@@ -1,8 +1,8 @@
 {
-  "run_id": "260922-a225affe",
+  "run_id": "260922-21d16ff1",
   "command": [
     "/opt/sglang/bin/python3",
-    "/scratch/260922-a225affe/miles/train.py",
+    "/scratch/260922-21d16ff1/miles/train.py",
     "--spec",
     "miles_plugins.models.qwen3_5",
     "get_qwen3_5_spec",
@@ -176,17 +176,17 @@
     "--save-interval",
     "3",
     "--save",
-    "/scratch/260922-a225affe/checkpoints",
+    "/scratch/260922-21d16ff1/checkpoints",
     "--load",
-    "/scratch/260922-a225affe/checkpoints",
+    "/scratch/260922-21d16ff1/checkpoints",
     "--prompt-data",
-    "/scratch/260922-a225affe/prompts.jsonl",
+    "/scratch/260922-21d16ff1/prompts.jsonl",
     "--wandb-group",
-    "260922-a225affe-qwen38-27b-fp8-dapo-smoke",
+    "260922-21d16ff1-qwen38-27b-fp8-dapo-smoke",
     "--wandb-dir",
-    "/scratch/260922-a225affe/wandb",
+    "/scratch/260922-21d16ff1/wandb",
     "--dump-details",
-    "/scratch/260922-a225affe/traces",
+    "/scratch/260922-21d16ff1/traces",
     "--pause-generation-mode",
     "retract",
     "--update-weights-interval",
@@ -203,20 +203,22 @@
     "probe.before_step",
     "--bf16",
     "--colocate",
-    "--use-tis"
+    "--use-tis",
+    "--reward-key",
+    "score"
   ],
   "runtime_env": {
     "env_vars": {
-      "PYTHONPATH": "/scratch/260922-a225affe/miles:/scratch/260922-a225affe/miles/examples/infra_features/low_precision/qwen38_smoke:/root/Megatron-LM",
+      "PYTHONPATH": "/scratch/260922-21d16ff1/miles:/scratch/260922-21d16ff1/miles/examples/infra_features/low_precision/qwen38_smoke:/root/Megatron-LM",
       "PYTHONUNBUFFERED": "1",
       "CUDA_DEVICE_MAX_CONNECTIONS": "1",
       "NVTE_FP8_BLOCK_SCALING_FP32_SCALES": "1",
       "NCCL_NVLS_ENABLE": "1",
-      "WANDB_RUN_ID": "260922a225affe",
+      "WANDB_RUN_ID": "26092221d16ff1",
       "WANDB_RESUME": "never",
-      "FP8_SMOKE_ROOT": "/scratch/260922-a225affe",
-      "HF_HOME": "/scratch/260922-a225affe/hf-cache",
-      "HF_HUB_CACHE": "/scratch/260922-a225affe/hf-cache/hub"
+      "FP8_SMOKE_ROOT": "/scratch/260922-21d16ff1",
+      "HF_HOME": "/scratch/260922-21d16ff1/hf-cache",
+      "HF_HUB_CACHE": "/scratch/260922-21d16ff1/hf-cache/hub"
     }
   }
 }

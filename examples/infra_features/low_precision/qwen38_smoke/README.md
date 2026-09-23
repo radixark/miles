@@ -1,1 +1,3 @@
 Qwen3.8-27B FP8 reasoning-RL smoke test. Three colocated GRPO updates on DAPO math, GBS32, TP4 trainer, TP2 rollout engines, 16k context. TE blockwise E4M3 and FP8 serving; GatedDeltaNet PyTorch projections remain BF16. The before-step hook asserts TE projections actually execute in FP8. This is a compatibility test, not a convergence evaluation. Runtime configuration is in config.json. The launcher additionally requires typed-argument-parser; install the adjacent requirements.txt with uv pip install -r before preparing data.
+
+DAPO returns a reward dictionary. Set --reward-key score to select its numeric score. Before launch run validate_reward.py; it checks correct, incorrect and mixed groups through the real reward hook and rollout metrics.
