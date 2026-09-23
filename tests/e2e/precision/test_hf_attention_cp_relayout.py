@@ -16,7 +16,7 @@ from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
 register_cuda_ci(est_time=30, suite="stage-c-4-gpu-h200", labels=["precision"], hardware=["hopper", "blackwell"])
 register_rocm_ci(est_time=60, suite="nightly-stage-c-4-gpu-mi350", labels=["precision"])
 
-from miles_plugins.models.cp_utils import packed_shard_to_zigzag, zigzag_to_packed_shard
+from miles_plugins.models.linear_attn import packed_shard_to_zigzag, zigzag_to_packed_shard
 
 
 def setup_dist():

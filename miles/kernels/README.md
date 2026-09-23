@@ -46,6 +46,9 @@ Ask first whether the model's ops already exist here.
   `miles_plugins.models.linear_attn.DeltaRuleAttention`, declare the model's input
   projections under their HF names with `sharded_linear`, pick `GatedDeltaRule` or `KimiDeltaRule`,
   and wrap it in `LinearAttentionLayer` in the layer spec. Heads are sharded across TP for free.
+  Qwen3.5 / Qwen3-Next (`GatedDeltaAttention`, one fused group-major `in_proj_qkv` and conv) and
+  Kimi-K3 (`KimiDeltaAttention`, HF's separate q/k/v projections and fp32 convs) differ only in
+  `_build_projections`, `_build_convolutions`, `project` and `convolve`.
 - A DSA variant with a new layout or feature: add a parameter branch in `attention/dsa`, do
   not copy the kernel pair.
 - A genuinely new op: add `miles/kernels/<op>/` with one entry function and a torch-reference
