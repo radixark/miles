@@ -2,6 +2,7 @@ import argparse
 import json
 import logging
 import sys
+from fnmatch import fnmatchcase
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -25,6 +26,7 @@ from miles.utils.arguments import (
 )
 from miles.utils.ft_utils.health_checker import SimpleHealthCheckerConfig
 from miles.utils.function_registry import function_registry
+from miles.utils.hf_utils.weight_mapping import HfWeightMapping
 from miles.utils.run_uuid import RUN_UUID_LENGTH, validate_run_uuid
 
 PATH_ARGS = ["--rollout-function-path", "--custom-generate-function-path"]
@@ -1006,6 +1008,21 @@ def test_critic_rejects_reward_level_kl(tmp_path):
 
 
 class TestMultiLoRAValidation:
+    @pytest.fixture(autouse=True)
+    def _bridge_selector(self, monkeypatch):
+        monkeypatch.setattr(
+            "miles.utils.lora.arguments.HfWeightMapping.from_config",
+            lambda config: SimpleNamespace(parameter_names=frozenset()),
+        )
+        monkeypatch.setattr(
+            "miles.utils.lora.arguments.load_hf_config",
+            lambda path: SimpleNamespace(model_type="qwen3", to_dict=lambda: {"model_type": "qwen3"}),
+        )
+        monkeypatch.setattr(
+            "miles.backends.megatron_utils.lora.target_modules.normalize_lora_targets_to_hf",
+            lambda checkpoint, targets, **kwargs: list(targets),
+        )
+
     def _parse(self, extra):
         parser = argparse.ArgumentParser()
         get_miles_extra_args_provider()(parser)
@@ -1023,6 +1040,68 @@ class TestMultiLoRAValidation:
             + extra
             + REQUIRED_ARGS
         )
+
+    def test_hf_selection_does_not_resolve_through_bridge(self, monkeypatch):
+        monkeypatch.setattr(
+            "miles.utils.lora.arguments.HfWeightMapping.from_config",
+            lambda config: SimpleNamespace(parameter_names=frozenset({"model.layers.0.self_attn.q_proj.weight"})),
+        )
+
+        def unexpected_bridge(*args, **kwargs):
+            pytest.fail("HF selection must not initialize Bridge")
+
+        monkeypatch.setattr(
+            "miles.backends.megatron_utils.lora.target_modules.normalize_lora_targets_to_hf",
+            unexpected_bridge,
+        )
+        args = self._parse(["--target-modules", "q_proj"])
+        miles_validate_args(args)
+        assert args.hf_lora_targets == ["q_proj"]
+        assert args.target_modules == "q_proj"
+
+    @pytest.mark.parametrize("exclusion", ["model.layers.*.self_attn.o_proj", "model.layers.0.self_attn.o_proj"])
+    @pytest.mark.parametrize("targets", ["o_proj,down_proj", "attn,mlp", "all-linear"])
+    def test_scoped_exclusion_resolves_without_bridge(self, monkeypatch, exclusion, targets):
+        hf_mapping = HfWeightMapping(
+            frozenset(
+                f"model.layers.{layer}.{module}.weight"
+                for layer in range(2)
+                for module in (
+                    "self_attn.q_proj",
+                    "self_attn.k_proj",
+                    "self_attn.v_proj",
+                    "self_attn.o_proj",
+                    "mlp.gate_proj",
+                    "mlp.up_proj",
+                    "mlp.down_proj",
+                )
+            )
+        )
+        monkeypatch.setattr("miles.utils.lora.arguments.HfWeightMapping.from_config", lambda config: hf_mapping)
+
+        def unexpected_bridge(*args, **kwargs):
+            pytest.fail("HF exclusions must not initialize Bridge")
+
+        monkeypatch.setattr(
+            "miles.backends.megatron_utils.lora.target_modules.normalize_lora_targets_to_hf",
+            unexpected_bridge,
+        )
+        args = self._parse(["--target-modules", targets, "--exclude-modules", exclusion])
+        if targets == "o_proj,down_proj":
+            with pytest.raises(AssertionError, match="overlap --exclude-modules"):
+                miles_validate_args(args)
+            return
+        miles_validate_args(args)
+
+        expected = {
+            name.removesuffix(".weight")
+            for name in hf_mapping.parameter_names
+            if not fnmatchcase(name.removesuffix(".weight"), exclusion)
+        }
+        assert args.target_modules == targets
+        assert args.exclude_modules == exclusion
+        assert set(args.hf_lora_targets) == expected
+        assert args.lora_adapter_targets == args.hf_lora_targets
 
     def test_rejects_multiple_tokenizer_workers(self):
         # Each sglang tokenizer worker holds its own LoRA registry, so per-step

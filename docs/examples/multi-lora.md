@@ -18,11 +18,10 @@ One 8-GPU node, disaggregated (multi-LoRA forbids `--colocate`):
   (`linear_qkv`, `linear_proj`), the per-expert MoE projections (`linear_fc1`, `linear_fc2`),
   and the output layer (`output_layer`) so the cookbook's default `train_unembed=True` is servable.
 
-The gateway currently resolves Tinker training groups for `qwen3` and `qwen3_moe`.
-`--tinker-train-attn`, `--tinker-train-mlp`, and `--tinker-train-unembed` default to enabled;
-use `--no-tinker-train-attn`, `--no-tinker-train-mlp`, or `--no-tinker-train-unembed` to disable a group.
-Every client's corresponding SDK flags must match the server layout. Tinker startup rejects
-`--target-modules` and `--exclude-modules`; native Miles training still accepts them.
+The example enables attention, MLP, and output-head training. Client SDK flags
+must match the server's selected groups. See [LoRA target selection](/advanced/lora#hf-target-source-of-truth)
+for `--target-modules attn,mlp,unembed`; use `attn,mlp` to disable output-head
+training. Tinker accepts only these group names and rejects `--exclude-modules`.
 
 ## Run
 

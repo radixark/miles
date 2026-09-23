@@ -47,21 +47,6 @@ _MEGATRON_MODEL_TYPE = {
     "Qwen3.6-35B-A3B": "qwen3.6-35B-A3B_lora",
 }
 
-# Anchored below decoder.layers: keeps LoRA off the MTP block and the vision tower.
-_LAYERS = "language_model.decoder.layers.*"
-_DEFAULT_TARGET_MODULES = ",".join(
-    [
-        f"{_LAYERS}.self_attention.linear_qkv",
-        f"{_LAYERS}.self_attention.linear_proj",
-        f"{_LAYERS}.mlp.experts.linear_fc1",
-        f"{_LAYERS}.mlp.experts.linear_fc2",
-        f"{_LAYERS}.mlp.shared_experts.linear_fc1",
-        f"{_LAYERS}.mlp.shared_experts.linear_fc2",
-        f"{_LAYERS}.self_attention.in_proj",
-        f"{_LAYERS}.self_attention.out_proj",
-    ]
-)
-
 
 @dataclass
 class ScriptArgs(U.ExecuteTrainConfig):
@@ -85,7 +70,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     lora_rank: int = 16
     lora_alpha: int = 32
     lora_dropout: float = 0.0
-    target_modules: str = _DEFAULT_TARGET_MODULES
+    target_modules: str = "all-linear"
     # required for true on-policy under colocate (OFF -> KL ~1.0 vs ~1e-3)
     lora_base_cpu_backup: bool = True
     # MoE-expert LoRA layout: shared-outer when True, per-expert when False

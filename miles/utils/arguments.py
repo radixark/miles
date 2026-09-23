@@ -17,9 +17,10 @@ from miles.utils.eval_config import EvalDatasetConfig, build_eval_dataset_config
 from miles.utils.file_arg_utils import resolve_file_arg
 from miles.utils.ft_utils.health_checker import SimpleHealthCheckerConfig
 from miles.utils.function_registry import load_function
-from miles.utils.hf_config import is_dsa, load_hf_config
+from miles.utils.hf_utils.config import is_dsa, load_hf_config
 from miles.utils.logging_utils import configure_logger_raw
-from miles.utils.lora import is_lora_enabled
+from miles.utils.lora.arguments import add_lora_arguments, validate_lora_args
+from miles.utils.lora.utils import is_lora_enabled
 from miles.utils.megatron_args_utils import compute_megatron_world_size_except_dp
 from miles.utils.object_store import ObjectStoreBackend
 from miles.utils.run_uuid import RUN_UUID_LENGTH, generate_run_uuid, validate_run_uuid
@@ -1781,98 +1782,6 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             )
             return parser
 
-        def add_lora_arguments(parser):
-            """Add LoRA-related arguments for Megatron backend."""
-            parser.add_argument(
-                "--lora-rank",
-                type=int,
-                default=0,
-                help="LoRA rank. Set to 0 to disable LoRA (default: 0)",
-            )
-            parser.add_argument(
-                "--lora-alpha",
-                type=int,
-                default=16,
-                help="LoRA alpha for scaling (default: 16)",
-            )
-            parser.add_argument(
-                "--lora-dropout",
-                type=float,
-                default=0.0,
-                help="LoRA dropout rate (default: 0.0)",
-            )
-            parser.add_argument(
-                "--lora-type",
-                type=str,
-                default="lora",
-                choices=["lora", "canonical_lora"],
-                help="LoRA variant to use: 'lora' (standard) or 'canonical_lora' (split Q/K/V) (default: lora)",
-            )
-            parser.add_argument(
-                "--target-modules",
-                type=str,
-                default=None,
-                help="Target modules for LoRA. Use 'all-linear' or comma-separated module names "
-                "(e.g., 'q_proj,k_proj,v_proj,o_proj' for HF naming or 'linear_qkv,linear_proj' for Megatron naming)",
-            )
-            parser.add_argument(
-                "--exclude-modules",
-                type=str,
-                default=None,
-                help="Modules to exclude from LoRA (comma-separated)",
-            )
-            parser.add_argument(
-                "--lora-adapter-path",
-                type=str,
-                default=None,
-                help="Path to load pre-trained LoRA adapter weights (default: None)",
-            )
-            parser.add_argument(
-                "--lora-sync-from-tensor",
-                action="store_true",
-                default=False,
-                help="Sync LoRA weights via tensor instead of file (more efficient)",
-            )
-            parser.add_argument(
-                "--lora-base-cpu-backup",
-                action="store_true",
-                default=False,
-                help=(
-                    "LoRA + colocate: keep SGLang-side CPU mirror of base weights "
-                    "and skip per-step base sync. Trades host RAM for faster "
-                    "onload/offload. Ignored unless --colocate and LoRA are both on. "
-                    "Also needs 'weight' in --offload-rollout-level: SGLang populates "
-                    "the mirror during release_weights_occupation, so with the weights "
-                    "never released the mirror is never built and the flag does nothing."
-                ),
-            )
-            parser.add_argument(
-                "--lora-train-only",
-                action="store_true",
-                default=False,
-                help=(
-                    "Train LoRA adapters in Megatron but keep rollout engines on the frozen "
-                    "base policy: SGLang LoRA serving and adapter weight sync are disabled "
-                    "(only the base weights are synced). For models without SGLang LoRA "
-                    "support (e.g. Inkling native LoRA)."
-                ),
-            )
-            parser.add_argument(
-                "--experts-shared-outer-loras",
-                action="store_true",
-                default=False,
-                help="Enable shared-outer grouped-expert LoRA (gate_up lora_A and "
-                "down lora_B shared across experts, expert_dim=1). Matches SGLang "
-                "PR #21466's experts_shared_outer_loras=True serving contract.",
-            )
-            parser.add_argument(
-                "--multi-lora-n-adapters",
-                type=int,
-                default=0,
-                help="Maximum number of concurrent adapter slots for multi-LoRA. Set to 0 to disable multi-LoRA (default: 0)",
-            )
-            return parser
-
         def add_router_arguments(parser):
             parser.add_argument(
                 "--use-miles-router",
@@ -2196,19 +2105,6 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 action="store_true",
                 help="When comparing weights after update, allow quantized tensors to differ "
                 "by up to 1 ULP of the quantized dtype per side (compared in dequantized space).",
-            )
-            parser.add_argument(
-                "--check-lora-weight-equal",
-                action="store_true",
-                default=False,
-                help=(
-                    "Verify the megatron->sglang LoRA adapter weight-sync on the colocated "
-                    "(from_tensors) path: on every sync the trainer ships a per-tensor sha256 "
-                    "manifest of the adapter it sends, and each rollout engine hashes the "
-                    "tensors it received and fails the load on any mismatch/missing/extra "
-                    "name. The LoRA analogue of --check-weight-update-equal, which only "
-                    "covers base weights."
-                ),
             )
             parser.add_argument(
                 "--save-local-weight-checksum",
@@ -2642,7 +2538,6 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
         parser = add_eval_arguments(parser)
         parser = add_algo_arguments(parser)
         parser = add_on_policy_distillation_arguments(parser)
-        parser = add_lora_arguments(parser)
         parser = add_wandb_arguments(parser)
         parser = add_mlflow_arguments(parser)
         parser = add_tensorboard_arguments(parser)
@@ -2651,16 +2546,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
         parser = add_router_arguments(parser)
         parser = add_debug_arguments(parser)
         parser = add_sglang_arguments(parser)
-        # required whenever expert projections are LoRA targets, inert otherwise
-        # (sglang's own default is False)
-        parser.set_defaults(sglang_lora_use_virtual_experts=True)
-        parser.add_argument(
-            "--no-sglang-lora-use-virtual-experts",
-            dest="sglang_lora_use_virtual_experts",
-            action="store_false",
-            help="Serve MoE-expert LoRA through sglang's fused_moe_lora alignment path instead "
-            "of the virtual-experts path.",
-        )
+        parser = add_lora_arguments(parser)
         parser = add_session_arguments(parser)
         parser = add_network_arguments(parser)
         parser = add_reward_model_arguments(parser)
@@ -2839,8 +2725,6 @@ def _validate_rematerialize_param_from_master_weight(args):
     assert (
         args.train_backend == "megatron"
     ), "--rematerialize-param-from-master-weight reads Megatron's distributed-optimizer main params"
-    from miles.backends.megatron_utils.lora.utils import is_lora_enabled
-
     assert not is_lora_enabled(args), "--rematerialize-param-from-master-weight does not support LoRA"
     assert not args.debug_disable_optimizer, "--debug-disable-optimizer leaves no main params to rematerialize from"
     assert not args.indep_dp, (
@@ -3156,55 +3040,7 @@ def miles_validate_args(args):
     if args.custom_megatron_post_save_hook_path is not None:
         assert args.save is not None, "'--save' is required when custom_megatron_post_save_hook_path is set."
 
-    # Parse LoRA target modules
-    if args.lora_rank > 0:
-        assert args.target_modules is not None, "'--target-modules' is required when LoRA is enabled."
-
-        if args.target_modules == "all-linear":
-            # MLA projections are HF-config-gated (SGLang sizes LoRA buffers per module name;
-            # listing them on a dense model crashes the engine). The DSA indexer stays excluded.
-            modules = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
-            hf_config = load_hf_config(args.hf_checkpoint)
-            if getattr(hf_config, "kv_lora_rank", None):
-                modules += ["kv_a_proj_with_mqa", "kv_b_proj"]
-                if getattr(hf_config, "q_lora_rank", None):
-                    modules += ["q_a_proj", "q_b_proj"]
-        elif "," in args.target_modules:
-            modules = [m.strip() for m in args.target_modules.split(",")]
-        else:
-            modules = [args.target_modules]
-
-        if args.exclude_modules:
-            exclude_set = (
-                set(m.strip() for m in args.exclude_modules.split(","))
-                if "," in args.exclude_modules
-                else {args.exclude_modules}
-            )
-            modules = [m for m in modules if m not in exclude_set]
-
-        args.target_modules = modules
-
-        # Training and serving must agree on shared-outer grouped-expert LoRA
-        # (expert_dim=1 buffers in SGLang).
-        if args.experts_shared_outer_loras and hasattr(args, "sglang_experts_shared_outer_loras"):
-            args.sglang_experts_shared_outer_loras = True
-        assert args.experts_shared_outer_loras == bool(
-            getattr(args, "sglang_experts_shared_outer_loras", args.experts_shared_outer_loras)
-        ), "experts_shared_outer_loras and sglang_experts_shared_outer_loras must agree"
-
-        # the two MoE-expert adapter layouts are not checkpoint-compatible; say which one runs
-        _expert_leaves = ("linear_fc1", "linear_fc2", "gate_proj", "up_proj", "down_proj")
-        if any(leaf in str(tm) for tm in modules for leaf in _expert_leaves):
-            logger.warning(
-                "MoE-expert LoRA layout: %s (--experts-shared-outer-loras).",
-                "shared-outer" if args.experts_shared_outer_loras else "per-expert",
-            )
-
-    # Sets args.multi_lora, then validates/defaults the multi-LoRA arg surface
-    # (adapter configs themselves are loaded later by the controller).
-    from miles.utils.multi_lora import validate_multi_lora_args
-
-    validate_multi_lora_args(args)
+    validate_lora_args(args)
 
     assert not (args.kl_coef != 0 and args.kl_loss_coef != 0), "Only one of kl_coef and kl_loss_coef can be set"
 

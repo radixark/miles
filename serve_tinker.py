@@ -15,7 +15,7 @@ from miles.tinker.server.app import build_app
 from miles.utils import object_store
 from miles.utils.arguments import parse_args
 from miles.utils.audit_utils.process_identity import MainProcessIdentity
-from miles.utils.hf_config import load_hf_config
+from miles.utils.hf_utils.config import load_hf_config
 from miles.utils.http_utils import init_http_client
 from miles.utils.logging_utils import configure_logger
 
@@ -27,7 +27,7 @@ async def serve(args):
     assert args.load == args.hf_checkpoint, "Tinker trainers and engines must load the same frozen HF base"
     checkpoint_root = args.tinker_checkpoint_root or (args.save and f"{args.save}/tinker")
     assert checkpoint_root, "set --tinker-checkpoint-root (or --save to derive <save>/tinker)"
-    hf_config = load_hf_config(args.hf_checkpoint)
+    hf_config = load_hf_config(args.hf_checkpoint).get_text_config()
     max_tokens_per_datum = hf_config.max_position_embeddings
     if args.max_tokens_per_gpu is not None:
         # The trainer pads each packed microbatch to this multiple.
@@ -63,9 +63,9 @@ async def serve(args):
         max_tokens_per_datum=max_tokens_per_datum,
         lora_alpha=args.lora_alpha,
         max_lora_rank=args.lora_rank,
-        trains_attn=args.tinker_train_attn,
-        trains_mlp=args.tinker_train_mlp,
-        trains_unembed=args.tinker_train_unembed,
+        trains_attn="attn" in args.tinker_lora_groups,
+        trains_mlp="mlp" in args.tinker_lora_groups,
+        trains_unembed="unembed" in args.tinker_lora_groups,
     )
     router_url = f"http://{args.sglang_router_ip}:{args.sglang_router_port}"
     actor_world_size = args.actor_num_nodes * args.actor_num_gpus_per_node

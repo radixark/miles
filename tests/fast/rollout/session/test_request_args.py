@@ -14,7 +14,7 @@ from miles.rollout.session.request_args import (
     resolve_request_args_by_config,
 )
 from miles.utils.chat_template_utils.tito_tokenizer import TITOTokenizer, extract_template_args
-from miles.utils.lora import LORA_ADAPTER_NAME
+from miles.utils.lora.utils import LORA_ADAPTER_NAME
 
 
 class TestResolveRequestArgsByConfig:
