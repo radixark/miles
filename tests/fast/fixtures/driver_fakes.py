@@ -20,6 +20,7 @@ class FakeRolloutExecutor:
         self.get = FakeRemoteMethod(self._get)
         self.eval = FakeRemoteMethod(self._eval)
         self.save = FakeRemoteMethod(self._save)
+        self.acknowledge = FakeRemoteMethod(self._acknowledge)
         self.dispose = FakeRemoteMethod(self._dispose)
         self.report_eval_skip = FakeRemoteMethod(self._report_eval_skip)
 
@@ -35,6 +36,9 @@ class FakeRolloutExecutor:
 
     async def _eval(self, rollout_id: int, **_kwargs: Any) -> None:
         self.events.append(f"eval:{rollout_id}")
+
+    async def _acknowledge(self, rollout_id: int) -> None:
+        self.events.append(f"acknowledge:{rollout_id}")
 
     async def _save(self, rollout_id: int) -> None:
         self.events.append(f"executor_save:{rollout_id}")

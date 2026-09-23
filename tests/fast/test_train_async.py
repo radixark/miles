@@ -61,6 +61,7 @@ def _install_driver_fakes(
     )
 
     async def create_rollout_components(_args: SimpleNamespace, *, checkpoint_replay=False) -> tuple[Any, Any, int]:
+        assert checkpoint_replay is True
         return components.inference_controller, components.rollout_executor, 4
 
     async def create_training_models(_args: SimpleNamespace, _controller: Any, _executor: Any) -> tuple[Any, Any]:
@@ -321,8 +322,24 @@ class TestPublicationAndReferences:
             gc.collect()
             assert batches[rollout_id]() is None
             assert f"consumed:rollout-data-{rollout_id}" in events
+            assert f"acknowledge:{rollout_id}" in events
 
         monkeypatch.setattr(components.rollout_executor.get, "_fn", get)
         monkeypatch.setattr(components.actor_model, "train", train)
         monkeypatch.setattr(components.actor_model, "save_model", save)
         await train_async_driver.train(args)
+
+
+async def test_failed_training_is_not_acknowledged(monkeypatch):
+    args = _make_args(num_rollout=1, save_interval=1)
+    events = []
+    components = _install_driver_fakes(monkeypatch, args, events)
+
+    async def fail_train(*args, **kwargs):
+        raise RuntimeError("training failed")
+
+    monkeypatch.setattr(components.actor_model, "train", fail_train)
+    with pytest.raises(RuntimeError, match="training failed"):
+        await train_async_driver.train(args)
+    assert "acknowledge:0" not in events
+    assert "executor_save:0" not in events

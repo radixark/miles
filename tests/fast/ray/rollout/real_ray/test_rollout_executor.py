@@ -18,6 +18,7 @@ from miles.rollout.base_types import (
     RolloutFnTrainOutput,
 )
 from miles.rollout.checkpoint_eval import CheckpointEvalFn
+from miles.rollout.data_source import RolloutDataSource
 from miles.utils.types import WeightVersionSpan, WeightVersionsPerCall
 from miles.utils.weight_version import max_rollouts_without_published_weight_version
 
@@ -82,6 +83,20 @@ class TestProcessSetup:
 
 @pytest.mark.asyncio
 class TestRolloutFunctionConstruction:
+    @pytest.mark.parametrize("checkpoint_replay", [False, True])
+    async def test_checkpoint_replay_is_enabled_only_when_requested(
+        self, patch_low_level, monkeypatch, checkpoint_replay
+    ):
+        import miles.ray.rollout.rollout_executor as rexec
+
+        args = _make_test_args(save="/checkpoint")
+        source = RolloutDataSource(args)
+        args.rollout_global_dataset = True
+        monkeypatch.setattr(rexec, "load_function", lambda path: lambda args: source)
+        executor = RolloutExecutor.__ray_actor_class__(args=args, checkpoint_replay=checkpoint_replay)
+        assert source._checkpoint_replay is checkpoint_replay
+        assert executor._checkpoint_source is (source if checkpoint_replay else None)
+
     @pytest.mark.parametrize("subclass", [False, True])
     async def test_fully_async_accepts_base_and_subclass_instances(self, patch_low_level, monkeypatch, subclass):
         import miles.ray.rollout.rollout_executor as rexec

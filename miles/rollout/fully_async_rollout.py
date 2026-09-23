@@ -30,6 +30,7 @@ from miles.rollout.base_types import (
     RolloutFnTrainInput,
     RolloutFnTrainOutput,
 )
+from miles.rollout.data_source import RolloutDataSource
 from miles.rollout.fully_async_data_buffer import (
     DataBuffer,
     DataBufferConstructorInput,
@@ -68,9 +69,7 @@ class FullyAsyncRolloutFn(BaseRolloutFn):
         self._scheduler = make_submission_scheduler(input.args, default="sample")
         assert input.args.async_unused_samples_handler in ("retry", "drop")
         # applied to every group we do not train on; "drop" discards instead of recycling
-        self._handle_unused = (
-            self._recycle if input.args.async_unused_samples_handler == "retry" else (lambda prompt_group: None)
-        )
+        self._handle_unused = self._recycle if input.args.async_unused_samples_handler == "retry" else self._discard
         self._sample_filter = load_function(input.args.rollout_sample_filter_path)
         self._worker: asyncio.Task | None = None
         self._eval_prompt_dataset_cache: dict = {}
@@ -84,7 +83,9 @@ class FullyAsyncRolloutFn(BaseRolloutFn):
         if self._worker is None:
             buffer_cls = load_function(self.args.custom_async_data_buffer_path) or DefaultDataBuffer
             self._output = buffer_cls(
-                DataBufferConstructorInput(args=self.args, unused_handler_fn=self._handle_unused)
+                DataBufferConstructorInput(
+                    args=self.args, unused_handler_fn=self._handle_unused, discard_handler_fn=self._discard
+                )
             )
             self._worker = asyncio.create_task(self._worker_loop())
             logger.info("Started fully-async rollout worker")
@@ -211,9 +212,17 @@ class FullyAsyncRolloutFn(BaseRolloutFn):
         data.sort(key=lambda group: first_sample(group).index)
 
         if self._sample_filter is not None:
+            before_filter = {first_sample(group).group_index: group for group in data}
             self._sample_filter(args, data)
+            kept = {first_sample(group).group_index for group in data}
+            for group_id in before_filter.keys() - kept:
+                self._discard([first_sample(before_filter[group_id])])
 
         return RolloutFnTrainOutput(samples=data, metrics=self._output.get_metrics())
+
+    def _discard(self, prompt_group: list[Sample]) -> None:
+        if isinstance(self.data_source, RolloutDataSource):
+            self.data_source.acknowledge([prompt_group[0].group_index])
 
     def _recycle(self, prompt_group: list[Sample]) -> None:
         for sample in prompt_group:

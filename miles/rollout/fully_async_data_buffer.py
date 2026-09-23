@@ -40,6 +40,7 @@ def first_sample(group: Group) -> Sample:
 class DataBufferConstructorInput:
     args: Namespace
     unused_handler_fn: Callable[[list[Sample]], None]  # --async-unused-samples-handler, applied to unused groups
+    discard_handler_fn: Callable[[list[Sample]], None] | None = None  # permanent rejection, including custom buffers
 
 
 @dataclass
@@ -54,7 +55,9 @@ class DataBuffer(ABC):
     The producer puts each finished group as it completes; the consumer gets one
     group at a time; get_metrics is collected once per training step. Storage,
     ordering, and filtering are invisible to callers — an implementation is free
-    to reject a group on put, on get, or not at all.
+    to reject a group on put, on get, or not at all. Notify the constructor's
+    discard_handler_fn (when provided) of permanent rejections/evictions so the
+    data source does not replay them on resume; unused_handler_fn applies drop/retry.
     """
 
     @abstractmethod
@@ -107,6 +110,7 @@ class DefaultDataBuffer(DataBuffer):
         assert self._capacity >= 1
 
         self._unused_handler_fn = input.unused_handler_fn
+        self._discard_handler_fn = input.discard_handler_fn
         self._dynamic_filter = load_function(args.dynamic_sampling_filter_path)
         self._cond = asyncio.Condition()
         self._current_version: int | None = None
@@ -142,11 +146,15 @@ class DefaultDataBuffer(DataBuffer):
         output = apply_missing_reward_filter(self._args, input.group)
         if not output.keep:
             self._metric_gatherer.on_dynamic_filter_drop(reason=output.reason)
+            if self._discard_handler_fn is not None:
+                self._discard_handler_fn(input.prompt_group)
             return False
 
         output = call_dynamic_filter(self._dynamic_filter, self._args, input.group)
         if not output.keep:
             self._metric_gatherer.on_dynamic_filter_drop(reason=output.reason)
+            if self._discard_handler_fn is not None:
+                self._discard_handler_fn(input.prompt_group)
             return False
         return True
 

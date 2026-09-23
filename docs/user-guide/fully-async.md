@@ -196,6 +196,26 @@ this section apply only if your class reads them. The one decision that stays ou
 `--rollout-sample-filter-path`, which runs on the assembled batch rather than on
 individual groups.
 
+Custom buffers must call `DataBufferConstructorInput.discard_handler_fn`, when provided,
+for permanently rejected or evicted prompt groups. Use `unused_handler_fn` for the
+configured drop/retry policy. These callbacks keep checkpoint replay consistent with
+filtering decisions.
+
+## Checkpoint replay
+
+With the built-in global data source, `train_async.py` checkpoints the dataset cursor
+and original inputs of every issued but unconsumed prompt group together. A group is
+acknowledged after successful training; deliberate filter drops are retired, while
+retries remain pending. This includes the driver's prefetched batch, completed groups
+in the default buffer, and requests still generating.
+
+On resume, pending inputs retain their sample/group IDs and are replayed before reading
+new prompts from the saved cursor. Responses are regenerated under the resumed weights;
+this does not reproduce the original response text or training order. Older checkpoints
+without pending inputs remain readable, but cannot recover prompts they did not save.
+Custom data sources must implement equivalent pending-state persistence themselves;
+custom rollout functions must preserve the source's group IDs.
+
 ## Evaluation
 
 Fully async rollout changes one thing about eval: generation is always in flight, so an

@@ -3,6 +3,7 @@ import copy
 import logging
 import os
 from pathlib import Path
+from threading import RLock
 
 import torch
 
@@ -55,6 +56,11 @@ class RolloutDataSource(DataSource):
         self.sample_offset = 0
         # TODO remove this
         self.metadata = {}
+        self._checkpoint_lock = RLock()
+        self._checkpoint_replay = False
+        self._pending_groups = {}
+        self._replay_groups = []
+        self._issued_groups = set()
 
         if args.rollout_global_dataset:
             tokenizer = load_tokenizer(
@@ -88,7 +94,40 @@ class RolloutDataSource(DataSource):
         else:
             self.dataset = None
 
+    def enable_checkpoint_replay(self):
+        """Journal original prompts until training acknowledges them; responses are regenerated on load."""
+        self._checkpoint_replay = True
+
     def get_samples(self, num_samples):
+        # The cursor and journal must advance together, including on the producer's background thread.
+        with self._checkpoint_lock:
+            samples = copy.deepcopy(self._replay_groups[:num_samples])
+            del self._replay_groups[:num_samples]
+            if len(samples) < num_samples:
+                samples += self._get_samples(num_samples - len(samples))
+            if self._checkpoint_replay:
+                for group in samples:
+                    group_id = group[0].group_index
+                    if group_id not in self._pending_groups:
+                        self._pending_groups[group_id] = copy.deepcopy(group)
+                    self._issued_groups.add(group_id)
+            return samples
+
+    def acknowledge(self, group_ids):
+        """Retire trained or deliberately discarded groups, never groups queued for retry."""
+        with self._checkpoint_lock:
+            for group_id in group_ids:
+                self._pending_groups.pop(group_id, None)
+                self._issued_groups.discard(group_id)
+
+    def finish_rollout(self, kept_group_ids):
+        """Retire pipelined oversampling/filter rejects, preserving partial-rollout retries."""
+        with self._checkpoint_lock:
+            buffered = {group[0].group_index for group in getattr(self, "buffer", [])}
+            self.acknowledge(self._issued_groups - set(kept_group_ids) - buffered)
+            self._issued_groups.clear()
+
+    def _get_samples(self, num_samples):
         # TODO further improve code
         if self.dataset is not None:
             if self.sample_offset + num_samples <= len(self.dataset):
@@ -125,16 +164,22 @@ class RolloutDataSource(DataSource):
         if not self.args.rollout_global_dataset:
             return
 
-        state_dict = {
-            "sample_offset": self.sample_offset,
-            "epoch_id": self.epoch_id,
-            "sample_group_index": self.sample_group_index,
-            "sample_index": self.sample_index,
-            "metadata": self.metadata,
-        }
-        path = os.path.join(self.args.save, f"rollout/global_dataset_state_dict_{rollout_id}.pt")
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        torch.save(state_dict, path)
+        with self._checkpoint_lock:
+            state_dict = {
+                "sample_offset": self.sample_offset,
+                "epoch_id": self.epoch_id,
+                "sample_group_index": self.sample_group_index,
+                "sample_index": self.sample_index,
+                "metadata": self.metadata,
+            }
+            if self._checkpoint_replay:
+                state_dict["pending_groups"] = [
+                    [sample.to_dict() for sample in group] for group in self._pending_groups.values()
+                ]
+            path = os.path.join(self.args.save, f"rollout/global_dataset_state_dict_{rollout_id}.pt")
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            torch.save(state_dict, path + ".tmp")
+            os.replace(path + ".tmp", path)
 
     def load(self, rollout_id=None):
         if not self.args.rollout_global_dataset:
@@ -150,15 +195,25 @@ class RolloutDataSource(DataSource):
 
         logger.info(f"load metadata from {path}")
         logger.info(f"load metadata: {self.metadata}")
-        state_dict = torch.load(path)
-        self.sample_offset = state_dict.get("sample_offset", 0)
-        self.epoch_id = state_dict.get("epoch_id", 0)
-        self.sample_group_index = state_dict.get("sample_group_index", 0)
-        self.sample_index = state_dict.get("sample_index", 0)
-        self.metadata = state_dict.get("metadata", {})
+        state_dict = torch.load(path, weights_only=False)
+        with self._checkpoint_lock:
+            self.sample_offset = state_dict.get("sample_offset", 0)
+            self.epoch_id = state_dict.get("epoch_id", 0)
+            self.sample_group_index = state_dict.get("sample_group_index", 0)
+            self.sample_index = state_dict.get("sample_index", 0)
+            self.metadata = state_dict.get("metadata", {})
 
-        if self.args.rollout_global_dataset and self.args.rollout_shuffle:
-            self.dataset.shuffle(self.epoch_id)
+            if self.args.rollout_global_dataset and self.args.rollout_shuffle:
+                self.dataset.shuffle(self.epoch_id)
+
+            if self._checkpoint_replay:
+                self._replay_groups = [
+                    [Sample.from_dict(sample) for sample in group] for group in state_dict.get("pending_groups", [])
+                ]
+                self._pending_groups = {group[0].group_index: group for group in self._replay_groups}
+                self._issued_groups.clear()
+                if hasattr(self, "buffer"):
+                    self.buffer.clear()
 
 
 class RolloutDataSourceWithBuffer(RolloutDataSource):
@@ -170,18 +225,14 @@ class RolloutDataSourceWithBuffer(RolloutDataSource):
         else:
             self.buffer_filter = load_function(self.args.buffer_filter_path)
 
-    def get_samples(self, num_samples: int) -> list[list[Sample]]:
-        """
-        Return num_samples samples
-        """
-
+    def _get_samples(self, num_samples: int) -> list[list[Sample]]:
         samples = self._get_samples_from_buffer(num_samples)
         num_samples -= len(samples)
 
         if num_samples == 0:
             return samples
 
-        samples += super().get_samples(num_samples=num_samples)
+        samples += super()._get_samples(num_samples=num_samples)
         return samples
 
     def _get_samples_from_buffer(self, num_samples: int) -> list[list[Sample]]:
@@ -195,16 +246,17 @@ class RolloutDataSourceWithBuffer(RolloutDataSource):
         """
         Add a sample group to buffer.
         """
-        if not samples:
-            return
-        assert isinstance(samples, list), f"samples must be a list, got {type(samples)}"
-        assert isinstance(samples[0], list), f"the elements of samples must be list, got {type(samples[0])}"
-        for i in range(0, len(samples)):
-            assert (
-                len(samples[i]) == self.args.n_samples_per_prompt
-            ), f"the length of the elements of samples must be equal to n_samples_per_prompt, got {len(samples[i])} != {self.args.n_samples_per_prompt}"
-            group = samples[i]  # type: ignore
-            self.buffer.append(group)
+        with self._checkpoint_lock:
+            if not samples:
+                return
+            assert isinstance(samples, list), f"samples must be a list, got {type(samples)}"
+            assert isinstance(samples[0], list), f"the elements of samples must be list, got {type(samples[0])}"
+            for i in range(0, len(samples)):
+                assert (
+                    len(samples[i]) == self.args.n_samples_per_prompt
+                ), f"the length of the elements of samples must be equal to n_samples_per_prompt, got {len(samples[i])} != {self.args.n_samples_per_prompt}"
+                group = samples[i]  # type: ignore
+                self.buffer.append(group)
 
     # TODO remove
     def update_metadata(self, metadata: dict):
