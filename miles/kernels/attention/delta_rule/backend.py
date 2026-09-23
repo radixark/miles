@@ -1,3 +1,9 @@
+import functools
+import logging
+import os
+
+logger = logging.getLogger(__name__)
+
 try:
     from fla.ops.gated_delta_rule import chunk_gated_delta_rule as _fla_chunk_gated_delta_rule
 except ImportError:
@@ -28,3 +34,17 @@ def get_chunk_kda():
     except ImportError as exc:
         raise ImportError("KDA requires flash-linear-attention >= 0.5 (fla.ops.kda).") from exc
     return chunk_kda
+
+
+@functools.cache
+def get_short_conv_backend() -> str:
+    backend = os.environ.get("FLA_CONV_BACKEND")
+    if backend is None:
+        try:
+            from causal_conv1d.cpp_functions import causal_conv1d_bwd_function  # noqa: F401
+
+            backend = "mix"
+        except ImportError:
+            backend = "triton"
+    logger.info(f"Delta-rule short conv backend: {backend}")
+    return backend
