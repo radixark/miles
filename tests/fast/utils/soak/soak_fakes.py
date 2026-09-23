@@ -35,7 +35,7 @@ from tests.utils.soak.core.types import (
 from tests.utils.soak.core.views import SoakActionRecord
 from tests.utils.soak.ft.types import CellTarget, PodDetails
 from tests.utils.soak.k8s_utils.pod_manipulation import PodDeletedEvidence, SoakPodTarget
-from tests.utils.soak.k8s_utils.pod_processes import ProcessTarget
+from tests.utils.soak.k8s_utils.pod_processes import ProcessIdentity, ProcessTarget
 
 from miles.backends.megatron_utils.ft.types import TrainStepOutcome
 from miles.backends.megatron_utils.megatron_config import ACTOR_ROLE
@@ -401,6 +401,10 @@ def _cell(
     )
 
 
+def _fault_target(cell_id: str, *, workers_hash: str = "hash-a", rank: int = 0) -> FaultTarget:
+    return FaultTarget(cell_id=cell_id, sub_index=rank, workers_hash=workers_hash)
+
+
 _CellReply = int | Cell | Exception
 
 
@@ -467,6 +471,17 @@ def _pod_json(name: str, *, pool_id: str, cell_index: int | None) -> dict:
     if cell_index is not None:
         labels[DEFAULT_LABEL_KEYS.cell_index] = str(cell_index)
     return {"metadata": {"name": name, "uid": f"uid-{name}", "labels": labels}}
+
+
+def _process_target(*, pod_uid: str, pattern: str) -> ProcessTarget:
+    return ProcessTarget(
+        pod_uid=pod_uid,
+        boot_id="boot",
+        pid_namespace="pidns",
+        init_start_ticks=1,
+        pattern=pattern,
+        processes=[ProcessIdentity(pid=42, start_ticks=7)],
+    )
 
 
 class _FakeKubectl:
