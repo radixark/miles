@@ -1,19 +1,19 @@
 from typing import Any
 
+from pydantic import Field
+
+from miles.utils.pydantic_utils import FrozenStrictBaseModel
+
 InferenceEngineChecksums = dict[str, str]
 
 
-def flatten_inference_engine_checksums(check_weights_result: Any) -> list[InferenceEngineChecksums]:
-    engine_bodies = list(check_weights_result)
-    surviving = [body for body in engine_bodies if body is not None]
-    assert surviving, (
-        f"check_weights('checksum') returned no non-None engine bodies "
-        f"(got {len(engine_bodies)} entries, all None): {check_weights_result!r}"
-    )
-    return [_merge_inference_engine_ranks(body) for body in surviving]
+class InferenceEngineChecksumSnapshot(FrozenStrictBaseModel):
+    cell_id: str = Field(min_length=1)
+    workers_hash: str = Field(min_length=1)
+    tensor_checksums: InferenceEngineChecksums = Field(min_length=1)
 
 
-def _merge_inference_engine_ranks(engine_body: dict[str, Any]) -> InferenceEngineChecksums:
+def merge_inference_engine_ranks(engine_body: dict[str, Any]) -> InferenceEngineChecksums:
     # Ranks arrive in non-deterministic (zmq) order under TP>1; sort and prefix each tensor
     # name with rank{r}/ so distinct shards' identically-named tensors never clobber.
     assert engine_body.get("success", False), f"check_weights engine reported failure: {engine_body!r}"

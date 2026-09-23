@@ -330,7 +330,7 @@ class InferenceController:
         selector: str = "all",
         skip_list: list[str] | None = None,
         model_id: str | None = None,
-    ) -> list[Any]:
+    ) -> list[tuple[ServerCellMetadata, Any]]:
         # Only the updatable model is re-synced; a frozen model would always mismatch.
         srv = self._get_updatable_server(model_id=model_id)
         if srv is None:
