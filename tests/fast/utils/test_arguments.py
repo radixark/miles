@@ -1,8 +1,8 @@
 import argparse
-from fnmatch import fnmatchcase
 import json
 import logging
 import sys
+from fnmatch import fnmatchcase
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -987,8 +987,13 @@ class TestMultiLoRAValidation:
                 f"model.layers.{layer}.{module}.weight"
                 for layer in range(2)
                 for module in (
-                    "self_attn.q_proj", "self_attn.k_proj", "self_attn.v_proj", "self_attn.o_proj",
-                    "mlp.gate_proj", "mlp.up_proj", "mlp.down_proj",
+                    "self_attn.q_proj",
+                    "self_attn.k_proj",
+                    "self_attn.v_proj",
+                    "self_attn.o_proj",
+                    "mlp.gate_proj",
+                    "mlp.up_proj",
+                    "mlp.down_proj",
                 )
             )
         )
@@ -1009,7 +1014,8 @@ class TestMultiLoRAValidation:
         miles_validate_args(args)
 
         expected = {
-            name.removesuffix(".weight") for name in hf_mapping.parameter_names
+            name.removesuffix(".weight")
+            for name in hf_mapping.parameter_names
             if not fnmatchcase(name.removesuffix(".weight"), exclusion)
         }
         assert set(args.hf_lora_targets) == expected

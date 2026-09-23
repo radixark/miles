@@ -137,9 +137,9 @@ def normalize_lora_targets_to_hf(hf_checkpoint, target_modules, *, canonical, ex
                         matches_lora_target(hf_module, exclude) or matches_lora_target(megatron_module, exclude)
                         for exclude in exclude_modules
                     )
-                    assert not (excluded and target in explicit_targets), (
-                        f"Explicit LoRA target {target!r} overlaps --exclude-modules at {hf_module!r}"
-                    )
+                    assert not (
+                        excluded and target in explicit_targets
+                    ), f"Explicit LoRA target {target!r} overlaps --exclude-modules at {hf_module!r}"
                     if not excluded:
                         selected_hf_modules.add(hf_module)
     assert (

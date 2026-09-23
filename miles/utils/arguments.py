@@ -3137,14 +3137,16 @@ def miles_validate_args(args):
         if targets is not None:
             expanded = expand_packed_hf_lora_targets(targets, hf_modules)
             explicit_targets = [
-                target for target in dict.fromkeys(targets + expanded)
+                target
+                for target in dict.fromkeys(targets + expanded)
                 if target not in (*LORA_TARGET_GROUPS, "all-linear")
             ]
             targets = expanded
         args.exclude_modules = parse_lora_targets(args.exclude_modules) or []
         if args.exclude_modules:
             conflicts = {
-                module for module in hf_modules + explicit_targets + args.exclude_modules
+                module
+                for module in hf_modules + explicit_targets + args.exclude_modules
                 if any(matches_lora_target(module, target) for target in explicit_targets)
                 and any(matches_lora_target(module, exclude) for exclude in args.exclude_modules)
             }
