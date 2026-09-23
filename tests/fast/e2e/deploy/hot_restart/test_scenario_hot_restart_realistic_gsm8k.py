@@ -21,6 +21,7 @@ _CHECKERS: tuple[str, ...] = (
     "assert_checkpoints_advanced_between_takeovers",
     "assert_take_overs_replaced_only_script",
     "assert_take_over_loss_within_save_interval",
+    "assert_publications_after_take_overs",
     "assert_take_overs_resumed_within_save_interval",
 )
 
@@ -136,7 +137,7 @@ class TestTheLaunchATakeOverResumes:
     def test_the_run_keeps_one_wandb_run_and_publishes_checksums_without_training_ft(
         self, harness: ScenarioHarness
     ) -> None:
-        """A take-over is not a cell fault, so cell ft stays off while the engines keep publishing checksums."""
+        """A take-over is not a cell fault, so cell ft stays off while the publication checker needs checksums."""
         scenario.run_ci(seed=5, num_rollout=40, hot_restart_interval_seconds=17.0)
 
         (launch,) = harness.launches
@@ -162,6 +163,8 @@ class TestWhatAHotRestartSoakIsJudgedBy:
         assert project_kwargs == {"release": compute_release_of_config(soak["config"])}
         ((_, scope_kwargs),) = harness.calls_of("assert_take_overs_replaced_only_script")
         assert scope_kwargs == {"num_restarts": 0, "minimum_restarts": MIN_HOT_RESTARTS}
+        ((_, publication_kwargs),) = harness.calls_of("assert_publications_after_take_overs")
+        assert publication_kwargs["source"] == soak["dump_dir"] / "events"
         ((resumed_args, _),) = harness.calls_of("assert_take_overs_resumed_within_save_interval")
         assert resumed_args == (str(soak["dump_dir"]),)
 

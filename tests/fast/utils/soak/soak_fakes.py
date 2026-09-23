@@ -40,7 +40,12 @@ from tests.utils.soak.k8s_utils.pod_processes import ProcessIdentity, ProcessTar
 
 from miles.backends.megatron_utils.ft.types import TrainStepOutcome
 from miles.backends.megatron_utils.megatron_config import ACTOR_ROLE
-from miles.utils.audit_utils.event_logger.models import CellReconfigureEvent, Event, TrainGroupStepEndEvent
+from miles.utils.audit_utils.event_logger.models import (
+    CellReconfigureEvent,
+    Event,
+    TrainGroupStepEndEvent,
+    WeightUpdateResultEvent,
+)
 from miles.utils.audit_utils.process_identity import SimpleProcessIdentity, TrainerControllerProcessIdentity
 from miles.utils.ft_utils.api_server.models import (
     CELL_TYPE_LABEL,
@@ -98,6 +103,30 @@ def _reconfigure(
         healed_cell_indices=healed_cell_indices,
         alive_cell_indices_after=[0, *healed_cell_indices],
         cell_incarnations_after=cell_incarnations_after,
+    )
+
+
+def _weight_update_result(
+    update_id: str,
+    *,
+    at: datetime,
+    cell_hashes: dict[str, str],
+    updated: list[str],
+    failed: list[str] | None = None,
+    candidate_version: int | None = 1,
+    published_version: int | None = None,
+) -> WeightUpdateResultEvent:
+    return WeightUpdateResultEvent(
+        timestamp=at,
+        source=TrainerControllerProcessIdentity(trainer_id=ACTOR_ROLE),
+        debug_weight_update_id=update_id,
+        debug_trainer_load_state_timestamp=0.0,
+        rollout_id=0,
+        candidate_version=candidate_version,
+        published_version=(candidate_version if updated else None) if published_version is None else published_version,
+        snapshot_cell_id_to_hashes=cell_hashes,
+        updated_cell_ids=updated,
+        failed_cell_ids=failed or [],
     )
 
 
