@@ -173,7 +173,6 @@ class Qwen38NextPLEHyperConnection(Qwen38NextHyperConnection):
         overwritten by a later microbatch, so the checkpointed pass enqueues its batch
         and the recompute pass pops it. FIFO matches non-interleaved 1F1B.
         """
-
         if not hasattr(self, "_ple_recompute_fifo"):
             self._ple_recompute_fifo = []
 
@@ -192,7 +191,6 @@ class Qwen38NextPLEHyperConnection(Qwen38NextHyperConnection):
         return batch
 
     def _apply_ple(self, hidden_states, ngram_ids, cu_seqlens):
-
         seq, batch = hidden_states.shape[0], hidden_states.shape[1]
         if ngram_ids.dim() == 3:
             if ngram_ids.shape[:2] != (batch, seq):
@@ -218,7 +216,6 @@ class Qwen38NextPLEHyperConnection(Qwen38NextHyperConnection):
         mhc_recompute_manager=None,
         output_slot=None,
     ) -> tuple[Tensor, Tensor | None, Tensor, Tensor]:
-
         ngram_ids, cu_seqlens = self._resolve_ple_batch()
 
         sp_size = 1

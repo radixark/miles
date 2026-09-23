@@ -7,16 +7,14 @@ Runs on the full-attention layers and picks, per query token, which
 import math
 
 import torch
-
-
-def _indexer_acc_dtype(x):
-    return x.dtype if x.dtype in (torch.float32, torch.float64) else torch.float32
-
-
 from megatron.core.extensions.transformer_engine import TELinear
 from megatron.core.transformer.module import MegatronModule
 from megatron.core.transformer.transformer_config import TransformerConfig
 from torch import Tensor
+
+
+def _indexer_acc_dtype(x):
+    return x.dtype if x.dtype in (torch.float32, torch.float64) else torch.float32
 
 
 def gemma_rmsnorm_last_dim(x: Tensor, weight: Tensor, eps: float) -> Tensor:
