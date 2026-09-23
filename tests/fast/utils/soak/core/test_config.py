@@ -53,3 +53,25 @@ class TestSoakRunnerConfig:
         """Zero polls, zero intervals, negative starts and unbounded timeouts are invalid soak limits."""
         with pytest.raises(ValidationError):
             SoakRunnerConfig(seed=0, **fields)
+
+
+class TestSoakTailConfigCreate:
+    @pytest.mark.parametrize(
+        ("num_rollout", "close_after_rollout_id"),
+        [(4, 0), (10, 6), (15, 11), (20, 15), (100, 79)],
+    )
+    def test_admission_closes_leaving_the_larger_of_three_rollouts_and_a_fifth_of_the_run(
+        self, num_rollout: int, close_after_rollout_id: int
+    ) -> None:
+        """The tail keeps max(3, num_rollout // 5) rollouts after the last admitted one."""
+        assert SoakTailConfig.create(num_rollout=num_rollout).close_after_rollout_id == close_after_rollout_id
+
+    @pytest.mark.parametrize(("num_rollout", "min_tail_rollouts"), [(3, 3), (1, 3), (10, 2), (5, 5)])
+    def test_a_run_too_short_for_a_recovery_tail_is_rejected(self, num_rollout: int, min_tail_rollouts: int) -> None:
+        """A tail shorter than three rollouts or covering the whole run cannot prove recovery."""
+        with pytest.raises(ValueError, match="complete recovery tail"):
+            SoakTailConfig.create(num_rollout=num_rollout, min_tail_rollouts=min_tail_rollouts)
+
+    def test_a_larger_minimum_tail_moves_the_closing_rollout_earlier(self) -> None:
+        """An explicit minimum tail wins over the fifth-of-run default when it is longer."""
+        assert SoakTailConfig.create(num_rollout=20, min_tail_rollouts=6).close_after_rollout_id == 13
