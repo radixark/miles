@@ -5,6 +5,13 @@ from megatron.core.models.gpt.gpt_layer_specs import get_gpt_mtp_block_spec
 
 from mbridge.core import register_model
 from mbridge.models import Qwen2MoEBridge
+from miles.backends.megatron_utils.megatron_to_hf.gdn_layout import (
+    gdn_heads,
+    qkv_flat_to_group_major,
+    qkv_group_major_to_flat,
+)
+
+_GDN_GROUP_MAJOR = ("self_attention.linear_attn.in_proj_qkv.weight", "self_attention.linear_attn.conv1d.weight")
 
 
 @register_model(["qwen3_5", "qwen3_5_moe", "qwen3_6", "qwen3_6_moe"])
@@ -340,6 +347,9 @@ class Qwen3_5Bridge(Qwen2MoEBridge):
             # from Bridge's global pre-cast to self.dtype.
             return hf_weights[0].to(dtype=torch.float32).contiguous()
 
+        if mcore_weights_name.endswith(_GDN_GROUP_MAJOR):
+            return qkv_flat_to_group_major(hf_weights[0], gdn_heads(self._get_text_config()))
+
         if "self_attention.linear_qkv." in mcore_weights_name and "layer_norm" not in mcore_weights_name:
             # merge qkv
             assert len(hf_weights) == 3
@@ -387,7 +397,10 @@ class Qwen3_5Bridge(Qwen2MoEBridge):
     def _weight_to_hf_format(
         self, mcore_weights_name: str, mcore_weights: torch.Tensor
     ) -> tuple[list[str], list[torch.Tensor]]:
-        return super()._weight_to_hf_format(mcore_weights_name, mcore_weights)
+        names, weights = super()._weight_to_hf_format(mcore_weights_name, mcore_weights)
+        if mcore_weights_name.endswith(_GDN_GROUP_MAJOR):
+            weights = [qkv_group_major_to_flat(weights[0], gdn_heads(self._get_text_config()))]
+        return names, weights
 
     def _build_config(self):
         text_config = self._get_text_config()

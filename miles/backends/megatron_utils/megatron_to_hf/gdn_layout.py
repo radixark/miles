@@ -6,9 +6,12 @@ with ``R = num_v_heads // num_k_heads`` value heads in ``v_g``. A TP chunk is th
 that rank owns, for any TP size, and the projection output feeds the conv without a copy.
 """
 
+from functools import cache
+
 import torch
 
 from miles.kernels.attention.delta_rule import DeltaRuleHeads
+from miles.utils.hf_utils.config import load_hf_config
 
 
 def gdn_heads(hf_config) -> DeltaRuleHeads:
@@ -49,3 +52,8 @@ def qkv_flat_to_group_major(weight: torch.Tensor, heads: DeltaRuleHeads) -> torc
 def qkv_group_major_to_flat(weight: torch.Tensor, heads: DeltaRuleHeads) -> torch.Tensor:
     assert weight.shape[0] == heads.qkv_dim, (weight.shape, heads)
     return torch.cat(split_group_major(weight, _qkv_rows(heads), heads))
+
+
+@cache
+def gdn_heads_of(hf_checkpoint: str) -> DeltaRuleHeads:
+    return gdn_heads(load_hf_config(hf_checkpoint))
