@@ -167,9 +167,9 @@ def save_checkpoint_with_lora(
     args = get_args()
 
     if is_lora_model(model):
-        assert publisher is not None or args.megatron_to_hf_mode == "raw", (
-            "Bridge LoRA checkpoint requires a snapshot publisher"
-        )
+        assert (
+            publisher is not None or args.megatron_to_hf_mode == "raw"
+        ), "Bridge LoRA checkpoint requires a snapshot publisher"
         save_dir = Path(args.save) / f"iter_{iteration:07d}" / "adapter"
         logger.info(f"Saving LoRA checkpoint to {save_dir}")
         save_lora_checkpoint(

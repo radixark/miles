@@ -13,8 +13,11 @@ import torch.distributed as dist
 from miles.backends.training_utils.checkpoint_io import write_checkpoint_dir
 from miles.backends.training_utils.parallel import get_parallel_state
 from miles.backends.training_utils.weight_update.snapshot_publisher import SnapshotPublisher
-from miles.utils.lora.utils import is_lora_enabled, lora_rollout_enabled  # noqa: F401  (re-exported)
-from miles.utils.lora.utils import build_lora_config
+from miles.utils.lora.utils import (  # noqa: F401  (re-exported)
+    build_lora_config,
+    is_lora_enabled,
+    lora_rollout_enabled,
+)
 
 logger = logging.getLogger(__name__)
 
