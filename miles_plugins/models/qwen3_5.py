@@ -53,15 +53,7 @@ class Qwen3_5GatedDeltaNet(nn.Module):
         self.layer_idx = layer_idx
         self.activation = config.hidden_act
         self.act = ACT2FN[config.hidden_act]
-        # The gated output norm has its own activation in the config, separate from
-        # hidden_act. Qwen3.8-Next sets output_gate_type="sigmoid" while hidden_act
-        # stays "silu", so reusing hidden_act below computes norm(x) * silu(z) where
-        # the model wants norm(x) * sigmoid(z). Nothing about that failure is
-        # visible in the weights -- every GDN tensor still matches the checkpoint
-        # bit for bit -- it just makes the layer output wrong by ~85%, which is how
-        # it was found (a layer-by-layer dump against sglang, whose RMSNormGated is
-        # built from output_gate_type). Falls back to hidden_act so configs without
-        # the field keep today's behaviour.
+        # Qwen3.8-Next gates the output norm with sigmoid while hidden_act stays silu
         self.output_gate_activation = getattr(config, "output_gate_type", None) or config.hidden_act
         self.layer_norm_epsilon = config.rms_norm_eps
 

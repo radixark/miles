@@ -46,16 +46,8 @@ _CONFIG_ALIASES: tuple[_HFConfigAlias, ...] = (
         auto_model_classes=(),
         override_hf_native=True,
     ),
-    # Qwen3.8-Flash-Next ships model_type qwen4_exp with a nested
-    # text_config (qwen4_exp_text) + vision_config, which is exactly
-    # Qwen3_5MoeConfig's shape. Both levels need an alias: the composite config
-    # resolves its sub-config class by the nested model_type, so registering only
-    # the outer one leaves AutoConfig unable to build text_config.
-    #
-    # The extra fields Qwen3.8-Next adds (hc_count, hc_lowrank, ple_*, indexer_*)
-    # are not in the base class's signature, but transformers configs setattr
-    # unknown kwargs, so they survive as attributes -- which is all the bridge and
-    # the spec need, since both read them with getattr.
+    # Qwen3.8-Flash-Next: the composite config resolves text_config by its nested
+    # model_type, so both levels need an alias; extra fields survive as attributes
     _HFConfigAlias(
         model_type="qwen4_exp_text",
         base_module="transformers.models.qwen3_5_moe.configuration_qwen3_5_moe",
