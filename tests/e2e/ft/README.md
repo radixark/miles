@@ -205,14 +205,14 @@ Phase B - target:
   3. Rollout 2, attempt 0: exit_process at trainer_step_before_allreduce on last cell rank 0
      -> os._exit(1) -> allreduce timeout -> should_commit=false -> retry
   4. Rollout 2, attempt 1: reconfigure to N-1 cells, commit on the degraded quorum
-  5. After rollout 2: stop_cell(last) + start_cell(last) at trainer_controller_step_end
+  5. After rollout 2: stop_cell_at_end(last) + start_cell_at_end(last)
   6. Rollout 3: heal back to N cells, train with the healed cell
 
-Fault injection: --ci-fault-hooks, JSON list of FaultHookRequest {request_id, hook_name, action, target {cell_id, rank},
-  rollout_id, attempt, weight_version}
-  hook_name trainer_step_before_allreduce: inside the targeted actor rank, matched on rollout_id and attempt
-  hook_name trainer_controller_step_end: trainer controller, actions stop_cell / start_cell via cell_operations
-  action exit_process / kill_process: os._exit(1) or SIGKILL
+Fault injection: --ci-ft-test-actions, JSON list of {at_rollout, action, cell_id}
+  at_rollout: rollout id
+  stop_cell_at_end / start_cell_at_end: trainer controller, suspend/resume via cell_operations
+Crash: --ci-fault-hooks, exit_process at trainer_step_before_allreduce inside the targeted actor rank, matched on
+  rollout_id and attempt
 
 Healing witness: target phase_b event dir, exactly two CellReconfigureEvents
   rollout 2: shrink, alive N -> N-1
@@ -273,7 +273,7 @@ Per-phase baseline: rollouts P..P+2 all normal, no stop/start, no healing
 
 Per-phase target:
   1. Rollout P, P+1: all N cells normal
-  2. After rollout P+1: stop_cell(last) + start_cell(last) at trainer_controller_step_end
+  2. After rollout P+1: stop_cell_at_end(last) + start_cell_at_end(last)
   3. Rollout P+2: heal at the start (recv_ckpt from cell 0), then normal execution
 
 Determinism: --deterministic-mode, plus NCCL_ALGO=Ring, NVTE_ALLOW_NONDETERMINISTIC_ALGO=0,

@@ -1,12 +1,7 @@
 import abc
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
 
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
-
-if TYPE_CHECKING:
-    from miles.ray.train.group import TrainerController
-    from miles.utils.workers.cell_operations.base import BaseCellOperations
 
 
 class FaultHookContext(FrozenStrictBaseModel):
@@ -19,8 +14,6 @@ class FaultHookContext(FrozenStrictBaseModel):
 @dataclass(frozen=True, kw_only=True)
 class FaultHookResources:
     args: object | None = None
-    controller: "TrainerController | None" = None
-    cell_operations: "BaseCellOperations | None" = None
 
 
 class BaseFaultAction(FrozenStrictBaseModel, abc.ABC):
