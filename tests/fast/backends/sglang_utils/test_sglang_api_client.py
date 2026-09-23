@@ -790,6 +790,17 @@ class TestWeightControlPayloads:
             "selector": "draft",
         }
 
+    async def test_check_weights_asks_for_exactly_the_named_tensors(self, client, recorder):
+        """A raw checksum of one P2P write must cover the written names, not the whole model."""
+        await client.check_weights(action="raw_checksum", names=["w", "qk"])
+
+        assert recorder.calls[0][2]["json"] == {
+            "action": "raw_checksum",
+            "allow_quant_error": False,
+            "selector": "all",
+            "names": ["w", "qk"],
+        }
+
     async def test_begin_weight_update_forwards_a_custom_selector(self, client, recorder):
         """The session must open on the same submodel the update will write to."""
         await client.begin_weight_update(selector="draft")

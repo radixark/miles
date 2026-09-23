@@ -2292,6 +2292,13 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help="Save per-rank local weight checksum per-step.",
             )
             parser.add_argument(
+                "--check-weight-transfer-checksum",
+                action=argparse.BooleanOptionalAction,
+                default=None,
+                help="Hash every P2P weight write on the sending trainer rank and on the receiving engine rank and "
+                "fail the write when they differ. Defaults on under --ci-test.",
+            )
+            parser.add_argument(
                 "--enable-event-analyzer",
                 action="store_true",
                 help="Enable event analyzer to run sanity checks (e.g. cross-replica checksum consistency) before each training step.",
@@ -3702,6 +3709,8 @@ def miles_validate_args(args):
         and not args.ci_disable_weight_update_checker
     ):
         args.check_weight_update_equal = True
+    if args.check_weight_transfer_checksum is None:
+        args.check_weight_transfer_checksum = args.ci_test
 
     # always true on offload for colocate at the moment.
     assert (

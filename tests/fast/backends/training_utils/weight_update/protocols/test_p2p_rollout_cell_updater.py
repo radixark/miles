@@ -564,3 +564,181 @@ class TestPerCellWriteThread:
 
         assert len(engine.calls) == 4
         assert len(set(engine.thread_idents)) == 1
+
+
+# ============================ transfer checksums ============================
+
+
+class _RawChecksumApi:
+    def __init__(
+        self,
+        transfer_engine: _RecordingTransferEngine,
+        *,
+        checksums_by_rank: dict[int, dict[str, str]],
+        error: Exception | None = None,
+    ) -> None:
+        self.calls: list[dict[str, Any]] = []
+        self.writes_seen_at_call: list[int] = []
+        self._transfer_engine = transfer_engine
+        self._checksums_by_rank = checksums_by_rank
+        self._error = error
+
+    async def check_weights(self, **kwargs: Any) -> dict[str, Any]:
+        self.calls.append(kwargs)
+        self.writes_seen_at_call.append(len(self._transfer_engine.calls))
+        if self._error is not None:
+            raise self._error
+        return {
+            "success": True,
+            "ranks": [
+                {"checksums": checksums, "parallelism_info": [{"role": "tp", "rank": rank}]}
+                for rank, checksums in self._checksums_by_rank.items()
+            ],
+        }
+
+
+def _checksummed_updater(
+    p2p_rollout_cell_updater: ModuleType, p2p_transfer_utils: ModuleType, api: _RawChecksumApi, *, cell_id: str
+) -> Any:
+    updater = p2p_rollout_cell_updater._P2PRolloutCellUpdater(args=_make_args(), cell_id=cell_id, api_client=api)
+    updater.targets_by_rollout_engine_rank = {
+        rank: _remote_session(
+            p2p_rollout_cell_updater, p2p_transfer_utils, f"{cell_id}-r{rank}", {"w": (0x2000, 4, 2)}
+        )
+        for rank in (0, 1)
+    }
+    return updater
+
+
+class TestWriteChecksumVerification:
+    def test_the_receiver_is_asked_for_exactly_the_written_names_after_the_write(
+        self, p2p_rollout_cell_updater: ModuleType, p2p_transfer_utils: ModuleType
+    ) -> None:
+        """Reading checksums before the write lands, or for other names, verifies nothing about this write."""
+        engine = _RecordingTransferEngine()
+        api = _RawChecksumApi(engine, checksums_by_rank={0: {"w": "h"}})
+        updater = _checksummed_updater(p2p_rollout_cell_updater, p2p_transfer_utils, api, cell_id="cell-a")
+
+        updater.submit_write(
+            rollout_engine_rank=0,
+            names=["w"],
+            weight_memory_registry=_REGISTRY,
+            transfer_engine=engine,
+            sent_checksums={"w": "h"},
+        )
+        updater.wait_for_pending_writes(timeout=_TRANSFER_TIMEOUT)
+
+        assert api.calls == [dict(action="raw_checksum", names=["w"])]
+        assert api.writes_seen_at_call == [1]
+        assert not updater.is_errored
+
+    def test_a_mismatch_fails_only_the_cell_it_was_written_to(
+        self, p2p_rollout_cell_updater: ModuleType, p2p_transfer_utils: ModuleType
+    ) -> None:
+        """A corrupted receiver must be taken out without blaming a healthy peer of the same bucket."""
+        engine = _RecordingTransferEngine()
+        corrupt = _checksummed_updater(
+            p2p_rollout_cell_updater,
+            p2p_transfer_utils,
+            _RawChecksumApi(engine, checksums_by_rank={0: {"w": "bad"}}),
+            cell_id="cell-corrupt",
+        )
+        healthy = _checksummed_updater(
+            p2p_rollout_cell_updater,
+            p2p_transfer_utils,
+            _RawChecksumApi(engine, checksums_by_rank={0: {"w": "h"}}),
+            cell_id="cell-healthy",
+        )
+
+        for updater in (corrupt, healthy):
+            updater.submit_write(
+                rollout_engine_rank=0,
+                names=["w"],
+                weight_memory_registry=_REGISTRY,
+                transfer_engine=engine,
+                sent_checksums={"w": "h"},
+            )
+        for updater in (corrupt, healthy):
+            updater.wait_for_pending_writes(timeout=_TRANSFER_TIMEOUT)
+
+        assert (corrupt.is_errored, healthy.is_errored) == (True, False)
+        assert "cell-corrupt rank 0" in str(corrupt._error)
+
+    def test_the_written_rank_selects_the_record_compared(
+        self, p2p_rollout_cell_updater: ModuleType, p2p_transfer_utils: ModuleType
+    ) -> None:
+        """Comparing rank 0's shard against a write to rank 1 would fail every healthy multi-rank engine."""
+        engine = _RecordingTransferEngine()
+        api = _RawChecksumApi(engine, checksums_by_rank={0: {"w": "rank-0-shard"}, 1: {"w": "h"}})
+        updater = _checksummed_updater(p2p_rollout_cell_updater, p2p_transfer_utils, api, cell_id="cell-a")
+
+        updater.submit_write(
+            rollout_engine_rank=1,
+            names=["w"],
+            weight_memory_registry=_REGISTRY,
+            transfer_engine=engine,
+            sent_checksums={"w": "h"},
+        )
+        updater.wait_for_pending_writes(timeout=_TRANSFER_TIMEOUT)
+
+        assert not updater.is_errored
+        assert [session_id for session_id, *_ in engine.calls] == ["cell-a-r1"]
+
+    def test_disabled_checksums_ask_the_receiver_nothing(
+        self, p2p_rollout_cell_updater: ModuleType, p2p_transfer_utils: ModuleType
+    ) -> None:
+        """With the flag off no extra request may reach the engine on the weight update path."""
+        engine = _RecordingTransferEngine()
+        api = _RawChecksumApi(engine, checksums_by_rank={0: {"w": "bad"}})
+        updater = _checksummed_updater(p2p_rollout_cell_updater, p2p_transfer_utils, api, cell_id="cell-a")
+
+        updater.submit_write(
+            rollout_engine_rank=0,
+            names=["w"],
+            weight_memory_registry=_REGISTRY,
+            transfer_engine=engine,
+            sent_checksums=None,
+        )
+        updater.wait_for_pending_writes(timeout=_TRANSFER_TIMEOUT)
+
+        assert api.calls == []
+        assert len(engine.calls) == 1 and not updater.is_errored
+
+    def test_an_unanswered_checksum_request_fails_the_cell_with_that_error(
+        self, p2p_rollout_cell_updater: ModuleType, p2p_transfer_utils: ModuleType
+    ) -> None:
+        """A receiver that cannot report its checksums is not a verified receiver."""
+        engine = _RecordingTransferEngine()
+        api = _RawChecksumApi(engine, checksums_by_rank={}, error=ConnectionError("engine gone"))
+        updater = _checksummed_updater(p2p_rollout_cell_updater, p2p_transfer_utils, api, cell_id="cell-a")
+
+        updater.submit_write(
+            rollout_engine_rank=0,
+            names=["w"],
+            weight_memory_registry=_REGISTRY,
+            transfer_engine=engine,
+            sent_checksums={"w": "h"},
+        )
+        updater.wait_for_pending_writes(timeout=_TRANSFER_TIMEOUT)
+
+        assert isinstance(updater._error, ConnectionError)
+
+    def test_a_failed_write_is_not_followed_by_a_checksum_request(
+        self, p2p_rollout_cell_updater: ModuleType, p2p_transfer_utils: ModuleType
+    ) -> None:
+        """The write error is the cell's failure; reading checksums of a failed write only adds noise."""
+        engine = _RecordingTransferEngine(return_code=-1)
+        api = _RawChecksumApi(engine, checksums_by_rank={0: {"w": "h"}})
+        updater = _checksummed_updater(p2p_rollout_cell_updater, p2p_transfer_utils, api, cell_id="cell-a")
+
+        updater.submit_write(
+            rollout_engine_rank=0,
+            names=["w"],
+            weight_memory_registry=_REGISTRY,
+            transfer_engine=engine,
+            sent_checksums={"w": "h"},
+        )
+        updater.wait_for_pending_writes(timeout=_TRANSFER_TIMEOUT)
+
+        assert api.calls == []
+        assert "Transfer failed" in str(updater._error)

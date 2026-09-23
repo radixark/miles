@@ -4,6 +4,7 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from typing import Any
 
 from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
+from miles.backends.training_utils.weight_update import checksum_utils
 from miles.backends.training_utils.weight_update.rollout_cell_updater import _RolloutCellUpdater
 from miles.utils.test_utils.fault_injector.controller import reach_fault_hook
 from miles.utils.test_utils.fault_injector.models import FaultHookName
@@ -32,6 +33,7 @@ class _P2PRolloutCellUpdater(_RolloutCellUpdater):
         names: list[str],
         weight_memory_registry: dict[str, tuple[int, int, int]],
         transfer_engine: Any,
+        sent_checksums: dict[str, str] | None,
     ) -> None:
         if self.is_errored:
             return
@@ -42,6 +44,8 @@ class _P2PRolloutCellUpdater(_RolloutCellUpdater):
                 self.targets_by_rollout_engine_rank[rollout_engine_rank],
                 names,
                 weight_memory_registry,
+                rollout_engine_rank=rollout_engine_rank,
+                sent_checksums=sent_checksums,
             )
         )
 
@@ -64,11 +68,17 @@ class _P2PRolloutCellUpdater(_RolloutCellUpdater):
         target: RemoteWeightInfo,
         names: list[str],
         weight_memory_registry: dict[str, tuple[int, int, int]],
+        rollout_engine_rank: int,
+        sent_checksums: dict[str, str] | None,
     ) -> None:
         if self.is_errored:
             logger.warning(f"[P2P-Shared] skipping a queued write to rollout cell {self.cell_id}")
             return
         _do_p2p_write_one_session(transfer_engine, target, names, weight_memory_registry)
+        if sent_checksums is not None:
+            _verify_transfer_checksums(
+                self, rollout_engine_rank=rollout_engine_rank, names=names, sent_checksums=sent_checksums
+            )
 
 
 def _do_p2p_write_one_session(
@@ -118,3 +128,18 @@ def _do_p2p_write_one_session(
     ret = transfer_engine.batch_transfer_sync_write(session_id, source_ptrs, target_ptrs, source_lens)
     if ret < 0:
         raise RuntimeError(f"[P2P-Shared] Transfer failed for session {session_id}, error: {ret}")
+
+
+def _verify_transfer_checksums(
+    cell_updater: _P2PRolloutCellUpdater,
+    *,
+    rollout_engine_rank: int,
+    names: list[str],
+    sent_checksums: dict[str, str],
+) -> None:
+    engine_body = cell_updater.submit_client_call("check_weights", action="raw_checksum", names=names).result()
+    if engine_body is None:
+        return
+    checksum_utils.verify_transfer_checksums(
+        sent_checksums=sent_checksums, engine_body=engine_body, cell_id=cell_updater.cell_id, rank=rollout_engine_rank
+    )
