@@ -150,6 +150,14 @@ explicit HF targets, or a mix of both. Group names expand through the model's HF
 definition, so `mlp` includes dense, shared, and routed expert projections, including
 packed `gate_up_proj` weights. Only exact group names expand; full paths remain
 literal target patterns. Duplicates are removed, then `--exclude-modules` applies.
+Explicit module selections must not overlap exclusions; defaults and group
+selections may still be narrowed with exclusions.
+
+A matching pair of `gate_proj` and `up_proj` selectors also selects
+`gate_up_proj` when the HF model has packed projections, with a warning.
+Scoped pairs retain their path prefix; selecting only gate or only up does not
+expand to the packed projection. Split selectors remain where the model has
+split modules and are replaced where it has only packed modules.
 
 Without explicit targets, ordinary LoRA uses its model defaults and multi-LoRA
 selects all three groups. `all-linear` selects the ordinary model defaults and

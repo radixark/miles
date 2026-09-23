@@ -1,9 +1,12 @@
 """LoRA projection groups in the HF model namespace; backend layouts are resolved separately."""
 
+import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 
 from miles.utils.lora import matches_lora_target
+
+logger = logging.getLogger(__name__)
 
 LORA_TARGET_GROUPS = ("attn", "mlp", "unembed")
 
@@ -231,6 +234,25 @@ def resolve_hf_lora_targets(hf_config: dict, *, target_modules: list[str] | None
     targets = [module for target in target_modules for module in groups.get(target, (target,))]
     assert targets, "At least one trainable LoRA module group is required"
     return list(dict.fromkeys(targets))
+
+
+def expand_packed_hf_lora_targets(targets: list[str], modules: list[str]) -> list[str]:
+    added, replaced = [], set()
+    for gate in targets:
+        if gate.rsplit(".", 1)[-1] != "gate_proj":
+            continue
+        prefix = gate.removesuffix("gate_proj")
+        up, packed = prefix + "up_proj", prefix + "gate_up_proj"
+        if up not in targets or not any(matches_lora_target(module, packed) for module in modules):
+            continue
+        if not any(matches_lora_target(packed, target) for target in targets):
+            added.append(packed)
+        replaced.update(
+            target for target in (gate, up) if not any(matches_lora_target(module, target) for module in modules)
+        )
+    if added:
+        logger.warning("Expanding paired gate_proj/up_proj LoRA targets to packed HF targets: %s", added)
+    return list(dict.fromkeys([target for target in targets if target not in replaced] + added))
 
 
 def parse_lora_targets(value: str | list[str] | None) -> list[str] | None:

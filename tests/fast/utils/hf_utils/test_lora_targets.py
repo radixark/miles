@@ -2,7 +2,9 @@
 
 import pytest
 
-from miles.utils.hf_utils.lora_targets import exclude_hf_lora_targets, parse_lora_targets, resolve_hf_lora_targets
+from miles.utils.hf_utils.lora_targets import (
+    exclude_hf_lora_targets, expand_packed_hf_lora_targets, parse_lora_targets, resolve_hf_lora_targets,
+)
 
 
 @pytest.mark.parametrize("selection", [None, ["all-linear"], ["attn", "mlp"], ["attn", "mlp", "attn"]])
@@ -58,3 +60,18 @@ def test_nonexistent_exclusion_does_not_change_selection():
 def test_empty_selector_is_rejected():
     with pytest.raises(AssertionError, match="empty entries"):
         parse_lora_targets("q_proj,,k_proj")
+
+
+@pytest.mark.parametrize("dense", [True, False])
+@pytest.mark.parametrize("scoped", [True, False])
+def test_paired_targets_include_packed_experts(dense, scoped, caplog):
+    modules = ["model.layers.0.mlp.experts.gate_up_proj", "model.layers.0.mlp.experts.down_proj"]
+    if dense:
+        modules += [f"model.layers.0.mlp.{name}_proj" for name in ("gate", "up", "down")]
+    prefix = "model.layers.*.mlp.experts." if scoped else ""
+    targets = [prefix + name + "_proj" for name in ("gate", "up", "down")]
+    expected = targets if dense and not scoped else [prefix + "down_proj"]
+    assert expand_packed_hf_lora_targets(targets, modules) == expected + [prefix + "gate_up_proj"]
+    assert "Expanding paired gate_proj/up_proj" in caplog.text
+    assert expand_packed_hf_lora_targets(targets[:1], modules) == targets[:1]
+    assert expand_packed_hf_lora_targets(targets, ["model.layers.0.mlp.gate_proj"]) == targets

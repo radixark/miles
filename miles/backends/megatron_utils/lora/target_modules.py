@@ -102,7 +102,7 @@ def resolve_megatron_lora_targets(targets, mappings, *, parameter_names, hf_mapp
     return list(adapter_targets)
 
 
-def normalize_lora_targets_to_hf(hf_checkpoint, target_modules, *, canonical, exclude_modules):
+def normalize_lora_targets_to_hf(hf_checkpoint, target_modules, *, canonical, exclude_modules, explicit_targets=()):
     # Only legacy Megatron selectors need Bridge before trainer creation.
     from megatron.bridge import AutoBridge
 
@@ -133,10 +133,14 @@ def normalize_lora_targets_to_hf(hf_checkpoint, target_modules, *, canonical, ex
                     )
                 if matches:
                     matched_targets.add(target)
-                    if not any(
+                    excluded = any(
                         matches_lora_target(hf_module, exclude) or matches_lora_target(megatron_module, exclude)
                         for exclude in exclude_modules
-                    ):
+                    )
+                    assert not (excluded and target in explicit_targets), (
+                        f"Explicit LoRA target {target!r} overlaps --exclude-modules at {hf_module!r}"
+                    )
+                    if not excluded:
                         selected_hf_modules.add(hf_module)
     assert (
         set(target_modules) <= matched_targets

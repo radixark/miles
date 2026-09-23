@@ -1,4 +1,5 @@
 import argparse
+from fnmatch import fnmatchcase
 import json
 import logging
 import sys
@@ -979,12 +980,16 @@ class TestMultiLoRAValidation:
         assert args.hf_lora_targets == ["q_proj"]
 
     @pytest.mark.parametrize("exclusion", ["model.layers.*.self_attn.o_proj", "model.layers.0.self_attn.o_proj"])
-    def test_scoped_exclusion_resolves_without_bridge(self, monkeypatch, exclusion):
+    @pytest.mark.parametrize("targets", ["o_proj,down_proj", "attn,mlp", "all-linear"])
+    def test_scoped_exclusion_resolves_without_bridge(self, monkeypatch, exclusion, targets):
         hf_mapping = HfWeightMapping(
             frozenset(
                 f"model.layers.{layer}.{module}.weight"
                 for layer in range(2)
-                for module in ("self_attn.o_proj", "mlp.down_proj")
+                for module in (
+                    "self_attn.q_proj", "self_attn.k_proj", "self_attn.v_proj", "self_attn.o_proj",
+                    "mlp.gate_proj", "mlp.up_proj", "mlp.down_proj",
+                )
             )
         )
         monkeypatch.setattr("miles.utils.arguments.HfWeightMapping.from_config", lambda config: hf_mapping)
@@ -996,12 +1001,17 @@ class TestMultiLoRAValidation:
             "miles.backends.megatron_utils.lora.target_modules.normalize_lora_targets_to_hf",
             unexpected_bridge,
         )
-        args = self._parse(["--target-modules", "o_proj,down_proj", "--exclude-modules", exclusion])
+        args = self._parse(["--target-modules", targets, "--exclude-modules", exclusion])
+        if targets == "o_proj,down_proj":
+            with pytest.raises(AssertionError, match="overlap --exclude-modules"):
+                miles_validate_args(args)
+            return
         miles_validate_args(args)
 
-        expected = {"model.layers.0.mlp.down_proj", "model.layers.1.mlp.down_proj"}
-        if exclusion == "model.layers.0.self_attn.o_proj":
-            expected.add("model.layers.1.self_attn.o_proj")
+        expected = {
+            name.removesuffix(".weight") for name in hf_mapping.parameter_names
+            if not fnmatchcase(name.removesuffix(".weight"), exclusion)
+        }
         assert set(args.hf_lora_targets) == expected
         assert args.lora_adapter_targets == args.hf_lora_targets
 

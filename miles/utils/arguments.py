@@ -22,6 +22,7 @@ from miles.utils.hf_utils.lora_targets import (
     LORA_TARGET_GROUPS,
     exclude_hf_lora_targets,
     expand_hf_lora_targets,
+    expand_packed_hf_lora_targets,
     get_hf_lora_targets,
     parse_lora_targets,
     resolve_hf_lora_targets,
@@ -3129,11 +3130,28 @@ def miles_validate_args(args):
         ), "LoRA injection is not implemented for FSDP; use --train-backend megatron"
         assert args.lora_rank > 0, "LoRA requires a positive --lora-rank, including when loading an adapter"
         hf_config = load_hf_config(args.hf_checkpoint)
+        hf_mapping = HfWeightMapping.from_config(hf_config)
+        hf_modules = [name.removesuffix(".weight") for name in hf_mapping.parameter_names]
         targets = parse_lora_targets(args.target_modules)
+        explicit_targets = []
+        if targets is not None:
+            expanded = expand_packed_hf_lora_targets(targets, hf_modules)
+            explicit_targets = [
+                target for target in dict.fromkeys(targets + expanded)
+                if target not in (*LORA_TARGET_GROUPS, "all-linear")
+            ]
+            targets = expanded
+        args.exclude_modules = parse_lora_targets(args.exclude_modules) or []
+        if args.exclude_modules:
+            conflicts = {
+                module for module in hf_modules + explicit_targets + args.exclude_modules
+                if any(matches_lora_target(module, target) for target in explicit_targets)
+                and any(matches_lora_target(module, exclude) for exclude in args.exclude_modules)
+            }
+            assert not conflicts, f"Explicit LoRA targets overlap --exclude-modules: {sorted(conflicts)}"
         if targets is None and args.multi_lora_n_adapters > 0:
             targets = list(LORA_TARGET_GROUPS)
         targets = resolve_hf_lora_targets(hf_config.to_dict(), target_modules=targets)
-        args.exclude_modules = parse_lora_targets(args.exclude_modules) or []
         args.target_modules = exclude_hf_lora_targets(targets, args.exclude_modules)
 
         # Training and serving must agree on shared-outer grouped-expert LoRA
@@ -3155,8 +3173,6 @@ def miles_validate_args(args):
     # (adapter configs themselves are loaded later by the controller).
     validate_multi_lora_args(args)
     if is_lora:
-        hf_mapping = HfWeightMapping.from_config(hf_config)
-        hf_modules = [name.removesuffix(".weight") for name in hf_mapping.parameter_names]
         if all(
             any(matches_lora_target(module, target) for module in hf_modules)
             for target in args.target_modules + args.exclude_modules
@@ -3178,6 +3194,7 @@ def miles_validate_args(args):
                 args.target_modules,
                 canonical=args.lora_type == "canonical_lora",
                 exclude_modules=args.exclude_modules,
+                explicit_targets=explicit_targets,
             )
         else:
             layout = get_hf_lora_targets(hf_config.to_dict())
