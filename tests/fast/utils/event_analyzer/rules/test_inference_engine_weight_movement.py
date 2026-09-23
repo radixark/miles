@@ -1,8 +1,17 @@
 from typing import Any
 
 import pytest
-from tests.fast.utils.event_analyzer.rules.weight_event_fakes import make_checksum, make_step_end, make_trainer_args
+from tests.fast.utils.event_analyzer.rules.weight_event_fakes import (
+    make_checksum,
+    make_result,
+    make_step_end,
+    make_trainer_args,
+)
 
+from miles.utils.audit_utils.event_analyzer.rules import (
+    inference_engine_weight_checksum_consistency,
+    inference_engine_weight_checksum_coverage,
+)
 from miles.utils.audit_utils.event_analyzer.rules.inference_engine_weight_movement import check
 from miles.utils.audit_utils.event_logger.models import Event, InferenceEngineWeightChecksumEvent
 
@@ -128,3 +137,56 @@ class TestCheck:
         events = [make_trainer_args(), _version(1, {"w": "1"}), _version(2, {"w": "1"})]
 
         assert check(events) == []
+
+    def test_the_rule_is_silent_without_trainer_arguments(self) -> None:
+        """Without the trainer env report the exclusions cannot be evaluated, so the rule stays off."""
+        events = [_version(1, {"w": "1"}), _version(2, {"w": "1"}), make_step_end(second=100.0)]
+
+        assert check(events) == []
+
+
+class TestExclusions:
+    @pytest.mark.parametrize(
+        "overrides",
+        [dict(lora_rank=8), dict(lora_adapter_path="/adapters/a"), dict(update_weights_interval=2)],
+    )
+    def test_each_exclusion_alone_turns_movement_off(self, overrides: dict[str, Any]) -> None:
+        """LoRA, a loaded adapter or a skipped push each make unchanged tensors legitimate."""
+        events = _settled(_version(1, {"w": "1"}), _version(2, {"w": "1"}), **overrides)
+
+        assert check(events) == []
+
+    def test_the_default_configuration_is_not_excluded(self) -> None:
+        """The baseline arguments keep the check on, or the exclusions above would prove nothing."""
+        events = _settled(_version(1, {"w": "1"}), _version(2, {"w": "1"}))
+
+        assert len(check(events)) == 1
+
+    def test_trainer_ranks_reporting_different_arguments_are_rejected(self) -> None:
+        """Ranks that disagree on the exclusion arguments would make the decision depend on report order."""
+        events = [
+            make_trainer_args(rank=0),
+            make_trainer_args(rank=1, lora_rank=8),
+            _version(1, {"w": "1"}),
+            make_step_end(second=100.0),
+        ]
+
+        with pytest.raises(AssertionError, match="different arguments"):
+            check(events)
+
+    def test_excluding_movement_keeps_consistency_and_coverage_reporting(self) -> None:
+        """Only movement is excluded; engines disagreeing or an uncovered publication still fail."""
+        disagreeing = make_checksum(
+            second=1.0,
+            update_id="u1",
+            weight_version=1,
+            snapshots={"a": ("hash-a", {"w": "1"}), "b": ("hash-b", {"w": "2"})},
+        )
+        uncovered = make_result(
+            second=2.0, update_id="u2", published_version=2, cell_hashes={"a": "hash-a"}, updated=["a"]
+        )
+        events = _settled(disagreeing, uncovered, lora_rank=8)
+
+        assert check(events) == []
+        assert len(inference_engine_weight_checksum_consistency.check(events)) == 1
+        assert len(inference_engine_weight_checksum_coverage.check(events)) == 1
