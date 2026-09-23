@@ -20,6 +20,7 @@ from sglang.srt.server_args import ServerArgs
 
 from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
 from miles.backends.training_utils.parallel import ParallelState
+from miles.backends.training_utils.weight_update import checksum_utils
 from miles.backends.training_utils.weight_update.hf_weight_iterator import WeightUpdatePlacement
 from miles.backends.training_utils.weight_update.protocol import WeightTransferProtocol
 from miles.backends.training_utils.weight_update.utils import ModelParamStager
@@ -107,6 +108,11 @@ class UpdateWeightP2P(WeightTransferProtocol):
             last_idx = len(self._rollout_engine_rank_infos) - 1
             for i, meta in enumerate(self._rollout_engine_rank_infos):
                 meta.model_replica.load_weights(ready_hf_tensors)
+                sent_checksums = (
+                    checksum_utils.compute_send_checksums(self._cpu_replicas.shared_params_dict, transfer_ready_params)
+                    if checksum_utils.is_verifying_transfer_checksums(self.args)
+                    else None
+                )
 
                 # Last rollout engine rank: fire-and-forget all sessions to background,
                 # as the weight will no longer be overwritten
@@ -116,6 +122,7 @@ class UpdateWeightP2P(WeightTransferProtocol):
                         names=transfer_ready_params,
                         weight_memory_registry=self._weight_memory_registry,
                         transfer_engine=self._transfer_engine,
+                        sent_checksums=sent_checksums,
                     )
 
                 if i != last_idx:
