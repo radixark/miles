@@ -102,12 +102,11 @@ SHA256 over each layer's parameter bytes, including name, shape and dtype, and w
 JSON per rank under `iter_<iteration>/model_hash_tp*_pp*_dp*_cp*.json`. Layer granularity
 is deliberate: a mismatch names the layer instead of just saying the model differs.
 
-**Fault injection.** `--ci-ft-test-actions` takes a JSON array of actions, such as
-`[{"at_rollout": 3, "action": "stop_cell_at_end", "cell_id": "trainer-engine-actor-00000"}]`. The
-actions are `stop_cell_at_end`, `start_cell_at_end` and
-`sleep_forever_at_end`. `--ci-fault-hooks` takes a JSON array of fault hook requests, each running an action
-(`kill_process`, `exit_process`, `observe`) at a named hook. They are how the fault-tolerance suite kills things
-on purpose. See
+**Fault injection.** `--ci-fault-hooks` takes a JSON array of fault hook requests, such as
+`[{"request_id": "stop", "hook_name": "trainer_controller_step_end", "action": {"kind": "stop_cell", "cell_id": "trainer-engine-actor-00000"}, "rollout_id": 3}]`. A request waits at a named hook
+(`trainer_step_before_allreduce`, `trainer_controller_step_end`, `orchestrator_step_end`, the weight-update
+hooks) and runs its action there (`kill_process`, `exit_process`, `stop_cell`, `start_cell`,
+`observe`). It is how the fault-tolerance suite kills things on purpose. See
 [Fault Tolerance](/advanced/fault-tolerance).
 
 ## Aligning precision

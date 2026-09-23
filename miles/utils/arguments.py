@@ -2401,9 +2401,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 type=str,
                 default=None,
                 help="JSON array of fault injection actions. Each action: "
-                '{"at_rollout": N, "action": "stop_cell_at_end"|"start_cell_at_end", '
-                '"cell_id": "trainer-engine-actor-00002"}. '
-                "cell_id is the full cell id (spec name plus zero-padded cell index) of the target cell. "
+                '{"at_rollout": N, "action": "sleep_forever_at_end"}. '
                 'The action "sleep_forever_at_end" names no cell: it puts the orchestration script itself to sleep '
                 "once the step it names is trained and saved, so the run never starts the step after it.",
             )
