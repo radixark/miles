@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from miles.rollout.generate_utils.sampling_mask import validate_sampling_support_request
+from miles.rollout.generate_utils.score_centering import configure_score_centering_request
 from miles.rollout.session.config import SessionServerConfig
 from miles.rollout.session.errors import MessageValidationError
 from miles.utils.chat_template_utils.tito_tokenizer import TITOTokenizer, extract_template_args
@@ -77,6 +78,7 @@ def prepare_chat_request(
         request_args.pop("routed_experts_start_len", None)
     else:
         try:
+            configure_score_centering_request(config, request_args, openai=True)
             return_sampling_mask = validate_sampling_support_request(
                 request_args,
                 replay_enabled=sampling_support_replay,
