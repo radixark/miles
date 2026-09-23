@@ -879,7 +879,9 @@ class MegatronTrainRayActor(TrainRayActor):
 
     @with_logs
     @timer
-    def update_weights(self, info: UpdatableEngines, debug_weight_update_id: str) -> WeightUpdateOutput:
+    def update_weights(
+        self, info: UpdatableEngines, debug_weight_update_id: str, rollout_id: int | None
+    ) -> WeightUpdateOutput:
         self._heartbeat.bump()
         if self.args.debug_train_only or self.args.debug_rollout_only:
             return WeightUpdateOutput(weight_version=None, failed_cell_ids=())
@@ -929,6 +931,7 @@ class MegatronTrainRayActor(TrainRayActor):
             weight_version = self._get_actor_weight_version()
             with fault_hook_controller.with_context(
                 FaultHookContext(
+                    rollout_id=rollout_id,
                     weight_version=weight_version,
                     debug_weight_update_id=debug_weight_update_id,
                     snapshot_cell_id_to_hashes=snapshot_cell_id_to_hashes,
