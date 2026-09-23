@@ -5,7 +5,7 @@ import torch
 
 from miles.utils.lora.hf_lora_targets import resolve_hf_lora_targets
 from miles.utils.lora.utils import get_adapter_target_modules
-from miles_plugins.models.inkling.lora import _export_dense_mlp, _export_experts, validate_inkling_lora_targets
+from miles_plugins.models.inkling.lora import _export_dense_mlp, _export_experts, resolve_inkling_adapter_targets
 
 
 class _LocalGather:
@@ -19,7 +19,7 @@ def test_hf_mlp_selection_matches_existing_native_export(multimodal):
     if multimodal:
         config = dict(model_type="inkling_mm_model", text_config=config)
     hf_targets = resolve_hf_lora_targets(config)
-    validate_inkling_lora_targets(config, hf_targets)
+    assert resolve_inkling_adapter_targets(config, hf_targets) == "all-linear"
     prefix = "model.language_model" if multimodal else "model"
     assert f"{prefix}.layers.*.mlp.gate_proj" in hf_targets
     assert f"{prefix}.layers.*.mlp.experts.gate_up_proj" in hf_targets
@@ -42,11 +42,11 @@ def test_hf_mlp_selection_matches_existing_native_export(multimodal):
     assert weights["language_model.layers.0.mlp.gate_up_proj.lora_A.weight"] is tensor
     assert torch.equal(weights["language_model.layers.0.mlp.gate_up_proj.lora_B.weight"], tensor)
     with pytest.raises(AssertionError, match="complete adapter layout"):
-        validate_inkling_lora_targets(config, [target for target in hf_targets if not target.endswith(".up_proj")])
+        resolve_inkling_adapter_targets(config, [target for target in hf_targets if not target.endswith(".up_proj")])
 
 
 def test_legacy_config_selects_the_same_native_adapters():
     legacy = dict(model_type="inkling_model", dense_mlp_idx=1, num_hidden_layers=2, n_shared_experts=1)
     native = dict(model_type="inkling_text", mlp_layer_types=["dense", "sparse"], n_shared_experts=1)
     assert resolve_hf_lora_targets(legacy) == resolve_hf_lora_targets(native)
-    validate_inkling_lora_targets(legacy, resolve_hf_lora_targets(legacy))
+    resolve_inkling_adapter_targets(legacy, resolve_hf_lora_targets(legacy))

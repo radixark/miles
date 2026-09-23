@@ -118,8 +118,8 @@ def _grouped_linear(inputs: torch.Tensor, weights: torch.Tensor, tokens_per_expe
     return torch.cat([F.linear(segment, weights[idx]) for idx, segment in enumerate(segments)], dim=0)
 
 
-def validate_kimi_k3_lora_targets(args) -> None:
-    suffixes = {target.removeprefix("language_model.model.layers.*.") for target in args.hf_lora_targets}
+def resolve_kimi_k3_adapter_targets(targets, *, canonical, experts_shared_outer_loras):
+    suffixes = {target.removeprefix("language_model.model.layers.*.") for target in targets}
     unsupported = suffixes - _SUPPORTED_TARGET_SUFFIXES
     missing = _SUPPORTED_TARGET_SUFFIXES - suffixes - _OPTIONAL_TARGET_SUFFIXES
     if unsupported or missing:
@@ -127,11 +127,11 @@ def validate_kimi_k3_lora_targets(args) -> None:
             "Kimi K3 native LoRA currently requires the verified target set; "
             f"unsupported={sorted(unsupported)}, missing={sorted(missing)}"
         )
-    assert args.lora_type == "lora", "Kimi K3 native LoRA does not implement canonical_lora"
-    if not args.experts_shared_outer_loras:
+    assert not canonical, "Kimi K3 native LoRA does not implement canonical_lora"
+    if not experts_shared_outer_loras:
         raise NotImplementedError("Kimi K3 native LoRA currently requires --experts-shared-outer-loras")
     # Shared-outer export stores the expert dimension in each tensor, not in its name.
-    args.lora_adapter_targets = [target.replace(".experts.*.", ".experts.") for target in args.hf_lora_targets]
+    return [target.replace(".experts.*.", ".experts.") for target in targets]
 
 
 def _enable_full_recompute_input_grads(model) -> None:

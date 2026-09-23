@@ -205,7 +205,6 @@ def _setup_lora_model_via_bridge(args: Namespace) -> list:
             parameter_names=parameter_names,
             hf_mapping=hf_mapping,
             canonical=args.lora_type == "canonical_lora",
-            exclude_modules=args.exclude_modules,
         )
         lora = create_adapter(args, target_modules=adapter_targets)
         transformed = lora(model_chunks, training=True)

@@ -15,11 +15,12 @@ from miles.utils.lora.hf_lora_targets import resolve_hf_lora_targets
 logger = logging.getLogger(__name__)
 
 
-def validate_inkling_lora_targets(hf_config, targets):
+def resolve_inkling_adapter_targets(hf_config, targets):
     expected = resolve_hf_lora_targets(hf_config)
     assert set(targets) == set(
         expected
     ), "Native Inkling LoRA requires its complete adapter layout; omit --target-modules and --exclude-modules"
+    return "all-linear"
 
 
 class InklingLoRAAdapter(nn.Module):

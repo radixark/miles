@@ -978,6 +978,7 @@ class TestMultiLoRAValidation:
         args = self._parse(["--target-modules", "q_proj"])
         miles_validate_args(args)
         assert args.hf_lora_targets == ["q_proj"]
+        assert args.target_modules == "q_proj"
 
     @pytest.mark.parametrize("exclusion", ["model.layers.*.self_attn.o_proj", "model.layers.0.self_attn.o_proj"])
     @pytest.mark.parametrize("targets", ["o_proj,down_proj", "attn,mlp", "all-linear"])
@@ -1018,6 +1019,8 @@ class TestMultiLoRAValidation:
             for name in hf_mapping.parameter_names
             if not fnmatchcase(name.removesuffix(".weight"), exclusion)
         }
+        assert args.target_modules == targets
+        assert args.exclude_modules == exclusion
         assert set(args.hf_lora_targets) == expected
         assert args.lora_adapter_targets == args.hf_lora_targets
 
