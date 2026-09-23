@@ -16,7 +16,7 @@ Public surface (see :mod:`.ops`): :func:`sparse_attention`, :func:`lightning_ind
 :func:`sparse_attention_forward` / :func:`sparse_attention_backward` / :func:`indexer_backward`.
 """
 
-from ._jit import SUPPORTED_CAPABILITIES, device_arch
+from ..cake_native import SUPPORTED_CAPABILITIES, device_arch
 from .ops import (
     extract_topk_scores,
     flashinfer_topk,

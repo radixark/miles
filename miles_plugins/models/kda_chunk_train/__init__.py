@@ -8,7 +8,7 @@ passes on identical inputs are bit-identical. :func:`chunk_kda_backward` consume
 forward's saved set; the forward itself stays in flash-linear-attention.
 """
 
-from ._jit import SUPPORTED_CAPABILITIES, device_arch
+from ..cake_native import SUPPORTED_CAPABILITIES, device_arch
 from .backward import chunk_kda_backward
 
 __all__ = ["SUPPORTED_CAPABILITIES", "chunk_kda_backward", "device_arch"]

@@ -1,0 +1,1530 @@
+{
+ "meta": {
+  "name": "cake_gdn_chunk_train_8e5debffef07e906f8cb",
+  "kernel_symbol": "kernel_cake_gdn_chunk_train_8e5debffef07e906f8cb",
+  "arg_plan": [
+   [
+    "buffer",
+    "cu_seqlens"
+   ],
+   [
+    "buffer",
+    "chunk_start"
+   ],
+   [
+    "buffer",
+    "chunk_len"
+   ],
+   [
+    "buffer",
+    "seq_chunk_start"
+   ],
+   [
+    "parameter",
+    "num_seqs"
+   ],
+   [
+    "parameter",
+    "num_chunks_max"
+   ],
+   [
+    "parameter",
+    "total_tokens"
+   ],
+   [
+    "grid",
+    "grid_x"
+   ],
+   [
+    "grid",
+    "grid_y"
+   ],
+   [
+    "grid",
+    "grid_z"
+   ]
+  ],
+  "sources": [
+   "cake_gdn_chunk_train_8e5debffef07e906f8cb_kernel.cu",
+   "cake_gdn_chunk_train_8e5debffef07e906f8cb_binding.cu"
+  ],
+  "block": [
+   128,
+   1,
+   1
+  ],
+  "dynamic_smem_bytes": 0,
+  "tma_workspace_bytes": 0,
+  "ffi_entry": "run",
+  "compile_flags": [],
+  "arches": [
+   "sm_100a",
+   "sm_103a"
+  ]
+ },
+ "prep": {
+  "name": "cake_gdn_chunk_train_79675869a77088c714d1",
+  "kernel_symbol": "kernel_cake_gdn_chunk_train_79675869a77088c714d1",
+  "arg_plan": [
+   [
+    "buffer",
+    "q"
+   ],
+   [
+    "buffer",
+    "k"
+   ],
+   [
+    "buffer",
+    "g"
+   ],
+   [
+    "buffer",
+    "beta"
+   ],
+   [
+    "buffer",
+    "beta32_out"
+   ],
+   [
+    "buffer",
+    "qn"
+   ],
+   [
+    "buffer",
+    "kn"
+   ],
+   [
+    "buffer",
+    "rstd_q"
+   ],
+   [
+    "buffer",
+    "rstd_k"
+   ],
+   [
+    "buffer",
+    "g_cs"
+   ],
+   [
+    "buffer",
+    "chunk_start"
+   ],
+   [
+    "buffer",
+    "chunk_len"
+   ],
+   [
+    "parameter",
+    "num_heads"
+   ],
+   [
+    "parameter",
+    "num_v_heads"
+   ],
+   [
+    "parameter",
+    "normalize_qk"
+   ],
+   [
+    "grid",
+    "grid_x"
+   ],
+   [
+    "grid",
+    "grid_y"
+   ],
+   [
+    "grid",
+    "grid_z"
+   ]
+  ],
+  "sources": [
+   "cake_gdn_chunk_train_79675869a77088c714d1_kernel.cu",
+   "cake_gdn_chunk_train_79675869a77088c714d1_binding.cu"
+  ],
+  "block": [
+   128,
+   1,
+   1
+  ],
+  "dynamic_smem_bytes": 0,
+  "tma_workspace_bytes": 0,
+  "ffi_entry": "run",
+  "compile_flags": [],
+  "arches": [
+   "sm_100a",
+   "sm_103a"
+  ]
+ },
+ "prep_bf16beta": {
+  "name": "cake_gdn_chunk_train_99ba0855e2578a159dc1",
+  "kernel_symbol": "kernel_cake_gdn_chunk_train_99ba0855e2578a159dc1",
+  "arg_plan": [
+   [
+    "buffer",
+    "q"
+   ],
+   [
+    "buffer",
+    "k"
+   ],
+   [
+    "buffer",
+    "g"
+   ],
+   [
+    "buffer",
+    "beta"
+   ],
+   [
+    "buffer",
+    "beta32_out"
+   ],
+   [
+    "buffer",
+    "qn"
+   ],
+   [
+    "buffer",
+    "kn"
+   ],
+   [
+    "buffer",
+    "rstd_q"
+   ],
+   [
+    "buffer",
+    "rstd_k"
+   ],
+   [
+    "buffer",
+    "g_cs"
+   ],
+   [
+    "buffer",
+    "chunk_start"
+   ],
+   [
+    "buffer",
+    "chunk_len"
+   ],
+   [
+    "parameter",
+    "num_heads"
+   ],
+   [
+    "parameter",
+    "num_v_heads"
+   ],
+   [
+    "parameter",
+    "normalize_qk"
+   ],
+   [
+    "grid",
+    "grid_x"
+   ],
+   [
+    "grid",
+    "grid_y"
+   ],
+   [
+    "grid",
+    "grid_z"
+   ]
+  ],
+  "sources": [
+   "cake_gdn_chunk_train_99ba0855e2578a159dc1_kernel.cu",
+   "cake_gdn_chunk_train_99ba0855e2578a159dc1_binding.cu"
+  ],
+  "block": [
+   128,
+   1,
+   1
+  ],
+  "dynamic_smem_bytes": 0,
+  "tma_workspace_bytes": 0,
+  "ffi_entry": "run",
+  "compile_flags": [],
+  "arches": [
+   "sm_100a",
+   "sm_103a"
+  ]
+ },
+ "wy": {
+  "name": "cake_gdn_chunk_train_7af3251a242e15dbaeb4",
+  "kernel_symbol": "kernel_cake_gdn_chunk_train_7af3251a242e15dbaeb4",
+  "arg_plan": [
+   [
+    "buffer",
+    "kn"
+   ],
+   [
+    "buffer",
+    "v"
+   ],
+   [
+    "buffer",
+    "g_cs"
+   ],
+   [
+    "buffer",
+    "beta"
+   ],
+   [
+    "buffer",
+    "A_out"
+   ],
+   [
+    "buffer",
+    "w_out"
+   ],
+   [
+    "buffer",
+    "u_out"
+   ],
+   [
+    "buffer",
+    "chunk_start"
+   ],
+   [
+    "buffer",
+    "chunk_len"
+   ],
+   [
+    "parameter",
+    "num_heads"
+   ],
+   [
+    "parameter",
+    "num_v_heads"
+   ],
+   [
+    "parameter",
+    "recompute"
+   ],
+   [
+    "grid",
+    "grid_x"
+   ],
+   [
+    "grid",
+    "grid_y"
+   ],
+   [
+    "grid",
+    "grid_z"
+   ]
+  ],
+  "sources": [
+   "cake_gdn_chunk_train_7af3251a242e15dbaeb4_kernel.cu",
+   "cake_gdn_chunk_train_7af3251a242e15dbaeb4_binding.cu"
+  ],
+  "block": [
+   128,
+   1,
+   1
+  ],
+  "dynamic_smem_bytes": 93696,
+  "tma_workspace_bytes": 0,
+  "ffi_entry": "run",
+  "compile_flags": [],
+  "arches": [
+   "sm_100a",
+   "sm_103a"
+  ]
+ },
+ "fwd_h_r32k2": {
+  "name": "cake_gdn_chunk_train_3bb5ea7c18d7965632f7",
+  "kernel_symbol": "kernel_cake_gdn_chunk_train_3bb5ea7c18d7965632f7",
+  "arg_plan": [
+   [
+    "buffer",
+    "kn"
+   ],
+   [
+    "buffer",
+    "w"
+   ],
+   [
+    "buffer",
+    "u"
+   ],
+   [
+    "buffer",
+    "g_cs"
+   ],
+   [
+    "buffer",
+    "h0"
+   ],
+   [
+    "buffer",
+    "h_out"
+   ],
+   [
+    "buffer",
+    "v_new"
+   ],
+   [
+    "buffer",
+    "final_state"
+   ],
+   [
+    "buffer",
+    "chunk_start"
+   ],
+   [
+    "buffer",
+    "chunk_len"
+   ],
+   [
+    "buffer",
+    "seq_chunk_start"
+   ],
+   [
+    "parameter",
+    "num_heads"
+   ],
+   [
+    "parameter",
+    "num_v_heads"
+   ],
+   [
+    "parameter",
+    "use_initial_state"
+   ],
+   [
+    "parameter",
+    "store_final_state"
+   ],
+   [
+    "grid",
+    "grid_x"
+   ],
+   [
+    "grid",
+    "grid_y"
+   ],
+   [
+    "grid",
+    "grid_z"
+   ]
+  ],
+  "sources": [
+   "cake_gdn_chunk_train_3bb5ea7c18d7965632f7_kernel.cu",
+   "cake_gdn_chunk_train_3bb5ea7c18d7965632f7_binding.cu"
+  ],
+  "block": [
+   128,
+   1,
+   1
+  ],
+  "dynamic_smem_bytes": 107008,
+  "tma_workspace_bytes": 0,
+  "ffi_entry": "run",
+  "compile_flags": [],
+  "scan": {
+   "kind": "fwd_h",
+   "v_block": 32,
+   "k_split": 2,
+   "select_smem_bytes": 107008
+  },
+  "arches": [
+   "sm_100a",
+   "sm_103a"
+  ]
+ },
+ "fwd_h_r32k1": {
+  "name": "cake_gdn_chunk_train_42d87f570cb2ebf9b6c6",
+  "kernel_symbol": "kernel_cake_gdn_chunk_train_42d87f570cb2ebf9b6c6",
+  "arg_plan": [
+   [
+    "buffer",
+    "kn"
+   ],
+   [
+    "buffer",
+    "w"
+   ],
+   [
+    "buffer",
+    "u"
+   ],
+   [
+    "buffer",
+    "g_cs"
+   ],
+   [
+    "buffer",
+    "h0"
+   ],
+   [
+    "buffer",
+    "h_out"
+   ],
+   [
+    "buffer",
+    "v_new"
+   ],
+   [
+    "buffer",
+    "final_state"
+   ],
+   [
+    "buffer",
+    "chunk_start"
+   ],
+   [
+    "buffer",
+    "chunk_len"
+   ],
+   [
+    "buffer",
+    "seq_chunk_start"
+   ],
+   [
+    "parameter",
+    "num_heads"
+   ],
+   [
+    "parameter",
+    "num_v_heads"
+   ],
+   [
+    "parameter",
+    "use_initial_state"
+   ],
+   [
+    "parameter",
+    "store_final_state"
+   ],
+   [
+    "grid",
+    "grid_x"
+   ],
+   [
+    "grid",
+    "grid_y"
+   ],
+   [
+    "grid",
+    "grid_z"
+   ]
+  ],
+  "sources": [
+   "cake_gdn_chunk_train_42d87f570cb2ebf9b6c6_kernel.cu",
+   "cake_gdn_chunk_train_42d87f570cb2ebf9b6c6_binding.cu"
+  ],
+  "block": [
+   64,
+   1,
+   1
+  ],
+  "dynamic_smem_bytes": 90752,
+  "tma_workspace_bytes": 0,
+  "ffi_entry": "run",
+  "compile_flags": [],
+  "scan": {
+   "kind": "fwd_h",
+   "v_block": 32,
+   "k_split": 1,
+   "select_smem_bytes": 90640
+  },
+  "arches": [
+   "sm_100a",
+   "sm_103a"
+  ]
+ },
+ "fwd_h_r64k1": {
+  "name": "cake_gdn_chunk_train_578831049b4e2cd00eb8",
+  "kernel_symbol": "kernel_cake_gdn_chunk_train_578831049b4e2cd00eb8",
+  "arg_plan": [
+   [
+    "buffer",
+    "kn"
+   ],
+   [
+    "buffer",
+    "w"
+   ],
+   [
+    "buffer",
+    "u"
+   ],
+   [
+    "buffer",
+    "g_cs"
+   ],
+   [
+    "buffer",
+    "h0"
+   ],
+   [
+    "buffer",
+    "h_out"
+   ],
+   [
+    "buffer",
+    "v_new"
+   ],
+   [
+    "buffer",
+    "final_state"
+   ],
+   [
+    "buffer",
+    "chunk_start"
+   ],
+   [
+    "buffer",
+    "chunk_len"
+   ],
+   [
+    "buffer",
+    "seq_chunk_start"
+   ],
+   [
+    "parameter",
+    "num_heads"
+   ],
+   [
+    "parameter",
+    "num_v_heads"
+   ],
+   [
+    "parameter",
+    "use_initial_state"
+   ],
+   [
+    "parameter",
+    "store_final_state"
+   ],
+   [
+    "grid",
+    "grid_x"
+   ],
+   [
+    "grid",
+    "grid_y"
+   ],
+   [
+    "grid",
+    "grid_z"
+   ]
+  ],
+  "sources": [
+   "cake_gdn_chunk_train_578831049b4e2cd00eb8_kernel.cu",
+   "cake_gdn_chunk_train_578831049b4e2cd00eb8_binding.cu"
+  ],
+  "block": [
+   128,
+   1,
+   1
+  ],
+  "dynamic_smem_bytes": 98944,
+  "tma_workspace_bytes": 0,
+  "ffi_entry": "run",
+  "compile_flags": [],
+  "scan": {
+   "kind": "fwd_h",
+   "v_block": 64,
+   "k_split": 1,
+   "select_smem_bytes": 98832
+  },
+  "arches": [
+   "sm_100a",
+   "sm_103a"
+  ]
+ },
+ "fwd_o": {
+  "name": "cake_gdn_chunk_train_d308d9806b1a9747ba62",
+  "kernel_symbol": "kernel_cake_gdn_chunk_train_d308d9806b1a9747ba62",
+  "arg_plan": [
+   [
+    "buffer",
+    "qn"
+   ],
+   [
+    "buffer",
+    "kn"
+   ],
+   [
+    "buffer",
+    "v_new"
+   ],
+   [
+    "buffer",
+    "h"
+   ],
+   [
+    "buffer",
+    "g_cs"
+   ],
+   [
+    "buffer",
+    "o_out"
+   ],
+   [
+    "buffer",
+    "chunk_start"
+   ],
+   [
+    "buffer",
+    "chunk_len"
+   ],
+   [
+    "parameter",
+    "num_heads"
+   ],
+   [
+    "parameter",
+    "num_v_heads"
+   ],
+   [
+    "parameter",
+    "scale"
+   ],
+   [
+    "grid",
+    "grid_x"
+   ],
+   [
+    "grid",
+    "grid_y"
+   ],
+   [
+    "grid",
+    "grid_z"
+   ]
+  ],
+  "sources": [
+   "cake_gdn_chunk_train_d308d9806b1a9747ba62_kernel.cu",
+   "cake_gdn_chunk_train_d308d9806b1a9747ba62_binding.cu"
+  ],
+  "block": [
+   128,
+   1,
+   1
+  ],
+  "dynamic_smem_bytes": 90368,
+  "tma_workspace_bytes": 0,
+  "ffi_entry": "run",
+  "compile_flags": [],
+  "arches": [
+   "sm_100a",
+   "sm_103a"
+  ]
+ },
+ "dv_local": {
+  "name": "cake_gdn_chunk_train_69c45c2c625104cdf3a0",
+  "kernel_symbol": "kernel_cake_gdn_chunk_train_69c45c2c625104cdf3a0",
+  "arg_plan": [
+   [
+    "buffer",
+    "qn"
+   ],
+   [
+    "buffer",
+    "kn"
+   ],
+   [
+    "buffer",
+    "do"
+   ],
+   [
+    "buffer",
+    "g_cs"
+   ],
+   [
+    "buffer",
+    "dv_local"
+   ],
+   [
+    "buffer",
+    "chunk_start"
+   ],
+   [
+    "buffer",
+    "chunk_len"
+   ],
+   [
+    "parameter",
+    "num_heads"
+   ],
+   [
+    "parameter",
+    "num_v_heads"
+   ],
+   [
+    "parameter",
+    "scale"
+   ],
+   [
+    "grid",
+    "grid_x"
+   ],
+   [
+    "grid",
+    "grid_y"
+   ],
+   [
+    "grid",
+    "grid_z"
+   ]
+  ],
+  "sources": [
+   "cake_gdn_chunk_train_69c45c2c625104cdf3a0_kernel.cu",
+   "cake_gdn_chunk_train_69c45c2c625104cdf3a0_binding.cu"
+  ],
+  "block": [
+   128,
+   1,
+   1
+  ],
+  "dynamic_smem_bytes": 57600,
+  "tma_workspace_bytes": 0,
+  "ffi_entry": "run",
+  "compile_flags": [],
+  "arches": [
+   "sm_100a",
+   "sm_103a"
+  ]
+ },
+ "dhu_r32k2": {
+  "name": "cake_gdn_chunk_train_ca87cd15d7b61a97ecde",
+  "kernel_symbol": "kernel_cake_gdn_chunk_train_ca87cd15d7b61a97ecde",
+  "arg_plan": [
+   [
+    "buffer",
+    "qn"
+   ],
+   [
+    "buffer",
+    "kn"
+   ],
+   [
+    "buffer",
+    "w"
+   ],
+   [
+    "buffer",
+    "do"
+   ],
+   [
+    "buffer",
+    "dv_local"
+   ],
+   [
+    "buffer",
+    "g_cs"
+   ],
+   [
+    "buffer",
+    "dht"
+   ],
+   [
+    "buffer",
+    "dh_out"
+   ],
+   [
+    "buffer",
+    "dv2"
+   ],
+   [
+    "buffer",
+    "dh0"
+   ],
+   [
+    "buffer",
+    "chunk_start"
+   ],
+   [
+    "buffer",
+    "chunk_len"
+   ],
+   [
+    "buffer",
+    "seq_chunk_start"
+   ],
+   [
+    "parameter",
+    "num_heads"
+   ],
+   [
+    "parameter",
+    "num_v_heads"
+   ],
+   [
+    "parameter",
+    "use_final_state_grad"
+   ],
+   [
+    "parameter",
+    "store_initial_state_grad"
+   ],
+   [
+    "parameter",
+    "scale"
+   ],
+   [
+    "grid",
+    "grid_x"
+   ],
+   [
+    "grid",
+    "grid_y"
+   ],
+   [
+    "grid",
+    "grid_z"
+   ]
+  ],
+  "sources": [
+   "cake_gdn_chunk_train_ca87cd15d7b61a97ecde_kernel.cu",
+   "cake_gdn_chunk_train_ca87cd15d7b61a97ecde_binding.cu"
+  ],
+  "block": [
+   128,
+   1,
+   1
+  ],
+  "dynamic_smem_bytes": 156672,
+  "tma_workspace_bytes": 0,
+  "ffi_entry": "run",
+  "compile_flags": [],
+  "scan": {
+   "kind": "dhu",
+   "v_block": 32,
+   "k_split": 2,
+   "select_smem_bytes": 156672
+  },
+  "arches": [
+   "sm_100a",
+   "sm_103a"
+  ]
+ },
+ "dhu_r32k1": {
+  "name": "cake_gdn_chunk_train_e361efceb5efcf4eb52a",
+  "kernel_symbol": "kernel_cake_gdn_chunk_train_e361efceb5efcf4eb52a",
+  "arg_plan": [
+   [
+    "buffer",
+    "qn"
+   ],
+   [
+    "buffer",
+    "kn"
+   ],
+   [
+    "buffer",
+    "w"
+   ],
+   [
+    "buffer",
+    "do"
+   ],
+   [
+    "buffer",
+    "dv_local"
+   ],
+   [
+    "buffer",
+    "g_cs"
+   ],
+   [
+    "buffer",
+    "dht"
+   ],
+   [
+    "buffer",
+    "dh_out"
+   ],
+   [
+    "buffer",
+    "dv2"
+   ],
+   [
+    "buffer",
+    "dh0"
+   ],
+   [
+    "buffer",
+    "chunk_start"
+   ],
+   [
+    "buffer",
+    "chunk_len"
+   ],
+   [
+    "buffer",
+    "seq_chunk_start"
+   ],
+   [
+    "parameter",
+    "num_heads"
+   ],
+   [
+    "parameter",
+    "num_v_heads"
+   ],
+   [
+    "parameter",
+    "use_final_state_grad"
+   ],
+   [
+    "parameter",
+    "store_initial_state_grad"
+   ],
+   [
+    "parameter",
+    "scale"
+   ],
+   [
+    "grid",
+    "grid_x"
+   ],
+   [
+    "grid",
+    "grid_y"
+   ],
+   [
+    "grid",
+    "grid_z"
+   ]
+  ],
+  "sources": [
+   "cake_gdn_chunk_train_e361efceb5efcf4eb52a_kernel.cu",
+   "cake_gdn_chunk_train_e361efceb5efcf4eb52a_binding.cu"
+  ],
+  "block": [
+   64,
+   1,
+   1
+  ],
+  "dynamic_smem_bytes": 140416,
+  "tma_workspace_bytes": 0,
+  "ffi_entry": "run",
+  "compile_flags": [],
+  "scan": {
+   "kind": "dhu",
+   "v_block": 32,
+   "k_split": 1,
+   "select_smem_bytes": 140304
+  },
+  "arches": [
+   "sm_100a",
+   "sm_103a"
+  ]
+ },
+ "dhu_r64k1": {
+  "name": "cake_gdn_chunk_train_dea44cbdf6f0e3a36d04",
+  "kernel_symbol": "kernel_cake_gdn_chunk_train_dea44cbdf6f0e3a36d04",
+  "arg_plan": [
+   [
+    "buffer",
+    "qn"
+   ],
+   [
+    "buffer",
+    "kn"
+   ],
+   [
+    "buffer",
+    "w"
+   ],
+   [
+    "buffer",
+    "do"
+   ],
+   [
+    "buffer",
+    "dv_local"
+   ],
+   [
+    "buffer",
+    "g_cs"
+   ],
+   [
+    "buffer",
+    "dht"
+   ],
+   [
+    "buffer",
+    "dh_out"
+   ],
+   [
+    "buffer",
+    "dv2"
+   ],
+   [
+    "buffer",
+    "dh0"
+   ],
+   [
+    "buffer",
+    "chunk_start"
+   ],
+   [
+    "buffer",
+    "chunk_len"
+   ],
+   [
+    "buffer",
+    "seq_chunk_start"
+   ],
+   [
+    "parameter",
+    "num_heads"
+   ],
+   [
+    "parameter",
+    "num_v_heads"
+   ],
+   [
+    "parameter",
+    "use_final_state_grad"
+   ],
+   [
+    "parameter",
+    "store_initial_state_grad"
+   ],
+   [
+    "parameter",
+    "scale"
+   ],
+   [
+    "grid",
+    "grid_x"
+   ],
+   [
+    "grid",
+    "grid_y"
+   ],
+   [
+    "grid",
+    "grid_z"
+   ]
+  ],
+  "sources": [
+   "cake_gdn_chunk_train_dea44cbdf6f0e3a36d04_kernel.cu",
+   "cake_gdn_chunk_train_dea44cbdf6f0e3a36d04_binding.cu"
+  ],
+  "block": [
+   128,
+   1,
+   1
+  ],
+  "dynamic_smem_bytes": 148608,
+  "tma_workspace_bytes": 0,
+  "ffi_entry": "run",
+  "compile_flags": [],
+  "scan": {
+   "kind": "dhu",
+   "v_block": 64,
+   "k_split": 1,
+   "select_smem_bytes": 148496
+  },
+  "arches": [
+   "sm_100a",
+   "sm_103a"
+  ]
+ },
+ "dqkwg": {
+  "name": "cake_gdn_chunk_train_44a7dd7b3a6d3f0b0045",
+  "kernel_symbol": "kernel_cake_gdn_chunk_train_44a7dd7b3a6d3f0b0045",
+  "arg_plan": [
+   [
+    "buffer",
+    "qn"
+   ],
+   [
+    "buffer",
+    "kn"
+   ],
+   [
+    "buffer",
+    "v_new"
+   ],
+   [
+    "buffer",
+    "do"
+   ],
+   [
+    "buffer",
+    "dv2"
+   ],
+   [
+    "buffer",
+    "h"
+   ],
+   [
+    "buffer",
+    "dh"
+   ],
+   [
+    "buffer",
+    "g_cs"
+   ],
+   [
+    "buffer",
+    "dq_out"
+   ],
+   [
+    "buffer",
+    "dk_out"
+   ],
+   [
+    "buffer",
+    "dw_out"
+   ],
+   [
+    "buffer",
+    "dg_out"
+   ],
+   [
+    "buffer",
+    "chunk_start"
+   ],
+   [
+    "buffer",
+    "chunk_len"
+   ],
+   [
+    "parameter",
+    "num_heads"
+   ],
+   [
+    "parameter",
+    "num_v_heads"
+   ],
+   [
+    "parameter",
+    "scale"
+   ],
+   [
+    "grid",
+    "grid_x"
+   ],
+   [
+    "grid",
+    "grid_y"
+   ],
+   [
+    "grid",
+    "grid_z"
+   ]
+  ],
+  "sources": [
+   "cake_gdn_chunk_train_44a7dd7b3a6d3f0b0045_kernel.cu",
+   "cake_gdn_chunk_train_44a7dd7b3a6d3f0b0045_binding.cu"
+  ],
+  "block": [
+   128,
+   1,
+   1
+  ],
+  "dynamic_smem_bytes": 156928,
+  "tma_workspace_bytes": 0,
+  "ffi_entry": "run",
+  "compile_flags": [],
+  "arches": [
+   "sm_100a",
+   "sm_103a"
+  ]
+ },
+ "wy_bwd": {
+  "name": "cake_gdn_chunk_train_08b8c467d9dd75bd69d7",
+  "kernel_symbol": "kernel_cake_gdn_chunk_train_08b8c467d9dd75bd69d7",
+  "arg_plan": [
+   [
+    "buffer",
+    "kn"
+   ],
+   [
+    "buffer",
+    "v"
+   ],
+   [
+    "buffer",
+    "A"
+   ],
+   [
+    "buffer",
+    "dw"
+   ],
+   [
+    "buffer",
+    "du"
+   ],
+   [
+    "buffer",
+    "g_cs"
+   ],
+   [
+    "buffer",
+    "beta"
+   ],
+   [
+    "buffer",
+    "dk2_out"
+   ],
+   [
+    "buffer",
+    "dv_out"
+   ],
+   [
+    "buffer",
+    "dbeta_out"
+   ],
+   [
+    "buffer",
+    "dg2_out"
+   ],
+   [
+    "buffer",
+    "chunk_start"
+   ],
+   [
+    "buffer",
+    "chunk_len"
+   ],
+   [
+    "parameter",
+    "num_heads"
+   ],
+   [
+    "parameter",
+    "num_v_heads"
+   ],
+   [
+    "grid",
+    "grid_x"
+   ],
+   [
+    "grid",
+    "grid_y"
+   ],
+   [
+    "grid",
+    "grid_z"
+   ]
+  ],
+  "sources": [
+   "cake_gdn_chunk_train_08b8c467d9dd75bd69d7_kernel.cu",
+   "cake_gdn_chunk_train_08b8c467d9dd75bd69d7_binding.cu"
+  ],
+  "block": [
+   128,
+   1,
+   1
+  ],
+  "dynamic_smem_bytes": 108032,
+  "tma_workspace_bytes": 0,
+  "ffi_entry": "run",
+  "compile_flags": [],
+  "arches": [
+   "sm_100a",
+   "sm_103a"
+  ]
+ },
+ "wy_bwd_bf16": {
+  "name": "cake_gdn_chunk_train_c2d8e02001feb945f994",
+  "kernel_symbol": "kernel_cake_gdn_chunk_train_c2d8e02001feb945f994",
+  "arg_plan": [
+   [
+    "buffer",
+    "kn"
+   ],
+   [
+    "buffer",
+    "v"
+   ],
+   [
+    "buffer",
+    "A"
+   ],
+   [
+    "buffer",
+    "dw"
+   ],
+   [
+    "buffer",
+    "du"
+   ],
+   [
+    "buffer",
+    "g_cs"
+   ],
+   [
+    "buffer",
+    "beta"
+   ],
+   [
+    "buffer",
+    "dk2_out"
+   ],
+   [
+    "buffer",
+    "dv_out"
+   ],
+   [
+    "buffer",
+    "dbeta_out"
+   ],
+   [
+    "buffer",
+    "dg2_out"
+   ],
+   [
+    "buffer",
+    "chunk_start"
+   ],
+   [
+    "buffer",
+    "chunk_len"
+   ],
+   [
+    "parameter",
+    "num_heads"
+   ],
+   [
+    "parameter",
+    "num_v_heads"
+   ],
+   [
+    "grid",
+    "grid_x"
+   ],
+   [
+    "grid",
+    "grid_y"
+   ],
+   [
+    "grid",
+    "grid_z"
+   ]
+  ],
+  "sources": [
+   "cake_gdn_chunk_train_c2d8e02001feb945f994_kernel.cu",
+   "cake_gdn_chunk_train_c2d8e02001feb945f994_binding.cu"
+  ],
+  "block": [
+   128,
+   1,
+   1
+  ],
+  "dynamic_smem_bytes": 108032,
+  "tma_workspace_bytes": 0,
+  "ffi_entry": "run",
+  "compile_flags": [],
+  "arches": [
+   "sm_100a",
+   "sm_103a"
+  ]
+ },
+ "finalize": {
+  "name": "cake_gdn_chunk_train_f476781e557972f034c5",
+  "kernel_symbol": "kernel_cake_gdn_chunk_train_f476781e557972f034c5",
+  "arg_plan": [
+   [
+    "buffer",
+    "qn"
+   ],
+   [
+    "buffer",
+    "kn"
+   ],
+   [
+    "buffer",
+    "rstd_q"
+   ],
+   [
+    "buffer",
+    "rstd_k"
+   ],
+   [
+    "buffer",
+    "dq_hv"
+   ],
+   [
+    "buffer",
+    "dk_hv"
+   ],
+   [
+    "buffer",
+    "dk2"
+   ],
+   [
+    "buffer",
+    "dg1"
+   ],
+   [
+    "buffer",
+    "dg2"
+   ],
+   [
+    "buffer",
+    "dq_out"
+   ],
+   [
+    "buffer",
+    "dk_out"
+   ],
+   [
+    "buffer",
+    "dg_out"
+   ],
+   [
+    "buffer",
+    "chunk_start"
+   ],
+   [
+    "buffer",
+    "chunk_len"
+   ],
+   [
+    "parameter",
+    "num_heads"
+   ],
+   [
+    "parameter",
+    "num_v_heads"
+   ],
+   [
+    "parameter",
+    "normalize_qk"
+   ],
+   [
+    "grid",
+    "grid_x"
+   ],
+   [
+    "grid",
+    "grid_y"
+   ],
+   [
+    "grid",
+    "grid_z"
+   ]
+  ],
+  "sources": [
+   "cake_gdn_chunk_train_f476781e557972f034c5_kernel.cu",
+   "cake_gdn_chunk_train_f476781e557972f034c5_binding.cu"
+  ],
+  "block": [
+   128,
+   1,
+   1
+  ],
+  "dynamic_smem_bytes": 0,
+  "tma_workspace_bytes": 0,
+  "ffi_entry": "run",
+  "compile_flags": [],
+  "arches": [
+   "sm_100a",
+   "sm_103a"
+  ]
+ }
+}

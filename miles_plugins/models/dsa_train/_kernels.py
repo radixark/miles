@@ -13,12 +13,14 @@ host code one to one so the exported kernels are launched exactly as they were v
 
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass
 
 import torch
 
-from ._jit import MODULES, device_arch, kernel, prebuild
+from ..cake_native import Package, device_arch
+
+_PACKAGE = Package(__file__)  # registry.json + csrc/ next to this file
+MODULES = _PACKAGE.MODULES
 
 LOG2E = 1.4426950408889634
 INDEXER_HEAD_DIM = 128
@@ -32,9 +34,8 @@ def _kernel(name: str, device):
     arch = device_arch(device)
     if arch not in _PREBUILT:
         _PREBUILT.add(arch)
-        if os.environ.get("MILES_DSA_TRAIN_PREBUILD", "1") != "0":
-            prebuild(arch)
-    return kernel(name, arch)
+        _PACKAGE.prebuild(arch)
+    return _PACKAGE.kernel(name, arch)
 
 
 def _attention_name(kind: str, block_h: int, d_v: int, d_tail: int) -> str:

@@ -8,7 +8,7 @@ are bit-identical.  :func:`chunk_gated_delta_rule` has FLA's signature and autog
 including ``cu_seqlens`` packing and ``cp_context`` state passing.
 """
 
-from ._jit import SUPPORTED_CAPABILITIES, device_arch
+from ..cake_native import SUPPORTED_CAPABILITIES, device_arch
 from .ops import chunk_gated_delta_rule
 
 __all__ = ["SUPPORTED_CAPABILITIES", "chunk_gated_delta_rule", "device_arch"]

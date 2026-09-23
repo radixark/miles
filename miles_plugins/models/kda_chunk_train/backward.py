@@ -35,7 +35,10 @@ from functools import cached_property
 
 import torch
 
-from ._jit import device_arch, kernel
+from ..cake_native import Package, device_arch
+
+_PACKAGE = Package(__file__)  # registry.json + csrc/ next to this file
+kernel = _PACKAGE.kernel
 
 CHUNK = 64
 HEAD_DIM = 128

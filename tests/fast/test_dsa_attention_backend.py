@@ -1,6 +1,7 @@
 """The DSA attention backend switch: one value selects the kernel family for both DSA model plugins."""
 
 import importlib.util
+import json
 from argparse import Namespace
 from pathlib import Path
 
@@ -40,8 +41,8 @@ def test_bridge_path_rejects_loom():
 
 def test_generated_package_registry_covers_both_architectures():
     """Every exported stage is exported for SM100a and SM103a from one source set that exists on disk."""
-    jit = _load("test_dsa_train_jit_module", "miles_plugins/models/dsa_train/_jit.py")
-    assert set(jit.MODULES), "registry.json missing"
+    package = REPO / "miles_plugins/models/dsa_train"
+    registry = json.loads((package / "registry.json").read_text())
     expected = {
         *(f"dsa_attention_{kind}_h{h}_d512t{t}" for kind in ("fwd", "bwd") for h in (16, 32) for t in (64, 0)),
         *(f"dsa_indexer_logits_h{h}" for h in (8, 16, 32, 64)),
@@ -49,9 +50,11 @@ def test_generated_package_registry_covers_both_architectures():
         "dsa_indexer_clean",
         "dsa_segmented_reduce",
     }
-    assert set(jit.MODULES) == expected
-    for stage, record in jit.MODULES.items():
+    assert set(registry) == expected
+    for stage, record in registry.items():
         assert set(record["arches"]) == {"sm_100a", "sm_103a"}, stage
         assert record["kernel_symbol"] == f"kernel_{record['name']}", stage
         for relative in record["sources"]:
-            assert (REPO / "miles_plugins/models/dsa_train/csrc" / relative).is_file(), (stage, relative)
+            assert (package / "csrc" / relative).is_file(), (stage, relative)
+    # the launchers include the host surface shipped once, by the shared loader package
+    assert (REPO / "miles_plugins/models/cake_native/csrc/cake_host_shim.h").is_file()
