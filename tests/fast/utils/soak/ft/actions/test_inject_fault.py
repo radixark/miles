@@ -90,7 +90,7 @@ class TestInjectFaultFormExecute:
         [(cell_id, injection)] = api.injection_posts
         assert cell_id == _ACTOR_0
         assert injection.mode is FailureMode.SIGKILL
-        assert injection.sub_index == request.details.fault_target.sub_index
+        assert injection.sub_index == request.details.fault_target.rank
         assert injection.expected_target == request.details.fault_target
         assert evidence == ObservedCellFault(
             request_id=request.request_id,

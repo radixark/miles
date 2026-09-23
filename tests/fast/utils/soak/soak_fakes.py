@@ -52,7 +52,7 @@ from miles.utils.ft_utils.api_server.models import (
     FaultInjection,
     TriState,
 )
-from miles.utils.workers.cell_operations.base import FaultTarget
+from miles.utils.test_utils.fault_injector.models import ObservedFaultHookTarget
 from miles.utils.workers.naming import compute_cell_id
 from miles.utils.workers.worker_provider.kubernetes.helm.env import DEFAULT_LABEL_KEYS
 
@@ -403,8 +403,8 @@ def _cell(
     )
 
 
-def _fault_target(cell_id: str, *, workers_hash: str = "hash-a", rank: int = 0) -> FaultTarget:
-    return FaultTarget(cell_id=cell_id, sub_index=rank, workers_hash=workers_hash)
+def _fault_target(cell_id: str, *, workers_hash: str = "hash-a", rank: int = 0) -> ObservedFaultHookTarget:
+    return ObservedFaultHookTarget(cell_id=cell_id, rank=rank, workers_hash=workers_hash)
 
 
 _CellReply = int | Cell | Exception
@@ -414,7 +414,7 @@ class _FakeCellApi:
     def __init__(self, cells: list[Cell]) -> None:
         self.cells = {cell.metadata.name: cell for cell in cells}
         self.list_reply: int | dict | None = None
-        self.fault_targets: dict[str, FaultTarget | int] = {}
+        self.fault_targets: dict[str, ObservedFaultHookTarget | int] = {}
         self.cell_replies: dict[str, list[_CellReply]] = {}
         self.injection_status = 200
         self.injection_posts: list[tuple[str, FaultInjection]] = []

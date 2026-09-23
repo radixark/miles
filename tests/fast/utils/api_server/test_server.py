@@ -4,7 +4,6 @@ import socket
 import threading
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
 
 import httpx
 import pytest
@@ -17,7 +16,20 @@ from miles.utils.ft_utils.api_server.handles import _CellHandler
 from miles.utils.ft_utils.api_server.registry import _CellRegistry
 from miles.utils.http_utils import find_available_port
 from miles.utils.test_utils.fault_injector import FailureMode
-from miles.utils.workers.cell_operations.base import FaultTarget, StaleFaultTargetError
+from miles.utils.test_utils.fault_injector.actions.process import KillProcessAction
+from miles.utils.test_utils.fault_injector.controller import (
+    FaultHookCommand,
+    FaultHookConflictError,
+    FaultHookOperation,
+)
+from miles.utils.test_utils.fault_injector.models import (
+    FaultHookName,
+    FaultHookRecord,
+    FaultHookRequest,
+    FaultHookStatus,
+    ObservedFaultHookTarget,
+)
+from miles.utils.workers.cell_operations.base import StaleFaultTargetError
 from miles.utils.workers.cell_operations.ray import RayCellOperations
 
 from .conftest import (
@@ -735,24 +747,31 @@ class _IdentityHandler(MockHandler):
     def __init__(self, cell_type: str) -> None:
         super().__init__(cell_type)
         self.observe_error: Exception | None = None
-        self.targeted_injections: list[tuple[str, int, FaultTarget | None]] = []
+        self.fault_hook_commands: list[FaultHookCommand] = []
+        self.fault_hook_failure: Exception | None = None
 
-    async def observe_fault_target(self, cell_id: str, *, sub_index: int) -> FaultTarget:
+    async def observe_fault_target(self, cell_id: str, *, rank: int) -> ObservedFaultHookTarget:
         if self.observe_error is not None:
             raise self.observe_error
-        return FaultTarget(cell_id=cell_id, sub_index=sub_index, workers_hash=self.cells[cell_id].workers_hash)
+        return ObservedFaultHookTarget(cell_id=cell_id, rank=rank, workers_hash=self.cells[cell_id].workers_hash)
 
-    async def inject_fault(
-        self, cell_id: str, *, mode: Any, sub_index: int, expected_target: FaultTarget | None = None
-    ) -> None:
-        if self.inject_fault_error is not None:
-            raise self.inject_fault_error
-        self.targeted_injections.append((cell_id, sub_index, expected_target))
+    async def control_fault_hook(self, command: FaultHookCommand) -> FaultHookRecord:
+        if self.fault_hook_failure is not None:
+            raise self.fault_hook_failure
+        self.fault_hook_commands.append(command)
+        return FaultHookRecord(request=command.request, status=FaultHookStatus.FIRED, set_at=1.0, changed_at=2.0)
 
 
-def _targeted_injection(*, cell_id: str, sub_index: int = 0) -> dict[str, Any]:
-    target = FaultTarget(cell_id=cell_id, sub_index=sub_index, workers_hash="pseudo-hash-1")
-    return {"mode": "sigkill", "sub_index": sub_index, "expected_target": target.model_dump(mode="json")}
+def _identity_command(*, cell_id: str, rank: int = 0) -> FaultHookCommand:
+    return FaultHookCommand(
+        operation=FaultHookOperation.SET,
+        request=FaultHookRequest(
+            request_id="test-request",
+            hook_name=FaultHookName.TRAINER_STEP_BEFORE_ALLREDUCE,
+            action=KillProcessAction(),
+            target=ObservedFaultHookTarget(cell_id=cell_id, rank=rank, workers_hash="pseudo-hash-1"),
+        ),
+    )
 
 
 class TestFaultTargetIdentity:
@@ -767,23 +786,24 @@ class TestFaultTargetIdentity:
         """The rank in the query picks the worker, rather than always observing worker zero."""
         rollout_handler.add("rollout-engine-0")
 
-        resp = await async_client.get("/api/v1/cells/rollout-engine-0/fault-target", params={"sub_index": 2})
+        resp = await async_client.get("/api/v1/cells/rollout-engine-0/fault-target", params={"rank": 2})
 
         assert resp.status_code == 200
-        assert resp.json()["sub_index"] == 2
+        assert resp.json()["rank"] == 2
 
     @pytest.mark.asyncio
-    async def test_an_unknown_cell_has_neither_a_target_nor_an_injection(
+    async def test_an_unknown_cell_has_neither_a_target_nor_a_hook(
         self, rollout_handler: _IdentityHandler, async_client: httpx.AsyncClient
     ) -> None:
         """A cell that is not registered answers 404 on both fault routes."""
         observed = await async_client.get("/api/v1/cells/rollout-engine-9/fault-target")
         written = await async_client.post(
-            "/api/v1/cells/rollout-engine-9/inject-fault", json=_targeted_injection(cell_id="rollout-engine-9")
+            "/api/v1/cells/rollout-engine-9/fault-hook",
+            json=_identity_command(cell_id="rollout-engine-9").model_dump(mode="json"),
         )
 
         assert (observed.status_code, written.status_code) == (404, 404)
-        assert rollout_handler.targeted_injections == []
+        assert rollout_handler.fault_hook_commands == []
 
     @pytest.mark.asyncio
     async def test_a_stale_observation_answers_precondition_failed(
@@ -804,13 +824,91 @@ class TestFaultTargetIdentity:
         self, rollout_handler: _IdentityHandler, async_client: httpx.AsyncClient
     ) -> None:
         """A target whose incarnation moved on is refused as 412 and records no fault."""
-        rollout_handler.inject_fault_error = StaleFaultTargetError("no longer matches the observed fault target")
+        rollout_handler.fault_hook_failure = StaleFaultTargetError("no longer matches the observed fault target")
         rollout_handler.add("rollout-engine-0")
 
         resp = await async_client.post(
-            "/api/v1/cells/rollout-engine-0/inject-fault", json=_targeted_injection(cell_id="rollout-engine-0")
+            "/api/v1/cells/rollout-engine-0/fault-hook",
+            json=_identity_command(cell_id="rollout-engine-0").model_dump(mode="json"),
         )
 
         assert resp.status_code == 412
         assert resp.json()["reason"] == "PreconditionFailed"
-        assert rollout_handler.targeted_injections == []
+        assert rollout_handler.fault_hook_commands == []
+
+    @pytest.mark.asyncio
+    async def test_a_target_of_another_cell_is_refused_before_reaching_any_cell(
+        self, rollout_handler: _IdentityHandler, async_client: httpx.AsyncClient
+    ) -> None:
+        """A body naming one cell cannot be sent through the route of another."""
+        rollout_handler.add("rollout-engine-0")
+        rollout_handler.add("rollout-engine-1")
+
+        resp = await async_client.post(
+            "/api/v1/cells/rollout-engine-0/fault-hook",
+            json=_identity_command(cell_id="rollout-engine-1").model_dump(mode="json"),
+        )
+
+        assert resp.status_code == 400
+        assert rollout_handler.fault_hook_commands == []
+
+    @pytest.mark.asyncio
+    async def test_a_fault_call_that_times_out_answers_that_its_outcome_is_unknown(
+        self, rollout_handler: _IdentityHandler, async_client: httpx.AsyncClient
+    ) -> None:
+        """A worker that never answered may or may not have been faulted, which is a 504, not a 500."""
+        rollout_handler.fault_hook_failure = TimeoutError()
+        rollout_handler.add("rollout-engine-0")
+
+        resp = await async_client.post(
+            "/api/v1/cells/rollout-engine-0/fault-hook",
+            json=_identity_command(cell_id="rollout-engine-0").model_dump(mode="json"),
+        )
+
+        assert resp.status_code == 504
+        assert resp.json()["message"] == "Fault hook outcome is unknown"
+
+    @pytest.mark.asyncio
+    async def test_a_conflicting_request_answers_conflict_without_a_fault(
+        self, rollout_handler: _IdentityHandler, async_client: httpx.AsyncClient
+    ) -> None:
+        """A request the worker refuses as a duplicate trigger is a 409 the caller must not retry blindly."""
+        rollout_handler.fault_hook_failure = FaultHookConflictError("already set for the same trigger")
+        rollout_handler.add("rollout-engine-0")
+
+        resp = await async_client.post(
+            "/api/v1/cells/rollout-engine-0/fault-hook",
+            json=_identity_command(cell_id="rollout-engine-0").model_dump(mode="json"),
+        )
+
+        assert resp.status_code == 409
+        assert resp.json()["reason"] == "Conflict"
+        assert rollout_handler.fault_hook_commands == []
+
+    @pytest.mark.asyncio
+    async def test_a_declared_target_is_refused_before_reaching_any_cell(
+        self, rollout_handler: _IdentityHandler, async_client: httpx.AsyncClient
+    ) -> None:
+        """A remote fault that names no observed incarnation could strike a replacement, so it is a 400."""
+        rollout_handler.add("rollout-engine-0")
+        body = _identity_command(cell_id="rollout-engine-0").model_dump(mode="json")
+        body["request"]["target"] = {"kind": "declared", "cell_id": "rollout-engine-0", "rank": 0}
+
+        resp = await async_client.post("/api/v1/cells/rollout-engine-0/fault-hook", json=body)
+
+        assert resp.status_code == 400
+        assert resp.json()["message"] == "Fault hook must name an observed target"
+        assert rollout_handler.fault_hook_commands == []
+
+    @pytest.mark.asyncio
+    async def test_an_unobservable_worker_answers_bad_request(
+        self, rollout_handler: _IdentityHandler, async_client: httpx.AsyncClient
+    ) -> None:
+        """A worker kind that cannot be observed is a caller error, not an unknown outcome."""
+        rollout_handler.add("rollout-engine-0")
+        rollout_handler.observe_error = NotImplementedError("Worker is not served over RPC")
+
+        resp = await async_client.get("/api/v1/cells/rollout-engine-0/fault-target")
+
+        assert resp.status_code == 400
+        assert resp.json()["message"] == "Worker is not served over RPC"
