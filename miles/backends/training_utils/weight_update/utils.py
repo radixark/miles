@@ -34,10 +34,12 @@ def record_lora_checksums(bucket, checksums) -> None:
         if ":" not in name:
             continue
         lora_name, hf_key = name.split(":", 1)
-        digest = hashlib.sha256(
-            tensor.detach().cpu().contiguous().flatten().view(torch.uint8).numpy().tobytes()
-        ).hexdigest()
-        checksums[lora_name][hf_key] = digest
+        checksums[lora_name][hf_key] = hash_tensor_sha256(tensor)
+
+
+def hash_tensor_sha256(tensor: torch.Tensor) -> str:
+    """Real (cryptographic) hash: a mismatch here has to mean a bug."""
+    return hashlib.sha256(tensor.detach().cpu().contiguous().flatten().view(torch.uint8).numpy().tobytes()).hexdigest()
 
 
 class ModelParamStager:

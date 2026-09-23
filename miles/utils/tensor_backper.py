@@ -1,10 +1,11 @@
-import hashlib
 from abc import ABC, abstractmethod
 from collections import defaultdict
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 
 import torch
+
+from miles.backends.training_utils.weight_update.utils import hash_tensor_sha256
 
 _SourceGetter = Callable[[], Iterable[tuple[str, torch.Tensor]]]
 
@@ -185,7 +186,7 @@ class _TensorBackuperMainCast(TensorBackuper):
         return out
 
     def _compute_hashes(self) -> dict[str, str]:
-        return {name: _hash_tensor_sha256(tensor) for name, tensor in self._source_getter()}
+        return {name: hash_tensor_sha256(tensor) for name, tensor in self._source_getter()}
 
     def _verify_hashes(self) -> None:
         actual = self._compute_hashes()
@@ -203,12 +204,6 @@ class _TensorBackuperMainCast(TensorBackuper):
                 f"backup time for {len(mismatches)}/{len(expected)} tensors "
                 f"(cycle {self._backup_count}): {mismatches[:20]}"
             )
-
-
-def _hash_tensor_sha256(x: torch.Tensor) -> str:
-    """Real (cryptographic) hash: a mismatch here has to mean a bug."""
-    data = x.detach().cpu().contiguous()
-    return hashlib.sha256(data.reshape(-1).view(torch.uint8).numpy().tobytes()).hexdigest()
 
 
 def _copy_and_maybe_resize(
