@@ -314,3 +314,38 @@ jobs:
 
           prune_series '^dev-[0-9]{12}$'
           prune_series '^dev-cu12-[0-9]{12}$'
+
+  # A failed automatic build leaves the published images behind their inputs until a
+  # later build succeeds, so report it to the Miles CI Lark group on the first failure.
+  # Manual dispatches are left to whoever started them.
+  notify-build-failure:
+    needs: [build-and-push]
+    if: |
+      always() && github.repository == 'radixark/miles' &&
+      needs.build-and-push.result == 'failure' && github.event_name != 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - name: Check out the notifier
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+          sparse-checkout: |
+            .github/workflows/scripts/lark_notify.py
+            .github/workflows/scripts/ci_failure_analysis.py
+          sparse-checkout-cone-mode: false
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: "3.12"
+
+      - name: Post the build failure card
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          LARK_WEBHOOK: ${{ secrets.LARK_WEBHOOK }}
+          RUN_ID: ${{ github.run_id }}
+        run: python .github/workflows/scripts/lark_notify.py docker-build-failure --run-id "$RUN_ID"
