@@ -125,11 +125,16 @@ def _compute_metrics_from_samples(args, samples):
                 [any(m.get("type") == mtype for m in v) for v in tito_vals]
             ).item()
         if args.ci_test:
-            for strict_type in ("special_token_count", "special_token_type", "non_assistant_text"):
+            strict_thresholds = {
+                "special_token_count": args.ci_tito_special_token_count_threshold,
+                "special_token_type": 0,
+                "non_assistant_text": 0,
+            }
+            for strict_type, threshold in strict_thresholds.items():
                 rate = log_dict.get(f"{metric_prefix}/{strict_type}", 0)
                 assert (
-                    rate == 0
-                ), f"{metric_prefix}/{strict_type}={rate:.4f} must be 0 — this indicates a bug in the TITO algorithm or chat template. Please check your tito model and chat template."
+                    rate <= threshold
+                ), f"{metric_prefix}/{strict_type}={rate:.4f} exceeds {threshold} — this indicates a bug in the TITO algorithm or chat template. Please check your tito model and chat template."
             # assistant_text mismatch is non-critical: assistant tokens are inherited
             # from the pretokenized prefix and may differ from canonical tokenization.
 

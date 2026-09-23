@@ -33,6 +33,9 @@ def make_args(**overrides: Any) -> Namespace:
         n_samples_per_eval_prompt=4,
         rollout_max_response_len=512,
         rollout_temperature=1.0,
+        rollout_top_p=1.0,
+        rollout_top_k=-1,
+        use_sampling_support_replay=False,
         over_sampling_batch_size=None,
         rollout_global_dataset=False,
         num_rollout=1,
@@ -149,6 +152,7 @@ def make_args(**overrides: Any) -> Namespace:
         save=None,
         # CI
         ci_test=False,
+        ci_tito_special_token_count_threshold=0.0,
         # dumper (sglang debug dumper integration)
         dumper_enable=False,
         dumper_inference=False,

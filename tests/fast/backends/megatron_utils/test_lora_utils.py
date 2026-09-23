@@ -437,6 +437,8 @@ class TestSaveLoraCheckpointTrainingState:
         model = [SimpleNamespace(named_parameters=lambda: [("layers.0.self_attention.lora_A.weight", adapter)])]
         args = Namespace(
             hf_checkpoint="/nonexistent",
+            # the bridge export path; raw mode writes the rank-sharded config instead
+            megatron_to_hf_mode="bridge",
             target_modules=None,
             lora_rank=8,
             lora_alpha=16,
