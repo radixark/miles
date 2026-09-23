@@ -76,7 +76,9 @@ class BaseSoakActionForm(abc.ABC):
 
 
 def find_form(forms: SoakForms, *, kind: str, name: str) -> BaseSoakActionForm:
-    raise NotImplementedError
+    matched = [form for form in forms[kind] if form.name == name]
+    assert len(matched) == 1, f"Expected exactly one action form named {name!r} for {kind!r}, got {len(matched)}"
+    return matched[0]
 
 
 # ================================= observers ==================================
