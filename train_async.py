@@ -73,7 +73,7 @@ async def train(args):
         if args.use_critic and args.offload_train:
             await model.offload()
 
-    async def train_and_save(rollout_id, rollout_data_curr_ref):
+    async def train_step(rollout_id, rollout_data_curr_ref):
         if args.use_critic:
             values = await critic_model.train(rollout_id, rollout_data_curr_ref)
             if args.offload_train:
@@ -84,8 +84,8 @@ async def train(args):
                     await actor_model.offload()
         else:
             await actor_model.train(rollout_id, rollout_data_curr_ref)
-        remove_rollout_data_refs(args, rollout_data_curr_ref)
 
+    async def save_if_needed(rollout_id):
         external_save = args.save_trigger_sentinel is not None and os.path.exists(args.save_trigger_sentinel)
         if external_save or should_run_periodic_action(
             rollout_id, args.save_interval, num_rollout_per_epoch, args.num_rollout
@@ -97,6 +97,11 @@ async def train(args):
             await rollout_executor.save.remote(rollout_id)
             if external_save:
                 os.remove(args.save_trigger_sentinel)
+
+    async def train_and_save(rollout_id, rollout_data_curr_ref):
+        await train_step(rollout_id, rollout_data_curr_ref)
+        remove_rollout_data_refs(args, rollout_data_curr_ref)
+        await save_if_needed(rollout_id)
 
     async def prepare_and_generate(rollout_id):
         await inference_controller.prepare_rollout(rollout_id)
