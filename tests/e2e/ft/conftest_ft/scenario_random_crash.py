@@ -23,6 +23,7 @@ from tests.e2e.ft.conftest_ft.execution import (
 )
 from tests.e2e.ft.conftest_ft.modes import FTTestMode, resolve_mode
 from tests.utils.ft.launch import get_fully_async_args, get_train_script
+from tests.utils.soak.core.checkers.engine_checksums import assert_engine_checksums_cover_published_updates
 from tests.utils.soak.core.config import SoakRunnerConfig, SoakTailConfig, SoakTargetConfig
 from tests.utils.soak.core.event_log import EventLog
 from tests.utils.soak.core.runner import SoakRunner
@@ -34,6 +35,7 @@ from tests.utils.soak.core.utils import (
     note_launch_outcome,
     resolve_dump_dir,
 )
+from tests.utils.soak.core.views import read_training_events
 from tests.utils.soak.ft.actions.factory import compute_mean_interval_seconds_of_kind
 from tests.utils.soak.ft.checkers.healing import assert_healing
 from tests.utils.soak.ft.entrypoint import run_cell_soak
@@ -102,6 +104,9 @@ def run_ci(
         fully_async=fully_async,
     )
 
+    training_events = read_training_events(injector.event_log.events, dump_dir=dump_dir)
+    if ft_mode.has_real_rollout:
+        assert_engine_checksums_cover_published_updates(training_events)
     assert_healing(
         ft_mode.ft_components,
         events=injector.event_log.events,

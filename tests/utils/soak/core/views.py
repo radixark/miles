@@ -1,6 +1,8 @@
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from typing import NamedTuple
 
 from tests.utils.soak.core.events import (
     SoakActionAppliedEvent,
@@ -15,7 +17,7 @@ from tests.utils.soak.core.events import (
 from miles.backends.megatron_utils.ft.types import TrainStepOutcome
 from miles.backends.megatron_utils.megatron_config import ACTOR_ROLE
 from miles.utils.audit_utils.event_logger.logger import EVENTS_DIRNAME, read_events
-from miles.utils.audit_utils.event_logger.models import Event, TrainGroupStepEndEvent
+from miles.utils.audit_utils.event_logger.models import Event, TrainGroupStepEndEvent, WeightUpdateResultEvent
 from miles.utils.audit_utils.process_identity import TrainerControllerProcessIdentity
 
 
@@ -137,3 +139,52 @@ def _applied_actions(events: list[SoakEvent], *, kind: str | None) -> list[SoakA
         for action in project_actions(events).values()
         if action.applied is not None and (kind is None or action.requested.request.target.kind == kind)
     ]
+
+
+# ================================ weight updates ==============================
+
+
+class PublishedWeightUpdateKey(NamedTuple):
+    trainer_model_id: str | None
+    debug_trainer_load_state_timestamp: float
+    weight_version: int
+    debug_weight_update_id: str
+
+
+def weight_update_results(events: Sequence[Event]) -> list[WeightUpdateResultEvent]:
+    results = [event for event in events if isinstance(event, WeightUpdateResultEvent)]
+    for result in results:
+        updated, failed = set(result.updated_cell_ids), set(result.failed_cell_ids)
+        assert len(updated) == len(
+            result.updated_cell_ids
+        ), f"Repeated updated engine: {result.debug_weight_update_id}"
+        assert not updated & failed, f"Published engine is also reported failed: {result.debug_weight_update_id}"
+        assert updated | failed == set(
+            result.snapshot_cell_id_to_hashes
+        ), f"Update omits assigned targets: {result.debug_weight_update_id}"
+        assert all(
+            result.snapshot_cell_id_to_hashes[cell_id] for cell_id in updated
+        ), f"Updated engine lacks its incarnation: {result.debug_weight_update_id}"
+        assert result.published_version == (
+            result.candidate_version if updated else None
+        ), f"Published version is inconsistent with the updated engines: {result.debug_weight_update_id}"
+    return results
+
+
+def published_weight_updates(events: Sequence[Event]) -> dict[PublishedWeightUpdateKey, WeightUpdateResultEvent]:
+    published: dict[PublishedWeightUpdateKey, WeightUpdateResultEvent] = {}
+    updates: set[tuple[str | None, str, str]] = set()
+    for result in weight_update_results(events):
+        if result.published_version is None:
+            continue
+        assert isinstance(result.source, TrainerControllerProcessIdentity), "Weight publication lacks trainer identity"
+        assert (
+            result.debug_trainer_load_state_timestamp and result.debug_weight_update_id
+        ), "Publication lacks load-state timestamp or update identity"
+        update = (result.source.model_id, result.debug_trainer_load_state_timestamp, result.debug_weight_update_id)
+        assert update not in updates, f"Repeated weight update identity: {update}"
+        updates.add(update)
+        published[PublishedWeightUpdateKey(*update[:2], result.published_version, result.debug_weight_update_id)] = (
+            result
+        )
+    return published
