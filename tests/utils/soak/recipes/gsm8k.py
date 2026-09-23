@@ -1,10 +1,11 @@
+import asyncio
 import os
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
 from tests.utils.cluster_backends import create_backend_for_run
-from tests.utils.ft.launch import MEGATRON_PATH, get_fully_async_args, get_train_script
+from tests.utils.ft.launch import MEGATRON_PATH, get_fully_async_args, get_train_script, launch_training
 from tests.utils.soak.core.event_log import EventLog
 from tests.utils.soak.core.events import LaunchOutcome
 from tests.utils.soak.core.utils import (
@@ -15,6 +16,7 @@ from tests.utils.soak.core.utils import (
     compute_base_url,
     create_soak_config,
     evidence_directory,
+    note_launch_outcome,
     resolve_dump_dir,
 )
 
@@ -131,11 +133,19 @@ def _build_gsm8k_train_args(
 
 
 async def execute_gsm8k_session(run: Gsm8kRun) -> LaunchOutcome:
-    raise NotImplementedError
+    return await note_launch_outcome(event_log=run.event_log, request_id=None, launching=launch(run.launch_spec))
 
 
 async def launch(spec: Gsm8kLaunchSpec, *, guard: LaunchGuard | None = None) -> None:
-    raise NotImplementedError
+    await asyncio.to_thread(
+        launch_training,
+        train_args=spec.train_args,
+        num_gpus_per_node=TRAIN_GPUS + ROLLOUT_GPUS,
+        megatron_model_type=MODEL_TYPE,
+        config=spec.config,
+        train_script=get_train_script(fully_async=spec.fully_async),
+        guard=guard,
+    )
 
 
 def prepare_gsm8k(U: BaseCommandBackend) -> None:
