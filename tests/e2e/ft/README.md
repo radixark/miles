@@ -209,7 +209,7 @@ Phase B - target:
   6. Rollout 3: heal back to N cells, train with the healed cell
 
 Fault injection: --ci-fault-hooks, JSON list of FaultHookRequest {request_id, hook_name, action, target {cell_id, rank},
-  rollout_id, attempt, weight_version}; the same requests can be set at runtime through the api server
+  rollout_id, attempt, weight_version}
   hook_name trainer_step_before_allreduce: inside the targeted actor rank, matched on rollout_id and attempt
   hook_name trainer_controller_step_end: trainer controller, actions stop_cell / start_cell via cell_operations
   action exit_process / kill_process: os._exit(1) or SIGKILL

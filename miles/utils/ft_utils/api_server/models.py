@@ -9,7 +9,7 @@ from typing import Literal
 
 from miles.utils.pydantic_utils import StrictBaseModel
 from miles.utils.test_utils.fault_injector.actions.process import FailureMode
-from miles.utils.test_utils.fault_injector.models import ObservedFaultHookTarget
+from miles.utils.workers.cell_operations.base import FaultTarget
 
 CELL_TYPE_LABEL: str = "miles.io/cell-type"
 
@@ -96,7 +96,7 @@ class CellPatch(StrictBaseModel):
 class FaultInjection(StrictBaseModel):
     mode: FailureMode
     sub_index: int = 0
-    expected_target: ObservedFaultHookTarget | None = None
+    expected_target: FaultTarget | None = None
 
 
 class K8sStatus(StrictBaseModel):

@@ -13,7 +13,7 @@ from tests.utils.soak.ft.types import CellTarget, InjectFaultDetails, ObservedCe
 
 from miles.utils.ft_utils.api_server.models import Cell, FaultInjection
 from miles.utils.test_utils.fault_injector.actions.process import FailureMode
-from miles.utils.test_utils.fault_injector.models import ObservedFaultHookTarget
+from miles.utils.workers.cell_operations.base import FaultTarget
 
 logger = logging.getLogger(__name__)
 
@@ -58,7 +58,7 @@ class InjectFaultForm(BaseCellFaultForm):
                 response = await client.post(
                     f"{self.base_url}/api/v1/cells/{request.target.identity}/inject-fault",
                     content=FaultInjection(
-                        mode=self.failure_mode, sub_index=fault_target.rank, expected_target=fault_target
+                        mode=self.failure_mode, sub_index=fault_target.sub_index, expected_target=fault_target
                     ).model_dump_json(),
                     headers={"Content-Type": "application/json"},
                 )
@@ -80,7 +80,7 @@ class InjectFaultForm(BaseCellFaultForm):
         *,
         client: httpx.AsyncClient,
         request: SoakActionRequest,
-        fault_target: ObservedFaultHookTarget,
+        fault_target: FaultTarget,
     ) -> ObservedCellFault:
         async with asyncio.timeout(EFFECT_TIMEOUT_SECONDS):
             while (effect := await self._observe_effect_once(client=client, fault_target=fault_target)) is None:
@@ -96,7 +96,7 @@ class InjectFaultForm(BaseCellFaultForm):
         )
 
     async def _observe_effect_once(
-        self, *, client: httpx.AsyncClient, fault_target: ObservedFaultHookTarget
+        self, *, client: httpx.AsyncClient, fault_target: FaultTarget
     ) -> tuple[ObservedCellFaultKind, str | None] | None:
         try:
             response = await client.get(f"{self.base_url}/api/v1/cells/{fault_target.cell_id}")

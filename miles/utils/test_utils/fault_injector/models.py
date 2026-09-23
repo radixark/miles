@@ -1,7 +1,7 @@
 from enum import StrEnum
-from typing import Annotated, Literal
+from typing import Literal
 
-from pydantic import Discriminator, Field
+from pydantic import Field
 
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
 from miles.utils.test_utils.fault_injector.actions.base import FaultHookContext
@@ -55,23 +55,11 @@ class DeclaredFaultHookTarget(_BaseFaultHookTarget):
     kind: Literal["declared"] = "declared"
 
 
-class ObservedFaultHookTarget(_BaseFaultHookTarget):
-    kind: Literal["observed"] = "observed"
-    cell_id: str
-    rank: int = Field(ge=0)
-    workers_hash: str = Field(min_length=1)
-    boot_uuid: str | None = None
-    pod_uid: str | None = None
-
-
-FaultHookTarget = Annotated[DeclaredFaultHookTarget | ObservedFaultHookTarget, Discriminator("kind")]
-
-
 class FaultHookRequest(FrozenStrictBaseModel):
     request_id: str = Field(min_length=1)
     hook_name: FaultHookName
     action: FaultAction
-    target: FaultHookTarget = DeclaredFaultHookTarget()
+    target: DeclaredFaultHookTarget = DeclaredFaultHookTarget()
     rollout_id: int | None = Field(default=None, ge=0)
     attempt: int | None = Field(default=None, ge=0)
     weight_version: int | None = Field(default=None, ge=0)
