@@ -7,7 +7,7 @@ import pytest
 import torch
 from transformers import AutoConfig, AutoModelForCausalLM, AutoModelForImageTextToText, PretrainedConfig
 
-from miles.utils.hf_utils.lora_targets import (
+from miles.utils.lora.hf_lora_targets import (
     _HF_LORA_MODELS,
     exclude_hf_lora_targets,
     get_hf_lora_targets,

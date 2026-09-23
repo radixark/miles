@@ -103,7 +103,7 @@ LoRA training.
 </Warning>
 
 Omitting `--target-modules` or passing `all-linear` uses the model defaults from
-`miles/utils/hf_utils/lora_targets.py`: attention + MLP, with model-specific exclusions
+`miles/utils/lora/hf_lora_targets.py`: attention + MLP, with model-specific exclusions
 and output-head defaults. Multi-LoRA without explicit targets selects all three
 training groups. Use `--target-modules attn,mlp,unembed` to select groups explicitly.
 Ordinary LoRA also accepts specific HF targets mixed with group names, such as
@@ -128,7 +128,7 @@ Ordinary LoRA also accepts specific HF targets mixed with group names, such as
 
 ### HF target source of truth
 
-`miles/utils/hf_utils/lora_targets.py` owns **HF target groups and defaults** for all
+`miles/utils/lora/hf_lora_targets.py` owns **HF target groups and defaults** for all
 backends. It derives attention, MLP, and output-head paths from the model config,
 including nested text models, optional MLA projections, expert layouts, and
 hybrid attention. Vision towers, routers, norms, and GDN convolutions are excluded.
