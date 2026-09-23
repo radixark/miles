@@ -186,15 +186,17 @@ class RolloutServer:
     @requires_lock
     async def check_weights(
         self, action: str, allow_quant_error: bool = False, selector: str = "all", skip_list: list[str] | None = None
-    ):
-        return await asyncio.gather(
+    ) -> list[tuple[ServerCellMetadata, Any]]:
+        cells = self._addressable_cells()
+        bodies = await asyncio.gather(
             *[
                 cell.check_weights(
                     action=action, allow_quant_error=allow_quant_error, selector=selector, skip_list=skip_list
                 )
-                for cell in self._addressable_cells()
+                for cell in cells
             ]
         )
+        return [(cell.meta, body) for cell, body in zip(cells, bodies, strict=True)]
 
     @requires_lock
     def _addressable_cells(self) -> list[ServerCell]:
