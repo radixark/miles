@@ -1,3 +1,4 @@
+import asyncio
 from dataclasses import replace
 from pathlib import Path
 
@@ -11,6 +12,7 @@ from tests.utils.soak.core.utils import (
     create_soak_config,
     evidence_directory,
     get_dumps_root,
+    recording_error,
     resolve_dump_dir,
 )
 
@@ -141,3 +143,33 @@ class TestCreateSoakConfig:
         config = ExecuteTrainConfig(cluster_backend=ClusterBackend.KUBERNETES, namespace="rl", run_id=_RUN_ID)
 
         assert create_soak_config(config) is config
+
+
+class TestRecordingError:
+    def test_an_exception_is_recorded_under_its_key_and_swallowed(self) -> None:
+        """One failed read becomes an observation error without aborting the others."""
+        errors: dict[str, str] = {"cells": "earlier"}
+
+        with recording_error(errors, "pods"):
+            raise RuntimeError("kubectl down")
+
+        assert errors == {"cells": "earlier", "pods": repr(RuntimeError("kubectl down"))}
+
+    def test_a_cancellation_is_not_swallowed(self) -> None:
+        """Cancelling an observation must propagate instead of turning into an error entry."""
+        errors: dict[str, str] = {}
+
+        with pytest.raises(asyncio.CancelledError):
+            with recording_error(errors, "pods"):
+                raise asyncio.CancelledError
+
+        assert errors == {}
+
+    def test_a_clean_block_records_nothing(self) -> None:
+        """A successful read leaves the error map untouched."""
+        errors: dict[str, str] = {}
+
+        with recording_error(errors, "pods"):
+            pass
+
+        assert errors == {}
