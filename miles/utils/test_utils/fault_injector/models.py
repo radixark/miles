@@ -38,7 +38,6 @@ class FaultHookName(StrEnum):
 
 class FaultHookStatus(StrEnum):
     PENDING = "pending"
-    SCHEDULED = "scheduled"
     CLEARED = "cleared"
     FIRED = "fired"
     FAILED = "failed"
@@ -76,7 +75,6 @@ class FaultHookRequest(FrozenStrictBaseModel):
     rollout_id: int | None = Field(default=None, ge=0)
     attempt: int | None = Field(default=None, ge=0)
     weight_version: int | None = Field(default=None, ge=0)
-    delay_ms: float = Field(default=0.0, ge=0, le=300_000, allow_inf_nan=False)
 
     @model_validator(mode="after")
     def _validate_target(self) -> "FaultHookRequest":
@@ -112,5 +110,4 @@ class FaultHookRecord(FrozenStrictBaseModel):
     set_at: float
     changed_at: float
     reached_at: float | None = None
-    due_at: float | None = None
     context: FaultHookContext | None = None
