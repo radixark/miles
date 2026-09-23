@@ -24,6 +24,7 @@ def _args(**overrides: object) -> Namespace:
         rollout_temperature=0.7,
         rollout_top_p=1.0,
         rollout_top_k=-1,
+        use_sampling_support_replay=False,
         advantage_estimator="grpo",
         rewards_normalization=False,
         reward_key=None,

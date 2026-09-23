@@ -346,6 +346,10 @@ class TestSessionServerRouterPoolLookup:
 
 
 class TestInferenceEngineEnvVars:
+    def test_score_centering_requests_sampler_logprobs_on_workers(self):
+        envs = compute_inference_engine_env_vars(make_args(loss_type="score_centering"))
+        assert envs["SGLANG_RETURN_ORIGINAL_LOGPROB"] == "0"
+
     def test_a_process_level_override_wins_over_the_built_in_default(self, monkeypatch):
         """The launcher's environment is how operators retune sglang per cluster, so defaults must not overwrite it."""
         monkeypatch.setenv("SGLANG_JIT_DEEPGEMM_PRECOMPILE", "true")
