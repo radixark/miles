@@ -361,7 +361,7 @@ Type: soak (no baseline, no compare); passes if training completes without hangi
       witnesses hold
 Steps: 60 (default)
 CLI: --mode, --seed (42), --num-steps (60), --trainer-crash-interval-seconds (120),
-     --rollout-crash-interval-seconds (240), --fully-async (off)
+     --rollout-crash-interval-seconds (240), --fully-async (off), --mix (off)
 
 Targeting and assertions follow the mode's ft_components:
   ("train",)          -> inject into "actor" cells, assert trainer healing
@@ -418,6 +418,12 @@ Faults are random, so beyond the witnesses no exact sequence is asserted.
 - **Why the rollout witness is one-sided**: sampled polls miss windows by construction, so it never demands seeing the down half of a recovery. It demands a new incarnation of the cell observed Serving after the fault applied; a stale Healthy reading of the old incarnation cannot satisfy it.
 - **Evidence**: typed events in `<dump_dir>-soak/<session_id>/events.jsonl`, requests flushed before dispatch; after teardown the training-event logs, discarded generations included, are copied under `sources/` with SHA-256 digests, and the checks read those copies.
 - **Code**: the soak engine lives in `tests/utils/soak/core/`, the FT forms, observers and checkers in `tests/utils/soak/ft/`.
+- **Hook topology**: `--mix` adds P2P weight transfer and `--update-weights-timeout 600`; it sets trainer faults at both `trainer_weight_update_before_all_gather` and `trainer_weight_update_before_send`, and, when rollout ft is on, receiver faults triggered at `trainer_weight_update_before_send`.
+- **Hook faults**: `HookFaultForm` sets `kill_process`, `stop_process` or `deadlock_thread` at a trainer hook (`trainer_weight_update_before_all_gather`, `trainer_weight_update_before_send`) through the api server's `fault-hook` route, bound to the observed fault target, and reads the cell's effect like `inject_fault`.
+- **Receiver triggers**: `RemoteHookFaultForm` sets an `observe` hook on another trainer cell and, once the runner's training-event feed reports that worker's `FaultHookEvent` hit, applies its rollout form (`inject_fault`, `exec_sigkill`, `exec_sigstop`, `delete_pod`) through the selected backend. The feed's poll interval and network latency separate hook arrival from receiver failure.
+- **Mixed injection**: `--mix` draws the hook forms and the wall-clock forms through the same scheduler, and each hook request draws its delay uniformly from 0 to 1000 ms (the deadlock stays immediate). Every enabled form must produce an effect.
+- **Hook witnesses**: every applied hook form needs exactly one worker-side dispatch at its recorded delay, and every remote P2P form needs a receiver failure in its exact triggered update (`tests/utils/soak/ft/checkers/hooks.py`); every trainer fault needs an original peer to finish a normal step afterwards (`tests/utils/soak/ft/checkers/survivors.py`). The normal healing and tail witnesses remain mandatory.
+- **Calibration**: the hook deadlines and the 4800-second CI estimate have not been calibrated by a run.
 
 ### `scenario_realistic_gsm8k`
 

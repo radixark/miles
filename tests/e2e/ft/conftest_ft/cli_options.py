@@ -16,6 +16,9 @@ NumStepsOption = Annotated[int, typer.Option(help="Number of train() calls")]
 NumRolloutOption = Annotated[int, typer.Option(help="Number of rollouts")]
 MetricThresholdOption = Annotated[float, typer.Option(help="eval/gsm8k accuracy threshold")]
 FullyAsyncOption = Annotated[bool, typer.Option(help="Train through train_async.py with --fully-async")]
+MixOption = Annotated[
+    bool, typer.Option(help="Draw randomly delayed trainer hook faults alongside the wall-clock faults")
+]
 TrainerCrashIntervalSecondsOption = Annotated[float, typer.Option(help="Mean seconds between trainer cell injections")]
 RolloutCrashIntervalSecondsOption = Annotated[
     float, typer.Option(help="Mean seconds between rollout engine injections")

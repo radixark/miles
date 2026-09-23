@@ -8,12 +8,7 @@ from tests.e2e.ft.conftest_ft.app import BASELINE_SIDE, TARGET_SIDE, RunSideRequ
 from tests.e2e.ft.conftest_ft.comparisons import compare_deterministic_sides
 from tests.e2e.ft.conftest_ft.execution import get_common_train_args, get_ft_args, get_train_env_vars_arg, run_training
 from tests.e2e.ft.conftest_ft.modes import FTTestMode
-from tests.utils.soak.core.config import (
-    QUIESCENT_POLLS_REQUIRED,
-    SoakRunnerConfig,
-    SoakTailConfig,
-    SoakTargetConfig,
-)
+from tests.utils.soak.core.config import QUIESCENT_POLLS_REQUIRED, SoakRunnerConfig, SoakTailConfig, SoakTargetConfig
 from tests.utils.soak.core.event_log import EventLog
 from tests.utils.soak.core.utils import (
     API_SERVER_ARGS,
@@ -22,6 +17,7 @@ from tests.utils.soak.core.utils import (
     evidence_directory,
     note_launch_outcome,
 )
+from tests.utils.soak.ft.actions.factory import create_cell_fault_forms
 from tests.utils.soak.ft.checkers.healing import assert_injections_recovered, assert_min_injections
 from tests.utils.soak.ft.checkers.progress_windows import assert_faults_span_progress_windows
 from tests.utils.soak.ft.entrypoint import run_cell_soak
@@ -111,6 +107,7 @@ def _run_side(request: RunSideRequest) -> None:
             ),
             event_log=event_log,
             evidence_dir=evidence_dir,
+            cell_fault_forms=create_cell_fault_forms(config),
         )
     )
     if target:

@@ -7,7 +7,7 @@ from dataclasses import dataclass
 import httpx
 from tests.utils.soak.core.events import SoakEvent, SoakObservationEvent
 from tests.utils.soak.core.types import SoakActionEvidence, SoakActionRequest
-from tests.utils.soak.ft.actions.base import BaseCellFaultForm
+from tests.utils.soak.ft.actions.base import BaseCellFaultForm, assert_request_target, resolve_fault_target
 from tests.utils.soak.ft.cells import cell_is_alive
 from tests.utils.soak.ft.types import CellTarget, InjectFaultDetails, ObservedCellFault, ObservedCellFaultKind
 
@@ -42,50 +42,36 @@ class InjectFaultForm(BaseCellFaultForm):
         events: list[SoakEvent],
         rng: random.Random,
     ) -> SoakActionRequest | None:
-        identity = target.fault_target
-        if identity is None or identity.workers_hash != target.incarnation:
+        if (fault_target := resolve_fault_target(target)) is None:
             return None
-        return self._create_request(target=target, details=InjectFaultDetails(fault_target=identity))
+        return self._create_request(target=target, details=InjectFaultDetails(fault_target=fault_target))
 
     async def execute(
         self, request: SoakActionRequest, *, report_applied: Callable[[SoakActionEvidence], None]
     ) -> None:
         assert isinstance(request.details, InjectFaultDetails), f"Request {request.request_id} names no fault target"
-        fault_target = request.details.fault_target
-        assert fault_target.cell_id == request.target.identity
-        assert fault_target.workers_hash == request.target.incarnation
+        fault_target = assert_request_target(request, fault_target=request.details.fault_target)
         command = FaultHookCommand(
             operation=FaultHookOperation.SET,
             request=FaultHookRequest(request_id=request.request_id, action=self.action, target=fault_target),
         )
         async with httpx.AsyncClient(timeout=5.0) as client:
-            try:
-                response = await client.post(
-                    f"{self.base_url}/api/v1/cells/{request.target.identity}/fault-hook",
-                    content=command.model_dump_json(),
-                    headers={"Content-Type": "application/json"},
+            await post_fault_hook_command(client, base_url=self.base_url, command=command)
+            report_applied(
+                await self._await_effect(
+                    client=client, request=request, fault_target=fault_target, timeout_seconds=EFFECT_TIMEOUT_SECONDS
                 )
-                if response.is_server_error:
-                    logger.warning(
-                        "Fault submission outcome is unknown for %s: HTTP %s %s",
-                        request.request_id,
-                        response.status_code,
-                        response.text,
-                    )
-                else:
-                    response.raise_for_status()
-            except httpx.TransportError:
-                logger.warning("Fault submission outcome is unknown: %s", request.request_id, exc_info=True)
-            report_applied(await self._read_effect(client=client, request=request, fault_target=fault_target))
+            )
 
-    async def _read_effect(
+    async def _await_effect(
         self,
         *,
         client: httpx.AsyncClient,
         request: SoakActionRequest,
         fault_target: ObservedFaultHookTarget,
+        timeout_seconds: float,
     ) -> ObservedCellFault:
-        async with asyncio.timeout(EFFECT_TIMEOUT_SECONDS):
+        async with asyncio.timeout(timeout_seconds):
             while (effect := await self._observe_effect_once(client=client, fault_target=fault_target)) is None:
                 await asyncio.sleep(0.2)
 
@@ -125,3 +111,31 @@ class InjectFaultForm(BaseCellFaultForm):
         if not cell_is_alive(cell):
             return ObservedCellFaultKind.UNHEALTHY, cell.status.workers_hash
         return None
+
+
+async def post_fault_hook_command(
+    client: httpx.AsyncClient, *, base_url: str, command: FaultHookCommand
+) -> httpx.Response | None:
+    request_id = command.request.request_id
+    try:
+        response = await client.post(
+            compute_fault_hook_url(base_url=base_url, command=command),
+            content=command.model_dump_json(),
+            headers={"Content-Type": "application/json"},
+        )
+    except httpx.TransportError:
+        logger.warning("Fault control outcome is unknown: %s", request_id, exc_info=True)
+        return None
+    if response.is_server_error:
+        logger.warning(
+            "Fault control outcome is unknown for %s: HTTP %s %s", request_id, response.status_code, response.text
+        )
+        return None
+    response.raise_for_status()
+    return response
+
+
+def compute_fault_hook_url(*, base_url: str, command: FaultHookCommand) -> str:
+    target = command.request.target
+    assert isinstance(target, ObservedFaultHookTarget), f"Fault hook {command.request.request_id} names no cell"
+    return f"{base_url}/api/v1/cells/{target.cell_id}/fault-hook"
