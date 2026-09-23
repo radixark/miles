@@ -1,11 +1,4 @@
-"""Qwen3.8-Flash-Next triton kernels vs their torch references (1 GPU).
-
-The references are the sglang-parity-verified torch implementations the
-production triton kernels replaced: grouped RMSNorm + hyper-connection
-mix/inject/combine, the PLE gate+conv chain, sparse attention over explicit
-index lists, and the n-gram hash. Everything runs fwd + bwd and compares
-against autograd through the reference.
-"""
+"""Qwen3.8-Flash-Next triton kernels must match their torch references, forward and backward."""
 
 from tests.ci.ci_register import register_cuda_ci
 
@@ -22,8 +15,6 @@ from miles_plugins.models.qwen3_8_next.ops.kernel.hc_triton import hc_combine_tr
 from miles_plugins.models.qwen3_8_next.ops.kernel.ple_triton import ple_gate_conv_triton
 from miles_plugins.models.qwen3_8_next.ops.kernel.qsa_sparse_attn import qsa_sparse_attention_triton
 from miles_plugins.models.qwen3_8_next.ops.ple import ngram_hash_ids, shift_right_ignore_eos
-
-# ---- torch references ----
 
 
 def grouped_gemma_rmsnorm(x: Tensor, weight: Tensor, n: int, eps: float) -> Tensor:
@@ -108,8 +99,6 @@ def rel_err(a, b):
     return ((a - b).abs().max() / b.abs().max().clamp_min(1e-6)).item()
 
 
-# ---- n-gram hash ----
-
 NGRAM_SIZE, HEADS_PER_NGRAM = 3, 8
 EOS = 248044
 VOCAB = 248320
@@ -191,8 +180,6 @@ def test_ngram_hash_matches_sglang(eos_frac):
     assert torch.equal(mine, ref), "hash ids diverge from sglang fused kernel"
 
 
-# ---- hyper-connection ----
-
 HC_SHAPES = [(7, 64, 4, 16), (128, 2560, 4, 320)]
 HC_DTYPES = [(torch.float32, 2e-5, 1e-5), (torch.bfloat16, 3e-2, 1e-2)]
 
@@ -272,8 +259,6 @@ def test_hc_mix_inject_3d_leading_shape():
     assert m3.shape == (17, 2, 64) and hp3.shape == (17, 2, 4)
 
 
-# ---- PLE gate + conv ----
-
 # fp32 tol is looser than HC/QSA: d(gate)/d(score) ~ 1/(2*sqrt(|s|)) blows up
 # toward the 1e-6 clamp knee and amplifies summation-order differences.
 PLE_CASES = [
@@ -317,8 +302,6 @@ def test_ple_gate_conv(T, C, n, segs, dtype, tol):
         assert err < tol, f"{name}: {err:.2e} > {tol}"
 
 
-# ---- QSA sparse attention ----
-
 QSA_CASES = [
     (128, 128, 4, 2, 64, 32, torch.float32),
     (257, 257, 6, 2, 128, 64, torch.float32),
@@ -333,9 +316,7 @@ def test_qsa_sparse_attention(T, S, Hq, Hkv, D, K, dtype):
     q = torch.randn(T, Hq, D, device="cuda", dtype=dtype, generator=g, requires_grad=True)
     k = torch.randn(S, Hkv, D, device="cuda", dtype=dtype, generator=g, requires_grad=True)
     v = torch.randn(S, Hkv, D, device="cuda", dtype=dtype, generator=g, requires_grad=True)
-    # Unique indices per row: production selections are unique by construction,
-    # and the kernel is list-semantics (a duplicate would be counted twice,
-    # which the mask-based reference cannot represent).
+    # unique per row: the kernel counts a duplicate twice, the mask-based reference cannot
     idx = torch.rand(T, S, device="cuda", generator=g).topk(K, dim=-1).indices.to(torch.int32)
     keep = torch.rand(T, K, device="cuda", generator=g) > 0.3
     keep[:, 0] = True

@@ -1,17 +1,4 @@
-"""QSA indexer parity between a packed (thd) batch and one-sequence-at-a-time.
-
-sglang scores one request at a time, so its compressed-block grid always starts at
-that request's token 0. Training packs several sequences into one micro-batch, and
-the indexer's positions restart per sequence while the block grid used to be global
-over the whole buffer -- so every sequence after the first scored the blocks at the
-front of the buffer, had them clamped away by the caller, and ended up attending to
-nothing but its own tail. It cost 1.5-4.8 nats of train/rollout logprob gap on every
-such sample (position 0 in the micro-batch was always fine, which is what made it
-look like a "short sample" problem).
-
-These tests pin the packed path to the per-sequence result, with a boundary that is
-deliberately NOT a multiple of the compress ratio.
-"""
+"""A packed (thd) QSA indexer batch must score each sequence as if it ran alone."""
 
 import pytest
 
@@ -158,9 +145,7 @@ def test_selection_equals_single_sequence_runs(lens):
             shifted = torch.where(alone >= 0, alone + lo, alone)
             got = packed[lo : lo + length]
 
-            # The returned width is min(block_topk, num_blocks) * ratio, so a sequence
-            # scored alone can come back narrower than the same sequence inside a pack.
-            # What has to match is the set of key tokens each query may look at.
+            # a sequence scored alone can come back narrower, so compare token sets
             for row in range(length):
                 got_set = {int(t) for t in got[row].tolist() if t >= 0}
                 want_set = {int(t) for t in shifted[row].tolist() if t >= 0}

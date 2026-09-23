@@ -1,16 +1,4 @@
-"""Tensor-core QSA attention: same answer as the gather kernel, orders of magnitude faster.
-
-The gather kernel materialises a ``[BQ, BK, D]`` tile per step and reduces it with ALU
-math because each query has its own key set; at the production shape (T=25k, 12 q-heads,
-D=256, budget 2048) that measured 2.5 s forward and 13.9 s forward+backward per layer,
-which was ~95% of a training micro-batch. The replacement walks key tiles with ``tl.dot``
-and masks each (query, key) pair against a per-sequence block bitmap: 23 ms / 118 ms for
-the same numbers.
-
-These tests pin the equivalence, including the packed case with a sequence boundary that
-is not a multiple of the compress ratio -- the case where a global block grid would mix
-one sequence's blocks into another's.
-"""
+"""The tensor-core QSA kernel must match the gather kernel, including off-grid packed boundaries."""
 
 import pytest
 
