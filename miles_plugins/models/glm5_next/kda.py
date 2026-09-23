@@ -12,7 +12,7 @@ except ImportError:
     chunk_kda = None
     fused_kda_gate = None
 
-from miles.backends.training_utils.cp_utils import build_gdn_cp_context
+from miles_plugins.models.cp_utils import build_gdn_cp_context
 from miles_plugins.models.hf_attention import HuggingfaceAttention
 
 
