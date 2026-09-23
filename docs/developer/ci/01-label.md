@@ -13,6 +13,7 @@ A label is a GitHub PR label that changes what CI runs or how it fails. Three ki
 | Scope label | `run-ci-all` | run every enabled tag |
 | Behavior label | `bypass-fastfail` | opt out of fast-fail; one run surfaces every failure |
 | Behavior label | `rebuild-ci-image` | force a rebuild when selected CUDA tests need an eligible PR image; does not select tests and is removed once consumed (see [Docker build](/developer/ci/02-docker-build)) |
+| Opt-in label | `run-ci` (or any `run-ci*` label) | lets a PR whose base is not the default branch run `PR Test` (see [below](#labels-opt-non-main-prs-into-ci)) |
 
 Only domain labels are declared in `labels=[...]`; scope and behavior labels are workflow inputs resolved by `tests/ci/ci_policy.py`. The separate `nightly=True` registration field is a cadence gate described below.
 
@@ -73,7 +74,7 @@ Unrecognized comments exit after trusted parsing with capability `none`; they do
 
 The gateway controls only the delegated comment path; it does not restrict users' existing GitHub UI/API label permissions and does not offer commands that add `run-ci-all`, `nightly`, or an arbitrary label absent from the policy.
 
-Post `/clear-labels` as the entire comment to remove every current label whose name starts with `run-ci` or `run-on-`, plus `nightly` and `bypass-fastfail`. All other PR labels are preserved. This stops stale CI scope, dispatch, cadence, fast-fail, and fork-approval choices from carrying into later pushes. It neither suppresses the ordinary always-on CI triggered by `synchronize` nor cancels a run that has already started.
+Post `/clear-labels` as the entire comment to remove every current label whose name starts with `run-ci` or `run-on-`, plus `nightly` and `bypass-fastfail`. All other PR labels are preserved. This stops stale CI scope, dispatch, cadence, fast-fail, and fork-approval choices from carrying into later pushes. On a PR based on the default branch it does not suppress the ordinary CI triggered by `synchronize`; on a PR based on another branch, later pushes stop starting `PR Test`. It never cancels a run that has already started.
 
 Post `/rerun-failed-ci` as the entire comment to request failed-job reruns for the current open PR head. The handler considers only the latest run of each allowlisted PR workflow: `pre-commit.yml`, `pr-test.yml`, and `pr-test-rocm.yml`. A latest run is rerun only when it belongs to this PR and exact head SHA and has completed with conclusion `failure`.
 
@@ -192,3 +193,7 @@ Like the scope labels, `bypass-fastfail` is a workflow-only input and is not in 
 ## Labels double as fork-PR CI approval
 
 GitHub holds a first-time contributor's fork-PR CI at "Approve and run" after every push. Any maintainer-applied or comment-gateway-authorized `run-ci*` label is already that human decision, so the `Approve Trusted CI` workflow (on `pull_request_target`) auto-approves those held runs while such a label is present. Removing the labels restores manual approval. This automation covers the first-time-contributor hold only; GitHub may separately hold a workflow it identifies as potentially malicious, and that hold requires approval through an authenticated web session.
+
+## Labels opt non-main PRs into CI
+
+`PR Test` starts automatically only on PRs based on the default branch. A PR based on another branch, typically a stacked PR, runs it only while it carries a `run-ci*` label; the bare `run-ci` label opts in without selecting extra tests, and adding a label starts a run. Labeling the top PR of a stack tests the whole stack once. Retargeting a PR to `main` does not start a run; push or add a label to run it there.

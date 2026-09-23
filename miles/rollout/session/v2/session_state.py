@@ -51,6 +51,7 @@ class SessionStateV2:
     tree: SessionTree = field(default_factory=SessionTree)
     evaluation: bool = False
     sampling_defaults: dict[str, Any] = field(default_factory=dict)
+    sampling_support_replay: bool = False
 
     def latest(self) -> TrajectoryNode | None:
         """The most recently committed generation (always a leaf), or ``None``
@@ -107,6 +108,7 @@ def prepare_token_ids_and_request_args(
         turn_args=parent.turn_args if parent is not None else None,
         evaluation=state.evaluation,
         sampling_defaults=state.sampling_defaults,
+        sampling_support_replay=state.sampling_support_replay,
     )
     prepared.body["input_ids"] = _render_token_ids(
         parent, request_messages, template_args=prepared.template_args, tito_tokenizer=tito_tokenizer
@@ -216,10 +218,18 @@ class SessionRegistryV2(SessionRegistry):
 
     sessions: dict[str, SessionStateV2]
 
-    def create_session(self, *, evaluation: bool = False, sampling_defaults: dict[str, Any] | None = None) -> str:
+    def create_session(
+        self,
+        *,
+        evaluation: bool = False,
+        sampling_defaults: dict[str, Any] | None = None,
+        sampling_support_replay: bool = False,
+    ) -> str:
         session_id = uuid.uuid4().hex
         self.sessions[session_id] = SessionStateV2(
-            evaluation=evaluation, sampling_defaults=dict(sampling_defaults or {})
+            evaluation=evaluation,
+            sampling_defaults=dict(sampling_defaults or {}),
+            sampling_support_replay=sampling_support_replay,
         )
         return session_id
 

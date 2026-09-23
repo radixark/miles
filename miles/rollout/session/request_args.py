@@ -15,6 +15,7 @@ from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any
 
+from miles.rollout.generate_utils.sampling_mask import validate_sampling_support_request
 from miles.rollout.session.config import SessionServerConfig
 from miles.rollout.session.errors import MessageValidationError
 from miles.utils.chat_template_utils.tito_tokenizer import TITOTokenizer, extract_template_args
@@ -56,6 +57,7 @@ def prepare_chat_request(
     turn_args: dict[str, Any] | None,
     evaluation: bool = False,
     sampling_defaults: dict[str, Any] | None = None,
+    sampling_support_replay: bool = False,
 ) -> PreparedChatRequest:
     """Resolve an owned request using server rules, session defaults, model rules, and prior turn args.
 
@@ -73,6 +75,19 @@ def prepare_chat_request(
         # Model rules must not re-enable training replay outputs for evaluation.
         request_args.update(return_sampling_mask=False, return_routed_experts=False, return_indexer_topk=False)
         request_args.pop("routed_experts_start_len", None)
+    else:
+        try:
+            return_sampling_mask = validate_sampling_support_request(
+                request_args,
+                replay_enabled=sampling_support_replay,
+                expected_temperature=(sampling_defaults or {}).get("temperature"),
+            )
+        except ValueError as e:
+            raise MessageValidationError(str(e)) from e
+        if return_sampling_mask:
+            request_args["return_sampling_mask"] = True
+        else:
+            request_args.pop("return_sampling_mask", None)
     return PreparedChatRequest(
         body=request_args, template_args=extract_template_args(request_args), client_stream=client_stream
     )
@@ -105,6 +120,7 @@ def resolve_request_args_by_config(
     # TITO needs these on every request: agent-side overrides would break token accumulation.
     request_args["logprobs"] = True
     request_args["return_meta_info"] = True
+
     # Must be False so stop-token text is trimmed from assistant content;
     # token IDs still come from logprobs below.
     request_args["no_stop_trim"] = False
