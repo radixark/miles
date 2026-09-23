@@ -1,6 +1,10 @@
 import os
 import re
+import select
+import signal
 import sys
+import time
+from contextlib import ExitStack
 from enum import StrEnum
 from pathlib import Path
 from typing import Literal
@@ -38,7 +42,10 @@ class ProcessSignalReceipt(FrozenStrictBaseModel):
     signalled_pids: list[int] = Field(min_length=1)
 
     def validate_for(self, *, request_id: str, target: ProcessTarget, operation: ProcessSignal) -> None:
-        raise NotImplementedError
+        assert self.request_id == request_id, "Process receipt belongs to another request"
+        assert self.target == target, "Process receipt belongs to another incarnation"
+        assert self.operation == operation, "Process receipt describes another operation"
+        assert self.signalled_pids == [process.pid for process in target.processes], "Process receipt is incomplete"
 
 
 def observe_processes(*, pod_uid: str, pattern: str) -> ProcessTarget:
@@ -64,6 +71,57 @@ def observe_processes(*, pod_uid: str, pattern: str) -> ProcessTarget:
         pattern=pattern,
         processes=sorted(processes, key=lambda process: process.pid),
     )
+
+
+def signal_observed_processes(*, target: ProcessTarget, operation: ProcessSignal) -> list[int]:
+    _assert_container_unchanged(target)
+    with ExitStack() as resources:
+        handles = _open_observed_handles(target=target, operation=operation, resources=resources)
+        for fd in handles:
+            if select.select([fd], [], [], 0)[0]:
+                raise ProcessLookupError("An observed process exited before injection")
+        for process, fd in zip(target.processes, handles, strict=True):
+            signal.pidfd_send_signal(fd, signal.SIGKILL)
+            _log(f"Sent SIGKILL to pid {process.pid}")
+
+        pids = [process.pid for process in target.processes]
+        _log(f"Confirming pids {pids} exited")
+        _confirm_processes_exited(handles)
+        _log(f"Confirmed pids {pids} exited")
+    return [process.pid for process in target.processes]
+
+
+def _assert_container_unchanged(target: ProcessTarget) -> None:
+    assert os.environ[POD_UID_ENV_VAR] == target.pod_uid, "Pod identity changed"
+    assert Path("/proc/sys/kernel/random/boot_id").read_text().strip() == target.boot_id, "Host rebooted"
+    assert os.readlink("/proc/self/ns/pid") == target.pid_namespace, "PID namespace changed"
+    assert _start_ticks(1) == target.init_start_ticks, "Container restarted"
+    _log(f"Container identity unchanged for pod {target.pod_uid}")
+
+
+def _open_observed_handles(*, target: ProcessTarget, operation: ProcessSignal, resources: ExitStack) -> list[int]:
+    matcher = re.compile(target.pattern)
+    handles: list[int] = []
+    for process in target.processes:
+        fd = os.pidfd_open(process.pid)
+        resources.callback(os.close, fd)
+        assert _start_ticks(process.pid) == process.start_ticks, "Process identity changed"
+        command = (Path("/proc") / str(process.pid) / "cmdline").read_bytes().replace(b"\0", b" ")
+        assert matcher.search(command.decode(errors="replace")), "Process command changed"
+        handles.append(fd)
+        _log(f"Opened pidfd for pid {process.pid}")
+    return handles
+
+
+def _confirm_processes_exited(handles: list[int]) -> None:
+    pending = set(handles)
+    deadline = time.monotonic() + 5.0
+    while pending:
+        readable, _, _ = select.select(list(pending), [], [], max(0.0, deadline - time.monotonic()))
+        if not readable:
+            _log(f"Timed out waiting for {len(pending)} signalled processes to exit")
+            raise TimeoutError("Signalled processes did not exit within five seconds")
+        pending.difference_update(readable)
 
 
 def _start_ticks(pid: int) -> int:
