@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 import logging
 
+from miles.utils.audit_utils.event_logger.models import FaultHookRecord
+from miles.utils.test_utils.fault_hooks import FaultHookCommand
 from miles.utils.test_utils.fault_injector import FailureMode
 from miles.utils.workers.cell_operations.base import BaseCellOperations, FaultTarget, StaleFaultTargetError
 from miles.utils.workers.k8s_client import core_v1_api
@@ -15,6 +17,7 @@ from miles.utils.workers.worker_provider.utils import build_rpc_handle_of_worker
 logger = logging.getLogger(__name__)
 
 INJECT_FAULT_TIMEOUT_SECONDS = 60.0
+CONTROL_FAULT_HOOK_TIMEOUT_SECONDS = 10.0
 
 
 class KubernetesCellOperations(BaseCellOperations):
@@ -67,6 +70,20 @@ class KubernetesCellOperations(BaseCellOperations):
             boot_uuid=health.boot_uuid,
             pod_uid=health.pod_uid,
         )
+
+    async def control_fault_hook(self, *, target: FaultTarget, command: FaultHookCommand) -> FaultHookRecord:
+        await self._ensure_watching()
+
+        if target != await self.observe_fault_target(cell_id=target.cell_id, sub_index=target.sub_index):
+            raise StaleFaultTargetError(f"Cell {target.cell_id} no longer matches the observed fault target")
+        (infos,) = self._provider.get_worker_infos(cell_ids=[target.cell_id])
+        handle = build_rpc_handle_of_worker_info(infos[target.sub_index], expected_boot_uuid=target.boot_uuid)
+        try:
+            return await asyncio.wait_for(
+                handle.control_fault_hook(command=command), timeout=CONTROL_FAULT_HOOK_TIMEOUT_SECONDS
+            )
+        except ServerRestartedError as error:
+            raise StaleFaultTargetError("Fault hook worker changed its boot identity") from error
 
     async def inject_fault(
         self,

@@ -4,7 +4,9 @@ import abc
 
 from pydantic import Field
 
+from miles.utils.audit_utils.event_logger.models import FaultHookRecord
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
+from miles.utils.test_utils.fault_hooks import FaultHookCommand
 from miles.utils.test_utils.fault_injector import FailureMode
 from miles.utils.workers.worker_provider.base import CellInfo
 
@@ -43,3 +45,6 @@ class BaseCellOperations(abc.ABC):
 
     @abc.abstractmethod
     async def observe_fault_target(self, *, cell_id: str, sub_index: int) -> FaultTarget: ...
+
+    @abc.abstractmethod
+    async def control_fault_hook(self, *, target: FaultTarget, command: FaultHookCommand) -> FaultHookRecord: ...
