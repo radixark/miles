@@ -1,14 +1,7 @@
 from model_args_utils import moe_layer_freq
 
-FIRST_K_DENSE_REPLACE = 0
-
 
 def model_args(nlayers: int = 48) -> str:
-    """Qwen3.8-Flash-Next: 180B total, ~7.4B active. Shapes from the released
-    config.json; the hyper-connection / PLE / QSA fields have no Megatron CLI
-    flags and are derived from the checkpoint by the spec instead
-    (miles_plugins/models/qwen3_8_next/qwen3_8_next.py). --mtp-num-layers is
-    omitted: MTP tensors are not yet mapped."""
     return (
         "--spec miles_plugins.models.qwen3_8_next.qwen3_8_next get_qwen3_8_next_spec "
         "--disable-bias-linear "
@@ -34,7 +27,7 @@ def model_args(nlayers: int = 48) -> str:
         "--moe-router-score-function softmax "
         "--moe-token-dispatcher-type alltoall "
         "--moe-router-topk 10 "
-        f"--moe-layer-freq {moe_layer_freq(nlayers=nlayers, first_k_dense_replace=FIRST_K_DENSE_REPLACE)} "
+        f"--moe-layer-freq {moe_layer_freq(nlayers=nlayers, first_k_dense_replace=0)} "
         "--num-experts 512 "
         "--moe-grouped-gemm "
         "--moe-token-drop-policy probs "

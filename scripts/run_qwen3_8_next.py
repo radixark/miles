@@ -1,15 +1,7 @@
-"""Qwen3.8-Flash-Next (Qwen4Exp) DAPO training.
+"""Qwen3.8-Flash-Next DAPO training on an already-running ray cluster (MILES_SCRIPT_EXTERNAL_RAY=1).
 
-Assumes an already-running ray cluster (MILES_SCRIPT_EXTERNAL_RAY=1) and a
-converted torch_dist reference checkpoint.
-
-Args:
-    model-name: "Qwen3.8-Flash-Next" (48-layer, 8 nodes x 4 GPUs, TP2 PP8 EP4)
-        or "Qwen3.8-Flash-Next-4layer" (smoke slice, 1 node x 4 GPUs,
-        TP2 PP2 EP2).
-
-Usage (inside the head-node container):
-    python scripts/run_qwen3_8_next.py train --num-rollout 5
+python scripts/run_qwen3_8_next.py train --num-nodes 8 --num-gpus-per-node 4
+python scripts/run_qwen3_8_next.py train --model-name Qwen3.8-Flash-Next-4layer --num-nodes 1 --num-gpus-per-node 8
 """
 
 import os
@@ -33,16 +25,17 @@ class ScriptArgs(U.ExecuteTrainConfig):
     model_name: Literal["Qwen3.8-Flash-Next", "Qwen3.8-Flash-Next-4layer"] = "Qwen3.8-Flash-Next"
     num_nodes: int = 8
     num_gpus_per_node: int = 4
-    run_id: str = "qwen38next-dapo"
+    run_id: str = U.create_run_id()
     hf_checkpoint: str | None = None
     model_dir: str = "/root/models"
     ckpt_dir: str = "/root/ckpt"
     data_dir: str = "/root/datasets"
     save_dir: str = "/root/shared_data"
     megatron_path: str = "/root/Megatron-LM"
+    train_offload_dir: str = "/root/train_offload"
     num_rollout: int = 5
     rollout_max_response_len: int = 4096
-    check_weight_update: bool = True
+    check_weight_update_equal: bool = True
     enable_r3: bool = False
     skip_saving: bool = True
     extra_args: str = ""
@@ -53,13 +46,6 @@ class ScriptArgs(U.ExecuteTrainConfig):
 
 
 def _train(args: ScriptArgs):
-    shape = (args.num_nodes, args.num_gpus_per_node)
-    assert shape in (
-        (8, 4),
-        (1, 4),
-        (1, 8),
-    ), "the parallel configs below are shaped for 8x4 (full) or 1x4 / 1x8 (4layer)"
-
     megatron_model_type = _MODEL_REGISTRY[args.model_name]
 
     ckpt_args = (
@@ -89,26 +75,24 @@ def _train(args: ScriptArgs):
         '--apply-chat-template-kwargs \'{"thinking_mode":"thinking"}\' '
     )
 
-    if shape == (8, 4):
-        parallel_args = (
-            "--tensor-model-parallel-size 2 "
-            "--sequence-parallel "
-            "--pipeline-model-parallel-size 8 "
-            "--context-parallel-size 1 "
-            "--expert-model-parallel-size 4 "
-            "--expert-tensor-parallel-size 1 "
-        )
-        engine_args = "--rollout-num-gpus-per-engine 8 " "--sglang-tp-size 8 " "--sglang-ep-size 8 "
+    num_gpus = args.num_nodes * args.num_gpus_per_node
+    if args.model_name == "Qwen3.8-Flash-Next":
+        assert num_gpus == 32, f"the full-model layout is validated on 32 GPUs, got {num_gpus}"
+        pipeline_parallel_size, engine_gpus = 8, 8
     else:
-        parallel_args = (
-            "--tensor-model-parallel-size 2 "
-            "--sequence-parallel "
-            "--pipeline-model-parallel-size 2 "
-            "--context-parallel-size 1 "
-            f"--expert-model-parallel-size {2 if shape == (1, 4) else 4} "
-            "--expert-tensor-parallel-size 1 "
-        )
-        engine_args = "--rollout-num-gpus-per-engine 4 " "--sglang-tp-size 4 " "--sglang-ep-size 4 "
+        assert num_gpus in (4, 8), f"the 4-layer layout is validated on 4 or 8 GPUs, got {num_gpus}"
+        pipeline_parallel_size, engine_gpus = 2, 4
+    parallel_args = (
+        "--tensor-model-parallel-size 2 "
+        "--sequence-parallel "
+        f"--pipeline-model-parallel-size {pipeline_parallel_size} "
+        "--context-parallel-size 1 "
+        f"--expert-model-parallel-size {num_gpus // pipeline_parallel_size} "
+        "--expert-tensor-parallel-size 1 "
+    )
+    engine_args = (
+        f"--rollout-num-gpus-per-engine {engine_gpus} --sglang-tp-size {engine_gpus} --sglang-ep-size {engine_gpus} "
+    )
 
     perf_args = (
         f"{parallel_args}"
@@ -139,7 +123,6 @@ def _train(args: ScriptArgs):
 
     sglang_args = (
         f"{engine_args}"
-        "--sglang-dp-size 1 "
         "--sglang-linear-attn-prefill-backend flashinfer "
         "--sglang-moe-runner-backend triton "
         "--sglang-chunked-prefill-size 8192 "
@@ -160,7 +143,7 @@ def _train(args: ScriptArgs):
         f"--num-gpus-per-node {args.num_gpus_per_node} "
         "--train-memory-margin-bytes 3221225472 "
         "--offload-train-target disk "
-        "--offload-train-disk-dir /tmp/train_offload "
+        f"--offload-train-disk-dir {args.train_offload_dir} "
         "--sglang-mem-fraction-static 0.7 "
         "--colocate "
         "--model-name qwen4_exp "
@@ -172,7 +155,7 @@ def _train(args: ScriptArgs):
         "--distributed-timeout-minutes 60 "
         "--rollout-health-check-timeout 300 "
     )
-    if args.check_weight_update:
+    if args.check_weight_update_equal:
         misc_args += "--check-weight-update-equal " "--check-weight-update-skip-list visual. ple_embedding. "
     if args.enable_r3:
         misc_args += "--use-rollout-routing-replay "
@@ -184,16 +167,17 @@ def _train(args: ScriptArgs):
     )
 
     extra_env_vars = {
-        "SGLANG_SKIP_CHECKPOINT_LOAD_CHECK": "1",
         "SGLANG_HEALTH_CHECK_TIMEOUT": "120",
         "SGLANG_DISABLE_MULTIMEM_AG": "1",
         "PYTHONPATH": os.environ.get("PYTHONPATH", ""),
-        "QSA_BACKEND": "triton",
-        "PYTHONFAULTHANDLER": "1",
+        # inductor's subprocess compile pool deadlocks under the torch_memory_saver LD_PRELOAD
         "TORCHINDUCTOR_COMPILE_THREADS": "1",
-        "TRITON_CACHE_DIR": "/tmp/triton_cache",
-        "TORCHINDUCTOR_CACHE_DIR": "/tmp/inductor_cache",
     }
+    # ray's runtime_env replaces the actor env; without the JIT cache dirs the kernels recompile every run
+    for cache_var in ("TRITON_CACHE_DIR", "TORCHINDUCTOR_CACHE_DIR"):
+        cache_dir = os.environ.get(cache_var)
+        if cache_dir:
+            extra_env_vars[cache_var] = cache_dir
 
     U.execute_train(
         train_args=train_args,
