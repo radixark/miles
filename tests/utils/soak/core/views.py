@@ -52,6 +52,10 @@ def tail_started_at(events: list[SoakEvent]) -> datetime:
     )
 
 
+def latest_observation(events: list[SoakEvent]) -> SoakObservationEvent | None:
+    return next((event for event in reversed(events) if isinstance(event, SoakObservationEvent)), None)
+
+
 # ================================ sut progress ================================
 
 
