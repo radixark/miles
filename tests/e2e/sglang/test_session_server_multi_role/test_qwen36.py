@@ -25,6 +25,9 @@ CONFIG = ModelConfig(
     # Anthropic tool-call conversion changes raw assistant serialization;
     # keep this endpoint-only formatting mismatch soft while hard gates stay at 0.
     anthropic_assistant_text_threshold=1.0,
+    # One special_token_count sample in ~33 (0.0303) intermittently fails
+    # nightly and passes on rerun; tolerate one per rollout, not two.
+    special_token_count_threshold=0.05,
     anthropic_intermediate_system_expectation="forbidden",
 )
 

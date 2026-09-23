@@ -76,6 +76,7 @@ _ARGS_DEFAULTS = dict(
     # compute_advantages_and_returns
     advantage_estimator="grpo",
     use_rollout_logprobs=False,
+    use_sampling_support_replay=False,
     skip_actor_forward_only=False,
     kl_coef=0.1,
     kl_loss_type="k1",

@@ -90,6 +90,7 @@ class LinearTrajectory:
     turn_args_history: list[dict[str, Any]] = field(default_factory=list)
     evaluation: bool = False
     sampling_defaults: dict[str, Any] = field(default_factory=dict)
+    sampling_support_replay: bool = False
 
     @property
     def turn_args(self) -> dict[str, Any]:
@@ -135,6 +136,7 @@ class LinearTrajectory:
             turn_args=turn_args,
             evaluation=self.evaluation,
             sampling_defaults=self.sampling_defaults,
+            sampling_support_replay=self.sampling_support_replay,
         )
         prepared.body["input_ids"] = self._render_token_ids(
             request_messages,
@@ -382,10 +384,18 @@ class SessionRegistry:
             message_matcher if message_matcher is not None else strict_message_matches
         )
 
-    def create_session(self, *, evaluation: bool = False, sampling_defaults: dict[str, Any] | None = None) -> str:
+    def create_session(
+        self,
+        *,
+        evaluation: bool = False,
+        sampling_defaults: dict[str, Any] | None = None,
+        sampling_support_replay: bool = False,
+    ) -> str:
         session_id = uuid.uuid4().hex
         self.sessions[session_id] = LinearTrajectory(
-            evaluation=evaluation, sampling_defaults=dict(sampling_defaults or {})
+            evaluation=evaluation,
+            sampling_defaults=dict(sampling_defaults or {}),
+            sampling_support_replay=sampling_support_replay,
         )
         return session_id
 
