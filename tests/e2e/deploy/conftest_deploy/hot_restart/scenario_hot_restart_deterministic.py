@@ -29,8 +29,6 @@ from tests.e2e.deploy.conftest_deploy.hot_restart.assert_redone_from_scratch imp
 from tests.e2e.deploy.conftest_deploy.hot_restart.driver import (
     HotRestartDriver,
     ScheduledFreeze,
-    compute_checkpoint_dir,
-    compute_release_of_config,
     driving_hot_restarts,
     relaunch_with_hot_restart,
 )
@@ -43,7 +41,9 @@ from tests.e2e.ft.conftest_ft.app import BASELINE_SIDE, TARGET_SIDE, create_comp
 from tests.e2e.ft.conftest_ft.execution import DATA_DIR, MODEL_DIR
 from tests.e2e.ft.conftest_ft.modes import DENSE_MODEL_HF_REPO, DENSE_MODEL_NAME, DENSE_MODEL_TYPE, FTTestMode
 from tests.utils.deploy.hot_restart.evidence import TRAIN_STEP_METRIC_KEY, HotRestartEvidence
+from tests.utils.soak.core.utils import compute_release_of_config
 from tests.utils.soak.deploy.checkers.takeover_scope import assert_take_overs_replaced_only_script
+from tests.utils.soak.deploy.utils import compute_checkpoint_dir
 
 from miles.utils.audit_utils.event_logger.logger import EVENTS_DIRNAME
 from miles.utils.external_utils import command_utils
@@ -162,9 +162,17 @@ def _config_for_comparison_side(
 # ========================== train argument building ===========================
 
 
-def _build_args(restart_mode: HotRestartMode, mode: FTTestMode, dump_dir: str, enable_dumper: bool = True) -> str:
+def _build_args(
+    restart_mode: HotRestartMode,
+    mode: FTTestMode,
+    dump_dir: str,
+    enable_dumper: bool = True,
+    config: command_utils.ExecuteTrainConfig | None = None,
+) -> str:
     checkpoint_dir = str(compute_checkpoint_dir(dump_dir))
-    script_args = _build_script_args(restart_mode, mode=mode, dump_dir=dump_dir, enable_dumper=enable_dumper)
+    script_args = _build_script_args(
+        restart_mode, mode=mode, dump_dir=dump_dir, enable_dumper=enable_dumper, config=config
+    )
 
     args = without_weight_decay(build_train_args(script_args))
     for flag in (SAVE_FLAG, LOAD_FLAG):
@@ -204,11 +212,15 @@ def _assert_run_saves_before_step_report(train_args: str) -> None:
 
 
 def _build_frozen_args(
-    restart_mode: HotRestartMode, mode: FTTestMode, dump_dir: str, enable_dumper: bool = True
+    restart_mode: HotRestartMode,
+    mode: FTTestMode,
+    dump_dir: str,
+    enable_dumper: bool = True,
+    config: command_utils.ExecuteTrainConfig | None = None,
 ) -> str:
     # TODO ad hoc hack: revert after the args refactor
     args = arm_first_freeze(
-        _build_args(restart_mode, mode, dump_dir, enable_dumper),
+        _build_args(restart_mode, mode, dump_dir, enable_dumper, config),
         side_dump_dir=dump_dir,
         frozen_rollout_id=restart_mode.frozen_rollout_ids[0],
     )
@@ -217,7 +229,12 @@ def _build_frozen_args(
 
 
 def _build_script_args(
-    restart_mode: HotRestartMode, *, mode: FTTestMode, dump_dir: str, enable_dumper: bool
+    restart_mode: HotRestartMode,
+    *,
+    mode: FTTestMode,
+    dump_dir: str,
+    enable_dumper: bool,
+    config: command_utils.ExecuteTrainConfig | None = None,
 ) -> ScriptArgs:
     assert mode.has_real_rollout, (
         f"{restart_mode.test_name} replaces the rollout executor of a live run, and mode {mode.model_name} has no "
@@ -226,7 +243,7 @@ def _build_script_args(
     assert_freeze_schedule_leaves_redo_window(restart_mode)
 
     return build_script_args(
-        command_utils.default_config(),
+        config if config is not None else command_utils.default_config(),
         script_args_class=ScriptArgs,
         model_name=mode.model_name,
         megatron_model_type=mode.megatron_model_type,
