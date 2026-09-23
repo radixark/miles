@@ -88,6 +88,10 @@ def is_normal_step(step: TrainGroupStepEndEvent) -> bool:
 # ================================== injections ================================
 
 
+def compute_num_injections(events: list[SoakEvent], *, kind: str | None = None) -> int:
+    return len(_applied_actions(events, kind=kind))
+
+
 def compute_successful_form_names(events: list[SoakEvent], *, kind: str) -> set[str]:
     return {action.requested.request.form_name for action in _applied_actions(events, kind=kind)}
 
