@@ -10,9 +10,6 @@ from miles.utils.audit_utils.event_logger import checkpoint as event_logger_chec
 from miles.utils.audit_utils.process_identity import SimpleProcessIdentity
 from miles.utils.debug_utils.periodic_py_spy import maybe_start_periodic_pyspy_dump
 from miles.utils.logging_utils import configure_logger
-from miles.utils.test_utils.fault_injector.actions.base import FaultHookResources
-from miles.utils.test_utils.fault_injector.controller import fault_hook_controller
-from miles.utils.test_utils.fault_injector.models import FaultHookOwner
 from miles.utils.tracking_utils.tracking import finish_tracking, init_tracking
 
 
@@ -25,5 +22,4 @@ def init_orchestration_script(args: Namespace, *, disposer: Disposer) -> ActorHa
     worker_manager = launch_worker_manager(args)
     disposer.add(partial(shutdown_worker_manager, worker_manager))
     object_store.init_instance(args, contribute_segment=False)
-    fault_hook_controller.configure(resources=FaultHookResources(args=args), owner=FaultHookOwner.ORCHESTRATOR)
     return worker_manager

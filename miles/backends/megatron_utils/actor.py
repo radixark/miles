@@ -40,9 +40,6 @@ from miles.utils.object_store import StoreObjectRef, ValueSpec
 from miles.utils.processing_utils import load_tokenizer
 from miles.utils.reloadable_process_group import destroy_process_groups, monkey_patch_torch_dist, reload_process_groups
 from miles.utils.replay_base import all_replay_managers, routing_replay_manager
-from miles.utils.test_utils.fault_injector.actions.base import FaultHookContext, FaultHookResources
-from miles.utils.test_utils.fault_injector.controller import fault_hook_controller
-from miles.utils.test_utils.fault_injector.models import FaultHookOwner
 from miles.utils.test_utils.ft_test_actions import FTTestActionActorExecutor
 from miles.utils.timer import Timer, inverse_timer, timer
 from miles.utils.tracking_utils.structured_log import with_logs
@@ -139,12 +136,6 @@ class MegatronTrainRayActor(TrainRayActor):
         trainer_pool_id = compute_trainer_pool_id(args.trainer_id)
         self._ft_test_action_executor = FTTestActionActorExecutor.from_args(
             args,
-            cell_id=compute_cell_id(pool_id=trainer_pool_id, cell_index=indep_dp_info.cell_index),
-            rank=self._rank,
-        )
-        fault_hook_controller.configure(
-            resources=FaultHookResources(args=args),
-            owner=FaultHookOwner.TRAINER_ACTOR,
             cell_id=compute_cell_id(pool_id=trainer_pool_id, cell_index=indep_dp_info.cell_index),
             rank=self._rank,
         )
@@ -934,8 +925,7 @@ class MegatronTrainRayActor(TrainRayActor):
         with torch_memory_saver.disable() if self.args.offload_train else nullcontext():
             print_memory("before update_weights")
             weight_version = self._get_actor_weight_version()
-            with fault_hook_controller.with_context(FaultHookContext(weight_version=weight_version)):
-                self.weight_updater.update_weights(weight_version=weight_version)
+            self.weight_updater.update_weights(weight_version=weight_version)
             print_memory("after update_weights")
 
             cell_updaters = self.weight_updater.protocol.cell_updaters_of_cell_id

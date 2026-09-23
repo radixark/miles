@@ -39,8 +39,6 @@ from miles.utils.audit_utils.witness.module import witness_dump_and_clear_stale
 from miles.utils.dumper_utils import DumperMegatronUtil, DumperPhase
 from miles.utils.memory_utils import clear_memory
 from miles.utils.multi_lora import is_multi_lora_enabled
-from miles.utils.test_utils.fault_injector.controller import reach_fault_hook
-from miles.utils.test_utils.fault_injector.models import FaultHookName
 from miles.utils.test_utils.ft_test_actions import FTTestActionActorExecutor
 from miles.utils.tracking_utils.structured_log import log_structured
 from miles.utils.types import SampleLineage
@@ -579,7 +577,6 @@ def train_one_step(
 
         if ft_test_action_executor is not None:
             ft_test_action_executor.maybe_crash(rollout_id=rollout_id, attempt=attempt)
-        reach_fault_hook(FaultHookName.TRAINER_STEP_BEFORE_ALLREDUCE, rollout_id=rollout_id, attempt=attempt)
 
         metric_num_rollouts = None if args.calculate_per_token_loss else num_rollouts
         ok, indep_dp_loss_reduced = allreduce_grads_and_losses_across_replicas(
