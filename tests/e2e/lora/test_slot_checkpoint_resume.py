@@ -1,13 +1,16 @@
 """A slot checkpoint preserves FP32 Adam state and resumes into another slot exactly."""
 
 import argparse
+import multiprocessing
 import os
 import subprocess
 import sys
 import tempfile
 from argparse import Namespace
 from datetime import timedelta
+from functools import partial
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 import torch
@@ -22,7 +25,8 @@ from megatron.core.transformer.transformer_config import TransformerConfig
 from tests.ci.ci_register import register_cuda_ci
 from torch.utils._pytree import tree_flatten, tree_map
 
-from miles.backends.megatron_utils.lora.checkpoint import load_slot, save_slot
+from miles.backends.megatron_utils.lora import checkpoint as slot_checkpoint
+from miles.backends.megatron_utils.lora.checkpoint import AsyncSlotSave, load_slot, save_slot
 from miles.backends.megatron_utils.lora.optimizer import SlotOptimizer, adapter_slot_parameters, step_slot_optimizers
 from miles.utils.distributed_utils import init_gloo_group
 
@@ -74,6 +78,45 @@ def apply_step(model, optimizer, step):
         param.main_grad.copy_(torch.sin(gradient + index + step) * 0.1)
     outcome = step_slot_optimizers({optimizer.slot: optimizer}, {optimizer.slot: ADAM})
     assert outcome[optimizer.slot]["grad_norm"] > 0
+
+
+def gated_write(gate, write, *args, **kwargs):
+    assert gate.wait(timeout=60), "training did not release the checkpoint writer"
+    return write(*args, **kwargs)
+
+
+def check_async_save(model, source, other, checkpoint_dir):
+    saved = snapshot(model, source)
+    other_before = snapshot(model, other)
+    gate = multiprocessing.get_context("fork").Event()
+    save = slot_checkpoint.dist_checkpointing.save
+
+    def gated_save(*args, **kwargs):
+        request = save(*args, **kwargs)
+        if request.async_fn is not None:
+            request = request._replace(async_fn=partial(gated_write, gate, request.async_fn))
+        return request
+
+    with patch.object(slot_checkpoint.dist_checkpointing, "save", gated_save):
+        pending = AsyncSlotSave(model, source, str(checkpoint_dir), None, async_strategy="nvrx")
+    try:
+        assert pending.poll() is None
+        assert not checkpoint_dir.exists(), "an incomplete checkpoint must not be addressable"
+        apply_step(model, other, 5)
+        with pytest.raises(AssertionError):
+            assert_same_state(snapshot(model, other), other_before)
+        # Mutating even the saved slot proves staging detached the writer from live tensors.
+        apply_step(model, source, 5)
+        assert pending.poll() is None, "the writer must still be held while optimizer steps run"
+        print(f"rank={dist.get_rank()} both slots stepped while checkpoint writer was paused", flush=True)
+    finally:
+        gate.set()
+    assert pending.poll(blocking=True) == {}
+    other_after = snapshot(model, other)
+    load_slot(model, source, str(checkpoint_dir), load_optimizer=True)
+    assert_same_state(snapshot(model, source), saved)
+    assert_same_state(snapshot(model, other), other_after)
+    print(f"rank={dist.get_rank()} async snapshot restore is exact and leaves the other slot unchanged", flush=True)
 
 
 def run_worker(checkpoint_dir):
@@ -151,6 +194,7 @@ def run_worker(checkpoint_dir):
     with pytest.raises(AssertionError):
         assert_same_state(snapshot(model, resumed), uninterrupted)
     print(f"rank={dist.get_rank()} negative control: weights-only restart diverges", flush=True)
+    check_async_save(model, source, resumed, checkpoint_dir.parent / "async-checkpoint")
     dist.barrier()
     parallel_state.destroy_model_parallel()
     dist.destroy_process_group()

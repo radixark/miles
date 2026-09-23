@@ -104,8 +104,13 @@ class MilesBackend:
         worker_results = await self.trainer.optim_step(adam_params_by_slot=adam_params_by_slot)
         return worker_results[0]
 
-    async def save_slot(self, slot: int, path: str, metadata: dict | None = None) -> dict | None:
-        return _slot_failure(await self.trainer.save_slot(slot=slot, path=path, metadata=metadata))
+    async def start_slot_save(self, slot: int, path: str, metadata: dict | None = None) -> dict | None:
+        return _slot_failure(await self.trainer.start_slot_save(slot=slot, path=path, metadata=metadata))
+
+    async def poll_slot_save(self) -> dict | None:
+        outcomes = await self.trainer.poll_slot_save()
+        assert all(outcome == outcomes[0] for outcome in outcomes), "checkpoint completion differs across ranks"
+        return outcomes[0]
 
     async def export_slot(
         self, slot: int, rank: int, alpha: float, path: str, metadata: dict | None = None

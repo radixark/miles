@@ -15,7 +15,7 @@ from tests.fast.tinker.harness import (
     model_payload,
 )
 
-from miles.tinker.core.future import DONE, FAILED
+from miles.tinker.core.future import DONE, FAILED, PENDING
 from miles.tinker.core.types import OwnershipError, UserInputError
 from miles.tinker.core.utils import resolve_checkpoint_dir, resolve_sampler_checkpoint
 
@@ -261,7 +261,7 @@ async def test_traversal_checkpoint_names_are_rejected(service, name):
     future = await await_settled(service, "tenant", request_id)
     assert (future.state, future.error_category) == (FAILED, "user")
     assert "invalid checkpoint path segment" in future.error
-    assert not service.backend.named("save_slot"), "nothing may touch the disk for a rejected name"
+    assert not service.backend.named("start_slot_save"), "nothing may touch the disk for a rejected name"
 
 
 async def test_traversal_sampler_paths_are_rejected(service):
@@ -848,3 +848,56 @@ async def test_dispatcher_shutdown_stops_model_creation_and_sampling(tmp_path, m
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
+
+
+async def test_checkpoint_write_releases_other_models_but_keeps_its_own_barrier(service):
+    a = await created_model(service)
+    b = await created_model(service, tenant="other")
+    service.backend.save_ready = False
+    save_a = service.submit("tenant", "save_state", {"model_id": a, "seq_id": 1, "name": "a", "overwrite": False})
+    step_a = service.submit("tenant", "optim_step", {"model_id": a, "seq_id": 2, "adam_params": ADAM})
+    fb_b = service.submit("other", "forward_backward", fb_payload(b, 1, [datum()]))
+    step_b = service.submit("other", "optim_step", {"model_id": b, "seq_id": 2, "adam_params": ADAM})
+    save_b = service.submit("other", "save_state", {"model_id": b, "seq_id": 3, "name": "b", "overwrite": False})
+    assert (await await_settled(service, "other", step_b)).state == DONE
+    assert service.retrieve_future("other", fb_b).state == DONE
+    assert service.retrieve_future("tenant", save_a).state == PENDING
+    assert service.retrieve_future("tenant", step_a).state == PENDING
+    assert service.retrieve_future("other", save_b).state == PENDING
+    assert len(service.backend.named("start_slot_save")) == 1
+    assert not Path(resolve_checkpoint_dir(service.config.checkpoint_root, a, "weights", "a")).exists()
+    service.backend.save_ready = True
+    assert (await await_settled(service, "other", save_b)).state == DONE
+    assert service.retrieve_future("tenant", step_a).state == DONE
+    assert service.retrieve_future("tenant", save_a).state == DONE
+
+
+async def test_async_checkpoint_io_failure_does_not_close_model(service):
+    model = await created_model(service)
+    service.backend.save_failure = {"error": "disk full", "error_category": "server"}
+    saved = service.submit("tenant", "save_state", {"model_id": model, "seq_id": 1, "name": "x", "overwrite": False})
+    step = service.submit("tenant", "optim_step", {"model_id": model, "seq_id": 2, "adam_params": ADAM})
+    assert (await await_settled(service, "tenant", saved)).state == FAILED
+    assert (await await_settled(service, "tenant", step)).state == DONE
+    assert not service.backend.dead
+    assert model in service.models
+
+
+async def test_checkpoint_completion_after_lease_expiry_does_not_touch_reused_slot(service):
+    session = service.create_session("tenant")
+    model = await created_model(service, session_id=session)
+    service.backend.save_ready = False
+    saved = service.submit("tenant", "save_state", {"model_id": model, "seq_id": 1, "name": "x", "overwrite": False})
+    other = await created_model(service, tenant="other")
+    step = service.submit("other", "optim_step", {"model_id": other, "seq_id": 1, "adam_params": ADAM})
+    await await_settled(service, "other", step)
+    slot = service.models[model].slot
+    service.sessions[session].last_heartbeat = -1e9
+    await service._expire_sessions()
+    fresh = await created_model(service, tenant="fresh")
+    assert service.models[fresh].slot == slot
+    service.backend.save_ready = True
+    assert service.retrieve_future("tenant", saved).state == FAILED
+    assert fresh in service.models
+    step = service.submit("fresh", "optim_step", {"model_id": fresh, "seq_id": 1, "adam_params": ADAM})
+    assert (await await_settled(service, "fresh", step)).state == DONE

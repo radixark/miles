@@ -1,6 +1,6 @@
 """Checkpoint directories: written collectively, complete at their final path."""
 
-# TODO: isolate checkpoint IO failures; they currently terminate the trainer cell.
+# TODO: isolate shard-writing failures on the synchronous checkpoint path.
 
 import json
 import os
@@ -25,40 +25,64 @@ def write_checkpoint_dir(
 
     All ranks must call. Readers may still hold an older version, so retain it.
     """
-    final_dir = Path(path)
-    tmp_dir = final_dir.parent / f"_tmp_{final_dir.name}"
+    publication = CheckpointPublication(path, metadata, overwrite=overwrite)
+    publication.prepare()
+    write_shards(publication.tmp_dir)
+    _barrier()
+    publication.publish()
 
-    def make_tmp_dir():
+
+class CheckpointIOError(OSError):
+    """All ranks observed the same checkpoint directory IO failure."""
+
+
+class CheckpointPublication:
+    def __init__(self, path: str | Path, metadata: dict | None = None, *, overwrite: bool = True):
+        self.final_dir = Path(path)
+        self.tmp_dir = self.final_dir.parent / f"_tmp_{self.final_dir.name}"
+        self.metadata = metadata
+        self.overwrite = overwrite
+
+    def prepare(self) -> None:
+        self._on_rank_zero(self._prepare)
+
+    def publish(self) -> None:
+        self._on_rank_zero(self._publish)
+
+    def _prepare(self):
+        if not self.overwrite and self.final_dir.exists():
+            raise FileExistsError(f"checkpoint {self.final_dir} already exists")
+        if self.final_dir.exists() and not self.final_dir.is_symlink():
+            raise NotImplementedError(
+                f"cannot overwrite a legacy checkpoint directory {self.final_dir}; save under a new name"
+            )
+        # A crashed attempt may leave shards or an unpublished version link.
+        if self.tmp_dir.is_symlink():
+            self.tmp_dir.unlink()
+        elif self.tmp_dir.exists():
+            shutil.rmtree(self.tmp_dir)
+        self.tmp_dir.mkdir(parents=True)
+
+    def _publish(self):
+        if self.metadata is not None:
+            (self.tmp_dir / "META.json").write_text(json.dumps(self.metadata, indent=2))
+        version_dir = self.final_dir.parent / f"_version_{self.final_dir.name}_{uuid4().hex}"
+        os.replace(self.tmp_dir, version_dir)
+        self.tmp_dir.symlink_to(version_dir.name, target_is_directory=True)
+        os.replace(self.tmp_dir, self.final_dir)
+
+    @staticmethod
+    def _on_rank_zero(operation):
+        error = [None]
         if _rank() == 0:
-            if not overwrite and final_dir.exists():
-                raise FileExistsError(f"checkpoint {final_dir} already exists")
-            if final_dir.exists() and not final_dir.is_symlink():
-                raise NotImplementedError(
-                    f"cannot overwrite a legacy checkpoint directory {final_dir}; save under a new name"
-                )
-            # a crashed attempt may leave shards or an unpublished version link
-            if tmp_dir.is_symlink():
-                tmp_dir.unlink()
-            elif tmp_dir.exists():
-                shutil.rmtree(tmp_dir)
-            tmp_dir.mkdir(parents=True)
-
-    def publish_dir():
-        if _rank() != 0:
-            return
-        if metadata is not None:
-            (tmp_dir / "META.json").write_text(json.dumps(metadata, indent=2))
-        version_dir = final_dir.parent / f"_version_{final_dir.name}_{uuid4().hex}"
-        os.replace(tmp_dir, version_dir)
-        tmp_dir.symlink_to(version_dir.name, target_is_directory=True)
-        os.replace(tmp_dir, final_dir)
-
-    make_tmp_dir()
-    _barrier()
-    write_shards(tmp_dir)
-    _barrier()
-    publish_dir()
-    _barrier()
+            try:
+                operation()
+            except OSError as exc:
+                error[0] = str(exc)
+        if dist.is_initialized():
+            dist.broadcast_object_list(error, src=0, group=get_gloo_group())
+        if error[0] is not None:
+            raise CheckpointIOError(error[0])
 
 
 def _rank() -> int:

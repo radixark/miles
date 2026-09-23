@@ -17,7 +17,7 @@ from miles.tinker.core.input_validation import (
     validate_sample_payload,
     validate_seq_id,
 )
-from miles.tinker.core.model_queue import ModelRequestQueue
+from miles.tinker.core.model_queue import ModelRequestQueue, PendingRequest
 from miles.tinker.core.scheduler import BarrierUnit, BatchUnit, RequestScheduler
 from miles.tinker.core.types import (
     Command,
@@ -56,6 +56,7 @@ class TinkerService:
         self._create_tasks: set = set()
         self._arrival_counter = 0
         self._batch_counter = 0
+        self._checkpoint_save: tuple[ModelRequestQueue, PendingRequest, dict] | None = None
         self._background_error: BaseException | None = None
         # why each model closed, so later requests get the reason instead of "unknown model"
         self._close_reasons: dict[str, str] = {}
@@ -70,6 +71,8 @@ class TinkerService:
                 # unit selection shares the critical section with execution, so
                 # lease expiry cannot reclaim a model queue between the two
                 async with self._trainer_lock:
+                    if self._checkpoint_save is not None:
+                        await self._poll_checkpoint_save()
                     rejections = self.scheduler.ready_rejections()
                     if rejections:
                         for model_queue, pending in rejections:
@@ -79,7 +82,7 @@ class TinkerService:
                                 {"error": pending.command.validation_error, "error_category": "user"},
                             )
                         continue
-                    unit = self.scheduler.schedule_next()
+                    unit = self.scheduler.schedule_next(checkpoint_pending=self._checkpoint_save is not None)
                     if unit is not None:
                         if isinstance(unit, BatchUnit):
                             await self._run_batch(unit)
@@ -88,7 +91,12 @@ class TinkerService:
                         if self.backend.trainer_dead():
                             raise RuntimeError("the trainer workers died; exiting so clients get refused connections")
                         continue
-                await self._wake.wait()
+                try:
+                    await asyncio.wait_for(
+                        self._wake.wait(), timeout=0.1 if self._checkpoint_save is not None else None
+                    )
+                except TimeoutError:
+                    pass
                 self._wake.clear()
         finally:
             tasks = [sweep_task, *self._create_tasks, *(task for task, _ in self._sample_tasks.values())]
@@ -281,7 +289,15 @@ class TinkerService:
 
     async def _run_barrier(self, barrier: BarrierUnit) -> None:
         try:
-            outcomes = await self._dispatch_barrier_op(barrier)
+            if barrier.op == CommandOp.SAVE_STATE:
+                ((model_queue, pending),) = barrier.entries
+                outcome = await self._start_checkpoint_save(self.models[model_queue.model_id], pending.command.payload)
+                if "error" not in outcome:
+                    self._checkpoint_save = (model_queue, pending, outcome)
+                    return
+                outcomes = [outcome]
+            else:
+                outcomes = await self._dispatch_barrier_op(barrier)
         except (UserInputError, OwnershipError) as error:
             outcomes = [{"error": str(error), "error_category": "user"} for _ in barrier.entries]
         for (model_queue, pending), outcome in zip(barrier.entries, outcomes, strict=True):
@@ -294,8 +310,6 @@ class TinkerService:
         ((model_queue, pending),) = barrier.entries  # every other barrier is single-entry
         record = self.models[model_queue.model_id]
         payload = pending.command.payload
-        if barrier.op == CommandOp.SAVE_STATE:
-            return [await self._save_state(record, payload)]
         if barrier.op == CommandOp.LOAD_STATE:
             return [await self._load_state(record, payload)]
         if barrier.op == CommandOp.SAVE_WEIGHTS_FOR_SAMPLER:
@@ -331,7 +345,7 @@ class TinkerService:
             self.futures.resolve(pending.command.request_id, outcome)
         model_queue.finish(pending)
 
-    async def _save_state(self, record: ModelRecord, payload: dict) -> dict:
+    async def _start_checkpoint_save(self, record: ModelRecord, payload: dict) -> dict:
         """Save parameters and optimizer state; call after optim_step to persist accumulated training work."""
         name = payload["name"] or f"checkpoint-{payload['seq_id']:06d}"
         validate_checkpoint_segment(name)
@@ -340,12 +354,22 @@ class TinkerService:
             raise UserInputError(f"checkpoint {name!r} already exists; pass overwrite=True to replace it")
         if os.path.isdir(checkpoint_dir) and not os.path.islink(checkpoint_dir):
             raise UserInputError(f"cannot overwrite legacy checkpoint {name!r}; save under a new name")
-        failure = await self.backend.save_slot(
+        failure = await self.backend.start_slot_save(
             record.slot, checkpoint_dir, metadata=build_checkpoint_metadata(record, self.config)
         )
         if failure is not None:
             return failure
         return {"op": "save_state", "path": f"tinker://{record.model_id}/weights/{name}"}
+
+    async def _poll_checkpoint_save(self) -> None:
+        model_queue, pending, result = self._checkpoint_save
+        outcome = await self.backend.poll_slot_save()
+        if outcome is None:
+            return
+        self._checkpoint_save = None
+        # Lease expiry may have removed the model and reused its slot while writing.
+        if model_queue.model_id in self.models:
+            await self._finish_request(model_queue, pending, outcome if "error" in outcome else result)
 
     async def _load_state(self, record: ModelRecord, payload: dict) -> dict:
         source_id, kind, name = parse_tinker_path(payload["path"])

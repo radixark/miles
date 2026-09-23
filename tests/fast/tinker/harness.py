@@ -26,6 +26,9 @@ class FakeBackend:
         self.dead = False
         self.optim_outcomes: dict[int, dict] = {}
         self.fail_on: dict[str, Exception | dict] = {}
+        self.save_ready = True
+        self.save_failure = None
+        self.pending_save = None
 
     def _record(self, name: str, **kwargs) -> dict | None:
         self.calls.append((name, kwargs))
@@ -77,8 +80,23 @@ class FakeBackend:
             return {slot: failure for slot in adam_params_by_slot}
         return {slot: self.optim_outcomes.get(slot, {"grad_norm": 0.5 + slot}) for slot in adam_params_by_slot}
 
-    async def save_slot(self, slot, path, metadata=None):
-        return self._write_checkpoint("save_slot", path, metadata, slot=slot)
+    async def start_slot_save(self, slot, path, metadata=None):
+        failure = self._record("start_slot_save", slot=slot, path=path, metadata=metadata)
+        if failure is None:
+            assert self.pending_save is None
+            self.pending_save = (path, metadata)
+        return failure
+
+    async def poll_slot_save(self):
+        if not self.save_ready:
+            return None
+        path, metadata = self.pending_save
+        self.pending_save = None
+        if self.save_failure is not None:
+            failure, self.save_failure = self.save_failure, None
+            return failure
+        write_checkpoint_dir(path, lambda _: None, metadata=metadata)
+        return {}
 
     async def export_slot(self, slot, rank, alpha, path, metadata=None):
         return self._write_checkpoint("export_slot", path, metadata, slot=slot, rank=rank, alpha=alpha)
@@ -86,7 +104,7 @@ class FakeBackend:
     def _write_checkpoint(self, name, path, metadata, **kwargs):
         failure = self._record(name, path=path, metadata=metadata, **kwargs)
         if failure is None and metadata is not None:
-            write_checkpoint_dir(path, lambda _: None, metadata=metadata, overwrite=name == "save_slot")
+            write_checkpoint_dir(path, lambda _: None, metadata=metadata, overwrite=False)
         return failure
 
     async def sample(self, payload, lora_name, lora_path=None):
