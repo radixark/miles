@@ -177,6 +177,12 @@ def execute_train(
         extra_env_vars = {}
     if config is None:
         config = ExecuteTrainConfig()
+    # nothing reads this variable any more, so an old export would be ignored without a word
+    if "MILES_ROUTER_EXTERNAL_HOST" in {**os.environ, **resolve_extra_env_vars(extra_env_vars, config)}:
+        raise ValueError(
+            "MILES_ROUTER_EXTERNAL_HOST is no longer read. Pass --session-server-external-host for one host that "
+            "reaches every session server, or set MILES_NODE_EXTERNAL_IP on each node to its own address."
+        )
     if not os.path.isabs(train_script):
         train_script = f"{repo_base_dir}/{train_script}"
     external_ray = get_bool_env_var("MILES_SCRIPT_EXTERNAL_RAY")

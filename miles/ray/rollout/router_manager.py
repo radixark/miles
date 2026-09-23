@@ -52,15 +52,40 @@ async def wait_session_server_ready(args):
     # OpenAIEndpointTracer.create picks each session's instance from this list.
     args.session_server_instances = [
         SessionServerInstance(
-            addr=f"{addr.host}:{addr.port}",
+            addr=addr.netloc,
+            external_addr=_compute_external_addr(args, addr),
             instance_id=compute_session_server_instance_id(args, instance_index),
         )
         for instance_index, addr in enumerate(addrs)
     ]
+    _assert_hosts_keep_their_own_external_host(args.session_server_instances)
 
     for addr in addrs:
         await wait_tcp_ready_async(addr.host, addr.port, timeout=_SERVER_READY_TIMEOUT_SECS)
     logger.info(
         f"Session servers ready at {[instance.addr for instance in args.session_server_instances]} "
-        f"({len(addrs)} instances)"
+        f"({len(addrs)} instances), "
+        f"externally at {[instance.external_addr for instance in args.session_server_instances]}"
     )
+
+
+def _compute_external_addr(args, addr: HostAndPort) -> str:
+    # spec_session_server keeps every instance on the head whenever this host is set
+    if args.session_server_external_host:
+        return f"{args.session_server_external_host}:{addr.port}"
+    return addr.external_netloc
+
+
+def _assert_hosts_keep_their_own_external_host(instances: list[SessionServerInstance]) -> None:
+    placed_hosts_by_external_host: dict[str, set[str]] = {}
+    for instance in instances:
+        external_host = instance.external_addr.rsplit(":", 1)[0]
+        placed_hosts_by_external_host.setdefault(external_host, set()).add(instance.addr.rsplit(":", 1)[0])
+    for external_host, placed_hosts in placed_hosts_by_external_host.items():
+        if len(placed_hosts) > 1:
+            raise ValueError(
+                f"Session servers on {sorted(placed_hosts)} are all published at the external host {external_host}, "
+                "so agents outside the cluster would reach only one of those hosts. Set MILES_NODE_EXTERNAL_IP on "
+                "each node to its own address, or pass --session-server-external-host, which keeps the session "
+                "servers on the head node."
+            )

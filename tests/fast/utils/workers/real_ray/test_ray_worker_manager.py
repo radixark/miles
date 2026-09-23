@@ -42,6 +42,7 @@ class TestLaunchOnRealRay:
             assert record["context"]["self_addrs"]["primary"] == {
                 "host": advertised.host,
                 "port": advertised.port,
+                "external_host": advertised.external_host,
             }
 
     def test_the_advertised_address_is_one_the_worker_can_serve_on(self, manager_factory, worker_probe_factory):
@@ -122,7 +123,11 @@ class TestNamedManagerActor:
         addr = (await RayWorkerProvider.create().get_addrs(worker_name="router-0-0"))["primary"]
 
         assert isinstance(addr, HostAndPort)
-        assert records["0-0"]["context"]["self_addrs"]["primary"] == {"host": addr.host, "port": addr.port}
+        assert records["0-0"]["context"]["self_addrs"]["primary"] == {
+            "host": addr.host,
+            "port": addr.port,
+            "external_host": addr.external_host,
+        }
         wait_tcp_ready(addr.host, addr.port, timeout=30)
 
     def test_an_unknown_worker_name_is_not_answered_with_another_workers_address(
@@ -204,10 +209,7 @@ class TestCrossSpecWiringOnRealRay:
         for record in session_records.values():
             pool_addrs = record["context"]["pool_addrs"]
             assert sorted(pool_addrs) == ["inference-router-0", "session-server"]
-            assert pool_addrs["inference-router-0"][0]["primary"] == {
-                "host": router_addr.host,
-                "port": router_addr.port,
-            }
+            assert pool_addrs["inference-router-0"][0]["primary"] == router_addr.model_dump()
             assert len(pool_addrs["session-server"]) == 2
 
     def test_each_spec_only_gets_its_own_env(self, manager_factory, worker_probe_factory):
@@ -340,7 +342,7 @@ class TestWorkerInfosOnRealRay:
         assert [info.gpu_ids for info in infos] == [[], []]
         for worker_in_cell_index, info in enumerate(infos):
             recorded = records[f"1-{worker_in_cell_index}"]["context"]["self_addrs"]["primary"]
-            assert {"host": info.self_addrs["primary"].host, "port": info.self_addrs["primary"].port} == recorded
+            assert info.self_addrs["primary"].model_dump() == recorded
             node_ip = await info.handle._get_node_ip()
             assert info.self_addrs["primary"].host.strip("[]") == node_ip
 

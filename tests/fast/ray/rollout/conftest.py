@@ -109,6 +109,7 @@ def make_args(**overrides: Any) -> Namespace:
         use_session_server=False,
         use_rollout_routing_replay=False,
         session_server_ip=None,
+        session_server_external_host=None,
         session_server_port=None,
         session_server_workers=1,
         run_uuid="0123456789abcdef",

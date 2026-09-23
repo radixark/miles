@@ -31,10 +31,13 @@ class OpenAIEndpointTracer:
         session_id: str,
         session_server_instance_id: str | None = None,
         samples_wire_fields: tuple[str, ...] = COMPUTED_FIELDS,
+        agent_router_url: str | None = None,
     ):
         self.router_url = router_url
         self.session_id = session_id
         self.base_url = f"{router_url}/sessions/{session_id}"
+        # The agent may run outside the cluster; the driver's own calls stay on base_url.
+        self.agent_base_url = f"{agent_router_url or router_url}/sessions/{session_id}"
         self.session_server_instance_id = session_server_instance_id
         # The samples-wire allowlist must match the server's encode: v1 default,
         # extended under --use-session-server v2 (create() selects from args;
@@ -73,6 +76,7 @@ class OpenAIEndpointTracer:
             session_id=session_id,
             session_server_instance_id=instance.instance_id,
             samples_wire_fields=samples_wire_fields,
+            agent_router_url=instance.external_url,
         )
 
     async def collect_samples(

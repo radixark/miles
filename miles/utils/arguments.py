@@ -2459,6 +2459,15 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "Defaults to that placed address.",
             )
             parser.add_argument(
+                "--session-server-external-host",
+                type=str,
+                default=None,
+                help="Host that peers outside the cluster, such as agents in a sandbox, reach every session "
+                "server on. Setting it keeps all session servers on the head node, so it must reach the head. "
+                "Leave it unset when each node sets MILES_NODE_EXTERNAL_IP to its own reachable address, or "
+                "when the placed addresses already route from outside.",
+            )
+            parser.add_argument(
                 "--session-server-port",
                 type=int,
                 default=None,

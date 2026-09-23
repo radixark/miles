@@ -69,6 +69,21 @@ def get_current_node_ip():
     return address
 
 
+MILES_NODE_EXTERNAL_IP_ENV = "MILES_NODE_EXTERNAL_IP"
+
+
+def get_node_external_ip() -> str | None:
+    """The address off-cluster peers reach this node on (a DNS name also works),
+    or None when its own address already routes from there.
+
+    The deployment supplies this per node -- a tailscale sidecar or an init
+    container writing the interface it joined. It is never forwarded through the
+    job's runtime env, which would give every node one shared value; one host for
+    every session server is ``--session-server-external-host`` instead.
+    """
+    return os.environ.get(MILES_NODE_EXTERNAL_IP_ENV) or None
+
+
 def get_free_port(start_port=10000, consecutive=1):
     # find the port where port, port + 1, port + 2, ... port + consecutive - 1 are all available,
     # scanning upwards from start_port and wrapping around once the ports run out
@@ -119,6 +134,10 @@ class NodeProbeMixin:
     @staticmethod
     def _get_node_ip() -> str:
         return os.getenv(MILES_HOST_IP_ENV) or get_current_node_ip()
+
+    @staticmethod
+    def _get_node_external_ip() -> str | None:
+        return get_node_external_ip()
 
     @staticmethod
     def _get_free_port_block(*, start_port: int, count: int) -> int:
