@@ -2,7 +2,7 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Annotated, Any, Literal
 
-from pydantic import Discriminator, Field, field_validator
+from pydantic import Discriminator, Field, field_validator, model_validator
 
 from miles.backends.megatron_utils.ft.types import TrainStepOutcome
 from miles.utils.audit_utils.process_identity import ProcessIdentity
@@ -200,6 +200,7 @@ class FaultHookAction(StrEnum):
 
 class FaultHookStatus(StrEnum):
     PENDING = "pending"
+    SCHEDULED = "scheduled"
     CLEARED = "cleared"
     EXPIRED = "expired"
     FIRED = "fired"
@@ -217,6 +218,7 @@ class FaultHookRequest(FrozenStrictBaseModel):
     mode: FailureMode
     action: FaultHookAction = FaultHookAction.INJECT
     lifetime_seconds: float = Field(default=60.0, gt=0, le=300, allow_inf_nan=False)
+    delay_ms: float = Field(default=0.0, ge=0, le=300_000, allow_inf_nan=False)
 
     @field_validator("mode")
     @classmethod
@@ -224,6 +226,12 @@ class FaultHookRequest(FrozenStrictBaseModel):
         if mode not in _HOOKABLE_FAILURE_MODES:
             raise ValueError(f"A fault hook cannot carry {mode.value}")
         return mode
+
+    @model_validator(mode="after")
+    def _validate_delay(self) -> "FaultHookRequest":
+        if self.mode == FailureMode.THREAD_DEADLOCK and self.delay_ms > 0:
+            raise ValueError("Training-thread deadlock requires immediate hook execution")
+        return self
 
 
 class FaultHookContext(FrozenStrictBaseModel):
@@ -236,6 +244,7 @@ class FaultHookRecord(FrozenStrictBaseModel):
     set_at: float
     changed_at: float
     reached_at: float | None = None
+    due_at: float | None = None
     context: FaultHookContext | None = None
 
 

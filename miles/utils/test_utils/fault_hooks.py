@@ -1,7 +1,7 @@
 import logging
 import threading
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from enum import StrEnum
 
@@ -82,10 +82,26 @@ class _FaultHookController:
     def _reach(self, hook_name: FaultHookName) -> None:
         with self._lock:
             self._drop_expired()
-            if (executor := self._ongoing) is None or executor.record.request.hook_name != hook_name:
+            if (
+                (executor := self._ongoing) is None
+                or executor.record.status != FaultHookStatus.PENDING
+                or executor.record.request.hook_name != hook_name
+            ):
+                return
+            executor.reach(context=self._context)
+            if executor.record.request.delay_ms > 0:
+                executor.schedule(on_due=self._fire_due)
+                return
+
+        self._fire_due(executor)
+
+    def _fire_due(self, executor: "_FaultHookRequestExecutor") -> None:
+        with self._lock:
+            self._drop_expired()
+            if self._ongoing is not executor:
                 return
             self._ongoing = None
-            executor.fire(context=self._context)
+            executor.fire()
 
         executor.execute()
 
@@ -99,19 +115,36 @@ class _FaultHookRequestExecutor:
     def __init__(self, request: FaultHookRequest) -> None:
         now = time.monotonic()
         self.record = FaultHookRecord(request=request, status=FaultHookStatus.PENDING, set_at=now, changed_at=now)
+        self._timer: threading.Timer | None = None
         self._log_event()
 
     def is_expired(self) -> bool:
         return time.monotonic() >= self.record.set_at + self.record.request.lifetime_seconds
 
     def clear(self) -> FaultHookRecord:
+        self._cancel_timer()
         return self._transition(FaultHookStatus.CLEARED)
 
     def expire(self) -> FaultHookRecord:
+        self._cancel_timer()
         return self._transition(FaultHookStatus.EXPIRED)
 
-    def fire(self, *, context: FaultHookContext | None) -> FaultHookRecord:
-        self.record = self.record.model_copy(update={"context": context, "reached_at": time.monotonic()})
+    def reach(self, *, context: FaultHookContext | None) -> None:
+        now = time.monotonic()
+        self.record = self.record.model_copy(
+            update={"context": context, "reached_at": now, "due_at": now + self.record.request.delay_ms / 1000}
+        )
+
+    def schedule(self, *, on_due: Callable[["_FaultHookRequestExecutor"], None]) -> FaultHookRecord:
+        assert self.record.due_at is not None
+        self._timer = threading.Timer(
+            interval=self.record.due_at - time.monotonic(), function=on_due, kwargs={"executor": self}
+        )
+        self._timer.daemon = True
+        self._timer.start()
+        return self._transition(FaultHookStatus.SCHEDULED)
+
+    def fire(self) -> FaultHookRecord:
         return self._transition(FaultHookStatus.FIRED)
 
     def execute(self) -> None:
@@ -123,6 +156,11 @@ class _FaultHookRequestExecutor:
         except Exception:
             logger.exception("Fault hook execution failed: %s", self.record.request.request_id)
             self._transition(FaultHookStatus.FAILED)
+
+    def _cancel_timer(self) -> None:
+        if (timer := self._timer) is not None:
+            self._timer = None
+            timer.cancel()
 
     def _transition(self, status: FaultHookStatus) -> FaultHookRecord:
         self.record = self.record.model_copy(update={"status": status, "changed_at": time.monotonic()})
