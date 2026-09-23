@@ -19,6 +19,9 @@ class FaultHookRequestExecutor:
     def record(self) -> FaultHookRecord:
         return self._record
 
+    def clear(self) -> FaultHookRecord:
+        return self._transition(FaultHookStatus.CLEARED)
+
     def mark_reached(self, *, context: FaultHookContext) -> None:
         self._record = self._record.model_copy(update={"context": context, "reached_at": time.monotonic()})
 
