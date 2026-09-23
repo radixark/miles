@@ -7,6 +7,7 @@ import ctypes
 import logging
 import os
 import signal
+import threading
 from enum import Enum
 
 logger = logging.getLogger(__name__)
@@ -17,6 +18,8 @@ class FailureMode(Enum):
     EXIT = "exit"
     SEGFAULT = "segfault"
     DEADLOCK = "deadlock"
+    THREAD_DEADLOCK = "thread_deadlock"
+    SIGSTOP = "sigstop"
 
 
 def inject_fault(mode: str) -> None:
@@ -24,6 +27,12 @@ def inject_fault(mode: str) -> None:
     logger.warning("FaultInjector: executing %s (pid=%d)", failure_mode.value, os.getpid())
 
     match failure_mode:
+        case FailureMode.THREAD_DEADLOCK:
+            threading.Event().wait()
+
+        case FailureMode.SIGSTOP:
+            os.kill(os.getpid(), signal.SIGSTOP)
+
         case FailureMode.SIGKILL:
             os.kill(os.getpid(), signal.SIGKILL)
 

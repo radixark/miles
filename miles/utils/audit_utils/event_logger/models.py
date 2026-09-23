@@ -1,11 +1,13 @@
 from datetime import datetime
+from enum import StrEnum
 from typing import Annotated, Any, Literal
 
-from pydantic import Discriminator, Field
+from pydantic import Discriminator, Field, field_validator
 
 from miles.backends.megatron_utils.ft.types import TrainStepOutcome
 from miles.utils.audit_utils.process_identity import ProcessIdentity
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
+from miles.utils.test_utils.fault_injector import FailureMode
 
 
 class EnvReportEditablePackageInfo(FrozenStrictBaseModel):
@@ -186,6 +188,62 @@ class TrainerModelCompanionInfoEvent(EventBase):
     skipped_nonfinite_sample_counts: list[OutputConsumption]
 
 
+class FaultHookName(StrEnum):
+    TRAINER_WEIGHT_UPDATE_BEFORE_ALL_GATHER = "trainer_weight_update_before_all_gather"
+    TRAINER_WEIGHT_UPDATE_BEFORE_SEND = "trainer_weight_update_before_send"
+
+
+class FaultHookAction(StrEnum):
+    INJECT = "inject"
+    OBSERVE = "observe"
+
+
+class FaultHookStatus(StrEnum):
+    PENDING = "pending"
+    CLEARED = "cleared"
+    EXPIRED = "expired"
+    FIRED = "fired"
+    FAILED = "failed"
+
+
+_HOOKABLE_FAILURE_MODES: frozenset[FailureMode] = frozenset(
+    {FailureMode.SIGKILL, FailureMode.SIGSTOP, FailureMode.THREAD_DEADLOCK}
+)
+
+
+class FaultHookRequest(FrozenStrictBaseModel):
+    request_id: str = Field(min_length=1)
+    hook_name: FaultHookName
+    mode: FailureMode
+    action: FaultHookAction = FaultHookAction.INJECT
+    lifetime_seconds: float = Field(default=60.0, gt=0, le=300, allow_inf_nan=False)
+
+    @field_validator("mode")
+    @classmethod
+    def _validate_mode(cls, mode: FailureMode) -> FailureMode:
+        if mode not in _HOOKABLE_FAILURE_MODES:
+            raise ValueError(f"A fault hook cannot carry {mode.value}")
+        return mode
+
+
+class FaultHookContext(FrozenStrictBaseModel):
+    weight_version: int
+
+
+class FaultHookRecord(FrozenStrictBaseModel):
+    request: FaultHookRequest
+    status: FaultHookStatus
+    set_at: float
+    changed_at: float
+    reached_at: float | None = None
+    context: FaultHookContext | None = None
+
+
+class FaultHookEvent(EventBase):
+    type: Literal["fault_hook"] = "fault_hook"
+    record: FaultHookRecord
+
+
 Event = Annotated[
     TrainEngineLocalWeightChecksumEvent
     | WitnessSnapshotParamEvent
@@ -199,7 +257,8 @@ Event = Annotated[
     | MetricEvent
     | DataSourceIssuedSamplesEvent
     | ExplicitlyDroppedSamplesEvent
-    | TrainerModelCompanionInfoEvent,
+    | TrainerModelCompanionInfoEvent
+    | FaultHookEvent,
     Discriminator("type"),
 ]
 
