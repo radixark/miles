@@ -13,6 +13,7 @@ from miles.utils.test_utils.fault_injector.actions.process import (
     SegfaultProcessAction,
     StopProcessAction,
 )
+from miles.utils.test_utils.fault_injector.actions.remote import ApiServerFaultAction
 
 FaultAction = Annotated[
     Union[
@@ -26,6 +27,7 @@ FaultAction = Annotated[
         StopCellAction,
         StartCellAction,
         SleepForeverAction,
+        ApiServerFaultAction,
     ],
     Discriminator("kind"),
 ]

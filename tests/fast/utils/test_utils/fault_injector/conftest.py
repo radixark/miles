@@ -3,12 +3,13 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from tests.fast.utils.test_utils.fault_injector.fakes import _CellOperations, _Clock, _Effects, _Timer
+from tests.fast.utils.test_utils.fault_injector.fakes import _ApiServer, _CellOperations, _Clock, _Effects, _Timer
 
 from miles.utils.audit_utils.event_logger.logger import EventLogger, read_events, set_event_logger
 from miles.utils.audit_utils.event_logger.models import FaultHookEvent
 from miles.utils.audit_utils.process_identity import SimpleProcessIdentity
 from miles.utils.test_utils.fault_injector import request_executor
+from miles.utils.test_utils.fault_injector.actions import remote
 from miles.utils.test_utils.fault_injector.actions.base import FaultHookResources
 from miles.utils.test_utils.fault_injector.controller import _FaultHookController
 from miles.utils.test_utils.fault_injector.models import FaultHookRecord
@@ -60,3 +61,10 @@ def runtime_hooks(operations: _CellOperations) -> _FaultHookController:
 @pytest.fixture
 def effects(monkeypatch: pytest.MonkeyPatch) -> _Effects:
     return _Effects(monkeypatch)
+
+
+@pytest.fixture
+def api_server(monkeypatch: pytest.MonkeyPatch) -> _ApiServer:
+    server = _ApiServer(target={"kind": "observed", "cell_id": "rollout-0", "rank": 1, "workers_hash": "hash-a"})
+    monkeypatch.setattr(remote, "httpx", SimpleNamespace(AsyncClient=server.client))
+    return server
