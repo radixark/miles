@@ -5,6 +5,7 @@ import logging
 
 from miles.utils.test_utils.fault_injector import FailureMode
 from miles.utils.workers.cell_operations.base import BaseCellOperations, FaultTarget, StaleFaultTargetError
+from miles.utils.workers.k8s_client import core_v1_api
 from miles.utils.workers.rpc.client.misc import ServerRestartedError
 from miles.utils.workers.worker_handle import BaseWorkerHandle, WorkerUnreachableError
 from miles.utils.workers.worker_provider.base import CellInfo, StopWatchFn
@@ -119,12 +120,7 @@ async def _ignore_cell(cell_id: str, info: CellInfo | None) -> None:
 
 
 async def _delete_pods(*, namespace: str, pod_names: list[str]) -> None:
-    from kubernetes_asyncio import client as kubernetes_client
-    from kubernetes_asyncio import config as kubernetes_config
-
-    kubernetes_config.load_incluster_config()
-    async with kubernetes_client.ApiClient() as api_client:
-        core_v1_api = kubernetes_client.CoreV1Api(api_client)
+    async with core_v1_api() as api:
         await asyncio.gather(
-            *(core_v1_api.delete_namespaced_pod(name=pod_name, namespace=namespace) for pod_name in pod_names)
+            *(api.delete_namespaced_pod(name=pod_name, namespace=namespace) for pod_name in pod_names)
         )
