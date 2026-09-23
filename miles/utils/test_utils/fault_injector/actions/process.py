@@ -2,7 +2,9 @@ import ctypes
 import os
 import signal
 import threading
-from typing import Literal
+from typing import Annotated, Literal, Union
+
+from pydantic import Discriminator
 
 from miles.utils.test_utils.fault_injector.actions.base import BaseFaultAction, FaultHookContext, FaultHookResources
 from miles.utils.workers import process_utils
@@ -75,3 +77,17 @@ def _signal_process(resources: FaultHookResources, signum: signal.Signals) -> No
 
 def _assert_own_process(resources: FaultHookResources) -> None:
     assert resources.managed_process is None, "This fault is one a process inflicts on itself, not on a subprocess"
+
+
+ProcessFaultAction = Annotated[
+    Union[
+        ObserveAction,
+        KillProcessAction,
+        StopProcessAction,
+        ExitProcessAction,
+        SegfaultProcessAction,
+        FreezeProcessAction,
+        DeadlockThreadAction,
+    ],
+    Discriminator("kind"),
+]
