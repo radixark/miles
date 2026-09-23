@@ -40,6 +40,7 @@ class FaultHookStatus(StrEnum):
     PENDING = "pending"
     SCHEDULED = "scheduled"
     CLEARED = "cleared"
+    EXPIRED = "expired"
     FIRED = "fired"
     FAILED = "failed"
 
@@ -76,6 +77,7 @@ class FaultHookRequest(FrozenStrictBaseModel):
     rollout_id: int | None = Field(default=None, ge=0)
     attempt: int | None = Field(default=None, ge=0)
     weight_version: int | None = Field(default=None, ge=0)
+    lifetime_seconds: float | None = Field(default=None, gt=0, le=300, allow_inf_nan=False)
     delay_ms: float = Field(default=0.0, ge=0, le=300_000, allow_inf_nan=False)
 
     @model_validator(mode="after")
