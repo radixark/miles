@@ -60,6 +60,7 @@ async def test_create_reads_session_server_instance_id_from_args(monkeypatch, cr
     tracer = await OpenAIEndpointTracer.create(args, **create_kwargs)
 
     assert tracer.base_url == "http://127.0.0.1:12345/sessions/session-123"
+    assert tracer.agent_base_url == tracer.base_url
     assert tracer.session_server_id == "127.0.0.1:12345"
     assert tracer.session_server_instance_id == "server-instance-123"
     # No /health probe: the id is read locally, create() issues only the POST.
@@ -146,6 +147,44 @@ class TestOpenAIEndpointTracerCreate:
         assert tracer.session_server_id == "10.0.0.2:5005"
         assert tracer.base_url == "http://10.0.0.2:5005/sessions/session-abc"
         assert tracer.session_server_instance_id == "instance-b"
+
+    @pytest.mark.asyncio
+    async def test_external_url_only_changes_the_agent_endpoint(self, monkeypatch):
+        posted: list[str] = []
+
+        async def fake_post(url: str, payload: dict, action: str = "post"):
+            posted.append(url)
+            return {"session_id": "session-abc"}
+
+        monkeypatch.setattr("miles.rollout.generate_utils.openai_endpoint_utils.post", fake_post)
+        monkeypatch.setattr("miles.rollout.generate_utils.openai_endpoint_utils.random.choice", lambda addrs: addrs[1])
+
+        args = SimpleNamespace(
+            session_server_addrs=["10.0.0.1:5005", "10.0.0.2:5005"],
+            session_server_external_url_map={
+                "10.0.0.1:5005": "https://session-a.example",
+                "10.0.0.2:5005": "https://session-b.example",
+            },
+        )
+        tracer = await OpenAIEndpointTracer.create(args)
+
+        assert posted == ["http://10.0.0.2:5005/sessions"]
+        assert tracer.base_url == "http://10.0.0.2:5005/sessions/session-abc"
+        assert tracer.agent_base_url == "https://session-b.example/sessions/session-abc"
+
+    @pytest.mark.asyncio
+    async def test_external_url_map_must_contain_the_selected_server(self, monkeypatch):
+        args = SimpleNamespace(
+            session_server_addrs=["10.0.0.1:5005", "10.0.0.2:5005"],
+            session_server_external_url_map={"10.0.0.1:5005": "https://session-a.example"},
+        )
+        monkeypatch.setattr(
+            "miles.rollout.generate_utils.openai_endpoint_utils.random.choice",
+            lambda addrs: addrs[1],
+        )
+
+        with pytest.raises(KeyError, match="10.0.0.2:5005"):
+            await OpenAIEndpointTracer.create(args)
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("addrs_kwargs", [{}, {"session_server_addrs": None}, {"session_server_addrs": []}])

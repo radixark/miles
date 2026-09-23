@@ -166,6 +166,28 @@ class TestWaitSessionServerReady:
         }
         assert waited == [("10.0.0.9", 5005), ("10.0.0.9", 5006)]
 
+    async def test_external_url_map_must_match_resolved_servers(self, monkeypatch):
+        class _FakeProvider:
+            async def get_addrs(self, worker_name: str) -> NamedHostAndPorts:
+                return {"primary": HostAndPort(host="10.0.0.9", port=5005)}
+
+        monkeypatch.setattr(
+            "miles.ray.rollout.router_manager.RayWorkerProvider",
+            SimpleNamespace(create=lambda: _FakeProvider()),
+        )
+
+        args = make_args(
+            use_session_server=True,
+            hf_checkpoint="/fake/model",
+            session_server_workers=1,
+            session_server_external_url_map={
+                "10.0.0.8:5005": "https://wrong-session.example"
+            },
+        )
+
+        with pytest.raises(ValueError, match="exactly the resolved session server addresses"):
+            await wait_session_server_ready(args)
+
     async def test_servers_on_different_hosts_are_each_addressed_in_full(self, monkeypatch):
         """Placement may spread the servers across hosts, so no instance may be addressed by a
         port under a host borrowed from another one."""

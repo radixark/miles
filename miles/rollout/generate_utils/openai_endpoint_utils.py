@@ -29,10 +29,12 @@ class OpenAIEndpointTracer:
         session_id: str,
         session_server_instance_id: str | None = None,
         samples_wire_fields: tuple[str, ...] = COMPUTED_FIELDS,
+        external_router_url: str | None = None,
     ):
         self.router_url = router_url
         self.session_id = session_id
         self.base_url = f"{router_url}/sessions/{session_id}"
+        self.agent_base_url = f"{external_router_url or router_url}/sessions/{session_id}"
         self.session_server_instance_id = session_server_instance_id
         # The samples-wire allowlist must match the server's encode: v1 default,
         # extended under --use-session-server v2 (create() selects from args;
@@ -55,6 +57,10 @@ class OpenAIEndpointTracer:
         # per session; every later touch of the session reuses this URL.
         session_addr = random.choice(session_addrs)
         session_url = f"http://{session_addr}"
+        external_urls = getattr(args, "session_server_external_url_map", None)
+        external_url = None
+        if external_urls is not None:
+            external_url = external_urls[session_addr]
         instance_ids = getattr(args, "session_server_instance_ids", None) or {}
         session_server_instance_id = instance_ids.get(session_addr)
         # Drop engine-only sampling fields before validating the session creation body.
@@ -70,6 +76,7 @@ class OpenAIEndpointTracer:
             session_id=session_id,
             session_server_instance_id=session_server_instance_id,
             samples_wire_fields=COMPUTED_FIELDS_V2 if use_v2 else COMPUTED_FIELDS,
+            external_router_url=external_url,
         )
 
     async def collect_samples(

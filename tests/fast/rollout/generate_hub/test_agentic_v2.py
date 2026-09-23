@@ -15,6 +15,7 @@ class _Tracer:
     session_server_id = "127.0.0.1:12345"
     session_server_instance_id = None
     base_url = "http://127.0.0.1:12345/sessions/sid-1"
+    agent_base_url = base_url
 
     def __init__(self, reply=None, error=None):
         self.reply = reply
@@ -90,6 +91,25 @@ async def test_success_returns_list_and_forwards_agent_metadata(monkeypatch, eva
     assert output.samples == [sample]
     assert output.samples[0].rollout_id is None
     assert tracer.agent_metadata == {"agent_result": "done"}
+
+
+@pytest.mark.asyncio
+async def test_agent_receives_external_session_url(monkeypatch):
+    sample = Sample(status=Sample.Status.COMPLETED, response="done", response_length=1, tokens=[1])
+    tracer = _Tracer(SamplesReply(samples=[sample], session_metadata={}, empty_reason=None))
+    tracer.agent_base_url = "https://session.example/sessions/sid-1"
+    received: list[str] = []
+
+    async def agent(**kwargs):
+        received.append(kwargs["base_url"])
+        return {}
+
+    _patch_agent(monkeypatch, tracer)
+    monkeypatch.setattr(agentic_tool_call, "load_function", lambda path: agent)
+
+    await agentic_tool_call.generate(_generate_input())
+
+    assert received == ["https://session.example/sessions/sid-1"]
 
 
 @pytest.mark.asyncio

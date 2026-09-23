@@ -51,6 +51,12 @@ async def wait_session_server_ready(args):
     # The canonical driver-side value; rollout code picks from this list. Instances may sit on
     # different hosts, so each one is addressed in full rather than by a port under a shared ip.
     args.session_server_addrs = [f"{x.host}:{x.port}" for x in addrs]
+    external_urls = getattr(args, "session_server_external_url_map", None)
+    if external_urls is not None and external_urls.keys() != set(args.session_server_addrs):
+        raise ValueError(
+            "session_server_external_url_map must contain exactly the resolved "
+            f"session server addresses: {args.session_server_addrs}"
+        )
 
     # Spawn all children before waiting on any: each child pays the ~10s
     # transformers import, so N servers start in ~one import of wall-time.

@@ -596,6 +596,58 @@ class TestSessionServerScalingArguments:
         assert args.session_server_port == 30000
         assert args.session_server_workers == 4
 
+    def test_parses_external_url_map(self):
+        args = self._parse(
+            [
+                "--use-session-server",
+                "v2",
+                "--session-server-external-url-map",
+                '{"10.0.0.1:30000":"https://session-a.example/"}',
+            ]
+        )
+
+        miles_validate_args(args)
+
+        assert args.session_server_external_url_map == {
+            "10.0.0.1:30000": "https://session-a.example"
+        }
+
+    @pytest.mark.parametrize(
+        ("extra", "message"),
+        [
+            (
+                [
+                    "--session-server-external-url-map",
+                    '{"10.0.0.1:30000":"https://session.example"}',
+                ],
+                "requires --use-session-server",
+            ),
+            (
+                [
+                    "--use-session-server",
+                    "v2",
+                    "--session-server-external-url-map",
+                    '["https://session.example"]',
+                ],
+                "must be a JSON object",
+            ),
+            (
+                [
+                    "--use-session-server",
+                    "v2",
+                    "--session-server-external-url-map",
+                    '{"10.0.0.1:30000":"not-a-url"}',
+                ],
+                "expected an absolute HTTP URL",
+            ),
+        ],
+    )
+    def test_rejects_invalid_external_urls(self, extra, message):
+        args = self._parse(extra)
+
+        with pytest.raises(ValueError, match=message):
+            miles_validate_args(args)
+
     def test_rejects_the_removed_end_port_form(self):
         with pytest.raises(SystemExit):
             self._parse(["--session-server-port", "30000", "30004"])
