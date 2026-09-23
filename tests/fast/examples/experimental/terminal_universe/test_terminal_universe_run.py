@@ -36,6 +36,7 @@ def test_submitted_runtime_explicitly_enables_summarization(tmp_path: Path, monk
     run.execute(args)
 
     env = captured["extra_env_vars"]
+    assert args.radix_raft_dir in env["PYTHONPATH"].split(":")
     assert env["HARBOR_TERMINUS_2_ENABLE_SUMMARIZE"] == "true"
     assert env["HARBOR_TERMINUS_2_LINEAR_HISTORY"] == "true"
     assert env["AGENT_MAX_INPUT_TOKENS"] == "49152"
@@ -43,6 +44,7 @@ def test_submitted_runtime_explicitly_enables_summarization(tmp_path: Path, monk
     assert env["HARBOR_MAX_SEQ_LEN"] == "65536"
     assert env["MILES_ROUTER_EXTERNAL_HOST"] == ""
     argv = shlex.split(captured["train_args"])
+    assert argv[argv.index("--custom-agent-function-path") + 1] == "experiments.shi.terminal_universe.miles_agent.run"
     assert "--use-rollout-routing-replay" in argv
     assert "--use-miles-dashboard" in argv
     assert "--observe-training-entropy" in argv

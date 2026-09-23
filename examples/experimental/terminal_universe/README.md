@@ -13,3 +13,10 @@ Extract the published dataset archive rather than copying expanded S3 objects,
 so executable and directory modes are preserved. Verify the archive and template
 map against the release checksums recorded in the run manifest before launching.
 Keep artifacts on a sufficiently large node-local scratch filesystem.
+
+This restart uses the dataset-local adapter from radix_raft PR100, selected by
+`--custom-agent-function-path experiments.shi.terminal_universe.miles_agent.run`.
+Set `--radix-raft-dir` to its checkout on every worker. Harbor must include the
+merged PR3372 prebuilt-template support. Miles' public Harbor adapter is unchanged.
+Before submitting, validate the actual TrialConfig/EnvironmentFactory path with
+template building forbidden, not just a direct E2B SDK probe.

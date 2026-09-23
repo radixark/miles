@@ -28,7 +28,7 @@ HARBOR_DOCKER_EXAMPLE_DIR = SCRIPT_DIR.parents[1] / "swe-agent-harbor-docker"
 @dataclass
 class ScriptArgs(U.ExecuteTrainConfig):
     mode: Literal["train", "prepare_only"] = "train"
-    run_id: str = "260922-17a43c75"
+    run_id: str = "260922-905f7100"
     model_name: str = "Qwen3.6-35B-A3B"
     megatron_model_type: str = "qwen3.6-35B-A3B"
     num_gpus_per_node: int = 8
@@ -39,7 +39,8 @@ class ScriptArgs(U.ExecuteTrainConfig):
     output_dir: str = "/scratch/terminal-universe-training"
     tasks_dir: str = "/scratch/terminal-universe-training/260922-17a43c75/data/tasks"
     template_map: str = "/scratch/terminal-universe-training/260922-17a43c75/data/e2b_templates.json"
-    harbor_dir: str = "/scratch/terminal-universe-training/260922-17a43c75/code/harbor"
+    harbor_dir: str = "/scratch/terminal-universe-training/260922-905f7100/code/harbor"
+    radix_raft_dir: str = "/scratch/terminal-universe-training/260922-905f7100/code/radix_raft"
     skip_prepare: bool = False
 
     num_rollout: int = 1000
@@ -64,7 +65,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     wandb_key: str = os.environ.get("WANDB_API_KEY", "")
     wandb_team: str = "radixarkai"
     wandb_project: str = "miles-terminal-universe"
-    wandb_run_name: str = "260922-qwen36-35b-a3b-tu338-async4n-r3-inplace-summarize-c256-b128-lr1e6-17a43c75"
+    wandb_run_name: str = "260922-qwen36-35b-a3b-tu338-async4n-r3-inplace-summarize-c256-b128-lr1e6-905f7100"
 
     def __post_init__(self) -> None:
         if self.num_nodes != 4:
@@ -187,7 +188,7 @@ def train_args(args: ScriptArgs) -> str:
     agent_args = (
         "--pin-rollout-manager-to-head "
         "--custom-generate-function-path miles.rollout.generate_hub.agentic_tool_call.generate "
-        "--custom-agent-function-path harbor_agent_function.run "
+        "--custom-agent-function-path experiments.shi.terminal_universe.miles_agent.run "
         "--custom-rm-path generate.reward_func "
         "--dynamic-sampling-filter-path miles.rollout.filter_hub.dynamic_sampling_filters.check_no_aborted "
         "--tito-model qwen36 --use-session-server v2 "
@@ -255,6 +256,7 @@ def execute(args: ScriptArgs) -> None:
     write_manifest(args, rendered_train_args)
     dependency_site_packages = Path(U.repo_base_dir).parents[1] / ".venv" / "lib" / f"python{sys.version_info.major}.{sys.version_info.minor}" / "site-packages"
     python_paths = [
+        args.radix_raft_dir,
         str(dependency_site_packages),
         args.megatron_path,
         str(HARBOR_EXAMPLE_DIR),
