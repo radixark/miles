@@ -1,0 +1,302 @@
+import asyncio
+from collections.abc import Callable
+
+import pytest
+from tests.fast.utils.test_utils.fault_injector.fakes import _CellOperations, _Clock
+
+from miles.utils.test_utils.fault_injector import controller as controller_module
+from miles.utils.test_utils.fault_injector import request_executor
+from miles.utils.test_utils.fault_injector.actions.base import FaultHookContext, FaultHookResources
+from miles.utils.test_utils.fault_injector.actions.cell import StopCellAction
+from miles.utils.test_utils.fault_injector.controller import (
+    FaultHookCommand,
+    FaultHookConflictError,
+    FaultHookOperation,
+    _FaultHookController,
+    reach_fault_hook,
+    reach_fault_hook_async,
+)
+from miles.utils.test_utils.fault_injector.models import (
+    FaultHookName,
+    FaultHookRecord,
+    FaultHookRequest,
+    FaultHookStatus,
+)
+
+_CELL_HOOK = FaultHookName.TRAINER_CONTROLLER_STEP_END
+
+
+_SEND = FaultHookName.TRAINER_WEIGHT_UPDATE_BEFORE_SEND
+
+
+def _stop(request_id: str = "stop", cell_id: str = "cell-0", **fields: object) -> FaultHookRequest:
+    return FaultHookRequest(
+        request_id=request_id,
+        hook_name=fields.pop("hook_name", _CELL_HOOK),
+        action=StopCellAction(cell_id=cell_id),
+        **fields,
+    )
+
+
+def _set(hooks: _FaultHookController, request: FaultHookRequest) -> FaultHookRecord:
+    return hooks.apply(FaultHookCommand(operation=FaultHookOperation.SET, request=request))
+
+
+def _clear(hooks: _FaultHookController, request: FaultHookRequest) -> FaultHookRecord:
+    return hooks.apply(FaultHookCommand(operation=FaultHookOperation.CLEAR, request=request))
+
+
+def _statuses(records: list[FaultHookRecord], request_id: str) -> list[FaultHookStatus]:
+    return [record.status for record in records if record.request.request_id == request_id]
+
+
+class TestRuntimeSetAndClear:
+    def test_a_duplicate_id_is_rejected_and_leaves_the_original_armed(
+        self, runtime_hooks: _FaultHookController, operations: _CellOperations
+    ) -> None:
+        """Re-setting a pending ID must fail without replacing what it guards."""
+        _set(runtime_hooks, _stop(rollout_id=3))
+        with pytest.raises(FaultHookConflictError, match="already set"):
+            _set(runtime_hooks, _stop(rollout_id=4, cell_id="cell-1"))
+        runtime_hooks._reach(_CELL_HOOK, {"rollout_id": 4})
+        assert operations.stopped == []
+        runtime_hooks._reach(_CELL_HOOK, {"rollout_id": 3})
+        assert operations.stopped == ["cell-0"]
+
+    def test_the_same_trigger_under_another_id_is_rejected(
+        self,
+        runtime_hooks: _FaultHookController,
+        operations: _CellOperations,
+        hook_records: Callable[[], list[FaultHookRecord]],
+    ) -> None:
+        """Two IDs firing the same action at one trigger must not both be armed."""
+        _set(runtime_hooks, _stop("a", rollout_id=3))
+        with pytest.raises(FaultHookConflictError, match="same trigger"):
+            _set(runtime_hooks, _stop("b", rollout_id=3))
+        runtime_hooks._reach(_CELL_HOOK, {"rollout_id": 3})
+        assert operations.stopped == ["cell-0"]
+        assert _statuses(hook_records(), "b") == []
+
+    def test_requests_for_different_rollouts_coexist(
+        self, runtime_hooks: _FaultHookController, operations: _CellOperations
+    ) -> None:
+        """Requests differing only in rollout must each fire at their own step."""
+        _set(runtime_hooks, _stop("a", rollout_id=3))
+        _set(runtime_hooks, _stop("b", rollout_id=4, cell_id="cell-1"))
+        runtime_hooks._reach(_CELL_HOOK, {"rollout_id": 4})
+        runtime_hooks._reach(_CELL_HOOK, {"rollout_id": 3})
+        assert operations.stopped == ["cell-1", "cell-0"]
+
+    def test_a_matching_clear_disarms_the_request(
+        self,
+        runtime_hooks: _FaultHookController,
+        operations: _CellOperations,
+        hook_records: Callable[[], list[FaultHookRecord]],
+    ) -> None:
+        """A cleared request must never fire and cannot be cleared twice."""
+        request = _stop(rollout_id=3)
+        _set(runtime_hooks, request)
+        assert _clear(runtime_hooks, request).status == FaultHookStatus.CLEARED
+        runtime_hooks._reach(_CELL_HOOK, {"rollout_id": 3})
+        assert operations.stopped == []
+        with pytest.raises(FaultHookConflictError, match="never set"):
+            _clear(runtime_hooks, request)
+        assert _statuses(hook_records(), "stop") == [FaultHookStatus.PENDING, FaultHookStatus.CLEARED]
+
+    def test_a_clear_that_differs_from_the_set_request_is_rejected(
+        self, runtime_hooks: _FaultHookController, operations: _CellOperations
+    ) -> None:
+        """Clearing with the right ID but another request must leave the original armed."""
+        _set(runtime_hooks, _stop(rollout_id=3))
+        with pytest.raises(FaultHookConflictError, match="does not match"):
+            _clear(runtime_hooks, _stop(rollout_id=4))
+        runtime_hooks._reach(_CELL_HOOK, {"rollout_id": 3})
+        assert operations.stopped == ["cell-0"]
+
+    def test_a_fired_request_can_no_longer_be_cleared_but_can_be_rearmed(
+        self, runtime_hooks: _FaultHookController, operations: _CellOperations
+    ) -> None:
+        """A one-shot request must leave the controller after firing and free its ID."""
+        request = _stop(rollout_id=3)
+        _set(runtime_hooks, request)
+        runtime_hooks._reach(_CELL_HOOK, {"rollout_id": 3})
+        with pytest.raises(FaultHookConflictError, match="never set"):
+            _clear(runtime_hooks, request)
+        runtime_hooks._reach(_CELL_HOOK, {"rollout_id": 3})
+        assert operations.stopped == ["cell-0"]
+        _set(runtime_hooks, request)
+        runtime_hooks._reach(_CELL_HOOK, {"rollout_id": 3})
+        assert operations.stopped == ["cell-0", "cell-0"]
+
+    async def test_a_reach_while_the_action_runs_does_not_fire_it_again(self) -> None:
+        """A concurrent reach of the same hook must not re-run an action that already fired."""
+        operations = _CellOperations(stop_gate=asyncio.Event())
+        hooks = _FaultHookController()
+        hooks.configure(resources=FaultHookResources(cell_operations=operations))
+        _set(hooks, _stop(rollout_id=3))
+        first = asyncio.create_task(hooks._reach_async(_CELL_HOOK, {"rollout_id": 3}))
+        while not operations.entered:
+            await asyncio.sleep(0)
+        await hooks._reach_async(_CELL_HOOK, {"rollout_id": 3})
+        operations.stop_gate.set()
+        await first
+        assert operations.entered == operations.stopped == ["cell-0"]
+
+    async def test_rearming_an_id_while_its_first_action_fails_keeps_the_new_request(
+        self, hook_records: Callable[[], list[FaultHookRecord]]
+    ) -> None:
+        """A late failure of the fired request must not consume the request re-set under its ID."""
+        operations = _CellOperations(reject_stop=True, stop_gate=asyncio.Event())
+        hooks = _FaultHookController()
+        hooks.configure(resources=FaultHookResources(cell_operations=operations))
+        _set(hooks, _stop(rollout_id=3))
+        first = asyncio.create_task(hooks._reach_async(_CELL_HOOK, {"rollout_id": 3}))
+        while not operations.entered:
+            await asyncio.sleep(0)
+        assert _set(hooks, _stop(rollout_id=4, cell_id="cell-1")).status == FaultHookStatus.PENDING
+        operations.stop_gate.set()
+        with pytest.raises(RuntimeError, match="rejected the stop"):
+            await first
+        operations.reject_stop = False
+        await hooks._reach_async(_CELL_HOOK, {"rollout_id": 4})
+        assert operations.stopped == ["cell-1"]
+        assert _statuses(hook_records(), "stop") == [
+            FaultHookStatus.PENDING,
+            FaultHookStatus.FIRED,
+            FaultHookStatus.PENDING,
+            FaultHookStatus.FAILED,
+            FaultHookStatus.FIRED,
+        ]
+
+
+class TestReachEntries:
+    def test_the_sync_module_entry_reaches_the_process_controller(
+        self,
+        runtime_hooks: _FaultHookController,
+        operations: _CellOperations,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The sync entry used by instrumented code must dispatch through the process controller."""
+        monkeypatch.setattr(controller_module, "fault_hook_controller", runtime_hooks)
+        _set(runtime_hooks, _stop(rollout_id=3))
+        reach_fault_hook(_CELL_HOOK, rollout_id=2)
+        assert operations.stopped == []
+        reach_fault_hook(_CELL_HOOK, rollout_id=3)
+        assert operations.stopped == ["cell-0"]
+
+    async def test_the_async_module_entry_reaches_the_process_controller(
+        self,
+        runtime_hooks: _FaultHookController,
+        operations: _CellOperations,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The async entry used by instrumented code must dispatch through the process controller."""
+        monkeypatch.setattr(controller_module, "fault_hook_controller", runtime_hooks)
+        _set(runtime_hooks, _stop(rollout_id=3))
+        await reach_fault_hook_async(_CELL_HOOK, rollout_id=3)
+        assert operations.stopped == ["cell-0"]
+
+    def test_a_sync_failure_without_a_loop_is_raised_and_recorded_once(
+        self,
+        runtime_hooks: _FaultHookController,
+        operations: _CellOperations,
+        hook_records: Callable[[], list[FaultHookRecord]],
+    ) -> None:
+        """A failing action on the sync entry must reach the caller, end FAILED and never retry."""
+        operations.reject_stop = True
+        _set(runtime_hooks, _stop(rollout_id=3))
+        with pytest.raises(RuntimeError, match="rejected the stop"):
+            runtime_hooks._reach(_CELL_HOOK, {"rollout_id": 3})
+        runtime_hooks._reach(_CELL_HOOK, {"rollout_id": 3})
+        assert operations.entered == ["cell-0"]
+        assert _statuses(hook_records(), "stop") == [
+            FaultHookStatus.PENDING,
+            FaultHookStatus.FIRED,
+            FaultHookStatus.FAILED,
+        ]
+
+    async def test_a_sync_failure_inside_a_running_loop_is_raised(
+        self, runtime_hooks: _FaultHookController, operations: _CellOperations
+    ) -> None:
+        """A sync reach from code already on an event loop must still surface the action failure."""
+        operations.reject_stop = True
+        _set(runtime_hooks, _stop(rollout_id=3))
+        with pytest.raises(RuntimeError, match="rejected the stop"):
+            runtime_hooks._reach(_CELL_HOOK, {"rollout_id": 3})
+
+    async def test_a_sync_reach_inside_a_running_loop_completes_before_returning(
+        self, runtime_hooks: _FaultHookController, operations: _CellOperations
+    ) -> None:
+        """A sync reach on a busy loop must run the action to completion before the caller continues."""
+        _set(runtime_hooks, _stop(rollout_id=3))
+        runtime_hooks._reach(_CELL_HOOK, {"rollout_id": 3})
+        assert operations.stopped == ["cell-0"]
+
+    def test_the_fired_record_carries_the_reached_context_and_time(
+        self,
+        runtime_hooks: _FaultHookController,
+        clock: _Clock,
+        hook_records: Callable[[], list[FaultHookRecord]],
+    ) -> None:
+        """The FIRED event must say where and when the hook was reached."""
+        _set(runtime_hooks, _stop(rollout_id=3))
+        clock.advance(2.0)
+        runtime_hooks._reach(_CELL_HOOK, {"rollout_id": 3, "attempt": 1})
+        [pending, fired] = hook_records()
+        assert pending.status == FaultHookStatus.PENDING and pending.context is None
+        assert pending.set_at == pending.changed_at == 100.0
+        assert fired.status == FaultHookStatus.FIRED
+        assert fired.context == FaultHookContext(rollout_id=3, attempt=1)
+        assert fired.set_at == 100.0
+        assert fired.reached_at == fired.changed_at == 102.0
+
+    def test_an_event_log_failure_does_not_block_the_fault(
+        self, runtime_hooks: _FaultHookController, operations: _CellOperations, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A broken event logger must not stop a fault from being injected."""
+
+        def broken() -> None:
+            raise OSError("disk full")
+
+        monkeypatch.setattr(request_executor, "is_event_logger_initialized", lambda: True)
+        monkeypatch.setattr(request_executor, "get_event_logger", broken)
+        _set(runtime_hooks, _stop(rollout_id=3))
+        runtime_hooks._reach(_CELL_HOOK, {"rollout_id": 3})
+        assert operations.stopped == ["cell-0"]
+
+
+class TestWithContext:
+    @pytest.mark.parametrize("weight_version,expected", [(7, ["cell-0"]), (8, [])])
+    async def test_a_reach_inherits_the_weight_version_of_the_update(
+        self,
+        runtime_hooks: _FaultHookController,
+        operations: _CellOperations,
+        weight_version: int,
+        expected: list[str],
+    ) -> None:
+        """A weight update hook must match on the version its enclosing update publishes."""
+        _set(runtime_hooks, _stop(hook_name=_SEND, weight_version=7, rollout_id=3))
+        with runtime_hooks.with_context(FaultHookContext(weight_version=weight_version, rollout_id=3)):
+            await runtime_hooks._reach_async(_SEND, {})
+        assert operations.stopped == expected
+
+    async def test_reach_arguments_override_the_inherited_context(
+        self, runtime_hooks: _FaultHookController, operations: _CellOperations
+    ) -> None:
+        """Values passed at the hook must win over the enclosing update context."""
+        _set(runtime_hooks, _stop("a", hook_name=_SEND, rollout_id=3))
+        _set(runtime_hooks, _stop("b", hook_name=_SEND, rollout_id=4, cell_id="cell-1"))
+        with runtime_hooks.with_context(FaultHookContext(rollout_id=3)):
+            await runtime_hooks._reach_async(_SEND, {"rollout_id": 4})
+        assert operations.stopped == ["cell-1"]
+
+    async def test_the_context_is_cleared_even_when_the_update_raises(
+        self, runtime_hooks: _FaultHookController, operations: _CellOperations
+    ) -> None:
+        """A failed update must not leak its version into later hooks."""
+        _set(runtime_hooks, _stop(hook_name=_SEND, weight_version=7))
+        with pytest.raises(ValueError, match="update failed"):
+            with runtime_hooks.with_context(FaultHookContext(weight_version=7)):
+                raise ValueError("update failed")
+        await runtime_hooks._reach_async(_SEND, {})
+        assert operations.stopped == []

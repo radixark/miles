@@ -1,5 +1,6 @@
 import os
 import shlex
+import signal
 import threading
 import time
 from pathlib import Path
@@ -9,7 +10,11 @@ import pytest
 from miles.utils.http_utils import MILES_HOST_IP_ENV
 from miles.utils.misc import get_current_node_ip
 from miles.utils.test_utils import fault_injector
-from miles.utils.workers import process_utils
+from miles.utils.test_utils.fault_injector.actions.base import FaultHookResources
+from miles.utils.test_utils.fault_injector.actions.process import KillProcessAction
+from miles.utils.test_utils.fault_injector.controller import FaultHookCommand, FaultHookOperation, _FaultHookController
+from miles.utils.test_utils.fault_injector.models import FaultHookName, FaultHookRequest, FaultHookStatus
+from miles.utils.workers import command_actor, process_utils
 from miles.utils.workers.command_actor import CommandActor
 
 
@@ -306,3 +311,45 @@ class TestNodeAddress:
         monkeypatch.delenv(MILES_HOST_IP_ENV, raising=False)
 
         assert CommandActor()._get_node_ip() == get_current_node_ip()
+
+
+# ======================= fault hooks through the actor =======================
+
+
+class _HookedWorkerProcess:
+    def __init__(self, *, pid: int) -> None:
+        self.pid = pid
+
+
+def _refuse_any_signal(process: _HookedWorkerProcess, signum: signal.Signals) -> None:
+    raise AssertionError(f"no signal was expected, but {signum} was sent to pid {process.pid}")
+
+
+def _hooked_actor(hooks: _FaultHookController) -> CommandActor:
+    actor = CommandActor()
+    actor._process = _HookedWorkerProcess(pid=4321)
+    hooks.configure(resources=FaultHookResources(managed_process=actor._process))
+    return actor
+
+
+class TestFaultHookThroughTheActor:
+    @pytest.fixture
+    def actor_hooks(self, monkeypatch: pytest.MonkeyPatch) -> _FaultHookController:
+        hooks = _FaultHookController()
+        monkeypatch.setattr(command_actor, "fault_hook_controller", hooks)
+        return hooks
+
+    def test_a_cleared_hooked_request_never_signals_the_worker(
+        self, monkeypatch: pytest.MonkeyPatch, actor_hooks: _FaultHookController
+    ) -> None:
+        """A SET that waits on a hook must be clearable through the actor before it signals anything."""
+        monkeypatch.setattr(process_utils, "signal_process_tree", _refuse_any_signal)
+        actor = _hooked_actor(actor_hooks)
+        request = FaultHookRequest(
+            request_id="test", hook_name=FaultHookName.TRAINER_STEP_BEFORE_ALLREDUCE, action=KillProcessAction()
+        )
+
+        armed = actor.control_fault_hook(FaultHookCommand(operation=FaultHookOperation.SET, request=request))
+        cleared = actor.control_fault_hook(FaultHookCommand(operation=FaultHookOperation.CLEAR, request=request))
+
+        assert (armed.status, cleared.status) == (FaultHookStatus.PENDING, FaultHookStatus.CLEARED)
