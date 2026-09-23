@@ -248,15 +248,12 @@ def test_the_flag_and_a_matching_path_agree():
     assert args.rollout_function_path == FULLY_ASYNC_ROLLOUT_PATH
 
 
-def test_the_flag_preserves_a_custom_rollout_path_without_importing_it():
-    """The worker validates subclass compatibility; argument resolution needs no plugin import."""
+def test_the_flag_still_rejects_a_different_rollout_function():
+    """Two different selections remain a misconfiguration."""
     args = _fully_async_candidate_args(fully_async=True, rollout_function_path="pkg.CustomRolloutFn")
 
-    _resolve_rollout_functions(args)
-
-    assert args.fully_async is True
-    assert args.rollout_function_path == "pkg.CustomRolloutFn"
-    assert args.eval_function_path == "pkg.CustomRolloutFn"
+    with pytest.raises(AssertionError, match="pass only one"):
+        _resolve_rollout_functions(args)
 
 
 def test_an_ordinary_rollout_function_path_stays_untouched():

@@ -21,7 +21,6 @@ from miles.rollout.base_types import (
     call_rollout_fn,
 )
 from miles.rollout.checkpoint_eval import CheckpointEvalFn, EvalSkip
-from miles.rollout.data_source import RolloutDataSource
 from miles.rollout.inference_rollout.compatibility import call_rollout_function, load_rollout_function
 from miles.utils import object_store
 from miles.utils.audit_utils.event_analyzer import analyzer as event_analyzer
@@ -35,7 +34,6 @@ from miles.utils.logging_utils import configure_logger
 from miles.utils.metric_checker import MetricChecker
 from miles.utils.timer import timer
 from miles.utils.tracking_utils.tracking import init_tracking
-from miles.utils.types import Sample
 from miles.utils.weight_version import assert_samples_weight_version_sane, assert_weight_version_is_published
 
 logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -49,7 +47,7 @@ logger = logging.getLogger(__name__)
 class RolloutExecutor:
     """The class to run rollout and convert rollout data to training data."""
 
-    def __init__(self, *, args, checkpoint_replay=False):
+    def __init__(self, *, args):
         event_logger_checkpoint.restore(args)
         configure_logger(args, source=RolloutExecutorProcessIdentity())
 
@@ -65,14 +63,6 @@ class RolloutExecutor:
 
         data_source_cls = load_function(self.args.data_source_path)
         self.data_source = data_source_cls(args)
-        self._checkpoint_source = None
-        self._pending_rollouts = {}
-        if checkpoint_replay and args.rollout_global_dataset and (args.save or args.load):
-            if isinstance(self.data_source, RolloutDataSource):
-                self._checkpoint_source = self.data_source
-                self.data_source.enable_checkpoint_replay()
-            else:
-                logger.warning("Custom data sources must checkpoint their own unconsumed prompts")
 
         self.use_legacy_rollout_v1 = use_legacy_rollout_v1()
         if not self.use_legacy_rollout_v1:
@@ -82,12 +72,6 @@ class RolloutExecutor:
             else:
                 input = RolloutFnConstructorInput(args=args, data_source=self.data_source)
                 self.generate_rollout = load_rollout_function(input, self.args.rollout_function_path)
-                if args.fully_async:
-                    # Import generation dependencies only in the worker, after loading the plugin.
-                    from miles.rollout.fully_async_rollout import FullyAsyncRolloutFn
-
-                    if not isinstance(self.generate_rollout, FullyAsyncRolloutFn):
-                        raise TypeError("--fully-async requires FullyAsyncRolloutFn or a subclass")
                 if self.args.eval_function_path == self.args.rollout_function_path:
                     # Reuse the instance so train and eval share one state (and stateful
                     # rollout fns like FullyAsyncRolloutFn are not constructed twice).
@@ -243,7 +227,6 @@ class RolloutExecutor:
                 )
             metrics = data.metrics
             data = data.samples
-            generated_group_ids = _group_ids(data) if self._checkpoint_source is not None else set()
             data, metadata = postprocess_rollout_data(
                 self.args, data, train_parallel_config=self.train_parallel_config
             )
@@ -255,21 +238,10 @@ class RolloutExecutor:
                     self.args, generated=generated_data, injected=data, rollout_id=rollout_id
                 )
                 metrics = None
-            if self._checkpoint_source is not None:
-                kept = _group_ids(data)
-                self._checkpoint_source.acknowledge(generated_group_ids - kept)
-                if not self.args.fully_async:
-                    self._checkpoint_source.finish_rollout(kept)
-                self._pending_rollouts[rollout_id] = kept
 
         return data, metadata, metrics
 
     # -------------------------- checkpointing -----------------------------
-
-    def acknowledge(self, rollout_id):
-        """Called only after the driver has successfully trained this batch."""
-        if self._checkpoint_source is not None:
-            self._checkpoint_source.acknowledge(self._pending_rollouts.pop(rollout_id, ()))
 
     # TODO the train and eval rollout functions will become one object, so one save/load is enough here
     def save(self, rollout_id):
@@ -309,11 +281,3 @@ class RolloutExecutor:
 
     def set_eval_fleet(self, eval_fleet: "EvalFleet | None"):
         self._eval_fleet = eval_fleet
-
-
-def _group_ids(data):
-    if isinstance(data, Sample):
-        if data.group_index is None:
-            raise ValueError("Checkpoint replay requires stable Sample.group_index values")
-        return {data.group_index}
-    return {group_id for item in data for group_id in _group_ids(item)}

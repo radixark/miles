@@ -1,15 +1,11 @@
 import asyncio
-import gc
-import weakref
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
+
 import train_async as train_async_driver
 from tests.fast.fixtures.driver_fakes import FakeInferenceController, FakeRolloutExecutor, FakeTrainingModel
-
-from miles.ray.rollout import rollout_executor as executor_module
-from miles.rollout.base_types import RolloutFnTrainOutput
 
 
 def _make_args(**overrides: Any) -> SimpleNamespace:
@@ -60,17 +56,13 @@ def _install_driver_fakes(
         api_server_calls=[],
     )
 
-    async def create_rollout_components(_args: SimpleNamespace, *, checkpoint_replay=False) -> tuple[Any, Any, int]:
-        assert checkpoint_replay is True
+    async def create_rollout_components(_args: SimpleNamespace) -> tuple[Any, Any, int]:
         return components.inference_controller, components.rollout_executor, 4
 
     async def create_training_models(_args: SimpleNamespace, _controller: Any, _executor: Any) -> tuple[Any, Any]:
         return components.actor_model, components.critic_model
 
     async def update_weights(_model: Any, _executor: Any, rollout_id: int | None = None) -> None:
-        # A real publication spans awaits; yield so an un-awaited or overlapped update is observable.
-        events.append(f"update_weights_start:{rollout_id}")
-        await asyncio.sleep(0)
         events.append(f"update_weights:{rollout_id}")
 
     monkeypatch.setattr(train_async_driver, "configure_logger", lambda *_args, **_kwargs: None)
@@ -82,17 +74,11 @@ def _install_driver_fakes(
     monkeypatch.setattr(train_async_driver, "create_training_models", create_training_models)
     monkeypatch.setattr(train_async_driver, "maybe_start_mini_ft_controller", lambda _args: None)
     monkeypatch.setattr(train_async_driver, "update_weights", update_weights)
-    monkeypatch.setattr(
-        train_async_driver, "remove_rollout_data_refs", lambda _args, ref: events.append(f"consumed:{ref['data_ref']}")
-    )
+    monkeypatch.setattr(train_async_driver, "remove_rollout_data_refs", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(
         train_async_driver, "start_api_server", lambda **kwargs: components.api_server_calls.append(kwargs)
     )
     return components
-
-
-def _consumed(events: list[str]) -> list[str]:
-    return [event.removeprefix("consumed:") for event in events if event.startswith("consumed:")]
 
 
 class TestApiServer:
@@ -165,9 +151,8 @@ class TestPipelinedGeneration:
         await asyncio.wait_for(driver, timeout=10)
 
         assert events.index("generate_start:1") < events.index("actor_train:0")
-        assert events.index("generate_done:1") < events.index("update_weights_start:0")
+        assert events.index("generate_done:1") < events.index("update_weights:0")
         assert components.actor_model.trained == [0, 1]
-        assert _consumed(events) == ["rollout-data-0", "rollout-data-1"]
 
     async def test_fully_async_next_drain_starts_after_weight_publication(self, monkeypatch: pytest.MonkeyPatch):
         """The persistent producer needs no lookahead drain that captures the previous weight version."""
@@ -181,7 +166,6 @@ class TestPipelinedGeneration:
         assert events.index("update_weights:0") < events.index("generate_start:1")
         assert "generate_start:2" not in events
         assert components.actor_model.trained == [0, 1]
-        assert _consumed(events) == ["rollout-data-0", "rollout-data-1"]
 
     async def test_fully_async_keeps_lookahead_between_weight_updates(self, monkeypatch: pytest.MonkeyPatch):
         """A drain may still overlap training when that step cannot change the current weight version."""
@@ -195,27 +179,6 @@ class TestPipelinedGeneration:
         assert events.index("actor_train:1") < events.index("update_weights:1")
         assert events.index("update_weights:1") < events.index("generate_start:2")
         assert components.actor_model.trained == [0, 1, 2]
-        assert _consumed(events) == ["rollout-data-0", "rollout-data-1", "rollout-data-2"]
-
-    async def test_pipelined_publishes_on_interval_and_next_drain_follows_publication(
-        self, monkeypatch: pytest.MonkeyPatch
-    ):
-        """Weights ship only on interval steps; the lookahead after a publication must see the new weights."""
-        events: list[str] = []
-        args = _make_args(num_rollout=4, update_weights_interval=2)
-        _install_driver_fakes(monkeypatch, args, events)
-
-        await train_async_driver.train(args)
-
-        assert [e for e in events if e.startswith("update_weights:")] == [
-            "update_weights:None",
-            "update_weights:1",
-            "update_weights:3",
-        ]
-        assert events.index("generate_start:2") < events.index("actor_train:1")
-        assert events.index("generate_done:2") < events.index("update_weights_start:1")
-        assert events.index("update_weights:1") < events.index("generate_start:3")
-        assert _consumed(events) == [f"rollout-data-{i}" for i in range(4)]
 
 
 class TestTerminalLifecycle:
@@ -236,110 +199,3 @@ class TestTerminalLifecycle:
             "executor_dispose",
             "inference_dispose",
         ]
-
-
-class TestPublicationAndReferences:
-    async def test_fully_async_drain_waits_for_completed_publication(self, monkeypatch):
-        args = _make_args(fully_async=True, num_rollout=2)
-        events = []
-        components = _install_driver_fakes(monkeypatch, args, events)
-        publishing = asyncio.Event()
-        published = asyncio.Event()
-        captured_versions = []
-        executor = SimpleNamespace(
-            args=SimpleNamespace(load_debug_rollout_data=None),
-            weight_version=0,
-            use_legacy_rollout_v1=False,
-            train_parallel_config={},
-            _checkpoint_source=None,
-        )
-
-        def generate(input):
-            captured_versions.append((input.rollout_id, input.weight_version))
-            return RolloutFnTrainOutput(samples=[])
-
-        executor.generate_rollout = generate
-        monkeypatch.setattr(executor_module, "postprocess_rollout_data", lambda _args, data, **kw: (data, {}))
-        monkeypatch.setattr(executor_module, "assert_samples_weight_version_sane", lambda *a, **kw: None)
-        monkeypatch.setattr(executor_module.RolloutDataInjectionUtil, "should_inject", lambda *a: False)
-        get = components.rollout_executor.get._fn
-
-        async def update_weights(_model, _executor, rollout_id=None):
-            if rollout_id == 0:
-                publishing.set()
-                await published.wait()
-                executor.weight_version = 1
-
-        async def drain(rollout_id):
-            await executor_module.RolloutExecutor.__ray_actor_class__._get_rollout_data(executor, rollout_id)
-            return await get(rollout_id)
-
-        monkeypatch.setattr(train_async_driver, "update_weights", update_weights)
-        monkeypatch.setattr(components.rollout_executor.get, "_fn", drain)
-        driver = asyncio.create_task(train_async_driver.train(args))
-        try:
-            await asyncio.wait_for(publishing.wait(), timeout=10)
-            # Allow an incorrectly detached update's caller to start the next drain.
-            await asyncio.sleep(0)
-            assert captured_versions == [(0, 0)]
-            assert not driver.done()
-            published.set()
-            await asyncio.wait_for(driver, timeout=10)
-            assert captured_versions == [(0, 0), (1, 1)]
-        finally:
-            published.set()
-            driver.cancel()
-            await asyncio.gather(driver, return_exceptions=True)
-
-    @pytest.mark.parametrize("fully_async", [False, True])
-    @pytest.mark.parametrize("update_weights_interval", [1, 2])
-    async def test_consumed_batch_is_released_before_save(self, monkeypatch, fully_async, update_weights_interval):
-        class Batch(dict):
-            pass
-
-        args = _make_args(
-            fully_async=fully_async,
-            num_rollout=3,
-            save_interval=1,
-            update_weights_interval=update_weights_interval,
-        )
-        events = []
-        components = _install_driver_fakes(monkeypatch, args, events)
-        batches = {}
-
-        async def get(rollout_id):
-            batch = Batch(data_ref=f"rollout-data-{rollout_id}")
-            batches[rollout_id] = weakref.ref(batch)
-            return batch
-
-        async def train(rollout_id, batch):
-            assert batch is batches[rollout_id]()
-            assert batch["data_ref"] == f"rollout-data-{rollout_id}"
-
-        async def save(rollout_id, force_sync=False):
-            # asyncio can retain the completed Task's wakeup callback for one loop turn.
-            await asyncio.sleep(0)
-            gc.collect()
-            assert batches[rollout_id]() is None
-            assert f"consumed:rollout-data-{rollout_id}" in events
-            assert f"acknowledge:{rollout_id}" in events
-
-        monkeypatch.setattr(components.rollout_executor.get, "_fn", get)
-        monkeypatch.setattr(components.actor_model, "train", train)
-        monkeypatch.setattr(components.actor_model, "save_model", save)
-        await train_async_driver.train(args)
-
-
-async def test_failed_training_is_not_acknowledged(monkeypatch):
-    args = _make_args(num_rollout=1, save_interval=1)
-    events = []
-    components = _install_driver_fakes(monkeypatch, args, events)
-
-    async def fail_train(*args, **kwargs):
-        raise RuntimeError("training failed")
-
-    monkeypatch.setattr(components.actor_model, "train", fail_train)
-    with pytest.raises(RuntimeError, match="training failed"):
-        await train_async_driver.train(args)
-    assert "acknowledge:0" not in events
-    assert "executor_save:0" not in events

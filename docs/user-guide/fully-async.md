@@ -28,12 +28,6 @@ rollout API, and pass `--fully-async`:
 +   --fully-async
 ```
 
-A custom producer can subclass `FullyAsyncRolloutFn` and pass both
-`--fully-async --rollout-function-path my_package.MyFullyAsyncRolloutFn`.
-The explicit path takes precedence; the rollout worker checks that the instance is
-compatible with the fully async schedule. Eval uses the same instance unless an
-explicit `--eval-function-path` is supplied.
-
 ### Examples
 
 Four launch scripts show the mode end to end, from a single-node smoke test to a
@@ -195,26 +189,6 @@ takes over all three methods and therefore every group-level decision, and the f
 this section apply only if your class reads them. The one decision that stays outside is
 `--rollout-sample-filter-path`, which runs on the assembled batch rather than on
 individual groups.
-
-Custom buffers must call `DataBufferConstructorInput.discard_handler_fn`, when provided,
-for permanently rejected or evicted prompt groups. Use `unused_handler_fn` for the
-configured drop/retry policy. These callbacks keep checkpoint replay consistent with
-filtering decisions.
-
-## Checkpoint replay
-
-With the built-in global data source, `train_async.py` checkpoints the dataset cursor
-and original inputs of every issued but unconsumed prompt group together. A group is
-acknowledged after successful training; deliberate filter drops are retired, while
-retries remain pending. This includes the driver's prefetched batch, completed groups
-in the default buffer, and requests still generating.
-
-On resume, pending inputs retain their sample/group IDs and are replayed before reading
-new prompts from the saved cursor. Responses are regenerated under the resumed weights;
-this does not reproduce the original response text or training order. Older checkpoints
-without pending inputs remain readable, but cannot recover prompts they did not save.
-Custom data sources must implement equivalent pending-state persistence themselves;
-custom rollout functions must preserve the source's group IDs.
 
 ## Evaluation
 

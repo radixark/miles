@@ -130,7 +130,6 @@ def make_args(**overrides: Any) -> Namespace:
         lora_rank=0,
         rollout_function_path="miles.rollout.sglang_rollout.generate_rollout",
         eval_function_path="miles.rollout.sglang_rollout.eval_generate_rollout",
-        fully_async=False,
         data_source_path="miles.data.dummy.DummyDataSource",
         custom_reward_post_process_path=None,
         custom_convert_samples_to_train_data_path=None,

@@ -170,13 +170,13 @@ class RolloutComponents(NamedTuple):
     num_rollout_per_epoch: int | None
 
 
-async def create_rollout_components(args, *, checkpoint_replay=False) -> RolloutComponents:
+async def create_rollout_components(args) -> RolloutComponents:
     inference_controller = InferenceController(args)
     await inference_controller.init()
 
     rollout_executor = RolloutExecutor.options(
         num_cpus=1, num_gpus=0, **(compute_ray_pin_head_options() if args.pin_rollout_manager_to_head else {})
-    ).remote(args=args, checkpoint_replay=checkpoint_replay)
+    ).remote(args=args)
 
     # calculate num_rollout from num_epoch
     num_rollout_per_epoch = None

@@ -32,14 +32,12 @@ class _FakeExecutorClass:
     def __init__(self, handle: MagicMock) -> None:
         self._handle = handle
         self.arg_snapshots: list[Namespace] = []
-        self.replay_modes: list[bool] = []
 
     def options(self, **_kwargs):
         return self
 
-    def remote(self, *, args, checkpoint_replay=False):
+    def remote(self, *, args):
         self.arg_snapshots.append(deepcopy(args))
-        self.replay_modes.append(checkpoint_replay)
         return self._handle
 
 
@@ -82,8 +80,7 @@ class TestCreateRolloutComponents:
         """Starting the engines fills the router address into args, and Ray pickles args at construction."""
         args = _make_args(num_rollout=1)
 
-        await create_rollout_components(args, checkpoint_replay=True)
-        assert fake_components.executor_cls.replay_modes == [True]
+        await create_rollout_components(args)
 
         (executor_args,) = fake_components.executor_cls.arg_snapshots
         assert executor_args.sglang_router_ip == "10.0.0.1"
