@@ -2,15 +2,18 @@
 
 The model shape is passed through Megatron's own flags (--csa-window-size,
 --o-groups, --num-residual-streams, ...); the plugin only declares what Megatron
-cannot know: which of the two implementations trains the model.
+cannot know: which implementation trains the model and its activation QAT policies.
 
 Imports nothing from megatron or the plugin's kernels: argument parsing runs long
 before tilelang can be loaded.
 """
 
+import os
 from argparse import ArgumentParser, Namespace
 
 DSV4_SPEC_MODULE = "miles_plugins.models.deepseek_v4.deepseek_v4"
+KV_QAT_MODES = ("legacy", "off", "fp8_ue8m0")
+INDEX_QAT_MODES = (*KV_QAT_MODES, "fp8_dynamic")
 
 
 def is_dsv4_model(args: Namespace) -> bool:
@@ -36,7 +39,39 @@ def add_dsv4_arguments(parser: ArgumentParser) -> ArgumentParser:
             "interchangeable."
         ),
     )
+    group.add_argument(
+        "--dsv4-kv-qat",
+        choices=KV_QAT_MODES,
+        default="legacy",
+        help=(
+            "Attention KV QAT for the miles implementation (SWA and C4/C128, excluding the RoPE tail). "
+            "legacy follows config.fp8; off disables KV QAT; fp8_ue8m0 enables it independently of TE FP8 GEMMs. "
+            "Use off when comparing against the unified BF16 KV rollout backend."
+        ),
+    )
+    group.add_argument(
+        "--dsv4-index-qat",
+        choices=INDEX_QAT_MODES,
+        default="legacy",
+        help=(
+            "Indexer Q and compressed K QAT for V4_INDEXER_IMPL=tilelang. legacy follows config.fp8; "
+            "off disables it; fp8_ue8m0 or fp8_dynamic enable it independently of TE FP8 GEMMs. "
+            "fp8_dynamic uses unrounded FP32 scales, not a different GEMM or FP8 encoder."
+        ),
+    )
     return parser
+
+
+def validate_dsv4_qat_args(args: Namespace) -> None:
+    """Reject policies that the selected implementation would silently ignore."""
+    kv_mode = getattr(args, "dsv4_kv_qat", "legacy")
+    index_mode = getattr(args, "dsv4_index_qat", "legacy")
+    if kv_mode not in KV_QAT_MODES or index_mode not in INDEX_QAT_MODES:
+        raise ValueError(f"Invalid DeepSeek V4 QAT policies: {kv_mode=}, {index_mode=}.")
+    if args.dsv4_impl != "miles" and (kv_mode != "legacy" or index_mode != "legacy"):
+        raise ValueError("Explicit --dsv4-kv-qat/--dsv4-index-qat policies require --dsv4-impl miles.")
+    if index_mode != "legacy" and os.environ.get("V4_INDEXER_IMPL", "tilelang") != "tilelang":
+        raise ValueError("Explicit --dsv4-index-qat policies require V4_INDEXER_IMPL=tilelang.")
 
 
 def normalize_dsv4_args(args: Namespace) -> None:
@@ -46,6 +81,7 @@ def normalize_dsv4_args(args: Namespace) -> None:
     which post-init contract Megatron enforces on the config.
     """
     _validate_impl(args)
+    validate_dsv4_qat_args(args)
     # Both implementations take their hyper-connections from Megatron's own module.
     args.enable_hyper_connections = True
     args.experimental_attention_variant = "dsv4_hybrid" if args.dsv4_impl == "megatron" else "dsv4"
