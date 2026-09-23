@@ -4,8 +4,12 @@ from pathlib import Path
 
 from tests.utils.deploy.hot_restart.cluster_observer import ClusterSnapshot
 
+from miles.utils.audit_utils.event_logger.logger import read_events
+from miles.utils.audit_utils.event_logger.models import MetricEvent
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
 from miles.utils.test_utils.comparisons.metrics import read_metric_events
+
+DISCARDED_EVENTS_GLOB: str = ".trash_*"
 
 logger = logging.getLogger(__name__)
 
@@ -104,3 +108,15 @@ class HotRestartEvidence(FrozenStrictBaseModel):
 
 def evidence_path(*, dump_dir: str) -> Path:
     return Path(dump_dir) / "hot_restart" / "evidence.json"
+
+
+def read_step_events(events_dir: Path) -> dict[int, list[str]]:
+    events_of_rollout_id: dict[int, list[str]] = {}
+    for event in read_events(events_dir):
+        if isinstance(event, MetricEvent) and event.rollout_id is not None and TRAIN_STEP_METRIC_KEY in event.metrics:
+            events_of_rollout_id.setdefault(event.rollout_id, []).append(event.model_dump_json())
+    return dict(sorted(events_of_rollout_id.items()))
+
+
+def read_discarded_event_dirs(dump_dir: str) -> list[Path]:
+    return sorted(Path(dump_dir).glob(DISCARDED_EVENTS_GLOB))

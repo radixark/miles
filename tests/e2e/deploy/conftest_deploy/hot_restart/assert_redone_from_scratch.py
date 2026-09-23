@@ -5,11 +5,14 @@ from pathlib import Path
 from tests.e2e.deploy.conftest_deploy.hot_restart.assert_redone_from_checkpoint import (
     compute_expected_attempts,
     read_checkpoint_snapshot_dirs,
-    read_discarded_event_dirs,
-    read_step_events,
 )
 from tests.e2e.deploy.conftest_deploy.hot_restart.driver import ScheduledFreeze
-from tests.utils.deploy.hot_restart.evidence import HotRestartRecord, read_last_saved_iteration
+from tests.utils.deploy.hot_restart.evidence import (
+    HotRestartRecord,
+    read_discarded_event_dirs,
+    read_last_saved_iteration,
+    read_step_events,
+)
 
 from miles.utils.audit_utils.event_logger.logger import EVENTS_DIRNAME
 

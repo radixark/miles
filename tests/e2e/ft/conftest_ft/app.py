@@ -3,7 +3,6 @@
 import contextlib
 import os
 import shutil
-import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -21,10 +20,9 @@ from tests.e2e.ft.conftest_ft.cli_options import (
 
 from tests.e2e.ft.conftest_ft.execution import get_common_train_args, prepare, run_training
 from tests.e2e.ft.conftest_ft.modes import FTTestMode, resolve_mode
+from tests.utils.deploy.hot_restart.release import remove_release_and_wait
 
 from miles.utils.external_utils import command_utils
-from miles.utils.external_utils.command_utils.helm_backend.launcher.command_wrapper import Helm, Kubectl
-from miles.utils.external_utils.command_utils.helm_backend.launcher.observability.pod_facts import selected_pods
 from miles.utils.external_utils.command_utils.helm_backend.naming import ReleaseName
 from miles.utils.workers.types import ClusterBackend
 
@@ -34,8 +32,6 @@ TARGET_SIDE: str = "target"
 
 _DUMPS_ROOT_ENV = "MILES_TEST_DUMPS_ROOT"
 _DEFAULT_DUMPS_ROOT = Path("/node_public/dumps")
-_RELEASE_POLL_INTERVAL_SECONDS = 1.0
-_RELEASE_TIMEOUT_SECONDS = 300.0
 
 BuildArgsFn = Callable[[FTTestMode, str, bool], str]
 ConfigForSideFn = Callable[[str, command_utils.ExecuteTrainConfig], command_utils.ExecuteTrainConfig]
@@ -88,25 +84,6 @@ def _release_comparison_side(request: RunSideRequest) -> None:
         ).serialize(),
         namespace=config.namespace,
     )
-
-
-def remove_release_and_wait(*, release: str, namespace: str) -> None:
-    selector = Kubectl.release_selector(release)
-    deadline = time.monotonic() + _RELEASE_TIMEOUT_SECONDS
-
-    Helm.uninstall_if_present(release=release, namespace=namespace)
-    while True:
-        manifest = Helm.get_manifest(release, namespace)
-        pods = selected_pods(namespace, selector)
-        if manifest is None and not pods:
-            return
-        if time.monotonic() >= deadline:
-            pod_names = sorted(pod.metadata.name for pod in pods)
-            raise TimeoutError(
-                f"Timed out removing release {release!r} from namespace {namespace!r}; "
-                f"release_exists={manifest is not None}, pods={pod_names}"
-            )
-        time.sleep(_RELEASE_POLL_INTERVAL_SECONDS)
 
 
 def run_pipeline(

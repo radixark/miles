@@ -11,6 +11,7 @@ from pathlib import Path
 import typer
 from examples.infra_features.hot_restart.run_qwen3_0_6b_hot_restart import ScriptArgs, build_train_args
 from examples.infra_features.split_deployment.address_book import DEFAULT_TRAINER_ID
+from tests.e2e.deploy.conftest_deploy.common.comparisons import compare_deterministic_sides
 from tests.e2e.deploy.conftest_deploy.common.example_args import (
     assert_example_parallelism_matches,
     build_deterministic_test_args,
@@ -18,7 +19,7 @@ from tests.e2e.deploy.conftest_deploy.common.example_args import (
     with_replaced_value,
     without_weight_decay,
 )
-from tests.e2e.deploy.conftest_deploy.common.utils import compare_deterministic_sides, run_on_cluster
+from tests.e2e.deploy.conftest_deploy.common.utils import run_on_cluster
 from tests.e2e.deploy.conftest_deploy.hot_restart.assert_redone_from_checkpoint import (
     assert_only_post_checkpoint_steps_redone,
 )
