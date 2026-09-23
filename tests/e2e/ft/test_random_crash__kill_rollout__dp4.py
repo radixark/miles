@@ -11,16 +11,10 @@ register_cuda_ci(
     suite="stage-c-8-gpu-h200",
     labels=["ft-long"],
     hardware=["hopper", "blackwell"],
-    disabled=(
-        "FT soak tests pending CI infra support: every ft-long entry is disabled for the same reason, so "
-        "run-ci-ft-long currently schedules nothing. Unblock condition: an ft-long capable "
-        "stage-c-8-gpu-h200 lane, then drop this argument -- nothing in the test itself is known broken. "
-        "Until then tests/fast/e2e/ft/test_rollout_gated_recovery.py is the fast-layer stand-in for this entry "
-        "(suspend -> gated relaunch -> recovery, no GPU). See tests/e2e/ft/README.md."
-    ),
+    disabled="FT soak tests pending CI infra support",
 )
 
-_MODE: str = "kill_rollout__dp4__colocate"
+_MODE: str = "kill_rollout__dp4"
 
 if __name__ == "__main__":
     run_ci(_MODE)
