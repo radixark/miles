@@ -111,11 +111,9 @@ def monkey_patch_torch_dist():
 class ReloadableProcessGroup(torch.distributed.ProcessGroup):
     """Wrapper PG whose inner group can be destroyed and rebuilt.
 
-    Do not define python overrides for collectives here: pybind installs them
-    as trampoline overrides that wrap every returned Work in
-    c10d::PyProcessGroup::PyWorkHolder, which segfaults on torch 2.13.
-    Collectives dispatch through the C++ backend map that
-    ``_adopt_inner_backends`` registers; ``_fwd`` is for plumbing methods only.
+    Do not define python overrides for collectives here: pybind wraps every returned Work in
+    c10d::PyProcessGroup::PyWorkHolder, which segfaults on torch 2.13. Collectives dispatch through the
+    C++ backend map that `_adopt_inner_backends` registers; `_fwd` is for plumbing methods only.
     """
 
     GROUPS = {}
@@ -137,10 +135,8 @@ class ReloadableProcessGroup(torch.distributed.ProcessGroup):
     def _adopt_inner_backends(self) -> None:
         """Register the inner group's backends on this wrapper.
 
-        Newer torch (observed on 2.13) dispatches collectives through the C++
-        backend map of the group object itself, which __getattr__ forwarding
-        cannot cover. Must re-run after every reload: the fresh inner group
-        carries fresh backends.
+        torch 2.13 dispatches collectives through the group object's own C++ backend map, which
+        `__getattr__` forwarding cannot reach. Re-run after every reload: the new inner group has new backends.
         """
         if self.group is None:
             return

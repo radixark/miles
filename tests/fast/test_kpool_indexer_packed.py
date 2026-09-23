@@ -1,14 +1,4 @@
-"""kpool indexer: pools and the eligible-pool window stay inside each packed sequence.
-
-sglang scores one request at a time, so anything the trainer computes over a packed
-micro-batch has to reproduce that per sequence. Qwen3.8-Next's QSA indexer did not, and
-every sequence packed at position >= 1 ended up scoring the blocks at the front of the
-buffer (1.5-4.8 nats of train/rollout logprob gap per affected sample). GLM's kpool path
-is written packed-aware -- `pool_boundaries` counts pools per sequence and
-`kpool_select_topk` restricts the logits to `[pool_base, pool_base + eligible_pools)`.
-These tests pin that invariant so it cannot regress, with sequence lengths that are
-deliberately NOT multiples of ``kpool``.
-"""
+"""Kpool pools and the eligible-pool window stay inside each packed sequence, as sglang scores per request."""
 
 import pytest
 
@@ -37,7 +27,7 @@ def test_pools_are_counted_per_sequence():
 
 
 def test_eligible_pool_window_never_leaves_the_query_sequence():
-    """Mirrors the index arithmetic in ``kpool_select_topk``."""
+    """Mirrors the index arithmetic in `kpool_select_topk`."""
     cu = _cu(LENS)
     pool_cu = pool_boundaries(cu, KPOOL)
     total = int(cu[-1])

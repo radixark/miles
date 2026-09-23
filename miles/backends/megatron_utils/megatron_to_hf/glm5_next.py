@@ -1,12 +1,8 @@
-"""Megatron -> HF weight conversion for GLM-5.3-Flash (glm5_next), the inverse
-of ``miles_plugins/mbridge/glm5_next.py`` for the weight-update direction.
+"""Megatron -> HF weight-update conversion for GLM-5.3-Flash, the inverse of `miles_plugins/mbridge/glm5_next.py`.
 
-Everything DeepseekV3-shaped delegates to ``convert_deepseekv3_to_hf``; the DSA
-indexer names are handled here instead so the converter's rope-interleave
-half-swap can never run (GLM-5.3 has ``qk_rope_head_dim == 0``). The packed
-``kda.conv1d.weight`` splits into the checkpoint's ``{q,k,v}_conv1d.weight``;
-the three ``alpha_*`` parameters (always on the same rank) are buffered per
-(layer, site) and emitted as one ``hc_*_scale`` tensor once all have arrived.
+DSA indexer names are mapped here, not in `convert_deepseekv3_to_hf`, so its rope-interleave half-swap never runs
+(`qk_rope_head_dim == 0`). The three `alpha_*` of one mHC site arrive on the same rank and are buffered until they
+can be emitted as one `hc_*_scale` tensor.
 """
 
 import re
