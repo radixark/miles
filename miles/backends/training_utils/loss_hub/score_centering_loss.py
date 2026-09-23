@@ -141,5 +141,14 @@ def score_centering_loss_function(
     loss = loss + pg_loss
     log.update({key: sum_of_sample_mean(value).detach() for key, value in metrics.items()})
     log.update(loss=loss.detach(), pg_loss=pg_loss.detach())
-    log["train_rollout_logprob_abs_diff"] = sum_of_sample_mean((selected[:, 0].detach() - rollout).abs()).detach()
+    train_log_probs = torch.where(active, selected[:, 0].detach(), 0.0)
+    log["train_rollout_logprob_abs_diff"] = sum_of_sample_mean((train_log_probs - rollout).abs()).detach()
+    # Match the policy-loss diagnostic: sampled-token k3 estimate of KL(rollout || train).
+    rollout_train_kl = compute_approx_kl(rollout, train_log_probs, kl_loss_type="low_var_kl")
+    rollout_train_kl = torch.where(
+        active,
+        torch.nan_to_num(rollout_train_kl, nan=0.0, posinf=0.0, neginf=0.0),
+        0.0,
+    )
+    log["train_rollout_kl"] = sum_of_sample_mean(rollout_train_kl).detach()
     return loss, log

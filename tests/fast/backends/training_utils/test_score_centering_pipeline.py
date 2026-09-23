@@ -150,6 +150,12 @@ def test_multiturn_wire_dp_split_and_training_gradient(single_rank: None, mode: 
     assert torch.isfinite(loss) and all(torch.isfinite(value) for value in metrics.values())
     assert (actual[0, 3] == 0).all()  # observation token
     assert (actual[..., 8:] == 0).all()  # padded vocabulary
+    # Independent k3 formula checks direction and excludes the masked NaN observation.
+    train_logp = logp.gather(-1, torch.tensor(restored.tokens[2:])[:, None]).squeeze(-1).detach()
+    delta = (train_logp[mask] - torch.tensor(restored.rollout_log_probs)[mask]).clamp(-20, 20)
+    expected_kl = (delta.exp() - 1 - delta).clamp(-10, 10).mean()
+    torch.testing.assert_close(metrics["train_rollout_kl"], expected_kl)
+    assert not metrics["train_rollout_kl"].requires_grad
 
 
 def test_observation_padding_retry_and_disabled_wire() -> None:
@@ -386,6 +392,7 @@ def test_shared_advantages_loss_scaling_and_regularization(
     expected.backward()
     torch.testing.assert_close(logits.grad, reference_logits.grad, atol=1e-6, rtol=1e-5)
     assert normalizer == 1 and "entropy_loss" in metrics["keys"] and "kl_loss" in metrics["keys"]
+    assert "train_rollout_kl" in metrics["keys"]
 
 
 @pytest.mark.parametrize("candidates", [[2, 3, -1], [-1, 3, 2], [-1, 2, -1], [-1, -1, -1]])
