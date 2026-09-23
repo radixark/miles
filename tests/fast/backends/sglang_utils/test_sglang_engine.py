@@ -10,7 +10,7 @@ pytest.importorskip("sglang")
 
 from miles.backends.sglang_utils.server_args_utils import parse_server_args_argv
 from miles.backends.sglang_utils.sglang_engine import compute_engine_launch_cmd
-from miles.utils.lora import build_lora_config
+from miles.utils.lora.utils import build_lora_config
 
 
 def _cmd(

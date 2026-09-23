@@ -23,7 +23,7 @@ from miles.backends.megatron_utils.lora.utils import (
 from miles.utils.hf_utils.config import load_hf_config
 from miles.utils.hf_utils.weight_mapping import HfWeightMapping
 from miles.utils.megatron_bridge_utils import apply_dsa_backend_args
-from miles.utils.multi_lora import is_multi_lora_enabled, targets_expert_leaves
+from miles.utils.lora.utils import is_multi_lora_enabled, targets_expert_leaves
 
 logger = logging.getLogger(__name__)
 

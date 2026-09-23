@@ -932,11 +932,11 @@ class TestMultiLoRAValidation:
     @pytest.fixture(autouse=True)
     def _bridge_selector(self, monkeypatch):
         monkeypatch.setattr(
-            "miles.utils.arguments.HfWeightMapping.from_config",
+            "miles.utils.lora.arguments.HfWeightMapping.from_config",
             lambda config: SimpleNamespace(parameter_names=frozenset()),
         )
         monkeypatch.setattr(
-            "miles.utils.arguments.load_hf_config",
+            "miles.utils.lora.arguments.load_hf_config",
             lambda path: SimpleNamespace(model_type="qwen3", to_dict=lambda: {"model_type": "qwen3"}),
         )
         monkeypatch.setattr(
@@ -964,7 +964,7 @@ class TestMultiLoRAValidation:
 
     def test_hf_selection_does_not_resolve_through_bridge(self, monkeypatch):
         monkeypatch.setattr(
-            "miles.utils.arguments.HfWeightMapping.from_config",
+            "miles.utils.lora.arguments.HfWeightMapping.from_config",
             lambda config: SimpleNamespace(parameter_names=frozenset({"model.layers.0.self_attn.q_proj.weight"})),
         )
 
@@ -997,7 +997,7 @@ class TestMultiLoRAValidation:
                 )
             )
         )
-        monkeypatch.setattr("miles.utils.arguments.HfWeightMapping.from_config", lambda config: hf_mapping)
+        monkeypatch.setattr("miles.utils.lora.arguments.HfWeightMapping.from_config", lambda config: hf_mapping)
 
         def unexpected_bridge(*args, **kwargs):
             pytest.fail("HF exclusions must not initialize Bridge")

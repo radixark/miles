@@ -8,13 +8,13 @@ import sys
 from sglang.srt.server_args import ServerArgs
 
 from miles.backends.sglang_utils.server_args_utils import server_args_to_argv
-from miles.utils.lora import (
+from miles.utils.lora.utils import (
     LORA_ADAPTER_NAME,
     engine_loads_adapter_from_disk,
     lora_base_cpu_backup_enabled,
     lora_rollout_enabled,
 )
-from miles.utils.multi_lora import is_multi_lora_enabled
+from miles.utils.lora.utils import is_multi_lora_enabled
 from miles.utils.workers.argv_utils import _record_field_names
 
 logger = logging.getLogger(__name__)

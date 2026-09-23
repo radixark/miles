@@ -1,7 +1,7 @@
 import re
 
 from miles.utils.hf_utils.weight_mapping import HfWeightMapping
-from miles.utils.lora import matches_lora_target
+from miles.utils.lora.utils import matches_lora_target
 
 _CANONICAL_PROJECTIONS = {
     "q_proj": "linear_q",

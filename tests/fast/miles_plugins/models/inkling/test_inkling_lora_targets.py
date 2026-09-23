@@ -4,7 +4,7 @@ import pytest
 import torch
 
 from miles.utils.hf_utils.lora_targets import resolve_hf_lora_targets
-from miles.utils.lora import get_adapter_target_modules
+from miles.utils.lora.utils import get_adapter_target_modules
 from miles_plugins.models.inkling.lora import _export_dense_mlp, _export_experts, validate_inkling_lora_targets
 
 

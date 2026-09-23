@@ -16,7 +16,7 @@ from miles.backends.megatron_utils.lora.utils import (
     load_lora_adapter,
     save_lora_checkpoint,
 )
-from miles.utils.lora import LORA_ADAPTER_NAME, is_lora_weight_name
+from miles.utils.lora.utils import LORA_ADAPTER_NAME, is_lora_weight_name
 
 # ---------------------------------------------------------------------------
 # is_lora_enabled

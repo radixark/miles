@@ -15,7 +15,7 @@ from miles.utils.debug_utils.periodic_py_spy import maybe_start_periodic_pyspy_d
 from miles.utils.ft_utils.api_server.server import start_api_server
 from miles.utils.ft_utils.mini_ft_controller import maybe_start_mini_ft_controller
 from miles.utils.logging_utils import configure_logger
-from miles.utils.lora import lora_rollout_enabled
+from miles.utils.lora.utils import lora_rollout_enabled
 from miles.utils.misc import should_run_periodic_action
 from miles.utils.tracking_utils.tracking import finish_tracking, init_tracking
 

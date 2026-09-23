@@ -4,7 +4,7 @@ import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from miles.utils.lora import matches_lora_target
+from miles.utils.lora.utils import matches_lora_target
 
 logger = logging.getLogger(__name__)
 
