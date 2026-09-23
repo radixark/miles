@@ -105,7 +105,7 @@ is deliberate: a mismatch names the layer instead of just saying the model diffe
 **Fault injection.** `--ci-fault-hooks` takes a JSON array of fault hook requests, such as
 `[{"request_id": "stop", "hook_name": "trainer_controller_step_end", "action": {"kind": "stop_cell", "cell_id": "trainer-engine-actor-00000"}, "rollout_id": 3}]`. A request waits at a named hook
 (`trainer_step_before_allreduce`, `trainer_controller_step_end`, `orchestrator_step_end`, the weight-update
-hooks) and runs its action there (`kill_process`, `exit_process`, `stop_process`, `deadlock_thread`, `stop_cell`, `start_cell`,
+hooks) and runs its action there (`kill_process`, `exit_process`, `stop_cell`, `start_cell`,
 `sleep_forever`, `observe`). It is how the fault-tolerance suite kills things on purpose. See
 [Fault Tolerance](/advanced/fault-tolerance).
 
