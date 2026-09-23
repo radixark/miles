@@ -430,6 +430,7 @@ class MegatronTrainRayActor(TrainRayActor):
                 rollout_id=rollout_id,
                 store_prefix=store_prefix,
                 fp32_output=False,
+                use_rollout_sampling_mask=store_prefix == "" and self.args.use_sampling_support_replay,
             )
 
     @with_logs

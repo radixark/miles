@@ -67,23 +67,40 @@ class _Backend:
         }
 
 
-@pytest_asyncio.fixture(params=[True, "v2"], ids=["v1", "v2"])
-async def env(request, tokenizer, monkeypatch):
+async def _serve_env(tokenizer, monkeypatch, version, *, use_sampling_support_replay=False):
     monkeypatch.setattr(sessions, "load_tokenizer", lambda *args, **kwargs: tokenizer)
     backend = _Backend(tokenizer)
     config = make_session_server_config(
         hf_checkpoint="Qwen/Qwen3-0.6B",
         apply_chat_template_kwargs={"enable_thinking": False},
-        use_session_server=request.param,
+        use_session_server=version,
         use_rollout_routing_replay=True,
         use_rollout_indexer_replay=True,
+        use_sampling_support_replay=use_sampling_support_replay,
         session_sample_picker_path="miles.rollout.session.v2.picker_hub.drop_retries",
         session_sample_postprocessor_path="miles.rollout.session.v2.postprocessor_hub.default_postprocess",
     )
     app = FastAPI()
     sessions.setup_session_routes(app, backend, config, use_addition_r3=True)
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url="http://session") as client:
-        yield SimpleNamespace(client=client, backend=backend, version=request.param)
+        yield SimpleNamespace(client=client, backend=backend, version=version)
+
+
+@pytest_asyncio.fixture(params=[True, "v2"], ids=["v1", "v2"])
+async def env(request, tokenizer, monkeypatch):
+    async for value in _serve_env(tokenizer, monkeypatch, request.param):
+        yield value
+
+
+@pytest_asyncio.fixture(params=[True, "v2"], ids=["v1", "v2"])
+async def replay_env(request, tokenizer, monkeypatch):
+    async for value in _serve_env(
+        tokenizer,
+        monkeypatch,
+        request.param,
+        use_sampling_support_replay=True,
+    ):
+        yield value
 
 
 async def _create(env, body=b""):
@@ -187,23 +204,25 @@ SAMPLING = {"temperature": 0.6, "top_p": 0.9, "top_k": 20}
 
 
 @pytest.mark.parametrize("evaluation", [False, True])
-async def test_creation_sampling_defaults_fill_only_omitted_fields(env, evaluation):
-    sid = await _create(env, json.dumps({**SAMPLING, "evaluation": evaluation}).encode())
-    await _chat(env, sid, [USER])
+async def test_creation_sampling_defaults_fill_only_omitted_fields(replay_env, evaluation):
+    sid = await _create(replay_env, json.dumps({**SAMPLING, "evaluation": evaluation}).encode())
+    await _chat(replay_env, sid, [USER])
     temperature = 0.1 if evaluation else SAMPLING["temperature"]
-    await _chat(env, sid, [USER, ASSISTANT, TOOL], temperature=temperature, top_p=None, top_k=-1)
-    omitted, explicit = env.backend.requests[-2:]
+    await _chat(replay_env, sid, [USER, ASSISTANT, TOOL], temperature=temperature, top_p=None, top_k=10)
+    omitted, explicit = replay_env.backend.requests[-2:]
     assert {key: omitted[key] for key in SAMPLING} == SAMPLING
-    assert {key: explicit[key] for key in SAMPLING} == {**SAMPLING, "temperature": temperature, "top_k": -1}
+    assert {key: explicit[key] for key in SAMPLING} == {**SAMPLING, "temperature": temperature, "top_k": 10}
+    assert omitted["return_sampling_mask"] is (not evaluation)
+    assert explicit["return_sampling_mask"] is (not evaluation)
 
 
 @pytest.mark.parametrize("saved,requested", [(0.6, 0.1), (0.6, 0.0), (0.0, 0.6)])
-async def test_training_temperature_mismatch_is_rejected_before_forwarding(env, saved, requested):
-    sid = await _create(env, json.dumps({**SAMPLING, "temperature": saved}).encode())
+async def test_training_temperature_mismatch_is_rejected_before_forwarding(replay_env, saved, requested):
+    sid = await _create(replay_env, json.dumps({**SAMPLING, "temperature": saved}).encode())
     turns = [[USER], [USER, ASSISTANT, TOOL], [USER, ASSISTANT, TOOL]]
     for messages in turns:
-        request_count = len(env.backend.requests)
-        response = await env.client.post(
+        request_count = len(replay_env.backend.requests)
+        response = await replay_env.client.post(
             f"/sessions/{sid}/v1/chat/completions",
             json={"messages": messages, "temperature": requested},
         )
@@ -211,16 +230,17 @@ async def test_training_temperature_mismatch_is_rejected_before_forwarding(env, 
         assert response.json()["error"] == (
             f"temperature={requested!r} does not match the training session temperature={saved!r}"
         )
-        assert len(env.backend.requests) == request_count
-        await _chat(env, sid, messages, temperature=saved, top_p=0.5, top_k=-1)
-        wire = env.backend.requests[-1]
-        assert (wire["temperature"], wire["top_p"], wire["top_k"]) == (saved, 0.5, -1)
+        assert len(replay_env.backend.requests) == request_count
+        await _chat(replay_env, sid, messages, temperature=saved, top_p=0.5, top_k=10)
+        wire = replay_env.backend.requests[-1]
+        assert (wire["temperature"], wire["top_p"], wire["top_k"]) == (saved, 0.5, 10)
+        assert wire["return_sampling_mask"] is True
 
 
-async def test_training_null_temperature_uses_registered_value(env):
-    sid = await _create(env, json.dumps(SAMPLING).encode())
-    await _chat(env, sid, [USER], temperature=None)
-    assert env.backend.requests[-1]["temperature"] == SAMPLING["temperature"]
+async def test_training_null_temperature_uses_registered_value(replay_env):
+    sid = await _create(replay_env, json.dumps(SAMPLING).encode())
+    await _chat(replay_env, sid, [USER], temperature=None)
+    assert replay_env.backend.requests[-1]["temperature"] == SAMPLING["temperature"]
 
 
 async def test_creation_without_sampling_defaults_leaves_omitted_fields_unset(env):
@@ -240,7 +260,7 @@ async def test_an_integer_temperature_is_accepted_as_a_float_default(env):
 
 async def test_an_integral_float_top_k_is_stored_as_an_int(env):
     """An eval dataset YAML can spell top_k as 40.0; the engine must still receive an integer."""
-    sid = await _create(env, b'{"top_k": 40.0}')
+    sid = await _create(env, b'{"evaluation": true, "top_k": 40.0}')
     await _chat(env, sid, [USER])
     top_k = env.backend.requests[-1]["top_k"]
     assert top_k == 40 and isinstance(top_k, int)

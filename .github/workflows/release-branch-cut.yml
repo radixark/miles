@@ -105,9 +105,10 @@ jobs:
             | python3 -c "import sys, json, re; names = [t['name'] for t in json.load(sys.stdin)['results']]; c = sorted(n for n in names if re.fullmatch(r'dev-\d{12}', n)); print(c[-1] if c else 'dev')")
 
           # docker-build.yml's scheduled prune keeps only the newest 20 dev-<ts>
-          # tags, so a pinned one vanishes within weeks — and a .postN re-run of
-          # this workflow would then fail every container pull. Retag the frozen
-          # image under a release-scoped name the prune regex never matches.
+          # tags plus those under 14 days old, so a pinned one vanishes within
+          # weeks — and a .postN re-run of this workflow would then fail every
+          # container pull. Retag the frozen image under a release-scoped name the
+          # prune regex never matches.
           CI_IMAGE_TAG="release-${BRANCH_NAME#release/}-ci"
           docker buildx imagetools create -t "radixark/miles:${CI_IMAGE_TAG}" "radixark/miles:${DEV_IMAGE_TAG}"
           echo "Retagged radixark/miles:${DEV_IMAGE_TAG} -> radixark/miles:${CI_IMAGE_TAG}"

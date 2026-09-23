@@ -112,6 +112,43 @@ class TestPrepareChatRequest:
         assert prepared.body["chat_template_kwargs"] == {"enable_thinking": True}
         assert prepared.body["logprobs"] is True  # resolve_request_args_by_config ran on the same body
 
+    def test_sampling_replay_uses_session_defaults_and_keeps_request_filters(self):
+        prepared = prepare_chat_request(
+            {"top_p": 0.8, "custom_params": {"caller_option": "kept"}},
+            self._tito(),
+            config=make_session_server_config(),
+            turn_args=None,
+            sampling_defaults={"temperature": 0.7, "top_p": 0.95, "top_k": 32},
+            sampling_support_replay=True,
+        )
+
+        assert prepared.body["return_sampling_mask"] is True
+        assert prepared.body["temperature"] == 0.7
+        assert prepared.body["top_p"] == 0.8
+        assert prepared.body["top_k"] == 32
+        assert prepared.body["custom_params"] == {"caller_option": "kept"}
+
+    def test_sampling_replay_cannot_be_disabled_by_a_request(self):
+        prepared = prepare_chat_request(
+            {"return_sampling_mask": False},
+            self._tito(),
+            config=make_session_server_config(),
+            turn_args=None,
+            sampling_defaults={"temperature": 0.7, "top_p": 0.95, "top_k": 32},
+            sampling_support_replay=True,
+        )
+
+        assert prepared.body["return_sampling_mask"] is True
+
+    def test_bounded_request_requires_session_sampling_replay(self):
+        with pytest.raises(MessageValidationError, match="bounded training-request sampling"):
+            prepare_chat_request(
+                {"temperature": 1.0, "top_p": 1.0, "top_k": 32},
+                self._tito(),
+                config=make_session_server_config(),
+                turn_args=None,
+            )
+
     @pytest.mark.parametrize("client_tools", [None, [], [{"function": {"name": "override"}}]])
     def test_launch_tools_stay_top_level_and_client_tools_override_them(self, client_tools):
         launch_kwargs = {**self.LAUNCH, "tools": self.TOOLS}
@@ -233,7 +270,14 @@ def test_eval_keeps_sampling_resolution_and_overrides_model_replay(sampling):
     client_args = {**sampling, "return_sampling_mask": True, "routed_experts_start_len": 99}
     history = {"temperature": 0.3, "chat_template_kwargs": {}}
     original, original_history = deepcopy(client_args), deepcopy(history)
-    prepared = prepare_chat_request(client_args, Model(MagicMock()), config=config, turn_args=history, evaluation=True)
+    prepared = prepare_chat_request(
+        client_args,
+        Model(MagicMock()),
+        config=config,
+        turn_args=history,
+        evaluation=True,
+        sampling_support_replay=True,
+    )
     assert {key: prepared.body[key] for key in ("temperature", "top_p", "top_k")} == {
         "temperature": 0.7,
         "top_p": 0.9,
@@ -250,7 +294,8 @@ def test_eval_keeps_sampling_resolution_and_overrides_model_replay(sampling):
 @pytest.mark.parametrize("evaluation", [False, True])
 def test_session_sampling_defaults_fill_only_omitted_fields(evaluation):
     temperature = 0.1 if evaluation else 0.6
-    client_args = {"temperature": temperature, "top_p": None, "top_k": -1}
+    top_k = -1 if evaluation else 10
+    client_args = {"temperature": temperature, "top_p": None, "top_k": top_k}
     original = deepcopy(client_args)
     prepared = prepare_chat_request(
         client_args,
@@ -259,11 +304,12 @@ def test_session_sampling_defaults_fill_only_omitted_fields(evaluation):
         turn_args=None,
         evaluation=evaluation,
         sampling_defaults={"temperature": 0.6, "top_p": 0.9, "top_k": 20},
+        sampling_support_replay=not evaluation,
     )
     assert {key: prepared.body[key] for key in ("temperature", "top_p", "top_k")} == {
         "temperature": temperature,
         "top_p": 0.9,
-        "top_k": -1,
+        "top_k": top_k,
     }
     assert client_args == original
 

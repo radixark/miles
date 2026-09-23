@@ -329,6 +329,13 @@ class TestWorkflowScopeSeam:
         assert "resolve-ci-image" not in stage_a
         assert "resolve-ci-image" not in stage_b
 
+    def test_non_default_base_pr_needs_run_ci_label(self):
+        policy_gate = self._workflow().split("  resolve-ci-policy:", 1)[1].split("    runs-on:", 1)[0]
+
+        assert "github.event.pull_request.base.ref == github.event.repository.default_branch" in policy_gate
+        assert "contains(toJSON(github.event.pull_request.labels.*.name), '\"run-ci')" in policy_gate
+        assert "github.event_name != 'pull_request'" in policy_gate
+
     def test_cpu_and_gpu_stages_use_dedicated_reusable_workflows(self):
         workflow = self._workflow()
         assert workflow.count("uses: ./.github/workflows/_run-cpu-ci.yml") == 2
