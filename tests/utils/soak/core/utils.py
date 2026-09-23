@@ -1,4 +1,5 @@
 import logging
+import os
 import signal
 from collections.abc import Awaitable, Iterator
 from contextlib import contextmanager
@@ -30,7 +31,7 @@ def recording_error(errors: dict[str, str], key: str) -> Iterator[None]:
 
 
 def compute_base_url(config: command_utils.ExecuteTrainConfig) -> str:
-    raise NotImplementedError
+    return f"http://{config.create_backend().api_server_host(config)}:{API_SERVER_PORT}"
 
 
 def compute_release_of_config(config: command_utils.ExecuteTrainConfig) -> str:
@@ -52,19 +53,26 @@ _DEFAULT_DUMPS_ROOT = Path("/node_public/dumps")
 
 
 def get_dumps_root() -> Path:
-    raise NotImplementedError
+    root = Path(os.environ.get(_DUMPS_ROOT_ENV) or _DEFAULT_DUMPS_ROOT)
+    if not root.is_absolute():
+        raise ValueError("The shared dumps root must be an absolute path")
+    return root
 
 
 def resolve_dump_dir(test_name: str, *, run_id: str) -> str:
-    raise NotImplementedError
+    dump_dir = get_dumps_root() / run_id / test_name
+    os.makedirs(dump_dir, exist_ok=True)
+    return str(dump_dir)
 
 
 def assert_fresh_dump_dir(dump_dir: Path) -> None:
-    raise NotImplementedError
+    if dump_dir.exists() and any(dump_dir.iterdir()):
+        raise ValueError(f"Soak dump directory contains existing artifacts: {dump_dir}; choose a new run_id")
+    dump_dir.mkdir(parents=True, exist_ok=True)
 
 
 def evidence_directory(dump_dir: Path) -> Path:
-    raise NotImplementedError
+    return dump_dir.with_name(f"{dump_dir.name}-soak") / uuid4().hex
 
 
 async def note_launch_outcome(
