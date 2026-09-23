@@ -1,6 +1,4 @@
 openai-agents<0.5
-# 0.3.0 dropped CommandRequest, which prime 0.6.19 still imports.
-prime-sandboxes<0.3
 # 0.1.11 removes the renderer pool APIs used by Miles and Verifiers 0.2.0.
 renderers==0.1.10
 # 0.2.1 requires OpenAI>=2.9, while SGLang pins OpenAI==2.6.1.
