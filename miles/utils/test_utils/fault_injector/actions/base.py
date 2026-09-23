@@ -3,6 +3,8 @@ import subprocess
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from pydantic import Field
+
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
 
 if TYPE_CHECKING:
@@ -12,6 +14,8 @@ if TYPE_CHECKING:
 
 class FaultHookContext(FrozenStrictBaseModel):
     weight_version: int | None = None
+    debug_weight_update_id: str | None = None
+    snapshot_cell_id_to_hashes: dict[str, str] = Field(default_factory=dict)
     rollout_id: int | None = None
     attempt: int | None = None
     trainer_model_id: str | None = None

@@ -924,7 +924,7 @@ class MegatronTrainRayActor(TrainRayActor):
 
     @with_logs
     @timer
-    def update_weights(self, info: UpdatableEngines) -> WeightUpdateOutput:
+    def update_weights(self, info: UpdatableEngines, debug_weight_update_id: str) -> WeightUpdateOutput:
         self._heartbeat.bump()
         if self.args.debug_train_only or self.args.debug_rollout_only:
             return WeightUpdateOutput(weight_version=None, failed_cell_ids=())
@@ -967,7 +967,13 @@ class MegatronTrainRayActor(TrainRayActor):
         with torch_memory_saver.disable() if self.args.offload_train else nullcontext():
             print_memory("before update_weights")
             weight_version = self._get_actor_weight_version()
-            with fault_hook_controller.with_context(FaultHookContext(weight_version=weight_version)):
+            with fault_hook_controller.with_context(
+                FaultHookContext(
+                    weight_version=weight_version,
+                    debug_weight_update_id=debug_weight_update_id,
+                    snapshot_cell_id_to_hashes=snapshot_cell_id_to_hashes,
+                )
+            ):
                 self.weight_updater.update_weights(weight_version=weight_version)
             print_memory("after update_weights")
 

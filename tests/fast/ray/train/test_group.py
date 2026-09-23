@@ -18,7 +18,11 @@ from miles.ray.train.group import TrainerController, compute_trainer_health_chec
 from miles.ray.train_actor import WeightUpdateOutput
 from miles.utils import object_store
 from miles.utils.audit_utils.event_logger.logger import EventLogger, read_events, set_event_logger
-from miles.utils.audit_utils.event_logger.models import CellReconfigureEvent
+from miles.utils.audit_utils.event_logger.models import (
+    CellReconfigureEvent,
+    TrainGroupStepEndEvent,
+    WeightUpdateResultEvent,
+)
 from miles.utils.audit_utils.process_identity import SimpleProcessIdentity
 from miles.utils.audit_utils.witness.allocator import WitnessIdAllocator
 from miles.utils.data import RolloutDataPack
@@ -1675,7 +1679,7 @@ class TestUpdateWeightsGivesUpOnADeadTrainersTargets:
 
         output = await controller.update_weights(info=_make_engines(4))
 
-        assert output == _output(4)
+        assert (output.weight_version, output.failed_cell_ids) == (4, ())
         assert _targets_of(cells[0]) == [["rollout-0"]]
         assert _targets_of(cells[1]) == [["rollout-1"], ["rollout-0", "rollout-1"]]
         assert _targets_of(cells[2]) == [["rollout-2"], ["rollout-2", "rollout-3"]]
@@ -1807,3 +1811,150 @@ class TestBlameTheSenderThatReachedNoneOfItsTargets:
             await controller.update_weights(info=_make_engines(4))
 
         assert cells[0].killed and cells[1].killed
+
+
+# ========================= weight update result events ========================
+
+
+class TestWeightUpdateResultEvent:
+    @pytest.fixture
+    def _event_log_dir(self, tmp_path: Path):
+        set_event_logger(EventLogger(log_dir=tmp_path, source=SimpleProcessIdentity(component="main")))
+        try:
+            yield tmp_path
+        finally:
+            set_event_logger(None)
+
+    @staticmethod
+    def _results(log_dir: Path) -> list[WeightUpdateResultEvent]:
+        return [e for e in read_events(log_dir) if isinstance(e, WeightUpdateResultEvent)]
+
+    @staticmethod
+    def _controller(cells: list[_FakeTrainerCell]) -> TrainerController:
+        controller = _make_partial_target_controller(cells)
+        controller._debug_trainer_load_state_timestamp = 123.5
+        return controller
+
+    async def test_a_partial_success_logs_the_updated_and_failed_cells_under_one_update_id(self, _event_log_dir: Path):
+        """The result names exactly the cells that took the version, with the id every sender and the output used."""
+        cells = [
+            _FakeTrainerCell(cell_index=0, output=_output(5, "rollout-1")),
+            _FakeTrainerCell(cell_index=1, output=_output(5)),
+        ]
+        info = _make_engines(4)
+
+        output = await self._controller(cells).update_weights(info=info, rollout_id=3)
+
+        [event] = self._results(_event_log_dir)
+        assert event.debug_weight_update_id == output.debug_weight_update_id
+        assert {kwargs["debug_weight_update_id"] for cell in cells for kwargs in cell.received_kwargs} == {
+            event.debug_weight_update_id
+        }
+        assert event.rollout_id == 3
+        assert (event.candidate_version, event.published_version) == (5, 5)
+        assert event.updated_cell_ids == ["rollout-0", "rollout-2", "rollout-3"]
+        assert event.failed_cell_ids == ["rollout-1"]
+        assert event.snapshot_cell_id_to_hashes == info.snapshot_cell_id_to_hashes
+        assert event.debug_trainer_load_state_timestamp == output.debug_trainer_load_state_timestamp == 123.5
+
+    async def test_a_sender_that_raised_puts_its_whole_share_in_the_failed_cells(self, _event_log_dir: Path):
+        """A dead sender's targets never took the version, so they must not be reported updated."""
+        cells = [
+            _FakeTrainerCell(cell_index=0, error=RuntimeError("trainer died")),
+            _FakeTrainerCell(cell_index=1, output=_output(5)),
+        ]
+
+        await self._controller(cells).update_weights(info=_make_engines(4))
+
+        [event] = self._results(_event_log_dir)
+        assert event.updated_cell_ids == ["rollout-2", "rollout-3"]
+        assert sorted(event.failed_cell_ids) == ["rollout-0", "rollout-1"]
+        assert event.published_version == 5
+
+    async def test_an_update_without_targets_publishes_nothing(self, _event_log_dir: Path):
+        """No engine took any weights, so a published version would claim coverage that does not exist."""
+        await self._controller([_FakeTrainerCell(cell_index=0)]).update_weights(info=_make_engines(0))
+
+        [event] = self._results(_event_log_dir)
+        assert event.updated_cell_ids == [] and event.failed_cell_ids == []
+        assert event.published_version is None
+
+    async def test_a_skipped_broadcast_logs_no_published_version(self, _event_log_dir: Path):
+        """Workers that skipped the broadcast answer no version, which must not be recorded as published."""
+        cells = [_FakeTrainerCell(cell_index=0, output=_output(None))]
+
+        await self._controller(cells).update_weights(info=_make_engines(2))
+
+        [event] = self._results(_event_log_dir)
+        assert (event.candidate_version, event.published_version) == (None, None)
+
+    async def test_each_update_gets_a_fresh_id(self, _event_log_dir: Path):
+        """Reusing an id would let one update's checksum record cover another update."""
+        controller = self._controller([_FakeTrainerCell(cell_index=0)])
+
+        first = await controller.update_weights(info=_make_engines(1))
+        second = await controller.update_weights(info=_make_engines(1))
+
+        assert [e.debug_weight_update_id for e in self._results(_event_log_dir)] == [
+            first.debug_weight_update_id,
+            second.debug_weight_update_id,
+        ]
+        assert first.debug_weight_update_id != second.debug_weight_update_id
+
+    async def test_the_first_alive_dispatch_logs_the_failed_cells_its_worker_reported(self, _event_log_dir: Path):
+        """The broadcast path must log the same outcome shape as the split path."""
+        group = TrainerController.__new__(TrainerController)
+        group.args = _make_broadcast_args()
+        group._trainer_id = "trainer-0"
+        group._debug_trainer_load_state_timestamp = 7.0
+        group._execute_first_alive = AsyncMock(return_value=[_output(2, "rollout-1"), _output(2, "rollout-1")])
+
+        output = await group.update_weights(info=_make_engines(2), rollout_id=1)
+
+        [event] = self._results(_event_log_dir)
+        assert event.debug_weight_update_id == output.debug_weight_update_id
+        assert group._execute_first_alive.await_args.kwargs["debug_weight_update_id"] == output.debug_weight_update_id
+        assert (event.updated_cell_ids, event.failed_cell_ids) == (["rollout-0"], ["rollout-1"])
+        assert event.debug_trainer_load_state_timestamp == 7.0
+
+    async def test_no_event_is_logged_without_an_event_logger(self):
+        """A run without the event logger still gets its output instead of failing on the log call."""
+        output = await self._controller([_FakeTrainerCell(cell_index=0)]).update_weights(info=_make_engines(1))
+
+        assert output.weight_version == 5
+
+    async def test_reloading_the_trainer_state_starts_a_new_lineage(self, _event_log_dir: Path):
+        """A load_state rewinds the weights, so later results must not share the earlier lineage."""
+        info = SimpleNamespace(engine_cell_ids=["rollout-0"], snapshot_cell_id_to_hashes={"rollout-0": "h"})
+        group = await _make_alive_controller(num_cells=1)
+        for handle in get_raw_actor_handles(_cell(group, 0)):
+            ray.get(handle.set_update_weights_return_value.remote(_output(1)))
+        before = await group.update_weights(info=info)
+
+        await group.load_state()
+        after = await group.update_weights(info=info)
+
+        first, second = self._results(_event_log_dir)
+        assert after.debug_trainer_load_state_timestamp > before.debug_trainer_load_state_timestamp
+        assert first.debug_trainer_load_state_timestamp == before.debug_trainer_load_state_timestamp
+        assert second.debug_trainer_load_state_timestamp == after.debug_trainer_load_state_timestamp
+
+
+class TestStepEndRecordsCellIncarnations:
+    def test_the_step_end_names_the_incarnation_of_every_participating_cell(self, tmp_path: Path):
+        """A peer-progress check needs the exact incarnations that trained, not just cell indices."""
+        set_event_logger(EventLogger(log_dir=tmp_path, source=SimpleProcessIdentity(component="main")))
+        try:
+            cells = [
+                SimpleNamespace(cell_index=0, cell_id="trainer-0", workers_hash="hash-0"),
+                SimpleNamespace(cell_index=2, cell_id="trainer-2", workers_hash="hash-2b"),
+            ]
+            _make_controller(num_cells=3)._log_step_end_event(
+                rollout_id=4, attempt=0, snapshot_alive_cells=cells, results=[[NORMAL], RuntimeError("boom")]
+            )
+        finally:
+            set_event_logger(None)
+
+        [event] = [e for e in read_events(tmp_path) if isinstance(e, TrainGroupStepEndEvent)]
+        assert event.cell_incarnations == {"trainer-0": "hash-0", "trainer-2": "hash-2b"}
+        assert event.cell_outcomes == {0: [TrainStepOutcome.NORMAL], 2: "error"}
