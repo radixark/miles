@@ -1,7 +1,10 @@
 import asyncio
 import json
+import shutil
 import subprocess
 import threading
+import uuid
+from collections.abc import Iterable
 from datetime import datetime
 from pathlib import Path
 
@@ -18,7 +21,7 @@ from tests.fast.e2e.deploy.hot_restart.cluster_facts import (
 )
 from tests.fast.utils.soak.soak_fakes import _at
 from tests.utils.deploy.hot_restart.cluster_observer import LEADER_WORKER_SET_KIND, STATEFUL_SET_KIND, ClusterSnapshot
-from tests.utils.deploy.hot_restart.evidence import RunProgress
+from tests.utils.deploy.hot_restart.evidence import TRAIN_STEP_METRIC_KEY, RunProgress
 from tests.utils.soak.core.event_log import EventLog
 from tests.utils.soak.core.events import (
     LaunchOutcome,
@@ -35,6 +38,9 @@ from tests.utils.soak.deploy.session import LauncherChain
 from tests.utils.soak.deploy.types import DeploymentTarget, HotRestartDetails, HotRestartTakeOverEvidence
 from tests.utils.soak.recipes.gsm8k import Gsm8kLaunchSpec
 
+from miles.utils.audit_utils.event_logger.logger import EVENTS_DIRNAME, EventLogger
+from miles.utils.audit_utils.event_logger.models import MetricEvent
+from miles.utils.audit_utils.process_identity import SimpleProcessIdentity
 from miles.utils.external_utils.command_utils.base_backend import ExecuteTrainConfig, LaunchGuard
 from miles.utils.external_utils.command_utils.helm_backend.launcher.manifest_types import RESTART_AT_ANNOTATION
 from miles.utils.workers.types import ClusterBackend
@@ -287,3 +293,23 @@ class _HotRestartHarness:
         self.checked.append(target)
         if self.stale is not None:
             raise self.stale
+
+
+# ============================ rolled-aside logs =============================
+
+
+def _write_finished_steps(events_dir: Path, rollout_ids: Iterable[int]) -> None:
+    for rollout_id in rollout_ids:
+        logger = EventLogger(
+            log_dir=events_dir, file_name=f"step-{rollout_id}.jsonl", source=SimpleProcessIdentity(component="main")
+        )
+        logger.log(MetricEvent, {"rollout_id": rollout_id, "metrics": {TRAIN_STEP_METRIC_KEY: 1.0}}, print_log=False)
+
+
+def _roll_log_aside(dump_dir: Path, *, rolled_aside_at: str, kept: Iterable[int]) -> None:
+    events_dir = dump_dir / EVENTS_DIRNAME
+    replaced = dump_dir / f".trash_{rolled_aside_at}_{uuid.uuid4().hex[:8]}"
+    shutil.move(str(events_dir), str(replaced))
+    events_dir.mkdir(parents=True)
+    for rollout_id in kept:
+        shutil.copy(replaced / f"step-{rollout_id}.jsonl", events_dir / f"step-{rollout_id}.jsonl")
