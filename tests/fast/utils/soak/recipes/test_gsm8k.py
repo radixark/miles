@@ -2,23 +2,28 @@ import os
 from pathlib import Path
 
 import pytest
-from tests.fast.utils.soak.recipes.recipe_fakes import _FakeBackend
-from tests.utils.ft.launch import MEGATRON_PATH
-from tests.utils.soak.core.utils import DATA_DIR, MODEL_DIR, compute_base_url
+from tests.fast.utils.soak.recipes.recipe_fakes import _FakeBackend, _FakeTrainingLauncher
+from tests.utils.ft.launch import MEGATRON_PATH, get_train_script
+from tests.utils.soak.core.events import LaunchOutcome, SoakLaunchFinishedEvent
+from tests.utils.soak.core.utils import DATA_DIR, MODEL_DIR, REPLACED_LAUNCH_EXIT_CODE, compute_base_url
 from tests.utils.soak.recipes import gsm8k
 from tests.utils.soak.recipes.gsm8k import (
     MODEL_NAME,
     MODEL_TYPE,
     ROLLOUT_GPUS,
     TRAIN_GPUS,
+    Gsm8kLaunchSpec,
     Gsm8kRun,
+    execute_gsm8k_session,
     get_gsm8k_train_args,
+    launch,
     prepare_gsm8k,
     prepare_gsm8k_run,
 )
 
 from miles.utils.audit_utils.event_logger.logger import EVENTS_DIRNAME
-from miles.utils.external_utils.command_utils.base_backend import ExecuteTrainConfig
+from miles.utils.external_utils.command_utils.base_backend import ExecuteTrainConfig, LaunchGuard
+from miles.utils.external_utils.command_utils.helm_backend.launcher.entrypoint import RunExitedError
 from miles.utils.workers.types import ClusterBackend
 
 
@@ -145,3 +150,68 @@ class TestPrepareGsm8kRun:
         _prepare()
 
         assert "http_proxy" not in os.environ and "HTTPS_PROXY" not in os.environ
+
+
+class TestLaunch:
+    async def test_the_launch_runs_the_spec_on_every_gpu_with_its_driver_and_guard(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The launcher gets the spec's args and config, the async driver when asked, and the caller's guard."""
+        launcher = _FakeTrainingLauncher()
+        launcher.install(monkeypatch)
+        spec = Gsm8kLaunchSpec(config=_config(), train_args="--x 1 ", fully_async=True)
+        guard = LaunchGuard()
+
+        await launch(spec, guard=guard)
+
+        assert launcher.calls == [
+            {
+                "train_args": "--x 1 ",
+                "num_gpus_per_node": TRAIN_GPUS + ROLLOUT_GPUS,
+                "megatron_model_type": MODEL_TYPE,
+                "config": spec.config,
+                "train_script": get_train_script(fully_async=True),
+                "guard": guard,
+            }
+        ]
+
+
+class TestExecuteGsm8kSession:
+    @pytest.mark.parametrize(
+        ("error", "outcome"),
+        [
+            pytest.param(None, LaunchOutcome.FINISHED, id="finished"),
+            pytest.param(RunExitedError(REPLACED_LAUNCH_EXIT_CODE), LaunchOutcome.REPLACED, id="replaced"),
+        ],
+    )
+    async def test_the_first_launch_outcome_is_recorded_without_a_request(
+        self,
+        tmp_path: Path,
+        backend: _FakeBackend,
+        monkeypatch: pytest.MonkeyPatch,
+        error: BaseException | None,
+        outcome: LaunchOutcome,
+    ) -> None:
+        """The unguarded first launch is logged under no request id so the launch checker can chain it."""
+        _FakeTrainingLauncher(error=error).install(monkeypatch)
+        run = _prepare()
+
+        assert await execute_gsm8k_session(run) is outcome
+
+        [event] = [event for event in run.event_log.events if isinstance(event, SoakLaunchFinishedEvent)]
+        assert (event.request_id, event.outcome) == (None, outcome)
+
+    async def test_a_failed_first_launch_is_recorded_and_raised(
+        self, backend: _FakeBackend, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A crashed run must surface as a failure, never as a finished soak."""
+        launcher = _FakeTrainingLauncher(error=RuntimeError("train crashed"))
+        launcher.install(monkeypatch)
+        run = _prepare()
+
+        with pytest.raises(RuntimeError, match="train crashed"):
+            await execute_gsm8k_session(run)
+
+        [event] = [event for event in run.event_log.events if isinstance(event, SoakLaunchFinishedEvent)]
+        assert event.outcome is LaunchOutcome.FAILED
+        assert launcher.calls[0]["guard"] is None
