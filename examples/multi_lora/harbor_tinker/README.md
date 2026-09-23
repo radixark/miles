@@ -28,8 +28,9 @@ The turns form a tree: each exported turn carries `parent` (the turn whose histo
 message by message with the miles strict matcher; `null` for a new root), `inherits` (its ids extend the parent's),
 `reset_reason` (`first`, `retry`, `rewrite`, `budget`, `mismatch`, `no_tito`) and `after_truncation` (an ancestor's
 reply was cut at `max_tokens`). The client's `select_turns` applies the miles v2 `drop_retries` rule to that tree:
-a leaf with a later sibling is a superseded attempt, every other leaf's path trains, and nothing below a truncated
-reply does; `--tinker-session-strict-truncation` refuses such continuations with 409 instead. The export also
+a leaf with a later sibling is a superseded attempt (a root only when a later root resends the same prompt), every
+other leaf's path trains, and nothing below a truncated reply does; `--tinker-session-strict-truncation` refuses
+such continuations with 409 instead. The export also
 carries `max_trim_tokens`, the boundary tokens the TITO family may drop when it extends a prefix (GLM: 1): with a
 non-zero value consecutive turns are not strict prefixes and the cookbook keeps them as separate Datums.
 

@@ -162,8 +162,11 @@ def select_turns(turns: list[dict[str, Any]]) -> list[dict[str, Any]]:
         children.setdefault(turn.get("parent"), []).append(index)
     kept: set[int] = set()
     for index, turn in enumerate(turns):
-        if index in children or any(sibling > index for sibling in children[turn.get("parent")]):
-            continue  # not a leaf, or an attempt that a later sibling superseded
+        later = [sibling for sibling in children[turn.get("parent")] if sibling > index]
+        if turn.get("parent") is None:  # roots are separate histories; only a resend of the same prompt supersedes one
+            later = [sibling for sibling in later if turns[sibling]["input_ids"] == turn["input_ids"]]
+        if index in children or later:
+            continue  # not a leaf, or an attempt that a later one superseded
         while index is not None:  # the leaf's whole path trains
             kept.add(index)
             index = turns[index].get("parent")
