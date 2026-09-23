@@ -19,6 +19,7 @@ from miles_plugins.models.deepseek_v4.ops.qat import fp8_simulate_qat
 from miles_plugins.models.deepseek_v4.ops.rope import apply_rotary_emb, wrapped_precompute_freqs_cis
 from miles_plugins.models.deepseek_v4.ops.thd_utils import ThdLayout, get_compress_cu_seqlens_thd, get_q_positions_thd
 from miles_plugins.models.deepseek_v4.ops.utils import rotate_activation
+from miles_plugins.models.dsa_backend import loom_dsa_ops, resolve_dsa_attention_backend
 from miles_plugins.models.dsa_topk import get_dsa_topk_fn
 
 
@@ -34,6 +35,7 @@ class V4Indexer(MegatronModule):
         self.index_head_dim = config.dsa_indexer_head_dim
         self.index_topk = config.dsa_indexer_topk
         self.topk_backend = config.miles_dsa_topk_backend
+        self.attention_backend = resolve_dsa_attention_backend(getattr(config, "dsa_attention_backend", None))
         self.rope_head_dim = config.qk_pos_emb_head_dim
         self.compress_ratio = 4
         self.use_fp8_qat = config.fp8 is not None
@@ -168,7 +170,11 @@ class V4Indexer(MegatronModule):
                 total_tokens=seqlen,
                 global_start=thd_layout.global_start,
             )
-        index_scores = batched_indexer_fwd(q, k, weights.float(), cu_ks, cu_ke)
+        if self.attention_backend == "loom":
+            # One launch over the batch (sbhd inputs: q [S, B, H, D], k [S_kv, B, D], weights [S, B, H]).
+            index_scores = loom_dsa_ops().indexer_logits(q, k, weights.float(), cu_ks, cu_ke, layout="sbhd")
+        else:
+            index_scores = batched_indexer_fwd(q, k, weights.float(), cu_ks, cu_ke)
 
         # index_scores: [batch, seqlen, n_kv]; topk over the KV dim. Route through the indexer
         # replay manager (flattened to [n_tokens, n_kv], matching the record/replay convention) so
