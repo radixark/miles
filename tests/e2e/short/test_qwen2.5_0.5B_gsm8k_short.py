@@ -1,7 +1,7 @@
 import os
 
 from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
-from tests.e2e.common_dirs import get_test_data_dir, get_test_model_dir
+from tests.utils.dirs import get_test_data_dir, get_test_model_dir
 
 from miles.utils.external_utils import command_utils
 from miles.utils.object_store import ObjectStoreBackend

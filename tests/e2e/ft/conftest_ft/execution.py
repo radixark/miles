@@ -6,11 +6,12 @@ import shutil
 import tempfile
 from pathlib import Path
 
-from tests.e2e.common_dirs import get_test_data_dir, get_test_model_dir
 from tests.e2e.conftest_dumper import MEGATRON_PATCHER_YAMLS
 from tests.e2e.ft.conftest_ft.fault_injection.entrypoint import API_SERVER_PORT
 from tests.e2e.ft.conftest_ft.modes import DEBUG_ROLLOUT_DATA_HF_REPO, FTTestMode
-from tests.fast.cluster_backends import create_backend_for_run
+from tests.utils.cluster_backends import create_backend_for_run
+from tests.utils.dirs import get_test_data_dir, get_test_model_dir
+from tests.utils.ft.launch import DEFAULT_TRAIN_SCRIPT
 
 from miles.utils.audit_utils.event_logger.logger import EVENTS_DIRNAME
 from miles.utils.external_utils import command_utils
@@ -172,20 +173,6 @@ def get_api_server_args(config: command_utils.ExecuteTrainConfig | None = None) 
     if resolved.cluster_backend is not ClusterBackend.KUBERNETES:
         return f"--api-server-port {API_SERVER_PORT} "
     return f"--api-server-port {API_SERVER_PORT} --api-server-host 0.0.0.0 "
-
-
-DEFAULT_TRAIN_SCRIPT: str = "train.py"
-FULLY_ASYNC_TRAIN_SCRIPT: str = "train_async.py"
-
-
-def get_train_script(*, fully_async: bool) -> str:
-    return FULLY_ASYNC_TRAIN_SCRIPT if fully_async else DEFAULT_TRAIN_SCRIPT
-
-
-def get_fully_async_args(*, fully_async: bool) -> str:
-    if not fully_async:
-        return ""
-    return "--fully-async --pause-generation-mode in_place "
 
 
 DETERMINISTIC_ROLLOUT_ARGS: str = (

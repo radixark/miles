@@ -3,7 +3,7 @@ import shlex
 from pathlib import Path
 
 import pytest
-from tests.fast.cluster_backends import both_backends, require_backend
+from tests.utils.cluster_backends import both_backends, require_backend
 
 import miles.utils.external_utils.command_utils as command_utils
 from miles.utils.external_utils.command_utils.helm_backend.backend import KubernetesCommandBackend
