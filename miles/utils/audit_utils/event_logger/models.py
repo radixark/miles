@@ -6,7 +6,6 @@ from pydantic import Discriminator, Field
 from miles.backends.megatron_utils.ft.types import TrainStepOutcome
 from miles.utils.audit_utils.process_identity import ProcessIdentity
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
-from miles.utils.test_utils.fault_injector.models import FaultHookRecord
 
 
 class EnvReportEditablePackageInfo(FrozenStrictBaseModel):
@@ -187,11 +186,6 @@ class TrainerModelCompanionInfoEvent(EventBase):
     skipped_nonfinite_sample_counts: list[OutputConsumption]
 
 
-class FaultHookEvent(EventBase):
-    type: Literal["fault_hook"] = "fault_hook"
-    record: FaultHookRecord
-
-
 Event = Annotated[
     TrainEngineLocalWeightChecksumEvent
     | WitnessSnapshotParamEvent
@@ -205,8 +199,7 @@ Event = Annotated[
     | MetricEvent
     | DataSourceIssuedSamplesEvent
     | ExplicitlyDroppedSamplesEvent
-    | TrainerModelCompanionInfoEvent
-    | FaultHookEvent,
+    | TrainerModelCompanionInfoEvent,
     Discriminator("type"),
 ]
 
