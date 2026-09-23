@@ -1,6 +1,6 @@
 import argparse
 
-from miles.utils.hf_config import load_hf_config
+from miles.utils.hf_utils.config import load_hf_config
 
 
 def add_tinker_arguments(parser):

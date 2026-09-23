@@ -12,7 +12,7 @@ from dataclasses import dataclass
 
 from megatron.core.utils import get_attr_wrapped_model
 
-from miles.utils.hf_config import load_hf_config
+from miles.utils.hf_utils.config import load_hf_config
 from miles.utils.lora.utils import is_multi_lora_enabled, targets_expert_leaves
 from miles.utils.megatron_bridge_utils import apply_dsa_backend_args
 

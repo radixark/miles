@@ -1,7 +1,7 @@
 import logging
 from typing import Any
 
-from miles.utils.hf_config import load_hf_config
+from miles.utils.hf_utils.config import load_hf_config
 
 logger = logging.getLogger(__name__)
 

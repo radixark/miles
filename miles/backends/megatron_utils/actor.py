@@ -27,7 +27,7 @@ from miles.utils.audit_utils.witness.allocator import WitnessInfo
 from miles.utils.context_utils import with_defer
 from miles.utils.distributed_utils import get_gloo_group
 from miles.utils.ft_utils.indep_dp import IndepDPInfo
-from miles.utils.hf_config import load_hf_config
+from miles.utils.hf_utils.config import load_hf_config
 from miles.utils.memory_utils import clear_memory, print_memory
 from miles.utils.processing_utils import load_tokenizer
 from miles.utils.ray_utils import Box

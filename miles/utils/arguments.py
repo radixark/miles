@@ -17,7 +17,7 @@ from miles.utils.eval_config import EvalDatasetConfig, build_eval_dataset_config
 from miles.utils.file_arg_utils import resolve_file_arg
 from miles.utils.ft_utils.health_checker import SimpleHealthCheckerConfig
 from miles.utils.function_registry import load_function
-from miles.utils.hf_config import is_dsa, load_hf_config
+from miles.utils.hf_utils.config import is_dsa, load_hf_config
 from miles.utils.logging_utils import configure_logger_raw
 from miles.utils.lora.arguments import add_lora_arguments, validate_lora_args
 from miles.utils.lora.utils import is_lora_enabled

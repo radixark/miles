@@ -15,7 +15,7 @@ from miles.tinker.server.app import build_app
 from miles.utils import object_store
 from miles.utils.arguments import parse_args
 from miles.utils.audit_utils.process_identity import MainProcessIdentity
-from miles.utils.hf_config import load_hf_config
+from miles.utils.hf_utils.config import load_hf_config
 from miles.utils.http_utils import init_http_client
 from miles.utils.logging_utils import configure_logger
 
