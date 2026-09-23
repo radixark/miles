@@ -123,7 +123,7 @@ def run_ci(
         ft_mode, config=config, dump_dir=dump_dir, num_steps=num_steps, fully_async=fully_async
     )
     if precise is not PreciseHook.NONE:
-        train_args += "--update-weight-transfer-mode p2p --update-weights-timeout 600 "
+        train_args += "--update-weights-timeout 600 "
     evidence_dir = evidence_directory(Path(dump_dir))
     event_log = EventLog(evidence_dir / "events.jsonl")
 
@@ -184,6 +184,8 @@ def _build_train_args(
         + get_fully_async_args(fully_async=fully_async)
         + "--mini-ft-controller-enable "
     )
+    if ft_mode.has_real_rollout:
+        train_args += "--update-weight-transfer-mode p2p "
     assert_fresh_dump_dir(Path(dump_dir))
     return train_args
 
