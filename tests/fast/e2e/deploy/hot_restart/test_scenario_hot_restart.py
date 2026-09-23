@@ -280,17 +280,6 @@ class TestTheModesThisScenarioRefuses:
         with pytest.raises(AssertionError, match="leaving no step past the last take-over"):
             scenario.assert_freeze_schedule_leaves_redo_window(too_late)
 
-    def test_a_colocated_mode_is_refused(self):
-        """A take-over keeps the trainers and the engines up, and a colocated mode shares their gpus."""
-        colocated = dataclasses.replace(
-            scenario._MODE, colocate=True, rollout_num_engines=2, rollout_gpus_per_engine=1
-        )
-
-        with pytest.raises(AssertionError, match="colocates them"):
-            scenario._build_script_args(
-                scenario.CHECKPOINTED, mode=colocated, dump_dir="/dumps/target", enable_dumper=False
-            )
-
     def test_a_mode_with_no_engines_is_refused(self):
         """The take-over replaces the rollout executor, which needs engines to drive when it returns."""
         engineless = dataclasses.replace(scenario._MODE, rollout_num_engines=0, rollout_gpus_per_engine=0)

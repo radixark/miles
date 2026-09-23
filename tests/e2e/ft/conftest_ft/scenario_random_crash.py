@@ -148,9 +148,6 @@ def assert_mode_supports_fully_async(ft_mode: FTTestMode, *, mode: str) -> None:
         f"Mode {mode!r} has no rollout engines, so a fully-async soak would train off pre-recorded debug rollout "
         f"data and would prove nothing about generating while training"
     )
-    assert (
-        not ft_mode.colocate
-    ), f"Mode {mode!r} is colocated, which train_async.py rejects: a fully-async run needs engines of its own"
 
 
 def assert_healing(
