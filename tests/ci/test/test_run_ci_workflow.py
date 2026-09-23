@@ -1,8 +1,10 @@
 import shlex
 from pathlib import Path
 
+import pytest
 import yaml
 from tests.ci.ci_register import register_cpu_ci
+from tests.utils.soak.core.utils import get_dumps_root
 
 register_cpu_ci(est_time=1, suite="stage-a-cpu", labels=[])
 
@@ -25,6 +27,15 @@ class TestTheDumpsRootOfTheCiWorkflow:
             root = Path(job["env"][DUMPS_ROOT_ENV])
             mounts = _identity_mounts(job["container"]["options"])
             assert any(root.is_relative_to(mount) for mount in mounts), f"job {name} writes {root} outside {mounts}"
+
+    def test_the_soak_helpers_resolve_the_workflow_value_as_the_dumps_root(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The workflow and the helper must agree on the variable, or CI silently uses the fallback root."""
+        for job in _jobs().values():
+            monkeypatch.setenv(DUMPS_ROOT_ENV, job["env"][DUMPS_ROOT_ENV])
+
+            assert get_dumps_root() == Path(job["env"][DUMPS_ROOT_ENV])
 
 
 def _jobs() -> dict[str, dict]:
