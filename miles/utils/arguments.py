@@ -2468,6 +2468,12 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 action="store_true",
             )
             parser.add_argument(
+                "--ci-tito-special-token-count-threshold",
+                type=float,
+                default=0.0,
+                help="Max TITO special_token_count mismatch rate tolerated under --ci-test; other hard types stay at 0.",
+            )
+            parser.add_argument(
                 "--ci-disable-kl-checker",
                 action="store_true",
             )

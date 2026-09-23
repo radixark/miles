@@ -205,6 +205,8 @@ def namespace_to_train_args(ns: argparse.Namespace) -> str:
         parts.append("--debug-rollout-only")
     if ns.ci_test:
         parts.append("--ci-test")
+    if getattr(ns, "ci_tito_special_token_count_threshold", 0.0):
+        parts.append(f"--ci-tito-special-token-count-threshold {ns.ci_tito_special_token_count_threshold}")
     if ns.colocate:
         parts.append("--colocate")
     return " ".join(parts) + " "
@@ -274,6 +276,7 @@ def run_session_verify(args: argparse.Namespace, *, wire_format: SessionWireForm
         assert_session_verify_metrics(
             metrics_path,
             assistant_text_threshold=args.assistant_text_threshold,
+            special_token_count_threshold=getattr(args, "ci_tito_special_token_count_threshold", 0.0),
             require_append_tool=wire_format == "openai",
         )
     except Exception:
@@ -293,19 +296,25 @@ def run_session_verify(args: argparse.Namespace, *, wire_format: SessionWireForm
 
 
 def assert_session_verify_metrics(
-    metrics_path: str, *, assistant_text_threshold: float, require_append_tool: bool = True
+    metrics_path: str,
+    *,
+    assistant_text_threshold: float,
+    special_token_count_threshold: float = 0.0,
+    require_append_tool: bool = True,
 ) -> None:
     """Read per-sample JSONL metrics and assert cross-sample verifier gates.
 
     Forbidden mismatch types (special_*, non_assistant_text) are recorded by
     the agent wrapper and hard-failed here so the rollout loop cannot discard
-    their assertion as a retryable sample failure.  The assistant_text tier
-    remains soft and is checked only against the caller-provided ratio
-    threshold.
+    their assertion as a retryable sample failure.  Samples whose only hard
+    type is special_token_count are tolerated up to the caller-provided
+    ``special_token_count_threshold`` ratio.  The assistant_text tier remains
+    soft and is checked only against the caller-provided ratio threshold.
     """
     samples_with_mismatch = 0
     total_samples = 0
     has_append_tool = False
+    samples_with_special_token_count_only = 0
     samples_with_hard_mismatch = 0
     hard_mismatch_count = 0
     hard_mismatch_types = set()
@@ -342,6 +351,8 @@ def assert_session_verify_metrics(
             entry_hard_types = entry.get("hard_mismatch_types", [])
             entry_hard_count = entry.get("hard_mismatch_count", len(entry_hard_types))
             if entry_hard_count or entry_hard_types:
+                if set(entry_hard_types) == {"special_token_count"}:
+                    samples_with_special_token_count_only += 1
                 samples_with_hard_mismatch += 1
                 hard_mismatch_count += entry_hard_count
                 hard_mismatch_types.update(entry_hard_types)
@@ -381,13 +392,17 @@ def assert_session_verify_metrics(
         ratio,
         assistant_text_threshold,
     )
-    if samples_with_hard_mismatch:
+    special_token_count_ratio = samples_with_special_token_count_only / total_samples
+    if samples_with_hard_mismatch > samples_with_special_token_count_only or (
+        special_token_count_ratio > special_token_count_threshold
+    ):
         raise AssertionError(
             f"Session multi-role e2e: hard TITO mismatches found in "
             f"{samples_with_hard_mismatch}/{total_samples} attempted samples "
             f"({hard_mismatch_count} mismatches, types={sorted(hard_mismatch_types)}, "
             f"first={hard_mismatch_example}).  These types must be 0 for any "
-            "TITO-correct setup."
+            f"TITO-correct setup (special_token_count-only samples tolerated up to "
+            f"{special_token_count_threshold})."
         )
 
     if require_append_tool and not has_append_tool:
