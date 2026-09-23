@@ -406,11 +406,10 @@ class _QSABlockSparseAttn(torch.autograd.Function):
         group = Hq // Hkv
         qc, kc, vc = q.contiguous(), k.contiguous(), v.contiguous()
         selc = sel.contiguous()
-        BQ_, BK_ = 64, 64
-        klist, kcnt = build_tile_index(selc, BQ_, BK_, block_size)
+        BQ, BK = 64, 64
+        klist, kcnt = build_tile_index(selc, BQ, BK, block_size)
         o = torch.empty(T, Hq, D, device=q.device, dtype=torch.float32)
         lse = torch.empty(Hq, T, device=q.device, dtype=torch.float32)
-        BQ, BK = 64, 64
         grid = (triton.cdiv(T, BQ), Hq)
         _qsa_bs_fwd_kernel[grid](
             qc,

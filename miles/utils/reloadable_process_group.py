@@ -143,7 +143,7 @@ class ReloadableProcessGroup(torch.distributed.ProcessGroup):
             backend_cls = type(backend).__name__
             if "NCCL" in backend_cls:
                 backend_type = torch.distributed.ProcessGroup.BackendType.NCCL
-            elif "Gloo" in backend_cls.title() or "GLOO" in backend_cls.upper():
+            elif "GLOO" in backend_cls.upper():
                 backend_type = torch.distributed.ProcessGroup.BackendType.GLOO
             else:
                 backend_type = torch.distributed.ProcessGroup.BackendType.CUSTOM

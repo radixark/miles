@@ -45,9 +45,7 @@ class Qwen38NextQSACoreAttention(MegatronModule):
             )
 
         if query.dim() != 4:
-            raise RuntimeError(
-                f"QSA core attention expected a 3D (thd) or 4D (sbhd) query, got " f"{tuple(query.shape)}"
-            )
+            raise RuntimeError(f"QSA core attention expected a 3D (thd) or 4D (sbhd) query, got {tuple(query.shape)}")
 
         s, b, hq, d = query.shape
         out = [

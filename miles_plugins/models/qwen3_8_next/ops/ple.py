@@ -169,9 +169,7 @@ class Qwen38NextFrozenNGramEmbedding(MegatronModule):
                     "nor qwen3_8_next_hf_checkpoint is set on the config; deriving it "
                     "from ngram_vocab_size_base drifts 12 rows/shard."
                 )
-            name = (
-                f"model.language_model.layers.{layer_number - 1}.ple.ple_embedding" ".ngram_embedding.shard_0.weight"
-            )
+            name = f"model.language_model.layers.{layer_number - 1}.ple.ple_embedding.ngram_embedding.shard_0.weight"
             index = _weight_map(hf)
             _, _, shape = _safetensors_slice(f"{hf}/{index[name]}", name, {})
             self.rows_per_shard = int(shape[0])

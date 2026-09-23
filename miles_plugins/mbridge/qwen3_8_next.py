@@ -154,7 +154,7 @@ class Qwen38NextBridge(Qwen3_5Bridge):
         layer_ids = self._ple_layer_ids()
         if not layer_ids:
             return None
-        key = f"model.language_model.layers.{layer_ids[0]}.ple.ple_embedding" ".ngram_embedding.shard_0.weight"
+        key = f"model.language_model.layers.{layer_ids[0]}.ple.ple_embedding.ngram_embedding.shard_0.weight"
         try:
             shape = self.safetensor_io.get_tensor_shape(key)
         except Exception:
