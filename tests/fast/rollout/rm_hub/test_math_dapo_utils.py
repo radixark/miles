@@ -100,6 +100,9 @@ class TestComputeScore:
             ("Answer: wrong", "42", False, -1.0, False),
             (r"\boxed{42}", "42", True, 1.0, True),
             ("x" * 500 + " Answer: 42", "42", False, 1.0, True),
+            # DeepSeek's EOS lands on the answer line when the response ends right after it.
+            ("Reasoning.\nAnswer: 45<｜end▁of▁sentence｜>", "45", False, 1.0, True),
+            ("Reasoning.\nAnswer: 46<｜end▁of▁sentence｜>", "45", False, -1.0, False),
         ],
     )
     def test_compute_score(self, solution, gt, strict_box, expected_score, expected_acc):
