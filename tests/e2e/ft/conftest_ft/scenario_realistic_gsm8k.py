@@ -15,7 +15,8 @@ from tests.e2e.ft.conftest_ft.cli_options import (
     TrainerCrashIntervalSecondsOption,
 )
 from tests.utils.soak.core.config import SoakRunnerConfig, SoakTailConfig, SoakTargetConfig
-from tests.utils.soak.ft.actions.factory import compute_mean_interval_seconds_of_kind
+from tests.utils.soak.core.utils import compute_base_url
+from tests.utils.soak.ft.actions.factory import compute_mean_interval_seconds_of_kind, create_cell_fault_forms
 from tests.utils.soak.ft.checkers.healing import assert_healing
 from tests.utils.soak.ft.entrypoint import run_cell_soak
 from tests.utils.soak.ft.types import ACTOR_CELL_TYPE, ROLLOUT_CELL_TYPE
@@ -74,6 +75,9 @@ def run_ci(
             ),
             event_log=run.event_log,
             evidence_dir=run.evidence_dir,
+            cell_fault_forms=create_cell_fault_forms(
+                base_url=compute_base_url(run.launch_spec.config), config=run.launch_spec.config
+            ),
         )
     )
 

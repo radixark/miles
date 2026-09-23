@@ -17,6 +17,10 @@ class BaseCellFaultForm(BaseSoakActionForm):
         return False
 
     @property
+    def trigger_cell_types(self) -> frozenset[str]:
+        return frozenset()
+
+    @property
     def process_patterns(self) -> dict[str, str]:
         return {}
 

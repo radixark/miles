@@ -360,7 +360,7 @@ Type: soak (no baseline, no compare); passes if training completes without hangi
       witnesses hold
 Steps: 60 (default)
 CLI: --mode, --seed (42), --num-steps (60), --trainer-crash-interval-seconds (120),
-     --rollout-crash-interval-seconds (240), --fully-async (off)
+     --rollout-crash-interval-seconds (240), --fully-async (off), --precise (none), --mix (off)
 
 Targeting and assertions follow the mode's ft_components:
   ("train",)          -> inject into "actor" cells, assert trainer healing
@@ -417,6 +417,12 @@ Faults are random, so beyond the witnesses no exact sequence is asserted.
 - **Why the rollout witness is one-sided**: sampled polls miss windows by construction, so it never demands seeing the down half of a recovery. It demands a new incarnation of the cell observed Serving after the fault applied; a stale Healthy reading of the old incarnation cannot satisfy it.
 - **Evidence**: typed events in `<dump_dir>-soak/<session_id>/events.jsonl`, requests flushed before dispatch; after teardown the training-event logs, discarded generations included, are copied under `sources/` with SHA-256 digests, and the checks read those copies.
 - **Code**: the soak engine lives in `tests/utils/soak/core/`, the FT forms, observers and checkers in `tests/utils/soak/ft/`.
+- **Precise topology**: `--precise` adds P2P weight transfer and `--update-weights-timeout 600`; `all_gather` sets trainer faults, and `p2p` sets the sender on a trainer-only mode and a receiver otherwise.
+- **Precise faults**: `HookFaultForm` sets `sigkill`, `sigstop` or a training-thread deadlock at a trainer hook (`trainer_before_all_gather`, `trainer_before_weight_send`) through the api server's `fault-hook` route, bound to the observed fault target, and reads the cell's effect like `inject_fault`.
+- **Receiver triggers**: `RemoteHookFaultForm` sets an observation-only hook on another trainer cell and, once the runner's training-event feed reports that worker's `FaultHookEvent` hit, applies its rollout form (`inject_fault`, `exec_sigkill`, `exec_sigstop`, `delete_pod`) through the selected backend. The feed's poll interval and network latency separate hook arrival from receiver failure.
+- **Mixed injection**: `--mix` draws the hook forms and the wall-clock forms through the same scheduler, and each hook request draws its delay uniformly from 0 to 1000 ms (the deadlock stays immediate). Every enabled form must produce an effect.
+- **Hook witnesses**: every applied hook form needs exactly one worker-side dispatch at its recorded delay, and every remote P2P form needs a receiver failure in its exact triggered update (`tests/utils/soak/ft/checkers/hooks.py`); every trainer fault needs an original peer to finish a normal step afterwards (`tests/utils/soak/ft/checkers/survivors.py`). The normal healing and tail witnesses remain mandatory.
+- **Calibration**: the hook deadlines and the 4800-second CI estimate have not been calibrated by a run.
 - **Checksum observation**: real-rollout modes pass `--save-inference-engine-weight-checksum`, so each published weight version records per-tensor engine checksums bound to its version, update and engine incarnation, collected under a five-second timeout; a missed observation loses evidence and fails the test, not training. Small observation overhead is accepted; production recovery and ordering remain unchanged.
 - **Checksum witness**: `assert_engine_checksums_cover_published_updates` (`tests/utils/soak/core/checkers/engine_checksums.py`) requires exactly one checksum record per publication, covering the updated engine incarnations, and same-version engines to agree.
 

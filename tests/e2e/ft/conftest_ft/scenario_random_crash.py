@@ -8,8 +8,11 @@ from pathlib import Path
 import typer
 from tests.e2e.ft.conftest_ft.cli_options import (
     FullyAsyncOption,
+    MixOption,
     ModeOption,
     NumStepsOption,
+    PreciseHook,
+    PreciseOption,
     RolloutCrashIntervalSecondsOption,
     SeedOption,
     TrainerCrashIntervalSecondsOption,
@@ -26,22 +29,30 @@ from tests.utils.ft.launch import get_fully_async_args, get_train_script
 from tests.utils.soak.core.checkers.engine_checksums import assert_engine_checksums_cover_published_updates
 from tests.utils.soak.core.config import SoakRunnerConfig, SoakTailConfig, SoakTargetConfig
 from tests.utils.soak.core.event_log import EventLog
+from tests.utils.soak.core.events import SoakEvent
 from tests.utils.soak.core.runner import SoakRunner
 from tests.utils.soak.core.utils import (
     API_SERVER_ARGS,
     assert_fresh_dump_dir,
+    compute_base_url,
     create_soak_config,
     evidence_directory,
     note_launch_outcome,
     resolve_dump_dir,
 )
 from tests.utils.soak.core.views import read_training_events
-from tests.utils.soak.ft.actions.factory import compute_mean_interval_seconds_of_kind
+from tests.utils.soak.ft.actions.base import CellFaultForms
+from tests.utils.soak.ft.actions.factory import compute_mean_interval_seconds_of_kind, create_cell_fault_forms
+from tests.utils.soak.ft.actions.hook import HookFaultForm, RemoteHookFaultForm
 from tests.utils.soak.ft.checkers.healing import assert_healing
+from tests.utils.soak.ft.checkers.hooks import assert_hook_effects, assert_remote_p2p_failures
+from tests.utils.soak.ft.checkers.survivors import assert_trainer_fault_survivors
 from tests.utils.soak.ft.entrypoint import run_cell_soak
 from tests.utils.soak.ft.types import ACTOR_CELL_TYPE, ROLLOUT_CELL_TYPE
 
+from miles.utils.audit_utils.event_logger.models import Event, FaultHookEvent, FaultHookName, TrainGroupStepEndEvent
 from miles.utils.external_utils import command_utils
+from miles.utils.test_utils.fault_injector import FailureMode
 
 app: typer.Typer = typer.Typer()
 
@@ -52,6 +63,18 @@ DEFAULT_NUM_STEPS: int = 60
 DEFAULT_TRAINER_CRASH_INTERVAL_SECONDS: float = 120.0
 DEFAULT_ROLLOUT_CRASH_INTERVAL_SECONDS: float = 240.0
 
+HOOK_LIFETIME_SECONDS: float = 300.0
+MIXED_MAX_DELAY_MS: float = 1000.0
+MIXED_MAX_DELAY_MS_OF_MODE: dict[FailureMode, float] = {
+    FailureMode.SIGKILL: MIXED_MAX_DELAY_MS,
+    FailureMode.SIGSTOP: MIXED_MAX_DELAY_MS,
+    FailureMode.THREAD_DEADLOCK: 0.0,
+}
+HOOK_OF_PRECISE: dict[PreciseHook, FaultHookName] = {
+    PreciseHook.ALL_GATHER: FaultHookName.TRAINER_BEFORE_ALL_GATHER,
+    PreciseHook.P2P: FaultHookName.TRAINER_BEFORE_WEIGHT_SEND,
+}
+
 
 @app.command(name="run")
 def run_ci(
@@ -61,6 +84,8 @@ def run_ci(
     trainer_crash_interval_seconds: TrainerCrashIntervalSecondsOption = DEFAULT_TRAINER_CRASH_INTERVAL_SECONDS,
     rollout_crash_interval_seconds: RolloutCrashIntervalSecondsOption = DEFAULT_ROLLOUT_CRASH_INTERVAL_SECONDS,
     fully_async: FullyAsyncOption = False,
+    precise: PreciseOption = PreciseHook.NONE,
+    mix: MixOption = False,
 ) -> None:
     """Random failure soak test, for whichever components the mode enables ft on.
 
@@ -76,7 +101,11 @@ def run_ci(
         assert_mode_supports_fully_async(ft_mode, mode=mode)
 
     config = create_soak_config(command_utils.default_config())
-    test_name: str = f"{TEST_NAME}_fully_async" if fully_async else TEST_NAME
+    test_name: str = TEST_NAME if precise is PreciseHook.NONE else f"precise_{precise}"
+    if mix:
+        test_name += "_mixed"
+    if fully_async:
+        test_name += "_fully_async"
     dump_dir: str = resolve_dump_dir(f"{test_name}_{mode}", run_id=config.run_id)
     print(f"Dump directory: {dump_dir}")
     mean_interval_seconds_of_cell_type: dict[str, float] = compute_mean_interval_seconds_of_kind(
@@ -92,6 +121,10 @@ def run_ci(
     train_args = _build_train_args(
         ft_mode, config=config, dump_dir=dump_dir, num_steps=num_steps, fully_async=fully_async
     )
+    if precise is not PreciseHook.NONE:
+        train_args += "--update-weight-transfer-mode p2p --update-weights-timeout 600 "
+    evidence_dir = evidence_directory(Path(dump_dir))
+    event_log = EventLog(evidence_dir / "events.jsonl")
 
     injector = _run_soak(
         ft_mode,
@@ -102,11 +135,20 @@ def run_ci(
         mean_interval_seconds_of_cell_type=mean_interval_seconds_of_cell_type,
         train_args=train_args,
         fully_async=fully_async,
+        event_log=event_log,
+        evidence_dir=evidence_dir,
+        cell_fault_forms=_create_cell_fault_forms(
+            ft_mode, config=config, event_log=event_log, precise=precise, mix=mix
+        ),
     )
 
     training_events = read_training_events(injector.event_log.events, dump_dir=dump_dir)
     if ft_mode.has_real_rollout:
         assert_engine_checksums_cover_published_updates(training_events)
+    if precise is not PreciseHook.NONE:
+        _assert_hook_evidence(
+            ft_mode, events=injector.event_log.events, training_events=training_events, precise=precise
+        )
     assert_healing(
         ft_mode.ft_components,
         events=injector.event_log.events,
@@ -133,6 +175,52 @@ def _build_train_args(
     return train_args
 
 
+def _create_cell_fault_forms(
+    ft_mode: FTTestMode,
+    *,
+    config: command_utils.ExecuteTrainConfig,
+    event_log: EventLog,
+    precise: PreciseHook,
+    mix: bool,
+) -> CellFaultForms:
+    base_url = compute_base_url(config)
+    wall_clock_forms = create_cell_fault_forms(base_url=base_url, config=config)
+    if precise is PreciseHook.NONE:
+        return wall_clock_forms
+
+    if precise is PreciseHook.P2P and ft_mode.ft_components != ("train",):
+        hook_forms: CellFaultForms = {
+            ROLLOUT_CELL_TYPE: [
+                RemoteHookFaultForm(
+                    base_url=base_url,
+                    hook_name=HOOK_OF_PRECISE[precise],
+                    victim=victim,
+                    event_log=event_log,
+                    lifetime_seconds=HOOK_LIFETIME_SECONDS,
+                    max_delay_ms=MIXED_MAX_DELAY_MS if mix else 0,
+                )
+                for victim in wall_clock_forms[ROLLOUT_CELL_TYPE]
+            ]
+        }
+    else:
+        hook_forms = {
+            ACTOR_CELL_TYPE: [
+                HookFaultForm(
+                    base_url=base_url,
+                    failure_mode=failure_mode,
+                    hook_name=HOOK_OF_PRECISE[precise],
+                    lifetime_seconds=HOOK_LIFETIME_SECONDS,
+                    max_delay_ms=max_delay_ms if mix else 0,
+                )
+                for failure_mode, max_delay_ms in MIXED_MAX_DELAY_MS_OF_MODE.items()
+            ]
+        }
+
+    if not mix:
+        return hook_forms
+    return {kind: [*forms, *wall_clock_forms[kind]] for kind, forms in hook_forms.items()}
+
+
 def _run_soak(
     ft_mode: FTTestMode,
     *,
@@ -143,13 +231,14 @@ def _run_soak(
     mean_interval_seconds_of_cell_type: dict[str, float],
     train_args: str,
     fully_async: bool,
+    event_log: EventLog,
+    evidence_dir: Path,
+    cell_fault_forms: CellFaultForms,
 ) -> SoakRunner:
     expected_counts: dict[str, int] = {
         ACTOR_CELL_TYPE: ft_mode.num_cells,
         ROLLOUT_CELL_TYPE: ft_mode.rollout_num_engines,
     }
-    evidence_dir = evidence_directory(Path(dump_dir))
-    event_log = EventLog(evidence_dir / "events.jsonl")
     return asyncio.run(
         run_cell_soak(
             config=config,
@@ -175,8 +264,21 @@ def _run_soak(
             ),
             event_log=event_log,
             evidence_dir=evidence_dir,
+            cell_fault_forms=cell_fault_forms,
         )
     )
+
+
+def _assert_hook_evidence(
+    ft_mode: FTTestMode, *, events: list[SoakEvent], training_events: list[Event], precise: PreciseHook
+) -> None:
+    assert_hook_effects(events, hook_events=[event for event in training_events if isinstance(event, FaultHookEvent)])
+    if precise is PreciseHook.P2P and "rollout" in ft_mode.ft_components:
+        assert_remote_p2p_failures(events, training_events=training_events)
+    if "train" in ft_mode.ft_components:
+        assert_trainer_fault_survivors(
+            events, steps=[event for event in training_events if isinstance(event, TrainGroupStepEndEvent)]
+        )
 
 
 def assert_mode_supports_fully_async(ft_mode: FTTestMode, *, mode: str) -> None:

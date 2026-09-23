@@ -13,10 +13,9 @@ from tests.utils.soak.deploy.types import (
     HotRestartDetails,
     HotRestartTakeOverEvidence,
 )
-from tests.utils.soak.ft.types import CellTarget, InjectFaultDetails, ObservedCellFault, PodDetails
-from tests.utils.soak.k8s_utils.pod_manipulation import PodDeletedEvidence
-from tests.utils.soak.k8s_utils.pod_processes import ProcessSignalReceipt
+from tests.utils.soak.ft.types import CellFaultDetails, CellFaultEvidence, CellTarget
 
+from miles.utils.audit_utils.event_logger.models import Event
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
 
 if TYPE_CHECKING:
@@ -25,12 +24,9 @@ if TYPE_CHECKING:
 
 SoakTarget = Annotated[CellTarget | DeploymentTarget, Discriminator("kind")]
 
-SoakActionDetails = Annotated[InjectFaultDetails | PodDetails | HotRestartDetails, Discriminator("form")]
+SoakActionDetails = Annotated[CellFaultDetails | HotRestartDetails, Discriminator("form")]
 
-SoakActionEvidence = Annotated[
-    ObservedCellFault | PodDeletedEvidence | ProcessSignalReceipt | HotRestartTakeOverEvidence,
-    Discriminator("kind"),
-]
+SoakActionEvidence = Annotated[CellFaultEvidence | HotRestartTakeOverEvidence, Discriminator("kind")]
 
 SoakObservationDetails = DeploymentObservationDetails
 
@@ -73,6 +69,14 @@ class BaseSoakActionForm(abc.ABC):
 
     @abc.abstractmethod
     def is_recovered(self, *, action: SoakActionRecord, events: list[SoakEvent]) -> bool: ...
+
+    @property
+    def sut_event_file_patterns(self) -> tuple[str, ...]:
+        return ()
+
+    @property
+    def sut_event_types(self) -> tuple[type[Event], ...]:
+        return ()
 
 
 def find_form(forms: SoakForms, *, kind: str, name: str) -> BaseSoakActionForm:

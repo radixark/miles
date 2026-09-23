@@ -62,6 +62,7 @@ def _create_runner(
     observer: SoakObserver,
 ) -> SoakRunner:
     sources = {"training_events": dump_dir / EVENTS_DIRNAME}
+    all_forms = [form for kind_forms in forms.values() for form in kind_forms]
 
     event_log.append(
         SoakRunContextEvent(
@@ -83,7 +84,15 @@ def _create_runner(
         config=runner_config,
         sut_events=SutEventFeed(
             directory=sources["training_events"],
-            file_patterns=("trainer_controller_*.jsonl", "rollout_executor.jsonl"),
-            event_types=(TrainGroupStepEndEvent, CellReconfigureEvent),
+            file_patterns=(
+                "trainer_controller_*.jsonl",
+                "rollout_executor.jsonl",
+                *sorted({pattern for form in all_forms for pattern in form.sut_event_file_patterns}),
+            ),
+            event_types=(
+                TrainGroupStepEndEvent,
+                CellReconfigureEvent,
+                *{event_type for form in all_forms for event_type in form.sut_event_types},
+            ),
         ),
     )
