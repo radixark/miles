@@ -10,13 +10,20 @@ import logging
 from argparse import Namespace
 from dataclasses import dataclass
 
+import torch.distributed as dist
+from megatron.core.tensor_parallel import ColumnParallelLinear
 from megatron.core.utils import get_attr_wrapped_model
 
-from miles.utils.hf_config import load_hf_config
+from miles.backends.megatron_utils.lora.slots import create_multi_lora_instance
+from miles.backends.megatron_utils.lora.target_modules import resolve_megatron_lora_targets
+from miles.backends.megatron_utils.lora.utils import (
+    create_lora_instance,
+    patch_param_grad_buffer_for_colocate_mode_lora,
+)
+from miles.utils.hf_utils.config import load_hf_config
+from miles.utils.hf_utils.weight_mapping import HfWeightMapping
+from miles.utils.lora.utils import is_multi_lora_enabled, targets_expert_leaves
 from miles.utils.megatron_bridge_utils import apply_dsa_backend_args
-from miles.utils.multi_lora import is_multi_lora_enabled, targets_expert_leaves
-
-from .utils import convert_target_modules_to_hf, patch_param_grad_buffer_for_colocate_mode_lora
 
 logger = logging.getLogger(__name__)
 
@@ -75,7 +82,7 @@ def _validate_multi_lora_moe_support(args: Namespace, provider) -> None:
     post-finalize because they depend on the resolved provider, not the CLI)."""
     if not getattr(provider, "num_moe_experts", None):
         return
-    if not targets_expert_leaves(args.target_modules):
+    if not targets_expert_leaves(args.hf_lora_targets):
         logger.info("[multilora] MoE model with no expert leaves in --target-modules; experts stay frozen")
         return
 
@@ -94,7 +101,9 @@ def _validate_multi_lora_moe_support(args: Namespace, provider) -> None:
         "desynchronizes the dispatched token order)."
     )
     # sglang only wraps a fused MoE layer when both expert projections are targeted.
-    served = set(convert_target_modules_to_hf(list(args.target_modules)))
+    served = {target.rsplit(".", 1)[-1] for target in args.hf_lora_targets}
+    if "gate_up_proj" in served:
+        served.update(("gate_proj", "up_proj"))
     expert_pair = {"gate_proj", "up_proj", "down_proj"}
     if served & expert_pair:
         assert expert_pair <= served, (
@@ -126,6 +135,7 @@ def _setup_lora_model_via_bridge(args: Namespace) -> list:
         List of DDP-wrapped model chunks with LoRA applied.
     """
     from megatron.bridge import AutoBridge
+    from megatron.bridge.models.conversion.model_bridge import _megatron_local_name_to_global
     from megatron.bridge.training.config import DistributedDataParallelConfig
 
     hf_config = load_hf_config(args.hf_checkpoint)
@@ -149,7 +159,7 @@ def _setup_lora_model_via_bridge(args: Namespace) -> list:
     provider.variable_seq_lengths = True
     provider.moe_token_dispatcher_type = "alltoall"
     provider.moe_router_load_balancing_type = "none"
-    if is_multi_lora_enabled(args) and targets_expert_leaves(args.target_modules):
+    if is_multi_lora_enabled(args) and targets_expert_leaves(args.hf_lora_targets):
         # Expert adapters cannot replay the fused permute's row_id_map, and most bridge
         # MoE providers default the fusion on — so turn it off rather than refuse to build.
         if getattr(provider, "moe_permute_fusion", False):
@@ -168,15 +178,35 @@ def _setup_lora_model_via_bridge(args: Namespace) -> list:
     if is_multi_lora_enabled(args):
         _validate_multi_lora_moe_support(args, provider)
 
-        from miles.backends.megatron_utils.lora.slots import create_multi_lora_instance
-
-        lora = create_multi_lora_instance(args)
-    else:
-        from .utils import create_lora_instance
-
-        lora = create_lora_instance(args)
+    create_adapter = create_multi_lora_instance if is_multi_lora_enabled(args) else create_lora_instance
+    assert not (
+        is_multi_lora_enabled(args) and args.lora_type == "canonical_lora"
+    ), "MultiLoRA requires --lora-type lora; it does not implement canonical split adapters"
+    model_bridge = bridge._model_bridge
+    model_bridge.hf_pretrained = bridge.hf_pretrained
+    hf_mapping = HfWeightMapping.from_config(hf_config)
 
     def apply_lora_hook(model_chunks):
+        parameter_names = set(model_bridge._megatron_global_param_names_all_pp_ranks(model_chunks))
+        # Tied output layers own no weight but can still carry an independent adapter.
+        for vp_stage, chunk in enumerate(model_chunks):
+            for name, module in chunk.named_modules():
+                if isinstance(module, ColumnParallelLinear) and module.weight is None:
+                    parameter_names.add(
+                        _megatron_local_name_to_global(model_chunks, chunk.config, f"{name}.weight", vp_stage)
+                    )
+        # Include tied layers and experts owned by other PP/EP ranks without changing Bridge's weight inventory.
+        names_by_rank = [None] * dist.get_world_size()
+        dist.all_gather_object(names_by_rank, parameter_names)
+        parameter_names = set().union(*names_by_rank)
+        adapter_targets = resolve_megatron_lora_targets(
+            args.hf_lora_targets,
+            model_bridge.mapping_registry().get_all_mappings(),
+            parameter_names=parameter_names,
+            hf_mapping=hf_mapping,
+            canonical=args.lora_type == "canonical_lora",
+        )
+        lora = create_adapter(args, target_modules=adapter_targets)
         transformed = lora(model_chunks, training=True)
         lora.set_params_to_save(transformed)
         return transformed

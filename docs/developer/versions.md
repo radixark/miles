@@ -159,12 +159,13 @@ before it lands on `sglang-miles`. See
 [Contributing](/developer/contributor-guide#pr-description-ci-tags) for all three
 directives.
 
-**Expect `dev` to move on its own, within a bound.** The scheduled build (00:00 and 12:00
-UTC) polls the SGLang and Megatron-LM branch heads plus a fingerprint of the wheels release,
-and rebuilds when any of them moved. It deliberately does not poll Miles, which would
-rebuild constantly, and instead forces a build once the last one is 24 hours old. So `dev`
-follows its dependencies immediately and trails Miles `main` by at most a day. When you need
-that to stop moving underneath you, pin `ci-image-tag:` to a timestamped tag.
+**Expect `dev` to move on its own, within a bound.** The scheduled check (every 10 minutes)
+polls the SGLang and Megatron-LM branch heads plus a fingerprint of the wheels release,
+and starts a rebuild within about 30 minutes of any of them moving. It deliberately does not
+poll Miles, which would rebuild constantly, and instead forces a build once the last one is
+12 hours old. So `dev` follows its dependencies closely and trails Miles `main` by at most
+half a day. When you need that to stop moving underneath you, pin `ci-image-tag:` to a
+timestamped tag; the scheduled prune keeps every timestamped tag for at least 14 days.
 
 **The ROCm images move daily too.** The sgl-project/sglang nightlies rebuild the undated
 `rocm/sgl-dev:miles-rocm*-mi35x` tags from Miles `main` every day and publish a dated

@@ -11,7 +11,7 @@ import pytest
 import torch
 
 from miles.backends.training_utils.weight_update.updater import WeightUpdater
-from miles.utils.lora import is_lora_weight_name
+from miles.utils.lora.utils import is_lora_weight_name
 
 # ---------------------------------------------------------------------------
 # LoRA / base weight separation (pure logic, no distributed deps)

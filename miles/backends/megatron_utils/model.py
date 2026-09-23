@@ -33,8 +33,8 @@ from miles.backends.training_utils.sampling_mask import get_rollout_sampling_mas
 from miles.utils.audit_utils.witness.allocator import WitnessInfo
 from miles.utils.audit_utils.witness.module import witness_dump_and_clear_stale
 from miles.utils.dumper_utils import DumperMegatronUtil, DumperPhase
+from miles.utils.lora.utils import is_multi_lora_enabled
 from miles.utils.memory_utils import clear_memory
-from miles.utils.multi_lora import is_multi_lora_enabled
 from miles.utils.test_utils.ft_test_actions import FTTestActionActorExecutor
 from miles.utils.tracking_utils.structured_log import log_structured
 
@@ -156,7 +156,8 @@ def setup_model_and_optimizer(
     else:
         provider_func = get_model_provider_func(args, role)
         if is_lora_enabled(args) and role == "actor":
-            if "inkling" in (getattr(args, "custom_model_provider_path", None) or ""):
+            if "inkling" in (args.custom_model_provider_path or ""):
+                assert args.lora_type == "lora", "Native Inkling does not implement --lora-type canonical_lora"
                 from miles_plugins.models.inkling.lora import wrap_model_provider_with_inkling_lora
 
                 provider_func = wrap_model_provider_with_inkling_lora(provider_func, args)
@@ -169,6 +170,11 @@ def setup_model_and_optimizer(
                 provider_func = wrap_model_provider_with_kimi_k3_lora(provider_func, args)
                 if args.offload_train:
                     patch_param_grad_buffer_for_colocate_mode_lora()
+            else:
+                raise AssertionError(
+                    "Native LoRA injection is only implemented for Inkling and Kimi K3; "
+                    "use --megatron-to-hf-mode bridge"
+                )
         model = get_model(provider_func, ModelType.encoder_or_decoder)
 
     if args.debug_disable_optimizer:

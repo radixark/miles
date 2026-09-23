@@ -100,4 +100,9 @@ class OpenAIEndpointTracer:
             except Exception as e:
                 logger.warning(f"Failed to delete session {self.session_id} after collecting samples: {e}")
 
-        return decode_samples_and_merge_input_sample(payload, input_sample, fields=self.samples_wire_fields)
+        return await asyncio.to_thread(
+            decode_samples_and_merge_input_sample,
+            payload,
+            input_sample,
+            fields=self.samples_wire_fields,
+        )
