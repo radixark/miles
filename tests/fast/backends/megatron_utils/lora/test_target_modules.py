@@ -3,8 +3,8 @@ from types import SimpleNamespace
 import pytest
 
 from miles.backends.megatron_utils.lora.target_modules import resolve_megatron_lora_targets
-from miles.utils.lora.hf_lora_targets import resolve_hf_lora_targets
 from miles.utils.hf_utils.weight_mapping import HfWeightMapping
+from miles.utils.lora.hf_lora_targets import resolve_hf_lora_targets
 
 
 class _Mapping(SimpleNamespace):

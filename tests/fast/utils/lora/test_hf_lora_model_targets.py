@@ -7,6 +7,7 @@ import pytest
 import torch
 from transformers import AutoConfig, AutoModelForCausalLM, AutoModelForImageTextToText, PretrainedConfig
 
+from miles.utils.hf_utils.weight_mapping import HfWeightMapping
 from miles.utils.lora.hf_lora_targets import (
     _HF_LORA_MODELS,
     exclude_hf_lora_targets,
@@ -14,8 +15,6 @@ from miles.utils.lora.hf_lora_targets import (
     parse_lora_targets,
     resolve_hf_lora_targets,
 )
-from miles.utils.hf_utils.weight_mapping import HfWeightMapping
-
 
 _NATIVE_MODELS = (
     "llama",
