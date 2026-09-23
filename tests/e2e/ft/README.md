@@ -495,6 +495,8 @@ Faults are random, so beyond the witnesses no exact sequence is asserted.
 - **Mixed injection**: `--mix` draws the hook forms and the wall-clock forms through the same scheduler, and each hook request draws its delay uniformly from 0 to 1000 ms (the deadlock stays immediate). Every enabled form must produce an effect.
 - **Hook witnesses**: every applied hook form needs exactly one worker-side dispatch at its recorded delay, and every remote P2P form needs a receiver failure in its exact triggered update (`tests/utils/soak/ft/checkers/hooks.py`); every trainer fault needs an original peer to finish a normal step afterwards (`tests/utils/soak/ft/checkers/survivors.py`). The normal healing and tail witnesses remain mandatory.
 - **Calibration**: the hook deadlines and the 4800-second CI estimate have not been calibrated by a run.
+- **Checksum observation**: real-rollout modes pass `--save-inference-engine-weight-checksum`, so each published weight version records per-tensor engine checksums bound to its version, update and engine incarnation, collected under a five-second timeout; a missed observation loses evidence and fails the test, not training. Small observation overhead is accepted; production recovery and ordering remain unchanged.
+- **Checksum witness**: the analyzer rule `inference_engine_weight_checksum_coverage` requires every settled published weight update to carry exactly one checksum record covering the engine incarnations it updated, and `inference_engine_weight_checksum_consistency` requires same-version engines to agree; both run before every training step, so a run's last publication is the one publication no rule sees.
 
 ### `scenario_realistic_gsm8k`
 
