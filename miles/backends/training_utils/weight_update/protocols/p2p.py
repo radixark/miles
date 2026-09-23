@@ -23,6 +23,7 @@ from miles.backends.training_utils.parallel import ParallelState
 from miles.backends.training_utils.weight_update.hf_weight_iterator import WeightUpdatePlacement
 from miles.backends.training_utils.weight_update.protocol import WeightTransferProtocol
 from miles.backends.training_utils.weight_update.utils import ModelParamStager
+from miles.utils.audit_utils.event_logger import weight_update_observer
 from miles.utils.distributed_utils import get_gloo_group
 
 from .p2p_rollout_cell_updater import _P2PRolloutCellUpdater
@@ -107,6 +108,13 @@ class UpdateWeightP2P(WeightTransferProtocol):
             last_idx = len(self._rollout_engine_rank_infos) - 1
             for i, meta in enumerate(self._rollout_engine_rank_infos):
                 meta.model_replica.load_weights(ready_hf_tensors)
+                sent_checksums = (
+                    weight_update_observer.compute_send_checksums(
+                        self._cpu_replicas.shared_params_dict, transfer_ready_params
+                    )
+                    if weight_update_observer.is_observing_checksums(self.args)
+                    else None
+                )
 
                 # Last rollout engine rank: fire-and-forget all sessions to background,
                 # as the weight will no longer be overwritten
@@ -116,6 +124,7 @@ class UpdateWeightP2P(WeightTransferProtocol):
                         names=transfer_ready_params,
                         weight_memory_registry=self._weight_memory_registry,
                         transfer_engine=self._transfer_engine,
+                        sent_checksums=sent_checksums,
                     )
 
                 if i != last_idx:

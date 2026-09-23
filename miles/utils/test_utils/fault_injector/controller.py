@@ -63,6 +63,10 @@ class _FaultHookController:
         for request in _filter_fault_hooks(declared, owner=owner, cell_id=cell_id, rank=rank):
             self.apply(FaultHookCommand(operation=FaultHookOperation.SET, request=request))
 
+    @property
+    def context(self) -> FaultHookContext | None:
+        return self._context
+
     @contextmanager
     def with_context(self, context: FaultHookContext) -> Iterator[None]:
         self._context = context

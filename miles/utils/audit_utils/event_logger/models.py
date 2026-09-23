@@ -198,6 +198,16 @@ class FaultHookEvent(EventBase):
     record: FaultHookRecord
 
 
+class WeightUpdateTransferChecksumEvent(EventBase):
+    type: Literal["weight_update_transfer_checksum"] = "weight_update_transfer_checksum"
+    debug_weight_update_id: str
+    cell_id: str
+    workers_hash: str
+    receiver_rank: int
+    sent_checksums: dict[str, str]
+    received_checksums: dict[str, str]
+
+
 class WeightUpdateResultEvent(EventBase):
     type: Literal["weight_update_result"] = "weight_update_result"
     debug_weight_update_id: str
@@ -225,6 +235,7 @@ Event = Annotated[
     | ExplicitlyDroppedSamplesEvent
     | TrainerModelCompanionInfoEvent
     | FaultHookEvent
+    | WeightUpdateTransferChecksumEvent
     | WeightUpdateResultEvent,
     Discriminator("type"),
 ]
