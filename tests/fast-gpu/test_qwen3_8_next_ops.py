@@ -9,7 +9,7 @@ against autograd through the reference.
 
 from tests.ci.ci_register import register_cuda_ci
 
-register_cuda_ci(est_time=180, suite="stage-b-2-gpu-h200", labels=["miles-plugin"])
+register_cuda_ci(est_time=180, suite="stage-b-2-gpu-h200", labels=["miles-plugin"], hardware=["hopper", "blackwell"])
 
 import math
 
