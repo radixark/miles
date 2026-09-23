@@ -35,12 +35,9 @@ def _grade_boxed_solution(model_solution, label):
     return 0
 
 
-# markers that end the reasoning segment; Kimi K-series uses the tagged <|open|>response<|sep|>
-_THINKING_CLOSERS = ("<|open|>response<|sep|>", "</think>", "###Response")
-
-
 def get_deepscaler_rule_based_reward(response, label):
-    for closer in _THINKING_CLOSERS:
+    # markers that end the reasoning segment; Kimi K-series uses the tagged <|open|>response<|sep|>
+    for closer in ("<|open|>response<|sep|>", "</think>", "###Response"):
         if closer in response:
             return _grade_boxed_solution(response.split(closer)[-1], label)
     return 0
