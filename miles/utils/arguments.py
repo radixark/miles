@@ -2354,6 +2354,23 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "instead of through the argument. Mutually exclusive with --ci-ft-test-actions.",
             )
             parser.add_argument(
+                "--ci-fault-hooks",
+                type=str,
+                default=None,
+                help="JSON array of fault hook requests set when each process starts. Each request names the hook "
+                "it waits at, the action to run there, the cell_id / rank it applies to, and the rollout_id / "
+                "attempt / weight_version it fires on.",
+            )
+            parser.add_argument(
+                "--ci-fault-hooks-path",
+                type=str,
+                default=None,
+                help="Path of a file holding the same JSON array as --ci-fault-hooks, read when a process starts. "
+                "A run relaunched in place keeps the arguments its pods were rendered from, so a plan that has to "
+                "change from one launch to the next is delivered through this file. Mutually exclusive with "
+                "--ci-fault-hooks.",
+            )
+            parser.add_argument(
                 "--ci-inject-rollout-data-path",
                 type=str,
                 default=None,
