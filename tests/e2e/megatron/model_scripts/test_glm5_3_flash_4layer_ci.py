@@ -12,6 +12,7 @@ register_cuda_ci(
     est_time=1800,
     suite="stage-c-8-gpu-h200",
     labels=["megatron", "model-scripts"],
+    hardware=["hopper", "blackwell"],
     disabled="needs a CI image with GLM-5.3-Flash sglang support (branch sglang-miles-glm53); "
     "re-enable once it lands.",
 )
