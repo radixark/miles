@@ -16,6 +16,7 @@ from megatron.core.optimizer.cpu_offloading.hybrid_optimizer import HybridDevice
 from miles.backends.megatron_utils.optimizer_cpu_streaming_gradients import (
     add_optimizer_cpu_streaming_gradients_argument,
     install_optimizer_cpu_streaming_gradients,
+    validate_optimizer_cpu_streaming_gradients_args,
 )
 
 
@@ -427,6 +428,35 @@ def test_opt_in_parser_and_disabled_noop():
     assert parser.parse_args([]).optimizer_cpu_streaming_gradients is False
     assert parser.parse_args(["--optimizer-cpu-streaming-gradients"]).optimizer_cpu_streaming_gradients is True
     install_optimizer_cpu_streaming_gradients(SimpleNamespace(), object())
+
+
+@pytest.mark.parametrize(
+    "change,match",
+    [
+        ({"train_backend": "fsdp"}, "requires --train-backend megatron"),
+        ({"debug_disable_optimizer": True}, "no optimizer under --debug-disable-optimizer"),
+        ({"multi_lora": True}, "does not support multi-LoRA"),
+        ({"optimizer_cpu_offload": False}, "requires --optimizer-cpu-offload"),
+        ({"overlap_cpu_optimizer_d2h_h2d": False}, "requires --overlap-cpu-optimizer-d2h-h2d"),
+    ],
+)
+def test_configs_that_never_reach_the_install_are_rejected_at_parse_time(change, match):
+    """setup_model_and_optimizer returns early under these, so the flag would silently do nothing."""
+    base = dict(
+        optimizer_cpu_streaming_gradients=True,
+        train_backend="megatron",
+        debug_disable_optimizer=False,
+        multi_lora=False,
+        optimizer_cpu_offload=True,
+        overlap_cpu_optimizer_d2h_h2d=True,
+    )
+    validate_optimizer_cpu_streaming_gradients_args(SimpleNamespace(**base))
+    with pytest.raises(RuntimeError, match=match):
+        validate_optimizer_cpu_streaming_gradients_args(SimpleNamespace(**{**base, **change}))
+
+
+def test_parse_time_validation_ignores_runs_without_the_flag():
+    validate_optimizer_cpu_streaming_gradients_args(SimpleNamespace(train_backend="fsdp"))
 
 
 @pytest.mark.parametrize(
