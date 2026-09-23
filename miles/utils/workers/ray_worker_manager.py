@@ -111,28 +111,6 @@ class RayWorkerManager:
             raise StaleFaultTargetError(f"Cell {cell_id} has no live worker at index {rank}")
         return ObservedFaultHookTarget(cell_id=cell_id, rank=rank, workers_hash=cell.get_info().workers_hash)
 
-    def inject_fault(
-        self,
-        cell_id: str,
-        *,
-        mode: str,
-        worker_in_cell_index: int,
-        expected_target: ObservedFaultHookTarget | None = None,
-    ) -> None:
-        if expected_target is not None and expected_target != self.observe_fault_target(
-            cell_id, rank=worker_in_cell_index
-        ):
-            raise StaleFaultTargetError(f"Cell {cell_id} no longer matches the observed fault target")
-        cell = self._find_cell(cell_id)
-        if not cell.alive:
-            raise RuntimeError(f"Cell {cell_id} is not alive, cannot inject fault")
-        if not 0 <= worker_in_cell_index < len(cell.actors):
-            raise IndexError(
-                f"worker_in_cell_index {worker_in_cell_index} out of range for cell {cell_id} "
-                f"(has {len(cell.actors)} workers)"
-            )
-        cell.actors[worker_in_cell_index].actor_handle.inject_fault.remote(mode)
-
     async def control_fault_hook(self, command: FaultHookCommand) -> FaultHookRecord:
         target = command.request.target
         assert isinstance(target, ObservedFaultHookTarget), "A fault hook sent to a cell names the worker it observed"
