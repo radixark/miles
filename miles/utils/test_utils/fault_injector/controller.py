@@ -73,7 +73,6 @@ class _FaultHookController:
 
     def apply(self, command: FaultHookCommand) -> FaultHookRecord:
         with self._lock:
-            self._drop_expired()
             match command.operation:
                 case FaultHookOperation.SET:
                     executor = self._set(command.request)
@@ -120,7 +119,6 @@ class _FaultHookController:
     ) -> list[FaultHookRequestExecutor]:
         reached_context = self._current_context(context)
         with self._lock:
-            self._drop_expired()
             candidates = [
                 executor
                 for executor in self._executors.values()
@@ -147,19 +145,12 @@ class _FaultHookController:
 
     def _on_due(self, executor: FaultHookRequestExecutor) -> None:
         with self._lock:
-            self._drop_expired()
             if self._executors.get(executor.record.request.request_id) is not executor:
                 return
             del self._executors[executor.record.request.request_id]
             executor.mark_fired()
 
         _run_blocking(executor.execute(resources=self._resources))
-
-    def _drop_expired(self) -> None:
-        for request_id, executor in list(self._executors.items()):
-            if executor.is_expired():
-                del self._executors[request_id]
-                executor.expire()
 
 
 def _filter_fault_hooks(

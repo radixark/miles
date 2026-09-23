@@ -22,17 +22,9 @@ class FaultHookRequestExecutor:
     def record(self) -> FaultHookRecord:
         return self._record
 
-    def is_expired(self) -> bool:
-        lifetime = self._record.request.lifetime_seconds
-        return lifetime is not None and time.monotonic() >= self._record.set_at + lifetime
-
     def clear(self) -> FaultHookRecord:
         self._cancel_timer()
         return self._transition(FaultHookStatus.CLEARED)
-
-    def expire(self) -> FaultHookRecord:
-        self._cancel_timer()
-        return self._transition(FaultHookStatus.EXPIRED)
 
     def mark_reached(self, *, context: FaultHookContext) -> None:
         now = time.monotonic()
