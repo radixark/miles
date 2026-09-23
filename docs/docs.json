@@ -220,6 +220,7 @@
        "advanced/low-precision",
        "advanced/int4-qat",
        "advanced/speculative-decoding",
+       "advanced/sampling-support-replay",
        "advanced/lora",
        "advanced/on-policy-distillation"
       ]

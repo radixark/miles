@@ -312,6 +312,35 @@ class TestTitoMismatchMetrics:
         ):
             _compute_metrics_from_samples(args, samples)
 
+    @pytest.mark.parametrize(
+        ("mismatch_type", "threshold", "raises"),
+        [
+            ("special_token_count", 0.25, False),
+            ("special_token_count", 0.2, True),
+            ("special_token_type", 0.25, True),
+        ],
+    )
+    def test_special_token_count_threshold_under_ci_test(self, mismatch_type, threshold, raises):
+        """The special_token_count threshold only relaxes that type; the
+        other strict types stay at 0."""
+        args = make_args(
+            advantage_estimator="ppo",
+            ci_test=True,
+            ci_tito_special_token_count_threshold=threshold,
+            log_passrate=False,
+            use_session_server="v2",
+        )
+        samples = make_samples_grouped(1, 4)
+        samples[0].metadata = {"tito_session_mismatch": [{"type": mismatch_type}]}
+        for s in samples[1:]:
+            s.metadata = {"tito_session_mismatch": []}
+        if raises:
+            with pytest.raises(AssertionError, match=rf"tito_session_mismatch_rate/v2/{mismatch_type}=0\.2500"):
+                _compute_metrics_from_samples(args, samples)
+        else:
+            out = _compute_metrics_from_samples(args, samples)
+            assert out[f"tito_session_mismatch_rate/v2/{mismatch_type}"] == 0.25
+
     def test_assistant_text_mismatch_does_not_raise_under_ci_test(self):
         """assistant_text mismatch is non-critical (tokens inherited from the
         pretokenized prefix) — even under ci_test, must not raise."""

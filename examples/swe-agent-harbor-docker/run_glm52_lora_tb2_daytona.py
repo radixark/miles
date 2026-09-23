@@ -49,7 +49,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 # tilelang the indexer adapter gets no gradient at all — and EXCLUDING the MLP/MoE
 # leaves (gate_proj/up_proj/down_proj): this is the MoE-LoRA-off ablation, so all
 # experts (routed + shared) and the dense MLP stay frozen.
-_DEFAULT_TARGET_MODULES = "q_proj,k_proj,v_proj,o_proj,q_a_proj,kv_a_proj_with_mqa,q_b_proj,kv_b_proj"
+_DEFAULT_TARGET_MODULES = "o_proj,q_a_proj,kv_a_proj_with_mqa,q_b_proj,kv_b_proj"
 
 
 @dataclass

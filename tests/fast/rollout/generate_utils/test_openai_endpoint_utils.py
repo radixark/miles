@@ -10,23 +10,53 @@ DELETE is attempted on every path.
 """
 
 import asyncio
+import threading
 from types import SimpleNamespace
 
 import pytest
 
 import miles.utils.http_utils as http_utils
 from miles.rollout.generate_utils.openai_endpoint_utils import OpenAIEndpointTracer
-from miles.rollout.session.samples.codec import COMPUTED_FIELDS, COMPUTED_FIELDS_V2, encode_samples
+from miles.rollout.session.samples.codec import (
+    COMPUTED_FIELDS,
+    COMPUTED_FIELDS_V2,
+    ROLLOUT_SAMPLING_MASK_FIELDS,
+    decode_samples_and_merge_input_sample,
+    encode_samples,
+)
 from miles.utils.http_utils import post_bytes_no_retry
 from miles.utils.types import Sample
 
 
 @pytest.mark.asyncio
-async def test_create_reads_session_server_instance_id_from_args(monkeypatch):
+@pytest.mark.parametrize(
+    ("create_kwargs", "expected_payload"),
+    [
+        ({}, {"evaluation": False}),
+        ({"evaluation": False}, {"evaluation": False}),
+        ({"evaluation": True}, {"evaluation": True}),
+        # Only the sampling fields the session fills travel; None and other keys stay behind.
+        (
+            {"sampling_params": {"temperature": 0.6, "top_p": 0.9, "top_k": 20, "max_new_tokens": 8}},
+            {"evaluation": False, "temperature": 0.6, "top_p": 0.9, "top_k": 20},
+        ),
+        # An eval dataset YAML can spell top_k as 40.0; the session body carries the integer.
+        (
+            {"sampling_params": {"temperature": 1.0, "top_p": 1.0, "top_k": 40.0}},
+            {"evaluation": False, "temperature": 1.0, "top_p": 1.0, "top_k": 40},
+        ),
+    ],
+)
+async def test_create_reads_session_server_instance_id_from_args(monkeypatch, create_kwargs, expected_payload):
     calls: list[tuple[str, str]] = []
 
     async def fake_post(url: str, payload: dict, action: str = "post"):
         calls.append((action, url))
+        assert payload == expected_payload
+        # 40.0 == 40 in Python, so the equality above cannot see a float leaking through
+        assert {key: type(value) for key, value in payload.items()} == {
+            key: type(value) for key, value in expected_payload.items()
+        }
         assert action == "post"
         assert url == "http://127.0.0.1:12345/sessions"
         return {"session_id": "session-123"}
@@ -36,8 +66,12 @@ async def test_create_reads_session_server_instance_id_from_args(monkeypatch):
     args = SimpleNamespace(
         session_server_addrs=["127.0.0.1:12345"],
         session_server_instance_ids={"127.0.0.1:12345": "server-instance-123"},
+        use_sampling_support_replay=expected_payload.get("top_p", 1.0) < 1.0 or expected_payload.get("top_k", -1) > 0,
+        rollout_temperature=expected_payload.get("temperature", 1.0),
+        rollout_top_p=expected_payload.get("top_p", 1.0),
+        rollout_top_k=expected_payload.get("top_k", -1),
     )
-    tracer = await OpenAIEndpointTracer.create(args)
+    tracer = await OpenAIEndpointTracer.create(args, **create_kwargs)
 
     assert tracer.base_url == "http://127.0.0.1:12345/sessions/session-123"
     assert tracer.session_server_id == "127.0.0.1:12345"
@@ -53,7 +87,10 @@ async def test_create_without_instance_id_on_args(monkeypatch):
 
     monkeypatch.setattr("miles.rollout.generate_utils.openai_endpoint_utils.post", fake_post)
 
-    args = SimpleNamespace(session_server_addrs=["127.0.0.1:12345"])
+    args = SimpleNamespace(
+        session_server_addrs=["127.0.0.1:12345"],
+        use_sampling_support_replay=False,
+    )
     tracer = await OpenAIEndpointTracer.create(args)
 
     assert tracer.session_server_instance_id is None
@@ -80,7 +117,10 @@ async def test_create_distributes_sessions_across_port_range(monkeypatch):
     monkeypatch.setattr("miles.rollout.generate_utils.openai_endpoint_utils.post_bytes_no_retry", fake_post_bytes)
 
     ports = [12345, 12346, 12347, 12348]
-    args = SimpleNamespace(session_server_addrs=[f"127.0.0.1:{port}" for port in ports])
+    args = SimpleNamespace(
+        session_server_addrs=[f"127.0.0.1:{port}" for port in ports],
+        use_sampling_support_replay=False,
+    )
 
     chosen_ports = set()
     for _ in range(32):
@@ -119,6 +159,7 @@ class TestOpenAIEndpointTracerCreate:
         args = SimpleNamespace(
             session_server_addrs=["10.0.0.1:5005", "10.0.0.2:5005"],
             session_server_instance_ids={"10.0.0.1:5005": "instance-a", "10.0.0.2:5005": "instance-b"},
+            use_sampling_support_replay=False,
         )
         tracer = await OpenAIEndpointTracer.create(args)
 
@@ -141,6 +182,31 @@ class TestOpenAIEndpointTracerCreate:
 
         with pytest.raises(RuntimeError, match="session_server_addrs is not set"):
             await OpenAIEndpointTracer.create(SimpleNamespace(**addrs_kwargs))
+
+        assert posted == []
+
+    @pytest.mark.asyncio
+    async def test_create_validates_sampling_replay_before_allocating_session(self, monkeypatch):
+        posted: list[str] = []
+
+        async def fake_post(url: str, payload: dict, action: str = "post"):
+            posted.append(url)
+            return {"session_id": "session-abc"}
+
+        monkeypatch.setattr("miles.rollout.generate_utils.openai_endpoint_utils.post", fake_post)
+        args = SimpleNamespace(
+            session_server_addrs=["127.0.0.1:12345"],
+            use_sampling_support_replay=True,
+            rollout_temperature=1.0,
+            rollout_top_p=0.95,
+            rollout_top_k=32,
+        )
+
+        with pytest.raises(ValueError, match="does not match the training temperature"):
+            await OpenAIEndpointTracer.create(
+                args,
+                sampling_params={"temperature": 0.7, "top_p": 0.95, "top_k": 32},
+            )
 
         assert posted == []
 
@@ -199,6 +265,34 @@ async def test_collect_samples_single_post_then_delete(monkeypatch):
     (sample,) = result.samples
     assert sample.tokens == [1, 2, 10] and sample.status == Sample.Status.COMPLETED
     assert result.session_metadata == {"max_trim_tokens": 1}
+
+
+@pytest.mark.asyncio
+async def test_collect_samples_decoding_does_not_block_event_loop(monkeypatch):
+    _CollectCalls(monkeypatch, post_outcome=_computed_reply_payload())
+    decode_started = threading.Event()
+    release_decode = threading.Event()
+
+    def blocking_decode(*args, **kwargs):
+        decode_started.set()
+        if not release_decode.wait(timeout=1.0):
+            raise TimeoutError("sample decoding blocked the event loop")
+        return decode_samples_and_merge_input_sample(*args, **kwargs)
+
+    monkeypatch.setattr(
+        "miles.rollout.generate_utils.openai_endpoint_utils.decode_samples_and_merge_input_sample",
+        blocking_decode,
+    )
+
+    collect_task = asyncio.create_task(_tracer().collect_samples(Sample(), max_seq_len=7))
+    while not decode_started.is_set():
+        if collect_task.done():
+            await collect_task
+        await asyncio.sleep(0)
+    release_decode.set()
+
+    result = await collect_task
+    assert len(result.samples) == 1
 
 
 @pytest.mark.asyncio
@@ -330,8 +424,32 @@ async def test_create_selects_wire_fields_by_session_server_version(monkeypatch)
 
     monkeypatch.setattr("miles.rollout.generate_utils.openai_endpoint_utils.post", fake_post)
 
-    def args(version):
-        return SimpleNamespace(session_server_addrs=["127.0.0.1:7000"], use_session_server=version)
+    def args(version, top_p=1.0, top_k=-1):
+        return SimpleNamespace(
+            session_server_addrs=["127.0.0.1:7000"],
+            use_session_server=version,
+            use_sampling_support_replay=top_p < 1.0 or top_k > 0,
+            rollout_temperature=1.0,
+            rollout_top_p=top_p,
+            rollout_top_k=top_k,
+        )
+
+    def sampling_params(top_p, top_k):
+        return {"temperature": 1.0, "top_p": top_p, "top_k": top_k}
 
     assert (await OpenAIEndpointTracer.create(args(True))).samples_wire_fields == COMPUTED_FIELDS
     assert (await OpenAIEndpointTracer.create(args("v2"))).samples_wire_fields == COMPUTED_FIELDS_V2
+    assert (
+        await OpenAIEndpointTracer.create(args(True, 0.95, 32), sampling_params=sampling_params(0.95, 32))
+    ).samples_wire_fields == (COMPUTED_FIELDS + ROLLOUT_SAMPLING_MASK_FIELDS)
+    assert (
+        await OpenAIEndpointTracer.create(args("v2", 0.95, 32), sampling_params=sampling_params(0.95, 32))
+    ).samples_wire_fields == (COMPUTED_FIELDS_V2 + ROLLOUT_SAMPLING_MASK_FIELDS)
+    assert (
+        await OpenAIEndpointTracer.create(args(True, top_k=32), sampling_params=sampling_params(1.0, 32))
+    ).samples_wire_fields == (COMPUTED_FIELDS + ROLLOUT_SAMPLING_MASK_FIELDS)
+    assert (
+        await OpenAIEndpointTracer.create(
+            args(True, 0.95, 32), evaluation=True, sampling_params=sampling_params(0.95, 32)
+        )
+    ).samples_wire_fields == COMPUTED_FIELDS

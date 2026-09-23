@@ -23,6 +23,7 @@ def _make_args(**overrides: Any) -> SimpleNamespace:
         eval_max_in_flight=2,
         eval_overflow_policy="skip",
         eval_uses_snapshots=True,
+        fully_async=False,
         ft_components=[],
         hf_checkpoint=None,
         keep_old_actor=False,
@@ -152,6 +153,32 @@ class TestPipelinedGeneration:
         assert events.index("generate_start:1") < events.index("actor_train:0")
         assert events.index("generate_done:1") < events.index("update_weights:0")
         assert components.actor_model.trained == [0, 1]
+
+    async def test_fully_async_next_drain_starts_after_weight_publication(self, monkeypatch: pytest.MonkeyPatch):
+        """The persistent producer needs no lookahead drain that captures the previous weight version."""
+        events: list[str] = []
+        args = _make_args(fully_async=True, num_rollout=2, update_weights_interval=1)
+        components = _install_driver_fakes(monkeypatch, args, events)
+
+        await train_async_driver.train(args)
+
+        assert events.index("actor_train:0") < events.index("update_weights:0")
+        assert events.index("update_weights:0") < events.index("generate_start:1")
+        assert "generate_start:2" not in events
+        assert components.actor_model.trained == [0, 1]
+
+    async def test_fully_async_keeps_lookahead_between_weight_updates(self, monkeypatch: pytest.MonkeyPatch):
+        """A drain may still overlap training when that step cannot change the current weight version."""
+        events: list[str] = []
+        args = _make_args(fully_async=True, num_rollout=3, update_weights_interval=2)
+        components = _install_driver_fakes(monkeypatch, args, events)
+
+        await train_async_driver.train(args)
+
+        assert events.index("generate_start:1") < events.index("actor_train:0")
+        assert events.index("actor_train:1") < events.index("update_weights:1")
+        assert events.index("update_weights:1") < events.index("generate_start:2")
+        assert components.actor_model.trained == [0, 1, 2]
 
 
 class TestTerminalLifecycle:

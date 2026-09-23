@@ -26,7 +26,7 @@ from miles.rollout.session.v2 import core as session_core_v2
 from miles.utils.chat_template_utils.tito_tokenizer import TITOTokenizer
 from miles.utils.function_registry import function_registry
 from miles.utils.http_utils import find_available_port
-from miles.utils.lora import LORA_ADAPTER_NAME
+from miles.utils.lora.utils import LORA_ADAPTER_NAME
 from miles.utils.test_utils.mock_sglang_server import MockSGLangServer, ProcessResult, with_mock_server
 from miles.utils.test_utils.uvicorn_thread_server import UvicornThreadServer
 
@@ -47,6 +47,7 @@ def _serve_router(extra_args: dict | None = None):
             "tito_model": "default",
             "use_rollout_routing_replay": False,
             "use_rollout_indexer_replay": False,
+            "use_sampling_support_replay": False,
             "sglang_speculative_algorithm": None,
             "num_layers": None,
             "moe_router_topk": None,

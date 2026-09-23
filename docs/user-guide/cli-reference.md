@@ -80,7 +80,8 @@ then push up until you OOM.
 | Flag | Default | What |
 |---|---|---|
 | `--rollout-temperature` | `1.0` | Sampling temperature. |
-| `--rollout-top-p` | `1.0` | Top-p truncation. |
+| `--rollout-top-p` | `1.0` | Top-p truncation. Values below `1` enable [sampling-support replay](/advanced/sampling-support-replay) and require a positive top-k. |
+| `--rollout-top-k` | `-1` | Top-k truncation. Positive values enable [sampling-support replay](/advanced/sampling-support-replay). |
 | `--rollout-max-response-len` | `–` | Max tokens per response. |
 | `--rollout-stop-token-ids` | model default | Stop token IDs. Override when generations don't stop. |
 | `--apply-chat-template` | off | Apply the tokenizer's chat template. |
@@ -186,8 +187,8 @@ Sections mirror the launch-script argument groups.
 |---|---|---|---|
 | `--rollout-max-response-len` | int | – | Max tokens per response. |
 | `--rollout-temperature` | float | `1.0` | Sampling temperature. |
-| `--rollout-top-p` | float | `1.0` | Top-p truncation. |
-| `--rollout-top-k` | int | `-1` | Top-k truncation (-1 disables). |
+| `--rollout-top-p` | float | `1.0` | Top-p truncation. Values below `1` require bounded [sampling-support replay](/advanced/sampling-support-replay). |
+| `--rollout-top-k` | int | `-1` | Top-k truncation (`-1` disables). Positive values enable [sampling-support replay](/advanced/sampling-support-replay). |
 | `--rollout-stop` | str+ | – | Stop strings. |
 | `--rollout-stop-token-ids` | int+ | – | Stop token IDs. |
 
@@ -201,6 +202,7 @@ Sections mirror the launch-script argument groups.
 | `--eval-max-response-len` | int | – | Max eval response length. Inherits from rollout if unset. |
 | `--eval-temperature` | float | – | Eval temperature. Inherits from rollout if unset. |
 | `--eval-top-p` | float | – | Eval top-p. Inherits from rollout if unset. |
+| `--eval-top-k` | int | – | Eval top-k. Inherits from rollout if unset. |
 | `--eval-num-gpus` | int | `0` | Dedicated eval fleet size. `0` = shared-engine eval. Requires `train_async.py`. |
 | `--eval-num-gpus-per-engine` | int | `1` | Eval engine TP, independent of rollout TP. |
 | `--eval-hf-dir` | str | – | Staging dir for per-eval HF snapshots (tmpfs recommended). Unset + `--save-hf` = reuse mode. |

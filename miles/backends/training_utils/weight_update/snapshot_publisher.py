@@ -10,7 +10,7 @@ import torch.distributed as dist
 
 from miles.backends.training_utils.checkpoint_io import write_checkpoint_dir
 from miles.backends.training_utils.weight_update.hf_weight_iterator import HfWeightIteratorBase
-from miles.utils.multi_lora import AdapterSpec
+from miles.utils.lora.utils import AdapterSpec, get_adapter_target_modules
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +53,7 @@ class SnapshotPublisher:
             adapter_config = adapter_config | {"r": adapter.rank, "lora_alpha": adapter.alpha}
 
         if is_writer:
+            adapter_config = adapter_config | {"target_modules": get_adapter_target_modules(adapter_tensors)}
             path.mkdir(parents=True, exist_ok=True)
             (path / "adapter_config.json").write_text(json.dumps(adapter_config))
             (path / "adapter_model.safetensors").write_bytes(adapter_bytes)

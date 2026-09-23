@@ -1,4 +1,4 @@
-"""Unit tests for miles.utils.hf_config."""
+"""Unit tests for miles.utils.hf_utils.config."""
 
 import json
 import os
@@ -15,7 +15,7 @@ def _write_config_json(directory: str, config_dict: dict) -> None:
 
 class TestLoadHfConfig:
     def test_overrides_apply_to_returned_config(self, tmp_path):
-        from miles.utils.hf_config import load_hf_config
+        from miles.utils.hf_utils.config import load_hf_config
 
         fake_config = SimpleNamespace(max_position_embeddings=4096, hidden_size=128)
         with patch("transformers.AutoConfig.from_pretrained", return_value=fake_config):
@@ -28,7 +28,7 @@ class TestLoadHfConfig:
         assert cfg._attn_implementation == "flash"
 
     def test_trust_remote_code_default_is_true(self, tmp_path):
-        from miles.utils.hf_config import load_hf_config
+        from miles.utils.hf_utils.config import load_hf_config
 
         with patch("transformers.AutoConfig.from_pretrained", return_value=SimpleNamespace()) as mock_from_pretrained:
             load_hf_config(str(tmp_path))
@@ -36,7 +36,7 @@ class TestLoadHfConfig:
         assert kwargs["trust_remote_code"] is True
 
     def test_extra_kwargs_forwarded_to_autoconfig(self, tmp_path):
-        from miles.utils.hf_config import load_hf_config
+        from miles.utils.hf_utils.config import load_hf_config
 
         with patch("transformers.AutoConfig.from_pretrained", return_value=SimpleNamespace()) as mock_from_pretrained:
             load_hf_config(str(tmp_path), revision="main", trust_remote_code=False)
@@ -46,7 +46,7 @@ class TestLoadHfConfig:
 
     def test_unknown_model_type_raises(self, tmp_path):
         """Unrecognized model_type must fail loud, not be silently routed elsewhere."""
-        from miles.utils.hf_config import load_hf_config
+        from miles.utils.hf_utils.config import load_hf_config
 
         _write_config_json(str(tmp_path), {"model_type": "totally_unknown_model"})
         with pytest.raises(ValueError):
@@ -54,7 +54,7 @@ class TestLoadHfConfig:
 
     def test_repeated_calls_are_idempotent(self, tmp_path):
         """Alias registration on every call must not raise on the second pass."""
-        from miles.utils.hf_config import load_hf_config
+        from miles.utils.hf_utils.config import load_hf_config
 
         with patch("transformers.AutoConfig.from_pretrained", return_value=SimpleNamespace()):
             load_hf_config(str(tmp_path))
@@ -62,7 +62,7 @@ class TestLoadHfConfig:
 
     def test_native_support_raises_without_override(self, tmp_path):
         """If transformers ships native support for an alias, registration must fail loud."""
-        from miles.utils import hf_config as hf_config_module
+        from miles.utils.hf_utils import config as hf_config_module
 
         alias = hf_config_module._HFConfigAlias(
             model_type="fake_native_type",
@@ -80,7 +80,7 @@ class TestLoadHfConfig:
 
     def test_native_support_overridden_when_flag_set(self, tmp_path):
         """override_hf_native=True must allow registration to win over native support."""
-        from miles.utils import hf_config as hf_config_module
+        from miles.utils.hf_utils import config as hf_config_module
 
         alias = hf_config_module._HFConfigAlias(
             model_type="fake_native_type",
@@ -109,7 +109,7 @@ class TestDeepseekV32Alias:
         pytest.importorskip("transformers.models.deepseek_v3.configuration_deepseek_v3")
         from transformers.models.deepseek_v3.configuration_deepseek_v3 import DeepseekV3Config
 
-        from miles.utils.hf_config import load_hf_config
+        from miles.utils.hf_utils.config import load_hf_config
 
         # Use DeepseekV3Config's __init__ defaults to produce a valid config dict,
         # then re-stamp the model_type as deepseek_v32.
@@ -136,7 +136,7 @@ class TestDeepseekV32Alias:
         from transformers import AutoModelForCausalLM
         from transformers.models.deepseek_v3.configuration_deepseek_v3 import DeepseekV3Config
 
-        from miles.utils.hf_config import load_hf_config
+        from miles.utils.hf_utils.config import load_hf_config
 
         base_dict = DeepseekV3Config().to_dict()
         base_dict["model_type"] = "deepseek_v32"

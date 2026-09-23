@@ -14,7 +14,7 @@ from torch_memory_saver import torch_memory_saver
 
 from miles.backends.megatron_utils.ft.types import TrainStepOutput
 from miles.backends.megatron_utils.hf_export import save_hf_model
-from miles.backends.megatron_utils.lora.utils import build_lora_sync_config, is_lora_enabled, lora_rollout_enabled
+from miles.backends.megatron_utils.lora.utils import is_lora_enabled, lora_rollout_enabled
 from miles.backends.megatron_utils.rematerialize_utils import build_main_cast_context
 from miles.backends.megatron_utils.update_weight.hf_weight_iterator import get_hf_weight_iterator
 from miles.backends.training_utils.weight_update.hf_weight_iterator import WeightUpdatePlacement
@@ -30,7 +30,8 @@ from miles.utils.audit_utils.witness.allocator import WitnessInfo
 from miles.utils.context_utils import with_defer
 from miles.utils.distributed_utils import get_gloo_group
 from miles.utils.ft_utils.indep_dp import IndepDPInfo
-from miles.utils.hf_config import load_hf_config
+from miles.utils.hf_utils.config import load_hf_config
+from miles.utils.lora.utils import build_lora_config
 from miles.utils.memory_utils import clear_memory, print_memory
 from miles.utils.processing_utils import load_tokenizer
 from miles.utils.ray_utils import Box
@@ -279,7 +280,7 @@ class MegatronTrainRayActor(TrainRayActor):
             publish_snapshots=(
                 args.save_hf is not None
                 or (args.eval_uses_snapshots and args.eval_hf_dir is not None)
-                or (is_lora_enabled(args) and args.save is not None)
+                or (is_lora_enabled(args) and args.save is not None and args.megatron_to_hf_mode != "raw")
             ),
         )
 
@@ -306,7 +307,7 @@ class MegatronTrainRayActor(TrainRayActor):
                 iterator_factory=get_hf_weight_iterator,
                 parallel_state=get_parallel_state(),
                 is_lora=is_lora,
-                lora_sync_config=build_lora_sync_config(args) if is_lora else None,
+                lora_sync_config=build_lora_config(args, target_modules=args.lora_adapter_targets) if is_lora else None,
             )
 
         if publish_snapshots:
@@ -318,7 +319,9 @@ class MegatronTrainRayActor(TrainRayActor):
                 model_name=model_name,
                 quantization_config=None if is_lora else quantization_config,
             )
-            self.snapshot_publisher = SnapshotPublisher(iterator, build_lora_sync_config(args) if is_lora else None)
+            self.snapshot_publisher = SnapshotPublisher(
+                iterator, build_lora_config(args, target_modules=args.lora_adapter_targets) if is_lora else None
+            )
 
     def _clear_quantized_weight_workspaces(self) -> None:
         if not (
@@ -460,6 +463,7 @@ class MegatronTrainRayActor(TrainRayActor):
                 rollout_id=rollout_id,
                 store_prefix=store_prefix,
                 fp32_output=False,
+                use_rollout_sampling_mask=store_prefix == "" and self.args.use_sampling_support_replay,
             )
 
     @with_logs

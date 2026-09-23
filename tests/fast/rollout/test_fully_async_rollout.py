@@ -256,7 +256,7 @@ async def test_stale_group_recycled(monkeypatch):
 
     assert data_source.recycled == [stale]
     assert output.metrics["rollout/fully_async/stale_groups_filtered"] == 1
-    assert output.metrics["rollout/fully_async/max_staleness"] == 5
+    assert output.metrics["rollout/fully_async/max_staleness"] == 0
 
 
 async def test_stale_group_dropped_by_default(monkeypatch):
@@ -585,6 +585,51 @@ async def test_buffer_staleness_metrics():
     assert metrics["rollout/fully_async/avg_staleness"] == 6.0  # consumed group 1: 10 - 4
     assert metrics["rollout/fully_async/buffer_avg_staleness"] == 3.0  # buffered groups 2, 3: (4 + 2) / 2
     assert metrics["rollout/fully_async/buffer_max_staleness"] == 4
+
+
+async def test_buffer_reports_selected_policy_provenance():
+    buffer, _ = make_buffer(max_groups=8, max_staleness=2)
+    await put_group(buffer, make_group(1, weight_versions=["2", "4"]))
+    await put_group(buffer, make_group(2, weight_versions=["8", "10"]))
+
+    assert (await buffer.get(current_version=10)).group[0].group_index == 2
+    metrics = buffer.get_metrics()
+
+    assert metrics["rollout/fully_async/avg_staleness"] == 2
+    assert metrics["rollout/fully_async/max_staleness"] == 2
+    assert metrics["rollout/fully_async/avg_post_generation_staleness"] == 0
+    assert metrics["rollout/fully_async/avg_generation_version_span"] == 2
+    assert metrics["rollout/fully_async/token_weighted_staleness"] == 1
+    assert metrics["rollout/fully_async/weight_version_sample_coverage"] == 1
+
+
+async def test_buffer_reports_generation_span_without_current_version():
+    buffer, _ = make_buffer(max_groups=8)
+    await put_group(buffer, make_group(1, weight_versions=["2", "4"]))
+
+    await buffer.get(current_version=None)
+    metrics = buffer.get_metrics()
+
+    assert metrics["rollout/fully_async/avg_generation_version_span"] == 2
+    assert "rollout/fully_async/avg_post_generation_staleness" not in metrics
+    assert "rollout/fully_async/token_weighted_staleness" not in metrics
+
+
+async def test_buffer_reports_missing_weight_version_coverage_without_inventing_lag():
+    buffer, _ = make_buffer(max_groups=8)
+    partial_group = make_group(1, weight_versions=["7"])
+    partial_group[1].weight_versions = []
+    await put_group(buffer, partial_group)
+
+    await buffer.get(current_version=10)
+    metrics = buffer.get_metrics()
+
+    assert metrics["rollout/fully_async/weight_version_sample_coverage"] == 0.5
+    assert metrics["rollout/fully_async/token_weighted_staleness"] == 3
+
+    metrics = buffer.get_metrics()
+    assert "rollout/fully_async/weight_version_sample_coverage" not in metrics
+    assert "rollout/fully_async/token_weighted_staleness" not in metrics
 
 
 class RecordingBuffer(data_buffer.DefaultDataBuffer):

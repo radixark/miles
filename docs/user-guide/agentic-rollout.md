@@ -133,6 +133,12 @@ sequence, trims model-specific boundary tokens, and builds the training sample.
 
 ### Choose the session behavior
 
+Use `{"evaluation": true}` in `POST /sessions` for evaluation; omitting it defaults to training. The agentic generator sets this automatically, and the purpose stays fixed across turns, retries, and branches.
+
+`temperature`, `top_p`, and `top_k` in `POST /sessions` provide defaults for omitted or `null` chat fields. Training requests must match the registered temperature or receive HTTP 400; eval temperature and `top_p`/`top_k` remain overridable. The agentic generator registers the sample's resolved values automatically.
+
+Evaluation forces `return_sampling_mask`, `return_routed_experts`, and `return_indexer_topk` off and ignores `routed_experts_start_len`. TITO, logprobs, and sample collection still apply; engine-internal capture may remain enabled.
+
 History handling depends on the selected server version:
 
 - **v1 is linear.** Each request must extend the previous messages at the tail.

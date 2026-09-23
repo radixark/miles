@@ -173,6 +173,9 @@ def expected_openai_request(messages: list[dict], **extra) -> dict:
         # The R3 replay flags follow the launch flags and are always present.
         "return_routed_experts": False,
         "return_indexer_topk": False,
+        # The mock agent drops request_kwargs; the session fills the temperature the
+        # generator registered at creation.
+        "temperature": DEFAULT_SAMPLING_PARAMS["temperature"],
         "chat_template_kwargs": {"clear_thinking": False},
         **extra,
     }
