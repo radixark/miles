@@ -3648,6 +3648,11 @@ def miles_validate_args(args):
         args.disable_param_buffers_cpu_backup = True
 
     _validate_rematerialize_param_from_master_weight(args)
+    from miles.backends.megatron_utils.optimizer_cpu_streaming_gradients import (
+        validate_optimizer_cpu_streaming_gradients_args,
+    )
+
+    validate_optimizer_cpu_streaming_gradients_args(args)
 
     if (args.offload_train_target == "disk" or args.stream_optimizer_state_to_disk) and (
         args.offload_train_disk_dir is None
