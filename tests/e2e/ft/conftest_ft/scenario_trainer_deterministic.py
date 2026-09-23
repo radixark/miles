@@ -18,7 +18,7 @@ from miles.utils.test_utils.comparisons.dumps import (
 )
 from miles.utils.test_utils.comparisons.inference_engine_checksums import compare_inference_engine_checksums
 from miles.utils.test_utils.comparisons.metrics import compare_metrics
-from miles.utils.test_utils.fault_injector.static_source import compute_ft_test_actions_arg
+from miles.utils.test_utils.ft_test_actions import compute_ft_test_actions_arg
 from miles.utils.workers.naming import compute_cell_id
 
 # --num-rollout is the exclusive global end id (TOTAL_NUM_ROLLOUTS); --debug-exit-after-rollout counts rollouts within the current run.

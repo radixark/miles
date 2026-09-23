@@ -1,7 +1,9 @@
 import asyncio
+import json
 import logging
 import os
-from collections.abc import Awaitable, Callable
+import sys
+from collections.abc import Awaitable, Callable, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
@@ -9,12 +11,6 @@ from pydantic import TypeAdapter, model_validator
 
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
 from miles.utils.retry_utils import retry_until_deadline
-from miles.utils.test_utils.fault_injector.actions.frozen import (
-    SLEEP_FOREVER_AT_END_ACTION,
-    assert_loop_parkable,
-    write_frozen_sentinel,
-)
-from miles.utils.test_utils.fault_injector.static_source import read_declared_actions
 from miles.utils.workers.naming import parse_cell_id
 
 if TYPE_CHECKING:
@@ -23,7 +19,19 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+CI_FT_TEST_ACTIONS_FLAG: str = "--ci-ft-test-actions"
+SLEEP_FOREVER_AT_END_ACTION: str = "sleep_forever_at_end"
 SLEEP_FOREVER_INTERVAL_SECONDS: float = 60.0
+PARKABLE_TRAIN_SCRIPT: str = "train.py"
+
+
+def compute_ft_test_actions_arg(actions: Sequence[dict]) -> str:
+    return f"{CI_FT_TEST_ACTIONS_FLAG} '{render_ft_test_actions(actions)}' "
+
+
+def render_ft_test_actions(actions: Sequence[dict]) -> str:
+    return json.dumps(list(actions))
+
 
 _CELL_RESUME_OBSERVED_TIMEOUT_SECONDS = 300.0
 
@@ -54,7 +62,7 @@ _ACTION_LIST_ADAPTER: TypeAdapter[list[FTTestAction]] = TypeAdapter(list[FTTestA
 
 
 def _load_actions(args: object, action_filter: set[str]) -> list[FTTestAction]:
-    if not (raw := read_declared_actions(args)):
+    if not (raw := _read_declared_actions(args)):
         return []
     all_actions = _ACTION_LIST_ADAPTER.validate_json(raw)
 
@@ -70,6 +78,23 @@ def _load_actions(args: object, action_filter: set[str]) -> list[FTTestAction]:
     if actions:
         logger.info("FT test actions activated: %d actions (%s)", len(actions), action_filter)
     return actions
+
+
+def _assert_loop_parkable(args: object, *, trainer_model_id: str | None) -> None:
+    assert (script := Path(sys.argv[0]).name) == PARKABLE_TRAIN_SCRIPT, (
+        f"{SLEEP_FOREVER_AT_END_ACTION} parks the orchestration script between two steps, and only "
+        f"{PARKABLE_TRAIN_SCRIPT} stands still at that point; {script} has already started the next rollout by the "
+        f"time it reaches here, so the run would not be standing where the action names"
+    )
+    assert (interval := args.update_weights_interval) == 1, (
+        f"{SLEEP_FOREVER_AT_END_ACTION} parks the run where it updates weights, and --update-weights-interval "
+        f"{interval} means the run does not pass through that point after every step"
+    )
+    assert trainer_model_id is None, (
+        f"{SLEEP_FOREVER_AT_END_ACTION} parks one coroutine, and a run training several policies drives one per "
+        f"policy ({trainer_model_id!r} reached it here), so every other policy would keep training past the step "
+        f"the action names"
+    )
 
 
 class FTTestActionControllerExecutor:
@@ -182,7 +207,7 @@ class FTTestActionOrchestrationExecutor:
     def from_args(args: object, *, trainer_model_id: str | None = None) -> "FTTestActionOrchestrationExecutor":
         actions = _load_actions(args, _ORCHESTRATION_ACTIONS)
         if actions:
-            assert_loop_parkable(args, trainer_model_id=trainer_model_id)
+            _assert_loop_parkable(args, trainer_model_id=trainer_model_id)
 
         path: str | None = args.ci_ft_test_actions_path
         return FTTestActionOrchestrationExecutor(
@@ -213,3 +238,83 @@ class FTTestActionOrchestrationExecutor:
     async def _sleep_forever(self) -> None:
         while True:
             await self._sleep(self._interval_seconds)
+
+
+# ============ adhoc file delivery (revert after the args refactor) ============
+
+
+CI_FT_TEST_ACTIONS_PATH_FLAG: str = "--ci-ft-test-actions-path"
+
+
+# TODO ad hoc hack: revert after the args refactor
+def _read_declared_actions(args: object) -> str:
+    inline: str | None = args.ci_ft_test_actions
+    path: str | None = args.ci_ft_test_actions_path
+
+    assert inline is None or path is None, (
+        f"{CI_FT_TEST_ACTIONS_FLAG} and {CI_FT_TEST_ACTIONS_PATH_FLAG} both name the actions a run performs, and a "
+        f"run given both silently follows one of them"
+    )
+    return read_ft_test_actions(Path(path)) if path is not None else (inline or "")
+
+
+# TODO ad hoc hack: revert after the args refactor
+def write_ft_test_actions(path: Path, actions: Sequence[dict]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    scratch = path.with_name(f"{path.name}.{os.getpid()}.partial")
+    scratch.write_text(render_ft_test_actions(actions))
+    scratch.replace(path)
+
+
+# TODO ad hoc hack: revert after the args refactor
+def read_ft_test_actions(path: Path) -> str:
+    stamp = _stat_or_none(path)
+    assert stamp is not None, (
+        f"{CI_FT_TEST_ACTIONS_PATH_FLAG} names {path}, which does not exist; a run told to read its plan from a "
+        f"file nothing wrote would quietly perform no action at all"
+    )
+
+    stamped_at = (stamp.st_mtime_ns, stamp.st_size)
+    if (cached := _ACTIONS_OF_STAMP.get(path)) is not None and cached[0] == stamped_at:
+        return cached[1]
+
+    text = path.read_text()
+    _ACTIONS_OF_STAMP[path] = (stamped_at, text)
+    return text
+
+
+# TODO ad hoc hack: revert after the args refactor
+def _stat_or_none(path: Path) -> os.stat_result | None:
+    try:
+        return path.stat()
+    except OSError:
+        return None
+
+
+FROZEN_SENTINEL_SUFFIX: str = "_frozen_at.json"
+# TODO ad hoc hack: revert after the args refactor
+_ACTIONS_OF_STAMP: dict[Path, tuple[tuple[int, int], str]] = {}
+
+
+# TODO ad hoc hack: revert after the args refactor
+def compute_frozen_sentinel_path(actions_path: Path) -> Path:
+    return actions_path.with_name(f"{actions_path.stem}{FROZEN_SENTINEL_SUFFIX}")
+
+
+# TODO ad hoc hack: revert after the args refactor
+def write_frozen_sentinel(actions_path: Path, *, rollout_id: int) -> None:
+    path = compute_frozen_sentinel_path(actions_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    scratch = path.with_name(f"{path.name}.{os.getpid()}.partial")
+    scratch.write_text(json.dumps({"rollout_id": rollout_id}))
+    scratch.replace(path)
+
+
+# TODO ad hoc hack: revert after the args refactor
+def read_frozen_rollout_id(actions_path: Path) -> int | None:
+    path = compute_frozen_sentinel_path(actions_path)
+    if not path.is_file():
+        return None
+    return int(json.loads(path.read_text())["rollout_id"])

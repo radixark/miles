@@ -17,7 +17,7 @@ from miles.utils.test_utils.comparisons.dumps import (
     compare_dumps,
 )
 from miles.utils.test_utils.comparisons.metrics import compare_metrics
-from miles.utils.test_utils.fault_injector.static_source import compute_ft_test_actions_arg
+from miles.utils.test_utils.ft_test_actions import compute_ft_test_actions_arg
 from miles.utils.workers.naming import compute_cell_id
 
 NUM_PHASE_A_STEPS: int = 1

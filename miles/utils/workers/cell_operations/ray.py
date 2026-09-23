@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import ray.actor
 
-from miles.utils.test_utils.fault_injector.actions.process import FailureMode
+from miles.utils.test_utils.fault_injector import FailureMode
 from miles.utils.workers.cell_operations.base import BaseCellOperations, FaultTarget
 from miles.utils.workers.worker_provider.base import CellInfo
 

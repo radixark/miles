@@ -20,7 +20,7 @@ from tests.utils.soak.deploy.utils import compute_hot_restart_config
 
 from miles.utils.external_utils.command_utils.base_backend import ExecuteTrainConfig
 from miles.utils.external_utils.command_utils.helm_backend.launcher.entrypoint import RunExitedError
-from miles.utils.test_utils.fault_injector.actions.frozen import SLEEP_FOREVER_AT_END_ACTION, read_frozen_rollout_id
+from miles.utils.test_utils.ft_test_actions import SLEEP_FOREVER_AT_END_ACTION, read_frozen_rollout_id
 from miles.utils.test_utils.polling_worker import PollingWorker
 
 # ================================= constants ==================================

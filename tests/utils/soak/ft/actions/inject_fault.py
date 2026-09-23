@@ -12,7 +12,7 @@ from tests.utils.soak.ft.cells import cell_is_alive
 from tests.utils.soak.ft.types import CellTarget, InjectFaultDetails, ObservedCellFault, ObservedCellFaultKind
 
 from miles.utils.ft_utils.api_server.models import Cell, FaultInjection
-from miles.utils.test_utils.fault_injector.actions.process import FailureMode
+from miles.utils.test_utils.fault_injector import FailureMode
 from miles.utils.workers.cell_operations.base import FaultTarget
 
 logger = logging.getLogger(__name__)
