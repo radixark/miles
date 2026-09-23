@@ -2,6 +2,7 @@ from collections.abc import Awaitable
 from functools import partial
 from pathlib import Path
 
+from tests.utils.soak.core.checkers.end_state import assert_end_state_complete
 from tests.utils.soak.core.checkers.tail_completeness import assert_tail_complete
 from tests.utils.soak.core.config import SoakRunnerConfig
 from tests.utils.soak.core.event_log import EventLog
@@ -44,6 +45,10 @@ async def run_soak(
     )
 
     assert_tail_complete(runner.event_log.events)
+    assert_end_state_complete(
+        runner.event_log.events,
+        expected_count_of_kind={kind: one.expected_count for kind, one in runner.config.target_configs.items()},
+    )
     return runner
 
 

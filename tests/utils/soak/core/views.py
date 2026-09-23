@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 
 from tests.utils.soak.core.events import (
@@ -7,6 +8,7 @@ from tests.utils.soak.core.events import (
     SoakActionResultEvent,
     SoakAdmissionClosedEvent,
     SoakEvent,
+    SoakEvidenceArchivedEvent,
     SoakObservationEvent,
 )
 
@@ -92,12 +94,21 @@ def compute_num_injections(events: list[SoakEvent], *, kind: str | None = None) 
     return len(_applied_actions(events, kind=kind))
 
 
+def compute_injection_times(events: list[SoakEvent], *, kind: str | None = None) -> list[datetime]:
+    return [action.applied.timestamp for action in _applied_actions(events, kind=kind)]
+
+
 def compute_successful_form_names(events: list[SoakEvent], *, kind: str) -> set[str]:
     return {action.requested.request.form_name for action in _applied_actions(events, kind=kind)}
 
 
 def event_source(events: list[SoakEvent], *, name: str, fallback: Path) -> Path:
-    raise NotImplementedError
+    for event in reversed(events):
+        if isinstance(event, SoakEvidenceArchivedEvent):
+            assert name not in event.missing_sources, f"Missing archived soak evidence: {name}"
+            if name in event.sources:
+                return event.sources[name]
+    return fallback
 
 
 def _applied_actions(events: list[SoakEvent], *, kind: str | None) -> list[SoakActionRecord]:
