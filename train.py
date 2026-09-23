@@ -146,9 +146,9 @@ async def train(args):
             if external_save:
                 os.remove(args.save_trigger_sentinel)
 
-        if rollout_id + 1 < args.num_rollout or should_run_periodic_action(
-            rollout_id, args.eval_interval, num_rollout_per_epoch
-        ):
+        # One predicate for both blocks: the handoff below exists to feed this eval on the last rollout.
+        eval_due = should_run_periodic_action(rollout_id, args.eval_interval, num_rollout_per_epoch, args.num_rollout)
+        if rollout_id + 1 < args.num_rollout or eval_due:
             if args.colocate_memory_peak_device == "gpu":
                 await actor_model.clear_memory()
                 if lora_rollout_enabled(args):
@@ -163,7 +163,7 @@ async def train(args):
             if args.offload_rollout:
                 await inference_controller.onload_kv()
 
-        if should_run_periodic_action(rollout_id, args.eval_interval, num_rollout_per_epoch, args.num_rollout):
+        if eval_due:
             await inference_controller.prepare_eval()
             await eval_dispatcher.dispatch(rollout_id, force=rollout_id == args.num_rollout - 1)
 

@@ -183,6 +183,9 @@ def save_lora_checkpoint(
        checkpoint resume without name/weight conversion. Each TP/PP rank saves its
        own shard with original parameter names.
 
+    Raw-mode (native) adapters skip the HF PEFT export: they have no bridge, and Kimi K3's
+    896-expert adapter could not be materialized on every rank anyway.
+
     When ``optimizer`` is provided, resume state (iteration + LR scheduler) is also
     saved per-rank. ``--no-save-optim`` drops the optimizer entry from that file and
     nothing else, so a resumed run still restarts at the right step and LR.
@@ -193,15 +196,14 @@ def save_lora_checkpoint(
     """
     import json
 
-    from megatron.bridge import AutoBridge
-
-    from miles.utils import megatron_bridge_utils
-
     save_path = Path(save_dir)
+    # raw-mode adapters have no bridge to export HF PEFT through
+    native = args.megatron_to_hf_mode == "raw"
     parallel_state = get_parallel_state()
     is_dp_cp_rank_0 = parallel_state.effective_dp.rank == 0 and parallel_state.cp.rank == 0
     tp_rank = parallel_state.tp.rank
     pp_rank = parallel_state.pp.rank
+    global_rank = dist.get_rank() if dist.is_initialized() else 0
 
     save_path.mkdir(parents=True, exist_ok=True)
     if dist.is_initialized():
@@ -213,43 +215,58 @@ def save_lora_checkpoint(
             if _is_adapter_param_name(name):
                 adapter_state[name] = param.data.cpu()
 
-    global_rank = dist.get_rank() if dist.is_initialized() else 0
     native_path = save_path / f"adapter_megatron_rank{global_rank}.pt"
     torch.save(adapter_state, native_path)
     logger.info(f"Saved {len(adapter_state)} adapter tensors (native) to {native_path}")
 
-    # ---- HF PEFT format (uses bridge for correct name/weight conversion) ----
-    # Bridge export is collective: all TP ranks participate in the all-gather,
-    # so every rank must call export_adapter_weights.
-    try:
-        bridge = AutoBridge.from_hf_pretrained(args.hf_checkpoint, trust_remote_code=True)
-        # Megatron is optional until the HF export path is entered.
-        from miles.backends.megatron_utils.update_weight.hf_weight_iterator import _gather_pp_full_adapter
-
-        lora_state_dict: dict[str, torch.Tensor] = {}
-        with megatron_bridge_utils.patch_megatron_model(model):
-            for hf_name, weight, *_ in bridge.export_adapter_weights(
-                model,
-                cpu=True,
-                show_progress=False,
-            ):
-                lora_state_dict[hf_name] = weight
-
-        lora_state_dict = dict(_gather_pp_full_adapter(list(lora_state_dict.items())))
-    except Exception as hf_export_err:
-        logger.warning(
-            f"HF PEFT adapter export skipped ({hf_export_err}); the per-rank native "
-            f"shards + training state are sufficient for training resume."
-        )
-    else:
-        if is_dp_cp_rank_0 and tp_rank == 0 and pp_rank == 0:
-            torch.save(
-                {name: weight.cpu() for name, weight in lora_state_dict.items()}, save_path / "adapter_model.bin"
+    if native:
+        if global_rank == 0:
+            config = build_lora_config(args, target_modules=args.lora_adapter_targets)
+            config.update(
+                experts_shared_outer_loras=bool(args.experts_shared_outer_loras),
+                format="megatron_rank_sharded",
             )
-            config = build_lora_config(args, target_modules=get_adapter_target_modules(lora_state_dict))
-            (save_path / "adapter_config.json").write_text(json.dumps(config, indent=2))
+            with open(save_path / "adapter_config.json", "w") as f:
+                json.dump(config, f, indent=2)
             os.sync()
-            logger.info(f"Saved HF PEFT adapter to {save_path} with {len(lora_state_dict)} tensors")
+            logger.info(f"Saved rank-sharded adapter config to {save_path}")
+    else:
+        # ---- HF PEFT format (uses bridge for correct name/weight conversion) ----
+        # Bridge export is collective: all TP ranks participate in the all-gather,
+        # so every rank must call export_adapter_weights.
+        try:
+            from megatron.bridge import AutoBridge
+
+            from miles.utils import megatron_bridge_utils
+
+            bridge = AutoBridge.from_hf_pretrained(args.hf_checkpoint, trust_remote_code=True)
+            # Megatron is optional until the HF export path is entered.
+            from miles.backends.megatron_utils.update_weight.hf_weight_iterator import _gather_pp_full_adapter
+
+            lora_state_dict: dict[str, torch.Tensor] = {}
+            with megatron_bridge_utils.patch_megatron_model(model):
+                for hf_name, weight, *_ in bridge.export_adapter_weights(
+                    model,
+                    cpu=True,
+                    show_progress=False,
+                ):
+                    lora_state_dict[hf_name] = weight
+
+            lora_state_dict = dict(_gather_pp_full_adapter(list(lora_state_dict.items())))
+        except Exception as hf_export_err:
+            logger.warning(
+                f"HF PEFT adapter export skipped ({hf_export_err}); the per-rank native "
+                f"shards + training state are sufficient for training resume."
+            )
+        else:
+            if is_dp_cp_rank_0 and tp_rank == 0 and pp_rank == 0:
+                torch.save(
+                    {name: weight.cpu() for name, weight in lora_state_dict.items()}, save_path / "adapter_model.bin"
+                )
+                config = build_lora_config(args, target_modules=get_adapter_target_modules(lora_state_dict))
+                (save_path / "adapter_config.json").write_text(json.dumps(config, indent=2))
+                os.sync()
+                logger.info(f"Saved HF PEFT adapter to {save_path} with {len(lora_state_dict)} tensors")
 
     # ---- Training state (iteration + scheduler, and the optimizer unless opted out) ----
     if optimizer is not None:
