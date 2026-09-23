@@ -9,15 +9,17 @@ from tests.utils.soak.core.archive import archive_evidence
 from tests.utils.soak.core.config import SoakRunnerConfig
 from tests.utils.soak.core.event_log import EventLog
 from tests.utils.soak.core.events import (
+    SoakActionAppliedEvent,
     SoakActionRequestedEvent,
+    SoakActionResultEvent,
     SoakAdmissionClosedEvent,
     SoakEvent,
     SoakObservationEvent,
 )
 from tests.utils.soak.core.scheduler import SoakActionScheduler
 from tests.utils.soak.core.sut_events import SutEventFeed
-from tests.utils.soak.core.types import SoakForms, SoakObserver
-from tests.utils.soak.core.views import admission_closed, trainer_step_ends
+from tests.utils.soak.core.types import SoakActionEvidence, SoakActionRequest, SoakForms, SoakObserver, find_form
+from tests.utils.soak.core.views import admission_closed, project_actions, trainer_step_ends
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +48,12 @@ class SoakRunner:
 
     async def _finish(self) -> None:
         await self._observe_and_record(timeout_seconds=self.config.timeouts.final_observation_seconds)
+        events = self.event_log.events
+        for request_id, action in project_actions(events).items():
+            request = action.requested.request
+            form = find_form(self.forms, kind=request.target.kind, name=request.form_name)
+            assert action.result is not None and action.result.returned, f"Action did not finish: {request_id}"
+            assert form.is_recovered(action=action, events=events), f"Action did not recover: {request_id}"
 
     async def _run(self, *, sut_run: Awaitable[object]) -> None:
         async with asyncio.TaskGroup() as tasks:
@@ -55,17 +63,19 @@ class SoakRunner:
             observing.cancel()
 
     async def _observe_and_choose(self) -> None:
-        while True:
-            await asyncio.sleep(self.config.poll_interval_seconds)
-            await self._observe_and_record(timeout_seconds=self.config.timeouts.observation_seconds)
+        async with asyncio.TaskGroup() as actions:
+            while True:
+                await asyncio.sleep(self.config.poll_interval_seconds)
+                await self._observe_and_record(timeout_seconds=self.config.timeouts.observation_seconds)
 
-            events = self.event_log.events
-            _assert_within_tail_budget(events, tail_seconds=self.config.timeouts.tail_seconds)
+                events = self.event_log.events
+                _assert_within_tail_budget(events, tail_seconds=self.config.timeouts.tail_seconds)
 
-            if (request := self.scheduler.choose(events=events, now=time.monotonic())) is None:
-                continue
+                if (request := self.scheduler.choose(events=events, now=time.monotonic())) is None:
+                    continue
 
-            self.event_log.append(SoakActionRequestedEvent(request=request))
+                self.event_log.append(SoakActionRequestedEvent(request=request))
+                actions.create_task(self._execute(request))
 
     async def _observe_and_record(self, *, timeout_seconds: float) -> None:
         try:
@@ -85,6 +95,32 @@ class SoakRunner:
     def _close_admission(self) -> None:
         if admission_closed(self.event_log.events) is None:
             self.event_log.append(SoakAdmissionClosedEvent())
+
+    async def _execute(self, request: SoakActionRequest) -> None:
+        reported = False
+
+        def report_applied(evidence: SoakActionEvidence) -> None:
+            nonlocal reported
+            assert not reported, f"Action reported its effect twice: {request.request_id}"
+            reported = True
+            self.event_log.append(SoakActionAppliedEvent(request_id=request.request_id, evidence=evidence))
+
+        try:
+            await find_form(self.forms, kind=request.target.kind, name=request.form_name).execute(
+                request, report_applied=report_applied
+            )
+        except asyncio.CancelledError as error:
+            self.event_log.append(
+                SoakActionResultEvent(request_id=request.request_id, returned=False, error=repr(error))
+            )
+            raise
+        except Exception as error:
+            logger.info("Action %s failed", request.request_id, exc_info=True)
+            self.event_log.append(
+                SoakActionResultEvent(request_id=request.request_id, returned=False, error=repr(error))
+            )
+        else:
+            self.event_log.append(SoakActionResultEvent(request_id=request.request_id, returned=True))
 
 
 def _assert_within_tail_budget(events: list[SoakEvent], *, tail_seconds: float) -> None:
