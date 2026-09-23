@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import logging
 from typing import TYPE_CHECKING
 
@@ -8,6 +7,7 @@ import torch
 import torch.distributed as dist
 
 from miles.backends.training_utils.parallel import ParallelState
+from miles.backends.training_utils.weight_update.checksum_utils import hash_tensor_sha256
 from miles.backends.training_utils.weight_update.hf_weight_iterator import WeightUpdatePlacement
 
 if TYPE_CHECKING:
@@ -34,10 +34,7 @@ def record_lora_checksums(bucket, checksums) -> None:
         if ":" not in name:
             continue
         lora_name, hf_key = name.split(":", 1)
-        digest = hashlib.sha256(
-            tensor.detach().cpu().contiguous().flatten().view(torch.uint8).numpy().tobytes()
-        ).hexdigest()
-        checksums[lora_name][hf_key] = digest
+        checksums[lora_name][hf_key] = hash_tensor_sha256(tensor)
 
 
 class ModelParamStager:

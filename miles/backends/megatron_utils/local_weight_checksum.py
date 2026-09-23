@@ -6,7 +6,6 @@ raise an error rather than skip it — incomplete checksums defeat the purpose o
 cross-replica consistency verification.
 """
 
-import hashlib
 import logging
 from argparse import Namespace
 from collections.abc import Iterator, Sequence
@@ -16,7 +15,7 @@ import torch
 from megatron.core.distributed import DistributedDataParallel as DDP
 from megatron.core.optimizer.optimizer import MegatronOptimizer
 
-from miles.backends.megatron_utils.ci_utils import _hash_tensor_bytes
+from miles.backends.training_utils.weight_update.checksum_utils import hash_tensor_sha256
 
 if TYPE_CHECKING:
     from miles.utils.audit_utils.event_logger.models import OptimizerStateInfo, TrainEngineLocalWeightChecksumState
@@ -91,7 +90,7 @@ def _hash_named_tensors(model: Sequence[DDP], *, accessor: str) -> dict[str, str
     for pp_idx, model_chunk in enumerate(model):
         for name, tensor in sorted(getattr(model_chunk, accessor)(), key=lambda x: x[0]):
             assert tensor is not None, f"pp{pp_idx}.{name}: tensor is None"
-            hashes[f"pp{pp_idx}.{name}"] = _hash_tensor_sha256(tensor)
+            hashes[f"pp{pp_idx}.{name}"] = hash_tensor_sha256(tensor)
     return hashes
 
 
@@ -160,7 +159,7 @@ def _build_param_names_for_optimizer(
 def _transform_tensor_to_hash(obj: Any) -> Any:
     """Recursively replace all tensors in a nested structure with their SHA-256 hashes."""
     if isinstance(obj, torch.Tensor):
-        return _hash_tensor_sha256(obj)
+        return hash_tensor_sha256(obj)
     if isinstance(obj, dict):
         return {k: _transform_tensor_to_hash(v) for k, v in obj.items()}
     if isinstance(obj, (list, tuple)):
@@ -175,8 +174,3 @@ def _iter_sub_optimizers(optimizer: MegatronOptimizer) -> Iterator[MegatronOptim
             yield from _iter_sub_optimizers(sub)
     else:
         yield optimizer
-
-
-def _hash_tensor_sha256(tensor: torch.Tensor) -> str:
-    raw_bytes = _hash_tensor_bytes(tensor)
-    return hashlib.sha256(raw_bytes).hexdigest()
