@@ -36,6 +36,10 @@ def kill_process_tree(process: subprocess.Popen) -> None:
     _signal_process_group(process.pid, signal.SIGKILL)
 
 
+def stop_process_tree(process: subprocess.Popen) -> None:
+    _signal_process_group(process.pid, signal.SIGSTOP)
+
+
 def kill_process(process: subprocess.Popen) -> None:
     try:
         os.kill(process.pid, signal.SIGKILL)

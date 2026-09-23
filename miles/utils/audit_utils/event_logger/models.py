@@ -208,7 +208,9 @@ class FaultHookStatus(StrEnum):
     FAILED = "failed"
 
 
-_HOOKABLE_FAILURE_MODES: frozenset[FailureMode] = frozenset({FailureMode.SIGKILL})
+_HOOKABLE_FAILURE_MODES: frozenset[FailureMode] = frozenset(
+    {FailureMode.SIGKILL, FailureMode.SIGSTOP, FailureMode.THREAD_DEADLOCK}
+)
 
 
 class FaultHookRequest(FrozenStrictBaseModel):
