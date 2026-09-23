@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import threading
 import time
@@ -12,9 +13,19 @@ from starlette.responses import JSONResponse
 
 from miles.ray.specs.inference import compute_engine_pool_ids
 from miles.ray.specs.train import compute_trainer_pool_id
+from miles.utils.audit_utils.event_logger.models import FaultHookRecord
 from miles.utils.ft_utils.api_server.handles import _CellHandler
-from miles.utils.ft_utils.api_server.models import Cell, CellList, CellPatch, FaultInjection, K8sStatus, _OkResponse
+from miles.utils.ft_utils.api_server.models import (
+    Cell,
+    CellList,
+    CellPatch,
+    FaultHookControl,
+    FaultInjection,
+    K8sStatus,
+    _OkResponse,
+)
 from miles.utils.ft_utils.api_server.registry import _CellRegistry
+from miles.utils.test_utils.fault_hooks import FaultHookConflictError
 from miles.utils.workers.cell_operations.base import BaseCellOperations, FaultTarget, StaleFaultTargetError
 from miles.utils.workers.worker_handle import BaseWorkerHandle
 
@@ -133,6 +144,14 @@ def _create_api_app(registry: _CellRegistry) -> FastAPI:
         with _translate_fault_errors(name, action="Fault target observation"):
             return await handler.observe_fault_target(name, sub_index=sub_index)
 
+    @app.post("/api/v1/cells/{name}/fault-hook")
+    async def control_fault_hook(name: str, body: FaultHookControl) -> FaultHookRecord:
+        if body.target.cell_id != name:
+            raise _K8sError(status_code=400, reason="BadRequest", message="Fault target does not match route")
+        handler = await _resolve(name)
+        with _translate_fault_errors(name, action="Fault hook"):
+            return await handler.control_fault_hook(target=body.target, command=body.command)
+
     @app.post("/api/v1/cells/{name}/inject-fault")
     async def inject_fault(name: str, body: FaultInjection) -> _OkResponse:
         handler = await _resolve(name)
@@ -155,6 +174,10 @@ def _create_api_app(registry: _CellRegistry) -> FastAPI:
             raise _K8sError(status_code=412, reason="PreconditionFailed", message=str(err)) from err
         except NotImplementedError as err:
             raise _K8sError(status_code=400, reason="BadRequest", message=str(err)) from err
+        except FaultHookConflictError as err:
+            raise _K8sError(status_code=409, reason="Conflict", message=str(err)) from err
+        except (TimeoutError, asyncio.TimeoutError) as err:
+            raise _K8sError(status_code=504, reason="Timeout", message=f"{action} outcome is unknown") from err
         except Exception as err:
             logger.error("%s failed in cell %s", action, name, exc_info=True)
             raise _K8sError(status_code=500, reason="InternalError", message=f"{action} outcome is unknown") from err
