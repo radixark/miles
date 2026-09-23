@@ -75,14 +75,15 @@ def test_relayout(rank: int, world_size: int):
     zigzag, expected_packed_shard, cu_seqlens = _build_rank_inputs(rank, world_size, device)
 
     packed_shard = zigzag_to_packed_shard(zigzag, cu_seqlens, cp_group, rank, world_size)
-    roundtrip = packed_shard_to_zigzag(packed_shard, cu_seqlens, cp_group, rank, world_size)
-
     packed_ok = torch.equal(packed_shard, expected_packed_shard)
-    roundtrip_ok = torch.equal(roundtrip, zigzag)
+    (packed_shard * expected_packed_shard).sum().backward()
+    grad_ok = torch.equal(zigzag.grad, zigzag.detach())
 
-    loss = roundtrip.sum()
-    loss.backward()
-    grad_ok = torch.equal(zigzag.grad, torch.ones_like(zigzag))
+    packed_leaf = expected_packed_shard.clone().requires_grad_(True)
+    roundtrip = packed_shard_to_zigzag(packed_leaf, cu_seqlens, cp_group, rank, world_size)
+    roundtrip_ok = torch.equal(roundtrip, zigzag.detach())
+    (roundtrip * zigzag.detach()).sum().backward()
+    grad_ok = grad_ok and torch.equal(packed_leaf.grad, expected_packed_shard)
 
     passed = packed_ok and roundtrip_ok and grad_ok
     if rank == 0:
