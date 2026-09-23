@@ -115,20 +115,22 @@ async def train(args):
 
         weight_update_due = (rollout_id + 1) % args.update_weights_interval == 0
 
-        # A fully-async producer keeps generating without a pending get(). When
-        # weights will change, defer the next drain so it uses the new version.
-        if not args.fully_async or not weight_update_due:
-            rollout_data_next_future = await prefetch_next_rollout(rollout_id, rollout_data_next_future)
-
-        await train_and_save(rollout_id, rollout_data_curr_ref)
-
-        if weight_update_due:
-            if not args.fully_async:
-                # sync generate before update weights to prevent update weight in the middle of generation
-                await rollout_data_next_future
-            await update_weights(actor_model, rollout_executor, rollout_id=rollout_id)
-            if args.fully_async:
+        if args.fully_async:
+            # The producer keeps generating independently. On update steps, drain
+            # afterward so staleness filtering uses the newly published version.
+            if not weight_update_due:
                 rollout_data_next_future = await prefetch_next_rollout(rollout_id, rollout_data_next_future)
+            await train_and_save(rollout_id, rollout_data_curr_ref)
+            if weight_update_due:
+                await update_weights(actor_model, rollout_executor, rollout_id=rollout_id)
+                rollout_data_next_future = await prefetch_next_rollout(rollout_id, rollout_data_next_future)
+        else:
+            rollout_data_next_future = await prefetch_next_rollout(rollout_id, rollout_data_next_future)
+            await train_and_save(rollout_id, rollout_data_curr_ref)
+            if weight_update_due:
+                # Finish the next generation before publishing new weights.
+                await rollout_data_next_future
+                await update_weights(actor_model, rollout_executor, rollout_id=rollout_id)
 
         if should_run_periodic_action(rollout_id, args.eval_interval, num_rollout_per_epoch, args.num_rollout):
             await inference_controller.prepare_eval()
