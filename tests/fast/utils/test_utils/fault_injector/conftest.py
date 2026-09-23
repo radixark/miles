@@ -1,8 +1,9 @@
 from collections.abc import Callable, Iterator
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
-from tests.fast.utils.test_utils.fault_injector.fakes import _CellOperations, _Clock, _Effects
+from tests.fast.utils.test_utils.fault_injector.fakes import _CellOperations, _Clock, _Effects, _Timer
 
 from miles.utils.audit_utils.event_logger.logger import EventLogger, read_events, set_event_logger
 from miles.utils.audit_utils.event_logger.models import FaultHookEvent
@@ -23,6 +24,18 @@ def clock(monkeypatch: pytest.MonkeyPatch) -> _Clock:
     fake = _Clock()
     monkeypatch.setattr(request_executor, "time", fake)
     return fake
+
+
+@pytest.fixture
+def timers(monkeypatch: pytest.MonkeyPatch) -> list[_Timer]:
+    created: list[_Timer] = []
+
+    def create(**kwargs: object) -> _Timer:
+        created.append(timer := _Timer(**kwargs))
+        return timer
+
+    monkeypatch.setattr(request_executor, "threading", SimpleNamespace(Timer=create))
+    return created
 
 
 @pytest.fixture

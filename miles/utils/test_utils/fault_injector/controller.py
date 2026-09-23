@@ -126,15 +126,31 @@ class _FaultHookController:
                 and executor.record.request.hook_name == hook_name
                 and executor.record.request.matches(reached_context)
             ]
-            return [self._dispatch(executor, context=reached_context) for executor in candidates]
+            return [
+                fired for executor in candidates if (fired := self._dispatch(executor, context=reached_context))
+            ]
 
-    def _dispatch(self, executor: FaultHookRequestExecutor, *, context: FaultHookContext) -> FaultHookRequestExecutor:
+    def _dispatch(
+        self, executor: FaultHookRequestExecutor, *, context: FaultHookContext
+    ) -> FaultHookRequestExecutor | None:
         executor.mark_reached(context=context)
+        if executor.record.request.delay_ms > 0:
+            executor.schedule(on_due=self._on_due)
+            return None
         del self._executors[executor.record.request.request_id]
         return executor.mark_fired()
 
     def _current_context(self, context: dict[str, int | str | None]) -> FaultHookContext:
         return (self._context or FaultHookContext()).model_copy(update=context)
+
+    def _on_due(self, executor: FaultHookRequestExecutor) -> None:
+        with self._lock:
+            if self._executors.get(executor.record.request.request_id) is not executor:
+                return
+            del self._executors[executor.record.request.request_id]
+            executor.mark_fired()
+
+        _run_blocking(executor.execute(resources=self._resources))
 
 
 def _filter_fault_hooks(

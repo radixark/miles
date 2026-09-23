@@ -1,6 +1,8 @@
 import asyncio
 import os
+from collections.abc import Callable
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
@@ -61,6 +63,25 @@ class _Clock:
 
     def advance(self, seconds: float) -> None:
         self.now += seconds
+
+
+class _Timer:
+    def __init__(self, *, interval: float, function: Callable[..., None], kwargs: dict[str, Any]) -> None:
+        self.interval = interval
+        self.function = function
+        self.kwargs = kwargs
+        self.daemon = False
+        self.started = False
+        self.cancelled = False
+
+    def start(self) -> None:
+        self.started = True
+
+    def cancel(self) -> None:
+        self.cancelled = True
+
+    def fire(self) -> None:
+        self.function(**self.kwargs)
 
 
 class _Effects:
