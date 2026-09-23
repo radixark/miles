@@ -17,8 +17,8 @@ One 8-GPU node, disaggregated (multi-LoRA forbids `--colocate`):
 
 The example enables attention, MLP, and output-head training. Client SDK flags
 must match the server's selected groups. See [LoRA target selection](../../docs/advanced/lora.md#hf-target-source-of-truth)
-for the `--tinker-train-attn/mlp/unembed` flags. Tinker rejects `--target-modules`
-and `--exclude-modules`.
+for `--target-modules attn,mlp,unembed`; use `attn,mlp` to disable output-head
+training. Tinker accepts only these group names and rejects `--exclude-modules`.
 
 ## Run
 

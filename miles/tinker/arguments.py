@@ -1,7 +1,4 @@
-import argparse
-
-from miles.utils.hf_utils.config import load_hf_config
-from miles.utils.hf_utils.lora_targets import resolve_hf_lora_targets
+from miles.utils.hf_utils.lora_targets import LORA_TARGET_GROUPS, parse_lora_targets
 
 
 def add_tinker_arguments(parser):
@@ -20,20 +17,15 @@ def add_tinker_arguments(parser):
         "checkpoint-root",
         help="Directory for tinker:// checkpoints (default: <save>/tinker)",
     )
-    add_argument("train-attn", action=argparse.BooleanOptionalAction, default=True)
-    add_argument("train-mlp", action=argparse.BooleanOptionalAction, default=True)
-    add_argument("train-unembed", action=argparse.BooleanOptionalAction, default=True)
     return parser
 
 
 def configure_tinker_args(args):
     assert args.train_backend == "megatron", "Tinker requires the Megatron backend"
-    assert (
-        args.target_modules is None and args.exclude_modules is None
-    ), "Tinker uses --tinker-train-attn/mlp/unembed; --target-modules and --exclude-modules are not supported"
-    args.target_modules = resolve_hf_lora_targets(
-        load_hf_config(args.hf_checkpoint).to_dict(),
-        train_attn=args.tinker_train_attn,
-        train_mlp=args.tinker_train_mlp,
-        train_unembed=args.tinker_train_unembed,
-    )
+    assert args.exclude_modules is None, "Tinker selects complete training groups; --exclude-modules is not supported"
+    groups = parse_lora_targets(args.target_modules)
+    if groups is None:
+        groups = list(LORA_TARGET_GROUPS)
+    assert set(groups) <= set(LORA_TARGET_GROUPS), "Tinker --target-modules accepts only attn,mlp,unembed groups"
+    args.tinker_lora_groups = groups
+    args.target_modules = groups

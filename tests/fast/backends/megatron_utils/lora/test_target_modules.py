@@ -44,7 +44,7 @@ _QKV = _mapping(
     ids=["separate-namespace", "appended-layer"],
 )
 def test_scoped_attention_excludes_mtp(mtp_source):
-    targets = resolve_hf_lora_targets({"model_type": "qwen3"}, train_attn=True, train_mlp=False, train_unembed=False)
+    targets = resolve_hf_lora_targets({"model_type": "qwen3"}, target_modules=["attn"])
     output = _mapping("decoder.layers.*.self_attention.linear_proj.weight", "model.layers.*.self_attn.o_proj.weight")
     mtp = _mapping("mtp.layers.*.self_attention.linear_proj.weight", mtp_source)
     megatron_parameters = [

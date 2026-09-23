@@ -105,9 +105,9 @@ LoRA training.
 Omitting `--target-modules` or passing `all-linear` uses the model defaults from
 `miles/utils/hf_utils/lora_targets.py`: attention + MLP, with model-specific exclusions
 and output-head defaults. Multi-LoRA without explicit targets selects all three
-training groups; Tinker controls them with `--tinker-train-attn/mlp/unembed`.
-An explicit target list overrides the default selection in ordinary Miles LoRA.
-Tinker accepts only the three training-group flags.
+training groups. Use `--target-modules attn,mlp,unembed` to select groups explicitly.
+Ordinary LoRA also accepts specific HF targets mixed with group names, such as
+`--target-modules attn,lm_head`; Tinker accepts only group names.
 
 ### Core arguments
 
@@ -117,7 +117,7 @@ Tinker accepts only the three training-group flags.
 | `--lora-alpha` | `16` | Adapter scaling factor. |
 | `--lora-dropout` | `0.0` | Dropout on the adapter path. |
 | `--lora-type` | `lora` | `lora` uses fused Megatron projections; `canonical_lora` uses split Q/K/V and gate/up projections. The canonical path is implemented and covered by fast name-mapping tests, but has no maintained recipe or E2E validation. |
-| `--target-modules` | none | Uses HF model defaults when omitted. Accepts `all-linear`, HF leaf names or scoped HF paths; Bridge also accepts Megatron selectors. |
+| `--target-modules` | none | Uses HF model defaults when omitted. Accepts `all-linear`, `attn/mlp/unembed` groups, HF leaf names or scoped HF paths; Bridge also accepts Megatron selectors. |
 | `--exclude-modules` | none | Comma-separated HF leaf names or scoped HF paths removed after selection; Bridge also accepts Megatron selectors. |
 | `--lora-adapter-path` | none | Warm-start/resume path. Also provide the matching positive rank, alpha, and target modules. Bridge training resume currently requires miles' per-rank adapter shards and the same parallel topology; an HF PEFT-only adapter cannot yet be loaded directly into the Bridge model. Inkling native has its own HF adapter loader. |
 | `--lora-base-cpu-backup` | off | Colocated mode only: keep a CPU mirror of the frozen SGLang base and avoid re-sending base weights. This trades host RAM for faster and more reliable pause/resume. |
@@ -145,14 +145,15 @@ hybrid attention. Vision towers, routers, norms, and GDN convolutions are exclud
 | GLM-4 MoE | Q/K/V/O | Dense + routed + shared experts as configured | Attention + MLP |
 | Inkling | Q/K/V/R/O | Dense + packed routed + shared expert projections | Attention + MLP + output head |
 
-`resolve_hf_lora_targets()` selects targets in this order:
+`--target-modules` accepts comma-separated `attn`, `mlp`, and `unembed` groups,
+explicit HF targets, or a mix of both. Group names expand through the model's HF
+definition, so `mlp` includes dense, shared, and routed expert projections, including
+packed `gate_up_proj` weights. Only exact group names expand; full paths remain
+literal target patterns. Duplicates are removed, then `--exclude-modules` applies.
 
-1. `all-linear` selects the ordinary model defaults, regardless of training flags.
-2. Any other explicit target list overrides defaults and training flags.
-3. Without explicit targets, three training flags select the corresponding groups;
-   without flags, use the ordinary model defaults.
-
-`--exclude-modules` applies after selection.
+Without explicit targets, ordinary LoRA uses its model defaults and multi-LoRA
+selects all three groups. `all-linear` selects the ordinary model defaults and
+must be used alone. Explicit lists replace the defaults.
 
 Packed expert entries identify HF parameters rather than `nn.Linear` modules.
 Inkling entries follow the native HF model namespace. Its native Megatron LoRA
@@ -180,9 +181,10 @@ Standard LoRA requires all projections of a fused weight together;
 Grouped-expert FC1 and GDN input projections remain fused and require all of
 their HF projections even in canonical mode.
 
-Tinker selects complete attention, MLP, and output-head groups through
-`--tinker-train-attn/mlp/unembed`, which default to enabled. Client SDK flags must
-match these server settings. `--target-modules` and `--exclude-modules` are rejected.
+Tinker uses `--target-modules attn,mlp,unembed` by default; for example,
+`--target-modules attn,mlp` disables output-head training. Client SDK flags must
+match the selected server groups. Tinker rejects explicit module names,
+`all-linear`, and `--exclude-modules` because the SDK describes only whole groups.
 
 For Bridge, SGLang receives the selected HF paths and normalizes them into buffer types
 (for example, Q/K/V become `qkv_proj`); it does not own the selection policy.

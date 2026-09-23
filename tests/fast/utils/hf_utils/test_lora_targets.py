@@ -5,9 +5,10 @@ import pytest
 from miles.utils.hf_utils.lora_targets import exclude_hf_lora_targets, parse_lora_targets, resolve_hf_lora_targets
 
 
-def test_missing_targets_and_all_linear_use_model_defaults():
+@pytest.mark.parametrize("selection", [None, ["all-linear"], ["attn", "mlp"], ["attn", "mlp", "attn"]])
+def test_missing_targets_and_all_linear_use_model_defaults(selection):
     config = {"model_type": "qwen3"}
-    targets = resolve_hf_lora_targets(config)
+    targets = resolve_hf_lora_targets(config, target_modules=selection)
     assert targets == resolve_hf_lora_targets(config, target_modules=["all-linear"])
     assert "model.layers.*.self_attn.q_proj" in targets
     assert "model.layers.*.mlp.gate_proj" in targets
@@ -15,19 +16,26 @@ def test_missing_targets_and_all_linear_use_model_defaults():
 
 
 @pytest.mark.parametrize(
-    "value",
-    ["q_proj, k_proj", "q_proj,k_proj", ["q_proj", "k_proj"]],
-    ids=["spaced", "comma-separated", "list"],
+    "config,value,expected",
+    [
+        ({"model_type": "custom"}, "q_proj, k_proj", ["q_proj", "k_proj"]),
+        ({"model_type": "custom"}, ["q_proj", "k_proj"], ["q_proj", "k_proj"]),
+        ({"model_type": "qwen3"}, "unembed,lm_head", ["lm_head"]),
+        (
+            {"model_type": "qwen3"},
+            "attn, lm_head",
+            [f"model.layers.*.self_attn.{name}_proj" for name in ("q", "k", "v", "o")] + ["lm_head"],
+        ),
+        (
+            {"model_type": "gpt_oss"},
+            "mlp",
+            ["model.layers.*.mlp.experts.gate_up_proj", "model.layers.*.mlp.experts.down_proj"],
+        ),
+        ({"model_type": "custom"}, "model.mlp", ["model.mlp"]),
+    ],
 )
-def test_explicit_targets_override_group_flags(value):
-    targets = resolve_hf_lora_targets(
-        {"model_type": "custom"},
-        target_modules=parse_lora_targets(value),
-        train_attn=False,
-        train_mlp=True,
-        train_unembed=True,
-    )
-    assert targets == ["q_proj", "k_proj"]
+def test_explicit_targets_preserve_user_choices(config, value, expected):
+    assert resolve_hf_lora_targets(config, target_modules=parse_lora_targets(value)) == expected
 
 
 def test_exclude_leaf_applies_to_scoped_model_defaults():

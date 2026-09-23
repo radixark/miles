@@ -29,9 +29,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     lora_rank: int = 32
     lora_alpha: int = 64
     n_adapters: int = 4
-    tinker_train_attn: bool = True
-    tinker_train_mlp: bool = True
-    tinker_train_unembed: bool = True
+    target_modules: str = "attn,mlp,unembed"
 
     tinker_port: int = 10613
     rollout_num_gpus_per_engine: int = 2
@@ -69,13 +67,10 @@ def serve(args: ScriptArgs):
         f"--lora-rank {args.lora_rank} --lora-alpha {args.lora_alpha} --lora-dropout 0.0 "
         "--no-gradient-accumulation-fusion "
         f"--multi-lora-n-adapters {args.n_adapters} "
+        f'--target-modules "{args.target_modules}"'
     )
 
     tinker_args = f"--tinker-server-port {args.tinker_port} " f"--tinker-checkpoint-root {args.save_dir}/{args.run_id}"
-
-    for group in ("attn", "mlp", "unembed"):
-        enabled = getattr(args, f"tinker_train_{group}")
-        tinker_args += f" --{'' if enabled else 'no-'}tinker-train-{group}"
 
     # initial config only; AdamParams come per optim_step request
     optimizer_args = "--optimizer adam --lr 1e-4 "

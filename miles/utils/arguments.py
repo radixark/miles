@@ -19,6 +19,7 @@ from miles.utils.ft_utils.health_checker import SimpleHealthCheckerConfig
 from miles.utils.function_registry import load_function
 from miles.utils.hf_utils.config import is_dsa, load_hf_config
 from miles.utils.hf_utils.lora_targets import (
+    LORA_TARGET_GROUPS,
     exclude_hf_lora_targets,
     expand_hf_lora_targets,
     get_hf_lora_targets,
@@ -1811,7 +1812,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 type=str,
                 default=None,
                 help="LoRA targets: omit or use 'all-linear' for the HF model defaults, or provide "
-                "comma-separated HF targets (e.g., 'q_proj,k_proj,v_proj,o_proj'). "
+                "comma-separated groups (attn,mlp,unembed), HF targets, or a mix of both. "
                 "Megatron module names are also accepted by the Bridge backend.",
             )
             parser.add_argument(
@@ -3129,17 +3130,9 @@ def miles_validate_args(args):
         assert args.lora_rank > 0, "LoRA requires a positive --lora-rank, including when loading an adapter"
         hf_config = load_hf_config(args.hf_checkpoint)
         targets = parse_lora_targets(args.target_modules)
-        if targets is None or targets == ["all-linear"]:
-            # Non-Tinker multi-LoRA uses the same all-enabled group defaults as the gateway.
-            multi_lora_defaults = args.multi_lora_n_adapters > 0 and targets is None
-            targets = resolve_hf_lora_targets(
-                hf_config.to_dict(),
-                target_modules=targets,
-                train_attn=True if multi_lora_defaults else None,
-                train_mlp=True if multi_lora_defaults else None,
-                train_unembed=True if multi_lora_defaults else None,
-            )
-        assert "all-linear" not in targets, "Use all-linear alone or provide explicit LoRA targets"
+        if targets is None and args.multi_lora_n_adapters > 0:
+            targets = list(LORA_TARGET_GROUPS)
+        targets = resolve_hf_lora_targets(hf_config.to_dict(), target_modules=targets)
         args.exclude_modules = parse_lora_targets(args.exclude_modules) or []
         args.target_modules = exclude_hf_lora_targets(targets, args.exclude_modules)
 

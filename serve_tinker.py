@@ -63,9 +63,9 @@ async def serve(args):
         max_tokens_per_datum=max_tokens_per_datum,
         lora_alpha=args.lora_alpha,
         max_lora_rank=args.lora_rank,
-        trains_attn=args.tinker_train_attn,
-        trains_mlp=args.tinker_train_mlp,
-        trains_unembed=args.tinker_train_unembed,
+        trains_attn="attn" in args.tinker_lora_groups,
+        trains_mlp="mlp" in args.tinker_lora_groups,
+        trains_unembed="unembed" in args.tinker_lora_groups,
     )
     router_url = f"http://{args.sglang_router_ip}:{args.sglang_router_port}"
     actor_world_size = args.actor_num_nodes * args.actor_num_gpus_per_node

@@ -5,6 +5,8 @@ from dataclasses import dataclass
 
 from miles.utils.lora import matches_lora_target
 
+LORA_TARGET_GROUPS = ("attn", "mlp", "unembed")
+
 
 @dataclass(frozen=True)
 class HfLoraTargets:
@@ -216,36 +218,19 @@ def get_hf_lora_targets(hf_config: dict) -> HfLoraTargets:
     )
 
 
-def resolve_hf_lora_targets(
-    hf_config: dict,
-    *,
-    target_modules: list[str] | None = None,
-    train_attn: bool | None = None,
-    train_mlp: bool | None = None,
-    train_unembed: bool | None = None,
-) -> list[str]:
-    if target_modules == ["all-linear"]:
-        train_attn = train_mlp = train_unembed = None
-    elif target_modules is not None:
-        assert (
-            target_modules and "all-linear" not in target_modules
-        ), "Use all-linear alone or provide explicit targets"
+def resolve_hf_lora_targets(hf_config: dict, *, target_modules: list[str] | None = None) -> list[str]:
+    if target_modules is None or target_modules == ["all-linear"]:
+        layout = get_hf_lora_targets(hf_config)
+        target_modules = ["attn", "mlp", *(["unembed"] if layout.default_train_unembed else [])]
+    assert target_modules and "all-linear" not in target_modules, "Use all-linear alone or provide explicit targets"
+    if not any(target in LORA_TARGET_GROUPS for target in target_modules):
         return list(target_modules)
 
     layout = get_hf_lora_targets(hf_config)
-    train_flags = (train_attn, train_mlp, train_unembed)
-    if all(enabled is None for enabled in train_flags):
-        train_flags = (True, True, layout.default_train_unembed)
-    else:
-        assert all(
-            enabled is not None for enabled in train_flags
-        ), "Specify all three LoRA training group flags together"
-    targets = []
-    for enabled, group in zip(train_flags, (layout.attention, layout.mlp, layout.unembed), strict=True):
-        if enabled:
-            targets.extend(group)
+    groups = dict(zip(LORA_TARGET_GROUPS, (layout.attention, layout.mlp, layout.unembed), strict=True))
+    targets = [module for target in target_modules for module in groups.get(target, (target,))]
     assert targets, "At least one trainable LoRA module group is required"
-    return targets
+    return list(dict.fromkeys(targets))
 
 
 def parse_lora_targets(value: str | list[str] | None) -> list[str] | None:
