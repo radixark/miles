@@ -52,10 +52,7 @@ CASE = CaseConfig(
     rollout_num_gpus_per_engine=1,
     num_rollout=100,
     optimizer_args=MUON_OPTIMIZER_ARGS,
-    # W&B entity: the CI key's default entity (radixarkai) needs an organization API key to
-    # create projects; the zhichenzeng_zzz team accepts the CI key and is shared with the
-    # miles maintainers.
-    extra_args="--ci-disable-weight-update-checker --wandb-team zhichenzeng_zzz ",
+    extra_args="--ci-disable-weight-update-checker ",
 )
 
 

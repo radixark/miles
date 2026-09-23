@@ -70,10 +70,7 @@ CASE = CaseConfig(
     # Chunked log-prob/entropy computation (the production DeepSeek-V3.2 / GLM-5 scripts use
     # 1024 too): the fp32 [tokens, vocab/tp] logits of one ~4.7k-token micro-batch are ~2 GiB,
     # and run 35722840158 OOMed on exactly that allocation with ~48 GB of Muon state resident.
-    # W&B entity: the CI key's default entity (radixarkai) needs an organization API key to
-    # create projects; the zhichenzeng_zzz team accepts the CI key and is shared with the
-    # miles maintainers.
-    extra_args="--ci-disable-weight-update-checker --log-probs-chunk-size 1024 --wandb-team zhichenzeng_zzz ",
+    extra_args="--ci-disable-weight-update-checker --log-probs-chunk-size 1024 ",
 )
 
 
