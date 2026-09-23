@@ -1,14 +1,15 @@
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 from tests.utils.soak.core.config import SoakRunnerConfig, SoakTargetConfig
 from tests.utils.soak.core.event_log import EventLog
 from tests.utils.soak.ft import entrypoint as ft_entrypoint
+from tests.utils.soak.ft.actions.inject_fault import InjectFaultForm
 from tests.utils.soak.ft.entrypoint import run_cell_soak
 from tests.utils.soak.ft.observers import CellObserver
 
 from miles.utils.external_utils.command_utils.base_backend import ExecuteTrainConfig
+from miles.utils.test_utils.fault_injector import FailureMode
 from miles.utils.workers.types import ClusterBackend
 
 
@@ -23,8 +24,8 @@ class TestRunCellSoak:
             recorded.update(kwargs)
 
         monkeypatch.setattr(ft_entrypoint, "run_soak", run_soak)
-        actor_form = SimpleNamespace(needs_fault_target=False, process_patterns={})
-        rollout_form = SimpleNamespace(needs_fault_target=False, process_patterns={})
+        actor_form = InjectFaultForm(base_url="http://localhost:18080", failure_mode=FailureMode.EXIT)
+        rollout_form = InjectFaultForm(base_url="http://localhost:18080", failure_mode=FailureMode.SIGKILL)
         monkeypatch.setattr(
             ft_entrypoint,
             "create_cell_fault_forms",
