@@ -1431,6 +1431,33 @@ class TestUpdateWeightsReachesTheWorker:
             assert all("weight_version" not in c[2] for c in calls)
 
 
+class TestUpdateWeightsCarriesTheRollout:
+    @pytest.mark.parametrize("rollout_id", [3, None])
+    async def test_the_first_alive_dispatch_hands_the_worker_the_rollout(self, rollout_id: int | None):
+        """The weight update hooks match on the rollout, so the worker must receive the one the caller named."""
+        group = await _make_alive_controller(num_cells=1)
+        for handle in get_raw_actor_handles(_cell(group, 0)):
+            ray.get(handle.set_update_weights_return_value.remote(_output(1)))
+
+        output = await group.update_weights(info=SimpleNamespace(snapshot_cell_id_to_hashes={}), rollout_id=rollout_id)
+
+        for handle in get_raw_actor_handles(_cell(group, 0)):
+            [update_call] = [c for c in ray.get(handle.get_calls.remote()) if c[0] == "update_weights"]
+            assert update_call[2]["rollout_id"] == rollout_id
+            assert update_call[2]["debug_weight_update_id"] == output.debug_weight_update_id
+
+    async def test_every_alive_dispatch_hands_each_sender_the_rollout_and_one_update_id(self):
+        """Every sender of a split update must see the same rollout and update ID as the others."""
+        cells = [_FakeTrainerCell(cell_index=i) for i in range(2)]
+        controller = _make_partial_target_controller(cells)
+
+        output = await controller.update_weights(info=_make_engines(4), rollout_id=3)
+
+        received = [kwargs for cell in cells for kwargs in cell.received_kwargs]
+        assert [kwargs["rollout_id"] for kwargs in received] == [3, 3]
+        assert {kwargs["debug_weight_update_id"] for kwargs in received} == {output.debug_weight_update_id}
+
+
 class _FakeTrainerCell:
     def __init__(
         self,
@@ -1446,12 +1473,14 @@ class _FakeTrainerCell:
         self.killed = False
         self.received_infos: list[UpdatableEngines] = []
         self.received_timeouts: list[float | None] = []
+        self.received_kwargs: list[dict[str, object]] = []
         self._output = output if output is not None else _output(5)
         self._error = error
 
     async def execute(self, fn_name: str, *, timeout: float | None = None, **kwargs: object) -> list:
         self.received_infos.append(kwargs["info"])
         self.received_timeouts.append(timeout)
+        self.received_kwargs.append(kwargs)
         if self._error is not None:
             self.is_alive = False
             raise self._error
