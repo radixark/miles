@@ -32,10 +32,6 @@ def terminate_process_tree(process: subprocess.Popen, *, sigkill_timeout: float 
     process.wait()
 
 
-def signal_process_tree(process: subprocess.Popen, signum: signal.Signals) -> None:
-    _signal_process_group(process.pid, signum)
-
-
 def kill_process_tree(process: subprocess.Popen) -> None:
     _signal_process_group(process.pid, signal.SIGKILL)
 

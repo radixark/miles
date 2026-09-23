@@ -2,34 +2,17 @@ import asyncio
 import threading
 from collections.abc import Coroutine, Iterator
 from contextlib import contextmanager
-from enum import StrEnum
 from typing import Any
 
-from miles.utils.pydantic_utils import FrozenStrictBaseModel
 from miles.utils.test_utils.fault_injector.actions.base import FaultHookContext, FaultHookResources
 from miles.utils.test_utils.fault_injector.models import (
     FaultHookName,
     FaultHookOwner,
-    FaultHookRecord,
     FaultHookRequest,
     FaultHookStatus,
 )
 from miles.utils.test_utils.fault_injector.request_executor import FaultHookRequestExecutor
 from miles.utils.test_utils.fault_injector.static_source import read_declared_fault_hooks
-
-
-class FaultHookConflictError(Exception):
-    pass
-
-
-class FaultHookOperation(StrEnum):
-    SET = "set"
-    CLEAR = "clear"
-
-
-class FaultHookCommand(FrozenStrictBaseModel):
-    operation: FaultHookOperation
-    request: FaultHookRequest
 
 
 def reach_fault_hook(hook_name: FaultHookName, **context: int | str | None) -> None:
@@ -42,7 +25,6 @@ async def reach_fault_hook_async(hook_name: FaultHookName, **context: int | str 
 
 class _FaultHookController:
     def __init__(self) -> None:
-        self._lock = threading.Lock()
         self._executors: dict[str, FaultHookRequestExecutor] = {}
         self._context: FaultHookContext | None = None
         self._resources = FaultHookResources()
@@ -51,17 +33,15 @@ class _FaultHookController:
         self,
         *,
         resources: FaultHookResources,
-        owner: FaultHookOwner | None = None,
+        owner: FaultHookOwner,
         cell_id: str | None = None,
         rank: int | None = None,
     ) -> None:
         self._resources = resources
-        if owner is None:
-            return
         assert resources.args is not None, "A process that reaches fault hooks reads its declared hooks from args"
         declared = read_declared_fault_hooks(resources.args)
         for request in _filter_fault_hooks(declared, owner=owner, cell_id=cell_id, rank=rank):
-            self.apply(FaultHookCommand(operation=FaultHookOperation.SET, request=request))
+            self._set(request)
 
     @contextmanager
     def with_context(self, context: FaultHookContext) -> Iterator[None]:
@@ -71,29 +51,10 @@ class _FaultHookController:
         finally:
             self._context = None
 
-    def apply(self, command: FaultHookCommand) -> FaultHookRecord:
-        with self._lock:
-            match command.operation:
-                case FaultHookOperation.SET:
-                    return self._set(command.request).record
-                case FaultHookOperation.CLEAR:
-                    return self._clear(command.request)
-
     def _set(self, request: FaultHookRequest) -> FaultHookRequestExecutor:
-        if request.request_id in self._executors or any(
-            executor.record.request.conflicts_with(request) for executor in self._executors.values()
-        ):
-            raise FaultHookConflictError(f"A fault hook is already set for the same trigger: {request.request_id}")
+        assert request.request_id not in self._executors, f"Two declared fault hooks share {request.request_id}"
         self._executors[request.request_id] = executor = FaultHookRequestExecutor(request)
         return executor
-
-    def _clear(self, request: FaultHookRequest) -> FaultHookRecord:
-        if (executor := self._executors.get(request.request_id)) is None:
-            raise FaultHookConflictError("Fault hook clearing names a request this process never set")
-        if executor.record.request != request:
-            raise FaultHookConflictError("Fault hook clearing does not match the original request")
-        del self._executors[request.request_id]
-        return executor.clear()
 
     def _reach(self, hook_name: FaultHookName, context: dict[str, int | str | None]) -> None:
         if fired := self._dispatch_reached(hook_name, context):
@@ -110,15 +71,14 @@ class _FaultHookController:
         self, hook_name: FaultHookName, context: dict[str, int | str | None]
     ) -> list[FaultHookRequestExecutor]:
         reached_context = self._current_context(context)
-        with self._lock:
-            candidates = [
-                executor
-                for executor in self._executors.values()
-                if executor.record.status == FaultHookStatus.PENDING
-                and executor.record.request.hook_name == hook_name
-                and executor.record.request.matches(reached_context)
-            ]
-            return [self._dispatch(executor, context=reached_context) for executor in candidates]
+        candidates = [
+            executor
+            for executor in self._executors.values()
+            if executor.record.status == FaultHookStatus.PENDING
+            and executor.record.request.hook_name == hook_name
+            and executor.record.request.matches(reached_context)
+        ]
+        return [self._dispatch(executor, context=reached_context) for executor in candidates]
 
     def _dispatch(self, executor: FaultHookRequestExecutor, *, context: FaultHookContext) -> FaultHookRequestExecutor:
         executor.mark_reached(context=context)
