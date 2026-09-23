@@ -1,9 +1,6 @@
 import hashlib
 import json
 import logging
-import threading
-from collections.abc import Iterator
-from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -18,7 +15,6 @@ from miles.utils.external_utils.command_utils.helm_backend.launcher.manifest_typ
 from miles.utils.external_utils.command_utils.helm_backend.naming import ORCHESTRATOR_COMPONENT, RunNames
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
 from miles.utils.test_utils.kubectl_reads import read_objects_of_release
-from miles.utils.test_utils.polling_worker import PollingWorker, poll_until_stopped
 from miles.utils.workers.rpc.common.protocol import BOOT_UUID_HEADER, HEALTH_PATH
 from miles.utils.workers.worker_provider.kubernetes.helm.naming import component_name, static_worker_host
 from miles.utils.workers.worker_spec import DEFAULT_RPC_PORT
@@ -34,8 +30,6 @@ STATEFUL_SET_KIND: str = "statefulsets"
 LEADER_WORKER_SET_KIND: str = "leaderworkersets.leaderworkerset.x-k8s.io"
 WORKLOAD_KINDS: tuple[str, ...] = (STATEFUL_SET_KIND, LEADER_WORKER_SET_KIND)
 BOOT_UUID_TIMEOUT_SECONDS: float = 10.0
-POLL_INTERVAL_SECONDS: float = 5.0
-JOIN_TIMEOUT_SECONDS: float = 1800.0
 
 
 # ============================ what a cluster holds ============================
@@ -173,29 +167,6 @@ class ClusterObserver:
         self.recorder.record(snapshot)
 
 
-@contextmanager
-def observing_cluster(
-    observer: ClusterObserver, *, poll_interval_seconds: float = POLL_INTERVAL_SECONDS
-) -> Iterator[ClusterObserver]:
-    def observe_until_stopped(stop_event: threading.Event) -> None:
-        poll_until_stopped(stop_event, tick=observer.observe_once_or_warn, poll_interval_seconds=poll_interval_seconds)
-
-    worker = PollingWorker(name="hot-restart-observer", run=observe_until_stopped)
-    worker.start()
-    try:
-        yield observer
-    finally:
-        worker.stop_and_join(timeout_seconds=JOIN_TIMEOUT_SECONDS)
-
-    worker.assert_not_running(
-        message=(
-            f"the cluster observer was still reading the run {JOIN_TIMEOUT_SECONDS}s after being asked to stop, "
-            f"so reading what it collected now would race it"
-        )
-    )
-    observer.observe_once()
-
-
 # ============================== reading a cluster =============================
 
 
@@ -232,16 +203,6 @@ def compute_hot_restart_workloads(release: str) -> frozenset[str]:
     return frozenset(
         component_name(release, component) for component in (ORCHESTRATOR_COMPONENT, ROLLOUT_EXECUTOR_POOL_ID)
     )
-
-
-def read_restart_stamp_of_workload(*, release: str, namespace: str) -> dict[str, str | None] | None:
-    stamps: dict[str, str | None] = {}
-    for kind in WORKLOAD_KINDS:
-        payload = _read_objects(kind=kind, release=release, namespace=namespace)
-        if payload is None:
-            return None
-        stamps.update({fact.name: fact.restart_at for fact in parse_workload_facts(payload, kind=kind)})
-    return stamps
 
 
 def read_boot_uuid(url: str) -> str | None:
