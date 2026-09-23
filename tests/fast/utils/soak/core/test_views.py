@@ -14,6 +14,7 @@ from tests.fast.utils.soak.soak_fakes import (
 )
 from tests.utils.soak.core.events import SoakAdmissionClosedEvent, SoakEvent, SoakEvidenceArchivedEvent
 from tests.utils.soak.core.views import (
+    compute_num_injections,
     compute_successful_form_names,
     is_normal_step,
     latest_observation,
@@ -69,6 +70,13 @@ class TestInjectionCounts:
             _requested(rollout, at=_at(4)),
             _applied(rollout, at=_at(5)),
         ]
+
+    def test_only_applied_actions_of_the_kind_are_counted(self) -> None:
+        """Requests that never landed and actions of other kinds are not injections."""
+        events = self._events()
+
+        assert compute_num_injections(events, kind="actor") == 1
+        assert compute_num_injections(events) == 2
 
     def test_only_applied_forms_have_worked(self) -> None:
         """A form proves itself only through an applied effect of its own kind."""

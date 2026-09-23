@@ -515,6 +515,14 @@ class _FakeKubectl:
         return subprocess.CompletedProcess(argv, 0, stdout=reply.model_dump_json(), stderr="")
 
 
+def _injected(request: SoakActionRequest, *, start: float, returned: bool = True) -> list[SoakEvent]:
+    return [
+        _requested(request, at=_at(start)),
+        _applied(request, at=_at(start + 1)),
+        _result(request, at=_at(start + 2), returned=returned),
+    ]
+
+
 def _with_fault_target(target: CellTarget) -> CellTarget:
     return target.model_copy(update={"fault_target": _fault_target(target.identity, workers_hash=target.incarnation)})
 
@@ -530,3 +538,38 @@ def _raising_injection_transport(api: _FakeCellApi) -> _FakeCellApi:
 
     api.handle = raise_on_injection
     return api
+
+
+def _healed_injection(
+    form_name: str,
+    *,
+    kind: str,
+    cell_index: int,
+    start: float,
+    request_id: str,
+    new_incarnation: str = "inc-b",
+    ready: bool = True,
+    healed_cell_indices: list[int] | None = None,
+    step_after: bool = True,
+) -> list[SoakEvent]:
+    target = _cell_target(kind=kind, cell_index=cell_index)
+    request = _request(target, form_name=form_name, request_id=request_id)
+    healed = target.model_copy(update={"incarnation": new_incarnation, "ready": ready})
+    reconfigurations = (
+        [
+            _reconfigure(
+                at=_at(start + 3),
+                healed_cell_indices=[cell_index] if healed_cell_indices is None else healed_cell_indices,
+                cell_incarnations_after={target.identity: new_incarnation},
+            )
+        ]
+        if kind == "actor" and healed_cell_indices != []
+        else []
+    )
+    events = [
+        *_injected(request, start=start),
+        _observation([healed], at=_at(start + 3), new_sut_events=reconfigurations),
+    ]
+    if step_after:
+        events.append(_observation(None, at=_at(start + 4), new_sut_events=[_step_end(int(start), at=_at(start + 4))]))
+    return events
