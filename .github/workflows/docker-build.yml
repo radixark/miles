@@ -76,21 +76,33 @@ jobs:
           set -o pipefail
           SHOULD_BUILD=false
 
-          # A failed lookup must not read as an upstream move: an error body stored as
-          # the "SHA" would build now and again once the API recovers. Skip this poll
-          # without building or saving state; the next poll retries.
-          skip_poll() {
-            echo "::warning::$1; skipping this poll"
-            echo "should_build=false" >> "$GITHUB_OUTPUT"
-            exit 0
+          # A failed lookup must not read as an upstream move (an error body stored as
+          # the "SHA" would build now and again once the API recovers), and must not pass
+          # silently either: fail this poll without building or saving state, so a lookup
+          # that keeps failing shows as red runs instead of quietly stopping rebuilds.
+          fail_poll() {
+            echo "::error::$1"
+            exit 1
+          }
+
+          # Retry transient API errors (e.g. HTTP 502) so only a lookup that keeps
+          # failing reaches fail_poll. Buffer each attempt so a failed attempt's error
+          # body never mixes into the output.
+          gh_api() {
+            local out attempt
+            for attempt in 1 2 3; do
+              out=$(gh api "$@") && { printf '%s\n' "$out"; return 0; }
+              [ "$attempt" -lt 3 ] && sleep 10
+            done
+            return 1
           }
 
           head_sha() {
             local sha
-            sha=$(gh api "repos/$1/commits/$2" --jq .sha) && [[ "$sha" =~ ^[0-9a-f]{40}$ ]] && echo "$sha"
+            sha=$(gh_api "repos/$1/commits/$2" --jq .sha) && [[ "$sha" =~ ^[0-9a-f]{40}$ ]] && echo "$sha"
           }
-          SGLANG_SHA=$(head_sha sgl-project/sglang sglang-miles) || skip_poll "sglang sglang-miles HEAD lookup failed"
-          MEGATRON_SHA=$(head_sha radixark/Megatron-LM miles-main) || skip_poll "Megatron-LM miles-main HEAD lookup failed"
+          SGLANG_SHA=$(head_sha sgl-project/sglang sglang-miles) || fail_poll "sglang sglang-miles HEAD lookup failed"
+          MEGATRON_SHA=$(head_sha radixark/Megatron-LM miles-main) || fail_poll "Megatron-LM miles-main HEAD lookup failed"
 
           # Fingerprint the miles-wheels releases the images install from (sgl-router +
           # the other prebuilt wheels). cu13 installs cu130-torch213-x86_64 /
@@ -100,13 +112,13 @@ jobs:
           # so fingerprint the asset list rather than a commit SHA.
           wheels_fp() {
             local fp
-            fp=$(gh api "repos/yueming-yuan/miles-wheels/releases/tags/$1" \
+            fp=$(gh_api "repos/yueming-yuan/miles-wheels/releases/tags/$1" \
               | python3 -c "import sys,json,hashlib; a=json.load(sys.stdin).get('assets',[]); fp=sorted([x['name'],x['id'],x['size'],x['updated_at']] for x in a); print(hashlib.sha256(repr(fp).encode()).hexdigest() if a else '')") \
               && [[ "$fp" =~ ^[0-9a-f]{64}$ ]] && echo "$fp"
           }
-          WHEELS_CU13_X86_FP=$(wheels_fp cu130-torch213-x86_64) || skip_poll "wheels cu130-torch213-x86_64 lookup failed"
-          WHEELS_CU13_ARM64_FP=$(wheels_fp cu130-torch213-aarch64) || skip_poll "wheels cu130-torch213-aarch64 lookup failed"
-          WHEELS_CU12_X86_FP=$(wheels_fp cu129-x86_64) || skip_poll "wheels cu129-x86_64 lookup failed"
+          WHEELS_CU13_X86_FP=$(wheels_fp cu130-torch213-x86_64) || fail_poll "wheels cu130-torch213-x86_64 lookup failed"
+          WHEELS_CU13_ARM64_FP=$(wheels_fp cu130-torch213-aarch64) || fail_poll "wheels cu130-torch213-aarch64 lookup failed"
+          WHEELS_CU12_X86_FP=$(wheels_fp cu129-x86_64) || fail_poll "wheels cu129-x86_64 lookup failed"
 
           echo "sglang HEAD:   ${SGLANG_SHA}"
           echo "megatron HEAD: ${MEGATRON_SHA}"
