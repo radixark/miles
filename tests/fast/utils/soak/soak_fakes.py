@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 from tests.utils.soak.core.events import (
     SoakActionAppliedEvent,
@@ -14,8 +15,8 @@ from tests.utils.soak.k8s_utils.pod_manipulation import PodDeletedEvidence, Soak
 
 from miles.backends.megatron_utils.ft.types import TrainStepOutcome
 from miles.backends.megatron_utils.megatron_config import ACTOR_ROLE
-from miles.utils.audit_utils.event_logger.models import Event, TrainGroupStepEndEvent
-from miles.utils.audit_utils.process_identity import TrainerControllerProcessIdentity
+from miles.utils.audit_utils.event_logger.models import CellReconfigureEvent, Event, TrainGroupStepEndEvent
+from miles.utils.audit_utils.process_identity import SimpleProcessIdentity, TrainerControllerProcessIdentity
 from miles.utils.workers.naming import compute_cell_id
 
 _BASE = datetime(2026, 9, 26, 12, 0, tzinfo=timezone.utc)
@@ -43,6 +44,32 @@ def _step_end(
         role="actor",
         cell_outcomes={0: [TrainStepOutcome.NORMAL] if outcomes is None else outcomes},
     )
+
+
+def _reconfigure(
+    *, at: datetime, healed_cell_indices: list[int], cell_incarnations_after: dict[str, str]
+) -> CellReconfigureEvent:
+    return CellReconfigureEvent(
+        timestamp=at,
+        source=TrainerControllerProcessIdentity(trainer_id=ACTOR_ROLE),
+        rollout_id=0,
+        quorum_id=1,
+        src_cell_index=0,
+        healed_cell_indices=healed_cell_indices,
+        alive_cell_indices_after=[0, *healed_cell_indices],
+        cell_incarnations_after=cell_incarnations_after,
+    )
+
+
+def _sut_main_source() -> SimpleProcessIdentity:
+    return SimpleProcessIdentity(component="main")
+
+
+def _write_sut_lines(path: Path, events: list[Event], *, trailing: str = "") -> None:
+    with path.open("a") as stream:
+        for event in events:
+            stream.write(event.model_dump_json() + "\n")
+        stream.write(trailing)
 
 
 # ============================= soak events ==============================
