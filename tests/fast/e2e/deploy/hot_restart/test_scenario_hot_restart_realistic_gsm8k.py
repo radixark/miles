@@ -20,8 +20,8 @@ from miles.utils.external_utils.command_utils.base_backend import ExecuteTrainCo
 from miles.utils.external_utils.command_utils.common import ArgvManipulator
 
 
-def _run(dump_dir: str) -> gsm8k.Gsm8kRun:
-    return gsm8k.Gsm8kRun(
+def _run(dump_dir: str) -> gsm8k._LegacyGsm8kRun:
+    return gsm8k._LegacyGsm8kRun(
         base_url="http://orchestrator:18080",
         config=ExecuteTrainConfig(run_id="demo", namespace="rl"),
         dump_dir=dump_dir,
