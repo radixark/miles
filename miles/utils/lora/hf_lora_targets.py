@@ -88,6 +88,32 @@ def _kimi_targets(config):
     return _mla_attention_targets(config), tuple(mlp)
 
 
+def _kimi_k3_targets(config):
+    attention = []
+    linear = config["linear_attn_config"]
+    if linear["kda_layers"]:
+        gates = ("g_proj",) if linear.get("use_full_rank_gate", False) else ("g_a_proj", "g_b_proj")
+        attention.extend(_QKVO_ATTENTION + _prefix_paths("self_attn", "f_a_proj", "f_b_proj", "b_proj", *gates))
+    if len(linear["kda_layers"]) < config["num_hidden_layers"]:
+        attention.extend(_mla_attention_targets(config))
+        if config.get("mla_use_output_gate", False):
+            attention.append("self_attn.g_proj")
+    num_moe_layers = sum(
+        config["num_experts"] is not None
+        and layer >= config["first_k_dense_replace"]
+        and layer % config["moe_layer_freq"] == 0
+        for layer in range(config["num_hidden_layers"])
+    )
+    mlp = list(_DENSE_MLP) if num_moe_layers < config["num_hidden_layers"] else []
+    if num_moe_layers:
+        mlp.extend(_prefix_paths("block_sparse_moe.experts.*", "w1", "w2", "w3"))
+        if config["num_shared_experts"] is not None:
+            mlp.extend(_prefix_paths("block_sparse_moe.shared_experts", "gate_proj", "up_proj", "down_proj"))
+        if config.get("routed_expert_hidden_size") is not None:
+            mlp.extend(_prefix_paths("block_sparse_moe", "routed_expert_down_proj", "routed_expert_up_proj"))
+    return tuple(dict.fromkeys(attention)), tuple(mlp)
+
+
 def _glm4_moe_targets(config):
     return _QKVO_ATTENTION, _deepseek_mlp_targets(config)
 
@@ -190,6 +216,12 @@ _HF_LORA_MODELS = {
     "kimi_k2": _HfLoraModelSpec(_kimi_targets),
     "kimi_k25": _HfLoraModelSpec(
         _kimi_targets,
+        layer_prefix="language_model.model.layers.*",
+        unembed="language_model.lm_head",
+        unwrap_text_config=True,
+    ),
+    "kimi_k3": _HfLoraModelSpec(
+        _kimi_k3_targets,
         layer_prefix="language_model.model.layers.*",
         unembed="language_model.lm_head",
         unwrap_text_config=True,

@@ -68,7 +68,7 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --lora-rank 16
   --lora-alpha 32
   --lora-dropout 0.0
-  --target-modules "decoder.layers.*.self_attention.o_proj,decoder.layers.*.self_attention.q_a_proj,decoder.layers.*.self_attention.kv_a_proj_with_mqa,decoder.layers.*.mlp.linear_fc1,decoder.layers.*.mlp.linear_fc2,decoder.layers.*.mlp.experts.linear_fc1,decoder.layers.*.mlp.experts.linear_fc2"
+  --target-modules "language_model.model.layers.*.self_attn.o_proj,language_model.model.layers.*.self_attn.q_a_proj,language_model.model.layers.*.self_attn.kv_a_proj_with_mqa,language_model.model.layers.*.mlp.gate_proj,language_model.model.layers.*.mlp.up_proj,language_model.model.layers.*.mlp.down_proj,language_model.model.layers.*.block_sparse_moe.shared_experts.gate_proj,language_model.model.layers.*.block_sparse_moe.shared_experts.up_proj,language_model.model.layers.*.block_sparse_moe.shared_experts.down_proj,language_model.model.layers.*.block_sparse_moe.experts.*.w1,language_model.model.layers.*.block_sparse_moe.experts.*.w2,language_model.model.layers.*.block_sparse_moe.experts.*.w3"
   --no-gradient-accumulation-fusion
   --lora-base-cpu-backup
   --experts-shared-outer-loras 

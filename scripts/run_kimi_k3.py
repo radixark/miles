@@ -34,17 +34,23 @@ _NUM_EXPERTS = {"Kimi-K3": 896, "Kimi-K3-4layer": 896, "Kimi-K3-4layer-64experts
 _NUM_ATTENTION_HEADS = 96
 _VALIDATED_FULL_MODEL_GPUS = 64
 
-_LAYERS = "decoder.layers.*"
+_LAYERS = "language_model.model.layers.*"
 _DEFAULT_TARGET_MODULES = ",".join(
-    [
-        f"{_LAYERS}.self_attention.o_proj",
-        f"{_LAYERS}.self_attention.q_a_proj",
-        f"{_LAYERS}.self_attention.kv_a_proj_with_mqa",
-        f"{_LAYERS}.mlp.linear_fc1",
-        f"{_LAYERS}.mlp.linear_fc2",
-        f"{_LAYERS}.mlp.experts.linear_fc1",
-        f"{_LAYERS}.mlp.experts.linear_fc2",
-    ]
+    f"{_LAYERS}.{module}"
+    for module in (
+        "self_attn.o_proj",
+        "self_attn.q_a_proj",
+        "self_attn.kv_a_proj_with_mqa",
+        "mlp.gate_proj",
+        "mlp.up_proj",
+        "mlp.down_proj",
+        "block_sparse_moe.shared_experts.gate_proj",
+        "block_sparse_moe.shared_experts.up_proj",
+        "block_sparse_moe.shared_experts.down_proj",
+        "block_sparse_moe.experts.*.w1",
+        "block_sparse_moe.experts.*.w2",
+        "block_sparse_moe.experts.*.w3",
+    )
 )
 
 

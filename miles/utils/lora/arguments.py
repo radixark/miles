@@ -14,6 +14,7 @@ from miles.utils.lora.hf_lora_targets import (
 )
 from miles.utils.lora.utils import is_lora_enabled, matches_lora_target, targets_expert_leaves
 from miles_plugins.models.inkling.lora import validate_inkling_lora_targets
+from miles_plugins.models.kimi_k3.lora import validate_kimi_k3_lora_targets
 
 logger = logging.getLogger(__name__)
 
@@ -221,6 +222,8 @@ def validate_lora_args(args):
         ):
             validate_inkling_lora_targets(hf_config.to_dict(), args.hf_lora_targets)
             args.lora_adapter_targets = "all-linear"
+        elif args.megatron_to_hf_mode == "raw" and hf_config.model_type == "kimi_k3":
+            validate_kimi_k3_lora_targets(args)
 
 
 def validate_multi_lora_args(args: Any) -> None:
