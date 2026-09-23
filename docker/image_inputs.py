@@ -26,7 +26,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 
 # A build reads exactly these. Anything outside them cannot change the image, so a
 # PR touching only such files reuses the released image. Dockerfile.rocm is absent on
-# purpose: it feeds pr-test-rocm.yml, not the cu13 multi-arch image built here.
+# purpose: it feeds the rocm/sgl-dev images, not the cu13 multi-arch image built here.
 INPUT_GLOBS = (
     "docker/Dockerfile",
     "docker/build.py",
@@ -43,31 +43,31 @@ def _matches(path: str) -> bool:
     return any(fnmatch.fnmatch(path, glob) for glob in INPUT_GLOBS)
 
 
-def _git(*args: str) -> bytes:
-    return subprocess.run(["git", *args], cwd=REPO_ROOT, check=True, stdout=subprocess.PIPE).stdout
+def _git(*args: str, root: Path = REPO_ROOT) -> bytes:
+    return subprocess.run(["git", *args], cwd=root, check=True, stdout=subprocess.PIPE).stdout
 
 
-def _paths_at(rev: str | None) -> list[str]:
+def _paths_at(rev: str | None, root: Path = REPO_ROOT) -> list[str]:
     if rev is None:
-        listing = _git("ls-files").decode()
+        listing = _git("ls-files", root=root).decode()
     else:
-        listing = _git("ls-tree", "-r", "--name-only", rev).decode()
+        listing = _git("ls-tree", "-r", "--name-only", rev, root=root).decode()
     return sorted(p for p in listing.splitlines() if _matches(p))
 
 
-def _content_at(path: str, rev: str | None) -> bytes:
+def _content_at(path: str, rev: str | None, root: Path = REPO_ROOT) -> bytes:
     if rev is None:
-        return (REPO_ROOT / path).read_bytes()
-    return _git("show", f"{rev}:{path}")
+        return (root / path).read_bytes()
+    return _git("show", f"{rev}:{path}", root=root)
 
 
-def compute(rev: str | None = None) -> str:
+def compute(rev: str | None = None, *, root: Path = REPO_ROOT) -> str:
     """Hash the build inputs in the working tree (``rev=None``) or at a revision."""
     digest = hashlib.sha256()
-    for path in _paths_at(rev):
+    for path in _paths_at(rev, root):
         digest.update(path.encode())
         digest.update(b"\0")
-        digest.update(hashlib.sha256(_content_at(path, rev)).digest())
+        digest.update(hashlib.sha256(_content_at(path, rev, root)).digest())
     return digest.hexdigest()
 
 

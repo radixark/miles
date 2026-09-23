@@ -12,7 +12,7 @@ from tests.ci.ci_register import register_cuda_ci
 
 import miles.utils.external_utils.command_utils as U
 
-register_cuda_ci(est_time=900, suite="stage-c-2-gpu-h200", labels=["short"])
+register_cuda_ci(est_time=900, suite="stage-c-2-gpu-h200", labels=["short"], hardware=["hopper", "blackwell"])
 
 MODEL_NAME = "Qwen3-0.6B"
 MODEL_TYPE = "qwen3-0.6B"
@@ -38,7 +38,9 @@ def prepare():
         f"{VERIFIERS_VENV}/bin/python -m pip install "
         f"-r {U.repo_base_dir}/examples/experimental/verifiers/requirements.txt"
     )
-    U.exec_command_cpu("uv tool install 'prime==0.6.19'")
+    # prime pins no upper bound on prime-sandboxes, and 0.3.0 dropped the
+    # CommandRequest the pinned prime imports, so the tool env has to cap it.
+    U.exec_command_cpu("uv tool install 'prime==0.6.19' --with 'prime-sandboxes<0.3'")
     if not VERIFIERS_DIR.exists():
         U.exec_command_cpu(
             f"git clone --depth 1 --branch v0.2.0 "

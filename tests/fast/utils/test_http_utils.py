@@ -619,3 +619,46 @@ class TestPosterActorKeywordOnlyConstruction:
         )
 
         assert init.calls == [((), {"concurrency": 6})] * 4
+
+
+class TestInitHttpClientConcurrency:
+    def _args(self, **overrides):
+        defaults = dict(
+            rollout_num_gpus=0,
+            rollout_num_gpus_per_engine=1,
+            eval_num_gpus=0,
+            eval_num_gpus_per_engine=1,
+            eval_uses_snapshots=True,
+            sglang_server_concurrency=512,
+            use_distributed_post=False,
+        )
+        defaults.update(overrides)
+        return SimpleNamespace(**defaults)
+
+    def _init(self, monkeypatch, args):
+        monkeypatch.setattr(http_utils, "_http_client", None)
+        monkeypatch.setattr(http_utils, "_client_concurrency", 0)
+        http_utils.init_http_client(args)
+        if http_utils._http_client is not None:
+            asyncio.run(http_utils._http_client.aclose())
+        return http_utils._client_concurrency, http_utils._http_client
+
+    def test_external_snapshot_eval_without_in_job_gpus_gets_one_engine_of_connections(self, monkeypatch):
+        concurrency, client = self._init(monkeypatch, self._args())
+        assert client is not None
+        assert concurrency == 512
+
+    def test_train_only_eval_fleet_sizes_the_pool_from_the_fleet(self, monkeypatch):
+        args = self._args(rollout_num_gpus=None, eval_num_gpus=4, eval_num_gpus_per_engine=2)
+        concurrency, client = self._init(monkeypatch, args)
+        assert client is not None
+        assert concurrency == 512 * 4 // 2
+
+    def test_in_job_gpu_sizing_is_unchanged(self, monkeypatch):
+        args = self._args(rollout_num_gpus=8, rollout_num_gpus_per_engine=2, eval_uses_snapshots=False)
+        concurrency, _ = self._init(monkeypatch, args)
+        assert concurrency == 512 * 8 // 2
+
+    def test_no_client_without_gpus_or_snapshot_eval(self, monkeypatch):
+        _, client = self._init(monkeypatch, self._args(eval_uses_snapshots=False))
+        assert client is None

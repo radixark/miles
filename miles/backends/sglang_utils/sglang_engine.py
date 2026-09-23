@@ -1,16 +1,22 @@
-import dataclasses
 import ipaddress
 import logging
 import os
 import shlex
 import sys
 
+
 from sglang.srt.server_args import ServerArgs
 
-from miles.backends.megatron_utils.lora_utils import convert_target_modules_to_hf, sglang_lora_target_all_sentinel
+from miles.backends.megatron_utils.lora.utils import convert_target_modules_to_hf, sglang_lora_target_all_sentinel
 from miles.backends.sglang_utils.server_args_utils import server_args_to_argv
-from miles.utils.lora import LORA_ADAPTER_NAME, lora_base_cpu_backup_enabled, lora_rollout_enabled
+from miles.utils.lora import (
+    LORA_ADAPTER_NAME,
+    engine_loads_adapter_from_disk,
+    lora_base_cpu_backup_enabled,
+    lora_rollout_enabled,
+)
 from miles.utils.multi_lora import is_multi_lora_enabled
+from miles.utils.workers.argv_utils import _record_field_names
 
 logger = logging.getLogger(__name__)
 
@@ -153,10 +159,10 @@ def _compute_server_args(
         else:
             kwargs["lora_target_modules"] = convert_target_modules_to_hf(args.target_modules)
 
-        if args.lora_adapter_path is not None and kwargs.get("load_format") != "dummy":
+        if engine_loads_adapter_from_disk(args):
             kwargs["lora_paths"] = [f"{LORA_ADAPTER_NAME}={args.lora_adapter_path}"]
         elif args.lora_adapter_path is not None:
-            logger.info("dummy base load: skipping startup lora_paths; adapter comes via weight-sync")
+            logger.info("Skipping startup lora_paths: the trainer pushes the adapter in the first weight sync")
         else:
             logger.info("No pre-trained LoRA adapter_path provided, will use random initial weights")
 
@@ -177,17 +183,24 @@ def _compute_server_args(
         kwargs.update(sglang_overrides)
 
     unused_keys = set(kwargs.keys())
-    for attr in dataclasses.fields(ServerArgs):
-        if worker_type == "decode" and attr.name == "enable_hierarchical_cache":
+    for name in _record_field_names(ServerArgs):
+        if worker_type == "decode" and name == "enable_hierarchical_cache":
             continue
-        if hasattr(args, f"sglang_{attr.name}") and attr.name not in kwargs:
-            kwargs[attr.name] = getattr(args, f"sglang_{attr.name}")
-        unused_keys.discard(attr.name)
+        if hasattr(args, f"sglang_{name}") and name not in kwargs:
+            kwargs[name] = getattr(args, f"sglang_{name}")
+        unused_keys.discard(name)
 
     # for compatibility with old args
     if len(unused_keys) > 0:
         logger.info(f"Warning: The following arguments is not supported in the current sglang: {unused_keys}.")
         for key in unused_keys:
             kwargs.pop(key)
+
+    if is_multi_lora_enabled(args):
+        assert kwargs.get("load_format") != "dummy", "Tinker engines must load the frozen base from disk"
+        if kwargs.get("max_loaded_loras") is None:
+            # use --sglang-max-loaded-loras to override
+            # TODO: dynamic allocation
+            kwargs["max_loaded_loras"] = 2 * kwargs["max_loras_per_batch"]
 
     return kwargs

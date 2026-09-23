@@ -62,10 +62,10 @@ class _StubIterator(HfWeightIteratorBase):
         for pair in self._base:
             yield [pair]
 
-    def _iter_hf_adapter_units(self, lora_name, adapter, *, materialize):
+    def _iter_hf_adapter_units(self, adapter, *, materialize):
         self.export_calls.append(adapter)
         for name, tensor in self._exported:
-            yield [(f"{lora_name}:{name}", tensor)]
+            yield [(name, tensor)]
 
 
 class TestIterHfWeightsTemplate:
@@ -88,6 +88,15 @@ class TestIterHfWeightsTemplate:
         iterator = _StubIterator(SAMPLE_LORA_WEIGHTS, base=SAMPLE_BASE_ONLY_WEIGHTS)
         names = self._names(iterator.iter_hf_weights(None, include_base=False, adapters=[("miles_lora", None)]))
         assert names == [f"miles_lora:{n}" for n, _ in SAMPLE_LORA_WEIGHTS]
+
+    def test_each_adapter_keeps_its_own_prefix(self):
+        """A genexp in the chaining loop late-binds the name and stamps every adapter with the last one."""
+        iterator = _StubIterator(SAMPLE_LORA_WEIGHTS)
+        names = self._names(
+            iterator.iter_hf_weights(None, include_base=False, adapters=[("run_a@1", None), ("run_b@2", None)])
+        )
+        expected = [f"run_a@1:{n}" for n, _ in SAMPLE_LORA_WEIGHTS] + [f"run_b@2:{n}" for n, _ in SAMPLE_LORA_WEIGHTS]
+        assert names == expected
 
     def test_no_adapters_matches_base_stream(self):
         iterator = _StubIterator([], base=SAMPLE_BASE_ONLY_WEIGHTS)

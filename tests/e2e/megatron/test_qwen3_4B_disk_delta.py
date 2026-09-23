@@ -11,6 +11,7 @@ register_cuda_ci(
     est_time=600,
     suite="stage-c-8-gpu-h100",
     labels=["megatron", "weight-update"],
+    hardware=["hopper", "blackwell"],
 )
 register_rocm_ci(
     est_time=500,

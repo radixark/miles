@@ -181,7 +181,7 @@ run_mode() {
         --sglang-mem-fraction-static 0.75
         --sglang-ep-size 32
         --sglang-dp-size 1
-        --sglang-cuda-graph-bs 1 2 4 8 16
+        --sglang-cuda-graph-bs-decode 1 2 4 8 16
         --sglang-enable-dp-attention
         --sglang-enable-dp-lm-head
     )

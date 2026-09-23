@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import argparse
-import dataclasses
+
 
 import pytest
 
@@ -10,6 +10,7 @@ pytest.importorskip("sglang")
 from sglang.srt.server_args import ServerArgs
 
 from miles.backends.sglang_utils.arguments import add_sglang_arguments, collect_eval_sglang_overrides
+from miles.utils.workers.argv_utils import _record_field_names
 
 
 def _sglang_flags() -> set[str]:
@@ -56,4 +57,4 @@ class TestAllocatorOwnedServerArgs:
 
     def test_the_skipped_launch_gate_port_names_a_real_server_args_field(self):
         """A renamed upstream field would leave the skip entry stale and quietly re-expose the flag."""
-        assert "gated_launch_port" in {field.name for field in dataclasses.fields(ServerArgs)}
+        assert "gated_launch_port" in set(_record_field_names(ServerArgs))

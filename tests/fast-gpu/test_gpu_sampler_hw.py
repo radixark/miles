@@ -1,6 +1,6 @@
 from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
 
-register_cuda_ci(est_time=60, suite="stage-b-2-gpu-h200", labels=["short"])
+register_cuda_ci(est_time=60, suite="stage-b-2-gpu-h200", labels=["short"], hardware=["hopper", "blackwell"])
 register_rocm_ci(est_time=60, suite="stage-c-4-gpu-mi350", labels=["amd"])
 
 import torch

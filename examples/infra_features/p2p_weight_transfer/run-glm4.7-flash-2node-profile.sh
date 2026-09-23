@@ -180,7 +180,7 @@ run_mode() {
         --rollout-num-gpus ${NUM_ROLLOUT_GPUS}
         --sglang-mem-fraction-static 0.7
         --sglang-ep-size 4
-        --sglang-cuda-graph-bs 1 2 4 8 16
+        --sglang-cuda-graph-bs-decode 1 2 4 8 16
         --sglang-enable-dp-attention
         --sglang-enable-dp-lm-head
     )

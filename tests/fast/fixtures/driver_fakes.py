@@ -95,9 +95,6 @@ class FakeTrainingModel:
     async def export_hf(self, rollout_id: int, path: str) -> None:
         self.events.append(f"{self.role}_export_hf:{rollout_id}")
 
-    async def reconcile_adapters(self) -> None:
-        self.events.append(f"{self.role}_reconcile_adapters")
-
     async def offload(self) -> None:
         self.events.append(f"{self.role}_offload")
 

@@ -156,6 +156,14 @@ both are decided on `put()`. Staleness depends on how long the group then sits i
 buffer, so it is decided on `get()`. Once the trainer has a full batch it sorts the
 groups by index and applies `--rollout-sample-filter-path` to the assembled batch.
 
+If a sample cancels itself (for example, a sandbox client raises `CancelledError`),
+its group is marked aborted after the sibling samples settle. The default buffer
+discards the entire group from training, counts it in
+`rollout/fully_async/aborted_groups_filtered`, and applies
+`--async-unused-samples-handler` to the original prompts. Other groups keep running.
+Cancelling the producer itself still propagates, and unexpected non-cancellation
+exceptions still fail the worker rather than being silently discarded.
+
 The buffer decouples the two loops. As long as it holds finished groups, the trainer
 never waits for generation. If it sits empty, rollout is still the bottleneck and async
 cannot hide it.
@@ -300,13 +308,33 @@ rollout/fully_async/queue_size
 rollout/fully_async/aborted_groups_filtered
 rollout/fully_async/stale_groups_filtered
 rollout/fully_async/avg_staleness, rollout/fully_async/max_staleness
+rollout/fully_async/avg_post_generation_staleness, rollout/fully_async/max_post_generation_staleness
+rollout/fully_async/avg_generation_version_span, rollout/fully_async/max_generation_version_span
+rollout/fully_async/token_weighted_staleness
+rollout/fully_async/weight_version_sample_coverage
 rollout/fully_async/buffer_avg_staleness, rollout/fully_async/buffer_max_staleness
 rollout/dynamic_filter/drop_<reason>
 ```
 
-The `avg_staleness` and `max_staleness` pair covers the groups training actually
-consumed, while the `buffer_` pair covers the groups still sitting in the buffer when
-the step drained it.
+Staleness is measured in published rollout weight versions: with
+`--update-weights-interval 1`, one version normally corresponds to one optimizer step;
+otherwise it does not. The metrics separate three parts of policy provenance:
+
+- `avg_staleness` and `max_staleness` are the gap from the current version to the
+  oldest version in each selected group. `stale_groups_filtered` counts groups that
+  exceeded `--max-weight-staleness`; rejected groups do not enter these averages.
+- `post_generation_staleness` is the gap from the current version to the newest version
+  in each selected group. `generation_version_span` is the newest minus oldest version
+  within the group. Together they distinguish aging after generation from updates that
+  landed while a trajectory was being generated.
+- `token_weighted_staleness` averages `current_version - span.version`, weighting each
+  numeric version span by its number of generated tokens. It therefore describes the
+  typical version gap of stamped generation tokens rather than the oldest token only.
+
+`weight_version_sample_coverage` is the fraction of selected samples with at least one
+numeric version span. Missing provenance is excluded from lag averages, not treated as
+zero. The `buffer_` pair covers groups still sitting in the buffer when the step drained
+it.
 
 A `queue_size` pinned at zero means rollout is the bottleneck, so scale rollout capacity
 or lower per-sample generation cost. A `queue_size` pinned at capacity means training is

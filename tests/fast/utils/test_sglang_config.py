@@ -26,6 +26,7 @@ def _resolve(path: str, *, rollout_num_gpus: int, hf_checkpoint: str = "/path/to
         rollout_num_gpus_per_engine=1,
         num_gpus_per_node=8,
         eval_num_gpus=0,
+        starts_inference_engines=True,
         hf_checkpoint=hf_checkpoint,
         offload_rollout=False,
         debug_train_only=False,

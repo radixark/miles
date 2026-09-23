@@ -1,0 +1,51 @@
+{
+  "schema_version": "1",
+  "comment": "Feature areas the analyzer may tag a failed job with. Kept separate from tests/ci/labels.py because that registry doubles as the run-ci-<key> trigger contract.",
+  "subsystem": [
+    "amd",
+    "ckpt",
+    "dashboard",
+    "eval",
+    "fsdp",
+    "ft",
+    "fully-async",
+    "lora",
+    "megatron",
+    "miles-plugin",
+    "model-scripts",
+    "mooncake",
+    "precision",
+    "replay",
+    "rollout",
+    "router",
+    "session",
+    "sglang",
+    "weight-update"
+  ],
+  "model": [
+    "deepseek-v32",
+    "deepseek-v4",
+    "gemma-4",
+    "glm45",
+    "glm47-flash",
+    "glm5",
+    "gpt-oss",
+    "inkling",
+    "joy-ai-llm",
+    "kimi-k2",
+    "kimi-k25",
+    "nemotron-3",
+    "qwen3",
+    "qwen35"
+  ],
+  "feature": [
+    "docker",
+    "examples",
+    "metrics",
+    "mtp",
+    "multi-lora",
+    "offload",
+    "optimizer",
+    "tito"
+  ]
+}

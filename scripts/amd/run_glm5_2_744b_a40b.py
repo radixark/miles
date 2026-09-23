@@ -219,11 +219,11 @@ def _execute_train(args: ScriptArgs):
         sglang_args += "--sglang-moe-a2a-backend mori " "--sglang-deepep-mode auto "
     sglang_args += (
         "--sglang-kv-cache-dtype fp8_e4m3 "
-        "--sglang-nsa-decode-backend tilelang "
-        "--sglang-nsa-prefill-backend tilelang "
+        "--sglang-dsa-decode-backend tilelang "
+        "--sglang-dsa-prefill-backend tilelang "
         "--sglang-attention-backend nsa "
         "--sglang-page-size 64 "
-        f"--sglang-cuda-graph-max-bs {sglang_decode_max_bs} "
+        f"--sglang-cuda-graph-max-bs-decode {sglang_decode_max_bs} "
         # concurrency
         "--sglang-max-running-requests 512 "
         f"--sglang-chunked-prefill-size {2048 * sglang_world_size} "

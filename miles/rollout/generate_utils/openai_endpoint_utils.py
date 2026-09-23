@@ -13,6 +13,7 @@ from miles.rollout.session.samples.codec import (
     SamplesReply,
     decode_samples_and_merge_input_sample,
 )
+from miles.rollout.session.types import CreateSessionRequest
 from miles.utils.http_utils import post, post_bytes_no_retry
 from miles.utils.types import Sample
 
@@ -44,7 +45,7 @@ class OpenAIEndpointTracer:
         return self.router_url.removeprefix("http://")
 
     @staticmethod
-    async def create(args: Namespace):
+    async def create(args: Namespace, *, evaluation: bool = False, sampling_params: dict | None = None):
         session_addrs = getattr(args, "session_server_addrs", None)
         if not session_addrs:
             raise RuntimeError(
@@ -56,7 +57,12 @@ class OpenAIEndpointTracer:
         session_url = f"http://{session_addr}"
         instance_ids = getattr(args, "session_server_instance_ids", None) or {}
         session_server_instance_id = instance_ids.get(session_addr)
-        response = await post(f"{session_url}/sessions", {}, action="post")
+        # Drop engine-only sampling fields before validating the session creation body.
+        session_params = {
+            key: value for key, value in (sampling_params or {}).items() if key in CreateSessionRequest.model_fields
+        }
+        body = CreateSessionRequest.model_validate({**session_params, "evaluation": evaluation})
+        response = await post(f"{session_url}/sessions", body.model_dump(exclude_none=True), action="post")
         session_id = response["session_id"]
         use_v2 = getattr(args, "use_session_server", None) == "v2"
         return OpenAIEndpointTracer(

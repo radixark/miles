@@ -166,6 +166,7 @@ jobs:
             v=$(python -m pip show "$pkg" 2>/dev/null | awk '/^Version:/{print $2}' || true)
             if [ -n "$v" ]; then pinned="$pinned $pkg==$v"; fi
           done
+          python -m pip install -r "$GITHUB_WORKSPACE/examples/multi_lora/requirements.txt" --break-system-packages
           python -m pip install -r "$GITHUB_WORKSPACE/requirements.txt" --break-system-packages
           for spec in $pinned; do
             pkg=${spec%%==*}

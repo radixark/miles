@@ -253,7 +253,7 @@ def _execute_train(args: ScriptArgs, before_ray_job_submit=None):
         "--sglang-server-concurrency 1024 "
         f"--sglang-max-running-requests {sglang_world_size * sglang_decode_max_bs // sglang_attn_tp_size} "
         f"--sglang-chunked-prefill-size {sglang_world_size * sglang_decode_max_bs} "
-        f"--sglang-cuda-graph-max-bs {sglang_decode_max_bs} "
+        f"--sglang-cuda-graph-max-bs-decode {sglang_decode_max_bs} "
         # For quick experiments
         # """--sglang-json-model-override-args '{"num_hidden_layers": 5}' """
     )

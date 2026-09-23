@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
+import msgspec
 import pytest
 from pydantic import ValidationError
 
@@ -16,11 +17,24 @@ from miles.utils.pydantic_utils import FrozenStrictBaseModel
 from miles.utils.workers import argv_utils
 from miles.utils.workers.argv_utils import (
     CONFIG_JSON_FLAG,
+    _record_field_names,
     config_to_argv,
     dataclass_to_values,
     parse_config_argv,
     render_cli_argv,
 )
+
+
+@pytest.mark.parametrize(
+    "record_factory", [dataclasses.make_dataclass, msgspec.defstruct], ids=["dataclass", "msgspec"]
+)
+def test_record_fields_support_classes_and_instances(record_factory):
+    record_type = record_factory("Args", [("port", int), ("host", str)])
+    record = record_type(port=30000, host="localhost")
+
+    assert _record_field_names(record_type) == ("port", "host")
+    assert _record_field_names(record) == ("port", "host")
+    assert dataclass_to_values(record) == {"port": 30000, "host": "localhost"}
 
 
 class _DemoConfig(FrozenStrictBaseModel):
@@ -110,6 +124,7 @@ class TestConfigToArgv:
             save_debug_trajectory_data=None,
             lora_rank=0,
             lora_adapter_path=None,
+            lora_train_only=False,
             use_session_server="v2",
             session_message_matcher="strict",
             pause_generation_mode=None,
@@ -592,6 +607,29 @@ _REPO_ROOT = Path(__file__).parents[4]
 
 
 class TestPythonArgvPrefix:
+    @pytest.mark.parametrize("selector,kept", [("-c", []), ("-uc", ["-u"]), ("-OOuc", ["-OOu"])])
+    def test_attached_command_does_not_replace_the_child_entrypoint(self, selector, kept):
+        prefix = _run_prefix_printing_command([sys.executable, "-B", selector + _PRINT_PREFIX_SOURCE])
+        assert prefix == [sys.executable, "-B", *kept]
+        completed = subprocess.run(
+            [*prefix, "-c", "print('child entrypoint')"], capture_output=True, check=True, text=True
+        )
+        assert completed.stdout.strip() == "child entrypoint"
+
+    @pytest.mark.parametrize("selector,kept", [("-m", []), ("-um", ["-u"])])
+    def test_attached_module_is_not_forwarded(self, tmp_path, selector, kept):
+        (tmp_path / "prefix_probe.py").write_text(_PRINT_PREFIX_SOURCE)
+        prefix = _run_prefix_printing_command(
+            [sys.executable, "-B", selector + "prefix_probe", "--parent-only"], extra_python_path=tmp_path
+        )
+        assert prefix == [sys.executable, "-B", *kept]
+
+    @pytest.mark.parametrize(
+        "flags", [["-Wignore::DeprecationWarning"], ["-Ximporttime"], ["-uW", "ignore"], ["-uX", "dev"]]
+    )
+    def test_short_option_values_are_not_scanned_as_entrypoint_flags(self, flags):
+        assert self._run_prefix_under(flags) == [sys.executable, *flags]
+
     def _run_prefix_under(self, interpreter_flags: list[str]) -> list[str]:
         script = "import json, sys; from miles.utils.workers.argv_utils import python_argv_prefix; print(json.dumps(python_argv_prefix()))"
         completed = subprocess.run(

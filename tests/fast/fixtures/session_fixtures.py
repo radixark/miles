@@ -24,6 +24,7 @@ def make_session_server_config(**overrides: Any) -> SessionServerConfig:
         save_debug_trajectory_data=None,
         lora_rank=0,
         lora_adapter_path=None,
+        lora_train_only=False,
         use_session_server=None,
         session_message_matcher="strict",
         pause_generation_mode=None,

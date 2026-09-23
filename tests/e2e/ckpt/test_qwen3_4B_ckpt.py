@@ -4,7 +4,7 @@ from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
 
 import miles.utils.external_utils.command_utils as U
 
-register_cuda_ci(est_time=1400, suite="stage-c-8-gpu-h100", labels=["ckpt"])
+register_cuda_ci(est_time=1400, suite="stage-c-8-gpu-h100", labels=["ckpt"], hardware=["hopper", "blackwell"])
 register_rocm_ci(est_time=1200, suite="nightly-stage-c-8-gpu-mi350", labels=["ckpt"])
 
 ENABLE_EVAL = bool(int(os.environ.get("MILES_TEST_ENABLE_EVAL", "1")))
@@ -96,7 +96,9 @@ def execute(mode: str = "", ckpt_step: int | None = None):
         "--adam-beta2 0.98 "
     )
 
-    sglang_args = "--rollout-num-gpus-per-engine 2 --sglang-mem-fraction-static 0.7 --sglang-cuda-graph-bs 1 2 4 8 16 "
+    sglang_args = (
+        "--rollout-num-gpus-per-engine 2 --sglang-mem-fraction-static 0.7 --sglang-cuda-graph-bs-decode 1 2 4 8 16 "
+    )
 
     ci_args = "--ci-test "
     if mode in {"save", "async_save"}:

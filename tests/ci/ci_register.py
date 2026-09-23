@@ -4,6 +4,7 @@ import warnings
 from dataclasses import dataclass, field
 from enum import Enum, auto
 
+from tests.ci.hardware import CUDA_STAGES, KNOWN_ARCHES, auto_arch
 from tests.ci.labels import KNOWN_LABELS
 
 __all__ = [
@@ -22,7 +23,9 @@ __all__ = [
 _POSITIONAL_PARAMS = ("est_time", "suite")
 
 # All accepted keyword arguments (in addition to the positional pair above).
-_VALID_KWARGS = frozenset({"est_time", "suite", "labels", "nightly", "disabled"})
+# `hardware` is CUDA-only; CPU has no GPU generation and ROCm is a separate
+# backend rather than a CUDA arch.
+_VALID_KWARGS = frozenset({"est_time", "suite", "labels", "nightly", "disabled", "hardware"})
 
 _REGISTER_NAMES = frozenset({"register_cpu_ci", "register_cuda_ci", "register_rocm_ci"})
 
@@ -42,6 +45,8 @@ class CIRegistry:
     est_time: float
     suite: str
     labels: list[str] = field(default_factory=list)
+    # GPU generations this test supports; CUDA only, always non-empty there.
+    hardware: list[str] = field(default_factory=list)
     nightly: bool = False
     disabled: str | None = None  # None = enabled, string = disabled reason
     # True only when collect_tests synthesized this entry by directory
@@ -75,6 +80,7 @@ def register_cuda_ci(
     suite: str,
     *,
     labels: list[str],
+    hardware: list[str],
     nightly: bool = False,
     disabled: str | None = None,
 ):
@@ -82,6 +88,12 @@ def register_cuda_ci(
 
     `labels` must contain at least one domain label so GPU tests run only when
     an explicit or broad scope selects them.
+
+    `hardware` lists the GPU generations whose kernels and precision paths this
+    test supports, e.g. `["hopper", "blackwell"]`. It is required: a default
+    would silently claim a capability nobody decided. `suite` must name a stage
+    on the first supported arch, so a test's home stage is where it runs when
+    nothing asks for a different one.
     """
     return None
 
@@ -146,8 +158,9 @@ def _extract_list_constant(node: ast.AST, *, context: str = "value") -> list:
 
 
 class RegistryVisitor(ast.NodeVisitor):
-    def __init__(self, filename: str):
+    def __init__(self, filename: str, *, known_labels=KNOWN_LABELS):
         self.filename = filename
+        self.known_labels = known_labels
         self.registries: list[CIRegistry] = []
 
     def _parse_call_args(self, func_call: ast.Call, func_name: str) -> CIRegistry:
@@ -176,9 +189,9 @@ class RegistryVisitor(ast.NodeVisitor):
                 raise ValueError(f"{self.filename}: duplicated argument '{kw.arg}' in {func_name}()")
             if kw.arg not in _VALID_KWARGS:
                 raise ValueError(f"{self.filename}: unknown argument '{kw.arg}' in {func_name}()")
-            if kw.arg == "labels":
-                parsed["labels"] = _extract_list_constant(
-                    kw.value, context=f"{self.filename}: labels in {func_name}()"
+            if kw.arg in ("labels", "hardware"):
+                parsed[kw.arg] = _extract_list_constant(
+                    kw.value, context=f"{self.filename}: {kw.arg} in {func_name}()"
                 )
             else:
                 v = _extract_constant(kw.value)
@@ -213,9 +226,18 @@ class RegistryVisitor(ast.NodeVisitor):
         if disabled is not None and not isinstance(disabled, str):
             raise ValueError(f"{self.filename}: disabled must be a string or None in {func_name}()")
 
-        unknown = [label for label in labels if label not in KNOWN_LABELS]
+        hardware = parsed.get("hardware", [])
+        if backend is HWBackend.CUDA:
+            self._check_cuda_hardware(func_name, parsed["suite"], hardware)
+        elif hardware:
+            raise ValueError(
+                f"{self.filename}: hardware in {func_name}() is CUDA-only; "
+                f"CPU has no GPU generation and ROCm is a separate backend"
+            )
+
+        unknown = [label for label in labels if label not in self.known_labels]
         if unknown:
-            valid_list = ", ".join(sorted(KNOWN_LABELS))
+            valid_list = ", ".join(sorted(self.known_labels))
             raise ValueError(
                 f"{self.filename}: unknown labels {unknown} in {func_name}(); "
                 f"valid labels: [{valid_list}]. "
@@ -229,10 +251,41 @@ class RegistryVisitor(ast.NodeVisitor):
             est_time=float(parsed["est_time"]),
             suite=parsed["suite"],
             labels=list(labels),
+            hardware=list(hardware),
             nightly=nightly,
             disabled=disabled,
             implicit=False,
         )
+
+    def _check_cuda_hardware(self, func_name: str, suite: str, hardware: list) -> None:
+        """Validate `hardware` and tie it to the declared home stage.
+
+        The home stage must sit on the test's first supported arch, so "where
+        this test lives" and "where it runs by default" cannot disagree.
+        """
+        if not hardware:
+            raise ValueError(
+                f"{self.filename}: hardware in {func_name}() must list at least one arch " f"from {list(KNOWN_ARCHES)}"
+            )
+        unknown = [arch for arch in hardware if arch not in KNOWN_ARCHES]
+        if unknown:
+            raise ValueError(
+                f"{self.filename}: unknown arches {unknown} in {func_name}(); " f"valid arches: {list(KNOWN_ARCHES)}"
+            )
+        if len(set(hardware)) != len(hardware):
+            raise ValueError(f"{self.filename}: duplicated arch in {func_name}() hardware={hardware}")
+        if suite not in CUDA_STAGES:
+            raise ValueError(
+                f"{self.filename}: unknown CUDA suite {suite!r} in {func_name}(); "
+                f"valid suites: {sorted(CUDA_STAGES)}"
+            )
+        home_arch, first = CUDA_STAGES[suite].arch, auto_arch(hardware)
+        if home_arch != first:
+            raise ValueError(
+                f"{self.filename}: suite {suite!r} is {home_arch} but hardware={hardware} "
+                f"runs on {first} by default; a test's home stage must be on its first "
+                f"supported arch"
+            )
 
     def _collect_ci_registry(self, func_call: ast.Call):
         if not isinstance(func_call.func, ast.Name):
@@ -250,11 +303,11 @@ class RegistryVisitor(ast.NodeVisitor):
                 self.registries.append(cr)
 
 
-def ut_parse_one_file(filename: str) -> list[CIRegistry]:
+def ut_parse_one_file(filename: str, *, known_labels=KNOWN_LABELS) -> list[CIRegistry]:
     with open(filename) as f:
         file_content = f.read()
     tree = ast.parse(file_content, filename=filename)
-    visitor = RegistryVisitor(filename=filename)
+    visitor = RegistryVisitor(filename=filename, known_labels=known_labels)
     visitor.visit(tree)
     return visitor.registries
 
@@ -311,10 +364,10 @@ def _make_implicit_cpu_registry(filename: str) -> CIRegistry:
     )
 
 
-def collect_tests(files: list[str], sanity_check: bool = True) -> list[CIRegistry]:
+def collect_tests(files: list[str], sanity_check: bool = True, *, known_labels=KNOWN_LABELS) -> list[CIRegistry]:
     ci_tests: list[CIRegistry] = []
     for file in files:
-        registries = ut_parse_one_file(file)
+        registries = ut_parse_one_file(file, known_labels=known_labels)
         if _is_implicit_fast_cpu_path(file):
             # tests/fast/ is CPU-only by location;
             for r in registries:

@@ -1,4 +1,5 @@
 import argparse
+import json
 import logging
 import sys
 from pathlib import Path
@@ -10,6 +11,7 @@ import pytest
 from miles.backends.sglang_utils.arguments import add_sglang_arguments, collect_eval_sglang_overrides
 from miles.backends.sglang_utils.arguments import validate_args as validate_sglang_args
 from miles.utils.arguments import (
+    FULLY_ASYNC_ROLLOUT_PATH,
     _maybe_apply_dumper_overrides,
     _resolve_ft_components,
     _resolve_mini_ft_controller_enable,
@@ -196,6 +198,71 @@ def test_fully_async_eval_resolves_to_the_producer_itself():
 
     override = SimpleNamespace(rollout_function_path=None, eval_function_path="pkg.CustomEval", fully_async=True)
     assert resolve_rollout_function_paths(override) == (path, "pkg.CustomEval")
+
+
+def _fully_async_candidate_args(**overrides) -> SimpleNamespace:
+    """A namespace shaped like the parsed args `_resolve_rollout_functions` reads."""
+    defaults = dict(
+        fully_async=False,
+        multi_lora=False,
+        rollout_function_path=None,
+        eval_function_path=None,
+        colocate=False,
+        partial_rollout=False,
+        mask_offpolicy_in_partial_rollout=False,
+        pause_generation_mode="retract",
+        recompute_logprobs_via_prefill=False,
+        rollout_all_samples_process_path=None,
+        eval_num_gpus=0,
+    )
+    return SimpleNamespace(**(defaults | overrides))
+
+
+def test_naming_the_fully_async_class_enables_the_mode():
+    """--rollout-function-path FullyAsyncRolloutFn selects what --fully-async selects, so it
+    must reach the same validation and driver scheduling instead of passing as a plugin."""
+    args = _fully_async_candidate_args(rollout_function_path=FULLY_ASYNC_ROLLOUT_PATH)
+
+    _resolve_rollout_functions(args)
+
+    assert args.fully_async is True
+    assert args.rollout_function_path == FULLY_ASYNC_ROLLOUT_PATH
+    assert args.eval_function_path == FULLY_ASYNC_ROLLOUT_PATH
+
+
+def test_naming_the_fully_async_class_enforces_the_mode_constraints():
+    """The class alone cannot keep generating through a colocated weight update; before the
+    mode was inferred, this combination started and only failed later, in training."""
+    args = _fully_async_candidate_args(rollout_function_path=FULLY_ASYNC_ROLLOUT_PATH, colocate=True)
+
+    with pytest.raises(AssertionError, match="cannot colocate"):
+        _resolve_rollout_functions(args)
+
+
+def test_the_flag_and_a_matching_path_agree():
+    """Both spellings of one selection is redundant, not a conflict."""
+    args = _fully_async_candidate_args(fully_async=True, rollout_function_path=FULLY_ASYNC_ROLLOUT_PATH)
+
+    _resolve_rollout_functions(args)
+
+    assert args.rollout_function_path == FULLY_ASYNC_ROLLOUT_PATH
+
+
+def test_the_flag_still_rejects_a_different_rollout_function():
+    """Two different selections remain a misconfiguration."""
+    args = _fully_async_candidate_args(fully_async=True, rollout_function_path="pkg.CustomRolloutFn")
+
+    with pytest.raises(AssertionError, match="pass only one"):
+        _resolve_rollout_functions(args)
+
+
+def test_an_ordinary_rollout_function_path_stays_untouched():
+    args = _fully_async_candidate_args(rollout_function_path="pkg.CustomRolloutFn")
+
+    _resolve_rollout_functions(args)
+
+    assert args.fully_async is False
+    assert args.rollout_function_path == "pkg.CustomRolloutFn"
 
 
 def test_fully_async_rejects_abort_pause_mode():
@@ -625,6 +692,52 @@ class TestSessionServerPauseGenerationMode:
         assert warned is expect_warning
 
 
+class TestSnapshotEvalValidation:
+    def _parse(self, extra):
+        parser = argparse.ArgumentParser()
+        get_miles_extra_args_provider()(parser)
+        return parser.parse_args(extra + ["--num-rollout", "1"] + REQUIRED_ARGS)
+
+    def _snapshot_eval_args(self, tmp_path, *extra):
+        prompts = tmp_path / "eval.jsonl"
+        prompts.write_text("{}\n")
+        return self._parse(
+            [
+                "--eval-num-gpus",
+                "1",
+                "--eval-interval",
+                "5",
+                "--eval-hf-dir",
+                str(tmp_path / "snapshots"),
+                "--eval-prompt-data",
+                "dummy",
+                str(prompts),
+                *extra,
+            ]
+        )
+
+    def test_snapshot_eval_rejects_load_debug_rollout_data(self, tmp_path):
+        """The replay path loads no rollout functions, so there is nothing to run the eval with."""
+        args = self._snapshot_eval_args(tmp_path, "--load-debug-rollout-data", "/tmp/rollout_{rollout_id}.pt")
+        with pytest.raises(AssertionError, match="load-debug-rollout-data"):
+            miles_validate_args(args)
+
+    def test_train_only_snapshot_eval_needs_its_own_eval_function(self, tmp_path):
+        args = self._snapshot_eval_args(tmp_path, "--debug-train-only")
+        with pytest.raises(AssertionError, match="eval-function-path"):
+            miles_validate_args(args)
+
+    def test_train_only_leaves_no_rollout_gpus_even_under_colocate(self):
+        """The colocate normalization puts the actor's GPU count on rollout_num_gpus, which
+        would claim rollout engines for a job that starts none."""
+        args = self._parse(["--debug-train-only", "--colocate"])
+
+        miles_validate_args(args)
+
+        assert args.rollout_num_gpus == 0
+        assert args.starts_inference_engines is False
+
+
 class TestTitoFixedTemplateConfiguration:
     def _parse(self, extra):
         parser = argparse.ArgumentParser()
@@ -678,11 +791,40 @@ class TestTitoFixedTemplateConfiguration:
         assert args.apply_chat_template_kwargs == {"preserve_thinking": True}
 
     @pytest.mark.parametrize("family", ["qwen38small", "qwen4exp"])
-    def test_qwen38_families_resolve_default_template(self, family):
-        args = self._parse(["--use-session-server", "--tito-model", family])
+    @pytest.mark.parametrize("effort", [None, "low", "medium", "xhigh"])
+    def test_qwen38_families_resolve_default_template(self, family, effort):
+        extra = ["--use-session-server", "--tito-model", family]
+        if effort is not None:
+            extra += ["--apply-chat-template-kwargs", json.dumps({"reasoning_effort": effort})]
+        args = self._parse(extra)
         miles_validate_args(args)
         assert args.chat_template_path.endswith("/qwen3.8_small_and_flash_next_fixed.jinja")
-        assert args.apply_chat_template_kwargs == {"preserve_thinking": True, "reasoning_effort": "xhigh"}
+        expected = {"preserve_thinking": True}
+        if effort is not None:
+            expected["reasoning_effort"] = effort
+        assert args.apply_chat_template_kwargs == expected
+
+    def test_glm53_uses_native_template(self):
+        args = self._parse(["--use-session-server", "--tito-model", "glm53"])
+        miles_validate_args(args)
+        assert args.chat_template_path is None
+        assert args.apply_chat_template_kwargs == {
+            "clear_thinking": False,
+            "enable_thinking": True,
+        }
+
+    def test_glm53_fixed_thinking_overrides_launch_value(self):
+        args = self._parse(
+            [
+                "--use-session-server",
+                "--tito-model",
+                "glm53",
+                "--apply-chat-template-kwargs",
+                '{"enable_thinking": false}',
+            ]
+        )
+        miles_validate_args(args)
+        assert args.apply_chat_template_kwargs == {"clear_thinking": False, "enable_thinking": True}
 
     def test_named_family_rejects_custom_template(self):
         args = self._parse(
@@ -697,7 +839,7 @@ class TestTitoFixedTemplateConfiguration:
         with pytest.raises(ValueError, match="cannot override the template registered"):
             miles_validate_args(args)
 
-    def test_named_family_rejects_conflicting_registered_kwarg(self):
+    def test_named_family_fixed_kwargs_override_launch_values(self):
         args = self._parse(
             [
                 "--use-session-server",
@@ -707,8 +849,8 @@ class TestTitoFixedTemplateConfiguration:
                 '{"clear_thinking": true}',
             ]
         )
-        with pytest.raises(ValueError, match="clear_thinking=True conflicts"):
-            miles_validate_args(args)
+        miles_validate_args(args)
+        assert args.apply_chat_template_kwargs == {"clear_thinking": False}
 
     def test_named_family_accepts_same_registered_and_additional_kwargs(self):
         args = self._parse(
@@ -817,29 +959,6 @@ class TestMultiLoRAValidation:
         miles_validate_args(args)
 
         assert args.multi_lora is True
-
-    def test_defaults_rollout_fn_and_data_source_to_multi_lora(self):
-        args = self._parse([])
-
-        miles_validate_args(args)
-
-        assert args.rollout_function_path == "miles.rollout.multi_lora.async_rollout.generate_rollout_multi_lora"
-        assert args.data_source_path == "miles.rollout.multi_lora.data_source.MultiLoRAAsyncDataSource"
-        assert args.rollout_global_dataset is True
-
-    def test_keeps_user_supplied_rollout_fn_and_data_source(self):
-        args = self._parse(
-            ["--rollout-function-path", "my.custom.rollout_fn", "--data-source-path", "my.custom.DataSource"]
-        )
-
-        miles_validate_args(args)
-
-        assert args.rollout_function_path == "my.custom.rollout_fn"
-        assert args.data_source_path == "my.custom.DataSource"
-
-    def test_empty_wait_is_a_registered_argument(self):
-        assert self._parse([]).multi_lora_max_empty_wait_s == 30.0
-        assert self._parse(["--multi-lora-max-empty-wait-s", "5"]).multi_lora_max_empty_wait_s == 5.0
 
     def test_rejects_non_adam_optimizer(self):
         # Per-slot optimizer isolation (state init, retirement cleanup, step

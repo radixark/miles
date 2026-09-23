@@ -29,14 +29,9 @@ where the environment itself comes from:
 | [τ-bench](https://github.com/sierra-research/tau-bench) | generate function | [example](https://github.com/radixark/miles/tree/main/examples/experimental/tau-bench) |
 
 Sandbox providers are a different axis: they provision the task containers
-*inside* a connector rather than occupying a rollout layer.
-
-| Sandbox provider | Used within | Guide |
-|---|---|---|
-| [AgentENV](https://github.com/kvcache-ai/AgentENV) | OpenEnv | [example](https://github.com/radixark/miles/tree/main/examples/experimental/agentenv) |
-| [Daytona](https://www.daytona.io/) | Harbor, HUD, NeMo Gym, OpenEnv | [example](https://github.com/radixark/miles/tree/main/examples/experimental/openenv) |
-| [E2B](https://e2b.dev/) | OpenEnv | [example](https://github.com/radixark/miles/tree/main/examples/experimental/openenv) |
-| [Modal](https://modal.com/) | OpenEnv | [example](https://github.com/radixark/miles/tree/main/examples/experimental/openenv) |
+*inside* a connector rather than occupying a rollout layer. Which providers work
+with which connector, and how to set one up, is
+[Sandbox Providers](/user-guide/sandbox-providers).
 
 Everything above is experimental, and listed alphabetically.
 

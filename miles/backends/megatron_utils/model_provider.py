@@ -49,6 +49,10 @@ def _apply_bridge_runtime_config(provider, args: argparse.Namespace) -> None:
     provider.calculate_per_token_loss = args.calculate_per_token_loss  # CP>1 VL models assert this
     provider.variable_seq_lengths = args.variable_seq_lengths
 
+    # Match the non-bridge path: MTP must only train its own draft parameters.
+    if getattr(args, "enable_mtp_training", False):
+        provider.mtp_detach_heads = True
+
     # numerics (training infra, not model-defining)
     provider.attention_softmax_in_fp32 = args.attention_softmax_in_fp32
     provider.gradient_accumulation_fusion = args.gradient_accumulation_fusion
@@ -93,8 +97,10 @@ def _apply_bridge_runtime_config(provider, args: argparse.Namespace) -> None:
     if getattr(args, "moe_aux_loss_coeff", None) is not None:
         provider.moe_aux_loss_coeff = args.moe_aux_loss_coeff
 
-    if hasattr(provider, "dsa_attention_backend"):
-        provider.dsa_attention_backend = getattr(args, "dsa_attention_backend", "megatron")
+    # Imported here: test_bridge_mtp_detachment.py exec()s this function's AST in a bare namespace (no module names).
+    from miles.utils.megatron_bridge_utils import apply_dsa_backend_args
+
+    apply_dsa_backend_args(provider, args)
 
 
 # Adapt from https://github.com/volcengine/verl/blob/c3b20575d2bc815fcccd84bddb4c0401fc4b632b/verl/models/llama/megatron/layers/parallel_linear.py#L82

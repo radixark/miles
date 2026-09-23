@@ -142,7 +142,7 @@ def execute(args: ScriptArgs):
         "--sglang-ep-size 32 "
         "--sglang-enable-dp-lm-head "
         # was `1 2 4 8 $(seq 16 8 256)` in shell
-        "--sglang-cuda-graph-bs 1 2 4 8 16 24 32 40 48 56 64 72 80 88 96 104 112 120 128 136 144 152 160 168 176 184 192 200 208 216 224 232 240 248 256 "
+        "--sglang-cuda-graph-bs-decode 1 2 4 8 16 24 32 40 48 56 64 72 80 88 96 104 112 120 128 136 144 152 160 168 176 184 192 200 208 216 224 232 240 248 256 "
         "--sglang-moe-a2a-backend deepep "
         "--sglang-deepep-mode auto "
     )

@@ -29,7 +29,12 @@ from miles_plugins.models.deepseek_v4.ops.thd_utils import (
     exchange_cp_boundary_hidden,
 )
 
-register_cuda_ci(est_time=60, suite="stage-c-4-gpu-h200", labels=["precision", "megatron"])
+register_cuda_ci(
+    est_time=60,
+    suite="stage-c-4-gpu-h200",
+    labels=["precision", "megatron"],
+    hardware=["hopper", "blackwell"],
+)
 register_rocm_ci(est_time=60, suite="nightly-stage-c-4-gpu-mi350", labels=["precision"])
 
 SEGMENTS = [1500, 2093, 500, 3]  # neither ratio divides these; the last is shorter than both

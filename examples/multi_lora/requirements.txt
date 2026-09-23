@@ -1,0 +1,2 @@
+tinker==0.26.2
+tinker_cookbook[math-rl] @ git+https://github.com/thinking-machines-lab/tinker-cookbook@1f962eda3a2c

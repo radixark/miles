@@ -163,8 +163,8 @@ The `--enable-mis` flag turns on truncated importance sampling to correct the tr
 ```bash
 --sglang-mem-fraction-static 0.8
 --sglang-attention-backend nsa
---sglang-nsa-decode-backend flashmla_sparse
---sglang-nsa-prefill-backend flashmla_sparse
+--sglang-dsa-decode-backend flashmla_sparse
+--sglang-dsa-prefill-backend flashmla_sparse
 --sglang-kv-cache-dtype bf16
 --sglang-page-size 64  # the NSA KV cache requires 64 on CUDA
 --rollout-num-gpus-per-engine 8  # 2 with --use-single-node
@@ -172,7 +172,7 @@ The `--enable-mis` flag turns on truncated importance sampling to correct the tr
 --sglang-dp-size 8
 --sglang-enable-dp-attention
 --sglang-enable-dp-lm-head
---sglang-cuda-graph-max-bs 256
+--sglang-cuda-graph-max-bs-decode 256
 --sglang-moe-runner-backend flashinfer_trtllm_routed  # triton on H100 / H200
 ```
 

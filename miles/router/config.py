@@ -10,11 +10,11 @@ class MilesRouterConfig(FrozenStrictBaseModel):
     health_check_failure_threshold: int
 
 
-def compute_miles_router_config(args, *, host: str, port: int) -> MilesRouterConfig:
+def compute_miles_router_config(args, *, host: str, port: int, num_engines: int) -> MilesRouterConfig:
     if args.miles_router_max_connections is not None:
         max_connections = args.miles_router_max_connections
     else:
-        max_connections = args.sglang_server_concurrency * args.rollout_num_gpus // args.rollout_num_gpus_per_engine
+        max_connections = args.sglang_server_concurrency * num_engines
 
     return MilesRouterConfig(
         host=host,

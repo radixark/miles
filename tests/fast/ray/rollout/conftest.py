@@ -155,6 +155,9 @@ def make_args(**overrides: Any) -> Namespace:
     )
     defaults.update(router_defaults)
     defaults.update(overrides)
+    defaults.setdefault("starts_inference_engines", not defaults["debug_train_only"] or defaults["eval_num_gpus"] > 0)
+    if defaults["debug_train_only"]:
+        defaults["rollout_num_gpus"] = 0
     return Namespace(**defaults)
 
 

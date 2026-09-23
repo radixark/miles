@@ -16,7 +16,9 @@ growing a branch:
   target         (var, label, default description) echoed so a launch says
                  which endpoint/environment it will actually use
   sdk_min_version  optional; the floor the extra in setup.py declares,
-                 enforced by preflight_sdk
+                   enforced by preflight_sdk
+  env_defaults     optional; provider runtime selectors forwarded with a safe
+                   default while still allowing an explicit environment value
 """
 
 import importlib
@@ -63,9 +65,13 @@ PROVIDER_CREDENTIALS = {
         "file_env_var": "MODAL_CONFIG_PATH",
         "arg_attr": "modal_config_file",
         "default_path": "~/.modal.toml",
-        "provision_hint": "uv tool install modal && modal token new  # writes ~/.modal.toml",
+        "provision_hint": "uv tool install 'modal>=1.5.5' && modal token new  # writes ~/.modal.toml",
         "sdk": "modal",
-        "sdk_hint": "pip install modal",
+        "sdk_hint": "pip install -e '<miles>[modal]'",
+        "sdk_min_version": "1.5.5",
+        # Modal SDK >=1.5.5 selects Sandbox V2 through this public switch while
+        # Harbor continues to call the documented Sandbox.create.aio API.
+        "env_defaults": {"MODAL_SANDBOX_V2": "1"},
         "forward": ("MODAL_PROFILE", "MODAL_ENVIRONMENT", "OPENENV_MODAL_APP"),
         "target": ("MODAL_ENVIRONMENT", "workspace environment", "the profile's default"),
     },
@@ -94,6 +100,24 @@ def forward_address(env: dict[str, str], var: str, value: str) -> None:
     env[var] = value
 
 
+def _key_file_has_value(path: Path) -> bool:
+    try:
+        return bool(path.read_text(encoding="utf-8").strip())
+    except OSError:
+        return False
+
+
+def credential_available(spec: dict, *, arg_path: str = "") -> bool:
+    """Whether either supply this provider accepts is in place on this machine.
+
+    ``sandbox_key_supply`` raises on the same condition; a caller that needs to
+    decide rather than fail asks this.
+    """
+    if _key_file_has_value(Path(arg_path or spec["default_path"]).expanduser()):
+        return True
+    return all(os.environ.get(var, "").strip() for var in spec["key_env_vars"])
+
+
 def sandbox_key_supply(
     env: dict[str, str],
     *,
@@ -112,10 +136,7 @@ def sandbox_key_supply(
     echoes into driver logs and ray persists in job metadata, all in
     plaintext."""
     key_file = Path(arg_path or default_path).expanduser()
-    try:
-        key_present = bool(key_file.read_text(encoding="utf-8").strip())
-    except OSError:
-        key_present = False
+    key_present = _key_file_has_value(key_file)
     # Either supply is fine; neither is fully verifiable from here (the
     # launcher cannot probe worker nodes), so echo which one is in effect.
     # A provider whose credential is several variables (Modal's token pair) is
@@ -233,6 +254,8 @@ def provision_provider(env: dict[str, str], spec: dict, *, arg_path: str = "") -
         provision_hint=spec["provision_hint"],
     )
     preflight_sdk(spec["sdk"], spec["sdk_hint"], spec.get("sdk_min_version"))
+    for var, default in spec.get("env_defaults", {}).items():
+        forward_address(env, var, os.environ.get(var, "").strip() or default)
     for var in spec["forward"]:
         if value := os.environ.get(var, "").strip():
             forward_address(env, var, value)

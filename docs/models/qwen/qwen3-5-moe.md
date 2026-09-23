@@ -84,7 +84,7 @@ GRPO with `--eps-clip 0.2 --eps-clip-high 0.28 --use-kl-loss --kl-loss-coef 0.00
 --rollout-num-gpus-per-engine 8
 --sglang-mem-fraction-static 0.7
 --sglang-ep-size 8
---sglang-cuda-graph-bs 1 2 4 8 16 24 ... 256
+--sglang-cuda-graph-bs-decode 1 2 4 8 16 24 ... 256
 
 # mtp speculative decoding
 --sglang-speculative-algorithm EAGLE

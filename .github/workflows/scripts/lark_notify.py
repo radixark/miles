@@ -7,6 +7,7 @@ LARK_WEBHOOK, or --dry-run to print the card JSON instead of posting.
 """
 
 import argparse
+import base64
 import json
 import os
 import re
@@ -15,18 +16,29 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections import deque
 from datetime import datetime, timezone
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from ci_failure_analysis import AnalysisOutcome, analyze_failures
+
 DEFAULT_REPO = "radixark/miles"
 LOCAL_TZ = ZoneInfo("America/Los_Angeles")
 GITHUB_API = "https://api.github.com"
+SAFE_GITHUB_DOWNLOAD_HOSTS = (
+    ".amazonaws.com",
+    ".blob.core.windows.net",
+    ".github.com",
+    ".githubusercontent.com",
+)
 
 FAILED_CONCLUSIONS = {"failure", "timed_out", "startup_failure", "action_required"}
 # Aggregator jobs fail whenever any other job fails; listing them is noise.
 AGGREGATOR_JOB_RE = re.compile(r"^(check-all-jobs|pr-test-finish)$")
 MAX_LISTED_JOBS = 15
+# Bounds the transfer when the storage backend reports no length and ignores the range.
+MAX_LOG_STREAM_BYTES = 64 * 1024 * 1024
 
 
 # --------------------------------------------------------------------------
@@ -35,11 +47,14 @@ MAX_LISTED_JOBS = 15
 
 
 class GitHub:
-    def __init__(self, token: str, repo: str):
+    def __init__(self, token: str, repo: str, *, timeout: int = 60, retries: int = 5):
         self.token = token
         self.repo = repo
+        self.timeout = timeout
+        self.retries = retries
 
-    def get(self, path: str, params: dict | None = None, retries: int = 5) -> Any:
+    def get(self, path: str, params: dict | None = None, retries: int | None = None) -> Any:
+        retries = self.retries if retries is None else retries
         url = f"{GITHUB_API}/{path}"
         if params:
             url += "?" + urllib.parse.urlencode(params)
@@ -49,7 +64,7 @@ class GitHub:
         req.add_header("X-GitHub-Api-Version", "2022-11-28")
         for attempt in range(retries):
             try:
-                with urllib.request.urlopen(req, timeout=60) as resp:
+                with urllib.request.urlopen(req, timeout=self.timeout) as resp:
                     return json.loads(resp.read().decode("utf-8"))
             except urllib.error.HTTPError as e:
                 body = e.read().decode("utf-8", errors="replace")
@@ -88,6 +103,145 @@ class GitHub:
 
     def run_attempt_jobs(self, run_id: int, attempt: int) -> list:
         return self.paginate(f"repos/{self.repo}/actions/runs/{run_id}/attempts/{attempt}/jobs", "jobs")
+
+    def rerun_failed_jobs(self, run_id: int) -> None:
+        url = f"{GITHUB_API}/repos/{self.repo}/actions/runs/{run_id}/rerun-failed-jobs"
+        req = urllib.request.Request(url, data=b"", method="POST")
+        req.add_header("Authorization", f"Bearer {self.token}")
+        req.add_header("Accept", "application/vnd.github+json")
+        req.add_header("X-GitHub-Api-Version", "2022-11-28")
+        try:
+            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                status = resp.status
+        except urllib.error.HTTPError as e:
+            body = e.read().decode("utf-8", errors="replace")
+            raise RuntimeError(f"POST {url} -> {e.code}: {body[:300]}") from e
+        except urllib.error.URLError as e:
+            raise RuntimeError(f"POST {url} failed: {e}") from e
+        if status != 201:
+            raise RuntimeError(f"POST {url} -> {status}")
+
+    def paginate_list(self, path: str, params: dict | None = None, max_pages: int = 10) -> list:
+        params = dict(params or {})
+        params.setdefault("per_page", 100)
+        items: list = []
+        for page in range(1, max_pages + 1):
+            params["page"] = page
+            chunk = self.get(path, params)
+            if not isinstance(chunk, list):
+                raise RuntimeError("GitHub API returned an unexpected list response")
+            items.extend(chunk)
+            if len(chunk) < params["per_page"]:
+                break
+        return items
+
+    def _download_tail(self, path: str, max_bytes: int, retries: int | None = None) -> bytes:
+        retries = self.retries if retries is None else retries
+        if max_bytes <= 0:
+            return b""
+        url = f"{GITHUB_API}/{path}"
+        request = urllib.request.Request(
+            url,
+            headers={
+                "Authorization": f"Bearer {self.token}",
+                "Accept": "application/vnd.github+json",
+                "X-GitHub-Api-Version": "2022-11-28",
+            },
+        )
+        for attempt in range(retries):
+            try:
+                opener = urllib.request.build_opener(_NoRedirect())
+                with opener.open(request, timeout=self.timeout) as response:
+                    return _read_tail(response, max_bytes)
+            except urllib.error.HTTPError as exc:
+                if exc.code in (301, 302, 303, 307, 308):
+                    location = exc.headers.get("Location")
+                    if not location:
+                        raise RuntimeError(f"GET {url} -> redirect without location") from exc
+                    target = urllib.parse.urlparse(location)
+                    hostname = (target.hostname or "").lower()
+                    if target.scheme != "https" or not hostname.endswith(SAFE_GITHUB_DOWNLOAD_HOSTS):
+                        raise RuntimeError(f"GET {url} -> unsafe redirect") from exc
+                    try:
+                        return self._download_tail_from(location, max_bytes)
+                    except (urllib.error.HTTPError, urllib.error.URLError) as redirect_exc:
+                        if attempt == retries - 1:
+                            raise RuntimeError(f"GET {url} redirected download failed") from redirect_exc
+                elif exc.code not in (429, 502, 503, 504) or attempt == retries - 1:
+                    raise RuntimeError(f"GET {url} -> {exc.code}") from exc
+            except urllib.error.URLError as exc:
+                if attempt == retries - 1:
+                    raise RuntimeError(f"GET {url} failed") from exc
+            time.sleep(2**attempt)
+        raise RuntimeError("unreachable")
+
+    def _download_tail_from(self, location: str, max_bytes: int) -> bytes:
+        # The log storage backend ignores suffix ranges, so the tail needs an explicit offset.
+        with urllib.request.urlopen(location, timeout=self.timeout) as response:
+            length = response.headers.get("Content-Length")
+            total = int(length) if length is not None and length.isdigit() else 0
+            if total <= max_bytes:
+                return _read_tail(response, max_bytes)
+        ranged = urllib.request.Request(location, headers={"Range": f"bytes={total - max_bytes}-{total - 1}"})
+        with urllib.request.urlopen(ranged, timeout=self.timeout) as response:
+            return _read_tail(response, max_bytes)
+
+    def job_log(self, job_id: int, max_bytes: int) -> str:
+        if isinstance(job_id, bool) or not isinstance(job_id, int) or job_id <= 0:
+            raise ValueError("job_id must be a positive integer")
+        return self._download_tail(f"repos/{self.repo}/actions/jobs/{job_id}/logs", max_bytes).decode(
+            "utf-8", errors="replace"
+        )
+
+    def pulls_for_commit(self, sha: str) -> list:
+        pulls = self.get(f"repos/{self.repo}/commits/{sha}/pulls")
+        if not isinstance(pulls, list):
+            raise RuntimeError("GitHub API returned an unexpected pull response")
+        return pulls
+
+    def pull_files(self, pull_number: int) -> list:
+        return self.paginate_list(f"repos/{self.repo}/pulls/{pull_number}/files", max_pages=3)
+
+    def commits_for_path(self, path: str, sha: str, limit: int) -> list:
+        commits = self.get(f"repos/{self.repo}/commits", {"path": path, "sha": sha, "per_page": limit})
+        if not isinstance(commits, list):
+            raise RuntimeError("GitHub API returned an unexpected commit response")
+        return commits
+
+    def file_content(self, path: str, sha: str, max_bytes: int) -> str:
+        payload = self.get(f"repos/{self.repo}/contents/{urllib.parse.quote(path)}", {"ref": sha})
+        if payload.get("encoding") != "base64" or not isinstance(payload.get("content"), str):
+            raise RuntimeError("GitHub content response is not a base64 file")
+        try:
+            encoded = "".join(payload["content"].split())
+            decoded = base64.b64decode(encoded, validate=True)[:max_bytes]
+        except (ValueError, TypeError) as exc:
+            raise RuntimeError("GitHub content response has invalid base64") from exc
+        if b"\0" in decoded:
+            raise RuntimeError("GitHub content response is binary")
+        return decoded.decode("utf-8", errors="replace")
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+def _read_tail(response: Any, max_bytes: int) -> bytes:
+    """Keep the last max_bytes of the body; failures are reported at the end of a job log."""
+    chunks: deque[bytes] = deque()
+    held = 0
+    streamed = 0
+    while streamed < MAX_LOG_STREAM_BYTES:
+        chunk = response.read(min(65_536, MAX_LOG_STREAM_BYTES - streamed))
+        if not chunk:
+            break
+        streamed += len(chunk)
+        chunks.append(chunk)
+        held += len(chunk)
+        while chunks and held - len(chunks[0]) >= max_bytes:
+            held -= len(chunks.popleft())
+    return b"".join(chunks)[-max_bytes:]
 
 
 # --------------------------------------------------------------------------
@@ -204,8 +358,45 @@ def fmt_duration(seconds: float | None) -> str:
     return f"{seconds // 3600}h{(seconds % 3600) // 60:02d}m"
 
 
-def list_jobs_md(jobs: list, limit: int = MAX_LISTED_JOBS) -> str:
-    lines = [f"- [{j['name']}]({j['html_url']})" for j in jobs[:limit]]
+def analysis_md(analysis: Any, repo: str) -> list[str]:
+    tags = "".join(f"[{tag}]" for tag in analysis.tags)
+    headline = " ".join(part for part in (tags, f"`{analysis.test_name}`" if analysis.test_name else "") if part)
+    lines = [f"  ↳ {headline}"] if headline else []
+    lines.append(f"  ↳ {analysis.reason}")
+    if analysis.related_pull_request:
+        number = analysis.related_pull_request
+        lines.append(f"  ↳ related to [PR #{number}](https://github.com/{repo}/pull/{number})")
+    return lines
+
+
+def group_identical_failures(jobs: list, reasons: dict | None) -> list[tuple[tuple, list]]:
+    """One defect can fail every shard the same way, and repeating it per job buries the rest.
+
+    Jobs group only on an identical, non-empty analysis: without one there is nothing to
+    compare, so those rows stay separate as before.
+    """
+    groups: list[tuple[tuple, list]] = []
+    members_by_analyses: dict[tuple, list] = {}
+    for job in jobs:
+        analyses = tuple((reasons or {}).get(job.get("id")) or ())
+        if analyses and analyses in members_by_analyses:
+            members_by_analyses[analyses].append(job)
+            continue
+        members = [job]
+        groups.append((analyses, members))
+        if analyses:
+            members_by_analyses[analyses] = members
+    return groups
+
+
+def list_jobs_md(
+    jobs: list, limit: int = MAX_LISTED_JOBS, reasons: dict | None = None, repo: str = DEFAULT_REPO
+) -> str:
+    lines = []
+    for analyses, members in group_identical_failures(jobs[:limit], reasons):
+        lines.append("- " + ", ".join(f"[{job['name']}]({job['html_url']})" for job in members))
+        for analysis in analyses:
+            lines.extend(analysis_md(analysis, repo))
     if len(jobs) > limit:
         lines.append(f"- ... and {len(jobs) - limit} more")
     return "\n".join(lines)
@@ -235,7 +426,13 @@ def diff_attempts(current: dict, previous: dict) -> dict:
     }
 
 
-def render_ci_status(run: dict, jobs: list, prev_failed: dict | None) -> dict:
+def render_ci_status(
+    run: dict,
+    jobs: list,
+    prev_failed: dict | None,
+    analysis: AnalysisOutcome | None = None,
+    repo: str = DEFAULT_REPO,
+) -> dict:
     name = ci_display_name(run)
     attempt = run.get("run_attempt", 1)
     conclusion = run.get("conclusion") or "unknown"
@@ -250,19 +447,21 @@ def render_ci_status(run: dict, jobs: list, prev_failed: dict | None) -> dict:
     sha = run["head_sha"]
     subject = ((run.get("head_commit") or {}).get("message") or "").splitlines()
     commit_md = f"[`{sha[:9]}`]({repo_url}/commit/{sha}) {subject[0] if subject else ''}"
-    rerun_prefix = f"Rerun #{attempt} - " if attempt > 1 else ""
+    diff = diff_attempts(failed, prev_failed) if prev_failed is not None else None
+    flaky = diff["fixed"] if diff else []
+    flaky_note = f", {len(flaky)} flaky" if flaky else ""
 
     if conclusion == "cancelled":
-        title = f"{rerun_prefix}{name}: CANCELLED"
+        title = f"{name}: CANCELLED"
         color = "grey"
     elif failed:
-        title = f"{rerun_prefix}{name}: FAILED ({len(failed)} of {plural(len(counted), 'job')})"
+        title = f"{name}: FAILED ({len(failed)} of {plural(len(counted), 'job')}{flaky_note})"
         color = "red"
     else:
-        title = f"{rerun_prefix}{name}: PASSED ({plural(len(counted), 'job')})"
+        title = f"{name}: PASSED ({plural(len(counted), 'job')}{flaky_note})"
         color = "green"
 
-    jobs_summary = f"{len(counted)} total, {len(failed)} failed"
+    jobs_summary = f"{len(counted)} total, {len(failed)} failed{flaky_note}"
     if cancelled:
         jobs_summary += f", {len(cancelled)} cancelled"
     commit_label = "Tested main commit" if run["event"] == "schedule" else "Commit"
@@ -280,18 +479,29 @@ def render_ci_status(run: dict, jobs: list, prev_failed: dict | None) -> dict:
 
     sections = []
     # None: first attempt, nothing to compare against
-    if prev_failed is None:
+    if diff is None:
         if failed:
-            sections.append(f"**Failed jobs ({len(failed)})**\n{list_jobs_md(list(failed.values()))}")
+            sections.append(
+                f"**Failed jobs ({len(failed)})**\n"
+                f"{list_jobs_md(list(failed.values()), reasons=analysis.reasons if analysis else None, repo=repo)}"
+            )
     else:
-        diff = diff_attempts(failed, prev_failed)
+        remaining_current_jobs = MAX_LISTED_JOBS
         for key, heading in (
-            ("fixed", "Fixed by rerun"),
+            ("fixed", "Flaky, passed on rerun"),
             ("still", "Still failing"),
             ("new", "New failures"),
         ):
             if diff[key]:
-                sections.append(f"**{heading} ({len(diff[key])})**\n{list_jobs_md(diff[key])}")
+                reasons = analysis.reasons if analysis and key in ("still", "new") else None
+                limit = MAX_LISTED_JOBS if key == "fixed" else remaining_current_jobs
+                sections.append(f"**{heading} ({len(diff[key])})**\n{list_jobs_md(diff[key], limit, reasons, repo)}")
+                if key in ("still", "new"):
+                    remaining_current_jobs = max(0, remaining_current_jobs - len(diff[key][:limit]))
+    if analysis and analysis.unavailable:
+        sections.append(grey("AI analysis unavailable"))
+    elif analysis and analysis.omitted_count:
+        sections.append(grey(f"AI analysis omitted for {plural(analysis.omitted_count, 'additional failed job')}"))
     if sections:
         elements.append(HR)
         elements.append(md("\n\n".join(sections)))
@@ -312,10 +522,48 @@ def cmd_ci_status(args: argparse.Namespace, gh: GitHub) -> None:
         return
     jobs = gh.run_jobs(run["id"])
     attempt = run.get("run_attempt", 1)
+    failed = failed_job_names(jobs)
+    # failed nightly jobs get one automatic rerun; the card follows that attempt, so failed means failed twice
+    rerun_error = None
+    if attempt == 1 and failed and run["event"] == "schedule" and run.get("conclusion") != "cancelled":
+        if args.dry_run:
+            print(f"dry-run: would rerun {plural(len(failed), 'failed job')} of run {run['id']}")
+            return
+        try:
+            gh.rerun_failed_jobs(run["id"])
+        except RuntimeError as exc:
+            # a refused rerun must not cost the nightly its report: post attempt 1, then fail
+            rerun_error = exc
+        else:
+            print(
+                f"rerun requested for {plural(len(failed), 'failed job')} of run {run['id']}; card follows attempt 2"
+            )
+            return
     prev_failed = None
     if attempt > 1:
         prev_failed = failed_job_names(gh.run_attempt_jobs(run["id"], attempt - 1))
-    post_card(render_ci_status(run, jobs, prev_failed), args.webhook, args.dry_run)
+    current_failed = list(failed.values())
+    if prev_failed is not None:
+        diff = diff_attempts(failed, prev_failed)
+        current_failed = diff["still"] + diff["new"]
+    analysis = None
+    if current_failed:
+        analysis_token = os.environ.get("CI_FAILURE_ANALYSIS_GITHUB_TOKEN")
+        analysis_gh = GitHub(analysis_token, args.repo, timeout=15, retries=2) if analysis_token else None
+        try:
+            analysis = analyze_failures(
+                run=run,
+                jobs=current_failed[:MAX_LISTED_JOBS],
+                repo=args.repo,
+                gh=analysis_gh,
+                emit=lambda line: print(line, file=sys.stderr),
+            )
+        except Exception as exc:
+            print(f"ci_failure_analysis_unexpected={type(exc).__name__}", file=sys.stderr)
+            analysis = AnalysisOutcome(enabled=True, reasons={}, unavailable=True)
+    post_card(render_ci_status(run, jobs, prev_failed, analysis, args.repo), args.webhook, args.dry_run)
+    if rerun_error is not None:
+        raise rerun_error
 
 
 # --------------------------------------------------------------------------

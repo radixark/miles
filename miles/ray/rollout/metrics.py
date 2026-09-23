@@ -4,6 +4,7 @@ from typing import Any
 
 import numpy as np
 
+from miles.rollout.session.v2.metrics import SESSION_ROLLOUT_METRICS_KEY
 from miles.utils.function_registry import load_function
 from miles.utils.iter_utils import group_by
 from miles.utils.metric_utils import (
@@ -14,7 +15,7 @@ from miles.utils.metric_utils import (
     has_repetition,
 )
 from miles.utils.tracking_utils import tracking
-from miles.utils.types import AdapterRef, Sample
+from miles.utils.types import Sample
 
 logger = logging.getLogger(__name__)
 
@@ -135,13 +136,12 @@ def _compute_metrics_from_samples(args, samples):
     return log_dict
 
 
-def _get_rollout_key(sample: Sample, position: int) -> tuple[AdapterRef | None, str, int | None, int]:
-    # Adapter identity scopes the IDs because each Multi-LoRA data source numbers them independently.
+def _get_rollout_key(sample: Sample, position: int) -> tuple[str, int | None, int]:
     if sample.rollout_id is not None:
-        return (sample.adapter, "rollout", sample.group_index, sample.rollout_id)
+        return ("rollout", sample.group_index, sample.rollout_id)
     if sample.index is not None:
-        return (sample.adapter, "sample", sample.group_index, sample.index)
-    return (sample.adapter, "position", sample.group_index, position)
+        return ("sample", sample.group_index, sample.index)
+    return ("position", sample.group_index, position)
 
 
 def _compute_episode_response_length_metrics(samples: list[Sample]) -> dict[str, float]:
@@ -152,11 +152,8 @@ def _compute_episode_response_length_metrics(samples: list[Sample]) -> dict[str,
     computing batch-level statistics. Effective lengths count only trainable
     tokens; total lengths count both masked and unmasked tokens in every sample.
     """
-    if any(sample.adapter is not None for sample in samples):
-        return {}
-
-    effective_lengths_by_rollout: dict[tuple[AdapterRef | None, str, int | None, int], int] = {}
-    total_lengths_by_rollout: dict[tuple[AdapterRef | None, str, int | None, int], int] = {}
+    effective_lengths_by_rollout: dict[tuple[str, int | None, int], int] = {}
+    total_lengths_by_rollout: dict[tuple[str, int | None, int], int] = {}
     for position, sample in enumerate(samples):
         rollout_key = _get_rollout_key(sample, position)
         effective_response_length = 0 if sample.remove_sample else sample.effective_response_length
@@ -182,10 +179,9 @@ def _compute_training_sample_metrics(args: Any, samples: list[Sample]) -> dict[s
     Session compaction can turn one rollout into several training samples. The
     sample count includes every resulting row, while the reward first averages
     sibling rows that share a rollout ID so long rollouts do not receive more
-    metric weight merely because they produced more samples. Adapter identity
-    scopes these IDs because each Multi-LoRA data source numbers them independently.
+    metric weight merely because they produced more samples.
     """
-    rewards_by_rollout: dict[tuple[AdapterRef | None, str, int | None, int], list[float]] = {}
+    rewards_by_rollout: dict[tuple[str, int | None, int], list[float]] = {}
     use_metadata_reward = bool(samples and samples[0].metadata and "raw_reward" in samples[0].metadata)
     for position, sample in enumerate(samples):
         rollout_key = _get_rollout_key(sample, position)
@@ -265,11 +261,23 @@ def _compute_zero_std_metrics(args, all_samples: list[Sample]):
 def _compute_spec_metrics(args, all_samples: list[Sample]):
     if args.sglang_speculative_algorithm is None:
         return {}
-    num_samples = len(all_samples)
-    metrics = {}
-    metrics["spec_accept_rate"] = sum(sample.spec_info.spec_accept_rate for sample in all_samples) / num_samples
-    metrics["spec_accept_length"] = sum(sample.spec_info.spec_accept_length for sample in all_samples) / num_samples
-    return metrics
+    carriers = {}
+    spec_infos = []
+    for sample in all_samples:
+        carrier = sample.metadata.get(SESSION_ROLLOUT_METRICS_KEY)
+        if carrier is None:
+            spec_infos.append(sample.spec_info)
+        else:
+            carriers[carrier["session_id"]] = carrier
+    spec_infos.extend(Sample.SpecInfo.from_dict(carrier["metrics"]["spec_info"]) for carrier in carriers.values())
+    num_correct_drafts = sum(info.spec_num_correct_drafts for info in spec_infos)
+    num_proposed_drafts = sum(info.spec_num_proposed_drafts for info in spec_infos)
+    spec_verify_ct = sum(info.spec_verify_ct for info in spec_infos)
+    completion_tokens = sum(info.completion_tokens for info in spec_infos)
+    return {
+        "spec_accept_rate": num_correct_drafts / num_proposed_drafts if num_proposed_drafts > 0 else 0.0,
+        "spec_accept_length": completion_tokens / spec_verify_ct if spec_verify_ct > 0 else 0.0,
+    }
 
 
 def _compute_prefix_cache_metrics(args, all_samples: list[Sample]):

@@ -141,7 +141,7 @@ def build_train_args(case: CaseConfig, *, wandb_file: str) -> str:
         "--sglang-speculative-num-draft-tokens 3 "
         # spec v2: required to pair speculative decoding with radix cache on Qwen3.5MoE
         # (see scripts/run_qwen3_5_35b_a3b_mtp.py); also needs SGLANG_ENABLE_SPEC_V2=1.
-        "--sglang-mamba-scheduler-strategy extra_buffer "
+        "--sglang-mamba-radix-cache-strategy extra_buffer "
     )
     if case.use_r3:
         sglang_args += "--use-rollout-routing-replay "

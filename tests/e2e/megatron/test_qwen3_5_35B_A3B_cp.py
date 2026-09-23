@@ -15,6 +15,7 @@ register_cuda_ci(
     est_time=900,
     suite="stage-c-8-gpu-h100",
     labels=["megatron"],
+    hardware=["hopper", "blackwell"],
     disabled="Flaky; temporarily disabled to validate PR correctness",
 )
 
@@ -109,7 +110,7 @@ def _execute_with_cp(cp_size: int):
         # SGLang requires extra_buffer + SGLANG_ENABLE_SPEC_V2=1 to combine
         # speculative decoding with radix cache on Qwen3.5MoE; the prod
         # script run_qwen3_5_35b_a3b_mtp.py already pairs these two.
-        "--sglang-mamba-scheduler-strategy extra_buffer "
+        "--sglang-mamba-radix-cache-strategy extra_buffer "
     )
 
     mtp_args = "--enable-mtp-training " "--mtp-num-layers 1 " "--mtp-loss-scaling-factor 0.2 "

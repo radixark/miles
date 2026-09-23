@@ -21,23 +21,20 @@ import pytest
 # --- start hook -------------------------------------------------------------
 
 
-def test_start_hook_creates_per_task_and_closes_by_terminating(monkeypatch):
+def test_start_hook_creates_per_task_and_uses_materializer_cleanup(monkeypatch):
     """The sandbox is per-task (tasks_dir/task_id), the create carries the
-    build+create deadline this backend owns, and close_fn terminates the sandbox."""
+    materializer's defaults, and close_fn uses its complete cleanup contract."""
     created = {}
-    terminated = []
+    closed = []
 
-    class _FakeSandbox:
-        def terminate(self):
-            terminated.append(True)
-
-    sandbox = _FakeSandbox()
+    sandbox = object()
 
     def fake_create(task_dir, **kwargs):
         created.update(task_dir=task_dir, kwargs=kwargs)
         return sandbox, "https://abc.r5.modal.host"
 
     monkeypatch.setattr(omaf.tb2_sandbox_modal, "create_task_sandbox", fake_create)
+    monkeypatch.setattr(omaf.tb2_sandbox_modal, "close_sandbox", closed.append)
 
     close_fn, url = omaf._start_sandbox("regex-chess", "/tasks")
 
@@ -47,7 +44,7 @@ def test_start_hook_creates_per_task_and_closes_by_terminating(monkeypatch):
     # the materialization's own default, so the two cannot drift apart.
     assert created["kwargs"] == {}
     close_fn()
-    assert terminated == [True]
+    assert closed == [sandbox]
 
 
 # --- throttle classification ------------------------------------------------

@@ -5,12 +5,14 @@ register_cpu_ci(est_time=60, suite="stage-a-cpu", labels=[])
 import asyncio
 from argparse import Namespace
 from collections import deque
+from collections.abc import Callable
 from dataclasses import replace
 
 import pytest
 
 import miles.rollout.fully_async_data_buffer as data_buffer
 import miles.rollout.fully_async_rollout as fully_async
+import miles.rollout.inference_rollout.inference_rollout_common as rollout_common
 from miles.rollout.base_types import BaseRolloutFn, RolloutFnConstructorInput, RolloutFnEvalInput, RolloutFnTrainInput
 from miles.rollout.filter_hub.base_types import FilterOutput
 from miles.utils.types import Sample, WeightVersionSpan, WeightVersionsPerCall
@@ -254,7 +256,7 @@ async def test_stale_group_recycled(monkeypatch):
 
     assert data_source.recycled == [stale]
     assert output.metrics["rollout/fully_async/stale_groups_filtered"] == 1
-    assert output.metrics["rollout/fully_async/max_staleness"] == 5
+    assert output.metrics["rollout/fully_async/max_staleness"] == 0
 
 
 async def test_stale_group_dropped_by_default(monkeypatch):
@@ -276,6 +278,105 @@ async def test_worker_error_propagates(monkeypatch):
 
     with pytest.raises(RuntimeError, match="generation exploded"):
         await fn(RolloutFnTrainInput(rollout_id=0))
+
+
+@pytest.mark.parametrize("handler", ["drop", "retry"])
+@pytest.mark.parametrize("granularity", ["sample", "group"])
+async def test_sample_cancellation_aborts_group_without_stopping_worker(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    handler: str,
+    granularity: str,
+) -> None:
+    prompt_group = make_group(1)
+    data_source = FakeDataSource(scripted=[prompt_group])
+    sibling_started = asyncio.Event()
+    sibling_finished = asyncio.Event()
+
+    async def generate_sample(
+        state: FakeGenerateState,
+        sample: Sample,
+        sampling_params: dict,
+        evaluation: bool = False,
+    ) -> Sample:
+        if sample.group_index != 1:
+            return sample
+        if sample is prompt_group[0]:
+            await sibling_started.wait()
+            asyncio.current_task().cancel()
+            await asyncio.sleep(0)
+        sibling_started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            sibling_finished.set()
+        return sample
+
+    monkeypatch.setattr(rollout_common, "generate_and_rm", generate_sample)
+    monkeypatch.setattr(rollout_common, "policy_uses_routing_key", lambda args: False)
+    args = make_args(
+        rollout_batch_size=1,
+        async_max_concurrent_samples=N_SAMPLES_PER_PROMPT,
+        async_unused_samples_handler=handler,
+        rollout_submission_granularity=granularity,
+        group_rm=False,
+    )
+    # Exercise the real fan-out/cleanup and scheduler callbacks, not a mocked
+    # group result: one cancelled sample also cancels and settles its sibling.
+    fn = make_fn(monkeypatch, args, data_source, generate=rollout_common.generate_and_rm_group)
+
+    output = await asyncio.wait_for(fn(RolloutFnTrainInput(rollout_id=0)), timeout=2)
+
+    assert sibling_finished.is_set()
+    assert not fn._worker.done()
+    assert output.metrics["rollout/fully_async/aborted_groups_filtered"] == 1
+    assert all(sample.group_index != 1 for group in output.samples for sample in group)
+    assert all(sample.status == Sample.Status.COMPLETED for group in output.samples for sample in group)
+    assert "Rollout group was cancelled" in caplog.text
+    if handler == "retry":
+        assert data_source.recycled == [prompt_group]
+        assert all(sample.response == "" and sample.weight_versions == [] for sample in prompt_group)
+    else:
+        assert data_source.recycled == []
+        assert all(sample.status == Sample.Status.COMPLETED for sample in prompt_group)
+
+    # The producer remains usable after the affected batch, not just until the
+    # first replacement arrives.
+    following = await asyncio.wait_for(fn(RolloutFnTrainInput(rollout_id=1)), timeout=2)
+    assert following.samples
+    assert following.metrics["rollout/fully_async/aborted_groups_filtered"] == 0
+
+
+async def test_worker_cancellation_still_propagates(monkeypatch: pytest.MonkeyPatch) -> None:
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def blocking_generate(
+        state: FakeGenerateState,
+        group: list[Sample],
+        sampling_params: dict,
+        evaluation: bool = False,
+        sample_done_callback: Callable[[], None] | None = None,
+    ) -> list[Sample]:
+        started.set()
+        await release.wait()
+        return group
+
+    data_source = FakeDataSource()
+    fn = make_fn(monkeypatch, make_args(rollout_batch_size=1), data_source, generate=blocking_generate)
+    drain = asyncio.create_task(fn(RolloutFnTrainInput(rollout_id=0)))
+    await asyncio.wait_for(started.wait(), timeout=2)
+    fn._worker.cancel()
+
+    try:
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(drain, timeout=2)
+        assert fn._worker.cancelled()
+        assert data_source.recycled == []
+        assert fn._output.get_metrics()["rollout/fully_async/aborted_groups_filtered"] == 0
+    finally:
+        release.set()
+        await asyncio.sleep(0)
 
 
 async def test_worker_bounds_in_flight_groups(monkeypatch):
@@ -484,6 +585,51 @@ async def test_buffer_staleness_metrics():
     assert metrics["rollout/fully_async/avg_staleness"] == 6.0  # consumed group 1: 10 - 4
     assert metrics["rollout/fully_async/buffer_avg_staleness"] == 3.0  # buffered groups 2, 3: (4 + 2) / 2
     assert metrics["rollout/fully_async/buffer_max_staleness"] == 4
+
+
+async def test_buffer_reports_selected_policy_provenance():
+    buffer, _ = make_buffer(max_groups=8, max_staleness=2)
+    await put_group(buffer, make_group(1, weight_versions=["2", "4"]))
+    await put_group(buffer, make_group(2, weight_versions=["8", "10"]))
+
+    assert (await buffer.get(current_version=10)).group[0].group_index == 2
+    metrics = buffer.get_metrics()
+
+    assert metrics["rollout/fully_async/avg_staleness"] == 2
+    assert metrics["rollout/fully_async/max_staleness"] == 2
+    assert metrics["rollout/fully_async/avg_post_generation_staleness"] == 0
+    assert metrics["rollout/fully_async/avg_generation_version_span"] == 2
+    assert metrics["rollout/fully_async/token_weighted_staleness"] == 1
+    assert metrics["rollout/fully_async/weight_version_sample_coverage"] == 1
+
+
+async def test_buffer_reports_generation_span_without_current_version():
+    buffer, _ = make_buffer(max_groups=8)
+    await put_group(buffer, make_group(1, weight_versions=["2", "4"]))
+
+    await buffer.get(current_version=None)
+    metrics = buffer.get_metrics()
+
+    assert metrics["rollout/fully_async/avg_generation_version_span"] == 2
+    assert "rollout/fully_async/avg_post_generation_staleness" not in metrics
+    assert "rollout/fully_async/token_weighted_staleness" not in metrics
+
+
+async def test_buffer_reports_missing_weight_version_coverage_without_inventing_lag():
+    buffer, _ = make_buffer(max_groups=8)
+    partial_group = make_group(1, weight_versions=["7"])
+    partial_group[1].weight_versions = []
+    await put_group(buffer, partial_group)
+
+    await buffer.get(current_version=10)
+    metrics = buffer.get_metrics()
+
+    assert metrics["rollout/fully_async/weight_version_sample_coverage"] == 0.5
+    assert metrics["rollout/fully_async/token_weighted_staleness"] == 3
+
+    metrics = buffer.get_metrics()
+    assert "rollout/fully_async/weight_version_sample_coverage" not in metrics
+    assert "rollout/fully_async/token_weighted_staleness" not in metrics
 
 
 class RecordingBuffer(data_buffer.DefaultDataBuffer):

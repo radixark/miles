@@ -66,6 +66,9 @@ setup(
         "e2b": [
             "e2b>=2.12",
         ],
+        "modal": [
+            "modal>=1.5.5",
+        ],
     },
     python_requires=">=3.10",
     classifiers=[

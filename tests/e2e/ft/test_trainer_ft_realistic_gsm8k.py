@@ -10,6 +10,7 @@ register_cuda_ci(
     est_time=9000,
     suite="stage-c-8-gpu-h200",
     labels=["ft-long"],
+    hardware=["hopper", "blackwell"],
     disabled="FT soak tests pending CI infra support",
 )
 

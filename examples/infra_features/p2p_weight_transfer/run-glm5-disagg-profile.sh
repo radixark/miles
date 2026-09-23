@@ -221,10 +221,10 @@ run_mode() {
         --sglang-enable-dp-lm-head
         # GLM5 NSA attention and chunked prefill
         --sglang-page-size 64
-        --sglang-nsa-decode-backend flashmla_sparse
-        --sglang-nsa-prefill-backend flashmla_sparse
+        --sglang-dsa-decode-backend flashmla_sparse
+        --sglang-dsa-prefill-backend flashmla_sparse
         --sglang-attention-backend nsa
-        --sglang-cuda-graph-max-bs ${SGLANG_DECODE_MAX_BS}
+        --sglang-cuda-graph-max-bs-decode ${SGLANG_DECODE_MAX_BS}
         --sglang-max-running-requests 512
         --sglang-chunked-prefill-size $((2048 * ${SGLANG_WORLD_SIZE}))
         --sglang-watchdog-timeout 3600

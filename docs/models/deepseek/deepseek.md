@@ -201,14 +201,14 @@ with attention DP 1 and 8 respectively.
 --sglang-server-concurrency 1024
 --sglang-max-running-requests 2048
 --sglang-chunked-prefill-size 16384
---sglang-cuda-graph-max-bs 256
+--sglang-cuda-graph-max-bs-decode 256
 ```
 
 `--rollout-num-gpus-per-engine` corresponds to SGLang's `tp_size`. To exploit large-EP inference,
 the recipe sets EP64, DP-attention with DP8, and DeepEP `low_latency`.
 `--sglang-server-concurrency` is a miles-specific knob to keep the SGLang HTTP server from being
 swamped — default 512, raised to 1024 here so each of the 8 DP ranks gets 128 concurrent requests.
-`SGLANG_DEEPEP_NUM_MAX_DISPATCH_TOKENS_PER_RANK` is exported to match `--sglang-cuda-graph-max-bs`.
+`SGLANG_DEEPEP_NUM_MAX_DISPATCH_TOKENS_PER_RANK` is exported to match `--sglang-cuda-graph-max-bs-decode`.
 
 ### 5.4 Optimizer
 

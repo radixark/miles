@@ -4,7 +4,12 @@ from scripts.run_deepseek_v4 import ScriptArgs, _prepare_download, _prepare_sing
 from tests.ci.ci_register import register_cuda_ci
 from tests.ci.metric_history import register_ci_gate
 
-register_cuda_ci(est_time=1900, suite="stage-c-4-gpu-h200", labels=["megatron", "model-scripts"])
+register_cuda_ci(
+    est_time=1900,
+    suite="stage-c-4-gpu-h200",
+    labels=["megatron", "model-scripts"],
+    hardware=["hopper", "blackwell"],
+)
 
 register_ci_gate(metric_key="train/grad_norm")
 register_ci_gate(metric_key="train/ppo_kl")
@@ -24,10 +29,7 @@ def _args() -> ScriptArgs:
         skip_saving=True,
         use_fault_tolerance=False,
         dsv4_impl="megatron",
-        # The CI image ships neither flash_mla nor cudnn-frontend DSA, so the
-        # default cuDNN backend cannot start; the PyTorch fallback still covers
-        # the megatron-impl model path (dsv4_hybrid attention, native mHC).
-        dsa_kernel_backend="none",
+        dsa_kernel_backend="cudnn",
         extra_args=(
             "--ci-test " "--check-weight-update-allow-quant-error " "--ci-disable-logprobs-checker " "--num-rollout 2 "
         ),
