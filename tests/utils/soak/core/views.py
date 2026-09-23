@@ -40,6 +40,10 @@ def admission_closed(events: list[SoakEvent]) -> SoakAdmissionClosedEvent | None
     return next((event for event in events if isinstance(event, SoakAdmissionClosedEvent)), None)
 
 
+def latest_observation(events: list[SoakEvent]) -> SoakObservationEvent | None:
+    return next((event for event in reversed(events) if isinstance(event, SoakObservationEvent)), None)
+
+
 # ================================ sut progress ================================
 
 
