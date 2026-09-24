@@ -272,6 +272,8 @@ def load_lora_adapter(
         iteration, optimizer_restored = _load_training_state(
             adapter_dir, optimizer, opt_param_scheduler, load_optimizer
         )
+        if optimizer is not None and not optimizer_restored:
+            optimizer.reload_model_params()
         return True, iteration, optimizer_restored
 
     if any((adapter_dir / name).exists() for name in ("adapter_model.safetensors", "adapter_model.bin")):

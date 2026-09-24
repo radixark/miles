@@ -223,7 +223,7 @@ class TestLoadTrainingStateOptimizerGate:
     @staticmethod
     def _recorder():
         loaded = []
-        return loaded, SimpleNamespace(load_state_dict=loaded.append)
+        return loaded, SimpleNamespace(load_state_dict=loaded.append, reload_model_params=lambda: None)
 
     @staticmethod
     def _write_training_state(tmp_path):
@@ -262,3 +262,50 @@ class TestLoadTrainingStateOptimizerGate:
         assert (loaded, iteration, optimizer_restored) == (True, 11, False)
         assert optimizer_loads == []
         assert scheduler_loads == [{"lr": 0.5}]
+
+
+class TestLoadLoraAdapterRefreshesMasters:
+    """The optimizer's fp32 masters are built before the adapter loads; unless the checkpoint's
+    optimizer state replaces them, the first step() writes the initial adapter back."""
+
+    @staticmethod
+    def _optimizer():
+        calls = []
+        optimizer = SimpleNamespace(
+            load_state_dict=lambda state: calls.append("load_state_dict"),
+            reload_model_params=lambda: calls.append("reload_model_params"),
+        )
+        return calls, optimizer
+
+    @staticmethod
+    def _write_checkpoint(tmp_path, optimizer_state):
+        torch.save({"lora_A": torch.ones(1, 2), "lora_B": torch.ones(2, 1)}, tmp_path / "adapter_megatron_rank0.pt")
+        torch.save(
+            {"iteration": 5, "optimizer": optimizer_state, "opt_param_scheduler": None},
+            tmp_path / "training_state_rank0.pt",
+        )
+
+    @pytest.mark.parametrize(
+        "optimizer_state,load_optimizer", [({"step": 7}, False), (None, True)], ids=["no-load-optim", "no-state"]
+    )
+    def test_masters_are_refreshed_when_the_optimizer_is_not_restored(
+        self, tmp_path, monkeypatch, optimizer_state, load_optimizer
+    ):
+        _single_rank(monkeypatch)
+        self._write_checkpoint(tmp_path, optimizer_state)
+        calls, optimizer = self._optimizer()
+
+        lora_utils.load_lora_adapter(
+            [_AdapterModel()], str(tmp_path), optimizer=optimizer, load_optimizer=load_optimizer
+        )
+
+        assert calls == ["reload_model_params"]
+
+    def test_restored_optimizer_state_keeps_its_masters(self, tmp_path, monkeypatch):
+        _single_rank(monkeypatch)
+        self._write_checkpoint(tmp_path, {"step": 7})
+        calls, optimizer = self._optimizer()
+
+        lora_utils.load_lora_adapter([_AdapterModel()], str(tmp_path), optimizer=optimizer)
+
+        assert calls == ["load_state_dict"]
