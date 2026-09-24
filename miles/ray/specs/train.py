@@ -27,9 +27,9 @@ from miles.utils.workers.worker_spec import (
     HostAndPort,
     PortInfo,
     SchedulingSpec,
+    StaticMeta,
     WorkerCtorContext,
     WorkerLaunchContext,
-    WorkerMetaContext,
 )
 
 TRAINER_CONTROLLER_ADDRS_FLAG = "--trainer-controller-addrs"
@@ -175,6 +175,7 @@ class TrainerSpec(BaseServeSpec):
                 pg_name="actor",
                 pg_slot_offset=_compute_trainer_pg_slot_offset(config),
             ),
+            static_meta=StaticMeta(values=dict(role=config.trainer_role), include_cell_index=True),
             worker_class=(
                 "miles.backends.megatron_utils.lora.actor.MultiLoRATrainRayActor"
                 if config.train_backend == "megatron"
@@ -184,9 +185,6 @@ class TrainerSpec(BaseServeSpec):
             ),
             concurrency_groups=TRAINER_CONCURRENCY_GROUPS if config.use_fault_tolerance else None,
         )
-
-    def meta(self, ctx: WorkerMetaContext) -> dict[str, Any]:
-        return dict(role=self.args.trainer_role, cell_index=ctx.cell_index)
 
     def env_var(self, ctx: WorkerLaunchContext) -> dict[str, str]:
         fp8_scales = (
