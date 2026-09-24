@@ -76,14 +76,14 @@ def run_ci(
     ft_mode: FTTestMode = resolve_mode(mode)
     if fully_async:
         assert_mode_supports_fully_async(ft_mode, mode=mode)
-    triggers = fault_triggers.resolve(requested_triggers)
+    triggers = fault_triggers.resolve(requested_triggers, has_real_rollout=ft_mode.has_real_rollout)
 
     config = create_soak_config(command_utils.default_config())
     test_name: str = TEST_NAME + fault_triggers.compute_test_name_suffix(triggers)
     if fully_async:
         test_name += "_fully_async"
     dump_dir: str = resolve_dump_dir(f"{test_name}_{mode}", run_id=config.run_id)
-    print(f"Dump directory: {dump_dir}")
+    print(f"Dump directory: {dump_dir}, fault triggers: {sorted(triggers)}")
     mean_interval_seconds_of_cell_type: dict[str, float] = compute_mean_interval_seconds_of_kind(
         ft_mode.ft_components,
         trainer_crash_interval_seconds=trainer_crash_interval_seconds,

@@ -53,7 +53,7 @@ def run_ci(
     fully_async: FullyAsyncOption = False,
     requested_triggers: FaultTriggersOption = None,
 ) -> None:
-    triggers = fault_triggers.resolve(requested_triggers)
+    triggers = fault_triggers.resolve(requested_triggers, has_real_rollout=True)
     test_name: str = TEST_NAME + fault_triggers.compute_test_name_suffix(triggers)
     if fully_async:
         test_name += "_fully_async"

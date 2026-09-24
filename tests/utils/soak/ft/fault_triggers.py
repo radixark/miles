@@ -9,12 +9,20 @@ from tests.utils.soak.ft.types import FaultTrigger
 from miles.utils.external_utils import command_utils
 from miles.utils.workers.types import ClusterBackend
 
-DEFAULT_FAULT_TRIGGERS: frozenset[FaultTrigger] = frozenset({FaultTrigger.TIMER})
+DEFAULT_FAULT_TRIGGERS: frozenset[FaultTrigger] = frozenset({FaultTrigger.TIMER, FaultTrigger.HOOK})
 HOOK_TRAIN_ARGS: str = "--update-weights-timeout 600 "
 
 
-def resolve(requested: list[FaultTrigger] | None) -> frozenset[FaultTrigger]:
-    return frozenset(requested) if requested else DEFAULT_FAULT_TRIGGERS
+def resolve(requested: list[FaultTrigger] | None, *, has_real_rollout: bool) -> frozenset[FaultTrigger]:
+    triggers = frozenset(requested) if requested else DEFAULT_FAULT_TRIGGERS
+    if not has_real_rollout:
+        assert requested is None or FaultTrigger.HOOK not in triggers, (
+            "Without rollout engines no weight update ever reaches a trainer fault hook, so hook-triggered faults "
+            "could only expire"
+        )
+        triggers -= {FaultTrigger.HOOK}
+    assert triggers, "At least one fault trigger is needed"
+    return triggers
 
 
 def compute_test_name_suffix(triggers: frozenset[FaultTrigger]) -> str:
