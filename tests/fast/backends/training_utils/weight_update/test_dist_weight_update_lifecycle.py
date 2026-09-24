@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from miles.backends.training_utils.weight_update.hf_weight_iterator import WeightUpdatePlacement
 from miles.backends.training_utils.weight_update.updater import WeightUpdater
 from miles.utils import async_utils
 
@@ -71,7 +72,13 @@ def _make_engines(
     ]
 
 
-def _make_updater(engines: list[_RecordingApiClient], *, pause_generation_mode: str = "retract") -> WeightUpdater:
+def _make_updater(
+    engines: list[_RecordingApiClient],
+    *,
+    pause_generation_mode: str = "retract",
+    placement: WeightUpdatePlacement | None = None,
+    require_ep_local: bool = False,
+) -> WeightUpdater:
     protocol = SimpleNamespace(
         use_weight_update_session=True,
         needs_base_resync_for_lora=False,
@@ -80,6 +87,8 @@ def _make_updater(engines: list[_RecordingApiClient], *, pause_generation_mode: 
         rollout_engines=engines,
         required_placement=MagicMock(),
         supports_lora=False,
+        configure=MagicMock(),
+        should_send_weight_unit=lambda unit: True,
         begin_sync=lambda weight_version, iter_buckets: True,
         send_bucket=MagicMock(),
         after_base_weights=MagicMock(),
@@ -87,9 +96,14 @@ def _make_updater(engines: list[_RecordingApiClient], *, pause_generation_mode: 
         after_engines_resumed=MagicMock(),
     )
     iterator = MagicMock()
+    iterator.placement = placement or WeightUpdatePlacement(gather_pp=False)
     iterator.iter_hf_weights.return_value = iter([])
     iterator.weight_update_selector = "all"
-    args = Namespace(pause_generation_mode=pause_generation_mode, check_lora_weight_equal=False)
+    args = Namespace(
+        pause_generation_mode=pause_generation_mode,
+        check_lora_weight_equal=False,
+        ci_require_ep_local_weight_update=require_ep_local,
+    )
     with patch(f"{_UPDATER_MODULE}.get_weight_transfer_protocol", return_value=protocol):
         return WeightUpdater(
             args,
@@ -166,6 +180,38 @@ def _run_with_gated_later_engine(
 
 class TestWeightUpdateSessionFrame:
     """The session frame must pause, flush, open, close, publish the version and only then resume, on every engine."""
+
+    def test_protocol_uses_the_resolved_placement_and_filters_complete_units(self):
+        updater = _make_updater(_make_engines([]))
+
+        updater.protocol.configure.assert_called_once_with(
+            updater.parallel_state,
+            updater._hf_weight_iterator.placement,
+        )
+
+        _run(updater)
+
+        assert (
+            updater._hf_weight_iterator.iter_hf_weights.call_args.kwargs["unit_filter"]
+            is updater.protocol.should_send_weight_unit
+        )
+
+    def test_ci_ep_local_requirement_accepts_resolved_local_placement(self):
+        updater = _make_updater(
+            _make_engines([]),
+            placement=WeightUpdatePlacement(gather_pp=False, gather_ep=False),
+            require_ep_local=True,
+        )
+
+        updater.protocol.configure.assert_called_once()
+
+    def test_ci_ep_local_requirement_rejects_resolved_gathered_placement(self):
+        with pytest.raises(AssertionError, match="expected.*gather_ep=False"):
+            _make_updater(
+                _make_engines([]),
+                placement=WeightUpdatePlacement(gather_pp=False, gather_ep=True),
+                require_ep_local=True,
+            )
 
     @pytest.mark.parametrize("pause_generation_mode", ["retract", "abort"])
     def test_every_engine_walks_the_frame_in_order(self, pause_generation_mode):

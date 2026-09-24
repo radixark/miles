@@ -15,10 +15,10 @@ from miles.backends.training_utils.weight_update.hf_weight_iterator import Weigh
 class WeightTransferProtocol(ABC):
     """Moves HF-named weight buckets from training ranks to rollout engines.
 
-    ``connect`` makes every pairing decision once: it sets ``is_sender`` and
-    whatever send channels the protocol needs. The updater then drives
-    ``send_bucket`` on sender ranks only; streamed adapter tensors are ordinary
-    bucket entries (``{lora_name}:{hf_key}`` names).
+    ``configure`` resolves topology-dependent sender state collectively, then
+    ``connect`` creates the channels for the current engine set. The updater
+    drives ``send_bucket`` on sender ranks only; streamed adapter tensors are
+    ordinary bucket entries (``{lora_name}:{hf_key}`` names).
     """
 
     required_placement: ClassVar[WeightUpdatePlacement] = WeightUpdatePlacement(gather_pp=False)
@@ -32,6 +32,9 @@ class WeightTransferProtocol(ABC):
         self.is_sender: bool | None = None
         self.group_name = "miles"
         self.update_weight_metrics: dict[str, float] = {}
+
+    def configure(self, parallel_state: ParallelState, placement: WeightUpdatePlacement) -> None:  # noqa: B027
+        """Collectively configure topology-dependent protocol state."""
 
     @abstractmethod
     def connect(
@@ -51,6 +54,10 @@ class WeightTransferProtocol(ABC):
     ) -> bool:
         """Hook before the session frame; return False to skip this round.
         The return value must be identical on every rank."""
+        return True
+
+    def should_send_weight_unit(self, _unit: list[tuple[str, torch.Tensor]]) -> bool:
+        """Whether this sender owns an assembled HF update unit."""
         return True
 
     @abstractmethod
