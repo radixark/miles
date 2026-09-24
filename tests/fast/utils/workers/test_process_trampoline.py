@@ -179,6 +179,15 @@ class TestTrampolineProcess:
 
         assert result.returncode == 7
 
+    def test_the_terminating_signal_is_preserved(self) -> None:
+        """A killed command must remain distinguishable from an ordinary exit(1)."""
+        result = _run_trampoline_process(
+            expected_parent_pid=os.getpid(),
+            argv=[sys.executable, "-c", "import os, signal; os.kill(os.getpid(), signal.SIGKILL)"],
+        )
+
+        assert result.returncode == -signal.SIGKILL
+
     def test_the_command_arguments_arrive_unchanged(self) -> None:
         """Joining the argv into a shell string would expand, split or drop these arguments."""
         arguments = ["--flag", "a b", "", "$HOME", 'quote"d']

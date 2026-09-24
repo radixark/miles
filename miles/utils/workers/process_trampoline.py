@@ -35,7 +35,15 @@ def main() -> None:
             _log(f"launch of {argv} failed: {error}")
             os._exit(_EXEC_FAILURE_EXIT_CODE)
         returncode = child.wait()
-        os._exit(returncode if 0 <= returncode <= 255 else 1)
+        if returncode < 0:
+            # Keep the signal visible to CommandActor's process.wait(). A
+            # plain exit(1) would hide crashes and OOM kills in its logs.
+            signum = -returncode
+            if signum not in (signal.SIGKILL, signal.SIGSTOP):
+                signal.signal(signum, signal.SIG_DFL)
+            os.kill(os.getpid(), signum)
+            os._exit(1)
+        os._exit(returncode if returncode <= 255 else 1)
 
     _log(f"bound to parent {expected_parent_pid}; exec {argv}")
     try:
