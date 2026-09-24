@@ -1,5 +1,6 @@
 """Backend selection and checkpoint writing for Megatron HF exports."""
 
+import json
 import logging
 from collections.abc import Sequence
 from functools import cache
@@ -18,6 +19,28 @@ from miles.utils.hf_utils.config import HF_EXPORT_COMPLETE_MARKER
 from miles.utils.megatron_bridge_utils import patch_megatron_model
 
 logger = logging.getLogger(__name__)
+
+
+_SAFETENSORS_INDEX = "model.safetensors.index.json"
+
+
+def missing_hf_weights(source_dir: str | Path, export_dir: str | Path) -> list[str]:
+    """Tensors in the source checkpoint's safetensors index that the export does not deliver.
+
+    A tensor is delivered when the export's index names it and the shard file it names
+    exists (the index is planned up front; a shard is written only once all its tensors
+    arrive). Empty when the source has no local index to compare against.
+    """
+    source_index = Path(source_dir) / _SAFETENSORS_INDEX
+    if not source_index.is_file():
+        return []
+    expected = json.loads(source_index.read_text())["weight_map"]
+    export_index = Path(export_dir) / _SAFETENSORS_INDEX
+    if not export_index.is_file():
+        return sorted(expected)
+    written = json.loads(export_index.read_text())["weight_map"]
+    shards = {f for f in set(written.values()) if (Path(export_dir) / f).is_file()}
+    return sorted(k for k in expected if written.get(k) not in shards)
 
 
 @cache
@@ -58,17 +81,17 @@ def save_hf_model(
             with patch_megatron_model(model):
                 bridge.save_hf_pretrained(model, path=checkpoint_dir)
             torch.distributed.barrier(group=get_gloo_group())
-            missing_weights = [False]
+            missing_weights = [None]
             if torch.distributed.get_rank() == 0:
-                missing_weights[0] = not any(checkpoint_dir.glob("*.safetensors")) and not any(
-                    checkpoint_dir.glob("*.bin")
-                )
+                if not any(checkpoint_dir.glob("*.safetensors")) and not any(checkpoint_dir.glob("*.bin")):
+                    missing_weights[0] = "no weight files"
+                elif missing := missing_hf_weights(args.hf_checkpoint, checkpoint_dir):
+                    # A partly mapped model still writes files, but drops every shard
+                    # holding an unmapped tensor -- and whatever else shares it.
+                    missing_weights[0] = f"{len(missing)} tensor(s) of {args.hf_checkpoint} missing, e.g. {missing[:8]}"
             torch.distributed.broadcast_object_list(missing_weights, src=0, group=get_gloo_group())
-            if missing_weights[0]:
-                raise RuntimeError(
-                    f"HF export to {path} produced no weight files — the megatron "
-                    f"bridge likely has no mapping for this model architecture."
-                )
+            if missing_weights[0] is not None:
+                raise RuntimeError(f"HF export to {path} is incomplete ({missing_weights[0]}) — the megatron bridge likely has no mapping for part of this model architecture.")
         if is_lora_model(model):
             publisher.write_adapter(None, checkpoint_dir / "adapter")
 
