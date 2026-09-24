@@ -649,9 +649,7 @@ def _hf_unpadded_vocab_size(hf_checkpoint: str):
     if not _UNPADDED_VOCAB_CACHE:
         value = None
         try:
-            from megatron.training import get_args
-
-            with open(os.path.join(get_args().hf_checkpoint, "config.json"), encoding="utf-8") as f:
+            with open(os.path.join(hf_checkpoint, "config.json"), encoding="utf-8") as f:
                 config = json.load(f)
             value = (config.get("text_config") or config).get("unpadded_vocab_size")
         except Exception:
