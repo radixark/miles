@@ -2494,8 +2494,9 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "list[Sample], a pure selection over the per-leaf raw samples. "
                 "Runs synchronously inside the session server process; long CPU "
                 "work stalls every session on the instance. Default: drop_retries_same_prompt, "
-                "which trims identical re-sends; drop_rolled_back_leaves also trims leaves "
-                "superseded by a different later request.",
+                "which trims identical re-sends, including a re-sent first turn; "
+                "drop_rolled_back_leaves also trims a leaf whose later sibling sent a "
+                "different request.",
             )
             parser.add_argument(
                 "--session-sample-postprocessor-path",
