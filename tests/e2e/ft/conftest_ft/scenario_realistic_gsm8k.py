@@ -18,7 +18,7 @@ from tests.utils.soak.core.config import SoakRunnerConfig, SoakTailConfig, SoakT
 from tests.utils.soak.ft.actions.factory import compute_mean_interval_seconds_of_kind, create_cell_fault_forms
 from tests.utils.soak.ft.checkers.healing import assert_healing
 from tests.utils.soak.ft.entrypoint import run_cell_soak
-from tests.utils.soak.ft.types import ACTOR_CELL_TYPE, ROLLOUT_CELL_TYPE
+from tests.utils.soak.ft.types import ACTOR_CELL_TYPE, ROLLOUT_CELL_TYPE, FaultTrigger
 from tests.utils.soak.recipes.gsm8k import (
     CONTEXT_PARALLEL_SIZE,
     DEFAULT_METRIC_THRESHOLD,
@@ -74,7 +74,7 @@ def run_ci(
             ),
             event_log=run.event_log,
             evidence_dir=run.evidence_dir,
-            cell_fault_forms=create_cell_fault_forms(run.launch_spec.config),
+            cell_fault_forms=create_cell_fault_forms(run.launch_spec.config, triggers=frozenset({FaultTrigger.TIMER})),
         )
     )
 
