@@ -555,6 +555,11 @@ class TestCustomConfigAppliedBeforeDerivedArgs:
             extra + ["--custom-config-path", str(config_path), "--num-rollout", "1"] + REQUIRED_ARGS
         )
 
+    def test_score_centering_config_is_validated_at_startup(self, tmp_path: Path) -> None:
+        args = self._parse(tmp_path, [], "loss_type: score_centering\nscore_centering_top_k: 0\n")
+        with pytest.raises(ValueError, match="--score-centering-top-k"):
+            miles_validate_args(args)
+
     def test_a_dashboard_switched_on_by_the_config_file_is_still_checked(self, tmp_path):
         """Checking the dashboard before the file override let a file-only opt-in start without a dump directory."""
         args = self._parse(tmp_path, [], "use_miles_dashboard: true\n")
