@@ -60,6 +60,12 @@ class Qwen38NextAttention(SelfAttention):
 
     def __init__(self, config, submodules, layer_number=1, *args, **kwargs):
         super().__init__(config, submodules, layer_number, *args, **kwargs)
+        if self.checkpoint_core_attention:
+            # the selection is cleared after forward, so a backward-time core_attn recompute would find none
+            raise NotImplementedError(
+                "Qwen3.8-Next QSA does not support selective core_attn recompute; "
+                "use full recompute or drop core_attn from --recompute-modules"
+            )
         self.indexer = Qwen38NextQSAIndexer(config, layer_number=layer_number)
         self.compress_ratio = config.qwen3_8_next_indexer_compress_ratio
         self.core_attention = Qwen38NextQSACoreAttention(config, layer_number, owner=self)
