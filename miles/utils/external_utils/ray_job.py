@@ -52,7 +52,9 @@ async def _run_ray_job(address: str, submission_id: str, entrypoint: str, runtim
             raise SystemExit(128 + stop_signal)
         status = client.get_job_status(submission_id)
         if status != JobStatus.SUCCEEDED:
-            raise RuntimeError(f"Ray job {submission_id} ended with {status}: {client.get_job_info(submission_id).message}")
+            raise RuntimeError(
+                f"Ray job {submission_id} ended with {status}: {client.get_job_info(submission_id).message}"
+            )
     finally:
         for sig, handler in previous_handlers.items():
             signal.signal(sig, handler)
