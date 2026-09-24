@@ -45,8 +45,8 @@ set -gx PYTHON (command -v python)
 git clone https://github.com/NVIDIA-NeMo/Gym.git $GYM_DIR
 git -C $GYM_DIR checkout 1ea6b75496c97bf52cdc4578bf34afc4fc5e9e7a
 uv pip install --python $PYTHON \
-    -r $MILES_DIR/examples/experimental/nemo-gym/workplace-requirements.txt
-set -gx PYTHONPATH "$GYM_DIR:$MILES_DIR/examples/experimental/nemo-gym:$MILES_DIR:$PYTHONPATH"
+    -r $MILES_DIR/examples/experimental/nemo-gym-workspace-assistant/workplace-requirements.txt
+set -gx PYTHONPATH "$GYM_DIR:$MILES_DIR/examples/experimental/nemo-gym-workspace-assistant:$MILES_DIR:$PYTHONPATH"
 ```
 
 The Gym checkout is required on the **CPU resource-service host** and wherever
@@ -86,7 +86,7 @@ and `ground_truth`. Keep this native file for the resource service. Convert a
 separate policy-only file for Miles:
 
 ```fish
-$PYTHON $MILES_DIR/examples/experimental/nemo-gym/prepare_workplace.py \
+$PYTHON $MILES_DIR/examples/experimental/nemo-gym-workspace-assistant/prepare_workplace.py \
     --source $WORKPLACE_DATA/native_train.jsonl \
     --target $WORKPLACE_DATA/workplace_train.jsonl \
     --max_turns 24
@@ -102,7 +102,7 @@ catalog for the service as you used to produce the policy file.
 In a persistent terminal on the trainer or another trusted host:
 
 ```fish
-$PYTHON $MILES_DIR/examples/experimental/nemo-gym/workplace_server.py \
+$PYTHON $MILES_DIR/examples/experimental/nemo-gym-workspace-assistant/workplace_server.py \
     --dataset $WORKPLACE_DATA/native_train.jsonl \
     --host 0.0.0.0 --port 8211
 ```
@@ -147,7 +147,7 @@ From the trainer, with the same `MASTER_ADDR`:
 
 ```fish
 set -gx MILES_SCRIPT_EXTERNAL_RAY 1
-$PYTHON $MILES_DIR/examples/experimental/nemo-gym/run_nemotron35_workplace.py \
+$PYTHON $MILES_DIR/examples/experimental/nemo-gym-workspace-assistant/run_nemotron35_workplace.py \
     --config /data/workplace/launcher.json
 ```
 
@@ -201,7 +201,7 @@ With the pinned Gym checkout and example on `PYTHONPATH`:
 
 ```fish
 uv pip install --python $PYTHON pytest
-$PYTHON -m pytest $MILES_DIR/tests/fast/examples/experimental/nemo_gym -k workplace
+$PYTHON -m pytest $MILES_DIR/tests/fast/examples/experimental/nemo_gym_workspace_assistant -k workplace
 ```
 
 These checks use Gym's real tools and final-state verifier, including isolated

@@ -238,9 +238,3 @@ on CPU-only machines, in three independent layers (all three pass as of
 4. A failed episode surfaces as `sample.metadata["eval_report"]["error"]` with
    a traceback from the NeMo Gym server — check there before digging into
    server logs.
-
-## Workplace Assistant with Nemotron
-
-See [the Nemotron 3.5 Lightning Workplace Assistant example](README-workplace.md)
-for native office tools and state-based rewards with two-node asynchronous RL.
-This workflow uses no SWE sandbox or mini-swe-agent service.

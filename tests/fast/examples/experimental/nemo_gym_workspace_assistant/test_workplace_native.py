@@ -12,7 +12,7 @@ from prepare_workplace import convert
 
 pytest.importorskip(
     "resources_servers.workplace_assistant.utils",
-    reason="Put the pinned NeMo Gym checkout on PYTHONPATH (see README-workplace.md)",
+    reason="Put the pinned NeMo Gym checkout on PYTHONPATH (see README.md)",
 )
 pytest.importorskip("polars")
 pytest.importorskip("pyarrow")

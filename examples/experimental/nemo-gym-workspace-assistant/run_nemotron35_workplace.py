@@ -9,7 +9,7 @@ Args:
     --config: JSON object containing the ScriptArgs fields below.
 
 Example:
-    python examples/experimental/nemo-gym/run_nemotron35_workplace.py \
+    python examples/experimental/nemo-gym-workspace-assistant/run_nemotron35_workplace.py \
         --config /path/to/launcher_config.json
 """
 
@@ -241,7 +241,7 @@ def execute(args: ScriptArgs) -> None:
             "WORKPLACE_RESOURCE_URL": args.verifier_url,
             "HF_HOME": args.hf_cache_dir,
             "HUGGINGFACE_HUB_CACHE": str(Path(args.hf_cache_dir) / "hub"),
-            "PYTHONPATH": str(Path(U.repo_base_dir) / "examples/experimental/nemo-gym"),
+            "PYTHONPATH": str(Path(U.repo_base_dir) / "examples/experimental/nemo-gym-workspace-assistant"),
         },
     )
 

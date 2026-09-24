@@ -3,7 +3,7 @@
 Adapted from the [original walkthrough](https://gist.github.com/Shi-Dong/c8746fee78bc3a87cbc531ade514c13c).
 Commands below target this checkout's example. The recorded run and time/storage
 estimates refer to the historical experiment; GPU validation on current backend
-versions remains necessary. See [the recipe reference](README-workplace.md) for
+versions remains necessary. See [the recipe reference](README.md) for
 compatibility notes.
 
 Teach **Nemotron 3.5 Lightning** to complete office tasks: search email, update project records, change calendar events, and check the results.
@@ -47,7 +47,7 @@ The expandable sections contain the setup commands. Paths are examples; use your
 <details>
 <summary>One-time setup: helper scripts and paths</summary>
 
-Use the [task-generation helpers](https://gist.github.com/Shi-Dong/37315073940a57e3c3a0bddbf5652b77), the [Miles Workplace example in this checkout](README-workplace.md), and [this Gym revision](https://github.com/NVIDIA-NeMo/Gym/tree/1ea6b75496c97bf52cdc4578bf34afc4fc5e9e7a). Download all files in the helper Gist into one directory. These helper scripts are required; they are not all part of the basic Quick Start. Install Gym at the linked revision.
+Use the [task-generation helpers](https://gist.github.com/Shi-Dong/37315073940a57e3c3a0bddbf5652b77), the [Miles Workplace example in this checkout](README.md), and [this Gym revision](https://github.com/NVIDIA-NeMo/Gym/tree/1ea6b75496c97bf52cdc4578bf34afc4fc5e9e7a). Download all files in the helper Gist into one directory. These helper scripts are required; they are not all part of the basic Quick Start. Install Gym at the linked revision.
 
 Place the helper folder at `/workspace/workplace-data-tools`, Gym at `/workspace/Gym`, and your Miles checkout at `/workspace/miles`. Keep the compatible SGLang and Megatron installation from your training environment. The original run's source versions are linked at the end.
 
@@ -58,7 +58,7 @@ set DATA_CODE /workspace/workplace-data-tools
 set GYM_ROOT /workspace/Gym
 set MILES_ROOT /workspace/miles
 set MEGATRON_ROOT /workspace/Megatron-LM
-set EXAMPLE $MILES_ROOT/examples/experimental/nemo-gym
+set EXAMPLE $MILES_ROOT/examples/experimental/nemo-gym-workspace-assistant
 set DATA_ROOT /data/workplace
 set RUN_DIR /outputs/workplace-run
 set MODEL_ROOT /models
