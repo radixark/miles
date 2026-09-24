@@ -410,3 +410,11 @@ def test_the_backward_search_is_not_repeated_for_every_sequence_length(monkeypat
 
     assert len(built) == 3, "one build per call"
     assert len(targets) == 1, "the shape changed, the tiling question did not"
+
+
+if __name__ == "__main__":
+    import sys
+
+    import pytest
+
+    sys.exit(pytest.main([__file__, "-v"]))
