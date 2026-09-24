@@ -9,6 +9,7 @@ from miles.backends.training_utils.loss_hub.losses import get_loss_function
 from miles.backends.training_utils.loss_hub.math_utils import compute_approx_kl
 from miles.backends.training_utils.loss_hub.opd import apply_opd_kl_to_advantages
 from miles.backends.training_utils.parallel import get_parallel_state
+from miles.utils.args.custom_view import compute_custom_function_config
 from miles.utils.audit_utils.event_logger.logger import get_event_logger, is_event_logger_initialized
 from miles.utils.audit_utils.event_logger.models import TrainAdvantageComputationEvent
 from miles.utils.multi_lora import is_multi_lora_enabled
@@ -175,17 +176,22 @@ def loss_function(
     )
 
     func = get_loss_function(args, batch.get("loss_fn"))
+    fn_args = (
+        compute_custom_function_config(args, args.custom_loss_function_path)
+        if args.loss_type == "custom_loss" and batch.get("loss_fn") is None
+        else args
+    )
 
     if args.recompute_loss_function:
         loss, log = checkpoint(
             func,
-            args,
+            fn_args,
             batch,
             logits,
             sum_of_sample_mean,
         )
     else:
-        loss, log = func(args, batch, logits, sum_of_sample_mean)
+        loss, log = func(fn_args, batch, logits, sum_of_sample_mean)
 
     # Forces autograd to traverse the full graph on every rank to avoid hang.
     # fp32 sum: an fp16 logits sum can overflow to inf, and 0 * inf is nan.

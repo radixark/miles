@@ -29,6 +29,7 @@ from miles.rollout.checkpoint_eval import CheckpointEvalFn, EvalSkip
 from miles.rollout.fully_async_data_buffer import Group
 from miles.rollout.inference_rollout.compatibility import load_rollout_function
 from miles.utils import object_store
+from miles.utils.args.custom_view import compute_custom_function_config
 from miles.utils.async_utils import maybe_await
 from miles.utils.audit_utils.event_analyzer import analyzer as event_analyzer
 from miles.utils.audit_utils.event_logger import checkpoint as event_logger_checkpoint
@@ -102,7 +103,8 @@ class RolloutExecutor:
         init_http_client(args)
 
         data_source_cls = load_function(self.args.data_source_path)
-        self.data_source = data_source_cls(args)
+        fn_args = compute_custom_function_config(args, self.args.data_source_path)
+        self.data_source = data_source_cls(fn_args)
         SampleOwnershipRecorder.install(
             args=args, data_source=self.data_source, current_rollout_id=lambda: self.rollout_id
         )

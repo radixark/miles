@@ -26,6 +26,7 @@ from miles.ray.specs.train import compute_trainer_pool_id
 from miles.ray.train_actor import TrainRayActor, WeightUpdateOutput
 from miles.utils import async_utils, object_store, train_dump_utils
 from miles.utils.argparse_utils import inplace_modify_args
+from miles.utils.args.custom_view import compute_custom_function_config
 from miles.utils.audit_utils.config_snapshot.dumper import ConfigSnapshotDumper
 from miles.utils.audit_utils.event_logger.logger import event_logger_context
 from miles.utils.audit_utils.sample_ownership.recorder import SampleOwnershipRecorder
@@ -743,7 +744,8 @@ class MegatronTrainRayActor(TrainRayActor):
                 log_train_advantage_computation_event(rollout_data)
 
             if self.rollout_data_postprocess is not None:
-                self.rollout_data_postprocess(self.args)
+                fn_args = compute_custom_function_config(self.args, self.args.rollout_data_postprocess_path)
+                self.rollout_data_postprocess(fn_args)
 
             log_rollout_data(rollout_id, self.args, rollout_data)
 
@@ -837,7 +839,7 @@ class MegatronTrainRayActor(TrainRayActor):
 
             save_hf_model(self.args, rollout_id, self.model)
 
-        if self.args.custom_megatron_post_save_hook_path is not None and dist.get_rank() == 0:
+        if (x := self.args.custom_megatron_post_save_hook_path) is not None and dist.get_rank() == 0:
             self._finalize_pending_async_save()
 
             from megatron.training.checkpointing import get_checkpoint_name
@@ -850,8 +852,9 @@ class MegatronTrainRayActor(TrainRayActor):
                 if self.args.save_hf is not None and self.role == "actor"
                 else None
             )
-            post_save_hook = load_function(self.args.custom_megatron_post_save_hook_path)
-            post_save_hook(self.args, rollout_id, checkpoint_dir, hf_checkpoint_dir)
+            post_save_hook = load_function(x)
+            fn_args = compute_custom_function_config(self.args, x)
+            post_save_hook(fn_args, rollout_id, checkpoint_dir, hf_checkpoint_dir)
 
     @with_logs
     @timer
