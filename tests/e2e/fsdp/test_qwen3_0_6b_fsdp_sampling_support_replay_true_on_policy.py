@@ -22,7 +22,7 @@ NUM_GPUS = 2
 
 
 def prepare() -> None:
-    backend = U.ExecuteTrainConfig().create_backend()
+    backend = U.default_config().create_backend()
     backend.exec_command_cpu("mkdir -p /root/models /root/datasets")
     backend.exec_command_cpu(f"hf download Qwen/{MODEL_NAME} --local-dir /root/models/{MODEL_NAME}")
     backend.hf_download_dataset("zhuzilin/gsm8k")
@@ -88,7 +88,7 @@ def execute() -> None:
         + "--ci-test --actor-num-nodes 1 --actor-num-gpus-per-node 2 --colocate "
     )
 
-    backend = U.ExecuteTrainConfig().create_backend()
+    backend = U.default_config().create_backend()
     backend.execute_train(
         train_args=train_args,
         num_gpus_per_node=NUM_GPUS,
