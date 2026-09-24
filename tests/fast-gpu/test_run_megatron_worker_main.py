@@ -110,44 +110,74 @@ _MODULE = "miles.utils.debug_utils.run_megatron.worker.main"
 
 
 class TestParseArgs:
-    @patch(f"{_MODULE}.WORKER_SCRIPT_ARGS_BRIDGE")
-    @patch(f"{_MODULE}.parse_args")
-    def test_ref_load_overrides_args_load(
-        self,
-        mock_parse_args: MagicMock,
-        mock_bridge: MagicMock,
-    ) -> None:
-        """When script_args.ref_load is set, args.load is overridden."""
-        args = argparse.Namespace(load=None)
-        mock_parse_args.return_value = args
+    def test_script_options_are_translated_for_the_shared_parser(self) -> None:
+        """Use the shared parser with standalone topology and checkpoint options."""
+        argv = [
+            "worker",
+            "--script-hf-checkpoint",
+            "/model",
+            "--script-token-ids-file",
+            "/tokens",
+            "--script-ref-load",
+            "/checkpoint",
+            "--script-role",
+            "critic",
+            "--micro-batch-size",
+            "2",
+            "--dsv4-impl",
+            "miles",
+        ]
+        captured: list[str] = []
+        parsed = object()
 
-        script_args = MagicMock()
-        script_args.ref_load = Path("/some/path")
-        mock_bridge.from_namespace.return_value = script_args
+        def parse_shared() -> object:
+            captured.extend(sys.argv[1:])
+            return parsed
 
-        returned_args, returned_script = _parse_args()
+        with patch.object(sys, "argv", argv), patch.dict(
+            os.environ, {"WORLD_SIZE": "8", "LOCAL_WORLD_SIZE": "4"}
+        ), patch(f"{_MODULE}.parse_args", side_effect=parse_shared):
+            args, script_args = _parse_args()
+            assert sys.argv is argv
 
-        assert returned_args.load == "/some/path"
-        assert returned_script is script_args
+        assert args is parsed
+        assert script_args.ref_load == Path("/checkpoint")
+        for flag, value in [
+            ("--hf-checkpoint", "/model"),
+            ("--load", "/checkpoint"),
+            ("--ref-load", "/checkpoint"),
+            ("--actor-num-nodes", "2"),
+            ("--actor-num-gpus-per-node", "4"),
+            ("--micro-batch-size", "2"),
+            ("--dsv4-impl", "miles"),
+            ("--advantage-estimator", "ppo"),
+        ]:
+            assert captured[captured.index(flag) + 1] == value
+        assert "--debug-train-only" in captured
+        assert not any(argument.startswith("--script-") for argument in captured)
 
-    @patch(f"{_MODULE}.WORKER_SCRIPT_ARGS_BRIDGE")
-    @patch(f"{_MODULE}.parse_args")
-    def test_ref_load_none_preserves_original_load(
-        self,
-        mock_parse_args: MagicMock,
-        mock_bridge: MagicMock,
-    ) -> None:
-        """When script_args.ref_load is None, args.load stays as-is."""
-        args = argparse.Namespace(load="/orig")
-        mock_parse_args.return_value = args
+    def test_missing_ref_load_preserves_model_load_argument(self) -> None:
+        """Preserve a model checkpoint when the script does not override it."""
+        argv = [
+            "worker",
+            "--script-hf-checkpoint",
+            "/model",
+            "--script-token-ids-file",
+            "/tokens",
+            "--load",
+            "/original",
+        ]
+        captured: list[str] = []
 
-        script_args = MagicMock()
-        script_args.ref_load = None
-        mock_bridge.from_namespace.return_value = script_args
+        def parse_shared() -> object:
+            captured.extend(sys.argv[1:])
+            return object()
 
-        returned_args, _ = _parse_args()
+        with patch.object(sys, "argv", argv), patch(f"{_MODULE}.parse_args", side_effect=parse_shared):
+            _parse_args()
 
-        assert returned_args.load == "/orig"
+        assert captured.count("--load") == 1
+        assert captured[captured.index("--load") + 1] == "/original"
 
 
 class TestApplySourcePatches:
@@ -181,7 +211,7 @@ class TestRunForwardBackward:
         mock_get_fb.return_value = mock_fb_func
         mock_dist.get_rank.return_value = 1
 
-        args = argparse.Namespace(seq_length=4, micro_batch_size=1)
+        args = argparse.Namespace(backend=argparse.Namespace(seq_length=4, micro_batch_size=1))
         script = MagicMock()
         script.run_backward = False
 
@@ -209,7 +239,7 @@ class TestRunForwardBackward:
         mock_get_fb.return_value = mock_fb_func
         mock_dist.get_rank.return_value = 1
 
-        args = argparse.Namespace(seq_length=4, micro_batch_size=1)
+        args = argparse.Namespace(backend=argparse.Namespace(seq_length=4, micro_batch_size=1))
         script = MagicMock()
         script.run_backward = False
 
