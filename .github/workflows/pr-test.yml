@@ -77,7 +77,14 @@ concurrency:
 
 jobs:
   resolve-ci-policy:
-    if: github.event.action != 'closed'
+    # A PR based on another branch (e.g. a stacked PR) starts CI only while it
+    # carries a `run-ci*` label; `"run-ci` in the JSON array matches a label
+    # prefix. Every other job needs this one, so skipping it skips the whole run.
+    if: |
+      github.event.action != 'closed' &&
+      (github.event_name != 'pull_request' ||
+        github.event.pull_request.base.ref == github.event.repository.default_branch ||
+        contains(toJSON(github.event.pull_request.labels.*.name), '"run-ci'))
     runs-on: ubuntu-latest
     outputs:
       cadence: ${{ steps.resolve.outputs.cadence }}
@@ -172,7 +179,7 @@ jobs:
           echo "container_image=radixark/miles:${CI_IMAGE_TAG}" >> "$GITHUB_OUTPUT"
           echo "Resolved CI image: radixark/miles:${CI_IMAGE_TAG}"
 
-  # Stage A: CPU-only fast tests (always runs on PR)
+  # Stage A: CPU-only fast tests (runs whenever resolve-ci-policy runs)
   # Uses the CPU-only reusable workflow on GitHub-hosted ubuntu-latest, so
   # fast tests do not occupy GPU-fleet runner slots.
   stage-a-cpu:
@@ -192,7 +199,8 @@ jobs:
     secrets: inherit
 
   # Stage B: CPU-only bucket for slower CPU tests that don't fit stage-a-cpu's
-  # fast budget. Always runs on PR; an empty suite still exits 0 in run_suite.py.
+  # fast budget. Runs whenever resolve-ci-policy runs; an empty suite still exits 0
+  # in run_suite.py.
   stage-b-cpu:
     needs: [resolve-ci-policy]
     uses: ./.github/workflows/_run-cpu-ci.yml

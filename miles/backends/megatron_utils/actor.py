@@ -13,9 +13,12 @@ import torch.distributed as dist
 from torch_memory_saver import torch_memory_saver
 
 from miles.backends.megatron_utils.ft.types import TrainStepOutput
-from miles.backends.megatron_utils.lora.utils import build_lora_sync_config, is_lora_enabled, lora_rollout_enabled
+from miles.backends.megatron_utils.hf_export import save_hf_model
+from miles.backends.megatron_utils.lora.utils import is_lora_enabled, lora_rollout_enabled
 from miles.backends.megatron_utils.rematerialize_utils import build_main_cast_context
 from miles.backends.megatron_utils.update_weight.hf_weight_iterator import get_hf_weight_iterator
+from miles.backends.training_utils.weight_update.hf_weight_iterator import WeightUpdatePlacement
+from miles.backends.training_utils.weight_update.snapshot_publisher import SnapshotPublisher
 from miles.backends.training_utils.weight_update.updater import WeightUpdater
 from miles.dashboard import hooks as dashboard_hooks
 from miles.ray.specs.train import compute_trainer_pool_id
@@ -27,7 +30,8 @@ from miles.utils.audit_utils.witness.allocator import WitnessInfo
 from miles.utils.context_utils import with_defer
 from miles.utils.distributed_utils import get_gloo_group
 from miles.utils.ft_utils.indep_dp import IndepDPInfo
-from miles.utils.hf_config import load_hf_config
+from miles.utils.hf_utils.config import load_hf_config
+from miles.utils.lora.utils import build_lora_config
 from miles.utils.memory_utils import clear_memory, print_memory
 from miles.utils.processing_utils import load_tokenizer
 from miles.utils.ray_utils import Box
@@ -99,6 +103,8 @@ class MegatronTrainRayActor(TrainRayActor):
         recv_ckpt_src_rank: int | None = None,
         indep_dp_info: IndepDPInfo,
     ) -> int | None:
+        self.weight_updater: WeightUpdater | None = None
+        self.snapshot_publisher: SnapshotPublisher | None = None
         monkey_patch_torch_dist()
 
         super().init(args, role, with_ref, with_opd_teacher=with_opd_teacher)
@@ -269,26 +275,55 @@ class MegatronTrainRayActor(TrainRayActor):
 
     def _init_training_state(self) -> None:
         args = self.args
-        is_lora = lora_rollout_enabled(args)
-        uses_colocate_protocol = self.args.colocate
-        if is_lora and not uses_colocate_protocol:
-            assert args.megatron_to_hf_mode == "bridge", (
-                "LoRA weight sync over distributed engines requires "
-                f"--megatron-to-hf-mode bridge (got {args.megatron_to_hf_mode!r})."
-            )
+        self._init_weight_updater_and_publisher(
+            update_weights=not args.debug_train_only,
+            publish_snapshots=(
+                args.save_hf is not None
+                or (args.eval_uses_snapshots and args.eval_hf_dir is not None)
+                or (is_lora_enabled(args) and args.save is not None and args.megatron_to_hf_mode != "raw")
+            ),
+        )
+
+    def _init_weight_updater_and_publisher(self, *, update_weights: bool, publish_snapshots: bool) -> None:
+        args = self.args
         model_name = type(self.hf_config).__name__.lower() if args.model_name is None else args.model_name
         quantization_config = getattr(self.hf_config, "quantization_config", None)
-        self.weight_updater = WeightUpdater(
-            args,
-            self.model,
-            weights_getter=self._get_actor_weights,
-            model_name=model_name,
-            quantization_config=quantization_config,
-            iterator_factory=get_hf_weight_iterator,
-            parallel_state=get_parallel_state(),
-            is_lora=is_lora,
-            lora_sync_config=build_lora_sync_config(args) if is_lora else None,
-        )
+        self.weight_updater = None
+        self.snapshot_publisher = None
+
+        if update_weights:
+            is_lora = lora_rollout_enabled(args)
+            if is_lora and not args.colocate:
+                assert args.megatron_to_hf_mode == "bridge", (
+                    "LoRA weight sync over distributed engines requires "
+                    f"--megatron-to-hf-mode bridge (got {args.megatron_to_hf_mode!r})."
+                )
+            self.weight_updater = WeightUpdater(
+                args,
+                self.model,
+                weights_getter=self._get_actor_weights,
+                model_name=model_name,
+                quantization_config=quantization_config,
+                iterator_factory=get_hf_weight_iterator,
+                parallel_state=get_parallel_state(),
+                is_lora=is_lora,
+                lora_sync_config=(
+                    build_lora_config(args, target_modules=args.lora_adapter_targets) if is_lora else None
+                ),
+            )
+
+        if publish_snapshots:
+            is_lora = is_lora_enabled(args)
+            iterator = get_hf_weight_iterator(
+                args,
+                self.model,
+                required_placement=WeightUpdatePlacement(gather_pp=True),
+                model_name=model_name,
+                quantization_config=None if is_lora else quantization_config,
+            )
+            self.snapshot_publisher = SnapshotPublisher(
+                iterator, build_lora_config(args, target_modules=args.lora_adapter_targets) if is_lora else None
+            )
 
     def _clear_quantized_weight_workspaces(self) -> None:
         if not (
@@ -430,6 +465,7 @@ class MegatronTrainRayActor(TrainRayActor):
                 rollout_id=rollout_id,
                 store_prefix=store_prefix,
                 fp32_output=False,
+                use_rollout_sampling_mask=store_prefix == "" and self.args.use_sampling_support_replay,
             )
 
     @with_logs
@@ -663,7 +699,11 @@ class MegatronTrainRayActor(TrainRayActor):
                         logger.info(f"Updating ref model at rollout_id {rollout_id}")
                     self.weights_backuper.backup("ref")
 
-        log_perf_data(rollout_id, self.args, extra_metrics=self.weight_updater.pop_metrics())
+        log_perf_data(
+            rollout_id,
+            self.args,
+            extra_metrics=self.weight_updater.pop_metrics() if self.weight_updater is not None else {},
+        )
 
         self._heartbeat.bump()
         return TrainStepOutput(outcome=train_step_outcome)
@@ -679,15 +719,20 @@ class MegatronTrainRayActor(TrainRayActor):
 
             maybe_finalize_async_save(blocking=True)
 
-        save(rollout_id, self.model, self.optimizer, self.opt_param_scheduler)
+        save(
+            rollout_id,
+            self.model,
+            self.optimizer,
+            self.opt_param_scheduler,
+            snapshot_publisher=self.snapshot_publisher,
+        )
 
         if force_sync and self.args.async_save:
             maybe_finalize_async_save(blocking=True)
 
         if self.args.save_hf is not None and self.role == "actor":
-            from miles.backends.megatron_utils.hf_export import save_hf_model
-
-            save_hf_model(self.args, rollout_id, self.model)
+            assert self.snapshot_publisher is not None, "HF export requires a snapshot publisher"
+            save_hf_model(self.args, rollout_id, self.model, publisher=self.snapshot_publisher)
 
         if self.args.custom_megatron_post_save_hook_path is not None and dist.get_rank() == 0:
             if self.args.async_save:
@@ -717,9 +762,10 @@ class MegatronTrainRayActor(TrainRayActor):
         that failed to export can be skipped loudly.
         """
         self._heartbeat.bump()
-        from miles.backends.megatron_utils.hf_export import save_hf_model
-
-        save_hf_model(self.args, rollout_id, self.model, path=path, raise_on_error=True)
+        assert self.snapshot_publisher is not None, "HF export requires a snapshot publisher"
+        save_hf_model(
+            self.args, rollout_id, self.model, publisher=self.snapshot_publisher, path=path, raise_on_error=True
+        )
 
     def _named_actor_weights(self, *, translate_gpu_to_cpu: bool = False):
         return named_params_and_buffers(
@@ -744,6 +790,7 @@ class MegatronTrainRayActor(TrainRayActor):
         if self.args.debug_train_only or self.args.debug_rollout_only:
             return None
 
+        assert self.weight_updater is not None, "weight update requires a weight updater"
         rollout_engines = info.rollout_engines
         snapshot_cell_id_to_hashes = info.snapshot_cell_id_to_hashes
         engine_gpu_counts = info.engine_gpu_counts
@@ -825,7 +872,7 @@ class MegatronTrainRayActor(TrainRayActor):
             old_ckpt_step = self.args.ckpt_step
             self.args.ckpt_step = self.args.opd_teacher_ckpt_step
 
-        _, _ = load_checkpoint(
+        load_checkpoint(
             self.model,
             None,
             None,
@@ -866,4 +913,5 @@ class MegatronTrainRayActor(TrainRayActor):
             megatron_rank=dist.get_rank(),
             megatron_world_size=dist.get_world_size(),
         )
-        self.weight_updater.conn_status.mark_trainer_stale()
+        if self.weight_updater is not None:
+            self.weight_updater.conn_status.mark_trainer_stale()

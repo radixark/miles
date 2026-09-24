@@ -50,7 +50,6 @@ class EvalDispatcher:
                     export_time = await self._export(rollout_id, hf_dir)
                 except Exception as e:
                     logger.error(f"HF snapshot export for eval {rollout_id} failed: {e}")
-                    shutil.rmtree(hf_dir, ignore_errors=True)
                     await self.rollout_manager.report_eval_skip.remote(rollout_id, "export_failed")
                     return
                 exported_dir = hf_dir

@@ -7,9 +7,11 @@ import logging
 import random
 from argparse import Namespace
 
+from miles.rollout.generate_utils.sampling_mask import should_return_sampling_mask
 from miles.rollout.session.samples.codec import (
     COMPUTED_FIELDS,
     COMPUTED_FIELDS_V2,
+    ROLLOUT_SAMPLING_MASK_FIELDS,
     SamplesReply,
     decode_samples_and_merge_input_sample,
 )
@@ -62,14 +64,17 @@ class OpenAIEndpointTracer:
             key: value for key, value in (sampling_params or {}).items() if key in CreateSessionRequest.model_fields
         }
         body = CreateSessionRequest.model_validate({**session_params, "evaluation": evaluation})
+        use_v2 = getattr(args, "use_session_server", None) == "v2"
+        samples_wire_fields = COMPUTED_FIELDS_V2 if use_v2 else COMPUTED_FIELDS
+        if should_return_sampling_mask(args, sampling_params, evaluation=evaluation):
+            samples_wire_fields += ROLLOUT_SAMPLING_MASK_FIELDS
         response = await post(f"{session_url}/sessions", body.model_dump(exclude_none=True), action="post")
         session_id = response["session_id"]
-        use_v2 = getattr(args, "use_session_server", None) == "v2"
         return OpenAIEndpointTracer(
             router_url=session_url,
             session_id=session_id,
             session_server_instance_id=session_server_instance_id,
-            samples_wire_fields=COMPUTED_FIELDS_V2 if use_v2 else COMPUTED_FIELDS,
+            samples_wire_fields=samples_wire_fields,
         )
 
     async def collect_samples(
@@ -95,4 +100,9 @@ class OpenAIEndpointTracer:
             except Exception as e:
                 logger.warning(f"Failed to delete session {self.session_id} after collecting samples: {e}")
 
-        return decode_samples_and_merge_input_sample(payload, input_sample, fields=self.samples_wire_fields)
+        return await asyncio.to_thread(
+            decode_samples_and_merge_input_sample,
+            payload,
+            input_sample,
+            fields=self.samples_wire_fields,
+        )

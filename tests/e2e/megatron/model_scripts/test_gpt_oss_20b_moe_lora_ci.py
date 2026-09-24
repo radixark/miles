@@ -43,7 +43,7 @@ def execute(shared_outer: bool, virtual_experts: bool):
         "--lora-rank 32 "
         "--lora-alpha 32 "
         "--lora-dropout 0.0 "
-        '--target-modules "gate_proj,up_proj,down_proj" '
+        '--target-modules "gate_up_proj,down_proj" '
         "--sglang-lora-backend triton "
         f"{'--experts-shared-outer-loras ' if shared_outer else ''}"
         f"{'' if virtual_experts else '--no-sglang-lora-use-virtual-experts '}"

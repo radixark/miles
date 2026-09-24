@@ -28,7 +28,7 @@ from miles.utils.audit_utils.event_logger import checkpoint as event_logger_chec
 from miles.utils.audit_utils.process_identity import RolloutExecutorProcessIdentity
 from miles.utils.environ import use_legacy_rollout_v1
 from miles.utils.function_registry import load_function
-from miles.utils.hf_config import is_complete_hf_export
+from miles.utils.hf_utils.config import is_complete_hf_export
 from miles.utils.http_utils import init_http_client
 from miles.utils.logging_utils import configure_logger
 from miles.utils.metric_checker import MetricChecker
