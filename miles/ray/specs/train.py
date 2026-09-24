@@ -5,9 +5,10 @@ from typing import Any, ClassVar, Self
 from miles.backends.megatron_utils.megatron_config import ACTOR_ROLE, CRITIC_ROLE, MegatronTrainerConfig
 from miles.ray.utils import NOSET_VISIBLE_DEVICES_ENV_VARS_LIST
 from miles.utils.args.runtime import AllConfig, TrainerConfig
-from miles.utils.args.trainer_utils import compute_trainer_config
+from miles.utils.args.trainer_utils import compute_trainer_config, compute_trainer_total_gpus
 from miles.utils.environ import default_fp8_block_scaling_fp32_scales
-from miles.utils.megatron_args_utils import compute_megatron_world_size_except_dp
+from miles.utils.math_utils import exact_div
+from miles.utils.megatron_args_utils import compute_trainer_num_cells
 from miles.utils.multi_lora import is_multi_lora_enabled
 from miles.utils.workers.backend_capability.base import BackendCapability
 from miles.utils.workers.naming import (
@@ -150,14 +151,9 @@ class TrainerSpec(BaseServeSpec):
 
     @classmethod
     def create(cls, config: TrainerConfig) -> Self:
-        num_nodes, num_gpus_per_node = (
-            (config.critic_num_nodes, config.critic_num_gpus_per_node)
-            if config.trainer_role == CRITIC_ROLE
-            else (config.actor_num_nodes, config.actor_num_gpus_per_node)
-        )
-        total_gpus = num_nodes * num_gpus_per_node
-        num_cells = compute_trainer_num_cells(config, role=config.trainer_role)
-        assert total_gpus % num_cells == 0, f"{total_gpus=} must be divisible by {num_cells=}"
+        is_critic = config.trainer_role == CRITIC_ROLE
+        total_gpus = compute_trainer_total_gpus(config, role=config.trainer_role)
+        num_cells = compute_trainer_num_cells(config, total_gpus=total_gpus)
         return cls(
             args=config,
             name=compute_trainer_pool_id(config.trainer_id),
@@ -167,11 +163,11 @@ class TrainerSpec(BaseServeSpec):
             ],
             scheduling=SchedulingSpec(
                 num_cells=num_cells,
-                num_workers_per_cell=total_gpus // num_cells,
+                num_workers_per_cell=exact_div(total_gpus, num_cells),
                 num_gpus_per_worker=_NUM_GPUS_PER_TRAINER_WORKER,
                 num_cpus_per_worker=_NUM_GPUS_PER_TRAINER_WORKER,
                 num_gpu_slots_per_worker=1,
-                num_gpus_per_node=num_gpus_per_node,
+                num_gpus_per_node=config.critic_num_gpus_per_node if is_critic else config.actor_num_gpus_per_node,
                 pg_name="actor",
                 pg_slot_offset=_compute_trainer_pg_slot_offset(config),
             ),
@@ -208,16 +204,6 @@ def compute_trainer_pool_id(trainer_id: str) -> str:
     return f"trainer-engine-{trainer_id}"
 
 
-def compute_trainer_num_cells(args, *, role: str) -> int:
-    num_nodes, num_gpus_per_node = (
-        (args.actor_num_nodes, args.actor_num_gpus_per_node)
-        if role == ACTOR_ROLE
-        else (args.critic_num_nodes, args.critic_num_gpus_per_node)
-    )
-    total_gpus = num_nodes * num_gpus_per_node
-    return (total_gpus // compute_megatron_world_size_except_dp(args)) if args.indep_dp else 1
-
-
 # TODO: support different sizes after the args refactor
 def _compute_trainer_pg_slot_offset(config: TrainerConfig) -> int:
     if config.trainer_actor_index is None:
@@ -226,14 +212,8 @@ def _compute_trainer_pg_slot_offset(config: TrainerConfig) -> int:
 
 
 def _compute_trainer_world_size(args: TrainerConfig) -> int:
-    total_gpus = (
-        args.critic_num_nodes * args.critic_num_gpus_per_node
-        if args.trainer_role == CRITIC_ROLE
-        else args.actor_num_nodes * args.actor_num_gpus_per_node
-    )
-    num_cells = compute_trainer_num_cells(args, role=args.trainer_role)
-    assert total_gpus % num_cells == 0, f"{total_gpus=} must be divisible by {num_cells=}"
-    return total_gpus // num_cells
+    total_gpus = compute_trainer_total_gpus(args, role=args.trainer_role)
+    return exact_div(total_gpus, compute_trainer_num_cells(args, total_gpus=total_gpus))
 
 
 def compute_trainer_env_vars(args, ctx: WorkerLaunchContext, *, fp8_scales: str) -> dict[str, str]:
