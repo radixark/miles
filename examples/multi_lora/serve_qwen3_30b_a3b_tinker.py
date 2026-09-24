@@ -110,6 +110,7 @@ def serve(args: ScriptArgs):
         megatron_model_type=args.model_type,
         train_script="serve_tinker.py",
         megatron_path=args.megatron_path,
+        job_lifetime="launcher",
     )
 
 

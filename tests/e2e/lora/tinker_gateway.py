@@ -1,6 +1,5 @@
 """Shared gateway setup for Tinker GPU acceptance tests."""
 
-import json
 import os
 import signal
 import subprocess
@@ -16,11 +15,8 @@ from miles.utils.http_utils import is_port_available
 MODEL_NAME = "Qwen3-4B-Instruct-2507"
 BASE_MODEL = f"Qwen/{MODEL_NAME}"
 GATEWAY_PORT = 10613
-RAY_DASHBOARD_URL = "http://127.0.0.1:8265"
 SERVE_TIMEOUT_S = 1200
 STOP_TIMEOUT_S = 30
-HTTP_TIMEOUT_S = 10
-TERMINAL_JOB_STATUSES = {"STOPPED", "SUCCEEDED", "FAILED"}
 
 
 def prepare_gateway():
@@ -40,31 +36,6 @@ def _wait_for_gateway(server: subprocess.Popen) -> None:
         except OSError:
             time.sleep(5)
     raise TimeoutError(f"gateway not serving after {SERVE_TIMEOUT_S}s")
-
-
-def _dashboard(method: str, path: str):
-    request = urllib.request.Request(
-        f"{RAY_DASHBOARD_URL}{path}", data=b"" if method == "POST" else None, method=method
-    )
-    with urllib.request.urlopen(request, timeout=HTTP_TIMEOUT_S) as response:
-        return json.load(response)
-
-
-def _stop_gateway_jobs() -> None:
-    try:
-        jobs = _dashboard("GET", "/api/jobs/")
-    except OSError:
-        return
-    job_ids = [
-        job["submission_id"]
-        for job in jobs
-        if job.get("submission_id")
-        and "serve_tinker.py" in (job.get("entrypoint") or "")
-        and job["status"] not in TERMINAL_JOB_STATUSES
-    ]
-    # Ray's JobSupervisor sends the driver tree SIGTERM, then SIGKILL; _kill_leaked_gateway asserts the port is free.
-    for job_id in job_ids:
-        _dashboard("POST", f"/api/jobs/{job_id}/stop")
 
 
 def _gateway_listener_pids() -> list[int]:
@@ -98,8 +69,10 @@ def _kill_leaked_gateway() -> None:
 def _stop_launcher(server: subprocess.Popen) -> None:
     try:
         with suppress(ProcessLookupError):
-            os.killpg(server.pid, signal.SIGTERM)
-        server.wait(timeout=30)
+            server.terminate()
+        returncode = server.wait(timeout=180)
+        if returncode not in (0, 128 + signal.SIGTERM):
+            raise RuntimeError(f"gateway launcher failed during shutdown with code {returncode}")
     finally:
         # Descendants can retain CI stdout after the launcher has exited.
         with suppress(ProcessLookupError):
@@ -121,17 +94,12 @@ def running_gateway():
         "--model-type qwen3-4B-Instruct-2507 --tp 2 --ep 1 --lora-rank 8 --lora-alpha 16 "
         f'--extra-args "--tinker-base-model {BASE_MODEL}"'
     )
-    server = subprocess.Popen(["bash", "-c", serve_cmd], start_new_session=True)
+    server = subprocess.Popen(["bash", "-c", f"exec {serve_cmd}"], start_new_session=True)
     try:
         _wait_for_gateway(server)
         yield f"http://127.0.0.1:{GATEWAY_PORT}"
     finally:
         try:
-            # The gateway is the Ray job driver in its own session, which killpg and `ray stop` both miss;
-            # stop the job while the dashboard, in the launcher's process group, is still up.
-            _stop_gateway_jobs()
+            _stop_launcher(server)
         finally:
-            try:
-                _stop_launcher(server)
-            finally:
-                _kill_leaked_gateway()
+            _kill_leaked_gateway()
