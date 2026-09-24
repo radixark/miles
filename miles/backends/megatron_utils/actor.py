@@ -611,7 +611,7 @@ class MegatronTrainRayActor(TrainRayActor):
 
         compute_advantages_and_returns(self.args, rollout_data)
 
-        self.args.loss_type = "value_loss"
+        assert self.args.loss_type == "value_loss"
         self._log_first_train_config()
         train_step_outcome: TrainStepOutcome = train(
             rollout_id,
