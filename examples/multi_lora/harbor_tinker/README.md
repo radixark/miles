@@ -18,7 +18,8 @@ turn's prompt inherits the previous turn's tokens (TITO), so a trajectory trains
 | client `run_harbor_tinker.py` | `HarborTinkerConfig` → cookbook `train.Config` → `train.main`, with a sandbox preflight |
 
 Status codes on the session routes: 400 bad input, missing key, or bind without `sampling_session_id`, 403 another
-tenant's session, 404 chat on an unbound or deleted session (the session id is the chat route's only credential),
+tenant's session, 404 chat on an unbound or deleted session (the session id is the chat route's only credential, so
+it must be 32-128 chars),
 409 a continuation past a truncated reply under `--tinker-session-strict-truncation`, 429 per-tenant session cap or
 per-session turn cap, 502 engine failure (nothing recorded).
 

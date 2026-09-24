@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 
 TINKER_PATH_PREFIX = "tinker://"
 SWEEP_INTERVAL_S = 60.0
-_SESSION_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}")
+_SESSION_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{31,127}")  # the chat route's only credential: unguessable
 
 
 class SessionError(Exception):
@@ -54,9 +54,9 @@ class SamplingBackendError(SessionError):
 
 
 def validate_session_id(session_id: str) -> None:
-    """A session id is one to 128 chars of [A-Za-z0-9._:-], starting alphanumeric."""
+    """A session id is 32 to 128 chars of [A-Za-z0-9._:-], starting alphanumeric (e.g. a prefix + uuid4 hex)."""
     if not isinstance(session_id, str) or _SESSION_ID.fullmatch(session_id) is None:
-        raise UserInputError(f"invalid session id {session_id!r}: use 1-128 chars of A-Z a-z 0-9 . _ : -")
+        raise UserInputError(f"invalid session id {session_id!r}: use 32-128 chars of A-Z a-z 0-9 . _ : -")
 
 
 @dataclass
