@@ -204,19 +204,19 @@ def test_force_sync_save_overlaps_hf_export_with_async_checkpoint(actor_module, 
     worker.model = object()
     worker.optimizer = object()
     worker.opt_param_scheduler = object()
+    worker.snapshot_publisher = object()
     events = []
 
-    monkeypatch.setattr(actor_module, "save", lambda *_args: events.append("save"))
+    monkeypatch.setattr(actor_module, "save", lambda *_args, **_kwargs: events.append("save"))
 
     from megatron.training import async_utils
-    from miles.backends.megatron_utils import hf_export
 
     monkeypatch.setattr(
         async_utils,
         "maybe_finalize_async_save",
         lambda **_kwargs: events.append("finalize"),
     )
-    monkeypatch.setattr(hf_export, "save_hf_model", lambda *_args: events.append("save_hf"))
+    monkeypatch.setattr(actor_module, "save_hf_model", lambda *_args, **_kwargs: events.append("save_hf"))
 
     worker.save_model(6, force_sync=True)
 
