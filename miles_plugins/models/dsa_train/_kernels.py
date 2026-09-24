@@ -27,6 +27,7 @@ INDEXER_HEAD_DIM = 128
 INDEXER_HEADS = (8, 16, 32, 64)
 ATTENTION_SHAPES = ((512, 64), (512, 0))  # (d_v, d_tail)
 
+
 def _kernel(name: str, device):
     return _PACKAGE.kernel(name, device_arch(device))
 

@@ -80,9 +80,7 @@ class Package:
 
     def record(self, stage, arch):
         if arch not in self.module.get("arches", ()):
-            raise NotImplementedError(
-                f"{self.name}: not exported for {arch} (exported: {self.module.get('arches')})"
-            )
+            raise NotImplementedError(f"{self.name}: not exported for {arch} (exported: {self.module.get('arches')})")
         return self.MODULES[stage]
 
     def load(self, arch):
