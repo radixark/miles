@@ -12,8 +12,10 @@ in four ways that the TransformerConfig cannot express on its own:
 The per-layer RoPE base and the SWA window reuse existing config fields (``rotary_base_per_layer``,
 ``window_size`` with a per-layer ``window_attn_skip_freq``).
 
-The bridge reads the BF16 split-q/k/v layout written by ``tools/convert_mimo_v2_to_bf16.py``; the
-official checkpoint (FP8/MXFP4, fused kv-head-interleaved ``qkv_proj``) must be converted first.
+Weights load from the BF16 split-q/k/v layout written by ``tools/convert_mimo_v2_to_bf16.py``. The
+official config (FP8/MXFP4, fused kv-head-interleaved ``qkv_proj``) or its ``--keep-quant``
+conversions can still describe the model, as the rollout checkpoint of an MXFP4 engine; export then
+emits the fused ``qkv_proj`` it expects.
 Only the text decoder is built: vision/audio towers and the MTP layers are not.
 """
 
@@ -153,6 +155,8 @@ class MiMoV2ModelProvider(GPTModelProvider):
     attention_value_scale: float | None = None
     full_attention_sink: bool = False
     swa_attention_sink: bool = True
+    # kv-head shards of the checkpoint's fused qkv_proj, which HF export reproduces; None exports split q/k/v.
+    fused_qkv_shards: int | None = None
 
     def provide(self, pre_process=None, post_process=None, vp_stage=None) -> GPTModel:
         assert self.tensor_model_parallel_size <= min(
@@ -162,8 +166,20 @@ class MiMoV2ModelProvider(GPTModelProvider):
         return super().provide(pre_process=pre_process, post_process=post_process, vp_stage=vp_stage)
 
 
+def fuse_qkv(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, shards: int) -> torch.Tensor:
+    """Head-ordered q/k/v rows -> the official fused qkv_proj, whose shard i is [its q | its k | its v heads]."""
+    hidden = q.shape[-1]
+    return torch.cat([t.reshape(shards, -1, hidden) for t in (q, k, v)], dim=1).reshape(-1, hidden)
+
+
 class MiMoV2QKVMapping(QKVMapping):
     """QKV mapping for per-group [q heads, k head, v head] with a V head of ``v_head_dim``."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # A fused --hf-checkpoint stores qkv_proj, not q/k/v; without this, build_conversion_tasks drops
+        # the export task on the owning PP rank. A load that misses q/k/v still fails on the missing key.
+        self.allow_hf_name_mismatch = True
 
     def hf_to_megatron(self, hf_weights, megatron_module):
         merged = None
@@ -191,6 +207,12 @@ class MiMoV2QKVMapping(QKVMapping):
         groups, qk_dim, v_dim = config.num_query_groups, config.kv_channels, config.v_head_dim
         q_dim = config.num_attention_heads // groups * qk_dim
         q, k, v = packed.view(groups, q_dim + qk_dim + v_dim, -1).split([q_dim, qk_dim, v_dim], dim=1)
+        if config.fused_qkv_shards is not None:
+            hidden = packed.shape[-1]
+            fused = fuse_qkv(
+                q.reshape(-1, hidden), k.reshape(-1, hidden), v.reshape(-1, hidden), config.fused_qkv_shards
+            )
+            return {self.hf_param["q"].replace(".q_proj.", ".qkv_proj."): fused}
         return {
             self.hf_param["q"]: q.reshape(-1, packed.shape[-1]),
             self.hf_param["k"]: k.reshape(-1, packed.shape[-1]),
@@ -202,14 +224,19 @@ class MiMoV2QKVMapping(QKVMapping):
     source="MiMoV2ForCausalLM", target=GPTModel, provider=MiMoV2ModelProvider, model_type="mimo_v2"
 )
 class MiMoV2Bridge(MegatronModelBridge):
-    """HF ``MiMoV2ForCausalLM`` (BF16, split q/k/v) <-> Megatron GPTModel with MiMo-V2 attention."""
+    """HF ``MiMoV2ForCausalLM`` <-> Megatron GPTModel with MiMo-V2 attention."""
 
     def provider_bridge(self, hf_pretrained) -> MiMoV2ModelProvider:
         hf = hf_pretrained.config
-        if getattr(hf, "attention_projection_layout", "split") != "split" or getattr(hf, "quantization_config", None):
+        layout = getattr(hf, "attention_projection_layout", "split")
+        assert layout in ("split", "fused_qkv"), f"unsupported attention_projection_layout {layout!r}"
+        quant = getattr(hf, "quantization_config", None)
+        # Weight sync reproduces BF16 and the FP8 + MXFP4-experts format (quantizer_fp8_mxfp4.py) only.
+        if quant is not None and not (quant.get("quant_method") == "fp8" and quant.get("store_dtype") == "mxfp4"):
             raise ValueError(
-                "MiMo-V2 bridge reads BF16 split q/k/v checkpoints; convert the official checkpoint "
-                "with tools/convert_mimo_v2_to_bf16.py first"
+                f"MiMo-V2 bridge cannot sync weights to a {quant.get('quant_method')} checkpoint "
+                "without MXFP4 experts; convert it with tools/convert_mimo_v2_to_bf16.py and serve "
+                "the BF16 conversion"
             )
         for swa_key, full_key in (
             ("swa_num_attention_heads", "num_attention_heads"),
@@ -233,6 +260,10 @@ class MiMoV2Bridge(MegatronModelBridge):
         provider.attention_value_scale = hf.attention_value_scale
         provider.full_attention_sink = bool(hf.add_full_attention_sink_bias)
         provider.swa_attention_sink = bool(hf.add_swa_attention_sink_bias)
+        # A fused, quantized config (the official one or its --keep-quant conversions) only describes the
+        # rollout checkpoint: the weights come from the BF16 split conversion (--ref-load), and export
+        # returns to the fused layout.
+        provider.fused_qkv_shards = hf.num_key_value_heads if layout == "fused_qkv" else None
 
         provider.normalization = "RMSNorm"
         provider.layernorm_epsilon = hf.layernorm_epsilon
@@ -258,6 +289,16 @@ class MiMoV2Bridge(MegatronModelBridge):
             provider.moe_router_group_topk = None
         provider.mtp_num_layers = None
         return provider
+
+    def maybe_modify_loaded_hf_weight(self, hf_param, hf_state_dict):
+        hf_weights = super().maybe_modify_loaded_hf_weight(hf_param, hf_state_dict)
+        for weight in hf_weights.values() if isinstance(hf_weights, dict) else (hf_weights,):
+            if weight.dtype in (torch.uint8, torch.float8_e4m3fn):
+                raise ValueError(
+                    f"MiMo-V2 bridge loads BF16 split q/k/v weights, got {weight.dtype} for {hf_param}; load "
+                    "the tools/convert_mimo_v2_to_bf16.py output (--ref-load for a quantized --hf-checkpoint)"
+                )
+        return hf_weights
 
     def mapping_registry(self) -> MegatronMappingRegistry:
         direct = {

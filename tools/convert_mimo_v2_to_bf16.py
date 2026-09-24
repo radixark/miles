@@ -12,7 +12,10 @@ BF16, splits qkv into q_proj/k_proj/v_proj in head order, and drops `quantizatio
 `attention_projection_layout`, so the HF remote code, Megatron-Bridge and a BF16 SGLang engine
 all read it as-is.
 
---keep-quant only reindexes layers and copies every tensor in its source format.
+--keep-quant only reindexes layers and copies every tensor in its source format. With --bf16-linears
+it also dequantizes the decoder layers' FP8 linears (fused qkv_proj, dense MLP) to BF16 in their
+source layout and lists them in `ignored_layers`, so an engine runs them without activation
+quantization; the routed experts stay MXFP4 and the MTP layers keep their source format.
 
 python tools/convert_mimo_v2_to_bf16.py --model-dir <src> --save-dir <dst> [--layers 0,1,5,6] [--num-experts 32]
 """
@@ -95,7 +98,21 @@ def output_name(name: str, layer_map: dict[int, int] | None, num_experts: int | 
     return f"model.layers.{layer_map[layer] if layer_map is not None else layer}.{rest}"
 
 
-def convert_config(config: dict, layer_map: dict[int, int] | None, num_experts: int | None, keep_quant: bool) -> dict:
+def ignored_names(module: str) -> list[str]:
+    # SGLang skips a fused qkv_proj only when its q/k/v shard names are ignored,
+    # while Miles' weight sync matches the fused name.
+    if module.endswith(".qkv_proj"):
+        return [module, *(module.removesuffix("qkv_proj") + f"{proj}_proj" for proj in "qkv")]
+    return [module]
+
+
+def convert_config(
+    config: dict,
+    layer_map: dict[int, int] | None,
+    num_experts: int | None,
+    keep_quant: bool,
+    bf16_modules: list[str] | None = None,
+) -> dict:
     config = json.loads(json.dumps(config))
     if layer_map is not None:
         assert config.get("hybrid_block_size") is None, "per-layer schedules must be explicit lists"
@@ -113,6 +130,7 @@ def convert_config(config: dict, layer_map: dict[int, int] | None, num_experts: 
             renamed = output_name(module + ".weight", layer_map, num_experts)
             if renamed is not None:
                 ignored.append(renamed.removesuffix(".weight"))
+        ignored += [name for module in bf16_modules or [] for name in ignored_names(module)]
         quant["ignored_layers"] = ignored
     else:
         config.pop("quantization_config", None)
@@ -171,7 +189,13 @@ def check_output(weight_map: dict[str, str], config: dict) -> None:
 
 
 def main(
-    model_dir: str, save_dir: str, layers: list[int] | None, num_experts: int | None, keep_quant: bool, device: str
+    model_dir: str,
+    save_dir: str,
+    layers: list[int] | None,
+    num_experts: int | None,
+    keep_quant: bool,
+    device: str,
+    bf16_linears: bool = False,
 ):
     src, dst = Path(model_dir), Path(save_dir)
     dst.mkdir(parents=True, exist_ok=True)
@@ -180,6 +204,7 @@ def main(
     layer_map = {old: new for new, old in enumerate(layers)} if layers is not None else None
     assert layer_map is None or all(0 <= layer < config["num_hidden_layers"] for layer in layer_map), layers
     assert not (keep_quant and num_experts is not None), "--num-experts needs the dequantized output"
+    assert keep_quant or not bf16_linears, "--bf16-linears needs --keep-quant"
     fused_qkv = config.get("attention_projection_layout") == "fused_qkv"
 
     weight_map = json.loads((src / "model.safetensors.index.json").read_text())["weight_map"]
@@ -194,12 +219,24 @@ def main(
     writer = ShardWriter(dst)
     counts = {"fp8": 0, "mxfp4": 0, "qkv_split": 0, "copied": 0}
     scale_suffixes = ("weight_scale_inv", "weight_scale")
+    bf16_modules = []
     for file_name in tqdm(sorted(set(weight_map.values())), desc="shards"):
         for name in [n for n, f in weight_map.items() if f == file_name]:
             new_name = output_name(name, layer_map, num_experts)
             if new_name is None or (not keep_quant and name.endswith(scale_suffixes)):
                 continue
+            # Only FP8 linears carry `weight_scale_inv` (experts use `weight_scale`).
+            if bf16_linears and _LAYER_RE.match(name) and name.endswith("weight_scale_inv"):
+                continue
             tensor = load(name)
+            if bf16_linears and _LAYER_RE.match(name) and tensor.dtype == torch.float8_e4m3fn:
+                scale_inv = load(name + "_scale_inv")
+                if fused_qkv and name.endswith("self_attn.qkv_proj.weight"):
+                    tensor = dequant_fused_qkv(tensor, scale_inv, config["num_key_value_heads"])
+                else:
+                    tensor = dequant_fp8_block(tensor, scale_inv)
+                bf16_modules.append(new_name.removesuffix(".weight"))
+                counts["fp8"] += 1
             if keep_quant:
                 writer.add(new_name, tensor)
                 counts["copied"] += 1
@@ -226,7 +263,7 @@ def main(
             counts["copied"] += 1
     writer.flush()
 
-    new_config = convert_config(config, layer_map, num_experts, keep_quant)
+    new_config = convert_config(config, layer_map, num_experts, keep_quant, bf16_modules)
     if not keep_quant:
         check_output(writer.weight_map, new_config)
     (dst / "config.json").write_text(json.dumps(new_config, indent=2) + "\n")
@@ -258,7 +295,13 @@ if __name__ == "__main__":
         "--num-experts", type=int, default=None, help="Keep only the first N routed experts per MoE layer."
     )
     parser.add_argument("--keep-quant", action="store_true", help="Reindex layers but keep the source tensor formats.")
+    parser.add_argument(
+        "--bf16-linears",
+        action="store_true",
+        help="With --keep-quant: dequantize the decoder layers' FP8 linears to BF16 "
+        "and ignore them in the quant config.",
+    )
     parser.add_argument("--device", type=str, default="cpu")
     args = parser.parse_args()
     layers = [int(x) for x in args.layers.split(",")] if args.layers else None
-    main(args.model_dir, args.save_dir, layers, args.num_experts, args.keep_quant, args.device)
+    main(args.model_dir, args.save_dir, layers, args.num_experts, args.keep_quant, args.device, args.bf16_linears)
