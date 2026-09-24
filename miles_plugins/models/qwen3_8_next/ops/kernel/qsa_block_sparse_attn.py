@@ -25,6 +25,10 @@ def _qsa_bs_fwd_kernel(
     TOKBASE,
     KLIST,
     KCNT,
+    QSTART,
+    QEND,
+    KSTART,
+    KEND,
     OUT,
     LSE,
     stride_qt,
@@ -50,9 +54,11 @@ def _qsa_bs_fwd_kernel(
     pid_h = tl.program_id(1)
     kv_head = pid_h // GROUP
 
-    offs_q = pid_t * BQ + tl.arange(0, BQ)
+    query_start = tl.load(QSTART + pid_t)
+    query_end = tl.load(QEND + pid_t)
+    offs_q = query_start + tl.arange(0, BQ)
     offs_d = tl.arange(0, D)
-    q_mask = offs_q < T
+    q_mask = offs_q < query_end
 
     q = tl.load(
         Q + offs_q[:, None] * stride_qt + pid_h * stride_qh + offs_d[None, :],
@@ -72,8 +78,10 @@ def _qsa_bs_fwd_kernel(
     n_tiles = tl.load(KCNT + pid_t)
     for i in range(0, n_tiles):
         kt = tl.load(KLIST + pid_t * stride_kl + i)
-        offs_k = kt * BK + tl.arange(0, BK)
-        k_in = offs_k < T
+        key_start = tl.load(KSTART + kt)
+        key_end = tl.load(KEND + kt)
+        offs_k = key_start + tl.arange(0, BK)
+        k_in = offs_k < key_end
 
         # per-token block lookup: a packed sequence's blocks start at its own first token,
         # which need not be a multiple of BLK
@@ -132,6 +140,10 @@ def _qsa_bs_dq_kernel(
     TOKBASE,
     KLIST,
     KCNT,
+    QSTART,
+    QEND,
+    KSTART,
+    KEND,
     OUT,
     LSE,
     DO,
@@ -160,9 +172,11 @@ def _qsa_bs_dq_kernel(
     pid_h = tl.program_id(1)
     kv_head = pid_h // GROUP
 
-    offs_q = pid_t * BQ + tl.arange(0, BQ)
+    query_start = tl.load(QSTART + pid_t)
+    query_end = tl.load(QEND + pid_t)
+    offs_q = query_start + tl.arange(0, BQ)
     offs_d = tl.arange(0, D)
-    q_mask = offs_q < T
+    q_mask = offs_q < query_end
 
     q = tl.load(Q + offs_q[:, None] * stride_qt + pid_h * stride_qh + offs_d[None, :], mask=q_mask[:, None], other=0.0)
     do = tl.load(
@@ -182,8 +196,10 @@ def _qsa_bs_dq_kernel(
     n_tiles = tl.load(KCNT + pid_t)
     for i in range(0, n_tiles):
         kt = tl.load(KLIST + pid_t * stride_kl + i)
-        offs_k = kt * BK + tl.arange(0, BK)
-        k_in = offs_k < T
+        key_start = tl.load(KSTART + kt)
+        key_end = tl.load(KEND + kt)
+        offs_k = key_start + tl.arange(0, BK)
+        k_in = offs_k < key_end
 
         # per-token block lookup, as in the forward kernel
         blk = blk_base[:, None] + (offs_k[None, :] - tok_base[:, None]) // BLK
@@ -231,6 +247,10 @@ def _qsa_bs_dkdv_kernel(
     TOKBASE,
     QLIST,
     QCNT,
+    QSTART,
+    QEND,
+    KSTART,
+    KEND,
     LSE,
     DO,
     DELTA,
@@ -263,9 +283,11 @@ def _qsa_bs_dkdv_kernel(
     pid_k = tl.program_id(0)
     kv_head = tl.program_id(1)
 
-    offs_k = pid_k * BK + tl.arange(0, BK)
+    key_start = tl.load(KSTART + pid_k)
+    key_end = tl.load(KEND + pid_k)
+    offs_k = key_start + tl.arange(0, BK)
     offs_d = tl.arange(0, D)
-    k_in = offs_k < T
+    k_in = offs_k < key_end
 
     k_tile = tl.load(
         K + offs_k[:, None] * stride_kt + kv_head * stride_kh + offs_d[None, :], mask=k_in[:, None], other=0.0
@@ -279,8 +301,10 @@ def _qsa_bs_dkdv_kernel(
     n_q = tl.load(QCNT + pid_k)
     for i in range(0, n_q):
         qt = tl.load(QLIST + pid_k * stride_ql + i)
-        offs_q = qt * BQ + tl.arange(0, BQ)
-        q_mask = offs_q < T
+        query_start = tl.load(QSTART + qt)
+        query_end = tl.load(QEND + qt)
+        offs_q = query_start + tl.arange(0, BQ)
+        q_mask = offs_q < query_end
         lo = tl.load(LO + offs_q, mask=q_mask, other=0)
         hi = tl.load(HI + offs_q, mask=q_mask, other=-1)
         blk_base = tl.load(BLKBASE + offs_q, mask=q_mask, other=0)
@@ -347,54 +371,75 @@ def selection_to_block_bitmap(indices: Tensor, num_tokens: int, block_size: int)
     return flags
 
 
-def build_tile_index(sel: Tensor, bq: int, bk: int, block_size: int) -> tuple[Tensor, Tensor]:
-    """``[T, NB]`` block flags -> (``klist`` [NQT, maxc] int32, ``kcnt`` [NQT] int32).
+def _segment_tiles(
+    sel: Tensor, blk_base: Tensor, tok_base: Tensor, bq: int, bk: int, block_size: int
+) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor]:
+    """Tile every packed sequence on its own grid, starting at its first token.
+
+    A global grid is wrong in two ways once a sequence starts off it: block ids are
+    per-sequence, so grouping them ``bk // block_size`` at a time no longer names the
+    physical key tile the kernel loads (selected keys get skipped), and the same sequence
+    is split into different tiles depending on where it lands in the pack, which changes
+    the softmax reduction order.
+
+    Returns the ``[NQT, NKT]`` tile occupancy plus each query/key tile's physical token
+    range ``[start, end)``. Tiles never straddle two sequences. Only a sequence's own
+    tiles are filled: keys outside it are masked by ``lo``/``hi`` in any case.
+    """
+    total, num_blocks = sel.shape
+    first = torch.ones(total, dtype=torch.bool, device=sel.device)
+    first[1:] = (blk_base[1:] != blk_base[:-1]) | (tok_base[1:] != tok_base[:-1])
+    rows = first.nonzero().flatten()
+    token_starts, block_starts = torch.stack([tok_base[rows], blk_base[rows]]).tolist()
+    token_ends = token_starts[1:] + [total]
+    block_ends = block_starts[1:] + [num_blocks]
+    bpt = bk // block_size
+
+    nqts = [-(-(t1 - t0) // bq) for t0, t1 in zip(token_starts, token_ends, strict=True)]
+    nkts = [-(-(b1 - b0) // bpt) for b0, b1 in zip(block_starts, block_ends, strict=True)]
+    tile = torch.zeros(sum(nqts), sum(nkts), dtype=torch.bool, device=sel.device)
+    query_start, query_end, key_start, key_end = [], [], [], []
+    qt = kt = 0
+    for t0, t1, b0, b1, nqt, nkt in zip(token_starts, token_ends, block_starts, block_ends, nqts, nkts, strict=True):
+        part = torch.nn.functional.pad(sel[t0:t1, b0:b1], (0, nkt * bpt - (b1 - b0), 0, nqt * bq - (t1 - t0)))
+        tile[qt : qt + nqt, kt : kt + nkt] = part.view(nqt, bq, nkt, bpt).amax(dim=3).amax(dim=1) > 0
+        query_start += range(t0, t1, bq)
+        query_end += [min(s + bq, t1) for s in range(t0, t1, bq)]
+        key_start += [t0 + i * bk for i in range(nkt)]
+        key_end += [min(t0 + (i + 1) * bk, t1) for i in range(nkt)]
+        qt += nqt
+        kt += nkt
+
+    ranges = torch.tensor(query_start + query_end + key_start + key_end, dtype=torch.int32, device=sel.device)
+    return tile, *ranges.split([len(query_start)] * 2 + [len(key_start)] * 2)
+
+
+def _compact(mat: Tensor) -> tuple[Tensor, Tensor]:
+    """Row-wise CSR: ascending column ids of each row's set entries, and their count."""
+    cnt = mat.sum(dim=1).to(torch.int32)
+    maxc = max(int(cnt.max().item()), 1)
+    order = torch.argsort((~mat).to(torch.int8), dim=1, stable=True)
+    return order[:, :maxc].contiguous().to(torch.int32), cnt
+
+
+def build_tile_index(sel: Tensor, bq: int, bk: int, block_size: int, blk_base: Tensor, tok_base: Tensor):
+    """``[T, NB]`` block flags -> (``klist``, ``kcnt``) plus the tile token ranges.
 
     ``klist[i]`` lists, ascending, the key tiles that at least one query in query-tile
     ``i`` selected. Per-query exactness still comes from the in-kernel mask; this only
     decides which tiles are worth visiting.
     """
-    T, nb = sel.shape
-    bpt = bk // block_size
-    nqt = -(-T // bq)
-    nkt = -(-nb // bpt)
-    pad_b = nkt * bpt - nb
-    pad_q = nqt * bq - T
-    if pad_b or pad_q:
-        sel = torch.nn.functional.pad(sel, (0, pad_b, 0, pad_q))
-    tile = sel.view(nqt, bq, nkt, bpt).amax(dim=3).amax(dim=1) > 0  # [nqt, nkt]
-    kcnt = tile.sum(dim=1).to(torch.int32)
-    maxc = max(int(kcnt.max().item()), 1)
-    order = torch.argsort((~tile).to(torch.int8), dim=1, stable=True)
-    klist = order[:, :maxc].contiguous().to(torch.int32)
-    return klist, kcnt
+    tile, *ranges = _segment_tiles(sel, blk_base, tok_base, bq, bk, block_size)
+    return *_compact(tile), *ranges
 
 
-def build_tile_index_pair(sel: Tensor, bq: int, bk: int, block_size: int):
+def build_tile_index_pair(sel: Tensor, bq: int, bk: int, block_size: int, blk_base: Tensor, tok_base: Tensor):
     """Both directions of the tile map: (klist, kcnt) per query tile, (qlist, qcnt) per key tile.
 
     The transposed half is what lets dK/dV be keyed on the key tile and so avoid atomics.
     """
-    T, nb = sel.shape
-    bpt = bk // block_size
-    nqt = -(-T // bq)
-    nkt = -(-nb // bpt)
-    pad_b = nkt * bpt - nb
-    pad_q = nqt * bq - T
-    padded = sel
-    if pad_b or pad_q:
-        padded = torch.nn.functional.pad(sel, (0, pad_b, 0, pad_q))
-    tile = padded.view(nqt, bq, nkt, bpt).amax(dim=3).amax(dim=1) > 0
-
-    def compact(mat):
-        cnt = mat.sum(dim=1).to(torch.int32)
-        maxc = max(int(cnt.max().item()), 1)
-        order = torch.argsort((~mat).to(torch.int8), dim=1, stable=True)
-        return order[:, :maxc].contiguous().to(torch.int32), cnt
-
-    klist, kcnt = compact(tile)
-    qlist, qcnt = compact(tile.t().contiguous())
-    return klist, kcnt, qlist, qcnt
+    tile, *ranges = _segment_tiles(sel, blk_base, tok_base, bq, bk, block_size)
+    return *_compact(tile), *_compact(tile.t().contiguous()), *ranges
 
 
 class _QSABlockSparseAttn(torch.autograd.Function):
@@ -407,10 +452,12 @@ class _QSABlockSparseAttn(torch.autograd.Function):
         qc, kc, vc = q.contiguous(), k.contiguous(), v.contiguous()
         selc = sel.contiguous()
         BQ, BK = 64, 64
-        klist, kcnt = build_tile_index(selc, BQ, BK, block_size)
+        klist, kcnt, query_start, query_end, key_start, key_end = build_tile_index(
+            selc, BQ, BK, block_size, blk_base, tok_base
+        )
         o = torch.empty(T, Hq, D, device=q.device, dtype=torch.float32)
         lse = torch.empty(Hq, T, device=q.device, dtype=torch.float32)
-        grid = (triton.cdiv(T, BQ), Hq)
+        grid = (query_start.numel(), Hq)
         _qsa_bs_fwd_kernel[grid](
             qc,
             kc,
@@ -422,6 +469,10 @@ class _QSABlockSparseAttn(torch.autograd.Function):
             tok_base,
             klist,
             kcnt,
+            query_start,
+            query_end,
+            key_start,
+            key_end,
             o,
             lse,
             qc.stride(0),
@@ -463,7 +514,10 @@ class _QSABlockSparseAttn(torch.autograd.Function):
         dv = torch.zeros(vc.shape, device=vc.device, dtype=torch.float32)
 
         BQ, BK = 64, 32
-        klist, kcnt, qlist, qcnt = build_tile_index_pair(selc, BQ, BK, ctx.block_size)
+        klist, kcnt, qlist, qcnt, query_start, query_end, key_start, key_end = build_tile_index_pair(
+            selc, BQ, BK, ctx.block_size, blk_base, tok_base
+        )
+        tile_ranges = (query_start, query_end, key_start, key_end)
         common = (
             qc.stride(0),
             qc.stride(1),
@@ -473,7 +527,7 @@ class _QSABlockSparseAttn(torch.autograd.Function):
             vc.stride(1),
             selc.stride(0),
         )
-        _qsa_bs_dq_kernel[(triton.cdiv(T, BQ), Hq)](
+        _qsa_bs_dq_kernel[(query_start.numel(), Hq)](
             qc,
             kc,
             vc,
@@ -484,6 +538,7 @@ class _QSABlockSparseAttn(torch.autograd.Function):
             tok_base,
             klist,
             kcnt,
+            *tile_ranges,
             o,
             lse,
             do,
@@ -504,7 +559,7 @@ class _QSABlockSparseAttn(torch.autograd.Function):
             num_warps=8,
             num_stages=1,
         )
-        _qsa_bs_dkdv_kernel[(triton.cdiv(T, BK), kc.shape[1])](
+        _qsa_bs_dkdv_kernel[(key_start.numel(), kc.shape[1])](
             qc,
             kc,
             vc,
@@ -515,6 +570,7 @@ class _QSABlockSparseAttn(torch.autograd.Function):
             tok_base,
             qlist,
             qcnt,
+            *tile_ranges,
             lse,
             do,
             delta,
