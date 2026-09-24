@@ -130,6 +130,8 @@ def _train(args: ScriptArgs):
 
     sglang_args = (
         f"{engine_args}"
+        # routing replay needs materialized topk ids; the SM100 default resolves to a fused runner
+        "--sglang-moe-runner-backend triton "
         "--sglang-chunked-prefill-size 8192 "
         "--sglang-disable-radix-cache "
         "--sglang-dsa-prefill-backend tilelang "
