@@ -24,6 +24,8 @@ Add these arguments to an existing text-only GRPO training recipe:
 --calculate-per-token-loss
 ```
 
+For session-server rollouts using more than 20 candidates, also set `--use-miles-router`.
+
 Keep reward mean subtraction enabled. Disabling standard-deviation normalization gives the paper's group-centered rewards. This is a separate REINFORCE-style loss: PPO clipping parameters do not apply. Existing batch size and update scheduling still control how many updates consume a rollout batch; choose them explicitly when reproducing an experiment.
 
 Choose `--score-centering-is tis` for weights clipped at `--score-centering-tis-clip` (default 2). Choose `mis` to retain ratios in `[--score-centering-mis-low, --score-centering-mis-high]` (defaults 0.5 and 5), setting other weights to zero. These weights are centered together with the score. Use these options instead of `--use-tis` or a custom TIS function.
@@ -87,8 +89,9 @@ The numerical tests compare gradients against an independent dense-distribution 
 
 ```bash
 python -m pytest tests/fast/backends/training_utils/test_score_centering.py \
-    tests/fast/backends/training_utils/test_score_centering_pipeline.py
-MILES_TEST_DISTRIBUTED=1 python -m pytest \
+    tests/fast/backends/training_utils/test_score_centering_pipeline.py \
+    tests/fast/backends/training_utils/test_score_centering_filtered.py
+python -m pytest \
     tests/fast/backends/training_utils/test_score_centering_distributed.py
 MILES_TEST_CUDA_DISTRIBUTED=1 python -m pytest \
     tests/fast/backends/training_utils/test_score_centering_distributed.py
