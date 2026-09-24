@@ -38,6 +38,7 @@ from miles.utils.lora.utils import is_multi_lora_enabled
 from miles.utils.memory_utils import clear_memory
 from miles.utils.test_utils.ft_test_actions import FTTestActionActorExecutor
 from miles.utils.tracking_utils.structured_log import log_structured
+from miles_plugins.lora import load_lora_adapter_hf, wrap_model_provider_with_lora
 
 from ...utils.misc import filter_keys
 from ..training_utils.ci_utils import check_grad_norm, check_kl
@@ -53,7 +54,7 @@ from .ci_utils import (
     save_model_hashes,
 )
 from .initialize import is_first_replica_megatron_main_rank
-from .lora.utils import is_lora_enabled, is_lora_model
+from .lora.utils import is_lora_enabled, is_lora_model, patch_param_grad_buffer_for_colocate_mode_lora
 from .model_provider import get_model_provider_func
 from .parallel import get_packed_seq_params
 
@@ -157,25 +158,9 @@ def setup_model_and_optimizer(
     else:
         provider_func = get_model_provider_func(args, role)
         if is_lora_enabled(args) and role == "actor":
-            if "inkling" in (args.custom_model_provider_path or ""):
-                assert args.lora_type == "lora", "Native Inkling does not implement --lora-type canonical_lora"
-                from miles_plugins.models.inkling.lora import wrap_model_provider_with_inkling_lora
-
-                provider_func = wrap_model_provider_with_inkling_lora(provider_func, args)
-            # TODO: will rewrite in native lora refactor
-            elif "kimi_k3" in (args.model_name or "").lower():
-                from miles_plugins.models.kimi_k3.lora import wrap_model_provider_with_kimi_k3_lora
-
-                from .lora.utils import patch_param_grad_buffer_for_colocate_mode_lora
-
-                provider_func = wrap_model_provider_with_kimi_k3_lora(provider_func, args)
-                if args.offload_train:
-                    patch_param_grad_buffer_for_colocate_mode_lora()
-            else:
-                raise AssertionError(
-                    "Native LoRA injection is only implemented for Inkling and Kimi K3; "
-                    "use --megatron-to-hf-mode bridge"
-                )
+            provider_func = wrap_model_provider_with_lora(provider_func, args)
+            if args.offload_train:
+                patch_param_grad_buffer_for_colocate_mode_lora()
         model = get_model(provider_func, ModelType.encoder_or_decoder)
 
     if args.debug_disable_optimizer:
@@ -963,12 +948,9 @@ def initialize_model_and_optimizer(
         and role == "actor"
         and args.megatron_to_hf_mode != "bridge"
         and getattr(args, "lora_adapter_path", None)
-        and "inkling" in (getattr(args, "custom_model_provider_path", None) or "")
     ):
         if (Path(args.lora_adapter_path) / "adapter_model.safetensors").exists() and not native_optimizer_restored:
-            from miles_plugins.models.inkling.lora import load_inkling_lora_adapter
-
-            load_inkling_lora_adapter(model, args.lora_adapter_path)
+            load_lora_adapter_hf(model, args.lora_adapter_path)
             if optimizer is not None:
                 # refresh the fp32 masters, or the first step() restores the
                 # pre-load init values over the adapter we just wrote
