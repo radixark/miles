@@ -19,7 +19,7 @@ from miles.backends.sglang_utils.arguments import collect_eval_sglang_overrides
 from miles.backends.sglang_utils.arguments import validate_args as sglang_validate_args
 from miles.backends.sglang_utils.sglang_config import SglangConfig
 from miles.dashboard.args import add_dashboard_arguments, validate_dashboard_args
-from miles.ray.specs.train import compute_trainer_ids, external_trainer_controller_addrs
+from miles.ray.specs.train import external_trainer_controller_addrs
 from miles.rollout.checkpoint_eval import is_checkpoint_eval_fn
 from miles.utils.args.configs.algo import AlgoConfig
 from miles.utils.args.configs.ci import CiConfig
@@ -402,7 +402,13 @@ def parse_args_and_get_parser(
     sglang_validate_args(args)
 
     assert parser is not None
-    values = vars(args) | {"sglang": SglangConfig.parse_args(args)}
+    values = vars(args) | {
+        "raw_megatron": resolve_megatron_config(
+            args,
+            base_args={name: value for name, value in vars(args).items() if name in training_backend_arg_names},
+        ),
+        "sglang": SglangConfig.parse_args(args),
+    }
     values.update(RouterConfig.from_args(args))
     return AllConfig.model_validate(values), parser
 
@@ -546,7 +552,7 @@ def _validate_deploy_instance_id(args: argparse.Namespace, *, component: DeployC
 
 
 def _validate_single_deployed_trainer(args: argparse.Namespace) -> None:
-    trainers = resolve_megatron_config(args).trainers
+    trainers = resolve_megatron_config(args, base_args={}).trainers
     assert len(trainers) == 1, (
         f"--deploy-component trainer deploys one trainer and its arguments describe {len(trainers)} "
         f"({[t.trainer_id for t in trainers]}); give this deployment the config of the one trainer it carries, "
@@ -636,7 +642,8 @@ def _validate_watched_cells_deployed_locally(args: argparse.Namespace, *, compon
 
 
 def _validate_trainer_controller_addrs(args: argparse.Namespace) -> None:
-    external_trainer_controller_addrs(args, trainer_ids=compute_trainer_ids(args))
+    trainer_ids = [trainer.trainer_id for trainer in resolve_megatron_config(args, base_args={}).trainers]
+    external_trainer_controller_addrs(args, trainer_ids=trainer_ids)
 
 
 def _validate_shared_object_store(args: argparse.Namespace, *, component: DeployComponent) -> None:
@@ -754,7 +761,10 @@ def _resolve_sample_ownership_check(args: argparse.Namespace) -> None:
     multi_policy = (
         args.train_backend == "megatron"
         and args.megatron_config is not None
-        and len([config for config in resolve_megatron_config(args).trainers if config.role == ACTOR_ROLE]) > 1
+        and len(
+            [config for config in resolve_megatron_config(args, base_args={}).trainers if config.role == ACTOR_ROLE]
+        )
+        > 1
     )
     unsupported = [
         reason
