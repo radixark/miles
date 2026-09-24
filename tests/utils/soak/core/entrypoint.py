@@ -15,7 +15,12 @@ from tests.utils.soak.core.types import SoakForms, SoakObserver
 from tests.utils.soak.core.utils import compute_base_url
 
 from miles.utils.audit_utils.event_logger.logger import EVENTS_DIRNAME
-from miles.utils.audit_utils.event_logger.models import CellReconfigureEvent, TrainGroupStepEndEvent
+from miles.utils.audit_utils.event_logger.models import (
+    CellReconfigureEvent,
+    InferenceEngineWeightChecksumEvent,
+    MetricEvent,
+    TrainGroupStepEndEvent,
+)
 from miles.utils.external_utils.command_utils.base_backend import ExecuteTrainConfig
 
 
@@ -83,7 +88,17 @@ def _create_runner(
         config=runner_config,
         sut_events=SutEventFeed(
             directory=sources["training_events"],
-            file_patterns=("trainer_controller_*.jsonl", "rollout_executor.jsonl"),
-            event_types=(TrainGroupStepEndEvent, CellReconfigureEvent),
+            file_patterns=(
+                "trainer_controller_*.jsonl",
+                "rollout_executor.jsonl",
+                "main.jsonl",
+                "actor_cell*_rank*.jsonl",
+            ),
+            event_types=(
+                TrainGroupStepEndEvent,
+                CellReconfigureEvent,
+                MetricEvent,
+                InferenceEngineWeightChecksumEvent,
+            ),
         ),
     )

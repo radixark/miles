@@ -188,7 +188,7 @@ def _run_soak(
             ),
             event_log=event_log,
             evidence_dir=evidence_dir,
-            cell_fault_forms=cell_fault_forms,
+            forms=cell_fault_forms,
         )
     )
 

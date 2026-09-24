@@ -11,6 +11,9 @@ from miles.utils.test_utils.fault_injector.models import FaultHookName, Observed
 
 ACTOR_CELL_TYPE: str = ACTOR_ROLE
 ROLLOUT_CELL_TYPE: str = "rollout"
+POOL_TARGET_KIND: str = "pool"
+
+Moment = Literal["generating", "training"]
 
 
 class FaultTrigger(StrEnum):
@@ -28,6 +31,17 @@ class CellTarget(FrozenStrictBaseModel):
     fault_target: ObservedFaultHookTarget | None = None
 
 
+class PoolTarget(FrozenStrictBaseModel):
+    kind: Literal["pool"] = "pool"
+    identity: str
+    incarnation: str = ""
+    alive: bool
+    ready: bool
+    cell_type: str
+    replicas: int
+    cell_ids: list[str]
+
+
 class InjectFaultDetails(FrozenStrictBaseModel):
     form: Literal["inject_fault"] = "inject_fault"
     fault_target: ObservedFaultHookTarget
@@ -39,6 +53,13 @@ class InjectFaultDetails(FrozenStrictBaseModel):
 class PodDetails(FrozenStrictBaseModel):
     form: Literal["pod"] = "pod"
     pod: SoakPodTarget
+
+
+class ResizeDetails(FrozenStrictBaseModel):
+    form: Literal["resize"] = "resize"
+    replicas: int
+    at_rollout: int | None
+    moment: Moment | None
 
 
 class ObservedCellFaultKind(StrEnum):
@@ -54,3 +75,9 @@ class ObservedCellFault(FrozenStrictBaseModel):
     action: FaultAction
     observed: ObservedCellFaultKind
     observed_workers_hash: str | None = None
+
+
+class PoolResizedEvidence(FrozenStrictBaseModel):
+    kind: Literal["pool_resized"] = "pool_resized"
+    replicas_before: int
+    replicas_after: int
