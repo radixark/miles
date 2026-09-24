@@ -129,8 +129,7 @@ def validate_checkpoint_compatibility(meta: dict, record: ModelRecord, config: G
 
 
 def validate_save_options(payload: dict) -> None:
-    if payload.get("ttl_seconds") is not None:
-        raise UserInputError("ttl_seconds is not supported: checkpoints on this gateway do not expire")
+    # ttl_seconds is accepted and ignored (the cookbook sends it on every save): checkpoints here never expire
     if payload.get("user_metadata") is not None:
         raise UserInputError("user_metadata is not supported by this gateway")
 
