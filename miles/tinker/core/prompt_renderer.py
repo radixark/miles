@@ -128,7 +128,7 @@ def _try_merge_tokens(
             pretokenized_token_ids=prefix_ids,
             template_args=template_args,
         )
-    except ValueError:  # the appended messages cannot extend this family's template (e.g. a disallowed role)
+    except Exception:  # the appended messages cannot extend this prefix (a disallowed role, a malformed tool call)
         return None, "rewrite"
     prompt_token_ids = [int(token) for token in prompt]
     kept = len(prefix_ids) - getattr(tito_tokenizer, "max_trim_tokens", 0)
