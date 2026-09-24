@@ -4,9 +4,12 @@ import ast
 import ctypes
 import json
 import os
+import shlex
 import signal
+import socket
 import subprocess
 import sys
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -22,6 +25,7 @@ class _TrampolineRun:
     events: list[str] = field(default_factory=list)
     prctl_calls: list[tuple[int, int]] = field(default_factory=list)
     exec_calls: list[tuple[str, list[str]]] = field(default_factory=list)
+    popen_calls: list[list[str]] = field(default_factory=list)
     exit_status: int | None = None
 
 
@@ -55,12 +59,26 @@ def _run_main(
         run.events.append("exit")
         raise SystemExit(status)
 
+    class _FakeProcess:
+        def wait(self) -> int:
+            run.events.append("wait")
+            return 7
+
+    def fake_popen(args: list[str]) -> _FakeProcess:
+        run.events.append("popen")
+        run.popen_calls.append(args)
+        if exec_error is not None:
+            raise exec_error
+        return _FakeProcess()
+
     monkeypatch.setattr(sys, "platform", platform)
     monkeypatch.setattr(sys, "argv", argv)
     monkeypatch.setattr(ctypes, "CDLL", lambda name, use_errno=False: _FakeLibc())
     monkeypatch.setattr(os, "getppid", fake_getppid)
     monkeypatch.setattr(os, "execvp", fake_execvp)
     monkeypatch.setattr(os, "_exit", fake_exit)
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(signal, "signal", lambda *_args: run.events.append("signal"))
 
     try:
         process_trampoline.main()
@@ -81,26 +99,26 @@ def _run_trampoline_process(*, expected_parent_pid: int, argv: list[str]) -> sub
 
 
 class TestTrampolineMain:
-    def test_the_death_signal_is_armed_with_sigkill_on_linux(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """On linux the trampoline asks the kernel for a SIGKILL when its parent dies."""
+    def test_the_death_signal_is_armed_with_sigterm_on_linux(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """SIGTERM lets the supervisor kill the whole group when its parent dies."""
         run = _run_main(
             monkeypatch=monkeypatch,
             argv=["trampoline", "4242", "/bin/echo", "hi"],
             current_parent_pid=4242,
         )
 
-        assert run.prctl_calls == [(1, signal.SIGKILL)]
+        assert run.prctl_calls == [(1, signal.SIGTERM)]
 
-    def test_the_real_command_is_exec_ed_with_its_own_argv(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Everything after the expected parent pid becomes the exec'd command, argv0 included."""
+    def test_the_real_command_is_supervised_with_its_own_argv(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Everything after the expected parent pid becomes the child's argv."""
         run = _run_main(
             monkeypatch=monkeypatch,
             argv=["trampoline", "4242", "/bin/sh", "-c", "sleep 1", ""],
             current_parent_pid=4242,
         )
 
-        assert run.exec_calls == [("/bin/sh", ["/bin/sh", "-c", "sleep 1", ""])]
-        assert run.exit_status is None
+        assert run.popen_calls == [["/bin/sh", "-c", "sleep 1", ""]]
+        assert run.exit_status == 7
 
     def test_the_death_signal_is_armed_before_the_parent_is_checked(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Checking the parent first would leave a window where the death signal is never armed."""
@@ -110,7 +128,7 @@ class TestTrampolineMain:
             current_parent_pid=4242,
         )
 
-        assert run.events == ["prctl", "getppid", "execvp"]
+        assert run.events == ["signal", "prctl", "getppid", "popen", "wait", "exit"]
 
     def test_a_changed_parent_makes_it_exit_instead_of_exec(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """A child reparented before the signal was armed would never be reaped, so it must not run the command."""
@@ -121,11 +139,9 @@ class TestTrampolineMain:
         )
 
         assert run.exit_status == 1
-        assert run.exec_calls == []
+        assert run.popen_calls == []
 
-    def test_a_failed_exec_is_reported_and_exits_with_the_shell_convention(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_a_failed_launch_is_reported_and_exits_with_the_shell_convention(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """A missing or unrunnable command must not look like the real command dying with status 1."""
         run = _run_main(
             monkeypatch=monkeypatch,
@@ -134,7 +150,7 @@ class TestTrampolineMain:
             exec_error=FileNotFoundError(2, "No such file or directory"),
         )
 
-        assert run.events[-2:] == ["execvp", "exit"]
+        assert run.events[-2:] == ["popen", "exit"]
         assert run.exit_status == 127
 
     def test_off_linux_it_execs_without_arming_or_checking_anything(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -153,7 +169,7 @@ class TestTrampolineMain:
 
 class TestTrampolineProcess:
     def test_the_exit_status_is_the_real_commands_own(self) -> None:
-        """A trampoline that ran the command as a child instead of exec'ing would report its own status."""
+        """The supervisor preserves the command's exit status."""
         result = _run_trampoline_process(
             expected_parent_pid=os.getpid(),
             argv=[sys.executable, "-c", "raise SystemExit(7)"],
@@ -173,6 +189,68 @@ class TestTrampolineProcess:
         assert result.returncode == 0
         assert json.loads(result.stdout) == arguments
 
+    @pytest.mark.skipif(sys.platform != "linux", reason="requires Linux parent-death signals")
+    def test_parent_death_releases_a_grandchild_listener(self, tmp_path: Path) -> None:
+        """Abrupt actor death must not leave a server listening behind its shell."""
+        ready_path = tmp_path / "port"
+        server_code = """
+import pathlib
+import socket
+import sys
+import time
+
+listener = socket.socket()
+listener.bind(("127.0.0.1", 0))
+listener.listen()
+pathlib.Path(sys.argv[1]).write_text(str(listener.getsockname()[1]))
+time.sleep(60)
+"""
+        shell_command = shlex.join([sys.executable, "-c", server_code, str(ready_path)]) + " & wait"
+        parent_code = """
+import os
+import subprocess
+import sys
+
+argv = [sys.executable, *sys.argv[1:]]
+argv[3] = str(os.getpid())
+child = subprocess.Popen(argv, start_new_session=True)
+print(child.pid, flush=True)
+child.wait()
+"""
+        parent = subprocess.Popen(
+            [sys.executable, "-c", parent_code, "-m", _TRAMPOLINE_MODULE, "PARENT_PID", "/bin/sh", "-c", shell_command],
+            stdout=subprocess.PIPE,
+            text=True,
+        )
+        assert parent.stdout is not None
+        supervisor_pid = int(parent.stdout.readline())
+        try:
+            for _ in range(100):
+                if ready_path.exists():
+                    break
+                time.sleep(0.05)
+            assert ready_path.exists(), "grandchild did not start"
+            port = int(ready_path.read_text())
+            parent.kill()
+            parent.wait(timeout=5)
+            for _ in range(100):
+                with socket.socket() as probe:
+                    try:
+                        probe.bind(("127.0.0.1", port))
+                        break
+                    except OSError:
+                        time.sleep(0.05)
+            else:
+                pytest.fail(f"grandchild retained port {port} after its owner died")
+        finally:
+            if parent.poll() is None:
+                parent.kill()
+                parent.wait(timeout=5)
+            try:
+                os.killpg(supervisor_pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+
 
 class TestTrampolineModule:
     def test_it_imports_nothing_but_the_standard_library_modules_it_needs(self) -> None:
@@ -186,4 +264,4 @@ class TestTrampolineModule:
             elif isinstance(node, ast.ImportFrom) and node.module is not None:
                 imported_modules.add(node.module.split(".")[0])
 
-        assert imported_modules == {"ctypes", "os", "signal", "sys"}
+        assert imported_modules == {"ctypes", "os", "signal", "subprocess", "sys"}

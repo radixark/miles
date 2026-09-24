@@ -1,6 +1,7 @@
 import ctypes
 import os
 import signal
+import subprocess
 import sys
 
 _PR_SET_PDEATHSIG = 1
@@ -12,10 +13,24 @@ def main() -> None:
     argv = sys.argv[2:]
 
     if sys.platform == "linux":
-        ctypes.CDLL(None, use_errno=True).prctl(_PR_SET_PDEATHSIG, signal.SIGKILL)
+        # The launched command may fork (notably /bin/sh -c). A death signal
+        # delivered only to that command would leave its children running.
+        # Stay alive as the process-group leader so the parent's death reaps
+        # the entire group, including session servers and other descendants.
+        signal.signal(signal.SIGTERM, _kill_process_group)
+        ctypes.CDLL(None, use_errno=True).prctl(_PR_SET_PDEATHSIG, signal.SIGTERM)
         if (parent_pid := os.getppid()) != expected_parent_pid:
             _log(f"parent {expected_parent_pid} is gone (current parent {parent_pid}); exiting without running {argv}")
             os._exit(1)
+
+        _log(f"bound to parent {expected_parent_pid}; supervise {argv}")
+        try:
+            child = subprocess.Popen(argv)
+        except OSError as error:
+            _log(f"launch of {argv} failed: {error}")
+            os._exit(_EXEC_FAILURE_EXIT_CODE)
+        returncode = child.wait()
+        os._exit(returncode if 0 <= returncode <= 255 else 1)
 
     _log(f"bound to parent {expected_parent_pid}; exec {argv}")
     try:
@@ -23,6 +38,10 @@ def main() -> None:
     except OSError as error:
         _log(f"exec of {argv} failed: {error}")
         os._exit(_EXEC_FAILURE_EXIT_CODE)
+
+
+def _kill_process_group(_signal_number: int, _frame: object) -> None:
+    os.killpg(os.getpgrp(), signal.SIGKILL)
 
 
 def _log(message: str) -> None:
