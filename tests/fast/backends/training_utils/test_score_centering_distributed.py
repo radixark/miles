@@ -158,7 +158,6 @@ def _worker(rank: int, rendezvous: str, backend: str) -> None:
         dist.destroy_process_group()
 
 
-@pytest.mark.skipif(os.environ.get("MILES_TEST_DISTRIBUTED") != "1", reason="opt-in multiprocess CPU parity")
 def test_tensor_and_context_parallel_gradients(tmp_path: Path) -> None:
     mp.spawn(_worker, args=((tmp_path / "rendezvous").as_uri(), "gloo"), nprocs=4, join=True)
 
