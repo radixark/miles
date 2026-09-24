@@ -20,7 +20,7 @@ from tests.utils.soak.ft.actions.factory import create_cell_fault_forms
 from tests.utils.soak.ft.checkers.healing import assert_injections_recovered, assert_min_injections
 from tests.utils.soak.ft.checkers.progress_windows import assert_faults_span_progress_windows
 from tests.utils.soak.ft.entrypoint import run_cell_soak
-from tests.utils.soak.ft.types import ROLLOUT_CELL_TYPE
+from tests.utils.soak.ft.types import ROLLOUT_CELL_TYPE, FaultTrigger
 
 from miles.utils.external_utils import command_utils
 from miles.utils.workers.types import ClusterBackend
@@ -86,7 +86,7 @@ def _run_side(request: RunSideRequest) -> None:
             ),
             event_log=event_log,
             evidence_dir=evidence_dir,
-            cell_fault_forms=create_cell_fault_forms(config),
+            cell_fault_forms=create_cell_fault_forms(config, triggers=frozenset({FaultTrigger.TIMER})),
         )
     )
     if target:

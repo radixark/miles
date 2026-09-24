@@ -21,7 +21,7 @@ from tests.utils.soak.ft.actions.pod import (
     ExecSigkillFaultForm,
     ExecSigstopFaultForm,
 )
-from tests.utils.soak.ft.types import CellTarget, InjectFaultDetails, PodDetails
+from tests.utils.soak.ft.types import CellTarget, FaultTrigger, InjectFaultDetails, PodDetails
 from tests.utils.soak.k8s_utils.pod_manipulation import PodDeletedEvidence, SoakPodTarget
 from tests.utils.soak.k8s_utils.pod_processes import (
     ProcessIdentity,
@@ -329,7 +329,7 @@ class TestCreateCellFaultFormsPodForms:
             cluster_backend=ClusterBackend.KUBERNETES, namespace="ns", run_id=_RUN_ID
         )
 
-        forms = create_cell_fault_forms(config)
+        forms = create_cell_fault_forms(config, triggers=frozenset({FaultTrigger.TIMER}))
 
         rollout_names = [form.name for form in forms["rollout"]]
         assert rollout_names == ["exec_sigkill", "exec_sigstop", "delete_pod"]
@@ -342,6 +342,6 @@ class TestCreateCellFaultFormsPodForms:
         """Ray runs have no pods to harm, so no pod form is scheduled."""
         config = command_utils.ExecuteTrainConfig(cluster_backend=ClusterBackend.RAY, run_id=_RUN_ID)
 
-        forms = create_cell_fault_forms(config)
+        forms = create_cell_fault_forms(config, triggers=frozenset({FaultTrigger.TIMER}))
 
         assert not any(isinstance(form, BasePodFaultForm) for kind_forms in forms.values() for form in kind_forms)

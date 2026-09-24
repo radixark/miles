@@ -7,7 +7,7 @@ from tests.fast.e2e.scenario_harness import SCENARIO_RUN_ID, ScenarioHarness, pa
 from tests.utils.soak.core.config import SoakTailConfig, SoakTargetConfig
 from tests.utils.soak.core.events import LaunchOutcome
 from tests.utils.soak.ft.actions.factory import create_cell_fault_forms
-from tests.utils.soak.ft.types import ACTOR_CELL_TYPE, ROLLOUT_CELL_TYPE
+from tests.utils.soak.ft.types import ACTOR_CELL_TYPE, ROLLOUT_CELL_TYPE, FaultTrigger
 from tests.utils.soak.recipes import gsm8k
 
 
@@ -35,12 +35,12 @@ class TestTheSoakTheGsm8kRunSchedules:
         }
         assert runner_config.tail == SoakTailConfig.create(num_rollout=40)
 
-    def test_the_forms_are_the_factory_forms(self, harness: ScenarioHarness) -> None:
-        """Forms built for another backend would inject faults the run was never configured to survive."""
+    def test_the_forms_are_the_timer_forms(self, harness: ScenarioHarness) -> None:
+        """Forms of another trigger would inject faults the run was never configured to survive."""
         _run(seed=5, num_rollout=40)
 
         (soak,) = harness.soaks
-        expected = create_cell_fault_forms(soak["config"])
+        expected = create_cell_fault_forms(soak["config"], triggers=frozenset({FaultTrigger.TIMER}))
         assert {kind: [form.name for form in forms] for kind, forms in soak["forms"].items()} == {
             kind: [form.name for form in expected[kind]] for kind in (ACTOR_CELL_TYPE, ROLLOUT_CELL_TYPE)
         }

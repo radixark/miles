@@ -38,7 +38,7 @@ from tests.utils.soak.ft.actions.base import CellFaultForms
 from tests.utils.soak.ft.actions.factory import compute_mean_interval_seconds_of_kind, create_cell_fault_forms
 from tests.utils.soak.ft.checkers.healing import assert_healing
 from tests.utils.soak.ft.entrypoint import run_cell_soak
-from tests.utils.soak.ft.types import ACTOR_CELL_TYPE, ROLLOUT_CELL_TYPE
+from tests.utils.soak.ft.types import ACTOR_CELL_TYPE, ROLLOUT_CELL_TYPE, FaultTrigger
 
 from miles.utils.external_utils import command_utils
 
@@ -101,7 +101,7 @@ def run_ci(
         mean_interval_seconds_of_cell_type=mean_interval_seconds_of_cell_type,
         train_args=train_args,
         fully_async=fully_async,
-        cell_fault_forms=create_cell_fault_forms(config),
+        cell_fault_forms=create_cell_fault_forms(config, triggers=frozenset({FaultTrigger.TIMER})),
     )
 
     assert_healing(
