@@ -43,7 +43,10 @@ def _run_launcher_owned_job(*, address: str, entrypoint: str, runtime_env: dict)
     try:
         asyncio.run(
             _run_and_stop_job(
-                address=address, submission_id=f"miles-{uuid.uuid4().hex}", entrypoint=entrypoint, runtime_env=runtime_env
+                address=address,
+                submission_id=f"miles-{uuid.uuid4().hex}",
+                entrypoint=entrypoint,
+                runtime_env=runtime_env,
             )
         )
     finally:
