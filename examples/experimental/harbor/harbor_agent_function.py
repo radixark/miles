@@ -56,14 +56,16 @@ Env vars (read on the rollout worker):
                          (in-sandbox agents call the model from inside the
                          sandbox, so it must route from the sandbox platform)
 
-Failure semantics: a verdict is returned as-is; every episode that ends
-without one scores 0 with a named ``exit_status`` (``TimeLimitExceeded``,
-``SequenceLengthLimitExceeded``, ``AgentError``), matching the agent-server
-path. Configuration errors (missing task dir, bad env vars) raise instead:
-they would fail every sample, and a loud stop beats training on silent
-all-zero rewards. Nothing is discarded here yet; see the tracking issue for
-wiring the platform-side Harbor exceptions to ``InfraAbort`` once that
-contract lands.
+Failure semantics: a verdict is returned as-is. A trial that fails before its
+agent starts is discarded (``InfraAbort``): ``SandboxUnavailable`` when the
+sandbox never became ready, ``AgentSetupFailed`` when the harness could not be
+set up in it; the policy has not acted yet, so it cannot have caused either.
+Every other episode that ends without a verdict scores 0 with a named
+``exit_status`` (``TimeLimitExceeded``, ``SequenceLengthLimitExceeded``,
+``AgentError``), matching the agent-server path: once the agent runs, Harbor's
+exception cannot tell a platform failure from one the agent caused.
+Configuration errors (missing task dir, bad env vars) raise instead: they would
+fail every sample, and a loud stop beats training on silent all-zero rewards.
 """
 
 import asyncio
@@ -77,6 +79,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from miles.rollout.agentic.agent_function import InfraAbort
 from miles.rollout.agentic.credentials import PROVIDER_CREDENTIALS, resolve_provider_api_key
 from miles.rollout.agentic.session import resolve_session_url
 
@@ -443,6 +446,14 @@ def _failed(exit_status: str) -> dict[str, Any]:
     return {"reward": 0.0, "exit_status": exit_status, "eval_report": {}, "agent_metrics": {}}
 
 
+def _pre_agent_failure(result) -> str | None:
+    """The discard cause of a trial that failed before its agent started, else None."""
+    if getattr(result, "exception_info", None) is None or getattr(result, "agent_execution", None) is not None:
+        return None
+    # Harbor stamps a phase's timing when the phase begins, so no agent_setup means it never got that far
+    return "SandboxUnavailable" if getattr(result, "agent_setup", None) is None else "AgentSetupFailed"
+
+
 # --- entry -----------------------------------------------------------------
 
 
@@ -480,6 +491,14 @@ async def run(
     except Exception as e:
         logger.error(f"Harbor trial for {instance_id} failed: {e}", exc_info=True)
         return _failed("AgentError")
+
+    if (cause := _pre_agent_failure(result)) is not None:
+        exc = result.exception_info
+        raise InfraAbort(
+            cause,
+            f"Harbor trial for {instance_id} failed before its agent started: "
+            f"{exc.exception_type}: {exc.exception_message}",
+        )
 
     out = trial_result_to_metadata(result)
     out["trial_dir"] = str(trial.paths.trial_dir)
