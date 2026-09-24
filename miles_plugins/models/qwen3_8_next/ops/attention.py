@@ -36,9 +36,20 @@ class Qwen38NextQSACoreAttention(MegatronModule):
         block_form = getattr(self._owner, "_qsa_block_form", None)
         if query.dim() == 3:
             if block_form is not None:
-                sel_bitmap, lo, hi, blk_base, tok_base, blk = block_form
+                sel_bitmap, lo, hi, blk_base, tok_base, block_first, block_last, blk = block_form
                 return qsa_block_sparse_attention_triton(
-                    query, key, value, sel_bitmap, lo, hi, blk_base, tok_base, self.softmax_scale, blk
+                    query,
+                    key,
+                    value,
+                    sel_bitmap,
+                    lo,
+                    hi,
+                    blk_base,
+                    tok_base,
+                    block_first,
+                    block_last,
+                    self.softmax_scale,
+                    blk,
                 ).reshape(query.shape[0], -1)
             return qsa_sparse_attention_triton(query, key, value, selection, self.softmax_scale).reshape(
                 query.shape[0], -1
@@ -147,15 +158,12 @@ class Qwen38NextAttention(SelfAttention):
         """
         ratio = self.compress_ratio
         cu = self._qsa_cu_seqlens
-        if cu is not None and cu.numel() > 2:
-            layout = PackedBlockLayout(cu, positions, ratio)
-            blk_base = layout.token_block_start.to(torch.int32)
-            tok_base = layout.token_start.to(torch.int32)
-            num_blocks = layout.num_blocks
-        else:
-            blk_base = torch.zeros(seq, dtype=torch.int32, device=selection.device)
-            tok_base = torch.zeros(seq, dtype=torch.int32, device=selection.device)
-            num_blocks = -(-seq // ratio)
+        if cu is None or cu.numel() <= 2:
+            cu = torch.tensor([0, seq], device=selection.device)
+        layout = PackedBlockLayout(cu, positions, ratio)
+        blk_base = layout.token_block_start.to(torch.int32)
+        tok_base = layout.token_start.to(torch.int32)
+        num_blocks = layout.num_blocks
 
         sel_bitmap = torch.zeros(seq, num_blocks, dtype=torch.uint8, device=selection.device)
         valid = selection >= 0
@@ -165,4 +173,6 @@ class Qwen38NextAttention(SelfAttention):
             sel_bitmap[rows[valid], blk[valid].long().clamp_(0, num_blocks - 1)] = 1
         lo = tok_base
         hi = (positions + seq_start).to(torch.int32)
-        return sel_bitmap, lo, hi, blk_base, tok_base, ratio
+        block_first = layout.block_first_token.to(torch.int32)
+        block_last = layout.block_last_token.to(torch.int32)
+        return sel_bitmap, lo, hi, blk_base, tok_base, block_first, block_last, ratio

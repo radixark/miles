@@ -95,6 +95,8 @@ class PackedBlockLayout:
         # per block
         self.block_seq = torch.repeat_interleave(torch.arange(blocks_per_seq.numel(), device=device), blocks_per_seq)
         self.block_local = torch.arange(self.num_blocks, device=device) - seq_block_start[self.block_seq]
+        self.block_first_token = seq_token_start[self.block_seq] + self.block_local * compress_ratio
+        self.block_last_token = torch.minimum(self.block_first_token + compress_ratio, cu[1:][self.block_seq]) - 1
 
 
 def compress_keys_by_mean_packed(token_k: Tensor, layout: PackedBlockLayout) -> Tensor:

@@ -89,9 +89,9 @@ def test_gradients_match_gather_kernel():
         assert rel < 1e-2, (name, rel)
 
 
-def test_packed_boundary_not_a_multiple_of_the_block():
+@pytest.mark.parametrize("lens", [[301, 211], [61, 128]])
+def test_packed_boundary_not_a_multiple_of_the_block(lens):
     """A sequence starting off the global block grid must not borrow its neighbour's blocks."""
-    lens = [301, 211]
     T = sum(lens)
     g = torch.Generator(device="cuda").manual_seed(0)
     q = torch.randn(T, HQ, D, device="cuda", dtype=torch.bfloat16, generator=g)
@@ -102,6 +102,7 @@ def test_packed_boundary_not_a_multiple_of_the_block():
     tok_base = torch.zeros(T, dtype=torch.int32, device="cuda")
     blk_base = torch.zeros(T, dtype=torch.int32, device="cuda")
     pos = torch.zeros(T, dtype=torch.int64, device="cuda")
+    block_first, block_last = [], []
     boff = 0
     for i, length in enumerate(lens):
         s0 = int(cu[i])
@@ -109,6 +110,10 @@ def test_packed_boundary_not_a_multiple_of_the_block():
         blk_base[s0 : s0 + length] = boff
         pos[s0 : s0 + length] = torch.arange(length, device="cuda")
         boff += -(-length // BLK)
+        block_first += list(range(s0, s0 + length, BLK))
+        block_last += [min(b + BLK, s0 + length) - 1 for b in range(s0, s0 + length, BLK)]
+    block_first = torch.tensor(block_first, dtype=torch.int32, device="cuda")
+    block_last = torch.tensor(block_last, dtype=torch.int32, device="cuda")
 
     sel = torch.zeros(T, boff, dtype=torch.uint8, device="cuda")
     idx = torch.full((T, 64), -1, dtype=torch.int32, device="cuda")
@@ -122,19 +127,29 @@ def test_packed_boundary_not_a_multiple_of_the_block():
         toks = toks[(toks >= int(tok_base[t])) & (toks <= t)]
         idx[t, : toks.numel()] = toks.to(torch.int32)
 
+    hi = torch.arange(T, dtype=torch.int32, device="cuda")
+    qq, kk, vv = (t.clone().requires_grad_(True) for t in (q, k, v))
     out = qsa_block_sparse_attention_triton(
-        q, k, v, sel, tok_base, torch.arange(T, dtype=torch.int32, device="cuda"), blk_base, tok_base, SCALE, BLK
+        qq, kk, vv, sel, tok_base, hi, blk_base, tok_base, block_first, block_last, SCALE, BLK
     )
     ref = _reference(q, k, v, idx, SCALE)
     assert _rel(out, ref)[1] < 1e-2
     # the second sequence is the one a global grid would corrupt
     assert _rel(out[lens[0] :], ref[lens[0] :])[1] < 1e-2
 
+    gout = torch.randn(q.shape, device="cuda", dtype=torch.bfloat16, generator=g)
+    out.backward(gout)
+    ref_grads = [t.clone().requires_grad_(True) for t in (q, k, v)]
+    qsa_sparse_attention_triton(*ref_grads, idx, SCALE).backward(gout)
+    for got, want, name in zip((qq, kk, vv), ref_grads, "qkv", strict=True):
+        assert _rel(got.grad, want.grad)[1] < 1e-2, name
+
 
 def test_tile_index_pair_is_consistent_both_ways():
     q, k, v, idx = _single_sequence_case(T=256, budget=32)
     sel = selection_to_block_bitmap(idx, 256, BLK)
-    klist, kcnt, qlist, qcnt = build_tile_index_pair(sel, 64, 32, BLK)
+    block_first = torch.arange(sel.shape[1], dtype=torch.int32, device="cuda") * BLK
+    klist, kcnt, qlist, qcnt = build_tile_index_pair(sel, block_first, block_first + BLK - 1, 64, 32)
 
     forward = {(qt, int(klist[qt, i])) for qt in range(kcnt.numel()) for i in range(int(kcnt[qt]))}
     backward = {(int(qlist[kt, i]), kt) for kt in range(qcnt.numel()) for i in range(int(qcnt[kt]))}
