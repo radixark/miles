@@ -32,6 +32,7 @@ def compute_samples_from_openai_records(
     max_trim_tokens: int = 0,
     *,
     use_addition_r3: bool = False,
+    evaluation: bool = False,
 ) -> list[Sample]:
     """Convert per-turn session records into training Samples, aligning each
     turn's output tokens against the TITO accumulated token sequence.
@@ -84,7 +85,7 @@ def compute_samples_from_openai_records(
             cursor += matched
 
         sample = _compute_sample_from_openai_record(
-            args, record, tokenizer, trim_count, use_addition_r3=use_addition_r3
+            args, record, tokenizer, trim_count, use_addition_r3=use_addition_r3, evaluation=evaluation
         )
         attach_lifecycle_metadata(sample, record, records[i - 1] if i else None, turn=i + 1)
         if is_last and args.save_debug_trajectory_data is not None:
@@ -102,7 +103,13 @@ def compute_samples_from_openai_records(
 
 
 def _compute_sample_from_openai_record(
-    args: Namespace, record: SessionRecord, tokenizer, trim_count: int = 0, *, use_addition_r3: bool = False
+    args: Namespace,
+    record: SessionRecord,
+    tokenizer,
+    trim_count: int = 0,
+    *,
+    use_addition_r3: bool = False,
+    evaluation: bool = False,
 ) -> Sample:
     choice = record.response["choices"][0]
     finish_reason = choice.get("finish_reason")
@@ -128,7 +135,9 @@ def _compute_sample_from_openai_record(
     sample.response = tokenizer.decode(output_token_ids)
     sample.response_length = len(output_token_ids)
     sample.loss_mask = [1] * len(output_token_ids)
-    if record.request.get("top_logprobs") or record.request.get("sampling_logprobs_mode") == "support":
+    if not evaluation and (
+        record.request.get("top_logprobs") or record.request.get("sampling_logprobs_mode") == "support"
+    ):
         append_score_centering_topk(
             sample,
             choice["meta_info"],

@@ -82,6 +82,28 @@ def test_session_producer_trims_candidates_with_tito_tokens() -> None:
     validate_score_centering_sample(merged, 3)
 
 
+@pytest.mark.parametrize("evaluation", [False, True])
+def test_evaluation_client_top_logprobs_do_not_collect_training_candidates(evaluation: bool) -> None:
+    record = SessionRecord(
+        timestamp=2.0,
+        request_timestamp=1.0,
+        method="POST",
+        path="v1/chat/completions",
+        status_code=200,
+        request={"input_ids": [0, 1], "top_logprobs": 3},
+        response={"choices": [{"meta_info": _meta([2], [0.5]), "finish_reason": "stop"}]},
+    )
+    samples = compute_samples_from_openai_records(
+        _args(save_debug_trajectory_data=None, sglang_speculative_algorithm=None),
+        [record],
+        _Tokenizer(),
+        evaluation=evaluation,
+    )
+    assert len(samples) == 1
+    assert (samples[0].rollout_topk_token_ids is None) is evaluation
+    assert (samples[0].rollout_topk_log_probs is None) is evaluation
+
+
 def test_filtered_session_request_and_producer() -> None:
     config = make_session_server_config(
         loss_type="score_centering",
