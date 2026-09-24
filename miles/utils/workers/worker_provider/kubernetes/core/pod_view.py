@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
+from miles.utils.workers.connection_config import WORKER_METADATA_ANNOTATION, WorkerPodMetadata
 from miles.utils.workers.k8s_types import Pod, PodStatus
 from miles.utils.workers.naming import compute_cell_id
 
@@ -32,6 +33,7 @@ class ParsedPod(FrozenStrictBaseModel):
     cell_size: int
     subdomain: str | None
     gpu_ids: tuple[int, ...]
+    worker_metadata: WorkerPodMetadata
 
 
 def parse_pods(pods: list[Pod], *, keys: CellLabelKeys) -> list[ParsedPod]:
@@ -44,6 +46,9 @@ def parse_pod(pod: Pod, keys: CellLabelKeys) -> ParsedPod | None:
     labels = metadata.labels
     pool_id = labels.get(keys.pool_id)
     if pool_id is None or keys.cell_index not in labels:
+        return None
+    worker_metadata_json = metadata.annotations.get(WORKER_METADATA_ANNOTATION)
+    if worker_metadata_json is None:
         return None
 
     status = pod.status
@@ -64,6 +69,7 @@ def parse_pod(pod: Pod, keys: CellLabelKeys) -> ParsedPod | None:
         cell_size=int(metadata.annotations.get(keys.cell_size_annotation, 0)),
         subdomain=pod.spec.subdomain,
         gpu_ids=_parse_gpu_ids(meta.get(keys.gpu_ids_meta, ""), base=_base_gpu_id(pod, keys)),
+        worker_metadata=WorkerPodMetadata.model_validate_json(worker_metadata_json),
     )
 
 
