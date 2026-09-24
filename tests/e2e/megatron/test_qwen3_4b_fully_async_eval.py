@@ -17,6 +17,7 @@ Requires: 8 GPUs, Qwen3-4B, GSM8K. Triggered by label: run-ci-megatron or run-ci
 """
 
 import os
+from tempfile import TemporaryDirectory
 
 from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
 from tests.ci.metric_history import register_ci_gate
@@ -61,7 +62,7 @@ def prepare():
     )
 
 
-def execute(eval_mode: str):
+def execute(eval_mode: str, eval_hf_dir: str):
     ckpt_args = f"--hf-checkpoint /root/models/{MODEL_NAME} " f"--ref-load /root/models/{MODEL_NAME}_torch_dist "
 
     rollout_args = (
@@ -93,7 +94,7 @@ def execute(eval_mode: str):
     rollout_num_gpus = NUM_GPUS - ACTOR_GPUS
     eval_env = {}
     if eval_mode != "shared":
-        eval_args += "--eval-hf-dir /dev/shm/miles_eval_hf --eval-keep-snapshots 2 "
+        eval_args += f"--eval-hf-dir {eval_hf_dir} --eval-keep-snapshots 2 "
         rollout_num_gpus -= 1
     if eval_mode == "fleet":
         eval_args += "--eval-num-gpus 1 --eval-num-gpus-per-engine 1 "
@@ -173,4 +174,6 @@ if __name__ == "__main__":
     prepare()
     for mode in EVAL_MODES:
         print(f"===== fully-async eval mode: {mode} =====", flush=True)
-        execute(mode)
+        # CI containers share host IPC, so each case must own its snapshot directory.
+        with TemporaryDirectory(prefix=f"miles_eval_{mode}_", dir="/dev/shm") as eval_hf_dir:
+            execute(mode, eval_hf_dir)

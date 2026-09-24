@@ -59,6 +59,8 @@ _SCRIPTS_WHOSE_DEFAULTS_ARE_UNSUPPORTED: dict[str, Callable[[Path], dict[str, ob
     "scripts/run_glm5_744b_a40b.py": lambda sandbox: _glm_checkpoint(sandbox, "GLM-5", 78),
     "scripts/run_glm5_2_744b_a40b.py": lambda sandbox: _glm_checkpoint(sandbox, "GLM-5.2", 78),
     "scripts/run_inkling.py": lambda sandbox: {"model_name": "Inkling-4layer"},
+    # convert_checkpoint locks a file under model_dir, which must be writable while recording
+    "scripts/run_kimi_k3.py": lambda sandbox: {"model_dir": str(sandbox / "models")},
     "scripts/run_nemotron_3_nano_4b_fsdp.py": _nemotron_checkpoint,
     "scripts/run_nemotron_3_ultra_550b_a55b.py": lambda sandbox: {
         "model_name": "NVIDIA-Nemotron-3-Ultra-550B-A55B-BF16-4layer"

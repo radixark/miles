@@ -28,7 +28,7 @@ def make_args(**overrides: object) -> SimpleNamespace:
         debug_rollout_only=False,
         debug_skip_weight_update=False,
         multi_lora_n_adapters=1,
-        target_modules=["linear_qkv"],
+        lora_adapter_targets=[f"model.layers.*.self_attn.{projection}_proj" for projection in ("q", "k", "v")],
     )
     defaults.update(overrides)
     return SimpleNamespace(**defaults)

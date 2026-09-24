@@ -7,6 +7,8 @@ route to LoRA-specific code paths depending on configuration — without GPU.
 from argparse import Namespace
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 # ---------------------------------------------------------------------------
 # _ensure_model_list
 # ---------------------------------------------------------------------------
@@ -67,7 +69,9 @@ class TestSetupModelAndOptimizerLoraBranch:
         return Namespace(
             lora_rank=lora_rank,
             lora_adapter_path=None,
+            custom_model_provider_path=None,
             megatron_to_hf_mode=mode,
+            model_name=None,
             moe_use_upcycling=False,
             debug_disable_optimizer=False,
             stream_optimizer_state_to_disk=False,
@@ -150,7 +154,7 @@ class TestSetupModelAndOptimizerLoraBranch:
     @patch(f"{_MODEL_MODULE}.get_megatron_optimizer")
     @patch(f"{_MODEL_MODULE}.get_model")
     @patch(f"{_MODEL_MODULE}._setup_lora_model_via_bridge")
-    def test_lora_raw_mode_skips_bridge(self, mock_lora_setup, mock_get_model, mock_opt, mock_sched):
+    def test_non_inkling_lora_raw_mode_is_rejected(self, mock_lora_setup, mock_get_model, mock_opt, mock_sched):
         from miles.backends.megatron_utils.model import setup_model_and_optimizer
 
         mock_get_model.return_value = [MagicMock()]
@@ -158,10 +162,11 @@ class TestSetupModelAndOptimizerLoraBranch:
         mock_sched.return_value = MagicMock()
 
         args = self._make_args(lora_rank=32, role="actor", mode="raw")
-        setup_model_and_optimizer(args, role="actor")
+        with pytest.raises(AssertionError, match="Native LoRA injection is only implemented for Inkling"):
+            setup_model_and_optimizer(args, role="actor")
 
         mock_lora_setup.assert_not_called()
-        mock_get_model.assert_called_once()
+        mock_get_model.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

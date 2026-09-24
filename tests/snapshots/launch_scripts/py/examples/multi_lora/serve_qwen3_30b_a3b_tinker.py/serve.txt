@@ -51,12 +51,10 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --lora-alpha 64
   --lora-dropout 0.0
   --no-gradient-accumulation-fusion
-  --multi-lora-n-adapters 4 
+  --multi-lora-n-adapters 4
+  --target-modules "attn,mlp,unembed"
   --tinker-server-port 10613
   --tinker-checkpoint-root /root/shared_data/checkpoints/260101-000000-000
-  --tinker-train-attn
-  --tinker-train-mlp
-  --tinker-train-unembed
   --optimizer adam
   --lr 1e-4 
   --tensor-model-parallel-size 2

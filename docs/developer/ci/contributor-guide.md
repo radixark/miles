@@ -8,7 +8,7 @@ This guide is for contributors landing small features and fixes. It answers thre
 
 CI selection is driven by a one-line declaration at the top of each test file, not by the workflow. To add a test you drop a `test_*.py` file in the right place and declare it; the runner discovers it automatically.
 
-**CPU / pure-Python tests** go under `tests/fast/`. No declaration needed — every `test_*.py` there is auto-registered as a CPU test and runs on every PR.
+**CPU / pure-Python tests** go under `tests/fast/`. No declaration needed — every `test_*.py` there is auto-registered as a CPU test and runs in every `PR Test` run.
 
 **GPU tests** go under `tests/e2e/` (or `tests/fast-gpu/` for small single-file GPU tests) and need exactly one top-level declaration:
 

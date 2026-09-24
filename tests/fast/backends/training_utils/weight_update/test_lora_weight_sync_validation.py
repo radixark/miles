@@ -18,7 +18,7 @@ import torch
 
 from miles.backends.training_utils.weight_update.session import check_weight_sync_results
 from miles.backends.training_utils.weight_update.updater import WeightUpdater
-from miles.utils.lora import is_lora_weight_name
+from miles.utils.lora.utils import is_lora_weight_name
 
 _UW_MODULE = "miles.backends.training_utils.weight_update.protocols.cuda_ipc"
 _UPDATER_MODULE = "miles.backends.training_utils.weight_update.updater"

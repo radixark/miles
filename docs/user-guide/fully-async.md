@@ -279,6 +279,11 @@ The fleet and an external backend both evaluate a checkpoint, so both need
 | A fresh export per eval point | `--eval-hf-dir`, pointed at tmpfs | `eval/export_time_seconds` per point, plus staging space |
 | The periodic HF checkpoints | `--eval-hf-dir` unset and `--save-hf` set | None, but `eval_interval` must be a multiple of `save_interval` |
 
+When snapshot eval reuses `--save-hf`, a fixed path such as `/checkpoints/hf`
+automatically becomes `/checkpoints/hf/step_{rollout_id}`. Existing rollout ID
+format fields, including `{rollout_id:06d}`, keep their original layout. Save paths
+are unchanged when eval uses `--eval-hf-dir` or shared engines, or eval is disabled.
+
 On a real run you are persisting checkpoints anyway, so reuse costs nothing. A test run
 that saves no checkpoints needs the export, and a tmpfs staging directory keeps it off
 disk.

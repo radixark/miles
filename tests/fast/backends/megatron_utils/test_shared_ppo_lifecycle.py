@@ -136,18 +136,25 @@ def test_train_keeps_model_resident(actor_module, monkeypatch):
     worker.sleep.assert_not_called()
 
 
-def test_compute_log_prob_keeps_logits_in_model_precision(actor_module, monkeypatch):
+@pytest.mark.parametrize(
+    ("store_prefix", "expected"),
+    [("", True), ("ref_", False), ("teacher_", False)],
+)
+def test_compute_log_prob_replays_sampling_support_only_for_actor_scores(
+    actor_module, monkeypatch, store_prefix, expected
+):
     worker = object.__new__(actor_module.MegatronTrainRayActor)
-    worker.args = Namespace()
+    worker.args = Namespace(use_sampling_support_replay=True)
     worker.model = [object()]
     forward_only = Mock(return_value={"log_probs": []})
     monkeypatch.setattr(actor_module, "forward_only", forward_only)
     monkeypatch.setattr(actor_module, "timer", lambda _name: nullcontext())
 
-    result = worker.compute_log_prob([], [], rollout_id=3)
+    result = worker.compute_log_prob([], [], rollout_id=3, store_prefix=store_prefix)
 
     assert result == {"log_probs": []}
     assert forward_only.call_args.kwargs["fp32_output"] is False
+    assert forward_only.call_args.kwargs["use_rollout_sampling_mask"] is expected
 
 
 def test_save_model_does_not_manage_lifecycle(actor_module, monkeypatch):
@@ -163,6 +170,7 @@ def test_save_model_does_not_manage_lifecycle(actor_module, monkeypatch):
     worker.model = object()
     worker.optimizer = object()
     worker.opt_param_scheduler = object()
+    worker.snapshot_publisher = object()
     worker.wake_up = Mock()
     worker.sleep = Mock()
     save = Mock()
@@ -174,7 +182,9 @@ def test_save_model_does_not_manage_lifecycle(actor_module, monkeypatch):
 
     worker.save_model(6)
 
-    save.assert_called_once_with(6, worker.model, worker.optimizer, worker.opt_param_scheduler)
+    save.assert_called_once_with(
+        6, worker.model, worker.optimizer, worker.opt_param_scheduler, snapshot_publisher=worker.snapshot_publisher
+    )
     worker.wake_up.assert_not_called()
     worker.sleep.assert_not_called()
     reload_groups.assert_not_called()

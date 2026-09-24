@@ -80,7 +80,8 @@ then push up until you OOM.
 | Flag | Default | What |
 |---|---|---|
 | `--rollout-temperature` | `1.0` | Sampling temperature. |
-| `--rollout-top-p` | `1.0` | Top-p truncation. |
+| `--rollout-top-p` | `1.0` | Top-p truncation. Values below `1` enable [sampling-support replay](/advanced/sampling-support-replay) and require a positive top-k. |
+| `--rollout-top-k` | `-1` | Top-k truncation. Positive values enable [sampling-support replay](/advanced/sampling-support-replay). |
 | `--rollout-max-response-len` | `–` | Max tokens per response. |
 | `--rollout-stop-token-ids` | model default | Stop token IDs. Override when generations don't stop. |
 | `--apply-chat-template` | off | Apply the tokenizer's chat template. |
@@ -186,8 +187,8 @@ Sections mirror the launch-script argument groups.
 |---|---|---|---|
 | `--rollout-max-response-len` | int | – | Max tokens per response. |
 | `--rollout-temperature` | float | `1.0` | Sampling temperature. |
-| `--rollout-top-p` | float | `1.0` | Top-p truncation. |
-| `--rollout-top-k` | int | `-1` | Top-k truncation (-1 disables). |
+| `--rollout-top-p` | float | `1.0` | Top-p truncation. Values below `1` require bounded [sampling-support replay](/advanced/sampling-support-replay). |
+| `--rollout-top-k` | int | `-1` | Top-k truncation (`-1` disables). Positive values enable [sampling-support replay](/advanced/sampling-support-replay). |
 | `--rollout-stop` | str+ | – | Stop strings. |
 | `--rollout-stop-token-ids` | int+ | – | Stop token IDs. |
 

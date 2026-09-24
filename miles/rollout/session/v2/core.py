@@ -16,7 +16,7 @@ from miles.rollout.session.core import (
 )
 from miles.rollout.session.errors import SessionNotFoundError, TokenizationError
 from miles.rollout.session.request_args import filter_turn_args, parse_chat_request
-from miles.rollout.session.samples.codec import COMPUTED_FIELDS_V2, encode_samples
+from miles.rollout.session.samples.codec import COMPUTED_FIELDS_V2, ROLLOUT_SAMPLING_MASK_FIELDS, encode_samples
 from miles.rollout.session.types import GetSessionResponse, SessionRecord
 from miles.rollout.session.v2.metrics import SESSION_ROLLOUT_METRICS_KEY, build_session_rollout_metrics
 from miles.rollout.session.v2.session_state import (
@@ -85,12 +85,13 @@ class SessionCoreV2(SessionCore):
         """
         session = self.registry.get_session(session_id)
         metadata = self._session_metadata(session_id, session)
+        fields = COMPUTED_FIELDS_V2
+        if session.sampling_support_replay:
+            fields += ROLLOUT_SAMPLING_MASK_FIELDS
         if agent_metadata is not None:
             metadata["agent"] = agent_metadata
         if not session.tree.nodes:
-            return _samples_response(
-                encode_samples([], metadata, empty_reason="no_records", fields=COMPUTED_FIELDS_V2)
-            )
+            return _samples_response(encode_samples([], metadata, empty_reason="no_records", fields=fields))
 
         try:
             material = build_leaf_material(
@@ -104,9 +105,7 @@ class SessionCoreV2(SessionCore):
         except (AssertionError, ValueError) as exc:
             return Response(content=str(exc).encode(), status_code=422, media_type="text/plain")
         if not material:
-            return _samples_response(
-                encode_samples([], metadata, empty_reason="all_truncated", fields=COMPUTED_FIELDS_V2)
-            )
+            return _samples_response(encode_samples([], metadata, empty_reason="all_truncated", fields=fields))
 
         # Hook lane: a policy bug is a deterministic 422 carrying the hook's
         # identity, never a masked 500 (server death stays loud).
@@ -126,14 +125,12 @@ class SessionCoreV2(SessionCore):
             )
             return Response(content=body.encode(), status_code=422, media_type="text/plain")
         if not samples:
-            return _samples_response(
-                encode_samples([], metadata, empty_reason="all_truncated", fields=COMPUTED_FIELDS_V2)
-            )
+            return _samples_response(encode_samples([], metadata, empty_reason="all_truncated", fields=fields))
         # Hooks may inspect or mutate session metadata, so publish the
         # authoritative server-owned value only at the wire boundary.
         if self.config.sglang_speculative_algorithm is not None:
             metadata[SESSION_ROLLOUT_METRICS_KEY] = build_session_rollout_metrics(session_id, session.tree.nodes)
-        return _samples_response(encode_samples(samples, metadata, fields=COMPUTED_FIELDS_V2))
+        return _samples_response(encode_samples(samples, metadata, fields=fields))
 
     async def chat_completions(
         self, session_id: str, *, method: str, query: str, headers: dict, body: bytes
@@ -196,7 +193,7 @@ class SessionCoreV2(SessionCore):
         # --- Phase 3: update state (lock held briefly) ---
         async with session.lock:
             if session.closing:
-                logger.warning(f"Session {session_id} closed during proxy, skipping state update")
+                logger.debug("Session %s closed during proxy, skipping state update", session_id)
                 return _chat_client_response(result, response, client_stream)
 
             record = SessionRecord(

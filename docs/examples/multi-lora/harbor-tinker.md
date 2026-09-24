@@ -63,8 +63,8 @@ tool-call parsing are not covered yet).
      plain Tinker gateway, no tokenizer load, no extra routes, no sweep task).
    - `--tinker-tito-model qwen3` selects the Qwen3 fixed chat template; leave `--chat-template-path` unset with it. Drop the
      flag to re-render the full history every turn (one Datum per turn).
-   - Keep `--tinker-train-unembed` on (the launcher's default): the cookbook creates its model with the SDK default
-     `train_unembed=True`.
+   - Keep `unembed` in `--target-modules` (the launcher's default `attn,mlp,unembed`): the cookbook creates its model
+     with the SDK default `train_unembed=True`.
    - The gateway refuses a Datum longer than `min(model max_position_embeddings, --max-tokens-per-gpu)` and closes the
      model; agent trajectories run to 10–30k tokens, so pass `--max-tokens-per-gpu 32768` (with recompute). The bind
      answers that cap and the client truncates each trajectory to it (`max_datum_tokens` can only lower it).
