@@ -17,6 +17,7 @@
 | `scenario_rollout_deterministic` | `kill_rollout__dp4` |
 | `scenario_trainer_all_gather_fault` | `kill_train__dp2_tp2` |
 | `scenario_p2p_send_receiver_fault` | `kill_rollout__dp2_tp2` |
+| `scenario_inference_scaling` | `test_inference_scaling__kill_rollout.py`, no modes |
 | `scenario_random_crash` | `kill_train__dp2_cp2_tp2_ep2__fake_rollout__moe_5layer`, `kill_train__dp2_cp2__moe_5layer`, `kill_train_rollout__dp2_cp2`, `kill_rollout__dp4` |
 | `scenario_realistic_gsm8k` | `test_realistic_gsm8k__kill_train_rollout.py`, no modes |
 | `scenario_random_crash_fully_async` | `kill_train_rollout__dp2_cp2` |
@@ -42,6 +43,7 @@
 | `scenario_rollout_deterministic` | comparison | engine crashes change training bits not at all |
 | `scenario_trainer_all_gather_fault` | comparison | a trainer rank killed, stopped or deadlocked in the weight-update all-gather changes training bits not at all |
 | `scenario_p2p_send_receiver_fault` | comparison | an engine killed while the trainer is sending it weights over P2P changes training bits not at all |
+| `scenario_inference_scaling` | soak | the engine pool grows and shrinks under a live run, and the run follows it |
 | `scenario_random_crash` | soak | system survives random crashes without hanging |
 | `scenario_realistic_gsm8k` | soak | model still reaches gsm8k accuracy under random crashes |
 | `scenario_random_crash_fully_async` | soak | same, through `train_async.py --fully-async` |
@@ -423,6 +425,58 @@ Assertions:
 - **Why 50 ms**: long enough for the first writes to be in flight, far shorter than the transfer, so the kill lands inside it on every run; the delay is fixed, not drawn, so both sides stay deterministic.
 - **Why the failed-cell witness**: the update has to record the receiver as failed in exactly that rollout, so a kill that landed after the transfer finished cannot pass as the fault under test.
 - **Calibration**: the 50 ms delay and the CI estimate have not been calibrated by a run.
+
+### `scenario_inference_scaling`
+
+```
+Type: soak (no baseline, no compare); kubernetes only, the pool is a LeaderWorkerSet there
+Entry: test_inference_scaling__kill_rollout.py, no mode: the topology is pinned in
+       conftest_ft/scaling.py (compute_scaling_mode)
+Steps: 12 rollouts (SCALING_NUM_ROLLOUTS)
+Layout: dense Qwen3-0.6B, 2 cells x CP2 on 4 train GPUs + 2 engines x 1 GPU, disaggregated,
+        --ft-components rollout, api server + mini ft controller as in the soaks; 7 GPUs at the peak
+
+Mechanism: run_cell_soak with one target kind, "pool": the observer lists the engine pool as a
+        PoolTarget (its LeaderWorkerSet replicas, read through kubectl, and its rollout cells), and
+        the only form is a scheduled ResizePoolForm (tests/utils/soak/ft/actions/resize.py). The
+        scheduler draws that form every poll; the form fires only while the run stands at the
+        next step's moment and otherwise declines, and it patches spec.replicas of the pool's
+        LeaderWorkerSet - during training the engines are idle, so nothing is mid-generation on
+        the pod that goes away. Kubernetes creates or deletes the highest group index, the
+        inference controller sees the pod through its watch and adds / removes the cell, the
+        next weight update covers the new engine, and the rollout executor re-reads the engine
+        topology before every rollout.
+Schedule (SCHEDULE = compute_scaling_schedule("training")): 2 -> 3 engines while training
+        rollout 2, 3 -> 2 while training rollout 7
+Timing: exact - the form reads the run's live events the soak feeds into every observation
+        (rollout executor metrics = generation done, train/grad_norm = training done, the engine
+        checksum event = weights pushed) and fires only while the run stands at the scheduled
+        moment; a missed moment fails the soak, it never fires late
+Landing: a resize recovers once an observation shows the pool ready - every engine cell Serving
+        and exactly as many cells as replicas - and nothing else is drawn before it; it shows
+        in the run within LANDING_LAG_ROLLOUTS (3) rollouts, and no earlier
+
+Assertions:
+  1. Soak: every action returned and recovered, the tail trained a normal step after admission
+     closed, and the final observation holds the pool alive and ready
+  2. Resizes: exactly the two scheduled resizes were applied, in order, the pool reading
+     2 -> 3 -> 2 replicas before and after each
+  3. Api server: the soak's GET /api/v1/cells readings list at most 3 rollout cells alive and
+     Serving at once, and exactly 2 when the run ends
+  4. train/grad_norm finite and nonzero for all 12 rollouts
+  5. Weight updates: the number of engines each InferenceEngineWeightChecksumEvent covers is 2
+     for rollouts before the first landing, 3 between the landings, 2 after the second, each
+     landing within the lag window of its resize, plus 2 for the update before rollout 0
+  6. Rollout executor topology: the engine gpu count the executor normalized rollout throughput
+     by, rebuilt per rollout as num_training_samples x response_len/mean / rollout_time /
+     effective_tokens_per_gpu_per_sec, follows the same schedule
+  7. Zero CellReconfigureEvents (no trainer cell moved)
+```
+
+- **Why not relaunch with a new `--rollout-num-gpus`**: the launcher admits a relaunch whose only difference is a LeaderWorkerSet's `replicas` ("scaling"), but a changed size also changes the resolved `sglang` config every leaf payload carries (`server_groups[].num_gpus`) and the orchestrator's argv, so today it refuses the upgrade; resizing the workload directly is how an operator scales the pool until the size leaves the worker payloads.
+- **Why during training**: an engine deleted mid-generation is a crash the rollout ft path already covers in the soaks; the scaling question is whether the run follows a pool that changes size, so the resize lands where nothing is in flight.
+- **Why two independent witnesses of the size**: the checksum event counts the engines the trainer pushed to; the throughput denominator is what `InferenceRuntimeMutState` told the rollout executor. One agreeing with the schedule while the other does not is exactly the bug a refactor of the runtime topology would introduce.
+- **Why the lag window**: a pod takes seconds to be created and the reflector to see it; the update after the resize's own rollout may or may not include the new engine, the one after it must.
 
 ### `scenario_random_crash`
 
