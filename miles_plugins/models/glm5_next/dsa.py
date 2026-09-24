@@ -102,10 +102,16 @@ class Glm5NextDSAAttention(DSAMLASelfAttention):
         query = query.contiguous()
         key = kv_compressed.contiguous()
 
-        q_compressed = q_compressed.detach()
+        # the q RMSNorm is fused into linear_q_up_proj, but the indexer reads the normed q_lora too
+        q_lora = torch.nn.functional.rms_norm(
+            q_compressed.detach().float(),
+            normalized_shape=(q_compressed.shape[-1],),
+            weight=self.linear_q_up_proj.layer_norm_weight.detach().float(),
+            eps=self.config.layernorm_epsilon,
+        ).to(q_compressed.dtype)
         hidden_states = hidden_states.detach()
 
-        index_q, _ = self.wq_b(q_compressed)
+        index_q, _ = self.wq_b(q_lora)
         index_q = index_q.view(*index_q.size()[:-1], self.config.index_num_attention_heads, self.config.index_head_dim)
         if self.config.sequence_parallel:
             index_q = gather_from_sequence_parallel_region(index_q)
