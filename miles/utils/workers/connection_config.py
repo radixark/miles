@@ -1,6 +1,7 @@
 import json
 from pydantic import Field
 
+from miles.utils.args.configs.scaling import ScalingConfig
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
 from miles.utils.workers.worker_spec import BaseServeSpec, BaseSpec, PortInfo, StaticMeta
 
@@ -31,7 +32,7 @@ class WorkerPodMetadata(FrozenStrictBaseModel):
     static_meta: StaticMeta
 
 
-def build_static_conn_config(*, specs: list[BaseSpec]) -> StaticConnConfig:
+def build_static_conn_config(*, specs: list[BaseSpec], scaling: ScalingConfig) -> StaticConnConfig:
     return StaticConnConfig(
         static_conn_infos={
             spec.name: StaticPoolConnInfo(
@@ -48,7 +49,7 @@ def build_static_conn_config(*, specs: list[BaseSpec]) -> StaticConnConfig:
     )
 
 
-def build_worker_annotations(*, spec: BaseSpec) -> dict[str, str]:
+def build_worker_annotations(*, spec: BaseSpec, scaling: ScalingConfig) -> dict[str, str]:
     metadata = WorkerPodMetadata(
         category=spec.category,
         workers_per_pod=spec.scheduling.workers_per_pod(),
