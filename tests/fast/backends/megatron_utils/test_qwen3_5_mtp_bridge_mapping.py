@@ -3,6 +3,7 @@ import sys
 import types
 from pathlib import Path
 
+import pytest
 import torch
 
 
@@ -172,6 +173,60 @@ def test_eh_proj_keeps_column_order_when_loading_to_mcore():
     converted = bridge._weight_to_mcore_format("mtp.layers.0.eh_proj.weight", [weight])
 
     assert torch.equal(converted, weight)
+
+
+@pytest.mark.parametrize("ep_size", [1, 2, 4, 8])
+@pytest.mark.parametrize("projection", ["linear_fc1", "linear_fc2"])
+@pytest.mark.parametrize("layer_prefix", ["decoder.layers.0", "mtp.layers.0.transformer_layer"])
+def test_fused_experts_use_global_rows_on_every_ep_rank(ep_size, projection, layer_prefix):
+    module = load_bridge_module()
+    bridge = module.Qwen3_5Bridge.__new__(module.Qwen3_5Bridge)
+    bridge.config = types.SimpleNamespace(num_moe_experts=16)
+    fused_experts = torch.arange(16 * 3 * 2).view(16, 3, 2)
+    experts_per_rank = 16 // ep_size
+
+    for ep_rank in range(ep_size):
+        bridge.mpu = types.SimpleNamespace(ep_size=ep_size, ep_rank=ep_rank)
+        for local_expert_id in {0, experts_per_rank - 1}:
+            name = f"{layer_prefix}.mlp.experts.{projection}.weight{local_expert_id}"
+            converted = bridge._weight_to_mcore_format(name, [fused_experts])
+            global_expert_id = ep_rank * experts_per_rank + local_expert_id
+            assert torch.equal(converted, fused_experts[global_expert_id])
+
+
+def test_split_expert_tensor_keeps_its_local_mapping():
+    module = load_bridge_module()
+    bridge = module.Qwen3_5Bridge.__new__(module.Qwen3_5Bridge)
+    bridge.config = types.SimpleNamespace(num_moe_experts=8)
+    bridge.mpu = types.SimpleNamespace(ep_size=4, ep_rank=3)
+    split_expert = torch.arange(6).view(3, 2)
+
+    converted = bridge._weight_to_mcore_format("decoder.layers.0.mlp.experts.linear_fc1.weight1", [split_expert])
+
+    assert converted is split_expert
+
+
+@pytest.mark.parametrize(
+    ("num_experts", "tensor_experts", "ep_size", "ep_rank", "local_expert_id", "message"),
+    [
+        (8, 7, 2, 0, 0, "expected 8 fused experts"),
+        (9, 9, 2, 0, 0, "not divisible"),
+        (8, 8, 2, 0, 4, "local expert"),
+        (8, 8, 2, 2, 0, "EP rank"),
+    ],
+)
+def test_fused_experts_reject_invalid_partitions(
+    num_experts, tensor_experts, ep_size, ep_rank, local_expert_id, message
+):
+    module = load_bridge_module()
+    bridge = module.Qwen3_5Bridge.__new__(module.Qwen3_5Bridge)
+    bridge.config = types.SimpleNamespace(num_moe_experts=num_experts)
+    bridge.mpu = types.SimpleNamespace(ep_size=ep_size, ep_rank=ep_rank)
+    fused_experts = torch.arange(tensor_experts).view(tensor_experts, 1, 1)
+    name = f"decoder.layers.0.mlp.experts.linear_fc1.weight{local_expert_id}"
+
+    with pytest.raises(ValueError, match=message):
+        bridge._weight_to_mcore_format(name, [fused_experts])
 
 
 def test_build_config_enables_gated_attention_when_transformer_config_supports_it():

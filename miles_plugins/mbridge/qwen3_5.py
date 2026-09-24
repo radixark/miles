@@ -377,10 +377,23 @@ class Qwen3_5Bridge(Qwen2MoEBridge):
         if "mlp.experts.linear_fc" in mcore_weights_name and len(hf_weights) == 1:
             w = hf_weights[0]
             if w.dim() == 3:
-                # Extract expert_id from name like "...linear_fc1.weight42"
-                expert_id = int(mcore_weights_name.split("weight")[-1])
-                expert_w = w[expert_id]  # (out_features, in_features)
-                return expert_w.contiguous()
+                # mbridge passes an EP-local parameter name, while the fused HF
+                # tensor contains every expert. Translate before selecting a row.
+                num_experts = self.config.num_moe_experts
+                if w.shape[0] != num_experts:
+                    raise ValueError(f"expected {num_experts} fused experts, got {w.shape[0]}")
+                ep_size = self.mpu.ep_size
+                if num_experts % ep_size:
+                    raise ValueError(f"num_moe_experts={num_experts} is not divisible by ep_size={ep_size}")
+                ep_rank = self.mpu.ep_rank
+                if not 0 <= ep_rank < ep_size:
+                    raise ValueError(f"EP rank {ep_rank} is outside [0, {ep_size})")
+                local_expert_id = int(mcore_weights_name.split("weight")[-1])
+                experts_per_rank = num_experts // ep_size
+                if not 0 <= local_expert_id < experts_per_rank:
+                    raise ValueError(f"local expert {local_expert_id} is outside [0, {experts_per_rank})")
+                global_expert_id = ep_rank * experts_per_rank + local_expert_id
+                return w[global_expert_id].contiguous()
 
         return super()._weight_to_mcore_format(mcore_weights_name, hf_weights)
 
