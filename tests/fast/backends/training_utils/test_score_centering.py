@@ -1,5 +1,7 @@
 """Compare the implemented gradient with independent dense-distribution oracles."""
 
+import math
+
 import pytest
 import torch
 
@@ -18,7 +20,7 @@ from miles.backends.training_utils.loss_hub.score_centering import (
         ("tis", {"tis_clip": float("inf")}),
         ("mis", {"mis_low": 0.0}),
         ("mis", {"mis_low": -1.0}),
-        ("mis", {"mis_low": 2.0, "mis_high": 2.0}),
+        ("mis", {"mis_low": 2.0, "mis_high": 1.0}),
         ("mis", {"mis_high": float("nan")}),
     ],
 )
@@ -67,6 +69,65 @@ def test_zero_advantage_ignores_nan_importance_ratio(mode: str) -> None:
     )
     torch.testing.assert_close(loss, torch.zeros_like(loss))
     assert torch.isfinite(metrics["sc_importance_weight"]).all()
+
+
+@pytest.mark.parametrize("mode", ["tis", "mis"])
+def test_zero_advantage_preserves_finite_importance_weight(mode: str) -> None:
+    _, metrics = score_centering_loss(
+        torch.tensor([-1.0]),
+        torch.tensor([[-1.0]]),
+        torch.tensor([-1.0 - math.log(0.8)]),
+        torch.tensor([[-1.0]]),
+        torch.tensor([[True]]),
+        torch.zeros(1),
+        mode=mode,
+    )
+    torch.testing.assert_close(metrics["sc_importance_weight"], torch.tensor([0.8]))
+
+
+@pytest.mark.parametrize("mode", ["none", "tis", "mis"])
+@pytest.mark.parametrize("bad_side", ["train", "rollout"])
+def test_zero_advantage_ignores_nan_head_candidate(mode: str, bad_side: str) -> None:
+    train_head = torch.tensor([[float("nan") if bad_side == "train" else -1.0, -1.5]])
+    rollout_head = torch.tensor([[float("nan") if bad_side == "rollout" else -1.0, -1.5]])
+    loss, metrics = score_centering_loss(
+        torch.tensor([-1.0]),
+        train_head,
+        torch.tensor([-1.0]),
+        rollout_head,
+        torch.tensor([[True, True]]),
+        torch.zeros(1),
+        mode=mode,
+    )
+    torch.testing.assert_close(loss, torch.zeros_like(loss))
+    assert all(torch.isfinite(value).all() for value in metrics.values())
+
+
+def test_active_nan_head_candidate_fails_clearly() -> None:
+    with pytest.raises(ValueError, match="NaN candidate"):
+        score_centering_loss(
+            torch.tensor([-1.0]),
+            torch.tensor([[float("nan")]]),
+            torch.tensor([-1.0]),
+            torch.tensor([[-1.0]]),
+            torch.tensor([[True]]),
+            torch.ones(1),
+        )
+
+
+@pytest.mark.parametrize("bad_index", [1, 2, 3, 4, 5])
+def test_score_centering_loss_rejects_broadcastable_shapes(bad_index: int) -> None:
+    values = [
+        torch.tensor([-1.0]),
+        torch.tensor([[-1.0, -2.0]]),
+        torch.tensor([-1.0]),
+        torch.tensor([[-1.0, -2.0]]),
+        torch.tensor([[True, True]]),
+        torch.ones(1),
+    ]
+    values[bad_index] = values[bad_index][..., :1] if bad_index in (1, 3, 4) else values[bad_index][None]
+    with pytest.raises(ValueError, match="sample tensors must be"):
+        score_centering_loss(*values)
 
 
 @pytest.mark.parametrize("mode", ["tis", "mis"])

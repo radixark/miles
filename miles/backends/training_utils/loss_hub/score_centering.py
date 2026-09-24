@@ -14,8 +14,8 @@ import torch.distributed as dist
 def _validate_importance_args(mode: str, tis_clip: float, mis_low: float, mis_high: float) -> None:
     if mode == "tis" and (not math.isfinite(tis_clip) or tis_clip <= 0):
         raise ValueError("Score-centering TIS clip must be positive and finite")
-    if mode == "mis" and (not math.isfinite(mis_low) or not math.isfinite(mis_high) or not 0 < mis_low < mis_high):
-        raise ValueError("Score-centering MIS bounds must be finite with 0 < low < high")
+    if mode == "mis" and (not math.isfinite(mis_low) or not math.isfinite(mis_high) or not 0 < mis_low <= mis_high):
+        raise ValueError("Score-centering MIS bounds must be finite with 0 < low <= high")
     if mode not in ("none", "tis", "mis"):
         raise ValueError(f"Unknown score-centering importance weighting: {mode}")
 
@@ -63,12 +63,33 @@ def score_centering_loss(
     cancellation is exact for a full distribution, approximate for a true tail
     that differs from the modeled, rescaled trainer tail.
     """
+    if (
+        train_log_probs.ndim != 1
+        or rollout_log_probs.shape != train_log_probs.shape
+        or advantages.shape != train_log_probs.shape
+        or train_head_log_probs.ndim != 2
+        or train_head_log_probs.shape[0] != train_log_probs.shape[0]
+        or rollout_head_log_probs.shape != train_head_log_probs.shape
+        or head_mask.shape != train_head_log_probs.shape
+    ):
+        raise ValueError("Score-centering sample tensors must be [tokens] and head tensors [tokens, candidates]")
     _validate_importance_args(mode, tis_clip, mis_low, mis_high)
     active = advantages.detach() != 0
-    head_log_probs = torch.where(head_mask, train_head_log_probs, 0.0)
+    invalid_head = (
+        active[:, None] & head_mask & (torch.isnan(train_head_log_probs) | torch.isnan(rollout_head_log_probs))
+    )
+    if invalid_head.any():
+        raise ValueError("Score centering has a NaN candidate log-probability on an active token")
+    # Inactive padding can contain NaN sentinels. Preserve finite values for
+    # diagnostics while giving invalid candidates zero mass.
+    inactive_nan_train = ~active[:, None] & torch.isnan(train_head_log_probs)
+    inactive_nan_rollout = ~active[:, None] & torch.isnan(rollout_head_log_probs)
+    safe_train_head = torch.where(inactive_nan_train, -torch.inf, train_head_log_probs)
+    safe_rollout_head = torch.where(inactive_nan_rollout, -torch.inf, rollout_head_log_probs)
+    head_log_probs = torch.where(head_mask, safe_train_head, 0.0)
     with torch.no_grad():
         p = head_log_probs.exp().masked_fill(~head_mask, 0.0)
-        q = rollout_head_log_probs.exp().masked_fill(~head_mask, 0.0)
+        q = safe_rollout_head.exp().masked_fill(~head_mask, 0.0)
         p_mass, q_mass = p.sum(-1), q.sum(-1)
         rho = (1 - q_mass).clamp_min(eps) / (1 - p_mass).clamp_min(eps)
         if mode == "none":
@@ -77,15 +98,16 @@ def score_centering_loss(
             # q * min(p/q, c), including q=0, without 0 * inf.
             weighted_q, alpha = torch.minimum(p, tis_clip * q), (tis_clip * rho).clamp_max(1)
         elif mode == "mis":
-            log_ratio = head_log_probs - rollout_head_log_probs
+            log_ratio = head_log_probs - safe_rollout_head
             inside = (log_ratio >= math.log(mis_low)) & (log_ratio <= math.log(mis_high))
             weighted_q = torch.where(inside & head_mask, p, 0.0)
             alpha = ((rho >= 1 / mis_high) & (rho <= 1 / mis_low)).to(p.dtype)
         else:
             raise ValueError(f"Unknown score-centering importance weighting: {mode}")
         residual = weighted_q - alpha.unsqueeze(-1) * p
+        sample_log_ratio = train_log_probs - rollout_log_probs
         weight = importance_weights(
-            torch.where(active, train_log_probs - rollout_log_probs, 0.0),
+            torch.where(~active & torch.isnan(sample_log_ratio), 0.0, sample_log_ratio),
             mode,
             tis_clip=tis_clip,
             mis_low=mis_low,
