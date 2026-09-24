@@ -285,6 +285,8 @@ class SessionRolloutStrategy(RolloutStrategy):
             bind_body["max_datum_tokens"] = self.max_datum_tokens  # TITO chain budget (see truncate_turns)
         bound = await http.post(f"/oai/sessions/{session_id}", json=bind_body)
         bound.raise_for_status()
+        # the gateway's effective cap: a longer datum fails validation, which closes the model
+        max_datum_tokens = bound.json().get("max_datum_tokens", self.max_datum_tokens)
         try:
             run_trial = self.run_trial or _default_run_trial()
             verdict = await run_trial(
@@ -302,14 +304,14 @@ class SessionRolloutStrategy(RolloutStrategy):
             except httpx.HTTPError as error:  # the gateway's TTL sweep is the fallback
                 logger.warning("could not delete session %s: %s", session_id, error)
         turns = exported.json()["turns"]
-        kept = truncate_turns(select_turns(turns), self.max_datum_tokens)
+        kept = truncate_turns(select_turns(turns), max_datum_tokens)
         if len(kept) < len(turns):
             logger.warning(
                 "%s: %d of %d turns left out (retry-superseded, after a truncated reply, or over %d tokens)",
                 env.task_id,
                 len(turns) - len(kept),
                 len(turns),
-                self.max_datum_tokens,
+                max_datum_tokens,
             )
         self._record(env, session_id, turns, len(turns) - len(kept))
         return turns_to_trajectory(kept)

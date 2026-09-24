@@ -266,8 +266,8 @@ class TrajectoryCollector:
             if dropped := self.sweep():
                 logger.info(f"swept {dropped} idle recorded session(s)")
 
-    def _tito_budget(self, session: TrajectorySession) -> int:
-        """TITO chain budget: the gateway per-datum cap, lowered to the client's bind-time max_datum_tokens."""
+    def datum_budget(self, session: TrajectorySession) -> int:
+        """The session's per-datum cap: the gateway's, lowered to the client's bind-time max_datum_tokens."""
         cap = self.service.config.max_tokens_per_datum
         return cap if session.max_datum_tokens is None else min(cap, session.max_datum_tokens)
 
@@ -289,7 +289,7 @@ class TrajectoryCollector:
                 request.tools,
                 request.chat_template_kwargs,
                 max_new_tokens=max_new_tokens,
-                budget=self._tito_budget(session),
+                budget=self.datum_budget(session),
             )
             if self.sessions.get(session_id) is not session:  # a DELETE landed while rendering: sample nothing
                 raise SessionNotFoundError(f"session {session_id!r} was deleted")

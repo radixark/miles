@@ -73,7 +73,7 @@ def setup_session_routes(app: FastAPI, collector: TrajectoryCollector, max_body_
 
     @app.post("/oai/sessions/{session_id}")
     async def create_session(session_id: str, request: Request):
-        """Bind the session to a Tinker sampling session (optional max_datum_tokens); the tenant's key is required."""
+        """Bind to a Tinker sampling session (tenant key); answers the effective per-datum cap the client must keep."""
         tenant = _tenant(request)
         payload = await _json_body(request, max_body_bytes)
         session = collector.create_session(
@@ -82,7 +82,11 @@ def setup_session_routes(app: FastAPI, collector: TrajectoryCollector, max_body_
             sampling_session_id=payload.get("sampling_session_id"),
             max_datum_tokens=payload.get("max_datum_tokens"),
         )
-        return {"session_id": session.session_id, "model_path": session.model_path}
+        return {
+            "session_id": session.session_id,
+            "model_path": session.model_path,
+            "max_datum_tokens": collector.datum_budget(session),
+        }
 
     for suffix, (parse, render) in CHAT_ADAPTERS.items():
         _mount_chat_route(app, collector, suffix, parse, render, max_body_bytes)
