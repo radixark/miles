@@ -66,12 +66,13 @@ def check(name, config, tp_group):
     errors = {
         "out": rel_err(out_ref, out_new.transpose(0, 1)),
         "dx": rel_err(x_ref.grad, x_new.grad.transpose(0, 1)),
-        "conv1d": rel_err(conv_of(ref, grad=True), gather(core.conv1d.weight.grad, 0, tp_group)),
         "A_log": rel_err(ref.A_log.grad, gather(core.A_log.grad, 0, tp_group)),
         "dt_bias": rel_err(ref.dt_bias.grad, gather(core.dt_bias.grad, 0, tp_group)),
         "norm": rel_err(norm_ref.weight.grad, core.norm.weight.grad),
         "out_proj": rel_err(out_proj_ref.weight.grad, gather(core.out_proj.weight.grad, 1, tp_group)),
     }
+    for conv, full_grad in conv_of(ref, grad=True).items():
+        errors[conv] = rel_err(full_grad, gather(getattr(core, conv).weight.grad, 0, tp_group))
     for proj, full_grad in sharded_projections(ref, grad=True).items():
         errors[proj] = rel_err(full_grad, gather(getattr(core, proj).weight.grad, 0, tp_group))
     if name == "kda":

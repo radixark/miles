@@ -2,9 +2,6 @@ import copy
 
 import torch
 import torch.nn as nn
-from einops import rearrange
-from fla.modules import FusedRMSNormGated, ShortConvolution
-from megatron.core.dist_checkpointing.mapping import ShardedStateDict
 from megatron.core.extensions.transformer_engine import (
     TEColumnParallelLinear,
     TEDotProductAttention,
@@ -14,7 +11,6 @@ from megatron.core.extensions.transformer_engine import (
 from megatron.core.inference.contexts import BaseInferenceContext
 from megatron.core.packed_seq_params import PackedSeqParams
 from megatron.core.process_groups_config import ProcessGroupCollection
-from megatron.core.tensor_parallel.layers import set_tensor_model_parallel_attributes
 from megatron.core.tensor_parallel.mappings import (
     copy_to_tensor_model_parallel_region,
     gather_from_sequence_parallel_region,
@@ -23,12 +19,11 @@ from megatron.core.tensor_parallel.mappings import (
 from megatron.core.transformer.enums import AttnMaskType
 from megatron.core.transformer.module import MegatronModule
 from megatron.core.transformer.transformer_layer import TransformerLayer, get_transformer_layer_offset
-from megatron.core.transformer.utils import ensure_metadata_has_dp_cp_group, make_sharded_tensors_for_checkpoint
 
-from miles.backends.megatron_utils.fp32_param_utils import mark_param_dtype
-from miles_plugins.models.cp_utils import build_gdn_cp_context, packed_shard_to_zigzag, zigzag_to_packed_shard
-from miles_plugins.models.kimi_k3.ops import KimiRMSNorm, attn_res_aggregate, kda
+from miles.kernels.attention.delta_rule import DeltaRuleHeads, KimiDeltaRule
+from miles_plugins.models.kimi_k3.ops import KimiRMSNorm, attn_res_aggregate
 from miles_plugins.models.kimi_k3.pipeline import bank_num_rows, pack_stage_boundary, unpack_stage_boundary
+from miles_plugins.models.linear_attn import KimiDeltaAttention, LinearAttentionLayer
 
 
 def _mark_tp_replicated(module: nn.Module) -> None:
@@ -42,31 +37,11 @@ def _linear(module: nn.Module, inputs: torch.Tensor) -> torch.Tensor:
     return output
 
 
-class KimiK3ShortConvolution(ShortConvolution):
-    def __init__(self, *args, tp_group, **kwargs) -> None:
-        super().__init__(*args, **kwargs)
-        self.tp_group = tp_group
-        mark_param_dtype(self.weight, torch.float32)
-        set_tensor_model_parallel_attributes(self.weight, True, 0, 1)
-
-    def sharded_state_dict(
-        self,
-        prefix: str = "",
-        sharded_offsets: tuple = (),
-        metadata: dict | None = None,
-    ) -> ShardedStateDict:
-        metadata = ensure_metadata_has_dp_cp_group(metadata)
-        return make_sharded_tensors_for_checkpoint(
-            self.state_dict(prefix="", keep_vars=True),
-            prefix,
-            {"weight": 0},
-            sharded_offsets,
-            tp_group=self.tp_group,
-            dp_cp_group=metadata["dp_cp_group"],
-        )
-
-
 class KimiK3Attention(MegatronModule):
+    """K3's MLA layers; the KDA layers are :class:`KimiK3KDAAttention`."""
+
+    is_kda = False
+
     def __init__(
         self,
         config,
@@ -93,11 +68,8 @@ class KimiK3Attention(MegatronModule):
         self.linear_config.sequence_parallel = False
 
         self.layer_idx = layer_number - 1
-        self.is_kda = layer_number in config.kimi_kda_layers
-        if self.is_kda:
-            self._init_kda(config)
-        else:
-            self._init_mla(config)
+        assert layer_number not in config.kimi_kda_layers, "K3's KDA layers are KimiK3KDAAttention"
+        self._init_mla(config)
 
     def _duplicated_linear(self, input_size: int, output_size: int) -> TELinear:
         return TELinear(
@@ -137,70 +109,6 @@ class KimiK3Attention(MegatronModule):
             tp_group=self.tp_group,
         )
 
-    def _init_kda(self, config) -> None:
-        hidden_size = config.hidden_size
-        device = torch.cuda.current_device()
-        dtype = config.params_dtype
-        self.num_heads = config.kimi_linear_num_heads
-        assert self.num_heads % self.tp_size == 0
-        self.local_num_heads = self.num_heads // self.tp_size
-        self.head_dim = config.kimi_linear_head_dim
-        # build_gdn_cp_context reads this off the module.
-        self.conv_kernel_size = config.kimi_linear_conv_kernel_size
-        self.projection_size = self.num_heads * self.head_dim
-        self.local_projection_size = self.local_num_heads * self.head_dim
-
-        self.q_proj = self._column_linear(hidden_size, self.projection_size)
-        self.k_proj = self._column_linear(hidden_size, self.projection_size)
-        self.v_proj = self._column_linear(hidden_size, self.projection_size)
-        self.q_conv1d = KimiK3ShortConvolution(
-            hidden_size=self.local_projection_size,
-            kernel_size=config.kimi_linear_conv_kernel_size,
-            activation="silu",
-            device=device,
-            dtype=dtype,
-            tp_group=self.tp_group,
-        )
-        self.k_conv1d = KimiK3ShortConvolution(
-            hidden_size=self.local_projection_size,
-            kernel_size=config.kimi_linear_conv_kernel_size,
-            activation="silu",
-            device=device,
-            dtype=dtype,
-            tp_group=self.tp_group,
-        )
-        self.v_conv1d = KimiK3ShortConvolution(
-            hidden_size=self.local_projection_size,
-            kernel_size=config.kimi_linear_conv_kernel_size,
-            activation="silu",
-            device=device,
-            dtype=dtype,
-            tp_group=self.tp_group,
-        )
-
-        self.f_a_proj = self._duplicated_linear(hidden_size, self.head_dim)
-        self.f_b_proj = self._column_linear(self.head_dim, self.projection_size)
-        self.b_proj = self._column_linear(hidden_size, self.num_heads)
-        self.g_proj = self._column_linear(hidden_size, self.projection_size)
-
-        self.A_log = nn.Parameter(torch.empty(self.local_num_heads, dtype=torch.float32, device=device))
-        self.dt_bias = nn.Parameter(torch.empty(self.local_projection_size, dtype=torch.float32, device=device))
-        mark_param_dtype(self.A_log, torch.float32)
-        mark_param_dtype(self.dt_bias, torch.float32)
-        set_tensor_model_parallel_attributes(self.A_log, True, 0, 1)
-        set_tensor_model_parallel_attributes(self.dt_bias, True, 0, 1)
-
-        self.o_norm = FusedRMSNormGated(
-            self.head_dim,
-            eps=config.layernorm_epsilon,
-            activation="sigmoid",
-            device=device,
-            dtype=dtype,
-        )
-        _mark_tp_replicated(self.o_norm)
-        self.o_proj = self._row_linear(self.projection_size, hidden_size)
-        self.gate_lower_bound = config.kimi_kda_gate_lower_bound
-
     def _init_mla(self, config) -> None:
         hidden_size = config.hidden_size
         device = torch.cuda.current_device()
@@ -239,100 +147,6 @@ class KimiK3Attention(MegatronModule):
             cp_comm_type=self.cp_comm_type,
             pg_collection=self.pg_collection,
         )
-
-    def sharded_state_dict(
-        self,
-        prefix: str = "",
-        sharded_offsets: tuple = (),
-        metadata: dict | None = None,
-    ) -> ShardedStateDict:
-        sharded_state_dict = super().sharded_state_dict(prefix, sharded_offsets, metadata)
-        if not self.is_kda:
-            return sharded_state_dict
-
-        metadata = ensure_metadata_has_dp_cp_group(metadata)
-        sharded_state_dict.update(
-            make_sharded_tensors_for_checkpoint(
-                {"A_log": self.A_log, "dt_bias": self.dt_bias},
-                prefix,
-                {"A_log": 0, "dt_bias": 0},
-                sharded_offsets,
-                tp_group=self.tp_group,
-                dp_cp_group=metadata["dp_cp_group"],
-            )
-        )
-        return sharded_state_dict
-
-    def _cp_global_cu_seqlens(
-        self,
-        hidden_states: torch.Tensor,
-        packed_seq_params: PackedSeqParams | None,
-    ) -> torch.Tensor:
-        """Global packed-sequence boundaries; under BSHD the whole sequence is one segment."""
-        if packed_seq_params is not None and packed_seq_params.cu_seqlens_q is not None:
-            return packed_seq_params.cu_seqlens_q
-        total = hidden_states.shape[0] * self.cp_size
-        return torch.tensor([0, total], dtype=torch.int32, device=hidden_states.device)
-
-    def _forward_kda(
-        self,
-        hidden_states: torch.Tensor,
-        packed_seq_params: PackedSeqParams | None,
-    ) -> torch.Tensor:
-        core = self._kda_core(hidden_states, packed_seq_params)
-        return _linear(self.o_proj, core.to(hidden_states.dtype)).transpose(0, 1)
-
-    def _kda_core(
-        self,
-        hidden_states: torch.Tensor,
-        packed_seq_params: PackedSeqParams | None,
-    ) -> torch.Tensor:
-        """KDA delta-rule core: projections + conv + recurrence + gated norm,
-        returning the flattened pre-o_proj output."""
-        cp_context = (
-            build_gdn_cp_context(
-                self, self._cp_global_cu_seqlens(hidden_states, packed_seq_params), hidden_states.device
-            )
-            if self.cp_size > 1
-            else None
-        )
-        x = hidden_states.transpose(0, 1)
-        cu_seqlens = packed_seq_params.cu_seqlens_q if packed_seq_params is not None else None
-        if cp_context is not None:
-            # the context carries the rank-local boundaries; the global ones only located this shard
-            cu_seqlens = cp_context.cu_seqlens
-        # packed input with neither channel would silently leak recurrent state across samples
-        assert (
-            packed_seq_params is None or cu_seqlens is not None or cp_context is not None
-        ), "packed (THD) input reached the KDA core without sequence boundaries"
-
-        conv_kwargs = {"output_final_state": False, "cu_seqlens": cu_seqlens, "cp_context": cp_context}
-        q, _ = self.q_conv1d(x=_linear(self.q_proj, x), **conv_kwargs)
-        k, _ = self.k_conv1d(x=_linear(self.k_proj, x), **conv_kwargs)
-        v, _ = self.v_conv1d(x=_linear(self.v_proj, x), **conv_kwargs)
-        q = rearrange(q, "b s (h d) -> b s h d", h=self.local_num_heads)
-        k = rearrange(k, "b s (h d) -> b s h d", h=self.local_num_heads)
-        v = rearrange(v, "b s (h d) -> b s h d", h=self.local_num_heads)
-        forget_gate = rearrange(
-            _linear(self.f_b_proj, _linear(self.f_a_proj, x)), "b s (h d) -> b s h d", h=self.local_num_heads
-        )
-        beta = _linear(self.b_proj, x).float().sigmoid()
-        output = kda(
-            q,
-            k,
-            v,
-            forget_gate,
-            beta,
-            self.A_log,
-            self.dt_bias,
-            self.gate_lower_bound,
-            cu_seqlens=cu_seqlens,
-            cp_context=cp_context,
-        )
-        gate = rearrange(_linear(self.g_proj, x), "b s (h d) -> b s h d", h=self.local_num_heads)
-
-        output = self.o_norm(output.reshape(-1, self.head_dim), gate.reshape(-1, self.head_dim))
-        return output.view(*gate.shape).flatten(-2)
 
     def _forward_mla(
         self,
@@ -423,23 +237,45 @@ class KimiK3Attention(MegatronModule):
                 tensor_parallel_output_grad=False,
                 group=self.tp_group,
             )
-        # CP tokens sit in ring attention's zigzag order; fla's CP kernels want a contiguous rank-local chunk
-        relayout = self.is_kda and self.cp_size > 1
-        if relayout:
-            cp_cu_seqlens = self._cp_global_cu_seqlens(hidden_states, packed_seq_params)
-            hidden_states = zigzag_to_packed_shard(
-                hidden_states, cp_cu_seqlens, self.cp_group, self.cp_group.rank(), self.cp_size
-            )
-        output = (
-            self._forward_kda(hidden_states, packed_seq_params)
-            if self.is_kda
-            else self._forward_mla(hidden_states, packed_seq_params)
-        )
-        if relayout:
-            output = packed_shard_to_zigzag(output, cp_cu_seqlens, self.cp_group, self.cp_group.rank(), self.cp_size)
+        output = self._forward_mla(hidden_states, packed_seq_params)
         if self.sequence_parallel:
             output = scatter_to_sequence_parallel_region(output, group=self.tp_group)
         return output, None
+
+
+class KimiK3KDAAttention(LinearAttentionLayer):
+    """K3's KDA layers on the shared head-sharded delta-rule layer. The ``self_attention`` constructor
+    signature K3's layer spec builds with; the input norm is the transformer layer's, so none here."""
+
+    is_kda = True
+
+    def __init__(
+        self,
+        config,
+        layer_number: int,
+        cp_comm_type: str | None = None,
+        pg_collection=None,
+        name: str | None = None,
+    ) -> None:
+        del cp_comm_type, name
+        if pg_collection is None:
+            pg_collection = ProcessGroupCollection.use_mpu_process_groups(required_pgs=["tp", "cp"])
+        assert layer_number in config.kimi_kda_layers
+        heads = DeltaRuleHeads(
+            num_k_heads=config.kimi_linear_num_heads,
+            num_v_heads=config.kimi_linear_num_heads,
+            head_k_dim=config.kimi_linear_head_dim,
+            head_v_dim=config.kimi_linear_head_dim,
+        )
+        core = KimiDeltaAttention(
+            config,
+            heads,
+            KimiDeltaRule(config.kimi_kda_gate_lower_bound),
+            config.kimi_linear_conv_kernel_size,
+            config.layernorm_epsilon,
+            pg_collection.tp,
+        )
+        super().__init__(config, core, nn.Identity(), pg_collection, allgather_cp=False)
 
 
 class KimiK3TransformerLayer(TransformerLayer):
