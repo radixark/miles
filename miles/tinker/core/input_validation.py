@@ -129,8 +129,7 @@ def validate_checkpoint_compatibility(meta: dict, record: ModelRecord, config: G
 
 
 def validate_save_options(payload: dict) -> None:
-    if payload.get("ttl_seconds") is not None:
-        raise UserInputError("ttl_seconds is not supported: checkpoints on this gateway do not expire")
+    # ttl_seconds is accepted and ignored (the cookbook sends it on every save): checkpoints here never expire
     if payload.get("user_metadata") is not None:
         raise UserInputError("user_metadata is not supported by this gateway")
 
@@ -154,8 +153,3 @@ def validate_checkpoint_metadata(meta, shown_path: str) -> None:
         raise UserInputError(f"checkpoint {shown_path!r} has invalid or unsupported metadata")
     if meta["lora_rank"] <= 0 or not math.isfinite(meta["lora_alpha"]):
         raise UserInputError(f"checkpoint {shown_path!r} has invalid LoRA metadata")
-
-
-def accept_cookbook_save_options(payload: dict) -> None:
-    """Drop cookbook's ttl_seconds before validate_save_options: checkpoints on this gateway never expire."""
-    payload.pop("ttl_seconds", None)
