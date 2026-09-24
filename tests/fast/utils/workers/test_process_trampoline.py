@@ -99,15 +99,15 @@ def _run_trampoline_process(*, expected_parent_pid: int, argv: list[str]) -> sub
 
 
 class TestTrampolineMain:
-    def test_the_death_signal_is_armed_with_sigterm_on_linux(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """SIGTERM lets the supervisor kill the whole group when its parent dies."""
+    def test_the_death_signal_is_distinct_from_graceful_sigterm(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Parent death must reap the group without shortening normal shutdown."""
         run = _run_main(
             monkeypatch=monkeypatch,
             argv=["trampoline", "4242", "/bin/echo", "hi"],
             current_parent_pid=4242,
         )
 
-        assert run.prctl_calls == [(1, signal.SIGTERM)]
+        assert run.prctl_calls == [(1, signal.SIGUSR2)]
 
     def test_the_real_command_is_supervised_with_its_own_argv(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Everything after the expected parent pid becomes the child's argv."""
@@ -128,7 +128,7 @@ class TestTrampolineMain:
             current_parent_pid=4242,
         )
 
-        assert run.events == ["signal", "prctl", "getppid", "popen", "wait", "exit"]
+        assert run.events == ["signal", "signal", "prctl", "getppid", "popen", "wait", "exit"]
 
     def test_a_changed_parent_makes_it_exit_instead_of_exec(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """A child reparented before the signal was armed would never be reaped, so it must not run the command."""
@@ -141,7 +141,9 @@ class TestTrampolineMain:
         assert run.exit_status == 1
         assert run.popen_calls == []
 
-    def test_a_failed_launch_is_reported_and_exits_with_the_shell_convention(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_a_failed_launch_is_reported_and_exits_with_the_shell_convention(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """A missing or unrunnable command must not look like the real command dying with status 1."""
         run = _run_main(
             monkeypatch=monkeypatch,
@@ -218,7 +220,17 @@ print(child.pid, flush=True)
 child.wait()
 """
         parent = subprocess.Popen(
-            [sys.executable, "-c", parent_code, "-m", _TRAMPOLINE_MODULE, "PARENT_PID", "/bin/sh", "-c", shell_command],
+            [
+                sys.executable,
+                "-c",
+                parent_code,
+                "-m",
+                _TRAMPOLINE_MODULE,
+                "PARENT_PID",
+                "/bin/sh",
+                "-c",
+                shell_command,
+            ],
             stdout=subprocess.PIPE,
             text=True,
         )

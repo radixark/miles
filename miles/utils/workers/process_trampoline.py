@@ -17,8 +17,13 @@ def main() -> None:
         # delivered only to that command would leave its children running.
         # Stay alive as the process-group leader so the parent's death reaps
         # the entire group, including session servers and other descendants.
-        signal.signal(signal.SIGTERM, _kill_process_group)
-        ctypes.CDLL(None, use_errno=True).prctl(_PR_SET_PDEATHSIG, signal.SIGTERM)
+        # Graceful shutdown sends SIGTERM to the entire group. The child must
+        # retain its grace period, so the supervisor waits for it to exit.
+        signal.signal(signal.SIGTERM, _wait_for_child)
+        # Use a separate signal for abrupt parent death, which needs to reap
+        # descendants immediately even if the child has forked.
+        signal.signal(signal.SIGUSR2, _kill_process_group)
+        ctypes.CDLL(None, use_errno=True).prctl(_PR_SET_PDEATHSIG, signal.SIGUSR2)
         if (parent_pid := os.getppid()) != expected_parent_pid:
             _log(f"parent {expected_parent_pid} is gone (current parent {parent_pid}); exiting without running {argv}")
             os._exit(1)
@@ -42,6 +47,10 @@ def main() -> None:
 
 def _kill_process_group(_signal_number: int, _frame: object) -> None:
     os.killpg(os.getpgrp(), signal.SIGKILL)
+
+
+def _wait_for_child(_signal_number: int, _frame: object) -> None:
+    pass
 
 
 def _log(message: str) -> None:
