@@ -7,6 +7,7 @@ import sys
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from typing import Any, NamedTuple, TypeVar
 
+from miles.utils.args.schema import validate_complete_config
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
 
 CONFIG_JSON_FLAG = "--config-json"
@@ -60,7 +61,7 @@ def parse_config_argv(config_cls: type[_ConfigT], argv: list[str] | None) -> _Co
     parser = argparse.ArgumentParser()
     parser.add_argument(CONFIG_JSON_FLAG, required=True)
     args = parser.parse_args(argv)
-    return config_cls.model_validate_json(args.config_json)
+    return validate_complete_config(config_cls, json.loads(args.config_json))
 
 
 def dataclass_to_values(args_obj: object) -> dict[str, object]:
