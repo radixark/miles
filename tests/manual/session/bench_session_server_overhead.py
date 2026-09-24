@@ -372,6 +372,9 @@ def _build_server_config(
         pause_generation_mode="in_place" if bench_args.incremental_r3 else "retract",
         session_sample_picker_path=None,
         session_sample_postprocessor_path=None,
+        loss_type="policy_loss",
+        score_centering_top_k=128,
+        rollout_temperature=1.0,
     )
 
 
