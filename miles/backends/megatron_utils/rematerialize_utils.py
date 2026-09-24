@@ -2,12 +2,12 @@
 weights from the optimizer's master weights instead of a pinned CPU copy."""
 
 import logging
-from argparse import Namespace
 from collections.abc import Callable, Iterator, Sequence
 
 import torch
 
 from miles.backends.megatron_utils.misc_utils import strip_param_name_prefix
+from miles.utils.args.runtime import TrainerConfig
 from miles.utils.tensor_backper import MainCastContext
 
 logger = logging.getLogger(__name__)
@@ -24,7 +24,7 @@ def _named_restore_extras(model: Sequence[torch.nn.Module]) -> Iterator[tuple[st
                 yield f"vp_stages.{vp_stage}.{strip_param_name_prefix(name)}", param
 
 
-def build_main_cast_context(args: Namespace, *, model: Sequence[torch.nn.Module], optimizer) -> MainCastContext:
+def build_main_cast_context(args: TrainerConfig, *, model: Sequence[torch.nn.Module], optimizer) -> MainCastContext:
     extras = list(_named_restore_extras(model))
     extras_bytes = sum(t.numel() * t.element_size() for _, t in extras)
     logger.info(
