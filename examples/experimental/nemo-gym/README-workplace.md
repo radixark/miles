@@ -17,6 +17,9 @@ This experimental recipe ports the settings from this
 CPU integration and launch-command tests cover this example; the recipe still
 needs GPU validation with your installed Miles/SGLang/Megatron versions.
 
+For a beginner-oriented walkthrough, including data-generation and calibration
+commands, see [Train a workplace assistant with Miles](nemotron35-workplace-data-to-training.md).
+
 ## 1. Prepare the machines
 
 Use two nodes with **8 H200 GPUs each**, a working Miles training installation,
@@ -198,10 +201,13 @@ With the pinned Gym checkout and example on `PYTHONPATH`:
 
 ```fish
 uv pip install --python $PYTHON pytest
-$PYTHON -m pytest $MILES_DIR/examples/experimental/nemo-gym/test_workplace.py
+$PYTHON -m pytest $MILES_DIR/tests/fast/examples/experimental/nemo_gym -k workplace
 ```
 
 These checks use Gym's real tools and final-state verifier, including isolated
 episodes, missing required actions, invalid calls, reference-answer exclusion,
 context-budget retries, and cleanup on abort or HTTP failure. They make no model
 API calls and need no GPU.
+
+The native integration suite reports a skip if Gym is missing. The policy-loop
+and launcher checks run independently of Gym.

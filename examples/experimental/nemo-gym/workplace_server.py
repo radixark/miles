@@ -115,8 +115,9 @@ class Workplace:
                 args = {key: value for key, value in args.items() if value is not None}
                 result = episode.env["functions"][call.name](**args)
                 return {"output": json_safe(result)}
-            except Exception as error:
-                return {"output": f"Error executing tool '{call.name}': {str(error)[:700]}"}
+            except Exception:
+                logger.exception("Workplace tool execution failed: %s", call.name)
+                return {"output": "Error executing tool: invalid arguments or operation failed"}
 
     def verify(self, session_id: str) -> dict:
         episode = self.get(session_id)
