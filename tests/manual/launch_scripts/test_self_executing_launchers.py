@@ -10,7 +10,8 @@ from tests.fast.launch_scripts.py_harness import (
     install_shell_recorder,
     iter_self_executing_launchers,
 )
-from tests.fast.launch_scripts.sh_harness import REPO_ROOT, assert_matches_snapshot
+from miles.utils.test_utils.snapshot import assert_matches_snapshot
+from tests.fast.launch_scripts.sh_harness import REPO_ROOT
 
 _SNAPSHOT_DIR = REPO_ROOT / "tests" / "snapshots" / "launch_scripts" / "self_executing"
 

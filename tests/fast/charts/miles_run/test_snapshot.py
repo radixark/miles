@@ -11,7 +11,8 @@ import pytest
 import yaml
 from megatron.training import arguments as megatron_arguments
 from tests.fast.charts.utils import NAMESPACE, RUN_CHART_DIR, RUN_ID, RUN_RELEASE_NAME, requires_helm
-from tests.fast.launch_scripts.sh_harness import REPO_ROOT, SANDBOX_PLACEHOLDER, assert_matches_snapshot
+from miles.utils.test_utils.snapshot import assert_matches_snapshot
+from tests.fast.launch_scripts.sh_harness import REPO_ROOT, SANDBOX_PLACEHOLDER
 
 from miles.ray.specs.entrypoint import compute_specs
 from miles.utils.arguments import parse_args

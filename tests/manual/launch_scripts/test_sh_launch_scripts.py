@@ -1,9 +1,9 @@
 from dataclasses import dataclass, field
 
 import pytest
+from miles.utils.test_utils.snapshot import assert_matches_snapshot
 from tests.fast.launch_scripts.sh_harness import (
     REPO_ROOT,
-    assert_matches_snapshot,
     format_invocations,
     iter_launch_scripts,
     run_launch_script,
