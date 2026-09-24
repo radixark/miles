@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 
-from miles.utils.workers.worker_spec import BaseWorkerSpec, HostAndPort, NamedHostAndPorts, PortInfo
+from miles.utils.workers.worker_spec import BaseSpec, HostAndPort, NamedHostAndPorts, PortInfo
 
 CHART_NAME = "miles-run"
 UNINSTALLER_SERVICE_ACCOUNT = "miles-uninstaller"
@@ -17,7 +17,7 @@ MIN_RELEASE_PREFIX_LENGTH = len("x-") + 2 * RELEASE_DIGEST_LENGTH
 
 
 def static_cell_addrs(
-    *, spec: BaseWorkerSpec, release: str, cell_index: int, worker_in_pod_index: int = 0
+    *, spec: BaseSpec, release: str, cell_index: int, worker_in_pod_index: int = 0
 ) -> NamedHostAndPorts:
     return static_cell_addrs_raw(
         name=spec.name,
