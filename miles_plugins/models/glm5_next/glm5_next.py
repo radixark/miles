@@ -12,7 +12,7 @@ from megatron.core.transformer.spec_utils import ModuleSpec
 from megatron.core.transformer.transformer_block import TransformerBlock, get_num_layers_to_build
 from megatron.core.transformer.transformer_layer import get_transformer_layer_offset
 
-from miles.utils.hf_config import load_hf_config
+from miles.utils.hf_utils.config import load_hf_config
 from miles_plugins.models.glm5.glm5 import DSASelfAttentionSubmodules
 from miles_plugins.models.glm5_next.dsa import Glm5NextDSAAttention
 from miles_plugins.models.glm5_next.kda import Glm5NextKDAAttention, _get_text_config
