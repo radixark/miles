@@ -38,8 +38,8 @@ async def _json_body(request: Request, max_body_bytes: int = MAX_BODY_BYTES) -> 
         return {}
     try:
         payload = json.loads(body)
-    except json.JSONDecodeError as error:
-        raise UserInputError(f"invalid JSON body: {error}") from error
+    except (ValueError, RecursionError) as error:  # bad JSON, bytes that are not UTF-8, or nesting too deep to parse
+        raise UserInputError(f"invalid JSON body: {error}") from None
     if not isinstance(payload, dict):
         raise UserInputError("request body must be a JSON object")
     return payload

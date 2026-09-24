@@ -55,13 +55,16 @@ def validate_messages(request_messages: Any) -> None:
     for index, message in enumerate(request_messages):
         if not isinstance(message, dict) or "role" not in message:
             raise UserInputError(f"messages[{index}] must be an object with a role")
+        tool_calls = message.get("tool_calls")
+        if tool_calls is not None and not (isinstance(tool_calls, list) and all(type(c) is dict for c in tool_calls)):
+            raise UserInputError(f"messages[{index}].tool_calls must be a list of objects")
 
 
 def _rendered_ids(render: Any) -> list[int]:
     """Run a chat-template render, mapping template errors to UserInputError and refusing an empty prompt."""
     try:
         rendered = render()
-    except (TypeError, ValueError, KeyError) as error:
+    except Exception as error:  # the template is fixed: a failed render, jinja's too, is the request's fault
         raise UserInputError(f"cannot render messages with the chat template: {error}") from error
     ids = _token_list(rendered)
     if not ids:

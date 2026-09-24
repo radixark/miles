@@ -179,7 +179,7 @@ class TrajectoryCollector:
         validate_session_id(session_id)
         if not tenant:
             raise UserInputError("binding a session needs the tenant's API key")
-        if not sampling_session_id:
+        if not sampling_session_id or not isinstance(sampling_session_id, str):
             raise UserInputError("bind needs sampling_session_id: create a Tinker sampling session and pass its id")
         if max_datum_tokens is not None and (type(max_datum_tokens) is not int or max_datum_tokens < 1):
             raise UserInputError("max_datum_tokens must be a positive integer")

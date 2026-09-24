@@ -48,6 +48,8 @@ def parse_chat_request(body: dict[str, Any]) -> TurnRequest:
     override = body.get("chat_template_kwargs")
     if override is not None and not isinstance(override, dict):
         raise UserInputError("chat_template_kwargs must be an object")
+    if body.get("model") is not None and not isinstance(body["model"], str):
+        raise UserInputError("model must be a string")
     return TurnRequest(
         messages=body.get("messages"),
         tools=body.get("tools") or None,
