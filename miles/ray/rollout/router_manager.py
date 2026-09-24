@@ -71,10 +71,10 @@ async def wait_session_server_ready(args, *, provider: BaseWorkerProvider | None
     Always runs standalone regardless of whether ``--use-miles-router`` is
     active.
     """
-    if not getattr(args, "use_session_server", False):
+    if not args.use_session_server:
         return
 
-    hf_checkpoint = getattr(args, "hf_checkpoint", None)
+    hf_checkpoint = args.hf_checkpoint
     if not hf_checkpoint:
         raise ValueError("--use-session-server requires --hf-checkpoint to be set.")
 

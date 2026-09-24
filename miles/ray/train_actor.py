@@ -147,7 +147,7 @@ class TrainRayActor(NodeProbeMixin):
 
         # Use hybrid backend when FSDP CPU offload is enabled with a CPU backend
         backend = args.distributed_backend
-        if getattr(args, "fsdp_cpu_offload", False) and getattr(args, "fsdp_cpu_backend", None):
+        if args.train_backend == "fsdp" and args.fsdp_cpu_offload and args.fsdp_cpu_backend:
             cpu_backend = args.fsdp_cpu_backend
             backend = f"cpu:{cpu_backend},cuda:{args.distributed_backend}"
             logger.info(f"FSDP CPU offload enabled, using hybrid backend: {backend}")

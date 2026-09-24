@@ -44,11 +44,11 @@ logger = logging.getLogger(__name__)
 
 async def generate(input: GenerateFnInput) -> GenerateFnOutput:
     assert not input.args.partial_rollout, "Partial rollout is not supported"
-    assert getattr(input.args, "session_server_addrs", None), (
+    assert input.args.session_server_addrs, (
         "agentic_tool_call.generate requires session_server_addrs. "
         "Pass --use-session-server to start the session server."
     )
-    use_v2 = getattr(input.args, "use_session_server", None) == "v2"
+    use_v2 = input.args.use_session_server == "v2"
     collect_spec_metrics = use_v2 and input.args.sglang.common_value("speculative_algorithm") is not None
     tracer = await OpenAIEndpointTracer.create(input.args, extra_key=input.sample.kv_cache_namespace)
 

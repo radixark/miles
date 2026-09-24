@@ -45,7 +45,7 @@ class OpenAIEndpointTracer:
 
     @staticmethod
     async def create(args: Namespace, *, extra_key: str | None = None):
-        session_addrs = getattr(args, "session_server_addrs", None)
+        session_addrs = args.session_server_addrs
         if not session_addrs:
             raise RuntimeError(
                 "session_server_addrs is not set. Pass --use-session-server to start the session server."
@@ -54,12 +54,12 @@ class OpenAIEndpointTracer:
         # per session; every later touch of the session reuses this URL.
         session_addr = random.choice(session_addrs)
         session_url = f"http://{session_addr}"
-        instance_ids = getattr(args, "session_server_instance_ids", None) or {}
+        instance_ids = args.session_server_instance_ids or {}
         session_server_instance_id = instance_ids.get(session_addr)
         body = {} if extra_key is None else {"extra_key": extra_key}
         response = await post(f"{session_url}/sessions", body, action="post")
         session_id = response["session_id"]
-        use_v2 = getattr(args, "use_session_server", None) == "v2"
+        use_v2 = args.use_session_server == "v2"
         return OpenAIEndpointTracer(
             router_url=session_url,
             session_id=session_id,

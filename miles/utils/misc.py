@@ -61,7 +61,7 @@ async def call_agent_abort_hook(args) -> None:
     sibling ``abort`` callable in the same module as the configured agent function
     and call it. Backends that don't expose one are left to drain as before.
     """
-    agent_function_path = getattr(args, "custom_agent_function_path", None)
+    agent_function_path = args.custom_agent_function_path
     if not agent_function_path:
         return
 
