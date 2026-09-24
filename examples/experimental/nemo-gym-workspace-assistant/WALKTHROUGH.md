@@ -1,16 +1,19 @@
 # Train a workplace assistant with Miles
 
-Teach **Nemotron 3.5 Lightning** to complete office tasks in **NeMo Gym**: search email, update project records, change calendar events, and check the results. Miles runs the training; Gym grades the work.
+Teach **Nemotron 3.5 Lightning** to complete office tasks: search email, update project records, change calendar events, and check the results.
 
-New to Miles? Begin with the [Miles Quick Start](https://miles.radixark.com/docs/getting-started/quick-start). Once you have seen that reward curve climb, come back here and put the same loop to work on a real agent task.
+The model works in a simulated office provided by **NeMo Gym**. It calls a tool, reads the response, and decides what to do next. Gym checks whether the requested changes were actually made; Miles uses that score to train the model.
 
 **The workflow:** create tasks → try the untrained model → choose tasks → train → inspect results.
 
 ## Before you start
 
+New to Miles? Begin with the [Miles Quick Start](https://miles.radixark.com/docs/getting-started/quick-start). Once you have seen that reward curve climb, come back here and put the same loop to work on a real agent task.
+
+**What you need**
 - **GPUs:** 2 nodes × 8 GPUs (check the [Miles documentation](https://miles.radixark.com/docs/getting-started/installation#hardware-requirements) for supported hardware).
-- **Storage:** reserve **8–10 TB of free SSD/NVMe space on the trainer** and **1 TB on the rollout node**, keeping all checkpoints and full training traces.
-- **Time:** plan for **3–5 hours from data generation to launching training**, or **2–3 days through all 1,000 training updates**.
+- **Storage:** reserve **8–10 TB of free SSD/NVMe space on the trainer** and **1 TB on the rollout node**.
+- **Time:** **3–5 hours** from data generation to launching training, or **2–3 days** through all 1,000 training updates.
 - An LLM API key, to write the task instructions.
 - A [Weights & Biases](https://wandb.ai) account, to track training on the W&B dashboard.
 - `jq`, for the task-selection command.
