@@ -57,6 +57,8 @@ def validate_score_centering_args(args: Namespace) -> None:
         temperature=args.rollout_temperature,
         candidate_count=args.score_centering_top_k,
     )
+    if (args.rollout_top_p < 1.0 or args.rollout_top_k > 0) and not args.use_sampling_support_replay:
+        raise ValueError("Filtered score-centering rollouts require sampling-support replay")
     if args.advantage_estimator != "grpo":
         raise ValueError("Score centering currently supports --advantage-estimator grpo (group-centered rewards)")
     incompatible = {
