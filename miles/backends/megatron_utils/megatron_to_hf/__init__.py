@@ -15,14 +15,14 @@ from .qwen3moe import convert_qwen3moe_to_hf
 
 # TODO unify w/ `convert_to_hf`
 def postprocess_hf_param(args, megatron_param_name, hf_param_name, param):
-    param = remove_padding(megatron_param_name, param, args.vocab_size)
+    param = remove_padding(megatron_param_name, param, args.backend.vocab_size)
     # TODO support quant
     return param
 
 
 # TODO optimize code details
 def convert_to_hf(args, model_name, name, param, quantization_config=None):
-    param = remove_padding(name, param, args.vocab_size)
+    param = remove_padding(name, param, args.backend.vocab_size)
 
     converted_named_tensors = _convert_to_hf_core(args, model_name, name, param)
 
@@ -38,31 +38,31 @@ def _convert_to_hf_core(args, model_name, name, param):
         or "glmmoedsa" in model_name
         or "glm_moe_dsa" in model_name
     ):
-        converted_named_tensors = convert_deepseekv3_to_hf(args, name, param)
+        converted_named_tensors = convert_deepseekv3_to_hf(args.backend, name, param)
     elif "glm4moe" in model_name:
-        converted_named_tensors = convert_glm4moe_to_hf(args, name, param)
+        converted_named_tensors = convert_glm4moe_to_hf(args.backend, name, param)
     elif "glm4" in model_name:
-        converted_named_tensors = convert_glm4_to_hf(args, name, param)
+        converted_named_tensors = convert_glm4_to_hf(args.backend, name, param)
     elif "qwen3moe" in model_name:
-        converted_named_tensors = convert_qwen3moe_to_hf(args, name, param)
+        converted_named_tensors = convert_qwen3moe_to_hf(args.backend, name, param)
     elif "qwen3next" in model_name:
-        converted_named_tensors = convert_qwen3_next_to_hf(args, name, param)
+        converted_named_tensors = convert_qwen3_next_to_hf(args.backend, name, param)
     elif "qwen3_5" in model_name or "qwen3_6" in model_name:
-        converted_named_tensors = convert_qwen3_5_to_hf(args, name, param)
+        converted_named_tensors = convert_qwen3_5_to_hf(args.backend, name, param)
     elif "qwen2" in model_name or "qwen3" in model_name:
-        converted_named_tensors = convert_qwen2_to_hf(args, name, param)
+        converted_named_tensors = convert_qwen2_to_hf(args.backend, name, param)
     elif "deepseekv4" in model_name:
         converted_named_tensors = convert_deepseekv4_to_hf(args, name, param)
     elif "inkling" in model_name:
         converted_named_tensors = convert_inkling_to_hf(args, name, param)
     elif "llama" in model_name:
-        converted_named_tensors = convert_llama_to_hf(args, name, param)
+        converted_named_tensors = convert_llama_to_hf(args.backend, name, param)
     elif "mimo" in model_name:
-        converted_named_tensors = convert_mimo_to_hf(args, name, param)
+        converted_named_tensors = convert_mimo_to_hf(args.backend, name, param)
     elif "kimivl" in model_name:
-        converted_named_tensors = convert_kimivl_to_hf(args, name, param)
+        converted_named_tensors = convert_kimivl_to_hf(args.backend, name, param)
     elif "kimi_k25" in model_name:
-        converted_named_tensors = convert_kimi_k25_to_hf(args, name, param)
+        converted_named_tensors = convert_kimi_k25_to_hf(args.backend, name, param)
     else:
         raise ValueError(f"Unsupported model: {model_name}")
 

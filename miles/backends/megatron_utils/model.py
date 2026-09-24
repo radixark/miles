@@ -87,35 +87,37 @@ def get_optimizer_param_scheduler(args: TrainerConfig, optimizer: MegatronOptimi
         OptimizerParamScheduler: Initialized scheduler bound to ``optimizer``.
     """
     # Iteration-based training.
-    args.train_iters = args.num_rollout * args.rollout_batch_size * args.n_samples_per_prompt // args.global_batch_size
-    if args.lr_decay_iters is None:
-        args.lr_decay_iters = args.train_iters
-    lr_decay_steps = args.lr_decay_iters * args.global_batch_size
-    wd_incr_steps = args.train_iters * args.global_batch_size
+    args.backend.train_iters = (
+        args.num_rollout * args.rollout_batch_size * args.n_samples_per_prompt // args.backend.global_batch_size
+    )
+    if args.backend.lr_decay_iters is None:
+        args.backend.lr_decay_iters = args.backend.train_iters
+    lr_decay_steps = args.backend.lr_decay_iters * args.backend.global_batch_size
+    wd_incr_steps = args.backend.train_iters * args.backend.global_batch_size
     wsd_decay_steps = None
-    if args.lr_wsd_decay_iters is not None:
-        wsd_decay_steps = args.lr_wsd_decay_iters * args.global_batch_size
-    if args.lr_warmup_fraction is not None:
-        lr_warmup_steps = args.lr_warmup_fraction * lr_decay_steps
+    if args.backend.lr_wsd_decay_iters is not None:
+        wsd_decay_steps = args.backend.lr_wsd_decay_iters * args.backend.global_batch_size
+    if args.backend.lr_warmup_fraction is not None:
+        lr_warmup_steps = args.backend.lr_warmup_fraction * lr_decay_steps
     else:
-        lr_warmup_steps = args.lr_warmup_iters * args.global_batch_size
+        lr_warmup_steps = args.backend.lr_warmup_iters * args.backend.global_batch_size
 
     opt_param_scheduler = OptimizerParamScheduler(
         optimizer,
-        init_lr=args.lr_warmup_init,
-        max_lr=args.lr,
-        min_lr=args.min_lr,
+        init_lr=args.backend.lr_warmup_init,
+        max_lr=args.backend.lr,
+        min_lr=args.backend.min_lr,
         lr_warmup_steps=lr_warmup_steps,
         lr_decay_steps=lr_decay_steps,
-        lr_decay_style=args.lr_decay_style,
-        start_wd=args.start_weight_decay,
-        end_wd=args.end_weight_decay,
+        lr_decay_style=args.backend.lr_decay_style,
+        start_wd=args.backend.start_weight_decay,
+        end_wd=args.backend.end_weight_decay,
         wd_incr_steps=wd_incr_steps,
-        wd_incr_style=args.weight_decay_incr_style,
-        use_checkpoint_opt_param_scheduler=args.use_checkpoint_opt_param_scheduler,
-        override_opt_param_scheduler=args.override_opt_param_scheduler,
+        wd_incr_style=args.backend.weight_decay_incr_style,
+        use_checkpoint_opt_param_scheduler=args.backend.use_checkpoint_opt_param_scheduler,
+        override_opt_param_scheduler=args.backend.override_opt_param_scheduler,
         wsd_decay_steps=wsd_decay_steps,
-        lr_wsd_decay_style=args.lr_wsd_decay_style,
+        lr_wsd_decay_style=args.backend.lr_wsd_decay_style,
     )
 
     return opt_param_scheduler
@@ -149,8 +151,8 @@ def setup_model_and_optimizer(
               ``None`` when ``--debug-disable-optimizer`` is set.
     """
     assert isinstance(args, TrainerConfig)
-    assert not args.moe_use_upcycling
-    assert args.load is not None or args.pretrained_checkpoint is not None
+    assert not args.backend.moe_use_upcycling
+    assert args.backend.load is not None or args.backend.pretrained_checkpoint is not None
 
     # Multi-LoRA and single-LoRA (actor, bridge) both build via the bridge helper,
     # which picks the adapter type internally.
@@ -177,8 +179,10 @@ def setup_model_and_optimizer(
     # Optimizer
     kwargs = {}
     for f in dataclasses.fields(OptimizerConfig):
-        if hasattr(args, f.name):  # config-access-exempt: attribute selected at runtime from f.name
-            kwargs[f.name] = getattr(args, f.name)  # config-access-exempt: attribute selected at runtime from f.name
+        if hasattr(args.backend, f.name):  # config-access-exempt: attribute selected at runtime from f.name
+            kwargs[f.name] = getattr(
+                args.backend, f.name
+            )  # config-access-exempt: attribute selected at runtime from f.name
     config = OptimizerConfig(**kwargs)
     if args.stream_optimizer_state_to_disk and not _is_muon_optimizer(config.optimizer):
         config.defer_main_param_initialization = True
@@ -198,7 +202,7 @@ def setup_model_and_optimizer(
         optimizer = get_megatron_muon_optimizer(
             config=config,
             model_chunks=model,
-            use_gloo_process_groups=args.use_gloo_process_groups,
+            use_gloo_process_groups=args.backend.use_gloo_process_groups,
             layer_wise_distributed_optimizer="dist" in config.optimizer.lower(),
         )
     elif is_multi_lora_enabled(args):
@@ -211,7 +215,7 @@ def setup_model_and_optimizer(
         optimizer = get_megatron_optimizer(
             config=config,
             model_chunks=model,
-            use_gloo_process_groups=args.use_gloo_process_groups,
+            use_gloo_process_groups=args.backend.use_gloo_process_groups,
         )
 
     if args.stream_optimizer_state_to_disk and not _is_muon_optimizer(config.optimizer):
@@ -254,7 +258,7 @@ def disable_forward_pre_hook(model_chunks: Sequence[DDP], param_sync: bool = Tru
 
 def should_disable_forward_pre_hook(args: TrainerConfig) -> bool:
     """Block forward pre-hook for certain configurations."""
-    return args.use_distributed_optimizer and args.overlap_param_gather
+    return args.backend.use_distributed_optimizer and args.backend.overlap_param_gather
 
 
 # ---------------------------------------------------------------------------
@@ -378,8 +382,8 @@ def forward_only(
             data_iterator=data_iterator,
             model=model,
             num_microbatches=num_microbatches[step_id],
-            seq_length=args.seq_length,
-            micro_batch_size=args.micro_batch_size,
+            seq_length=args.backend.seq_length,
+            micro_batch_size=args.backend.micro_batch_size,
             forward_only=True,
             collect_non_loss_data=True,
         )
@@ -517,9 +521,9 @@ def run_forward_backward_pass(
             data_iterator=data_iterator,
             model=model,
             num_microbatches=num_microbatches,
-            seq_length=args.seq_length,
-            micro_batch_size=args.micro_batch_size,
-            decoder_seq_length=args.decoder_seq_length,
+            seq_length=args.backend.seq_length,
+            micro_batch_size=args.backend.micro_batch_size,
+            decoder_seq_length=args.backend.decoder_seq_length,
             forward_only=forward_only,
         )
 
@@ -574,7 +578,7 @@ def train_one_step(
 
         reach_fault_hook(FaultHookName.TRAINER_STEP_BEFORE_ALLREDUCE, rollout_id=rollout_id, attempt=attempt)
 
-        metric_num_rollouts = None if args.calculate_per_token_loss else num_rollouts
+        metric_num_rollouts = None if args.backend.calculate_per_token_loss else num_rollouts
         ok, indep_dp_loss_reduced = allreduce_grads_and_losses_across_replicas(
             args,
             model,
@@ -595,7 +599,7 @@ def train_one_step(
             outcome = TrainStepOutcome.DISCARDED_SHOULD_RETRY
             valid_step = False
 
-    if (not disable_optimizer) and (not args.check_for_nan_in_loss_and_grad):
+    if (not disable_optimizer) and (not args.backend.check_for_nan_in_loss_and_grad):
         found_inf_flag = optimizer.prepare_grads()
         if found_inf_flag:
             valid_step = False
@@ -652,7 +656,7 @@ def train_one_step(
             witness_dump_and_clear_stale(model=model, witness_info=witness_info, optimizer=optimizer)
 
         if mpu.is_pipeline_last_stage(ignore_virtual=True):
-            metric_num_rollouts = None if args.calculate_per_token_loss else num_rollouts
+            metric_num_rollouts = None if args.backend.calculate_per_token_loss else num_rollouts
             loss_reduced = (
                 indep_dp_loss_reduced
                 if parallel_state.indep_dp.size > 1
@@ -680,13 +684,13 @@ def setup_train_iteration_config(args, model, optimizer, disable_optimizer):
     config = get_model_config(model[0])
     config.grad_scale_func = None if disable_optimizer else optimizer.scale_loss
     config.timers = None
-    if isinstance(model[0], DDP) and args.overlap_grad_reduce:
+    if isinstance(model[0], DDP) and args.backend.overlap_grad_reduce:
         no_sync_funcs = [model_chunk.no_sync for model_chunk in model]
         config.no_sync_func = no_sync_funcs[0] if len(model) == 1 else no_sync_funcs
-        if args.align_grad_reduce:
+        if args.backend.align_grad_reduce:
             grad_sync_funcs = [model_chunk.start_grad_sync for model_chunk in model]
             config.grad_sync_func = grad_sync_funcs[0] if len(model) == 1 else grad_sync_funcs
-    if args.overlap_param_gather and args.align_param_gather:
+    if args.backend.overlap_param_gather and args.backend.align_param_gather:
         param_sync_funcs = [model_chunk.start_param_sync for model_chunk in model]
         config.param_sync_func = param_sync_funcs[0] if len(model) == 1 else param_sync_funcs
     config.finalize_model_grads_func = finalize_model_grads_with_empty_cache
@@ -743,10 +747,12 @@ def train(
             logger.info("Reset optimizer states")
         reset_optimizer_states(optimizer)
 
-    if args.manual_gc:
+    if args.backend.manual_gc:
         # Disable the default garbage collector and perform the collection manually.
         # This is to align the timing of garbage collection across ranks.
-        assert args.manual_gc_interval >= 0, "Manual garbage collection interval should be larger than or equal to 0"
+        assert (
+            args.backend.manual_gc_interval >= 0
+        ), "Manual garbage collection interval should be larger than or equal to 0"
         gc.disable()
         gc.collect()
 
@@ -796,7 +802,7 @@ def train(
         if args.enable_mtp_training:
             from megatron.core.transformer.multi_token_prediction import MTPLossLoggingHelper
 
-            mtp_loss_scale = 1.0 if args.calculate_per_token_loss else 1 / num_microbatches[step_id]
+            mtp_loss_scale = 1.0 if args.backend.calculate_per_token_loss else 1 / num_microbatches[step_id]
             MTPLossLoggingHelper.reduce_loss_in_tracker()
             tracker = MTPLossLoggingHelper.tracker
             # here we assume only one mtp layer
@@ -974,7 +980,7 @@ def load_model_state(
     else:
         load_ctx = nullcontext()
 
-    load_dir = args.load
+    load_dir = args.backend.load
     # --load may be unset: setup_model_and_optimizer already asserted pretrained_checkpoint covers it.
     if load_dir is None or _has_loadable_ckpt(load_dir):
         with load_ctx:
@@ -1013,12 +1019,12 @@ def load_model_state(
 
     # Megatron checkpoint loads can restore scheduler state directly. In that
     # case, stepping by the checkpoint iteration here would double-count.
-    if opt_param_scheduler is not None and not (args.use_checkpoint_opt_param_scheduler and iteration > 0):
-        opt_param_scheduler.step(increment=iteration * args.global_batch_size)
+    if opt_param_scheduler is not None and not (args.backend.use_checkpoint_opt_param_scheduler and iteration > 0):
+        opt_param_scheduler.step(increment=iteration * args.backend.global_batch_size)
 
-    if args.finetune and not is_lora_enabled(args):
+    if args.backend.finetune and not is_lora_enabled(args):
         assert iteration == 0, (
-            f"--finetune loaded {args.load} and found iteration {iteration}, so the checkpoint and the flag disagree "
+            f"--finetune loaded {args.backend.load} and found iteration {iteration}, so the checkpoint and the flag disagree "
             f"about where this run stands"
         )
         start_rollout_id = 0

@@ -79,8 +79,8 @@ def _named_params_and_buffers_global(
     """
     ep_size = get_parallel_state().ep.size
     ep_rank = get_parallel_state().ep.rank
-    if args.num_experts:
-        expert_offset = ep_rank * args.num_experts // ep_size
+    if args.backend.num_experts:
+        expert_offset = ep_rank * args.backend.num_experts // ep_size
 
     sig = inspect.signature(get_transformer_layer_offset)
     need_vp_stage = "vp_stage" in sig.parameters
