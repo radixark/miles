@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
@@ -17,6 +18,14 @@ MessageMatcher = Callable[[dict[str, Any], dict[str, Any]], bool]  # (stored mes
 def _same_role_and_content(stored: dict[str, Any], new: dict[str, Any]) -> bool:
     """The fallback matcher, role and content only; serve_tinker injects the miles strict matcher instead."""
     return stored.get("role") == new.get("role") and stored.get("content") == new.get("content")
+
+
+def _named_parameters(function) -> frozenset[str]:
+    """The keyword-passable parameter names of a callable (none when absent): apply_chat_template's own arguments."""
+    if function is None:
+        return frozenset()
+    kinds = (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
+    return frozenset(name for name, param in inspect.signature(function).parameters.items() if param.kind in kinds)
 
 
 @dataclass(frozen=True)
@@ -158,6 +167,7 @@ class PromptRenderer:
         self.chat_template_kwargs = dict(chat_template_kwargs or {})
         self.tito_tokenizer = tito_tokenizer
         self.message_matcher = message_matcher or _same_role_and_content
+        self._render_arguments = _named_parameters(getattr(tokenizer, "apply_chat_template", None))
 
     def prepare_pretokenized(
         self,
@@ -171,6 +181,7 @@ class PromptRenderer:
     ) -> Rendered:
         """Find the turn the request continues, then a TITO merge from it when it applies, else a full render."""
         validate_messages(request_messages)
+        self._check_override(override)
         parent, reason = attach_point(session.turns, request_messages, self.message_matcher)
         if self.tito_tokenizer is None:
             ids = render_prompt(request_messages, tools, self.template_kwargs(override), self.tokenizer)
@@ -198,6 +209,15 @@ class PromptRenderer:
             )
         )
         return Rendered(ids, False, reason, request_args, parent)
+
+    def _check_override(self, override: dict[str, Any] | None) -> None:
+        """A turn's chat_template_kwargs are template variables; apply_chat_template's own arguments are refused."""
+        if override is None:
+            return
+        if not isinstance(override, dict):
+            raise UserInputError("chat_template_kwargs must be an object")
+        if refused := sorted(self._render_arguments.intersection(override)):
+            raise UserInputError(f"chat_template_kwargs cannot set {refused}: apply_chat_template's own arguments")
 
     def _resolve_request_args(
         self, parent: Turn | None, tools: list[dict[str, Any]] | None, override: dict[str, Any] | None
