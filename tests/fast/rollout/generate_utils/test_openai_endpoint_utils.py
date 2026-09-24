@@ -10,6 +10,7 @@ DELETE is attempted on every path.
 """
 
 import asyncio
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -20,6 +21,7 @@ from miles.rollout.session.samples.codec import (
     COMPUTED_FIELDS,
     COMPUTED_FIELDS_V2,
     ROLLOUT_SAMPLING_MASK_FIELDS,
+    decode_samples_and_merge_input_sample,
     encode_samples,
 )
 from miles.utils.http_utils import post_bytes_no_retry
@@ -263,6 +265,34 @@ async def test_collect_samples_single_post_then_delete(monkeypatch):
     (sample,) = result.samples
     assert sample.tokens == [1, 2, 10] and sample.status == Sample.Status.COMPLETED
     assert result.session_metadata == {"max_trim_tokens": 1}
+
+
+@pytest.mark.asyncio
+async def test_collect_samples_decoding_does_not_block_event_loop(monkeypatch):
+    _CollectCalls(monkeypatch, post_outcome=_computed_reply_payload())
+    decode_started = threading.Event()
+    release_decode = threading.Event()
+
+    def blocking_decode(*args, **kwargs):
+        decode_started.set()
+        if not release_decode.wait(timeout=1.0):
+            raise TimeoutError("sample decoding blocked the event loop")
+        return decode_samples_and_merge_input_sample(*args, **kwargs)
+
+    monkeypatch.setattr(
+        "miles.rollout.generate_utils.openai_endpoint_utils.decode_samples_and_merge_input_sample",
+        blocking_decode,
+    )
+
+    collect_task = asyncio.create_task(_tracer().collect_samples(Sample(), max_seq_len=7))
+    while not decode_started.is_set():
+        if collect_task.done():
+            await collect_task
+        await asyncio.sleep(0)
+    release_decode.set()
+
+    result = await collect_task
+    assert len(result.samples) == 1
 
 
 @pytest.mark.asyncio

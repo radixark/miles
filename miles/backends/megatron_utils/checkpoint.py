@@ -12,6 +12,7 @@ from megatron.training.checkpointing import load_checkpoint as _load_checkpoint_
 from megatron.training.checkpointing import save_checkpoint
 from megatron.training.global_vars import get_args
 
+from miles.backends.training_utils.weight_update.snapshot_publisher import SnapshotPublisher
 from miles.utils import megatron_bridge_utils
 from miles_plugins.models.deepseek_v4.arguments import assert_checkpoint_is_current, is_dsv4_model
 
@@ -134,10 +135,11 @@ def load_checkpoint(ddp_model, optimizer, opt_param_scheduler, checkpointing_con
         )
 
     # Load LoRA adapter weights if available
+    native_optimizer_restored = False
     if is_lora_enabled(args):
         adapter_path = getattr(args, "lora_adapter_path", None)
         if adapter_path is not None:
-            loaded, iteration = load_lora_adapter(
+            loaded, iteration, native_optimizer_restored = load_lora_adapter(
                 ddp_model,
                 adapter_path,
                 optimizer=optimizer,
@@ -155,20 +157,26 @@ def load_checkpoint(ddp_model, optimizer, opt_param_scheduler, checkpointing_con
                     f"Training will start with freshly initialized adapter weights."
                 )
 
-    return result
+    return (*result, native_optimizer_restored)
 
 
-def save_checkpoint_with_lora(iteration, model, optimizer, opt_param_scheduler):
+def save_checkpoint_with_lora(
+    iteration, model, optimizer, opt_param_scheduler, *, publisher: SnapshotPublisher | None = None
+):
     """Extended save that handles LoRA adapters separately."""
     args = get_args()
 
     if is_lora_model(model):
+        assert (
+            publisher is not None or args.megatron_to_hf_mode == "raw"
+        ), "Bridge LoRA checkpoint requires a snapshot publisher"
         save_dir = Path(args.save) / f"iter_{iteration:07d}" / "adapter"
         logger.info(f"Saving LoRA checkpoint to {save_dir}")
         save_lora_checkpoint(
             model,
             args,
             str(save_dir),
+            publisher=publisher,
             optimizer=optimizer,
             opt_param_scheduler=opt_param_scheduler,
             iteration=iteration,

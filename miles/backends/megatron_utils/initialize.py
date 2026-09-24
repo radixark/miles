@@ -11,7 +11,7 @@ from megatron.training.global_vars import _build_tokenizer, set_args
 
 from miles.backends.training_utils.parallel import get_parallel_state, set_parallel_state
 from miles.utils.ft_utils.indep_dp import IndepDPInfo
-from miles.utils.hf_config import register_hf_config_aliases
+from miles.utils.hf_utils.config import register_hf_config_aliases
 
 from .ft.indep_dp import create_indep_dp_group
 from .parallel import create_megatron_parallel_state

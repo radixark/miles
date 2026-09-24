@@ -74,13 +74,15 @@ def get_args():
         args.pipeline_model_parallel_size == 1
         and args.tensor_model_parallel_size == 1
         and args.context_parallel_size == 1
-        and args.expert_model_parallel_size == 1
-        and args.expert_tensor_parallel_size == 1
-        and world_size > 1
+        # ETP defaults to None (= TP) until validate_args resolves it.
+        and (args.expert_tensor_parallel_size or args.tensor_model_parallel_size) == 1
+        # Each pipeline stage must hold whole EP groups, so auto PP only fills the ranks EP leaves.
+        and world_size % args.expert_model_parallel_size == 0
+        and world_size > args.expert_model_parallel_size
         and not os.environ.get("CONVERT_KEEP_PP1")
     )
     if auto_pipeline_parallel:
-        pp_size = world_size
+        pp_size = world_size // args.expert_model_parallel_size
         while True:
             args.pipeline_model_parallel_size = pp_size
             args.decoder_last_pipeline_num_layers = args.num_layers - ceildiv(

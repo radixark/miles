@@ -9,7 +9,7 @@ import numpy as np
 import pybase64
 
 from miles.rollout.generate_utils.sampling_mask import append_sampling_metadata, should_return_sampling_mask
-from miles.utils.lora import LORA_ADAPTER_NAME, lora_rollout_enabled
+from miles.utils.lora.utils import LORA_ADAPTER_NAME, lora_rollout_enabled
 from miles.utils.processing_utils import encode_image_for_rollout_engine, extract_multimodal_train_inputs
 from miles.utils.types import Sample
 

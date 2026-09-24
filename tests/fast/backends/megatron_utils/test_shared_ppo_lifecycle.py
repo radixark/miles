@@ -170,6 +170,7 @@ def test_save_model_does_not_manage_lifecycle(actor_module, monkeypatch):
     worker.model = object()
     worker.optimizer = object()
     worker.opt_param_scheduler = object()
+    worker.snapshot_publisher = object()
     worker.wake_up = Mock()
     worker.sleep = Mock()
     save = Mock()
@@ -181,7 +182,9 @@ def test_save_model_does_not_manage_lifecycle(actor_module, monkeypatch):
 
     worker.save_model(6)
 
-    save.assert_called_once_with(6, worker.model, worker.optimizer, worker.opt_param_scheduler)
+    save.assert_called_once_with(
+        6, worker.model, worker.optimizer, worker.opt_param_scheduler, snapshot_publisher=worker.snapshot_publisher
+    )
     worker.wake_up.assert_not_called()
     worker.sleep.assert_not_called()
     reload_groups.assert_not_called()

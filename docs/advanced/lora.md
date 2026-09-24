@@ -102,12 +102,12 @@ in PR #1792 are not released on `main` yet. FSDP does not currently implement
 LoRA training.
 </Warning>
 
-`all-linear` expands to Q/K/V/O and gate/up/down projections, and conditionally
-adds MLA Q/KV projections based on the HF config. It does not literally wrap
-every linear layer. GDN and other model-specific projections require an explicit
-target list. Current GLM recipes validate models that contain DSA while leaving
-the DSA indexer unadapted; current hybrid-model recipes also leave MTP blocks and
-vision towers unadapted. Use the model launcher as the source of truth.
+Omitting `--target-modules` or passing `all-linear` uses the model defaults from
+`miles/utils/lora/hf_lora_targets.py`: attention + MLP, with model-specific exclusions
+and output-head defaults. Multi-LoRA without explicit targets selects all three
+training groups. Use `--target-modules attn,mlp,unembed` to select groups explicitly.
+Ordinary LoRA also accepts specific HF targets mixed with group names, such as
+`--target-modules attn,lm_head`; Tinker accepts only group names.
 
 ### Core arguments
 
@@ -117,8 +117,8 @@ vision towers unadapted. Use the model launcher as the source of truth.
 | `--lora-alpha` | `16` | Adapter scaling factor. |
 | `--lora-dropout` | `0.0` | Dropout on the adapter path. |
 | `--lora-type` | `lora` | `lora` uses fused Megatron projections; `canonical_lora` uses split Q/K/V and gate/up projections. The canonical path is implemented and covered by fast name-mapping tests, but has no maintained recipe or E2E validation. |
-| `--target-modules` | none | Required with a positive rank. Accepts `all-linear`, HF leaf names, Megatron names, or model-specific wildcard paths. |
-| `--exclude-modules` | none | Comma-separated exact entries removed from the resolved targets. |
+| `--target-modules` | none | Uses HF model defaults when omitted. Accepts `all-linear`, `attn/mlp/unembed` groups, HF leaf names or scoped HF paths; Bridge also accepts Megatron selectors. |
+| `--exclude-modules` | none | Comma-separated HF leaf names or scoped HF paths removed after selection; Bridge also accepts Megatron selectors. |
 | `--lora-adapter-path` | none | Warm-start/resume path. Also provide the matching positive rank, alpha, and target modules. Bridge training resume currently requires miles' per-rank adapter shards and the same parallel topology; an HF PEFT-only adapter cannot yet be loaded directly into the Bridge model. Inkling native has its own HF adapter loader. |
 | `--lora-base-cpu-backup` | off | Colocated mode only: keep a CPU mirror of the frozen SGLang base and avoid re-sending base weights. This trades host RAM for faster and more reliable pause/resume. |
 | `--lora-train-only` | off | Train the adapter while keeping ordinary rollout engines on the frozen base policy. |
@@ -126,10 +126,88 @@ vision towers unadapted. Use the model launcher as the source of truth.
 | `--check-lora-weight-equal` | off | On the colocated path, verify each synchronized adapter tensor with SHA-256. |
 | `--update-weights-interval` | `1` | Publish new weights every N rollout/train iterations. This is not LoRA-specific, but it controls when the live adapter is synchronized. |
 
-This argument table describes the general Bridge surface. Current native Inkling
-uses a fixed model-specific adapter schema: `--target-modules` does not select
-individual training modules, `--exclude-modules` is not applied, and
-`canonical_lora` is not implemented. Use the Inkling launcher defaults.
+### HF target source of truth
+
+`miles/utils/lora/hf_lora_targets.py` owns **HF target groups and defaults** for all
+backends. It derives attention, MLP, and output-head paths from the model config,
+including nested text models, optional MLA projections, expert layouts, and
+hybrid attention. Vision towers, routers, norms, and GDN convolutions are excluded.
+
+| Model layout | Attention | MLP | Ordinary LoRA default |
+|---|---|---|---|
+| Llama, Qwen2/2.5, Qwen3 | Q/K/V/O | Dense gate/up/down | Attention + MLP |
+| Qwen3 MoE | Q/K/V/O | Routed experts; dense layers when configured | Attention + MLP |
+| Qwen3-Next | Q/K/V/O + GDN qkvz/ba/out | Routed + shared experts; configured dense layers | Attention + MLP |
+| Qwen3.5/3.6, text and multimodal | Q/K/V/O + GDN qkv/z/b/a/out | Dense or packed routed + shared experts | Attention + MLP |
+| GPT-OSS | Q/K/V/O | Packed gate_up/down experts | Attention + MLP |
+| DeepSeek V2/V3, Kimi K2/K2.5 | MLA | Dense + routed + shared experts as configured | Attention + MLP |
+| DeepSeek V3.2, GLM-5/5.1/5.2 | MLA + DSA indexer | Dense + routed + shared experts as configured | Attention + MLP, excluding indexer |
+| GLM-4 MoE | Q/K/V/O | Dense + routed + shared experts as configured | Attention + MLP |
+| Inkling | Q/K/V/R/O | Dense + packed routed + shared expert projections | Attention + MLP + output head |
+
+`--target-modules` accepts comma-separated `attn`, `mlp`, and `unembed` groups,
+explicit HF targets, or a mix of both. Group names expand through the model's HF
+definition, so `mlp` includes dense, shared, and routed expert projections, including
+packed `gate_up_proj` weights. Only exact group names expand; full paths remain
+literal target patterns. Duplicates are removed, then `--exclude-modules` applies.
+Explicit module selections must not overlap exclusions; defaults and group
+selections may still be narrowed with exclusions.
+
+A matching pair of `gate_proj` and `up_proj` selectors also selects
+`gate_up_proj` when the HF model has packed projections, with a warning.
+Scoped pairs retain their path prefix; selecting only gate or only up does not
+expand to the packed projection. Split selectors remain where the model has
+split modules and are replaced where it has only packed modules.
+
+Without explicit targets, ordinary LoRA uses its model defaults and multi-LoRA
+selects all three groups. `all-linear` selects the ordinary model defaults and
+must be used alone. Explicit lists replace the defaults.
+
+Packed expert entries identify HF parameters rather than `nn.Linear` modules.
+Inkling entries follow the native HF model namespace. Its native Megatron LoRA
+implementation requires the complete fixed layout. SGLang discovers its adapter
+modules with `all`, and online weight-sync config uses `all-linear`; adapter
+checkpoints derive explicit names from exported tensors. Adapter factors, tensor
+packing, and checkpoint names are unchanged. The pinned Transformers version does
+not yet include native Inkling, so its HF structure is not covered by the native
+meta-model tests. A layout entry is not a backend support claim.
+
+Ordinary LoRA and Tinker share these HF target groups. HF targets retain their
+meaning throughout training and serving. `miles/utils/hf_utils/weight_mapping.py`
+uses Transformers conversion rules and a meta model's parameter names to relate
+checkpoint keys to the current HF model namespace, without loading base weights.
+This resolves renamed and packed parameter names. Custom models absent from
+native Transformers keep their existing checkpoint namespace.
+
+Bridge resolves mappings against parameters that actually exist across PP/EP
+ranks before checking fused selections. Explicit Megatron selectors retain a
+compatibility conversion at startup. Adapter factories receive only Megatron
+targets; they do not overwrite the HF selection. Arbitrary layer/expert subsets
+within a registry template are not implemented and are rejected.
+Standard LoRA requires all projections of a fused weight together;
+`canonical_lora` supports individual Q/K/V and dense gate/up selections.
+Grouped-expert FC1 and GDN input projections remain fused and require all of
+their HF projections even in canonical mode.
+
+Tinker uses `--target-modules attn,mlp,unembed` by default; for example,
+`--target-modules attn,mlp` disables output-head training. Client SDK flags must
+match the selected server groups. Tinker rejects explicit module names,
+`all-linear`, and `--exclude-modules` because the SDK describes only whole groups.
+
+For Bridge, SGLang receives the selected HF paths and normalizes them into buffer types
+(for example, Q/K/V become `qkv_proj`); it does not own the selection policy.
+Adapter checkpoints derive their concrete `target_modules` from exported tensor
+keys rather than a separate Megatron-to-HF name table. Online adapter registration
+uses the resolved HF selection for Bridge and `all-linear` for native Inkling,
+without an extra tensor export.
+This requires [SGLang's HF-path normalization support](https://github.com/sgl-project/sglang/pull/40242),
+including GDN split names. FSDP LoRA injection remains
+unsupported.
+
+Native Inkling
+uses a fixed model-specific adapter schema: defaults select that complete schema,
+and partial/custom layouts or `canonical_lora` are rejected before injection.
+Use the Inkling launcher defaults.
 
 ### Rollout topology
 
@@ -160,7 +238,7 @@ LORA_ARGS=(
   --lora-rank 32
   --lora-alpha 32
   --lora-dropout 0.0
-  --target-modules "gate_proj,up_proj,down_proj"
+  --target-modules "gate_up_proj,down_proj"
   --sglang-lora-backend triton
   --megatron-to-hf-mode bridge
 )
@@ -183,10 +261,13 @@ alternative aligned-expert path.
   adapters.
 - **Checkpoints.** miles saves native per-rank adapter shards and
   optimizer/scheduler state. Exact resume expects the same TP/PP topology. It
-  also attempts a best-effort HF PEFT `adapter_model.bin` plus
-  `adapter_config.json` export for external serving and warns if that export
-  fails. Direct HF PEFT-to-Bridge resume is not implemented yet; native Inkling
-  supplies a model-specific HF adapter importer.
+  also attempts a best-effort HF PEFT `adapter_model.safetensors` plus
+  `adapter_config.json` export in Bridge mode, through the same snapshot publisher
+  used by Tinker. HF export errors are logged while native checkpoint saving
+  continues. Raw mode saves native shards and a rank-sharded adapter config without
+  HF export. `--save-hf` exports a merged model and an HF adapter without native
+  training shards. Direct HF PEFT-to-Bridge resume is not implemented yet; native
+  Inkling supplies a model-specific HF adapter importer.
 - **Weight synchronization.** Colocated IPC and remote NCCL broadcast both ship
   adapter tensors at each configured update boundary without merging them into
   the base. A checksum checker is available for the colocated path.

@@ -15,10 +15,11 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from functools import partial
 from pathlib import Path
-from typing import get_args
+from typing import Literal, get_args
 
 from miles.utils.external_utils.exec_command import exec_command_cpu, exec_command_gpu, exec_command_multi_node
 from miles.utils.external_utils.model_args_utils import shell_safe_model_args
+from miles.utils.external_utils.ray_job import run_ray_job
 from miles.utils.file_arg_utils import PSEUDO_FILE_PREFIX
 from miles.utils.http_utils import wait_for_server_ready
 from miles.utils.typer_utils import dataclass_cli
@@ -169,7 +170,9 @@ def execute_train(
     extra_env_vars=None,
     config: ExecuteTrainConfig | None = None,
     megatron_path: str = "/root/Megatron-LM",
+    job_lifetime: Literal["independent", "launcher"] = "independent",
 ):
+    assert job_lifetime in ("independent", "launcher")
     if extra_env_vars is None:
         extra_env_vars = {}
     if config is None:
@@ -243,18 +246,18 @@ def execute_train(
         **resolve_extra_env_vars(extra_env_vars, config),
     }
     runtime_env_vars["PYTHONPATH"] = _pythonpath_with_sources(megatron_path, runtime_env_vars.get("PYTHONPATH"))
-    runtime_env_json = json.dumps({"env_vars": runtime_env_vars})
 
     if get_bool_env_var("MILES_SCRIPT_ENABLE_RAY_SUBMIT", "1"):
         model_args = shell_safe_model_args(megatron_model_type)
-        exec_command_cpu(
-            f"export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && "
-            f"""ray job submit {'' if 'RAY_ADDRESS' in os.environ else '--address="http://127.0.0.1:8265" '}"""
-            f"--runtime-env-json={shlex.quote(runtime_env_json)} "
-            f"-- python3 {train_script} "
-            f"{model_args} "
-            f"{train_args}"
-        )
+        try:
+            run_ray_job(
+                entrypoint=f"python3 {shlex.quote(train_script)} {model_args} {train_args}",
+                runtime_env={"env_vars": runtime_env_vars},
+                job_lifetime=job_lifetime,
+            )
+        finally:
+            if job_lifetime == "launcher" and not external_ray:
+                exec_command_cpu("ray stop --force")
 
 
 def _parse_extra_env_vars(text: str):

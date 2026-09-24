@@ -1,5 +1,22 @@
 // Minimal dependency-free canvas charts (line + scatter) with point picking.
 
+// [min, max] over one or more arrays, walked in place. Math.min(...arr) passes
+// every element as a call argument, and past ~100k of them the engine throws
+// "RangeError: Maximum call stack size exceeded" -- a long run's per-GPU
+// telemetry crosses that. Empty input gives [Infinity, -Infinity], as the
+// spread form did.
+export function extent(...arrays) {
+  let lo = Infinity;
+  let hi = -Infinity;
+  for (const values of arrays) {
+    for (const v of values) {
+      if (v < lo) lo = v;
+      if (v > hi) hi = v;
+    }
+  }
+  return [lo, hi];
+}
+
 const MARGIN = { left: 52, right: 14, top: 10, bottom: 24 };
 
 function setupCanvas(canvas) {
@@ -88,8 +105,7 @@ export function drawChart(canvas, points, opts = {}) {
   if (zoom?.x) {
     [xMin, xMax] = zoom.x;
   } else {
-    const xs = pts.map((p) => p.x);
-    [xMin, xMax] = [Math.min(...xs), Math.max(...xs)];
+    [xMin, xMax] = extent(pts.map((p) => p.x));
     // bands cover point-free regions: widen the domain so they stay visible
     for (const b of bands) {
       xMin = Math.min(xMin, b.x0);
@@ -101,8 +117,7 @@ export function drawChart(canvas, points, opts = {}) {
   if (zoom?.y) {
     [yMin, yMax] = zoom.y;
   } else {
-    const ys = pts.map((p) => p.y);
-    [yMin, yMax] = ys.length ? [Math.min(...ys), Math.max(...ys)] : [0, 1];
+    [yMin, yMax] = pts.length ? extent(pts.map((p) => p.y)) : [0, 1];
     if (yMin === yMax) [yMin, yMax] = [yMin - 0.5, yMax + 0.5];
     const yPad = (yMax - yMin) * 0.08;
     yMin -= yPad;
@@ -372,7 +387,7 @@ export function drawMultiLine(canvas, seriesList, opts = {}) {
     [yMin, yMax] = zoom.y;
   } else {
     [yMin, yMax] = alive.length
-      ? [Math.min(...alive.map((s) => Math.min(...s.value))), Math.max(...alive.map((s) => Math.max(...s.value)))]
+      ? extent(...alive.map((s) => s.value))
       : [0, 1];
   }
   if (yMin === yMax) [yMin, yMax] = [yMin - 0.5, yMax + 0.5];

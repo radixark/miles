@@ -167,7 +167,7 @@ def test_initialize_does_not_step_scheduler_restored_from_checkpoint():
                 return_value=(model, optimizer, opt_param_scheduler),
             )
         )
-        stack.enter_context(patch("miles.backends.megatron_utils.model.load_checkpoint", return_value=(100, 0)))
+        stack.enter_context(patch("miles.backends.megatron_utils.model.load_checkpoint", return_value=(100, 0, False)))
         _patch_initialize_side_effects(stack)
         result = initialize_model_and_optimizer(args)
 
@@ -190,7 +190,7 @@ def test_initialize_steps_scheduler_when_checkpoint_did_not_restore_it():
                 return_value=(model, optimizer, opt_param_scheduler),
             )
         )
-        stack.enter_context(patch("miles.backends.megatron_utils.model.load_checkpoint", return_value=(100, 0)))
+        stack.enter_context(patch("miles.backends.megatron_utils.model.load_checkpoint", return_value=(100, 0, False)))
         _patch_initialize_side_effects(stack)
         result = initialize_model_and_optimizer(args)
 

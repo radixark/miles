@@ -37,6 +37,8 @@ In `pr-test.yml`, `tier a` (CPU fast) gates PR-image preparation and the NVIDIA 
 
 `pr-test.yml` treats `pull_request.closed` as cancellation-only: the close event shares the PR's concurrency group, cancels any queued or running `PR Test` run, and starts no resolver or test jobs.
 
+A PR event starts jobs only when the PR's base is the default branch or the PR carries a `run-ci*` label. Otherwise `resolve-ci-policy` is skipped, and because every other job needs it, the run starts nothing. A stacked PR therefore runs `PR Test` only while labeled; retargeting a PR to `main` is an `edited` event, which does not start a run.
+
 Both PR workflows are also reusable `workflow_call` entry points for release CI. Called runs group concurrency by `inputs.ref`, so redispatching the same release branch cancels the older run; literal `pr-test-` and `pr-test-rocm-` prefixes keep the CUDA and ROCm groups from cancelling each other under the same branch-cut caller.
 
 ## What each stage does
@@ -90,7 +92,7 @@ Weekly runs keep the same shards but set each GPU matrix's `max-parallel` to one
 
 `pr-test-rocm.yml` exposes `pull_request`, exact nightly and weekly crons, `workflow_dispatch`, and `workflow_call`. PR runs use the same low-trust merge-commit model as `pr-test.yml`. It runs `stage-c-4-gpu-mi350` through `_run-ci-rocm.yml` on two 4-GPU MI350 runners and splits tests into two `est_time`-balanced shards; weekly alone limits the matrix to one runner at a time. It runs no CPU tests.
 
-A called release run checks out the supplied Miles `ref` with `cadence=release` but resolves the same undated `rocm/sgl-dev:miles-rocm720-mi35x` image as the other automatic paths. SGLang and Megatron-LM remain baked into that image, so release ROCm is a smoke signal.
+A called release run checks out the supplied Miles `ref` with `cadence=release` but resolves the same undated `rocm/sgl-dev:miles-rocm724-mi35x` image as the other automatic paths. SGLang and Megatron-LM remain baked into that image, so release ROCm is a smoke signal.
 
 Only tests registered with `register_rocm_ci(suite="stage-c-4-gpu-mi350", ...)` run; the `nightly-` prefixed suites and CUDA registrations are not inherited. PR, nightly, weekly, and release runs consume the shared cadence and label policy: `run-ci-amd` selects the `amd`-labelled subset, other `run-ci-*` labels select matching subsets, nightly admits regular plus `nightly=True` registrations, and weekly or release selects every enabled registration.
 

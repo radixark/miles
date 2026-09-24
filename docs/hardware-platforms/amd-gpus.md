@@ -16,7 +16,7 @@ workflows and published to Docker Hub under
 | Image | ROCm | GPUs | Notes |
 |---|---|---|---|
 | `rocm/sgl-dev:miles-rocm10-mi35x` | 10 | MI350X / MI355X | Python 3.12 — the image the nightly tests run on |
-| `rocm/sgl-dev:miles-rocm720-mi35x` | 7.2 | MI350X / MI355X | Python 3.10 |
+| `rocm/sgl-dev:miles-rocm724-mi35x` | 7.2.4 | MI350X / MI355X | Python 3.12 |
 | `rocm/sgl-dev:miles-rocm700-mi30x` | 7.0 | MI300X / MI325X | Not rebuilt daily — last built 2026-09-08 |
 
 Each undated tag moves with every build; append `-YYYYMMDD` (e.g.
@@ -25,7 +25,7 @@ Each undated tag moves with every build; append `-YYYYMMDD` (e.g.
 To build an image yourself, `docker/Dockerfile.rocm` holds the recipe:
 
 ```bash
-python docker/build.py --variant rocm10-mi35x --image-tag dev    # or rocm720-mi35x
+python docker/build.py --variant rocm10-mi35x --image-tag dev    # or rocm724-mi35x
 ```
 
 ## Start the container
