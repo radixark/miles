@@ -13,6 +13,7 @@ import torch.distributed as dist
 from miles.backends.training_utils.checkpoint_io import write_checkpoint_dir
 from miles.backends.training_utils.parallel import get_parallel_state
 from miles.backends.training_utils.weight_update.snapshot_publisher import SnapshotPublisher
+from miles.utils.distributed_utils import get_gloo_group, run_on_all_ranks
 from miles.utils.lora.utils import (  # noqa: F401  (re-exported)
     build_lora_config,
     is_lora_enabled,
@@ -20,6 +21,9 @@ from miles.utils.lora.utils import (  # noqa: F401  (re-exported)
 )
 
 logger = logging.getLogger(__name__)
+
+# Written after every rank's shards and training state; absent after an interrupted save.
+LORA_CHECKPOINT_COMPLETE_MARKER = ".complete"
 
 _marked_lora_grad_params_cache: dict[int, list] = {}
 
@@ -213,7 +217,7 @@ def save_lora_checkpoint(
         if training_state is not None:
             torch.save(training_state, checkpoint_dir / f"training_state_rank{global_rank}.pt")
 
-    write_checkpoint_dir(save_dir, write_shards)
+    write_checkpoint_dir(save_dir, write_shards, completion_marker=LORA_CHECKPOINT_COMPLETE_MARKER)
     return str(save_dir)
 
 
@@ -225,10 +229,38 @@ def load_lora_adapter(
     opt_param_scheduler: Any | None = None,
     load_optimizer: bool = True,
 ) -> tuple[bool, int | None, bool]:
-    """Restore native adapter shards and optional optimizer/scheduler state.
+    """Collectively restore native adapter shards and optional optimizer/scheduler state.
 
-    HF adapters cannot be loaded into Bridge models through this path.
+    Fails on every rank unless all ranks restore the same state. HF adapters cannot be loaded
+    into Bridge models through this path.
     """
+    outcome = run_on_all_ranks(
+        f"loading LoRA adapter {adapter_path}",
+        _load_lora_adapter_on_rank,
+        model,
+        adapter_path,
+        optimizer,
+        opt_param_scheduler,
+        load_optimizer,
+    )
+    if dist.is_initialized():
+        outcomes = [None] * dist.get_world_size()
+        dist.all_gather_object(outcomes, outcome, group=get_gloo_group())
+        if any(other != outcome for other in outcomes):
+            raise RuntimeError(
+                f"LoRA adapter {adapter_path} restored differently across ranks "
+                f"(loaded, iteration, optimizer_restored per rank: {outcomes}); the checkpoint is likely incomplete"
+            )
+    return outcome
+
+
+def _load_lora_adapter_on_rank(
+    model: Sequence[torch.nn.Module],
+    adapter_path: str,
+    optimizer: Any | None,
+    opt_param_scheduler: Any | None,
+    load_optimizer: bool,
+) -> tuple[bool, int | None, bool]:
     adapter_dir = Path(adapter_path).resolve()
     if not adapter_dir.exists():
         logger.warning(f"LoRA adapter path does not exist: {adapter_dir}")
@@ -251,6 +283,11 @@ def load_lora_adapter(
             logger.warning(f"Using legacy tp/pp-named adapter shard {legacy}; only valid when EP<=TP")
             native_path = legacy
     if native_path.exists():
+        if global_rank == 0 and not (adapter_dir / LORA_CHECKPOINT_COMPLETE_MARKER).exists():
+            logger.warning(
+                f"{adapter_dir} has no {LORA_CHECKPOINT_COMPLETE_MARKER} marker: it was saved by an older miles "
+                f"or its save was interrupted"
+            )
         state_dict = torch.load(native_path, map_location="cpu", weights_only=True)
         adapter_params = {
             name: param
