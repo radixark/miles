@@ -26,12 +26,8 @@ def _gather_ple_rows_from_pinned(
     offsets = tl.arange(0, BLOCK_D)
     mask = offsets < embedding_dim
     ptr = weight_ptr.to(tl.int64).to(tl.pointer_type(tl.bfloat16))
-    values = tl.load(ptr + local_idx * embedding_dim + offsets, mask=mask, other=0.0)
-    tl.store(
-        output_ptr + row_id * embedding_dim + offsets,
-        tl.where(in_range, values.to(tl.bfloat16), 0.0),
-        mask=mask,
-    )
+    values = tl.load(ptr + local_idx * embedding_dim + offsets, mask=mask & in_range, other=0.0)
+    tl.store(output_ptr + row_id * embedding_dim + offsets, values, mask=mask)
 
 
 def gather_ple_rows(
