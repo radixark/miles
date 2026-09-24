@@ -226,3 +226,11 @@ def test_tensorwise_linear_fp8_forward_backward(grouped, monkeypatch):
         "fp8_gemm_calls": len(calls),
     }
     print(json.dumps(metrics), flush=True)
+
+
+if __name__ == "__main__":
+    import sys
+
+    import pytest
+
+    sys.exit(pytest.main([__file__, "-v"]))
