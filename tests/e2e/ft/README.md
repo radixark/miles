@@ -18,6 +18,7 @@
 | `scenario_trainer_all_gather_fault` | `kill_train__dp2_tp2` |
 | `scenario_p2p_send_receiver_fault` | `kill_rollout__dp2_tp2` |
 | `scenario_inference_scaling` | `test_inference_scaling__kill_rollout.py`, no modes |
+| `scenario_trainer_scaling` | `test_trainer_scaling__kill_train.py`, no modes |
 | `scenario_random_crash` | `kill_train__dp2_cp2_tp2_ep2__fake_rollout__moe_5layer`, `kill_train__dp2_cp2__moe_5layer`, `kill_train_rollout__dp2_cp2`, `kill_rollout__dp4` |
 | `scenario_realistic_gsm8k` | `test_realistic_gsm8k__kill_train_rollout.py`, no modes |
 | `scenario_random_crash_fully_async` | `kill_train_rollout__dp2_cp2` |
@@ -44,6 +45,7 @@
 | `scenario_trainer_all_gather_fault` | comparison | a trainer rank killed, stopped or deadlocked in the weight-update all-gather changes training bits not at all |
 | `scenario_p2p_send_receiver_fault` | comparison | an engine killed while the trainer is sending it weights over P2P changes training bits not at all |
 | `scenario_inference_scaling` | soak | the engine pool grows and shrinks under a live run, and the run follows it |
+| `scenario_trainer_scaling` | soak | the trainer pool gains and loses a DP cell under a live run, and the quorum follows it |
 | `scenario_random_crash` | soak | system survives random crashes without hanging |
 | `scenario_realistic_gsm8k` | soak | model still reaches gsm8k accuracy under random crashes |
 | `scenario_random_crash_fully_async` | soak | same, through `train_async.py --fully-async` |
@@ -477,6 +479,54 @@ Assertions:
 - **Why during training**: an engine deleted mid-generation is a crash the rollout ft path already covers in the soaks; the scaling question is whether the run follows a pool that changes size, so the resize lands where nothing is in flight.
 - **Why two independent witnesses of the size**: the checksum event counts the engines the trainer pushed to; the throughput denominator is what `InferenceRuntimeMutState` told the rollout executor. One agreeing with the schedule while the other does not is exactly the bug a refactor of the runtime topology would introduce.
 - **Why the lag window**: a pod takes seconds to be created and the reflector to see it; the update after the resize's own rollout may or may not include the new engine, the one after it must.
+
+### `scenario_trainer_scaling`
+
+```
+Type: soak (no baseline, no compare); kubernetes only, the pool is a LeaderWorkerSet there
+Entry: test_trainer_scaling__kill_train.py, no mode: the topology is pinned in
+       conftest_ft/scaling.py (compute_scaling_mode)
+Steps: 12 rollouts (SCALING_NUM_ROLLOUTS)
+Layout: dense Qwen3-0.6B, 2 cells x CP2 on 4 train GPUs + 2 engines x 1 GPU, disaggregated,
+        --ft-components train (indep_dp), api server + mini ft controller as in the soaks;
+        8 GPUs at the peak (3 cells x 2 GPUs + 2 engines)
+
+Mechanism: as scenario_inference_scaling - the soak's only target is the pool and its only form
+        a scheduled ResizePoolForm the scheduler draws every poll - on the trainer pool's
+        LeaderWorkerSet, firing while the run is generating a scheduled rollout: the trainers
+        are idle then, and the weight update before that generation has already been pushed.
+        Kubernetes creates or deletes the highest group index (one 2-GPU pod = one cell), the
+        trainer controller sees the pod through its watch and adds / removes the cell, and the
+        next train step's refresh heals the new cell into the quorum (checkpoint from cell 0) or
+        shrinks the quorum to the survivors.
+Schedule (SCHEDULE = compute_scaling_schedule("generating")): 2 -> 3 cells while generating
+        rollout 2, 3 -> 2 while generating rollout 7
+Timing and landing: as scenario_inference_scaling (exact moments read off the run's live events,
+        a resize recovers once the pool is observed ready - every actor cell Running and Healthy
+        and exactly as many cells as replicas - LANDING_LAG_ROLLOUTS = 3)
+
+Assertions:
+  1. Soak: every action returned and recovered, the tail trained a normal step after admission
+     closed, and the final observation holds the pool alive and ready
+  2. Resizes: exactly the two scheduled resizes were applied, in order, the pool reading
+     2 -> 3 -> 2 replicas before and after each
+  3. Api server: the soak's readings list at most 3 actor cells alive at once, exactly 2 when
+     the run ends
+  4. train/grad_norm finite and nonzero for all 12 rollouts
+  5. Steps: the number of cells in the final attempt of each TrainGroupStepEndEvent is 2 before
+     the first landing, 3 between the landings, 2 after the second, each landing within the lag
+     window; every cell of every final attempt reports NORMAL, so a cell joined or left without
+     taking a step down
+  6. Quorum: exactly two CellReconfigureEvents, in schedule order and inside the lag windows -
+     the heal (src cell 0, healed [2], alive [0, 1, 2]) and the shrink (no src, healed [],
+     alive [0, 1])
+  7. Every weight update reached the 2 engines
+```
+
+- **Why not relaunch with a new `--actor-num-gpus-per-node`**: the pool's replica count comes from `TrainerSpec.scheduling(scaling)` and is a permitted "scaling" diff, but `--trainer-init-expected-num-cells` is filled at parse time as `{trainer_id: num_cells}` from the scaling fields and travels in every leaf payload that mixes in `ClusterConfig`, so a relaunch with more GPUs rewrites the trainer, inference-controller and rollout-executor pods unless the flag is declared explicitly; on top of that the `sglang` payload leak above still applies. Resizing the workload directly leaves the payloads alone.
+- **Why during generation**: a trainer cell removed mid-step is the crash the soaks already cover; here the cell leaves while the trainers are idle, so the shrink is a reconfigure and not a retry.
+- **Why the step-end witness and not only the reconfigure events**: a heal that lands but never trains would still log its event; counting the cells that reported an outcome per step proves the third cell carried gradients for every step between the landings.
+- **Why only above the deployed size**: the controller waits for its deployed cell count at init and on reload, so a pool scaled below it would hang the next take-over; this schedule returns to the deployed size, never under it.
 
 ### `scenario_random_crash`
 
