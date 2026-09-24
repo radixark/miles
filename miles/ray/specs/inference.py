@@ -363,7 +363,7 @@ def _compute_spec_inference_engine(
                 static_port=9000,
                 mode="master",
                 allow_dynamic=True,
-                num_consecutive=30 + args.sglang_dp_size,
+                num_consecutive=30 + server_group_config.overrides.get("dp_size", args.sglang_dp_size),
             ),
             PortInfo(name="nccl", static_port=10000, allow_dynamic=True),
             *(
