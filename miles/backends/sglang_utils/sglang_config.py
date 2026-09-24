@@ -4,6 +4,7 @@ import argparse
 import logging
 from argparse import Namespace
 from dataclasses import dataclass
+from typing import Any
 
 import pydantic
 import yaml
@@ -277,19 +278,30 @@ class ModelConfig(FrozenStrictBaseModel):
 
 class SglangConfig(FrozenStrictBaseModel):
     models: list[ModelConfig]
+    base_args: dict[str, Any]
 
     @classmethod
     def parse_args(cls, args: Namespace) -> "SglangConfig":
-        return cls.resolve(raw=_compute_raw_sglang_config(args), args=args)
+        return cls.resolve(raw=_compute_raw_sglang_config(args), args=args, base_args=_extract_base_args(args))
+
+    def get_value(self, name: str, group: ServerGroupConfig) -> Any:
+        return group.overrides.get(name, self.base_args[name])
+
+    def common_value(self, name: str) -> Any:
+        values = [
+            self.base_args | group.overrides
+            for model in self.models
+            for group in model.server_groups
+            if group.worker_type != WorkerType.PLACEHOLDER
+        ]
+        return _list_of_dicts_get(values, name)
 
     @classmethod
     def add_arguments(cls, parser: argparse.ArgumentParser) -> None:
         add_sglang_router_arguments(parser)
         parser.add_argument("--sglang-server-concurrency", type=int, default=512)
 
-        _add_prefixed_server_args(
-            parser, flag_prefix="sglang", dest_prefix="sglang_", skipped_args=_SKIPPED_SERVER_ARGS, inherit=False
-        )
+        _add_prefixed_primary_server_args(parser)
         _add_prefixed_server_args(
             parser,
             flag_prefix="eval-sglang",
@@ -315,16 +327,37 @@ class SglangConfig(FrozenStrictBaseModel):
         )
 
     @classmethod
-    def resolve(cls, raw: _RawSglangConfig, args) -> "SglangConfig":
+    def resolve(cls, raw: _RawSglangConfig, args: Namespace, *, base_args: dict[str, Any]) -> "SglangConfig":
         offset_cursor = _OffsetCursor(gpu=0, engine=0)
         model_configs = [ModelConfig.resolve(m, args, offset_cursor) for m in raw.models]
 
         assert offset_cursor.gpu == raw.total_num_gpus
-        return cls(models=model_configs)
+        return cls(models=model_configs, base_args=base_args)
 
     @property
     def has_pd_disaggregation(self) -> bool:
         return any(m.has_pd_disaggregation for m in self.models)
+
+
+def _extract_base_args(args: Namespace) -> dict[str, Any]:
+    parser = argparse.ArgumentParser(add_help=False)
+    _add_prefixed_primary_server_args(parser)
+    values = vars(args)
+    return {action.dest.removeprefix("sglang_"): values[action.dest] for action in parser._actions}
+
+
+def _add_prefixed_primary_server_args(parser: argparse.ArgumentParser) -> None:
+    _add_prefixed_server_args(
+        parser, flag_prefix="sglang", dest_prefix="sglang_", skipped_args=_SKIPPED_SERVER_ARGS, inherit=False
+    )
+
+
+def _list_of_dicts_get(dicts: list[dict[str, Any]], key: str) -> Any:
+    if not dicts or any(key not in values for values in dicts):
+        raise AttributeError(f"No common field {key!r}")
+    value = dicts[0][key]
+    assert all(values[key] == value for values in dicts[1:]), f"Field {key!r} differs across configurations"
+    return value
 
 
 @dataclass
