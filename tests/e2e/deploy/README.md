@@ -78,7 +78,10 @@ Modes: checkpointed  - --save-interval 2 (saves after 1, 3, 5), 2 restarts: rest
                        1 and 2, before anything was saved
 Entries: test_hot_restart_checkpointed.py, test_hot_restart_no_checkpoint.py
 
-1. Relaunch the same command + --hot-restart orchestration,rollout_executor per the mode
+1. Relaunch the same command + --hot-restart orchestration,rollout_executor per the mode, with one
+   rollout-executor-only argument changed: --save-debug-rollout-data points at
+   <side>/rollout_data/generation_<k>/{rollout_id}.pt, k = the take-over's number (the install is
+   generation 0); every other argument is repeated byte for byte
 2. Assert workloads: only orchestrator + rollout-executor rolled (pod uid / restartCount / stamps);
    compare canonical PodTemplate fingerprints for every workload because a controller may advance the generation of
    an unchanged custom resource
@@ -101,6 +104,8 @@ checkpointed lands every take-over on a non-save step, so unsaved steps are roll
 redone; no_checkpoint has nothing to resume from, so its event log is moved aside and it starts
 over at rollout 0 with the run.
 ```
+
+- **Why `--save-debug-rollout-data`**: it is read by the rollout executor alone (a `DebugRolloutOnlyConfig` field), so a relaunch that changes it must leave the trainer and inference-controller payloads byte-identical - which the launcher enforces by refusing any other diff - and what it does is visible on disk without touching a single training bit, so the bitwise comparison against the baseline still holds.
 
 ### `scenario_hot_restart_realistic_gsm8k`
 
