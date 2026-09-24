@@ -19,10 +19,12 @@ class RayWorkerProvider(BaseWorkerProvider):
         worker_manager_handle: ray.actor.ActorHandle,
         *,
         pool_ids: list[str] | None = None,
+        category: str | None = None,
         poll_interval_seconds: float = POLL_INTERVAL_SECONDS,
     ):
         self._worker_manager_handle = worker_manager_handle
         self._pool_ids = pool_ids
+        self._category = category
         self._poll_interval_seconds = poll_interval_seconds
 
     # TEMPORARY: this layer is not meant to serve a suspend the inference controller drives, deliberately
@@ -57,7 +59,7 @@ class RayWorkerProvider(BaseWorkerProvider):
         return await loop.start(reconcile)
 
     async def _list_alive_cells(self, *, pool_ids: list[str] | None) -> dict[str, CellInfo]:
-        all_infos = await self._worker_manager_handle.get_cell_infos.remote(pool_ids=pool_ids)
+        all_infos = await self._worker_manager_handle.get_cell_infos.remote(pool_ids=pool_ids, category=self._category)
         return {cell_id: info for cell_id, info in all_infos.items() if info.alive}
 
     def _get_actor_handles(self, infos: list[WorkerInfo]) -> dict[str, ray.actor.ActorHandle]:
