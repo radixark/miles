@@ -7,21 +7,24 @@ adapter from a trainer on NVIDIA GPUs to engines on AMD GPUs -- NCCL and RCCL do
 not interoperate. The transports that DO work across hosts, ``p2p`` and
 ``disk-delta``, both ``assert lora_rank <= 0``.
 
-``load_lora_adapter_from_tensors`` looks like the portable escape hatch but is
-not: SGLang's ``MultiprocessingSerializer`` emits a fixed-size shared-memory
-handle rather than bytes (a 64 B tensor serialises to 464 chars, a 2 MB tensor to
-472), so the data never travels. It also has no caller in the repo.
+Two engine routes carry an adapter over plain HTTP, and this transport speaks both
+(``--http-lora-ship``):
 
-What is portable is a file plus a path-based load, which the engine already
-exposes: ``POST /load_lora_adapter {"lora_name", "lora_path", "pinned"}``.
+* ``path`` (default): rank 0 writes the adapter as a versioned PEFT directory under
+  --update-weight-disk-dir and POSTs the path to ``/load_lora_adapter``. The
+  directory must be visible to the engine hosts (a shared filesystem), or
+  --custom-update-weight-post-write-path copies it there, as with disk-delta.
+  Versioned files on disk are what make a served adapter auditable afterwards.
+* ``tensors``: rank 0 POSTs the weights themselves to
+  ``/load_lora_adapter_from_tensors``, so the engines need nothing but an HTTP
+  port. The payload is a plain pickle of ``{name: cpu tensor}`` -- NOT SGLang's
+  ``MultiprocessingSerializer``, which ships shared-memory handles that only
+  resolve on the same host -- base64-encoded once per TP rank, as the request
+  type expects. About 1.3x the adapter size per rank.
 
-So rank 0 gathers the adapter, writes safetensors to --update-weight-disk-dir,
-and POSTs the path. As with disk-delta, that directory is expected to be visible
-to the engines; --custom-update-weight-post-write-path covers the case where it
-is not. Nothing but HTTP and a filesystem crosses
-the boundary, so the trainer and the engines need not share a vendor, an
-interconnect, or a host. Only sane for LoRA: a full-weight sync this way would
-move the whole model every step.
+Either way only HTTP crosses the boundary, so the trainer and the engines need
+not share a vendor, an interconnect, or a host. Only sane for LoRA: a
+full-weight sync this way would move the whole model every step.
 
 ``use_weight_update_session = False`` because this protocol owns registration and
 reload itself; it does not need the session frame's pause/resume around a
@@ -30,10 +33,13 @@ collective that is not happening.
 
 from __future__ import annotations
 
+import base64
 import contextlib
+import io
 import json
 import logging
 import os
+import pickle
 import shutil
 import time
 from argparse import Namespace
@@ -58,6 +64,34 @@ KEEP_VERSIONS = 3
 LOAD_TIMEOUT_S = 300.0
 
 
+def _pickle_with_torch_globals(obj) -> bytes:
+    """``pickle.dumps`` that names torch's own storage loader in the stream.
+
+    A tensor pickles its storage as ``(torch.storage._load_from_bytes, (bytes,))``,
+    looked up in ``torch.storage`` at pickling time. Megatron replaces that module
+    attribute with ``megatron.core.safe_globals.safe_load_from_bytes``, so anything
+    pickled inside a trainer process references a Megatron function -- and the
+    engine's allowlisting unpickler (CVE-2025-10164) refuses it, fatally, in the
+    scheduler. The engine runs stock torch, so emit the stock name: put a function
+    with torch's module/qualname in the slot for the duration of the dump.
+    """
+    import torch.storage as ts
+
+    current = ts._load_from_bytes
+    if getattr(current, "__module__", "") == "torch.storage":
+        return pickle.dumps(obj, protocol=pickle.HIGHEST_PROTOCOL)
+
+    def _load_from_bytes(b):  # only the name is used here; the engine runs its own
+        return torch.load(io.BytesIO(b))
+
+    _load_from_bytes.__module__, _load_from_bytes.__qualname__ = "torch.storage", "_load_from_bytes"
+    ts._load_from_bytes = _load_from_bytes
+    try:
+        return pickle.dumps(obj, protocol=pickle.HIGHEST_PROTOCOL)
+    finally:
+        ts._load_from_bytes = current
+
+
 class UpdateWeightHttpLora(WeightTransferProtocol):
     """Stage the adapter to a directory, then POST its path to every engine."""
 
@@ -72,9 +106,16 @@ class UpdateWeightHttpLora(WeightTransferProtocol):
     def __init__(self, args: Namespace) -> None:
         super().__init__(args)
         self._buf: dict[str, torch.Tensor] = {}
-        # Validation already asserts --update-weight-disk-dir for this mode, so a
-        # fallback here would be unreachable.
-        self._stage_root: str = args.update_weight_disk_dir
+        self._ship: str = getattr(args, "http_lora_ship", "path")
+        # 'path' is validated to have a staging dir; 'tensors' keeps versioned
+        # copies on disk only if one was given.
+        self._stage_root: str | None = getattr(args, "update_weight_disk_dir", None) or None
+        assert (
+            self._ship == "tensors" or self._stage_root
+        ), "http-lora --http-lora-ship path needs --update-weight-disk-dir"
+        self._load_route: str = "/load_lora_adapter" if self._ship == "path" else "/load_lora_adapter_from_tensors"
+        # The tensor route wants one serialized copy per TP rank of the engine.
+        self._engine_tp: int = int(getattr(args, "rollout_num_gpus_per_engine", 1) or 1)
         # Per-slot rank/alpha are not visible to a transport (send_bucket carries
         # only "{lora_name}:{hf_key}"), so a multi-LoRA run would be published with
         # the wrong config. Refuse rather than mislabel it.
@@ -165,23 +206,28 @@ class UpdateWeightHttpLora(WeightTransferProtocol):
                 pause_engines(self.args, engines)
             for lora_name, tensors in by_adapter.items():
                 t0 = time.time()
-                local_dir = self._write_adapter(lora_name, weight_version, tensors)
+                local_dir = self._write_adapter(lora_name, weight_version, tensors) if self._stage_root else None
                 nbytes = sum(t.numel() * t.element_size() for t in tensors.values())
                 t_write = time.time() - t0
 
                 t0 = time.time()
-                # Same escape hatch disk-delta uses: when the staging dir is not
-                # genuinely shared with the engine hosts, the operator supplies
-                # --custom-update-weight-post-write-path to replicate it.
-                if self._post_write_hook is not None:
-                    self._post_write_hook(self.args, local_dir, engines)
+                if self._ship == "path":
+                    # Same escape hatch disk-delta uses: when the staging dir is not
+                    # genuinely shared with the engine hosts, the operator supplies
+                    # --custom-update-weight-post-write-path to replicate it.
+                    if self._post_write_hook is not None:
+                        self._post_write_hook(self.args, local_dir, engines)
+                    load_body = {"lora_name": lora_name, "lora_path": local_dir, "pinned": False}
+                else:
+                    load_body = self._tensor_body(lora_name, tensors)
                 t_ship = time.time() - t0
 
                 t0 = time.time()
-                self._load_everywhere(lora_name, local_dir)
+                self._load_everywhere(lora_name, load_body)
                 t_load = time.time() - t0
 
-                self._prune_old_versions(lora_name, weight_version)
+                if self._stage_root:
+                    self._prune_old_versions(lora_name, weight_version)
 
                 # Namespaced per adapter: a shared key set would leave only the last
                 # adapter's numbers on the step log.
@@ -239,6 +285,24 @@ class UpdateWeightHttpLora(WeightTransferProtocol):
                 os.chmod(os.path.join(d, f), 0o644)
         return d
 
+    def _tensor_body(self, lora_name: str, tensors: dict[str, torch.Tensor]) -> dict:
+        """Request body for ``/load_lora_adapter_from_tensors``.
+
+        A plain pickle carries the bytes; SGLang's own ``MultiprocessingSerializer``
+        would carry a shared-memory handle no other host can open. The server
+        unpickles a ``{name: tensor}`` dict and each TP rank reads entry
+        ``[tp_rank]`` of the list, so every rank gets an identical copy.
+        """
+        blob = base64.b64encode(_pickle_with_torch_globals({k: v.contiguous() for k, v in tensors.items()})).decode(
+            "ascii"
+        )
+        return {
+            "lora_name": lora_name,
+            "config_dict": self._adapter_config(tensors),
+            "serialized_named_tensors": [blob] * self._engine_tp,
+            "pinned": False,
+        }
+
     @staticmethod
     def _infer_rank(tensors: dict[str, torch.Tensor]) -> int | None:
         """lora_A is [r, in], so the rank is readable off the weights."""
@@ -285,7 +349,7 @@ class UpdateWeightHttpLora(WeightTransferProtocol):
         """Nothing registered under this name (SGLang answers 400 'does not exist')."""
         return "does not exist" in (resp.text or "").lower()
 
-    def _probe_upsert(self, client, base: str, lora_name: str, remote_dir: str) -> bool:
+    def _probe_upsert(self, client, base: str, lora_name: str, load_body: dict) -> bool:
         """First sync: install the adapter, then find out whether this engine can
         replace it in place.
 
@@ -294,13 +358,13 @@ class UpdateWeightHttpLora(WeightTransferProtocol):
         test is a second load against the name we just registered: 200 means it
         replaced in place, "already exists" means it cannot.
         """
-        plain = {"lora_name": lora_name, "lora_path": remote_dir, "pinned": False}
-        r = client.post(base + "/load_lora_adapter", json=plain)
+        plain = load_body
+        r = client.post(base + self._load_route, json=plain)
         if r.status_code != 200 and not self._is_name_conflict(r):
             raise RuntimeError(f"http-lora: load failed on {base}: HTTP {r.status_code} {r.text[:200]}")
         stale = r.status_code != 200  # a leftover from a previous run holds the name
 
-        r = client.post(base + "/load_lora_adapter", json={**plain, "upsert": True})
+        r = client.post(base + self._load_route, json={**plain, "upsert": True})
         if r.status_code == 200:
             return True
         if not self._is_name_conflict(r):
@@ -310,11 +374,11 @@ class UpdateWeightHttpLora(WeightTransferProtocol):
             raise RuntimeError(
                 f"http-lora: {lora_name!r} is already registered on {base} from an earlier run "
                 "and this engine cannot replace it in place. Restart the engine, or use one "
-                "with upsert on /load_lora_adapter."
+                f"with upsert on {self._load_route}."
             )
         return False
 
-    def _load_one(self, base: str, lora_name: str, remote_dir: str) -> bool | None:
+    def _load_one(self, base: str, lora_name: str, load_body: dict) -> bool | None:
         """Install one version on one engine. Returns the probe result on the
         first sync, None afterwards.
 
@@ -324,8 +388,8 @@ class UpdateWeightHttpLora(WeightTransferProtocol):
         rejected with "LoRA with name X already exists". Treating that as success
         is how a run silently serves the step-1 adapter forever.
 
-        Upsert replaces in place: one call, no window, safe under a pause. The
-        client already sends it on the two tensor routes; only Miles' fork has it.
+        Upsert replaces in place: one call, no window, safe under a pause. No
+        released SGLang exposes it on either HTTP load route yet; the probe finds out.
 
         Fallback for a stock engine: unload, then load. Only safe UNPAUSED, and
         only in synchronous RL. ``unload_lora_adapter`` waits for the adapter's
@@ -337,13 +401,13 @@ class UpdateWeightHttpLora(WeightTransferProtocol):
         """
         import httpx
 
-        plain = {"lora_name": lora_name, "lora_path": remote_dir, "pinned": False}
+        plain = load_body
         with httpx.Client(timeout=self._load_timeout_s) as client:
             if self._upsert_supported is None:
-                return self._probe_upsert(client, base, lora_name, remote_dir)
+                return self._probe_upsert(client, base, lora_name, load_body)
 
             if self._upsert_supported:
-                r = client.post(base + "/load_lora_adapter", json={**plain, "upsert": True})
+                r = client.post(base + self._load_route, json={**plain, "upsert": True})
                 if r.status_code != 200:
                     raise RuntimeError(f"http-lora: upsert load failed on {base}: HTTP {r.status_code} {r.text[:200]}")
                 return None
@@ -354,14 +418,14 @@ class UpdateWeightHttpLora(WeightTransferProtocol):
                     f"http-lora: {lora_name!r} is registered on {base} and unload failed: "
                     f"HTTP {u.status_code} {u.text[:200]}"
                 )
-            r = client.post(base + "/load_lora_adapter", json=plain)
+            r = client.post(base + self._load_route, json=plain)
             if r.status_code != 200:
                 raise RuntimeError(
                     f"http-lora: reload after unload failed on {base}: HTTP {r.status_code} {r.text[:200]}"
                 )
             return None
 
-    def _load_everywhere(self, lora_name: str, remote_dir: str) -> None:
+    def _load_everywhere(self, lora_name: str, load_body: dict) -> None:
         """Install the staged adapter on every engine, in parallel.
 
         On the first sync this also settles whether the fleet can replace in
@@ -376,7 +440,7 @@ class UpdateWeightHttpLora(WeightTransferProtocol):
             return
         first_sync = self._upsert_supported is None
         with ThreadPoolExecutor(max_workers=len(bases)) as pool:
-            results = list(pool.map(lambda b: self._load_one(b, lora_name, remote_dir), bases))
+            results = list(pool.map(lambda b: self._load_one(b, lora_name, load_body), bases))
         if not first_sync:
             return
 
@@ -386,17 +450,18 @@ class UpdateWeightHttpLora(WeightTransferProtocol):
         if self._upsert_supported:
             return
         logger.warning(
-            "http-lora: engines cannot replace an adapter in place (no upsert on "
-            "/load_lora_adapter); later syncs will unload+reload unpaused."
+            "http-lora: engines cannot replace an adapter in place (no upsert on %s); "
+            "later syncs will unload+reload unpaused.",
+            self._load_route,
         )
         if getattr(self.args, "fully_async", False):
             raise RuntimeError(
-                "http-lora under --fully-async needs engines that support `upsert` on "
-                "/load_lora_adapter. Without it the only safe replacement is unload+reload "
+                f"http-lora under --fully-async needs engines that support `upsert` on {self._load_route}. "
+                "Without it the only safe replacement is unload+reload "
                 "while unpaused, which leaves the adapter unregistered for as long as the "
                 "slowest in-flight rollout takes to finish -- every request in that window "
                 "fails, and the wait can exceed the load timeout. Run synchronous RL, or use "
-                "an engine with upsert (Miles' fork has it on the tensor routes already)."
+                "an engine with upsert on that route."
             )
 
     def _prune_old_versions(self, lora_name: str, current: int) -> None:
