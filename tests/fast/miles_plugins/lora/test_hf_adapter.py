@@ -35,6 +35,18 @@ class TestHfNaming:
         )
         assert resolve_hf_naming(path) == ("model.language_model.layers.", "mlp.shared_expert.")
 
+    def test_a_nested_mtp_block_does_not_win_the_prefix_vote(self, tmp_path):
+        """Inkling-Small-4layer has more MTP tensors than decoder tensors."""
+        path = _write_index(
+            tmp_path,
+            [
+                "model.llm.layers.0.attn.wq_du.weight",
+                *(f"model.mtp.layers.{i}.attn.wq_du.weight" for i in range(3)),
+                *(f"model.mtp.layers.{i}.attn.wk_dv.weight" for i in range(3)),
+            ],
+        )
+        assert resolve_hf_naming(path)[0] == "model.llm.layers."
+
     def test_missing_index_falls_back_to_the_plain_layout(self, tmp_path):
         assert resolve_hf_naming(str(tmp_path)) == ("model.layers.", "mlp.shared_expert.")
         assert resolve_hf_naming(None) == ("model.layers.", "mlp.shared_expert.")

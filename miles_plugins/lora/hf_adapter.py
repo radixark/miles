@@ -34,7 +34,7 @@ def resolve_hf_naming(hf_checkpoint: str | None) -> tuple[str, str]:
 
     prefixes: collections.Counter[str] = collections.Counter()
     for name in names:
-        if name.startswith("mtp.") or "vision" in name:
+        if "mtp" in name.split(".") or "vision" in name:
             continue
         match = re.match(r"^((?:[\w.]+\.)?layers\.)\d+\.", name)
         if match:
