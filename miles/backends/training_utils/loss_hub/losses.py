@@ -346,9 +346,7 @@ def policy_loss_function(
         # The loss baseline may be rollout log-probs. Diagnostics must use an
         # independently scored trainer policy, even in that case.
         train_scored_log_probs = (
-            torch.cat(trainer_scored_log_probs, dim=0)
-            if trainer_scored_log_probs is not None
-            else log_probs.detach()
+            torch.cat(trainer_scored_log_probs, dim=0) if trainer_scored_log_probs is not None else log_probs.detach()
         )
         rollout_log_probs = torch.cat(rollout_old_log_probs, dim=0)
         abs_diff = (train_scored_log_probs - rollout_log_probs).abs()
