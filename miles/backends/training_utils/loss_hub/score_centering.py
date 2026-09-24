@@ -73,6 +73,8 @@ def score_centering_loss(
         or head_mask.shape != train_head_log_probs.shape
     ):
         raise ValueError("Score-centering sample tensors must be [tokens] and head tensors [tokens, candidates]")
+    if not torch.isfinite(advantages).all():
+        raise ValueError("Score-centering advantages must be finite")
     _validate_importance_args(mode, tis_clip, mis_low, mis_high)
     active = advantages.detach() != 0
     invalid_head = (

@@ -115,6 +115,19 @@ def test_active_nan_head_candidate_fails_clearly() -> None:
         )
 
 
+@pytest.mark.parametrize("advantage", [float("nan"), float("inf"), float("-inf")])
+def test_nonfinite_advantage_fails_clearly(advantage: float) -> None:
+    with pytest.raises(ValueError, match="advantages must be finite"):
+        score_centering_loss(
+            torch.tensor([-1.0]),
+            torch.tensor([[-1.0]]),
+            torch.tensor([-1.0]),
+            torch.tensor([[-1.0]]),
+            torch.tensor([[True]]),
+            torch.tensor([advantage]),
+        )
+
+
 @pytest.mark.parametrize("bad_index", [1, 2, 3, 4, 5])
 def test_score_centering_loss_rejects_broadcastable_shapes(bad_index: int) -> None:
     values = [
