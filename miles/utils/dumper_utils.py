@@ -14,7 +14,6 @@ import torch
 import torch.distributed as dist
 from sglang.srt.debug_utils.dumper import DumperConfig, _get_rank, dumper
 
-from miles.backends.sglang_utils.sglang_config import resolve_sglang_config
 from miles.backends.training_utils.parallel import get_parallel_state
 from miles.utils.ft_utils.process_group_utils import GeneralPGUtil
 from miles.utils.retry_utils import retry_until_deadline
@@ -84,7 +83,7 @@ async def configure_sglang(args: Namespace) -> None:
 async def _wait_registered_worker_urls(args: Namespace) -> list[str]:
     from miles.rollout.inference_rollout.inference_rollout_train import get_worker_urls
 
-    expected_worker_count = resolve_sglang_config(args).models[0].num_server_cells
+    expected_worker_count = args.sglang.models[0].num_server_cells
 
     async def _attempt(_remaining_seconds: float) -> list[str]:
         worker_urls = await get_worker_urls(args)

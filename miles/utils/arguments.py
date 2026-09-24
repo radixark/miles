@@ -394,7 +394,7 @@ def parse_args_and_get_parser(
     sglang_validate_args(args)
 
     assert parser is not None
-    values = vars(args).copy()
+    values = vars(args) | {"sglang": SglangConfig.parse_args(args)}
     values.update(RouterConfig.from_args(args))
     return AllConfig.model_validate(values), parser
 

@@ -3,7 +3,6 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from miles.backends.megatron_utils.megatron_config import MegatronConfig, compute_trainer_args, resolve_megatron_config
-from miles.backends.sglang_utils.sglang_config import resolve_sglang_config
 from miles.ray.placement_group import create_trainer_handles, create_training_model, take_over_trainers
 from miles.ray.rollout.rollout_executor import compute_rollout_checkpoint_dir
 from miles.ray.specs.train import compute_trainer_configs
@@ -135,7 +134,7 @@ def validate_multi_policy_args(args, *, megatron_config: MegatronConfig) -> None
         "multi policy training needs --sglang-config to deploy one inference model per policy, so that a "
         "weight update reaches exactly the engines of its own policy"
     )
-    trainable = [model.name for model in resolve_sglang_config(args).models if model.update_weights]
+    trainable = [model.name for model in args.sglang.models if model.update_weights]
     missing = [model_id for model_id in megatron_config.model_ids if model_id not in trainable]
     assert not missing, (
         f"--megatron-config models {missing} have no matching --sglang-config model with "
