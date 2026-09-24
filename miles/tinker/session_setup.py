@@ -16,12 +16,14 @@ def build_session_app(service: TinkerService, *, args) -> tuple[FastAPI, Traject
     """Build the SDK app plus a collector and session routes; the caller owns background tasks."""
     app = build_app(service)
     tokenizer = load_tokenizer(args.hf_checkpoint, chat_template_path=args.chat_template_path)
-    # every turn is a full render through the miles renderer (the default TITO family), as the miles session server
-    tito_tokenizer = get_tito_tokenizer(
-        tokenizer, TITOTokenizerType.DEFAULT.value, chat_template_kwargs=args.apply_chat_template_kwargs
-    )
+    # without --tinker-tito-model every turn is a full render through the default family, as the miles session server
+    family = args.tinker_tito_model or TITOTokenizerType.DEFAULT.value
+    tito_tokenizer = get_tito_tokenizer(tokenizer, family, chat_template_kwargs=args.apply_chat_template_kwargs)
     renderer = PromptRenderer(
-        tokenizer, tito_tokenizer, message_matcher=resolve_session_message_matcher(args.session_message_matcher)
+        tokenizer,
+        tito_tokenizer,
+        inherit=args.tinker_tito_model is not None,
+        message_matcher=resolve_session_message_matcher(args.session_message_matcher),
     )
     collector = TrajectoryCollector(
         service,

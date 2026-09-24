@@ -12,7 +12,7 @@ from miles.backends.sglang_utils.arguments import add_sglang_arguments, collect_
 from miles.backends.sglang_utils.arguments import validate_args as sglang_validate_args
 from miles.dashboard.args import add_dashboard_arguments, validate_dashboard_args
 from miles.rollout.checkpoint_eval import is_checkpoint_eval_fn
-from miles.utils.chat_template_utils.tito_tokenizer import TITOTokenizerType
+from miles.utils.chat_template_utils.tito_tokenizer import TITOTokenizerType, configure_fixed_chat_template
 from miles.utils.environ import use_legacy_rollout_v1
 from miles.utils.eval_config import EvalDatasetConfig, build_eval_dataset_configs, ensure_dataset_list
 from miles.utils.file_arg_utils import resolve_file_arg
@@ -2912,20 +2912,9 @@ def miles_validate_args(args):
     # the renderer consistent with the roles they support.
     if args.tito_model != TITOTokenizerType.DEFAULT.value:
         tito_model = TITOTokenizerType(args.tito_model)
-        from miles.utils.chat_template_utils import resolve_fixed_chat_template
-
-        if args.chat_template_path is not None:
-            raise ValueError(
-                f"--chat-template-path cannot override the template registered for "
-                f"--tito-model={tito_model.value}; use --tito-model=default for a custom template"
-            )
-
-        resolved_path, resolved_kwargs = resolve_fixed_chat_template(tito_model)
-        if resolved_path is not None:
-            args.chat_template_path = resolved_path
-        user_kwargs = dict(args.apply_chat_template_kwargs or {})
-        user_kwargs.update(resolved_kwargs)
-        args.apply_chat_template_kwargs = user_kwargs
+        configure_fixed_chat_template(
+            args, tito_model, option="--tito-model", hint="; use --tito-model=default for a custom template"
+        )
 
     if args.chat_template_path is not None:
         if not os.path.isfile(args.chat_template_path):

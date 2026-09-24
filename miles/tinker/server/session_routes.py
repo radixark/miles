@@ -75,7 +75,7 @@ def setup_session_routes(app: FastAPI, collector: TrajectoryCollector, max_body_
 
     @app.get("/oai/sessions/{session_id}")
     async def get_session(session_id: str, request: Request):
-        """Export {session_id, model_path, turns: [ids, logprobs, finish_reason, parent, ...]}; owner only."""
+        """Export {session_id, model_path, max_trim_tokens, turns: [ids, logprobs, finish_reason, ...]}; owner only."""
         return collector.get_session(session_id, _tenant(request))
 
     @app.delete("/oai/sessions/{session_id}")
