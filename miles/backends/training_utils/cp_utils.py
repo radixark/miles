@@ -342,7 +342,8 @@ def allgather_cp_redistribute(
     Args:
         res: Dict mapping metric names to lists of per-sample tensors.
         logits: Model output used only to determine the local sequence length
-            (``logits.size(1)``).
+            (``logits.size(1)``). For ``bshd``, each batch row has its own
+            sequence window.
         args: Configuration (needs ``qkv_format``).
         total_lengths: Total sequence lengths (prompt + response) per sample.
         response_lengths: Response segment lengths per sample.
@@ -362,8 +363,9 @@ def allgather_cp_redistribute(
         seq_start = 0
         for value, total_length, response_length in zip(values, total_lengths, response_lengths, strict=False):
             prompt_length = total_length - response_length
-            logit_global_start = seq_start + prompt_length - 1
-            logit_global_end = seq_start + total_length - 1
+            sample_start = 0 if args.qkv_format == "bshd" else seq_start
+            logit_global_start = sample_start + prompt_length - 1
+            logit_global_end = sample_start + total_length - 1
 
             s = max(logit_global_start, chunk_start)
             e = min(logit_global_end, chunk_end)

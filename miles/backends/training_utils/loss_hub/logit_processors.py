@@ -86,16 +86,23 @@ def _iter_response_chunks(
             tokens_chunk = tokens[-response_length:] if response_length else tokens[0:0]
             response_indices = range(response_length) if include_response_indices else ()
         elif args.allgather_cp:
-            # DSA: global concat then contiguous CP split. Each rank owns logits for
-            # global positions [chunk_start, chunk_end).
-            logits_local_len = logits.size(0)
+            # THD concatenates samples before the CP split. BSHD splits each
+            # padded sample independently, then flattens the local batch.
+            if qkv_format == "bshd":
+                logits_local_len = max_seq_len // cp_size
+                logits_offset = i * logits_local_len
+                sample_start = 0
+            else:
+                logits_local_len = logits.size(0)
+                logits_offset = 0
+                sample_start = seq_start
             cp_rank = parallel_state.cp.rank
             chunk_start = cp_rank * logits_local_len
             chunk_end = chunk_start + logits_local_len
 
             prompt_length = total_length - response_length
-            resp_token_start = seq_start + prompt_length
-            resp_token_end = seq_start + total_length
+            resp_token_start = sample_start + prompt_length
+            resp_token_end = sample_start + total_length
             logit_global_start = resp_token_start - 1
             logit_global_end = resp_token_end - 1
 
@@ -106,8 +113,8 @@ def _iter_response_chunks(
                 tokens_chunk = tokens[0:0]
                 response_indices = ()
             else:
-                logits_chunk = logits[s - chunk_start : e - chunk_start]
-                tokens_chunk = tokens[(s + 1) - seq_start : (e + 1) - seq_start]
+                logits_chunk = logits[logits_offset + s - chunk_start : logits_offset + e - chunk_start]
+                tokens_chunk = tokens[(s + 1) - sample_start : (e + 1) - sample_start]
                 response_indices = (
                     range(
                         s - logit_global_start,

@@ -19,6 +19,8 @@ from miles.backends.training_utils.parallel import GroupInfo, ParallelState, set
 
 def _layout(parts: list[torch.Tensor], args: Namespace, cp_rank: int) -> torch.Tensor:
     if args.allgather_cp:
+        if args.qkv_format == "bshd":
+            return torch.stack([F.pad(part, (0, 0, 0, 12 - part.size(0))).chunk(2)[cp_rank] for part in parts])
         full = torch.cat(parts)
         full = F.pad(full, (0, 0, 0, full.size(0) % 2))
         return full.chunk(2)[cp_rank].unsqueeze(0)
@@ -54,8 +56,8 @@ def _check_selected(tp: GroupInfo, dtype: torch.dtype, device: torch.device) -> 
 
 def _check_loss(tp: GroupInfo, cp: GroupInfo, layout: str, mode: str, device: torch.device) -> None:
     args = Namespace(
-        qkv_format="bshd" if layout == "bshd" else "thd",
-        allgather_cp=layout == "allgather",
+        qkv_format="bshd" if layout in ("bshd", "bshd_allgather") else "thd",
+        allgather_cp=layout in ("allgather", "bshd_allgather"),
         true_on_policy_mode=False,
         rollout_temperature=0.7,
         log_probs_chunk_size=2,
@@ -151,7 +153,7 @@ def _worker(rank: int, rendezvous: str, backend: str) -> None:
         set_parallel_state(ParallelState(**state, tp=tp, cp=cp))
         for dtype in (torch.float32, torch.bfloat16):
             _check_selected(tp, dtype, device)
-        for layout in ("thd", "bshd", "allgather"):
+        for layout in ("thd", "bshd", "allgather", "bshd_allgather"):
             for mode in ("none", "tis", "mis"):
                 _check_loss(tp, cp, layout, mode, device)
     finally:
