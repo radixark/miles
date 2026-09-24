@@ -11,6 +11,7 @@ from tests.fast.utils.soak.soak_fakes import (
     _result,
     _step_end,
     _sut_main_source,
+    _weight_update_result,
 )
 from tests.utils.soak.core.events import SoakAdmissionClosedEvent, SoakEvent, SoakEvidenceArchivedEvent
 from tests.utils.soak.core.views import (
@@ -25,10 +26,11 @@ from tests.utils.soak.core.views import (
     quiescent_polls_of_type,
     tail_started_at,
     trainer_step_ends,
+    weight_update_results,
 )
 
 from miles.backends.megatron_utils.ft.types import TrainStepOutcome
-from miles.utils.audit_utils.event_logger.models import MetricEvent
+from miles.utils.audit_utils.event_logger.models import MetricEvent, WeightUpdateResultEvent
 
 
 def _archived(sources: dict[str, Path], *, missing: list[str], at: float) -> SoakEvidenceArchivedEvent:
@@ -211,3 +213,53 @@ class TestEventSource:
     def test_without_an_archive_the_fallback_is_used(self, tmp_path: Path) -> None:
         """Before archiving checkers read the live source."""
         assert event_source([], name="training_events", fallback=tmp_path) == tmp_path
+
+
+class TestWeightUpdateResults:
+    _HASHES: dict[str, str] = {"rollout-0": "inc-0", "rollout-1": "inc-1"}
+
+    def _result(self, **overrides: object) -> WeightUpdateResultEvent:
+        values: dict[str, object] = dict(cell_hashes=self._HASHES, updated=["rollout-0"], failed=["rollout-1"])
+        values.update(overrides)
+        return _weight_update_result("update-1", at=_at(0), **values)
+
+    def test_a_consistent_partial_result_is_returned_and_other_events_are_dropped(self) -> None:
+        """Only result events come back, and a partition of the snapshot into updated and failed is valid."""
+        result = self._result()
+
+        assert weight_update_results([result, _step_end(1, at=_at(1))]) == [result]
+
+    @pytest.mark.parametrize(
+        "overrides,message",
+        [
+            (dict(updated=["rollout-0", "rollout-0"], failed=["rollout-1"]), "Repeated updated engine"),
+            (dict(updated=["rollout-0", "rollout-1"], failed=["rollout-1"]), "also reported failed"),
+            (dict(updated=["rollout-0"], failed=[]), "omits assigned targets"),
+            (dict(updated=["rollout-0", "rollout-9"], failed=["rollout-1"]), "omits assigned targets"),
+            (dict(cell_hashes={"rollout-0": "", "rollout-1": "inc-1"}), "lacks its incarnation"),
+        ],
+        ids=["repeated", "overlap", "omitted", "unassigned", "empty-hash"],
+    )
+    def test_an_inconsistent_result_is_rejected(self, overrides: dict[str, object], message: str) -> None:
+        """A result whose cell sets contradict the snapshot cannot be used as evidence."""
+        with pytest.raises(AssertionError, match=message):
+            weight_update_results([self._result(**overrides)])
+
+    @pytest.mark.parametrize(
+        "overrides",
+        [
+            dict(published_version=None),
+            dict(updated=[], failed=["rollout-0", "rollout-1"], published_version=1),
+            dict(published_version=2),
+        ],
+        ids=["updated-unpublished", "nothing-updated-but-published", "published-other-version"],
+    )
+    def test_a_published_version_disagreeing_with_the_updated_cells_is_rejected(
+        self, overrides: dict[str, object]
+    ) -> None:
+        """Publication is exactly the candidate when some cell took it and nothing otherwise."""
+        published = overrides.pop("published_version")
+        result = self._result(**overrides).model_copy(update={"published_version": published})
+
+        with pytest.raises(AssertionError, match="Published version is inconsistent"):
+            weight_update_results([result])

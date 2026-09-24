@@ -34,7 +34,13 @@ from tests.utils.soak.core.types import (
     SoakTarget,
 )
 from tests.utils.soak.core.views import SoakActionRecord
-from tests.utils.soak.ft.types import CellTarget, PodDetails
+from tests.utils.soak.ft.types import (
+    CellTarget,
+    InjectFaultDetails,
+    ObservedCellFault,
+    ObservedCellFaultKind,
+    PodDetails,
+)
 from tests.utils.soak.k8s_utils.pod_manipulation import PodDeletedEvidence, SoakPodTarget
 from tests.utils.soak.k8s_utils.pod_processes import ProcessIdentity, ProcessTarget
 
@@ -43,6 +49,7 @@ from miles.backends.megatron_utils.megatron_config import ACTOR_ROLE
 from miles.utils.audit_utils.event_logger.models import (
     CellReconfigureEvent,
     Event,
+    FaultHookEvent,
     TrainGroupStepEndEvent,
     WeightUpdateResultEvent,
 )
@@ -57,8 +64,16 @@ from miles.utils.ft_utils.api_server.models import (
     CellStatus,
     TriState,
 )
+from miles.utils.test_utils.fault_injector.actions.base import FaultHookContext
+from miles.utils.test_utils.fault_injector.actions.process import KillProcessAction
 from miles.utils.test_utils.fault_injector.controller import FaultHookCommand
-from miles.utils.test_utils.fault_injector.models import ObservedFaultHookTarget
+from miles.utils.test_utils.fault_injector.models import (
+    FaultHookName,
+    FaultHookRecord,
+    FaultHookRequest,
+    FaultHookStatus,
+    ObservedFaultHookTarget,
+)
 from miles.utils.workers.naming import compute_cell_id
 from miles.utils.workers.worker_provider.kubernetes.helm.env import DEFAULT_LABEL_KEYS
 
@@ -603,3 +618,81 @@ def _healed_injection(
     if step_after:
         events.append(_observation(None, at=_at(start + 4), new_sut_events=[_step_end(int(start), at=_at(start + 4))]))
     return events
+
+
+# ============================== hook-triggered faults ==============================
+
+
+def _hook_fault_request(
+    target: CellTarget,
+    *,
+    request_id: str,
+    hook_target: ObservedFaultHookTarget | None = None,
+    hook_name: FaultHookName | None = FaultHookName.TRAINER_WEIGHT_UPDATE_BEFORE_SEND,
+    delay_ms: float = 250.0,
+) -> SoakActionRequest:
+    fault_target = _fault_target(target.identity, workers_hash=target.incarnation)
+    return SoakActionRequest(
+        request_id=request_id,
+        target=target.model_copy(update={"fault_target": fault_target}),
+        form_name="inject_fault",
+        details=InjectFaultDetails(
+            fault_target=fault_target,
+            hook_target=fault_target if hook_target is None else hook_target,
+            hook_name=hook_name,
+            delay_ms=delay_ms,
+        ),
+    )
+
+
+def _hook_fault_applied(
+    request: SoakActionRequest, *, at: datetime, target: ObservedFaultHookTarget | None = None
+) -> SoakActionAppliedEvent:
+    assert isinstance(request.details, InjectFaultDetails)
+    return SoakActionAppliedEvent(
+        timestamp=at,
+        request_id=request.request_id,
+        evidence=ObservedCellFault(
+            request_id=request.request_id,
+            target=request.details.fault_target if target is None else target,
+            action=KillProcessAction(),
+            observed=ObservedCellFaultKind.MISSING,
+        ),
+    )
+
+
+def _hook_record_event(
+    request: SoakActionRequest,
+    status: FaultHookStatus,
+    *,
+    context: FaultHookContext | None = None,
+    reached_at: float | None = 10.0,
+    due_at: float | None = 10.25,
+    changed_at: float = 10.3,
+    hook_name: FaultHookName | None = None,
+    delay_ms: float | None = None,
+) -> FaultHookEvent:
+    assert isinstance(request.details, InjectFaultDetails)
+    return FaultHookEvent(
+        timestamp=_at(changed_at),
+        source=_sut_main_source(),
+        record=FaultHookRecord(
+            request=FaultHookRequest(
+                request_id=request.request_id,
+                hook_name=request.details.hook_name if hook_name is None else hook_name,
+                action=KillProcessAction(),
+                target=request.details.hook_target,
+                delay_ms=request.details.delay_ms if delay_ms is None else delay_ms,
+            ),
+            status=status,
+            set_at=0.0,
+            changed_at=changed_at,
+            reached_at=reached_at,
+            due_at=due_at,
+            context=context,
+        ),
+    )
+
+
+def _update_context(update_id: str = "update-7", *, weight_version: int = 7) -> FaultHookContext:
+    return FaultHookContext(weight_version=weight_version, debug_weight_update_id=update_id, rollout_id=0)
