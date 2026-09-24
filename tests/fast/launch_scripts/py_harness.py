@@ -72,7 +72,11 @@ class PyLaunchScript:
 
 def iter_py_launch_scripts() -> list[PyLaunchScript]:
     paths = sorted(
-        [*(REPO_ROOT / "scripts").rglob("run_*.py"), REPO_ROOT / "examples/multi_lora/serve_qwen3_30b_a3b_tinker.py"]
+        [
+            *(REPO_ROOT / "scripts").rglob("run_*.py"),
+            REPO_ROOT / "examples/multi_lora/serve_qwen3_30b_a3b_tinker.py",
+            REPO_ROOT / "examples/experimental/nemo-gym/run_nemotron35_workplace.py",
+        ]
     )
     return [PyLaunchScript(path=path, entrypoints=tuple(_entrypoint_names(path))) for path in paths]
 
