@@ -16,6 +16,8 @@ from types import SimpleNamespace
 import harbor_agent_function as haf
 import pytest
 
+from miles.rollout.agentic.agent_function import InfraAbort
+
 
 class _EnvironmentType(str, enum.Enum):
     DOCKER = "docker"
@@ -372,6 +374,42 @@ def test_run_raises_when_no_provider_key_is_resolvable(tasks_dir, fake_harbor, m
 
 def test_run_scores_a_trial_exception_zero(tasks_dir, fake_harbor):
     fake_harbor.result = RuntimeError("sandbox exploded")
+    out = run_async(haf.run("http://s/sessions/s1", [], {}, {"instance_id": "task-1"}))
+    assert out["reward"] == 0.0 and out["exit_status"] == "AgentError"
+
+
+def _failure(*, agent_setup_started: bool, agent_started: bool):
+    t0 = datetime(2026, 1, 1, 0, 0, 0)
+    phase = SimpleNamespace(started_at=t0, finished_at=t0 + timedelta(seconds=5))
+    return SimpleNamespace(
+        exception_info=SimpleNamespace(exception_type="SandboxException", exception_message="503: no capacity"),
+        verifier_result=None,
+        agent_result=None,
+        started_at=t0,
+        finished_at=t0 + timedelta(seconds=20),
+        environment_setup=phase,
+        agent_setup=phase if agent_setup_started else None,
+        agent_execution=phase if agent_started else None,
+        verifier=None,
+    )
+
+
+@pytest.mark.parametrize(
+    ("agent_setup_started", "cause"),
+    [(False, "SandboxUnavailable"), (True, "AgentSetupFailed")],
+    ids=["sandbox-never-ready", "agent-setup-failed"],
+)
+def test_run_discards_a_trial_that_failed_before_its_agent_started(tasks_dir, fake_harbor, agent_setup_started, cause):
+    """The policy has not acted yet, so the failure cannot be its doing: a discard, not a 0."""
+    fake_harbor.result = _failure(agent_setup_started=agent_setup_started, agent_started=False)
+    with pytest.raises(InfraAbort) as abort:
+        run_async(haf.run("http://s/sessions/s1", [], {}, {"instance_id": "task-1"}))
+    assert abort.value.exit_status == cause
+
+
+def test_run_scores_a_failure_after_the_agent_started_zero(tasks_dir, fake_harbor):
+    """Once the agent runs, Harbor's exception cannot tell a platform failure from one the agent caused."""
+    fake_harbor.result = _failure(agent_setup_started=True, agent_started=True)
     out = run_async(haf.run("http://s/sessions/s1", [], {}, {"instance_id": "task-1"}))
     assert out["reward"] == 0.0 and out["exit_status"] == "AgentError"
 

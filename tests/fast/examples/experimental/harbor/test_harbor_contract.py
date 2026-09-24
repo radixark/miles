@@ -69,10 +69,11 @@ def test_the_trial_entrypoints_exist():
 
 
 def test_the_result_fields_the_mapping_reads_still_exist():
-    """trial_result_to_metadata reads these via getattr(default None): a rename
-    would silently drop metrics/timings, so lock the names here."""
-    from harbor.models.trial.result import TrialResult
+    """trial_result_to_metadata and the pre-agent discard read these via getattr(default None):
+    a rename would silently drop metrics/timings or stop the discard, so lock the names here."""
+    from harbor.models.trial.result import ExceptionInfo, TrialResult
 
+    assert {"exception_type", "exception_message"} <= set(ExceptionInfo.model_fields)
     fields = set(TrialResult.model_fields)
     assert {
         "started_at",

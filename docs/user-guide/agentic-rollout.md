@@ -100,6 +100,7 @@ policy cannot bring about, and unsafe for everything it can:
 | Outcome | Can the policy cause it? | Do |
 |---|---|---|
 | Sandbox platform refuses to create a sandbox (quota, 429 after retries) | No | raise `InfraAbort` |
+| The episode failed before the agent started (sandbox never ready, harness could not be installed) | No | raise `InfraAbort` |
 | Environment or agent-server host process died; trainer lost its network path to the environment | No | raise `InfraAbort` |
 | Wall-clock timeout | Yes (stalling) | return `reward: 0` |
 | Sandbox lost mid-episode, verifier crashed or produced no result | Yes (the agent runs as root inside it) | return `reward: 0` |
@@ -110,6 +111,21 @@ platform was saturated or the agent killed the server — treat it as the
 policy's: a few false negatives cost less than an outcome the policy can
 learn to trigger. Record the cause in the returned metadata (`exit_status`)
 so its rate stays visible.
+
+The bundled agent functions (Harbor, OpenEnv, NeMo Gym) share one
+`exit_status` vocabulary so the same dashboard reads all of them:
+
+| `exit_status` | Meaning | Sample |
+|---|---|---|
+| `Submitted` | the verifier scored the episode | kept, `reward` = the score |
+| `TimeLimitExceeded` | the wall-clock cap ended the episode | kept, `reward: 0` |
+| `SequenceLengthLimitExceeded` | `max_seq_len` / a turn limit ended it | kept, `reward: 0` |
+| `VerifierError` | the scoring step itself errored | kept, `reward: 0` |
+| `AgentError` | the episode failed for any other reason the policy may have caused | kept, `reward: 0` |
+| `SandboxUnavailable` | the platform could not provide a working sandbox | discarded |
+| `AgentSetupFailed` | the harness could not be set up in the sandbox, before the policy acted | discarded |
+| `ServerUnreachable` | the agent or environment server could not be reached | discarded |
+| `NonCanonicalVerifier` | the server does not carry the canonical scoring contract | discarded |
 
 ### Optional teardown hook
 
