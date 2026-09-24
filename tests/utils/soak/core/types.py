@@ -13,7 +13,15 @@ from tests.utils.soak.deploy.types import (
     HotRestartDetails,
     HotRestartTakeOverEvidence,
 )
-from tests.utils.soak.ft.types import CellTarget, InjectFaultDetails, ObservedCellFault, PodDetails, PoolTarget
+from tests.utils.soak.ft.types import (
+    CellTarget,
+    InjectFaultDetails,
+    ObservedCellFault,
+    PodDetails,
+    PoolResizedEvidence,
+    PoolTarget,
+    ResizeDetails,
+)
 from tests.utils.soak.k8s_utils.pod_manipulation import PodDeletedEvidence
 from tests.utils.soak.k8s_utils.pod_processes import ProcessSignalReceipt
 
@@ -25,10 +33,12 @@ if TYPE_CHECKING:
 
 SoakTarget = Annotated[CellTarget | DeploymentTarget | PoolTarget, Discriminator("kind")]
 
-SoakActionDetails = Annotated[InjectFaultDetails | PodDetails | HotRestartDetails, Discriminator("form")]
+SoakActionDetails = Annotated[
+    InjectFaultDetails | PodDetails | HotRestartDetails | ResizeDetails, Discriminator("form")
+]
 
 SoakActionEvidence = Annotated[
-    ObservedCellFault | PodDeletedEvidence | ProcessSignalReceipt | HotRestartTakeOverEvidence,
+    ObservedCellFault | PodDeletedEvidence | ProcessSignalReceipt | HotRestartTakeOverEvidence | PoolResizedEvidence,
     Discriminator("kind"),
 ]
 

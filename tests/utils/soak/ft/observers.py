@@ -1,14 +1,16 @@
 import asyncio
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from typing import TypeVar
 
 import httpx
 from tests.utils.soak.core.events import SoakObservationEvent
-from tests.utils.soak.core.types import SoakObserver
+from tests.utils.soak.core.types import BaseSoakActionForm, SoakForms, SoakObserver
 from tests.utils.soak.core.utils import recording_error
-from tests.utils.soak.ft.actions.base import CellFaultForms
+from tests.utils.soak.ft.actions.base import BaseCellFaultForm
+from tests.utils.soak.ft.actions.resize import ResizePoolForm
 from tests.utils.soak.ft.cells import cell_is_alive, cell_is_ready, cell_type_of
-from tests.utils.soak.ft.types import CellTarget, PoolTarget
+from tests.utils.soak.ft.types import POOL_TARGET_KIND, CellTarget, PoolTarget
 from tests.utils.soak.k8s_utils.pod_manipulation import SoakPodTarget
 from tests.utils.soak.k8s_utils.pod_processes import ProcessTarget
 
@@ -22,6 +24,8 @@ from miles.utils.workers.k8s_types import Pod, PodList
 from miles.utils.workers.types import ClusterBackend, DeployComponent
 from miles.utils.workers.worker_provider.kubernetes.core.pod_view import parse_pod
 from miles.utils.workers.worker_provider.kubernetes.helm.env import DEFAULT_LABEL_KEYS
+
+_FormT = TypeVar("_FormT", bound=BaseSoakActionForm)
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -227,24 +231,30 @@ def create_cell_observer(
     *,
     base_url: str,
     cell_types: set[str],
-    forms: CellFaultForms,
+    forms: SoakForms,
     config: ExecuteTrainConfig,
 ) -> CellObserver:
+    fault_kinds = cell_types - {POOL_TARGET_KIND}
+    fault_forms = {kind: _forms_of_type(forms[kind], cls=BaseCellFaultForm) for kind in fault_kinds}
     fault_target_types = {
         fault_target_type
-        for kind in cell_types
-        for form in forms[kind]
+        for kind in fault_kinds
+        for form in fault_forms[kind]
         for fault_target_type in form.fault_target_cell_types(kind)
     }
     process_patterns = {
-        kind: {container: pattern for form in forms[kind] for container, pattern in form.process_patterns.items()}
-        for kind in cell_types
+        kind: {
+            container: pattern for form in fault_forms[kind] for container, pattern in form.process_patterns.items()
+        }
+        for kind in fault_kinds
     }
+    pool_forms = _forms_of_type(forms[POOL_TARGET_KIND], cls=ResizePoolForm) if POOL_TARGET_KIND in cell_types else []
+    pool_workloads = {form.cell_type: form.workload for form in pool_forms}
     use_kubernetes = config.cluster_backend is ClusterBackend.KUBERNETES
 
     return CellObserver(
         base_url=base_url,
-        cell_types=cell_types | fault_target_types,
+        cell_types=fault_kinds | fault_target_types | set(pool_workloads),
         namespace=config.namespace if use_kubernetes else None,
         release=(
             ReleaseName(
@@ -255,7 +265,13 @@ def create_cell_observer(
         ),
         fault_target_cell_types=frozenset(fault_target_types),
         process_patterns_of_type=process_patterns,
+        pool_workloads_of_cell_type=pool_workloads,
     )
+
+
+def _forms_of_type(forms: list[BaseSoakActionForm], *, cls: type[_FormT]) -> list[_FormT]:
+    assert all(isinstance(form, cls) for form in forms), f"Not every form is a {cls.__name__}: {forms}"
+    return forms
 
 
 def _create_cell_target(
