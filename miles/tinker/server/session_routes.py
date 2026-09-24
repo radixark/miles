@@ -4,15 +4,8 @@ import json
 from collections.abc import Callable
 
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
 
-from miles.tinker.core.tinker_session_server import (
-    SessionError,
-    SessionNotFoundError,
-    TrajectoryCollector,
-    TurnRequest,
-    TurnResult,
-)
+from miles.tinker.core.tinker_session_server import TrajectoryCollector, TurnRequest, TurnResult
 from miles.tinker.core.types import UserInputError
 from miles.tinker.server.app import _tenant
 from miles.tinker.server.oai_shapes import chat_completion_json, parse_chat_request
@@ -61,15 +54,7 @@ def _mount_chat_route(app: FastAPI, collector: TrajectoryCollector, suffix: str,
 
 
 def setup_session_routes(app: FastAPI, collector: TrajectoryCollector, max_body_bytes: int = MAX_BODY_BYTES) -> None:
-    """Mount bind/export/delete, one chat route per CHAT_ADAPTERS entry, and the SessionError handler (its status)."""
-
-    @app.exception_handler(SessionError)
-    async def _session_error(request: Request, error: SessionError):
-        hint = ""
-        if isinstance(error, SessionNotFoundError):
-            session_id = request.path_params.get("session_id", "{sid}")
-            hint = f"; bind it first with POST /oai/sessions/{session_id} (tenant key + sampling_session_id)"
-        return JSONResponse(status_code=error.status_code, content={"error": f"{error}{hint}"})
+    """Mount bind/export/delete and one chat route per CHAT_ADAPTERS entry; build_app's handler maps their errors."""
 
     @app.post("/oai/sessions/{session_id}")
     async def create_session(session_id: str, request: Request):

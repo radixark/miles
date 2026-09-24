@@ -14,7 +14,7 @@ from typing import Any
 from miles.tinker.core.future import FAILED
 from miles.tinker.core.prompt_renderer import PromptRenderer, Rendered
 from miles.tinker.core.service import TinkerService
-from miles.tinker.core.types import OwnershipError, UserInputError
+from miles.tinker.core.types import GatewayError, OwnershipError, UserInputError
 
 logger = logging.getLogger(__name__)
 
@@ -23,10 +23,8 @@ SWEEP_INTERVAL_S = 60.0
 _SESSION_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{31,127}")  # the chat route's only credential: unguessable
 
 
-class SessionError(Exception):
-    """Base of the recorded-session errors; status_code is what the session routes answer with."""
-
-    status_code = 500
+class SessionError(GatewayError):
+    """Base of the recorded-session errors; each subclass carries the status the routes answer with."""
 
 
 class SessionNotFoundError(SessionError):
@@ -220,7 +218,9 @@ class TrajectoryCollector:
         """Return the session; the tenant, when given, must own it; unknown ids raise SessionNotFoundError."""
         session = self.sessions.get(session_id)
         if session is None:
-            raise SessionNotFoundError(f"unknown session {session_id!r}")
+            raise SessionNotFoundError(
+                f"unknown session {session_id!r}; bind it first (tenant key + sampling_session_id)"
+            )
         if tenant is not None and session.tenant != tenant:
             raise OwnershipError("session does not belong to this tenant")
         return session

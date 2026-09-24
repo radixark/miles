@@ -125,14 +125,16 @@ class TinkerService:
         """True while the tenant still holds at least one Tinker session lease."""
         return any(record.tenant == tenant for record in self.sessions.values())
 
-    def _lease_owner(self, tenant: str, sampling_session_id: str) -> str:
-        """The live Tinker session behind a sampling session; unknown or expired -> 400, another tenant's -> 403."""
+    def _sampling_session(self, tenant: str, sampling_session_id: str) -> SamplingSessionRecord:
+        """The tenant's live sampling session (lease expiry deletes it); unknown -> 400, another tenant's -> 403."""
         record = self.sampling_sessions.get(sampling_session_id)
-        if record is None or record.session_id not in self.sessions:
-            raise UserInputError(f"sampling session {sampling_session_id!r} is unknown or its lease expired")
+        if record is None:
+            raise UserInputError(
+                f"unknown sampling session {sampling_session_id!r} (or its lease expired); create a sampling session first"
+            )
         if record.tenant != tenant:
             raise OwnershipError("sampling session does not belong to this tenant")
-        return record.session_id
+        return record
 
     def create_model(self, tenant: str, payload: dict) -> tuple[str, str]:
         """Two-phase like every command: allocate now, initialize the slot behind the future."""
@@ -446,11 +448,7 @@ class TinkerService:
         return sampling_session_id
 
     def get_sampler(self, tenant: str, sampling_session_id: str) -> dict:
-        session = self.sampling_sessions.get(sampling_session_id)
-        if session is None:
-            raise UserInputError(f"unknown sampling session {sampling_session_id!r}")
-        if session.tenant != tenant:
-            raise OwnershipError("sampling session does not belong to this tenant")
+        session = self._sampling_session(tenant, sampling_session_id)
         return {
             "sampler_id": sampling_session_id,
             "base_model": self.config.base_model,
@@ -459,7 +457,7 @@ class TinkerService:
 
     def resolve_sampler_path(self, tenant: str, sampling_session_id: str) -> str | None:
         """The sampling session's sampler path (None = frozen base), owned by the tenant and present on disk."""
-        model_path = self.get_sampler(tenant, sampling_session_id)["model_path"]
+        model_path = self._sampling_session(tenant, sampling_session_id).model_path
         if model_path is None or model_path == self.config.base_model:
             return None
         resolve_sampler_checkpoint(self.config.checkpoint_root, tenant, model_path, self.config.base_model)
@@ -473,21 +471,14 @@ class TinkerService:
         if lease_sampling_session_id is not None:
             if payload.get("sampling_session_id"):
                 raise ValueError("a sample is filed under the payload's sampling session or the lease, not both")
-            session_id = self._lease_owner(tenant, lease_sampling_session_id)
+            session_id = self._sampling_session(tenant, lease_sampling_session_id).session_id
         base_model = payload.get("base_model")
         if base_model is not None and base_model != self.config.base_model:
             raise UserInputError(f"this gateway serves {self.config.base_model!r}, not {base_model!r}")
         model_path = payload.get("model_path")
         sampling_session = None
         if payload.get("sampling_session_id"):
-            sampling_session_id = payload["sampling_session_id"]
-            sampling_session = self.sampling_sessions.get(sampling_session_id)
-            if sampling_session is None:
-                raise UserInputError(
-                    f"unknown sampling session {sampling_session_id!r}; create a sampling session first"
-                )
-            if sampling_session.tenant != tenant:
-                raise OwnershipError("sampling session does not belong to this tenant")
+            sampling_session = self._sampling_session(tenant, payload["sampling_session_id"])
             model_path = model_path or sampling_session.model_path
             seq_id = validate_seq_id(payload["seq_id"], "seq_id", minimum=0)
             if (previous := sampling_session.samples_by_seq.get(seq_id)) is not None:
