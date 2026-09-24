@@ -1137,6 +1137,21 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 ),
             )
             parser.add_argument(
+                "--http-lora-ship",
+                type=str,
+                choices=["path", "tensors"],
+                default="path",
+                help=(
+                    "How http-lora hands the adapter to the engines. 'path': write a versioned PEFT "
+                    "directory under --update-weight-disk-dir and POST its path to load_lora_adapter; "
+                    "the directory must be visible to the engine hosts, or "
+                    "--custom-update-weight-post-write-path copies it there. 'tensors': POST the "
+                    "adapter weights in the request body (load_lora_adapter_from_tensors), so the "
+                    "engines need nothing but an HTTP port; --update-weight-disk-dir is then optional "
+                    "and only keeps versioned copies for auditing."
+                ),
+            )
+            parser.add_argument(
                 "--update-weight-local-checkpoint-dir",
                 type=str,
                 default=None,
@@ -3849,10 +3864,12 @@ def miles_validate_args(args):
         assert (
             not args.colocate
         ), "http-lora is for a trainer and engines that do NOT share GPUs; colocate transfers via CUDA IPC."
-        assert args.update_weight_disk_dir, (
-            "--update-weight-transfer-mode=http-lora requires --update-weight-disk-dir as the staging directory "
-            "(shared with the engines, or the source the adapter is copied from)."
-        )
+        if args.http_lora_ship == "path":
+            assert args.update_weight_disk_dir, (
+                "--update-weight-transfer-mode=http-lora with --http-lora-ship path requires "
+                "--update-weight-disk-dir as the staging directory (shared with the engines, or the "
+                "source the adapter is copied from). --http-lora-ship tensors needs no directory."
+            )
 
     if args.colocate:
         if args.offload_train is None:
