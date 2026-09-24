@@ -75,7 +75,8 @@ def get_args():
         and args.tensor_model_parallel_size == 1
         and args.context_parallel_size == 1
         and args.expert_model_parallel_size == 1
-        and args.expert_tensor_parallel_size == 1
+        # ETP defaults to None (= TP) until validate_args resolves it.
+        and (args.expert_tensor_parallel_size or args.tensor_model_parallel_size) == 1
         and world_size > 1
         and not os.environ.get("CONVERT_KEEP_PP1")
     )
