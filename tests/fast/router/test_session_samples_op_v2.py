@@ -51,7 +51,7 @@ _ARGS = make_session_server_config(
     sglang_speculative_algorithm=None,
     instance_id=uuid.uuid4().hex,
     save_debug_trajectory_data=None,
-    session_sample_picker_path="miles.rollout.session.v2.picker_hub.drop_retries",
+    session_sample_picker_path="miles.rollout.session.v2.picker_hub.drop_rolled_back_leaves",
     session_sample_postprocessor_path="miles.rollout.session.v2.postprocessor_hub.default_postprocess",
     num_layers=NUM_LAYERS,
     moe_router_topk=TOPK,
@@ -88,6 +88,15 @@ def core():
 @pytest.fixture(scope="module")
 def addition_core():
     return _build_core(use_addition_r3=True)
+
+
+@pytest.fixture(scope="module")
+def same_prompt_core():
+    return _build_core(
+        _ARGS.model_copy(
+            update={"session_sample_picker_path": "miles.rollout.session.v2.picker_hub.drop_retries_same_prompt"}
+        )
+    )
 
 
 @pytest.fixture(scope="module")
@@ -697,7 +706,7 @@ async def test_picker_warns_and_trims_longer_superseded_leaf(core, caplog):
         completion_span=(6, 7),
     )
 
-    with caplog.at_level(logging.WARNING, logger="miles.rollout.session.v2.picker_hub.drop_retries"):
+    with caplog.at_level(logging.WARNING, logger="miles.rollout.session.v2.picker_hub._supersession"):
         status, payload = await _collect_via_op(core, sid)
     assert status == 200
     reply = decode_samples_and_merge_input_sample(payload, Sample(), fields=COMPUTED_FIELDS_V2)
@@ -730,7 +739,7 @@ async def test_picker_warns_on_wall_clock_rollback_and_trims_by_seq(core, caplog
         committed_at=5.0,
     )
 
-    with caplog.at_level(logging.WARNING, logger="miles.rollout.session.v2.picker_hub.drop_retries"):
+    with caplog.at_level(logging.WARNING, logger="miles.rollout.session.v2.picker_hub._supersession"):
         status, payload = await _collect_via_op(core, sid)
     assert status == 200
     reply = decode_samples_and_merge_input_sample(payload, Sample(), fields=COMPUTED_FIELDS_V2)
@@ -761,8 +770,10 @@ async def test_two_roots_yield_two_samples(core):
     assert [first.reward, second.reward] == [None, None]
 
 
-async def test_resent_first_turn_root_is_trimmed(core):
-    """A re-sent first turn opens a root with the same prompt; the abandoned root is trimmed."""
+@pytest.mark.parametrize("core_name", ["core", "same_prompt_core"])
+async def test_resent_first_turn_root_is_trimmed(core_name, request):
+    """A re-sent first turn opens a root with the same prompt; both pickers trim the abandoned root."""
+    core = request.getfixturevalue(core_name)
     sid, state = await _fresh_state(core)
     _fabricate_node(state, None, _single_turn_record([1, 2, 3], [10, 11]), [1, 2, 3, 10, 11], completion_span=(3, 5))
     retry = _fabricate_node(state, None, _single_turn_record([1, 2, 3], [12]), [1, 2, 3, 12], completion_span=(3, 4))
@@ -775,6 +786,42 @@ async def test_resent_first_turn_root_is_trimmed(core):
     reply = decode_samples_and_merge_input_sample(payload, Sample(), fields=COMPUTED_FIELDS_V2)
     (sample,) = reply.samples
     assert sample.tokens == leaf.token_ids
+
+
+@pytest.mark.parametrize(
+    ("resent_env_token", "expected_leaf_names"),
+    [(20, ["retry"]), (21, ["retry", "attempt"])],
+    ids=["identical-resend-trimmed", "different-request-kept-as-branch"],
+)
+async def test_same_prompt_picker_trims_only_identical_resends(
+    same_prompt_core, resent_env_token, expected_leaf_names
+):
+    """The default picker supersedes a leaf only when the later sibling re-sent its exact prompt."""
+    sid, state = await _fresh_state(same_prompt_core)
+    root = _fabricate_node(
+        state, None, _single_turn_record([1, 2, 3], [10, 11]), [1, 2, 3, 10, 11], completion_span=(3, 5)
+    )
+    leaves = {
+        "attempt": _fabricate_node(
+            state,
+            root,
+            _single_turn_record([1, 2, 3, 10, 11, 20], [30]),
+            [1, 2, 3, 10, 11, 20, 30],
+            completion_span=(6, 7),
+        ),
+        "retry": _fabricate_node(
+            state,
+            root,
+            _single_turn_record([1, 2, 3, 10, 11, resent_env_token], [31]),
+            [1, 2, 3, 10, 11, resent_env_token, 31],
+            completion_span=(6, 7),
+        ),
+    }
+
+    status, payload = await _collect_via_op(same_prompt_core, sid)
+    assert status == 200
+    reply = decode_samples_and_merge_input_sample(payload, Sample(), fields=COMPUTED_FIELDS_V2)
+    assert [sample.tokens for sample in reply.samples] == [leaves[name].token_ids for name in expected_leaf_names]
 
 
 async def test_picker_orders_by_checkpoint_count_then_latest_commit(core):

@@ -321,7 +321,7 @@ contract, session behavior, and model-family selection.
 | `--session-server-ip` | str | router IP | Session-server bind address. |
 | `--session-server-port` | int | auto | First port for standalone session-server instances. When unset, each worker port is auto-allocated. |
 | `--session-server-workers` | int | `32` | Number of instances, at least 1; an explicit `--session-server-port` anchors a consecutive range. |
-| `--session-sample-picker-path` | `<module>.<fn>` | `drop_retries` | v2 only: selects leaf samples before post-processing. |
+| `--session-sample-picker-path` | `<module>.<fn>` | `drop_retries_same_prompt` | v2 only: selects leaf samples before post-processing. The default trims identical re-sends; `drop_rolled_back_leaves` also trims leaves superseded by a different later request. |
 | `--session-sample-postprocessor-path` | `<module>.<fn>` | `default_postprocess` | v2 only: finalizes loss masks and rewards. |
 
 `--use-session-server v2` returns `list[Sample]` and rejects `--group-rm`, `--partial-rollout`, and `--recompute-logprobs-via-prefill`.
