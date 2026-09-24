@@ -48,7 +48,7 @@ from miles.utils.args.configs.session import SessionConfig
 from miles.utils.args.configs.tensorboard import TensorboardConfig
 from miles.utils.args.configs.train import TrainConfig
 from miles.utils.args.configs.wandb import WandbConfig
-from miles.utils.args.custom_function import add_user_provided_function_arguments
+from miles.utils.args.custom_function import add_user_provided_function_arguments, resolve_custom_function_configs
 from miles.utils.args.runtime import AllConfig
 from miles.utils.audit_utils.event_logger.logger import EVENTS_DIRNAME
 from miles.utils.chat_template_utils.tito_tokenizer import TITOTokenizerType
@@ -186,8 +186,10 @@ def _assert_reset_arg_compatible(
         assert actual == value, f"Cannot reset {name}: {key}={actual!r} does not match {value!r}"
 
 
-def get_miles_extra_args_provider(add_custom_arguments=None):
-    def add_miles_arguments(parser):
+def get_miles_extra_args_provider(
+    add_custom_arguments: Callable[[argparse.ArgumentParser], argparse.ArgumentParser] | None = None,
+) -> Callable[[argparse.ArgumentParser], argparse.ArgumentParser]:
+    def add_miles_arguments(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
         parser.set_defaults(entry="train")
 
         # Add custom arguments in front to prevent overwritten some miles arguments.
@@ -401,6 +403,7 @@ def parse_args_and_get_parser(
     vars(args).setdefault("custom_agent_function_path", None)
 
     assert parser is not None
+    resolve_custom_function_configs(args)
     backend_values = {name: value for name, value in vars(args).items() if name in training_backend_arg_names}
     backend_only_fields = training_backend_arg_names - AllConfig.model_fields.keys()
     values = {name: value for name, value in vars(args).items() if name not in backend_only_fields} | {

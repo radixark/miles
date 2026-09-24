@@ -1,3 +1,4 @@
+from miles.utils.args.custom_function import CustomFunctionConfig
 from miles.utils.args.schema import A, Arg, BaseConfig
 
 
@@ -37,13 +38,13 @@ class AlgoConfig(BaseConfig):
         ),
     ] = None
     custom_megatron_post_save_hook_path: A[
-        str | None,
+        CustomFunctionConfig | None,
         Arg(
             help=(
                 "Path to a custom function invoked on rank 0 after every checkpoint save. "
                 "Signature: def hook(args, rollout_id: int, checkpoint_dir: str, "
                 "hf_checkpoint_dir: str | None) -> None."
-            )
+            ),
         ),
     ] = None
     num_critic_only_steps: A[
@@ -95,12 +96,12 @@ class AlgoConfig(BaseConfig):
         ),
     ] = "policy_loss"
     custom_loss_function_path: A[
-        str | None,
+        CustomFunctionConfig | None,
         Arg(
             help=(
                 "Path to the custom loss function, if the loss_type is `custom_loss`, "
                 "we will use this function to calculate the loss. "
-            )
+            ),
         ),
     ] = None
     kl_loss_type: A[
@@ -230,15 +231,15 @@ class AlgoConfig(BaseConfig):
         Arg(help="Lower bound clipping threshold C for importance sampling ratios to control variance."),
     ] = 0
     custom_tis_function_path: A[
-        str | None,
+        CustomFunctionConfig | None,
         Arg(
-            help="Path to the custom TIS/RS function (e.g., examples/infra_features/train_infer_mismatch_helper/mis.py:compute_mis_weights_with_cp)."
+            help="Path to the custom TIS/RS function (e.g., examples/infra_features/train_infer_mismatch_helper/mis.py:compute_mis_weights_with_cp).",
         ),
     ] = None
     custom_pg_loss_reducer_function_path: A[
-        str | None,
+        CustomFunctionConfig | None,
         Arg(
-            help="Path to a custom reducer function for pg_loss only. When set, pg_loss will use this custom reducer while other metrics (pg_clipfrac, ppo_kl, entropy_loss, etc.) still use the default sum_of_sample_mean. (e.g., examples/experimental/DrGRPO/custom_reducer.py:get_pg_loss_reducer)."
+            help="Path to a custom reducer function for pg_loss only. When set, pg_loss will use this custom reducer while other metrics (pg_clipfrac, ppo_kl, entropy_loss, etc.) still use the default sum_of_sample_mean. (e.g., examples/experimental/DrGRPO/custom_reducer.py:get_pg_loss_reducer).",
         ),
     ] = None
 
