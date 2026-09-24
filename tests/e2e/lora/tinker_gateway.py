@@ -8,6 +8,7 @@ import urllib.request
 from contextlib import contextmanager, suppress
 
 import miles.utils.external_utils.command_utils as U
+from miles.utils.http_utils import is_port_available
 
 MODEL_NAME = "Qwen3-4B-Instruct-2507"
 BASE_MODEL = f"Qwen/{MODEL_NAME}"
@@ -36,24 +37,29 @@ def _wait_for_gateway(server: subprocess.Popen) -> None:
 
 @contextmanager
 def running_gateway():
+    if not is_port_available(GATEWAY_PORT):
+        raise RuntimeError(f"port {GATEWAY_PORT} already has a listener; refusing to reuse a gateway not started here")
     serve_cmd = (
         "python examples/multi_lora/serve_qwen3_30b_a3b_tinker.py serve "
         f"--hf-checkpoint /root/models/{MODEL_NAME} "
         "--model-type qwen3-4B-Instruct-2507 --tp 2 --ep 1 --lora-rank 8 --lora-alpha 16 "
         f'--extra-args "--tinker-base-model {BASE_MODEL}"'
     )
-    server = subprocess.Popen(["bash", "-c", serve_cmd], start_new_session=True)
+    server = subprocess.Popen(["bash", "-c", f"exec {serve_cmd}"], start_new_session=True)
     try:
         _wait_for_gateway(server)
         yield f"http://127.0.0.1:{GATEWAY_PORT}"
     finally:
         try:
             with suppress(ProcessLookupError):
-                os.killpg(server.pid, signal.SIGTERM)
-            server.wait(timeout=30)
-        finally:
-            # Descendants can retain CI stdout after the launcher has exited.
+                server.terminate()
+            returncode = server.wait(timeout=180)
+            if returncode not in (0, 128 + signal.SIGTERM):
+                raise RuntimeError(f"gateway launcher failed during shutdown with code {returncode}")
+        except BaseException:
+            # A stuck launcher cannot finish its own Ray cleanup.
             with suppress(ProcessLookupError):
                 os.killpg(server.pid, signal.SIGKILL)
             server.wait(timeout=30)
             subprocess.run(["ray", "stop", "--force"], check=True, timeout=120)
+            raise
