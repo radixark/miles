@@ -589,7 +589,6 @@ class ChunkGatedDeltaRuleFunction(torch.autograd.Function):
         batch, seq_len, num_heads, key_dim = q.shape
         num_v_heads, value_dim = v.shape[2], v.shape[3]
         arch = device_arch(q.device)
-        _PACKAGE.prebuild(arch)  # cached: builds all stages once so no stage compiles inside a later step
 
         def flat(t, heads, dim):
             return t.reshape(batch * seq_len, heads, dim)

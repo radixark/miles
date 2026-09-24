@@ -27,15 +27,8 @@ INDEXER_HEAD_DIM = 128
 INDEXER_HEADS = (8, 16, 32, 64)
 ATTENTION_SHAPES = ((512, 64), (512, 0))  # (d_v, d_tail)
 
-_PREBUILT: set[str] = set()
-
-
 def _kernel(name: str, device):
-    arch = device_arch(device)
-    if arch not in _PREBUILT:
-        _PREBUILT.add(arch)
-        _PACKAGE.prebuild(arch)
-    return _PACKAGE.kernel(name, arch)
+    return _PACKAGE.kernel(name, device_arch(device))
 
 
 def _attention_name(kind: str, block_h: int, d_v: int, d_tail: int) -> str:

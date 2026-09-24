@@ -43,6 +43,12 @@ def test_generated_package_registry_covers_both_architectures():
     """Every exported stage is exported for SM100a and SM103a from one source set that exists on disk."""
     package = REPO / "miles_plugins/models/dsa_train"
     registry = json.loads((package / "registry.json").read_text())
+    module = registry["module"]
+    assert set(module["arches"]) == {"sm_100a", "sm_103a"}
+    assert module["sources"][0] == "cake_module.cu"
+    for relative in module["sources"]:
+        assert (package / "csrc" / relative).is_file(), relative
+    stages = registry["stages"]
     expected = {
         *(f"dsa_attention_{kind}_h{h}_d512t{t}" for kind in ("fwd", "bwd") for h in (16, 32) for t in (64, 0)),
         *(f"dsa_indexer_logits_h{h}" for h in (8, 16, 32, 64)),
@@ -50,11 +56,11 @@ def test_generated_package_registry_covers_both_architectures():
         "dsa_indexer_clean",
         "dsa_segmented_reduce",
     }
-    assert set(registry) == expected
-    for stage, record in registry.items():
-        assert set(record["arches"]) == {"sm_100a", "sm_103a"}, stage
+    assert set(stages) == expected
+    for stage, record in stages.items():
+        assert record["ffi_entry"] == stage
         assert record["kernel_symbol"] == f"kernel_{record['name']}", stage
         for relative in record["sources"]:
-            assert (package / "csrc" / relative).is_file(), (stage, relative)
+            assert relative in module["sources"], (stage, relative)
     # the launchers include the host surface shipped once, by the shared loader package
     assert (REPO / "miles_plugins/models/cake_native/csrc/cake_host_shim.h").is_file()
