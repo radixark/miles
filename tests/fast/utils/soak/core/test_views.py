@@ -14,6 +14,7 @@ from tests.fast.utils.soak.soak_fakes import (
 )
 from tests.utils.soak.core.events import SoakAdmissionClosedEvent, SoakEvent, SoakEvidenceArchivedEvent
 from tests.utils.soak.core.views import (
+    alive_targets_of_kind,
     compute_injection_times,
     compute_num_injections,
     compute_successful_form_names,
@@ -154,6 +155,16 @@ class TestObservationViews:
 
         assert latest_observation(events) is last
         assert latest_observation([]) is None
+
+    def test_alive_targets_of_kind_skip_dead_and_other_kinds(self) -> None:
+        """Only live targets of the asked kind are candidates."""
+        alive = _cell_target()
+        observation = _observation(
+            [alive, _cell_target(cell_index=1, alive=False), _cell_target(kind="rollout")], at=_at(0)
+        )
+
+        assert alive_targets_of_kind(observation, "actor") == [alive]
+        assert alive_targets_of_kind(_observation(None, at=_at(0)), "actor") == []
 
 
 class TestTailStartedAt:
