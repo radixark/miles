@@ -107,6 +107,7 @@ class TurnResult:
 
     turn: Turn
     assistant_message: dict[str, Any]  # OpenAI-style {role, content[, tool_calls]}: TITO stores it, adapters render it
+    model: str = ""  # what actually sampled: the bound tinker:// sampler path, or the frozen base model
 
 
 @dataclass
@@ -355,7 +356,9 @@ class TrajectoryCollector:
         turn.messages = [*request_messages, message]  # the same dict the adapter renders: a child matches it later
         session.turns.append(turn)
         session.last_seen = turn.created_at
-        return TurnResult(turn=turn, assistant_message=message)
+        return TurnResult(
+            turn=turn, assistant_message=message, model=session.model_path or self.service.config.base_model
+        )
 
     def _session_for_request(self, session_id: str, model: str | None) -> TrajectorySession:
         """The bound session for a chat turn: the unguessable id is the credential; a tinker:// model must match."""

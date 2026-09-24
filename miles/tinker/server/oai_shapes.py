@@ -67,7 +67,7 @@ def chat_completion_json(body: dict[str, Any], result: TurnResult) -> dict[str, 
         "id": f"chatcmpl-{uuid.uuid4().hex}",
         "object": "chat.completion",
         "created": int(time.time()),
-        "model": body.get("model") or "",
+        "model": result.model,
         "choices": [
             {
                 "index": 0,
