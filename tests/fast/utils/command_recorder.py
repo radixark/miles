@@ -2,6 +2,7 @@ import json
 import shlex
 
 import miles.utils.external_utils.command_utils as command_utils
+import miles.utils.external_utils.ray_job as ray_job
 
 
 def record_commands(monkeypatch) -> list[str]:
@@ -18,7 +19,7 @@ def record_commands(monkeypatch) -> list[str]:
         commands.append(f"[multi_node num_nodes={num_nodes}] {cmd}")
         return ["0"]
 
-    def fake_run_ray_job(*, address, entrypoint, runtime_env):
+    def fake_run_launcher_owned_job(*, address, entrypoint, runtime_env):
         commands.append(
             f"[launcher lifetime] ray job submit --address={shlex.quote(address)} "
             f"--runtime-env-json={shlex.quote(json.dumps(runtime_env))} -- {entrypoint}"
@@ -27,6 +28,7 @@ def record_commands(monkeypatch) -> list[str]:
     monkeypatch.setattr(command_utils, "exec_command_cpu", fake_exec_command)
     monkeypatch.setattr(command_utils, "exec_command_gpu", fake_exec_command)
     monkeypatch.setattr(command_utils, "exec_command_multi_node", fake_exec_command_multi_node)
-    monkeypatch.setattr(command_utils, "run_ray_job", fake_run_ray_job)
+    monkeypatch.setattr(ray_job, "exec_command_cpu", fake_exec_command)
+    monkeypatch.setattr(ray_job, "_run_launcher_owned_job", fake_run_launcher_owned_job)
 
     return commands

@@ -246,29 +246,18 @@ def execute_train(
         **resolve_extra_env_vars(extra_env_vars, config),
     }
     runtime_env_vars["PYTHONPATH"] = _pythonpath_with_sources(megatron_path, runtime_env_vars.get("PYTHONPATH"))
-    runtime_env_json = json.dumps({"env_vars": runtime_env_vars})
 
     if get_bool_env_var("MILES_SCRIPT_ENABLE_RAY_SUBMIT", "1"):
         model_args = shell_safe_model_args(megatron_model_type)
-        if job_lifetime == "launcher":
-            try:
-                run_ray_job(
-                    address=os.environ.get("RAY_ADDRESS", "http://127.0.0.1:8265"),
-                    entrypoint=f"python3 {shlex.quote(train_script)} {model_args} {train_args}",
-                    runtime_env={"env_vars": runtime_env_vars},
-                )
-            finally:
-                if not external_ray:
-                    exec_command_cpu("ray stop --force")
-            return
-        exec_command_cpu(
-            f"export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && "
-            f"""ray job submit {'' if 'RAY_ADDRESS' in os.environ else '--address="http://127.0.0.1:8265" '}"""
-            f"--runtime-env-json={shlex.quote(runtime_env_json)} "
-            f"-- python3 {train_script} "
-            f"{model_args} "
-            f"{train_args}"
-        )
+        try:
+            run_ray_job(
+                entrypoint=f"python3 {shlex.quote(train_script)} {model_args} {train_args}",
+                runtime_env={"env_vars": runtime_env_vars},
+                job_lifetime=job_lifetime,
+            )
+        finally:
+            if job_lifetime == "launcher" and not external_ray:
+                exec_command_cpu("ray stop --force")
 
 
 def _parse_extra_env_vars(text: str):

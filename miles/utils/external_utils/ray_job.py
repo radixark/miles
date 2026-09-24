@@ -1,23 +1,51 @@
 import asyncio
+import json
 import os
+import shlex
 import signal
 import subprocess
 import sys
 import uuid
 from contextlib import suppress
+from typing import Literal
 
 from ray.job_submission import JobStatus, JobSubmissionClient
 
+from miles.utils.external_utils.exec_command import exec_command_cpu
 
-def run_ray_job(*, address: str, entrypoint: str, runtime_env: dict) -> None:
-    """Run a job until completion or a launcher signal, stopping it before returning."""
+
+def run_ray_job(
+    *, entrypoint: str, runtime_env: dict, job_lifetime: Literal["independent", "launcher"] = "independent"
+) -> None:
+    """Submit and follow a job; launcher-owned jobs stop when the launcher exits."""
+    if job_lifetime == "independent":
+        exec_command_cpu(
+            "export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && "
+            f"""ray job submit {'' if 'RAY_ADDRESS' in os.environ else '--address="http://127.0.0.1:8265" '}"""
+            f"--runtime-env-json={shlex.quote(json.dumps(runtime_env))} -- {entrypoint}"
+        )
+    elif job_lifetime == "launcher":
+        _run_launcher_owned_job(
+            address=os.environ.get("RAY_ADDRESS", "http://127.0.0.1:8265"),
+            entrypoint=entrypoint,
+            runtime_env=runtime_env,
+        )
+    else:
+        raise ValueError(f"Unknown job lifetime: {job_lifetime}")
+
+
+def _run_launcher_owned_job(*, address: str, entrypoint: str, runtime_env: dict) -> None:
     runtime_env = {**runtime_env, "env_vars": {**runtime_env.get("env_vars", {}), "PYTHONUNBUFFERED": "1"}}
     previous_no_proxy = os.environ.get("no_proxy")
     os.environ["no_proxy"] = ",".join(
         filter(None, (previous_no_proxy or os.environ.get("NO_PROXY"), "127.0.0.1", "localhost"))
     )
     try:
-        asyncio.run(_run_ray_job(address, f"miles-{uuid.uuid4().hex}", entrypoint, runtime_env))
+        asyncio.run(
+            _run_and_stop_job(
+                address=address, submission_id=f"miles-{uuid.uuid4().hex}", entrypoint=entrypoint, runtime_env=runtime_env
+            )
+        )
     finally:
         if previous_no_proxy is None:
             del os.environ["no_proxy"]
@@ -25,7 +53,7 @@ def run_ray_job(*, address: str, entrypoint: str, runtime_env: dict) -> None:
             os.environ["no_proxy"] = previous_no_proxy
 
 
-async def _run_ray_job(address: str, submission_id: str, entrypoint: str, runtime_env: dict) -> None:
+async def _run_and_stop_job(address: str, submission_id: str, entrypoint: str, runtime_env: dict) -> None:
     loop = asyncio.get_running_loop()
     stop_requested = asyncio.Event()
     stop_signal = None
