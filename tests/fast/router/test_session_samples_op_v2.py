@@ -761,6 +761,22 @@ async def test_two_roots_yield_two_samples(core):
     assert [first.reward, second.reward] == [None, None]
 
 
+async def test_resent_first_turn_root_is_trimmed(core):
+    """A re-sent first turn opens a root with the same prompt; the abandoned root is trimmed."""
+    sid, state = await _fresh_state(core)
+    _fabricate_node(state, None, _single_turn_record([1, 2, 3], [10, 11]), [1, 2, 3, 10, 11], completion_span=(3, 5))
+    retry = _fabricate_node(state, None, _single_turn_record([1, 2, 3], [12]), [1, 2, 3, 12], completion_span=(3, 4))
+    leaf = _fabricate_node(
+        state, retry, _single_turn_record([1, 2, 3, 12, 20], [30]), [1, 2, 3, 12, 20, 30], completion_span=(5, 6)
+    )
+
+    status, payload = await _collect_via_op(core, sid)
+    assert status == 200
+    reply = decode_samples_and_merge_input_sample(payload, Sample(), fields=COMPUTED_FIELDS_V2)
+    (sample,) = reply.samples
+    assert sample.tokens == leaf.token_ids
+
+
 async def test_picker_orders_by_checkpoint_count_then_latest_commit(core):
     sid, state = await _fresh_state(core)
     root = _fabricate_node(state, None, _single_turn_record([1], [10]), [1, 10], completion_span=(1, 2))

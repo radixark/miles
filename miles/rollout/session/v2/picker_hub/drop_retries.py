@@ -16,8 +16,10 @@ def drop_retries(leaf_samples: list[Sample], session_metadata: dict) -> list[Sam
 
     The rule, leaf by leaf: a sibling branched off the same parent after it
     -> this leaf is the abandoned attempt, superseded by the retry: trim it.
-    No later sibling -> keep (root leaves included). Survivors are ordered by
-    checkpoint count, then commit order, both descending.
+    Roots are siblings when their prompt tokens match: a re-sent first turn
+    opens a new root. No later sibling -> keep, so roots with different
+    prompts (subagents) all survive. Survivors are ordered by checkpoint count,
+    then commit order, both descending.
 
     Example — turn 2 hit the length cap and the agent re-sent it (``seq`` is
     commit order):
@@ -33,12 +35,18 @@ def drop_retries(leaf_samples: list[Sample], session_metadata: dict) -> list[Sam
         if n["parent"] is not None:
             children.setdefault(n["parent"], []).append(n["id"])
     leaf_rows = session_metadata["tree"]["leaves"]
+    root_prompts = _root_prompts(leaf_samples, nodes)
 
     kept: list[Sample] = []
     for sample in leaf_samples:
         descriptor = sample.metadata["leaf"]
         leaf_id, parent = descriptor["node_id"], descriptor["parent"]
-        later = [] if parent is None else [sibling for sibling in children[parent] if sibling > leaf_id]
+        if parent is None:
+            later = [
+                root for root, prompt in root_prompts.items() if root > leaf_id and prompt == root_prompts[leaf_id]
+            ]
+        else:
+            later = [sibling for sibling in children[parent] if sibling > leaf_id]
         if not later:
             kept.append(sample)
             continue
@@ -84,3 +92,13 @@ def drop_retries(leaf_samples: list[Sample], session_metadata: dict) -> list[Sam
         ),
         reverse=True,
     )
+
+
+def _root_prompts(leaf_samples: list[Sample], nodes: dict[int, dict]) -> dict[int, tuple[int, ...]]:
+    """Prompt tokens of each root that has a leaf sample, keyed by root seq."""
+    prompts: dict[int, tuple[int, ...]] = {}
+    for sample in leaf_samples:
+        root_id = sample.metadata["leaf"]["path_node_ids"][0]
+        prompt_len = nodes[root_id]["completion_span"][0]
+        prompts.setdefault(root_id, tuple(sample.metadata["accumulated_token_ids"][:prompt_len]))
+    return prompts
