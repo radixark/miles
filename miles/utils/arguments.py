@@ -423,7 +423,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 default="tilelang",
                 help=(
                     "DSA sparse-MLA kernel backend for GLM (glm_moe_dsa) under --megatron-to-hf-mode bridge. "
-                    "'tilelang' (default) uses the fused TileLang kernels (SparseMLA + lighting_indexer, vendored from slime) for "
+                    "'tilelang' (default) uses the fused TileLang DSA kernels in miles/kernels/attention/dsa (sparse_attention + lighting_indexer) for "
                     "rollout<->train numerical parity; 'megatron' uses the portable unfused megatron-core "
                     "kernels. 'tilelang' requires --qkv-format thd and the optional tilelang dep, and is "
                     "training/forward-only (no KV cache, cannot serve inference). Both support GLM-5.1 and "
