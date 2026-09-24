@@ -14,7 +14,7 @@ from miles.utils.external_utils.command_utils.helm_backend.launcher.manifest_typ
 )
 from miles.utils.external_utils.command_utils.helm_backend.naming import ORCHESTRATOR_COMPONENT, RunNames
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
-from miles.utils.test_utils.kubectl_reads import read_objects_of_release
+from miles.utils.test_utils.kubectl_reads import LEADER_WORKER_SET_KIND, read_objects_of_release
 from miles.utils.workers.rpc.common.protocol import BOOT_UUID_HEADER, HEALTH_PATH
 from miles.utils.workers.worker_provider.kubernetes.helm.naming import component_name, static_worker_host
 from miles.utils.workers.worker_spec import DEFAULT_RPC_PORT
@@ -27,7 +27,6 @@ logger = logging.getLogger(__name__)
 
 POD_KIND: str = "pods"
 STATEFUL_SET_KIND: str = "statefulsets"
-LEADER_WORKER_SET_KIND: str = "leaderworkersets.leaderworkerset.x-k8s.io"
 WORKLOAD_KINDS: tuple[str, ...] = (STATEFUL_SET_KIND, LEADER_WORKER_SET_KIND)
 BOOT_UUID_TIMEOUT_SECONDS: float = 10.0
 
@@ -56,6 +55,7 @@ class ClusterSnapshot(FrozenStrictBaseModel):
     trainer_boot_uuid: str | None
     orchestrator_state_file: Path | None
     reads_missing: tuple[str, ...] = ()
+    commands_of_pod_uid: dict[str, tuple[str, ...]] = {}
 
     @property
     def workload_names(self) -> tuple[str, ...]:
@@ -79,6 +79,7 @@ class SnapshotRecorder:
     snapshots: list[ClusterSnapshot] = field(default_factory=list)
     attempts: int = 0
     failures: int = 0
+    commands_of_pod_uid: dict[str, tuple[str, ...]] = field(default_factory=dict)
     _settled_workloads: frozenset[str] | None = None
     _topology_read_before: tuple[frozenset[str], frozenset[str]] | None = None
 
@@ -90,6 +91,7 @@ class SnapshotRecorder:
                 f"failed rather than a run whose pods changed"
             )
             return
+        self.commands_of_pod_uid.update(snapshot.commands_of_pod_uid)
         if snapshot.describes_gone_release:
             logger.warning(
                 f"Observed {self.release} with {len(snapshot.pods)} pod(s) and {len(snapshot.workloads)} "
@@ -119,7 +121,7 @@ class SnapshotRecorder:
             return
 
         self.attempts += 1
-        self.snapshots.append(snapshot)
+        self.snapshots.append(snapshot.model_copy(update={"commands_of_pod_uid": {}}))
 
     def record_failed_read(self) -> None:
         self.failures += 1
@@ -148,6 +150,10 @@ class ClusterObserver:
     @property
     def failures(self) -> int:
         return self.recorder.failures
+
+    @property
+    def commands_of_pod_uid(self) -> dict[str, tuple[str, ...]]:
+        return self.recorder.commands_of_pod_uid
 
     def observe_once_or_warn(self) -> None:
         try:
@@ -196,6 +202,7 @@ def read_cluster_snapshot(*, release: str, namespace: str, trainer_rpc_url: str)
         trainer_boot_uuid=boot_uuid,
         orchestrator_state_file=_read_orchestrator_state_file(payload_of_kind, release=release, namespace=namespace),
         reads_missing=tuple(kind for kind, payload in payload_of_kind.items() if payload is None),
+        commands_of_pod_uid=parse_pod_commands(pods) if pods is not None else {},
     )
 
 
@@ -227,6 +234,15 @@ def parse_pod_facts(payload: dict) -> tuple[PodFact, ...]:
         for item in payload["items"]
     ]
     return tuple(sorted(facts, key=lambda one: one.name))
+
+
+def parse_pod_commands(payload: dict) -> dict[str, tuple[str, ...]]:
+    return {
+        item["metadata"]["uid"]: tuple(
+            part for container in item.get("spec", {}).get("containers", []) for part in container.get("command", [])
+        )
+        for item in payload["items"]
+    }
 
 
 def parse_workload_facts(payload: dict, *, kind: str) -> tuple[WorkloadFact, ...]:

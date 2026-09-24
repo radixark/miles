@@ -80,7 +80,7 @@ def run_ci(
             ),
             event_log=run.event_log,
             evidence_dir=run.evidence_dir,
-            cell_fault_forms=create_cell_fault_forms(run.launch_spec.config, triggers=triggers),
+            forms=create_cell_fault_forms(run.launch_spec.config, triggers=triggers),
         )
     )
 
