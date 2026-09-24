@@ -7,11 +7,10 @@ from tests.utils.deploy.hot_restart.cluster_observer import compute_hot_restart_
 from tests.utils.soak.core.event_log import EventLog
 from tests.utils.soak.core.events import LaunchOutcome, SoakEvent, SoakObservationEvent
 from tests.utils.soak.core.types import BaseSoakActionForm, SoakActionEvidence, SoakActionRequest
-from tests.utils.soak.core.utils import note_launch_outcome
 from tests.utils.soak.core.views import SoakActionRecord, latest_observation
 from tests.utils.soak.deploy.guard.launch_guard import HotRestartLaunchGuard, HotRestartLaunchSpec
 from tests.utils.soak.deploy.guard.target_check import assert_workloads_unchanged
-from tests.utils.soak.deploy.session import LauncherChain
+from tests.utils.soak.deploy.session import LauncherChain, start_launch
 from tests.utils.soak.deploy.types import (
     DEPLOYMENT_TARGET_KIND,
     DeploymentTarget,
@@ -100,8 +99,12 @@ class HotRestartForm(BaseSoakActionForm):
             fully_async=self.launch_spec.fully_async,
             target=target,
         )
-        launcher = asyncio.create_task(self._launch(request=request, spec=spec))
-        self.chain.put_nowait(launcher)
+        launcher = start_launch(
+            launch(spec, guard=HotRestartLaunchGuard(target=spec.target)),
+            event_log=self.event_log,
+            request_id=request.request_id,
+            chain=self.chain,
+        )
         try:
             async with asyncio.timeout(TAKE_OVER_TIMEOUT_SECONDS):
                 await self._wait_for_take_over(request=request, launcher=launcher, report_applied=report_applied)
@@ -110,13 +113,6 @@ class HotRestartForm(BaseSoakActionForm):
             if not launcher.done():
                 launcher.cancel()
             await asyncio.gather(launcher, return_exceptions=True)
-
-    async def _launch(self, *, request: SoakActionRequest, spec: HotRestartLaunchSpec) -> LaunchOutcome:
-        return await note_launch_outcome(
-            event_log=self.event_log,
-            request_id=request.request_id,
-            launching=launch(spec, guard=HotRestartLaunchGuard(target=spec.target)),
-        )
 
     async def _wait_for_take_over(
         self,
