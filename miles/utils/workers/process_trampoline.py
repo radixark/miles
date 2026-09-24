@@ -13,12 +13,8 @@ def main() -> None:
     argv = sys.argv[2:]
 
     if sys.platform == "linux":
-        # The launched command may fork (notably /bin/sh -c). A death signal
-        # delivered only to that command would leave its children running.
-        # Stay alive as the process-group leader so the parent's death reaps
-        # the entire group, including session servers and other descendants.
-        # Graceful shutdown sends SIGTERM to the entire group. The child must
-        # retain its grace period, so the supervisor waits for it to exit.
+        # Stay as group leader to kill forked descendants if the parent dies.
+        # On graceful SIGTERM, let the child use its shutdown grace period.
         signal.signal(signal.SIGTERM, _wait_for_child)
         # Use a separate signal for abrupt parent death, which needs to reap
         # descendants immediately even if the child has forked.
