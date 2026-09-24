@@ -172,6 +172,36 @@ def test_skip_actor_forward_only_preserves_rollout_log_probs_as_old_policy(proce
     for key in skip_metrics:
         assert torch.equal(skip_metrics[key], baseline_metrics[key]), key
     assert skip_metrics["ppo_kl"].item() > 0
+    assert skip_metrics["train_rollout_logprob_abs_diff"].item() > 0
+    assert skip_metrics["train_rollout_kl"].item() > 0
+
+
+@pytest.mark.parametrize("use_rollout_logprobs", [False, True])
+def test_train_rollout_metrics_use_trainer_scores_independent_of_loss_baseline(process_group, use_rollout_logprobs):
+    make_parallel_state()
+    args = make_args(
+        entropy_coef=0.0,
+        observe_training_entropy=False,
+        true_on_policy_mode=False,
+        use_rollout_logprobs=use_rollout_logprobs,
+    )
+    inputs = make_inputs(seed=23, batch_size=1, prompt_lens=[4], response_lens=[3], vocab_size=16, args=args)
+    batch = make_batch(inputs, "policy_loss")
+    trainer_scores = get_log_probs_and_entropy(
+        deep_clone(inputs["policy_logits"]),
+        args=args,
+        unconcat_tokens=deep_clone(inputs["unconcat_tokens"]),
+        total_lengths=list(inputs["total_lens"]),
+        response_lengths=list(inputs["response_lens"]),
+        with_entropy=False,
+    )["log_probs"]
+    batch["log_probs"] = [scores.detach() for scores in trainer_scores]
+    batch["rollout_log_probs"] = [scores.detach() + 0.25 for scores in trainer_scores]
+
+    _, metrics, _ = _run_policy_loss(args, batch, inputs, skip_actor_forward_only=False)
+
+    assert metrics["train_rollout_logprob_abs_diff"].item() == pytest.approx(0.25)
+    assert metrics["train_rollout_kl"].item() > 0
 
 
 @pytest.mark.parametrize(

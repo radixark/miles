@@ -90,7 +90,7 @@ def test_aborted_generation_is_not_committed(version):
 
 
 @pytest.mark.parametrize("random_tool_ids", [False, True])
-def test_agentic_v2_drop_retries_matches_v1_training_payload_bitwise(random_tool_ids, monkeypatch):
+def test_agentic_v2_same_prompt_retries_match_v1_training_payload_bitwise(random_tool_ids, monkeypatch):
     if random_tool_ids:
         original = MockSGLangServer._compute_chat_completions_response
 

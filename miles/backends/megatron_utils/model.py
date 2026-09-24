@@ -30,6 +30,7 @@ from miles.backends.megatron_utils.ft.types import TrainStepOutcome
 from miles.backends.megatron_utils.local_weight_checksum import dump_local_weight_checksums
 from miles.backends.megatron_utils.optimizer_state_reset import reset_optimizer_states
 from miles.backends.training_utils.sampling_mask import get_rollout_sampling_masks
+from miles.backends.training_utils.weight_update.snapshot_publisher import SnapshotPublisher
 from miles.utils.audit_utils.witness.allocator import WitnessInfo
 from miles.utils.audit_utils.witness.module import witness_dump_and_clear_stale
 from miles.utils.dumper_utils import DumperMegatronUtil, DumperPhase
@@ -869,6 +870,8 @@ def save(
     opt_param_scheduler: OptimizerParamScheduler | None,
     checkpointing_context: dict | None = None,
     non_persistent_ckpt: bool = False,
+    *,
+    snapshot_publisher: SnapshotPublisher | None = None,
 ) -> None:
     """Persist a training checkpoint safely with forward hooks disabled.
 
@@ -889,7 +892,7 @@ def save(
         disable_forward_pre_hook(model)
 
     if is_lora_model(model):
-        save_checkpoint_with_lora(iteration, model, optimizer, opt_param_scheduler)
+        save_checkpoint_with_lora(iteration, model, optimizer, opt_param_scheduler, publisher=snapshot_publisher)
     else:
         save_checkpoint(
             iteration,
@@ -939,10 +942,11 @@ def initialize_model_and_optimizer(
         load_ctx = nullcontext()
 
     load_dir = getattr(args, "load", None)
+    native_optimizer_restored = False
     # --load may be unset: setup_model_and_optimizer already asserted pretrained_checkpoint covers it.
     if load_dir is None or _has_loadable_ckpt(load_dir):
         with load_ctx:
-            iteration, _ = load_checkpoint(
+            iteration, _, native_optimizer_restored = load_checkpoint(
                 model,
                 optimizer,
                 opt_param_scheduler,
@@ -961,7 +965,7 @@ def initialize_model_and_optimizer(
         and getattr(args, "lora_adapter_path", None)
         and "inkling" in (getattr(args, "custom_model_provider_path", None) or "")
     ):
-        if (Path(args.lora_adapter_path) / "adapter_model.safetensors").exists():
+        if (Path(args.lora_adapter_path) / "adapter_model.safetensors").exists() and not native_optimizer_restored:
             from miles_plugins.models.inkling.lora import load_inkling_lora_adapter
 
             load_inkling_lora_adapter(model, args.lora_adapter_path)

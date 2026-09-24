@@ -261,10 +261,13 @@ alternative aligned-expert path.
   adapters.
 - **Checkpoints.** miles saves native per-rank adapter shards and
   optimizer/scheduler state. Exact resume expects the same TP/PP topology. It
-  also attempts a best-effort HF PEFT `adapter_model.bin` plus
-  `adapter_config.json` export for external serving and warns if that export
-  fails. Direct HF PEFT-to-Bridge resume is not implemented yet; native Inkling
-  supplies a model-specific HF adapter importer.
+  also attempts a best-effort HF PEFT `adapter_model.safetensors` plus
+  `adapter_config.json` export in Bridge mode, through the same snapshot publisher
+  used by Tinker. HF export errors are logged while native checkpoint saving
+  continues. Raw mode saves native shards and a rank-sharded adapter config without
+  HF export. `--save-hf` exports a merged model and an HF adapter without native
+  training shards. Direct HF PEFT-to-Bridge resume is not implemented yet; native
+  Inkling supplies a model-specific HF adapter importer.
 - **Weight synchronization.** Colocated IPC and remote NCCL broadcast both ship
   adapter tensors at each configured update boundary without merging them into
   the base. A checksum checker is available for the colocated path.

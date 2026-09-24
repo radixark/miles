@@ -86,12 +86,12 @@ loading and `update_weights: true` are rejected. Ordinary full-model and
 single-LoRA training continue to use the existing weight updater.
 
 `--tinker-checkpoint-root` must be on storage shared by the trainers, gateway,
-and every inference engine. A sampler save exports the current adapter weights,
-then publishes its tensors, adapter config, and `META.json` together through an
-atomic symlink replacement. Existing sampler versions cannot be overwritten. Saving between
-`forward_backward` and `optim_step` neither applies nor discards pending gradients.
+and every inference engine. All trainer ranks participate in adapter gathering;
+rank 0 writes the tensors and config, then `META.json` after all ranks finish.
+Existing sampler versions cannot be overwritten. Saving between `forward_backward`
+and `optim_step` neither applies nor discards pending gradients.
 
-Training checkpoint names also point to immutable version directories. Overwriting
-atomically switches the link; older versions remain on disk for active readers.
-Legacy directory checkpoints can still be loaded; save under a new name instead
-of overwriting them.
+Training checkpoint saves and loads are serialized within the gateway. Overwriting
+deletes the previous checkpoint before writing the new one; a failed overwrite does
+not preserve the previous checkpoint. Checkpoints are ordinary directories;
+overwriting does not retain hidden versions.

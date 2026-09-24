@@ -2,6 +2,7 @@ import argparse
 import json
 import logging
 import os
+from string import Formatter
 from typing import Any
 
 import yaml
@@ -2487,13 +2488,15 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             parser.add_argument(
                 "--session-sample-picker-path",
                 type=str,
-                default="miles.rollout.session.v2.picker_hub.drop_retries",
+                default="miles.rollout.session.v2.picker_hub.drop_same_prompt_retries",
                 help="v2 only. Import path of the sample-pick hook for the "
                 "session samples op: fn(leaf_samples, session_metadata) -> "
                 "list[Sample], a pure selection over the per-leaf raw samples. "
                 "Runs synchronously inside the session server process; long CPU "
-                "work stalls every session on the instance. Default: the "
-                "temporal-supersession retry trim.",
+                "work stalls every session on the instance. Default: drop_same_prompt_retries, "
+                "which trims identical re-sends, including a re-sent first turn; "
+                "drop_rolled_back_leaves also trims a leaf whose later sibling sent a "
+                "different request.",
             )
             parser.add_argument(
                 "--session-sample-postprocessor-path",
@@ -3358,6 +3361,9 @@ def miles_validate_args(args):
                 "the training rollout function cannot evaluate snapshots."
             )
         if args.eval_hf_dir is None:
+            if not any(field == "rollout_id" for _, field, _, _ in Formatter().parse(args.save_hf)):
+                args.save_hf = os.path.join(args.save_hf, "step_{rollout_id}")
+                logger.info(f"Using per-step checkpoints for snapshot eval: --save-hf={args.save_hf}")
             assert args.save_interval is not None and args.eval_interval % args.save_interval == 0, (
                 "Reusing --save-hf checkpoints for eval requires eval_interval to be a "
                 f"multiple of save_interval (got eval_interval={args.eval_interval}, "
