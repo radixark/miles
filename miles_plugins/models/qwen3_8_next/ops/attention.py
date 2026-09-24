@@ -66,6 +66,8 @@ class Qwen38NextAttention(SelfAttention):
                 "Qwen3.8-Next QSA does not support selective core_attn recompute; "
                 "use full recompute or drop core_attn from --recompute-modules"
             )
+        if config.rotary_interleaved:
+            raise NotImplementedError("the QSA indexer mirrors sglang's neox RoPE; rotary_interleaved is unsupported")
         self.indexer = Qwen38NextQSAIndexer(config, layer_number=layer_number)
         self.compress_ratio = config.qwen3_8_next_indexer_compress_ratio
         self.core_attention = Qwen38NextQSACoreAttention(config, layer_number, owner=self)
@@ -108,8 +110,11 @@ class Qwen38NextAttention(SelfAttention):
         else:
             self._qsa_cu_seqlens = None
             positions = torch.arange(seq, device=hidden_states.device)
+        rotary_pos_emb = kwargs.get("rotary_pos_emb")
+        if rotary_pos_emb is None:
+            raise RuntimeError("the QSA indexer reuses the attention RoPE, but no rotary_pos_emb was passed")
         with torch.no_grad():
-            selection = self.indexer(indexer_states[:, 0], positions, cu_seqlens=self._qsa_cu_seqlens)
+            selection = self.indexer(indexer_states[:, 0], positions, rotary_pos_emb, cu_seqlens=self._qsa_cu_seqlens)
             seq_start = torch.arange(seq, device=positions.device) - positions
             r = self.compress_ratio
             tail_in_seq = (positions + 1) // r * r

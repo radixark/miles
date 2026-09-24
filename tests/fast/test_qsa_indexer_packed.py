@@ -131,15 +131,20 @@ def test_selection_equals_single_sequence_runs(lens):
     positions = _packed_positions(cu.cpu(), total).cuda()
     torch.manual_seed(0)
     hidden_states = torch.randn(total, hidden, device="cuda", dtype=torch.bfloat16)
+    rotary_dim = 8
+    inv_freq = 1.0 / (1e7 ** (torch.arange(0, rotary_dim, 2, dtype=torch.float32, device="cuda") / rotary_dim))
+    freqs = torch.outer(torch.arange(total, dtype=torch.float32, device="cuda"), inv_freq)
+    rotary_pos_emb = torch.cat((freqs, freqs), dim=-1)[:, None, None, :]
 
     with torch.no_grad():
-        packed = indexer(hidden_states, positions, cu_seqlens=cu)
+        packed = indexer(hidden_states, positions, rotary_pos_emb, cu_seqlens=cu)
         for i, length in enumerate(lens):
             lo = int(cu[i])
             sub_cu = torch.tensor([0, length], dtype=torch.int32, device="cuda")
             alone = indexer(
                 hidden_states[lo : lo + length].contiguous(),
                 positions[lo : lo + length].contiguous(),
+                rotary_pos_emb,
                 cu_seqlens=sub_cu,
             )
             shifted = torch.where(alone >= 0, alone + lo, alone)
