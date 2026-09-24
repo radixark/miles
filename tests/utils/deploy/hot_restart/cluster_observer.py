@@ -14,7 +14,7 @@ from miles.utils.external_utils.command_utils.helm_backend.launcher.manifest_typ
 )
 from miles.utils.external_utils.command_utils.helm_backend.naming import ORCHESTRATOR_COMPONENT, RunNames
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
-from miles.utils.test_utils.kubectl_reads import read_objects_of_release
+from miles.utils.test_utils.kubectl_reads import LEADER_WORKER_SET_KIND, read_objects_of_release
 from miles.utils.workers.rpc.common.protocol import BOOT_UUID_HEADER, HEALTH_PATH
 from miles.utils.workers.worker_provider.kubernetes.helm.naming import component_name, static_worker_host
 from miles.utils.workers.worker_spec import DEFAULT_RPC_PORT
@@ -27,7 +27,6 @@ logger = logging.getLogger(__name__)
 
 POD_KIND: str = "pods"
 STATEFUL_SET_KIND: str = "statefulsets"
-LEADER_WORKER_SET_KIND: str = "leaderworkersets.leaderworkerset.x-k8s.io"
 WORKLOAD_KINDS: tuple[str, ...] = (STATEFUL_SET_KIND, LEADER_WORKER_SET_KIND)
 BOOT_UUID_TIMEOUT_SECONDS: float = 10.0
 
