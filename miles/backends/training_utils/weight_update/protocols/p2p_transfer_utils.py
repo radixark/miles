@@ -52,7 +52,7 @@ class RemoteTransferPlan:
             get_parallel_state(), WeightUpdatePlacement(gather_pp=False)
         )
 
-        self._rollout_pp_size = args.sglang_pp_size
+        self._rollout_pp_size = args.sglang.common_value("pp_size")
         if self._rollout_pp_size != 1:
             raise NotImplementedError("Rollout pipeline parallelism is not tested yet.")
 

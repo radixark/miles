@@ -89,6 +89,7 @@ def _compute_server_args(
     gated_launch_port: int,
     random_seed: int,
 ):
+    base_args = args.sglang.base_args
     _gpus_per_engine = num_gpus_per_engine or args.rollout_num_gpus_per_engine
     nnodes = max(1, _gpus_per_engine // args.num_gpus_per_node)
     kwargs = {
@@ -109,9 +110,9 @@ def _compute_server_args(
         "gated_launch_port": gated_launch_port,
         # parallel
         "tp_size": _gpus_per_engine,
-        "dp_size": args.sglang_dp_size,
-        "pp_size": args.sglang_pp_size,
-        "ep_size": args.sglang_ep_size,
+        "dp_size": base_args["dp_size"],
+        "pp_size": base_args["pp_size"],
+        "ep_size": base_args["ep_size"],
         # always skip warmup to prevent warmup timeout.
         "skip_server_warmup": True,
         # always enable draft weights cpu backup so that we run training without mtp weights.
@@ -184,8 +185,8 @@ def _compute_server_args(
     for attr in dataclasses.fields(ServerArgs):
         if worker_type == WorkerType.DECODE and attr.name == "enable_hierarchical_cache":
             continue
-        if hasattr(args, f"sglang_{attr.name}") and attr.name not in kwargs:
-            kwargs[attr.name] = getattr(args, f"sglang_{attr.name}")
+        if attr.name in base_args and attr.name not in kwargs:
+            kwargs[attr.name] = base_args[attr.name]
         unused_keys.discard(attr.name)
 
     # for compatibility with old args

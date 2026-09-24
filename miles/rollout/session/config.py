@@ -44,7 +44,7 @@ def compute_session_server_config(
         apply_chat_template_kwargs=args.apply_chat_template_kwargs,
         use_rollout_routing_replay=args.use_rollout_routing_replay,
         use_rollout_indexer_replay=args.use_rollout_indexer_replay,
-        sglang_speculative_algorithm=args.sglang_speculative_algorithm,
+        sglang_speculative_algorithm=args.sglang.common_value("speculative_algorithm"),
         num_layers=getattr(args, "num_layers", None),
         moe_router_topk=getattr(args, "moe_router_topk", None),
         save_debug_trajectory_data=args.save_debug_trajectory_data,
