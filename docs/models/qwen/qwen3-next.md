@@ -117,6 +117,7 @@ Both topologies enable CPU Adam:
 ### 5.5 Notable quirks
 
 - Gated DeltaNet (GDN) is loaded via the HuggingFace bridge; miles doesn't re-implement GDN in Megatron native code.
+- The GDN layers run through the same head-sharded module as Qwen3.5 (`miles_plugins/models/gdn_attention.py`): with `--tensor-model-parallel-size N` each rank owns `linear_num_key_heads / N` key-head groups of `in_proj_qkvz` / `in_proj_ba` (their HF row order is already head-major), `conv1d.weight` is stored head-interleaved, and `--linear-attention-backend loom` selects the bit-deterministic generated kernels on Blackwell (SM100a/SM103a). See the Qwen3.5 page, section 5.6, for the backend table.
 
 ## 6. Pairs Well With
 
