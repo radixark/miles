@@ -3,10 +3,12 @@ from typing import Any
 
 import torch
 
+from miles.rollout.generate_utils.score_centering import validate_score_centering_sample
 from miles.utils import object_store
 from miles.utils.dp_schedule import build_dp_schedule, has_full_schedule_config
 from miles.utils.multi_lora import is_multi_lora_enabled
 from miles.utils.object_store import ValueSpec
+from miles.utils.score_centering import score_centering_top_k
 from miles.utils.seqlen_balancing import get_seqlen_balanced_partitions
 from miles.utils.timer import Timer
 from miles.utils.types import Sample
@@ -18,6 +20,8 @@ ROLLOUT_DATA_TENSOR_DTYPES = {
     "target_tokens": "int32",
     "loss_masks": "int32",
     "rollout_log_probs": "float32",
+    "rollout_topk_token_ids": "int32",
+    "rollout_topk_log_probs": "float32",
     "rollout_sampling_mask_ids": "int32",
     "rollout_sampling_mask_offsets": "int64",
     "teacher_log_probs": "float32",
@@ -114,6 +118,14 @@ def convert_samples_to_train_data(
     # Add rollout log probabilities for off-policy correction
     if samples[0].rollout_log_probs is not None:
         train_data["rollout_log_probs"] = [sample.rollout_log_probs for sample in samples]
+
+    if k := score_centering_top_k(args):
+        for sample in samples:
+            validate_score_centering_sample(sample, k)
+            if sample.multimodal_train_inputs:
+                raise ValueError("Score centering does not yet support multimodal token expansion")
+        train_data["rollout_topk_token_ids"] = [sample.rollout_topk_token_ids for sample in samples]
+        train_data["rollout_topk_log_probs"] = [sample.rollout_topk_log_probs for sample in samples]
 
     has_sampling_mask = any(sample.rollout_sampling_mask is not None for sample in samples)
     if has_sampling_mask:
@@ -373,6 +385,8 @@ def _package_shards(args, data: dict[str, Any], partitions) -> list[dict[str, An
             "rollout_ids",
             "rollout_mask_sums",
             "rollout_log_probs",
+            "rollout_topk_token_ids",
+            "rollout_topk_log_probs",
             "rollout_sampling_mask_ids",
             "rollout_sampling_mask_offsets",
             "rollout_routed_experts",

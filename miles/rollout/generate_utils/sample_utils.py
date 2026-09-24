@@ -3,6 +3,7 @@ from dataclasses import fields
 from typing import Any
 
 from miles.rollout.generate_utils.sampling_mask import merge_sampling_masks
+from miles.rollout.generate_utils.score_centering import merge_score_centering_field
 from miles.utils.types import Sample
 
 _OPD_STUDENT_TOP_LOGPROBS_KEY = "opd_student_top_logprobs"
@@ -162,6 +163,8 @@ def _merge_sample_pair(a: Sample, b: Sample, tokenizer) -> Sample:
             loss_mask=a.loss_mask + [0] * obs_len + b.loss_mask,
             weight_versions=a.weight_versions + b.weight_versions,
             rollout_log_probs=a.rollout_log_probs + [0.0] * obs_len + b.rollout_log_probs,
+            rollout_topk_token_ids=merge_score_centering_field(a, b, "rollout_topk_token_ids", obs_len),
+            rollout_topk_log_probs=merge_score_centering_field(a, b, "rollout_topk_log_probs", obs_len),
             rollout_sampling_mask=sampling_mask,
             teacher_log_probs=_merge_optional_per_token("teacher_log_probs"),
             opd_reverse_kl=_merge_optional_per_token("opd_reverse_kl"),
