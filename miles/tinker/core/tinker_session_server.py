@@ -357,7 +357,7 @@ class TrajectoryCollector:
             parent=rendered.parent,
             request_args=rendered.request_args,
         )
-        message = self.renderer.assistant_message(turn, stop)
+        message, turn.ended_on_stop = self.renderer.assistant_message(turn, stop)
         turn.messages = [*request_messages, message]  # the same dict the adapter renders: a child matches it later
         session.turns.append(turn)
         session.last_seen = turn.created_at

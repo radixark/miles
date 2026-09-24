@@ -224,12 +224,11 @@ class PromptRenderer:
         """The reply text for the wire response, special tokens dropped."""
         return self.tokenizer.decode(list(ids), skip_special_tokens=True)
 
-    def assistant_message(self, turn: Turn, stop: list[str] | None = None) -> dict[str, Any]:
-        """The unified assistant message, without a stop string the reply ended on (as OpenAI); marks such a turn."""
+    def assistant_message(self, turn: Turn, stop: list[str] | None = None) -> tuple[dict[str, Any], bool]:
+        """The unified assistant message without a stop string the reply ended on (as OpenAI), and whether it did."""
         content = self.decode(turn.output_ids)
         if turn.finish_reason == "stop":
             for suffix in stop or ():
                 if suffix and content.endswith(suffix):
-                    content, turn.ended_on_stop = content[: -len(suffix)], True
-                    break
-        return {"role": "assistant", "content": content}
+                    return {"role": "assistant", "content": content[: -len(suffix)]}, True
+        return {"role": "assistant", "content": content}, False
