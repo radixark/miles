@@ -38,6 +38,9 @@ def configure_tinker_args(args):
     )
     # The common LoRA validator parses and validates this before trainer/engine initialization.
     args.target_modules = ",".join(modules)
+    # commands ship one work unit at a time; its size is the batch size
+    args.use_dynamic_global_batch_size = True
+    args.delay_split_train_data_by_dp = True
 
 
 def _resolve_target_modules(hf_config, *, train_attn, train_mlp, train_unembed):

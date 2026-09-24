@@ -1,13 +1,9 @@
 import os
 from pathlib import Path
 
-from miles.backends.megatron_utils.megatron_config import (
-    ACTOR_ROLE,
-    CRITIC_ROLE,
-    MegatronTrainerConfig,
-    compute_trainer_args,
-)
+from miles.backends.megatron_utils.megatron_config import ACTOR_ROLE, CRITIC_ROLE, MegatronTrainerConfig
 from miles.ray.utils import NOSET_VISIBLE_DEVICES_ENV_VARS_LIST
+from miles.utils.args.trainer_utils import compute_trainer_config
 from miles.utils.environ import default_fp8_block_scaling_fp32_scales
 from miles.utils.megatron_args_utils import compute_megatron_world_size_except_dp
 from miles.utils.multi_lora import is_multi_lora_enabled
@@ -49,7 +45,7 @@ _NUM_GPUS_PER_TRAINER_WORKER = 0.4
 def specs_trainer_controller(args) -> list[ServeWorkerSpec]:
     specs = []
     for config in compute_trainer_configs(args):
-        trainer_args = compute_trainer_args(args, config)
+        trainer_args = compute_trainer_config(args, config)
         specs.append(
             _compute_spec_trainer_controller(
                 args,
@@ -162,7 +158,7 @@ def specs_trainer(args) -> list[ServeWorkerSpec]:
             actor_index += 1
         specs.append(
             _compute_spec_trainer(
-                compute_trainer_args(args, config),
+                compute_trainer_config(args, config),
                 config=config,
                 num_nodes=num_nodes,
                 num_gpus_per_node=num_gpus_per_node,
