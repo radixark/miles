@@ -185,14 +185,14 @@ class PromptRenderer:
                     budget=budget,
                 )
                 if ids is not None:
-                    return Rendered(ids, True, None, request_args, parent)
+                    return Rendered(ids, inherits=True, reset_reason=None, request_args=request_args, parent=parent)
         tito = self.tito_tokenizer
         ids = _rendered_ids(
             lambda: tito.apply_chat_template(
                 request_messages, add_generation_prompt=True, tokenize=True, template_args=template_args
             )
         )
-        return Rendered(ids, False, reason, request_args, parent)
+        return Rendered(ids, inherits=False, reset_reason=reason, request_args=request_args, parent=parent)
 
     def _check_override(self, override: dict[str, Any] | None) -> None:
         """A turn's chat_template_kwargs are template variables; apply_chat_template's own arguments are refused."""

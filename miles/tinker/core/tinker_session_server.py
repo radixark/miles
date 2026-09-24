@@ -300,7 +300,9 @@ class TrajectoryCollector:
             payload = self._payload(session, rendered.prompt_token_ids, request.sampling_params)
             sequence = await self._sample(session, payload)
             stop = request.sampling_params.get("stop")
-            return self._commit_generation(session, request.messages, rendered, sequence, after_truncation, stop)
+            return self._commit_generation(
+                session, request.messages, rendered, sequence, after_truncation=after_truncation, stop=stop
+            )
 
     @staticmethod
     def _payload(session: TrajectorySession, prompt_token_ids: list[int], sampling_params: dict) -> dict[str, Any]:
