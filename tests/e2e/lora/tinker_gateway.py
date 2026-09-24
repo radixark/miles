@@ -55,8 +55,7 @@ def _stop_launcher(server: subprocess.Popen) -> None:
 def running_gateway():
     if not is_port_available(GATEWAY_PORT):
         raise RuntimeError(
-            f"port {GATEWAY_PORT} already has a listener; "
-            "refusing to reuse a gateway not started here"
+            f"port {GATEWAY_PORT} already has a listener; " "refusing to reuse a gateway not started here"
         )
     serve_cmd = (
         "python examples/multi_lora/serve_qwen3_30b_a3b_tinker.py serve "
