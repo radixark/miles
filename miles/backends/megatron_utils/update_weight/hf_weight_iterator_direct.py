@@ -13,6 +13,7 @@ from miles.backends.training_utils.parallel import get_parallel_state
 from miles.backends.training_utils.weight_update.hf_weight_iterator import WeightUpdatePlacement
 from miles.utils.distributed_utils import get_gloo_group
 from miles.utils.types import ParamInfo
+from miles_plugins.lora import export_lora_sglang_named
 
 from ..megatron_to_hf import convert_to_hf
 from ..named_weights import named_params_and_buffers
@@ -67,11 +68,7 @@ class HfWeightIteratorDirect(MegatronHfWeightIteratorBase):
             from miles_plugins.models.kimi_k3.lora import export_kimi_k3_lora_hf_chunks
 
             return [named_tensor for chunk in export_kimi_k3_lora_hf_chunks(self.model) for named_tensor in chunk]
-        if "inkling" in (self.args.custom_model_provider_path or ""):
-            from miles_plugins.models.inkling.lora import export_inkling_lora_hf_named
-
-            return export_inkling_lora_hf_named(self.model)
-        raise NotImplementedError(f"Raw LoRA export is not implemented for model {self.model_name!r}")
+        return export_lora_sglang_named(self.model)
 
     def _convert_to_hf_param_units(self, named_params: Sequence[tuple[str, torch.Tensor]]):
         for name, param in named_params:
