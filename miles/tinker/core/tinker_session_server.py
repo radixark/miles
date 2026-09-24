@@ -290,6 +290,8 @@ class TrajectoryCollector:
                 max_new_tokens=max_new_tokens,
                 budget=self._tito_budget(session),
             )
+            if self.sessions.get(session_id) is not session:  # a DELETE landed while rendering: sample nothing
+                raise SessionNotFoundError(f"session {session_id!r} was deleted")
             # the harness continued past a reply cut at max_tokens; miles session server v2 refuses, v1 desyncs
             after_truncation = lineage_truncated(session.turns, rendered.parent)
             if after_truncation and self.strict_truncation:
