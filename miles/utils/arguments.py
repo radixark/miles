@@ -46,6 +46,7 @@ from miles.utils.args.configs.router import RouterConfig
 from miles.utils.args.configs.run_uuid import RunUuidConfig
 from miles.utils.args.configs.session import SessionConfig
 from miles.utils.args.configs.tensorboard import TensorboardConfig
+from miles.utils.args.configs.tinker import TinkerConfig
 from miles.utils.args.configs.train import TrainConfig
 from miles.utils.args.configs.wandb import WandbConfig
 from miles.utils.args.custom_function import add_user_provided_function_arguments, resolve_custom_function_configs
@@ -242,6 +243,7 @@ def get_miles_extra_args_provider(
         CiConfig.add_arguments(parser=parser)
         CustomMegatronPluginsConfig.add_arguments(parser=parser)
         Dsv4MegatronPluginsConfig.add_arguments(parser=parser)
+        TinkerConfig.add_arguments(parser=parser)
         parser = add_user_provided_function_arguments(parser, modify_args=resolve_rollout_function_paths)
 
         reset_arg(
@@ -404,8 +406,8 @@ def parse_args_and_get_parser(
     assert parser is not None
     resolve_custom_function_configs(args)
     backend_values = {name: value for name, value in vars(args).items() if name in training_backend_arg_names}
-    backend_only_fields = training_backend_arg_names - AllConfig.model_fields.keys()
-    values = {name: value for name, value in vars(args).items() if name not in backend_only_fields} | {
+    _validate_argument_ownership(args, parser=parser, training_backend_arg_names=training_backend_arg_names)
+    values = {name: value for name, value in vars(args).items() if name in AllConfig.model_fields} | {
         "raw_megatron": resolve_megatron_config(args, base_args=backend_values if backend == "megatron" else {}),
         "raw_fsdp": FsdpArgsNamespace(**backend_values) if backend == "fsdp" else None,
         "sglang": SglangConfig.parse_args(args),
@@ -413,6 +415,23 @@ def parse_args_and_get_parser(
     }
     values.update(RouterConfig.from_args(args))
     return AllConfig.model_validate(values), parser
+
+
+def _validate_argument_ownership(
+    args: argparse.Namespace, *, parser: argparse.ArgumentParser, training_backend_arg_names: set[str]
+) -> None:
+    sglang_arg_names = {
+        action.dest for action in parser._actions if action.dest.startswith(("sglang_", "eval_sglang_"))
+    }
+    owned_arg_names = (
+        AllConfig.model_fields.keys()
+        | training_backend_arg_names
+        | sglang_arg_names
+        | RouterConfig.arg_names()
+        | {"custom_config_path", "megatron_config"}
+    )
+    if unknown_arg_names := vars(args).keys() - owned_arg_names:
+        raise ValueError(f"Parsed arguments have no configuration owner: {sorted(unknown_arg_names)}")
 
 
 def parse_args_train_backend():
