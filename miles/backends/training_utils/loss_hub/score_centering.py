@@ -11,6 +11,15 @@ import torch
 import torch.distributed as dist
 
 
+def _validate_importance_args(mode: str, tis_clip: float, mis_low: float, mis_high: float) -> None:
+    if mode == "tis" and (not math.isfinite(tis_clip) or tis_clip <= 0):
+        raise ValueError("Score-centering TIS clip must be positive and finite")
+    if mode == "mis" and (not math.isfinite(mis_low) or not math.isfinite(mis_high) or not 0 < mis_low < mis_high):
+        raise ValueError("Score-centering MIS bounds must be finite with 0 < low < high")
+    if mode not in ("none", "tis", "mis"):
+        raise ValueError(f"Unknown score-centering importance weighting: {mode}")
+
+
 def importance_weights(
     log_ratio: torch.Tensor,
     mode: str,
@@ -20,8 +29,11 @@ def importance_weights(
     mis_high: float = 5.0,
 ) -> torch.Tensor:
     """Evaluate token-level weights without exponentiating unbounded ratios."""
+    _validate_importance_args(mode, tis_clip, mis_low, mis_high)
     if mode == "none":
         return torch.ones_like(log_ratio)
+    if torch.isnan(log_ratio).any():
+        raise ValueError("Score-centering importance log-ratio contains NaN")
     if mode == "tis":
         return log_ratio.clamp(max=math.log(tis_clip)).exp()
     if mode == "mis":
@@ -51,6 +63,8 @@ def score_centering_loss(
     cancellation is exact for a full distribution, approximate for a true tail
     that differs from the modeled, rescaled trainer tail.
     """
+    _validate_importance_args(mode, tis_clip, mis_low, mis_high)
+    active = advantages.detach() != 0
     head_log_probs = torch.where(head_mask, train_head_log_probs, 0.0)
     with torch.no_grad():
         p = head_log_probs.exp().masked_fill(~head_mask, 0.0)
@@ -71,13 +85,12 @@ def score_centering_loss(
             raise ValueError(f"Unknown score-centering importance weighting: {mode}")
         residual = weighted_q - alpha.unsqueeze(-1) * p
         weight = importance_weights(
-            train_log_probs - rollout_log_probs,
+            torch.where(active, train_log_probs - rollout_log_probs, 0.0),
             mode,
             tis_clip=tis_clip,
             mis_low=mis_low,
             mis_high=mis_high,
         )
-    active = advantages.detach() != 0
     finite_head = torch.isfinite(head_log_probs)
     finite_sample = torch.isfinite(train_log_probs)
     invalid = (active[:, None] & (residual != 0) & ~finite_head).any(-1) | (active & (weight != 0) & ~finite_sample)

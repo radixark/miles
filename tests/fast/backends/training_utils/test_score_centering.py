@@ -4,10 +4,69 @@ import pytest
 import torch
 
 from miles.backends.training_utils.loss_hub.score_centering import (
+    importance_weights,
     score_centering_loss,
     selected_log_probs,
     selected_log_probs_and_entropy,
 )
+
+
+@pytest.mark.parametrize(
+    "mode,kwargs",
+    [
+        ("tis", {"tis_clip": 0.0}),
+        ("tis", {"tis_clip": float("inf")}),
+        ("mis", {"mis_low": 0.0}),
+        ("mis", {"mis_low": -1.0}),
+        ("mis", {"mis_low": 2.0, "mis_high": 2.0}),
+        ("mis", {"mis_high": float("nan")}),
+    ],
+)
+def test_invalid_importance_bounds_fail_clearly(mode: str, kwargs: dict[str, float]) -> None:
+    with pytest.raises(ValueError, match="clip|bounds"):
+        importance_weights(torch.tensor([0.0]), mode, **kwargs)
+    with pytest.raises(ValueError, match="clip|bounds"):
+        score_centering_loss(
+            torch.tensor([-1.0]),
+            torch.tensor([[-1.0]]),
+            torch.tensor([-1.0]),
+            torch.tensor([[-1.0]]),
+            torch.tensor([[True]]),
+            torch.ones(1),
+            mode=mode,
+            **kwargs,
+        )
+
+
+@pytest.mark.parametrize("mode", ["tis", "mis"])
+def test_nan_importance_ratio_fails_clearly(mode: str) -> None:
+    with pytest.raises(ValueError, match="log-ratio contains NaN"):
+        importance_weights(torch.tensor([float("nan")]), mode)
+    with pytest.raises(ValueError, match="log-ratio contains NaN"):
+        score_centering_loss(
+            torch.tensor([float("-inf")]),
+            torch.tensor([[-1.0]]),
+            torch.tensor([float("-inf")]),
+            torch.tensor([[-1.0]]),
+            torch.tensor([[True]]),
+            torch.ones(1),
+            mode=mode,
+        )
+
+
+@pytest.mark.parametrize("mode", ["tis", "mis"])
+def test_zero_advantage_ignores_nan_importance_ratio(mode: str) -> None:
+    loss, metrics = score_centering_loss(
+        torch.tensor([float("-inf")]),
+        torch.tensor([[-1.0]]),
+        torch.tensor([float("-inf")]),
+        torch.tensor([[-1.0]]),
+        torch.tensor([[True]]),
+        torch.zeros(1),
+        mode=mode,
+    )
+    torch.testing.assert_close(loss, torch.zeros_like(loss))
+    assert torch.isfinite(metrics["sc_importance_weight"]).all()
 
 
 @pytest.mark.parametrize("mode", ["tis", "mis"])
