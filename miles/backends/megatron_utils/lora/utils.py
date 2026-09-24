@@ -1,7 +1,7 @@
 """LoRA utilities for Megatron backend using Megatron-Bridge PEFT integration."""
 
+import json
 import logging
-import os
 from argparse import Namespace
 from collections.abc import Sequence
 from pathlib import Path
@@ -10,11 +10,14 @@ from typing import Any
 import torch
 import torch.distributed as dist
 
+from miles.backends.training_utils.checkpoint_io import write_checkpoint_dir
 from miles.backends.training_utils.parallel import get_parallel_state
-from miles.utils.distributed_utils import get_gloo_group
-from miles.utils.lora.utils import is_lora_enabled  # noqa: F401 (re-exported)
-from miles.utils.lora.utils import lora_rollout_enabled  # noqa: F401 (re-exported)
-from miles.utils.lora.utils import build_lora_config, get_adapter_target_modules
+from miles.backends.training_utils.weight_update.snapshot_publisher import SnapshotPublisher
+from miles.utils.lora.utils import (  # noqa: F401  (re-exported)
+    build_lora_config,
+    is_lora_enabled,
+    lora_rollout_enabled,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -169,123 +172,49 @@ def save_lora_checkpoint(
     args: Namespace,
     save_dir: str,
     *,
+    publisher: SnapshotPublisher | None,
     optimizer: Any | None = None,
     opt_param_scheduler: Any | None = None,
     iteration: int | None = None,
 ) -> str:
-    """Save LoRA adapter checkpoint to disk.
-
-    Saves in two formats:
-    1. **HF PEFT format** (``adapter_model.bin`` + ``adapter_config.json``) for
-       external tool compatibility. Uses Megatron-Bridge's ``export_adapter_weights``
-       which correctly handles fused QKV / gate-up weight splitting and TP gathering.
-    2. **Megatron-native format** (``adapter_megatron_rank{global_rank}.pt``) for fast
-       checkpoint resume without name/weight conversion. Each TP/PP rank saves its
-       own shard with original parameter names.
-
-    Raw-mode (native) adapters skip the HF PEFT export: they have no bridge, and Kimi K3's
-    896-expert adapter could not be materialized on every rank anyway.
-
-    When ``optimizer`` is provided, resume state (iteration + LR scheduler) is also
-    saved per-rank. ``--no-save-optim`` drops the optimizer entry from that file and
-    nothing else, so a resumed run still restarts at the right step and LR.
-    Base model weights are frozen and never change, so they are not saved.
-
-    This function is collective: **all ranks must call it** because the bridge
-    export performs TP all-gather internally. Only ``dp_rank == 0`` writes files.
-    """
-    import json
-
-    save_path = Path(save_dir)
-    # raw-mode adapters have no bridge to export HF PEFT through
-    native = args.megatron_to_hf_mode == "raw"
-    parallel_state = get_parallel_state()
-    is_dp_cp_rank_0 = parallel_state.effective_dp.rank == 0 and parallel_state.cp.rank == 0
-    tp_rank = parallel_state.tp.rank
-    pp_rank = parallel_state.pp.rank
+    """Collectively save native adapter shards, training state, and optional HF adapter weights."""
     global_rank = dist.get_rank() if dist.is_initialized() else 0
 
-    save_path.mkdir(parents=True, exist_ok=True)
-    if dist.is_initialized():
-        dist.barrier(group=get_gloo_group())
-
-    adapter_state: dict[str, torch.Tensor] = {}
-    for model_chunk in model:
-        for name, param in model_chunk.named_parameters():
-            if _is_adapter_param_name(name):
-                adapter_state[name] = param.data.cpu()
-
-    native_path = save_path / f"adapter_megatron_rank{global_rank}.pt"
-    torch.save(adapter_state, native_path)
-    logger.info(f"Saved {len(adapter_state)} adapter tensors (native) to {native_path}")
-
-    if native:
-        if global_rank == 0:
-            config = build_lora_config(args, target_modules=args.lora_adapter_targets)
-            config.update(
-                experts_shared_outer_loras=bool(args.experts_shared_outer_loras),
-                format="megatron_rank_sharded",
-            )
-            with open(save_path / "adapter_config.json", "w") as f:
-                json.dump(config, f, indent=2)
-            os.sync()
-            logger.info(f"Saved rank-sharded adapter config to {save_path}")
-    else:
-        # ---- HF PEFT format (uses bridge for correct name/weight conversion) ----
-        # Bridge export is collective: all TP ranks participate in the all-gather,
-        # so every rank must call export_adapter_weights.
-        try:
-            from megatron.bridge import AutoBridge
-
-            from miles.utils import megatron_bridge_utils
-
-            bridge = AutoBridge.from_hf_pretrained(args.hf_checkpoint, trust_remote_code=True)
-            # Megatron is optional until the HF export path is entered.
-            from miles.backends.megatron_utils.update_weight.hf_weight_iterator import _gather_pp_full_adapter
-
-            lora_state_dict: dict[str, torch.Tensor] = {}
-            with megatron_bridge_utils.patch_megatron_model(model):
-                for hf_name, weight, *_ in bridge.export_adapter_weights(
-                    model,
-                    cpu=True,
-                    show_progress=False,
-                ):
-                    lora_state_dict[hf_name] = weight
-
-            lora_state_dict = dict(_gather_pp_full_adapter(list(lora_state_dict.items())))
-        except Exception as hf_export_err:
-            logger.warning(
-                f"HF PEFT adapter export skipped ({hf_export_err}); the per-rank native "
-                f"shards + training state are sufficient for training resume."
-            )
-        else:
-            if is_dp_cp_rank_0 and tp_rank == 0 and pp_rank == 0:
-                torch.save(
-                    {name: weight.cpu() for name, weight in lora_state_dict.items()}, save_path / "adapter_model.bin"
-                )
-                config = build_lora_config(args, target_modules=get_adapter_target_modules(lora_state_dict))
-                (save_path / "adapter_config.json").write_text(json.dumps(config, indent=2))
-                os.sync()
-                logger.info(f"Saved HF PEFT adapter to {save_path} with {len(lora_state_dict)} tensors")
-
-    # ---- Training state (iteration + scheduler, and the optimizer unless opted out) ----
-    if optimizer is not None:
-        save_optimizer = not getattr(args, "no_save_optim", False)
-        rank = dist.get_rank() if dist.is_initialized() else 0
-        torch.save(
-            {
+    def write_shards(checkpoint_dir: Path):
+        adapter_state = {
+            name: param.detach().cpu()
+            for model_chunk in model
+            for name, param in model_chunk.named_parameters()
+            if _is_adapter_param_name(name)
+        }
+        training_state = None
+        if optimizer is not None:
+            save_optimizer = not getattr(args, "no_save_optim", False)
+            training_state = {
                 "iteration": iteration,
                 "optimizer": optimizer.state_dict() if save_optimizer else None,
                 "opt_param_scheduler": opt_param_scheduler.state_dict() if opt_param_scheduler else None,
-            },
-            save_path / f"training_state_rank{rank}.pt",
-        )
-        logger.info(f"Saved {'optimizer/scheduler' if save_optimizer else 'scheduler'} state to {save_path}")
+            }
 
-    if dist.is_initialized():
-        dist.barrier(group=get_gloo_group())
+        if args.megatron_to_hf_mode == "raw":
+            if global_rank == 0:
+                config = build_lora_config(args, target_modules=args.lora_adapter_targets)
+                config.update(
+                    experts_shared_outer_loras=bool(args.experts_shared_outer_loras),
+                    format="megatron_rank_sharded",
+                )
+                (checkpoint_dir / "adapter_config.json").write_text(json.dumps(config, indent=2))
+        else:
+            try:
+                publisher.write_adapter(None, checkpoint_dir)
+            except Exception:
+                logger.warning("HF adapter export failed; saving native checkpoint only", exc_info=True)
+        torch.save(adapter_state, checkpoint_dir / f"adapter_megatron_rank{global_rank}.pt")
+        if training_state is not None:
+            torch.save(training_state, checkpoint_dir / f"training_state_rank{global_rank}.pt")
 
-    return str(save_path)
+    write_checkpoint_dir(save_dir, write_shards)
+    return str(save_dir)
 
 
 def load_lora_adapter(
@@ -295,35 +224,15 @@ def load_lora_adapter(
     optimizer: Any | None = None,
     opt_param_scheduler: Any | None = None,
     load_optimizer: bool = True,
-) -> tuple[bool, int | None]:
-    """Load LoRA adapter weights from a saved checkpoint into the model.
+) -> tuple[bool, int | None, bool]:
+    """Restore native adapter shards and optional optimizer/scheduler state.
 
-    Attempts to load from Megatron-native format first (per-rank ``.pt`` files),
-    which preserves the exact TP/PP sharding and requires no name conversion.
-    Falls back to HF PEFT ``adapter_model.bin`` if native files are not found
-    (not yet implemented for HF PEFT format).
-
-    When ``optimizer`` is provided, also restores training state (iteration, LR
-    scheduler, and the optimizer when the checkpoint carries it) from a co-located
-    ``training_state_rank*.pt`` file.
-
-    Args:
-        model: List of DDP-wrapped model chunks with LoRA layers already applied.
-        adapter_path: Path to the adapter checkpoint directory.
-        optimizer: If provided, restore optimizer state for training resume.
-        opt_param_scheduler: If provided, restore LR scheduler state.
-        load_optimizer: False (``--no-load-optim``) keeps the freshly initialized
-            optimizer while still restoring the iteration and the LR scheduler.
-
-    Returns:
-        ``(loaded, iteration)`` — *loaded* is True if adapter weights were
-        successfully loaded; *iteration* is the saved iteration number (or None
-        if no training state was found).
+    HF adapters cannot be loaded into Bridge models through this path.
     """
-    adapter_dir = Path(adapter_path)
+    adapter_dir = Path(adapter_path).resolve()
     if not adapter_dir.exists():
         logger.warning(f"LoRA adapter path does not exist: {adapter_dir}")
-        return False, None
+        return False, None, False
 
     tp_rank = get_parallel_state().tp.rank
     pp_rank = get_parallel_state().pp.rank
@@ -360,21 +269,21 @@ def load_lora_adapter(
             param.data.copy_(state_dict[name].to(device=param.device))
         logger.info(f"Loaded {len(adapter_params)} adapter tensors from Megatron-native checkpoint: {native_path}")
 
-        iteration = _load_training_state(adapter_dir, optimizer, opt_param_scheduler, load_optimizer)
-        return True, iteration
-
-    # ---- HF PEFT format (future work) ----
-    hf_path = adapter_dir / "adapter_model.bin"
-    if hf_path.exists():
-        logger.warning(
-            f"Found HF PEFT adapter at {hf_path} but direct HF PEFT loading into "
-            f"Megatron is not yet supported. Please save using Megatron-native format "
-            f"(adapter_megatron_tp*_pp*.pt files) for checkpoint resume."
+        iteration, optimizer_restored = _load_training_state(
+            adapter_dir, optimizer, opt_param_scheduler, load_optimizer
         )
-        return False, None
+        return True, iteration, optimizer_restored
+
+    if any((adapter_dir / name).exists() for name in ("adapter_model.safetensors", "adapter_model.bin")):
+        logger.warning(
+            f"Found HF PEFT adapter at {adapter_dir} but direct HF PEFT loading into "
+            f"Megatron is not yet supported. Please save using Megatron-native format "
+            f"(adapter_megatron_rank*.pt files) for checkpoint resume."
+        )
+        return False, None, False
 
     logger.warning(f"No adapter checkpoint found at {adapter_dir}")
-    return False, None
+    return False, None, False
 
 
 def _load_training_state(
@@ -382,24 +291,26 @@ def _load_training_state(
     optimizer: Any | None,
     opt_param_scheduler: Any | None,
     load_optimizer: bool = True,
-) -> int | None:
+) -> tuple[int | None, bool]:
     """Restore optimizer/scheduler state saved alongside a LoRA adapter checkpoint."""
     if optimizer is None:
-        return None
+        return None, False
 
     rank = dist.get_rank() if dist.is_initialized() else 0
     state_path = adapter_dir / f"training_state_rank{rank}.pt"
     if not state_path.exists():
-        return None
+        return None, False
 
     # Optimizer state dicts may contain non-tensor objects (e.g. step counts,
     # param group metadata), so full unpickling is required here.
     training_state = torch.load(state_path, map_location="cpu", weights_only=False)
 
+    optimizer_restored = False
     if not load_optimizer:
         logger.info("--no-load-optim: keeping the freshly initialized optimizer")
     elif training_state.get("optimizer") is not None:
         optimizer.load_state_dict(training_state["optimizer"])
+        optimizer_restored = True
         logger.info("Restored optimizer state from LoRA checkpoint")
 
     if opt_param_scheduler is not None and training_state.get("opt_param_scheduler") is not None:
@@ -409,4 +320,4 @@ def _load_training_state(
     iteration = training_state.get("iteration")
     if iteration is not None:
         logger.info(f"Resuming LoRA training from iteration {iteration}")
-    return iteration
+    return iteration, optimizer_restored

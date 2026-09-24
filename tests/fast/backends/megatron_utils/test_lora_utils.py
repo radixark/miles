@@ -1,10 +1,7 @@
 """LoRA detection, adapter parameters, and training checkpoint state."""
 
-import sys
-import types
 from argparse import Namespace
 from types import SimpleNamespace
-from unittest.mock import Mock
 
 import pytest
 import torch
@@ -144,43 +141,31 @@ def test_load_lora_adapter_rejects_shards_saved_under_another_layout(tmp_path, m
 
 
 class TestSaveLoraCheckpointTrainingState:
-    def _save(self, tmp_path, monkeypatch, *, no_save_optim, scheduler=None):
-        rank0 = SimpleNamespace(rank=0)
-        monkeypatch.setattr(
-            lora_utils, "get_parallel_state", lambda: SimpleNamespace(effective_dp=rank0, cp=rank0, tp=rank0, pp=rank0)
-        )
-        # the HF PEFT export is best-effort and needs a real bridge; fail it fast
-        bridge = types.ModuleType("megatron.bridge")
-        bridge.AutoBridge = SimpleNamespace(
-            from_hf_pretrained=Mock(side_effect=RuntimeError("no bridge in this test"))
-        )
-        monkeypatch.setitem(sys.modules, "megatron.bridge", bridge)
+    def _save(self, tmp_path, *, no_save_optim, scheduler=None):
+        publisher = SimpleNamespace(write_adapter=lambda *_: None)
 
         adapter = torch.nn.Parameter(torch.ones(2))
         model = [SimpleNamespace(named_parameters=lambda: [("layers.0.self_attention.lora_A.weight", adapter)])]
-        args = Namespace(
-            hf_checkpoint="/nonexistent",
-            # the bridge export path; raw mode writes the rank-sharded config instead
-            megatron_to_hf_mode="bridge",
-            target_modules=None,
-            lora_rank=8,
-            lora_alpha=16,
-            lora_dropout=0.0,
-            no_save_optim=no_save_optim,
-        )
+        args = Namespace(megatron_to_hf_mode="bridge", no_save_optim=no_save_optim)
         optimizer = SimpleNamespace(state_dict=lambda: {"step": 7})
         save_lora_checkpoint(
-            model, args, str(tmp_path), optimizer=optimizer, opt_param_scheduler=scheduler, iteration=3
+            model,
+            args,
+            str(tmp_path / "checkpoint"),
+            publisher=publisher,
+            optimizer=optimizer,
+            opt_param_scheduler=scheduler,
+            iteration=3,
         )
-        return sorted(path.name for path in tmp_path.iterdir())
+        return sorted(path.name for path in (tmp_path / "checkpoint").iterdir())
 
     @staticmethod
     def _state(tmp_path):
-        return torch.load(tmp_path / "training_state_rank0.pt", weights_only=False)
+        return torch.load(tmp_path / "checkpoint" / "training_state_rank0.pt", weights_only=False)
 
-    def test_training_state_is_written_by_default(self, tmp_path, monkeypatch):
+    def test_training_state_is_written_by_default(self, tmp_path):
         scheduler = SimpleNamespace(state_dict=lambda: {"lr": 0.5})
-        files = self._save(tmp_path, monkeypatch, no_save_optim=False, scheduler=scheduler)
+        files = self._save(tmp_path, no_save_optim=False, scheduler=scheduler)
 
         assert files == ["adapter_megatron_rank0.pt", "training_state_rank0.pt"]
         state = self._state(tmp_path)
@@ -188,11 +173,11 @@ class TestSaveLoraCheckpointTrainingState:
         assert state["opt_param_scheduler"] == {"lr": 0.5}
         assert state["iteration"] == 3
 
-    def test_no_save_optim_drops_the_optimizer_and_keeps_the_resume_metadata(self, tmp_path, monkeypatch):
+    def test_no_save_optim_drops_the_optimizer_and_keeps_the_resume_metadata(self, tmp_path):
         """--no-save-optim is about optimizer state; losing the step and the LR schedule with it
         would silently restart a resumed run from iteration 0."""
         scheduler = SimpleNamespace(state_dict=lambda: {"lr": 0.5})
-        files = self._save(tmp_path, monkeypatch, no_save_optim=True, scheduler=scheduler)
+        files = self._save(tmp_path, no_save_optim=True, scheduler=scheduler)
 
         assert files == ["adapter_megatron_rank0.pt", "training_state_rank0.pt"]
         state = self._state(tmp_path)
@@ -218,7 +203,7 @@ class TestLoadTrainingState:
         optimizer_loads, optimizer = self._recorder()
         scheduler_loads, scheduler = self._recorder()
 
-        assert lora_utils._load_training_state(tmp_path, optimizer, scheduler) == 3
+        assert lora_utils._load_training_state(tmp_path, optimizer, scheduler) == (3, False)
         assert optimizer_loads == []
         assert scheduler_loads == [{"lr": 0.5}]
 
@@ -227,7 +212,7 @@ class TestLoadTrainingState:
         optimizer_loads, optimizer = self._recorder()
         scheduler_loads, scheduler = self._recorder()
 
-        assert lora_utils._load_training_state(tmp_path, optimizer, scheduler) == 3
+        assert lora_utils._load_training_state(tmp_path, optimizer, scheduler) == (3, True)
         assert optimizer_loads == [{"step": 7}]
         assert scheduler_loads == [{"lr": 0.5}]
 
@@ -252,7 +237,7 @@ class TestLoadTrainingStateOptimizerGate:
         optimizer_loads, optimizer = self._recorder()
         scheduler_loads, scheduler = self._recorder()
 
-        assert lora_utils._load_training_state(tmp_path, optimizer, scheduler, load_optimizer=False) == 11
+        assert lora_utils._load_training_state(tmp_path, optimizer, scheduler, load_optimizer=False) == (11, False)
         assert optimizer_loads == []
         assert scheduler_loads == [{"lr": 0.5}]
 
@@ -266,7 +251,7 @@ class TestLoadTrainingStateOptimizerGate:
         optimizer_loads, optimizer = self._recorder()
         scheduler_loads, scheduler = self._recorder()
 
-        loaded, iteration = load_lora_adapter(
+        loaded, iteration, optimizer_restored = load_lora_adapter(
             model,
             str(tmp_path),
             optimizer=optimizer,
@@ -274,6 +259,6 @@ class TestLoadTrainingStateOptimizerGate:
             load_optimizer=False,
         )
 
-        assert (loaded, iteration) == (True, 11)
+        assert (loaded, iteration, optimizer_restored) == (True, 11, False)
         assert optimizer_loads == []
         assert scheduler_loads == [{"lr": 0.5}]

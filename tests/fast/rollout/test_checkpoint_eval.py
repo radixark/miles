@@ -479,8 +479,7 @@ async def test_dispatcher_caller_supplied_dir_skips_marker(dispatcher_env):
 
 
 class TestSnapshotOwnership:
-    """The dispatcher exports the snapshot, so the dispatcher deletes it — on every
-    outcome, and only for dirs it exported itself."""
+    """The dispatcher retires snapshots it successfully exported."""
 
     def _make(self, dispatcher_env, tmp_path, **overrides):
         manager = FakeManagerActor()
@@ -520,16 +519,17 @@ class TestSnapshotOwnership:
         assert manager.skip_calls == [(1, "crashed")]
         assert not first.exists()
 
-    async def test_failed_export_leaves_nothing_behind(self, dispatcher_env, tmp_path):
+    async def test_dispatcher_leaves_failed_export_cleanup_to_writer(self, dispatcher_env, tmp_path):
         manager = FakeManagerActor()
         dispatcher, _ = make_dispatcher(dispatcher_env, manager, FakeActorModel(fail=True), eval_hf_dir=str(tmp_path))
-        partial = tmp_path / "step_4"
-        partial.mkdir()
+        checkpoint = tmp_path / "step_4"
+        checkpoint.mkdir()
+        (checkpoint / "weights").write_bytes(b"previous checkpoint")
 
         await dispatcher.dispatch(4)
 
         assert manager.skip_calls == [(4, "export_failed")]
-        assert not partial.exists()
+        assert (checkpoint / "weights").read_bytes() == b"previous checkpoint"
 
     async def test_never_deletes_what_it_did_not_export(self, dispatcher_env, tmp_path):
         """--save-hf checkpoints and --hf-checkpoint are not the dispatcher's to delete."""

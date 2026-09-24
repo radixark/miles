@@ -244,13 +244,8 @@ class TestStartMooncakeMaster:
 
 
 class TestExecuteTrain:
-    def test_exports_unbuffered_python_to_ray(self, monkeypatch):
+    def test_exports_unbuffered_python_to_ray(self, commands):
         """Ray start and job submit must export the correctly spelled PYTHONUNBUFFERED."""
-        commands = []
-        monkeypatch.delenv("MILES_SCRIPT_EXTERNAL_RAY", raising=False)
-        monkeypatch.setenv("MILES_SCRIPT_ENABLE_RAY_SUBMIT", "1")
-        monkeypatch.setattr(command_utils, "exec_command_cpu", commands.append)
-        monkeypatch.setattr(command_utils, "check_has_nvlink", lambda: False)
 
         command_utils.execute_train(
             train_args="",
@@ -263,27 +258,19 @@ class TestExecuteTrain:
         assert not any("PYTHONBUFFERED" in command for command in commands)
         assert all("export PYTHONUNBUFFERED=1 &&" in command for command in exports)
 
-    def test_unbuffers_the_ray_workers_too(self, monkeypatch):
+    def test_unbuffers_the_ray_workers_too(self, commands, monkeypatch):
         """An export only reaches the submitting client; the ray workers read the runtime environment."""
-        commands = []
         monkeypatch.setenv("MILES_SCRIPT_EXTERNAL_RAY", "1")
-        monkeypatch.setenv("MILES_SCRIPT_ENABLE_RAY_SUBMIT", "1")
-        monkeypatch.setattr(command_utils, "exec_command_cpu", commands.append)
-        monkeypatch.setattr(command_utils, "check_has_nvlink", lambda: False)
 
         command_utils.execute_train(train_args="", num_gpus_per_node=1, megatron_model_type="qwen3-4B")
 
         runtime_env_arg = next(arg for arg in shlex.split(commands[-1]) if arg.startswith("--runtime-env-json="))
         assert json.loads(runtime_env_arg.split("=", 1)[1])["env_vars"]["PYTHONUNBUFFERED"] == "1"
 
-    def test_preserves_source_paths_in_the_ray_runtime(self, monkeypatch):
+    def test_preserves_source_paths_in_the_ray_runtime(self, commands, monkeypatch):
         """A caller-supplied PYTHONPATH must be prepended to, not replace, the checkouts miles needs."""
-        commands = []
         monkeypatch.setenv("PYTHONPATH", "/sglang:/existing")
         monkeypatch.setenv("MILES_SCRIPT_EXTERNAL_RAY", "1")
-        monkeypatch.setenv("MILES_SCRIPT_ENABLE_RAY_SUBMIT", "1")
-        monkeypatch.setattr(command_utils, "exec_command_cpu", commands.append)
-        monkeypatch.setattr(command_utils, "check_has_nvlink", lambda: False)
 
         command_utils.execute_train(
             train_args="",

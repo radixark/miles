@@ -34,7 +34,7 @@ V2 = "v2"
 SESSION_PARITY_SEED = 20260803
 
 _CHAT_TIMEOUT_SECS = 120.0
-_PICKER_PATH = "miles.rollout.session.v2.picker_hub.drop_retries"
+_PICKER_PATH = "miles.rollout.session.v2.picker_hub.drop_same_prompt_retries"
 _POSTPROCESSOR_PATH = "miles.rollout.session.v2.postprocessor_hub.default_postprocess"
 _RUNTIME_LIFECYCLE_KEYS = frozenset({"t0", "t1", "req_ts", "prev_t1"})
 _EXPECTED_AGENT_METADATA = {

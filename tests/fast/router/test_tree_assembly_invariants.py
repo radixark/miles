@@ -4,7 +4,7 @@ The independent oracle checks:
 
 1. token fields match each possibly truncated leaf snapshot;
 2. every kept completion span is trainable in exactly one surviving leaf;
-3. temporal retry trimming accepts shorter replacements;
+3. rolled-back leaf trimming accepts shorter replacements;
 4. one trajectory reward reaches every kept sample;
 5. samples sort by checkpoint count, then leaf seq, descending.
 """
@@ -39,7 +39,7 @@ _ARGS = SimpleNamespace(
     lora_train_only=False,
     session_server_instance_id=uuid.uuid4().hex,
     save_debug_trajectory_data=None,
-    session_sample_picker_path="miles.rollout.session.v2.picker_hub.drop_retries",
+    session_sample_picker_path="miles.rollout.session.v2.picker_hub.drop_rolled_back_leaves",
     session_sample_postprocessor_path="miles.rollout.session.v2.postprocessor_hub.default_postprocess",
 )
 
@@ -98,7 +98,11 @@ async def _fresh_grower(core):
 
 
 def _oracle_pick(state):
-    """Independent re-derivation of ruling F: (kept, trimmed)."""
+    """Independent re-derivation of drop_rolled_back_leaves: (kept, trimmed).
+
+    Every root leaf is kept: the grower's token ids are globally unique, so no
+    two roots share a prompt and the re-sent-first-turn rule never applies.
+    """
     kept, trimmed = [], []
     for leaf in state.tree.leaves():
         if leaf.parent is None:
@@ -147,8 +151,8 @@ async def _collect(core, sid, *, max_seq_len=None, agent_metadata=None):
     return response.status_code, bytes(response.body)
 
 
-def _grow_random_tree(grower, rng: random.Random, *, allow_shorter_retries: bool = False):
-    """Grow a random forest, optionally allowing shorter retry branches."""
+def _grow_random_tree(grower, rng: random.Random, *, allow_shorter_replacements: bool = False):
+    """Grow a random forest, optionally allowing shorter replacement branches."""
     grower.grow(None, env_len=rng.randint(1, 3), completion_len=rng.randint(1, 4))
     for _ in range(rng.randint(2, 9)):
         state = grower.state
@@ -156,13 +160,13 @@ def _grow_random_tree(grower, rng: random.Random, *, allow_shorter_retries: bool
         leaves = state.tree.leaves()
         if op < 0.15:  # new root (subagent)
             grower.grow(None, env_len=rng.randint(1, 3), completion_len=rng.randint(1, 4))
-        elif op < 0.45:  # retry: supersede a random childless leaf with a sibling
+        elif op < 0.45:  # rollback: supersede a random childless leaf with a sibling
             leaf = rng.choice(leaves)
             if leaf.parent is None:
                 grower.grow(leaf, env_len=rng.randint(1, 2), completion_len=rng.randint(1, 3))
                 continue
             abandoned_len = len(leaf.token_ids) - len(leaf.parent.token_ids)
-            floor = 1 if allow_shorter_retries else max(1, abandoned_len)
+            floor = 1 if allow_shorter_replacements else max(1, abandoned_len)
             grower.grow(
                 leaf.parent,
                 env_len=rng.randint(1, 2),
@@ -199,7 +203,7 @@ async def test_fuzz_shorter_replacements_assemble_legally(core, seed):
     """Shorter replacements still assemble under the temporal trim rule."""
     sid, state, grower = await _fresh_grower(core)
     rng = random.Random(seed)
-    _grow_random_tree(grower, rng, allow_shorter_retries=True)
+    _grow_random_tree(grower, rng, allow_shorter_replacements=True)
 
     kept, _ = _oracle_pick(state)
     status, payload = await _collect(core, sid)
@@ -237,7 +241,7 @@ async def test_fuzz_forest_invariants_under_truncation(core, seed):
 
 
 class TestTargetedEdges:
-    async def test_chained_retries_single_survivor(self, core):
+    async def test_chained_rollbacks_single_survivor(self, core):
         sid, state, grower = await _fresh_grower(core)
         root = grower.grow(None, env_len=2, completion_len=2)
         for _ in range(3):  # three abandoned attempts, each superseded
