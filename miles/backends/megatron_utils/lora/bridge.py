@@ -138,6 +138,7 @@ def _setup_lora_model_via_bridge(args: Namespace) -> list:
     from megatron.bridge import AutoBridge
     from megatron.bridge.models.conversion.model_bridge import _megatron_local_name_to_global
     from megatron.bridge.training.config import DistributedDataParallelConfig
+    from megatron.bridge.utils.fusions import validate_rope_fusion_compatibility
 
     hf_config = load_hf_config(args.hf_checkpoint)
     bridge = AutoBridge.from_hf_pretrained(args.hf_checkpoint, trust_remote_code=True)
@@ -158,6 +159,9 @@ def _setup_lora_model_via_bridge(args: Namespace) -> list:
     provider.distribute_saved_activations = args.distribute_saved_activations
     provider.attention_backend = args.attention_backend
     provider.apply_rope_fusion = args.apply_rope_fusion
+    # Custom providers can bypass GPTModelProvider.provide() and its fusion checks.
+    if not validate_rope_fusion_compatibility(provider):
+        provider.apply_rope_fusion = False
     provider.bias_activation_fusion = args.bias_swiglu_fusion
     provider.moe_router_dtype = args.moe_router_dtype
     provider.moe_router_use_torch_mm = args.moe_router_use_torch_mm
