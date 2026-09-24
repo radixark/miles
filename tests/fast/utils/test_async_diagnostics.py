@@ -20,7 +20,11 @@ def diagnostics(monkeypatch):
 
 
 def events(caplog):
-    return [json.loads(r.message.split("async_diagnostic ", 1)[1]) for r in caplog.records if "async_diagnostic " in r.message]
+    return [
+        json.loads(r.message.split("async_diagnostic ", 1)[1])
+        for r in caplog.records
+        if "async_diagnostic " in r.message
+    ]
 
 
 def test_cancel_and_timeout_provenance(diagnostics, caplog):

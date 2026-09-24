@@ -58,7 +58,9 @@ def configure_strict_async_warnings() -> None:
     _original_hook = sys.unraisablehook
 
     def _crash_on_async_misuse(unraisable):
-        if isinstance(unraisable.exc_value, RuntimeWarning) and re.search(_FATAL_ASYNC_PATTERN, str(unraisable.exc_value)):
+        if isinstance(unraisable.exc_value, RuntimeWarning) and re.search(
+            _FATAL_ASYNC_PATTERN, str(unraisable.exc_value)
+        ):
             log_unawaited_coroutine(unraisable.object, policy=policy)
             if policy == "log":
                 return
