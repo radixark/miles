@@ -68,7 +68,7 @@ class TritonAttnFunction(torch.autograd.Function):
     @staticmethod
     def backward(ctx, grad_output):
         """Memory-efficient Triton backward for causal self-attention."""
-        from .triton_attn_bwd import triton_attention_backward
+        from miles.kernels.attention.dense_bwd.triton_attn_bwd import triton_attention_backward
 
         q, k, v, o = ctx.saved_tensors
         B, S = ctx.B, ctx.S
