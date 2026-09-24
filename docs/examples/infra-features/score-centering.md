@@ -1,5 +1,8 @@
-# Score Centering
-
+---
+title: "Score Centering"
+description: "Center off-policy policy gradients using the sampler's top-k probabilities, with optional TIS or MIS weights."
+# Generated from examples/infra_features/score_centering/README.md by scripts/tools/sync_example_docs.py. Edit that README, not this file.
+---
 Correct off-policy score drift using the sampler's top-k probabilities, with optional truncated or masked importance weights.
 
 This implements [Score Centering Stabilizes Off-policy Reinforcement Learning](https://arxiv.org/abs/2609.20807), including the efficient top-k approximation in Appendix A.
