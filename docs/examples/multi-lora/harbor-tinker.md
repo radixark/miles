@@ -66,8 +66,8 @@ tool-call parsing are not covered yet).
    - Keep `--tinker-train-unembed` on (the launcher's default): the cookbook creates its model with the SDK default
      `train_unembed=True`.
    - The gateway refuses a Datum longer than `min(model max_position_embeddings, --max-tokens-per-gpu)` and closes the
-     model; agent trajectories run to 10–30k tokens, so pass `--max-tokens-per-gpu 32768` (with recompute) and give the
-     client the same cap as `max_datum_tokens`.
+     model; agent trajectories run to 10–30k tokens, so pass `--max-tokens-per-gpu 32768` (with recompute). The bind
+     answers that cap and the client truncates each trajectory to it (`max_datum_tokens` can only lower it).
 
 2. **Client host** (must reach the gateway and the sandbox API):
 
