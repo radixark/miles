@@ -1,4 +1,4 @@
-# Native Workplace service and CPU integration tests (Gym is a separately pinned checkout).
+# Native Workplace service (Gym is a separately pinned checkout).
 fastapi>=0.115,<1
 httpx>=0.28,<1
 pandas>=2,<3
