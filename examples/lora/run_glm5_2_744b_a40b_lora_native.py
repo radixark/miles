@@ -210,7 +210,7 @@ def _train(args: ScriptArgs):
     sglang_args = (
         f"--rollout-num-gpus-per-engine {args.rollout_num_gpus_per_engine} "
         f"--sglang-mem-fraction-static {args.sglang_mem_fraction_static} "
-        "--sglang-cuda-graph-max-bs 64 --sglang-moe-runner-backend triton "
+        "--sglang-cuda-graph-max-bs-decode 64 --sglang-moe-runner-backend triton "
         "--sglang-disable-shared-experts-fusion "
         "--sglang-reasoning-parser glm45 --sglang-tool-call-parser glm47 "
         f"--sglang-max-lora-rank {args.lora_rank} "
