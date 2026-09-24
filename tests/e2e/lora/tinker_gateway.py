@@ -35,27 +35,11 @@ def _wait_for_gateway(server: subprocess.Popen) -> None:
     raise TimeoutError(f"gateway not serving after {SERVE_TIMEOUT_S}s")
 
 
-def _stop_launcher(server: subprocess.Popen) -> None:
-    try:
-        with suppress(ProcessLookupError):
-            server.terminate()
-        returncode = server.wait(timeout=180)
-        if returncode not in (0, 128 + signal.SIGTERM):
-            raise RuntimeError(f"gateway launcher failed during shutdown with code {returncode}")
-    except BaseException:
-        # A stuck launcher cannot finish its own Ray cleanup.
-        with suppress(ProcessLookupError):
-            os.killpg(server.pid, signal.SIGKILL)
-        server.wait(timeout=30)
-        subprocess.run(["ray", "stop", "--force"], check=True, timeout=120)
-        raise
-
-
 @contextmanager
 def running_gateway():
     if not is_port_available(GATEWAY_PORT):
         raise RuntimeError(
-            f"port {GATEWAY_PORT} already has a listener; " "refusing to reuse a gateway not started here"
+            f"port {GATEWAY_PORT} already has a listener; refusing to reuse a gateway not started here"
         )
     serve_cmd = (
         "python examples/multi_lora/serve_qwen3_30b_a3b_tinker.py serve "
@@ -68,7 +52,19 @@ def running_gateway():
         _wait_for_gateway(server)
         yield f"http://127.0.0.1:{GATEWAY_PORT}"
     finally:
-        _stop_launcher(server)
+        try:
+            with suppress(ProcessLookupError):
+                server.terminate()
+            returncode = server.wait(timeout=180)
+            if returncode not in (0, 128 + signal.SIGTERM):
+                raise RuntimeError(f"gateway launcher failed during shutdown with code {returncode}")
+        except BaseException:
+            # A stuck launcher cannot finish its own Ray cleanup.
+            with suppress(ProcessLookupError):
+                os.killpg(server.pid, signal.SIGKILL)
+            server.wait(timeout=30)
+            subprocess.run(["ray", "stop", "--force"], check=True, timeout=120)
+            raise
         deadline = time.monotonic() + 5
         while not is_port_available(GATEWAY_PORT):
             if time.monotonic() >= deadline:
