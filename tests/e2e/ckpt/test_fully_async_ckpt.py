@@ -10,6 +10,7 @@ from miles.utils.audit_utils.event_analyzer.rules.sample_ownership.check import 
 from miles.utils.audit_utils.event_analyzer.rules.sample_ownership.models import SampleOwnershipViolation
 from miles.utils.audit_utils.event_logger.logger import read_events
 from miles.utils.external_utils import command_utils
+from miles.utils.simple_checkpointer import load_simple_checkpoint
 
 logger = logging.getLogger(__name__)
 
@@ -67,6 +68,7 @@ def _execute(mode: str, *, missing_training_step: bool = False) -> None:
         "--rollout-shuffle "
         "--rm-type deepscaler "
         "--num-rollout 12 "
+        "--update-weights-interval 3 "
         f"--rollout-batch-size {ROLLOUT_BATCH_SIZE} "
         f"--n-samples-per-prompt {N_SAMPLES_PER_PROMPT} "
         "--rollout-max-response-len 256 "
@@ -158,6 +160,7 @@ def run(*, missing_training_step: bool = False) -> None:
     for proxy_var in ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY"):
         os.environ.pop(proxy_var, None)
     _execute("save")
+    _assert_prefetched_checkpoint()
     if missing_training_step:
         try:
             _execute("load", missing_training_step=True)
@@ -168,6 +171,15 @@ def run(*, missing_training_step: bool = False) -> None:
             raise AssertionError("The sample ownership checker missed the injected batch loss")
     else:
         _execute("load")
+
+
+def _assert_prefetched_checkpoint() -> None:
+    iteration = _get_latest_checkpointed_iteration()
+    directory = Path(f"/root/models/{MODEL_NAME}_miles/rollout/{iteration}/executor")
+    outputs = load_simple_checkpoint(directory=directory)
+    prefetched = [data for key, (data, _) in outputs.items() if key.rollout_id == iteration + 1]
+    assert len(prefetched) == 1, f"Checkpoint has no next batch to replay: {list(outputs)}"
+    assert len(prefetched[0]) == ROLLOUT_BATCH_SIZE * N_SAMPLES_PER_PROMPT
 
 
 def _assert_missing_sample() -> None:
