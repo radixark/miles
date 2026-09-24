@@ -1,0 +1,88 @@
+# Harbor agents on the multi-LoRA Tinker gateway
+
+Agentic RL on the gateway from [`examples/multi_lora`](../README.md) without changing the Tinker wire format. The
+unmodified tinker-cookbook `rl/train.py` loop trains; Harbor harnesses (terminus-2) run their tasks in sandboxes (any
+provider Harbor supports; the example uses an E2B-compatible endpoint) and chat with a recorded session on the
+gateway, which samples through the gateway's own token path
+(adapter `M@V`) and records every turn's `input_ids`, `output_ids` and `logprobs`. With `--tinker-tito-model` each
+turn's prompt inherits the previous turn's tokens (TITO), so a trajectory trains as one Datum.
+
+## Pieces
+
+| Where | What |
+|---|---|
+| gateway `miles/tinker/core/tinker_session_server.py`, `prompt_renderer.py` | `TrajectoryCollector`: recorded sessions, one per trajectory, ownership, caps, turns; `PromptRenderer`: renders through an injected miles `TITOTokenizer` (the `default` family without `--tinker-tito-model`, as the miles session server), and with TITO each turn inherits the previous turn's tokens (full re-render when a chain breaks) |
+| gateway `miles/tinker/server/session_routes.py`, `oai_shapes.py` | `POST /oai/sessions/{sid}` bind (`sampling_session_id` required: its sampler version and lease, optional `max_datum_tokens`; the answer carries the effective per-datum cap, never above the gateway's, which the client truncates to), `POST /oai/sessions/{sid}/v1/chat/completions`, `GET /oai/sessions/{sid}` turns, `DELETE`; `oai_shapes.py` maps the OpenAI body to a `TurnRequest` and the recorded `TurnResult` back to ChatCompletion JSON |
+| gateway `serve_tinker.py`, `miles/tinker/arguments.py` | `--tinker-session-server` (default off) mounts the routes on the served app; `--tinker-session-ttl-s` (default 3600), `--tinker-session-max-body-bytes` (default 16 MiB), `--tinker-tito-model` (a `TITOTokenizerType`, its fixed template replaces `--chat-template-path`), renders with `--apply-chat-template-kwargs` |
+| client `harbor_env.py` | cookbook plug-ins: `HarborDatasetBuilder`, `HarborGroup` (rewards from Harbor verdicts; an `AgentError` trial is dropped, not scored 0), `SessionRolloutStrategy` (bind → Harbor trial → export → delete → `Trajectory`) |
+| client `run_harbor_tinker.py` | `HarborTinkerConfig` → cookbook `train.Config` → `train.main`, with a sandbox preflight |
+
+Status codes on the session routes: 400 bad input, missing key, or bind without `sampling_session_id`, 403 another
+tenant's session, 404 chat on an unbound or deleted session (the session id is the chat route's only credential, so
+it must be 32-128 chars),
+409 a continuation past a truncated reply under `--tinker-session-strict-truncation`, 429 per-tenant session cap or
+per-session turn cap, 502 engine failure (nothing recorded).
+
+A session records one turn at a time: render, sample and commit run under the session's lock, so a retry that
+overlaps its first attempt waits and is then attached where it belongs; `DELETE` cancels a sample still running.
+The turns form a tree: each exported turn carries `parent` (the turn whose history its request continues, matched
+message by message with the miles strict matcher; `null` for a new root), `inherits` (its ids extend the parent's),
+`reset_reason` (`first`, `retry`, `rewrite`, `budget`, `mismatch`, `stop_string`, `no_tito`; `stop_string` = the parent
+reply ended on a request stop string, which the response omits as OpenAI does) and `after_truncation` (an ancestor's
+reply was cut at `max_tokens`). The client's `select_turns` applies the miles v2 `drop_retries` rule to that tree:
+a leaf with a later sibling is a superseded attempt (a root only when a later root resends the same prompt), every
+other leaf's path trains, and nothing below a truncated reply does; `--tinker-session-strict-truncation` refuses
+such continuations with 409 instead. The export also
+carries `max_trim_tokens`, the boundary tokens the TITO family may drop when it extends a prefix (GLM: 1): with a
+non-zero value consecutive turns are not strict prefixes and the cookbook keeps them as separate Datums.
+
+API adapters: a chat dialect is one pair of functions, body → `TurnRequest` and (body, `TurnResult`) → response JSON,
+registered under its path suffix in `session_routes.CHAT_ADAPTERS`; the collector, TITO and sampling only ever see the
+unified OpenAI-style message dicts (`role`, `content`, `tool_calls`, `tool_call_id`, `name`), and the assistant message
+an adapter renders is the very dict TITO stores. OpenAI lives in `oai_shapes.py`; an Anthropic `/v1/messages` adapter
+would add `parse_messages_request` / `messages_response_json` and one registry entry (its error shape, streaming and
+tool-call parsing are not covered yet).
+
+## Run
+
+1. **Gateway** (a node of the Ray cluster; see [`examples/multi_lora`](../README.md) for the launcher):
+
+   ```bash
+   python3 examples/multi_lora/serve_qwen3_30b_a3b_tinker.py serve \
+       --model-dir /models --save-dir <ckpt-dir> --output-dir <out-dir> --n-adapters 8 --lora-rank 16 --lora-alpha 32 \
+       --extra-args "--use-miles-router --tinker-base-model Qwen/Qwen3-30B-A3B \
+                     --tinker-session-server --tinker-tito-model qwen3 --apply-chat-template-kwargs '{\"enable_thinking\": false}' \
+                     --max-tokens-per-gpu 32768 --recompute-granularity full --recompute-method uniform --recompute-num-layers 1 \
+                     --tinker-session-ttl-s 7200"
+   ```
+
+   - `--tinker-session-server` mounts the `/oai/sessions/*` routes (off by default: without it `serve_tinker.py` is the
+     plain Tinker gateway, no tokenizer load, no extra routes, no sweep task).
+   - `--tinker-tito-model qwen3` selects the Qwen3 fixed chat template; leave `--chat-template-path` unset with it. Drop the
+     flag to re-render the full history every turn (one Datum per turn).
+   - Keep `unembed` in `--target-modules` (the launcher's default `attn,mlp,unembed`): the cookbook creates its model
+     with the SDK default `train_unembed=True`.
+   - The gateway refuses a Datum longer than `min(model max_position_embeddings, --max-tokens-per-gpu)` and closes the
+     model; agent trajectories run to 10–30k tokens, so pass `--max-tokens-per-gpu 32768` (with recompute). The bind
+     answers that cap and the client truncates each trajectory to it (`max_datum_tokens` can only lower it).
+
+2. **Client host** (must reach the gateway and the sandbox API):
+
+   ```bash
+   pip install "tinker==0.26.2" tinker-cookbook "harbor[e2b] @ git+https://github.com/harbor-framework/harbor@harbor-miles-v0.20.0"
+   mkdir -p ~/.config/e2b && echo <key> > ~/.config/e2b/api_key && chmod 600 ~/.config/e2b/api_key
+   git clone https://github.com/laude-institute/terminal-bench-2 ~/.cache/terminal-bench-2   # one task dir per task.toml
+   ```
+
+3. **Train**:
+
+   ```bash
+   HARBOR_ENV_TYPE=e2b E2B_API_URL=https://<sandbox-api> E2B_API_KEY_FILE=~/.config/e2b/api_key \
+   HARBOR_TASKS_DIR=~/.cache/terminal-bench-2 TINKER_API_KEY=tml-<key> \
+   python examples/multi_lora/harbor_tinker/run_harbor_tinker.py \
+       gateway=http://<gateway>:10613 model_name=Qwen/Qwen3-30B-A3B tasks_dir=~/.cache/terminal-bench-2 \
+       groups_per_batch=4 group_size=4 max_tokens=1536 max_seq_len=16384 max_datum_tokens=32768 lora_rank=16
+   ```
+
+   Every step runs `groups_per_batch × group_size` trials, each in its own sandbox. The preflight fails fast on a missing
+   `HARBOR_ENV_TYPE` / `HARBOR_TASKS_DIR`, a missing provider key, an old e2b SDK, or an unreachable `E2B_API_URL`.
