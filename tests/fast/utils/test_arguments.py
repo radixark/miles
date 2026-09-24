@@ -719,8 +719,21 @@ class TestClusterBackend:
         with pytest.raises(AssertionError, match="--use-distributed-post"):
             miles_validate_args(args)
 
-    def test_refuses_a_kubernetes_run_that_drives_multi_lora(self):
+    def test_refuses_a_kubernetes_run_that_drives_multi_lora(self, tmp_path: Path) -> None:
         """The multi-LoRA controller calls into RayWorkerManager, which this backend never instantiates."""
+        (tmp_path / "config.json").write_text(
+            json.dumps(
+                dict(
+                    model_type="llama",
+                    hidden_size=16,
+                    intermediate_size=32,
+                    num_hidden_layers=1,
+                    num_attention_heads=2,
+                    num_key_value_heads=2,
+                    vocab_size=32,
+                )
+            )
+        )
         args = self._parse(
             [
                 "--cluster-backend",
@@ -732,7 +745,9 @@ class TestClusterBackend:
                 "--lora-rank",
                 "8",
                 "--target-modules",
-                "linear_qkv",
+                "q_proj",
+                "--hf-checkpoint",
+                str(tmp_path),
             ]
         )
 

@@ -354,6 +354,7 @@ async def test_sample_cancellation_aborts_group_without_stopping_worker(
 
 
 async def test_worker_cancellation_still_propagates(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A cancelled worker fails the waiting step loudly instead of being filtered away as an abort."""
     started = asyncio.Event()
     release = asyncio.Event()
 
@@ -375,7 +376,7 @@ async def test_worker_cancellation_still_propagates(monkeypatch: pytest.MonkeyPa
     fn._worker.cancel()
 
     try:
-        with pytest.raises(asyncio.CancelledError):
+        with pytest.raises(RuntimeError, match="disposed while a step waited"):
             await asyncio.wait_for(drain, timeout=2)
         assert fn._worker.cancelled()
         assert data_source.recycled == []

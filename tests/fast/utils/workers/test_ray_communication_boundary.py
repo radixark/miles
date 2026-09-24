@@ -99,7 +99,7 @@ class TestTheScanReachesEveryProcessTheDriverIsPartOf:
         """The driver is where a ray-only exception handler hid, and miles/ alone never covered it."""
         scanned = relative_paths(_scanned_modules())
 
-        assert {"train.py", "train_async.py", "train_multi_lora_async.py"} <= set(scanned)
+        assert {"train.py", "train_async.py"} <= set(scanned)
 
     def test_a_driver_script_that_reaches_for_ray_would_be_reported(self):
         """A check that only ever looks under miles/ passes on the very file that broke under rpc."""

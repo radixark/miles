@@ -63,7 +63,15 @@ def _mock_megatron_environment():
         _stub_module("megatron", is_package=True)
         core_module = _stub_module("megatron.core", is_package=True)
         core_module.mpu = types.SimpleNamespace()
-        core_module.tensor_parallel = types.SimpleNamespace(model_parallel_cuda_manual_seed=MagicMock())
+        core_module.tensor_parallel = _stub_module(
+            "megatron.core.tensor_parallel",
+            {"model_parallel_cuda_manual_seed": MagicMock()},
+            is_package=True,
+        )
+        _stub_module(
+            "megatron.core.tensor_parallel.random",
+            {"_get_all_rng_states": MagicMock(), "_set_all_rng_states": MagicMock()},
+        )
         _stub_module(
             "megatron.core.distributed",
             {
@@ -223,7 +231,9 @@ def _load_model_state_with(
     (load_dir / "latest_checkpointed_iteration.txt").write_text(str(iteration))
 
     with ExitStack() as stack:
-        stack.enter_context(patch("miles.backends.megatron_utils.model.load_checkpoint", return_value=(iteration, 0)))
+        stack.enter_context(
+            patch("miles.backends.megatron_utils.model.load_checkpoint", return_value=(iteration, 0, False))
+        )
         _patch_initialize_side_effects(stack)
         return load_model_state(
             Namespace(

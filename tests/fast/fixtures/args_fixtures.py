@@ -25,6 +25,7 @@ _RESOLVED_AFTER_PARSING: dict[str, Any] = dict(
     offload_train=False,
     offload_rollout=False,
     eval_uses_snapshots=False,
+    starts_inference_engines=True,
     run_uuid="0" * RUN_UUID_LENGTH,
 )
 

@@ -21,7 +21,7 @@ _TOOLING_DIRS = (
 
 TRAIN_ONLY_SUBCOMMAND = "train"
 
-ORCHESTRATION_SCRIPTS = ("train.py", "train_async.py", "train_multi_lora_async.py")
+ORCHESTRATION_SCRIPTS = ("train.py", "train_async.py")
 
 BACKEND_CAPABILITY_FN = "launch_worker_manager"
 ORCHESTRATION_INIT_FN = "init_orchestration_script"
@@ -63,7 +63,6 @@ UPPER_LAYER_EXEMPTIONS = {
     "miles/utils/workers/ray_worker_manager.py": "the composition root of a worker process an actor wraps",
     "miles/utils/workers/deployment_entrypoint.py": "the composition root of a deployment that carries no orchestration script",
     "miles/utils/workers/backend_capability/factory.py": "the fork itself: it is the switch every composition root asks",
-    "miles/ray/multi_lora/controller.py": "multi-LoRA is a ray actor and the charts render no form of it",
     "miles/utils/workers/reconcile/k8s_api.py": "the kubernetes client the observing provider is written against",
     "miles/utils/arguments.py": "declares the --cluster-backend flag the composition roots read",
     "miles/utils/tracking_utils/base.py": "the prometheus collector is a ray actor and has no kubernetes form",

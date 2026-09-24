@@ -225,7 +225,7 @@ def _compute_spec_trainer(
         ),
         worker_class=(
             "miles.backends.megatron_utils.lora.actor.MultiLoRATrainRayActor"
-            if args.train_backend == "megatron" and role == "actor" and is_multi_lora_enabled(args)
+            if args.train_backend == "megatron" and config.role == ACTOR_ROLE and is_multi_lora_enabled(args)
             else _TRAINER_ACTOR_CLASSES[args.train_backend]
         ),
         ctor_kwargs=lambda ctx: dict(

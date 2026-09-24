@@ -126,7 +126,9 @@ def _get_placement_group_layout(args) -> tuple[int, int]:
         eval_num_gpus = args.eval_num_gpus if selector.selects(DeployComponent.INFERENCE) else 0
         return trainer_num_gpus + eval_num_gpus, trainer_num_gpus
 
-    rollout_num_gpus = (args.rollout_num_gpus or 0) + args.eval_num_gpus if selector.selects(DeployComponent.INFERENCE) else 0
+    rollout_num_gpus = (
+        (args.rollout_num_gpus or 0) + args.eval_num_gpus if selector.selects(DeployComponent.INFERENCE) else 0
+    )
     if args.rollout_external:
         return (0, 0) if args.debug_rollout_only else (trainer_num_gpus, trainer_num_gpus)
     if args.debug_rollout_only:
@@ -304,7 +306,11 @@ async def update_weights(
         await orchestration_executor.run_after_step(rollout_id=rollout_id)
 
     info: UpdatableEngines = await inference_controller.start_update_weights(model_id=trainer_model_id)
-    weight_version = await actor_model.update_weights(info=info, rollout_id=rollout_id)
+    try:
+        weight_version = await actor_model.update_weights(info=info, rollout_id=rollout_id)
+    except BaseException:
+        await inference_controller.abort_update_weights()
+        raise
     await inference_controller.end_update_weights(snapshot_cell_id_to_hashes=info.snapshot_cell_id_to_hashes)
 
     await _maybe_log_inference_engine_weight_checksums(

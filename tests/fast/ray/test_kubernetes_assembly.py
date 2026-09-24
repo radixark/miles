@@ -166,9 +166,6 @@ class FakeTrainerController:
     async def clear_memory(self) -> None:
         return None
 
-    async def reconcile_adapters(self) -> None:
-        return None
-
     async def get_train_parallel_config(self) -> dict[str, Any]:
         return {"dp_size": 2}
 
