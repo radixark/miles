@@ -1173,6 +1173,19 @@ def resolve_fixed_chat_template(
     return path, dict(fixed.extra_kwargs)
 
 
+def configure_fixed_chat_template(args, tito_model: TITOTokenizerType | str, *, option: str, hint: str = "") -> None:
+    """Install the family's fixed template and kwargs on args; option names the CLI flag in the error message."""
+    family = tito_model.value if isinstance(tito_model, TITOTokenizerType) else tito_model
+    if args.chat_template_path is not None:
+        raise ValueError(f"--chat-template-path cannot override the template registered for {option}={family}{hint}")
+    template_path, fixed_kwargs = resolve_fixed_chat_template(tito_model)
+    if template_path is not None:
+        args.chat_template_path = template_path
+    kwargs = dict(args.apply_chat_template_kwargs or {})
+    kwargs.update(fixed_kwargs)  # the family's registered kwargs win, as miles_validate_args does for --tito-model
+    args.apply_chat_template_kwargs = kwargs
+
+
 # ---------------------------------------------------------------------------
 # sglang parser resolution (per-family binding + assert-equal on user input)
 # ---------------------------------------------------------------------------

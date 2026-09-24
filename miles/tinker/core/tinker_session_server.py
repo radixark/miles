@@ -66,9 +66,13 @@ class Turn:
     logprobs: Sequence[float]
     finish_reason: str  # "stop" | "length"
     created_at: float = field(default_factory=time.time)
+    inherits: bool = False  # TITO: input_ids extend the parent turn's input_ids + output_ids (up to max_trim_tokens)
+    reset_reason: str | None = None  # why a full render: first/retry/rewrite/budget/mismatch/stop_string/no_tito
     after_truncation: bool = False  # an ancestor's reply was cut at max_tokens and the harness continued past it
     parent: int | None = None  # the turn this prompt continues (the tree edge the client prunes by); None: a root
     messages: list[dict[str, Any]] | None = field(default=None, repr=False)  # request + reply, for attach points
+    request_args: dict[str, Any] | None = field(default=None, repr=False)  # resolved TITO args a child inherits
+    ended_on_stop: bool = False  # the reply ended on a request stop string, so its ids lack the end-of-turn token
 
     def as_json(self) -> dict[str, Any]:
         """Plain lists for the trajectory export (what the client's turns_to_trajectory reads)."""
@@ -78,6 +82,8 @@ class Turn:
             "logprobs": list(self.logprobs),
             "finish_reason": self.finish_reason,
             "created_at": self.created_at,
+            "inherits": self.inherits,
+            "reset_reason": self.reset_reason,
             "after_truncation": self.after_truncation,
             "parent": self.parent,
         }
@@ -99,7 +105,7 @@ class TurnResult:
     """The recorded Turn plus the unified assistant message; an API adapter shapes both into its wire response."""
 
     turn: Turn
-    assistant_message: dict[str, Any]  # OpenAI-style {role, content[, tool_calls]}: stored for attach points, rendered
+    assistant_message: dict[str, Any]  # OpenAI-style {role, content[, tool_calls]}: TITO stores it, adapters render it
     model: str = ""  # what actually sampled: the bound tinker:// sampler path, or the frozen base model
 
 
@@ -115,7 +121,7 @@ class TrajectorySession:
     last_seen: float = field(default_factory=time.time)
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)  # held for a whole turn: render, sample and commit as one
     pending_request_id: str | None = None  # the sample running under the lock; DELETE cancels it
-    max_datum_tokens: int | None = None  # the client's per-datum cap from bind; the bind answers the effective one
+    max_datum_tokens: int | None = None  # the client's per-datum cap from bind; a TITO chain never grows past it
     sampling_session_id: str | None = None  # the Tinker sampling session bound at create: sampler version + lease
 
 
@@ -227,11 +233,12 @@ class TrajectoryCollector:
             self.service.cancel(tenant, session.pending_request_id)
 
     def get_session(self, session_id: str, tenant: str) -> dict[str, Any]:
-        """Export {session_id, model_path, turns} for the client's turns_to_trajectory; owner only."""
+        """Export {session_id, model_path, max_trim_tokens, turns} for the client's turns_to_trajectory; owner only."""
         session = self._get_session(session_id, tenant)
         return {
             "session_id": session.session_id,
             "model_path": session.model_path,
+            "max_trim_tokens": self.renderer.max_trim_tokens,
             "turns": [turn.as_json() for turn in session.turns],
         }
 
@@ -267,7 +274,7 @@ class TrajectoryCollector:
     async def complete(self, session_id: str, request: TurnRequest) -> TurnResult:
         """Record one turn on a bound session under its lock: attach + render off the loop, sample, commit."""
         session = self._session_for_request(session_id, request.model)
-        max_new_tokens_of(request.sampling_params)  # required, as for Tinker sample
+        max_new_tokens = max_new_tokens_of(request.sampling_params)
         async with session.lock:  # a retry that overlaps its first attempt waits here and is then seen as a resend
             if self.sessions.get(session_id) is not session:
                 raise SessionNotFoundError(f"session {session_id!r} was deleted")
@@ -281,6 +288,8 @@ class TrajectoryCollector:
                 request.messages,
                 request.tools,
                 request.chat_template_kwargs,
+                max_new_tokens=max_new_tokens,
+                budget=self.datum_budget(session),
             )
             if self.sessions.get(session_id) is not session:  # a DELETE landed while rendering: sample nothing
                 raise SessionNotFoundError(f"session {session_id!r} was deleted")
@@ -344,10 +353,13 @@ class TrajectoryCollector:
             logprobs=array("d", (float(value) for value in sequence["logprobs"])),
             finish_reason="length" if sequence.get("stop_reason") == "length" else "stop",
             created_at=self.clock(),
+            inherits=rendered.inherits,
+            reset_reason=rendered.reset_reason,
             after_truncation=after_truncation,
             parent=rendered.parent,
+            request_args=rendered.request_args,
         )
-        message = self.renderer.assistant_message(turn, stop)
+        message, turn.ended_on_stop = self.renderer.assistant_message(turn, stop)
         turn.messages = [*request_messages, message]  # the same dict the adapter renders: a child matches it later
         session.turns.append(turn)
         session.last_seen = turn.created_at

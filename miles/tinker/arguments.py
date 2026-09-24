@@ -1,5 +1,6 @@
 import argparse
 
+from miles.utils.chat_template_utils import TITOTokenizerType, configure_fixed_chat_template
 from miles.utils.lora.hf_lora_targets import LORA_TARGET_GROUPS, parse_lora_targets
 
 
@@ -38,6 +39,12 @@ def add_tinker_arguments(parser):
         help="Largest JSON body a /oai/sessions route accepts; bodies are parsed on the shared loop (default: 16 MiB)",
     )
     add_argument(
+        "tito-model",
+        choices=[t.value for t in TITOTokenizerType],
+        default=None,
+        help="TITO for recorded sessions: each turn's prompt inherits the previous turn's input + output tokens through this miles TITOTokenizer family, whose fixed chat template replaces --chat-template-path (default: off, full re-render every turn)",
+    )
+    add_argument(
         "session-strict-truncation",
         action=argparse.BooleanOptionalAction,
         default=False,
@@ -55,3 +62,15 @@ def configure_tinker_args(args):
     assert set(groups) <= set(LORA_TARGET_GROUPS), "Tinker --target-modules accepts only attn,mlp,unembed groups"
     args.tinker_lora_groups = groups
     args.target_modules = groups
+    _configure_tito(args)
+
+
+def _configure_tito(args):
+    """--tinker-tito-model: install the family's fixed chat template and merge its kwargs so both renders agree."""
+    if args.tinker_tito_model is None:
+        return
+    if not args.tinker_session_server:
+        raise ValueError(
+            "--tinker-tito-model requires --tinker-session-server; TITO only applies to recorded sessions"
+        )
+    configure_fixed_chat_template(args, args.tinker_tito_model, option="--tinker-tito-model")
