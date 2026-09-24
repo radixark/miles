@@ -4,12 +4,12 @@ import torch
 
 from megatron.core.extensions.transformer_engine_spec_provider import TESpecProvider
 from megatron.core.models.gpt.gpt_layer_specs import get_gpt_decoder_block_spec
-from megatron.core.transformer import hyper_connection, transformer_block
+from megatron.core.transformer import hyper_connection
 from megatron.core.transformer.enums import AttnMaskType
 from megatron.core.transformer.hyper_connection import HyperConnectionModule
 from megatron.core.transformer.identity_op import IdentityOp
 from megatron.core.transformer.spec_utils import ModuleSpec
-from megatron.core.transformer.transformer_block import TransformerBlock, get_num_layers_to_build
+from megatron.core.transformer.transformer_block import get_num_layers_to_build
 from megatron.core.transformer.transformer_layer import get_transformer_layer_offset
 
 from miles.utils.hf_utils.config import load_hf_config
@@ -18,8 +18,6 @@ from miles_plugins.models.glm5_next.dsa import Glm5NextDSAAttention
 from miles_plugins.models.glm5_next.kda import Glm5NextKDAAttention, _get_text_config
 
 _MHC_EPS = 1e-6
-
-_HC_HEAD_PARAM_NAMES = ("hc_head_fn", "hc_head_base", "hc_head_scale")
 
 
 def full_attn_layers(text_config) -> list[int]:
@@ -56,26 +54,15 @@ def _apply_glm5_next_config(config, text_config) -> None:
     config.glm5_next_full_attn_layers = full_attn_layers(text_config)
 
 
-def _patch_mean_output_contract() -> None:
-    if getattr(transformer_block, "_glm5_next_mean_contract_patched", False):
-        return
+class Glm5NextMeanOutputContraction(torch.nn.Module):
+    """Plain mean over the residual streams, with no learned head weights."""
 
-    def _mean_output_contract(hidden_states, head_fn, base, scale, n, eps):
-        return HyperConnectionModule.output_contract(hidden_states, n)
+    def __init__(self, config):
+        super().__init__()
+        self.num_streams = config.num_residual_streams
 
-    transformer_block.learned_output_contract = _mean_output_contract
-
-    original_init = TransformerBlock.__init__
-
-    def _init_and_demote_hc_head(self, *args, **kwargs):
-        original_init(self, *args, **kwargs)
-        for param_name in _HC_HEAD_PARAM_NAMES:
-            param = self._parameters.pop(param_name, None)
-            if param is not None:
-                setattr(self, param_name, param.data)
-
-    TransformerBlock.__init__ = _init_and_demote_hc_head
-    transformer_block._glm5_next_mean_contract_patched = True
+    def forward(self, hidden_states):
+        return HyperConnectionModule.output_contract(hidden_states, self.num_streams)
 
 
 def _reference_proj_rms(x, weight, eps):
@@ -106,13 +93,13 @@ def get_glm5_next_spec(args, config, vp_stage=None):
 
     _apply_glm5_next_config(config, text_config)
     config.freeze_indexer = getattr(args, "freeze_indexer", False)
-    _patch_mean_output_contract()
     _patch_reference_proj_rms()
 
     kwargs = {"use_transformer_engine": True}
     if vp_stage is not None:
         kwargs["vp_stage"] = vp_stage
     transformer_layer_spec = get_gpt_decoder_block_spec(config, **kwargs)
+    transformer_layer_spec.hc_head_contraction = ModuleSpec(module=Glm5NextMeanOutputContraction)
 
     assert config.pipeline_model_parallel_layout is None, "pipeline_model_parallel_layout is not supported"
 
