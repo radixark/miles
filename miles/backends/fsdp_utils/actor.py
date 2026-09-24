@@ -740,7 +740,7 @@ def move_torch_optimizer(optimizer, device):
     torch.cuda.synchronize()
 
 
-def apply_fsdp2(model, mesh=None, cpu_offload=False, args=None, param_dtype=None, reduce_dtype=None):
+def apply_fsdp2(model, mesh=None, cpu_offload=False, *, args, param_dtype=None, reduce_dtype=None):
     """Apply FSDP2 (fully_shard) to the model.
 
     ``cpu_offload`` offloads params/grads/optimizer to CPU (the optimizer step runs on CPU).
