@@ -12,12 +12,8 @@ from miles.utils.http_utils import is_port_available
 
 MODEL_NAME = "Qwen3-4B-Instruct-2507"
 BASE_MODEL = f"Qwen/{MODEL_NAME}"
-HF_CHECKPOINT = f"/root/models/{MODEL_NAME}"
 GATEWAY_PORT = 10613
 SERVE_TIMEOUT_S = 1200
-TITO_MODEL = "qwen3"
-# mounts the recorded-session routes with TITO for the session tests; the plain gateway tests pass nothing
-SESSION_SERVER_ARGS = f"--tinker-session-server --tinker-tito-model {TITO_MODEL}"
 
 
 def prepare_gateway():
@@ -40,15 +36,14 @@ def _wait_for_gateway(server: subprocess.Popen) -> None:
 
 
 @contextmanager
-def running_gateway(extra_args: str = ""):
-    """The gateway on GATEWAY_PORT; extra_args are more Tinker flags appended to the serve script's --extra-args."""
+def running_gateway():
     if not is_port_available(GATEWAY_PORT):
         raise RuntimeError(f"port {GATEWAY_PORT} already has a listener; refusing to reuse a gateway not started here")
     serve_cmd = (
         "python examples/multi_lora/serve_qwen3_30b_a3b_tinker.py serve "
-        f"--hf-checkpoint {HF_CHECKPOINT} "
+        f"--hf-checkpoint /root/models/{MODEL_NAME} "
         "--model-type qwen3-4B-Instruct-2507 --tp 2 --ep 1 --lora-rank 8 --lora-alpha 16 "
-        f'--extra-args "--tinker-base-model {BASE_MODEL} {extra_args}"'
+        f'--extra-args "--tinker-base-model {BASE_MODEL}"'
     )
     server = subprocess.Popen(["bash", "-c", f"exec {serve_cmd}"], start_new_session=True)
     try:
