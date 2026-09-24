@@ -79,6 +79,7 @@ from typing import Any
 
 from miles.rollout.agentic.credentials import PROVIDER_CREDENTIALS, resolve_provider_api_key
 from miles.rollout.agentic.session import resolve_session_url
+from miles.utils.async_diagnostics import async_diagnostic_scope
 
 logger = logging.getLogger(__name__)
 
@@ -472,7 +473,8 @@ async def run(
         trial = await Trial.create(config)
         # wait_for cancels the coroutine on expiry; Trial.run handles the
         # cancellation and stops its environment.
-        result = await asyncio.wait_for(trial.run(), timeout=trial_timeout_s)
+        with async_diagnostic_scope(Path(trial.paths.trial_dir).name, timeout_s=trial_timeout_s):
+            result = await asyncio.wait_for(trial.run(), timeout=trial_timeout_s)
     except asyncio.TimeoutError:
         # The policy may be what is stalling, so this is a negative sample.
         logger.error(f"Harbor trial for {instance_id} exceeded {trial_timeout_s}s; scoring 0")
