@@ -138,7 +138,11 @@ class RayWorkerManager:
     def get_cell_infos(self, *, pool_ids: list[str] | None, category: str | None = None) -> dict[str, CellInfo]:
         # TODO: about `get_worker_infos` (which is only used by dashboard)
         if pool_ids is None:
-            pool_ids = [name for name, pool in self._pools.items() if pool.spec.scheduling.declares_dynamic_pool()]
+            pool_ids = [
+                name
+                for name, pool in self._pools.items()
+                if pool.spec.scheduling(self.scaling).declares_dynamic_pool()
+            ]
         unknown = set(pool_ids) - set(self._pools)
         assert not unknown, f"{unknown=} {sorted(self._pools)=}"
         infos = [
@@ -197,7 +201,7 @@ class _PoolManager:
                     spec=spec,
                     actors=None,
                 )
-                for cell_index in range(spec.scheduling.num_cells)
+                for cell_index in range(spec.scheduling(manager.scaling).num_cells)
             ],
         )
 
@@ -228,7 +232,7 @@ class _CellManager(Generic[SpecT]):
     async def launch_actors(self):
         assert self.actors is None
         self.generation += 1
-        scheduling = self.spec.scheduling
+        scheduling = self.spec.scheduling(self.manager.scaling)
         actor_manager_cls = _actor_manager_cls(self.spec, comm_backend=self.manager.comm_backend)
         self.actors = [
             actor_manager_cls(
@@ -378,8 +382,9 @@ class _BaseActorManager(Generic[SpecT]):
         return {}
 
     def _create_actor(self, actor_class: type, **ctor_kwargs) -> ray.actor.ActorHandle:
+        scheduling = self.spec.scheduling(self.manager.scaling)
         scheduling_strategy = None
-        if (pg_name := self.spec.scheduling.pg_name) is not None:
+        if (pg_name := scheduling.pg_name) is not None:
             pg = self.manager.pgs[pg_name]
             scheduling_strategy = PlacementGroupSchedulingStrategy(
                 placement_group=pg.pg,
@@ -391,11 +396,11 @@ class _BaseActorManager(Generic[SpecT]):
         remote_class = ray.remote(**remote_options)(actor_class) if remote_options else ray.remote(actor_class)
 
         return remote_class.options(
-            num_cpus=self.spec.scheduling.num_cpus_per_worker,
-            num_gpus=self.spec.scheduling.num_gpus_per_worker,
+            num_cpus=scheduling.num_cpus_per_worker,
+            num_gpus=scheduling.num_gpus_per_worker,
             **(dict(scheduling_strategy=s) if (s := scheduling_strategy) is not None else {}),
             runtime_env={"env_vars": self.spec.env_var(self.launch_context)},
-            **(compute_ray_pin_head_options() if self.spec.scheduling.pin_to_head else {}),
+            **(compute_ray_pin_head_options() if scheduling.pin_to_head else {}),
         ).remote(**ctor_kwargs)
 
     async def probe_is_dead(self) -> bool:
@@ -432,11 +437,12 @@ class _BaseActorManager(Generic[SpecT]):
 
     @property
     def gpu_ids(self) -> list[int]:
-        if (pg_name := self.spec.scheduling.pg_name) is None:
+        scheduling = self.spec.scheduling(self.manager.scaling)
+        if (pg_name := scheduling.pg_name) is None:
             return []
         pg = self.manager.pgs[pg_name]
         base_gpu_id = int(pg.pg_reordered_gpu_ids[self.gpu_slot_index])
-        return list(range(base_gpu_id, base_gpu_id + self.spec.scheduling.num_gpu_slots_per_worker))
+        return list(range(base_gpu_id, base_gpu_id + scheduling.num_gpu_slots_per_worker))
 
     @property
     def master_mode_addrs(self) -> NamedHostAndPorts:
