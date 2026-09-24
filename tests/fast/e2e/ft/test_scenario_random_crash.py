@@ -9,6 +9,7 @@ from tests.utils.ft.launch import DETERMINISTIC_ENV_VARS, MEGATRON_PATH
 from tests.utils.soak.core.config import SoakTailConfig, SoakTargetConfig
 from tests.utils.soak.core.events import LaunchOutcome, SoakLaunchFinishedEvent
 from tests.utils.soak.core.utils import API_SERVER_PORT
+from tests.utils.soak.ft.actions.factory import create_cell_fault_forms
 from tests.utils.soak.ft.types import ACTOR_CELL_TYPE, ROLLOUT_CELL_TYPE
 
 from miles.utils.workers.types import ClusterBackend
@@ -63,6 +64,16 @@ class TestTheSoakARandomCrashRunSchedules:
         assert soak["runner_config"].target_configs == {
             ACTOR_CELL_TYPE: SoakTargetConfig(expected_count=2, mean_interval_seconds=11.0),
             ROLLOUT_CELL_TYPE: SoakTargetConfig(expected_count=4, mean_interval_seconds=13.0),
+        }
+
+    def test_the_forms_are_the_factory_forms_for_this_backend(self, harness: ScenarioHarness) -> None:
+        """Forms built for another backend would inject faults the run was never configured to survive."""
+        _run(_MIXED_MODE, seed=7, num_steps=9)
+
+        (soak,) = harness.soaks
+        expected = create_cell_fault_forms(soak["config"])
+        assert {kind: [form.name for form in forms] for kind, forms in soak["forms"].items()} == {
+            kind: [form.name for form in expected[kind]] for kind in (ACTOR_CELL_TYPE, ROLLOUT_CELL_TYPE)
         }
 
     def test_the_observer_watches_the_api_server_the_run_is_launched_with(self, harness: ScenarioHarness) -> None:
@@ -147,8 +158,13 @@ class TestTheLaunchedTrainArguments:
         _run(_FAKE_ROLLOUT_MODE, seed=7, num_steps=9)
 
         (launch,) = harness.launches
+        (soak,) = harness.soaks
         assert launch.value_of("--load-debug-rollout-data") == f"{tmp_path / 'cyclic-9'}/{{rollout_id}}.pt"
         assert "--update-weight-transfer-mode" not in launch.argv
+        expected = create_cell_fault_forms(soak["config"])
+        assert [form.name for form in soak["forms"][ACTOR_CELL_TYPE]] == [
+            form.name for form in expected[ACTOR_CELL_TYPE]
+        ]
 
     def test_a_fully_async_run_launches_the_async_driver_under_a_name_of_its_own(
         self, harness: ScenarioHarness
