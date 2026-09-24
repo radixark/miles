@@ -1,4 +1,6 @@
-from pydantic import ConfigDict
+from typing import Self
+
+from pydantic import ConfigDict, model_validator
 
 from miles.backends.fsdp_utils.config import FsdpArgsNamespace
 from miles.backends.megatron_utils.megatron_config import MegatronConfig
@@ -98,7 +100,10 @@ class TrainerConfig(
     DashboardConfig,
     SglangFieldsConfig,
 ):
-    pass
+    @model_validator(mode="after")
+    def _validate_backend_name(self) -> Self:
+        assert self.train_backend == self.backend.backend_name, "train_backend must match backend.backend_name"
+        return self
 
 
 class InferenceControllerConfig(
