@@ -63,7 +63,15 @@ def _mock_megatron_environment():
         _stub_module("megatron", is_package=True)
         core_module = _stub_module("megatron.core", is_package=True)
         core_module.mpu = types.SimpleNamespace()
-        core_module.tensor_parallel = types.SimpleNamespace(model_parallel_cuda_manual_seed=MagicMock())
+        core_module.tensor_parallel = _stub_module(
+            "megatron.core.tensor_parallel",
+            {"model_parallel_cuda_manual_seed": MagicMock()},
+            is_package=True,
+        )
+        _stub_module(
+            "megatron.core.tensor_parallel.random",
+            {"_get_all_rng_states": MagicMock(), "_set_all_rng_states": MagicMock()},
+        )
         _stub_module(
             "megatron.core.distributed",
             {
