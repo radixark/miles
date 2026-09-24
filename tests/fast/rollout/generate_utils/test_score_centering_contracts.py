@@ -141,6 +141,14 @@ def test_missing_or_mismatched_probabilities_fail_before_training() -> None:
         append_score_centering_topk(Sample(response_length=1), {"output_token_logprobs": [(-1.0, 2, None)]}, 3)
 
 
+@pytest.mark.parametrize("mode", ["selected", "support"])
+def test_zero_token_completion_accepts_missing_candidate_fields(mode: str) -> None:
+    sample = Sample(response_length=0)
+    append_score_centering_topk(sample, {}, 3, sampling_logprobs_mode=mode)
+    assert sample.rollout_topk_token_ids.shape == (0, 3)
+    assert sample.rollout_topk_log_probs.shape == (0, 3)
+
+
 @pytest.mark.parametrize("candidates", [[2, 3, -1], [-1, 3, 2], [-1, 2, -1], [-1, -1, -1]])
 def test_candidate_validation_preserves_order_and_allows_repeated_padding(candidates: list[int]) -> None:
     sample = _turn([0], [2, 3], [0.5, 0.25])

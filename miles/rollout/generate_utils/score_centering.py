@@ -57,7 +57,7 @@ def append_score_centering_topk(
         field = "output_token_sampling_logprobs" if support_mode else "output_top_logprobs"
         raise ValueError(f"Score centering requires SGLang {field} from generation")
     rows = rows if rows is not None else []
-    if len(rows) != n or (support_mode and len(support_ids) != n):
+    if len(rows) != n or (support_mode and n and len(support_ids) != n):
         raise ValueError("Score-centering candidate rows do not match generated tokens")
     ids = np.full((n, k), -1, dtype=np.int32)
     logps = np.full((n, k), -np.inf, dtype=np.float32)
