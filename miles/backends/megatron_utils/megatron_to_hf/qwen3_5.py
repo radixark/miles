@@ -7,7 +7,7 @@ import torch
 @cache
 def _gdn_layout(hf_checkpoint: str):
     """Static GDN shape facts of the checkpoint (for the head-interleaved ``linear_attn`` tensors)."""
-    from miles.utils.hf_config import load_hf_config
+    from miles.utils.hf_utils.config import load_hf_config
     from miles_plugins.models.gdn_attention import GdnLayout
 
     hf_config = load_hf_config(hf_checkpoint)
