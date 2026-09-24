@@ -7,8 +7,6 @@ import time
 import urllib.request
 from contextlib import contextmanager, suppress
 
-import psutil
-
 import miles.utils.external_utils.command_utils as U
 from miles.utils.http_utils import is_port_available
 
@@ -16,7 +14,6 @@ MODEL_NAME = "Qwen3-4B-Instruct-2507"
 BASE_MODEL = f"Qwen/{MODEL_NAME}"
 GATEWAY_PORT = 10613
 SERVE_TIMEOUT_S = 1200
-STOP_TIMEOUT_S = 30
 
 
 def prepare_gateway():
@@ -38,34 +35,6 @@ def _wait_for_gateway(server: subprocess.Popen) -> None:
     raise TimeoutError(f"gateway not serving after {SERVE_TIMEOUT_S}s")
 
 
-def _gateway_listener_pids() -> list[int]:
-    conns = psutil.net_connections(kind="tcp")
-    return sorted({c.pid for c in conns if c.status == psutil.CONN_LISTEN and c.laddr.port == GATEWAY_PORT and c.pid})
-
-
-def _wait_for_port_release(timeout_s: float) -> bool:
-    deadline = time.time() + timeout_s
-    while not is_port_available(GATEWAY_PORT):
-        if time.time() > deadline:
-            return False
-        time.sleep(1)
-    return True
-
-
-def _kill_leaked_gateway() -> None:
-    if _wait_for_port_release(timeout_s=5):
-        return
-    # Last resort so a leaked gateway cannot answer the next test's health check; the leak still fails this one.
-    pids = _gateway_listener_pids()
-    for pid in pids:
-        with suppress(ProcessLookupError):
-            os.kill(pid, signal.SIGKILL)
-    released = _wait_for_port_release(STOP_TIMEOUT_S)
-    raise RuntimeError(
-        f"gateway still listening on :{GATEWAY_PORT} after teardown; SIGKILLed pids {pids}, port free now: {released}"
-    )
-
-
 def _stop_launcher(server: subprocess.Popen) -> None:
     try:
         with suppress(ProcessLookupError):
@@ -73,19 +42,20 @@ def _stop_launcher(server: subprocess.Popen) -> None:
         returncode = server.wait(timeout=180)
         if returncode not in (0, 128 + signal.SIGTERM):
             raise RuntimeError(f"gateway launcher failed during shutdown with code {returncode}")
-    finally:
-        # Descendants can retain CI stdout after the launcher has exited.
+    except BaseException:
+        # A stuck launcher cannot finish its own Ray cleanup.
         with suppress(ProcessLookupError):
             os.killpg(server.pid, signal.SIGKILL)
         server.wait(timeout=30)
         subprocess.run(["ray", "stop", "--force"], check=True, timeout=120)
+        raise
 
 
 @contextmanager
 def running_gateway():
     if not is_port_available(GATEWAY_PORT):
         raise RuntimeError(
-            f"port {GATEWAY_PORT} already has a listener (pids {_gateway_listener_pids()}); "
+            f"port {GATEWAY_PORT} already has a listener; "
             "refusing to reuse a gateway not started here"
         )
     serve_cmd = (
@@ -99,7 +69,9 @@ def running_gateway():
         _wait_for_gateway(server)
         yield f"http://127.0.0.1:{GATEWAY_PORT}"
     finally:
-        try:
-            _stop_launcher(server)
-        finally:
-            _kill_leaked_gateway()
+        _stop_launcher(server)
+        deadline = time.monotonic() + 5
+        while not is_port_available(GATEWAY_PORT):
+            if time.monotonic() >= deadline:
+                raise RuntimeError(f"gateway still listening on :{GATEWAY_PORT} after teardown")
+            time.sleep(0.1)
