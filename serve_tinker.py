@@ -12,6 +12,7 @@ from miles.tinker.core.service import TinkerService
 from miles.tinker.core.types import GatewayConfig
 from miles.tinker.runtime import MilesBackend
 from miles.tinker.server.app import build_app
+from miles.tinker.session_setup import build_session_app
 from miles.utils import object_store
 from miles.utils.arguments import parse_args
 from miles.utils.audit_utils.process_identity import MainProcessIdentity
@@ -73,16 +74,24 @@ async def serve(args):
         args.tensor_model_parallel_size * args.pipeline_model_parallel_size * args.context_parallel_size
     )
     service = TinkerService(MilesBackend(trainer, router_url, dp_size=dp_size), config)
+    if args.tinker_session_server:
+        app, collector = build_session_app(service, args=args)
+        logger.info("recorded-session routes mounted at /oai/sessions/{sid} (--tinker-session-server)")
+    else:  # no tokenizer, no /oai routes, no sweep: the gateway behaves exactly as before
+        app = build_app(service)
+        collector = None
 
     server = uvicorn.Server(
-        uvicorn.Config(
-            build_app(service), host=args.tinker_server_host, port=args.tinker_server_port, log_level="info"
-        )
+        uvicorn.Config(app, host=args.tinker_server_host, port=args.tinker_server_port, log_level="info")
     )
     logger.info(f"tinker gateway serving {config.base_model} on :{args.tinker_server_port}")
     # supervise both: a crashed dispatcher must take the HTTP server down with it,
     # not keep answering /healthz while every training future pends forever
     service_task = asyncio.create_task(service.run())
+    if collector is not None:
+        # the sweep lives exactly as long as the dispatcher; nothing else needs to know about it
+        sweep_task = asyncio.create_task(collector.run_sweeper())
+        service_task.add_done_callback(lambda _: sweep_task.cancel())
     server_task = asyncio.create_task(server.serve())
     try:
         done, _ = await asyncio.wait({service_task, server_task}, return_when=asyncio.FIRST_COMPLETED)
