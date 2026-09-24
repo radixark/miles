@@ -193,7 +193,7 @@ async def take_over_trainers(args, *, handles: dict[str, BaseWorkerHandle]) -> b
 
 
 def _trainer_has_checkpoint(args) -> bool:
-    assert args.megatron_config is None, "a multi policy run's base --load holds no tracker to read"
+    assert not args.raw_megatron.model_ids, "a multi policy run's base --load holds no tracker to read"
     return read_checkpoint_tracker_iteration(args.requested_load) is not None
 
 

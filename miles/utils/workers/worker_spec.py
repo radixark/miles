@@ -38,6 +38,14 @@ class PortInfo(FrozenStrictBaseModel):
         return self
 
 
+DEFAULT_RPC_PORT_INFO = PortInfo(
+    name=RPC_PORT_NAME,
+    static_port=DEFAULT_RPC_PORT,
+    mode="per_worker",
+    allow_dynamic=True,
+)
+
+
 class SchedulingSpec(FrozenStrictBaseModel):
     num_cells: int
     num_workers_per_cell: int
@@ -148,7 +156,5 @@ class ServeWorkerSpec(BaseWorkerSpec):
 
         port_infos = list(values["port_infos"])
         if all(_port_info_name(port_info) != RPC_PORT_NAME for port_info in port_infos):
-            port_infos.append(
-                PortInfo(name=RPC_PORT_NAME, static_port=DEFAULT_RPC_PORT, mode="per_worker", allow_dynamic=True)
-            )
+            port_infos.append(DEFAULT_RPC_PORT_INFO)
         return {**values, "port_infos": port_infos}
