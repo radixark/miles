@@ -147,7 +147,7 @@ class TestBasePodFaultForm:
     async def test_a_request_without_pod_details_is_refused(self) -> None:
         """Details of another form cannot be misread as a pod."""
         form = DeletePodFaultForm(namespace="ns", run_id=_RUN_ID)
-        details = InjectFaultDetails(fault_target=_fault_target("c"))
+        details = InjectFaultDetails(fault_target=_fault_target("c"), hook_target=_fault_target("c"))
         request = SoakActionRequest(target=_rollout_with(), form_name=form.name, details=details)
 
         with pytest.raises(AssertionError, match="names no pod"):

@@ -20,16 +20,18 @@ from tests.utils.soak.ft.actions.inject_fault import InjectFaultForm
 from tests.utils.soak.ft.types import CellTarget, InjectFaultDetails, ObservedCellFault, ObservedCellFaultKind
 
 from miles.utils.ft_utils.api_server.models import TriState
-from miles.utils.test_utils.fault_injector.actions.process import ExitProcessAction, KillProcessAction
+from miles.utils.test_utils.fault_injector.actions.process import KillProcessAction
 from miles.utils.test_utils.fault_injector.controller import FaultHookOperation
+from miles.utils.test_utils.fault_injector.models import FaultHookName
 from miles.utils.workers.naming import compute_cell_id
 
 _BASE_URL = "http://api:18080"
 _ACTOR_0 = compute_cell_id(pool_id="actor", cell_index=0)
+_HOOK = FaultHookName.TRAINER_WEIGHT_UPDATE_BEFORE_SEND
 
 
-def _form() -> InjectFaultForm:
-    return InjectFaultForm(base_url=_BASE_URL, action=KillProcessAction())
+def _form(**kwargs: object) -> InjectFaultForm:
+    return InjectFaultForm(base_url=_BASE_URL, action=KillProcessAction(), **kwargs)
 
 
 def _create(
@@ -47,10 +49,10 @@ async def _execute(form: InjectFaultForm, request: SoakActionRequest) -> list[So
 
 
 class TestInjectFaultFormName:
-    def test_the_name_encodes_the_action(self) -> None:
-        """Forms injecting different actions get distinct names so find_form can tell them apart."""
+    def test_the_name_encodes_action_hook_and_delay(self) -> None:
+        """Forms differing in hook or delay get distinct names so find_form can tell them apart."""
         assert _form().name == "inject_fault:kill_process"
-        assert InjectFaultForm(base_url=_BASE_URL, action=ExitProcessAction()).name == "inject_fault:exit_process"
+        assert _form(hook_name=_HOOK, max_delay_ms=1000).name == f"inject_fault:kill_process:{_HOOK.value}:1000ms"
 
 
 class TestInjectFaultFormRequest:
@@ -66,14 +68,21 @@ class TestInjectFaultFormRequest:
 
         assert _create(_form(), target) is None
 
-    def test_a_request_names_the_observed_fault_target(self) -> None:
-        """The request addresses exactly the worker observed for the current incarnation."""
+    def test_a_direct_request_hooks_the_fault_target_itself(self) -> None:
+        """Without trainer routing the hook and fault targets are the same worker."""
         target = _with_fault_target(_cell_target())
 
-        request = _create(_form(), target)
+        request = _create(_form(hook_name=_HOOK, max_delay_ms=500), target)
 
-        assert (request.target, request.form_name) == (target, _form().name)
-        assert request.details == InjectFaultDetails(fault_target=target.fault_target)
+        assert (request.target, request.form_name) == (target, _form(hook_name=_HOOK, max_delay_ms=500).name)
+        assert isinstance(request.details, InjectFaultDetails)
+        assert request.details.fault_target == request.details.hook_target == target.fault_target
+        assert request.details.hook_name == _HOOK
+        assert 0 <= request.details.delay_ms <= 500
+
+    def test_a_form_without_delay_never_delays(self) -> None:
+        """A zero maximum delay yields an immediate fault."""
+        assert _create(_form(), _with_fault_target(_cell_target())).details.delay_ms == 0
 
 
 class TestInjectFaultFormExecute:
@@ -83,7 +92,7 @@ class TestInjectFaultFormExecute:
         """A SET command naming this request is posted and a vanished cell is reported as applied."""
         api = _FakeCellApi([])
         _patch_http(monkeypatch, api)
-        form = _form()
+        form = _form(hook_name=_HOOK, lifetime_seconds=60.0)
         request = _create(form, _with_fault_target(_cell_target()))
 
         [evidence] = await _execute(form, request)
@@ -93,7 +102,8 @@ class TestInjectFaultFormExecute:
         assert command.operation is FaultHookOperation.SET
         assert command.request.request_id == request.request_id
         assert command.request.action == KillProcessAction()
-        assert command.request.target == request.details.fault_target
+        assert command.request.target == request.details.hook_target
+        assert (command.request.hook_name, command.request.lifetime_seconds) == (_HOOK, 60.0)
         assert evidence == ObservedCellFault(
             request_id=request.request_id,
             target=request.details.fault_target,
@@ -196,3 +206,37 @@ class TestInjectFaultFormExecute:
         with pytest.raises(AssertionError):
             await _execute(form, forged)
         assert api.hook_posts == []
+
+
+# ============================ hook triggers ============================
+
+
+class TestHookTriggeredRequests:
+    def test_the_drawn_delay_is_reproducible_from_the_seed_and_bounded(self) -> None:
+        """A soak replayed with its seed must draw the same delays, each within the form's maximum."""
+        form = _form(hook_name=_HOOK, max_delay_ms=1000)
+        target = _with_fault_target(_cell_target())
+
+        def _delays(seed: int) -> list[float]:
+            rng = random.Random(seed)
+            observation = _observation([target], at=_at(0))
+            return [
+                form.maybe_create_request(target=target, observation=observation, events=[], rng=rng).details.delay_ms
+                for _ in range(5)
+            ]
+
+        assert _delays(3) == _delays(3)
+        assert all(0 <= delay <= 1000 for delay in _delays(3))
+
+    async def test_the_drawn_delay_and_hook_reach_the_set_request(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The worker enforces the delay it receives, so the drawn one must be the one posted."""
+        api = _FakeCellApi([])
+        _patch_http(monkeypatch, api)
+        form = _form(hook_name=_HOOK, max_delay_ms=1000)
+        request = _create(form, _with_fault_target(_cell_target()))
+
+        await _execute(form, request)
+
+        [(_cell_id, command)] = api.hook_posts
+        assert command.request.delay_ms == request.details.delay_ms > 0
+        assert command.request.hook_name == _HOOK
