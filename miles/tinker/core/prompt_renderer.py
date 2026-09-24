@@ -48,7 +48,7 @@ def _token_list(rendered) -> list[int]:
     return [int(token) for token in rendered]
 
 
-def validate_messages(request_messages: Any) -> None:
+def _validate_messages(request_messages: Any) -> None:
     """A non-empty list of objects with a role, else UserInputError (400); runs before any render or TITO merge."""
     if not isinstance(request_messages, list) or not request_messages:
         raise UserInputError("messages must be a non-empty list")
@@ -87,7 +87,7 @@ def _is_prefix(history: list[dict[str, Any]], request_messages: list[dict[str, A
     )
 
 
-def attach_point(
+def _attach_point(
     turns: list[Turn], request_messages: list[dict[str, Any]], matcher: MessageMatcher
 ) -> tuple[int | None, str | None]:
     """The turn this request continues (longest history prefixing it, latest on ties), or (None, why not)."""
@@ -163,9 +163,9 @@ class PromptRenderer:
         budget: int | None,
     ) -> Rendered:
         """Find the turn the request continues, then a TITO merge from it when it applies, else a full render."""
-        validate_messages(request_messages)
+        _validate_messages(request_messages)
         self._check_override(override)
-        parent, reason = attach_point(session.turns, request_messages, self.message_matcher)
+        parent, reason = _attach_point(session.turns, request_messages, self.message_matcher)
         parent_turn = session.turns[parent] if parent is not None and self.inherit else None
         request_args, continued = self._resolve_request_args(parent_turn, tools, override)
         template_args = _template_args(request_args)

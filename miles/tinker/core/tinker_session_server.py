@@ -51,7 +51,7 @@ class SamplingBackendError(SessionError):
     status_code = 502
 
 
-def validate_session_id(session_id: str) -> None:
+def _validate_session_id(session_id: str) -> None:
     """A session id is 32 to 128 chars of [A-Za-z0-9._:-], starting alphanumeric (e.g. a prefix + uuid4 hex)."""
     if not isinstance(session_id, str) or _SESSION_ID.fullmatch(session_id) is None:
         raise UserInputError(f"invalid session id {session_id!r}: use 32-128 chars of A-Z a-z 0-9 . _ : -")
@@ -125,7 +125,7 @@ class TrajectorySession:
     sampling_session_id: str | None = None  # the Tinker sampling session bound at create: sampler version + lease
 
 
-def lineage_truncated(turns: list[Turn], parent: int | None) -> bool:
+def _lineage_truncated(turns: list[Turn], parent: int | None) -> bool:
     """True when any turn on the path from the root to `parent` ended at max_tokens (finish_reason "length")."""
     while parent is not None:
         if turns[parent].finish_reason == "length":
@@ -176,7 +176,7 @@ class TrajectoryCollector:
         max_datum_tokens: int | None = None,
     ) -> TrajectorySession:
         """Create or re-bind a session to a Tinker sampling session (its sampler version and its lease); caps apply."""
-        validate_session_id(session_id)
+        _validate_session_id(session_id)
         if not tenant:
             raise UserInputError("binding a session needs the tenant's API key")
         if not sampling_session_id or not isinstance(sampling_session_id, str):
@@ -294,7 +294,7 @@ class TrajectoryCollector:
             if self.sessions.get(session_id) is not session:  # a DELETE landed while rendering: sample nothing
                 raise SessionNotFoundError(f"session {session_id!r} was deleted")
             # the harness continued past a reply cut at max_tokens; miles session server v2 refuses, v1 desyncs
-            after_truncation = lineage_truncated(session.turns, rendered.parent)
+            after_truncation = _lineage_truncated(session.turns, rendered.parent)
             if after_truncation and self.strict_truncation:
                 raise TruncatedGenerationError("cannot extend a reply that ended at max_tokens; resample it or rebind")
             payload = self._payload(session, rendered.prompt_token_ids, request.sampling_params)
@@ -369,7 +369,7 @@ class TrajectoryCollector:
 
     def _session_for_request(self, session_id: str, model: str | None) -> TrajectorySession:
         """The bound session for a chat turn: the unguessable id is the credential; a tinker:// model must match."""
-        validate_session_id(session_id)
+        _validate_session_id(session_id)
         session = self._get_session(session_id)
         self._check_same_version(session, model)
         session.last_seen = self.clock()
