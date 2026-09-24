@@ -47,6 +47,10 @@ _STOP_REASONS = {"stop": StopReason.COMPLETED, "length": StopReason.MAX_TOKENS}
 RunTrial = Callable[..., Awaitable[dict[str, Any]]]
 
 
+class TrialAgentError(RuntimeError):
+    """A trial that ended in AgentError (sandbox, harness or transport failure): dropped from its group, not scored."""
+
+
 @dataclass
 class HarborEnv(Env):
     """One Harbor task instance for one trajectory: task_id, harness name, and the verdict once the trial ran."""
@@ -296,6 +300,9 @@ class SessionRolloutStrategy(RolloutStrategy):
                 metadata={"instance_id": env.task_id, "agent_name": env.agent_name, "max_seq_len": self.max_seq_len},
             )
             env.verdict = {**verdict, "model_path": bound.json().get("model_path")}
+            if verdict.get("exit_status") == "AgentError":  # infra failure, not the policy's: drop, never train a 0
+                self._record(env, session_id, [])
+                raise TrialAgentError(f"{env.task_id}: the Harbor trial ended in AgentError; dropped, not scored")
             exported = await http.get(f"/oai/sessions/{session_id}")
             exported.raise_for_status()
         finally:
