@@ -1469,10 +1469,10 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             parser.add_argument(
                 "--loss-type",
                 type=str,
-                choices=["policy_loss", "sft_loss", "custom_loss"],
+                choices=["policy_loss", "sft_loss", "custom_loss", "score_centering"],
                 default="policy_loss",
                 help=(
-                    "Choose loss type, currently support ppo policy_loss or sft_loss, "
+                    "Choose PPO policy_loss, REINFORCE score_centering, or sft_loss; "
                     "if custom_loss is set, we will use the function path from `--custom-loss-function-path`."
                 ),
             )
