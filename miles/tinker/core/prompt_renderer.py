@@ -131,7 +131,7 @@ def _try_merge_tokens(
     except Exception:  # the appended messages cannot extend this prefix (a disallowed role, a malformed tool call)
         return None, "rewrite"
     prompt_token_ids = [int(token) for token in prompt]
-    kept = len(prefix_ids) - getattr(tito_tokenizer, "max_trim_tokens", 0)
+    kept = len(prefix_ids) - tito_tokenizer.max_trim_tokens
     if kept > 0 and prompt_token_ids[:kept] != prefix_ids[:kept]:
         return None, "mismatch"  # the merge did not extend the recorded prefix: never sample it, re-render instead
     if budget is not None and len(prompt_token_ids) + max_new_tokens > budget:
@@ -207,8 +207,6 @@ class PromptRenderer:
         self, parent: Turn | None, tools: list[dict[str, Any]] | None, override: dict[str, Any] | None
     ) -> tuple[dict[str, Any], bool]:
         """The TITO family's resolved (chat_template_kwargs, tools) for this turn; False when it cannot continue."""
-        if override is not None and not isinstance(override, dict):
-            raise UserInputError("chat_template_kwargs must be an object")
         request = {"chat_template_kwargs": dict(override or {}), "tools": tools}
         if parent is not None and parent.request_args is not None:
             try:  # omitted fields inherit the parent turn's; tools that changed cannot reuse its prefix

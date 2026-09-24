@@ -10,11 +10,8 @@ from miles.tinker.core.types import UserInputError
 from miles.tinker.server.app import _tenant
 from miles.tinker.server.oai_shapes import chat_completion_json, parse_chat_request
 
-# default for --tinker-session-max-body-bytes; bodies are parsed synchronously on the shared loop
-MAX_BODY_BYTES = 16 * 1024 * 1024
 
-
-async def _json_body(request: Request, max_body_bytes: int = MAX_BODY_BYTES) -> dict:
+async def _json_body(request: Request, max_body_bytes: int) -> dict:
     """The JSON object body as a dict; bad JSON is a UserInputError (400); over-cap bodies are refused unbuffered."""
     declared = request.headers.get("content-length", "")
     if declared.isdigit() and int(declared) > max_body_bytes:
@@ -53,7 +50,7 @@ def _mount_chat_route(app: FastAPI, collector: TrajectoryCollector, suffix: str,
         return render(body, await collector.complete(session_id, parse(body)))
 
 
-def setup_session_routes(app: FastAPI, collector: TrajectoryCollector, max_body_bytes: int = MAX_BODY_BYTES) -> None:
+def setup_session_routes(app: FastAPI, collector: TrajectoryCollector, max_body_bytes: int) -> None:
     """Mount bind/export/delete and one chat route per CHAT_ADAPTERS entry; build_app's handler maps their errors."""
 
     @app.post("/oai/sessions/{session_id}")

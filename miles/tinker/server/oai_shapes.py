@@ -4,37 +4,28 @@ import time
 import uuid
 from typing import Any
 
-from miles.tinker.core.tinker_session_server import TurnRequest, TurnResult
+from miles.tinker.core.tinker_session_server import TurnRequest, TurnResult, max_new_tokens_of
 from miles.tinker.core.types import UserInputError
 
 
-def _number(body: dict[str, Any], key: str, default: float) -> float:
-    value = body.get(key, default)
+def _number(body: dict[str, Any], key: str) -> float:
+    value = body[key]
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise UserInputError(f"{key} must be a number")
     return value
 
 
-def max_new_tokens_of(body: dict[str, Any]) -> int:
-    """The body's max_tokens (or max_completion_tokens): a positive int, required as for Tinker sample."""
-    max_tokens = body.get("max_tokens", body.get("max_completion_tokens"))
-    if type(max_tokens) is not int or max_tokens < 1:
-        raise UserInputError("max_tokens must be a positive integer (required, as for Tinker sample)")
-    return max_tokens
-
-
 def parse_chat_request(body: dict[str, Any]) -> TurnRequest:
     """OpenAI chat body → TurnRequest: n=1 only, no stream, max_tokens required, stop normalized to a list."""
-    max_tokens = max_new_tokens_of(body)
+    sampling_params: dict[str, Any] = {"max_tokens": body.get("max_tokens", body.get("max_completion_tokens"))}
+    max_new_tokens_of(sampling_params)
     if body.get("n", 1) != 1:
         raise UserInputError("a recorded session samples one completion per turn; use n=1")
     if body.get("stream"):
         raise UserInputError("stream=true is not supported on the recorded session route")
-    sampling_params: dict[str, Any] = {
-        "max_tokens": max_tokens,
-        "temperature": _number(body, "temperature", 1.0),
-        "top_p": _number(body, "top_p", 1.0),
-    }
+    for key in ("temperature", "top_p"):  # omitted: runtime's defaults
+        if key in body:
+            sampling_params[key] = _number(body, key)
     for key in ("top_k", "seed"):
         if body.get(key) is not None:
             sampling_params[key] = body[key]

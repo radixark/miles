@@ -95,7 +95,7 @@ class TurnRequest:
 
     messages: list[dict[str, Any]]
     tools: list[dict[str, Any]] | None
-    sampling_params: dict[str, Any]  # max_tokens (required), temperature, top_p, optional top_k / seed / stop
+    sampling_params: dict[str, Any]  # max_tokens (required); optional temperature / top_p / top_k / seed / stop
     chat_template_kwargs: dict[str, Any] | None = None  # per-request override of the gateway's template kwargs
     model: str | None = None  # the tinker:// spelling the client sent, checked against the bound version
 
@@ -138,7 +138,7 @@ def max_new_tokens_of(sampling_params: dict[str, Any]) -> int:
     """The turn's max_tokens: a positive int, required as for Tinker sample."""
     max_tokens = sampling_params.get("max_tokens")
     if type(max_tokens) is not int or max_tokens < 1:
-        raise UserInputError("sampling_params.max_tokens must be a positive integer")
+        raise UserInputError("max_tokens must be a positive integer (required, as for Tinker sample)")
     return max_tokens
 
 
