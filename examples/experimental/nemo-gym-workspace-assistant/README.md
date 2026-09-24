@@ -18,7 +18,7 @@ CPU integration and launch-command tests cover this example; the recipe still
 needs GPU validation with your installed Miles/SGLang/Megatron versions.
 
 For a beginner-oriented walkthrough, including data-generation and calibration
-commands, see [Train a workplace assistant with Miles](nemotron35-workplace-data-to-training.md).
+commands, see [Train a workplace assistant with Miles](WALKTHROUGH.md).
 
 ## 1. Prepare the machines
 
