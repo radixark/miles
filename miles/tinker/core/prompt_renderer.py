@@ -1,4 +1,4 @@
-"""Prompt rendering for recorded sessions: full chat-template render, or TITO prefix inheritance when injected."""
+"""Prompt rendering for recorded sessions through an injected miles TITOTokenizer: full render or TITO inheritance."""
 
 from __future__ import annotations
 
@@ -72,22 +72,6 @@ def _rendered_ids(render: Any) -> list[int]:
     return ids
 
 
-def render_prompt(
-    request_messages: list[dict[str, Any]],
-    tools: list[dict[str, Any]] | None,
-    chat_template_kwargs: dict[str, Any],
-    tokenizer,
-) -> list[int]:
-    """Validate the messages and render them with apply_chat_template(add_generation_prompt=True, tokenize=True)."""
-    validate_messages(request_messages)
-    kwargs = dict(chat_template_kwargs)
-    if tools:
-        kwargs["tools"] = tools
-    return _rendered_ids(
-        lambda: tokenizer.apply_chat_template(request_messages, add_generation_prompt=True, tokenize=True, **kwargs)
-    )
-
-
 def _template_args(request_args: dict[str, Any]) -> dict[str, Any]:
     """Renderer kwargs of a resolved request: its chat_template_kwargs plus tools (as chat_template_utils extracts)."""
     args = dict(request_args.get("chat_template_kwargs") or {})
@@ -159,16 +143,12 @@ class PromptRenderer:
     """A session's history as prompt ids: a TITO merge from the turn it continues, else a full render."""
 
     def __init__(
-        self,
-        tokenizer,
-        chat_template_kwargs: dict[str, Any] | None,
-        tito_tokenizer=None,
-        message_matcher: MessageMatcher | None = None,
+        self, tokenizer, tito_tokenizer, *, inherit: bool = True, message_matcher: MessageMatcher | None = None
     ) -> None:
-        """Keep the HF tokenizer, the gateway's chat_template_kwargs, the optional TITOTokenizer and matcher."""
+        """Keep the HF tokenizer (decode), the TITOTokenizer that renders, whether turns inherit, and the matcher."""
         self.tokenizer = tokenizer
-        self.chat_template_kwargs = dict(chat_template_kwargs or {})
         self.tito_tokenizer = tito_tokenizer
+        self.inherit = inherit
         self.message_matcher = message_matcher or _same_role_and_content
         self._render_arguments = _named_parameters(getattr(tokenizer, "apply_chat_template", None))
 
@@ -186,13 +166,12 @@ class PromptRenderer:
         validate_messages(request_messages)
         self._check_override(override)
         parent, reason = attach_point(session.turns, request_messages, self.message_matcher)
-        if self.tito_tokenizer is None:
-            ids = render_prompt(request_messages, tools, self.template_kwargs(override), self.tokenizer)
-            return Rendered(ids, False, "no_tito", None, parent)
-        parent_turn = session.turns[parent] if parent is not None else None
+        parent_turn = session.turns[parent] if parent is not None and self.inherit else None
         request_args, continued = self._resolve_request_args(parent_turn, tools, override)
         template_args = _template_args(request_args)
-        if parent_turn is not None:
+        if not self.inherit:
+            reason = "no_tito"
+        elif parent_turn is not None:
             reason = "rewrite"  # the parent's prefix cannot be reused: its tools changed, or the merge refused
             if parent_turn.ended_on_stop:
                 reason = "stop_string"  # its ids stop before the end-of-turn token a merge would build on
@@ -241,7 +220,7 @@ class PromptRenderer:
     @property
     def max_trim_tokens(self) -> int:
         """Trailing tokens the TITO family may drop when it extends a prefix (GLM: 1); 0 without TITO."""
-        return getattr(self.tito_tokenizer, "max_trim_tokens", 0)
+        return self.tito_tokenizer.max_trim_tokens if self.inherit else 0
 
     def decode(self, ids) -> str:
         """The reply text for the wire response, special tokens dropped."""
@@ -256,12 +235,3 @@ class PromptRenderer:
                     content, turn.ended_on_stop = content[: -len(suffix)], True
                     break
         return {"role": "assistant", "content": content}
-
-    def template_kwargs(self, override: dict[str, Any] | None) -> dict[str, Any]:
-        """The gateway's chat_template_kwargs, overridden by the turn's chat_template_kwargs object (no TITO)."""
-        kwargs = dict(self.chat_template_kwargs)
-        if override is not None:
-            if not isinstance(override, dict):
-                raise UserInputError("chat_template_kwargs must be an object")
-            kwargs.update(override)
-        return kwargs
