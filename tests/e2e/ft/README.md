@@ -18,6 +18,7 @@
 | `scenario_trainer_all_gather_fault` | `kill_train__dp2_tp2` |
 | `scenario_p2p_send_receiver_fault` | `kill_rollout__dp2_tp2` |
 | `scenario_inference_scaling` | `test_inference_scaling__kill_rollout.py`, no modes |
+| `scenario_trainer_scaling` | `test_trainer_scaling__kill_train.py`, no modes |
 | `scenario_random_crash` | `kill_train__dp2_cp2_tp2_ep2__fake_rollout__moe_5layer`, `kill_train__dp2_cp2__moe_5layer`, `kill_train_rollout__dp2_cp2`, `kill_rollout__dp4` |
 | `scenario_realistic_gsm8k` | `test_realistic_gsm8k__kill_train_rollout.py`, no modes |
 | `scenario_random_crash_fully_async` | `kill_train_rollout__dp2_cp2` |
@@ -44,6 +45,7 @@
 | `scenario_trainer_all_gather_fault` | comparison | a trainer rank killed, stopped or deadlocked in the weight-update all-gather changes training bits not at all |
 | `scenario_p2p_send_receiver_fault` | comparison | an engine killed while the trainer is sending it weights over P2P changes training bits not at all |
 | `scenario_inference_scaling` | soak | the engine pool grows and shrinks under a live run, and the run follows it |
+| `scenario_trainer_scaling` | soak | the trainer pool gains and loses a DP cell under a live run, and the quorum follows it |
 | `scenario_random_crash` | soak | system survives random crashes without hanging |
 | `scenario_realistic_gsm8k` | soak | model still reaches gsm8k accuracy under random crashes |
 | `scenario_random_crash_fully_async` | soak | same, through `train_async.py --fully-async` |
@@ -455,6 +457,30 @@ Assertions:
 
 - **Why through the launcher**: scaling is relaunching the run with a new size, as an operator does; the launcher admits a change of pool replicas as a scaling, and no other workload of the run is recreated.
 - **Why the engines of the update before a rollout**: the weights published after rollout r are what rollout r + 1 generates with, so that is the rollout an engine joining or leaving there shows in.
+
+### `scenario_trainer_scaling`
+
+```
+Type: soak (no baseline, no compare); kubernetes only, the pool is a LeaderWorkerSet there
+Entry: test_trainer_scaling__kill_train.py, no mode: topology pinned in conftest_ft/scaling.py
+Steps: 12 rollouts (SCALING_NUM_ROLLOUTS)
+Layout: as scenario_inference_scaling with --ft-components train (indep_dp); 8 GPUs at the peak
+
+Mechanism: as scenario_inference_scaling, relaunching with --actor-num-gpus-per-node set for the
+        new size (one 2-GPU pod = one cell): the trainer controller sees the pod through its
+        watch, and the next step's refresh heals the new cell into the quorum (checkpoint from
+        cell 0) or shrinks the quorum to the survivors. Recovered once every actor cell is Healthy
+        and there are exactly replicas of them.
+
+Assertions:
+  1. - 3. as scenario_inference_scaling
+  4. Cells in the one TrainGroupStepEndEvent of each rollout follow 2 / 3 / 2 within the lag
+     windows; every cell reports NORMAL, except that the cell a shrink removes may report
+     "error" inside the shrink's lag window
+```
+
+- **Why the removed cell may report "error"**: the trainer does not retry a step whose surviving cells all report NORMAL after one cell failed (the gradients were already exchanged), so a shrink landing late in a step leaves that step's final attempt with the removed cell as "error".
+- **Why only above the deployed size**: the controller waits for its deployed cell count at init and on reload, so a pool scaled below it would hang a later restart of the run.
 
 ### `scenario_random_crash`
 
