@@ -114,12 +114,12 @@ class TestOneRunIdentityAcrossTheScenario:
         assert soak["event_log"].path == soak["evidence_dir"] / "events.jsonl"
         assert Path(launch.value_of("--save-debug-event-data")).parent == dump_dir
 
-    def test_a_non_default_trigger_set_gets_a_dump_directory_of_its_own(self, harness: ScenarioHarness) -> None:
-        """A hook rerun sharing the default name would refuse to start on the default run's dumps."""
-        _run(_MIXED_MODE, seed=7, num_steps=9, requested_triggers=[FaultTrigger.TIMER, FaultTrigger.HOOK])
+    def test_a_trigger_subset_gets_a_dump_directory_of_its_own(self, harness: ScenarioHarness) -> None:
+        """A timer-only rerun sharing the default name would refuse to start on the default run's dumps."""
+        _run(_MIXED_MODE, seed=7, num_steps=9, requested_triggers=[FaultTrigger.TIMER])
 
         (soak,) = harness.soaks
-        assert soak["dump_dir"].name == f"random_crash_hook_timer_{_MIXED_MODE}"
+        assert soak["dump_dir"].name == f"random_crash_timer_{_MIXED_MODE}"
 
 
 class TestTheLaunchedTrainArguments:
@@ -142,7 +142,7 @@ class TestTheLaunchedTrainArguments:
 
     def test_a_real_rollout_run_carries_the_hook_timeout_and_p2p_update(self, harness: ScenarioHarness) -> None:
         """Hook faults hold a weight update open, and the default timeout would fail it before the fault fires."""
-        _run(_MIXED_MODE, seed=7, num_steps=9, requested_triggers=[FaultTrigger.TIMER, FaultTrigger.HOOK])
+        _run(_MIXED_MODE, seed=7, num_steps=9)
 
         (launch,) = harness.launches
         assert launch.value_of("--update-weights-timeout") == "600"
@@ -212,6 +212,16 @@ class TestTheLaunchedTrainArguments:
         assert harness.prepared == []
         assert harness.launches == []
 
+    def test_hook_faults_on_a_fake_rollout_run_are_refused_before_anything_is_prepared(
+        self, harness: ScenarioHarness
+    ) -> None:
+        """No weight update ever reaches a hook without engines, so every hook fault could only expire."""
+        with pytest.raises(AssertionError, match="hook-triggered faults"):
+            _run(_FAKE_ROLLOUT_MODE, seed=7, num_steps=9, requested_triggers=[FaultTrigger.HOOK])
+
+        assert harness.prepared == []
+        assert harness.launches == []
+
 
 class TestWhatTheSoakIsJudgedBy:
     def test_the_checkers_read_the_events_and_forms_of_this_soak(self, harness: ScenarioHarness) -> None:
@@ -222,7 +232,7 @@ class TestWhatTheSoakIsJudgedBy:
         events = soak["event_log"].events
         assert harness.checker_names == ["assert_hook_evidence", "assert_healing"]
         ((hook_args, hook_kwargs),) = harness.calls_of("assert_hook_evidence")
-        assert hook_args == (frozenset({FaultTrigger.TIMER}),)
+        assert hook_args == (frozenset({FaultTrigger.TIMER, FaultTrigger.HOOK}),)
         assert hook_kwargs == {
             "ft_components": ("train", "rollout"),
             "config": soak["config"],
@@ -292,3 +302,21 @@ def _assert_the_gpu_layout_is_the_modes(num_gpus_per_node: int, namespace: objec
     if mode.has_real_rollout:
         assert namespace.rollout_num_gpus == mode.total_rollout_gpus
         assert namespace.rollout_num_gpus_per_engine == mode.rollout_gpus_per_engine
+
+
+# ============================ fault triggers ============================
+
+
+class TestFaultTriggersOfTheFullyAsyncEntry:
+    def test_the_fully_async_wrapper_passes_the_requested_triggers_through(self, harness: ScenarioHarness) -> None:
+        """Dropping the option in the wrapper would silently soak the async driver with both triggers."""
+        scenario_random_crash_fully_async.run_ci(fully_async_entry._MODE, requested_triggers=[FaultTrigger.TIMER])
+
+        (soak,) = harness.soaks
+        expected = create_cell_fault_forms(soak["config"], triggers=frozenset({FaultTrigger.TIMER}))
+        assert {kind: [form.name for form in forms] for kind, forms in soak["forms"].items()} == {
+            kind: [form.name for form in expected[kind]] for kind in soak["forms"]
+        }
+        assert soak["dump_dir"].name == f"random_crash_timer_fully_async_{fully_async_entry._MODE}"
+        ((hook_args, _hook_kwargs),) = harness.calls_of("assert_hook_evidence")
+        assert hook_args == (frozenset({FaultTrigger.TIMER}),)

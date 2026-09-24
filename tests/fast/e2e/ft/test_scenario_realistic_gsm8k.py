@@ -77,7 +77,7 @@ class TestOneGsm8kRunIdentity:
     @pytest.mark.parametrize(
         ("fully_async", "requested_triggers", "name"),
         [
-            (False, [FaultTrigger.TIMER, FaultTrigger.HOOK], "realistic_gsm8k_hook_timer"),
+            (False, [FaultTrigger.TIMER], "realistic_gsm8k_timer"),
             (True, None, "realistic_gsm8k_fully_async"),
         ],
     )
@@ -129,6 +129,7 @@ class TestTheLaunchedGsm8kArguments:
         (soak,) = harness.soaks
         assert launch.value_of("--num-rollout") == "40"
         assert launch.value_of("--ci-metric-checker-threshold") == "0.42"
+        assert launch.value_of("--update-weights-timeout") == "600"
         assert Path(launch.value_of("--save-debug-event-data")) == soak["dump_dir"] / "events"
         assert launch.request.train_script.endswith("/train.py")
 
@@ -150,7 +151,7 @@ class TestWhatTheGsm8kSoakIsJudgedBy:
         events = soak["event_log"].events
         assert harness.checker_names == ["assert_hook_evidence", "assert_healing"]
         ((hook_args, hook_kwargs),) = harness.calls_of("assert_hook_evidence")
-        assert hook_args == (frozenset({FaultTrigger.TIMER}),)
+        assert hook_args == (frozenset({FaultTrigger.TIMER, FaultTrigger.HOOK}),)
         assert hook_kwargs == {
             "ft_components": ("train", "rollout"),
             "config": soak["config"],

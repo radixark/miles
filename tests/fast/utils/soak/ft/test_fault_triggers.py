@@ -13,7 +13,45 @@ _TIMER = FaultTrigger.TIMER
 _HOOK = FaultTrigger.HOOK
 
 
+class TestResolve:
+    @pytest.mark.parametrize(
+        "requested,has_real_rollout,expected",
+        [
+            (None, True, {_TIMER, _HOOK}),
+            ([], True, {_TIMER, _HOOK}),
+            (None, False, {_TIMER}),
+            ([_TIMER], True, {_TIMER}),
+            ([_TIMER], False, {_TIMER}),
+            ([_HOOK], True, {_HOOK}),
+            ([_HOOK, _TIMER, _HOOK], True, {_TIMER, _HOOK}),
+        ],
+        ids=["default", "empty", "fake-default", "timer", "fake-timer", "hook", "both"],
+    )
+    def test_the_requested_or_default_triggers_are_resolved(
+        self, requested: list[FaultTrigger] | None, has_real_rollout: bool, expected: set[FaultTrigger]
+    ) -> None:
+        """A real rollout draws both by default and a fake rollout silently narrows the default to timer."""
+        assert fault_triggers.resolve(requested, has_real_rollout=has_real_rollout) == frozenset(expected)
+
+    @pytest.mark.parametrize("requested", [[_HOOK], [_TIMER, _HOOK]], ids=["hook", "both"])
+    def test_explicit_hook_faults_without_rollout_engines_are_refused(self, requested: list[FaultTrigger]) -> None:
+        """No update reaches a trainer hook without engines, so asking for hooks explicitly must fail loudly."""
+        with pytest.raises(AssertionError, match="hook-triggered faults could only expire"):
+            fault_triggers.resolve(requested, has_real_rollout=False)
+
+
 class TestTestNameSuffixAndTrainArgs:
+    @pytest.mark.parametrize(
+        "triggers,suffix",
+        [({_TIMER, _HOOK}, ""), ({_TIMER}, "_timer"), ({_HOOK}, "_hook")],
+        ids=["default", "timer", "hook"],
+    )
+    def test_only_a_non_default_trigger_set_changes_the_test_name(
+        self, triggers: set[FaultTrigger], suffix: str
+    ) -> None:
+        """The default keeps the historical dump directory while a subset gets one of its own."""
+        assert fault_triggers.compute_test_name_suffix(frozenset(triggers)) == suffix
+
     def test_hook_faults_lengthen_the_weight_update_timeout(self) -> None:
         """A hook delay plus recovery inside an update needs a timeout longer than the default."""
         assert fault_triggers.compute_hook_train_args(frozenset({_HOOK})) == "--update-weights-timeout 600 "
