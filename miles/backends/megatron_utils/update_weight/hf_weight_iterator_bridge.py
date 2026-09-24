@@ -1,17 +1,25 @@
 import dataclasses
 import inspect
 import itertools
+import json
+import logging
+from pathlib import Path
+
+import torch
 
 from miles.backends.megatron_utils.update_weight.hf_weight_iterator import (
     MegatronHfWeightIteratorBase,
     _iter_mm_tower_units,
 )
 from miles.utils import megatron_bridge_utils
+from miles.utils.hf_parameter_names import get_param_name_remap
 from miles.utils.lora.utils import is_lora_weight_name
 
 from ..megatron_to_hf import postprocess_hf_param
 from ..megatron_to_hf.processors import quantize_params
 from ..misc_utils import strip_param_name_prefix
+
+logger = logging.getLogger(__name__)
 
 
 class HfWeightIteratorBridge(MegatronHfWeightIteratorBase):
@@ -20,13 +28,30 @@ class HfWeightIteratorBridge(MegatronHfWeightIteratorBase):
 
         from megatron.bridge import AutoBridge
 
-        self._bridge = AutoBridge.from_hf_pretrained(self.args.hf_checkpoint, trust_remote_code=True)
+        bridge_checkpoint = _select_bridge_checkpoint(self.args)
+        self._bridge = AutoBridge.from_hf_pretrained(bridge_checkpoint, trust_remote_code=True)
+        # Bridge may export official DSV4 checkpoint names, e.g. layers.0.attn.wq_a.weight,
+        # while SGLang's model uses model.layers.0.self_attn.wq_a.weight.
+        # Resolve the mapping once so postprocessing, quantization, and bucketing
+        # all use SGLang's model namespace.
+        self._remap_hf_name = _load_checkpoint_name_remap(bridge_checkpoint)
 
     def _iter_hf_param_units(self, weights, *, materialize):
         renamed_megatron_local_weights = {strip_param_name_prefix(k): v for k, v in weights.items()}
         with megatron_bridge_utils.patch_megatron_model(self.model):
             conversion_tasks = self._bridge.get_conversion_tasks(self.model)
-            conversion_tasks = _process_conversion_tasks(conversion_tasks, renamed_megatron_local_weights)
+            # Newer Bridge exports can restore the checkpoint's quantized layout.
+            # Miles owns rollout quantization. Export FP32 to preserve both BF16
+            # weights and FP32-only parameters (e.g. DSV4 APE and attention sinks),
+            # including on PP receivers that have no local parameter.
+            export_dtype = (
+                torch.float32
+                if "weight_dtype" in inspect.signature(self._bridge.export_hf_weights).parameters
+                else None
+            )
+            conversion_tasks = _process_conversion_tasks(
+                conversion_tasks, renamed_megatron_local_weights, weight_dtype=export_dtype
+            )
             named_weights = self._bridge.export_hf_weights(
                 self.model,
                 cpu=False,
@@ -45,6 +70,10 @@ class HfWeightIteratorBridge(MegatronHfWeightIteratorBase):
                     pass
                 return
 
+            named_weights = (
+                (self._remap_hf_name(hf_name), weight, megatron_name)
+                for hf_name, weight, megatron_name in named_weights
+            )
             named_weights = self._postprocess_and_quantize(named_weights, "base")
             # Group by the (tuple of) source names so quantize's weight + scales land in one unit.
             for _megatron_name, group in itertools.groupby(named_weights, key=lambda item: item[2]):
@@ -123,11 +152,38 @@ class HfWeightIteratorBridge(MegatronHfWeightIteratorBase):
                 yield hf_name, weight, megatron_param_names
 
 
-def _process_conversion_tasks(vanilla_conversion_tasks, new_weight_dict):
+def _load_checkpoint_name_remap(checkpoint):
+    """Resolve export names from the checkpoint's architecture and tensor namespace."""
+    config_path = Path(checkpoint) / "config.json"
+    index_path = Path(checkpoint) / "model.safetensors.index.json"
+    if not config_path.is_file() or not index_path.is_file():
+        logger.warning(
+            "Checkpoint %s has no local config or safetensors index; preserving Bridge export names.", checkpoint
+        )
+        return lambda name: name
+    with index_path.open(encoding="utf-8") as index_file:
+        weight_map = json.load(index_file)["weight_map"]
+    return get_param_name_remap(str(config_path), weight_map)
+
+
+def _select_bridge_checkpoint(args):
+    """Use an HF trainer seed for export mappings when one is available."""
+    for candidate in (getattr(args, "load", None), getattr(args, "ref_load", None)):
+        if candidate is None:
+            continue
+        path = Path(candidate)
+        if (path / "model.safetensors.index.json").is_file() or any(path.glob("*.safetensors")):
+            return candidate
+    return args.hf_checkpoint
+
+
+def _process_conversion_tasks(vanilla_conversion_tasks, new_weight_dict, *, weight_dtype=None):
     def _handle_one(task):
         if task is None:
             # no HF mapping (e.g. Gemma-4 post_shared_expert_layernorm)
             return task
+        if weight_dtype is not None:
+            task = dataclasses.replace(task, weight_dtype=weight_dtype)
         if task.param_weight is None:
             return task
 

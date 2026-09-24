@@ -94,11 +94,12 @@ async def train(args):
             if args.use_critic and args.offload_train:
                 await model.offload()
 
+        # Persist data progress before model saving publishes the latest checkpoint.
+        await rollout_executor.save.remote(rollout_id)
         if (not args.use_critic) or (rollout_id >= args.num_critic_only_steps):
             await save_training_model(actor_model)
         if args.use_critic:
             await save_training_model(critic_model)
-        await rollout_executor.save.remote(rollout_id)
 
     if args.num_rollout > args.start_rollout_id and args.eval_interval is not None and not args.skip_eval_before_train:
         await inference_controller.prepare_eval()

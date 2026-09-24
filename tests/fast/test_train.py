@@ -39,7 +39,11 @@ def _make_args(**overrides: Any) -> SimpleNamespace:
 
 
 def _install_driver_fakes(
-    monkeypatch: pytest.MonkeyPatch, args: SimpleNamespace, events: list[str]
+    monkeypatch: pytest.MonkeyPatch,
+    args: SimpleNamespace,
+    events: list[str],
+    *,
+    num_rollout_per_epoch: int = 4,
 ) -> SimpleNamespace:
     components = SimpleNamespace(
         inference_controller=FakeInferenceController(events),
@@ -49,7 +53,7 @@ def _install_driver_fakes(
     )
 
     async def create_rollout_components(_args: SimpleNamespace) -> tuple[Any, Any, int]:
-        return components.inference_controller, components.rollout_executor, 4
+        return components.inference_controller, components.rollout_executor, num_rollout_per_epoch
 
     async def create_training_models(_args: SimpleNamespace, _controller: Any, _executor: Any) -> tuple[Any, Any]:
         return components.actor_model, components.critic_model
@@ -179,6 +183,40 @@ class TestWeightEqualityCheck:
         await train_driver.train(args)
 
         assert components.inference_controller.check_weights_calls == []
+
+
+class TestCheckpointPublication:
+    async def test_checkpoint_and_eval_share_the_completed_rollout_cadence(self, monkeypatch: pytest.MonkeyPatch):
+        events: list[str] = []
+        args = _make_args(num_rollout=40, save_interval=20, eval_interval=20, skip_eval_before_train=True)
+        components = _install_driver_fakes(monkeypatch, args, events, num_rollout_per_epoch=100)
+
+        await train_driver.train(args)
+
+        assert components.actor_model.saved == [19, 39]
+        assert [event for event in events if event.startswith("eval:")] == ["eval:19", "eval:39"]
+        for rollout_id in components.actor_model.saved:
+            assert (
+                events.index(f"executor_save:{rollout_id}")
+                < events.index(f"actor_save:{rollout_id}")
+                < events.index(f"eval:{rollout_id}")
+            )
+
+    async def test_rollout_save_failure_does_not_publish_a_model_checkpoint(self, monkeypatch: pytest.MonkeyPatch):
+        """A resumable model checkpoint must not precede its matching data progress."""
+        events: list[str] = []
+        args = _make_args(num_rollout=1, save_interval=20)
+        components = _install_driver_fakes(monkeypatch, args, events)
+
+        async def fail_rollout_save(rollout_id):
+            raise OSError("rollout state write failed")
+
+        components.rollout_executor.save = SimpleNamespace(remote=fail_rollout_save)
+
+        with pytest.raises(OSError, match="rollout state write failed"):
+            await train_driver.train(args)
+
+        assert components.actor_model.saved == []
 
 
 class TestTerminalLifecycle:

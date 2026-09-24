@@ -28,6 +28,22 @@ def _make_probe_slow(engine: MagicMock, *, delay_seconds: float) -> None:
 
 
 class TestPortAllocator:
+    @pytest.mark.parametrize("port", ["0", "65536"])
+    def test_invalid_configured_base_is_rejected(self, monkeypatch, port):
+        monkeypatch.setenv("MILES_DYNAMIC_PORT_START", port)
+        with pytest.raises(ValueError, match="MILES_DYNAMIC_PORT_START"):
+            PortAllocator()
+
+    @pytest.mark.parametrize("wraparound", [False, True])
+    async def test_configured_base_applies_to_new_nodes_and_wraparound(self, monkeypatch, wraparound):
+        monkeypatch.setenv("MILES_DYNAMIC_PORT_START", "2000")
+        cursors = PortAllocator()
+        if wraparound:
+            cursors._next_port_of_ip["10.0.0.1"] = 65535
+        engine = fake_engine(host="10.0.0.1", port_seed=0)
+        assert await cursors.alloc(engine, node_ip="10.0.0.1", consecutive=4) == 2000
+        assert cursors._next_port_of_ip["10.0.0.1"] == 2004
+
     def test_a_fresh_allocator_has_no_cursors(self):
         """A brand new allocator starts with no per-node cursors."""
         c = PortAllocator()
