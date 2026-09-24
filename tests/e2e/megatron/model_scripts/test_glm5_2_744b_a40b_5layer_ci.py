@@ -1,6 +1,8 @@
 import os
 
-if os.getenv("MILES_HARDWARE_PLATFORM") == "rocm":
+MILES_HARDWARE_PLATFORM = os.getenv("MILES_HARDWARE_PLATFORM")
+
+if MILES_HARDWARE_PLATFORM == "rocm":
     from scripts.amd.run_glm5_2_744b_a40b import (
         ScriptArgs,
         _convert_to_fp8,
@@ -36,7 +38,6 @@ register_rocm_ci(
     est_time=900,
     suite="stage-c-4-gpu-mi350",
     labels=["megatron", "model-scripts", "amd"],
-    disabled="FIXME: re-enable once this case passes on the MI350 runners.",
 )
 
 register_ci_gate(metric_key="train/grad_norm")
@@ -47,8 +48,7 @@ register_ci_gate(metric_key="rollout/raw_reward")
 
 
 def _args() -> ScriptArgs:
-    return ScriptArgs(
-        hardware="H200",
+    common_args = dict(
         model_name="GLM-5.2_5layer",
         num_nodes=1,
         num_gpus_per_node=4,
@@ -56,6 +56,9 @@ def _args() -> ScriptArgs:
         enable_optimizer_offload=True,
         extra_args=("--ci-test " "--ci-disable-logprobs-checker "),
     )
+    if MILES_HARDWARE_PLATFORM == "rocm":
+        return ScriptArgs(**common_args)
+    return ScriptArgs(**common_args, hardware="H200")
 
 
 def prepare(args: ScriptArgs):

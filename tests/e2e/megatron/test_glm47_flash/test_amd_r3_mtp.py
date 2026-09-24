@@ -25,7 +25,6 @@ register_rocm_ci(
     est_time=1100,
     suite="stage-c-4-gpu-mi350",
     labels=["megatron", "amd"],
-    disabled="FIXME: re-enable once this case passes on the MI350 runners.",
 )
 
 register_ci_gate(metric_key="train/grad_norm")
@@ -43,6 +42,8 @@ CASE = CaseConfig(
     ep_size=2,
     # GLM-4.7-Flash has 20 attention heads; non-EP SGLang TP must divide it.
     rollout_num_gpus_per_engine=4,
+    # Lean attention accesses an unallocated lock buffer during EAGLE warmup.
+    extra_env_vars={"SGLANG_DISABLE_LEAN_ATTENTION": "1"},
 )
 
 
