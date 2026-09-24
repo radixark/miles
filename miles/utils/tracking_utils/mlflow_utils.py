@@ -77,7 +77,7 @@ def _init_mlflow_primary(args, experiment_name: str) -> None:
     slurm_job_id = os.environ.get("SLURM_JOB_ID")
     if slurm_job_id:
         tags["slurm_job_id"] = slurm_job_id
-    tags["rank"] = str(args.rank)
+    tags["rank"] = "0"
 
     run = mlflow.start_run(run_name=run_name, tags=tags)
     mlflow.log_params(_compute_config_for_logging(args))
