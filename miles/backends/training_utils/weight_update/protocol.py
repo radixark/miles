@@ -79,7 +79,7 @@ class WeightTransferProtocol(ABC):
 
 def get_weight_transfer_protocol(args: Namespace) -> WeightTransferProtocol:
     mode = args.update_weight_transfer_mode
-    if mode not in ("broadcast", "broadcast_packed", "p2p", "disk-delta"):
+    if mode not in ("broadcast", "broadcast_packed", "p2p", "disk-delta", "http-lora"):
         raise ValueError(f"Unknown --update-weight-transfer-mode {mode!r}")
     if mode == "broadcast_packed" and (args.train_backend != "megatron" or args.colocate):
         raise ValueError("broadcast_packed requires Megatron non-colocated weight transfer")
@@ -99,4 +99,8 @@ def get_weight_transfer_protocol(args: Namespace) -> WeightTransferProtocol:
         from miles.backends.training_utils.weight_update.protocols.p2p import UpdateWeightP2P
 
         return UpdateWeightP2P(args)
+    if mode == "http-lora":
+        from miles.backends.training_utils.weight_update.protocols.http_lora import UpdateWeightHttpLora
+
+        return UpdateWeightHttpLora(args)
     raise ValueError(f"Unknown --update-weight-transfer-mode {mode!r}")
