@@ -11,6 +11,7 @@ from miles.utils.test_utils.fault_injector.models import FaultHookName, Observed
 
 ACTOR_CELL_TYPE: str = ACTOR_ROLE
 ROLLOUT_CELL_TYPE: str = "rollout"
+POOL_TARGET_KIND: str = "pool"
 
 
 class FaultTrigger(StrEnum):
@@ -26,6 +27,15 @@ class CellTarget(FrozenStrictBaseModel):
     ready: bool
     pods: list[SoakPodTarget] = Field(default_factory=list)
     fault_target: ObservedFaultHookTarget | None = None
+
+
+class PoolTarget(FrozenStrictBaseModel):
+    kind: Literal["pool"] = "pool"
+    identity: str
+    incarnation: str = ""
+    alive: bool
+    ready: bool
+    replicas: int
 
 
 class InjectFaultDetails(FrozenStrictBaseModel):

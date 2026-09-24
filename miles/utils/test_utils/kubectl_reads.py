@@ -26,6 +26,13 @@ def read_objects_of_release(
     return result.stdout
 
 
+def read_replicas(*, namespace: str, workload: str) -> int:
+    result = _run_kubectl(
+        ["get", LEADER_WORKER_SET_KIND, workload, "--namespace", namespace, "-o", "jsonpath={.spec.replicas}"]
+    )
+    return int(result.stdout.strip())
+
+
 def compute_release_selector(*, release: str, extra_labels: Sequence[str] = ()) -> str:
     return ",".join([f"{INSTANCE_LABEL}={release}", *extra_labels])
 
