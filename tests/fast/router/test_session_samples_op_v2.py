@@ -94,7 +94,7 @@ def addition_core():
 def same_prompt_core():
     return _build_core(
         _ARGS.model_copy(
-            update={"session_sample_picker_path": "miles.rollout.session.v2.picker_hub.drop_retries_same_prompt"}
+            update={"session_sample_picker_path": "miles.rollout.session.v2.picker_hub.drop_same_prompt_retries"}
         )
     )
 

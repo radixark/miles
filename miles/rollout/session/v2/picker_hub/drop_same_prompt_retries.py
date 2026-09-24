@@ -4,7 +4,7 @@ from miles.rollout.session.v2.picker_hub.drop_rolled_back_leaves import drop_rol
 from miles.utils.types import Sample
 
 
-def drop_retries_same_prompt(leaf_samples: list[Sample], session_metadata: dict) -> list[Sample]:
+def drop_same_prompt_retries(leaf_samples: list[Sample], session_metadata: dict) -> list[Sample]:
     """Drop the leaves that retries leave behind; a retry re-sends the same prompt tokens.
 
     Like ``drop_rolled_back_leaves``, but a later sibling with a different

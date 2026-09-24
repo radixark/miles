@@ -2488,12 +2488,12 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             parser.add_argument(
                 "--session-sample-picker-path",
                 type=str,
-                default="miles.rollout.session.v2.picker_hub.drop_retries_same_prompt",
+                default="miles.rollout.session.v2.picker_hub.drop_same_prompt_retries",
                 help="v2 only. Import path of the sample-pick hook for the "
                 "session samples op: fn(leaf_samples, session_metadata) -> "
                 "list[Sample], a pure selection over the per-leaf raw samples. "
                 "Runs synchronously inside the session server process; long CPU "
-                "work stalls every session on the instance. Default: drop_retries_same_prompt, "
+                "work stalls every session on the instance. Default: drop_same_prompt_retries, "
                 "which trims identical re-sends, including a re-sent first turn; "
                 "drop_rolled_back_leaves also trims a leaf whose later sibling sent a "
                 "different request.",

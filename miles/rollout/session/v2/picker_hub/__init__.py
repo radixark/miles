@@ -8,7 +8,7 @@ the structural tree tables in ``session_metadata``. Runs synchronously inside
 the session server process.
 """
 
-from miles.rollout.session.v2.picker_hub.drop_retries_same_prompt import drop_retries_same_prompt
 from miles.rollout.session.v2.picker_hub.drop_rolled_back_leaves import drop_rolled_back_leaves
+from miles.rollout.session.v2.picker_hub.drop_same_prompt_retries import drop_same_prompt_retries
 
-__all__ = ["drop_retries_same_prompt", "drop_rolled_back_leaves"]
+__all__ = ["drop_rolled_back_leaves", "drop_same_prompt_retries"]
