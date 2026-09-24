@@ -92,7 +92,7 @@ python scripts/run_mimo_v2_6_flash.py --mode rl --model-name mimo26-p4-bf16 --sg
 - On the 4-layer partial (two training steps, R3), the train/rollout log-prob gap was 0.027 with `mxfp4_w4a16_linear`, within the BF16 engine's run-to-run range (0.024–0.026), and 0.055–0.061 with `mxfp4_w4a8_linear`. The FP8 linears cause the difference; the MXFP4 experts add none that is measurable. `mxfp4_w4a16_linear` keeps about 3 GB more weights for the full model.
 - The MTP layers keep their source format in both checkpoints: Miles does not train them, and SGLang's draft model maps their names differently.
 - No quantization-aware training: an update smaller than one MXFP4 step does not reach the engine.
-- Blackwell is not supported yet: the Marlin method runs only on SM90/SM120, and the SM100 MXFP4 runner (TRT-LLM) has no in-place reload.
+- On B300 (`--hardware B300`) the launcher selects Marlin for `mxfp4_w4a16_linear` and DeepGEMM for `mxfp4_w4a8_linear`, with FA4 attention; the SGLang support they need on SM100 (Marlin admitting SM100, an in-place weight reload for the DeepGEMM runner) is not yet part of the requirements in section 3.2.
 - HF export (`--save-hf`) builds its bridge from `--hf-checkpoint`, so with an MXFP4 engine it writes that checkpoint's config over BF16 tensors; export from a BF16-engine run instead.
 
 ## 5. Recipe Configuration
