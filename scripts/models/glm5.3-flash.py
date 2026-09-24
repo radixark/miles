@@ -37,6 +37,8 @@ def model_args(nlayers: int = 45, first_k_dense_replace: int = 3) -> str:
         "--normalization RMSNorm "
         "--norm-epsilon 1e-5 "
         "--swiglu "
+        # the checkpoint sets swiglu_limit=10, which sglang applies to dense, shared and routed MLPs
+        "--activation-func-clamp-value 10 "
         "--disable-bias-linear "
         "--untie-embeddings-and-output-weights "
         "--make-vocab-size-divisible-by 16 "
