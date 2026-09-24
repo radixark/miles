@@ -212,3 +212,35 @@ class TestSaveLoRaBranch:
         save(42, model, MagicMock(), MagicMock())
 
         mock_save_ckpt.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# save_hf_model — raw-mode LoRA merges natively instead of going through Bridge
+# ---------------------------------------------------------------------------
+
+_HF_EXPORT_MODULE = "miles.backends.megatron_utils.hf_export"
+
+
+class TestSaveHfModelRawLoRA:
+    @patch(f"{_HF_EXPORT_MODULE}._get_hf_bridge")
+    @patch(f"{_HF_EXPORT_MODULE}.merge_lora_into_weights")
+    @patch(f"{_HF_EXPORT_MODULE}.named_params_and_buffers")
+    @patch(f"{_HF_EXPORT_MODULE}.is_lora_model", return_value=True)
+    @patch(f"{_HF_EXPORT_MODULE}.write_checkpoint_dir", side_effect=lambda path, write, **_kwargs: write(path))
+    @patch(f"{_HF_EXPORT_MODULE}.get_parallel_state")
+    def test_raw_lora_writes_merged_weights_and_the_adapter(
+        self, _parallel_state, _write_dir, _is_lora, named_weights, merge, get_bridge, tmp_path
+    ):
+        from miles.backends.megatron_utils.hf_export import save_hf_model
+
+        named_weights.return_value = [("decoder.w", MagicMock())]
+        publisher = MagicMock()
+        model = [MagicMock()]
+        args = Namespace(megatron_to_hf_mode="raw", hf_checkpoint="/hf", save_hf=None)
+
+        save_hf_model(args, 0, model, publisher=publisher, path=tmp_path, raise_on_error=True)
+
+        merge.assert_called_once_with(model, dict(named_weights.return_value))
+        publisher.write_model.assert_called_once_with(tmp_path, weights=merge.return_value, hf_checkpoint="/hf")
+        publisher.write_adapter.assert_called_once_with(None, tmp_path / "adapter")
+        get_bridge.assert_not_called()

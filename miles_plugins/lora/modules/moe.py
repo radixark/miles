@@ -87,8 +87,12 @@ class LoRAGroupedFC1(NativeLoRAAdapter):
         up = _grouped_linear(joint[..., rank:].contiguous(), self.w3_B, tokens_per_expert)
         return torch.cat([gate, up], dim=-1)
 
-    def exports(self):
-        yield from ()
+    def weight_deltas(self):
+        (host,) = self._hosts
+        for index in range(self.w1_B.shape[0]):
+            yield getattr(host, f"weight{index}"), lambda index=index: self.context.scale * torch.cat(
+                [self.w1_B[index].float() @ self.w1_A.float(), self.w3_B[index].float() @ self.w3_A.float()]
+            )
 
     def export_plan(self, gather) -> list:
         prefix = self.hf_prefix
@@ -149,8 +153,12 @@ class LoRAGroupedFC2(NativeLoRAAdapter):
         )
         return F.linear(inner, self.w2_B)
 
-    def exports(self):
-        yield from ()
+    def weight_deltas(self):
+        (host,) = self._hosts
+        for index in range(self.w2_A.shape[0]):
+            yield getattr(host, f"weight{index}"), lambda index=index: self.context.scale * (
+                self.w2_B.float() @ self.w2_A[index].float()
+            )
 
     def export_plan(self, gather) -> list:
         prefix = self.hf_prefix
@@ -219,8 +227,15 @@ class LoRASharedExpertsAdapter(NativeLoRAAdapter):
         local = F.linear(apply_lora_dropout(x, self.context, host.training), self.w2_A[index])
         return F.linear(reduce_row_parallel(local, self.context), self.w2_B)
 
-    def exports(self):
-        yield from ()
+    def weight_deltas(self):
+        """Hosts are bound per sub-expert as ``fc1, fc2`` pairs, in sub-expert order."""
+        scale = self.context.scale
+        for index in range(self.w1_B.shape[0]):
+            fc1, fc2 = self._hosts[2 * index : 2 * index + 2]
+            yield fc1.weight, lambda index=index: scale * torch.cat(
+                [self.w1_B[index].float() @ self.w1_A.float(), self.w3_B[index].float() @ self.w3_A.float()]
+            )
+            yield fc2.weight, lambda index=index: scale * (self.w2_B.float() @ self.w2_A[index].float())
 
     def export_plan(self, gather) -> list:
         prefix = self.hf_prefix
@@ -287,8 +302,10 @@ class LoRAOutputHead(NativeLoRAAdapter):
         scaled = branch_input(scaled, base_module, self.context)
         return F.linear(F.linear(scaled, self.head_A), self.head_B)
 
-    def exports(self):
-        yield from ()
+    def weight_deltas(self):
+        (host,) = self._hosts
+        scale = self.context.scale / self.mup if self.mup else self.context.scale
+        yield host.weight, lambda: scale * (self.head_B.float() @ self.head_A.float())
 
     def export_plan(self, gather) -> list:
         head_b = gather.request(self.head_B, 0)

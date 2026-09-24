@@ -26,7 +26,8 @@ Exits nonzero if any check fails. Checks, per configuration:
      fused qkv is checked after mcore's own per-group split, so the row permutation
      (and, when gated, the query/gate deinterleave) is verified where it is consumed
   3. export: TP shards gather to tensors identical on every rank
-  4. round-trip: export -> load into a fresh model reproduces params and outputs
+  4. round-trip: export -> load into a fresh model reproduces params and outputs; the
+     merged weights reproduce the adapted model's outputs in a model without adapters
   5. grads: dL/dA == 0 while dL/dB != 0 for a fresh adapter (B zero-init), grads are
      nonzero once B is randomized, and replicated-param grads agree across TP after
      reduce_marked_lora_grads combined genuinely distinct per-rank partials
@@ -48,6 +49,7 @@ from megatron.core.transformer.transformer_config import MLATransformerConfig, T
 from miles.backends.megatron_utils.lora.utils import reduce_marked_lora_grads
 from miles_plugins.lora.distributed import rmsnorm
 from miles_plugins.lora.lora import apply_native_lora, export_lora_hf_named, load_lora_adapter_hf
+from miles_plugins.lora.merge import merge_lora_into_weights
 from miles_plugins.lora.modules.linear import NativeLoRAAdapter
 
 torch.backends.cuda.matmul.allow_tf32 = False
@@ -412,6 +414,22 @@ def main():
         o2 = fwd(fresh, tokens, pos, mask)
     d = (o1 - o2).abs().max().item()
     check(f"{label} round-tripped model reproduces outputs", d < 5e-2, f"max|d|={d:.3e}")
+
+    merged = merge_lora_into_weights([lora_model], dict(lora_model.named_parameters()))
+    plain, _ = build(a.tp, a.sp, mla=a.mla, output_gate=a.gate)
+    with torch.no_grad():
+        for name, parameter in plain.named_parameters():
+            parameter.copy_(merged[name])
+    plain.eval()
+    with torch.no_grad():
+        o3 = fwd(plain, tokens, pos, mask)
+    d_merged = (o1 - o3).abs().max().item()
+    d_base = (out_base - o3).abs().max().item()
+    check(
+        f"{label} merged weights reproduce the adapted model without adapters",
+        d_merged < 5e-2 and d_base > 10 * d_merged,
+        f"max|d| vs LoRA={d_merged:.3e}, vs base={d_base:.3e}",
+    )
 
     fresh2, _ = build(a.tp, a.sp, mla=a.mla, output_gate=a.gate)
     apply_native_lora(fresh2, Args())

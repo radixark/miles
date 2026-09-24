@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 
 import torch
@@ -87,6 +87,11 @@ class NativeLoRAAdapter(nn.Module):
         self.hf_prefix = hf_prefix
         self.tp_rank = tp_rank
         self._projection_specs = projection_specs
+        self._hosts: list[nn.Module] = []
+
+    def bind_host(self, host: nn.Module) -> None:
+        """Record a linear this adapter adds its delta to; a plain list keeps it out of the module tree."""
+        self._hosts.append(host)
 
     @property
     def projection_specs(self) -> tuple[ProjectionSpec, ...]:
@@ -99,8 +104,8 @@ class NativeLoRAAdapter(nn.Module):
             ), f"native LoRA projection {projection.hf!r} has no complete A/B parameter pair"
 
     def exports(self) -> Iterator[ProjectionExport]:
-        """Yield one public descriptor per logical projection this adapter carries."""
-        raise NotImplementedError
+        """Yield one public descriptor per logical projection; adapters owning an ``export_plan`` have none."""
+        return iter(())
 
     def export_plan(self, gather) -> list | None:
         """Custom HF export: ``[(hf_name, tensor_or_thunk), ...]`` built against a ParallelGather.
@@ -119,6 +124,14 @@ class NativeLoRAAdapter(nn.Module):
         """
         del take
         return None
+
+    def weight_deltas(self) -> Iterator[tuple[nn.Parameter, Callable[[], torch.Tensor]]]:
+        """``(host weight, delta thunk)`` pairs whose sum merges this adapter into its hosts.
+
+        Each delta is scaled and laid out like the host's local shard, so a merged
+        export can hand ``weight + delta`` to the ordinary base-weight converters.
+        """
+        raise NotImplementedError(f"{type(self).__name__} does not implement weight merging")
 
     def _export_projections(self, fused_group: SGLangFusedGroup | None) -> Iterator[ProjectionExport]:
         tp = self.context.tp_size
@@ -204,6 +217,12 @@ class LoRALinear(NativeLoRAAdapter):
     def exports(self) -> Iterator[ProjectionExport]:
         yield from self._export_projections(self.sglang_group)
 
+    def weight_deltas(self):
+        (host,) = self._hosts
+        a = getattr(self, f"{self.attr}_A")
+        b = getattr(self, f"{self.attr}_B")
+        yield host.weight, lambda: self.context.scale * (b.float() @ a.float())
+
 
 class LoRASplitAdapter(NativeLoRAAdapter):
     """Independent per-projection adapters whose deltas pack into one fused output.
@@ -264,6 +283,25 @@ class LoRASplitAdapter(NativeLoRAAdapter):
 
     def _pack(self, delta: torch.Tensor) -> torch.Tensor:
         return delta
+
+    def _pack_rows(self, delta: torch.Tensor) -> torch.Tensor:
+        return self._pack(delta.t()).t()
+
+    def weight_deltas(self):
+        (host,) = self._hosts
+
+        def delta() -> torch.Tensor:
+            slots = [
+                (
+                    getattr(self, f"{name}_B").float() @ getattr(self, f"{name}_A").float()
+                    if name in self._active
+                    else host.weight.new_zeros(rows, host.weight.shape[1], dtype=torch.float32)
+                )
+                for name, rows in self._rows.items()
+            ]
+            return self.context.scale * self._pack_rows(torch.cat(slots, dim=0))
+
+        yield host.weight, delta
 
     def forward(self, x: torch.Tensor, base_module: nn.Module, *_host_args) -> torch.Tensor:
         x = branch_input(x, base_module, self.context)
@@ -352,19 +390,25 @@ class LoRASplitFC1(LoRASplitAdapter):
         self.inter_local = inter_local
 
 
-def attach_adapter_forward(module: nn.Module, adapter: NativeLoRAAdapter, scale: float) -> None:
-    """Add a callable adapter module's delta while preserving ``(out, bias)``.
+def attach_delta_forward(module: nn.Module, delta: Callable[..., torch.Tensor], scale: float) -> None:
+    """Add ``scale * delta(x, module, *host_args)`` to a host linear while preserving ``(out, bias)``.
 
     Extra host-forward positionals (e.g. grouped GEMM's ``tokens_per_expert``)
-    are forwarded to the adapter, which may ignore them.
+    are forwarded to the delta, which may ignore them.
     """
     original = module.forward
 
     def forward(x, *args, **kwargs):
         out, bias = original(x, *args, **kwargs)
-        return torch.add(out, adapter(x, module, *args), alpha=scale), bias
+        return torch.add(out, delta(x, module, *args), alpha=scale), bias
 
     module.forward = forward
+
+
+def attach_adapter_forward(module: nn.Module, adapter: NativeLoRAAdapter, scale: float) -> None:
+    """Make a single-host adapter's forward the delta of ``module``."""
+    attach_delta_forward(module, adapter, scale)
+    adapter.bind_host(module)
 
 
 def build_qkv_permutation(

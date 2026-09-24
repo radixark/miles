@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import functools
+
 import torch
 import torch.nn as nn
 
-from miles_plugins.lora.modules.linear import attach_adapter_forward
+from miles_plugins.lora.modules.linear import attach_adapter_forward, attach_delta_forward
 from miles_plugins.lora.modules.moe import LoRAGroupedFC1, LoRAGroupedFC2, LoRASharedExpertsAdapter
 from miles_plugins.lora.spec.base import AttachContext
 
@@ -70,11 +72,10 @@ class InklingExpertsSpec:
         for index, sub in enumerate(subs):
             for host_attr, delta in (("linear_fc1", adapter.fc1_delta), ("linear_fc2", adapter.fc2_delta)):
                 host = getattr(sub, host_attr)
-                original = host.forward
-
-                def forward(x, *args, _original=original, _host=host, _delta=delta, _index=index, **kwargs):
-                    out, bias = _original(x, *args, **kwargs)
-                    return torch.add(out, _delta(x, _host, _index), alpha=context.scale), bias
-
-                host.forward = forward
+                attach_delta_forward(host, functools.partial(_indexed, delta, index), context.scale)
+                adapter.bind_host(host)
         return 1
+
+
+def _indexed(delta, index: int, x: torch.Tensor, host: nn.Module, *_host_args) -> torch.Tensor:
+    return delta(x, host, index)
