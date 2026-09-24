@@ -27,7 +27,8 @@ A session records one turn at a time: render, sample and commit run under the se
 overlaps its first attempt waits and is then attached where it belongs; `DELETE` cancels a sample still running.
 The turns form a tree: each exported turn carries `parent` (the turn whose history its request continues, matched
 message by message with the miles strict matcher; `null` for a new root), `inherits` (its ids extend the parent's),
-`reset_reason` (`first`, `retry`, `rewrite`, `budget`, `mismatch`, `no_tito`) and `after_truncation` (an ancestor's
+`reset_reason` (`first`, `retry`, `rewrite`, `budget`, `mismatch`, `stop_string`, `no_tito`; `stop_string` = the parent
+reply ended on a request stop string, which the response omits as OpenAI does) and `after_truncation` (an ancestor's
 reply was cut at `max_tokens`). The client's `select_turns` applies the miles v2 `drop_retries` rule to that tree:
 a leaf with a later sibling is a superseded attempt (a root only when a later root resends the same prompt), every
 other leaf's path trains, and nothing below a truncated reply does; `--tinker-session-strict-truncation` refuses

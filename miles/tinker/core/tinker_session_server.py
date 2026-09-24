@@ -69,11 +69,12 @@ class Turn:
     finish_reason: str  # "stop" | "length"
     created_at: float = field(default_factory=time.time)
     inherits: bool = False  # TITO: input_ids extend the parent turn's input_ids + output_ids (up to max_trim_tokens)
-    reset_reason: str | None = None  # why a full render opened a segment: first/retry/rewrite/budget/mismatch/no_tito
+    reset_reason: str | None = None  # why a full render: first/retry/rewrite/budget/mismatch/stop_string/no_tito
     after_truncation: bool = False  # an ancestor's reply was cut at max_tokens and the harness continued past it
     parent: int | None = None  # the turn this prompt continues (the tree edge the client prunes by); None: a root
     messages: list[dict[str, Any]] | None = field(default=None, repr=False)  # request + reply, for attach points
     request_args: dict[str, Any] | None = field(default=None, repr=False)  # resolved TITO args a child inherits
+    ended_on_stop: bool = False  # the reply ended on a request stop string, so its ids lack the end-of-turn token
 
     def as_json(self) -> dict[str, Any]:
         """Plain lists for the trajectory export (what the client's turns_to_trajectory reads)."""
@@ -298,7 +299,8 @@ class TrajectoryCollector:
                 raise TruncatedGenerationError("cannot extend a reply that ended at max_tokens; resample it or rebind")
             payload = self._payload(session, rendered.prompt_token_ids, request.sampling_params)
             sequence = await self._sample(session, payload)
-            return self._commit_generation(session, request.messages, rendered, sequence, after_truncation)
+            stop = request.sampling_params.get("stop")
+            return self._commit_generation(session, request.messages, rendered, sequence, after_truncation, stop)
 
     @staticmethod
     def _payload(session: TrajectorySession, prompt_token_ids: list[int], sampling_params: dict) -> dict[str, Any]:
@@ -340,6 +342,7 @@ class TrajectoryCollector:
         rendered: Rendered,
         sequence: dict[str, Any],
         after_truncation: bool,
+        stop: list[str] | None = None,
     ) -> TurnResult:
         """Build the Turn with its history and assistant message, then append it: the tree grows by one node."""
         turn = Turn(
@@ -354,7 +357,7 @@ class TrajectoryCollector:
             parent=rendered.parent,
             request_args=rendered.request_args,
         )
-        message = self.renderer.assistant_message(turn)
+        message = self.renderer.assistant_message(turn, stop)
         turn.messages = [*request_messages, message]  # the same dict the adapter renders: a child matches it later
         session.turns.append(turn)
         session.last_seen = turn.created_at

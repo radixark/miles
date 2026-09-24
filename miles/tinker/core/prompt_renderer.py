@@ -194,7 +194,9 @@ class PromptRenderer:
         template_args = _template_args(request_args)
         if parent_turn is not None:
             reason = "rewrite"  # the parent's prefix cannot be reused: its tools changed, or the merge refused
-            if continued:
+            if parent_turn.ended_on_stop:
+                reason = "stop_string"  # its ids stop before the end-of-turn token a merge would build on
+            elif continued:
                 ids, reason = _try_merge_tokens(
                     parent_turn,
                     request_messages,
@@ -245,9 +247,15 @@ class PromptRenderer:
         """The reply text for the wire response, special tokens dropped."""
         return self.tokenizer.decode(list(ids), skip_special_tokens=True)
 
-    def assistant_message(self, turn: Turn) -> dict[str, Any]:
-        """The unified assistant message for a reply: text today; per-family tool_call parsing would plug in here."""
-        return {"role": "assistant", "content": self.decode(turn.output_ids)}
+    def assistant_message(self, turn: Turn, stop: list[str] | None = None) -> dict[str, Any]:
+        """The unified assistant message, without a stop string the reply ended on (as OpenAI); marks such a turn."""
+        content = self.decode(turn.output_ids)
+        if turn.finish_reason == "stop":
+            for suffix in stop or ():
+                if suffix and content.endswith(suffix):
+                    content, turn.ended_on_stop = content[: -len(suffix)], True
+                    break
+        return {"role": "assistant", "content": content}
 
     def template_kwargs(self, override: dict[str, Any] | None) -> dict[str, Any]:
         """The gateway's chat_template_kwargs, overridden by the turn's chat_template_kwargs object (no TITO)."""
