@@ -9,7 +9,7 @@ from miles.utils.object_store import ObjectStoreBackend
 
 # rollout
 class RolloutRelatedConfig(BaseConfig):
-    custom_agent_function_path: str | None
+    custom_agent_function_path: A[CustomFunctionConfig | None, Arg()] = None
 
     hf_checkpoint: A[
         str | None,
