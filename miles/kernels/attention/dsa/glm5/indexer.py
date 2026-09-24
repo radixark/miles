@@ -1,10 +1,9 @@
 import torch
 
+from miles.kernels.attention.dsa.glm5.tilelang_indexer_bwd import indexer_bwd_interface
+from miles.kernels.attention.dsa.glm5.tilelang_indexer_fwd import indexer_fwd_interface
+from miles.kernels.attention.dsa.topk import get_dsa_topk_fn
 from miles.utils.replay_base import indexer_replay_manager
-from miles_plugins.models.dsa_topk import get_dsa_topk_fn
-
-from .tilelang_indexer_bwd import indexer_bwd_interface
-from .tilelang_indexer_fwd import indexer_fwd_interface
 
 
 def pytorch_extract_topk_scores(logits, topk_indices, dim=-1):
