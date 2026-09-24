@@ -119,6 +119,8 @@ def load_checkpoint(ddp_model, optimizer, opt_param_scheduler, checkpointing_con
     if has_local_checkpoint_manager or _is_megatron_checkpoint(load_path):
         if not has_local_checkpoint_manager and is_dsv4_model(args):
             assert_checkpoint_is_current(load_path)
+        if not has_local_checkpoint_manager and _has_linear_attention(ddp_model):
+            assert_linear_attn_checkpoint_is_current(load_path)
         result = _load_checkpoint_megatron(
             ddp_model=ddp_model,
             optimizer=optimizer,
@@ -183,6 +185,35 @@ def save_checkpoint_with_lora(
         )
     else:
         save_checkpoint(iteration, model, optimizer, opt_param_scheduler)
+
+
+LINEAR_ATTN_LAYOUT_KEY = "weight_layout_version"
+
+
+def _has_linear_attention(ddp_model) -> bool:
+    return any(LINEAR_ATTN_LAYOUT_KEY in name for chunk in ddp_model for name, _ in chunk.named_buffers())
+
+
+def assert_linear_attn_checkpoint_is_current(load_dir: str) -> None:
+    """Reject torch_dist checkpoints written before the shared linear-attention layer (group-major GDN
+    q/k/v and conv rows, Kimi-K3 KDA under linear_attn.*). Megatron skips tensors a checkpoint lacks, so
+    such a checkpoint would load scrambled or half-initialized instead of failing."""
+    from torch.distributed.checkpoint import FileSystemReader
+
+    path = Path(load_dir)
+    step_file = path / "latest_checkpointed_iteration.txt"
+    if step_file.is_file():
+        step = step_file.read_text().strip()
+        path = path / (step if step == "release" else f"iter_{int(step):07d}")
+    if not path.is_dir():
+        return
+    if not any(
+        key.endswith(LINEAR_ATTN_LAYOUT_KEY) for key in FileSystemReader(path).read_metadata().state_dict_metadata
+    ):
+        raise ValueError(
+            f"{load_dir} was written before the shared linear-attention layer's weight layout and would load "
+            "scrambled. Re-convert it from the HuggingFace checkpoint (tools/convert_hf_to_torch_dist.py)."
+        )
 
 
 def _is_megatron_checkpoint(path: str | Path) -> bool:

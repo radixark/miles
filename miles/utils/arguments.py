@@ -29,6 +29,8 @@ from miles.utils.tracking_utils.ci_history import RECORD_DIR_ENV
 
 logger = logging.getLogger(__name__)
 
+LINEAR_ATTENTION_BACKENDS = ("fla", "flashqla")
+
 FULLY_ASYNC_ROLLOUT_PATH = "miles.rollout.fully_async_rollout.FullyAsyncRolloutFn"
 
 
@@ -333,7 +335,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             parser.add_argument(
                 "--linear-attention-backend",
                 type=str,
-                choices=["fla", "flashqla"],
+                choices=LINEAR_ATTENTION_BACKENDS,
                 default="fla",
                 help=(
                     "Backend for Qwen GDN linear-attention layers. "

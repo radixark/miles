@@ -201,6 +201,8 @@ if __name__ == "__main__":
     print(f"loading model from {args.input_dir}")
     t = time.time()
     megatron_args = torch.load(os.path.join(args.input_dir, "common.pt"), weights_only=False)["args"]
+    if args.origin_hf_dir:
+        megatron_args.hf_checkpoint = args.origin_hf_dir
     dist_cp.state_dict_loader._load_state_dict(
         state_dict,
         storage_reader=WrappedStorageReader(args.input_dir),

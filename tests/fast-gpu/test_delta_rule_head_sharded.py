@@ -1,4 +1,4 @@
-"""Head-sharded KDA against its replicated reference at
+"""Head-sharded GDN (Qwen3.5, Qwen3-Next layouts) and KDA against their replicated references at
 TP = world size: forward output and every input / parameter gradient, gathered to the full layout.
 
     torchrun --nproc_per_node=2 tests/fast-gpu/test_delta_rule_head_sharded.py
@@ -19,6 +19,7 @@ from miles.kernels.attention.delta_rule import DeltaRuleHeads
 
 sys.path.insert(0, os.path.dirname(__file__))
 from delta_rule_reference import (  # noqa: E402
+    ReplicatedGDN,
     ReplicatedKDA,
     build_layer,
     conv_of,
@@ -32,6 +33,8 @@ register_cuda_ci(est_time=300, suite="stage-c-4-gpu-h200", labels=["precision"],
 
 HIDDEN = 256
 CASES = {
+    "qwen3_5": DeltaRuleHeads(num_k_heads=4, num_v_heads=8, head_k_dim=64, head_v_dim=64),
+    "qwen3_next": DeltaRuleHeads(num_k_heads=4, num_v_heads=8, head_k_dim=64, head_v_dim=64),
     "kda": DeltaRuleHeads(num_k_heads=8, num_v_heads=8, head_k_dim=64, head_v_dim=64),
 }
 
@@ -39,7 +42,11 @@ CASES = {
 def check(name, config, tp_group):
     torch.manual_seed(7)
     heads = CASES[name]
-    ref = ReplicatedKDA(HIDDEN, heads, torch.bfloat16).cuda()
+    ref = (
+        ReplicatedKDA(HIDDEN, heads, torch.bfloat16)
+        if name == "kda"
+        else ReplicatedGDN(name, HIDDEN, heads, torch.bfloat16)
+    ).cuda()
     layer = build_layer(ref, config)
     core = layer.linear_attn
 
@@ -54,7 +61,8 @@ def check(name, config, tp_group):
     out_ref.backward(grad_out)
     out_new.backward(grad_out.transpose(0, 1))
 
-    norm_ref, out_proj_ref = ref.o_norm, ref.o_proj
+    norm_ref = ref.o_norm if name == "kda" else ref.norm
+    out_proj_ref = ref.o_proj if name == "kda" else ref.out_proj
     errors = {
         "out": rel_err(out_ref, out_new.transpose(0, 1)),
         "dx": rel_err(x_ref.grad, x_new.grad.transpose(0, 1)),
@@ -66,7 +74,8 @@ def check(name, config, tp_group):
     }
     for proj, full_grad in sharded_projections(ref, grad=True).items():
         errors[proj] = rel_err(full_grad, gather(getattr(core, proj).weight.grad, 0, tp_group))
-    errors["f_a_proj"] = rel_err(ref.f_a_proj.weight.grad, core.f_a_proj.weight.grad)
+    if name == "kda":
+        errors["f_a_proj"] = rel_err(ref.f_a_proj.weight.grad, core.f_a_proj.weight.grad)
     return errors
 
 
