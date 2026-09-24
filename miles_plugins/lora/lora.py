@@ -70,7 +70,9 @@ def _resolve_attach_context(args, transformer_config, arch_spec: LoRAArchSpec) -
 
     layer_prefix, shared_expert = resolve_hf_naming(args.hf_checkpoint)
     return AttachContext(
-        lora=LoRAConfig.from_args(args, select_all=arch_spec.complete_layout),
+        lora=LoRAConfig.from_args(
+            args, select_all=arch_spec.fixed_targets is not None and arch_spec.fixed_targets.select_all
+        ),
         transformer_config=transformer_config,
         tp_size=ps.get_tensor_model_parallel_world_size(),
         tp_rank=ps.get_tensor_model_parallel_rank(),
@@ -127,13 +129,13 @@ def _assert_supported_run(args) -> None:
 
 
 def _require_grad_on_first_activation(model) -> nn.Module | None:
-    """Make a frozen embedding output require grad so recomputation enters each block."""
+    """Make a frozen embedding output require grad in training so recomputation enters each block."""
     embedding = getattr(model, "embedding", None)
     if embedding is None:
         return None
 
-    def hook(_module, _inputs, output):
-        return output if output.requires_grad else output.requires_grad_(True)
+    def hook(module, _inputs, output):
+        return output.requires_grad_(True) if module.training and not output.requires_grad else output
 
     embedding.register_forward_hook(hook)
     return embedding

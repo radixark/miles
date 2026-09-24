@@ -43,7 +43,7 @@ separate from SGLang's serving-side `--sglang-lora-backend` choice.
 | Implementation | How the adapter is built | Model coverage on current `main` | Status |
 |---|---|---|---|
 | **Megatron-Bridge PEFT** | `AutoBridge` builds the provider, applies Bridge LoRA before DDP, and exports HF-named adapter tensors. Select it with `--megatron-to-hf-mode bridge`. | Qwen2.5, Qwen3, GPT-OSS, Kimi K2.5, GLM-5/5.1/5.2, and Qwen3.5/3.6, subject to the evidence and module caveats below. | General production path. Current multi-LoRA also requires this path. |
-| **Native / raw-mode LoRA** | Under `--megatron-to-hf-mode raw`, miles builds the model with its own Megatron provider and the `miles_plugins.lora` plugin attaches adapter modules directly before DDP. | Architectures registered in `miles_plugins/lora/registry.py`: fused-QKV GQA (Llama, Qwen2/3, GLM-4), Qwen3.5/3.6/Next hybrids (GQA layers), MLA (DeepSeek-V3/V3.2, Kimi K2/K2.5, GLM-4.7-Flash, GLM-5.x), and Inkling. Kimi K3 keeps its model-specific integration. | Single-LoRA, colocated. Unregistered models fail at startup. |
+| **Native / raw-mode LoRA** | Under `--megatron-to-hf-mode raw`, miles builds the model with its own Megatron provider and the `miles_plugins.lora` plugin attaches adapter modules directly before DDP. | Architectures registered in `miles_plugins/lora/registry.py`: fused-QKV GQA (Llama, Qwen2/3, GLM-4), Qwen3.5/3.6/Next hybrids (GQA layers), MLA (DeepSeek-V3/V3.2, Kimi K2/K2.5, GLM-4.7-Flash, GLM-5.x), Inkling, and Kimi K3. | Single-LoRA, colocated. Unregistered models fail at startup. |
 
 <Note>
 The planned maintenance direction is native-first: after the generalized native plugin
@@ -61,8 +61,11 @@ same declaration drives attachment, HF export/import, and SGLang serving targets
 The spec is selected from the checkpoint's `model_type`.
 
 Adapters cover attention projections (GQA Q/K/V/O, MLA Q-A/Q-B/KV-A/KV-B/O), dense
-MLPs, and shared experts. Routed experts carry adapters only for Inkling, whose spec
-also covers its output head. Selecting a projection the spec does not implement
+MLPs, and shared experts. Routed experts carry shared-outer adapters only for Inkling
+and Kimi K3 (which require `--experts-shared-outer-loras`); Inkling's spec also covers
+its output head. Inkling and Kimi K3 accept only their verified adapter layout (Kimi
+K3 may omit the routed-expert down projection), so omit `--target-modules` for them.
+Selecting a projection the spec does not implement
 (for example routed experts or GDN input projections) fails at startup; use
 `--megatron-to-hf-mode bridge` for those. A partial fused selection (for example
 only `q_proj`) trains only the selected projection; its fused-buffer siblings are
@@ -275,8 +278,10 @@ alternative aligned-expert path.
   used by Tinker. HF export errors are logged while native checkpoint saving
   continues. Raw mode saves native shards and a rank-sharded adapter config without
   HF export. `--save-hf` exports a merged model and an HF adapter without native
-  training shards. Direct HF PEFT-to-Bridge resume is not implemented yet; native
-  Inkling supplies a model-specific HF adapter importer.
+  training shards; native LoRA merges each adapter into its host weights before the
+  ordinary base-weight conversion, so the merged model uses the same converters as
+  full-model exports. Direct HF PEFT-to-Bridge resume is not implemented yet;
+  native LoRA imports HF adapters through `--lora-adapter-path`.
 - **Weight synchronization.** Colocated IPC and remote NCCL broadcast both ship
   adapter tensors at each configured update boundary without merging them into
   the base. A checksum checker is available for the colocated path.

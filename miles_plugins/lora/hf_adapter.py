@@ -33,14 +33,17 @@ def resolve_hf_naming(hf_checkpoint: str | None) -> tuple[str, str]:
         names = json.load(handle).get("weight_map", {})
 
     prefixes: collections.Counter[str] = collections.Counter()
+    shared_blocks: collections.Counter[str] = collections.Counter()
     for name in names:
         if "mtp" in name.split(".") or "vision" in name:
             continue
-        match = re.match(r"^((?:[\w.]+\.)?layers\.)\d+\.", name)
+        match = re.match(r"^((?:[\w.]+\.)?layers\.)\d+\.(?:(\w+\.shared_experts?\.))?", name)
         if match:
             prefixes[match.group(1)] += 1
+            if match.group(2):
+                shared_blocks[match.group(2)] += 1
     layer_prefix = prefixes.most_common(1)[0][0] if prefixes else default_layer_prefix
-    shared = "mlp.shared_experts." if any(".mlp.shared_experts." in name for name in names) else default_shared_expert
+    shared = shared_blocks.most_common(1)[0][0] if shared_blocks else default_shared_expert
     return layer_prefix, shared
 
 

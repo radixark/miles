@@ -15,7 +15,13 @@ from miles_plugins.lora.spec.attention import (
     InklingAttentionSpec,
     MLAAttentionSpec,
 )
-from miles_plugins.lora.spec.base import LoRAArchSpec
+from miles_plugins.lora.spec.base import FixedTargets, LoRAArchSpec
+from miles_plugins.lora.spec.kimi_k3 import (
+    KimiK3AttentionSpec,
+    KimiK3ExpertsSpec,
+    KimiK3MLPSpec,
+    shared_outer_serving_targets,
+)
 from miles_plugins.lora.spec.layout import AttentionSpecBase
 from miles_plugins.lora.spec.lm_head import InklingLMHeadSpec
 from miles_plugins.lora.spec.mlp import FusedGatedMLPSpec, InklingDenseMLPSpec
@@ -43,7 +49,23 @@ def _inkling_arch_spec() -> LoRAArchSpec:
         mlp=InklingDenseMLPSpec(),
         experts=InklingExpertsSpec(),
         lm_head=InklingLMHeadSpec(),
-        complete_layout=True,
+        # TML export names are not HF targets; SGLang auto-detects them.
+        fixed_targets=FixedTargets(serving=lambda _targets: "all-linear", select_all=True),
+    )
+
+
+def _kimi_k3_arch_spec() -> LoRAArchSpec:
+    attention = KimiK3AttentionSpec()
+    return LoRAArchSpec(
+        name=attention.name,
+        model_family=attention.family,
+        attention=attention,
+        mlp=KimiK3MLPSpec(),
+        experts=KimiK3ExpertsSpec(),
+        # the routed-expert down-proj may be omitted: its EP-shared w2_lora_B dominates adapter growth (#1559)
+        fixed_targets=FixedTargets(
+            serving=shared_outer_serving_targets, optional=frozenset({"block_sparse_moe.experts.*.w2"})
+        ),
     )
 
 
@@ -73,6 +95,7 @@ def _build_model_specs() -> dict[str, LoRAArchSpec]:
         "kimi_k2": mla,
         "kimi_k25": mla,
         "joyai_llm_flash": mla,
+        "kimi_k3": _kimi_k3_arch_spec(),
         "inkling_text": inkling,
         "inkling_model": inkling,
         "inkling_mm_model": inkling,
@@ -102,19 +125,27 @@ def resolve_checkpoint_spec(hf_checkpoint: str) -> tuple[str, LoRAArchSpec]:
         return resolve_config_spec(json.load(handle))
 
 
-def resolve_adapter_targets(hf_config: dict, hf_targets: list[str], *, hf_modules: list[str]) -> list[str] | str:
+def resolve_adapter_targets(
+    hf_config: dict,
+    hf_targets: list[str],
+    *,
+    hf_modules: list[str],
+    lora_type: str,
+    experts_shared_outer_loras: bool,
+) -> list[str] | str:
     """Validate the resolved HF targets against the native spec; return the targets SGLang serves.
 
     ``hf_modules`` lists the HF model's module names; when it is empty (custom HF
     implementations) the target selectors themselves are checked.
     """
+    assert lora_type == "lora", "native LoRA does not implement --lora-type canonical_lora; use bridge mode"
     _model_type, spec = resolve_config_spec(hf_config)
-    if spec.complete_layout:
-        assert set(hf_targets) == set(resolve_hf_lora_targets(hf_config)), (
-            f"native {spec.name} LoRA requires its complete adapter layout; omit --target-modules and "
-            "--exclude-modules"
-        )
-        return "all-linear"
+    assert (
+        spec.experts is None or experts_shared_outer_loras
+    ), f"native {spec.name} LoRA trains shared-outer expert adapters; pass --experts-shared-outer-loras"
+    if spec.fixed_targets is not None:
+        _check_fixed_targets(spec, hf_config, hf_targets)
+        return spec.fixed_targets.serving(hf_targets)
 
     selected = [module for module in hf_modules if any(matches_lora_target(module, t) for t in hf_targets)]
     unattachable = [module for module in selected or hf_targets if not spec.attaches(module)]
@@ -124,6 +155,17 @@ def resolve_adapter_targets(hf_config: dict, hf_targets: list[str], *, hf_module
         f"--target-modules {default_target_modules(hf_config)}) or use --megatron-to-hf-mode bridge."
     )
     return _expand_fused_families(hf_targets, spec.serving_fused_families())
+
+
+def _check_fixed_targets(spec: LoRAArchSpec, hf_config: dict, hf_targets: list[str]) -> None:
+    layout = resolve_hf_lora_targets(hf_config)
+    optional = {t for t in layout if any(t.endswith(f".{suffix}") for suffix in spec.fixed_targets.optional)}
+    missing = sorted(set(layout) - set(hf_targets) - optional)
+    unexpected = sorted(set(hf_targets) - set(layout))
+    assert not (missing or unexpected), (
+        f"native {spec.name} LoRA requires its verified adapter layout (missing={missing}, "
+        f"unexpected={unexpected}); omit --target-modules and --exclude-modules to use it"
+    )
 
 
 def _expand_fused_families(targets: list[str], families: list[frozenset[str]]) -> list[str]:

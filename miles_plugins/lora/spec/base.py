@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import enum
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, Protocol
 
@@ -126,11 +127,23 @@ _HF_LAYER = r"(?:^|\.)layers\.(?:\d+|\*)\."
 
 
 @dataclass(frozen=True)
+class FixedTargets:
+    """A verified adapter layout: requests must be the model's HF target layout, minus ``optional`` suffixes.
+
+    ``serving`` turns the request into SGLang's target list. ``select_all`` attaches every
+    implemented projection regardless of names, for specs whose export names are not HF targets.
+    """
+
+    serving: Callable[[list[str]], list[str] | str]
+    optional: frozenset[str] = frozenset()
+    select_all: bool = False
+
+
+@dataclass(frozen=True)
 class LoRAArchSpec:
     """Complete native-LoRA contract selected for one HF model architecture.
 
-    ``complete_layout`` specs attach every projection they implement, export names
-    SGLang auto-detects, and accept only the model's complete HF target layout.
+    Without ``fixed_targets``, any selection of attachable projections is accepted.
     """
 
     name: str
@@ -140,7 +153,7 @@ class LoRAArchSpec:
     experts: ExpertsLoRASpec | None = None
     lm_head: Any = None
     allows_mixer_only_adapter_chunks: bool = False
-    complete_layout: bool = False
+    fixed_targets: FixedTargets | None = None
 
     def attaches(self, hf_module: str) -> bool:
         """Whether this spec implements an adapter for the HF module (``*`` stands for any layer)."""

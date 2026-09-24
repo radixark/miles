@@ -8,7 +8,8 @@ import torch.nn as nn
 
 from miles.utils.lora.hf_lora_targets import resolve_hf_lora_targets
 from miles_plugins.lora.config import LoRAConfig
-from miles_plugins.lora.registry import MODEL_SPECS, resolve_adapter_targets
+from miles_plugins.lora.registry import MODEL_SPECS
+from miles_plugins.lora.registry import resolve_adapter_targets as _resolve_adapter_targets
 from miles_plugins.lora.spec.attention import GQAAttentionSpec, MLAAttentionSpec
 from miles_plugins.lora.spec.base import AttachContext
 
@@ -40,6 +41,12 @@ class TestArchitectureGuards:
         """An uncompressed query path exports an unfused q_proj SGLang's qkv_a loader cannot ingest."""
         with pytest.raises(AssertionError, match="q_lora_rank"):
             _assert_supported_architecture(_config(mla=True, q_lora_rank=None))
+
+
+def resolve_adapter_targets(hf_config, targets, *, hf_modules):
+    return _resolve_adapter_targets(
+        hf_config, targets, hf_modules=hf_modules, lora_type="lora", experts_shared_outer_loras=True
+    )
 
 
 def _qwen3_modules(num_layers=2):
@@ -102,6 +109,16 @@ class TestResolveAdapterTargets:
         with pytest.raises(AssertionError, match=r"layers\.1\.mlp\.experts\.3\.gate_proj"):
             resolve_adapter_targets({"model_type": "qwen3"}, ["gate_proj", "up_proj"], hf_modules=modules)
 
+    def test_canonical_lora_is_bridge_only(self):
+        with pytest.raises(AssertionError, match="canonical_lora"):
+            _resolve_adapter_targets(
+                {"model_type": "qwen3"},
+                ["q_proj"],
+                hf_modules=_qwen3_modules(),
+                lora_type="canonical_lora",
+                experts_shared_outer_loras=False,
+            )
+
     def test_unregistered_model_type_fails_closed(self):
         with pytest.raises(AssertionError, match="no spec registered"):
             resolve_adapter_targets({"model_type": "gpt_oss"}, ["q_proj"], hf_modules=[])
@@ -115,7 +132,7 @@ class TestInklingSpec:
             config = dict(model_type="inkling_mm_model", text_config=config)
         hf_targets = resolve_hf_lora_targets(config)
         assert resolve_adapter_targets(config, hf_targets, hf_modules=[]) == "all-linear"
-        with pytest.raises(AssertionError, match="complete adapter layout"):
+        with pytest.raises(AssertionError, match="verified adapter layout"):
             resolve_adapter_targets(config, [t for t in hf_targets if not t.endswith(".up_proj")], hf_modules=[])
 
     def test_legacy_config_uses_the_same_layout(self):
@@ -124,7 +141,7 @@ class TestInklingSpec:
 
     def test_spec_carries_tml_naming_and_custom_hooks(self):
         spec = MODEL_SPECS["inkling_mm_model"]
-        assert spec.complete_layout
+        assert spec.fixed_targets.select_all
         assert spec.attention.hf_block == "attn"
         assert spec.attention.supported_targets == {"wq_du", "wk_dv", "wv_dv", "wr_du", "wo_ud"}
         assert spec.mlp.supported_targets == {"gate_up_proj", "down_proj"}

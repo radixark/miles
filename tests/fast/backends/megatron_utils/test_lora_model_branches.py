@@ -165,7 +165,7 @@ class TestSetupModelAndOptimizerLoraBranch:
         mock_sched.return_value = MagicMock()
 
         args = self._make_args(lora_rank=32, role="actor", mode="raw")
-        args.lora_type = "lora"
+        args.offload_train = False
         setup_model_and_optimizer(args, role="actor")
 
         mock_lora_setup.assert_not_called()

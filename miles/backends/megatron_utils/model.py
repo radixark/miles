@@ -54,7 +54,7 @@ from .ci_utils import (
     save_model_hashes,
 )
 from .initialize import is_first_replica_megatron_main_rank
-from .lora.utils import is_lora_enabled, is_lora_model
+from .lora.utils import is_lora_enabled, is_lora_model, patch_param_grad_buffer_for_colocate_mode_lora
 from .model_provider import get_model_provider_func
 from .parallel import get_packed_seq_params
 
@@ -158,18 +158,9 @@ def setup_model_and_optimizer(
     else:
         provider_func = get_model_provider_func(args, role)
         if is_lora_enabled(args) and role == "actor":
-            # TODO: will rewrite in native lora refactor
-            if "kimi_k3" in (args.model_name or "").lower():
-                from miles_plugins.models.kimi_k3.lora import wrap_model_provider_with_kimi_k3_lora
-
-                from .lora.utils import patch_param_grad_buffer_for_colocate_mode_lora
-
-                provider_func = wrap_model_provider_with_kimi_k3_lora(provider_func, args)
-                if args.offload_train:
-                    patch_param_grad_buffer_for_colocate_mode_lora()
-            else:
-                assert args.lora_type == "lora", "Native LoRA does not implement --lora-type canonical_lora"
-                provider_func = wrap_model_provider_with_lora(provider_func, args)
+            provider_func = wrap_model_provider_with_lora(provider_func, args)
+            if args.offload_train:
+                patch_param_grad_buffer_for_colocate_mode_lora()
         model = get_model(provider_func, ModelType.encoder_or_decoder)
 
     if args.debug_disable_optimizer:
@@ -957,7 +948,6 @@ def initialize_model_and_optimizer(
         and role == "actor"
         and args.megatron_to_hf_mode != "bridge"
         and getattr(args, "lora_adapter_path", None)
-        and "kimi_k3" not in (args.model_name or "").lower()
     ):
         if (Path(args.lora_adapter_path) / "adapter_model.safetensors").exists() and not native_optimizer_restored:
             load_lora_adapter_hf(model, args.lora_adapter_path)

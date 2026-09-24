@@ -47,6 +47,17 @@ class TestHfNaming:
         )
         assert resolve_hf_naming(path)[0] == "model.llm.layers."
 
+    def test_kimi_k3_shared_experts_live_under_block_sparse_moe(self, tmp_path):
+        path = _write_index(
+            tmp_path,
+            [
+                "language_model.model.layers.0.mlp.gate_proj.weight",
+                "language_model.model.layers.1.block_sparse_moe.shared_experts.up_proj.weight",
+                "language_model.model.layers.1.block_sparse_moe.experts.7.w1.weight",
+            ],
+        )
+        assert resolve_hf_naming(path) == ("language_model.model.layers.", "block_sparse_moe.shared_experts.")
+
     def test_missing_index_falls_back_to_the_plain_layout(self, tmp_path):
         assert resolve_hf_naming(str(tmp_path)) == ("model.layers.", "mlp.shared_expert.")
         assert resolve_hf_naming(None) == ("model.layers.", "mlp.shared_expert.")

@@ -88,5 +88,12 @@ class TestFirstActivationGrad:
         assert _require_grad_on_first_activation(model) is embedding
         assert embedding(torch.tensor([0, 1])).requires_grad
 
+    def test_eval_forward_stays_out_of_autograd(self):
+        embedding = torch.nn.Embedding(4, 3)
+        embedding.weight.requires_grad_(False)
+        _require_grad_on_first_activation(SimpleNamespace(embedding=embedding))
+        embedding.eval()
+        assert not embedding(torch.tensor([0, 1])).requires_grad
+
     def test_stage_without_an_embedding_is_a_noop(self):
         assert _require_grad_on_first_activation(SimpleNamespace()) is None
