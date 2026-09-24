@@ -274,12 +274,11 @@ class InklingGPTModel(GPTModel):
             )
 
 
-def inkling_model_provider(pre_process=True, post_process=True, vp_stage=None, *, mm_towers=False):
+def inkling_model_provider(
+    pre_process=True, post_process=True, vp_stage=None, *, args: TrainerConfig, mm_towers=False
+):
     import json
 
-    from megatron.training import get_args
-
-    args = get_args()
     if args.backend.context_parallel_size > 1:
         assert args.allgather_cp, "Inkling CP requires --allgather-cp (zigzag CP not supported)"
     text_cfg = json.load(open(f"{args.hf_checkpoint}/config.json"))["text_config"]
@@ -316,10 +315,10 @@ def inkling_model_provider(pre_process=True, post_process=True, vp_stage=None, *
     return model
 
 
-def inkling_mm_model_provider(pre_process=True, post_process=True, vp_stage=None):
+def inkling_mm_model_provider(pre_process=True, post_process=True, vp_stage=None, *, args: TrainerConfig):
     """Multimodal provider: the text model plus the frozen HF vision/audio towers.
 
     A separate entry point instead of a CLI switch -- multimodal launch scripts pass
     this as --custom-model-provider-path.
     """
-    return inkling_model_provider(pre_process, post_process, vp_stage, mm_towers=True)
+    return inkling_model_provider(pre_process, post_process, vp_stage, args=args, mm_towers=True)
