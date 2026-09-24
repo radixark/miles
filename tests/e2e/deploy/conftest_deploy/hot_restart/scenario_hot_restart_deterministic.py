@@ -26,6 +26,7 @@ from tests.e2e.deploy.conftest_deploy.hot_restart.assert_redone_from_checkpoint 
 from tests.e2e.deploy.conftest_deploy.hot_restart.assert_redone_from_scratch import (
     assert_unsaved_run_redone_from_scratch,
 )
+from tests.e2e.deploy.conftest_deploy.hot_restart.assert_rollout_data import assert_generations_recorded_their_steps
 from tests.e2e.deploy.conftest_deploy.hot_restart.driver import (
     HotRestartDriver,
     ScheduledFreeze,
@@ -42,7 +43,10 @@ from tests.e2e.ft.conftest_ft.execution import DATA_DIR, MODEL_DIR
 from tests.e2e.ft.conftest_ft.modes import DENSE_MODEL_HF_REPO, DENSE_MODEL_NAME, DENSE_MODEL_TYPE, FTTestMode
 from tests.utils.deploy.hot_restart.evidence import TRAIN_STEP_METRIC_KEY, HotRestartEvidence
 from tests.utils.soak.core.utils import compute_release_of_config
-from tests.utils.soak.deploy.checkers.takeover_scope import assert_take_overs_replaced_only_script
+from tests.utils.soak.deploy.checkers.takeover_scope import (
+    assert_take_overs_carried_rollout_only_args,
+    assert_take_overs_replaced_only_script,
+)
 from tests.utils.soak.deploy.utils import compute_checkpoint_dir
 
 from miles.utils.audit_utils.event_logger.logger import EVENTS_DIRNAME
@@ -314,6 +318,8 @@ def _driving_take_overs_of(
         yield
 
     driver.assert_all_restarts_happened()
+    assert_generations_recorded_their_steps(templates, schedule=restart_mode.schedule, num_rollouts=NUM_ROLLOUTS)
+    assert_take_overs_carried_rollout_only_args(driver.evidence, flag=SAVE_DEBUG_ROLLOUT_DATA_FLAG, values=templates)
 
 
 # ========================= comparison and assertions ==========================
