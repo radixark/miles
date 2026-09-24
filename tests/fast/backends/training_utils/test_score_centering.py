@@ -163,3 +163,33 @@ def test_selected_log_probs_gradcheck_and_empty_response() -> None:
     assert result.shape == (0, 3)
     result.sum().backward()
     torch.testing.assert_close(logits.grad, torch.zeros_like(logits))
+
+
+@pytest.mark.parametrize("mode", ["none", "tis", "mis"])
+def test_disabled_centering_matches_detached_weighted_policy_gradient(mode: str) -> None:
+    logits = torch.tensor([[2.0, -0.5, 0.1], [-1.0, 2.0, 0.3]], dtype=torch.float64, requires_grad=True)
+    q = torch.tensor([[0.1, 0.6, 0.3], [0.6, 0.1, 0.3]], dtype=torch.float64)
+    logp = logits.log_softmax(-1)
+    advantage = torch.tensor([1.2, -0.7], dtype=torch.float64, requires_grad=True)
+    behavior = q.log().requires_grad_()
+    args = (logp[:, 0], logp[:, :2], behavior[:, 0], behavior[:, :2], torch.ones(2, 2, dtype=torch.bool), advantage)
+    actual, metrics = score_centering_loss(*args, mode=mode, center=False)
+    ratio = (logp[:, 0].detach() - behavior[:, 0].detach()).exp()
+    if mode == "tis":
+        weight = ratio.clamp_max(2.0)
+    elif mode == "mis":
+        weight = torch.where((ratio >= 0.5) & (ratio <= 5.0), ratio, 0.0)
+    else:
+        weight = torch.ones_like(ratio)
+    expected = -advantage.detach() * weight * logp[:, 0]
+    torch.testing.assert_close(actual, expected)
+    actual_grad = torch.autograd.grad(
+        actual.sum(), (logits, behavior, advantage), retain_graph=True, allow_unused=True
+    )
+    expected_grad = torch.autograd.grad(expected.sum(), logits, retain_graph=True)[0]
+    torch.testing.assert_close(actual_grad[0], expected_grad)
+    assert actual_grad[1:] == (None, None)
+    assert torch.count_nonzero(metrics["sc_correction"]) == 0
+    default, _ = score_centering_loss(*args, mode=mode)
+    explicit, _ = score_centering_loss(*args, mode=mode, center=True)
+    torch.testing.assert_close(default, explicit, atol=0, rtol=0)

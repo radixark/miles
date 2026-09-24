@@ -1473,6 +1473,11 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 default="none",
                 help="Importance weights to center together with the policy score.",
             )
+            parser.add_argument(
+                "--disable-score-centering-correction",
+                action="store_true",
+                help="Ablate only score centering while retaining identical importance weights and diagnostics.",
+            )
             parser.add_argument("--score-centering-tis-clip", type=float, default=2.0)
             parser.add_argument("--score-centering-mis-low", type=float, default=0.5)
             parser.add_argument("--score-centering-mis-high", type=float, default=5.0)

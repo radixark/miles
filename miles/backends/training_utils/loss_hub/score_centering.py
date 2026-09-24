@@ -43,6 +43,7 @@ def score_centering_loss(
     mis_low: float = 0.5,
     mis_high: float = 5.0,
     eps: float = 1e-6,
+    center: bool = True,
 ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
     """Return unreduced token losses and detached token metrics.
 
@@ -78,9 +79,12 @@ def score_centering_loss(
             mis_high=mis_high,
         )
     correction = (residual * head_log_probs).sum(-1)
-    loss = -advantages.detach() * (weight * train_log_probs - correction)
+    applied_correction = correction if center else correction * 0.0
+    loss = -advantages.detach() * (weight * train_log_probs - applied_correction)
     return loss, {
-        "sc_correction": correction.detach(),
+        "sc_correction": applied_correction.detach(),
+        "sc_uncentered_correction": correction.detach(),
+        "sc_importance_weight_sq": weight.square(),
         "sc_train_head_mass": p_mass,
         "sc_rollout_head_mass": q_mass,
         "sc_tail_ratio": rho,

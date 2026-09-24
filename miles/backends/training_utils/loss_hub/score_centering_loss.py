@@ -130,6 +130,7 @@ def score_centering_loss_function(
         head,
         (ids >= 0) & active.unsqueeze(-1),
         advantages,
+        center=not getattr(args, "disable_score_centering_correction", False),
         mode=args.score_centering_is,
         tis_clip=args.score_centering_tis_clip,
         mis_low=args.score_centering_mis_low,

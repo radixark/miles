@@ -97,3 +97,13 @@ python -m pytest --confcutdir=tests/manual tests/manual/test_score_centering_liv
 ```
 
 Set `SGLANG_RETURN_ORIGINAL_LOGPROB=0` on the server before starting it. The probe checks native and OpenAI response metadata using the production candidate collector and validator, and checks temperature scaling at 0.7, 1.0 and 1.3. It warms the shared prompt first so that cached and uncached prefills do not confound the temperature comparison. Set `MILES_LIVE_SCORE_CENTERING_ARTIFACT_DIR` to keep the raw responses.
+
+### Fixed-rollout ablation
+
+Record behavior probabilities with the rollout-only debug mode, then replay the same
+recordings with the training-only debug mode. For a matched control, add
+`--disable-score-centering-correction`: only the correction is disabled; candidate
+computation, importance weighting, regularization, and probability diagnostics remain
+the same. This control is a weighted policy-gradient ablation, not the PPO loss.
+Never replace recorded behavior probabilities with probabilities from the updated actor.
+Evaluate learned checkpoints separately: the rewards of recorded responses are fixed.
