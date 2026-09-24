@@ -65,6 +65,9 @@ VARIANTS = {
             "WHEELS_TAG_ROCM": "rocm720-gfx950-v0.5.16",
             "APPLY_ROCR_VMMFIX": "1",
             "TE_USE_WHEEL": "1",
+            # Frozen with the Python 3.10 base: later Megatron-Bridge revisions require Python 3.12,
+            # so this variant cannot follow the pin the other images track.
+            "MEGATRON_BRIDGE_COMMIT": "40b930897717941cfe2bd9806f417e28bf1bfa65",
         },
     },
     "rocm10-mi35x": {

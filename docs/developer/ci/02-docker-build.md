@@ -31,7 +31,7 @@ The Dockerfile is the build recipe: it provides the cu13 defaults and emits one 
 
 **Output** — one `radixark/miles` image for the platform buildx targets: the SGLang base, then the Python dependencies declared in `requirements.txt`, Megatron-LM at its branch default or caller-pinned commit, Miles, and the prebuilt wheels (`sgl-router` among them). A multi-arch build is one `buildx` run executed once per platform — `TARGETARCH` differs each time, so each arch installs its own wheels — and buildx pushes the two as a single manifest.
 
-`docker/Dockerfile.rocm` is the ROCm counterpart (build-args `GPU_ARCH`, a ROCm `SGLANG_IMAGE_TAG`, and a `WHEELS_TAG_ROCM` release from `XinyuJiangCMU/miles-wheels-rocm`). `rocm720-mi35x` sets `APPLY_ROCR_VMMFIX=1` to install the rebuilt ROCr with the VMM-pause fix from its wheels release; ROCm 10 has the fix upstream. `rocm10-mi35x` uses its own cp312 wheels release (`rocm10-gfx950-v0.5.18`) and sets `APEX_USE_PREBUILT=1` and `NVRX_INSTALL=1`.
+`docker/Dockerfile.rocm` is the ROCm counterpart (build-args `GPU_ARCH`, a ROCm `SGLANG_IMAGE_TAG`, and a `WHEELS_TAG_ROCM` release from `XinyuJiangCMU/miles-wheels-rocm`). `rocm720-mi35x` sets `APPLY_ROCR_VMMFIX=1` to install the rebuilt ROCr with the VMM-pause fix from its wheels release; ROCm 10 has the fix upstream. It also sets `MEGATRON_BRIDGE_COMMIT` to the last Megatron-Bridge revision that supports its Python 3.10 base, because the Dockerfile default requires Python 3.12. `rocm10-mi35x` uses its own cp312 wheels release (`rocm10-gfx950-v0.5.18`) and sets `APEX_USE_PREBUILT=1` and `NVRX_INSTALL=1`.
 
 ## Build script
 
