@@ -300,7 +300,8 @@ class Qwen38NextPLE(MegatronModule):
         self.norm_conv = torch.nn.Parameter(torch.zeros(wide, dtype=dtype))
 
         kernel = config.qwen3_8_next_ple_conv_kernel_size
-        self.conv_dilation = getattr(config, "qwen3_8_next_ple_conv_dilation", 3)
+        # sglang dilates the short conv by the n-gram size; the checkpoint has no separate field
+        self.conv_dilation = config.qwen3_8_next_ngram_size
         self.conv1d_weight = torch.nn.Parameter(torch.zeros(wide, 1, kernel, dtype=dtype))
 
         for p in (self.norm_key, self.norm_query, self.norm_conv, self.conv1d_weight):

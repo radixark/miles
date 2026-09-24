@@ -254,7 +254,6 @@ class Qwen38NextBridge(Qwen3_5Bridge):
         config.qwen3_8_next_ngram_vocab_size_base = getattr(text_config, "ngram_vocab_size_base", 20000000)
         config.qwen3_8_next_split_ngram_parts = getattr(text_config, "split_ngram_parts", 128)
         config.qwen3_8_next_ple_conv_kernel_size = getattr(text_config, "ple_conv_kernel_size", 4)
-        config.qwen3_8_next_ple_conv_dilation = getattr(text_config, "ple_conv_dilation", 3)
         # the n-gram hash resets at EOS so n-grams never straddle a document
         config.qwen3_8_next_eos_token_id = getattr(text_config, "eos_token_id", 0)
         # the checkpoint pads the last shard, so the height is not a ceil over the config
