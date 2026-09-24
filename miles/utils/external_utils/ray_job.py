@@ -11,6 +11,7 @@ from ray.job_submission import JobStatus, JobSubmissionClient
 
 def run_ray_job(*, address: str, entrypoint: str, runtime_env: dict) -> None:
     """Run a job until completion or a launcher signal, stopping it before returning."""
+    runtime_env = {**runtime_env, "env_vars": {**runtime_env.get("env_vars", {}), "PYTHONUNBUFFERED": "1"}}
     previous_no_proxy = os.environ.get("no_proxy")
     os.environ["no_proxy"] = ",".join(
         filter(None, (previous_no_proxy or os.environ.get("NO_PROXY"), "127.0.0.1", "localhost"))
