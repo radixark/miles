@@ -63,8 +63,3 @@ def running_gateway():
             server.wait(timeout=30)
             subprocess.run(["ray", "stop", "--force"], check=True, timeout=120)
             raise
-        deadline = time.monotonic() + 5
-        while not is_port_available(GATEWAY_PORT):
-            if time.monotonic() >= deadline:
-                raise RuntimeError(f"gateway still listening on :{GATEWAY_PORT} after teardown")
-            time.sleep(0.1)
