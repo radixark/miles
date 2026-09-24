@@ -12,9 +12,8 @@ class BaseCellFaultForm(BaseSoakActionForm):
     def harms_target(self) -> bool:
         return True
 
-    @property
-    def needs_fault_target(self) -> bool:
-        return False
+    def fault_target_cell_types(self, kind: str) -> frozenset[str]:
+        return frozenset()
 
     @property
     def process_patterns(self) -> dict[str, str]:

@@ -11,6 +11,7 @@ from tests.utils.soak.core.events import (
     SoakEvidenceArchivedEvent,
     SoakObservationEvent,
 )
+from tests.utils.soak.core.types import SoakTarget
 
 from miles.backends.megatron_utils.ft.types import TrainStepOutcome
 from miles.backends.megatron_utils.megatron_config import ACTOR_ROLE
@@ -56,6 +57,10 @@ def tail_started_at(events: list[SoakEvent]) -> datetime:
 
 def latest_observation(events: list[SoakEvent]) -> SoakObservationEvent | None:
     return next((event for event in reversed(events) if isinstance(event, SoakObservationEvent)), None)
+
+
+def alive_targets_of_kind(observation: SoakObservationEvent, kind: str) -> list[SoakTarget]:
+    return [target for target in observation.targets or [] if target.kind == kind and target.alive]
 
 
 def quiescent_polls_of_type(events: list[SoakEvent], *, expected_count_of_kind: dict[str, int]) -> dict[str, int]:

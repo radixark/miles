@@ -200,7 +200,12 @@ def create_cell_observer(
     forms: CellFaultForms,
     config: ExecuteTrainConfig,
 ) -> CellObserver:
-    fault_target_types = {kind for kind in cell_types for form in forms[kind] if form.needs_fault_target}
+    fault_target_types = {
+        fault_target_type
+        for kind in cell_types
+        for form in forms[kind]
+        for fault_target_type in form.fault_target_cell_types(kind)
+    }
     process_patterns = {
         kind: {container: pattern for form in forms[kind] for container, pattern in form.process_patterns.items()}
         for kind in cell_types
@@ -212,7 +217,9 @@ def create_cell_observer(
         cell_types=cell_types | fault_target_types,
         namespace=config.namespace if use_kubernetes else None,
         release=(
-            ReleaseName(run_id=config.run_id, deploy_component=DeployComponent.ALL, deploy_instance_id=None).serialize()
+            ReleaseName(
+                run_id=config.run_id, deploy_component=DeployComponent.ALL, deploy_instance_id=None
+            ).serialize()
             if use_kubernetes
             else None
         ),
