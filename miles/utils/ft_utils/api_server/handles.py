@@ -30,12 +30,14 @@ class _CellHandler:
         cell_type: str,
         operations: BaseCellOperations,
         controllers: list[_CellStatusSource],
-        pool_ids: list[str],
+        pool_ids: list[str] | None,
+        category: str | None,
     ) -> None:
         self._cell_type = cell_type
         self._operations = operations
         self._controllers = controllers
         self._pool_ids = pool_ids
+        self._category = category
 
     @property
     def cell_type(self) -> str:
@@ -90,7 +92,7 @@ class _CellHandler:
         }
 
     async def _get_cell_infos(self) -> dict[str, CellInfo]:
-        return await self._operations.cell_infos(pool_ids=self._pool_ids)
+        return await self._operations.cell_infos(pool_ids=self._pool_ids, category=self._category)
 
     async def suspend(self, cell_id: str) -> None:
         await self._operations.suspend(cell_id=cell_id)
