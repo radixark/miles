@@ -44,7 +44,7 @@ set TRAIN_PY /venvs/training/bin/python
 mkdir -p $DATA_ROOT $RUN_DIR
 ```
 
-Install the data helpers in their own environment, separate from the training stack:
+Install the data helpers separately from the training environment:
 
 ```fish
 cd $DATA_CODE
@@ -75,7 +75,7 @@ Each task has an initial office state, a plain-English request, and a reference 
 <details>
 <summary>Generate and validate 2,000 tasks</summary>
 
-Run in the data-tools terminal. Store your API key in a protected file and pass it with `--key_file`; choose the writer model with `--model`.
+Run in the data-tools terminal. Store your API key in a protected file and point the command at it.
 
 ```fish
 set -gx PYTHONPATH $GYM_ROOT
