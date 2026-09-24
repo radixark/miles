@@ -1,7 +1,8 @@
 """Triton hyper-connection kernels for Qwen3.8-Next (Qwen4Exp).
 
 Every reduction and elementwise step runs in fp32, with one cast onto the output dtype
-at the end.
+at the end. Token indices are promoted before multiplying by the stream width:
+long sequences can exceed 2**31 elements even when the token count fits in int32.
 """
 
 import torch
@@ -22,7 +23,7 @@ def _grouped_rmsnorm_fwd_kernel(
     EPS: tl.constexpr,
     BLOCK_C: tl.constexpr,
 ):
-    pid = tl.program_id(0)
+    pid = tl.program_id(0).to(tl.int64)
     t = pid // N
     c = pid % N
     if t >= T:
@@ -50,7 +51,7 @@ def _grouped_rmsnorm_bwd_kernel(
     C: tl.constexpr,
     BLOCK_C: tl.constexpr,
 ):
-    pid = tl.program_id(0)
+    pid = tl.program_id(0).to(tl.int64)
     t = pid // N
     c = pid % N
     if t >= T:
@@ -78,7 +79,7 @@ def _gate_mul_mean_fwd_kernel(
     C: tl.constexpr,
     BLOCK_C: tl.constexpr,
 ):
-    t = tl.program_id(0)
+    t = tl.program_id(0).to(tl.int64)
     if t >= T:
         return
     offs = tl.arange(0, BLOCK_C)
@@ -105,7 +106,7 @@ def _gate_mul_mean_bwd_kernel(
     C: tl.constexpr,
     BLOCK_C: tl.constexpr,
 ):
-    t = tl.program_id(0)
+    t = tl.program_id(0).to(tl.int64)
     if t >= T:
         return
     offs = tl.arange(0, BLOCK_C)
@@ -130,7 +131,7 @@ def _combine_fwd_kernel(
     C: tl.constexpr,
     BLOCK_C: tl.constexpr,
 ):
-    pid = tl.program_id(0)
+    pid = tl.program_id(0).to(tl.int64)
     t = pid // N
     c = pid % N
     if t >= T:
@@ -156,7 +157,7 @@ def _combine_bwd_kernel(
     C: tl.constexpr,
     BLOCK_C: tl.constexpr,
 ):
-    t = tl.program_id(0)
+    t = tl.program_id(0).to(tl.int64)
     if t >= T:
         return
     offs = tl.arange(0, BLOCK_C)

@@ -19,7 +19,8 @@ def _gather_ple_rows_from_pinned(
     row_end,
     BLOCK_D: tl.constexpr,
 ):
-    row_id = tl.program_id(0)
+    # ids hold T * heads rows of embedding_dim each; int32 row offsets wrap past ~52K tokens
+    row_id = tl.program_id(0).to(tl.int64)
     global_idx = tl.load(ids_ptr + row_id)
     in_range = (global_idx >= row_start) & (global_idx < row_end)
     local_idx = tl.where(in_range, global_idx - row_start, 0)

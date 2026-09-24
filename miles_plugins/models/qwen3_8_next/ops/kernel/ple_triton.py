@@ -1,6 +1,7 @@
 """Triton PLE kernels: fused gate chain and segment-aware causal depthwise conv.
 
 fp32 for every reduction and elementwise step, one cast onto the output dtype.
+Token indices use int64 before width multiplication, including convolution neighbors.
 """
 
 import math
@@ -30,7 +31,7 @@ def _ple_gate_fwd_kernel(
     SQRTC: tl.constexpr,
     BLOCK_C: tl.constexpr,
 ):
-    pid = tl.program_id(0)
+    pid = tl.program_id(0).to(tl.int64)
     t = pid // N
     c = pid % N
     if t >= T:
@@ -83,7 +84,7 @@ def _ple_gate_bwd_kernel(
     SQRTC: tl.constexpr,
     BLOCK_C: tl.constexpr,
 ):
-    pid = tl.program_id(0)
+    pid = tl.program_id(0).to(tl.int64)
     t = pid // N
     c = pid % N
     if t >= T:
@@ -145,7 +146,7 @@ def _ple_conv_fwd_kernel(
     DIL: tl.constexpr,
     BLOCK_W: tl.constexpr,
 ):
-    t = tl.program_id(0)
+    t = tl.program_id(0).to(tl.int64)
     wb = tl.program_id(1)
     if t >= T:
         return
@@ -184,7 +185,7 @@ def _ple_conv_bwd_kernel(
     DIL: tl.constexpr,
     BLOCK_W: tl.constexpr,
 ):
-    t = tl.program_id(0)
+    t = tl.program_id(0).to(tl.int64)
     wb = tl.program_id(1)
     if t >= T:
         return
