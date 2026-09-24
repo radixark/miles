@@ -223,7 +223,7 @@ def _load_model_state_with(
     (load_dir / "latest_checkpointed_iteration.txt").write_text(str(iteration))
 
     with ExitStack() as stack:
-        stack.enter_context(patch("miles.backends.megatron_utils.model.load_checkpoint", return_value=(iteration, 0)))
+        stack.enter_context(patch("miles.backends.megatron_utils.model.load_checkpoint", return_value=(iteration, 0, False)))
         _patch_initialize_side_effects(stack)
         return load_model_state(
             Namespace(

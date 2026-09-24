@@ -9,6 +9,7 @@ _CORE_METHOD = "_load_state_core"
 _LOAD_FUNCTION = "load_model_state"
 _INIT_METHOD = "init"
 _TRAINING_STATE_METHOD = "_init_training_state"
+_WEIGHT_UPDATER_METHOD = "_init_weight_updater_and_publisher"
 _SLEEP_METHOD = "sleep"
 _WEIGHT_UPDATER_ATTRIBUTE = "weight_updater"
 
@@ -72,7 +73,9 @@ class TestWhenTheTrainerBuildsItsWeightUpdater:
     def test_the_weight_updater_is_built_where_init_says_it_is(self):
         """The ordering below reads init, so the build has to stay in the one call init makes for it."""
         assert _attribute_assignment_lines(_INIT_METHOD, _WEIGHT_UPDATER_ATTRIBUTE) == []
-        assert len(_attribute_assignment_lines(_TRAINING_STATE_METHOD, _WEIGHT_UPDATER_ATTRIBUTE)) == 1
+        assert _functions_calling(_WEIGHT_UPDATER_METHOD, as_method=True) == [_TRAINING_STATE_METHOD]
+        assert len(_method_call_lines(_TRAINING_STATE_METHOD, _WEIGHT_UPDATER_METHOD)) == 1
+        assert len(_attribute_assignment_lines(_WEIGHT_UPDATER_METHOD, _WEIGHT_UPDATER_ATTRIBUTE)) == 2
 
     def test_the_weight_updater_is_built_after_the_state_load(self):
         """The checkpoint load lifts expert_bias back to fp32, so a snapshot taken before it records a stale dtype."""
