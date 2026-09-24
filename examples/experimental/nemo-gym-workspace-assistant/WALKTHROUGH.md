@@ -16,7 +16,7 @@ Prerequisites
 
 ## Step 1: Set up code and model
 
-This example needs three repositories beyond the Quick Start: the task-generation helpers (link will be provided), the [tested Miles checkout with the Workplace example](https://github.com/radixark/miles/tree/4e039aed9394f460e92e5703be14832fbacdfea2/examples/experimental/nemo-gym#workplace-assistant), and [NeMo Gym at the tested revision](https://github.com/NVIDIA-NeMo/Gym/tree/1ea6b75496c97bf52cdc4578bf34afc4fc5e9e7a). Keep the SGLang and Megatron-LM installation from your training environment.
+This example needs three repositories beyond the Quick Start: the [task-generation helpers](https://github.com/radixark/miles/tree/main/examples/experimental/nemo-gym-workspace-assistant), the [tested Miles checkout with the Workplace example](https://github.com/radixark/miles/tree/4e039aed9394f460e92e5703be14832fbacdfea2/examples/experimental/nemo-gym#workplace-assistant), and [NeMo Gym at the tested revision](https://github.com/NVIDIA-NeMo/Gym/tree/1ea6b75496c97bf52cdc4578bf34afc4fc5e9e7a). Keep the SGLang and Megatron-LM installation from your training environment.
 
 Place the helper folder at `/workspace/workplace-data-tools`, Gym at `/workspace/Gym`, and the tested Miles checkout at `/workspace/miles`. Paths are examples; use your own mounted storage.
 
