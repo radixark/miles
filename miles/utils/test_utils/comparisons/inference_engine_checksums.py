@@ -7,8 +7,8 @@ from miles.utils.audit_utils.event_logger.models import InferenceEngineWeightChe
 
 
 def compare_inference_engine_checksums(baseline_dir: str, target_dir: str) -> None:
-    baseline = _read_inference_engine_checksum_events(Path(baseline_dir))
-    target = _read_inference_engine_checksum_events(Path(target_dir))
+    baseline = read_inference_engine_checksum_events(Path(baseline_dir))
+    target = read_inference_engine_checksum_events(Path(target_dir))
     assert baseline, f"No InferenceEngineWeightChecksumEvents found in baseline dir: {baseline_dir}"
     assert target, f"No InferenceEngineWeightChecksumEvents found in target dir: {target_dir}"
 
@@ -45,7 +45,7 @@ def compare_inference_engine_checksums(baseline_dir: str, target_dir: str) -> No
 
 
 def assert_engine_count(*, side: str, dump_dir: str, expected: int) -> None:
-    events = _read_inference_engine_checksum_events(Path(dump_dir))
+    events = read_inference_engine_checksum_events(Path(dump_dir))
     assert events, f"{side}: no InferenceEngineWeightChecksumEvents in {dump_dir}, so no engine ever took weights"
 
     counted = sorted({len(event.engine_snapshots) for event in events})
@@ -58,7 +58,7 @@ def assert_engine_count(*, side: str, dump_dir: str, expected: int) -> None:
 
 
 def assert_engine_weights_moved(*, side: str, dump_dir: str) -> None:
-    by_model_and_version = _checksums_by_model_and_version(_read_inference_engine_checksum_events(Path(dump_dir)))
+    by_model_and_version = _checksums_by_model_and_version(read_inference_engine_checksum_events(Path(dump_dir)))
     assert len(by_model_and_version) > 1, (
         f"{side}: engine weight checksums cover {sorted(by_model_and_version)}, so there is no pair to compare "
         f"and nothing proves the run pushed an update at all"
@@ -87,7 +87,7 @@ def _checksums_by_model_and_version(
     return by_model_and_version
 
 
-def _read_inference_engine_checksum_events(dump_dir: Path) -> list[InferenceEngineWeightChecksumEvent]:
+def read_inference_engine_checksum_events(dump_dir: Path) -> list[InferenceEngineWeightChecksumEvent]:
     """Read all InferenceEngineWeightChecksumEvents from the events directory."""
     events_dir: Path = dump_dir / EVENTS_DIRNAME
     if not events_dir.exists():

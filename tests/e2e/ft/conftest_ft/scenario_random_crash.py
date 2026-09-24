@@ -24,7 +24,7 @@ from tests.e2e.ft.conftest_ft.execution import (
 )
 from tests.e2e.ft.conftest_ft.modes import FTTestMode, resolve_mode
 from tests.utils.ft.launch import get_fully_async_args, get_train_script
-from tests.utils.soak.core.config import SoakRunnerConfig, SoakTailConfig, SoakTargetConfig
+from tests.utils.soak.core.config import SoakRunnerConfig, SoakTailConfig, SoakTargetConfig, TimerTrigger
 from tests.utils.soak.core.event_log import EventLog
 from tests.utils.soak.core.runner import SoakRunner
 from tests.utils.soak.core.utils import (
@@ -181,14 +181,16 @@ def _run_soak(
             runner_config=SoakRunnerConfig(
                 seed=seed,
                 target_configs={
-                    kind: SoakTargetConfig(expected_count=expected_counts[kind], mean_interval_seconds=interval)
+                    kind: SoakTargetConfig(
+                        expected_count=expected_counts[kind], trigger=TimerTrigger(mean_interval_seconds=interval)
+                    )
                     for kind, interval in mean_interval_seconds_of_cell_type.items()
                 },
                 tail=SoakTailConfig.create(num_rollout=num_steps),
             ),
             event_log=event_log,
             evidence_dir=evidence_dir,
-            cell_fault_forms=cell_fault_forms,
+            forms=cell_fault_forms,
         )
     )
 

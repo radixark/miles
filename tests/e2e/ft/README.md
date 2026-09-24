@@ -478,6 +478,7 @@ Faults are random, so beyond the witnesses no exact sequence is asserted.
 ```
 
 - **Why per-kind schedules and counting**: each kind's cadence stays what it would be in a single-kind soak, and the trainer assertion reads only `actor` injections while the rollout one reads only `rollout` — a mixed soak cannot let one kind's crashes pay for the other's missing heal.
+- **Triggers**: each target kind's `SoakTargetConfig.trigger` decides when the scheduler draws it - a `TimerTrigger` (exponential intervals, the per-kind schedules above) or a `MomentTrigger` (exact rollout / phase standings read off the training events the soak feeds into every observation; a missed standing fails the soak). The trigger is independent of the form: fault forms and the pool resize form are both drawable by either.
 - **Why rollout gets the longer interval**: the replacement pays a full sglang launch plus a weight sync before it can serve again.
 - **No per-kind quota**: when the trainer has no spare replica for a long stretch every injection lands on rollout, and the failure form is a loud "too few trainer injections" rather than a silent pass.
 - **Why injections wait for quiescence**: the api server reports a just-killed cell Healthy for ~95s, far longer than the poll interval, and indep_dp cannot heal from zero survivors, so a naive Healthy count would eventually kill the last replica. A 60-poll all-healthy streak (~120s) outlasts that window.

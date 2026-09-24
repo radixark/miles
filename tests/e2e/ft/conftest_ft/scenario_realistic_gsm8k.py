@@ -15,7 +15,7 @@ from tests.e2e.ft.conftest_ft.cli_options import (
     SeedOption,
     TrainerCrashIntervalSecondsOption,
 )
-from tests.utils.soak.core.config import SoakRunnerConfig, SoakTailConfig, SoakTargetConfig
+from tests.utils.soak.core.config import SoakRunnerConfig, SoakTailConfig, SoakTargetConfig, TimerTrigger
 from tests.utils.soak.ft import fault_triggers
 from tests.utils.soak.ft.actions.factory import compute_mean_interval_seconds_of_kind, create_cell_fault_forms
 from tests.utils.soak.ft.checkers.healing import assert_healing
@@ -80,7 +80,7 @@ def run_ci(
             ),
             event_log=run.event_log,
             evidence_dir=run.evidence_dir,
-            cell_fault_forms=create_cell_fault_forms(run.launch_spec.config, triggers=triggers),
+            forms=create_cell_fault_forms(run.launch_spec.config, triggers=triggers),
         )
     )
 
@@ -121,7 +121,9 @@ def _build_runner_config(
     return SoakRunnerConfig(
         seed=seed,
         target_configs={
-            kind: SoakTargetConfig(expected_count=expected_counts[kind], mean_interval_seconds=interval)
+            kind: SoakTargetConfig(
+                expected_count=expected_counts[kind], trigger=TimerTrigger(mean_interval_seconds=interval)
+            )
             for kind, interval in mean_intervals.items()
         },
         tail=SoakTailConfig.create(num_rollout=num_rollout),

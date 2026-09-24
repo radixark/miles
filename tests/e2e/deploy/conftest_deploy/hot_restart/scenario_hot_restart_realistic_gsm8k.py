@@ -3,7 +3,7 @@ from typing import Annotated
 
 import typer
 from tests.e2e.ft.conftest_ft.cli_options import NumRolloutOption, SeedOption
-from tests.utils.soak.core.config import SoakRunnerConfig, SoakTailConfig, SoakTargetConfig
+from tests.utils.soak.core.config import SoakRunnerConfig, SoakTailConfig, SoakTargetConfig, TimerTrigger
 from tests.utils.soak.core.runner import SoakRunner
 from tests.utils.soak.core.utils import compute_release_of_config
 from tests.utils.soak.core.views import training_events_dir
@@ -62,7 +62,7 @@ def run_ci(
                 seed=seed,
                 target_configs={
                     DEPLOYMENT_TARGET_KIND: SoakTargetConfig(
-                        expected_count=1, mean_interval_seconds=hot_restart_interval_seconds
+                        expected_count=1, trigger=TimerTrigger(mean_interval_seconds=hot_restart_interval_seconds)
                     )
                 },
                 tail=SoakTailConfig.create(num_rollout=num_rollout),

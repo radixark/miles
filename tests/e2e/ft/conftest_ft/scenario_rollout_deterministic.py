@@ -8,7 +8,13 @@ from tests.e2e.ft.conftest_ft.app import BASELINE_SIDE, TARGET_SIDE, RunSideRequ
 from tests.e2e.ft.conftest_ft.comparisons import compare_deterministic_sides
 from tests.e2e.ft.conftest_ft.execution import get_deterministic_p2p_train_args, run_training
 from tests.e2e.ft.conftest_ft.modes import FTTestMode
-from tests.utils.soak.core.config import QUIESCENT_POLLS_REQUIRED, SoakRunnerConfig, SoakTailConfig, SoakTargetConfig
+from tests.utils.soak.core.config import (
+    QUIESCENT_POLLS_REQUIRED,
+    SoakRunnerConfig,
+    SoakTailConfig,
+    SoakTargetConfig,
+    TimerTrigger,
+)
 from tests.utils.soak.core.event_log import EventLog
 from tests.utils.soak.core.utils import (
     assert_fresh_dump_dir,
@@ -59,7 +65,8 @@ def _run_side(request: RunSideRequest) -> None:
     if target:
         target_configs = {
             ROLLOUT_CELL_TYPE: SoakTargetConfig(
-                expected_count=request.mode.rollout_num_engines, mean_interval_seconds=CRASH_INTERVAL_SECONDS
+                expected_count=request.mode.rollout_num_engines,
+                trigger=TimerTrigger(mean_interval_seconds=CRASH_INTERVAL_SECONDS),
             )
         }
 
@@ -86,7 +93,7 @@ def _run_side(request: RunSideRequest) -> None:
             ),
             event_log=event_log,
             evidence_dir=evidence_dir,
-            cell_fault_forms=create_cell_fault_forms(config, triggers=frozenset({FaultTrigger.TIMER})),
+            forms=create_cell_fault_forms(config, triggers=frozenset({FaultTrigger.TIMER})),
         )
     )
     if target:

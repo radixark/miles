@@ -2,21 +2,30 @@ import logging
 import random
 import time
 from dataclasses import dataclass, field
+from typing import Literal
 
-from tests.utils.soak.core.config import SoakRunnerConfig, SoakTargetConfig
+from tests.utils.soak.core.config import MomentTrigger, RunMoment, SoakRunnerConfig, SoakTargetConfig, TimerTrigger
 from tests.utils.soak.core.events import SoakActionAppliedEvent, SoakEvent
 from tests.utils.soak.core.types import BaseSoakActionForm, SoakActionRequest, SoakForms, SoakTarget, find_form
 from tests.utils.soak.core.views import (
     admission_closed,
+    compute_num_injections,
     compute_successful_form_names,
     is_normal_step,
     latest_observation,
     project_actions,
     quiescent_polls_of_type,
+    sut_events,
     trainer_step_ends,
 )
 
+from miles.utils.audit_utils.event_logger.models import InferenceEngineWeightChecksumEvent, MetricEvent
+
 logger = logging.getLogger(__name__)
+
+_TRAIN_STEP_METRIC_KEY: str = "train/grad_norm"
+
+_Standing = Literal["before", "at", "after"]
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -33,7 +42,7 @@ class SoakActionScheduler:
         object.__setattr__(
             self,
             "due_of_type",
-            {kind: self._draw_due_at(kind, now=now) for kind in sorted(self.config.target_configs)},
+            {kind: self._draw_due_at(kind, now=now) for kind in sorted(self._timer_kinds())},
         )
 
     def choose(self, *, events: list[SoakEvent], now: float) -> SoakActionRequest | None:
@@ -53,7 +62,13 @@ class SoakActionScheduler:
             kind: [target for target in observation.targets or [] if target.kind == kind]
             for kind in self.config.target_configs
         }
-        due_types = sorted(kind for kind, due_at in self.due_of_type.items() if now >= due_at)
+        moment_kinds = self._moment_kinds()
+        due_types = sorted(
+            [
+                *(kind for kind, due_at in self.due_of_type.items() if now >= due_at),
+                *(kind for kind in moment_kinds if self._stands_at_next_moment(kind, events=events)),
+            ]
+        )
         if not due_types:
             return None
 
@@ -66,7 +81,8 @@ class SoakActionScheduler:
         ready_types = [
             kind
             for kind in due_types
-            if targets_of_type[kind] and polls_of_type[kind] >= self.config.quiescent_polls_required
+            if targets_of_type[kind]
+            and (kind in moment_kinds or polls_of_type[kind] >= self.config.quiescent_polls_required)
         ]
         if not ready_types:
             logger.info(
@@ -99,11 +115,40 @@ class SoakActionScheduler:
         applied = {event.request_id for event in events if isinstance(event, SoakActionAppliedEvent)}
         for kind, request_id in list(self.awaiting_applied.items()):
             if request_id in applied:
-                self.due_of_type[kind] = self._draw_due_at(kind, now=now)
+                if kind in self.due_of_type:
+                    self.due_of_type[kind] = self._draw_due_at(kind, now=now)
                 del self.awaiting_applied[kind]
 
     def _draw_due_at(self, kind: str, *, now: float) -> float:
-        return now + self.rng.expovariate(1.0 / self.config.target_configs[kind].mean_interval_seconds)
+        trigger = self.config.target_configs[kind].trigger
+        assert isinstance(trigger, TimerTrigger), f"{kind} is not drawn by a timer"
+        return now + self.rng.expovariate(1.0 / trigger.mean_interval_seconds)
+
+    def _timer_kinds(self) -> set[str]:
+        return {
+            kind for kind, policy in self.config.target_configs.items() if isinstance(policy.trigger, TimerTrigger)
+        }
+
+    def _moment_kinds(self) -> set[str]:
+        return {
+            kind for kind, policy in self.config.target_configs.items() if isinstance(policy.trigger, MomentTrigger)
+        }
+
+    def _stands_at_next_moment(self, kind: str, *, events: list[SoakEvent]) -> bool:
+        trigger = self.config.target_configs[kind].trigger
+        assert isinstance(trigger, MomentTrigger), f"{kind} is not drawn at run moments"
+        index = compute_num_injections(events, kind=kind)
+        if index >= len(trigger.moments):
+            return False
+        moment = trigger.moments[index]
+
+        progress = _compute_run_progress(events)
+        standing = _compute_standing(progress, moment=moment)
+        assert standing != "after", (
+            f"{kind} action {index} was to fire while the run was {moment.phase} rollout {moment.at_rollout}, and "
+            f"the run stands at {progress}: the soak missed the moment, so where the action landed would be raced"
+        )
+        return standing == "at"
 
     def _is_started(self, events: list[SoakEvent]) -> bool:
         if (start_after_rollout_id := self.config.start_after_rollout_id) is None:
@@ -138,3 +183,48 @@ def _draw_form(
     worked = compute_successful_form_names(events, kind=kind)
     unproven = [form for form in forms if form.name not in worked]
     return rng.choice(unproven or forms)
+
+
+# ========================== how far the run has come ==========================
+
+
+@dataclass(frozen=True)
+class _RunProgress:
+    last_generated_rollout_id: int | None
+    last_trained_rollout_id: int | None
+    last_weight_updated_rollout_id: int | None
+
+
+def _compute_standing(progress: _RunProgress, *, moment: RunMoment) -> _Standing:
+    if moment.phase == "training":
+        opened, closed = progress.last_generated_rollout_id, progress.last_trained_rollout_id
+        opens_at = moment.at_rollout
+    else:
+        opened, closed = progress.last_weight_updated_rollout_id, progress.last_generated_rollout_id
+        opens_at = moment.at_rollout - 1
+
+    if _reached(closed, moment.at_rollout):
+        return "after"
+    return "at" if _reached(opened, opens_at) else "before"
+
+
+def _compute_run_progress(events: list[SoakEvent]) -> _RunProgress:
+    observed = sut_events(events)
+    metric_events = [event for event in observed if isinstance(event, MetricEvent) and event.rollout_id is not None]
+    return _RunProgress(
+        last_generated_rollout_id=max(
+            (event.rollout_id for event in metric_events if event.source.component == "rollout_executor"),
+            default=None,
+        ),
+        last_trained_rollout_id=max(
+            (event.rollout_id for event in metric_events if _TRAIN_STEP_METRIC_KEY in event.metrics), default=None
+        ),
+        last_weight_updated_rollout_id=max(
+            (event.rollout_id for event in observed if isinstance(event, InferenceEngineWeightChecksumEvent)),
+            default=None,
+        ),
+    )
+
+
+def _reached(rollout_id: int | None, threshold: int) -> bool:
+    return rollout_id is not None and rollout_id >= threshold

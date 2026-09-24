@@ -4,11 +4,12 @@ from datetime import datetime, timezone
 
 import httpx
 from tests.utils.soak.core.events import SoakObservationEvent
-from tests.utils.soak.core.types import SoakObserver
+from tests.utils.soak.core.types import BaseSoakActionForm, SoakForms, SoakObserver, SoakTarget
 from tests.utils.soak.core.utils import recording_error
-from tests.utils.soak.ft.actions.base import CellFaultForms
+from tests.utils.soak.ft.actions.base import BaseCellFaultForm
+from tests.utils.soak.ft.actions.resize import ResizePoolForm
 from tests.utils.soak.ft.cells import cell_is_alive, cell_is_ready, cell_type_of
-from tests.utils.soak.ft.types import CellTarget
+from tests.utils.soak.ft.types import POOL_TARGET_KIND, CellTarget, PoolTarget
 from tests.utils.soak.k8s_utils.pod_manipulation import SoakPodTarget
 from tests.utils.soak.k8s_utils.pod_processes import ProcessTarget
 
@@ -17,7 +18,7 @@ from miles.utils.external_utils.command_utils.common import run_process
 from miles.utils.external_utils.command_utils.helm_backend.naming import ReleaseName
 from miles.utils.ft_utils.api_server.models import Cell, CellList
 from miles.utils.test_utils.fault_injector.models import ObservedFaultHookTarget
-from miles.utils.test_utils.kubectl_reads import KUBECTL_TIMEOUT_SECONDS, compute_release_selector
+from miles.utils.test_utils.kubectl_reads import KUBECTL_TIMEOUT_SECONDS, compute_release_selector, read_replicas
 from miles.utils.workers.k8s_types import Pod, PodList
 from miles.utils.workers.types import ClusterBackend, DeployComponent
 from miles.utils.workers.worker_provider.kubernetes.core.pod_view import parse_pod
@@ -32,6 +33,7 @@ class CellObserver(SoakObserver):
     release: str | None = None
     fault_target_cell_types: frozenset[str] = frozenset()
     process_patterns_of_type: dict[str, dict[str, str]] = field(default_factory=dict)
+    pool_workloads_of_cell_type: dict[str, str] = field(default_factory=dict)
 
     async def observe(self) -> SoakObservationEvent:
         observed_at = datetime.now(timezone.utc)
@@ -41,23 +43,24 @@ class CellObserver(SoakObserver):
         cells, fault_targets = observed_cells
         pods_of_cell = self._create_pod_targets(cells=cells, pods=pods, errors=errors)
         await self._observe_processes(cells=cells, pods_of_cell=pods_of_cell, errors=errors)
+        pools = await self._observe_pools(cells=cells, errors=errors)
 
-        return SoakObservationEvent(
-            timestamp=observed_at,
-            targets=(
-                None
-                if cells is None
-                else [
+        targets: list[SoakTarget] | None = None
+        if cells is not None:
+            targets = [
+                *(
                     _create_cell_target(
                         cell,
                         pods=pods_of_cell.get(cell.metadata.name, []),
                         fault_target=fault_targets.get(cell.metadata.name),
                     )
                     for cell in cells
-                ]
-            ),
-            errors=errors,
-        )
+                    if cell_type_of(cell) in self.cell_types
+                ),
+                *pools,
+            ]
+
+        return SoakObservationEvent(timestamp=observed_at, targets=targets, errors=errors)
 
     async def _observe_cells(
         self, *, errors: dict[str, str]
@@ -71,7 +74,7 @@ class CellObserver(SoakObserver):
                 cells = [
                     cell
                     for cell in CellList.model_validate(response.json()).items
-                    if cell_type_of(cell) in self.cell_types
+                    if cell_type_of(cell) in self.cell_types or cell_type_of(cell) in self.pool_workloads_of_cell_type
                 ]
                 fault_targets = await self._observe_fault_targets(client=client, cells=cells, errors=errors)
         return cells, fault_targets
@@ -95,6 +98,28 @@ class CellObserver(SoakObserver):
             *(read_target(cell) for cell in cells if cell_type_of(cell) in self.fault_target_cell_types)
         )
         return {name: target for name, target in observations if target is not None}
+
+    async def _observe_pools(self, *, cells: list[Cell] | None, errors: dict[str, str]) -> list[PoolTarget]:
+        if cells is None or not self.pool_workloads_of_cell_type:
+            return []
+        assert self.namespace, "A pool observation needs a namespace"
+
+        async def read_pool(cell_type: str, workload: str) -> PoolTarget | None:
+            pool: PoolTarget | None = None
+            with recording_error(errors, f"pool:{workload}"):
+                replicas = await asyncio.to_thread(read_replicas, namespace=self.namespace, workload=workload)
+                pool = _create_pool_target(
+                    [cell for cell in cells if cell_type_of(cell) == cell_type],
+                    workload=workload,
+                    cell_type=cell_type,
+                    replicas=replicas,
+                )
+            return pool
+
+        pools = await asyncio.gather(
+            *(read_pool(cell_type, workload) for cell_type, workload in self.pool_workloads_of_cell_type.items())
+        )
+        return [pool for pool in pools if pool is not None]
 
     async def _read_pods(self, *, errors: dict[str, str]) -> list[Pod] | None:
         if self.release is None:
@@ -197,24 +222,30 @@ def create_cell_observer(
     *,
     base_url: str,
     cell_types: set[str],
-    forms: CellFaultForms,
+    forms: SoakForms,
     config: ExecuteTrainConfig,
 ) -> CellObserver:
+    fault_kinds = cell_types - {POOL_TARGET_KIND}
+    fault_forms = {kind: _cell_fault_forms(forms[kind]) for kind in fault_kinds}
     fault_target_types = {
         fault_target_type
-        for kind in cell_types
-        for form in forms[kind]
+        for kind in fault_kinds
+        for form in fault_forms[kind]
         for fault_target_type in form.fault_target_cell_types(kind)
     }
     process_patterns = {
-        kind: {container: pattern for form in forms[kind] for container, pattern in form.process_patterns.items()}
-        for kind in cell_types
+        kind: {
+            container: pattern for form in fault_forms[kind] for container, pattern in form.process_patterns.items()
+        }
+        for kind in fault_kinds
     }
+    pool_forms = _resize_pool_forms(forms[POOL_TARGET_KIND]) if POOL_TARGET_KIND in cell_types else []
+    pool_workloads = {form.cell_type: form.workload for form in pool_forms}
     use_kubernetes = config.cluster_backend is ClusterBackend.KUBERNETES
 
     return CellObserver(
         base_url=base_url,
-        cell_types=cell_types | fault_target_types,
+        cell_types=fault_kinds | fault_target_types | set(pool_workloads),
         namespace=config.namespace if use_kubernetes else None,
         release=(
             ReleaseName(
@@ -225,7 +256,18 @@ def create_cell_observer(
         ),
         fault_target_cell_types=frozenset(fault_target_types),
         process_patterns_of_type=process_patterns,
+        pool_workloads_of_cell_type=pool_workloads,
     )
+
+
+def _cell_fault_forms(forms: list[BaseSoakActionForm]) -> list[BaseCellFaultForm]:
+    assert all(isinstance(form, BaseCellFaultForm) for form in forms), f"Not every cell form is a cell fault: {forms}"
+    return forms
+
+
+def _resize_pool_forms(forms: list[BaseSoakActionForm]) -> list[ResizePoolForm]:
+    assert all(isinstance(form, ResizePoolForm) for form in forms), f"Not every pool form resizes a pool: {forms}"
+    return forms
 
 
 def _create_cell_target(
@@ -239,4 +281,15 @@ def _create_cell_target(
         ready=cell_is_ready(cell),
         pods=pods,
         fault_target=fault_target,
+    )
+
+
+def _create_pool_target(cells: list[Cell], *, workload: str, cell_type: str, replicas: int) -> PoolTarget:
+    return PoolTarget(
+        identity=workload,
+        alive=all(cell_is_alive(cell) for cell in cells),
+        ready=all(cell_is_ready(cell) for cell in cells) and len(cells) == replicas,
+        cell_type=cell_type,
+        replicas=replicas,
+        cell_ids=[cell.metadata.name for cell in cells],
     )

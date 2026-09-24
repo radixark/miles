@@ -1,14 +1,33 @@
-from pydantic import Field
+from typing import Annotated, Literal
+
+from pydantic import Discriminator, Field
 
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
 
 POLL_INTERVAL_SECONDS: float = 2.0
 QUIESCENT_POLLS_REQUIRED: int = 60
 
+RunPhase = Literal["generating", "training"]
+
+
+class RunMoment(FrozenStrictBaseModel):
+    at_rollout: int = Field(ge=0)
+    phase: RunPhase
+
+
+class TimerTrigger(FrozenStrictBaseModel):
+    kind: Literal["timer"] = "timer"
+    mean_interval_seconds: float = Field(gt=0, allow_inf_nan=False)
+
+
+class MomentTrigger(FrozenStrictBaseModel):
+    kind: Literal["moment"] = "moment"
+    moments: tuple[RunMoment, ...]
+
 
 class SoakTargetConfig(FrozenStrictBaseModel):
     expected_count: int = Field(ge=1)
-    mean_interval_seconds: float = Field(gt=0, allow_inf_nan=False)
+    trigger: Annotated[TimerTrigger | MomentTrigger, Discriminator("kind")]
 
 
 class SoakTimeoutConfig(FrozenStrictBaseModel):
