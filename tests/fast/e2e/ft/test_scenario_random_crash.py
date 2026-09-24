@@ -9,6 +9,7 @@ from tests.utils.ft.launch import DETERMINISTIC_ENV_VARS, MEGATRON_PATH
 from tests.utils.soak.core.config import SoakTailConfig, SoakTargetConfig
 from tests.utils.soak.core.events import LaunchOutcome, SoakLaunchFinishedEvent
 from tests.utils.soak.core.utils import API_SERVER_PORT
+from tests.utils.soak.ft import fault_triggers
 from tests.utils.soak.ft.actions.factory import create_cell_fault_forms
 from tests.utils.soak.ft.types import ACTOR_CELL_TYPE, ROLLOUT_CELL_TYPE, FaultTrigger
 
@@ -26,6 +27,7 @@ def harness(scenario_harness: ScenarioHarness, monkeypatch: pytest.MonkeyPatch, 
     monkeypatch.setattr(
         scenario_random_crash, "materialize_cyclic_debug_rollout_data", lambda count: str(tmp_path / f"cyclic-{count}")
     )
+    monkeypatch.setattr(fault_triggers, "assert_hook_evidence", scenario_harness.recorder("assert_hook_evidence"))
     monkeypatch.setattr(scenario_random_crash, "assert_healing", scenario_harness.recorder("assert_healing"))
     return scenario_harness
 
@@ -66,9 +68,9 @@ class TestTheSoakARandomCrashRunSchedules:
             ROLLOUT_CELL_TYPE: SoakTargetConfig(expected_count=4, mean_interval_seconds=13.0),
         }
 
-    def test_the_forms_are_the_timer_forms_for_this_backend(self, harness: ScenarioHarness) -> None:
-        """Forms built for another trigger would inject faults the run was never configured to survive."""
-        _run(_MIXED_MODE, seed=7, num_steps=9)
+    def test_the_forms_are_the_ones_of_the_resolved_triggers_for_this_backend(self, harness: ScenarioHarness) -> None:
+        """Forms built for other triggers would inject faults the run was never configured to survive."""
+        _run(_MIXED_MODE, seed=7, num_steps=9, requested_triggers=[FaultTrigger.TIMER])
 
         (soak,) = harness.soaks
         expected = create_cell_fault_forms(soak["config"], triggers=frozenset({FaultTrigger.TIMER}))
@@ -112,6 +114,13 @@ class TestOneRunIdentityAcrossTheScenario:
         assert soak["event_log"].path == soak["evidence_dir"] / "events.jsonl"
         assert Path(launch.value_of("--save-debug-event-data")).parent == dump_dir
 
+    def test_a_non_default_trigger_set_gets_a_dump_directory_of_its_own(self, harness: ScenarioHarness) -> None:
+        """A hook rerun sharing the default name would refuse to start on the default run's dumps."""
+        _run(_MIXED_MODE, seed=7, num_steps=9, requested_triggers=[FaultTrigger.TIMER, FaultTrigger.HOOK])
+
+        (soak,) = harness.soaks
+        assert soak["dump_dir"].name == f"random_crash_hook_timer_{_MIXED_MODE}"
+
 
 class TestTheLaunchedTrainArguments:
     @pytest.mark.parametrize("mode_name", sorted(MODES))
@@ -131,11 +140,12 @@ class TestTheLaunchedTrainArguments:
         assert "rollout" not in parsed.ft_components or parsed.partial_target_weight_update
         _assert_the_gpu_layout_is_the_modes(launch.request.num_gpus_per_node, parsed.namespace, mode=mode)
 
-    def test_a_real_rollout_run_carries_the_p2p_update(self, harness: ScenarioHarness) -> None:
-        """A rollout soak without the disaggregated P2P update would fail the partial-target gate at launch."""
-        _run(_MIXED_MODE, seed=7, num_steps=9)
+    def test_a_real_rollout_run_carries_the_hook_timeout_and_p2p_update(self, harness: ScenarioHarness) -> None:
+        """Hook faults hold a weight update open, and the default timeout would fail it before the fault fires."""
+        _run(_MIXED_MODE, seed=7, num_steps=9, requested_triggers=[FaultTrigger.TIMER, FaultTrigger.HOOK])
 
         (launch,) = harness.launches
+        assert launch.value_of("--update-weights-timeout") == "600"
         assert launch.value_of("--update-weight-transfer-mode") == "p2p"
         assert launch.value_of("--num-rollout") == "9"
         assert launch.request.train_script.endswith("/train.py")
@@ -154,12 +164,13 @@ class TestTheLaunchedTrainArguments:
     def test_a_fake_rollout_run_trains_off_the_materialized_cyclic_data_without_hooks(
         self, harness: ScenarioHarness, tmp_path: Path
     ) -> None:
-        """Without engines there is no weight update to send, and the data must cover every one of the steps."""
+        """Without engines no update reaches a hook, and the data must cover every one of the steps."""
         _run(_FAKE_ROLLOUT_MODE, seed=7, num_steps=9)
 
         (launch,) = harness.launches
         (soak,) = harness.soaks
         assert launch.value_of("--load-debug-rollout-data") == f"{tmp_path / 'cyclic-9'}/{{rollout_id}}.pt"
+        assert "--update-weights-timeout" not in launch.argv
         assert "--update-weight-transfer-mode" not in launch.argv
         expected = create_cell_fault_forms(soak["config"], triggers=frozenset({FaultTrigger.TIMER}))
         assert [form.name for form in soak["forms"][ACTOR_CELL_TYPE]] == [
@@ -209,7 +220,15 @@ class TestWhatTheSoakIsJudgedBy:
 
         (soak,) = harness.soaks
         events = soak["event_log"].events
-        assert harness.checker_names == ["assert_healing"]
+        assert harness.checker_names == ["assert_hook_evidence", "assert_healing"]
+        ((hook_args, hook_kwargs),) = harness.calls_of("assert_hook_evidence")
+        assert hook_args == (frozenset({FaultTrigger.TIMER}),)
+        assert hook_kwargs == {
+            "ft_components": ("train", "rollout"),
+            "config": soak["config"],
+            "events": events,
+            "dump_dir": str(soak["dump_dir"]),
+        }
         ((healing_args, healing_kwargs),) = harness.calls_of("assert_healing")
         assert healing_args == (("train", "rollout"),)
         assert healing_kwargs["events"] == events
@@ -244,7 +263,7 @@ class TestWhatTheSoakIsJudgedBy:
         monkeypatch.setattr(scenario_random_crash, "prepare", scenario_harness.record_prepare)
 
         with pytest.raises(AssertionError, match="Soak proved too little"):
-            _run(_TRAIN_ONLY_MODE, seed=7, num_steps=9)
+            _run(_TRAIN_ONLY_MODE, seed=7, num_steps=9, requested_triggers=[FaultTrigger.TIMER])
 
 
 def _run(
@@ -253,6 +272,7 @@ def _run(
     seed: int,
     num_steps: int,
     fully_async: bool = False,
+    requested_triggers: list[FaultTrigger] | None = None,
 ) -> None:
     scenario_random_crash.run_ci(
         mode=mode,
@@ -261,6 +281,7 @@ def _run(
         trainer_crash_interval_seconds=11.0,
         rollout_crash_interval_seconds=13.0,
         fully_async=fully_async,
+        requested_triggers=requested_triggers,
     )
 
 

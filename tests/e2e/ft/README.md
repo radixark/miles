@@ -431,7 +431,7 @@ Type: soak (no baseline, no compare); passes if training completes without hangi
       witnesses hold
 Steps: 60 (default)
 CLI: --mode, --seed (42), --num-steps (60), --trainer-crash-interval-seconds (120),
-     --rollout-crash-interval-seconds (240), --fully-async (off)
+     --rollout-crash-interval-seconds (240), --fully-async (off), --fault-triggers (timer)
 
 Targeting and assertions follow the mode's ft_components:
   ("train",)          -> inject into "actor" cells, assert trainer healing
@@ -492,6 +492,11 @@ Faults are random, so beyond the witnesses no exact sequence is asserted.
 - **Checksum observation**: real-rollout modes pass `--save-inference-engine-weight-checksum`, so each published weight version records per-tensor engine checksums bound to its version, update and engine incarnation, collected under a five-second timeout; a missed observation loses evidence and fails the test, not training. Small observation overhead is accepted; production recovery and ordering remain unchanged.
 - **Checksum witness**: the analyzer rule `inference_engine_weight_checksum_coverage` requires every settled published weight update to carry exactly one checksum record covering the engine incarnations it updated, and `inference_engine_weight_checksum_consistency` requires same-version engines to agree; both run before every training step, so a run's last publication is the one publication no rule sees.
 - **Movement**: the analyzer rule `inference_engine_weight_movement` requires each tensor to change between adjacent settled versions within one trainer load state of a model, with an unchanged tensor set; LoRA and update intervals other than one disable it, read from the trainer ranks' environment reports, but never same-version consistency.
+- **Fault triggers**: `--fault-triggers` picks which triggers the scheduler draws from. `timer` is the wall-clock scheduler: an exponential interval elapses and the drawn form fires at once. `hook` binds the drawn form to a named trainer fault hook (`trainer_weight_update_before_all_gather`, `trainer_weight_update_before_send`) with a delay drawn uniformly from 0 to 1000 ms (the deadlock stays immediate), so the fault lands inside a weight update; it adds `--update-weights-timeout 600`. Both together mix the two through one scheduler; every enabled form must produce an effect.
+- **One mechanism**: `create_cell_fault_forms` builds one form list per trigger, `_create_timer_forms` and `_create_hook_forms`, each split by cluster backend the same way. Every cell fault is an `InjectFaultForm` posting one `FaultHookRequest` through the api server's `fault-hook` route, bound to the observed fault target; a request without a hook name executes at once, one with a hook name waits for the worker to reach it. The cell's effect is read the same way in both cases.
+- **Receiver faults through a trainer hook**: with rollout ft on the ray backend, the `hook` trigger also draws a rollout form that sets the hook on another healthy trainer cell with an `api_server_fault` action wrapping `kill_process`, so the sending trainer itself kills the receiver at `trainer_weight_update_before_send`; no runner round trip separates hook arrival from receiver failure. Kubernetes pod forms stay timer-only.
+- **Hook witnesses**: every applied hook form needs exactly one worker-side dispatch with its recorded hook name and delay (`tests/utils/soak/ft/checkers/fault_hook_dispatch.py`), every receiver fault needs its target in the failed engines of the exact weight update the hook fired in, and every trainer fault needs an original peer to finish a normal step afterwards (`tests/utils/soak/ft/checkers/trainer_peer_progress.py`). The normal healing and tail witnesses remain mandatory.
+- **Calibration**: the 300-second hook lifetime, the 1000 ms delay bound and the 4800-second CI estimate have not been calibrated by a run.
 
 ### `scenario_realistic_gsm8k`
 
@@ -499,8 +504,8 @@ Faults are random, so beyond the witnesses no exact sequence is asserted.
 Type: soak (no baseline run; reference = the baseline test's wandb curves)
 Entry: test_realistic_gsm8k__kill_train_rollout.py, no mode variants
 CLI: --seed (42), --num-rollout (250), --trainer-crash-interval-seconds (600),
-     --rollout-crash-interval-seconds (1200), --metric-threshold (0.55), --fully-async (off);
-     no --mode
+     --rollout-crash-interval-seconds (1200), --metric-threshold (0.55), --fully-async (off),
+     --fault-triggers (timer); no --mode
 
 Recipe: Qwen2.5-0.5B-Instruct, GRPO, 250 rollouts, over the gsm8k RL recipe of
         tests/e2e/long/test_qwen2.5_0.5B_gsm8k.py, whose regular CI runs are the no-fault
@@ -508,7 +513,9 @@ Recipe: Qwen2.5-0.5B-Instruct, GRPO, 250 rollouts, over the gsm8k RL recipe of
 Layout: mirrors kill_train__dp2_cp2__moe_5layer - 2 cells x CP2 on 4 train GPUs + 4 rollout engines
         x 1 GPU, disaggregated
 Faults: scenario_random_crash's soak runner (run_cell_soak over prepare_gsm8k_run's run), with
-        --ft-components train rollout asked for outright, so both trainer cells and engines crash
+        --ft-components train rollout asked for outright, so both trainer cells and engines crash;
+        --fault-triggers, its train args and its hook witnesses are the same as scenario_random_crash's
+        (tests/utils/soak/ft/fault_triggers.py)
 
 Assertions:
   1. --ci-metric-checker-key eval/gsm8k against a threshold that must stay identical to the
