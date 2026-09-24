@@ -161,8 +161,9 @@ class TrainRayActor(NodeProbeMixin):
         )
         init_gloo_group()
 
-        args.backend.rank = dist.get_rank()
-        args.backend.world_size = dist.get_world_size()
+        with args.backend.mutable():
+            args.backend.rank = dist.get_rank()
+            args.backend.world_size = dist.get_world_size()
         rebind_env_reporting(args)
 
         try:

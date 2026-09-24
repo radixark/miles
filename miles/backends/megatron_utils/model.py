@@ -87,11 +87,12 @@ def get_optimizer_param_scheduler(args: TrainerConfig, optimizer: MegatronOptimi
         OptimizerParamScheduler: Initialized scheduler bound to ``optimizer``.
     """
     # Iteration-based training.
-    args.backend.train_iters = (
-        args.num_rollout * args.rollout_batch_size * args.n_samples_per_prompt // args.backend.global_batch_size
-    )
-    if args.backend.lr_decay_iters is None:
-        args.backend.lr_decay_iters = args.backend.train_iters
+    with args.backend.mutable():
+        args.backend.train_iters = (
+            args.num_rollout * args.rollout_batch_size * args.n_samples_per_prompt // args.backend.global_batch_size
+        )
+        if args.backend.lr_decay_iters is None:
+            args.backend.lr_decay_iters = args.backend.train_iters
     lr_decay_steps = args.backend.lr_decay_iters * args.backend.global_batch_size
     wd_incr_steps = args.backend.train_iters * args.backend.global_batch_size
     wsd_decay_steps = None
@@ -166,7 +167,8 @@ def setup_model_and_optimizer(
             from miles_plugins.models.inkling.lora import wrap_model_provider_with_inkling_lora
 
             provider_func = wrap_model_provider_with_inkling_lora(provider_func, args)
-        model = get_model(provider_func, ModelType.encoder_or_decoder)
+        with args.backend.mutable():
+            model = get_model(provider_func, ModelType.encoder_or_decoder)
 
     if args.debug_disable_optimizer:
         if is_first_replica_megatron_main_rank():
