@@ -187,7 +187,7 @@ def selected_log_probs_and_entropy(
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Selected logprobs and optional entropy of the same unpadded distribution."""
     size = dist.get_world_size(group) if group is not None else 1
-    vocab_size = vocab_size or logits.size(-1) * size
+    vocab_size = vocab_size if vocab_size is not None else logits.size(-1) * size
     if temperature <= 0 or not 0 < vocab_size <= logits.size(-1) * size:
         raise ValueError("Score centering needs a positive temperature and valid vocabulary size")
     if token_ids.ndim != 2 or logits.ndim != 2 or logits.size(0) != token_ids.size(0):

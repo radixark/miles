@@ -233,6 +233,14 @@ def test_entropy_uses_same_unpadded_distribution_and_gradient() -> None:
     torch.testing.assert_close(actual_grad, expected_grad)
 
 
+@pytest.mark.parametrize("vocab_size", [0, -1])
+def test_selected_log_probs_rejects_invalid_vocabulary_size(vocab_size: int) -> None:
+    logits = torch.randn(2, 4)
+    token_ids = torch.tensor([[0], [1]])
+    with pytest.raises(ValueError, match="valid vocabulary size"):
+        selected_log_probs(logits, token_ids, vocab_size=vocab_size)
+
+
 def test_selected_log_probs_gradcheck_and_empty_response() -> None:
     logits = torch.randn(2, 4, dtype=torch.float64, requires_grad=True)
     ids = torch.tensor([[0, 2, -1], [1, 3, 1]])
