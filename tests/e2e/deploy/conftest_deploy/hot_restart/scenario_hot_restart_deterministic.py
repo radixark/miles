@@ -2,7 +2,7 @@ import dataclasses
 import hashlib
 import shlex
 import shutil
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from functools import partial
@@ -42,7 +42,10 @@ from tests.e2e.ft.conftest_ft.execution import DATA_DIR, MODEL_DIR
 from tests.e2e.ft.conftest_ft.modes import DENSE_MODEL_HF_REPO, DENSE_MODEL_NAME, DENSE_MODEL_TYPE, FTTestMode
 from tests.utils.deploy.hot_restart.evidence import TRAIN_STEP_METRIC_KEY, HotRestartEvidence
 from tests.utils.soak.core.utils import compute_release_of_config
-from tests.utils.soak.deploy.checkers.takeover_scope import assert_take_overs_replaced_only_script
+from tests.utils.soak.deploy.checkers.takeover_scope import (
+    assert_take_overs_carried_rollout_only_args,
+    assert_take_overs_replaced_only_script,
+)
 from tests.utils.soak.deploy.utils import compute_checkpoint_dir
 
 from miles.utils.audit_utils.event_logger.logger import EVENTS_DIRNAME
@@ -314,6 +317,42 @@ def _driving_take_overs_of(
         yield
 
     driver.assert_all_restarts_happened()
+    assert_generations_recorded_their_steps(templates, schedule=restart_mode.schedule)
+    assert_take_overs_carried_rollout_only_args(driver.evidence, flag=SAVE_DEBUG_ROLLOUT_DATA_FLAG, values=templates)
+
+
+# ===================== what each generation of the script did =================
+
+
+def _compute_rollout_ids_of_generation(schedule: Sequence[ScheduledFreeze], *, num_rollouts: int) -> list[list[int]]:
+    windows: list[list[int]] = []
+    start = 0
+    for scheduled in schedule:
+        windows.append(list(range(start, scheduled.frozen_rollout_id + 1)))
+        start = 0 if scheduled.saved_iteration is None else scheduled.saved_iteration + 1
+    windows.append(list(range(start, num_rollouts)))
+    return windows
+
+
+def assert_generations_recorded_their_steps(templates: Sequence[str], *, schedule: Sequence[ScheduledFreeze]) -> None:
+    directories = [Path(template).parent for template in templates]
+    stray = sorted(set(directories[0].parent.iterdir()) - set(directories))
+    assert not stray, (
+        f"{directories[0].parent} holds {[one.name for one in stray]} beside the {len(templates)} generation "
+        f"directories the take-overs relaunched with, so some executor wrote where nothing relaunched it"
+    )
+
+    for generation, (directory, rollout_ids) in enumerate(
+        zip(directories, _compute_rollout_ids_of_generation(schedule, num_rollouts=NUM_ROLLOUTS), strict=True)
+    ):
+        recorded = sorted(int(one.stem) for one in directory.glob("*.pt"))
+        assert recorded == rollout_ids, (
+            f"generation {generation} of the rollout executor recorded the rollouts {recorded} under {directory}, "
+            f"and the freeze schedule has that generation generate exactly {rollout_ids}: the relaunched executor "
+            f"did not run with the arguments it was relaunched with, or generated steps it should not have"
+        )
+
+    print("every generation of the rollout executor recorded the steps it generated")
 
 
 # ========================= comparison and assertions ==========================

@@ -87,7 +87,15 @@ Entries: test_hot_restart_checkpointed.py, test_hot_restart_no_checkpoint.py
    an unchanged custom resource
 3. Assert process: one trainer rpc boot uuid throughout, answering the take-over's fresh client, and
    read once off a whole-release snapshot taken before the first take-over stamped anything
-4. Assert redo, measured off the logs, per mode:
+4. Assert the changed argument reached the two restarted components and nothing else, off the
+   commands of every pod the observer saw (recorded once per pod uid):
+   - the successive orchestrator pods carry --save-debug-rollout-data generation_0, _1, ... in their
+     argv; the successive rollout-executor pods carry it in their served --config payload
+   - no pod of any other workload carries any of those values
+   - generation k's directory holds exactly the rollouts that generation generated: 0..frozen_0
+     for generation 0, (saved_{k-1}, frozen_k] for the k-th take-over, (saved_last, 5] for the
+     last - so the relaunched executor demonstrably ran with its new arguments
+5. Assert redo, measured off the logs, per mode:
    - checkpointed: one .trash_* per restart; resume point == the pinned save (the snapshot
      beside that checkpoint), so the run resumed there, not at step 0; the redone steps are
      exactly the pinned (save, frozen step] windows; per-step attempts all 1 or 2
@@ -95,7 +103,7 @@ Entries: test_hot_restart_checkpointed.py, test_hot_restart_no_checkpoint.py
      thrown away (steps 0..1, each once) and sharing no step with the log that replaced it; the
      surviving log describes each of the 6 steps exactly once; the run still saves after the
      restart, past the step it was frozen at
-5. Compare: bitwise as in scenario_split_deterministic, engine checksums included, with one
+6. Compare: bitwise as in scenario_split_deterministic, engine checksums included, with one
    exemption - rollout/weight_version mean/median/max/min. The trainer outlives a take-over, so
    its weight update counter keeps counting through the steps the target redoes and stands
    ahead of the baseline's at the same step
@@ -106,6 +114,7 @@ over at rollout 0 with the run.
 ```
 
 - **Why `--save-debug-rollout-data`**: it is read by the rollout executor alone (a `DebugRolloutOnlyConfig` field), so a relaunch that changes it must leave the trainer and inference-controller payloads byte-identical - which the launcher enforces by refusing any other diff - and what it does is visible on disk without touching a single training bit, so the bitwise comparison against the baseline still holds.
+- **Why the pod commands and not only the files**: the files prove the restarted executor ran the new value; the orchestrator reads nothing off this flag, so its argv is the only place its take-over can show it took the new arguments.
 
 ### `scenario_hot_restart_realistic_gsm8k`
 
