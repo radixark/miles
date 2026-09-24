@@ -4,6 +4,10 @@ from miles.utils.args.schema import A, Arg, BaseConfig
 class LoraConfig(BaseConfig):
     """Add LoRA-related arguments for Megatron backend."""
 
+    lora_A_init_method: str
+    lora_B_init_method: str
+    multi_lora: bool
+
     sglang_lora_use_virtual_experts: A[
         bool,
         Arg(
@@ -24,13 +28,15 @@ class LoraConfig(BaseConfig):
             help="LoRA variant to use: 'lora' (standard) or 'canonical_lora' (split Q/K/V) (default: lora)",
         ),
     ] = "lora"
+    # TODO: Remove this temporary override after separating CLI input types from normalized config types.
     target_modules: A[
-        str | None,
+        str | list[str] | None,
         Arg(
+            type_parser=str,
             help=(
                 "Target modules for LoRA. Use 'all-linear' or comma-separated module names "
                 "(e.g., 'q_proj,k_proj,v_proj,o_proj' for HF naming or 'linear_qkv,linear_proj' for Megatron naming)"
-            )
+            ),
         ),
     ] = None
     exclude_modules: A[str | None, Arg(help="Modules to exclude from LoRA (comma-separated)")] = None
