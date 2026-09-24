@@ -260,5 +260,3 @@ class ClusterConfig(BaseConfig):
             ),
         ),
     ] = "cpu"
-    distributed_backend: A[str, Arg(reset=True)] = "nccl"
-    distributed_timeout_minutes: A[int, Arg(reset=True)] = 10
