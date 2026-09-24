@@ -116,7 +116,9 @@ class ScriptArgs(U.ExecuteTrainConfig):
     dsa_kernel_backend: Literal["none", "tilelang", "cudnn"] | None = None
     optimizer_offload: bool = True
     use_fault_tolerance: bool = True
-    cp_size: int = 1
+    # None runs each recipe's own CP. Only the single-node miles impl lets it vary (TP takes the GPUs
+    # CP leaves, CP split with --allgather-cp); every other recipe accepts only its own CP size.
+    cp_size: int | None = None
 
     # debug configs
     dump_details: bool = False
@@ -154,6 +156,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
             assert not (self.train_mxfp8 or self.rollout_mxfp8), "train_mxfp8/rollout_mxfp8 require Blackwell"
         assert self.rollout_num_nodes >= 0
         assert self.rollout_num_nodes < self.num_nodes
+        assert self.cp_size is None or self.cp_size >= 1, f"cp_size must be at least 1, got {self.cp_size}"
         self.colocate = self.rollout_num_nodes == 0
         self.actor_num_nodes = self.num_nodes - self.rollout_num_nodes
         self.actor_num_gpus_per_node = self.num_gpus_per_node
@@ -398,6 +401,8 @@ def _get_parallel_config(args: ScriptArgs) -> str:
     # Single-node smoke-test configs
     if actor_num_nodes == 1:
         if args.dsv4_impl == "megatron":
+            # dsv4_hybrid needs cp_partition_mode='contiguous' for CP>1, which miles does not set
+            _require_recipe_cp(args, 1)
             # The plugin rejects TP>1; the TP ranks go to DP instead.
             return (
                 "--tensor-model-parallel-size 1 "
@@ -406,11 +411,16 @@ def _get_parallel_config(args: ScriptArgs) -> str:
                 f"--expert-model-parallel-size {actor_num_gpus_per_node} "
                 "--expert-tensor-parallel-size 1 "
             )
+        cp_size = args.cp_size or 1
+        if actor_num_gpus_per_node % cp_size:
+            raise NotImplementedError(f"cp_size={cp_size} does not divide {actor_num_gpus_per_node} GPUs")
+        tp_size = actor_num_gpus_per_node // cp_size
         return (
-            f"--tensor-model-parallel-size {actor_num_gpus_per_node} "
-            "--sequence-parallel "
+            f"--tensor-model-parallel-size {tp_size} "
+            f"{'--sequence-parallel ' if tp_size > 1 else ''}"
             "--pipeline-model-parallel-size 1 "
-            "--context-parallel-size 1 "
+            f"--context-parallel-size {cp_size} "
+            f"{'--allgather-cp ' if cp_size > 1 else ''}"
             f"--expert-model-parallel-size {actor_num_gpus_per_node} "
             "--expert-tensor-parallel-size 1 "
         )
@@ -422,6 +432,7 @@ def _get_parallel_config(args: ScriptArgs) -> str:
                 # CP>1, which no launcher exercises yet -- so the TP and CP ranks both go
                 # to DP. max-tokens-per-gpu below doubles to keep the per-micro-batch
                 # budget (max_tokens_per_gpu * cp_size) equal to the miles recipe's.
+                _require_recipe_cp(args, 1)
                 return (
                     "--tensor-model-parallel-size 1 "
                     "--pipeline-model-parallel-size 8 "
@@ -431,6 +442,7 @@ def _get_parallel_config(args: ScriptArgs) -> str:
                     "--expert-model-parallel-size 4 "
                     "--expert-tensor-parallel-size 1 "
                 )
+            _require_recipe_cp(args, 2)
             return (
                 "--tensor-model-parallel-size 2 "
                 "--sequence-parallel "
@@ -445,6 +457,7 @@ def _get_parallel_config(args: ScriptArgs) -> str:
 
     if actor_num_gpus_per_node == 8:
         if total_gpus == 64:  # 8 nodes x 8 GPUs
+            _require_recipe_cp(args, 1)
             return (
                 "--tensor-model-parallel-size 8 "
                 "--sequence-parallel "
@@ -456,6 +469,7 @@ def _get_parallel_config(args: ScriptArgs) -> str:
                 "--expert-tensor-parallel-size 1 "
             )
         elif total_gpus == 256:  # 32 nodes x 8 GPUs (Pro)
+            _require_recipe_cp(args, 1)
             return (
                 "--tensor-model-parallel-size 8 "
                 "--sequence-parallel "
@@ -471,6 +485,15 @@ def _get_parallel_config(args: ScriptArgs) -> str:
         f"No pre-set parallel config for {total_gpus} GPUs. "
         f"Please specify your parallel config in `run_deepseek_v4._get_parallel_config`."
     )
+
+
+def _require_recipe_cp(args: ScriptArgs, recipe_cp_size: int) -> None:
+    """A recipe with a fixed CP size accepts ``cp_size`` only when it is unset or equal."""
+    if args.cp_size not in (None, recipe_cp_size):
+        raise NotImplementedError(
+            f"cp_size={args.cp_size} is untested here: this recipe (--dsv4-impl {args.dsv4_impl}, "
+            f"{args.actor_num_nodes}x{args.actor_num_gpus_per_node} GPUs) runs CP{recipe_cp_size}"
+        )
 
 
 def _train(args: ScriptArgs):
