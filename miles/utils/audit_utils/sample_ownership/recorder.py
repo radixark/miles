@@ -144,7 +144,7 @@ class SampleOwnershipRecorder:
             event_logger.log(
                 DataSourceIssuedSamplesEvent,
                 dict(groups=issued_groups),
-                print_log=False,
+                print_log=True,
             )
 
     @classmethod

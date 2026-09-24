@@ -118,6 +118,12 @@ class FullyAsyncRolloutFn(BaseRolloutFn):
         if (worker := self._worker) is None:
             return
         await _end_worker(worker)
+        logger.info(
+            "Ownership diagnostic at disposal: retry=%s running=%s output=%s",
+            [[sample.index for sample in group] for group in self._retry_buffer],
+            [[sample.index for sample in entry.prompt_group] for entry in self._running_tasks],
+            [[sample.index for sample in entry.prompt_group] for entry in self._output.state_dict()],
+        )
 
     async def _call_eval(self, input: RolloutFnEvalInput) -> RolloutFnOutput:
         if input.generate_state is not None:
