@@ -45,7 +45,9 @@ _SAFETENSORS_DTYPE_BY_TORCH_DTYPE = {
     torch.bool: "BOOL",
     torch.complex64: "C64",
     **{
-        getattr(torch, torch_dtype_name): safetensors_dtype
+        getattr(
+            torch, torch_dtype_name
+        ): safetensors_dtype  # config-access-exempt: attribute selected at runtime from torch_dtype_name
         for torch_dtype_name, safetensors_dtype in (
             ("float8_e4m3fn", "F8_E4M3"),
             ("float8_e4m3fnuz", "F8_E4M3FNUZ"),
@@ -55,7 +57,9 @@ _SAFETENSORS_DTYPE_BY_TORCH_DTYPE = {
             ("uint32", "U32"),
             ("uint16", "U16"),
         )
-        if hasattr(torch, torch_dtype_name)
+        if hasattr(
+            torch, torch_dtype_name
+        )  # config-access-exempt: attribute selected at runtime from torch_dtype_name
     },
 }
 

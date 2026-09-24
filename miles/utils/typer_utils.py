@@ -154,7 +154,7 @@ def _print_arguments(data: object) -> None:
     print(f"| {'Argument':<{max_key_len}} | {'Value':<50} |")
     print(sep)
     for f in fields:
-        val_raw = getattr(data, f.name)
+        val_raw = getattr(data, f.name)  # config-access-exempt: attribute selected at runtime from f.name
         val = str(val_raw.value if isinstance(val_raw, Enum) else val_raw)
         if len(val) > 50:
             val = val[:47] + "..."

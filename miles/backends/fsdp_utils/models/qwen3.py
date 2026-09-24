@@ -27,8 +27,12 @@ def resolve_qwen3_dense_sync_dtype(name: str, checkpoint_dtype: torch.dtype) -> 
 
 
 def apply_qwen3_dense_true_on_policy_patch(model) -> bool:
-    base_model = getattr(model, "model", model)
-    final_norm = getattr(base_model, "norm", None)
+    base_model = getattr(
+        model, "model", model
+    )  # config-access-exempt: HF wrappers differ in base-model and final-norm layout
+    final_norm = getattr(
+        base_model, "norm", None
+    )  # config-access-exempt: HF wrappers differ in base-model and final-norm layout
     if isinstance(final_norm, Qwen3FinalRMSNorm):
         return False
     if not isinstance(final_norm, Qwen3RMSNorm):

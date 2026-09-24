@@ -11,7 +11,9 @@ register_param_transform("qwen3_moe", _batched_experts_matches, _hf_unfuse_exper
 
 
 def _is_qwen3_moe(hf_config) -> bool:
-    return str(getattr(hf_config, "model_type", "") or "") == "qwen3_moe"
+    return (
+        str(getattr(hf_config, "model_type", "") or "") == "qwen3_moe"
+    )  # config-access-exempt: model-family schemas differ in optional model_type metadata
 
 
 def _apply_moe_patch(hf_config, args) -> None:

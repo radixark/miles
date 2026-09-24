@@ -91,7 +91,9 @@ def wire_mm_towers(model, hf_checkpoint: str, train: bool = False) -> None:
 
     _orig_forward = model.forward
 
-    if not getattr(model, "pre_process", False):
+    if not getattr(
+        model, "pre_process", False
+    ):  # config-access-exempt: only first pipeline stages construct multimodal towers
 
         def _mm_passthrough(
             *a,

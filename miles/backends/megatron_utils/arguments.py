@@ -52,7 +52,9 @@ def set_default_megatron_args(args):
 
     args.trust_remote_code = True
 
-    if not hasattr(args, "miles_dsa_topk_backend"):
+    if not hasattr(
+        args, "miles_dsa_topk_backend"
+    ):  # config-access-exempt: initialize a Miles extension missing from upstream Megatron args
         args.miles_dsa_topk_backend = "torch"
 
     if is_dsv4_model(args):

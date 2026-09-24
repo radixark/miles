@@ -147,7 +147,9 @@ class RolloutExecutor:
     async def dispose(self) -> None:
         if not self.use_legacy_rollout_v1 and self.generate_rollout is not None:
             await maybe_await(self.generate_rollout.dispose())
-        if (close := getattr(self.data_source, "close", None)) is not None:
+        if (
+            close := getattr(self.data_source, "close", None)
+        ) is not None:  # config-access-exempt: custom data sources may omit this lifecycle method
             close()
         event_analyzer.run_sample_ownership_analysis(args=self.args)
         event_analyzer.run_analysis_from_args(self.args)
@@ -202,7 +204,9 @@ class RolloutExecutor:
         assert_weight_version_is_published(
             self.args, rollouts_since_publish=self._rollouts_since_publish_of_model_id[trainer_model_id]
         )
-        if (get_buffer_length := getattr(self.data_source, "get_buffer_length", None)) is not None:
+        if (
+            get_buffer_length := getattr(self.data_source, "get_buffer_length", None)
+        ) is not None:  # config-access-exempt: custom data sources may omit this lifecycle method
             dashboard_hooks.report_data_buffer(get_buffer_length())
         with timer("rollout" if trainer_model_id is None else f"{trainer_model_id}/rollout"):
             data, metadata, metrics = await self._get_rollout_data(

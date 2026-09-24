@@ -13,7 +13,9 @@ def detect_and_setup_hybrid_cp(model: nn.Module, cp_group: dist.ProcessGroup, cp
     count = 0
     for module in model.modules():
         if isinstance(module, HuggingfaceAttention):
-            linear_attn = getattr(module, "linear_attn", None)
+            linear_attn = getattr(
+                module, "linear_attn", None
+            )  # config-access-exempt: only linear-attention modules expose a linear_attn child
             if linear_attn is not None:
                 linear_attn.cp_group = cp_group
                 linear_attn.cp_rank = cp_rank

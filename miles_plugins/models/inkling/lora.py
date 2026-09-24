@@ -231,7 +231,9 @@ def _apply_expert_lora(moe, args, hf_prefix: str, *, scale: float, dropout: floa
     from megatron.core import parallel_state
 
     config = moe.config
-    assert (getattr(config, "expert_tensor_parallel_size", 1) or 1) == 1, "Inkling LoRA assumes ETP=1"
+    assert (
+        getattr(config, "expert_tensor_parallel_size", 1) or 1
+    ) == 1, "Inkling LoRA assumes ETP=1"  # config-access-exempt: upstream TransformerConfig versions may omit expert tensor parallelism
     rank = int(args.lora_rank)
     hidden_size = config.hidden_size
     moe_intermediate = config.moe_ffn_hidden_size
@@ -341,7 +343,9 @@ def _apply_shared_experts_lora(shared, args, hf_prefix: str, *, scale: float, dr
 def _apply_lm_head_lora(model, args, *, scale: float, dropout: float, a_init: str) -> None:
     from megatron.core import parallel_state
 
-    if not getattr(model, "post_process", False) or getattr(model, "output_layer", None) is None:
+    if (
+        not getattr(model, "post_process", False) or getattr(model, "output_layer", None) is None
+    ):  # config-access-exempt: only final pipeline stages expose an output projection
         return
 
     config = model.config
@@ -350,7 +354,9 @@ def _apply_lm_head_lora(model, args, *, scale: float, dropout: float, a_init: st
     sequence_parallel = bool(config.sequence_parallel)
     output_layer = model.output_layer
     vocab_local = output_layer.weight.shape[0]
-    mup = getattr(config.inkling, "logits_mup_width_multiplier", None)
+    mup = getattr(
+        config.inkling, "logits_mup_width_multiplier", None
+    )  # config-access-exempt: Inkling checkpoint configs may omit the MuP multiplier
     mup = float(mup) if mup else None
 
     adapter = InklingLoRAAdapter("lm_head", "language_model.lm_head.")
@@ -439,7 +445,9 @@ def wrap_model_provider_with_inkling_lora(provider_func, args):
 def _iter_adapters(model_chunks):
     for chunk in model_chunks:
         module = chunk
-        while hasattr(module, "module"):
+        while hasattr(
+            module, "module"
+        ):  # config-access-exempt: distributed wrappers nest their wrapped module dynamically
             module = module.module
         yield from (m for m in module.modules() if isinstance(m, InklingLoRAAdapter))
 
@@ -454,9 +462,13 @@ def _load_attention_adapter(adapter, get_tensor, copy_param) -> None:
         ("wv_dv", "wv_A", "wv_B", meta["nkv_l"] * meta["hd"]),
         ("wr_du", "wr_A", "wr_B", meta["nh_l"] * meta["d_rel"]),
     ):
-        copy_param(getattr(adapter, a_name), get_tensor(f"{prefix}{hf_proj}.lora_A.weight"))
+        copy_param(
+            getattr(adapter, a_name), get_tensor(f"{prefix}{hf_proj}.lora_A.weight")
+        )  # config-access-exempt: adapter projection names come from the LoRA mapping
         full_b = get_tensor(f"{prefix}{hf_proj}.lora_B.weight")
-        copy_param(getattr(adapter, b_name), full_b[tp_rank * rows : (tp_rank + 1) * rows])
+        copy_param(
+            getattr(adapter, b_name), full_b[tp_rank * rows : (tp_rank + 1) * rows]
+        )  # config-access-exempt: adapter projection names come from the LoRA mapping
     full_a = get_tensor(f"{prefix}wo_ud.lora_A.weight")
     cols = meta["nh_l"] * meta["hd"]
     copy_param(adapter.wo_A, full_a[:, tp_rank * cols : (tp_rank + 1) * cols])

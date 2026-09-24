@@ -105,7 +105,9 @@ class DeepseekV4Bridge(DeepseekV3Bridge):
         # round these to bf16 before they reach the fp32 mcore params. Run the base
         # reshaping but skip the dtype downcast for fp32-source weights.
         if len(hf_weights) == 1 and hf_weights[0].dtype == torch.float32:
-            saved_dtype = getattr(self, "dtype", None)
+            saved_dtype = getattr(
+                self, "dtype", None
+            )  # config-access-exempt: mbridge versions may leave the optional weight-conversion dtype unset
             self.dtype = None
             try:
                 return super()._weight_to_mcore_format(mcore_weights_name, hf_weights)
@@ -121,24 +123,48 @@ class DeepseekV4Bridge(DeepseekV3Bridge):
         config.moe_router_score_function = self.hf_config.scoring_func
 
         config.experimental_attention_variant = "dsv4"
-        config.dsa_indexer_n_heads = getattr(self.hf_config, "index_n_heads", 64)
-        config.dsa_indexer_head_dim = getattr(self.hf_config, "index_head_dim", 128)
-        config.dsa_indexer_topk = getattr(self.hf_config, "index_topk", 512)
+        config.dsa_indexer_n_heads = getattr(
+            self.hf_config, "index_n_heads", 64
+        )  # config-access-exempt: HF checkpoints may omit indexer head count
+        config.dsa_indexer_head_dim = getattr(
+            self.hf_config, "index_head_dim", 128
+        )  # config-access-exempt: HF checkpoints may omit indexer head dimension
+        config.dsa_indexer_topk = getattr(
+            self.hf_config, "index_topk", 512
+        )  # config-access-exempt: HF checkpoints may omit indexer top-k
 
-        config.num_residual_streams = getattr(self.hf_config, "hc_mult", 4)
-        config.mhc_sinkhorn_iterations = getattr(self.hf_config, "hc_sinkhorn_iters", 20)
+        config.num_residual_streams = getattr(
+            self.hf_config, "hc_mult", 4
+        )  # config-access-exempt: HF checkpoints may omit hyper-connection multiplicity
+        config.mhc_sinkhorn_iterations = getattr(
+            self.hf_config, "hc_sinkhorn_iters", 20
+        )  # config-access-exempt: HF checkpoints may omit Sinkhorn iteration count
 
-        config.csa_compress_ratios = getattr(self.hf_config, "compress_ratios", None)
-        config.csa_compress_rotary_base = getattr(self.hf_config, "compress_rope_theta", 160000)
+        config.csa_compress_ratios = getattr(
+            self.hf_config, "compress_ratios", None
+        )  # config-access-exempt: HF checkpoints may omit compression ratios
+        config.csa_compress_rotary_base = getattr(
+            self.hf_config, "compress_rope_theta", 160000
+        )  # config-access-exempt: HF checkpoints may omit compression rotary base
 
-        swiglu_limit = getattr(self.hf_config, "swiglu_limit", 0.0)
+        swiglu_limit = getattr(
+            self.hf_config, "swiglu_limit", 0.0
+        )  # config-access-exempt: HF checkpoints may omit the SwiGLU clamp
         if swiglu_limit > 0:
             config.bias_activation_fusion = False
             config.activation_func_clamp_value = swiglu_limit
 
-        config.o_groups = getattr(self.hf_config, "o_groups", 8)
-        config.o_lora_rank = getattr(self.hf_config, "o_lora_rank", 1024)
-        config.moe_n_hash_layers = getattr(self.hf_config, "n_hash_layers", 3)
-        config.csa_window_size = getattr(self.hf_config, "window_size", 128)
+        config.o_groups = getattr(
+            self.hf_config, "o_groups", 8
+        )  # config-access-exempt: HF checkpoints may omit output projection groups
+        config.o_lora_rank = getattr(
+            self.hf_config, "o_lora_rank", 1024
+        )  # config-access-exempt: HF checkpoints may omit output projection rank
+        config.moe_n_hash_layers = getattr(
+            self.hf_config, "n_hash_layers", 3
+        )  # config-access-exempt: HF checkpoints may omit hash-layer count
+        config.csa_window_size = getattr(
+            self.hf_config, "window_size", 128
+        )  # config-access-exempt: HF checkpoints may omit the CSA window
 
         return config

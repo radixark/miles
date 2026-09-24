@@ -98,7 +98,9 @@ class SGLangApiClient:
         try:
             response.raise_for_status()
         except httpx.HTTPStatusError as e:
-            if hasattr(e, "add_note"):
+            if hasattr(
+                e, "add_note"
+            ):  # config-access-exempt: exception notes are unavailable on older Python versions
                 e.add_note(f"{response.text=}")
             raise
         if not response.content:

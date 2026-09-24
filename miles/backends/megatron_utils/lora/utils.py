@@ -134,7 +134,9 @@ def reduce_marked_lora_grads(model: Sequence[torch.nn.Module]) -> None:
         marked = []
         for chunk in model:
             for param in chunk.parameters():
-                group_name = getattr(param, "_lora_grad_sum_group", None)
+                group_name = getattr(
+                    param, "_lora_grad_sum_group", None
+                )  # config-access-exempt: _lora_grad_sum_group is optional backend-attached tensor metadata
                 if group_name is not None and param.requires_grad:
                     marked.append((param, group_name))
         _marked_lora_grad_params_cache[key] = marked
@@ -152,7 +154,9 @@ def reduce_marked_lora_grads(model: Sequence[torch.nn.Module]) -> None:
         for param, g_name in marked:
             if g_name != group_name:
                 continue
-            grad = getattr(param, "main_grad", None)
+            grad = getattr(
+                param, "main_grad", None
+            )  # config-access-exempt: main_grad is optional backend-attached tensor metadata
             if grad is None:
                 grad = param.grad
             if grad is not None:
@@ -171,7 +175,9 @@ def reduce_marked_lora_grads(model: Sequence[torch.nn.Module]) -> None:
 def is_lora_model(model: Sequence[torch.nn.Module]) -> bool:
     """Check if model has LoRA layers applied."""
     for model_chunk in model:
-        if hasattr(model_chunk.module, "peft_config"):
+        if hasattr(
+            model_chunk.module, "peft_config"
+        ):  # config-access-exempt: only PEFT-wrapped modules expose adapter configuration
             return True
         for name, _ in model_chunk.named_parameters():
             if "lora_" in name or "adapter" in name:

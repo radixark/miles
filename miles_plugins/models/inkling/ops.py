@@ -43,7 +43,9 @@ def inkling_sp_residual_conv(config, conv, x_sbh, seqlens):
     """Residual depthwise sconv on [s,b,h]. Under SP/CP the sequence is sharded, so a local-shard
     causal conv misses the left context -> gather -> conv on the full sequence -> take this rank's
     slice. Exact because the conv is residual. seqlens must be the FULL-sequence segment lengths."""
-    sp = getattr(config, "sequence_parallel", False) and ps.get_tensor_model_parallel_world_size() > 1
+    sp = (
+        getattr(config, "sequence_parallel", False) and ps.get_tensor_model_parallel_world_size() > 1
+    )  # config-access-exempt: upstream TransformerConfig variants may omit sequence parallelism
     cp, cp_rank, cp_group = cp_world()
     x = gather_from_sequence_parallel_region(x_sbh, tensor_parallel_output_grad=False) if sp else x_sbh
     if cp > 1:
@@ -60,7 +62,9 @@ def seqlens_from_packed(packed_seq_params, T):
     """THD packing: per-segment token lengths (over the full post-SP-gather length T) from
     cu_seqlens_q, so attention/sconv/rel-bias never cross packed-sequence boundaries. Clip to T:
     keep whole segments, split the boundary one, trailing pad as its own segment."""
-    if packed_seq_params is None or getattr(packed_seq_params, "cu_seqlens_q", None) is None:
+    if (
+        packed_seq_params is None or getattr(packed_seq_params, "cu_seqlens_q", None) is None
+    ):  # config-access-exempt: packed-sequence implementations may omit cumulative lengths
         return None
     cu = packed_seq_params.cu_seqlens_q
     raw = [int(s) for s in (cu[1:] - cu[:-1]).tolist() if s > 0]
