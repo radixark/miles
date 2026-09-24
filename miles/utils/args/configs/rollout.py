@@ -228,15 +228,34 @@ class RolloutRelatedConfig(BaseConfig):
         str,
         Arg(
             type_parser=None,
-            choices=["broadcast", "broadcast_packed", "p2p", "disk-delta"],
+            choices=["broadcast", "broadcast_packed", "p2p", "disk-delta", "http-lora"],
             help=(
                 "The method to transfer weights to remote rollout engines during update weight. "
                 "'disk-delta' diffs each sync against a CPU snapshot of the previous one and publishes "
                 "only the changed bytes to --update-weight-disk-dir; each engine's /pull_weights applies "
-                "them into a host-local checkpoint that the engine reloads from."
+                "them into a host-local checkpoint that the engine reloads from. "
+                "'http-lora' is LoRA-only: rank 0 hands the adapter to each engine's LoRA load route over "
+                "HTTP (see --http-lora-ship), so the trainer and the engines need not share a vendor, an "
+                "interconnect, or a host."
             ),
         ),
     ] = "broadcast"
+    http_lora_ship: A[
+        str,
+        Arg(
+            type_parser=None,
+            choices=["path", "tensors"],
+            help=(
+                "How http-lora hands the adapter to the engines. 'path': write a versioned PEFT "
+                "directory under --update-weight-disk-dir and POST its path to load_lora_adapter; "
+                "the directory must be visible to the engine hosts, or "
+                "--custom-update-weight-post-write-path copies it there. 'tensors': POST the "
+                "adapter weights in the request body (load_lora_adapter_from_tensors), so the "
+                "engines need nothing but an HTTP port; --update-weight-disk-dir is then optional "
+                "and only keeps versioned copies for auditing."
+            ),
+        ),
+    ] = "path"
     update_weight_disk_dir: A[
         str | None,
         Arg(
