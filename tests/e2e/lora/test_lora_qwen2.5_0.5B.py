@@ -7,7 +7,7 @@ with LoRA enabled (rank=32, all-linear) to validate:
   - LoRA checkpoint save (native + HF PEFT format)
   - Training completes without errors
 
-Requires: 8 GPUs, Qwen2.5-0.5B-Instruct model, GSM8K dataset.
+Requires: 4 GPUs, Qwen2.5-0.5B-Instruct model, GSM8K dataset.
 Triggered by label: run-ci-lora
 """
 
