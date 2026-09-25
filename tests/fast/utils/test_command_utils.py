@@ -292,6 +292,7 @@ class TestStartMooncakeMaster:
             ),
             num_gpus_per_node=1,
             megatron_model_type="qwen3-4B",
+            config=command_utils.ExecuteTrainConfig(external_mooncake=True),
         )
 
         assert not any("mooncake_master --rpc_port" in command for command in commands)
