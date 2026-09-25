@@ -23,6 +23,7 @@ from miles.utils.lora import is_lora_enabled
 from miles.utils.megatron_args_utils import compute_megatron_world_size_except_dp
 from miles.utils.object_store import ObjectStoreBackend
 from miles.utils.run_uuid import RUN_UUID_LENGTH, generate_run_uuid, validate_run_uuid
+from miles.utils.score_centering import validate_score_centering_args
 from miles.utils.tracking_utils.ci_history import RECORD_DIR_ENV
 
 logger = logging.getLogger(__name__)
@@ -1484,6 +1485,21 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                     "we will use this function to calculate the loss. "
                 ),
             )
+            parser.add_argument(
+                "--score-centering-top-k",
+                type=int,
+                default=128,
+                help="Number of sampler candidates recorded for --loss-type score_centering.",
+            )
+            parser.add_argument(
+                "--score-centering-is",
+                choices=["none", "tis", "mis"],
+                default="none",
+                help="Importance weights to center together with the policy score.",
+            )
+            parser.add_argument("--score-centering-tis-clip", type=float, default=2.0)
+            parser.add_argument("--score-centering-mis-low", type=float, default=0.5)
+            parser.add_argument("--score-centering-mis-high", type=float, default=5.0)
             parser.add_argument(
                 "--kl-loss-type",
                 type=str,
@@ -3617,6 +3633,8 @@ def miles_validate_args(args):
 
     if args.skip_actor_forward_only:
         validate_skip_actor_forward_only(args)
+
+    validate_score_centering_args(args)
 
     _maybe_apply_dumper_overrides(args)
 

@@ -162,6 +162,32 @@ def test_append_sampling_metadata_preserves_ragged_support_and_native_logprobs()
     sample.validate()
 
 
+def test_append_sampling_metadata_selects_sampled_probability_from_support_mode():
+    sample = Sample(tokens=[1])
+    meta_info = {
+        "output_token_sampling_mask": [[10, 4, 7], [11, 3]],
+        "output_token_sampling_logprobs": [[-1.2, -0.6, -2.0], [-0.4, -1.1]],
+    }
+
+    log_probs = append_sampling_metadata(sample, [4, 11], meta_info, sampling_logprobs_mode="support")
+
+    assert log_probs == [-0.6, -0.4]
+    ids, offsets = sample.rollout_sampling_mask._as_tensors()
+    assert ids.tolist() == [10, 4, 7, 11, 3]
+    assert offsets.tolist() == [0, 3, 5]
+
+
+def test_append_sampling_metadata_rejects_misaligned_support_logprobs():
+    sample = Sample(tokens=[1])
+    meta_info = {
+        "output_token_sampling_mask": [[10, 4]],
+        "output_token_sampling_logprobs": [[-0.5]],
+    }
+
+    with pytest.raises(ValueError, match="align"):
+        append_sampling_metadata(sample, [4], meta_info, sampling_logprobs_mode="support")
+
+
 def test_forced_tokens_append_singleton_support_and_strip_cleanly():
     sample = Sample(
         tokens=[1, 10],

@@ -7,7 +7,6 @@ import torch
 
 from miles.utils.sampling_mask import RolloutSamplingMask
 
-
 LEGACY_WEIGHT_VERSIONS_KEY = "legacy_weight_versions"
 
 
@@ -87,6 +86,8 @@ class Sample:
     loss_mask: list[int] | None = None
     weight_versions: list[WeightVersionsPerCall] = field(default_factory=list)
     rollout_log_probs: list[float] | None = None  # Log probabilities from rollout engine
+    rollout_topk_token_ids: numpy.ndarray | None = None  # [response_length, k], int32; -1 pads unused slots
+    rollout_topk_log_probs: numpy.ndarray | None = None  # [response_length, k], float32; -inf pads unused slots
     rollout_sampling_mask: RolloutSamplingMask | None = None
     rollout_routed_experts: numpy.ndarray | None = (
         None  # Routed experts from rollout engine. shape: (num_tokens-1, num_layers, moe_router_topk), dtype=int32
@@ -249,6 +250,11 @@ class Sample:
             assert (
                 len(self.rollout_log_probs) == self.response_length
             ), f"rollout_log_probs length ({len(self.rollout_log_probs)}) != response_length ({self.response_length})"
+        if self.rollout_topk_token_ids is not None or self.rollout_topk_log_probs is not None:
+            ids, logps = self.rollout_topk_token_ids, self.rollout_topk_log_probs
+            assert ids is not None and logps is not None, "Score-centering IDs and probabilities must both be present"
+            assert ids.ndim == 2 and ids.shape == logps.shape, "Score-centering candidate shapes do not match"
+            assert ids.shape[0] == self.response_length, "Score-centering candidates do not match response length"
         if self.rollout_sampling_mask is not None:
             assert len(self.rollout_sampling_mask) == self.response_length, (
                 f"rollout_sampling_mask length ({len(self.rollout_sampling_mask)}) "
@@ -294,6 +300,9 @@ class Sample:
         ), f"cannot strip {n} tokens: only {self.response_length} output tokens available"
         self.tokens = self.tokens[:-n]
         self.response_length -= n
+        if self.rollout_topk_token_ids is not None:
+            self.rollout_topk_token_ids = self.rollout_topk_token_ids[:-n]
+            self.rollout_topk_log_probs = self.rollout_topk_log_probs[:-n]
         if self.rollout_log_probs is not None:
             self.rollout_log_probs = self.rollout_log_probs[:-n]
         if self.rollout_sampling_mask is not None:
@@ -333,6 +342,8 @@ class Sample:
         self.loss_mask = None
         self.weight_versions = []
         self.rollout_log_probs = None
+        self.rollout_topk_token_ids = None
+        self.rollout_topk_log_probs = None
         self.rollout_sampling_mask = None
         self.rollout_routed_experts = None
         self.rollout_indexer_topk = None
@@ -389,7 +400,7 @@ class ParamInfo:
 # A dict-based batch produced along the rollout -> training path
 # In Megatron backend, several fields are converted to torch.Tensor lists on GPU
 # before being consumed by data iterators (see megatron_utils.actor._get_rollout_data).
-RolloutBatch = dict[str, list[torch.Tensor] | list[int] | list[float] | list[str]]
+RolloutBatch = dict[str, list[torch.Tensor] | list[numpy.ndarray] | list[int] | list[float] | list[str]]
 
 
 @dataclass
