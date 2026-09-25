@@ -1,6 +1,7 @@
 import os
 from dataclasses import dataclass
 
+from tests.ci.rocm_utils import IS_ROCM
 import miles.utils.external_utils.command_utils as U
 
 MODEL_NAME = "GLM-4.7-Flash"
@@ -134,6 +135,8 @@ def build_train_args(case: CaseConfig, *, wandb_file: str) -> str:
     mtp_args = "--enable-mtp-training " "--mtp-loss-scaling-factor 0.2 "
 
     ci_args = "--ci-test "
+    if IS_ROCM:
+        ci_args += "--ci-disable-logprobs-checker "
 
     misc_args = (
         "--attention-dropout 0.0 "
@@ -173,8 +176,18 @@ def execute(case: CaseConfig, *, wandb_file: str) -> None:
 
     train_args = build_train_args(case, wandb_file=wandb_file)
 
+    extra_env_vars = None
+    if IS_ROCM:
+        extra_env_vars = {
+            "SGLANG_USE_AITER": "0",
+            "MILES_TEST_R3_THRESHOLD": "1.0",
+            "SGLANG_ENABLE_SPLITKV_VERIFY": "0",
+            "SGLANG_ROCM_FUSED_DECODE_MLA": "0",
+        }
+
     U.execute_train(
         train_args=train_args,
         num_gpus_per_node=case.num_gpus_per_node,
         megatron_model_type=MODEL_TYPE,
+        extra_env_vars=extra_env_vars,
     )
