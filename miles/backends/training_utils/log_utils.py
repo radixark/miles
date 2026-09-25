@@ -15,8 +15,8 @@ from miles.utils.tracking_utils.structured_log import log_structured
 from miles.utils.types import RolloutBatch
 
 from ...utils.tracking_utils import tracking
-from .cp_utils import get_sum_of_sample_mean
-from .data import DataIterator
+from .data.context_parallel import get_sum_of_sample_mean
+from .data.rollout import DataIterator
 from .parallel import get_parallel_state
 
 logger = logging.getLogger(__name__)

@@ -4,7 +4,7 @@ from miles.backends.megatron_utils.actor import MegatronTrainRayActor
 from miles.backends.megatron_utils.lora import checkpoint as lora_checkpoint
 from miles.backends.megatron_utils.lora import model as lora_model
 from miles.backends.megatron_utils.lora.optimizer import SlotOptimizer
-from miles.backends.training_utils.data import get_rollout_data
+from miles.backends.training_utils.data.rollout import get_rollout_data
 from miles.utils.lora.utils import AdapterSpec
 from miles.utils.ray_utils import Box
 from miles.utils.tracking_utils.structured_log import with_logs

@@ -43,7 +43,7 @@ from miles.utils.workers.naming import compute_cell_id
 
 from ...utils.profile_utils import TrainProfiler
 from ...utils.tensor_backper import TensorBackuper
-from ..training_utils.data import DataIterator, get_data_iterator, get_num_rollouts, get_rollout_data
+from ..training_utils.data.rollout import DataIterator, get_data_iterator, get_num_rollouts, get_rollout_data
 from ..training_utils.log_utils import log_cpu_memory, log_perf_data, log_rollout_data
 from ..training_utils.loss import (
     compute_advantages_and_returns,

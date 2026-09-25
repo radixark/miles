@@ -2,7 +2,7 @@ from typing import Protocol
 
 import torch
 
-from .cp_utils import slice_with_cp
+from .data.context_parallel import slice_with_cp
 from .parallel import get_parallel_state
 
 

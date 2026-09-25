@@ -3,9 +3,9 @@ from types import SimpleNamespace
 
 import torch
 
-from miles.backends.training_utils import cp_utils
-from miles.backends.training_utils import data as data_utils
 from miles.backends.training_utils import log_utils
+from miles.backends.training_utils.data import context_parallel
+from miles.backends.training_utils.data import rollout as data_utils
 
 
 def test_true_on_policy_rollout_logprob_dtype_follows_training_precision():
@@ -29,7 +29,7 @@ def test_true_on_policy_log_checker_passes_when_values_and_dtype_match(monkeypat
     )
 
     monkeypatch.setattr(log_utils, "get_parallel_state", lambda: parallel_state)
-    monkeypatch.setattr(cp_utils, "get_parallel_state", lambda: parallel_state)
+    monkeypatch.setattr(context_parallel, "get_parallel_state", lambda: parallel_state)
     monkeypatch.setattr(
         log_utils,
         "gather_log_data",
@@ -70,7 +70,7 @@ def test_sampling_mask_csr_payload_is_not_averaged_as_a_metric(monkeypatch):
         is_pp_last_stage=True,
     )
     monkeypatch.setattr(log_utils, "get_parallel_state", lambda: parallel_state)
-    monkeypatch.setattr(cp_utils, "get_parallel_state", lambda: parallel_state)
+    monkeypatch.setattr(context_parallel, "get_parallel_state", lambda: parallel_state)
     monkeypatch.setattr(
         log_utils,
         "gather_log_data",

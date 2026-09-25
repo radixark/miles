@@ -148,7 +148,7 @@ def mode(request):
 
 
 def _get_sum_of_sample_mean(batch, args, parallel_state):
-    from miles.backends.training_utils.cp_utils import get_sum_of_sample_mean
+    from miles.backends.training_utils.data.context_parallel import get_sum_of_sample_mean
 
     return get_sum_of_sample_mean(
         batch["total_lengths"],

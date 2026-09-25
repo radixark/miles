@@ -12,7 +12,8 @@ from transformers import PretrainedConfig, PreTrainedTokenizerBase
 
 from miles.backends.megatron_utils.ft.types import TrainStepOutcome, TrainStepOutput
 from miles.backends.training_utils.ci_utils import check_grad_norm
-from miles.backends.training_utils.data import DataIterator, get_batch, get_data_iterator, get_rollout_data
+from miles.backends.training_utils.data.rollout import DataIterator, get_batch, get_data_iterator, get_rollout_data
+from miles.backends.training_utils.data.sampling_mask import get_rollout_sampling_masks
 from miles.backends.training_utils.log_utils import (
     aggregate_forward_results,
     aggregate_train_losses,
@@ -21,7 +22,6 @@ from miles.backends.training_utils.log_utils import (
 )
 from miles.backends.training_utils.loss import compute_advantages_and_returns, get_log_probs_and_entropy, loss_function
 from miles.backends.training_utils.parallel import get_parallel_state
-from miles.backends.training_utils.sampling_mask import get_rollout_sampling_masks
 from miles.backends.training_utils.torch_native import routing_replay
 from miles.backends.training_utils.torch_native.step_runner import StepRunner
 from miles.backends.training_utils.weight_update.updater import WeightUpdater

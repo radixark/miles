@@ -7,7 +7,7 @@ import torch
 import torch.distributed as dist
 
 from miles.backends.training_utils import loss as loss_module
-from miles.backends.training_utils.cp_utils import get_sum_of_sample_mean
+from miles.backends.training_utils.data.context_parallel import get_sum_of_sample_mean
 from miles.backends.training_utils.loss import compute_advantages_and_returns
 from miles.backends.training_utils.loss_hub import losses as losses_module
 from miles.backends.training_utils.loss_hub.logit_processors import get_log_probs_and_entropy

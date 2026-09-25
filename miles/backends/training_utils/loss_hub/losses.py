@@ -4,11 +4,12 @@ from typing import Protocol
 
 import torch
 
-from miles.backends.training_utils.cp_utils import (
+from miles.backends.training_utils.data.context_parallel import (
     all_gather_with_cp,
     get_local_response_loss_masks,
     get_sum_of_sample_mean,
 )
+from miles.backends.training_utils.data.sampling_mask import get_rollout_sampling_masks
 from miles.backends.training_utils.loss_hub.corrections import vanilla_tis_function
 from miles.backends.training_utils.loss_hub.logit_processors import get_log_probs_and_entropy, get_values
 from miles.backends.training_utils.loss_hub.math_utils import (
@@ -19,7 +20,6 @@ from miles.backends.training_utils.loss_hub.math_utils import (
     compute_policy_loss,
 )
 from miles.backends.training_utils.parallel import get_parallel_state
-from miles.backends.training_utils.sampling_mask import get_rollout_sampling_masks
 from miles.utils.function_registry import load_function
 from miles.utils.types import RolloutBatch
 

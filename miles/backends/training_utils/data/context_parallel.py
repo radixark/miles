@@ -5,7 +5,7 @@ import torch
 import torch.distributed as dist
 import torch.nn.functional as F
 
-from .parallel import get_parallel_state
+from ..parallel import get_parallel_state
 
 logger = logging.getLogger(__name__)
 

@@ -3,10 +3,13 @@ from collections.abc import Iterator, Sequence
 
 import torch
 
-from miles.backends.training_utils.cp_utils import allgather_cp_redistribute, get_logits_and_tokens_offset_with_cp
+from miles.backends.training_utils.data.context_parallel import (
+    allgather_cp_redistribute,
+    get_logits_and_tokens_offset_with_cp,
+)
+from miles.backends.training_utils.data.sampling_mask import build_local_sampling_mask
 from miles.backends.training_utils.loss_hub.math_utils import calculate_log_probs_and_entropy
 from miles.backends.training_utils.parallel import get_parallel_state
-from miles.backends.training_utils.sampling_mask import build_local_sampling_mask
 from miles.utils.sampling_mask import RolloutSamplingMask
 
 

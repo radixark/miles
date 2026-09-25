@@ -3,9 +3,8 @@ from argparse import Namespace
 import pytest
 import torch
 
-from miles.backends.training_utils import cp_utils
-from miles.backends.training_utils import data as data_utils
-from miles.backends.training_utils import mm_data
+from miles.backends.training_utils.data import context_parallel, multimodal
+from miles.backends.training_utils.data import rollout as data_utils
 from miles.backends.training_utils.loss_hub.opd import apply_opd_kl_to_advantages
 from miles.backends.training_utils.parallel import GroupInfo, ParallelState
 
@@ -59,7 +58,7 @@ def _load_rollout_data(
 
     monkeypatch.setattr(data_utils, "process_rollout_data", lambda *args, **kwargs: (rollout_data, object()))
     monkeypatch.setattr(data_utils, "get_parallel_state", lambda: parallel_state)
-    monkeypatch.setattr(cp_utils, "get_parallel_state", lambda: parallel_state)
+    monkeypatch.setattr(context_parallel, "get_parallel_state", lambda: parallel_state)
     monkeypatch.setattr(torch.cuda, "current_device", lambda: torch.device("cpu"))
 
     loaded_rollout_data, _store_get_result = data_utils.get_rollout_data(_args(qkv_format), object())
@@ -125,7 +124,7 @@ def test_sglang_opd_response_fields_follow_rollout_log_prob_cp_slice(
 
 def test_multimodal_cp_reslices_precomputed_opd_reverse_kl(monkeypatch: pytest.MonkeyPatch) -> None:
     rollout_data = {
-        "tokens": [torch.tensor([mm_data.KIMI_VL_MEDIA_TOKEN_ID, 1, 2])],
+        "tokens": [torch.tensor([multimodal.KIMI_VL_MEDIA_TOKEN_ID, 1, 2])],
         "loss_masks": [torch.ones(2, dtype=torch.int)],
         "total_lengths": [3],
         "response_lengths": [2],
@@ -134,16 +133,16 @@ def test_multimodal_cp_reslices_precomputed_opd_reverse_kl(monkeypatch: pytest.M
     }
     gathered_keys = []
 
-    monkeypatch.setattr(mm_data, "get_parallel_state", lambda: _parallel_state(cp_size=2))
+    monkeypatch.setattr(multimodal, "get_parallel_state", lambda: _parallel_state(cp_size=2))
 
     def _all_gather(value: torch.Tensor, *args, **kwargs) -> torch.Tensor:
         gathered_keys.append(value)
         return value
 
-    monkeypatch.setattr(mm_data, "all_gather_with_cp", _all_gather)
-    monkeypatch.setattr(mm_data, "slice_log_prob_with_cp", lambda value, *args, **kwargs: value)
+    monkeypatch.setattr(multimodal, "all_gather_with_cp", _all_gather)
+    monkeypatch.setattr(multimodal, "slice_log_prob_with_cp", lambda value, *args, **kwargs: value)
 
-    mm_data.expand_multimodal_rollout_data_in_place(rollout_data)
+    multimodal.expand_multimodal_rollout_data_in_place(rollout_data)
 
     assert len(gathered_keys) == 1
     assert gathered_keys[0] is rollout_data["opd_reverse_kl"][0]
