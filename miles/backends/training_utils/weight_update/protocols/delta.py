@@ -23,7 +23,13 @@ from miles.backends.training_utils.weight_update.protocol import WeightTransferP
 from miles.backends.training_utils.weight_update.session import check_weight_sync_results
 from miles.backends.training_utils.weight_update.utils import get_data_replica_rank_and_size
 from miles.utils import async_utils
-from miles.utils.disk_delta import NUM_WORKERS, checksum, make_tensor_reader, overwrite_encode
+from miles.utils.disk_delta import (
+    NUM_WORKERS,
+    checkpoint_tensor_layout,
+    checksum,
+    make_tensor_reader,
+    overwrite_encode,
+)
 from miles.utils.distributed_utils import get_gloo_group
 
 logger = logging.getLogger(__name__)
@@ -56,6 +62,13 @@ _SAFETENSORS_DTYPE_BY_TORCH_DTYPE = {
         )
         if hasattr(torch, torch_dtype_name)
     },
+}
+
+_PLAIN_FLOAT_DTYPE_BY_SAFETENSORS_DTYPE = {
+    "F64": torch.float64,
+    "F32": torch.float32,
+    "F16": torch.float16,
+    "BF16": torch.bfloat16,
 }
 
 
@@ -127,7 +140,9 @@ class UpdateWeightFromDiskDelta(WeightTransferProtocol):
     def send_bucket(self, bucket: list[tuple[str, torch.Tensor]]) -> None:
         """Submit each tensor of the bucket to the diff/compress pool (pipelined with the gather)."""
         for name, tensor in bucket:
-            flat = tensor.detach().contiguous().view(torch.uint8).reshape(-1)
+            tensor = self._match_checkpoint_layout(name, tensor)
+            # The dtype-view overload requires at least one dimension.
+            flat = tensor.detach().contiguous().reshape(-1).view(torch.uint8)
             nbytes = int(flat.numel())
             if self._use_pinned and nbytes <= self._max_bytes:
                 buf = self._free_q.get()  # blocks when all buffers are in flight -> backpressures the gather
@@ -195,16 +210,12 @@ class UpdateWeightFromDiskDelta(WeightTransferProtocol):
             assert read_hf is not None
             try:
                 for name, tensor in bucket:
-                    try:
-                        baseline = read_hf(
-                            name,
-                            expected_dtype=_safetensors_dtype(tensor.dtype),
-                            expected_shape=tuple(tensor.shape),
-                        )
-                    except KeyError as error:
-                        raise ValueError(
-                            f"Trainer emitted {name!r}, but it is absent from the canonical checkpoint"
-                        ) from error
+                    tensor = self._match_checkpoint_layout(name, tensor)
+                    baseline = read_hf(
+                        name,
+                        expected_dtype=_safetensors_dtype(tensor.dtype),
+                        expected_shape=tuple(tensor.shape),
+                    )
                     emitted_nbytes = tensor.numel() * tensor.element_size()
                     if emitted_nbytes != baseline.nbytes:
                         raise ValueError(
@@ -258,6 +269,37 @@ class UpdateWeightFromDiskDelta(WeightTransferProtocol):
                 self.args.hf_checkpoint,
             )
         dist.barrier(group=get_gloo_group())
+
+    def _match_checkpoint_layout(self, name: str, tensor: torch.Tensor) -> torch.Tensor:
+        """Match one emitted tensor to the immutable checkpoint byte layout.
+
+        Model conversion and quantization decide which tensors exist. Disk-delta
+        only permits a storage-dtype cast between ordinary floating-point
+        tensors; packed and FP8 layouts must already match exactly.
+        """
+        try:
+            checkpoint_dtype, checkpoint_shape = checkpoint_tensor_layout(self.args.hf_checkpoint, name)
+        except KeyError as error:
+            raise ValueError(f"Trainer emitted {name!r}, but it is absent from the canonical checkpoint") from error
+
+        if tuple(tensor.shape) != checkpoint_shape:
+            raise ValueError(
+                f"Checkpoint tensor {name!r} has shape {checkpoint_shape}; " f"trainer emitted {tuple(tensor.shape)}"
+            )
+
+        emitted_dtype = _safetensors_dtype(tensor.dtype)
+        if emitted_dtype == checkpoint_dtype:
+            return tensor
+
+        checkpoint_torch_dtype = _PLAIN_FLOAT_DTYPE_BY_SAFETENSORS_DTYPE.get(checkpoint_dtype)
+        if checkpoint_torch_dtype is not None and emitted_dtype in _PLAIN_FLOAT_DTYPE_BY_SAFETENSORS_DTYPE:
+            return tensor.to(checkpoint_torch_dtype)
+
+        raise ValueError(
+            f"Checkpoint tensor {name!r} has dtype {checkpoint_dtype}; "
+            f"trainer emitted {emitted_dtype}. Quantized storage layouts must "
+            "be produced by the model's weight converter."
+        )
 
     def _begin_encode(self, weight_version: int) -> None:
         """Set up this version's diff/compress pipeline: each ``send_bucket`` copies one tensor at
