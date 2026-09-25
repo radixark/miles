@@ -1,6 +1,8 @@
 import asyncio
 import contextvars
+import gc
 import json
+import logging
 import os
 import subprocess
 import sys
@@ -28,9 +30,7 @@ def events(caplog):
 
 
 def test_cancel_and_timeout_provenance(diagnostics, caplog):
-    async def run():
-        loop = asyncio.get_running_loop()
-        configure_async_diagnostics(loop)
+    async def trial():
         with async_diagnostic_scope("trial-123", timeout_s=0.01):
             with pytest.raises(TimeoutError):
                 await asyncio.wait_for(asyncio.sleep(60), timeout=0.01)
@@ -39,6 +39,12 @@ def test_cancel_and_timeout_provenance(diagnostics, caplog):
             with pytest.raises(asyncio.CancelledError):
                 await task
             assert not task.cancel()
+
+    async def run():
+        configure_async_diagnostics(asyncio.get_running_loop())
+        # Run the trial in a traced task: Python 3.12's wait_for cancels the
+        # awaiting task itself instead of wrapping the coroutine in a new one.
+        await asyncio.create_task(trial())
 
     asyncio.run(run())
     cancels = [e for e in events(caplog) if e["event"] == "task_cancel"]
@@ -132,3 +138,64 @@ def test_invalid_policy(monkeypatch):
     monkeypatch.setenv("MILES_ASYNC_WARNING_POLICY", "typo")
     with pytest.raises(ValueError, match="MILES_ASYNC_WARNING_POLICY"):
         configure_strict_async_warnings()
+
+
+def test_lifecycle_events_are_informational_and_defects_are_warnings(diagnostics, caplog):
+    caplog.set_level(logging.INFO, logger="miles.utils.async_diagnostics")
+
+    async def run():
+        configure_async_diagnostics(asyncio.get_running_loop())
+        with async_diagnostic_scope("trial-ok", timeout_s=1):
+            await asyncio.sleep(0)
+        task = asyncio.create_task(asyncio.sleep(60))
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(run())
+    levels = {
+        r.message.split('"event": "', 1)[1].split('"', 1)[0]: r.levelno
+        for r in caplog.records
+        if "async_diagnostic " in r.message
+    }
+    assert levels["enabled"] == levels["scope_start"] == levels["scope_end"] == logging.INFO
+    assert levels["task_cancel"] == logging.WARNING
+
+
+def test_task_ids_are_process_unique_counters(diagnostics, caplog):
+    async def run():
+        configure_async_diagnostics(asyncio.get_running_loop())
+        for _ in range(3):
+            task = asyncio.create_task(asyncio.sleep(60))
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            del task
+            gc.collect()
+
+    asyncio.run(run())
+    cancels = [e for e in events(caplog) if e["event"] == "task_cancel"]
+    ids = [e["task_id"] for e in cancels]
+    assert len(ids) == 3 and len(set(ids)) == 3 and ids == sorted(ids)
+    assert all(e["caller_task_id"] not in ids for e in cancels)
+    assert all(isinstance(f[0], str) and isinstance(f[2], str) for e in cancels for f in e["caller_stack"])
+
+
+def test_cancel_skips_diagnostic_work_when_warnings_are_disabled(diagnostics, caplog, monkeypatch):
+    calls = []
+    monkeypatch.setattr("miles.utils.async_diagnostics._caller_stack", lambda frame: calls.append(frame) or [])
+    logging.getLogger("miles.utils.async_diagnostics").setLevel(logging.ERROR)
+    try:
+
+        async def run():
+            configure_async_diagnostics(asyncio.get_running_loop())
+            task = asyncio.create_task(asyncio.sleep(60))
+            assert task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+        asyncio.run(run())
+    finally:
+        logging.getLogger("miles.utils.async_diagnostics").setLevel(logging.NOTSET)
+    assert calls == []
+    assert not [e for e in events(caplog) if e["event"] == "task_cancel"]

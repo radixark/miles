@@ -112,7 +112,8 @@ This README's command has been run end to end: 8×H200, real training mode with
 the batch dials reduced, both trials scoring reward 1.0 and one GRPO step
 completed. Which sandbox providers this path has been run on is the table in
 [Sandbox Providers](../../../docs/user-guide/sandbox-providers.md).
-# Diagnosing cancellation and unawaited coroutines
+
+## Diagnosing cancellation and unawaited coroutines
 
 For diagnostic runs, forward these variables in the Ray **worker runtime
 environment** (setting them only on the submitting shell is insufficient):
@@ -127,10 +128,14 @@ The default warning policy remains `error`, preserving fail-fast behavior.
 it does not fix the abandoned operation or change trial rewards, filtering,
 timeouts, or cancellation propagation.
 
-Opt-in diagnostics emit `async_diagnostic` JSON records in worker logs:
+Opt-in diagnostics emit `async_diagnostic` JSON records in worker logs.
+Lifecycle events (`enabled`, `scope_start`, `scope_end`) are logged at INFO;
+only defects (`task_cancel`, `unawaited_coroutine`, `task_factory_conflict`)
+are logged at WARNING, so a successful trial adds no warnings.
 `scope_start`/`scope_end` identify the Harbor trial and its outer time budget;
-`task_cancel` records the target and caller task IDs, elapsed task age, trial
-scope, cancellation acceptance, and caller stack locations. This distinguishes
+`task_cancel` records the target and caller task IDs (process-unique counters,
+not memory addresses), elapsed task age, trial scope, cancellation acceptance,
+and caller stack locations. This distinguishes
 timeout machinery, group cancellation, and loop shutdown by their call sites.
 `unawaited_coroutine` records the coroutine's code location and, when available,
 creation locations. No prompt text, coroutine arguments, frame locals, source
