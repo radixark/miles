@@ -124,13 +124,12 @@ class _Runner:
             return
 
         marker = RunFiles.superseded_marker(state_file=self.state_file)
-        if marker.exists():
-            logger.info(
-                f"{marker} says a later launch took this run over, so this generation leaves the uninstall to it"
-            )
-            return
-
         for attempt, sleep_seconds in enumerate(_UNINSTALL_JOB_RETRY_SLEEPS, start=1):
+            if marker.exists():
+                logger.info(
+                    f"{marker} says a later launch took this run over, so this generation leaves the uninstall to it"
+                )
+                return
             if self._create_uninstall_job_once(attempt=attempt):
                 return
             sleep(sleep_seconds)

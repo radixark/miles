@@ -221,6 +221,30 @@ class TestMain:
 
 
 class TestUninstallJob:
+    def test_stops_retrying_when_a_new_generation_takes_over(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A takeover during retry backoff prevents recreating the uninstall job."""
+        state_file = tmp_path / "orchestrator.state"
+        attempts: list[str] = []
+
+        def fail_to_create(manifest_path: str) -> bool:
+            attempts.append(manifest_path)
+            raise RuntimeError("apiserver unavailable")
+
+        def take_over(seconds: int) -> None:
+            RunFiles.superseded_marker(state_file=state_file).write_text("new generation\n")
+
+        monkeypatch.setattr(Kubectl, "create_if_absent", staticmethod(fail_to_create))
+        monkeypatch.setattr(orchestrator_wrapper, "sleep", take_over)
+
+        code = orchestrator_wrapper.main(
+            ["--state-file", str(state_file), "--uninstall-manifest", MANIFEST, "--", sys.executable, "-c", "pass"]
+        )
+
+        assert code == 0
+        assert attempts == [MANIFEST]
+
     def test_retries_when_creating_the_uninstall_job_raises(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, slept: list[int]
     ) -> None:
