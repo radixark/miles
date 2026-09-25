@@ -1,6 +1,6 @@
 import pytest
 
-from miles.backends.training_utils.conn_status import ConnStatusManager
+from miles.backends.training_utils.weight_update.conn_status import ConnStatusManager
 
 _INITIAL_SNAPSHOT: dict[str, str] = {"cell-a": "hash-a", "cell-b": "hash-b"}
 
