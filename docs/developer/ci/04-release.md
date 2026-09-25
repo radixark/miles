@@ -3,7 +3,7 @@ title: Release a Version
 description: Cut a versioned Miles release branch, run release CI, tag an exact release, and publish the official Docker images.
 ---
 
-This runbook is for maintainers publishing an official Miles version from `radixark/miles`. It covers the supported path from a base-version bump through the two published Docker tags. The version vocabulary and pin ownership live in [Versions and Images](/developer/versions); CI selection details live in [Stage](/developer/ci/00-stage) and [Labels](/developer/ci/01-label).
+This runbook is for maintainers publishing an official Miles version from `radixark/miles`. It covers the supported path from a base-version bump through the published CUDA 13 Docker image. The version vocabulary and pin ownership live in [Versions and Images](/developer/versions); CI selection details live in [Stage](/developer/ci/00-stage) and [Labels](/developer/ci/01-label).
 
 ## Before you start
 
@@ -52,7 +52,7 @@ gh workflow run release-branch-cut.yml -f branch_name="${RELEASE_BRANCH}"
 
 Add `-f commit_sha=FULL_MAIN_SHA` to cut from a specific commit already on `main`; otherwise the workflow uses the checked-out `main` tip. On the first dispatch, it creates `release/vX.Y.Z`, records the SGLang and Megatron-LM commits in `release-lock.json`, retags the preflighted development image as `release-vX.Y.Z-ci`, and commits the lockfile on the release branch. Re-dispatching an existing branch preserves its lockfile and tests its current tip.
 
-The lockfile records a separate `sglang_commit_cu12` from `sglang-miles-v0.5.19-final` for the CUDA 12 image. Release CUDA CI uses the CUDA 13 image and `sglang_commit`; it does not validate the CUDA 12 combination.
+Release CUDA CI uses the CUDA 13 image and the locked `sglang_commit` and `megatron_commit`.
 
 While this run is active, do not push or cherry-pick anything onto the release branch. The workflow runs full-scope CUDA, CPU, and ROCm jobs with `cadence=release`, then records a `release-ci` commit status. [Stage](/developer/ci/00-stage) and [Labels](/developer/ci/01-label) own the cadence details; ROCm is a smoke signal because its dependencies remain baked into the image.
 
@@ -99,16 +99,12 @@ Do not use `force=true` to bypass missing or failed release CI. If the status is
 
 ## 5. Verify the published images
 
-`release-docker.yml` builds from `v${EXACT_VERSION}` and publishes:
+`release-docker.yml` builds from `v${EXACT_VERSION}` and publishes `radixark/miles:v${EXACT_VERSION}` for CUDA 13 on `linux/amd64` and `linux/arm64`. Starting with v0.1.1, CUDA 12 release images are not published; previously published CUDA 12 tags remain available.
 
-- `radixark/miles:v${EXACT_VERSION}` for CUDA 13 on `linux/amd64` and `linux/arm64`.
-- `radixark/miles:v${EXACT_VERSION}-cu12` for CUDA 12.9 on `linux/amd64`.
-
-Verify both manifests after the workflow succeeds:
+Verify that the manifest contains both architectures after the workflow succeeds:
 
 ```bash
 docker buildx imagetools inspect "radixark/miles:v${EXACT_VERSION}"
-docker buildx imagetools inspect "radixark/miles:v${EXACT_VERSION}-cu12"
 ```
 
 The versioned release does not move `dev`, `dev-cu12`, `latest`, or `latest-cu12`.

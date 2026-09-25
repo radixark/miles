@@ -70,7 +70,7 @@ Release values represent different facts. Each row below names the source used b
 | Fact | Authoritative source | Derived or consumed values |
 |---|---|---|
 | Base Miles version | `setup.py` | Release branch `release/vX.Y.Z`; base-version check before tagging |
-| Exact published version | `version` input to `release-tag.yml`, persisted as annotated Git tag `v<exact-version>` | CUDA image tags `v<exact-version>` and `v<exact-version>-cu12` |
+| Exact published version | `version` input to `release-tag.yml`, persisted as annotated Git tag `v<exact-version>` | CUDA 13 image tag `v<exact-version>` |
 | Frozen dependency selection | `release-lock.json` committed on the release branch | SGLang commit, Megatron-LM commit, and the CUDA image tag used by release CI |
 
 For example, base version `0.3.0` owns branch `release/v0.3.0`; that branch can produce exact tags `v0.3.0rc0`, `v0.3.0`, and `v0.3.0.post1` without changing `setup.py` between tags.
@@ -105,7 +105,7 @@ python docker/build.py --variant cu13-x86 --image-tag custom --custom-tag my-exp
 [Docker build](/developer/ci/02-docker-build) is the full reference for the build script, the
 workflow and the tag rules.
 
-Official versioned releases add `radixark/miles:v<exact-version>` for the CUDA 13 multi-arch image and `radixark/miles:v<exact-version>-cu12` for the CUDA 12.9 image. Publishing them does not move the rolling `dev` or `latest` families.
+Official versioned releases add `radixark/miles:v<exact-version>` for the CUDA 13 multi-arch image. Starting with v0.1.1, CUDA 12 release images are not published; previously published CUDA 12 tags remain available. Publishing a release does not move the rolling `dev` or `latest` families.
 
 ## What CI moves, and what it does not
 
