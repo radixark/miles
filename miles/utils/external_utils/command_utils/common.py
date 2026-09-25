@@ -201,7 +201,7 @@ def get_owned_mooncake_master_port(train_argv: list[str]) -> int | None:
         return None if os.environ.get("MOONCAKE_MASTER") else MOONCAKE_MASTER_PORT
 
     address = json.loads(declared).get(MOONCAKE_MASTER_ADDRESS_KEY)
-    if address is None:
+    if address is None or "://" in address:
         return None
 
     endpoint = parse_host_and_port(address)

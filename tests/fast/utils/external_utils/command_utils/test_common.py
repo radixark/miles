@@ -19,6 +19,13 @@ class TestGetMooncakeObjectStoreArgs:
 
 
 class TestOwnedMooncakeMaster:
+    @pytest.mark.parametrize("address", ["etcd://etcd-1:2379,etcd-2:2379", "etcd://127.0.0.1:2379"])
+    def test_ha_endpoints_are_left_to_mooncake(self, address: str) -> None:
+        """HA discovery endpoints are not owned static master services, even on localhost."""
+        argv = [MOONCAKE_INIT_KWARGS_FLAG, json.dumps({"master_server_address": address})]
+
+        assert common.get_owned_mooncake_master_port(argv) is None
+
     def test_an_environment_master_does_not_require_a_local_service(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """An external Mooncake client does not need the master executable installed locally."""
         monkeypatch.setenv("MOONCAKE_MASTER", "store.example:61234")
