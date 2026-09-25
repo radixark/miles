@@ -16,6 +16,7 @@ from tests.fast.source_scan import (
 EXCLUDED_DIRS = (REPO_ROOT / "tests",)
 
 RAY_USING_MODULES = {
+    "miles/utils/external_utils/ray_job.py": "launcher closure: submit, follow, and stop the launcher-owned ray job",
     "miles/ray/placement_group.py": "launcher closure: placement groups are how ray is asked to schedule",
     "miles/ray/wiring.py": "launcher closure: driver shutdown kills the manager it launched by ActorHandle",
     "miles/utils/ray_utils.py": "launcher closure: node lookup and pinning options for the launcher's own calls",
