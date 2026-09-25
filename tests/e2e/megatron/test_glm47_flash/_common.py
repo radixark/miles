@@ -24,6 +24,33 @@ class CaseConfig:
     use_bridge: bool = False
     use_r3: bool = False
     max_tokens_per_gpu: int = 8192
+    rollout_max_response_len: int = 8192
+    colocate: bool = True
+    rollout_num_gpus: int = None
+    update_weight_transfer_mode: str = None
+    num_rollout: int = 2
+    fully_async: bool = False
+    extra_args: str = ""
+
+    def __post_init__(self):
+        # Validation only — topology values are passed explicitly, not inferred.
+        if self.fully_async and self.colocate:
+            raise ValueError("fully_async requires colocate=False: train_async.py rejects colocation")
+        if self.num_gpus_per_node % (self.cp_size * self.pp_size) != 0:
+            raise ValueError(
+                "num_gpus_per_node must be divisible by cp_size * pp_size: "
+                f"{self.num_gpus_per_node=} {self.cp_size=} {self.pp_size=}"
+            )
+        if not self.colocate and self.rollout_num_gpus is None:
+            raise ValueError("rollout_num_gpus must be set when colocate is False")
+        rollout_pool = self.num_gpus_per_node if self.colocate else self.rollout_num_gpus
+        if rollout_pool % self.rollout_num_gpus_per_engine != 0:
+            raise ValueError(
+                "rollout pool must be divisible by rollout_num_gpus_per_engine: "
+                f"{rollout_pool=} {self.rollout_num_gpus_per_engine=}"
+            )
+        if self.update_weight_transfer_mode is not None:
+            assert self.update_weight_transfer_mode == "broadcast"
 
 
 def prepare(case: CaseConfig) -> None:
@@ -57,10 +84,10 @@ def build_train_args(case: CaseConfig, *, wandb_file: str) -> str:
         "--apply-chat-template "
         "--rollout-shuffle "
         "--rm-type deepscaler "
-        "--num-rollout 2 "
+        f"--num-rollout {case.num_rollout} "
         "--rollout-batch-size 8 "
         "--n-samples-per-prompt 8 "
-        "--rollout-max-response-len 8192 "
+        f"--rollout-max-response-len {case.rollout_max_response_len} "
         "--rollout-temperature 1 "
         "--global-batch-size 32 "
     )
@@ -143,8 +170,17 @@ def build_train_args(case: CaseConfig, *, wandb_file: str) -> str:
         "--attention-backend flash "
         "--actor-num-nodes 1 "
         f"--actor-num-gpus-per-node {case.num_gpus_per_node} "
-        "--colocate "
     )
+    if case.colocate:
+        misc_args += "--colocate "
+    else:
+        misc_args += f"--rollout-num-gpus {case.rollout_num_gpus} "
+
+    if case.update_weight_transfer_mode is not None:
+        misc_args += f"--update-weight-transfer-mode {case.update_weight_transfer_mode} "
+
+    if case.fully_async:
+        misc_args += "--fully-async "
 
     if case.use_deepep:
         misc_args += "--moe-token-dispatcher-type flex --moe-enable-deepep "
@@ -163,6 +199,7 @@ def build_train_args(case: CaseConfig, *, wandb_file: str) -> str:
         f"{mtp_args} "
         f"{ci_args} "
         f"{misc_args} "
+        f"{case.extra_args} "
     )
     return train_args
 
@@ -175,6 +212,7 @@ def execute(case: CaseConfig, *, wandb_file: str) -> None:
 
     U.execute_train(
         train_args=train_args,
-        num_gpus_per_node=case.num_gpus_per_node,
+        num_gpus_per_node=case.num_gpus_per_node + (0 if case.colocate else case.rollout_num_gpus),
         megatron_model_type=MODEL_TYPE,
+        train_script="train_async.py" if case.fully_async else "train.py",
     )
