@@ -185,6 +185,18 @@ MODES: dict[str, FTTestMode] = {
         ft_components=("rollout",),
         parallel_args="",
     ),
+    "kill_rollout__dp2_cp2__colocate": FTTestMode(
+        model_name=DENSE_MODEL_NAME,
+        model_hf_repo=DENSE_MODEL_HF_REPO,
+        megatron_model_type=DENSE_MODEL_TYPE,
+        num_cells=2,
+        train_gpus_per_node=4,
+        rollout_num_engines=4,
+        rollout_gpus_per_engine=1,
+        colocate=True,
+        ft_components=("rollout",),
+        parallel_args="--context-parallel-size 2",
+    ),
     # --- 6-node (48 GPUs) disaggregated: 4 train nodes + 2 rollout nodes ---
     "kill_train__dp4_cp2_tp2_pp2_ep2_etp2__moe_full": FTTestMode(
         model_name=FULL_MODEL_NAME,

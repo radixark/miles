@@ -15,6 +15,16 @@ KILL_SEGMENTS = set(KILL_SEGMENT_OF_FT_COMPONENTS.values())
 
 
 class TestModeNames:
+    def test_random_soak_keeps_colocated_cp2_beside_the_dp4_comparison(self) -> None:
+        """The deterministic DP4 recipe cannot replace the existing colocated CP2 fault coverage."""
+        mode = MODES["kill_rollout__dp2_cp2__colocate"]
+        assert mode.colocate
+        assert mode.num_cells == 2
+        assert mode.parallel_args == "--context-parallel-size 2"
+        assert mode.ft_components == ("rollout",)
+        assert (ENTRY_DIR / "test_random_crash__kill_rollout__dp2_cp2__colocate.py").is_file()
+        assert (ENTRY_DIR / "test_rollout_deterministic__kill_rollout__dp4__colocate.py").is_file()
+
     @pytest.mark.parametrize("name", sorted(MODES))
     def test_a_mode_name_is_reproduced_by_the_fields_it_claims_to_describe(self, name: str):
         """A name that drifts from the fields sends a reader to the wrong topology, and nothing else would catch it."""
