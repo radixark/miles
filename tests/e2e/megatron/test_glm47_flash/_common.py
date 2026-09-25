@@ -19,6 +19,7 @@ class CaseConfig:
     ep_size: int
     sglang_ep_size: int = None
     use_deepep: bool = False
+    sglang_deepep_mode: str = "auto"
     use_fp8_rollout: bool = False
     use_int4_rollout: bool = False
     use_bridge: bool = False
@@ -154,7 +155,12 @@ def build_train_args(case: CaseConfig, *, wandb_file: str) -> str:
     )
 
     if case.use_deepep:
-        sglang_args += "--sglang-moe-a2a-backend deepep --sglang-deepep-mode auto "
+        # GLM-4.7-Flash rolls out in BF16, and SGLang has DeepEP MoE kernels for BF16 experts
+        # only on the DeepGEMM runner.
+        sglang_args += (
+            "--sglang-moe-a2a-backend deepep --sglang-moe-runner-backend deep_gemm "
+            f"--sglang-deepep-mode {case.sglang_deepep_mode} "
+        )
     if case.sglang_ep_size is not None:
         sglang_args += f"--sglang-expert-parallel-size {case.sglang_ep_size} "
 
