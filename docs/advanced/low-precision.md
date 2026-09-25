@@ -98,7 +98,7 @@ Block layout is 128×128 with FP32 scales.
 | `--use-tis` | Truncated Importance Sampling for residual precision drift. |
 
 `NVTE_FP8_BLOCK_SCALING_FP32_SCALES` is set for you in the actor env
-(`miles/ray/train/actor_factory.py`), defaulting by hardware: `1` on Hopper, and
+(`compute_trainer_env_vars` in `miles/ray/specs/train.py`), defaulting by hardware: `1` on Hopper, and
 `0` on Blackwell, where TransformerEngine emulates the block-wise recipe with
 MXFP8 and needs power-of-two scales. Override it only if you know you want the
 non-default for your GPU.

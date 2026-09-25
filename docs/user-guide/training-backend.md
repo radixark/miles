@@ -3,8 +3,8 @@ title: Training Backends
 description: The contract Megatron-LM and FSDP both implement, which one to pick, and how to configure parallelism, GPU layout, offload, and checkpoints for each.
 ---
 In Miles a training backend is one class: a `TrainRayActor` subclass that owns the model on
-the GPU. `--train-backend` decides which one `miles/ray/train/actor_factory.py` instantiates
-on every trainer rank, and there are two choices.
+the GPU. `--train-backend` decides which one the trainer spec (`_TRAINER_ACTOR_CLASSES` in
+`miles/ray/specs/train.py`) instantiates on every trainer rank, and there are two choices.
 
 | Value | Class | What it is | Default |
 |---|---|---|---|

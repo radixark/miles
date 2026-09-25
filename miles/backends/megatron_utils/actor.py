@@ -80,7 +80,8 @@ def _setup_disk_offload_reclaim(disk_dir: str) -> None:
 
     torch_memory_saver unlinks each backup file as its allocation is freed on a
     graceful teardown, but a SIGKILL'd run leaves stale files behind. The dir is
-    per-rank (see actor_factory), so clearing it wholesale touches nobody else.
+    per-rank (see compute_trainer_env_vars in miles/ray/specs/train.py), so clearing
+    it wholesale touches nobody else.
     """
     if not disk_dir:
         return
