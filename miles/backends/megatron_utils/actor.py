@@ -746,9 +746,9 @@ class MegatronTrainRayActor(TrainRayActor):
                             "paired with a pp-last-stage actor rank must have shipped 'values'"
                         )
                         with object_store.get_instance().get(values_ref) as shipped:
-                            rollout_data["values"] = [
-                                value.to(device=torch.cuda.current_device()).clone() for value in shipped["values"]
-                            ]
+                            rollout_data["values"] = _materialize_critic_values(
+                                values=shipped["values"], device=torch.cuda.current_device()
+                            )
                 if self._active_model_tag != "actor":
                     self._switch_model("actor")
 
@@ -1018,3 +1018,9 @@ class MegatronTrainRayActor(TrainRayActor):
         )
         if self.weight_updater is not None:
             self.weight_updater.conn_status.mark_trainer_stale()
+
+
+def _materialize_critic_values(
+    values: list[list[float] | torch.Tensor], device: torch.device | int
+) -> list[torch.Tensor]:
+    return [torch.as_tensor(value, dtype=torch.float32, device=device).clone() for value in values]

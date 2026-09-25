@@ -6,6 +6,7 @@ from types import ModuleType, SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
+import torch
 
 _ACTOR_MODULE_NAME = "miles.backends.megatron_utils.actor"
 
@@ -47,6 +48,21 @@ class TestCriticValuesValueSpec:
     def test_critic_values_are_shipped_as_a_typed_ragged_field(self, actor_module: ModuleType) -> None:
         """Variable-length critic sequences require the typed ragged object-store codec."""
         assert actor_module.CRITIC_VALUES_VALUE_SPEC["values"].codec == "typed_ragged"
+
+
+class TestMaterializeCriticValues:
+    @pytest.mark.parametrize("tensor_input", [False, True])
+    def test_ragged_values_become_owned_float32_tensors(self, actor_module: ModuleType, tensor_input: bool) -> None:
+        """Both store codecs yield owned FP32 tensors independent of released storage."""
+        sequences = [[1.5, -2.0], [], [3.0]]
+        values = [torch.tensor(value, dtype=torch.float32) for value in sequences] if tensor_input else sequences
+
+        result = actor_module._materialize_critic_values(values=values, device=torch.device("cpu"))
+        values[0][0] = 99.0
+
+        assert [value.tolist() for value in result] == [[1.5, -2.0], [], [3.0]]
+        assert all(value.dtype == torch.float32 for value in result)
+        assert all(value.device == torch.device("cpu") for value in result)
 
 
 class TestSendCheckpoint:
