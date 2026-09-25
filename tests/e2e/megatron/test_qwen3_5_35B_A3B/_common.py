@@ -1,16 +1,18 @@
-"""Shared setup for Qwen3.5-35B-A3B MTP + speculative-v2 + R3 e2e cases.
+"""Shared setup for Qwen3.5-35B-A3B e2e cases.
 
-Two cases differ in `enable_mtp_training` and `use_r3`:
-- mtp1: MTP training on (1 layer + loss factor) + R3 on; the MTP/draft weights are synced.
-- mtp0: MTP training off + R3 off. Whether the MTP layer is checked is a weight-check
+Cases cover speculative decoding x R3:
+- mtp1 (spec + R3): MTP training on (1 layer + loss factor); the MTP/draft weights are synced.
+- mtp0 (spec, no R3): MTP training off. Whether the MTP layer is checked is a weight-check
   *selector* concern, not a skip-list one.
+- dp_attention (no spec, no R3) and fully_async_r3 (no spec, R3): EAGLE off, so there is no
+  draft to sync and the selector is "target".
 
 miles has no VLM/vision implementation on the training side, so Qwen3.5's `visual.*`
 weights are never synced and must be excluded from the weight-equality check; each case
 passes `check_weight_update_skip_list=("visual",)`.
 
-Each case picks its own topology (see its CASE).
-Spec (EAGLE) and spec-v2 (mamba scheduler) are on for the whole suite; R3 is per-case.
+Each case picks its own topology (see its CASE). Spec (EAGLE + spec-v2 mamba scheduler), R3,
+colocation and fully-async are per-case.
 """
 
 import os
@@ -50,7 +52,24 @@ class CaseConfig:
     use_deepep: bool = False
     # Serve Qwen/Qwen3.5-35B-A3B-FP8 against bf16 training; weight updates re-quantize.
     use_fp8_rollout: bool = False
+    # EAGLE speculative decoding (MTP draft) with spec v2 in the rollout.
+    use_spec: bool = True
+    sglang_dp_size: int = None
+    sglang_enable_dp_attention: bool = False
+    megatron_dispatcher: str = "flex"
+    rollout_max_response_len: int = 8192
+    colocate: bool = True
+    rollout_num_gpus: int = None
+    fully_async: bool = False
     extra_args: str = ""
+
+    def __post_init__(self):
+        if self.fully_async and self.colocate:
+            raise ValueError("fully_async requires colocate=False: train_async.py rejects colocation")
+        if not self.colocate and self.rollout_num_gpus is None:
+            raise ValueError("rollout_num_gpus must be set when colocate is False")
+        if not self.use_spec and (self.enable_mtp_training or self.check_weight_update_selector != "target"):
+            raise ValueError("without spec there is no draft: set enable_mtp_training=False and selector 'target'")
 
 
 def prepare(case: CaseConfig) -> None:
@@ -83,7 +102,7 @@ def build_train_args(case: CaseConfig, *, wandb_file: str) -> str:
         "--num-rollout 2 "
         "--rollout-batch-size 8 "
         "--n-samples-per-prompt 8 "
-        "--rollout-max-response-len 8192 "
+        f"--rollout-max-response-len {case.rollout_max_response_len} "
         "--rollout-temperature 1 "
         "--global-batch-size 32 "
         "--balance-data "
@@ -143,15 +162,22 @@ def build_train_args(case: CaseConfig, *, wandb_file: str) -> str:
         "--sglang-mem-fraction-static 0.6 "
         f"--sglang-ep-size {case.sglang_ep_size} "
         f"--sglang-max-running-requests {max_running} "
-        # EAGLE speculative decoding (MTP draft)
-        "--sglang-speculative-algorithm EAGLE "
-        "--sglang-speculative-num-steps 2 "
-        "--sglang-speculative-eagle-topk 1 "
-        "--sglang-speculative-num-draft-tokens 3 "
-        # spec v2: required to pair speculative decoding with radix cache on Qwen3.5MoE
-        # (see scripts/run_qwen3_5_35b_a3b_mtp.py); also needs SGLANG_ENABLE_SPEC_V2=1.
-        "--sglang-mamba-radix-cache-strategy extra_buffer "
     )
+    if case.use_spec:
+        sglang_args += (
+            # EAGLE speculative decoding (MTP draft)
+            "--sglang-speculative-algorithm EAGLE "
+            "--sglang-speculative-num-steps 2 "
+            "--sglang-speculative-eagle-topk 1 "
+            "--sglang-speculative-num-draft-tokens 3 "
+            # spec v2: required to pair speculative decoding with radix cache on Qwen3.5MoE
+            # (see scripts/run_qwen3_5_35b_a3b_mtp.py); also needs SGLANG_ENABLE_SPEC_V2=1.
+            "--sglang-mamba-radix-cache-strategy extra_buffer "
+        )
+    if case.sglang_dp_size is not None:
+        sglang_args += f"--sglang-data-parallel-size {case.sglang_dp_size} "
+    if case.sglang_enable_dp_attention:
+        sglang_args += "--sglang-enable-dp-attention "
     if case.use_r3:
         sglang_args += "--use-rollout-routing-replay "
     if case.use_deepep:
@@ -182,10 +208,16 @@ def build_train_args(case: CaseConfig, *, wandb_file: str) -> str:
         "--attention-backend flash "
         "--actor-num-nodes 1 "
         f"--actor-num-gpus-per-node {case.num_gpus_per_node} "
-        "--colocate "
-        "--moe-token-dispatcher-type flex "
-        "--rematerialize-param-from-master-weight "
     )
+    if case.colocate:
+        misc_args += "--colocate "
+    else:
+        misc_args += f"--rollout-num-gpus {case.rollout_num_gpus} "
+    if case.fully_async:
+        misc_args += "--fully-async "
+    misc_args += f"--moe-token-dispatcher-type {case.megatron_dispatcher} "
+    if case.colocate:
+        misc_args += "--rematerialize-param-from-master-weight "
 
     train_args = (
         f"{ckpt_args} "
@@ -208,7 +240,8 @@ def execute(case: CaseConfig, *, wandb_file: str) -> None:
     train_args = build_train_args(case, wandb_file=wandb_file)
     U.execute_train(
         train_args=train_args,
-        num_gpus_per_node=case.num_gpus_per_node,
+        num_gpus_per_node=case.num_gpus_per_node + (0 if case.colocate else case.rollout_num_gpus),
         megatron_model_type=MODEL_TYPE,
-        extra_env_vars={"SGLANG_ENABLE_SPEC_V2": "1"},
+        train_script="train_async.py" if case.fully_async else "train.py",
+        extra_env_vars={"SGLANG_ENABLE_SPEC_V2": "1"} if case.use_spec else {},
     )
