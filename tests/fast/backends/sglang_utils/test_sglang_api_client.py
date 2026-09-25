@@ -179,7 +179,7 @@ async def test_flush_cache_sleeps_between_pending_request_retries(client, monkey
         sleep_calls.append(seconds)
 
     monkeypatch.setattr(asyncio, "sleep", fake_sleep)
-    _Recorder().install(monkeypatch, responses=[_FakeResponse(status_code=400) for _ in range(60)])
+    _Recorder().install(monkeypatch, responses=[_FakeResponse(status_code=400) for _ in range(120)])
 
     with pytest.raises(TimeoutError, match="Timeout while flushing cache"):
         await client.flush_cache()
@@ -188,6 +188,22 @@ async def test_flush_cache_sleeps_between_pending_request_retries(client, monkey
         f"expected the loop to back off on every one of its 60 attempts, got {len(sleep_calls)} sleeps "
         "-- a 400 response (pending requests) must not skip the retry delay"
     )
+
+
+async def test_flush_cache_reissues_abort_for_pending_requests(client, monkeypatch):
+    """A pending request is actively marked for abort on each flush retry."""
+    monkeypatch.setattr(asyncio, "sleep", _noop_sleep)
+    rec = _Recorder()
+    rec.install(monkeypatch, responses=[_FakeResponse(status_code=400), _FakeResponse(status_code=200)])
+
+    await client.flush_cache()
+
+    assert [(verb, url) for verb, url, _ in rec.calls] == [
+        ("get", f"{SERVER_URL}/flush_cache"),
+        ("post", f"{SERVER_URL}/abort_request"),
+        ("get", f"{SERVER_URL}/flush_cache"),
+    ]
+    assert rec.calls[1][2]["json"] == {"abort_all": True}
 
 
 async def test_flush_cache_retries_a_refused_connection(client, monkeypatch):
@@ -637,7 +653,7 @@ class TestFlushCacheTimeoutMessage:
         """A 400 carries the reason (pending requests) in its body, not in an exception."""
         monkeypatch.setattr(asyncio, "sleep", _noop_sleep)
         _Recorder().install(
-            monkeypatch, responses=[_FakeResponse(status_code=400, text="3 requests pending") for _ in range(60)]
+            monkeypatch, responses=[_FakeResponse(status_code=400, text="3 requests pending") for _ in range(120)]
         )
 
         with pytest.raises(TimeoutError, match="3 requests pending"):

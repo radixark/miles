@@ -239,6 +239,18 @@ class SGLangApiClient:
             except Exception as e:
                 logger.info(f"Error flushing cache: {e}")
                 last_message = str(e)
+                await asyncio.sleep(1)
+                continue
+
+            # A running request marked for abort may only be reaped on a later
+            # decode step. Re-issue the abort while flush_cache is pending so a
+            # wedged request cannot keep the offload blocked indefinitely.
+            try:
+                await GeneralHttpClientProvider.client().post(
+                    f"{self.server_url}/abort_request", json={"abort_all": True}
+                )
+            except Exception as e:
+                logger.info(f"Error aborting pending requests during flush_cache: {e}")
             await asyncio.sleep(1)
         else:
             raise TimeoutError(f"Timeout while flushing cache: {last_message}")
