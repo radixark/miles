@@ -15,8 +15,8 @@ import torch.distributed as dist
 from tests.fast.dist_utils import init_gloo, run_multiprocess
 
 from miles.backends.training_utils.data.context_parallel import all_gather_with_cp
-from miles.backends.training_utils.loss import loss_function
-from miles.backends.training_utils.loss_hub.logit_processors import get_log_probs_and_entropy
+from miles.backends.training_utils.loss.hub.logit_processors import get_log_probs_and_entropy
+from miles.backends.training_utils.loss.objective import loss_function
 from miles.backends.training_utils.parallel import GroupInfo, ParallelState, set_parallel_state
 
 from .loss_test_utils import make_args, make_batch, make_inputs

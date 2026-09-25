@@ -3,7 +3,7 @@ from argparse import Namespace
 import torch
 
 from miles.backends.training_utils.data.context_parallel import get_logits_and_tokens_offset_with_cp
-from miles.backends.training_utils.loss_hub.math_utils import (
+from miles.backends.training_utils.loss.hub.math_utils import (
     get_advantages_and_returns_batch,
     get_grpo_returns,
     get_reinforce_plus_plus_baseline_advantages,

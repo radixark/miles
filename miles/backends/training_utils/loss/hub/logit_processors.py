@@ -8,7 +8,7 @@ from miles.backends.training_utils.data.context_parallel import (
     get_logits_and_tokens_offset_with_cp,
 )
 from miles.backends.training_utils.data.sampling_mask import build_local_sampling_mask
-from miles.backends.training_utils.loss_hub.math_utils import calculate_log_probs_and_entropy
+from miles.backends.training_utils.loss.hub.math_utils import calculate_log_probs_and_entropy
 from miles.backends.training_utils.parallel import get_parallel_state
 from miles.utils.sampling_mask import RolloutSamplingMask
 

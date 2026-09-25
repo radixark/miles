@@ -5,8 +5,8 @@ import torch
 
 from miles.backends.training_utils.data import context_parallel
 from miles.backends.training_utils.data.sampling_mask import build_local_sampling_mask, get_rollout_sampling_masks
-from miles.backends.training_utils.loss_hub import logit_processors
-from miles.backends.training_utils.loss_hub.math_utils import _calculate_log_probs_and_entropy_true_on_policy
+from miles.backends.training_utils.loss.hub import logit_processors
+from miles.backends.training_utils.loss.hub.math_utils import _calculate_log_probs_and_entropy_true_on_policy
 from miles.utils.sampling_mask import RolloutSamplingMask
 
 

@@ -6,8 +6,8 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from miles.backends.training_utils import loss as loss_module
-from miles.backends.training_utils.loss_hub import tinker_losses
+from miles.backends.training_utils.loss import objective as loss_module
+from miles.backends.training_utils.loss.hub import tinker_losses
 
 
 @pytest.mark.parametrize("recompute", [False, True], ids=["direct", "recomputed"])

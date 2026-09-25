@@ -5,7 +5,7 @@ import torch
 
 from miles.backends.training_utils.data import context_parallel, multimodal
 from miles.backends.training_utils.data import rollout as data_utils
-from miles.backends.training_utils.loss_hub.opd import apply_opd_kl_to_advantages
+from miles.backends.training_utils.loss.hub.opd import apply_opd_kl_to_advantages
 from miles.backends.training_utils.parallel import GroupInfo, ParallelState
 
 _ROLLOUT_LOG_PROBS = torch.tensor([-0.2, -1.3, -0.7, -2.1, -0.4, -3.2, -1.8])

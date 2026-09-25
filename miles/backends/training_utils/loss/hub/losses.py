@@ -10,9 +10,9 @@ from miles.backends.training_utils.data.context_parallel import (
     get_sum_of_sample_mean,
 )
 from miles.backends.training_utils.data.sampling_mask import get_rollout_sampling_masks
-from miles.backends.training_utils.loss_hub.corrections import vanilla_tis_function
-from miles.backends.training_utils.loss_hub.logit_processors import get_log_probs_and_entropy, get_values
-from miles.backends.training_utils.loss_hub.math_utils import (
+from miles.backends.training_utils.loss.hub.corrections import vanilla_tis_function
+from miles.backends.training_utils.loss.hub.logit_processors import get_log_probs_and_entropy, get_values
+from miles.backends.training_utils.loss.hub.math_utils import (
     compute_approx_kl,
     compute_ess_ratio_contribution,
     compute_gspo_kl,
@@ -514,7 +514,7 @@ def sft_loss_function(
 
 def get_loss_function(args: Namespace, loss_fn: str | None = None) -> LossFunction:
     if loss_fn is not None:
-        from miles.backends.training_utils.loss_hub.tinker_losses import TINKER_LOSS_FUNCTIONS
+        from miles.backends.training_utils.loss.hub.tinker_losses import TINKER_LOSS_FUNCTIONS
 
         return TINKER_LOSS_FUNCTIONS[loss_fn]
     match args.loss_type:

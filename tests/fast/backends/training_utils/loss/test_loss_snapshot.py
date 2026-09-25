@@ -19,10 +19,10 @@ import pytest
 import torch
 import torch.distributed as dist
 
-from miles.backends.training_utils.loss import compute_advantages_and_returns, loss_function
-from miles.backends.training_utils.loss_hub.corrections import icepop_function, vanilla_tis_function
-from miles.backends.training_utils.loss_hub.logit_processors import get_log_probs_and_entropy, get_values
-from miles.backends.training_utils.loss_hub.losses import policy_loss_function, sft_loss_function, value_loss_function
+from miles.backends.training_utils.loss.hub.corrections import icepop_function, vanilla_tis_function
+from miles.backends.training_utils.loss.hub.logit_processors import get_log_probs_and_entropy, get_values
+from miles.backends.training_utils.loss.hub.losses import policy_loss_function, sft_loss_function, value_loss_function
+from miles.backends.training_utils.loss.objective import compute_advantages_and_returns, loss_function
 
 from .loss_test_utils import (
     args_from_dict,
