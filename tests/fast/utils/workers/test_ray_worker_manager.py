@@ -299,8 +299,12 @@ class TestInitAllocatesPorts:
         fake_ray_cluster.node_external_ips = {"10.0.0.1": "100.64.0.1"}
         manager = await _launch([_make_spec("session-server", num_cells=2)])
 
-        with_external = manager.get_worker_addrs(compute_worker_name(pool_id="session-server", cell_index=0))["primary"]
-        without_external = manager.get_worker_addrs(compute_worker_name(pool_id="session-server", cell_index=1))["primary"]
+        with_external = manager.get_worker_addrs(compute_worker_name(pool_id="session-server", cell_index=0))[
+            "primary"
+        ]
+        without_external = manager.get_worker_addrs(compute_worker_name(pool_id="session-server", cell_index=1))[
+            "primary"
+        ]
         assert with_external.external_host == "100.64.0.1"
         assert with_external.external_netloc == f"100.64.0.1:{with_external.port}"
         assert without_external.external_host is None
