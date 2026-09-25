@@ -86,6 +86,7 @@ class ReconcileLoop:
         except asyncio.CancelledError:
             driver_task.cancel()
             await asyncio.gather(driver_task, return_exceptions=True)
+            await self._retry.shutdown()
             raise
 
         self._tasks = [asyncio.create_task(self._worker_loop()), driver_task]

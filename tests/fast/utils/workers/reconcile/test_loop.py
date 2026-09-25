@@ -108,6 +108,29 @@ class TestCadenceValidation:
 
 
 class TestInitialSync:
+    @pytest.mark.parametrize("context_entry", [False, True])
+    async def test_cancelled_initial_sync_leaves_no_background_tasks_without_explicit_stop(
+        self, context_entry: bool
+    ) -> None:
+        """Failed startup releases its source and retry timer without caller cleanup."""
+        source = FakeSource()
+        clock = FakeClock()
+        loop = ReconcileLoop(source=source, reconcile=Recorder(), clock=clock)
+        startup = asyncio.create_task(loop.__aenter__() if context_entry else loop.start())
+        await settle()
+        assert clock.pending_count > 0
+
+        startup.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await startup
+
+        assert source.closed_count == 1
+        assert clock.pending_count == 0
+        await clock.elapse(10.0)
+        await settle()
+        assert source.open_count == 1
+        assert clock.pending_count == 0
+
     async def test_start_blocks_until_the_initial_replace(self):
         """start() returns only once the initial LIST has landed in the store."""
         source = FakeSource()
