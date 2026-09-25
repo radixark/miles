@@ -11,6 +11,7 @@ import functools
 import logging
 
 from ..adaptations.packing.boundaries import packed_seq_context
+from ..kernels.presets import SLOT_CAUSAL_CONV1D, SLOT_GATED_DELTA_RULE
 
 logger = logging.getLogger(__name__)
 
@@ -109,3 +110,67 @@ def apply_gateddeltanet_packing_patch():
             "linear-attn recurrence and causal-conv state per packed document"
         )
     return patched
+
+
+# Per slot: the GatedDeltaNet instance attribute -> the function name in that Hub build. The names
+# differ on the recurrent kernel, which transformers stores without the `fused_` prefix.
+_GDN_KERNEL_SLOTS = (
+    (
+        SLOT_GATED_DELTA_RULE,
+        {
+            "chunk_gated_delta_rule": "chunk_gated_delta_rule",
+            "recurrent_gated_delta_rule": "fused_recurrent_gated_delta_rule",
+        },
+    ),
+    (
+        SLOT_CAUSAL_CONV1D,
+        {
+            "causal_conv1d_fn": "causal_conv1d_fn",
+            "causal_conv1d_update": "causal_conv1d_update",
+        },
+    ),
+)
+
+
+def bind_gated_deltanet_hub_kernels(model, args) -> int:
+    """Point each GatedDeltaNet's kernel handles at the Hub builds. Returns modules patched.
+
+    ``_patch_gdn_forward`` above injects the packed-document boundaries into whatever callables the
+    instance carries, so this only has to replace them. Both slots exist because the native
+    fallbacks defeat that injection in different ways:
+
+      * no ``flash-linear-attention`` -> ``self.chunk_gated_delta_rule`` becomes transformers'
+        ``torch_chunk_gated_delta_rule``, which ends in ``**kwargs``: the injected ``cu_seqlens`` is
+        swallowed and ignored, so the recurrence never resets and nothing warns;
+      * no ``causal_conv1d`` -> ``self.causal_conv1d_fn`` is ``None`` and the forward drops to
+        ``F.silu(self.conv1d(...))``, which takes no ``seq_idx``, so the wrapper finds nothing to
+        wrap and the conv state carries across documents.
+
+    Slots resolve independently: one missing Hub build leaves the other bound.
+    """
+    from ..kernels.hub import resolve_slot
+
+    modules = [m for m in model.modules() if type(m).__name__.endswith("GatedDeltaNet")]
+    if not modules:
+        return 0
+
+    bound = []
+    for slot, attr_to_function in _GDN_KERNEL_SLOTS:
+        functions = resolve_slot(args, slot)
+        if not functions:
+            continue
+        for module in modules:
+            for attr, function_name in attr_to_function.items():
+                setattr(module, attr, functions[function_name])
+        bound.append(slot)
+
+    if not bound:
+        return 0
+
+    logger.info(
+        "[fsdp hub kernels] GatedDeltaNet %s served from the Hub on %d module(s); "
+        "the packed-document reset stays active without the native wheels",
+        " + ".join(bound),
+        len(modules),
+    )
+    return len(modules)

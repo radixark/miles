@@ -380,6 +380,90 @@ and LR scheduler, plus a `latest_checkpointed_iteration.txt` tracker. So `--load
 **parent** directory exactly like the Megatron backend does. These are FSDP-backend
 checkpoints, not `torch_dist` ones, and the two formats are not interchangeable.
 
+### 5. Compute kernels
+
+By default (`--kernel-backend native`) every fused kernel comes from the wheels baked into the
+image: `flash_attn`, `causal_conv1d`, `flash-linear-attention` and the rest, built out of band and
+installed by `docker/Dockerfile`.
+
+`--kernel-backend hub` additionally resolves a few of them from
+[Hugging Face Hub kernel repos](https://huggingface.co/docs/kernels/en/index) instead. A kernel
+repo ships one prebuilt variant per `(torch, CUDA, C++ ABI, arch, OS)`, so the client picks a
+variant at load time and imports it from the HF cache — **no compiler on the training node, and no
+image rebuild to change a kernel.**
+
+| Flag | Effect |
+|---|---|
+| `--kernel-backend {native,hub}` | `native` (default) never imports `kernels`. `hub` loads the mapping below. |
+| `--kernel-mapping-path` | Dotted path to your own `(args) -> dict[str, HubKernelSpec]`, replacing the shipped mapping entirely. |
+| `--kernel-strict` | Raise when a repo or a function will not resolve, instead of falling back to the native kernel. |
+
+What miles ships, in `miles/backends/fsdp_utils/kernels/presets.py`:
+
+| Slot | Repo | Feeds |
+|---|---|---|
+| `gated_delta_rule` | `kernels-community/fla` v1 | GatedDeltaNet's linear-attention recurrence (Qwen3-Next, Qwen3.5, Qwen3.6) |
+| `causal_conv1d` | `kernels-community/causal-conv1d` v1 | GatedDeltaNet's short causal convolution, same architectures |
+| `flash_attn_varlen` | `kernels-community/flash-attn2` v2 | The NemotronH attention mixer's varlen path |
+
+Slots resolve independently. Before either model is bound, all ranks agree on each slot's
+availability, repository/ref, and kernel build identity. If any rank cannot load a slot or the
+identities differ, every rank keeps its native implementation for that slot. `--kernel-strict`
+turns that collective fallback into an initialization error on every rank.
+
+Custom mappings may omit entire slots, but each included slot must declare all the functions
+listed by `REQUIRED_SLOT_FUNCTIONS` in `presets.py`. Unknown slots and incomplete declarations
+are configuration errors, regardless of `--kernel-strict`; they are rejected before binding.
+Use repositories from trusted Hub kernel publishers. Local kernel overrides are unsupported
+because their Hub provenance cannot be verified across ranks.
+
+These are **module-level** kernels: `kernels.get_kernel()` returns a module and miles rebinds the
+free functions HF modeling code already looks up per forward. Nothing rebinds an `nn.Module.forward`,
+so `state_dict`, `_no_split_modules` and the DTensor gather in `update_weight_utils.py` are all
+untouched — which is why the binding runs before `apply_fsdp2` and the ref model takes the same call.
+
+<Note>
+
+This is worth turning on for the packing path specifically. Every slot feeds a kernel that
+[sequence packing](#going-deeper-when-an-hf-model-needs-help) needs in order to reset state per
+packed document, and each one fails differently when its wheel is missing:
+
+- no `flash-linear-attention` — `transformers` binds `torch_chunk_gated_delta_rule`, whose signature
+  ends in `**kwargs`, so the injected `cu_seqlens` is *accepted and ignored*;
+- no `causal_conv1d` — the handle is `None` and the forward drops to `F.silu(self.conv1d(...))`,
+  which takes no `seq_idx`;
+- no `flash_attn` — the NemotronH attention patch returns the unpatched dense forward.
+
+In all three the per-document reset stops happening, nothing raises, and the only symptom is a wider
+train/rollout logprob gap. Successfully loading the Hub kernels restores those boundary resets without a wheel build.
+Use `--kernel-strict` when those native wheels are absent: a non-strict fallback does not
+make a native implementation that ignores boundaries safe for packed training.
+
+</Note>
+
+Hub kernels are rejected together with `--true-on-policy-mode` and `--deterministic-mode`: those
+modes require the training kernel to match SGLang's build exactly, and that equivalence has not been
+established per kernel yet.
+
+This loader requires access to Hub metadata even when the kernel binaries are already cached.
+It does **not** consume `kernels.lock`, and `kernels lock . && kernels download .` does not make
+`--kernel-backend hub` work under `HF_HUB_OFFLINE=1`. Offline provisioning remains a follow-up
+in [RFC #2207](https://github.com/radixark/miles/issues/2207).
+
+For repeatable online runs, provide a custom mapping with `HubKernelSpec(revision="<commit SHA>",
+version=None, ...)` for each selected repository, retaining the slot's required functions. Major
+versions such as `version=1` follow moving `v1` branches. The collective check ensures agreement
+within a run; immutable revisions also pin the source across runs. A revision pin still requires
+online metadata access with this loader.
+
+<Tip>
+
+Attention needs none of this. `--attn-implementation` is passed straight to `from_pretrained`, and
+`transformers` resolves a Hub repo ID there on its own:
+`--attn-implementation kernels-community/flash-attn2@v2` works with `--kernel-backend native`.
+
+</Tip>
+
 ### Limits
 
 <Warning>
