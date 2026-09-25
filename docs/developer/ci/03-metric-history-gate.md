@@ -200,7 +200,7 @@ Chart key: rectangle = a step or check; rounded box = a data artifact; diamond =
 Repository writers can use `$neon-access` to query or repair hosted metric history. For example:
 
 ```text
-Use $neon-access to show the 10 most recent metric-history runs for tests/e2e/megatron/test_qwen3_5_35B_A3B_mtp/test_mtp1_spec_v2_r3.py and include each run's metric rows.
+Use $neon-access to show the 10 most recent metric-history runs for tests/e2e/megatron/test_qwen3_5_35B_A3B/test_mtp1_spec_v2_r3.py and include each run's metric rows.
 ```
 
 ## Trust, cleanup, who writes
