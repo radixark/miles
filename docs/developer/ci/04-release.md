@@ -99,7 +99,7 @@ Do not use `force=true` to bypass missing or failed release CI. If the status is
 
 ## 5. Verify the published images
 
-`release-docker.yml` builds from `v${EXACT_VERSION}` and publishes `radixark/miles:v${EXACT_VERSION}` for CUDA 13 on `linux/amd64` and `linux/arm64`. Starting with v0.1.1, CUDA 12 release images are not published; previously published CUDA 12 tags remain available.
+`release-docker.yml` builds from `v${EXACT_VERSION}` and publishes `radixark/miles:v${EXACT_VERSION}` for CUDA 13 on `linux/amd64` and `linux/arm64`. Miles no longer builds CUDA 12 images, either rolling or versioned. Previously published CUDA 12 tags remain available but receive no updates.
 
 Verify that the manifest contains both architectures after the workflow succeeds:
 
@@ -107,7 +107,7 @@ Verify that the manifest contains both architectures after the workflow succeeds
 docker buildx imagetools inspect "radixark/miles:v${EXACT_VERSION}"
 ```
 
-The versioned release does not move `dev`, `dev-cu12`, `latest`, or `latest-cu12`.
+The versioned release does not move `dev` or `latest`.
 
 If the automatic Docker dispatch must be retried, keep its two manual inputs paired to the same immutable tag:
 
