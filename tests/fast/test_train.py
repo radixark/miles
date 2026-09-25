@@ -191,6 +191,30 @@ class TestWeightEqualityCheck:
 
 
 class TestCriticValuesHandoff:
+    async def test_critic_outputs_are_released_when_actor_training_fails(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Actor failures do not leak the critic's distributed values."""
+        events: list[str] = []
+        args = _make_args(num_rollout=1, use_critic=True)
+        components = _install_driver_fakes(monkeypatch, args, events)
+        store = FakeObjectStore()
+        monkeypatch.setattr(object_store, "_INSTANCE", store)
+        ref = store.put("critic-values")
+        values = [TrainStepOutput(outcome=TrainStepOutcome.NORMAL, values=ref)]
+        components.critic_model.train_outputs[0] = values
+
+        def fail_after_reading(external_data: list[TrainStepOutput]) -> None:
+            assert store.contains(external_data[0].values)
+            raise RuntimeError("actor failed")
+
+        components.actor_model.consume_external_data = fail_after_reading
+
+        with pytest.raises(RuntimeError, match="actor failed"):
+            await with_disposer(train_driver.train, args)
+
+        assert not store.contains(ref)
+
     async def test_critic_outputs_reach_the_actor_and_are_released_after_training(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

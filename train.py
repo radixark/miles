@@ -118,13 +118,15 @@ async def train(args, *, disposer: Disposer):
 
         if args.use_critic:
             values = await critic_model.train(rollout_id, rollout_data_pack)
-            if args.offload_train:
-                await critic_model.offload()
-            if rollout_id >= args.num_critic_only_steps:
-                await actor_model.train(rollout_id, rollout_data_pack, external_data=values)
+            try:
                 if args.offload_train:
-                    await actor_model.offload()
-            remove_train_output_refs(values)
+                    await critic_model.offload()
+                if rollout_id >= args.num_critic_only_steps:
+                    await actor_model.train(rollout_id, rollout_data_pack, external_data=values)
+                    if args.offload_train:
+                        await actor_model.offload()
+            finally:
+                remove_train_output_refs(values)
         else:
             await actor_model.train(rollout_id, rollout_data_pack)
         remove_rollout_data_refs(args, rollout_data_pack)
