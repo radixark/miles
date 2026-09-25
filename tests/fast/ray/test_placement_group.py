@@ -113,6 +113,15 @@ class TestFrozenInferenceChecksums:
 
 
 class TestCreateRolloutComponents:
+    async def test_train_only_with_eval_resolves_session_addresses(self, fake_components) -> None:
+        """Snapshot evaluation still needs session routing when training uses injected rollouts."""
+        args = _make_args(num_rollout=1, debug_train_only=True, eval_num_gpus=1, use_session_server=True)
+
+        await create_rollout_components(args)
+
+        assert args.session_server_addrs == ["10.0.0.2:5000"]
+        assert args.session_server_instance_ids == ["session-0"]
+
     async def test_the_executor_is_inited_after_the_session_servers_are_known(self, fake_components):
         """The executor reads the session contract off args, so it must be written before init() runs."""
         args = _make_args(num_rollout=1, use_session_server=True)
