@@ -91,6 +91,39 @@ def log_rollout_data(rollout_id, args, samples, rollout_extra_metrics, rollout_t
     step = compute_rollout_step(args, rollout_id)
     log_dict["rollout/step"] = step
     tracking.log(args, log_dict, step_key="rollout/step")
+    if args.log_sample_completions > 0:
+        columns, rows = sample_completion_rows(samples, args.log_sample_completions)
+        tracking.log_table("rollout/completions", columns, rows)
+
+
+SAMPLE_COMPLETION_COLUMNS = ["prompt", "response", "reward", "status", "response_length"]
+
+
+def _prompt_text(prompt) -> str:
+    if isinstance(prompt, list):
+        # Chat-format prompt: one "role: content" line per message.
+        return "\n".join(f"{m.get('role', '?')}: {m.get('content', '')}" for m in prompt)
+    return str(prompt)
+
+
+def sample_completion_rows(samples: list[Sample], limit: int) -> tuple[list[str], list[list]]:
+    """Rows for the sampled-completions table: the first ``limit`` samples of the
+    step taken round-robin across prompt groups (``group_index``), so a small
+    table shows different prompts rather than one prompt's n responses. Every
+    cell is a string or an int so the table has no mixed-type column."""
+    groups = list(group_by(samples, key=lambda s: s.group_index).values())
+    ordered = [group[i] for i in range(max((len(g) for g in groups), default=0)) for group in groups if i < len(group)]
+    rows = [
+        [
+            _prompt_text(s.prompt)[:2048],
+            str(s.response)[:4096],
+            str(s.reward)[:256],
+            s.status.name,
+            s.response_length,
+        ]
+        for s in ordered[:limit]
+    ]
+    return SAMPLE_COMPLETION_COLUMNS, rows
 
 
 def _compute_metrics_from_samples(args, samples):
