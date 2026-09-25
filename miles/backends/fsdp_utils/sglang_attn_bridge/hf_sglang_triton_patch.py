@@ -13,7 +13,27 @@ The TritonAttnFunction autograd wrapper ensures:
   - Backward: computes correct gradients so qkv_proj receives gradient flow
 """
 
+import inspect
+from functools import cache, partial
+
 import torch
+
+
+@cache
+def _get_extend_attention_fwd():
+    # Resolve the kernel lazily: SGLang moved it out of
+    # sglang.srt.layers.attention.triton_ops, and keep working with both layouts.
+    try:
+        from sglang.kernels.ops.attention.extend_attention import extend_attention_fwd_unified
+    except ModuleNotFoundError as exc:
+        if not exc.name or not "sglang.kernels.ops.attention.extend_attention".startswith(exc.name):
+            raise
+        from sglang.srt.layers.attention.triton_ops.extend_attention import extend_attention_fwd_unified
+
+    # The relocated kernel takes explicit KV quantization scales; this bridge uses BF16 KV.
+    if "k_scale" in inspect.signature(extend_attention_fwd_unified).parameters:
+        return partial(extend_attention_fwd_unified, k_scale=1.0, v_scale=1.0)
+    return extend_attention_fwd_unified
 
 
 class TritonAttnFunction(torch.autograd.Function):
@@ -36,7 +56,7 @@ class TritonAttnFunction(torch.autograd.Function):
         Returns:
             o: [total, num_heads, D], bf16
         """
-        from sglang.srt.layers.attention.triton_ops.extend_attention import extend_attention_fwd_unified
+        extend_attention_fwd_unified = _get_extend_attention_fwd()
 
         total = B * S
         device = q.device
@@ -52,10 +72,10 @@ class TritonAttnFunction(torch.autograd.Function):
             o,
             k,
             v,
-            qo_indptr,
-            kv_indptr,
-            kv_indices,
-            prefix_lens,
+            qo_indptr=qo_indptr,
+            kv_indptr=kv_indptr,
+            kv_indices=kv_indices,
+            prefix_lens=prefix_lens,
             max_len_extend=S,
             is_causal=True,
         )
