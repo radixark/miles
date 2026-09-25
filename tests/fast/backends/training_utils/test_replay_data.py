@@ -5,7 +5,7 @@ register_cpu_ci(est_time=60, suite="stage-a-cpu", labels=[])
 import pytest
 import torch
 
-from miles.backends.training_utils.replay_data import register_replay_list_sequential
+from miles.backends.training_utils.replay_data import _bshd_replay_to_megatron_order, register_replay_list_sequential
 
 
 class _Replay:
@@ -45,3 +45,36 @@ def test_register_replay_list_sequential_rejects_out_of_range_stream_idx():
 
     with pytest.raises(AssertionError, match="out of range"):
         register_replay_list_sequential(replays, replay_data)
+
+
+def test_bshd_replay_uses_megatron_sequence_major_order():
+    replay_data = torch.arange(2 * 4).reshape(2, 4, 1, 1)
+
+    actual = _bshd_replay_to_megatron_order(
+        replay_data,
+        sequence_parallel=False,
+        tp_rank=0,
+        tp_size=2,
+    )
+
+    assert actual[:, 0, 0].tolist() == [0, 4, 1, 5, 2, 6, 3, 7]
+
+
+@pytest.mark.parametrize(
+    ("tp_rank", "expected"),
+    [
+        (0, [0, 4, 1, 5]),
+        (1, [2, 6, 3, 7]),
+    ],
+)
+def test_bshd_replay_sequence_parallel_slices_sequence_dimension(tp_rank, expected):
+    replay_data = torch.arange(2 * 4).reshape(2, 4, 1, 1)
+
+    actual = _bshd_replay_to_megatron_order(
+        replay_data,
+        sequence_parallel=True,
+        tp_rank=tp_rank,
+        tp_size=2,
+    )
+
+    assert actual[:, 0, 0].tolist() == expected
