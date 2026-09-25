@@ -306,7 +306,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--skip-prepare", action="store_true", help="Reuse previously prepared checkpoints and dataset."
     )
-    parser.add_argument("--num-rollout", type=int, default=2, help="Six rollouts exercise five post-training updates.")
+    parser.add_argument("--num-rollout", type=int, default=2, help="Number of rollouts; at least two are required.")
     parser.add_argument("--update-weight-transfer-mode", choices=("broadcast", "disk-delta"), default="broadcast")
     parser.add_argument("--update-weight-disk-dir")
     parser.add_argument("--update-weight-local-checkpoint-dir")
