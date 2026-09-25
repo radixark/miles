@@ -1,5 +1,6 @@
 import dataclasses
 import inspect
+import logging
 import os
 from dataclasses import dataclass
 from typing import Literal
@@ -33,6 +34,18 @@ class _HardwareConfig(ExecuteTrainConfig):
 
 
 class TestResolveHardware:
+    def test_early_hardware_detection_is_visible_without_a_configured_logger(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Hardware detection remains visible before backend initialization."""
+        root = logging.getLogger()
+        monkeypatch.setattr(root, "handlers", [])
+        monkeypatch.setattr(root, "level", logging.WARNING)
+        monkeypatch.setattr(base_backend, "detect_hardware", lambda: "H100")
+
+        assert resolve_hardware(_HardwareConfig()) == "H100"
+        assert "detected --hardware H100" in capsys.readouterr().err
+
     def test_supported_explicit_value_bypasses_detection_while_auto_uses_it(self, monkeypatch):
         """Explicit hardware bypasses detection, while auto resolves to a supported detected profile."""
         detected: list[None] = []

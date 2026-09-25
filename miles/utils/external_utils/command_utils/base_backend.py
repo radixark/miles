@@ -334,6 +334,7 @@ def _exclusive_path_lock(path_dst: str):
 def resolve_hardware(config: ExecuteTrainConfig) -> str:
     """`auto` asks the node the launcher runs on; anything explicit overrides it."""
     if config.hardware == "auto":
+        logging.basicConfig(level=logging.INFO)
         hardware = detect_hardware()
         logger.info(f"detected --hardware {hardware}")
     else:
