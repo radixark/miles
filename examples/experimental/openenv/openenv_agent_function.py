@@ -256,13 +256,19 @@ async def multi_turn(
     action_cls = classes["action"]
     task_id = metadata.get("task_id") or metadata.get("task_name")
     max_turns = int(os.getenv("OPENENV_MAX_TURNS", "30"))
+    raw_budget = metadata.get("max_seq_len")
+    try:
+        max_seq_len = int(raw_budget) if raw_budget is not None else None
+    except (TypeError, ValueError):
+        max_seq_len = None
 
-    async def body(env: Any) -> tuple[float | None, int, str, list[float], list[float], float, float]:
+    async def body(env: Any) -> tuple[float | None, int, str, list[float], list[float], float, float, int]:
         # Per-turn wall-clock timings. gen_times[i] is turn i's policy generation
         # latency; tool_times[i] is turn i's env.step(exec) latency. reset_time and
         # eval_time bracket the one-off reset() and the final evaluate() env steps.
         gen_times: list[float] = []
         tool_times: list[float] = []
+        session_tokens = 0
 
         t0 = time.monotonic()
         reset_result = await (env.reset(task_id=task_id) if task_id else env.reset())
@@ -294,8 +300,24 @@ async def multi_turn(
             # (extras like reasoning_content included).
             convo.append(message.model_dump(exclude_none=True))
 
+            # Assignment, not +=: every turn re-sends the whole conversation, so this
+            # request's total_tokens (prompt + completion) already IS the session total.
+            # It lags by one env response -- turn N's output is appended below and only
+            # priced into turn N+1's prompt -- so we stop just after crossing, never before.
+            usage = getattr(completion, "usage", None)
+            turn_tokens = getattr(usage, "total_tokens", None)
+            if turn_tokens is not None:
+                session_tokens = int(turn_tokens)
+
             if choice.finish_reason == "length":
                 end_reason = "length"
+                break
+
+            # `turn_tokens is not None` again on purpose: if this turn reported no usage,
+            # session_tokens is a stale count from an earlier turn and must not end the
+            # episode. Better to overrun than to truncate a good rollout on a guess.
+            if max_seq_len is not None and turn_tokens is not None and session_tokens >= max_seq_len:
+                end_reason = "max_seq_len"
                 break
 
             command = _strip_fence(reply) if "```" in reply else reply.strip()
@@ -352,10 +374,10 @@ async def multi_turn(
         if post_episode is not None:
             await post_episode(env, action_cls)
 
-        return reward, turns, end_reason, gen_times, tool_times, reset_time, eval_time
+        return reward, turns, end_reason, gen_times, tool_times, reset_time, eval_time, session_tokens
 
     result = await run_body(classes["env"], metadata, body)
-    reward, turns, end_reason, gen_times, tool_times, reset_time, eval_time = result
+    reward, turns, end_reason, gen_times, tool_times, reset_time, eval_time, session_tokens = result
     total_gen_time = sum(gen_times)
     # non_generation_time = everything the rollout spent outside policy generation:
     # per-turn exec latency plus the one-off reset() and evaluate() env steps. Feeds
@@ -364,6 +386,7 @@ async def multi_turn(
     return reward, {
         "turns": turns,
         "end_reason": end_reason,
+        "session_tokens": session_tokens,
         "tool_calls": len(tool_times),
         "gen_times": gen_times,
         "tool_times": tool_times,
