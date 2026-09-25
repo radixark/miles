@@ -16,7 +16,7 @@ from tests.ci.metric_history import register_ci_gate
 from tests.e2e.megatron.test_qwen3_5_35B_A3B_mtp._common import CaseConfig, execute, prepare
 
 register_cuda_ci(
-    est_time=1800, suite="stage-c-8-gpu-h100", labels=["megatron", "qwen35"], hardware=["hopper", "blackwell"]
+    est_time=1800, suite="stage-c-4-gpu-h200", labels=["megatron", "qwen35"], hardware=["hopper", "blackwell"]
 )
 
 register_ci_gate(metric_key="train/grad_norm")
@@ -26,18 +26,18 @@ register_ci_gate(metric_key="train/train_rollout_kl")
 register_ci_gate(metric_key="rollout/raw_reward")
 
 CASE = CaseConfig(
-    # tp2/cp2/pp2/ep4: TP=4 hits a Qwen3.5 attention-output-gate sharding bug, so stay at
-    # TP=2 and use PP=2 to halve the resident layers for OOM headroom (keeps CP=2 coverage).
-    num_gpus_per_node=8,
+    # tp2/cp2/ep4: TP=4 hits a Qwen3.5 attention-output-gate sharding bug, so stay at TP=2.
+    # PP=1 on 4 GPUs: PP=2 stays covered by test_mtp1_spec_v2_r3.
+    num_gpus_per_node=4,
     cp_size=2,
-    pp_size=2,
+    pp_size=1,
     tp_size=2,
     ep_size=4,
     # 4096 (mtp1 keeps 8192): CP=2 routes the GatedDeltaNet backward through the heavier fla
     # CP kernel, whose Triton autotune OOMs at 8192 even with PP=2; halve the budget for headroom.
     max_tokens_per_gpu=4096,
-    rollout_num_gpus_per_engine=8,
-    sglang_ep_size=8,
+    rollout_num_gpus_per_engine=4,
+    sglang_ep_size=4,
     enable_mtp_training=False,
     use_r3=False,
     check_weight_update_selector="target",
