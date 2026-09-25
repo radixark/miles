@@ -52,6 +52,8 @@ gh workflow run release-branch-cut.yml -f branch_name="${RELEASE_BRANCH}"
 
 Add `-f commit_sha=FULL_MAIN_SHA` to cut from a specific commit already on `main`; otherwise the workflow uses the checked-out `main` tip. On the first dispatch, it creates `release/vX.Y.Z`, records the SGLang and Megatron-LM commits in `release-lock.json`, retags the preflighted development image as `release-vX.Y.Z-ci`, and commits the lockfile on the release branch. Re-dispatching an existing branch preserves its lockfile and tests its current tip.
 
+The lockfile records a separate `sglang_commit_cu12` from `sglang-miles-v0.5.19-final` for the CUDA 12 image. Release CUDA CI uses the CUDA 13 image and `sglang_commit`; it does not validate the CUDA 12 combination.
+
 While this run is active, do not push or cherry-pick anything onto the release branch. The workflow runs full-scope CUDA, CPU, and ROCm jobs with `cadence=release`, then records a `release-ci` commit status. [Stage](/developer/ci/00-stage) and [Labels](/developer/ci/01-label) own the cadence details; ROCm is a smoke signal because its dependencies remain baked into the image.
 
 After the run is green, resolve the branch tip and copy the first column as `RELEASE_SHA`:

@@ -69,6 +69,8 @@ jobs:
             exit 1
           fi
           echo "sglang_commit=$(python3 -c "import json; print(json.load(open('release-lock.json'))['sglang_commit'])")" >> "$GITHUB_OUTPUT"
+          # Older releases used the same SGLang commit for both CUDA variants.
+          echo "sglang_commit_cu12=$(python3 -c "import json; lock=json.load(open('release-lock.json')); print(lock.get('sglang_commit_cu12', lock['sglang_commit']))")" >> "$GITHUB_OUTPUT"
           echo "megatron_commit=$(python3 -c "import json; print(json.load(open('release-lock.json'))['megatron_commit'])")" >> "$GITHUB_OUTPUT"
           # github.sha is the default-branch HEAD on workflow_dispatch; the
           # image must bake the checked-out release commit.
@@ -115,7 +117,7 @@ jobs:
         run: |
           python3 docker/build.py --variant cu12-x86 --image-tag custom \
             --custom-tag "v${{ steps.resolve.outputs.version }}" \
-            --build-arg "SGLANG_COMMIT=${{ steps.lock.outputs.sglang_commit }}" \
+            --build-arg "SGLANG_COMMIT=${{ steps.lock.outputs.sglang_commit_cu12 }}" \
             --build-arg "MEGATRON_COMMIT=${{ steps.lock.outputs.megatron_commit }}" \
             --build-arg "MILES_COMMIT=${{ steps.lock.outputs.miles_commit }}" \
             --push
@@ -128,6 +130,7 @@ jobs:
             echo "- \`radixark/miles:v${{ steps.resolve.outputs.version }}\` (cu13, amd64+arm64)"
             echo "- \`radixark/miles:v${{ steps.resolve.outputs.version }}-cu12\` (cu12.9, amd64)"
             echo "- sglang: \`${{ steps.lock.outputs.sglang_commit }}\`"
+            echo "- sglang (cu12): \`${{ steps.lock.outputs.sglang_commit_cu12 }}\`"
             echo "- Megatron-LM: \`${{ steps.lock.outputs.megatron_commit }}\`"
             echo "- miles: \`${{ steps.lock.outputs.miles_commit }}\`"
           } >> "$GITHUB_STEP_SUMMARY"

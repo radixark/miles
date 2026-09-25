@@ -98,6 +98,7 @@ jobs:
           git checkout -b "$BRANCH_NAME" "${{ steps.validate.outputs.commit_sha }}"
 
           SGLANG_SHA=$(git ls-remote https://github.com/sgl-project/sglang refs/heads/sglang-miles | cut -f1)
+          SGLANG_CU12_SHA=$(git ls-remote https://github.com/sgl-project/sglang refs/heads/sglang-miles-v0.5.19-final | cut -f1)
           MEGATRON_SHA=$(git ls-remote https://github.com/radixark/Megatron-LM refs/heads/miles-main | cut -f1)
 
           # Prefer the latest timestamped dev tag; fall back to mutable dev if none exists.
@@ -123,7 +124,7 @@ jobs:
           WHEELS_TAG_X86=$(sed -n 's/^ARG WHEELS_TAG_X86=//p' docker/Dockerfile)
           WHEELS_TAG_ARM64=$(sed -n 's/^ARG WHEELS_TAG_ARM64=//p' docker/Dockerfile)
           python3 .github/scripts/release/write_release_lock.py "$BRANCH_NAME" "$SGLANG_SHA" "$MEGATRON_SHA" \
-            "$CI_IMAGE_TAG" "$(wheels_fp "$WHEELS_TAG_X86")" "$(wheels_fp "$WHEELS_TAG_ARM64")" "$(wheels_fp cu129-x86_64)"
+            "$CI_IMAGE_TAG" "$(wheels_fp "$WHEELS_TAG_X86")" "$(wheels_fp "$WHEELS_TAG_ARM64")" "$(wheels_fp cu129-x86_64)" "$SGLANG_CU12_SHA"
           git add release-lock.json
           git commit -m "release: freeze dependency lockfile for $BRANCH_NAME"
           git push origin "$BRANCH_NAME"
