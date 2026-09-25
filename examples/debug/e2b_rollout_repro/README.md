@@ -1,5 +1,31 @@
 # E2B / agentic rollout failure reproduction
 
+## Controlled payload experiment
+
+`payload_control.py` isolates candidate-metadata overhead using the real pinned
+Miles session server and its sample assembler. It captures one live task response
+from an existing SGLang engine, then replays identical generated tokens through
+fresh session-server processes. Arms are plain probabilities, top-128 metadata,
+and top-128 metadata retained for training but removed from agent-facing replies.
+The default order is plain/full/strip/strip/full/plain, with eight server processes
+and 128 concurrent single-turn sessions per block. Owned prebuilt E2B sandboxes
+execute the same short command after each reply; no benchmark agent or verifier
+runs. This is a synchronized payload stress test, not a full agentic rollout or
+a measurement of model inference speed. It measures server/driver event-loop lag,
+server CPU, sampled peak RSS, reply/sample bytes, and command errors/latencies.
+
+Run in the original pinned Python environment with the archived runtime environment
+and administrator credentials loaded privately. Supply `--root` (a new scratch
+directory), `--parent` (the archived run directory), and `--engine` (an existing
+OpenAI-compatible engine URL). Start with `--workers 1 --concurrency 1
+--sandbox_count 0 --repetitions 1` to verify fixture/session compatibility, then
+use the defaults for the stress comparison. Only this experiment's child processes
+and sandbox IDs are terminated. Logs and result JSON files remain under `--root`.
+
+The fixture includes exact request/response data and a SHA256 digest. Raw task
+contents and credentials are not committed. Read both per-trial errors and cleanup
+receipts before interpreting timing numbers.
+
 This is an archived workload reproduction, **not a deterministic minimal reproducer**.
 It preserves the collector used for the failure; it does not implement the proposed
 standalone-SGLang redesign or disable uvloop.

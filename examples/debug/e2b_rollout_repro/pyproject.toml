@@ -2,4 +2,4 @@
 name = "e2b-rollout-crash-repro"
 version = "0.1.0"
 requires-python = ">=3.12"
-dependencies = ["typed-argument-parser", "torch", "numpy", "e2b==2.50.0", "httpx==0.28.1"]
+dependencies = ["typed-argument-parser", "torch", "numpy", "e2b==2.50.0", "httpx==0.28.1", "psutil", "uvicorn", "uvloop", "fastapi"]
