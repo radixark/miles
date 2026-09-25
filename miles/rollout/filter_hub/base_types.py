@@ -46,7 +46,7 @@ class MetricGatherer:
         for sample in _iter_group_samples(group):
             if sample.reward is None:
                 continue
-            if not args.reward_key and isinstance(sample.reward, dict):
+            if isinstance(sample.reward, dict) and (not args.reward_key or args.reward_key not in sample.reward):
                 continue
             if (value := sample.get_reward_value(args)) is None:
                 continue
