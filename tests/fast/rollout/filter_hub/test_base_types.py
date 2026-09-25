@@ -5,6 +5,16 @@ from miles.utils.types import Sample
 
 
 class TestMetricGathererUnfilteredRawReward:
+    def test_aborted_samples_without_the_reward_key_do_not_break_statistics(self) -> None:
+        """A failed generation can still be filtered after its missing reward is skipped."""
+        gatherer = MetricGatherer()
+        aborted = _sample(reward={})
+        aborted.status = Sample.Status.ABORTED
+
+        gatherer.on_group_before_dynamic_filter(_args(reward_key="score"), [aborted, _sample(reward={"score": 0.5})])
+
+        assert gatherer.collect()["rollout/raw_reward_unfiltered"] == 0.5
+
     def test_the_mean_covers_kept_and_dropped_groups_alike(self):
         """The gatherer sees every group before the filter, so the mean must not depend on the keep decision."""
         gatherer = MetricGatherer()
