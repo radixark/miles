@@ -198,7 +198,7 @@ def get_owned_mooncake_master_port(train_argv: list[str]) -> int | None:
 
     declared = ArgvManipulator.get_effective(train_argv, MOONCAKE_INIT_KWARGS_FLAG)
     if declared is None:
-        return MOONCAKE_MASTER_PORT
+        return None if os.environ.get("MOONCAKE_MASTER") else MOONCAKE_MASTER_PORT
 
     address = json.loads(declared).get(MOONCAKE_MASTER_ADDRESS_KEY)
     if address is None:

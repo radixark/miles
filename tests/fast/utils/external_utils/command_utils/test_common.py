@@ -18,6 +18,27 @@ class TestGetMooncakeObjectStoreArgs:
         assert kwargs["master_server_address"] == "mooncake.run.svc:61234"
 
 
+class TestOwnedMooncakeMaster:
+    def test_an_environment_master_does_not_require_a_local_service(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """An external Mooncake client does not need the master executable installed locally."""
+        monkeypatch.setenv("MOONCAKE_MASTER", "store.example:61234")
+
+        assert common.get_owned_mooncake_master_port([]) is None
+
+    def test_an_unconfigured_master_keeps_automatic_local_startup(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The default launcher still owns the default local master."""
+        monkeypatch.delenv("MOONCAKE_MASTER", raising=False)
+
+        assert common.get_owned_mooncake_master_port([]) == 50051
+
+    def test_explicit_arguments_take_precedence_over_the_environment(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """An explicit local endpoint overrides an inherited remote endpoint."""
+        monkeypatch.setenv("MOONCAKE_MASTER", "store.example:61234")
+        argv = [MOONCAKE_INIT_KWARGS_FLAG, json.dumps({"master_server_address": "127.0.0.1:61235"})]
+
+        assert common.get_owned_mooncake_master_port(argv) == 61235
+
+
 class TestGetDefaultWandbArgs:
     def test_missing_credentials_configures_logging_before_reporting_the_skip(
         self, monkeypatch: pytest.MonkeyPatch
