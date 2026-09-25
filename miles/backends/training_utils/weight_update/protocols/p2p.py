@@ -226,7 +226,7 @@ class UpdateWeightP2P(WeightTransferProtocol):
         try:
             with ParallelismContext(parallelism_config):
                 model = get_model(
-                    model_config=ModelConfig(model_path),
+                    model_config=ModelConfig.from_server_args(server_args, model_path=model_path),
                     load_config=load_config,
                     device_config=DeviceConfig(device="cpu"),
                 )
