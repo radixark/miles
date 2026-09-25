@@ -1,0 +1,12 @@
+{
+  "release_branch": "release/v0.1.1",
+  "sglang_repo": "sgl-project/sglang",
+  "sglang_branch": "sglang-miles",
+  "sglang_commit": "00caa88c9f7000227cde4123fbd150265e866317",
+  "megatron_repo": "radixark/Megatron-LM",
+  "megatron_branch": "miles-main",
+  "megatron_commit": "f148a32b4385b758b66a77c9c3ad1641f1295d4b",
+  "ci_image_tag": "release-v0.1.1-ci",
+  "wheels_fingerprint_cu130_x86_64": "6fa79f53f8d36c7cadf84fe4b17f9f9f97305faa0d6784fae9c45545d3807981",
+  "wheels_fingerprint_cu130_aarch64": "66b7e1432dbcd498bcfeec34386835f0be172926c2a9771f683b0633d4a5a7ea"
+}
