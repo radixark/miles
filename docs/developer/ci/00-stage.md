@@ -39,13 +39,13 @@ In `pr-test.yml`, `tier a` (CPU fast) gates PR-image preparation and the NVIDIA 
 
 A PR event starts jobs only when the PR's base is the default branch or the PR carries a `run-ci*` label. Otherwise `resolve-ci-policy` is skipped, and because every other job needs it, the run starts nothing. A stacked PR therefore runs `PR Test` only while labeled; retargeting a PR to `main` is an `edited` event, which does not start a run.
 
-Both PR workflows are also reusable `workflow_call` entry points for release CI. Called runs group concurrency by `inputs.ref`, so redispatching the same release branch cancels the older run; literal `pr-test-` and `pr-test-rocm-` prefixes keep the CUDA and ROCm groups from cancelling each other under the same branch-cut caller.
+Both PR workflows expose reusable `workflow_call` entry points. Release CI calls only `pr-test.yml` for CPU and CUDA coverage. Called runs group concurrency by `inputs.ref`, so redispatching the same release branch cancels the older run; literal `pr-test-` and `pr-test-rocm-` prefixes keep the two workflows in separate concurrency groups.
 
 ## What each stage does
 
 **Image resolution (`resolve-ci-image`).** In `pr-test.yml`, a small `ubuntu-latest` job selects, in order: the called workflow's `image_tag`, the `ci_image_tag` dispatch input, a current `pr-<num>` image, the PR description's `ci-image-tag:`, then `dev`. It validates the result is a bare tag and outputs `radixark/miles:<tag>`. `release-branch-cut.yml` passes the prune-exempt `release-vX.Y.Z-ci` tag recorded in `release-lock.json`.
 
-The ROCm resolver uses only its dispatch input, defaults to its undated `rocm/sgl-dev` tag, and uses that default for called release runs too. For PRs, it runs only when `stage-c-4-gpu-mi350` is selected. CPU-only PRs skip both CUDA image preparation and ROCm image resolution.
+The ROCm resolver uses only its dispatch input, defaults to its undated `rocm/sgl-dev` tag, and uses that default for reusable calls too. For PRs, it runs only when `stage-c-4-gpu-mi350` is selected. CPU-only PRs skip both CUDA image preparation and ROCm image resolution.
 
 Distinct from image selection, the **`run-ci-image` label** selects the test scope — every enabled tag except `long`, `ft-short`, and `ft-long` — which validates an image bump without selecting those domains implicitly.
 
@@ -88,11 +88,11 @@ Both workflows receive `execute_command` and an optional `ref`; CUDA callers add
 
 Weekly runs keep the same shards but set each GPU matrix's `max-parallel` to one, so each stage occupies at most one matching runner. Stages remain independent: `stage-b-2-gpu-h200` and `stage-c-2-gpu-h200` may each occupy one 2-GPU runner at the same time. PR, nightly, and release runs retain their existing matrix parallelism.
 
-## ROCm PR/nightly/weekly/release mirror
+## ROCm PR/nightly/weekly mirror
 
 `pr-test-rocm.yml` exposes `pull_request`, exact nightly and weekly crons, `workflow_dispatch`, and `workflow_call`. PR runs use the same low-trust merge-commit model as `pr-test.yml`. It runs `stage-c-4-gpu-mi350` through `_run-ci-rocm.yml` on two 4-GPU MI350 runners and splits tests into two `est_time`-balanced shards; weekly alone limits the matrix to one runner at a time. It runs no CPU tests.
 
-A called release run checks out the supplied Miles `ref` with `cadence=release` but resolves the same undated `rocm/sgl-dev:miles-rocm724-mi35x` image as the other automatic paths. SGLang and Megatron-LM remain baked into that image, so release ROCm is a smoke signal.
+Reusable calls can select a Miles `ref` and cadence, but resolve the same undated `rocm/sgl-dev:miles-rocm724-mi35x` image as the other automatic paths. SGLang and Megatron-LM remain baked into that image. The release branch-cut workflow does not call ROCm CI or include it in the `release-ci` gate.
 
 Only tests registered with `register_rocm_ci(suite="stage-c-4-gpu-mi350", ...)` run; the `nightly-` prefixed suites and CUDA registrations are not inherited. PR, nightly, weekly, and release runs consume the shared cadence and label policy: `run-ci-amd` selects the `amd`-labelled subset, other `run-ci-*` labels select matching subsets, nightly admits regular plus `nightly=True` registrations, and weekly or release selects every enabled registration.
 

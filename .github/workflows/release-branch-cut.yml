@@ -11,7 +11,7 @@ run-name: Release Branch Cut ${{ inputs.branch_name }}
 #
 # A Miles version freezes the repository commit plus the SGLang and Megatron-LM
 # commits; see docs/developer/versions.md. The lockfile also names the CUDA CI
-# image, while wheel fingerprints are audit records and ROCm remains smoke-only.
+# image, while wheel fingerprints are audit records.
 
 on:
   workflow_dispatch:
@@ -155,22 +155,12 @@ jobs:
       image_tag: ${{ needs.cut-release-branch.outputs.ci_image_tag }}
     secrets: inherit
 
-  # ROCm images bake their own sglang/Megatron and ignore the lockfile: a smoke
-  # signal for the release, not a pin-accurate verification.
-  run-tests-rocm:
-    needs: cut-release-branch
-    uses: ./.github/workflows/pr-test-rocm.yml
-    with:
-      ref: ${{ needs.cut-release-branch.outputs.branch_name }}
-      cadence: release
-    secrets: inherit
-
   # Finalizer: stamps the verdict onto the exact tested commit so
   # release-tag.yml can gate on per-SHA evidence instead of run archaeology.
   # always() so a red run stamps failure; a re-dispatch on the same branch
   # overwrites the same context (newest status per context wins).
   report-ci-status:
-    needs: [cut-release-branch, run-tests-cuda, run-tests-rocm]
+    needs: [cut-release-branch, run-tests-cuda]
     if: always() && needs.cut-release-branch.result == 'success'
     runs-on: ubuntu-latest
     steps:
@@ -179,15 +169,14 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SHA: ${{ needs.cut-release-branch.outputs.tested_sha }}
           CUDA_RESULT: ${{ needs.run-tests-cuda.result }}
-          ROCM_RESULT: ${{ needs.run-tests-rocm.result }}
         run: |
-          if [ "$CUDA_RESULT" = "success" ] && [ "$ROCM_RESULT" = "success" ]; then
+          if [ "$CUDA_RESULT" = "success" ]; then
             STATE=success
           else
             STATE=failure
           fi
           gh api "repos/${{ github.repository }}/statuses/$SHA" \
             -f state="$STATE" -f context=release-ci \
-            -f description="full release CI (cuda=$CUDA_RESULT rocm=$ROCM_RESULT)" \
+            -f description="full release CI (cpu/cuda=$CUDA_RESULT)" \
             -f target_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           echo "Posted release-ci=$STATE on $SHA"

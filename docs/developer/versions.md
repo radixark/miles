@@ -128,7 +128,7 @@ It never reinstalls the three source trees, because they are editable installs. 
 | SGLang or Megatron-LM code | No. Point CI at a ref instead |
 | Miles code | No |
 
-The ROCm stage is the exception: it takes SGLang and Megatron-LM from `rocm/sgl-dev` unless the run names a ref for one, and never reads `release-lock.json`. A release call can select the Miles ref, but its baked dependencies still make the run a smoke signal rather than a lock-accurate check.
+The ROCm stage is the exception: it takes SGLang and Megatron-LM from `rocm/sgl-dev` unless the run names a ref for one, and never reads `release-lock.json`. ROCm CI runs independently and is not part of the versioned release gate.
 
 ## Bumping principle
 
