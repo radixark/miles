@@ -23,6 +23,7 @@ from miles.utils.external_utils.command_utils.helm_backend.launcher.values.place
     sentinels_to_placeholders,
 )
 from miles.utils.workers.argv_utils import python_argv_prefix
+from miles.utils.workers.env_vars import CELL_INDEX_ENV_VAR, POD_INDEX_ENV_VAR
 from miles.utils.workers.naming import compute_port_name
 from miles.utils.workers.types import PlatformAccess
 from miles.utils.workers.worker_provider.kubernetes.helm import env
@@ -167,11 +168,41 @@ def _launch_context(
 def _command_of_spec(spec: BaseWorkerSpec, context: LaunchCommandContext, plan: LaunchPlan) -> list[str]:
     match spec:
         case CommandWorkerSpec():
-            return sentinels_to_placeholders(shlex.split(spec.launch_command(context)), spec)
+            return _command_for_each_cell(spec, context)
         case ServeWorkerSpec():
             return _serve_command(spec, plan)
         case _:
             raise AssertionError(f"{spec.name} is neither launched by a command nor served over rpc: {spec}")
+
+
+def _command_for_each_cell(spec: CommandWorkerSpec, context: LaunchCommandContext) -> list[str]:
+    template = sentinels_to_placeholders(shlex.split(spec.launch_command(context)), spec)
+    commands: dict[str, list[str]] = {}
+    matches_template = True
+    for cell_index in range(spec.scheduling.num_cells):
+        for pod_index in range(spec.scheduling.pods_per_cell()):
+            actual_context = context.model_copy(update={"cell_index": cell_index, "worker_in_cell_index": pod_index})
+            command = sentinels_to_placeholders(shlex.split(spec.launch_command(actual_context)), spec)
+            commands[f"{cell_index}:{pod_index}"] = command
+            expected = [argument.replace("$(LWS_WORKER_INDEX)", str(pod_index)) for argument in template]
+            matches_template = matches_template and command == expected
+
+    if matches_template:
+        return template
+
+    branches = [f"{identity}) exec {shlex.join(command)} ;;" for identity, command in commands.items()]
+    return [
+        "bash",
+        "-c",
+        "\n".join(
+            [
+                f'case "${{{CELL_INDEX_ENV_VAR}}}:${{{POD_INDEX_ENV_VAR}:-0}}" in',
+                *branches,
+                '*) echo "Invalid cell/pod identity for this worker pool" >&2; exit 1 ;;',
+                "esac",
+            ]
+        ),
+    ]
 
 
 def _serve_command(spec: ServeWorkerSpec, plan: LaunchPlan) -> list[str]:

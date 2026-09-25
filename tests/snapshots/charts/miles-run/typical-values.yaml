@@ -28,51 +28,17 @@ run:
   id: 260101-000000-000
   inferenceEngines:
   - command:
-    - <PYTHON>
-    - -m
-    - sglang.launch_server
-    - --trust-remote-code
-    - --model-path
-    - <FIXTURE_DIR>/typical-model
-    - --host
-    - 0.0.0.0
-    - --port
-    - '8000'
-    - --device
-    - cuda
-    - --random-seed
-    - '<RANDOM_SEED>'
-    - --enable-memory-saver
-    - --nccl-port
-    - '10000'
-    - --nnodes
-    - '2'
-    - --node-rank
-    - $(LWS_WORKER_INDEX)
-    - --dist-init-addr
-    - $(LWS_LEADER_ADDRESS):9000
-    - --gated-launch-port
-    - '13000'
-    - --tp-size
-    - '16'
-    - --skip-server-warmup
-    - --enable-draft-weights-cpu-backup
-    - --enable-metrics
-    - --disaggregation-mode
-    - prefill
-    - --load-balance-method
-    - round_robin
-    - --disaggregation-bootstrap-port
-    - '11000'
-    - --engine-info-bootstrap-port
-    - '12000'
-    - --mem-fraction-static
-    - '0.7'
-    - --chunked-prefill-size
-    - '4096'
-    - --cuda-graph-backend-prefill
-    - disabled
-    - --lora-use-virtual-experts
+    - bash
+    - -c
+    - 'case "${MILES_CELL_INDEX}:${MILES_POD_INDEX:-0}" in
+
+      0:0) exec <PYTHON> -m sglang.launch_server --trust-remote-code --model-path <FIXTURE_DIR>/typical-model --host 0.0.0.0 --port 8000 --device cuda --random-seed 1234 --enable-memory-saver --nccl-port 10000 --nnodes 2 --dist-init-addr ''$(LWS_LEADER_ADDRESS):9000'' --gated-launch-port 13000 --tp-size 16 --skip-server-warmup --enable-draft-weights-cpu-backup --enable-metrics --disaggregation-mode prefill --load-balance-method round_robin --disaggregation-bootstrap-port 11000 --engine-info-bootstrap-port 12000 --mem-fraction-static 0.7 --chunked-prefill-size 4096 --cuda-graph-backend-prefill disabled --lora-use-virtual-experts ;;
+
+      0:1) exec <PYTHON> -m sglang.launch_server --trust-remote-code --model-path <FIXTURE_DIR>/typical-model --host 0.0.0.0 --port 8000 --device cuda --random-seed 1235 --enable-memory-saver --nccl-port 10000 --nnodes 2 --node-rank 1 --dist-init-addr ''$(LWS_LEADER_ADDRESS):9000'' --gated-launch-port 13000 --tp-size 16 --skip-server-warmup --enable-draft-weights-cpu-backup --enable-metrics --disaggregation-mode prefill --load-balance-method round_robin --disaggregation-bootstrap-port 11000 --engine-info-bootstrap-port 12000 --mem-fraction-static 0.7 --chunked-prefill-size 4096 --cuda-graph-backend-prefill disabled --lora-use-virtual-experts ;;
+
+      *) echo "Invalid cell/pod identity for this worker pool" >&2; exit 1 ;;
+
+      esac'
     env:
       NVSHMEM_DISABLE_NCCL: '1'
       RAY_EXPERIMENTAL_NOSET_ASCEND_RT_VISIBLE_DEVICES: '1'
@@ -115,45 +81,17 @@ run:
         nvidia.com/gpu: 8
     size: 2
   - command:
-    - <PYTHON>
-    - -m
-    - sglang.launch_server
-    - --trust-remote-code
-    - --model-path
-    - <FIXTURE_DIR>/typical-model
-    - --host
-    - 0.0.0.0
-    - --port
-    - '8000'
-    - --device
-    - cuda
-    - --random-seed
-    - '<RANDOM_SEED>'
-    - --enable-memory-saver
-    - --nccl-port
-    - '10000'
-    - --node-rank
-    - $(LWS_WORKER_INDEX)
-    - --dist-init-addr
-    - $(LWS_LEADER_ADDRESS):9000
-    - --gated-launch-port
-    - '13000'
-    - --tp-size
-    - '8'
-    - --skip-server-warmup
-    - --enable-draft-weights-cpu-backup
-    - --enable-metrics
-    - --disaggregation-mode
-    - decode
-    - --engine-info-bootstrap-port
-    - '12000'
-    - --mem-fraction-static
-    - '0.7'
-    - --chunked-prefill-size
-    - '4096'
-    - --cuda-graph-backend-prefill
-    - disabled
-    - --lora-use-virtual-experts
+    - bash
+    - -c
+    - 'case "${MILES_CELL_INDEX}:${MILES_POD_INDEX:-0}" in
+
+      0:0) exec <PYTHON> -m sglang.launch_server --trust-remote-code --model-path <FIXTURE_DIR>/typical-model --host 0.0.0.0 --port 8000 --device cuda --random-seed 1236 --enable-memory-saver --nccl-port 10000 --dist-init-addr ''$(LWS_LEADER_ADDRESS):9000'' --gated-launch-port 13000 --tp-size 8 --skip-server-warmup --enable-draft-weights-cpu-backup --enable-metrics --disaggregation-mode decode --engine-info-bootstrap-port 12000 --mem-fraction-static 0.7 --chunked-prefill-size 4096 --cuda-graph-backend-prefill disabled --lora-use-virtual-experts ;;
+
+      1:0) exec <PYTHON> -m sglang.launch_server --trust-remote-code --model-path <FIXTURE_DIR>/typical-model --host 0.0.0.0 --port 8000 --device cuda --random-seed 1237 --enable-memory-saver --nccl-port 10000 --dist-init-addr ''$(LWS_LEADER_ADDRESS):9000'' --gated-launch-port 13000 --tp-size 8 --skip-server-warmup --enable-draft-weights-cpu-backup --enable-metrics --disaggregation-mode decode --engine-info-bootstrap-port 12000 --mem-fraction-static 0.7 --chunked-prefill-size 4096 --cuda-graph-backend-prefill disabled --lora-use-virtual-experts ;;
+
+      *) echo "Invalid cell/pod identity for this worker pool" >&2; exit 1 ;;
+
+      esac'
     env:
       NVSHMEM_DISABLE_NCCL: '1'
       RAY_EXPERIMENTAL_NOSET_ASCEND_RT_VISIBLE_DEVICES: '1'
@@ -277,11 +215,77 @@ run:
       port: 9000
     replicas: 1
   - command:
-    - <PYTHON>
-    - -m
-    - miles.rollout.session.server
-    - --config-json
-    - '{"host":"0.0.0.0","port":8000,"instance_id":"0123456789abcdef-0","backend_url":"http://myrun-miles-run-inference-router-0-0.myrun-miles-run-inference-router-0:8000","timeout":null,"hf_checkpoint":"<FIXTURE_DIR>/typical-model","chat_template_path":null,"tito_model":"default","apply_chat_template_kwargs":{},"use_rollout_routing_replay":false,"use_rollout_indexer_replay":false,"use_sampling_support_replay":false,"sglang_speculative_algorithm":null,"num_layers":36,"moe_router_topk":2,"save_debug_trajectory_data":null,"lora_rank":0,"lora_adapter_path":null,"lora_train_only":false,"use_session_server":true,"session_message_matcher":"strict","pause_generation_mode":"retract","session_sample_picker_path":"miles.rollout.session.v2.picker_hub.drop_retries","session_sample_postprocessor_path":"miles.rollout.session.v2.postprocessor_hub.default_postprocess"}'
+    - bash
+    - -c
+    - 'case "${MILES_CELL_INDEX}:${MILES_POD_INDEX:-0}" in
+
+      0:0) exec <PYTHON> -m miles.rollout.session.server --config-json ''{"host":"0.0.0.0","port":8000,"instance_id":"0123456789abcdef-0","backend_url":"http://myrun-miles-run-inference-router-0-0.myrun-miles-run-inference-router-0:8000","timeout":null,"hf_checkpoint":"<FIXTURE_DIR>/typical-model","chat_template_path":null,"tito_model":"default","apply_chat_template_kwargs":{},"use_rollout_routing_replay":false,"use_rollout_indexer_replay":false,"use_sampling_support_replay":false,"sglang_speculative_algorithm":null,"num_layers":36,"moe_router_topk":2,"save_debug_trajectory_data":null,"lora_rank":0,"lora_adapter_path":null,"lora_train_only":false,"use_session_server":true,"session_message_matcher":"strict","pause_generation_mode":"retract","session_sample_picker_path":"miles.rollout.session.v2.picker_hub.drop_retries","session_sample_postprocessor_path":"miles.rollout.session.v2.postprocessor_hub.default_postprocess"}'' ;;
+
+      1:0) exec <PYTHON> -m miles.rollout.session.server --config-json ''{"host":"0.0.0.0","port":8000,"instance_id":"0123456789abcdef-1","backend_url":"http://myrun-miles-run-inference-router-0-0.myrun-miles-run-inference-router-0:8000","timeout":null,"hf_checkpoint":"<FIXTURE_DIR>/typical-model","chat_template_path":null,"tito_model":"default","apply_chat_template_kwargs":{},"use_rollout_routing_replay":false,"use_rollout_indexer_replay":false,"use_sampling_support_replay":false,"sglang_speculative_algorithm":null,"num_layers":36,"moe_router_topk":2,"save_debug_trajectory_data":null,"lora_rank":0,"lora_adapter_path":null,"lora_train_only":false,"use_session_server":true,"session_message_matcher":"strict","pause_generation_mode":"retract","session_sample_picker_path":"miles.rollout.session.v2.picker_hub.drop_retries","session_sample_postprocessor_path":"miles.rollout.session.v2.postprocessor_hub.default_postprocess"}'' ;;
+
+      2:0) exec <PYTHON> -m miles.rollout.session.server --config-json ''{"host":"0.0.0.0","port":8000,"instance_id":"0123456789abcdef-2","backend_url":"http://myrun-miles-run-inference-router-0-0.myrun-miles-run-inference-router-0:8000","timeout":null,"hf_checkpoint":"<FIXTURE_DIR>/typical-model","chat_template_path":null,"tito_model":"default","apply_chat_template_kwargs":{},"use_rollout_routing_replay":false,"use_rollout_indexer_replay":false,"use_sampling_support_replay":false,"sglang_speculative_algorithm":null,"num_layers":36,"moe_router_topk":2,"save_debug_trajectory_data":null,"lora_rank":0,"lora_adapter_path":null,"lora_train_only":false,"use_session_server":true,"session_message_matcher":"strict","pause_generation_mode":"retract","session_sample_picker_path":"miles.rollout.session.v2.picker_hub.drop_retries","session_sample_postprocessor_path":"miles.rollout.session.v2.postprocessor_hub.default_postprocess"}'' ;;
+
+      3:0) exec <PYTHON> -m miles.rollout.session.server --config-json ''{"host":"0.0.0.0","port":8000,"instance_id":"0123456789abcdef-3","backend_url":"http://myrun-miles-run-inference-router-0-0.myrun-miles-run-inference-router-0:8000","timeout":null,"hf_checkpoint":"<FIXTURE_DIR>/typical-model","chat_template_path":null,"tito_model":"default","apply_chat_template_kwargs":{},"use_rollout_routing_replay":false,"use_rollout_indexer_replay":false,"use_sampling_support_replay":false,"sglang_speculative_algorithm":null,"num_layers":36,"moe_router_topk":2,"save_debug_trajectory_data":null,"lora_rank":0,"lora_adapter_path":null,"lora_train_only":false,"use_session_server":true,"session_message_matcher":"strict","pause_generation_mode":"retract","session_sample_picker_path":"miles.rollout.session.v2.picker_hub.drop_retries","session_sample_postprocessor_path":"miles.rollout.session.v2.postprocessor_hub.default_postprocess"}'' ;;
+
+      4:0) exec <PYTHON> -m miles.rollout.session.server --config-json ''{"host":"0.0.0.0","port":8000,"instance_id":"0123456789abcdef-4","backend_url":"http://myrun-miles-run-inference-router-0-0.myrun-miles-run-inference-router-0:8000","timeout":null,"hf_checkpoint":"<FIXTURE_DIR>/typical-model","chat_template_path":null,"tito_model":"default","apply_chat_template_kwargs":{},"use_rollout_routing_replay":false,"use_rollout_indexer_replay":false,"use_sampling_support_replay":false,"sglang_speculative_algorithm":null,"num_layers":36,"moe_router_topk":2,"save_debug_trajectory_data":null,"lora_rank":0,"lora_adapter_path":null,"lora_train_only":false,"use_session_server":true,"session_message_matcher":"strict","pause_generation_mode":"retract","session_sample_picker_path":"miles.rollout.session.v2.picker_hub.drop_retries","session_sample_postprocessor_path":"miles.rollout.session.v2.postprocessor_hub.default_postprocess"}'' ;;
+
+      5:0) exec <PYTHON> -m miles.rollout.session.server --config-json ''{"host":"0.0.0.0","port":8000,"instance_id":"0123456789abcdef-5","backend_url":"http://myrun-miles-run-inference-router-0-0.myrun-miles-run-inference-router-0:8000","timeout":null,"hf_checkpoint":"<FIXTURE_DIR>/typical-model","chat_template_path":null,"tito_model":"default","apply_chat_template_kwargs":{},"use_rollout_routing_replay":false,"use_rollout_indexer_replay":false,"use_sampling_support_replay":false,"sglang_speculative_algorithm":null,"num_layers":36,"moe_router_topk":2,"save_debug_trajectory_data":null,"lora_rank":0,"lora_adapter_path":null,"lora_train_only":false,"use_session_server":true,"session_message_matcher":"strict","pause_generation_mode":"retract","session_sample_picker_path":"miles.rollout.session.v2.picker_hub.drop_retries","session_sample_postprocessor_path":"miles.rollout.session.v2.postprocessor_hub.default_postprocess"}'' ;;
+
+      6:0) exec <PYTHON> -m miles.rollout.session.server --config-json ''{"host":"0.0.0.0","port":8000,"instance_id":"0123456789abcdef-6","backend_url":"http://myrun-miles-run-inference-router-0-0.myrun-miles-run-inference-router-0:8000","timeout":null,"hf_checkpoint":"<FIXTURE_DIR>/typical-model","chat_template_path":null,"tito_model":"default","apply_chat_template_kwargs":{},"use_rollout_routing_replay":false,"use_rollout_indexer_replay":false,"use_sampling_support_replay":false,"sglang_speculative_algorithm":null,"num_layers":36,"moe_router_topk":2,"save_debug_trajectory_data":null,"lora_rank":0,"lora_adapter_path":null,"lora_train_only":false,"use_session_server":true,"session_message_matcher":"strict","pause_generation_mode":"retract","session_sample_picker_path":"miles.rollout.session.v2.picker_hub.drop_retries","session_sample_postprocessor_path":"miles.rollout.session.v2.postprocessor_hub.default_postprocess"}'' ;;
+
+      7:0) exec <PYTHON> -m miles.rollout.session.server --config-json ''{"host":"0.0.0.0","port":8000,"instance_id":"0123456789abcdef-7","backend_url":"http://myrun-miles-run-inference-router-0-0.myrun-miles-run-inference-router-0:8000","timeout":null,"hf_checkpoint":"<FIXTURE_DIR>/typical-model","chat_template_path":null,"tito_model":"default","apply_chat_template_kwargs":{},"use_rollout_routing_replay":false,"use_rollout_indexer_replay":false,"use_sampling_support_replay":false,"sglang_speculative_algorithm":null,"num_layers":36,"moe_router_topk":2,"save_debug_trajectory_data":null,"lora_rank":0,"lora_adapter_path":null,"lora_train_only":false,"use_session_server":true,"session_message_matcher":"strict","pause_generation_mode":"retract","session_sample_picker_path":"miles.rollout.session.v2.picker_hub.drop_retries","session_sample_postprocessor_path":"miles.rollout.session.v2.postprocessor_hub.default_postprocess"}'' ;;
+
+      8:0) exec <PYTHON> -m miles.rollout.session.server --config-json ''{"host":"0.0.0.0","port":8000,"instance_id":"0123456789abcdef-8","backend_url":"http://myrun-miles-run-inference-router-0-0.myrun-miles-run-inference-router-0:8000","timeout":null,"hf_checkpoint":"<FIXTURE_DIR>/typical-model","chat_template_path":null,"tito_model":"default","apply_chat_template_kwargs":{},"use_rollout_routing_replay":false,"use_rollout_indexer_replay":false,"use_sampling_support_replay":false,"sglang_speculative_algorithm":null,"num_layers":36,"moe_router_topk":2,"save_debug_trajectory_data":null,"lora_rank":0,"lora_adapter_path":null,"lora_train_only":false,"use_session_server":true,"session_message_matcher":"strict","pause_generation_mode":"retract","session_sample_picker_path":"miles.rollout.session.v2.picker_hub.drop_retries","session_sample_postprocessor_path":"miles.rollout.session.v2.postprocessor_hub.default_postprocess"}'' ;;
+
+      9:0) exec <PYTHON> -m miles.rollout.session.server --config-json ''{"host":"0.0.0.0","port":8000,"instance_id":"0123456789abcdef-9","backend_url":"http://myrun-miles-run-inference-router-0-0.myrun-miles-run-inference-router-0:8000","timeout":null,"hf_checkpoint":"<FIXTURE_DIR>/typical-model","chat_template_path":null,"tito_model":"default","apply_chat_template_kwargs":{},"use_rollout_routing_replay":false,"use_rollout_indexer_replay":false,"use_sampling_support_replay":false,"sglang_speculative_algorithm":null,"num_layers":36,"moe_router_topk":2,"save_debug_trajectory_data":null,"lora_rank":0,"lora_adapter_path":null,"lora_train_only":false,"use_session_server":true,"session_message_matcher":"strict","pause_generation_mode":"retract","session_sample_picker_path":"miles.rollout.session.v2.picker_hub.drop_retries","session_sample_postprocessor_path":"miles.rollout.session.v2.postprocessor_hub.default_postprocess"}'' ;;
+
+      10:0) exec <PYTHON> -m miles.rollout.session.server --config-json ''{"host":"0.0.0.0","port":8000,"instance_id":"0123456789abcdef-10","backend_url":"http://myrun-miles-run-inference-router-0-0.myrun-miles-run-inference-router-0:8000","timeout":null,"hf_checkpoint":"<FIXTURE_DIR>/typical-model","chat_template_path":null,"tito_model":"default","apply_chat_template_kwargs":{},"use_rollout_routing_replay":false,"use_rollout_indexer_replay":false,"use_sampling_support_replay":false,"sglang_speculative_algorithm":null,"num_layers":36,"moe_router_topk":2,"save_debug_trajectory_data":null,"lora_rank":0,"lora_adapter_path":null,"lora_train_only":false,"use_session_server":true,"session_message_matcher":"strict","pause_generation_mode":"retract","session_sample_picker_path":"miles.rollout.session.v2.picker_hub.drop_retries","session_sample_postprocessor_path":"miles.rollout.session.v2.postprocessor_hub.default_postprocess"}'' ;;
+
+      11:0) exec <PYTHON> -m miles.rollout.session.server --config-json ''{"host":"0.0.0.0","port":8000,"instance_id":"0123456789abcdef-11","backend_url":"http://myrun-miles-run-inference-router-0-0.myrun-miles-run-inference-router-0:8000","timeout":null,"hf_checkpoint":"<FIXTURE_DIR>/typical-model","chat_template_path":null,"tito_model":"default","apply_chat_template_kwargs":{},"use_rollout_routing_replay":false,"use_rollout_indexer_replay":false,"use_sampling_support_replay":false,"sglang_speculative_algorithm":null,"num_layers":36,"moe_router_topk":2,"save_debug_trajectory_data":null,"lora_rank":0,"lora_adapter_path":null,"lora_train_only":false,"use_session_server":true,"session_message_matcher":"strict","pause_generation_mode":"retract","session_sample_picker_path":"miles.rollout.session.v2.picker_hub.drop_retries","session_sample_postprocessor_path":"miles.rollout.session.v2.postprocessor_hub.default_postprocess"}'' ;;
+
+      12:0) exec <PYTHON> -m miles.rollout.session.server --config-json ''{"host":"0.0.0.0","port":8000,"instance_id":"0123456789abcdef-12","backend_url":"http://myrun-miles-run-inference-router-0-0.myrun-miles-run-inference-router-0:8000","timeout":null,"hf_checkpoint":"<FIXTURE_DIR>/typical-model","chat_template_path":null,"tito_model":"default","apply_chat_template_kwargs":{},"use_rollout_routing_replay":false,"use_rollout_indexer_replay":false,"use_sampling_support_replay":false,"sglang_speculative_algorithm":null,"num_layers":36,"moe_router_topk":2,"save_debug_trajectory_data":null,"lora_rank":0,"lora_adapter_path":null,"lora_train_only":false,"use_session_server":true,"session_message_matcher":"strict","pause_generation_mode":"retract","session_sample_picker_path":"miles.rollout.session.v2.picker_hub.drop_retries","session_sample_postprocessor_path":"miles.rollout.session.v2.postprocessor_hub.default_postprocess"}'' ;;
+
+      13:0) exec <PYTHON> -m miles.rollout.session.server --config-json ''{"host":"0.0.0.0","port":8000,"instance_id":"0123456789abcdef-13","backend_url":"http://myrun-miles-run-inference-router-0-0.myrun-miles-run-inference-router-0:8000","timeout":null,"hf_checkpoint":"<FIXTURE_DIR>/typical-model","chat_template_path":null,"tito_model":"default","apply_chat_template_kwargs":{},"use_rollout_routing_replay":false,"use_rollout_indexer_replay":false,"use_sampling_support_replay":false,"sglang_speculative_algorithm":null,"num_layers":36,"moe_router_topk":2,"save_debug_trajectory_data":null,"lora_rank":0,"lora_adapter_path":null,"lora_train_only":false,"use_session_server":true,"session_message_matcher":"strict","pause_generation_mode":"retract","session_sample_picker_path":"miles.rollout.session.v2.picker_hub.drop_retries","session_sample_postprocessor_path":"miles.rollout.session.v2.postprocessor_hub.default_postprocess"}'' ;;
+
+      14:0) exec <PYTHON> -m miles.rollout.session.server --config-json ''{"host":"0.0.0.0","port":8000,"instance_id":"0123456789abcdef-14","backend_url":"http://myrun-miles-run-inference-router-0-0.myrun-miles-run-inference-router-0:8000","timeout":null,"hf_checkpoint":"<FIXTURE_DIR>/typical-model","chat_template_path":null,"tito_model":"default","apply_chat_template_kwargs":{},"use_rollout_routing_replay":false,"use_rollout_indexer_replay":false,"use_sampling_support_replay":false,"sglang_speculative_algorithm":null,"num_layers":36,"moe_router_topk":2,"save_debug_trajectory_data":null,"lora_rank":0,"lora_adapter_path":null,"lora_train_only":false,"use_session_server":true,"session_message_matcher":"strict","pause_generation_mode":"retract","session_sample_picker_path":"miles.rollout.session.v2.picker_hub.drop_retries","session_sample_postprocessor_path":"miles.rollout.session.v2.postprocessor_hub.default_postprocess"}'' ;;
+
+      15:0) exec <PYTHON> -m miles.rollout.session.server --config-json ''{"host":"0.0.0.0","port":8000,"instance_id":"0123456789abcdef-15","backend_url":"http://myrun-miles-run-inference-router-0-0.myrun-miles-run-inference-router-0:8000","timeout":null,"hf_checkpoint":"<FIXTURE_DIR>/typical-model","chat_template_path":null,"tito_model":"default","apply_chat_template_kwargs":{},"use_rollout_routing_replay":false,"use_rollout_indexer_replay":false,"use_sampling_support_replay":false,"sglang_speculative_algorithm":null,"num_layers":36,"moe_router_topk":2,"save_debug_trajectory_data":null,"lora_rank":0,"lora_adapter_path":null,"lora_train_only":false,"use_session_server":true,"session_message_matcher":"strict","pause_generation_mode":"retract","session_sample_picker_path":"miles.rollout.session.v2.picker_hub.drop_retries","session_sample_postprocessor_path":"miles.rollout.session.v2.postprocessor_hub.default_postprocess"}'' ;;
+
+      16:0) exec <PYTHON> -m miles.rollout.session.server --config-json ''{"host":"0.0.0.0","port":8000,"instance_id":"0123456789abcdef-16","backend_url":"http://myrun-miles-run-inference-router-0-0.myrun-miles-run-inference-router-0:8000","timeout":null,"hf_checkpoint":"<FIXTURE_DIR>/typical-model","chat_template_path":null,"tito_model":"default","apply_chat_template_kwargs":{},"use_rollout_routing_replay":false,"use_rollout_indexer_replay":false,"use_sampling_support_replay":false,"sglang_speculative_algorithm":null,"num_layers":36,"moe_router_topk":2,"save_debug_trajectory_data":null,"lora_rank":0,"lora_adapter_path":null,"lora_train_only":false,"use_session_server":true,"session_message_matcher":"strict","pause_generation_mode":"retract","session_sample_picker_path":"miles.rollout.session.v2.picker_hub.drop_retries","session_sample_postprocessor_path":"miles.rollout.session.v2.postprocessor_hub.default_postprocess"}'' ;;
+
+      17:0) exec <PYTHON> -m miles.rollout.session.server --config-json ''{"host":"0.0.0.0","port":8000,"instance_id":"0123456789abcdef-17","backend_url":"http://myrun-miles-run-inference-router-0-0.myrun-miles-run-inference-router-0:8000","timeout":null,"hf_checkpoint":"<FIXTURE_DIR>/typical-model","chat_template_path":null,"tito_model":"default","apply_chat_template_kwargs":{},"use_rollout_routing_replay":false,"use_rollout_indexer_replay":false,"use_sampling_support_replay":false,"sglang_speculative_algorithm":null,"num_layers":36,"moe_router_topk":2,"save_debug_trajectory_data":null,"lora_rank":0,"lora_adapter_path":null,"lora_train_only":false,"use_session_server":true,"session_message_matcher":"strict","pause_generation_mode":"retract","session_sample_picker_path":"miles.rollout.session.v2.picker_hub.drop_retries","session_sample_postprocessor_path":"miles.rollout.session.v2.postprocessor_hub.default_postprocess"}'' ;;
+
+      18:0) exec <PYTHON> -m miles.rollout.session.server --config-json ''{"host":"0.0.0.0","port":8000,"instance_id":"0123456789abcdef-18","backend_url":"http://myrun-miles-run-inference-router-0-0.myrun-miles-run-inference-router-0:8000","timeout":null,"hf_checkpoint":"<FIXTURE_DIR>/typical-model","chat_template_path":null,"tito_model":"default","apply_chat_template_kwargs":{},"use_rollout_routing_replay":false,"use_rollout_indexer_replay":false,"use_sampling_support_replay":false,"sglang_speculative_algorithm":null,"num_layers":36,"moe_router_topk":2,"save_debug_trajectory_data":null,"lora_rank":0,"lora_adapter_path":null,"lora_train_only":false,"use_session_server":true,"session_message_matcher":"strict","pause_generation_mode":"retract","session_sample_picker_path":"miles.rollout.session.v2.picker_hub.drop_retries","session_sample_postprocessor_path":"miles.rollout.session.v2.postprocessor_hub.default_postprocess"}'' ;;
+
+      19:0) exec <PYTHON> -m miles.rollout.session.server --config-json ''{"host":"0.0.0.0","port":8000,"instance_id":"0123456789abcdef-19","backend_url":"http://myrun-miles-run-inference-router-0-0.myrun-miles-run-inference-router-0:8000","timeout":null,"hf_checkpoint":"<FIXTURE_DIR>/typical-model","chat_template_path":null,"tito_model":"default","apply_chat_template_kwargs":{},"use_rollout_routing_replay":false,"use_rollout_indexer_replay":false,"use_sampling_support_replay":false,"sglang_speculative_algorithm":null,"num_layers":36,"moe_router_topk":2,"save_debug_trajectory_data":null,"lora_rank":0,"lora_adapter_path":null,"lora_train_only":false,"use_session_server":true,"session_message_matcher":"strict","pause_generation_mode":"retract","session_sample_picker_path":"miles.rollout.session.v2.picker_hub.drop_retries","session_sample_postprocessor_path":"miles.rollout.session.v2.postprocessor_hub.default_postprocess"}'' ;;
+
+      20:0) exec <PYTHON> -m miles.rollout.session.server --config-json ''{"host":"0.0.0.0","port":8000,"instance_id":"0123456789abcdef-20","backend_url":"http://myrun-miles-run-inference-router-0-0.myrun-miles-run-inference-router-0:8000","timeout":null,"hf_checkpoint":"<FIXTURE_DIR>/typical-model","chat_template_path":null,"tito_model":"default","apply_chat_template_kwargs":{},"use_rollout_routing_replay":false,"use_rollout_indexer_replay":false,"use_sampling_support_replay":false,"sglang_speculative_algorithm":null,"num_layers":36,"moe_router_topk":2,"save_debug_trajectory_data":null,"lora_rank":0,"lora_adapter_path":null,"lora_train_only":false,"use_session_server":true,"session_message_matcher":"strict","pause_generation_mode":"retract","session_sample_picker_path":"miles.rollout.session.v2.picker_hub.drop_retries","session_sample_postprocessor_path":"miles.rollout.session.v2.postprocessor_hub.default_postprocess"}'' ;;
+
+      21:0) exec <PYTHON> -m miles.rollout.session.server --config-json ''{"host":"0.0.0.0","port":8000,"instance_id":"0123456789abcdef-21","backend_url":"http://myrun-miles-run-inference-router-0-0.myrun-miles-run-inference-router-0:8000","timeout":null,"hf_checkpoint":"<FIXTURE_DIR>/typical-model","chat_template_path":null,"tito_model":"default","apply_chat_template_kwargs":{},"use_rollout_routing_replay":false,"use_rollout_indexer_replay":false,"use_sampling_support_replay":false,"sglang_speculative_algorithm":null,"num_layers":36,"moe_router_topk":2,"save_debug_trajectory_data":null,"lora_rank":0,"lora_adapter_path":null,"lora_train_only":false,"use_session_server":true,"session_message_matcher":"strict","pause_generation_mode":"retract","session_sample_picker_path":"miles.rollout.session.v2.picker_hub.drop_retries","session_sample_postprocessor_path":"miles.rollout.session.v2.postprocessor_hub.default_postprocess"}'' ;;
+
+      22:0) exec <PYTHON> -m miles.rollout.session.server --config-json ''{"host":"0.0.0.0","port":8000,"instance_id":"0123456789abcdef-22","backend_url":"http://myrun-miles-run-inference-router-0-0.myrun-miles-run-inference-router-0:8000","timeout":null,"hf_checkpoint":"<FIXTURE_DIR>/typical-model","chat_template_path":null,"tito_model":"default","apply_chat_template_kwargs":{},"use_rollout_routing_replay":false,"use_rollout_indexer_replay":false,"use_sampling_support_replay":false,"sglang_speculative_algorithm":null,"num_layers":36,"moe_router_topk":2,"save_debug_trajectory_data":null,"lora_rank":0,"lora_adapter_path":null,"lora_train_only":false,"use_session_server":true,"session_message_matcher":"strict","pause_generation_mode":"retract","session_sample_picker_path":"miles.rollout.session.v2.picker_hub.drop_retries","session_sample_postprocessor_path":"miles.rollout.session.v2.postprocessor_hub.default_postprocess"}'' ;;
+
+      23:0) exec <PYTHON> -m miles.rollout.session.server --config-json ''{"host":"0.0.0.0","port":8000,"instance_id":"0123456789abcdef-23","backend_url":"http://myrun-miles-run-inference-router-0-0.myrun-miles-run-inference-router-0:8000","timeout":null,"hf_checkpoint":"<FIXTURE_DIR>/typical-model","chat_template_path":null,"tito_model":"default","apply_chat_template_kwargs":{},"use_rollout_routing_replay":false,"use_rollout_indexer_replay":false,"use_sampling_support_replay":false,"sglang_speculative_algorithm":null,"num_layers":36,"moe_router_topk":2,"save_debug_trajectory_data":null,"lora_rank":0,"lora_adapter_path":null,"lora_train_only":false,"use_session_server":true,"session_message_matcher":"strict","pause_generation_mode":"retract","session_sample_picker_path":"miles.rollout.session.v2.picker_hub.drop_retries","session_sample_postprocessor_path":"miles.rollout.session.v2.postprocessor_hub.default_postprocess"}'' ;;
+
+      24:0) exec <PYTHON> -m miles.rollout.session.server --config-json ''{"host":"0.0.0.0","port":8000,"instance_id":"0123456789abcdef-24","backend_url":"http://myrun-miles-run-inference-router-0-0.myrun-miles-run-inference-router-0:8000","timeout":null,"hf_checkpoint":"<FIXTURE_DIR>/typical-model","chat_template_path":null,"tito_model":"default","apply_chat_template_kwargs":{},"use_rollout_routing_replay":false,"use_rollout_indexer_replay":false,"use_sampling_support_replay":false,"sglang_speculative_algorithm":null,"num_layers":36,"moe_router_topk":2,"save_debug_trajectory_data":null,"lora_rank":0,"lora_adapter_path":null,"lora_train_only":false,"use_session_server":true,"session_message_matcher":"strict","pause_generation_mode":"retract","session_sample_picker_path":"miles.rollout.session.v2.picker_hub.drop_retries","session_sample_postprocessor_path":"miles.rollout.session.v2.postprocessor_hub.default_postprocess"}'' ;;
+
+      25:0) exec <PYTHON> -m miles.rollout.session.server --config-json ''{"host":"0.0.0.0","port":8000,"instance_id":"0123456789abcdef-25","backend_url":"http://myrun-miles-run-inference-router-0-0.myrun-miles-run-inference-router-0:8000","timeout":null,"hf_checkpoint":"<FIXTURE_DIR>/typical-model","chat_template_path":null,"tito_model":"default","apply_chat_template_kwargs":{},"use_rollout_routing_replay":false,"use_rollout_indexer_replay":false,"use_sampling_support_replay":false,"sglang_speculative_algorithm":null,"num_layers":36,"moe_router_topk":2,"save_debug_trajectory_data":null,"lora_rank":0,"lora_adapter_path":null,"lora_train_only":false,"use_session_server":true,"session_message_matcher":"strict","pause_generation_mode":"retract","session_sample_picker_path":"miles.rollout.session.v2.picker_hub.drop_retries","session_sample_postprocessor_path":"miles.rollout.session.v2.postprocessor_hub.default_postprocess"}'' ;;
+
+      26:0) exec <PYTHON> -m miles.rollout.session.server --config-json ''{"host":"0.0.0.0","port":8000,"instance_id":"0123456789abcdef-26","backend_url":"http://myrun-miles-run-inference-router-0-0.myrun-miles-run-inference-router-0:8000","timeout":null,"hf_checkpoint":"<FIXTURE_DIR>/typical-model","chat_template_path":null,"tito_model":"default","apply_chat_template_kwargs":{},"use_rollout_routing_replay":false,"use_rollout_indexer_replay":false,"use_sampling_support_replay":false,"sglang_speculative_algorithm":null,"num_layers":36,"moe_router_topk":2,"save_debug_trajectory_data":null,"lora_rank":0,"lora_adapter_path":null,"lora_train_only":false,"use_session_server":true,"session_message_matcher":"strict","pause_generation_mode":"retract","session_sample_picker_path":"miles.rollout.session.v2.picker_hub.drop_retries","session_sample_postprocessor_path":"miles.rollout.session.v2.postprocessor_hub.default_postprocess"}'' ;;
+
+      27:0) exec <PYTHON> -m miles.rollout.session.server --config-json ''{"host":"0.0.0.0","port":8000,"instance_id":"0123456789abcdef-27","backend_url":"http://myrun-miles-run-inference-router-0-0.myrun-miles-run-inference-router-0:8000","timeout":null,"hf_checkpoint":"<FIXTURE_DIR>/typical-model","chat_template_path":null,"tito_model":"default","apply_chat_template_kwargs":{},"use_rollout_routing_replay":false,"use_rollout_indexer_replay":false,"use_sampling_support_replay":false,"sglang_speculative_algorithm":null,"num_layers":36,"moe_router_topk":2,"save_debug_trajectory_data":null,"lora_rank":0,"lora_adapter_path":null,"lora_train_only":false,"use_session_server":true,"session_message_matcher":"strict","pause_generation_mode":"retract","session_sample_picker_path":"miles.rollout.session.v2.picker_hub.drop_retries","session_sample_postprocessor_path":"miles.rollout.session.v2.postprocessor_hub.default_postprocess"}'' ;;
+
+      28:0) exec <PYTHON> -m miles.rollout.session.server --config-json ''{"host":"0.0.0.0","port":8000,"instance_id":"0123456789abcdef-28","backend_url":"http://myrun-miles-run-inference-router-0-0.myrun-miles-run-inference-router-0:8000","timeout":null,"hf_checkpoint":"<FIXTURE_DIR>/typical-model","chat_template_path":null,"tito_model":"default","apply_chat_template_kwargs":{},"use_rollout_routing_replay":false,"use_rollout_indexer_replay":false,"use_sampling_support_replay":false,"sglang_speculative_algorithm":null,"num_layers":36,"moe_router_topk":2,"save_debug_trajectory_data":null,"lora_rank":0,"lora_adapter_path":null,"lora_train_only":false,"use_session_server":true,"session_message_matcher":"strict","pause_generation_mode":"retract","session_sample_picker_path":"miles.rollout.session.v2.picker_hub.drop_retries","session_sample_postprocessor_path":"miles.rollout.session.v2.postprocessor_hub.default_postprocess"}'' ;;
+
+      29:0) exec <PYTHON> -m miles.rollout.session.server --config-json ''{"host":"0.0.0.0","port":8000,"instance_id":"0123456789abcdef-29","backend_url":"http://myrun-miles-run-inference-router-0-0.myrun-miles-run-inference-router-0:8000","timeout":null,"hf_checkpoint":"<FIXTURE_DIR>/typical-model","chat_template_path":null,"tito_model":"default","apply_chat_template_kwargs":{},"use_rollout_routing_replay":false,"use_rollout_indexer_replay":false,"use_sampling_support_replay":false,"sglang_speculative_algorithm":null,"num_layers":36,"moe_router_topk":2,"save_debug_trajectory_data":null,"lora_rank":0,"lora_adapter_path":null,"lora_train_only":false,"use_session_server":true,"session_message_matcher":"strict","pause_generation_mode":"retract","session_sample_picker_path":"miles.rollout.session.v2.picker_hub.drop_retries","session_sample_postprocessor_path":"miles.rollout.session.v2.postprocessor_hub.default_postprocess"}'' ;;
+
+      30:0) exec <PYTHON> -m miles.rollout.session.server --config-json ''{"host":"0.0.0.0","port":8000,"instance_id":"0123456789abcdef-30","backend_url":"http://myrun-miles-run-inference-router-0-0.myrun-miles-run-inference-router-0:8000","timeout":null,"hf_checkpoint":"<FIXTURE_DIR>/typical-model","chat_template_path":null,"tito_model":"default","apply_chat_template_kwargs":{},"use_rollout_routing_replay":false,"use_rollout_indexer_replay":false,"use_sampling_support_replay":false,"sglang_speculative_algorithm":null,"num_layers":36,"moe_router_topk":2,"save_debug_trajectory_data":null,"lora_rank":0,"lora_adapter_path":null,"lora_train_only":false,"use_session_server":true,"session_message_matcher":"strict","pause_generation_mode":"retract","session_sample_picker_path":"miles.rollout.session.v2.picker_hub.drop_retries","session_sample_postprocessor_path":"miles.rollout.session.v2.postprocessor_hub.default_postprocess"}'' ;;
+
+      31:0) exec <PYTHON> -m miles.rollout.session.server --config-json ''{"host":"0.0.0.0","port":8000,"instance_id":"0123456789abcdef-31","backend_url":"http://myrun-miles-run-inference-router-0-0.myrun-miles-run-inference-router-0:8000","timeout":null,"hf_checkpoint":"<FIXTURE_DIR>/typical-model","chat_template_path":null,"tito_model":"default","apply_chat_template_kwargs":{},"use_rollout_routing_replay":false,"use_rollout_indexer_replay":false,"use_sampling_support_replay":false,"sglang_speculative_algorithm":null,"num_layers":36,"moe_router_topk":2,"save_debug_trajectory_data":null,"lora_rank":0,"lora_adapter_path":null,"lora_train_only":false,"use_session_server":true,"session_message_matcher":"strict","pause_generation_mode":"retract","session_sample_picker_path":"miles.rollout.session.v2.picker_hub.drop_retries","session_sample_postprocessor_path":"miles.rollout.session.v2.postprocessor_hub.default_postprocess"}'' ;;
+
+      *) echo "Invalid cell/pod identity for this worker pool" >&2; exit 1 ;;
+
+      esac'
     name: session-server
     objectName: myrun-miles-run-session-server
     poolId: session-server

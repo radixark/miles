@@ -1,3 +1,8 @@
+import os
+import shlex
+import subprocess
+import sys
+
 import pydantic
 import pytest
 from tests.fast.utils.external_utils.command_utils.helm_backend.launcher.values.utils import (
@@ -40,6 +45,49 @@ def _prepared(section: str, spec: BaseWorkerSpec) -> list[str]:
 
 
 class TestBuildEntry:
+    @pytest.mark.parametrize(("cell_index", "pod_index"), [(0, 0), (1, 0), (1, 1), (1, None)])
+    def test_cell_and_pod_specific_arguments_reach_the_launched_process(
+        self, cell_index: int, pod_index: int | None
+    ) -> None:
+        """Each pod receives its own derived seed and instance identity."""
+        base = session_server(num_cells=2) if pod_index is None else engine(num_cells=2, gpus_per_engine=16)
+        spec = base.model_copy(
+            update={
+                "launch_command": lambda ctx: shlex.join(
+                    [
+                        sys.executable,
+                        "-c",
+                        "import sys; print(sys.argv[1:])",
+                        f"instance-{ctx.cell_index}",
+                        str(100 + ctx.cell_index * 2 + ctx.worker_in_cell_index),
+                        "literal space; echo must-not-run",
+                    ]
+                )
+            }
+        )
+        command = pool_entry.build_entry(spec, plan=LAYOUT, addresses={}).command
+        environment = {**os.environ, "MILES_CELL_INDEX": str(cell_index)}
+        environment.pop("MILES_POD_INDEX", None)
+        if pod_index is not None:
+            environment["MILES_POD_INDEX"] = str(pod_index)
+
+        result = subprocess.run(
+            command,
+            env=environment,
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+
+        assert result.stdout.strip() == repr(
+            [
+                f"instance-{cell_index}",
+                str(100 + cell_index * 2 + (pod_index or 0)),
+                "literal space; echo must-not-run",
+            ]
+        )
+
     def test_refuses_a_spec_with_no_launch_mechanism(self):
         """A pool without a command or RPC server cannot launch a worker."""
         spec = BaseWorkerSpec(
