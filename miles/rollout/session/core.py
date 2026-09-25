@@ -299,6 +299,7 @@ class SessionCore:
                 accumulated_token_ids=metadata.get("accumulated_token_ids"),
                 max_trim_tokens=metadata.get("max_trim_tokens", 0),
                 use_addition_r3=self.use_addition_r3,
+                evaluation=session.evaluation,
             )
             if max_seq_len is not None:
                 samples = truncate_samples_by_total_tokens(samples, max_seq_len, tokenizer)
