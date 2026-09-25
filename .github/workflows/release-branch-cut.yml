@@ -144,6 +144,10 @@ jobs:
 
   run-tests-cuda:
     needs: cut-release-branch
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: write
     uses: ./.github/workflows/pr-test.yml
     with:
       ref: ${{ needs.cut-release-branch.outputs.branch_name }}
