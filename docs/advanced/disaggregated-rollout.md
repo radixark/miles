@@ -162,8 +162,8 @@ visible before a rollout host reads them.
 
 The maintained end-to-end coverage is
 [`tests/e2e/megatron/test_qwen3_4B_disk_delta.py`](https://github.com/radixark/miles/blob/main/tests/e2e/megatron/test_qwen3_4B_disk_delta.py).
-It exercises a Qwen3-4B Megatron trainer and two SGLang rollout engines on a
-single 8-GPU node. The same storage contract supports separate hosts, but the
+It exercises a Qwen3-4B Megatron trainer (TP2 on two GPUs) and two TP1 SGLang
+rollout engines on the other two GPUs of a single 4-GPU node. The same storage contract supports separate hosts, but the
 registered test does not reproduce a cross-cluster deployment.
 
 Current `main` rejects disk-delta with `--colocate`, LoRA, or PD

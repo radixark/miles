@@ -5,17 +5,17 @@ import miles.utils.external_utils.command_utils as U
 
 MODEL_NAME = "Qwen3-4B"
 MODEL_TYPE = "qwen3-4B"
-NUM_GPUS = 8
+NUM_GPUS = 4
 
 register_cuda_ci(
     est_time=600,
-    suite="stage-c-8-gpu-h100",
+    suite="stage-c-4-gpu-h200",
     labels=["megatron", "weight-update"],
     hardware=["hopper", "blackwell"],
 )
 register_rocm_ci(
     est_time=500,
-    suite="nightly-stage-c-8-gpu-mi350",
+    suite="nightly-stage-c-4-gpu-mi350",
     labels=["megatron", "weight-update"],
 )
 
@@ -56,7 +56,7 @@ def execute():
         "--tensor-model-parallel-size 2 "
         "--sequence-parallel "
         "--pipeline-model-parallel-size 1 "
-        "--context-parallel-size 2 "
+        "--context-parallel-size 1 "
         "--recompute-granularity full "
         "--recompute-method uniform "
         "--recompute-num-layers 1 "
@@ -83,7 +83,7 @@ def execute():
     )
 
     sglang_args = (
-        "--rollout-num-gpus-per-engine 2 " f"--rollout-num-gpus {NUM_GPUS // 2} " "--sglang-mem-fraction-static 0.8 "
+        "--rollout-num-gpus-per-engine 1 " f"--rollout-num-gpus {NUM_GPUS // 2} " "--sglang-mem-fraction-static 0.8 "
     )
 
     ci_args = "--ci-test "
