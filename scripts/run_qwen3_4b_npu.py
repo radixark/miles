@@ -1,7 +1,7 @@
 import os
 
 from miles.utils.external_utils import command_utils
-from miles.utils.external_utils.command_utils import execute_train_npu
+from miles.utils.external_utils.command_utils.npu import execute_train_npu
 
 MODEL_NAME = os.environ.get("MILES_SCRIPT_MODEL_NAME", "Qwen3-4B-Instruct-2507")
 

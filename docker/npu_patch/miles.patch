@@ -336,14 +336,20 @@ index 359a51c1d..78e697e7c 100644
  
      args.hf_checkpoint = str(args.script_hf_checkpoint)
      args.__dict__.setdefault("megatron_to_hf_mode", "raw")
-diff --git a/miles/utils/external_utils/command_utils.py b/miles/utils/external_utils/command_utils.py
-index d016e01ac..08b4d6eff 100644
---- a/miles/utils/external_utils/command_utils.py
-+++ b/miles/utils/external_utils/command_utils.py
-@@ -193,6 +193,107 @@ def execute_train(
-         )
- 
- 
+diff --git a/miles/utils/external_utils/command_utils/npu.py b/miles/utils/external_utils/command_utils/npu.py
+new file mode 100644
+--- /dev/null
++++ b/miles/utils/external_utils/command_utils/npu.py
+@@ -0,0 +1,108 @@
++import json
++import os
++
++from miles.utils.external_utils.command_utils.common import _parse_extra_env_vars, get_bool_env_var
++from miles.utils.external_utils.command_utils.legacy import ExecuteTrainConfig, check_has_nvlink, exec_command_cpu
++from miles.utils.external_utils.model_args_utils import shell_safe_model_args
++
++
++
 +def execute_train_npu(
 +    train_args: str,
 +    num_gpus_per_node: int,
@@ -443,11 +449,6 @@ index d016e01ac..08b4d6eff 100644
 +            f"{model_args} "
 +            f"{train_args}"
 +        )
-+
-+
- def _parse_extra_env_vars(text: str):
-     try:
-         return json.loads(text)
 diff --git a/miles/utils/ppo_utils.py b/miles/utils/ppo_utils.py
 index 4c09dc508..369d8fda5 100644
 --- a/miles/utils/ppo_utils.py
