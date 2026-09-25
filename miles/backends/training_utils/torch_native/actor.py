@@ -26,7 +26,7 @@ from miles.backends.training_utils.metrics.log_utils import (
     log_train_step,
 )
 from miles.backends.training_utils.parallel import get_parallel_state
-from miles.backends.training_utils.torch_native import routing_replay
+from miles.backends.training_utils.replay import routing_replay
 from miles.backends.training_utils.torch_native.step_runner import StepRunner
 from miles.backends.training_utils.weight_update.updater import WeightUpdater
 from miles.ray.train_actor import TrainRayActor

@@ -2,8 +2,8 @@ from typing import Protocol
 
 import torch
 
-from .data.context_parallel import slice_with_cp
-from .parallel import get_parallel_state
+from ..data.context_parallel import slice_with_cp
+from ..parallel import get_parallel_state
 
 
 class RegisterReplayListFunc(Protocol):

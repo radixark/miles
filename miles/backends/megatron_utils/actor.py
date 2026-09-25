@@ -52,7 +52,7 @@ from ..training_utils.loss.objective import (
 )
 from ..training_utils.metrics.log_utils import log_cpu_memory, log_perf_data, log_rollout_data
 from ..training_utils.parallel import get_parallel_state
-from ..training_utils.replay_data import fill_replay_data, register_replay_list_sequential
+from ..training_utils.replay.replay_data import fill_replay_data, register_replay_list_sequential
 from .checkpoint import load_checkpoint
 from .ft.checkpoint_transfer import recv_ckpt
 from .ft.checkpoint_transfer import send_ckpt as _send_ckpt

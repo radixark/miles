@@ -8,12 +8,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.distributed.tensor import DTensor
 
-from miles.backends.training_utils.torch_native.routing_replay import (
-    FALLTHROUGH,
-    REPLAY_BACKWARD,
-    REPLAY_FORWARD,
-    stage,
-)
+from miles.backends.training_utils.replay.routing_replay import FALLTHROUGH, REPLAY_BACKWARD, REPLAY_FORWARD, stage
 from miles.utils.replay_base import routing_replay_manager
 
 logger = logging.getLogger(__name__)
