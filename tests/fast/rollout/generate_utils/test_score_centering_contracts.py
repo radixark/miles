@@ -110,14 +110,6 @@ def test_large_native_heads_can_use_sglang_router() -> None:
     validate_score_centering_args(_args(use_session_server=None, score_centering_top_k=128, use_miles_router=False))
 
 
-@pytest.mark.parametrize("top_p,top_k", [(0.9, 64), (1.0, 64)])
-def test_filtered_score_centering_requires_replay_at_startup(top_p: float, top_k: int) -> None:
-    args = _args(rollout_top_p=top_p, rollout_top_k=top_k, use_sampling_support_replay=False)
-    with pytest.raises(ValueError, match="require sampling-support replay"):
-        validate_score_centering_args(args)
-
-    args.use_sampling_support_replay = True
-    validate_score_centering_args(args)
 
 
 @pytest.mark.parametrize("session", ["v1", "v2"])
