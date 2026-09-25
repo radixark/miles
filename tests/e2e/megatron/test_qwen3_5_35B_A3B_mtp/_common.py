@@ -16,10 +16,14 @@ Spec (EAGLE) and spec-v2 (mamba scheduler) are on for the whole suite; R3 is per
 import os
 from dataclasses import dataclass
 
+import torch
+
 import miles.utils.external_utils.command_utils as U
 
 MODEL_NAME = "Qwen3.5-35B-A3B"
 MODEL_TYPE = "qwen3.5-35B-A3B"
+
+_IS_HIP = torch.version.hip is not None
 
 
 @dataclass
@@ -145,6 +149,11 @@ def build_train_args(case: CaseConfig, *, wandb_file: str) -> str:
     )
     if case.use_r3:
         sglang_args += "--use-rollout-routing-replay "
+    if _IS_HIP:
+        # Fusion folds the shared expert into experts.w13/w2 as an extra slot that
+        # the weight sync never writes, so the rollout runs a stale shared expert.
+        # Off matches CUDA, which never enables fusion by default.
+        sglang_args += "--sglang-disable-shared-experts-fusion "
 
     # When MTP training is off the rollout still runs EAGLE spec from the checkpoint
     # draft; those draft weights just never get synced (see the mtp0 case + skip-list).
@@ -166,7 +175,9 @@ def build_train_args(case: CaseConfig, *, wandb_file: str) -> str:
         "--actor-num-nodes 1 "
         f"--actor-num-gpus-per-node {case.num_gpus_per_node} "
         "--colocate "
-        "--moe-token-dispatcher-type flex "
+        # flex builds _DeepepManager unconditionally; deep_ep is not in the ROCm
+        # image. Drop this branch once it is.
+        f"--moe-token-dispatcher-type {'alltoall' if _IS_HIP else 'flex'} "
         "--rematerialize-param-from-master-weight "
     )
 
