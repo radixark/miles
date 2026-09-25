@@ -1,0 +1,40 @@
+### 0
+mkdir -p <SANDBOX>/models <SANDBOX>/data
+
+### 1
+hf download Qwen/Qwen3-1.7B
+  --local-dir <SANDBOX>/models/Qwen3-1.7B
+
+### 2
+hf download
+  --repo-type dataset open-r1/OpenThoughts-114k-math
+  --local-dir <SANDBOX>/data/OpenThoughts-114k-math
+
+### 3
+hf download
+  --repo-type dataset HuggingFaceH4/aime_2024
+  --local-dir <SANDBOX>/data/aime_2024
+
+### 4
+PYTHONPATH=<REPO_ROOT>:/root/Megatron-LM:/frozen/pythonpath torchrun
+  --nproc-per-node 8 <REPO_ROOT>/tools/convert_hf_to_torch_dist.py
+  --swiglu
+  --num-layers 28
+  --hidden-size 2048
+  --ffn-hidden-size 6144
+  --num-attention-heads 16
+  --group-query-attention
+  --num-query-groups 8
+  --use-rotary-position-embeddings
+  --disable-bias-linear
+  --normalization RMSNorm
+  --norm-epsilon 1e-6
+  --rotary-base 1000000
+  --vocab-size 151936
+  --kv-channels 128
+  --qk-layernorm
+  --hf-checkpoint <SANDBOX>/models/Qwen3-1.7B
+  --save <SANDBOX>/models/Qwen3-1.7B_torch_dist
+
+### 5
+python -m examples.on_policy_distillation.qwen3_1_7b_opsd.prepare_data <SANDBOX>/models/Qwen3-1.7B <SANDBOX>/data/OpenThoughts-114k-math <SANDBOX>/data/aime_2024 <SANDBOX>/data/opsd-train.jsonl <SANDBOX>/data/opsd-aime24.jsonl
