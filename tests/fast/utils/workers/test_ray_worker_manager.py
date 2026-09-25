@@ -79,7 +79,7 @@ def _make_pgs(*, num_slots: int = 8, first_gpu_id: int = 0) -> dict[str, Placeme
 async def _launch(
     specs: list[CommandWorkerSpec], pgs: dict[str, PlacementGroupInfo] | None = None
 ) -> RayWorkerManager:
-    manager = RayWorkerManager()
+    manager = RayWorkerManager(head_node_id="head-node")
     await manager.init(specs, pgs if pgs is not None else {})
     return manager
 
@@ -117,11 +117,33 @@ class _AllocPortsGate:
 
 class TestLaunchEntryPoint:
     async def test_the_manager_is_registered_under_its_well_known_name(self, fake_ray_cluster: FakeRayCluster):
-        """Consumers find the manager by a fixed actor name, so it must be launched under that name."""
+        """Consumers find the manager by a fixed actor name."""
         handle = RayWorkerManager.launch([], {})
 
         assert handle.options["name"] == "ray_worker_manager"
+        assert "scheduling_strategy" not in handle.options
         assert handle.actor_class is RayWorkerManager
+        assert fake_ray_cluster.ctor_kwargs == [{"head_node_id": None}]
+        assert [call.method for call in fake_ray_cluster.calls] == ["init"]
+
+    async def test_head_affinity_is_resolved_before_the_manager_launches(self, fake_ray_cluster: FakeRayCluster):
+        """A head-pinned child receives the head ID resolved before manager launch."""
+        handle = RayWorkerManager.launch([_make_spec("router", pin_to_head=True)], {})
+
+        assert "scheduling_strategy" not in handle.options
+        assert fake_ray_cluster.ctor_kwargs == [{"head_node_id": "head-node"}]
+
+    async def test_empty_head_pinned_pool_does_not_resolve_the_head(
+        self, fake_ray_cluster: FakeRayCluster, monkeypatch: pytest.MonkeyPatch
+    ):
+        def fail() -> str:
+            raise AssertionError("an empty pool does not need a head node")
+
+        monkeypatch.setattr("miles.utils.workers.ray_worker_manager.get_head_node_id", fail)
+
+        RayWorkerManager.launch([_make_spec("session-server", num_cells=0, pin_to_head=True)], {})
+
+        assert fake_ray_cluster.ctor_kwargs == [{"head_node_id": None}]
         assert [call.method for call in fake_ray_cluster.calls] == ["init"]
 
     async def test_launch_waits_for_init_to_finish(self, fake_ray_cluster: FakeRayCluster):
@@ -585,7 +607,7 @@ class TestPinToHead:
         """Pinning adds the head-affinity strategy without dropping the other actor options."""
         monkeypatch.setattr(
             "miles.utils.workers.ray_worker_manager.compute_ray_pin_head_options",
-            lambda: {"scheduling_strategy": "head-affinity"},
+            lambda _head_node_id=None: {"scheduling_strategy": "head-affinity"},
         )
         await _launch([_make_spec("router", pin_to_head=True, env_var={"A": "1"})])
 

@@ -12,7 +12,7 @@ from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 
 from miles.utils.function_registry import load_function
 from miles.utils.http_utils import _wrap_ipv6
-from miles.utils.ray_utils import compute_ray_pin_head_options
+from miles.utils.ray_utils import compute_ray_pin_head_options, get_head_node_id
 from miles.utils.workers.addr_allocator import PortAllocator
 from miles.utils.workers.command_actor import CommandActor
 from miles.utils.workers.naming import compute_cell_id, compute_worker_name
@@ -41,12 +41,23 @@ _ACTOR_NAME = "ray_worker_manager"
 
 
 class RayWorkerManager:
-    def __init__(self):
+    def __init__(self, *, head_node_id: str | None = None):
         self.port_allocator = PortAllocator()
+        self.head_node_id = head_node_id
 
     @staticmethod
     def launch(specs: list[BaseWorkerSpec], pgs: dict[str, PlacementGroupInfo]):
-        obj = ray.remote(RayWorkerManager).options(name=_ACTOR_NAME).remote()
+        head_node_id = (
+            get_head_node_id()
+            if any(
+                spec.scheduling.pin_to_head
+                and spec.scheduling.num_cells > 0
+                and spec.scheduling.num_workers_per_cell > 0
+                for spec in specs
+            )
+            else None
+        )
+        obj = ray.remote(RayWorkerManager).options(name=_ACTOR_NAME).remote(head_node_id=head_node_id)
         ray.get(obj.init.remote(specs, pgs))
         return obj
 
@@ -309,7 +320,7 @@ class _BaseActorManager(Generic[SpecT]):
             num_gpus=self.spec.scheduling.num_gpus_per_worker,
             **(dict(scheduling_strategy=s) if (s := scheduling_strategy) is not None else {}),
             runtime_env={"env_vars": self.spec.env_var(self.launch_context)},
-            **(compute_ray_pin_head_options() if self.spec.scheduling.pin_to_head else {}),
+            **(compute_ray_pin_head_options(self.manager.head_node_id) if self.spec.scheduling.pin_to_head else {}),
         ).remote(**ctor_kwargs)
 
     async def stop(self) -> None:

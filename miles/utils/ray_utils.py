@@ -1,5 +1,6 @@
+import ray
+from ray._common.constants import HEAD_NODE_RESOURCE_NAME
 from ray.util.scheduling_strategies import NodeAffinitySchedulingStrategy
-from ray.util.state import list_nodes
 
 
 class Box:
@@ -11,8 +12,9 @@ class Box:
         return self._inner
 
 
-def compute_ray_pin_head_options():
-    head_node_id = _get_head_node_id()
+def compute_ray_pin_head_options(head_node_id: str | None = None):
+    if head_node_id is None:
+        head_node_id = get_head_node_id()
     return {
         "scheduling_strategy": NodeAffinitySchedulingStrategy(
             node_id=head_node_id,
@@ -21,8 +23,8 @@ def compute_ray_pin_head_options():
     }
 
 
-def _get_head_node_id() -> str:
-    for node in list_nodes():
-        if node.is_head_node:
-            return node.node_id
+def get_head_node_id() -> str:
+    for node in ray.nodes():
+        if node.get("Alive") and HEAD_NODE_RESOURCE_NAME in node.get("Resources", {}):
+            return node["NodeID"]
     raise RuntimeError("Could not find a head node in the Ray cluster")

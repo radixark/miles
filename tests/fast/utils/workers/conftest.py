@@ -10,4 +10,10 @@ def fake_ray_cluster(monkeypatch) -> FakeRayCluster:
     cluster = FakeRayCluster()
     fake_ray = FakeRayModule(cluster=cluster)
     monkeypatch.setattr(ray_worker_manager_mod, "ray", fake_ray)
+    monkeypatch.setattr(
+        ray_worker_manager_mod,
+        "compute_ray_pin_head_options",
+        lambda _head_node_id=None: {"scheduling_strategy": "head-affinity"},
+    )
+    monkeypatch.setattr(ray_worker_manager_mod, "get_head_node_id", lambda: "head-node")
     return cluster
