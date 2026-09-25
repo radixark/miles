@@ -24,6 +24,14 @@ class CaseConfig:
     use_bridge: bool = False
     use_r3: bool = False
     max_tokens_per_gpu: int = 8192
+    # Number of rollout steps (--num-rollout). The regular e2e cases run 2; long-run
+    # cases raise it.
+    num_rollout: int = 2
+    # Full optimizer argument block. None -> the default Adam + CPU-offload block below.
+    # Non-Adam optimizers (e.g. dist_muon) pass their own block, because the CPU-offload,
+    # precision-aware and fp16-state flags in the default block are Adam-only.
+    optimizer_args: str | None = None
+    extra_args: str = ""
 
 
 def prepare(case: CaseConfig) -> None:
@@ -57,7 +65,7 @@ def build_train_args(case: CaseConfig, *, wandb_file: str) -> str:
         "--apply-chat-template "
         "--rollout-shuffle "
         "--rm-type deepscaler "
-        "--num-rollout 2 "
+        f"--num-rollout {case.num_rollout} "
         "--rollout-batch-size 8 "
         "--n-samples-per-prompt 8 "
         "--rollout-max-response-len 8192 "
@@ -88,7 +96,9 @@ def build_train_args(case: CaseConfig, *, wandb_file: str) -> str:
         f"--max-tokens-per-gpu {case.max_tokens_per_gpu} "
     )
 
-    if TIGHT_HOST_MEMORY:
+    # The fp16 optimizer-state dtypes belong to the precision-aware Adam block; a custom
+    # optimizer block (Muon) has no precision-aware optimizer to apply them to.
+    if TIGHT_HOST_MEMORY and case.optimizer_args is None:
         perf_args += "--exp-avg-dtype fp16 "
         perf_args += "--exp-avg-sq-dtype fp16 "
         perf_args += "--main-params-dtype fp16 "
@@ -104,7 +114,7 @@ def build_train_args(case: CaseConfig, *, wandb_file: str) -> str:
         "--use-rollout-routing-replay "
     )
 
-    optimizer_args = (
+    optimizer_args = case.optimizer_args or (
         "--optimizer adam "
         "--lr 1e-6 "
         "--lr-decay-style constant "
@@ -163,6 +173,7 @@ def build_train_args(case: CaseConfig, *, wandb_file: str) -> str:
         f"{mtp_args} "
         f"{ci_args} "
         f"{misc_args} "
+        f"{case.extra_args} "
     )
     return train_args
 
