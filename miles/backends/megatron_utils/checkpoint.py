@@ -139,17 +139,21 @@ def load_checkpoint(ddp_model, optimizer, opt_param_scheduler, checkpointing_con
     if is_lora_enabled(args):
         adapter_path = getattr(args, "lora_adapter_path", None)
         if adapter_path is not None:
+            resume = getattr(args, "lora_resume_root", None) is not None
             loaded, iteration, native_optimizer_restored = load_lora_adapter(
                 ddp_model,
                 adapter_path,
                 optimizer=optimizer,
                 opt_param_scheduler=opt_param_scheduler,
                 load_optimizer=not args.no_load_optim,
+                resume=resume,
             )
             if loaded:
                 logger.info(f"Successfully loaded LoRA adapter from {adapter_path}")
                 if iteration is not None:
                     result = (iteration, result[1])
+            elif resume:
+                raise FileNotFoundError(f"No native LoRA adapter shards to resume from in {adapter_path}")
             else:
                 logger.warning(
                     f"LoRA is enabled and --lora-adapter-path={adapter_path} was specified, "

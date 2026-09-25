@@ -140,11 +140,17 @@ class RolloutDataSource(DataSource):
         if not self.args.rollout_global_dataset:
             return
 
-        if self.args.load is None:
+        # A LoRA resume keeps --load on the base model; the cursor lives in the run being resumed.
+        resume_root = getattr(self.args, "lora_resume_root", None)
+        load_root = resume_root or self.args.load
+        if load_root is None:
             return
 
-        path = os.path.join(self.args.load, f"rollout/global_dataset_state_dict_{rollout_id}.pt")
+        path = os.path.join(load_root, f"rollout/global_dataset_state_dict_{rollout_id}.pt")
         if not os.path.exists(path):
+            # Rollout -1 is the run starting at rollout 0, which has no cursor to restore.
+            if resume_root is not None and rollout_id >= 0:
+                raise FileNotFoundError(f"Expected data-source checkpoint for the LoRA resume does not exist: {path}")
             logger.info(f"Checkpoint {path} does not exist.")
             return
 
