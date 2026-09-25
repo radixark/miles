@@ -220,7 +220,7 @@ def _miscellaneous_args(args: ScriptArgs) -> str:
 
 
 def execute(args: ScriptArgs) -> None:
-    U.execute_train(
+    args.create_backend().execute_train(
         train_args=" ".join(
             [
                 _checkpoint_args(args),
