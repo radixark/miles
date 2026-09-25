@@ -16,6 +16,7 @@ End-to-end training workflows — the place to start.
 - **[ppo](./ppo)**: Actor-critic PPO with GAE advantages, where the critic shares the actor's train GPUs.
 - **[retool_v2](./retool_v2)**: Tool-enabled language model generation with sandboxed Python code execution interleaved with thinking.
 - **[swe-agent-harbor-docker](./swe-agent-harbor-docker)**: Trains coding and terminal agents with Harbor-managed local Docker sandboxes and verifier rewards.
+- **[tmax](./tmax)**: Terminal-RL on the TMax tasks with per-task Podman sandboxes: sync and fully-async GRPO, plus on-policy distillation.
 
 ## [Infra Features](./infra_features)
 
