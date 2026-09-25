@@ -285,9 +285,7 @@ class TestWhereALoadSaysTheRunStarts:
     def test_weight_initialization_with_a_trained_iteration_is_refused(self, tmp_path: Path):
         """Weight initialization cannot claim a nonzero trained iteration."""
         with pytest.raises(AssertionError, match="Weight initialization returned a trained iteration"):
-            _load_model_state_with(
-                tmp_path=tmp_path, finetune=True, iteration=100, restored_trained_iteration=False
-            )
+            _load_model_state_with(tmp_path=tmp_path, finetune=True, iteration=100, restored_trained_iteration=False)
 
 
 class TestALoraAdapterThatCarriesItsOwnIteration:
