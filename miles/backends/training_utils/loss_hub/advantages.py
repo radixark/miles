@@ -50,7 +50,7 @@ def compute_advantages(
         `advantages`: List length `B`; `advantages[i]` has shape `[C_i]`.
         `returns`: List length `B`; `returns[i]` has shape `[C_i]`.
     """
-    if args.advantage_estimator in ["grpo", "gspo"]:
+    if args.advantage_estimator in ["grpo", "gspo", "reinforce"]:
         rewards = torch.tensor(rewards, dtype=torch.float32, device=kl[0].device)
         returns = get_grpo_returns(rewards, kl)
         # TODO: is the copy necessary?
