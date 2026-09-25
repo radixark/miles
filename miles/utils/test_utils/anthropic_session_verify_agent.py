@@ -41,7 +41,6 @@ _TOOL_PROMPTS = (
     "Finally, check the weather in London.",
 )
 _REQUEST_COUNT = len(_TOOL_PROMPTS) * 2
-_MAX_TOKENS_PER_TURN = 1024
 _MAX_ANTHROPIC_INCOMPLETE_TURN_RETRIES = 8
 _MINIMAX_TITO_MODELS = frozenset(
     {
@@ -83,7 +82,7 @@ def _assert_intermediate_system_expectation(expectation: str, *, actual: bool) -
 def _build_payload(request_kwargs: dict, metadata: dict, messages: list[dict], *, tool_choice: dict) -> dict:
     payload = {
         "model": metadata["anthropic_model"],
-        "max_tokens": min(request_kwargs["max_tokens"], _MAX_TOKENS_PER_TURN),
+        "max_tokens": request_kwargs["max_tokens"],
         "system": INITIAL_SYSTEM_PROMPT,
         "messages": list(messages),
         "tools": _ANTHROPIC_TOOLS,

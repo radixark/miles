@@ -727,12 +727,12 @@ class MegatronTrainRayActor(TrainRayActor):
             snapshot_publisher=self.snapshot_publisher,
         )
 
-        if force_sync and self.args.async_save:
-            maybe_finalize_async_save(blocking=True)
-
         if self.args.save_hf is not None and self.role == "actor":
             assert self.snapshot_publisher is not None, "HF export requires a snapshot publisher"
             save_hf_model(self.args, rollout_id, self.model, publisher=self.snapshot_publisher)
+
+        if force_sync and self.args.async_save:
+            maybe_finalize_async_save(blocking=True)
 
         if self.args.custom_megatron_post_save_hook_path is not None and dist.get_rank() == 0:
             if self.args.async_save:

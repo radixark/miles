@@ -51,10 +51,6 @@ Env vars (read on the rollout worker):
                          same meaning as on the agent server
   HARBOR_OVERRIDE_STORAGE_MB
                          per-sandbox disk, Harbor's ``override_storage_mb``
-  MILES_ROUTER_EXTERNAL_HOST
-                         host the sandbox uses to reach the session server
-                         (in-sandbox agents call the model from inside the
-                         sandbox, so it must route from the sandbox platform)
 
 Failure semantics: a verdict is returned as-is; every episode that ends
 without one scores 0 with a named ``exit_status`` (``TimeLimitExceeded``,
@@ -78,7 +74,7 @@ from pathlib import Path
 from typing import Any
 
 from miles.rollout.agentic.credentials import PROVIDER_CREDENTIALS, resolve_provider_api_key
-from miles.rollout.agentic.session import resolve_session_url
+from miles.rollout.agentic.session import openai_session_url
 from miles.utils.async_diagnostics import async_diagnostic_scope
 
 logger = logging.getLogger(__name__)
@@ -459,7 +455,7 @@ async def run(
 
     metadata = metadata or {}
     request_kwargs = request_kwargs or {}
-    session_url = resolve_session_url(base_url)
+    session_url = openai_session_url(base_url)
     instance_id = metadata.get("instance_id")
     trial_timeout_s = _trial_timeout_s()
 

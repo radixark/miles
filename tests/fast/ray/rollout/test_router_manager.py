@@ -8,6 +8,7 @@ import pytest
 from tests.fast.ray.rollout.conftest import make_args
 
 from miles.ray.rollout.router_manager import wait_router_ready, wait_session_server_ready
+from miles.rollout.session.types import SessionServerInstance
 from miles.utils.workers.worker_spec import HostAndPort, NamedHostAndPorts
 
 
@@ -108,8 +109,7 @@ class TestWaitSessionServerReady:
         await wait_session_server_ready(args)
 
         assert created == []
-        assert not hasattr(args, "session_server_addrs")
-        assert not hasattr(args, "session_server_instance_ids")
+        assert not hasattr(args, "session_server_instances")
 
     async def test_enabled_without_hf_checkpoint_raises(self):
         """Enabling the session server without a tokenizer source fails fast."""
@@ -159,11 +159,10 @@ class TestWaitSessionServerReady:
         await wait_session_server_ready(args)
 
         assert requested == ["session-server-0-0", "session-server-1-0"]
-        assert args.session_server_addrs == ["10.0.0.9:5005", "10.0.0.9:5006"]
-        assert args.session_server_instance_ids == {
-            "10.0.0.9:5005": "00112233445566aa-0",
-            "10.0.0.9:5006": "00112233445566aa-1",
-        }
+        assert args.session_server_instances == [
+            SessionServerInstance(addr="10.0.0.9:5005", instance_id="00112233445566aa-0"),
+            SessionServerInstance(addr="10.0.0.9:5006", instance_id="00112233445566aa-1"),
+        ]
         assert waited == [("10.0.0.9", 5005), ("10.0.0.9", 5006)]
 
     async def test_servers_on_different_hosts_are_each_addressed_in_full(self, monkeypatch):
@@ -196,12 +195,129 @@ class TestWaitSessionServerReady:
         )
         await wait_session_server_ready(args)
 
-        assert args.session_server_addrs == ["10.0.0.1:5005", "10.0.0.2:5005"]
-        assert args.session_server_instance_ids == {
-            "10.0.0.1:5005": "00112233445566aa-0",
-            "10.0.0.2:5005": "00112233445566aa-1",
-        }
+        assert args.session_server_instances == [
+            SessionServerInstance(addr="10.0.0.1:5005", instance_id="00112233445566aa-0"),
+            SessionServerInstance(addr="10.0.0.2:5005", instance_id="00112233445566aa-1"),
+        ]
         assert waited == [("10.0.0.1", 5005), ("10.0.0.2", 5005)]
+
+    async def test_instances_carry_each_host_external_address(self, monkeypatch):
+        """Each instance keeps its own node's external address; a shared one would send agents to the wrong instance."""
+
+        class _FakeProvider:
+            def __init__(self):
+                self._counter = 0
+
+            async def get_addrs(self, worker_name: str) -> NamedHostAndPorts:
+                self._counter += 1
+                return {
+                    "primary": HostAndPort(
+                        host=f"10.0.0.{self._counter}",
+                        port=5005,
+                        external_host=f"100.64.0.{self._counter}",
+                    )
+                }
+
+        waited: list[tuple[str, int]] = []
+        monkeypatch.setattr(
+            "miles.ray.rollout.router_manager.RayWorkerProvider",
+            SimpleNamespace(create=lambda: _FakeProvider()),
+        )
+        monkeypatch.setattr(
+            "miles.ray.rollout.router_manager.wait_tcp_ready_async",
+            _recording_probe(waited),
+        )
+
+        args = make_args(
+            use_session_server=True,
+            hf_checkpoint="/fake/model",
+            session_server_workers=2,
+            run_uuid="00112233445566aa",
+        )
+        await wait_session_server_ready(args)
+
+        assert args.session_server_instances == [
+            SessionServerInstance(
+                addr="10.0.0.1:5005", external_addr="100.64.0.1:5005", instance_id="00112233445566aa-0"
+            ),
+            SessionServerInstance(
+                addr="10.0.0.2:5005", external_addr="100.64.0.2:5005", instance_id="00112233445566aa-1"
+            ),
+        ]
+        # Readiness is the driver's own probe, so it runs against the cluster addresses.
+        assert waited == [("10.0.0.1", 5005), ("10.0.0.2", 5005)]
+
+    async def test_a_shared_external_host_publishes_every_instance_there(self, monkeypatch):
+        """--session-server-external-host names every instance's external address; the driver keeps its own."""
+
+        class _FakeProvider:
+            def __init__(self):
+                self._port = 5004
+
+            async def get_addrs(self, worker_name: str) -> NamedHostAndPorts:
+                self._port += 1
+                return {"primary": HostAndPort(host="10.0.0.9", port=self._port)}
+
+        waited: list[tuple[str, int]] = []
+        monkeypatch.setattr(
+            "miles.ray.rollout.router_manager.RayWorkerProvider",
+            SimpleNamespace(create=lambda: _FakeProvider()),
+        )
+        monkeypatch.setattr(
+            "miles.ray.rollout.router_manager.wait_tcp_ready_async",
+            _recording_probe(waited),
+        )
+
+        args = make_args(
+            use_session_server=True,
+            hf_checkpoint="/fake/model",
+            session_server_workers=2,
+            run_uuid="00112233445566aa",
+            session_server_external_host="100.64.0.1",
+        )
+        await wait_session_server_ready(args)
+
+        assert [instance.external_addr for instance in args.session_server_instances] == [
+            "100.64.0.1:5005",
+            "100.64.0.1:5006",
+        ]
+        assert waited == [("10.0.0.9", 5005), ("10.0.0.9", 5006)]
+
+    async def test_hosts_sharing_one_external_host_fail_before_any_readiness_wait(self, monkeypatch):
+        """Instances on different hosts published at one external host would send agents to the wrong one."""
+
+        class _FakeProvider:
+            def __init__(self):
+                self._counter = 0
+
+            async def get_addrs(self, worker_name: str) -> NamedHostAndPorts:
+                self._counter += 1
+                return {
+                    "primary": HostAndPort(
+                        host=f"10.0.0.{self._counter}", port=5004 + self._counter, external_host="100.64.0.1"
+                    )
+                }
+
+        waited: list[tuple[str, int]] = []
+        monkeypatch.setattr(
+            "miles.ray.rollout.router_manager.RayWorkerProvider",
+            SimpleNamespace(create=lambda: _FakeProvider()),
+        )
+        monkeypatch.setattr(
+            "miles.ray.rollout.router_manager.wait_tcp_ready_async",
+            _recording_probe(waited),
+        )
+
+        args = make_args(
+            use_session_server=True,
+            hf_checkpoint="/fake/model",
+            session_server_workers=2,
+            run_uuid="00112233445566aa",
+        )
+        with pytest.raises(ValueError, match="MILES_NODE_EXTERNAL_IP on each node"):
+            await wait_session_server_ready(args)
+
+        assert waited == []
 
     async def test_one_unreachable_instance_fails_the_whole_readiness_wait(self, monkeypatch):
         """A single session server whose port never opens fails startup even if its siblings are up."""

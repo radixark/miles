@@ -84,7 +84,14 @@ RUN pip install /tmp/wheels/flash_attn_3-*.whl
 
 RUN pip install git+https://github.com/ISEEKYAN/mbridge.git@89eb10887887bc74853f89a4de258c0702932a1c --no-deps
 
-RUN pip install flash-linear-attention==0.5.2
+# fla 0.5.2 computes BK = triton.next_power_of_2(K) inside a @triton.jit KDA kernel, which this triton
+# rejects at the first GLM-5.3-Flash trainer forward. Fixed upstream by
+# https://github.com/fla-org/flash-linear-attention/pull/1108; drop the patch once a release has it.
+COPY docker/patch/fla_kda_hoist_next_power_of_2.patch /tmp/fla_kda_hoist_next_power_of_2.patch
+RUN pip install flash-linear-attention==0.5.2 && \
+    FLA_DIR=$(python3 -c 'import importlib.util; print(importlib.util.find_spec("fla").submodule_search_locations[0])') && \
+    patch --fuzz=0 -p1 -d "$FLA_DIR" < /tmp/fla_kda_hoist_next_power_of_2.patch && \
+    rm /tmp/fla_kda_hoist_next_power_of_2.patch
 # required for DeepSeek V4
 RUN pip install tilelang==0.1.14 apache-tvm-ffi==0.1.11
 # TileKernels target-import fix: https://github.com/deepseek-ai/TileKernels/pull/25.

@@ -52,10 +52,10 @@ class ScriptArgs(U.ExecuteTrainConfig):
 
     # NeMo Gym settings
     nemo_gym_url: str = os.environ.get("NEMO_GYM_URL", "http://localhost:12000")
-    # Trainer address reachable from the NeMo Gym host; only needed when that
-    # host cannot resolve the trainer's hostname (e.g. it dials back over a
-    # tailnet).
-    router_external_host: str = os.environ.get("MILES_ROUTER_EXTERNAL_HOST", "")
+    # The trainer host the NeMo Gym host reaches, needed only when that host cannot resolve the trainer's
+    # hostname (e.g. it dials back over a tailnet). Passed as --session-server-external-host, which also
+    # keeps the session servers on the head node.
+    session_server_external_host: str = ""
 
 
 def cleanup():
@@ -140,6 +140,11 @@ def execute(args: ScriptArgs):
 
     sglang_args = "--rollout-num-gpus-per-engine 1 --sglang-mem-fraction-static 0.7 "
 
+    external_host_arg = (
+        f"--session-server-external-host {args.session_server_external_host} "
+        if args.session_server_external_host
+        else ""
+    )
     agent_args = (
         "--custom-generate-function-path miles.rollout.generate_hub.agentic_tool_call.generate "
         "--custom-agent-function-path nemogym_agent_function.run "
@@ -151,6 +156,7 @@ def execute(args: ScriptArgs):
         "--session-server-ip 0.0.0.0 "
         "--session-server-port 30000 "
         "--session-server-workers 32 "
+        f"{external_host_arg}"
         "--tito-model qwen3 "
     )
 
@@ -183,8 +189,6 @@ def execute(args: ScriptArgs):
         "PYTHONPATH": f"{args.megatron_path}:{SCRIPT_DIR}:{U.repo_base_dir}",
         "NEMO_GYM_URL": args.nemo_gym_url,
     }
-    if args.router_external_host:
-        extra_env_vars["MILES_ROUTER_EXTERNAL_HOST"] = args.router_external_host
 
     U.execute_train(
         train_args=train_args,

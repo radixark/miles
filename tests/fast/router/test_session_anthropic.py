@@ -73,7 +73,7 @@ def _anthropic_env(extra_args: dict | None = None, *, latency: float = 0.0):
 
 _V2_ARGS = {
     "use_session_server": "v2",
-    "session_sample_picker_path": "miles.rollout.session.v2.picker_hub.drop_retries",
+    "session_sample_picker_path": "miles.rollout.session.v2.picker_hub.drop_same_prompt_retries",
     "session_sample_postprocessor_path": "miles.rollout.session.v2.postprocessor_hub.default_postprocess",
 }
 
