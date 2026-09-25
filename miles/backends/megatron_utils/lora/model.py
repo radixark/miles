@@ -12,7 +12,7 @@ from miles.backends.megatron_utils.lora.optimizer import (
 )
 from miles.backends.megatron_utils.model import run_forward_backward_pass, setup_train_iteration_config
 from miles.backends.training_utils.data.rollout import get_data_iterator
-from miles.backends.training_utils.log_utils import aggregate_train_losses
+from miles.backends.training_utils.metrics.log_utils import aggregate_train_losses
 from miles.backends.training_utils.parallel import get_parallel_state
 from miles.utils.dumper_utils import DumperMegatronUtil, DumperPhase
 from miles.utils.types import RolloutBatch

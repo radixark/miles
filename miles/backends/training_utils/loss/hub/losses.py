@@ -212,7 +212,7 @@ def policy_loss_function(
     )
 
     if getattr(args, "dump_details", None) is not None:
-        from miles.backends.training_utils.debug_dump import maybe_dump_policy_loss_debug
+        from miles.backends.training_utils.metrics.debug_dump import maybe_dump_policy_loss_debug
 
         maybe_dump_policy_loss_debug(
             args=args,

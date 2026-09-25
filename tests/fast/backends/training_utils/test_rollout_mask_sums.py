@@ -17,8 +17,8 @@ import torch
 from tests.fast.backends.training_utils.loss.loss_test_utils import make_parallel_state
 from tests.fast.ray.rollout.conftest import make_args, make_sample
 
-from miles.backends.training_utils import log_utils
 from miles.backends.training_utils.data.context_parallel import get_sum_of_sample_mean
+from miles.backends.training_utils.metrics import log_utils
 from miles.ray.rollout.train_data_conversion import convert_samples_to_train_data
 
 

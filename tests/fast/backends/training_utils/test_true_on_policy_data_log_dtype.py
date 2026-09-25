@@ -3,9 +3,9 @@ from types import SimpleNamespace
 
 import torch
 
-from miles.backends.training_utils import log_utils
 from miles.backends.training_utils.data import context_parallel
 from miles.backends.training_utils.data import rollout as data_utils
+from miles.backends.training_utils.metrics import log_utils
 
 
 def test_true_on_policy_rollout_logprob_dtype_follows_training_precision():
