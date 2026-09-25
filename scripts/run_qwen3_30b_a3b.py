@@ -17,8 +17,9 @@ class ScriptArgs(U.ExecuteTrainConfig):
     actor_num_gpus_per_node: int | None = None
     rollout_num_gpus: int | None = None
     no_colocate: bool = False
-    hardware: Literal["auto", "H100", "B200", "B300", "GB200", "GB300"] = "auto"
+    hardware: Literal["auto", "H100", "B200", "B300", "GB200", "GB300", "Rubin"] = "auto"
     enable_eval: bool = True
+    skip_prepare: bool = False
     extra_args: str = ""
     data_dir: str = "/root/datasets"
     model_dir: str = "/root/models"
@@ -53,6 +54,20 @@ class ScriptArgs(U.ExecuteTrainConfig):
         assert (
             sum((self.train_fp8, self.train_mxfp8, self.train_nvfp4)) <= 1
         ), "only one train precision mode can be enabled"
+        if self.hardware == "Rubin":
+            assert self.num_nodes == 1, "the Rubin profile supports one node"
+            assert not any(
+                (
+                    self.rollout_fp8,
+                    self.rollout_mxfp8,
+                    self.rollout_int4,
+                    self.rollout_nvfp4,
+                    self.rollout_attn_fp8,
+                    self.train_fp8,
+                    self.train_mxfp8,
+                    self.train_nvfp4,
+                )
+            ), "the Rubin profile supports BF16 training, rollout, and KV cache only"
         if any((self.rollout_mxfp8, self.rollout_nvfp4, self.train_mxfp8, self.train_nvfp4)):
             assert self.hardware in ("B200", "B300", "GB200", "GB300"), "mxfp8 and nvfp4 only support Blackwell GPUs"
 
@@ -214,6 +229,18 @@ def execute(args: ScriptArgs):
     else:
         misc_args += f"--actor-num-gpus-per-node {args.num_gpus_per_node} " "--colocate "
     misc_env_vars = {}
+    if args.hardware == "Rubin":
+        # Use the validated Rubin BF16 runtime settings.
+        misc_args += "--use-miles-router "
+        misc_env_vars |= {
+            "NCCL_NVLS_ENABLE": "0",
+            "NVTE_FUSED_ATTN": "0",
+            "NVTE_UNFUSED_ATTN": "0",
+            "NVTE_FLASH_ATTN": "1",
+            "NVTE_FLASH_ATTN_V2": "0",
+            "NVTE_FLASH_ATTN_V3": "0",
+            "NVTE_FLASH_ATTN_V4": "1",
+        }
 
     if args.rollout_int4:
         misc_env_vars |= {
@@ -313,7 +340,7 @@ matchers:
             optimizer_args += (
                 "--optimizer-cpu-offload " "--overlap-cpu-optimizer-d2h-h2d " "--use-precision-aware-optimizer "
             )
-        case ("B200" | "B300" | "GB200" | "GB300", 1 | 2 | 4):
+        case ("B200" | "B300" | "GB200" | "GB300", 1 | 2 | 4) | ("Rubin", 1):
             perf_args += (
                 f"--tensor-model-parallel-size {min(4, args.actor_num_gpus_per_node)} "
                 "--sequence-parallel "
@@ -325,7 +352,16 @@ matchers:
                 perf_args += f"--expert-model-parallel-size {args.actor_num_gpus_per_node} "
             else:
                 perf_args += f"--expert-model-parallel-size {args.num_gpus_per_node if args.train_mxfp8 else 4} "
-            sglang_args = "--sglang-mem-fraction-static 0.7 " "--sglang-attention-backend trtllm_mha "
+            sglang_args = "--sglang-mem-fraction-static 0.7 "
+            if args.hardware == "Rubin":
+                sglang_args += (
+                    "--sglang-attention-backend triton "
+                    "--sglang-moe-runner-backend triton "
+                    "--sglang-bf16-gemm-backend torch "
+                    "--sglang-max-running-requests 128 "
+                )
+            else:
+                sglang_args += "--sglang-attention-backend trtllm_mha "
             if args.rollout_fp8:
                 sglang_world_size = 2
                 sglang_attn_tp_size = 2
@@ -428,7 +464,8 @@ tis_batch_normalize: true
 
 @U.dataclass_cli
 def main(args: ScriptArgs):
-    prepare(args)
+    if not args.skip_prepare:
+        prepare(args)
     execute(args)
 
 

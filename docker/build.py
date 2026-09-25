@@ -53,6 +53,13 @@ VARIANTS = {
             "WHEELS_TAG_X86": "cu129-x86_64",
         },
     },
+    "rubin": {
+        "image": "radixark/miles",
+        "platforms": ["linux/arm64"],
+        "tag_postfix": "-rubin",
+        "dockerfile": "docker/Dockerfile.rubin",
+        "build_args": {},
+    },
     "rocm724-mi35x": {
         "image": "rocm/sgl-dev",
         "tag_postfix": "-rocm724-mi35x",
@@ -157,8 +164,9 @@ def build_and_push(
         assert "=" in spec, f"--build-arg expects KEY=VALUE, got {spec!r}"
         cmd += ["--build-arg", spec]
 
-    # CI reads this back off the published tag to skip rebuilds whose inputs are unchanged.
-    cmd += ["--label", f"{image_inputs.LABEL_KEY}={image_inputs.compute(root=context)}"]
+    # This hash belongs to the regular CUDA PR image, not the Rubin Dockerfile.
+    if variant != "rubin":
+        cmd += ["--label", f"{image_inputs.LABEL_KEY}={image_inputs.compute(root=context)}"]
 
     for tag in tags:
         cmd += ["-t", tag]
@@ -175,6 +183,7 @@ class Variant(str, Enum):
     cu13_x86 = "cu13-x86"
     cu13_aarch64 = "cu13-aarch64"
     cu12_x86 = "cu12-x86"
+    rubin = "rubin"
     rocm724_mi35x = "rocm724-mi35x"
     rocm10_mi35x = "rocm10-mi35x"
 

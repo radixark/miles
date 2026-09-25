@@ -1,0 +1,143 @@
+# syntax=docker/dockerfile:1
+# Native aarch64 build for core BF16 Miles training on Vera Rubin (SM107).
+ARG SGLANG_IMAGE=lmsysorg/sglang:nightly-cu134-20260911-a4ff563@sha256:4af3254b070e087afdf8cabebe895132bb4d1d6cf6fd5b5c60f0a3da07c1b468
+FROM ${SGLANG_IMAGE}
+
+SHELL ["/bin/bash", "-euo", "pipefail", "-c"]
+ARG MAX_JOBS=8
+ARG NVCC_THREADS=2
+ARG TE_COMMIT=5e52befd5262c06289106338c308079d6adb391f
+ARG TE_FA4_FIX_COMMIT=8d43cd1ff49a024b00e228d156b63cd5a19d32b3
+ARG APEX_COMMIT=10417aceddd7d5d05d7cbf7b0fc2daad1105f8b4
+ARG FA2_COMMIT=a8aa52b1ab3e9ca574c8a33b3f35afc017ffa2e2
+ARG MEGATRON_COMMIT=96fe16ecb280f0365f68fe0dc8a33e2e27b4cb95
+ARG SGLANG_COMMIT=67e4cd1885155bf9b08366b348c59d5b79a7fb7b
+
+ENV CUDA_HOME=/usr/local/cuda \
+    TORCH_CUDA_ARCH_LIST=10.7 \
+    MAX_JOBS=${MAX_JOBS} \
+    NVCC_THREADS=${NVCC_THREADS} \
+    PIP_EXTRA_INDEX_URL=https://download.pytorch.org/whl/nightly/cu134 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
+
+RUN test "$(uname -m)" = aarch64 && \
+    apt-get update && apt-get install -y --no-install-recommends \
+      build-essential cmake ninja-build git ca-certificates patch \
+      python3.12-dev libnuma-dev libopenmpi-dev libibverbs-dev libzstd-dev rsync && \
+    rm -rf /var/lib/apt/lists/*
+
+COPY docker/rubin/ /opt/miles-rubin/
+RUN python3 -m pip install 'setuptools<80' wheel packaging pybind11 ninja cmake \
+      'nvidia-cudnn-frontend==1.28.0' einops onnx onnxscript pydantic nvdlfw-inspect
+
+# Torch extension headers include cuDNN from the base's pip installation.
+ENV CUDNN_PATH=/opt/sglang/lib/python3.12/site-packages/nvidia/cudnn
+ENV CPLUS_INCLUDE_PATH=/usr/local/cuda/include/cccl:${CUDNN_PATH}/include \
+    C_INCLUDE_PATH=/usr/local/cuda/include/cccl:${CUDNN_PATH}/include \
+    LIBRARY_PATH=${CUDNN_PATH}/lib
+
+# TE 2.19 supports 107a; the older cu130/Torch2.13 wheels cannot be reused.
+# Apply only the backends.py fix from TE #3532.
+# TE 2.19 has import os where the upstream diff uses import inspect as context.
+RUN --mount=type=cache,id=miles-te-${TE_COMMIT}-torch215-cu134,target=/opt/build/te,sharing=locked \
+    if ! test -d /opt/build/te/src/.git; then \
+      git init /opt/build/te/src && \
+      git -C /opt/build/te/src remote add origin https://github.com/NVIDIA/TransformerEngine.git && \
+      git -C /opt/build/te/src fetch --depth=1 origin ${TE_COMMIT} && \
+      git -C /opt/build/te/src checkout --detach FETCH_HEAD && \
+      git -C /opt/build/te/src submodule update --init --recursive --depth=1; \
+    fi && \
+    test "$(git -C /opt/build/te/src rev-parse HEAD)" = "${TE_COMMIT}" && \
+    test -z "$(git -C /opt/build/te/src diff --name-only HEAD)" && \
+    git -C /opt/build/te/src fetch --depth=2 origin ${TE_FA4_FIX_COMMIT} && \
+    python3 -m pip uninstall -y transformer-engine transformer-engine-cu12 \
+      transformer-engine-cu13 transformer-engine-torch && \
+    NVTE_FRAMEWORK=pytorch NVTE_CUDA_ARCHS=107a NVTE_WITH_NCCL_EP=0 \
+      python3 -m pip install /opt/build/te/src --no-deps --no-build-isolation -v && \
+    git -C /opt/build/te/src show --format= --unified=1 ${TE_FA4_FIX_COMMIT} -- \
+      transformer_engine/pytorch/attention/dot_product_attention/backends.py | \
+      sed 's/^ import inspect$/ import os/' | \
+      git -C "$(python3 -c 'import sysconfig; print(sysconfig.get_path("purelib"))')" apply
+
+RUN git init /opt/build/apex && \
+    git -C /opt/build/apex remote add origin https://github.com/NVIDIA/apex.git && \
+    git -C /opt/build/apex fetch --depth=1 origin ${APEX_COMMIT} && \
+    git -C /opt/build/apex checkout --detach FETCH_HEAD && \
+    git -C /opt/build/apex submodule update --init --recursive --depth=1 && \
+    git -C /opt/build/apex apply /opt/miles-rubin/apex-cxx20.patch && \
+    APEX_CPP_EXT=1 APEX_CUDA_EXT=1 NVCC_APPEND_FLAGS="--threads ${NVCC_THREADS}" \
+      python3 -m pip install /opt/build/apex --no-deps --no-build-isolation -v && \
+    rm -rf /opt/build/apex
+
+RUN git init /opt/build/fa2 && \
+    git -C /opt/build/fa2 remote add origin https://github.com/Dao-AILab/flash-attention.git && \
+    git -C /opt/build/fa2 fetch --depth=1 origin ${FA2_COMMIT} && \
+    git -C /opt/build/fa2 checkout --detach FETCH_HEAD && \
+    git -C /opt/build/fa2 submodule update --init --recursive --depth=1 && \
+    git -C /opt/build/fa2 apply /opt/miles-rubin/fa2-sm107-cxx20.patch && \
+    FLASH_ATTENTION_FORCE_BUILD=TRUE FLASH_ATTN_CUDA_ARCHS=107 \
+      python3 -m pip install /opt/build/fa2 --no-deps --no-build-isolation -v && \
+    rm -rf /opt/build/fa2
+
+RUN git init /root/Megatron-LM && \
+    git -C /root/Megatron-LM remote add origin https://github.com/radixark/Megatron-LM.git && \
+    git -C /root/Megatron-LM fetch --depth=1 origin ${MEGATRON_COMMIT} && \
+    git -C /root/Megatron-LM checkout --detach FETCH_HEAD && \
+    git -C /root/Megatron-LM submodule update --init --recursive --depth=1 && \
+    python3 -m pip install -e /root/Megatron-LM --no-deps --no-build-isolation && \
+    python3 -m pip install --no-deps --no-build-isolation \
+      git+https://github.com/ISEEKYAN/mbridge.git@89eb10887887bc74853f89a4de258c0702932a1c && \
+    TMS_CUDA_MAJOR=13 python3 -m pip install --force-reinstall --no-deps --no-build-isolation \
+      git+https://github.com/fzyzcjy/torch_memory_saver.git@b5588e83de86412a48689a6583a4b567e75f7acc
+
+# Megatron's build requires <80; ModelOpt needs >=80 and still imports pkg_resources.
+RUN python3 -m pip install --no-deps setuptools==80.9.0
+
+# Switch to the selected sglang-miles revision while preserving the base Torch/CUDA stack.
+RUN if git -C /sgl-workspace/sglang config --local --get-all 'http.https://github.com/.extraheader' >/dev/null; then \
+      git -C /sgl-workspace/sglang config --local --unset-all 'http.https://github.com/.extraheader'; \
+    fi && \
+    git -C /sgl-workspace/sglang remote set-url origin https://github.com/sgl-project/sglang.git && \
+    git -C /sgl-workspace/sglang fetch --depth=1 origin ${SGLANG_COMMIT} && \
+    git -C /sgl-workspace/sglang checkout -f --detach FETCH_HEAD
+
+# The AOT kernel version is independent of the SGLang framework version.
+# Reuse a matching kernel from this Torch 2.15/cu134 base; otherwise rebuild
+# the selected source. Its PyPI wheel targets Torch 2.13; sm_100f includes SM107.
+RUN installed_kernel_version=$(python3 -c 'from importlib.metadata import version; print(version("sglang-kernel"))') && \
+    required_kernel_version=$(python3 -c \
+      'import sys, tomllib; print(tomllib.load(sys.stdin.buffer)["project"]["version"])' \
+      < /sgl-workspace/sglang/python/sglang/kernels/aot/pyproject.toml) && \
+    if [ "${installed_kernel_version}" = "${required_kernel_version}" ]; then \
+      echo "Reusing base sglang-kernel ${installed_kernel_version}"; \
+    else \
+      echo "Building sglang-kernel ${required_kernel_version} (base has ${installed_kernel_version})" && \
+      python3 -m pip install cmake==3.31.1 'scikit-build-core>=0.10' && \
+      CMAKE_ARGS="-DSGL_KERNEL_CXX_STANDARD=20 -DSGL_KERNEL_COMPILE_THREADS=${NVCC_THREADS}" \
+      CMAKE_BUILD_PARALLEL_LEVEL=${MAX_JOBS} \
+        python3 -m pip install --force-reinstall --no-deps --no-build-isolation -v \
+          /sgl-workspace/sglang/python/sglang/kernels/aot; \
+    fi
+
+RUN SGLANG_BUILD_RUST_EXTS=none python3 -m pip install \
+      -e '/sgl-workspace/sglang/python[all]' --no-deps --no-build-isolation
+
+ARG MILES_REPO=radixark/miles
+ARG MILES_COMMIT=main
+RUN git clone "https://github.com/${MILES_REPO}.git" /opt/miles && \
+    git -C /opt/miles checkout "${MILES_COMMIT}" && \
+    cp /opt/miles/requirements.txt /opt/miles-rubin/requirements.txt
+
+# An explicit nightly spec prevents pip from rejecting the installed prerelease.
+RUN python3 -m pip install 'torch==2.15.0.dev20260818+cu134' 'setuptools==80.9.0' \
+      -r /opt/miles-rubin/requirements.txt
+
+WORKDIR /opt/miles
+# FA2 2.8.3.post1 includes flash_attn/cute/ files that overlap with FA4; reinstall FA4 last.
+RUN python3 -m pip install -e . --no-deps --no-build-isolation && \
+    python3 -m pip install --force-reinstall --no-deps \
+      flash-attn-4==4.0.0b32 apache-tvm-ffi==0.1.12 torch-c-dlpack-ext==0.1.5
+
+LABEL ai.miles.hardware="Vera Rubin SM107 / aarch64" \
+      ai.miles.support="experimental core Megatron BF16"
+CMD ["/bin/bash"]

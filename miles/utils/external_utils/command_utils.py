@@ -399,6 +399,7 @@ NUM_GPUS_OF_HARDWARE = {
     "B300": 8,
     "GB200": 4,
     "GB300": 4,
+    "Rubin": 4,
     "MI350X": 8,
     "MI355X": 8,
 }
@@ -410,6 +411,7 @@ GENERATION_HARDWARE = {
     "B300": "Blackwell",
     "GB200": "Blackwell",
     "GB300": "Blackwell",
+    "Rubin": "Rubin",
 }
 
 
@@ -430,6 +432,8 @@ def detect_hardware() -> str:
                 detected = "GB200" if grace else "B200"
             case (10, 3):
                 detected = "GB300" if grace else "B300"
+            case (10, 7):
+                detected = "Rubin"
             case _:
                 detected = None
     assert detected is not None, f"cannot tell which hardware {name!r} is, pass --hardware explicitly"
