@@ -299,23 +299,28 @@ async def _post(client, url, payload, max_retries=60, action="post", headers=Non
 async def wait_http_ok(url: str, *, json_payload=None, timeout: float = 180.0, request_timeout: float = 60.0) -> None:
     """Poll ``url`` until it answers HTTP 200 (POST when ``json_payload`` is given,
     else GET); raise ``TimeoutError`` past the deadline."""
-    deadline = time.time() + timeout
-    last_error = "no attempt made"
-    async with httpx.AsyncClient() as client:
-        while True:
-            try:
-                if json_payload is not None:
-                    response = await client.post(url, json=json_payload, timeout=request_timeout)
-                else:
-                    response = await client.get(url, timeout=request_timeout)
-                if response.status_code == 200:
-                    return
-                last_error = f"HTTP {response.status_code}"
-            except httpx.HTTPError as e:
-                last_error = repr(e)
-            if time.time() > deadline:
-                raise TimeoutError(f"{url} not ready after {timeout}s: {last_error}")
-            await asyncio.sleep(5)
+    last_error = "no response received"
+
+    async def poll() -> None:
+        nonlocal last_error
+        async with httpx.AsyncClient() as client:
+            while True:
+                try:
+                    if json_payload is not None:
+                        response = await client.post(url, json=json_payload, timeout=request_timeout)
+                    else:
+                        response = await client.get(url, timeout=request_timeout)
+                    if response.status_code == 200:
+                        return
+                    last_error = f"HTTP {response.status_code}"
+                except httpx.HTTPError as e:
+                    last_error = repr(e)
+                await asyncio.sleep(5)
+
+    try:
+        await asyncio.wait_for(poll(), timeout=timeout)
+    except asyncio.TimeoutError as e:
+        raise TimeoutError(f"{url} not ready after {timeout}s: {last_error}") from e
 
 
 async def post_bytes_no_retry(url: str, payload: dict, *, timeout: float) -> bytes:
