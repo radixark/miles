@@ -85,6 +85,7 @@ class TestSendBucketUnderTheEngineLock:
     @staticmethod
     def _make_self(store: HashStore) -> SimpleNamespace:
         return SimpleNamespace(
+            args=Namespace(),
             _engine_lock=StoreTicketLock(store=store, prefix=_PREFIX, poll_interval=0.001),
             group_name="miles-pp_0",
             _model_update_groups=MagicMock(name="nccl_group"),
@@ -125,6 +126,7 @@ class TestSendBucketUnderTheEngineLock:
             fake_self.rollout_engines,
             bucket,
             selector="all",
+            use_flattened_buckets=False,
         )
         wait_futures.assert_called_once_with(broadcast.return_value)
         assert bucket == []
