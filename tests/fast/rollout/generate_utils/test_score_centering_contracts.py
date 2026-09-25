@@ -110,8 +110,6 @@ def test_large_native_heads_can_use_sglang_router() -> None:
     validate_score_centering_args(_args(use_session_server=None, score_centering_top_k=128, use_miles_router=False))
 
 
-
-
 @pytest.mark.parametrize("session", ["v1", "v2"])
 def test_filtered_session_support_does_not_use_top_logprobs_router_cap(session: str) -> None:
     validate_score_centering_args(
