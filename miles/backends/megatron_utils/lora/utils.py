@@ -3,7 +3,8 @@
 import json
 import logging
 from argparse import Namespace
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -13,6 +14,8 @@ import torch.distributed as dist
 from miles.backends.training_utils.checkpoint_io import write_checkpoint_dir
 from miles.backends.training_utils.parallel import get_parallel_state
 from miles.backends.training_utils.weight_update.snapshot_publisher import SnapshotPublisher
+from miles.utils.distributed_utils import get_gloo_group
+from miles.utils.ft_utils.process_group_utils import collective_bool_and
 from miles.utils.lora.utils import (  # noqa: F401  (re-exported)
     build_lora_config,
     is_lora_enabled,
@@ -167,6 +170,73 @@ def create_lora_instance(args: Namespace, *, target_modules):
 # ---------------------------------------------------------------------------
 
 
+def _all_ranks_true(value: bool) -> bool:
+    if not dist.is_initialized():
+        return value
+    return collective_bool_and(value=value, group=get_gloo_group())
+
+
+def _optimizer_param_state_entries(optimizer: Any, directory: Path) -> list[tuple[Any, Path]]:
+    """Non-stub ``DistributedOptimizer`` children, with files indexed by position in the chain."""
+    from megatron.core.optimizer.distrib_optimizer import DistributedOptimizer
+
+    rank = dist.get_rank() if dist.is_initialized() else 0
+    children = getattr(optimizer, "chained_optimizers", [optimizer])
+    return [
+        (child, directory / f"optimizer_param_state_rank{rank}_optimizer{index}.pt")
+        for index, child in enumerate(children)
+        if isinstance(child, DistributedOptimizer) and not child.is_stub_optimizer
+    ]
+
+
+def _gather_optimizer_param_states(optimizer: Any, directory: Path) -> list[tuple[Path, Any]]:
+    """Gather each child's parameter state onto its data-parallel root; other ranks get None."""
+    entries = _optimizer_param_state_entries(optimizer, directory)
+    # Before its first step an optimizer has no parameter state, and resuming it fresh is equivalent.
+    if _all_ranks_true(not any(child.optimizer.state for child, _ in entries)):
+        return []
+    return [(path, child.get_parameter_state_dp_zero()) for child, path in entries]
+
+
+@contextmanager
+def _without_stub_optimizers(optimizer: Any) -> Iterator[None]:
+    """Megatron's chained ``state_dict``/``load_state_dict`` dereference every child, stubs included."""
+    children = getattr(optimizer, "chained_optimizers", None)
+    if children is None:
+        yield
+        return
+    optimizer.chained_optimizers = [child for child in children if not getattr(child, "is_stub_optimizer", False)]
+    try:
+        yield
+    finally:
+        optimizer.chained_optimizers = children
+
+
+def _load_optimizer_state(optimizer: Any, directory: Path, state_dict: Any) -> bool:
+    """Resume from a complete optimizer state, keep the fresh optimizer without one, reject a partial one.
+
+    ``DistributedOptimizer.load_state_dict`` allocates the Adam moments with ``torch.empty`` and
+    relies on ``load_parameter_state`` to fill them, so it must never run on its own.
+    """
+    entries = _optimizer_param_state_entries(optimizer, directory)
+    # Only the data-parallel root of each child writes its parameter state.
+    present = [path.exists() for child, path in entries if child.data_parallel_group.rank() == 0]
+    if _all_ranks_true(state_dict is not None and all(present)):
+        with _without_stub_optimizers(optimizer):
+            optimizer.load_state_dict(state_dict)
+        for child, path in entries:
+            child.load_parameter_state(str(path))
+        logger.info("Restored optimizer state from LoRA checkpoint")
+        return True
+    if _all_ranks_true(state_dict is None or not any(present)):
+        logger.warning("No optimizer state next to the LoRA adapter; keeping the freshly initialized optimizer")
+        return False
+    raise RuntimeError(
+        "Optimizer parameter state is incomplete: some optimizer_param_state_rank*.pt shards are "
+        "missing. Resume from a checkpoint that has all of them, or remove them all to warm-start."
+    )
+
+
 def save_lora_checkpoint(
     model: Sequence[torch.nn.Module],
     args: Namespace,
@@ -179,8 +249,11 @@ def save_lora_checkpoint(
 ) -> str:
     """Collectively save native adapter shards, training state, and optional HF adapter weights."""
     global_rank = dist.get_rank() if dist.is_initialized() else 0
+    save_optimizer = optimizer is not None and not getattr(args, "no_save_optim", False)
 
     def write_shards(checkpoint_dir: Path):
+        # write_checkpoint_dir requires every rank to finish these collectives before any local error.
+        param_states = _gather_optimizer_param_states(optimizer, checkpoint_dir) if save_optimizer else []
         adapter_state = {
             name: param.detach().cpu()
             for model_chunk in model
@@ -189,12 +262,12 @@ def save_lora_checkpoint(
         }
         training_state = None
         if optimizer is not None:
-            save_optimizer = not getattr(args, "no_save_optim", False)
-            training_state = {
-                "iteration": iteration,
-                "optimizer": optimizer.state_dict() if save_optimizer else None,
-                "opt_param_scheduler": opt_param_scheduler.state_dict() if opt_param_scheduler else None,
-            }
+            with _without_stub_optimizers(optimizer):
+                training_state = {
+                    "iteration": iteration,
+                    "optimizer": optimizer.state_dict() if save_optimizer else None,
+                    "opt_param_scheduler": opt_param_scheduler.state_dict() if opt_param_scheduler else None,
+                }
 
         if args.megatron_to_hf_mode == "raw":
             if global_rank == 0:
@@ -212,6 +285,9 @@ def save_lora_checkpoint(
         torch.save(adapter_state, checkpoint_dir / f"adapter_megatron_rank{global_rank}.pt")
         if training_state is not None:
             torch.save(training_state, checkpoint_dir / f"training_state_rank{global_rank}.pt")
+        for path, state in param_states:
+            if state is not None:  # only the data-parallel root holds the gathered state
+                torch.save(state, path)
 
     write_checkpoint_dir(save_dir, write_shards)
     return str(save_dir)
@@ -269,6 +345,9 @@ def load_lora_adapter(
             param.data.copy_(state_dict[name].to(device=param.device))
         logger.info(f"Loaded {len(adapter_params)} adapter tensors from Megatron-native checkpoint: {native_path}")
 
+        if optimizer is not None:
+            optimizer.reload_model_params()
+
         iteration, optimizer_restored = _load_training_state(
             adapter_dir, optimizer, opt_param_scheduler, load_optimizer
         )
@@ -298,7 +377,9 @@ def _load_training_state(
 
     rank = dist.get_rank() if dist.is_initialized() else 0
     state_path = adapter_dir / f"training_state_rank{rank}.pt"
-    if not state_path.exists():
+    if not _all_ranks_true(state_path.exists()):
+        if state_path.exists():
+            logger.warning(f"{state_path.name} is missing on some ranks; skipping the training-state restore")
         return None, False
 
     # Optimizer state dicts may contain non-tensor objects (e.g. step counts,
@@ -308,10 +389,8 @@ def _load_training_state(
     optimizer_restored = False
     if not load_optimizer:
         logger.info("--no-load-optim: keeping the freshly initialized optimizer")
-    elif training_state.get("optimizer") is not None:
-        optimizer.load_state_dict(training_state["optimizer"])
-        optimizer_restored = True
-        logger.info("Restored optimizer state from LoRA checkpoint")
+    else:
+        optimizer_restored = _load_optimizer_state(optimizer, adapter_dir, training_state.get("optimizer"))
 
     if opt_param_scheduler is not None and training_state.get("opt_param_scheduler") is not None:
         opt_param_scheduler.load_state_dict(training_state["opt_param_scheduler"])
