@@ -31,6 +31,16 @@ from miles_plugins.models.kimi_k3.ops import KimiRMSNorm, attn_res_aggregate, kd
 from miles_plugins.models.kimi_k3.pipeline import bank_num_rows, pack_stage_boundary, unpack_stage_boundary
 
 
+def _kda_backend_from_args() -> str:
+    """``--kda-backend`` from the Megatron args; ``fla`` when no args are initialized (layer unit tests)."""
+    try:
+        from megatron.training import get_args
+
+        return getattr(get_args(), "kda_backend", "fla")
+    except (ImportError, AssertionError):
+        return "fla"
+
+
 def _mark_tp_replicated(module: nn.Module) -> None:
     for parameter in module.parameters():
         parameter.sum_gradients_across_tp_domain = True
@@ -200,6 +210,7 @@ class KimiK3Attention(MegatronModule):
         _mark_tp_replicated(self.o_norm)
         self.o_proj = self._row_linear(self.projection_size, hidden_size)
         self.gate_lower_bound = config.kimi_kda_gate_lower_bound
+        self.kda_backend = _kda_backend_from_args()
 
     def _init_mla(self, config) -> None:
         hidden_size = config.hidden_size
@@ -328,6 +339,7 @@ class KimiK3Attention(MegatronModule):
             self.gate_lower_bound,
             cu_seqlens=cu_seqlens,
             cp_context=cp_context,
+            backend=self.kda_backend,
         )
         gate = rearrange(_linear(self.g_proj, x), "b s (h d) -> b s h d", h=self.local_num_heads)
 

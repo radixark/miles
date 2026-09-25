@@ -333,12 +333,28 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             parser.add_argument(
                 "--linear-attention-backend",
                 type=str,
-                choices=["fla", "flashqla"],
+                choices=["fla", "flashqla", "loom"],
                 default="fla",
                 help=(
                     "Backend for Qwen GDN linear-attention layers. "
                     "'fla' (flash-linear-attention) is portable and runs on any supported GPU. "
-                    "'flashqla' (FlashQLA) requires NVIDIA SM90 (Hopper) or newer, CUDA 12.8+, and PyTorch 2.8+."
+                    "'flashqla' (FlashQLA) requires NVIDIA SM90 (Hopper) or newer, CUDA 12.8+, and PyTorch 2.8+. "
+                    "'loom' is the bit-deterministic chunked forward/backward generated into "
+                    "miles_plugins/models/gdn_chunk_train (NVIDIA SM100a/SM103a Blackwell only; K = V = 128)."
+                ),
+            )
+            parser.add_argument(
+                "--kda-backend",
+                type=str,
+                choices=["fla", "deterministic"],
+                default="fla",
+                help=(
+                    "Backend for the Kimi K3 KDA delta-rule core. "
+                    "'fla' (flash-linear-attention) runs forward and backward through FLA's Triton kernels. "
+                    "'deterministic' keeps FLA's forward and runs the backward through Miles' deterministic "
+                    "chunked KDA training backward (miles_plugins/models/kda_chunk_train; SM100a/SM103a, "
+                    "K = V = 128, no context parallelism, fixed or equal-length packed sequences in multiples "
+                    "of 128; other calls fall back to FLA)."
                 ),
             )
             parser.add_argument(
@@ -419,15 +435,16 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             )
             parser.add_argument(
                 "--dsa-attention-backend",
-                choices=["megatron", "tilelang"],
+                choices=["megatron", "tilelang", "loom"],
                 default="tilelang",
                 help=(
-                    "DSA sparse-MLA kernel backend for GLM (glm_moe_dsa) under --megatron-to-hf-mode bridge. "
-                    "'tilelang' (default) uses the fused TileLang kernels (SparseMLA + lighting_indexer, vendored from slime) for "
-                    "rollout<->train numerical parity; 'megatron' uses the portable unfused megatron-core "
-                    "kernels. 'tilelang' requires --qkv-format thd and the optional tilelang dep, and is "
-                    "training/forward-only (no KV cache, cannot serve inference). Both support GLM-5.1 and "
-                    "GLM-5.2, full or LoRA. No effect on non-DSA models or the 'raw' path."
+                    "DSA indexer + sparse-attention kernel backend. Plugin specs (GLM-5 get_glm5_spec, "
+                    "DeepSeek-V4 get_dsv4_spec with --dsv4-impl miles): 'tilelang' (default) uses the fused "
+                    "TileLang kernels vendored per model; 'loom' uses the generated deterministic kernels in "
+                    "miles_plugins/models/dsa_train (SM100a/SM103a: bit-deterministic backward, batched "
+                    "DeepSeek-V4 indexer in one launch). Under --megatron-to-hf-mode bridge (GLM LoRA): "
+                    "'tilelang' or 'megatron' (portable unfused megatron-core kernels); 'tilelang' requires "
+                    "--qkv-format thd. No effect on non-DSA models."
                 ),
             )
             parser.add_argument(

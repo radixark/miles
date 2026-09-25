@@ -1,6 +1,24 @@
 import re
+from functools import cache
 
 import torch
+
+
+@cache
+def _gdn_layout(hf_checkpoint: str):
+    """Static GDN shape facts of the checkpoint (for the head-interleaved ``linear_attn`` tensors)."""
+    from miles.utils.hf_utils.config import load_hf_config
+    from miles_plugins.models.gdn_attention import GdnLayout
+
+    hf_config = load_hf_config(hf_checkpoint)
+    return GdnLayout.from_hf_config(getattr(hf_config, "text_config", hf_config), hf_layout="qwen3_next")
+
+
+def _linear_attn_to_hf(args, rest: str, param):
+    """Megatron ``linear_attn.<name>`` tensor (TP-merged, head-interleaved rows) -> HF row order."""
+    from miles_plugins.models.gdn_attention import megatron_to_hf_linear_attn
+
+    return megatron_to_hf_linear_attn(_gdn_layout(args.hf_checkpoint), rest[len("linear_attn.") :], param)
 
 
 def convert_qwen3_next_to_hf(args, name, param):
@@ -137,6 +155,8 @@ def convert_qwen3_next_to_hf(args, name, param):
             "self_attn.v_proj.weight",
         ]:
             rest = rest[len("self_attention.") :]
+            if rest.startswith("linear_attn."):
+                param = _linear_attn_to_hf(args, rest, param)
             return [(f"model.layers.{layer_idx}.{rest}", param)]
 
     # MTP (Multi-Token Prediction) layers
