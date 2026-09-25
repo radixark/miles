@@ -41,6 +41,7 @@ CASE = CaseConfig(
     update_weight_transfer_mode="broadcast",
     num_rollout=3,
     fully_async=True,
+    extra_args="--sample-ownership-grace-steps 4",
 )
 
 
