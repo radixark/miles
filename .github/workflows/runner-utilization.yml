@@ -1,0 +1,75 @@
+name: Runner Utilization Report
+
+# Daily per-pool runner utilization for miles CI: jobs, active hours,
+# utilization %, and queue-wait Avg / P50 / P90 / P99 / Max per runner label.
+# The report lands in the job log and the run's step summary.
+#
+# Script ported from sgl-project/sglang (same accounting), with percentile
+# columns added and the repo defaulted to this one.
+
+on:
+  schedule:
+    - cron: '30 8 * * *'  # Daily at 08:30 UTC
+  pull_request:
+    paths:
+      - '.github/workflows/runner-utilization.yml'
+      - 'scripts/ci/runner_utilization_report.py'
+  workflow_dispatch:
+    inputs:
+      hours:
+        description: 'Time window in hours'
+        required: false
+        default: '24'
+        type: string
+      filter:
+        description: 'Filter runner labels (substring match)'
+        required: false
+        type: string
+
+# One scan per ref at a time — every run is a window-wide Actions API sweep.
+concurrency:
+  group: runner-utilization-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  report:
+    name: Generate Report
+    # Fork PRs are skipped (no useful token); same-repo PR pushes run a short
+    # smoke window only (see the --hours expression below).
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Generate Utilization Report
+        timeout-minutes: 55
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # PR-trigger is a smoke check; scan a 20-minute window (0.34h) to
+          # bound API cost. schedule / dispatch run the full report.
+          python scripts/ci/runner_utilization_report.py \
+            --repo ${{ github.repository }} \
+            --hours ${{ (github.event_name == 'pull_request' && '0.34') || inputs.hours || '24' }} \
+            ${{ inputs.filter && format('--filter {0}', inputs.filter) || '' }} \
+            --output report.md
+          cat report.md
+          cat report.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload report artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: runner-utilization-report
+          path: report.md

@@ -76,10 +76,12 @@ class TestSaveCheckpointWithLoRA:
         mock_get_args.return_value = Namespace(save=str(tmp_path))
         model = [MagicMock()]
 
-        save_checkpoint_with_lora(42, model, MagicMock(), MagicMock())
+        publisher = MagicMock()
+        save_checkpoint_with_lora(42, model, MagicMock(), MagicMock(), publisher=publisher)
 
         mock_save_lora.assert_called_once()
         call_args = mock_save_lora.call_args
+        assert call_args.kwargs["publisher"] is publisher
         assert "adapter" in call_args[1].get("save_dir", call_args[0][2] if len(call_args[0]) > 2 else "")
 
     @patch("miles.backends.megatron_utils.checkpoint.get_args")

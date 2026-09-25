@@ -403,11 +403,11 @@ def _execute_train(args: ScriptArgs):
     sglang_args += (
         "--sglang-kv-cache-dtype fp8_e4m3 "
         # flashmla_kv decode / flashmla_sparse prefill (GLM-5.2 recipe)
-        "--sglang-nsa-decode-backend flashmla_kv "
-        "--sglang-nsa-prefill-backend flashmla_sparse "
+        "--sglang-dsa-decode-backend flashmla_kv "
+        "--sglang-dsa-prefill-backend flashmla_sparse "
         "--sglang-attention-backend nsa "
         "--sglang-page-size 64 "
-        f"--sglang-cuda-graph-max-bs {sglang_decode_max_bs} "
+        f"--sglang-cuda-graph-max-bs-decode {sglang_decode_max_bs} "
         # concurrency
         f"--sglang-max-running-requests {256 if balanced else 512} "
         f"--sglang-chunked-prefill-size {32768 if balanced else 2048 * sglang_world_size} "

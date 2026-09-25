@@ -54,11 +54,6 @@ _MEGATRON_MODEL_TYPE = {
     "GLM-5.1-6layer": "glm5.1-744B-A40B_6layer_lora",
 }
 
-# Standard attn + MLA + MLP/MoE, EXCLUDING the DSA indexer (wq_b/wk/weights_proj).
-_DEFAULT_TARGET_MODULES = (
-    "q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj,q_a_proj,kv_a_proj_with_mqa,q_b_proj,kv_b_proj"
-)
-
 
 @dataclass
 class ScriptArgs(U.ExecuteTrainConfig):
@@ -89,7 +84,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     lora_rank: int = 16
     lora_alpha: int = 32
     lora_dropout: float = 0.0
-    target_modules: str = _DEFAULT_TARGET_MODULES
+    target_modules: str = "all-linear"
     # required for true on-policy under colocate (OFF -> KL ~1.0 vs ~1e-4); opt out only
     # when host RAM cannot take the ~372 GB/node mirror on the full model
     lora_base_cpu_backup: bool = True
@@ -179,11 +174,8 @@ def _train(args: ScriptArgs):
 
     # the full rollout config applies to the toys too (same glm_moe_dsa serving path)
     _is_full = True
-    _tm = args.target_modules
     # KEEP_MOE_LORA=0 drops the expert projections (attention-only LoRA)
     _keep_moe_lora = os.environ.get("KEEP_MOE_LORA", "1") != "0"
-    if _is_full and not _keep_moe_lora:
-        _tm = ",".join(m for m in _tm.split(",") if m.strip() not in ("gate_proj", "up_proj", "down_proj"))
     # the MOE_LORA_LAYERS subset feature is disabled; warn so it is not silently ignored
     _moe_lora_layers = os.environ.get("MOE_LORA_LAYERS", "").strip()
     if _moe_lora_layers:
@@ -191,7 +183,12 @@ def _train(args: ScriptArgs):
             f"[run_glm5_1_744b_a40b_lora] WARNING: MOE_LORA_LAYERS={_moe_lora_layers} is SET but the subset-rewrite "
             "feature is DISABLED (commented out for debugging) -> MoE-expert LoRA stays on ALL layers."
         )
-    lora_args = f'--lora-rank {args.lora_rank} --lora-alpha {args.lora_alpha} --lora-dropout {args.lora_dropout} --target-modules "{_tm}" '
+    lora_args = (
+        f"--lora-rank {args.lora_rank} --lora-alpha {args.lora_alpha} --lora-dropout {args.lora_dropout} "
+        f'--target-modules "{args.target_modules}" '
+    )
+    if not _keep_moe_lora:
+        lora_args += "--exclude-modules gate_proj,up_proj,gate_up_proj,down_proj "
     if _keep_moe_lora and args.experts_shared_outer_loras:
         lora_args += "--experts-shared-outer-loras "
     if _is_full:
@@ -248,9 +245,9 @@ def _train(args: ScriptArgs):
             f"--rollout-num-gpus-per-engine {_eng} --sglang-mem-fraction-static {args.sglang_mem_fraction_static} "
             f"--sglang-enable-dp-attention --sglang-ep-size {_eng} --sglang-dp-size {_eng} "
             "--sglang-moe-dense-tp-size 1 --sglang-enable-dp-lm-head "
-            f"--sglang-attention-backend nsa --sglang-nsa-decode-backend {_decode} "
-            f"--sglang-nsa-prefill-backend flashmla_sparse --sglang-page-size 64 {_kv}"
-            f"--sglang-cuda-graph-max-bs {_cg} --sglang-max-running-requests 512 "
+            f"--sglang-attention-backend nsa --sglang-dsa-decode-backend {_decode} "
+            f"--sglang-dsa-prefill-backend flashmla_sparse --sglang-page-size 64 {_kv}"
+            f"--sglang-cuda-graph-max-bs-decode {_cg} --sglang-max-running-requests 512 "
             f"--sglang-chunked-prefill-size {2048 * _eng} --sglang-watchdog-timeout 3600 "
             "--sglang-moe-runner-backend triton --sglang-disable-shared-experts-fusion "
             # required: without it sglang miscounts the gate_up slices -> engine-init crash
@@ -258,7 +255,7 @@ def _train(args: ScriptArgs):
             f"--sglang-lora-backend {args.sglang_lora_backend} "
         )
     else:
-        sglang_args = f"--rollout-num-gpus-per-engine {args.rollout_num_gpus_per_engine} --sglang-mem-fraction-static {args.sglang_mem_fraction_static} --sglang-cuda-graph-max-bs 64 --sglang-moe-runner-backend triton --sglang-disable-shared-experts-fusion --sglang-lora-backend {args.sglang_lora_backend} --sglang-reasoning-parser glm45 --sglang-tool-call-parser glm47 "
+        sglang_args = f"--rollout-num-gpus-per-engine {args.rollout_num_gpus_per_engine} --sglang-mem-fraction-static {args.sglang_mem_fraction_static} --sglang-cuda-graph-max-bs-decode 64 --sglang-moe-runner-backend triton --sglang-disable-shared-experts-fusion --sglang-lora-backend {args.sglang_lora_backend} --sglang-reasoning-parser glm45 --sglang-tool-call-parser glm47 "
 
     save_args = f"--save-interval 1 --save {load_save_path} "
 

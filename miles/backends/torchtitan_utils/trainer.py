@@ -12,7 +12,7 @@ from torchtitan.trainer import Trainer
 
 from miles.backends.torchtitan_utils import routing_replay
 from miles.backends.training_utils.torch_native.step_runner import StepMetrics
-from miles.utils.hf_config import load_hf_config
+from miles.utils.hf_utils.config import load_hf_config
 
 _FLEX_BLOCK = 128
 _CP_LENGTH_BUCKET = 1024

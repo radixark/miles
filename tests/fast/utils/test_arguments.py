@@ -1,6 +1,8 @@
 import argparse
+import json
 import logging
 import sys
+from fnmatch import fnmatchcase
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -10,6 +12,7 @@ import pytest
 from miles.backends.sglang_utils.arguments import add_sglang_arguments, collect_eval_sglang_overrides
 from miles.backends.sglang_utils.arguments import validate_args as validate_sglang_args
 from miles.utils.arguments import (
+    FULLY_ASYNC_ROLLOUT_PATH,
     _maybe_apply_dumper_overrides,
     _resolve_ft_components,
     _resolve_mini_ft_controller_enable,
@@ -23,6 +26,7 @@ from miles.utils.arguments import (
 )
 from miles.utils.ft_utils.health_checker import SimpleHealthCheckerConfig
 from miles.utils.function_registry import function_registry
+from miles.utils.hf_utils.weight_mapping import HfWeightMapping
 from miles.utils.run_uuid import RUN_UUID_LENGTH, validate_run_uuid
 
 PATH_ARGS = ["--rollout-function-path", "--custom-generate-function-path"]
@@ -198,6 +202,71 @@ def test_fully_async_eval_resolves_to_the_producer_itself():
     assert resolve_rollout_function_paths(override) == (path, "pkg.CustomEval")
 
 
+def _fully_async_candidate_args(**overrides) -> SimpleNamespace:
+    """A namespace shaped like the parsed args `_resolve_rollout_functions` reads."""
+    defaults = dict(
+        fully_async=False,
+        multi_lora=False,
+        rollout_function_path=None,
+        eval_function_path=None,
+        colocate=False,
+        partial_rollout=False,
+        mask_offpolicy_in_partial_rollout=False,
+        pause_generation_mode="retract",
+        recompute_logprobs_via_prefill=False,
+        rollout_all_samples_process_path=None,
+        eval_num_gpus=0,
+    )
+    return SimpleNamespace(**(defaults | overrides))
+
+
+def test_naming_the_fully_async_class_enables_the_mode():
+    """--rollout-function-path FullyAsyncRolloutFn selects what --fully-async selects, so it
+    must reach the same validation and driver scheduling instead of passing as a plugin."""
+    args = _fully_async_candidate_args(rollout_function_path=FULLY_ASYNC_ROLLOUT_PATH)
+
+    _resolve_rollout_functions(args)
+
+    assert args.fully_async is True
+    assert args.rollout_function_path == FULLY_ASYNC_ROLLOUT_PATH
+    assert args.eval_function_path == FULLY_ASYNC_ROLLOUT_PATH
+
+
+def test_naming_the_fully_async_class_enforces_the_mode_constraints():
+    """The class alone cannot keep generating through a colocated weight update; before the
+    mode was inferred, this combination started and only failed later, in training."""
+    args = _fully_async_candidate_args(rollout_function_path=FULLY_ASYNC_ROLLOUT_PATH, colocate=True)
+
+    with pytest.raises(AssertionError, match="cannot colocate"):
+        _resolve_rollout_functions(args)
+
+
+def test_the_flag_and_a_matching_path_agree():
+    """Both spellings of one selection is redundant, not a conflict."""
+    args = _fully_async_candidate_args(fully_async=True, rollout_function_path=FULLY_ASYNC_ROLLOUT_PATH)
+
+    _resolve_rollout_functions(args)
+
+    assert args.rollout_function_path == FULLY_ASYNC_ROLLOUT_PATH
+
+
+def test_the_flag_still_rejects_a_different_rollout_function():
+    """Two different selections remain a misconfiguration."""
+    args = _fully_async_candidate_args(fully_async=True, rollout_function_path="pkg.CustomRolloutFn")
+
+    with pytest.raises(AssertionError, match="pass only one"):
+        _resolve_rollout_functions(args)
+
+
+def test_an_ordinary_rollout_function_path_stays_untouched():
+    args = _fully_async_candidate_args(rollout_function_path="pkg.CustomRolloutFn")
+
+    _resolve_rollout_functions(args)
+
+    assert args.fully_async is False
+    assert args.rollout_function_path == "pkg.CustomRolloutFn"
+
+
 def test_fully_async_rejects_abort_pause_mode():
     """Generation is always in flight, so aborting on every weight update would kill it."""
     args = SimpleNamespace(
@@ -227,6 +296,85 @@ def test_recompute_logprobs_via_prefill_flag_is_parsed():
     args = parser.parse_args(["--recompute-logprobs-via-prefill"] + REQUIRED_ARGS)
 
     assert args.recompute_logprobs_via_prefill is True
+
+
+@pytest.mark.parametrize(
+    ("extra", "message"),
+    [
+        (["--rollout-top-p", "0"], "--rollout-top-p must be in"),
+        (["--rollout-top-k", "0"], "--rollout-top-k must be -1 or at least 1"),
+        (
+            ["--rollout-top-p", "0.95"],
+            "--rollout-top-p below 1 requires a positive --rollout-top-k",
+        ),
+        (
+            [
+                "--rollout-top-p",
+                "0.95",
+                "--rollout-top-k",
+                "32",
+                "--true-on-policy-mode",
+                "--recompute-logprobs-via-prefill",
+            ],
+            "sampling-support replay cannot be combined with --recompute-logprobs-via-prefill",
+        ),
+        (
+            [
+                "--rollout-top-p",
+                "0.95",
+                "--rollout-top-k",
+                "32",
+                "--kl-coef",
+                "0.1",
+            ],
+            "cannot currently be combined with reference KL or teacher distillation",
+        ),
+        (
+            [
+                "--rollout-top-p",
+                "0.95",
+                "--rollout-top-k",
+                "32",
+                "--use-kl-loss",
+            ],
+            "cannot currently be combined with reference KL or teacher distillation",
+        ),
+        (
+            [
+                "--rollout-top-p",
+                "0.95",
+                "--rollout-top-k",
+                "32",
+                "--use-opd",
+            ],
+            "cannot currently be combined with reference KL or teacher distillation",
+        ),
+    ],
+)
+def test_sampling_support_arguments_fail_closed(extra, message):
+    parser = argparse.ArgumentParser()
+    get_miles_extra_args_provider()(parser)
+    args = parser.parse_args(extra + ["--num-rollout", "1"] + REQUIRED_ARGS)
+
+    with pytest.raises(ValueError, match=message):
+        miles_validate_args(args)
+
+
+@pytest.mark.parametrize(
+    ("sampling_args", "expected"),
+    [
+        ([], False),
+        (["--rollout-top-k", "32"], True),
+        (["--rollout-top-p", "0.95", "--rollout-top-k", "32"], True),
+    ],
+)
+def test_sampling_support_replay_is_derived_from_rollout_filters(sampling_args, expected):
+    parser = argparse.ArgumentParser()
+    get_miles_extra_args_provider()(parser)
+    args = parser.parse_args(sampling_args + ["--num-rollout", "1"] + REQUIRED_ARGS)
+
+    miles_validate_args(args)
+    assert args.use_sampling_support_replay is expected
 
 
 def test_sglang_parallel_sizes_keep_server_args_destinations():
@@ -724,11 +872,18 @@ class TestTitoFixedTemplateConfiguration:
         assert args.apply_chat_template_kwargs == {"preserve_thinking": True}
 
     @pytest.mark.parametrize("family", ["qwen38small", "qwen4exp"])
-    def test_qwen38_families_resolve_default_template(self, family):
-        args = self._parse(["--use-session-server", "--tito-model", family])
+    @pytest.mark.parametrize("effort", [None, "low", "medium", "xhigh"])
+    def test_qwen38_families_resolve_default_template(self, family, effort):
+        extra = ["--use-session-server", "--tito-model", family]
+        if effort is not None:
+            extra += ["--apply-chat-template-kwargs", json.dumps({"reasoning_effort": effort})]
+        args = self._parse(extra)
         miles_validate_args(args)
         assert args.chat_template_path.endswith("/qwen3.8_small_and_flash_next_fixed.jinja")
-        assert args.apply_chat_template_kwargs == {"preserve_thinking": True, "reasoning_effort": "xhigh"}
+        expected = {"preserve_thinking": True}
+        if effort is not None:
+            expected["reasoning_effort"] = effort
+        assert args.apply_chat_template_kwargs == expected
 
     def test_glm53_uses_native_template(self):
         args = self._parse(["--use-session-server", "--tito-model", "glm53"])
@@ -739,7 +894,7 @@ class TestTitoFixedTemplateConfiguration:
             "enable_thinking": True,
         }
 
-    def test_glm53_rejects_disabling_thinking(self):
+    def test_glm53_fixed_thinking_overrides_launch_value(self):
         args = self._parse(
             [
                 "--use-session-server",
@@ -749,8 +904,8 @@ class TestTitoFixedTemplateConfiguration:
                 '{"enable_thinking": false}',
             ]
         )
-        with pytest.raises(ValueError, match="enable_thinking=False conflicts"):
-            miles_validate_args(args)
+        miles_validate_args(args)
+        assert args.apply_chat_template_kwargs == {"clear_thinking": False, "enable_thinking": True}
 
     def test_named_family_rejects_custom_template(self):
         args = self._parse(
@@ -765,7 +920,7 @@ class TestTitoFixedTemplateConfiguration:
         with pytest.raises(ValueError, match="cannot override the template registered"):
             miles_validate_args(args)
 
-    def test_named_family_rejects_conflicting_registered_kwarg(self):
+    def test_named_family_fixed_kwargs_override_launch_values(self):
         args = self._parse(
             [
                 "--use-session-server",
@@ -775,8 +930,8 @@ class TestTitoFixedTemplateConfiguration:
                 '{"clear_thinking": true}',
             ]
         )
-        with pytest.raises(ValueError, match="clear_thinking=True conflicts"):
-            miles_validate_args(args)
+        miles_validate_args(args)
+        assert args.apply_chat_template_kwargs == {"clear_thinking": False}
 
     def test_named_family_accepts_same_registered_and_additional_kwargs(self):
         args = self._parse(
@@ -853,6 +1008,21 @@ def test_critic_rejects_reward_level_kl(tmp_path):
 
 
 class TestMultiLoRAValidation:
+    @pytest.fixture(autouse=True)
+    def _bridge_selector(self, monkeypatch):
+        monkeypatch.setattr(
+            "miles.utils.lora.arguments.HfWeightMapping.from_config",
+            lambda config: SimpleNamespace(parameter_names=frozenset()),
+        )
+        monkeypatch.setattr(
+            "miles.utils.lora.arguments.load_hf_config",
+            lambda path: SimpleNamespace(model_type="qwen3", to_dict=lambda: {"model_type": "qwen3"}),
+        )
+        monkeypatch.setattr(
+            "miles.backends.megatron_utils.lora.target_modules.normalize_lora_targets_to_hf",
+            lambda checkpoint, targets, **kwargs: list(targets),
+        )
+
     def _parse(self, extra):
         parser = argparse.ArgumentParser()
         get_miles_extra_args_provider()(parser)
@@ -870,6 +1040,68 @@ class TestMultiLoRAValidation:
             + extra
             + REQUIRED_ARGS
         )
+
+    def test_hf_selection_does_not_resolve_through_bridge(self, monkeypatch):
+        monkeypatch.setattr(
+            "miles.utils.lora.arguments.HfWeightMapping.from_config",
+            lambda config: SimpleNamespace(parameter_names=frozenset({"model.layers.0.self_attn.q_proj.weight"})),
+        )
+
+        def unexpected_bridge(*args, **kwargs):
+            pytest.fail("HF selection must not initialize Bridge")
+
+        monkeypatch.setattr(
+            "miles.backends.megatron_utils.lora.target_modules.normalize_lora_targets_to_hf",
+            unexpected_bridge,
+        )
+        args = self._parse(["--target-modules", "q_proj"])
+        miles_validate_args(args)
+        assert args.hf_lora_targets == ["q_proj"]
+        assert args.target_modules == "q_proj"
+
+    @pytest.mark.parametrize("exclusion", ["model.layers.*.self_attn.o_proj", "model.layers.0.self_attn.o_proj"])
+    @pytest.mark.parametrize("targets", ["o_proj,down_proj", "attn,mlp", "all-linear"])
+    def test_scoped_exclusion_resolves_without_bridge(self, monkeypatch, exclusion, targets):
+        hf_mapping = HfWeightMapping(
+            frozenset(
+                f"model.layers.{layer}.{module}.weight"
+                for layer in range(2)
+                for module in (
+                    "self_attn.q_proj",
+                    "self_attn.k_proj",
+                    "self_attn.v_proj",
+                    "self_attn.o_proj",
+                    "mlp.gate_proj",
+                    "mlp.up_proj",
+                    "mlp.down_proj",
+                )
+            )
+        )
+        monkeypatch.setattr("miles.utils.lora.arguments.HfWeightMapping.from_config", lambda config: hf_mapping)
+
+        def unexpected_bridge(*args, **kwargs):
+            pytest.fail("HF exclusions must not initialize Bridge")
+
+        monkeypatch.setattr(
+            "miles.backends.megatron_utils.lora.target_modules.normalize_lora_targets_to_hf",
+            unexpected_bridge,
+        )
+        args = self._parse(["--target-modules", targets, "--exclude-modules", exclusion])
+        if targets == "o_proj,down_proj":
+            with pytest.raises(AssertionError, match="overlap --exclude-modules"):
+                miles_validate_args(args)
+            return
+        miles_validate_args(args)
+
+        expected = {
+            name.removesuffix(".weight")
+            for name in hf_mapping.parameter_names
+            if not fnmatchcase(name.removesuffix(".weight"), exclusion)
+        }
+        assert args.target_modules == targets
+        assert args.exclude_modules == exclusion
+        assert set(args.hf_lora_targets) == expected
+        assert args.lora_adapter_targets == args.hf_lora_targets
 
     def test_rejects_multiple_tokenizer_workers(self):
         # Each sglang tokenizer worker holds its own LoRA registry, so per-step

@@ -185,7 +185,7 @@ def execute():
         f"--sglang-dp-size {ROLLOUT_GPUS_PER_ENGINE} "
         "--sglang-enable-dp-attention "
         "--sglang-enable-dp-lm-head "
-        "--sglang-cuda-graph-max-bs 256 "
+        "--sglang-cuda-graph-max-bs-decode 256 "
     )
 
     ci_args = "--ci-test --check-weight-update-allow-quant-error "

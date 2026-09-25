@@ -123,6 +123,29 @@ class TestFinalEval:
 
         assert [event for event in events if event.startswith("eval:")] == ["eval:0", "eval:1", "eval:2"]
 
+    async def test_an_off_cadence_final_eval_follows_the_last_handoff(self, monkeypatch: pytest.MonkeyPatch):
+        """The last rollout skips its handoff only when no final eval follows; an off-cadence
+        final eval must still see the engine onloaded with the trained weights."""
+        events: list[str] = []
+        args = _make_args(num_rollout=3, eval_interval=2, offload_rollout=True)
+        _install_driver_fakes(monkeypatch, args, events)
+
+        await train_driver.train(args)
+
+        final = events[events.index("actor_train:2") : events.index("eval:2")]
+        assert final.index("onload_weights") < final.index("update_weights:2") < final.index("onload_kv")
+
+    async def test_the_last_rollout_skips_the_handoff_without_an_eval(self, monkeypatch: pytest.MonkeyPatch):
+        events: list[str] = []
+        args = _make_args(num_rollout=3, offload_rollout=True)
+        _install_driver_fakes(monkeypatch, args, events)
+
+        await train_driver.train(args)
+
+        assert "update_weights:1" in events
+        assert "update_weights:2" not in events
+        assert "onload_weights" not in events[events.index("actor_train:2") :]
+
 
 class TestWeightEqualityCheck:
     async def test_weight_equality_check_is_routed_to_the_inference_controller(self, monkeypatch: pytest.MonkeyPatch):

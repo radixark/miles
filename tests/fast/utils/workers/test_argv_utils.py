@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
+import msgspec
 import pytest
 from pydantic import ValidationError
 
@@ -16,11 +17,24 @@ from miles.utils.pydantic_utils import FrozenStrictBaseModel
 from miles.utils.workers import argv_utils
 from miles.utils.workers.argv_utils import (
     CONFIG_JSON_FLAG,
+    _record_field_names,
     config_to_argv,
     dataclass_to_values,
     parse_config_argv,
     render_cli_argv,
 )
+
+
+@pytest.mark.parametrize(
+    "record_factory", [dataclasses.make_dataclass, msgspec.defstruct], ids=["dataclass", "msgspec"]
+)
+def test_record_fields_support_classes_and_instances(record_factory):
+    record_type = record_factory("Args", [("port", int), ("host", str)])
+    record = record_type(port=30000, host="localhost")
+
+    assert _record_field_names(record_type) == ("port", "host")
+    assert _record_field_names(record) == ("port", "host")
+    assert dataclass_to_values(record) == {"port": 30000, "host": "localhost"}
 
 
 class _DemoConfig(FrozenStrictBaseModel):
@@ -104,16 +118,18 @@ class TestConfigToArgv:
             apply_chat_template_kwargs={"enable_thinking": False},
             use_rollout_routing_replay=True,
             use_rollout_indexer_replay=False,
+            use_sampling_support_replay=False,
             sglang_speculative_algorithm=None,
             num_layers=None,
             moe_router_topk=None,
             save_debug_trajectory_data=None,
             lora_rank=0,
             lora_adapter_path=None,
+            lora_train_only=False,
             use_session_server="v2",
             session_message_matcher="strict",
             pause_generation_mode=None,
-            session_sample_picker_path="miles.rollout.session.v2.picker_hub.drop_retries",
+            session_sample_picker_path="miles.rollout.session.v2.picker_hub.drop_same_prompt_retries",
             session_sample_postprocessor_path=("miles.rollout.session.v2.postprocessor_hub.default_postprocess"),
         )
         assert parse_config_argv(SessionServerConfig, config_to_argv(session_config)) == session_config

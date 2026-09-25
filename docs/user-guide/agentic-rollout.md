@@ -121,14 +121,23 @@ sequence, trims model-specific boundary tokens, and builds the training sample.
 
 <Warning>
 
-**Do not set TITO control fields.** The session server replaces client
-`input_ids` and forces `logprobs=True`, `return_meta_info=True`, and the response
-metadata needed for TITO. Do not set `logprob_start_len=0`; scoring the entire
-prompt defeats prefix caching and hurts performance.
+**Do not set TITO control fields.** Leave `input_ids`, `routed_experts_start_len`, and `logprob_start_len` unset. The server selects `lora_path` and rejects conflicting control values with HTTP 400. It forces `logprobs=True`, `return_meta_info=True`, and the response metadata needed for TITO.
 
 </Warning>
 
+### Choose template options per session
+
+- Ordinary `chat_template_kwargs` use request > continued turn > launch defaults. Fields required to preserve the reused prompt retain their recorded values; fixed model settings override conflicts. Qwen3.8 selects `reasoning_effort` on a new root and preserves its value or absence on continuation. When the field is absent, the template defaults to `xhigh`.
+- Omitted `tools` inherit on continuation; incompatible changes return HTTP 400 by default. Sampling parameters remain per-request. New roots resolve without turn history.
+- Each successful turn records the full resolved request as `turn_args`. Exported session, tree-node and sample metadata omit `input_ids` and `messages` from this snapshot; the stored history remains complete.
+
 ### Choose the session behavior
+
+Use `{"evaluation": true}` in `POST /sessions` for evaluation; omitting it defaults to training. The agentic generator sets this automatically, and the purpose stays fixed across turns, retries, and branches.
+
+`temperature`, `top_p`, and `top_k` in `POST /sessions` provide defaults for omitted or `null` chat fields. Training requests must match the registered temperature or receive HTTP 400; eval temperature and `top_p`/`top_k` remain overridable. The agentic generator registers the sample's resolved values automatically.
+
+Evaluation forces `return_sampling_mask`, `return_routed_experts`, and `return_indexer_topk` off and ignores `routed_experts_start_len`. TITO, logprobs, and sample collection still apply; engine-internal capture may remain enabled.
 
 History handling depends on the selected server version:
 
@@ -139,7 +148,10 @@ History handling depends on the selected server version:
 - **v2 (Experimental) is an append-only tree.** A request attaches to the deepest checkpoint
   whose complete message path prefixes the request. Any unmatched suffix creates
   a branch, and existing branches are never deleted. A path whose last generation
-  ended with `finish_reason=length` cannot be extended.
+  ended with `finish_reason=length` cannot be extended. By default, a leaf becomes
+  no sample when a later request re-sent its exact prompt tokens; a later request
+  that differs is a separate branch and its own sample
+  (`--session-sample-picker-path`).
 
 Whether a replayed message counts as "the same" as the stored one is decided by
 `--session-message-matcher` (default `strict`); see

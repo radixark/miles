@@ -239,7 +239,7 @@ def execute(args: ScriptArgs, *, wandb_file: str = __file__):
                     f"--sglang-tp-size {sglang_world_size} "
                     f"--sglang-dp-size {sglang_world_size} "
                     "--sglang-enable-dp-attention "
-                    f"--sglang-cuda-graph-max-bs {sglang_decode_max_bs} "
+                    f"--sglang-cuda-graph-max-bs-decode {sglang_decode_max_bs} "
                     # f"--sglang-max-running-requests {sglang_world_size * sglang_decode_max_bs // sglang_attn_tp_size} "
                     # f"--sglang-chunked-prefill-size {sglang_world_size * sglang_decode_max_bs} "
                 )
@@ -254,7 +254,7 @@ def execute(args: ScriptArgs, *, wandb_file: str = __file__):
                 )
                 misc_args += f"--te-precision-config-file {U.encode_pseudo_file(MXFP8_TE_PRECISION_CONFIG)} "
             else:
-                sglang_args += "--rollout-num-gpus-per-engine 1 " "--sglang-cuda-graph-max-bs 256 "
+                sglang_args += "--rollout-num-gpus-per-engine 1 " "--sglang-cuda-graph-max-bs-decode 256 "
         case _:
             raise NotImplementedError
 

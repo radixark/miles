@@ -622,7 +622,7 @@ def _train(args: ScriptArgs):
     if args.model_name == "DeepSeek-V4-Pro-FP8":
         sglang_args += (
             "--sglang-enable-dp-attention "
-            "--sglang-cuda-graph-max-bs 8 "
+            "--sglang-cuda-graph-max-bs-decode 8 "
             "--sglang-moe-a2a-backend deepep "
             "--sglang-deepep-mode low_latency "
         )

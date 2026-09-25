@@ -97,6 +97,12 @@ def test_namespace_to_train_args_emits_anthropic_intermediate_system_expectation
     )
 
 
+def test_namespace_to_train_args_emits_special_token_count_threshold():
+    assert "--ci-tito-special-token-count-threshold" not in _build_args()
+    assert "--ci-tito-special-token-count-threshold" not in _build_args(ci_tito_special_token_count_threshold=0.0)
+    assert "--ci-tito-special-token-count-threshold 0.05" in _build_args(ci_tito_special_token_count_threshold=0.05)
+
+
 def test_namespace_to_train_args_has_no_append_role_policy_flag():
     train_args = _build_args()
 
@@ -275,6 +281,7 @@ def test_run_both_versions_adds_v2_anthropic_pass(
     assert [item.rollout_batch_size for item in args] == [8, 8, 8]
     assert [item.global_batch_size for item in args] == [expected_global_batch_size] * 3
     assert [item.assistant_text_threshold for item in args] == expected_thresholds
+    assert [item.ci_tito_special_token_count_threshold for item in args] == [0.0, 0.0, 0.0]
     assert [item.session_message_matcher for item in args] == ["strict", "strict", "loose_tool_call"]
     assert [item.anthropic_intermediate_system_expectation for item in args] == [None, None, "required"]
     assert [item.custom_generate_function_path for item in args] == [
@@ -389,6 +396,43 @@ def test_session_verify_metrics_hard_mismatch_precedes_soft_threshold(tmp_path):
 
     with pytest.raises(AssertionError, match="hard TITO mismatches.*special_token_count"):
         assert_session_verify_metrics(str(metrics_path), assistant_text_threshold=0.0)
+
+
+@pytest.mark.parametrize(
+    ("hard_types", "threshold", "raises"),
+    [
+        (["special_token_count"], 0.5, False),
+        (["special_token_count"], 0.25, True),
+        (["special_token_count", "special_token_type"], 0.5, True),
+        (["non_assistant_text"], 0.5, True),
+    ],
+)
+def test_session_verify_metrics_special_token_count_threshold(tmp_path, hard_types, threshold, raises):
+    metrics_path = tmp_path / "metrics.jsonl"
+    _write_metrics(
+        metrics_path,
+        [
+            {
+                "driver_events": ["append_tool"],
+                "had_assistant_mismatch": False,
+                "hard_mismatch_count": len(hard_types),
+                "hard_mismatch_types": hard_types,
+                "hard_mismatch_example": {"type": hard_types[0]},
+            },
+            {"driver_events": ["append_tool"], "had_assistant_mismatch": False},
+        ],
+    )
+
+    def check():
+        assert_session_verify_metrics(
+            str(metrics_path), assistant_text_threshold=1.0, special_token_count_threshold=threshold
+        )
+
+    if raises:
+        with pytest.raises(AssertionError, match="hard TITO mismatches"):
+            check()
+    else:
+        check()
 
 
 @pytest.mark.parametrize(

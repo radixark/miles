@@ -346,12 +346,12 @@ def _execute_train(args: ScriptArgs):
         sglang_args += "--prefill-num-servers 1 "
     sglang_args += (
         # use flashmla backend for better precision
-        "--sglang-nsa-decode-backend flashmla_sparse "
-        "--sglang-nsa-prefill-backend flashmla_sparse "
+        "--sglang-dsa-decode-backend flashmla_sparse "
+        "--sglang-dsa-prefill-backend flashmla_sparse "
         "--sglang-kv-cache-dtype bf16 "
         "--sglang-attention-backend nsa "
         "--sglang-page-size 64 "
-        f"--sglang-cuda-graph-max-bs {sglang_decode_max_bs} "
+        f"--sglang-cuda-graph-max-bs-decode {sglang_decode_max_bs} "
         # concurrency
         f"--sglang-max-running-requests 512 "
         f"--sglang-chunked-prefill-size {2048 * sglang_world_size} "

@@ -11,7 +11,7 @@ from torchtitan.trainer import Trainer
 from miles.backends.torchtitan_utils.components import EmptyDataLoader, TiedCheckpointManager
 from miles.backends.torchtitan_utils.loss import RLLossAdapter
 from miles.backends.torchtitan_utils.parallel import parallel_dims_from_config
-from miles.utils.hf_config import load_hf_config
+from miles.utils.hf_utils.config import load_hf_config
 
 logger = logging.getLogger(__name__)
 

@@ -37,7 +37,7 @@ class LaunchArgs(Protocol):
     daytona_api_key_file: str
     e2b_api_key_file: str
     modal_config_file: str
-    router_external_host: str
+    session_server_external_host: str
     miles_host_ip: str
 
     wandb_key: str
@@ -136,12 +136,15 @@ def resolve_sandbox_backend(args: LaunchArgs) -> str:
     return sandbox_common.resolve_backend(raw)
 
 
-def agent_args(tito_model: str, sandbox_backend: str = "") -> str:
+def agent_args(tito_model: str, sandbox_backend: str = "", session_server_external_host: str = "") -> str:
     """Agentic-rollout wiring. The TITO surface differs across models; the
     agent function decides where episodes run — per-episode sandboxes on
     whichever backend the launcher resolves (see resolve_sandbox_backend), else
     the one shared env server."""
     agent_fn = sandbox_common.AGENT_FUNCTIONS.get(sandbox_backend, "openenv_agent_function.run")
+    external_host_arg = (
+        f"--session-server-external-host {session_server_external_host} " if session_server_external_host else ""
+    )
     return (
         "--custom-generate-function-path miles.rollout.generate_hub.agentic_tool_call.generate "
         f"--custom-agent-function-path {agent_fn} "
@@ -151,6 +154,7 @@ def agent_args(tito_model: str, sandbox_backend: str = "") -> str:
         "--use-session-server "
         "--session-server-port 30000 "
         "--session-server-workers 32 "
+        f"{external_host_arg}"
     )
 
 
@@ -189,11 +193,9 @@ def base_env_vars(args: LaunchArgs, script_dir: str, megatron_path: str, miles_r
 
 
 def apply_optional_env_vars(env: dict[str, str], args: LaunchArgs) -> None:
-    """Add host-rewrite / Daytona-sandbox env vars when the args request them."""
+    """Add the node-address and sandbox-provider env vars the args ask for."""
     if args.miles_host_ip:
         env["MILES_HOST_IP"] = args.miles_host_ip
-    if args.router_external_host:
-        env["MILES_ROUTER_EXTERNAL_HOST"] = args.router_external_host
     backend = resolve_sandbox_backend(args)
     if backend:
         spec = PROVIDER_CREDENTIALS[backend]

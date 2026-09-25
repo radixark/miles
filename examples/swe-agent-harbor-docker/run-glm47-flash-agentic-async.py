@@ -78,7 +78,9 @@ class ScriptArgs(U.ExecuteTrainConfig):
     agent_server_url: str = os.environ.get("AGENT_SERVER_URL", "http://localhost:8080")
     agent_model_name: str = os.environ.get("AGENT_MODEL_NAME", "model")
     harbor_tasks_dir: str = os.environ.get("HARBOR_TASKS_DIR", "/root/harbor_tasks")
-    router_external_host: str = os.environ.get("MILES_ROUTER_EXTERNAL_HOST", "")
+    # The host agents outside the cluster reach every session server on; passed as
+    # --session-server-external-host, which also keeps the session servers on the head node.
+    session_server_external_host: str = ""
     miles_host_ip: str = os.environ.get("MILES_HOST_IP", "")
 
     # Disaggregated fully-async settings
@@ -265,13 +267,19 @@ def execute(args: ScriptArgs):
         "--sglang-enable-dp-lm-head "
         f"--sglang-max-running-requests {sglang_world_size * sglang_decode_max_bs // sglang_attn_tp_size} "
         f"--sglang-chunked-prefill-size {sglang_world_size * sglang_decode_max_bs} "
-        f"--sglang-cuda-graph-max-bs {sglang_decode_max_bs} "
+        f"--sglang-cuda-graph-max-bs-decode {sglang_decode_max_bs} "
         "--sglang-tool-call-parser glm47 "
         "--sglang-reasoning-parser glm45 "
         "--sglang-router-port 31000 "
         f"{sglang_p2p_extra}"
     )
     sglang_extra_env_vars: dict[str, str] = {}
+
+    external_host_arg = (
+        f"--session-server-external-host {args.session_server_external_host} "
+        if args.session_server_external_host
+        else ""
+    )
 
     agent_args = (
         "--custom-generate-function-path miles.rollout.generate_hub.agentic_tool_call.generate "
@@ -281,6 +289,7 @@ def execute(args: ScriptArgs):
         "--use-session-server "
         "--session-server-port 30000 "
         "--session-server-workers 32 "
+        f"{external_host_arg}"
     )
 
     misc_args = (
@@ -354,8 +363,6 @@ def execute(args: ScriptArgs):
         "HARBOR_TASKS_DIR": args.harbor_tasks_dir,
         **sglang_extra_env_vars,
     }
-    if args.router_external_host:
-        extra_env_vars["MILES_ROUTER_EXTERNAL_HOST"] = args.router_external_host
     if args.miles_host_ip:
         extra_env_vars["MILES_HOST_IP"] = args.miles_host_ip
 

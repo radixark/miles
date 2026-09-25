@@ -17,8 +17,8 @@ up a new model architecture.
 
 | Format | Block layout | Hardware | Models tested | Maturity |
 |---|---|---|---|---|
-| **BF16** | — | All NVIDIA + AMD MI300X / MI325 / MI350 / MI355X | All | Baseline |
-| **FP8 block-wise** (DeepSeek-style) | 128×128, FP32 scales | Hopper (H100 / H200), Blackwell (B200+) | Qwen3-4B, Qwen3-30B-A3B | Generally available |
+| **BF16** | — | All NVIDIA + AMD MI300X / MI325X / MI350X / MI355X | All | Baseline |
+| **FP8 block-wise** (DeepSeek-style) | 128×128, FP32 scales | Hopper (H100 / H200), Blackwell (B200+), AMD MI350X / MI355X | Qwen3-4B, Qwen3-30B-A3B, DeepSeek-V4-Flash | Generally available |
 | **MXFP8** | 1×32, UE8M0 scales | Blackwell only (B200, B300, GB200, GB300) | Qwen3-30B-A3B, DeepSeek-V3.2 | Beta |
 | **NVFP4** (E2M1) | 1×16, two-level (FP8 + FP32) scales | Blackwell only (B200, B300, GB200, GB300) | Qwen3-30B-A3B | Beta |
 
@@ -30,7 +30,7 @@ forward precision. ✅ = supported; ✗ = not supported.
 | Rollout \ Train | BF16 | FP8 block-wise | MXFP8 | NVFP4 |
 |---|---|---|---|---|
 | **BF16**           | ✅ baseline | ✗ | ✗ | ✗ |
-| **FP8 block-wise** | ✅ | ✅ Hopper + Blackwell | ✗ | ✗ |
+| **FP8 block-wise** | ✅ | ✅ Hopper + Blackwell + MI350X / MI355X | ✗ | ✗ |
 | **MXFP8**          | ✅ | ✗ | ✅ Blackwell | ✗ |
 | **NVFP4**          | ✗ | ✗ | ✗ | ✅ Blackwell |
 
@@ -248,6 +248,16 @@ python tools/convert_hf_to_nvfp4.py \
   --save-dir /root/models/Qwen3-30B-A3B-NVFP4
 ```
 
+Checkpoint conversion and live weight export quantize only routed experts in
+the main language decoder. MTP weights (including appended decoder layers),
+vision/audio components, shared experts, and dense layers keep their source
+precision. The HF converter uses the language `num_hidden_layers` from
+`text_config` when present, otherwise the top-level config, and recognizes
+`model.layers`, `language_model.model.layers`, `model.language_model.layers`,
+and `language_model.layers`. First/last-layer BF16 controls apply to those
+language layers. Unsupported namespaces remain unquantized. Training-time
+precision is still controlled separately by `--te-precision-config-file`.
+
 #### Advanced: dequantized backward
 
 Dequantized backward keeps the backward GEMMs in BF16 but uses BF16
@@ -301,7 +311,8 @@ conversion, Megatron training, SGLang rollout, and live weight export.
 | `--te-precision-config-file` | Select Transformer Engine recipes by Megatron tensor name. |
 
 Use equivalent Hugging Face and Megatron name matchers for exceptions beyond a
-recipe's default scope. NVFP4 excludes shared experts automatically. Common
+recipe's default scope. NVFP4 checkpoint conversion and live export exclude
+shared experts, MTP, and non-language components automatically. Common
 additional exceptions include final transformer layers and MLA projections
 whose contraction axis does not match a one-dimensional scaling layout.
 
@@ -312,13 +323,14 @@ whose contraction axis does not match a one-dimensional scaling layout.
 | NVIDIA H100 / H200 | ✅ | ✅ | ✗ | ✗ |
 | NVIDIA B200 / B300 / GB200 / GB300 | ✅ | ✅ | ✅ | ✅ |
 | NVIDIA A100 | ✅ | ✗ | ✗ | ✗ |
-| AMD MI300X / MI325 / MI350 / MI355X | ✅ | ✗ | ✗ | ✗ |
+| AMD MI350X / MI355X | ✅ | ✅ | ✗ | ✗ |
+| AMD MI300X / MI325X | ✅ | ✗ | ✗ | ✗ |
 
 ## When BF16 is enough
 
 * Dense models below ~30 B.
 * A100 hardware (no FP8 GEMM).
-* AMD hardware today.
+* AMD MI300X / MI325X (no FP8 block-wise path).
 * Bring-up of a new model architecture, where clean BF16 numerics simplify
   debugging.
 

@@ -16,7 +16,9 @@ growing a branch:
   target         (var, label, default description) echoed so a launch says
                  which endpoint/environment it will actually use
   sdk_min_version  optional; the floor the extra in setup.py declares,
-                 enforced by preflight_sdk
+                   enforced by preflight_sdk
+  env_defaults     optional; provider runtime selectors forwarded with a safe
+                   default while still allowing an explicit environment value
 """
 
 import importlib
@@ -63,9 +65,13 @@ PROVIDER_CREDENTIALS = {
         "file_env_var": "MODAL_CONFIG_PATH",
         "arg_attr": "modal_config_file",
         "default_path": "~/.modal.toml",
-        "provision_hint": "uv tool install modal && modal token new  # writes ~/.modal.toml",
+        "provision_hint": "uv tool install 'modal>=1.5.5' && modal token new  # writes ~/.modal.toml",
         "sdk": "modal",
-        "sdk_hint": "pip install modal",
+        "sdk_hint": "pip install -e '<miles>[modal]'",
+        "sdk_min_version": "1.5.5",
+        # Modal SDK >=1.5.5 selects Sandbox V2 through this public switch while
+        # Harbor continues to call the documented Sandbox.create.aio API.
+        "env_defaults": {"MODAL_SANDBOX_V2": "1"},
         "forward": ("MODAL_PROFILE", "MODAL_ENVIRONMENT", "OPENENV_MODAL_APP"),
         "target": ("MODAL_ENVIRONMENT", "workspace environment", "the profile's default"),
     },
@@ -248,6 +254,8 @@ def provision_provider(env: dict[str, str], spec: dict, *, arg_path: str = "") -
         provision_hint=spec["provision_hint"],
     )
     preflight_sdk(spec["sdk"], spec["sdk_hint"], spec.get("sdk_min_version"))
+    for var, default in spec.get("env_defaults", {}).items():
+        forward_address(env, var, os.environ.get(var, "").strip() or default)
     for var in spec["forward"]:
         if value := os.environ.get(var, "").strip():
             forward_address(env, var, value)

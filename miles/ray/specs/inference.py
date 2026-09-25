@@ -107,7 +107,8 @@ def spec_session_server(args) -> CommandWorkerSpec:
             num_workers_per_cell=1,
             num_gpus_per_worker=0,
             num_cpus_per_worker=0,
-            pin_to_head=True,
+            # one external host for every instance only reaches them while they all sit on the head
+            pin_to_head=args.pin_rollout_manager_to_head or bool(args.session_server_external_host),
         ),
         launch_command=_compute_launch_command,
     )

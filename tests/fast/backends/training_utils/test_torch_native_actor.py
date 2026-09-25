@@ -53,6 +53,7 @@ class _Provider(TorchNativeTrainRayActor):
             data_pad_size_multiplier=1,
             qkv_format="thd",
             ci_test=False,
+            use_sampling_support_replay=False,
         )
         self.model_parts = [MagicMock()]
         self.optimizers = [object()]

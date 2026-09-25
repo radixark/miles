@@ -10,7 +10,6 @@ from that example (generate.py), which this launcher puts on PYTHONPATH.
 """
 
 import os
-import socket
 import subprocess
 import time
 from dataclasses import dataclass
@@ -60,7 +59,9 @@ class ScriptArgs(U.ExecuteTrainConfig):
     e2b_api_key_file: str = os.environ.get("E2B_API_KEY_FILE", "")
     modal_config_file: str = os.environ.get("MODAL_CONFIG_PATH", "")
 
-    router_external_host: str = os.environ.get("MILES_ROUTER_EXTERNAL_HOST", socket.gethostname())
+    # The host agents outside the cluster reach every session server on; passed as
+    # --session-server-external-host, which also keeps the session servers on the head node.
+    session_server_external_host: str = ""
     miles_host_ip: str = os.environ.get("MILES_HOST_IP", "")
 
     # W&B settings
@@ -152,7 +153,11 @@ def execute(args: ScriptArgs):
         "--sglang-reasoning-parser glm45 "
         "--sglang-router-port 31000 "
     )
-    agent_args = agentic_train_args(tito_model="glm47", session_server_workers=32)
+    agent_args = agentic_train_args(
+        tito_model="glm47",
+        session_server_workers=32,
+        session_server_external_host=args.session_server_external_host,
+    )
     misc_args = (
         "--attention-dropout 0.0 "
         "--hidden-dropout 0.0 "

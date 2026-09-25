@@ -49,7 +49,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 # tilelang the indexer adapter gets no gradient at all — and EXCLUDING the MLP/MoE
 # leaves (gate_proj/up_proj/down_proj): this is the MoE-LoRA-off ablation, so all
 # experts (routed + shared) and the dense MLP stay frozen.
-_DEFAULT_TARGET_MODULES = "q_proj,k_proj,v_proj,o_proj,q_a_proj,kv_a_proj_with_mqa,q_b_proj,kv_b_proj"
+_DEFAULT_TARGET_MODULES = "o_proj,q_a_proj,kv_a_proj_with_mqa,q_b_proj,kv_b_proj"
 
 
 @dataclass
@@ -123,8 +123,10 @@ class ScriptArgs(U.ExecuteTrainConfig):
     agent_server_url: str = os.environ.get("AGENT_SERVER_URL", "http://localhost:8080")
     agent_model_name: str = os.environ.get("AGENT_MODEL_NAME", "model")
     harbor_tasks_dir: str = os.environ.get("HARBOR_TASKS_DIR", "/root/harbor_tasks")
+    # The host agents outside the cluster reach every session server on; passed as
+    # --session-server-external-host, which also keeps the session servers on the head node.
+    session_server_external_host: str = ""
     # sgl-router binds with a Rust SocketAddr parse, so this MUST be a numeric IP.
-    router_external_host: str = os.environ.get("MILES_ROUTER_EXTERNAL_HOST", "")
     miles_host_ip: str = os.environ.get("MILES_HOST_IP", "")
 
     # W&B settings
@@ -210,12 +212,12 @@ def _sglang_args(args: ScriptArgs) -> str:
         # deadlock the engines. Plain TP + EP MoE has no such collectives.
         f"--sglang-ep-size {engine} "
         "--sglang-attention-backend nsa "
-        "--sglang-nsa-decode-backend flashmla_kv "
-        "--sglang-nsa-prefill-backend flashmla_sparse "
+        "--sglang-dsa-decode-backend flashmla_kv "
+        "--sglang-dsa-prefill-backend flashmla_sparse "
         "--sglang-page-size 64 "
         "--sglang-kv-cache-dtype fp8_e4m3 "
         f"--sglang-context-length {args.sglang_context_length} "
-        f"--sglang-cuda-graph-max-bs {max_bs} --sglang-max-running-requests {max_bs} "
+        f"--sglang-cuda-graph-max-bs-decode {max_bs} --sglang-max-running-requests {max_bs} "
         f"--sglang-chunked-prefill-size {min(8192, 2048 * engine)} "
         "--sglang-watchdog-timeout 3600 "
         "--sglang-moe-runner-backend triton --sglang-disable-shared-experts-fusion "
@@ -310,6 +312,12 @@ def execute(args: ScriptArgs):
     # ~78-128 GB/rank host buffer OOMs the colocate pod
     r3_args = "--use-rollout-routing-replay " if args.use_r3 else ""
 
+    external_host_arg = (
+        f"--session-server-external-host {args.session_server_external_host} "
+        if args.session_server_external_host
+        else ""
+    )
+
     agent_args = (
         "--custom-generate-function-path miles.rollout.generate_hub.agentic_tool_call.generate "
         "--custom-agent-function-path swe_agent_function.run "
@@ -320,6 +328,7 @@ def execute(args: ScriptArgs):
         "--use-session-server "
         "--session-server-port 30001 "
         "--session-server-workers 32 "
+        f"{external_host_arg}"
     )
 
     misc_args = (
@@ -413,8 +422,6 @@ def execute(args: ScriptArgs):
         # engines would inherit the cap and OOM below --sglang-mem-fraction-static.
         "PYTORCH_CUDA_ALLOC_CONF": "garbage_collection_threshold:0.8,max_split_size_mb:512",
     }
-    if args.router_external_host:
-        extra_env_vars["MILES_ROUTER_EXTERNAL_HOST"] = args.router_external_host
     if args.miles_host_ip:
         extra_env_vars["MILES_HOST_IP"] = args.miles_host_ip
 

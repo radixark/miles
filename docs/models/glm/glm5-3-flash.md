@@ -28,7 +28,6 @@ GLM5.2 flagships, not a smaller cut of them.
 | Variant | `--model-name` | Layers |
 |---|---|---|
 | Full | `GLM-5.3-Flash` | 45 |
-| 8-layer slice | `GLM-5.3-Flash-8layer` | 8 |
 | 4-layer slice | `GLM-5.3-Flash-4layer` | 4 (launcher default) |
 
 ## 3. Environment Setup
@@ -83,16 +82,14 @@ python scripts/run_glm5_3_flash.py train --num-nodes 1 --num-gpus-per-node 8
 
 | Shape | TP | PP | EP | Rollout engine |
 |---|---|---|---|---|
-| 16 × 4 (full, validated) | 8 | 4 | 16 | 8 GPUs, SGLang TP 8 / EP 8 |
-| 8 × 4 (full) | 8 | 4 | 16 | 8 GPUs, SGLang TP 8 / EP 8 |
-| 6 × 4 (full) | 8 | 3 | 8 | 8 GPUs, SGLang TP 8 / EP 8 |
-| 2 × 4 or 1 × 8 (slices) | 2 | 2 | 2 | 4 GPUs, SGLang TP 4 / EP 4 |
+| 16 × 4 (full) | 8 | 4 | 16 | 8 GPUs, SGLang TP 8 / EP 8 |
+| 8 × 4 (full) | 8 | 4 | 8 | 8 GPUs, SGLang TP 8 / EP 8 |
+| 2 × 4 or 1 × 8 (4-layer slice) | 2 | 2 | 2 | 4 GPUs, SGLang TP 4 / EP 4 |
 
 The PP-4 shapes run 11 / 11 / 11 / 12 layers per stage, since 45 does not divide by 4.
 GRPO on DAPO-Math-17k, Adam at `lr 1e-6`, `max_tokens_per_gpu 8192`, full uniform recompute.
 Rollout is colocated, with the trainer offloaded to disk; both DSA paths run on tilelang and
-the KV cache is BF16. Routing replay is wired end to end, and indexer-topk replay
-(`--use-rollout-indexer-replay`) is implemented but off by default.
+the KV cache is BF16. Routing replay turns on with `--enable-r3`.
 
 ## 5. What a Healthy Run Looks Like
 

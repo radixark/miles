@@ -48,8 +48,11 @@ put it on a filesystem every worker can read.
 
 **Network.** In-sandbox agents (mini-swe-agent, claude-code) call the model
 from inside the sandbox, so the sandbox platform must reach the Miles session
-server. `--router-external-host` is the address substituted into the URL the
-agent gets. Two port ranges must route from the sandbox network: one
+server. `--session-server-external-host` is the address the sandboxes reach it
+on: the driver builds the URL the agent gets from it and keeps the session
+servers on the head node. On a multi-node job see the network note in
+[the agent-server example](../../swe-agent-harbor-docker/README.md). Two port
+ranges must route from the sandbox network: one
 session-server port per worker starting at `--session-server-port` (30000-30031
 for `run.py`'s 32 workers) and the SGLang router's 31000. Host-process agents
 (terminus-2) call the model from the worker and need no sandbox egress.
@@ -77,7 +80,7 @@ HARBOR_ENV_TYPE=e2b python examples/experimental/harbor/run.py \
     --save-dir /path/to/checkpoints \
     --prompt-data /path/to/tb2_train.jsonl \
     --harbor-tasks-dir /path/to/harbor_tasks \
-    --router-external-host <trainer-address-reachable-from-the-sandboxes> \
+    --session-server-external-host <trainer-address-reachable-from-the-sandboxes> \
     --rollout-batch-size 4 --n-samples-per-prompt 8 --global-batch-size 32 \
     --num-rollout 200 --save-interval 10
 ```
@@ -89,6 +92,15 @@ whatever is there.
 `HARBOR_ENV_TYPE` has no default: the backend decides whose quota a run spends.
 Backend-specific settings go in `HARBOR_ENV_KWARGS` as a JSON object (Harbor's
 `EnvironmentConfig.kwargs`), e.g. `'{"auto_snapshot": true}'` for Daytona.
+
+`HARBOR_OVERRIDE_CPUS`, `HARBOR_OVERRIDE_MEMORY_MB`, and
+`HARBOR_OVERRIDE_STORAGE_MB` replace a task's declared resource values. They do
+not change how Harbor enforces CPU or memory. Set
+`HARBOR_CPU_ENFORCEMENT_POLICY` or `HARBOR_MEMORY_ENFORCEMENT_POLICY` to one of
+Harbor's `auto`, `request`, `limit`, `guarantee`, or `ignore` modes when the
+provider default is not the desired contract. For example, Modal CPU `auto` is
+a hard request-and-limit pair; use `HARBOR_CPU_ENFORCEMENT_POLICY=request` to
+keep the requested CPU guarantee while allowing burst capacity.
 
 Every remaining knob — timeouts and their layering, failure semantics, the
 full env-var reference — is documented in `harbor_agent_function.py`'s header,

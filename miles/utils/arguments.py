@@ -2,6 +2,7 @@ import argparse
 import json
 import logging
 import os
+from string import Formatter
 from typing import Any
 
 import yaml
@@ -17,15 +18,18 @@ from miles.utils.eval_config import EvalDatasetConfig, build_eval_dataset_config
 from miles.utils.file_arg_utils import resolve_file_arg
 from miles.utils.ft_utils.health_checker import SimpleHealthCheckerConfig
 from miles.utils.function_registry import load_function
-from miles.utils.hf_config import is_dsa, load_hf_config
+from miles.utils.hf_utils.config import is_dsa, load_hf_config
 from miles.utils.logging_utils import configure_logger_raw
-from miles.utils.lora import is_lora_enabled
+from miles.utils.lora.arguments import add_lora_arguments, validate_lora_args
+from miles.utils.lora.utils import is_lora_enabled
 from miles.utils.megatron_args_utils import compute_megatron_world_size_except_dp
 from miles.utils.object_store import ObjectStoreBackend
 from miles.utils.run_uuid import RUN_UUID_LENGTH, generate_run_uuid, validate_run_uuid
 from miles.utils.tracking_utils.ci_history import RECORD_DIR_ENV
 
 logger = logging.getLogger(__name__)
+
+FULLY_ASYNC_ROLLOUT_PATH = "miles.rollout.fully_async_rollout.FullyAsyncRolloutFn"
 
 
 def resolve_rollout_function_paths(args) -> tuple[str, str]:
@@ -36,13 +40,19 @@ def resolve_rollout_function_paths(args) -> tuple[str, str]:
         standard_path = "miles.rollout.inference_rollout.inference_rollout_common.InferenceRolloutFn"
     rollout_path = args.rollout_function_path or standard_path
     if args.fully_async:
-        rollout_path = "miles.rollout.fully_async_rollout.FullyAsyncRolloutFn"
+        rollout_path = FULLY_ASYNC_ROLLOUT_PATH
     # Resolved after the override: shared-engine eval must reach the producer it pauses.
     eval_path = args.eval_function_path or rollout_path
     return rollout_path, eval_path
 
 
 def _resolve_rollout_functions(args) -> None:
+    if args.rollout_function_path == FULLY_ASYNC_ROLLOUT_PATH:
+        # The selection --fully-async makes, so enable the mode: as a plugin path it would
+        # skip the checks below and train.py's async-driver guard. A subclass passes the flag.
+        logger.info("--rollout-function-path selects FullyAsyncRolloutFn: enabling --fully-async")
+        args.fully_async = True
+        args.rollout_function_path = None
     if args.partial_rollout and args.mask_offpolicy_in_partial_rollout and not use_legacy_rollout_v1():
         raise ValueError(
             "--mask-offpolicy-in-partial-rollout does not re-extend the loss mask on the "
@@ -548,6 +558,9 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                     "Requires train_async.py."
                 ),
             )
+            # Sampling values reach the engine per request only: the built-in generate path sends them
+            # itself and the session server fills fields an agent omits from its session's defaults.
+            # They are never engine launch arguments: an engine shared by rollout and eval has no single default.
             parser.add_argument(
                 "--rollout-temperature",
                 type=float,
@@ -555,10 +568,23 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help="the temperature for the inference engine during rollout.",
             )
             parser.add_argument(
-                "--rollout-top-p", type=float, default=1.0, help="the top-p for the inference engine during rollout."
+                "--rollout-top-p",
+                type=float,
+                default=1.0,
+                help=(
+                    "the top-p for the inference engine during rollout. Values below 1 enable "
+                    "sampling-support replay and require a positive --rollout-top-k."
+                ),
             )
             parser.add_argument(
-                "--rollout-top-k", type=int, default=-1, help="the top-k for the inference engine during rollout."
+                "--rollout-top-k",
+                type=int,
+                default=-1,
+                help=(
+                    "the top-k for the inference engine during rollout. Positive values enable "
+                    "sampling-support replay. SGLang's --sampling-mask-max-tokens is the physical "
+                    "returned-support limit because cutoff ties can retain more than top-k tokens."
+                ),
             )
             parser.add_argument(
                 "--rollout-max-context-len",
@@ -862,7 +888,8 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 action="store_true",
                 default=False,
                 help=(
-                    "Pin the RolloutExecutor (and the co-located router process) to the Ray head node. "
+                    "Pin the RolloutExecutor, the co-located router process, and the session servers to the "
+                    "Ray head node. "
                     "Useful in K8s where the head pod has a stable Service address so that "
                     "external agent environments can reliably reach the router."
                 ),
@@ -1757,95 +1784,6 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             )
             return parser
 
-        def add_lora_arguments(parser):
-            """Add LoRA-related arguments for Megatron backend."""
-            parser.add_argument(
-                "--lora-rank",
-                type=int,
-                default=0,
-                help="LoRA rank. Set to 0 to disable LoRA (default: 0)",
-            )
-            parser.add_argument(
-                "--lora-alpha",
-                type=int,
-                default=16,
-                help="LoRA alpha for scaling (default: 16)",
-            )
-            parser.add_argument(
-                "--lora-dropout",
-                type=float,
-                default=0.0,
-                help="LoRA dropout rate (default: 0.0)",
-            )
-            parser.add_argument(
-                "--lora-type",
-                type=str,
-                default="lora",
-                choices=["lora", "canonical_lora"],
-                help="LoRA variant to use: 'lora' (standard) or 'canonical_lora' (split Q/K/V) (default: lora)",
-            )
-            parser.add_argument(
-                "--target-modules",
-                type=str,
-                default=None,
-                help="Target modules for LoRA. Use 'all-linear' or comma-separated module names "
-                "(e.g., 'q_proj,k_proj,v_proj,o_proj' for HF naming or 'linear_qkv,linear_proj' for Megatron naming)",
-            )
-            parser.add_argument(
-                "--exclude-modules",
-                type=str,
-                default=None,
-                help="Modules to exclude from LoRA (comma-separated)",
-            )
-            parser.add_argument(
-                "--lora-adapter-path",
-                type=str,
-                default=None,
-                help="Path to load pre-trained LoRA adapter weights (default: None)",
-            )
-            parser.add_argument(
-                "--lora-sync-from-tensor",
-                action="store_true",
-                default=False,
-                help="Sync LoRA weights via tensor instead of file (more efficient)",
-            )
-            parser.add_argument(
-                "--lora-base-cpu-backup",
-                action="store_true",
-                default=False,
-                help=(
-                    "LoRA + colocate: keep SGLang-side CPU mirror of base weights "
-                    "and skip per-step base sync. Trades host RAM for faster "
-                    "onload/offload. Ignored unless --colocate and LoRA are both on."
-                ),
-            )
-            parser.add_argument(
-                "--lora-train-only",
-                action="store_true",
-                default=False,
-                help=(
-                    "Train LoRA adapters in Megatron but keep rollout engines on the frozen "
-                    "base policy: SGLang LoRA serving and adapter weight sync are disabled "
-                    "(only the base weights are synced). For models without SGLang LoRA "
-                    "support (e.g. Inkling native LoRA)."
-                ),
-            )
-            parser.add_argument(
-                "--experts-shared-outer-loras",
-                action="store_true",
-                default=False,
-                help="Enable shared-outer grouped-expert LoRA (gate_up lora_A and "
-                "down lora_B shared across experts, expert_dim=1). Matches SGLang "
-                "PR #21466's experts_shared_outer_loras=True serving contract.",
-            )
-            parser.add_argument(
-                "--multi-lora-n-adapters",
-                type=int,
-                default=0,
-                help="Maximum number of concurrent adapter slots for multi-LoRA. Set to 0 to disable multi-LoRA (default: 0)",
-            )
-            return parser
-
         def add_router_arguments(parser):
             parser.add_argument(
                 "--use-miles-router",
@@ -2171,19 +2109,6 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "by up to 1 ULP of the quantized dtype per side (compared in dequantized space).",
             )
             parser.add_argument(
-                "--check-lora-weight-equal",
-                action="store_true",
-                default=False,
-                help=(
-                    "Verify the megatron->sglang LoRA adapter weight-sync on the colocated "
-                    "(from_tensors) path: on every sync the trainer ships a per-tensor sha256 "
-                    "manifest of the adapter it sends, and each rollout engine hashes the "
-                    "tensors it received and fails the load on any mismatch/missing/extra "
-                    "name. The LoRA analogue of --check-weight-update-equal, which only "
-                    "covers base weights."
-                ),
-            )
-            parser.add_argument(
                 "--save-local-weight-checksum",
                 action="store_true",
                 help="Save per-rank local weight checksum per-step.",
@@ -2454,6 +2379,12 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 action="store_true",
             )
             parser.add_argument(
+                "--ci-tito-special-token-count-threshold",
+                type=float,
+                default=0.0,
+                help="Max TITO special_token_count mismatch rate tolerated under --ci-test; other hard types stay at 0.",
+            )
+            parser.add_argument(
                 "--ci-disable-kl-checker",
                 action="store_true",
             )
@@ -2529,6 +2460,15 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "Defaults to that placed address.",
             )
             parser.add_argument(
+                "--session-server-external-host",
+                type=str,
+                default=None,
+                help="Host that peers outside the cluster, such as agents in a sandbox, reach every session "
+                "server on. Setting it keeps all session servers on the head node, so it must reach the head. "
+                "Leave it unset when each node sets MILES_NODE_EXTERNAL_IP to its own reachable address, or "
+                "when the placed addresses already route from outside.",
+            )
+            parser.add_argument(
                 "--session-server-port",
                 type=int,
                 default=None,
@@ -2558,13 +2498,15 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             parser.add_argument(
                 "--session-sample-picker-path",
                 type=str,
-                default="miles.rollout.session.v2.picker_hub.drop_retries",
+                default="miles.rollout.session.v2.picker_hub.drop_same_prompt_retries",
                 help="v2 only. Import path of the sample-pick hook for the "
                 "session samples op: fn(leaf_samples, session_metadata) -> "
                 "list[Sample], a pure selection over the per-leaf raw samples. "
                 "Runs synchronously inside the session server process; long CPU "
-                "work stalls every session on the instance. Default: the "
-                "temporal-supersession retry trim.",
+                "work stalls every session on the instance. Default: drop_same_prompt_retries, "
+                "which trims identical re-sends, including a re-sent first turn; "
+                "drop_rolled_back_leaves also trims a leaf whose later sibling sent a "
+                "different request.",
             )
             parser.add_argument(
                 "--session-sample-postprocessor-path",
@@ -2609,7 +2551,6 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
         parser = add_eval_arguments(parser)
         parser = add_algo_arguments(parser)
         parser = add_on_policy_distillation_arguments(parser)
-        parser = add_lora_arguments(parser)
         parser = add_wandb_arguments(parser)
         parser = add_mlflow_arguments(parser)
         parser = add_tensorboard_arguments(parser)
@@ -2618,16 +2559,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
         parser = add_router_arguments(parser)
         parser = add_debug_arguments(parser)
         parser = add_sglang_arguments(parser)
-        # required whenever expert projections are LoRA targets, inert otherwise
-        # (sglang's own default is False)
-        parser.set_defaults(sglang_lora_use_virtual_experts=True)
-        parser.add_argument(
-            "--no-sglang-lora-use-virtual-experts",
-            dest="sglang_lora_use_virtual_experts",
-            action="store_false",
-            help="Serve MoE-expert LoRA through sglang's fused_moe_lora alignment path instead "
-            "of the virtual-experts path.",
-        )
+        parser = add_lora_arguments(parser)
         parser = add_session_arguments(parser)
         parser = add_network_arguments(parser)
         parser = add_reward_model_arguments(parser)
@@ -2668,14 +2600,20 @@ def parse_args(add_custom_arguments=None, entry="train", preprocess_args=None):
 
         args = megatron_parse_args(extra_args_provider=add_miles_arguments)
         args.compress_ratios = None
+        args.rollout_indexer_topk_num_streams = None
         if args.hf_checkpoint:
             hf_config = load_hf_config(args.hf_checkpoint)
             args.compress_ratios = getattr(hf_config, "compress_ratios", None)
             hf_validate_args(args, hf_config)
 
             if is_dsa(hf_config):
-                args.indexer_rope_interleave = bool(getattr(hf_config, "indexer_rope_interleave", False))
+                getter = getattr(hf_config, "get_text_config", None)
+                text_config = (getter() if callable(getter) else getattr(hf_config, "text_config", None)) or hf_config
+                args.indexer_rope_interleave = bool(getattr(text_config, "indexer_rope_interleave", False))
                 logger.info(f"Setting indexer_rope_interleave: {args.indexer_rope_interleave} into args")
+                linear_attn_config = getattr(text_config, "linear_attn_config", None)
+                kda_layers = set((linear_attn_config or {}).get("kda_layers") or [])
+                args.rollout_indexer_topk_num_streams = text_config.num_hidden_layers - len(kda_layers)
 
         # TODO: unify this .rank and .world_size w/ indep_dp logics
         args.rank = 0
@@ -2815,8 +2753,6 @@ def _validate_rematerialize_param_from_master_weight(args):
     assert (
         args.train_backend == "megatron"
     ), "--rematerialize-param-from-master-weight reads Megatron's distributed-optimizer main params"
-    from miles.backends.megatron_utils.lora.utils import is_lora_enabled
-
     assert not is_lora_enabled(args), "--rematerialize-param-from-master-weight does not support LoRA"
     assert not args.debug_disable_optimizer, "--debug-disable-optimizer leaves no main params to rematerialize from"
     assert not args.indep_dp, (
@@ -2941,6 +2877,31 @@ def miles_validate_args(args):
             "have known issues in SGLang and need to be fixed."
         )
 
+    if not 0.0 < args.rollout_top_p <= 1.0:
+        raise ValueError(f"--rollout-top-p must be in (0, 1], got {args.rollout_top_p}")
+    if args.rollout_top_k != -1 and args.rollout_top_k < 1:
+        raise ValueError(f"--rollout-top-k must be -1 or at least 1, got {args.rollout_top_k}")
+    args.use_sampling_support_replay = args.rollout_top_p < 1.0 or args.rollout_top_k > 0
+    if args.use_sampling_support_replay:
+        if args.rollout_top_k == -1:
+            raise ValueError(
+                "--rollout-top-p below 1 requires a positive --rollout-top-k; "
+                "top-p alone does not bound the returned support size"
+            )
+        if args.recompute_logprobs_via_prefill:
+            raise ValueError(
+                "sampling-support replay cannot be combined with --recompute-logprobs-via-prefill; "
+                "prefill scoring does not preserve the rollout sampling support"
+            )
+        if args.kl_coef != 0 or args.use_kl_loss or args.use_opd:
+            # The actor still produces full-vocabulary logits, but replay currently exposes only the
+            # support-normalized actor score to the loss. These objectives can be enabled once the loss
+            # path also preserves an unmasked actor score from the same forward pass.
+            raise ValueError(
+                "sampling-support replay cannot currently be combined with reference KL or teacher distillation; "
+                "those objectives require a separate full-policy actor score"
+            )
+
     if not args.use_session_server and args.tito_model != TITOTokenizerType.DEFAULT.value:
         raise ValueError(
             f"--tito-model={args.tito_model} requires --use-session-server; "
@@ -2974,9 +2935,8 @@ def miles_validate_args(args):
         )
         args.chat_template_path = None
 
-    # A named family is one fixed renderer contract.  Letting a custom path or
-    # conflicting required kwarg through would detach its declared role
-    # capability from the renderer that actually runs.
+    # Named families require their registered template and fixed kwargs to keep
+    # the renderer consistent with the roles they support.
     if args.tito_model != TITOTokenizerType.DEFAULT.value:
         tito_model = TITOTokenizerType(args.tito_model)
         from miles.utils.chat_template_utils import resolve_fixed_chat_template
@@ -2991,13 +2951,7 @@ def miles_validate_args(args):
         if resolved_path is not None:
             args.chat_template_path = resolved_path
         user_kwargs = dict(args.apply_chat_template_kwargs or {})
-        for key, value in resolved_kwargs.items():
-            if key in user_kwargs and user_kwargs[key] != value:
-                raise ValueError(
-                    f"--apply-chat-template-kwargs {key}={user_kwargs[key]!r} conflicts "
-                    f"with the value registered for --tito-model={tito_model.value}: {value!r}"
-                )
-            user_kwargs[key] = value
+        user_kwargs.update(resolved_kwargs)
         args.apply_chat_template_kwargs = user_kwargs
 
     if args.chat_template_path is not None:
@@ -3114,55 +3068,7 @@ def miles_validate_args(args):
     if args.custom_megatron_post_save_hook_path is not None:
         assert args.save is not None, "'--save' is required when custom_megatron_post_save_hook_path is set."
 
-    # Parse LoRA target modules
-    if args.lora_rank > 0:
-        assert args.target_modules is not None, "'--target-modules' is required when LoRA is enabled."
-
-        if args.target_modules == "all-linear":
-            # MLA projections are HF-config-gated (SGLang sizes LoRA buffers per module name;
-            # listing them on a dense model crashes the engine). The DSA indexer stays excluded.
-            modules = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
-            hf_config = load_hf_config(args.hf_checkpoint)
-            if getattr(hf_config, "kv_lora_rank", None):
-                modules += ["kv_a_proj_with_mqa", "kv_b_proj"]
-                if getattr(hf_config, "q_lora_rank", None):
-                    modules += ["q_a_proj", "q_b_proj"]
-        elif "," in args.target_modules:
-            modules = [m.strip() for m in args.target_modules.split(",")]
-        else:
-            modules = [args.target_modules]
-
-        if args.exclude_modules:
-            exclude_set = (
-                set(m.strip() for m in args.exclude_modules.split(","))
-                if "," in args.exclude_modules
-                else {args.exclude_modules}
-            )
-            modules = [m for m in modules if m not in exclude_set]
-
-        args.target_modules = modules
-
-        # Training and serving must agree on shared-outer grouped-expert LoRA
-        # (expert_dim=1 buffers in SGLang).
-        if args.experts_shared_outer_loras and hasattr(args, "sglang_experts_shared_outer_loras"):
-            args.sglang_experts_shared_outer_loras = True
-        assert args.experts_shared_outer_loras == bool(
-            getattr(args, "sglang_experts_shared_outer_loras", args.experts_shared_outer_loras)
-        ), "experts_shared_outer_loras and sglang_experts_shared_outer_loras must agree"
-
-        # the two MoE-expert adapter layouts are not checkpoint-compatible; say which one runs
-        _expert_leaves = ("linear_fc1", "linear_fc2", "gate_proj", "up_proj", "down_proj")
-        if any(leaf in str(tm) for tm in modules for leaf in _expert_leaves):
-            logger.warning(
-                "MoE-expert LoRA layout: %s (--experts-shared-outer-loras).",
-                "shared-outer" if args.experts_shared_outer_loras else "per-expert",
-            )
-
-    # Sets args.multi_lora, then validates/defaults the multi-LoRA arg surface
-    # (adapter configs themselves are loaded later by the controller).
-    from miles.utils.multi_lora import validate_multi_lora_args
-
-    validate_multi_lora_args(args)
+    validate_lora_args(args)
 
     assert not (args.kl_coef != 0 and args.kl_loss_coef != 0), "Only one of kl_coef and kl_loss_coef can be set"
 
@@ -3480,6 +3386,9 @@ def miles_validate_args(args):
                 "the training rollout function cannot evaluate snapshots."
             )
         if args.eval_hf_dir is None:
+            if not any(field == "rollout_id" for _, field, _, _ in Formatter().parse(args.save_hf)):
+                args.save_hf = os.path.join(args.save_hf, "step_{rollout_id}")
+                logger.info(f"Using per-step checkpoints for snapshot eval: --save-hf={args.save_hf}")
             assert args.save_interval is not None and args.eval_interval % args.save_interval == 0, (
                 "Reusing --save-hf checkpoints for eval requires eval_interval to be a "
                 f"multiple of save_interval (got eval_interval={args.eval_interval}, "

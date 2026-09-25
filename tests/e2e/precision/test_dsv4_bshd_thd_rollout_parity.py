@@ -85,7 +85,7 @@ def _common_extra_args(*, te_precision_config_path: Path, micro_batch_size: int)
         "--rollout-max-response-len 256 "
         "--rollout-temperature 0.7 "
         "--rollout-seed 42 "
-        "--sglang-cuda-graph-max-bs 4 "
+        "--sglang-cuda-graph-max-bs-decode 4 "
         "--seed 1234 "
         f"--te-precision-config-file {te_precision_config_path} "
     )

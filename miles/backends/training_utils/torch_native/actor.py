@@ -21,6 +21,7 @@ from miles.backends.training_utils.log_utils import (
 )
 from miles.backends.training_utils.loss import compute_advantages_and_returns, get_log_probs_and_entropy, loss_function
 from miles.backends.training_utils.parallel import get_parallel_state
+from miles.backends.training_utils.sampling_mask import get_rollout_sampling_masks
 from miles.backends.training_utils.torch_native import routing_replay
 from miles.backends.training_utils.torch_native.step_runner import StepRunner
 from miles.backends.training_utils.weight_update.updater import WeightUpdater
@@ -53,6 +54,7 @@ TRAIN_KEYS = FORWARD_ONLY_KEYS + [
     "ref_log_probs",
     "rollout_log_probs",
 ]
+SAMPLING_MASK_KEYS = ["rollout_sampling_mask_ids", "rollout_sampling_mask_offsets"]
 
 
 class TorchNativeTrainRayActor(TrainRayActor):
@@ -181,6 +183,8 @@ class TorchNativeTrainRayActor(TrainRayActor):
         args = self.args
         forward_store: list[dict] = []
         data_iterator.reset()
+        use_rollout_sampling_mask = store_prefix == "" and args.use_sampling_support_replay
+        keys = FORWARD_ONLY_KEYS + SAMPLING_MASK_KEYS if use_rollout_sampling_mask else FORWARD_ONLY_KEYS
 
         def compute(logits: torch.Tensor, batch: dict) -> dict:
             result = get_log_probs_and_entropy(
@@ -191,6 +195,7 @@ class TorchNativeTrainRayActor(TrainRayActor):
                 response_lengths=batch["response_lengths"],
                 with_entropy=(store_prefix == ""),
                 max_seq_lens=batch.get("max_seq_lens"),
+                rollout_sampling_mask=get_rollout_sampling_masks(batch) if use_rollout_sampling_mask else None,
             )
             entry = {f"{store_prefix}log_probs": result["log_probs"]}
             if "entropy" in result:
@@ -200,9 +205,7 @@ class TorchNativeTrainRayActor(TrainRayActor):
         with timer(f"{store_prefix}log_probs"):
             for microbatches in num_microbatches:
                 progress = tqdm(range(microbatches), desc=f"{store_prefix}log_probs", disable=dist.get_rank() != 0)
-                batches = self._fetch_batches(
-                    self.prof.iterate_train_log_probs(progress), data_iterator, FORWARD_ONLY_KEYS
-                )
+                batches = self._fetch_batches(self.prof.iterate_train_log_probs(progress), data_iterator, keys)
                 forward_store.extend(runner.forward_only_step(batches, compute))
 
         return aggregate_forward_results(forward_store, data_iterator, args, store_prefix)
@@ -213,11 +216,12 @@ class TorchNativeTrainRayActor(TrainRayActor):
         args = self.args
         data_iterator.reset()
         state = get_parallel_state()
+        keys = TRAIN_KEYS + SAMPLING_MASK_KEYS if args.use_sampling_support_replay else TRAIN_KEYS
 
         for step_id, microbatches in enumerate(num_microbatches):
             runner.zero_grad()
             progress = tqdm(range(microbatches), desc="actor_train", disable=dist.get_rank() != 0)
-            batches = self._fetch_batches(self.prof.iterate_train_actor(progress), data_iterator, TRAIN_KEYS)
+            batches = self._fetch_batches(self.prof.iterate_train_actor(progress), data_iterator, keys)
             losses_reduced = runner.forward_backward_step(batches, partial(_step_loss, args, microbatches))
             metrics = runner.apply_step()
 

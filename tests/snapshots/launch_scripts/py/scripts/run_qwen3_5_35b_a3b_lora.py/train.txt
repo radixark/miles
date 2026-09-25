@@ -56,7 +56,7 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --lora-rank 16
   --lora-alpha 32
   --lora-dropout 0.0
-  --target-modules "language_model.decoder.layers.*.self_attention.linear_qkv,language_model.decoder.layers.*.self_attention.linear_proj,language_model.decoder.layers.*.mlp.experts.linear_fc1,language_model.decoder.layers.*.mlp.experts.linear_fc2,language_model.decoder.layers.*.mlp.shared_experts.linear_fc1,language_model.decoder.layers.*.mlp.shared_experts.linear_fc2,language_model.decoder.layers.*.self_attention.in_proj,language_model.decoder.layers.*.self_attention.out_proj"
+  --target-modules "all-linear"
   --experts-shared-outer-loras
   --no-gradient-accumulation-fusion
   --lora-base-cpu-backup 

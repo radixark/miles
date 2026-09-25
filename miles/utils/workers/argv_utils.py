@@ -59,7 +59,7 @@ def parse_config_argv(config_cls: type[_ConfigT], argv: list[str] | None) -> _Co
 
 
 def dataclass_to_values(args_obj: object) -> dict[str, object]:
-    return {field.name: getattr(args_obj, field.name) for field in dataclasses.fields(args_obj)}
+    return {name: getattr(args_obj, name) for name in _record_field_names(args_obj)}
 
 
 def render_cli_argv(
@@ -106,11 +106,26 @@ def render_cli_argv(
     return argv
 
 
+def _record_field_names(record) -> tuple[str, ...]:
+    """Accept dataclass and msgspec Struct classes or instances across SGLang versions.
+
+    msgspec is imported inside the branch that needs it: this module is on the light
+    worker entrypoint's import path, whose footprint tests/fast/utils/workers/import_probe.py
+    pins.
+    """
+    if dataclasses.is_dataclass(record):
+        return tuple(field.name for field in dataclasses.fields(record))
+
+    import msgspec
+
+    return tuple(field.name for field in msgspec.structs.fields(record))
+
+
 def _describe_mismatch(parsed: _ArgsT, wanted: _ArgsT, *, uncompared_fields: frozenset[str]) -> str:
     return ", ".join(
-        f"{field.name}: parsed {getattr(parsed, field.name)!r} != wanted {getattr(wanted, field.name)!r}"
-        for field in dataclasses.fields(wanted)
-        if field.name not in uncompared_fields and getattr(parsed, field.name) != getattr(wanted, field.name)
+        f"{name}: parsed {getattr(parsed, name)!r} != wanted {getattr(wanted, name)!r}"
+        for name in _record_field_names(wanted)
+        if name not in uncompared_fields and getattr(parsed, name) != getattr(wanted, name)
     )
 
 

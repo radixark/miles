@@ -40,7 +40,7 @@ class bdist_wheel(_bdist_wheel):
 setup(
     author="miles Team",
     name="miles",
-    version="0.1.0",
+    version="0.1.1",
     packages=find_packages(include=["miles*", "miles_plugins*"]),
     include_package_data=True,
     package_data={"miles.dashboard": ["static/*"]},
@@ -65,6 +65,9 @@ setup(
         # the deprecated `alias` and every Template.build fails with 400
         "e2b": [
             "e2b>=2.12",
+        ],
+        "modal": [
+            "modal>=1.5.5",
         ],
     },
     python_requires=">=3.10",

@@ -95,7 +95,6 @@ def harbor_worker_env() -> dict[str, str]:
         harbor_trials_dir=TRIALS_DIR,
         agent_model_name="model",
         agent_timeout=600,
-        router_external_host="",  # terminus-2 runs on this host; no sandbox callback
         # every registered provider's key-file argument, so a new backend needs no change here
         **{spec["arg_attr"]: os.environ.get(spec["file_env_var"], "") for spec in PROVIDER_CREDENTIALS.values()},
     )

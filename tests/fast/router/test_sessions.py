@@ -619,14 +619,17 @@ def _serve_router(extra_args: dict | None = None):
         return ProcessResult(text="ok", finish_reason="stop")
 
     with with_mock_server(process_fn=process_fn) as backend:
+        defaults = {
+            "hf_checkpoint": "Qwen/Qwen3-0.6B",
+            "apply_chat_template_kwargs": {"enable_thinking": False},
+            "tito_model": "default",
+            "pause_generation_mode": "retract",
+        }
         config = make_session_server_config(
             backend_url=backend.url,
             timeout=30,
-            hf_checkpoint="Qwen/Qwen3-0.6B",
-            apply_chat_template_kwargs={"enable_thinking": False},
-            tito_model="default",
             instance_id=uuid.uuid4().hex,
-            **({"pause_generation_mode": "retract"} | (extra_args or {})),
+            **(defaults | (extra_args or {})),
         )
         server_obj = SessionServer(config)
         port = find_available_port(31000)
@@ -701,10 +704,11 @@ class TestAdditionR3RequestOffset:
             assert body["return_routed_experts"] is True
             assert "routed_experts_start_len" not in body
 
-    def test_in_place_without_replay_sends_neither_field(self):
+    def test_in_place_without_replay_sends_false_flag_and_no_start_len(self):
         with _serve_router({"pause_generation_mode": "in_place"}) as env:
             session_id = _create_session(env.url)
             assert _post_chat(env.url, session_id, {"messages": self.MESSAGES}).status_code == 200
             body = env.backend.request_log[-1]
-            assert "return_routed_experts" not in body
+            # The launch flag is authoritative: off means an explicit False, never a client-provided value.
+            assert body["return_routed_experts"] is False
             assert "routed_experts_start_len" not in body

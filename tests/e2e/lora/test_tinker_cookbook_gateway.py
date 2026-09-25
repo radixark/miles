@@ -12,13 +12,6 @@ register_cuda_ci(
     hardware=["hopper"],
 )
 
-COOKBOOK_PIN = "git+https://github.com/thinking-machines-lab/tinker-cookbook@1f962eda3a2c"
-
-
-def prepare():
-    prepare_gateway()
-    U.exec_command_cpu(f"pip install tinker==0.26.2 {COOKBOOK_PIN}")
-
 
 def execute():
     with running_gateway() as base_url:
@@ -29,5 +22,5 @@ def execute():
 
 
 if __name__ == "__main__":
-    prepare()
+    prepare_gateway()
     execute()
