@@ -11,6 +11,7 @@ import pydantic
 import yaml
 
 from miles.utils.file_arg_utils import resolve_file_arg
+from miles.utils.hf_utils.config import load_hf_config
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
 from miles.utils.workers.argv_utils import coerce_dict_to_args, declared_arg_dests
 from miles.utils.workers.naming import DNS_LABEL_PATTERN, TRAINER_ID_MAX_LENGTH
@@ -340,8 +341,13 @@ def compute_trainer_args(args: Namespace, trainer: MegatronTrainerConfig) -> Nam
 
 def _apply_critical_derived_overrides(ans: Namespace, *, base: Namespace, trainer: MegatronTrainerConfig) -> None:
     # TODO: most derived defaults are still computed from the base args; revisit after the arguments refactor
-    if "hf_checkpoint" in trainer.overrides and base.tokenizer_model == base.hf_checkpoint:
-        ans.tokenizer_model = ans.hf_checkpoint
+    if "hf_checkpoint" in trainer.overrides:
+        if base.tokenizer_model == base.hf_checkpoint:
+            ans.tokenizer_model = ans.hf_checkpoint
+        if ans.hf_checkpoint != base.hf_checkpoint:
+            config = load_hf_config(ans.hf_checkpoint).to_dict() if ans.hf_checkpoint else {}
+            ans.compress_ratios = config.get("compress_ratios")
+            ans.indexer_rope_interleave = bool(config.get("indexer_rope_interleave", False))
 
 
 # ---------------------------- checkpoint dirs -----------------------------

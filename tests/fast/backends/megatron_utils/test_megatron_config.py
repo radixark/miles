@@ -2,7 +2,9 @@ import argparse
 import re
 import sys
 from argparse import Namespace
+from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import pydantic
 import pytest
@@ -647,7 +649,9 @@ class TestPerPolicyCheckpointResolution:
         assert model_args.load == str(trainer_dir)
         assert (model_args.finetune, model_args.start_rollout_id) == (False, None)
 
-    def test_a_fresh_bridge_policy_falls_back_to_its_own_hf_checkpoint(self, tmp_path):
+    def test_a_fresh_bridge_policy_falls_back_to_its_own_hf_checkpoint(
+        self, tmp_path: Path, policy_hf_configs: dict[str, dict[str, Any]]
+    ) -> None:
         """In bridge mode a policy starts from its own hugging face checkpoint, not from another policy's."""
         path = _write_yaml(
             {
@@ -665,7 +669,41 @@ class TestPerPolicyCheckpointResolution:
 
 
 class TestPerPolicyDerivedDefaults:
-    def test_a_policy_checkpoint_override_repoints_the_tokenizer(self, tmp_path):
+    @pytest.mark.parametrize(
+        ("metadata", "expected_ratios", "expected_interleave"),
+        [
+            ({"compress_ratios": [1, 4], "indexer_rope_interleave": True}, [1, 4], True),
+            ({}, None, False),
+        ],
+    )
+    def test_checkpoint_override_recomputes_model_derived_fields(
+        self,
+        tmp_path: Path,
+        policy_hf_configs: dict[str, dict[str, Any]],
+        metadata: dict[str, Any],
+        expected_ratios: list[int] | None,
+        expected_interleave: bool,
+    ) -> None:
+        """Policy metadata replaces stale compression and rotary layout defaults."""
+        policy_hf_configs["/models/a"] = metadata
+        path = _write_yaml(
+            {"trainers": [{"model_id": "a", "overrides": {"hf_checkpoint": "/models/a"}}, {"model_id": "b"}]},
+            tmp_path,
+        )
+        args = _make_args(path, compress_ratios=[8], indexer_rope_interleave=True)
+
+        policy = _model_args(args, model_id="a")
+        unchanged = _model_args(args, model_id="b")
+
+        assert policy.compress_ratios == expected_ratios
+        assert policy.indexer_rope_interleave is expected_interleave
+        assert unchanged.compress_ratios == [8]
+        assert unchanged.indexer_rope_interleave is True
+        assert args.compress_ratios == [8]
+
+    def test_a_policy_checkpoint_override_repoints_the_tokenizer(
+        self, tmp_path: Path, policy_hf_configs: dict[str, dict[str, Any]]
+    ) -> None:
         """The tokenizer latched onto the base checkpoint at parse time, so a policy of its own needs its own."""
         path = _write_yaml(
             {"trainers": [{"model_id": "a", "overrides": {"hf_checkpoint": "/models/a"}}, {"model_id": "b"}]},
@@ -676,7 +714,9 @@ class TestPerPolicyDerivedDefaults:
         assert _model_args(args, model_id="a").tokenizer_model == "/models/a"
         assert _model_args(args, model_id="b").tokenizer_model == "/models/base"
 
-    def test_a_tokenizer_named_on_the_command_line_is_left_alone(self, tmp_path):
+    def test_a_tokenizer_named_on_the_command_line_is_left_alone(
+        self, tmp_path: Path, policy_hf_configs: dict[str, dict[str, Any]]
+    ) -> None:
         """That tokenizer was chosen rather than derived, so no policy may re-point it at its own checkpoint."""
         path = _write_yaml(
             {"trainers": [{"model_id": "a", "overrides": {"hf_checkpoint": "/models/a"}}, {"model_id": "b"}]},
