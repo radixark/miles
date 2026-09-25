@@ -194,6 +194,9 @@ MOONCAKE_INIT_KWARGS_FLAG = "--mooncake-store-init-kwargs"
 
 
 def get_owned_mooncake_master_port(train_argv: list[str]) -> int | None:
+    if os.environ.get("MOONCAKE_MASTER"):
+        return None
+
     from miles.utils.workers.worker_provider.static import parse_host_and_port
 
     declared = ArgvManipulator.get_effective(train_argv, MOONCAKE_INIT_KWARGS_FLAG)
