@@ -17,6 +17,22 @@ from miles.ray.rollout.debug_data import (
 
 
 class TestRoundTrip:
+    @pytest.mark.parametrize("field", ["{rollout_id:0>4}", "{rollout_id!s:0>4}"])
+    def test_formatted_rollout_ids_are_saved(self, tmp_path: Path, field: str) -> None:
+        """Valid format specifications and conversions keep working in debug dump paths."""
+        args = make_args(save_debug_rollout_data=str(tmp_path / f"r_{field}.pt"))
+
+        save_debug_rollout_data(args, [make_sample()], rollout_id=7, evaluation=False)
+
+        assert (tmp_path / "r_0007.pt").exists()
+
+    def test_an_escaped_rollout_id_is_not_a_substitution(self, tmp_path: Path) -> None:
+        """Escaped braces cannot provide unique rollout filenames."""
+        args = make_args(save_debug_rollout_data=str(tmp_path / "r_{{rollout_id}}.pt"))
+
+        with pytest.raises(AssertionError, match="placeholder"):
+            save_debug_rollout_data(args, [make_sample()], rollout_id=7, evaluation=False)
+
     def test_train_path_round_trip(self, tmp_path: Path):
         path_template = str(tmp_path / "rollout_{rollout_id}.pt")
         args_save = make_args(save_debug_rollout_data=path_template)

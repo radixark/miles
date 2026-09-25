@@ -2,6 +2,7 @@ import json
 import logging
 from collections import defaultdict
 from pathlib import Path
+from string import Formatter
 
 import torch
 
@@ -133,8 +134,8 @@ def save_debug_rollout_data(
 
 
 def _format_dump_path(path_template: str, *, stem: str) -> Path:
-    assert (
-        "{rollout_id}" in path_template
+    assert any(
+        field_name == "rollout_id" for _, field_name, _, _ in Formatter().parse(path_template)
     ), f"Debug dump path template {path_template!r} must contain the {{rollout_id}} placeholder"
     return Path(path_template.format(rollout_id=stem))
 
