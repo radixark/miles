@@ -87,8 +87,16 @@ def _validate_glm_checkpoint():
     with open(config_path) as f:
         config = json.load(f)
 
-    if config.get("model_type") != "glm_moe_dsa" or config.get("architectures") != ["GlmMoeDsaForCausalLM"] or config.get("num_hidden_layers") != 5:
-        raise RuntimeError(f"{config_path} must use native GLM-5.2 5-layer config with model_type=glm_moe_dsa, architectures=[GlmMoeDsaForCausalLM], and num_hidden_layers=5")
+    if (
+        config.get("model_type") != "glm_moe_dsa"
+        or config.get("architectures") != ["GlmMoeDsaForCausalLM"]
+        or config.get("num_hidden_layers") != 5
+    ):
+        raise RuntimeError(
+            f"{config_path} must use native GLM-5.2 5-layer config with "
+            f"model_type=glm_moe_dsa, architectures=[GlmMoeDsaForCausalLM], "
+            "and num_hidden_layers=5"
+        )
     if "auto_map" in config:
         raise RuntimeError(f"{config_path} must not contain auto_map. Try updating the checkpoint.")
 
@@ -102,13 +110,23 @@ def prepare():
     _validate_glm_checkpoint()
     U.exec_command_cpu(f"rm -rf {MODEL_DIR}/{MODEL_NAME}-NVFP4 {MODEL_DIR}/{MODEL_NAME}_torch_dist")
 
-    U.exec_command_gpu(f"python tools/convert_hf_to_nvfp4.py --model-dir {MODEL_DIR}/{MODEL_NAME} --save-dir {MODEL_DIR}/{MODEL_NAME}-NVFP4 {_extra_high_precision_layers_hf_args()}")
+    U.exec_command_gpu(
+        f"python tools/convert_hf_to_nvfp4.py "
+        f"--model-dir {MODEL_DIR}/{MODEL_NAME} "
+        f"--save-dir {MODEL_DIR}/{MODEL_NAME}-NVFP4 "
+        f"{_extra_high_precision_layers_hf_args()}"
+    )
 
     U.convert_checkpoint(
         model_name=MODEL_NAME,
         megatron_model_type=MODEL_TYPE,
         num_gpus_per_node=1,
-        extra_args=("--tensor-model-parallel-size 1 --expert-tensor-parallel-size 1 --pipeline-model-parallel-size 1 --expert-model-parallel-size 1 "),
+        extra_args=(
+            "--tensor-model-parallel-size 1 "
+            "--expert-tensor-parallel-size 1 "
+            "--pipeline-model-parallel-size 1 "
+            "--expert-model-parallel-size 1 "
+        ),
         dir_dst=MODEL_DIR,
         hf_checkpoint=f"{MODEL_DIR}/{MODEL_NAME}",
         megatron_path=MEGATRON_PATH,
@@ -130,14 +148,17 @@ def execute(
     if update_weight_transfer_mode == "disk-delta":
         if not update_weight_disk_dir or not update_weight_local_checkpoint_dir:
             raise ValueError("disk-delta requires both publication and local checkpoint directories.")
-        weight_transfer_args += f"--update-weight-disk-dir {shlex.quote(update_weight_disk_dir)} --update-weight-local-checkpoint-dir {shlex.quote(update_weight_local_checkpoint_dir)} "
+        weight_transfer_args += (
+            f"--update-weight-disk-dir {shlex.quote(update_weight_disk_dir)} "
+            f"--update-weight-local-checkpoint-dir {shlex.quote(update_weight_local_checkpoint_dir)} "
+        )
 
     os.environ.update(NVFP4_ENV)
     os.environ.update(GLM5_ENV)
     os.environ.setdefault("RAY_TMPDIR", "/tmp/ray")
     te_precision_config_path = U.encode_pseudo_file(TE_PRECISION_CONFIG)
 
-    ckpt_args = f"--hf-checkpoint {MODEL_DIR}/{MODEL_NAME}-NVFP4/ --ref-load {MODEL_DIR}/{MODEL_NAME}_torch_dist "
+    ckpt_args = f"--hf-checkpoint {MODEL_DIR}/{MODEL_NAME}-NVFP4/ " f"--ref-load {MODEL_DIR}/{MODEL_NAME}_torch_dist "
 
     rollout_args = (
         f"--prompt-data {DATA_DIR}/dapo-math-17k/dapo-math-17k.jsonl "
@@ -172,9 +193,31 @@ def execute(
         "--log-probs-chunk-size 16384 "
     )
 
-    grpo_args = "--advantage-estimator grpo --use-kl-loss --kl-loss-coef 0.00 --kl-loss-type low_var_kl --kl-coef 0.00 --entropy-coef 0.00 --eps-clip 0.2 --eps-clip-high 0.28 --use-tis --tis-clip-low 0.5 --tis-clip 2.0 "
+    grpo_args = (
+        "--advantage-estimator grpo "
+        "--use-kl-loss "
+        "--kl-loss-coef 0.00 "
+        "--kl-loss-type low_var_kl "
+        "--kl-coef 0.00 "
+        "--entropy-coef 0.00 "
+        "--eps-clip 0.2 "
+        "--eps-clip-high 0.28 "
+        "--use-tis "
+        "--tis-clip-low 0.5 "
+        "--tis-clip 2.0 "
+    )
 
-    optimizer_args = "--optimizer adam --lr 1e-6 --lr-decay-style constant --weight-decay 0.1 --adam-beta1 0.9 --adam-beta2 0.98 --optimizer-cpu-offload --overlap-cpu-optimizer-d2h-h2d --use-precision-aware-optimizer "
+    optimizer_args = (
+        "--optimizer adam "
+        "--lr 1e-6 "
+        "--lr-decay-style constant "
+        "--weight-decay 0.1 "
+        "--adam-beta1 0.9 "
+        "--adam-beta2 0.98 "
+        "--optimizer-cpu-offload "
+        "--overlap-cpu-optimizer-d2h-h2d "
+        "--use-precision-aware-optimizer "
+    )
 
     sglang_args = (
         "--sglang-mem-fraction-static 0.7 "
@@ -201,7 +244,13 @@ def execute(
 
     ci_args = "--ci-test --ci-disable-logprobs-checker --ci-disable-weight-update-checker --ci-disable-kl-checker "
 
-    mixed_precision_args = f"--transformer-impl transformer_engine --bf16 {_extra_high_precision_layers_hf_args()}{_extra_high_precision_layers_megatron_args()}--te-precision-config-file {te_precision_config_path} "
+    mixed_precision_args = (
+        "--transformer-impl transformer_engine "
+        "--bf16 "
+        f"{_extra_high_precision_layers_hf_args()}"
+        f"{_extra_high_precision_layers_megatron_args()}"
+        f"--te-precision-config-file {te_precision_config_path} "
+    )
 
     misc_args = (
         "--use-rollout-routing-replay "
@@ -215,7 +264,7 @@ def execute(
         "--attention-backend flash "
         "--allgather-cp "
         "--miles-dsa-topk-backend flashinfer "
-        f"--update-weight-buffer-size {2 * 1024**3} "
+        f"--update-weight-buffer-size {2 * 1024 ** 3} "
         "--actor-num-nodes 1 "
         f"--actor-num-gpus-per-node {ACTOR_NUM_GPUS} "
         f"--num-gpus-per-node {NUM_GPUS} "
@@ -229,7 +278,19 @@ def execute(
         f"--save-debug-trajectory-data /root/shared_data/{RUN_ID}/dump_details/trajectory/{{rollout_id}}.jsonl "
     )
 
-    train_args = f"{ckpt_args} {rollout_args} {optimizer_args} {grpo_args} {U.get_default_wandb_args(__file__, run_id=RUN_ID)} {perf_args} {sglang_args} {ci_args} {mixed_precision_args} {misc_args} {weight_transfer_args} "
+    train_args = (
+        f"{ckpt_args} "
+        f"{rollout_args} "
+        f"{optimizer_args} "
+        f"{grpo_args} "
+        f"{U.get_default_wandb_args(__file__, run_id=RUN_ID)} "
+        f"{perf_args} "
+        f"{sglang_args} "
+        f"{ci_args} "
+        f"{mixed_precision_args} "
+        f"{misc_args} "
+        f"{weight_transfer_args} "
+    )
 
     U.execute_train(
         train_args=train_args,
@@ -242,13 +303,17 @@ def execute(
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="GLM-5.2 NVFP4 W4A16 with four training and four rollout GPUs.")
-    parser.add_argument("--skip-prepare", action="store_true", help="Reuse previously prepared checkpoints and dataset.")
+    parser.add_argument(
+        "--skip-prepare", action="store_true", help="Reuse previously prepared checkpoints and dataset."
+    )
     parser.add_argument("--num-rollout", type=int, default=2, help="Six rollouts exercise five post-training updates.")
     parser.add_argument("--update-weight-transfer-mode", choices=("broadcast", "disk-delta"), default="broadcast")
     parser.add_argument("--update-weight-disk-dir")
     parser.add_argument("--update-weight-local-checkpoint-dir")
     options = parser.parse_args()
-    if options.update_weight_transfer_mode == "disk-delta" and (not options.update_weight_disk_dir or not options.update_weight_local_checkpoint_dir):
+    if options.update_weight_transfer_mode == "disk-delta" and (
+        not options.update_weight_disk_dir or not options.update_weight_local_checkpoint_dir
+    ):
         parser.error("disk-delta requires --update-weight-disk-dir and --update-weight-local-checkpoint-dir")
     if options.num_rollout < 2:
         parser.error("--num-rollout must be at least 2")
