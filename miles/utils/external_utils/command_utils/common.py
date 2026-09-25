@@ -193,7 +193,7 @@ MOONCAKE_BACKEND_NAME = "mooncake"
 MOONCAKE_INIT_KWARGS_FLAG = "--mooncake-store-init-kwargs"
 
 
-def get_owned_mooncake_master_port(train_argv: list[str]) -> int | None:
+def get_mooncake_master_port(train_argv: list[str]) -> int:
     from miles.utils.workers.worker_provider.static import parse_host_and_port
 
     declared = ArgvManipulator.get_effective(train_argv, MOONCAKE_INIT_KWARGS_FLAG)
@@ -202,10 +202,9 @@ def get_owned_mooncake_master_port(train_argv: list[str]) -> int | None:
 
     address = json.loads(declared).get(MOONCAKE_MASTER_ADDRESS_KEY)
     if address is None:
-        return None
+        return MOONCAKE_MASTER_PORT
 
-    endpoint = parse_host_and_port(address)
-    return endpoint.port if endpoint.host in ("127.0.0.1", "0.0.0.0", "localhost", "[::1]") else None
+    return parse_host_and_port(address).port
 
 
 def get_mooncake_object_store_args(master_port: int = MOONCAKE_MASTER_PORT, master_host: str = "127.0.0.1") -> str:

@@ -59,6 +59,7 @@ __all__ = [
 @dataclass
 class ExecuteTrainConfig:
     cuda_core_dump: bool = False
+    external_mooncake: bool = False
     num_nodes: int = field(default_factory=lambda: int(os.environ.get("SLURM_JOB_NUM_NODES", "1")))
     extra_env_vars: str = ""
     output_dir: str = "/root/shared_data"
@@ -158,6 +159,7 @@ def check_has_nvlink() -> bool:
 def _to_current_config(config: ExecuteTrainConfig) -> _CurrentExecuteTrainConfig:
     return _CurrentExecuteTrainConfig(
         cuda_core_dump=config.cuda_core_dump,
+        external_mooncake=config.external_mooncake,
         num_nodes=config.num_nodes,
         extra_env_vars=config.extra_env_vars,
         output_dir=config.output_dir,

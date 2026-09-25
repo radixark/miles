@@ -1,5 +1,4 @@
 import json
-import logging
 import os
 import shlex
 
@@ -14,7 +13,7 @@ from miles.utils.external_utils.command_utils.common import (
     ArgvManipulator,
     _pythonpath_with_sources,
     get_bool_env_var,
-    get_owned_mooncake_master_port,
+    get_mooncake_master_port,
     run_shell_command,
     train_env_vars,
 )
@@ -23,8 +22,6 @@ from miles.utils.external_utils.command_utils.ray_backend.command import (
     start_mooncake_master,
 )
 from miles.utils.external_utils.model_args_utils import shell_safe_model_args
-
-logger = logging.getLogger(__name__)
 
 
 class RayCommandBackend(BaseCommandBackend):
@@ -35,7 +32,9 @@ class RayCommandBackend(BaseCommandBackend):
         )
         external_ray = get_bool_env_var("MILES_SCRIPT_EXTERNAL_RAY")
         master_addr = os.environ.get("MASTER_ADDR", "127.0.0.1")
-        mooncake_master_port = self._resolve_owned_mooncake_master_port(request.train_args)
+        mooncake_master_port = (
+            None if config.external_mooncake else self._resolve_mooncake_master_port(request.train_args)
+        )
 
         self._clean_up_previous_run(external_ray=external_ray)
 
@@ -72,15 +71,12 @@ class RayCommandBackend(BaseCommandBackend):
                 f"{request.train_args}"
             )
 
-    def _resolve_owned_mooncake_master_port(self, train_args: str) -> int | None:
+    def _resolve_mooncake_master_port(self, train_args: str) -> int | None:
         train_argv = shlex.split(train_args)
         if ArgvManipulator.get_effective(train_argv, OBJECT_STORE_BACKEND_FLAG) != MOONCAKE_BACKEND_NAME:
             return None
 
-        port = get_owned_mooncake_master_port(train_argv)
-        if port is None:
-            logger.info("The mooncake master the train arguments name is the caller's, so miles starts none")
-        return port
+        return get_mooncake_master_port(train_argv)
 
     def _exec_command_gpu_inner(
         self, cmd: str, capture_output: bool = False, num_gpus_per_node: int | None = None
