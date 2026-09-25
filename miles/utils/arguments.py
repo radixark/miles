@@ -92,6 +92,17 @@ def _resolve_rollout_functions(args) -> None:
     args.eval_uses_snapshots = args.eval_num_gpus > 0 or checkpoint_backend
 
 
+def is_external_model_server(args) -> bool:
+    """Return whether rollout runs against an external SGLang model server.
+
+    In this mode ``sglang_router_ip`` points at a long-lived remote server and no
+    local rollout GPUs are allocated, so the framework should skip Megatron argument
+    validation (which reads CUDA device properties) to allow evals to run on
+    CPU-only pods with no NVIDIA driver.
+    """
+    return getattr(args, "sglang_router_ip", None) is not None and args.rollout_num_gpus == 0
+
+
 def reset_arg(parser, name, **kwargs):
     """
     Reset the default value of a Megatron argument.
@@ -2641,7 +2652,7 @@ def parse_args(add_custom_arguments=None, entry="train", preprocess_args=None):
         preprocess_args(args)
     miles_validate_args(args)
 
-    if backend == "megatron":
+    if backend == "megatron" and not is_external_model_server(args):
         megatron_validate_args(args)
 
         # always use varlen
