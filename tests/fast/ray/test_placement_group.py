@@ -105,7 +105,10 @@ class TestFrozenInferenceChecksums:
         controller = SimpleNamespace(check_weights=AsyncMock(return_value=[]))
 
         await placement_group_module._maybe_log_inference_engine_weight_checksums(
-            _make_args(), inference_controller=controller, rollout_id=None, trainer_model_id=None
+            _make_args(log_inference_engine_weight_checksums=True),
+            inference_controller=controller,
+            rollout_id=None,
+            trainer_model_id=None,
         )
 
         controller.check_weights.assert_awaited_once()
