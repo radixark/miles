@@ -58,6 +58,14 @@ token, so the ratio stays high when the sync is correct.
 | `--debug-disable-optimizer` | Optimizer and LR-scheduler construction, and the optimizer step. Rollout, log-prob forward and actor forward/backward still run, so this isolates optimizer-state memory and update behavior from the rest. |
 | `--debug-exit-after-rollout <n>` | Everything after rollout `n`. Built for exercising checkpoint resume with consistent scheduler state. |
 
+## NCCL channel mismatch during weight updates
+
+For managed CUDA broadcast transfers with deterministic TP serving, Miles automatically matches the trainer and serving NCCL channel limits. No extra flags are needed.
+
+If startup reports a conflicting `NCCL_MIN_NCHANNELS` or `NCCL_MAX_NCHANNELS`, remove that override from the job environment or `--train-env-vars`, or match the value shown in the error. To choose a different shared count, set `SGLANG_DETERMINISTIC_NCCL_NCHANNELS` in the job environment before workers start. Trainer channel limits also affect training collectives.
+
+External serving requires you to coordinate channel limits before starting both sides. `NCCL_ALGO` remains unchanged.
+
 ## Make two runs comparable
 
 `--debug-deterministic-collective` runs the training world on the `det_nccl` backend from

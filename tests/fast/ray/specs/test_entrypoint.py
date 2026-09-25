@@ -94,3 +94,24 @@ def _debug_train_only_specs(tmp_path) -> list[BaseWorkerSpec]:
         debug_train_only=True,
     )
     return compute_specs(args)
+
+
+def test_deterministic_weight_transfer_env_is_installed_before_worker_launch(monkeypatch):
+    from miles.utils.workers.worker_spec import WorkerLaunchContext
+
+    monkeypatch.setattr("miles.ray.specs.entrypoint.torch.version.hip", None)
+    monkeypatch.setattr("miles.ray.specs.weight_update_env._deterministic_channels", lambda: 8)
+    monkeypatch.delenv("NCCL_MIN_NCHANNELS", raising=False)
+    monkeypatch.delenv("NCCL_MAX_NCHANNELS", raising=False)
+    args = make_args(
+        colocate=False,
+        rollout_num_gpus=2,
+        rollout_num_gpus_per_engine=2,
+        sglang_enable_deterministic_inference=True,
+        update_weight_transfer_mode="broadcast",
+    )
+    specs = {spec.name: spec for spec in compute_specs(args)}
+    ctx = WorkerLaunchContext(cell_index=0, worker_in_cell_index=0, gpu_ids=[0])
+    for name in ("trainer-actor", "inference-engine-0-0"):
+        env = specs[name].env_var(ctx)
+        assert env["NCCL_MIN_NCHANNELS"] == env["NCCL_MAX_NCHANNELS"] == "8"
