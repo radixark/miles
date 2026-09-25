@@ -46,12 +46,18 @@ class CaseConfig:
     # mismatches become non-fatal). Cases pass ("visual",): miles has no VLM/vision
     # implementation on the training side, so those weights are never synced.
     check_weight_update_skip_list: tuple[str, ...] = ()
+    # SGLang-side DeepEP; Megatron always dispatches through flex, whose default backend is DeepEP.
+    use_deepep: bool = False
+    # Serve Qwen/Qwen3.5-35B-A3B-FP8 against bf16 training; weight updates re-quantize.
+    use_fp8_rollout: bool = False
     extra_args: str = ""
 
 
 def prepare(case: CaseConfig) -> None:
     U.exec_command_cpu("mkdir -p /root/models /root/datasets")
     U.exec_command_cpu(f"hf download Qwen/{MODEL_NAME} --local-dir /root/models/{MODEL_NAME}")
+    if case.use_fp8_rollout:
+        U.exec_command_cpu(f"hf download Qwen/{MODEL_NAME}-FP8 --local-dir /root/models/{MODEL_NAME}-FP8")
     U.hf_download_dataset("zhuzilin/dapo-math-17k")
     U.hf_download_dataset("zhuzilin/aime-2024")
     U.convert_checkpoint(
@@ -64,7 +70,8 @@ def prepare(case: CaseConfig) -> None:
 def build_train_args(case: CaseConfig, *, wandb_file: str) -> str:
     enable_eval = os.environ.get("MILES_TEST_ENABLE_EVAL", "0").lower() in ("1", "true", "yes")
 
-    ckpt_args = f"--hf-checkpoint /root/models/{MODEL_NAME} " f"--ref-load /root/{MODEL_NAME}_torch_dist "
+    hf_checkpoint = f"/root/models/{MODEL_NAME}-FP8" if case.use_fp8_rollout else f"/root/models/{MODEL_NAME}"
+    ckpt_args = f"--hf-checkpoint {hf_checkpoint} " f"--ref-load /root/{MODEL_NAME}_torch_dist "
 
     rollout_args = (
         "--prompt-data /root/datasets/dapo-math-17k/dapo-math-17k.jsonl "
@@ -126,13 +133,16 @@ def build_train_args(case: CaseConfig, *, wandb_file: str) -> str:
         "--use-precision-aware-optimizer "
     )
 
+    # DeepEP low-latency dispatch (every decode-phase forward, incl. EAGLE verify) holds at most
+    # 128 tokens per rank; each request carries 3 draft tokens scattered over the engine's TP ranks.
+    max_running = min(128, 128 * case.rollout_num_gpus_per_engine // 3 // 8 * 8) if case.use_deepep else 512
     sglang_args = (
         f"--rollout-num-gpus-per-engine {case.rollout_num_gpus_per_engine} "
         # 0.6 (not 0.7): colocate leaves ~11GB of resident training memory on each GPU, so
         # sglang at 0.7 OOMs in the rollout MoE forward; 0.6 leaves headroom for both.
         "--sglang-mem-fraction-static 0.6 "
         f"--sglang-ep-size {case.sglang_ep_size} "
-        "--sglang-max-running-requests 512 "
+        f"--sglang-max-running-requests {max_running} "
         # EAGLE speculative decoding (MTP draft)
         "--sglang-speculative-algorithm EAGLE "
         "--sglang-speculative-num-steps 2 "
@@ -144,6 +154,12 @@ def build_train_args(case: CaseConfig, *, wandb_file: str) -> str:
     )
     if case.use_r3:
         sglang_args += "--use-rollout-routing-replay "
+    if case.use_deepep:
+        sglang_args += "--sglang-moe-a2a-backend deepep --sglang-deepep-mode auto "
+        sglang_args += f"--sglang-cuda-graph-max-bs-decode {max_running} "
+        if not case.use_fp8_rollout:
+            # BF16 experts have SGLang DeepEP kernels only on the DeepGEMM runner.
+            sglang_args += "--sglang-moe-runner-backend deep_gemm "
 
     # When MTP training is off the rollout still runs EAGLE spec from the checkpoint
     # draft; those draft weights just never get synced (see the mtp0 case + skip-list).
@@ -155,6 +171,8 @@ def build_train_args(case: CaseConfig, *, wandb_file: str) -> str:
     ci_args += f"--check-weight-update-selector {case.check_weight_update_selector} "
     if case.check_weight_update_skip_list:
         ci_args += "--check-weight-update-skip-list " + " ".join(case.check_weight_update_skip_list) + " "
+    if case.use_fp8_rollout:
+        ci_args += "--check-weight-update-allow-quant-error "
 
     misc_args = (
         "--attention-dropout 0.0 "
