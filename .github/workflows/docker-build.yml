@@ -26,7 +26,6 @@ on:
           - cu13
           - cu13-x86
           - cu13-aarch64
-          - cu12-x86
           - rocm724-mi35x
           - rocm10-mi35x
       image_tag:
@@ -65,8 +64,8 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: last_upstream_shas.txt
-          key: upstream-shas-
-          restore-keys: upstream-shas-
+          key: upstream-shas-cu13-
+          restore-keys: upstream-shas-cu13-
 
       - name: Check for new upstream commits
         id: check
@@ -104,12 +103,8 @@ jobs:
           SGLANG_SHA=$(head_sha sgl-project/sglang sglang-miles) || fail_poll "sglang sglang-miles HEAD lookup failed"
           MEGATRON_SHA=$(head_sha radixark/Megatron-LM miles-main) || fail_poll "Megatron-LM miles-main HEAD lookup failed"
 
-          # Fingerprint the miles-wheels releases the images install from (sgl-router +
-          # the other prebuilt wheels). cu13 installs cu130-torch213-x86_64 /
-          # cu130-torch213-aarch64;
-          # cu12-x86 installs cu129-x86_64 — both build automatically, so track all rolling
-          # release tags they bake. Rolling tags stay fixed while assets may be replaced,
-          # so fingerprint the asset list rather than a commit SHA.
+          # Rolling wheel assets can be replaced without moving the release tag.
+          # Fingerprint both CUDA 13 architectures to catch those updates.
           wheels_fp() {
             local fp
             fp=$(gh_api "repos/yueming-yuan/miles-wheels/releases/tags/$1" \
@@ -118,13 +113,11 @@ jobs:
           }
           WHEELS_CU13_X86_FP=$(wheels_fp cu130-torch213-x86_64) || fail_poll "wheels cu130-torch213-x86_64 lookup failed"
           WHEELS_CU13_ARM64_FP=$(wheels_fp cu130-torch213-aarch64) || fail_poll "wheels cu130-torch213-aarch64 lookup failed"
-          WHEELS_CU12_X86_FP=$(wheels_fp cu129-x86_64) || fail_poll "wheels cu129-x86_64 lookup failed"
 
           echo "sglang HEAD:   ${SGLANG_SHA}"
           echo "megatron HEAD: ${MEGATRON_SHA}"
           echo "wheels FP cu13 x86:   ${WHEELS_CU13_X86_FP}"
           echo "wheels FP cu13 arm64: ${WHEELS_CU13_ARM64_FP}"
-          echo "wheels FP cu12 x86:   ${WHEELS_CU12_X86_FP}"
 
           # Compare against last known values stored in cache
           CACHE_FILE="last_upstream_shas.txt"
@@ -133,18 +126,16 @@ jobs:
             LAST_MEGATRON=$(sed -n '2p' "$CACHE_FILE")
             LAST_WHEELS_CU13_X86=$(sed -n '3p' "$CACHE_FILE")
             LAST_WHEELS_CU13_ARM64=$(sed -n '4p' "$CACHE_FILE")
-            LAST_WHEELS_CU12_X86=$(sed -n '5p' "$CACHE_FILE")
-            LAST_BUILD_EPOCH=$(sed -n '6p' "$CACHE_FILE")
+            LAST_BUILD_EPOCH=$(sed -n '5p' "$CACHE_FILE")
           else
             LAST_SGLANG=""
             LAST_MEGATRON=""
             LAST_WHEELS_CU13_X86=""
             LAST_WHEELS_CU13_ARM64=""
-            LAST_WHEELS_CU12_X86=""
             LAST_BUILD_EPOCH=""
           fi
 
-          if [ "$SGLANG_SHA" != "$LAST_SGLANG" ] || [ "$MEGATRON_SHA" != "$LAST_MEGATRON" ] || [ "$WHEELS_CU13_X86_FP" != "$LAST_WHEELS_CU13_X86" ] || [ "$WHEELS_CU13_ARM64_FP" != "$LAST_WHEELS_CU13_ARM64" ] || [ "$WHEELS_CU12_X86_FP" != "$LAST_WHEELS_CU12_X86" ]; then
+          if [ "$SGLANG_SHA" != "$LAST_SGLANG" ] || [ "$MEGATRON_SHA" != "$LAST_MEGATRON" ] || [ "$WHEELS_CU13_X86_FP" != "$LAST_WHEELS_CU13_X86" ] || [ "$WHEELS_CU13_ARM64_FP" != "$LAST_WHEELS_CU13_ARM64" ]; then
             SHOULD_BUILD=true
             echo "Upstream change detected"
           else
@@ -166,12 +157,11 @@ jobs:
           fi
 
           # Save current values for next run (cached only when a build triggers,
-          # so line 6 = when the last build was kicked off).
+          # so line 5 = when the last build was kicked off).
           echo "${SGLANG_SHA}" > "$CACHE_FILE"
           echo "${MEGATRON_SHA}" >> "$CACHE_FILE"
           echo "${WHEELS_CU13_X86_FP}" >> "$CACHE_FILE"
           echo "${WHEELS_CU13_ARM64_FP}" >> "$CACHE_FILE"
-          echo "${WHEELS_CU12_X86_FP}" >> "$CACHE_FILE"
           echo "${NOW_EPOCH}" >> "$CACHE_FILE"
 
           echo "should_build=${SHOULD_BUILD}" >> "$GITHUB_OUTPUT"
@@ -181,7 +171,7 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: last_upstream_shas.txt
-          key: upstream-shas-${{ github.run_id }}
+          key: upstream-shas-cu13-${{ github.run_id }}
 
   build-and-push:
     needs: [check-upstream]
@@ -240,20 +230,12 @@ jobs:
             ${{ inputs.custom_tag && format('--custom-tag {0}', inputs.custom_tag) || '' }} \
             --push
 
-      - name: Build and push cu12-x86 (automatic builds only)
-        # schedule / push-to-main leave inputs.variant empty → also build the cu12.9 legacy
-        # image; a manual workflow_dispatch builds only the single variant the user picked.
-        if: ${{ !inputs.variant }}
-        run: |
-          python3 docker/build.py --variant cu12-x86 --image-tag dev --push
-
       - name: Point latest to current dev
         # schedule only: latest is published registry state, so — like prune — a [DEBUG]
-        # simulate_schedule must not move it. A scheduled run always builds both variants.
+        # simulate_schedule must not move it.
         if: github.event_name == 'schedule'
         run: |
           docker buildx imagetools create -t radixark/miles:latest radixark/miles:dev
-          docker buildx imagetools create -t radixark/miles:latest-cu12 radixark/miles:dev-cu12
 
       - name: Prune old dev tags
         if: github.event_name == 'schedule'
@@ -273,7 +255,6 @@ jobs:
 
           # Keep the newest $KEEP timestamped tags matching $1 plus any younger than
           # $MIN_AGE_DAYS days, delete the rest.
-          # cu13 (dev-<ts>) and cu12-x86 (dev-cu12-<ts>) are pruned as independent series.
           prune_series() {
             PATTERN="$1"
             TAGS=""
@@ -313,7 +294,6 @@ jobs:
           }
 
           prune_series '^dev-[0-9]{12}$'
-          prune_series '^dev-cu12-[0-9]{12}$'
 
   # A failed automatic build leaves the published images behind their inputs until a
   # later build succeeds, so report it to the Miles CI Lark group on the first failure.

@@ -5,7 +5,6 @@
 Usage:
     python docker/build.py --variant cu13 --image-tag dev --push          # multi-arch (amd64+arm64)
     python docker/build.py --variant cu13-x86 --image-tag dev --push      # single arch
-    python docker/build.py --variant cu12-x86 --image-tag latest
     python docker/build.py --variant cu13 --image-tag dev --dry-run
 """
 
@@ -39,19 +38,6 @@ VARIANTS = {
         "platforms": ["linux/arm64"],
         "tag_postfix": "",
         "build_args": {},
-    },
-    "cu12-x86": {
-        "image": "radixark/miles",
-        "platforms": ["linux/amd64"],
-        "tag_postfix": "-cu12",
-        "build_args": {
-            "ENABLE_CUDA_13": "0",
-            "SGLANG_IMAGE_TAG": "v0.5.19-cu129",
-            # Frozen with the base image: sglang publishes no cu12 image from v0.5.20 on,
-            # so this variant cannot follow the branch the cu13 images track.
-            "SGLANG_BRANCH": "sglang-miles-v0.5.19-final",
-            "WHEELS_TAG_X86": "cu129-x86_64",
-        },
     },
     "rocm724-mi35x": {
         "image": "rocm/sgl-dev",
@@ -174,7 +160,6 @@ class Variant(str, Enum):
     cu13 = "cu13"
     cu13_x86 = "cu13-x86"
     cu13_aarch64 = "cu13-aarch64"
-    cu12_x86 = "cu12-x86"
     rocm724_mi35x = "rocm724-mi35x"
     rocm10_mi35x = "rocm10-mi35x"
 
