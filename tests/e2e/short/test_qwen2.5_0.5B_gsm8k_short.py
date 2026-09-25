@@ -8,17 +8,15 @@ from miles.utils.object_store import ObjectStoreBackend
 from miles.utils.workers.types import WorkerCommBackend
 
 register_cuda_ci(
-    est_time=400, suite="stage-c-8-gpu-h100", labels=["short", "mooncake"], hardware=["hopper", "blackwell"]
+    est_time=400, suite="stage-c-2-gpu-h200", labels=["short", "mooncake"], hardware=["hopper", "blackwell"]
 )
-register_rocm_ci(est_time=360, suite="nightly-stage-c-8-gpu-mi350", labels=["short", "mooncake"])
-
-FEW_GPU = command_utils.get_bool_env_var("MILES_TEST_FEW_GPU", "0")
+register_rocm_ci(est_time=360, suite="nightly-stage-c-2-gpu-mi350", labels=["short", "mooncake"])
 
 MODEL_DIR = get_test_model_dir()
 DATA_DIR = get_test_data_dir()
 MODEL_NAME = "Qwen2.5-0.5B-Instruct"
 MODEL_TYPE = "qwen2.5-0.5B"
-NUM_GPUS = 4 if FEW_GPU else 8
+NUM_GPUS = 2
 
 
 def entrypoint(
