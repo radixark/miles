@@ -300,6 +300,16 @@
      "developer/versions",
      "developer/debug",
      {
+      "group": "Deep Dive",
+      "pages": [
+       "deep-dive/index",
+       "deep-dive/rl-step-walkthrough",
+       "deep-dive/metrics-and-debugging",
+       "deep-dive/async-and-off-policy",
+       "deep-dive/agentic-rollout-internals"
+      ]
+     },
+     {
       "group": "CI",
       "pages": [
        "ci/00-stage",
