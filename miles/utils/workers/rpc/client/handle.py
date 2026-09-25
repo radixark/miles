@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterator
 from typing import Any
 
 import httpx
@@ -11,7 +11,6 @@ from miles.utils.workers.rpc.client.call import RpcCall
 from miles.utils.workers.rpc.client.misc import (
     RETRY_INITIAL_DELAY_SECONDS,
     RETRYABLE_ERRORS,
-    WORKER_IS_GONE_ERRORS,
     BootUuidPin,
     RpcTransport,
     ServerRestartedError,
@@ -142,8 +141,10 @@ class RpcWorkerHandle(BaseWorkerHandle):
             await self._transport.request(
                 "GET", HEALTH_PATH, seconds=_HEALTH_TIMEOUT_SECONDS, response_model=HealthResponse
             )
-        except (ServerRestartedError, *WORKER_IS_GONE_ERRORS):
+        except ServerRestartedError:
             return True
+        except httpx.ConnectError as error:
+            return any(isinstance(e, ConnectionRefusedError) for e in _traverse_error_chain(error))
         except RETRYABLE_ERRORS:
             return False
         return False
@@ -165,3 +166,13 @@ class RpcWorkerHandle(BaseWorkerHandle):
             await self.wait_ready(timeout=self._ready_timeout_seconds)
 
         return call
+
+
+def _traverse_error_chain(error: BaseException) -> Iterator[BaseException]:
+    seen: set[int] = set()
+    while id(error) not in seen:
+        seen.add(id(error))
+        yield error
+        if (cause := error.__cause__ or error.__context__) is None:
+            return
+        error = cause

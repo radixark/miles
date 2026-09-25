@@ -1,7 +1,9 @@
 import asyncio
 import contextlib
+import errno
 import json
 import logging
+import socket
 import threading
 import time
 from collections.abc import AsyncIterator, Callable
@@ -1186,10 +1188,68 @@ class TestPositionalCalls:
                 assert transport.requests == 0
 
 
+class TestTraverseErrorChain:
+    def test_single_error_yields_itself(self) -> None:
+        """Include the original exception even without a cause or context."""
+        error = RuntimeError("root")
+
+        assert list(rpc_handle_module._traverse_error_chain(error)) == [error]
+
+    def test_cause_takes_precedence_and_context_is_followed(self) -> None:
+        """Follow explicit causes first and fall back to implicit context."""
+        error = RuntimeError("root")
+        cause = OSError("cause")
+        context = ConnectionRefusedError("context")
+        error.__cause__ = cause
+        error.__context__ = ValueError("ignored context")
+        cause.__context__ = context
+
+        assert list(rpc_handle_module._traverse_error_chain(error)) == [error, cause, context]
+
+    def test_cycle_stops_before_repeating_an_exception(self) -> None:
+        """Terminate a cyclic chain without yielding an exception twice."""
+        error = RuntimeError("root")
+        cause = OSError("cause")
+        error.__cause__ = cause
+        cause.__context__ = error
+
+        chain = rpc_handle_module._traverse_error_chain(error)
+        assert next(chain) is error
+        assert next(chain) is cause
+        with pytest.raises(StopIteration):
+            next(chain)
+
+
 class TestWaitDead:
+    @pytest.mark.parametrize(
+        ("cause", "expected_dead"),
+        [
+            (None, False),
+            (socket.gaierror(socket.EAI_NONAME, "name lookup failed"), False),
+            (OSError(errno.ENETUNREACH, "network unreachable"), False),
+            (ConnectionRefusedError(errno.ECONNREFUSED, "connection refused"), True),
+        ],
+    )
+    async def test_connection_errors_require_underlying_refusal_before_reporting_death(
+        self, cause: Exception | None, expected_dead: bool
+    ) -> None:
+        """DNS and network failures do not prove death, unlike an explicit refused connection."""
+        error = httpx.ConnectError("connection refused")
+        intermediate = OSError("all connection attempts failed")
+        intermediate.__cause__ = cause
+        error.__cause__ = intermediate
+        transport = _HookTransport(None)
+        transport.fail_with(error)
+
+        async with _handle_over(transport) as handle:
+            assert await handle.probe_is_dead() is expected_dead
+
     async def test_wait_dead_returns_once_the_server_stops_answering(self):
         """A cell is healed only after its ranks are gone, and a refused connection is that proof."""
-        transport = _HookTransport(None, hook=_fail_hook(-1))
+        error = httpx.ConnectError("connection refused")
+        error.__cause__ = ConnectionRefusedError(errno.ECONNREFUSED, "connection refused")
+        transport = _HookTransport(None)
+        transport.fail_with(error)
         async with _handle_over(transport) as handle:
             await handle.wait_dead(timeout=5.0)
 
