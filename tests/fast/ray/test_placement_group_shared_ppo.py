@@ -22,6 +22,7 @@ def _layout_args(**overrides):
         "rollout_external": False,
         "colocate": False,
         "use_critic": True,
+        "num_critic_only_steps": 0,
         "megatron_config": None,
         "critic_load": None,
         "critic_save": None,
@@ -248,6 +249,7 @@ def _training_models_args(**overrides):
         "critic_num_nodes": 1,
         "critic_num_gpus_per_node": 2,
         "use_critic": True,
+        "num_critic_only_steps": 0,
         "kl_coef": 0.1,
         "use_kl_loss": False,
         "use_opd": True,
@@ -270,6 +272,29 @@ def _training_models_args(**overrides):
     }
     values.update(overrides)
     return Namespace(**values)
+
+
+@pytest.mark.parametrize("critic_position", [3, 5])
+async def test_critic_only_warmup_resumes_at_the_critic_checkpoint(monkeypatch, critic_position: int) -> None:
+    """A frozen actor may lag its critic through the final critic-only checkpoint."""
+    _patch_train_controller_handles(monkeypatch, restored={"actor": [0], "critic": [critic_position]})
+    args = _training_models_args(num_critic_only_steps=5)
+    executor = _RecordingRolloutExecutor()
+
+    await placement_group_module.create_training_models(args, rollout_executor=executor)
+
+    assert args.start_rollout_id == critic_position
+    assert executor.loaded_rollout_id == critic_position - 1
+
+
+async def test_a_critic_ahead_after_actor_training_started_is_rejected(monkeypatch) -> None:
+    """Warmup does not excuse mismatched checkpoints after both models have started updating."""
+    _patch_train_controller_handles(monkeypatch, restored={"actor": [0], "critic": [6]})
+
+    with pytest.raises(AssertionError):
+        await placement_group_module.create_training_models(
+            _training_models_args(num_critic_only_steps=5), rollout_executor=_RecordingRolloutExecutor()
+        )
 
 
 async def test_an_actor_and_a_critic_that_restored_to_different_rollouts_are_refused(monkeypatch):

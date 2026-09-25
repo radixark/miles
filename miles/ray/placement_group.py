@@ -238,7 +238,10 @@ async def create_training_models(
             trainer_id=critic_config.trainer_id,
             resumed=resumed,
         )
-        assert critic_info.restored_rollout_id == actor_info.restored_rollout_id, (
+        critic_only_resume = (
+            0 <= actor_info.restored_rollout_id < critic_info.restored_rollout_id <= args.num_critic_only_steps
+        )
+        assert critic_only_resume or critic_info.restored_rollout_id == actor_info.restored_rollout_id, (
             f"the actor restored to rollout {actor_info.restored_rollout_id} but its critic to "
             f"{critic_info.restored_rollout_id}"
         )
@@ -247,7 +250,7 @@ async def create_training_models(
             not critic_configs
         ), f"a run without --use-critic needs no critic, but the trainer configs are {trainer_configs}"
 
-    args.start_rollout_id = actor_info.start_rollout_id
+    args.start_rollout_id = critic_info.start_rollout_id if critic_info is not None else actor_info.start_rollout_id
 
     await rollout_executor.set_train_parallel_config(await actor_info.handle.get_train_parallel_config())
     await rollout_executor.load(args.start_rollout_id - 1)
