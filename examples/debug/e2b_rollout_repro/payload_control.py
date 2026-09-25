@@ -22,6 +22,8 @@ from tap import Tap
 import miles.rollout.session.core as session_core
 from miles.rollout.session.config import compute_session_server_config
 from miles.rollout.session.server import SessionServer
+from miles.rollout.session.samples.codec import COMPUTED_FIELDS_V2, decode_samples_and_merge_input_sample
+from miles.utils.types import Sample
 
 
 class Args(Tap):
@@ -190,7 +192,7 @@ async def create_sandboxes(args: Args) -> list:
     return sandboxes
 
 
-async def one_trial(client: httpx.AsyncClient, args: Args, index: int, fixture: dict, sandboxes: list) -> dict:
+async def one_trial(client: httpx.AsyncClient, args: Args, index: int, fixture: dict, sandboxes: list, arm: str) -> dict:
     base = f"http://127.0.0.1:{args.port + index % args.workers}"
     created = await client.post(base + "/sessions")
     created.raise_for_status()
@@ -219,6 +221,14 @@ async def one_trial(client: httpx.AsyncClient, args: Args, index: int, fixture: 
         response = await client.post(session + "/samples", json={"max_seq_len": 65536})
         response.raise_for_status()
         row.update(samples_s=time.monotonic() - before, sample_bytes=len(response.content))
+        decoded = decode_samples_and_merge_input_sample(response.content, Sample(), fields=COMPUTED_FIELDS_V2)
+        assert len(decoded.samples) == 1, decoded.empty_reason
+        sample = decoded.samples[0]
+        row["training_hash"] = hashlib.sha256(json.dumps([sample.tokens, sample.loss_mask, sample.rollout_log_probs]).encode()).hexdigest()
+        candidates = sample.rollout_topk_log_probs
+        assert (candidates is None) == (arm == "plain")
+        if candidates is not None:
+            row["candidate_hash"] = hashlib.sha256(candidates.tobytes() + sample.rollout_topk_token_ids.tobytes()).hexdigest()
     except Exception as exc:
         row["error"] = f"{type(exc).__name__}: {exc}"
     finally:
@@ -235,7 +245,7 @@ async def run_arm(client: httpx.AsyncClient, args: Args, arm: str, block: int, f
         driver_stats = {"lag_s": [], "rss_max": 0, "cpu_s": 0}
         monitor = asyncio.create_task(heartbeat(driver_stats))
         start = time.monotonic()
-        rows = await asyncio.gather(*(one_trial(client, args, index, fixture, sandboxes) for index in range(args.concurrency)))
+        rows = await asyncio.gather(*(one_trial(client, args, index, fixture, sandboxes, arm) for index in range(args.concurrency)))
         duration = time.monotonic() - start
         await asyncio.sleep(0.15)
         monitor.cancel()
