@@ -46,5 +46,7 @@ The model definition lives in `scripts/models/inkling-small.py` (`MODEL_ARGS_NUM
 | Hardware | GPUs | TP | SP | PP | EP | expert-TP | Notes |
 |---|---|---|---|---|---|---|---|
 | H200 | 32 | 4 | on | 8 | 4 | 1 | `--decoder-last-pipeline-num-layers 7` (42 = 7×5 + 7) |
+| H200 | 56 | 4 | on | 7 | 8 | 1 | 42 = 7×6, no uneven split needed; use `--rollout-num-gpus-per-engine 8` |
+| H200 | 64 | 4 | on | 8 | 8 | 1 | 8 GPUs per node; `--decoder-last-pipeline-num-layers 7` (PP7 cannot divide 64) |
 
 Batch shape is configurable from the launcher (`--rollout-batch-size`, `--global-batch-size`; defaults 32/64). The validated Small runs used 64/128: full with `--lr 5e-5`, LoRA with `--lr 2e-4` — both produce a steadily rising dapo-math reward curve. At the launcher's conservative LoRA default (5e-6) the zero-initialised B factors take hundreds of rollouts to accumulate a visible delta-W, which reads as "not learning".

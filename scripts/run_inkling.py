@@ -84,7 +84,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     model_name: Literal["Inkling", "Inkling-4layer", "Inkling-Small", "Inkling-Small-4layer"] = "Inkling"
 
     train_mode: Literal["full", "lora"] = "full"
-    task: Literal["dapo_math", "geo3k"] = "dapo_math"
+    task: Literal["dapo_math", "gsm8k", "geo3k"] = "dapo_math"
     fully_async: bool = False
     rollout_num_nodes: int = 4
     enable_eval: bool = False
@@ -174,6 +174,28 @@ def _get_parallel_config(args: ScriptArgs) -> str:
             "--expert-tensor-parallel-size 1 "
         )
 
+    if args.model_name == "Inkling-Small" and args.actor_num_gpus_per_node == 8:
+        if total_gpus == 56:
+            # TP4 x PP7 -> DP2; 42 = 7x6 exactly; EP8 <= TP*DP=8 -> 32 experts per rank.
+            return (
+                "--tensor-model-parallel-size 4 "
+                "--sequence-parallel "
+                "--pipeline-model-parallel-size 7 "
+                "--expert-model-parallel-size 8 "
+                "--expert-tensor-parallel-size 1 "
+            )
+        if total_gpus == 64:
+            # TP4 x PP8 -> DP2; 42 = 7x5 + 7 (PP7 cannot divide 64);
+            # EP8 <= TP*DP=8 -> 32 experts per rank.
+            return (
+                "--tensor-model-parallel-size 4 "
+                "--sequence-parallel "
+                "--pipeline-model-parallel-size 8 "
+                "--decoder-last-pipeline-num-layers 7 "
+                "--expert-model-parallel-size 8 "
+                "--expert-tensor-parallel-size 1 "
+            )
+
     if args.model_name in ("Inkling-4layer", "Inkling-Small-4layer") and args.actor_num_nodes == 1:
         return (
             "--tensor-model-parallel-size 4 "
@@ -230,7 +252,6 @@ def _train(args: ScriptArgs):
     if args.fully_async:
         rollout_args += "--fully-async " "--pause-generation-mode in_place "
     rollout_args += (
-        "--input-key prompt "
         "--label-key label "
         "--rollout-shuffle "
         "--rm-type math "
@@ -246,7 +267,8 @@ def _train(args: ScriptArgs):
     match args.task:
         case "dapo_math":
             rollout_args += (
-                f"--prompt-data {args.data_dir}/dapo-math-17k/dapo-math-17k.jsonl " "--apply-chat-template "
+                f"--prompt-data {args.data_dir}/dapo-math-17k/dapo-math-17k.jsonl "
+                "--input-key prompt --apply-chat-template "
             )
             if args.enable_eval:
                 eval_args = (
@@ -256,8 +278,22 @@ def _train(args: ScriptArgs):
                     "--n-samples-per-eval-prompt 1 --eval-temperature 1 "
                     f"--eval-max-response-len {args.rollout_max_response_len} "
                 )
+        case "gsm8k":
+            # zhuzilin/gsm8k ships {messages, label} parquet.
+            rollout_args += (
+                f"--prompt-data {args.data_dir}/gsm8k/train.parquet "
+                "--input-key messages --apply-chat-template "
+            )
+            if args.enable_eval:
+                eval_args = (
+                    "--eval-interval 5 "
+                    f"--eval-prompt-data gsm8k {args.data_dir}/gsm8k/test.parquet "
+                    "--eval-input-key messages --eval-label-key label "
+                    "--n-samples-per-eval-prompt 1 --eval-temperature 1 "
+                    f"--eval-max-response-len {args.rollout_max_response_len} "
+                )
         case "geo3k":
-            rollout_args += f"--prompt-data {args.data_dir}/geo3k/geo3k_train.jsonl "
+            rollout_args += f"--prompt-data {args.data_dir}/geo3k/geo3k_train.jsonl --input-key prompt "
             if args.enable_eval:
                 eval_args = (
                     "--eval-interval 5 "
