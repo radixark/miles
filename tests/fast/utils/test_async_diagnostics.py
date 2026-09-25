@@ -33,7 +33,9 @@ def test_cancel_and_timeout_provenance(diagnostics, caplog):
         configure_async_diagnostics(loop)
         with async_diagnostic_scope("trial-123", timeout_s=0.01):
             with pytest.raises(TimeoutError):
-                await asyncio.wait_for(asyncio.sleep(60), timeout=0.01)
+                # Python 3.12 wait_for can cancel its caller directly. Use a
+                # tracked child so this test exercises child cancellation.
+                await asyncio.wait_for(asyncio.create_task(asyncio.sleep(60)), timeout=0.01)
             task = asyncio.create_task(asyncio.sleep(60), context=contextvars.copy_context())
             assert task.cancel("SECRET cancellation message")
             with pytest.raises(asyncio.CancelledError):
