@@ -370,6 +370,17 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help="Extra environment variables for training process, e.g. PyTorch memory management ones.",
             )
             parser.add_argument(
+                "--te-disable-flash-attn-4",
+                action="store_true",
+                default=False,
+                help=(
+                    "Hide FlashAttention 4 from Transformer Engine so it selects FlashAttention 2 instead. "
+                    "TE prefers FA4 whenever it is installed; on sm_120 with head_dim 256 (Qwen3.5/3.6/3.8) FA4 "
+                    "fails to compile and TE falls back to the unfused kernel, whose memory grows with the square "
+                    "of the sequence length. TE has no switch for FA4 alone (NVTE_FLASH_ATTN=0 disables all versions)."
+                ),
+            )
+            parser.add_argument(
                 "--train-memory-margin-bytes",
                 type=int,
                 default=1024**3,
