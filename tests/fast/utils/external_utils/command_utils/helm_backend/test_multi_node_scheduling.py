@@ -3,6 +3,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+import yaml
 
 from miles.utils.external_utils.command_utils.helm_backend import command_job
 
@@ -44,6 +45,62 @@ def _record_completions(monkeypatch: pytest.MonkeyPatch) -> list[int]:
 
 
 class TestTheNodesACommandAsksFor:
+    @pytest.mark.parametrize(
+        ("terms", "num_nodes", "refused"),
+        [
+            ([["gpu-1"]], 2, True),
+            ([["gpu-1", "gpu-2"]], 3, True),
+            ([["gpu-1"], ["gpu-2"]], 2, False),
+            ([["gpu-1"], None], 2, False),
+            ([["gpu-1"]], 1, False),
+        ],
+    )
+    def test_required_affinity_host_bounds_respect_alternative_terms(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        terms: list[list[str] | None],
+        num_nodes: int,
+        refused: bool,
+    ) -> None:
+        """Only a proven shortage across all affinity alternatives blocks submission."""
+        expressions = [
+            (
+                {"matchExpressions": [{"key": "kubernetes.io/hostname", "operator": "In", "values": hosts}]}
+                if hosts is not None
+                else {"matchExpressions": [{"key": "accelerator", "operator": "Exists"}]}
+            )
+            for hosts in terms
+        ]
+        values = tmp_path / "affinity.yaml"
+        values.write_text(
+            yaml.safe_dump(
+                {
+                    "infra": {
+                        "scheduling": {
+                            "affinity": {
+                                "nodeAffinity": {
+                                    "requiredDuringSchedulingIgnoredDuringExecution": {
+                                        "nodeSelectorTerms": expressions
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            )
+        )
+        completions = _record_completions(monkeypatch)
+        backend = _backend((str(values),))
+
+        if refused:
+            with pytest.raises(AssertionError, match="required node affinity"):
+                backend.exec_command_multi_node("true", num_nodes=num_nodes, num_gpus_per_node=1)
+            assert completions == []
+        else:
+            backend.exec_command_multi_node("true", num_nodes=num_nodes, num_gpus_per_node=1)
+            assert completions == [num_nodes]
+
     def test_refuses_a_multi_node_command_pinned_to_a_single_host(self, monkeypatch, tmp_path):
         """A two-node command under a single-host nodeSelector is refused before any Job reaches the cluster."""
         completions = _record_completions(monkeypatch)
