@@ -5,9 +5,29 @@ import pytest
 import miles.utils.orchestration_utils as orchestration_utils
 from miles.utils.async_utils import Disposer
 from miles.utils.audit_utils.process_identity import SimpleProcessIdentity
+from miles.utils.tracking_utils import tracking
+from miles.utils.tracking_utils.base import TrackingManager
 
 
 class TestInitOrchestrationScript:
+    async def test_partial_tracking_initialization_releases_started_backends(
+        self, monkeypatch: pytest.MonkeyPatch, partially_failing_tracking_manager: TrackingManager
+    ) -> None:
+        """A later backend failure still releases previously initialized tracking resources."""
+        resources: list[object] = []
+        monkeypatch.setattr(tracking, "_manager", partially_failing_tracking_manager)
+        monkeypatch.setattr(orchestration_utils.event_logger_checkpoint, "restore", lambda _args: None)
+        monkeypatch.setattr(orchestration_utils, "configure_logger", lambda _args, *, source: None)
+        monkeypatch.setattr(orchestration_utils, "maybe_start_periodic_pyspy_dump", lambda: None)
+
+        with pytest.raises(RuntimeError, match="tracking backend unavailable"):
+            async with Disposer() as disposer:
+                orchestration_utils.init_orchestration_script(
+                    Namespace(enabled=True, resources=resources), disposer=disposer
+                )
+
+        assert resources == []
+
     def test_initializes_the_shared_driver_machinery_in_order(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Every driver restores the event history first, then initializes the shared machinery in order."""
         args = Namespace(run="test")
