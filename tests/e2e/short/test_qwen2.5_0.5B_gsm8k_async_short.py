@@ -32,6 +32,8 @@ def execute():
         "--apply-chat-template "
         "--rollout-shuffle "
         "--rm-type math "
+        # 3, not 2: train_async.py prefetches rollout k+1 during train k, so rollout 2 is the first
+        # one generated on updated weights.
         "--num-rollout 3 "
         "--rollout-batch-size 8 "
         "--n-samples-per-prompt 4 "

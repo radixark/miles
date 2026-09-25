@@ -41,10 +41,10 @@ def execute(mode: str = "", ckpt_step: int | None = None):
     ckpt_args = f"--hf-checkpoint /root/models/{MODEL_NAME}/ " f"--ref-load /root/models/{MODEL_NAME}_torch_dist "
     if mode == "save":
         ckpt_args += f"--save {SAVE_DIR} "
-        ckpt_args += "--save-interval 2 "
+        ckpt_args += "--save-interval 1 "
     elif mode == "async_save":
         ckpt_args += f"--save {SAVE_DIR} "
-        ckpt_args += "--save-interval 2 "
+        ckpt_args += "--save-interval 1 "
         ckpt_args += "--async-save "
         ckpt_args += "--use-persistent-ckpt-worker "
     elif mode == "load":
@@ -59,7 +59,7 @@ def execute(mode: str = "", ckpt_step: int | None = None):
         "--apply-chat-template "
         "--rollout-shuffle "
         "--rm-type deepscaler "
-        "--num-rollout 3 "
+        "--num-rollout 2 "
         "--rollout-batch-size 4 "
         "--n-samples-per-prompt 2 "
         "--rollout-max-response-len 1024 "

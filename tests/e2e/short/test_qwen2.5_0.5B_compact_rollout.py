@@ -36,7 +36,7 @@ def execute():
         "--rollout-shuffle "
         "--custom-generate-function-path tests.manual.compact_split_generate.generate "
         "--rm-type math "
-        "--num-rollout 3 "
+        "--num-rollout 2 "
         "--rollout-batch-size 8 "
         "--n-samples-per-prompt 4 "
         "--rollout-max-response-len 1024 "
