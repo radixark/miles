@@ -1,5 +1,6 @@
 import dataclasses
 import inspect
+import logging
 import os
 from dataclasses import dataclass
 from typing import Literal
@@ -33,6 +34,26 @@ class _HardwareConfig(ExecuteTrainConfig):
 
 
 class TestResolveHardware:
+    @pytest.mark.parametrize("configured", [False, True])
+    def test_hardware_detection_is_visible_without_changing_logging(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], configured: bool
+    ) -> None:
+        """Hardware detection writes to stderr without changing application logging."""
+        root = logging.getLogger()
+        handlers = [logging.NullHandler()] if configured else []
+        expected_handlers = tuple(handlers)
+        monkeypatch.setattr(root, "handlers", handlers)
+        monkeypatch.setattr(root, "level", logging.WARNING)
+        monkeypatch.setattr(base_backend, "detect_hardware", lambda: "H100")
+
+        assert resolve_hardware(_HardwareConfig()) == "H100"
+        captured = capsys.readouterr()
+        assert captured.err == "detected --hardware H100\n"
+        assert captured.out == ""
+        assert root.handlers is handlers
+        assert tuple(root.handlers) == expected_handlers
+        assert root.level == logging.WARNING
+
     def test_supported_explicit_value_bypasses_detection_while_auto_uses_it(self, monkeypatch):
         """Explicit hardware bypasses detection, while auto resolves to a supported detected profile."""
         detected: list[None] = []

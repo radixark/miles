@@ -4,6 +4,7 @@ import fcntl
 import logging
 import os
 import shlex
+import sys
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 from contextlib import contextmanager
@@ -336,7 +337,7 @@ def resolve_hardware(config: ExecuteTrainConfig) -> str:
     """`auto` asks the node the launcher runs on; anything explicit overrides it."""
     if config.hardware == "auto":
         hardware = detect_hardware()
-        logger.info(f"detected --hardware {hardware}")
+        print(f"detected --hardware {hardware}", file=sys.stderr, flush=True)
     else:
         hardware = config.hardware
     supported = get_args(config.__dataclass_fields__["hardware"].type)
