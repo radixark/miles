@@ -15,7 +15,7 @@ from miles.backends.training_utils.weight_update.hf_weight_iterator.atomic_group
 from miles.backends.training_utils.weight_update.hf_weight_iterator.checkpoint_towers import (
     iter_checkpoint_tower_units,
 )
-from miles.utils.hf_config import load_hf_config
+from miles.utils.hf_utils.config import load_hf_config
 
 
 class TitanHfWeightIterator(HfWeightIteratorBase):
