@@ -129,12 +129,12 @@ class TestRolloutCellHealthCheckerActiveness:
         "state, expected",
         [
             (StateUninitialized(), False),
-            (StatePendingWeights(addr_info=_addr_info()), True),
+            (StatePendingWeights(addr_info=_addr_info()), False),
             (StateServing(addr_info=_addr_info()), True),
         ],
     )
-    async def test_only_a_started_engine_is_probed(self, state, expected):
-        """An engine whose process is not up yet would fail every probe and look unhealthy."""
+    async def test_only_a_serving_engine_is_probed(self, state, expected):
+        """A started engine may still hold randomized weights until its first refit."""
         cell = _make_cell(ft_components=["rollout"])
         cell._state = state
         assert cell._health_checker._get_activeness().active is expected

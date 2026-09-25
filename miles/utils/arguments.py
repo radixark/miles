@@ -909,13 +909,25 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             )
             parser.add_argument(
                 "--update-weight-transfer-mode",
-                choices=["broadcast", "p2p", "disk-delta"],
+                choices=["broadcast", "p2p", "disk-delta", "nccl-m2n"],
                 default="broadcast",
                 help=(
                     "The method to transfer weights to remote rollout engines during update weight. "
+                    "'nccl-m2n' routes supported local FFN shards through staging-backed NCCL M2N "
+                    "and keeps unsupported atomic units on the existing NCCL broadcast path. "
                     "'disk-delta' diffs each sync against a CPU snapshot of the previous one and publishes "
                     "only the changed bytes to --update-weight-disk-dir; each engine's /pull_weights applies "
                     "them into a host-local checkpoint that the engine reloads from."
+                ),
+            )
+            parser.add_argument(
+                "--m2n-pp-concurrency",
+                type=int,
+                default=2,
+                help=(
+                    "Maximum trainer PP stages transferred concurrently by nccl-m2n. "
+                    "Each stage retains its own communicator and rollout CUDA stream. "
+                    "Set to 1 for sequential PP updates."
                 ),
             )
             parser.add_argument(
@@ -2789,6 +2801,72 @@ def _resolve_mini_ft_controller_enable(args: argparse.Namespace) -> bool:
     return bool(args.ft_components) and args.api_server_port != 0
 
 
+def _validate_nccl_m2n_args(args):
+    assert getattr(args, "m2n_pp_concurrency", 2) > 0, "--m2n-pp-concurrency must be a positive integer."
+    assert not args.colocate, (
+        "NCCL M2N weight transfer requires disaggregated trainer and rollout GPUs; " "disable --colocate."
+    )
+    assert args.train_backend == "megatron", "NCCL M2N weight transfer requires --train-backend=megatron."
+
+    trainer_topology = {
+        "TP": args.tensor_model_parallel_size,
+        "CP": args.context_parallel_size,
+        "PP": args.pipeline_model_parallel_size,
+        "EP": args.expert_model_parallel_size,
+        "ETP": getattr(args, "expert_tensor_parallel_size", 1),
+    }
+    assert all(
+        size > 0 for size in trainer_topology.values()
+    ), f"NCCL M2N requires positive trainer parallel sizes, got {trainer_topology}."
+    assert trainer_topology["ETP"] == 1, f"NCCL M2N requires trainer ETP=1, got ETP={trainer_topology['ETP']}."
+
+    trainer_gpus = args.actor_num_nodes * args.actor_num_gpus_per_node
+    dense_model_parallel = trainer_topology["TP"] * trainer_topology["CP"] * trainer_topology["PP"]
+    expert_model_parallel = trainer_topology["EP"] * trainer_topology["ETP"] * trainer_topology["PP"]
+    assert trainer_gpus > 0, f"NCCL M2N requires a positive trainer GPU count, got {trainer_gpus}."
+    assert trainer_gpus % dense_model_parallel == 0, (
+        f"NCCL M2N trainer GPU count {trainer_gpus} must be divisible by "
+        f"TP*CP*PP={dense_model_parallel}; got {trainer_topology}."
+    )
+    assert trainer_gpus % expert_model_parallel == 0, (
+        f"NCCL M2N trainer GPU count {trainer_gpus} must be divisible by "
+        f"EP*ETP*PP={expert_model_parallel}; got {trainer_topology}."
+    )
+
+    rollout_gpus = args.rollout_num_gpus
+    engine_gpus = args.rollout_num_gpus_per_engine
+    assert (
+        isinstance(rollout_gpus, int) and rollout_gpus > 0
+    ), f"NCCL M2N requires a positive disaggregated rollout GPU count, got {rollout_gpus}."
+    assert engine_gpus > 0, f"NCCL M2N requires a positive GPU count per rollout engine, got {engine_gpus}."
+    assert rollout_gpus % engine_gpus == 0, (
+        f"NCCL M2N rollout GPU count {rollout_gpus} must be divisible by " f"rollout GPUs per engine {engine_gpus}."
+    )
+
+    rollout_topology = {
+        "TP": engine_gpus,
+        "EP": getattr(args, "sglang_ep_size", 1),
+        "PP": getattr(args, "sglang_pp_size", 1),
+        "DP": getattr(args, "sglang_dp_size", 1),
+    }
+    assert rollout_topology["EP"] > 0, f"NCCL M2N requires positive rollout EP, got {rollout_topology}."
+    assert (
+        rollout_topology["PP"] == 1 and rollout_topology["DP"] == 1
+    ), f"NCCL M2N requires rollout PP=1 and DP=1; got {rollout_topology}."
+
+    assert args.lora_rank <= 0, "LoRA weight sync is not supported by NCCL M2N."
+    assert (
+        getattr(args, "prefill_num_servers", None) is None
+    ), "NCCL M2N does not support PD-disaggregated rollout engines."
+    if getattr(args, "sglang_config", None) is not None:
+        from miles.backends.sglang_utils.sglang_config import SglangConfig
+
+        sglang_config = SglangConfig.from_yaml(args.sglang_config)
+        assert (
+            not sglang_config.has_pd_disaggregation
+        ), "NCCL M2N does not support prefill/decode server groups in --sglang-config."
+
+
 def miles_validate_args(args):
     if args.custom_config_path:
         data = yaml.safe_load(resolve_file_arg(args.custom_config_path)) or {}
@@ -3198,6 +3276,9 @@ def miles_validate_args(args):
         assert (
             args.megatron_to_hf_mode != "bridge"
         ), f"{args.update_weight_transfer_mode} mode is not supported when use megatron-bridge"
+
+    if args.update_weight_transfer_mode == "nccl-m2n":
+        _validate_nccl_m2n_args(args)
 
     if args.update_weight_transfer_mode == "disk-delta":
         assert not args.colocate, (
