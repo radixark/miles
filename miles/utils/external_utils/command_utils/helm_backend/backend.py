@@ -10,6 +10,7 @@ from miles.utils.external_utils.command_utils.base_backend import (
 from miles.utils.external_utils.command_utils.common import chart_dir, repo_base_dir
 from miles.utils.external_utils.command_utils.helm_backend import command_job
 from miles.utils.external_utils.command_utils.helm_backend.launcher import entrypoint
+from miles.utils.external_utils.command_utils.helm_backend.launcher.values.helm_values_types import Scheduling
 from miles.utils.external_utils.command_utils.helm_backend.launcher.values.misc import InfraInfo
 from miles.utils.external_utils.command_utils.helm_backend.naming import ReleaseName, RunNames
 
@@ -61,6 +62,11 @@ class KubernetesCommandBackend(BaseCommandBackend):
         scheduling = infra.scheduling
         node_selector = (scheduling.node_selector if scheduling is not None else None) or {}
         if (hostname := node_selector.get(_HOSTNAME_LABEL)) is None:
+            hosts = _required_affinity_hostnames(scheduling)
+            assert hosts is None or len(hosts) >= num_nodes, (
+                f"this command asks for {num_nodes} nodes, but required node affinity permits at most "
+                f"{len(hosts)} hostnames: {sorted(hosts)}; ask for fewer nodes, or unpin the deployment"
+            )
             return
 
         raise AssertionError(
@@ -87,3 +93,26 @@ class KubernetesCommandBackend(BaseCommandBackend):
             ).serialize(),
             namespace=config.namespace,
         )
+
+
+def _required_affinity_hostnames(scheduling: Scheduling | None) -> set[str] | None:
+    if scheduling is None or not scheduling.affinity:
+        return None
+    affinity = scheduling.affinity.get("nodeAffinity") or {}
+    required = affinity.get("requiredDuringSchedulingIgnoredDuringExecution")
+    if required is None:
+        return None
+
+    allowed: set[str] = set()
+    for term in required.get("nodeSelectorTerms", []):
+        if not term:
+            continue
+        bounds = [
+            set(expression.get("values", []))
+            for expression in term.get("matchExpressions", [])
+            if expression.get("key") == _HOSTNAME_LABEL and expression.get("operator") == "In"
+        ]
+        if not bounds:
+            return None
+        allowed.update(set.intersection(*bounds))
+    return allowed
