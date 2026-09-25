@@ -96,6 +96,7 @@ def execute():
     ci_args = (
         "--ci-test --ci-metric-checker-key eval/gsm8k --ci-metric-checker-threshold 0.4 "
         "--ci-metric-checker-expect-num 3 "
+        "--sample-ownership-grace-steps 4 "
         "--sglang-enable-prefill-weight-versions --ci-assert-prefill-lag-max 3 "
     )
 
