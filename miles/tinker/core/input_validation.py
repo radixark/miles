@@ -96,6 +96,27 @@ def validate_sample_payload(payload: dict, config: GatewayConfig) -> None:
     topk = payload.get("topk_prompt_logprobs", 0)
     if type(topk) is not int or topk < 0:
         raise UserInputError("topk_prompt_logprobs must be a nonnegative integer")
+    validate_sampling_params(payload.get("sampling_params") or {})
+
+
+def validate_sampling_params(params: dict) -> None:
+    """The engine request's types: finite temperature/top_p, integer top_k/seed/max_tokens, stop as strings or ids."""
+    if not isinstance(params, dict):
+        raise UserInputError("sampling_params must be an object")
+    for key in ("temperature", "top_p"):
+        value = params.get(key)
+        if value is not None and (type(value) not in (int, float) or not math.isfinite(value)):
+            raise UserInputError(f"sampling_params.{key} must be a finite number")
+    for key in ("top_k", "seed", "max_tokens"):
+        value = params.get(key)
+        if value is not None and type(value) is not int:
+            raise UserInputError(f"sampling_params.{key} must be an integer")
+    stop = params.get("stop")
+    if stop is not None and not isinstance(stop, str):
+        if not isinstance(stop, list) or not (
+            all(type(item) is str for item in stop) or all(type(item) is int for item in stop)
+        ):
+            raise UserInputError("sampling_params.stop must be a string, a list of strings or a list of token ids")
 
 
 def validate_seq_id(value, name: str, minimum: int = 1) -> int:
