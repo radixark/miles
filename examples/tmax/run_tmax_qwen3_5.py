@@ -84,23 +84,25 @@ from tmax_prompts import TMAX_SYSTEM_PROMPT
 _SCRIPT_DIR = Path(__file__).resolve().parent
 _DATASET = "allenai/tmax-15k-open-instruct"
 
-_MODEL_NAMES = Literal["Qwen3.5-9B", "Qwen3.5-4B-tmax-template", "tmax-4b", "tmax-9b"]
+_MODEL_NAMES = Literal["Qwen3.5-9B", "Qwen3.5-9B-tmax-template", "Qwen3.5-4B-tmax-template", "tmax-4b", "tmax-9b"]
 
 
 @dataclass(frozen=True)
 class _Recipe:
     hf_repo: str
     megatron_model_type: str
-    # The allenai/tmax-* chat template (also on hamishivi/Qwen3.5-*) defaults to thinking off; Miles' qwen35
-    # template defaults to on, so those checkpoints are rendered with enable_thinking=false as they were trained.
+    # Rendered through Miles' qwen35 template, which (like these checkpoints' own templates and open-instruct's
+    # rlvr_tokenize_v1) opens <think> unless enable_thinking=false. Only allenai/tmax-2b defaults to off.
     enable_thinking: bool
 
 
 _RECIPES: dict[str, _Recipe] = {
     "Qwen3.5-9B": _Recipe("Qwen/Qwen3.5-9B", "qwen3.5-9B", enable_thinking=True),
-    "Qwen3.5-4B-tmax-template": _Recipe("hamishivi/Qwen3.5-4B", "qwen3.5-4B", enable_thinking=False),
-    "tmax-4b": _Recipe("allenai/tmax-4b", "qwen3.5-4B", enable_thinking=False),
-    "tmax-9b": _Recipe("allenai/tmax-9b", "qwen3.5-9B", enable_thinking=False),
+    # open-instruct's production TMax student
+    "Qwen3.5-9B-tmax-template": _Recipe("hamishivi/Qwen3.5-9B", "qwen3.5-9B", enable_thinking=True),
+    "Qwen3.5-4B-tmax-template": _Recipe("hamishivi/Qwen3.5-4B", "qwen3.5-4B", enable_thinking=True),
+    "tmax-4b": _Recipe("allenai/tmax-4b", "qwen3.5-4B", enable_thinking=True),
+    "tmax-9b": _Recipe("allenai/tmax-9b", "qwen3.5-9B", enable_thinking=True),
 }
 
 app = typer.Typer()

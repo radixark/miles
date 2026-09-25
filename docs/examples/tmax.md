@@ -114,7 +114,8 @@ Synchronous GRPO, Qwen3.5-9B:
 Fully-async GRPO, Qwen3.5-9B, 2 training + 2 rollout GPUs: 4 steps, grad_norm 0.40 / 0.28 / 0.23 / 0.22,
 train/rollout KL 3e-4 to 4e-4, at most 1 weight version stale, no stale or aborted groups.
 
-On-policy distillation, `allenai/tmax-4b` into `hamishivi/Qwen3.5-4B` (`--opd-kl-coef 1.0`):
+On-policy distillation, `allenai/tmax-4b` into `hamishivi/Qwen3.5-4B` (`--opd-kl-coef 1.0`; these runs rendered
+with `enable_thinking=false`, off the models' training distribution, so they validate the pipeline, not the numbers):
 
 | | Step 0 | Step 1 | Step 2 | Step 3 |
 |---|---|---|---|---|
@@ -141,12 +142,14 @@ above 1 nat).
   drops it, and a synchronous step never fills (the progress bar sits at 0/16 while the loop cycles through
   the prompt pool without any error). Use 8 samples per prompt and a large prompt pool for real runs,
   `--no-filter-zero-std` for smoke tests, and always with OPD, where uniform groups still carry signal.
-- **Thinking.** The `allenai/tmax-*` chat template (also on `hamishivi/Qwen3.5-*`) defaults to thinking
-  off; Miles' `qwen35` template defaults to on. The `_RECIPES` table renders TMax-template checkpoints with
-  `enable_thinking=false`, as they were trained. SGLang's Qwen3.5 reasoning detector treats `<tool_call>`
-  as an implicit end of reasoning, so thinking-off turns still parse. vLLM's `qwen3` reasoning parser
-  does not: it files the whole turn as reasoning and drops every tool call, so serve TMax checkpoints in
-  vLLM without `--reasoning-parser`, and with `--language-model-only` (they ship no image-processor config).
+- **Thinking.** `allenai/tmax-4b`, `allenai/tmax-9b`, `hamishivi/Qwen3.5-4B`/`-9B` and stock Qwen3.5 all
+  open `<think>` by default, as does Miles' `qwen35` template, and open-instruct trained with that default;
+  only `allenai/tmax-2b` defaults to thinking off. The `_RECIPES` table keeps thinking on. (The OPD runs in
+  the results below predate this and rendered with `enable_thinking=false`.) SGLang's Qwen3.5 reasoning
+  detector treats `<tool_call>` as an implicit end of reasoning, so turns parse either way. vLLM's `qwen3`
+  reasoning parser does not: for a model that emits no `</think>` it files the whole turn as reasoning and
+  drops every tool call. Serve these checkpoints in vLLM with `--language-model-only` (they ship no
+  image-processor config).
 
 ### Throughput
 
