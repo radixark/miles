@@ -330,6 +330,8 @@ async def _maybe_log_inference_engine_weight_checksums(
         return
 
     check_weights_result = await inference_controller.check_weights(action="checksum", model_id=trainer_model_id)
+    if not check_weights_result:
+        return
     engine_checksums = flatten_inference_engine_checksums(check_weights_result)
     get_event_logger().log(
         InferenceEngineWeightChecksumEvent,

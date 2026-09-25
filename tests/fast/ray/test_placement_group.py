@@ -96,6 +96,22 @@ def fake_components():
         )
 
 
+class TestFrozenInferenceChecksums:
+    async def test_no_updatable_engines_skips_the_checksum_event(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Frozen inference fleets have no weight update checksums to flatten or record."""
+        monkeypatch.setattr(placement_group_module, "is_event_logger_initialized", lambda: True)
+        event_logger = MagicMock()
+        monkeypatch.setattr(placement_group_module, "get_event_logger", lambda: event_logger)
+        controller = SimpleNamespace(check_weights=AsyncMock(return_value=[]))
+
+        await placement_group_module._maybe_log_inference_engine_weight_checksums(
+            _make_args(), inference_controller=controller, rollout_id=None, trainer_model_id=None
+        )
+
+        controller.check_weights.assert_awaited_once()
+        event_logger.log.assert_not_called()
+
+
 class TestCreateRolloutComponents:
     async def test_the_executor_is_inited_after_the_session_servers_are_known(self, fake_components):
         """The executor reads the session contract off args, so it must be written before init() runs."""
