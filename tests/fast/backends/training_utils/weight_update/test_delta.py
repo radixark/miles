@@ -10,6 +10,7 @@ import torch
 import zstandard
 
 from miles.backends.training_utils.weight_update.protocols.delta import UpdateWeightFromDiskDelta
+from miles.backends.training_utils.weight_update.updater import WeightUpdater
 from miles.utils.disk_delta import checksum, make_tensor_reader
 
 _DELTA_MODULE = "miles.backends.training_utils.weight_update.protocols.delta"
@@ -144,7 +145,13 @@ def test_nvfp4_bytes_roundtrip_across_syncs(tmp_path: Path, encoding: str) -> No
         with patch(f"{_DELTA_MODULE}.torch.empty", side_effect=RuntimeError("CPU test has no pinned memory")):
             protocol._begin_encode(version)
         protocol.send_bucket(list(emitted.items()))
-        protocol.after_base_weights()
+        with (
+            patch(f"{_DELTA_MODULE}.dist") as distributed,
+            patch(f"{_DELTA_MODULE}.get_gloo_group", return_value=None),
+        ):
+            distributed.get_world_size.return_value = 1
+            distributed.all_gather_object.side_effect = lambda output, value, **kwargs: output.__setitem__(0, value)
+            protocol.after_base_weights()
 
         for name, compressed in protocol._delta.items():
             delta = np.frombuffer(zstandard.ZstdDecompressor().decompress(compressed), dtype=np.uint8)
@@ -178,6 +185,7 @@ def test_send_bucket_encodes_a_scalar_tensor(tmp_path: Path) -> None:
     protocol._use_pinned = False
     protocol._pool = MagicMock()
     protocol._inflight = deque()
+    protocol._encode_error = None
     protocol.total_bytes = 0
 
     protocol.send_bucket([("weight_scale", torch.ones((), dtype=torch.float32))])
@@ -187,6 +195,82 @@ def test_send_bucket_encodes_a_scalar_tensor(tmp_path: Path) -> None:
     assert payload.shape == (torch.float32.itemsize,)
     assert nbytes == torch.float32.itemsize
     assert not pinned
+
+
+@pytest.mark.parametrize("is_sender", [True, False])
+def test_update_validation_failure_drains_stream_and_prevents_publication(tmp_path: Path, is_sender: bool) -> None:
+    """Both the failing sender and a non-sender finish the iterator and raise before finalize."""
+    tensor = torch.zeros((2, 3), dtype=torch.bfloat16)
+    safetensors.torch.save_file({"weight": tensor}, tmp_path / "model.safetensors")
+    protocol = UpdateWeightFromDiskDelta(
+        Namespace(
+            hf_checkpoint=str(tmp_path),
+            update_weight_disk_dir=str(tmp_path / "deltas"),
+            update_weight_delta_encoding="xor",
+            update_weight_delta_checksum="adler32",
+            custom_update_weight_post_write_path=None,
+        )
+    )
+    protocol.is_sender = is_sender
+    protocol._baseline_captured = True
+    protocol._snapshot = {"weight": make_tensor_reader(str(tmp_path))("weight")} if is_sender else {}
+    observed = []
+    buckets = [
+        [("weight", torch.ones_like(tensor))],
+        [("weight", torch.ones((3, 2), dtype=torch.bfloat16))],
+        [("missing", tensor)],
+        [("weight", tensor)],
+    ]
+
+    def iter_weights(*args, **kwargs):
+        for index, bucket in enumerate(buckets):
+            observed.append(index)
+            yield bucket if kwargs["materialize"] else []
+
+    updater = WeightUpdater.__new__(WeightUpdater)
+    updater.protocol = protocol
+    updater.weight_version = 0
+    updater.is_lora = False
+    updater.weights_getter = lambda: {}
+    updater._hf_weight_iterator = MagicMock()
+    updater._hf_weight_iterator.iter_hf_weights.side_effect = iter_weights
+    error_message = "ValueError: Checkpoint tensor 'weight' has shape (2, 3); trainer emitted (3, 2)"
+
+    def gather_errors(output, message, **kwargs):
+        assert protocol._pool is None
+        assert not protocol._inflight
+        assert observed == [0, 1, 2, 3]
+        assert message == (error_message if is_sender else None)
+        output[:] = [error_message, None]
+
+    with (
+        patch(f"{_DELTA_MODULE}.dist") as distributed,
+        patch("miles.backends.training_utils.weight_update.updater.dist", distributed),
+        patch(f"{_DELTA_MODULE}.get_gloo_group", return_value=None),
+        patch(
+            "miles.backends.training_utils.weight_update.updater.get_gloo_group",
+            return_value=None,
+        ),
+        patch(
+            f"{_DELTA_MODULE}.torch.empty",
+            side_effect=RuntimeError("CPU test has no pinned memory"),
+        ),
+        patch.object(protocol, "finalize") as finalize,
+    ):
+        distributed.get_rank.return_value = 0 if is_sender else 1
+        distributed.get_world_size.return_value = 2
+        distributed.all_gather_object.side_effect = gather_errors
+        with pytest.raises(RuntimeError, match="Disk-delta update validation failed on rank 0") as error:
+            updater.update_weights()
+
+    finalize.assert_not_called()
+    if is_sender:
+        assert isinstance(error.value.__cause__, ValueError)
+        assert protocol.total_bytes == tensor.numel() * tensor.element_size()
+    else:
+        assert error.value.__cause__ is None
+    assert not list((tmp_path / "deltas").rglob("*.safetensors"))
+    assert not list((tmp_path / "deltas").rglob("*.json"))
 
 
 class TestReloadEnginesFailureTransitions:

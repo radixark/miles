@@ -139,8 +139,16 @@ class UpdateWeightFromDiskDelta(WeightTransferProtocol):
 
     def send_bucket(self, bucket: list[tuple[str, torch.Tensor]]) -> None:
         """Submit each tensor of the bucket to the diff/compress pool (pipelined with the gather)."""
+        if self._encode_error is not None:
+            return
         for name, tensor in bucket:
-            tensor = self._match_checkpoint_layout(name, tensor)
+            try:
+                tensor = self._match_checkpoint_layout(name, tensor)
+            except ValueError as error:
+                # Every rank must keep driving the iterator's gathers. Raise together
+                # after the stream is exhausted, before publishing any delta files.
+                self._encode_error = error
+                return
             # The dtype-view overload requires at least one dimension.
             flat = tensor.detach().contiguous().reshape(-1).view(torch.uint8)
             nbytes = int(flat.numel())
@@ -158,10 +166,13 @@ class UpdateWeightFromDiskDelta(WeightTransferProtocol):
 
     def after_base_weights(self) -> None:
         """Drain the in-flight diff/compress work and shut the pool down."""
-        while self._inflight:
-            self._collect(self._inflight.popleft())
-        self._pool.shutdown()
-        self._pool = None
+        try:
+            while self._inflight:
+                self._collect(self._inflight.popleft())
+        finally:
+            self._pool.shutdown()
+            self._pool = None
+        _raise_if_validation_failed(self._encode_error, phase="update")
 
     def finalize(self, weight_version: int) -> None:
         """Write this version as a canonical HF dir, have the engines pull and reload it."""
@@ -228,18 +239,7 @@ class UpdateWeightFromDiskDelta(WeightTransferProtocol):
                 # collectives. Defer the error until iteration finishes, then make every rank fail.
                 local_error = error
 
-        group = get_gloo_group()
-        error_messages: list[str | None] = [None] * dist.get_world_size(group=group)
-        local_error_message = None if local_error is None else f"{type(local_error).__name__}: {local_error}"
-        dist.all_gather_object(error_messages, local_error_message, group=group)
-        if any(error_messages):
-            failed_rank, error_message = next(
-                (rank, message) for rank, message in enumerate(error_messages) if message is not None
-            )
-            error = RuntimeError(f"Disk-delta baseline validation failed on rank {failed_rank}: {error_message}")
-            if local_error is not None:
-                raise error from local_error
-            raise error
+        _raise_if_validation_failed(local_error, phase="baseline")
 
         if dist.get_rank() == 0:
             check_weight_sync_results(async_utils.wait_futures(pulls), is_lora=False)
@@ -312,6 +312,7 @@ class UpdateWeightFromDiskDelta(WeightTransferProtocol):
             os.makedirs(self._version_dir, exist_ok=True)
         self._delta: dict[str, np.ndarray] = {}  # changed tensor name -> compressed diff
         self._checksums: dict[str, str] = {}  # changed tensor name -> new-state checksum
+        self._encode_error: ValueError | None = None
         self.changed_bytes = self.total_bytes = 0
 
         # Pinned host-buffer pool: a pinned non_blocking GPU->CPU copy is far faster than .cpu().
@@ -481,6 +482,16 @@ class UpdateWeightFromDiskDelta(WeightTransferProtocol):
                 100.0 * changed / max(total, 1),
                 wire / 1e9,
             )
+
+
+def _raise_if_validation_failed(local_error: ValueError | None, *, phase: str) -> None:
+    group = get_gloo_group()
+    error_messages: list[str | None] = [None] * dist.get_world_size(group=group)
+    local_message = None if local_error is None else f"{type(local_error).__name__}: {local_error}"
+    dist.all_gather_object(error_messages, local_message, group=group)
+    for rank, message in enumerate(error_messages):
+        if message is not None:
+            raise RuntimeError(f"Disk-delta {phase} validation failed on rank {rank}: {message}") from local_error
 
 
 def _atomic_write(path: str, data: bytes) -> None:
