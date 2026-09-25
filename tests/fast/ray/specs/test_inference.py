@@ -5,8 +5,10 @@ import sys
 from argparse import Namespace
 
 import pytest
-from tests.fast.ray.rollout.conftest import make_args, make_sglang_config_yaml
+import yaml
+from tests.fast.ray.rollout.conftest import fake_engine, make_args, make_sglang_config_yaml
 
+from miles.backends.sglang_utils import sglang_engine
 from miles.backends.sglang_utils.router_args_utils import parse_router_args_argv
 from miles.backends.sglang_utils.sglang_config import ModelConfig, ServerGroupConfig, resolve_sglang_config
 from miles.ray.specs import inference as inference_specs
@@ -24,6 +26,7 @@ from miles.ray.specs.inference import (
 )
 from miles.rollout.session.config import SessionServerConfig
 from miles.router.config import MilesRouterConfig
+from miles.utils.workers.addr_allocator import PortAllocator
 from miles.utils.workers.argv_utils import parse_config_argv
 from miles.utils.workers.worker_spec import HostAndPort, LaunchCommandContext, WorkerMetaContext
 
@@ -561,15 +564,85 @@ def _make_pin_args(*, pinned: bool):
 
 
 class TestInferenceEnginePortSchema:
+    def test_dp_attention_disabled_reserves_only_the_rendezvous_port(self):
+        (spec,) = specs_inference_engine(make_args(sglang_enable_dp_attention=False))
+        dist_init = next(info for info in spec.port_infos if info.name == "dist_init")
+
+        assert dist_init.num_consecutive == 1
+
+    async def test_non_dp_engines_get_adjacent_dist_init_allocations(self):
+        (spec,) = specs_inference_engine(make_args(sglang_enable_dp_attention=False, rollout_num_gpus=2))
+        dist_init = next(info for info in spec.port_infos if info.name == "dist_init")
+        allocator = PortAllocator()
+
+        # Allocate just the rendezvous endpoints; other engine endpoints consume their own ports.
+        ports = [
+            await allocator.alloc(fake_engine(port_seed=0), node_ip="10.0.0.1", consecutive=dist_init.num_consecutive)
+            for _ in range(spec.scheduling.num_cells)
+        ]
+
+        assert ports == [20000, 20001]
+
+    @pytest.mark.parametrize(
+        "global_dp_attention,global_dp_size,overrides,expected_launch,expected_reservations",
+        [
+            (False, 1, {"enable_dp_attention": True}, [(True, 1), (False, 1)], [31, 1]),
+            (True, 4, {"enable_dp_attention": False}, [(False, 4), (True, 4)], [1, 34]),
+            (False, 1, {"enable_dp_attention": True, "dp_size": 4}, [(True, 4), (False, 1)], [34, 1]),
+            (True, 2, {"dp_size": 4}, [(True, 4), (True, 2)], [34, 32]),
+        ],
+        ids=["enable-dp", "disable-dp", "enable-and-resize-dp", "resize-dp"],
+    )
+    def test_group_reservations_match_launch_overrides(
+        self,
+        tmp_path,
+        monkeypatch,
+        global_dp_attention,
+        global_dp_size,
+        overrides,
+        expected_launch,
+        expected_reservations,
+    ):
+        config_path = tmp_path / "sglang.yaml"
+        groups = [
+            {"worker_type": "regular", "num_gpus": 4, "num_gpus_per_engine": 4, "overrides": group_overrides}
+            for group_overrides in (overrides, {})
+        ]
+        config_path.write_text(yaml.safe_dump({"sglang": [{"name": "default", "server_groups": groups}]}))
+        args = make_args(
+            sglang_config=str(config_path),
+            sglang_enable_dp_attention=global_dp_attention,
+            sglang_dp_size=global_dp_size,
+        )
+        launched = []
+
+        def record_server_args(server_args):
+            launched.append((server_args["enable_dp_attention"], server_args["dp_size"]))
+            return []
+
+        # Keep the launch merge real without constructing a model or probing an accelerator.
+        monkeypatch.setattr(sglang_engine, "server_args_to_argv", record_server_args)
+        specs = specs_inference_engine(args)
+        reservations = [
+            next(info.num_consecutive for info in spec.port_infos if info.name == "dist_init") for spec in specs
+        ]
+        for spec in specs:
+            spec.launch_command(_make_engine_ctx())
+
+        assert launched == expected_launch
+        assert reservations == expected_reservations
+
     def test_the_master_port_reserves_a_block_for_every_dp_rank(self, tmp_path):
-        """sglang needs a contiguous block behind dist_init, so the reservation must grow with dp size."""
+        """DP attention needs a contiguous block behind dist_init that grows with dp size."""
         config_path = tmp_path / "sglang.yaml"
         config_path.write_text(
             make_sglang_config_yaml(
                 server_groups=[{"worker_type": "regular", "num_gpus": 4, "num_gpus_per_engine": 2}]
             )
         )
-        args = make_args(sglang_config=str(config_path), rollout_num_gpus=4, sglang_dp_size=3)
+        args = make_args(
+            sglang_config=str(config_path), rollout_num_gpus=4, sglang_enable_dp_attention=True, sglang_dp_size=3
+        )
 
         ports = {info.name: info for info in specs_inference_engine(args)[0].port_infos}
 
