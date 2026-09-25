@@ -5,6 +5,7 @@ import copy
 import hashlib
 import json
 import os
+import resource
 import subprocess
 import sys
 import time
@@ -105,6 +106,7 @@ def serve(args: Args) -> None:
 
     @app.get("/control_metrics")
     async def metrics() -> dict:
+        stats["rss_peak_bytes"] = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss * 1024
         return stats
 
     uvicorn.run(app, host="127.0.0.1", port=port, log_level="warning")
@@ -242,6 +244,7 @@ async def run_arm(client: httpx.AsyncClient, args: Args, arm: str, block: int, f
     try:
         await ready(client, list(range(args.port, args.port + args.workers)), processes)
         before = [psutil.Process(process.pid).cpu_times() for process in processes]
+        initial_rss = [psutil.Process(process.pid).memory_info().rss for process in processes]
         driver_stats = {"lag_s": [], "rss_max": 0, "cpu_s": 0}
         monitor = asyncio.create_task(heartbeat(driver_stats))
         start = time.monotonic()
@@ -254,7 +257,7 @@ async def run_arm(client: httpx.AsyncClient, args: Args, arm: str, block: int, f
                    for i in range(args.workers)]
         cpu = sum(sum(psutil.Process(p.pid).cpu_times()[:2]) - sum(b[:2]) for p, b in zip(processes, before))
         result = {"arm": arm, "block": block, "duration_s": duration, "server_cpu_s": cpu,
-                  "metrics": metrics, "driver_metrics": driver_stats, "rows": rows}
+                  "metrics": metrics, "initial_rss": initial_rss, "driver_metrics": driver_stats, "rows": rows}
         (Path(args.root) / f"result-{block}-{arm}.json").write_text(json.dumps(result))
         print("ARM_DONE", arm, block, duration, "errors", sum("error" in row for row in rows), flush=True)
         return result
