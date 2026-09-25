@@ -14,6 +14,7 @@ from miles.backends.sglang_utils.arguments import validate_args as validate_sgla
 from miles.utils.arguments import (
     FULLY_ASYNC_ROLLOUT_PATH,
     _maybe_apply_dumper_overrides,
+    _resolve_checkpoint_load,
     _resolve_ft_components,
     _resolve_mini_ft_controller_enable,
     _resolve_rollout_functions,
@@ -287,6 +288,69 @@ def test_fully_async_rejects_abort_pause_mode():
 
     args.pause_generation_mode = "retract"
     _resolve_rollout_functions(args)
+
+
+class TestResolveCheckpointLoad:
+    @staticmethod
+    def _make_args(**overrides):
+        defaults = dict(
+            load=None,
+            exit_on_missing_checkpoint=False,
+            ckpt_step=None,
+            megatron_to_hf_mode="bridge",
+            ref_load="/reference",
+            hf_checkpoint="/hf",
+            start_rollout_id=None,
+            no_load_optim=False,
+            no_load_rng=False,
+            finetune=False,
+            ref_ckpt_step=None,
+        )
+        defaults.update(overrides)
+        return SimpleNamespace(**defaults)
+
+    def test_fresh_run_uses_initial_weights(self, tmp_path):
+        args = self._make_args(load=str(tmp_path / "missing"))
+
+        _resolve_checkpoint_load(args)
+
+        assert args.load == "/reference"
+        assert args.start_rollout_id == 0
+
+    @pytest.mark.parametrize(
+        "selector",
+        [{"exit_on_missing_checkpoint": True}, {"ckpt_step": 39}],
+        ids=["exit-on-missing", "checkpoint-step"],
+    )
+    def test_explicit_resume_keeps_selected_path(self, tmp_path, selector):
+        load = str(tmp_path / "missing")
+        args = self._make_args(load=load, **selector)
+
+        _resolve_checkpoint_load(args)
+
+        assert args.load == load
+        assert args.start_rollout_id is None
+
+    def test_tracker_selects_checkpoint(self, tmp_path):
+        (tmp_path / "latest_checkpointed_iteration.txt").write_text("39")
+        args = self._make_args(load=str(tmp_path))
+
+        _resolve_checkpoint_load(args)
+
+        assert args.load == str(tmp_path)
+        assert args.start_rollout_id is None
+
+    def test_raw_fresh_run_uses_reference_checkpoint(self):
+        args = self._make_args(megatron_to_hf_mode="raw", ref_ckpt_step=7)
+
+        _resolve_checkpoint_load(args)
+
+        assert args.load == "/reference"
+        assert args.ckpt_step == 7
+        assert args.start_rollout_id == 0
+        assert args.no_load_optim
+        assert args.no_load_rng
+        assert args.finetune
 
 
 def test_recompute_logprobs_via_prefill_flag_is_parsed():

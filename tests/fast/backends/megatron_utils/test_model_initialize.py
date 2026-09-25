@@ -196,3 +196,41 @@ def test_initialize_steps_scheduler_when_checkpoint_did_not_restore_it():
 
     assert result == (model, optimizer, opt_param_scheduler, 100)
     opt_param_scheduler.step.assert_called_once_with(increment=800)
+
+
+@pytest.mark.parametrize(
+    "selector",
+    [{"exit_on_missing_checkpoint": True}, {"ckpt_step": 39}],
+    ids=["exit-on-missing", "checkpoint-step"],
+)
+def test_initialize_attempts_explicit_resume_from_empty_directory(tmp_path, selector):
+    from miles.backends.megatron_utils.model import initialize_model_and_optimizer
+
+    args = Namespace(
+        load=str(tmp_path),
+        ckpt_step=None,
+        exit_on_missing_checkpoint=False,
+        use_checkpoint_opt_param_scheduler=True,
+        global_batch_size=8,
+    )
+    for key, value in selector.items():
+        setattr(args, key, value)
+    model = [_FakeModelChunk()]
+    optimizer = object()
+    opt_param_scheduler = MagicMock()
+
+    with ExitStack() as stack:
+        stack.enter_context(
+            patch(
+                "miles.backends.megatron_utils.model.setup_model_and_optimizer",
+                return_value=(model, optimizer, opt_param_scheduler),
+            )
+        )
+        load_checkpoint = stack.enter_context(
+            patch("miles.backends.megatron_utils.model.load_checkpoint", return_value=(39, 0))
+        )
+        _patch_initialize_side_effects(stack)
+        result = initialize_model_and_optimizer(args)
+
+    assert result == (model, optimizer, opt_param_scheduler, 39)
+    load_checkpoint.assert_called_once()

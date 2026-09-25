@@ -259,6 +259,78 @@ def test_update_weights_only_uses_temporary_process_groups_when_asleep(actor_mod
     assert destroy_groups.call_count == int(asleep)
 
 
+@pytest.mark.parametrize(
+    ("model_tag", "path", "expected_step"),
+    [("ref", "/ref", None), ("teacher", "/teacher", 7), ("old_actor", "/actor", 39)],
+)
+def test_load_other_checkpoint_uses_its_own_checkpoint_step(actor_module, monkeypatch, model_tag, path, expected_step):
+    worker = object.__new__(actor_module.MegatronTrainRayActor)
+    worker.args = Namespace(
+        load="/actor",
+        no_load_optim=False,
+        no_load_rng=False,
+        finetune=False,
+        ckpt_step=39,
+        ref_ckpt_step=None,
+        opd_teacher_ckpt_step=7,
+    )
+    worker.model = object()
+    worker.weights_backuper = Mock()
+    observed_args = {}
+
+    def load_checkpoint(*_args, **_kwargs):
+        observed_args.update(vars(worker.args))
+        return 0, 0
+
+    monkeypatch.setattr(actor_module, "load_checkpoint", load_checkpoint)
+
+    worker.load_other_checkpoint(model_tag, path)
+
+    assert observed_args == {
+        "load": path,
+        "no_load_optim": True,
+        "no_load_rng": True,
+        "finetune": True,
+        "ckpt_step": expected_step,
+        "ref_ckpt_step": None,
+        "opd_teacher_ckpt_step": 7,
+    }
+    assert worker.args.load == "/actor"
+    assert worker.args.ckpt_step == 39
+    worker.weights_backuper.backup.assert_called_once_with(model_tag)
+    assert worker._active_model_tag == model_tag
+
+
+def test_load_other_checkpoint_restores_arguments_after_failure(actor_module, monkeypatch):
+    worker = object.__new__(actor_module.MegatronTrainRayActor)
+    worker.args = Namespace(
+        load="/actor",
+        no_load_optim=False,
+        no_load_rng=False,
+        finetune=False,
+        ckpt_step=39,
+        ref_ckpt_step=None,
+        opd_teacher_ckpt_step=None,
+    )
+    worker.model = object()
+    worker.weights_backuper = Mock()
+    monkeypatch.setattr(actor_module, "load_checkpoint", Mock(side_effect=RuntimeError("load failed")))
+
+    with pytest.raises(RuntimeError, match="load failed"):
+        worker.load_other_checkpoint("ref", "/ref")
+
+    assert worker.args == Namespace(
+        load="/actor",
+        no_load_optim=False,
+        no_load_rng=False,
+        finetune=False,
+        ckpt_step=39,
+        ref_ckpt_step=None,
+        opd_teacher_ckpt_step=None,
+    )
+    worker.weights_backuper.backup.assert_not_called()
+
+
 def _lifecycle_worker(actor_module, monkeypatch, asleep):
     worker = object.__new__(actor_module.MegatronTrainRayActor)
     worker.args = Namespace(
