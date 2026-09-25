@@ -5,9 +5,15 @@ from tests.ci.metric_history import register_ci_gate
 from tests.e2e.megatron.test_qwen3_30B_A3B._common import CaseConfig, execute, prepare
 
 register_cuda_ci(
-    est_time=1200, suite="stage-c-4-gpu-h200", labels=["megatron", "replay"], hardware=["hopper", "blackwell"]
+    est_time=1200,
+    suite="stage-c-4-gpu-h200",
+    labels=["megatron", "replay"],
+    hardware=["hopper", "blackwell"],
+    disabled="Outdated and simple.",
 )
-register_rocm_ci(est_time=1500, suite="nightly-stage-c-4-gpu-mi350", labels=["megatron", "replay"])
+register_rocm_ci(
+    est_time=1500, suite="nightly-stage-c-4-gpu-mi350", labels=["megatron", "replay"], disabled="Outdated and simple."
+)
 
 register_ci_gate(metric_key="train/grad_norm")
 register_ci_gate(metric_key="train/ppo_kl")
