@@ -60,10 +60,10 @@ __all__ = [
 @dataclass
 class ExecuteTrainConfig:
     cuda_core_dump: bool = False
-    external_mooncake: bool = False
     num_nodes: int = field(default_factory=lambda: int(os.environ.get("SLURM_JOB_NUM_NODES", "1")))
     extra_env_vars: str = ""
     output_dir: str = "/root/shared_data"
+    external_mooncake: bool = field(default=False, kw_only=True)
 
 
 def execute_train(

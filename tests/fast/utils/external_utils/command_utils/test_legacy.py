@@ -20,9 +20,12 @@ class _RecordingBackend:
 
 
 class TestExecuteTrainConfig:
-    def test_positional_v1_config_is_converted_before_launch(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    @pytest.mark.parametrize("external_mooncake", [False, True])
+    def test_positional_v1_config_is_converted_before_launch(
+        self, monkeypatch: pytest.MonkeyPatch, external_mooncake: bool
+    ) -> None:
         """The v1 positional field order and values must reach the current backend unchanged."""
-        config = legacy.ExecuteTrainConfig(True, 4, "MY_VAR=value", "/output")
+        config = legacy.ExecuteTrainConfig(True, 4, "MY_VAR=value", "/output", external_mooncake=external_mooncake)
         backend = _RecordingBackend()
         current_configs: list[CurrentExecuteTrainConfig] = []
 
@@ -44,7 +47,7 @@ class TestExecuteTrainConfig:
             job_lifetime="launcher",
         )
 
-        assert [field.name for field in dataclasses.fields(legacy.ExecuteTrainConfig)] == [
+        assert [field.name for field in dataclasses.fields(legacy.ExecuteTrainConfig) if not field.kw_only] == [
             "cuda_core_dump",
             "num_nodes",
             "extra_env_vars",
@@ -52,6 +55,7 @@ class TestExecuteTrainConfig:
         ]
         current_config = current_configs[0]
         assert current_config.cuda_core_dump is True
+        assert current_config.external_mooncake is external_mooncake
         assert current_config.num_nodes == 4
         assert current_config.extra_env_vars == "MY_VAR=value"
         assert current_config.output_dir == "/output"
