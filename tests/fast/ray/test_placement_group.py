@@ -18,6 +18,7 @@ from miles.ray.placement_group import (
     take_over_trainers,
 )
 from miles.ray.rollout.eval_fleet import EvalFleetInfo
+from miles.rollout.session.types import SessionServerInstance
 from miles.utils.init_once import InitState
 from miles.utils.workers.types import DeployComponent, DeploymentIdentity
 from miles.utils.workers.worker_spec import HostAndPort
@@ -62,8 +63,7 @@ def fake_components():
         # the real one returns before touching anything when the run asked for no session server
         if provider is None:
             return
-        args.session_server_addrs = ["10.0.0.2:5000"]
-        args.session_server_instance_ids = ["session-0"]
+        args.session_server_instances = [SessionServerInstance(addr="10.0.0.2:5000", instance_id="session-0")]
         events.append("session_servers_ready")
 
     async def fake_executor_get_init_state() -> str:
@@ -122,8 +122,7 @@ class TestCreateRolloutComponents:
 
         await create_rollout_components(args)
 
-        assert args.session_server_addrs == ["10.0.0.2:5000"]
-        assert args.session_server_instance_ids == ["session-0"]
+        assert args.session_server_instances == [SessionServerInstance(addr="10.0.0.2:5000", instance_id="session-0")]
 
     async def test_the_executor_is_inited_after_the_session_servers_are_known(self, fake_components):
         """The executor reads the session contract off args, so it must be written before init() runs."""
@@ -137,8 +136,7 @@ class TestCreateRolloutComponents:
             "controller_init",
             "executor_init",
         ]
-        assert args.session_server_addrs == ["10.0.0.2:5000"]
-        assert args.session_server_instance_ids == ["session-0"]
+        assert args.session_server_instances == [SessionServerInstance(addr="10.0.0.2:5000", instance_id="session-0")]
 
     async def test_the_executor_is_waited_out_before_anything_is_initialized(self, fake_components):
         """A hot restart finds the previous script's executor up, and initializing anything against it is the bug."""

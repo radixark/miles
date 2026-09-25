@@ -5,6 +5,7 @@ from tests.fast.ray.rollout.conftest import make_args
 
 from miles.ray.rollout import rollout_executor as executor_module
 from miles.ray.rollout.rollout_executor import RolloutExecutor
+from miles.rollout.session.types import SessionServerInstance
 from miles.utils.init_once import InitOnce, InitState
 
 pytestmark = pytest.mark.asyncio
@@ -36,7 +37,7 @@ class TestInitRunsExactlyOnce:
             return {}
 
         async def resolve_session(args, *, provider) -> None:
-            args.session_server_addrs = ["eval-session:5000"]
+            args.session_server_instances = [SessionServerInstance(addr="eval-session:5000")]
 
         class StopAfterAddressResolution(Exception):
             pass
@@ -51,7 +52,7 @@ class TestInitRunsExactlyOnce:
         with pytest.raises(StopAfterAddressResolution):
             await executor.init()
 
-        assert args.session_server_addrs == ["eval-session:5000"]
+        assert args.session_server_instances == [SessionServerInstance(addr="eval-session:5000")]
 
     async def test_a_constructed_executor_reports_itself_uninitialized(self):
         """The constructor the run really uses is what has to leave the guard clear."""
