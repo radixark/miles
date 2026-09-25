@@ -71,7 +71,11 @@ class TestLibraryChart:
         )
         shutil.copytree(CHART_DIR, umbrella / "charts" / "miles-workbench")
         shutil.copytree(REPO_ROOT / "charts" / "miles-common", umbrella / "charts" / "miles-common")
-        (umbrella / "values.yaml").write_text(yaml.safe_dump({"global": {"imageRegistry": "registry.local"}}))
+        (umbrella / "values.yaml").write_text(
+            yaml.safe_dump(
+                {"global": {"imageRegistry": "registry.local"}, "miles-workbench": {"objectName": "workbench"}}
+            )
+        )
 
         result = subprocess.run(
             ["helm", "template", "myrel", str(umbrella), "-n", NAMESPACE], capture_output=True, text=True

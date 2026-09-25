@@ -27,6 +27,12 @@ def _infra_checksum(objects: list[dict]) -> str:
 
 @requires_helm
 class TestWorkbenchStatefulSet:
+    def test_refuses_an_empty_object_name_before_installation(self) -> None:
+        """An empty workbench name fails rendering rather than Kubernetes admission."""
+        error = render_error("--set-string", "objectName=")
+
+        assert "objectName must be set to a non-empty workbench name" in error
+
     def test_a_single_pod_idles_on_the_training_image(self):
         """The workbench is one long-lived pod on the training image, not a job that exits."""
         objects = render()

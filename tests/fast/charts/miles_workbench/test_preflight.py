@@ -521,7 +521,7 @@ class TestPreflightChecks:
     def test_the_plan_it_derives_is_what_the_chart_actually_renders(self, overrides, expected):
         """The whole point is to read helm's answer, so the parse has to hold against the real chart."""
         rendered = subprocess.run(
-            ["helm", "template", "wb", str(CHART_DIR), "-n", NAMESPACE, *overrides],
+            ["helm", "template", "wb", str(CHART_DIR), "-n", NAMESPACE, "--set-string", "objectName=wb", *overrides],
             capture_output=True,
             text=True,
         )

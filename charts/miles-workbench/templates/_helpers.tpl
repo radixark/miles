@@ -1,5 +1,5 @@
 {{- define "miles-workbench.fullname" -}}
-{{- .Values.objectName }}
+{{- required "objectName must be set to a non-empty workbench name" .Values.objectName }}
 {{- end }}
 
 {{- define "miles-workbench.labels" -}}
