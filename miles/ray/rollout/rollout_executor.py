@@ -56,7 +56,12 @@ class RolloutExecutor:
         self.weight_version: int | None = None
         self._rollouts_since_weight_version_publish = 0
         # TODO make args immutable
-        init_tracking(args, primary=False, router_addr=f"http://{args.sglang_router_ip}:{args.sglang_router_port}")
+        router_addr = (
+            None
+            if args.rollout_endpoint_url is not None
+            else f"http://{args.sglang_router_ip}:{args.sglang_router_port}"
+        )
+        init_tracking(args, primary=False, router_addr=router_addr)
         object_store.init_instance(args, contribute_segment=False)
 
         init_http_client(args)

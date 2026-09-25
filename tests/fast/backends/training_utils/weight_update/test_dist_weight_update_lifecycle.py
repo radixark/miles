@@ -71,7 +71,12 @@ def _make_engines(
     ]
 
 
-def _make_updater(engines: list[_RecordingApiClient], *, pause_generation_mode: str = "retract") -> WeightUpdater:
+def _make_updater(
+    engines: list[_RecordingApiClient],
+    *,
+    pause_generation_mode: str = "retract",
+    initial_weight_version: int = 0,
+) -> WeightUpdater:
     protocol = SimpleNamespace(
         use_weight_update_session=True,
         needs_base_resync_for_lora=False,
@@ -100,6 +105,7 @@ def _make_updater(engines: list[_RecordingApiClient], *, pause_generation_mode: 
             iterator_factory=lambda *a, **k: iterator,
             parallel_state=MagicMock(),
             is_lora=False,
+            initial_weight_version=initial_weight_version,
         )
 
 
@@ -185,6 +191,15 @@ class TestWeightUpdateSessionFrame:
         assert _kwargs_of(calls, "pause_generation") == [{"mode": pause_generation_mode}] * _ENGINE_COUNT
         assert _kwargs_of(calls, "begin_weight_update") == [{"selector": "all", "sync_base": True}] * _ENGINE_COUNT
         assert _kwargs_of(calls, "update_weight_version") == [{"weight_version": "1"}] * _ENGINE_COUNT
+
+    def test_the_next_publication_follows_the_restored_version(self):
+        calls: list[tuple[int, str, dict]] = []
+        updater = _make_updater(_make_engines(calls), initial_weight_version=17)
+
+        _run(updater)
+
+        assert updater.weight_version == 18
+        assert _kwargs_of(calls, "update_weight_version") == [{"weight_version": "18"}] * _ENGINE_COUNT
 
     def test_in_place_pause_mode_skips_the_flush(self):
         """in_place pause keeps the running requests, so their cache must survive."""

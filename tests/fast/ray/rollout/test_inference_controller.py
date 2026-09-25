@@ -691,6 +691,33 @@ class TestUpdatableEnginesPayload:
 
 class TestInitLifecycle:
     @pytest.mark.asyncio
+    async def test_external_endpoint_skips_the_managed_inference_fleet(self, monkeypatch: pytest.MonkeyPatch):
+        waited = []
+
+        async def _wait_session_server_ready(args: Namespace) -> None:
+            waited.append(args)
+
+        async def _no_servers(args: Namespace, **kwargs: Any) -> dict:
+            raise AssertionError("external endpoint must not create rollout servers")
+
+        monkeypatch.setattr(inference_controller_module, "wait_session_server_ready", _wait_session_server_ready)
+        monkeypatch.setattr(inference_controller_module, "create_rollout_servers", _no_servers)
+        monkeypatch.setattr(
+            inference_controller_module,
+            "RayWorkerProvider",
+            SimpleNamespace(create=lambda **kwargs: pytest.fail("external endpoint must not watch engine cells")),
+        )
+        args = make_args(rollout_endpoint_url="https://rollout.example", rollout_num_gpus=0)
+        controller = InferenceController(args)
+
+        await controller.init()
+
+        assert waited == [args]
+        assert controller.servers == {}
+        assert controller._watcher_disposers == []
+        assert controller._ticker is None
+
+    @pytest.mark.asyncio
     async def test_debug_train_only_init_has_no_rollout_side_effects(self, monkeypatch: pytest.MonkeyPatch):
         """A train-only debug run owns no engines, so init must not reach any rollout machinery."""
 

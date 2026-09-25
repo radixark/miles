@@ -35,6 +35,8 @@ def _make_args(**overrides: Any) -> SimpleNamespace:
         save_trigger_sentinel=None,
         skip_eval_before_train=False,
         start_rollout_id=0,
+        rollout_endpoint_url=None,
+        update_weight_transfer_mode="broadcast",
         update_weights_interval=1,
         use_critic=False,
         use_rollout_logprobs=False,
@@ -132,6 +134,64 @@ class TestWeightEqualityCheck:
 
 
 class TestPipelinedGeneration:
+    async def test_external_disk_delta_overlaps_initial_baseline_with_first_rollout(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        """The external fleet already serves the base, but training must wait for its snapshot."""
+        events: list[str] = []
+        args = _make_args(
+            num_rollout=1,
+            rollout_endpoint_url="https://rollout.example",
+            update_weight_transfer_mode="disk-delta",
+        )
+        _install_driver_fakes(monkeypatch, args, events)
+        baseline_started = asyncio.Event()
+        baseline_gate = asyncio.Event()
+
+        async def update_weights(_model: Any, _executor: Any, rollout_id: int | None = None) -> None:
+            events.append(f"update_weights_start:{rollout_id}")
+            baseline_started.set()
+            await baseline_gate.wait()
+            events.append(f"update_weights_done:{rollout_id}")
+
+        monkeypatch.setattr(train_async_driver, "update_weights", update_weights)
+
+        driver = asyncio.create_task(train_async_driver.train(args))
+        await asyncio.wait_for(baseline_started.wait(), timeout=10)
+
+        assert "generate_start:0" in events
+        assert "update_weights_start:None" in events
+        assert "actor_train:0" not in events
+
+        baseline_gate.set()
+        await asyncio.wait_for(driver, timeout=10)
+
+        assert events.index("generate_start:0") < events.index("update_weights_done:None")
+        assert events.index("update_weights_done:None") < events.index("actor_train:0")
+
+    @pytest.mark.parametrize(
+        ("transfer_mode", "endpoint"),
+        [("broadcast", "https://rollout.example"), ("disk-delta", None)],
+    )
+    async def test_initial_weight_sync_precedes_rollout_without_external_disk_delta(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        transfer_mode: str,
+        endpoint: str | None,
+    ):
+        """Only an independently booted external disk-delta fleet can generate from the base."""
+        events: list[str] = []
+        args = _make_args(
+            num_rollout=1,
+            rollout_endpoint_url=endpoint,
+            update_weight_transfer_mode=transfer_mode,
+        )
+        _install_driver_fakes(monkeypatch, args, events)
+
+        await train_async_driver.train(args)
+
+        assert events.index("update_weights:None") < events.index("generate_start:0")
+
     async def test_inflight_next_rollout_finishes_before_weight_publication(self, monkeypatch: pytest.MonkeyPatch):
         """Generation for the next rollout starts while this one trains, but must settle before new weights ship."""
         events: list[str] = []

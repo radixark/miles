@@ -7,6 +7,7 @@ import uvicorn
 from miles.ray.rollout.inference_controller import InferenceController
 from miles.ray.train.group import TrainerController
 from miles.ray.wiring import launch_worker_manager
+from miles.rollout.endpoint import compute_rollout_concurrency
 from miles.tinker.arguments import add_tinker_arguments, configure_tinker_args
 from miles.tinker.core.service import TinkerService
 from miles.tinker.core.types import GatewayConfig
@@ -37,7 +38,7 @@ async def serve(args):
     assert max_tokens_per_datum > 0, "trainer token budget must fit at least one padding block"
     configure_logger(args, source=MainProcessIdentity())
 
-    init_http_client(args)
+    init_http_client(args, max_connections=compute_rollout_concurrency(args))
 
     _worker_manager = launch_worker_manager(args)
     object_store.init_instance(args, contribute_segment=False)

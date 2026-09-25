@@ -310,6 +310,7 @@ class MegatronTrainRayActor(TrainRayActor):
                 lora_sync_config=(
                     build_lora_config(args, target_modules=args.lora_adapter_targets) if is_lora else None
                 ),
+                initial_weight_version=args.update_weight_initial_version,
             )
 
         if publish_snapshots:

@@ -47,6 +47,7 @@ class WeightUpdater:
         parallel_state: ParallelState,
         is_lora: bool,
         lora_sync_config: dict | None = None,
+        initial_weight_version: int = 0,
     ) -> None:
         self.args = args
         self.parallel_state = parallel_state
@@ -63,7 +64,9 @@ class WeightUpdater:
             quantization_config=quantization_config,
         )
         self.weights_getter = weights_getter
-        self.weight_version = 0
+        if initial_weight_version < 0:
+            raise ValueError("initial_weight_version must be non-negative")
+        self.weight_version = initial_weight_version
         self.is_lora = is_lora
         if is_lora:
             assert lora_sync_config is not None

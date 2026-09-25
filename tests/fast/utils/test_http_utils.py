@@ -624,6 +624,7 @@ class TestPosterActorKeywordOnlyConstruction:
 class TestInitHttpClientConcurrency:
     def _args(self, **overrides):
         defaults = dict(
+            rollout_endpoint_url=None,
             rollout_num_gpus=0,
             rollout_num_gpus_per_engine=1,
             eval_num_gpus=0,

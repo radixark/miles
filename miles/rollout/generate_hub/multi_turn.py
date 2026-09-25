@@ -7,6 +7,7 @@ import time
 from copy import deepcopy
 
 from miles.rollout.base_types import GenerateFnInput, GenerateFnOutput
+from miles.rollout.endpoint import get_rollout_url
 from miles.rollout.generate_utils.generate_endpoint_utils import (
     compute_prompt_ids_from_sample,
     compute_request_payload,
@@ -31,7 +32,7 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
     tokenizer = input.state.tokenizer
     assert not args.partial_rollout, "Partial rollout is not supported"
 
-    url = f"http://{args.sglang_router_ip}:{args.sglang_router_port}/generate"
+    url = get_rollout_url(args, "/generate")
 
     execute_tool_function = load_function(args.generate_execute_tool_function_path)
 
