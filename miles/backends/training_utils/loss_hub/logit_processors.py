@@ -58,12 +58,17 @@ def _iter_response_chunks(
         logits = logits.view(-1, logits.size(-1))
 
     if args.true_on_policy_mode:
-        if logits.size(-1) > 1 and args.rollout_temperature > 0 and args.rollout_temperature != 1.0:
-            logits = logits.div(args.rollout_temperature)
-        if getattr(args, "bf16", False):
-            logits = logits.to(torch.bfloat16)
-        elif getattr(args, "fp16", False):
-            logits = logits.to(torch.float16)
+        temperature = (
+            args.rollout_temperature
+            if (logits.size(-1) > 1 and args.rollout_temperature > 0 and args.rollout_temperature != 1.0)
+            else None
+        )
+        chunk_dtype = torch.bfloat16 if getattr(args, "bf16", False) else (
+            torch.float16 if getattr(args, "fp16", False) else None
+        )
+    else:
+        temperature = None
+        chunk_dtype = None
 
     parallel_state = get_parallel_state()
     cp_size = parallel_state.cp.size
@@ -153,6 +158,11 @@ def _iter_response_chunks(
                 response_indices = ()
 
         seq_start += total_length
+
+        if temperature is not None:
+            logits_chunk = logits_chunk.div(temperature)
+        if chunk_dtype is not None:
+            logits_chunk = logits_chunk.to(chunk_dtype)
 
         if include_response_indices:
             assert len(response_indices) == tokens_chunk.size(0)
