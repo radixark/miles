@@ -2,7 +2,7 @@
   "release_branch": "release/v0.1.1",
   "sglang_repo": "sgl-project/sglang",
   "sglang_branch": "sglang-miles",
-  "sglang_commit": "00caa88c9f7000227cde4123fbd150265e866317",
+  "sglang_commit": "880e3d2453eb7ef1738350e8c35ba2b956cc93a9",
   "megatron_repo": "radixark/Megatron-LM",
   "megatron_branch": "miles-main",
   "megatron_commit": "f148a32b4385b758b66a77c9c3ad1641f1295d4b",
