@@ -1,0 +1,26 @@
+{
+  "base_image": {
+    "typed-argument-parser": "1.11.0",
+    "pydantic": "2.13.5",
+    "sglang": "0.5.20.dev59+gc9660a7",
+    "ray": "2.58.0",
+    "uvloop": "0.22.1",
+    "torch": "2.13.0+cu130",
+    "numpy": "2.3.5",
+    "httpx": "0.28.1",
+    "transformers": "5.12.1",
+    "httpcore": "1.0.9"
+  },
+  "harbor_overlay": {
+    "harbor": "0.20.0",
+    "httpx": "0.28.1",
+    "tenacity": "9.1.4",
+    "pydantic": "2.13.5",
+    "httpcore": "1.0.9",
+    "litellm": "1.102.1",
+    "e2b": "2.50.0",
+    "connectrpc": "0.11.1",
+    "pyqwest": "0.10.0",
+    "typed-argument-parser": "1.12.0"
+  }
+}
