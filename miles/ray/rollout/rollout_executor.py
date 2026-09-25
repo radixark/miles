@@ -123,7 +123,11 @@ class RolloutExecutor:
         with timer("rollout"):
             data, metadata, metrics = await self._get_rollout_data(rollout_id=rollout_id)
         save_debug_rollout_data(self.args, data, rollout_id=rollout_id, evaluation=False, metadata=metadata)
-        log_rollout_data(rollout_id, self.args, data, metrics, time.time() - start_time)
+        if data:
+            log_rollout_data(rollout_id, self.args, data, metrics, time.time() - start_time)
+        if self.args.debug_rollout_only:
+            logger.info("Rollout-only wave %s collected %s samples; skipping training transport", rollout_id, len(data))
+            return dict(sample_indices=[s.index for s in data], data_ref=[])
         data = convert_samples_to_train_data(
             self.args,
             data,
@@ -227,9 +231,13 @@ class RolloutExecutor:
                 )
             metrics = data.metrics
             data = data.samples
-            data, metadata = postprocess_rollout_data(
-                self.args, data, train_parallel_config=self.train_parallel_config
-            )
+            if self.args.debug_rollout_only:
+                data = [sample for group in data for sample in group] if data and isinstance(data[0], list) else data
+                metadata = {}
+            else:
+                data, metadata = postprocess_rollout_data(
+                    self.args, data, train_parallel_config=self.train_parallel_config
+                )
             assert_samples_weight_version_sane(self.args, samples=data)
             if RolloutDataInjectionUtil.should_inject(self.args, rollout_id):
                 generated_data = data

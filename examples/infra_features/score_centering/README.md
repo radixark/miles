@@ -107,3 +107,10 @@ computation, importance weighting, regularization, and probability diagnostics r
 the same. This control is a weighted policy-gradient ablation, not the PPO loss.
 Never replace recorded behavior probabilities with probabilities from the updated actor.
 Evaluate learned checkpoints separately: the rewards of recorded responses are fixed.
+
+### Frozen rollout collection
+
+With `--debug-rollout-only`, collection skips training-batch postprocessing,
+partitioning, and trainer dispatch. Empty waves are allowed and the data cursor
+is saved after every wave. This does not relax the training data requirements
+when the saved corpus is later replayed.

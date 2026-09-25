@@ -113,6 +113,16 @@ async def train(args):
         await inference_controller.prepare_rollout(rollout_id)
         rollout_data_pack = await rollout_executor.get.remote(rollout_id)
 
+        if args.debug_rollout_only:
+            # Collection artifacts and the data cursor do not require a training batch.
+            await rollout_executor.save.remote(rollout_id)
+            if (
+                args.debug_exit_after_rollout is not None
+                and rollout_id - args.start_rollout_id + 1 >= args.debug_exit_after_rollout
+            ):
+                break
+            continue
+
         if args.offload_rollout:
             if args.colocate_memory_peak_device == "gpu":
                 await inference_controller.offload_kv()
