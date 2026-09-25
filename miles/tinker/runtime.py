@@ -7,7 +7,7 @@ import httpx
 from miles.ray.rollout.train_data_conversion import ROLLOUT_DATA_VALUE_SPEC
 from miles.tinker.core.types import UserInputError
 from miles.utils import object_store
-from miles.utils.http_utils import post
+from miles.utils.http_utils import is_client_error, post
 from tinker.types.sample_response import MASK_LOGPROB
 
 # internal datum key -> trainer batch key
@@ -121,11 +121,13 @@ class MilesBackend:
         try:
             responses = await asyncio.gather(
                 *[
-                    post(f"{self.router_url}/generate", _with_sample_seed(request, index))
+                    post(f"{self.router_url}/generate", _with_sample_seed(request, index), retry_client_errors=False)
                     for index in range(payload["num_samples"])
                 ]
             )
         except httpx.HTTPError as error:
+            if is_client_error(error):  # the engine refused the request itself, e.g. over its context
+                raise UserInputError(f"the engine rejected the sample: {_error_message(error.response)}") from None
             return {"error": str(error)}
         sequences = [_to_sequence(response) for response in responses]
         for sequence in sequences:
@@ -185,6 +187,18 @@ def _with_sample_seed(request: dict, index: int) -> dict:
         params["sampling_seed"] = seed + index
     request["sampling_params"] = params
     return request
+
+
+def _error_message(response: httpx.Response) -> str:
+    """The engine's error message: SGLang answers {"error": {"message": ...}}; else the raw body."""
+    try:
+        body = response.json()
+    except ValueError:
+        body = None
+    error = body.get("error") if isinstance(body, dict) else None
+    if isinstance(error, dict):
+        error = error.get("message")
+    return error or response.text
 
 
 def _prompt_logprobs(response: dict) -> list[float]:

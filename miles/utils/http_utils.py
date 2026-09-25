@@ -261,7 +261,16 @@ def _next_actor():
     return actor
 
 
-async def _post(client, url, payload, max_retries=60, action="post", headers=None):
+def is_client_error(error: Exception) -> bool:
+    """A 4xx answer a retry cannot change; 408 and 429 are transient and stay retryable."""
+    return (
+        isinstance(error, httpx.HTTPStatusError)
+        and 400 <= error.response.status_code < 500
+        and error.response.status_code not in (408, 429)
+    )
+
+
+async def _post(client, url, payload, max_retries=60, action="post", headers=None, retry_client_errors=True):
     retry_count = 0
     while retry_count < max_retries:
         try:
@@ -276,6 +285,8 @@ async def _post(client, url, payload, max_retries=60, action="post", headers=Non
             except json.JSONDecodeError:
                 output = response.text
         except Exception as e:
+            if not retry_client_errors and is_client_error(e):
+                raise  # the server refused the request itself; resending it cannot succeed
             retry_count += 1
 
             if isinstance(e, httpx.HTTPStatusError):
@@ -382,8 +393,16 @@ def _init_ray_distributed_post(args):
                 timeout=httpx.Timeout(None),
             )
 
-        async def do_post(self, url, payload, max_retries=60, action="post", headers=None):
-            return await _post(self._client, url, payload, max_retries, action=action, headers=headers)
+        async def do_post(self, url, payload, max_retries=60, action="post", headers=None, retry_client_errors=True):
+            return await _post(
+                self._client,
+                url,
+                payload,
+                max_retries,
+                action=action,
+                headers=headers,
+                retry_client_errors=retry_client_errors,
+            )
 
     # Create actors per node
     created = []
@@ -408,18 +427,31 @@ def _init_ray_distributed_post(args):
 
 
 # TODO may generalize the name since it now contains http DELETE/GET etc (with retries and remote-execution)
-async def post(url, payload, max_retries=60, action="post", headers=None):
+async def post(url, payload, max_retries=60, action="post", headers=None, retry_client_errors=True):
     # If distributed mode is enabled and actors exist, dispatch via Ray.
     if _distributed_post_enabled and _post_actors:
         try:
             actor = _next_actor()
             if actor is not None:
-                return await actor.do_post.remote(url, payload, max_retries, action=action, headers=headers)
+                return await actor.do_post.remote(
+                    url, payload, max_retries, action=action, headers=headers, retry_client_errors=retry_client_errors
+                )
         except Exception as e:
+            cause = getattr(e, "cause", e)  # a Ray task error wraps what the actor raised
+            if not retry_client_errors and is_client_error(cause):
+                raise cause from None
             logger.info(f"[http_utils] Distributed POST failed, falling back to local: {e} (url={url})")
             # fall through to local
 
-    return await _post(_http_client, url, payload, max_retries, action=action, headers=headers)
+    return await _post(
+        _http_client,
+        url,
+        payload,
+        max_retries,
+        action=action,
+        headers=headers,
+        retry_client_errors=retry_client_errors,
+    )
 
 
 # TODO unify w/ `post` to add retries and remote-execution
