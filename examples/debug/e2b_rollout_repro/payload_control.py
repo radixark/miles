@@ -234,8 +234,14 @@ async def one_trial(client: httpx.AsyncClient, args: Args, index: int, fixture: 
     except Exception as exc:
         row["error"] = f"{type(exc).__name__}: {exc}"
     finally:
-        response = await client.delete(session)
-        row["delete_status"] = response.status_code
+        try:
+            response = await client.delete(session, timeout=60)
+            row["delete_status"] = response.status_code
+        except Exception as exc:
+            row["delete_error"] = f"{type(exc).__name__}: {exc}"
+        row["total_s"] = time.monotonic() - start
+        with (Path(args.root) / f"trials-{arm}.jsonl").open("a") as stream:
+            stream.write(json.dumps(row) + "\n")
     return row
 
 
@@ -248,16 +254,29 @@ async def run_arm(client: httpx.AsyncClient, args: Args, arm: str, block: int, f
         driver_stats = {"lag_s": [], "rss_max": 0, "cpu_s": 0}
         monitor = asyncio.create_task(heartbeat(driver_stats))
         start = time.monotonic()
-        rows = await asyncio.gather(*(one_trial(client, args, index, fixture, sandboxes, arm) for index in range(args.concurrency)))
+        raw_rows = await asyncio.gather(
+            *(one_trial(client, args, index, fixture, sandboxes, arm) for index in range(args.concurrency)),
+            return_exceptions=True,
+        )
+        rows = [row if isinstance(row, dict) else {"index": i, "error": f"{type(row).__name__}: {row}"}
+                for i, row in enumerate(raw_rows)]
         duration = time.monotonic() - start
         await asyncio.sleep(0.15)
         monitor.cancel()
         await asyncio.gather(monitor, return_exceptions=True)
-        metrics = [(await client.get(f"http://127.0.0.1:{args.port + i}/control_metrics")).json()
-                   for i in range(args.workers)]
-        cpu = sum(sum(psutil.Process(p.pid).cpu_times()[:2]) - sum(b[:2]) for p, b in zip(processes, before))
+        metrics = []
+        cpu = 0
+        for i, (process, baseline) in enumerate(zip(processes, before)):
+            try:
+                response = await client.get(f"http://127.0.0.1:{args.port + i}/control_metrics", timeout=10)
+                response.raise_for_status()
+                metrics.append(response.json())
+                cpu += sum(psutil.Process(process.pid).cpu_times()[:2]) - sum(baseline[:2])
+            except Exception as exc:
+                metrics.append({"lag_s": [], "rss_peak_bytes": 0, "error": str(exc)})
         result = {"arm": arm, "block": block, "duration_s": duration, "server_cpu_s": cpu,
-                  "metrics": metrics, "initial_rss": initial_rss, "driver_metrics": driver_stats, "rows": rows}
+                  "metrics": metrics, "initial_rss": initial_rss, "driver_metrics": driver_stats, "rows": rows,
+                  "worker_exit_codes_before_cleanup": [process.poll() for process in processes]}
         (Path(args.root) / f"result-{block}-{arm}.json").write_text(json.dumps(result))
         print("ARM_DONE", arm, block, duration, "errors", sum("error" in row for row in rows), flush=True)
         return result

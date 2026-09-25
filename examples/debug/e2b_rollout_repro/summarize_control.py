@@ -24,6 +24,8 @@ def summarize(block: dict) -> dict:
     result = {"arm": block["arm"], "block": block["block"], "count": len(rows),
               "wall_s": block["duration_s"], "server_cpu_s": block["server_cpu_s"],
               "request_errors": sum("error" in row for row in rows),
+              "delete_errors": sum("delete_error" in row for row in rows),
+              "worker_exit_codes_before_cleanup": block.get("worker_exit_codes_before_cleanup"),
               "sandbox_errors": sum(row.get("sandbox_ok") is False for row in rows),
               "sandbox_successes": sum(row.get("sandbox_ok") is True for row in rows),
               "server_loop_max_s": max((max(m["lag_s"], default=0) for m in metrics), default=0),
