@@ -9,7 +9,7 @@ miles has no VLM/vision implementation on the training side, so Qwen3.5's `visua
 weights are never synced and must be excluded from the weight-equality check; each case
 passes `check_weight_update_skip_list=("visual",)`.
 
-Topology follows scripts/run_qwen3_5_35b_a3b_mtp.py (cp2/ep8 on 8 GPUs).
+Each case picks its own topology (see its CASE).
 Spec (EAGLE) and spec-v2 (mamba scheduler) are on for the whole suite; R3 is per-case.
 """
 
@@ -24,8 +24,7 @@ MODEL_TYPE = "qwen3.5-35B-A3B"
 
 @dataclass
 class CaseConfig:
-    # Topology / GPU counts — explicit per case (each test file picks a shape that fits
-    # the Qwen3.5 GatedDeltaNet backward on 8x80GB; see each file's CASE).
+    # Topology / GPU counts — explicit per case (see each file's CASE).
     num_gpus_per_node: int
     cp_size: int
     pp_size: int

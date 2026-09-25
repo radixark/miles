@@ -12,7 +12,7 @@ from tests.ci.metric_history import register_ci_gate
 from tests.e2e.megatron.test_qwen3_5_35B_A3B_mtp._common import CaseConfig, execute, prepare
 
 register_cuda_ci(
-    est_time=1600, suite="stage-c-8-gpu-h100", labels=["megatron", "qwen35"], hardware=["hopper", "blackwell"]
+    est_time=1600, suite="stage-c-8-gpu-h200", labels=["megatron", "qwen35"], hardware=["hopper", "blackwell"]
 )
 
 register_ci_gate(metric_key="train/grad_norm")
@@ -22,9 +22,9 @@ register_ci_gate(metric_key="train/train_rollout_kl")
 register_ci_gate(metric_key="rollout/raw_reward")
 
 CASE = CaseConfig(
-    # tp2/pp2/cp1/ep4: TP=4 hits a Qwen3.5 attention-output-gate sharding bug, so stay at
-    # TP=2; CP=1 avoids the memory-heavy GatedDeltaNet CP backward kernel and PP=2 halves
-    # the resident layers, together fitting the MTP-training run on 8x80GB.
+    # tp2/pp2/cp1/ep4 on 8x H200: TP=4 hits a Qwen3.5 attention-output-gate sharding bug, so
+    # stay at TP=2; PP=2 with dense DP2 keeps Megatron DeepEP x DP x PP (a 4-rank DeepEP group
+    # per PP stage), which no 4-GPU case can hold.
     num_gpus_per_node=8,
     cp_size=1,
     pp_size=2,
