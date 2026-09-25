@@ -1,4 +1,5 @@
 import argparse
+import contextlib
 import json
 import os
 import pickle
@@ -27,7 +28,19 @@ class UnpicklerWrapper(pickle.Unpickler):
         return super().find_class(mod_name, name)
 
 
-pickle.Unpickler = UnpicklerWrapper
+@contextlib.contextmanager
+def _megatron_classes_as_dummies():
+    """Unpickle the raw torch_dist checkpoint without importing Megatron's argument classes.
+
+    Scoped to the raw path on purpose: the bridge path hands the checkpoint to megatron.bridge, which
+    needs those classes intact.
+    """
+    original = pickle.Unpickler
+    pickle.Unpickler = UnpicklerWrapper
+    try:
+        yield
+    finally:
+        pickle.Unpickler = original
 
 
 class WrappedStorageReader(dist_cp.FileSystemReader):
@@ -157,11 +170,41 @@ def copy_assets(origin_hf_dir, output_dir):
         shutil.copy(src, dst)
 
 
-if __name__ == "__main__":
+MEGATRON_TO_HF_MODES = ("raw", "bridge")
+
+
+def convert_with_bridge(input_dir: str, output_dir: str, origin_hf_dir: str) -> None:
+    """Export a megatron.bridge-built checkpoint (Qwen3-VL and friends) through the bridge itself.
+
+    The raw converters in miles.backends.megatron_utils.megatron_to_hf only know the plain decoder
+    layout, so a bridge checkpoint dies there with "Unknown parameter name" (#634). AutoBridge.export_ckpt
+    loads the torch_dist checkpoint under a temporary gloo group and writes safetensors on CPU, so no
+    GPU is needed here either.
+    """
+    try:
+        from megatron.bridge import AutoBridge
+    except ImportError as exc:
+        raise RuntimeError(
+            "--megatron-to-hf-mode bridge needs megatron.bridge, which this environment does not provide; "
+            "run the conversion inside the miles image or install Megatron-Bridge"
+        ) from exc
+    bridge = AutoBridge.from_hf_pretrained(origin_hf_dir, trust_remote_code=True)
+    bridge.export_ckpt(megatron_path=input_dir, hf_path=output_dir)
+
+
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
     parser.add_argument("--model-name", type=str, default=None)
     parser.add_argument("--input-dir", type=str, required=True)
     parser.add_argument("--output-dir", type=str, required=True)
+    parser.add_argument(
+        "--megatron-to-hf-mode",
+        choices=MEGATRON_TO_HF_MODES,
+        default="raw",
+        help="raw: the per-model converters under miles.backends.megatron_utils.megatron_to_hf; "
+        "bridge: AutoBridge.export_ckpt, required for checkpoints trained with --megatron-to-hf-mode bridge "
+        "(needs --origin-hf-dir).",
+    )
     parser.add_argument(
         "--origin-hf-dir",
         type=str,
@@ -183,10 +226,21 @@ if __name__ == "__main__":
         default=None,
         help="Vocab size for removing padding, if applicable. If not provided, no padding will be removed.",
     )
-    args = parser.parse_args()
+    return parser
+
+
+def main(argv: list[str] | None = None) -> None:
+    args = build_parser().parse_args(argv)
 
     if os.path.exists(args.output_dir) and not args.force:
         raise ValueError(f"Output directory {args.output_dir} already exists. Use --force to overwrite it.")
+
+    if args.megatron_to_hf_mode == "bridge":
+        if args.origin_hf_dir is None:
+            raise ValueError("--megatron-to-hf-mode bridge needs --origin-hf-dir to build the bridge from")
+        convert_with_bridge(args.input_dir, args.output_dir, args.origin_hf_dir)
+        copy_assets(args.origin_hf_dir, args.output_dir)
+        return
 
     if args.model_name is None and args.origin_hf_dir is None:
         raise ValueError(
@@ -200,16 +254,21 @@ if __name__ == "__main__":
     state_dict = {}
     print(f"loading model from {args.input_dir}")
     t = time.time()
-    megatron_args = torch.load(os.path.join(args.input_dir, "common.pt"), weights_only=False)["args"]
-    dist_cp.state_dict_loader._load_state_dict(
-        state_dict,
-        storage_reader=WrappedStorageReader(args.input_dir),
-        planner=EmptyStateDictLoadPlanner(),
-        no_dist=True,
-    )
+    with _megatron_classes_as_dummies():
+        megatron_args = torch.load(os.path.join(args.input_dir, "common.pt"), weights_only=False)["args"]
+        dist_cp.state_dict_loader._load_state_dict(
+            state_dict,
+            storage_reader=WrappedStorageReader(args.input_dir),
+            planner=EmptyStateDictLoadPlanner(),
+            no_dist=True,
+        )
     print(f"model loaded in {time.time()-t:.2f} sec.")
 
     save_tensors(megatron_args, args.model_name, state_dict, args.output_dir, args.chunk_size, args.vocab_size)
 
     if args.origin_hf_dir:
         copy_assets(args.origin_hf_dir, args.output_dir)
+
+
+if __name__ == "__main__":
+    main()
