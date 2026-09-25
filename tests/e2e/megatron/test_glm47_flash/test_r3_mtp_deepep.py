@@ -6,7 +6,7 @@ from tests.e2e.megatron.test_glm47_flash._common import CaseConfig, execute, pre
 # FIXME: sglang deepep code path bug.
 register_cuda_ci(
     est_time=900,
-    suite="stage-c-8-gpu-h100",
+    suite="stage-c-8-gpu-h200",
     labels=["megatron"],
     hardware=["hopper", "blackwell"],
     disabled="Disabled due to sglang deepep code path bug.",

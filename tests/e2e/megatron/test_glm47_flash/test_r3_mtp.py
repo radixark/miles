@@ -4,7 +4,7 @@ from tests.ci.ci_register import register_cuda_ci
 from tests.ci.metric_history import register_ci_gate
 from tests.e2e.megatron.test_glm47_flash._common import CaseConfig, execute, prepare
 
-register_cuda_ci(est_time=1100, suite="stage-c-8-gpu-h100", labels=["megatron"], hardware=["hopper", "blackwell"])
+register_cuda_ci(est_time=1300, suite="stage-c-4-gpu-h200", labels=["megatron"], hardware=["hopper", "blackwell"])
 
 register_ci_gate(metric_key="train/grad_norm")
 register_ci_gate(metric_key="train/ppo_kl")
@@ -14,11 +14,13 @@ register_ci_gate(metric_key="rollout/raw_reward")
 
 CASE = CaseConfig(
     use_deepep=False,
-    num_gpus_per_node=8,
-    cp_size=2,
+    # tp2/pp2/cp1/ep2 on 4 GPUs (same shape as test_amd_r3_mtp); the 8-GPU tp2/pp2/cp2/ep4
+    # shape is test_r3_mtp_deepep's on 8x H200, which is disabled.
+    num_gpus_per_node=4,
+    cp_size=1,
     pp_size=2,
     tp_size=2,
-    ep_size=4,
+    ep_size=2,
     # GLM-4.7-Flash has 20 attention heads; non-EP SGLang TP must divide it.
     rollout_num_gpus_per_engine=4,
 )
