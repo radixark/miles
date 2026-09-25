@@ -244,6 +244,15 @@ class TestStartMooncakeMaster:
 
 
 class TestExecuteTrain:
+    def test_a_leftover_router_external_host_fails_before_launching(self, commands, monkeypatch):
+        """Nothing reads the removed variable, so an old export would silently send agents to the placed address."""
+        monkeypatch.setenv("MILES_ROUTER_EXTERNAL_HOST", "trainer.tailnet")
+
+        with pytest.raises(ValueError, match="--session-server-external-host"):
+            command_utils.execute_train(train_args="", num_gpus_per_node=1, megatron_model_type="qwen3-4B")
+
+        assert commands == []
+
     def test_exports_unbuffered_python_to_ray(self, commands):
         """Ray start and job submit must export the correctly spelled PYTHONUNBUFFERED."""
 

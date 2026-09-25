@@ -71,10 +71,21 @@ class BaseWorkerSpec(FrozenStrictBaseModel):
 class HostAndPort(FrozenStrictBaseModel):
     host: str
     port: int
+    # The host that peers outside the cluster reach this worker on; None when the placed host works for them too.
+    external_host: str | None = None
+
+    @property
+    def netloc(self) -> str:
+        return f"{self.host}:{self.port}"
+
+    @property
+    def external_netloc(self) -> str:
+        """``host:port`` for a peer outside the cluster, falling back to the placed host."""
+        return f"{self.external_host or self.host}:{self.port}"
 
     @property
     def addr(self):
-        return f"http://{self.host}:{self.port}"
+        return f"http://{self.netloc}"
 
 
 # dict key: name

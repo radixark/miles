@@ -18,7 +18,7 @@ from typing import Any
 from urllib.parse import urlsplit
 
 import httpx
-from miles.rollout.agentic.session import resolve_session_url
+from miles.rollout.agentic.session import openai_session_url
 from miles.utils.http_utils import post
 
 logger = logging.getLogger(__name__)
@@ -80,8 +80,7 @@ async def run(
         os.getenv("SWE_AGENT_MODEL_NAME", "model"),
     )
 
-    session_url = resolve_session_url(base_url)
-    external_host = os.getenv("MILES_ROUTER_EXTERNAL_HOST")
+    session_url = openai_session_url(base_url)
 
     request: dict[str, Any] = {
         **metadata,
@@ -94,12 +93,9 @@ async def run(
     if max_seq_len is not None:
         request["max_seq_len"] = int(max_seq_len)
 
-    session_server_id = metadata.get("session_server_id")
-    if session_server_id is not None:
-        if external_host:
-            port = urlsplit(f"http://{session_server_id}").port
-            session_server_id = f"{external_host}:{port}"
-        request["session_server_id"] = session_server_id
+    if metadata.get("session_server_id") is not None:
+        # The id in metadata is the cluster address; the agent server needs the address base_url names.
+        request["session_server_id"] = urlsplit(session_url).netloc
 
     session_server_instance_id = metadata.get("session_server_instance_id")
     if session_server_instance_id is not None:
@@ -140,7 +136,8 @@ async def abort(args) -> None:
     """
     agent_server_url = os.getenv("AGENT_SERVER_URL", os.getenv("SWE_AGENT_URL"))
 
-    instance_ids = set((getattr(args, "session_server_instance_ids", None) or {}).values())
+    instances = getattr(args, "session_server_instances", None) or []
+    instance_ids = {instance.instance_id for instance in instances if instance.instance_id}
     singular = getattr(args, "session_server_instance_id", None)  # back-compat / child path
     if singular:
         instance_ids.add(singular)

@@ -146,11 +146,15 @@ skip):
 
 ```bash
 export NEMO_GYM_URL="http://<nemo-gym-host>:12000"
-# Only if the NeMo Gym host cannot resolve the trainer's hostname (e.g. it
-# reaches the trainer over a tailnet):
-export MILES_ROUTER_EXTERNAL_HOST="<trainer host/IP reachable from that host>"
 python examples/experimental/nemo-gym/run.py
 ```
+
+If the NeMo Gym host cannot resolve the trainer's hostname (e.g. it reaches the
+trainer over a tailnet), add
+`--session-server-external-host <trainer host/IP reachable from that host>`. It
+publishes every session server at that host and keeps them on the head node.
+When each trainer pod has its own reachable address, have the deployment set
+`MILES_NODE_EXTERNAL_IP` in each pod instead.
 
 To wire the connector into a different launch script, the essential pieces
 are this example's directory on `PYTHONPATH`, and:

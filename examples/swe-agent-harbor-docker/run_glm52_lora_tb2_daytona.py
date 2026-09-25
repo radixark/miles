@@ -123,8 +123,10 @@ class ScriptArgs(U.ExecuteTrainConfig):
     agent_server_url: str = os.environ.get("AGENT_SERVER_URL", "http://localhost:8080")
     agent_model_name: str = os.environ.get("AGENT_MODEL_NAME", "model")
     harbor_tasks_dir: str = os.environ.get("HARBOR_TASKS_DIR", "/root/harbor_tasks")
+    # The host agents outside the cluster reach every session server on; passed as
+    # --session-server-external-host, which also keeps the session servers on the head node.
+    session_server_external_host: str = ""
     # sgl-router binds with a Rust SocketAddr parse, so this MUST be a numeric IP.
-    router_external_host: str = os.environ.get("MILES_ROUTER_EXTERNAL_HOST", "")
     miles_host_ip: str = os.environ.get("MILES_HOST_IP", "")
 
     # W&B settings
@@ -310,6 +312,12 @@ def execute(args: ScriptArgs):
     # ~78-128 GB/rank host buffer OOMs the colocate pod
     r3_args = "--use-rollout-routing-replay " if args.use_r3 else ""
 
+    external_host_arg = (
+        f"--session-server-external-host {args.session_server_external_host} "
+        if args.session_server_external_host
+        else ""
+    )
+
     agent_args = (
         "--custom-generate-function-path miles.rollout.generate_hub.agentic_tool_call.generate "
         "--custom-agent-function-path swe_agent_function.run "
@@ -320,6 +328,7 @@ def execute(args: ScriptArgs):
         "--use-session-server "
         "--session-server-port 30001 "
         "--session-server-workers 32 "
+        f"{external_host_arg}"
     )
 
     misc_args = (
@@ -413,8 +422,6 @@ def execute(args: ScriptArgs):
         # engines would inherit the cap and OOM below --sglang-mem-fraction-static.
         "PYTORCH_CUDA_ALLOC_CONF": "garbage_collection_threshold:0.8,max_split_size_mb:512",
     }
-    if args.router_external_host:
-        extra_env_vars["MILES_ROUTER_EXTERNAL_HOST"] = args.router_external_host
     if args.miles_host_ip:
         extra_env_vars["MILES_HOST_IP"] = args.miles_host_ip
 

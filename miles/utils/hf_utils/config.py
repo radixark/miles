@@ -46,6 +46,22 @@ _CONFIG_ALIASES: tuple[_HFConfigAlias, ...] = (
         auto_model_classes=(),
         override_hf_native=True,
     ),
+    # Qwen3.8-Flash-Next: the composite config resolves text_config by its nested
+    # model_type, so both levels need an alias; extra fields survive as attributes
+    _HFConfigAlias(
+        model_type="qwen4_exp_text",
+        base_module="transformers.models.qwen3_5_moe.configuration_qwen3_5_moe",
+        base_class="Qwen3_5MoeTextConfig",
+        compat_class_name="Qwen4ExpTextConfig",
+        auto_model_classes=(),
+    ),
+    _HFConfigAlias(
+        model_type="qwen4_exp",
+        base_module="transformers.models.qwen3_5_moe.configuration_qwen3_5_moe",
+        base_class="Qwen3_5MoeConfig",
+        compat_class_name="Qwen4ExpConfig",
+        auto_model_classes=(),
+    ),
     _HFConfigAlias(
         model_type="glm5_next",
         base_module="transformers.models.glm4v_moe.configuration_glm4v_moe",

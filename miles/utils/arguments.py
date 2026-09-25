@@ -888,7 +888,8 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 action="store_true",
                 default=False,
                 help=(
-                    "Pin the RolloutExecutor (and the co-located router process) to the Ray head node. "
+                    "Pin the RolloutExecutor, the co-located router process, and the session servers to the "
+                    "Ray head node. "
                     "Useful in K8s where the head pod has a stable Service address so that "
                     "external agent environments can reliably reach the router."
                 ),
@@ -2457,6 +2458,15 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help="Address the session servers bind to, e.g. 0.0.0.0 to accept traffic from outside "
                 "the cluster. Peers still reach them on the address their worker was placed on. "
                 "Defaults to that placed address.",
+            )
+            parser.add_argument(
+                "--session-server-external-host",
+                type=str,
+                default=None,
+                help="Host that peers outside the cluster, such as agents in a sandbox, reach every session "
+                "server on. Setting it keeps all session servers on the head node, so it must reach the head. "
+                "Leave it unset when each node sets MILES_NODE_EXTERNAL_IP to its own reachable address, or "
+                "when the placed addresses already route from outside.",
             )
             parser.add_argument(
                 "--session-server-port",

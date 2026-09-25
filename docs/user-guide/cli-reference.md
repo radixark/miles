@@ -320,6 +320,7 @@ contract, session behavior, and model-family selection.
 | `--tito-model` | enum | `default` | TITO model family. Named families load their registered fixed template; `default` is best-effort with a checkpoint-native or custom template. |
 | `--max-seq-len` | int | – | Total tokens per session, including prompts, completions, and environment responses. Registered with the agentic wrapper. |
 | `--session-server-ip` | str | router IP | Session-server bind address. |
+| `--session-server-external-host` | str | – | Host that peers outside the cluster reach every session server on. Keeps the session servers on the head node. Leave unset when each node sets `MILES_NODE_EXTERNAL_IP`. |
 | `--session-server-port` | int | auto | First port for standalone session-server instances. When unset, each worker port is auto-allocated. |
 | `--session-server-workers` | int | `32` | Number of instances, at least 1; an explicit `--session-server-port` anchors a consecutive range. |
 | `--session-sample-picker-path` | `<module>.<fn>` | `drop_same_prompt_retries` | v2 only: selects leaf samples before post-processing. The default trims identical re-sends, including a re-sent first turn; `drop_rolled_back_leaves` also trims a leaf whose later sibling sent a different request. |

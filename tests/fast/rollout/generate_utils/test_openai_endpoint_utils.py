@@ -24,6 +24,7 @@ from miles.rollout.session.samples.codec import (
     decode_samples_and_merge_input_sample,
     encode_samples,
 )
+from miles.rollout.session.types import SessionServerInstance
 from miles.utils.http_utils import post_bytes_no_retry
 from miles.utils.types import Sample
 
@@ -64,8 +65,7 @@ async def test_create_reads_session_server_instance_id_from_args(monkeypatch, cr
     monkeypatch.setattr("miles.rollout.generate_utils.openai_endpoint_utils.post", fake_post)
 
     args = SimpleNamespace(
-        session_server_addrs=["127.0.0.1:12345"],
-        session_server_instance_ids={"127.0.0.1:12345": "server-instance-123"},
+        session_server_instances=[SessionServerInstance(addr="127.0.0.1:12345", instance_id="server-instance-123")],
         use_sampling_support_replay=expected_payload.get("top_p", 1.0) < 1.0 or expected_payload.get("top_k", -1) > 0,
         rollout_temperature=expected_payload.get("temperature", 1.0),
         rollout_top_p=expected_payload.get("top_p", 1.0),
@@ -88,7 +88,7 @@ async def test_create_without_instance_id_on_args(monkeypatch):
     monkeypatch.setattr("miles.rollout.generate_utils.openai_endpoint_utils.post", fake_post)
 
     args = SimpleNamespace(
-        session_server_addrs=["127.0.0.1:12345"],
+        session_server_instances=[SessionServerInstance(addr="127.0.0.1:12345")],
         use_sampling_support_replay=False,
     )
     tracer = await OpenAIEndpointTracer.create(args)
@@ -118,7 +118,7 @@ async def test_create_distributes_sessions_across_port_range(monkeypatch):
 
     ports = [12345, 12346, 12347, 12348]
     args = SimpleNamespace(
-        session_server_addrs=[f"127.0.0.1:{port}" for port in ports],
+        session_server_instances=[SessionServerInstance(addr=f"127.0.0.1:{port}") for port in ports],
         use_sampling_support_replay=False,
     )
 
@@ -154,11 +154,15 @@ class TestOpenAIEndpointTracerCreate:
             return {"session_id": "session-abc"}
 
         monkeypatch.setattr("miles.rollout.generate_utils.openai_endpoint_utils.post", fake_post)
-        monkeypatch.setattr("miles.rollout.generate_utils.openai_endpoint_utils.random.choice", lambda addrs: addrs[1])
+        monkeypatch.setattr(
+            "miles.rollout.generate_utils.openai_endpoint_utils.random.choice", lambda instances: instances[1]
+        )
 
         args = SimpleNamespace(
-            session_server_addrs=["10.0.0.1:5005", "10.0.0.2:5005"],
-            session_server_instance_ids={"10.0.0.1:5005": "instance-a", "10.0.0.2:5005": "instance-b"},
+            session_server_instances=[
+                SessionServerInstance(addr="10.0.0.1:5005", instance_id="instance-a"),
+                SessionServerInstance(addr="10.0.0.2:5005", instance_id="instance-b"),
+            ],
             use_sampling_support_replay=False,
         )
         tracer = await OpenAIEndpointTracer.create(args)
@@ -169,9 +173,57 @@ class TestOpenAIEndpointTracerCreate:
         assert tracer.session_server_instance_id == "instance-b"
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("addrs_kwargs", [{}, {"session_server_addrs": None}, {"session_server_addrs": []}])
-    async def test_create_without_session_server_addrs_raises_before_post(self, monkeypatch, addrs_kwargs):
-        """create() raises a RuntimeError pointing at --use-session-server and issues no HTTP request when session_server_addrs is absent, null or empty."""
+    async def test_agent_url_names_the_same_instance_from_outside_the_cluster(self, monkeypatch):
+        """The agent's URL and the driver's URL are the chosen record's two views of one
+        instance, so a session is never opened on one instance and dialed on another."""
+        posted: list[str] = []
+
+        async def fake_post(url: str, payload: dict, action: str = "post"):
+            posted.append(url)
+            return {"session_id": "session-abc"}
+
+        monkeypatch.setattr("miles.rollout.generate_utils.openai_endpoint_utils.post", fake_post)
+        monkeypatch.setattr(
+            "miles.rollout.generate_utils.openai_endpoint_utils.random.choice", lambda instances: instances[1]
+        )
+
+        args = SimpleNamespace(
+            session_server_instances=[
+                SessionServerInstance(addr="10.0.0.1:5005", external_addr="100.64.0.1:5005"),
+                SessionServerInstance(addr="10.0.0.2:5005", external_addr="100.64.0.2:5005"),
+            ],
+            use_sampling_support_replay=False,
+        )
+        tracer = await OpenAIEndpointTracer.create(args)
+
+        # The session is opened over the cluster network, not the external one.
+        assert posted == ["http://10.0.0.2:5005/sessions"]
+        assert tracer.base_url == "http://10.0.0.2:5005/sessions/session-abc"
+        assert tracer.agent_base_url == "http://100.64.0.2:5005/sessions/session-abc"
+
+    @pytest.mark.asyncio
+    async def test_agent_url_falls_back_to_the_cluster_address(self, monkeypatch):
+        """Without an external address, the agent dials the address the driver dials."""
+
+        async def fake_post(url: str, payload: dict, action: str = "post"):
+            return {"session_id": "session-abc"}
+
+        monkeypatch.setattr("miles.rollout.generate_utils.openai_endpoint_utils.post", fake_post)
+
+        args = SimpleNamespace(
+            session_server_instances=[SessionServerInstance(addr="10.0.0.1:5005")],
+            use_sampling_support_replay=False,
+        )
+        tracer = await OpenAIEndpointTracer.create(args)
+
+        assert tracer.agent_base_url == tracer.base_url
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "instances_kwargs", [{}, {"session_server_instances": None}, {"session_server_instances": []}]
+    )
+    async def test_create_without_session_server_instances_raises_before_post(self, monkeypatch, instances_kwargs):
+        """create() raises a RuntimeError pointing at --use-session-server and issues no HTTP request when session_server_instances is absent, null or empty."""
         posted: list[str] = []
 
         async def fake_post(url: str, payload: dict, action: str = "post"):
@@ -180,8 +232,8 @@ class TestOpenAIEndpointTracerCreate:
 
         monkeypatch.setattr("miles.rollout.generate_utils.openai_endpoint_utils.post", fake_post)
 
-        with pytest.raises(RuntimeError, match="session_server_addrs is not set"):
-            await OpenAIEndpointTracer.create(SimpleNamespace(**addrs_kwargs))
+        with pytest.raises(RuntimeError, match="session_server_instances is not set"):
+            await OpenAIEndpointTracer.create(SimpleNamespace(**instances_kwargs))
 
         assert posted == []
 
@@ -195,7 +247,7 @@ class TestOpenAIEndpointTracerCreate:
 
         monkeypatch.setattr("miles.rollout.generate_utils.openai_endpoint_utils.post", fake_post)
         args = SimpleNamespace(
-            session_server_addrs=["127.0.0.1:12345"],
+            session_server_instances=[SessionServerInstance(addr="127.0.0.1:12345")],
             use_sampling_support_replay=True,
             rollout_temperature=1.0,
             rollout_top_p=0.95,
@@ -426,7 +478,7 @@ async def test_create_selects_wire_fields_by_session_server_version(monkeypatch)
 
     def args(version, top_p=1.0, top_k=-1):
         return SimpleNamespace(
-            session_server_addrs=["127.0.0.1:7000"],
+            session_server_instances=[SessionServerInstance(addr="127.0.0.1:7000")],
             use_session_server=version,
             use_sampling_support_replay=top_p < 1.0 or top_k > 0,
             rollout_temperature=1.0,

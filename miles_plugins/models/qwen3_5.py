@@ -53,6 +53,8 @@ class Qwen3_5GatedDeltaNet(nn.Module):
         self.layer_idx = layer_idx
         self.activation = config.hidden_act
         self.act = ACT2FN[config.hidden_act]
+        # Qwen3.8-Next gates the output norm with sigmoid while hidden_act stays silu
+        self.output_gate_activation = getattr(config, "output_gate_type", None) or config.hidden_act
         self.layer_norm_epsilon = config.rms_norm_eps
 
         # QKV
@@ -88,7 +90,7 @@ class Qwen3_5GatedDeltaNet(nn.Module):
         self.norm = FusedRMSNormGated(
             self.head_v_dim,
             eps=self.layer_norm_epsilon,
-            activation=self.activation,
+            activation=self.output_gate_activation,
             device=torch.cuda.current_device(),
             dtype=config.dtype if config.dtype is not None else torch.get_current_dtype(),
         )

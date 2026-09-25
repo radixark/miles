@@ -205,7 +205,7 @@ overrides the target back to `--offload-train-target cpu`.
 --qkv-format thd
 ```
 
-`QSA_BACKEND=triton` selects the sparse-attention kernel. The recipe also loosens router
+The recipe loosens router
 health checking (`--router-health-failure-threshold 40`,
 `--router-health-check-interval-secs 15`, `--router-health-success-threshold 1`) and raises
 `--rollout-health-check-interval` / `--rollout-health-check-timeout` to 300 s.

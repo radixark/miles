@@ -180,10 +180,9 @@ class TestComputeSpecSessionServer:
         assert config.instance_id == f"{args.run_uuid}-1"
 
     def test_it_reserves_no_cpu_on_the_head_node(self):
-        """Pinned to the head unconditionally, a CPU reservation would leave it pending forever on a head started with --num-cpus=0."""
+        """When pinned to the head, a CPU reservation would leave it pending forever on a head started with --num-cpus=0."""
         spec = spec_session_server(_make_session_server_args())
 
-        assert spec.scheduling.pin_to_head is True
         assert spec.scheduling.num_cpus_per_worker == 0
 
     def test_disabled_schedules_zero_cells(self):
@@ -528,15 +527,24 @@ class TestInferenceSpecPinToHead:
         assert router.scheduling.pin_to_head is pinned
 
     @pytest.mark.parametrize("pinned", [False, True])
-    def test_the_session_servers_are_always_pinned_to_the_head_node(self, pinned: bool):
-        """Session servers live on the driver host whatever the rollout manager flag says, as on main."""
+    def test_the_session_server_spec_follows_the_rollout_manager_flag(self, pinned: bool):
+        """Without an external host, the session servers are pinned to the head exactly when the rollout manager is."""
         from miles.ray.specs.inference import spec_session_server
 
         args = _make_pin_args(pinned=pinned)
 
         session = spec_session_server(args)
 
-        assert session.scheduling.pin_to_head is True
+        assert session.scheduling.pin_to_head is pinned
+
+    def test_a_shared_external_host_keeps_the_session_servers_on_the_head(self):
+        """One external host for every instance reaches them only while they all sit on the head."""
+        from miles.ray.specs.inference import spec_session_server
+
+        args = _make_pin_args(pinned=False)
+        args.session_server_external_host = "100.64.0.1"
+
+        assert spec_session_server(args).scheduling.pin_to_head is True
 
 
 def _make_pin_args(*, pinned: bool):

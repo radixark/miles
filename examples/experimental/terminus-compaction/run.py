@@ -15,7 +15,7 @@ Example:
         --output-dir /path/to/output \
         --agent-server-url http://agent-server.example:11000 \
         --session-server-ip 0.0.0.0 \
-        --router-external-host trainer.example
+        --session-server-external-host trainer.example
 """
 
 import os
@@ -58,7 +58,9 @@ class ScriptArgs(U.ExecuteTrainConfig):
     agent_server_url: str = field(default_factory=lambda: os.environ.get("AGENT_SERVER_URL", "http://127.0.0.1:11000"))
     agent_model_name: str = field(default_factory=lambda: os.environ.get("AGENT_MODEL_NAME", "model"))
     agent_trial_timeout: int = 7200
-    router_external_host: str = field(default_factory=lambda: os.environ.get("MILES_ROUTER_EXTERNAL_HOST", ""))
+    # The host agents outside the cluster reach every session server on; passed as
+    # --session-server-external-host, which also keeps the session servers on the head node.
+    session_server_external_host: str = ""
     miles_host_ip: str = field(default_factory=lambda: os.environ.get("MILES_HOST_IP", ""))
     session_server_ip: str = field(default_factory=lambda: os.environ.get("MILES_SESSION_SERVER_IP", ""))
 
@@ -163,6 +165,11 @@ def _sglang_args() -> str:
 
 def _agent_args(args: ScriptArgs) -> str:
     bind_arg = f"--session-server-ip {args.session_server_ip} " if args.session_server_ip else ""
+    external_host_arg = (
+        f"--session-server-external-host {args.session_server_external_host} "
+        if args.session_server_external_host
+        else ""
+    )
     return (
         "--custom-generate-function-path miles.rollout.generate_hub.agentic_tool_call.generate "
         "--custom-agent-function-path swe_agent_function.run "
@@ -172,6 +179,7 @@ def _agent_args(args: ScriptArgs) -> str:
         "--tito-model glm47 "
         "--use-session-server v2 "
         f"{bind_arg}"
+        f"{external_host_arg}"
         "--session-server-port 30000 "
         "--session-server-workers 32 "
     )
@@ -233,8 +241,6 @@ def _extra_env_vars(args: ScriptArgs) -> dict[str, str]:
         "AGENT_MODEL_NAME": args.agent_model_name,
         "AGENT_TRIAL_TIMEOUT": str(args.agent_trial_timeout),
     }
-    if args.router_external_host:
-        env["MILES_ROUTER_EXTERNAL_HOST"] = args.router_external_host
     if args.miles_host_ip:
         env["MILES_HOST_IP"] = args.miles_host_ip
     return env
