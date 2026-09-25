@@ -50,10 +50,11 @@ def fake_components():
     eval_fleet = object()
 
     def construct_controller(args):
-        async def _init():
+        async def _init(*, wait_for_ready=True):
             args.sglang_router_ip = "10.0.0.1"
             args.sglang_router_port = 4321
-            controller.eval_fleet = eval_fleet
+            if wait_for_ready:
+                controller.eval_fleet = eval_fleet
 
         controller.init = AsyncMock(side_effect=_init)
         return controller
@@ -141,6 +142,14 @@ class TestCreateRolloutComponents:
         await create_rollout_components(args)
 
         fake_components.executor_handle.set_eval_fleet.remote.assert_awaited_once_with(fake_components.eval_fleet)
+
+    async def test_deferred_readiness_does_not_publish_an_unready_eval_fleet(self, fake_components):
+        """Concurrent model loading must not hand evaluation an unfinished inference fleet."""
+        await create_rollout_components(_make_args(num_rollout=1), wait_for_inference_ready=False)
+
+        fake_components.controller.init.assert_awaited_once_with(wait_for_ready=False)
+        assert fake_components.controller.eval_fleet is None
+        fake_components.executor_handle.set_eval_fleet.remote.assert_not_called()
 
 
 class _FakeRolloutExecutorHandle:

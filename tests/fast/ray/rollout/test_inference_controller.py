@@ -691,7 +691,10 @@ class TestUpdatableEnginesPayload:
 
 class TestInitLifecycle:
     @pytest.mark.asyncio
-    async def test_debug_train_only_init_has_no_rollout_side_effects(self, monkeypatch: pytest.MonkeyPatch):
+    @pytest.mark.parametrize("wait_for_ready", [True, False], ids=["immediate", "deferred"])
+    async def test_debug_train_only_init_has_no_rollout_side_effects(
+        self, monkeypatch: pytest.MonkeyPatch, wait_for_ready: bool
+    ):
         """A train-only debug run owns no engines, so init must not reach any rollout machinery."""
 
         async def _no_servers(args: Namespace, **kwargs: Any) -> dict:
@@ -712,12 +715,49 @@ class TestInitLifecycle:
         )
         controller = InferenceController(make_args(debug_train_only=True))
 
-        await controller.init()
+        await controller.init(wait_for_ready=wait_for_ready)
+        if not wait_for_ready:
+            await controller.wait_for_ready()
 
         assert controller.servers == {}
         assert controller.eval_fleet is None
         assert controller._watcher_disposers == []
         assert controller._ticker is None
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("debug_train_only", [False, True], ids=["training", "debug_with_eval"])
+    async def test_deferred_readiness_waits_for_eval_engines(
+        self, monkeypatch: pytest.MonkeyPatch, debug_train_only: bool
+    ):
+        """Debug training with separate eval GPUs must still join engine loading before publishing the fleet."""
+        monkeypatch.setattr(inference_controller_module, "EvalFleet", _RecordingEvalFleet)
+        gate = asyncio.Event()
+        default = _RecordingServer(model_name="default")
+        eval_srv = _RecordingServer(model_name="eval", cells_gate=gate)
+        _patch_init(monkeypatch, provider=_FakeWorkerProvider([]), servers={"default": default, "eval": eval_srv})
+        controller = InferenceController(make_args(debug_train_only=debug_train_only, eval_num_gpus=2))
+
+        await controller.init(wait_for_ready=False)
+        assert controller.eval_fleet is None
+        assert default.waited_expected_num_cells == eval_srv.waited_expected_num_cells == 0
+
+        readiness = asyncio.create_task(controller.wait_for_ready())
+        try:
+            for _ in range(20):
+                await asyncio.sleep(0)
+            assert not readiness.done()
+            assert default.waited_expected_num_cells == 1
+            assert controller.eval_fleet is None
+            gate.set()
+            await asyncio.wait_for(readiness, timeout=5)
+            assert eval_srv.waited_expected_num_cells == 1
+            assert isinstance(controller.eval_fleet, _RecordingEvalFleet)
+        finally:
+            gate.set()
+            if not readiness.done():
+                readiness.cancel()
+            await asyncio.gather(readiness, return_exceptions=True)
+            await controller.dispose()
 
     @pytest.mark.asyncio
     async def test_init_passes_its_exact_context_lock_to_the_server_factory(self, monkeypatch: pytest.MonkeyPatch):

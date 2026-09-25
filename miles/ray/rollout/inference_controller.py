@@ -51,7 +51,7 @@ class InferenceController:
         self._ticker: SimpleTicker | None = None
 
     @lock_exempt
-    async def init(self) -> None:
+    async def init(self, *, wait_for_ready: bool = True) -> None:
         if not self.args.starts_inference_engines:
             return
 
@@ -69,6 +69,15 @@ class InferenceController:
 
         dashboard_hooks.register_router(self.args)
         await wait_session_server_ready(self.args)
+
+        if wait_for_ready:
+            await self.wait_for_ready()
+
+    @lock_exempt
+    async def wait_for_ready(self) -> None:
+        """Wait for model loading and prepare the evaluation fleet."""
+        if not self.args.starts_inference_engines:
+            return
 
         await asyncio.gather(*[srv.wait_expected_num_cells() for srv in self.servers.values()])
 

@@ -170,9 +170,10 @@ class RolloutComponents(NamedTuple):
     num_rollout_per_epoch: int | None
 
 
-async def create_rollout_components(args) -> RolloutComponents:
+async def create_rollout_components(args, *, wait_for_inference_ready: bool = True) -> RolloutComponents:
+    """Create controllers; deferred callers must await readiness and bind the eval fleet."""
     inference_controller = InferenceController(args)
-    await inference_controller.init()
+    await inference_controller.init(wait_for_ready=wait_for_inference_ready)
 
     rollout_executor = RolloutExecutor.options(
         num_cpus=1, num_gpus=0, **(compute_ray_pin_head_options() if args.pin_rollout_manager_to_head else {})
@@ -185,7 +186,8 @@ async def create_rollout_components(args) -> RolloutComponents:
         args.num_rollout = num_rollout_per_epoch * args.num_epoch
         assert args.num_rollout > 0
 
-    await rollout_executor.set_eval_fleet.remote(inference_controller.eval_fleet)
+    if wait_for_inference_ready:
+        await rollout_executor.set_eval_fleet.remote(inference_controller.eval_fleet)
 
     return RolloutComponents(
         inference_controller=inference_controller,
