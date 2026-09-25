@@ -22,6 +22,22 @@ python scripts/run_qwen3_4b.py --train-backend fsdp --true-on-policy
 
 In order to quickly see the curve, you may use `--mode debug_minimal`, which will skip evaluation and run generation with a very short output sequence length. Since true on policy is unrelated to OSL or answer correctness, this can be used for quick experiments.
 
+### AMD Qwen3 with Triton attention
+
+With a compatible ROCm/SGLang build, the AMD example uses the Qwen3 precision
+contract with Triton attention on both sides:
+
+```bash
+python examples/infra_features/true_on_policy/run_simple_amd_triton.py
+```
+
+The launcher sets `--sglang-true-on-policy-contract qwen3_dense_true_on_policy_v1`,
+`--recompute-logprobs-via-prefill`, and `SGLANG_ROPE_CACHE_FP32=1`. The contract
+keeps selected model operations in FP32, so the ROCm RoPE cache must retain that
+precision. The comparison target is SGLang's recomputed **prefill** log-probabilities;
+a zero difference does not by itself establish equality with the original decode
+log-probabilities. Keep `--ci-test` enabled to check alignment after weight updates.
+
 ### Other Cases
 
 In order to support true on policy for other cases, please refer to the flags changed in the examples above.
