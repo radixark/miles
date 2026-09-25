@@ -18,6 +18,7 @@ from miles.backends.training_utils.loss_hub.math_utils import (
     compute_opsm_mask,
     compute_policy_loss,
 )
+from miles.backends.training_utils.loss_hub.score_centering_loss import score_centering_loss_function
 from miles.backends.training_utils.parallel import get_parallel_state
 from miles.backends.training_utils.sampling_mask import get_rollout_sampling_masks
 from miles.utils.function_registry import load_function
@@ -514,6 +515,8 @@ def get_loss_function(args: Namespace, loss_fn: str | None = None) -> LossFuncti
 
         return TINKER_LOSS_FUNCTIONS[loss_fn]
     match args.loss_type:
+        case "score_centering":
+            return score_centering_loss_function
         case "policy_loss":
             return policy_loss_function
         case "value_loss":
