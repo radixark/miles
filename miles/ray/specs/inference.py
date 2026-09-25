@@ -264,4 +264,8 @@ def compute_inference_engine_env_vars(args) -> dict[str, str]:
         }.items()
     }
     env_vars.update(dumper_utils.get_sglang_env(args))
+    if getattr(args, "loss_type", None) == "score_centering":
+        # Candidate and sampled logprobs must describe the temperature-scaled
+        # distribution used to draw tokens, including on remote workers.
+        env_vars["SGLANG_RETURN_ORIGINAL_LOGPROB"] = "0"
     return env_vars
