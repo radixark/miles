@@ -43,14 +43,15 @@ def compute_cells_not_serving_after_injection(
         grace_seconds = STALE_STATUS_GRACE_SECONDS
 
     cell_type_of_name = _compute_cell_type_of_name(events)
-    last_injection_time_of_name: dict[str, datetime] = {
-        event.cell_name: event.timestamp
-        for event in events
-        if isinstance(event, InjectionEvent)
-        and event.succeeded
-        and event.harmed
-        and cell_type_of_name.get(event.cell_name) == cell_type
-    }
+    last_injection_time_of_name: dict[str, datetime] = {}
+    observed_hashes: dict[str, str | None] = {}
+    injected_hashes: dict[str, str | None] = {}
+    for event in events:
+        if isinstance(event, ObservationsEvent):
+            observed_hashes.update({name: info.workers_hash for name, info in event.cell_infos.items()})
+        elif event.succeeded and event.harmed and cell_type_of_name.get(event.cell_name) == cell_type:
+            last_injection_time_of_name[event.cell_name] = event.timestamp
+            injected_hashes[event.cell_name] = observed_hashes.get(event.cell_name)
 
     served: set[str] = set()
     for event in events:
@@ -62,6 +63,9 @@ def compute_cells_not_serving_after_injection(
                 name not in served
                 and info is not None
                 and info.alive
+                and injected_hashes[name] is not None
+                and info.workers_hash is not None
+                and info.workers_hash != injected_hashes[name]
                 and info.state is ObservedCellState.SERVING
                 and (event.timestamp - injected_at).total_seconds() >= grace_seconds
             ):

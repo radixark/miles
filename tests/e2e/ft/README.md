@@ -395,7 +395,8 @@ Witnesses, counted per kind:
              that same index - no debt left when training ends
   rollout -> >= 2 accepted rollout injections, and every injected cell observed Serving
              at least once on a reading taken >= 120s after its last injection - late
-             enough that the ~95s stale-status window cannot have produced it
+             enough that the ~95s stale-status window cannot have produced it - with
+             status.workers_hash different from its last observation before that injection
 
 Faults are random, so beyond the witnesses neither an exact sequence nor the end-state
 membership is asserted.
@@ -411,7 +412,7 @@ membership is asserted.
 - **Why every enabled form has to land**: the floors count injections, not forms, so `inject_fault:sigkill` alone could clear them while `delete_pod` is never tried. This witness makes the draw's preference for an untried form binding.
 - **Why the per-cell pairing**: a floor of ">= 2 healings" passes whenever the last crash never recovered. The default intervals are short enough that a soak reliably clears the floors.
 - **Why the step budget is 60**: a rollout injection needs a 60-poll (~120s) quiescent streak plus a mean-240s exponential wait, and a weight update resets the streak, so the second accepted rollout injection the witness demands takes well over ten minutes. The budget buys that time instead of lowering the quiescence gate that keeps the injector from killing a kind's last live replica.
-- **Why the rollout witness is one-sided**: the trainer witness reads the run's own CellReconfigureEvents, which miss nothing; the rollout witness reads sampled polls, which miss windows by construction. It therefore never demands seeing the down half of a recovery - it demands a Serving reading fresh enough (>= 120s after the cell's last injection, past the ~95s staleness) to prove the survivor really serves. Undercounting an intermediate recovery cannot fail the run; claiming one that never happened cannot pass it.
+- **Why the rollout witness is one-sided**: sampled polls may miss the down half of a recovery. The witness instead requires healthy Serving at least 120s after the last injection and a changed worker generation relative to the pre-injection observation. An unchanged generation or missing pre-injection observation fails; an injection response alone cannot prove a replacement happened.
 - **Stopping the injector**: `stop_and_join` asserts the thread actually stopped, since a thread still mid-injection could crash a cell nothing will heal, and would race the witness being read.
 
 ### `scenario_realistic_gsm8k`

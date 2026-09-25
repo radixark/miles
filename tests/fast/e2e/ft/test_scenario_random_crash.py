@@ -44,7 +44,11 @@ def _actor_cell(name: str = _ACTOR_CELL_NAME) -> dict:
             "name": name,
             "labels": {"miles.io/cell-type": "actor", "miles.io/workers-hash": "generation-0"},
         },
-        "status": {"phase": "Running", "conditions": [{"type": "Healthy", "status": "True"}]},
+        "status": {
+            "phase": "Running",
+            "conditions": [{"type": "Healthy", "status": "True"}],
+            "workers_hash": "generation-0",
+        },
     }
 
 
@@ -81,7 +85,7 @@ def _note_rollout_injection(log: state.EventLog) -> None:
     )
 
 
-def _rollout_cell(cell_state: state.ObservedCellState) -> dict:
+def _rollout_cell(cell_state: state.ObservedCellState, *, workers_hash: str = "generation-0") -> dict:
     phase = "Pending" if cell_state is state.ObservedCellState.PENDING else "Running"
     conditions = (
         []
@@ -96,7 +100,7 @@ def _rollout_cell(cell_state: state.ObservedCellState) -> dict:
             "name": _ROLLOUT_CELL_NAME,
             "labels": {"miles.io/cell-type": "rollout", "miles.io/workers-hash": "generation-0"},
         },
-        "status": {"phase": phase, "conditions": conditions},
+        "status": {"phase": phase, "conditions": conditions, "workers_hash": workers_hash},
     }
 
 
@@ -174,7 +178,7 @@ class TestAssertHealing:
         for _ in range(2):
             _note_rollout_injection(log)
         log.observe([_rollout_cell(state.ObservedCellState.PENDING)])
-        log.observe([_rollout_cell(state.ObservedCellState.SERVING)])
+        log.observe([_rollout_cell(state.ObservedCellState.SERVING, workers_hash="generation-1")])
 
         assert_healing(("rollout",), injector=injector, event_dir=tmp_path / "events", context="soak")
 

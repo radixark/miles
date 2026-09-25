@@ -17,3 +17,14 @@ def test_a_running_cell_that_is_not_in_the_router_is_not_serving() -> None:
     """The api server renders PendingWeights and Serving alike, so the Serving condition must split them."""
     assert state.compute_observed_cell_state(staged("c", RUNNING_NOT_SERVING)) is RUNNING_NOT_SERVING
     assert state.compute_observed_cell_state(staged("c", SERVING)) is SERVING
+
+
+def test_virtual_cells_can_be_observed_without_claiming_a_generation() -> None:
+    """Non-destructive orchestration faults use virtual cells with no worker incarnation."""
+    virtual = cell("script", healthy=True, cell_type="script")
+    del virtual["status"]["workers_hash"]
+    log = state.EventLog()
+
+    log.observe([virtual])
+
+    assert log.events[0].cell_infos["script"].workers_hash is None

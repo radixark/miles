@@ -48,7 +48,7 @@ def cell(
             "name": name,
             "labels": {"miles.io/cell-type": cell_type, "miles.io/workers-hash": workers_hash},
         },
-        "status": {"phase": phase, "conditions": conditions},
+        "status": {"phase": phase, "conditions": conditions, "workers_hash": workers_hash},
     }
 
 
@@ -95,18 +95,21 @@ def staged(
             "name": name,
             "labels": {"miles.io/cell-type": cell_type, "miles.io/workers-hash": workers_hash},
         },
-        "status": {"phase": phase, "conditions": conditions},
+        "status": {"phase": phase, "conditions": conditions, "workers_hash": workers_hash},
     }
 
 
 def log_of(
-    cell_states: list[state.ObservedCellState], *, inject_before: dict[int, int] | None = None
+    cell_states: list[state.ObservedCellState],
+    *,
+    inject_before: dict[int, int] | None = None,
+    generations: list[str] | None = None,
 ) -> state.EventLog:
     log = state.EventLog()
     for index, cell_state in enumerate(cell_states):
         for _ in range((inject_before or {}).get(index, 0)):
             note_injected(log, "rollout-engine-0")
-        log.observe([staged("rollout-engine-0", cell_state)])
+        log.observe([staged("rollout-engine-0", cell_state, workers_hash=generations[index] if generations else "g0")])
     return log
 
 

@@ -21,14 +21,14 @@ def test_observed_states_record_only_transitions() -> None:
 
 def test_a_serve_after_the_last_injection_clears_the_cell() -> None:
     """This is the recovery the soak asserts: the injected engine ends up serving again."""
-    log = log_of([SERVING, PENDING, SERVING], inject_before={1: 1})
+    log = log_of([SERVING, PENDING, SERVING], inject_before={1: 1}, generations=["g0", "g1", "g1"])
 
     assert views.compute_cells_not_serving_after_injection(log.events, cell_type="rollout", grace_seconds=0.0) == {}
 
 
 def test_a_completely_missed_down_window_is_not_an_offence() -> None:
     """A replacement can finish between two polls, and the witness must not demand the down it never saw."""
-    log = log_of([SERVING, SERVING, SERVING], inject_before={1: 1})
+    log = log_of([SERVING, SERVING, SERVING], inject_before={1: 1}, generations=["g0", "g1", "g1"])
 
     assert views.compute_cells_not_serving_after_injection(log.events, cell_type="rollout", grace_seconds=0.0) == {}
 
@@ -61,7 +61,9 @@ def test_a_serve_that_predates_the_last_injection_does_not_discharge_it() -> Non
 
 def test_only_the_last_injection_of_a_cell_needs_a_serve_after_it() -> None:
     """Injections are serialized by the quiescence gate, so one final fresh serve settles the whole cell."""
-    log = log_of([SERVING, PENDING, SERVING, SERVING], inject_before={1: 1, 3: 1})
+    log = log_of(
+        [SERVING, PENDING, SERVING, SERVING], inject_before={1: 1, 3: 1}, generations=["g0", "g1", "g1", "g2"]
+    )
 
     assert views.compute_num_injections(log.events, cell_type="rollout") == 2
     assert views.compute_cells_not_serving_after_injection(log.events, cell_type="rollout", grace_seconds=0.0) == {}
@@ -92,13 +94,47 @@ def test_a_siblings_serve_cannot_clear_the_injected_cells_debt() -> None:
 
 
 class TestStaleServingGrace:
+    def test_an_unstamped_status_cannot_prove_replacement(self) -> None:
+        """Missing generation data is not evidence of a new worker."""
+        log = state.EventLog()
+        log.observe([staged("rollout-engine-0", SERVING)])
+        note_injected(log, "rollout-engine-0")
+        unstamped = staged("rollout-engine-0", SERVING)
+        del unstamped["status"]["workers_hash"]
+        log.observe([unstamped])
+
+        assert views.compute_cells_not_serving_after_injection(log.events, cell_type="rollout", grace_seconds=0) == {
+            "rollout-engine-0": [SERVING.value]
+        }
+
+    def test_a_noop_kill_never_proves_recovery_even_after_the_grace_period(self) -> None:
+        """A successful injection response cannot substitute for an actual worker replacement."""
+        base = datetime(2026, 8, 24, tzinfo=timezone.utc)
+        events = [
+            _observation("rollout-engine-0", SERVING, at=base),
+            _injection("rollout-engine-0", at=base),
+            _observation("rollout-engine-0", SERVING, at=base + timedelta(seconds=300)),
+        ]
+
+        assert views.compute_cells_not_serving_after_injection(events, cell_type="rollout") == {
+            "rollout-engine-0": [SERVING.value]
+        }
+
+    def test_a_previous_replacement_cannot_pay_for_a_later_noop_kill(self) -> None:
+        """The replacement must differ from the generation observed before the last injection."""
+        log = log_of([SERVING, SERVING, SERVING], inject_before={1: 1, 2: 1}, generations=["g0", "g1", "g1"])
+
+        assert views.compute_cells_not_serving_after_injection(log.events, cell_type="rollout", grace_seconds=0) == {
+            "rollout-engine-0": [SERVING.value]
+        }
+
     def test_a_serve_inside_the_stale_window_does_not_clear_the_cell(self) -> None:
         """The api server reports a just-killed cell Serving for ~95s, so an early serve proves nothing."""
         base = datetime(2026, 8, 24, tzinfo=timezone.utc)
         events = [
             _observation("rollout-engine-0", SERVING, at=base),
             _injection("rollout-engine-0", at=base),
-            _observation("rollout-engine-0", SERVING, at=base + timedelta(seconds=30)),
+            _observation("rollout-engine-0", SERVING, at=base + timedelta(seconds=30), workers_hash="g1"),
         ]
 
         assert views.compute_cells_not_serving_after_injection(events, cell_type="rollout") == {
@@ -111,7 +147,7 @@ class TestStaleServingGrace:
         events = [
             _observation("rollout-engine-0", SERVING, at=base),
             _injection("rollout-engine-0", at=base),
-            _observation("rollout-engine-0", SERVING, at=base + timedelta(seconds=120)),
+            _observation("rollout-engine-0", SERVING, at=base + timedelta(seconds=120), workers_hash="g1"),
         ]
 
         assert views.compute_cells_not_serving_after_injection(events, cell_type="rollout") == {}
@@ -122,7 +158,9 @@ class TestStaleServingGrace:
         events = [
             _observation("rollout-engine-0", SERVING, at=base),
             _injection("rollout-engine-0", at=base),
-            _observation("rollout-engine-0", SERVING, at=base + timedelta(seconds=130), alive=False),
+            _observation(
+                "rollout-engine-0", SERVING, at=base + timedelta(seconds=130), alive=False, workers_hash="g1"
+            ),
         ]
 
         assert views.compute_cells_not_serving_after_injection(events, cell_type="rollout") == {
@@ -135,17 +173,20 @@ class TestStaleServingGrace:
         events = [
             _observation("rollout-engine-0", SERVING, at=base),
             _injection("rollout-engine-0", at=base),
-            _observation("rollout-engine-0", SERVING, at=base + timedelta(seconds=130)),
+            _observation("rollout-engine-0", SERVING, at=base + timedelta(seconds=130), workers_hash="g1"),
         ]
 
         assert views.compute_cells_not_serving_after_injection(events, cell_type="rollout") == {}
 
 
 def _observation(
-    name: str, cell_state: state.ObservedCellState, *, at: datetime, alive: bool = True
+    name: str, cell_state: state.ObservedCellState, *, at: datetime, alive: bool = True, workers_hash: str = "g0"
 ) -> state.ObservationsEvent:
     return state.ObservationsEvent(
-        timestamp=at, cell_infos={name: state.CellInfo(cell_type="rollout", state=cell_state, alive=alive)}
+        timestamp=at,
+        cell_infos={
+            name: state.CellInfo(cell_type="rollout", state=cell_state, alive=alive, workers_hash=workers_hash)
+        },
     )
 
 
