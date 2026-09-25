@@ -65,7 +65,7 @@ logger = logging.getLogger(__name__)
 # older install outright, and the shared agent loop's harness-marker guard
 # backstops it per episode.
 #
-# Creates are capped process-wide and retried with jittered backoff when Daytona
+# Creates are capped node-wide and retried with jittered backoff when Daytona
 # throttles (429) or reports the org out of capacity (OPENENV_DAYTONA_CREATE_* knobs).
 def _is_throttle_error(exc: BaseException) -> bool:
     """True when a sandbox create failed only because Daytona would not seat it yet.

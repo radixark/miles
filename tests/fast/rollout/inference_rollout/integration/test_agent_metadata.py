@@ -55,6 +55,31 @@ def test_agent_metadata_reaches_reward_model(rollout_env, variant):
         mock_tools.AGENTIC_RETURN_METADATA = None
 
 
+def _subproc_config() -> RolloutEnvConfig:
+    argv = extra_argv_for_variant(
+        "agentic_tool_call",
+        custom_agent_function_path="miles.utils.test_utils.mock_tools.run_agentic_tool_call_returning_reward",
+    )
+    return RolloutEnvConfig(
+        extra_argv=MODULAR_ROLLOUT_BASE_ARGV
+        + argv
+        + ["--custom-agent-function-mode", "subproc"]
+        + _METADATA_RM_EXTRA_ARGV,
+        data_rows=TWO_TURN_DATA_ROWS,
+    )
+
+
+@pytest.mark.parametrize("rollout_env", [pytest.param(_subproc_config(), id="subproc")], indirect=True)
+def test_subproc_agent_metadata_reaches_reward_model(ray_local_mode, rollout_env):
+    """An agent in its own process still reaches the session server and returns its metadata to the RM."""
+    rollout_env.mock_server.process_fn = TwoTurnStub.process_fn
+
+    out = load_and_call_rollout(rollout_env.args, rollout_env.data_source, mode="train")
+
+    flat = [s for group in out.samples for sub in group for s in (sub if isinstance(sub, list) else [sub])]
+    assert flat and all(sample.reward == 42.0 for sample in flat)
+
+
 async def _metadata_reward_function(args, samples: Sample | list[Sample]) -> float | list[float]:
     """Custom RM that reads reward from sample.metadata['agent_reward'] — simulates SWE-bench pattern."""
     if isinstance(samples, list):

@@ -7,6 +7,7 @@ The agent logic is fully encapsulated in a user-provided async function
   2. Collecting the worker-assembled training samples (the session server
      converts records to samples, truncates and merges in the owning worker)
   3. Driver-side metadata application (agent_metadata, session_metadata)
+  4. Where each agent call runs (--custom-agent-function-mode)
 
 Agent function contract:
   async def my_agent(
@@ -21,6 +22,10 @@ Agent function contract:
   Returning None means no extra metadata to attach.
   Returning a dict merges it into every sample's metadata, so downstream
   reward models (--custom-rm-path) can read whatever the agent left there.
+
+  Under ``subproc`` (the default) each call runs in a fresh process: its
+  arguments and return value must be picklable, and module-level state lasts
+  one call. Limits shared across calls go through ``miles.rollout.agentic.node_limits``.
 """
 
 import argparse
@@ -33,6 +38,7 @@ from typing import Any
 import httpx
 from sglang.srt.entrypoints.openai.protocol import ChatCompletionRequest
 
+from miles.rollout.agentic.agent_function import AGENT_FUNCTION_MODES, call_agent_function
 from miles.rollout.base_types import GenerateFnInput, GenerateFnOutput
 from miles.rollout.generate_utils.openai_endpoint_utils import OpenAIEndpointTracer
 from miles.rollout.session.v2.metrics import SESSION_ROLLOUT_METRICS_KEY
@@ -77,7 +83,9 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
     t_start = time.monotonic()
     try:
         logger.debug(f"{log_prefix} Starting agent function call")
-        agent_metadata = await custom_agent_function(
+        agent_metadata = await call_agent_function(
+            custom_agent_function,
+            mode=input.args.custom_agent_function_mode,
             base_url=tracer.agent_base_url,
             prompt=input.sample.prompt,
             request_kwargs=build_chat_request_kwargs(input.sampling_params),
@@ -170,6 +178,13 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
 
 def _add_arguments(parser: argparse.ArgumentParser):
     parser.add_argument("--custom-agent-function-path", type=str)
+    parser.add_argument(
+        "--custom-agent-function-mode",
+        choices=AGENT_FUNCTION_MODES,
+        default="subproc",
+        help="Where each agent call runs: subproc, a fresh process on the rollout's node so one episode's "
+        "blocking step or crash cannot stall the others; or inline, on the rollout's event loop.",
+    )
     parser.add_argument(
         "--max-seq-len",
         type=int,
