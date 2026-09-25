@@ -330,7 +330,8 @@ def _environment_config():
         if value is not None and value <= 0:
             raise ValueError(f"{var} must be a positive integer")
         overrides[field] = value
-    return EnvironmentConfig(type=env_type, delete=True, kwargs=kwargs, **overrides)
+    import_path = os.getenv("HARBOR_ENV_IMPORT_PATH", "").strip() or None
+    return EnvironmentConfig(type=env_type, import_path=import_path, delete=True, kwargs=kwargs, **overrides)
 
 
 def build_trial_config(metadata: dict[str, Any], session_url: str, request_kwargs: dict[str, Any]):

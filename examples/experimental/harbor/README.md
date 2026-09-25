@@ -133,3 +133,7 @@ every nearby warning belongs to that trial. Logs from all worker processes
 must be retained. Enable this before starting a fresh worker; it cannot recover
 the creation/cancellation history of a previous crash. Task tracing and origin
 tracking add overhead and are disabled by default.
+
+Custom environment classes can be selected with HARBOR_ENV_IMPORT_PATH
+(module:Class), with constructor options in HARBOR_ENV_KWARGS.
+This supports explicit prebuilt-template selection without changing the agent.
