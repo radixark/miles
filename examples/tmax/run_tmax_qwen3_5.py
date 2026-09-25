@@ -1,8 +1,8 @@
-"""TMax Terminal-RL for Qwen3.5-9B with per-task Podman sandboxes.
+"""TMax Terminal-RL for Qwen3.5 dense models with per-task Podman sandboxes, optionally with OPD.
 
 =====================
 
-Trains Qwen3.5-9B with GRPO on the 14.6k TMax terminal tasks
+Trains a Qwen3.5 dense model (default Qwen3.5-9B) with GRPO on the 14.6k TMax terminal tasks
 (allenai/tmax-15k-open-instruct), the Miles counterpart of open-instruct's
 scripts/general_agent/terminal/rl/qwen35_9b_base_tmax_10k_dppo_32k.sh. Every
 episode runs in a fresh container from the task's prebuilt image, driven by
@@ -26,13 +26,20 @@ Requires:
     the sandbox containers must be able to pull the hamishi740/swerl-tmax-v3 images;
   * `pip install docker` in the training image (the SDK is not shipped).
 
+With --opd-teacher, adds Megatron-mode on-policy distillation: the teacher (same architecture as the
+student) scores every rollout token in the training forward pass, and
+opd_kl_coef * (log p_student - log p_teacher) is subtracted from each token's GRPO advantage.
+
 `prepare` downloads the dataset, extracts the task directories, writes the prompt
-JSONL, and converts the HF checkpoint to Megatron torch_dist. `execute` submits
+JSONL, and converts the student (and teacher) HF checkpoints to Megatron torch_dist. `execute` submits
 the training job.
 
 =====================
 
 Args:
+  --model-name: student, a key of _RECIPES (default: Qwen3.5-9B).
+  --opd-teacher: teacher, a key of _RECIPES with the student's architecture (default: none, no OPD).
+  --opd-kl-coef: weight of the per-token reverse-KL penalty (default: 1.0).
   --num-gpus-per-node: GPUs per node (default: 8).
   --rollout-batch-size / --n-samples-per-prompt: prompts x samples per step (default: 32 x 8).
   --max-seq-len: per-episode token budget including the prompt (default: 34816).
@@ -48,12 +55,17 @@ Args:
 
 =====================
 
-  python examples/tmax/run_tmax_qwen3_5_9b.py prepare --num-gpus-per-node 4
-  python examples/tmax/run_tmax_qwen3_5_9b.py execute --num-gpus-per-node 4
+  python examples/tmax/run_tmax_qwen3_5.py prepare --num-gpus-per-node 4
+  python examples/tmax/run_tmax_qwen3_5.py execute --num-gpus-per-node 4
+
+Distill allenai/tmax-4b into Qwen3.5-4B (pass the same --model-name / --opd-teacher to prepare):
+
+  python examples/tmax/run_tmax_qwen3_5.py execute --num-gpus-per-node 4 \\
+      --model-name Qwen3.5-4B-tmax-template --opd-teacher tmax-4b
 
 Smoke test on four 80GB+ GPUs:
 
-  python examples/tmax/run_tmax_qwen3_5_9b.py execute --num-gpus-per-node 4 \\
+  python examples/tmax/run_tmax_qwen3_5.py execute --num-gpus-per-node 4 \\
       --tensor-model-parallel-size 1 --no-optimizer-cpu-offload \\
       --rollout-batch-size 2 --n-samples-per-prompt 4 --num-rollout 2 --max-seq-len 16384
 """
@@ -61,6 +73,7 @@ Smoke test on four 80GB+ GPUs:
 import json
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 import pandas as pd
 import typer
@@ -70,8 +83,25 @@ from tmax_prompts import TMAX_SYSTEM_PROMPT
 
 _SCRIPT_DIR = Path(__file__).resolve().parent
 _DATASET = "allenai/tmax-15k-open-instruct"
-_MODEL_NAME = "Qwen3.5-9B"
-_MEGATRON_MODEL_TYPE = "qwen3.5-9B"
+
+_MODEL_NAMES = Literal["Qwen3.5-9B", "Qwen3.5-4B-tmax-template", "tmax-4b", "tmax-9b"]
+
+
+@dataclass(frozen=True)
+class _Recipe:
+    hf_repo: str
+    megatron_model_type: str
+    # The allenai/tmax-* chat template (also on hamishivi/Qwen3.5-*) defaults to thinking off; Miles' qwen35
+    # template defaults to on, so those checkpoints are rendered with enable_thinking=false as they were trained.
+    enable_thinking: bool
+
+
+_RECIPES: dict[str, _Recipe] = {
+    "Qwen3.5-9B": _Recipe("Qwen/Qwen3.5-9B", "qwen3.5-9B", enable_thinking=True),
+    "Qwen3.5-4B-tmax-template": _Recipe("hamishivi/Qwen3.5-4B", "qwen3.5-4B", enable_thinking=False),
+    "tmax-4b": _Recipe("allenai/tmax-4b", "qwen3.5-4B", enable_thinking=False),
+    "tmax-9b": _Recipe("allenai/tmax-9b", "qwen3.5-9B", enable_thinking=False),
+}
 
 app = typer.Typer()
 
@@ -79,6 +109,9 @@ app = typer.Typer()
 @dataclass
 class ScriptArgs(U.ExecuteTrainConfig):
     run_id: str = U.create_run_id()
+    model_name: _MODEL_NAMES = "Qwen3.5-9B"
+    opd_teacher: _MODEL_NAMES | None = None
+    opd_kl_coef: float = 1.0
     num_gpus_per_node: int = 8
     rollout_batch_size: int = 32
     n_samples_per_prompt: int = 8
@@ -102,6 +135,18 @@ class ScriptArgs(U.ExecuteTrainConfig):
     model_dir: str = "/root/models"
     megatron_path: str = "/root/Megatron-LM"
 
+    def __post_init__(self):
+        if self.opd_teacher is not None:
+            student, teacher = _RECIPES[self.model_name], _RECIPES[self.opd_teacher]
+            assert student.megatron_model_type == teacher.megatron_model_type, (
+                f"Megatron-mode OPD needs one architecture: {self.model_name} is {student.megatron_model_type}, "
+                f"{self.opd_teacher} is {teacher.megatron_model_type}"
+            )
+
+    @property
+    def recipe(self) -> _Recipe:
+        return _RECIPES[self.model_name]
+
     @property
     def fully_async(self) -> bool:
         return self.async_rollout_gpus > 0
@@ -123,7 +168,6 @@ class ScriptArgs(U.ExecuteTrainConfig):
 @app.command()
 @U.dataclass_cli
 def prepare(args: ScriptArgs):
-    U.exec_command_cpu(f"hf download Qwen/{_MODEL_NAME} --local-dir {args.model_dir}/{_MODEL_NAME}")
     U.hf_download_dataset(_DATASET, data_dir=args.data_dir)
     if not Path(args.task_data_dir).exists():
         U.exec_command_cpu(
@@ -132,14 +176,17 @@ def prepare(args: ScriptArgs):
             f"mv {args.task_data_dir}.tmp {args.task_data_dir}"
         )
     _write_prompt_data(args)
-    U.convert_checkpoint(
-        model_name=_MODEL_NAME,
-        megatron_model_type=_MEGATRON_MODEL_TYPE,
-        num_gpus_per_node=args.num_gpus_per_node,
-        dir_dst=args.model_dir,
-        hf_checkpoint=f"{args.model_dir}/{_MODEL_NAME}",
-        megatron_path=args.megatron_path,
-    )
+    for name in filter(None, [args.model_name, args.opd_teacher]):
+        recipe = _RECIPES[name]
+        U.exec_command_cpu(f"hf download {recipe.hf_repo} --local-dir {args.model_dir}/{name}")
+        U.convert_checkpoint(
+            model_name=name,
+            megatron_model_type=recipe.megatron_model_type,
+            num_gpus_per_node=args.num_gpus_per_node,
+            dir_dst=args.model_dir,
+            hf_checkpoint=f"{args.model_dir}/{name}",
+            megatron_path=args.megatron_path,
+        )
 
 
 def _write_prompt_data(args: ScriptArgs) -> None:
@@ -161,8 +208,8 @@ def _write_prompt_data(args: ScriptArgs) -> None:
 @U.dataclass_cli
 def execute(args: ScriptArgs):
     ckpt_args = (
-        f"--hf-checkpoint {args.model_dir}/{_MODEL_NAME} "
-        f"--ref-load {args.model_dir}/{_MODEL_NAME}_torch_dist "
+        f"--hf-checkpoint {args.model_dir}/{args.model_name} "
+        f"--ref-load {args.model_dir}/{args.model_name}_torch_dist "
         f"--load {args.output_dir}/{args.run_id}/checkpoints "
         f"--save {args.output_dir}/{args.run_id}/checkpoints "
         f"--save-interval {args.save_interval} "
@@ -191,6 +238,8 @@ def execute(args: ScriptArgs):
         "--tito-model qwen35 "
         "--session-server-workers 8 "
     )
+    if not args.recipe.enable_thinking:
+        agent_args += """--apply-chat-template-kwargs '{"enable_thinking": false}' """
     if not args.fully_async:
         # --fully-async selects its own rollout function, so agent/* metrics are logged only in sync mode.
         agent_args += "--rollout-function-path generate.RolloutFn "
@@ -220,6 +269,13 @@ def execute(args: ScriptArgs):
         "--eps-clip 0.2 "
         "--eps-clip-high 0.28 "
     )
+    if args.opd_teacher is not None:
+        grpo_args += (
+            "--use-opd "
+            "--opd-type megatron "
+            f"--opd-kl-coef {args.opd_kl_coef} "
+            f"--opd-teacher-load {args.model_dir}/{args.opd_teacher}_torch_dist "
+        )
 
     optimizer_args = (
         "--optimizer adam "
@@ -283,7 +339,7 @@ def execute(args: ScriptArgs):
         train_args=train_args,
         config=args,
         num_gpus_per_node=args.num_gpus_per_node,
-        megatron_model_type=_MEGATRON_MODEL_TYPE,
+        megatron_model_type=args.recipe.megatron_model_type,
         megatron_path=args.megatron_path,
         train_script="train_async.py" if args.fully_async else "train.py",
         extra_env_vars={
