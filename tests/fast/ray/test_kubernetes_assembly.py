@@ -461,6 +461,7 @@ class TestKubernetesDriverAssembly:
             num_rollout=None,
             num_epoch=3,
             debug_train_only=True,
+            eval_num_gpus=0,
         )
         monkeypatch.setattr(placement_group, "get_backend_capability", lambda _args: capability)
 
