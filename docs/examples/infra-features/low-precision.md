@@ -58,6 +58,19 @@ Here's a quick explanation of how FP8 training is currently implemented in miles
 
 4. Save checkpoint: Similar to weight updates, if checkpoints need to be saved from the training engine, they will also be dequantized back to bf16 and saved to `torch_dist` format checkpoints.
 
+### MoE weight updates
+
+With `--megatron-to-hf-mode raw`, MoE weight updates require
+`--expert-tensor-parallel-size 1`. Each EP rank owns complete local routed experts.
+Their conversion and quantization are split into contiguous expert ranges across
+its expert-DP replicas, so each expert is processed once. For example, with two
+expert-DP replicas, each processes half of the local experts. Converted tensors
+and scales are then gathered as required by the weight-transfer protocol.
+
+The same path serves unquantized weights and all rollout quantization formats
+supported by the direct exporter. Quantization exclusions still apply. Shared experts and nonexpert layers retain
+their existing gathering and conversion behavior. The Bridge exporter is unchanged.
+
 ## TODO
 
 Currently, FP8 is far from being a complete feature and still has the following bugs, for examples:
