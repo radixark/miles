@@ -393,7 +393,12 @@ class TestUpdateWeights:
 
         with pytest.raises(AssertionError, match="fault hook failed"):
             await update_weights(
-                self._args(), actor_model, rollout_executor, inference_controller, rollout_id=3, trainer_model_id="alpha"
+                self._args(),
+                actor_model,
+                rollout_executor,
+                inference_controller,
+                rollout_id=3,
+                trainer_model_id="alpha",
             )
 
         hook.assert_awaited_once_with(FaultHookName.ORCHESTRATOR_STEP_END, rollout_id=3, trainer_model_id="alpha")
