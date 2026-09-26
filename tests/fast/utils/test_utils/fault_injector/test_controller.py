@@ -91,18 +91,23 @@ class TestCellHooks:
         observed_after_reads: int,
     ) -> None:
         """Resuming a dropped cell must wait for its return to the controller membership."""
-        controller = _Controller(observed_after_reads=observed_after_reads)
+        controller = _Controller(
+            observed_after_reads=observed_after_reads,
+            cell_ids=("trainer-engine-actor-0", "trainer-engine-actor-2"),
+            initial_cell_ids=("trainer-engine-actor-0",),
+        )
         request = FaultHookRequest(
             request_id="start",
             hook_name=_CELL_HOOK,
             rollout_id=3,
-            action=StartCellAction(cell_id="trainer-engine-actor-0"),
+            action=StartCellAction(cell_id="trainer-engine-actor-2"),
         )
         hooks = configure_hooks(
             [request], owner=FaultHookOwner.TRAINER_CONTROLLER, operations=operations, controller=controller
         )
         await hooks._reach_async(_CELL_HOOK, {"rollout_id": 3})
-        assert operations.started == ["trainer-engine-actor-0"]
+        assert operations.started == ["trainer-engine-actor-2"]
+        assert operations.stopped == []
         assert controller.reads == observed_after_reads + 1
 
     async def test_unobserved_start_fails_at_the_bounded_deadline(
@@ -134,24 +139,35 @@ class TestCellHooks:
         operations = _CellOperations(reject_stop=reject_stop)
         requests = [
             FaultHookRequest(
-                request_id="stop", hook_name=_CELL_HOOK, action=StopCellAction(cell_id="trainer-engine-actor-0")
+                request_id="stop",
+                hook_name=_CELL_HOOK,
+                rollout_id=3,
+                action=StopCellAction(cell_id="trainer-engine-actor-0"),
             ),
             FaultHookRequest(
-                request_id="start", hook_name=_CELL_HOOK, action=StartCellAction(cell_id="trainer-engine-actor-0")
+                request_id="start",
+                hook_name=_CELL_HOOK,
+                rollout_id=3,
+                action=StartCellAction(cell_id="trainer-engine-actor-2"),
             ),
         ]
         hooks = configure_hooks(
-            requests, owner=FaultHookOwner.TRAINER_CONTROLLER, operations=operations, controller=_Controller()
+            requests,
+            owner=FaultHookOwner.TRAINER_CONTROLLER,
+            operations=operations,
+            controller=_Controller(cell_ids=("trainer-engine-actor-0", "trainer-engine-actor-2")),
         )
         if reject_stop:
             with pytest.raises(RuntimeError, match="rejected the stop"):
-                await hooks._reach_async(_CELL_HOOK, {})
+                await hooks._reach_async(_CELL_HOOK, {"rollout_id": 3})
             assert operations.stopped == operations.started == []
         else:
-            await hooks._reach_async(_CELL_HOOK, {})
-            assert operations.stopped == operations.started == ["trainer-engine-actor-0"]
-            await hooks._reach_async(_CELL_HOOK, {})
-            assert operations.stopped == operations.started == ["trainer-engine-actor-0"]
+            await hooks._reach_async(_CELL_HOOK, {"rollout_id": 3})
+            assert operations.stopped == ["trainer-engine-actor-0"]
+            assert operations.started == ["trainer-engine-actor-2"]
+            await hooks._reach_async(_CELL_HOOK, {"rollout_id": 3})
+            assert operations.stopped == ["trainer-engine-actor-0"]
+            assert operations.started == ["trainer-engine-actor-2"]
 
     async def test_no_plan_has_no_cell_side_effects(
         self, configure_hooks: Callable[..., _FaultHookController], operations: _CellOperations

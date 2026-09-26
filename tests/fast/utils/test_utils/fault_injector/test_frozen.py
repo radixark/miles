@@ -49,6 +49,7 @@ class TestSleepForeverHook:
         wakes: list[float] = []
 
         async def sleep(seconds: float) -> None:
+            assert read_frozen_rollout_id(path) == 2
             wakes.append(seconds)
             if len(wakes) == 3:
                 raise asyncio.CancelledError
