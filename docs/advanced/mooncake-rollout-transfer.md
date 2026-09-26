@@ -32,11 +32,6 @@ CUDA runtime and is compatible with the Miles revision. Follow the
 [Mooncake installation guide](https://kvcache-ai.github.io/Mooncake/getting_started/build.html)
 for current package names and supported platforms.
 
-The structured-object wheel ships only on the CUDA 13 path, so
-`mooncake.structured_object_store` fails to import on a CUDA 12 image. See
-[Versions and Images](/developer/versions) for the `ENABLE_CUDA_13` switch and
-that failure mode.
-
 ## Configure the backend
 
 Choose the transfer protocol before starting Ray. TCP works on any routable data

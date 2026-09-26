@@ -2,10 +2,7 @@
 
 Training VLMs with FSDP or Megatron on single-turn reasoning task using GRPO on the [GEO3K dataset](https://huggingface.co/datasets/hiyouga/geometry3k). We used processed version [here](https://huggingface.co/datasets/chenhegu/geo3k_imgurl).
 
-Note: Please make sure the cudnn version in the environment is 9.16.0.29 to prevent severe performance regression in conv3d in torch 2.9 mentioned in https://github.com/pytorch/pytorch/issues/168167. Otherwise, you can reinstall cudnn with:
-```bash
-pip install nvidia-cudnn-cu12==9.16.0.29
-```
+Use the current Miles CUDA 13 image, which pins cuDNN in `docker/Dockerfile`. Keep that pin when installing additional dependencies.
 
 <p align="center">
   <img src="fsdp_vs_megatron.png" alt="FSDP vs Megatron Reward Plot" width="800">

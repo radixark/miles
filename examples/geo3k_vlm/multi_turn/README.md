@@ -1,10 +1,7 @@
 # VLM Multi-Turn (geo3k dataset)
 Training VLM on [geo3k dataset](https://huggingface.co/datasets/hiyouga/geometry3k) with multi-turn reasoning with interactive environment feedback, using GRPO. For the dataset, we used the [processed version](https://huggingface.co/datasets/VeraIsHere/geo3k_imgurl_processed).
 
-Note: Please make sure the cudnn version in the environment is 9.16.0.29 to prevent severe performance regression in conv3d in torch 2.9 mentioned in https://github.com/pytorch/pytorch/issues/168167. Otherwise, you can reinstall cudnn with:
-```bash
-pip install nvidia-cudnn-cu12==9.16.0.29
-```
+Use the current Miles CUDA 13 image, which pins cuDNN in `docker/Dockerfile`. Keep that pin when installing additional dependencies.
 
 The multi-turn rollout is implemented through a [custom generate function](rollout.py#L309), overriding the original generate function.
 

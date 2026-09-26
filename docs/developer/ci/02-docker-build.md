@@ -15,7 +15,7 @@ GPU CI runs inside `radixark/miles`. This doc maps which Dockerfiles exist, the 
 
 ### `docker/Dockerfile` — inputs & output
 
-The Dockerfile is the build recipe: it provides the cu13 defaults and emits one image. `build.py` owns the variant → build-arg overrides (see Build script), including the cu12 base and wheels release.
+The Dockerfile is the build recipe: it targets CUDA 13 and emits one image. `build.py` owns the variant → platform and build-arg overrides (see Build script). CUDA 12 builds are no longer supported.
 
 **Inputs (build-args)**
 
@@ -23,9 +23,8 @@ The Dockerfile is the build recipe: it provides the cu13 defaults and emits one 
 | Arg                                                                                                    | Meaning                                                                                                                                                                                                                                                                                                                                             |
 | ------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `SGLANG_IMAGE_TAG`                                                                                     | base `lmsysorg/sglang` image tag                                                                                                                                                                                                                                                                                                                    |
-| `ENABLE_CUDA_13`                                                                                       | `1` = CUDA 13 (default) and installs the Mooncake wheel from the selected wheels release; `0` = CUDA 12.9 and keeps the base image's Mooncake                                                                                                                                                                                                         |
 | `WHEELS_REPO`                                                                                          | prebuilt-wheels GitHub repo (`yueming-yuan/miles-wheels`)                                                                                                                                                                                                                                                                                           |
-| `WHEELS_TAG_X86` / `WHEELS_TAG_ARM64`                                                                  | the two **complete** wheels release tags selected by `TARGETARCH` and installed **verbatim**. cu13 uses the rolling `cu130-torch213-x86_64` / `cu130-torch213-aarch64` releases; cu12-x86 overrides `WHEELS_TAG_X86` with the rolling `cu129-x86_64` release                                                                                                                                                                                              |
+| `WHEELS_TAG_X86` / `WHEELS_TAG_ARM64`                                                                  | the two **complete** wheels release tags selected by `TARGETARCH` and installed **verbatim**. cu13 uses the rolling `cu130-torch213-x86_64` / `cu130-torch213-aarch64` releases                                                                                                                                                                                              |
 | `SGLANG_BRANCH` / `SGLANG_COMMIT`, `MEGATRON_REPO` / `MEGATRON_BRANCH` / `MEGATRON_COMMIT`, `MILES_COMMIT`, `SGL_ROUTER_*` | source pins for the layered repos; empty commit args follow their branch, while release builds provide exact SHAs |
 | `TARGETARCH`                                                                                           | set by buildx; also the one argument `docker/install-kube-tools.sh` takes                                                                                                                                                                                                                                                                           |
 
@@ -48,7 +47,6 @@ The Dockerfile is the build recipe: it provides the cu13 defaults and emits one 
 | `cu13`         | `radixark/miles:dev`               | `linux/amd64` + `linux/arm64` | **multi-arch**, one manifest — the daily image |
 | `cu13-x86`     | `radixark/miles:dev`               | `linux/amd64`                 | x86-only build of the same image               |
 | `cu13-aarch64` | `radixark/miles:dev`               | `linux/arm64`                 | arm64-only build of the same image             |
-| `cu12-x86`     | `radixark/miles:dev-cu12`          | `linux/amd64`                 | CUDA 12.9 legacy                               |
 | `rocm724-mi35x` | `rocm/sgl-dev:miles-rocm724-mi35x` | native                       | AMD MI35x (`gfx950`, ROCm 7.2.4) — `docker/Dockerfile.rocm` |
 | `rocm10-mi35x`  | `rocm/sgl-dev:miles-rocm10-mi35x`  | native                       | AMD MI35x (`gfx950`, ROCm 10, ROCm SDK as pip wheels) — `docker/Dockerfile.rocm` |
 
@@ -104,7 +102,7 @@ This workflow owns the rolling `dev` and `latest` image families. It has three j
 
 ### Triggers: automatic vs manual
 
-- **Automatic** (no human) — the **schedule** (10-minute poll, gated by `check-upstream`) and any **push to `main` that touches `docker/Dockerfile`, `docker/install-kube-tools.sh`, `docker/verify_transformer_engine.py`, or `requirements.txt`**. Both leave `--variant` empty and build **two images**: `cu13` → `radixark/miles` (multi-arch) and `cu12-x86` → `radixark/miles:dev-cu12`.
+- **Automatic** (no human) — the **schedule** (10-minute poll, gated by `check-upstream`) and any **push to `main` that touches `docker/Dockerfile`, `docker/install-kube-tools.sh`, `docker/verify_transformer_engine.py`, or `requirements.txt`**. Both default to `cu13` → `radixark/miles` (multi-arch).
 - **Manual** — `workflow_dispatch` (pick one variant — see Trigger a build yourself below) or running `docker/build.py` locally. Only the `rocm*-mi35x` images have **no automatic path in this repo** (their nightlies live in sgl-project/sglang) (`cu13-x86` / `cu13-aarch64` just rebuild the same `dev` image single-arch).
 
 `docker/build.py` and `docker/patch/**` participate in PR image validation but are not `main`-push triggers; [Release a Version](/developer/ci/04-release) treats them as manual preflight cases.
@@ -112,8 +110,8 @@ This workflow owns the rolling `dev` and `latest` image families. It has three j
 
 | Trigger                                     | `check-upstream`                   | builds                | `latest` move     | prune      |
 | ------------------------------------------- | ---------------------------------- | --------------------- | ----------------- | ---------- |
-| schedule (10-minute poll)                   | runs; build if upstream moved or last build ≥ 12h ago | `cu13` + `cu12-x86`   | yes (both)        | yes (both) |
-| push to `main` touching `docker/Dockerfile`, `docker/install-kube-tools.sh`, `docker/verify_transformer_engine.py`, or `requirements.txt` | skipped                            | `cu13` + `cu12-x86`   | no                | no         |
+| schedule (10-minute poll)                   | runs; build if upstream moved or last build ≥ 12h ago | `cu13`   | yes        | yes |
+| push to `main` touching `docker/Dockerfile`, `docker/install-kube-tools.sh`, `docker/verify_transformer_engine.py`, or `requirements.txt` | skipped                            | `cu13`   | no                | no         |
 | `workflow_dispatch`                         | skipped                            | the one input variant | no                | no         |
 | `workflow_dispatch` + `simulate_schedule`   | runs                               | the one input variant | no                | no         |
 
@@ -125,10 +123,9 @@ All images push to **Docker Hub**. CUDA variants → `radixark/miles`; ROCm vari
 | variant(s) | `--image-tag dev` writes | `latest` mode writes |
 | --- | --- | --- |
 | `cu13` / `cu13-x86` / `cu13-aarch64` | `radixark/miles:dev` + `radixark/miles:dev-<YYYYMMDDHHMM>` | `radixark/miles:latest` |
-| `cu12-x86` | `radixark/miles:dev-cu12` (+ timestamped sibling) | `radixark/miles:latest-cu12` |
 | `rocm724-mi35x` / `rocm10-mi35x` | `rocm/sgl-dev:miles-rocm*-mi35x` (+ timestamped sibling) | `rocm/sgl-dev:latest-rocm*-mi35x` |
 
-What **moves a shared tag**: `--image-tag dev` overwrites `:dev` (or `:dev-cu12`) and adds a timestamped sibling; on a **scheduled** run `latest`→`dev` *and* `latest-cu12`→`dev-cu12` both advance; pruning likewise runs **only on schedule**, keeping the newest 20 of **each** series — `dev-<ts>` and `dev-cu12-<ts>` independently — and never deleting a tag younger than 14 days. Any `workflow_dispatch` — **including** `simulate_schedule` — writes its own tag(s) but never moves `latest` or prunes; only the real cron mutates published tags. See the trigger table above.
+What **moves a shared tag**: `--image-tag dev` overwrites `:dev` and adds a timestamped sibling; on a **scheduled** run `latest` advances to `dev`; pruning likewise runs **only on schedule**, keeping the newest 20 `dev-<ts>` tags and never deleting a tag younger than 14 days. Any `workflow_dispatch` — **including** `simulate_schedule` — writes its own tag(s) but never moves `latest` or prunes; only the real cron mutates published tags. See the trigger table above.
 
 ### Trigger a build yourself
 
@@ -145,7 +142,7 @@ gh workflow run docker-build.yml -f variant=cu13-x86 -f image_tag=custom -f cust
 
 | input | required | values / default |
 | ----- | -------- | ---------------- |
-| `variant` | yes | `cu13` / `cu13-x86` / `cu13-aarch64` / `cu12-x86` / `rocm724-mi35x` / `rocm10-mi35x` |
+| `variant` | yes | `cu13` / `cu13-x86` / `cu13-aarch64` / `rocm724-mi35x` / `rocm10-mi35x` |
 | `image_tag` | yes | `dev` / `latest` / `custom` |
 | `custom_tag` | no | tag name; required when `image_tag=custom` |
 | `dockerfile` | no | path to Dockerfile (default `docker/Dockerfile`) |
@@ -154,9 +151,9 @@ gh workflow run docker-build.yml -f variant=cu13-x86 -f image_tag=custom -f cust
 ### Steps (`build-and-push`)
 
 1. checkout → Buildx → install Python + typer → Docker Hub login.
-2. **Build + push** via `build.py` — automatic runs build **both** `cu13` and `cu12-x86`; a manual dispatch builds only the one variant you picked.
-3. **schedule only** — point `latest`→`dev` and `latest-cu12`→`dev-cu12`.
-4. **schedule only** — prune each timestamp series to the newest 20, keeping every tag younger than 14 days.
+2. **Build + push** via `build.py` — automatic runs build `cu13`; a manual dispatch builds only the one variant you picked.
+3. **schedule only** — point `latest`→`dev`.
+4. **schedule only** — prune `dev-<timestamp>` tags to the newest 20, keeping every tag younger than 14 days.
 
 ### Push auth & permissions
 
@@ -171,4 +168,4 @@ Pushes use a Docker Hub credential, not your identity:
 
 ## Image retention (open)
 
-`docker-build.yml` prunes `dev-<timestamp>` and `dev-cu12-<timestamp>` as separate series, keeping the newest 20 of each plus every tag younger than 14 days; `dev` / `latest` and `dev-cu12` / `latest-cu12` move forward. Ordinary PR, nightly, and weekly CI therefore has no durable image record. A release branch cut instead retags the newest timestamped `dev` image, or mutable `dev` when none exists, as prune-exempt `release-vX.Y.Z-ci` and records that tag in `release-lock.json`. The guarded preflight is documented in [Release a Version](/developer/ci/04-release).
+`docker-build.yml` prunes `dev-<timestamp>` tags, keeping the newest 20 plus every tag younger than 14 days; `dev` / `latest` move forward. Previously published CUDA 12 tags remain available, but are no longer rebuilt, updated, or pruned by this workflow. Ordinary PR, nightly, and weekly CI therefore has no durable image record. A release branch cut instead retags the newest timestamped `dev` image, or mutable `dev` when none exists, as prune-exempt `release-vX.Y.Z-ci` and records that tag in `release-lock.json`. The guarded preflight is documented in [Release a Version](/developer/ci/04-release).

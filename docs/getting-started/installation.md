@@ -11,6 +11,8 @@ versions of SGLang, Megatron-LM, and a few CUDA kernels.
 
   <Tab title="NVIDIA">
 
+    Miles NVIDIA images use CUDA 13 on amd64 and arm64. CUDA 12 images are no longer built or updated.
+
     ```bash
     docker pull radixark/miles:latest
 

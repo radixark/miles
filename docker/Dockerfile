@@ -5,11 +5,10 @@
 #       python docker/build.py --variant cu13     --image-tag dev --push   # radixark/miles:dev      (amd64+arm64)
 #       python docker/build.py --variant cu13-x86 --image-tag dev --push   # radixark/miles:dev (amd64)
 #       python docker/build.py --variant cu13-aarch64 --image-tag dev --push   # radixark/miles:dev (arm64)
-#       python docker/build.py --variant cu12-x86 --image-tag dev --push   # radixark/miles:dev-cu12 (CUDA 12.9)
 #
 # A multi-arch build runs the recipe once per platform; it installs the wheels
 # release for the current arch picked from TARGETARCH — WHEELS_TAG_X86 on amd64,
-# WHEELS_TAG_ARM64 on arm64 (cu12-x86 overrides WHEELS_TAG_X86).
+# WHEELS_TAG_ARM64 on arm64.
 
 ARG SGLANG_IMAGE_TAG=v0.5.20
 FROM lmsysorg/sglang:${SGLANG_IMAGE_TAG} AS sglang
@@ -23,8 +22,6 @@ ARG MEGATRON_REPO=radixark/Megatron-LM
 ARG MEGATRON_BRANCH=miles-main
 # Empty means the branch HEAD at build time; release builds set it to freeze one commit.
 ARG MEGATRON_COMMIT=""
-
-ARG ENABLE_CUDA_13=1
 
 ARG WHEELS_REPO=yueming-yuan/miles-wheels
 # Two complete wheels release tags (the wheels repo's own names). The build picks
@@ -119,10 +116,8 @@ RUN if ls /tmp/wheels/fast_hadamard_transform-*.whl 2>/dev/null | grep -q .; the
 # (cudnn.DSA.indexer_forward_top_k_wrapper with `deterministic`) that upstream
 # Megatron #5992 requires on SM100; 1.26.0 has no compact wrapper and fails
 # TransformerConfig validation once that change is in miles-main.
-RUN if [ "${ENABLE_CUDA_13}" = "1" ]; then \
-      pip install /tmp/wheels/flash_mla-*.whl && \
-      pip install --no-deps "nvidia-cudnn-frontend==1.28.0"; \
-    fi
+RUN pip install /tmp/wheels/flash_mla-*.whl && \
+    pip install --no-deps "nvidia-cudnn-frontend==1.28.0"
 
 # Mamba kernels for nemotron_h hybrid (mamba+attention) models.
 RUN if ls /tmp/wheels/causal_conv1d-*.whl 2>/dev/null | grep -q . && \
@@ -138,22 +133,17 @@ RUN if ls /tmp/wheels/causal_conv1d-*.whl 2>/dev/null | grep -q . && \
 # runtime deps, which still have to be installed: transformer_engine.pytorch
 # imports onnxscript unconditionally (module/_common -> export -> onnx_extensions).
 RUN --mount=type=bind,source=docker/verify_transformer_engine.py,target=/tmp/verify_transformer_engine.py \
-    if [ "${ENABLE_CUDA_13}" = "1" ]; then \
-      TE_CORE_DIST=transformer_engine_cu13; \
-    else \
-      TE_CORE_DIST=transformer_engine_cu12; \
-    fi && \
     set -- \
       /tmp/wheels/transformer_engine-2.17.0-py3-none-any.whl \
-      /tmp/wheels/${TE_CORE_DIST}-2.17.0-py3-none-manylinux_2_28_*.whl \
+      /tmp/wheels/transformer_engine_cu13-2.17.0-py3-none-manylinux_2_28_*.whl \
       /tmp/wheels/transformer_engine_torch-2.17.0-cp312-cp312-linux_*.whl; \
     if [ "$#" -ne 3 ] || [ ! -f "$1" ] || [ ! -f "$2" ] || [ ! -f "$3" ]; then \
-      echo "expected exactly one TransformerEngine 2.17 wheel for each component (${TE_CORE_DIST})" >&2; exit 1; \
+      echo "expected exactly one TransformerEngine 2.17 wheel for each component (transformer_engine_cu13)" >&2; exit 1; \
     fi && \
     pip uninstall -y transformer-engine transformer-engine-cu12 transformer-engine-cu13 transformer-engine-torch && \
     pip install --force-reinstall --no-deps "$@" && \
     pip install einops onnx onnxscript pydantic nvdlfw-inspect && \
-    python3 /tmp/verify_transformer_engine.py "${TE_CORE_DIST}"
+    python3 /tmp/verify_transformer_engine.py "transformer_engine_cu13"
 
 # TE patches (cu13): B300/GB300 FA2 and backward override fixes
 # te_dequantized_backward_override.patch is a hot fix from
@@ -162,7 +152,7 @@ COPY docker/patch/ /tmp/patches/
 # A `for` loop exits with the status of its LAST iteration, so a patch that fails
 # to apply here used to be swallowed whenever a later one succeeded -- the image
 # shipped with TE silently unpatched. Fail the build instead.
-RUN if [ "${ENABLE_CUDA_13}" = "1" ] && [ -d /tmp/patches/cu13 ]; then \
+RUN if [ -d /tmp/patches/cu13 ]; then \
       TE_DIR=$(python -c 'import importlib.util; print(importlib.util.find_spec("transformer_engine").submodule_search_locations[0])') && \
       for p in /tmp/patches/cu13/*.patch; do \
         echo "Applying $(basename $p) to $TE_DIR"; \
@@ -200,16 +190,11 @@ RUN rm -rf /usr/lib/python3/dist-packages/jwt /usr/lib/python3/dist-packages/PyJ
 # The apt copy shadows the pip one in ldconfig and the loader interleaves the two,
 # so transformer_engine gets a mixed set of libcudnn sub-libraries. The packages are
 # held, hence --allow-change-held-packages.
-RUN if [ "${ENABLE_CUDA_13}" = "1" ]; then CU=13; else CU=12; fi; \
-  apt-get remove -y --purge --allow-change-held-packages \
-    libcudnn9-cuda-${CU} libcudnn9-dev-cuda-${CU} libcudnn9-headers-cuda-${CU} \
-  && rm -rf /var/lib/apt/lists/*
+RUN apt-get remove -y --purge --allow-change-held-packages \
+    libcudnn9-cuda-13 libcudnn9-dev-cuda-13 libcudnn9-headers-cuda-13 \
+    && rm -rf /var/lib/apt/lists/*
 
-RUN if [ "${ENABLE_CUDA_13}" = "1" ]; then \
-    pip install nvidia-cudnn-cu13==9.22.0.52; \
-  else \
-    pip install nvidia-cudnn-cu12==9.22.0.52; \
-  fi
+RUN pip install nvidia-cudnn-cu13==9.22.0.52
 
 
 RUN rm -rf /root/.cache/pip /root/flash-attention
@@ -217,11 +202,6 @@ RUN rm -rf /root/.cache/pip /root/flash-attention
 # ====================================== Install sglang-miles ============================================
 
 # Install sglang from sglang-miles branch
-# The CUDA 12 sglang images sed their dependency markers from cu13 to cu12 in
-# python/pyproject.toml and never commit it, so a plain checkout aborts on the dirty
-# file. Force it, then re-apply the same rewrite: the tree we just checked out carries
-# the cu13 markers, and sglang's editable install makes them visible to every later pip
-# resolve, which would drag cu13 packages onto a cu12 image.
 # The base image ships the Rust extension modules prebuilt (SGLANG_RUST_BUILD_MODE=never);
 # re-installing must not rebuild them, which needs the torch link path only the upstream
 # build stage has.
@@ -232,27 +212,18 @@ RUN cd /sgl-workspace/sglang && \
     else \
       git checkout -f FETCH_HEAD; \
     fi && \
-    if [ "${ENABLE_CUDA_13}" != "1" ]; then \
-      sed -i 's/cuda-python>=13\.0/cuda-python>=12,<13/' python/pyproject.toml && \
-      sed -i 's/flashinfer_python\[cu13\]/flashinfer_python[cu12]/' python/pyproject.toml && \
-      sed -i 's/nvidia-cutlass-dsl\[cu13\]/nvidia-cutlass-dsl/' python/pyproject.toml; \
-    fi && \
     SGLANG_BUILD_RUST_EXTS=none pip install -e "python[all]" --no-deps
 
 # =========================== Mooncake structured object store wheel ===========================
 
 # Miles' Mooncake backend requires the structured object store API. Install the selected
-# CUDA 13 wheel as one coherent Python/native package; CUDA 12 keeps its base Mooncake.
-RUN if [ "${ENABLE_CUDA_13}" = "1" ]; then \
-      set -- /tmp/wheels/mooncake_transfer_engine*-*.whl; \
-      if [ "$#" -ne 1 ] || [ ! -e "$1" ]; then \
-        echo "expected exactly one mooncake wheel for cu13/${TARGETARCH}" >&2; exit 1; \
-      fi && \
-      pip install --force-reinstall --no-deps "$1" && \
-      python3 -c "from mooncake.structured_object_store import FieldSchema, MooncakeBundleTransfer, export_ref, import_ref; MooncakeBundleTransfer.put; MooncakeBundleTransfer.get; MooncakeBundleTransfer.release_result; MooncakeBundleTransfer.cleanup_dataproto"; \
-    else \
-      echo "CUDA 12 variant: keeping the base image's mooncake"; \
-    fi
+# CUDA 13 wheel as one coherent Python/native package.
+RUN set -- /tmp/wheels/mooncake_transfer_engine*-*.whl; \
+    if [ "$#" -ne 1 ] || [ ! -e "$1" ]; then \
+      echo "expected exactly one mooncake wheel for cu13/${TARGETARCH}" >&2; exit 1; \
+    fi && \
+    pip install --force-reinstall --no-deps "$1" && \
+    python3 -c "from mooncake.structured_object_store import FieldSchema, MooncakeBundleTransfer, export_ref, import_ref; MooncakeBundleTransfer.put; MooncakeBundleTransfer.get; MooncakeBundleTransfer.release_result; MooncakeBundleTransfer.cleanup_dataproto"
 
 COPY docker/install-kube-tools.sh /tmp/install-kube-tools.sh
 RUN bash /tmp/install-kube-tools.sh "${TARGETARCH}" && rm -f /tmp/install-kube-tools.sh
