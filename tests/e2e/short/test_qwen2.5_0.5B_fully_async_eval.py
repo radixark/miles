@@ -1,19 +1,18 @@
 import os
+from tempfile import TemporaryDirectory
 
 from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
 
 import miles.utils.external_utils.command_utils as U
 
 register_cuda_ci(
-    est_time=400, suite="stage-c-8-gpu-h100", labels=["short", "eval", "fully-async"], hardware=["hopper", "blackwell"]
+    est_time=400, suite="stage-c-4-gpu-h200", labels=["short", "eval", "fully-async"], hardware=["hopper", "blackwell"]
 )
-register_rocm_ci(est_time=400, suite="nightly-stage-c-8-gpu-mi350", labels=["short", "eval", "fully-async"])
-
-FEW_GPU = U.get_bool_env_var("MILES_TEST_FEW_GPU", "0")
+register_rocm_ci(est_time=400, suite="nightly-stage-c-4-gpu-mi350", labels=["short", "eval", "fully-async"])
 
 MODEL_NAME = "Qwen2.5-0.5B-Instruct"
 MODEL_TYPE = "qwen2.5-0.5B"
-NUM_GPUS = 4 if FEW_GPU else 8
+NUM_GPUS = 4
 
 
 def prepare():
@@ -22,7 +21,7 @@ def prepare():
     U.hf_download_dataset("zhuzilin/gsm8k")
 
 
-def execute():
+def execute(eval_hf_dir: str):
     ckpt_args = f"--hf-checkpoint /root/models/{MODEL_NAME}/ " f"--ref-load /root/models/{MODEL_NAME}/ "
 
     rollout_args = (
@@ -54,7 +53,7 @@ def execute():
         "--eval-top-k 1 "
         "--eval-num-gpus 1 "
         "--eval-num-gpus-per-engine 1 "
-        "--eval-hf-dir /dev/shm/miles_e2e_eval_hf "
+        f"--eval-hf-dir {eval_hf_dir} "
         "--eval-keep-snapshots 2 "
     )
 
@@ -102,8 +101,8 @@ def execute():
         "--attention-softmax-in-fp32 "
         "--attention-backend flash "
         "--actor-num-nodes 1 "
-        f"--actor-num-gpus-per-node {1 if FEW_GPU else 2} "
-        f"--rollout-num-gpus {2 if FEW_GPU else 5} "
+        "--actor-num-gpus-per-node 2 "
+        "--rollout-num-gpus 1 "
         # HF-format --ref-load requires the bridge loader; eval snapshots are
         # exported through the bridge path as well (marker-gated).
         "--megatron-to-hf-mode bridge "
@@ -134,4 +133,6 @@ if __name__ == "__main__":
     prepare()
     for proxy_var in ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY"):
         os.environ.pop(proxy_var, None)
-    execute()
+    # CI containers share host IPC, so each run must own its snapshot directory.
+    with TemporaryDirectory(prefix="miles_e2e_eval_hf_", dir="/dev/shm") as eval_hf_dir:
+        execute(eval_hf_dir)

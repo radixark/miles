@@ -4,7 +4,7 @@ from tests.ci.ci_register import register_cuda_ci
 from tests.ci.metric_history import register_ci_gate
 from tests.e2e.megatron.test_qwen3_30B_A3B._common import CaseConfig, execute, prepare
 
-register_cuda_ci(est_time=900, suite="stage-c-8-gpu-h100", labels=["megatron"], hardware=["hopper", "blackwell"])
+register_cuda_ci(est_time=1500, suite="stage-c-4-gpu-h200", labels=["megatron"], hardware=["hopper", "blackwell"])
 
 register_ci_gate(metric_key="train/grad_norm")
 register_ci_gate(metric_key="train/ppo_kl")
@@ -18,13 +18,19 @@ CASE = CaseConfig(
     use_int4_rollout=False,
     use_bridge=False,
     use_r3=False,
-    num_gpus_per_node=8,
-    cp_size=2,
-    pp_size=2,
+    # tp2/etp2 x dense dp2/ep2 on 4 GPUs: the Megatron DeepEP group is etp2 x ep2 = 4 ranks.
+    # SGLang runs DP attention (dp4, attention TP1) with DeepEP EP4 = engine TP; 512 running
+    # requests / dp4 = 128 tokens per rank, the DeepEP low-latency cap.
+    num_gpus_per_node=4,
+    cp_size=1,
+    pp_size=1,
     tp_size=2,
-    ep_size=4,
-    rollout_num_gpus_per_engine=8,
-    sglang_ep_size=8,
+    ep_size=2,
+    etp_size=2,
+    rollout_num_gpus_per_engine=4,
+    sglang_ep_size=4,
+    sglang_dp_size=4,
+    sglang_enable_dp_attention=True,
 )
 
 

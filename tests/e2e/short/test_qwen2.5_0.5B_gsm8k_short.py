@@ -5,15 +5,13 @@ from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
 import miles.utils.external_utils.command_utils as U
 
 register_cuda_ci(
-    est_time=400, suite="stage-c-8-gpu-h100", labels=["short", "mooncake"], hardware=["hopper", "blackwell"]
+    est_time=400, suite="stage-c-2-gpu-h200", labels=["short", "mooncake"], hardware=["hopper", "blackwell"]
 )
-register_rocm_ci(est_time=360, suite="nightly-stage-c-8-gpu-mi350", labels=["short", "mooncake"])
-
-FEW_GPU = U.get_bool_env_var("MILES_TEST_FEW_GPU", "0")
+register_rocm_ci(est_time=360, suite="nightly-stage-c-2-gpu-mi350", labels=["short", "mooncake"])
 
 MODEL_NAME = "Qwen2.5-0.5B-Instruct"
 MODEL_TYPE = "qwen2.5-0.5B"
-NUM_GPUS = 4 if FEW_GPU else 8
+NUM_GPUS = 2
 
 
 def prepare():

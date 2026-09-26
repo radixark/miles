@@ -17,27 +17,27 @@ from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
 
 import miles.utils.external_utils.command_utils as U
 
-register_cuda_ci(est_time=500, suite="stage-c-8-gpu-h100", labels=["short"], hardware=["hopper", "blackwell"])
-register_rocm_ci(est_time=600, suite="nightly-stage-c-8-gpu-mi350", labels=["short"])
+register_cuda_ci(est_time=500, suite="stage-c-4-gpu-h200", labels=["short"], hardware=["hopper", "blackwell"])
+register_rocm_ci(est_time=600, suite="nightly-stage-c-4-gpu-mi350", labels=["short"])
 
 MODEL_NAME = "Qwen2.5-0.5B-Instruct"
 MODEL_TYPE = "qwen2.5-0.5B"
-NUM_GPUS = 8
+NUM_GPUS = 4
 
-# Two models on 8 GPUs (colocate): actor gets weight updates, ref is frozen.
+# Two models on 4 GPUs (colocate): actor gets weight updates, ref is frozen.
 SGLANG_CONFIG_YAML = """\
 sglang:
   - name: actor
     update_weights: true
     server_groups:
       - worker_type: regular
-        num_gpus: 4
+        num_gpus: 2
         num_gpus_per_engine: 1
   - name: ref
     update_weights: false
     server_groups:
       - worker_type: regular
-        num_gpus: 4
+        num_gpus: 2
         num_gpus_per_engine: 1
 """
 
