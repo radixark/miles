@@ -1811,6 +1811,7 @@ def test_rollout_fault_tolerance_rejects_a_dedicated_eval_fleet():
     get_miles_extra_args_provider()(parser)
     args = parser.parse_args(
         ["--use-fault-tolerance", "--ft-components", "rollout", "--eval-num-gpus", "8", "--num-rollout", "1"]
+        + _P2P_ARGS
         + REQUIRED_ARGS
     )
 
