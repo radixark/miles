@@ -12,7 +12,12 @@ from miles.utils.ft_utils.api_server.registry import _CellRegistry
 from miles.utils.ft_utils.api_server.server import _create_api_app
 from miles.utils.test_utils.fault_injector.actions.process import KillProcessAction
 from miles.utils.test_utils.fault_injector.controller import FaultHookCommand, FaultHookOperation
-from miles.utils.test_utils.fault_injector.models import FaultHookRecord, FaultHookRequest, FaultHookStatus, ObservedFaultHookTarget
+from miles.utils.test_utils.fault_injector.models import (
+    FaultHookRecord,
+    FaultHookRequest,
+    FaultHookStatus,
+    ObservedFaultHookTarget,
+)
 from miles.utils.workers.worker_provider.base import CellInfo
 
 

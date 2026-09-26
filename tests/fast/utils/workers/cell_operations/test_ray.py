@@ -9,7 +9,11 @@ from typing import Any
 import pytest
 
 import miles.utils.workers.cell_operations.ray as cell_operations_ray_mod
-from miles.utils.test_utils.fault_injector.actions.process import ExitProcessAction, KillProcessAction, SegfaultProcessAction
+from miles.utils.test_utils.fault_injector.actions.process import (
+    ExitProcessAction,
+    KillProcessAction,
+    SegfaultProcessAction,
+)
 from miles.utils.test_utils.fault_injector.actions.union import FaultAction
 from miles.utils.test_utils.fault_injector.controller import FaultHookCommand, FaultHookOperation
 from miles.utils.test_utils.fault_injector.models import FaultHookRequest, ObservedFaultHookTarget
@@ -57,10 +61,14 @@ def _make_fixture() -> _Fixture:
     )
 
 
-def _command(*, cell_id: str, rank: int = 0, action: FaultAction = KillProcessAction()) -> FaultHookCommand:
+def _command(*, cell_id: str, rank: int = 0, action: FaultAction | None = None) -> FaultHookCommand:
     return FaultHookCommand(
         operation=FaultHookOperation.SET,
-        request=FaultHookRequest(request_id="test", action=action, target=ObservedFaultHookTarget(cell_id=cell_id, rank=rank, workers_hash="h")),
+        request=FaultHookRequest(
+            request_id="test",
+            action=KillProcessAction() if action is None else action,
+            target=ObservedFaultHookTarget(cell_id=cell_id, rank=rank, workers_hash="h"),
+        ),
     )
 
 
@@ -88,13 +96,9 @@ class TestRayCellOperationsDisruptiveOperations:
         fixture = _make_fixture()
         command = _command(cell_id="engine-0-2")
 
-        await asyncio.wait_for(
-            fixture.operations.control_fault_hook(command), timeout=5.0
-        )
+        await asyncio.wait_for(fixture.operations.control_fault_hook(command), timeout=5.0)
 
-        assert fixture.worker_manager.calls == [
-            ("control_fault_hook", (), {"command": command})
-        ]
+        assert fixture.worker_manager.calls == [("control_fault_hook", (), {"command": command})]
 
     async def test_a_trainer_cells_fault_reaches_the_worker_manager(self) -> None:
         """Regression: routing a trainer cell through the rollout controller raised, so the actor never died."""
@@ -106,22 +110,16 @@ class TestRayCellOperationsDisruptiveOperations:
             timeout=5.0,
         )
 
-        assert fixture.worker_manager.calls == [
-            ("control_fault_hook", (), {"command": command})
-        ]
+        assert fixture.worker_manager.calls == [("control_fault_hook", (), {"command": command})]
 
     async def test_a_cell_the_controller_never_listed_is_still_crashed(self) -> None:
         """A cell being replaced is exactly the one a soak wants to crash, and no membership read gates it."""
         fixture = _make_fixture()
         command = _command(cell_id="engine-0-7")
 
-        await asyncio.wait_for(
-            fixture.operations.control_fault_hook(command), timeout=5.0
-        )
+        await asyncio.wait_for(fixture.operations.control_fault_hook(command), timeout=5.0)
 
-        assert fixture.worker_manager.calls == [
-            ("control_fault_hook", (), {"command": command})
-        ]
+        assert fixture.worker_manager.calls == [("control_fault_hook", (), {"command": command})]
 
 
 class TestRayCellOperationsProtocol:
@@ -227,9 +225,7 @@ class TestRayCellOperationsFaultHookPayload:
 
         result = await fixture.operations.control_fault_hook(command)
 
-        assert fixture.worker_manager.calls == [
-            ("control_fault_hook", (), {"command": command})
-        ]
+        assert fixture.worker_manager.calls == [("control_fault_hook", (), {"command": command})]
         assert result is fixture.worker_manager.control_fault_hook.result
 
     async def test_the_rank_names_the_worker_inside_the_cell(self) -> None:
@@ -239,9 +235,7 @@ class TestRayCellOperationsFaultHookPayload:
 
         await fixture.operations.control_fault_hook(command)
 
-        assert fixture.worker_manager.calls == [
-            ("control_fault_hook", (), {"command": command})
-        ]
+        assert fixture.worker_manager.calls == [("control_fault_hook", (), {"command": command})]
 
     async def test_a_worker_manager_that_never_answers_times_out_after_the_dispatch(
         self, monkeypatch: pytest.MonkeyPatch

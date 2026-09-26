@@ -537,7 +537,9 @@ class TestControlFaultHook:
         """Not every kind of cell can be crashed on demand."""
         actor_handler.add("actor-0")
 
-        resp = await async_client.post("/api/v1/cells/actor-0/fault-hook", json=make_fault_command(cell_id="actor-0").model_dump(mode="json"))
+        resp = await async_client.post(
+            "/api/v1/cells/actor-0/fault-hook", json=make_fault_command(cell_id="actor-0").model_dump(mode="json")
+        )
 
         assert resp.status_code == 400
 
@@ -582,7 +584,8 @@ class TestControlFaultHook:
         rollout_handler.add("rollout-engine-0")
 
         resp = await async_client.post(
-            "/api/v1/cells/rollout-engine-0/fault-hook", json=make_fault_command(cell_id="rollout-engine-0", rank=1).model_dump(mode="json")
+            "/api/v1/cells/rollout-engine-0/fault-hook",
+            json=make_fault_command(cell_id="rollout-engine-0", rank=1).model_dump(mode="json"),
         )
 
         assert resp.status_code == 500
@@ -668,9 +671,7 @@ class TestRequestValidation:
         patch_resp = await async_client.patch(
             "/api/v1/cells/actor-0", json={"spec": {"suspend": True, "gracePeriod": 5}}
         )
-        inject_resp = await async_client.post(
-            "/api/v1/cells/rollout-engine-0/fault-hook", json=body
-        )
+        inject_resp = await async_client.post("/api/v1/cells/rollout-engine-0/fault-hook", json=body)
 
         assert (patch_resp.status_code, inject_resp.status_code) == (422, 422)
         assert (cell.suspend_calls, cell.resume_calls) == (0, 0)

@@ -4,15 +4,19 @@ from types import ModuleType, SimpleNamespace
 from typing import Any
 
 import pytest
-
 from pydantic import ValidationError
 
 from miles.utils.test_utils.fault_injector.actions.process import KillProcessAction, SegfaultProcessAction
 from miles.utils.test_utils.fault_injector.actions.union import FaultAction
 from miles.utils.test_utils.fault_injector.controller import FaultHookCommand, FaultHookOperation
-from miles.utils.test_utils.fault_injector.models import FaultHookRecord, FaultHookRequest, FaultHookStatus, ObservedFaultHookTarget
-from miles.utils.workers.cell_operations.base import StaleFaultTargetError
+from miles.utils.test_utils.fault_injector.models import (
+    FaultHookRecord,
+    FaultHookRequest,
+    FaultHookStatus,
+    ObservedFaultHookTarget,
+)
 from miles.utils.workers.cell_operations import kubernetes as cell_operations_kubernetes
+from miles.utils.workers.cell_operations.base import StaleFaultTargetError
 from miles.utils.workers.cell_operations.kubernetes import KubernetesCellOperations
 from miles.utils.workers.rpc.client.misc import ServerRestartedError
 from miles.utils.workers.rpc.common.protocol import ServerHealth
@@ -97,12 +101,20 @@ class FakeProvider:
     def debug_cell_incarnation(self, cell_id: str) -> Any:
         if (info := self._infos.get(cell_id)) is None:
             return None
-        return SimpleNamespace(workers_hash=info.workers_hash, pods=[SimpleNamespace(uid=f"uid-{name}") for name in info.worker_names])
+        return SimpleNamespace(
+            workers_hash=info.workers_hash, pods=[SimpleNamespace(uid=f"uid-{name}") for name in info.worker_names]
+        )
 
     def _worker_infos_of_cell(self, cell_id: str) -> list[WorkerInfo]:
         info = self._infos.get(cell_id)
         return [
-            WorkerInfo(name=name, generation=0, self_addrs={}, gpu_ids=[], worker_class=None if name in self._unserved_workers else "fake.Worker")
+            WorkerInfo(
+                name=name,
+                generation=0,
+                self_addrs={},
+                gpu_ids=[],
+                worker_class=None if name in self._unserved_workers else "fake.Worker",
+            )
             for name in (info.worker_names if info is not None else [])
         ]
 
@@ -313,7 +325,9 @@ class TestControlFaultHook:
 
         result = asyncio.run(operations.control_fault_hook(command))
 
-        assert result == FaultHookRecord(request=command.request, status=FaultHookStatus.FIRED, set_at=1.0, changed_at=2.0)
+        assert result == FaultHookRecord(
+            request=command.request, status=FaultHookStatus.FIRED, set_at=1.0, changed_at=2.0
+        )
         assert operations._provider.commands == [("engine-0-0", command)]
         assert operations._provider.boot_pins == [None, "boot-engine-0-0"]
 
@@ -336,7 +350,9 @@ class TestControlFaultHook:
 
         assert operations._provider.commands == [("engine-0-0", command)]
 
-    def test_a_worker_that_dies_before_answering_leaves_the_outcome_unknown(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_a_worker_that_dies_before_answering_leaves_the_outcome_unknown(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """A missing response cannot confirm the fault request was applied."""
         operations = _operations(
             {"engine-0": _info(cell_id="engine-0", workers=("engine-0-0",))}, handle_effect="unreachable"
@@ -401,7 +417,13 @@ class TestControlFaultHook:
         assert operations._provider.commands == []
 
 
-def _fault_command(*, monkeypatch: pytest.MonkeyPatch, operations: KubernetesCellOperations, rank: int = 0, action: FaultAction = KillProcessAction()) -> FaultHookCommand:
+def _fault_command(
+    *,
+    monkeypatch: pytest.MonkeyPatch,
+    operations: KubernetesCellOperations,
+    rank: int = 0,
+    action: FaultAction | None = None,
+) -> FaultHookCommand:
     provider = operations._provider
 
     def build_handle(info: WorkerInfo, *, expected_boot_uuid: str | None = None) -> FakeHandle:
@@ -411,7 +433,17 @@ def _fault_command(*, monkeypatch: pytest.MonkeyPatch, operations: KubernetesCel
     monkeypatch.setattr(cell_operations_kubernetes, "build_rpc_handle_of_worker_info", build_handle)
     return FaultHookCommand(
         operation=FaultHookOperation.SET,
-        request=FaultHookRequest(request_id="test", action=action, target=ObservedFaultHookTarget(cell_id="engine-0", rank=rank, workers_hash="h", boot_uuid=f"boot-engine-0-{rank}", pod_uid=f"uid-engine-0-{rank}")),
+        request=FaultHookRequest(
+            request_id="test",
+            action=KillProcessAction() if action is None else action,
+            target=ObservedFaultHookTarget(
+                cell_id="engine-0",
+                rank=rank,
+                workers_hash="h",
+                boot_uuid=f"boot-engine-0-{rank}",
+                pod_uid=f"uid-engine-0-{rank}",
+            ),
+        ),
     )
 
 

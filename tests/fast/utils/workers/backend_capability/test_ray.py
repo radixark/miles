@@ -45,7 +45,11 @@ class TestRayBackendCapabilityCellOperations:
 
         command = FaultHookCommand(
             operation=FaultHookOperation.SET,
-            request=FaultHookRequest(request_id="test", action=KillProcessAction(), target=ObservedFaultHookTarget(cell_id="cell-2", rank=1, workers_hash="h")),
+            request=FaultHookRequest(
+                request_id="test",
+                action=KillProcessAction(),
+                target=ObservedFaultHookTarget(cell_id="cell-2", rank=1, workers_hash="h"),
+            ),
         )
 
         await capability.cell_operations().control_fault_hook(command)
