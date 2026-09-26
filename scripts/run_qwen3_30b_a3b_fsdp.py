@@ -120,9 +120,7 @@ def execute(args: ScriptArgs):
     perf_args = "--use-dynamic-batch-size --max-tokens-per-gpu 9216 "
 
     misc_args = (
-        f"--actor-num-nodes {args.num_nodes} "
-        f"--actor-num-gpus-per-node {args.num_gpus_per_node} "
-        "--colocate "
+        f"--actor-num-nodes {args.num_nodes} " f"--actor-num-gpus-per-node {args.num_gpus_per_node} " "--colocate "
     )
 
     U.execute_train(
