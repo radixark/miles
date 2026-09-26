@@ -16,8 +16,27 @@ from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
 
 from miles.utils.external_utils import command_utils
 
-register_cuda_ci(est_time=500, suite="stage-c-8-gpu-h100", labels=["short"], hardware=["hopper", "blackwell"])
-register_rocm_ci(est_time=600, suite="nightly-stage-c-8-gpu-mi350", labels=["short"])
+register_cuda_ci(
+    est_time=500,
+    suite="stage-c-8-gpu-h100",
+    labels=["short"],
+    hardware=["hopper", "blackwell"],
+    disabled=(
+        "Colocated fault tolerance is unsupported: miles_validate_args rejects rollout fault tolerance without a "
+        "partial-target P2P weight update, which --colocate cannot provide. Unblock condition: a decision to port "
+        "this recovery scenario to a disaggregated P2P layout or to delete it."
+    ),
+)
+register_rocm_ci(
+    est_time=600,
+    suite="nightly-stage-c-8-gpu-mi350",
+    labels=["short"],
+    disabled=(
+        "Colocated fault tolerance is unsupported: miles_validate_args rejects rollout fault tolerance without a "
+        "partial-target P2P weight update, which --colocate cannot provide. Unblock condition: a decision to port "
+        "this recovery scenario to a disaggregated P2P layout or to delete it."
+    ),
+)
 
 MODEL_NAME = "Qwen2.5-0.5B-Instruct"
 MODEL_TYPE = "qwen2.5-0.5B"
