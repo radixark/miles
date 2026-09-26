@@ -1,8 +1,8 @@
 """Resolve chat arguments before rendering or forwarding a request.
 
 ``prepare_chat_request`` owns a copy of the client's input. Config rules apply
-Session server constraints and retain the client's streaming preference. The
-session's sampling defaults fill the fields the client omitted. The TITO
+Session server constraints and retain what the client asked the response to
+carry. The session's sampling defaults fill the fields the client omitted. The TITO
 tokenizer then applies model rules to the same full request.
 
 After rendering and a successful generation, the session records the complete
@@ -39,14 +39,28 @@ def parse_chat_request(body: bytes) -> dict[str, Any]:
         raise MessageValidationError(f"invalid JSON body: {e}") from e
 
 
+@dataclass(frozen=True)
+class ClientResponseIntent:
+    """What the client's own request asked the response to carry.
+
+    The backend request always asks for ``logprobs`` and ``meta_info`` and never
+    streams, because TITO and the session record need a complete response. The
+    reply to the client carries each of them only when the client asked for it.
+    """
+
+    stream: bool
+    logprobs: bool
+    meta_info: bool
+
+
 @dataclass
 class PreparedChatRequest:
     """Outbound body before adding ``input_ids``, template args to render them,
-    and the client's streaming preference for the response."""
+    and what the client asked the response to carry."""
 
     body: dict[str, Any]
     template_args: dict[str, Any]
-    client_stream: bool
+    response_intent: ClientResponseIntent
 
 
 def prepare_chat_request(
@@ -65,7 +79,9 @@ def prepare_chat_request(
     ``sampling_defaults`` are the session's values for sampling fields the client omits.
     Client input and recorded history remain unchanged.
     """
-    request_args, client_stream = resolve_request_args_by_config(deepcopy(client_args), config, evaluation=evaluation)
+    request_args, response_intent = resolve_request_args_by_config(
+        deepcopy(client_args), config, evaluation=evaluation
+    )
     apply_session_sampling_defaults(request_args, sampling_defaults or {}, evaluation=evaluation)
     try:
         request_args = tito_tokenizer.resolve_request_args(request_args, turn_args=turn_args)
@@ -89,7 +105,7 @@ def prepare_chat_request(
         else:
             request_args.pop("return_sampling_mask", None)
     return PreparedChatRequest(
-        body=request_args, template_args=extract_template_args(request_args), client_stream=client_stream
+        body=request_args, template_args=extract_template_args(request_args), response_intent=response_intent
     )
 
 
@@ -112,12 +128,15 @@ def apply_session_sampling_defaults(
 
 def resolve_request_args_by_config(
     request_args: dict[str, Any], config: SessionServerConfig, *, evaluation: bool = False
-) -> tuple[dict[str, Any], bool]:
-    """Apply server constraints in place and return the same request and stream intent.
+) -> tuple[dict[str, Any], ClientResponseIntent]:
+    """Apply server constraints in place and return the same request and the client's response intent.
 
     The caller owns ``request_args``; this function does not copy it.
     """
     # TITO needs these on every request: agent-side overrides would break token accumulation.
+    # The client's own values decide whether its reply carries them.
+    client_logprobs = bool(request_args.get("logprobs"))
+    client_meta_info = bool(request_args.get("return_meta_info"))
     request_args["logprobs"] = True
     request_args["return_meta_info"] = True
 
@@ -169,4 +188,6 @@ def resolve_request_args_by_config(
         raise MessageValidationError("chat_template_kwargs must be an object")
     if kwargs is not None and "tools" in kwargs:
         raise MessageValidationError("tools belongs at the top level of the request, not in chat_template_kwargs")
-    return request_args, client_stream
+    return request_args, ClientResponseIntent(
+        stream=client_stream, logprobs=client_logprobs, meta_info=client_meta_info
+    )
