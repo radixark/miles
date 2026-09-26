@@ -4,6 +4,7 @@ import pytest
 from pydantic import TypeAdapter, ValidationError
 
 from miles.backends.megatron_utils.ft.types import TrainStepOutcome
+from miles.utils.audit_utils.checksum_utils import InferenceEngineChecksumSnapshot
 from miles.utils.audit_utils.event_logger.models import (
     CellReconfigureEvent,
     EngineEnvReportEvent,
@@ -181,12 +182,24 @@ class TestInferenceEngineWeightChecksumEvent:
             timestamp=_FIXED_TS,
             source=_FIXED_SOURCE,
             rollout_id=4,
-            engine_checksums=engine_checksums,
+            weight_version=5,
+            debug_trainer_load_state_timestamp=123.0,
+            debug_weight_update_id="update-5",
+            engine_snapshots=[
+                InferenceEngineChecksumSnapshot(
+                    cell_id=f"cell-{index}", workers_hash=f"incarnation-{index}", tensor_checksums=checksums
+                )
+                for index, checksums in enumerate(engine_checksums)
+            ],
         )
         parsed = _event_adapter.validate_json(event.model_dump_json())
         assert isinstance(parsed, InferenceEngineWeightChecksumEvent)
         assert parsed.rollout_id == 4
-        assert parsed.engine_checksums == engine_checksums
+        assert parsed.weight_version == 5
+        assert parsed.debug_trainer_load_state_timestamp == 123.0
+        assert parsed.debug_weight_update_id == "update-5"
+        assert parsed.engine_snapshots == event.engine_snapshots
+        assert [snapshot.tensor_checksums for snapshot in parsed.engine_snapshots] == engine_checksums
 
 
 class TestEngineEnvReportEvent:
@@ -250,7 +263,14 @@ class TestDiscriminatedUnionParsesAllEvents:
                 timestamp=_FIXED_TS,
                 source=_FIXED_SOURCE,
                 rollout_id=0,
-                engine_checksums=[{"rank0/w": "aaa"}],
+                weight_version=1,
+                debug_trainer_load_state_timestamp=0.0,
+                debug_weight_update_id="update-1",
+                engine_snapshots=[
+                    InferenceEngineChecksumSnapshot(
+                        cell_id="cell-0", workers_hash="incarnation-0", tensor_checksums={"rank0/w": "aaa"}
+                    )
+                ],
             ),
         ]
         for event in events:

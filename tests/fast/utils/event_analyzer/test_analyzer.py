@@ -147,7 +147,16 @@ def _log_inference_engine_checksum_event(
 ) -> None:
     event_logger.log(
         InferenceEngineWeightChecksumEvent,
-        dict(rollout_id=rollout_id, engine_checksums=engine_checksums),
+        dict(
+            rollout_id=rollout_id,
+            weight_version=rollout_id + 1,
+            debug_trainer_load_state_timestamp=0.0,
+            debug_weight_update_id=f"update-{rollout_id + 1}",
+            engine_snapshots=[
+                dict(cell_id=f"cell-{index}", workers_hash=f"incarnation-{index}", tensor_checksums=checksums)
+                for index, checksums in enumerate(engine_checksums)
+            ],
+        ),
     )
 
 
