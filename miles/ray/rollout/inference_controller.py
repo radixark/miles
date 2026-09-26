@@ -421,6 +421,16 @@ class UpdatableEngines:
     engine_cell_ids: list[str]
     snapshot_cell_id_to_hashes: dict[str, str]
 
+    def __getitem__(self, s: slice) -> "UpdatableEngines":
+        cell_ids = self.engine_cell_ids[s]
+        return UpdatableEngines(
+            rollout_engines=self.rollout_engines[s],
+            engine_gpu_counts=self.engine_gpu_counts[s],
+            engine_gpu_offsets=self.engine_gpu_offsets[s],
+            engine_cell_ids=cell_ids,
+            snapshot_cell_id_to_hashes={c: self.snapshot_cell_id_to_hashes[c] for c in cell_ids},
+        )
+
 
 # TODO may move and generalize later
 def _compute_server_cell_meta_from_info(info: CellInfo) -> ServerCellMetadata:
