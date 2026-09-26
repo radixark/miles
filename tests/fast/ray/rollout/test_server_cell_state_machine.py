@@ -290,7 +290,7 @@ class TestTickReportsTheEngineEnv:
         """An engine that has not answered a probe cannot answer /server_info either."""
         cell_env["health"]["ready"] = False
         cell = _make_cell()
-        asked: list[str] = []
+        asked: list[tuple[str, str]] = []
         monkeypatch.setattr(cell._env_reporter, "report_if_due", _record_into(asked))
 
         await cell.init()
@@ -301,19 +301,19 @@ class TestTickReportsTheEngineEnv:
     async def test_a_serving_cell_is_asked_for_its_env_on_every_tick(self, cell_env, monkeypatch):
         """The reporter decides how often to actually read; the tick just keeps offering it the chance."""
         cell = _make_cell()
-        asked: list[str] = []
+        asked: list[tuple[str, str]] = []
         monkeypatch.setattr(cell._env_reporter, "report_if_due", _record_into(asked))
 
         await cell.init()
         await cell.tick()
         await cell.tick()
 
-        assert asked == [cell.meta.cell_id, cell.meta.cell_id]
+        assert asked == [(cell.meta.cell_id, cell.meta.workers_hash)] * 2
 
 
-def _record_into(asked: list[str]):
-    async def _report_if_due(*, cell_id: str, server_url: str, api_client) -> None:
-        asked.append(cell_id)
+def _record_into(asked: list[tuple[str, str]]):
+    async def _report_if_due(*, cell_id: str, workers_hash: str, server_url: str, api_client) -> None:
+        asked.append((cell_id, workers_hash))
 
     return _report_if_due
 
@@ -1032,7 +1032,7 @@ class TestMarkErrored:
     async def test_an_errored_cell_is_inert_under_the_tick_sweep(self, cell_env, monkeypatch):
         """The sweep keeps visiting it until reconcile removes it, and must not address it again."""
         cell = await _make_serving_cell(cell_env, router=_RecordingRouterApiClient())
-        asked: list[str] = []
+        asked: list[tuple[str, str]] = []
         monkeypatch.setattr(cell._env_reporter, "report_if_due", _record_into(asked))
         await cell.mark_errored()
 

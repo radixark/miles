@@ -89,9 +89,6 @@ class _RecordingServer:
         self.calls: list[tuple] = []
         self.router_ip: str = "10.0.0.9"
         self.router_port: int = 31000
-        self.api_clients: list = []
-        self.engine_gpu_counts: list[int] = []
-        self.engine_gpu_offsets: list[int] = []
         self.engine_cells_calls = 0
         self.offload_tags: list = []
         self.onload_tags: list = []
@@ -108,7 +105,23 @@ class _RecordingServer:
     @property
     def engine_cells(self) -> list:
         self.engine_cells_calls += 1
-        return sorted(self.all_server_cells.values(), key=lambda cell: cell.meta.gpu_offset)
+        return sorted(self.normal_server_cells.values(), key=lambda cell: cell.meta.gpu_offset)
+
+    @property
+    def api_clients(self) -> list:
+        return [cell.api_client for cell in self.engine_cells]
+
+    @property
+    def engine_gpu_counts(self) -> list[int]:
+        return [cell.meta.num_gpus_per_engine for cell in self.engine_cells]
+
+    @property
+    def engine_gpu_offsets(self) -> list[int]:
+        return [cell.meta.gpu_offset for cell in self.engine_cells]
+
+    @property
+    def engine_cell_ids(self) -> list[str]:
+        return [cell.meta.cell_id for cell in self.engine_cells]
 
     async def offload(self, tags=None):
         self.calls.append(("offload",))
@@ -840,10 +853,16 @@ class TestUpdatableModelSelection:
     async def test_only_the_updatable_models_engines_receive_weights(self):
         """A frozen reference model handed the trainer's weights stops being the baseline the
         KL term is measured against."""
-        actor = _RecordingServer(model_name="actor", update_weights=True)
-        actor.api_clients = ["actor-client"]
-        ref = _RecordingServer(model_name="ref", update_weights=False)
-        ref.api_clients = ["ref-client"]
+        actor = _RecordingServer(
+            {"actor-0": _FakeUpdatableCell("hash-actor", cell_id="actor-0", api_client="actor-client")},
+            model_name="actor",
+            update_weights=True,
+        )
+        ref = _RecordingServer(
+            {"ref-0": _FakeUpdatableCell("hash-ref", cell_id="ref-0", api_client="ref-client")},
+            model_name="ref",
+            update_weights=False,
+        )
 
         updatable = await self._controller(actor, ref).start_update_weights()
 
@@ -919,10 +938,16 @@ class TestGetServersOfModelId:
     @pytest.mark.asyncio
     async def test_a_named_policy_scopes_the_update_to_its_own_server(self):
         """Several policies train at once, so the ambiguity a single-policy run never hits is the normal case."""
-        alpha = _RecordingServer(model_name="alpha", update_weights=True)
-        alpha.api_clients = ["alpha-client"]
-        beta = _RecordingServer(model_name="beta", update_weights=True)
-        beta.api_clients = ["beta-client"]
+        alpha = _RecordingServer(
+            {"alpha-0": _FakeUpdatableCell("hash-alpha", cell_id="alpha-0", api_client="alpha-client")},
+            model_name="alpha",
+            update_weights=True,
+        )
+        beta = _RecordingServer(
+            {"beta-0": _FakeUpdatableCell("hash-beta", cell_id="beta-0", api_client="beta-client")},
+            model_name="beta",
+            update_weights=True,
+        )
 
         updatable = await self._controller(alpha, beta).start_update_weights(model_id="beta")
 
@@ -1458,23 +1483,14 @@ class TestCellsReadyIsScopedToTheTargetedModel:
     @pytest.mark.asyncio
     async def test_a_named_model_does_not_wait_for_another_models_cells(self):
         """Different model ids are independent, so a sick engine of B must not stall A's weight update."""
-        a = _RecordingServer(model_name="a", update_weights=True)
-        a.api_clients = ["a-client"]
-        a.all_server_cells = {
-            "a-0": SimpleNamespace(
-                is_pending_weights_or_serving=True,
-                is_uninitialized=False,
-                meta=SimpleNamespace(workers_hash="hash-a"),
-            )
-        }
-        b = _RecordingServer(model_name="b", update_weights=True)
-        b.all_server_cells = {
-            "b-0": SimpleNamespace(
-                is_pending_weights_or_serving=False,
-                is_uninitialized=False,
-                meta=SimpleNamespace(workers_hash="hash-b"),
-            )
-        }
+        a = _RecordingServer(
+            {"a-0": _FakeUpdatableCell("hash-a", cell_id="a-0", api_client="a-client")},
+            model_name="a",
+            update_weights=True,
+        )
+        pending = _FakeUpdatableCell("hash-b", cell_id="b-0", api_client="b-client")
+        pending.is_pending_weights_or_serving = False
+        b = _RecordingServer({"b-0": pending}, model_name="b", update_weights=True)
         controller = _make_controller({"a": a, "b": b})
 
         updatable = await controller.start_update_weights(model_id="a")
