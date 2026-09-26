@@ -18,6 +18,7 @@ from miles.ray.placement_group import (
     take_over_trainers,
 )
 from miles.ray.rollout.eval_fleet import EvalFleetInfo
+from miles.ray.train_actor import WeightUpdateOutput
 from miles.rollout.session.types import SessionServerInstance
 from miles.utils.init_once import InitState
 from miles.utils.workers.types import DeployComponent, DeploymentIdentity
@@ -109,6 +110,8 @@ class TestFrozenInferenceChecksums:
             inference_controller=controller,
             rollout_id=None,
             trainer_model_id=None,
+            output=WeightUpdateOutput(weight_version=1, failed_cell_ids=()),
+            snapshot_cell_id_to_hashes={},
         )
 
         controller.check_weights.assert_awaited_once()
