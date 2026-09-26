@@ -228,7 +228,7 @@ class _P2PSenderHarness:
         monkeypatch.setattr(p2p_protocol, "dist", SimpleNamespace(get_rank=lambda group=None: 0))
         monkeypatch.setitem(p2p_protocol.query_remote_weight_infos.__globals__, "ServerArgs", _FakeServerArgs)
         monkeypatch.setitem(
-            p2p_protocol.P2PTransferManager.ensure_started.__globals__,
+            p2p_protocol._P2PRolloutCellUpdater.__init__.__globals__,
             "ThreadPoolExecutor",
             lambda **kwargs: _ObservedExecutor(self.waiting_threads, **kwargs),
         )

@@ -1,12 +1,12 @@
 import logging
 from argparse import Namespace
-from concurrent.futures import Future
+from concurrent.futures import Future, ThreadPoolExecutor
 from typing import Any
 
 from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
 from miles.backends.training_utils.weight_update.rollout_cell_updater import _RolloutCellUpdater
 
-from .p2p_transfer_utils import P2PTransferManager, RemoteWeightInfo
+from .p2p_transfer_utils import RemoteWeightInfo
 
 logger = logging.getLogger(__name__)
 
@@ -20,6 +20,7 @@ class _P2PRolloutCellUpdater(_RolloutCellUpdater):
         api_client: SGLangApiClient,
     ) -> None:
         super().__init__(args=args, cell_id=cell_id, api_client=api_client)
+        self._executor = ThreadPoolExecutor(max_workers=1)
         self.targets_by_rollout_engine_rank: dict[int, RemoteWeightInfo] = {}
         self._pending_writes: list[Future[None]] = []
 
@@ -29,12 +30,11 @@ class _P2PRolloutCellUpdater(_RolloutCellUpdater):
         names: list[str],
         weight_memory_registry: dict[str, tuple[int, int, int]],
         transfer_engine: Any,
-        transfer_manager: P2PTransferManager,
     ) -> None:
         if self.is_errored:
             return
         self._pending_writes.append(
-            transfer_manager.submit(
+            self._executor.submit(
                 self._write_if_active,
                 transfer_engine,
                 self.targets_by_rollout_engine_rank[rollout_engine_rank],
@@ -75,7 +75,7 @@ def _do_p2p_write_one_session(
     """P2P write from shared CPU pinned buffers to a single remote session.
 
     Used by the parallelized submission path where each session within an
-    rollout engine rank is submitted as a separate task to P2PTransferManager.
+    rollout engine rank is submitted as a separate task to its cell updater's thread.
     """
     source_ptrs, source_lens = [], []
     valid_names = []
