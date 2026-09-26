@@ -1860,16 +1860,17 @@ class TestLifecycle:
         assert fn._worker is worker
         assert fn._output is output
 
-    async def test_the_buffer_is_built_on_the_first_train_step_not_at_construction(self, monkeypatch) -> None:
-        """Construction happens wherever the rollout function is loaded, including eval-only processes."""
+    async def test_the_buffer_is_built_at_construction_so_a_restore_can_fill_it(self, monkeypatch) -> None:
+        """load() runs before the first train step, so it has to restore into a buffer that already exists."""
         fn = make_fn(monkeypatch, make_args(rollout_batch_size=1), FakeDataSource())
 
-        assert fn._output is None
+        assert type(fn._output) is data_buffer.DefaultDataBuffer
         assert fn._worker is None
+        output = fn._output
 
         await fn(RolloutFnTrainInput(rollout_id=0))
 
-        assert type(fn._output) is data_buffer.DefaultDataBuffer
+        assert fn._output is output
 
     async def test_an_evaluation_only_call_never_starts_the_producer(self, monkeypatch) -> None:
         """A checkpoint-eval-only process would otherwise generate training rollouts that nobody drains."""
@@ -1884,7 +1885,6 @@ class TestLifecycle:
         await fn(RolloutFnEvalInput(rollout_id=0))
 
         assert fn._worker is None
-        assert fn._output is None
         assert source.num_get_calls == 0
 
     async def test_an_eval_that_raises_still_resumes_the_producer(self, monkeypatch) -> None:
