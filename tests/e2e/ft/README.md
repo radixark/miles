@@ -81,8 +81,8 @@
 - **Broad scopes**: `run-ci-all` includes both; the nightly cadence includes `ft-short` but not `ft-long`; `run-ci-image` excludes both.
 - **Suite**: `suite="stage-c-8-gpu-h200"`, run by the job of the same name in `.github/workflows/pr-test.yml`.
 - **Hardware**: every entry declares `hardware=["hopper", "blackwell"]`.
-- **ft-long is disabled**: `tests/ci/run_suite.py` drops every test with a non-`None` `disabled`, and every ft-long entry passes one, so `run-ci-ft-long` executes nothing. Unblocked by an ft-long capable lane; the tests themselves have no open failure.
-- **Disabled reasons**: entries here start theirs with `FT soak tests pending CI infra support`; `tests/e2e/deploy/test_hot_restart_realistic_gsm8k.py` starts with `needs a Kubernetes cluster backend`.
+- **Enabled ft-long entries**: `run-ci-ft-long` runs the sync and fully-async `random_crash` entries in mode `kill_train_rollout__dp2_cp2`. Other ft-long entries remain disabled; `tests/ci/run_suite.py` skips every test with a non-`None` `disabled`.
+- **Disabled reasons**: remaining disabled FT entries use `FT soak tests pending CI infra support` or `will enable in future FT delivery`; `tests/e2e/deploy/test_hot_restart_realistic_gsm8k.py` starts with `needs a Kubernetes cluster backend`.
 - **Add a `(scenario, mode)`**: copy an entry file, change `_MODE`.
 - **Add a label**: an entry in `tests/ci/labels.py` plus the matching `run-ci-<key>` GitHub label; the workflow needs no edit.
 

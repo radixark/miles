@@ -11,7 +11,6 @@ register_cuda_ci(
     suite="stage-c-8-gpu-h200",
     labels=["ft-short"],
     hardware=["hopper", "blackwell"],
-    disabled="will enable in future FT delivery",
 )
 
 _MODE: str = "kill_train__dp2_tp2"
