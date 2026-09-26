@@ -59,7 +59,7 @@ def _make_fixture() -> _Fixture:
     controller = InferenceController(SimpleNamespace(), engine_provider=provider, router_providers=[])
     controller.servers = {
         "actor": SimpleNamespace(
-            server_cells={"engine-0-2": SimpleNamespace()},
+            all_server_cells={"engine-0-2": SimpleNamespace()},
             health_checker_activeness=ActivenessTracker(active=True),
         )
     }

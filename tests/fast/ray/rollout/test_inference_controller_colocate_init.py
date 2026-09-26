@@ -38,8 +38,8 @@ class _FakeCell:
 
 
 class _StubServer:
-    def __init__(self, server_cells: dict):
-        self.server_cells = server_cells
+    def __init__(self, all_server_cells: dict):
+        self.all_server_cells = all_server_cells
 
 
 def _make_controller(servers: dict, *, colocate: bool) -> InferenceController:
@@ -124,7 +124,7 @@ class TestEnsureCellsReady:
         task = asyncio.create_task(_ensure_ready_under_lock(controller))
         await asyncio.wait_for(early.init_started.wait(), timeout=1)
         late = _FakeCell()
-        srv.server_cells["late"] = late
+        srv.all_server_cells["late"] = late
         await asyncio.wait_for(late.init_started.wait(), timeout=1)
         early.become_ready()
         late.become_ready()

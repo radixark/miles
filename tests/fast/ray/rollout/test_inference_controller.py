@@ -77,13 +77,13 @@ def _make_cell_meta(info: CellInfo) -> ServerCellMetadata:
 class _RecordingServer:
     def __init__(
         self,
-        server_cells: dict | None = None,
+        all_server_cells: dict | None = None,
         *,
         model_name: str = "model",
         update_weights: bool = False,
         cells_gate: asyncio.Event | None = None,
     ):
-        self.server_cells = server_cells or {}
+        self.all_server_cells = all_server_cells or {}
         self.health_checker_activeness = ActivenessTracker(active=True)
         self.update_weights = update_weights
         self.model_name = model_name
@@ -105,7 +105,7 @@ class _RecordingServer:
     @property
     def engine_cells(self) -> list:
         self.engine_cells_calls += 1
-        return sorted(self.server_cells.values(), key=lambda cell: cell.meta.gpu_offset)
+        return sorted(self.all_server_cells.values(), key=lambda cell: cell.meta.gpu_offset)
 
     async def offload(self, tags=None):
         self.calls.append(("offload",))
@@ -126,11 +126,11 @@ class _RecordingServer:
 
     async def add_cell(self, cell_meta: ServerCellMetadata):
         self.calls.append(("add", cell_meta.cell_id))
-        self.server_cells[cell_meta.cell_id] = SimpleNamespace(meta=cell_meta)
+        self.all_server_cells[cell_meta.cell_id] = SimpleNamespace(meta=cell_meta)
 
     async def remove_cell(self, cell_id: str):
         self.calls.append(("remove", cell_id))
-        del self.server_cells[cell_id]
+        del self.all_server_cells[cell_id]
 
     async def wait_init_expected_num_cells(self, timeout: float = 3600.0) -> None:
         if self._cells_gate is not None:
@@ -381,7 +381,7 @@ class TestRolloutFaultInjectionWindow:
         cell_id = "unknown-rollout-cell"
         provider = _FakeWorkerProvider([])
         controller = _make_controller(
-            {"default": _RecordingServer(server_cells={"inference-engine-0-0-0": object()})},
+            {"default": _RecordingServer(all_server_cells={"inference-engine-0-0-0": object()})},
             engine_provider=provider,
         )
 
@@ -399,7 +399,7 @@ class TestRolloutFaultInjectionWindow:
     async def test_fault_injection_reaches_a_serving_rollout_cell(self) -> None:
         """A serving rollout cell accepts a fault through the Ray worker manager."""
         cell_id = "inference-engine-0-0-0"
-        server = _RecordingServer(server_cells={cell_id: object()})
+        server = _RecordingServer(all_server_cells={cell_id: object()})
         provider = _FakeWorkerProvider([])
         controller = _make_controller({"default": server}, engine_provider=provider)
 
@@ -417,7 +417,7 @@ class TestRolloutFaultInjectionWindow:
     async def test_fault_injection_refuses_an_offloaded_rollout_cell(self) -> None:
         """Colocate must not kill rollout processes while trainer ranks own the shared GPUs."""
         cell_id = "inference-engine-0-0-0"
-        server = _RecordingServer(server_cells={cell_id: object()})
+        server = _RecordingServer(all_server_cells={cell_id: object()})
         server.health_checker_activeness.bump_active(False)
         provider = _FakeWorkerProvider([])
         controller = _make_controller({"default": server}, engine_provider=provider)
@@ -462,32 +462,32 @@ class TestReconcile:
     async def test_a_disappeared_tracked_cell_is_removed(self, servers):
         """A tracked cell reported as gone is removed even though no meta is observable."""
         info = _make_cell_info()
-        servers["model-a"].server_cells[info.cell_id] = SimpleNamespace(meta=_make_cell_meta(info))
+        servers["model-a"].all_server_cells[info.cell_id] = SimpleNamespace(meta=_make_cell_meta(info))
         controller = _make_controller(servers)
 
         await controller._reconcile(info.cell_id, None)
 
         assert servers["model-a"].calls == [("remove", info.cell_id)]
-        assert servers["model-a"].server_cells == {}
+        assert servers["model-a"].all_server_cells == {}
 
     @pytest.mark.asyncio
     async def test_a_disappeared_cell_is_removed_from_its_owning_server(self, servers):
         """The owner scan must find the server that actually tracks the cell, not the first one."""
         info = _make_cell_info(cell_id="inference-engine-1-0-0", model_id="model-b", pool_id="inference-engine-1-0")
-        servers["model-b"].server_cells[info.cell_id] = SimpleNamespace(meta=_make_cell_meta(info))
+        servers["model-b"].all_server_cells[info.cell_id] = SimpleNamespace(meta=_make_cell_meta(info))
         controller = _make_controller(servers)
 
         await controller._reconcile(info.cell_id, None)
 
         assert servers["model-a"].calls == []
         assert servers["model-b"].calls == [("remove", info.cell_id)]
-        assert servers["model-b"].server_cells == {}
+        assert servers["model-b"].all_server_cells == {}
 
     @pytest.mark.asyncio
     async def test_a_workers_hash_change_replaces_the_cell(self, servers):
         """A relaunched cell (new workers_hash) is removed then re-added, in that order."""
         old_info = _make_cell_info(workers_hash="pseudo-hash-0")
-        servers["model-a"].server_cells[old_info.cell_id] = SimpleNamespace(meta=_make_cell_meta(old_info))
+        servers["model-a"].all_server_cells[old_info.cell_id] = SimpleNamespace(meta=_make_cell_meta(old_info))
         controller = _make_controller(servers)
         new_info = _make_cell_info(workers_hash="pseudo-hash-1")
 
@@ -500,7 +500,7 @@ class TestReconcile:
     async def test_an_unchanged_tracked_cell_is_a_noop(self, servers):
         """A tracked cell observed with the same workers_hash triggers no bookkeeping change."""
         info = _make_cell_info()
-        servers["model-a"].server_cells[info.cell_id] = SimpleNamespace(meta=_make_cell_meta(info))
+        servers["model-a"].all_server_cells[info.cell_id] = SimpleNamespace(meta=_make_cell_meta(info))
         controller = _make_controller(servers)
 
         await controller._reconcile(info.cell_id, info)
@@ -563,7 +563,7 @@ class TestReconcileAfterAFailedInit:
 
         controller = _make_controller({})
         srv = RolloutServer(
-            server_cells={},
+            all_server_cells={},
             args=make_args(colocate=False, ft_components=[]),
             context_lock=controller.context_lock,
             engine_provider=_FakeWorkerProvider([]),
@@ -579,7 +579,7 @@ class TestReconcileAfterAFailedInit:
         await controller._reconcile(info.cell_id, info)
 
         assert init_calls == [info.cell_id, info.cell_id]
-        assert list(srv.server_cells) == [info.cell_id]
+        assert list(srv.all_server_cells) == [info.cell_id]
         async with controller.context_lock:
             await srv.dispose()
 
@@ -588,7 +588,7 @@ class TestReconcileAfterAFailedInit:
         """A dropped cell must vanish from the status surface, otherwise the dashboard shows an engine nobody owns."""
         controller = _make_controller({})
         srv = RolloutServer(
-            server_cells={},
+            all_server_cells={},
             args=make_args(colocate=False, ft_components=[]),
             context_lock=controller.context_lock,
             engine_provider=_FakeWorkerProvider([]),
@@ -841,7 +841,7 @@ class TestServersShareTheControllerLock:
         """The controller lock is the very lock its servers require, so reconcile works end to end."""
         controller = _make_controller({})
         srv = RolloutServer(
-            server_cells={},
+            all_server_cells={},
             args=SimpleNamespace(),
             context_lock=controller.context_lock,
             engine_provider=_FakeWorkerProvider([]),
@@ -850,14 +850,14 @@ class TestServersShareTheControllerLock:
         info = _make_cell_info()
 
         await controller._reconcile(info.cell_id, None)
-        assert srv.server_cells == {}
+        assert srv.all_server_cells == {}
 
     @pytest.mark.asyncio
     async def test_a_server_holding_a_foreign_lock_is_rejected(self):
         """A server wired up with its own lock instead of the controller's is a wiring bug."""
         controller = _make_controller({})
         srv = RolloutServer(
-            server_cells={},
+            all_server_cells={},
             args=SimpleNamespace(),
             context_lock=ContextLock("InferenceController"),
             engine_provider=_FakeWorkerProvider([]),
@@ -1353,7 +1353,7 @@ class _StoppingWorkerProvider(_FakeWorkerProvider):
 def _make_cell_operations_controller(
     provider: _StoppingWorkerProvider, *, probing_paused: bool = False
 ) -> InferenceController:
-    server = _RecordingServer(server_cells={_ROLLOUT_CELL_ID: object()})
+    server = _RecordingServer(all_server_cells={_ROLLOUT_CELL_ID: object()})
     if probing_paused:
         server.health_checker_activeness.bump_active(False)
     return _make_controller({"default": server}, engine_provider=provider)
@@ -1664,7 +1664,7 @@ class TestCellsReadyIsScopedToTheTargetedModel:
         """Different model ids are independent, so a sick engine of B must not stall A's weight update."""
         a = _RecordingServer(model_name="a", update_weights=True)
         a.api_clients = ["a-client"]
-        a.server_cells = {
+        a.all_server_cells = {
             "a-0": SimpleNamespace(
                 is_pending_weights_or_serving=True,
                 is_uninitialized=False,
@@ -1672,7 +1672,7 @@ class TestCellsReadyIsScopedToTheTargetedModel:
             )
         }
         b = _RecordingServer(model_name="b", update_weights=True)
-        b.server_cells = {
+        b.all_server_cells = {
             "b-0": SimpleNamespace(
                 is_pending_weights_or_serving=False,
                 is_uninitialized=False,

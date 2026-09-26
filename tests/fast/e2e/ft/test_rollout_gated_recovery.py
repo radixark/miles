@@ -182,7 +182,7 @@ class _Harness:
         self.controller._health_checker_activeness = ActivenessTracker(active=True)
         self.controller.servers = {
             "default": RolloutServer(
-                server_cells={},
+                all_server_cells={},
                 args=self.args,
                 context_lock=self.controller.context_lock,
                 engine_provider=_StubProvider(),
@@ -293,7 +293,7 @@ async def test_the_replacement_engine_stays_gated_until_the_next_window(harness:
     await harness.run_ft_controller_once()
     cells = await harness.observe()
 
-    assert harness.controller.servers["default"].server_cells[_CELL_IDS[0]].is_uninitialized
+    assert harness.controller.servers["default"].all_server_cells[_CELL_IDS[0]].is_uninitialized
     assert harness.activated_gate_urls == gates_before
     assert cells[_CELL_IDS[0]]["status"]["phase"] == "Pending"
 
