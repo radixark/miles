@@ -134,11 +134,11 @@ class TestUpdateWeightsEmptyBaseIteration:
                 parallel_state=MagicMock(),
                 is_lora=False,
             )
-            updater.update_weights()
+            updater.update_weights(weight_version=1)
 
         protocol.send_bucket.assert_not_called()
         protocol.after_base_weights.assert_called_once()
-        assert updater.weight_version == 1
+        protocol.finalize.assert_called_once_with(1)
 
 
 # ---------------------------------------------------------------------------
