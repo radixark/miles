@@ -18,7 +18,7 @@ from typing import Any
 
 import torch.nn as nn
 
-from miles.backends.training_utils.torch_native.routing_replay import (
+from miles.backends.training_utils.replay.routing_replay import (
     FALLTHROUGH,
     RECORD,
     REPLAY_BACKWARD,

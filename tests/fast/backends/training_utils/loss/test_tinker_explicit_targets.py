@@ -3,7 +3,7 @@
 import torch
 from tests.fast.backends.training_utils.loss.loss_test_utils import make_args, make_parallel_state
 
-from miles.backends.training_utils.loss_hub import math_utils, tinker_losses
+from miles.backends.training_utils.loss.hub import math_utils, tinker_losses
 
 VOCAB = 32
 

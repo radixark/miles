@@ -11,7 +11,7 @@ from miles.utils.ft_utils.indep_dp import IndepDPInfo
 from miles.utils.ft_utils.process_group_utils import GeneralPGUtil, GroupInfo, collective_bool_and
 from miles.utils.tracking_utils.structured_log import log_structured
 
-from ...training_utils.log_utils import aggregate_train_losses
+from ...training_utils.metrics.log_utils import aggregate_train_losses
 from ...training_utils.parallel import ParallelState
 
 if TYPE_CHECKING:

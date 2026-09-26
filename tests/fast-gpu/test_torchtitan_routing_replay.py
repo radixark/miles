@@ -24,7 +24,7 @@ import torch.nn as nn
 from torchtitan.models.common.moe import TokenChoiceTopKRouter
 
 from miles.backends.torchtitan_utils import routing_replay
-from miles.backends.training_utils.torch_native import routing_replay as shared_replay
+from miles.backends.training_utils.replay import routing_replay as shared_replay
 from miles.utils.replay_base import routing_replay_manager
 
 

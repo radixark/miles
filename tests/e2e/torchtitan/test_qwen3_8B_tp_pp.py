@@ -8,7 +8,7 @@ register_cuda_ci(est_time=900, suite="stage-c-4-gpu-h200", labels=["torchtitan"]
 # miles' loss reduces the softmax over the tp group, so the logits have to reach
 # it as the local shard -- gathering them shifts every log prob by -ln(tp).
 # Pipeline parallelism infers its stage buffers once, so every microbatch of the
-# run is padded to --titan-seq-len, and the pad carries consecutive positions
+# run is padded to --seq-length, and the pad carries consecutive positions
 # rather than zeros (thousands of one-token documents break linear attention).
 # The model is the untied dense one: torchtitan cannot tie lm_head to the
 # embedding across stages, so the tied 0.6B is refused under PP. It is not

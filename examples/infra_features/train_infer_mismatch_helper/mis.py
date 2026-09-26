@@ -333,7 +333,7 @@ def compute_mis_weights_with_cp(
         is_metrics: The metrics for the importance sampling weights, a dict of flattened tensors.
     """
     # Lazy import to avoid importing Megatron dependencies when only `compute_mis_weights` is used.
-    from miles.backends.training_utils.cp_utils import all_gather_with_cp, slice_log_prob_with_cp
+    from miles.backends.training_utils.data.context_parallel import all_gather_with_cp, slice_log_prob_with_cp
 
     qkv_format = args.qkv_format
     max_seq_lens = kwargs.get("max_seq_lens", None)

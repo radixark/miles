@@ -1,6 +1,6 @@
 from contextlib import contextmanager
 
-from miles.backends.training_utils.replay_data import fill_replay_data, register_replay_list_sequential
+from miles.backends.training_utils.replay.replay_data import fill_replay_data, register_replay_list_sequential
 from miles.utils.replay_base import routing_replay_manager
 
 FALLTHROUGH = "fallthrough"

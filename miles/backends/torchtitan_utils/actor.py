@@ -12,8 +12,8 @@ from miles.backends.torchtitan_utils.parallel import create_titan_parallel_state
 from miles.backends.torchtitan_utils.routing_replay import install as install_routing_replay
 from miles.backends.torchtitan_utils.trainer import TitanTrainer
 from miles.backends.training_utils.parallel import get_parallel_state, set_parallel_state
+from miles.backends.training_utils.replay.routing_replay import enable as enable_routing_replay
 from miles.backends.training_utils.torch_native.actor import TorchNativeTrainRayActor
-from miles.backends.training_utils.torch_native.routing_replay import enable as enable_routing_replay
 from miles.utils.context_utils import with_defer
 from miles.utils.ft_utils.indep_dp import IndepDPInfo
 from miles.utils.memory_utils import clear_memory

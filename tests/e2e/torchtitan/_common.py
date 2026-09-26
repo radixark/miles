@@ -1,9 +1,8 @@
 """Shared case harness for the torchtitan backend's end-to-end tests.
 
 One file per case, all of them differing only in a topology and a model, so the
-command line is built once here. The fields are named after torchtitan's own
-parallelism degrees rather than Megatron's, because that is what the flags are:
-the backend copies them straight into torchtitan's ``Parallelism`` config.
+command line is built once here. The parallelism flags are the ones Megatron
+takes; the backend copies them into torchtitan's ``Parallelism`` config.
 
 Context parallelism is deliberately not a field of the topology check below in
 the way the others are: it is internal to the trainer, which shards the sequence
@@ -138,11 +137,11 @@ def build_train_args(case: CaseConfig, *, wandb_file: str) -> str:
         "--train-backend torchtitan "
         f"--titan-model-name {case.titan_model_name} "
         f"--titan-model-flavor {case.titan_model_flavor} "
-        f"--titan-seq-len {case.seq_len} "
-        f"--titan-tensor-parallel-degree {case.tp_size} "
-        f"--titan-pipeline-parallel-degree {case.pp_size} "
-        f"--titan-context-parallel-degree {case.cp_size} "
-        f"--titan-expert-parallel-degree {case.ep_size} "
+        f"--seq-length {case.seq_len} "
+        f"--tensor-model-parallel-size {case.tp_size} "
+        f"--pipeline-model-parallel-size {case.pp_size} "
+        f"--context-parallel-size {case.cp_size} "
+        f"--expert-model-parallel-size {case.ep_size} "
         "--micro-batch-size 1 "
         "--gradient-checkpointing "
         f"--update-weight-buffer-size {512 * 1024 * 1024} "
