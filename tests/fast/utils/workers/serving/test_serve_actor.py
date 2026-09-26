@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import threading
 import signal
+import threading
 from collections.abc import Callable
 from types import SimpleNamespace
 from typing import Any
@@ -170,7 +170,9 @@ class TestFaultInjection:
         monkeypatch.setattr(serve_actor_module, "fault_hook_controller", _FaultHookController())
         monkeypatch.setattr(serve_actor_module.os, "kill", lambda pid, signum: injected.append((pid, signum)))
         actor = ServeActor(build_worker=_build_worker())
-        command = FaultHookCommand(operation=FaultHookOperation.SET, request=FaultHookRequest(request_id="test", action=StopProcessAction()))
+        command = FaultHookCommand(
+            operation=FaultHookOperation.SET, request=FaultHookRequest(request_id="test", action=StopProcessAction())
+        )
 
         record = actor.control_fault_hook(command)
 

@@ -1931,7 +1931,9 @@ class TestControlFaultHook:
             await manager.control_fault_hook(command)
         assert fake_ray_cluster.calls_of("control_fault_hook") == []
 
-    async def test_a_replaced_worker_rejects_the_previous_observed_target(self, fake_ray_cluster: FakeRayCluster) -> None:
+    async def test_a_replaced_worker_rejects_the_previous_observed_target(
+        self, fake_ray_cluster: FakeRayCluster
+    ) -> None:
         """A fault observed before a restart must not crash the replacement worker."""
         manager = await _launch([_make_spec("engine")])
         command = _fault_command(manager.observe_fault_target("engine-00000", rank=0))
