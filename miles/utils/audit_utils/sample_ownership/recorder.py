@@ -1,9 +1,13 @@
 import argparse
-from collections.abc import Callable
-from typing import TYPE_CHECKING
+from collections.abc import Callable, Iterator
+from typing import TYPE_CHECKING, Any
 
 from miles.utils.audit_utils.event_logger.logger import get_event_logger, is_event_logger_initialized
-from miles.utils.audit_utils.event_logger.models import DataSourceIssuedSamplesEvent, IssuedSampleGroup
+from miles.utils.audit_utils.event_logger.models import (
+    DataSourceIssuedSamplesEvent,
+    ExplicitlyDroppedSamplesEvent,
+    IssuedSampleGroup,
+)
 from miles.utils.types import Sample
 
 if TYPE_CHECKING:
@@ -32,6 +36,44 @@ class SampleOwnershipRecorder:
         data_source.get_samples = get_samples_and_record
 
     @classmethod
+    def flatten_samples(cls, data: list[Any]) -> list[Sample]:
+        return list(cls._iter_samples(data))
+
+    @classmethod
+    def log_dropped_groups(cls, *, args: argparse.Namespace, before: list[Any], after: list[Any], reason: str) -> None:
+        if not args.enable_sample_ownership_checker or not before or not is_event_logger_initialized():
+            return
+
+        retained = {cls._source_sample_index(sample) for sample in cls._iter_samples(after)}
+        removed = [sample for sample in cls._iter_samples(before) if cls._source_sample_index(sample) not in retained]
+        cls.log_dropped_samples(args=args, samples=removed, reason=reason)
+
+    @classmethod
+    def log_dropped_samples(cls, *, args: argparse.Namespace, samples: list[Sample], reason: str) -> None:
+        if not args.enable_sample_ownership_checker or not samples or not is_event_logger_initialized():
+            return
+
+        cls.log_dropped_source_sample_indices(
+            args=args,
+            source_sample_indices=[cls._source_sample_index(sample) for sample in samples],
+            reason=reason,
+        )
+
+    @classmethod
+    def log_dropped_source_sample_indices(
+        cls, *, args: argparse.Namespace, source_sample_indices: list[int], reason: str
+    ) -> None:
+        if not args.enable_sample_ownership_checker or not source_sample_indices or not is_event_logger_initialized():
+            return
+
+        source_sample_indices = list(dict.fromkeys(source_sample_indices))
+        get_event_logger().log(
+            ExplicitlyDroppedSamplesEvent,
+            dict(source_sample_indices=source_sample_indices, reason=reason),
+            print_log=False,
+        )
+
+    @classmethod
     def _log_issued_groups(cls, *, args: argparse.Namespace, groups: list[list[Sample]], rollout_id: int) -> None:
         if not args.enable_sample_ownership_checker or not groups or not is_event_logger_initialized():
             return
@@ -50,6 +92,19 @@ class SampleOwnershipRecorder:
                 dict(groups=issued_groups),
                 print_log=False,
             )
+
+    @classmethod
+    def _iter_samples(cls, node: list[Any]) -> Iterator[Sample]:
+        for item in node:
+            if isinstance(item, Sample):
+                yield item
+            else:
+                yield from cls._iter_samples(item)
+
+    @classmethod
+    def _source_sample_index(cls, sample: Sample) -> int:
+        index = sample.lineage.source_sample_index if sample.lineage is not None else sample.index
+        return cls._require_identity(index, "source sample index")
 
     @classmethod
     def _require_identity(cls, value: int | None, name: str) -> int:
