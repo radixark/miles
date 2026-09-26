@@ -1595,3 +1595,103 @@ class TestUpdateWeightsFromEveryAliveCell:
         assert await controller.update_weights(info=_make_engines(4)) == _output(3)
 
         assert _targets_of(cells[0]) == []
+
+
+class TestUpdateWeightsGivesUpOnADeadTrainersTargets:
+    async def test_the_targets_of_a_sender_that_raised_are_all_reported_failed(self):
+        """Those engines may hold a half-written model, and serving from them would poison the rollouts."""
+        cells = [
+            _FakeTrainerCell(cell_index=0, error=RuntimeError("trainer died")),
+            _FakeTrainerCell(cell_index=1, output=_output(4)),
+        ]
+        controller = _make_partial_target_controller(cells)
+
+        output = await controller.update_weights(info=_make_engines(2))
+
+        assert set(output.failed_cell_ids) == {"rollout-0"}
+
+    async def test_a_surviving_sender_still_publishes_the_version_it_reached(self):
+        """The engines it did update serve the new weights, which the driver can only publish if it is told."""
+        cells = [
+            _FakeTrainerCell(cell_index=0, error=RuntimeError("trainer died")),
+            _FakeTrainerCell(cell_index=1, output=_output(4)),
+        ]
+        controller = _make_partial_target_controller(cells)
+
+        assert (await controller.update_weights(info=_make_engines(2))).weight_version == 4
+
+    async def test_a_dead_senders_targets_and_a_survivors_own_failure_are_all_reported(self) -> None:
+        """Dropping either set on the merge would leave a stale or half-written engine in service."""
+        cells = [
+            _FakeTrainerCell(cell_index=0, error=RuntimeError("trainer died")),
+            _FakeTrainerCell(cell_index=1, output=_output(4, "rollout-3")),
+        ]
+        controller = _make_partial_target_controller(cells)
+
+        output = await controller.update_weights(info=_make_engines(4))
+
+        assert output.weight_version == 4
+        assert set(output.failed_cell_ids) == {"rollout-0", "rollout-1", "rollout-3"}
+
+    async def test_the_next_update_splits_every_target_among_the_survivors_only(self) -> None:
+        """A share left with the dead sender would keep those engines on the old weights on every later update."""
+        cells = [
+            _FakeTrainerCell(cell_index=0, error=RuntimeError("trainer died")),
+            _FakeTrainerCell(cell_index=1, output=_output(4)),
+            _FakeTrainerCell(cell_index=2, output=_output(4)),
+        ]
+        controller = _make_partial_target_controller(cells)
+        await controller.update_weights(info=_make_engines(3))
+
+        output = await controller.update_weights(info=_make_engines(4))
+
+        assert output == _output(4)
+        assert _targets_of(cells[0]) == [["rollout-0"]]
+        assert _targets_of(cells[1]) == [["rollout-1"], ["rollout-0", "rollout-1"]]
+        assert _targets_of(cells[2]) == [["rollout-2"], ["rollout-2", "rollout-3"]]
+
+    async def test_losing_every_sender_raises_the_first_failure(self):
+        """No engine got the weights and no cell is left to retry on, so the run must surface the error."""
+        cells = [
+            _FakeTrainerCell(cell_index=0, error=RuntimeError("first failure")),
+            _FakeTrainerCell(cell_index=1, error=RuntimeError("second failure")),
+        ]
+        controller = _make_partial_target_controller(cells)
+
+        with pytest.raises(RuntimeError, match="first failure"):
+            await controller.update_weights(info=_make_engines(2))
+
+    async def test_a_healthy_sender_with_no_share_keeps_the_run_from_exiting(self):
+        """A trainer cell that was handed no target is still available to heal the pool on the next update."""
+        cells = [
+            _FakeTrainerCell(cell_index=0, error=RuntimeError("first failure")),
+            _FakeTrainerCell(cell_index=1, error=RuntimeError("second failure")),
+            _FakeTrainerCell(cell_index=2),
+        ]
+        controller = _make_partial_target_controller(cells)
+
+        with pytest.raises(NonRetryableError, match="No inference cell received the weights"):
+            await controller.update_weights(info=_make_engines(2))
+
+    async def test_no_engine_receiving_the_weights_is_not_worth_retrying(self):
+        """Every rollout cell now serves stale or half-written weights, which only a fresh rollout pool fixes."""
+        cells = [
+            _FakeTrainerCell(cell_index=0, output=_output(4, "rollout-0")),
+            _FakeTrainerCell(cell_index=1, output=_output(4, "rollout-1")),
+        ]
+        controller = _make_partial_target_controller(cells)
+
+        with pytest.raises(NonRetryableError, match="No inference cell received the weights"):
+            await controller.update_weights(info=_make_engines(2))
+
+    async def test_one_engine_out_of_several_failing_is_reported_rather_than_raised(self):
+        """The rest of the fleet serves the new weights, and the driver only has to drop the one that failed."""
+        cells = [
+            _FakeTrainerCell(cell_index=0, output=_output(4, "rollout-0")),
+            _FakeTrainerCell(cell_index=1, output=_output(4)),
+        ]
+        controller = _make_partial_target_controller(cells)
+
+        output = await controller.update_weights(info=_make_engines(2))
+
+        assert output == _output(4, "rollout-0")
