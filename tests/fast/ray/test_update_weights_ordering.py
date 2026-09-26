@@ -287,6 +287,7 @@ def _checksum_response(engine_checksums: list[dict[str, str]]) -> list[tuple[Ser
         for index, cs in enumerate(engine_checksums)
     ]
 
+
 class TestTheScriptLogsTheChecksumsTheEnginesNowServe:
     @staticmethod
     async def _log(
@@ -356,8 +357,12 @@ class TestTheScriptLogsTheChecksumsTheEnginesNowServe:
             debug_trainer_load_state_timestamp=1.0,
             debug_weight_update_id="update-11",
             engine_snapshots=[
-                InferenceEngineChecksumSnapshot(cell_id="cell-0", workers_hash="incarnation-0", tensor_checksums={"rank0/w": "e0"}),
-                InferenceEngineChecksumSnapshot(cell_id="cell-1", workers_hash="incarnation-1", tensor_checksums={"rank0/w": "e1"}),
+                InferenceEngineChecksumSnapshot(
+                    cell_id="cell-0", workers_hash="incarnation-0", tensor_checksums={"rank0/w": "e0"}
+                ),
+                InferenceEngineChecksumSnapshot(
+                    cell_id="cell-1", workers_hash="incarnation-1", tensor_checksums={"rank0/w": "e1"}
+                ),
             ],
         )
 
@@ -377,7 +382,9 @@ class TestTheScriptLogsTheChecksumsTheEnginesNowServe:
             debug_trainer_load_state_timestamp=1.0,
             debug_weight_update_id="update-11",
             engine_snapshots=[
-                InferenceEngineChecksumSnapshot(cell_id="cell-0", workers_hash="incarnation-0", tensor_checksums={"rank0/w": "e0"}),
+                InferenceEngineChecksumSnapshot(
+                    cell_id="cell-0", workers_hash="incarnation-0", tensor_checksums={"rank0/w": "e0"}
+                ),
             ],
         )
 
