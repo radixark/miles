@@ -19,6 +19,53 @@ def _parse(*argv: str) -> Namespace:
     return parser.parse_args(argv)
 
 
+@pytest.fixture(autouse=True)
+def default_indexer_impl(monkeypatch):
+    monkeypatch.delenv("V4_INDEXER_IMPL", raising=False)
+
+
+def test_qat_defaults_remain_legacy():
+    args = _parse()
+    assert args.dsv4_kv_qat == args.dsv4_index_qat == "legacy"
+    normalize_dsv4_args(args)
+
+
+@pytest.mark.parametrize("kv_mode", ["legacy", "off", "fp8_ue8m0"])
+@pytest.mark.parametrize("index_mode", ["legacy", "off", "fp8_ue8m0", "fp8_dynamic"])
+def test_qat_modes_parse_independently(kv_mode, index_mode):
+    args = _parse("--dsv4-impl", "miles", "--dsv4-kv-qat", kv_mode, "--dsv4-index-qat", index_mode)
+    normalize_dsv4_args(args)
+    assert args.dsv4_kv_qat == kv_mode
+    assert args.dsv4_index_qat == index_mode
+
+
+@pytest.mark.parametrize("flag,value", [("--dsv4-kv-qat", "fp8_dynamic"), ("--dsv4-index-qat", "fp8")])
+def test_unknown_qat_modes_fail_parsing(flag, value):
+    with pytest.raises(SystemExit):
+        _parse(flag, value)
+
+
+@pytest.mark.parametrize("flag", ["--dsv4-kv-qat", "--dsv4-index-qat"])
+def test_native_megatron_rejects_explicit_qat_policy(flag):
+    with pytest.raises(ValueError, match="require --dsv4-impl miles"):
+        normalize_dsv4_args(_parse(flag, "off"))
+
+
+def test_non_v4_indexer_rejects_explicit_index_policy(monkeypatch):
+    monkeypatch.setenv("V4_INDEXER_IMPL", "megatron")
+    with pytest.raises(ValueError, match="require V4_INDEXER_IMPL=tilelang"):
+        normalize_dsv4_args(_parse("--dsv4-impl", "miles", "--dsv4-index-qat", "off"))
+    # KV-only overrides do not reconfigure the alternative indexer.
+    normalize_dsv4_args(_parse("--dsv4-impl", "miles", "--dsv4-kv-qat", "off"))
+
+
+def test_missing_qat_attributes_preserve_old_programmatic_callers():
+    args = _parse()
+    del args.dsv4_kv_qat, args.dsv4_index_qat
+    normalize_dsv4_args(args)
+    assert args.experimental_attention_variant == "dsv4_hybrid"
+
+
 def test_only_the_dsv4_spec_triggers_normalization():
     assert is_dsv4_model(_parse())
 
