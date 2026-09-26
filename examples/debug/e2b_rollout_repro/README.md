@@ -33,6 +33,11 @@ remain invalid training data. The settings file does not launch a job.
 
 ## Controlled payload experiment
 
+For the original unfiltered performance comparison, use the
+`shi/session-payload-control` branch. On this pilot branch, the production filter
+also applies to the historical `full` arm; use the dedicated compatibility gate
+above to validate the new behavior.
+
 `payload_control.py` isolates candidate-metadata overhead using the real pinned
 Miles session server and its sample assembler. It captures one live task response
 from an existing SGLang engine, then replays identical generated tokens through

@@ -86,8 +86,8 @@ def serve(args: Args) -> None:
         if args.arm == "strip":
             original = session_core._strip_replay_payloads
 
-            def strip_training_metadata(response: dict) -> dict:
-                result = original(response)
+            def strip_training_metadata(response: dict, *, client_top_logprobs: int | None = None) -> dict:
+                result = original(response, client_top_logprobs=client_top_logprobs)
                 choices = []
                 for choice in result["choices"]:
                     meta = {key: value for key, value in choice.get("meta_info", {}).items()
