@@ -471,7 +471,7 @@ class _IdentityProvider:
         return [
             [
                 WorkerInfo(name=name, generation=0, self_addrs={}, gpu_ids=[], worker_class="fake.Worker")
-                for name in (info.worker_names if (info := self._infos.get(cell_id)) is not None else [])
+                for name in (self._infos[cell_id].worker_names if cell_id in self._infos else [])
             ]
             for cell_id in cell_ids
         ]
