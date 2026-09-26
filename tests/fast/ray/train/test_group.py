@@ -1,5 +1,4 @@
 import asyncio
-import json
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -12,6 +11,7 @@ from tests.fast.ray.train.conftest import get_raw_actor_handles, make_deployment
 from tests.fast.train_parallel_config_utils import make_train_parallel_config
 
 import miles.ray.train.group as group_module
+import miles.utils.test_utils.fault_injector.controller as fault_hook_module
 from miles.backends.megatron_utils.ft.types import TrainStepOutcome, TrainStepOutput
 from miles.ray.rollout.inference_controller import UpdatableEngines
 from miles.ray.train.group import TrainerController, compute_trainer_health_checker_config
@@ -30,6 +30,10 @@ from miles.utils.dp_schedule import TrainParallelConfig
 from miles.utils.object_store import _MooncakeStoreObjectRef
 from miles.utils.ray_utils import Box
 from miles.utils.retry_utils import NonRetryableError
+from miles.utils.test_utils.fault_injector.actions.cell import StopCellAction
+from miles.utils.test_utils.fault_injector.controller import _FaultHookController
+from miles.utils.test_utils.fault_injector.models import FaultHookName, FaultHookRequest
+from miles.utils.test_utils.fault_injector.static_source import render_fault_hooks
 from miles.utils.workers.naming import compute_cell_id
 
 pytestmark = pytest.mark.asyncio
@@ -43,8 +47,8 @@ def _make_mock_args(
     enable_witness: bool = False,
     gpus_per_cell: int = 1,
     num_cells: int = 3,
-    ci_ft_test_actions: str | None = None,
-    ci_ft_test_actions_path: str | None = None,
+    ci_fault_hooks: str | None = None,
+    ci_fault_hooks_path: str | None = None,
     colocate: bool = True,
     update_weight_transfer_mode: str = "broadcast",
 ) -> SimpleNamespace:
@@ -62,8 +66,8 @@ def _make_mock_args(
         trainer_heartbeat_checker_timeout=10.0,
         trainer_heartbeat_checker_first_wait=300.0,
         trainer_heartbeat_checker_failure_threshold=3,
-        ci_ft_test_actions=ci_ft_test_actions,
-        ci_ft_test_actions_path=ci_ft_test_actions_path,
+        ci_fault_hooks=ci_fault_hooks,
+        ci_fault_hooks_path=ci_fault_hooks_path,
         debug_train_only=False,
         debug_rollout_only=False,
         # compute_megatron_world_size_except_dp(args) = TP * PP * CP. Set CP to
@@ -88,7 +92,7 @@ def _make_controller(
     actor_count_per_cell: int = 1,
     with_ref: bool = False,
     with_opd_teacher: bool = False,
-    ci_ft_test_actions: str | None = None,
+    ci_fault_hooks: str | None = None,
 ) -> TrainerController:
     """Create a TrainerController and let it observe every cell, as the watcher would."""
     train_conftest.fake_worker_manager.num_cells = num_cells
@@ -106,8 +110,8 @@ def _make_controller(
         indep_dp=True,
         gpus_per_cell=actor_count_per_cell,
         num_cells=num_cells,
-        ci_ft_test_actions=ci_ft_test_actions,
-        ci_ft_test_actions_path=None,
+        ci_fault_hooks=ci_fault_hooks,
+        ci_fault_hooks_path=None,
     )
     group._health_checker_config = compute_trainer_health_checker_config(
         group.args, expected_num_cells=group._expected_num_cells
@@ -1345,28 +1349,58 @@ class TestInitForwardsModelFlags:
                 assert init_call[2]["with_opd_teacher"] is True
 
 
-class TestTrainRunsFTTestActions:
-    async def test_train_applies_the_action_armed_for_that_rollout_before_returning(self):
-        """The FT scenario's stop must have landed by the time the driver starts the next rollout."""
-        actions = json.dumps(
-            [{"at_rollout": 4, "action": "stop_cell_at_end", "cell_id": "trainer-engine-actor-00002"}]
+class TestTrainRunsFaultHooks:
+    async def test_train_applies_the_hook_armed_for_that_rollout_before_returning(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The declared stop must finish before the caller can begin the next rollout."""
+        _isolate_fault_hook_controller(monkeypatch)
+        requests = render_fault_hooks(
+            [
+                FaultHookRequest(
+                    request_id="stop-cell-2",
+                    hook_name=FaultHookName.TRAINER_CONTROLLER_STEP_END,
+                    rollout_id=4,
+                    action=StopCellAction(cell_id="trainer-engine-actor-00002"),
+                )
+            ]
         )
-        group = await _make_alive_controller(num_cells=3, ci_ft_test_actions=actions)
+        group = await _make_alive_controller(num_cells=3, ci_fault_hooks=requests)
 
         await group.train(rollout_id=4, rollout_data_pack=_DUMMY_DATA_PACK)
 
         group._cell_operations.suspend.assert_awaited_once_with(cell_id="trainer-engine-actor-00002")
 
-    async def test_train_leaves_the_pool_alone_on_a_rollout_no_action_names(self):
-        """An action that fires on every rollout would tear the pool down for the whole run."""
-        actions = json.dumps(
-            [{"at_rollout": 4, "action": "stop_cell_at_end", "cell_id": "trainer-engine-actor-00002"}]
+    async def test_train_leaves_the_pool_alone_until_the_declared_rollout(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An unmatched rollout must preserve the pending stop for its declared step."""
+        _isolate_fault_hook_controller(monkeypatch)
+        requests = render_fault_hooks(
+            [
+                FaultHookRequest(
+                    request_id="stop-cell-2",
+                    hook_name=FaultHookName.TRAINER_CONTROLLER_STEP_END,
+                    rollout_id=4,
+                    action=StopCellAction(cell_id="trainer-engine-actor-00002"),
+                )
+            ]
         )
-        group = await _make_alive_controller(num_cells=3, ci_ft_test_actions=actions)
+        group = await _make_alive_controller(num_cells=3, ci_fault_hooks=requests)
 
         await group.train(rollout_id=3, rollout_data_pack=_DUMMY_DATA_PACK)
 
         group._cell_operations.suspend.assert_not_awaited()
+
+        await group.train(rollout_id=4, rollout_data_pack=_DUMMY_DATA_PACK)
+
+        group._cell_operations.suspend.assert_awaited_once_with(cell_id="trainer-engine-actor-00002")
+
+
+def _isolate_fault_hook_controller(monkeypatch: pytest.MonkeyPatch) -> None:
+    controller = _FaultHookController()
+    monkeypatch.setattr(group_module, "fault_hook_controller", controller)
+    monkeypatch.setattr(fault_hook_module, "fault_hook_controller", controller)
 
 
 class TestSaveModel:
