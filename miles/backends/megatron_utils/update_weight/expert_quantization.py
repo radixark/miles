@@ -37,15 +37,21 @@ def gather_expert_units(
     metadata_by_rank = [None] * dist.get_world_size(group)
     dist.all_gather_object(metadata_by_rank, (local_metadata, local_nbytes), group=group)
     source_ranks = dist.get_process_group_ranks(group)
+    local_rank = dist.get_rank()
 
     gathered = []
+    handles = []
     for rank, (metadata, nbytes) in zip(source_ranks, metadata_by_rank, strict=True):
         payload = torch.empty(nbytes, dtype=torch.uint8, device=device)
-        if dist.get_rank() == rank:
+        if local_rank == rank:
             _pack_units(units, metadata, payload)
         if nbytes:
-            dist.broadcast(payload, src=rank, group=group)
+            handles.append(dist.broadcast(payload, src=rank, group=group, async_op=True))
         gathered.extend(_unpack_units(metadata, payload))
+    # Queue every source before waiting so packing and communication can overlap.
+    # The returned views keep each payload alive until its broadcast completes.
+    for handle in handles:
+        handle.wait()
     return gathered
 
 
