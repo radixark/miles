@@ -33,6 +33,11 @@ def _quiet_rollout_pipeline(monkeypatch):
 def _make_executor() -> RolloutExecutor:
     executor = RolloutExecutor.__new__(RolloutExecutor)
     executor.args = Namespace(
+        enable_sample_ownership_checker=False,
+        sample_ownership_grace_steps=10,
+        save_debug_event_data=None,
+        ci_test=False,
+        save=None,
         delay_split_train_data_by_dp=False,
         indep_dp=False,
         load_debug_rollout_data=None,
