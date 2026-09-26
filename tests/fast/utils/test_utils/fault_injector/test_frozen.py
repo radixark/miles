@@ -141,6 +141,4 @@ class TestParkableLoops:
         """A normal asynchronous run must not be rejected by an unused freeze action."""
         monkeypatch.setattr(sys, "argv", ["/miles/train_async.py"])
         hooks = configure_hooks([], owner=FaultHookOwner.ORCHESTRATOR)
-        await hooks._reach_async(
-            FaultHookName.ORCHESTRATOR_STEP_END, {"rollout_id": 2, "trainer_model_id": "solver"}
-        )
+        await hooks._reach_async(FaultHookName.ORCHESTRATOR_STEP_END, {"rollout_id": 2, "trainer_model_id": "solver"})

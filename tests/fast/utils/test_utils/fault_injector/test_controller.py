@@ -232,6 +232,18 @@ class TestActorHooks:
         assert recorded_exit_codes == [1]
         assert operations.stopped == ["trainer-engine-actor-0"]
 
+    async def test_other_actor_hook_does_not_consume_the_crash_request(
+        self, configure_hooks: Callable[..., _FaultHookController], recorded_exit_codes: list[int]
+    ) -> None:
+        """A different trainer hook must leave the armed crash pending for its exact hook."""
+        hooks = configure_hooks([_CRASH], owner=FaultHookOwner.TRAINER_ACTOR, cell_id="trainer-engine-actor-1", rank=0)
+        context = {"rollout_id": 4, "attempt": 0}
+        await hooks._reach_async(FaultHookName.TRAINER_WEIGHT_UPDATE_BEFORE_SEND, context)
+        assert recorded_exit_codes == []
+        await hooks._reach_async(_ACTOR_HOOK, context)
+        await hooks._reach_async(_ACTOR_HOOK, context)
+        assert recorded_exit_codes == [1]
+
 
 class TestRuntimeSetAndClear:
     def test_an_immediate_request_fires_on_set_and_frees_its_id(

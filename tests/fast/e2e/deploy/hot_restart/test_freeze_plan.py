@@ -29,7 +29,7 @@ from miles.utils.test_utils.fault_injector.static_source import CI_FAULT_HOOKS_P
 # TODO ad hoc hack: revert after the args refactor
 class TestTheFreezePlanFile:
     def test_the_plan_a_relaunch_writes_replaces_the_one_the_run_was_installed_with(self, tmp_path):
-        """The run rereads this one path every step, so a second plan beside it would never be seen."""
+        """Each replacement reads the same path, so a second plan beside it would never be seen."""
         path = compute_freeze_plan_path(f"{tmp_path}/target")
         write_freeze_plan(path, frozen_rollout_id=2)
         write_freeze_plan(path, frozen_rollout_id=4)
@@ -59,7 +59,7 @@ class TestTheFreezePlanFile:
         assert compute_freeze_plan_path(f"{tmp_path}/target") != compute_freeze_plan_path(f"{tmp_path}/baseline")
 
     def test_a_partial_write_is_never_what_the_run_reads(self, tmp_path):
-        """The run rereads the plan every step, so it may only ever see a whole one."""
+        """A replacement reading the shared plan may only ever see a complete request list."""
         path = compute_freeze_plan_path(f"{tmp_path}/target")
         write_freeze_plan(path, frozen_rollout_id=2)
 
