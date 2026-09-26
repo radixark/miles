@@ -198,7 +198,7 @@ class TestWeightPublicationRulesWiredIn:
             tmp_path,
             [
                 make_result(second=1.0, update_id="u1", published_version=1, cell_hashes={"a": "h"}, updated=["a"]),
-                make_step_end(second=2.0),
+                make_step_end(second=2.0, cell_outcomes={}),
             ],
         )
 
@@ -221,7 +221,7 @@ class TestWeightPublicationRulesWiredIn:
                     )
                     for version in (1, 2)
                 ],
-                make_step_end(second=9.0),
+                make_step_end(second=9.0, cell_outcomes={}),
             ],
         )
 
