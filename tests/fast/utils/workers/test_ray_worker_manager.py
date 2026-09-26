@@ -457,12 +457,12 @@ class TestPortAllocationDetails:
 
 class TestInitStartsCommands:
     async def test_every_worker_runs_the_command_rendered_for_it(self, fake_ray_cluster: FakeRayCluster):
-        """Each worker's actor runs exactly the command its own launch context rendered."""
+        """Each worker's actor execs the command its own launch context rendered, so no shell sits in between."""
         recorder = _LaunchRecorder()
         await _launch([_make_spec("engine", num_cells=2, launch_command=recorder.command)])
 
         run_calls = fake_ray_cluster.calls_of("run")
-        assert [call.kwargs["cmd"] for call in run_calls] == ["run-0-0", "run-1-0"]
+        assert [call.kwargs["cmd"] for call in run_calls] == ["exec run-0-0", "exec run-1-0"]
         assert [call.kwargs["envs"] for call in run_calls] == [{}, {}]
 
     async def test_the_launch_context_carries_the_workers_own_indices_and_addrs(

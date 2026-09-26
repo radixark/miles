@@ -99,6 +99,7 @@ class LaunchCommandContext(WorkerLaunchContext):
 
 
 class CommandWorkerSpec(BaseWorkerSpec):
+    # A single simple command: the manager execs it, so it must not rely on shell control flow.
     launch_command: Callable[[LaunchCommandContext], str]
 
 
