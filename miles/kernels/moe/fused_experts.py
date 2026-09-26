@@ -9,7 +9,7 @@ from sglang.srt.layers.moe.fused_moe_triton.fused_moe import (
     silu_and_mul,
 )
 
-from .fused_moe_triton_backward_kernels import invoke_fused_moe_backward_kernel
+from miles.kernels.moe.fused_moe_triton_backward_kernels import invoke_fused_moe_backward_kernel
 
 
 class GateUpProjFunction(torch.autograd.Function):
@@ -377,3 +377,37 @@ class MoeSumReduceFunction(torch.autograd.Function):
     def backward(ctx, grad_output):
         (intermediate_cache3,) = ctx.saved_tensors
         return grad_output.unsqueeze(1).expand_as(intermediate_cache3), None
+
+
+def fused_experts_impl(
+    hidden_states: torch.Tensor,
+    w1: torch.Tensor,
+    w2: torch.Tensor,
+    topk_weights: torch.Tensor,
+    topk_ids: torch.Tensor,
+):
+    assert hidden_states.shape[1] == w1.shape[2], "Hidden size mismatch"
+    assert topk_weights.shape == topk_ids.shape, "topk shape mismatch"
+    assert hidden_states.is_contiguous(), "Hidden_states must be contiguous"
+    assert w1.is_contiguous(), "Expert weights1 must be contiguous"
+    assert w2.is_contiguous(), "Expert weights2 must be contiguous"
+    assert hidden_states.dtype in [torch.bfloat16]
+
+    intermediate_cache1 = GateUpProjFunction.apply(
+        hidden_states,
+        w1,
+        topk_weights,
+        topk_ids,
+    )
+    intermediate_cache2 = SiluAndMulFunction.apply(intermediate_cache1)
+    intermediate_cache3 = DownProjFunction.apply(
+        intermediate_cache2,
+        w2,
+        topk_weights,
+        topk_ids,
+    )
+    output_hidden_states = MoeSumReduceFunction.apply(
+        intermediate_cache3,
+        hidden_states.shape,
+    )
+    return output_hidden_states
