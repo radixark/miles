@@ -36,6 +36,7 @@ from miles.utils.audit_utils.event_logger.logger import event_logger_context
 from miles.utils.audit_utils.process_identity import SimpleProcessIdentity
 from miles.utils.audit_utils.sample_ownership.recorder import SampleOwnershipRecorder
 from miles.utils.data import RolloutDataPack
+from miles.utils.dp_schedule import TrainParallelConfig
 from miles.utils.environ import use_legacy_rollout_v1
 from miles.utils.function_registry import load_function
 from miles.utils.hf_utils.config import is_complete_hf_export
@@ -81,7 +82,7 @@ class RolloutExecutor:
         self._weight_versions_of_model_id: dict[str | None, int] = {}
         self.last_get_rollout_id_of_model_id: dict[str | None, int] = {}
         self._rollouts_since_publish_of_model_id: dict[str | None, int] = defaultdict(int)
-        self._train_parallel_configs_of_model_id: dict[str | None, dict[str, Any]] = {}
+        self._train_parallel_configs_of_model_id: dict[str | None, TrainParallelConfig | None] = {}
         self._router_providers = router_providers
         self._session_server_provider = session_server_provider
         self._inference_controller_provider = inference_controller_provider
@@ -188,9 +189,11 @@ class RolloutExecutor:
             if self.args.delay_split_train_data_by_dp:
                 data_ref = object_store.get_instance().put(value=train_data, value_spec=ROLLOUT_DATA_VALUE_SPEC)
             else:
-                data_ref = split_train_data_by_dp(
+                shards = split_train_data_by_dp(
                     self.args, train_data, self._train_parallel_configs_of_model_id[trainer_model_id]
                 )
+                store = object_store.get_instance()
+                data_ref = [store.put(value=shard, value_spec=ROLLOUT_DATA_VALUE_SPEC) for shard in shards]
             return RolloutDataPack(sample_indices=sample_indices, data_ref=data_ref)
 
     async def _generate_rollout_data(
@@ -378,7 +381,9 @@ class RolloutExecutor:
         self._weight_versions_of_model_id[trainer_model_id] = weight_version
         self._rollouts_since_publish_of_model_id[trainer_model_id] = 0
 
-    def set_train_parallel_config(self, config: dict[str, Any], trainer_model_id: str | None = None) -> None:
+    def set_train_parallel_config(
+        self, config: TrainParallelConfig | None, trainer_model_id: str | None = None
+    ) -> None:
         self._train_parallel_configs_of_model_id[trainer_model_id] = config
 
     async def set_eval_fleet_info(self, eval_fleet_info: EvalFleetInfo | None) -> None:

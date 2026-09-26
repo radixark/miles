@@ -22,6 +22,7 @@ from miles.utils.external_utils.command_utils.base_backend import (
     CLUSTER_BACKEND_FLAG,
     ExecuteTrainConfig,
     ExecuteTrainRequest,
+    LaunchGuard,
 )
 from miles.utils.external_utils.command_utils.common import (
     MOONCAKE_INIT_KWARGS_FLAG,
@@ -70,6 +71,7 @@ _RUN_UUID_FLAG = "--run-uuid"
 _ENV_REPORT_FLAG = "--env-report"
 _WANDB_RUN_ID_FLAG = "--wandb-run-id"
 _RUN_ID_PATTERN = re.compile(DNS_LABEL_PATTERN)
+_DEFAULT_LAUNCH_GUARD = LaunchGuard()
 
 
 class RunExitedError(SystemExit):
@@ -78,7 +80,10 @@ class RunExitedError(SystemExit):
         self.exit_code = exit_code
 
 
-def execute_train(*, request: ExecuteTrainRequest, config: ExecuteTrainConfig) -> None:
+def execute_train(
+    *, request: ExecuteTrainRequest, config: ExecuteTrainConfig, guard: LaunchGuard | None = None
+) -> None:
+    guard = _DEFAULT_LAUNCH_GUARD if guard is None else guard
     run_id = config.run_id
     assert _RUN_ID_PATTERN.fullmatch(
         run_id
@@ -90,7 +95,7 @@ def execute_train(*, request: ExecuteTrainRequest, config: ExecuteTrainConfig) -
         deploy_component=config.deploy_component,
         deploy_instance_id=config.deploy_instance_id,
     ).serialize()
-    installed_manifest = Helm.get_manifest(release, namespace)
+    installed_manifest = guard.get_manifest(release, namespace)
     run_uuid = _resolve_run_uuid(config, installed_manifest=installed_manifest, release=release)
     env = train_env_vars(request, {}, config=config)
     pod_argv, args = _compute_train_argv(request, run_uuid=run_uuid, release=release, namespace=namespace, env=env)
@@ -194,14 +199,21 @@ def execute_train(*, request: ExecuteTrainRequest, config: ExecuteTrainConfig) -
             allow_diff_object_keys=hot_restart_plan.allow_diff_object_keys,
         )
     if rebuilds_orchestrator:
-        _defuse_previous_generation(
+        guard.before_defuse(
             release, namespace=namespace, superseded_state_file=carried_state_file, state_file=state_file
+        )
+        _defuse_previous_generation(
+            release,
+            namespace=namespace,
+            superseded_state_file=carried_state_file,
+            state_file=state_file,
+            guard=guard,
         )
 
     record.write(path=record_path)
     logger.info(f"What this launch launched is recorded under {record_path}")
 
-    Helm.upgrade(
+    guard.upgrade(
         release=release,
         namespace=namespace,
         chart=chart,
@@ -417,7 +429,12 @@ def _uninstall_leftover_ci_releases(namespace: str, *, keep_run_id: str) -> list
 
 
 def _defuse_previous_generation(
-    release: str, *, namespace: str, superseded_state_file: Path | None, state_file: Path | None
+    release: str,
+    *,
+    namespace: str,
+    superseded_state_file: Path | None,
+    state_file: Path | None,
+    guard: LaunchGuard = _DEFAULT_LAUNCH_GUARD,
 ) -> None:
     if superseded_state_file is not None:
         marker = RunFiles.superseded_marker(state_file=superseded_state_file)
@@ -430,7 +447,7 @@ def _defuse_previous_generation(
 
     job = RunNames.uninstall_job(release=release)
     logger.info(f"Deleting {job} if it is pending, so it cannot uninstall the release this launch installs")
-    Kubectl.delete_job(job, namespace=namespace, check=True)
+    guard.delete_uninstall_job(job, namespace=namespace, check=True)
 
 
 def _collect_diagnosis(*, release: str, namespace: str, state_file: Path) -> None:

@@ -7,6 +7,12 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from tests.fast.utils.event_analyzer.rules.weight_event_fakes import (
+    make_checksum,
+    make_result,
+    make_step_end,
+    make_trainer_args,
+)
 
 from miles.backends.megatron_utils.ft.types import TrainStepOutcome
 from miles.utils.audit_utils.event_analyzer import analyzer as analyzer_module
@@ -16,6 +22,10 @@ from miles.utils.audit_utils.event_analyzer.analyzer import (
     run_analysis_from_args,
     run_sample_ownership_analysis,
 )
+from miles.utils.audit_utils.event_analyzer.rules.inference_engine_weight_checksum_coverage import (
+    WeightUpdateCoverageIssue,
+)
+from miles.utils.audit_utils.event_analyzer.rules.inference_engine_weight_movement import WeightMovementIssue
 from miles.utils.audit_utils.event_logger.logger import EventLogger
 from miles.utils.audit_utils.event_logger.models import (
     InferenceEngineWeightChecksumEvent,
@@ -137,7 +147,16 @@ def _log_inference_engine_checksum_event(
 ) -> None:
     event_logger.log(
         InferenceEngineWeightChecksumEvent,
-        dict(rollout_id=rollout_id, engine_checksums=engine_checksums),
+        dict(
+            rollout_id=rollout_id,
+            weight_version=rollout_id + 1,
+            debug_trainer_load_state_timestamp=0.0,
+            debug_weight_update_id=f"update-{rollout_id + 1}",
+            engine_snapshots=[
+                dict(cell_id=f"cell-{index}", workers_hash=f"incarnation-{index}", tensor_checksums=checksums)
+                for index, checksums in enumerate(engine_checksums)
+            ],
+        ),
     )
 
 
@@ -166,6 +185,49 @@ class TestInferenceEngineChecksumRuleWiredIn:
         event_logger.close()
 
         assert run_analysis(event_dir=tmp_path) == []
+
+
+class TestWeightPublicationRulesWiredIn:
+    @staticmethod
+    def _write(tmp_path: Path, events: list[Any]) -> None:
+        (tmp_path / "e.jsonl").write_text("".join(event.model_dump_json() + "\n" for event in events))
+
+    def test_an_uncovered_settled_publication_is_reported(self, tmp_path: Path) -> None:
+        """run_analysis runs the publication coverage rule on every model partition."""
+        self._write(
+            tmp_path,
+            [
+                make_result(second=1.0, update_id="u1", published_version=1, cell_hashes={"a": "h"}, updated=["a"]),
+                make_step_end(second=2.0, cell_outcomes={}),
+            ],
+        )
+
+        [issue] = run_analysis(event_dir=tmp_path)
+
+        assert isinstance(issue, WeightUpdateCoverageIssue)
+
+    def test_an_unchanged_tensor_between_settled_versions_is_reported(self, tmp_path: Path) -> None:
+        """run_analysis runs the per-tensor movement rule when the trainer arguments allow it."""
+        self._write(
+            tmp_path,
+            [
+                make_trainer_args(),
+                *[
+                    make_checksum(
+                        second=float(version),
+                        update_id=f"u{version}",
+                        weight_version=version,
+                        snapshots={"a": ("h", {"w": "same"})},
+                    )
+                    for version in (1, 2)
+                ],
+                make_step_end(second=9.0, cell_outcomes={}),
+            ],
+        )
+
+        [issue] = run_analysis(event_dir=tmp_path)
+
+        assert isinstance(issue, WeightMovementIssue)
 
 
 class TestRunAnalysisFromArgs:

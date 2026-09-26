@@ -1,15 +1,28 @@
 import os
 import shlex
+import signal
 import threading
 import time
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
 from miles.utils.http_utils import MILES_HOST_IP_ENV
 from miles.utils.misc import get_current_node_ip
-from miles.utils.test_utils import fault_injector
-from miles.utils.workers import process_utils
+from miles.utils.test_utils.fault_injector.actions.base import FaultHookResources
+from miles.utils.test_utils.fault_injector.actions.process import (
+    DeadlockThreadAction,
+    ExitProcessAction,
+    FreezeProcessAction,
+    KillProcessAction,
+    SegfaultProcessAction,
+    StopProcessAction,
+)
+from miles.utils.test_utils.fault_injector.actions.union import FaultAction
+from miles.utils.test_utils.fault_injector.controller import FaultHookCommand, FaultHookOperation, _FaultHookController
+from miles.utils.test_utils.fault_injector.models import FaultHookName, FaultHookRequest, FaultHookStatus
+from miles.utils.workers import command_actor, process_utils
 from miles.utils.workers.command_actor import CommandActor
 
 
@@ -196,18 +209,30 @@ class TestKillSubprocess:
             CommandActor().kill_subprocess()
 
 
-class TestInjectFault:
-    def test_a_sigkill_reaches_the_worker_process_group(self, monkeypatch: pytest.MonkeyPatch):
+class TestControlFaultHook:
+    @pytest.fixture(autouse=True)
+    def isolated_hooks(self, monkeypatch: pytest.MonkeyPatch) -> _FaultHookController:
+        hooks = _FaultHookController()
+        monkeypatch.setattr(command_actor, "fault_hook_controller", hooks)
+        return hooks
+
+    def test_a_sigkill_reaches_the_worker_process_group(
+        self, monkeypatch: pytest.MonkeyPatch, isolated_hooks: _FaultHookController
+    ) -> None:
         """Crashing a worker must include every subprocess that belongs to that worker."""
-        killed: list[int] = []
+        killed: list[tuple[int, signal.Signals]] = []
         monkeypatch.setattr(process_utils, "kill_process", _refuse_to_kill)
-        monkeypatch.setattr(process_utils, "kill_process_tree", lambda process: killed.append(process.pid))
+        monkeypatch.setattr(
+            process_utils, "signal_process_tree", lambda process, signum: killed.append((process.pid, signum))
+        )
         actor = CommandActor()
         actor._process = _FakeProcess(pid=4321)
+        isolated_hooks.configure(resources=FaultHookResources(managed_process=actor._process))
 
-        actor.inject_fault("sigkill")
+        record = actor.control_fault_hook(_fault_command(KillProcessAction()))
 
-        assert killed == [4321]
+        assert killed == [(4321, signal.SIGKILL)]
+        assert record.status == FaultHookStatus.FIRED
 
     def test_a_sigkill_does_not_leave_a_spawned_engine_process_behind(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
@@ -221,46 +246,56 @@ class TestInjectFault:
         child_pid = int(child_pid_path.read_text())
 
         try:
-            actor.inject_fault("sigkill")
+            actor.control_fault_hook(_fault_command(KillProcessAction()))
 
             fake_exit.wait()
             _wait_for_process_exit(child_pid)
         finally:
             process_utils.kill_process_tree(actor._process)
 
-    @pytest.mark.parametrize("mode", ["exit", "segfault", "deadlock"])
-    def test_every_other_failure_mode_is_rejected(self, monkeypatch: pytest.MonkeyPatch, mode: str):
+    @pytest.mark.parametrize("action", [ExitProcessAction(), SegfaultProcessAction(), DeadlockThreadAction()])
+    def test_self_inflicted_actions_are_rejected_for_a_subprocess(
+        self, monkeypatch: pytest.MonkeyPatch, isolated_hooks: _FaultHookController, action: FaultAction
+    ) -> None:
         """A process exits, segfaults and deadlocks from the inside; no signal an outsider sends reproduces that."""
         monkeypatch.setattr(process_utils, "kill_process_tree", _refuse_to_kill)
         actor = CommandActor()
         actor._process = _FakeProcess(pid=4321)
+        isolated_hooks.configure(resources=FaultHookResources(managed_process=actor._process))
 
-        with pytest.raises(AssertionError, match="only sigkill"):
-            actor.inject_fault(mode)
+        with pytest.raises(AssertionError, match="not on a subprocess"):
+            actor.control_fault_hook(_fault_command(action))
 
-    def test_an_unknown_mode_is_rejected(self):
+    def test_an_unknown_action_is_rejected(self) -> None:
         """A misspelt mode must not be waved through as some default crash."""
         actor = CommandActor()
         actor._process = _FakeProcess(pid=4321)
 
-        with pytest.raises(ValueError):
-            actor.inject_fault("nuke")
+        with pytest.raises(ValidationError, match="union_tag_invalid"):
+            actor.control_fault_hook(
+                FaultHookCommand.model_validate(
+                    {"operation": "set", "request": {"request_id": "test", "action": {"kind": "nuke"}}}
+                )
+            )
 
-    def test_the_actor_process_survives_the_injection(self, monkeypatch: pytest.MonkeyPatch):
+    def test_the_actor_process_survives_the_injection(
+        self, monkeypatch: pytest.MonkeyPatch, isolated_hooks: _FaultHookController
+    ) -> None:
         """Production loses the engine, not its supervisor, so crashing the actor would be the wrong fault."""
-        monkeypatch.setattr(fault_injector, "inject_fault", _refuse_to_inject)
-        monkeypatch.setattr(process_utils, "kill_process_tree", lambda process: None)
+        monkeypatch.setattr(os, "kill", _refuse_to_inject)
+        monkeypatch.setattr(process_utils, "signal_process_tree", lambda process, signum: None)
         actor = CommandActor()
         actor._process = _FakeProcess(pid=4321)
+        isolated_hooks.configure(resources=FaultHookResources(managed_process=actor._process))
 
-        actor.inject_fault("sigkill")
+        actor.control_fault_hook(_fault_command(KillProcessAction()))
 
     def test_an_actor_without_a_subprocess_is_rejected(self, monkeypatch: pytest.MonkeyPatch):
         """Falling back to killing the actor would inject a fault production never produces."""
-        monkeypatch.setattr(fault_injector, "inject_fault", _refuse_to_inject)
+        monkeypatch.setattr(os, "kill", _refuse_to_inject)
 
         with pytest.raises(AssertionError, match="no subprocess"):
-            CommandActor().inject_fault("sigkill")
+            CommandActor().control_fault_hook(_fault_command(KillProcessAction()))
 
 
 class _FakeProcess:
@@ -268,8 +303,14 @@ class _FakeProcess:
         self.pid = pid
 
 
-def _refuse_to_inject(mode: str) -> None:
-    raise AssertionError(f"the actor process must not crash itself, but {mode} was injected into it")
+def _fault_command(action: FaultAction) -> FaultHookCommand:
+    return FaultHookCommand(
+        operation=FaultHookOperation.SET, request=FaultHookRequest(request_id="test", action=action)
+    )
+
+
+def _refuse_to_inject(pid: int, signum: signal.Signals) -> None:
+    raise AssertionError(f"the actor process must not crash itself, but signal {signum} was sent to {pid}")
 
 
 def _refuse_to_kill(process) -> None:
@@ -306,3 +347,89 @@ class TestNodeAddress:
         monkeypatch.delenv(MILES_HOST_IP_ENV, raising=False)
 
         assert CommandActor()._get_node_ip() == get_current_node_ip()
+
+
+# ======================= fault hooks through the actor =======================
+
+
+class _HookedWorkerProcess:
+    def __init__(self, *, pid: int) -> None:
+        self.pid = pid
+
+
+def _refuse_any_signal(process: _HookedWorkerProcess, signum: signal.Signals) -> None:
+    raise AssertionError(f"no signal was expected, but {signum} was sent to pid {process.pid}")
+
+
+def _refuse_to_signal_the_actor(pid: int, signum: signal.Signals) -> None:
+    raise AssertionError(f"the actor process must not signal itself, but {signum} was sent to {pid}")
+
+
+def _refuse_any_kill(process: _HookedWorkerProcess) -> None:
+    raise AssertionError(f"no kill was expected, but pid {process.pid} was killed")
+
+
+def _hooked_actor(hooks: _FaultHookController) -> CommandActor:
+    actor = CommandActor()
+    actor._process = _HookedWorkerProcess(pid=4321)
+    hooks.configure(resources=FaultHookResources(managed_process=actor._process))
+    return actor
+
+
+class TestFaultHookThroughTheActor:
+    @pytest.fixture
+    def actor_hooks(self, monkeypatch: pytest.MonkeyPatch) -> _FaultHookController:
+        hooks = _FaultHookController()
+        monkeypatch.setattr(command_actor, "fault_hook_controller", hooks)
+        return hooks
+
+    def test_a_cleared_hooked_request_never_signals_the_worker(
+        self, monkeypatch: pytest.MonkeyPatch, actor_hooks: _FaultHookController
+    ) -> None:
+        """A SET that waits on a hook must be clearable through the actor before it signals anything."""
+        monkeypatch.setattr(process_utils, "signal_process_tree", _refuse_any_signal)
+        actor = _hooked_actor(actor_hooks)
+        request = FaultHookRequest(
+            request_id="test", hook_name=FaultHookName.TRAINER_STEP_BEFORE_ALLREDUCE, action=KillProcessAction()
+        )
+
+        armed = actor.control_fault_hook(FaultHookCommand(operation=FaultHookOperation.SET, request=request))
+        cleared = actor.control_fault_hook(FaultHookCommand(operation=FaultHookOperation.CLEAR, request=request))
+
+        assert (armed.status, cleared.status) == (FaultHookStatus.PENDING, FaultHookStatus.CLEARED)
+
+    def test_a_sigstop_reaches_the_worker_process_group_and_spares_the_actor(
+        self, monkeypatch: pytest.MonkeyPatch, actor_hooks: _FaultHookController
+    ) -> None:
+        """Pausing a worker must stop its whole process group and never the supervising actor."""
+        stopped: list[tuple[int, signal.Signals]] = []
+        monkeypatch.setattr(os, "kill", _refuse_to_signal_the_actor)
+        monkeypatch.setattr(
+            process_utils, "signal_process_tree", lambda process, signum: stopped.append((process.pid, signum))
+        )
+        actor = _hooked_actor(actor_hooks)
+
+        record = actor.control_fault_hook(
+            FaultHookCommand(
+                operation=FaultHookOperation.SET,
+                request=FaultHookRequest(request_id="test", action=StopProcessAction()),
+            )
+        )
+
+        assert stopped == [(4321, signal.SIGSTOP)]
+        assert record.status == FaultHookStatus.FIRED
+
+    def test_a_freeze_is_rejected_for_a_subprocess(
+        self, monkeypatch: pytest.MonkeyPatch, actor_hooks: _FaultHookController
+    ) -> None:
+        """A process freezes from the inside; no signal an outsider sends reproduces that."""
+        monkeypatch.setattr(process_utils, "kill_process_tree", _refuse_any_kill)
+        actor = _hooked_actor(actor_hooks)
+
+        with pytest.raises(AssertionError, match="not on a subprocess"):
+            actor.control_fault_hook(
+                FaultHookCommand(
+                    operation=FaultHookOperation.SET,
+                    request=FaultHookRequest(request_id="test", action=FreezeProcessAction()),
+                )
+            )

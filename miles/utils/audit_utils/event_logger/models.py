@@ -1,11 +1,13 @@
 from datetime import datetime
 from typing import Annotated, Any, Literal
 
-from pydantic import Discriminator
+from pydantic import Discriminator, Field
 
 from miles.backends.megatron_utils.ft.types import TrainStepOutcome
+from miles.utils.audit_utils.checksum_utils import InferenceEngineChecksumSnapshot
 from miles.utils.audit_utils.process_identity import ProcessIdentity
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
+from miles.utils.test_utils.fault_injector.models import FaultHookRecord
 
 
 class EnvReportEditablePackageInfo(FrozenStrictBaseModel):
@@ -100,6 +102,7 @@ class TrainGroupStepEndEvent(EventBase):
     attempt: int
     role: Literal["actor", "critic"]
     cell_outcomes: dict[int, Literal["error"] | list[TrainStepOutcome]]
+    cell_incarnations: dict[str, str] = Field(default_factory=dict)
 
 
 class CellReconfigureEvent(EventBase):
@@ -110,6 +113,7 @@ class CellReconfigureEvent(EventBase):
     # healing happened iff non-empty
     healed_cell_indices: list[int]
     alive_cell_indices_after: list[int]
+    cell_incarnations_after: dict[str, str] = Field(default_factory=dict)
 
 
 class InferenceEngineWeightChecksumEvent(EventBase):
@@ -118,8 +122,11 @@ class InferenceEngineWeightChecksumEvent(EventBase):
     rollout_id: int
     # The policy whose weights were pushed, or None for a run that trains one unnamed policy.
     trainer_model_id: str | None = None
+    weight_version: int
+    debug_trainer_load_state_timestamp: float
+    debug_weight_update_id: str
     # One {tensor -> hash} dict per rollout engine; a TP>1 engine's ranks merge with a rank{r}/ prefix.
-    engine_checksums: list[dict[str, str]]
+    engine_snapshots: list[InferenceEngineChecksumSnapshot] = Field(min_length=1)
 
 
 class TrainAdvantageComputationEvent(_ActorTrainEventBase):
@@ -136,6 +143,7 @@ class EnvReportEvent(EventBase):
 class EngineEnvReportEvent(EventBase):
     type: Literal["engine_env_report"] = "engine_env_report"
     cell_id: str
+    workers_hash: str | None = None
     server_url: str
     server_info: dict[str, Any]
 
@@ -185,6 +193,23 @@ class TrainerModelCompanionInfoEvent(EventBase):
     skipped_nonfinite_sample_counts: list[OutputConsumption]
 
 
+class FaultHookEvent(EventBase):
+    type: Literal["fault_hook"] = "fault_hook"
+    record: FaultHookRecord
+
+
+class WeightUpdateResultEvent(EventBase):
+    type: Literal["weight_update_result"] = "weight_update_result"
+    debug_weight_update_id: str
+    debug_trainer_load_state_timestamp: float
+    rollout_id: int | None
+    candidate_version: int | None
+    published_version: int | None
+    snapshot_cell_id_to_hashes: dict[str, str]
+    updated_cell_ids: list[str]
+    failed_cell_ids: list[str]
+
+
 Event = Annotated[
     TrainEngineLocalWeightChecksumEvent
     | WitnessSnapshotParamEvent
@@ -198,7 +223,9 @@ Event = Annotated[
     | MetricEvent
     | DataSourceIssuedSamplesEvent
     | ExplicitlyDroppedSamplesEvent
-    | TrainerModelCompanionInfoEvent,
+    | TrainerModelCompanionInfoEvent
+    | FaultHookEvent
+    | WeightUpdateResultEvent,
     Discriminator("type"),
 ]
 

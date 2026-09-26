@@ -31,6 +31,7 @@ from miles.utils.arguments import (
     get_miles_extra_args_provider,
     miles_validate_args,
     resolve_rollout_function_paths,
+    supports_partial_target_weight_update,
     validate_async_off_policy_correction,
     validate_skip_actor_forward_only,
 )
@@ -44,6 +45,8 @@ from miles.utils.workers.naming import DEPLOY_INSTANCE_ID_MAX_LENGTH
 
 PATH_ARGS = ["--rollout-function-path", "--custom-generate-function-path", "--custom-inference-engine-provider-path"]
 REQUIRED_ARGS = ["--rollout-batch-size", "64"]
+_P2P_ARGS = ["--update-weight-transfer-mode", "p2p"]
+DYNAMIC_BATCH_ARGS = ["--use-dynamic-batch-size", "--max-tokens-per-gpu", "1024"]
 
 _MEGATRON_PARALLEL_SIZES: dict[str, int] = {
     "world_size": 8,
@@ -56,6 +59,14 @@ _MEGATRON_PARALLEL_SIZES: dict[str, int] = {
 def _set_megatron_parallel_sizes(args: argparse.Namespace) -> None:
     for name, size in _MEGATRON_PARALLEL_SIZES.items():
         setattr(args, name, size)
+
+
+def _parse_megatron_args(extra: list[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser()
+    get_miles_extra_args_provider()(parser)
+    args = parser.parse_args(extra + ["--num-rollout", "1"] + REQUIRED_ARGS)
+    _set_megatron_parallel_sizes(args)
+    return args
 
 
 # These name a dataset column, a metric or a prompt field, not a credential.
@@ -573,6 +584,28 @@ class TestSampleOwnershipCheckArguments:
 
         with pytest.raises(ValueError, match="--sample-ownership-grace-steps"):
             _resolve_sample_ownership_check(args)
+
+
+class TestWeightTransferChecksumArguments:
+    @pytest.mark.parametrize(
+        "extra,enabled",
+        [
+            ([], False),
+            (["--ci-test"], True),
+            (["--check-weight-transfer-checksum"], True),
+            (["--ci-test", "--no-check-weight-transfer-checksum"], False),
+        ],
+        ids=["default-off", "ci-default-on", "explicit-on", "ci-explicit-off"],
+    )
+    def test_ci_enables_the_check_unless_the_flag_says_otherwise(self, extra: list[str], enabled: bool) -> None:
+        """Every P2P write is checked in CI by default, and an explicit flag wins either way."""
+        parser = argparse.ArgumentParser()
+        get_miles_extra_args_provider()(parser)
+        args = parser.parse_args(["--num-rollout", "1", "--run-uuid", "0123456789abcdef", *extra, *REQUIRED_ARGS])
+
+        miles_validate_args(args)
+
+        assert args.check_weight_transfer_checksum is enabled
 
 
 class TestMaybeApplyDumperOverrides:
@@ -1738,13 +1771,38 @@ def test_dynamic_global_batch_size_requires_dynamic_batch_size():
 
 def test_shared_actor_critic_ppo_rejects_indep_dp():
     """Multi-cell PPO used to pass validation and fail only at the first training step's external-data assert."""
-    parser = argparse.ArgumentParser()
-    get_miles_extra_args_provider()(parser)
-    args = parser.parse_args(["--advantage-estimator", "ppo", "--indep-dp", "--num-rollout", "1"] + REQUIRED_ARGS)
-    _set_megatron_parallel_sizes(args)
+    args = _parse_megatron_args(["--advantage-estimator", "ppo", "--indep-dp"] + DYNAMIC_BATCH_ARGS)
 
     with pytest.raises(AssertionError, match="does not support --indep-dp"):
         miles_validate_args(args)
+
+
+class TestIndepDpBatchSchedule:
+    def test_indep_dp_requires_dynamic_batch_size(self):
+        """Static micro-batching cannot align once the live cell count stops dividing the global batch."""
+        with pytest.raises(AssertionError, match="requires --use-dynamic-batch-size"):
+            miles_validate_args(_parse_megatron_args(["--indep-dp"]))
+
+    def test_train_fault_tolerance_inherits_the_dynamic_batch_size_requirement(self):
+        """The train component implies indep_dp, so it must fail the same way instead of at the first fault."""
+        with pytest.raises(AssertionError, match="requires --use-dynamic-batch-size"):
+            miles_validate_args(_parse_megatron_args(["--use-fault-tolerance", "--ft-components", "train"]))
+
+    def test_indep_dp_rejects_dynamic_global_batch_size(self):
+        """The rollout side resolves that flag from a dp_size independent cells never advertise."""
+        with pytest.raises(AssertionError, match="does not support --use-dynamic-global-batch-size"):
+            miles_validate_args(
+                _parse_megatron_args(["--indep-dp", "--use-dynamic-global-batch-size"] + DYNAMIC_BATCH_ARGS)
+            )
+
+    def test_indep_dp_with_dynamic_batch_size_passes(self):
+        """The supported combination must keep validating, or every trainer FT run is rejected."""
+        args = _parse_megatron_args(["--use-fault-tolerance", "--ft-components", "train"] + DYNAMIC_BATCH_ARGS)
+
+        miles_validate_args(args)
+
+        assert args.indep_dp
+        assert args.use_dynamic_batch_size
 
 
 def test_rollout_fault_tolerance_rejects_a_dedicated_eval_fleet():
@@ -1753,6 +1811,7 @@ def test_rollout_fault_tolerance_rejects_a_dedicated_eval_fleet():
     get_miles_extra_args_provider()(parser)
     args = parser.parse_args(
         ["--use-fault-tolerance", "--ft-components", "rollout", "--eval-num-gpus", "8", "--num-rollout", "1"]
+        + _P2P_ARGS
         + REQUIRED_ARGS
     )
 
@@ -1764,12 +1823,7 @@ class TestFaultToleranceResolutionOrder:
     def _validate(self, tmp_path: Path, extra: list[str], yaml_body: str) -> argparse.Namespace:
         config_path = tmp_path / "custom.yaml"
         config_path.write_text(yaml_body)
-        parser = argparse.ArgumentParser()
-        get_miles_extra_args_provider()(parser)
-        args = parser.parse_args(
-            extra + ["--custom-config-path", str(config_path), "--num-rollout", "1"] + REQUIRED_ARGS
-        )
-        _set_megatron_parallel_sizes(args)
+        args = _parse_megatron_args(extra + ["--custom-config-path", str(config_path)] + DYNAMIC_BATCH_ARGS)
         miles_validate_args(args)
         return args
 
@@ -1781,7 +1835,7 @@ class TestFaultToleranceResolutionOrder:
 
     def test_the_config_file_can_turn_fault_tolerance_on(self, tmp_path):
         """A file-only opt-in must reach the same defaults the flag would have produced."""
-        args = self._validate(tmp_path, [], "use_fault_tolerance: true\n")
+        args = self._validate(tmp_path, _P2P_ARGS, "use_fault_tolerance: true\n")
 
         assert (args.ft_components, args.mini_ft_controller_enable) == (["rollout"], True)
 
@@ -1804,7 +1858,7 @@ class TestFaultToleranceResolutionOrder:
 
     def test_the_config_file_keeps_an_explicit_api_server_port(self, tmp_path):
         """The implicit healing defaults must follow the port the file asks for, not the one the flag implied."""
-        args = self._validate(tmp_path, [], "use_fault_tolerance: true\napi_server_port: 0\n")
+        args = self._validate(tmp_path, _P2P_ARGS, "use_fault_tolerance: true\napi_server_port: 0\n")
 
         assert (args.ft_components, args.api_server_port, args.mini_ft_controller_enable) == (["rollout"], 0, False)
 
@@ -1844,18 +1898,8 @@ class TestCustomConfigAppliedBeforeDerivedArgs:
 
 def test_stream_optimizer_state_to_disk_rejects_fault_tolerant_training():
     """Deriving indep_dp after the disk-stream asserts would have let an unsupported pair through."""
-    parser = argparse.ArgumentParser()
-    get_miles_extra_args_provider()(parser)
-    args = parser.parse_args(
-        [
-            "--stream-optimizer-state-to-disk",
-            "--use-fault-tolerance",
-            "--ft-components",
-            "train",
-            "--num-rollout",
-            "1",
-        ]
-        + REQUIRED_ARGS
+    args = _parse_megatron_args(
+        ["--stream-optimizer-state-to-disk", "--use-fault-tolerance", "--ft-components", "train"] + DYNAMIC_BATCH_ARGS
     )
     args.optimizer = "adam"
     args.use_distributed_optimizer = True
@@ -3108,11 +3152,11 @@ class TestMiniFtControllerArguments:
 
     def test_fault_tolerance_alone_turns_the_healing_loop_on(self):
         """Asking for fault tolerance heals on its own, so the loop must come up without a second flag."""
-        assert self._validate(["--use-fault-tolerance"]).mini_ft_controller_enable is True
+        assert self._validate(["--use-fault-tolerance", *_P2P_ARGS]).mini_ft_controller_enable is True
 
     def test_the_negative_flag_turns_the_healing_loop_back_off(self):
         """A run that drives healing from outside needs a way to keep the health reporting without the loop."""
-        args = self._validate(["--use-fault-tolerance", "--no-mini-ft-controller-enable"])
+        args = self._validate(["--use-fault-tolerance", "--no-mini-ft-controller-enable", *_P2P_ARGS])
 
         assert args.mini_ft_controller_enable is False
 
@@ -3278,3 +3322,146 @@ class TestMilesValidateArgsDiskDeltaResume:
         load_dir.mkdir()
 
         miles_validate_args(self._parse(load_dir, tmp_path))
+
+
+class TestWeightUpdateDeadlines:
+    def _parse(self, extra: list[str]) -> argparse.Namespace:
+        parser = argparse.ArgumentParser()
+        get_miles_extra_args_provider()(parser)
+        return parser.parse_args(["--num-rollout", "1"] + extra + REQUIRED_ARGS)
+
+    def test_every_weight_update_deadline_defaults_to_a_finite_value(self):
+        """An unbounded default would let one hung engine or trainer cell stall the run forever."""
+        args = self._parse([])
+
+        assert args.update_weights_timeout == 600.0
+        assert args.update_weight_engine_request_timeout == 300.0
+
+    @pytest.mark.parametrize("flag", ["--update-weights-timeout", "--update-weight-engine-request-timeout"])
+    @pytest.mark.parametrize("value", ["0", "-1"])
+    def test_a_non_positive_deadline_is_refused(self, flag: str, value: str):
+        """A zero or negative deadline would give up on every update before it even started."""
+        args = self._parse([flag, value])
+
+        with pytest.raises(AssertionError, match=re.escape(flag)):
+            miles_validate_args(args)
+
+
+class TestSupportsPartialTargetWeightUpdate:
+    @pytest.mark.parametrize(
+        "colocate, transfer_mode, expected",
+        [
+            (False, "p2p", True),
+            (False, "broadcast", False),
+            (True, "p2p", False),
+            (True, "broadcast", False),
+        ],
+    )
+    def test_only_a_disaggregated_p2p_run_can_split_the_targets(
+        self, colocate: bool, transfer_mode: str, expected: bool
+    ) -> None:
+        """A broadcast reaches every engine at once and cannot be cut per target, and a colocated run has one sender."""
+        args = SimpleNamespace(colocate=colocate, update_weight_transfer_mode=transfer_mode)
+
+        assert supports_partial_target_weight_update(args) is expected
+
+
+class TestRolloutFaultToleranceNeedsAPartialTargetWeightUpdate:
+    def _parse(self, extra: list[str]) -> argparse.Namespace:
+        parser = argparse.ArgumentParser()
+        get_miles_extra_args_provider()(parser)
+        return parser.parse_args(extra + ["--num-rollout", "1"] + REQUIRED_ARGS)
+
+    _MESSAGE = "rollout fault tolerance needs a partial-target weight update"
+
+    def test_p2p_without_colocate_is_accepted(self) -> None:
+        """A rollout cell stopped mid update is survivable only when each engine pulls its own weights."""
+        args = self._parse(["--use-fault-tolerance", *_P2P_ARGS])
+
+        miles_validate_args(args)
+
+        assert args.ft_components == ["rollout"]
+        assert supports_partial_target_weight_update(args)
+
+    def test_the_default_broadcast_transfer_mode_is_rejected(self) -> None:
+        """A broadcast blocks on every engine, so losing one during the update hangs the trainer."""
+        args = self._parse(["--use-fault-tolerance"])
+
+        with pytest.raises(AssertionError, match=self._MESSAGE) as exc_info:
+            miles_validate_args(args)
+
+        assert "--update-weight-transfer-mode p2p" in str(exc_info.value)
+        assert "a rollout cell may be stopped during a weight update" in str(exc_info.value)
+
+    def test_p2p_with_colocate_is_rejected(self) -> None:
+        """Colocate hands weights over by CUDA IPC from ranks that share the engine's gpus."""
+        args = self._parse(["--use-fault-tolerance", *_P2P_ARGS, "--colocate"])
+
+        with pytest.raises(AssertionError, match=self._MESSAGE) as exc_info:
+            miles_validate_args(args)
+
+        assert "no --colocate" in str(exc_info.value)
+
+    def test_the_disk_delta_transfer_mode_is_rejected(self) -> None:
+        """Only p2p is a partial-target update; every other mode fails the same way broadcast does."""
+        args = self._parse(["--use-fault-tolerance", "--update-weight-transfer-mode", "disk-delta"])
+
+        with pytest.raises(AssertionError, match=self._MESSAGE):
+            miles_validate_args(args)
+
+    def test_an_explicitly_requested_rollout_component_is_checked_too(self) -> None:
+        """The check reads the resolved component list, not the flag that happened to imply it."""
+        args = self._parse(["--use-fault-tolerance", "--ft-components", "rollout"])
+
+        with pytest.raises(AssertionError, match=self._MESSAGE):
+            miles_validate_args(args)
+
+    def test_a_mixed_component_list_containing_rollout_is_rejected(self) -> None:
+        """Adding the trainer component must not buy the rollout component an exemption."""
+        args = self._parse(["--use-fault-tolerance", "--ft-components", "rollout", "train"])
+
+        with pytest.raises(AssertionError, match=self._MESSAGE):
+            miles_validate_args(args)
+
+    def test_trainer_only_fault_tolerance_keeps_the_broadcast_transfer_mode(self) -> None:
+        """Trainer cells are healed between updates, so the transfer mode is none of this check's business."""
+        args = _parse_megatron_args(["--use-fault-tolerance", "--ft-components", "train"] + DYNAMIC_BATCH_ARGS)
+
+        miles_validate_args(args)
+
+        assert args.ft_components == ["train"]
+        assert args.update_weight_transfer_mode == "broadcast"
+
+    def test_trainer_only_fault_tolerance_keeps_colocate(self) -> None:
+        """The colocated half of the constraint is equally scoped to the rollout component."""
+        args = _parse_megatron_args(
+            ["--use-fault-tolerance", "--ft-components", "train", "--colocate"] + DYNAMIC_BATCH_ARGS
+        )
+
+        miles_validate_args(args)
+
+        assert (args.ft_components, args.colocate) == (["train"], True)
+
+    def test_a_run_without_fault_tolerance_is_unconstrained(self) -> None:
+        """Nothing stops a cell mid update when no healing loop exists to stop it."""
+        args = self._parse(["--colocate"])
+
+        miles_validate_args(args)
+
+        assert args.ft_components == []
+
+    def test_a_config_file_that_turns_rollout_fault_tolerance_on_is_checked(self, tmp_path) -> None:
+        """The check runs after the file override, so a file-only opt-in cannot slip past it."""
+        config_path = tmp_path / "custom.yaml"
+        config_path.write_text("use_fault_tolerance: true\n")
+        args = self._parse(["--custom-config-path", str(config_path)])
+
+        with pytest.raises(AssertionError, match=self._MESSAGE):
+            miles_validate_args(args)
+
+    def test_the_eval_fleet_check_still_runs_for_an_otherwise_valid_rollout_run(self) -> None:
+        """The new assertion must not shadow the one that follows it."""
+        args = self._parse(["--use-fault-tolerance", *_P2P_ARGS, "--eval-num-gpus", "8"])
+
+        with pytest.raises(AssertionError, match="dedicated eval fleet"):
+            miles_validate_args(args)

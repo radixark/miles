@@ -2,8 +2,13 @@ from __future__ import annotations
 
 import abc
 
-from miles.utils.test_utils.fault_injector import FailureMode
+from miles.utils.test_utils.fault_injector.controller import FaultHookCommand
+from miles.utils.test_utils.fault_injector.models import FaultHookRecord, ObservedFaultHookTarget
 from miles.utils.workers.worker_provider.base import CellInfo
+
+
+class StaleFaultTargetError(Exception):
+    pass
 
 
 class BaseCellOperations(abc.ABC):
@@ -17,4 +22,7 @@ class BaseCellOperations(abc.ABC):
     async def resume(self, *, cell_id: str) -> None: ...
 
     @abc.abstractmethod
-    async def inject_fault(self, *, cell_id: str, mode: FailureMode, sub_index: int) -> None: ...
+    async def observe_fault_target(self, *, cell_id: str, rank: int) -> ObservedFaultHookTarget: ...
+
+    @abc.abstractmethod
+    async def control_fault_hook(self, command: FaultHookCommand) -> FaultHookRecord: ...

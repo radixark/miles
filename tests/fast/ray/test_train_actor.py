@@ -3,9 +3,11 @@ import socket
 from types import SimpleNamespace
 
 import pytest
+from tests.fast.train_parallel_config_utils import make_train_parallel_config
 
 from miles.ray import placement_group, train_actor
-from miles.ray.train_actor import TrainRayActor
+from miles.ray.train_actor import TrainRayActor, WeightUpdateOutput
+from miles.utils.dp_schedule import TrainParallelConfig
 from miles.utils.init_once import InitOnce
 from miles.utils.workers.env_vars import CELL_INDEX_ENV_VAR, SUBPROCESS_INDEX_ENV_VAR
 
@@ -108,18 +110,18 @@ class TestConfigureMasterAddrAndPort:
 class TestTrainParallelConfigWiring:
     async def test_the_driver_passes_the_resolved_actor_config_to_the_rollout_executor(self, monkeypatch):
         """The driver resolves the actor config before handing it to the rollout executor."""
-        train_parallel_config = {"dp_size": 4, "topology": {"tp_size": 2}}
+        train_parallel_config = make_train_parallel_config(dp_size=4)
         trainer_config = SimpleNamespace(role="actor", trainer_id="actor")
 
         class FakeActorHandle:
-            async def get_train_parallel_config(self):
+            async def get_train_parallel_config(self) -> TrainParallelConfig | None:
                 return train_parallel_config
 
         class FakeRolloutExecutor:
             def __init__(self):
                 self.received_config = None
 
-            async def set_train_parallel_config(self, config):
+            async def set_train_parallel_config(self, config: TrainParallelConfig | None) -> None:
                 assert not isinstance(config, FakeActorHandle)
                 self.received_config = config
 
@@ -239,3 +241,80 @@ class TestTheLocalGpuIsFoundWithoutRay:
         monkeypatch.setattr(train_actor.ray, "get_gpu_ids", lambda: [5])
 
         assert train_actor.get_local_gpu_id() == 5
+
+
+class TestWeightUpdateOutputMerge:
+    def test_merging_nothing_answers_an_empty_report(self):
+        """An update window with no engines runs no trainer cell, and that is not a failure."""
+        assert WeightUpdateOutput.merge([]) == WeightUpdateOutput(weight_version=None, failed_cell_ids=())
+
+    def test_trainer_cells_that_all_succeeded_publish_one_version_and_no_failure(self):
+        """The driver publishes this version to the executor, so a merge must not invent a second one."""
+        outputs = [
+            WeightUpdateOutput(weight_version=5, failed_cell_ids=()),
+            WeightUpdateOutput(weight_version=5, failed_cell_ids=()),
+        ]
+
+        assert WeightUpdateOutput.merge(outputs) == WeightUpdateOutput(weight_version=5, failed_cell_ids=())
+
+    def test_the_failed_cell_ids_of_every_trainer_cell_are_concatenated(self):
+        """A dropped id leaves an engine serving half-written weights in service."""
+        outputs = [
+            WeightUpdateOutput(weight_version=5, failed_cell_ids=("rollout-1",)),
+            WeightUpdateOutput(weight_version=5, failed_cell_ids=("rollout-3", "rollout-4")),
+        ]
+
+        merged = WeightUpdateOutput.merge(outputs)
+
+        assert merged.weight_version == 5
+        assert set(merged.failed_cell_ids) == {"rollout-1", "rollout-3", "rollout-4"}
+
+    def test_one_rollout_cell_blamed_by_two_trainer_cells_is_rejected(self):
+        """The targets are split disjointly, so the same id twice means the split leaked."""
+        outputs = [
+            WeightUpdateOutput(weight_version=5, failed_cell_ids=("rollout-1",)),
+            WeightUpdateOutput(weight_version=5, failed_cell_ids=("rollout-1",)),
+        ]
+
+        with pytest.raises(AssertionError, match="more than one trainer cell"):
+            WeightUpdateOutput.merge(outputs)
+
+    def test_every_target_failing_still_merges_into_one_report(self):
+        """The caller decides what a total failure means, so merge itself must not raise on it."""
+        outputs = [
+            WeightUpdateOutput(weight_version=None, failed_cell_ids=("rollout-1",)),
+            WeightUpdateOutput(weight_version=None, failed_cell_ids=("rollout-2",)),
+        ]
+
+        merged = WeightUpdateOutput.merge(outputs)
+
+        assert merged.weight_version is None
+        assert set(merged.failed_cell_ids) == {"rollout-1", "rollout-2"}
+
+    def test_a_trainer_cell_that_published_no_version_does_not_erase_a_surviving_ones(self):
+        """A dead trainer's report carries no version, and answering None would republish nothing to the engines."""
+        outputs = [
+            WeightUpdateOutput(weight_version=None, failed_cell_ids=("rollout-1",)),
+            WeightUpdateOutput(weight_version=9, failed_cell_ids=()),
+        ]
+
+        assert WeightUpdateOutput.merge(outputs).weight_version == 9
+
+    def test_trainer_cells_that_disagree_on_the_version_are_rejected(self):
+        """Two live versions mean the engines now serve different weights under one version number."""
+        outputs = [
+            WeightUpdateOutput(weight_version=5, failed_cell_ids=()),
+            WeightUpdateOutput(weight_version=6, failed_cell_ids=()),
+        ]
+
+        with pytest.raises(AssertionError, match="disagree on the weight version"):
+            WeightUpdateOutput.merge(outputs)
+
+    def test_a_skipped_broadcast_from_every_trainer_cell_answers_no_version(self):
+        """--debug-skip-weight-update returns None everywhere, which must reach the driver as None."""
+        outputs = [
+            WeightUpdateOutput(weight_version=None, failed_cell_ids=()),
+            WeightUpdateOutput(weight_version=None, failed_cell_ids=()),
+        ]
+
+        assert WeightUpdateOutput.merge(outputs) == WeightUpdateOutput(weight_version=None, failed_cell_ids=())

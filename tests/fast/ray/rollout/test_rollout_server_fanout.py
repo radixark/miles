@@ -46,7 +46,7 @@ class _StubProvider:
 
 def _make_server(cells: list[_RecordingCell], **overrides) -> RolloutServer:
     return RolloutServer(
-        server_cells={cell.meta.cell_id: cell for cell in cells},
+        all_server_cells={cell.meta.cell_id: cell for cell in cells},
         args=make_args(colocate=True),
         context_lock=ContextLock("InferenceController"),
         engine_provider=_StubProvider(),
@@ -104,7 +104,7 @@ class TestCheckWeightsFanOut:
                 action="snapshot", allow_quant_error=True, selector="lora", skip_list=["x"]
             )
 
-        assert results == [f"checked-{i}" for i in range(3)]
+        assert results == [(cell.meta, f"checked-{i}") for i, cell in enumerate(cells)]
         assert all(
             cell.calls
             == [

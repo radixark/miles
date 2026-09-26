@@ -41,7 +41,7 @@ async def create_rollout_servers(
         router_addr = router_addrs[model_cfg.name]
 
         servers[model_cfg.name] = RolloutServer(
-            server_cells={},
+            all_server_cells={},
             args=args,
             context_lock=context_lock,
             engine_provider=engine_provider,
@@ -73,7 +73,7 @@ class RolloutServer:
     Each RolloutServer represents one model deployed behind a single router.
     """
 
-    server_cells: dict[str, ServerCell]
+    all_server_cells: dict[str, ServerCell]
     args: Any
     context_lock: ContextLock
     engine_provider: BaseWorkerProvider
@@ -103,14 +103,24 @@ class RolloutServer:
     def engine_gpu_offsets(self) -> list[int]:
         return [cell.meta.gpu_offset for cell in self._cells_by_gpu_offset()]
 
+    @property
+    @requires_lock
+    def engine_cell_ids(self) -> list[str]:
+        return [cell.meta.cell_id for cell in self._cells_by_gpu_offset()]
+
+    @property
+    @requires_lock
+    def normal_server_cells(self) -> dict[str, ServerCell]:
+        return {cell_id: cell for cell_id, cell in self.all_server_cells.items() if not cell.is_errored}
+
     @requires_lock
     def _cells_by_gpu_offset(self) -> list[ServerCell]:
-        return sorted(self.server_cells.values(), key=lambda cell: cell.meta.gpu_offset)
+        return sorted(self.normal_server_cells.values(), key=lambda cell: cell.meta.gpu_offset)
 
     @requires_lock
     async def add_cell(self, cell_meta: ServerCellMetadata):
         cell_id = cell_meta.cell_id
-        assert cell_id not in self.server_cells
+        assert cell_id not in self.all_server_cells
         cell = ServerCell(
             args=self.args,
             router_api_client=self._router_api_client,
@@ -118,24 +128,24 @@ class RolloutServer:
             provider=self.engine_provider,
             health_checker_activeness=self.health_checker_activeness.get,
         )
-        self.server_cells[cell_id] = cell
+        self.all_server_cells[cell_id] = cell
         if not (self.args.colocate and cell_meta.needs_offload):
             try:
                 await cell.init()
             except Exception:
-                del self.server_cells[cell_id]
+                del self.all_server_cells[cell_id]
                 await cell.dispose()
                 raise
 
     @requires_lock
     async def remove_cell(self, cell_id: str):
         logger.info(f"Killing server {cell_id=}...")
-        await self.server_cells[cell_id].dispose()
-        del self.server_cells[cell_id]
+        await self.all_server_cells[cell_id].dispose()
+        del self.all_server_cells[cell_id]
 
     @requires_lock
     async def dispose(self) -> None:
-        for cell_id in list(self.server_cells.keys()):
+        for cell_id in list(self.all_server_cells.keys()):
             await self.remove_cell(cell_id)
 
     @requires_lock
@@ -176,19 +186,21 @@ class RolloutServer:
     @requires_lock
     async def check_weights(
         self, action: str, allow_quant_error: bool = False, selector: str = "all", skip_list: list[str] | None = None
-    ):
-        return await asyncio.gather(
+    ) -> list[tuple[ServerCellMetadata, Any]]:
+        cells = self._addressable_cells()
+        bodies = await asyncio.gather(
             *[
                 cell.check_weights(
                     action=action, allow_quant_error=allow_quant_error, selector=selector, skip_list=skip_list
                 )
-                for cell in self._addressable_cells()
+                for cell in cells
             ]
         )
+        return [(cell.meta, body) for cell, body in zip(cells, bodies, strict=True)]
 
     @requires_lock
     def _addressable_cells(self) -> list[ServerCell]:
-        return [cell for cell in self.server_cells.values() if cell.is_pending_weights_or_serving]
+        return [cell for cell in self.all_server_cells.values() if cell.is_pending_weights_or_serving]
 
     @lock_exempt
     async def wait_init_expected_num_cells(self, timeout: float = 3600):
@@ -210,8 +222,9 @@ class RolloutServer:
     def _count_startable_cells(self) -> int:
         return sum(
             1
-            for cell in self.server_cells.values()
-            if (self.args.colocate and cell.meta.needs_offload) or cell.is_pending_weights_or_serving
+            for cell in self.all_server_cells.values()
+            if not cell.is_errored
+            and ((self.args.colocate and cell.meta.needs_offload) or cell.is_pending_weights_or_serving)
         )
 
     @property

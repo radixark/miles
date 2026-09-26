@@ -3,14 +3,23 @@ import sys
 from argparse import Namespace
 from collections.abc import Iterator
 from functools import partial
+from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
 import torch
+from tests.fast.utils.test_utils.fault_injector.fakes import _arm_marker_hook
 
 from miles.backends.training_utils.model_companion import ModelCompanion
+from miles.utils.audit_utils.event_logger import logger as event_logger_module
+from miles.utils.audit_utils.event_logger.logger import EventLogger, read_events
+from miles.utils.audit_utils.event_logger.models import FaultHookEvent
+from miles.utils.audit_utils.process_identity import SimpleProcessIdentity
 from miles.utils.tensor_backper import TensorBackuper
+from miles.utils.test_utils.fault_injector.actions.base import FaultHookContext
+from miles.utils.test_utils.fault_injector.controller import reach_fault_hook
+from miles.utils.test_utils.fault_injector.models import FaultHookName, FaultHookStatus
 from miles.utils.types import SampleLineage
 
 _ACTOR_MODULE_NAME = "miles.backends.megatron_utils.actor"
@@ -194,3 +203,120 @@ def test_model_companion_info_records_only_normal_actor_representatives(
         assert calls[0]["cell_index"] == 2
         assert calls[0]["rollout_id"] == 7
         assert calls[0]["attempt"] == 3
+
+
+class _FakeWeightUpdater:
+    def __init__(self, *, error: Exception | None = None) -> None:
+        self.error = error
+        self.weight_versions: list[int] = []
+        self.conn_status = SimpleNamespace(needs_reconnect=lambda snapshot: False)
+        self.protocol = SimpleNamespace(cell_updaters_of_cell_id={})
+
+    def update_weights(self, *, weight_version: int) -> None:
+        self.weight_versions.append(weight_version)
+        reach_fault_hook(FaultHookName.TRAINER_WEIGHT_UPDATE_BEFORE_SEND)
+        if self.error is not None:
+            raise self.error
+
+
+def _make_updating_actor(
+    actor_module: ModuleType, monkeypatch: pytest.MonkeyPatch, updater: _FakeWeightUpdater
+) -> object:
+    monkeypatch.setattr(actor_module, "print_memory", lambda *args, **kwargs: None)
+    train_actor = object.__new__(actor_module.MegatronTrainRayActor)
+    train_actor.args = Namespace(
+        debug_train_only=False,
+        debug_rollout_only=False,
+        offload_train=False,
+        debug_skip_weight_update=False,
+        ci_test=False,
+        keep_old_actor=False,
+        rematerialize_param_from_master_weight=False,
+    )
+    train_actor._heartbeat = Mock()
+    train_actor._asleep = False
+    train_actor.weight_updater = updater
+    train_actor._get_actor_weight_version = lambda: 7
+    return train_actor
+
+
+def _update(train_actor: object, *, rollout_id: int | None) -> object:
+    info = SimpleNamespace(
+        rollout_engines=[],
+        snapshot_cell_id_to_hashes={"rollout-0": "hash-a"},
+        engine_gpu_counts=[],
+        engine_gpu_offsets=[],
+        engine_cell_ids=[],
+    )
+    return train_actor.update_weights(info=info, debug_weight_update_id="update-1", rollout_id=rollout_id)
+
+
+class TestUpdateWeightsFaultHookContext:
+    def test_the_send_hook_inherits_the_rollout_version_and_update_of_this_update(
+        self, actor_module: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """A hook reached inside the update must match on, and record, the update that reached it."""
+        log: list[object] = []
+        hooks = _arm_marker_hook(
+            monkeypatch,
+            log=log,
+            hook_name=FaultHookName.TRAINER_WEIGHT_UPDATE_BEFORE_SEND,
+            rollout_id=3,
+            weight_version=7,
+        )
+        monkeypatch.setattr(actor_module, "fault_hook_controller", hooks)
+        monkeypatch.setattr(
+            event_logger_module,
+            "_event_logger",
+            EventLogger(log_dir=tmp_path, source=SimpleProcessIdentity(component="main")),
+        )
+        updater = _FakeWeightUpdater()
+
+        output = _update(_make_updating_actor(actor_module, monkeypatch, updater), rollout_id=3)
+
+        assert log == [("hook", FaultHookName.TRAINER_WEIGHT_UPDATE_BEFORE_SEND.value)]
+        assert updater.weight_versions == [7]
+        assert output.weight_version == 7
+        [fired] = [
+            event.record
+            for event in read_events(tmp_path)
+            if isinstance(event, FaultHookEvent) and event.record.status == FaultHookStatus.FIRED
+        ]
+        assert fired.context == FaultHookContext(
+            rollout_id=3,
+            weight_version=7,
+            debug_weight_update_id="update-1",
+            snapshot_cell_id_to_hashes={"rollout-0": "hash-a"},
+        )
+
+    @pytest.mark.parametrize("filters", [{"rollout_id": 4}, {"weight_version": 8}])
+    def test_a_hook_armed_for_another_rollout_or_version_does_not_fire(
+        self, actor_module: ModuleType, monkeypatch: pytest.MonkeyPatch, filters: dict[str, int]
+    ) -> None:
+        """A request for another step's update must not fire during this one."""
+        log: list[object] = []
+        hooks = _arm_marker_hook(
+            monkeypatch, log=log, hook_name=FaultHookName.TRAINER_WEIGHT_UPDATE_BEFORE_SEND, **filters
+        )
+        monkeypatch.setattr(actor_module, "fault_hook_controller", hooks)
+
+        _update(_make_updating_actor(actor_module, monkeypatch, _FakeWeightUpdater()), rollout_id=3)
+
+        assert log == []
+
+    def test_the_context_is_dropped_when_the_update_fails(
+        self, actor_module: ModuleType, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A failed update must not leave its version for a later hook to match against."""
+        log: list[object] = []
+        hooks = _arm_marker_hook(
+            monkeypatch, log=log, hook_name=FaultHookName.TRAINER_WEIGHT_UPDATE_BEFORE_ALL_GATHER, weight_version=7
+        )
+        monkeypatch.setattr(actor_module, "fault_hook_controller", hooks)
+        updater = _FakeWeightUpdater(error=RuntimeError("send failed"))
+
+        with pytest.raises(RuntimeError, match="send failed"):
+            _update(_make_updating_actor(actor_module, monkeypatch, updater), rollout_id=3)
+        reach_fault_hook(FaultHookName.TRAINER_WEIGHT_UPDATE_BEFORE_ALL_GATHER)
+
+        assert log == []

@@ -2,17 +2,16 @@ import dataclasses
 import logging
 from argparse import Namespace
 from collections import defaultdict
-from collections.abc import Callable, Sequence
-from concurrent.futures import Future, ThreadPoolExecutor
+from collections.abc import Sequence
+from typing import NamedTuple
 
 import ray
-import torch
 from sglang.srt.server_args import ServerArgs
-from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
+
 from miles.backends.training_utils.parallel import get_parallel_state
 from miles.backends.training_utils.weight_update.hf_weight_iterator import WeightUpdatePlacement
+from miles.backends.training_utils.weight_update.rollout_cell_updater import _RolloutCellUpdater
 from miles.backends.training_utils.weight_update.utils import get_data_replica_rank_and_size
-from miles.utils import async_utils
 from miles.utils.workers.argv_utils import _record_field_names
 
 logger = logging.getLogger(__name__)
@@ -20,12 +19,12 @@ logger = logging.getLogger(__name__)
 
 @dataclasses.dataclass
 class TransferTaskP2PMeta:
-    """Specifies a engine rollout rank to connect to."""
+    """Specifies a rollout engine rank to connect to."""
 
     # The index of the target rollout engine.
-    engine_ind: int
+    rollout_engine_ind: int
     # The rank of the target shard within the rollout engine (corresponds to `sglang_tp_rank`).
-    engine_rank: int
+    rollout_engine_rank: int
     # The source pp shard index.
     source_shard: int = 0
 
@@ -57,13 +56,10 @@ class RemoteTransferPlan:
         self._rollout_pp_size = args.sglang_pp_size
         if self._rollout_pp_size != 1:
             raise NotImplementedError("Rollout pipeline parallelism is not tested yet.")
-        self._rollout_num_gpu_per_engine = args.rollout_num_gpus_per_engine
-        self._rollout_engine_count = args.rollout_num_gpus // self._rollout_num_gpu_per_engine
-        self._rollout_num_gpus = args.rollout_num_gpus
 
-    def plan_p2p(self) -> list[TransferTaskP2PMeta]:
+    def plan_p2p(self, engine_gpu_counts: Sequence[int]) -> list[TransferTaskP2PMeta]:
         """
-        Plan P2P transfer within each pp_group -> all target engine ranks.
+        Plan P2P transfer within each pp_group -> all target rollout engine ranks.
 
         For each pp shard source rank, it plans the mapping relationship between n source dp ranks, m target rollout engines with k ranks each.
         The Transfer Plan Mapping Heuristics works as follows:
@@ -83,99 +79,72 @@ class RemoteTransferPlan:
         Finally extract the transfer tasks matching the current dp_rank(self._gathered_dp_rank).
 
         """
+        for rollout_engine_idx, engine_gpu_count in enumerate(engine_gpu_counts):
+            assert (
+                engine_gpu_count > 0
+            ), f"engine {rollout_engine_idx} declares {engine_gpu_count!r} GPUs, so it has no rank to send weights to"
+
         all_targets = [
-            (engine_idx, engine_rank)
-            for engine_idx in range(self._rollout_engine_count)
-            for engine_rank in range(self._rollout_num_gpu_per_engine)
+            (rollout_engine_idx, rollout_engine_rank)
+            for rollout_engine_idx, engine_gpu_count in enumerate(engine_gpu_counts)
+            for rollout_engine_rank in range(engine_gpu_count)
         ]
         assignments = defaultdict(lambda: defaultdict(list))
 
         # Total number of source-to-target P2P connections established.
         p2p_count = 0
-        # step 1: assign engine ranks in a round-robin way
+        # step 1: assign rollout engine ranks in a round-robin way
         for source_rank, (_, target) in zip(range(self._gathered_dp_size), enumerate(all_targets), strict=False):
             p2p_count += 1
-            engine_idx, engine_rank = target
-            assignments[source_rank][engine_rank].append(engine_idx)
+            rollout_engine_idx, rollout_engine_rank = target
+            assignments[source_rank][rollout_engine_rank].append(rollout_engine_idx)
 
-        def count_engine_index_assignments(engine_rank: int) -> list[int]:
-            return [len(assignments[source][engine_rank]) for source in range(self._gathered_dp_size)]
+        def count_rollout_engine_index_assignments(rollout_engine_rank: int) -> list[int]:
+            return [len(assignments[source][rollout_engine_rank]) for source in range(self._gathered_dp_size)]
 
         cur_source_index = 0
-        # step 2: assign the left engine ranks.
+        # step 2: assign the left rollout engine ranks.
         if p2p_count < len(all_targets):
             for target in all_targets[p2p_count:]:
-                engine_idx, engine_rank = target
-                counted = count_engine_index_assignments(engine_rank)
+                rollout_engine_idx, rollout_engine_rank = target
+                counted = count_rollout_engine_index_assignments(rollout_engine_rank)
                 if max(counted) > 0:
-                    # assign it to existing source rank assigned to the same target engine_rank, with lowest load
+                    # assign it to existing source rank assigned to the same target rollout_engine_rank, with lowest load
                     _, select_source = min((val, idx) for (idx, val) in enumerate(counted) if val > 0)
                 else:
                     # otherwise round robin
                     select_source = cur_source_index % self._gathered_dp_size
                     cur_source_index += 1
-                assignments[select_source][engine_rank].append(engine_idx)
+                assignments[select_source][rollout_engine_rank].append(rollout_engine_idx)
 
         transfer_tasks = []
-        for engine_rank, engine_indices in assignments[self._gathered_dp_rank].items():
-            for engine_ind in engine_indices:
+        for rollout_engine_rank, rollout_engine_indices in assignments[self._gathered_dp_rank].items():
+            for rollout_engine_ind in rollout_engine_indices:
                 transfer_tasks.append(
-                    TransferTaskP2PMeta(source_shard=self._pp_rank, engine_ind=engine_ind, engine_rank=engine_rank)
+                    TransferTaskP2PMeta(
+                        source_shard=self._pp_rank,
+                        rollout_engine_ind=rollout_engine_ind,
+                        rollout_engine_rank=rollout_engine_rank,
+                    )
                 )
 
         return transfer_tasks
 
 
+class RemoteWeightLocation(NamedTuple):
+    address: int
+    numel: int
+    element_size: int
+
+
 @dataclasses.dataclass
 class RemoteWeightInfo:
     """
-    The remote weight info related to one specific engine_rank.
+    The remote weight info related to one specific rollout_engine_rank.
     """
 
     session_id: str
-    weights_info: dict[str, tuple[int, int, int]]  # name -> (remote_address, numel, element_size)
-
-
-class P2PTransferManager:
-    """Generic async task manager for P2P writes.
-
-    Accepts arbitrary callables via submit(), runs them in a thread pool,
-    and tracks futures for bulk waiting.
-    """
-
-    def __init__(self, num_workers: int = 8, transfer_timeout: float = 30.0):
-        self.num_workers = num_workers
-        self.transfer_timeout = transfer_timeout
-        self.executor: ThreadPoolExecutor | None = None
-        self.transfer_futures: list[Future] = []
-
-    def ensure_started(self) -> None:
-        if self.executor is None:
-            # NOTE: RDMA ops won't be affected by the python GIL
-            self.executor = ThreadPoolExecutor(max_workers=self.num_workers)
-
-    def submit(self, fn: Callable, *args) -> None:
-        """Submit a callable to the thread pool."""
-        self.ensure_started()
-        future = self.executor.submit(fn, *args)
-        self.transfer_futures.append(future)
-
-    def submit_returning_future(self, fn: Callable, *args) -> torch.Future:
-        """Submit a callable and return its future (also tracked for bulk waiting)."""
-        self.ensure_started()
-        future = self.executor.submit(fn, *args)
-        self.transfer_futures.append(future)
-        return future
-
-    def wait_transfers(self) -> None:
-        """Wait for all submitted tasks to complete."""
-        for future in self.transfer_futures:
-            try:
-                future.result(timeout=self.transfer_timeout)
-            except Exception as e:
-                logger.error(f"[P2P] Transfer future failed: {e}")
-
-        self.transfer_futures.clear()
+    weights_info: dict[str, RemoteWeightLocation]  # name -> (remote_address, numel, element_size)
 
 
 def create_server_args_from_dict(data_dict: dict) -> ServerArgs:
@@ -211,26 +180,43 @@ def create_transfer_engine():
 
 
 def query_remote_weight_infos(
-    rollout_engines: Sequence[SGLangApiClient],
+    cell_updaters_of_cell_id: dict[str, _RolloutCellUpdater],
+    engine_cell_ids: Sequence[str],
     targets,
 ) -> tuple[dict, dict, dict]:
     """Query remote rollout engines for weight info, session IDs, and server args."""
     remote_weight_infos_by_session_id = {}
     targets_to_session_id = {}
     session_id_to_server_args = {}
-    targets_to_query = set((target.engine_ind, target.engine_rank) for target in targets)
+    targets_to_query = set((target.rollout_engine_ind, target.rollout_engine_rank) for target in targets)
 
-    for engine_ind, engine_rank in targets_to_query:
-        session_id, weights_info = async_utils.run(
-            rollout_engines[engine_ind].get_remote_instance_transfer_engine_info(rank=engine_rank)
-        )
-        parallelism_info = async_utils.run(rollout_engines[engine_ind].get_parallelism_info(rank=engine_rank))
+    for rollout_engine_ind, rollout_engine_rank in targets_to_query:
+        cell_updater = cell_updaters_of_cell_id[engine_cell_ids[rollout_engine_ind]]
+        queried = _query_remote_weight_info(cell_updater, rollout_engine_rank)
+        if queried is None:
+            continue
+        session_id, weights_info, parallelism_info, server_info = queried
 
-        session_id_to_server_args[session_id] = create_server_args_from_dict(
-            async_utils.run(rollout_engines[engine_ind].get_server_info())
-        )
-        assert session_id is not None, f"Failed to get session id from rollout engine {engine_ind} rank {engine_rank}"
+        session_id_to_server_args[session_id] = create_server_args_from_dict(server_info)
+        assert (
+            session_id is not None
+        ), f"Failed to get session id from rollout engine {rollout_engine_ind} rank {rollout_engine_rank}"
         remote_weight_infos_by_session_id[session_id] = (weights_info, parallelism_info)
-        targets_to_session_id[(engine_ind, engine_rank)] = session_id
+        targets_to_session_id[(rollout_engine_ind, rollout_engine_rank)] = session_id
 
     return remote_weight_infos_by_session_id, targets_to_session_id, session_id_to_server_args
+
+
+def _query_remote_weight_info(
+    cell_updater: _RolloutCellUpdater, rollout_engine_rank: int
+) -> tuple[str, dict[str, RemoteWeightLocation], dict, dict] | None:
+    transfer_engine_info = cell_updater.submit_client_call(
+        "get_remote_instance_transfer_engine_info", rank=rollout_engine_rank
+    ).result()
+    parallelism_info = cell_updater.submit_client_call("get_parallelism_info", rank=rollout_engine_rank).result()
+    server_info = cell_updater.submit_client_call("get_server_info").result()
+    if cell_updater.is_errored:
+        return None
+    session_id, raw_weights_info = transfer_engine_info
+    weights_info = {name: RemoteWeightLocation(*location) for name, location in raw_weights_info.items()}
+    return session_id, weights_info, parallelism_info, server_info

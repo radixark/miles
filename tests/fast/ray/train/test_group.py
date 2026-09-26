@@ -1,27 +1,39 @@
 import asyncio
-import json
 import time
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
 import ray
 from tests.fast.ray.train import conftest as train_conftest
 from tests.fast.ray.train.conftest import get_raw_actor_handles, make_deployment_identity, make_provider
+from tests.fast.train_parallel_config_utils import make_train_parallel_config
 
 import miles.ray.train.group as group_module
+import miles.utils.test_utils.fault_injector.controller as fault_hook_module
 from miles.backends.megatron_utils.ft.types import TrainStepOutcome, TrainStepOutput
+from miles.ray.rollout.inference_controller import UpdatableEngines
 from miles.ray.train.group import TrainerController, compute_trainer_health_checker_config
+from miles.ray.train_actor import WeightUpdateOutput
 from miles.utils import object_store
 from miles.utils.audit_utils.event_logger.logger import EventLogger, read_events, set_event_logger
-from miles.utils.audit_utils.event_logger.models import CellReconfigureEvent
+from miles.utils.audit_utils.event_logger.models import (
+    CellReconfigureEvent,
+    TrainGroupStepEndEvent,
+    WeightUpdateResultEvent,
+)
 from miles.utils.audit_utils.process_identity import SimpleProcessIdentity
 from miles.utils.audit_utils.witness.allocator import WitnessIdAllocator
 from miles.utils.data import RolloutDataPack
+from miles.utils.dp_schedule import TrainParallelConfig
 from miles.utils.object_store import _MooncakeStoreObjectRef
 from miles.utils.ray_utils import Box
 from miles.utils.retry_utils import NonRetryableError
+from miles.utils.test_utils.fault_injector.actions.cell import StopCellAction
+from miles.utils.test_utils.fault_injector.controller import _FaultHookController
+from miles.utils.test_utils.fault_injector.models import FaultHookName, FaultHookRequest
+from miles.utils.test_utils.fault_injector.static_source import render_fault_hooks
 from miles.utils.workers.naming import compute_cell_id
 
 pytestmark = pytest.mark.asyncio
@@ -35,8 +47,10 @@ def _make_mock_args(
     enable_witness: bool = False,
     gpus_per_cell: int = 1,
     num_cells: int = 3,
-    ci_ft_test_actions: str | None = None,
-    ci_ft_test_actions_path: str | None = None,
+    ci_fault_hooks: str | None = None,
+    ci_fault_hooks_path: str | None = None,
+    colocate: bool = True,
+    update_weight_transfer_mode: str = "broadcast",
 ) -> SimpleNamespace:
     # Use SimpleNamespace (not MagicMock) so the args object is picklable. TrainerCell.init
     # passes self.args through Ray to the remote actor; pickling a MagicMock blows the
@@ -52,8 +66,8 @@ def _make_mock_args(
         trainer_heartbeat_checker_timeout=10.0,
         trainer_heartbeat_checker_first_wait=300.0,
         trainer_heartbeat_checker_failure_threshold=3,
-        ci_ft_test_actions=ci_ft_test_actions,
-        ci_ft_test_actions_path=ci_ft_test_actions_path,
+        ci_fault_hooks=ci_fault_hooks,
+        ci_fault_hooks_path=ci_fault_hooks_path,
         debug_train_only=False,
         debug_rollout_only=False,
         # compute_megatron_world_size_except_dp(args) = TP * PP * CP. Set CP to
@@ -66,6 +80,9 @@ def _make_mock_args(
         object_store_backend="ray",
         worker_comm_backend="ray",
         trainer_model_id=None,
+        colocate=colocate,
+        update_weight_transfer_mode=update_weight_transfer_mode,
+        update_weights_timeout=None,
     )
 
 
@@ -75,7 +92,7 @@ def _make_controller(
     actor_count_per_cell: int = 1,
     with_ref: bool = False,
     with_opd_teacher: bool = False,
-    ci_ft_test_actions: str | None = None,
+    ci_fault_hooks: str | None = None,
 ) -> TrainerController:
     """Create a TrainerController and let it observe every cell, as the watcher would."""
     train_conftest.fake_worker_manager.num_cells = num_cells
@@ -93,8 +110,8 @@ def _make_controller(
         indep_dp=True,
         gpus_per_cell=actor_count_per_cell,
         num_cells=num_cells,
-        ci_ft_test_actions=ci_ft_test_actions,
-        ci_ft_test_actions_path=None,
+        ci_fault_hooks=ci_fault_hooks,
+        ci_fault_hooks_path=None,
     )
     group._health_checker_config = compute_trainer_health_checker_config(
         group.args, expected_num_cells=group._expected_num_cells
@@ -154,6 +171,25 @@ async def _make_alive_controller(*, num_cells: int = 3, **kwargs) -> TrainerCont
     group = _make_controller(num_cells=num_cells, **kwargs)
     await _init_controller(group)
     return group
+
+
+def _output(weight_version: int | None, *failed_cell_ids: str) -> WeightUpdateOutput:
+    return WeightUpdateOutput(weight_version=weight_version, failed_cell_ids=failed_cell_ids)
+
+
+def _outcome_of(output: WeightUpdateOutput) -> tuple[int | None, tuple[str, ...]]:
+    return output.weight_version, output.failed_cell_ids
+
+
+def _make_broadcast_args() -> SimpleNamespace:
+    return SimpleNamespace(
+        debug_train_only=False,
+        debug_rollout_only=False,
+        trainer_model_id=None,
+        colocate=True,
+        update_weight_transfer_mode="broadcast",
+        update_weights_timeout=None,
+    )
 
 
 class TestIndepDPStore:
@@ -302,7 +338,7 @@ class TestExecuteFirstAlive:
 
 class TestGetTrainParallelConfig:
     @staticmethod
-    def _set_configs(cell, configs: list[dict]) -> None:
+    def _set_configs(cell, configs: list[TrainParallelConfig | None]) -> None:
         handles = get_raw_actor_handles(cell)
         ray.get(
             [handle.set_train_parallel_config.remote(config) for handle, config in zip(handles, configs, strict=True)]
@@ -311,17 +347,20 @@ class TestGetTrainParallelConfig:
     async def test_returns_config_of_rank_zero_of_the_first_alive_cell(self):
         """The driver reads the config the cell's own rank 0 computed at init."""
         group = await _make_alive_controller(num_cells=2, actor_count_per_cell=2)
-        self._set_configs(group._cells[0], [{"dp_size": 4}, {"dp_size": 99}])
+        self._set_configs(
+            cell=group._cells[0],
+            configs=[make_train_parallel_config(dp_size=4), make_train_parallel_config(dp_size=99)],
+        )
 
-        assert await group.get_train_parallel_config() == {"dp_size": 4}
+        assert await group.get_train_parallel_config() == make_train_parallel_config(dp_size=4)
 
     async def test_skips_stopped_cells(self):
         """A stopped cell 0 must not be asked; the next alive cell answers instead."""
         group = await _make_alive_controller(num_cells=2)
-        self._set_configs(_cell(group, 1), [{"dp_size": 2}])
+        self._set_configs(cell=_cell(group, 1), configs=[make_train_parallel_config(dp_size=2)])
         await _stop_cell(group, 0)
 
-        assert await group.get_train_parallel_config() == {"dp_size": 2}
+        assert await group.get_train_parallel_config() == make_train_parallel_config(dp_size=2)
 
 
 class TestComputeIndepDPInfo:
@@ -538,6 +577,36 @@ class TestRefreshCellsReconfigureEvent:
         await group._refresh_cells(rollout_id=5)
 
         assert self._read_reconfigure_events(_event_log_dir) == []
+
+    async def test_healing_records_the_new_hash_of_the_healed_cell_and_the_kept_hash_of_the_rest(
+        self, _event_log_dir: Path
+    ) -> None:
+        """The event maps exactly the alive cells to the incarnation each one has after the heal."""
+        group = await _make_alive_controller(num_cells=3)
+        await _stop_cell(group, 2)
+        _start_cell(group, 2)
+
+        await group._refresh_cells(rollout_id=7)
+
+        (event,) = self._read_reconfigure_events(_event_log_dir)
+        assert event.cell_incarnations_after == {
+            compute_cell_id(pool_id=group._pool_id, cell_index=0): "pseudo-hash-1",
+            compute_cell_id(pool_id=group._pool_id, cell_index=1): "pseudo-hash-1",
+            compute_cell_id(pool_id=group._pool_id, cell_index=2): "pseudo-hash-2",
+        }
+
+    async def test_a_shrink_leaves_the_dead_cell_out_of_the_incarnations(self, _event_log_dir: Path) -> None:
+        """A cell that is gone after the reconfigure has no incarnation a checker could match against."""
+        group = await _make_alive_controller(num_cells=3)
+        await _stop_cell(group, 1)
+
+        await group._refresh_cells(rollout_id=4)
+
+        (event,) = self._read_reconfigure_events(_event_log_dir)
+        assert event.cell_incarnations_after == {
+            compute_cell_id(pool_id=group._pool_id, cell_index=0): "pseudo-hash-1",
+            compute_cell_id(pool_id=group._pool_id, cell_index=2): "pseudo-hash-1",
+        }
 
 
 class TestRefreshCellsNoOp:
@@ -1209,33 +1278,40 @@ class TestCellStatusesUnderConcurrentReconcile:
 
 
 class TestUpdateWeightsReturnsTheVersion:
-    def _make_group(self, *, per_worker_versions: list[int | None]) -> TrainerController:
+    def _make_group(self, *, per_worker_outputs: list[WeightUpdateOutput]) -> TrainerController:
         group = TrainerController.__new__(TrainerController)
-        group.args = SimpleNamespace(debug_train_only=False, debug_rollout_only=False, trainer_model_id=None)
+        group.args = _make_broadcast_args()
         group._trainer_id = "trainer-0"
-        group._execute_first_alive = AsyncMock(return_value=per_worker_versions)
+        group._debug_trainer_load_state_timestamp = 0.0
+        group._execute_first_alive = AsyncMock(return_value=per_worker_outputs)
         return group
 
     async def test_the_controller_answers_the_version_the_engines_now_serve(self):
         """The driver can only publish the version to the executor if the controller hands it back."""
-        group = self._make_group(per_worker_versions=[1, 1])
+        group = self._make_group(per_worker_outputs=[_output(1), _output(1)])
 
-        assert await group.update_weights(info=MagicMock()) == 1
+        assert _outcome_of(await group.update_weights(info=MagicMock())) == _outcome_of(_output(1))
 
     async def test_a_trainer_that_skipped_the_broadcast_answers_nothing(self):
         """--debug-skip-weight-update returns None from every worker, which must reach the driver as None."""
-        group = self._make_group(per_worker_versions=[None])
+        group = self._make_group(per_worker_outputs=[_output(None)])
 
-        assert await group.update_weights(info=MagicMock()) is None
+        assert (await group.update_weights(info=MagicMock())).weight_version is None
 
     async def test_it_broadcasts_the_window_the_orchestration_script_opened(self):
         """The engines it writes into are the ones the script snapshotted, not a set it fetched for itself."""
-        group = self._make_group(per_worker_versions=[1])
+        group = self._make_group(per_worker_outputs=[_output(1)])
         info = MagicMock()
 
         await group.update_weights(info=info)
 
-        group._execute_first_alive.assert_awaited_once_with("update_weights", info=info)
+        group._execute_first_alive.assert_awaited_once_with(
+            "update_weights",
+            timeout=group.args.update_weights_timeout,
+            info=info,
+            debug_weight_update_id=ANY,
+            rollout_id=None,
+        )
 
 
 class TestModelOwnedWeightVersions:
@@ -1243,20 +1319,30 @@ class TestModelOwnedWeightVersions:
     async def test_controller_returns_model_versions_without_allocating_ordinals(self, versions: list) -> None:
         """Republishing, skipped steps and checkpoint rewinds preserve model versions."""
         controller = TrainerController.__new__(TrainerController)
+        controller.args = _make_broadcast_args()
         controller._trainer_id = "trainer-0"
-        controller._execute_first_alive = AsyncMock(side_effect=[[version, version] for version in versions])
+        controller._debug_trainer_load_state_timestamp = 0.0
+        controller._execute_first_alive = AsyncMock(
+            side_effect=[[_output(version), _output(version)] for version in versions]
+        )
         info = MagicMock()
 
-        assert [await controller.update_weights(info=info) for _ in versions] == versions
-        assert all(call.kwargs == {"info": info} for call in controller._execute_first_alive.await_args_list)
+        outputs = [await controller.update_weights(info=info) for _ in versions]
+
+        assert [output.weight_version for output in outputs] == versions
+        assert all(call.kwargs["info"] is info for call in controller._execute_first_alive.await_args_list)
 
     async def test_retry_reads_the_recovered_models_version(self) -> None:
         """A failed trainer does not reserve a version for its replacement."""
         controller = TrainerController.__new__(TrainerController)
+        controller.args = _make_broadcast_args()
         controller._trainer_id = "trainer-0"
-        controller._execute_first_alive = AsyncMock(side_effect=[RuntimeError("cell died"), [12, 12]])
+        controller._debug_trainer_load_state_timestamp = 0.0
+        controller._execute_first_alive = AsyncMock(
+            side_effect=[RuntimeError("cell died"), [_output(12), _output(12)]]
+        )
 
-        assert await controller.update_weights(info=MagicMock()) == 12
+        assert (await controller.update_weights(info=MagicMock())).weight_version == 12
 
 
 class TestInitForwardsModelFlags:
@@ -1274,28 +1360,58 @@ class TestInitForwardsModelFlags:
                 assert init_call[2]["with_opd_teacher"] is True
 
 
-class TestTrainRunsFTTestActions:
-    async def test_train_applies_the_action_armed_for_that_rollout_before_returning(self):
-        """The FT scenario's stop must have landed by the time the driver starts the next rollout."""
-        actions = json.dumps(
-            [{"at_rollout": 4, "action": "stop_cell_at_end", "cell_id": "trainer-engine-actor-00002"}]
+class TestTrainRunsFaultHooks:
+    async def test_train_applies_the_hook_armed_for_that_rollout_before_returning(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The declared stop must finish before the caller can begin the next rollout."""
+        _isolate_fault_hook_controller(monkeypatch)
+        requests = render_fault_hooks(
+            [
+                FaultHookRequest(
+                    request_id="stop-cell-2",
+                    hook_name=FaultHookName.TRAINER_CONTROLLER_STEP_END,
+                    rollout_id=4,
+                    action=StopCellAction(cell_id="trainer-engine-actor-00002"),
+                )
+            ]
         )
-        group = await _make_alive_controller(num_cells=3, ci_ft_test_actions=actions)
+        group = await _make_alive_controller(num_cells=3, ci_fault_hooks=requests)
 
         await group.train(rollout_id=4, rollout_data_pack=_DUMMY_DATA_PACK)
 
         group._cell_operations.suspend.assert_awaited_once_with(cell_id="trainer-engine-actor-00002")
 
-    async def test_train_leaves_the_pool_alone_on_a_rollout_no_action_names(self):
-        """An action that fires on every rollout would tear the pool down for the whole run."""
-        actions = json.dumps(
-            [{"at_rollout": 4, "action": "stop_cell_at_end", "cell_id": "trainer-engine-actor-00002"}]
+    async def test_train_leaves_the_pool_alone_until_the_declared_rollout(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An unmatched rollout must preserve the pending stop for its declared step."""
+        _isolate_fault_hook_controller(monkeypatch)
+        requests = render_fault_hooks(
+            [
+                FaultHookRequest(
+                    request_id="stop-cell-2",
+                    hook_name=FaultHookName.TRAINER_CONTROLLER_STEP_END,
+                    rollout_id=4,
+                    action=StopCellAction(cell_id="trainer-engine-actor-00002"),
+                )
+            ]
         )
-        group = await _make_alive_controller(num_cells=3, ci_ft_test_actions=actions)
+        group = await _make_alive_controller(num_cells=3, ci_fault_hooks=requests)
 
         await group.train(rollout_id=3, rollout_data_pack=_DUMMY_DATA_PACK)
 
         group._cell_operations.suspend.assert_not_awaited()
+
+        await group.train(rollout_id=4, rollout_data_pack=_DUMMY_DATA_PACK)
+
+        group._cell_operations.suspend.assert_awaited_once_with(cell_id="trainer-engine-actor-00002")
+
+
+def _isolate_fault_hook_controller(monkeypatch: pytest.MonkeyPatch) -> None:
+    controller = _FaultHookController()
+    monkeypatch.setattr(group_module, "fault_hook_controller", controller)
+    monkeypatch.setattr(fault_hook_module, "fault_hook_controller", controller)
 
 
 class TestSaveModel:
@@ -1328,12 +1444,14 @@ class TestExportHf:
 class TestUpdateWeightsReachesTheWorker:
     async def test_the_engine_snapshot_reaches_the_worker_and_its_version_comes_back(self):
         """A worker that never sees the snapshot broadcasts to engines that were not part of the update window."""
-        info = SimpleNamespace(snapshot_cell_id_to_hashes={"trainer-actor-0": "workers-hash-9"})
+        info = SimpleNamespace(
+            engine_cell_ids=["trainer-actor-0"], snapshot_cell_id_to_hashes={"trainer-actor-0": "workers-hash-9"}
+        )
         group = await _make_alive_controller(num_cells=1)
         for handle in get_raw_actor_handles(_cell(group, 0)):
-            ray.get(handle.set_update_weights_return_value.remote(1))
+            ray.get(handle.set_update_weights_return_value.remote(_output(1)))
 
-        assert await group.update_weights(info=info, rollout_id=3) == 1
+        assert _outcome_of(await group.update_weights(info=info, rollout_id=3)) == _outcome_of(_output(1))
 
         for handle in get_raw_actor_handles(_cell(group, 0)):
             [update_call] = [c for c in ray.get(handle.get_calls.remote()) if c[0] == "update_weights"]
@@ -1342,19 +1460,582 @@ class TestUpdateWeightsReachesTheWorker:
 
     async def test_reloading_the_trainer_state_does_not_rewind_the_published_version(self):
         """A hot restart reloads the cells while the controller survives, and restarting at version 1 would republish an old ordinal."""
-        info = SimpleNamespace(snapshot_cell_id_to_hashes={})
+        info = SimpleNamespace(engine_cell_ids=[], snapshot_cell_id_to_hashes={})
         group = await _make_alive_controller(num_cells=1)
         handles = get_raw_actor_handles(_cell(group, 0))
         for handle in handles:
-            ray.get(handle.set_update_weights_return_value.remote(1))
-        assert await group.update_weights(info=info) == 1
+            ray.get(handle.set_update_weights_return_value.remote(_output(1)))
+        assert _outcome_of(await group.update_weights(info=info)) == _outcome_of(_output(1))
 
         await group.load_state()
         for handle in handles:
-            ray.get(handle.set_update_weights_return_value.remote(2))
+            ray.get(handle.set_update_weights_return_value.remote(_output(2)))
 
-        assert await group.update_weights(info=info) == 2
+        assert _outcome_of(await group.update_weights(info=info)) == _outcome_of(_output(2))
 
         for handle in handles:
             calls = [c for c in ray.get(handle.get_calls.remote()) if c[0] == "update_weights"]
             assert all("weight_version" not in c[2] for c in calls)
+
+
+class TestUpdateWeightsCarriesTheRollout:
+    @pytest.mark.parametrize("rollout_id", [3, None])
+    async def test_the_first_alive_dispatch_hands_the_worker_the_rollout(self, rollout_id: int | None):
+        """The weight update hooks match on the rollout, so the worker must receive the one the caller named."""
+        group = await _make_alive_controller(num_cells=1)
+        for handle in get_raw_actor_handles(_cell(group, 0)):
+            ray.get(handle.set_update_weights_return_value.remote(_output(1)))
+
+        output = await group.update_weights(
+            info=SimpleNamespace(engine_cell_ids=[], snapshot_cell_id_to_hashes={}), rollout_id=rollout_id
+        )
+
+        for handle in get_raw_actor_handles(_cell(group, 0)):
+            [update_call] = [c for c in ray.get(handle.get_calls.remote()) if c[0] == "update_weights"]
+            assert update_call[2]["rollout_id"] == rollout_id
+            assert update_call[2]["debug_weight_update_id"] == output.debug_weight_update_id
+
+    async def test_every_alive_dispatch_hands_each_sender_the_rollout_and_one_update_id(self):
+        """Every sender of a split update must see the same rollout and update ID as the others."""
+        cells = [_FakeTrainerCell(cell_index=i) for i in range(2)]
+        controller = _make_partial_target_controller(cells)
+
+        output = await controller.update_weights(info=_make_engines(4), rollout_id=3)
+
+        received = [kwargs for cell in cells for kwargs in cell.received_kwargs]
+        assert [kwargs["rollout_id"] for kwargs in received] == [3, 3]
+        assert {kwargs["debug_weight_update_id"] for kwargs in received} == {output.debug_weight_update_id}
+
+
+class _FakeTrainerCell:
+    def __init__(
+        self,
+        *,
+        cell_index: int,
+        output: WeightUpdateOutput | None = None,
+        error: Exception | None = None,
+        is_alive: bool = True,
+    ) -> None:
+        self.cell_id = f"trainer-engine-actor-{cell_index:05d}"
+        self.cell_index = cell_index
+        self.is_alive = is_alive
+        self.killed = False
+        self.received_infos: list[UpdatableEngines] = []
+        self.received_timeouts: list[float | None] = []
+        self.received_kwargs: list[dict[str, object]] = []
+        self._output = output if output is not None else _output(5)
+        self._error = error
+
+    async def execute(self, fn_name: str, *, timeout: float | None = None, **kwargs: object) -> list:
+        self.received_infos.append(kwargs["info"])
+        self.received_timeouts.append(timeout)
+        self.received_kwargs.append(kwargs)
+        if self._error is not None:
+            self.is_alive = False
+            raise self._error
+        return [self._output, self._output]
+
+    async def mark_errored_and_kill(self) -> None:
+        self.killed = True
+        self.is_alive = False
+
+
+def _make_partial_target_controller(cells: list[_FakeTrainerCell], *, timeout: float | None = 60.0):
+    controller = TrainerController.__new__(TrainerController)
+    controller.args = SimpleNamespace(
+        debug_train_only=False,
+        debug_rollout_only=False,
+        trainer_model_id=None,
+        colocate=False,
+        update_weight_transfer_mode="p2p",
+        update_weights_timeout=timeout,
+    )
+    controller._trainer_id = "trainer-0"
+    controller._cells_by_id = {cell.cell_id: cell for cell in cells}
+    controller._debug_trainer_load_state_timestamp = None
+    return controller
+
+
+def _make_engines(num_engines: int) -> UpdatableEngines:
+    cell_ids = [f"rollout-{i}" for i in range(num_engines)]
+    return UpdatableEngines(
+        rollout_engines=[MagicMock() for _ in cell_ids],
+        engine_gpu_counts=[1] * len(cell_ids),
+        engine_gpu_offsets=list(range(len(cell_ids))),
+        engine_cell_ids=cell_ids,
+        snapshot_cell_id_to_hashes={cell_id: "workers-hash" for cell_id in cell_ids},
+    )
+
+
+def _targets_of(cell: _FakeTrainerCell) -> list[list[str]]:
+    return [info.engine_cell_ids for info in cell.received_infos]
+
+
+class TestUpdateWeightsFromEveryAliveCell:
+    async def test_the_targets_are_split_disjointly_across_the_alive_trainer_cells(self):
+        """Sending every engine from one cell wastes the other senders' links and their bandwidth."""
+        cells = [_FakeTrainerCell(cell_index=i) for i in range(2)]
+        controller = _make_partial_target_controller(cells)
+
+        await controller.update_weights(info=_make_engines(4))
+
+        assert _targets_of(cells[0]) == [["rollout-0", "rollout-1"]]
+        assert _targets_of(cells[1]) == [["rollout-2", "rollout-3"]]
+
+    async def test_an_uneven_share_goes_to_the_earliest_trainer_cells(self):
+        """Every share must stay within one of the others so no sender becomes the straggler."""
+        cells = [_FakeTrainerCell(cell_index=i) for i in range(2)]
+        controller = _make_partial_target_controller(cells)
+
+        await controller.update_weights(info=_make_engines(3))
+
+        assert _targets_of(cells[0]) == [["rollout-0", "rollout-1"]]
+        assert _targets_of(cells[1]) == [["rollout-2"]]
+
+    async def test_a_trainer_cell_left_without_a_target_is_not_asked_to_send(self):
+        """An update_weights call with an empty engine list would make the worker set up a transfer to nobody."""
+        cells = [_FakeTrainerCell(cell_index=i) for i in range(3)]
+        controller = _make_partial_target_controller(cells)
+
+        await controller.update_weights(info=_make_engines(2))
+
+        assert _targets_of(cells[0]) == [["rollout-0"]]
+        assert _targets_of(cells[1]) == [["rollout-1"]]
+        assert _targets_of(cells[2]) == []
+
+    async def test_the_targets_are_shared_only_among_the_cells_that_are_alive(self):
+        """A share handed to a dead cell would leave its engines on the previous weights."""
+        cells = [
+            _FakeTrainerCell(cell_index=0, is_alive=False),
+            _FakeTrainerCell(cell_index=1),
+            _FakeTrainerCell(cell_index=2),
+        ]
+        controller = _make_partial_target_controller(cells)
+
+        await controller.update_weights(info=_make_engines(4))
+
+        assert _targets_of(cells[0]) == []
+        assert _targets_of(cells[1]) == [["rollout-0", "rollout-1"]]
+        assert _targets_of(cells[2]) == [["rollout-2", "rollout-3"]]
+
+    async def test_every_sender_is_given_the_configured_transfer_timeout(self):
+        """A transfer that hangs forever would stall the whole run instead of failing its own share."""
+        cells = [_FakeTrainerCell(cell_index=i) for i in range(2)]
+        controller = _make_partial_target_controller(cells, timeout=123.0)
+
+        await controller.update_weights(info=_make_engines(2))
+
+        assert cells[0].received_timeouts == [123.0]
+        assert cells[1].received_timeouts == [123.0]
+
+    async def test_the_reports_of_every_sender_are_merged_into_one_answer(self):
+        """The driver acts on a single report, so a failure seen by only one sender must survive the merge."""
+        cells = [
+            _FakeTrainerCell(cell_index=0, output=_output(7, "rollout-1")),
+            _FakeTrainerCell(cell_index=1, output=_output(7)),
+        ]
+        controller = _make_partial_target_controller(cells)
+
+        output = await controller.update_weights(info=_make_engines(4))
+
+        assert output.weight_version == 7
+        assert set(output.failed_cell_ids) == {"rollout-1"}
+
+    async def test_an_update_with_no_trainer_cell_alive_is_not_worth_retrying(self):
+        """Retrying inside the controller cannot bring a cell back, and the driver must heal the pool instead."""
+        cells = [_FakeTrainerCell(cell_index=i, is_alive=False) for i in range(2)]
+        controller = _make_partial_target_controller(cells)
+
+        with pytest.raises(NonRetryableError, match="No alive cells"):
+            await controller.update_weights(info=_make_engines(2))
+
+    async def test_an_update_window_with_no_engines_answers_an_empty_report(self):
+        """A run whose rollout cells are all down must not be reported as a failed weight update."""
+        cells = [_FakeTrainerCell(cell_index=i) for i in range(2)]
+        controller = _make_partial_target_controller(cells)
+
+        output = await controller.update_weights(info=_make_engines(0))
+
+        assert _outcome_of(output) == (None, ())
+        assert _targets_of(cells[0]) == []
+
+    async def test_a_broadcast_run_still_sends_from_a_single_cell(self):
+        """A broadcast reaches every engine at once, so splitting its targets would send the weights twice."""
+        cells = [_FakeTrainerCell(cell_index=i) for i in range(2)]
+        controller = _make_partial_target_controller(cells)
+        controller.args.update_weight_transfer_mode = "broadcast"
+        controller._execute_first_alive = AsyncMock(return_value=[_output(3), _output(3)])
+        info = _make_engines(4)
+
+        assert _outcome_of(await controller.update_weights(info=info)) == _outcome_of(_output(3))
+
+        controller._execute_first_alive.assert_awaited_once_with(
+            "update_weights", timeout=60.0, info=info, debug_weight_update_id=ANY, rollout_id=None
+        )
+        assert _targets_of(cells[0]) == []
+
+    async def test_each_share_carries_the_layout_and_snapshot_of_its_own_engines(self) -> None:
+        """A share whose gpu offsets or hashes belong to other engines would write into the wrong ranks."""
+        cells = [_FakeTrainerCell(cell_index=i) for i in range(2)]
+        controller = _make_partial_target_controller(cells)
+        engines = [MagicMock() for _ in range(3)]
+        info = UpdatableEngines(
+            rollout_engines=engines,
+            engine_gpu_counts=[1, 2, 4],
+            engine_gpu_offsets=[0, 1, 3],
+            engine_cell_ids=["rollout-0", "rollout-1", "rollout-2"],
+            snapshot_cell_id_to_hashes={"rollout-0": "hash-0", "rollout-1": "hash-1", "rollout-2": "hash-2"},
+        )
+
+        await controller.update_weights(info=info)
+
+        [first_share] = cells[0].received_infos
+        [second_share] = cells[1].received_infos
+        assert first_share.rollout_engines == engines[:2]
+        assert first_share.engine_gpu_counts == [1, 2]
+        assert first_share.engine_gpu_offsets == [0, 1]
+        assert first_share.snapshot_cell_id_to_hashes == {"rollout-0": "hash-0", "rollout-1": "hash-1"}
+        assert second_share.rollout_engines == engines[2:]
+        assert second_share.engine_gpu_counts == [4]
+        assert second_share.engine_gpu_offsets == [3]
+        assert second_share.snapshot_cell_id_to_hashes == {"rollout-2": "hash-2"}
+
+    async def test_a_colocated_run_still_sends_from_a_single_cell(self):
+        """Colocation puts the engines on the trainer's own gpus, where there is nothing to split."""
+        cells = [_FakeTrainerCell(cell_index=i) for i in range(2)]
+        controller = _make_partial_target_controller(cells)
+        controller.args.colocate = True
+        controller._execute_first_alive = AsyncMock(return_value=[_output(3)])
+
+        assert _outcome_of(await controller.update_weights(info=_make_engines(4))) == _outcome_of(_output(3))
+
+        assert _targets_of(cells[0]) == []
+
+
+class TestUpdateWeightsGivesUpOnADeadTrainersTargets:
+    async def test_the_targets_of_a_sender_that_raised_are_all_reported_failed(self):
+        """Those engines may hold a half-written model, and serving from them would poison the rollouts."""
+        cells = [
+            _FakeTrainerCell(cell_index=0, error=RuntimeError("trainer died")),
+            _FakeTrainerCell(cell_index=1, output=_output(4)),
+        ]
+        controller = _make_partial_target_controller(cells)
+
+        output = await controller.update_weights(info=_make_engines(2))
+
+        assert set(output.failed_cell_ids) == {"rollout-0"}
+
+    async def test_a_surviving_sender_still_publishes_the_version_it_reached(self):
+        """The engines it did update serve the new weights, which the driver can only publish if it is told."""
+        cells = [
+            _FakeTrainerCell(cell_index=0, error=RuntimeError("trainer died")),
+            _FakeTrainerCell(cell_index=1, output=_output(4)),
+        ]
+        controller = _make_partial_target_controller(cells)
+
+        assert (await controller.update_weights(info=_make_engines(2))).weight_version == 4
+
+    async def test_a_dead_senders_targets_and_a_survivors_own_failure_are_all_reported(self) -> None:
+        """Dropping either set on the merge would leave a stale or half-written engine in service."""
+        cells = [
+            _FakeTrainerCell(cell_index=0, error=RuntimeError("trainer died")),
+            _FakeTrainerCell(cell_index=1, output=_output(4, "rollout-3")),
+        ]
+        controller = _make_partial_target_controller(cells)
+
+        output = await controller.update_weights(info=_make_engines(4))
+
+        assert output.weight_version == 4
+        assert set(output.failed_cell_ids) == {"rollout-0", "rollout-1", "rollout-3"}
+
+    async def test_the_next_update_splits_every_target_among_the_survivors_only(self) -> None:
+        """A share left with the dead sender would keep those engines on the old weights on every later update."""
+        cells = [
+            _FakeTrainerCell(cell_index=0, error=RuntimeError("trainer died")),
+            _FakeTrainerCell(cell_index=1, output=_output(4)),
+            _FakeTrainerCell(cell_index=2, output=_output(4)),
+        ]
+        controller = _make_partial_target_controller(cells)
+        await controller.update_weights(info=_make_engines(3))
+
+        output = await controller.update_weights(info=_make_engines(4))
+
+        assert (output.weight_version, output.failed_cell_ids) == (4, ())
+        assert _targets_of(cells[0]) == [["rollout-0"]]
+        assert _targets_of(cells[1]) == [["rollout-1"], ["rollout-0", "rollout-1"]]
+        assert _targets_of(cells[2]) == [["rollout-2"], ["rollout-2", "rollout-3"]]
+
+    async def test_losing_every_sender_raises_the_first_failure(self):
+        """No engine got the weights and no cell is left to retry on, so the run must surface the error."""
+        cells = [
+            _FakeTrainerCell(cell_index=0, error=RuntimeError("first failure")),
+            _FakeTrainerCell(cell_index=1, error=RuntimeError("second failure")),
+        ]
+        controller = _make_partial_target_controller(cells)
+
+        with pytest.raises(RuntimeError, match="first failure"):
+            await controller.update_weights(info=_make_engines(2))
+
+    async def test_a_healthy_sender_with_no_share_keeps_the_run_from_exiting(self):
+        """A trainer cell that was handed no target is still available to heal the pool on the next update."""
+        cells = [
+            _FakeTrainerCell(cell_index=0, error=RuntimeError("first failure")),
+            _FakeTrainerCell(cell_index=1, error=RuntimeError("second failure")),
+            _FakeTrainerCell(cell_index=2),
+        ]
+        controller = _make_partial_target_controller(cells)
+
+        with pytest.raises(NonRetryableError, match="No inference cell received the weights"):
+            await controller.update_weights(info=_make_engines(2))
+
+    async def test_no_engine_receiving_the_weights_is_not_worth_retrying(self):
+        """Every rollout cell now serves stale or half-written weights, which only a fresh rollout pool fixes."""
+        cells = [
+            _FakeTrainerCell(cell_index=0, output=_output(4, "rollout-0")),
+            _FakeTrainerCell(cell_index=1, output=_output(4, "rollout-1")),
+        ]
+        controller = _make_partial_target_controller(cells)
+
+        with pytest.raises(NonRetryableError, match="No inference cell received the weights"):
+            await controller.update_weights(info=_make_engines(2))
+
+    async def test_one_engine_out_of_several_failing_is_reported_rather_than_raised(self):
+        """The rest of the fleet serves the new weights, and the driver only has to drop the one that failed."""
+        cells = [
+            _FakeTrainerCell(cell_index=0, output=_output(4, "rollout-0")),
+            _FakeTrainerCell(cell_index=1, output=_output(4)),
+        ]
+        controller = _make_partial_target_controller(cells)
+
+        output = await controller.update_weights(info=_make_engines(2))
+
+        assert _outcome_of(output) == _outcome_of(_output(4, "rollout-0"))
+
+
+class TestBlameTheSenderThatReachedNoneOfItsTargets:
+    async def test_a_sender_that_missed_all_of_its_several_targets_is_killed(self):
+        """A trainer with a dead link would otherwise be handed a fresh share on every update until none are left."""
+        cells = [
+            _FakeTrainerCell(cell_index=0, output=_output(4, "rollout-0", "rollout-1")),
+            _FakeTrainerCell(cell_index=1, output=_output(4)),
+        ]
+        controller = _make_partial_target_controller(cells)
+
+        await controller.update_weights(info=_make_engines(4))
+
+        assert cells[0].killed
+        assert not cells[1].killed
+
+    async def test_a_sender_that_raised_on_all_of_its_several_targets_is_killed(self):
+        """A raise is at least as damning as a report of failure, and the cell must not be reused either way."""
+        cells = [
+            _FakeTrainerCell(cell_index=0, error=RuntimeError("trainer died")),
+            _FakeTrainerCell(cell_index=1, output=_output(4)),
+        ]
+        controller = _make_partial_target_controller(cells)
+
+        await controller.update_weights(info=_make_engines(3))
+
+        assert cells[0].killed
+
+    async def test_a_sender_with_a_single_failed_target_is_left_alone(self):
+        """One unreachable engine is far more likely the engine's fault than the sender's."""
+        cells = [
+            _FakeTrainerCell(cell_index=0, output=_output(4, "rollout-0")),
+            _FakeTrainerCell(cell_index=1, output=_output(4)),
+        ]
+        controller = _make_partial_target_controller(cells)
+
+        await controller.update_weights(info=_make_engines(2))
+
+        assert not cells[0].killed
+
+    async def test_a_sender_that_reached_some_of_its_targets_is_left_alone(self):
+        """Its link demonstrably works, so killing it would throw away a healthy trainer cell."""
+        cells = [
+            _FakeTrainerCell(cell_index=0, output=_output(4, "rollout-0")),
+            _FakeTrainerCell(cell_index=1, output=_output(4)),
+        ]
+        controller = _make_partial_target_controller(cells)
+
+        await controller.update_weights(info=_make_engines(4))
+
+        assert not cells[0].killed
+
+    async def test_a_killed_sender_is_handed_no_share_on_the_next_update(self) -> None:
+        """Handing the blamed sender another share would lose those engines again on every update."""
+        cells = [
+            _FakeTrainerCell(cell_index=0, output=_output(4, "rollout-0", "rollout-1")),
+            _FakeTrainerCell(cell_index=1, output=_output(4)),
+        ]
+        controller = _make_partial_target_controller(cells)
+        await controller.update_weights(info=_make_engines(4))
+
+        await controller.update_weights(info=_make_engines(4))
+
+        assert cells[0].killed
+        assert _targets_of(cells[0]) == [["rollout-0", "rollout-1"]]
+        assert _targets_of(cells[1]) == [
+            ["rollout-2", "rollout-3"],
+            ["rollout-0", "rollout-1", "rollout-2", "rollout-3"],
+        ]
+
+    async def test_the_senders_are_blamed_before_the_update_is_declared_a_total_loss(self):
+        """Leaving a broken sender alive because the update failed outright would repeat the failure next time."""
+        cells = [
+            _FakeTrainerCell(cell_index=0, output=_output(4, "rollout-0", "rollout-1")),
+            _FakeTrainerCell(cell_index=1, output=_output(4, "rollout-2", "rollout-3")),
+        ]
+        controller = _make_partial_target_controller(cells)
+
+        with pytest.raises(NonRetryableError, match="No inference cell received the weights"):
+            await controller.update_weights(info=_make_engines(4))
+
+        assert cells[0].killed and cells[1].killed
+
+
+# ========================= weight update result events ========================
+
+
+class TestWeightUpdateResultEvent:
+    @pytest.fixture
+    def _event_log_dir(self, tmp_path: Path):
+        set_event_logger(EventLogger(log_dir=tmp_path, source=SimpleProcessIdentity(component="main")))
+        try:
+            yield tmp_path
+        finally:
+            set_event_logger(None)
+
+    @staticmethod
+    def _results(log_dir: Path) -> list[WeightUpdateResultEvent]:
+        return [e for e in read_events(log_dir) if isinstance(e, WeightUpdateResultEvent)]
+
+    @staticmethod
+    def _controller(cells: list[_FakeTrainerCell]) -> TrainerController:
+        controller = _make_partial_target_controller(cells)
+        controller._debug_trainer_load_state_timestamp = 123.5
+        return controller
+
+    async def test_a_partial_success_logs_the_updated_and_failed_cells_under_one_update_id(self, _event_log_dir: Path):
+        """The result names exactly the cells that took the version, with the id every sender and the output used."""
+        cells = [
+            _FakeTrainerCell(cell_index=0, output=_output(5, "rollout-1")),
+            _FakeTrainerCell(cell_index=1, output=_output(5)),
+        ]
+        info = _make_engines(4)
+
+        output = await self._controller(cells).update_weights(info=info, rollout_id=3)
+
+        [event] = self._results(_event_log_dir)
+        assert event.debug_weight_update_id == output.debug_weight_update_id
+        assert {kwargs["debug_weight_update_id"] for cell in cells for kwargs in cell.received_kwargs} == {
+            event.debug_weight_update_id
+        }
+        assert event.rollout_id == 3
+        assert (event.candidate_version, event.published_version) == (5, 5)
+        assert event.updated_cell_ids == ["rollout-0", "rollout-2", "rollout-3"]
+        assert event.failed_cell_ids == ["rollout-1"]
+        assert event.snapshot_cell_id_to_hashes == info.snapshot_cell_id_to_hashes
+        assert event.debug_trainer_load_state_timestamp == output.debug_trainer_load_state_timestamp == 123.5
+
+    async def test_a_sender_that_raised_puts_its_whole_share_in_the_failed_cells(self, _event_log_dir: Path):
+        """A dead sender's targets never took the version, so they must not be reported updated."""
+        cells = [
+            _FakeTrainerCell(cell_index=0, error=RuntimeError("trainer died")),
+            _FakeTrainerCell(cell_index=1, output=_output(5)),
+        ]
+
+        await self._controller(cells).update_weights(info=_make_engines(4))
+
+        [event] = self._results(_event_log_dir)
+        assert event.updated_cell_ids == ["rollout-2", "rollout-3"]
+        assert sorted(event.failed_cell_ids) == ["rollout-0", "rollout-1"]
+        assert event.published_version == 5
+
+    async def test_an_update_without_targets_publishes_nothing(self, _event_log_dir: Path):
+        """No engine took any weights, so a published version would claim coverage that does not exist."""
+        await self._controller([_FakeTrainerCell(cell_index=0)]).update_weights(info=_make_engines(0))
+
+        [event] = self._results(_event_log_dir)
+        assert event.updated_cell_ids == [] and event.failed_cell_ids == []
+        assert event.published_version is None
+
+    async def test_a_skipped_broadcast_logs_no_published_version(self, _event_log_dir: Path):
+        """Workers that skipped the broadcast answer no version, which must not be recorded as published."""
+        cells = [_FakeTrainerCell(cell_index=0, output=_output(None))]
+
+        await self._controller(cells).update_weights(info=_make_engines(2))
+
+        [event] = self._results(_event_log_dir)
+        assert (event.candidate_version, event.published_version) == (None, None)
+
+    async def test_each_update_gets_a_fresh_id(self, _event_log_dir: Path):
+        """Reusing an id would let one update's checksum record cover another update."""
+        controller = self._controller([_FakeTrainerCell(cell_index=0)])
+
+        first = await controller.update_weights(info=_make_engines(1))
+        second = await controller.update_weights(info=_make_engines(1))
+
+        assert [e.debug_weight_update_id for e in self._results(_event_log_dir)] == [
+            first.debug_weight_update_id,
+            second.debug_weight_update_id,
+        ]
+        assert first.debug_weight_update_id != second.debug_weight_update_id
+
+    async def test_the_first_alive_dispatch_logs_the_failed_cells_its_worker_reported(self, _event_log_dir: Path):
+        """The broadcast path must log the same outcome shape as the split path."""
+        group = TrainerController.__new__(TrainerController)
+        group.args = _make_broadcast_args()
+        group._trainer_id = "trainer-0"
+        group._debug_trainer_load_state_timestamp = 7.0
+        group._execute_first_alive = AsyncMock(return_value=[_output(2, "rollout-1"), _output(2, "rollout-1")])
+
+        output = await group.update_weights(info=_make_engines(2), rollout_id=1)
+
+        [event] = self._results(_event_log_dir)
+        assert event.debug_weight_update_id == output.debug_weight_update_id
+        assert group._execute_first_alive.await_args.kwargs["debug_weight_update_id"] == output.debug_weight_update_id
+        assert (event.updated_cell_ids, event.failed_cell_ids) == (["rollout-0"], ["rollout-1"])
+        assert event.debug_trainer_load_state_timestamp == 7.0
+
+    async def test_no_event_is_logged_without_an_event_logger(self):
+        """A run without the event logger still gets its output instead of failing on the log call."""
+        output = await self._controller([_FakeTrainerCell(cell_index=0)]).update_weights(info=_make_engines(1))
+
+        assert output.weight_version == 5
+
+    async def test_reloading_the_trainer_state_starts_a_new_lineage(self, _event_log_dir: Path):
+        """A load_state rewinds the weights, so later results must not share the earlier lineage."""
+        info = SimpleNamespace(engine_cell_ids=["rollout-0"], snapshot_cell_id_to_hashes={"rollout-0": "h"})
+        group = await _make_alive_controller(num_cells=1)
+        for handle in get_raw_actor_handles(_cell(group, 0)):
+            ray.get(handle.set_update_weights_return_value.remote(_output(1)))
+        before = await group.update_weights(info=info)
+
+        await group.load_state()
+        after = await group.update_weights(info=info)
+
+        first, second = self._results(_event_log_dir)
+        assert after.debug_trainer_load_state_timestamp > before.debug_trainer_load_state_timestamp
+        assert first.debug_trainer_load_state_timestamp == before.debug_trainer_load_state_timestamp
+        assert second.debug_trainer_load_state_timestamp == after.debug_trainer_load_state_timestamp
+
+
+class TestStepEndRecordsCellIncarnations:
+    def test_the_step_end_names_the_incarnation_of_every_participating_cell(self, tmp_path: Path):
+        """A peer-progress check needs the exact incarnations that trained, not just cell indices."""
+        set_event_logger(EventLogger(log_dir=tmp_path, source=SimpleProcessIdentity(component="main")))
+        try:
+            cells = [
+                SimpleNamespace(cell_index=0, cell_id="trainer-0", workers_hash="hash-0"),
+                SimpleNamespace(cell_index=2, cell_id="trainer-2", workers_hash="hash-2b"),
+            ]
+            _make_controller(num_cells=3)._log_step_end_event(
+                rollout_id=4, attempt=0, snapshot_alive_cells=cells, results=[[NORMAL], RuntimeError("boom")]
+            )
+        finally:
+            set_event_logger(None)
+
+        [event] = [e for e in read_events(tmp_path) if isinstance(e, TrainGroupStepEndEvent)]
+        assert event.cell_incarnations == {"trainer-0": "hash-0", "trainer-2": "hash-2b"}
+        assert event.cell_outcomes == {0: [TrainStepOutcome.NORMAL], 2: "error"}

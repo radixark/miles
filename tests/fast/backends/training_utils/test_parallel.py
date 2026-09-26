@@ -113,3 +113,42 @@ def test_effective_dp_cp_uses_inner_outer_pair_in_indep_mode():
     assert result.size == 3 * 4
     assert result.groups_inner_to_outer == [None, None]
     assert result.gloo_groups_inner_to_outer == [None, None]
+
+
+class TestTrainParallelConfig:
+    def test_live_cell_count_and_pipeline_layout_are_derived_after_reconfiguration(self) -> None:
+        """The next config reflects three live cells and the current CP and VPP layout."""
+        state = _parallel_state(
+            intra_dp=GroupInfo(rank=0, size=1, group=None),
+            indep_dp=GroupInfo(rank=2, size=4, group=None),
+        )
+        state.cp = GroupInfo(rank=1, size=2, group=None)
+        state.vpp_size = 2
+        state.microbatch_group_size_per_vp_stage = 4
+
+        before = state.train_parallel_config(supports_precomputed_schedule=True)
+        state.indep_dp = GroupInfo(rank=2, size=3, group=None)
+        after = state.train_parallel_config(supports_precomputed_schedule=True)
+
+        assert before.dp_size == 4
+        assert after.dp_size == 3
+        assert after.cp_size == 2
+        assert after.vpp_size == 2
+        assert after.microbatch_group_size_per_vp_stage == 4
+        assert after.independent_dp
+        assert after.supports_precomputed_schedule
+
+    def test_backend_capability_does_not_change_the_live_topology(self) -> None:
+        """A backend without precomputed scheduling retains the current DP and CP sizes."""
+        state = _parallel_state(
+            intra_dp=GroupInfo(rank=1, size=4, group=None),
+            indep_dp=GroupInfo(rank=0, size=1, group=None),
+        )
+        state.cp = GroupInfo(rank=1, size=2, group=None)
+
+        config = state.train_parallel_config(supports_precomputed_schedule=False)
+
+        assert config.dp_size == 4
+        assert config.cp_size == 2
+        assert not config.independent_dp
+        assert not config.supports_precomputed_schedule

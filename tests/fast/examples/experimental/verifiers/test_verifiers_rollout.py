@@ -27,6 +27,7 @@ from examples.experimental.verifiers.verifiers_rollout import (
     trace_to_sample,
     trace_to_samples,
 )
+from tests.fast.train_parallel_config_utils import make_train_parallel_config
 
 from miles.rollout.base_types import BaseRolloutFn, RolloutFnConstructorInput
 from miles.utils.types import Sample
@@ -409,7 +410,9 @@ def test_convert_group_uses_standard_miles_group_shape():
         global_batch_size=1,
         use_dynamic_global_batch_size=False,
     )
-    flattened, _ = postprocess_rollout_data(args, [group], train_parallel_config={"dp_size": 1})
+    flattened, _ = postprocess_rollout_data(
+        args=args, data=[group], train_parallel_config=make_train_parallel_config(dp_size=1)
+    )
     assert [sample.routing_key for sample in flattened] == ["first", "second"]
 
 

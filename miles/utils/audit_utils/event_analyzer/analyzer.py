@@ -9,6 +9,8 @@ from typing import Any
 from miles.utils.audit_utils.event_analyzer.rules import (
     cross_replica_weight_checksum,
     inference_engine_weight_checksum_consistency,
+    inference_engine_weight_checksum_coverage,
+    inference_engine_weight_movement,
 )
 from miles.utils.audit_utils.event_analyzer.rules import witness as witness_rule
 from miles.utils.audit_utils.event_analyzer.rules.sample_ownership import check as sample_ownership_check
@@ -68,6 +70,8 @@ def _check_one_model_id(events: list[Any]) -> list[Any]:
     return [
         *cross_replica_weight_checksum.check(events),
         *inference_engine_weight_checksum_consistency.check(events),
+        *inference_engine_weight_checksum_coverage.check(events),
+        *inference_engine_weight_movement.check(events),
         *witness_rule.check(events),
     ]
 

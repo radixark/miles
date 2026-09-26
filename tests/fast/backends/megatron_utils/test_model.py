@@ -7,9 +7,11 @@ from unittest.mock import Mock
 
 import pytest
 import torch
+from tests.fast.utils.test_utils.fault_injector.fakes import _arm_marker_hook
 
 from miles.backends.training_utils.data import DataIterator
 from miles.backends.training_utils.model_companion import ModelCompanion
+from miles.utils.test_utils.fault_injector.models import FaultHookName
 
 
 class FakeModelChunk(torch.nn.Module):
@@ -164,6 +166,89 @@ class TestTrainOneStepStructuredLog:
             )
 
         assert "train op=train_step rollout=7 step=3 attempt=2 outcome=NORMAL valid_step=true" in caplog.messages
+
+
+class TestTrainOneStepFaultHook:
+    @pytest.fixture
+    def allreduce_log(self, train_one_step_env: TrainOneStepEnv, monkeypatch: pytest.MonkeyPatch) -> list[object]:
+        from miles.backends.megatron_utils import model as model_module
+
+        log: list[object] = []
+        train_one_step_env.args.enable_sample_ownership_checker = False
+        train_one_step_env.parallel_state.indep_dp = FakeParallelGroup(size=2)
+
+        def allreduce(*args: Any, **kwargs: Any) -> tuple[bool, dict[str, float]]:
+            log.append("allreduce")
+            return True, {}
+
+        monkeypatch.setattr(model_module, "allreduce_grads_and_losses_across_replicas", allreduce)
+        return log
+
+    def _train(self, env: TrainOneStepEnv) -> None:
+        from miles.backends.megatron_utils.model import train_one_step
+
+        train_one_step(
+            args=env.args,
+            rollout_id=7,
+            step_id=0,
+            data_iterator=env.data_iterator,
+            model=env.model,
+            optimizer=None,
+            opt_param_scheduler=None,
+            num_microbatches=1,
+            num_rollouts=1,
+            witness_info=None,
+            attempt=2,
+        )
+
+    def test_the_hook_of_this_step_fires_before_the_cross_replica_allreduce(
+        self, train_one_step_env: TrainOneStepEnv, allreduce_log: list[object], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A fault armed for this rollout and attempt must strike before replicas exchange gradients."""
+        _arm_marker_hook(
+            monkeypatch,
+            log=allreduce_log,
+            hook_name=FaultHookName.TRAINER_STEP_BEFORE_ALLREDUCE,
+            rollout_id=7,
+            attempt=2,
+        )
+        self._train(train_one_step_env)
+        assert allreduce_log == [("hook", FaultHookName.TRAINER_STEP_BEFORE_ALLREDUCE.value), "allreduce"]
+
+    @pytest.mark.parametrize("filters", [{"rollout_id": 6}, {"attempt": 1}])
+    def test_a_hook_armed_for_another_step_or_attempt_does_not_fire(
+        self,
+        train_one_step_env: TrainOneStepEnv,
+        allreduce_log: list[object],
+        monkeypatch: pytest.MonkeyPatch,
+        filters: dict[str, int],
+    ) -> None:
+        """The hook must be reached with this step's rollout and attempt so other steps are spared."""
+        _arm_marker_hook(
+            monkeypatch, log=allreduce_log, hook_name=FaultHookName.TRAINER_STEP_BEFORE_ALLREDUCE, **filters
+        )
+        self._train(train_one_step_env)
+        assert allreduce_log == ["allreduce"]
+
+    def test_a_failing_hook_stops_the_step_before_the_allreduce(
+        self, train_one_step_env: TrainOneStepEnv, allreduce_log: list[object], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A hook failure must surface instead of letting the gradients be exchanged."""
+        _arm_marker_hook(
+            monkeypatch, log=allreduce_log, hook_name=FaultHookName.TRAINER_STEP_BEFORE_ALLREDUCE, fail=True
+        )
+        with pytest.raises(RuntimeError, match="failed"):
+            self._train(train_one_step_env)
+        assert allreduce_log == [("hook", FaultHookName.TRAINER_STEP_BEFORE_ALLREDUCE.value)]
+
+    def test_a_single_replica_step_never_reaches_the_hook(
+        self, train_one_step_env: TrainOneStepEnv, allreduce_log: list[object], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Without independent replicas there is no allreduce, so the hook must not fire."""
+        train_one_step_env.parallel_state.indep_dp = FakeParallelGroup(size=1)
+        _arm_marker_hook(monkeypatch, log=allreduce_log, hook_name=FaultHookName.TRAINER_STEP_BEFORE_ALLREDUCE)
+        self._train(train_one_step_env)
+        assert allreduce_log == []
 
 
 def test_forward_only_omits_sampling_mask_for_callbacks_that_do_not_replay_sampling_support(monkeypatch):

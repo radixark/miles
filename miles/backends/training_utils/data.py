@@ -8,6 +8,7 @@ import torch.nn.functional as F
 
 from miles.utils.audit_utils.witness.allocator import WitnessInfo
 from miles.utils.data import get_minimum_num_micro_batch_size
+from miles.utils.dp_schedule import TrainParallelConfig
 from miles.utils.ft_utils.process_group_utils import GeneralPGUtil
 from miles.utils.object_store import ObjectStoreGetResult
 from miles.utils.seqlen_balancing import get_seqlen_balanced_partitions
@@ -35,6 +36,8 @@ def get_rollout_data(
     args: Namespace,
     rollout_data_ref: Box,
     witness_info: WitnessInfo | None = None,
+    *,
+    train_parallel_config: TrainParallelConfig,
 ) -> tuple[RolloutBatch, ObjectStoreGetResult]:
     parallel_state = get_parallel_state()
     # Fetch data through ray on CPU, not sure if this will be performance bottleneck.
@@ -42,8 +45,8 @@ def get_rollout_data(
     rollout_data, store_get_result = process_rollout_data(
         args,
         rollout_data_ref,
-        parallel_state.effective_dp.rank,
-        parallel_state.effective_dp.size,
+        dp_rank=parallel_state.effective_dp.rank,
+        train_parallel_config=train_parallel_config,
         witness_info=witness_info,
     )
     # move tokens to GPU in advance
@@ -491,6 +494,9 @@ def get_data_iterator(
     num_local_samples = len(rollout_data["total_lengths"])
     assert args.use_dynamic_global_batch_size == ("dynamic_global_batch_size" in rollout_data)
     global_batch_size = rollout_data.get("dynamic_global_batch_size", args.global_batch_size)
+    assert (
+        global_batch_size % dp_size == 0
+    ), f"global_batch_size ({global_batch_size}) must be divisible by dp_size ({dp_size}) for the training-side schedule"
     num_local_gbs = global_batch_size // dp_size
     num_steps_per_rollout = num_local_samples // num_local_gbs
 

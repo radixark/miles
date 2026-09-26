@@ -20,6 +20,7 @@ from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
 from miles.backends.training_utils.parallel import ParallelState
 from miles.backends.training_utils.weight_update.hf_weight_iterator import WeightUpdatePlacement
 from miles.backends.training_utils.weight_update.protocol import WeightTransferProtocol
+from miles.backends.training_utils.weight_update.rollout_cell_updater import create_rollout_cell_updaters
 from miles.backends.training_utils.weight_update.session import check_weight_sync_results
 from miles.backends.training_utils.weight_update.utils import get_data_replica_rank_and_size
 from miles.utils import async_utils
@@ -104,6 +105,7 @@ class UpdateWeightFromDiskDelta(WeightTransferProtocol):
         rollout_engines: Sequence[SGLangApiClient],
         engine_gpu_counts: Sequence[int] | None,
         engine_gpu_offsets: Sequence[int] | None,
+        engine_cell_ids: Sequence[str],
         parallel_state: ParallelState,
         placement: WeightUpdatePlacement,
         selector: str,
@@ -112,6 +114,7 @@ class UpdateWeightFromDiskDelta(WeightTransferProtocol):
         # uses isn't needed either — the engine-side apply is serialized by a per-host flock
         # behind /pull_weights.
         self.rollout_engines = rollout_engines
+        self.cell_updaters_of_cell_id = create_rollout_cell_updaters(self.args, self.rollout_engines, engine_cell_ids)
         self.group_name = "miles-disk-delta"
         replica_rank, _ = get_data_replica_rank_and_size(parallel_state, placement)
         self.is_sender = replica_rank == 0

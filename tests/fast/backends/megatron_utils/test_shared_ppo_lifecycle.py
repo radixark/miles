@@ -10,10 +10,14 @@ from unittest.mock import Mock, call
 import pytest
 import ray
 import torch
+from tests.fast.train_parallel_config_utils import make_train_parallel_config
 
 from miles.backends.megatron_utils.ft.types import TrainStepOutcome, TrainStepOutput
 from miles.backends.training_utils.conn_status import ConnStatusManager
+from miles.backends.training_utils.parallel import GroupInfo, ParallelState
+from miles.ray.train_actor import WeightUpdateOutput
 from miles.utils import object_store
+from miles.utils.dp_schedule import TrainParallelConfig
 from miles.utils.ray_utils import Box
 from miles.utils.replay_base import IndexerReplayManager, RoutingReplayManager
 from miles.utils.tensor_backper import MainCastContext, TensorBackuper
@@ -85,8 +89,9 @@ def test_critic_train_wakes_and_leaves_offload_to_driver(actor_module, monkeypat
     worker = _worker(actor_module, "critic")
     critic_output = TrainStepOutput(outcome=TrainStepOutcome.NORMAL, values=Box("cpu-values-ref"))
     worker._train_critic = Mock(return_value=critic_output)
+    monkeypatch.setattr(actor_module, "get_rollout_data", lambda **_kwargs: ({"tokens": []}, nullcontext()))
     monkeypatch.setattr(
-        actor_module, "get_rollout_data", lambda _args, _ref, **_kwargs: ({"tokens": []}, nullcontext())
+        actor_module, "get_parallel_state", lambda: SimpleNamespace(train_parallel_config=make_train_parallel_config)
     )
     phases = []
 
@@ -111,8 +116,9 @@ def test_critic_train_wakes_and_leaves_offload_to_driver(actor_module, monkeypat
 def test_actor_receives_critic_payload_and_leaves_offload_to_driver(actor_module, monkeypatch):
     worker = _worker(actor_module, "actor")
     worker._train_actor = Mock(return_value=None)
+    monkeypatch.setattr(actor_module, "get_rollout_data", lambda **_kwargs: ({"tokens": []}, nullcontext()))
     monkeypatch.setattr(
-        actor_module, "get_rollout_data", lambda _args, _ref, **_kwargs: ({"tokens": []}, nullcontext())
+        actor_module, "get_parallel_state", lambda: SimpleNamespace(train_parallel_config=make_train_parallel_config)
     )
     values = TrainStepOutput(outcome=TrainStepOutcome.NORMAL, values=Box("cpu-values-ref"))
 
@@ -128,14 +134,110 @@ def test_actor_receives_critic_payload_and_leaves_offload_to_driver(actor_module
 def test_train_keeps_model_resident(actor_module, monkeypatch):
     worker = _worker(actor_module, "actor", asleep=False)
     worker._train_actor = Mock(return_value=None)
+    monkeypatch.setattr(actor_module, "get_rollout_data", lambda **_kwargs: ({"tokens": []}, nullcontext()))
     monkeypatch.setattr(
-        actor_module, "get_rollout_data", lambda _args, _ref, **_kwargs: ({"tokens": []}, nullcontext())
+        actor_module, "get_parallel_state", lambda: SimpleNamespace(train_parallel_config=make_train_parallel_config)
     )
 
     worker.train(5, object())
 
     worker.wake_up.assert_not_called()
     worker.sleep.assert_not_called()
+
+
+class TestTrainParallelConfigWiring:
+    def test_megatron_train_reads_the_live_three_cell_topology(
+        self, actor_module: ModuleType, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Training after a cell loss passes the current DP, CP and VPP layout to the loader, not a cached one."""
+        worker = _worker(actor_module, "actor", asleep=False)
+        worker.args.debug_rollout_only = True
+        trivial = GroupInfo(rank=0, size=1, group=None)
+        state = ParallelState(
+            intra_dp=trivial,
+            intra_dp_cp=trivial,
+            cp=GroupInfo(rank=1, size=2, group=None),
+            tp=trivial,
+            pp=trivial,
+            ep=trivial,
+            etp=trivial,
+            indep_dp=GroupInfo(rank=2, size=4, group=None),
+            vpp_size=2,
+            microbatch_group_size_per_vp_stage=4,
+        )
+        worker.train_parallel_config = state.train_parallel_config(supports_precomputed_schedule=True)
+        state.indep_dp = GroupInfo(rank=2, size=3, group=None)
+        received: list[TrainParallelConfig] = []
+
+        def load_rollout_data(
+            *,
+            args: Namespace,
+            rollout_data_ref: object,
+            witness_info: object,
+            train_parallel_config: TrainParallelConfig,
+        ) -> tuple[dict[str, list], object]:
+            received.append(train_parallel_config)
+            return {"tokens": []}, nullcontext()
+
+        monkeypatch.setattr(actor_module, "get_parallel_state", lambda: state)
+        monkeypatch.setattr(actor_module, "get_rollout_data", load_rollout_data)
+        monkeypatch.setattr(actor_module, "log_rollout_data", lambda *_args: None)
+
+        worker.train(rollout_id=3, rollout_data_ref=object())
+
+        assert len(received) == 1
+        config = received[0]
+        assert (config.dp_size, config.cp_size, config.vpp_size) == (3, 2, 2)
+        assert config.microbatch_group_size_per_vp_stage == 4
+        assert config.independent_dp
+        assert config.supports_precomputed_schedule
+
+    @pytest.mark.parametrize("method_name", ["forward_backward", "forward_only"])
+    def test_multi_lora_entry_uses_the_live_topology(
+        self, actor_module: ModuleType, monkeypatch: pytest.MonkeyPatch, method_name: str
+    ) -> None:
+        """Both MultiLoRA entry points send the post-loss cell topology to data loading, not a cached one."""
+        lora_actor_module = importlib.import_module("miles.backends.megatron_utils.lora.actor")
+        worker = object.__new__(lora_actor_module.MultiLoRATrainRayActor)
+        worker.args = Namespace()
+        worker.model = object()
+        worker._heartbeat = Mock()
+        trivial = GroupInfo(rank=0, size=1, group=None)
+        state = ParallelState(
+            intra_dp=trivial,
+            intra_dp_cp=trivial,
+            cp=GroupInfo(rank=1, size=2, group=None),
+            tp=trivial,
+            pp=trivial,
+            ep=trivial,
+            etp=trivial,
+            indep_dp=GroupInfo(rank=1, size=4, group=None),
+            vpp_size=2,
+            microbatch_group_size_per_vp_stage=4,
+        )
+        worker.train_parallel_config = state.train_parallel_config(supports_precomputed_schedule=True)
+        state.indep_dp = GroupInfo(rank=1, size=3, group=None)
+        received: list[TrainParallelConfig] = []
+
+        def load_rollout_data(
+            *, args: Namespace, rollout_data_ref: object, train_parallel_config: TrainParallelConfig
+        ) -> tuple[dict[str, list], object]:
+            received.append(train_parallel_config)
+            return {"tokens": []}, nullcontext()
+
+        monkeypatch.setattr(lora_actor_module, "get_parallel_state", lambda: state)
+        monkeypatch.setattr(lora_actor_module, "get_rollout_data", load_rollout_data)
+        monkeypatch.setattr(lora_actor_module.lora_model, "run_forward_backward", lambda *_args, **_kwargs: {})
+
+        method = worker.forward_backward if method_name == "forward_backward" else worker.forward_only
+        method(batch_id=7, rollout_data_ref=object())
+
+        assert len(received) == 1
+        config = received[0]
+        assert (config.dp_size, config.cp_size, config.vpp_size) == (3, 2, 2)
+        assert config.microbatch_group_size_per_vp_stage == 4
+        assert config.independent_dp
+        assert config.supports_precomputed_schedule
 
 
 @pytest.mark.parametrize(
@@ -246,6 +348,7 @@ def test_update_weights_only_uses_temporary_process_groups_when_asleep(actor_mod
         rollout_engines=[],
         engine_gpu_counts=[],
         engine_gpu_offsets=[],
+        engine_cell_ids=[],
         snapshot_cell_id_to_hashes={},
     )
     reload_groups = Mock()
@@ -254,7 +357,7 @@ def test_update_weights_only_uses_temporary_process_groups_when_asleep(actor_mod
     monkeypatch.setattr(actor_module, "destroy_process_groups", destroy_groups)
     monkeypatch.setattr(actor_module.dist, "get_rank", lambda: 1)
 
-    worker.update_weights(info)
+    worker.update_weights(info, debug_weight_update_id="update-0", rollout_id=0)
 
     assert reload_groups.call_count == int(asleep)
     assert destroy_groups.call_count == int(asleep)
@@ -365,7 +468,6 @@ def _actor_reuse_worker(actor_module, **args_overrides):
     worker._compute_log_prob = Mock(return_value={"log_probs": [object()]})
     worker.rollout_data_postprocess = None
     worker.prof = Mock()
-    worker._ft_test_action_executor = None
     worker.weight_updater = Mock()
     worker.weight_updater.pop_metrics.return_value = {}
     worker._heartbeat = Mock()
@@ -429,7 +531,6 @@ def test_actor_logprob_forward_is_explicit_single_step_opt_in(
     assert train_call.kwargs == {
         "witness_info": None,
         "attempt": 0,
-        "ft_test_action_executor": None,
     }
 
 
@@ -613,7 +714,6 @@ def _actor_worker(actor_module: Any) -> Any:
     worker.weights_backuper = Mock()
     worker.weights_backuper.backup_tags = ()
     worker._active_model_tag = "actor"
-    worker._ft_test_action_executor = None
     worker._heartbeat = Mock()
     worker._switch_model = Mock()
     return worker
@@ -656,8 +756,9 @@ def test_debug_rollout_only_train_answers_with_a_normal_train_step_output(
     worker.args.debug_rollout_only = True
     worker._train_actor = Mock()
     worker._train_critic = Mock()
+    monkeypatch.setattr(actor_module, "get_rollout_data", lambda **_kwargs: ({"tokens": []}, nullcontext()))
     monkeypatch.setattr(
-        actor_module, "get_rollout_data", lambda _args, _ref, **_kwargs: ({"tokens": []}, nullcontext())
+        actor_module, "get_parallel_state", lambda: SimpleNamespace(train_parallel_config=make_train_parallel_config)
     )
     monkeypatch.setattr(actor_module, "log_rollout_data", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(actor_module, "timer", _noop_timer)
@@ -701,18 +802,25 @@ class _RecordingWeightUpdater:
         self.conn_status = ConnStatusManager()
         self.connect_calls: list[dict[str, Any]] = []
         self.update_weights_calls: int = 0
+        self.protocol = SimpleNamespace(cell_updaters_of_cell_id={})
 
     def connect_rollout_engines(
         self,
         rollout_engines: list[Any],
         engine_gpu_counts: list[int] | None = None,
         engine_gpu_offsets: list[int] | None = None,
+        *,
+        engine_cell_ids: list[str],
     ) -> None:
+        self.protocol.cell_updaters_of_cell_id = {
+            cell_id: SimpleNamespace(is_errored=False) for cell_id in engine_cell_ids
+        }
         self.connect_calls.append(
             dict(
                 rollout_engines=list(rollout_engines),
                 engine_gpu_counts=engine_gpu_counts,
                 engine_gpu_offsets=engine_gpu_offsets,
+                engine_cell_ids=list(engine_cell_ids),
             )
         )
 
@@ -841,10 +949,12 @@ def test_switch_model_rejects_unknown_tag_even_when_marked_active(
 def _updatable_engines(rollout_engines: list[Any], snapshot: dict[str, str], gpu_count: int) -> Any:
     from miles.ray.rollout.inference_controller import UpdatableEngines
 
+    assert len(snapshot) == len(rollout_engines), "the snapshot describes one worker generation per engine"
     return UpdatableEngines(
         rollout_engines=rollout_engines,
         engine_gpu_counts=[gpu_count] * len(rollout_engines),
         engine_gpu_offsets=[index * gpu_count for index in range(len(rollout_engines))],
+        engine_cell_ids=list(snapshot),
         snapshot_cell_id_to_hashes=snapshot,
     )
 
@@ -880,13 +990,13 @@ def test_connection_uses_safe_allocations_when_offloading(
     monkeypatch.setattr(actor_module, "reload_process_groups", Mock())
     monkeypatch.setattr(actor_module, "destroy_process_groups", Mock())
     worker.weight_updater.connect_rollout_engines = check_connection
-    engines = _updatable_engines([], {"cell-0": "hash-a"}, gpu_count=8)
+    engines = _updatable_engines([object()], {"cell-0": "hash-a"}, gpu_count=8)
 
     if connect_fails:
         with pytest.raises(RuntimeError, match="connection failed"):
-            worker.update_weights(engines)
+            worker.update_weights(engines, debug_weight_update_id="update-0", rollout_id=0)
     else:
-        worker.update_weights(engines)
+        worker.update_weights(engines, debug_weight_update_id="update-0", rollout_id=0)
 
     assert not inside_safe_region
     assert saver.disable.call_count == ((1 if connect_fails else 2) if offload_train else 0)
@@ -902,16 +1012,28 @@ def test_update_weights_reconnects_once_per_rollout_snapshot(
     first_engines = [object()]
     replacement_engines = [object(), object()]
 
-    worker.update_weights(_updatable_engines(first_engines, {"cell-0": "hash-a"}, gpu_count=4))
-    worker.update_weights(_updatable_engines(first_engines, {"cell-0": "hash-a"}, gpu_count=4))
-    weight_version = worker.update_weights(_updatable_engines(replacement_engines, {"cell-0": "hash-b"}, gpu_count=2))
+    worker.update_weights(
+        _updatable_engines(first_engines, {"cell-0": "hash-a"}, gpu_count=4),
+        debug_weight_update_id="update-0",
+        rollout_id=0,
+    )
+    worker.update_weights(
+        _updatable_engines(first_engines, {"cell-0": "hash-a"}, gpu_count=4),
+        debug_weight_update_id="update-0",
+        rollout_id=0,
+    )
+    weight_version = worker.update_weights(
+        _updatable_engines(replacement_engines, {"cell-0": "hash-b", "cell-1": "hash-b"}, gpu_count=2),
+        debug_weight_update_id="update-0",
+        rollout_id=0,
+    )
 
     assert [call["rollout_engines"] for call in updater.connect_calls] == [first_engines, replacement_engines]
     assert updater.connect_calls[1]["engine_gpu_counts"] == [2, 2]
     assert updater.connect_calls[1]["engine_gpu_offsets"] == [0, 2]
     assert updater.update_weights_calls == 3
-    assert weight_version == 3
-    assert not updater.conn_status.needs_reconnect({"cell-0": "hash-b"})
+    assert weight_version == WeightUpdateOutput(weight_version=3, failed_cell_ids=())
+    assert not updater.conn_status.needs_reconnect({"cell-0": "hash-b", "cell-1": "hash-b"})
 
 
 @pytest.mark.parametrize("weight_version", [0, 7])
@@ -922,10 +1044,14 @@ def test_actor_returns_model_version_after_update_weights_returns(
     worker = _weight_update_worker(actor_module, monkeypatch)
     worker.model[0].model_companion.weight_version.fill_(weight_version)
 
-    result = worker.update_weights(_updatable_engines([object()], {"cell-0": "hash-a"}, gpu_count=4))
+    result = worker.update_weights(
+        _updatable_engines([object()], {"cell-0": "hash-a"}, gpu_count=4),
+        debug_weight_update_id="update-0",
+        rollout_id=0,
+    )
 
-    assert type(result) is int
-    assert result == weight_version
+    assert type(result) is WeightUpdateOutput
+    assert result == WeightUpdateOutput(weight_version=weight_version, failed_cell_ids=())
 
 
 def test_reconfigure_indep_dp_forces_the_next_weight_update_to_reconnect(
@@ -941,9 +1067,13 @@ def test_reconfigure_indep_dp_forces_the_next_weight_update_to_reconnect(
     engines = [object()]
     snapshot = {"cell-0": "hash-a"}
 
-    worker.update_weights(_updatable_engines(engines, snapshot, gpu_count=4))
+    worker.update_weights(
+        _updatable_engines(engines, snapshot, gpu_count=4), debug_weight_update_id="update-0", rollout_id=0
+    )
     worker.reconfigure_indep_dp(object(), "10.0.0.1:1234")
-    worker.update_weights(_updatable_engines(engines, snapshot, gpu_count=4))
+    worker.update_weights(
+        _updatable_engines(engines, snapshot, gpu_count=4), debug_weight_update_id="update-0", rollout_id=0
+    )
 
     assert len(updater.connect_calls) == 2
 

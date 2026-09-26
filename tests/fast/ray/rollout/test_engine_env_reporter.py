@@ -59,8 +59,12 @@ def fake_clock(monkeypatch) -> list[float]:
     return now
 
 
-async def _report(reporter: EngineEnvReporter, api_client: _FakeApiClient, *, cell_id: str = "a") -> None:
-    await reporter.report_if_due(cell_id=cell_id, server_url=f"http://{cell_id}:30000", api_client=api_client)
+async def _report(
+    reporter: EngineEnvReporter, api_client: _FakeApiClient, *, cell_id: str = "a", workers_hash: str = "workers-a"
+) -> None:
+    await reporter.report_if_due(
+        cell_id=cell_id, workers_hash=workers_hash, server_url=f"http://{cell_id}:30000", api_client=api_client
+    )
 
 
 def _events(log_dir: Path) -> list[EngineEnvReportEvent]:
@@ -75,6 +79,7 @@ class TestReportIfDue:
         events = _events(event_log_dir)
         assert [event.cell_id for event in events] == ["a"]
         assert events[0].server_url == "http://a:30000"
+        assert events[0].workers_hash == "workers-a"
         assert events[0].source == SimpleProcessIdentity(component="inference_controller")
 
     async def test_reads_only_once_within_the_interval(self, event_log_dir: Path, fake_clock) -> None:
@@ -111,10 +116,11 @@ class TestReportIfDue:
         """Healing builds a new cell, whose reporter is new too, which is the case this audit exists for."""
         api_client = _FakeApiClient()
 
-        await _report(EngineEnvReporter(interval_seconds=3600.0), api_client)
-        await _report(EngineEnvReporter(interval_seconds=3600.0), api_client)
+        await _report(EngineEnvReporter(interval_seconds=3600.0), api_client, workers_hash="workers-old")
+        await _report(EngineEnvReporter(interval_seconds=3600.0), api_client, workers_hash="workers-new")
 
         assert api_client.call_count == 2
+        assert [event.workers_hash for event in _events(event_log_dir)] == ["workers-old", "workers-new"]
 
 
 class TestRedaction:

@@ -1,303 +1,322 @@
 from pathlib import Path
 
 import pytest
-from tests.e2e.ft.conftest_ft.fault_injection import entrypoint, fault_forms, state, views
-from tests.e2e.ft.conftest_ft.scenario_random_crash import _assert_drawn_fault_forms_worked, assert_healing
+from tests.e2e.ft import test_random_crash_fully_async__kill_train_rollout__dp2_cp2 as fully_async_entry
+from tests.e2e.ft.conftest_ft import scenario_random_crash, scenario_random_crash_fully_async
+from tests.e2e.ft.conftest_ft.modes import MODES, FTTestMode
+from tests.fast.e2e.scenario_harness import SCENARIO_RUN_ID, ScenarioHarness, parse_fault_tolerance_args
+from tests.utils.ft.launch import DETERMINISTIC_ENV_VARS, MEGATRON_PATH
+from tests.utils.soak.core.config import SoakTailConfig, SoakTargetConfig
+from tests.utils.soak.core.events import LaunchOutcome, SoakLaunchFinishedEvent
+from tests.utils.soak.core.utils import API_SERVER_PORT
+from tests.utils.soak.ft import fault_triggers
+from tests.utils.soak.ft.actions.factory import create_cell_fault_forms
+from tests.utils.soak.ft.types import ACTOR_CELL_TYPE, ROLLOUT_CELL_TYPE, FaultTrigger
 
-from miles.utils.audit_utils.event_logger.logger import EventLogger
-from miles.utils.audit_utils.event_logger.models import CellReconfigureEvent
-from miles.utils.audit_utils.process_identity import SimpleProcessIdentity
-from miles.utils.external_utils import command_utils
-from miles.utils.test_utils.fault_injector import FailureMode
 from miles.utils.workers.types import ClusterBackend
 
-_ROLLOUT_CELL_NAME = "rollout-engine-0"
-_ACTOR_CELL_NAME = "actor-0"
+_TRAIN_ONLY_MODE = "kill_train__dp2_cp2"
+_ROLLOUT_ONLY_MODE = "kill_rollout__dp4"
+_MIXED_MODE = "kill_train_rollout__dp2_cp2"
+_FAKE_ROLLOUT_MODE = "kill_train__dp4_cp2__fake_rollout__moe_5layer"
 
 
-def _injector(
-    *, cell_types: tuple[str, ...], cell_fault_forms: fault_forms.CellFaultForms | None = None
-) -> entrypoint.FaultInjectorHandle:
-    return entrypoint.FaultInjectorHandle(
-        base_url="http://control",
-        seed=0,
-        mean_interval_seconds_of_cell_type={cell_type: 1e9 for cell_type in cell_types},
-        cell_fault_forms=cell_fault_forms if cell_fault_forms is not None else _sigkill_forms(cell_types),
+@pytest.fixture
+def harness(scenario_harness: ScenarioHarness, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> ScenarioHarness:
+    monkeypatch.setattr(scenario_random_crash, "prepare", scenario_harness.record_prepare)
+    monkeypatch.setattr(
+        scenario_random_crash, "materialize_cyclic_debug_rollout_data", lambda count: str(tmp_path / f"cyclic-{count}")
     )
+    monkeypatch.setattr(fault_triggers, "assert_hook_evidence", scenario_harness.recorder("assert_hook_evidence"))
+    monkeypatch.setattr(scenario_random_crash, "assert_healing", scenario_harness.recorder("assert_healing"))
+    return scenario_harness
 
 
-def _sigkill_forms(cell_types: tuple[str, ...]) -> fault_forms.CellFaultForms:
-    return {
-        cell_type: [fault_forms.InjectFaultForm(base_url="http://control", failure_mode=FailureMode.SIGKILL)]
-        for cell_type in cell_types
-    }
+class TestTheSoakARandomCrashRunSchedules:
+    def test_a_trainer_only_mode_soaks_only_actor_cells_at_the_trainer_cadence(self, harness: ScenarioHarness) -> None:
+        """A rollout schedule in a trainer-only mode would draw targets the mode never made fault tolerant."""
+        _run(_TRAIN_ONLY_MODE, seed=7, num_steps=9)
+
+        (soak,) = harness.soaks
+        runner_config = soak["runner_config"]
+        assert runner_config.seed == 7
+        assert runner_config.target_configs == {
+            ACTOR_CELL_TYPE: SoakTargetConfig(expected_count=2, mean_interval_seconds=11.0)
+        }
+        assert runner_config.tail == SoakTailConfig.create(num_rollout=9)
+        assert set(soak["forms"]) == {ACTOR_CELL_TYPE}
+
+    def test_a_rollout_only_mode_expects_one_target_per_engine_at_the_rollout_cadence(
+        self, harness: ScenarioHarness
+    ) -> None:
+        """The expected count is what the end-state check compares against, so it must be the engine count."""
+        _run(_ROLLOUT_ONLY_MODE, seed=7, num_steps=9)
+
+        (soak,) = harness.soaks
+        assert soak["runner_config"].target_configs == {
+            ROLLOUT_CELL_TYPE: SoakTargetConfig(expected_count=4, mean_interval_seconds=13.0)
+        }
+        assert set(soak["forms"]) == {ROLLOUT_CELL_TYPE}
+
+    def test_a_mixed_mode_keeps_each_kind_on_its_own_count_and_cadence(self, harness: ScenarioHarness) -> None:
+        """Swapping the two cadences or counts would soak each kind at the rate meant for the other."""
+        _run(_MIXED_MODE, seed=7, num_steps=9)
+
+        (soak,) = harness.soaks
+        assert soak["runner_config"].target_configs == {
+            ACTOR_CELL_TYPE: SoakTargetConfig(expected_count=2, mean_interval_seconds=11.0),
+            ROLLOUT_CELL_TYPE: SoakTargetConfig(expected_count=4, mean_interval_seconds=13.0),
+        }
+
+    def test_the_forms_are_the_ones_of_the_resolved_triggers_for_this_backend(self, harness: ScenarioHarness) -> None:
+        """Forms built for other triggers would inject faults the run was never configured to survive."""
+        _run(_MIXED_MODE, seed=7, num_steps=9, requested_triggers=[FaultTrigger.TIMER])
+
+        (soak,) = harness.soaks
+        expected = create_cell_fault_forms(soak["config"], triggers=frozenset({FaultTrigger.TIMER}))
+        assert {kind: [form.name for form in forms] for kind, forms in soak["forms"].items()} == {
+            kind: [form.name for form in expected[kind]] for kind in (ACTOR_CELL_TYPE, ROLLOUT_CELL_TYPE)
+        }
+
+    def test_the_observer_watches_the_api_server_the_run_is_launched_with(self, harness: ScenarioHarness) -> None:
+        """An observer polling another port would see no cells, and the soak would never draw a target."""
+        _run(_MIXED_MODE, seed=7, num_steps=9)
+
+        (soak,) = harness.soaks
+        (launch,) = harness.launches
+        observer = soak["observer"]
+        assert observer.base_url == f"http://localhost:{API_SERVER_PORT}"
+        assert int(launch.value_of("--api-server-port")) == API_SERVER_PORT
+        assert {ACTOR_CELL_TYPE, ROLLOUT_CELL_TYPE} <= observer.cell_types
 
 
-def _all_forms_of_ray_run() -> fault_forms.CellFaultForms:
-    config = command_utils.ExecuteTrainConfig(cluster_backend=ClusterBackend.RAY)
-    return fault_forms.create_cell_fault_forms(base_url="http://control", config=config)
+class TestOneRunIdentityAcrossTheScenario:
+    def test_prepare_the_launch_and_the_soak_share_one_ray_submission(self, harness: ScenarioHarness) -> None:
+        """A second default config would mint another submission id, and teardown would stop a job nobody ran."""
+        _run(_TRAIN_ONLY_MODE, seed=7, num_steps=9)
+
+        (soak,) = harness.soaks
+        (launch,) = harness.launches
+        (prepared,) = harness.prepared
+        assert launch.config is soak["config"] is prepared["config"]
+        assert launch.config.cluster_backend is ClusterBackend.RAY
+        assert launch.config.ray_submission_id.startswith("miles-soak-")
+
+    def test_the_dumps_and_evidence_of_the_run_sit_under_its_run_id(self, harness: ScenarioHarness) -> None:
+        """Evidence written beside another run's dumps would be archived as that run's proof."""
+        _run(_TRAIN_ONLY_MODE, seed=7, num_steps=9)
+
+        (soak,) = harness.soaks
+        (launch,) = harness.launches
+        dump_dir = harness.dumps_root / SCENARIO_RUN_ID / f"random_crash_{_TRAIN_ONLY_MODE}"
+        assert soak["dump_dir"] == dump_dir
+        assert soak["evidence_dir"].parent == dump_dir.with_name(f"{dump_dir.name}-soak")
+        assert soak["event_log"].path == soak["evidence_dir"] / "events.jsonl"
+        assert Path(launch.value_of("--save-debug-event-data")).parent == dump_dir
+
+    def test_a_trigger_subset_gets_a_dump_directory_of_its_own(self, harness: ScenarioHarness) -> None:
+        """A timer-only rerun sharing the default name would refuse to start on the default run's dumps."""
+        _run(_MIXED_MODE, seed=7, num_steps=9, requested_triggers=[FaultTrigger.TIMER])
+
+        (soak,) = harness.soaks
+        assert soak["dump_dir"].name == f"random_crash_timer_{_MIXED_MODE}"
 
 
-def _actor_cell(name: str = _ACTOR_CELL_NAME) -> dict:
-    return {
-        "metadata": {
-            "name": name,
-            "labels": {"miles.io/cell-type": "actor", "miles.io/workers-hash": "generation-0"},
-        },
-        "status": {"phase": "Running", "conditions": [{"type": "Healthy", "status": "True"}]},
-    }
+class TestTheLaunchedTrainArguments:
+    @pytest.mark.parametrize("mode_name", sorted(MODES))
+    def test_every_mode_launches_arguments_the_fault_tolerance_parser_gate_accepts(
+        self, harness: ScenarioHarness, mode_name: str
+    ) -> None:
+        """A mode whose generated args fail the real partial-target gate cannot start, whatever the soak checks."""
+        mode = MODES[mode_name]
 
+        _run(mode_name, seed=7, num_steps=9)
 
-def _note_actor_injections(
-    injector: entrypoint.FaultInjectorHandle, count: int, *, name: str = _ACTOR_CELL_NAME
-) -> None:
-    log = injector.event_log
-    for _ in range(count):
-        log.observe([_actor_cell(name)])
-        log.note_injection_attempt(
-            cell_name=name,
-            form_name="inject_fault:sigkill",
-            succeeded=True,
-        )
+        (launch,) = harness.launches
+        parsed = parse_fault_tolerance_args(launch.request.train_args)
+        assert parsed.ft_components == list(mode.ft_components)
+        assert parsed.mini_ft_controller_enable
+        assert not parsed.namespace.colocate
+        assert "rollout" not in parsed.ft_components or parsed.partial_target_weight_update
+        _assert_the_gpu_layout_is_the_modes(launch.request.num_gpus_per_node, parsed.namespace, mode=mode)
 
+    def test_a_real_rollout_run_carries_the_hook_timeout_and_p2p_update(self, harness: ScenarioHarness) -> None:
+        """Hook faults hold a weight update open, and the default timeout would fail it before the fault fires."""
+        _run(_MIXED_MODE, seed=7, num_steps=9)
 
-def _note_form_attempts(
-    injector: entrypoint.FaultInjectorHandle, *, form_name: str, outcomes: list[bool], name: str = _ACTOR_CELL_NAME
-) -> None:
-    injector.event_log.observe([_actor_cell(name)])
-    for succeeded in outcomes:
-        injector.event_log.note_injection_attempt(
-            cell_name=name,
-            form_name=form_name,
-            succeeded=succeeded,
-        )
+        (launch,) = harness.launches
+        assert launch.value_of("--update-weights-timeout") == "600"
+        assert launch.value_of("--update-weight-transfer-mode") == "p2p"
+        assert launch.value_of("--num-rollout") == "9"
+        assert launch.request.train_script.endswith("/train.py")
 
+    def test_the_launch_carries_the_shared_eager_deterministic_environment(self, harness: ScenarioHarness) -> None:
+        """A respawned cell recompiling under torch.compile can OOM, so every soak launch must run eager."""
+        _run(_TRAIN_ONLY_MODE, seed=7, num_steps=9)
 
-def _note_rollout_injection(log: state.EventLog) -> None:
-    log.note_injection_attempt(
-        cell_name=_ROLLOUT_CELL_NAME,
-        form_name="inject_fault:sigkill",
-        succeeded=True,
-    )
+        (launch,) = harness.launches
+        env = launch.request.extra_env_vars
+        assert DETERMINISTIC_ENV_VARS.items() <= env.items()
+        assert (env["TORCHDYNAMO_DISABLE"], env["RAY_DEDUP_LOGS"]) == ("1", "0")
+        assert launch.request.megatron_path == MEGATRON_PATH
+        assert launch.request.megatron_model_type == MODES[_TRAIN_ONLY_MODE].megatron_model_type
 
+    def test_a_fake_rollout_run_trains_off_the_materialized_cyclic_data_without_hooks(
+        self, harness: ScenarioHarness, tmp_path: Path
+    ) -> None:
+        """Without engines no update reaches a hook, and the data must cover every one of the steps."""
+        _run(_FAKE_ROLLOUT_MODE, seed=7, num_steps=9)
 
-def _rollout_cell(cell_state: state.ObservedCellState) -> dict:
-    phase = "Pending" if cell_state is state.ObservedCellState.PENDING else "Running"
-    conditions = (
-        []
-        if phase == "Pending"
-        else [
-            {"type": "Healthy", "status": "True"},
-            {"type": "Serving", "status": "True" if cell_state is state.ObservedCellState.SERVING else "False"},
+        (launch,) = harness.launches
+        (soak,) = harness.soaks
+        assert launch.value_of("--load-debug-rollout-data") == f"{tmp_path / 'cyclic-9'}/{{rollout_id}}.pt"
+        assert "--update-weights-timeout" not in launch.argv
+        assert "--update-weight-transfer-mode" not in launch.argv
+        expected = create_cell_fault_forms(soak["config"], triggers=frozenset({FaultTrigger.TIMER}))
+        assert [form.name for form in soak["forms"][ACTOR_CELL_TYPE]] == [
+            form.name for form in expected[ACTOR_CELL_TYPE]
         ]
-    )
-    return {
-        "metadata": {
-            "name": _ROLLOUT_CELL_NAME,
-            "labels": {"miles.io/cell-type": "rollout", "miles.io/workers-hash": "generation-0"},
-        },
-        "status": {"phase": phase, "conditions": conditions},
-    }
+
+    def test_a_fully_async_run_launches_the_async_driver_under_a_name_of_its_own(
+        self, harness: ScenarioHarness
+    ) -> None:
+        """The sync driver ignores --fully-async, so the soak would test a mode that never ran."""
+        _run(_MIXED_MODE, seed=7, num_steps=9, fully_async=True)
+
+        (launch,) = harness.launches
+        (soak,) = harness.soaks
+        assert launch.request.train_script.endswith("/train_async.py")
+        assert "--fully-async" in launch.argv
+        assert launch.value_of("--pause-generation-mode") == "in_place"
+        assert soak["dump_dir"].name == f"random_crash_fully_async_{_MIXED_MODE}"
+
+    def test_the_fully_async_entry_soaks_trainers_and_real_engines_through_the_async_driver(
+        self, harness: ScenarioHarness
+    ) -> None:
+        """Killing an engine that keeps generating across updates is the fault only this entry can produce."""
+        scenario_random_crash_fully_async.run_ci(fully_async_entry._MODE)
+
+        (launch,) = harness.launches
+        (soak,) = harness.soaks
+        assert launch.request.train_script.endswith("/train_async.py")
+        assert set(soak["runner_config"].target_configs) == {ACTOR_CELL_TYPE, ROLLOUT_CELL_TYPE}
+        assert MODES[fully_async_entry._MODE].has_real_rollout
+
+    def test_a_fully_async_fake_rollout_run_is_refused_before_anything_is_prepared(
+        self, harness: ScenarioHarness
+    ) -> None:
+        """Training off recorded data proves nothing about generating while training, so it must not start."""
+        with pytest.raises(AssertionError, match="fully-async soak"):
+            _run(_FAKE_ROLLOUT_MODE, seed=7, num_steps=9, fully_async=True)
+
+        assert harness.prepared == []
+        assert harness.launches == []
+
+    def test_hook_faults_on_a_fake_rollout_run_are_refused_before_anything_is_prepared(
+        self, harness: ScenarioHarness
+    ) -> None:
+        """No weight update ever reaches a hook without engines, so every hook fault could only expire."""
+        with pytest.raises(AssertionError, match="hook-triggered faults"):
+            _run(_FAKE_ROLLOUT_MODE, seed=7, num_steps=9, requested_triggers=[FaultTrigger.HOOK])
+
+        assert harness.prepared == []
+        assert harness.launches == []
 
 
-def _write_shrink_only_events(event_dir: Path) -> None:
-    event_logger = EventLogger(log_dir=event_dir, source=SimpleProcessIdentity(component="main"))
-    event_logger.log(
-        CellReconfigureEvent,
-        dict(rollout_id=2, quorum_id=1, src_cell_index=None, healed_cell_indices=[], alive_cell_indices_after=[0]),
-        print_log=False,
-    )
-    event_logger.close()
+class TestWhatTheSoakIsJudgedBy:
+    def test_the_checkers_read_the_events_and_forms_of_this_soak(self, harness: ScenarioHarness) -> None:
+        """Checking another event log or form set would pass a soak on evidence it never produced."""
+        _run(_MIXED_MODE, seed=7, num_steps=9)
 
+        (soak,) = harness.soaks
+        events = soak["event_log"].events
+        assert harness.checker_names == ["assert_hook_evidence", "assert_healing"]
+        ((hook_args, hook_kwargs),) = harness.calls_of("assert_hook_evidence")
+        assert hook_args == (frozenset({FaultTrigger.TIMER, FaultTrigger.HOOK}),)
+        assert hook_kwargs == {
+            "ft_components": ("train", "rollout"),
+            "config": soak["config"],
+            "events": events,
+            "dump_dir": str(soak["dump_dir"]),
+        }
+        ((healing_args, healing_kwargs),) = harness.calls_of("assert_healing")
+        assert healing_args == (("train", "rollout"),)
+        assert healing_kwargs["events"] == events
+        assert healing_kwargs["forms"] is soak["forms"]
+        assert healing_kwargs["context"] == f"random_crash {_MIXED_MODE}"
 
-def _write_healing_events(event_dir: Path, healed_cell_indices_per_event: list[list[int]]) -> None:
-    event_logger = EventLogger(log_dir=event_dir, source=SimpleProcessIdentity(component="main"))
-    for index, healed_cell_indices in enumerate(healed_cell_indices_per_event):
-        event_logger.log(
-            CellReconfigureEvent,
-            dict(
-                rollout_id=index + 2,
-                quorum_id=index + 1,
-                src_cell_index=0,
-                healed_cell_indices=healed_cell_indices,
-                alive_cell_indices_after=[0, 1],
-            ),
-            print_log=False,
-        )
-    event_logger.close()
+    def test_the_launch_outcome_is_recorded_in_the_soak_event_log(self, harness: ScenarioHarness) -> None:
+        """The runner decides the soak ended from this event, so a launch that finished must be written there."""
+        _run(_TRAIN_ONLY_MODE, seed=7, num_steps=9)
 
+        (soak,) = harness.soaks
+        (event,) = soak["event_log"].events
+        assert isinstance(event, SoakLaunchFinishedEvent)
+        assert (event.request_id, event.outcome, event.error) == (None, LaunchOutcome.FINISHED, None)
 
-class TestAssertHealing:
-    def test_trainer_soak_rejects_missing_reconfigure_witness(self, tmp_path: Path) -> None:
-        """A trainer-only soak whose accepted injections produced no healing event must fail."""
-        _write_shrink_only_events(tmp_path / "events")
-        injector = _injector(cell_types=("actor",))
-        _note_actor_injections(injector, 3)
+    def test_a_failed_launch_is_raised_recorded_and_never_graded(self, harness: ScenarioHarness) -> None:
+        """A failed run must fail the soak rather than be graded as though it had trained."""
+        harness.launch_error = RuntimeError("the job exited 1")
 
-        with pytest.raises(AssertionError, match="Healing witness failed"):
-            assert_healing(("train",), injector=injector, event_dir=tmp_path / "events", context="soak")
+        with pytest.raises(RuntimeError, match="the job exited 1"):
+            _run(_TRAIN_ONLY_MODE, seed=7, num_steps=9)
 
-    def test_trainer_soak_ignores_rollout_injections_when_counting_its_own(self, tmp_path: Path) -> None:
-        """A mixed soak's engine crashes say nothing about trainer healing, so they must not be counted."""
-        _write_shrink_only_events(tmp_path / "events")
-        injector = _injector(cell_types=("actor", "rollout"))
-        log = injector.event_log
-        log.observe([_rollout_cell(state.ObservedCellState.SERVING)])
-        for _ in range(3):
-            _note_rollout_injection(log)
+        (soak,) = harness.soaks
+        (event,) = soak["event_log"].events
+        assert event.outcome is LaunchOutcome.FAILED
+        assert harness.checks == []
+
+    def test_a_soak_that_injected_nothing_fails_the_real_healing_check(
+        self, scenario_harness: ScenarioHarness, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A run nothing was injected into proves no recovery, so the scenario must fail and not pass."""
+        monkeypatch.setattr(scenario_random_crash, "prepare", scenario_harness.record_prepare)
 
         with pytest.raises(AssertionError, match="Soak proved too little"):
-            assert_healing(("train", "rollout"), injector=injector, event_dir=tmp_path / "events", context="soak")
-
-    def test_rollout_soak_rejects_a_cell_never_seen_serving_after_its_last_injection(self, tmp_path: Path) -> None:
-        """A rollout-only soak that ends with its last victim still relaunching must fail."""
-        injector = _injector(cell_types=("rollout",))
-        log = injector.event_log
-        log.observe([_rollout_cell(state.ObservedCellState.SERVING)])
-        _note_rollout_injection(log)
-        log.observe([_rollout_cell(state.ObservedCellState.PENDING)])
-        log.observe([_rollout_cell(state.ObservedCellState.SERVING)])
-        _note_rollout_injection(log)
-        log.observe([_rollout_cell(state.ObservedCellState.PENDING)])
-
-        with pytest.raises(AssertionError, match="Rollout recovery witness failed"):
-            assert_healing(("rollout",), injector=injector, event_dir=tmp_path / "events", context="soak")
-
-    def test_rollout_soak_accepts_a_fresh_serve_after_the_last_injection(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """The witness must stay invisible on the path a healthy soak actually takes."""
-        monkeypatch.setattr(views, "STALE_STATUS_GRACE_SECONDS", 0.0)
-        injector = _injector(cell_types=("rollout",))
-        log = injector.event_log
-        log.observe([_rollout_cell(state.ObservedCellState.SERVING)])
-        for _ in range(2):
-            _note_rollout_injection(log)
-        log.observe([_rollout_cell(state.ObservedCellState.PENDING)])
-        log.observe([_rollout_cell(state.ObservedCellState.SERVING)])
-
-        assert_healing(("rollout",), injector=injector, event_dir=tmp_path / "events", context="soak")
-
-    def test_rollout_soak_rejects_a_serve_still_inside_the_stale_window(self, tmp_path: Path) -> None:
-        """A serve observed right after the kill can be the dead cell's stale reading, and proves nothing."""
-        injector = _injector(cell_types=("rollout",))
-        log = injector.event_log
-        log.observe([_rollout_cell(state.ObservedCellState.SERVING)])
-        for _ in range(2):
-            _note_rollout_injection(log)
-        log.observe([_rollout_cell(state.ObservedCellState.SERVING)])
-
-        with pytest.raises(AssertionError, match="Rollout recovery witness failed"):
-            assert_healing(("rollout",), injector=injector, event_dir=tmp_path / "events", context="soak")
+            _run(_TRAIN_ONLY_MODE, seed=7, num_steps=9, requested_triggers=[FaultTrigger.TIMER])
 
 
-def _mean_intervals(*ft_components: str) -> dict[str, float]:
-    return fault_forms.compute_mean_interval_seconds_of_cell_type(
-        tuple(ft_components), trainer_crash_interval_seconds=120.0, rollout_crash_interval_seconds=240.0
+def _run(
+    mode: str,
+    *,
+    seed: int,
+    num_steps: int,
+    fully_async: bool = False,
+    requested_triggers: list[FaultTrigger] | None = None,
+) -> None:
+    scenario_random_crash.run_ci(
+        mode=mode,
+        seed=seed,
+        num_steps=num_steps,
+        trainer_crash_interval_seconds=11.0,
+        rollout_crash_interval_seconds=13.0,
+        fully_async=fully_async,
+        requested_triggers=requested_triggers,
     )
 
 
-def test_a_trainer_only_soak_schedules_actor_injections_only() -> None:
-    """It must not crash engines that its assertions say nothing about."""
-    assert _mean_intervals("train") == {"actor": 120.0}
+def _assert_the_gpu_layout_is_the_modes(num_gpus_per_node: int, namespace: object, *, mode: FTTestMode) -> None:
+    assert num_gpus_per_node == mode.train_gpus_per_node + mode.rollout_num_engines * mode.rollout_gpus_per_engine
+    assert namespace.actor_num_gpus_per_node == mode.train_gpus_per_node
+    assert namespace.actor_num_nodes == mode.train_num_nodes
+    if mode.has_real_rollout:
+        assert namespace.rollout_num_gpus == mode.total_rollout_gpus
+        assert namespace.rollout_num_gpus_per_engine == mode.rollout_gpus_per_engine
 
 
-def test_a_rollout_only_soak_schedules_rollout_injections_only() -> None:
-    """Crashing trainer cells here would exercise a component this mode did not enable ft on."""
-    assert _mean_intervals("rollout") == {"rollout": 240.0}
+# ============================ fault triggers ============================
 
 
-def test_a_mixed_soak_keeps_each_kind_on_the_cadence_it_would_have_alone() -> None:
-    """Adding rollout to a soak must not dilute the trainer crash rate it was calibrated at."""
-    assert _mean_intervals("train", "rollout") == {"actor": 120.0, "rollout": 240.0}
+class TestFaultTriggersOfTheFullyAsyncEntry:
+    def test_the_fully_async_wrapper_passes_the_requested_triggers_through(self, harness: ScenarioHarness) -> None:
+        """Dropping the option in the wrapper would silently soak the async driver with both triggers."""
+        scenario_random_crash_fully_async.run_ci(fully_async_entry._MODE, requested_triggers=[FaultTrigger.TIMER])
 
-
-def test_a_kind_the_mode_does_not_enable_ft_on_gets_no_schedule_at_all() -> None:
-    """An entry in the map is what makes the loop consider a kind, so a stray one crashes an unwatched component."""
-    assert "rollout" not in _mean_intervals("train")
-
-
-class TestAssertEveryDrawnFaultFormWorked:
-    def test_a_form_that_never_worked_fails_the_soak(self, tmp_path: Path) -> None:
-        """Pod deletion can be refused for the whole run while the kills alone clear the injection floor."""
-        injector = _injector(cell_types=("actor",))
-        _note_actor_injections(injector, 3)
-        _note_form_attempts(injector, form_name=fault_forms.DELETE_POD_FORM_NAME, outcomes=[False] * 4)
-
-        with pytest.raises(AssertionError, match=fault_forms.DELETE_POD_FORM_NAME):
-            _assert_drawn_fault_forms_worked(injector)
-
-    def test_a_form_that_worked_at_least_once_is_accepted(self) -> None:
-        """A single refusal is a cluster hiccup, not proof the fault form is wired up wrong."""
-        injector = _injector(cell_types=("actor",))
-        _note_actor_injections(injector, 3)
-        _note_form_attempts(injector, form_name=fault_forms.DELETE_POD_FORM_NAME, outcomes=[False, False, False, True])
-
-        _assert_drawn_fault_forms_worked(injector)
-
-
-class TestAssertEveryEnabledFaultFormWorked:
-    def test_a_form_the_soak_never_drew_fails_it(self, tmp_path: Path) -> None:
-        """Regression: a soak that cleared the injection floor with one form used to pass without trying the rest."""
-        _write_healing_events(tmp_path / "events", [[0], [0]])
-        injector = _injector(cell_types=("actor",), cell_fault_forms=_all_forms_of_ray_run())
-        _note_actor_injections(injector, 2)
-
-        with pytest.raises(AssertionError, match="never injected successfully"):
-            assert_healing(("train",), injector=injector, event_dir=tmp_path / "events", context="soak")
-
-    def test_a_soak_that_landed_every_enabled_form_passes(self, tmp_path: Path) -> None:
-        """The happy path has to stay reachable, or the refusal above proves nothing."""
-        _write_healing_events(tmp_path / "events", [[0], [0], [0]])
-        injector = _injector(cell_types=("actor",), cell_fault_forms=_all_forms_of_ray_run())
-        for failure_mode in fault_forms.FAILURE_MODES:
-            _note_form_attempts(injector, form_name=f"inject_fault:{failure_mode.value}", outcomes=[True])
-
-        assert_healing(("train",), injector=injector, event_dir=tmp_path / "events", context="soak")
-
-    def test_forms_of_a_component_the_mode_did_not_enable_are_not_required(self, tmp_path: Path) -> None:
-        """A trainer-only soak must not be failed for never crashing an engine it was told to leave alone."""
-        _write_healing_events(tmp_path / "events", [[0], [0], [0]])
-        injector = _injector(cell_types=("actor", "rollout"), cell_fault_forms=_all_forms_of_ray_run())
-        for failure_mode in fault_forms.FAILURE_MODES:
-            _note_form_attempts(injector, form_name=f"inject_fault:{failure_mode.value}", outcomes=[True])
-
-        assert_healing(("train",), injector=injector, event_dir=tmp_path / "events", context="soak")
-
-
-class TestTrainerHealingPairing:
-    def test_a_final_injection_that_never_healed_fails_even_though_the_floor_is_cleared(self, tmp_path: Path) -> None:
-        """Regression: 3 crashes with 2 heals used to pass, leaving the run permanently degraded."""
-        _write_healing_events(tmp_path / "events", [[0], [0]])
-        injector = _injector(cell_types=("actor",))
-        _note_actor_injections(injector, 3)
-
-        with pytest.raises(AssertionError, match="Trainer recovery witness failed"):
-            assert_healing(("train",), injector=injector, event_dir=tmp_path / "events", context="soak")
-
-    def test_two_cells_healed_by_one_reconfigure_event_count_as_two_healings(self, tmp_path: Path) -> None:
-        """One reconfigure can readmit several cells, so counting events would under-count the healing."""
-        _write_healing_events(tmp_path / "events", [[0, 1]])
-        injector = _injector(cell_types=("actor",))
-        _note_actor_injections(injector, 1, name="actor-0")
-        _note_actor_injections(injector, 1, name="actor-1")
-
-        assert_healing(("train",), injector=injector, event_dir=tmp_path / "events", context="soak")
-
-    def test_healing_a_cell_that_was_never_injected_does_not_pay_another_cells_debt(self, tmp_path: Path) -> None:
-        """Counting healings without pairing them by cell index would call this a healthy soak."""
-        _write_healing_events(tmp_path / "events", [[0], [0]])
-        injector = _injector(cell_types=("actor",))
-        _note_actor_injections(injector, 2, name="actor-1")
-
-        with pytest.raises(AssertionError, match="Trainer recovery witness failed"):
-            assert_healing(("train",), injector=injector, event_dir=tmp_path / "events", context="soak")
-
-    def test_every_injection_paired_with_a_healing_of_the_same_cell_passes(self, tmp_path: Path) -> None:
-        """The assertion must stay invisible on the path a healthy soak actually takes."""
-        _write_healing_events(tmp_path / "events", [[0], [1]])
-        injector = _injector(cell_types=("actor",))
-        _note_actor_injections(injector, 1, name="actor-0")
-        _note_actor_injections(injector, 1, name="actor-1")
-
-        assert_healing(("train",), injector=injector, event_dir=tmp_path / "events", context="soak")
+        (soak,) = harness.soaks
+        expected = create_cell_fault_forms(soak["config"], triggers=frozenset({FaultTrigger.TIMER}))
+        assert {kind: [form.name for form in forms] for kind, forms in soak["forms"].items()} == {
+            kind: [form.name for form in expected[kind]] for kind in soak["forms"]
+        }
+        assert soak["dump_dir"].name == f"random_crash_timer_fully_async_{fully_async_entry._MODE}"
+        ((hook_args, _hook_kwargs),) = harness.calls_of("assert_hook_evidence")
+        assert hook_args == (frozenset({FaultTrigger.TIMER}),)

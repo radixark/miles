@@ -258,7 +258,6 @@ def execute():
         f"--actor-num-gpus-per-node {ACTOR_NUM_GPUS} "
         f"--num-gpus-per-node {NUM_GPUS} "
         f"--rollout-num-gpus {ROLLOUT_NUM_GPUS} "
-        "--use-fault-tolerance "
         "--moe-enable-deepep "
         "--moe-token-dispatcher-type flex "
         f"--dump-details /root/shared_data/{RUN_ID}/dump_details "

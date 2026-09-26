@@ -1,19 +1,6 @@
-import threading
-import time
+from pathlib import Path
 
 import pytest
-from tests.e2e.deploy.conftest_deploy.hot_restart import cluster_observer as cluster_module
-from tests.e2e.deploy.conftest_deploy.hot_restart.cluster_observer import (
-    LEADER_WORKER_SET_KIND,
-    POD_KIND,
-    STATEFUL_SET_KIND,
-    ClusterObserver,
-    ClusterSnapshot,
-    PodFact,
-    compute_trainer_rpc_url,
-    parse_pod_facts,
-    parse_workload_facts,
-)
 from tests.fast.e2e.deploy.hot_restart.cluster_facts import (
     ENGINE_POOL,
     NAMESPACE,
@@ -24,8 +11,23 @@ from tests.fast.e2e.deploy.hot_restart.cluster_facts import (
     pod_fact,
     workload_fact,
 )
+from tests.utils.deploy.hot_restart import cluster_observer as cluster_module
+from tests.utils.deploy.hot_restart.cluster_observer import (
+    LEADER_WORKER_SET_KIND,
+    POD_KIND,
+    STATEFUL_SET_KIND,
+    ClusterObserver,
+    ClusterSnapshot,
+    PodFact,
+    WorkloadFact,
+    compute_trainer_rpc_url,
+    parse_pod_facts,
+    parse_workload_facts,
+)
 
 from miles.utils.external_utils.command_utils.helm_backend.launcher.manifest_types import RESTART_AT_ANNOTATION
+from miles.utils.external_utils.command_utils.helm_backend.naming import ORCHESTRATOR_COMPONENT, RunNames
+from miles.utils.external_utils.command_utils.helm_backend.orchestrator.state import STATE_FILE_FLAG
 
 
 class TestComputeTrainerRpcUrl:
@@ -63,10 +65,13 @@ class TestParseWorkloadFacts:
         payload = {
             "items": [
                 {
-                    "metadata": {"name": ORCHESTRATOR, "generation": 2},
+                    "metadata": {"name": ORCHESTRATOR, "uid": "uid-o", "generation": 2},
                     "spec": {"template": {"metadata": {"annotations": {RESTART_AT_ANNOTATION: "t1"}}}},
                 },
-                {"metadata": {"name": TRAINER, "generation": 1}, "spec": {"template": {"metadata": {}}}},
+                {
+                    "metadata": {"name": TRAINER, "uid": "uid-t", "generation": 1},
+                    "spec": {"template": {"metadata": {}}},
+                },
             ]
         }
 
@@ -92,7 +97,7 @@ class TestParseWorkloadFacts:
         payload = {
             "items": [
                 {
-                    "metadata": {"name": ENGINE_POOL, "generation": 3},
+                    "metadata": {"name": ENGINE_POOL, "uid": "uid-e", "generation": 3},
                     "spec": {
                         "leaderWorkerTemplate": {
                             "workerTemplate": {"metadata": {"annotations": {RESTART_AT_ANNOTATION: "t1"}}}
@@ -117,7 +122,7 @@ class TestParseWorkloadFacts:
         first = {
             "items": [
                 {
-                    "metadata": {"name": TRAINER, "generation": 1},
+                    "metadata": {"name": TRAINER, "uid": "uid-t", "generation": 1},
                     "spec": {"template": {"metadata": {"labels": {"a": "1", "b": "2"}}, "spec": {}}},
                 }
             ]
@@ -125,7 +130,7 @@ class TestParseWorkloadFacts:
         second = {
             "items": [
                 {
-                    "metadata": {"generation": 2, "name": TRAINER},
+                    "metadata": {"generation": 2, "name": TRAINER, "uid": "uid-t"},
                     "spec": {"template": {"spec": {}, "metadata": {"labels": {"b": "2", "a": "1"}}}},
                 }
             ]
@@ -142,7 +147,7 @@ class TestParseWorkloadFacts:
         payload = {
             "items": [
                 {
-                    "metadata": {"name": ENGINE_POOL, "generation": 3},
+                    "metadata": {"name": ENGINE_POOL, "uid": "uid-e", "generation": 3},
                     "spec": {
                         "leaderWorkerTemplate": {
                             "leaderTemplate": {"metadata": {"annotations": {RESTART_AT_ANNOTATION: "t1"}}},
@@ -155,6 +160,124 @@ class TestParseWorkloadFacts:
 
         with pytest.raises(AssertionError, match="restart stamps"):
             parse_workload_facts(payload, kind=LEADER_WORKER_SET_KIND)
+
+
+_ORCHESTRATOR_OBJECT: str = RunNames.orchestrator_object(release=RELEASE)
+
+
+class TestWorkloadUid:
+    def test_a_workload_recreated_under_the_same_name_is_told_apart_by_its_uid(self) -> None:
+        """A guard comparing names and generations alone would accept a workload deleted and created again."""
+        before = parse_workload_facts(_statefulset_payload(uid="uid-o-1"), kind=STATEFUL_SET_KIND)
+        after = parse_workload_facts(_statefulset_payload(uid="uid-o-2"), kind=STATEFUL_SET_KIND)
+
+        assert [one.uid for one in before] == ["uid-o-1"]
+        assert [one.uid for one in after] == ["uid-o-2"]
+        assert before != after
+
+
+class TestReadClusterSnapshot:
+    def test_the_state_file_is_the_one_the_installed_orchestrator_is_told_to_write(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A take-over must be judged against the verdict file of the generation that is actually running."""
+        _install_objects(monkeypatch, statefulsets=_statefulset_payload(uid="uid-o-1", state_file="/shared/a.state"))
+
+        snapshot = _read_snapshot()
+
+        assert snapshot.orchestrator_state_file == Path("/shared/a.state")
+        assert snapshot.trainer_boot_uuid == "boot-a"
+
+    def test_a_release_without_an_orchestrator_names_no_state_file(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A trainer-only release has no verdict file, and inventing one would point the guard at nothing."""
+        _install_objects(
+            monkeypatch, statefulsets={"items": [_statefulset_item(name=TRAINER, uid="uid-t", command=["python"])]}
+        )
+
+        assert _read_snapshot().orchestrator_state_file is None
+
+    @pytest.mark.parametrize("missing", [STATEFUL_SET_KIND, LEADER_WORKER_SET_KIND])
+    def test_a_failed_workload_read_names_no_state_file_and_says_what_is_missing(
+        self, monkeypatch: pytest.MonkeyPatch, missing: str
+    ) -> None:
+        """Reading the state file off half a listing could miss the orchestrator and report the wrong generation."""
+        _install_objects(
+            monkeypatch,
+            statefulsets=_statefulset_payload(uid="uid-o-1", state_file="/shared/a.state"),
+            missing=missing,
+        )
+
+        snapshot = _read_snapshot()
+
+        assert snapshot.orchestrator_state_file is None
+        assert snapshot.reads_missing == (missing,)
+        assert not snapshot.describes_whole_release
+
+    def test_workloads_of_both_kinds_are_listed_with_their_uids_in_a_stable_order(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Snapshots are compared across polls, so the same cluster must always read as the same tuple."""
+        engines = {
+            "items": [
+                {
+                    "apiVersion": "leaderworkerset.x-k8s.io/v1",
+                    "kind": "LeaderWorkerSet",
+                    "metadata": {"name": ENGINE_POOL, "uid": "uid-e", "generation": 1},
+                    "spec": {"leaderWorkerTemplate": {"workerTemplate": {"metadata": {}}}},
+                }
+            ]
+        }
+        _install_objects(
+            monkeypatch,
+            statefulsets=_statefulset_payload(uid="uid-o-1", state_file="/shared/a.state"),
+            leader_worker_sets=engines,
+        )
+
+        snapshot = _read_snapshot()
+
+        assert [(one.kind, one.name, one.uid) for one in snapshot.workloads] == [
+            (LEADER_WORKER_SET_KIND, ENGINE_POOL, "uid-e"),
+            (STATEFUL_SET_KIND, _ORCHESTRATOR_OBJECT, "uid-o-1"),
+        ]
+        assert all(isinstance(one, WorkloadFact) for one in snapshot.workloads)
+
+
+def _read_snapshot() -> ClusterSnapshot:
+    return cluster_module.read_cluster_snapshot(release=RELEASE, namespace=NAMESPACE, trainer_rpc_url="http://x")
+
+
+def _install_objects(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    statefulsets: dict,
+    leader_worker_sets: dict | None = None,
+    missing: str | None = None,
+) -> None:
+    payload_of_kind = {
+        POD_KIND: {"items": [{"metadata": {"name": f"{ORCHESTRATOR}-0", "uid": "uid-p"}, "status": {}}]},
+        STATEFUL_SET_KIND: statefulsets,
+        LEADER_WORKER_SET_KIND: leader_worker_sets if leader_worker_sets is not None else {"items": []},
+    }
+    monkeypatch.setattr(
+        cluster_module,
+        "_read_objects",
+        lambda *, kind, release, namespace: None if kind == missing else payload_of_kind[kind],
+    )
+    monkeypatch.setattr(cluster_module, "read_boot_uuid", lambda _url: "boot-a")
+
+
+def _statefulset_payload(*, uid: str, state_file: str = "/shared/a.state") -> dict:
+    command = ["python", "-m", "wrapper", STATE_FILE_FLAG, state_file, "--", "python", "train.py"]
+    return {"items": [_statefulset_item(name=_ORCHESTRATOR_OBJECT, uid=uid, command=command)]}
+
+
+def _statefulset_item(*, name: str, uid: str, command: list[str]) -> dict:
+    return {
+        "apiVersion": "apps/v1",
+        "kind": "StatefulSet",
+        "metadata": {"name": name, "uid": uid, "generation": 1},
+        "spec": {"template": {"spec": {"containers": [{"name": ORCHESTRATOR_COMPONENT, "command": command}]}}},
+    }
 
 
 def _observer() -> ClusterObserver:
@@ -277,7 +400,7 @@ class TestClusterObserver:
             observer.observe_once()
 
         assert observer.snapshots == [_settled_snapshot()]
-        assert observer._settled_workloads == frozenset({ORCHESTRATOR, TRAINER})
+        assert observer.recorder._settled_workloads == frozenset({ORCHESTRATOR, TRAINER})
 
     def test_a_partial_listing_of_a_settled_release_is_not_recorded(self, monkeypatch):
         """A missing workload leaves an empty pod set, which reads as a healthy pod having been replaced."""
@@ -317,60 +440,3 @@ def _settled_snapshot(*, orchestrator_uid: str = "uid-o-1") -> ClusterSnapshot:
 
 def _raise_boom(**_kwargs) -> None:
     raise RuntimeError("kubectl said no")
-
-
-def _wait_until_threads_left(count: int) -> None:
-    deadline = time.monotonic() + 5.0
-    while threading.active_count() > count and time.monotonic() < deadline:
-        time.sleep(0.01)
-
-
-class TestObservingTheClusterInTheBackground:
-    def test_the_closing_snapshot_is_taken_after_the_body_returns(self, monkeypatch):
-        """The run ends inside the body, and the frame that shows its last pods comes after."""
-        observer = _observer()
-        taken: list[str] = []
-        monkeypatch.setattr(
-            cluster_module.ClusterObserver, "observe_once_or_warn", lambda _self: taken.append("polled")
-        )
-        monkeypatch.setattr(cluster_module.ClusterObserver, "observe_once", lambda _self: taken.append("closing"))
-
-        with cluster_module.observing_cluster(observer, poll_interval_seconds=0.0):
-            pass
-
-        assert taken[-1] == "closing"
-
-    def test_an_observer_still_mid_read_when_asked_to_stop_is_reported(self, monkeypatch):
-        """Reading what it collected while it is still writing would race it."""
-        release = threading.Event()
-        monkeypatch.setattr(
-            cluster_module.ClusterObserver, "observe_once_or_warn", lambda _self: release.wait(timeout=30.0)
-        )
-        monkeypatch.setattr(cluster_module.ClusterObserver, "observe_once", lambda _self: None)
-        monkeypatch.setattr(cluster_module, "JOIN_TIMEOUT_SECONDS", 0.05)
-        before = threading.active_count()
-
-        try:
-            with pytest.raises(AssertionError, match="still reading the run"):
-                with cluster_module.observing_cluster(_observer(), poll_interval_seconds=0.0):
-                    pass
-        finally:
-            release.set()
-            _wait_until_threads_left(before)
-
-    def test_a_body_that_raised_does_not_leave_the_observer_running(self, monkeypatch):
-        """A leaked poller keeps reading a release the next test is about to install over."""
-        monkeypatch.setattr(cluster_module.ClusterObserver, "observe_once_or_warn", lambda _self: None)
-        monkeypatch.setattr(cluster_module.ClusterObserver, "observe_once", lambda _self: None)
-        before = threading.active_count()
-
-        with pytest.raises(_BodyFailed):
-            with cluster_module.observing_cluster(_observer(), poll_interval_seconds=0.0):
-                raise _BodyFailed
-
-        _wait_until_threads_left(before)
-        assert threading.active_count() == before
-
-
-class _BodyFailed(Exception):
-    pass

@@ -26,7 +26,7 @@ from miles.backends.training_utils.weight_update.updater import WeightUpdater
 from miles.dashboard import hooks as dashboard_hooks
 from miles.ray.rollout.inference_controller import UpdatableEngines
 from miles.ray.specs.train import compute_trainer_pool_id
-from miles.ray.train_actor import TrainRayActor
+from miles.ray.train_actor import TrainRayActor, WeightUpdateOutput
 from miles.utils import async_utils, object_store, train_dump_utils
 from miles.utils.argparse_utils import inplace_modify_args
 from miles.utils.audit_utils.event_logger.logger import event_logger_context
@@ -38,11 +38,14 @@ from miles.utils.ft_utils.indep_dp import IndepDPInfo
 from miles.utils.hf_utils.config import load_hf_config
 from miles.utils.lora.utils import build_lora_config, is_multi_lora_enabled
 from miles.utils.memory_utils import clear_memory, print_memory
+from miles.utils.misc import partition
 from miles.utils.object_store import StoreObjectRef, ValueSpec
 from miles.utils.processing_utils import load_tokenizer
 from miles.utils.reloadable_process_group import destroy_process_groups, monkey_patch_torch_dist, reload_process_groups
 from miles.utils.replay_base import all_replay_managers, routing_replay_manager
-from miles.utils.test_utils.ft_test_actions import FTTestActionActorExecutor
+from miles.utils.test_utils.fault_injector.actions.base import FaultHookContext, FaultHookResources
+from miles.utils.test_utils.fault_injector.controller import fault_hook_controller
+from miles.utils.test_utils.fault_injector.models import FaultHookOwner
 from miles.utils.timer import Timer, inverse_timer, timer
 from miles.utils.tracking_utils.structured_log import with_logs
 from miles.utils.tracking_utils.tracking import init_tracking
@@ -138,8 +141,9 @@ class MegatronTrainRayActor(TrainRayActor):
         )
 
         trainer_pool_id = compute_trainer_pool_id(args.trainer_id)
-        self._ft_test_action_executor = FTTestActionActorExecutor.from_args(
-            args,
+        fault_hook_controller.configure(
+            resources=FaultHookResources(args=args),
+            owner=FaultHookOwner.TRAINER_ACTOR,
             cell_id=compute_cell_id(pool_id=trainer_pool_id, cell_index=indep_dp_info.cell_index),
             rank=self._rank,
         )
@@ -173,14 +177,7 @@ class MegatronTrainRayActor(TrainRayActor):
             dist.barrier(group=get_gloo_group())
 
         self.train_parallel_config = (
-            {}
-            if args.indep_dp
-            else {
-                "dp_size": get_parallel_state().intra_dp.size,
-                "cp_size": get_parallel_state().cp.size,
-                "vpp_size": get_parallel_state().vpp_size,
-                "microbatch_group_size_per_vp_stage": get_parallel_state().microbatch_group_size_per_vp_stage,
-            }
+            None if args.indep_dp else get_parallel_state().train_parallel_config(supports_precomputed_schedule=True)
         )
         dist.barrier(group=get_gloo_group())
 
@@ -600,7 +597,12 @@ class MegatronTrainRayActor(TrainRayActor):
         with ExitStack() as stack:
             with timer("data_preprocess"):
                 rollout_data, store_get_result = get_rollout_data(
-                    self.args, rollout_data_ref, witness_info=witness_info
+                    args=self.args,
+                    rollout_data_ref=rollout_data_ref,
+                    witness_info=witness_info,
+                    train_parallel_config=get_parallel_state().train_parallel_config(
+                        supports_precomputed_schedule=True
+                    ),
                 )
                 stack.enter_context(store_get_result)
                 if self.args.debug_rollout_only:
@@ -784,7 +786,6 @@ class MegatronTrainRayActor(TrainRayActor):
                     num_rollouts,
                     witness_info=witness_info,
                     attempt=attempt,
-                    ft_test_action_executor=self._ft_test_action_executor,
                 )
 
             self.prof.step(rollout_id=rollout_id)
@@ -923,16 +924,19 @@ class MegatronTrainRayActor(TrainRayActor):
 
     @with_logs
     @timer
-    def update_weights(self, info: UpdatableEngines) -> int | None:
+    def update_weights(
+        self, info: UpdatableEngines, debug_weight_update_id: str, rollout_id: int | None
+    ) -> WeightUpdateOutput:
         self._heartbeat.bump()
         if self.args.debug_train_only or self.args.debug_rollout_only:
-            return None
+            return WeightUpdateOutput(weight_version=None, failed_cell_ids=())
 
         assert self.weight_updater is not None, "weight update requires a weight updater"
         rollout_engines = info.rollout_engines
         snapshot_cell_id_to_hashes = info.snapshot_cell_id_to_hashes
         engine_gpu_counts = info.engine_gpu_counts
         engine_gpu_offsets = info.engine_gpu_offsets
+        engine_cell_ids = info.engine_cell_ids
         del info
 
         process_groups_are_temporary = self.args.offload_train and self._asleep
@@ -948,6 +952,7 @@ class MegatronTrainRayActor(TrainRayActor):
                     rollout_engines,
                     engine_gpu_counts=engine_gpu_counts,
                     engine_gpu_offsets=engine_gpu_offsets,
+                    engine_cell_ids=engine_cell_ids,
                 )
                 self.weight_updater.conn_status.mark_reconnected(snapshot_cell_id_to_hashes)
                 dist.barrier(group=get_gloo_group())
@@ -959,16 +964,32 @@ class MegatronTrainRayActor(TrainRayActor):
                 torch_memory_saver.pause(tag="param_buffer")
             if process_groups_are_temporary:
                 destroy_process_groups()
-            return None
+            return WeightUpdateOutput(weight_version=None, failed_cell_ids=())
 
         with torch_memory_saver.disable() if self.args.offload_train else nullcontext():
             print_memory("before update_weights")
             weight_version = self._get_actor_weight_version()
-            self.weight_updater.update_weights(weight_version=weight_version)
+            with fault_hook_controller.with_context(
+                FaultHookContext(
+                    rollout_id=rollout_id,
+                    weight_version=weight_version,
+                    debug_weight_update_id=debug_weight_update_id,
+                    snapshot_cell_id_to_hashes=snapshot_cell_id_to_hashes,
+                )
+            ):
+                self.weight_updater.update_weights(weight_version=weight_version)
             print_memory("after update_weights")
 
-            if self.args.ci_test and len(rollout_engines) > 0 and not is_lora_enabled(self.args):
-                engine = random.choice(rollout_engines)
+            cell_updaters = self.weight_updater.protocol.cell_updaters_of_cell_id
+            failed_cells, updated_cells = partition(cell_updaters.items(), lambda kv: not kv[1].is_errored)
+            updated_cell_ids = tuple(cell_id for cell_id, _ in updated_cells)
+            failed_cell_ids = tuple(cell_id for cell_id, _ in failed_cells)
+
+            updated_engines = [
+                e for e, c in zip(rollout_engines, engine_cell_ids, strict=True) if c in updated_cell_ids
+            ]
+            if self.args.ci_test and len(updated_engines) > 0 and not is_lora_enabled(self.args):
+                engine = random.choice(updated_engines)
                 engine_version = async_utils.run(engine.get_weight_version())
                 if str(engine_version) != str(weight_version):
                     raise RuntimeError(f"Weight version mismatch! Engine: {engine_version}, Updater: {weight_version}")
@@ -989,7 +1010,7 @@ class MegatronTrainRayActor(TrainRayActor):
         if process_groups_are_temporary:
             destroy_process_groups()
 
-        return weight_version
+        return WeightUpdateOutput(weight_version=weight_version, failed_cell_ids=failed_cell_ids)
 
     @with_logs
     def load_other_checkpoint(self, model_tag: str, path: str) -> None:

@@ -1,7 +1,7 @@
 import os
 
 from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
-from tests.e2e.common_dirs import get_test_data_dir, get_test_model_dir
+from tests.utils.dirs import get_test_data_dir, get_test_model_dir
 
 from miles.utils.external_utils import command_utils
 from miles.utils.object_store import ObjectStoreBackend
@@ -108,8 +108,7 @@ def execute(
 
     ci_args = "--ci-test "
 
-    fault_tolerance_args = (
-        "--use-fault-tolerance "
+    health_check_args = (
         "--rollout-health-check-interval 5 "
         "--rollout-health-check-timeout 10 "
         "--rollout-health-check-first-wait 0 "
@@ -146,7 +145,7 @@ def execute(
         f"{eval_args} "
         f"{sglang_args} "
         f"{ci_args} "
-        f"{fault_tolerance_args} "
+        f"{health_check_args} "
         f"{misc_args} "
         f"{worker_comm_args} "
     )

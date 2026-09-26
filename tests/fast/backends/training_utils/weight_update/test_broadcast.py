@@ -182,6 +182,7 @@ class TestUpdateWeightFromDistributedConnect:
                 engines,
                 engine_gpu_counts=[2, 4],
                 engine_gpu_offsets=[0, 2],
+                engine_cell_ids=["cell-0", "cell-1"],
                 parallel_state=parallel_state,
                 placement=SimpleNamespace(gather_pp=False),
                 selector="all",

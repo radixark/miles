@@ -8,6 +8,7 @@ import torch
 from miles.backends.fsdp_utils import actor as actor_module
 from miles.backends.fsdp_utils import update_weight_utils
 from miles.backends.training_utils.conn_status import ConnStatusManager
+from miles.ray.train_actor import WeightUpdateOutput
 
 
 class _SessionEngine:
@@ -104,6 +105,8 @@ class _SessionAwareUpdater(update_weight_utils.UpdateWeight):
         rollout_engines,
         engine_gpu_counts=None,
         engine_gpu_offsets=None,
+        *,
+        engine_cell_ids,
     ):
         self.rollout_engines = rollout_engines
 
@@ -120,7 +123,9 @@ def _make_updater(model, rollout_engines):
         Namespace(update_weight_buffer_size=1024),
         SimpleNamespace(config=SimpleNamespace(model_type=""), state_dict=lambda: model),
     )
-    updater.connect_rollout_engines(rollout_engines, None)
+    updater.connect_rollout_engines(
+        rollout_engines, None, engine_cell_ids=[f"engine-{index}" for index in range(len(rollout_engines))]
+    )
     return updater
 
 
@@ -231,6 +236,7 @@ class _RecordingWeightUpdater:
         self.conn_status: ConnStatusManager = ConnStatusManager()
         self.connect_calls: list[list[object]] = []
         self.connect_topologies: list[tuple[list[int] | None, list[int] | None]] = []
+        self.connect_cell_ids: list[list[str]] = []
         self.update_weights_calls: int = 0
         self.weight_version: int = 0
 
@@ -239,9 +245,12 @@ class _RecordingWeightUpdater:
         rollout_engines: list[object],
         engine_gpu_counts: list[int] | None = None,
         engine_gpu_offsets: list[int] | None = None,
+        *,
+        engine_cell_ids: list[str],
     ) -> None:
         self.connect_calls.append(list(rollout_engines))
         self.connect_topologies.append((engine_gpu_counts, engine_gpu_offsets))
+        self.connect_cell_ids.append(list(engine_cell_ids))
 
     def update_weights(self) -> None:
         self.update_weights_calls += 1
@@ -267,6 +276,7 @@ def _make_updatable_engines(
         has_new_engines=has_new_engines,
         engine_gpu_counts=[1] * len(rollout_engines),
         engine_gpu_offsets=list(range(len(rollout_engines))),
+        engine_cell_ids=[f"engine-{index}" for index in range(len(rollout_engines))],
         snapshot_cell_id_to_hashes=snapshot_cell_id_to_hashes if snapshot_cell_id_to_hashes is not None else {},
     )
 
@@ -289,12 +299,19 @@ def test_fsdp_actor_connects_engines_once_across_consecutive_windows(monkeypatch
     updater = actor.weight_updater
     engines: list[object] = [object(), object()]
 
-    first_version = actor.update_weights(_make_updatable_engines(engines, has_new_engines=True))
-    second_version = actor.update_weights(_make_updatable_engines(engines, has_new_engines=False))
+    first_version = actor.update_weights(
+        _make_updatable_engines(engines, has_new_engines=True), debug_weight_update_id="update-0", rollout_id=0
+    )
+    second_version = actor.update_weights(
+        _make_updatable_engines(engines, has_new_engines=False), debug_weight_update_id="update-0", rollout_id=0
+    )
 
     assert updater.connect_calls == [engines]
     assert updater.update_weights_calls == 2
-    assert (first_version, second_version) == (1, 2)
+    assert (first_version, second_version) == (
+        WeightUpdateOutput(weight_version=1, failed_cell_ids=()),
+        WeightUpdateOutput(weight_version=2, failed_cell_ids=()),
+    )
     assert not updater.conn_status.needs_reconnect({})
 
 
@@ -413,17 +430,23 @@ def test_fsdp_actor_reconnects_after_rollout_cell_hash_changes(monkeypatch):
     replacement_engines: list[object] = [object(), object()]
 
     actor.update_weights(
-        _make_updatable_engines(engines, has_new_engines=True, snapshot_cell_id_to_hashes={"cell-0": "hash-a"})
+        _make_updatable_engines(engines, has_new_engines=True, snapshot_cell_id_to_hashes={"cell-0": "hash-a"}),
+        debug_weight_update_id="update-0",
+        rollout_id=0,
     )
     actor.update_weights(
         _make_updatable_engines(
             replacement_engines, has_new_engines=False, snapshot_cell_id_to_hashes={"cell-0": "hash-b"}
-        )
+        ),
+        debug_weight_update_id="update-0",
+        rollout_id=0,
     )
     actor.update_weights(
         _make_updatable_engines(
             replacement_engines, has_new_engines=False, snapshot_cell_id_to_hashes={"cell-0": "hash-b"}
-        )
+        ),
+        debug_weight_update_id="update-0",
+        rollout_id=0,
     )
 
     assert updater.connect_calls == [engines, replacement_engines]
@@ -439,6 +462,8 @@ def test_fsdp_actor_rejects_a_mismatched_engine_weight_version(monkeypatch):
     engines: list[object] = [_VersionReportingEngine(7)]
 
     with pytest.raises(RuntimeError, match="Weight version mismatch"):
-        actor.update_weights(_make_updatable_engines(engines, has_new_engines=True))
+        actor.update_weights(
+            _make_updatable_engines(engines, has_new_engines=True), debug_weight_update_id="update-0", rollout_id=0
+        )
 
     assert updater.update_weights_calls == 1

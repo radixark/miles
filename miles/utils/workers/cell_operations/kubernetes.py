@@ -3,15 +3,18 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from miles.utils.test_utils.fault_injector import FailureMode
-from miles.utils.workers.cell_operations.base import BaseCellOperations
-from miles.utils.workers.worker_handle import BaseWorkerHandle, WorkerUnreachableError
+from miles.utils.test_utils.fault_injector.controller import FaultHookCommand
+from miles.utils.test_utils.fault_injector.models import FaultHookRecord, ObservedFaultHookTarget
+from miles.utils.workers.cell_operations.base import BaseCellOperations, StaleFaultTargetError
+from miles.utils.workers.k8s_client import core_v1_api
+from miles.utils.workers.rpc.client.misc import ServerRestartedError
 from miles.utils.workers.worker_provider.base import CellInfo, StopWatchFn
 from miles.utils.workers.worker_provider.kubernetes.core.provider import KubernetesWorkerProvider
+from miles.utils.workers.worker_provider.utils import build_rpc_handle_of_worker_info
 
 logger = logging.getLogger(__name__)
 
-INJECT_FAULT_TIMEOUT_SECONDS = 60.0
+CONTROL_FAULT_HOOK_TIMEOUT_SECONDS = 10.0
 
 
 class KubernetesCellOperations(BaseCellOperations):
@@ -39,21 +42,47 @@ class KubernetesCellOperations(BaseCellOperations):
             "a deleted cell comes back when its workload recreates it, so resume has no moment to return at"
         )
 
-    async def inject_fault(self, *, cell_id: str, mode: FailureMode, sub_index: int) -> None:
+    async def observe_fault_target(self, *, cell_id: str, rank: int) -> ObservedFaultHookTarget:
         await self._ensure_watching()
 
         (infos,) = self._provider.get_worker_infos(cell_ids=[cell_id])
-        assert (
-            0 <= sub_index < len(infos)
-        ), f"sub_index {sub_index} is out of range for cell {cell_id}, which has {len(infos)} workers"
+        if not 0 <= rank < len(infos):
+            raise StaleFaultTargetError(f"Cell {cell_id} has no worker at index {rank}")
+        info = infos[rank]
+        if info.worker_class is None:
+            raise NotImplementedError(f"Worker {info.name} is not served over RPC")
 
-        worker_name = infos[sub_index].name
-        handles = self._provider.get_handles_of_worker_infos(infos)
-        assert (
-            worker_name in handles
-        ), f"{worker_name} is not served over rpc, so no call can reach the process to crash it"
+        health = await build_rpc_handle_of_worker_info(info).read_health()
+        if not health.boot_uuid or not health.pod_uid:
+            raise StaleFaultTargetError(f"Worker {info.name} reports no boot or pod identity")
 
-        await _inject_fault_over_rpc(handle=handles[worker_name], mode=mode, worker_name=worker_name)
+        if (incarnation := self._provider.debug_cell_incarnation(cell_id)) is None:
+            raise StaleFaultTargetError(f"Cell {cell_id} has disappeared")
+        if health.pod_uid not in {pod.uid for pod in incarnation.pods}:
+            raise StaleFaultTargetError(f"Worker {info.name} answered from a pod that cell {cell_id} no longer lists")
+        return ObservedFaultHookTarget(
+            cell_id=cell_id,
+            rank=rank,
+            workers_hash=incarnation.workers_hash,
+            boot_uuid=health.boot_uuid,
+            pod_uid=health.pod_uid,
+        )
+
+    async def control_fault_hook(self, command: FaultHookCommand) -> FaultHookRecord:
+        await self._ensure_watching()
+
+        target = command.request.target
+        assert isinstance(target, ObservedFaultHookTarget), "A fault hook sent to a cell names the worker it observed"
+        if target != await self.observe_fault_target(cell_id=target.cell_id, rank=target.rank):
+            raise StaleFaultTargetError(f"Cell {target.cell_id} no longer matches the observed fault target")
+        (infos,) = self._provider.get_worker_infos(cell_ids=[target.cell_id])
+        handle = build_rpc_handle_of_worker_info(infos[target.rank], expected_boot_uuid=target.boot_uuid)
+        try:
+            return await asyncio.wait_for(
+                handle.control_fault_hook(command=command), timeout=CONTROL_FAULT_HOOK_TIMEOUT_SECONDS
+            )
+        except ServerRestartedError as error:
+            raise StaleFaultTargetError("Fault hook worker changed its boot identity") from error
 
     async def _ensure_watching(self) -> None:
         if self._watching is None:
@@ -65,26 +94,12 @@ class KubernetesCellOperations(BaseCellOperations):
             raise
 
 
-async def _inject_fault_over_rpc(*, handle: BaseWorkerHandle, mode: FailureMode, worker_name: str) -> None:
-    try:
-        await asyncio.wait_for(
-            handle.submit_without_result("inject_fault", mode=mode.value), timeout=INJECT_FAULT_TIMEOUT_SECONDS
-        )
-    except (WorkerUnreachableError, TimeoutError, asyncio.TimeoutError):
-        logger.info("Injecting %s into %s left it unreachable, which is what was asked for", mode.value, worker_name)
-
-
 async def _ignore_cell(cell_id: str, info: CellInfo | None) -> None:
     return None
 
 
 async def _delete_pods(*, namespace: str, pod_names: list[str]) -> None:
-    from kubernetes_asyncio import client as kubernetes_client
-    from kubernetes_asyncio import config as kubernetes_config
-
-    kubernetes_config.load_incluster_config()
-    async with kubernetes_client.ApiClient() as api_client:
-        core_v1_api = kubernetes_client.CoreV1Api(api_client)
+    async with core_v1_api() as api:
         await asyncio.gather(
-            *(core_v1_api.delete_namespaced_pod(name=pod_name, namespace=namespace) for pod_name in pod_names)
+            *(api.delete_namespaced_pod(name=pod_name, namespace=namespace) for pod_name in pod_names)
         )

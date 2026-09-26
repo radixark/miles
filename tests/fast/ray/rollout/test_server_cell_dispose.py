@@ -9,6 +9,19 @@ from tests.fast.ray.rollout.conftest import make_args
 from miles.ray.rollout import server_cell as server_cell_module
 from miles.ray.rollout.cell_state import CellAddrInfo, StateDisposed, StateServing
 from miles.ray.rollout.server_cell import ServerCell, ServerCellMetadata
+from miles.utils import retry_utils
+
+
+@pytest.fixture(autouse=True)
+def instant_retry_sleeps(monkeypatch: pytest.MonkeyPatch) -> list[float]:
+    """Make the unregister retry backoff free so a failing router costs no wall-clock time."""
+    slept: list[float] = []
+
+    async def _sleep(seconds: float) -> None:
+        slept.append(seconds)
+
+    monkeypatch.setattr(retry_utils.asyncio, "sleep", _sleep)
+    return slept
 
 
 def _make_meta(*, needs_offload: bool = False) -> ServerCellMetadata:
@@ -79,14 +92,41 @@ class TestServerCellDispose:
 
     @pytest.mark.asyncio
     async def test_a_failing_unregister_still_tears_the_cell_down(self) -> None:
-        """Unregistering is idempotent cleanup, so its failure must not block disposal."""
+        """Unregistering is retried and then given up on, so its failure must not block disposal."""
         client = _make_router_api_client(remove_worker_side_effect=RuntimeError("injected remove failure"))
         cell = _make_cell(router_api_client=client)
         await _register(cell, state=StateServing, server_url="http://10.0.0.3:30000", bootstrap_port=None)
 
         await cell.dispose()
 
-        client.remove_worker.assert_awaited_once()
+        assert client.remove_worker.await_count > 1
+        assert isinstance(cell._state, StateDisposed)
+
+    @pytest.mark.asyncio
+    async def test_an_unregister_that_only_fails_at_first_is_retried_until_it_lands(self) -> None:
+        """A router restarting under the teardown would otherwise leave a dead url in its worker table."""
+        client = _make_router_api_client(remove_worker_side_effect=[RuntimeError("injected remove failure"), None])
+        cell = _make_cell(router_api_client=client)
+        await _register(cell, state=StateServing, server_url="http://10.0.0.5:30000", bootstrap_port=None)
+
+        await cell.dispose()
+
+        assert client.remove_worker.await_count == 2
+        assert isinstance(cell._state, StateDisposed)
+
+    @pytest.mark.asyncio
+    async def test_the_unregister_retries_stop_once_the_teardown_budget_is_spent(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An unbounded retry here would hold up the reconcile loop that owns the whole fleet."""
+        monkeypatch.setattr(server_cell_module, "UNREGISTER_FROM_ROUTER_TIMEOUT", 0.3)
+        client = _make_router_api_client(remove_worker_side_effect=RuntimeError("injected remove failure"))
+        cell = _make_cell(router_api_client=client)
+        await _register(cell, state=StateServing, server_url="http://10.0.0.7:30000", bootstrap_port=None)
+
+        await asyncio.wait_for(cell.dispose(), timeout=5.0)
+
+        assert client.remove_worker.await_count == 1
         assert isinstance(cell._state, StateDisposed)
 
     @pytest.mark.asyncio
@@ -141,6 +181,7 @@ class TestServerCellRegisterRobustness:
         client = _make_router_api_client()
         client.remove_worker = _hang
         monkeypatch.setattr(server_cell_module, "SHUTDOWN_TIMEOUT", 0.05)
+        monkeypatch.setattr(server_cell_module, "UNREGISTER_FROM_ROUTER_TIMEOUT", 0.5)
         cell = _make_cell(router_api_client=client)
         await _register(cell, state=StateServing, server_url="http://10.0.0.2:30000", bootstrap_port=None)
 

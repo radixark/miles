@@ -1,10 +1,23 @@
+import asyncio
+import logging
 from argparse import Namespace
+from collections.abc import Awaitable, Callable, Iterator
+from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from tests.fast.ray.rollout.conftest import make_args
 
+from miles.backends.sglang_utils.sglang_api_client import WorkerType
 from miles.ray.rollout.inference_controller import InferenceController
+from miles.ray.rollout.server_cell import ServerCellMetadata
+from miles.ray.train_actor import WeightUpdateOutput
+from miles.utils.audit_utils.checksum_utils import InferenceEngineChecksumSnapshot
+from miles.utils.audit_utils.event_logger.logger import EventLogger, read_events, set_event_logger
+from miles.utils.audit_utils.event_logger.models import InferenceEngineWeightChecksumEvent
+from miles.utils.audit_utils.process_identity import SimpleProcessIdentity
 from miles.utils.context_lock import ContextLock
 from miles.utils.ft_utils.health_checker import ActivenessTracker
 
@@ -42,6 +55,7 @@ class _ColocatedCellStub:
     def __init__(self) -> None:
         self.init_count = 0
         self.ready = False
+        self.is_errored = False
 
     async def init(self) -> None:
         self.init_count += 1
@@ -57,9 +71,13 @@ class _ColocatedCellStub:
 
 
 class _ServerStub:
-    def __init__(self, server_cells: dict[str, _ColocatedCellStub]) -> None:
-        self.server_cells = server_cells
+    def __init__(self, all_server_cells: dict[str, _ColocatedCellStub]) -> None:
+        self.all_server_cells = all_server_cells
         self.health_checker_activeness = ActivenessTracker(active=True)
+
+    @property
+    def normal_server_cells(self) -> dict[str, _ColocatedCellStub]:
+        return {cell_id: cell for cell_id, cell in self.all_server_cells.items() if not cell.is_errored}
 
 
 def _make_inference_controller(**arg_overrides: object) -> InferenceController:
@@ -119,20 +137,21 @@ def _orchestration_args(**overrides) -> Namespace:
         debug_train_only=False,
         debug_rollout_only=False,
         start_rollout_id=0,
-        ci_ft_test_actions=None,
-        ci_ft_test_actions_path=None,
+        ci_fault_hooks=None,
+        ci_fault_hooks_path=None,
         mini_ft_controller_enable=True,
         mini_ft_controller_poll_interval=0.01,
         log_inference_engine_weight_checksums=True,
+        update_weight_engine_request_timeout=5.0,
     )
     values.update(overrides)
     return Namespace(**values)
 
 
 def _actor_model(order: list[str]) -> MagicMock:
-    async def _record_update_weights(*, info: object, rollout_id: int | None = None) -> int:
+    async def _record_update_weights(*, info: object, rollout_id: int | None = None) -> WeightUpdateOutput:
         order.append("trainer_update_weights")
-        return 11
+        return WeightUpdateOutput(weight_version=11, failed_cell_ids=())
 
     actor_model = MagicMock()
     actor_model.update_weights = AsyncMock(side_effect=_record_update_weights)
@@ -179,7 +198,7 @@ async def test_the_window_is_scoped_to_the_policy_the_script_is_publishing():
 
     with patch("miles.ray.placement_group.is_event_logger_initialized", return_value=True), patch(
         "miles.ray.placement_group.get_event_logger"
-    ), patch("miles.ray.placement_group.flatten_inference_engine_checksums", return_value=[]):
+    ):
         await update_weights(
             _orchestration_args(),
             _actor_model(order),
@@ -243,15 +262,29 @@ def test_fsdp_updater_flushes_only_after_every_engine_is_paused():
     assert pause_modes == ["retract", "retract"]
 
 
-def _checksum_response(engine_checksums: list[dict[str, str]]) -> list:
-    """Build a flat per-engine check_weights('checksum') response."""
+def _checksum_response(engine_checksums: list[dict[str, str]]) -> list[tuple[ServerCellMetadata, dict[str, Any]]]:
+    """Build a per-engine check_weights response with each cell incarnation."""
     return [
-        {
-            "success": True,
-            "message": "ok",
-            "ranks": [{"checksums": cs, "parallelism_info": [{"role": "target", "rank": 0}]}],
-        }
-        for cs in engine_checksums
+        (
+            ServerCellMetadata(
+                model_id="default",
+                worker_type=WorkerType.REGULAR,
+                cell_id=f"cell-{index}",
+                num_gpus_per_engine=1,
+                gpu_offset=index,
+                sglang_api_key=None,
+                worker_name=f"engine-{index}",
+                needs_offload=False,
+                update_weights=True,
+                workers_hash=f"incarnation-{index}",
+            ),
+            {
+                "success": True,
+                "message": "ok",
+                "ranks": [{"checksums": cs, "parallelism_info": [{"role": "target", "rank": 0}]}],
+            },
+        )
+        for index, cs in enumerate(engine_checksums)
     ]
 
 
@@ -269,7 +302,17 @@ class TestTheScriptLogsTheChecksumsTheEnginesNowServe:
             "miles.ray.placement_group.get_event_logger", return_value=event_logger
         ):
             await _maybe_log_inference_engine_weight_checksums(
-                args, inference_controller=inference_controller, rollout_id=0, trainer_model_id=trainer_model_id
+                args,
+                inference_controller=inference_controller,
+                rollout_id=0,
+                trainer_model_id=trainer_model_id,
+                output=WeightUpdateOutput(
+                    weight_version=11,
+                    failed_cell_ids=(),
+                    debug_trainer_load_state_timestamp=1.0,
+                    debug_weight_update_id="update-11",
+                ),
+                snapshot_cell_id_to_hashes={meta.cell_id: meta.workers_hash for meta, _body in response or []},
             )
         return inference_controller, event_logger
 
@@ -308,7 +351,19 @@ class TestTheScriptLogsTheChecksumsTheEnginesNowServe:
         inference_controller.check_weights.assert_awaited_once_with(action="checksum", model_id=None)
         event_logger.log.assert_called_once()
         assert event_logger.log.call_args.args[1] == dict(
-            rollout_id=0, trainer_model_id=None, engine_checksums=[{"rank0/w": "e0"}, {"rank0/w": "e1"}]
+            rollout_id=0,
+            trainer_model_id=None,
+            weight_version=11,
+            debug_trainer_load_state_timestamp=1.0,
+            debug_weight_update_id="update-11",
+            engine_snapshots=[
+                InferenceEngineChecksumSnapshot(
+                    cell_id="cell-0", workers_hash="incarnation-0", tensor_checksums={"rank0/w": "e0"}
+                ),
+                InferenceEngineChecksumSnapshot(
+                    cell_id="cell-1", workers_hash="incarnation-1", tensor_checksums={"rank0/w": "e1"}
+                ),
+            ],
         )
 
     async def test_a_named_policy_stamps_its_own_id_on_the_event(self):
@@ -321,5 +376,134 @@ class TestTheScriptLogsTheChecksumsTheEnginesNowServe:
 
         inference_controller.check_weights.assert_awaited_once_with(action="checksum", model_id="solver")
         assert event_logger.log.call_args.args[1] == dict(
-            rollout_id=0, trainer_model_id="solver", engine_checksums=[{"rank0/w": "e0"}]
+            rollout_id=0,
+            trainer_model_id="solver",
+            weight_version=11,
+            debug_trainer_load_state_timestamp=1.0,
+            debug_weight_update_id="update-11",
+            engine_snapshots=[
+                InferenceEngineChecksumSnapshot(
+                    cell_id="cell-0", workers_hash="incarnation-0", tensor_checksums={"rank0/w": "e0"}
+                ),
+            ],
         )
+
+
+class TestTheChecksumRecordKeepsOnlyThisPublication:
+    @pytest.fixture
+    def event_log_dir(self, tmp_path: Path) -> Iterator[Path]:
+        set_event_logger(EventLogger(log_dir=tmp_path, source=SimpleProcessIdentity(component="main")))
+        try:
+            yield tmp_path
+        finally:
+            set_event_logger(None)
+
+    @staticmethod
+    async def _log(
+        *,
+        check_weights: Callable[..., Awaitable[Any]],
+        snapshot: dict[str, str],
+        failed: tuple[str, ...] = (),
+        weight_version: int | None = 11,
+        **arg_overrides: object,
+    ) -> None:
+        from miles.ray.placement_group import _maybe_log_inference_engine_weight_checksums
+
+        await _maybe_log_inference_engine_weight_checksums(
+            _orchestration_args(**arg_overrides),
+            inference_controller=SimpleNamespace(check_weights=check_weights),
+            rollout_id=0,
+            trainer_model_id=None,
+            output=WeightUpdateOutput(
+                weight_version=weight_version,
+                failed_cell_ids=failed,
+                debug_trainer_load_state_timestamp=1.0,
+                debug_weight_update_id="update-11",
+            ),
+            snapshot_cell_id_to_hashes=snapshot,
+        )
+
+    @staticmethod
+    def _answering(response: list[tuple[ServerCellMetadata, dict[str, Any]]]) -> Callable[..., Awaitable[Any]]:
+        async def _check_weights(**_kwargs: object) -> list[tuple[ServerCellMetadata, dict[str, Any]]]:
+            return response
+
+        return _check_weights
+
+    @staticmethod
+    def _recorded(log_dir: Path) -> list[InferenceEngineWeightChecksumEvent]:
+        return [e for e in read_events(log_dir) if isinstance(e, InferenceEngineWeightChecksumEvent)]
+
+    async def test_a_cell_the_update_failed_on_is_left_out(self, event_log_dir: Path) -> None:
+        """A failed cell still serves the previous version, so its checksum would be charged to this one."""
+        response = _checksum_response([{"w": "new"}, {"w": "old"}])
+
+        await self._log(
+            check_weights=self._answering(response),
+            snapshot={"cell-0": "incarnation-0", "cell-1": "incarnation-1"},
+            failed=("cell-1",),
+        )
+
+        [event] = self._recorded(event_log_dir)
+        assert [snapshot.cell_id for snapshot in event.engine_snapshots] == ["cell-0"]
+
+    async def test_a_cell_replaced_since_the_snapshot_is_left_out(self, event_log_dir: Path) -> None:
+        """A same-named cell with a new incarnation never received this update."""
+        response = _checksum_response([{"w": "new"}, {"w": "fresh"}])
+
+        await self._log(
+            check_weights=self._answering(response),
+            snapshot={"cell-0": "incarnation-0", "cell-1": "incarnation-before-restart"},
+        )
+
+        [event] = self._recorded(event_log_dir)
+        assert [(s.cell_id, s.workers_hash) for s in event.engine_snapshots] == [("cell-0", "incarnation-0")]
+
+    async def test_a_cell_outside_the_snapshot_is_left_out(self, event_log_dir: Path) -> None:
+        """A cell that joined after the window opened was never a target of this update."""
+        response = _checksum_response([{"w": "new"}, {"w": "joined-late"}])
+
+        await self._log(check_weights=self._answering(response), snapshot={"cell-0": "incarnation-0"})
+
+        [event] = self._recorded(event_log_dir)
+        assert [snapshot.cell_id for snapshot in event.engine_snapshots] == ["cell-0"]
+
+    async def test_an_unpublished_update_asks_no_engine(self, event_log_dir: Path) -> None:
+        """Without a published version there is no version the checksums could be attributed to."""
+        asked: list[dict[str, object]] = []
+
+        async def _check_weights(**kwargs: object) -> list[tuple[ServerCellMetadata, dict[str, Any]]]:
+            asked.append(kwargs)
+            return _checksum_response([{"w": "x"}])
+
+        await self._log(check_weights=_check_weights, snapshot={"cell-0": "incarnation-0"}, weight_version=None)
+
+        assert asked == []
+        assert self._recorded(event_log_dir) == []
+
+    async def test_a_hanging_engine_is_deadlined_without_failing_the_update(self, event_log_dir: Path) -> None:
+        """Evidence collection is best effort, so a stuck engine must not block or fail publication."""
+
+        async def _hang(**_kwargs: object) -> None:
+            await asyncio.Event().wait()
+
+        await self._log(
+            check_weights=_hang, snapshot={"cell-0": "incarnation-0"}, update_weight_engine_request_timeout=0.01
+        )
+
+        assert self._recorded(event_log_dir) == []
+
+    async def test_a_failed_engine_body_is_logged_instead_of_raised(
+        self, event_log_dir: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A malformed check_weights answer must not turn a published update into a failed one."""
+        [(meta, body)] = _checksum_response([{"w": "x"}])
+
+        with caplog.at_level(logging.ERROR, logger="miles.ray.placement_group"):
+            await self._log(
+                check_weights=self._answering([(meta, {**body, "success": False})]),
+                snapshot={"cell-0": "incarnation-0"},
+            )
+
+        assert self._recorded(event_log_dir) == []
+        assert "Could not record inference engine checksum observation" in caplog.text

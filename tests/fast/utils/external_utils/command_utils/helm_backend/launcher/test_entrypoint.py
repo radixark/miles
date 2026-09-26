@@ -5,6 +5,7 @@ from typing import Any
 
 import pytest
 import yaml
+from tests.fast.utils.external_utils.command_utils.fake_launch_guard import RecordingLaunchGuard
 
 from miles.utils.external_utils.command_utils.base_backend import ExecuteTrainConfig, ExecuteTrainRequest
 from miles.utils.external_utils.command_utils.helm_backend.launcher import command_wrapper, entrypoint
@@ -350,3 +351,48 @@ class TestDefusingThePreviousGeneration:
         deleted = _defuse(monkeypatch, superseded_state_file=None, state_file=tmp_path / "new.state")
 
         assert deleted == [entrypoint.RunNames.uninstall_job(release="r")]
+
+
+class TestDefusingThroughAGuard:
+    def test_the_uninstall_job_is_deleted_through_the_guard_and_never_directly(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """A direct kubectl delete would bypass the guard that checks the job still belongs to the observed run."""
+        monkeypatch.setattr(
+            entrypoint.Kubectl,
+            "delete_job",
+            staticmethod(lambda name, **kwargs: pytest.fail("the uninstall job was deleted around the guard")),
+        )
+        guard = RecordingLaunchGuard()
+
+        entrypoint._defuse_previous_generation(
+            "r", namespace="rl", superseded_state_file=None, state_file=tmp_path / "new.state", guard=guard
+        )
+
+        assert guard.calls == [
+            (
+                "delete_uninstall_job",
+                {"name": entrypoint.RunNames.uninstall_job(release="r"), "namespace": "rl", "check": True},
+            )
+        ]
+
+    def test_the_marker_is_already_written_when_the_guard_is_asked_to_delete(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """The guard stands where the old delete stood, so the old orchestrator is defused before it runs."""
+        superseded = tmp_path / "state" / "orchestrator-old.state"
+        marked: list[bool] = []
+
+        class _MarkerProbe(RecordingLaunchGuard):
+            def delete_uninstall_job(self, name: str, *, namespace: str, check: bool = False) -> None:
+                marked.append(entrypoint.RunFiles.superseded_marker(state_file=superseded).exists())
+
+        entrypoint._defuse_previous_generation(
+            "r",
+            namespace="rl",
+            superseded_state_file=superseded,
+            state_file=tmp_path / "new.state",
+            guard=_MarkerProbe(),
+        )
+
+        assert marked == [True]

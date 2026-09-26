@@ -55,6 +55,10 @@ class RpcTransport:
     async def request(
         self, method: str, path: str, *, seconds: float, response_model: type[_ResponseT], **kwargs: Any
     ) -> _ResponseT:
+        response = await self.send(method, path, seconds=seconds, **kwargs)
+        return response_model.model_validate(response.json())
+
+    async def send(self, method: str, path: str, *, seconds: float, **kwargs: Any) -> httpx.Response:
         headers = dict(kwargs.pop("headers", {}))
         if self._boot_uuid_pin.expected is not None:
             headers[EXPECTED_BOOT_UUID_HEADER] = self._boot_uuid_pin.expected
@@ -81,7 +85,7 @@ class RpcTransport:
             )
 
         self._boot_uuid_pin.verify(response)
-        return response_model.model_validate(response.json())
+        return response
 
     @property
     def _client(self) -> httpx.AsyncClient:
@@ -91,10 +95,11 @@ class RpcTransport:
 
 
 class BootUuidPin:
-    def __init__(self, *, required: bool, worker_cls_name: str) -> None:
-        self._required = required
+    def __init__(self, *, required: bool, worker_cls_name: str, expected: str | None = None) -> None:
+        self._required = required or expected is not None
         self._worker_cls_name = worker_cls_name
-        self._value: str | None = None
+        self._fixed_value = expected
+        self._value = expected
 
     @property
     def expected(self) -> str | None:
@@ -104,11 +109,15 @@ class BootUuidPin:
         return self._required and self._value is None
 
     def unpin(self) -> str | None:
+        if self._fixed_value is not None:
+            raise ValueError("A handle targeting an observed boot UUID cannot follow a replacement")
         previous = self._value
         self._value = None
         return previous
 
     def repin(self, value: str | None) -> None:
+        if self._fixed_value is not None and value != self._fixed_value:
+            raise ValueError("Cannot change the observed boot UUID of a targeted handle")
         self._value = value
 
     def verify(self, response: httpx.Response) -> None:
