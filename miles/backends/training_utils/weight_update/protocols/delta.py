@@ -19,6 +19,7 @@ import zstandard
 from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
 from miles.backends.training_utils.parallel import ParallelState
 from miles.backends.training_utils.weight_update.hf_weight_iterator import WeightUpdatePlacement
+from miles.backends.training_utils.weight_update.packed_delta import PackedDeltaEncoder
 from miles.backends.training_utils.weight_update.protocol import WeightTransferProtocol
 from miles.backends.training_utils.weight_update.session import check_weight_sync_results
 from miles.backends.training_utils.weight_update.utils import get_data_replica_rank_and_size
@@ -87,7 +88,15 @@ class UpdateWeightFromDiskDelta(WeightTransferProtocol):
         os.makedirs(self.delta_dir, exist_ok=True)
         self.delta_encoding = args.update_weight_delta_encoding
         self.checksum_algorithm = args.update_weight_delta_checksum
+        self._cpu_backend = getattr(args, "update_weight_delta_cpu_backend", "numpy")
+        if self._cpu_backend == "torch-compile" and self.delta_encoding != "xor":
+            raise ValueError("The torch-compile delta CPU backend requires XOR encoding")
         self._snapshot: dict[str, np.ndarray] = {}
+        self._packed = (
+            PackedDeltaEncoder(self._snapshot, self.checksum_algorithm)
+            if self._cpu_backend == "torch-compile"
+            else None
+        )
         self._baseline_captured = False
         # Post-write hook: object-store-backed shared filesystems lack cross-host
         # read-after-write consistency, so written files need an explicit step
@@ -126,6 +135,9 @@ class UpdateWeightFromDiskDelta(WeightTransferProtocol):
 
     def send_bucket(self, bucket: list[tuple[str, torch.Tensor]]) -> None:
         """Submit each tensor of the bucket to the diff/compress pool (pipelined with the gather)."""
+        if self._packed is not None:
+            self._packed.submit(bucket)
+            return
         for name, tensor in bucket:
             flat = tensor.detach().contiguous().view(torch.uint8).reshape(-1)
             nbytes = int(flat.numel())
@@ -143,10 +155,26 @@ class UpdateWeightFromDiskDelta(WeightTransferProtocol):
 
     def after_base_weights(self) -> None:
         """Drain the in-flight diff/compress work and shut the pool down."""
+        if self._packed is not None:
+            error = self._packed.finish()
+            self.changed_bytes, self.total_bytes = self._packed.changed_bytes, self._packed.total_bytes
+            self._raise_packed_error(error)
+            return
         while self._inflight:
             self._collect(self._inflight.popleft())
         self._pool.shutdown()
         self._pool = None
+
+    def _raise_packed_error(self, error: Exception | None) -> None:
+        group = get_gloo_group()
+        failed = torch.tensor(int(error is not None), dtype=torch.int32)
+        dist.all_reduce(failed, op=dist.ReduceOp.MAX, group=group)
+        if not failed.item():
+            return
+        messages: list = [None] * dist.get_world_size(group=group)
+        dist.all_gather_object(messages, None if error is None else f"{type(error).__name__}: {error}", group=group)
+        rank, message = next((rank, message) for rank, message in enumerate(messages) if message is not None)
+        raise RuntimeError(f"Disk-delta packed preparation failed on rank {rank}: {message}") from error
 
     def finalize(self, weight_version: int) -> None:
         """Write this version as a canonical HF dir, have the engines pull and reload it."""
@@ -212,10 +240,21 @@ class UpdateWeightFromDiskDelta(WeightTransferProtocol):
                             f"trainer emitted {emitted_nbytes} bytes"
                         )
                     self._snapshot[name] = baseline
+                if self._packed is not None:
+                    try:
+                        self._packed.capture(bucket)
+                    except Exception as error:
+                        raise ValueError(f"Could not capture packed delta layout: {error}") from error
             except ValueError as error:
                 # Source ranks read the checkpoint, but every rank drives the bucket iterator's
                 # collectives. Defer the error until iteration finishes, then make every rank fail.
                 local_error = error
+
+        if self.is_sender and local_error is None and self._packed is not None:
+            try:
+                self._packed.initialize()
+            except Exception as error:
+                local_error = ValueError(f"Could not initialize the compiled delta CPU backend: {error}")
 
         group = get_gloo_group()
         error_messages: list[str | None] = [None] * dist.get_world_size(group=group)
@@ -271,6 +310,11 @@ class UpdateWeightFromDiskDelta(WeightTransferProtocol):
         self._delta: dict[str, np.ndarray] = {}  # changed tensor name -> compressed diff
         self._checksums: dict[str, str] = {}  # changed tensor name -> new-state checksum
         self.changed_bytes = self.total_bytes = 0
+
+        if self._packed is not None:
+            self._packed.begin()
+            self._delta, self._checksums = self._packed.deltas, self._packed.checksums
+            return
 
         # Pinned host-buffer pool: a pinned non_blocking GPU->CPU copy is far faster than .cpu().
         self._max_bytes = max((int(v.nbytes) for v in self._snapshot.values()), default=0)
