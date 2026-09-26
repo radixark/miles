@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
 import miles.utils.audit_utils.event_logger.logger as event_logger_module
 from miles.utils.audit_utils.event_logger.logger import (
@@ -201,6 +202,18 @@ class TestReadEvents:
 
         events = read_events(tmp_path)
         assert len(events) == 1
+
+    def test_malformed_line_raises_when_strict(self, tmp_path: Path) -> None:
+        """A reader that must not lose events asks for the failure instead of a warning."""
+        logger = _make_logger(tmp_path)
+        logger.log(_EVENT_CLS, _EVENT_PARTIAL)
+        logger.close()
+
+        with open(tmp_path / "events.jsonl", "a") as f:
+            f.write("this is not valid json\n")
+
+        with pytest.raises(ValidationError):
+            read_events(tmp_path, strict=True)
 
     def test_reads_multiple_jsonl_files(self, tmp_path: Path) -> None:
         from miles.utils.audit_utils.event_logger.logger import read_events
