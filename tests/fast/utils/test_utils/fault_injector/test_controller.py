@@ -654,7 +654,7 @@ class TestDelayedRequests:
         """A request without a hook but with a delay must wait for its timer after being set."""
         assert _set(runtime_hooks, _stop(hook_name=None, delay_ms=100)).status == FaultHookStatus.SCHEDULED
         assert operations.stopped == []
-        assert timers[0].interval == 0.1
+        assert timers[0].interval == pytest.approx(0.1)
         timers[0].fire()
         assert operations.stopped == ["cell-0"]
 
