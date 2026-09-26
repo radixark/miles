@@ -11,6 +11,7 @@ model resolver, which decides which fields inherit or must stay compatible.
 """
 
 import json
+import logging
 from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any
@@ -22,6 +23,38 @@ from miles.utils.chat_template_utils.tito_tokenizer import TITOTokenizer, extrac
 from miles.utils.lora.utils import LORA_ADAPTER_NAME, lora_rollout_enabled
 
 DEFAULT_TURN_ARGS_DROP_KEYS = ("input_ids", "messages")
+logger = logging.getLogger(__name__)
+
+
+def fit_completion_to_context(request_args: dict[str, Any], *, context_limit: int | None) -> None:
+    """Cap an owned, tokenized request's output budget without changing its input.
+
+    A per-turn maximum is not a reservation: later turns may have less room.
+    Apply this after rendering exact TITO input IDs and before changing session
+    state. Keep the adjusted budget in the recorded request for reproducibility.
+    """
+    if context_limit is None:
+        return
+    if type(context_limit) is not int or context_limit <= 0:
+        raise MessageValidationError("context_limit must be a positive integer")
+    remaining = context_limit - len(request_args["input_ids"])
+    if remaining <= 0:
+        raise MessageValidationError(
+            f"Input exceeds the maximum context length of {context_limit} tokens; prompt truncation is disabled"
+        )
+    fields = [
+        key for key in ("max_tokens", "max_completion_tokens") if request_args.get(key) is not None
+    ]
+    for key in fields:
+        value = request_args[key]
+        if type(value) is not int or value < 0:
+            raise MessageValidationError(f"{key} must be a nonnegative integer")
+    if not fields:
+        request_args["max_tokens"] = remaining
+    for key in fields:
+        if request_args[key] > remaining:
+            logger.info("Capping %s from %d to %d remaining context tokens", key, request_args[key], remaining)
+            request_args[key] = remaining
 
 
 def filter_turn_args(

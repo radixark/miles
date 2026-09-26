@@ -9,6 +9,7 @@ from miles.rollout.session.config import SessionServerConfig, compute_session_se
 
 
 _ARGS_TO_CONFIG_FIELD = {
+    "rollout_max_context_len": "rollout_max_context_len",
     "miles_router_timeout": "timeout",
     "hf_checkpoint": "hf_checkpoint",
     "chat_template_path": "chat_template_path",
@@ -33,6 +34,7 @@ _ARGS_TO_CONFIG_FIELD = {
 
 _CALL_SITE_FIELDS = ("host", "port", "instance_id", "backend_url")
 _OPTIONAL_ARGS_ATTRS = (
+    "rollout_max_context_len",
     "num_layers",
     "pause_generation_mode",
     "moe_router_topk",
@@ -42,6 +44,7 @@ _OPTIONAL_ARGS_ATTRS = (
 )
 
 _DISTINCT_ARGS_VALUES = dict(
+    rollout_max_context_len=65536,
     miles_router_timeout=31.5,
     hf_checkpoint="/fake/model",
     chat_template_path="/fake/chat_template.jinja",
@@ -117,6 +120,7 @@ class TestComputeSessionServerConfig:
 
 
 _COMPLETE_CONFIG_KWARGS = dict(
+    rollout_max_context_len=None,
     host="127.0.0.1",
     port=5001,
     instance_id=None,

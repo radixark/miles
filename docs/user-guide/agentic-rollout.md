@@ -86,6 +86,13 @@ async def run_agent(base_url, prompt, request_kwargs, metadata, **kwargs):
 For structured parsing, the payload may use SGLang's
 `ChatCompletionRequest`-compatible fields, which extend the OpenAI format.
 
+Set `--rollout-max-context-len` to the usable context budget of the inference
+backend. Both session-server versions use the exact rendered input-token count
+to cap each turn's requested output at the remaining budget. They never truncate
+the input; a prompt that already fills the budget is rejected. The effective
+output limit is logged and retained in the recorded request. Leave room for any
+backend-specific reserved tokens (for example, speculative draft tokens).
+
 
 ### Optional teardown hook
 

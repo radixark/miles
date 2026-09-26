@@ -10,11 +10,59 @@ from miles.rollout.session.errors import MessageValidationError
 from miles.rollout.session.request_args import (
     apply_session_sampling_defaults,
     filter_turn_args,
+    fit_completion_to_context,
     prepare_chat_request,
     resolve_request_args_by_config,
 )
 from miles.utils.chat_template_utils.tito_tokenizer import TITOTokenizer, extract_template_args
 from miles.utils.lora.utils import LORA_ADAPTER_NAME
+
+
+class TestCompletionContextBudget:
+    @pytest.mark.parametrize("field", ["max_tokens", "max_completion_tokens"])
+    def test_exact_regression_keeps_prompt_and_fits_output(self, field: str) -> None:
+        token_ids = [1] * 16696
+        body = {"input_ids": token_ids, field: 49152}
+        fit_completion_to_context(body, context_limit=65536)
+        assert body[field] == 48840
+        assert body["input_ids"] is token_ids
+        assert len(token_ids) == 16696
+
+    def test_smaller_explicit_budget_and_zero_are_preserved(self) -> None:
+        body = {"input_ids": [1] * 9, "max_tokens": 0, "max_completion_tokens": 1}
+        fit_completion_to_context(body, context_limit=10)
+        assert body["max_tokens"] == 0
+        assert body["max_completion_tokens"] == 1
+
+    def test_both_aliases_are_capped(self) -> None:
+        body = {"input_ids": [1] * 9, "max_tokens": 2, "max_completion_tokens": 3}
+        fit_completion_to_context(body, context_limit=10)
+        assert body["max_tokens"] == body["max_completion_tokens"] == 1
+
+    @pytest.mark.parametrize("budget", [None, {}, {"max_tokens": None, "max_completion_tokens": None}])
+    def test_missing_budget_uses_remaining_context(self, budget: dict | None) -> None:
+        body = {"input_ids": [1] * 9, **(budget or {})}
+        fit_completion_to_context(body, context_limit=10)
+        assert body["max_tokens"] == 1
+
+    @pytest.mark.parametrize("length", [10, 11])
+    def test_exhausted_input_is_rejected_without_mutation(self, length: int) -> None:
+        body = {"input_ids": [1] * length, "max_tokens": 20}
+        before = deepcopy(body)
+        with pytest.raises(MessageValidationError, match="maximum context length"):
+            fit_completion_to_context(body, context_limit=10)
+        assert body == before
+
+    @pytest.mark.parametrize("value", [True, "2", -1, 1.5])
+    def test_invalid_output_limit_is_rejected(self, value: object) -> None:
+        with pytest.raises(MessageValidationError, match="nonnegative integer"):
+            fit_completion_to_context({"input_ids": [1], "max_tokens": value}, context_limit=10)
+
+    def test_unconfigured_limit_preserves_request(self) -> None:
+        body = {"input_ids": [1], "max_tokens": 20}
+        before = deepcopy(body)
+        fit_completion_to_context(body, context_limit=None)
+        assert body == before
 
 
 class TestResolveRequestArgsByConfig:

@@ -7,6 +7,7 @@ from miles.rollout.session.config import SessionServerConfig
 
 def make_session_server_config(**overrides: Any) -> SessionServerConfig:
     defaults: dict[str, Any] = dict(
+        rollout_max_context_len=None,
         host="127.0.0.1",
         port=0,
         instance_id=None,

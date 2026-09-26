@@ -94,3 +94,33 @@ def test_valid_retry_renders_selected_checkpoint_before_rollback():
 
     assert prepared.body["input_ids"] == [1, 2, 5]
     assert _snapshot(session) == checkpoint
+
+
+def test_context_budget_is_applied_after_rendering() -> None:
+    registry = _make_registry()
+    session = registry.get_session(registry.create_session())
+    registry.tito_tokenizer.apply_chat_template = MagicMock(return_value=[1] * 16696)
+    client_args = {"messages": [USER], "max_tokens": 49152}
+    prepared = session.prepare_token_ids_and_request_args(
+        client_args,
+        config=make_session_server_config(rollout_max_context_len=65536),
+        tito_tokenizer=registry.tito_tokenizer,
+    )
+    assert len(prepared.body["input_ids"]) == 16696
+    assert prepared.body["max_tokens"] == 48840
+    assert client_args["max_tokens"] == 49152
+
+
+def test_context_rejection_does_not_roll_back_existing_history() -> None:
+    registry = _make_registry()
+    session = registry.get_session(registry.create_session())
+    _commit(session, [USER], [1], [2])
+    before = _snapshot(session)
+    registry.tito_tokenizer.apply_chat_template = MagicMock(return_value=[1] * 10)
+    with pytest.raises(MessageValidationError, match="maximum context length"):
+        session.prepare_token_ids_and_request_args(
+            {"messages": [USER], "max_tokens": 20},
+            config=make_session_server_config(rollout_max_context_len=10),
+            tito_tokenizer=registry.tito_tokenizer,
+        )
+    assert _snapshot(session) == before

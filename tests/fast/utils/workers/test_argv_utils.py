@@ -107,6 +107,7 @@ class TestConfigToArgv:
         assert parse_config_argv(MilesRouterConfig, config_to_argv(router_config)) == router_config
 
         session_config = SessionServerConfig(
+            rollout_max_context_len=None,
             host="127.0.0.1",
             port=30100,
             instance_id="abc",
