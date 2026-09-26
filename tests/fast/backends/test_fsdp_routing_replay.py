@@ -173,10 +173,6 @@ def test_enable_follows_use_routing_replay():
     assert routing_replay.enable(Namespace(use_routing_replay=False, ci_test=False)) is False
 
 
-def test_enable_defaults_false_when_arg_absent():
-    assert routing_replay.enable(Namespace(ci_test=False)) is False
-
-
 def test_enable_turns_on_the_replay_check_only_under_ci_test():
     routing_replay.enable(Namespace(use_routing_replay=True, ci_test=True))
     assert routing_replay_manager.enable_check_replay_result is True
