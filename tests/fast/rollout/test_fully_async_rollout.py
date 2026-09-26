@@ -212,6 +212,7 @@ async def test_aborted_group_recycled(monkeypatch):
     assert all(sample.response == "" and sample.weight_versions == [] for sample in aborted)
     assert output.samples[0][0].group_index != 1
     assert output.metrics["rollout/fully_async/aborted_groups_filtered"] == 1
+    assert output.metrics["rollout/aborted/drop_unknown"] == 1
     assert "rollout/dynamic_filter/drop_group_has_missing_reward" not in output.metrics
 
 

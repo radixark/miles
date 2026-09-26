@@ -8,7 +8,7 @@ from packaging.version import parse
 from tqdm import tqdm
 
 from miles.rollout.base_types import RolloutFnTrainOutput
-from miles.rollout.filter_hub.base_types import MetricGatherer
+from miles.rollout.filter_hub.base_types import MetricGatherer, group_has_aborted
 from miles.rollout.filter_hub.common_filters import apply_preput_filters
 from miles.rollout.generate_utils.prefill_logprobs import recompute_samples_rollout_logprobs_via_prefill
 from miles.rollout.generate_utils.sample_utils import reward_log_summary, sample_text_preview
@@ -142,6 +142,8 @@ async def generate_rollout_async(
             filter_output = apply_preput_filters(args, dynamic_filter, group)
             if not filter_output.keep:
                 metric_gatherer.on_dynamic_filter_drop(reason=filter_output.reason)
+                if group_has_aborted(group):
+                    metric_gatherer.on_aborted_group_drop(group)
                 continue
 
             # add the samples to the data

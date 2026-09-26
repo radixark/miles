@@ -14,7 +14,7 @@ from packaging.version import parse
 from tqdm import tqdm
 
 from miles.rollout.base_types import GenerateFnInput, RolloutFnEvalOutput, RolloutFnTrainOutput
-from miles.rollout.filter_hub.base_types import MetricGatherer
+from miles.rollout.filter_hub.base_types import MetricGatherer, group_has_aborted
 from miles.rollout.filter_hub.common_filters import apply_preput_filters
 from miles.rollout.inference_rollout.compatibility import load_generate_function
 from miles.utils import dumper_utils
@@ -503,6 +503,8 @@ async def generate_rollout_async(
             filter_output = apply_preput_filters(args, dynamic_filter, group)
             if not filter_output.keep:
                 metric_gatherer.on_dynamic_filter_drop(reason=filter_output.reason)
+                if group_has_aborted(group):
+                    metric_gatherer.on_aborted_group_drop(group)
                 state.remaining_batch_size -= 1
                 continue
 

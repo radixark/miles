@@ -319,7 +319,15 @@ rollout/fully_async/token_weighted_staleness
 rollout/fully_async/weight_version_sample_coverage
 rollout/fully_async/buffer_avg_staleness, rollout/fully_async/buffer_max_staleness
 rollout/dynamic_filter/drop_<reason>
+rollout/aborted/drop_<exit_status>
 ```
+
+`rollout/fully_async/aborted_groups_filtered` counts every group dropped for
+containing an aborted sample; `rollout/aborted/drop_<exit_status>` splits the
+same count by the cause the aborted sample recorded: `NoModelCalls`,
+`AllTruncated`, `CollectFailed`, the `exit_status` of the agent function's
+`InfraAbort`, or `unknown` when nothing was recorded, as for a cancelled group.
+The sync rollout reports `rollout/aborted/drop_<exit_status>` too.
 
 Staleness is measured in published rollout weight versions: with
 `--update-weights-interval 1`, one version normally corresponds to one optimizer step;
