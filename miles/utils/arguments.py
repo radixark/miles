@@ -954,6 +954,17 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 ),
             )
             parser.add_argument(
+                "--update-weight-delta-cpu-backend",
+                choices=["numpy", "torch-compile"],
+                default="numpy",
+                help=(
+                    "CPU preparation backend for disk-delta. 'torch-compile' packs stable buckets, "
+                    "compiles change counts and owned XOR/snapshot materialization during baseline capture, "
+                    "and requires XOR encoding plus a working host compiler. Compression and checksums "
+                    "keep the existing per-tensor wire format."
+                ),
+            )
+            parser.add_argument(
                 "--update-weight-delta-checksum",
                 choices=["xxh3-128", "blake3", "adler32"],
                 default="xxh3-128",
