@@ -15,6 +15,7 @@ from tests.fast.train_parallel_config_utils import make_train_parallel_config
 from miles.backends.megatron_utils.ft.types import TrainStepOutcome, TrainStepOutput
 from miles.backends.training_utils.conn_status import ConnStatusManager
 from miles.backends.training_utils.parallel import GroupInfo, ParallelState
+from miles.ray.train_actor import WeightUpdateOutput
 from miles.utils import object_store
 from miles.utils.dp_schedule import TrainParallelConfig
 from miles.utils.ray_utils import Box
@@ -356,7 +357,7 @@ def test_update_weights_only_uses_temporary_process_groups_when_asleep(actor_mod
     monkeypatch.setattr(actor_module, "destroy_process_groups", destroy_groups)
     monkeypatch.setattr(actor_module.dist, "get_rank", lambda: 1)
 
-    worker.update_weights(info)
+    worker.update_weights(info, debug_weight_update_id="update-0", rollout_id=0)
 
     assert reload_groups.call_count == int(asleep)
     assert destroy_groups.call_count == int(asleep)
@@ -467,7 +468,6 @@ def _actor_reuse_worker(actor_module, **args_overrides):
     worker._compute_log_prob = Mock(return_value={"log_probs": [object()]})
     worker.rollout_data_postprocess = None
     worker.prof = Mock()
-    worker._ft_test_action_executor = None
     worker.weight_updater = Mock()
     worker.weight_updater.pop_metrics.return_value = {}
     worker._heartbeat = Mock()
@@ -531,7 +531,6 @@ def test_actor_logprob_forward_is_explicit_single_step_opt_in(
     assert train_call.kwargs == {
         "witness_info": None,
         "attempt": 0,
-        "ft_test_action_executor": None,
     }
 
 
@@ -715,7 +714,6 @@ def _actor_worker(actor_module: Any) -> Any:
     worker.weights_backuper = Mock()
     worker.weights_backuper.backup_tags = ()
     worker._active_model_tag = "actor"
-    worker._ft_test_action_executor = None
     worker._heartbeat = Mock()
     worker._switch_model = Mock()
     return worker
@@ -804,6 +802,7 @@ class _RecordingWeightUpdater:
         self.conn_status = ConnStatusManager()
         self.connect_calls: list[dict[str, Any]] = []
         self.update_weights_calls: int = 0
+        self.protocol = SimpleNamespace(cell_updaters_of_cell_id={})
 
     def connect_rollout_engines(
         self,
@@ -813,6 +812,9 @@ class _RecordingWeightUpdater:
         *,
         engine_cell_ids: list[str],
     ) -> None:
+        self.protocol.cell_updaters_of_cell_id = {
+            cell_id: SimpleNamespace(is_errored=False) for cell_id in engine_cell_ids
+        }
         self.connect_calls.append(
             dict(
                 rollout_engines=list(rollout_engines),
@@ -988,13 +990,13 @@ def test_connection_uses_safe_allocations_when_offloading(
     monkeypatch.setattr(actor_module, "reload_process_groups", Mock())
     monkeypatch.setattr(actor_module, "destroy_process_groups", Mock())
     worker.weight_updater.connect_rollout_engines = check_connection
-    engines = _updatable_engines([], {"cell-0": "hash-a"}, gpu_count=8)
+    engines = _updatable_engines([object()], {"cell-0": "hash-a"}, gpu_count=8)
 
     if connect_fails:
         with pytest.raises(RuntimeError, match="connection failed"):
-            worker.update_weights(engines)
+            worker.update_weights(engines, debug_weight_update_id="update-0", rollout_id=0)
     else:
-        worker.update_weights(engines)
+        worker.update_weights(engines, debug_weight_update_id="update-0", rollout_id=0)
 
     assert not inside_safe_region
     assert saver.disable.call_count == ((1 if connect_fails else 2) if offload_train else 0)
@@ -1010,17 +1012,16 @@ def test_update_weights_reconnects_once_per_rollout_snapshot(
     first_engines = [object()]
     replacement_engines = [object(), object()]
 
-    worker.update_weights(_updatable_engines(first_engines, {"cell-0": "hash-a"}, gpu_count=4))
-    worker.update_weights(_updatable_engines(first_engines, {"cell-0": "hash-a"}, gpu_count=4))
+    worker.update_weights(_updatable_engines(first_engines, {"cell-0": "hash-a"}, gpu_count=4), debug_weight_update_id="update-0", rollout_id=0)
+    worker.update_weights(_updatable_engines(first_engines, {"cell-0": "hash-a"}, gpu_count=4), debug_weight_update_id="update-0", rollout_id=0)
     weight_version = worker.update_weights(
-        _updatable_engines(replacement_engines, {"cell-0": "hash-b", "cell-1": "hash-b"}, gpu_count=2)
-    )
+        _updatable_engines(replacement_engines, {"cell-0": "hash-b", "cell-1": "hash-b"}, gpu_count=2), debug_weight_update_id="update-0", rollout_id=0)
 
     assert [call["rollout_engines"] for call in updater.connect_calls] == [first_engines, replacement_engines]
     assert updater.connect_calls[1]["engine_gpu_counts"] == [2, 2]
     assert updater.connect_calls[1]["engine_gpu_offsets"] == [0, 2]
     assert updater.update_weights_calls == 3
-    assert weight_version == 3
+    assert weight_version == WeightUpdateOutput(weight_version=3, failed_cell_ids=())
     assert not updater.conn_status.needs_reconnect({"cell-0": "hash-b", "cell-1": "hash-b"})
 
 
@@ -1032,10 +1033,10 @@ def test_actor_returns_model_version_after_update_weights_returns(
     worker = _weight_update_worker(actor_module, monkeypatch)
     worker.model[0].model_companion.weight_version.fill_(weight_version)
 
-    result = worker.update_weights(_updatable_engines([object()], {"cell-0": "hash-a"}, gpu_count=4))
+    result = worker.update_weights(_updatable_engines([object()], {"cell-0": "hash-a"}, gpu_count=4), debug_weight_update_id="update-0", rollout_id=0)
 
-    assert type(result) is int
-    assert result == weight_version
+    assert type(result) is WeightUpdateOutput
+    assert result == WeightUpdateOutput(weight_version=weight_version, failed_cell_ids=())
 
 
 def test_reconfigure_indep_dp_forces_the_next_weight_update_to_reconnect(
@@ -1051,9 +1052,9 @@ def test_reconfigure_indep_dp_forces_the_next_weight_update_to_reconnect(
     engines = [object()]
     snapshot = {"cell-0": "hash-a"}
 
-    worker.update_weights(_updatable_engines(engines, snapshot, gpu_count=4))
+    worker.update_weights(_updatable_engines(engines, snapshot, gpu_count=4), debug_weight_update_id="update-0", rollout_id=0)
     worker.reconfigure_indep_dp(object(), "10.0.0.1:1234")
-    worker.update_weights(_updatable_engines(engines, snapshot, gpu_count=4))
+    worker.update_weights(_updatable_engines(engines, snapshot, gpu_count=4), debug_weight_update_id="update-0", rollout_id=0)
 
     assert len(updater.connect_calls) == 2
 
