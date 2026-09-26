@@ -26,8 +26,8 @@ RECEIVER_FAULT_DELAY_MS: float = 50.0
 
 def _build_fault_hooks(mode: FTTestMode, config: command_utils.ExecuteTrainConfig) -> list[FaultHookRequest]:
     assert config.cluster_backend is ClusterBackend.RAY, (
-        f"{TEST_NAME} reaches the api server from the sending trainer rank at {compute_base_url(config)}, and only "
-        f"the ray backend serves it on the trainer's own host"
+        f"{TEST_NAME} reaches the api server from the sending trainer rank, and only the ray backend serves it on "
+        f"the trainer's own host, not the {config.cluster_backend.value} backend"
     )
     sender_cell_id: str = compute_cell_id(pool_id=compute_trainer_pool_id("actor"), cell_index=0)
     return [
