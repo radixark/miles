@@ -10,6 +10,7 @@ from miles.backends.megatron_utils.lora.optimizer import (
     reset_grad_metadata_keep_grads,
     step_slot_optimizers,
 )
+from miles.backends.megatron_utils.lora.replay import rollout_routing_replay
 from miles.backends.megatron_utils.model import run_forward_backward_pass, setup_train_iteration_config
 from miles.backends.training_utils.data import get_data_iterator
 from miles.backends.training_utils.log_utils import aggregate_train_losses
@@ -39,15 +40,16 @@ def run_forward_backward(
         reset_grad_metadata_keep_grads(model)
 
     dumper_phase_util = DumperMegatronUtil(args, model, DumperPhase.FWD_BWD, rollout_id=batch_id)
-    losses_reduced = run_forward_backward_pass(
-        args,
-        dumper_phase_util,
-        data_iterator,
-        model,
-        num_microbatches[0],
-        num_rollouts=None,
-        forward_only=forward_only,
-    )
+    with rollout_routing_replay(args, model, rollout_data, data_iterator, num_microbatches):
+        losses_reduced = run_forward_backward_pass(
+            args,
+            dumper_phase_util,
+            data_iterator,
+            model,
+            num_microbatches[0],
+            num_rollouts=None,
+            forward_only=forward_only,
+        )
     per_datum_outputs = [output for microbatch in losses_reduced for output in microbatch["per_datum"]]
     dumper_phase_util.finalize(model)
 

@@ -9,7 +9,7 @@ from miles.ray.train.group import TrainerController
 from miles.ray.wiring import launch_worker_manager
 from miles.tinker.arguments import add_tinker_arguments, configure_tinker_args
 from miles.tinker.core.service import TinkerService
-from miles.tinker.core.types import GatewayConfig
+from miles.tinker.core.types import GatewayConfig, RoutingReplayConfig
 from miles.tinker.runtime import MilesBackend
 from miles.tinker.server.app import build_app
 from miles.utils import object_store
@@ -35,6 +35,11 @@ async def serve(args):
         trainer_token_limit = args.max_tokens_per_gpu // pad_size * pad_size
         max_tokens_per_datum = min(max_tokens_per_datum, trainer_token_limit)
     assert max_tokens_per_datum > 0, "trainer token budget must fit at least one padding block"
+    routing_replay = None
+    if args.use_rollout_routing_replay:
+        assert args.num_experts and args.num_experts > 0, "Tinker routing replay requires an MoE model"
+        assert not args.moe_router_fusion, "Tinker routing replay requires moe_router_fusion=False"
+        routing_replay = RoutingReplayConfig(args.num_layers, args.num_experts, args.moe_router_topk)
     configure_logger(args, source=MainProcessIdentity())
 
     init_http_client(args)
@@ -66,6 +71,7 @@ async def serve(args):
         trains_attn="attn" in args.tinker_lora_groups,
         trains_mlp="mlp" in args.tinker_lora_groups,
         trains_unembed="unembed" in args.tinker_lora_groups,
+        routing_replay=routing_replay,
     )
     router_url = f"http://{args.sglang_router_ip}:{args.sglang_router_port}"
     actor_world_size = args.actor_num_nodes * args.actor_num_gpus_per_node

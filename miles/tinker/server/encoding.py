@@ -98,12 +98,14 @@ def model_input_tokens(model_input: dict) -> list[int]:
     return tokens
 
 
-def build_datum(input_tokens: list[int], inputs: dict[str, list], index: int) -> dict:
+def build_datum(input_tokens: list[int], inputs: dict, index: int) -> dict:
     """One decoded datum (token list + loss_fn_inputs lists) -> internal datum."""
-    unknown = set(inputs) - set(LOSS_INPUT_KEYS) - {"target_tokens"}
+    unknown = set(inputs) - set(LOSS_INPUT_KEYS) - {"target_tokens", "routed_experts"}
     if unknown:
         raise UserInputError(f"datum {index}: unknown loss_fn_inputs {sorted(unknown)}")
     for name, values in inputs.items():
+        if name == "routed_experts":
+            continue
         if any(isinstance(value, (list, tuple)) for value in values):
             raise UserInputError(
                 f"datum {index}: loss_fn_inputs[{name!r}] must be 1-D; multi-target inputs are not supported"
@@ -117,11 +119,23 @@ def build_datum(input_tokens: list[int], inputs: dict[str, list], index: int) ->
     for wire_key, datum_key in LOSS_INPUT_KEYS.items():
         if wire_key in inputs:
             datum[datum_key] = [float(value) for value in inputs[wire_key]]
+    if "routed_experts" in inputs:
+        datum["routed_experts"] = inputs["routed_experts"]
     return datum
 
 
-def _decode_inputs(loss_fn_inputs: dict) -> dict[str, list]:
-    return {name: tensor_data_to_list(value) for name, value in loss_fn_inputs.items()}
+def _decode_inputs(loss_fn_inputs: dict) -> dict:
+    decoded = {}
+    for name, value in loss_fn_inputs.items():
+        if name == "routed_experts":
+            if not isinstance(value, dict) or value.get("dtype") != "int64":
+                raise UserInputError("routed_experts must be a dense int64 TensorData")
+            if value.get("sparse_crow_indices") is not None or value.get("sparse_col_indices") is not None:
+                raise UserInputError("routed_experts must be dense")
+            decoded[name] = {"shape": value.get("shape"), "data": value.get("data")}
+        else:
+            decoded[name] = tensor_data_to_list(value)
+    return decoded
 
 
 def tensor_data_to_list(tensor_data) -> list:

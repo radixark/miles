@@ -69,7 +69,11 @@ def _decode_forward_backward(message) -> dict:
     return decoded
 
 
-def _decode_tensor(name: str, tensor) -> list:
+def _decode_tensor(name: str, tensor) -> list | dict:
+    if name == "routed_experts":
+        if tensor.dtype != public_pb.DTYPE_INT64 or tensor.WhichOneof("encoding") != "dense":
+            raise UserInputError("routed_experts must be a dense int64 TensorData")
+        return {"shape": list(tensor.shape), "data": np.frombuffer(tensor.dense, dtype=np.int64).tolist()}
     np_dtype = _PROTO_DTYPE_TO_NUMPY.get(tensor.dtype)
     if np_dtype is None:
         raise UserInputError(f"loss_fn_inputs[{name!r}]: unsupported tensor dtype {tensor.dtype}")

@@ -3,6 +3,7 @@
 import asyncio
 
 import httpx
+import numpy as np
 
 from miles.ray.rollout.train_data_conversion import ROLLOUT_DATA_VALUE_SPEC
 from miles.tinker.core.types import UserInputError
@@ -40,6 +41,11 @@ def _build_train_data(slot_datums: list) -> dict:
     for datum_key, batch_key in DATUM_TO_BATCH_KEYS.items():
         if datum_key in datums[0]:
             train_data[batch_key] = [datum[datum_key] for datum in datums]
+    if "routed_experts" in datums[0]:
+        train_data["rollout_routed_experts"] = [
+            np.asarray(datum["routed_experts"]["data"], dtype=np.int32).reshape(datum["routed_experts"]["shape"])
+            for datum in datums
+        ]
     return train_data
 
 

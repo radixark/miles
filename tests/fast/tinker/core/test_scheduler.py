@@ -117,3 +117,15 @@ def test_forward_only_packs_only_within_one_loss():
     assert [ref.request.command.payload["loss_fn"] for ref in first.datums] == [
         "cross_entropy"
     ], "a DRO request must not execute under another request's loss"
+
+
+def test_replay_and_ordinary_requests_do_not_pack_together():
+    scheduler, (a, b, c) = _scheduler_with_model_queues(3)
+    replay_datum = datum() | {"routed_experts": {"shape": [3, 1, 2], "data": [0, 1] * 3}}
+    _submit_fb(a, 1, arrival=1, datums=[replay_datum])
+    _submit_fb(b, 1, arrival=2, datums=[datum()])
+    _submit_fb(c, 1, arrival=3, datums=[replay_datum])
+
+    first, second = scheduler.schedule_next(), scheduler.schedule_next()
+    assert [ref.model_queue.model_id for ref in first.datums] == ["model-0", "model-2"]
+    assert [ref.model_queue.model_id for ref in second.datums] == ["model-1"]

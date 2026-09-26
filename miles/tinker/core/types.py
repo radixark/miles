@@ -45,6 +45,13 @@ class OwnershipError(Exception):
     """model/checkpoint does not belong to the caller's tenant."""
 
 
+@dataclass(frozen=True)
+class RoutingReplayConfig:
+    num_layers: int
+    num_experts: int
+    topk: int
+
+
 @dataclass
 class GatewayConfig:
     base_model: str
@@ -63,6 +70,7 @@ class GatewayConfig:
     trains_unembed: bool = False
     lease_timeout_s: float = 300.0  # sessions stale beyond this lose their sampling, models, and slots
     batch_token_budget: int = 262_144  # packing bound per BatchUnit
+    routing_replay: RoutingReplayConfig | None = None
 
 
 @dataclass

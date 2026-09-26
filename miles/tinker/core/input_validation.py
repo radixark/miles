@@ -7,6 +7,7 @@ from miles.tinker.core.types import (
     CommandOp,
     GatewayConfig,
     ModelRecord,
+    RoutingReplayConfig,
     UserInputError,
 )
 
@@ -57,8 +58,15 @@ def validate_batch_payload(op: CommandOp, payload: dict, config: GatewayConfig) 
                 value = loss_fn_config[key]
                 if type(value) not in (int, float) or not math.isfinite(value):
                     raise UserInputError(f"loss_fn_config[{key!r}] must be a finite number")
+    has_routes = ["routed_experts" in datum for datum in datums]
+    if any(has_routes) and not all(has_routes):
+        raise UserInputError("routed_experts must be supplied for every datum in a request or none")
+    if any(has_routes) and config.routing_replay is None:
+        raise UserInputError("routed_experts requires a gateway started with --use-rollout-routing-replay")
     total_tokens = 0
     for index, datum in enumerate(datums):
+        if "routed_experts" in datum:
+            _validate_routed_experts(datum, config.routing_replay, index)
         validate_token_ids(datum["tokens"], config.vocab_size, f"datum {index}: model_input")
         validate_token_ids(datum["target_tokens"], config.vocab_size, f"datum {index}: target_tokens")
         if len(datum["tokens"]) > config.max_tokens_per_datum:
@@ -86,6 +94,27 @@ def validate_batch_payload(op: CommandOp, payload: dict, config: GatewayConfig) 
             )
     if total_tokens > config.max_tokens_per_request:
         raise UserInputError(f"{total_tokens} tokens exceeds max_tokens_per_request={config.max_tokens_per_request}")
+
+
+def _validate_routed_experts(datum: dict, config: RoutingReplayConfig, index: int) -> None:
+    routes = datum["routed_experts"]
+    expected_shape = [len(datum["tokens"]) - 1, config.num_layers, config.topk]
+    shape = routes.get("shape") if isinstance(routes, dict) else None
+    if not isinstance(shape, list) or any(type(size) is not int for size in shape) or shape != expected_shape:
+        raise UserInputError(f"datum {index}: routed_experts shape must be {expected_shape} (tokens, layers, topk)")
+    values = routes.get("data")
+    if not isinstance(values, list) or len(values) != math.prod(expected_shape):
+        raise UserInputError(f"datum {index}: routed_experts data length does not match its shape")
+    if any(type(value) is not int or not -1 <= value < config.num_experts for value in values):
+        raise UserInputError(
+            f"datum {index}: routed_experts must contain integer expert IDs in [0, {config.num_experts}) or -1"
+        )
+    for offset in range(0, len(values), config.topk):
+        picks = values[offset : offset + config.topk]
+        if all(pick == -1 for pick in picks):
+            continue  # Entire padding/dense-layer rows are ignored by the replay machinery.
+        if -1 in picks or len(set(picks)) != config.topk:
+            raise UserInputError(f"datum {index}: routed_experts picks must be distinct IDs or an all--1 padding row")
 
 
 def validate_sample_payload(payload: dict, config: GatewayConfig) -> None:

@@ -27,9 +27,10 @@ class PendingRequest:
         return self.remaining == 0
 
     def pack_key(self) -> tuple:
-        """Datums pack into one BatchUnit only within the same (op, loss_fn, config)."""
+        """Pack only requests with the same loss and routing-replay mode."""
         config = self.command.payload.get("loss_fn_config") or {}
-        return (self.command.op, self.command.payload["loss_fn"], tuple(sorted(config.items())))
+        replay = "routed_experts" in self.datums[0]
+        return (self.command.op, self.command.payload["loss_fn"], tuple(sorted(config.items())), replay)
 
 
 class ModelRequestQueue:
