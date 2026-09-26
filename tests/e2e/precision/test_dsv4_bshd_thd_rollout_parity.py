@@ -73,7 +73,7 @@ def _prepare_args() -> ScriptArgs:
 
 def _common_extra_args(*, te_precision_config_path: Path, micro_batch_size: int) -> str:
     return (
-        "--ci-test "
+        "--ci-test --no-enable-sample-ownership-checker "
         "--check-weight-update-allow-quant-error "
         "--ci-disable-logprobs-checker "
         "--wandb-mode disabled "

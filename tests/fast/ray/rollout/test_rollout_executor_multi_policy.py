@@ -1,11 +1,11 @@
 import asyncio
-import threading
 from argparse import Namespace
 from collections import defaultdict
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from tests.fast.fixtures.driver_fakes import FakeObjectStore
 
 from miles.ray.rollout import rollout_executor as rollout_executor_module
 from miles.ray.rollout.output_snapshotter import _RolloutExecutorOutputSnapshotter
@@ -24,7 +24,8 @@ def _quiet_rollout_pipeline(monkeypatch):
     Timer().start_time.clear()
     monkeypatch.setattr(rollout_executor_module, "save_debug_rollout_data", lambda *a, **kw: None)
     monkeypatch.setattr(rollout_executor_module, "convert_samples_to_train_data", lambda *a, **kw: {})
-    monkeypatch.setattr(rollout_executor_module, "split_train_data_by_dp", lambda *a, **kw: None)
+    monkeypatch.setattr(rollout_executor_module, "split_train_data_by_dp", lambda *a, **kw: [])
+    monkeypatch.setattr(rollout_executor_module.object_store, "get_instance", lambda: FakeObjectStore())
     monkeypatch.setattr(rollout_executor_module, "assert_weight_version_is_published", lambda *a, **kw: None)
     yield
     Timer().timers.clear()
@@ -48,6 +49,7 @@ def _make_executor() -> RolloutExecutor:
         debug_skip_weight_update=False,
         lora_rank=0,
         update_weights_interval=1,
+        ci_inject_missing_prefetched_batch_bug=False,
     )
     executor._output_snapshotter = _RolloutExecutorOutputSnapshotter(args=executor.args)
     executor.data_source = Namespace()
@@ -158,7 +160,7 @@ class TestPerPolicyKeying:
         executor.set_train_parallel_config({"dp_size": 4}, trainer_model_id="b")
         seen: list[dict] = []
         monkeypatch.setattr(
-            rollout_executor_module, "split_train_data_by_dp", lambda args, data, config: seen.append(config)
+            rollout_executor_module, "split_train_data_by_dp", lambda args, data, config: seen.append(config) or []
         )
         _record_logged_model_ids(monkeypatch)
 
@@ -195,7 +197,7 @@ class TestPerPolicyKeying:
         postprocessed = _record_postprocess_configs(monkeypatch)
         split: list[dict[str, Any]] = []
         monkeypatch.setattr(
-            rollout_executor_module, "split_train_data_by_dp", lambda args, data, config: split.append(config)
+            rollout_executor_module, "split_train_data_by_dp", lambda args, data, config: split.append(config) or []
         )
         _record_logged_model_ids(monkeypatch)
 
@@ -285,12 +287,12 @@ class TestLastGetRolloutId:
         _record_logged_model_ids(monkeypatch)
         executor = _make_ready_executor(None)
         extra_metrics = _record_eval_metrics(monkeypatch)
-        eval_may_finish = threading.Event()
+        eval_may_finish = asyncio.Event()
         get_entered = asyncio.Event()
         get_may_finish = asyncio.Event()
 
-        def _eval_generate_rollout(eval_input):
-            assert eval_may_finish.wait(timeout=5)
+        async def _eval_generate_rollout(eval_input):
+            await asyncio.wait_for(eval_may_finish.wait(), timeout=5)
             return RolloutFnEvalOutput(data={})
 
         async def _get_rollout_data(rollout_id, trainer_model_id=None):

@@ -31,7 +31,7 @@ class _RolloutExecutorOutputSnapshotter:
             _OutputSnapshotEntry(data=data, metadata=metadata, phase=_OutputSnapshotPhase.CAPTURED)
         )
         captured = [one for one, entry in self._snapshots.items() if entry.phase is _OutputSnapshotPhase.CAPTURED]
-        for stale in captured[: len(captured) - _MAX_RETAINED_OUTPUTS]:
+        for stale in captured[: max(len(captured) - _MAX_RETAINED_OUTPUTS, 0)]:
             del self._snapshots[stale]
 
     def get(self, *, trainer_model_id: str | None, rollout_id: int) -> "_OutputSnapshotEntry | None":

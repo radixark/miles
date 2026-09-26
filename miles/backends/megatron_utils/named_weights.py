@@ -41,7 +41,10 @@ def named_params_and_buffers(
     return ans
 
 
-def _maybe_get_cpu_backup(x: torch.Tensor):
+def _maybe_get_cpu_backup(x: torch.Tensor) -> torch.Tensor:
+    if not x.is_cuda:
+        return x
+
     from torch_memory_saver import torch_memory_saver
 
     if (cpu_tensor := torch_memory_saver.get_cpu_backup(x, zero_copy=True)) is not None:

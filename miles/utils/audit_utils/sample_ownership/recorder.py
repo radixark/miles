@@ -43,7 +43,7 @@ class SampleOwnershipRecorder:
         *,
         args: argparse.Namespace,
         data_source: "DataSource",
-        current_rollout_id: Callable[[], int],
+        current_rollout_id: Callable[[], int | None],
     ) -> None:
         if not args.enable_sample_ownership_checker:
             return
@@ -52,7 +52,9 @@ class SampleOwnershipRecorder:
 
         def get_samples_and_record(num_samples: int) -> list[list[Sample]]:
             groups = get_samples(num_samples)
-            cls._log_issued_groups(args=args, groups=groups, rollout_id=current_rollout_id())
+            rollout_id = current_rollout_id()
+            assert rollout_id is not None, "the data source issued samples before any rollout was requested"
+            cls._log_issued_groups(args=args, groups=groups, rollout_id=rollout_id)
             return groups
 
         data_source.get_samples = get_samples_and_record

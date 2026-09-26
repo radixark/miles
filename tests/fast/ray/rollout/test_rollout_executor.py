@@ -7,6 +7,7 @@ import pytest
 import torch
 from tests.fast.ray.rollout.conftest import make_args, make_sample
 
+from miles.backends.megatron_utils.ft.types import TrainStepOutcome
 from miles.ray.rollout import rollout_executor as rollout_executor_module
 from miles.ray.rollout.eval_fleet import EvalFleetInfo, EvalFleetPin
 from miles.ray.rollout.output_snapshotter import _RolloutExecutorOutputSnapshotter
@@ -23,10 +24,17 @@ from miles.rollout.base_types import (
 from miles.rollout.data_source import RolloutDataSource
 from miles.rollout.inference_rollout import inference_rollout_common
 from miles.rollout.inference_rollout.inference_rollout_common import GenerateState
+from miles.utils.audit_utils.event_analyzer.rules.sample_ownership.models import SampleOwnershipViolation
 from miles.utils.audit_utils.event_logger.logger import EventLogger, read_events, set_event_logger
-from miles.utils.audit_utils.event_logger.models import ExplicitlyDroppedSamplesEvent
+from miles.utils.audit_utils.event_logger.models import (
+    DataSourceIssuedSamplesEvent,
+    ExplicitlyDroppedSamplesEvent,
+    TrainerModelCompanionInfoEvent,
+    TrainGroupStepEndEvent,
+)
 from miles.utils.audit_utils.process_identity import SimpleProcessIdentity
 from miles.utils.audit_utils.sample_ownership.recorder import SampleOwnershipRecorder
+from miles.utils.object_store import _MooncakeStoreObjectRef
 from miles.utils.types import Sample
 from miles.utils.workers.worker_spec import HostAndPort
 
@@ -67,6 +75,63 @@ class _SynchronousDisposable:
 
 
 class TestDispose:
+    @pytest.mark.parametrize("issued_rollout_id", [3, 4, 6])
+    async def test_shutdown_preserves_grace_without_inventing_drops(
+        self, tmp_path: Path, issued_rollout_id: int
+    ) -> None:
+        """Shutdown defers only immature losses and never fabricates drops for prefetched output."""
+        executor = RolloutExecutor.__new__(RolloutExecutor)
+        executor.use_legacy_rollout_v1 = False
+        executor.generate_rollout = None
+        executor.eval_generate_rollout = None
+        executor.data_source = object()
+        executor.args = Namespace(
+            enable_sample_ownership_checker=True,
+            sample_ownership_grace_steps=2,
+            ci_test=True,
+            enable_event_analyzer=False,
+        )
+        executor._metric_checker = None
+        executor._output_snapshotter = _RolloutExecutorOutputSnapshotter(args=make_args())
+        executor._output_snapshotter.capture(trainer_model_id=None, rollout_id=6, data=[Sample(index=10)], metadata={})
+        event_logger = EventLogger(log_dir=tmp_path, source=SimpleProcessIdentity(component="rollout_executor"))
+        event_logger.log(
+            DataSourceIssuedSamplesEvent,
+            dict(
+                rollout_id=issued_rollout_id,
+                groups=[dict(group_index=0, sample_indices=[10])],
+            ),
+        )
+        event_logger.log(
+            TrainerModelCompanionInfoEvent,
+            dict(
+                rollout_id=5,
+                attempt=0,
+                cell_index=0,
+                sample_counts=[],
+                skipped_nonfinite_sample_counts=[],
+            ),
+        )
+        event_logger.log(
+            TrainGroupStepEndEvent,
+            dict(
+                rollout_id=5,
+                attempt=0,
+                role="actor",
+                cell_outcomes={0: [TrainStepOutcome.NORMAL]},
+            ),
+        )
+        set_event_logger(event_logger)
+        try:
+            if issued_rollout_id == 3:
+                with pytest.raises(SampleOwnershipViolation):
+                    await executor.dispose()
+            else:
+                await executor.dispose()
+            assert not any(isinstance(event, ExplicitlyDroppedSamplesEvent) for event in read_events(tmp_path))
+        finally:
+            set_event_logger(None)
+
     async def test_synchronous_train_and_eval_rollout_disposers_are_accepted(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -219,6 +284,11 @@ def _load_executor_state(directory: Path, *, rollout_id: int) -> dict:
     return torch.load(path, weights_only=False)
 
 
+class _FakeObjectStore:
+    def put(self, *, value, value_spec):
+        return value
+
+
 def _make_executor(tmp_path: Path, rollout_fn: _CountingRolloutFn) -> RolloutExecutor:
     executor = RolloutExecutor.__new__(RolloutExecutor)
     executor.args = make_args(load=str(tmp_path), save=str(tmp_path))
@@ -228,6 +298,9 @@ def _make_executor(tmp_path: Path, rollout_fn: _CountingRolloutFn) -> RolloutExe
     executor.data_source = _FakeDataSource(tmp_path)
     executor._train_parallel_configs_of_model_id = {None: {}}
     executor._weight_versions_of_model_id = {}
+    executor.last_get_rollout_id_of_model_id = {}
+    executor.custom_convert_samples_to_train_data_func = None
+    executor.custom_reward_post_process_func = None
     executor._output_snapshotter = _RolloutExecutorOutputSnapshotter(args=executor.args)
     return executor
 
@@ -267,7 +340,7 @@ class TestOutputSnapshotReplay:
 
         class Store:
             def put(self, *, value, value_spec):
-                return value
+                return _MooncakeStoreObjectRef(payload=value)
 
         monkeypatch.setattr(rollout_executor_module, "postprocess_rollout_data", postprocess_rollout_data)
         monkeypatch.setattr(rollout_executor_module, "log_rollout_data", lambda *args, **kwargs: None)
@@ -339,7 +412,8 @@ class TestOutputSnapshotReplay:
             return {"sample_indices": [sample.index for sample in data]}
 
         monkeypatch.setattr(rollout_executor_module, "convert_samples_to_train_data", convert)
-        monkeypatch.setattr(rollout_executor_module, "split_train_data_by_dp", lambda *_args: None)
+        monkeypatch.setattr(rollout_executor_module, "split_train_data_by_dp", lambda *_args: [])
+        monkeypatch.setattr(rollout_executor_module.object_store, "get_instance", _FakeObjectStore)
         assert (await restored.get(rollout_id=3)).sample_indices == [7]
         await restored.save(2)
         resumed_again = _make_executor(tmp_path, _CountingRolloutFn())
@@ -363,7 +437,8 @@ class TestOutputSnapshotReplay:
 
         monkeypatch.setattr(executor, "_generate_rollout_data", generate_rollout_data)
         monkeypatch.setattr(rollout_executor_module, "convert_samples_to_train_data", lambda *_args, **_kw: {})
-        monkeypatch.setattr(rollout_executor_module, "split_train_data_by_dp", lambda *_args: None)
+        monkeypatch.setattr(rollout_executor_module, "split_train_data_by_dp", lambda *_args: [])
+        monkeypatch.setattr(rollout_executor_module.object_store, "get_instance", _FakeObjectStore)
         saving = asyncio.create_task(save_once_generated())
         await asyncio.sleep(0)
 
@@ -389,7 +464,8 @@ class TestOutputSnapshotReplay:
 
         monkeypatch.setattr(executor, "_generate_rollout_data", generate_rollout_data)
         monkeypatch.setattr(rollout_executor_module, "convert_samples_to_train_data", lambda *_args, **_kw: {})
-        monkeypatch.setattr(rollout_executor_module, "split_train_data_by_dp", lambda *_args: None)
+        monkeypatch.setattr(rollout_executor_module, "split_train_data_by_dp", lambda *_args: [])
+        monkeypatch.setattr(rollout_executor_module.object_store, "get_instance", _FakeObjectStore)
         fetching = asyncio.create_task(executor.get(rollout_id=3))
         await entered.wait()
         await executor.save(2)
@@ -399,6 +475,49 @@ class TestOutputSnapshotReplay:
         await executor.save(2)
         data, _metadata = _load_executor_state(tmp_path, rollout_id=2)[None, 3]
         assert [sample.index for sample in data] == [7]
+
+
+class TestSampleOwnershipRolloutId:
+    async def test_samples_issued_during_a_get_are_recorded_against_that_rollout_id(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The data source issues samples mid-get, so the recorder must stamp the rollout being served."""
+        event_dir = tmp_path / "events"
+        executor = _make_executor(tmp_path, _CountingRolloutFn())
+        executor.args = make_args(
+            load=str(tmp_path),
+            save=str(tmp_path),
+            save_debug_event_data=str(event_dir),
+            enable_sample_ownership_checker=True,
+        )
+        executor.last_get_rollout_id_of_model_id = {}
+        executor.data_source.get_samples = lambda _num_samples: [[make_sample(group_index=3, index=10)]]
+        SampleOwnershipRecorder.install(
+            args=executor.args,
+            data_source=executor.data_source,
+            current_rollout_id=lambda: rollout_executor_module._single_or_none(
+                executor.last_get_rollout_id_of_model_id.values()
+            ),
+        )
+
+        async def generate_rollout_data(*, rollout_id: int, trainer_model_id: str | None):
+            executor.data_source.get_samples(1)
+            return [Sample(index=10)], {}
+
+        monkeypatch.setattr(executor, "_generate_rollout_data", generate_rollout_data)
+        monkeypatch.setattr(rollout_executor_module, "convert_samples_to_train_data", lambda *_args, **_kw: {})
+        monkeypatch.setattr(rollout_executor_module, "split_train_data_by_dp", lambda *_args: None)
+        monkeypatch.setattr(
+            rollout_executor_module.event_analyzer, "run_sample_ownership_analysis", lambda *, args: None
+        )
+        set_event_logger(EventLogger(log_dir=event_dir, source=SimpleProcessIdentity(component="rollout_executor")))
+        try:
+            await executor.get(rollout_id=7)
+        finally:
+            set_event_logger(None)
+
+        [event] = [x for x in read_events(event_dir) if isinstance(x, DataSourceIssuedSamplesEvent)]
+        assert event.rollout_id == 7
 
 
 class _CustomDataSource:

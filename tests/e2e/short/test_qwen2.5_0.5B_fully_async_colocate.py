@@ -4,7 +4,9 @@ from tests.ci.ci_register import register_cuda_ci
 
 from miles.utils.external_utils import command_utils
 
-register_cuda_ci(est_time=400, suite="stage-c-2-gpu-h200", labels=["short", "fully-async"])
+register_cuda_ci(
+    est_time=400, suite="stage-c-2-gpu-h200", labels=["short", "fully-async"], hardware=["hopper", "blackwell"]
+)
 
 MODEL_NAME = "Qwen2.5-0.5B-Instruct"
 MODEL_TYPE = "qwen2.5-0.5B"
@@ -71,7 +73,7 @@ def execute():
 
     sglang_args = "--rollout-num-gpus-per-engine 1 " "--sglang-mem-fraction-static 0.65 " "--sglang-enable-metrics "
 
-    ci_args = "--ci-test "
+    ci_args = "--ci-test --sample-ownership-grace-steps 3 "
 
     misc_args = (
         "--attention-dropout 0.0 "

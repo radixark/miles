@@ -186,7 +186,7 @@ async def test_add_worker_omits_bootstrap_port_for_non_prefill_workers(client, r
     await client.add_worker(worker_url=WORKER_URL, worker_type=worker_type, use_legacy_api=False, bootstrap_port=8998)
 
     assert len(recorder.calls) == 1
-    assert recorder.calls[0][2]["json"] == {"url": WORKER_URL, "worker_type": worker_type}
+    assert recorder.calls[0][2]["json"] == {"url": WORKER_URL, "worker_type": worker_type.value}
 
 
 @pytest.mark.parametrize(

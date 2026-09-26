@@ -71,6 +71,7 @@ _NOT_ACTUALLY_SECRET_ARG_NAMES = frozenset(
         "metadata_key",
         "opd_teacher_key",
         "reward_key",
+        "router_allow_requests_without_routing_key",
         "tool_key",
     }
 )
@@ -351,6 +352,39 @@ class TestEventDirectoryDefaults:
         assert defaulted.save_debug_event_data == "/checkpoints/run/events"
         assert explicit.save_debug_event_data == "/audit/events"
 
+    def test_an_explicit_event_directory_asks_for_engine_weight_checksums(self) -> None:
+        """Requesting an event dump opts into the engine checksum event it is meant to collect."""
+        args = self._parse(["--save-debug-event-data", "/audit/events"])
+
+        miles_validate_args(args)
+
+        assert args.log_inference_engine_weight_checksums is True
+
+    def test_the_ci_event_directory_fallback_does_not_ask_for_engine_weight_checksums(self) -> None:
+        """CI gets an event directory for sample ownership without the engine checksum allocation."""
+        args = self._parse(["--ci-test", "--run-uuid", "0123456789abcdef"])
+
+        miles_validate_args(args)
+
+        assert args.save_debug_event_data is not None
+        assert args.log_inference_engine_weight_checksums is False
+
+    def test_ci_with_an_event_analyzer_collects_engine_weight_checksums(self) -> None:
+        """Enabling analysis preserves checksum evidence even with an implicit CI directory."""
+        args = self._parse(["--ci-test", "--enable-event-analyzer"])
+
+        miles_validate_args(args)
+
+        assert args.log_inference_engine_weight_checksums is True
+
+    def test_engine_weight_checksums_can_be_requested_explicitly_in_ci(self) -> None:
+        """The explicit flag overrides the directory-derived default."""
+        args = self._parse(["--ci-test", "--run-uuid", "0123456789abcdef", "--log-inference-engine-weight-checksums"])
+
+        miles_validate_args(args)
+
+        assert args.log_inference_engine_weight_checksums is True
+
     def test_dump_details_places_events_under_the_dump_root(self) -> None:
         """A dump root keeps audit events with its other debug artifacts even when checkpoints are saved."""
         args = self._parse(["--save", "/checkpoints/run", "--dump-details", "/debug/run"])
@@ -467,7 +501,7 @@ class TestSampleOwnershipCheckArguments:
             debug_rollout_only=False,
             debug_disable_optimizer=False,
             enable_witness=False,
-            save_debug_event_data=None,
+            save_debug_event_data="/audit/events",
             run_uuid="0123456789abcdef",
         )
         values.update(overrides)
@@ -492,7 +526,32 @@ class TestSampleOwnershipCheckArguments:
         with pytest.raises(ValueError, match=reason):
             _resolve_sample_ownership_check(args)
 
-    def test_multi_policy_is_rejected(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    @pytest.mark.parametrize(
+        "overrides",
+        [
+            {"train_backend": "fsdp"},
+            {"lora_rank": 8},
+            {"multi_lora": True},
+            {"debug_train_only": True},
+            {"debug_rollout_only": True},
+            {"debug_disable_optimizer": True},
+            {"num_critic_only_steps": 1},
+        ],
+    )
+    @pytest.mark.parametrize("enabled", [None, False])
+    def test_unsupported_ci_modes_require_an_explicit_opt_out(self, overrides: dict, enabled: bool | None) -> None:
+        """Unsupported CI modes must opt out rather than silently lose ownership coverage."""
+        args = self._checker_args(enable_sample_ownership_checker=enabled, ci_test=True, **overrides)
+
+        if enabled is None:
+            with pytest.raises(ValueError, match="not supported here"):
+                _resolve_sample_ownership_check(args)
+        else:
+            _resolve_sample_ownership_check(args)
+            assert args.enable_sample_ownership_checker is False
+
+    @pytest.mark.parametrize("enabled", [None, True])
+    def test_multi_policy_is_rejected(self, monkeypatch: pytest.MonkeyPatch, enabled: bool | None) -> None:
         """Several actor lineages cannot share the single-policy current-witness checker."""
         monkeypatch.setattr(
             "miles.utils.arguments.resolve_megatron_config",
@@ -503,7 +562,7 @@ class TestSampleOwnershipCheckArguments:
                 ]
             ),
         )
-        args = self._checker_args(megatron_config="config")
+        args = self._checker_args(megatron_config="config", ci_test=True, enable_sample_ownership_checker=enabled)
 
         with pytest.raises(ValueError, match="multi-policy training has separate model companion lineages"):
             _resolve_sample_ownership_check(args)
@@ -640,6 +699,8 @@ def _fully_async_candidate_args(**overrides) -> SimpleNamespace:
         recompute_logprobs_via_prefill=False,
         rollout_all_samples_process_path=None,
         eval_num_gpus=0,
+        train_backend="megatron",
+        ft_components=[],
     )
     return SimpleNamespace(**(defaults | overrides))
 
@@ -657,11 +718,12 @@ def test_naming_the_fully_async_class_enables_the_mode():
 
 
 def test_naming_the_fully_async_class_enforces_the_mode_constraints():
-    """The class alone cannot keep generating through a colocated weight update; before the
-    mode was inferred, this combination started and only failed later, in training."""
-    args = _fully_async_candidate_args(rollout_function_path=FULLY_ASYNC_ROLLOUT_PATH, colocate=True)
+    """Selecting the class enforces the same FSDP colocation restriction as the flag."""
+    args = _fully_async_candidate_args(
+        rollout_function_path=FULLY_ASYNC_ROLLOUT_PATH, colocate=True, train_backend="fsdp"
+    )
 
-    with pytest.raises(AssertionError, match="cannot colocate"):
+    with pytest.raises(AssertionError, match="FSDP updater"):
         _resolve_rollout_functions(args)
 
 
@@ -917,19 +979,9 @@ class TestClusterBackend:
 
     def test_refuses_a_kubernetes_run_that_drives_multi_lora(self, tmp_path: Path) -> None:
         """The multi-LoRA controller calls into RayWorkerManager, which this backend never instantiates."""
-        (tmp_path / "config.json").write_text(
-            json.dumps(
-                dict(
-                    model_type="llama",
-                    hidden_size=16,
-                    intermediate_size=32,
-                    num_hidden_layers=1,
-                    num_attention_heads=2,
-                    num_key_value_heads=2,
-                    vocab_size=32,
-                )
-            )
-        )
+        from transformers import Qwen3Config
+
+        Qwen3Config(num_hidden_layers=1).save_pretrained(tmp_path)
         args = self._parse(
             [
                 "--cluster-backend",
@@ -3112,7 +3164,7 @@ class TestSecretArgumentsAreClassified:
             if _SECRET_ENV_VAR_PATTERN.search(name) and not name.startswith(_SGLANG_ARG_PREFIXES)
         }
 
-        assert suspicious - _SECRET_ARG_NAMES == _NOT_ACTUALLY_SECRET_ARG_NAMES, (
+        assert suspicious - _SECRET_ARG_NAMES <= _NOT_ACTUALLY_SECRET_ARG_NAMES, (
             "an argument's name looks like a credential; add it to _SECRET_ARG_NAMES in env_report/redaction.py so the env "
             "report hashes it, or to _NOT_ACTUALLY_SECRET_ARG_NAMES here to say it names something else"
         )

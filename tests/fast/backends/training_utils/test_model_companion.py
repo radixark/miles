@@ -1,5 +1,6 @@
 from types import SimpleNamespace
 
+import numpy as np
 import pytest
 import torch
 
@@ -122,6 +123,22 @@ class TestModelCompanion:
         assert witness.sample_consumptions is parameter
         assert parameter.shape == (2, 5)
 
+    def test_record_survives_a_parameter_backed_by_non_resizable_storage(self) -> None:
+        """A companion restored from a checkpoint-borne storage can still grow."""
+        witness = ModelCompanion(pipeline_rank=0, chunk_index=0, replica_id=(0, 0, 0))
+        with pytest.raises(RuntimeError, match="not resizable"):
+            torch.from_numpy(np.zeros((0, 5), dtype=np.int64)).resize_((1, 5))
+        witness.sample_consumptions.data = torch.from_numpy(np.zeros((0, 5), dtype=np.int64))
+
+        parameter = witness.sample_consumptions
+
+        witness.record_sample_consumptions([_identity(7, 0, 1), _identity(7, 0, 1)])
+
+        assert witness.snapshot_sample_consumptions(is_skipped=False) == {_identity(7, 0, 1): 2}
+        assert witness.sample_consumptions is parameter
+        assert witness.sample_consumptions.tolist() == [[7, 0, 1, 2, 0]]
+        assert witness.state_dict()["sample_consumptions"].tolist() == [[7, 0, 1, 2, 0]]
+
     def test_state_dict_without_companion_entries_loads_as_an_empty_record(self) -> None:
         """A base Megatron checkpoint predating the companion loads instead of raising KeyError."""
         witness = ModelCompanion(pipeline_rank=0, chunk_index=0, replica_id=(0, 0, 0))
@@ -132,6 +149,30 @@ class TestModelCompanion:
         assert witness.snapshot_sample_consumptions(is_skipped=False) == {}
         assert witness.sample_consumptions.shape == (0, 5)
         assert witness.weight_version.item() == 0
+
+    def test_placeholder_companion_entries_load_as_an_empty_record(self) -> None:
+        """Megatron's empty uint8 placeholders for absent entries load like missing keys."""
+        witness = ModelCompanion(pipeline_rank=0, chunk_index=0, replica_id=(0, 0, 0))
+        witness.weight_version.fill_(5)
+
+        witness.load_state_dict(
+            {
+                "sample_consumptions": torch.empty(0, dtype=torch.uint8),
+                "weight_version": torch.empty(0, dtype=torch.uint8),
+            }
+        )
+
+        assert witness.snapshot_sample_consumptions(is_skipped=False) == {}
+        assert witness.sample_consumptions.shape == (0, 5)
+        assert witness.weight_version.item() == 0
+
+    @pytest.mark.parametrize("value", [torch.tensor([[7, 0, 1, 2, 0]], dtype=torch.int32), None])
+    def test_invalid_existing_consumptions_are_not_replaced_with_empty_state(self, value) -> None:
+        """Malformed existing ownership records must fail instead of disappearing."""
+        witness = ModelCompanion(pipeline_rank=0, chunk_index=0, replica_id=(0, 0, 0))
+
+        with pytest.raises(AssertionError):
+            witness.load_state_dict({"sample_consumptions": value})
 
     def test_checkpoint_requires_the_outcome_column(self) -> None:
         """A truncated row cannot silently discard its outcome flag."""

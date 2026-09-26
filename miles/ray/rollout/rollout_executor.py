@@ -103,7 +103,9 @@ class RolloutExecutor:
         data_source_cls = load_function(self.args.data_source_path)
         self.data_source = data_source_cls(args)
         SampleOwnershipRecorder.install(
-            args=args, data_source=self.data_source, current_rollout_id=lambda: self.rollout_id
+            args=args,
+            data_source=self.data_source,
+            current_rollout_id=lambda: _single_or_none(self.last_get_rollout_id_of_model_id.values()),
         )
 
         self.use_legacy_rollout_v1 = use_legacy_rollout_v1()
@@ -186,9 +188,11 @@ class RolloutExecutor:
             if self.args.delay_split_train_data_by_dp:
                 data_ref = object_store.get_instance().put(value=train_data, value_spec=ROLLOUT_DATA_VALUE_SPEC)
             else:
-                data_ref = split_train_data_by_dp(
+                shards = split_train_data_by_dp(
                     self.args, train_data, self._train_parallel_configs_of_model_id[trainer_model_id]
                 )
+                store = object_store.get_instance()
+                data_ref = [store.put(value=shard, value_spec=ROLLOUT_DATA_VALUE_SPEC) for shard in shards]
             return RolloutDataPack(sample_indices=sample_indices, data_ref=data_ref)
 
     async def _generate_rollout_data(
