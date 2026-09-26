@@ -10,7 +10,9 @@ from miles.utils.ft_utils.api_server.handles import _CellHandler
 from miles.utils.ft_utils.api_server.models import Cell, CellCondition, CellSpec, CellStatus
 from miles.utils.ft_utils.api_server.registry import _CellRegistry
 from miles.utils.ft_utils.api_server.server import _create_api_app
-from miles.utils.test_utils.fault_injector import FailureMode
+from miles.utils.test_utils.fault_injector.actions.process import KillProcessAction
+from miles.utils.test_utils.fault_injector.controller import FaultHookCommand, FaultHookOperation
+from miles.utils.test_utils.fault_injector.models import FaultHookRecord, FaultHookRequest, FaultHookStatus, ObservedFaultHookTarget
 from miles.utils.workers.worker_provider.base import CellInfo
 
 
@@ -42,9 +44,9 @@ class MockHandler(_CellHandler):
     def __init__(self, cell_type: str) -> None:
         self._cell_type = cell_type
         self.cells: dict[str, MockCellState] = {}
-        self.injected: list[tuple[str, FailureMode, int]] = []
-        self.supports_inject_fault = False
-        self.inject_fault_error: Exception | None = None
+        self.commands: list[FaultHookCommand] = []
+        self.supports_fault_hook = False
+        self.fault_hook_error: Exception | None = None
 
     @property
     def cell_type(self) -> str:
@@ -98,12 +100,31 @@ class MockHandler(_CellHandler):
             {"type": "Healthy", "status": "True"},
         ]
 
-    async def inject_fault(self, cell_id: str, *, mode: FailureMode, sub_index: int) -> None:
-        if not self.supports_inject_fault:
+    async def observe_fault_target(self, cell_id: str, *, rank: int) -> ObservedFaultHookTarget:
+        return ObservedFaultHookTarget(cell_id=cell_id, rank=rank, workers_hash=self.cells[cell_id].workers_hash)
+
+    async def control_fault_hook(self, command: FaultHookCommand) -> FaultHookRecord:
+        if not self.supports_fault_hook:
             raise NotImplementedError(f"{type(self).__name__} does not support fault injection")
-        if self.inject_fault_error is not None:
-            raise self.inject_fault_error
-        self.injected.append((cell_id, mode, sub_index))
+        if self.fault_hook_error is not None:
+            raise self.fault_hook_error
+        self.commands.append(command)
+        return make_fault_record(command)
+
+
+def make_fault_command(*, cell_id: str, rank: int = 0) -> FaultHookCommand:
+    return FaultHookCommand(
+        operation=FaultHookOperation.SET,
+        request=FaultHookRequest(
+            request_id="test-request",
+            action=KillProcessAction(),
+            target=ObservedFaultHookTarget(cell_id=cell_id, rank=rank, workers_hash="pseudo-hash-1"),
+        ),
+    )
+
+
+def make_fault_record(command: FaultHookCommand) -> FaultHookRecord:
+    return FaultHookRecord(request=command.request, status=FaultHookStatus.FIRED, set_at=1.0, changed_at=2.0)
 
 
 class MockGatedHandler(MockHandler):

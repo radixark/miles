@@ -5,7 +5,9 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import miles.utils.workers.backend_capability.ray as backend_capability_ray_mod
-from miles.utils.test_utils.fault_injector import FailureMode
+from miles.utils.test_utils.fault_injector.actions.process import KillProcessAction
+from miles.utils.test_utils.fault_injector.controller import FaultHookCommand, FaultHookOperation
+from miles.utils.test_utils.fault_injector.models import FaultHookRequest, ObservedFaultHookTarget
 from miles.utils.workers.backend_capability.ray import RayBackendCapability
 from miles.utils.workers.cell_operations.ray import RayCellOperations
 
@@ -22,7 +24,7 @@ class _RecordingRemoteMethod:
 class _FakeWorkerManagerHandle:
     stop_cells: _RecordingRemoteMethod = field(default_factory=_RecordingRemoteMethod)
     start_cells: _RecordingRemoteMethod = field(default_factory=_RecordingRemoteMethod)
-    inject_fault: _RecordingRemoteMethod = field(default_factory=_RecordingRemoteMethod)
+    control_fault_hook: _RecordingRemoteMethod = field(default_factory=_RecordingRemoteMethod)
     get_cell_infos: _RecordingRemoteMethod = field(default_factory=_RecordingRemoteMethod)
 
 
@@ -41,9 +43,14 @@ class TestRayBackendCapabilityCellOperations:
         worker_manager = _FakeWorkerManagerHandle()
         capability = RayBackendCapability(worker_manager_handle=worker_manager)
 
-        await capability.cell_operations().inject_fault(cell_id="cell-2", mode=FailureMode.SIGKILL, sub_index=1)
+        command = FaultHookCommand(
+            operation=FaultHookOperation.SET,
+            request=FaultHookRequest(request_id="test", action=KillProcessAction(), target=ObservedFaultHookTarget(cell_id="cell-2", rank=1, workers_hash="h")),
+        )
 
-        assert worker_manager.inject_fault.calls == [(("cell-2",), {"mode": "sigkill", "worker_in_cell_index": 1})]
+        await capability.cell_operations().control_fault_hook(command)
+
+        assert worker_manager.control_fault_hook.calls == [((), {"command": command})]
 
     async def test_a_resume_reaches_the_worker_manager_directly(self) -> None:
         """Resume never went through the controller, and the shared path must not have changed it."""

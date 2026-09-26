@@ -9,25 +9,12 @@ from typing import Any
 import pytest
 
 import miles.utils.workers.cell_operations.ray as cell_operations_ray_mod
-from miles.utils.test_utils.fault_injector import FailureMode
-from miles.utils.test_utils.fault_injector.actions.process import KillProcessAction
+from miles.utils.test_utils.fault_injector.actions.process import ExitProcessAction, KillProcessAction, SegfaultProcessAction
 from miles.utils.test_utils.fault_injector.actions.union import FaultAction
 from miles.utils.test_utils.fault_injector.controller import FaultHookCommand, FaultHookOperation
 from miles.utils.test_utils.fault_injector.models import FaultHookRequest, ObservedFaultHookTarget
 from miles.utils.workers.cell_operations.base import BaseCellOperations
 from miles.utils.workers.cell_operations.ray import RayCellOperations
-
-
-def _command(*, cell_id: str, rank: int = 0, action: FaultAction | None = None) -> FaultHookCommand:
-    return FaultHookCommand(
-        operation=FaultHookOperation.SET,
-        request=FaultHookRequest(
-            request_id="test",
-            action=KillProcessAction() if action is None else action,
-            target=ObservedFaultHookTarget(cell_id=cell_id, rank=rank, workers_hash="h"),
-        ),
-    )
-
 
 _TRAINER_CELL_ID = "trainer-engine-actor-00001"
 
@@ -52,7 +39,8 @@ class _RecordingWorkerManagerHandle:
         self.get_cell_infos = _RecordingRemoteMethod(name="get_cell_infos", calls=self.calls)
         self.start_cells = _RecordingRemoteMethod(name="start_cells", calls=self.calls)
         self.stop_cells = _RecordingRemoteMethod(name="stop_cells", calls=self.calls)
-        self.inject_fault = _RecordingRemoteMethod(name="inject_fault", calls=self.calls)
+        self.control_fault_hook = _RecordingRemoteMethod(name="control_fault_hook", calls=self.calls)
+        self.observe_fault_target = _RecordingRemoteMethod(name="observe_fault_target", calls=self.calls)
 
 
 @dataclass(frozen=True)
@@ -66,6 +54,13 @@ def _make_fixture() -> _Fixture:
     return _Fixture(
         worker_manager=worker_manager,
         operations=RayCellOperations(worker_manager_handle=worker_manager),
+    )
+
+
+def _command(*, cell_id: str, rank: int = 0, action: FaultAction = KillProcessAction()) -> FaultHookCommand:
+    return FaultHookCommand(
+        operation=FaultHookOperation.SET,
+        request=FaultHookRequest(request_id="test", action=action, target=ObservedFaultHookTarget(cell_id=cell_id, rank=rank, workers_hash="h")),
     )
 
 
@@ -91,38 +86,41 @@ class TestRayCellOperationsDisruptiveOperations:
     async def test_a_rollout_cells_fault_reaches_the_worker_manager(self) -> None:
         """The fault has to land while a weight update is running, which the controller detour forbade."""
         fixture = _make_fixture()
+        command = _command(cell_id="engine-0-2")
 
         await asyncio.wait_for(
-            fixture.operations.inject_fault(cell_id="engine-0-2", mode=FailureMode.SIGKILL, sub_index=0), timeout=5.0
+            fixture.operations.control_fault_hook(command), timeout=5.0
         )
 
         assert fixture.worker_manager.calls == [
-            ("inject_fault", ("engine-0-2",), {"mode": "sigkill", "worker_in_cell_index": 0})
+            ("control_fault_hook", (), {"command": command})
         ]
 
     async def test_a_trainer_cells_fault_reaches_the_worker_manager(self) -> None:
         """Regression: routing a trainer cell through the rollout controller raised, so the actor never died."""
         fixture = _make_fixture()
+        command = _command(cell_id=_TRAINER_CELL_ID)
 
         await asyncio.wait_for(
-            fixture.operations.inject_fault(cell_id=_TRAINER_CELL_ID, mode=FailureMode.SIGKILL, sub_index=0),
+            fixture.operations.control_fault_hook(command),
             timeout=5.0,
         )
 
         assert fixture.worker_manager.calls == [
-            ("inject_fault", (_TRAINER_CELL_ID,), {"mode": "sigkill", "worker_in_cell_index": 0})
+            ("control_fault_hook", (), {"command": command})
         ]
 
     async def test_a_cell_the_controller_never_listed_is_still_crashed(self) -> None:
         """A cell being replaced is exactly the one a soak wants to crash, and no membership read gates it."""
         fixture = _make_fixture()
+        command = _command(cell_id="engine-0-7")
 
         await asyncio.wait_for(
-            fixture.operations.inject_fault(cell_id="engine-0-7", mode=FailureMode.SIGKILL, sub_index=0), timeout=5.0
+            fixture.operations.control_fault_hook(command), timeout=5.0
         )
 
         assert fixture.worker_manager.calls == [
-            ("inject_fault", ("engine-0-7",), {"mode": "sigkill", "worker_in_cell_index": 0})
+            ("control_fault_hook", (), {"command": command})
         ]
 
 
@@ -186,7 +184,7 @@ class TestRayCellOperationsHasNoInferenceControllerPath:
 
     def test_every_base_operation_is_implemented_here(self) -> None:
         """A dropped override would silently fall back to an abstract method at heal time."""
-        for name in ("cell_infos", "suspend", "resume", "inject_fault"):
+        for name in ("cell_infos", "suspend", "resume", "observe_fault_target", "control_fault_hook"):
             assert getattr(RayCellOperations, name) is not getattr(BaseCellOperations, name), name
 
 
@@ -215,31 +213,34 @@ class TestRayCellOperationsSuspendReachesTheWorkerManagerUnconditionally:
         fixture = _make_fixture()
 
         await fixture.operations.suspend(cell_id="engine-0-2")
-        await fixture.operations.inject_fault(cell_id="engine-0-2", mode=FailureMode.SIGKILL, sub_index=0)
+        await fixture.operations.control_fault_hook(_command(cell_id="engine-0-2"))
 
-        assert [name for name, _, _ in fixture.worker_manager.calls] == ["stop_cells", "inject_fault"]
+        assert [name for name, _, _ in fixture.worker_manager.calls] == ["stop_cells", "control_fault_hook"]
 
 
-class TestRayCellOperationsInjectFaultPayload:
-    @pytest.mark.parametrize("mode", list(FailureMode))
-    async def test_the_failure_mode_crosses_as_its_string_value(self, mode: FailureMode) -> None:
-        """The worker manager takes the wire value, and an enum would not survive the actor call."""
+class TestRayCellOperationsFaultHookPayload:
+    @pytest.mark.parametrize("action", [KillProcessAction(), ExitProcessAction(), SegfaultProcessAction()])
+    async def test_the_action_reaches_the_worker_manager_unchanged(self, action: FaultAction) -> None:
+        """The worker manager receives the requested action and observed identity together."""
         fixture = _make_fixture()
+        command = _command(cell_id="engine-0-2", action=action)
 
-        await fixture.operations.inject_fault(cell_id="engine-0-2", mode=mode, sub_index=0)
+        result = await fixture.operations.control_fault_hook(command)
 
         assert fixture.worker_manager.calls == [
-            ("inject_fault", ("engine-0-2",), {"mode": mode.value, "worker_in_cell_index": 0})
+            ("control_fault_hook", (), {"command": command})
         ]
+        assert result is fixture.worker_manager.control_fault_hook.result
 
-    async def test_the_sub_index_names_the_worker_inside_the_cell(self) -> None:
+    async def test_the_rank_names_the_worker_inside_the_cell(self) -> None:
         """A multi-worker cell needs the rank picked, not the whole cell crashed."""
         fixture = _make_fixture()
+        command = _command(cell_id=_TRAINER_CELL_ID, rank=3, action=SegfaultProcessAction())
 
-        await fixture.operations.inject_fault(cell_id=_TRAINER_CELL_ID, mode=FailureMode.SEGFAULT, sub_index=3)
+        await fixture.operations.control_fault_hook(command)
 
         assert fixture.worker_manager.calls == [
-            ("inject_fault", (_TRAINER_CELL_ID,), {"mode": "segfault", "worker_in_cell_index": 3})
+            ("control_fault_hook", (), {"command": command})
         ]
 
     async def test_a_worker_manager_that_never_answers_times_out_after_the_dispatch(
