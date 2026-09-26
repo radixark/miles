@@ -1533,6 +1533,17 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 ),
             )
             parser.add_argument(
+                "--hf-export-source-tensor-prefixes",
+                type=str,
+                nargs="+",
+                default=(),
+                help=(
+                    "HF tensor-name prefixes owned by the immutable --hf-checkpoint rather than the live trainer "
+                    "model. Direct HF exports copy matching tensors that the trainer does not emit from the local "
+                    "source checkpoint."
+                ),
+            )
+            parser.add_argument(
                 "--save-trigger-sentinel",
                 type=str,
                 default=None,

@@ -52,6 +52,7 @@ def save_hf_model(
                 checkpoint_dir,
                 weights=dict(named_params_and_buffers(args, model, convert_to_global_name=True)),
                 hf_checkpoint=args.hf_checkpoint,
+                source_tensor_prefixes=args.hf_export_source_tensor_prefixes,
             )
         else:
             bridge = _get_hf_bridge(args.hf_checkpoint)
