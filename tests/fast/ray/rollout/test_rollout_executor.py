@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 import torch
 from tests.fast.ray.rollout.conftest import make_args, make_sample
+from tests.fast.train_parallel_config_utils import make_train_parallel_config
 
 from miles.backends.megatron_utils.ft.types import TrainStepOutcome
 from miles.ray.rollout import rollout_executor as rollout_executor_module
@@ -296,7 +297,7 @@ def _make_executor(tmp_path: Path, rollout_fn: _CountingRolloutFn) -> RolloutExe
     executor.generate_rollout = rollout_fn
     executor.eval_generate_rollout = rollout_fn
     executor.data_source = _FakeDataSource(tmp_path)
-    executor._train_parallel_configs_of_model_id = {None: {}}
+    executor._train_parallel_configs_of_model_id = {None: make_train_parallel_config()}
     executor._weight_versions_of_model_id = {}
     executor.last_get_rollout_id_of_model_id = {}
     executor.custom_convert_samples_to_train_data_func = None
@@ -346,10 +347,6 @@ class TestOutputSnapshotReplay:
         monkeypatch.setattr(rollout_executor_module, "log_rollout_data", lambda *args, **kwargs: None)
         monkeypatch.setattr(rollout_executor_module.object_store, "get_instance", Store)
         monkeypatch.setattr(
-            "miles.ray.rollout.train_data_conversion.can_schedule_on_rollout_side",
-            lambda *args, **kwargs: True,
-        )
-        monkeypatch.setattr(
             "miles.ray.rollout.train_data_conversion.build_dp_schedule",
             lambda *args, **kwargs: ([[0]], [[[0]]], 1, 1),
         )
@@ -393,7 +390,9 @@ class TestOutputSnapshotReplay:
         executor._metric_checker = None
         executor.custom_convert_samples_to_train_data_func = None
         executor.custom_reward_post_process_func = None
-        executor._train_parallel_configs_of_model_id = {None: {"dp_size": 1}}
+        executor._train_parallel_configs_of_model_id = {
+            None: make_train_parallel_config(supports_precomputed_schedule=True)
+        }
 
     async def test_a_pending_sample_snapshot_is_replayed_after_a_checkpoint(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -506,7 +505,8 @@ class TestSampleOwnershipRolloutId:
 
         monkeypatch.setattr(executor, "_generate_rollout_data", generate_rollout_data)
         monkeypatch.setattr(rollout_executor_module, "convert_samples_to_train_data", lambda *_args, **_kw: {})
-        monkeypatch.setattr(rollout_executor_module, "split_train_data_by_dp", lambda *_args: None)
+        monkeypatch.setattr(rollout_executor_module, "split_train_data_by_dp", lambda *_args: [])
+        monkeypatch.setattr(rollout_executor_module.object_store, "get_instance", _FakeObjectStore)
         monkeypatch.setattr(
             rollout_executor_module.event_analyzer, "run_sample_ownership_analysis", lambda *, args: None
         )

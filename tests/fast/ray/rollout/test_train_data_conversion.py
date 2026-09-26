@@ -3,7 +3,6 @@ from __future__ import annotations
 from unittest.mock import MagicMock
 
 import pytest
-import ray
 import torch
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
@@ -12,6 +11,7 @@ from tests.fast.train_parallel_config_utils import make_train_parallel_config
 
 from miles.ray.rollout import train_data_conversion
 from miles.ray.rollout.train_data_conversion import (
+    ROLLOUT_DATA_VALUE_SPEC,
     _post_process_rewards,
     can_precompute_dp_schedule,
     convert_samples_to_train_data,
@@ -19,6 +19,7 @@ from miles.ray.rollout.train_data_conversion import (
     split_train_data_by_dp_raw,
     split_train_data_by_dp_scheduled_raw,
 )
+from miles.utils.object_store import RayObjectStore
 from miles.utils.sampling_mask import RolloutSamplingMask
 from miles.utils.types import Sample, WeightVersionSpan, WeightVersionsPerCall
 
@@ -826,7 +827,7 @@ class TestSplitTrainDataByDp:
             assert p["raw_reward"] == [9.0, 8.0, 7.0, 6.0]
             assert p["dynamic_global_batch_size"] == 4
 
-    def test_weight_versions_survive_the_object_store_with_their_prefill_spans(self):
+    def test_weight_versions_survive_the_object_store_with_their_prefill_spans(self, ray_local_mode: None) -> None:
         """Per-call prefill spans reach a DP shard through the store and read back as the same typed calls."""
         args = make_args(balance_data=False)
         calls = [
@@ -855,10 +856,13 @@ class TestSplitTrainDataByDp:
             "weight_versions": [[call.to_dict() for call in calls]],
         }
 
-        refs = split_train_data_by_dp(args, data, {"dp_size": 1})
-        (part,) = [ray.get(r.payload) for r in refs]
-
-        assert [WeightVersionsPerCall.from_dict(call) for call in part["weight_versions"][0]] == calls
+        [shard] = split_train_data_by_dp(
+            args=args, data=data, train_parallel_config=make_train_parallel_config(dp_size=1)
+        )
+        store = RayObjectStore(frees_objects=False)
+        ref = store.put(value=shard, value_spec=ROLLOUT_DATA_VALUE_SPEC)
+        with store.get(ref) as part:
+            assert [WeightVersionsPerCall.from_dict(call) for call in part["weight_versions"][0]] == calls
 
     def test_partition_indices_form_a_partition(self):
         """All partition indices together cover [0, N) exactly once."""

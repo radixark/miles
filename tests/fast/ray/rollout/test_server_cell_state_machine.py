@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from types import SimpleNamespace
 
 import pytest
 from tests.fast.ray.rollout.conftest import make_args, track_server_cell
@@ -899,10 +900,14 @@ class TestCheckWeights:
 def instant_retry_sleeps(monkeypatch) -> list[float]:
     """Make the unregister retry backoff free so a failing router costs no wall-clock time."""
     slept: list[float] = []
+    elapsed = [0.0]
+    monotonic = time.monotonic
 
     async def _sleep(seconds: float) -> None:
         slept.append(seconds)
+        elapsed[0] += seconds
 
+    monkeypatch.setattr(retry_utils, "time", SimpleNamespace(monotonic=lambda: monotonic() + elapsed[0]))
     monkeypatch.setattr(retry_utils.asyncio, "sleep", _sleep)
     return slept
 
