@@ -35,6 +35,14 @@ class _RolloutExecutorOutputSnapshotter:
             del self._snapshots[stale]
 
     def get(self, *, trainer_model_id: str | None, rollout_id: int) -> "_OutputSnapshotEntry | None":
+        if self._args.ci_inject_missing_prefetched_batch_bug:
+            assert self._args.ci_test
+            logger.info(
+                f"Injected CI bug: refusing to replay rollout {rollout_id} of trainer model {trainer_model_id}"
+            )
+            self._snapshots.pop(_OutputSnapshotKey(trainer_model_id=trainer_model_id, rollout_id=rollout_id), None)
+            return None
+
         key = _OutputSnapshotKey(trainer_model_id=trainer_model_id, rollout_id=rollout_id)
         if (entry := self._snapshots.get(key)) is None:
             return None
