@@ -51,7 +51,17 @@ def _source_of(model_id: str | None) -> SimpleProcessIdentity | TrainerControlle
 def _partial(
     *, rollout_id: int, engine_checksums: list[dict[str, str]], trainer_model_id: str | None = None
 ) -> dict[str, Any]:
-    return dict(rollout_id=rollout_id, trainer_model_id=trainer_model_id, engine_checksums=engine_checksums)
+    return dict(
+        rollout_id=rollout_id,
+        trainer_model_id=trainer_model_id,
+        weight_version=rollout_id + 1,
+        debug_trainer_load_state_timestamp=0.0,
+        debug_weight_update_id=f"update-{rollout_id + 1}",
+        engine_snapshots=[
+            dict(cell_id=f"cell-{index}", workers_hash=f"incarnation-{index}", tensor_checksums=checksums)
+            for index, checksums in enumerate(engine_checksums)
+        ],
+    )
 
 
 class TestCompareInferenceEngineChecksums:
@@ -144,7 +154,7 @@ class TestCompareInferenceEngineChecksums:
             tmp_path / "target", [_partial(rollout_id=1, engine_checksums=[{"rank0/w": "aaa"}])]
         )
 
-        with pytest.raises(AssertionError, match=r"\(model_id, rollout_id\) sets differ"):
+        with pytest.raises(AssertionError, match=r"\(model_id, weight_version\) sets differ"):
             compare_inference_engine_checksums(str(tmp_path / "baseline"), str(tmp_path / "target"))
 
     def test_empty_baseline_fails(self, tmp_path: Path) -> None:
@@ -198,7 +208,7 @@ class TestSeveralPolicies:
             model_id="b",
         )
 
-        with pytest.raises(AssertionError, match=r"baseline/b/rollout_1 vs target/b/rollout_1"):
+        with pytest.raises(AssertionError, match=r"baseline/b/version_2 vs target/b/version_2"):
             compare_inference_engine_checksums(str(tmp_path / "baseline"), str(tmp_path / "target"))
 
     def test_the_writers_identity_no_longer_decides_which_policy_an_event_belongs_to(self, tmp_path: Path) -> None:
