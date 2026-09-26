@@ -53,6 +53,11 @@ from miles.utils.workers.worker_spec import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _interpreter_without_runner_flags(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(sys, "orig_argv", [sys.executable, "-m", "pytest"])
+
+
 def _controller_layout() -> LaunchPlan:
     return LaunchPlan(
         run_id="260101-000000-000",
