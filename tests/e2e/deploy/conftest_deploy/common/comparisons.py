@@ -1,5 +1,6 @@
 from tests.e2e.ft.conftest_ft import comparisons
 from tests.e2e.ft.conftest_ft.app import BASELINE_SIDE, TARGET_SIDE
+from tests.utils.soak.ft.checkers.reconfigure import ReconfigureInfo
 
 from miles.utils.test_utils.comparisons.inference_engine_checksums import assert_engine_count
 
@@ -12,12 +13,14 @@ def compare_deterministic_sides(
     target_dir: str,
     expected_engine_count: int,
     min_trained_rollouts: int,
+    expected_target_reconfigures: list[ReconfigureInfo],
     exclude_keys: list[str] | None = None,
 ) -> None:
     comparisons.compare_deterministic_sides(
         baseline_dir=baseline_dir,
         target_dir=target_dir,
         min_trained_rollouts=min_trained_rollouts,
+        expected_target_reconfigures=expected_target_reconfigures,
         exclude_keys=exclude_keys,
     )
 

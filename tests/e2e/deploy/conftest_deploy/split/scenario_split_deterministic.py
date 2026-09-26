@@ -104,6 +104,7 @@ def _compare(dump_dir: str, mode: FTTestMode) -> None:
         target_dir=f"{dump_dir}/{TARGET_SIDE}",
         expected_engine_count=mode.rollout_num_engines,
         min_trained_rollouts=MIN_TRAINED_ROLLOUTS,
+        expected_target_reconfigures=[],
     )
 
     print("Split deployment deterministic comparison test PASSED")

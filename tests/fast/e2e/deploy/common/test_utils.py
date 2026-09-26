@@ -1,10 +1,16 @@
+from pathlib import Path
 from typing import Any
 
 import pytest
 from tests.e2e.deploy.conftest_deploy.common import comparisons as comparisons_module
 from tests.e2e.deploy.conftest_deploy.common import utils
+from tests.e2e.ft.conftest_ft import comparisons as ft_comparisons
 from tests.e2e.ft.conftest_ft.app import BASELINE_SIDE, TARGET_SIDE
 
+from tests.fast.e2e.ft.event_fakes import _reconfigure, _write_events
+from tests.utils.soak.ft.checkers.reconfigure import ReconfigureInfo
+
+from miles.utils.audit_utils.event_logger.logger import EVENTS_DIRNAME
 from miles.utils.external_utils.command_utils.base_backend import ExecuteTrainConfig
 from miles.utils.workers.types import ClusterBackend
 
@@ -12,6 +18,17 @@ _BASELINE_DIR: str = "/dumps/baseline"
 _TARGET_DIR: str = "/dumps/target"
 _MIN_TRAINED_ROLLOUTS: int = 2
 _EXPECTED_ENGINE_COUNT: int = 2
+_HEAL_AT_2: ReconfigureInfo = ReconfigureInfo(
+    rollout_id=2, src_cell_index=0, healed_cell_indices=[1], alive_cell_indices_after=[0, 1]
+)
+_FT_COMPARISON_IO: tuple[str, ...] = (
+    "assert_metrics_classified",
+    "compare_metrics",
+    "compare_dumps",
+    "compare_inference_engine_checksums",
+    "assert_engine_weights_moved",
+    "assert_gradients_nonzero",
+)
 
 
 def _config(*, cluster_backend: ClusterBackend, namespace: str) -> ExecuteTrainConfig:
@@ -109,12 +126,30 @@ def recorded_calls(monkeypatch) -> dict[str, list[dict[str, Any]]]:
     return calls
 
 
+@pytest.fixture
+def ft_comparison_io(monkeypatch) -> dict[str, list[dict[str, Any]]]:
+    calls: dict[str, list[dict[str, Any]]] = {name: [] for name in (*_FT_COMPARISON_IO, "assert_engine_count")}
+
+    def record(name: str):
+        def recorder(*_args: Any, **kwargs: Any) -> None:
+            calls[name].append(kwargs)
+
+        return recorder
+
+    for name in _FT_COMPARISON_IO:
+        monkeypatch.setattr(ft_comparisons, name, record(name))
+    monkeypatch.setattr(comparisons_module, "assert_engine_count", record("assert_engine_count"))
+
+    return calls
+
+
 def _compare(*, exclude_keys: list[str] | None = None) -> None:
     comparisons_module.compare_deterministic_sides(
         baseline_dir=_BASELINE_DIR,
         target_dir=_TARGET_DIR,
         expected_engine_count=_EXPECTED_ENGINE_COUNT,
         min_trained_rollouts=_MIN_TRAINED_ROLLOUTS,
+        expected_target_reconfigures=[_HEAL_AT_2],
         exclude_keys=exclude_keys,
     )
 
@@ -129,6 +164,7 @@ class TestCompareDeterministicSides:
                 baseline_dir=_BASELINE_DIR,
                 target_dir=_TARGET_DIR,
                 min_trained_rollouts=_MIN_TRAINED_ROLLOUTS,
+                expected_target_reconfigures=[_HEAL_AT_2],
                 exclude_keys=None,
             )
         ]
@@ -148,4 +184,30 @@ class TestCompareDeterministicSides:
         assert recorded_calls["assert_engine_count"] == [
             dict(side=BASELINE_SIDE, dump_dir=_BASELINE_DIR, expected=_EXPECTED_ENGINE_COUNT),
             dict(side=TARGET_SIDE, dump_dir=_TARGET_DIR, expected=_EXPECTED_ENGINE_COUNT),
+        ]
+
+
+class TestCompareDeterministicSidesThroughTheFtComparison:
+    def test_a_declared_target_healing_passes_the_real_ft_comparison_with_engines_and_exclusions_kept(
+        self, ft_comparison_io, tmp_path: Path
+    ):
+        """The deploy wrapper must satisfy the real ft comparison it wraps, not only a recorder accepting anything."""
+        baseline_dir, target_dir = tmp_path / BASELINE_SIDE, tmp_path / TARGET_SIDE
+        _write_events(baseline_dir / EVENTS_DIRNAME, [])
+        _write_events(target_dir / EVENTS_DIRNAME, [_reconfigure(rollout_id=2, healed=[1], alive=[0, 1])])
+        excluded = ["rollout/weight_version/max"]
+
+        comparisons_module.compare_deterministic_sides(
+            baseline_dir=str(baseline_dir),
+            target_dir=str(target_dir),
+            expected_engine_count=_EXPECTED_ENGINE_COUNT,
+            min_trained_rollouts=_MIN_TRAINED_ROLLOUTS,
+            expected_target_reconfigures=[_HEAL_AT_2],
+            exclude_keys=excluded,
+        )
+
+        assert [call["exclude_keys"] for call in ft_comparison_io["compare_metrics"]] == [excluded]
+        assert ft_comparison_io["assert_engine_count"] == [
+            dict(side=BASELINE_SIDE, dump_dir=str(baseline_dir), expected=_EXPECTED_ENGINE_COUNT),
+            dict(side=TARGET_SIDE, dump_dir=str(target_dir), expected=_EXPECTED_ENGINE_COUNT),
         ]

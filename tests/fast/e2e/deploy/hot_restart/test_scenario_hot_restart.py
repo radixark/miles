@@ -165,6 +165,7 @@ class TestWeightVersionExclusion:
                 target_dir=f"{dump_dir}/{TARGET_SIDE}",
                 expected_engine_count=scenario._MODE.rollout_num_engines,
                 min_trained_rollouts=scenario.MIN_TRAINED_ROLLOUTS,
+                expected_target_reconfigures=[],
                 exclude_keys=[
                     "rollout/weight_version/mean",
                     "rollout/weight_version/median",

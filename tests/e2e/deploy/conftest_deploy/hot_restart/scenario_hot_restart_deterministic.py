@@ -356,6 +356,7 @@ def _compare(restart_mode: HotRestartMode, dump_dir: str, mode: FTTestMode) -> N
         target_dir=target_dir,
         expected_engine_count=mode.rollout_num_engines,
         min_trained_rollouts=MIN_TRAINED_ROLLOUTS,
+        expected_target_reconfigures=[],
         exclude_keys=list(_WEIGHT_VERSION_METRIC_KEYS),
     )
 
