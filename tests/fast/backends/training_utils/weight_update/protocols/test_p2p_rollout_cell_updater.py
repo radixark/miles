@@ -211,6 +211,7 @@ class TestSubmitWrite:
         engine = _RecordingTransferEngine()
 
         updater.submit_write(
+            sent_checksums=None,
             rollout_engine_rank=1,
             names=["w"],
             weight_memory_registry={"w": (0x30, 2, 4)},
@@ -230,6 +231,7 @@ class TestSubmitWrite:
         engine = _RecordingTransferEngine()
         for _ in range(2):
             updater.submit_write(
+                sent_checksums=None,
                 rollout_engine_rank=0,
                 names=["w"],
                 weight_memory_registry={"w": (0x30, 2, 4)},
@@ -252,12 +254,14 @@ class TestSubmitWrite:
                 0: _remote_session(p2p_rollout_cell_updater, p2p_transfer_utils, session, {"w": (0x1000, 2, 4)})
             }
         broken.submit_write(
+            sent_checksums=None,
             rollout_engine_rank=0,
             names=["w"],
             weight_memory_registry={"w": (0x30, 2, 4)},
             transfer_engine=_RecordingTransferEngine(return_code=-1),
         )
         healthy.submit_write(
+            sent_checksums=None,
             rollout_engine_rank=0,
             names=["w"],
             weight_memory_registry={"w": (0x30, 2, 4)},
@@ -298,6 +302,7 @@ class TestErroredCellDropsItsWrites:
         engine = _RecordingTransferEngine()
 
         updater.submit_write(
+            sent_checksums=None,
             rollout_engine_rank=0,
             names=["w"],
             weight_memory_registry={"w": (0x30, 2, 4)},
@@ -315,7 +320,9 @@ class TestErroredCellDropsItsWrites:
         engine = _RecordingTransferEngine()
         updater.mark_errored(RuntimeError("lost"))
 
-        updater._write_if_active(engine, target, ["w"], {"w": (0x30, 2, 4)})
+        updater._write_if_active(
+            engine, target, ["w"], {"w": (0x30, 2, 4)}, rollout_engine_rank=0, sent_checksums=None
+        )
 
         assert engine.calls == []
 
@@ -328,6 +335,7 @@ class TestErroredCellDropsItsWrites:
             0: _remote_session(p2p_rollout_cell_updater, p2p_transfer_utils, "session-0", {"w": (0x1000, 2, 4)})
         }
         updater.submit_write(
+            sent_checksums=None,
             rollout_engine_rank=0,
             names=["w"],
             weight_memory_registry={"w": (0x30, 2, 4)},
@@ -352,6 +360,7 @@ class TestDrainingBlamesTheCell:
             0: _remote_session(p2p_rollout_cell_updater, p2p_transfer_utils, "session-0", {"w": (0x1000, 2, 4)})
         }
         updater.submit_write(
+            sent_checksums=None,
             rollout_engine_rank=0,
             names=["w"],
             weight_memory_registry={"w": (0x30, 2, 4)},
@@ -371,6 +380,7 @@ class TestDrainingBlamesTheCell:
             0: _remote_session(p2p_rollout_cell_updater, p2p_transfer_utils, "session-0", {"w": (0x1000, 2, 4)})
         }
         updater.submit_write(
+            sent_checksums=None,
             rollout_engine_rank=0,
             names=["w"],
             weight_memory_registry={"w": (0x30, 2, 4)},
@@ -442,6 +452,7 @@ class TestStopDrainingAfterTheFirstFailure:
         updater._executor = _FakeExecutor(futures)
         for _ in futures:
             updater.submit_write(
+                sent_checksums=None,
                 rollout_engine_rank=0,
                 names=["w"],
                 weight_memory_registry=_REGISTRY,
@@ -468,6 +479,7 @@ class TestStopDrainingAfterTheFirstFailure:
         updater._executor = _FakeExecutor(futures)
         for _ in futures:
             updater.submit_write(
+                sent_checksums=None,
                 rollout_engine_rank=0,
                 names=["w"],
                 weight_memory_registry=_REGISTRY,
@@ -486,6 +498,7 @@ class TestStopDrainingAfterTheFirstFailure:
         future = _FakeFuture()
         updater._executor = _FakeExecutor([future])
         updater.submit_write(
+            sent_checksums=None,
             rollout_engine_rank=0,
             names=["w"],
             weight_memory_registry=_REGISTRY,
@@ -511,10 +524,12 @@ class TestPerCellWriteThread:
 
         try:
             stuck.submit_write(
+                sent_checksums=None,
                 rollout_engine_rank=0, names=["w"], weight_memory_registry=_REGISTRY, transfer_engine=stuck_engine
             )
             assert stuck_engine.entered.wait(timeout=10)
             healthy.submit_write(
+                sent_checksums=None,
                 rollout_engine_rank=0, names=["w"], weight_memory_registry=_REGISTRY, transfer_engine=healthy_engine
             )
             healthy.wait_for_pending_writes(timeout=_TRANSFER_TIMEOUT)
@@ -537,10 +552,12 @@ class TestPerCellWriteThread:
 
         try:
             first.submit_write(
+                sent_checksums=None,
                 rollout_engine_rank=0, names=["w"], weight_memory_registry=_REGISTRY, transfer_engine=first_engine
             )
             assert first_engine.entered.wait(timeout=10)
             second.submit_write(
+                sent_checksums=None,
                 rollout_engine_rank=0, names=["w"], weight_memory_registry=_REGISTRY, transfer_engine=second_engine
             )
             second.wait_for_pending_writes(timeout=_TRANSFER_TIMEOUT)
@@ -558,6 +575,7 @@ class TestPerCellWriteThread:
 
         for _ in range(4):
             updater.submit_write(
+                sent_checksums=None,
                 rollout_engine_rank=0, names=["w"], weight_memory_registry=_REGISTRY, transfer_engine=engine
             )
         updater.wait_for_pending_writes(timeout=_TRANSFER_TIMEOUT)
