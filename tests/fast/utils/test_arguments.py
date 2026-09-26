@@ -3297,3 +3297,22 @@ class TestMilesValidateArgsDiskDeltaResume:
         load_dir.mkdir()
 
         miles_validate_args(self._parse(load_dir, tmp_path))
+
+
+class TestWeightUpdateDeadlines:
+    def _parse(self, extra: list[str]) -> argparse.Namespace:
+        parser = argparse.ArgumentParser()
+        get_miles_extra_args_provider()(parser)
+        return parser.parse_args(["--num-rollout", "1"] + extra + REQUIRED_ARGS)
+
+    def test_a_trainer_cells_update_has_a_finite_deadline_by_default(self):
+        """An unbounded default would let one hung trainer cell stall the whole run forever."""
+        assert self._parse([]).update_weights_timeout == 600.0
+
+    @pytest.mark.parametrize("value", ["0", "-1"])
+    def test_a_non_positive_trainer_deadline_is_refused(self, value: str):
+        """A zero or negative deadline would give up on every update before it even started."""
+        args = self._parse(["--update-weights-timeout", value])
+
+        with pytest.raises(AssertionError, match=re.escape("--update-weights-timeout")):
+            miles_validate_args(args)

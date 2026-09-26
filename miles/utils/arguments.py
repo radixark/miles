@@ -1146,6 +1146,12 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 default=30.0,
                 help="Timeout in seconds for each P2P transfer operation.",
             )
+            parser.add_argument(
+                "--update-weights-timeout",
+                type=float,
+                default=600.0,
+                help="Seconds the trainer controller waits for one trainer cell's update_weights before giving it up.",
+            )
             return parser
 
         def add_fault_tolerance_arguments(parser):
@@ -3694,6 +3700,9 @@ def miles_validate_args(args):
         args.check_weight_update_equal = True
 
     # always true on offload for colocate at the moment.
+    assert (
+        args.update_weights_timeout > 0
+    ), f"--update-weights-timeout must be positive, got {args.update_weights_timeout!r}"
     if args.update_weight_transfer_mode == "p2p":
         assert not args.colocate, (
             "P2P weight transfer mode is not compatible with --colocate. "
