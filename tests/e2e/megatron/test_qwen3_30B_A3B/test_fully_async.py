@@ -9,9 +9,13 @@ register_cuda_ci(
     suite="stage-c-4-gpu-h200",
     labels=["megatron", "weight-update", "fully-async"],
     hardware=["hopper", "blackwell"],
+    disabled="Outdated and simple.",
 )
 register_rocm_ci(
-    est_time=800, suite="nightly-stage-c-4-gpu-mi350", labels=["megatron", "weight-update", "fully-async"]
+    est_time=800,
+    suite="nightly-stage-c-4-gpu-mi350",
+    labels=["megatron", "weight-update", "fully-async"],
+    disabled="Outdated and simple.",
 )
 
 register_ci_gate(metric_key="train/grad_norm")

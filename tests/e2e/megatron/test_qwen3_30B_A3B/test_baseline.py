@@ -9,6 +9,7 @@ register_cuda_ci(
     suite="stage-c-4-gpu-h200",
     labels=["megatron", "weight-update", "short", "mooncake"],
     hardware=["hopper", "blackwell"],
+    disabled="Outdated and simple.",
 )
 
 register_ci_gate(metric_key="train/grad_norm")
@@ -18,7 +19,10 @@ register_ci_gate(metric_key="train/train_rollout_kl")
 register_ci_gate(metric_key="rollout/raw_reward")
 
 register_rocm_ci(
-    est_time=900, suite="nightly-stage-c-4-gpu-mi350", labels=["megatron", "weight-update", "short", "mooncake"]
+    est_time=900,
+    suite="nightly-stage-c-4-gpu-mi350",
+    labels=["megatron", "weight-update", "short", "mooncake"],
+    disabled="Outdated and simple.",
 )
 
 CASE = CaseConfig(

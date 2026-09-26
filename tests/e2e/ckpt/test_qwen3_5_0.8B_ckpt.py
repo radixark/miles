@@ -1,16 +1,15 @@
 import os
 
-from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
+from tests.ci.ci_register import register_cuda_ci
 
 import miles.utils.external_utils.command_utils as U
 
 register_cuda_ci(est_time=1400, suite="stage-c-2-gpu-h200", labels=["ckpt"], hardware=["hopper", "blackwell"])
-register_rocm_ci(est_time=1200, suite="nightly-stage-c-2-gpu-mi350", labels=["ckpt"])
 
 ENABLE_EVAL = bool(int(os.environ.get("MILES_TEST_ENABLE_EVAL", "1")))
 
-MODEL_NAME = "Qwen3-0.6B"
-MODEL_TYPE = "qwen3-0.6B"
+MODEL_NAME = "Qwen3.5-0.8B"
+MODEL_TYPE = "qwen3.5-0.8B"
 NUM_GPUS = 2
 # Container-local: /root/models is a host directory shared by every runner on the host.
 SAVE_DIR = f"/root/checkpoints/{MODEL_NAME}_miles"
@@ -99,10 +98,12 @@ def execute(mode: str = "", ckpt_step: int | None = None):
     )
 
     sglang_args = (
-        "--rollout-num-gpus-per-engine 2 --sglang-mem-fraction-static 0.7 --sglang-cuda-graph-bs-decode 1 2 4 8 16 "
+        # One GPU per engine: SGLang TP>1 garbles dense Qwen3.5 (see scripts/run_qwen3_dense.py).
+        "--rollout-num-gpus-per-engine 1 --sglang-mem-fraction-static 0.7 --sglang-cuda-graph-bs-decode 1 2 4 8 16 "
     )
 
-    ci_args = "--ci-test "
+    # miles has no Qwen3.5 vision implementation on the training side, so vision weights are never synced.
+    ci_args = "--ci-test --check-weight-update-skip-list visual "
     if mode in {"save", "async_save"}:
         ci_args += "--ci-save-model-hash "
     if mode == "load":

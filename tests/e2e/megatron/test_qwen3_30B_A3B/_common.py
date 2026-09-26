@@ -184,6 +184,10 @@ def build_train_args(case: CaseConfig, *, wandb_file: str) -> str:
 
     if case.use_deepep:
         sglang_args += "--sglang-moe-a2a-backend deepep --sglang-deepep-mode auto "
+        if not (case.use_fp8_rollout or case.use_int4_rollout):
+            # SGLang has DeepEP MoE kernels for BF16 experts only on the DeepGEMM runner
+            # (FP8 already resolves auto to DeepGEMM).
+            sglang_args += "--sglang-moe-runner-backend deep_gemm "
     if case.sglang_ep_size is not None:
         sglang_args += f"--sglang-expert-parallel-size {case.sglang_ep_size} "
     if case.sglang_dp_size is not None:

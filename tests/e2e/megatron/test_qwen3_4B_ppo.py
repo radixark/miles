@@ -43,6 +43,8 @@ def execute():
         "--apply-chat-template "
         "--rollout-shuffle "
         "--rm-type deepscaler "
+        # 3, not 2: rollout 0 trains only the critic (--num-critic-only-steps 1), so rollout 2 is
+        # the first one generated on trained actor weights.
         "--num-rollout 3 "
         "--rollout-batch-size 8 "
         "--n-samples-per-prompt 8 "
