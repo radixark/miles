@@ -12,7 +12,9 @@ from miles.utils.disk_delta import checksum
 
 @pytest.fixture(scope="module")
 def compiled_stage():
-    layout = PackedDeltaLayout((("empty", 0), ("tail", 65), ("unchanged", 128), ("byte_pairs", 65536)), block_bytes=64)
+    layout = PackedDeltaLayout(
+        (("empty", 0), ("tail", 65), ("unchanged", 128), ("byte_pairs", 65536 * 4)), block_bytes=64
+    )
     stage = CpuDeltaPreparer(layout)
     with ThreadPoolExecutor(max_workers=1) as pool:
         pool.submit(stage.warmup).result()
@@ -24,11 +26,13 @@ def _inputs(layout, *, changed):
     old_views, new_views = dict(layout.views(old)), dict(layout.views(new))
     for name, previous in old_views.items():
         values = torch.arange(previous.numel(), dtype=torch.int64).to(torch.uint8)
+        if name == "byte_pairs":
+            values = torch.arange(256, dtype=torch.uint8).repeat_interleave(256 * 4)
         previous.copy_(values)
         new_views[name].copy_(values)
     if changed:
         new_views["tail"][-1] ^= 0xFF
-        new_views["byte_pairs"].copy_(torch.arange(256, dtype=torch.uint8).repeat_interleave(256))
+        new_views["byte_pairs"].copy_(torch.arange(256, dtype=torch.uint8).repeat_interleave(4).repeat(256))
     return old, new
 
 
@@ -86,8 +90,9 @@ def test_one_compiled_stage_can_prepare_distinct_concurrent_buckets(compiled_sta
         torch.testing.assert_close(prepared.snapshot, expected)
         return prepared.changed_bytes
 
+    changed_bytes = 4 * (65536 - 256) + 1  # Every unequal byte pair in four lanes, plus the tail.
     with ThreadPoolExecutor(max_workers=4) as pool:
-        assert list(pool.map(run, [False, True, False, True])) == [0, 65281, 0, 65281]
+        assert list(pool.map(run, [False, True, False, True])) == [0, changed_bytes, 0, changed_bytes]
 
 
 def test_compact_scalar_layout_does_not_pad_scalars_to_large_weight_rows():
@@ -224,3 +229,43 @@ def test_layout_guards_exact_accounting_and_staging_contract():
         stage.warmup(old_snapshot=old, staging=old)
     with pytest.raises(ValueError, match="contiguous CPU uint8"):
         stage.warmup(old_snapshot=old, staging=torch.zeros(layout.padded_bytes, dtype=torch.int32))
+
+
+def test_word_layout_rejects_unaligned_storage_and_non_word_rows():
+    with pytest.raises(ValueError, match="multiple of four"):
+        PackedDeltaLayout((("a", 3),), block_bytes=3)
+    layout = PackedDeltaLayout((("a", 4),), block_bytes=4)
+    unaligned = torch.zeros(5, dtype=torch.uint8)[1:]
+    with pytest.raises(ValueError, match="aligned contiguous"):
+        CpuDeltaPreparer(layout, use_compile=False).prepare(unaligned, layout.allocate())
+
+
+@pytest.mark.parametrize("value", [0x80, 0xFF])
+def test_word_lanes_tails_aligned_offsets_and_no_change_ownership(value):
+    layout = PackedDeltaLayout(
+        tuple((f"lane{lane}", 4) for lane in range(4)) + tuple((f"tail{size}", size) for size in (1, 2, 3)),
+        block_bytes=4,
+    )
+    old = torch.zeros(layout.padded_bytes + 8, dtype=torch.uint8)[8:]
+    staging = torch.zeros(layout.padded_bytes + 4, dtype=torch.uint8)[4:]
+    for name, view in layout.views(staging):
+        index = int(name[-1]) if name.startswith("lane") else view.numel() - 1
+        view[index] = value
+    expected = staging.clone()
+    stage = CpuDeltaPreparer(layout)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        pool.submit(stage.warmup, old, staging).result()
+        result = pool.submit(stage.prepare, staging, old).result()
+        staging.fill_(42)
+        assert result.changed_counts == (1,) * 7
+        torch.testing.assert_close(result.snapshot, expected)
+        torch.testing.assert_close(result.xor, expected)
+        assert not old.any()
+        staging.zero_()
+        unchanged = pool.submit(stage.prepare, staging, old).result()
+        staging.fill_(255)
+        assert unchanged.changed_counts == (0,) * 7
+        assert unchanged.snapshot is old and not unchanged.snapshot.any()
+        assert unchanged.xor is None
+        assert unchanged.copied_unchanged_bytes == 0
+        assert unchanged.copied_padding_bytes == 0

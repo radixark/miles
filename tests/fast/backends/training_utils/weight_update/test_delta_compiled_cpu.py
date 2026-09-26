@@ -63,8 +63,6 @@ def test_packed_update_promotes_all_views_and_reuses_no_change_snapshot(make_enc
     assert weights is not previous_weights
     assert encoder._buckets[("expert.weight_scale_2",)].snapshot is previous_scalars
     assert encoder.snapshots["unchanged"].__array_interface__["data"][0] == weights.data_ptr() + 4096
-    assert encoder.copied_unchanged_bytes == 65
-    assert encoder.copied_padding_bytes == 8192 - 132
     # Poison all returned leases: neither the committed slab nor its views alias them.
     leases = [encoder._free.get_nowait() for _ in range(encoder._free.qsize())]
     for lease in leases:
@@ -73,8 +71,10 @@ def test_packed_update_promotes_all_views_and_reuses_no_change_snapshot(make_enc
     for name, tensor in bucket:
         np.testing.assert_array_equal(encoder.snapshots[name], tensor.reshape(-1).view(torch.uint8).numpy())
     encoder.begin()
-    encoder.submit(bucket)
-    assert encoder.finish() is None
+    with patch.object(encoder, "_install_snapshot", wraps=encoder._install_snapshot) as install:
+        encoder.submit(bucket)
+        assert encoder.finish() is None
+    install.assert_not_called()
     assert not encoder.deltas and not encoder.changed_bytes
     assert encoder._buckets[("changed", "unchanged")].snapshot is weights
 

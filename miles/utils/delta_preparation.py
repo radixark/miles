@@ -25,8 +25,8 @@ class PackedDeltaLayout:
     _block_ends: torch.Tensor = field(init=False, repr=False, compare=False)
 
     def __post_init__(self):
-        if not 0 < self.block_bytes <= torch.iinfo(torch.int32).max:
-            raise ValueError("block_bytes must fit a positive int32 change count")
+        if not 0 < self.block_bytes <= torch.iinfo(torch.int32).max or self.block_bytes % 4:
+            raise ValueError("block_bytes must be a multiple of four and fit a positive int32 change count")
         entries = tuple(self.entries)
         if len({name for name, _ in entries}) != len(entries):
             raise ValueError("Packed delta tensor names must be unique")
@@ -75,8 +75,9 @@ class PackedDeltaLayout:
             or buffer.dtype != torch.uint8
             or buffer.shape != (self.padded_bytes,)
             or not buffer.is_contiguous()
+            or buffer.storage_offset() % 4
         ):
-            raise ValueError(f"Expected contiguous CPU uint8 packed buffer with {self.padded_bytes} bytes")
+            raise ValueError(f"Expected aligned contiguous CPU uint8 packed buffer with {self.padded_bytes} bytes")
 
 
 @dataclass(frozen=True)
@@ -114,8 +115,15 @@ class PreparedDeltaBucket:
 
 
 def _count_changes(new: torch.Tensor, old: torch.Tensor, block_ends: torch.Tensor, block_bytes: int) -> torch.Tensor:
-    # Each row count is <= block_bytes <= INT32_MAX, regardless of bucket size.
-    counts = new.view(-1, block_bytes).ne(old.view(-1, block_bytes)).sum(dim=1, dtype=torch.int32).to(torch.int64)
+    # Count four byte lanes per word without widening each input byte. The
+    # masks also cover the sign byte; XOR and lane counts are dtype blind.
+    difference = new.view(torch.int32).view(-1, block_bytes // 4) ^ old.view(torch.int32).view(-1, block_bytes // 4)
+    counts = ((difference & 255) != 0).to(torch.int32)
+    counts = counts + ((difference & 65280) != 0)
+    counts = counts + ((difference & 16711680) != 0)
+    counts = counts + ((difference & -16777216) != 0)
+    # Per-row counts fit int32; per-name totals remain exact int64.
+    counts = counts.sum(dim=1, dtype=torch.int32).to(torch.int64)
     # Cast in the compiled graph: ATen cumsum's implicit dtype cast would use the
     # global eager thread pool rather than this graph's explicit thread budget.
     prefix = torch.cat((counts.new_zeros(1), counts.cumsum(dim=0)))
@@ -124,7 +132,8 @@ def _count_changes(new: torch.Tensor, old: torch.Tensor, block_ends: torch.Tenso
 
 
 def _xor_and_snapshot(new: torch.Tensor, old: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-    return torch.bitwise_xor(new, old), new.clone()
+    new_words, old_words = new.view(torch.int32), old.view(torch.int32)
+    return (new_words ^ old_words).view(torch.uint8), new_words.clone().view(torch.uint8)
 
 
 @cache
