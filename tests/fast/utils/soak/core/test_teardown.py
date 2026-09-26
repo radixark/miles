@@ -136,9 +136,7 @@ class TestKubernetesTeardown:
     ) -> None:
         """A removal that never finishes is bounded and leaves a failed teardown event."""
         release_removal = threading.Event()
-        monkeypatch.setattr(
-            soak_teardown, "remove_release_and_wait", _RecordingReleaseRemoval(block=release_removal)
-        )
+        monkeypatch.setattr(soak_teardown, "remove_release_and_wait", _RecordingReleaseRemoval(block=release_removal))
         monkeypatch.setattr(soak_teardown, "_TEARDOWN_TIMEOUT_SECONDS", 0.05)
         log = EventLog(tmp_path / "events.jsonl")
 
