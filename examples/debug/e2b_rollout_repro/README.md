@@ -253,3 +253,23 @@ paths containing spaces. The full 8-node workload was not
 relaunched solely to publish this package. Reproduction time and success rate are
 unknown; lowering concurrency or changing the loop is an isolation experiment,
 not an equivalent reproduction.
+
+## Continuous frozen collection
+
+Select `continuous_collect.RolloutFn` to backfill individual trajectory slots across
+export batches. It reuses Miles sample-admission accounting with singleton units,
+bounded by `SANDBOX_CONCURRENCY`. Each slot gets at most two attempts. Group
+membership and export order remain unchanged. Completed slots retain only file
+references in memory; token arrays are loaded for one export batch at a time.
+Use only `--debug-rollout-only --start-rollout-id 0`.
+
+Set `FROZEN_RESUME_ROOTS` to colon-separated immutable parent directories. Checksums,
+task/group/slot identity and sampling seeds are verified. Valid slots are reused;
+two failed attempts exhaust a slot; one failed attempt leaves one retry.
+Interrupted attempts without a persisted result may be rerun. Stop parent writers
+first. Preserve dataset order, model, seeds, sampling, token budgets and rewards.
+Keep parent archives available. The saved data-source cursor is not a resume
+checkpoint for this collector: restart from ID zero using attempt manifests.
+
+`progress.json` reports settled/usable/active slots; batch reports describe exports.
+Run `test_continuous_collect.py` in the pinned environment. No new dependencies.
