@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import json
 import logging
+from types import SimpleNamespace
 
 import httpx
 import pytest
 from tests.fast.fixtures.session_fixtures import make_session_server_config
 
 from miles.rollout.session import server as session_server_module
+from miles.rollout.session.core import ProxyRequest
 from miles.rollout.session.server import SessionServer, main
 from miles.utils.workers.argv_utils import config_to_argv
 
@@ -17,6 +20,111 @@ class TestSessionServer:
         server = SessionServer(make_session_server_config(timeout=7.5))
 
         assert server.client.timeout == httpx.Timeout(7.5)
+
+    @pytest.mark.asyncio
+    async def test_request_hook_can_add_policy_and_retry_admission_rejection(self, monkeypatch):
+        async def hook(hook_args, context, request):
+            assert hook_args == {"minimum_version": 3}
+            request["payload"]["weight_version"] = {"min_version": hook_args["minimum_version"]}
+            request["headers"]["X-Session-ID"] = context.session_id
+            request["max_attempts"] = 2
+            request["retry_interval"] = 0
+
+        monkeypatch.setattr(session_server_module, "load_function", lambda _path: hook)
+        requests = []
+
+        async def handler(request):
+            requests.append(request)
+            return httpx.Response(409 if len(requests) == 1 else 200, json={"ok": True})
+
+        server = SessionServer(
+            make_session_server_config(
+                custom_rollout_request_hook_path="fake.request_hook",
+                custom_rollout_request_hook_args={"minimum_version": 3},
+            )
+        )
+        await server.client.aclose()
+        server.client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        try:
+            result = await server.do_proxy(
+                ProxyRequest(method="POST", session_id="session-1"),
+                "v1/chat/completions",
+                body=b'{"messages":[]}',
+                headers={"content-type": "application/json"},
+            )
+        finally:
+            await server.client.aclose()
+
+        assert result["status_code"] == 200
+        assert len(requests) == 2
+        assert json.loads(requests[1].content)["weight_version"] == {"min_version": 3}
+        assert requests[1].headers["X-Session-ID"] == "session-1"
+
+    @pytest.mark.asyncio
+    async def test_request_hook_does_not_retry_ambiguous_server_error(self, monkeypatch):
+        def hook(_hook_args, _context, request):
+            request["max_attempts"] = 3
+            request["retry_interval"] = 0
+
+        monkeypatch.setattr(session_server_module, "load_function", lambda _path: hook)
+        request_count = 0
+
+        async def handler(_request):
+            nonlocal request_count
+            request_count += 1
+            return httpx.Response(500, json={"error": "failed after dispatch"})
+
+        server = SessionServer(make_session_server_config(custom_rollout_request_hook_path="fake.request_hook"))
+        await server.client.aclose()
+        server.client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        try:
+            result = await server.do_proxy(
+                ProxyRequest(method="POST", session_id="session-1"),
+                "v1/chat/completions",
+                body=b"{}",
+                headers={"content-type": "application/json"},
+            )
+        finally:
+            await server.client.aclose()
+
+        assert result["status_code"] == 500
+        assert request_count == 1
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("error_type", "expected_attempts"),
+        [(httpx.ConnectError, 2), (httpx.ReadError, 1)],
+    )
+    async def test_request_hook_retries_only_pre_dispatch_transport_errors(
+        self, monkeypatch, error_type, expected_attempts
+    ):
+        def hook(_hook_args, _context, request):
+            request["max_attempts"] = 2
+            request["retry_interval"] = 0
+
+        monkeypatch.setattr(session_server_module, "load_function", lambda _path: hook)
+        request_count = 0
+
+        async def send_request(*_args, **_kwargs):
+            nonlocal request_count
+            request_count += 1
+            if request_count == 1:
+                raise error_type("transport failed")
+            return httpx.Response(200, json={"ok": True})
+
+        server = SessionServer(make_session_server_config(custom_rollout_request_hook_path="fake.request_hook"))
+        await server.client.aclose()
+        server.client = SimpleNamespace(request=send_request)
+
+        result = await server.do_proxy(
+            ProxyRequest(method="POST", session_id="session-1"),
+            "v1/chat/completions",
+            body=b"{}",
+            headers={"content-type": "application/json"},
+        )
+
+        assert result["status_code"] == (200 if error_type is httpx.ConnectError else 502)
+        assert request_count == expected_attempts
 
 
 def test_run_session_server_suppresses_routine_request_logs(monkeypatch):

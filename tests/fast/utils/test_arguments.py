@@ -1728,6 +1728,40 @@ class TestSessionServerScalingArguments:
             self._parse(["--session-server-port", "30000", "30004"])
 
 
+class TestRolloutRequestHookArguments:
+    def _parse(self, extra):
+        parser = argparse.ArgumentParser()
+        get_miles_extra_args_provider()(parser)
+        return parser.parse_args(extra + ["--num-rollout", "1"] + REQUIRED_ARGS)
+
+    def test_parses_hook_and_json_args(self):
+        args = self._parse(
+            [
+                "--use-session-server",
+                "--custom-rollout-request-hook-path",
+                "hooks.prepare_request",
+                "--custom-rollout-request-hook-args",
+                '{"version_store":"s3://weights"}',
+            ]
+        )
+
+        miles_validate_args(args)
+
+        assert args.custom_rollout_request_hook_args == {"version_store": "s3://weights"}
+
+    def test_rejects_hook_without_session_server(self):
+        args = self._parse(["--custom-rollout-request-hook-path", "hooks.prepare_request"])
+
+        with pytest.raises(ValueError, match="requires --use-session-server"):
+            miles_validate_args(args)
+
+    def test_rejects_hook_args_without_hook(self):
+        args = self._parse(["--use-session-server", "--custom-rollout-request-hook-args", '{"key":"value"}'])
+
+        with pytest.raises(ValueError, match="requires --custom-rollout-request-hook-path"):
+            miles_validate_args(args)
+
+
 class TestSessionMessageMatcherArgument:
     def _parse(self, extra):
         parser = argparse.ArgumentParser()

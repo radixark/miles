@@ -6,6 +6,7 @@
 - ``run_session_server`` is the subprocess entry point: fresh interpreter, so it configures logging and the process title itself, then serves uvicorn.
 """
 
+import asyncio
 import json
 import logging
 
@@ -16,7 +17,9 @@ from fastapi import FastAPI
 
 from miles.rollout.session.config import SessionServerConfig
 from miles.rollout.session.core import ProxyRequest
+from miles.rollout.session.request_policy import RolloutRequestContext, prepare_rollout_request
 from miles.rollout.session.sessions import setup_session_routes
+from miles.utils.function_registry import load_function
 from miles.utils.logging_utils import configure_logger_raw
 from miles.utils.workers.argv_utils import parse_config_argv
 
@@ -31,7 +34,9 @@ class SessionServer:
     requests through the inference router (sglang or miles)."""
 
     def __init__(self, config: SessionServerConfig):
+        self.config = config
         self.backend_url = config.backend_url
+        self.request_hook = load_function(config.custom_rollout_request_hook_path)
         self.app = FastAPI()
 
         self.client = httpx.AsyncClient(
@@ -48,23 +53,54 @@ class SessionServer:
         setup_session_routes(self.app, self, config, use_addition_r3=self.use_addition_r3)
 
     async def do_proxy(self, request: ProxyRequest, path: str, *, body: bytes, headers: dict) -> dict:
+        deadline = asyncio.timeout(self.config.timeout)
+        try:
+            async with deadline:
+                return await self._do_proxy(request, path, body=body, headers=headers)
+        except TimeoutError:
+            if not deadline.expired():
+                raise
+            logger.warning("Proxy request deadline exceeded for %s %s", request.method, path)
+            return _proxy_error(body, "backend transport error: request deadline exceeded")
+
+    async def _do_proxy(self, request: ProxyRequest, path: str, *, body: bytes, headers: dict) -> dict:
         url = f"{self.backend_url}/{path}"
         if request.query:
             url = f"{url}?{request.query}"
 
         headers = {k: v for k, v in headers.items() if k.lower() not in _DROP_REQUEST_HEADERS}
+        max_attempts = 1
+        retry_interval = 1.0
+        if request.session_id is not None and self.request_hook is not None:
+            prepared = await prepare_rollout_request(
+                self.request_hook,
+                self.config.custom_rollout_request_hook_args,
+                RolloutRequestContext(session_id=request.session_id),
+                payload=json.loads(body),
+                headers=headers,
+            )
+            headers = prepared["headers"]
+            body = json.dumps(prepared["payload"], ensure_ascii=False, allow_nan=False, separators=(",", ":")).encode(
+                "utf-8"
+            )
+            max_attempts = prepared["max_attempts"]
+            retry_interval = prepared["retry_interval"]
 
-        try:
-            response = await self.client.request(request.method, url, content=body, headers=headers)
-        except httpx.TransportError as exc:
-            logger.warning("Proxy transport error for %s %s: %s", request.method, path, exc)
-            error_body = json.dumps({"error": f"backend transport error: {type(exc).__name__}: {exc}"}).encode()
-            return {
-                "request_body": body,
-                "response_body": error_body,
-                "status_code": 502,
-                "headers": {"content-type": "application/json"},
-            }
+        response = None
+        for attempt in range(max_attempts):
+            try:
+                response = await self.client.request(request.method, url, content=body, headers=headers)
+            except httpx.TransportError as exc:
+                if not _transport_error_is_safe_to_retry(exc) or attempt + 1 == max_attempts:
+                    logger.warning("Proxy transport error for %s %s: %s", request.method, path, exc)
+                    return _proxy_error(body, f"backend transport error: {type(exc).__name__}: {exc}")
+            else:
+                if response.status_code not in (409, 429) or attempt + 1 == max_attempts:
+                    break
+                await response.aread()
+            await asyncio.sleep(retry_interval)
+
+        assert response is not None
         content = await response.aread()
         return {
             "request_body": body,
@@ -72,6 +108,19 @@ class SessionServer:
             "status_code": response.status_code,
             "headers": dict(response.headers),
         }
+
+
+def _transport_error_is_safe_to_retry(exc: httpx.TransportError) -> bool:
+    return isinstance(exc, (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout))
+
+
+def _proxy_error(request_body: bytes, message: str) -> dict:
+    return {
+        "request_body": request_body,
+        "response_body": json.dumps({"error": message}).encode(),
+        "status_code": 502,
+        "headers": {"content-type": "application/json"},
+    }
 
 
 def run_session_server(config: SessionServerConfig):

@@ -26,6 +26,8 @@ class SessionServerConfig(FrozenStrictBaseModel):
     use_session_server: bool | str | None
     session_message_matcher: str
     pause_generation_mode: str | None
+    custom_rollout_request_hook_path: str | None
+    custom_rollout_request_hook_args: dict[str, Any]
     session_sample_picker_path: str | None
     session_sample_postprocessor_path: str | None
 
@@ -56,6 +58,8 @@ def compute_session_server_config(
         use_session_server=getattr(args, "use_session_server", None),
         session_message_matcher=getattr(args, "session_message_matcher", "strict"),
         pause_generation_mode=getattr(args, "pause_generation_mode", None),
+        custom_rollout_request_hook_path=getattr(args, "custom_rollout_request_hook_path", None),
+        custom_rollout_request_hook_args=getattr(args, "custom_rollout_request_hook_args", {}),
         session_sample_picker_path=getattr(args, "session_sample_picker_path", None),
         session_sample_postprocessor_path=getattr(args, "session_sample_postprocessor_path", None),
     )
