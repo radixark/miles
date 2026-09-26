@@ -136,6 +136,7 @@ class UpdateWeightP2P(WeightTransferProtocol):
         rollout_engines: Sequence[SGLangApiClient],
         engine_gpu_counts: Sequence[int] | None,
         engine_gpu_offsets: Sequence[int] | None,
+        engine_cell_ids: Sequence[str],
         parallel_state: ParallelState,
         placement: WeightUpdatePlacement,
         selector: str,
@@ -150,11 +151,15 @@ class UpdateWeightP2P(WeightTransferProtocol):
           replica that mirrors the target's sharding layout, enabling correct
           weight format conversion before transfer.
         """
+        assert len(engine_cell_ids) == len(rollout_engines), (
+            f"[P2P-Shared] {len(engine_cell_ids)} cell ids for {len(rollout_engines)} rollout engines; "
+            f"the per-engine metadata must describe the same engines"
+        )
+
         self.disconnect()
         self.rollout_engines = rollout_engines
         self._cell_updaters_of_rollout_engine_ind = {
-            rollout_engine_ind: _P2PRolloutCellUpdater(rollout_engine_ind=rollout_engine_ind)
-            for rollout_engine_ind in range(len(rollout_engines))
+            cell_id: _P2PRolloutCellUpdater(cell_id=cell_id) for cell_id in engine_cell_ids
         }
 
         self.is_sender = self.transfer_plan._gathered_dp_rank < self.transfer_plan._rollout_num_gpus
@@ -181,6 +186,7 @@ class UpdateWeightP2P(WeightTransferProtocol):
                 targets=targets,
                 targets_to_session_id=targets_to_session_id,
                 remote_weight_infos_by_session_id=self.remote_weight_infos_by_session_id,
+                engine_cell_ids=engine_cell_ids,
             )
 
             for rollout_engine_rank, rank_targets in targets_grouped_by_rollout_engine_rank.items():
@@ -214,14 +220,15 @@ class UpdateWeightP2P(WeightTransferProtocol):
 
 
 def _assign_p2p_targets(
-    cell_updaters: dict[int, _P2PRolloutCellUpdater],
+    cell_updaters: dict[str, _P2PRolloutCellUpdater],
     targets: list[TransferTaskP2PMeta],
     targets_to_session_id: dict[tuple[int, int], str],
     remote_weight_infos_by_session_id: dict[str, tuple],
+    engine_cell_ids: Sequence[str],
 ) -> None:
     for target in targets:
         session_id = targets_to_session_id[(target.rollout_engine_ind, target.rollout_engine_rank)]
-        cell_targets = cell_updaters[target.rollout_engine_ind].targets_by_rollout_engine_rank
+        cell_targets = cell_updaters[engine_cell_ids[target.rollout_engine_ind]].targets_by_rollout_engine_rank
         assert target.rollout_engine_rank not in cell_targets
         cell_targets[target.rollout_engine_rank] = RemoteWeightInfo(
             session_id, remote_weight_infos_by_session_id[session_id][0]

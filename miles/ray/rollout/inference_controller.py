@@ -241,6 +241,7 @@ class InferenceController:
                 rollout_engines=[],
                 engine_gpu_counts=[],
                 engine_gpu_offsets=[],
+                engine_cell_ids=[],
                 snapshot_cell_id_to_hashes={},
             )
 
@@ -248,6 +249,7 @@ class InferenceController:
             rollout_engines=srv.api_clients,
             engine_gpu_counts=srv.engine_gpu_counts,
             engine_gpu_offsets=srv.engine_gpu_offsets,
+            engine_cell_ids=srv.engine_cell_ids,
             snapshot_cell_id_to_hashes={cell_id: cell.meta.workers_hash for cell_id, cell in srv.server_cells.items()},
         )
 
@@ -411,6 +413,7 @@ class UpdatableEngines:
     rollout_engines: list[SGLangApiClient]
     engine_gpu_counts: list[int]
     engine_gpu_offsets: list[int]
+    engine_cell_ids: list[str]
     snapshot_cell_id_to_hashes: dict[str, str]
 
 
