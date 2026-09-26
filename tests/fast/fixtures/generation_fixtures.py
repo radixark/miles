@@ -64,6 +64,8 @@ def extra_argv_for_variant(
         argv += ["--generate-tool-call-parser", generate_tool_call_parser]
     elif variant == "agentic_tool_call":
         argv += ["--custom-agent-function-path", custom_agent_function_path]
+        # these tests steer the mock agent through module state, which a subproc call cannot see
+        argv += ["--custom-agent-function-mode", "inline"]
         argv += ["--use-session-server", "v2", "--tito-model", "qwen3"]
 
     return argv

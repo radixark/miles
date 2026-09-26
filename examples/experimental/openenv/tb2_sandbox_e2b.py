@@ -40,7 +40,6 @@ import os
 import re
 import shlex
 import sys
-import threading
 from pathlib import Path
 
 import tb2_sandbox_recipe as recipe
@@ -54,6 +53,7 @@ from tb2_sandbox_recipe import (
     wait_server_ready,
 )
 from miles.rollout.agentic.credentials import resolve_provider_api_key
+from miles.rollout.agentic.node_limits import node_lock
 
 
 # The user every build command and the env server run as. The TB2 task images
@@ -106,18 +106,6 @@ def _connection_opts() -> dict:
     return {"api_key": resolve_api_key()}
 
 
-# One build per alias per process: a rollout fans out many episodes of the
-# same task at once, and every concurrent miss would otherwise start its own
-# multi-minute build. Cross-process dedup is the server's job (build cache).
-_build_locks: dict[str, threading.Lock] = {}
-_build_locks_guard = threading.Lock()
-
-
-def _build_lock(alias: str) -> threading.Lock:
-    with _build_locks_guard:
-        return _build_locks.setdefault(alias, threading.Lock())
-
-
 def ensure_task_template(
     task_dir: Path,
     *,
@@ -141,7 +129,9 @@ def ensure_task_template(
 
     task_dir = Path(task_dir)
     alias = template_alias(task_dir)
-    with _build_lock(alias):
+    # one build per alias per node: a rollout fans out many episodes of the same task at once,
+    # and every concurrent miss would otherwise start its own multi-minute build
+    with node_lock(f"openenv-e2b-build-{alias}"):
         if not force and Template.alias_exists(alias, **_connection_opts()):
             return alias
         base = resolve_docker_image(task_dir, None)

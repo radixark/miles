@@ -87,6 +87,27 @@ For structured parsing, the payload may use SGLang's
 `ChatCompletionRequest`-compatible fields, which extend the OpenAI format.
 
 
+### Where the agent runs
+
+By default (`--custom-agent-function-mode subproc`) every agent call runs in a
+fresh process on the rollout's node. One episode that blocks on a slow step, or
+crashes, then affects only itself; on the rollout's single event loop it would
+stall every other episode, long enough under many episodes for their sandbox
+requests to time out. The contract changes in three ways:
+
+- The arguments and the return value cross a process boundary, so both must be
+  picklable, and the module must be importable from the Ray workers' `PYTHONPATH`.
+- Module-level state lasts one call. A module-level semaphore no longer limits
+  anything; use `node_semaphore` or `node_lock` from
+  `miles.rollout.agentic.node_limits`, which hold across the run's processes on
+  the node. The number of concurrent calls is already bounded by the rollout's
+  batch settings.
+- Cleanup the agent leaves in a thread must be a non-daemon thread: the process
+  waits for those before it exits.
+
+`--custom-agent-function-mode inline` runs the agent on the rollout's event loop,
+as before; use it for debugging and for agents that keep state across calls.
+
 ### Optional teardown hook
 
 The module named by `--custom-agent-function-path` may expose an `abort` function
@@ -97,8 +118,9 @@ async def abort(args) -> None:
     ...  # cancel this agent's in-flight external work
 ```
 
-Miles calls this hook during oversampling abort after it stops in-flight SGLang
-generation. Use it when the agent drives an external sandbox or agent server that
+Miles calls this hook in the rollout process during oversampling abort after it
+stops in-flight SGLang generation, so under `subproc` it cannot reach the agent
+calls' module state; tell the external backend to stop, as below. Use it when the agent drives an external sandbox or agent server that
 would otherwise keep issuing completion requests until its own length limit or
 timeout. The hook is optional; modules without it continue to work.
 
