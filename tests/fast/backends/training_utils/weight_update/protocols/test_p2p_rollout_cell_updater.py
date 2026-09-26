@@ -18,10 +18,14 @@ class _RecordingTransferEngine:
         self._return_code = return_code
         self._error = error
         self._gate = gate
+        self.entered = threading.Event()
+        self.thread_idents: list[int] = []
 
     def batch_transfer_sync_write(
         self, session_id: str, source_ptrs: list[int], target_ptrs: list[int], source_lens: list[int]
     ) -> int:
+        self.thread_idents.append(threading.get_ident())
+        self.entered.set()
         if self._gate is not None:
             self._gate.wait(timeout=30)
         self.calls.append((session_id, list(source_ptrs), list(target_ptrs), list(source_lens)))
