@@ -16,13 +16,14 @@ from tests.utils.ft import launch
 
 from miles.utils.external_utils.command_utils.base_backend import ExecuteTrainConfig
 from miles.utils.external_utils.command_utils.common import ArgvManipulator
-from miles.utils.test_utils.ft_test_actions import (
-    CI_FT_TEST_ACTIONS_PATH_FLAG,
-    SLEEP_FOREVER_AT_END_ACTION,
-    FTTestAction,
+from miles.utils.test_utils.fault_injector.actions.frozen import (
+    SleepForeverAction,
     read_frozen_rollout_id,
     write_frozen_sentinel,
 )
+
+from miles.utils.test_utils.fault_injector.models import FaultHookName, FaultHookRequest
+from miles.utils.test_utils.fault_injector.static_source import CI_FAULT_HOOKS_PATH_FLAG
 
 
 # TODO ad hoc hack: revert after the args refactor
@@ -33,8 +34,8 @@ class TestTheFreezePlanFile:
         write_freeze_plan(path, frozen_rollout_id=2)
         write_freeze_plan(path, frozen_rollout_id=4)
 
-        assert [FTTestAction(**one) for one in json.loads(path.read_text())] == [
-            FTTestAction(at_rollout=4, action=SLEEP_FOREVER_AT_END_ACTION)
+        assert [FaultHookRequest.model_validate(one) for one in json.loads(path.read_text())] == [
+            FaultHookRequest(request_id="sleep_forever_at_4", hook_name=FaultHookName.ORCHESTRATOR_STEP_END, action=SleepForeverAction(), rollout_id=4)
         ]
 
     def test_arming_a_run_clears_what_the_previous_run_froze_at(self, tmp_path):
@@ -57,7 +58,7 @@ class TestTheFreezePlanFile:
         path = compute_freeze_plan_path(f"{tmp_path}/target")
         write_freeze_plan(path, frozen_rollout_id=2)
 
-        assert json.loads(path.read_text()) == compute_freeze_plan(2)
+        assert [FaultHookRequest.model_validate(one) for one in json.loads(path.read_text())] == compute_freeze_plan(2)
         assert list(path.parent.glob("*.partial")) == []
 
 
@@ -68,7 +69,7 @@ class TestTheArgumentsThatNameThePlan:
         path = compute_freeze_plan_path(f"{tmp_path}/target")
         args = with_freeze_plan_of("--save /ckpt --num-rollout 6 ", plan_path=path)
 
-        assert ArgvManipulator.get(shlex.split(args), CI_FT_TEST_ACTIONS_PATH_FLAG) == [str(path)]
+        assert ArgvManipulator.get(shlex.split(args), CI_FAULT_HOOKS_PATH_FLAG) == [str(path)]
         assert "--save /ckpt" in args
 
     def test_the_arguments_of_a_relaunch_are_the_ones_the_run_is_already_up_with(self, tmp_path):
@@ -84,7 +85,7 @@ class TestTheArgumentsThatNameThePlan:
         """The path reaches the pods as one argument, so an unquoted one would arrive as several."""
         args = with_freeze_plan_of("--save /ckpt ", plan_path=compute_freeze_plan_path(f"{tmp_path}/a dir/target"))
 
-        assert len(ArgvManipulator.get(shlex.split(args), CI_FT_TEST_ACTIONS_PATH_FLAG)) == 1
+        assert len(ArgvManipulator.get(shlex.split(args), CI_FAULT_HOOKS_PATH_FLAG)) == 1
 
 
 # TODO ad hoc hack: revert after the args refactor

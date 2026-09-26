@@ -21,7 +21,9 @@ from miles.utils.external_utils.command_utils.base_backend import ExecuteTrainCo
 from miles.utils.external_utils.command_utils.common import ArgvManipulator
 from miles.utils.external_utils.command_utils.helm_backend.naming import RUN_ID_MAX_LENGTH
 from miles.utils.misc import should_run_periodic_action
-from miles.utils.test_utils.ft_test_actions import CI_FT_TEST_ACTIONS_PATH_FLAG
+from miles.utils.test_utils.fault_injector.actions.frozen import SleepForeverAction
+from miles.utils.test_utils.fault_injector.models import FaultHookName, FaultHookRequest
+from miles.utils.test_utils.fault_injector.static_source import CI_FAULT_HOOKS_PATH_FLAG
 
 ENTRY_DIR: Path = Path(tests.e2e.deploy.__file__).parent
 
@@ -249,17 +251,20 @@ class TestTheFreezeTheRunIsInstalledWith:
         args = scenario._build_frozen_args(scenario.CHECKPOINTED, scenario._MODE, dump_dir, False)
 
         plan_path = compute_freeze_plan_path(dump_dir)
-        assert ArgvManipulator.get(shlex.split(args), CI_FT_TEST_ACTIONS_PATH_FLAG) == [str(plan_path)]
-        assert json.loads(plan_path.read_text()) == [
-            {"at_rollout": scenario.CHECKPOINTED.frozen_rollout_ids[0], "action": "sleep_forever_at_end"}
-        ]
+        assert ArgvManipulator.get(shlex.split(args), CI_FAULT_HOOKS_PATH_FLAG) == [str(plan_path)]
+        [request] = [FaultHookRequest.model_validate(one) for one in json.loads(plan_path.read_text())]
+        assert request.hook_name == FaultHookName.ORCHESTRATOR_STEP_END
+        assert request.action == SleepForeverAction()
+        assert request.rollout_id == scenario.CHECKPOINTED.frozen_rollout_ids[0]
+        assert request.target.cell_id is None
+        assert request.target.rank is None
 
     # TODO ad hoc hack: revert after the args refactor
     def test_the_baseline_side_is_never_frozen(self):
         """The baseline is the run nobody touched, and one asleep at step 2 would never finish."""
         args = scenario._build_args(scenario.CHECKPOINTED, scenario._MODE, "/dumps/baseline/plain", False)
 
-        assert not ArgvManipulator.is_defined(shlex.split(args), CI_FT_TEST_ACTIONS_PATH_FLAG)
+        assert not ArgvManipulator.is_defined(shlex.split(args), CI_FAULT_HOOKS_PATH_FLAG)
 
     def test_the_relaunch_repeats_the_frozen_arguments_the_run_is_up_with(self, tmp_path):
         """A relaunch whose argv differs from the installed one is refused as more than a hot restart."""

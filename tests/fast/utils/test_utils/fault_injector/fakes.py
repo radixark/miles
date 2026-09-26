@@ -37,22 +37,16 @@ class _CellOperations:
 
 
 class _Controller:
-    def __init__(
-        self,
-        *,
-        observed_after_reads: int = 0,
-        cell_ids: tuple[str, ...] = ("trainer-engine-actor-0",),
-        initial_cell_ids: tuple[str, ...] = (),
-    ) -> None:
+    def __init__(self, *, observed_after_reads: int = 0) -> None:
         self.reads = 0
         self.observed_after_reads = observed_after_reads
-        self._cell_ids = cell_ids
-        self._initial_cell_ids = initial_cell_ids
 
     @property
     def cell_ids(self) -> list[str]:
         self.reads += 1
-        return list(self._initial_cell_ids if self.reads <= self.observed_after_reads else self._cell_ids)
+        return [] if self.reads <= self.observed_after_reads else ["trainer-engine-actor-0"]
+
+
 
 
 class _Clock:

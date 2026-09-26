@@ -1,9 +1,11 @@
+import os
+import sys
 from collections.abc import Callable, Iterator
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from tests.fast.utils.test_utils.fault_injector.fakes import _ApiServer, _CellOperations, _Clock, _Effects, _Timer
+from tests.fast.utils.test_utils.fault_injector.fakes import _ApiServer, _Clock, _Effects, _Timer
 
 from miles.utils.audit_utils.event_logger.logger import EventLogger, read_events, set_event_logger
 from miles.utils.audit_utils.event_logger.models import FaultHookEvent
@@ -12,12 +14,44 @@ from miles.utils.test_utils.fault_injector import request_executor
 from miles.utils.test_utils.fault_injector.actions import remote
 from miles.utils.test_utils.fault_injector.actions.base import FaultHookResources
 from miles.utils.test_utils.fault_injector.controller import _FaultHookController
-from miles.utils.test_utils.fault_injector.models import FaultHookRecord
+from miles.utils.test_utils.fault_injector.models import FaultHookOwner, FaultHookRecord, FaultHookRequest
+from miles.utils.test_utils.fault_injector.static_source import render_fault_hooks
+from tests.fast.utils.test_utils.fault_injector.fakes import _CellOperations, _Controller
 
 
 @pytest.fixture
 def operations() -> _CellOperations:
     return _CellOperations()
+
+
+@pytest.fixture
+def recorded_exit_codes(monkeypatch: pytest.MonkeyPatch) -> list[int]:
+    codes: list[int] = []
+    monkeypatch.setattr(os, "_exit", codes.append)
+    return codes
+
+
+@pytest.fixture
+def configure_hooks() -> Callable[..., _FaultHookController]:
+    def configure(
+        requests: list[FaultHookRequest], *, owner: FaultHookOwner,
+        cell_id: str | None = None, rank: int | None = None,
+        operations: _CellOperations | None = None, controller: _Controller | None = None,
+        path: str | None = None,
+    ) -> _FaultHookController:
+        hooks = _FaultHookController()
+        args = SimpleNamespace(ci_fault_hooks=render_fault_hooks(requests) if path is None else None,
+                               ci_fault_hooks_path=path, update_weights_interval=1)
+        hooks.configure(resources=FaultHookResources(args=args, controller=controller, cell_operations=operations),
+                        owner=owner, cell_id=cell_id, rank=rank)
+        return hooks
+
+    return configure
+
+
+@pytest.fixture
+def parkable_script(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(sys, "argv", ["/miles/train.py"])
 
 
 @pytest.fixture

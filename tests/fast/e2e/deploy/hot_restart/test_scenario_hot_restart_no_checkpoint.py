@@ -15,7 +15,9 @@ from tests.e2e.deploy.conftest_deploy.hot_restart.scenario_hot_restart_determini
 
 from miles.utils.external_utils.command_utils.common import ArgvManipulator
 from miles.utils.misc import should_run_periodic_action
-from miles.utils.test_utils.ft_test_actions import CI_FT_TEST_ACTIONS_PATH_FLAG
+from miles.utils.test_utils.fault_injector.actions.frozen import SleepForeverAction
+from miles.utils.test_utils.fault_injector.models import FaultHookName, FaultHookRequest
+from miles.utils.test_utils.fault_injector.static_source import CI_FAULT_HOOKS_PATH_FLAG
 
 ENTRY_DIR: Path = Path(tests.e2e.deploy.__file__).parent
 
@@ -136,7 +138,10 @@ class TestBuildArgs:
         args = scenario._build_frozen_args(scenario.NO_CHECKPOINT, scenario._MODE, dump_dir, False)
 
         plan_path = compute_freeze_plan_path(dump_dir)
-        assert ArgvManipulator.get(shlex.split(args), CI_FT_TEST_ACTIONS_PATH_FLAG) == [str(plan_path)]
-        assert json.loads(plan_path.read_text()) == [
-            {"at_rollout": scenario.NO_CHECKPOINT.frozen_rollout_ids[0], "action": "sleep_forever_at_end"}
-        ]
+        assert ArgvManipulator.get(shlex.split(args), CI_FAULT_HOOKS_PATH_FLAG) == [str(plan_path)]
+        [request] = [FaultHookRequest.model_validate(one) for one in json.loads(plan_path.read_text())]
+        assert request.hook_name == FaultHookName.ORCHESTRATOR_STEP_END
+        assert request.action == SleepForeverAction()
+        assert request.rollout_id == scenario.NO_CHECKPOINT.frozen_rollout_ids[0]
+        assert request.target.cell_id is None
+        assert request.target.rank is None
