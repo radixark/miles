@@ -45,6 +45,7 @@ from miles.utils.workers.naming import DEPLOY_INSTANCE_ID_MAX_LENGTH
 
 PATH_ARGS = ["--rollout-function-path", "--custom-generate-function-path", "--custom-inference-engine-provider-path"]
 REQUIRED_ARGS = ["--rollout-batch-size", "64"]
+_P2P_ARGS = ["--update-weight-transfer-mode", "p2p"]
 DYNAMIC_BATCH_ARGS = ["--use-dynamic-batch-size", "--max-tokens-per-gpu", "1024"]
 
 _MEGATRON_PARALLEL_SIZES: dict[str, int] = {
@@ -1811,7 +1812,7 @@ class TestFaultToleranceResolutionOrder:
 
     def test_the_config_file_can_turn_fault_tolerance_on(self, tmp_path):
         """A file-only opt-in must reach the same defaults the flag would have produced."""
-        args = self._validate(tmp_path, [], "use_fault_tolerance: true\n")
+        args = self._validate(tmp_path, _P2P_ARGS, "use_fault_tolerance: true\n")
 
         assert (args.ft_components, args.mini_ft_controller_enable) == (["rollout"], True)
 
@@ -1834,7 +1835,7 @@ class TestFaultToleranceResolutionOrder:
 
     def test_the_config_file_keeps_an_explicit_api_server_port(self, tmp_path):
         """The implicit healing defaults must follow the port the file asks for, not the one the flag implied."""
-        args = self._validate(tmp_path, [], "use_fault_tolerance: true\napi_server_port: 0\n")
+        args = self._validate(tmp_path, _P2P_ARGS, "use_fault_tolerance: true\napi_server_port: 0\n")
 
         assert (args.ft_components, args.api_server_port, args.mini_ft_controller_enable) == (["rollout"], 0, False)
 
@@ -3128,11 +3129,11 @@ class TestMiniFtControllerArguments:
 
     def test_fault_tolerance_alone_turns_the_healing_loop_on(self):
         """Asking for fault tolerance heals on its own, so the loop must come up without a second flag."""
-        assert self._validate(["--use-fault-tolerance"]).mini_ft_controller_enable is True
+        assert self._validate(["--use-fault-tolerance", *_P2P_ARGS]).mini_ft_controller_enable is True
 
     def test_the_negative_flag_turns_the_healing_loop_back_off(self):
         """A run that drives healing from outside needs a way to keep the health reporting without the loop."""
-        args = self._validate(["--use-fault-tolerance", "--no-mini-ft-controller-enable"])
+        args = self._validate(["--use-fault-tolerance", "--no-mini-ft-controller-enable", *_P2P_ARGS])
 
         assert args.mini_ft_controller_enable is False
 
@@ -3340,3 +3341,104 @@ class TestSupportsPartialTargetWeightUpdate:
         args = SimpleNamespace(colocate=colocate, update_weight_transfer_mode=transfer_mode)
 
         assert supports_partial_target_weight_update(args) is expected
+
+
+class TestRolloutFaultToleranceNeedsAPartialTargetWeightUpdate:
+    def _parse(self, extra: list[str]) -> argparse.Namespace:
+        parser = argparse.ArgumentParser()
+        get_miles_extra_args_provider()(parser)
+        return parser.parse_args(extra + ["--num-rollout", "1"] + REQUIRED_ARGS)
+
+    _MESSAGE = "rollout fault tolerance needs a partial-target weight update"
+
+    def test_p2p_without_colocate_is_accepted(self) -> None:
+        """A rollout cell stopped mid update is survivable only when each engine pulls its own weights."""
+        args = self._parse(["--use-fault-tolerance", *_P2P_ARGS])
+
+        miles_validate_args(args)
+
+        assert args.ft_components == ["rollout"]
+        assert supports_partial_target_weight_update(args)
+
+    def test_the_default_broadcast_transfer_mode_is_rejected(self) -> None:
+        """A broadcast blocks on every engine, so losing one during the update hangs the trainer."""
+        args = self._parse(["--use-fault-tolerance"])
+
+        with pytest.raises(AssertionError, match=self._MESSAGE) as exc_info:
+            miles_validate_args(args)
+
+        assert "--update-weight-transfer-mode p2p" in str(exc_info.value)
+        assert "a rollout cell may be stopped during a weight update" in str(exc_info.value)
+
+    def test_p2p_with_colocate_is_rejected(self) -> None:
+        """Colocate hands weights over by CUDA IPC from ranks that share the engine's gpus."""
+        args = self._parse(["--use-fault-tolerance", *_P2P_ARGS, "--colocate"])
+
+        with pytest.raises(AssertionError, match=self._MESSAGE) as exc_info:
+            miles_validate_args(args)
+
+        assert "no --colocate" in str(exc_info.value)
+
+    def test_the_disk_delta_transfer_mode_is_rejected(self) -> None:
+        """Only p2p is a partial-target update; every other mode fails the same way broadcast does."""
+        args = self._parse(["--use-fault-tolerance", "--update-weight-transfer-mode", "disk-delta"])
+
+        with pytest.raises(AssertionError, match=self._MESSAGE):
+            miles_validate_args(args)
+
+    def test_an_explicitly_requested_rollout_component_is_checked_too(self) -> None:
+        """The check reads the resolved component list, not the flag that happened to imply it."""
+        args = self._parse(["--use-fault-tolerance", "--ft-components", "rollout"])
+
+        with pytest.raises(AssertionError, match=self._MESSAGE):
+            miles_validate_args(args)
+
+    def test_a_mixed_component_list_containing_rollout_is_rejected(self) -> None:
+        """Adding the trainer component must not buy the rollout component an exemption."""
+        args = self._parse(["--use-fault-tolerance", "--ft-components", "rollout", "train"])
+
+        with pytest.raises(AssertionError, match=self._MESSAGE):
+            miles_validate_args(args)
+
+    def test_trainer_only_fault_tolerance_keeps_the_broadcast_transfer_mode(self) -> None:
+        """Trainer cells are healed between updates, so the transfer mode is none of this check's business."""
+        args = _parse_megatron_args(["--use-fault-tolerance", "--ft-components", "train"] + DYNAMIC_BATCH_ARGS)
+
+        miles_validate_args(args)
+
+        assert args.ft_components == ["train"]
+        assert args.update_weight_transfer_mode == "broadcast"
+
+    def test_trainer_only_fault_tolerance_keeps_colocate(self) -> None:
+        """The colocated half of the constraint is equally scoped to the rollout component."""
+        args = _parse_megatron_args(
+            ["--use-fault-tolerance", "--ft-components", "train", "--colocate"] + DYNAMIC_BATCH_ARGS
+        )
+
+        miles_validate_args(args)
+
+        assert (args.ft_components, args.colocate) == (["train"], True)
+
+    def test_a_run_without_fault_tolerance_is_unconstrained(self) -> None:
+        """Nothing stops a cell mid update when no healing loop exists to stop it."""
+        args = self._parse(["--colocate"])
+
+        miles_validate_args(args)
+
+        assert args.ft_components == []
+
+    def test_a_config_file_that_turns_rollout_fault_tolerance_on_is_checked(self, tmp_path) -> None:
+        """The check runs after the file override, so a file-only opt-in cannot slip past it."""
+        config_path = tmp_path / "custom.yaml"
+        config_path.write_text("use_fault_tolerance: true\n")
+        args = self._parse(["--custom-config-path", str(config_path)])
+
+        with pytest.raises(AssertionError, match=self._MESSAGE):
+            miles_validate_args(args)
+
+    def test_the_eval_fleet_check_still_runs_for_an_otherwise_valid_rollout_run(self) -> None:
+        """The new assertion must not shadow the one that follows it."""
+        args = self._parse(["--use-fault-tolerance", *_P2P_ARGS, "--eval-num-gpus", "8"])
+
+        with pytest.raises(AssertionError, match="dedicated eval fleet"):
+            miles_validate_args(args)
