@@ -35,7 +35,12 @@ class TestTheFreezePlanFile:
         write_freeze_plan(path, frozen_rollout_id=4)
 
         assert [FaultHookRequest.model_validate(one) for one in json.loads(path.read_text())] == [
-            FaultHookRequest(request_id="sleep_forever_at_4", hook_name=FaultHookName.ORCHESTRATOR_STEP_END, action=SleepForeverAction(), rollout_id=4)
+            FaultHookRequest(
+                request_id="sleep_forever_at_4",
+                hook_name=FaultHookName.ORCHESTRATOR_STEP_END,
+                action=SleepForeverAction(),
+                rollout_id=4,
+            )
         ]
 
     def test_arming_a_run_clears_what_the_previous_run_froze_at(self, tmp_path):

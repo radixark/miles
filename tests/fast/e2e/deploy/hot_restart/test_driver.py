@@ -59,7 +59,12 @@ class TestTheFreezePlan:
         """The run reads this plan, and it is the only thing that decides where the run stands still."""
         [action] = compute_freeze_plan(3)
 
-        assert action == FaultHookRequest(request_id="sleep_forever_at_3", hook_name=FaultHookName.ORCHESTRATOR_STEP_END, action=SleepForeverAction(), rollout_id=3)
+        assert action == FaultHookRequest(
+            request_id="sleep_forever_at_3",
+            hook_name=FaultHookName.ORCHESTRATOR_STEP_END,
+            action=SleepForeverAction(),
+            rollout_id=3,
+        )
 
     def test_a_run_with_no_freeze_left_carries_an_empty_plan(self):
         """The last relaunch has to train to the end, and a plan repeating the old step would freeze it again."""

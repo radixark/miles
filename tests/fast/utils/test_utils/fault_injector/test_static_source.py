@@ -15,10 +15,14 @@ from miles.utils.test_utils.fault_injector.static_source import (
     write_fault_hooks,
 )
 
-_REQUEST = FaultHookRequest.model_validate({
-    "request_id": "stop", "hook_name": "trainer_controller_step_end", "rollout_id": 2,
-    "action": {"kind": "stop_cell", "cell_id": "trainer-engine-actor-0"},
-})
+_REQUEST = FaultHookRequest.model_validate(
+    {
+        "request_id": "stop",
+        "hook_name": "trainer_controller_step_end",
+        "rollout_id": 2,
+        "action": {"kind": "stop_cell", "cell_id": "trainer-engine-actor-0"},
+    }
+)
 
 
 class TestStaticSource:
@@ -41,11 +45,18 @@ class TestStaticSource:
         with pytest.raises(AttributeError):
             read_declared_fault_hooks(SimpleNamespace())
 
-    @pytest.mark.parametrize("change", [
-        {"bogus": 5}, {"cell_index": -1}, {"rollout_id": -1}, {"request_id": ""},
-        {"action": {"kind": "not_a_real_action"}}, {"action": {"kind": "stop_cell"}},
-        {"action": {"kind": "stop_cell", "cell_id": "trainer-engine-actor-0", "bogus": 5}},
-    ])
+    @pytest.mark.parametrize(
+        "change",
+        [
+            {"bogus": 5},
+            {"cell_index": -1},
+            {"rollout_id": -1},
+            {"request_id": ""},
+            {"action": {"kind": "not_a_real_action"}},
+            {"action": {"kind": "stop_cell"}},
+            {"action": {"kind": "stop_cell", "cell_id": "trainer-engine-actor-0", "bogus": 5}},
+        ],
+    )
     def test_invalid_declarations_are_rejected_before_owner_filtering(self, change: dict[str, object]) -> None:
         """Invalid requests must fail even when their owner belongs to another process."""
         request = _REQUEST.model_dump(mode="json") | change
@@ -64,16 +75,32 @@ class TestStaticSource:
     def test_missing_file_fails_instead_of_disarming_the_run(self, tmp_path: Path) -> None:
         """A declared file must exist before a run starts."""
         with pytest.raises(AssertionError, match="does not exist"):
-            read_declared_fault_hooks(SimpleNamespace(ci_fault_hooks=None, ci_fault_hooks_path=str(tmp_path / "absent")))
+            read_declared_fault_hooks(
+                SimpleNamespace(ci_fault_hooks=None, ci_fault_hooks_path=str(tmp_path / "absent"))
+            )
 
     def test_two_plan_sources_are_rejected(self, tmp_path: Path) -> None:
         """Two declarations must never silently choose one source."""
         with pytest.raises(AssertionError, match="both name the hooks"):
-            read_declared_fault_hooks(SimpleNamespace(ci_fault_hooks=render_fault_hooks([_REQUEST]), ci_fault_hooks_path=str(tmp_path / "plan")))
+            read_declared_fault_hooks(
+                SimpleNamespace(
+                    ci_fault_hooks=render_fault_hooks([_REQUEST]), ci_fault_hooks_path=str(tmp_path / "plan")
+                )
+            )
 
     def test_process_request_defaults_preserve_wildcard_matching(self) -> None:
         """Omitted rank and attempt filters must keep the new request wildcard semantics."""
-        raw = json.dumps([{"request_id": "crash", "hook_name": "trainer_step_before_allreduce", "action": {"kind": "exit_process"}, "rollout_id": 3, "target": {"kind": "declared", "cell_id": "trainer-engine-actor-00002"}}])
+        raw = json.dumps(
+            [
+                {
+                    "request_id": "crash",
+                    "hook_name": "trainer_step_before_allreduce",
+                    "action": {"kind": "exit_process"},
+                    "rollout_id": 3,
+                    "target": {"kind": "declared", "cell_id": "trainer-engine-actor-00002"},
+                }
+            ]
+        )
         [request] = read_declared_fault_hooks(SimpleNamespace(ci_fault_hooks=raw, ci_fault_hooks_path=None))
         assert request.target.cell_id == "trainer-engine-actor-00002"
         assert request.target.rank is None

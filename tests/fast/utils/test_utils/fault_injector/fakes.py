@@ -47,8 +47,6 @@ class _Controller:
         return [] if self.reads <= self.observed_after_reads else ["trainer-engine-actor-0"]
 
 
-
-
 class _Clock:
     def __init__(self, now: float = 100.0) -> None:
         self.now = now

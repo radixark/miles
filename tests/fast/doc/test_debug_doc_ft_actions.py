@@ -43,9 +43,7 @@ class TestDocumentedFaultInjectionExample:
         assert len(requests) == len(documented_requests)
         assert all(isinstance(request, FaultHookRequest) for request in requests)
 
-    def test_the_documented_example_targets_a_cell_by_id(
-        self, documented_requests: list[dict[str, object]]
-    ) -> None:
+    def test_the_documented_example_targets_a_cell_by_id(self, documented_requests: list[dict[str, object]]) -> None:
         """The example must identify the actual cell instead of a retired index field."""
         for request in documented_requests:
             cell_id = request["action"]["cell_id"]
@@ -56,8 +54,7 @@ class TestDocumentedFaultInjectionExample:
     def test_the_paragraph_documents_exactly_the_supported_actions(self, fault_injection_paragraph: str) -> None:
         """Every action kind must remain discoverable in the fault injection paragraph."""
         identifiers = {
-            span for span in re.findall(r"`([^`]+)`", fault_injection_paragraph)
-            if re.fullmatch(r"[a-z][a-z_]*", span)
+            span for span in re.findall(r"`([^`]+)`", fault_injection_paragraph) if re.fullmatch(r"[a-z][a-z_]*", span)
         }
 
         assert identifiers - {hook.value for hook in FaultHookName} == _SUPPORTED_ACTIONS
