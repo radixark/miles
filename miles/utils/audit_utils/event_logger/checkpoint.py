@@ -20,11 +20,8 @@ def snapshot(args: Namespace, directory: Path) -> None:
         return
 
     src = Path(args.save_debug_event_data)
-    if not src.is_dir():
-        return
+    assert src.is_dir(), f"--save-debug-event-data names {src}, and a checkpoint cannot copy a log that is not there"
 
-    if directory.exists():
-        shutil.rmtree(directory)
     shutil.copytree(src, directory)
     logger.info("Snapshotted event dir %s -> %s", src, directory)
 
