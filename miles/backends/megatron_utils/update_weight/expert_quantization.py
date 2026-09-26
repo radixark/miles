@@ -21,6 +21,7 @@ class _TensorMetadata:
 class _PayloadMetadata:
     units: tuple[tuple[_TensorMetadata, ...], ...]
     nbytes: int
+    alignment: int
     dtype_bytes: tuple[tuple[torch.dtype, int], ...]
 
 
@@ -32,9 +33,11 @@ class ExpertGather:
     or topology changes. Tensor values and storage may change on every call.
     Packing checks the local layout before starting payload collectives.
 
-    Each call allocates fresh exact-size byte buffers. Returned typed views keep
-    their receive storage alive; inputs are never modified. ``device`` selects
-    the communication and output device, including for custom CUDA backends.
+    The existing process-group reference and layout are reused across updates; Work
+    handles belong to individual operations and are waited before returning.
+    Each call allocates fresh receive storage, since callers may retain earlier
+    outputs. Rank segments are padded only for dtype alignment, never to the
+    largest rank's payload. ``device`` selects communication and output storage.
     """
 
     def __init__(self, *, group: dist.ProcessGroup):
@@ -42,6 +45,10 @@ class ExpertGather:
         self._source_ranks = tuple(dist.get_process_group_ranks(group))
         self._local_index = self._source_ranks.index(dist.get_rank())
         self._metadata: tuple[_PayloadMetadata, ...] | None = None
+        self._payload_sizes: tuple[int, ...] = ()
+        self._single_source: int | None = None
+        self._total_bytes = 0
+        self._uniform = False
 
     def __call__(
         self, units: list[list[tuple[str, torch.Tensor]]], *, device: torch.device | str
@@ -52,25 +59,42 @@ class ExpertGather:
             metadata = [None] * len(self._source_ranks)
             dist.all_gather_object(metadata, _describe_units(units), group=self._group)
             self._metadata = tuple(metadata)
+            alignment = max(info.alignment for info in self._metadata)
+            self._payload_sizes = tuple(
+                (info.nbytes + alignment - 1) // alignment * alignment for info in self._metadata
+            )
+            self._total_bytes = sum(self._payload_sizes)
+            self._uniform = len(set(self._payload_sizes)) == 1
+            sources = [index for index, size in enumerate(self._payload_sizes) if size]
+            self._single_source = sources[0] if len(sources) == 1 else None
 
         local_metadata = self._metadata[self._local_index]
-        local_payload = torch.empty(local_metadata.nbytes, dtype=torch.uint8, device=device)
+        storage = torch.empty(self._total_bytes, dtype=torch.uint8, device=device)
+        payloads = list(storage.split(self._payload_sizes))
+        local_payload = payloads[self._local_index]
         _pack_units(units, local_metadata, local_payload)
-        gathered = []
-        handles = []
-        for index, (rank, metadata) in enumerate(zip(self._source_ranks, self._metadata, strict=True)):
-            payload = (
-                local_payload
-                if index == self._local_index
-                else torch.empty(metadata.nbytes, dtype=torch.uint8, device=device)
-            )
-            if metadata.nbytes:
-                handles.append(dist.broadcast(payload, src=rank, group=self._group, async_op=True))
-            gathered.extend(_unpack_units(metadata, payload))
-        # Queue every source before waiting. The views retain each byte buffer.
-        for handle in handles:
+        handle = self._gather_payloads(storage, payloads, local_payload)
+        # Build views on the CPU while the asynchronous transfer is in flight.
+        gathered = [
+            unit
+            for metadata, payload in zip(self._metadata, payloads, strict=True)
+            for unit in _unpack_units(metadata, payload)
+        ]
+        if handle is not None:
             handle.wait()
         return gathered
+
+    def _gather_payloads(self, storage, payloads, local_payload):
+        if not self._total_bytes:
+            return None
+        if self._single_source is not None:
+            source = self._single_source
+            return dist.broadcast(payloads[source], src=self._source_ranks[source], group=self._group, async_op=True)
+        if self._uniform:
+            # Native NCCL all-gather, in place: no flattened temporary or copies.
+            return dist.all_gather_into_tensor(storage, local_payload, group=self._group, async_op=True)
+        # NCCL coalesces uneven all-gather internally into one Work handle.
+        return dist.all_gather(payloads, local_payload, group=self._group, async_op=True)
 
 
 def _describe_units(units):
@@ -99,7 +123,7 @@ def _describe_units(units):
             offset += nbytes
         metadata.append(tuple(unit_metadata))
     dtype_bytes = tuple((dtype, offset // item_size * item_size) for dtype, item_size in dtype_sizes.items())
-    return _PayloadMetadata(tuple(metadata), offset, dtype_bytes)
+    return _PayloadMetadata(tuple(metadata), offset, max(dtype_sizes.values(), default=1), dtype_bytes)
 
 
 def _pack_units(units, metadata, payload):
@@ -116,9 +140,15 @@ def _pack_units(units, metadata, payload):
 def _unpack_units(metadata, payload):
     # Crop odd byte tails before reinterpreting the common storage by dtype.
     typed_payloads = {dtype: payload[:nbytes].view(dtype) for dtype, nbytes in metadata.dtype_bytes}
+    storage_offsets = {dtype: tensor.storage_offset() for dtype, tensor in typed_payloads.items()}
     return [
         [
-            (info.name, typed_payloads[info.dtype].as_strided(info.shape, info.strides, info.storage_offset))
+            (
+                info.name,
+                typed_payloads[info.dtype].as_strided(
+                    info.shape, info.strides, storage_offsets[info.dtype] + info.storage_offset
+                ),
+            )
             for info in unit_metadata
         ]
         for unit_metadata in metadata.units
