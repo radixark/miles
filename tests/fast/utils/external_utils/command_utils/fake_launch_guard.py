@@ -49,7 +49,7 @@ class RecordingLaunchGuard(LaunchGuard):
         (kwargs,) = [kwargs for called, kwargs in self.calls if called == name]
         return kwargs
 
-    def _record(self, name: str, **kwargs: Any) -> None:
-        self.calls.append((name, kwargs))
-        if name in self.refuse:
-            raise GuardRefusedError(f"guard refused {name}")
+    def _record(self, call: str, /, **kwargs: Any) -> None:
+        self.calls.append((call, kwargs))
+        if call in self.refuse:
+            raise GuardRefusedError(f"guard refused {call}")
