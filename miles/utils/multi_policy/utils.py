@@ -47,14 +47,15 @@ async def create_trainers(args, *, rollout_executor: BaseWorkerHandle) -> dict[s
         )
     leader_model_id = resolve_megatron_config(args).leader_model_id
     leader_rollout_id = trainers[leader_model_id].start_rollout_id - 1
-    _assert_global_rollout_state_exists(args, leader_rollout_id=leader_rollout_id)
-    await rollout_executor.load(leader_rollout_id)
+    if leader_rollout_id >= 0:
+        _assert_global_rollout_state_exists(args, leader_rollout_id=leader_rollout_id)
+        await rollout_executor.load(leader_rollout_id)
 
     return trainers
 
 
 def _assert_global_rollout_state_exists(args, *, leader_rollout_id: int) -> None:
-    if leader_rollout_id < 0 or not args.rollout_global_dataset or args.load is None:
+    if not args.rollout_global_dataset or args.load is None:
         return
 
     path = Path(args.load) / "rollout" / f"global_dataset_state_dict_{leader_rollout_id}.pt"
