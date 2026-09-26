@@ -422,7 +422,7 @@ class _FakeExecutor:
         self.submitted = 0
         self._futures = futures
 
-    def submit(self, fn: Any, *args: Any) -> _FakeFuture:
+    def submit(self, fn: Any, *args: Any, **kwargs: Any) -> _FakeFuture:
         future = self._futures[self.submitted]
         self.submitted += 1
         return future
