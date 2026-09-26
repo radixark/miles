@@ -9,6 +9,15 @@ import tilelang
 import torch
 from tilelang import language as T
 
+from miles_plugins.models.deepseek_v4.ops.kernel.tiling import (
+    DeviceLimits,
+    ForwardTiling,
+    build_with_largest_fitting_tiling,
+    current_target,
+    shared_memory_required,
+    sparse_mla_forward_tilings,
+)
+
 
 @tilelang.jit(
     out_idx=[-2, -1],
@@ -25,6 +34,7 @@ def sparse_mqa_fwd(
     block_I=64,
     num_stages=2,
     threads=256,
+    block_H=None,
 ):
     assert dim == tilelang.math.next_power_of_2(dim), f"dim must be power of 2, got {dim}"
     assert topk % block_I == 0, f"topk ({topk}) must be divisible by block_I ({block_I})"
@@ -53,13 +63,19 @@ def sparse_mqa_fwd(
     NI = tilelang.cdiv(topk, block_I)
     D = dim
 
-    if heads > 64:
-        assert heads % 64 == 0, "heads should be a multiple of 64"
-        REPLICATE_H = heads // 64
+    # block_H caps how many heads one workgroup stages in LDS. Q_shared/O_shared are
+    # [H_per_block, D], so at D=512 bf16 a 64-head block is 65536 B for Q_shared alone, leaving
+    # nothing for KV_shared/S_shared/Lse_shared on a 64 KiB budget. None keeps the original
+    # behaviour: blocks of 64, and only when heads > 64.
+    if block_H is None:
+        block_H = 64
+    if heads > block_H:
+        assert heads % block_H == 0, f"heads ({heads}) should be a multiple of block_H ({block_H})"
+        REPLICATE_H = heads // block_H
+        H_per_block = block_H
     else:
         REPLICATE_H = 1
-
-    H_per_block = padded_H if REPLICATE_H == 1 else 64
+        H_per_block = padded_H
 
     is_hip = getattr(torch.version, "hip", None)
     if is_hip:
@@ -83,6 +99,7 @@ def sparse_mqa_fwd(
             O_shared = T.alloc_shared([H_per_block, D], dtype)
             Lse_shared = T.alloc_shared([H_per_block], accum_dtype)
             mask = T.alloc_fragment([BI], "bool")
+            safe_index = T.alloc_fragment([BI], indices_dtype)
 
             acc_o = T.alloc_fragment([H_per_block, D], accum_dtype)
             acc_s = T.alloc_fragment([H_per_block, BI], accum_dtype)
@@ -100,7 +117,7 @@ def sparse_mqa_fwd(
             b_i = by
             s_i = bx if REPLICATE_H == 1 else (bx // REPLICATE_H)
 
-            H0 = 0 if REPLICATE_H == 1 else (bx % REPLICATE_H) * 64
+            H0 = 0 if REPLICATE_H == 1 else (bx % REPLICATE_H) * H_per_block
             H1 = H0 + H_per_block
 
             T.copy(Q[b_i, s_i, H0:H1, :D], Q_shared)
@@ -108,9 +125,13 @@ def sparse_mqa_fwd(
             for i_i in T.Pipelined(NI, num_stages=kernel_num_stages):
                 for bi_i in T.Parallel(BI):
                     mask[bi_i] = Indices[b_i, s_i, i_i * BI + bi_i] != -1
+                    # A -1 slot indexes KV off the front of this batch element, and off
+                    # the whole allocation when b_i == 0. Clamp to a real row; the mask
+                    # still drives acc_s to -inf below, so P is exactly zero either way.
+                    safe_index[bi_i] = T.max(Indices[b_i, s_i, i_i * BI + bi_i], 0)
 
                 for bi_i, d_i in T.Parallel(BI, D):
-                    KV_shared[bi_i, d_i] = KV[b_i, Indices[b_i, s_i, i_i * BI + bi_i], d_i]
+                    KV_shared[bi_i, d_i] = KV[b_i, safe_index[bi_i], d_i]
 
                 for h_i, bi_i in T.Parallel(H_per_block, BI):
                     acc_s[h_i, bi_i] = T.if_then_else(mask[bi_i], 0, -T.infinity(acc_s.dtype))
@@ -156,6 +177,67 @@ def sparse_mqa_fwd(
     return main
 
 
+_fitted_tiling: dict[tuple, ForwardTiling] = {}
+
+
+def _compile_within_shared_mem(heads, dim, topk, sm_scale, block_I, num_stages, threads):
+    """Compile sparse_mqa_fwd with the largest tiling this target can host. Memoized per shape."""
+
+    def build(tiling):
+        return sparse_mqa_fwd(
+            heads,
+            dim,
+            topk,
+            sm_scale,
+            block_I=tiling.block_I,
+            num_stages=tiling.num_stages,
+            threads=tiling.threads,
+            block_H=tiling.block_H,
+        )
+
+    key = (heads, dim, topk, sm_scale, block_I, num_stages, threads)
+    if key in _fitted_tiling:
+        return build(_fitted_tiling[key])
+
+    requested = ForwardTiling(num_stages, block_I, threads, None)
+    target = current_target()
+    limits = DeviceLimits.from_target(target)
+
+    def required_bytes(tiling):
+        prim_func = sparse_mqa_fwd.get_tir(
+            heads,
+            dim,
+            topk,
+            sm_scale,
+            block_I=tiling.block_I,
+            num_stages=tiling.num_stages,
+            threads=tiling.threads,
+            block_H=tiling.block_H,
+        )
+        return shared_memory_required(prim_func, target)
+
+    kernel, tiling = build_with_largest_fitting_tiling(
+        requested=requested,
+        derived=(
+            candidate
+            for candidate in sparse_mla_forward_tilings(
+                padded_heads=max(tilelang.math.next_power_of_2(heads), 16),
+                topk=topk,
+                block_I=block_I,
+                limits=limits,
+            )
+            if candidate != requested
+        ),
+        compile_tiling=build,
+        required_bytes=required_bytes,
+        budget=limits.shared_memory_per_block,
+        describe=lambda t: t.describe(),
+        what="sparse_mqa_fwd",
+    )
+    _fitted_tiling[key] = tiling
+    return kernel
+
+
 def sparse_mqa_fwd_interface(q, kv, attn_sink, topk_idxs, sm_scale=None, block_I=64, num_stages=2, threads=256):
     """Forward interface for V4 sparse MQA attention.
 
@@ -183,14 +265,6 @@ def sparse_mqa_fwd_interface(q, kv, attn_sink, topk_idxs, sm_scale=None, block_I
         topk_idxs = torch.cat([topk_idxs, pad], dim=-1).contiguous()
         topk = padded_topk
 
-    kernel = sparse_mqa_fwd(
-        heads,
-        dim,
-        topk,
-        sm_scale,
-        block_I=block_I,
-        num_stages=num_stages,
-        threads=threads,
-    )
+    kernel = _compile_within_shared_mem(heads, dim, topk, sm_scale, block_I, num_stages, threads)
     out, lse = kernel(q, kv, attn_sink, topk_idxs)
     return out, lse
