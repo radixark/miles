@@ -363,17 +363,24 @@ def main():
     init_gloo_group()
     assert dist.get_world_size() == 8, "This qualification requires exactly eight ranks"
     results = []
-    for ep, edp, pp in ((4, 2, 1), (2, 2, 2), (1, 2, 4), (2, 4, 1)):
+    for ep, edp, pp in ((4, 2, 1), (2, 2, 2), (1, 2, 4), (2, 4, 1), (1, 8, 1)):
         state = _create_parallel_state(ep, edp, pp)
         cases = [(2, False, True, True), (2, True, False, True), (2, True, True, True), (2, False, False, True)]
         if (ep, edp, pp) == (2, 2, 2):
             cases += [(3, False, True, True), (3, True, False, True), (2, True, False, False)]
         if edp == 4:
             cases = [(1, False, True, True), (1, True, False, True)]
+        if edp == 8:
+            # Match 256 experts / EP64 / EDP8 locally: four complete experts
+            # shared by eight replicas, without claiming a 512-GPU run.
+            cases = [(4, True, True, True)]
         for local_experts, gather_pp, sender_only, quantized in cases:
             result = _run_case(
                 state, local_experts=local_experts, gather_pp=gather_pp, sender_only=sender_only, quantized=quantized
             )
+            if edp == 8:
+                assert result["expert_conversions_per_rank"] == [2, 2, 2, 2, 0, 0, 0, 0], result
+                assert result["local_expert_edp_owners"] == [0, 1, 2, 3], result
             results.append(result)
             if dist.get_rank() == 0:
                 print("EP_LOCAL_CASE " + json.dumps(result, sort_keys=True), flush=True)
