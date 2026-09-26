@@ -11,7 +11,14 @@ from pydantic import ValidationError
 from miles.utils.http_utils import MILES_HOST_IP_ENV
 from miles.utils.misc import get_current_node_ip
 from miles.utils.test_utils.fault_injector.actions.base import FaultHookResources
-from miles.utils.test_utils.fault_injector.actions.process import DeadlockThreadAction, ExitProcessAction, FreezeProcessAction, KillProcessAction, SegfaultProcessAction, StopProcessAction
+from miles.utils.test_utils.fault_injector.actions.process import (
+    DeadlockThreadAction,
+    ExitProcessAction,
+    FreezeProcessAction,
+    KillProcessAction,
+    SegfaultProcessAction,
+    StopProcessAction,
+)
 from miles.utils.test_utils.fault_injector.actions.union import FaultAction
 from miles.utils.test_utils.fault_injector.controller import FaultHookCommand, FaultHookOperation, _FaultHookController
 from miles.utils.test_utils.fault_injector.models import FaultHookName, FaultHookRequest, FaultHookStatus
@@ -209,11 +216,15 @@ class TestControlFaultHook:
         monkeypatch.setattr(command_actor, "fault_hook_controller", hooks)
         return hooks
 
-    def test_a_sigkill_reaches_the_worker_process_group(self, monkeypatch: pytest.MonkeyPatch, isolated_hooks: _FaultHookController) -> None:
+    def test_a_sigkill_reaches_the_worker_process_group(
+        self, monkeypatch: pytest.MonkeyPatch, isolated_hooks: _FaultHookController
+    ) -> None:
         """Crashing a worker must include every subprocess that belongs to that worker."""
         killed: list[tuple[int, signal.Signals]] = []
         monkeypatch.setattr(process_utils, "kill_process", _refuse_to_kill)
-        monkeypatch.setattr(process_utils, "signal_process_tree", lambda process, signum: killed.append((process.pid, signum)))
+        monkeypatch.setattr(
+            process_utils, "signal_process_tree", lambda process, signum: killed.append((process.pid, signum))
+        )
         actor = CommandActor()
         actor._process = _FakeProcess(pid=4321)
         isolated_hooks.configure(resources=FaultHookResources(managed_process=actor._process))
@@ -243,7 +254,9 @@ class TestControlFaultHook:
             process_utils.kill_process_tree(actor._process)
 
     @pytest.mark.parametrize("action", [ExitProcessAction(), SegfaultProcessAction(), DeadlockThreadAction()])
-    def test_self_inflicted_actions_are_rejected_for_a_subprocess(self, monkeypatch: pytest.MonkeyPatch, isolated_hooks: _FaultHookController, action: FaultAction) -> None:
+    def test_self_inflicted_actions_are_rejected_for_a_subprocess(
+        self, monkeypatch: pytest.MonkeyPatch, isolated_hooks: _FaultHookController, action: FaultAction
+    ) -> None:
         """A process exits, segfaults and deadlocks from the inside; no signal an outsider sends reproduces that."""
         monkeypatch.setattr(process_utils, "kill_process_tree", _refuse_to_kill)
         actor = CommandActor()
@@ -259,9 +272,15 @@ class TestControlFaultHook:
         actor._process = _FakeProcess(pid=4321)
 
         with pytest.raises(ValidationError, match="union_tag_invalid"):
-            actor.control_fault_hook(FaultHookCommand.model_validate({"operation": "set", "request": {"request_id": "test", "action": {"kind": "nuke"}}}))
+            actor.control_fault_hook(
+                FaultHookCommand.model_validate(
+                    {"operation": "set", "request": {"request_id": "test", "action": {"kind": "nuke"}}}
+                )
+            )
 
-    def test_the_actor_process_survives_the_injection(self, monkeypatch: pytest.MonkeyPatch, isolated_hooks: _FaultHookController) -> None:
+    def test_the_actor_process_survives_the_injection(
+        self, monkeypatch: pytest.MonkeyPatch, isolated_hooks: _FaultHookController
+    ) -> None:
         """Production loses the engine, not its supervisor, so crashing the actor would be the wrong fault."""
         monkeypatch.setattr(os, "kill", _refuse_to_inject)
         monkeypatch.setattr(process_utils, "signal_process_tree", lambda process, signum: None)
@@ -285,7 +304,9 @@ class _FakeProcess:
 
 
 def _fault_command(action: FaultAction) -> FaultHookCommand:
-    return FaultHookCommand(operation=FaultHookOperation.SET, request=FaultHookRequest(request_id="test", action=action))
+    return FaultHookCommand(
+        operation=FaultHookOperation.SET, request=FaultHookRequest(request_id="test", action=action)
+    )
 
 
 def _refuse_to_inject(pid: int, signum: signal.Signals) -> None:
