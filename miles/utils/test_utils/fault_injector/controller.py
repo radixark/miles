@@ -1,6 +1,7 @@
 import asyncio
 import threading
 from collections.abc import Coroutine, Iterator
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from enum import StrEnum
 from typing import Any
@@ -177,9 +178,8 @@ def _run_blocking(coroutine: Coroutine[Any, Any, None]) -> None:
     except RuntimeError:
         asyncio.run(coroutine)
         return
-    runner = threading.Thread(target=asyncio.run, args=(coroutine,), daemon=True)
-    runner.start()
-    runner.join()
+    with ThreadPoolExecutor(max_workers=1) as runner:
+        runner.submit(asyncio.run, coroutine).result()
 
 
 fault_hook_controller = _FaultHookController()
