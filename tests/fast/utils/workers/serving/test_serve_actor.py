@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 import threading
+import signal
 from collections.abc import Callable
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
+from miles.utils.test_utils.fault_injector.actions.process import StopProcessAction
+from miles.utils.test_utils.fault_injector.controller import FaultHookCommand, FaultHookOperation, _FaultHookController
+from miles.utils.test_utils.fault_injector.models import FaultHookRequest, FaultHookStatus
 from miles.utils.workers.serving import serve_actor as serve_actor_module
 from miles.utils.workers.serving.serve_actor import ServeActor, serve_until_stopped
 from miles.utils.workers.serving.utils import IPV6_WILDCARD_HOST
@@ -162,13 +166,17 @@ class TestTheActorDiesWithItsServer:
 class TestFaultInjection:
     def test_the_actor_forwards_an_injected_fault_to_the_process(self, monkeypatch):
         """Fault injection targets the process the worker runs in, which is now the actor itself."""
-        injected: list[str] = []
-        monkeypatch.setattr(serve_actor_module, "_inject_fault", lambda *, mode: injected.append(mode))
+        injected: list[tuple[int, signal.Signals]] = []
+        monkeypatch.setattr(serve_actor_module, "fault_hook_controller", _FaultHookController())
+        monkeypatch.setattr(serve_actor_module.os, "kill", lambda pid, signum: injected.append((pid, signum)))
         actor = ServeActor(build_worker=_build_worker())
+        command = FaultHookCommand(operation=FaultHookOperation.SET, request=FaultHookRequest(request_id="test", action=StopProcessAction()))
 
-        actor.inject_fault("hang")
+        record = actor.control_fault_hook(command)
 
-        assert injected == ["hang"]
+        assert injected == [(serve_actor_module.os.getpid(), signal.SIGSTOP)]
+        assert record.request == command.request
+        assert record.status == FaultHookStatus.FIRED
 
 
 class TestTheRealThreadStarts:

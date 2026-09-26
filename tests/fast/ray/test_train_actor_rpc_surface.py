@@ -24,14 +24,14 @@ DRIVEN_METHODS = (
     "update_weights",
     "get_train_parallel_config",
     "get_heartbeat_status",
-    "inject_fault",
+    "control_fault_hook",
     "kill_self",
     "configure_master_addr_and_port",
     "propose_master_addr_and_port",
 )
 
 
-MEGATRON_ONLY_DRIVEN_METHODS = frozenset({"reconfigure_indep_dp", "send_ckpt", "reconcile_adapters"})
+MEGATRON_ONLY_DRIVEN_METHODS = frozenset({"reconfigure_indep_dp", "send_ckpt"})
 
 
 class TestTheTrainerSurfaceIsCallableOverRpc:
@@ -184,6 +184,7 @@ class TestTheConcreteBackends:
         specs = collect_rpc_method_specs(actor_module.MegatronTrainRayActor)
 
         assert MEGATRON_ONLY_DRIVEN_METHODS <= set(specs)
+        assert "reconcile_adapters" not in specs
 
     def test_the_fsdp_actor_is_accepted(self):
         """The second backend shares the driver's call sites, so it shares the requirement."""
