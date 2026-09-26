@@ -119,6 +119,15 @@ class TestModelCompanion:
         assert witness.sample_consumptions is parameter
         assert parameter.shape == (2, 5)
 
+    def test_state_dict_without_companion_entries_loads_as_an_empty_record(self) -> None:
+        """A base Megatron checkpoint predating the companion loads instead of raising KeyError."""
+        witness = ModelCompanion(pipeline_rank=0, chunk_index=0, replica_id=(0, 0, 0))
+
+        witness.load_state_dict({})
+
+        assert witness.snapshot_sample_consumptions(is_skipped=False) == {}
+        assert witness.sample_consumptions.shape == (0, 5)
+
     def test_checkpoint_requires_the_outcome_column(self) -> None:
         """A truncated row cannot silently discard its outcome flag."""
         witness = ModelCompanion(pipeline_rank=0, chunk_index=0, replica_id=(0, 0, 0))
