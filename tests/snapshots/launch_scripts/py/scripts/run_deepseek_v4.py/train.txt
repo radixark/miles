@@ -154,7 +154,6 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --rollout-health-check-interval 300
   --rollout-health-check-timeout 300
   --colocate
-  --use-fault-tolerance
   --use-rollout-routing-replay
   --deterministic-mode
   --transformer-impl transformer_engine

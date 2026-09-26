@@ -67,7 +67,6 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --actor-num-gpus-per-node 8
   --colocate
   --train-env-vars '{"PYTORCH_CUDA_ALLOC_CONF":"expandable_segments:True"}'
-  --use-fault-tolerance
   --dump-details /root/shared_data/260101-000000-000/dump_details  
   --use-wandb
   --wandb-project miles-dev-megatron-fsdp
