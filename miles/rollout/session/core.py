@@ -76,13 +76,41 @@ def _samples_response(payload: bytes) -> Response:
 _CLIENT_STRIPPED_META_KEYS = ("routed_experts", "indexer_topk")
 
 
-def _strip_replay_payloads(response: dict) -> dict:
+def requested_client_top_logprobs(body: bytes, loss_type: str) -> int | None:
+    """Separate client-requested candidates from those injected for training."""
+    if loss_type != "score_centering":
+        return None
+    value = (json.loads(body) if body else {}).get("top_logprobs")
+    if value is None:
+        return 0
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise MessageValidationError("top_logprobs must be a non-negative integer")
+    return value
+
+
+def _strip_replay_payloads(response: dict, *, client_top_logprobs: int | None = None) -> dict:
     stripped_choices = []
     for choice in response.get("choices", []):
         meta = choice.get("meta_info")
         if isinstance(meta, dict) and any(k in meta for k in _CLIENT_STRIPPED_META_KEYS):
             meta = {k: v for k, v in meta.items() if k not in _CLIENT_STRIPPED_META_KEYS}
             choice = {**choice, "meta_info": meta}
+        if client_top_logprobs is not None:
+            # Copy only the outgoing containers: the session record retains all
+            # candidates for training, including those not requested by the client.
+            if isinstance(meta, dict) and "output_top_logprobs" in meta:
+                meta = {k: v for k, v in meta.items() if k != "output_top_logprobs"}
+                choice = {**choice, "meta_info": meta}
+            logprobs = choice.get("logprobs")
+            if isinstance(logprobs, dict):
+                logprobs = dict(logprobs)
+                for field in ("content", "refusal"):
+                    if isinstance(logprobs.get(field), list):
+                        logprobs[field] = [
+                            {**token, "top_logprobs": token.get("top_logprobs", [])[:client_top_logprobs]}
+                            for token in logprobs[field]
+                        ]
+                choice = {**choice, "logprobs": logprobs}
         stripped_choices.append(choice)
     return {**response, "choices": stripped_choices}
 
@@ -117,7 +145,9 @@ def _response_to_stream_chunk(response: dict) -> dict:
     return chunk
 
 
-def _chat_client_response(result: dict, response: dict, client_stream: bool) -> Response:
+def _chat_client_response(
+    result: dict, response: dict, client_stream: bool, *, client_top_logprobs: int | None = None
+) -> Response:
     if client_stream:
         sse = b"data: " + _render_json(_response_to_stream_chunk(response)) + b"\n\ndata: [DONE]\n\n"
         # Fresh headers: upstream's headers describe its JSON body, not this SSE body.
@@ -130,7 +160,7 @@ def _chat_client_response(result: dict, response: dict, client_stream: bool) -> 
         )
     headers = {k: v for k, v in result["headers"].items() if k.lower() not in _DROP_RESPONSE_HEADERS}
     return Response(
-        content=_render_json(_strip_replay_payloads(response)),
+        content=_render_json(_strip_replay_payloads(response, client_top_logprobs=client_top_logprobs)),
         status_code=result["status_code"],
         headers=headers,
         media_type=JSON_MEDIA_TYPE,
@@ -389,6 +419,7 @@ class SessionCore:
             request_body, client_stream, tito_tokenizer = prepare_chat_request(
                 body, self.config, self.registry.tito_tokenizer, evaluation=session.evaluation
             )
+            client_top_logprobs = requested_client_top_logprobs(body, self.config.loss_type)
 
             request_messages = request_body.get("messages", [])
             prompt_token_ids = session.prepare_pretokenized(
@@ -430,7 +461,7 @@ class SessionCore:
         async with session.lock:
             if session.closing:
                 logger.warning(f"Session {session_id} closed during proxy, skipping state update")
-                return _chat_client_response(result, response, client_stream)
+                return _chat_client_response(result, response, client_stream, client_top_logprobs=client_top_logprobs)
 
             if session.num_assistant != expected_num_assistant:
                 logger.warning(
@@ -438,7 +469,7 @@ class SessionCore:
                     f"(expected num_assistant={expected_num_assistant}, "
                     f"got {session.num_assistant}), skipping state update"
                 )
-                return _chat_client_response(result, response, client_stream)
+                return _chat_client_response(result, response, client_stream, client_top_logprobs=client_top_logprobs)
 
             stored_request_messages = tito_tokenizer.preserve_server_message_state(
                 session.messages,
@@ -464,7 +495,7 @@ class SessionCore:
             session.append_record(record)
         # --- lock released ---
 
-        return _chat_client_response(result, response, client_stream)
+        return _chat_client_response(result, response, client_stream, client_top_logprobs=client_top_logprobs)
 
     async def proxy(
         self, session_id: str, path: str, *, method: str, query: str, headers: dict, body: bytes

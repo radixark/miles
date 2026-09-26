@@ -1,0 +1,27 @@
+{
+  "description": "Bounded agentic collection pilot; merge these overrides into the archived recipe before rendering.",
+  "arguments": {
+    "--num-rollout": "1",
+    "--rollout-batch-size": "16",
+    "--n-samples-per-prompt": "2",
+    "--global-batch-size": "16",
+    "--score-centering-top-k": "128",
+    "--rollout-max-response-len": "16384",
+    "--rollout-max-context-len": "65536",
+    "--seq-length": "65536"
+  },
+  "environment": {
+    "SANDBOX_CONCURRENCY": "16",
+    "FROZEN_RESUME_ROOTS": "",
+    "HARBOR_TERMINUS_2_ENABLE_SUMMARIZE": "false",
+    "HARBOR_TERMINUS_2_LINEAR_HISTORY": "true"
+  },
+  "expected_slots": 32,
+  "acceptance": [
+    "Only prebuilt E2B task images; retain the existing reward policy for truncated and agent-timeout trajectories.",
+    "Harbor receives chosen-token logprobs and IDs, with empty candidate lists unless explicitly requested.",
+    "Training samples retain 128 candidate IDs and probabilities per generated token.",
+    "Exclude infrastructure failures from trainable samples and retain bounded retry behavior.",
+    "Record per-turn reply bytes, wall time, session errors, and cleanup every owned sandbox."
+  ]
+}

@@ -14,6 +14,7 @@ from miles.rollout.session.core import (
     extract_completion,
     prepare_chat_request,
     proxy_result_to_response,
+    requested_client_top_logprobs,
 )
 from miles.rollout.session.errors import SessionNotFoundError, TokenizationError
 from miles.rollout.session.samples.codec import COMPUTED_FIELDS_V2, encode_samples
@@ -154,6 +155,7 @@ class SessionCoreV2(SessionCore):
             request_body, client_stream, tito_tokenizer = prepare_chat_request(
                 body, self.config, self.registry.tito_tokenizer, evaluation=session.evaluation
             )
+            client_top_logprobs = requested_client_top_logprobs(body, self.config.loss_type)
 
             request_messages = request_body.get("messages", [])
             position_for_request(session, request_messages, message_matcher=self.registry.message_matcher)
@@ -194,7 +196,7 @@ class SessionCoreV2(SessionCore):
         async with session.lock:
             if session.closing:
                 logger.warning(f"Session {session_id} closed during proxy, skipping state update")
-                return _chat_client_response(result, response, client_stream)
+                return _chat_client_response(result, response, client_stream, client_top_logprobs=client_top_logprobs)
 
             record = SessionRecord(
                 timestamp=time.time(),
@@ -219,4 +221,4 @@ class SessionCoreV2(SessionCore):
             )
         # --- lock released ---
 
-        return _chat_client_response(result, response, client_stream)
+        return _chat_client_response(result, response, client_stream, client_top_logprobs=client_top_logprobs)
