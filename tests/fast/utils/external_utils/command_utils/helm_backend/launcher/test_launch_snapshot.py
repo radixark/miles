@@ -132,6 +132,7 @@ def values_file(sandbox: Path) -> Path:
 
 
 def record_launch(monkeypatch, sandbox: Path, on_compute_specs=None, **request_overrides) -> list[str]:
+    monkeypatch.setattr(sys, "orig_argv", [sys.executable, "-m", "pytest"])
     recorded: list[str] = []
 
     def fake_run(command: list[str], **kwargs: Any) -> Any:
