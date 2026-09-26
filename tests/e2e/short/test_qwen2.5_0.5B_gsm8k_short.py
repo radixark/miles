@@ -108,8 +108,7 @@ def execute(
 
     ci_args = "--ci-test "
 
-    fault_tolerance_args = (
-        "--use-fault-tolerance "
+    health_check_args = (
         "--rollout-health-check-interval 5 "
         "--rollout-health-check-timeout 10 "
         "--rollout-health-check-first-wait 0 "
@@ -146,7 +145,7 @@ def execute(
         f"{eval_args} "
         f"{sglang_args} "
         f"{ci_args} "
-        f"{fault_tolerance_args} "
+        f"{health_check_args} "
         f"{misc_args} "
         f"{worker_comm_args} "
     )
