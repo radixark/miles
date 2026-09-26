@@ -10,11 +10,15 @@ globally-numbered ``cu_seqlens``, while ``deepseek_v4`` all-gathers the KV. Pass
 absolute, so the KV layout is unchanged.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import torch
 import torch.distributed as dist
 from torch import Tensor
+
+# Attribute holding the per-micro-batch cache on ``packed_seq_params``: every layer of a micro-batch
+# sees that object, including under recompute, and each micro-batch gets a new one.
+_MICRO_BATCH_CACHE_ATTR = "_dsv4_thd_micro_batch_cache"
 
 
 @dataclass
@@ -24,6 +28,8 @@ class ThdLayout:
     The first three fields come from the packed sequence parameters. The rest are filled in as
     the forward runs: ``cu_seqlens_compressed`` before the compressor is called, and the
     compaction ones only under CP, where a compressed group can straddle the split.
+    ``micro_batch_cache`` is shared by every layer's layout of one micro-batch, for values that
+    need a host sync to derive.
     """
 
     cu_seqlens: Tensor
@@ -33,18 +39,33 @@ class ThdLayout:
     compressed_group_ids: Tensor | None = None
     seq_to_rank_row: Tensor | None = None
     cu_seqlens_compressed: Tensor | None = None
+    micro_batch_cache: dict = field(default_factory=dict)
 
     @classmethod
     def from_packed_seq_params(cls, packed_seq_params, *, cp_rank: int, seqlen_local: int):
         """This rank's layout, or None for any format other than thd."""
         if packed_seq_params is None or packed_seq_params.qkv_format != "thd":
             return None
+        cache = getattr(packed_seq_params, _MICRO_BATCH_CACHE_ATTR, None)
+        if cache is None:
+            cache = {}
+            setattr(packed_seq_params, _MICRO_BATCH_CACHE_ATTR, cache)
         return cls(
             cu_seqlens=packed_seq_params.cu_seqlens_q,
             # CP splits the packed stream contiguously, so this rank's rows start here globally.
             global_start=cp_rank * seqlen_local,
             max_seqlen=packed_seq_params.max_seqlen_q,
+            micro_batch_cache=cache,
         )
+
+    def host_seq_lens(self, total_rows: int) -> tuple[int, ...]:
+        """Segment lengths on the host, tiling ``total_rows``; costs a device sync.
+
+        Rows past ``cu_seqlens[-1]`` belong to the last segment, as in ``batch_of_row``.
+        """
+        seq_lens = torch.diff(self.cu_seqlens).tolist()
+        seq_lens[-1] += total_rows - sum(seq_lens)
+        return tuple(seq_lens)
 
 
 def batch_of_row(cu_seqlens: Tensor, total_rows: int, global_start: int = 0) -> Tensor:
@@ -57,9 +78,14 @@ def batch_of_row(cu_seqlens: Tensor, total_rows: int, global_start: int = 0) -> 
     Returns:
         ``[total_rows]`` int64.
     """
-    n_seg = cu_seqlens.size(0) - 1
     row_idx = torch.arange(total_rows, device=cu_seqlens.device, dtype=torch.int64) + global_start
-    return torch.bucketize(row_idx, cu_seqlens[1:], right=True).clamp(max=max(n_seg - 1, 0))
+    return segment_of_positions(cu_seqlens, row_idx)
+
+
+def segment_of_positions(cu_seqlens: Tensor, positions: Tensor) -> Tensor:
+    """Segment index owning each global stream position; positions past the end clamp to the last."""
+    n_seg = cu_seqlens.size(0) - 1
+    return torch.bucketize(positions, cu_seqlens[1:], right=True).clamp(max=max(n_seg - 1, 0))
 
 
 def compressed_cu_seqlens(cu_seqlens: Tensor, ratio: int) -> Tensor:
@@ -128,22 +154,32 @@ def get_compress_cu_seqlens_thd(
     total_tokens: int,
     global_start: int = 0,
 ) -> tuple[Tensor, Tensor]:
-    """Get the compressed rows each packed query may see, as a half-open range.
+    """``compress_bounds_at_positions`` for this rank's contiguous rows."""
+    positions = torch.arange(total_tokens, device=cu_seqlens.device) + global_start
+    return compress_bounds_at_positions(cu_seqlens, cu_seqlens_compressed, positions, ratio=ratio)
+
+
+def compress_bounds_at_positions(
+    cu_seqlens: Tensor,
+    cu_seqlens_compressed: Tensor,
+    positions: Tensor,
+    *,
+    ratio: int,
+) -> tuple[Tensor, Tensor]:
+    """Get the compressed rows the packed queries at global stream ``positions`` may see.
 
     A query sees its own segment only, up to ``(pos_in_seg + 1) // ratio`` and never past
     what that segment produced; the BSHD ``ks = 0`` convention would let it score entries
     of earlier segments once all samples share one flat stream.
 
     Returns:
-        ``(cu_ks, cu_ke)`` int32 ``[total_tokens]``, indices into the compressed keys alone,
-        not the concatenated KV. The indexer kernel takes them as is;
+        ``(cu_ks, cu_ke)`` int32, one half-open range per position, indices into the compressed
+        keys alone, not the concatenated KV. The indexer kernel takes them as is;
         ``get_compress_topk_idxs_thd`` expands them into explicit indices.
     """
-    device = cu_seqlens.device
-    batch_ids = batch_of_row(cu_seqlens, total_tokens, global_start)
-    token_idx = torch.arange(total_tokens, device=device) + global_start
-    pos_in_seg = token_idx - cu_seqlens[batch_ids]
-
+    positions = positions.long()
+    batch_ids = segment_of_positions(cu_seqlens, positions)
+    pos_in_seg = positions - cu_seqlens[batch_ids]
     cu_ks = cu_seqlens_compressed[batch_ids]
     cu_ke = torch.minimum(cu_ks + (pos_in_seg + 1) // ratio, cu_seqlens_compressed[batch_ids + 1])
     return cu_ks.int(), cu_ke.int()

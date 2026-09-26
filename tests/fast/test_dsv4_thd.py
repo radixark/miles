@@ -9,6 +9,7 @@ the CP collectives in tests/fast-gpu/test_dsv4_thd_cp_correctness.py.
 """
 
 import random
+from types import SimpleNamespace
 
 import pytest
 import torch
@@ -17,11 +18,14 @@ from tests.ci.ci_register import register_cpu_ci
 
 from miles_plugins.models.deepseek_v4.ops.thd_utils import (
     CompressorInputCompact,
+    ThdLayout,
     compact_gather_index,
     compact_group_capacity,
+    compress_bounds_at_positions,
     compressed_cu_seqlens,
     compressed_rank_layout,
     compressor_boundary_width,
+    get_compress_cu_seqlens_thd,
     get_compress_topk_idxs_thd,
     get_window_topk_idxs_thd,
     to_rank_major_rows,
@@ -234,3 +238,38 @@ def test_an_empty_compressed_stream_yields_no_rows():
     )
     assert (rows == -1).all()
     assert not valid.any()
+
+
+@pytest.mark.parametrize("ratio", [4, 128])
+@pytest.mark.parametrize("shape", sorted(SHAPES))
+def test_compress_bounds_follow_the_position_not_the_row(ratio, shape):
+    """The CP-balanced indexer scores rows on another rank, so a row's bounds may depend only on
+    its global position; they must match what that token sees when its sample runs alone."""
+    lens = SHAPES[shape]
+    total = sum(lens)
+    cu = _cu(lens)
+    cu_comp = compressed_cu_seqlens(cu, ratio)
+    ks, ke = get_compress_cu_seqlens_thd(cu, cu_comp, ratio=ratio, total_tokens=total)
+    for token in _probe_tokens(lens):
+        _, want = _reference_rows(lens, ratio, token)
+        assert set(range(int(ks[token]), int(ke[token]))) == want, f"{shape} ratio={ratio} token={token}"
+
+    positions = torch.randperm(total, generator=torch.Generator().manual_seed(0))
+    got_ks, got_ke = compress_bounds_at_positions(cu, cu_comp, positions, ratio=ratio)
+    assert torch.equal(got_ks, ks[positions]) and torch.equal(got_ke, ke[positions])
+
+
+def test_the_layouts_of_one_micro_batch_share_one_cache():
+    """Every layer builds its own layout from the micro-batch's packed_seq_params."""
+    lens = [1536, 512, 7]
+    params = SimpleNamespace(qkv_format="thd", cu_seqlens_q=_cu(lens), max_seqlen_q=max(lens))
+    first = ThdLayout.from_packed_seq_params(params, cp_rank=0, seqlen_local=1028)
+    second = ThdLayout.from_packed_seq_params(params, cp_rank=1, seqlen_local=1028)
+    next_batch = SimpleNamespace(qkv_format="thd", cu_seqlens_q=_cu([2056]), max_seqlen_q=2056)
+    next_layout = ThdLayout.from_packed_seq_params(next_batch, cp_rank=0, seqlen_local=1028)
+
+    assert second.micro_batch_cache is first.micro_batch_cache
+    assert next_layout.micro_batch_cache is not first.micro_batch_cache
+    # rows past cu_seqlens[-1] belong to the last segment, as in batch_of_row
+    assert first.host_seq_lens(2056) == (1536, 512, 8)
+    assert next_layout.host_seq_lens(2056) == (2056,)
