@@ -525,12 +525,18 @@ class TestPerCellWriteThread:
         try:
             stuck.submit_write(
                 sent_checksums=None,
-                rollout_engine_rank=0, names=["w"], weight_memory_registry=_REGISTRY, transfer_engine=stuck_engine
+                rollout_engine_rank=0,
+                names=["w"],
+                weight_memory_registry=_REGISTRY,
+                transfer_engine=stuck_engine,
             )
             assert stuck_engine.entered.wait(timeout=10)
             healthy.submit_write(
                 sent_checksums=None,
-                rollout_engine_rank=0, names=["w"], weight_memory_registry=_REGISTRY, transfer_engine=healthy_engine
+                rollout_engine_rank=0,
+                names=["w"],
+                weight_memory_registry=_REGISTRY,
+                transfer_engine=healthy_engine,
             )
             healthy.wait_for_pending_writes(timeout=_TRANSFER_TIMEOUT)
 
@@ -553,12 +559,18 @@ class TestPerCellWriteThread:
         try:
             first.submit_write(
                 sent_checksums=None,
-                rollout_engine_rank=0, names=["w"], weight_memory_registry=_REGISTRY, transfer_engine=first_engine
+                rollout_engine_rank=0,
+                names=["w"],
+                weight_memory_registry=_REGISTRY,
+                transfer_engine=first_engine,
             )
             assert first_engine.entered.wait(timeout=10)
             second.submit_write(
                 sent_checksums=None,
-                rollout_engine_rank=0, names=["w"], weight_memory_registry=_REGISTRY, transfer_engine=second_engine
+                rollout_engine_rank=0,
+                names=["w"],
+                weight_memory_registry=_REGISTRY,
+                transfer_engine=second_engine,
             )
             second.wait_for_pending_writes(timeout=_TRANSFER_TIMEOUT)
 
@@ -576,7 +588,10 @@ class TestPerCellWriteThread:
         for _ in range(4):
             updater.submit_write(
                 sent_checksums=None,
-                rollout_engine_rank=0, names=["w"], weight_memory_registry=_REGISTRY, transfer_engine=engine
+                rollout_engine_rank=0,
+                names=["w"],
+                weight_memory_registry=_REGISTRY,
+                transfer_engine=engine,
             )
         updater.wait_for_pending_writes(timeout=_TRANSFER_TIMEOUT)
 
