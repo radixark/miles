@@ -270,8 +270,12 @@ class TestEngineListOrdering:
     def _server_with_cells(self, num_cells: int) -> RolloutServer:
         cells = {}
         for index in sorted(range(num_cells), key=lambda i: f"inference-engine-0-0-{i}"):
-            meta = SimpleNamespace(cell_id=f"inference-engine-0-0-{index}", num_gpus_per_engine=index + 1, gpu_offset=index)
-            cells[f"inference-engine-0-0-{index}"] = SimpleNamespace(meta=meta, api_client=f"client-{index}", is_errored=False)
+            meta = SimpleNamespace(
+                cell_id=f"inference-engine-0-0-{index}", num_gpus_per_engine=index + 1, gpu_offset=index
+            )
+            cells[f"inference-engine-0-0-{index}"] = SimpleNamespace(
+                meta=meta, api_client=f"client-{index}", is_errored=False
+            )
         return RolloutServer(
             all_server_cells=cells,
             args=SimpleNamespace(),
