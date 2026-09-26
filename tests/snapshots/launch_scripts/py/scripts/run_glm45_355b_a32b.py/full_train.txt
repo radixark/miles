@@ -21,7 +21,7 @@ hf download
   --local-dir /root/datasets/aime-2025
 
 ### 5
-[multi_node num_nodes=None] PYTHONPATH=<REPO_ROOT>:/root/Megatron-LM:/frozen/pythonpath torchrun
+[multi_node num_nodes=1] PYTHONPATH=<REPO_ROOT>:/root/Megatron-LM:/frozen/pythonpath torchrun
   --nproc-per-node 4
   --master-addr {{master_addr}}
   --master-port 23456
@@ -192,6 +192,6 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --colocate
   --use-fault-tolerance
   --dump-details /root/shared_data/260101-000000-000/dump_details
-  --disable-weights-backuper
   --router-health-success-threshold 1
   --router-health-check-interval-secs 15   
+  --deploy-component all

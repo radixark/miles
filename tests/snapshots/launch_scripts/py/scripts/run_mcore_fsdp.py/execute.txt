@@ -72,3 +72,4 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --use-wandb
   --wandb-project miles-dev-megatron-fsdp
   --wandb-group qwen3-4B-fsdp-noref   
+  --deploy-component all

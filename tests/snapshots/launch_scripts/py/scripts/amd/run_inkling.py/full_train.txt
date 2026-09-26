@@ -19,9 +19,9 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   -- python3 <REPO_ROOT>/train.py
   --disable-bias-linear
   --num-layers 4
-  --hidden-size 6144
-  --ffn-hidden-size 3072
-  --num-attention-heads 64
+  --hidden-size 4096
+  --ffn-hidden-size 2048
+  --num-attention-heads 32
   --group-query-attention
   --num-query-groups 8
   --kv-channels 128
@@ -38,9 +38,9 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --no-masked-softmax-fusion
   --max-position-embeddings 1048576
   --num-experts 256
-  --moe-ffn-hidden-size 3072
+  --moe-ffn-hidden-size 2048
   --moe-router-topk 6
-  --moe-shared-expert-intermediate-size 3072
+  --moe-shared-expert-intermediate-size 2048
   --moe-router-pre-softmax
   --moe-router-score-function sigmoid
   --moe-router-enable-expert-bias
@@ -50,13 +50,13 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --moe-grouped-gemm
   --qk-layernorm
   --custom-model-provider-path miles_plugins.models.inkling.model.inkling_model_provider
-  --hf-checkpoint /root/models/Inkling-4layer
-  --load /root/models/Inkling-4layer_torch_dist
+  --hf-checkpoint /root/models/Inkling-Small-4layer
+  --load /root/models/Inkling-Small-4layer_torch_dist
   --model-name inkling
   --megatron-to-hf-mode raw
   --no-load-optim
   --no-load-rng
-  --finetune  
+  --finetune 
   --input-key prompt
   --label-key label
   --rollout-shuffle
@@ -96,12 +96,12 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --recompute-granularity full
   --recompute-method uniform
   --recompute-num-layers 1
-  --micro-batch-size 1  
-  --rollout-num-gpus-per-engine 16
+  --micro-batch-size 1 
+  --rollout-num-gpus-per-engine 4
   --sglang-mem-fraction-static 0.6
   --sglang-max-running-requests 64
   --sglang-max-total-tokens 327680
-  --sglang-attention-backend fa4
+  --sglang-attention-backend triton
   --sglang-moe-runner-backend triton
   --sglang-mamba-radix-cache-strategy extra_buffer
   --sglang-enable-multimodal
