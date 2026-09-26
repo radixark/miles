@@ -1,5 +1,7 @@
 import argparse
+import contextvars
 from collections.abc import Callable, Iterator, Sequence
+from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any
 
 import torch
@@ -19,8 +21,22 @@ from miles.utils.types import Sample, SampleLineage
 if TYPE_CHECKING:
     from miles.rollout.data_source import DataSource
 
+_drop_logging_suppressed: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "drop_logging_suppressed",
+    default=False,
+)
+
 
 class SampleOwnershipRecorder:
+    @classmethod
+    @contextmanager
+    def suppress_drop_logging(cls) -> Iterator[None]:
+        token = _drop_logging_suppressed.set(True)
+        try:
+            yield
+        finally:
+            _drop_logging_suppressed.reset(token)
+
     @classmethod
     def install(
         cls,
@@ -94,7 +110,12 @@ class SampleOwnershipRecorder:
     def log_dropped_source_sample_indices(
         cls, *, args: argparse.Namespace, source_sample_indices: list[int], reason: str
     ) -> None:
-        if not args.enable_sample_ownership_checker or not source_sample_indices or not is_event_logger_initialized():
+        if (
+            not args.enable_sample_ownership_checker
+            or _drop_logging_suppressed.get()
+            or not source_sample_indices
+            or not is_event_logger_initialized()
+        ):
             return
 
         source_sample_indices = list(dict.fromkeys(source_sample_indices))
