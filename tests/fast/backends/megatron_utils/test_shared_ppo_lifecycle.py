@@ -1012,10 +1012,21 @@ def test_update_weights_reconnects_once_per_rollout_snapshot(
     first_engines = [object()]
     replacement_engines = [object(), object()]
 
-    worker.update_weights(_updatable_engines(first_engines, {"cell-0": "hash-a"}, gpu_count=4), debug_weight_update_id="update-0", rollout_id=0)
-    worker.update_weights(_updatable_engines(first_engines, {"cell-0": "hash-a"}, gpu_count=4), debug_weight_update_id="update-0", rollout_id=0)
+    worker.update_weights(
+        _updatable_engines(first_engines, {"cell-0": "hash-a"}, gpu_count=4),
+        debug_weight_update_id="update-0",
+        rollout_id=0,
+    )
+    worker.update_weights(
+        _updatable_engines(first_engines, {"cell-0": "hash-a"}, gpu_count=4),
+        debug_weight_update_id="update-0",
+        rollout_id=0,
+    )
     weight_version = worker.update_weights(
-        _updatable_engines(replacement_engines, {"cell-0": "hash-b", "cell-1": "hash-b"}, gpu_count=2), debug_weight_update_id="update-0", rollout_id=0)
+        _updatable_engines(replacement_engines, {"cell-0": "hash-b", "cell-1": "hash-b"}, gpu_count=2),
+        debug_weight_update_id="update-0",
+        rollout_id=0,
+    )
 
     assert [call["rollout_engines"] for call in updater.connect_calls] == [first_engines, replacement_engines]
     assert updater.connect_calls[1]["engine_gpu_counts"] == [2, 2]
@@ -1033,7 +1044,11 @@ def test_actor_returns_model_version_after_update_weights_returns(
     worker = _weight_update_worker(actor_module, monkeypatch)
     worker.model[0].model_companion.weight_version.fill_(weight_version)
 
-    result = worker.update_weights(_updatable_engines([object()], {"cell-0": "hash-a"}, gpu_count=4), debug_weight_update_id="update-0", rollout_id=0)
+    result = worker.update_weights(
+        _updatable_engines([object()], {"cell-0": "hash-a"}, gpu_count=4),
+        debug_weight_update_id="update-0",
+        rollout_id=0,
+    )
 
     assert type(result) is WeightUpdateOutput
     assert result == WeightUpdateOutput(weight_version=weight_version, failed_cell_ids=())
@@ -1052,9 +1067,13 @@ def test_reconfigure_indep_dp_forces_the_next_weight_update_to_reconnect(
     engines = [object()]
     snapshot = {"cell-0": "hash-a"}
 
-    worker.update_weights(_updatable_engines(engines, snapshot, gpu_count=4), debug_weight_update_id="update-0", rollout_id=0)
+    worker.update_weights(
+        _updatable_engines(engines, snapshot, gpu_count=4), debug_weight_update_id="update-0", rollout_id=0
+    )
     worker.reconfigure_indep_dp(object(), "10.0.0.1:1234")
-    worker.update_weights(_updatable_engines(engines, snapshot, gpu_count=4), debug_weight_update_id="update-0", rollout_id=0)
+    worker.update_weights(
+        _updatable_engines(engines, snapshot, gpu_count=4), debug_weight_update_id="update-0", rollout_id=0
+    )
 
     assert len(updater.connect_calls) == 2
 
