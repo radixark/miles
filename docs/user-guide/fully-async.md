@@ -164,6 +164,14 @@ discards the entire group from training, counts it in
 Cancelling the producer itself still propagates, and unexpected non-cancellation
 exceptions still fail the worker rather than being silently discarded.
 
+`--keep-partial-groups-on-abort` instead drops only the aborted trajectories when at
+least two trajectories remain. This policy applies to synchronous and fully asynchronous
+rollout. Groups with zero or one survivor still follow the existing whole-group handling
+because a singleton group has no centered policy-gradient signal. This mode requires
+dynamic global batches. In fully async mode with the unused-sample handler set to `retry`,
+Miles retries only groups for which fewer than two trajectories survived; retained groups
+are not retried.
+
 The buffer decouples the two loops. As long as it holds finished groups, the trainer
 never waits for generation. If it sits empty, rollout is still the bottleneck and async
 cannot hide it.
@@ -182,6 +190,7 @@ Staleness control decides which of those groups training is allowed to see:
 |---|---|
 | `--max-weight-staleness` | Maximum gap between a group's oldest weight version and the current engine version. Unset by default, which disables the filter |
 | `--async-unused-samples-handler` | What happens to a group training does not use, either aborted or too stale. The default `drop` discards it; `retry` recycles its prompts into the data source for regeneration. Dynamic-filter rejects are always dropped |
+| `--keep-partial-groups-on-abort` | Keep completed trajectories from an aborted group when at least two survive. Requires `--use-dynamic-global-batch-size` |
 
 When those knobs are not enough, `--custom-async-data-buffer-path` replaces the buffer
 itself. This is a larger step than setting any flag above: your `DataBuffer` subclass

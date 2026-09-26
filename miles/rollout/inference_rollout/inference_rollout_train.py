@@ -9,7 +9,7 @@ from tqdm import tqdm
 
 from miles.rollout.base_types import RolloutFnTrainOutput
 from miles.rollout.filter_hub.base_types import MetricGatherer
-from miles.rollout.filter_hub.common_filters import apply_preput_filters
+from miles.rollout.filter_hub.common_filters import apply_preput_filters, retain_partial_group
 from miles.rollout.generate_utils.prefill_logprobs import recompute_samples_rollout_logprobs_via_prefill
 from miles.rollout.generate_utils.sample_utils import reward_log_summary, sample_text_preview
 from miles.rollout.inference_rollout.inference_rollout_common import GenerateState, generate_and_rm_group
@@ -139,6 +139,10 @@ async def generate_rollout_async(
 
             assert len(group) == args.n_samples_per_prompt
             all_data.append(group)
+            original_size = len(group)
+            group, aborted = retain_partial_group(args, group)
+            if aborted:
+                metric_gatherer.on_aborted_trajectories(aborted, group_retained=len(group) < original_size)
             filter_output = apply_preput_filters(args, dynamic_filter, group)
             if not filter_output.keep:
                 metric_gatherer.on_dynamic_filter_drop(reason=filter_output.reason)

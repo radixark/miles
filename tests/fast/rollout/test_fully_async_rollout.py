@@ -82,6 +82,7 @@ def make_args(**overrides) -> Namespace:
         async_max_concurrent_samples=None,
         async_data_buffer_capacity_factor=1000.0,
         async_unused_samples_handler="drop",
+        keep_partial_groups_on_abort=False,
         custom_async_data_buffer_path=None,
         rollout_submission_granularity=None,
         dynamic_sampling_filter_path=None,
@@ -213,6 +214,50 @@ async def test_aborted_group_recycled(monkeypatch):
     assert output.samples[0][0].group_index != 1
     assert output.metrics["rollout/fully_async/aborted_groups_filtered"] == 1
     assert "rollout/dynamic_filter/drop_group_has_missing_reward" not in output.metrics
+
+
+async def test_partial_aborted_group_keeps_surviving_trajectories(monkeypatch):
+    partial = make_group(1)
+    partial.append(replace(partial[-1], index=partial[-1].index + 1))
+    partial[0].status = Sample.Status.ABORTED
+    partial[0].reward = None
+    data_source = FakeDataSource(scripted=[partial])
+    args = make_args(
+        rollout_batch_size=1,
+        n_samples_per_prompt=3,
+        async_unused_samples_handler="retry",
+        keep_partial_groups_on_abort=True,
+    )
+    fn = make_fn(monkeypatch, args, data_source)
+
+    output = await fn(RolloutFnTrainInput(rollout_id=0))
+
+    assert output.samples == [partial[1:]]
+    assert data_source.recycled == []
+    assert output.metrics["rollout/fully_async/aborted_groups_filtered"] == 0
+    assert output.metrics["rollout/aborted_trajectories_filtered"] == 1
+    assert output.metrics["rollout/partial_groups_retained"] == 1
+
+
+async def test_partial_aborted_group_drops_single_survivor(monkeypatch):
+    partial = make_group(1)
+    partial[0].status = Sample.Status.ABORTED
+    partial[0].reward = None
+    data_source = FakeDataSource(scripted=[partial])
+    args = make_args(
+        rollout_batch_size=1,
+        async_unused_samples_handler="retry",
+        keep_partial_groups_on_abort=True,
+    )
+    fn = make_fn(monkeypatch, args, data_source)
+
+    output = await fn(RolloutFnTrainInput(rollout_id=0))
+
+    assert output.samples[0][0].group_index != 1
+    assert data_source.recycled == [partial]
+    assert output.metrics["rollout/fully_async/aborted_groups_filtered"] == 1
+    assert output.metrics["rollout/aborted_trajectories_filtered"] == 1
+    assert output.metrics["rollout/partial_groups_retained"] == 0
 
 
 async def test_missing_reward_group_dropped_without_recycling(monkeypatch):

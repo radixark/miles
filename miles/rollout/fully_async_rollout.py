@@ -186,7 +186,10 @@ class FullyAsyncRolloutFn(BaseRolloutFn):
 
         while len(data) < target_data_size:
             entry = await self._next_group(input.weight_version)
-            assert len(entry.group) == args.n_samples_per_prompt
+            if args.keep_partial_groups_on_abort:
+                assert 2 <= len(entry.group) <= args.n_samples_per_prompt
+            else:
+                assert len(entry.group) == args.n_samples_per_prompt
 
             if do_print:
                 sample = first_sample(entry.group)

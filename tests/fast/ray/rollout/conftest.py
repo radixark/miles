@@ -45,6 +45,7 @@ def make_args(**overrides: Any) -> Namespace:
         # batch / training
         global_batch_size=8,
         use_dynamic_global_batch_size=False,
+        keep_partial_groups_on_abort=False,
         wandb_always_use_train_step=False,
         disable_rollout_trim_samples=False,
         balance_data=False,

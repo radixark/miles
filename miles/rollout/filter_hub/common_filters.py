@@ -79,6 +79,26 @@ def apply_preput_filters(args: Namespace, dynamic_filter, samples: Group, **kwar
     return call_dynamic_filter(dynamic_filter, args, samples, **kwargs)
 
 
+def retain_partial_group(args: Namespace, group: Group) -> tuple[Group, int]:
+    """Remove aborted trajectories when at least two complete trajectories remain.
+
+    Returning the original group leaves the existing aborted-group policy in
+    control when retention is disabled or too few trajectories survive.
+    """
+    if not args.keep_partial_groups_on_abort:
+        return group, 0
+
+    survivors = [
+        trajectory
+        for trajectory in group
+        if not any(sample.status == Sample.Status.ABORTED for sample in iter_samples([trajectory]))
+    ]
+    aborted = len(group) - len(survivors)
+    if aborted and len(survivors) >= 2:
+        return survivors, aborted
+    return group, aborted
+
+
 def apply_aborted_filter(args: Namespace, samples: Group, **kwargs) -> FilterOutput:
     """Reject entire group if any sample was aborted (e.g. env timeout, Docker crash)."""
     if any(sample.status == Sample.Status.ABORTED for sample in iter_samples(samples)):
