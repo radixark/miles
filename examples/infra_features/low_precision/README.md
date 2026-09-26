@@ -75,6 +75,15 @@ reuses that metadata on later updates. Tensor values are converted afresh each
 time; changing the model layout, quantization configuration, or topology requires
 recreating the exporter.
 
+Equal-sized contributions use a native all-gather into one contiguous receive
+buffer. Uneven contributions use grouped, variable-sized gathering without
+padding every rank to the largest payload; a sole contributor uses one broadcast.
+Only dtype alignment adds padding. Gathering borrows the existing Megatron
+process groups and creates no per-batch groups. Training offload and recovery
+retain their existing process-group reload behavior. Each transfer has its own
+completion handle and fresh receive storage, so previously returned weights
+remain valid.
+
 The same path serves unquantized weights and all rollout quantization formats
 supported by the direct exporter. Quantization exclusions still apply. Shared experts and nonexpert layers retain
 their existing gathering and conversion behavior. The Bridge exporter is unchanged.
