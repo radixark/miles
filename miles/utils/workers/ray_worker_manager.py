@@ -368,7 +368,9 @@ class _CommandActorManager(_BaseActorManager[CommandWorkerSpec]):
             local_gpu_ids=self.local_gpu_ids,
         )
         launch_cmd = self.spec.launch_command(ctx)
-        self.actor_handle.run.remote(cmd=launch_cmd, envs={})
+        # exec lets the command replace /bin/sh, so parent death and Ray's child cleanup kill the
+        # command itself rather than a shell that would leave it orphaned with its ports.
+        self.actor_handle.run.remote(cmd=f"exec {launch_cmd}", envs={})
 
     async def _shutdown_gracefully(self) -> None:
         try:

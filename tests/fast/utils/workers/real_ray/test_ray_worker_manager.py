@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import os
+import socket
+import sys
 import time
 
 import pytest
@@ -372,3 +374,32 @@ class TestWorkerDeathOnRealRay:
             assert time.monotonic() < deadline, "the actor of a dead command is still alive"
             await asyncio.sleep(0.5)
         assert await asyncio.wait_for(infos[1].handle._get_node_ip(), timeout=30)
+
+    @pytest.mark.skipif(sys.platform != "linux", reason="needs linux parent-death signals")
+    def test_killing_the_manager_frees_the_ports_its_workers_commands_held(
+        self, manager_factory, worker_probe_factory
+    ):
+        """Owner death force-kills the worker actors, and the commands they launched must not keep their ports."""
+        probe = worker_probe_factory(bind_primary=True)
+        manager_handle = manager_factory(
+            [make_command_spec("engine", num_workers_per_cell=2, launch_command=probe.launch_command)]
+        )
+        records = probe.wait_for_records(2)
+        ports = [record["context"]["self_addrs"]["primary"]["port"] for record in records.values()]
+
+        kill_quietly(manager_handle)
+
+        deadline = time.monotonic() + 60
+        while held := [port for port in ports if not _can_bind(port)]:
+            assert time.monotonic() < deadline, f"ports {held} are still held after their manager was killed"
+            time.sleep(0.2)
+
+
+def _can_bind(port: int) -> bool:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as candidate:
+        candidate.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            candidate.bind(("", port))
+        except OSError:
+            return False
+    return True
