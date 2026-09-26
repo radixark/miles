@@ -7,9 +7,9 @@ Every hand-written training kernel in miles, filed by the op it computes.
 ```
 miles/kernels/
 ├── attention/
-│   ├── dsa/          sparse attention: indexer + sparse MLA (TileLang), top-k selection
-│   │   ├── glm5/         thd layout, MLA, no sink (GLM-5.x, DeepSeek-V3.2)
-│   │   └── deepseek_v4/  bshd layout, MQA, fp32 attention sink, batched
+│   ├── dsa/          DeepSeek Sparse Attention: lightning indexer, top-k, sparse attention
+│   │   └── tilelang/     one kernel pair; RoPE tail (GLM-5, DSv3.2) and attention sink (DSv4) are
+│   │                     compile-time parameters
 │   ├── delta_rule/   GDN / KDA kernel selection (fla, FlashQLA)
 │   └── dense_bwd/    Triton backward paired with sglang's Triton forward
 ├── moe/              fused expert GEMMs with Triton backward
@@ -29,11 +29,11 @@ miles/kernels/
   Megatron import, no process group. TP/SP/CP live in the wrapper module that calls the kernel
   (`miles_plugins/models/`), which does TP through Column/RowParallel projections, SP through
   gather/scatter at the kernel boundary, and CP through an all-gather of KV or a `cp_context`.
-- **Variants are parameters, not copies.** A layout (`thd` / `bshd`) or an optional feature
-  (attention sink) is a kernel argument. `attention/dsa/glm5` and `attention/dsa/deepseek_v4`
-  are the one remaining pair of copies and are scheduled to merge; until then the DeepSeek-V4
-  plugin imports its indexer's TileLang module directly, and the DSA tests are manual scripts
-  under `tests/manual/`.
+- **Variants are parameters, not copies.** An optional feature (RoPE tail, attention sink) is a
+  compile-time kernel parameter, so the specialised code paths cost nothing at runtime. Layouts
+  are adapters around a packed kernel, never a second kernel: `indexer_logits_sbhd` runs the
+  packed indexer once per batch element, and `sparse_attention` takes a batch dimension that
+  packed callers set to 1.
 - **A new or changed kernel comes with a single-GPU test against a torch reference**, under
   `tests/fast-gpu/kernels/<op>/`.
 
@@ -41,8 +41,8 @@ miles/kernels/
 
 Ask first whether the model's ops already exist here.
 
-- Another GDN / KDA model: nothing changes in this package; pick the fla or FlashQLA kernel
-  through `attention/delta_rule/backend.py`.
+- Another GDN / KDA model: nothing changes in this package. Point the model's layer spec at
+  the shared delta-rule attention module.
 - A DSA variant with a new layout or feature: add a parameter branch in `attention/dsa`, do
   not copy the kernel pair.
 - A genuinely new op: add `miles/kernels/<op>/` with one entry function and a torch-reference

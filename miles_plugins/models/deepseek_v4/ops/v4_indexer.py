@@ -7,7 +7,7 @@ from megatron.core.tensor_parallel.mappings import gather_from_sequence_parallel
 from megatron.core.transformer.module import MegatronModule
 from megatron.core.transformer.transformer_config import TransformerConfig
 
-from miles.kernels.attention.dsa.deepseek_v4.tilelang_indexer_fwd import _make_causal_cu_seqlens, batched_indexer_fwd
+from miles.kernels.attention.dsa import causal_ranges_compressed, indexer_logits_sbhd
 from miles.kernels.attention.dsa.topk import get_dsa_topk_fn
 from miles.utils.replay_base import indexer_replay_manager
 from miles_plugins.models.deepseek_v4.ops.compressor import DeepSeekV4Compressor
@@ -148,9 +148,8 @@ class V4Indexer(MegatronModule):
                 k = k.index_select(0, thd_layout.seq_to_rank_row.clamp(min=0).long())
 
         seqlen_global = seqlen * cp_size
-        seqlen_kv = k.shape[0]
         if thd_layout is None:
-            cu_ks, cu_ke = _make_causal_cu_seqlens(seqlen_global, seqlen_kv, self.compress_ratio, q.device)
+            cu_ks, cu_ke = causal_ranges_compressed(seqlen_global, self.compress_ratio, q.device)
             # cu_seqlens are for global positions; slice to local query positions
             if cp_size > 1 and cp_group is not None:
                 cp_rank = cp_group.rank()
@@ -164,7 +163,7 @@ class V4Indexer(MegatronModule):
                 total_tokens=seqlen,
                 global_start=thd_layout.global_start,
             )
-        index_scores = batched_indexer_fwd(q, k, weights.float(), cu_ks, cu_ke)
+        index_scores = indexer_logits_sbhd(q, k, weights, cu_ks, cu_ke)
 
         # index_scores: [batch, seqlen, n_kv]; topk over the KV dim. Route through the indexer
         # replay manager (flattened to [n_tokens, n_kv], matching the record/replay convention) so

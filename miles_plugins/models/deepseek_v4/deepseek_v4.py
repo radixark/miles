@@ -23,7 +23,7 @@ from megatron.core.transformer.spec_utils import ModuleSpec
 from megatron.core.transformer.transformer_config import TransformerConfig
 from megatron.core.transformer.utils import make_sharded_tensors_for_checkpoint
 
-from miles.kernels.attention.dsa.deepseek_v4.sparse_mla import sparse_attn_tilelang
+from miles.kernels.attention.dsa import sparse_attention
 from miles_plugins.models.deepseek_v4.ops.compressor import DeepSeekV4Compressor
 from miles_plugins.models.deepseek_v4.ops.cp_utils import (
     all_gather_cp,
@@ -408,9 +408,15 @@ class DeepSeekV4Attention(MegatronModule):
 
         kv = copy_to_tensor_model_parallel_region(kv, group=self.tp_group, all_reduce_grad_fp32=True)
 
-        o = sparse_attn_tilelang(q, kv, self.core_attention.attn_sink, topk_idxs, self.softmax_scale)
+        o = sparse_attention(
+            q,
+            kv.unsqueeze(2),
+            topk_idxs.unsqueeze(2),
+            self.softmax_scale,
+            attn_sink=self.core_attention.attn_sink,
+        )
 
-        apply_rotary_emb(o[..., -rd:], freqs_cis, inverse=True)
+        o = torch.cat((o[..., :-rd], apply_rotary_emb(o[..., -rd:].clone(), freqs_cis, inverse=True)), dim=-1)
 
         o = o.view(bsz, seqlen_local, self.n_local_groups, -1)
         wo_a = self.linear_o_group_proj.view(self.n_local_groups, self.o_lora_rank, -1)
