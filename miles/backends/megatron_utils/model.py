@@ -29,6 +29,11 @@ from miles.backends.megatron_utils.ft.indep_dp import allreduce_grads_and_losses
 from miles.backends.megatron_utils.ft.types import TrainStepOutcome
 from miles.backends.megatron_utils.local_weight_checksum import dump_local_weight_checksums
 from miles.backends.megatron_utils.optimizer_state_reset import reset_optimizer_states
+from miles.backends.training_utils.model_companion import (
+    ModelCompanionSampleConsumptionUtils,
+    ModelCompanionWeightVersionUtils,
+    SampleIdentityExtractor,
+)
 from miles.backends.training_utils.sampling_mask import get_rollout_sampling_masks
 from miles.backends.training_utils.weight_update.snapshot_publisher import SnapshotPublisher
 from miles.utils.audit_utils.witness.allocator import WitnessInfo
@@ -38,6 +43,7 @@ from miles.utils.lora.utils import is_multi_lora_enabled
 from miles.utils.memory_utils import clear_memory
 from miles.utils.test_utils.ft_test_actions import FTTestActionActorExecutor
 from miles.utils.tracking_utils.structured_log import log_structured
+from miles.utils.types import SampleLineage
 
 from ...utils.misc import filter_keys
 from ..training_utils.ci_utils import check_grad_norm, check_kl
@@ -572,6 +578,8 @@ def train_one_step(
     parallel_state = get_parallel_state()
     dumper_phase_util = DumperMegatronUtil(args, model, DumperPhase.FWD_BWD, rollout_id=rollout_id)
     disable_optimizer = args.debug_disable_optimizer or optimizer is None
+    if args.enable_sample_ownership_checker:
+        sample_consumption_start = data_iterator[0].offset
     _zero_grads(model, optimizer, disable_optimizer)
 
     if args.custom_megatron_before_train_step_hook_path:
@@ -583,6 +591,14 @@ def train_one_step(
     losses_reduced = run_forward_backward_pass(
         args, dumper_phase_util, data_iterator, model, num_microbatches, num_rollouts
     )
+    if args.enable_sample_ownership_checker:
+        local_consumed_identities = SampleIdentityExtractor.get_consumed_sample_identities(
+            start_offset=sample_consumption_start,
+            end_offset=data_iterator[0].offset,
+            data=data_iterator[0].rollout_data,
+            micro_batch_indices=data_iterator[0].micro_batch_indices,
+        )
+        consumed_identities: list[SampleLineage] = []
 
     outcome = TrainStepOutcome.NORMAL
     grad_norm = 0.0
@@ -597,7 +613,20 @@ def train_one_step(
 
         metric_num_rollouts = None if args.calculate_per_token_loss else num_rollouts
         ok, indep_dp_loss_reduced = allreduce_grads_and_losses_across_replicas(
-            args, model, parallel_state, losses_reduced=losses_reduced, num_rollouts=metric_num_rollouts
+            args,
+            model,
+            parallel_state,
+            losses_reduced=losses_reduced,
+            num_rollouts=metric_num_rollouts,
+            collect_training_metadata=(
+                (
+                    lambda: consumed_identities.extend(
+                        SampleIdentityExtractor.gather_sample_identities(local_consumed_identities)
+                    )
+                )
+                if args.enable_sample_ownership_checker
+                else None
+            ),
         )
         if not ok:
             outcome = TrainStepOutcome.DISCARDED_SHOULD_RETRY
@@ -610,9 +639,9 @@ def train_one_step(
         else:
             grad_norm = optimizer.get_grad_norm()
             if isinstance(grad_norm, torch.Tensor):
-                valid_step = not (torch.isnan(grad_norm) or torch.isinf(grad_norm))
+                valid_step &= not (torch.isnan(grad_norm) or torch.isinf(grad_norm))
             else:
-                valid_step = not (math.isnan(grad_norm) or math.isinf(grad_norm))
+                valid_step &= not (math.isnan(grad_norm) or math.isinf(grad_norm))
 
     # CI check: verify only MTP parameters have non-zero gradients when truncation happens
     # This check must happen before optimizer.step() as gradients may be modified during step
@@ -630,7 +659,16 @@ def train_one_step(
     if not disable_optimizer and valid_step:
         update_successful, grad_norm, num_zeros_in_grad = optimizer.step()
         assert update_successful
+        ModelCompanionWeightVersionUtils.bump_weight_version(model)
         opt_param_scheduler.step(increment=num_rollouts)
+
+    if args.enable_sample_ownership_checker:
+        if parallel_state.indep_dp.size == 1:
+            consumed_identities = SampleIdentityExtractor.gather_sample_identities(local_consumed_identities)
+        if outcome == TrainStepOutcome.NORMAL:
+            ModelCompanionSampleConsumptionUtils.record(
+                model=model, samples=consumed_identities, is_skipped=not valid_step
+            )
 
     _zero_grads(model, optimizer, disable_optimizer)
 
@@ -979,7 +1017,7 @@ def load_model_state(
     # --load may be unset: setup_model_and_optimizer already asserted pretrained_checkpoint covers it.
     if load_dir is None or _has_loadable_ckpt(load_dir):
         with load_ctx:
-            iteration, _, native_optimizer_restored = load_checkpoint(
+            iteration, restored_trained_iteration, native_optimizer_restored = load_checkpoint(
                 model,
                 optimizer,
                 opt_param_scheduler,
@@ -990,6 +1028,7 @@ def load_model_state(
         if is_first_replica_megatron_main_rank():
             logger.warning("--load %r is empty; starting from model_provider-initialized weights", load_dir)
         iteration = 0
+        restored_trained_iteration = not args.finetune
 
     if (
         is_lora_enabled(args)
@@ -1017,11 +1056,8 @@ def load_model_state(
     if opt_param_scheduler is not None and not (args.use_checkpoint_opt_param_scheduler and iteration > 0):
         opt_param_scheduler.step(increment=iteration * args.global_batch_size)
 
-    if args.finetune and not is_lora_enabled(args):
-        assert iteration == 0, (
-            f"--finetune loaded {args.load} and found iteration {iteration}, so the checkpoint and the flag disagree "
-            f"about where this run stands"
-        )
+    if not restored_trained_iteration:
+        assert iteration == 0, f"Weight initialization returned a trained iteration: {iteration}"
         start_rollout_id = 0
     else:
         start_rollout_id = iteration + 1

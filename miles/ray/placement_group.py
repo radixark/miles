@@ -250,7 +250,8 @@ async def create_training_models(
     args.start_rollout_id = actor_info.start_rollout_id
 
     await rollout_executor.set_train_parallel_config(await actor_info.handle.get_train_parallel_config())
-    await rollout_executor.load(args.start_rollout_id - 1)
+    if args.start_rollout_id > 0:
+        await rollout_executor.load(args.start_rollout_id - 1)
 
     return actor_info.handle, critic_info.handle if critic_info is not None else None
 
@@ -324,6 +325,8 @@ async def update_weights(
 async def _maybe_log_inference_engine_weight_checksums(
     args, *, inference_controller: BaseWorkerHandle, rollout_id: int | None, trainer_model_id: str | None
 ) -> None:
+    if not args.log_inference_engine_weight_checksums:
+        return
     if not is_event_logger_initialized():
         return
     if args.debug_train_only or args.debug_rollout_only:

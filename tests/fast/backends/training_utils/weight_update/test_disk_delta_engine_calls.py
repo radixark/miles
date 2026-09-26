@@ -29,6 +29,7 @@ def _make_protocol(calls: list[tuple[str, dict]]) -> UpdateWeightFromDiskDelta:
     protocol.rollout_engines = [_RecordingApiClient(calls)]
     protocol._post_write_hook = None
     protocol._version_dir = "/shared/delta/v7"
+    protocol._snapshot_file_version = 7
     return protocol
 
 
@@ -39,7 +40,7 @@ def test_reload_engines_pulls_with_both_checkpoint_dirs_then_reloads():
 
     with patch(f"{_MODULE}.dist") as dist_mock, patch(f"{_MODULE}.get_gloo_group", return_value=MagicMock()):
         dist_mock.get_rank.return_value = 0
-        protocol._reload_engines(7)
+        protocol._reload_engines(weight_version=42)
 
     assert [name for name, _kwargs in calls] == [
         "pull_weights",
@@ -54,7 +55,7 @@ def test_reload_engines_pulls_with_both_checkpoint_dirs_then_reloads():
         "local_checkpoint_dir": "/local/ckpt",
         "source_dir": "/shared/delta",
     }
-    assert calls[3][1] == {"model_path": "/local/ckpt", "weight_version": "7"}
+    assert calls[3][1] == {"model_path": "/local/ckpt", "weight_version": "42"}
 
 
 def test_in_place_pause_mode_skips_the_flush():
@@ -65,7 +66,7 @@ def test_in_place_pause_mode_skips_the_flush():
 
     with patch(f"{_MODULE}.dist") as dist_mock, patch(f"{_MODULE}.get_gloo_group", return_value=MagicMock()):
         dist_mock.get_rank.return_value = 0
-        protocol._reload_engines(7)
+        protocol._reload_engines(weight_version=42)
 
     assert "flush_cache" not in [name for name, _kwargs in calls]
 
@@ -76,7 +77,7 @@ def test_non_source_rank_issues_no_requests():
 
     with patch(f"{_MODULE}.dist") as dist_mock, patch(f"{_MODULE}.get_gloo_group", return_value=MagicMock()):
         dist_mock.get_rank.return_value = 1
-        protocol._reload_engines(7)
+        protocol._reload_engines(weight_version=42)
 
     assert calls == []
 

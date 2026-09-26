@@ -113,6 +113,7 @@ def make_args(**overrides: Any) -> Namespace:
         sglang_server_concurrency=512,
         use_session_server=False,
         use_rollout_routing_replay=False,
+        sglang_enable_prefill_weight_versions=False,
         session_server_ip=None,
         session_server_external_host=None,
         session_server_port=None,
@@ -163,11 +164,15 @@ def make_args(**overrides: Any) -> Namespace:
         ci_inject_rollout_data_min_match_ratio=0.9,
         # event checkpointing (event_logger.restore/snapshot in RolloutExecutor)
         save_debug_event_data=None,
+        enable_sample_ownership_checker=False,
+        sample_ownership_grace_steps=10,
         load=None,
+        requested_load=None,
         save=None,
         # CI
         ci_test=False,
         ci_tito_special_token_count_threshold=0.0,
+        ci_assert_prefill_lag_max=None,
         # dumper (sglang debug dumper integration)
         dumper_enable=False,
         dumper_inference=False,

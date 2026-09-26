@@ -1,9 +1,12 @@
 import logging
 import os
 import re
+from collections.abc import Sequence
 from contextlib import contextmanager
 from pathlib import Path
+from typing import Any, NamedTuple
 
+import torch
 import torch.distributed as dist
 from megatron.core.utils import unwrap_model
 
@@ -12,6 +15,7 @@ from megatron.training.checkpointing import load_checkpoint as _load_checkpoint_
 from megatron.training.checkpointing import save_checkpoint
 from megatron.training.global_vars import get_args
 
+from miles.backends.training_utils.model_companion import ModelCompanionSampleConsumptionUtils
 from miles.backends.training_utils.weight_update.snapshot_publisher import SnapshotPublisher
 from miles.utils import megatron_bridge_utils
 from miles_plugins.models.deepseek_v4.arguments import assert_checkpoint_is_current, is_dsv4_model
@@ -102,7 +106,19 @@ logger = logging.getLogger(__name__)
 __all__ = ["save_checkpoint", "save_checkpoint_with_lora", "load_checkpoint"]
 
 
-def load_checkpoint(ddp_model, optimizer, opt_param_scheduler, checkpointing_context, skip_load_to_model_and_opt):
+class _CheckpointLoadResult(NamedTuple):
+    iteration: int
+    restored_trained_iteration: bool
+    native_optimizer_restored: bool
+
+
+def load_checkpoint(
+    ddp_model: Sequence[torch.nn.Module],
+    optimizer: Any | None,
+    opt_param_scheduler: Any | None,
+    checkpointing_context: dict[str, Any] | None,
+    skip_load_to_model_and_opt: bool,
+) -> _CheckpointLoadResult:
     # ref: how megatron `load_checkpoint` gets directory
     args = get_args()
 
@@ -119,7 +135,7 @@ def load_checkpoint(ddp_model, optimizer, opt_param_scheduler, checkpointing_con
     if has_local_checkpoint_manager or _is_megatron_checkpoint(load_path):
         if not has_local_checkpoint_manager and is_dsv4_model(args):
             assert_checkpoint_is_current(load_path)
-        result = _load_checkpoint_megatron(
+        result_iteration, _ = _load_checkpoint_megatron(
             ddp_model=ddp_model,
             optimizer=optimizer,
             opt_param_scheduler=opt_param_scheduler,
@@ -127,19 +143,20 @@ def load_checkpoint(ddp_model, optimizer, opt_param_scheduler, checkpointing_con
             skip_load_to_model_and_opt=skip_load_to_model_and_opt,
         )
     else:
-        result = _load_checkpoint_hf(
+        result_iteration, _ = _load_checkpoint_hf(
             ddp_model=ddp_model,
             optimizer=optimizer,
             args=args,
             load_path=load_path,
         )
+    restored_trained_iteration = not args.finetune
 
     # Load LoRA adapter weights if available
     native_optimizer_restored = False
     if is_lora_enabled(args):
         adapter_path = getattr(args, "lora_adapter_path", None)
         if adapter_path is not None:
-            loaded, iteration, native_optimizer_restored = load_lora_adapter(
+            loaded, adapter_iteration, native_optimizer_restored = load_lora_adapter(
                 ddp_model,
                 adapter_path,
                 optimizer=optimizer,
@@ -148,8 +165,9 @@ def load_checkpoint(ddp_model, optimizer, opt_param_scheduler, checkpointing_con
             )
             if loaded:
                 logger.info(f"Successfully loaded LoRA adapter from {adapter_path}")
-                if iteration is not None:
-                    result = (iteration, result[1])
+                if adapter_iteration is not None:
+                    result_iteration = adapter_iteration
+                    restored_trained_iteration = True
             else:
                 logger.warning(
                     f"LoRA is enabled and --lora-adapter-path={adapter_path} was specified, "
@@ -157,7 +175,13 @@ def load_checkpoint(ddp_model, optimizer, opt_param_scheduler, checkpointing_con
                     f"Training will start with freshly initialized adapter weights."
                 )
 
-    return (*result, native_optimizer_restored)
+    ModelCompanionSampleConsumptionUtils.clear_for_finetune(ddp_model, args=args)
+
+    return _CheckpointLoadResult(
+        iteration=result_iteration,
+        restored_trained_iteration=restored_trained_iteration,
+        native_optimizer_restored=native_optimizer_restored,
+    )
 
 
 def save_checkpoint_with_lora(
