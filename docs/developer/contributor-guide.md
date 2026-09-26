@@ -83,7 +83,11 @@ Beyond formatting, the conventions a reviewer will hold you to live in
 prefer stateless and immutable, keep functions under roughly 100 lines and files under
 roughly 1000, initialize derived values once, keep imports at the top, use absolute
 imports, prefer keyword arguments where they add clarity. It applies to `miles/**/*.py`,
-`scripts/**/*.py`, `tools/**/*.py`, `train.py` and `train_async.py`.
+`scripts/**/*.py`, `tools/**/*.py`, `train.py` and `train_async.py`. Three sibling rules
+cover what it leaves out: `comment-style.md` (what a comment or docstring has to carry to
+earn its place), `unit-test-admission.md` (which test cases are worth adding), and
+`no-getattr-defensive.md` (when `getattr` with a default is defensive access rather than a
+real optional). All of them are listed in the next section.
 
 ## What lives in `.claude`
 
@@ -92,9 +96,19 @@ worth reading even if you never run one, because it is where several rules are w
 down exactly once.
 
 **`.claude/rules/`** holds path-scoped conventions. Each file carries a `paths:` front
-matter list, and the rule applies to any file matching it. `general-code-style.md` is the
-one described above. `AGENTS.md` at the repo root points Codex at the same file, so both
-agents and humans review against one document.
+matter list, and the rule applies to any file matching it; a file without `paths:` always
+applies. `AGENTS.md` at the repo root points Codex at the same files, so both agents and
+humans review against one set of documents.
+
+| Rule | Applies to | What it decides |
+|---|---|---|
+| `general-code-style.md` | core modules and scripts | The conventions described above |
+| `comment-style.md` | every `.py` and `.cu` | What a comment or docstring must carry; where history, rationale and `Args:` blocks live instead |
+| `unit-test-admission.md` | `tests/**` | Which test cases are admissible: bug regression, derived property, or bookkeeping |
+| `no-getattr-defensive.md` | core modules and scripts | Direct attribute access by default; `getattr` / `hasattr` with a one-line reason only where absence is a real state |
+| `launch-and-model-scripts.md` | `scripts/`, `examples/`, `scripts/models/` | How a launcher or model definition is written and snapshot-tested |
+| `pool-cell-worker-names.md` | `miles/`, `tests/`, `charts/` | The pool / cell / worker vocabulary |
+| `modify-component-must-read.md` | always | Which skill to read before touching a `doc-dev` file, doing a mechanical refactor, or changing an `est_time` |
 
 **`.claude/skills/`** holds procedures, one directory per skill with a `SKILL.md`. They
 are workflows rather than style rules:
