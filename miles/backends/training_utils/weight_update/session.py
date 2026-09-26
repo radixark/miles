@@ -57,9 +57,11 @@ def end_weight_update(
             for updater in cell_updaters
         ]
     )
-    for result in results:
+    for updater, result in zip(cell_updaters, results, strict=True):
         if isinstance(result, Mapping) and result.get("success") is False:
-            raise RuntimeError(f"end_weight_update failed on a rollout engine: {result.get('message')}")
+            updater.mark_errored(
+                RuntimeError(f"end_weight_update failed on a rollout engine: {result.get('message')}")
+            )
 
 
 def register_lora_adapter(
