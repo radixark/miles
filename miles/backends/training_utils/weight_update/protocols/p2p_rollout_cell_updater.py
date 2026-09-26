@@ -1,4 +1,5 @@
 import logging
+from argparse import Namespace
 from concurrent.futures import Future
 from typing import Any
 
@@ -14,10 +15,11 @@ logger = logging.getLogger(__name__)
 class _P2PRolloutCellUpdater(_RolloutCellUpdater):
     def __init__(
         self,
+        args: Namespace,
         cell_id: str,
         api_client: SGLangApiClient,
     ) -> None:
-        super().__init__(cell_id=cell_id, api_client=api_client)
+        super().__init__(args=args, cell_id=cell_id, api_client=api_client)
         self.targets_by_rollout_engine_rank: dict[int, RemoteWeightInfo] = {}
         self._pending_writes: list[Future[None]] = []
 
@@ -41,13 +43,13 @@ class _P2PRolloutCellUpdater(_RolloutCellUpdater):
             )
         )
 
-    def wait_for_pending_writes(self) -> None:
+    def wait_for_pending_writes(self, timeout: float) -> None:
         if self.is_errored:
             return
         pending, self._pending_writes = self._pending_writes, []
         for future in pending:
             try:
-                future.result()
+                future.result(timeout=timeout)
             except Exception as error:
                 self.mark_errored(error)
 

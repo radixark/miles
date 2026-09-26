@@ -1,4 +1,5 @@
 import threading
+from argparse import Namespace
 from concurrent.futures import Future
 from types import ModuleType
 from typing import Any
@@ -132,7 +133,9 @@ class _RecordingTransferManager:
 
 
 def _cell_updater(p2p_rollout_cell_updater: ModuleType, cell_id: str = "cell-a") -> Any:
-    return p2p_rollout_cell_updater._P2PRolloutCellUpdater(cell_id=cell_id, api_client=None)
+    return p2p_rollout_cell_updater._P2PRolloutCellUpdater(
+        args=Namespace(update_weight_engine_request_timeout=10.0), cell_id=cell_id, api_client=None
+    )
 
 
 class TestSubmitWrite:

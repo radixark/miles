@@ -114,7 +114,7 @@ class UpdateWeightFromDiskDelta(WeightTransferProtocol):
         # uses isn't needed either — the engine-side apply is serialized by a per-host flock
         # behind /pull_weights.
         self.rollout_engines = rollout_engines
-        self.cell_updaters_of_cell_id = create_rollout_cell_updaters(self.rollout_engines, engine_cell_ids)
+        self.cell_updaters_of_cell_id = create_rollout_cell_updaters(self.args, self.rollout_engines, engine_cell_ids)
         self.group_name = "miles-disk-delta"
         replica_rank, _ = get_data_replica_rank_and_size(parallel_state, placement)
         self.is_sender = replica_rank == 0

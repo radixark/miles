@@ -8,11 +8,11 @@ from typing import NamedTuple
 
 import ray
 from sglang.srt.server_args import ServerArgs
-from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
+
 from miles.backends.training_utils.parallel import get_parallel_state
 from miles.backends.training_utils.weight_update.hf_weight_iterator import WeightUpdatePlacement
+from miles.backends.training_utils.weight_update.rollout_cell_updater import _RolloutCellUpdater
 from miles.backends.training_utils.weight_update.utils import get_data_replica_rank_and_size
-from miles.utils import async_utils
 from miles.utils.workers.argv_utils import _record_field_names
 
 logger = logging.getLogger(__name__)
@@ -203,7 +203,8 @@ def create_transfer_engine():
 
 
 def query_remote_weight_infos(
-    rollout_engines: Sequence[SGLangApiClient],
+    cell_updaters_of_cell_id: dict[str, _RolloutCellUpdater],
+    engine_cell_ids: Sequence[str],
     targets,
 ) -> tuple[dict, dict, dict]:
     """Query remote rollout engines for weight info, session IDs, and server args."""
@@ -213,17 +214,13 @@ def query_remote_weight_infos(
     targets_to_query = set((target.rollout_engine_ind, target.rollout_engine_rank) for target in targets)
 
     for rollout_engine_ind, rollout_engine_rank in targets_to_query:
-        session_id, raw_weights_info = async_utils.run(
-            rollout_engines[rollout_engine_ind].get_remote_instance_transfer_engine_info(rank=rollout_engine_rank)
-        )
-        weights_info = {name: RemoteWeightLocation(*location) for name, location in raw_weights_info.items()}
-        parallelism_info = async_utils.run(
-            rollout_engines[rollout_engine_ind].get_parallelism_info(rank=rollout_engine_rank)
-        )
+        cell_updater = cell_updaters_of_cell_id[engine_cell_ids[rollout_engine_ind]]
+        queried = _query_remote_weight_info(cell_updater, rollout_engine_rank)
+        if queried is None:
+            continue
+        session_id, weights_info, parallelism_info, server_info = queried
 
-        session_id_to_server_args[session_id] = create_server_args_from_dict(
-            async_utils.run(rollout_engines[rollout_engine_ind].get_server_info())
-        )
+        session_id_to_server_args[session_id] = create_server_args_from_dict(server_info)
         assert (
             session_id is not None
         ), f"Failed to get session id from rollout engine {rollout_engine_ind} rank {rollout_engine_rank}"
@@ -231,3 +228,18 @@ def query_remote_weight_infos(
         targets_to_session_id[(rollout_engine_ind, rollout_engine_rank)] = session_id
 
     return remote_weight_infos_by_session_id, targets_to_session_id, session_id_to_server_args
+
+
+def _query_remote_weight_info(
+    cell_updater: _RolloutCellUpdater, rollout_engine_rank: int
+) -> tuple[str, dict[str, RemoteWeightLocation], dict, dict] | None:
+    transfer_engine_info = cell_updater.submit_client_call(
+        "get_remote_instance_transfer_engine_info", rank=rollout_engine_rank
+    ).result()
+    parallelism_info = cell_updater.submit_client_call("get_parallelism_info", rank=rollout_engine_rank).result()
+    server_info = cell_updater.submit_client_call("get_server_info").result()
+    if cell_updater.is_errored:
+        return None
+    session_id, raw_weights_info = transfer_engine_info
+    weights_info = {name: RemoteWeightLocation(*location) for name, location in raw_weights_info.items()}
+    return session_id, weights_info, parallelism_info, server_info

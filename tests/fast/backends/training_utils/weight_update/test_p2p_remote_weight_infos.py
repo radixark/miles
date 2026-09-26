@@ -1,12 +1,16 @@
+import asyncio
 import dataclasses
 import importlib
 import sys
+from argparse import Namespace
 from collections import Counter
 from contextlib import contextmanager
 from types import ModuleType
 
 import msgspec
 import pytest
+
+from miles.backends.training_utils.weight_update.rollout_cell_updater import _RolloutCellUpdater
 
 _MODULE = "miles.backends.training_utils.weight_update.protocols.p2p_transfer_utils"
 
@@ -202,3 +206,67 @@ class TestQueryRemoteWeightInfos:
         location = weight_infos["session-0-0"][0]["weight-0"]
         assert isinstance(location, p2p_transfer_utils.RemoteWeightLocation)
         assert (location.address, location.numel, location.element_size) == (0x1000, 4, 2)
+
+
+def _make_cell_updaters(module: ModuleType, engines: list[_FakeRolloutEngine]) -> tuple[dict, list[str]]:
+    engine_cell_ids = [f"cell-{index}" for index in range(len(engines))]
+    args = Namespace(update_weight_engine_request_timeout=10.0)
+    cell_updaters = {
+        cell_id: _RolloutCellUpdater(args=args, cell_id=cell_id, api_client=engine)
+        for cell_id, engine in zip(engine_cell_ids, engines, strict=True)
+    }
+    return cell_updaters, engine_cell_ids
+
+
+class _UnreachableRolloutEngine(_FakeRolloutEngine):
+    async def get_remote_instance_transfer_engine_info(self, rank: int) -> tuple[str, dict]:
+        self.calls.append(("get_remote_instance_transfer_engine_info", {"rank": rank}))
+        raise RuntimeError("the engine is gone")
+
+
+class _HangingRolloutEngine(_FakeRolloutEngine):
+    async def get_parallelism_info(self, rank: int) -> dict:
+        self.calls.append(("get_parallelism_info", {"rank": rank}))
+        await asyncio.sleep(3600)
+
+
+class TestQueryRemoteWeightInfosGivesUpOnABrokenCell:
+    def test_an_unreachable_engine_is_left_out_of_the_transfer_plan(self, p2p_transfer_utils: ModuleType) -> None:
+        """Planning a transfer to an engine that never answered would write into an address nobody confirmed."""
+        engines = [_UnreachableRolloutEngine(0), _FakeRolloutEngine(1)]
+        cell_updaters, engine_cell_ids = _make_cell_updaters(p2p_transfer_utils, engines)
+
+        weight_infos, targets_to_session_id, _server_args = p2p_transfer_utils.query_remote_weight_infos(
+            cell_updaters, engine_cell_ids, _make_targets(p2p_transfer_utils, [(0, 0), (1, 0)])
+        )
+
+        assert cell_updaters["cell-0"].is_errored
+        assert not cell_updaters["cell-1"].is_errored
+        assert targets_to_session_id == {(1, 0): "session-1-0"}
+        assert list(weight_infos) == ["session-1-0"]
+
+    def test_a_metadata_query_that_never_returns_gives_the_cell_up(self, p2p_transfer_utils: ModuleType) -> None:
+        """Connecting must not hang forever on one engine that stopped answering."""
+        engines = [_HangingRolloutEngine(0)]
+        cell_updaters, engine_cell_ids = _make_cell_updaters(p2p_transfer_utils, engines)
+        cell_updaters["cell-0"]._args.update_weight_engine_request_timeout = 0.05
+
+        _weight_infos, targets_to_session_id, _server_args = p2p_transfer_utils.query_remote_weight_infos(
+            cell_updaters, engine_cell_ids, _make_targets(p2p_transfer_utils, [(0, 0)])
+        )
+
+        assert cell_updaters["cell-0"].is_errored
+        assert targets_to_session_id == {}
+
+    def test_a_cell_given_up_earlier_contributes_no_metadata(self, p2p_transfer_utils: ModuleType) -> None:
+        """Re-querying a cell that already lost the update would only waste the trainer's deadline."""
+        engines = [_FakeRolloutEngine(0)]
+        cell_updaters, engine_cell_ids = _make_cell_updaters(p2p_transfer_utils, engines)
+        cell_updaters["cell-0"].mark_errored(RuntimeError("lost"))
+
+        _weight_infos, targets_to_session_id, _server_args = p2p_transfer_utils.query_remote_weight_infos(
+            cell_updaters, engine_cell_ids, _make_targets(p2p_transfer_utils, [(0, 0)])
+        )
+
+        assert engines[0].calls == []
+        assert targets_to_session_id == {}

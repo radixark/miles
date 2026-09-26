@@ -1147,6 +1147,12 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help="Timeout in seconds for each P2P transfer operation.",
             )
             parser.add_argument(
+                "--update-weight-engine-request-timeout",
+                type=float,
+                default=300.0,
+                help="Seconds allowed for one weight-update request to a rollout engine before its cell is given up.",
+            )
+            parser.add_argument(
                 "--update-weights-timeout",
                 type=float,
                 default=600.0,
@@ -3700,6 +3706,9 @@ def miles_validate_args(args):
         args.check_weight_update_equal = True
 
     # always true on offload for colocate at the moment.
+    assert (
+        args.update_weight_engine_request_timeout > 0
+    ), f"--update-weight-engine-request-timeout must be positive, got {args.update_weight_engine_request_timeout!r}"
     assert (
         args.update_weights_timeout > 0
     ), f"--update-weights-timeout must be positive, got {args.update_weights_timeout!r}"
