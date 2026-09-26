@@ -1,5 +1,7 @@
+import argparse
 import json
 import os
+import shlex
 from pathlib import Path
 
 from tests.ci.ci_register import register_cuda_ci
@@ -131,7 +133,26 @@ def prepare():
     )
 
 
-def execute():
+def execute(
+    *,
+    num_rollout: int = 2,
+    update_weight_transfer_mode: str = "broadcast",
+    update_weight_disk_dir: str | None = None,
+    update_weight_local_checkpoint_dir: str | None = None,
+):
+    if num_rollout < 2:
+        raise ValueError("At least two rollouts are required to exercise a post-training weight update.")
+    if update_weight_transfer_mode not in ("broadcast", "disk-delta"):
+        raise ValueError(f"Unsupported weight transfer mode: {update_weight_transfer_mode}")
+    weight_transfer_args = f"--update-weight-transfer-mode {update_weight_transfer_mode} "
+    if update_weight_transfer_mode == "disk-delta":
+        if not update_weight_disk_dir or not update_weight_local_checkpoint_dir:
+            raise ValueError("disk-delta requires both publication and local checkpoint directories.")
+        weight_transfer_args += (
+            f"--update-weight-disk-dir {shlex.quote(update_weight_disk_dir)} "
+            f"--update-weight-local-checkpoint-dir {shlex.quote(update_weight_local_checkpoint_dir)} "
+        )
+
     os.environ.update(NVFP4_ENV)
     os.environ.update(GLM5_ENV)
     os.environ.setdefault("RAY_TMPDIR", "/tmp/ray")
@@ -146,7 +167,7 @@ def execute():
         "--apply-chat-template "
         "--rollout-shuffle "
         "--rm-type deepscaler "
-        "--num-rollout 2 "
+        f"--num-rollout {num_rollout} "
         "--rollout-batch-size 8 "
         "--n-samples-per-prompt 8 "
         "--rollout-max-response-len 100 "
@@ -268,6 +289,7 @@ def execute():
         f"{ci_args} "
         f"{mixed_precision_args} "
         f"{misc_args} "
+        f"{weight_transfer_args} "
     )
 
     U.execute_train(
@@ -280,7 +302,28 @@ def execute():
 
 
 if __name__ == "__main__":
-    prepare()
+    parser = argparse.ArgumentParser(description="GLM-5.2 NVFP4 W4A16 with four training and four rollout GPUs.")
+    parser.add_argument(
+        "--skip-prepare", action="store_true", help="Reuse previously prepared checkpoints and dataset."
+    )
+    parser.add_argument("--num-rollout", type=int, default=2, help="Number of rollouts; at least two are required.")
+    parser.add_argument("--update-weight-transfer-mode", choices=("broadcast", "disk-delta"), default="broadcast")
+    parser.add_argument("--update-weight-disk-dir")
+    parser.add_argument("--update-weight-local-checkpoint-dir")
+    options = parser.parse_args()
+    if options.update_weight_transfer_mode == "disk-delta" and (
+        not options.update_weight_disk_dir or not options.update_weight_local_checkpoint_dir
+    ):
+        parser.error("disk-delta requires --update-weight-disk-dir and --update-weight-local-checkpoint-dir")
+    if options.num_rollout < 2:
+        parser.error("--num-rollout must be at least 2")
+    if not options.skip_prepare:
+        prepare()
     for proxy_var in ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY"):
         os.environ.pop(proxy_var, None)
-    execute()
+    execute(
+        num_rollout=options.num_rollout,
+        update_weight_transfer_mode=options.update_weight_transfer_mode,
+        update_weight_disk_dir=options.update_weight_disk_dir,
+        update_weight_local_checkpoint_dir=options.update_weight_local_checkpoint_dir,
+    )

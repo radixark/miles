@@ -23,7 +23,13 @@ from miles.backends.training_utils.weight_update.protocol import WeightTransferP
 from miles.backends.training_utils.weight_update.session import check_weight_sync_results
 from miles.backends.training_utils.weight_update.utils import get_data_replica_rank_and_size
 from miles.utils import async_utils
-from miles.utils.disk_delta import NUM_WORKERS, checksum, make_tensor_reader, overwrite_encode
+from miles.utils.disk_delta import (
+    NUM_WORKERS,
+    checkpoint_tensor_layout,
+    checksum,
+    make_tensor_reader,
+    overwrite_encode,
+)
 from miles.utils.distributed_utils import get_gloo_group
 
 logger = logging.getLogger(__name__)
@@ -56,6 +62,13 @@ _SAFETENSORS_DTYPE_BY_TORCH_DTYPE = {
         )
         if hasattr(torch, torch_dtype_name)
     },
+}
+
+_PLAIN_FLOAT_DTYPE_BY_SAFETENSORS_DTYPE = {
+    "F64": torch.float64,
+    "F32": torch.float32,
+    "F16": torch.float16,
+    "BF16": torch.bfloat16,
 }
 
 
@@ -125,9 +138,39 @@ class UpdateWeightFromDiskDelta(WeightTransferProtocol):
         return True
 
     def send_bucket(self, bucket: list[tuple[str, torch.Tensor]]) -> None:
-        """Submit each tensor of the bucket to the diff/compress pool (pipelined with the gather)."""
+        """Submit tensors and small scalar groups to the diff/compress pool, pipelined with the gather."""
+        if self._encode_error is not None:
+            return
+        matched = []
         for name, tensor in bucket:
-            flat = tensor.detach().contiguous().view(torch.uint8).reshape(-1)
+            try:
+                tensor = self._match_checkpoint_layout(name, tensor)
+            except ValueError as error:
+                # Every rank must keep driving the iterator's gathers. Raise together
+                # after the stream is exhausted, before publishing any delta files.
+                self._encode_error = error
+                break
+            matched.append((name, tensor))
+
+        scalar_indices = [
+            index
+            for index, (name, tensor) in enumerate(matched)
+            if name.endswith(".weight_scale_2") and tensor.dtype == torch.float32 and tensor.ndim == 0
+        ]
+        if len(scalar_indices) < 2 or any(
+            matched[index][1].device != matched[scalar_indices[0]][1].device for index in scalar_indices
+        ):
+            scalar_indices = []
+        scalar_set = set(scalar_indices)
+        for index, (name, tensor) in enumerate(matched):
+            names = [name]
+            if index in scalar_set:
+                if index != scalar_indices[0]:
+                    continue
+                names = [matched[index][0] for index in scalar_indices]
+                tensor = torch.stack([matched[index][1].detach() for index in scalar_indices])
+            # The dtype-view overload requires at least one dimension.
+            flat = tensor.detach().contiguous().reshape(-1).view(torch.uint8)
             nbytes = int(flat.numel())
             if self._use_pinned and nbytes <= self._max_bytes:
                 buf = self._free_q.get()  # blocks when all buffers are in flight -> backpressures the gather
@@ -137,16 +180,19 @@ class UpdateWeightFromDiskDelta(WeightTransferProtocol):
             else:
                 payload, pinned = flat.cpu().numpy(), False
             self.total_bytes += nbytes
-            self._inflight.append(self._pool.submit(self._diff_and_compress, name, payload, nbytes, pinned))
+            self._inflight.append(self._pool.submit(self._diff_and_compress_batch, names, payload, nbytes, pinned))
             if len(self._inflight) >= 2 * NUM_WORKERS:
                 self._collect(self._inflight.popleft())
 
     def after_base_weights(self) -> None:
         """Drain the in-flight diff/compress work and shut the pool down."""
-        while self._inflight:
-            self._collect(self._inflight.popleft())
-        self._pool.shutdown()
-        self._pool = None
+        try:
+            while self._inflight:
+                self._collect(self._inflight.popleft())
+        finally:
+            self._pool.shutdown()
+            self._pool = None
+        _raise_if_validation_failed(self._encode_error, phase="update")
 
     def finalize(self, weight_version: int) -> None:
         """Write this version as a canonical HF dir, have the engines pull and reload it."""
@@ -195,16 +241,12 @@ class UpdateWeightFromDiskDelta(WeightTransferProtocol):
             assert read_hf is not None
             try:
                 for name, tensor in bucket:
-                    try:
-                        baseline = read_hf(
-                            name,
-                            expected_dtype=_safetensors_dtype(tensor.dtype),
-                            expected_shape=tuple(tensor.shape),
-                        )
-                    except KeyError as error:
-                        raise ValueError(
-                            f"Trainer emitted {name!r}, but it is absent from the canonical checkpoint"
-                        ) from error
+                    tensor = self._match_checkpoint_layout(name, tensor)
+                    baseline = read_hf(
+                        name,
+                        expected_dtype=_safetensors_dtype(tensor.dtype),
+                        expected_shape=tuple(tensor.shape),
+                    )
                     emitted_nbytes = tensor.numel() * tensor.element_size()
                     if emitted_nbytes != baseline.nbytes:
                         raise ValueError(
@@ -217,18 +259,7 @@ class UpdateWeightFromDiskDelta(WeightTransferProtocol):
                 # collectives. Defer the error until iteration finishes, then make every rank fail.
                 local_error = error
 
-        group = get_gloo_group()
-        error_messages: list[str | None] = [None] * dist.get_world_size(group=group)
-        local_error_message = None if local_error is None else f"{type(local_error).__name__}: {local_error}"
-        dist.all_gather_object(error_messages, local_error_message, group=group)
-        if any(error_messages):
-            failed_rank, error_message = next(
-                (rank, message) for rank, message in enumerate(error_messages) if message is not None
-            )
-            error = RuntimeError(f"Disk-delta baseline validation failed on rank {failed_rank}: {error_message}")
-            if local_error is not None:
-                raise error from local_error
-            raise error
+        _raise_if_validation_failed(local_error, phase="baseline")
 
         if dist.get_rank() == 0:
             check_weight_sync_results(async_utils.wait_futures(pulls), is_lora=False)
@@ -259,9 +290,40 @@ class UpdateWeightFromDiskDelta(WeightTransferProtocol):
             )
         dist.barrier(group=get_gloo_group())
 
+    def _match_checkpoint_layout(self, name: str, tensor: torch.Tensor) -> torch.Tensor:
+        """Match one emitted tensor to the immutable checkpoint byte layout.
+
+        Model conversion and quantization decide which tensors exist. Disk-delta
+        only permits a storage-dtype cast between ordinary floating-point
+        tensors; packed and FP8 layouts must already match exactly.
+        """
+        try:
+            checkpoint_dtype, checkpoint_shape = checkpoint_tensor_layout(self.args.hf_checkpoint, name)
+        except KeyError as error:
+            raise ValueError(f"Trainer emitted {name!r}, but it is absent from the canonical checkpoint") from error
+
+        if tuple(tensor.shape) != checkpoint_shape:
+            raise ValueError(
+                f"Checkpoint tensor {name!r} has shape {checkpoint_shape}; trainer emitted {tuple(tensor.shape)}"
+            )
+
+        emitted_dtype = _safetensors_dtype(tensor.dtype)
+        if emitted_dtype == checkpoint_dtype:
+            return tensor
+
+        checkpoint_torch_dtype = _PLAIN_FLOAT_DTYPE_BY_SAFETENSORS_DTYPE.get(checkpoint_dtype)
+        if checkpoint_torch_dtype is not None and emitted_dtype in _PLAIN_FLOAT_DTYPE_BY_SAFETENSORS_DTYPE:
+            return tensor.to(checkpoint_torch_dtype)
+
+        raise ValueError(
+            f"Checkpoint tensor {name!r} has dtype {checkpoint_dtype}; "
+            f"trainer emitted {emitted_dtype}. Quantized storage layouts must "
+            "be produced by the model's weight converter."
+        )
+
     def _begin_encode(self, weight_version: int) -> None:
-        """Set up this version's diff/compress pipeline: each ``send_bucket`` copies one tensor at
-        a time to a pinned buffer and submits it; pool workers diff against the snapshot and
+        """Set up this version's diff/compress pipeline: each ``send_bucket`` copies one tensor or
+        scalar group to a pinned buffer and submits it; pool workers diff against the snapshot and
         compress in parallel (each is a few big GIL-releasing numpy/zstd calls)."""
         if self._pool is not None:
             self._pool.shutdown(wait=False, cancel_futures=True)
@@ -270,6 +332,7 @@ class UpdateWeightFromDiskDelta(WeightTransferProtocol):
             os.makedirs(self._version_dir, exist_ok=True)
         self._delta: dict[str, np.ndarray] = {}  # changed tensor name -> compressed diff
         self._checksums: dict[str, str] = {}  # changed tensor name -> new-state checksum
+        self._encode_error: ValueError | None = None
         self.changed_bytes = self.total_bytes = 0
 
         # Pinned host-buffer pool: a pinned non_blocking GPU->CPU copy is far faster than .cpu().
@@ -286,35 +349,60 @@ class UpdateWeightFromDiskDelta(WeightTransferProtocol):
         self._pool = ThreadPoolExecutor(max_workers=NUM_WORKERS)
         self._inflight: deque = deque()
 
+    def _diff_and_compress_batch(self, names, buf, nbytes, pinned):
+        """Return one result per name; multi-name batches contain four-byte FP32 scalars."""
+        if len(names) == 1:
+            return [self._diff_and_compress(names[0], buf, nbytes, pinned)]
+        try:
+            if pinned:
+                # One tiny owned copy lets every scale snapshot outlive buffer reuse.
+                data = np.empty(nbytes, dtype=np.uint8)
+                np.copyto(data, buf.numpy()[:nbytes])
+            else:
+                data = buf
+        finally:
+            if pinned:
+                self._free_q.put(buf)
+        return [
+            self._diff_and_compress(name, data[index * 4 : index * 4 + 4], 4, False)
+            for index, name in enumerate(names)
+        ]
+
     def _diff_and_compress(self, name, buf, nbytes, pinned):
-        if pinned:  # copy out and free the pinned buffer before the heavy diff/compress
-            new = np.empty(nbytes, dtype=np.uint8)
-            np.copyto(new, buf.numpy()[:nbytes])
-            self._free_q.put(buf)
-        else:
-            new = buf
-        old = self._snapshot[name]
-        if self.delta_encoding == "xor":
-            diff = new ^ old
-            changed = int(np.count_nonzero(diff))
-        elif self.delta_encoding == "overwrite":
-            mask = new != old
-            changed = int(np.count_nonzero(mask))
+        try:
+            new = buf.numpy()[:nbytes] if pinned else buf
+            old = self._snapshot[name]
+            if self.delta_encoding == "xor":
+                diff = new ^ old
+                changed = int(np.count_nonzero(diff))
+            elif self.delta_encoding == "overwrite":
+                mask = new != old
+                changed = int(np.count_nonzero(mask))
+            else:
+                raise ValueError(f"unknown delta encoding {self.delta_encoding!r}")
+            if not changed:
+                return name, old, None, None, 0
+            if pinned:
+                # Only changed tensors need a new snapshot. Keep the pinned view
+                # alive through the diff and copy, then release it before encoding.
+                snapshot = np.empty(nbytes, dtype=np.uint8)
+                np.copyto(snapshot, new)
+                new = snapshot
+        finally:
+            if pinned:
+                self._free_q.put(buf)
+        if self.delta_encoding == "overwrite":
             diff = overwrite_encode(new, mask)
-        else:
-            raise ValueError(f"unknown delta encoding {self.delta_encoding!r}")
-        if not changed:
-            return name, new, None, None, 0
         compressed = np.frombuffer(zstandard.ZstdCompressor(level=1).compress(diff), dtype=np.uint8)
         return name, new, compressed, checksum(self.checksum_algorithm, new), changed
 
     def _collect(self, fut):
-        name, new, compressed, digest, changed = fut.result()
-        self._snapshot[name] = new  # becomes the next sync's base
-        if changed:
-            self.changed_bytes += changed
-            self._delta[name] = compressed
-            self._checksums[name] = digest
+        for name, new, compressed, digest, changed in fut.result():
+            self._snapshot[name] = new  # becomes the next sync's base
+            if changed:
+                self.changed_bytes += changed
+                self._delta[name] = compressed
+                self._checksums[name] = digest
 
     def _drop_duplicate_names(self, group, world: int, rank: int) -> None:
         """A parameter Megatron replicates across PP stages — the word embedding on the last stage
@@ -439,6 +527,20 @@ class UpdateWeightFromDiskDelta(WeightTransferProtocol):
                 100.0 * changed / max(total, 1),
                 wire / 1e9,
             )
+
+
+def _raise_if_validation_failed(local_error: ValueError | None, *, phase: str) -> None:
+    group = get_gloo_group()
+    failed = torch.tensor(int(local_error is not None), dtype=torch.int32, device="cpu")
+    dist.all_reduce(failed, op=dist.ReduceOp.MAX, group=group)
+    if not failed.item():
+        return
+    error_messages: list[str | None] = [None] * dist.get_world_size(group=group)
+    local_message = None if local_error is None else f"{type(local_error).__name__}: {local_error}"
+    dist.all_gather_object(error_messages, local_message, group=group)
+    for rank, message in enumerate(error_messages):
+        if message is not None:
+            raise RuntimeError(f"Disk-delta {phase} validation failed on rank {rank}: {message}") from local_error
 
 
 def _atomic_write(path: str, data: bytes) -> None:
