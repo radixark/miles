@@ -39,6 +39,7 @@ def fill_replay_data(
     register_replay_list_func: RegisterReplayListFunc,
     if_sp_region=True,
     indices_are_token_positions=False,
+    sequence_first=False,
 ):
     """Load rollout replay tensors into module replay queues.
 
@@ -48,6 +49,9 @@ def fill_replay_data(
     log-prob and train forwards, pads/slices them to match the local CP/SP
     token layout, and then delegates stream-to-module mapping to
     `register_replay_list_func`.
+
+    For `bshd`, `sequence_first` selects Megatron MoE's `[S, B]` token order;
+    indexer replay consumes the default `[B, S]` order.
     """
     if data_key not in rollout_data:
         raise ValueError(f"{data_key} is required in rollout_data for replay.")
@@ -96,6 +100,8 @@ def fill_replay_data(
                 replay_data = [slice_with_cp(r, pad_func, qkv_format, max_seqlen) for r in replay_data]
             replay_data = torch.stack(replay_data, dim=0)
             batch_size, seqlen, num_layers, topk = replay_data.shape
+            if sequence_first:
+                replay_data = replay_data.transpose(0, 1)
             replay_data = replay_data.reshape(batch_size * seqlen, num_layers, topk)
         else:
             pad_size = parallel_state.tp.size * args.data_pad_size_multiplier
