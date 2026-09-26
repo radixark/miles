@@ -30,8 +30,8 @@ except ImportError:
     tilelang = None
 
 if tilelang is not None:
-    from miles_plugins.models.deepseek_v4.ops.kernel.tilelang_sparse_mla import sparse_attn_tilelang
-    from miles_plugins.models.deepseek_v4.ops.kernel.tilelang_sparse_mla_fwd import sparse_mqa_fwd_interface
+    from miles.kernels.attention.dsa.deepseek_v4.sparse_mla import sparse_attn_tilelang
+    from miles.kernels.attention.dsa.deepseek_v4.tilelang_sparse_mla_fwd import sparse_mqa_fwd_interface
 else:
     sparse_attn_tilelang = None
     sparse_mqa_fwd_interface = None

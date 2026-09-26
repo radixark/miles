@@ -1,5 +1,5 @@
 # ruff: noqa
-# Adapted from miles_plugins/models/glm5/ops/tilelang_indexer_fwd.py for DeepSeek-V4.
+# Adapted from miles/kernels/attention/dsa/glm5/tilelang_indexer_fwd.py for DeepSeek-V4.
 # Key differences from GLM-5:
 #   - Operates on [seqlen, batch, heads, dim] (SBHD) layout, batch handled externally
 #   - Uses causal mask via cu_seqlens instead of variable-length packed sequences

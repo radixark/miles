@@ -24,13 +24,11 @@ from megatron.core.transformer.moe.moe_utils import RouterGatingLinearFunction a
 from megatron.core.transformer.spec_utils import ModuleSpec, build_module
 from megatron.core.transformer.transformer_block import get_num_layers_to_build
 from megatron.core.transformer.transformer_config import MLATransformerConfig
+from miles.kernels.attention.dsa.glm5.indexer import generate_varlen_mask_params, lighting_indexer
+from miles.kernels.attention.dsa.glm5.sparse_mla import SparseMLA
 from miles.utils.hf_utils.config import load_hf_config
-
 from miles.utils.replay_base import indexer_replay_manager
 from miles_plugins.models.normalization import rms_norm
-
-from .ops.indexer import generate_varlen_mask_params, lighting_indexer
-from .ops.sparse_mla import SparseMLA
 
 # Names of the indexer submodules. On a DSA model with *cross-layer index
 # sharing* these only exist on "computing" layers; "skip" layers drop them.

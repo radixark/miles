@@ -1,5 +1,5 @@
 # ruff: noqa
-# Adapted from miles_plugins/models/glm5/ops/tilelang_indexer_bwd.py for DeepSeek-V4.
+# Adapted from miles/kernels/attention/dsa/glm5/tilelang_indexer_bwd.py for DeepSeek-V4.
 import tilelang as tl
 import tilelang.language as T
 import torch

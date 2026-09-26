@@ -3,25 +3,14 @@
 Needs a Hopper (SM90+) GPU with both `fla` and `flash_qla`; skips otherwise.
 """
 
-import importlib.util
-from pathlib import Path
-
 import pytest
 
-
-def load_backend_module():
-    module_path = Path(__file__).resolve().parents[2] / "miles_plugins" / "models" / "qwen_gdn_backend.py"
-    spec = importlib.util.spec_from_file_location("test_qwen_gdn_backend_module", module_path)
-    module = importlib.util.module_from_spec(spec)
-    assert spec.loader is not None
-    spec.loader.exec_module(module)
-    return module
+from miles.kernels.attention.delta_rule import backend
 
 
 def test_unknown_backend_raises_value_error():
-    module = load_backend_module()
-    with pytest.raises(ValueError, match="Unsupported Qwen GDN backend"):
-        module.get_chunk_gated_delta_rule("nope")
+    with pytest.raises(ValueError, match="Unsupported GDN backend"):
+        backend.get_chunk_gated_delta_rule("nope")
 
 
 NUM_HEADS = 4
@@ -85,10 +74,9 @@ def _run(kernel, query, key, value, g, beta, cu_seqlens):
 def test_fla_flashqla_equivalence(dtype_name, atol, rtol):
     torch = _require_backends()
     dtype = getattr(torch, dtype_name)
-    module = load_backend_module()
 
-    fla_kernel = module.get_chunk_gated_delta_rule("fla")
-    flashqla_kernel = module.get_chunk_gated_delta_rule("flashqla")
+    fla_kernel = backend.get_chunk_gated_delta_rule("fla")
+    flashqla_kernel = backend.get_chunk_gated_delta_rule("flashqla")
 
     query, key, value, g, beta, cu = _make_inputs(torch, dtype, device="cuda")
 

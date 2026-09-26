@@ -16,10 +16,10 @@ try:
 except ImportError:
     pass
 
+from miles.kernels.attention.delta_rule.backend import get_chunk_gated_delta_rule
 from miles_plugins.models.cp_utils import build_gdn_cp_context
 
 from .hf_attention import HuggingfaceAttention
-from .qwen_gdn_backend import get_chunk_gated_delta_rule
 
 
 # adapt from https://github.com/huggingface/transformers/blob/38a08b6e8ae35857109cedad75377997fecbf9d0/src/transformers/models/qwen3_next/modeling_qwen3_next.py#L564
