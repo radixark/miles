@@ -292,8 +292,7 @@ class TestCreatePlacementGroups:
 
     @staticmethod
     def _patched(monkeypatch, requested: list[int]):
-        from miles.backends.sglang_utils.sglang_api_client import WorkerType
-from miles.ray import placement_group as placement_group_module
+        from miles.ray import placement_group as placement_group_module
         from miles.ray.placement_group import PlacementGroupInfo
 
         def _fake_create(num_gpus):
