@@ -22,6 +22,7 @@ from miles.utils.audit_utils.event_logger.models import (
 from miles.utils.audit_utils.process_identity import TrainerControllerProcessIdentity
 from miles.utils.audit_utils.witness.allocator import WitnessIdAllocator, read_persisted_witness_counter
 from miles.utils.data import RolloutDataPack, remove_train_output_refs
+from miles.utils.dp_schedule import TrainParallelConfig
 from miles.utils.ft_utils.api_server.models import CellStatus
 from miles.utils.ft_utils.health_checker import ActivenessTracker, NoopHealthChecker, SimpleHealthCheckerConfig
 from miles.utils.ft_utils.indep_dp import IndepDPInfo, create_tcp_store
@@ -462,7 +463,7 @@ class TrainerController:
     async def unload_slot(self, slot: int) -> list:
         return await self._execute_slots("unload_slot", slot=slot)
 
-    async def get_train_parallel_config(self) -> dict[str, Any]:
+    async def get_train_parallel_config(self) -> TrainParallelConfig | None:
         return (await self._execute_first_alive("get_train_parallel_config"))[0]
 
     async def get_cell_statuses(self) -> dict[str, CellStatus]:
