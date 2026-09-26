@@ -1093,16 +1093,20 @@ class TestUpdatableEnginesPayload:
         assert updatable.engine_gpu_offsets == [0, 4]
         assert updatable.snapshot_cell_id_to_hashes == {"engine-early": "hash-early", "engine-late": "hash-late"}
 
-    def test_a_metadata_list_that_covers_fewer_engines_is_rejected(self):
-        """A short list would pair every later engine with another engine's cell id."""
+    @pytest.mark.parametrize("field", ["engine_gpu_counts", "engine_gpu_offsets", "engine_cell_ids"])
+    def test_a_metadata_list_that_covers_fewer_engines_is_rejected(self, field: str) -> None:
+        """Every metadata list must cover the same engines without silently truncating their pairing."""
+        payload = dict(
+            rollout_engines=["client-0"],
+            engine_gpu_counts=[1],
+            engine_gpu_offsets=[0],
+            engine_cell_ids=["engine-0"],
+            snapshot_cell_id_to_hashes={"engine-0": "hash-a"},
+        )
+        payload[field] = []
+
         with pytest.raises(AssertionError, match="aligned"):
-            UpdatableEngines(
-                rollout_engines=["client-0"],
-                engine_gpu_counts=[1],
-                engine_gpu_offsets=[0],
-                engine_cell_ids=[],
-                snapshot_cell_id_to_hashes={},
-            )
+            UpdatableEngines(**payload)
 
     def test_two_engines_claiming_one_cell_id_are_rejected(self):
         """A duplicated id makes the trainer report one cell's outcome for two engines."""

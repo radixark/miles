@@ -399,6 +399,19 @@ class UpdatableEngines:
     engine_cell_ids: list[str]
     snapshot_cell_id_to_hashes: dict[str, str]
 
+    def __post_init__(self) -> None:
+        num_engines = len(self.rollout_engines)
+        assert (
+            len(self.engine_gpu_counts) == len(self.engine_gpu_offsets) == len(self.engine_cell_ids) == num_engines
+        ), "Per-engine metadata lists must be aligned with the rollout engines"
+        assert len(set(self.engine_cell_ids)) == num_engines, "Each engine must name its own cell"
+        assert set(self.snapshot_cell_id_to_hashes) == set(
+            self.engine_cell_ids
+        ), "The generation snapshot must cover exactly these engines"
+        assert all(
+            type(count) is int and count > 0 for count in self.engine_gpu_counts
+        ), f"Engine GPU counts include a value which cannot be updated: {self.engine_gpu_counts}"
+
     def __getitem__(self, s: slice) -> "UpdatableEngines":
         cell_ids = self.engine_cell_ids[s]
         return UpdatableEngines(
