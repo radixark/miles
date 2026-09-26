@@ -5,6 +5,7 @@ register_cpu_ci(est_time=60, suite="stage-a-cpu", labels=[])
 
 import argparse
 import asyncio
+import logging
 from argparse import Namespace
 from collections import deque
 from collections.abc import Callable, Iterator
@@ -28,6 +29,7 @@ from miles.rollout.inference_rollout.inference_rollout_common import GenerateSta
 from miles.utils.audit_utils.event_logger.logger import EventLogger, read_events, set_event_logger
 from miles.utils.audit_utils.event_logger.models import ExplicitlyDroppedSamplesEvent
 from miles.utils.audit_utils.process_identity import SimpleProcessIdentity
+from miles.utils.function_registry import load_function
 from miles.utils.types import Sample, WeightVersionSpan, WeightVersionsPerCall
 
 N_SAMPLES_PER_PROMPT = 2
@@ -1371,3 +1373,603 @@ async def test_worker_bounds_in_flight_groups(monkeypatch):
     release.set()
     output = await drain
     assert len(output.samples) == 2
+
+
+# ============================== shared helpers ==============================
+
+
+async def _settle(times: int = 50) -> None:
+    for _ in range(times):
+        await asyncio.sleep(0)
+
+
+def _parked_task() -> asyncio.Task:
+    return asyncio.create_task(asyncio.Event().wait())
+
+
+class _GatedGenerate:
+    def __init__(self) -> None:
+        self.gates: list[asyncio.Event] = []
+        self.callbacks: list = []
+        self.open = False
+
+    async def __call__(self, state, group, sampling_params=None, evaluation=False, sample_done_callback=None):
+        gate = asyncio.Event()
+        if self.open:
+            gate.set()
+        self.gates.append(gate)
+        self.callbacks.append(sample_done_callback)
+        await gate.wait()
+        for sample in group:
+            sample.status = Sample.Status.COMPLETED
+        return group
+
+    def release(self, *indices: int) -> None:
+        for index in indices:
+            self.gates[index].set()
+
+    def release_all(self) -> None:
+        self.open = True
+        for gate in self.gates:
+            gate.set()
+
+
+class _RecordingScheduler:
+    sample_done_callback = None
+
+    def __init__(self) -> None:
+        self.submitted: list[list[list[Sample]]] = []
+
+    def has_capacity(self, *, pending_groups: int, group_budget: int) -> bool:
+        return False
+
+    def on_submit(self, groups: list[list[Sample]]) -> None:
+        self.submitted.append(groups)
+
+    async def wait_for_progress(self, pendings: set) -> tuple[set, set]:
+        return set(), pendings
+
+
+class _RecordingPutBuffer(data_buffer.DefaultDataBuffer):
+    puts: list = []
+
+    async def put(self, input: data_buffer.DataBufferInput) -> None:
+        _RecordingPutBuffer.puts.append(input)
+        await super().put(input)
+
+
+class _MetricsRecordingBuffer(data_buffer.DefaultDataBuffer):
+    metrics_asked_about: list = []
+
+    def get_metrics(self, trainer_model_id: str | None = None) -> dict[str, float]:
+        _MetricsRecordingBuffer.metrics_asked_about.append(trainer_model_id)
+        return {"asked": 1.0}
+
+
+class _CancelWatchingBuffer(data_buffer.DataBuffer):
+    def __init__(self) -> None:
+        self.cancelled = False
+
+    async def put(self, input: data_buffer.DataBufferInput) -> None:
+        raise AssertionError("this buffer is only ever waited on")
+
+    async def get(self, **context) -> data_buffer.DataBufferInput:
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            self.cancelled = True
+            raise
+
+    def get_metrics(self, trainer_model_id: str | None = None) -> dict[str, float]:
+        return {}
+
+
+# ======================== submission and concurrency ========================
+
+
+class TestInFlightBudget:
+    def test_a_sample_budget_that_is_not_a_whole_number_of_groups_floors_to_whole_groups(self, monkeypatch) -> None:
+        """Whole groups are submitted, so an odd sample budget buys only the groups that fit inside it."""
+        fn = make_fn(monkeypatch, make_args(async_max_concurrent_samples=5), FakeDataSource())
+
+        assert fn._max_in_flight_groups() == 2
+
+    def test_a_sample_budget_smaller_than_one_group_still_keeps_one_group_in_flight(self, monkeypatch) -> None:
+        """A budget that floors to zero groups would stop the producer from ever submitting anything."""
+        fn = make_fn(monkeypatch, make_args(async_max_concurrent_samples=1), FakeDataSource())
+
+        assert fn._max_in_flight_groups() == 1
+
+    def test_an_unset_sample_budget_bounds_in_flight_groups_by_the_rollout_batch_size(self, monkeypatch) -> None:
+        """Without --async-max-concurrent-samples the producer keeps one training batch in flight."""
+        args = make_args(rollout_batch_size=7, async_max_concurrent_samples=None)
+        fn = make_fn(monkeypatch, args, FakeDataSource())
+
+        assert fn._max_in_flight_groups() == 7
+
+    async def test_a_finished_group_frees_exactly_one_submission_slot(self, monkeypatch) -> None:
+        """At group granularity the slot a group holds comes back only when that whole group returns."""
+        generate = _GatedGenerate()
+        source = FakeDataSource()
+        args = make_args(rollout_batch_size=2, rollout_submission_granularity="group")
+        fn = make_fn(monkeypatch, args, source, generate=generate)
+
+        step = asyncio.create_task(fn(RolloutFnTrainInput(rollout_id=0)))
+        await _settle()
+        assert source.num_get_calls == 2
+
+        generate.release(0)
+        await _settle()
+        assert source.num_get_calls == 3
+
+        generate.release_all()
+        assert len((await step).samples) == 2
+
+    async def test_the_producer_submits_nothing_more_while_an_eval_pause_is_in_effect(self, monkeypatch) -> None:
+        """The shared-engine pause has to hold the producer between groups, not merely stop new eval work."""
+        generate = _GatedGenerate()
+        source = FakeDataSource()
+        fn = make_fn(monkeypatch, make_args(rollout_batch_size=1), source, generate=generate)
+
+        step = asyncio.create_task(fn(RolloutFnTrainInput(rollout_id=0)))
+        await _settle()
+        assert source.num_get_calls == 1
+
+        fn._producer_resumed.clear()
+        generate.release_all()
+        await step
+        await _settle()
+        assert source.num_get_calls == 1
+
+        fn._producer_resumed.set()
+        await _settle()
+        assert source.num_get_calls == 2
+
+    async def test_every_submitted_group_is_reported_to_the_submission_scheduler(self, monkeypatch) -> None:
+        """The scheduler paces on the samples it was told about, and an unreported group is free capacity."""
+        group = make_group(7)
+        fn = make_fn(monkeypatch, make_args(rollout_batch_size=1), FakeDataSource(scripted=[group]))
+        scheduler = _RecordingScheduler()
+        fn._scheduler = scheduler
+
+        await fn._submit_one_group()
+
+        assert scheduler.submitted == [[group]]
+
+    async def test_a_retried_prompt_group_is_preferred_over_the_data_source_in_fifo_order(self, monkeypatch) -> None:
+        """Recycled prompts are a queue: the oldest failure is the one that has waited longest to be redone."""
+        source = FakeDataSource()
+        fn = make_fn(monkeypatch, make_args(rollout_batch_size=1), source)
+        first, second = make_group(1), make_group(2)
+        fn._recycle(first, data_buffer.UnusedReason.ABORTED)
+        fn._recycle(second, data_buffer.UnusedReason.ABORTED)
+
+        assert (await fn._submit_one_group()).prompt_group is first
+        assert (await fn._submit_one_group()).prompt_group is second
+        assert source.num_get_calls == 0
+
+        assert (await fn._submit_one_group()).prompt_group is not second
+        assert source.num_get_calls == 1
+
+    async def test_a_finished_group_reaches_the_buffer_with_its_prompt_group_intact(self, monkeypatch) -> None:
+        """Recycling resubmits the prompt group, which the buffer can only do if the put carried it along."""
+        _RecordingPutBuffer.puts = []
+        prompt_group = make_group(1)
+        args = make_args(rollout_batch_size=1, custom_async_data_buffer_path=f"{__name__}._RecordingPutBuffer")
+        fn = make_fn(monkeypatch, args, FakeDataSource(scripted=[prompt_group]))
+
+        output = await fn(RolloutFnTrainInput(rollout_id=0))
+
+        assert len(output.samples) == 1
+        assert _RecordingPutBuffer.puts[0].prompt_group is prompt_group
+
+    async def test_a_full_buffer_stops_the_producer_from_submitting_more_groups(self, monkeypatch) -> None:
+        """The put lives in the producer loop, so a full buffer wedges submission even with the budget free."""
+
+        async def generate_reporting_samples(
+            state, group, sampling_params=None, evaluation=False, sample_done_callback=None
+        ):
+            for sample in group:
+                sample.status = Sample.Status.COMPLETED
+                sample_done_callback()
+            return group
+
+        source = FakeDataSource()
+        fn = make_fn(monkeypatch, make_args(rollout_batch_size=8), source, generate=generate_reporting_samples)
+        buffer, _ = make_buffer(max_groups=1)
+        fn._output = buffer
+        await put_group(buffer, make_group(99))
+
+        fn._worker = asyncio.create_task(fn._worker_loop())
+        await _settle()
+
+        assert source.num_get_calls == 8
+        assert fn._scheduler.samples_in_flight == 0
+        assert buffer.get_metrics()["rollout/fully_async/queue_size"] == 1
+
+        await fn.dispose()
+
+
+# ============================== unused handler ==============================
+
+
+class TestUnusedHandler:
+    def test_a_recycled_prompt_group_is_reset_before_it_is_queued_again(self, monkeypatch) -> None:
+        """A prompt still carrying the last attempt's response and versions would be regenerated as stale output."""
+        fn = make_fn(monkeypatch, make_args(async_unused_samples_handler="retry"), FakeDataSource())
+        group = make_group(1, weight_versions=["3"])
+
+        fn._recycle(group, data_buffer.UnusedReason.ABORTED)
+
+        [queued] = fn._retry_buffer
+        assert queued is group
+        assert [sample.response for sample in queued] == ["", ""]
+        assert [sample.weight_versions for sample in queued] == [[], []]
+        assert [sample.reward for sample in queued] == [None, None]
+
+    def test_a_recycled_group_records_no_explicitly_dropped_event(self, monkeypatch, sample_flow_event_dir) -> None:
+        """A recycled prompt is regenerated, so calling it dropped would abandon a sample still in flight."""
+        args = make_args(enable_sample_ownership_checker=True, async_unused_samples_handler="retry")
+        fn = make_fn(monkeypatch, args, FakeDataSource())
+
+        fn._handle_unused(make_group(1), data_buffer.UnusedReason.ABORTED)
+
+        assert read_events(sample_flow_event_dir) == []
+
+    @pytest.mark.parametrize("reason", [data_buffer.UnusedReason.ABORTED, data_buffer.UnusedReason.STALE])
+    def test_a_dropped_group_records_the_unused_reason_it_was_dropped_for(
+        self, monkeypatch, sample_flow_event_dir, reason
+    ) -> None:
+        """The ownership audit has to tell an abandoned generation from output that simply arrived too late."""
+        args = make_args(enable_sample_ownership_checker=True, async_unused_samples_handler="drop")
+        fn = make_fn(monkeypatch, args, FakeDataSource())
+
+        fn._handle_unused(make_group(1), reason)
+
+        [event] = read_events(sample_flow_event_dir)
+        assert isinstance(event, ExplicitlyDroppedSamplesEvent)
+        assert event.source_sample_indices == [10, 11]
+        assert event.reason == reason.value
+
+    def test_the_unused_handler_flag_selects_between_recycling_and_dropping(self, monkeypatch) -> None:
+        """--async-unused-samples-handler is the only switch between regenerating a prompt and abandoning it."""
+        retrying = make_fn(monkeypatch, make_args(async_unused_samples_handler="retry"), FakeDataSource())
+        dropping = make_fn(monkeypatch, make_args(async_unused_samples_handler="drop"), FakeDataSource())
+
+        assert retrying._handle_unused == retrying._recycle
+        assert dropping._handle_unused == dropping._drop_unused
+
+    def test_an_unknown_unused_samples_handler_is_refused_at_construction(self, monkeypatch) -> None:
+        """A typo would silently pick one of the two policies, and which one is not something to guess."""
+        with pytest.raises(AssertionError):
+            make_fn(monkeypatch, make_args(async_unused_samples_handler="recycle"), FakeDataSource())
+
+
+# ========================= dead worker ends the wait ========================
+
+
+class TestDeadWorkerEndsTheWait:
+    async def test_a_worker_that_returns_normally_fails_the_waiting_step(self, monkeypatch) -> None:
+        """The producer loop never returns, so a quiet exit is a bug that must not read as an empty buffer."""
+        fn = make_fn(monkeypatch, make_args(rollout_batch_size=1), FakeDataSource())
+        fn._output = make_buffer()[0]
+
+        async def quiet():
+            return None
+
+        fn._worker = asyncio.create_task(quiet())
+        await _settle()
+
+        with pytest.raises(RuntimeError, match="worker exited without an exception"):
+            await fn(RolloutFnTrainInput(rollout_id=0))
+
+    async def test_a_cancelled_worker_fails_the_waiting_step_with_the_disposal_message(self, monkeypatch) -> None:
+        """A cancelled producer means teardown, and the step has to say so instead of reporting a crash."""
+        fn = make_fn(monkeypatch, make_args(rollout_batch_size=1), FakeDataSource())
+        fn._output = make_buffer()[0]
+        fn._worker = _parked_task()
+        await _settle()
+        fn._worker.cancel()
+        await _settle()
+
+        with pytest.raises(RuntimeError, match="disposed while a step waited for groups"):
+            await fn(RolloutFnTrainInput(rollout_id=0))
+
+    async def test_the_pending_buffer_get_is_cancelled_when_the_step_fails(self, monkeypatch) -> None:
+        """A get left running would keep draining groups into a step nobody is waiting on any more."""
+        buffer = _CancelWatchingBuffer()
+        fn = make_fn(monkeypatch, make_args(rollout_batch_size=1), FakeDataSource())
+        fn._output = buffer
+
+        async def quiet():
+            return None
+
+        fn._worker = asyncio.create_task(quiet())
+        await _settle()
+
+        with pytest.raises(RuntimeError, match="worker exited without an exception"):
+            await fn(RolloutFnTrainInput(rollout_id=0))
+        await _settle()
+
+        assert buffer.cancelled
+
+    async def test_a_step_that_waits_too_long_warns_about_missing_progress(self, monkeypatch, caplog) -> None:
+        """A silent stall is the hardest fully-async failure to see, so the wait has to say that it is waiting."""
+        monkeypatch.setattr(fully_async, "NO_PROGRESS_WARN_SECS", 0.01)
+        fn = make_fn(monkeypatch, make_args(rollout_batch_size=1), FakeDataSource())
+        fn._output = make_buffer()[0]
+        fn._worker = _parked_task()
+
+        with caplog.at_level(logging.WARNING, logger="miles.rollout.fully_async_rollout"):
+            step = asyncio.create_task(fn(RolloutFnTrainInput(rollout_id=0)))
+            for _ in range(200):
+                await asyncio.sleep(0.01)
+                if "No completed rollout groups" in caplog.text:
+                    break
+            step.cancel()
+            await asyncio.gather(step, return_exceptions=True)
+
+        fn._worker.cancel()
+        assert "No completed rollout groups" in caplog.text
+
+    async def test_a_worker_death_is_noticed_before_its_buffered_groups_are_drained(self, monkeypatch) -> None:
+        """A whole batch already in the buffer would otherwise hide the producer's death for a full step."""
+        fn = make_fn(monkeypatch, make_args(rollout_batch_size=2), FakeDataSource())
+        buffer, _ = make_buffer()
+        fn._output = buffer
+        await put_group(buffer, make_group(1))
+        await put_group(buffer, make_group(2))
+
+        async def boom():
+            raise RuntimeError("generation exploded")
+
+        fn._worker = asyncio.create_task(boom())
+        await _settle()
+
+        with pytest.raises(RuntimeError, match="generation exploded"):
+            await fn(RolloutFnTrainInput(rollout_id=0))
+
+
+# ================================== drain ===================================
+
+
+class TestDrain:
+    async def test_a_batch_is_returned_only_when_the_whole_rollout_batch_is_ready(self, monkeypatch) -> None:
+        """A step trains on a full batch, so a partly filled one may not be handed back early."""
+        generate = _GatedGenerate()
+        fn = make_fn(monkeypatch, make_args(rollout_batch_size=3), FakeDataSource(), generate=generate)
+
+        step = asyncio.create_task(fn(RolloutFnTrainInput(rollout_id=0)))
+        await _settle()
+        generate.release(0, 1)
+        await _settle()
+
+        assert not step.done()
+
+        generate.release_all()
+        assert len((await step).samples) == 3
+
+    async def test_the_batch_is_sorted_by_sample_index_whatever_the_completion_order(self, monkeypatch) -> None:
+        """The trainer pairs the batch with its own ordering, and a shuffled batch trains the wrong pairs."""
+        generate = _GatedGenerate()
+        source = FakeDataSource(scripted=[make_group(5), make_group(3), make_group(1)])
+        fn = make_fn(monkeypatch, make_args(rollout_batch_size=3), source, generate=generate)
+
+        step = asyncio.create_task(fn(RolloutFnTrainInput(rollout_id=0)))
+        await _settle()
+        generate.release(1)
+        await _settle()
+        generate.release(2)
+        await _settle()
+        generate.release(0)
+
+        output = await step
+
+        assert [data_buffer.first_sample(group).index for group in output.samples] == [10, 30, 50]
+
+    async def test_a_group_that_does_not_hold_n_samples_per_prompt_is_refused(self, monkeypatch) -> None:
+        """A short group would silently train on fewer trajectories than the advantage baseline assumes."""
+        fn = make_fn(monkeypatch, make_args(rollout_batch_size=1), FakeDataSource())
+        buffer, _ = make_buffer()
+        fn._output = buffer
+        short = make_group(1)[:1]
+        await buffer.put(data_buffer.DataBufferInput(prompt_group=short, group=short))
+        fn._worker = _parked_task()
+
+        with pytest.raises(AssertionError):
+            await fn(RolloutFnTrainInput(rollout_id=0))
+
+        fn._worker.cancel()
+
+    async def test_a_run_without_the_global_rollout_dataset_is_refused(self, monkeypatch) -> None:
+        """This driver drains one shared buffer, which a per-rank dataset would fill with disjoint prompts."""
+        args = make_args(rollout_batch_size=1, rollout_global_dataset=False)
+        fn = make_fn(monkeypatch, args, FakeDataSource())
+
+        with pytest.raises(AssertionError):
+            await fn(RolloutFnTrainInput(rollout_id=0))
+
+        await fn.dispose()
+
+    async def test_only_the_first_group_of_a_batch_is_previewed_in_the_log(self, monkeypatch, caplog) -> None:
+        """One preview per step samples the batch; one per group is a wall of text on every single step."""
+        fn = make_fn(monkeypatch, make_args(rollout_batch_size=3), FakeDataSource())
+
+        with caplog.at_level(logging.INFO, logger="miles.rollout.fully_async_rollout"):
+            await fn(RolloutFnTrainInput(rollout_id=0))
+
+        assert sum("First rollout sample:" in record.getMessage() for record in caplog.records) == 1
+
+    async def test_a_sample_filter_that_drops_groups_records_them_as_explicitly_dropped(
+        self, monkeypatch, sample_flow_event_dir
+    ) -> None:
+        """A filter that shortens the batch resolves those samples, and an unresolved one looks lost forever."""
+
+        def drop_the_first_group(args, data):
+            data.pop(0)
+
+        args = make_args(rollout_batch_size=2, enable_sample_ownership_checker=True)
+        source = FakeDataSource(scripted=[make_group(1), make_group(2)])
+        fn = make_fn(monkeypatch, args, source)
+        fn._sample_filter = drop_the_first_group
+
+        output = await fn(RolloutFnTrainInput(rollout_id=0))
+
+        assert [group[0].group_index for group in output.samples] == [2]
+        [event] = read_events(sample_flow_event_dir)
+        assert event.reason == "rollout_sample_filter"
+        assert event.source_sample_indices == [10, 11]
+
+    async def test_an_unset_sample_filter_leaves_the_batch_untouched_and_records_no_drop(
+        self, monkeypatch, sample_flow_event_dir
+    ) -> None:
+        """--rollout-sample-filter-path is opt-in, and an unset one may not cost the step a single sample."""
+        args = make_args(rollout_batch_size=2, enable_sample_ownership_checker=True)
+        fn = make_fn(monkeypatch, args, FakeDataSource())
+
+        output = await fn(RolloutFnTrainInput(rollout_id=0))
+
+        assert fn._sample_filter is None
+        assert len(output.samples) == 2
+        assert read_events(sample_flow_event_dir) == []
+
+    async def test_the_step_metrics_come_from_the_buffer_of_the_calling_policy(self, monkeypatch) -> None:
+        """A multi policy run reports one curve per policy, which a drain that forgets its own name cannot do."""
+        _MetricsRecordingBuffer.metrics_asked_about = []
+        args = make_args(rollout_batch_size=1, custom_async_data_buffer_path=f"{__name__}._MetricsRecordingBuffer")
+        fn = make_fn(monkeypatch, args, FakeDataSource())
+
+        output = await fn(RolloutFnTrainInput(rollout_id=0, trainer_model_id="solver"))
+
+        assert _MetricsRecordingBuffer.metrics_asked_about == ["solver"]
+        assert output.metrics == {"asked": 1.0}
+
+
+# ========================== lifecycle, eval, buffer =========================
+
+
+class TestLifecycle:
+    async def test_the_worker_starts_once_and_is_reused_by_later_steps(self, monkeypatch) -> None:
+        """A second producer would submit its own groups on top of the first one's, past every budget."""
+        fn = make_fn(monkeypatch, make_args(rollout_batch_size=1), FakeDataSource())
+
+        await fn(RolloutFnTrainInput(rollout_id=0, weight_version=1))
+        worker, output = fn._worker, fn._output
+        await fn(RolloutFnTrainInput(rollout_id=1, weight_version=1))
+
+        assert fn._worker is worker
+        assert fn._output is output
+
+    async def test_the_buffer_is_built_on_the_first_train_step_not_at_construction(self, monkeypatch) -> None:
+        """Construction happens wherever the rollout function is loaded, including eval-only processes."""
+        fn = make_fn(monkeypatch, make_args(rollout_batch_size=1), FakeDataSource())
+
+        assert fn._output is None
+        assert fn._worker is None
+
+        await fn(RolloutFnTrainInput(rollout_id=0))
+
+        assert type(fn._output) is data_buffer.DefaultDataBuffer
+
+    async def test_an_evaluation_only_call_never_starts_the_producer(self, monkeypatch) -> None:
+        """A checkpoint-eval-only process would otherwise generate training rollouts that nobody drains."""
+        source = FakeDataSource()
+        fn = make_fn(monkeypatch, make_args(rollout_batch_size=1), source)
+
+        async def fake_run_eval_datasets(state, cache):
+            return {}
+
+        monkeypatch.setattr(fully_async, "run_eval_datasets", fake_run_eval_datasets)
+
+        await fn(RolloutFnEvalInput(rollout_id=0))
+
+        assert fn._worker is None
+        assert fn._output is None
+        assert source.num_get_calls == 0
+
+    async def test_an_eval_that_raises_still_resumes_the_producer(self, monkeypatch) -> None:
+        """A failed eval that left the producer paused would stall every later training step."""
+        fn = make_fn(monkeypatch, make_args(rollout_batch_size=1), FakeDataSource())
+
+        async def failing_run_eval_datasets(state, cache):
+            raise RuntimeError("eval exploded")
+
+        monkeypatch.setattr(fully_async, "run_eval_datasets", failing_run_eval_datasets)
+
+        with pytest.raises(RuntimeError, match="eval exploded"):
+            await fn(RolloutFnEvalInput(rollout_id=0))
+
+        assert fn._producer_resumed.is_set()
+
+    async def test_the_eval_prompt_dataset_cache_is_reused_across_eval_calls(self, monkeypatch) -> None:
+        """Rebuilding the eval datasets every call re-reads and re-tokenizes them on the rollout path."""
+        fn = make_fn(monkeypatch, make_args(rollout_batch_size=1), FakeDataSource())
+        caches = []
+
+        async def fake_run_eval_datasets(state, cache):
+            caches.append(cache)
+            return {}
+
+        monkeypatch.setattr(fully_async, "run_eval_datasets", fake_run_eval_datasets)
+
+        await fn(RolloutFnEvalInput(rollout_id=0))
+        await fn(RolloutFnEvalInput(rollout_id=1))
+
+        assert caches[0] is fn._eval_prompt_dataset_cache
+        assert caches[1] is fn._eval_prompt_dataset_cache
+
+    async def test_a_dedicated_fleet_eval_leaves_the_producer_running(self, monkeypatch) -> None:
+        """The fleet has engines of its own, so pausing the shared producer would only waste rollout capacity."""
+        args = make_args(rollout_batch_size=1)
+        fn = make_fn(monkeypatch, args, FakeDataSource())
+        resumed_during_eval = []
+
+        async def fake_run_eval_datasets(state, cache):
+            resumed_during_eval.append(fn._producer_resumed.is_set())
+            return {}
+
+        monkeypatch.setattr(fully_async, "run_eval_datasets", fake_run_eval_datasets)
+
+        await fn(RolloutFnEvalInput(rollout_id=0, generate_state=FakeGenerateState(args)))
+
+        assert resumed_during_eval == [True]
+
+    async def test_disposing_twice_is_quiet(self, monkeypatch) -> None:
+        """Teardown runs from several paths, and a second call must not turn a clean shutdown into an error."""
+        args = make_args(rollout_batch_size=1, custom_async_data_buffer_path=f"{__name__}.WedgedBuffer")
+        fn = make_fn(monkeypatch, args, FakeDataSource())
+        step = asyncio.create_task(fn(RolloutFnTrainInput(rollout_id=0)))
+        await _settle()
+
+        await fn.dispose()
+        await fn.dispose()
+
+        assert fn._worker.cancelled()
+        with pytest.raises(RuntimeError, match="disposed while a step waited for groups"):
+            await step
+
+    async def test_the_custom_buffer_is_built_with_the_rollout_functions_unused_handler(self, monkeypatch) -> None:
+        """A custom buffer owns every keep-or-recycle decision, so it needs the run's configured policy."""
+        args = make_args(
+            rollout_batch_size=1,
+            async_unused_samples_handler="drop",
+            custom_async_data_buffer_path=f"{__name__}.RecordingBuffer",
+        )
+        fn = make_fn(monkeypatch, args, FakeDataSource())
+
+        await fn(RolloutFnTrainInput(rollout_id=0))
+
+        assert RecordingBuffer.constructed_with.unused_handler_fn == fn._drop_unused
+        assert RecordingBuffer.constructed_with.args is args
+
+    async def test_a_custom_buffer_path_that_names_nothing_falls_back_to_the_built_in_buffer(
+        self, monkeypatch
+    ) -> None:
+        """The flag is unset on every default run, so an empty path may not resolve to a missing class."""
+        assert load_function(None) is None
+        args = make_args(rollout_batch_size=1, custom_async_data_buffer_path=None)
+        fn = make_fn(monkeypatch, args, FakeDataSource())
+
+        await fn(RolloutFnTrainInput(rollout_id=0))
+
+        assert type(fn._output) is data_buffer.DefaultDataBuffer
