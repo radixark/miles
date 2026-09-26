@@ -26,6 +26,7 @@ _GROUP_BYTES = 128 << 20
 class _Bucket:
     layout: PackedDeltaLayout
     metadata: tuple[tuple[torch.dtype, tuple[int, ...]], ...]
+    payload_bytes: int
     snapshot: torch.Tensor
     preparer: CpuDeltaPreparer
 
@@ -79,14 +80,14 @@ class PackedDeltaEncoder:
                 raise ValueError("Packed delta tensor names repeat during baseline capture")
             layout = PackedDeltaLayout(tuple((name, self.snapshots[name].nbytes) for name in key), block_bytes)
             if layout.padded_bytes > _STAGING_BYTES:
-                raise ValueError(
-                    "Packed delta bucket exceeds the 32 GiB staging budget; reduce the weight bucket size"
-                )
+                raise ValueError("Packed delta tensor exceeds the torch-compile backend's 32 GiB staging budget")
             snapshot = layout.allocate()
             for name, view in layout.views(snapshot):
                 view.copy_(torch.from_numpy(self.snapshots[name]))
             metadata = tuple((tensor.dtype, tuple(tensor.shape)) for _, tensor in group)
-            state = _Bucket(layout, metadata, snapshot, CpuDeltaPreparer(layout))
+            state = _Bucket(
+                layout, metadata, sum(nbytes for _, nbytes in layout.entries), snapshot, CpuDeltaPreparer(layout)
+            )
             self._buckets[key] = state
             self._names.update(key)
             self._install_snapshot(state, snapshot)
@@ -125,7 +126,6 @@ class PackedDeltaEncoder:
         self.error: Exception | None = None
         self.deltas, self.checksums = {}, {}
         self.changed_bytes = self.total_bytes = 0
-        self.padding_reset_bytes = self.copied_unchanged_bytes = self.copied_padding_bytes = 0
 
     def submit(self, bucket) -> None:
         if self.error is not None:
@@ -161,7 +161,7 @@ class PackedDeltaEncoder:
         try:
             packed = lease.buffer[:size]
             if lease.layout is not state.layout:
-                self.padding_reset_bytes += state.layout.reset_padding(packed)
+                state.layout.reset_padding(packed)
                 lease.layout = state.layout
             if state.layout.block_bytes == 4:
                 # Small FP32 scales share one launch and D2H transfer. Keep them
@@ -187,7 +187,7 @@ class PackedDeltaEncoder:
             submitted = True
             self._inflight.append((size, future))
             self._inflight_bytes += size
-            self.total_bytes += sum(nbytes for _, nbytes in state.layout.entries)
+            self.total_bytes += state.payload_bytes
         finally:
             if not submitted:
                 try:
@@ -216,12 +216,11 @@ class PackedDeltaEncoder:
             state, prepared, payloads = future.result()
             # Update every name, including unchanged tensors, or old per-name
             # views would retain successive packed slabs indefinitely.
-            self._install_snapshot(state, prepared.snapshot)
+            if prepared.snapshot is not state.snapshot:
+                self._install_snapshot(state, prepared.snapshot)
             for name, compressed, digest, count in payloads:
                 self.deltas[name], self.checksums[name] = compressed, digest
                 self.changed_bytes += count
-            self.copied_unchanged_bytes += prepared.copied_unchanged_bytes
-            self.copied_padding_bytes += prepared.copied_padding_bytes
         except Exception as error:
             if self.error is None:
                 self.error = error
