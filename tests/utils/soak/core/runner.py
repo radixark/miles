@@ -42,9 +42,13 @@ class SoakRunner:
             await self._run(sut_run=sut_run)
         finally:
             self._close_admission()
-            await self._finish()
-            await teardown()
-            await archive_evidence(self.event_log)
+            try:
+                await self._finish()
+            finally:
+                try:
+                    await teardown()
+                finally:
+                    await archive_evidence(self.event_log)
 
     async def _finish(self) -> None:
         await self._observe_and_record(timeout_seconds=self.config.timeouts.final_observation_seconds)
