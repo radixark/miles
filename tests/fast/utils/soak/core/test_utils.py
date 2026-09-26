@@ -206,16 +206,26 @@ class TestNoteLaunchOutcome:
         [
             pytest.param(RunExitedError(1), id="other_exit_code"),
             pytest.param(RunExitedError(137), id="sigkill_exit"),
-            pytest.param(RuntimeError("helm upgrade failed"), id="exception"),
         ],
     )
-    async def test_any_other_ending_is_recorded_failed_and_reraised(
-        self, tmp_path: Path, error: BaseException
+    async def test_any_other_exit_is_recorded_failed_and_raised_as_an_ordinary_error(
+        self, tmp_path: Path, error: RunExitedError
     ) -> None:
-        """A launcher failure must be both in the evidence and propagated to the caller."""
+        """A failed launcher exit is evidence and reaches the caller as an Exception chained to the exit."""
         event_log = EventLog(tmp_path / "events.jsonl")
 
-        with pytest.raises(type(error)) as info:
+        with pytest.raises(RuntimeError, match=f"exited with code {error.exit_code}") as info:
+            await note_launch_outcome(event_log=event_log, request_id="req-1", launching=_raises(error))
+
+        assert info.value.__cause__ is error
+        assert _launch_events(event_log) == [("req-1", LaunchOutcome.FAILED, repr(error))]
+
+    async def test_a_launcher_exception_is_recorded_failed_and_reraised(self, tmp_path: Path) -> None:
+        """A launcher failure must be both in the evidence and propagated to the caller."""
+        event_log = EventLog(tmp_path / "events.jsonl")
+        error = RuntimeError("helm upgrade failed")
+
+        with pytest.raises(RuntimeError) as info:
             await note_launch_outcome(event_log=event_log, request_id="req-1", launching=_raises(error))
 
         assert info.value is error

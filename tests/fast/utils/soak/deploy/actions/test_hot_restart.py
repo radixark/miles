@@ -255,7 +255,8 @@ class TestHotRestartFormExecuteTakeOver:
 
         caught = asyncio.run(_scenario())
 
-        assert isinstance(caught, RunExitedError) and caught.exit_code == 1
+        assert isinstance(caught, RuntimeError)
+        assert isinstance(caught.__cause__, RunExitedError) and caught.__cause__.exit_code == 1
 
 
 def _recovery_events(

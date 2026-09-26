@@ -96,7 +96,7 @@ async def note_launch_outcome(
     except RunExitedError as error:
         if error.exit_code != REPLACED_LAUNCH_EXIT_CODE:
             record(LaunchOutcome.FAILED, error=error)
-            raise
+            raise RuntimeError(f"Launcher exited with code {error.exit_code}") from error
         return record(LaunchOutcome.REPLACED)
     except BaseException as error:
         record(LaunchOutcome.FAILED, error=error)
