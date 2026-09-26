@@ -323,7 +323,8 @@ class TrainerController:
         discarded = [
             c.cell_index
             for c, r in paired
-            if not isinstance(r, BaseException) and any(o.outcome == TrainStepOutcome.DISCARDED_SHOULD_RETRY for o in r)
+            if not isinstance(r, BaseException)
+            and any(o.outcome == TrainStepOutcome.DISCARDED_SHOULD_RETRY for o in r)
         ]
         normal = [c.cell_index for c, r in paired if c.cell_index not in errored and c.cell_index not in discarded]
         return {"errored": errored, "discarded": discarded, "normal": normal}
@@ -561,7 +562,9 @@ class TrainerController:
         return await self._execute_slots("save_slot", slot=slot, path=path, metadata=metadata)
 
     async def export_slot(self, slot: int, rank: int, alpha: float, path: str, metadata: dict | None = None) -> list:
-        return await self._execute_slots("export_slot", slot=slot, rank=rank, alpha=alpha, path=path, metadata=metadata)
+        return await self._execute_slots(
+            "export_slot", slot=slot, rank=rank, alpha=alpha, path=path, metadata=metadata
+        )
 
     async def unload_slot(self, slot: int) -> list:
         return await self._execute_slots("unload_slot", slot=slot)

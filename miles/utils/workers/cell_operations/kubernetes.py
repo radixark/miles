@@ -100,4 +100,6 @@ async def _ignore_cell(cell_id: str, info: CellInfo | None) -> None:
 
 async def _delete_pods(*, namespace: str, pod_names: list[str]) -> None:
     async with core_v1_api() as api:
-        await asyncio.gather(*(api.delete_namespaced_pod(name=pod_name, namespace=namespace) for pod_name in pod_names))
+        await asyncio.gather(
+            *(api.delete_namespaced_pod(name=pod_name, namespace=namespace) for pod_name in pod_names)
+        )

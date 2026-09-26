@@ -152,7 +152,9 @@ def weight_update_results(events: Sequence[Event]) -> list[WeightUpdateResultEve
     results = [event for event in events if isinstance(event, WeightUpdateResultEvent)]
     for result in results:
         updated, failed = set(result.updated_cell_ids), set(result.failed_cell_ids)
-        assert len(updated) == len(result.updated_cell_ids), f"Repeated updated engine: {result.debug_weight_update_id}"
+        assert len(updated) == len(
+            result.updated_cell_ids
+        ), f"Repeated updated engine: {result.debug_weight_update_id}"
         assert not updated & failed, f"Published engine is also reported failed: {result.debug_weight_update_id}"
         assert updated | failed == set(
             result.snapshot_cell_id_to_hashes

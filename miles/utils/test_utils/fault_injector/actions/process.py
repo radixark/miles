@@ -2,7 +2,7 @@ import ctypes
 import os
 import signal
 import threading
-from typing import Annotated, Literal, Union
+from typing import Annotated, Literal
 
 from pydantic import Discriminator
 
@@ -80,14 +80,12 @@ def _assert_own_process(resources: FaultHookResources) -> None:
 
 
 ProcessFaultAction = Annotated[
-    Union[
-        ObserveAction,
-        KillProcessAction,
-        StopProcessAction,
-        ExitProcessAction,
-        SegfaultProcessAction,
-        FreezeProcessAction,
-        DeadlockThreadAction,
-    ],
+    ObserveAction
+    | KillProcessAction
+    | StopProcessAction
+    | ExitProcessAction
+    | SegfaultProcessAction
+    | FreezeProcessAction
+    | DeadlockThreadAction,
     Discriminator("kind"),
 ]

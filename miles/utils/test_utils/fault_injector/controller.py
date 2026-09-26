@@ -128,9 +128,7 @@ class _FaultHookController:
                 and executor.record.request.hook_name == hook_name
                 and executor.record.request.matches(reached_context)
             ]
-            return [
-                fired for executor in candidates if (fired := self._dispatch(executor, context=reached_context))
-            ]
+            return [fired for executor in candidates if (fired := self._dispatch(executor, context=reached_context))]
 
     def _dispatch(
         self, executor: FaultHookRequestExecutor, *, context: FaultHookContext

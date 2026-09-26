@@ -14,13 +14,7 @@ from starlette.responses import JSONResponse
 from miles.ray.specs.inference import compute_engine_pool_ids
 from miles.ray.specs.train import compute_trainer_pool_id
 from miles.utils.ft_utils.api_server.handles import _CellHandler
-from miles.utils.ft_utils.api_server.models import (
-    Cell,
-    CellList,
-    CellPatch,
-    K8sStatus,
-    _OkResponse,
-)
+from miles.utils.ft_utils.api_server.models import Cell, CellList, CellPatch, K8sStatus, _OkResponse
 from miles.utils.ft_utils.api_server.registry import _CellRegistry
 from miles.utils.test_utils.fault_injector.controller import FaultHookCommand, FaultHookConflictError
 from miles.utils.test_utils.fault_injector.models import FaultHookRecord, ObservedFaultHookTarget
