@@ -1444,7 +1444,9 @@ class TestExportHf:
 class TestUpdateWeightsReachesTheWorker:
     async def test_the_engine_snapshot_reaches_the_worker_and_its_version_comes_back(self):
         """A worker that never sees the snapshot broadcasts to engines that were not part of the update window."""
-        info = SimpleNamespace(engine_cell_ids=["trainer-actor-0"], snapshot_cell_id_to_hashes={"trainer-actor-0": "workers-hash-9"})
+        info = SimpleNamespace(
+            engine_cell_ids=["trainer-actor-0"], snapshot_cell_id_to_hashes={"trainer-actor-0": "workers-hash-9"}
+        )
         group = await _make_alive_controller(num_cells=1)
         for handle in get_raw_actor_handles(_cell(group, 0)):
             ray.get(handle.set_update_weights_return_value.remote(_output(1)))
@@ -1484,7 +1486,9 @@ class TestUpdateWeightsCarriesTheRollout:
         for handle in get_raw_actor_handles(_cell(group, 0)):
             ray.get(handle.set_update_weights_return_value.remote(_output(1)))
 
-        output = await group.update_weights(info=SimpleNamespace(engine_cell_ids=[], snapshot_cell_id_to_hashes={}), rollout_id=rollout_id)
+        output = await group.update_weights(
+            info=SimpleNamespace(engine_cell_ids=[], snapshot_cell_id_to_hashes={}), rollout_id=rollout_id
+        )
 
         for handle in get_raw_actor_handles(_cell(group, 0)):
             [update_call] = [c for c in ray.get(handle.get_calls.remote()) if c[0] == "update_weights"]
