@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import ipaddress
+import logging
 import shlex
+import socket
 import sys
 from argparse import Namespace
 
@@ -43,18 +46,64 @@ def _make_model_cfg(*worker_types: str) -> ModelConfig:
     return ModelConfig(name="default", model_path=None, server_groups=groups, update_weights=True)
 
 
-def _make_router_ctx(*, port: int = 20000, prometheus_port: int = 4001) -> LaunchCommandContext:
+def _make_router_ctx(
+    *, host: str = "127.0.0.1", port: int = 20000, prometheus_port: int = 4001
+) -> LaunchCommandContext:
     return LaunchCommandContext(
         cell_index=0,
         worker_in_cell_index=0,
         self_addrs=dict(
-            primary=HostAndPort(host="127.0.0.1", port=port),
-            prometheus=HostAndPort(host="127.0.0.1", port=prometheus_port),
+            primary=HostAndPort(host=host, port=port),
+            prometheus=HostAndPort(host=host, port=prometheus_port),
         ),
         pool_addrs={},
         gpu_ids=[],
         local_gpu_ids=[],
     )
+
+
+_ADVERTISED_HOSTNAME = "worker-01.cluster.internal"
+_RESOLVED_IP = "10.20.30.40"
+
+
+def _addrinfo(ip: str, port: int | None) -> tuple:
+    """One getaddrinfo() row for ``ip``, in the shape the real resolver returns."""
+    if ipaddress.ip_address(ip).version == 6:
+        return (socket.AF_INET6, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", (ip, port or 0, 0, 0))
+    return (socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", (ip, port or 0))
+
+
+class _FakeResolver:
+    """Answers getaddrinfo() from a fixed table so no test touches real DNS or the machine's own addresses."""
+
+    def __init__(self) -> None:
+        self.answers: dict[str, list[str]] = {}
+        self.queries: list[str] = []
+
+    def __call__(self, host, port, family=0, type=0, proto=0, flags=0):  # noqa: A002
+        self.queries.append(host)
+        if host not in self.answers:
+            raise socket.gaierror(socket.EAI_NONAME, "Name or service not known")
+        return [_addrinfo(ip, port) for ip in self.answers[host]]
+
+
+@pytest.fixture
+def fake_resolver(monkeypatch: pytest.MonkeyPatch) -> _FakeResolver:
+    resolver = _FakeResolver()
+    monkeypatch.setattr(socket, "getaddrinfo", resolver)
+    return resolver
+
+
+def _sgl_router_argv(ctx: LaunchCommandContext) -> list[str]:
+    args = make_args(use_miles_router=False, sglang_router_ip=None, sglang_router_port=None)
+    spec = _compute_spec_router(args, model_idx=0, model_cfg=_make_model_cfg("regular"))
+    argv = shlex.split(spec.launch_command(ctx))
+    assert argv[1:3] == ["-m", "sglang_router.launch_router"]
+    return argv
+
+
+def _sgl_router_bind_host(argv: list[str]) -> str:
+    return argv[argv.index("--host") + 1]
 
 
 class TestRouterPortPinning:
@@ -136,6 +185,93 @@ class TestComputeSpecRouterLaunchCommand:
         assert config.host == "127.0.0.1"
         assert config.port == 20000
         assert config.max_connections == 100
+
+
+class TestSglRouterBindHost:
+    """sglang_router parses ``--host:--port`` as a socket address, so it needs an IP literal even though the
+    worker manager may legitimately advertise the placed node under a hostname (Ray on Slurm does)."""
+
+    def test_a_hostname_stays_advertised_while_the_router_binds_the_ip_it_resolves_to(self, fake_resolver):
+        """The launch context keeps the hostname for its peers; only the bind flag carries the resolved IP literal."""
+        fake_resolver.answers[_ADVERTISED_HOSTNAME] = [_RESOLVED_IP]
+        ctx = _make_router_ctx(host=_ADVERTISED_HOSTNAME)
+
+        argv = _sgl_router_argv(ctx)
+
+        assert _sgl_router_bind_host(argv) == _RESOLVED_IP
+        assert argv[argv.index("--port") + 1] == "20000"
+        assert ctx.self_addrs["primary"].host == _ADVERTISED_HOSTNAME
+        assert ctx.self_addrs["primary"].addr == f"http://{_ADVERTISED_HOSTNAME}:20000"
+        assert fake_resolver.queries == [_ADVERTISED_HOSTNAME]
+
+    def test_an_ipv4_literal_is_bound_as_given_without_a_lookup(self, fake_resolver):
+        """An address that already satisfies the router is never sent through the resolver."""
+        argv = _sgl_router_argv(_make_router_ctx(host="10.0.0.7"))
+
+        assert _sgl_router_bind_host(argv) == "10.0.0.7"
+        assert fake_resolver.queries == []
+
+    def test_a_bracketed_ipv6_literal_is_bound_as_given_without_a_lookup(self, fake_resolver):
+        """The manager advertises IPv6 nodes bracketed, which is the only IPv6 form the router accepts."""
+        argv = _sgl_router_argv(_make_router_ctx(host="[fd00::1]"))
+
+        assert _sgl_router_bind_host(argv) == "[fd00::1]"
+        assert parse_router_args_argv(argv[3:]).host == "[fd00::1]"
+        assert fake_resolver.queries == []
+
+    def test_a_hostname_resolving_to_ipv6_is_bound_bracketed(self, fake_resolver):
+        """The resolver hands back bare IPv6 addresses; the router only parses the bracketed form."""
+        fake_resolver.answers[_ADVERTISED_HOSTNAME] = ["fd00::1"]
+
+        argv = _sgl_router_argv(_make_router_ctx(host=_ADVERTISED_HOSTNAME))
+
+        assert _sgl_router_bind_host(argv) == "[fd00::1]"
+
+    def test_a_multi_address_hostname_binds_the_first_candidate_and_reports_the_ambiguity(self, fake_resolver, caplog):
+        """A multi-address hostname uses the first resolver candidate and reports the ambiguity."""
+        fake_resolver.answers[_ADVERTISED_HOSTNAME] = [_RESOLVED_IP, "fd00::40"]
+
+        with caplog.at_level(logging.WARNING):
+            argv = _sgl_router_argv(_make_router_ctx(host=_ADVERTISED_HOSTNAME))
+
+        assert _sgl_router_bind_host(argv) == _RESOLVED_IP
+        assert any(_RESOLVED_IP in r.message and "fd00::40" in r.message for r in caplog.records)
+
+    def test_an_unresolvable_hostname_fails_before_the_router_is_launched(self, fake_resolver):
+        """A name nobody can resolve must not reach the router, whose own failure names neither host nor remedy."""
+        ctx = _make_router_ctx(host="nowhere.invalid")
+
+        with pytest.raises(RuntimeError, match=r"nowhere\.invalid.*MILES_HOST_IP"):
+            _sgl_router_argv(ctx)
+
+    def test_the_miles_router_and_the_session_server_keep_the_advertised_hostname(self, fake_resolver):
+        """Only the sglang router needs a literal; the python servers bind hostnames and peers connect by them."""
+        args = make_args(
+            use_miles_router=True,
+            sglang_router_ip=None,
+            sglang_router_port=None,
+            miles_router_max_connections=100,
+            miles_router_timeout=None,
+            miles_router_health_check_failure_threshold=3,
+            rollout_health_check_interval=10.0,
+        )
+        spec = _compute_spec_router(args, model_idx=0, model_cfg=_make_model_cfg("regular"))
+        argv = shlex.split(spec.launch_command(_make_router_ctx(host=_ADVERTISED_HOSTNAME)))
+        assert parse_config_argv(MilesRouterConfig, argv[3:]).host == _ADVERTISED_HOSTNAME
+
+        session_ctx = LaunchCommandContext(
+            cell_index=0,
+            worker_in_cell_index=0,
+            self_addrs=dict(primary=HostAndPort(host=_ADVERTISED_HOSTNAME, port=5006)),
+            pool_addrs={compute_router_pool_id(0): [dict(primary=HostAndPort(host=_ADVERTISED_HOSTNAME, port=3000))]},
+            gpu_ids=[],
+            local_gpu_ids=[],
+        )
+        argv = shlex.split(spec_session_server(_make_session_server_args()).launch_command(session_ctx))
+        config = parse_config_argv(SessionServerConfig, argv[3:])
+        assert config.backend_url == f"http://{_ADVERTISED_HOSTNAME}:3000"
+        assert config.host == _ADVERTISED_HOSTNAME
+        assert fake_resolver.queries == []
 
 
 class TestComputeSpecSessionServer:
