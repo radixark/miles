@@ -80,10 +80,11 @@ class TestTheTwoSidesOfTheFaultHookComparison:
         _create_run_ci(harness)(_MODE)
 
         baseline, target = harness.launches
+        hooks = compute_fault_hooks_arg(_HOOKS)
         assert "/baseline" in baseline.request.train_args
-        assert (
-            baseline.request.train_args.replace("/baseline", "/target") + compute_fault_hooks_arg(_HOOKS)
-            == target.request.train_args
+        assert target.request.train_args.count(hooks) == 1
+        assert target.request.train_args.replace(hooks, "") == baseline.request.train_args.replace(
+            "/baseline", "/target"
         )
 
     def test_both_sides_run_the_deterministic_p2p_launch_with_the_scenario_arguments(
