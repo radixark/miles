@@ -177,6 +177,10 @@ def _output(weight_version: int | None, *failed_cell_ids: str) -> WeightUpdateOu
     return WeightUpdateOutput(weight_version=weight_version, failed_cell_ids=failed_cell_ids)
 
 
+def _outcome_of(output: WeightUpdateOutput) -> tuple[int | None, tuple[str, ...]]:
+    return output.weight_version, output.failed_cell_ids
+
+
 def _make_broadcast_args() -> SimpleNamespace:
     return SimpleNamespace(
         debug_train_only=False,
@@ -1278,6 +1282,7 @@ class TestUpdateWeightsReturnsTheVersion:
         group = TrainerController.__new__(TrainerController)
         group.args = _make_broadcast_args()
         group._trainer_id = "trainer-0"
+        group._debug_trainer_load_state_timestamp = 0.0
         group._execute_first_alive = AsyncMock(return_value=per_worker_outputs)
         return group
 
@@ -1285,7 +1290,7 @@ class TestUpdateWeightsReturnsTheVersion:
         """The driver can only publish the version to the executor if the controller hands it back."""
         group = self._make_group(per_worker_outputs=[_output(1), _output(1)])
 
-        assert await group.update_weights(info=MagicMock()) == _output(1)
+        assert _outcome_of(await group.update_weights(info=MagicMock())) == _outcome_of(_output(1))
 
     async def test_a_trainer_that_skipped_the_broadcast_answers_nothing(self):
         """--debug-skip-weight-update returns None from every worker, which must reach the driver as None."""
@@ -1301,7 +1306,11 @@ class TestUpdateWeightsReturnsTheVersion:
         await group.update_weights(info=info)
 
         group._execute_first_alive.assert_awaited_once_with(
-            "update_weights", timeout=group.args.update_weights_timeout, info=info
+            "update_weights",
+            timeout=group.args.update_weights_timeout,
+            info=info,
+            debug_weight_update_id=ANY,
+            rollout_id=None,
         )
 
 
@@ -1312,6 +1321,7 @@ class TestModelOwnedWeightVersions:
         controller = TrainerController.__new__(TrainerController)
         controller.args = _make_broadcast_args()
         controller._trainer_id = "trainer-0"
+        controller._debug_trainer_load_state_timestamp = 0.0
         controller._execute_first_alive = AsyncMock(
             side_effect=[[_output(version), _output(version)] for version in versions]
         )
@@ -1327,6 +1337,7 @@ class TestModelOwnedWeightVersions:
         controller = TrainerController.__new__(TrainerController)
         controller.args = _make_broadcast_args()
         controller._trainer_id = "trainer-0"
+        controller._debug_trainer_load_state_timestamp = 0.0
         controller._execute_first_alive = AsyncMock(
             side_effect=[RuntimeError("cell died"), [_output(12), _output(12)]]
         )
@@ -1438,7 +1449,7 @@ class TestUpdateWeightsReachesTheWorker:
         for handle in get_raw_actor_handles(_cell(group, 0)):
             ray.get(handle.set_update_weights_return_value.remote(_output(1)))
 
-        assert await group.update_weights(info=info, rollout_id=3) == _output(1)
+        assert _outcome_of(await group.update_weights(info=info, rollout_id=3)) == _outcome_of(_output(1))
 
         for handle in get_raw_actor_handles(_cell(group, 0)):
             [update_call] = [c for c in ray.get(handle.get_calls.remote()) if c[0] == "update_weights"]
@@ -1452,13 +1463,13 @@ class TestUpdateWeightsReachesTheWorker:
         handles = get_raw_actor_handles(_cell(group, 0))
         for handle in handles:
             ray.get(handle.set_update_weights_return_value.remote(_output(1)))
-        assert await group.update_weights(info=info) == _output(1)
+        assert _outcome_of(await group.update_weights(info=info)) == _outcome_of(_output(1))
 
         await group.load_state()
         for handle in handles:
             ray.get(handle.set_update_weights_return_value.remote(_output(2)))
 
-        assert await group.update_weights(info=info) == _output(2)
+        assert _outcome_of(await group.update_weights(info=info)) == _outcome_of(_output(2))
 
         for handle in handles:
             calls = [c for c in ray.get(handle.get_calls.remote()) if c[0] == "update_weights"]
