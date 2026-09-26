@@ -2,7 +2,7 @@ import asyncio
 import time
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
 import ray
@@ -1537,6 +1537,7 @@ def _make_partial_target_controller(cells: list[_FakeTrainerCell], *, timeout: f
     )
     controller._trainer_id = "trainer-0"
     controller._cells_by_id = {cell.cell_id: cell for cell in cells}
+    controller._debug_trainer_load_state_timestamp = None
     return controller
 
 
@@ -1653,7 +1654,9 @@ class TestUpdateWeightsFromEveryAliveCell:
 
         assert await controller.update_weights(info=info) == _output(3)
 
-        controller._execute_first_alive.assert_awaited_once_with("update_weights", timeout=60.0, info=info)
+        controller._execute_first_alive.assert_awaited_once_with(
+            "update_weights", timeout=60.0, info=info, debug_weight_update_id=ANY, rollout_id=None
+        )
         assert _targets_of(cells[0]) == []
 
     async def test_each_share_carries_the_layout_and_snapshot_of_its_own_engines(self) -> None:
