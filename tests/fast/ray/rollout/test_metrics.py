@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import numpy as np
 import pytest
 from tests.fast.ray.rollout.conftest import make_args, make_sample, make_samples_grouped
 
@@ -137,6 +138,56 @@ class TestTrainingSampleMetrics:
 
 
 class TestComputeZeroStdMetrics:
+    @pytest.mark.parametrize("reward_type", [int, float, np.int32, np.int64, np.float32, np.float64])
+    def test_binary_percentages_do_not_depend_on_reward_type(self, reward_type):
+        args = make_args(advantage_estimator="grpo", reward_key=None)
+        zero, one = reward_type(0), reward_type(1)
+        samples = make_samples_grouped(3, 2, rewards=[zero, zero, one, one, zero, one])
+
+        out = _compute_zero_std_metrics(args, samples)
+
+        assert out[f"zero_std/count_{round(zero, 1)}"] == 1
+        assert out[f"zero_std/count_{round(one, 1)}"] == 1
+        assert out["zero_std/all_zero_percentage"] == pytest.approx(1 / 3)
+        assert out["zero_std/all_one_percentage"] == pytest.approx(1 / 3)
+
+    def test_mixed_numeric_types_and_unequal_group_sizes_count_groups_equally(self):
+        args = make_args(advantage_estimator="grpo", reward_key=None)
+        samples = [
+            make_sample(group_index=0, reward=0),
+            make_sample(group_index=1, reward=1),
+            make_sample(group_index=1, reward=1.0),
+            make_sample(group_index=1, reward=np.int64(1)),
+            make_sample(group_index=2, reward=0.0),
+            make_sample(group_index=2, reward=1.0),
+        ]
+
+        out = _compute_zero_std_metrics(args, samples)
+
+        assert out["zero_std/all_zero_percentage"] == pytest.approx(1 / 3)
+        assert out["zero_std/all_one_percentage"] == pytest.approx(1 / 3)
+
+    @pytest.mark.parametrize("reward", [-0.04, 0.04, 0.96, 1.04])
+    def test_rounded_fractional_rewards_do_not_count_as_binary(self, reward):
+        args = make_args(advantage_estimator="grpo", reward_key=None)
+        samples = make_samples_grouped(1, 2, rewards=[reward, reward])
+
+        out = _compute_zero_std_metrics(args, samples)
+
+        assert out[f"zero_std/count_{round(reward, 1)}"] == 1
+        assert out["zero_std/all_zero_percentage"] == 0.0
+        assert out["zero_std/all_one_percentage"] == 0.0
+
+    def test_negative_zero_counts_as_zero(self):
+        args = make_args(advantage_estimator="grpo", reward_key=None)
+        samples = make_samples_grouped(1, 2, rewards=[-0.0, 0.0])
+
+        out = _compute_zero_std_metrics(args, samples)
+
+        assert out["zero_std/count_-0.0"] == 1
+        assert out["zero_std/all_zero_percentage"] == 1.0
+        assert out["zero_std/all_one_percentage"] == 0.0
+
     def test_returns_empty_for_ppo_regardless_of_reward_distribution(self):
         args = make_args(advantage_estimator="ppo")
         out = _compute_zero_std_metrics(args, make_samples_grouped(2, 4, rewards=[1.0] * 8))
