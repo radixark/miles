@@ -250,7 +250,6 @@ eval:
         f"--actor-num-gpus-per-node {actor_num_gpus_per_node} "
         f"--num-gpus-per-node {args.num_gpus_per_node} "
         "--colocate "
-        f"{'--use-fault-tolerance ' if not is_debug_mode else ''}"
         f"--dump-details {args.output_dir}/{args.run_id}/dump_details "
     )
     misc_env_vars = {}

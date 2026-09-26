@@ -209,7 +209,7 @@ eval:
     if args.train_backend == "fsdp":
         misc_args += """--train-env-vars '{"PYTORCH_CUDA_ALLOC_CONF":"expandable_segments:True"}' """
 
-    misc_args += "--use-fault-tolerance " f"--dump-details {args.output_dir}/{args.run_id}/dump_details "
+    misc_args += f"--dump-details {args.output_dir}/{args.run_id}/dump_details "
 
     misc_env_vars = {}
 

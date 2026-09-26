@@ -114,7 +114,7 @@ class ScriptArgs(command_utils.ExecuteTrainConfig):
     # None lets Megatron resolve it: tilelang for --dsv4-impl miles, cuDNN for megatron.
     dsa_kernel_backend: Literal["none", "tilelang", "cudnn"] | None = None
     optimizer_offload: bool = True
-    use_fault_tolerance: bool = True
+    use_fault_tolerance: bool = False
     cp_size: int = 1
 
     # debug configs

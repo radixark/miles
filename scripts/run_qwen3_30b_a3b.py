@@ -206,7 +206,6 @@ def execute(args: ScriptArgs):
         "--attention-backend flash "
         f"--actor-num-nodes {args.num_nodes} "
         f"--num-gpus-per-node {args.num_gpus_per_node} "
-        "--use-fault-tolerance "
         f"--dump-details {args.output_dir}/{args.run_id}/dump_details "
     )
     if args.no_colocate:

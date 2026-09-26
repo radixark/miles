@@ -133,7 +133,6 @@ def execute(args: ScriptArgs):
         f"--actor-num-nodes {args.num_nodes} "
         f"--actor-num-gpus-per-node {args.num_gpus_per_node} "
         "--colocate "
-        "--use-fault-tolerance "
     )
 
     U.execute_train(
