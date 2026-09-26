@@ -72,6 +72,11 @@ FC1 or FC2 tensor. For 256 experts with EP64 and EDP8, each EP rank has four loc
 experts: four of its replicas each process one expert, and four process none.
 Replicas with no assigned experts still participate in gathering.
 
+The exporter learns each batch's converted tensor layout on its first update and
+reuses that metadata on later updates. Tensor values are converted afresh each
+time; changing the model layout, quantization configuration, or topology requires
+recreating the exporter.
+
 The same path serves unquantized weights and all rollout quantization formats
 supported by the direct exporter. Quantization exclusions still apply. Shared experts and nonexpert layers retain
 their existing gathering and conversion behavior. The Bridge exporter is unchanged.

@@ -260,6 +260,8 @@ def _run_case(state, *, local_experts=2, gather_pp, sender_only, quantized=True)
     original_convert = direct.convert_to_hf
     original_enumeration = direct.named_params_and_buffers
     original_batch = direct.HfWeightIteratorDirect._materialize_expert_batch
+    original_metadata_exchange = dist.all_gather_object
+    metadata_exchanges = 0
 
     def tracked_convert(args, model_name, name, param, quantization_config=None, packed_weight_basenames=None):
         calls[name] += 1
@@ -267,14 +269,19 @@ def _run_case(state, *, local_experts=2, gather_pp, sender_only, quantized=True)
             round_calls[active_round] += 1
         return original_convert(args, model_name, name, param, quantization_config, packed_weight_basenames)
 
-    def tracked_batch(iterator, param_infos, local_weights):
+    def tracked_batch(iterator, batch, local_weights):
         nonlocal active_round
         active_round = len(round_calls)
         round_calls.append(0)
         try:
-            return original_batch(iterator, param_infos, local_weights)
+            return original_batch(iterator, batch, local_weights)
         finally:
             active_round = None
+
+    def tracked_metadata_exchange(*args, **kwargs):
+        nonlocal metadata_exchanges
+        metadata_exchanges += 1
+        return original_metadata_exchange(*args, **kwargs)
 
     direct.convert_to_hf = tracked_convert
     direct.named_params_and_buffers = lambda _args, modules: iter(modules[0].synthetic_weights.items())
@@ -287,23 +294,37 @@ def _run_case(state, *, local_experts=2, gather_pp, sender_only, quantized=True)
             model_name=MODEL_NAME,
             quantization_config=quantization,
         )
+        dist.all_gather_object = tracked_metadata_exchange
         dist.barrier()
         started = time.monotonic()
-        buckets = list(iterator.iter_hf_weights(weights, materialize=materialize))
+        initial_buckets = list(iterator.iter_hf_weights(weights, materialize=materialize))
+        initial_exchanges = metadata_exchanges
+        assert initial_exchanges > 0
+        initial_calls = calls.copy()
+        calls.clear()
+        round_calls.clear()
+        metadata_exchanges = 0
+        updated_weights = {name: tensor * -1.25 for name, tensor in weights.items()}
+        buckets = list(iterator.iter_hf_weights(updated_weights, materialize=materialize))
         torch.cuda.synchronize()
         elapsed = time.monotonic() - started
+        assert metadata_exchanges == 0, "Stable expert layouts must not be exchanged on later updates"
+        assert calls == initial_calls, (calls, initial_calls)
     finally:
         direct.convert_to_hf = original_convert
         direct.named_params_and_buffers = original_enumeration
         direct.HfWeightIteratorDirect._materialize_expert_batch = original_batch
+        dist.all_gather_object = original_metadata_exchange
 
-    expected = {}
-    if materialize:
-        for name, tensor in full_weights.items():
-            if not gather_pp and not name.startswith(f"module.module.decoder.layers.{state.pp.rank}."):
-                continue
-            expected.update(original_convert(args, MODEL_NAME, name, tensor.cuda(), quantization))
-    tensor_count, nbytes = _verify_output(buckets, expected)
+    # Keeping the first update alive checks that cached layouts never reuse its storage.
+    for outputs, multiplier in ((initial_buckets, 1.0), (buckets, -1.25)):
+        expected = {}
+        if materialize:
+            for name, tensor in full_weights.items():
+                if not gather_pp and not name.startswith(f"module.module.decoder.layers.{state.pp.rank}."):
+                    continue
+                expected.update(original_convert(args, MODEL_NAME, name, (tensor * multiplier).cuda(), quantization))
+        tensor_count, nbytes = _verify_output(outputs, expected)
     all_calls = [None] * dist.get_world_size()
     dist.all_gather_object(all_calls, calls, group=get_gloo_group())
     counts = _verify_calls(
@@ -324,6 +345,7 @@ def _run_case(state, *, local_experts=2, gather_pp, sender_only, quantized=True)
         "round_expert_conversions_per_edp": round_counts,
         "gather_pp": gather_pp,
         "sender_only": sender_only,
+        "updates": 2,
         **counts,
         "max_iterator_seconds": max(item[0] for item in measurements),
         "output_tensors_per_rank": [item[1] for item in measurements],
@@ -331,6 +353,9 @@ def _run_case(state, *, local_experts=2, gather_pp, sender_only, quantized=True)
         "bytewise_oracle": "passed",
         "owner_counts": "passed",
         "gate_up_atomicity": "passed",
+        "cached_layout_reuse": "passed",
+        "previous_update_storage": "passed",
+        "metadata_exchanges_per_update": [initial_exchanges, metadata_exchanges],
     }
 
 
