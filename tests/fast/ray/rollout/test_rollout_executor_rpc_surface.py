@@ -1,13 +1,20 @@
 from __future__ import annotations
 
+import asyncio
+from argparse import Namespace
+from pathlib import Path
+from types import SimpleNamespace
+
 import pytest
 from pydantic import ValidationError
+from tests.fast.utils.workers.rpc.server.fake_workers import OutcomeRecorder
 
-from miles.ray.rollout.rollout_executor import RolloutExecutor
+from miles.ray.rollout.rollout_executor import RolloutExecutor, compute_rollout_checkpoint_dir
 from miles.ray.train.group import TrainerController
 from miles.utils.data import RolloutDataPack
 from miles.utils.object_store import _MooncakeStoreObjectRef
 from miles.utils.workers.rpc.common.metadata import collect_rpc_method_specs
+from miles.utils.workers.rpc.server.executor import RpcCallExecutor
 
 
 def _round_trip(pack: RolloutDataPack) -> RolloutDataPack:
@@ -39,6 +46,39 @@ class TestWhatARolloutHandsToTheDriver:
         """The pack is a contract between two processes; a key only one side knows is a silent mismatch."""
         with pytest.raises(ValidationError):
             RolloutDataPack(sample_indices=[0], data_reference=None)
+
+
+class TestRolloutExecutorLifecycleRpc:
+    async def test_load_awaits_state_restore_on_the_rpc_event_loop(self, tmp_path: Path) -> None:
+        """The native RPC executor awaits checkpoint state restoration."""
+        worker = RolloutExecutor.__new__(RolloutExecutor)
+        loaded = asyncio.Event()
+
+        rpc_loop = asyncio.get_running_loop()
+
+        def load_state(_directory) -> None:
+            assert asyncio.get_running_loop() is rpc_loop
+            loaded.set()
+
+        worker.args = Namespace(load=str(tmp_path), save_debug_event_data=None)
+        worker.use_legacy_rollout_v1 = True
+        compute_rollout_checkpoint_dir(tmp_path, rollout_id=7).mkdir(parents=True)
+        worker.data_source = SimpleNamespace(load=load_state)
+        specs = collect_rpc_method_specs(RolloutExecutor)
+        assert specs["load"].is_async and specs["save"].is_async
+        executor = RpcCallExecutor(worker=worker, specs=specs)
+        recorder = OutcomeRecorder()
+
+        executor.start(
+            spec=specs["load"],
+            kwargs={"rollout_id": 7},
+            call_id="load",
+            finish=recorder.finish,
+        )
+        await asyncio.gather(*executor._background_tasks)
+
+        assert loaded.is_set()
+        assert [outcome.status for outcome in recorder.outcomes] == ["success"]
 
 
 class TestThePackTheTrainerControllerIsGiven:
