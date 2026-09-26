@@ -7,7 +7,7 @@ import time
 from argparse import Namespace
 from collections.abc import Callable, Iterator
 from concurrent.futures import Future, ThreadPoolExecutor
-from contextlib import contextmanager, nullcontext
+from contextlib import nullcontext
 from types import ModuleType, SimpleNamespace
 from typing import Any
 
@@ -299,71 +299,6 @@ class _P2PSenderHarness:
                 param.data = shared_params_dict[name]
         self.replicas_created.append((replica.tp_rank, first_rollout_engine_rank))
         return replica
-
-
-_P2P_PROTOCOL_MODULE = "miles.backends.training_utils.weight_update.protocols.p2p"
-
-
-@contextmanager
-def _stubbed_missing_external_sdks(module_attributes: dict[str, dict[str, object]]) -> Iterator[None]:
-    created_modules: list[str] = []
-    created_attributes: list[tuple[ModuleType, str]] = []
-
-    for module_name, attributes in module_attributes.items():
-        parts = module_name.split(".")
-        for depth in range(1, len(parts) + 1):
-            name = ".".join(parts[:depth])
-            if name in sys.modules:
-                continue
-            try:
-                importlib.import_module(name)
-                continue
-            except ImportError:
-                pass
-            module = ModuleType(name)
-            module.__path__ = []
-            sys.modules[name] = module
-            created_modules.append(name)
-            if depth > 1:
-                parent = sys.modules[".".join(parts[: depth - 1])]
-                setattr(parent, parts[depth - 1], module)
-                created_attributes.append((parent, parts[depth - 1]))
-        for attribute, value in attributes.items():
-            module = sys.modules[module_name]
-            if not hasattr(module, attribute):
-                setattr(module, attribute, value)
-                created_attributes.append((module, attribute))
-
-    try:
-        yield
-    finally:
-        for parent, attribute in reversed(created_attributes):
-            delattr(parent, attribute)
-        for name in reversed(created_modules):
-            sys.modules.pop(name, None)
-
-
-@pytest.fixture(scope="module")
-def p2p_protocol() -> ModuleType:
-    with _stubbed_missing_external_sdks(
-        {
-            "mooncake.engine": {"TransferEngine": object},
-            "sglang.srt.server_args": {"ServerArgs": object},
-            "sglang.srt.configs.device_config": {"DeviceConfig": object},
-            "sglang.srt.configs.load_config": {"LoadConfig": object},
-            "sglang.srt.configs.model_config": {"ModelConfig": object},
-            "sglang.srt.distributed.parallel_state": {
-                "ParallelismContext": object,
-                "RankParallelismConfig": object,
-            },
-            "sglang.srt.layers.moe": {"initialize_moe_config": lambda *args, **kwargs: None},
-            "sglang.srt.layers.quantization.fp4_utils": {"initialize_fp4_gemm_config": lambda *args, **kwargs: None},
-            "sglang.srt.layers.quantization.fp8_utils": {"initialize_fp8_gemm_config": lambda *args, **kwargs: None},
-            "sglang.srt.model_loader": {"get_model": lambda *args, **kwargs: None},
-            "sglang.srt.model_loader.parameter_mapper": {"ParameterMapper": object},
-        }
-    ):
-        return importlib.import_module(_P2P_PROTOCOL_MODULE)
 
 
 @pytest.fixture
