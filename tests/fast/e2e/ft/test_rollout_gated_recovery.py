@@ -130,14 +130,6 @@ class _FakeWorkerManager:
             await self._reconcile(cell_id, self.cell_info(cell_id))
 
 
-class _FakeStopCellController:
-    def __init__(self, *, worker_manager: _FakeWorkerManager) -> None:
-        self._worker_manager = worker_manager
-
-    async def stop_cell_between_weight_updates(self, cell_id: str) -> None:
-        await self._worker_manager.stop_cells.remote([cell_id])
-
-
 class _Harness:
     def __init__(self, *, monkeypatch: pytest.MonkeyPatch) -> None:
         self.router = _FakeRouter()
@@ -196,10 +188,7 @@ class _Harness:
         self.worker_manager = _FakeWorkerManager(cell_ids=_CELL_IDS, reconcile=self.controller._reconcile)
         self.handler = _CellHandler(
             cell_type="rollout",
-            operations=RayCellOperations(
-                worker_manager_handle=self.worker_manager,
-                resolve_inference_controller=lambda: _FakeStopCellController(worker_manager=self.worker_manager),
-            ),
+            operations=RayCellOperations(worker_manager_handle=self.worker_manager),
             controllers=[self.controller],
             pool_ids=[_POOL_ID],
         )

@@ -10,7 +10,13 @@ import pytest
 from tests.fast.ray.rollout.conftest import make_args, track_server_cell
 
 from miles.ray.rollout import server_cell as server_cell_module
-from miles.ray.rollout.cell_state import CellAddrInfo, StatePendingWeights, StateServing, StateUninitialized
+from miles.ray.rollout.cell_state import (
+    CellAddrInfo,
+    StateErrored,
+    StatePendingWeights,
+    StateServing,
+    StateUninitialized,
+)
 from miles.ray.rollout.inference_controller import InferenceController
 from miles.ray.rollout.rollout_server import RolloutServer
 from miles.ray.rollout.server_cell import ServerCell, ServerCellMetadata
@@ -142,6 +148,7 @@ class TestRolloutCellHealthCheckerActiveness:
             (StateUninitialized(), False),
             (StatePendingWeights(addr_info=_addr_info()), True),
             (StateServing(addr_info=_addr_info()), True),
+            (StateErrored(addr_info=_addr_info()), False),
         ],
     )
     async def test_only_a_started_engine_is_probed(self, state, expected):
@@ -275,6 +282,31 @@ class TestRolloutCellHealthConditionDuringPause:
 
         assert _healthy_condition(cell) == CellCondition.healthy(TriState.UNKNOWN, reason="HealthCheckUnknown")
         checker.stop()
+
+
+class TestRolloutCellHealthCheckerAfterAnError:
+    async def test_marking_a_cell_errored_stops_its_checker(self, monkeypatch):
+        """A cell taken out of service is never healed back, so its probe loop would poll a dead engine forever."""
+        monkeypatch.setattr(server_cell_module, "SGLangApiClient", _NoopEngineApiClient)
+        cell = _make_cell(ft_components=["rollout"])
+        cell.router_api_client = _NoopRouterApiClient()
+        cell._state = StateServing(addr_info=_addr_info())
+        assert cell._health_checker._task is not None
+
+        await cell.mark_errored()
+
+        assert cell._health_checker._task is None
+
+    async def test_an_errored_cell_is_never_probed_again_even_while_the_controller_is_active(self, monkeypatch):
+        """The global activeness flips back on after every weight update, and must not revive this cell."""
+        monkeypatch.setattr(server_cell_module, "SGLangApiClient", _NoopEngineApiClient)
+        cell = _make_cell(ft_components=["rollout"], global_activeness=True)
+        cell.router_api_client = _NoopRouterApiClient()
+        cell._state = StateServing(addr_info=_addr_info())
+
+        await cell.mark_errored()
+
+        assert cell._health_checker._get_activeness().active is False
 
 
 class TestRolloutCellHealthCheckerDisposal:

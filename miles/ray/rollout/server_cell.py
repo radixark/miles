@@ -1,4 +1,3 @@
-import asyncio
 import dataclasses
 import logging
 import time
@@ -15,6 +14,7 @@ from miles.ray.rollout.cell_state import (
     CellAddrInfo,
     CellState,
     StateDisposed,
+    StateErrored,
     StateInitializing,
     StatePendingWeights,
     StateServing,
@@ -30,12 +30,14 @@ from miles.utils.ft_utils.health_checker import (
     SimpleHealthCheckerConfig,
 )
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
+from miles.utils.retry_utils import retry_until_deadline
 from miles.utils.workers.launch_gate import GATE_PORT_NAME, activate_launch_gate
 from miles.utils.workers.worker_provider.base import BaseWorkerProvider
 
 logger = logging.getLogger(__name__)
 
 SHUTDOWN_TIMEOUT = 30
+UNREGISTER_FROM_ROUTER_TIMEOUT = 120
 INITIALIZING_TIMEOUT_SECONDS = 1800.0
 ABORT_REQUEST_TIMEOUT_SECONDS = 30.0
 
@@ -105,6 +107,17 @@ class ServerCell:
                     workers_hash=self.meta.workers_hash,
                 )
 
+            case StateErrored():
+                return CellStatus(
+                    phase="Running",
+                    conditions=[
+                        CellCondition.allocated(TriState.TRUE),
+                        CellCondition.healthy(TriState.FALSE, reason="CellErrored"),
+                        CellCondition.serving(TriState.FALSE),
+                    ],
+                    workers_hash=self.meta.workers_hash,
+                )
+
             case StateDisposed():
                 return CellStatus(
                     phase="Suspended",
@@ -134,6 +147,10 @@ class ServerCell:
     @property
     def is_serving(self) -> bool:
         return isinstance(self._state, StateServing)
+
+    @property
+    def is_errored(self) -> bool:
+        return isinstance(self._state, StateErrored)
 
     @property
     def is_initializing_past_deadline(self) -> bool:
@@ -216,34 +233,43 @@ class ServerCell:
             bootstrap_port=addr_info.bootstrap_port,
         )
 
+    async def mark_errored(self) -> None:
+        if isinstance(self._state, (StateErrored, StateDisposed)):
+            return
+        await self._leave_service()
+        self._change_state(
+            "mark_errored", (StatePendingWeights, StateServing), StateErrored(addr_info=self._state.addr_info)
+        )
+
     async def dispose(self) -> None:
-        self._health_checker.stop()
-
-        match self._state:
-            case StateServing():
-                await self._unregister_from_router()
-            case StateUninitialized() | StateInitializing() | StatePendingWeights() | StateDisposed():
-                pass
-            case _:
-                raise ValueError(f"{self._state=}")
-
+        try:
+            await self._leave_service()
+        except Exception:
+            logger.warning(
+                f"Unregistering cell {self.meta.cell_id} from the router failed, disposing anyway", exc_info=True
+            )
         self._change_state(
             "dispose",
-            (StateUninitialized, StateInitializing, StatePendingWeights, StateServing, StateDisposed),
+            (StateUninitialized, StateInitializing, StatePendingWeights, StateServing, StateErrored, StateDisposed),
             StateDisposed(),
         )
 
+    async def _leave_service(self) -> None:
+        self._health_checker.stop()
+        if self.is_serving:
+            await self._unregister_from_router()
+
     async def _unregister_from_router(self) -> None:
-        try:
-            await asyncio.wait_for(
-                self.router_api_client.remove_worker(
-                    worker_url=self.server_url,
-                    use_legacy_api=use_legacy_router_api(self.args),
-                ),
-                timeout=SHUTDOWN_TIMEOUT,
-            )
-        except Exception as e:
-            logger.warning(f"Unregistering cell {self.meta.cell_id} from the router failed, tearing down anyway ({e})")
+        await retry_until_deadline(
+            lambda _: self.router_api_client.remove_worker(
+                worker_url=self.server_url,
+                use_legacy_api=use_legacy_router_api(self.args),
+            ),
+            total_seconds=UNREGISTER_FROM_ROUTER_TIMEOUT,
+            attempt_seconds=SHUTDOWN_TIMEOUT,
+            retry_on=Exception,
+            log_fields={"cell": self.meta.cell_id},
+        )
 
     async def _compute_addr_info(self) -> CellAddrInfo:
         master_addrs = await self.provider.get_addrs(worker_name=self.meta.worker_name)

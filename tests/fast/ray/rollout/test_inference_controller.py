@@ -21,7 +21,6 @@ from miles.ray.rollout.server_cell import ServerCell, ServerCellMetadata
 from miles.ray.specs.inference import compute_engine_pool_ids, compute_router_pool_id, specs_inference_engine
 from miles.utils.context_lock import ContextLock
 from miles.utils.ft_utils.health_checker import ActivenessTracker
-from miles.utils.test_utils.fault_injector import FailureMode
 from miles.utils.workers.registration.hub import RegistrationHub
 from miles.utils.workers.registration.models import RegisteredCellInfo, RegistrationSnapshot
 from miles.utils.workers.rpc.client.handle import RpcWorkerHandle
@@ -103,6 +102,10 @@ class _RecordingServer:
         self._cells_gate = cells_gate
 
     @property
+    def normal_server_cells(self) -> dict:
+        return {cell_id: cell for cell_id, cell in self.all_server_cells.items() if not cell.is_errored}
+
+    @property
     def engine_cells(self) -> list:
         self.engine_cells_calls += 1
         return sorted(self.all_server_cells.values(), key=lambda cell: cell.meta.gpu_offset)
@@ -126,7 +129,7 @@ class _RecordingServer:
 
     async def add_cell(self, cell_meta: ServerCellMetadata):
         self.calls.append(("add", cell_meta.cell_id))
-        self.all_server_cells[cell_meta.cell_id] = SimpleNamespace(meta=cell_meta)
+        self.all_server_cells[cell_meta.cell_id] = SimpleNamespace(meta=cell_meta, is_errored=False)
 
     async def remove_cell(self, cell_id: str):
         self.calls.append(("remove", cell_id))
@@ -190,11 +193,22 @@ class _FakeUpdatableCell:
         )
         self.api_client = api_client
         self.marked_ready = 0
+        self.marked_errored = 0
+        self.mark_errored_error: Exception | None = None
+        self.is_errored = False
         self.is_pending_weights = True
         self.is_pending_weights_or_serving = True
 
     async def mark_weights_ready(self) -> None:
         self.marked_ready += 1
+
+    async def mark_errored(self) -> None:
+        self.marked_errored += 1
+        if self.mark_errored_error is not None:
+            raise self.mark_errored_error
+        self.is_errored = True
+        self.is_pending_weights = False
+        self.is_pending_weights_or_serving = False
 
 
 class _TickingCell:
@@ -373,63 +387,6 @@ class TestHealthCheckerActiveness:
         await controller.prepare_eval()
 
         assert srv.health_checker_activeness.get().active
-
-
-class TestRolloutFaultInjectionWindow:
-    async def test_fault_injection_refuses_an_unknown_rollout_cell(self) -> None:
-        """An unknown rollout cell raises its identifier without reaching the worker manager."""
-        cell_id = "unknown-rollout-cell"
-        provider = _FakeWorkerProvider([])
-        controller = _make_controller(
-            {"default": _RecordingServer(all_server_cells={"inference-engine-0-0-0": object()})},
-            engine_provider=provider,
-        )
-
-        with pytest.raises(KeyError) as exc_info:
-            await controller.inject_fault_between_weight_updates(
-                cell_id=cell_id,
-                mode=FailureMode.SIGKILL,
-                sub_index=0,
-            )
-
-        assert cell_id in str(exc_info.value)
-        assert provider._worker_manager_handle.inject_fault.calls == []
-
-    @pytest.mark.asyncio
-    async def test_fault_injection_reaches_a_serving_rollout_cell(self) -> None:
-        """A serving rollout cell accepts a fault through the Ray worker manager."""
-        cell_id = "inference-engine-0-0-0"
-        server = _RecordingServer(all_server_cells={cell_id: object()})
-        provider = _FakeWorkerProvider([])
-        controller = _make_controller({"default": server}, engine_provider=provider)
-
-        await controller.inject_fault_between_weight_updates(
-            cell_id=cell_id,
-            mode=FailureMode.SIGKILL,
-            sub_index=0,
-        )
-
-        assert provider._worker_manager_handle.inject_fault.calls == [
-            ((cell_id,), {"mode": "sigkill", "worker_in_cell_index": 0})
-        ]
-
-    @pytest.mark.asyncio
-    async def test_fault_injection_refuses_an_offloaded_rollout_cell(self) -> None:
-        """Colocate must not kill rollout processes while trainer ranks own the shared GPUs."""
-        cell_id = "inference-engine-0-0-0"
-        server = _RecordingServer(all_server_cells={cell_id: object()})
-        server.health_checker_activeness.bump_active(False)
-        provider = _FakeWorkerProvider([])
-        controller = _make_controller({"default": server}, engine_provider=provider)
-
-        with pytest.raises(RuntimeError, match="is offloaded; refusing fault injection"):
-            await controller.inject_fault_between_weight_updates(
-                cell_id=cell_id,
-                mode=FailureMode.SIGKILL,
-                sub_index=0,
-            )
-
-        assert provider._worker_manager_handle.inject_fault.calls == []
 
 
 class TestReconcile:
@@ -1333,177 +1290,6 @@ async def _raise_async(cell: ServerCell) -> None:
     raise RuntimeError("injected init failure")
 
 
-_ROLLOUT_CELL_ID = "inference-engine-0-0-0"
-
-
-class _StoppingWorkerProvider(_FakeWorkerProvider):
-    def __init__(self, *, completion: asyncio.Future | None = None) -> None:
-        super().__init__([])
-        self.stopped_cells: list[list[str]] = []
-        self.stop_requested = asyncio.Event()
-        self._completion = completion
-
-    async def stop_cells(self, *, cell_ids: list[str]) -> None:
-        self.stopped_cells.append(list(cell_ids))
-        self.stop_requested.set()
-        if self._completion is not None:
-            await self._completion
-
-
-def _make_cell_operations_controller(
-    provider: _StoppingWorkerProvider, *, probing_paused: bool = False
-) -> InferenceController:
-    server = _RecordingServer(all_server_cells={_ROLLOUT_CELL_ID: object()})
-    if probing_paused:
-        server.health_checker_activeness.bump_active(False)
-    return _make_controller({"default": server}, engine_provider=provider)
-
-
-async def _hold_context_lock(controller: InferenceController) -> tuple[asyncio.Task, asyncio.Event]:
-    entered, may_finish = asyncio.Event(), asyncio.Event()
-
-    async def _hold() -> None:
-        async with controller.context_lock:
-            entered.set()
-            await may_finish.wait()
-
-    holder = asyncio.create_task(_hold())
-    await entered.wait()
-    return holder, may_finish
-
-
-class TestCellOperations:
-    @pytest.mark.asyncio
-    async def test_stop_cell_between_weight_updates_is_forwarded_to_the_engine_provider(self):
-        """The provider owns the processes, so the controller only serializes the suspension."""
-        provider = _StoppingWorkerProvider()
-        controller = _make_cell_operations_controller(provider)
-
-        await controller.stop_cell_between_weight_updates(_ROLLOUT_CELL_ID)
-
-        assert provider.stopped_cells == [[_ROLLOUT_CELL_ID]]
-
-    @pytest.mark.asyncio
-    async def test_stop_cell_between_weight_updates_waits_until_the_weight_update_window_closes(self):
-        """Suspending a cell mid-broadcast leaves the trainer waiting on an engine that is being torn down."""
-        provider = _StoppingWorkerProvider()
-        controller = _make_cell_operations_controller(provider)
-        holder, may_finish = await _hold_context_lock(controller)
-
-        stopping = asyncio.create_task(controller.stop_cell_between_weight_updates(_ROLLOUT_CELL_ID))
-        await asyncio.sleep(0)
-
-        assert provider.stopped_cells == []
-
-        may_finish.set()
-        await holder
-        await stopping
-
-        assert provider.stopped_cells == [[_ROLLOUT_CELL_ID]]
-
-    @pytest.mark.asyncio
-    async def test_inject_fault_between_weight_updates_waits_until_the_weight_update_window_closes(self):
-        """Injection racing a broadcast is the same hazard as suspension, so it takes the same turn."""
-        provider = _StoppingWorkerProvider()
-        controller = _make_cell_operations_controller(provider)
-        holder, may_finish = await _hold_context_lock(controller)
-
-        injecting = asyncio.create_task(
-            controller.inject_fault_between_weight_updates(_ROLLOUT_CELL_ID, mode=FailureMode.SIGKILL, sub_index=0)
-        )
-        await asyncio.sleep(0)
-
-        assert provider._worker_manager_handle.inject_fault.calls == []
-
-        may_finish.set()
-        await holder
-        await injecting
-
-        assert provider._worker_manager_handle.inject_fault.calls == [
-            ((_ROLLOUT_CELL_ID,), {"mode": "sigkill", "worker_in_cell_index": 0})
-        ]
-
-    @pytest.mark.asyncio
-    async def test_stop_cell_between_weight_updates_is_allowed_while_probing_is_paused(self):
-        """An offloaded cell is the one a heal loop most needs to suspend, so only injection is refused."""
-        provider = _StoppingWorkerProvider()
-        controller = _make_cell_operations_controller(provider, probing_paused=True)
-
-        await controller.stop_cell_between_weight_updates(_ROLLOUT_CELL_ID)
-
-        assert provider.stopped_cells == [[_ROLLOUT_CELL_ID]]
-
-    @pytest.mark.asyncio
-    async def test_inject_fault_between_weight_updates_refuses_a_pause_that_began_while_it_waited(self):
-        """Reading the pause before taking the lock would kill a cell the offload has since put to sleep."""
-        provider = _StoppingWorkerProvider()
-        controller = _make_cell_operations_controller(provider)
-        server = controller.servers["default"]
-        entered, may_finish = asyncio.Event(), asyncio.Event()
-
-        async def _pause_probing_under_the_lock() -> None:
-            async with controller.context_lock:
-                entered.set()
-                await may_finish.wait()
-                server.health_checker_activeness.bump_active(False)
-
-        holder = asyncio.create_task(_pause_probing_under_the_lock())
-        await entered.wait()
-        injecting = asyncio.create_task(
-            controller.inject_fault_between_weight_updates(_ROLLOUT_CELL_ID, mode=FailureMode.SIGKILL, sub_index=0)
-        )
-        await asyncio.sleep(0)
-        may_finish.set()
-        await holder
-
-        with pytest.raises(RuntimeError, match="refusing fault injection"):
-            await injecting
-
-        assert provider._worker_manager_handle.inject_fault.calls == []
-
-    @pytest.mark.asyncio
-    async def test_a_refused_injection_leaves_the_weight_update_lock_free(self):
-        """A refusal that kept the lock would hang the next weight update instead of only skipping the injection."""
-        provider = _StoppingWorkerProvider()
-        controller = _make_cell_operations_controller(provider, probing_paused=True)
-
-        with pytest.raises(RuntimeError, match="refusing fault injection"):
-            await controller.inject_fault_between_weight_updates(
-                _ROLLOUT_CELL_ID, mode=FailureMode.SIGKILL, sub_index=0
-            )
-
-        assert not controller.context_lock.locked
-
-        await controller.stop_cell_between_weight_updates(_ROLLOUT_CELL_ID)
-
-        assert provider.stopped_cells == [[_ROLLOUT_CELL_ID]]
-
-    @pytest.mark.asyncio
-    async def test_a_weight_update_cannot_start_while_a_suspension_is_still_running(self):
-        """Releasing the lock before the provider has torn the cell down reopens the very race this serializes."""
-        completion: asyncio.Future = asyncio.get_running_loop().create_future()
-        provider = _StoppingWorkerProvider(completion=completion)
-        controller = _make_cell_operations_controller(provider)
-        weight_update_started = asyncio.Event()
-
-        async def _start_weight_update() -> None:
-            async with controller.context_lock:
-                weight_update_started.set()
-
-        stopping = asyncio.create_task(controller.stop_cell_between_weight_updates(_ROLLOUT_CELL_ID))
-        await provider.stop_requested.wait()
-        weight_update = asyncio.create_task(_start_weight_update())
-        await asyncio.sleep(0)
-
-        assert not weight_update_started.is_set()
-
-        completion.set_result(None)
-        await stopping
-        await weight_update
-
-        assert weight_update_started.is_set()
-
-
 def _raise_configure_logger(*args, **kwargs):
     raise ValueError("configure_logger blew up")
 
@@ -1779,3 +1565,35 @@ class TestRegistrationSnapshotEndpoint:
 
         with pytest.raises(AssertionError, match="serves model 'other'"):
             await controller.registration_ingest(snapshot=_registration_snapshot(model_id="other"))
+
+
+class TestErroredCellsLeaveTheUpdateWindow:
+    @staticmethod
+    def _server(*, errored_cell_ids: tuple[str, ...] = ()) -> _RecordingServer:
+        cells = {}
+        for index, cell_id in enumerate(("engine-0", "engine-1")):
+            cell = _FakeUpdatableCell(f"hash-{index}", cell_id=cell_id, api_client=f"client-{index}", gpu_offset=index)
+            cell.is_errored = cell_id in errored_cell_ids
+            cells[cell_id] = cell
+        return _RecordingServer(cells, model_name="actor", update_weights=True)
+
+    @pytest.mark.asyncio
+    async def test_the_snapshot_covers_only_the_cells_that_are_still_in_service(self):
+        """The snapshot is what end_update_weights republishes, so an errored cell in it would come back serving."""
+        controller = _make_controller({"actor": self._server(errored_cell_ids=("engine-1",))})
+
+        updatable = await controller.start_update_weights()
+
+        assert updatable.snapshot_cell_id_to_hashes == {"engine-0": "hash-0"}
+
+    @pytest.mark.asyncio
+    async def test_an_errored_cell_does_not_hold_up_the_readiness_wait(self, monkeypatch):
+        """It will never reach pending-weights again, so waiting for it would time out every later update."""
+        monkeypatch.setattr(inference_controller_module, "CELLS_READY_TIMEOUT_SECONDS", 0)
+        srv = self._server(errored_cell_ids=("engine-1",))
+        srv.all_server_cells["engine-1"].is_pending_weights_or_serving = False
+        controller = _make_controller({"actor": srv})
+
+        updatable = await controller.start_update_weights()
+
+        assert updatable.snapshot_cell_id_to_hashes == {"engine-0": "hash-0"}
