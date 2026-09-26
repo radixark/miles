@@ -103,12 +103,11 @@ class WeightUpdater:
         adapters = self._get_updated_adapters()
 
         driver = dist.get_rank() == 0
+        cell_updaters = list(protocol.cell_updaters_of_cell_id.values())
         if protocol.use_weight_update_session and driver:
-            maybe_pause_engines(self.args, protocol.rollout_engines)
+            maybe_pause_engines(self.args, cell_updaters)
             self._register_new_lora_adapters(protocol.rollout_engines, adapters)
-            begin_weight_update(
-                protocol.rollout_engines, self._hf_weight_iterator.weight_update_selector, sync_base=sync_base
-            )
+            begin_weight_update(cell_updaters, self._hf_weight_iterator.weight_update_selector, sync_base=sync_base)
         dist.barrier(group=get_gloo_group())
 
         checksums = {name: {} for name, _ in adapters} if self.is_lora and self.args.check_lora_weight_equal else None
@@ -135,9 +134,9 @@ class WeightUpdater:
         with timer("finalize_and_resume_engines"):
             protocol.finalize(weight_version)
             if protocol.use_weight_update_session and driver:
-                end_weight_update(protocol.rollout_engines, expected_lora_checksums=checksums)
-                set_weight_version(protocol.rollout_engines, weight_version)
-                maybe_resume_engines(self.args, protocol.rollout_engines)
+                end_weight_update(cell_updaters, expected_lora_checksums=checksums)
+                set_weight_version(cell_updaters, weight_version)
+                maybe_resume_engines(self.args, cell_updaters)
             dist.barrier(group=get_gloo_group())
         protocol.after_engines_resumed()
 
