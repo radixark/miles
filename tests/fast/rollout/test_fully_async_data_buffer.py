@@ -238,6 +238,18 @@ class TestStalenessFiltering:
         assert under_test.unused == [(stale, UnusedReason.STALE)]
         assert under_test.buffer.get_metrics()["rollout/fully_async/stale_groups_filtered"] == 1
 
+    async def test_a_group_dropped_for_staleness_is_left_out_of_the_consumed_staleness_metrics(self) -> None:
+        """A recycled group was never consumed, so counting it skews the staleness the trainer trained on."""
+        under_test = _make_buffer(max_weight_staleness=2)
+        await _put(under_test.buffer, _make_finished_group(1, weight_version=1))
+        await _put(under_test.buffer, _make_finished_group(2, weight_version=8))
+
+        assert (await _get_one(under_test.buffer, current_version=10)).group[0].group_index == 2
+
+        metrics = under_test.buffer.get_metrics()
+        assert metrics["rollout/fully_async/avg_staleness"] == 2
+        assert metrics["rollout/fully_async/max_staleness"] == 2
+
     async def test_an_unset_max_staleness_keeps_every_group_however_old(self) -> None:
         """The filter is opt-in, and a run without it still wants the staleness it is training on."""
         under_test = _make_buffer(max_weight_staleness=None)
