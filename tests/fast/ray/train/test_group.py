@@ -1656,7 +1656,7 @@ class TestUpdateWeightsFromEveryAliveCell:
 
         output = await controller.update_weights(info=_make_engines(0))
 
-        assert output == WeightUpdateOutput(weight_version=None, failed_cell_ids=())
+        assert _outcome_of(output) == (None, ())
         assert _targets_of(cells[0]) == []
 
     async def test_a_broadcast_run_still_sends_from_a_single_cell(self):
@@ -1667,7 +1667,7 @@ class TestUpdateWeightsFromEveryAliveCell:
         controller._execute_first_alive = AsyncMock(return_value=[_output(3), _output(3)])
         info = _make_engines(4)
 
-        assert await controller.update_weights(info=info) == _output(3)
+        assert _outcome_of(await controller.update_weights(info=info)) == _outcome_of(_output(3))
 
         controller._execute_first_alive.assert_awaited_once_with(
             "update_weights", timeout=60.0, info=info, debug_weight_update_id=ANY, rollout_id=None
@@ -1707,7 +1707,7 @@ class TestUpdateWeightsFromEveryAliveCell:
         controller.args.colocate = True
         controller._execute_first_alive = AsyncMock(return_value=[_output(3)])
 
-        assert await controller.update_weights(info=_make_engines(4)) == _output(3)
+        assert _outcome_of(await controller.update_weights(info=_make_engines(4))) == _outcome_of(_output(3))
 
         assert _targets_of(cells[0]) == []
 
@@ -1809,7 +1809,7 @@ class TestUpdateWeightsGivesUpOnADeadTrainersTargets:
 
         output = await controller.update_weights(info=_make_engines(2))
 
-        assert output == _output(4, "rollout-0")
+        assert _outcome_of(output) == _outcome_of(_output(4, "rollout-0"))
 
 
 class TestBlameTheSenderThatReachedNoneOfItsTargets:
