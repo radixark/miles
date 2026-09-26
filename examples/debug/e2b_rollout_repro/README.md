@@ -1,5 +1,36 @@
 # E2B / agentic rollout failure reproduction
 
+## Chosen-token reply pilot
+
+This branch changes score-centering session replies in both v1 and v2. The
+server retains the complete backend response for training, including all 128
+candidate IDs and logprobs. Non-streaming replies preserve chosen-token logprobs,
+token IDs, messages, and usage, but omit internal `output_top_logprobs` and return
+empty OpenAI `top_logprobs` lists unless the original client explicitly requested
+candidates. Explicit requests retain that many candidates in the standard OpenAI
+field. Other loss types and the existing streaming behavior are unchanged.
+
+The filtering copies response containers; it must not mutate session records.
+This corrects the earlier experimental `strip` arm, which also removed chosen
+logprobs and was unsuitable for Harbor rollout-detail collection.
+
+`chosen_logprobs_gate.py` checks a captured response with the pinned Harbor
+chosen-logprob extractor, then exercises the real session server and native
+sample decoder. It compares both training and top-128 candidate hashes against
+an unfiltered reference. Pass `--root`, `--parent`, `--fixture`,
+`--reference_results`, and `--harbor` in the original pinned environment. The gate
+creates no E2B sandboxes and starts no optimizer. It is a compatibility check,
+not a full agentic test or evidence that the original native crash is fixed.
+
+`chosen-logprobs-pilot.json` specifies the next bounded agentic pilot: one wave,
+16 prompt groups with two samples each, 16 concurrent sandboxes, the same eight
+GPU nodes, 64k total tokens and 16k per turn. Merge its argument/environment
+overrides into the archived recipe when preparing a fresh run. Keep top-128
+recording, prebuilt task images, linear history, and the existing acceptance of
+truncated and agent-timeout trajectories. Do not reuse an old corpus for this
+pilot; observe fresh multi-turn replies and cleanup. Infrastructure failures
+remain invalid training data. The settings file does not launch a job.
+
 ## Controlled payload experiment
 
 `payload_control.py` isolates candidate-metadata overhead using the real pinned

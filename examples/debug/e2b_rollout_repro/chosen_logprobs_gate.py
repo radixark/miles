@@ -36,7 +36,7 @@ def check_harbor(args: Args, fixture: dict) -> dict:
     response = _chat_client_response({"status_code": 200, "headers": {}}, original, False, client_top_logprobs=0)
     outgoing = json.loads(response.body)
     assert extract(None, outgoing) == extract(None, original)
-    assert len(extract(None, outgoing)) == 16384
+    assert len(extract(None, outgoing)) == original["usage"]["completion_tokens"]
     for raw, filtered in zip(original["choices"], outgoing["choices"], strict=True):
         assert raw["message"] == filtered["message"]
         for key in ("prompt_token_ids", "response_token_ids"):
