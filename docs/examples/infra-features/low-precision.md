@@ -67,6 +67,11 @@ its expert-DP replicas, so each expert is processed once. For example, with two
 expert-DP replicas, each processes half of the local experts. Converted tensors
 and scales are then gathered as required by the weight-transfer protocol.
 
+Expert-DP partitions the conversion work by whole expert, never within an expert's
+FC1 or FC2 tensor. For 256 experts with EP64 and EDP8, each EP rank has four local
+experts: four of its replicas each process one expert, and four process none.
+Replicas with no assigned experts still participate in gathering.
+
 The same path serves unquantized weights and all rollout quantization formats
 supported by the direct exporter. Quantization exclusions still apply. Shared experts and nonexpert layers retain
 their existing gathering and conversion behavior. The Bridge exporter is unchanged.
