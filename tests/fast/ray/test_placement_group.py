@@ -455,7 +455,7 @@ class TestUpdateWeights:
             workers_hash="incarnation-0",
         )
         info = UpdatableEngines(
-            rollout_engines=[],
+            rollout_engines=[MagicMock()],
             engine_gpu_counts=[1],
             engine_gpu_offsets=[0],
             engine_cell_ids=[metadata.cell_id],
