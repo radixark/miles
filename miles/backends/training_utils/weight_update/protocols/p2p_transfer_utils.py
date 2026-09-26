@@ -80,6 +80,11 @@ class RemoteTransferPlan:
         Finally extract the transfer tasks matching the current dp_rank(self._gathered_dp_rank).
 
         """
+        for rollout_engine_idx, engine_gpu_count in enumerate(engine_gpu_counts):
+            assert (
+                engine_gpu_count > 0
+            ), f"engine {rollout_engine_idx} declares {engine_gpu_count!r} GPUs, so it has no rank to send weights to"
+
         all_targets = [
             (rollout_engine_idx, rollout_engine_rank)
             for rollout_engine_idx, engine_gpu_count in enumerate(engine_gpu_counts)

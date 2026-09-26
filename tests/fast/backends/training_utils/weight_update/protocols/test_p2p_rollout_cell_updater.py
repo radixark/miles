@@ -83,6 +83,17 @@ class TestDoP2PWriteOneSession:
                 {"w0": (0x1000, 4, 2), "w1": (0x1100, 4, 2)},
             )
 
+    def test_a_weight_spanning_a_different_number_of_bytes_remotely_is_rejected(
+        self, p2p_rollout_cell_updater: ModuleType, p2p_transfer_utils: ModuleType
+    ) -> None:
+        """Writing a longer source into a shorter target buffer would run past the remote allocation."""
+        session = _remote_session(p2p_rollout_cell_updater, p2p_transfer_utils, "session-a", {"w0": (0x2000, 4, 1)})
+
+        with pytest.raises(AssertionError, match="run past the target buffer"):
+            p2p_rollout_cell_updater._do_p2p_write_one_session(
+                _RecordingTransferEngine(), session, ["w0"], {"w0": (0x1000, 4, 2)}
+            )
+
     def test_an_empty_bucket_transfers_nothing(
         self, p2p_rollout_cell_updater: ModuleType, p2p_transfer_utils: ModuleType
     ) -> None:
