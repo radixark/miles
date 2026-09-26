@@ -150,13 +150,42 @@ async def failure(root: Path) -> None:
     assert cancelled.is_set()
 
 
+async def drain(root: Path) -> None:
+    os.environ.update(PILOT_ROOT=str(root), SANDBOX_CONCURRENCY="4", FROZEN_RESUME_ROOTS="")
+    c = collector(2)
+    release = asyncio.Event()
+    waits = 0
+    native_wait = cc.SampleBackfillSubmission.wait_for_progress
+
+    async def counted_wait(scheduler: cc.SampleBackfillSubmission, pending: set[asyncio.Task]) -> tuple[set[asyncio.Task], set[asyncio.Task]]:
+        nonlocal waits
+        waits += 1
+        return await native_wait(scheduler, pending)
+
+    async def generate(state: object, s: Sample, params: dict) -> list[Sample]:
+        if s.index != 0:
+            await release.wait()
+        return [complete(s)]
+
+    with patch.object(cc, "generate_and_rm", generate), patch.object(cc.SampleBackfillSubmission, "wait_for_progress", counted_wait):
+        c._start()
+        await asyncio.wait_for(c._settled[0].wait(), 5)
+        await asyncio.sleep(0.05)
+        assert waits <= 2, f"Exhausted producer is busy-waking: {waits}"
+        release.set()
+        await asyncio.wait_for(c._producer, 5)
+        for i in range(2):
+            await c._call_train(RolloutFnTrainInput(rollout_id=i))
+
+
 async def main() -> None:
     with tempfile.TemporaryDirectory() as directory:
         root = Path(directory)
         await backfill(root / "backfill")
         await resume(root)
         await failure(root / "failure")
-    print("PASS: cross-batch trajectory backfill, bounded concurrency, deterministic groups, disk references, partial/exhausted/valid resume, repeated resume, corruption rejection, failure cleanup")
+        await drain(root / "drain")
+    print("PASS: cross-batch trajectory backfill, bounded concurrency, deterministic groups, disk references, partial/exhausted/valid resume, repeated resume, corruption rejection, failure cleanup, non-spinning terminal drain")
 
 
 if __name__ == "__main__":

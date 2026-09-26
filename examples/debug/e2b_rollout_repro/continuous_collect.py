@@ -134,7 +134,10 @@ class RolloutFn(InferenceRolloutFn):
                     pending[task] = original.index
                 if not pending:
                     break
-                done, _ = await scheduler.wait_for_progress(set(pending))
+                if exhausted:
+                    done, _ = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
+                else:
+                    done, _ = await scheduler.wait_for_progress(set(pending))
                 for task in done:
                     slot = pending.pop(task)
                     scheduler.sample_done_callback()
