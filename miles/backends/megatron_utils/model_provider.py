@@ -59,6 +59,17 @@ def _apply_bridge_runtime_config(provider, args: argparse.Namespace) -> None:
     provider.fp32_residual_connection = args.fp32_residual_connection
     provider.deterministic_mode = args.deterministic_mode
 
+    # Bridge owns the model activation; CLI activation defaults may describe a different model.
+    activation_func = getattr(provider, "activation_func", None)
+    if activation_func is torch.nn.functional.silu and getattr(provider, "gated_linear_unit", False):
+        fusion_arg = "bias_swiglu_fusion"
+    elif activation_func is torch.nn.functional.gelu:
+        fusion_arg = "bias_gelu_fusion"
+    else:
+        fusion_arg = None
+    if fusion_arg is not None and hasattr(args, fusion_arg):
+        provider.bias_activation_fusion = getattr(args, fusion_arg)
+
     # activation recompute (silently dropped before -> no checkpointing -> OOM at long context)
     provider.recompute_granularity = args.recompute_granularity
     provider.recompute_method = args.recompute_method
