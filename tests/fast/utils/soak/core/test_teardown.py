@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 from tests.fast.utils.soak.soak_fakes import _RecordingProcesses, _RecordingReleaseRemoval
-from tests.utils.soak.core import teardown as teardown_module
+from tests.utils.soak.core import teardown as soak_teardown
 from tests.utils.soak.core.event_log import EventLog
 from tests.utils.soak.core.events import SoakTeardownEvent
 from tests.utils.soak.core.teardown import teardown_run
@@ -34,14 +34,14 @@ def _kubernetes_config(namespace: str = "rl") -> ExecuteTrainConfig:
 @pytest.fixture
 def processes(monkeypatch: pytest.MonkeyPatch) -> _RecordingProcesses:
     fake = _RecordingProcesses()
-    monkeypatch.setattr(teardown_module, "run_process", fake)
+    monkeypatch.setattr(soak_teardown, "run_process", fake)
     return fake
 
 
 @pytest.fixture
 def removal(monkeypatch: pytest.MonkeyPatch) -> _RecordingReleaseRemoval:
     fake = _RecordingReleaseRemoval()
-    monkeypatch.setattr(teardown_module, "remove_release_and_wait", fake)
+    monkeypatch.setattr(soak_teardown, "remove_release_and_wait", fake)
     return fake
 
 
@@ -92,7 +92,7 @@ class TestRayTeardown:
     ) -> None:
         """A failing ray job stop leaves a not-returned teardown event and fails the soak."""
         error = subprocess.CalledProcessError(1, ["ray"])
-        monkeypatch.setattr(teardown_module, "run_process", _RecordingProcesses(error=error))
+        monkeypatch.setattr(soak_teardown, "run_process", _RecordingProcesses(error=error))
         log = EventLog(tmp_path / "events.jsonl")
 
         with pytest.raises(subprocess.CalledProcessError):
@@ -137,9 +137,9 @@ class TestKubernetesTeardown:
         """A removal that never finishes is bounded and leaves a failed teardown event."""
         release_removal = threading.Event()
         monkeypatch.setattr(
-            teardown_module, "remove_release_and_wait", _RecordingReleaseRemoval(block=release_removal)
+            soak_teardown, "remove_release_and_wait", _RecordingReleaseRemoval(block=release_removal)
         )
-        monkeypatch.setattr(teardown_module, "_TEARDOWN_TIMEOUT_SECONDS", 0.05)
+        monkeypatch.setattr(soak_teardown, "_TEARDOWN_TIMEOUT_SECONDS", 0.05)
         log = EventLog(tmp_path / "events.jsonl")
 
         try:
@@ -159,7 +159,7 @@ class TestKubernetesTeardown:
         """Cancelling cleanup still leaves evidence that the resource may remain."""
         release_removal = threading.Event()
         fake = _RecordingReleaseRemoval(block=release_removal)
-        monkeypatch.setattr(teardown_module, "remove_release_and_wait", fake)
+        monkeypatch.setattr(soak_teardown, "remove_release_and_wait", fake)
         log = EventLog(tmp_path / "events.jsonl")
 
         task = asyncio.create_task(teardown_run(config=_kubernetes_config(), event_log=log, evidence_dir=tmp_path))
