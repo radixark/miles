@@ -3,7 +3,7 @@
   "arguments": {
     "--num-rollout": "1",
     "--rollout-batch-size": "16",
-    "--n-samples-per-prompt": "2",
+    "--n-samples-per-prompt": "8",
     "--global-batch-size": "16",
     "--score-centering-top-k": "128",
     "--rollout-max-response-len": "16384",
@@ -11,12 +11,12 @@
     "--seq-length": "65536"
   },
   "environment": {
-    "SANDBOX_CONCURRENCY": "16",
+    "SANDBOX_CONCURRENCY": "128",
     "FROZEN_RESUME_ROOTS": "",
     "HARBOR_TERMINUS_2_ENABLE_SUMMARIZE": "false",
     "HARBOR_TERMINUS_2_LINEAR_HISTORY": "true"
   },
-  "expected_slots": 32,
+  "expected_slots": 128,
   "acceptance": [
     "Only prebuilt E2B task images; retain the existing reward policy for truncated and agent-timeout trajectories.",
     "Harbor receives chosen-token logprobs and IDs, with empty candidate lists unless explicitly requested.",

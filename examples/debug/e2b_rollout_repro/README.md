@@ -23,7 +23,7 @@ creates no E2B sandboxes and starts no optimizer. It is a compatibility check,
 not a full agentic test or evidence that the original native crash is fixed.
 
 `chosen-logprobs-pilot.json` specifies the next bounded agentic pilot: one wave,
-16 prompt groups with two samples each, 16 concurrent sandboxes, the same eight
+16 prompt groups with eight samples each, 128 concurrent sandboxes, the same eight
 GPU nodes, 64k total tokens and 16k per turn. Merge its argument/environment
 overrides into the archived recipe when preparing a fresh run. Keep top-128
 recording, prebuilt task images, linear history, and the existing acceptance of
