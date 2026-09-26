@@ -324,9 +324,10 @@ class RolloutExecutor:
         assert rollout_id >= 0, f"rollout {rollout_id} is not a trained step"
 
         directory = compute_rollout_checkpoint_dir(self.args.load, rollout_id=rollout_id)
-        if not directory.is_dir():
-            logger.warning(f"No rollout state at {directory}; the rollout side starts fresh")
-            return
+        assert directory.is_dir(), (
+            f"the trainer restored rollout {rollout_id}, but {directory} does not exist; a run saved before the "
+            f"rollout-side state moved into one directory per rollout cannot resume that state"
+        )
 
         self.data_source.load(directory / _DATA_SOURCE_DIRNAME)
         if not self.use_legacy_rollout_v1:
