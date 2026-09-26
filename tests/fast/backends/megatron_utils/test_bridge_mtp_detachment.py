@@ -82,3 +82,21 @@ def test_bridge_mtp_detachment(
 
     assert provider.mtp_detach_heads is expected_detach
     assert provider.mtp_num_layers == 1
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+def test_bridge_honors_rope_fusion_flag(
+    apply_bridge_runtime_config: Callable, runtime_args: argparse.Namespace, enabled: bool
+) -> None:
+    runtime_args.apply_rope_fusion = enabled
+    provider = SimpleNamespace(apply_rope_fusion=not enabled)
+    apply_bridge_runtime_config(provider, runtime_args)
+    assert provider.apply_rope_fusion is enabled
+
+
+def test_bridge_preserves_rope_fusion_when_argument_is_absent(
+    apply_bridge_runtime_config: Callable, runtime_args: argparse.Namespace
+) -> None:
+    provider = SimpleNamespace(apply_rope_fusion=True)
+    apply_bridge_runtime_config(provider, runtime_args)
+    assert provider.apply_rope_fusion is True
