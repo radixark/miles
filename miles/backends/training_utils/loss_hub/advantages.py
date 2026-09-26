@@ -113,11 +113,14 @@ def normalize_advantages(
     response_lengths: list[int],
     max_seq_lens: list[int] | None = None,
 ) -> list[torch.Tensor]:
-    """Whiten advantages across the DP group using `loss_masks` for weighting.
+    """Whiten advantages over the effective DP×CP set using `loss_masks` for weighting.
 
-    Under CP > 1 the mask is sliced to this rank's tokens; when the local
-    mask is empty the inputs pass through unchanged. Output shapes match
-    `advantages`.
+    Under CP > 1 the mask is sliced to this rank's tokens, but the whitening
+    statistics are aggregated over both the CP and the DP groups so every shard
+    of a logical batch is normalized by the same mean and variance. Ranks whose
+    local shard is empty still join the aggregation with zero statistics; a
+    batch whose global mask sum is zero raises on every rank. Output shapes
+    match `advantages`.
     """
     num_samples = len(advantages)
     assert len(loss_masks) == num_samples
@@ -164,19 +167,22 @@ def normalize_advantages(
 
         all_masks = torch.cat(mask_chunks)
 
-    if all_masks.numel() > 0:
-        assert (
-            all_advs.size() == all_masks.size()
-        ), f"Shape mismatch before whitening: advantages {all_advs.size()}, masks {all_masks.size()}"
-        dp_group = parallel_state.effective_dp.group
+    assert (
+        all_advs.size() == all_masks.size()
+    ), f"Shape mismatch before whitening: advantages {all_advs.size()}, masks {all_masks.size()}"
 
-        whitened_advs_flat = distributed_masked_whiten(
-            all_advs,
-            all_masks,
-            process_group=dp_group,
-            shift_mean=True,
-        )
-        chunk_lengths = [chunk.size(0) for chunk in advantages]
-        advantages = list(torch.split(whitened_advs_flat, chunk_lengths))
+    # The statistics must span the CP shards too: `effective_dp` excludes the
+    # CP dimension, so whitening inside it would normalize one logical batch
+    # with a different mean/variance on every CP slice. Empty local shards
+    # contribute zero statistics — skipping the collective would leave the
+    # other members of their group waiting on an all_reduce that never comes.
+    whitened_advs_flat = distributed_masked_whiten(
+        all_advs,
+        all_masks,
+        groups_inner_to_outer=parallel_state.effective_dp_cp.groups_inner_to_outer,
+        shift_mean=True,
+    )
+    chunk_lengths = [chunk.size(0) for chunk in advantages]
+    advantages = list(torch.split(whitened_advs_flat, chunk_lengths))
 
     return advantages
