@@ -1329,6 +1329,22 @@ class TestMultiLoRAValidation:
 
         miles_validate_args(args)
 
+    @pytest.mark.parametrize("cp_size", [2, 4])
+    def test_accepts_context_parallelism(self, cp_size):
+        # The Tinker losses shard their per-datum inputs with the native CP helpers.
+        args = self._parse([])
+        args.context_parallel_size = cp_size
+
+        miles_validate_args(args)
+
+    def test_rejects_allgather_cp(self):
+        # get_batch cannot route adapter slots under the allgather CP layout; fail at launch.
+        args = self._parse([])
+        args.context_parallel_size = 2
+        args.allgather_cp = True
+        with pytest.raises(AssertionError, match="--allgather-cp"):
+            miles_validate_args(args)
+
     def test_rejects_pipeline_parallelism(self):
         # Adapter routing is not recompute-safe under a pipelined schedule.
         args = self._parse([])
