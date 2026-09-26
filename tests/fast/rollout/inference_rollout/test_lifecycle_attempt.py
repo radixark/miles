@@ -1,7 +1,7 @@
 import asyncio
-from types import SimpleNamespace
 
 import pytest
+from tests.fast.rollout.inference_rollout.conftest import make_state
 
 from miles.rollout.base_types import GenerateFnOutput
 from miles.rollout.inference_rollout import inference_rollout_common as common
@@ -29,21 +29,6 @@ def lifecycle_sink():
     TrajectoryLifecycle().sink = sink
     yield sink
     TrajectoryLifecycle().sink = None
-
-
-def make_state(generate_function):
-    args = SimpleNamespace(
-        partial_rollout=False,
-        mask_offpolicy_in_partial_rollout=False,
-        group_rm=True,
-        sglang_router_policy="round_robin",
-    )
-    return SimpleNamespace(
-        args=args,
-        generate_fn_semaphore=asyncio.Semaphore(2),
-        aborted=False,
-        generate_function=generate_function,
-    )
 
 
 async def test_attempt_ends_once_after_success(lifecycle_sink):
