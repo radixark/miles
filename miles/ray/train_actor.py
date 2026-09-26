@@ -3,6 +3,7 @@ import logging
 import os
 import random
 from argparse import Namespace
+from dataclasses import dataclass
 from datetime import timedelta
 from typing import Literal
 
@@ -33,6 +34,12 @@ from miles.utils.workers.rpc.common.wire_types import Pickled
 from miles.utils.workers.serving.worker_identity import read_worker_in_pod_index
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class WeightUpdateOutput:
+    weight_version: int | None
+    failed_cell_ids: tuple[str, ...]
 
 
 def get_local_gpu_id():
@@ -213,7 +220,7 @@ class TrainRayActor(NodeProbeMixin):
         raise NotImplementedError(f"{type(self).__name__} does not support HF export")
 
     @abc.abstractmethod
-    def update_weights(self, info: UpdatableEngines) -> int | None:
+    def update_weights(self, info: UpdatableEngines) -> WeightUpdateOutput:
         raise NotImplementedError
 
     @abc.abstractmethod
