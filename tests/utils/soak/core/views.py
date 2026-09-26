@@ -69,10 +69,14 @@ def quiescent_polls_of_type(events: list[SoakEvent], *, expected_count_of_kind: 
     for event in events:
         if isinstance(event, SoakActionRequestedEvent):
             polls[event.request.target.kind] = 0
-        elif isinstance(event, SoakObservationEvent) and event.targets is not None:
+        elif isinstance(event, SoakObservationEvent):
             for kind, expected_count in expected_count_of_kind.items():
-                polled = [target for target in event.targets if target.kind == kind]
-                settled = len(polled) == expected_count and all(target.alive for target in polled)
+                polled = [target for target in event.targets or [] if target.kind == kind]
+                settled = (
+                    event.targets is not None
+                    and len(polled) == expected_count
+                    and all(target.alive for target in polled)
+                )
                 polls[kind] = polls[kind] + 1 if settled else 0
     return polls
 
