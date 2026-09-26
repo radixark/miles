@@ -2,11 +2,6 @@ import os
 
 import pytest
 
-from tests.fast.fixtures.generation_fixtures import generation_env
-from tests.fast.fixtures.rollout_fixtures import rollout_env
-
-_ = rollout_env, generation_env
-
 
 @pytest.fixture(autouse=True)
 def clear_legacy_rollout_gate(monkeypatch):
