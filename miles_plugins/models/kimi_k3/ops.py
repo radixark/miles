@@ -1,6 +1,8 @@
 import torch
 import torch.nn as nn
 
+from miles_plugins.models.kimi_k3.kda_backend import get_kda
+
 
 def kda(
     q: torch.Tensor,
@@ -14,29 +16,16 @@ def kda(
     *,
     cu_seqlens: torch.Tensor | None = None,
     cp_context=None,
+    backend: str = "fla",
 ) -> torch.Tensor:
-    """fla delta-rule core; boundaries travel as ``cu_seqlens`` without CP or ``cp_context`` under CP, never both."""
-    from fla.ops.kda import chunk_kda
+    """Delta-rule core; boundaries travel as ``cu_seqlens`` without CP or ``cp_context`` under CP, never both.
 
-    boundaries = {"cp_context": cp_context} if cp_context is not None else {"cu_seqlens": cu_seqlens}
-    output, _ = chunk_kda(
-        q=q,
-        k=k,
-        v=v,
-        g=g,
-        beta=beta,
-        A_log=A_log,
-        dt_bias=dt_bias,
-        initial_state=None,
-        output_final_state=False,
-        use_qk_l2norm_in_kernel=True,
-        use_gate_in_kernel=True,
-        safe_gate=True,
-        lower_bound=lower_bound,
-        transpose_state_layout=True,
-        **boundaries,
+    ``backend`` selects ``fla`` (flash-linear-attention forward and backward) or ``deterministic``
+    (FLA forward, Miles' deterministic chunked backward; see ``kda_backend``).
+    """
+    return get_kda(backend)(
+        q, k, v, g, beta, A_log, dt_bias, lower_bound, cu_seqlens=cu_seqlens, cp_context=cp_context
     )
-    return output
 
 
 def situ_and_mul(

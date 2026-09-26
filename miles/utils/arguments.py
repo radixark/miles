@@ -342,6 +342,20 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 ),
             )
             parser.add_argument(
+                "--kda-backend",
+                type=str,
+                choices=["fla", "deterministic"],
+                default="fla",
+                help=(
+                    "Backend for the Kimi K3 KDA delta-rule core. "
+                    "'fla' (flash-linear-attention) runs forward and backward through FLA's Triton kernels. "
+                    "'deterministic' keeps FLA's forward and runs the backward through Miles' deterministic "
+                    "chunked KDA training backward (miles_plugins/models/kda_chunk_train; SM100a/SM103a, "
+                    "K = V = 128, no context parallelism, fixed or equal-length packed sequences in multiples "
+                    "of 128; other calls fall back to FLA)."
+                ),
+            )
+            parser.add_argument(
                 "--miles-dsa-topk-backend",
                 type=str,
                 choices=["torch", "flashinfer"],
