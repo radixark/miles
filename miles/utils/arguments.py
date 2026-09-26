@@ -421,6 +421,11 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             return parser
 
         def add_train_arguments(parser):
+            from miles.backends.megatron_utils.optimizer_cpu_streaming_gradients import (
+                add_optimizer_cpu_streaming_gradients_argument,
+            )
+
+            add_optimizer_cpu_streaming_gradients_argument(parser)
             parser.add_argument(
                 "--train-backend",
                 type=str,
@@ -3643,6 +3648,11 @@ def miles_validate_args(args):
         args.disable_param_buffers_cpu_backup = True
 
     _validate_rematerialize_param_from_master_weight(args)
+    from miles.backends.megatron_utils.optimizer_cpu_streaming_gradients import (
+        validate_optimizer_cpu_streaming_gradients_args,
+    )
+
+    validate_optimizer_cpu_streaming_gradients_args(args)
 
     if (args.offload_train_target == "disk" or args.stream_optimizer_state_to_disk) and (
         args.offload_train_disk_dir is None
