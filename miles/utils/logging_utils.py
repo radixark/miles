@@ -3,6 +3,8 @@ import os
 import re
 import sys
 import warnings
+
+from miles.utils.async_diagnostics import log_unawaited_coroutine
 from miles.utils.audit_utils.event_logger.logger import EventLogger, is_event_logger_initialized, set_event_logger
 from miles.utils.audit_utils.process_identity import ProcessIdentity
 
@@ -41,12 +43,16 @@ def configure_logger_raw(name: str = "") -> None:
 
 
 def configure_strict_async_warnings() -> None:
-    """Turn unawaited-coroutine warnings into fatal errors.
+    """Handle unawaited coroutines according to MILES_ASYNC_WARNING_POLICY.
 
     Python emits RuntimeWarning when a coroutine is called but never awaited.
     The warning fires inside __del__, so the resulting exception is swallowed
-    by sys.unraisablehook. We override the hook to hard-exit the process.
+    by sys.unraisablehook. The default 'error' policy hard-exits the process;
+    opt-in 'log' records the defect without exiting. Other warnings are unchanged.
     """
+    policy = os.environ.get("MILES_ASYNC_WARNING_POLICY", "error")
+    if policy not in {"error", "log"}:
+        raise ValueError("MILES_ASYNC_WARNING_POLICY must be 'error' or 'log'")
     warnings.filterwarnings("error", category=RuntimeWarning, message=_FATAL_ASYNC_PATTERN)
 
     _original_hook = sys.unraisablehook
@@ -55,6 +61,9 @@ def configure_strict_async_warnings() -> None:
         if isinstance(unraisable.exc_value, RuntimeWarning) and re.search(
             _FATAL_ASYNC_PATTERN, str(unraisable.exc_value)
         ):
+            log_unawaited_coroutine(unraisable.object, policy=policy)
+            if policy == "log":
+                return
             msg = f"Fatal async misuse, aborting: {unraisable.exc_value}"
             logger.error(msg)
             print(msg, file=sys.stderr, flush=True)
