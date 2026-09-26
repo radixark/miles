@@ -13,6 +13,33 @@ GATED_PAIR_SUFFIXES = {
 }
 
 
+def _expand_batched_expert_params(converted_named_params):
+    """Expand Qwen3.5/3.6 fused expert tensors into ModelOpt's per-expert names."""
+    expanded_params = []
+    for name, weight in converted_named_params:
+        if name.endswith(".mlp.experts.gate_up_proj"):
+            if weight.dim() != 3 or weight.shape[1] % 2:
+                raise ValueError(
+                    f"Expected [experts, 2 * intermediate, hidden] for {name}, got {tuple(weight.shape)}."
+                )
+            prefix = name.removesuffix(".gate_up_proj")
+            gate_weights, up_weights = weight.chunk(2, dim=1)
+            for expert_idx in range(weight.shape[0]):
+                expanded_params.append((f"{prefix}.{expert_idx}.gate_proj.weight", gate_weights[expert_idx]))
+                expanded_params.append((f"{prefix}.{expert_idx}.up_proj.weight", up_weights[expert_idx]))
+        elif name.endswith(".mlp.experts.down_proj"):
+            if weight.dim() != 3:
+                raise ValueError(f"Expected [experts, hidden, intermediate] for {name}, got {tuple(weight.shape)}.")
+            prefix = name.removesuffix(".down_proj")
+            expanded_params.extend(
+                (f"{prefix}.{expert_idx}.down_proj.weight", weight[expert_idx])
+                for expert_idx in range(weight.shape[0])
+            )
+        else:
+            expanded_params.append((name, weight))
+    return expanded_params
+
+
 def _get_ignore_rules(quantization_config) -> list[str]:
     ignore_rules = quantization_config.get("ignore", []) or []
     if isinstance(ignore_rules, str):
@@ -78,7 +105,7 @@ def quantize_params_nvfp4(args, megatron_name, converted_named_params, quantizat
         head_end_idx = num_layers_at_start_in_bf16
         tail_start_idx = num_layers - num_layers_at_end_in_bf16
         if int(layer_idx) < head_end_idx or int(layer_idx) >= tail_start_idx:
-            return converted_named_params
+            return _expand_batched_expert_params(converted_named_params)
 
     # routed experts
     expert_pattern = r"mlp.experts\.(.+)\.weight(\d+)"
@@ -96,6 +123,7 @@ def quantize_params_nvfp4(args, megatron_name, converted_named_params, quantizat
 
 
 def _quantize_moe_params(converted_named_params, ignore_rules):
+    converted_named_params = _expand_batched_expert_params(converted_named_params)
     # Build/hash the policy once per conversion batch, not once per weight check.
     literal_rules = _literal_ignore_rules(tuple(ignore_rules))
     gated_candidates = {}

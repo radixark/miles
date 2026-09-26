@@ -289,6 +289,17 @@ class Qwen3_5Bridge(Qwen2MoEBridge):
             return self._convert_mtp_param(mcore_weights_name)
         return super()._weight_name_mapping_mcore_to_hf(mcore_weights_name)
 
+    def _global_expert_id(self, local_expert_id: int) -> int:
+        """Map this EP rank's local expert slot to the fused HF tensor row."""
+        num_experts = self.config.num_moe_experts
+        ep_size = self.mpu.ep_size
+        if num_experts % ep_size:
+            raise ValueError(f"num_moe_experts={num_experts} is not divisible by ep_size={ep_size}")
+        num_local_experts = num_experts // ep_size
+        if not 0 <= local_expert_id < num_local_experts:
+            raise ValueError(f"local expert {local_expert_id} is outside [0, {num_local_experts})")
+        return self.mpu.ep_rank * num_local_experts + local_expert_id
+
     def _convert_mtp_param(self, name: str) -> list[str]:
         """Convert MTP layer parameters from MCore to HF format."""
         if "mtp.layers." not in name:
@@ -377,9 +388,13 @@ class Qwen3_5Bridge(Qwen2MoEBridge):
         if "mlp.experts.linear_fc" in mcore_weights_name and len(hf_weights) == 1:
             w = hf_weights[0]
             if w.dim() == 3:
-                # Extract expert_id from name like "...linear_fc1.weight42"
-                expert_id = int(mcore_weights_name.split("weight")[-1])
-                expert_w = w[expert_id]  # (out_features, in_features)
+                local_expert_id = int(mcore_weights_name.split("weight")[-1])
+                expert_id = self._global_expert_id(local_expert_id)
+                if w.shape[0] != self.config.num_moe_experts:
+                    raise ValueError(
+                        f"expected {self.config.num_moe_experts} fused experts, " f"got shape {tuple(w.shape)}"
+                    )
+                expert_w = w[expert_id]
                 return expert_w.contiguous()
 
         return super()._weight_to_mcore_format(mcore_weights_name, hf_weights)

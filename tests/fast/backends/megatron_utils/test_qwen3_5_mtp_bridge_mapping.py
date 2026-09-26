@@ -186,6 +186,24 @@ def test_eh_proj_keeps_column_order_when_loading_to_mcore():
     assert torch.equal(converted, weight)
 
 
+def test_fused_expert_loading_uses_the_global_ep_expert_id():
+    module = load_bridge_module()
+    bridge = module.Qwen3_5Bridge.__new__(module.Qwen3_5Bridge)
+    bridge.config = types.SimpleNamespace(num_moe_experts=8)
+    bridge.mpu = types.SimpleNamespace(ep_size=2, ep_rank=1)
+    fused_experts = torch.arange(8 * 3 * 2).view(8, 3, 2)
+
+    for name in (
+        "decoder.layers.0.mlp.experts.linear_fc1.weight1",
+        "mtp.layers.0.transformer_layer.mlp.experts.linear_fc1.weight1",
+    ):
+        converted = bridge._weight_to_mcore_format(name, [fused_experts])
+
+        # EP rank 1 owns global experts 4..7, so its local expert 1 is global 5.
+        assert torch.equal(converted, fused_experts[5])
+        assert not torch.equal(converted, fused_experts[1])
+
+
 def test_build_config_enables_gated_attention_when_transformer_config_supports_it():
     module = load_bridge_module()
     bridge = module.Qwen3_5Bridge.__new__(module.Qwen3_5Bridge)

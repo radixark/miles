@@ -71,6 +71,11 @@ GATED_PAIR_SUFFIXES = {
     ".w3.weight": "up",
 }
 
+BATCHED_EXPERT_SUFFIXES = (
+    ".mlp.experts.gate_up_proj",
+    ".mlp.experts.down_proj",
+)
+
 
 def _is_routed_expert_weight_name(name: str) -> bool:
     if not name.endswith(".weight"):
@@ -80,6 +85,51 @@ def _is_routed_expert_weight_name(name: str) -> bool:
     if not any(marker in name for marker in ROUTED_EXPERT_NAME_MARKERS):
         return False
     return any(name.endswith(suffix) for suffix in EXPERT_WEIGHT_SUFFIXES)
+
+
+def _is_batched_expert_weight_name(name: str) -> bool:
+    return any(name.endswith(suffix) for suffix in BATCHED_EXPERT_SUFFIXES)
+
+
+def _expand_batched_expert_params(name: str, weight: torch.Tensor) -> list[tuple[str, torch.Tensor]]:
+    """Expand Qwen3.5/3.6 fused expert tensors into ModelOpt's per-expert names."""
+    if name.endswith(".mlp.experts.gate_up_proj"):
+        if weight.dim() != 3 or weight.shape[1] % 2:
+            raise ValueError(f"Expected [experts, 2 * intermediate, hidden] for {name}, got {tuple(weight.shape)}.")
+        prefix = name.removesuffix(".gate_up_proj")
+        gate_weights, up_weights = weight.chunk(2, dim=1)
+        return [
+            (f"{prefix}.{expert_idx}.{projection}_proj.weight", projection_weights[expert_idx])
+            for expert_idx in range(weight.shape[0])
+            for projection, projection_weights in (("gate", gate_weights), ("up", up_weights))
+        ]
+    if name.endswith(".mlp.experts.down_proj"):
+        if weight.dim() != 3:
+            raise ValueError(f"Expected [experts, hidden, intermediate] for {name}, got {tuple(weight.shape)}.")
+        prefix = name.removesuffix(".down_proj")
+        return [
+            (f"{prefix}.{expert_idx}.down_proj.weight", weight[expert_idx]) for expert_idx in range(weight.shape[0])
+        ]
+    return [(name, weight)]
+
+
+def _batched_expert_module_aliases(name: str) -> tuple[str, ...]:
+    module_name = name.rsplit(".", 1)[0]
+    aliases = [module_name]
+    nested_prefix = "model.language_model."
+    if module_name.startswith(nested_prefix):
+        aliases.append(f"model.{module_name.removeprefix(nested_prefix)}")
+    return tuple(aliases)
+
+
+def _normalize_checkpoint_dtype(name: str, tensor: torch.Tensor) -> torch.Tensor:
+    """Match fixed trainer/serving dtypes before writing the served base."""
+    if name.endswith(".linear_attn.A_log"):
+        # Miles and SGLang both keep A_log in fp32 even though Qwen3.6's HF
+        # checkpoint stores it in bf16. Disk-delta baselines require an exact
+        # dtype match with the trainer's live export.
+        return tensor.to(dtype=torch.float32)
+    return tensor
 
 
 def _get_num_hidden_layers(model_dir: str) -> int:
@@ -115,7 +165,7 @@ def should_quantize(
         return False
     if any(substr in name for substr in skip_weight_substrings):
         return False
-    if not _is_routed_expert_weight_name(name):
+    if not (_is_routed_expert_weight_name(name) or _is_batched_expert_weight_name(name)):
         return False
     if weight.dtype not in (torch.float16, torch.bfloat16, torch.float32):
         return False
@@ -305,6 +355,21 @@ def _nvfp4_quantized_entries(
     }
 
 
+def _quantize_batched_expert_weight(name: str, weight: torch.Tensor) -> dict[str, torch.Tensor]:
+    expanded_params = _expand_batched_expert_params(name, weight)
+    quantized: dict[str, torch.Tensor] = {}
+    if name.endswith(".gate_up_proj"):
+        for gate_param, up_param in zip(expanded_params[::2], expanded_params[1::2], strict=True):
+            gate_output, up_output = nvfp4_quantize_1d_pair(gate_param[1], up_param[1])
+            quantized.update(_nvfp4_quantized_entries(gate_param[0], *gate_output))
+            quantized.update(_nvfp4_quantized_entries(up_param[0], *up_output))
+        return quantized
+
+    for expanded_name, expanded_weight in expanded_params:
+        quantized.update(_nvfp4_quantized_entries(expanded_name, *quantize_nvfp4(expanded_weight)))
+    return quantized
+
+
 def _load_safetensors_tensor(input_path: str, filename: str, key: str, device: str) -> torch.Tensor:
     with safetensors.safe_open(os.path.join(input_path, filename), framework="pt", device=device) as f:
         return f.get_tensor(key)
@@ -348,9 +413,13 @@ def process_file(
                 continue
 
             tensor = f.get_tensor(key)
+            tensor = _normalize_checkpoint_dtype(key, tensor)
             if should_quantize(
                 key, tensor, skip_weight_substrings=dynamic_skip_substrings, num_hidden_layers=num_hidden_layers
             ):
+                if _is_batched_expert_weight_name(key):
+                    q_weights.update(_quantize_batched_expert_weight(key, tensor))
+                    continue
                 base, _role = _split_gated_pair_name(key)
                 if base in gated_pair_locations:
                     if base in processed_gated_pairs:
@@ -383,6 +452,10 @@ def process_file(
                 qweight, block_scale, weight_scale_2 = quantize_nvfp4(tensor)
                 q_weights.update(_nvfp4_quantized_entries(key, qweight, block_scale, weight_scale_2))
             else:
+                if _is_batched_expert_weight_name(key):
+                    modules_to_not_convert.extend(_batched_expert_module_aliases(key))
+                    q_weights.update(dict(_expand_batched_expert_params(key, tensor)))
+                    continue
                 if key.endswith(".weight"):
                     module_name = key[: -len(".weight")]
                     matched_layer_prefixes = [
