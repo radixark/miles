@@ -10,6 +10,18 @@ from miles.utils.delta_preparation import CpuDeltaPreparer, PackedDeltaLayout
 from miles.utils.disk_delta import checksum
 
 
+@pytest.fixture(scope="module", autouse=True)
+def initialize_fake_tensor_guard():
+    # PyTorch 2.11 can leave its global fake CUDA guard dangling when the
+    # initializing worker exits. Keep its owner on the main pytest thread.
+    # Fixed upstream: https://github.com/pytorch/pytorch/pull/178950
+    if torch.version.cuda is not None and not torch.cuda.is_available():
+        from torch._subclasses.fake_tensor import FakeTensorMode
+
+        with FakeTensorMode():
+            pass
+
+
 @pytest.fixture(scope="module")
 def compiled_stage():
     layout = PackedDeltaLayout(
