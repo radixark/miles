@@ -277,15 +277,15 @@ class TestLaunchBoundSubprocess:
             [sys.executable, "-m", "miles.utils.workers.process_trampoline", "12345", "/bin/sh", "-c", "true"]
         ]
 
-    def test_the_trampoline_execs_the_real_command_in_place(self, tmp_path: Path) -> None:
-        """An exec replaces the trampoline, so the reported pid must be the command's own process."""
+    def test_the_supervised_command_shares_the_process_group(self, tmp_path: Path) -> None:
+        """The returned pid identifies the group used to signal the command and its children."""
         out_file = tmp_path / "pid.txt"
-        code = f"import os, sys; open({str(out_file)!r}, 'w').write(f'{{os.getpid()}} {{sys.argv[0]}}')"
+        code = f"import os, sys; open({str(out_file)!r}, 'w').write(f'{{os.getpgrp()}} {{sys.argv[0]}}')"
         process = launch_bound_subprocess([sys.executable, "-c", code], envs={})
         process.wait(timeout=15)
 
-        reported_pid, argv0 = _read_when_present(out_file).split(" ")
-        assert int(reported_pid) == process.pid
+        reported_group, argv0 = _read_when_present(out_file).split(" ")
+        assert int(reported_group) == process.pid
         assert argv0 == "-c"
 
     @pytest.mark.skipif(sys.platform != "linux", reason="PDEATHSIG is linux-only")
