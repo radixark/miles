@@ -35,7 +35,7 @@ def _applied(request: SoakActionRequest) -> list[SoakEvent]:
 
 
 def _fired(request: SoakActionRequest, **overrides: object) -> Event:
-    return _hook_record_event(request, FaultHookStatus.FIRED, context=_update_context(), **overrides)
+    return _hook_record_event(request, FaultHookStatus.FIRED, **{"context": _update_context(), **overrides})
 
 
 class TestAssertHookDispatches:
