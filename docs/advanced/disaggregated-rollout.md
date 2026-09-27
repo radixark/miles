@@ -211,9 +211,9 @@ CPU writeback. The old CPU bytes cannot be overwritten until their H2D copy
 finishes, and a slot cannot be reused until compression and writeback finish.
 
 CPU baselines advance in place during preparation, as in ordinary delta sync.
-Publication then commits the version and activates the receiver. A failed or
-uncommitted update cannot reuse the exporter; it must be recreated with a matching
-base. There is no restart-persistent baseline or disk I/O for these expert bytes.
+Publication then commits the version and activates the receiver. Failed preparation
+or uncommitted publication prevents reusing the exporter; recreate it with a
+matching base. There is no restart-persistent baseline or disk I/O for these expert bytes.
 
 Budget host memory per node for its owners' pinned expert shards, ordinary
 nonexpert snapshots, ordinary staging buffers, compressed publication payloads

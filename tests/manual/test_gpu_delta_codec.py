@@ -114,14 +114,7 @@ def _test_overlapping_batches(device):
     return len(first_result) + len(second_result)
 
 
-def _test_async_submission(device):
-    codec = GpuDeltaCodec()
-    stream = torch.cuda.Stream(device=device)
-    old = [torch.zeros(65536, dtype=torch.uint8, device=device)]
-    new = [torch.ones(65536, dtype=torch.uint8, device=device)]
-    # Resolve lazy codec initialization and warm the fixed-size torch allocations.
-    for _ in range(3):
-        codec.encode_batch(old, new, stream).finish()
+def _queue_gpu_delay(stream):
     begin = torch.cuda.Event(enable_timing=True)
     end = torch.cuda.Event(enable_timing=True)
     with torch.cuda.stream(stream):
@@ -134,6 +127,18 @@ def _test_async_submission(device):
         begin.record()
         torch.cuda._sleep(cycles)
         end.record()
+    return begin, end
+
+
+def _test_async_submission(device):
+    codec = GpuDeltaCodec()
+    stream = torch.cuda.Stream(device=device)
+    old = [torch.zeros(65536, dtype=torch.uint8, device=device)]
+    new = [torch.ones(65536, dtype=torch.uint8, device=device)]
+    # Resolve lazy codec initialization and warm the fixed-size torch allocations.
+    for _ in range(3):
+        codec.encode_batch(old, new, stream).finish()
+    begin, end = _queue_gpu_delay(stream)
     start = time.perf_counter()
     pending = codec.encode_batch(old, new, stream)
     elapsed = (time.perf_counter() - start) * 1000
@@ -142,6 +147,30 @@ def _test_async_submission(device):
     delay_ms = begin.elapsed_time(end)
     assert delay_pending, f"encode_batch returned after the queued {delay_ms:.1f} ms GPU delay ({elapsed:.1f} ms host)"
     return {"encode_host_ms": elapsed, "queued_gpu_delay_ms": delay_ms, "delay_pending_after_encode": delay_pending}
+
+
+def _test_unchanged_batch_does_not_wait_for_later_work(device):
+    codec = GpuDeltaCodec()
+    stream = torch.cuda.Stream(device=device)
+    old = [torch.zeros(65536, dtype=torch.uint8, device=device)]
+    new = [torch.ones(65536, dtype=torch.uint8, device=device)]
+    codec.encode_batch(old, new, stream).finish()
+    first = codec.encode_batch(old, old, stream)
+    first._ready.synchronize()
+    begin, end = _queue_gpu_delay(stream)
+    second = codec.encode_batch(old, new, stream)
+    start = time.perf_counter()
+    result = first.finish()
+    elapsed = (time.perf_counter() - start) * 1000
+    delay_pending = not end.query()
+    second.finish()
+    assert result[0].changed == 0 and result[0].payload.size == 0
+    assert delay_pending, "An unchanged batch waited for unrelated later codec work"
+    return {
+        "finish_host_ms": elapsed,
+        "queued_gpu_delay_ms": begin.elapsed_time(end),
+        "delay_pending_after_finish": delay_pending,
+    }
 
 
 def _test_cuda_default_device(device):
@@ -170,6 +199,7 @@ def main():
         "overlap_cases": _test_overlapping_batches(device),
         "async_submission": _test_async_submission(device),
         "cuda_default_device_cases": _test_cuda_default_device(device),
+        "unchanged_finish": _test_unchanged_batch_does_not_wait_for_later_work(device),
     }
     print(json.dumps({"status": "PASS", "device": torch.cuda.get_device_name(device), **counts}, sort_keys=True))
 

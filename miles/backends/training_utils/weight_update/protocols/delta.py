@@ -273,6 +273,16 @@ class UpdateWeightFromDiskDelta(WeightTransferProtocol):
     def finalize(self, weight_version: int) -> None:
         """Write this version as a canonical HF dir, have the engines pull and reload it."""
         self._write_delta_files(weight_version)
+        if self._gpu_delta is not None:
+            # Upload/visibility hooks complete publication on non-POSIX storage.
+            # Keep the CPU baseline uncommitted if any owner's hook fails.
+            local_error = None
+            try:
+                if self._post_write_hook is not None:
+                    self._post_write_hook(self.args, self._version_dir, list(self.rollout_engines))
+            except Exception as error:
+                local_error = error
+            self._check_publication_error(local_error)
         self._commit_gpu_delta()
         self._reload_engines(weight_version)
         self._record_metrics(weight_version)
@@ -575,7 +585,7 @@ class UpdateWeightFromDiskDelta(WeightTransferProtocol):
         """Commit the published files, have each engine pull the delta onto every host it spans
         (checksum-verified), then reload the engines. The pull is disk-only, so it runs before
         pause and overlaps generation."""
-        if self._post_write_hook is not None:
+        if self._gpu_delta is None and self._post_write_hook is not None:
             self._post_write_hook(self.args, self._version_dir, list(self.rollout_engines))
         dist.barrier(group=get_gloo_group())
         if dist.get_rank() == 0:
