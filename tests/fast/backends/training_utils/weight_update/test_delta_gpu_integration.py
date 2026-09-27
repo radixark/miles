@@ -131,6 +131,47 @@ def test_gpu_commit_follows_publication_and_precedes_receiver_reload(tmp_path, c
     assert calls == (["publish", "commit"] if commit_fails else ["publish", "commit", "reload", "metrics"])
 
 
+@pytest.mark.parametrize("failing_rank", [None, 0, 1])
+def test_gpu_publication_hook_completes_collectively_before_commit(tmp_path, failing_rank):
+    protocol = _protocol(tmp_path)
+    protocol._gpu_delta = MagicMock()
+    protocol._version_dir = str(tmp_path / "deltas" / "weight_v000001")
+    protocol.rollout_engines = []
+    protocol.args.pause_generation_mode = "in_place"
+    calls = []
+    protocol._write_delta_files = lambda version: calls.append("files")
+    protocol._record_metrics = MagicMock()
+    protocol._gpu_delta.commit.side_effect = lambda: calls.append("commit")
+    reload_engines = protocol._reload_engines
+
+    def hook(args, path, engines):
+        assert path == protocol._version_dir and engines == []
+        calls.append("hook")
+        if failing_rank == 0:
+            raise OSError("upload failed")
+
+    def reload(version):
+        calls.append("reload")
+        reload_engines(version)
+
+    protocol._post_write_hook = MagicMock(side_effect=hook)
+    protocol._reload_engines = MagicMock(side_effect=reload)
+    with patch(f"{_MODULE}.dist") as distributed, patch(f"{_MODULE}.get_gloo_group", return_value=None):
+        distributed.get_rank.return_value = 0
+        distributed.get_world_size.return_value = 2
+        if failing_rank is not None:
+            distributed.all_reduce.side_effect = lambda failed, **kwargs: failed.fill_(1)
+            distributed.all_gather_object.side_effect = lambda output, message, **kwargs: output.__setitem__(
+                slice(None), ["OSError: upload failed" if rank == failing_rank else None for rank in range(2)]
+            )
+            with pytest.raises(RuntimeError, match=f"GPU publication validation failed on rank {failing_rank}"):
+                protocol.finalize(1)
+        else:
+            protocol.finalize(1)
+    protocol._post_write_hook.assert_called_once()
+    assert calls == (["files", "hook"] if failing_rank is not None else ["files", "hook", "commit", "reload"])
+
+
 def test_gpu_begin_failure_is_collective_before_iteration(tmp_path):
     protocol = _protocol(tmp_path)
     protocol._gpu_delta = MagicMock()
@@ -187,7 +228,8 @@ def test_gpu_non_sender_publishes_or_fails_before_commit(tmp_path, failing_suffi
         protocol._reload_engines.assert_called_once_with(1)
 
 
-def test_gpu_failed_publication_forbids_reusing_prepared_cpu_baseline(tmp_path):
+@pytest.mark.parametrize("failure_stage", ["files", "hook"])
+def test_gpu_failed_publication_forbids_reusing_prepared_cpu_baseline(tmp_path, failure_stage):
     protocol = _protocol(tmp_path)
     manager = Nvfp4GpuDelta.__new__(Nvfp4GpuDelta)
     manager.error, manager._active, manager._version = None, False, 0
@@ -197,10 +239,18 @@ def test_gpu_failed_publication_forbids_reusing_prepared_cpu_baseline(tmp_path):
     manager.begin(capture_baseline=False, weight_version=1)
     manager.finish()
     protocol._gpu_delta, protocol._baseline_captured = manager, True
-    protocol._write_delta_files = MagicMock(side_effect=OSError("publication failed"))
+    protocol._write_delta_files = MagicMock()
+    protocol._version_dir, protocol.rollout_engines = str(tmp_path / "version"), []
     protocol._reload_engines = MagicMock()
-    with pytest.raises(OSError, match="publication failed"):
-        protocol.finalize(1)
+    if failure_stage == "files":
+        protocol._write_delta_files.side_effect = OSError("publication failed")
+    else:
+        protocol._post_write_hook = MagicMock(side_effect=OSError("publication failed"))
+    with patch(f"{_MODULE}.dist") as distributed, patch(f"{_MODULE}.get_gloo_group", return_value=None):
+        distributed.get_world_size.return_value = 1
+        distributed.all_gather_object.side_effect = lambda output, message, **kwargs: output.__setitem__(0, message)
+        with pytest.raises((OSError, RuntimeError), match="publication failed"):
+            protocol.finalize(1)
     assert manager._active and manager._version == 0
     protocol._reload_engines.assert_not_called()
 
