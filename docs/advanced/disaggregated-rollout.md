@@ -187,7 +187,7 @@ CPU memory on that owner:
 ```
 
 This requires an NVFP4 checkpoint, the direct (`raw`) Megatron converter, ETP1,
-and the NVIDIA nvCOMP 5.3+ shared library for the installed CUDA release
+and the 64-bit NVIDIA nvCOMP >=5.3,<6 shared library for the installed CUDA release
 (`nvidia-libnvcomp-cu13==5.3.0.16` in the CUDA 13 bring-up). The public
 asynchronous C API uses Torch-owned buffers and metadata, avoiding the Python
 wrapper's implicit waits when it releases deferred output sizes. Baselines require no storage backend or GDS
