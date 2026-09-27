@@ -66,6 +66,10 @@ Their conversion and quantization are split into contiguous expert ranges across
 its expert-DP replicas, so each expert is processed once. For example, with two
 expert-DP replicas, each processes half of the local experts. Converted tensors
 and scales are then gathered as required by the weight-transfer protocol.
+At ETP1, Megatron's existing tensor/data/context-parallel group covers exactly
+EP and expert DP. The exporter reuses this group for one combined gather,
+avoiding an intermediate repacking step between EP and expert DP. Pipeline
+stages are gathered first when required by the transfer protocol.
 
 Expert-DP partitions the conversion work by whole expert, never within an expert's
 FC1 or FC2 tensor. For 256 experts with EP64 and EDP8, each EP rank has four local
