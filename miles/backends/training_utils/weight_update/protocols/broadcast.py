@@ -16,7 +16,6 @@ from miles.backends.training_utils.weight_update.utils import get_data_replica_r
 from miles.utils import async_utils
 from miles.utils.distributed_lock import create_world_ticket_lock
 from miles.utils.distributed_utils import init_process_group
-from miles.utils.weight_transfer import is_broadcast_mode, validate_weight_transfer_args
 
 
 class UpdateWeightFromDistributed(WeightTransferProtocol):
@@ -28,7 +27,6 @@ class UpdateWeightFromDistributed(WeightTransferProtocol):
     supports_lora = True
 
     def __init__(self, args: Namespace) -> None:
-        validate_weight_transfer_args(args)
         super().__init__(args)
         self._model_update_groups = None
         parallel_state = get_parallel_state()
@@ -156,7 +154,7 @@ def update_weights_from_distributed(
     """
     Send metadata (HTTP), broadcast tensors (NCCL rank 0 → engines).
     """
-    if not is_broadcast_mode(transfer_mode):
+    if transfer_mode not in ("broadcast", "broadcast_packed"):
         raise ValueError(f"Expected a broadcast transfer mode, got {transfer_mode!r}")
     # Pack before asking receivers to enter their collective, so allocation or
     # format validation failures cannot leave them waiting for a broadcast.

@@ -41,7 +41,6 @@ from miles.utils.object_store_config import (
 )
 from miles.utils.run_uuid import RUN_UUID_LENGTH, generate_run_uuid, validate_run_uuid
 from miles.utils.tracking_utils.ci_history import RECORD_DIR_ENV
-from miles.utils.weight_transfer import WEIGHT_TRANSFER_MODES, validate_weight_transfer_args
 from miles.utils.workers.argv_utils import with_relax_parser_required_args, with_suppressed_parser_help
 from miles.utils.workers.naming import DEPLOY_INSTANCE_ID_MAX_LENGTH, DNS_LABEL_PATTERN
 from miles.utils.workers.types import ClusterBackend, DeployComponent, WorkerCommBackend, resolve_worker_comm_backend
@@ -1029,7 +1028,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             )
             parser.add_argument(
                 "--update-weight-transfer-mode",
-                choices=WEIGHT_TRANSFER_MODES,
+                choices=["broadcast", "broadcast_packed", "p2p", "disk-delta"],
                 default="broadcast",
                 help=(
                     "The method to transfer weights to remote rollout engines during update weight. "
@@ -3197,7 +3196,16 @@ def miles_validate_args(args):
                 logger.info(f"Warning: Argument {k} is already set to {getattr(args, k)}, will override with {v}.")
             setattr(args, k, v)
 
-    validate_weight_transfer_args(args)
+    if hasattr(args, "update_weight_use_flattened_buckets"):
+        raise ValueError(
+            "update_weight_use_flattened_buckets was replaced by "
+            "--update-weight-transfer-mode=broadcast_packed; use broadcast for per-tensor transfer"
+        )
+    mode = args.update_weight_transfer_mode
+    if mode not in ("broadcast", "broadcast_packed", "p2p", "disk-delta"):
+        raise ValueError(f"Unknown --update-weight-transfer-mode {mode!r}")
+    if mode == "broadcast_packed" and (args.train_backend != "megatron" or args.colocate):
+        raise ValueError("broadcast_packed requires Megatron non-colocated weight transfer")
     validate_dashboard_args(args)
 
     args.ft_components = _resolve_ft_components(args)
