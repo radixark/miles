@@ -1,7 +1,7 @@
 """GPU behavioral qualification; no model, distributed group, or GDS mount needed.
 
 Run with: python tests/manual/test_gpu_delta_codec.py
-Requires CUDA, nvidia.nvcomp and zstandard. CPU copies below are test oracles,
+Requires CUDA, nvidia-libnvcomp-cu{12,13}>=5.3,<6 and zstandard. CPU copies below are test oracles,
 not part of the GPU codec implementation.
 """
 
@@ -149,28 +149,53 @@ def _test_async_submission(device):
     return {"encode_host_ms": elapsed, "queued_gpu_delay_ms": delay_ms, "delay_pending_after_encode": delay_pending}
 
 
-def _test_unchanged_batch_does_not_wait_for_later_work(device):
+def _test_batch_does_not_wait_for_later_work(device, *, changed, abandon=False):
     codec = GpuDeltaCodec()
     stream = torch.cuda.Stream(device=device)
     old = [torch.zeros(65536, dtype=torch.uint8, device=device)]
     new = [torch.ones(65536, dtype=torch.uint8, device=device)]
     codec.encode_batch(old, new, stream).finish()
-    first = codec.encode_batch(old, old, stream)
+    first = codec.encode_batch(old, new if changed else old, stream)
     first._ready.synchronize()
     begin, end = _queue_gpu_delay(stream)
     second = codec.encode_batch(old, new, stream)
+    pending_before = not end.query()
     start = time.perf_counter()
-    result = first.finish()
+    result = first.close() if abandon else first.finish()
     elapsed = (time.perf_counter() - start) * 1000
     delay_pending = not end.query()
     second.finish()
-    assert result[0].changed == 0 and result[0].payload.size == 0
-    assert delay_pending, "An unchanged batch waited for unrelated later codec work"
+    assert pending_before, "The queued delay finished before the completion test began"
+    if not abandon:
+        assert result[0].changed == (65536 if changed else 0)
+        if changed:
+            assert zstandard.ZstdDecompressor().decompress(result[0].payload) == bytes([1]) * 65536
+        else:
+            assert result[0].payload.size == 0
+    assert delay_pending, "Completing a ready batch waited for unrelated later codec work"
     return {
         "finish_host_ms": elapsed,
         "queued_gpu_delay_ms": begin.elapsed_time(end),
+        "delay_pending_before_finish": pending_before,
         "delay_pending_after_finish": delay_pending,
     }
+
+
+def _test_large_tensors(device):
+    # Include a normal expert-sized tensor and one above stale 16-MiB prose in
+    # nvCOMP's C header; its public maximum is actually 2 GiB - 1 bytes.
+    rng = np.random.default_rng(42)
+    codec = GpuDeltaCodec()
+    stream = torch.cuda.Stream(device=device)
+    for size in (6 << 20, (20 << 20) + 3):
+        raw = rng.integers(0, 256, size, dtype=np.uint8)
+        old = torch.zeros(size, dtype=torch.uint8, device=device)
+        new = torch.from_numpy(raw).to(device)
+        result = codec.encode_batch([old], [new], stream).finish()[0]
+        assert zstandard.ZstdDecompressor().decompress(result.payload) == raw.tobytes()
+        assert result.checksum == f"{zlib.adler32(raw):08x}"
+        assert result.changed == int(np.count_nonzero(raw))
+    return 2
 
 
 def _test_cuda_default_device(device):
@@ -199,7 +224,10 @@ def main():
         "overlap_cases": _test_overlapping_batches(device),
         "async_submission": _test_async_submission(device),
         "cuda_default_device_cases": _test_cuda_default_device(device),
-        "unchanged_finish": _test_unchanged_batch_does_not_wait_for_later_work(device),
+        "unchanged_finish": _test_batch_does_not_wait_for_later_work(device, changed=False),
+        "changed_finish": _test_batch_does_not_wait_for_later_work(device, changed=True),
+        "abandoned_close": _test_batch_does_not_wait_for_later_work(device, changed=True, abandon=True),
+        "large_tensor_cases": _test_large_tensors(device),
     }
     print(json.dumps({"status": "PASS", "device": torch.cuda.get_device_name(device), **counts}, sort_keys=True))
 
