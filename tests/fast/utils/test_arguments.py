@@ -2889,15 +2889,10 @@ class TestWeightTransferModeSelection:
         assert self._parse().update_weight_transfer_mode == "broadcast"
         args = self._parse(["--update-weight-transfer-mode", "broadcast_packed"])
         assert args.update_weight_transfer_mode == "broadcast_packed"
-        assert not hasattr(args, "update_weight_use_flattened_buckets")
 
-    @pytest.mark.parametrize(
-        "extra",
-        [["--update-weight-transfer-mode", "typo"], ["--update-weight-use-flattened-buckets"]],
-    )
-    def test_unknown_mode_and_removed_flag_are_rejected(self, extra):
+    def test_unknown_mode_is_rejected(self):
         with pytest.raises(SystemExit):
-            self._parse(extra)
+            self._parse(["--update-weight-transfer-mode", "typo"])
 
     def test_packed_mode_from_yaml_overrides_cli_and_remains_observable(self, tmp_path):
         config = tmp_path / "custom.yaml"
@@ -2917,7 +2912,6 @@ class TestWeightTransferModeSelection:
                 ["--train-backend", "fsdp"],
                 "requires Megatron non-colocated",
             ),
-            ("update_weight_use_flattened_buckets: false\n", [], "was replaced"),
         ],
     )
     def test_yaml_cannot_bypass_mode_validation(self, tmp_path, body, extra, error):

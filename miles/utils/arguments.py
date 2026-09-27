@@ -3196,11 +3196,6 @@ def miles_validate_args(args):
                 logger.info(f"Warning: Argument {k} is already set to {getattr(args, k)}, will override with {v}.")
             setattr(args, k, v)
 
-    if hasattr(args, "update_weight_use_flattened_buckets"):
-        raise ValueError(
-            "update_weight_use_flattened_buckets was replaced by "
-            "--update-weight-transfer-mode=broadcast_packed; use broadcast for per-tensor transfer"
-        )
     mode = args.update_weight_transfer_mode
     if mode not in ("broadcast", "broadcast_packed", "p2p", "disk-delta"):
         raise ValueError(f"Unknown --update-weight-transfer-mode {mode!r}")
