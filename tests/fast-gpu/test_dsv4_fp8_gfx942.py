@@ -228,6 +228,20 @@ def test_tensorwise_linear_fp8_forward_backward(grouped, monkeypatch):
     print(json.dumps(metrics), flush=True)
 
 
+def test_the_launcher_probe_selects_tensorwise_on_this_gpu():
+    """The launcher's child-process probe, run for real: gfx942 TE has no blockwise FP8."""
+    from scripts.amd.run_deepseek_v4 import _probe_device, _resolve_fp8_recipe
+
+    device = _probe_device()
+    assert device["arch"] == "gfx942"
+    assert device["tensorwise"][0], device["tensorwise"][1]
+    expected = "blockwise" if device["blockwise"][0] else "tensorwise"
+    assert _resolve_fp8_recipe("auto") == expected
+    if not device["blockwise"][0]:
+        with pytest.raises(RuntimeError, match="no automatic BF16 fallback"):
+            _resolve_fp8_recipe("blockwise")
+
+
 if __name__ == "__main__":
     import sys
 
