@@ -52,7 +52,13 @@ class HfWeightIteratorDirect(MegatronHfWeightIteratorBase):
             owner_infos = _partition_expert_infos(
                 expert_infos, num_local_experts=self.args.num_experts // ep_size, edp_size=edp.size
             )
-            groups = ([parallel.pp] if self.placement.gather_pp else []) + [parallel.ep, edp]
+            # At ETP1, TP x DP x CP is exactly EP x EDP. Borrow Megatron's
+            # combined group to avoid repacking between EP and EDP gathers.
+            combined = parallel.tp_dp_cp
+            assert (
+                combined is not None and combined.size == ep_size * edp.size
+            ), "The combined TP/DP/CP group must cover all EP/EDP ranks"
+            groups = ([parallel.pp] if self.placement.gather_pp else []) + [combined]
             # Pack each owner's share first so a round can quantize on every EDP
             # replica, even when the complete local expert set spans many batches.
             owner_batches = [
