@@ -56,11 +56,13 @@ def _install_import_stubs(monkeypatch):
     for name in [
         "megatron",
         "megatron.core",
+        "megatron.core.utils",
         "megatron.core.transformer",
         "megatron.core.transformer.transformer_layer",
     ]:
         monkeypatch.setitem(sys.modules, name, types.ModuleType(name))
     sys.modules["megatron.core.transformer.transformer_layer"].get_transformer_layer_offset = lambda *args: 0
+    sys.modules["megatron.core.utils"].unwrap_model = lambda model: model
 
 
 @pytest.fixture
@@ -91,14 +93,14 @@ def direct_module(monkeypatch):
             sys.modules[name] = module
 
 
-def _param(name: str, size: int) -> ParamInfo:
+def _param(name: str, size: int, *, src_rank: int = 0) -> ParamInfo:
     return ParamInfo(
         name=name,
         dtype=torch.float32,
         shape=torch.Size([size]),
         attrs={},
         size=size,
-        src_rank=0,
+        src_rank=src_rank,
     )
 
 
@@ -114,3 +116,57 @@ def test_gather_batches_pack_by_size_only(direct_module, monkeypatch):
         Namespace(update_weight_buffer_size=6), params, size_multiplier=2
     )
     assert [[param.name for param in batch] for batch in batches] == [["layer.a"], ["layer.b"], ["layer.c"]]
+
+
+@pytest.mark.parametrize("materialize", [True, False])
+@pytest.mark.parametrize("consume_local", [True, False])
+def test_expert_consumer_bypasses_gather_on_every_owner(direct_module, monkeypatch, materialize, consume_local):
+    """The owner consumes any converted layout; other transports keep the gathered stream."""
+    local_name = "layer.experts.linear_fc1.weight0"
+    local, remote = _param(local_name, 4), _param("layer.experts.linear_fc1.weight1", 4, src_rank=1)
+    unit = [
+        ("bf16.weight", torch.ones(4, dtype=torch.bfloat16)),
+        ("fp8.weight", torch.ones(4, dtype=torch.float8_e4m3fn)),
+        ("packed.weight", torch.ones(4, dtype=torch.uint8)),
+        ("scale", torch.ones(())),
+    ]
+    events = []
+
+    class Weight:
+        def detach(self):
+            return self
+
+        def to(self, **kwargs):
+            events.append("load")
+            return unit[0][1]
+
+    def convert(named_params):
+        assert [name for name, _ in named_params] == [local_name]
+        events.append("convert")
+        yield unit
+
+    def consume(converted):
+        assert converted is unit
+        events.append("consume")
+
+    def gather(units, **kwargs):
+        assert not consume_local
+        assert units == [unit]
+        events.append("gather")
+        return units
+
+    iterator = direct_module.HfWeightIteratorDirect.__new__(direct_module.HfWeightIteratorDirect)
+    iterator.args = Namespace()
+    iterator._non_expert_batches = []
+    iterator._expert_batches = [direct_module._ExpertBatch(param_infos=[local, remote], gathers=(gather,))]
+    iterator._convert_to_hf_param_units = convert
+    iterator._local_expert_consumer = None
+    if consume_local:
+        iterator.set_local_expert_consumer(consume)
+    monkeypatch.setattr(direct_module.dist, "get_rank", lambda: 0)
+    monkeypatch.setattr(direct_module.torch.cuda, "current_device", lambda: 0)
+    monkeypatch.setattr(direct_module, "_iter_mm_tower_units", lambda *args, **kwargs: iter(()))
+
+    units = list(iterator._iter_hf_param_units({local_name: Weight()}, materialize=materialize))
+    assert units == ([unit] if materialize and not consume_local else [])
+    assert events == ["load", "convert", "consume" if consume_local else "gather"]

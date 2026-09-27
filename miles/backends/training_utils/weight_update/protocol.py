@@ -33,6 +33,9 @@ class WeightTransferProtocol(ABC):
         self.group_name = "miles"
         self.update_weight_metrics: dict[str, float] = {}
 
+    def bind_iterator(self, iterator) -> None:  # noqa: B027 — optional hook
+        """Configure optional iterator hooks before the first sync."""
+
     @abstractmethod
     def connect(
         self,

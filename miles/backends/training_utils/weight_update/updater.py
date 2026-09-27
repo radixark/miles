@@ -62,6 +62,7 @@ class WeightUpdater:
             model_name=model_name,
             quantization_config=quantization_config,
         )
+        self.protocol.bind_iterator(self._hf_weight_iterator)
         self.weights_getter = weights_getter
         self.weight_version = 0
         self.is_lora = is_lora

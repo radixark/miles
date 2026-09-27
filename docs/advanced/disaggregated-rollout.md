@@ -127,9 +127,10 @@ The current lifecycle is:
 1. On the first `update_weights()` call, miles captures a CPU snapshot from
    `--hf-checkpoint`. No delta version is published. Each rollout host also
    materializes the same base checkpoint in its local directory.
-2. At the next update boundary, source trainer ranks gather Megatron tensors
-   under their canonical Hugging Face names and compare their bytes with the
-   previous snapshot.
+2. At the next update boundary, trainer ranks convert Megatron tensors to their
+   canonical Hugging Face layout and compare their bytes with the previous
+   snapshot on CPU. Direct MoE export processes routed experts on their EP×EDP
+   owners before expert gathering; ordinary weights retain their sender ranks.
 3. miles publishes `weight_vNNNNNN/` with compressed changed bytes and an index
    containing the version, base version, delta encoding, and final-state
    checksums. Files are written atomically before the version is consumed.
@@ -148,6 +149,21 @@ must be applied exactly once to the declared base version. `overwrite` stores
 changed positions and their new values; it is larger but idempotent. Both
 encodings are byte-oriented: the base and exported policy must agree on tensor
 names, dtypes, shapes, and byte layout.
+
+Owner-local routed-expert processing is automatic for direct Megatron disk-delta
+export. It reuses the existing CPU snapshot, pinned staging, diff, checksum,
+compression, and publication pipeline for every converted expert tensor, including
+quantization metadata. It is independent of precision: BF16 experts and quantized
+expert layouts use the same path. Each owner keeps only its assigned expert
+snapshots; shared experts and dense weights retain ordinary gathered placement.
+The existing direct exporter requires ETP1 and complete experts supported by its
+converter. Bridge export and other transports keep their gathered path. This
+does not add a GPU codec or an expert-baseline storage backend.
+
+CPU worker and pinned staging budgets are shared across local trainer ranks for
+owner-local export. Snapshot memory still scales with the local assigned weights;
+the staging budget excludes snapshots, compression temporaries, optimizer state,
+and rollout memory. Each rank needs room for at least its largest emitted tensor.
 
 Each published tensor carries a checksum of its complete target state.
 `xxh3-128` is the default; `blake3` and `adler32` are also accepted. A lineage,

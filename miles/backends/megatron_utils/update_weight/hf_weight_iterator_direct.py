@@ -1,7 +1,7 @@
 import itertools
 import re
 from argparse import Namespace
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
 import torch
@@ -29,11 +29,13 @@ class _ExpertBatch:
 
 
 class HfWeightIteratorDirect(MegatronHfWeightIteratorBase):
-    # TP/EP are always gathered; PP follows the requirement. Routed experts require ETP1.
+    # TP/EP are gathered unless routed experts have a local consumer. PP follows
+    # the requirement. Routed experts require ETP1.
     forced_placement = WeightUpdatePlacement(gather_pp=False)
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        self._local_expert_consumer: Callable[[list[tuple[str, torch.Tensor]]], None] | None = None
         parallel = get_parallel_state()
         if self.args.num_experts and parallel.etp.size != 1:
             raise ValueError(
@@ -73,6 +75,14 @@ class HfWeightIteratorDirect(MegatronHfWeightIteratorBase):
                 for batches in itertools.zip_longest(*owner_batches, fillvalue=())
             ]
 
+    def set_local_expert_consumer(self, consumer: Callable[[list[tuple[str, torch.Tensor]]], None]) -> None:
+        """Consume converted routed experts on their owners instead of gathering them.
+
+        Install on every rank. The consumer also runs on transport non-senders
+        and must defer failures until all ranks finish the weight iterator.
+        """
+        self._local_expert_consumer = consumer
+
     def _iter_hf_param_units(self, weights, *, materialize):
         rank = dist.get_rank()
 
@@ -99,7 +109,7 @@ class HfWeightIteratorDirect(MegatronHfWeightIteratorBase):
         yield from _iter_mm_tower_units(self.args, materialize=materialize)
 
     def _materialize_expert_batch(self, batch: _ExpertBatch, weights):
-        """Convert once per expert across EP/EDP, then gather HF weights and scales."""
+        """Convert once per expert across EP/EDP, then consume locally or gather."""
         device = torch.device("cuda", torch.cuda.current_device())
         rank = dist.get_rank()
         # Sender placement is independent of ownership: non-senders also
@@ -109,7 +119,12 @@ class HfWeightIteratorDirect(MegatronHfWeightIteratorBase):
             for info in batch.param_infos
             if info.src_rank == rank
         )
-        units = list(self._convert_to_hf_param_units(local_params))
+        converted_units = self._convert_to_hf_param_units(local_params)
+        if self._local_expert_consumer is not None:
+            for unit in converted_units:
+                self._local_expert_consumer(unit)
+            return []
+        units = list(converted_units)
         for gather in batch.gathers:
             units = gather(units, device=device)
         return units
