@@ -79,9 +79,7 @@ class _NvcompZstd:
         if not count:
             return [], sizes, statuses, ()
         temporary_bytes = ctypes.c_size_t()
-        self._check(
-            self._temporary(count, max(lengths), self._options, ctypes.byref(temporary_bytes), sum(lengths))
-        )
+        self._check(self._temporary(count, max(lengths), self._options, ctypes.byref(temporary_bytes), sum(lengths)))
         outputs = [torch.empty(self._output_bytes(n), dtype=torch.uint8, device=stream.device) for n in lengths]
         temporary = torch.empty(temporary_bytes.value, dtype=torch.uint8, device=stream.device)
         # Only pointers and fixed lengths go H2D. All data buffers come from
