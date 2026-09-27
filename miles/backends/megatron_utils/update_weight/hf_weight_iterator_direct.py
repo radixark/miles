@@ -1,7 +1,7 @@
 import itertools
 import re
 from argparse import Namespace
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
 import torch
@@ -34,6 +34,10 @@ class HfWeightIteratorDirect(MegatronHfWeightIteratorBase):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        self._expert_prefetch: Callable[[str], None] | None = None
+        self._expert_transform: (
+            Callable[[str, list[tuple[str, torch.Tensor]]], list[tuple[str, torch.Tensor]]] | None
+        ) = None
         parallel = get_parallel_state()
         if self.args.num_experts and parallel.etp.size != 1:
             raise ValueError(
@@ -73,6 +77,16 @@ class HfWeightIteratorDirect(MegatronHfWeightIteratorBase):
                 for batches in itertools.zip_longest(*owner_batches, fillvalue=())
             ]
 
+    def set_local_expert_transform(self, *, prefetch: Callable, transform: Callable) -> None:
+        """Process owner-local converted units before gathering their remaining tensors.
+
+        Hooks run on quantization owners, including transport non-senders. They
+        must retain tensors needed by asynchronous work and defer local errors
+        until the protocol drains the stream, so peers still join every gather.
+        """
+        self._expert_prefetch = prefetch
+        self._expert_transform = transform
+
     def _iter_hf_param_units(self, weights, *, materialize):
         rank = dist.get_rank()
 
@@ -104,12 +118,18 @@ class HfWeightIteratorDirect(MegatronHfWeightIteratorBase):
         rank = dist.get_rank()
         # Sender placement is independent of ownership: non-senders also
         # quantize their assigned experts, once across all expert-DP replicas.
-        local_params = (
-            (info.name, weights[info.name].detach().to(device=device, non_blocking=True))
-            for info in batch.param_infos
-            if info.src_rank == rank
-        )
-        units = list(self._convert_to_hf_param_units(local_params))
+        units = []
+        for info in batch.param_infos:
+            if info.src_rank != rank:
+                continue
+            if self._expert_prefetch is not None:
+                self._expert_prefetch(info.name)
+            param = weights[info.name].detach().to(device=device, non_blocking=True)
+            unit = next(self._convert_to_hf_param_units([(info.name, param)]))
+            if self._expert_transform is not None:
+                unit = self._expert_transform(info.name, unit)
+            if unit:
+                units.append(unit)
         for gather in batch.gathers:
             units = gather(units, device=device)
         return units

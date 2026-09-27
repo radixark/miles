@@ -56,11 +56,13 @@ def _install_import_stubs(monkeypatch):
     for name in [
         "megatron",
         "megatron.core",
+        "megatron.core.utils",
         "megatron.core.transformer",
         "megatron.core.transformer.transformer_layer",
     ]:
         monkeypatch.setitem(sys.modules, name, types.ModuleType(name))
     sys.modules["megatron.core.transformer.transformer_layer"].get_transformer_layer_offset = lambda *args: 0
+    sys.modules["megatron.core.utils"].unwrap_model = lambda model: model
 
 
 @pytest.fixture
@@ -72,6 +74,7 @@ def direct_module(monkeypatch):
         "miles.backends.megatron_utils.megatron_to_hf.processors.quantizer_fp8",
         "miles.backends.megatron_utils.megatron_to_hf.processors.quantizer_mxfp8",
         "miles.backends.megatron_utils.named_weights",
+        "miles.backends.megatron_utils.update_weight.hf_weight_iterator",
         "miles.backends.megatron_utils.update_weight.hf_weight_iterator_direct",
     ]
     saved_modules = {name: sys.modules.get(name) for name in module_names}
@@ -91,14 +94,14 @@ def direct_module(monkeypatch):
             sys.modules[name] = module
 
 
-def _param(name: str, size: int) -> ParamInfo:
+def _param(name: str, size: int, *, src_rank: int = 0) -> ParamInfo:
     return ParamInfo(
         name=name,
         dtype=torch.float32,
         shape=torch.Size([size]),
         attrs={},
         size=size,
-        src_rank=0,
+        src_rank=src_rank,
     )
 
 
@@ -114,3 +117,53 @@ def test_gather_batches_pack_by_size_only(direct_module, monkeypatch):
         Namespace(update_weight_buffer_size=6), params, size_multiplier=2
     )
     assert [[param.name for param in batch] for batch in batches] == [["layer.a"], ["layer.b"], ["layer.c"]]
+
+
+@pytest.mark.parametrize("materialize", [True, False])
+def test_owner_transform_precedes_gather_even_on_non_senders(direct_module, monkeypatch, materialize):
+    """GDS consumes only handled families; excluded weights still join the existing gather."""
+    events = []
+    packed = ("expert.gate_proj.weight", torch.zeros(4, dtype=torch.uint8))
+    excluded = ("expert.down_proj.weight", torch.zeros(4, dtype=torch.bfloat16))
+    local_name = "layer.experts.linear_fc1.weight0"
+    remote = _param("layer.experts.linear_fc1.weight1", 4, src_rank=1)
+
+    class Weight:
+        def detach(self):
+            return self
+
+        def to(self, **kwargs):
+            events.append("load")
+            return packed[1]
+
+    def convert(named_params):
+        assert named_params[0][0] == local_name
+        events.append("convert")
+        yield [packed, excluded]
+
+    def transform(key, unit):
+        assert key == local_name and unit == [packed, excluded]
+        events.append("process")
+        return [excluded]
+
+    def gather(units, **kwargs):
+        events.append("gather")
+        assert units == [[excluded]]
+        return units
+
+    iterator = direct_module.HfWeightIteratorDirect.__new__(direct_module.HfWeightIteratorDirect)
+    iterator.args = Namespace()
+    iterator._non_expert_batches = []
+    iterator._expert_batches = [
+        direct_module._ExpertBatch(param_infos=[_param(local_name, 4), remote], gathers=(gather,))
+    ]
+    iterator._convert_to_hf_param_units = convert
+    iterator.set_local_expert_transform(prefetch=lambda key: events.append("prefetch"), transform=transform)
+    monkeypatch.setattr(direct_module.dist, "get_rank", lambda: 0)
+    monkeypatch.setattr(direct_module.torch.cuda, "current_device", lambda: 0)
+    monkeypatch.setattr(direct_module, "_iter_mm_tower_units", lambda *args, **kwargs: iter(()))
+
+    units = list(iterator._iter_hf_param_units({local_name: Weight()}, materialize=materialize))
+
+    assert units == ([[excluded]] if materialize else [])
+    assert events == ["prefetch", "load", "convert", "process", "gather"]

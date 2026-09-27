@@ -18,7 +18,7 @@ import zstandard
 
 from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
 from miles.backends.training_utils.parallel import ParallelState
-from miles.backends.training_utils.weight_update.hf_weight_iterator import WeightUpdatePlacement
+from miles.backends.training_utils.weight_update.hf_weight_iterator import HfWeightIteratorBase, WeightUpdatePlacement
 from miles.backends.training_utils.weight_update.protocol import WeightTransferProtocol
 from miles.backends.training_utils.weight_update.session import check_weight_sync_results
 from miles.backends.training_utils.weight_update.utils import get_data_replica_rank_and_size
@@ -29,6 +29,7 @@ from miles.utils.disk_delta import (
     checksum,
     make_tensor_reader,
     overwrite_encode,
+    validate_gds_delta_paths,
 )
 from miles.utils.distributed_utils import get_gloo_group
 
@@ -92,6 +93,7 @@ class UpdateWeightFromDiskDelta(WeightTransferProtocol):
     # per-host flock behind /pull_weights and the reload pauses each engine itself, so
     # the sync never runs inside the pause/begin session frame.
     use_weight_update_session = False
+    _gds = None
 
     def __init__(self, args: Namespace) -> None:
         super().__init__(args)
@@ -102,6 +104,7 @@ class UpdateWeightFromDiskDelta(WeightTransferProtocol):
         self.checksum_algorithm = args.update_weight_delta_checksum
         self._snapshot: dict[str, np.ndarray] = {}
         self._baseline_captured = False
+        self._gds_dir = getattr(args, "update_weight_delta_gds_dir", None)
         # Post-write hook: object-store-backed shared filesystems lack cross-host
         # read-after-write consistency, so written files need an explicit step
         # (e.g. uploading them to the backing object store) before the engines can see them.
@@ -110,6 +113,77 @@ class UpdateWeightFromDiskDelta(WeightTransferProtocol):
             from miles.utils.function_registry import load_function
 
             self._post_write_hook = load_function(args.custom_update_weight_post_write_path)
+
+    def bind_iterator(self, iterator: HfWeightIteratorBase) -> None:
+        if self._gds_dir is None:
+            return
+        install = getattr(iterator, "set_local_expert_transform", None)
+        if install is None:
+            raise ValueError("NVFP4 GDS delta requires the direct Megatron HF weight iterator")
+        self._gds_quantization_config = iterator.quantization_config
+        install(prefetch=self._prefetch_expert, transform=self._process_expert)
+
+    def _prefetch_expert(self, unit_key: str) -> None:
+        self._gds.prefetch(unit_key)
+
+    def _process_expert(self, unit_key: str, unit: list[tuple[str, torch.Tensor]]) -> list[tuple[str, torch.Tensor]]:
+        return self._gds.process(unit_key, unit)
+
+    def _begin_gds(self, *, capture_baseline: bool, weight_version: int) -> None:
+        if self._gds_dir is None:
+            return
+        local_error = None
+        try:
+            validate_gds_delta_paths(
+                self._gds_dir,
+                publication_dir=self.delta_dir,
+                receiver_dir=getattr(self.args, "update_weight_local_checkpoint_dir", None),
+            )
+            if self.delta_encoding != "xor" or self.checksum_algorithm != "adler32":
+                raise ValueError("NVFP4 GDS delta requires XOR encoding and Adler32 checksums")
+            if self._gds is None:
+                # The GDS backend is optional; import and initialize it collectively
+                # before any iterator gather, never on the ordinary delta path.
+                from miles.backends.training_utils.weight_update.protocols.nvfp4_gds import Nvfp4GdsDelta
+
+                self._gds = Nvfp4GdsDelta(
+                    self.args.hf_checkpoint,
+                    self._gds_dir,
+                    torch.device("cuda", torch.cuda.current_device()),
+                    quantization_config=self._gds_quantization_config,
+                )
+            self._gds.begin(capture_baseline=capture_baseline, weight_version=weight_version)
+            local_error = self._gds.error
+        except Exception as error:
+            local_error = error
+        _raise_if_validation_failed(local_error, phase="GDS setup")
+
+    def _finish_gds(self, *, capture_baseline: bool) -> Exception | None:
+        if self._gds is None:
+            return None
+        try:
+            result = self._gds.finish()
+            if not capture_baseline:
+                duplicates = self._delta.keys() & result.delta.keys()
+                if duplicates:
+                    raise ValueError(f"GDS and ordinary delta both produced tensors: {sorted(duplicates)}")
+                self._delta.update(result.delta)
+                self._checksums.update(result.checksums)
+                self.changed_bytes += result.changed_bytes
+                self.total_bytes += result.total_bytes
+        except Exception as error:
+            return error
+        return None
+
+    def _commit_gds(self) -> None:
+        if self._gds is None:
+            return
+        local_error = None
+        try:
+            self._gds.commit()
+        except Exception as error:
+            local_error = error
+        _raise_if_validation_failed(local_error, phase="GDS baseline commit")
 
     def connect(
         self,
@@ -130,6 +204,10 @@ class UpdateWeightFromDiskDelta(WeightTransferProtocol):
 
     def begin_sync(self, weight_version: int, iter_buckets) -> bool:
         # The first call only captures the baseline snapshot the next sync diffs against.
+        self._begin_gds(
+            capture_baseline=not self._baseline_captured,
+            weight_version=weight_version if self._baseline_captured else 0,
+        )
         if not self._baseline_captured:
             self._capture_baseline(iter_buckets)
             self._baseline_captured = True
@@ -192,11 +270,14 @@ class UpdateWeightFromDiskDelta(WeightTransferProtocol):
         finally:
             self._pool.shutdown()
             self._pool = None
+        gds_error = self._finish_gds(capture_baseline=False)
+        self._encode_error = self._encode_error or gds_error
         _raise_if_validation_failed(self._encode_error, phase="update")
 
     def finalize(self, weight_version: int) -> None:
         """Write this version as a canonical HF dir, have the engines pull and reload it."""
         self._write_delta_files(weight_version)
+        self._commit_gds()
         self._reload_engines(weight_version)
         self._record_metrics(weight_version)
 
@@ -228,7 +309,7 @@ class UpdateWeightFromDiskDelta(WeightTransferProtocol):
         dist.barrier(group=get_gloo_group())
 
         read_hf = None
-        local_error: ValueError | None = None
+        local_error: Exception | None = None
         if self.is_sender:
             try:
                 read_hf = make_tensor_reader(self.args.hf_checkpoint)  # index the HF headers once
@@ -259,7 +340,9 @@ class UpdateWeightFromDiskDelta(WeightTransferProtocol):
                 # collectives. Defer the error until iteration finishes, then make every rank fail.
                 local_error = error
 
-        _raise_if_validation_failed(local_error, phase="baseline")
+        gds_error = self._finish_gds(capture_baseline=True)
+        _raise_if_validation_failed(local_error or gds_error, phase="baseline")
+        self._commit_gds()
 
         if dist.get_rank() == 0:
             check_weight_sync_results(async_utils.wait_futures(pulls), is_lora=False)
@@ -328,11 +411,11 @@ class UpdateWeightFromDiskDelta(WeightTransferProtocol):
         if self._pool is not None:
             self._pool.shutdown(wait=False, cancel_futures=True)
         self._version_dir = os.path.join(self.delta_dir, f"weight_v{weight_version:06d}")
-        if self.is_sender:
+        if self.is_sender and self._gds is None:
             os.makedirs(self._version_dir, exist_ok=True)
         self._delta: dict[str, np.ndarray] = {}  # changed tensor name -> compressed diff
         self._checksums: dict[str, str] = {}  # changed tensor name -> new-state checksum
-        self._encode_error: ValueError | None = None
+        self._encode_error: Exception | None = None
         self.changed_bytes = self.total_bytes = 0
 
         # Pinned host-buffer pool: a pinned non_blocking GPU->CPU copy is far faster than .cpu().
@@ -397,7 +480,14 @@ class UpdateWeightFromDiskDelta(WeightTransferProtocol):
         return name, new, compressed, checksum(self.checksum_algorithm, new), changed
 
     def _collect(self, fut):
-        for name, new, compressed, digest, changed in fut.result():
+        try:
+            results = fut.result()
+        except Exception as error:
+            # A worker can fail while peers are still gathering. Drain both
+            # pipelines before reporting the error collectively.
+            self._encode_error = self._encode_error or error
+            return
+        for name, new, compressed, digest, changed in results:
             self._snapshot[name] = new  # becomes the next sync's base
             if changed:
                 self.changed_bytes += changed
@@ -431,7 +521,12 @@ class UpdateWeightFromDiskDelta(WeightTransferProtocol):
         group = get_gloo_group()
         world, rank = dist.get_world_size(), dist.get_rank()
 
-        self._drop_duplicate_names(group, world, rank)
+        local_error = None
+        try:
+            self._drop_duplicate_names(group, world, rank)
+        except Exception as error:
+            local_error = error
+        self._check_publication_error(local_error)
 
         # number the files sequentially across only the ranks that have one (no gaps)
         counts: list = [None] * world
@@ -440,11 +535,17 @@ class UpdateWeightFromDiskDelta(WeightTransferProtocol):
 
         fname = None
         self.wire_bytes = 0
-        if self._delta:
-            fname = f"model-{offset:05d}-of-{total:05d}.safetensors"
-            blob = safetensors.numpy.save(self._delta, metadata=self._checksums)
-            self.wire_bytes = len(blob)
-            _atomic_write(os.path.join(self._version_dir, fname), blob)
+        try:
+            if self._gds is not None:
+                os.makedirs(self._version_dir, exist_ok=True)
+            if self._delta:
+                fname = f"model-{offset:05d}-of-{total:05d}.safetensors"
+                blob = safetensors.numpy.save(self._delta, metadata=self._checksums)
+                self.wire_bytes = len(blob)
+                _atomic_write(os.path.join(self._version_dir, fname), blob)
+        except Exception as error:
+            local_error = error
+        self._check_publication_error(local_error)
 
         maps: list = [None] * world
         dist.all_gather_object(maps, {name: fname for name in self._delta}, group=group)
@@ -459,8 +560,20 @@ class UpdateWeightFromDiskDelta(WeightTransferProtocol):
                 },
                 "weight_map": {name: f for m in maps for name, f in m.items()},
             }
-            _atomic_write(os.path.join(self._version_dir, "model.safetensors.index.json"), json.dumps(index).encode())
+            try:
+                _atomic_write(
+                    os.path.join(self._version_dir, "model.safetensors.index.json"), json.dumps(index).encode()
+                )
+            except Exception as error:
+                local_error = error
+        self._check_publication_error(local_error)
         dist.barrier(group=group)
+
+    def _check_publication_error(self, local_error: Exception | None) -> None:
+        if self._gds is not None:
+            _raise_if_validation_failed(local_error, phase="GDS publication")
+        elif local_error is not None:
+            raise local_error
 
     def _reload_engines(self, weight_version: int) -> None:
         """Commit the published files, have each engine pull the delta onto every host it spans
@@ -529,7 +642,7 @@ class UpdateWeightFromDiskDelta(WeightTransferProtocol):
             )
 
 
-def _raise_if_validation_failed(local_error: ValueError | None, *, phase: str) -> None:
+def _raise_if_validation_failed(local_error: Exception | None, *, phase: str) -> None:
     group = get_gloo_group()
     failed = torch.tensor(int(local_error is not None), dtype=torch.int32, device="cpu")
     dist.all_reduce(failed, op=dist.ReduceOp.MAX, group=group)
