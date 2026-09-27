@@ -6,7 +6,7 @@ import pytest
 import safetensors.torch
 import torch
 
-from miles.backends.training_utils.weight_update.protocols import nvfp4_gds
+from miles.backends.training_utils.weight_update.protocols import nvfp4_nvme
 
 
 def _family(prefix="model.layers.0.mlp.experts.0.gate_proj"):
@@ -18,7 +18,7 @@ def _family(prefix="model.layers.0.mlp.experts.0.gate_proj"):
 
 
 def _manager():
-    manager = nvfp4_gds.Nvfp4GdsDelta.__new__(nvfp4_gds.Nvfp4GdsDelta)
+    manager = nvfp4_nvme.Nvfp4NvmeDelta.__new__(nvfp4_nvme.Nvfp4NvmeDelta)
     manager.error = None
     manager._units = {}
     manager._seen = set()
@@ -28,7 +28,7 @@ def _manager():
     manager._failure_keepalive = []
     manager._capture = False
     manager._reader = manager._writer = None
-    manager._result = nvfp4_gds.GdsDeltaResult()
+    manager._result = nvfp4_nvme.NvmeDeltaResult()
     return manager
 
 
@@ -39,7 +39,7 @@ def test_selection_keeps_exclusions_and_shared_experts_ordinary():
         *_family("model.layers.0.mlp.shared_experts.experts.0.gate_proj"),
         *_family("model.layers.0.self_attn.q_proj"),
     ]
-    selected, remaining = nvfp4_gds._nvfp4_families(handled + ordinary)
+    selected, remaining = nvfp4_nvme._nvfp4_families(handled + ordinary)
     assert [name for name, _ in selected] == [name for name, _ in handled]
     assert [name for name, _ in remaining] == [name for name, _ in ordinary]
 
@@ -65,7 +65,7 @@ def test_malformed_previous_family_never_reenters_cached_gather(corruption):
 
 def test_backend_failure_keeps_consuming_handled_families():
     manager = _manager()
-    manager._layout = MagicMock(side_effect=OSError("GDS layout read failed"))
+    manager._layout = MagicMock(side_effect=OSError("NVMe layout read failed"))
     family = _family()
     assert manager.process("first", family) == []
     assert manager.process("second", family) == []
@@ -84,7 +84,7 @@ def test_canonical_layout_checks_shapes_dtypes_order_and_contiguity(tmp_path, mo
     manager._size = 0
     manager._next_path = tmp_path / "next.bin"
     manager._next_path.touch()
-    monkeypatch.setattr(nvfp4_gds.os, "posix_fallocate", lambda *args: None, raising=False)
+    monkeypatch.setattr(nvfp4_nvme.os, "posix_fallocate", lambda *args: None, raising=False)
 
     unit = manager._layout("unit", tensors)
     assert unit.nbytes == 4096
@@ -116,7 +116,7 @@ def test_failed_pending_batch_drains_both_consumers_before_releasing_storage(fai
 
         return run
 
-    pending = nvfp4_gds._Pending(
+    pending = nvfp4_nvme._Pending(
         unit=SimpleNamespace(regions=()),
         slot=object(),
         write=SimpleNamespace(result=operation("write")),
@@ -144,7 +144,7 @@ def test_finish_drains_prefetches_and_both_handles_after_one_failure(monkeypatch
     manager.device = torch.device("cuda", 0)
     manager._stream = MagicMock()
     current = MagicMock()
-    monkeypatch.setattr(nvfp4_gds.torch.cuda, "current_stream", lambda device: current)
+    monkeypatch.setattr(nvfp4_nvme.torch.cuda, "current_stream", lambda device: current)
 
     with pytest.raises(RuntimeError, match="preparation failed") as error:
         manager.finish()
@@ -166,12 +166,13 @@ def test_begin_failure_closes_open_handles_and_poisoned_state_cannot_restart(tmp
     manager._version = 0
     manager._size = 4096
     manager._units = {"unit": SimpleNamespace(nbytes=4096)}
-    manager._executor = object()
+    manager._read_executor = object()
+    manager._write_executor = object()
     writer = MagicMock()
-    original = OSError("reader registration failed")
+    original = OSError("reader open failed")
     manager._backend = MagicMock(side_effect=[writer, original])
     writer.close.side_effect = OSError("writer close failed")
-    monkeypatch.setattr(nvfp4_gds.os, "posix_fallocate", lambda *args: None, raising=False)
+    monkeypatch.setattr(nvfp4_nvme.os, "posix_fallocate", lambda *args: None, raising=False)
 
     with pytest.raises(OSError) as error:
         manager.begin(capture_baseline=False, weight_version=1)
@@ -180,5 +181,5 @@ def test_begin_failure_closes_open_handles_and_poisoned_state_cannot_restart(tmp
     writer.close.assert_called_once_with()
     assert manager._reader is manager._writer is None
     assert manager.error is original
-    with pytest.raises(RuntimeError, match="failed GDS baseline cannot be reused"):
+    with pytest.raises(RuntimeError, match="failed NVMe baseline cannot be reused"):
         manager.begin(capture_baseline=False, weight_version=1)
