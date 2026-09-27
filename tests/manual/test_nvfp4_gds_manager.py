@@ -201,6 +201,7 @@ def _test_versions(directory, device, receiver):
     store = _GpuFileStore(source / "model.safetensors", device)
     receiver_dir = directory / "receiver"
     shutil.copytree(source, receiver_dir)
+    (receiver_dir / receiver.SYNC_DIR).mkdir()
     receiver._write_applied_version(str(receiver_dir), 0)
     with patch("miles.utils.gds_io.GdsBackend", store.backend):
         manager = Nvfp4GdsDelta(

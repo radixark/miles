@@ -2771,6 +2771,29 @@ class TestMiniFtControllerArguments:
 
 
 class TestGdsDeltaArguments:
+    def test_existing_disk_delta_defaults_do_not_enable_gds(self, tmp_path):
+        parser = argparse.ArgumentParser()
+        get_miles_extra_args_provider()(parser)
+        args = parser.parse_args(
+            REQUIRED_ARGS
+            + [
+                "--num-rollout",
+                "1",
+                "--hf-checkpoint",
+                str(tmp_path),
+                "--update-weight-transfer-mode",
+                "disk-delta",
+                "--update-weight-disk-dir",
+                str(tmp_path / "published"),
+                "--update-weight-local-checkpoint-dir",
+                str(tmp_path / "receiver"),
+            ]
+        )
+        miles_validate_args(args)
+        assert args.update_weight_delta_gds_dir is None
+        assert args.update_weight_delta_encoding == "xor"
+        assert args.update_weight_delta_checksum == "xxh3-128"
+
     @pytest.mark.parametrize("overlap_flag", ["--update-weight-disk-dir", "--update-weight-local-checkpoint-dir"])
     def test_baseline_overlap_is_rejected_at_launch(self, tmp_path, overlap_flag):
         parser = argparse.ArgumentParser()
