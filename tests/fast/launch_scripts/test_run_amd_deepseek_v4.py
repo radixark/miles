@@ -45,6 +45,8 @@ def test_the_dapo_task_is_graded_by_the_answer_format_it_asks_for(launcher, tmp_
     assert _flag(command, "--rm-type") == "dapo"
     assert _flag(command, "--reward-key") == "score"
     assert _flag(command, "--eval-reward-key") == "acc"
+    assert _flag(command, "--sglang-context-length") == "16384"
+    assert int(_flag(command, "--rollout-max-response-len")) < 16384
 
 
 def test_aime_eval_is_graded_on_the_boxed_answer(launcher, tmp_path):

@@ -419,6 +419,11 @@ def _train(args: ScriptArgs):
         "--router-health-check-interval-secs 15 "
         "--router-health-failure-threshold 40 "  # TODO improve
     )
+    if args.task == "dapo_aime":
+        # The checkpoint declares max_position_embeddings=1048576 and SGLang would otherwise size
+        # every engine for that. 16384 covers the longest DAPO prompt (~1.2k tokens) plus the
+        # 8192-token response; SGLang rejects rather than truncates a request that exceeds it.
+        sglang_args += "--sglang-context-length 16384 "
     extra_env_vars = {
         "SGLANG_SKIP_CHECKPOINT_LOAD_CHECK": "1",
         "SGLANG_DSV4_FP4_EXPERTS": "0",
