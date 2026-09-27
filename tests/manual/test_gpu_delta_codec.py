@@ -144,6 +144,21 @@ def _test_async_submission(device):
     return {"encode_host_ms": elapsed, "queued_gpu_delay_ms": delay_ms, "delay_pending_after_encode": delay_pending}
 
 
+def _test_cuda_default_device(device):
+    # All payload and metadata allocations must stay on CPU even if a caller
+    # changes torch's default device before entering the codec.
+    with torch.device(device):
+        codec = GpuDeltaCodec()
+        stream = torch.cuda.Stream(device=device)
+        old = torch.zeros(4096, dtype=torch.uint8, device=device)
+        new = torch.ones(4096, dtype=torch.uint8, device=device)
+        result = codec.encode_batch([old, old], [old, new], stream).finish()
+        assert result[0].payload.size == 0
+        assert zstandard.ZstdDecompressor().decompress(result[1].payload) == bytes([1]) * 4096
+        assert result[1].checksum == f"{zlib.adler32(bytes([1]) * 4096):08x}"
+    return len(result)
+
+
 def main():
     if not torch.cuda.is_available():
         raise RuntimeError("This harness requires CUDA; it must not silently pass on CPU")
@@ -154,6 +169,7 @@ def main():
         "codec_cases": _test_codec(device),
         "overlap_cases": _test_overlapping_batches(device),
         "async_submission": _test_async_submission(device),
+        "cuda_default_device_cases": _test_cuda_default_device(device),
     }
     print(json.dumps({"status": "PASS", "device": torch.cuda.get_device_name(device), **counts}, sort_keys=True))
 

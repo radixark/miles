@@ -1,16 +1,18 @@
-"""Real local GDS manager qualification against the existing CPU receiver.
+"""Real local NVMe manager qualification against the existing CPU receiver.
 
 Run with --directory on the target local NVMe filesystem and --receiver-path
 pointing to SGLang's weight_sync/local_checkpoint.py. A temporary child directory
-holds all fixtures. Direct reads and writes are mandatory: missing cuFile support
-or enabled compatibility mode fails the test. No I/O test doubles are used.
+holds all fixtures. Ordinary Linux direct reads and writes with bounded pinned
+CPU staging are mandatory. No I/O test doubles or GDS drivers are used.
 """
 
 from __future__ import annotations
 
 import argparse
+import gc
 import importlib.util
 import json
+import os
 import shutil
 import tempfile
 from pathlib import Path
@@ -20,8 +22,44 @@ import safetensors.numpy
 import safetensors.torch
 import torch
 
-from miles.backends.training_utils.weight_update.protocols.nvfp4_gds import Nvfp4GdsDelta
+from miles.backends.training_utils.weight_update.protocols.nvfp4_nvme import Nvfp4NvmeDelta
 from miles.utils.disk_delta import checkpoint_tensor_location, make_tensor_reader
+from miles.utils.nvme_io import NvmeBackend, NvmeStagingPool, allocate_aligned_buffer
+
+
+def _test_io_boundaries(directory, device):
+    size = (20 << 20) + 4096  # Three chunks with the default 8 MiB staging capacity.
+    path = directory / "io-boundaries.bin"
+    fd = os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        os.posix_fallocate(fd, 0, size)
+    finally:
+        os.close(fd)
+    staging = NvmeStagingPool(device)
+    producer = torch.cuda.Stream(device=device)
+    with NvmeBackend(path, device, writable=True, staging=staging) as backend:
+        with torch.cuda.stream(producer):
+            source = allocate_aligned_buffer(size, device)
+            torch.cuda._sleep(20_000_000)
+            source.fill_(0x57)
+            ready = producer.record_event()
+        written = backend.write_from(0, source, ready)
+        del source
+        gc.collect()
+        # The queued write owns its producer tensor despite allocator pressure.
+        pressure = torch.zeros(size, dtype=torch.uint8, device=device)
+        assert written.result() == size
+        destination = allocate_aligned_buffer(size, device)
+        assert backend.read_into(0, destination).result() == size
+        assert destination.eq(0x57).all().item()
+        expected = (20 << 20) + 17
+        os.truncate(path, expected)
+        destination.fill_(0xCC)
+        assert backend.read_into(0, destination, expected_bytes=expected).result() == expected
+        assert destination[:expected].eq(0x57).all().item()
+        assert destination[expected:].eq(0xCC).all().item()
+        del pressure
+    return size
 
 
 def _fixture(directory):
@@ -90,7 +128,7 @@ def _test_versions(directory, device, receiver):
     shutil.copytree(source, receiver_dir)
     (receiver_dir / receiver.SYNC_DIR).mkdir()
     receiver._write_applied_version(str(receiver_dir), 0)
-    manager = Nvfp4GdsDelta(
+    manager = Nvfp4NvmeDelta(
         str(source), str(directory / "baselines"), device, quantization_config={"quant_method": "nvfp4"}
     )
     previous = initial
@@ -118,7 +156,8 @@ def _test_versions(directory, device, receiver):
                 _apply_receiver(receiver, receiver_dir, directory / f"delta-{version}", result, version, expected)
             previous = expected
     finally:
-        manager._executor.shutdown(wait=True)
+        manager._read_executor.shutdown(wait=True)
+        manager._write_executor.shutdown(wait=True)
 
 
 def main():
@@ -136,6 +175,7 @@ def main():
     device = torch.device("cuda", 0)
     torch.cuda.set_device(device)
     with tempfile.TemporaryDirectory(prefix="gpu-delta-manager-", dir=args.directory) as temporary:
+        io_bytes = _test_io_boundaries(Path(temporary), device)
         _test_versions(Path(temporary), device, receiver)
     print(
         json.dumps(
@@ -143,7 +183,8 @@ def main():
                 "status": "PASS",
                 "versions": 4,
                 "expert_units": 5,
-                "io_backend": "strict cuFile direct read/write",
+                "direct_io_bytes": io_bytes,
+                "io_backend": "Linux O_DIRECT and bounded pinned staging",
                 "directory": str(args.directory.resolve()),
                 "receiver": str(args.receiver_path),
             },

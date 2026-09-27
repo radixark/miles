@@ -1,4 +1,4 @@
-"""Owner-local NVFP4 delta state; full canonical bytes never enter host memory."""
+"""Owner-local NVFP4 GPU deltas with bounded staging and run-scoped NVMe baselines."""
 
 from __future__ import annotations
 
@@ -6,6 +6,7 @@ import os
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
+from functools import partial
 from pathlib import Path
 
 import numpy as np
@@ -47,7 +48,7 @@ class _Slot:
 
 
 @dataclass
-class GdsDeltaResult:
+class NvmeDeltaResult:
     delta: dict[str, np.ndarray] = field(default_factory=dict)
     checksums: dict[str, str] = field(default_factory=dict)
     changed_bytes: int = 0
@@ -81,7 +82,7 @@ def _nvfp4_families(tensors: list[tuple[str, torch.Tensor]]) -> tuple[list, list
     return ([item for item in tensors if item[0] in selected], [item for item in tensors if item[0] not in selected])
 
 
-class Nvfp4GdsDelta:
+class Nvfp4NvmeDelta:
     """A two-slot pipeline with staged disk baselines and explicit publication commit.
 
     The iterator prefetches before TE quantization and calls process afterwards.
@@ -92,10 +93,10 @@ class Nvfp4GdsDelta:
     def __init__(self, hf_checkpoint: str, local_dir: str, device, *, quantization_config: dict | None):
         config = quantization_config or {}
         if config.get("quant_method") != "nvfp4" and config.get("quant_algo") != "NVFP4":
-            raise ValueError("GDS routed-expert deltas require an NVFP4 checkpoint")
+            raise ValueError("NVMe routed-expert deltas require an NVFP4 checkpoint")
         self.device = torch.device(device)
         if self.device.type != "cuda" or self.device.index is None:
-            raise ValueError("GDS delta requires an explicitly indexed CUDA device")
+            raise ValueError("NVMe delta requires an explicitly indexed CUDA device")
         rank = dist.get_rank() if dist.is_initialized() else 0
         self.directory = Path(local_dir) / f"rank-{rank:05d}"
         self.hf_checkpoint = hf_checkpoint
@@ -107,12 +108,14 @@ class Nvfp4GdsDelta:
         self._prefetched = {}
         self._slots = deque()
         self._reader = self._writer = None
-        self._executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="nvfp4-gds")
+        self._read_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="nvfp4-nvme-read")
+        self._write_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="nvfp4-nvme-write")
         # Optional GPU libraries are loaded only for the explicitly enabled path.
-        from miles.utils.gds_io import GdsBackend, allocate_aligned_buffer
+        from miles.utils.nvme_io import NvmeBackend, NvmeStagingPool, allocate_aligned_buffer
         from miles.utils.gpu_delta import GpuDeltaCodec
 
-        self._backend = GdsBackend
+        self._staging = NvmeStagingPool(self.device)
+        self._backend = partial(NvmeBackend, staging=self._staging)
         self._allocate = allocate_aligned_buffer
         self._codec = GpuDeltaCodec()
         with torch.cuda.device(self.device):
@@ -120,17 +123,17 @@ class Nvfp4GdsDelta:
 
     def begin(self, *, capture_baseline: bool, weight_version: int) -> None:
         if self.error is not None:
-            raise RuntimeError("The failed GDS baseline cannot be reused") from self.error
+            raise RuntimeError("The failed NVMe baseline cannot be reused") from self.error
         if self._pending or self._prefetched:
-            raise RuntimeError("Previous GDS work has not finished")
+            raise RuntimeError("Previous NVMe work has not finished")
         if capture_baseline != (self._version == -1):
-            raise RuntimeError("GDS baseline capture/version mismatch")
+            raise RuntimeError("NVMe baseline capture/version mismatch")
         if weight_version != self._version + 1:
-            raise RuntimeError("GDS baseline versions must advance consecutively")
+            raise RuntimeError("NVMe baseline versions must advance consecutively")
         self.directory.mkdir(parents=True, exist_ok=True)
         self._capture = capture_baseline
         self._next_version = weight_version
-        self._result = GdsDeltaResult()
+        self._result = NvmeDeltaResult()
         self._seen = set()
         self._failure_keepalive = []
         self._next_path = self.directory / "next.bin"
@@ -142,9 +145,11 @@ class Nvfp4GdsDelta:
         finally:
             os.close(fd)
         try:
-            self._writer = self._backend(self._next_path, self.device, writable=True, executor=self._executor)
+            self._writer = self._backend(self._next_path, self.device, writable=True, executor=self._write_executor)
             if not capture_baseline and self._units:
-                self._reader = self._backend(self.directory / "baseline.bin", self.device, executor=self._executor)
+                self._reader = self._backend(
+                    self.directory / "baseline.bin", self.device, executor=self._read_executor
+                )
                 capacity = max(unit.nbytes for unit in self._units.values())
                 with torch.cuda.device(self.device):
                     self._slots = deque(
@@ -203,7 +208,7 @@ class Nvfp4GdsDelta:
             return remaining
         try:
             if unit_key in self._seen:
-                raise ValueError(f"Duplicate GDS expert unit {unit_key}")
+                raise ValueError(f"Duplicate NVMe expert unit {unit_key}")
             self._seen.add(unit_key)
             unit = self._layout(unit_key, selected)
             if self._capture:
@@ -258,7 +263,7 @@ class Nvfp4GdsDelta:
             start = region.source_offset // _ALIGNMENT * _ALIGNMENT
             length = _align(region.source_offset - start + region.nbytes)
             expected = min(length, os.stat(region.source_path).st_size - start)
-            source = self._backend(region.source_path, self.device, executor=self._executor)
+            source = self._backend(region.source_path, self.device, executor=self._read_executor)
             scratch = self._allocate(length, self.device)
             try:
                 source.read_into(start, scratch, expected_bytes=expected).result()
@@ -325,7 +330,7 @@ class Nvfp4GdsDelta:
         if not self._capture:
             self._slots.append(pending.slot)
 
-    def finish(self) -> GdsDeltaResult:
+    def finish(self) -> NvmeDeltaResult:
         while self._pending:
             try:
                 self._collect_one()
@@ -346,9 +351,9 @@ class Nvfp4GdsDelta:
         self._failure_keepalive.clear()
         self._slots.clear()
         if self._seen != set(self._units):
-            self.error = self.error or ValueError("Owned expert set changed during GDS delta sync")
+            self.error = self.error or ValueError("Owned expert set changed during NVMe delta sync")
         if self.error is not None:
-            raise RuntimeError("GDS expert delta preparation failed") from self.error
+            raise RuntimeError("NVMe expert delta preparation failed") from self.error
         return self._result
 
     def _close_backends(self) -> None:
@@ -363,7 +368,7 @@ class Nvfp4GdsDelta:
     def commit(self) -> None:
         """Advance only after every owner's publication succeeded (or initial capture)."""
         if self.error is not None or self._pending or self._writer is not None:
-            raise RuntimeError("Cannot commit an incomplete GDS baseline")
+            raise RuntimeError("Cannot commit an incomplete NVMe baseline")
         os.replace(self._next_path, self.directory / "baseline.bin")
         # This local NVMe cache lives only for the RL run. Publication ordering
         # needs a rename, not a durable manifest or storage flush.

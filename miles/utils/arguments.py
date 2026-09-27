@@ -22,7 +22,7 @@ from miles.ray.specs.train import compute_trainer_ids, external_trainer_controll
 from miles.rollout.checkpoint_eval import is_checkpoint_eval_fn
 from miles.utils.audit_utils.event_logger.logger import EVENTS_DIRNAME
 from miles.utils.chat_template_utils.tito_tokenizer import TITOTokenizerType
-from miles.utils.disk_delta import validate_gds_delta_paths
+from miles.utils.disk_delta import validate_nvme_delta_paths
 from miles.utils.env_report.launcher_report import LAUNCHER_REPORT_ENV_VAR
 from miles.utils.environ import use_legacy_rollout_v1
 from miles.utils.eval_config import EvalDatasetConfig, build_eval_dataset_configs, ensure_dataset_list
@@ -1079,15 +1079,15 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 ),
             )
             parser.add_argument(
-                "--update-weight-delta-gds-dir",
+                "--update-weight-delta-nvme-dir",
                 type=str,
                 default=None,
                 help=(
                     "Opt in to owner-local GPU XOR/Zstd for NVFP4 routed experts. Store the previous "
-                    "canonical bytes on GDS-capable local NVMe in this fresh, run-scoped directory; "
-                    "prefetch into bounded GPU buffers and write the next baseline directly from GPU. "
-                    "Requires disk-delta, the direct Megatron exporter, ETP1, xor/adler32, CUDA Python "
-                    "cuFile bindings and nvCOMP Zstd. Other tensors retain ordinary delta sync."
+                    "canonical bytes on local NVMe in this fresh, run-scoped directory, using bounded "
+                    "pinned buffers for GPU transfers and asynchronous file I/O. Requires disk-delta, "
+                    "the direct Megatron exporter, ETP1, xor/adler32 and nvCOMP Zstd. Other tensors "
+                    "retain ordinary delta sync."
                 ),
             )
             parser.add_argument(
@@ -3621,14 +3621,14 @@ def miles_validate_args(args):
             args.megatron_to_hf_mode != "bridge"
         ), f"{args.update_weight_transfer_mode} mode is not supported when use megatron-bridge"
 
-    if getattr(args, "update_weight_delta_gds_dir", None):
-        assert args.update_weight_transfer_mode == "disk-delta", "GDS expert deltas require disk-delta transfer"
-        assert args.train_backend == "megatron", "GDS expert deltas require the Megatron backend"
-        assert args.megatron_to_hf_mode != "bridge", "GDS expert deltas require the direct Megatron exporter"
-        assert args.update_weight_delta_encoding == "xor", "GDS expert deltas require xor encoding"
-        assert args.update_weight_delta_checksum == "adler32", "GDS expert deltas require the GPU adler32 checksum"
-        validate_gds_delta_paths(
-            args.update_weight_delta_gds_dir,
+    if getattr(args, "update_weight_delta_nvme_dir", None):
+        assert args.update_weight_transfer_mode == "disk-delta", "NVMe expert deltas require disk-delta transfer"
+        assert args.train_backend == "megatron", "NVMe expert deltas require the Megatron backend"
+        assert args.megatron_to_hf_mode != "bridge", "NVMe expert deltas require the direct Megatron exporter"
+        assert args.update_weight_delta_encoding == "xor", "NVMe expert deltas require xor encoding"
+        assert args.update_weight_delta_checksum == "adler32", "NVMe expert deltas require the GPU adler32 checksum"
+        validate_nvme_delta_paths(
+            args.update_weight_delta_nvme_dir,
             publication_dir=args.update_weight_disk_dir,
             receiver_dir=args.update_weight_local_checkpoint_dir,
         )

@@ -110,7 +110,7 @@ class PendingBatch:
             try:
                 for compressed, (changed, _) in zip(self._encoded, metadata, strict=True):
                     if not changed:
-                        copies.append(torch.empty(0, dtype=torch.uint8))
+                        copies.append(torch.empty(0, dtype=torch.uint8, device="cpu"))
                         continue
                     # RAW Zstd has no nvCOMP container header, so existing CPU
                     # receivers can decompress exactly one canonical tensor.
@@ -118,7 +118,7 @@ class PendingBatch:
                     device = torch.from_dlpack(compressed).view(torch.uint8).reshape(-1)
                     if device.device != self._stream.device or device.numel() < size:
                         raise RuntimeError("nvCOMP returned an invalid compressed device buffer")
-                    host = torch.empty(size, dtype=torch.uint8, pin_memory=True)
+                    host = torch.empty(size, dtype=torch.uint8, device="cpu", pin_memory=True)
                     host.copy_(device[:size], non_blocking=True)
                     device.record_stream(self._stream)
                     device_payloads.append(device)
@@ -205,7 +205,7 @@ class GpuDeltaCodec:
             device_metadata = (
                 torch.stack(metrics) if metrics else torch.empty((0, 2), dtype=torch.int64, device=stream.device)
             )
-            host_metadata = torch.empty(device_metadata.shape, dtype=torch.int64, pin_memory=True)
+            host_metadata = torch.empty(device_metadata.shape, dtype=torch.int64, device="cpu", pin_memory=True)
             host_metadata.copy_(device_metadata, non_blocking=True)
             ready = torch.cuda.Event()
             ready.record(stream)
