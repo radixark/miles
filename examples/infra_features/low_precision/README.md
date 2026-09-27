@@ -59,37 +59,20 @@ Here's a quick explanation of how FP8 training is currently implemented in miles
 ### MoE weight updates
 
 With `--megatron-to-hf-mode raw`, MoE weight updates require
-`--expert-tensor-parallel-size 1`. Each EP rank owns complete local routed experts.
-Their conversion and quantization are split into contiguous expert ranges across
-its expert-DP replicas, so each expert is processed once. For example, with two
-expert-DP replicas, each processes half of the local experts. Converted tensors
-and scales are then gathered as required by the weight-transfer protocol.
-At ETP1, Megatron's existing tensor/data/context-parallel group covers exactly
-EP and expert DP. The exporter reuses this group for one combined gather,
-avoiding an intermediate repacking step between EP and expert DP. Pipeline
-stages are gathered first when required by the transfer protocol.
+`--expert-tensor-parallel-size 1`, including unquantized updates. EP ranks convert
+and quantize their complete local routed experts in parallel. Expert-DP replicas
+split that work into contiguous ranges of whole experts, so each expert is
+processed once; individual expert tensors are never split across expert DP.
 
-Expert-DP partitions the conversion work by whole expert, never within an expert's
-FC1 or FC2 tensor. For 256 experts with EP64 and EDP8, each EP rank has four local
-experts: four of its replicas each process one expert, and four process none.
-Replicas with no assigned experts still participate in gathering.
+For 256 experts with EP64 and EDP8, each EP rank has four local experts: four
+replicas process one expert each, and four process none. All replicas participate
+in gathering the converted weights and scales.
 
-The exporter learns each batch's converted tensor layout on its first update and
-reuses that metadata on later updates. Tensor values are converted afresh each
-time; changing the model layout, quantization configuration, or topology requires
-recreating the exporter.
+Gathering reuses Megatron's existing tensor/data/context-parallel group, which
+covers EP and full expert DP at ETP1, including context-parallel replication.
+Pipeline stages are gathered first when required by the transfer protocol.
 
-Equal-sized contributions use a native all-gather into one contiguous receive
-buffer. Uneven contributions use grouped, variable-sized gathering without
-padding every rank to the largest payload; a sole contributor uses one broadcast.
-Only dtype alignment adds padding. Gathering borrows the existing Megatron
-process groups and creates no per-batch groups. Training offload and recovery
-retain their existing process-group reload behavior. Each transfer has its own
-completion handle and fresh receive storage, so previously returned weights
-remain valid.
-
-The same path serves unquantized weights and all rollout quantization formats
-supported by the direct exporter. Quantization exclusions still apply. Shared experts and nonexpert layers retain
+Quantization exclusions still apply. Shared experts and nonexpert layers retain
 their existing gathering and conversion behavior. The Bridge exporter is unchanged.
 
 
