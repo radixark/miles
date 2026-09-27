@@ -187,9 +187,10 @@ CPU memory on that owner:
 ```
 
 This requires an NVFP4 checkpoint, the direct (`raw`) Megatron converter, ETP1,
-and NVIDIA nvCOMP Python libraries for the installed CUDA release. The CUDA 13
-bring-up uses `nvidia-nvcomp-cu13==5.3.0.16` and
-`nvidia-libnvcomp-cu13==5.3.0.16`. Baselines require no storage backend or GDS
+and the NVIDIA nvCOMP 5.3+ shared library for the installed CUDA release
+(`nvidia-libnvcomp-cu13==5.3.0.16` in the CUDA 13 bring-up). The public
+asynchronous C API uses Torch-owned buffers and metadata, avoiding the Python
+wrapper's implicit waits when it releases deferred output sizes. Baselines require no storage backend or GDS
 configuration; the normal shared delta publication directory is still used.
 
 Before the existing quantizer runs, the owner asynchronously prefetches the
@@ -213,7 +214,8 @@ finishes, and a slot cannot be reused until compression and writeback finish.
 CPU baselines advance in place during preparation, as in ordinary delta sync.
 Publication then commits the version and activates the receiver. Failed preparation
 or uncommitted publication prevents reusing the exporter; recreate it with a
-matching base. There is no restart-persistent baseline or disk I/O for these expert bytes.
+matching base. There is no restart-persistent baseline or steady-state baseline
+disk I/O for these expert bytes.
 
 Budget host memory per node for its owners' pinned expert shards, ordinary
 nonexpert snapshots, ordinary staging buffers, compressed publication payloads
