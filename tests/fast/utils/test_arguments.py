@@ -2877,3 +2877,53 @@ class TestMilesValidateArgsCheckpointResolution:
         miles_validate_args(args)
 
         assert (args.load, args.finetune, args.start_rollout_id) == (None, False, None)
+class TestWeightTransferModeSelection:
+    def _parse(self, extra=()):
+        parser = argparse.ArgumentParser()
+        get_miles_extra_args_provider()(parser)
+        return parser.parse_args(["--num-rollout", "1", *extra, *REQUIRED_ARGS])
+
+    def test_upstream_default_preserves_per_tensor_broadcast(self):
+        args = self._parse()
+        assert args.update_weight_transfer_mode == "broadcast"
+        assert not hasattr(args, "update_weight_use_flattened_buckets")
+
+    @pytest.mark.parametrize("mode", ["broadcast", "broadcast_packed", "p2p", "disk-delta"])
+    def test_cli_preserves_explicit_mode(self, mode):
+        assert self._parse(["--update-weight-transfer-mode", mode]).update_weight_transfer_mode == mode
+
+    @pytest.mark.parametrize(
+        "extra", [["--update-weight-transfer-mode", "typo"], ["--update-weight-use-flattened-buckets"]]
+    )
+    def test_cli_rejects_unknown_mode_and_removed_boolean(self, extra):
+        with pytest.raises(SystemExit):
+            self._parse(extra)
+
+    def test_packed_mode_from_yaml_overrides_cli_and_remains_observable(self, tmp_path):
+        config = tmp_path / "custom.yaml"
+        config.write_text("update_weight_transfer_mode: broadcast_packed\n")
+        args = self._parse(["--custom-config-path", str(config), "--update-weight-transfer-mode", "broadcast"])
+        _set_megatron_parallel_sizes(args)
+        miles_validate_args(args)
+        assert args.update_weight_transfer_mode == "broadcast_packed"
+
+    @pytest.mark.parametrize(
+        "body,extra,error",
+        [
+            ("update_weight_transfer_mode: typo\n", [], "Unknown --update-weight-transfer-mode"),
+            ("update_weight_transfer_mode: broadcast_packed\n", ["--colocate"], "requires Megatron non-colocated"),
+            (
+                "update_weight_transfer_mode: broadcast_packed\n",
+                ["--train-backend", "fsdp"],
+                "requires Megatron non-colocated",
+            ),
+            ("update_weight_use_flattened_buckets: true\n", [], "was replaced"),
+            ("update_weight_use_flattened_buckets: false\n", [], "was replaced"),
+        ],
+    )
+    def test_yaml_cannot_bypass_mode_validation(self, tmp_path, body, extra, error):
+        config = tmp_path / "custom.yaml"
+        config.write_text(body)
+        args = self._parse(["--custom-config-path", str(config), *extra])
+        with pytest.raises(ValueError, match=error):
+            miles_validate_args(args)

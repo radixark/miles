@@ -59,7 +59,7 @@ class CaseConfig:
                 f"{rollout_pool=} {self.rollout_num_gpus_per_engine=}"
             )
         if self.update_weight_transfer_mode is not None:
-            assert self.update_weight_transfer_mode == "broadcast"
+            assert self.update_weight_transfer_mode in ("broadcast", "broadcast_packed")
 
 
 def prepare(case: CaseConfig, *, need_fp8: bool, need_int4: bool, all_bridge: bool) -> None:

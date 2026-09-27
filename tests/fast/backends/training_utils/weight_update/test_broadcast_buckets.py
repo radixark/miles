@@ -13,11 +13,9 @@ from unittest.mock import Mock
 import pytest
 import torch
 
+from miles.backends.training_utils.weight_update.protocol import get_weight_transfer_protocol
 from miles.backends.training_utils.weight_update.protocols import broadcast
-from miles.backends.training_utils.weight_update.protocol import (
-    get_weight_transfer_protocol,
-    validate_flattened_broadcast_args,
-)
+from miles.utils.weight_transfer import validate_weight_transfer_args
 from tests.ci.ci_register import register_cpu_ci
 
 register_cpu_ci(est_time=30, suite="stage-a-cpu", labels=[])
@@ -75,7 +73,9 @@ def test_broadcast_roundtrip_preserves_mixed_dtype_bytes_and_scalar_shape(monkey
         return SimpleNamespace(wait=lambda: waits.append(tensor.numel()))
 
     monkeypatch.setattr(broadcast.dist, "broadcast", send)
-    futures = broadcast.update_weights_from_distributed("test-group", group, clients, weights, "target", packed)
+    futures = broadcast.update_weights_from_distributed(
+        "test-group", group, clients, weights, "target", "broadcast_packed" if packed else "broadcast"
+    )
     assert futures == [client.update_weights_from_distributed.return_value for client in clients]
     assert len(sent) == len(waits) == (1 if packed else len(weights))
     for client in clients:
@@ -113,7 +113,7 @@ def test_unaligned_dtype_offset_is_rejected_before_receivers_enter_collectives(m
     monkeypatch.setattr(broadcast.dist, "broadcast", collective)
     weights = [("byte", torch.ones(3, dtype=torch.uint8)), ("scale", torch.tensor(1.0))]
     with pytest.raises(ValueError, match=r"Unaligned flattened weight scale: byte offset 3"):
-        broadcast.update_weights_from_distributed("g", object(), [client], weights, use_flattened_buckets=True)
+        broadcast.update_weights_from_distributed("g", object(), [client], weights, transfer_mode="broadcast_packed")
     client.update_weights_from_distributed.assert_not_called()
     collective.assert_not_called()
 
@@ -124,7 +124,9 @@ def test_unsupported_bucket_api_is_rejected_before_receiver_dispatch(monkeypatch
     collective = Mock()
     monkeypatch.setattr(broadcast.dist, "broadcast", collective)
     with pytest.raises(RuntimeError, match="mixed-dtype FlattenedTensorBucket"):
-        broadcast.update_weights_from_distributed("g", object(), [client], _weights(), use_flattened_buckets=True)
+        broadcast.update_weights_from_distributed(
+            "g", object(), [client], _weights(), transfer_mode="broadcast_packed"
+        )
     client.update_weights_from_distributed.assert_not_called()
     collective.assert_not_called()
 
@@ -138,7 +140,9 @@ def test_pack_allocation_failure_does_not_dispatch_receivers(monkeypatch, bucket
     collective = Mock()
     monkeypatch.setattr(broadcast.dist, "broadcast", collective)
     with pytest.raises(MemoryError, match="bucket allocation"):
-        broadcast.update_weights_from_distributed("g", object(), [client], _weights(), use_flattened_buckets=True)
+        broadcast.update_weights_from_distributed(
+            "g", object(), [client], _weights(), transfer_mode="broadcast_packed"
+        )
     client.update_weights_from_distributed.assert_not_called()
     collective.assert_not_called()
 
@@ -172,7 +176,7 @@ def test_backing_buffer_lives_through_collective_wait_and_bucket_clears_after_re
     monkeypatch.setattr(broadcast.dist, "broadcast", send)
     monkeypatch.setattr(broadcast.async_utils, "wait_futures", wait_receivers)
     updater = broadcast.UpdateWeightFromDistributed.__new__(broadcast.UpdateWeightFromDistributed)
-    updater.args = Namespace(update_weight_use_flattened_buckets=True)
+    updater.args = Namespace(update_weight_transfer_mode="broadcast_packed")
     updater._engine_lock = nullcontext()
     updater.group_name = "g"
     updater._model_update_groups = object()
@@ -185,42 +189,44 @@ def test_backing_buffer_lives_through_collective_wait_and_bucket_clears_after_re
     assert client.update_weights_from_distributed.call_args.kwargs["load_format"] == "flattened_bucket"
 
 
-@pytest.mark.parametrize("validator", [validate_flattened_broadcast_args, get_weight_transfer_protocol])
-@pytest.mark.parametrize(
-    "backend,colocate,mode",
-    [
-        ("megatron", True, "broadcast"),
-        ("megatron", False, "p2p"),
-        ("megatron", False, "disk-delta"),
-        ("fsdp", False, "broadcast"),
-        ("fsdp", True, "broadcast"),
-    ],
-)
-def test_opt_in_rejects_backends_and_protocols_that_would_ignore_it(validator, backend, colocate, mode):
-    args = Namespace(
-        train_backend=backend,
-        colocate=colocate,
-        update_weight_transfer_mode=mode,
-        update_weight_use_flattened_buckets=True,
-    )
-    with pytest.raises(ValueError, match="requires Megatron non-colocated broadcast transfer"):
+@pytest.mark.parametrize("validator", [validate_weight_transfer_args, get_weight_transfer_protocol])
+@pytest.mark.parametrize("backend,colocate", [("megatron", True), ("fsdp", False), ("fsdp", True)])
+def test_packed_mode_rejects_backends_that_would_ignore_it(validator, backend, colocate):
+    args = Namespace(train_backend=backend, colocate=colocate, update_weight_transfer_mode="broadcast_packed")
+    with pytest.raises(ValueError, match="requires Megatron non-colocated"):
         validator(args)
 
 
-@pytest.mark.parametrize("flag", [None, False])
-def test_existing_fsdp_arguments_are_unchanged_without_the_opt_in(flag):
-    args = Namespace(train_backend="fsdp", colocate=False, update_weight_transfer_mode="broadcast")
-    if flag is not None:
-        args.update_weight_use_flattened_buckets = flag
-    validate_flattened_broadcast_args(args)
+@pytest.mark.parametrize("colocate", [False, True])
+def test_unknown_mode_is_rejected_before_protocol_dispatch(colocate):
+    args = Namespace(train_backend="megatron", colocate=colocate, update_weight_transfer_mode="typo")
+    with pytest.raises(ValueError, match="Unknown --update-weight-transfer-mode"):
+        get_weight_transfer_protocol(args)
 
 
-def test_megatron_non_colocated_broadcast_accepts_the_opt_in():
-    validate_flattened_broadcast_args(
-        Namespace(
-            train_backend="megatron",
-            colocate=False,
-            update_weight_transfer_mode="broadcast",
-            update_weight_use_flattened_buckets=True,
-        )
-    )
+@pytest.mark.parametrize("mode", ["broadcast", "broadcast_packed"])
+def test_both_broadcast_modes_share_protocol_and_preserve_lora_support(monkeypatch, mode):
+    monkeypatch.setattr(broadcast, "get_parallel_state", lambda: SimpleNamespace(pp=SimpleNamespace(size=1)))
+    args = Namespace(train_backend="megatron", colocate=False, update_weight_transfer_mode=mode, lora_rank=32)
+    protocol = get_weight_transfer_protocol(args)
+    assert isinstance(protocol, broadcast.UpdateWeightFromDistributed)
+    assert protocol.args.update_weight_transfer_mode == mode
+    assert protocol.supports_lora
+
+
+def test_direct_caller_without_mode_keeps_legacy_protocol(monkeypatch):
+    monkeypatch.setattr(broadcast, "get_parallel_state", lambda: SimpleNamespace(pp=SimpleNamespace(size=1)))
+    args = Namespace(train_backend="megatron", colocate=False)
+    assert isinstance(get_weight_transfer_protocol(args), broadcast.UpdateWeightFromDistributed)
+    assert not hasattr(args, "update_weight_transfer_mode")
+
+
+@pytest.mark.parametrize("mode", ["typo", "p2p", "disk-delta", None, True])
+def test_low_level_helper_rejects_non_broadcast_modes_before_receiver_dispatch(monkeypatch, mode):
+    client = SimpleNamespace(update_weights_from_distributed=Mock())
+    collective = Mock()
+    monkeypatch.setattr(broadcast.dist, "broadcast", collective)
+    with pytest.raises(ValueError, match="Expected a broadcast transfer mode"):
+        broadcast.update_weights_from_distributed("g", object(), [client], _weights(), transfer_mode=mode)
+    client.update_weights_from_distributed.assert_not_called()
+    collective.assert_not_called()

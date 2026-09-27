@@ -17,7 +17,6 @@ from miles.backends.megatron_utils.megatron_config import (
 )
 from miles.backends.sglang_utils.arguments import add_sglang_arguments, collect_eval_sglang_overrides
 from miles.backends.sglang_utils.arguments import validate_args as sglang_validate_args
-from miles.backends.training_utils.weight_update.protocol import validate_flattened_broadcast_args
 from miles.dashboard.args import add_dashboard_arguments, validate_dashboard_args
 from miles.ray.specs.train import compute_trainer_ids, external_trainer_controller_addrs
 from miles.rollout.checkpoint_eval import is_checkpoint_eval_fn
@@ -42,6 +41,7 @@ from miles.utils.object_store_config import (
 )
 from miles.utils.run_uuid import RUN_UUID_LENGTH, generate_run_uuid, validate_run_uuid
 from miles.utils.tracking_utils.ci_history import RECORD_DIR_ENV
+from miles.utils.weight_transfer import add_weight_transfer_arguments, validate_weight_transfer_args
 from miles.utils.workers.argv_utils import with_relax_parser_required_args, with_suppressed_parser_help
 from miles.utils.workers.naming import DEPLOY_INSTANCE_ID_MAX_LENGTH, DNS_LABEL_PATTERN
 from miles.utils.workers.types import ClusterBackend, DeployComponent, WorkerCommBackend, resolve_worker_comm_backend
@@ -949,16 +949,6 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 ),
             )
             parser.add_argument(
-                "--update-weight-use-flattened-buckets",
-                action="store_true",
-                help=(
-                    "Opt in to one packed-byte NCCL broadcast per weight bucket. "
-                    "Requires Megatron non-colocated broadcast transfer and SGLang's mixed-dtype flattened-bucket API. "
-                    "Adds a contiguous bucket allocation on the sender and receivers; "
-                    "atomic update units may exceed --update-weight-buffer-size."
-                ),
-            )
-            parser.add_argument(
                 "--update-weights-interval",
                 type=int,
                 default=1,
@@ -1037,17 +1027,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                     "--rollout-external-engine-addrs, the backend's own provider otherwise."
                 ),
             )
-            parser.add_argument(
-                "--update-weight-transfer-mode",
-                choices=["broadcast", "p2p", "disk-delta"],
-                default="broadcast",
-                help=(
-                    "The method to transfer weights to remote rollout engines during update weight. "
-                    "'disk-delta' diffs each sync against a CPU snapshot of the previous one and publishes "
-                    "only the changed bytes to --update-weight-disk-dir; each engine's /pull_weights applies "
-                    "them into a host-local checkpoint that the engine reloads from."
-                ),
-            )
+            add_weight_transfer_arguments(parser)
             parser.add_argument(
                 "--update-weight-disk-dir",
                 type=str,
@@ -3202,7 +3182,7 @@ def miles_validate_args(args):
                 logger.info(f"Warning: Argument {k} is already set to {getattr(args, k)}, will override with {v}.")
             setattr(args, k, v)
 
-    validate_flattened_broadcast_args(args)
+    validate_weight_transfer_args(args)
     validate_dashboard_args(args)
 
     args.ft_components = _resolve_ft_components(args)

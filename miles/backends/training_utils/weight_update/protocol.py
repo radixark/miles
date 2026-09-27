@@ -10,6 +10,7 @@ import torch
 from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
 from miles.backends.training_utils.parallel import ParallelState
 from miles.backends.training_utils.weight_update.hf_weight_iterator import WeightUpdatePlacement
+from miles.utils.weight_transfer import is_broadcast_mode, validate_weight_transfer_args
 
 
 class WeightTransferProtocol(ABC):
@@ -70,29 +71,23 @@ class WeightTransferProtocol(ABC):
         return metrics
 
 
-def validate_flattened_broadcast_args(args: Namespace) -> None:
-    if getattr(args, "update_weight_use_flattened_buckets", False) and (
-        args.train_backend != "megatron" or args.colocate or args.update_weight_transfer_mode != "broadcast"
-    ):
-        raise ValueError("--update-weight-use-flattened-buckets requires Megatron non-colocated broadcast transfer")
-
-
 def get_weight_transfer_protocol(args: Namespace) -> WeightTransferProtocol:
-    validate_flattened_broadcast_args(args)
+    validate_weight_transfer_args(args)
+    mode = getattr(args, "update_weight_transfer_mode", "broadcast")
     if args.colocate:
         from miles.backends.training_utils.weight_update.protocols.cuda_ipc import UpdateWeightFromTensor
 
         return UpdateWeightFromTensor(args)
-    if args.update_weight_transfer_mode == "broadcast":
+    if is_broadcast_mode(mode):
         from miles.backends.training_utils.weight_update.protocols.broadcast import UpdateWeightFromDistributed
 
         return UpdateWeightFromDistributed(args)
-    if args.update_weight_transfer_mode == "disk-delta":
+    if mode == "disk-delta":
         from miles.backends.training_utils.weight_update.protocols.delta import UpdateWeightFromDiskDelta
 
         return UpdateWeightFromDiskDelta(args)
-    if args.update_weight_transfer_mode == "p2p":
+    if mode == "p2p":
         from miles.backends.training_utils.weight_update.protocols.p2p import UpdateWeightP2P
 
         return UpdateWeightP2P(args)
-    raise ValueError(f"Unknown --update-weight-transfer-mode {args.update_weight_transfer_mode!r}")
+    raise ValueError(f"Unknown --update-weight-transfer-mode {mode!r}")

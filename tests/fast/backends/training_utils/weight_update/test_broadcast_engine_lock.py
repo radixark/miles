@@ -126,7 +126,7 @@ class TestSendBucketUnderTheEngineLock:
             fake_self.rollout_engines,
             bucket,
             selector="all",
-            use_flattened_buckets=False,
+            transfer_mode="broadcast",
         )
         wait_futures.assert_called_once_with(broadcast.return_value)
         assert bucket == []
