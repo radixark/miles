@@ -127,6 +127,7 @@ def load_checkpoint(
     args = get_args()
 
     load_path = args.load
+    ckpt_step = args.ckpt_step
 
     has_local_checkpoint_manager = "local_checkpoint_manager" in (checkpointing_context or {})
     if has_local_checkpoint_manager:
@@ -136,11 +137,14 @@ def load_checkpoint(
             load_path
         ), f"{args.load=} does not exist or is an empty directory. Did you specify the wrong folder?"
 
-    if has_local_checkpoint_manager or _is_megatron_checkpoint(load_path):
+    if has_local_checkpoint_manager or ckpt_step is not None or _is_megatron_checkpoint(load_path):
+        checkpoint_path = (
+            get_checkpoint_name(load_path, ckpt_step, return_base_dir=True) if ckpt_step is not None else load_path
+        )
         if not has_local_checkpoint_manager and is_dsv4_model(args):
-            assert_checkpoint_is_current(load_path)
+            assert_checkpoint_is_current(checkpoint_path)
         if not has_local_checkpoint_manager and _has_linear_attention(ddp_model):
-            assert_linear_attn_checkpoint_is_current(load_path)
+            assert_linear_attn_checkpoint_is_current(checkpoint_path)
         result_iteration, _ = _load_checkpoint_megatron(
             ddp_model=ddp_model,
             optimizer=optimizer,
@@ -148,6 +152,8 @@ def load_checkpoint(
             checkpointing_context=checkpointing_context,
             skip_load_to_model_and_opt=skip_load_to_model_and_opt,
         )
+        if ckpt_step is not None and not args.finetune and result_iteration != ckpt_step:
+            raise ValueError(f"Requested checkpoint step {ckpt_step}, but Megatron loaded step {result_iteration}")
     else:
         result_iteration, _ = _load_checkpoint_hf(
             ddp_model=ddp_model,
