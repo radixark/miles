@@ -316,7 +316,6 @@ def _train(args: ScriptArgs):
         "--label-key label "
         "--apply-chat-template "
         "--rollout-shuffle "
-        "--rm-type math "
         "--num-rollout 3000 "
         "--rollout-batch-size 32 "
         "--n-samples-per-prompt 8 "
@@ -338,18 +337,29 @@ def _train(args: ScriptArgs):
     match args.task:
         case "dapo_aime":
             rollout_args += (
+                # DAPO prompts ask for "Answer: ...", not \boxed{}; the math grader extracts only
+                # boxed answers and scores correct completions 0.
+                "--rm-type dapo --reward-key score --eval-reward-key acc "
                 f"--prompt-data {args.data_dir}/dapo-math-17k/dapo-math-17k.jsonl "
                 "--input-key prompt "
                 f"--rollout-max-response-len 8192 "
                 """--apply-chat-template-kwargs '{"thinking_mode":"thinking"}' """
             )
+            # AIME prompts carry no "Answer:" instruction, so responses box their answer; the
+            # DAPO grader would score every one -1. dapo_boxed keeps DAPO's {score, acc} on the
+            # last \boxed{}, so --eval-reward-key acc stays an accuracy.
+            eval_config = (
+                "eval:\n  datasets:\n    - name: aime\n"
+                f"      path: {args.data_dir}/aime-2024/aime-2024.jsonl\n      rm_type: dapo_boxed\n"
+            )
             eval_args += (
-                f"--eval-prompt-data aime {args.data_dir}/aime-2024/aime-2024.jsonl "
+                f"--eval-config {command_utils.encode_pseudo_file(eval_config)} "
                 "--n-samples-per-eval-prompt 8 "
                 "--eval-max-response-len 4096 "
             )
         case "gsm8k":
             rollout_args += (
+                "--rm-type math "
                 f"--prompt-data {args.data_dir}/gsm8k/train.parquet "
                 "--input-key messages "
                 "--rollout-max-response-len 256 "

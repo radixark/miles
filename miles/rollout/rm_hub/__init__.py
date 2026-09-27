@@ -63,6 +63,10 @@ async def async_rm(args, sample: Sample, **kwargs):
         return get_gemma_math_reward(response, label)
     elif rm_type == "dapo":
         return compute_score_dapo(response, label)
+    elif rm_type == "dapo_boxed":
+        # DAPO's {score, acc, pred}, graded on the last \boxed{} instead of "Answer:", for
+        # prompts that do not ask for the Answer: line (e.g. AIME next to DAPO training).
+        return compute_score_dapo(response, label, strict_box_verify=True)
     elif rm_type == "math":
         return 1 if grade_answer_verl(response, label) else 0
     elif rm_type == "f1":
