@@ -29,7 +29,7 @@ from miles.utils.disk_delta import (
     checksum,
     make_tensor_reader,
     overwrite_encode,
-    validate_gds_delta_paths,
+    validate_nvme_delta_paths,
 )
 from miles.utils.distributed_utils import get_gloo_group
 
@@ -87,13 +87,16 @@ class UpdateWeightFromDiskDelta(WeightTransferProtocol):
     each engine's /pull_weights fans the apply out to every host it spans, then the engine reloads
     the patched local checkpoint via the ordinary update_weights_from_disk path. miles only ever
     talks to one endpoint per engine, so multi-node serving needs nothing extra.
+
+    The optional NVMe pipeline processes routed NVFP4 families on their quantization owners,
+    before gathering, and retains their previous bytes on disk with bounded pinned staging.
     """
 
     # The transport is asynchronous by design: the engine-side apply is serialized by a
     # per-host flock behind /pull_weights and the reload pauses each engine itself, so
     # the sync never runs inside the pause/begin session frame.
     use_weight_update_session = False
-    _gds = None
+    _nvme = None
 
     def __init__(self, args: Namespace) -> None:
         super().__init__(args)
@@ -104,7 +107,7 @@ class UpdateWeightFromDiskDelta(WeightTransferProtocol):
         self.checksum_algorithm = args.update_weight_delta_checksum
         self._snapshot: dict[str, np.ndarray] = {}
         self._baseline_captured = False
-        self._gds_dir = getattr(args, "update_weight_delta_gds_dir", None)
+        self._nvme_dir = getattr(args, "update_weight_delta_nvme_dir", None)
         # Post-write hook: object-store-backed shared filesystems lack cross-host
         # read-after-write consistency, so written files need an explicit step
         # (e.g. uploading them to the backing object store) before the engines can see them.
@@ -115,58 +118,58 @@ class UpdateWeightFromDiskDelta(WeightTransferProtocol):
             self._post_write_hook = load_function(args.custom_update_weight_post_write_path)
 
     def bind_iterator(self, iterator: HfWeightIteratorBase) -> None:
-        if self._gds_dir is None:
+        if self._nvme_dir is None:
             return
         install = getattr(iterator, "set_local_expert_transform", None)
         if install is None:
-            raise ValueError("NVFP4 GDS delta requires the direct Megatron HF weight iterator")
-        self._gds_quantization_config = iterator.quantization_config
+            raise ValueError("NVFP4 NVMe delta requires the direct Megatron HF weight iterator")
+        self._nvme_quantization_config = iterator.quantization_config
         install(prefetch=self._prefetch_expert, transform=self._process_expert)
 
     def _prefetch_expert(self, unit_key: str) -> None:
-        self._gds.prefetch(unit_key)
+        self._nvme.prefetch(unit_key)
 
     def _process_expert(self, unit_key: str, unit: list[tuple[str, torch.Tensor]]) -> list[tuple[str, torch.Tensor]]:
-        return self._gds.process(unit_key, unit)
+        return self._nvme.process(unit_key, unit)
 
-    def _begin_gds(self, *, capture_baseline: bool, weight_version: int) -> None:
-        if self._gds_dir is None:
+    def _begin_nvme(self, *, capture_baseline: bool, weight_version: int) -> None:
+        if self._nvme_dir is None:
             return
         local_error = None
         try:
-            validate_gds_delta_paths(
-                self._gds_dir,
+            validate_nvme_delta_paths(
+                self._nvme_dir,
                 publication_dir=self.delta_dir,
                 receiver_dir=getattr(self.args, "update_weight_local_checkpoint_dir", None),
             )
             if self.delta_encoding != "xor" or self.checksum_algorithm != "adler32":
-                raise ValueError("NVFP4 GDS delta requires XOR encoding and Adler32 checksums")
-            if self._gds is None:
-                # The GDS backend is optional; import and initialize it collectively
+                raise ValueError("NVFP4 NVMe delta requires XOR encoding and Adler32 checksums")
+            if self._nvme is None:
+                # The NVMe backend is optional; import and initialize it collectively
                 # before any iterator gather, never on the ordinary delta path.
-                from miles.backends.training_utils.weight_update.protocols.nvfp4_gds import Nvfp4GdsDelta
+                from miles.backends.training_utils.weight_update.protocols.nvfp4_nvme import Nvfp4NvmeDelta
 
-                self._gds = Nvfp4GdsDelta(
+                self._nvme = Nvfp4NvmeDelta(
                     self.args.hf_checkpoint,
-                    self._gds_dir,
+                    self._nvme_dir,
                     torch.device("cuda", torch.cuda.current_device()),
-                    quantization_config=self._gds_quantization_config,
+                    quantization_config=self._nvme_quantization_config,
                 )
-            self._gds.begin(capture_baseline=capture_baseline, weight_version=weight_version)
-            local_error = self._gds.error
+            self._nvme.begin(capture_baseline=capture_baseline, weight_version=weight_version)
+            local_error = self._nvme.error
         except Exception as error:
             local_error = error
-        _raise_if_validation_failed(local_error, phase="GDS setup")
+        _raise_if_validation_failed(local_error, phase="NVMe setup")
 
-    def _finish_gds(self, *, capture_baseline: bool) -> Exception | None:
-        if self._gds is None:
+    def _finish_nvme(self, *, capture_baseline: bool) -> Exception | None:
+        if self._nvme is None:
             return None
         try:
-            result = self._gds.finish()
+            result = self._nvme.finish()
             if not capture_baseline:
                 duplicates = self._delta.keys() & result.delta.keys()
                 if duplicates:
-                    raise ValueError(f"GDS and ordinary delta both produced tensors: {sorted(duplicates)}")
+                    raise ValueError(f"NVMe and ordinary delta both produced tensors: {sorted(duplicates)}")
                 self._delta.update(result.delta)
                 self._checksums.update(result.checksums)
                 self.changed_bytes += result.changed_bytes
@@ -175,15 +178,15 @@ class UpdateWeightFromDiskDelta(WeightTransferProtocol):
             return error
         return None
 
-    def _commit_gds(self) -> None:
-        if self._gds is None:
+    def _commit_nvme(self) -> None:
+        if self._nvme is None:
             return
         local_error = None
         try:
-            self._gds.commit()
+            self._nvme.commit()
         except Exception as error:
             local_error = error
-        _raise_if_validation_failed(local_error, phase="GDS baseline commit")
+        _raise_if_validation_failed(local_error, phase="NVMe baseline commit")
 
     def connect(
         self,
@@ -204,7 +207,7 @@ class UpdateWeightFromDiskDelta(WeightTransferProtocol):
 
     def begin_sync(self, weight_version: int, iter_buckets) -> bool:
         # The first call only captures the baseline snapshot the next sync diffs against.
-        self._begin_gds(
+        self._begin_nvme(
             capture_baseline=not self._baseline_captured,
             weight_version=weight_version if self._baseline_captured else 0,
         )
@@ -270,14 +273,14 @@ class UpdateWeightFromDiskDelta(WeightTransferProtocol):
         finally:
             self._pool.shutdown()
             self._pool = None
-        gds_error = self._finish_gds(capture_baseline=False)
-        self._encode_error = self._encode_error or gds_error
+        nvme_error = self._finish_nvme(capture_baseline=False)
+        self._encode_error = self._encode_error or nvme_error
         _raise_if_validation_failed(self._encode_error, phase="update")
 
     def finalize(self, weight_version: int) -> None:
         """Write this version as a canonical HF dir, have the engines pull and reload it."""
         self._write_delta_files(weight_version)
-        self._commit_gds()
+        self._commit_nvme()
         self._reload_engines(weight_version)
         self._record_metrics(weight_version)
 
@@ -340,9 +343,9 @@ class UpdateWeightFromDiskDelta(WeightTransferProtocol):
                 # collectives. Defer the error until iteration finishes, then make every rank fail.
                 local_error = error
 
-        gds_error = self._finish_gds(capture_baseline=True)
-        _raise_if_validation_failed(local_error or gds_error, phase="baseline")
-        self._commit_gds()
+        nvme_error = self._finish_nvme(capture_baseline=True)
+        _raise_if_validation_failed(local_error or nvme_error, phase="baseline")
+        self._commit_nvme()
 
         if dist.get_rank() == 0:
             check_weight_sync_results(async_utils.wait_futures(pulls), is_lora=False)
@@ -411,7 +414,7 @@ class UpdateWeightFromDiskDelta(WeightTransferProtocol):
         if self._pool is not None:
             self._pool.shutdown(wait=False, cancel_futures=True)
         self._version_dir = os.path.join(self.delta_dir, f"weight_v{weight_version:06d}")
-        if self.is_sender and self._gds is None:
+        if self.is_sender and self._nvme is None:
             os.makedirs(self._version_dir, exist_ok=True)
         self._delta: dict[str, np.ndarray] = {}  # changed tensor name -> compressed diff
         self._checksums: dict[str, str] = {}  # changed tensor name -> new-state checksum
@@ -536,7 +539,7 @@ class UpdateWeightFromDiskDelta(WeightTransferProtocol):
         fname = None
         self.wire_bytes = 0
         try:
-            if self._gds is not None:
+            if self._nvme is not None:
                 os.makedirs(self._version_dir, exist_ok=True)
             if self._delta:
                 fname = f"model-{offset:05d}-of-{total:05d}.safetensors"
@@ -570,8 +573,8 @@ class UpdateWeightFromDiskDelta(WeightTransferProtocol):
         dist.barrier(group=group)
 
     def _check_publication_error(self, local_error: Exception | None) -> None:
-        if self._gds is not None:
-            _raise_if_validation_failed(local_error, phase="GDS publication")
+        if self._nvme is not None:
+            _raise_if_validation_failed(local_error, phase="NVMe publication")
         elif local_error is not None:
             raise local_error
 

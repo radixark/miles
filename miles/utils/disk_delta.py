@@ -19,7 +19,7 @@ NUM_WORKERS = min(32, (os.cpu_count() or 8))
 # runs on every host of a multi-node engine while miles only talks to one endpoint.
 
 
-def validate_gds_delta_paths(local_dir: str, *, publication_dir: str | None, receiver_dir: str | None) -> None:
+def validate_nvme_delta_paths(local_dir: str, *, publication_dir: str | None, receiver_dir: str | None) -> None:
     """Keep staged trainer baselines outside trees cleared or patched by disk sync.
 
     Resolve existing symlinks and relative components on this host. Receiver
@@ -35,7 +35,7 @@ def validate_gds_delta_paths(local_dir: str, *, publication_dir: str | None, rec
             continue
         other = os.path.realpath(directory)
         if os.path.commonpath((baseline, other)) in (baseline, other):
-            raise ValueError(f"--update-weight-delta-gds-dir must not overlap {flag}: {baseline!r}, {other!r}")
+            raise ValueError(f"--update-weight-delta-nvme-dir must not overlap {flag}: {baseline!r}, {other!r}")
 
 
 def overwrite_encode(new: np.ndarray, changed_mask: np.ndarray) -> np.ndarray:
