@@ -100,6 +100,7 @@ def _parallel_state(ep_size, edp_size):
             group = dist.new_group(ranks=ranks, backend="nccl")
             if rank in ranks:
                 selected[kind] = SimpleNamespace(rank=ranks.index(rank), size=len(ranks), group=group)
+    selected["tp_dp_cp"] = selected["tp"]
     state = SimpleNamespace(**selected)
     set_parallel_state(state)
     return state

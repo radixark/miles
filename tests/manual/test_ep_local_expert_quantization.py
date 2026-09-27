@@ -65,6 +65,7 @@ def _create_parallel_state(ep_size, edp_size, pp_size):
             for ep in range(ep_size)
         ],
         "pp": [[pp * ranks_per_pp + lane for pp in range(pp_size)] for lane in range(ranks_per_pp)],
+        "tp_dp_cp": [list(range(pp * ranks_per_pp, (pp + 1) * ranks_per_pp)) for pp in range(pp_size)],
         "tp": [list(range(start, start + 2)) for start in range(0, 8, 2)],
         "etp": [[rank] for rank in range(8)],
     }
@@ -74,6 +75,13 @@ def _create_parallel_state(ep_size, edp_size, pp_size):
             if info is not None:
                 selected[kind] = info
     state = SimpleNamespace(**selected)
+    ep_groups_by_rank = {rank: ranks for ranks in group_lists["ep"] for rank in ranks}
+    staged_sources = [
+        source
+        for edp_source in dist.get_process_group_ranks(state.edp.group)
+        for source in ep_groups_by_rank[edp_source]
+    ]
+    assert dist.get_process_group_ranks(state.tp_dp_cp.group) == staged_sources
     set_parallel_state(state)
     return state
 
@@ -269,6 +277,10 @@ def _run_case(state, *, local_experts=2, gather_pp, sender_only, quantized=True)
     original_new_group = dist.new_group
     payload_phase = False
     payload_collectives = Counter()
+    payload_stages = Counter()
+    expected_groups = ([state.pp] if gather_pp else []) + [state.tp_dp_cp]
+    expected_groups = tuple(group.group for group in expected_groups if group.size > 1)
+    stage_names = {state.pp.group: "pp", state.tp_dp_cp.group: "tp_dp_cp"}
 
     def tracked_convert(args, model_name, name, param, quantization_config=None, packed_weight_basenames=None):
         calls[name] += 1
@@ -290,11 +302,15 @@ def _run_case(state, *, local_experts=2, gather_pp, sender_only, quantized=True)
         metadata_exchanges += 1
         return original_metadata_exchange(*args, **kwargs)
 
-    def tracked_gather_payloads(*args, **kwargs):
+    def tracked_gather_payloads(gather, storage, payloads, local_payload):
         nonlocal payload_phase
+        payload_stages[stage_names[gather._group]] += 1
+        previous_collectives = payload_collectives.total()
         payload_phase = True
         try:
-            return original_gather_payloads(*args, **kwargs)
+            handle = original_gather_payloads(gather, storage, payloads, local_payload)
+            assert payload_collectives.total() - previous_collectives == bool(storage.numel())
+            return handle
         finally:
             payload_phase = False
 
@@ -312,6 +328,7 @@ def _run_case(state, *, local_experts=2, gather_pp, sender_only, quantized=True)
     direct.convert_to_hf = tracked_convert
     direct.named_params_and_buffers = lambda _args, modules: iter(modules[0].synthetic_weights.items())
     direct.HfWeightIteratorDirect._materialize_expert_batch = tracked_batch
+    dist.new_group = reject_new_group
     try:
         iterator = direct.HfWeightIteratorDirect(
             args,
@@ -320,22 +337,29 @@ def _run_case(state, *, local_experts=2, gather_pp, sender_only, quantized=True)
             model_name=MODEL_NAME,
             quantization_config=quantization,
         )
+        for batch in iterator._expert_batches:
+            assert tuple(gather._group for gather in batch.gathers) == expected_groups
+        expected_stages = Counter(
+            stage_names[group] for _batch in iterator._expert_batches for group in expected_groups
+        )
         dist.all_gather_object = tracked_metadata_exchange
         direct.ExpertGather._gather_payloads = tracked_gather_payloads
         for name in original_collectives:
             setattr(dist, name, tracked_collective(name))
-        dist.new_group = reject_new_group
         dist.barrier()
         started = time.monotonic()
         initial_buckets = list(iterator.iter_hf_weights(weights, materialize=materialize))
         initial_exchanges = metadata_exchanges
         initial_payload_collectives = payload_collectives.copy()
-        assert initial_exchanges > 0
+        initial_payload_stages = payload_stages.copy()
+        assert initial_exchanges == expected_stages.total()
+        assert initial_payload_stages == expected_stages
         initial_calls = calls.copy()
         calls.clear()
         round_calls.clear()
         metadata_exchanges = 0
         payload_collectives.clear()
+        payload_stages.clear()
         updated_weights = {name: tensor * -1.25 for name, tensor in weights.items()}
         buckets = list(iterator.iter_hf_weights(updated_weights, materialize=materialize))
         torch.cuda.synchronize()
@@ -343,6 +367,7 @@ def _run_case(state, *, local_experts=2, gather_pp, sender_only, quantized=True)
         assert metadata_exchanges == 0, "Stable expert layouts must not be exchanged on later updates"
         assert calls == initial_calls, (calls, initial_calls)
         assert payload_collectives == initial_payload_collectives
+        assert payload_stages == expected_stages
     finally:
         direct.convert_to_hf = original_convert
         direct.named_params_and_buffers = original_enumeration
@@ -394,6 +419,8 @@ def _run_case(state, *, local_experts=2, gather_pp, sender_only, quantized=True)
         "previous_update_storage": "passed",
         "metadata_exchanges_per_update": [initial_exchanges, metadata_exchanges],
         "payload_collectives_per_update": [dict(initial_payload_collectives), dict(payload_collectives)],
+        "payload_stages_per_update": [dict(initial_payload_stages), dict(payload_stages)],
+        "new_process_groups_during_construction": 0,
         "new_process_groups_per_update": [0, 0],
     }
 
