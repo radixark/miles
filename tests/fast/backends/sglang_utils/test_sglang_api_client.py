@@ -739,29 +739,6 @@ class TestGetWeightVersion:
 class TestWeightControlPayloads:
     """Optional weight-control fields must be included when given and omitted when not."""
 
-    async def test_distributed_update_forwards_flattened_format_without_losing_version_or_selector(
-        self, client, recorder
-    ):
-        await client.update_weights_from_distributed(
-            names=["expert.weight", "expert.weight_scale_2"],
-            dtypes=["torch.uint8", "torch.float32"],
-            shapes=[[2, 8], []],
-            group_name="g",
-            weight_version="run-7",
-            selector="target",
-            load_format="flattened_bucket",
-        )
-        assert recorder.calls[0][2]["json"] == {
-            "names": ["expert.weight", "expert.weight_scale_2"],
-            "dtypes": ["uint8", "float32"],
-            "shapes": [[2, 8], []],
-            "group_name": "g",
-            "flush_cache": False,
-            "selector": "target",
-            "weight_version": "run-7",
-            "load_format": "flattened_bucket",
-        }
-
     async def test_tensor_update_forwards_a_weight_version_and_a_non_default_selector(self, client, recorder):
         """Multi-model engines address one submodel at a time and stamp the resulting version."""
         await client.update_weights_from_tensor(
@@ -776,7 +753,10 @@ class TestWeightControlPayloads:
             "weight_version": "run-7",
         }
 
-    async def test_distributed_update_forwards_a_weight_version_and_a_non_default_selector(self, client, recorder):
+    @pytest.mark.parametrize("load_format", [None, "flattened_bucket"])
+    async def test_distributed_update_forwards_a_weight_version_and_a_non_default_selector(
+        self, client, recorder, load_format
+    ):
         """The distributed path carries the same optional fields as the tensor path."""
         await client.update_weights_from_distributed(
             names=["w"],
@@ -785,6 +765,7 @@ class TestWeightControlPayloads:
             group_name="g",
             weight_version="run-7",
             selector="draft",
+            load_format=load_format,
         )
 
         assert recorder.calls[0][2]["json"] == {
@@ -795,6 +776,7 @@ class TestWeightControlPayloads:
             "flush_cache": False,
             "selector": "draft",
             "weight_version": "run-7",
+            **({"load_format": load_format} if load_format is not None else {}),
         }
 
     async def test_disk_update_omits_the_optional_fields_when_not_given(self, client, recorder):

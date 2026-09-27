@@ -205,4 +205,6 @@ def _flatten_weight_bucket(named_tensors: Sequence[tuple[str, torch.Tensor]]) ->
         if offset % tensor.element_size():
             raise ValueError(f"Unaligned flattened weight {name}: byte offset {offset}, dtype {tensor.dtype}")
         offset += tensor.numel() * tensor.element_size()
-    return FlattenedTensorBucket(named_tensors=list(named_tensors)).get_flattened_tensor()
+    return FlattenedTensorBucket(
+        named_tensors=[(name, tensor.contiguous()) for name, tensor in named_tensors]
+    ).get_flattened_tensor()

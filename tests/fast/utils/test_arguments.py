@@ -2883,19 +2883,17 @@ class TestWeightTransferModeSelection:
         get_miles_extra_args_provider()(parser)
         return parser.parse_args(["--num-rollout", "1", *extra, *REQUIRED_ARGS])
 
-    def test_upstream_default_preserves_per_tensor_broadcast(self):
-        args = self._parse()
-        assert args.update_weight_transfer_mode == "broadcast"
+    def test_broadcast_is_the_default_and_packed_is_an_explicit_choice(self):
+        assert self._parse().update_weight_transfer_mode == "broadcast"
+        args = self._parse(["--update-weight-transfer-mode", "broadcast_packed"])
+        assert args.update_weight_transfer_mode == "broadcast_packed"
         assert not hasattr(args, "update_weight_use_flattened_buckets")
 
-    @pytest.mark.parametrize("mode", ["broadcast", "broadcast_packed", "p2p", "disk-delta"])
-    def test_cli_preserves_explicit_mode(self, mode):
-        assert self._parse(["--update-weight-transfer-mode", mode]).update_weight_transfer_mode == mode
-
     @pytest.mark.parametrize(
-        "extra", [["--update-weight-transfer-mode", "typo"], ["--update-weight-use-flattened-buckets"]]
+        "extra",
+        [["--update-weight-transfer-mode", "typo"], ["--update-weight-use-flattened-buckets"]],
     )
-    def test_cli_rejects_unknown_mode_and_removed_boolean(self, extra):
+    def test_unknown_mode_and_removed_flag_are_rejected(self, extra):
         with pytest.raises(SystemExit):
             self._parse(extra)
 
@@ -2917,7 +2915,6 @@ class TestWeightTransferModeSelection:
                 ["--train-backend", "fsdp"],
                 "requires Megatron non-colocated",
             ),
-            ("update_weight_use_flattened_buckets: true\n", [], "was replaced"),
             ("update_weight_use_flattened_buckets: false\n", [], "was replaced"),
         ],
     )

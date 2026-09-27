@@ -41,7 +41,7 @@ from miles.utils.object_store_config import (
 )
 from miles.utils.run_uuid import RUN_UUID_LENGTH, generate_run_uuid, validate_run_uuid
 from miles.utils.tracking_utils.ci_history import RECORD_DIR_ENV
-from miles.utils.weight_transfer import add_weight_transfer_arguments, validate_weight_transfer_args
+from miles.utils.weight_transfer import WEIGHT_TRANSFER_MODES, validate_weight_transfer_args
 from miles.utils.workers.argv_utils import with_relax_parser_required_args, with_suppressed_parser_help
 from miles.utils.workers.naming import DEPLOY_INSTANCE_ID_MAX_LENGTH, DNS_LABEL_PATTERN
 from miles.utils.workers.types import ClusterBackend, DeployComponent, WorkerCommBackend, resolve_worker_comm_backend
@@ -1027,7 +1027,22 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                     "--rollout-external-engine-addrs, the backend's own provider otherwise."
                 ),
             )
-            add_weight_transfer_arguments(parser)
+            parser.add_argument(
+                "--update-weight-transfer-mode",
+                choices=WEIGHT_TRANSFER_MODES,
+                default="broadcast",
+                help=(
+                    "The method to transfer weights to remote rollout engines during update weight. "
+                    "'broadcast' (default) broadcasts each tensor separately; 'broadcast_packed' "
+                    "packs each bucket into one byte broadcast. The packed mode requires Megatron "
+                    "non-colocated transfer and SGLang's mixed-dtype flattened-bucket API. It adds a "
+                    "contiguous bucket allocation on sender and receivers; atomic update units may "
+                    "exceed --update-weight-buffer-size. "
+                    "'disk-delta' diffs each sync against a CPU snapshot of the previous one and publishes "
+                    "only the changed bytes to --update-weight-disk-dir; each engine's /pull_weights applies "
+                    "them into a host-local checkpoint that the engine reloads from."
+                ),
+            )
             parser.add_argument(
                 "--update-weight-disk-dir",
                 type=str,
