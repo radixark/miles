@@ -57,3 +57,11 @@ def test_aime_eval_is_graded_on_the_boxed_answer(launcher, tmp_path):
     assert _flag(command, "--eval-config").startswith("base64:")
     (config,) = [text for text in launcher.recording.pseudo_files if "aime-2024.jsonl" in text]
     assert "rm_type: dapo_boxed" in config
+
+
+def test_train_without_hf_checkpoint_reads_model_local_dir(launcher, tmp_path):
+    command = _train_argv(
+        launcher, tmp_path, model_dir="/nfs/models", model_local_dir="/nvme/models", **FOUR_MI355X_NODES
+    )
+
+    assert _flag(command, "--hf-checkpoint") == "/nvme/models/DeepSeek-V4-Flash-FP8"

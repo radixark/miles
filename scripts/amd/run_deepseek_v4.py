@@ -306,7 +306,8 @@ def _train(args: ScriptArgs):
     _ensure_4layer_model_type(args)
 
     load_save_path = f"{args.save_dir}/{args.run_id}/checkpoints"
-    ckpt_args = f"--hf-checkpoint {args.hf_checkpoint} " f"--ref-load {args.model_local_dir}/{args.torch_dist_name} "
+    hf_checkpoint = args.hf_checkpoint or f"{args.model_local_dir}/{args.model_name}"
+    ckpt_args = f"--hf-checkpoint {hf_checkpoint} " f"--ref-load {args.model_local_dir}/{args.torch_dist_name} "
     if not args.skip_saving:
         ckpt_args += (
             f"--load {load_save_path} " f"--save {load_save_path} " "--save-interval 20 " "--save-retain-interval 20 "

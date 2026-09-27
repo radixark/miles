@@ -72,7 +72,7 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --activation-func-clamp-value 10
   --no-bias-swiglu-fusion
   --no-activation-func-clamp-shared-expert
-  --hf-checkpoint None
+  --hf-checkpoint /root/models/DeepSeek-V4-Flash-FP8
   --ref-load /root/models/DeepSeek-V4-Flash-FP8_torch_dist
   --load /root/models/260101-000000-000/checkpoints
   --save /root/models/260101-000000-000/checkpoints
