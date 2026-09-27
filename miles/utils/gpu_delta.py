@@ -106,6 +106,7 @@ class PendingBatch:
         copies = []
         device_payloads = []
         copied = torch.cuda.Event()
+        copy_pending = False
         with torch.cuda.device(self._stream.device), torch.cuda.stream(self._stream):
             try:
                 for compressed, (changed, _) in zip(self._encoded, metadata, strict=True):
@@ -119,6 +120,7 @@ class PendingBatch:
                     if device.device != self._stream.device or device.numel() < size:
                         raise RuntimeError("nvCOMP returned an invalid compressed device buffer")
                     host = torch.empty(size, dtype=torch.uint8, device="cpu", pin_memory=True)
+                    copy_pending = True
                     host.copy_(device[:size], non_blocking=True)
                     device.record_stream(self._stream)
                     device_payloads.append(device)
@@ -126,8 +128,9 @@ class PendingBatch:
             finally:
                 # Even a later array conversion failure must drain copies whose
                 # source storage is held only by this pending operation.
-                copied.record(self._stream)
-                copied.synchronize()
+                if copy_pending:
+                    copied.record(self._stream)
+                    copied.synchronize()
         return copies
 
     def close(self) -> None:
@@ -190,13 +193,15 @@ class GpuDeltaCodec:
                 algorithm="Zstd", bitstream_kind=self._nvcomp.BitstreamKind.RAW, cuda_stream=stream.cuda_stream
             )
         codec = self._codecs[key]
+        # Record input consumers before the first kernel: a later allocation or
+        # checksum failure must not let their producer-stream storage be reused.
+        for tensor in old + new:
+            tensor.record_stream(stream)
         differences = [torch.bitwise_xor(before, after) for before, after in zip(old, new, strict=True)]
         metrics = [
             torch.stack((torch.count_nonzero(difference), gpu_adler32(after)))
             for difference, after in zip(differences, new, strict=True)
         ]
-        for tensor in old + new + differences:
-            tensor.record_stream(stream)
         arrays = [self._nvcomp.as_array(tensor, cuda_stream=stream.cuda_stream) for tensor in differences]
         # Batch encode is asynchronous in current nvCOMP. Installed releases are
         # qualified by the GPU harness; no exact sizes are inspected here.
