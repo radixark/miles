@@ -121,7 +121,7 @@ def test_gather_batches_pack_by_size_only(direct_module, monkeypatch):
 
 @pytest.mark.parametrize("materialize", [True, False])
 def test_owner_transform_precedes_gather_even_on_non_senders(direct_module, monkeypatch, materialize):
-    """NVMe consumes only handled families; excluded weights still join the existing gather."""
+    """GPU consumes only handled families; excluded weights still join the existing gather."""
     events = []
     packed = ("expert.gate_proj.weight", torch.zeros(4, dtype=torch.uint8))
     excluded = ("expert.down_proj.weight", torch.zeros(4, dtype=torch.bfloat16))
