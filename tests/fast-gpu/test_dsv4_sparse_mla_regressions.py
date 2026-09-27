@@ -48,6 +48,16 @@ def test_a_broadcast_output_gradient_is_read_as_a_broadcast():
         torch.testing.assert_close(got, want, rtol=1e-2, atol=1e-2)
 
 
+def test_the_attn_sink_gradient_is_reproducible():
+    """dAttnSink was summed with one atomic per block, so identical backwards differed in the
+    last bits from run to run."""
+    inputs = _inputs()
+    first = _run(*inputs, lambda o: o.float().sum().backward())[1][2]
+    for _ in range(4):
+        again = _run(*inputs, lambda o: o.float().sum().backward())[1][2]
+        assert torch.equal(again, first)
+
+
 if __name__ == "__main__":
     import sys
 

@@ -86,7 +86,8 @@ def postprocess(
 
 
 @tilelang.jit(
-    out_idx=[-3],
+    # dQ, the second-to-last parameter; dAttnSink is reduced by the caller.
+    out_idx=[-2],
     pass_configs={
         tilelang.PassConfigKey.TL_DISABLE_TMA_LOWER: True,
         tilelang.PassConfigKey.TL_DISABLE_WARP_SPECIALIZED: True,
@@ -153,7 +154,6 @@ def bwd(
         Delta: T.Tensor(delta_shape, accum_dtype),
         dQ: T.Tensor(q_shape, dtype),
         dKV: T.Tensor(kv_shape, accum_dtype),
-        dAttnSink: T.Tensor(attn_sink_shape, accum_dtype),
     ):
         with T.Kernel(S, B, NH, threads=threads) as (s_i, by, bz):
             Q_shared = T.alloc_shared([block_H, D], dtype)
@@ -245,16 +245,6 @@ def bwd(
                 T.copy(dQ_shared, dQ[by, s_i, bz * block_H : (bz + 1) * block_H, :D])
             else:
                 T.copy(acc_dq, dQ[by, s_i, bz * block_H : (bz + 1) * block_H, :D])
-
-            # dAttnSink[h] = -sum_{b,s}( Delta[b,s,h] * p_sink[b,s,h] )
-            # where p_sink = exp(attn_sink[h]) / Z = exp2(attn_sink[h]*log2e - LSE)
-            # attn_sink is a pre-scaled logit, so only convert to log2 base (no sm_scale)
-            for h_i in T.Parallel(block_H):
-                T.atomic_add(
-                    dAttnSink[bz * block_H + h_i],
-                    -Delta[by, s_i, bz * block_H + h_i]
-                    * T.exp2(AttnSink[bz * block_H + h_i] * 1.44269504 - Lse[by, s_i, bz * block_H + h_i]),
-                )
 
     return sparse_mqa_bwd_kernel
 
@@ -378,8 +368,18 @@ def sparse_mqa_bwd_interface(q, kv, attn_sink, o, do, topk_idxs, lse, sm_scale=N
 
     delta = preprocess_kernel(o, do)
     dkv = torch.zeros_like(kv, dtype=torch.float32)
-    d_attn_sink = torch.zeros_like(attn_sink)
-    dq = bwd_kernel(q, kv, do, attn_sink, topk_idxs, lse, delta, dkv, d_attn_sink)
+    dq = bwd_kernel(q, kv, do, attn_sink, topk_idxs, lse, delta, dkv)
     dkv = postprocess_kernel(dkv)
+
+    # dAttnSink[h] = -sum_{b,s}( Delta[b,s,h] * p_sink[b,s,h] ),
+    # p_sink = exp(attn_sink[h]) / Z = exp2(attn_sink[h]*log2e - LSE).
+    # attn_sink is a pre-scaled logit, so only the log2 base conversion applies (no sm_scale).
+    # Reduced here rather than with per-block atomics in the kernel so that it is run-to-run
+    # identical: torch.sum over a fixed-shape contiguous tensor uses a fixed reduction tree.
+    d_attn_sink = (
+        -(delta.float() * torch.exp2(attn_sink.float().view(1, 1, -1) * 1.44269504 - lse.float()))
+        .sum(dim=(0, 1))
+        .to(attn_sink.dtype)
+    )
 
     return dq, dkv, d_attn_sink
