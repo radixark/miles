@@ -2877,6 +2877,8 @@ class TestMilesValidateArgsCheckpointResolution:
         miles_validate_args(args)
 
         assert (args.load, args.finetune, args.start_rollout_id) == (None, False, None)
+
+
 class TestWeightTransferModeSelection:
     def _parse(self, extra=()):
         parser = argparse.ArgumentParser()
