@@ -140,6 +140,7 @@ def execute(
     update_weight_transfer_mode: str = "broadcast",
     update_weight_disk_dir: str | None = None,
     update_weight_local_checkpoint_dir: str | None = None,
+    update_weight_delta_gds_dir: str | None = None,
 ):
     U = command_utils.default_config().create_backend()
     if num_rollout < 2:
@@ -147,12 +148,19 @@ def execute(
     if update_weight_transfer_mode not in ("broadcast", "disk-delta"):
         raise ValueError(f"Unsupported weight transfer mode: {update_weight_transfer_mode}")
     weight_transfer_args = f"--update-weight-transfer-mode {update_weight_transfer_mode} "
+    if update_weight_delta_gds_dir and update_weight_transfer_mode != "disk-delta":
+        raise ValueError("GDS routed-expert deltas require disk-delta weight transfer.")
     if update_weight_transfer_mode == "disk-delta":
         if not update_weight_disk_dir or not update_weight_local_checkpoint_dir:
             raise ValueError("disk-delta requires both publication and local checkpoint directories.")
         weight_transfer_args += (
             f"--update-weight-disk-dir {shlex.quote(update_weight_disk_dir)} "
             f"--update-weight-local-checkpoint-dir {shlex.quote(update_weight_local_checkpoint_dir)} "
+        )
+    if update_weight_delta_gds_dir:
+        weight_transfer_args += (
+            f"--update-weight-delta-gds-dir {shlex.quote(update_weight_delta_gds_dir)} "
+            "--update-weight-delta-encoding xor --update-weight-delta-checksum adler32 "
         )
 
     os.environ.update(NVFP4_ENV)
@@ -312,6 +320,7 @@ if __name__ == "__main__":
     parser.add_argument("--update-weight-transfer-mode", choices=("broadcast", "disk-delta"), default="broadcast")
     parser.add_argument("--update-weight-disk-dir")
     parser.add_argument("--update-weight-local-checkpoint-dir")
+    parser.add_argument("--update-weight-delta-gds-dir")
     options = parser.parse_args()
     if options.update_weight_transfer_mode == "disk-delta" and (
         not options.update_weight_disk_dir or not options.update_weight_local_checkpoint_dir
@@ -319,6 +328,8 @@ if __name__ == "__main__":
         parser.error("disk-delta requires --update-weight-disk-dir and --update-weight-local-checkpoint-dir")
     if options.num_rollout < 2:
         parser.error("--num-rollout must be at least 2")
+    if options.update_weight_delta_gds_dir and options.update_weight_transfer_mode != "disk-delta":
+        parser.error("--update-weight-delta-gds-dir requires --update-weight-transfer-mode disk-delta")
     if not options.skip_prepare:
         prepare()
     for proxy_var in ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY"):
@@ -328,4 +339,5 @@ if __name__ == "__main__":
         update_weight_transfer_mode=options.update_weight_transfer_mode,
         update_weight_disk_dir=options.update_weight_disk_dir,
         update_weight_local_checkpoint_dir=options.update_weight_local_checkpoint_dir,
+        update_weight_delta_gds_dir=options.update_weight_delta_gds_dir,
     )

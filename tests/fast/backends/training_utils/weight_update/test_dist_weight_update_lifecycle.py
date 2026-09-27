@@ -80,6 +80,7 @@ def _make_updater(engines: list[_RecordingApiClient], *, pause_generation_mode: 
         rollout_engines=engines,
         required_placement=MagicMock(),
         supports_lora=False,
+        bind_iterator=MagicMock(),
         begin_sync=lambda weight_version, iter_buckets: True,
         send_bucket=MagicMock(),
         after_base_weights=MagicMock(),

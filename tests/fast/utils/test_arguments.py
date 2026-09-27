@@ -2770,6 +2770,36 @@ class TestMiniFtControllerArguments:
             miles_validate_args(args)
 
 
+class TestGdsDeltaArguments:
+    @pytest.mark.parametrize("overlap_flag", ["--update-weight-disk-dir", "--update-weight-local-checkpoint-dir"])
+    def test_baseline_overlap_is_rejected_at_launch(self, tmp_path, overlap_flag):
+        parser = argparse.ArgumentParser()
+        get_miles_extra_args_provider()(parser)
+        args = parser.parse_args(
+            REQUIRED_ARGS
+            + [
+                "--num-rollout",
+                "1",
+                "--hf-checkpoint",
+                str(tmp_path),
+                "--update-weight-transfer-mode",
+                "disk-delta",
+                "--update-weight-delta-checksum",
+                "adler32",
+                "--update-weight-delta-gds-dir",
+                str(tmp_path / "baseline"),
+                "--update-weight-disk-dir",
+                str(tmp_path / "published"),
+                "--update-weight-local-checkpoint-dir",
+                str(tmp_path / "receiver"),
+                overlap_flag,
+                str(tmp_path / "baseline" / "child"),
+            ]
+        )
+        with pytest.raises(ValueError, match=f"must not overlap {overlap_flag}"):
+            miles_validate_args(args)
+
+
 class TestSessionServerArguments:
     def _parse(self, extra: list[str]):
         parser = argparse.ArgumentParser()
