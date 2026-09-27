@@ -12,10 +12,10 @@ from unittest.mock import Mock
 
 import pytest
 import torch
+from tests.ci.ci_register import register_cpu_ci
 
 from miles.backends.training_utils.weight_update.protocol import get_weight_transfer_protocol
 from miles.backends.training_utils.weight_update.protocols import broadcast
-from tests.ci.ci_register import register_cpu_ci
 
 register_cpu_ci(est_time=30, suite="stage-a-cpu", labels=[])
 
