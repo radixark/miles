@@ -135,8 +135,10 @@ convention exists to prevent.
 
 ### What a PR runs
 
-Two things start automatically on every PR: the `pre-commit` workflow, and `PR Test`
-(`.github/workflows/pr-test.yml`). `PR Test` resolves a policy and an image, runs the two
+Two things start automatically: the `pre-commit` workflow on every PR, and `PR Test`
+(`.github/workflows/pr-test.yml`) on every PR based on `main`. A PR based on another branch,
+such as a stacked PR, runs `PR Test` only with a `run-ci*` label (see
+[Labels](/developer/ci/01-label)). `PR Test` resolves a policy and an image, runs the two
 CPU stages, and then the GPU stages, which are gated on `stage-a-cpu` succeeding so a
 formatting or import error does not burn GPU time. A PR that touches `docker/Dockerfile`,
 `docker/build.py`, `docker/verify_transformer_engine.py`, `docker/patch/**` or
@@ -147,8 +149,8 @@ formatting or import error does not burn GPU time. A PR that touches `docker/Doc
 Selection is declared in the test file, never in the workflow YAML.
 
 - **CPU tests go in `tests/fast/`.** Every `test_*.py` there is auto-registered as a CPU
-  test in `stage-a-cpu` with no labels, and runs on every PR. A `register_cuda_ci` under
-  `tests/fast/` is a hard error; move the file to `tests/fast-gpu/`.
+  test in `stage-a-cpu` with no labels, and runs in every `PR Test` run. A
+  `register_cuda_ci` under `tests/fast/` is a hard error; move the file to `tests/fast-gpu/`.
 - **Everywhere else, register explicitly.** One top-level call per file:
 
 ```python

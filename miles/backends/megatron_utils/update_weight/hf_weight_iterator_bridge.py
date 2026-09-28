@@ -7,7 +7,7 @@ from miles.backends.megatron_utils.update_weight.hf_weight_iterator import (
     _iter_mm_tower_units,
 )
 from miles.utils import megatron_bridge_utils
-from miles.utils.lora import is_lora_weight_name
+from miles.utils.lora.utils import is_lora_weight_name
 
 from ..megatron_to_hf import postprocess_hf_param
 from ..megatron_to_hf.processors import quantize_params

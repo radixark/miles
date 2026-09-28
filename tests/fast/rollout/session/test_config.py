@@ -16,6 +16,7 @@ _ARGS_TO_CONFIG_FIELD = {
     "apply_chat_template_kwargs": "apply_chat_template_kwargs",
     "use_rollout_routing_replay": "use_rollout_routing_replay",
     "use_rollout_indexer_replay": "use_rollout_indexer_replay",
+    "use_sampling_support_replay": "use_sampling_support_replay",
     "sglang_speculative_algorithm": "sglang_speculative_algorithm",
     "num_layers": "num_layers",
     "moe_router_topk": "moe_router_topk",
@@ -31,7 +32,6 @@ _ARGS_TO_CONFIG_FIELD = {
 }
 
 _CALL_SITE_FIELDS = ("host", "port", "instance_id", "backend_url")
-
 _OPTIONAL_ARGS_ATTRS = (
     "num_layers",
     "pause_generation_mode",
@@ -49,6 +49,7 @@ _DISTINCT_ARGS_VALUES = dict(
     apply_chat_template_kwargs={"enable_thinking": True},
     use_rollout_routing_replay=True,
     use_rollout_indexer_replay=True,
+    use_sampling_support_replay=True,
     sglang_speculative_algorithm="EAGLE",
     num_layers=61,
     moe_router_topk=8,
@@ -127,6 +128,7 @@ _COMPLETE_CONFIG_KWARGS = dict(
     apply_chat_template_kwargs=None,
     use_rollout_routing_replay=False,
     use_rollout_indexer_replay=False,
+    use_sampling_support_replay=False,
     sglang_speculative_algorithm=None,
     num_layers=None,
     moe_router_topk=None,

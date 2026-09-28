@@ -25,7 +25,7 @@ versions of SGLang, Megatron-LM, and a few CUDA kernels.
   <Tab title="AMD">
 
     ```bash
-    docker pull rocm/sgl-dev:miles-rocm10-mi35x    # or miles-rocm720-mi35x
+    docker pull rocm/sgl-dev:miles-rocm10-mi35x    # or miles-rocm724-mi35x
 
     docker run --rm \
       --device /dev/kfd --device /dev/dri --group-add video --group-add render \

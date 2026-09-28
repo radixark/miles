@@ -40,7 +40,7 @@ class FakeBackend:
     def named(self, name: str) -> list[dict]:
         return [kwargs for called, kwargs in self.calls if called == name]
 
-    def trainer_dead(self):
+    async def trainer_dead(self):
         return self.dead
 
     async def load_slot(self, slot, rank, alpha, ckpt_path=None, load_optimizer=True):

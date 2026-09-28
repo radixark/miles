@@ -148,7 +148,10 @@ History handling depends on the selected server version:
 - **v2 (Experimental) is an append-only tree.** A request attaches to the deepest checkpoint
   whose complete message path prefixes the request. Any unmatched suffix creates
   a branch, and existing branches are never deleted. A path whose last generation
-  ended with `finish_reason=length` cannot be extended.
+  ended with `finish_reason=length` cannot be extended. By default, a leaf becomes
+  no sample when a later request re-sent its exact prompt tokens; a later request
+  that differs is a separate branch and its own sample
+  (`--session-sample-picker-path`).
 
 Whether a replayed message counts as "the same" as the stored one is decided by
 `--session-message-matcher` (default `strict`); see

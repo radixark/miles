@@ -15,6 +15,8 @@ repos:
     rev: v4.5.0
     hooks:
       - id: check-yaml
+        args: ['--allow-multiple-documents']
+        exclude: '^charts/.*/templates/'
       - id: check-case-conflict
       - id: detect-private-key
       - id: check-added-large-files
@@ -64,6 +66,13 @@ repos:
         entry: '"root":'
         files: ^docs/docs\.json$
 
+      - id: helm-lint
+        name: helm lint every chart
+        language: system
+        entry: python3 tools/kubernetes/lint_charts.py
+        pass_filenames: false
+        files: '^charts/'
+
       - id: ban-mpu-get
         name: Ban direct mpu.get_* calls (use ParallelState)
         language: pygrep
@@ -76,7 +85,7 @@ repos:
         language: pygrep
         entry: '(AutoConfig|AutoTokenizer)\.from_pretrained'
         types: [python]
-        exclude: '(miles/utils/hf_config\.py|miles/utils/processing_utils\.py|tests/|test_utils/|miles_plugins/|examples/)'
+        exclude: '(miles/utils/hf_utils/config\.py|miles/utils/processing_utils\.py|tests/|test_utils/|miles_plugins/|examples/)'
 
       - id: ban-huggingface-cli
         name: Ban deprecated huggingface-cli (use hf)

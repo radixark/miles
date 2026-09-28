@@ -50,12 +50,8 @@ thinking_template = "{reasoning_content}"
 response_format_template: str = (
     "## Response Format:\n\nYou MUST strictly adhere to the following schema to reply:\n{schema}"
 )
-tool_call_template: str = (
-    '<{dsml_token}invoke name="{name}">\n{arguments}\n</{dsml_token}invoke>'
-)
-tool_calls_template = (
-    "<{dsml_token}function_calls>\n{tool_calls}\n</{dsml_token}function_calls>"
-)
+tool_call_template: str = '<{dsml_token}invoke name="{name}">\n{arguments}\n</{dsml_token}invoke>'
+tool_calls_template = "<{dsml_token}function_calls>\n{tool_calls}\n</{dsml_token}function_calls>"
 
 tool_output_template: str = "\n<result>{content}</result>"
 
@@ -99,13 +95,9 @@ def encode_arguments_to_dsml(tool_call: Dict[str, str]) -> str:
     P_dsml_strs = []
 
     raw_arguments = tool_call["arguments"]
-    arguments = (
-        json.loads(raw_arguments) if isinstance(raw_arguments, str) else raw_arguments
-    )
+    arguments = json.loads(raw_arguments) if isinstance(raw_arguments, str) else raw_arguments
     if not isinstance(arguments, dict):
-        raise ValueError(
-            "Assistant tool call function.arguments must be a JSON object."
-        )
+        raise ValueError("Assistant tool call function.arguments must be a JSON object.")
 
     for k, v in arguments.items():
         p_dsml_str = p_dsml_template.format(
@@ -120,20 +112,14 @@ def encode_arguments_to_dsml(tool_call: Dict[str, str]) -> str:
     return "\n".join(P_dsml_strs)
 
 
-def decode_dsml_to_arguments(
-    tool_name: str, tool_args: Dict[str, Tuple[str, str]]
-) -> Dict[str, str]:
+def decode_dsml_to_arguments(tool_name: str, tool_args: Dict[str, Tuple[str, str]]) -> Dict[str, str]:
     def _decode_value(key: str, value: str, string: str):
         if string == "true":
             value = to_json(value)
         return f"{to_json(key)}: {value}"
 
     tool_args_json = (
-        "{"
-        + ", ".join(
-            [_decode_value(k, v, string=is_str) for k, (v, is_str) in tool_args.items()]
-        )
-        + "}"
+        "{" + ", ".join([_decode_value(k, v, string=is_str) for k, (v, is_str) in tool_args.items()]) + "}"
     )
     return dict(name=tool_name, arguments=tool_args_json)
 
@@ -158,13 +144,9 @@ def find_last_user_index(messages: List[Dict[str, Any]]) -> int:
     return last_user_index
 
 
-def render_message(
-    index: int, messages: List[Dict[str, Any]], thinking_mode: str, drop_thinking: bool = True
-) -> str:
+def render_message(index: int, messages: List[Dict[str, Any]], thinking_mode: str, drop_thinking: bool = True) -> str:
     if not (0 <= index < len(messages)):
-        raise DS32EncodingError(
-            f"Index {index} out of range for messages list of length {len(messages)}"
-        )
+        raise DS32EncodingError(f"Index {index} out of range for messages list of length {len(messages)}")
     if thinking_mode not in ["chat", "thinking"]:
         raise DS32EncodingError(f"Invalid thinking_mode `{thinking_mode}`")
 
@@ -190,9 +172,7 @@ def render_message(
             prompt += "\n\n" + render_tools(tools)
 
         if response_format:
-            prompt += "\n\n" + response_format_template.format(
-                schema=to_json(response_format)
-            )
+            prompt += "\n\n" + response_format_template.format(schema=to_json(response_format))
 
     elif role == "developer":
         if not content:
@@ -202,9 +182,7 @@ def render_message(
             content_developer += "\n\n" + render_tools(tools)
 
         if response_format:
-            content_developer += "\n\n" + response_format_template.format(
-                schema=to_json(response_format)
-            )
+            content_developer += "\n\n" + response_format_template.format(schema=to_json(response_format))
 
         content_developer += "\n\n# The user's message is: {}".format(content)
 
@@ -236,10 +214,7 @@ def render_message(
             prev_assistant_idx -= 1
             assistant_msg = messages[prev_assistant_idx]
 
-        if not (
-            index == 0
-            or (prev_assistant_idx >= 0 and assistant_msg.get("role") == "assistant")
-        ):
+        if not (index == 0 or (prev_assistant_idx >= 0 and assistant_msg.get("role") == "assistant")):
             raise DS32EncodingError(f"Invalid messages at {index}:\n{assistant_msg}")
 
         tool_call_order = index - prev_assistant_idx
@@ -293,10 +268,7 @@ def render_message(
         # last user turn), which makes the render append-only across user
         # appends; mirrors encoding_dsv4's assistant gate.
         if thinking_mode == "thinking" and (not drop_thinking or index > last_user_idx):
-            thinking_part = (
-                thinking_template.format(reasoning_content=reasoning_content or "")
-                + thinking_end_token
-            )
+            thinking_part = thinking_template.format(reasoning_content=reasoning_content or "") + thinking_end_token
 
         prompt += assistant_msg_template.format(
             reasoning=thinking_part,
@@ -313,9 +285,7 @@ def drop_thinking_messages(
     messages: List[Dict[str, Any]], last_user_idx: Optional[int] = None
 ) -> List[Dict[str, Any]]:
     messages_wo_thinking: List[Dict[str, Any]] = []
-    last_user_idx = (
-        find_last_user_index(messages) if last_user_idx is None else last_user_idx
-    )
+    last_user_idx = find_last_user_index(messages) if last_user_idx is None else last_user_idx
     for idx, msg in enumerate(messages):
         role = msg.get("role")
         if role in ["user", "system", "tool"] or idx >= last_user_idx:
@@ -356,9 +326,7 @@ def encode_messages(
     return prompt
 
 
-def _read_until_stop(
-    index: int, text: str, stop: List[str]
-) -> Tuple[int, str, Optional[str]]:
+def _read_until_stop(index: int, text: str, stop: List[str]) -> Tuple[int, str, Optional[str]]:
     min_pos = len(text)
     matched_stop = None
 
@@ -382,9 +350,7 @@ def parse_tool_calls(index: int, text: str):
     tool_calls_end_token = f"</{dsml_token}function_calls>"
 
     while index < len(text):
-        index, _, stop_token = _read_until_stop(
-            index, text, [f"<{dsml_token}invoke", tool_calls_end_token]
-        )
+        index, _, stop_token = _read_until_stop(index, text, [f"<{dsml_token}invoke", tool_calls_end_token])
         if _ != ">\n":
             raise DS32EncodingError("Tool call format error")
 
@@ -398,18 +364,14 @@ def parse_tool_calls(index: int, text: str):
             index, text, [f"<{dsml_token}parameter", f"</{dsml_token}invoke"]
         )
 
-        p_tool_name = re.findall(
-            r'^\s*name="(.*?)">\n$', tool_name_content, flags=re.DOTALL
-        )
+        p_tool_name = re.findall(r'^\s*name="(.*?)">\n$', tool_name_content, flags=re.DOTALL)
         if len(p_tool_name) != 1:
             raise DS32EncodingError("Tool name format error")
         tool_name = p_tool_name[0]
 
         tool_args: Dict[str, Tuple[str, str]] = {}
         while stop_token == f"<{dsml_token}parameter":
-            index, param_content, stop_token = _read_until_stop(
-                index, text, [f"/{dsml_token}parameter"]
-            )
+            index, param_content, stop_token = _read_until_stop(index, text, [f"/{dsml_token}parameter"])
 
             param_kv = re.findall(
                 r'^ name="(.*?)" string="(true|false)">(.*?)<$',
@@ -445,16 +407,12 @@ def parse_message_from_completion_text(text: str, thinking_mode: str):
     is_thinking, is_tool_calling = thinking_mode == "thinking", False
 
     if is_thinking:
-        index, content_delta, stop_token = _read_until_stop(
-            index, text, [thinking_end_token, tool_calls_start_token]
-        )
+        index, content_delta, stop_token = _read_until_stop(index, text, [thinking_end_token, tool_calls_start_token])
         reasoning_content = content_delta
         if stop_token != thinking_end_token:
             raise DS32EncodingError("Invalid thinking format")
 
-    index, content_delta, stop_token = _read_until_stop(
-        index, text, [eos_token, tool_calls_start_token]
-    )
+    index, content_delta, stop_token = _read_until_stop(index, text, [eos_token, tool_calls_start_token])
     summary_content = content_delta
     if stop_token == tool_calls_start_token:
         is_tool_calling = True

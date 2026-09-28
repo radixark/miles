@@ -2,28 +2,49 @@ import argparse
 import json
 import logging
 import os
+import re
+from string import Formatter
 from typing import Any
 
 import yaml
 from sglang_router.launch_router import RouterArgs
 
+from miles.backends.megatron_utils.megatron_config import (
+    ACTOR_ROLE,
+    CRITIC_ROLE,
+    resolve_args_checkpoint_load,
+    resolve_megatron_config,
+)
 from miles.backends.sglang_utils.arguments import add_sglang_arguments, collect_eval_sglang_overrides
 from miles.backends.sglang_utils.arguments import validate_args as sglang_validate_args
 from miles.dashboard.args import add_dashboard_arguments, validate_dashboard_args
+from miles.ray.specs.train import compute_trainer_ids, external_trainer_controller_addrs
 from miles.rollout.checkpoint_eval import is_checkpoint_eval_fn
+from miles.utils.audit_utils.event_logger.logger import EVENTS_DIRNAME
 from miles.utils.chat_template_utils.tito_tokenizer import TITOTokenizerType
+from miles.utils.env_report.launcher_report import LAUNCHER_REPORT_ENV_VAR
 from miles.utils.environ import use_legacy_rollout_v1
 from miles.utils.eval_config import EvalDatasetConfig, build_eval_dataset_configs, ensure_dataset_list
 from miles.utils.file_arg_utils import resolve_file_arg
 from miles.utils.ft_utils.health_checker import SimpleHealthCheckerConfig
 from miles.utils.function_registry import load_function
-from miles.utils.hf_config import is_dsa, load_hf_config
+from miles.utils.hf_utils.config import is_dsa, load_hf_config
 from miles.utils.logging_utils import configure_logger_raw
-from miles.utils.lora import is_lora_enabled
+from miles.utils.lora.arguments import add_lora_arguments, validate_lora_args
+from miles.utils.lora.utils import is_lora_enabled
 from miles.utils.megatron_args_utils import compute_megatron_world_size_except_dp
 from miles.utils.object_store import ObjectStoreBackend
+from miles.utils.object_store_config import (
+    MOONCAKE_MASTER_ADDRESS_KEY,
+    compute_mooncake_init_kwargs_from_env,
+    compute_mooncake_init_kwargs_vanilla,
+)
 from miles.utils.run_uuid import RUN_UUID_LENGTH, generate_run_uuid, validate_run_uuid
 from miles.utils.tracking_utils.ci_history import RECORD_DIR_ENV
+from miles.utils.workers.argv_utils import with_relax_parser_required_args, with_suppressed_parser_help
+from miles.utils.workers.naming import DEPLOY_INSTANCE_ID_MAX_LENGTH, DNS_LABEL_PATTERN
+from miles.utils.workers.types import ClusterBackend, DeployComponent, WorkerCommBackend, resolve_worker_comm_backend
+from miles.utils.workers.worker_provider.static import parse_host_and_port
 
 logger = logging.getLogger(__name__)
 
@@ -87,6 +108,9 @@ def _resolve_rollout_functions(args) -> None:
         "--eval-num-gpus and a CheckpointEvalFn --eval-function-path each select an eval "
         "backend; the fleet would boot and then hand the work to the other one."
     )
+    assert not (
+        args.eval_num_gpus > 0 and _compute_rollout_external(args)
+    ), "eval_num_gpus cannot be set with external rollout engines."
     args.eval_uses_snapshots = args.eval_num_gpus > 0 or checkpoint_backend
 
 
@@ -130,6 +154,89 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
 
         # Ray
         def add_cluster_arguments(parser):
+            parser.add_argument(
+                "--cluster-backend",
+                type=str,
+                default=ClusterBackend.RAY.value,
+                choices=tuple(backend.value for backend in ClusterBackend),
+                help=(
+                    "Which backend provides the worker processes: "
+                    "`ray` launches them from the driver, `kubernetes` expects the platform to have "
+                    "created them already and observes them by their pod labels."
+                ),
+            )
+            parser.add_argument(
+                "--worker-comm-backend",
+                type=str,
+                default=None,
+                choices=tuple(backend.value for backend in WorkerCommBackend),
+                help=(
+                    "How the driver calls its workers: `ray` sends actor calls, `rpc` calls the http server "
+                    "every worker serves. Unset picks the default of the cluster backend, today `ray` under "
+                    "`--cluster-backend ray` and `rpc` under `--cluster-backend kubernetes`."
+                ),
+            )
+            parser.add_argument(
+                "--deploy-component",
+                type=str,
+                default=DeployComponent.ALL.value,
+                choices=tuple(component.value for component in DeployComponent),
+                help=(
+                    "Which part of the run this launch deploys: `all` deploys every worker, `trainer` the trainer "
+                    "controllers and their megatron ranks, `inference` a group of inference engines that registers "
+                    "itself into the run, and `primary` everything else (orchestration script, rollout executor, "
+                    "session servers, inference controller and routers). Deploying a subset takes one launch per "
+                    "subset, and the launch that carries the orchestration script reaches the trainer through the "
+                    "addresses it is given."
+                ),
+            )
+            parser.add_argument(
+                "--deploy-instance-id",
+                type=str,
+                default=None,
+                help=(
+                    "Id of this deployment, telling it apart from the other deployments of the same component "
+                    "in the same run: a trainer id such as `trainer-a` under `--deploy-component trainer`, or an "
+                    "engine group id such as `inf-east` under `--deploy-component inference`. A deployment's "
+                    "arguments describe only what it carries, so this id selects nothing; it is required under "
+                    "`--deploy-component inference`, which names its engine pools by it, optional under "
+                    "`--deploy-component trainer`, whose config already declares the one trainer id it carries, and "
+                    "refused for `all` and `primary`, which a run has exactly one of."
+                ),
+            )
+            parser.add_argument(
+                "--init-expected-num-cells",
+                type=int,
+                default=None,
+                help=(
+                    "How many engine cells per model this run waits for before it starts, when the engines are "
+                    "deployed elsewhere and register themselves into it. The run cannot derive the number, because "
+                    "the engine deployments are launched separately and may arrive late; declare here how many "
+                    "cells the first rollout needs. It gates startup only, and the run keeps serving whatever "
+                    "registers or leaves afterwards."
+                ),
+            )
+            parser.add_argument(
+                "--trainer-controller-addrs",
+                type=str,
+                default=None,
+                nargs="+",
+                help=(
+                    "Address of every independently deployed trainer controller, one "
+                    "<trainer_id>=<host:port> entry per trainer the run drives. Required when this launch "
+                    "carries the orchestration script but not the trainer."
+                ),
+            )
+            parser.add_argument(
+                "--inference-controller-addr",
+                type=str,
+                default=None,
+                help=(
+                    "Address of the one inference controller of the run, as host:port. Given "
+                    "to a `--deploy-component inference` launch, whose reporter registers the engines it deploys "
+                    "into that controller."
+                ),
+            )
             parser.add_argument("--actor-num-nodes", type=int, default=1, help="Number of nodes for training actor")
             parser.add_argument(
                 "--actor-num-gpus-per-node", type=int, default=8, help="Number of gpus per node for training actor"
@@ -566,10 +673,23 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help="the temperature for the inference engine during rollout.",
             )
             parser.add_argument(
-                "--rollout-top-p", type=float, default=1.0, help="the top-p for the inference engine during rollout."
+                "--rollout-top-p",
+                type=float,
+                default=1.0,
+                help=(
+                    "the top-p for the inference engine during rollout. Values below 1 enable "
+                    "sampling-support replay and require a positive --rollout-top-k."
+                ),
             )
             parser.add_argument(
-                "--rollout-top-k", type=int, default=-1, help="the top-k for the inference engine during rollout."
+                "--rollout-top-k",
+                type=int,
+                default=-1,
+                help=(
+                    "the top-k for the inference engine during rollout. Positive values enable "
+                    "sampling-support replay. SGLang's --sampling-mask-max-tokens is the physical "
+                    "returned-support limit because cutoff ties can retain more than top-k tokens."
+                ),
             )
             parser.add_argument(
                 "--rollout-max-context-len",
@@ -873,23 +993,45 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 action="store_true",
                 default=False,
                 help=(
-                    "Pin the RolloutExecutor (and the co-located router process) to the Ray head node. "
+                    "Pin the RolloutExecutor, the co-located router process, and the session servers to the "
+                    "Ray head node. "
                     "Useful in K8s where the head pod has a stable Service address so that "
                     "external agent environments can reliably reach the router."
                 ),
-            )
-            parser.add_argument(
-                "--rollout-external",
-                action="store_true",
-                default=False,
-                help="Use external SGLang instances instead of launching them inside the framework.",
             )
             parser.add_argument(
                 "--rollout-external-engine-addrs",
                 type=str,
                 default=None,
                 nargs="+",
-                help="Address and ports of the external engines.",
+                help=(
+                    "Static addresses of externally launched SGLang engines, one per engine cell "
+                    "(the node-0 engine url for multi-node engines). Each entry is host:port or "
+                    "http://host:port. Setting this implies external rollout: Miles launches no "
+                    "engines and discovers the topology from each engine's /server_info."
+                ),
+            )
+            parser.add_argument(
+                "--rollout-external-router-pd",
+                action="store_true",
+                default=False,
+                help=(
+                    "Launch the router in PD-disaggregation mode for external rollout engines. "
+                    "Internally launched engines infer this from the sglang config, but the router "
+                    "starts before external engines are discovered, so a PD external fleet must "
+                    "declare it here."
+                ),
+            )
+            parser.add_argument(
+                "--custom-inference-engine-provider-path",
+                type=str,
+                default=None,
+                help=(
+                    "Import path of a callable(args, *, capability) returning the BaseWorkerProvider "
+                    "that reports the inference engine cells. Setting this implies external rollout. "
+                    "When unset it is filled in automatically: the static discovery provider with "
+                    "--rollout-external-engine-addrs, the backend's own provider otherwise."
+                ),
             )
             parser.add_argument(
                 "--update-weight-transfer-mode",
@@ -1768,98 +1910,6 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             )
             return parser
 
-        def add_lora_arguments(parser):
-            """Add LoRA-related arguments for Megatron backend."""
-            parser.add_argument(
-                "--lora-rank",
-                type=int,
-                default=0,
-                help="LoRA rank. Set to 0 to disable LoRA (default: 0)",
-            )
-            parser.add_argument(
-                "--lora-alpha",
-                type=int,
-                default=16,
-                help="LoRA alpha for scaling (default: 16)",
-            )
-            parser.add_argument(
-                "--lora-dropout",
-                type=float,
-                default=0.0,
-                help="LoRA dropout rate (default: 0.0)",
-            )
-            parser.add_argument(
-                "--lora-type",
-                type=str,
-                default="lora",
-                choices=["lora", "canonical_lora"],
-                help="LoRA variant to use: 'lora' (standard) or 'canonical_lora' (split Q/K/V) (default: lora)",
-            )
-            parser.add_argument(
-                "--target-modules",
-                type=str,
-                default=None,
-                help="Target modules for LoRA. Use 'all-linear' or comma-separated module names "
-                "(e.g., 'q_proj,k_proj,v_proj,o_proj' for HF naming or 'linear_qkv,linear_proj' for Megatron naming)",
-            )
-            parser.add_argument(
-                "--exclude-modules",
-                type=str,
-                default=None,
-                help="Modules to exclude from LoRA (comma-separated)",
-            )
-            parser.add_argument(
-                "--lora-adapter-path",
-                type=str,
-                default=None,
-                help="Path to load pre-trained LoRA adapter weights (default: None)",
-            )
-            parser.add_argument(
-                "--lora-sync-from-tensor",
-                action="store_true",
-                default=False,
-                help="Sync LoRA weights via tensor instead of file (more efficient)",
-            )
-            parser.add_argument(
-                "--lora-base-cpu-backup",
-                action="store_true",
-                default=False,
-                help=(
-                    "LoRA + colocate: keep SGLang-side CPU mirror of base weights "
-                    "and skip per-step base sync. Trades host RAM for faster "
-                    "onload/offload. Ignored unless --colocate and LoRA are both on. "
-                    "Also needs 'weight' in --offload-rollout-level: SGLang populates "
-                    "the mirror during release_weights_occupation, so with the weights "
-                    "never released the mirror is never built and the flag does nothing."
-                ),
-            )
-            parser.add_argument(
-                "--lora-train-only",
-                action="store_true",
-                default=False,
-                help=(
-                    "Train LoRA adapters in Megatron but keep rollout engines on the frozen "
-                    "base policy: SGLang LoRA serving and adapter weight sync are disabled "
-                    "(only the base weights are synced). For models without SGLang LoRA "
-                    "support (e.g. Inkling native LoRA)."
-                ),
-            )
-            parser.add_argument(
-                "--experts-shared-outer-loras",
-                action="store_true",
-                default=False,
-                help="Enable shared-outer grouped-expert LoRA (gate_up lora_A and "
-                "down lora_B shared across experts, expert_dim=1). Matches SGLang "
-                "PR #21466's experts_shared_outer_loras=True serving contract.",
-            )
-            parser.add_argument(
-                "--multi-lora-n-adapters",
-                type=int,
-                default=0,
-                help="Maximum number of concurrent adapter slots for multi-LoRA. Set to 0 to disable multi-LoRA (default: 0)",
-            )
-            return parser
-
         def add_router_arguments(parser):
             parser.add_argument(
                 "--use-miles-router",
@@ -2027,7 +2077,8 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 default=None,
                 help=(
                     "Save the rollout data to this path for debugging. "
-                    "The file will be saved to `save_debug_rollout_data.format(rollout_id)`."
+                    "The file will be saved to `save_debug_rollout_data.format(rollout_id)`, "
+                    "so the template must contain the `{rollout_id}` placeholder."
                 ),
             )
             parser.add_argument(
@@ -2036,7 +2087,8 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 default=None,
                 help=(
                     "Save per-sample role-tagged trajectory text (JSONL) next to the rollout "
-                    "dump. The file will be saved to `save_debug_trajectory_data.format(rollout_id)`."
+                    "dump. The file will be saved to `save_debug_trajectory_data.format(rollout_id)`, "
+                    "so the template must contain the `{rollout_id}` placeholder."
                 ),
             )
             parser.add_argument(
@@ -2082,7 +2134,13 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                     "The file will be saved to `save_debug_train_data.format(rollout_id)`."
                 ),
             )
-            parser.add_argument("--save-debug-event-data", type=str, default=None)
+            parser.add_argument(
+                "--save-debug-event-data",
+                type=str,
+                default=None,
+                help="Where the audit events of this run go, including the env report. Defaults to "
+                "<save>/events, so that a run that checkpoints also records what it ran as.",
+            )
             parser.add_argument(
                 "--dump-details",
                 type=str,
@@ -2185,19 +2243,6 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "by up to 1 ULP of the quantized dtype per side (compared in dequantized space).",
             )
             parser.add_argument(
-                "--check-lora-weight-equal",
-                action="store_true",
-                default=False,
-                help=(
-                    "Verify the megatron->sglang LoRA adapter weight-sync on the colocated "
-                    "(from_tensors) path: on every sync the trainer ships a per-tensor sha256 "
-                    "manifest of the adapter it sends, and each rollout engine hashes the "
-                    "tensors it received and fails the load on any mismatch/missing/extra "
-                    "name. The LoRA analogue of --check-weight-update-equal, which only "
-                    "covers base weights."
-                ),
-            )
-            parser.add_argument(
                 "--save-local-weight-checksum",
                 action="store_true",
                 help="Save per-rank local weight checksum per-step.",
@@ -2224,8 +2269,20 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 default=None,
                 help="JSON array of fault injection actions. Each action: "
                 '{"at_rollout": N, "action": "stop_cell_at_end"|"start_cell_at_end"|"crash_before_allreduce", '
-                '"cell_id": "trainer-actor-2", "rank": 0, "attempt": 0}. '
-                "cell_id is the full cell id (spec name plus cell index) of the target cell.",
+                '"cell_id": "trainer-engine-actor-00002", "rank": 0, "attempt": 0}. '
+                "cell_id is the full cell id (spec name plus zero-padded cell index) of the target cell. "
+                'The action "sleep_forever_at_end" names no cell: it puts the orchestration script itself to sleep '
+                "once the step it names is trained and saved, so the run never starts the step after it.",
+            )
+            # TODO ad hoc hack: revert after the args refactor
+            parser.add_argument(
+                "--ci-ft-test-actions-path",
+                type=str,
+                default=None,
+                help="Path of a file holding the same JSON array as --ci-ft-test-actions, read afresh every time "
+                "the actions are consulted. A run relaunched in place keeps the arguments its pods were rendered "
+                "from, so a plan that has to change from one launch to the next is delivered through this file "
+                "instead of through the argument. Mutually exclusive with --ci-ft-test-actions.",
             )
             parser.add_argument(
                 "--ci-inject-rollout-data-path",
@@ -2256,8 +2313,24 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             parser.add_argument(
                 "--env-report",
                 type=str,
-                default=os.environ.get("MILES_SCRIPT_ENV_REPORT", ""),
-                help="JSON string containing environment report from external launcher.",
+                default=os.environ.get(LAUNCHER_REPORT_ENV_VAR, ""),
+                help="Path to the json record the external launcher wrote about the launch that started "
+                "this process.",
+            )
+            parser.add_argument(
+                "--env-report-interval-seconds",
+                type=float,
+                default=3600.0,
+                help="How often every process re-records its environment, so that code loaded later "
+                "(lazy imports, a swapped shared disk) is still captured. Non-positive records only at startup.",
+            )
+            parser.add_argument(
+                "--debug-unified-grad-fused-logprob",
+                action="store_true",
+                default=False,
+                help="Debug/test only: compute the stored log probabilities through the same grad-enabled fused "
+                "cross entropy the training step uses, then detach the result, so the two invocations of the "
+                "fused kernel take one execution path instead of two.",
             )
             parser.add_argument(
                 "--debug-deterministic-collective",
@@ -2549,6 +2622,15 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "Defaults to that placed address.",
             )
             parser.add_argument(
+                "--session-server-external-host",
+                type=str,
+                default=None,
+                help="Host that peers outside the cluster, such as agents in a sandbox, reach every session "
+                "server on. Setting it keeps all session servers on the head node, so it must reach the head. "
+                "Leave it unset when each node sets MILES_NODE_EXTERNAL_IP to its own reachable address, or "
+                "when the placed addresses already route from outside.",
+            )
+            parser.add_argument(
                 "--session-server-port",
                 type=int,
                 default=None,
@@ -2578,13 +2660,15 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             parser.add_argument(
                 "--session-sample-picker-path",
                 type=str,
-                default="miles.rollout.session.v2.picker_hub.drop_retries",
+                default="miles.rollout.session.v2.picker_hub.drop_same_prompt_retries",
                 help="v2 only. Import path of the sample-pick hook for the "
                 "session samples op: fn(leaf_samples, session_metadata) -> "
                 "list[Sample], a pure selection over the per-leaf raw samples. "
                 "Runs synchronously inside the session server process; long CPU "
-                "work stalls every session on the instance. Default: the "
-                "temporal-supersession retry trim.",
+                "work stalls every session on the instance. Default: drop_same_prompt_retries, "
+                "which trims identical re-sends, including a re-sent first turn; "
+                "drop_rolled_back_leaves also trims a leaf whose later sibling sent a "
+                "different request.",
             )
             parser.add_argument(
                 "--session-sample-postprocessor-path",
@@ -2601,13 +2685,18 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
 
         def add_user_provided_function_arguments(parser):
             try:
-                args_partial, _ = parser.parse_known_args()
+                with with_relax_parser_required_args(parser), with_suppressed_parser_help(parser):
+                    args_partial, _ = parser.parse_known_args()
             except SystemExit:
                 return parser
-            for path in [
-                resolve_rollout_function_paths(args_partial)[0],
-                args_partial.custom_generate_function_path,
-            ]:
+            paths = [args_partial.custom_inference_engine_provider_path]
+            if not use_legacy_rollout_v1():
+                paths = [
+                    resolve_rollout_function_paths(args_partial)[0],
+                    args_partial.custom_generate_function_path,
+                    *paths,
+                ]
+            for path in paths:
                 try:
                     fn = load_function(path)
                 except (ModuleNotFoundError, ValueError):
@@ -2629,7 +2718,6 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
         parser = add_eval_arguments(parser)
         parser = add_algo_arguments(parser)
         parser = add_on_policy_distillation_arguments(parser)
-        parser = add_lora_arguments(parser)
         parser = add_wandb_arguments(parser)
         parser = add_mlflow_arguments(parser)
         parser = add_tensorboard_arguments(parser)
@@ -2638,16 +2726,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
         parser = add_router_arguments(parser)
         parser = add_debug_arguments(parser)
         parser = add_sglang_arguments(parser)
-        # required whenever expert projections are LoRA targets, inert otherwise
-        # (sglang's own default is False)
-        parser.set_defaults(sglang_lora_use_virtual_experts=True)
-        parser.add_argument(
-            "--no-sglang-lora-use-virtual-experts",
-            dest="sglang_lora_use_virtual_experts",
-            action="store_false",
-            help="Serve MoE-expert LoRA through sglang's fused_moe_lora alignment path instead "
-            "of the virtual-experts path.",
-        )
+        parser = add_lora_arguments(parser)
         parser = add_session_arguments(parser)
         parser = add_network_arguments(parser)
         parser = add_reward_model_arguments(parser)
@@ -2656,8 +2735,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
         parser = add_prefill_decode_disaggregation_arguments(parser)
         parser = add_ci_arguments(parser)
         parser = add_custom_megatron_plugins_arguments(parser)
-        if not use_legacy_rollout_v1():
-            parser = add_user_provided_function_arguments(parser)
+        parser = add_user_provided_function_arguments(parser)
 
         reset_arg(
             parser,
@@ -2666,6 +2744,24 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             default=None,
             help="Path to the YAML config for custom function arguments, or an inline `base64:<payload>`.",
         )
+        reset_arg(
+            parser,
+            "--megatron-config",
+            type=str,
+            default=None,
+            help=(
+                "Path to a YAML config naming every trainer (or an inline `base64:<payload>`), "
+                "symmetric to --sglang-config. Format: "
+                "`trainers: [{model_id: ..., role: ..., trainer_id: ..., overrides: {lr: ...}}]`. "
+                "Each `model_id` is the policy model id: it is what a custom rollout function writes into "
+                "Sample.trainer_model_id, and it must match a --sglang-config model with update_weights: true. "
+                "Each `role` defaults to 'actor', and each `trainer_id` addresses one trainer controller and "
+                "its engine pool, defaulting to `<model_id>-<role>`. "
+                "Each `overrides` mapping overrides the base CLI arguments for that trainer only. Omitting the flag "
+                "is a single policy run. Several policies require train_multi_policy.py."
+            ),
+        )
+        parser.set_defaults(trainer_id=ACTOR_ROLE, trainer_model_id=None)
         reset_arg(parser, "--padded-vocab-size", type=int, default=None)
 
         return parser
@@ -2688,14 +2784,20 @@ def parse_args(add_custom_arguments=None, entry="train", preprocess_args=None):
 
         args = megatron_parse_args(extra_args_provider=add_miles_arguments)
         args.compress_ratios = None
+        args.rollout_indexer_topk_num_streams = None
         if args.hf_checkpoint:
             hf_config = load_hf_config(args.hf_checkpoint)
             args.compress_ratios = getattr(hf_config, "compress_ratios", None)
             hf_validate_args(args, hf_config)
 
             if is_dsa(hf_config):
-                args.indexer_rope_interleave = bool(getattr(hf_config, "indexer_rope_interleave", False))
+                getter = getattr(hf_config, "get_text_config", None)
+                text_config = (getter() if callable(getter) else getattr(hf_config, "text_config", None)) or hf_config
+                args.indexer_rope_interleave = bool(getattr(text_config, "indexer_rope_interleave", False))
                 logger.info(f"Setting indexer_rope_interleave: {args.indexer_rope_interleave} into args")
+                linear_attn_config = getattr(text_config, "linear_attn_config", None)
+                kda_layers = set((linear_attn_config or {}).get("kda_layers") or [])
+                args.rollout_indexer_topk_num_streams = text_config.num_hidden_layers - len(kda_layers)
 
         # TODO: unify this .rank and .world_size w/ indep_dp logics
         args.rank = 0
@@ -2803,6 +2905,202 @@ def _resolve_eval_datasets(args) -> list[EvalDatasetConfig]:
     return eval_datasets
 
 
+def _compute_rollout_external(args: argparse.Namespace) -> bool:
+    return args.rollout_external_engine_addrs is not None or args.custom_inference_engine_provider_path is not None
+
+
+_BACKEND_ENGINE_PROVIDER_PATH = "miles.ray.specs.inference.backend_inference_engine_provider"
+_STATIC_EXTERNAL_ENGINE_PROVIDER_PATH = "miles.ray.rollout.external_engine_provider.static_inference_engine_provider"
+
+
+def _compute_custom_inference_engine_provider_path(args: argparse.Namespace) -> str:
+    if (path := args.custom_inference_engine_provider_path) is not None:
+        return path
+    if args.rollout_external_engine_addrs is not None:
+        return _STATIC_EXTERNAL_ENGINE_PROVIDER_PATH
+    return _BACKEND_ENGINE_PROVIDER_PATH
+
+
+_DEPLOY_INSTANCE_ID_PATTERN = re.compile(DNS_LABEL_PATTERN)
+
+
+def _validate_deploy_component(args: argparse.Namespace) -> None:
+    component = DeployComponent(args.deploy_component)
+
+    _validate_deploy_instance_id(args, component=component)
+    _validate_static_addrs_external_launch(args, component=component)
+    _validate_registration(args, component=component)
+    _validate_single_engine_source(args, component=component)
+
+    if not component.is_split():
+        return
+
+    cluster_backend = ClusterBackend(args.cluster_backend)
+    assert cluster_backend is ClusterBackend.KUBERNETES or (
+        cluster_backend is ClusterBackend.RAY and WorkerCommBackend(args.worker_comm_backend) is WorkerCommBackend.RPC
+    ), (
+        f"--deploy-component {component.value} needs --cluster-backend {ClusterBackend.KUBERNETES.value}, or "
+        f"{ClusterBackend.RAY.value} with --worker-comm-backend {WorkerCommBackend.RPC.value} and a ray cluster "
+        f"per deployment; got --cluster-backend {args.cluster_backend} --worker-comm-backend "
+        f"{args.worker_comm_backend}"
+    )
+
+    assert (
+        not args.colocate
+    ), f"--deploy-component {component.value} cannot be combined with --colocate, which shares gpus across the two"
+
+    if component.deploys_orchestration_script():
+        assert (
+            args.trainer_controller_addrs is not None
+        ), f"--deploy-component {component.value} deploys no trainer, so it needs --trainer-controller-addrs"
+        _validate_trainer_controller_addrs(args)
+
+    if component is DeployComponent.TRAINER:
+        _validate_single_deployed_trainer(args)
+        assert not (
+            args.debug_rollout_only and cluster_backend is ClusterBackend.RAY
+        ), f"--debug-rollout-only needs an inference side, which --deploy-component {component.value} has none"
+
+    if component is not DeployComponent.INFERENCE:
+        _validate_shared_object_store(args, component=component)
+    _validate_watched_cells_deployed_locally(args, component=component)
+
+
+def _validate_deploy_instance_id(args: argparse.Namespace, *, component: DeployComponent) -> None:
+    if (instance_id := args.deploy_instance_id) is None:
+        return
+
+    assert component.takes_instance_id(), (
+        f"--deploy-instance-id {instance_id!r} names one deployment of {component.value} apart from the others, and "
+        f"a run has exactly one {component.value}; only "
+        f"{[one.value for one in DeployComponent if one.takes_instance_id()]} are deployed more than once"
+    )
+
+    if component is not DeployComponent.INFERENCE:
+        return
+
+    assert _DEPLOY_INSTANCE_ID_PATTERN.fullmatch(instance_id), (
+        f"--deploy-instance-id {instance_id!r} names the release this launch installs and the pool ids of the "
+        f"engines it deploys, so it has to match {_DEPLOY_INSTANCE_ID_PATTERN.pattern}"
+    )
+    assert len(instance_id) <= DEPLOY_INSTANCE_ID_MAX_LENGTH, (
+        f"--deploy-instance-id {instance_id!r} is {len(instance_id)} characters, and it is carried inside every "
+        f"engine pool id this deployment names, which kubernetes bounds; it takes at most "
+        f"{DEPLOY_INSTANCE_ID_MAX_LENGTH}"
+    )
+
+
+def _validate_single_deployed_trainer(args: argparse.Namespace) -> None:
+    trainers = resolve_megatron_config(args).trainers
+    assert len(trainers) == 1, (
+        f"--deploy-component trainer deploys one trainer and its arguments describe {len(trainers)} "
+        f"({[t.trainer_id for t in trainers]}); give this deployment the config of the one trainer it carries, "
+        f"and launch every other trainer as a deployment of its own"
+    )
+    assert not args.use_critic, (
+        "--use-critic grows this run by a critic trainer, and --deploy-component trainer carries exactly the "
+        "one trainer its config describes; deploy the critic separately with an explicit single-trainer config"
+    )
+    assert trainers[0].role != CRITIC_ROLE, (
+        f"--deploy-component trainer carries the trainer {trainers[0].trainer_id!r}, whose role is "
+        f"{CRITIC_ROLE!r}; a critic is deployed together with the run that drives it, and deploying one on its own "
+        f"is not supported yet"
+    )
+    assert args.deploy_instance_id is None or args.deploy_instance_id == trainers[0].trainer_id, (
+        f"--deploy-instance-id {args.deploy_instance_id!r} names this deployment, but its config describes trainer "
+        f"{trainers[0].trainer_id!r}; the run reaches a trainer by the id its config declares, so the two must "
+        f"agree"
+    )
+
+
+def _validate_static_addrs_external_launch(args: argparse.Namespace, *, component: DeployComponent) -> None:
+    assert component.deploys_orchestration_script() or args.trainer_controller_addrs is None, (
+        f"--trainer-controller-addrs describes the trainer side the orchestration script drives, but "
+        f"--deploy-component {component.value} carries no orchestration script, so nothing here would call those "
+        f"addresses"
+    )
+    assert not (
+        component.selects(DeployComponent.TRAINER) and args.trainer_controller_addrs is not None
+    ), f"--deploy-component {component.value} deploys the trainer itself, so drop --trainer-controller-addrs"
+
+
+def _validate_registration(args: argparse.Namespace, *, component: DeployComponent) -> None:
+    if (init_expected := args.init_expected_num_cells) is not None:
+        assert component is DeployComponent.PRIMARY, (
+            f"--init-expected-num-cells needs --deploy-component {DeployComponent.PRIMARY.value}, not "
+            f"{component.value}"
+        )
+        assert (
+            init_expected >= 1
+        ), f"--init-expected-num-cells {init_expected} lets the run start before a single engine registered into it"
+
+    if component is DeployComponent.INFERENCE:
+        assert args.deploy_instance_id is not None, (
+            f"--deploy-component {component.value} needs --deploy-instance-id: it names the engine pools this "
+            f"deployment reports and tells it apart from the other engine deployments of the run"
+        )
+        assert args.inference_controller_addr is not None, (
+            f"--deploy-component {component.value} deploys engines and nothing that drives them, so the one "
+            f"inference controller of the run has to be named by --inference-controller-addr"
+        )
+        parse_host_and_port(args.inference_controller_addr)
+    else:
+        assert args.inference_controller_addr is None, (
+            f"--deploy-component {component.value} holds the one inference controller of the run, so it reaches it "
+            f"in its own process rather than through --inference-controller-addr"
+        )
+
+
+def _validate_single_engine_source(args: argparse.Namespace, *, component: DeployComponent) -> None:
+    if component is not DeployComponent.PRIMARY:
+        return
+
+    assert args.rollout_external_engine_addrs is None, (
+        f"--deploy-component {component.value} serves the engines that register into it, so "
+        f"--rollout-external-engine-addrs would be dropped and the run would wait for registrations forever"
+    )
+    assert (path := args.custom_inference_engine_provider_path) in (None, _BACKEND_ENGINE_PROVIDER_PATH), (
+        f"--deploy-component {component.value} serves the engines that register into it, so "
+        f"--custom-inference-engine-provider-path {path!r} would be dropped and never asked for an engine"
+    )
+
+
+def _validate_watched_cells_deployed_locally(args: argparse.Namespace, *, component: DeployComponent) -> None:
+    if not component.deploys_orchestration_script():
+        unservable = sorted(set(args.ft_components) - {"train"})
+        assert not unservable, (
+            f"--deploy-component {component.value} installs no inference engines, and {unservable} cells are "
+            f"suspended and resumed through the controller of the deployment that owns them, so this launch cannot "
+            f"answer for them; pass --ft-components train"
+        )
+        return
+
+    assert (
+        not args.api_server_port
+    ), f"--deploy-component {component.value} watches cells it does not deploy; pass --api-server-port 0"
+
+
+def _validate_trainer_controller_addrs(args: argparse.Namespace) -> None:
+    external_trainer_controller_addrs(args, trainer_ids=compute_trainer_ids(args))
+
+
+def _validate_shared_object_store(args: argparse.Namespace, *, component: DeployComponent) -> None:
+    assert ObjectStoreBackend(args.object_store_backend) == ObjectStoreBackend.MOONCAKE, (
+        f"--deploy-component {component.value} needs --object-store-backend "
+        f"{ObjectStoreBackend.MOONCAKE.value}, shared by every deployment of the run"
+    )
+
+    if component.deploys_orchestration_script():
+        return
+
+    address = (args.mooncake_store_init_kwargs or {}).get(MOONCAKE_MASTER_ADDRESS_KEY)
+    assert isinstance(address, str) and ":" in address, (
+        f"--deploy-component {component.value} runs no object store master, so it needs "
+        f'--mooncake-store-init-kwargs \'{{"{MOONCAKE_MASTER_ADDRESS_KEY}": "<host>:<port>"}}\' '
+        f"(got {address!r})"
+    )
+
+
 _FT_DEFAULT_COMPONENTS: list[str] = ["rollout"]
 
 
@@ -2826,8 +3124,6 @@ def _validate_rematerialize_param_from_master_weight(args):
     assert (
         args.train_backend == "megatron"
     ), "--rematerialize-param-from-master-weight reads Megatron's distributed-optimizer main params"
-    from miles.backends.megatron_utils.lora.utils import is_lora_enabled
-
     assert not is_lora_enabled(args), "--rematerialize-param-from-master-weight does not support LoRA"
     assert not args.debug_disable_optimizer, "--debug-disable-optimizer leaves no main params to rematerialize from"
     assert not args.indep_dp, (
@@ -2871,6 +3167,19 @@ def _resolve_mini_ft_controller_enable(args: argparse.Namespace) -> bool:
     if (enable := args.mini_ft_controller_enable) is not None:
         return enable
     return bool(args.ft_components) and args.api_server_port != 0
+
+
+def _resolve_run_uuid(args: argparse.Namespace) -> str:
+    if (given := args.run_uuid) is not None:
+        return validate_run_uuid(given)
+
+    component = DeployComponent(args.deploy_component)
+    assert not component.is_split(), (
+        f"--deploy-component {component.value} installs one part of a run whose other parts are installed by other "
+        f"launches, and nothing but the run uuid joins them, so the layer that deploys them all has to name it "
+        f"with --run-uuid"
+    )
+    return generate_run_uuid()
 
 
 def miles_validate_args(args):
@@ -2951,6 +3260,31 @@ def miles_validate_args(args):
             "R3 payloads can become very large. TODO: Retract-mode weight updates R3 "
             "have known issues in SGLang and need to be fixed."
         )
+
+    if not 0.0 < args.rollout_top_p <= 1.0:
+        raise ValueError(f"--rollout-top-p must be in (0, 1], got {args.rollout_top_p}")
+    if args.rollout_top_k != -1 and args.rollout_top_k < 1:
+        raise ValueError(f"--rollout-top-k must be -1 or at least 1, got {args.rollout_top_k}")
+    args.use_sampling_support_replay = args.rollout_top_p < 1.0 or args.rollout_top_k > 0
+    if args.use_sampling_support_replay:
+        if args.rollout_top_k == -1:
+            raise ValueError(
+                "--rollout-top-p below 1 requires a positive --rollout-top-k; "
+                "top-p alone does not bound the returned support size"
+            )
+        if args.recompute_logprobs_via_prefill:
+            raise ValueError(
+                "sampling-support replay cannot be combined with --recompute-logprobs-via-prefill; "
+                "prefill scoring does not preserve the rollout sampling support"
+            )
+        if args.kl_coef != 0 or args.use_kl_loss or args.use_opd:
+            # The actor still produces full-vocabulary logits, but replay currently exposes only the
+            # support-normalized actor score to the loss. These objectives can be enabled once the loss
+            # path also preserves an unmasked actor score from the same forward pass.
+            raise ValueError(
+                "sampling-support replay cannot currently be combined with reference KL or teacher distillation; "
+                "those objectives require a separate full-policy actor score"
+            )
 
     if not args.use_session_server and args.tito_model != TITOTokenizerType.DEFAULT.value:
         raise ValueError(
@@ -3068,31 +3402,10 @@ def miles_validate_args(args):
         if args.opd_teacher_urls:
             raise ValueError("--opd-teacher-urls is set but --use-opd is not enabled. Please add --use-opd flag.")
 
-    # TODO: During loading, we need to set the start_rollout_id here.
-    if args.megatron_to_hf_mode == "bridge":
-        # Fresh runs pass a not-yet-created `--load` dir; fall back to the reference
-        # weights (loaded via the HF bridge) instead of asserting in load_checkpoint.
-        # Mirrors the non-bridge branch below.
-        if (
-            args.load is None
-            or not os.path.exists(args.load)
-            or not os.path.exists(os.path.join(args.load, "latest_checkpointed_iteration.txt"))
-        ):
-            args.load = args.ref_load or args.hf_checkpoint
-            args.start_rollout_id = 0
-    else:
-        if (
-            args.load is None
-            or not os.path.exists(args.load)
-            or not os.path.exists(os.path.join(args.load, "latest_checkpointed_iteration.txt"))
-        ):
-            args.no_load_optim = True
-            args.no_load_rng = True
-            args.finetune = True
-            args.load = args.ref_load
-            if args.ref_ckpt_step is not None:
-                args.ckpt_step = args.ref_ckpt_step
-            args.start_rollout_id = 0
+    # TODO: refactor
+    args.requested_load = args.load
+    if args.megatron_config is None:
+        resolve_args_checkpoint_load(args)
 
     if args.eval_interval is not None:
         assert args.eval_datasets, "Evaluation datasets must be configured when eval_interval is set."
@@ -3118,55 +3431,7 @@ def miles_validate_args(args):
     if args.custom_megatron_post_save_hook_path is not None:
         assert args.save is not None, "'--save' is required when custom_megatron_post_save_hook_path is set."
 
-    # Parse LoRA target modules
-    if args.lora_rank > 0:
-        assert args.target_modules is not None, "'--target-modules' is required when LoRA is enabled."
-
-        if args.target_modules == "all-linear":
-            # MLA projections are HF-config-gated (SGLang sizes LoRA buffers per module name;
-            # listing them on a dense model crashes the engine). The DSA indexer stays excluded.
-            modules = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
-            hf_config = load_hf_config(args.hf_checkpoint)
-            if getattr(hf_config, "kv_lora_rank", None):
-                modules += ["kv_a_proj_with_mqa", "kv_b_proj"]
-                if getattr(hf_config, "q_lora_rank", None):
-                    modules += ["q_a_proj", "q_b_proj"]
-        elif "," in args.target_modules:
-            modules = [m.strip() for m in args.target_modules.split(",")]
-        else:
-            modules = [args.target_modules]
-
-        if args.exclude_modules:
-            exclude_set = (
-                set(m.strip() for m in args.exclude_modules.split(","))
-                if "," in args.exclude_modules
-                else {args.exclude_modules}
-            )
-            modules = [m for m in modules if m not in exclude_set]
-
-        args.target_modules = modules
-
-        # Training and serving must agree on shared-outer grouped-expert LoRA
-        # (expert_dim=1 buffers in SGLang).
-        if args.experts_shared_outer_loras and hasattr(args, "sglang_experts_shared_outer_loras"):
-            args.sglang_experts_shared_outer_loras = True
-        assert args.experts_shared_outer_loras == bool(
-            getattr(args, "sglang_experts_shared_outer_loras", args.experts_shared_outer_loras)
-        ), "experts_shared_outer_loras and sglang_experts_shared_outer_loras must agree"
-
-        # the two MoE-expert adapter layouts are not checkpoint-compatible; say which one runs
-        _expert_leaves = ("linear_fc1", "linear_fc2", "gate_proj", "up_proj", "down_proj")
-        if any(leaf in str(tm) for tm in modules for leaf in _expert_leaves):
-            logger.warning(
-                "MoE-expert LoRA layout: %s (--experts-shared-outer-loras).",
-                "shared-outer" if args.experts_shared_outer_loras else "per-expert",
-            )
-
-    # Sets args.multi_lora, then validates/defaults the multi-LoRA arg surface
-    # (adapter configs themselves are loaded later by the controller).
-    from miles.utils.multi_lora import validate_multi_lora_args
-
-    validate_multi_lora_args(args)
+    validate_lora_args(args)
 
     assert not (args.kl_coef != 0 and args.kl_loss_coef != 0), "Only one of kl_coef and kl_loss_coef can be set"
 
@@ -3221,7 +3486,10 @@ def miles_validate_args(args):
         args.save_debug_rollout_data = f"{args.dump_details}/rollout_data/{{rollout_id}}.pt"
         args.save_debug_train_data = f"{args.dump_details}/train_data/{{rollout_id}}_{{rank}}.pt"
         args.save_debug_trajectory_data = f"{args.dump_details}/trajectory/{{rollout_id}}.jsonl"
-        args.save_debug_event_data = f"{args.dump_details}/events"
+        args.save_debug_event_data = f"{args.dump_details}/{EVENTS_DIRNAME}"
+
+    if args.save_debug_event_data is None and args.save is not None:
+        args.save_debug_event_data = f"{args.save}/{EVENTS_DIRNAME}"
 
     if args.load_debug_rollout_data is not None:
         logger.info(
@@ -3484,6 +3752,9 @@ def miles_validate_args(args):
                 "the training rollout function cannot evaluate snapshots."
             )
         if args.eval_hf_dir is None:
+            if not any(field == "rollout_id" for _, field, _, _ in Formatter().parse(args.save_hf)):
+                args.save_hf = os.path.join(args.save_hf, "step_{rollout_id}")
+                logger.info(f"Using per-step checkpoints for snapshot eval: --save-hf={args.save_hf}")
             assert args.save_interval is not None and args.eval_interval % args.save_interval == 0, (
                 "Reusing --save-hf checkpoints for eval requires eval_interval to be a "
                 f"multiple of save_interval (got eval_interval={args.eval_interval}, "
@@ -3537,7 +3808,38 @@ def miles_validate_args(args):
     if args.use_rollout_routing_replay:
         args.use_routing_replay = True
 
-    args.run_uuid = generate_run_uuid() if args.run_uuid is None else validate_run_uuid(args.run_uuid)
+    args.rollout_external = _compute_rollout_external(args)
+    args.custom_inference_engine_provider_path = _compute_custom_inference_engine_provider_path(args)
+
+    args.worker_comm_backend = resolve_worker_comm_backend(
+        cluster_backend=ClusterBackend(args.cluster_backend), requested=args.worker_comm_backend
+    ).value
+
+    if ClusterBackend(args.cluster_backend) == ClusterBackend.KUBERNETES:
+        assert (
+            not args.use_miles_dashboard
+        ), "--use-miles-dashboard creates a Ray actor, which --cluster-backend kubernetes has no Ray cluster for"
+        assert (
+            not args.use_distributed_post
+        ), "--use-distributed-post reads ray.nodes(), which --cluster-backend kubernetes has no Ray cluster for"
+        assert (
+            args.multi_lora_n_adapters == 0
+        ), "--multi-lora-n-adapters drives RayWorkerManager, which --cluster-backend kubernetes does not use"
+        if ObjectStoreBackend(args.object_store_backend) != ObjectStoreBackend.MOONCAKE:
+            logger.info(
+                f"Overriding --object-store-backend {args.object_store_backend} with "
+                f"{ObjectStoreBackend.MOONCAKE.value} under --cluster-backend {ClusterBackend.KUBERNETES.value}."
+            )
+            args.object_store_backend = ObjectStoreBackend.MOONCAKE.value
+        if (
+            not args.mooncake_store_init_kwargs
+            and DeployComponent(args.deploy_component).deploys_orchestration_script()
+        ):
+            args.mooncake_store_init_kwargs = (
+                compute_mooncake_init_kwargs_vanilla() | compute_mooncake_init_kwargs_from_env()
+            )
+
+    args.run_uuid = _resolve_run_uuid(args)
 
     if args.use_rollout_indexer_replay:
         args.use_indexer_replay = True
@@ -3561,11 +3863,15 @@ def miles_validate_args(args):
 
     assert not (
         args.prefill_num_servers is not None and args.rollout_external
-    ), "prefill_num_servers cannot be set when rollout_external is set."
+    ), "prefill_num_servers cannot be set with external rollout engines; use --rollout-external-router-pd."
 
     assert not (
-        getattr(args, "sglang_config", None) is not None and args.rollout_external
-    ), "sglang_config cannot be set when rollout_external is set."
+        args.sglang_config is not None and args.rollout_external
+    ), "sglang_config cannot be set with external rollout engines; the topology comes from discovery."
+
+    assert not (
+        args.rollout_external_router_pd and not args.rollout_external
+    ), "--rollout-external-router-pd only applies to external rollout engines; internally launched engines infer PD from the sglang config."
 
     assert not (
         getattr(args, "sglang_config", None) is not None and getattr(args, "prefill_num_servers", None) is not None
@@ -3587,6 +3893,8 @@ def miles_validate_args(args):
 
     if args.mini_ft_controller_enable and args.api_server_port == 0:
         raise ValueError("--mini-ft-controller-enable requires --api-server-port to be set (non-zero)")
+
+    _validate_deploy_component(args)
 
 
 def validate_skip_actor_forward_only(args) -> None:

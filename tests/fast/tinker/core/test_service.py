@@ -730,7 +730,11 @@ async def test_a_dead_trainer_escapes_the_dispatch_loop(tmp_path, monkeypatch):
     run_task = asyncio.create_task(gateway.run())
     try:
         model_id = await created_model(gateway)
-        monkeypatch.setattr(gateway.backend, "trainer_dead", lambda: True)
+
+        async def _dead() -> bool:
+            return True
+
+        monkeypatch.setattr(gateway.backend, "trainer_dead", _dead)
         gateway.submit("tenant", "forward_backward", fb_payload(model_id, 1, [datum()]))
         with pytest.raises(RuntimeError, match="trainer workers died"):
             await asyncio.wait_for(run_task, timeout=2)

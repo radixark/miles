@@ -4,31 +4,19 @@ from miles.backends.megatron_utils.actor import MegatronTrainRayActor
 from miles.backends.megatron_utils.lora import checkpoint as lora_checkpoint
 from miles.backends.megatron_utils.lora import model as lora_model
 from miles.backends.megatron_utils.lora.optimizer import SlotOptimizer
-from miles.backends.megatron_utils.lora.utils import build_lora_sync_config
-from miles.backends.megatron_utils.update_weight.hf_weight_iterator import get_hf_weight_iterator
 from miles.backends.training_utils.data import get_rollout_data
-from miles.backends.training_utils.weight_update.hf_weight_iterator import WeightUpdatePlacement
-from miles.backends.training_utils.weight_update.snapshot_publisher import WeightPublisher
-from miles.utils.multi_lora import AdapterSpec
-from miles.utils.ray_utils import Box
+from miles.utils.lora.utils import AdapterSpec
+from miles.utils.object_store import StoreObjectRef
 from miles.utils.tracking_utils.structured_log import with_logs
 
 
 class MultiLoRATrainRayActor(MegatronTrainRayActor):
     def _init_training_state(self) -> None:
-        args = self.args
         self.slot_optimizers: dict[int, SlotOptimizer] = {}
-        iterator = get_hf_weight_iterator(
-            args,
-            self.model,
-            required_placement=WeightUpdatePlacement(gather_pp=True),
-            model_name=type(self.hf_config).__name__.lower() if args.model_name is None else args.model_name,
-            quantization_config=getattr(self.hf_config, "quantization_config", None),
-        )
-        self.weight_publisher = WeightPublisher(iterator, build_lora_sync_config(args))
+        self._init_weight_updater_and_publisher(update_weights=False, publish_snapshots=True)
 
     @with_logs
-    def forward_backward(self, batch_id: int, rollout_data_ref: Box) -> dict:
+    def forward_backward(self, batch_id: int, rollout_data_ref: StoreObjectRef) -> dict:
         self._heartbeat.bump()
         with ExitStack() as stack:
             rollout_data, store_get_result = get_rollout_data(self.args, rollout_data_ref)
@@ -41,7 +29,7 @@ class MultiLoRATrainRayActor(MegatronTrainRayActor):
         return lora_model.optim_step(self.slot_optimizers, adam_params_by_slot)
 
     @with_logs
-    def forward_only(self, batch_id: int, rollout_data_ref: Box) -> dict:
+    def forward_only(self, batch_id: int, rollout_data_ref: StoreObjectRef) -> dict:
         """Same loss pass as forward_backward, without the backward: the Tinker
         forward() contract returns the requested loss per datum."""
         self._heartbeat.bump()
@@ -66,7 +54,10 @@ class MultiLoRATrainRayActor(MegatronTrainRayActor):
     def export_slot(self, slot: int, rank: int, alpha: float, path: str, metadata: dict | None = None) -> None:
         """Write the slot's adapter as an engine-loadable dir."""
         self._heartbeat.bump()
-        self.weight_publisher.publish_adapter(AdapterSpec(slot=slot, rank=rank, alpha=alpha), path, metadata=metadata)
+        assert self.snapshot_publisher is not None, "adapter export requires a snapshot publisher"
+        self.snapshot_publisher.publish_adapter(
+            AdapterSpec(slot=slot, rank=rank, alpha=alpha), path, metadata=metadata
+        )
 
     @with_logs
     def unload_slot(self, slot: int) -> dict | None:

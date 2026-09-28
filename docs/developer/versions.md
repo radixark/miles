@@ -37,12 +37,12 @@ The default build-args are the version surface:
 
 | Build-arg | Default | What it selects |
 |---|---|---|
-| `SGLANG_IMAGE_TAG` | `v0.5.16` | The `lmsysorg/sglang` base image, which brings torch, CUDA and Transformer Engine |
+| `SGLANG_IMAGE_TAG` | `v0.5.20` | The `lmsysorg/sglang` base image, which brings torch, CUDA, Transformer Engine and Mooncake |
 | `SGLANG_BRANCH` | `sglang-miles` | The branch fetched into the base image's SGLang checkout |
 | `SGLANG_COMMIT` | empty | Empty means the branch HEAD at build time; set it to freeze one commit |
 | `MEGATRON_REPO` / `MEGATRON_BRANCH` / `MEGATRON_COMMIT` | `radixark/Megatron-LM` / `miles-main` / empty | The Megatron-LM checkout; an empty commit follows branch HEAD, while a release build supplies the locked commit |
 | `MILES_COMMIT` | `main` | The Miles checkout baked into the image |
-| `ENABLE_CUDA_13` | `1` | CUDA 13 plus the Mooncake structured-object-store wheel; `0` selects the CUDA 12.9 path |
+| `ENABLE_CUDA_13` | `1` | CUDA 13; `0` selects the CUDA 12.9 path |
 | `WHEELS_REPO` | `yueming-yuan/miles-wheels` | The prebuilt-wheels repository |
 | `WHEELS_TAG_X86` / `WHEELS_TAG_ARM64` | `cu130-torch213-x86_64` / `cu130-torch213-aarch64` | Two complete wheels releases, selected by `TARGETARCH` and installed verbatim |
 
@@ -56,7 +56,9 @@ Everything else is pinned inline where it is installed: `mbridge` and `Megatron-
 explicit versions. Transformer Engine is special: `docker/verify_transformer_engine.py`
 asserts the installed triplet is `2.17.0`, and the patches under `docker/patch/cu13/` are
 applied to it with a build failure if any patch does not apply cleanly, so an image can
-never ship silently unpatched TE.
+never ship silently unpatched TE. Mooncake comes from the base image unchanged; Miles'
+Mooncake object-store backend needs 0.3.12.post1 or newer, the first release whose
+`mooncake.structured_object_store` has the API Miles imports.
 
 `requirements.txt` is Miles' own dependency list, and the convention there is that **a pin
 carries its reason inline**: `transformers==5.12.1` names the HF-native weight conversion and
@@ -70,7 +72,7 @@ Release values represent different facts. Each row below names the source used b
 | Fact | Authoritative source | Derived or consumed values |
 |---|---|---|
 | Base Miles version | `setup.py` | Release branch `release/vX.Y.Z`; base-version check before tagging |
-| Exact published version | `version` input to `release-tag.yml`, persisted as annotated Git tag `v<exact-version>` | CUDA image tags `v<exact-version>` and `v<exact-version>-cu12` |
+| Exact published version | `version` input to `release-tag.yml`, persisted as annotated Git tag `v<exact-version>` | CUDA 13 image tag `v<exact-version>` |
 | Frozen dependency selection | `release-lock.json` committed on the release branch | SGLang commit, Megatron-LM commit, and the CUDA image tag used by release CI |
 
 For example, base version `0.3.0` owns branch `release/v0.3.0`; that branch can produce exact tags `v0.3.0rc0`, `v0.3.0`, and `v0.3.0.post1` without changing `setup.py` between tags.
@@ -92,7 +94,7 @@ fleet's image is.
 | `cu13` | `radixark/miles:dev` | `linux/amd64` + `linux/arm64`, one manifest. This is the daily image |
 | `cu13-x86` / `cu13-aarch64` | `radixark/miles:dev` | Single-arch rebuilds of the same image |
 | `cu12-x86` | `radixark/miles:dev-cu12` | `linux/amd64`, CUDA 12.9 legacy |
-| `rocm720-mi35x` / `rocm10-mi35x` | `rocm/sgl-dev:miles-rocm*-mi35x` | Native |
+| `rocm724-mi35x` / `rocm10-mi35x` | `rocm/sgl-dev:miles-rocm*-mi35x` | Native |
 
 `--image-tag dev` also publishes a timestamped sibling. Scheduled retention and manual tag behavior are documented in [Docker build](/developer/ci/02-docker-build).
 
@@ -105,7 +107,7 @@ python docker/build.py --variant cu13-x86 --image-tag custom --custom-tag my-exp
 [Docker build](/developer/ci/02-docker-build) is the full reference for the build script, the
 workflow and the tag rules.
 
-Official versioned releases add `radixark/miles:v<exact-version>` for the CUDA 13 multi-arch image and `radixark/miles:v<exact-version>-cu12` for the CUDA 12.9 image. Publishing them does not move the rolling `dev` or `latest` families.
+Official versioned releases add `radixark/miles:v<exact-version>` for the CUDA 13 multi-arch image. Starting with v0.1.1, CUDA 12 release images are not published; previously published CUDA 12 tags remain available. Publishing a release does not move the rolling `dev` or `latest` families.
 
 ## What CI moves, and what it does not
 
@@ -128,7 +130,7 @@ It never reinstalls the three source trees, because they are editable installs. 
 | SGLang or Megatron-LM code | No. Point CI at a ref instead |
 | Miles code | No |
 
-The ROCm stage is the exception: it takes SGLang and Megatron-LM from `rocm/sgl-dev` unless the run names a ref for one, and never reads `release-lock.json`. A release call can select the Miles ref, but its baked dependencies still make the run a smoke signal rather than a lock-accurate check.
+The ROCm stage is the exception: it takes SGLang and Megatron-LM from `rocm/sgl-dev` unless the run names a ref for one, and never reads `release-lock.json`. ROCm CI runs independently and is not part of the versioned release gate.
 
 ## Bumping principle
 
@@ -159,12 +161,13 @@ before it lands on `sglang-miles`. See
 [Contributing](/developer/contributor-guide#pr-description-ci-tags) for all three
 directives.
 
-**Expect `dev` to move on its own, within a bound.** The scheduled build (00:00 and 12:00
-UTC) polls the SGLang and Megatron-LM branch heads plus a fingerprint of the wheels release,
-and rebuilds when any of them moved. It deliberately does not poll Miles, which would
-rebuild constantly, and instead forces a build once the last one is 24 hours old. So `dev`
-follows its dependencies immediately and trails Miles `main` by at most a day. When you need
-that to stop moving underneath you, pin `ci-image-tag:` to a timestamped tag.
+**Expect `dev` to move on its own, within a bound.** The scheduled check (every 10 minutes)
+polls the SGLang and Megatron-LM branch heads plus a fingerprint of the wheels release,
+and starts a rebuild within about 30 minutes of any of them moving. It deliberately does not
+poll Miles, which would rebuild constantly, and instead forces a build once the last one is
+12 hours old. So `dev` follows its dependencies closely and trails Miles `main` by at most
+half a day. When you need that to stop moving underneath you, pin `ci-image-tag:` to a
+timestamped tag; the scheduled prune keeps every timestamped tag for at least 14 days.
 
 **The ROCm images move daily too.** The sgl-project/sglang nightlies rebuild the undated
 `rocm/sgl-dev:miles-rocm*-mi35x` tags from Miles `main` every day and publish a dated
@@ -177,7 +180,7 @@ that to stop moving underneath you, pin `ci-image-tag:` to a timestamped tag.
 | `CUDNN_STATUS_BAD_PARAM` in a fused-attention backward | Something re-resolved cuDNN below the image's pin |
 | Build fails with "TE patch did not apply cleanly" | A `docker/patch/cu13/*.patch` no longer matches the new TE; rebase the patch or drop it if upstream fixed it |
 | TE triplet assertion at build time | The base image moved TE off `2.17.0`; update `docker/verify_transformer_engine.py` together with whatever depends on it |
-| `mooncake.structured_object_store` import fails | A CUDA 12 image; that wheel is only installed on the cu13 path |
+| `cannot import name 'FieldSchema' from 'mooncake.structured_object_store'` | The base image's Mooncake predates 0.3.12.post1, typically because `SGLANG_IMAGE_TAG` points at an older base |
 | A test passes locally but fails in CI, or the reverse | Compare the image tag and the two dependency refs or commits CI resolved. Every job logs all three |
 
 ## Related

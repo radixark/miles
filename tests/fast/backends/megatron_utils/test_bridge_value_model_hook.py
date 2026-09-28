@@ -71,6 +71,7 @@ def helpers_module():
     try:
         stub("megatron", is_package=True)
         stub("megatron.core", is_package=True)
+        stub("megatron.core.tensor_parallel", {"ColumnParallelLinear": type("ColumnParallelLinear", (), {})})
         stub("megatron.core.utils", {"get_attr_wrapped_model": lambda *a, **k: None})
         install("megatron.core.parallel_state", parallel_state)
 

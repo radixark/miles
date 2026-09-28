@@ -80,7 +80,8 @@ then push up until you OOM.
 | Flag | Default | What |
 |---|---|---|
 | `--rollout-temperature` | `1.0` | Sampling temperature. |
-| `--rollout-top-p` | `1.0` | Top-p truncation. |
+| `--rollout-top-p` | `1.0` | Top-p truncation. Values below `1` enable [sampling-support replay](/advanced/sampling-support-replay) and require a positive top-k. |
+| `--rollout-top-k` | `-1` | Top-k truncation. Positive values enable [sampling-support replay](/advanced/sampling-support-replay). |
 | `--rollout-max-response-len` | `–` | Max tokens per response. |
 | `--rollout-stop-token-ids` | model default | Stop token IDs. Override when generations don't stop. |
 | `--apply-chat-template` | off | Apply the tokenizer's chat template. |
@@ -141,6 +142,7 @@ Sections mirror the launch-script argument groups.
 
 | Flag | Type | Default | Notes |
 |---|---|---|---|
+| `--cluster-backend` | enum | `ray` | `ray` launches workers from the driver; `kubernetes` expects them to already exist. `kubernetes` is refused during validation until a later milestone provisions those workers. Under `kubernetes`, `--use-prometheus` is ignored. |
 | `--actor-num-nodes` | int | `1` | Total nodes for actor training. |
 | `--actor-num-gpus-per-node` | int | `8` | GPUs per actor node. |
 | `--rollout-num-gpus` | int | derived | Ignored under `--colocate`. |
@@ -157,6 +159,7 @@ Sections mirror the launch-script argument groups.
 | `--load` | path | – | Actor checkpoint to resume from. |
 | `--save` | path | – | Actor checkpoint write directory. |
 | `--save-interval` | int | – | Rollouts between saves. |
+| `--async-save` | flag | off | Write Megatron checkpoint shards asynchronously. With `--save-hf`, the native write overlaps the HF export. |
 | `--save-trigger-sentinel` | path | – | If this file exists at a save point, save a checkpoint now (regardless of `--save-interval`) and remove the file. |
 | `--custom-megatron-post-save-hook-path` | `<module>.<fn>` | – | Rank-0 callback after each checkpoint save. |
 | `--model-name` | str | – | Set in multi-node to avoid `transformers` file-system race. |
@@ -186,8 +189,8 @@ Sections mirror the launch-script argument groups.
 |---|---|---|---|
 | `--rollout-max-response-len` | int | – | Max tokens per response. |
 | `--rollout-temperature` | float | `1.0` | Sampling temperature. |
-| `--rollout-top-p` | float | `1.0` | Top-p truncation. |
-| `--rollout-top-k` | int | `-1` | Top-k truncation (-1 disables). |
+| `--rollout-top-p` | float | `1.0` | Top-p truncation. Values below `1` require bounded [sampling-support replay](/advanced/sampling-support-replay). |
+| `--rollout-top-k` | int | `-1` | Top-k truncation (`-1` disables). Positive values enable [sampling-support replay](/advanced/sampling-support-replay). |
 | `--rollout-stop` | str+ | – | Stop strings. |
 | `--rollout-stop-token-ids` | int+ | – | Stop token IDs. |
 
@@ -318,9 +321,10 @@ contract, session behavior, and model-family selection.
 | `--tito-model` | enum | `default` | TITO model family. Named families load their registered fixed template; `default` is best-effort with a checkpoint-native or custom template. |
 | `--max-seq-len` | int | – | Total tokens per session, including prompts, completions, and environment responses. Registered with the agentic wrapper. |
 | `--session-server-ip` | str | router IP | Session-server bind address. |
+| `--session-server-external-host` | str | – | Host that peers outside the cluster reach every session server on. Keeps the session servers on the head node. Leave unset when each node sets `MILES_NODE_EXTERNAL_IP`. |
 | `--session-server-port` | int | auto | First port for standalone session-server instances. When unset, each worker port is auto-allocated. |
 | `--session-server-workers` | int | `32` | Number of instances, at least 1; an explicit `--session-server-port` anchors a consecutive range. |
-| `--session-sample-picker-path` | `<module>.<fn>` | `drop_retries` | v2 only: selects leaf samples before post-processing. |
+| `--session-sample-picker-path` | `<module>.<fn>` | `drop_same_prompt_retries` | v2 only: selects leaf samples before post-processing. The default trims identical re-sends, including a re-sent first turn; `drop_rolled_back_leaves` also trims a leaf whose later sibling sent a different request. |
 | `--session-sample-postprocessor-path` | `<module>.<fn>` | `default_postprocess` | v2 only: finalizes loss masks and rewards. |
 
 `--use-session-server v2` returns `list[Sample]` and rejects `--group-rm`, `--partial-rollout`, and `--recompute-logprobs-via-prefill`.
@@ -376,7 +380,7 @@ contract, session behavior, and model-family selection.
 |---|---|---|---|
 | `--debug-rollout-only` | flag | off | Skip Megatron, only spin up SGLang. |
 | `--debug-train-only` | flag | off | Skip SGLang, only spin up Megatron. |
-| `--save-debug-rollout-data` | path | – | Pickle every rollout to disk. |
+| `--save-debug-rollout-data` | path | – | Pickle every rollout to disk. The template must contain `{rollout_id}`. |
 | `--load-debug-rollout-data` | path | – | Replay rollouts from disk (implies `--debug-train-only`). |
 | `--deterministic-mode` | flag | off | Megatron deterministic mode. |
 

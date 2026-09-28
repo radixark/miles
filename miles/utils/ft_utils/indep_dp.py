@@ -31,8 +31,9 @@ class IndepDPInfo:
 
 
 def create_tcp_store() -> tuple["torch.distributed.TCPStore", str]:
-    import ray
     import torch.distributed
+
+    from miles.utils.misc import get_current_node_ip
 
     store = torch.distributed.TCPStore(
         host_name="0.0.0.0",
@@ -40,6 +41,6 @@ def create_tcp_store() -> tuple["torch.distributed.TCPStore", str]:
         is_master=True,
         wait_for_workers=False,
     )
-    host = ray.util.get_node_ip_address()
+    host = get_current_node_ip()
     port = store.port
     return store, f"{host}:{port}"

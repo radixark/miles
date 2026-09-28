@@ -11,7 +11,7 @@ from miles.backends.training_utils.loss_hub.opd import apply_opd_kl_to_advantage
 from miles.backends.training_utils.parallel import get_parallel_state
 from miles.utils.audit_utils.event_logger.logger import get_event_logger, is_event_logger_initialized
 from miles.utils.audit_utils.event_logger.models import TrainAdvantageComputationEvent
-from miles.utils.multi_lora import is_multi_lora_enabled
+from miles.utils.lora.utils import is_multi_lora_enabled
 from miles.utils.types import RolloutBatch
 
 

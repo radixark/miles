@@ -104,7 +104,7 @@ from typing_extensions import override
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from miles.backends.megatron_utils import megatron_to_hf as m2hf
-from miles.utils.hf_config import load_hf_config as _load_hf_config
+from miles.utils.hf_utils.config import load_hf_config as _load_hf_config
 
 DEFAULT_DIRECT_MOE_GROUP_SIZE = 2 * 1024**3
 

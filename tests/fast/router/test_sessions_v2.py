@@ -26,7 +26,7 @@ from miles.rollout.session.v2 import core as session_core_v2
 from miles.utils.chat_template_utils.tito_tokenizer import TITOTokenizer
 from miles.utils.function_registry import function_registry
 from miles.utils.http_utils import find_available_port
-from miles.utils.lora import LORA_ADAPTER_NAME
+from miles.utils.lora.utils import LORA_ADAPTER_NAME
 from miles.utils.test_utils.mock_sglang_server import MockSGLangServer, ProcessResult, with_mock_server
 from miles.utils.test_utils.uvicorn_thread_server import UvicornThreadServer
 
@@ -47,6 +47,7 @@ def _serve_router(extra_args: dict | None = None):
             "tito_model": "default",
             "use_rollout_routing_replay": False,
             "use_rollout_indexer_replay": False,
+            "use_sampling_support_replay": False,
             "sglang_speculative_algorithm": None,
             "num_layers": None,
             "moe_router_topk": None,
@@ -56,7 +57,7 @@ def _serve_router(extra_args: dict | None = None):
             "use_session_server": "v2",
             "session_server_instance_id": uuid.uuid4().hex,
             "pause_generation_mode": "retract",
-            "session_sample_picker_path": "miles.rollout.session.v2.picker_hub.drop_retries",
+            "session_sample_picker_path": "miles.rollout.session.v2.picker_hub.drop_same_prompt_retries",
             "session_sample_postprocessor_path": "miles.rollout.session.v2.postprocessor_hub.default_postprocess",
         }
         args_values.update(extra_args or {})
@@ -210,7 +211,7 @@ def _keep_all_picker(leaf_samples, _session_metadata):
 
 def test_concurrent_requests_from_same_parent_commit_siblings():
     """Successful concurrent generations from one parent are both collected."""
-    picker_path = "miles.rollout.session.v2.picker_hub.drop_retries"
+    picker_path = "miles.rollout.session.v2.picker_hub.drop_same_prompt_retries"
     with function_registry.temporary(picker_path, _keep_all_picker):
         with _serve_router() as env:
             session_id = _create_session(env.url)

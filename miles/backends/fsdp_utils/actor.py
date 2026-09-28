@@ -1,9 +1,7 @@
 import logging
 import os
 import random
-from argparse import Namespace
 from contextlib import ExitStack
-from typing import TYPE_CHECKING
 
 import torch
 import torch.distributed as dist
@@ -21,19 +19,23 @@ from miles.backends.training_utils.log_utils import (
 )
 from miles.backends.training_utils.loss import compute_advantages_and_returns, get_log_probs_and_entropy, loss_function
 from miles.backends.training_utils.parallel import get_parallel_state, set_parallel_state
+from miles.backends.training_utils.sampling_mask import get_rollout_sampling_masks
+from miles.ray.rollout.inference_controller import UpdatableEngines
 from miles.ray.train_actor import TrainRayActor
 from miles.utils import async_utils, train_dump_utils, train_metric_utils
+from miles.utils.audit_utils.witness.allocator import WitnessInfo
 from miles.utils.context_utils import with_defer
 from miles.utils.distributed_utils import get_gloo_group
 from miles.utils.flops_utils import flops_args_from_hf_config, fwd_tflops_per_gpu
 from miles.utils.ft_utils.indep_dp import IndepDPInfo
-from miles.utils.hf_config import load_hf_config
+from miles.utils.hf_utils.config import load_hf_config
 from miles.utils.memory_utils import clear_memory, print_memory
+from miles.utils.object_store import StoreObjectRef
 from miles.utils.processing_utils import load_processor, load_tokenizer
 from miles.utils.profile_utils import TrainProfiler
-from miles.utils.ray_utils import Box
 from miles.utils.timer import Timer, inverse_timer, timer
 from miles.utils.tracking_utils.tracking import init_tracking
+from miles.utils.workers.rpc.common.wire_types import Pickled
 
 from . import checkpoint
 from .adaptations.class_patches import apply_class_patches, apply_model_instance_patches
@@ -43,10 +45,6 @@ from .adaptations.precision import apply_fp32_master, precision_forward_context,
 from .lr_scheduler import get_lr_scheduler
 from .parallel import create_fsdp_parallel_state
 from .update_weight_utils import UpdateWeightFromDistributed, UpdateWeightFromTensor
-
-if TYPE_CHECKING:
-    from miles.ray.rollout.inference_controller import UpdatableEngines
-    from miles.utils.audit_utils.witness.allocator import WitnessInfo
 
 logger = logging.getLogger(__name__)
 
@@ -62,19 +60,21 @@ class FSDPTrainRayActor(TrainRayActor):
     @with_defer(lambda: Timer().start("train_wait"))
     def init(
         self,
-        args: Namespace,
+        args: Pickled,
         role: str,
         *,
         with_ref: bool = False,
         with_opd_teacher: bool = False,
         recv_ckpt_src_rank: int | None = None,
         indep_dp_info: IndepDPInfo,
+        indep_dp_store_addr: str | None,
     ) -> int | None:  # type: ignore[override]
-        super().init(args, role, with_ref, with_opd_teacher=with_opd_teacher)
+        super()._init_common(args, role, with_ref, with_opd_teacher=with_opd_teacher)
 
         # Unsupported
         assert recv_ckpt_src_rank is None
         assert indep_dp_info.quorum_id == 0
+        assert indep_dp_store_addr is None
 
         if args.dumper_enable:
             from sglang.srt.debug_utils.dumper import dumper
@@ -215,7 +215,7 @@ class FSDPTrainRayActor(TrainRayActor):
 
         return int(getattr(self.args, "start_rollout_id", 0))
 
-    def get_model_cls(self):
+    def _get_model_cls(self):
         if hasattr(self.hf_config, "vision_config"):
             from transformers import AutoModelForImageTextToText
 
@@ -241,7 +241,7 @@ class FSDPTrainRayActor(TrainRayActor):
         effective_attn = "eager" if use_triton_bridge else self.args.attn_implementation
 
         with init_context():
-            model = self.get_model_cls().from_pretrained(
+            model = self._get_model_cls().from_pretrained(
                 checkpoint_path,
                 trust_remote_code=True,
                 attn_implementation=effective_attn,
@@ -369,6 +369,7 @@ class FSDPTrainRayActor(TrainRayActor):
             active_model.eval()
         else:
             active_model = self.model
+        use_rollout_sampling_mask = model_tag == "actor" and self.args.use_sampling_support_replay
 
         try:
             forward_data_store = []
@@ -392,6 +393,8 @@ class FSDPTrainRayActor(TrainRayActor):
                             "response_lengths",
                             "max_seq_lens",
                         ]
+                        if use_rollout_sampling_mask:
+                            forward_only_keys.extend(["rollout_sampling_mask_ids", "rollout_sampling_mask_offsets"])
                         batch = get_batch(
                             data_iterator,
                             forward_only_keys,
@@ -399,6 +402,9 @@ class FSDPTrainRayActor(TrainRayActor):
                             self.args.qkv_format,
                             get_position_ids=True,
                         )
+                        rollout_sampling_mask = None
+                        if use_rollout_sampling_mask:
+                            rollout_sampling_mask = get_rollout_sampling_masks(batch)
 
                         model_args = self._get_model_inputs_args(batch)
                         # keep logits in native bf16 (chunks upcast to fp32 downstream); avoids a full-vocab fp32 tensor (~5GB)
@@ -413,6 +419,7 @@ class FSDPTrainRayActor(TrainRayActor):
                             response_lengths=batch["response_lengths"],
                             with_entropy=(store_prefix == ""),
                             max_seq_lens=batch.get("max_seq_lens", None),
+                            rollout_sampling_mask=rollout_sampling_mask,
                         )
 
                         batch_result = {
@@ -439,14 +446,16 @@ class FSDPTrainRayActor(TrainRayActor):
     def train(
         self,
         rollout_id: int,
-        rollout_data_ref: Box,
-        witness_info: "WitnessInfo | None" = None,
+        rollout_data_ref: StoreObjectRef | list[StoreObjectRef],
+        witness_info: WitnessInfo | None = None,
         attempt: int = 0,
+        external_data: TrainStepOutput | None = None,
     ) -> TrainStepOutput:
         """Run one training update over a rollout batch (``rollout_data_ref`` is a Box handle to the
         Ray object ref with the rollout tensors; fetched and partitioned by data-parallel rank)."""
         assert witness_info is None
         assert attempt == 0
+        assert external_data is None, "the fsdp backend trains no critic, so it is never handed critic values"
 
         self._heartbeat.bump()
         if self.args.offload_train:
@@ -501,6 +510,11 @@ class FSDPTrainRayActor(TrainRayActor):
         with routing_replay.stage(routing_replay.REPLAY_BACKWARD), timer("actor_train"):
             data_iterator.reset()
             num_steps_per_rollout = len(num_microbatches)
+            sampling_mask_keys = (
+                ("rollout_sampling_mask_ids", "rollout_sampling_mask_offsets")
+                if self.args.use_sampling_support_replay
+                else ()
+            )
 
             for step_id in range(num_steps_per_rollout):
                 self.optimizer.zero_grad(set_to_none=True)
@@ -523,6 +537,7 @@ class FSDPTrainRayActor(TrainRayActor):
                             "returns",
                             "ref_log_probs",
                             "rollout_log_probs",
+                            *sampling_mask_keys,
                         ],
                         self.args.data_pad_size_multiplier,
                         self.args.qkv_format,
@@ -606,7 +621,7 @@ class FSDPTrainRayActor(TrainRayActor):
         return log_dict
 
     @timer
-    def update_weights(self, info: "UpdatableEngines") -> int | None:  # type: ignore[override]
+    def update_weights(self, info: UpdatableEngines) -> int | None:  # type: ignore[override]
         """Synchronize actor weights to rollout engines (colocated or distributed; wakes params in offload mode)."""
         if self.args.debug_train_only or self.args.debug_rollout_only:
             return None

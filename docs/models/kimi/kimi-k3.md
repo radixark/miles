@@ -96,6 +96,8 @@ torchrun --nnodes=8 --nproc-per-node=4 ... \
 
 ## 4. Launch
 
+The launcher uses `all-linear`, which selects Kimi K3's HF defaults: MLA query/KV down projections, attention output projections, dense/shared MLPs, and routed experts. `attn,mlp` selects the same set. Explicit HF targets can omit `language_model.model.layers.*.block_sparse_moe.experts.*.w2` to leave routed-expert down projections frozen; other layouts remain unsupported by the native backend.
+
 `--train-mode lora` (default) or `full`. Validated on **16 nodes × 4 GPUs**: one container per
 node, a ray cluster across them, `export MILES_SCRIPT_EXTERNAL_RAY=1`, then:
 

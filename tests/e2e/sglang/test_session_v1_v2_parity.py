@@ -48,7 +48,7 @@ def sglang_server():
         server.stop()
 
 
-def test_qwen3_8b_h200_fa3_agentic_v2_drop_retries_matches_v1_training_payload_bitwise(sglang_server):
+def test_qwen3_8b_h200_fa3_agentic_v2_same_prompt_retries_match_v1_training_payload_bitwise(sglang_server):
     v1_runs = run_agentic_retry_trajectories(
         backend_url=sglang_server.base_url,
         hf_checkpoint=_MODEL_PATH,

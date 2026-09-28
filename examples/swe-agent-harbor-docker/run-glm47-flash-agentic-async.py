@@ -32,7 +32,7 @@ from typing import Literal
 
 import typer
 
-import miles.utils.external_utils.command_utils as U
+from miles.utils.external_utils import command_utils
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 
@@ -42,9 +42,9 @@ MAX_CONVERT_GPUS = 92
 
 
 @dataclass
-class ScriptArgs(U.ExecuteTrainConfig):
+class ScriptArgs(command_utils.ExecuteTrainConfig):
     mode: Literal["normal", "debug_rollout_only"] = "normal"
-    run_id: str = U.create_run_id()
+    run_id: str = command_utils.create_run_id()
     megatron_model_type: str = "glm4.7-flash"
     num_gpus_per_node: int = 8
     megatron_path: str = "/root/Megatron-LM"
@@ -78,7 +78,9 @@ class ScriptArgs(U.ExecuteTrainConfig):
     agent_server_url: str = os.environ.get("AGENT_SERVER_URL", "http://localhost:8080")
     agent_model_name: str = os.environ.get("AGENT_MODEL_NAME", "model")
     harbor_tasks_dir: str = os.environ.get("HARBOR_TASKS_DIR", "/root/harbor_tasks")
-    router_external_host: str = os.environ.get("MILES_ROUTER_EXTERNAL_HOST", "")
+    # The host agents outside the cluster reach every session server on; passed as
+    # --session-server-external-host, which also keeps the session servers on the head node.
+    session_server_external_host: str = ""
     miles_host_ip: str = os.environ.get("MILES_HOST_IP", "")
 
     # Disaggregated fully-async settings
@@ -125,6 +127,7 @@ def cleanup():
 
 def prepare(args: ScriptArgs):
     """Convert HF checkpoint to torch_dist format."""
+    U = args.create_backend()
     max_convert_nodes = MAX_CONVERT_GPUS // args.num_gpus_per_node
     convert_nodes = min(args.num_nodes, max_convert_nodes)
     U.convert_checkpoint(
@@ -140,6 +143,7 @@ def prepare(args: ScriptArgs):
 
 
 def execute(args: ScriptArgs):
+    U = args.create_backend()
     if args.pause_generation_mode == "in_place" and args.update_weight_transfer_mode == "p2p":
         raise ValueError(
             "in_place + p2p is not supported: P2P transfer engine conflicts with "
@@ -273,6 +277,12 @@ def execute(args: ScriptArgs):
     )
     sglang_extra_env_vars: dict[str, str] = {}
 
+    external_host_arg = (
+        f"--session-server-external-host {args.session_server_external_host} "
+        if args.session_server_external_host
+        else ""
+    )
+
     agent_args = (
         "--custom-generate-function-path miles.rollout.generate_hub.agentic_tool_call.generate "
         "--custom-agent-function-path swe_agent_function.run "
@@ -281,6 +291,7 @@ def execute(args: ScriptArgs):
         "--use-session-server "
         "--session-server-port 30000 "
         "--session-server-workers 32 "
+        f"{external_host_arg}"
     )
 
     misc_args = (
@@ -343,7 +354,7 @@ def execute(args: ScriptArgs):
         f"{debug_args}"
     )
 
-    miles_root = U.repo_base_dir
+    miles_root = command_utils.repo_base_dir
 
     extra_env_vars = {
         "PYTHONPATH": f"{args.megatron_path}:{SCRIPT_DIR}:{miles_root}",
@@ -354,14 +365,11 @@ def execute(args: ScriptArgs):
         "HARBOR_TASKS_DIR": args.harbor_tasks_dir,
         **sglang_extra_env_vars,
     }
-    if args.router_external_host:
-        extra_env_vars["MILES_ROUTER_EXTERNAL_HOST"] = args.router_external_host
     if args.miles_host_ip:
         extra_env_vars["MILES_HOST_IP"] = args.miles_host_ip
 
     U.execute_train(
         train_args=train_args,
-        config=args,
         num_gpus_per_node=args.num_gpus_per_node,
         megatron_model_type=args.megatron_model_type,
         train_script="train_async.py",
@@ -370,7 +378,7 @@ def execute(args: ScriptArgs):
     )
 
 
-@U.dataclass_cli
+@command_utils.dataclass_cli
 def main(args: ScriptArgs):
     cleanup()
     if not args.skip_prepare:

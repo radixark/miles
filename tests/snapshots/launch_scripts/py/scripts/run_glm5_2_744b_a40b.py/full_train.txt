@@ -65,28 +65,25 @@ hf download
   --decoder-last-pipeline-num-layers 20 
 
 ### 4
-[multi_node num_nodes=None] mkdir -p /root/models/GLM-5.2_torch_dist && rsync -a
-  --info=progress2 <SANDBOX>/models/GLM-5.2_torch_dist/ /root/models/GLM-5.2_torch_dist
-
-### 5
-[multi_node num_nodes=None] mkdir -p /root/models/GLM-5.2 && rsync -a
-  --info=progress2 <SANDBOX>/models/GLM-5.2/ /root/models/GLM-5.2
-
-### 6
 pkill -9 sglang; sleep 3; ray stop
   --force; pkill -9 ray; pkill -9 miles; sleep 3; pkill -9 ray; pkill -9 miles; pkill -9 redis; true; 
 
-### 7
+### 5
 export PYTHONUNBUFFERED=1 && ray start
   --head
   --node-ip-address 127.0.0.1
   --num-gpus 8
   --disable-usage-stats
 
-### 8
+### 6
+[multi_node num_nodes=None] mkdir -p /root/models/GLM-5.2_torch_dist && rsync -a
+  --info=progress2 <SANDBOX>/models/GLM-5.2_torch_dist/ /root/models/GLM-5.2_torch_dist && mkdir -p /root/models/GLM-5.2 && rsync -a
+  --info=progress2 <SANDBOX>/models/GLM-5.2/ /root/models/GLM-5.2
+
+### 7
 nvidia-smi topo -m 2>/dev/null | grep -o 'NV[0-9][0-9]*' | wc -l
 
-### 9
+### 8
 export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --address="http://127.0.0.1:8265"
   --runtime-env-json='{"env_vars": {"PYTHONUNBUFFERED": "1", "CUDA_DEVICE_MAX_CONNECTIONS": "1", "NCCL_NVLS_ENABLE": "0", "no_proxy": "127.0.0.1,127.0.0.1", "MASTER_ADDR": "127.0.0.1", "SGLANG_DEEPEP_NUM_MAX_DISPATCH_TOKENS_PER_RANK": "256", "SGLANG_NSA_FORCE_MLA": "1", "INDEXER_ROPE_NEOX_STYLE": "0", "NVSHMEM_DISABLE_NCCL": "1", "PYTHONPATH": "<REPO_ROOT>:/root/Megatron-LM:/frozen/pythonpath"}}'

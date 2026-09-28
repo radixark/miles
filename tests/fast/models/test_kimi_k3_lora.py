@@ -5,11 +5,14 @@ import torch
 import torch.nn as nn
 from torch.utils.checkpoint import checkpoint
 
+from miles.utils.lora.hf_lora_targets import resolve_hf_lora_targets
+from miles.utils.lora.utils import get_adapter_target_modules, matches_lora_target
 from miles_plugins.models.kimi_k3.lora import (
     KimiK3LoRAAdapter,
     _enable_full_recompute_input_grads,
     _grouped_linear,
     export_kimi_k3_lora_hf_chunks,
+    resolve_kimi_k3_adapter_targets,
 )
 
 
@@ -108,7 +111,8 @@ def _model_with_adapters(*, include_shared_experts=True):
     return model
 
 
-def test_native_export_is_chunked_by_adapter(monkeypatch):
+@pytest.mark.parametrize("include_fc2", [True, False])
+def test_native_export_is_chunked_by_adapter(monkeypatch, include_fc2):
     """A wrong expert dim is a shape mismatch in SGLang's LoRA pool; a wrong HF name is silently dropped."""
     from megatron.core import parallel_state
 
@@ -116,7 +120,17 @@ def test_native_export_is_chunked_by_adapter(monkeypatch):
     monkeypatch.setattr(parallel_state, "get_expert_model_parallel_world_size", lambda: 1)
 
     model = _model_with_adapters()
+    targets = _default_hf_targets()
+    model.adapters[3].include_fc2 = include_fc2
+    if not include_fc2:
+        targets = [target for target in targets if not target.endswith(".experts.*.w2")]
+        del model.adapters[3].w2_lora_A
+        del model.adapters[3].w2_lora_B
+    adapter_targets = resolve_kimi_k3_adapter_targets(targets, canonical=False, experts_shared_outer_loras=True)
     chunks = list(export_kimi_k3_lora_hf_chunks([model]))
+    exported = get_adapter_target_modules(name for chunk in chunks for name, _ in chunk)
+    assert all(any(matches_lora_target(name, target) for target in adapter_targets) for name in exported)
+    assert all(any(matches_lora_target(name, target) for name in exported) for target in adapter_targets)
 
     assert len(chunks) == 5
     attention = dict(chunks[0])
@@ -131,8 +145,11 @@ def test_native_export_is_chunked_by_adapter(monkeypatch):
     prefix = "language_model.model.layers.4.block_sparse_moe.experts."
     assert experts[f"{prefix}w1.lora_A.weight"].shape == (1, 2, 8)
     assert experts[f"{prefix}w1.lora_B.weight"].shape == (3, 5, 2)
-    assert experts[f"{prefix}w2.lora_A.weight"].shape == (3, 2, 5)
-    assert experts[f"{prefix}w2.lora_B.weight"].shape == (1, 8, 2)
+    if include_fc2:
+        assert experts[f"{prefix}w2.lora_A.weight"].shape == (3, 2, 5)
+        assert experts[f"{prefix}w2.lora_B.weight"].shape == (1, 8, 2)
+    else:
+        assert not any(".w2." in name for name in experts)
 
     shared_experts = dict(chunks[4])
     prefix = "language_model.model.layers.4.block_sparse_moe.shared_experts."
@@ -142,6 +159,43 @@ def test_native_export_is_chunked_by_adapter(monkeypatch):
     assert shared_experts[f"{prefix}up_proj.lora_B.weight"].shape == (5, 2)
     assert shared_experts[f"{prefix}down_proj.lora_A.weight"].shape == (2, 5)
     assert shared_experts[f"{prefix}down_proj.lora_B.weight"].shape == (8, 2)
+
+
+def _default_hf_targets():
+    return resolve_hf_lora_targets(
+        dict(
+            model_type="kimi_k3",
+            text_config=dict(
+                num_hidden_layers=5,
+                first_k_dense_replace=4,
+                moe_layer_freq=1,
+                num_experts=3,
+                num_shared_experts=1,
+            ),
+        )
+    )
+
+
+@pytest.mark.parametrize("case", ["missing", "extra", "canonical", "per-expert"])
+def test_native_target_resolution_rejects_unsupported_layout(case):
+    targets = _default_hf_targets()
+    if case == "missing":
+        targets = [target for target in targets if not target.endswith(".q_a_proj")]
+    elif case == "extra":
+        targets.append("language_model.model.layers.*.self_attn.q_b_proj")
+    error = AssertionError if case == "canonical" else NotImplementedError
+    message = {
+        "missing": "missing=",
+        "extra": "unsupported=",
+        "canonical": "canonical_lora",
+        "per-expert": "shared-outer",
+    }[case]
+    with pytest.raises(error, match=message):
+        resolve_kimi_k3_adapter_targets(
+            targets,
+            canonical=case == "canonical",
+            experts_shared_outer_loras=case != "per-expert",
+        )
 
 
 def test_native_export_rejects_missing_shared_expert_adapter(monkeypatch):

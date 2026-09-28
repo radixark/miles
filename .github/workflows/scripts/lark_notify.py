@@ -2,7 +2,8 @@
 """
 Post Miles CI health cards to a Lark group via an incoming webhook.
 
-Used by .github/workflows/ci-lark-notify.yml. Needs GITHUB_TOKEN and
+Used by .github/workflows/ci-lark-notify.yml (scheduled PR Test results) and
+.github/workflows/docker-build.yml (failed automatic image builds). Needs GITHUB_TOKEN and
 LARK_WEBHOOK, or --dry-run to print the card JSON instead of posting.
 """
 
@@ -567,6 +568,46 @@ def cmd_ci_status(args: argparse.Namespace, gh: GitHub) -> None:
 
 
 # --------------------------------------------------------------------------
+# docker-build-failure
+# --------------------------------------------------------------------------
+
+
+def failed_steps(job: dict) -> list[str]:
+    return [step["name"] for step in job.get("steps") or [] if step.get("conclusion") in FAILED_CONCLUSIONS]
+
+
+def render_docker_build_failure(run: dict, failed: list) -> dict:
+    repo_url = run["html_url"].split("/actions/")[0]
+    sha = run["head_sha"]
+    subject = ((run.get("head_commit") or {}).get("message") or "").splitlines()
+    commit_md = f"[`{sha[:9]}`]({repo_url}/commit/{sha}) {subject[0] if subject else ''}"
+    trigger = "Scheduled rebuild" if run["event"] == "schedule" else f"{run['event']} to {run['head_branch']}"
+    rows = []
+    for job in failed[:MAX_LISTED_JOBS]:
+        steps = ", ".join(f"`{name}`" for name in failed_steps(job))
+        rows.append(f"- [{job['name']}]({job['html_url']})" + (f" at {steps}" if steps else ""))
+    if len(failed) > MAX_LISTED_JOBS:
+        rows.append(f"- ... and {len(failed) - MAX_LISTED_JOBS} more")
+    elements = [
+        md(f"{grey('Miles commit')}  {commit_md}"),
+        kv_columns([("Trigger", trigger), ("Started", fmt_local(parse_time(run.get("run_started_at"))))]),
+        HR,
+        md(f"**Failed jobs ({len(failed)})**\n" + "\n".join(rows)),
+    ]
+    return build_card(f"{run['name']}: FAILED", "red", elements, [("View run on GitHub", run["html_url"])])
+
+
+def cmd_docker_build_failure(args: argparse.Namespace, gh: GitHub) -> None:
+    # Runs as a job of the build's own workflow run, so the run is still in progress.
+    run = gh.run(args.run_id)
+    failed = [job for job in gh.run_jobs(run["id"]) if job.get("conclusion") in FAILED_CONCLUSIONS]
+    if not failed:
+        print(f"run {args.run_id} has no failed job; skipping")
+        return
+    post_card(render_docker_build_failure(run, failed), args.webhook, args.dry_run)
+
+
+# --------------------------------------------------------------------------
 # main
 # --------------------------------------------------------------------------
 
@@ -583,6 +624,9 @@ def main() -> int:
     p.add_argument("--run-id", type=int, required=True)
     p.add_argument("--any-event", action="store_true", help="also report non-schedule runs")
 
+    p = sub.add_parser("docker-build-failure", help="report a failed automatic Docker image build")
+    p.add_argument("--run-id", type=int, required=True)
+
     args = parser.parse_args()
     if not args.token:
         print("GITHUB_TOKEN (or --token) is required", file=sys.stderr)
@@ -592,7 +636,8 @@ def main() -> int:
         return 2
 
     gh = GitHub(args.token, args.repo)
-    cmd_ci_status(args, gh)
+    commands = {"ci-status": cmd_ci_status, "docker-build-failure": cmd_docker_build_failure}
+    commands[args.command](args, gh)
     return 0
 
 

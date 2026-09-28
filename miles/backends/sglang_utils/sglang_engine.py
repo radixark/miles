@@ -1,21 +1,19 @@
+import functools
 import ipaddress
 import logging
 import os
 import shlex
-import sys
-
 
 from sglang.srt.server_args import ServerArgs
 
-from miles.backends.megatron_utils.lora.utils import convert_target_modules_to_hf, sglang_lora_target_all_sentinel
 from miles.backends.sglang_utils.server_args_utils import server_args_to_argv
-from miles.utils.lora import (
+from miles.utils.lora.utils import (
     LORA_ADAPTER_NAME,
     engine_loads_adapter_from_disk,
+    is_multi_lora_enabled,
     lora_base_cpu_backup_enabled,
     lora_rollout_enabled,
 )
-from miles.utils.multi_lora import is_multi_lora_enabled
 from miles.utils.workers.argv_utils import _record_field_names
 
 logger = logging.getLogger(__name__)
@@ -39,6 +37,7 @@ def build_server_url(host: str, port: int) -> str:
 def compute_engine_launch_cmd(
     args,
     *,
+    interpreter_prefix: list[str],
     node_rank: int,
     worker_type: str,
     base_gpu_id: int,
@@ -53,6 +52,8 @@ def compute_engine_launch_cmd(
     gated_launch_port: int,
     random_seed: int,
 ) -> str:
+    _assert_launch_gate_served()
+
     server_args_dict = _compute_server_args(
         args,
         node_rank=node_rank,
@@ -71,7 +72,7 @@ def compute_engine_launch_cmd(
     )
 
     launch_args = {**server_args_dict, "host": server_args_dict["host"].strip("[]")}
-    return shlex.join([sys.executable, "-m", "sglang.launch_server", *server_args_to_argv(launch_args)])
+    return shlex.join([*interpreter_prefix, "-m", "sglang.launch_server", *server_args_to_argv(launch_args)])
 
 
 def _compute_server_args(
@@ -149,15 +150,16 @@ def _compute_server_args(
         kwargs["enable_lora"] = True
         kwargs["max_loras_per_batch"] = args.multi_lora_n_adapters
         kwargs["max_lora_rank"] = max(getattr(args, "lora_rank", 0), 1)
-        kwargs["lora_target_modules"] = convert_target_modules_to_hf(args.target_modules)
+        kwargs["lora_target_modules"] = (
+            ["all"] if args.lora_adapter_targets == "all-linear" else args.lora_adapter_targets
+        )
     elif lora_rollout_enabled(args):
         kwargs["enable_lora"] = True
         kwargs["max_loras_per_batch"] = 1
         kwargs["max_lora_rank"] = max(getattr(args, "lora_rank", 0), 1)
-        if sglang_lora_target_all_sentinel(args):
-            kwargs["lora_target_modules"] = ["all"]
-        else:
-            kwargs["lora_target_modules"] = convert_target_modules_to_hf(args.target_modules)
+        kwargs["lora_target_modules"] = (
+            ["all"] if args.lora_adapter_targets == "all-linear" else args.lora_adapter_targets
+        )
 
         if engine_loads_adapter_from_disk(args):
             kwargs["lora_paths"] = [f"{LORA_ADAPTER_NAME}={args.lora_adapter_path}"]
@@ -203,4 +205,15 @@ def _compute_server_args(
             # TODO: dynamic allocation
             kwargs["max_loaded_loras"] = 2 * kwargs["max_loras_per_batch"]
 
+    if kwargs.get("device") is None:
+        kwargs["device"] = "cuda"
+
     return kwargs
+
+
+@functools.cache
+def _assert_launch_gate_served() -> None:
+    assert "gated_launch_port" in _record_field_names(ServerArgs), (
+        "this sglang has no --gated-launch-port, and miles launches every inference engine through "
+        "that gate; upgrade sglang to one that serves it"
+    )

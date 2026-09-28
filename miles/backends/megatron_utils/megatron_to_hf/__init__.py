@@ -2,6 +2,7 @@ from .deepseekv3 import convert_deepseekv3_to_hf
 from .deepseekv4 import convert_deepseekv4_to_hf
 from .glm4 import convert_glm4_to_hf
 from .glm4moe import convert_glm4moe_to_hf
+from .glm5_next import convert_glm5_next_to_hf
 from .inkling import convert_inkling_to_hf
 from .kimi_k3 import convert_kimi_k3_to_hf
 from .kimi_vl import convert_kimi_k25_to_hf, convert_kimivl_to_hf
@@ -10,6 +11,7 @@ from .mimo import convert_mimo_to_hf
 from .processors import quantize_params, remove_padding
 from .qwen2 import convert_qwen2_to_hf
 from .qwen3_5 import convert_qwen3_5_to_hf
+from .qwen3_8_next import convert_qwen3_8_next_to_hf
 from .qwen3_next import convert_qwen3_next_to_hf
 from .qwen3moe import convert_qwen3moe_to_hf
 
@@ -33,7 +35,9 @@ def convert_to_hf(args, model_name, name, param, quantization_config=None, packe
 # TODO optimize code details
 def _convert_to_hf_core(args, model_name, name, param):
     model_name = model_name.lower()
-    if (
+    if "glm5_next" in model_name or "glm5next" in model_name:
+        converted_named_tensors = convert_glm5_next_to_hf(args, name, param)
+    elif (
         "glm4moelite" in model_name
         or "deepseekv3" in model_name
         or "glmmoedsa" in model_name
@@ -48,6 +52,8 @@ def _convert_to_hf_core(args, model_name, name, param):
         converted_named_tensors = convert_qwen3moe_to_hf(args, name, param)
     elif "qwen3next" in model_name:
         converted_named_tensors = convert_qwen3_next_to_hf(args, name, param)
+    elif "qwen3_8_next" in model_name or "qwen4_exp" in model_name or "qwen3.8_next" in model_name:
+        converted_named_tensors = convert_qwen3_8_next_to_hf(args, name, param)
     elif "qwen3_5" in model_name or "qwen3_6" in model_name:
         converted_named_tensors = convert_qwen3_5_to_hf(args, name, param)
     elif "qwen2" in model_name or "qwen3" in model_name:

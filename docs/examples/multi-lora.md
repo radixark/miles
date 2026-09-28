@@ -18,11 +18,10 @@ One 8-GPU node, disaggregated (multi-LoRA forbids `--colocate`):
   (`linear_qkv`, `linear_proj`), the per-expert MoE projections (`linear_fc1`, `linear_fc2`),
   and the output layer (`output_layer`) so the cookbook's default `train_unembed=True` is servable.
 
-The gateway currently resolves Tinker training groups for `qwen3` and `qwen3_moe`.
-`--tinker-train-attn`, `--tinker-train-mlp`, and `--tinker-train-unembed` default to enabled;
-use `--no-tinker-train-attn`, `--no-tinker-train-mlp`, or `--no-tinker-train-unembed` to disable a group.
-Every client's corresponding SDK flags must match the server layout. Tinker startup rejects
-`--target-modules` and `--exclude-modules`; native Miles training still accepts them.
+The example enables attention, MLP, and output-head training. Client SDK flags
+must match the server's selected groups. See [LoRA target selection](/advanced/lora#hf-target-source-of-truth)
+for `--target-modules attn,mlp,unembed`; use `attn,mlp` to disable output-head
+training. Tinker accepts only these group names and rejects `--exclude-modules`.
 
 ## Run
 
@@ -87,12 +86,12 @@ loading and `update_weights: true` are rejected. Ordinary full-model and
 single-LoRA training continue to use the existing weight updater.
 
 `--tinker-checkpoint-root` must be on storage shared by the trainers, gateway,
-and every inference engine. A sampler save exports the current adapter weights,
-then publishes its tensors, adapter config, and `META.json` together through an
-atomic symlink replacement. Existing sampler versions cannot be overwritten. Saving between
-`forward_backward` and `optim_step` neither applies nor discards pending gradients.
+and every inference engine. All trainer ranks participate in adapter gathering;
+rank 0 writes the tensors and config, then `META.json` after all ranks finish.
+Existing sampler versions cannot be overwritten. Saving between `forward_backward`
+and `optim_step` neither applies nor discards pending gradients.
 
-Training checkpoint names also point to immutable version directories. Overwriting
-atomically switches the link; older versions remain on disk for active readers.
-Legacy directory checkpoints can still be loaded; save under a new name instead
-of overwriting them.
+Training checkpoint saves and loads are serialized within the gateway. Overwriting
+deletes the previous checkpoint before writing the new one; a failed overwrite does
+not preserve the previous checkpoint. Checkpoints are ordinary directories;
+overwriting does not retain hidden versions.

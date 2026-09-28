@@ -9,7 +9,7 @@ from megatron.core.inference.contexts import BaseInferenceContext
 from megatron.core.packed_seq_params import PackedSeqParams
 from megatron.core.transformer.module import MegatronModule
 
-from miles.utils.hf_config import load_hf_config
+from miles.utils.hf_utils.config import load_hf_config
 from miles_plugins.models.cp_utils import packed_shard_to_zigzag, zigzag_to_packed_shard
 
 logger = logging.getLogger(__name__)

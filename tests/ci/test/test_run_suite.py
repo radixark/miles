@@ -15,6 +15,7 @@ parsing fixture files -- the AST-side validation lives in
 `test_ci_register.py`; this module exercises the runtime filter.
 """
 
+import itertools
 import os
 import re
 import subprocess
@@ -90,6 +91,22 @@ class TestBuildCpuPytestCmd:
         assert "-x" not in cmd
         assert cmd[0] == "pytest"
         assert "tests/fast/a.py" in cmd and "tests/fast/b.py" in cmd
+
+    def test_a_directory_is_never_returned_to_after_its_parent(self):
+        """pytest loads a directory's conftest when it first reaches it. Naming that directory again
+        after its parent leaves the second visit's tests without their own conftest's fixtures, which
+        reads as `fixture ... not found` on tests that have always had one."""
+        cmd = build_cpu_pytest_cmd(
+            [
+                "tests/fast/backends/megatron_utils/test_actor.py",
+                "tests/fast/backends/test_fsdp_routing_replay.py",
+                "tests/fast/backends/megatron_utils/test_model.py",
+            ],
+            continue_on_error=True,
+        )
+
+        directories = [name.rsplit("/", 1)[0] for name in cmd if name.endswith(".py")]
+        assert len(set(directories)) == len(list(itertools.groupby(directories)))
 
 
 # --- CI_SUITES locked to the stage taxonomy ---------------------------------
@@ -329,6 +346,13 @@ class TestWorkflowScopeSeam:
         assert "resolve-ci-image" not in stage_a
         assert "resolve-ci-image" not in stage_b
 
+    def test_non_default_base_pr_needs_run_ci_label(self):
+        policy_gate = self._workflow().split("  resolve-ci-policy:", 1)[1].split("    runs-on:", 1)[0]
+
+        assert "github.event.pull_request.base.ref == github.event.repository.default_branch" in policy_gate
+        assert "contains(toJSON(github.event.pull_request.labels.*.name), '\"run-ci')" in policy_gate
+        assert "github.event_name != 'pull_request'" in policy_gate
+
     def test_cpu_and_gpu_stages_use_dedicated_reusable_workflows(self):
         workflow = self._workflow()
         assert workflow.count("uses: ./.github/workflows/_run-cpu-ci.yml") == 2
@@ -438,7 +462,6 @@ class TestWorkflowScopeSeam:
     def test_weekly_serializes_each_gpu_matrix(self):
         workflow = self._workflow()
         normal_parallelism = {
-            "stage-c-8-gpu-h100": 2,
             "stage-c-8-gpu-h200": 2,
             "stage-c-4-gpu-h200": 3,
             "stage-c-2-gpu-h200": 2,

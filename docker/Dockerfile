@@ -84,7 +84,14 @@ RUN pip install /tmp/wheels/flash_attn_3-*.whl
 
 RUN pip install git+https://github.com/ISEEKYAN/mbridge.git@89eb10887887bc74853f89a4de258c0702932a1c --no-deps
 
-RUN pip install flash-linear-attention==0.5.2
+# fla 0.5.2 computes BK = triton.next_power_of_2(K) inside a @triton.jit KDA kernel, which this triton
+# rejects at the first GLM-5.3-Flash trainer forward. Fixed upstream by
+# https://github.com/fla-org/flash-linear-attention/pull/1108; drop the patch once a release has it.
+COPY docker/patch/fla_kda_hoist_next_power_of_2.patch /tmp/fla_kda_hoist_next_power_of_2.patch
+RUN pip install flash-linear-attention==0.5.2 && \
+    FLA_DIR=$(python3 -c 'import importlib.util; print(importlib.util.find_spec("fla").submodule_search_locations[0])') && \
+    patch --fuzz=0 -p1 -d "$FLA_DIR" < /tmp/fla_kda_hoist_next_power_of_2.patch && \
+    rm /tmp/fla_kda_hoist_next_power_of_2.patch
 # required for DeepSeek V4
 RUN pip install tilelang==0.1.14 apache-tvm-ffi==0.1.11
 # TileKernels target-import fix: https://github.com/deepseek-ai/TileKernels/pull/25.
@@ -183,7 +190,7 @@ RUN pip install "git+https://github.com/NVIDIA-NeMo/Emerging-Optimizers.git@v0.3
 RUN TMS_CUDA_MAJOR=$(python3 -c "import torch; print(torch.version.cuda.split('.')[0])") \
     pip install git+https://github.com/fzyzcjy/torch_memory_saver.git@b5588e83de86412a48689a6583a4b567e75f7acc --no-cache-dir --force-reinstall
 RUN pip install "nvidia-modelopt[torch]>=0.37.0" --no-build-isolation
-RUN pip install git+https://github.com/radixark/Megatron-Bridge.git@2e09c234a3272285140224d0d698593418b55ba5 --no-deps --no-build-isolation
+RUN pip install git+https://github.com/radixark/Megatron-Bridge.git@8cd3466d14d2337c8492827b3712482c2b3e4866 --no-deps --no-build-isolation
 RUN pip install megatron-energon --no-deps
 RUN pip install multi-storage-client --no-deps
 
@@ -231,21 +238,6 @@ RUN cd /sgl-workspace/sglang && \
       sed -i 's/nvidia-cutlass-dsl\[cu13\]/nvidia-cutlass-dsl/' python/pyproject.toml; \
     fi && \
     SGLANG_BUILD_RUST_EXTS=none pip install -e "python[all]" --no-deps
-
-# =========================== Mooncake structured object store wheel ===========================
-
-# Miles' Mooncake backend requires the structured object store API. Install the selected
-# CUDA 13 wheel as one coherent Python/native package; CUDA 12 keeps its base Mooncake.
-RUN if [ "${ENABLE_CUDA_13}" = "1" ]; then \
-      set -- /tmp/wheels/mooncake_transfer_engine*-*.whl; \
-      if [ "$#" -ne 1 ] || [ ! -e "$1" ]; then \
-        echo "expected exactly one mooncake wheel for cu13/${TARGETARCH}" >&2; exit 1; \
-      fi && \
-      pip install --force-reinstall --no-deps "$1" && \
-      python3 -c "from mooncake.structured_object_store import FieldSchema, MooncakeBundleTransfer, export_ref, import_ref; MooncakeBundleTransfer.put; MooncakeBundleTransfer.get; MooncakeBundleTransfer.release_result; MooncakeBundleTransfer.cleanup_dataproto"; \
-    else \
-      echo "CUDA 12 variant: keeping the base image's mooncake"; \
-    fi
 
 COPY docker/install-kube-tools.sh /tmp/install-kube-tools.sh
 RUN bash /tmp/install-kube-tools.sh "${TARGETARCH}" && rm -f /tmp/install-kube-tools.sh

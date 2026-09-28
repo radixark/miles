@@ -4,12 +4,18 @@ import logging
 import os
 import random
 import re
+from collections.abc import Sequence
+from typing import TYPE_CHECKING
 
 import numpy as np
 
 from miles.ray.rollout.train_data_conversion import split_train_data_by_dp_raw
 from miles.utils import object_store
+from miles.utils.pydantic_utils import StrictBaseModel
 from .audit_utils.witness.allocator import WitnessInfo
+
+if TYPE_CHECKING:
+    from miles.backends.megatron_utils.ft.types import TrainStepOutput
 
 try:
     import pyarrow.parquet as pq
@@ -18,7 +24,6 @@ except ImportError:
 
 from miles.utils import chat_template_utils
 from miles.utils.types import MultimodalTypes, Sample
-
 
 __all__ = ["Dataset"]
 
@@ -229,12 +234,9 @@ class Dataset:
             else:
                 output_prompt = prompt
 
-            if processor:
+            if processor and isinstance(prompt, list):
                 from miles.utils.processing_utils import process_vision_info
 
-                assert isinstance(
-                    prompt, list
-                ), f"prompt must be a list when processor is not None, got {type(prompt)} instead"
                 multimodal_inputs = process_vision_info(prompt, processor)
             else:
                 multimodal_inputs = None
@@ -315,8 +317,25 @@ def process_rollout_data(
     return process_rollout_data_shard(args, rollout_data), get_result
 
 
-def remove_rollout_data_refs(args, rollout_data_pack: dict) -> None:
+class RolloutDataPack(StrictBaseModel):
+    sample_indices: list[int] | None = None
+    data_ref: object_store.StoreObjectRef | list[object_store.StoreObjectRef] | None = None
+
+    @property
+    def data_refs(self) -> list[object_store.StoreObjectRef]:
+        if (ref := self.data_ref) is None:
+            return []
+        return ref if isinstance(ref, list) else [ref]
+
+
+def remove_rollout_data_refs(args, rollout_data_pack: RolloutDataPack) -> None:
     store = object_store.get_instance()
-    data_ref = rollout_data_pack["data_ref"]
-    for ref in data_ref if isinstance(data_ref, list) else [data_ref]:
+    for ref in rollout_data_pack.data_refs:
         store.remove(ref)
+
+
+def remove_train_output_refs(train_outputs: Sequence["TrainStepOutput"]) -> None:
+    store = object_store.get_instance()
+    for train_output in train_outputs:
+        if (ref := train_output.values) is not None:
+            store.remove(ref)

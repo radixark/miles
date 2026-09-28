@@ -119,9 +119,9 @@ class TestNeverReachedRetry:
         tag: str,
     ) -> None:
         """A submit succeeds when a server appears within its retry window."""
-        from tests.fast.utils.workers.e2e.harness import reserve_port
+        from tests.fast.utils.workers.e2e.harness import READY_TIMEOUT_SECONDS, reserve_port
 
-        monkeypatch.setattr(client_module, "SUBMIT_RETRY_WINDOW_SECONDS", 3.0)
+        monkeypatch.setattr(client_module, "SUBMIT_RETRY_WINDOW_SECONDS", READY_TIMEOUT_SECONDS)
         monkeypatch.setattr(client_module, "RETRY_INITIAL_DELAY_SECONDS", 0.01)
         monkeypatch.setattr(client_module, "RETRY_MAX_DELAY_SECONDS", 0.05)
         port = reserve_port()
@@ -129,7 +129,8 @@ class TestNeverReachedRetry:
 
         async def start_later() -> None:
             await asyncio.sleep(0.1)
-            wait_until_serving(spawn(port=port, wait=False))
+            server = spawn(port=port, wait=False)
+            await asyncio.to_thread(wait_until_serving, server)
 
         starter = asyncio.create_task(start_later())
         result = await handle.demo_count_sync(tag=tag)

@@ -29,11 +29,13 @@ from miles.backends.megatron_utils.ft.indep_dp import allreduce_grads_and_losses
 from miles.backends.megatron_utils.ft.types import TrainStepOutcome
 from miles.backends.megatron_utils.local_weight_checksum import dump_local_weight_checksums
 from miles.backends.megatron_utils.optimizer_state_reset import reset_optimizer_states
+from miles.backends.training_utils.sampling_mask import get_rollout_sampling_masks
+from miles.backends.training_utils.weight_update.snapshot_publisher import SnapshotPublisher
 from miles.utils.audit_utils.witness.allocator import WitnessInfo
 from miles.utils.audit_utils.witness.module import witness_dump_and_clear_stale
 from miles.utils.dumper_utils import DumperMegatronUtil, DumperPhase
+from miles.utils.lora.utils import is_multi_lora_enabled
 from miles.utils.memory_utils import clear_memory
-from miles.utils.multi_lora import is_multi_lora_enabled
 from miles.utils.test_utils.ft_test_actions import FTTestActionActorExecutor
 from miles.utils.tracking_utils.structured_log import log_structured
 
@@ -155,7 +157,8 @@ def setup_model_and_optimizer(
     else:
         provider_func = get_model_provider_func(args, role)
         if is_lora_enabled(args) and role == "actor":
-            if "inkling" in (getattr(args, "custom_model_provider_path", None) or ""):
+            if "inkling" in (args.custom_model_provider_path or ""):
+                assert args.lora_type == "lora", "Native Inkling does not implement --lora-type canonical_lora"
                 from miles_plugins.models.inkling.lora import wrap_model_provider_with_inkling_lora
 
                 provider_func = wrap_model_provider_with_inkling_lora(provider_func, args)
@@ -168,6 +171,11 @@ def setup_model_and_optimizer(
                 provider_func = wrap_model_provider_with_kimi_k3_lora(provider_func, args)
                 if args.offload_train:
                     patch_param_grad_buffer_for_colocate_mode_lora()
+            else:
+                raise AssertionError(
+                    "Native LoRA injection is only implemented for Inkling and Kimi K3; "
+                    "use --megatron-to-hf-mode bridge"
+                )
         model = get_model(provider_func, ModelType.encoder_or_decoder)
 
     if args.debug_disable_optimizer:
@@ -276,6 +284,7 @@ def forward_only(
     rollout_id: int,
     store_prefix: str = "",
     fp32_output: bool = True,
+    use_rollout_sampling_mask: bool = False,
 ) -> dict[str, list[torch.Tensor]]:
     """Run forward passes only and collect non-loss outputs (e.g., logprobs).
 
@@ -291,6 +300,8 @@ def forward_only(
         rollout_id: Rollout identifier (selects the per-rollout dump subdirectory).
         store_prefix: Prefix to prepend to stored output keys.
         fp32_output: Whether Megatron should upcast the complete model output to FP32.
+        use_rollout_sampling_mask: Whether to score over each rollout token's
+            captured sampling support.
 
     Returns:
         Aggregated outputs keyed by ``store_prefix + key``.
@@ -312,17 +323,20 @@ def forward_only(
     ) -> tuple[torch.Tensor, Callable[[torch.Tensor], dict[str, list[torch.Tensor]]]]:
         """Return the model output and its batch-bound loss callback."""
 
+        forward_only_keys = [
+            "tokens",
+            "loss_masks",
+            "multimodal_train_inputs",
+            "total_lengths",
+            "response_lengths",
+            "max_seq_lens",
+            "witness_ids",
+        ]
+        if use_rollout_sampling_mask:
+            forward_only_keys.extend(["rollout_sampling_mask_ids", "rollout_sampling_mask_offsets"])
         batch = get_batch(
             data_iterator,
-            [
-                "tokens",
-                "loss_masks",
-                "multimodal_train_inputs",
-                "total_lengths",
-                "response_lengths",
-                "max_seq_lens",
-                "witness_ids",
-            ],
+            forward_only_keys,
             args.data_pad_size_multiplier,
             args.qkv_format,
             allgather_cp=args.allgather_cp,
@@ -332,6 +346,7 @@ def forward_only(
         packed_seq_params = get_packed_seq_params(batch, args)
         total_lengths = batch["total_lengths"]
         response_lengths = batch["response_lengths"]
+        rollout_sampling_mask = get_rollout_sampling_masks(batch) if use_rollout_sampling_mask else None
 
         if "adapter_token_counts" in batch:
             from megatron.bridge.peft.multi_lora_layers import set_tokens_per_adapter_slot
@@ -350,8 +365,7 @@ def forward_only(
             fp32_output=fp32_output,
         )
 
-        return output_tensor, partial(
-            f,
+        callback_kwargs = dict(
             args=args,
             unconcat_tokens=unconcat_tokens,
             total_lengths=total_lengths,
@@ -359,6 +373,10 @@ def forward_only(
             with_entropy=args.use_rollout_entropy,
             max_seq_lens=batch.get("max_seq_lens", None),
         )
+        if use_rollout_sampling_mask:
+            callback_kwargs["rollout_sampling_mask"] = rollout_sampling_mask
+
+        return output_tensor, partial(f, **callback_kwargs)
 
     # Turn on evaluation mode which disables dropout.
     for model_module in model:
@@ -415,6 +433,12 @@ def run_forward_backward_pass(
 ):
     """One pipeline forward/backward pass over the microbatches; no optimizer interaction."""
 
+    sampling_mask_keys = (
+        ("rollout_sampling_mask_ids", "rollout_sampling_mask_offsets")
+        if args.use_sampling_support_replay and args.loss_type == "policy_loss"
+        else ()
+    )
+
     @dumper_phase_util.wrap_forward_step
     def forward_step(data_iterator: DataIterator, model: GPTModel, return_schedule_plan: bool = False) -> tuple[
         torch.Tensor,
@@ -455,6 +479,7 @@ def run_forward_backward_pass(
                 "loss_weights",
                 "target_tokens",
                 "sample_indices",
+                *sampling_mask_keys,
             ],
             args.data_pad_size_multiplier,
             args.qkv_format,
@@ -845,6 +870,8 @@ def save(
     opt_param_scheduler: OptimizerParamScheduler | None,
     checkpointing_context: dict | None = None,
     non_persistent_ckpt: bool = False,
+    *,
+    snapshot_publisher: SnapshotPublisher | None = None,
 ) -> None:
     """Persist a training checkpoint safely with forward hooks disabled.
 
@@ -865,7 +892,7 @@ def save(
         disable_forward_pre_hook(model)
 
     if is_lora_model(model):
-        save_checkpoint_with_lora(iteration, model, optimizer, opt_param_scheduler)
+        save_checkpoint_with_lora(iteration, model, optimizer, opt_param_scheduler, publisher=snapshot_publisher)
     else:
         save_checkpoint(
             iteration,
@@ -889,7 +916,7 @@ def initialize_model_and_optimizer(
     args: Namespace,
     role: str = "actor",
     checkpointing_context=None,
-) -> tuple[list[DDP], MegatronOptimizer | None, OptimizerParamScheduler | None, int]:
+) -> tuple[list[DDP], MegatronOptimizer | None, OptimizerParamScheduler | None, LoadCheckpointOutput]:
     """Initialize model(s), optimizer, scheduler, and load from checkpoint.
 
     Args:
@@ -898,13 +925,46 @@ def initialize_model_and_optimizer(
         checkpointing_context: pass-through checkpointing context
 
     Returns:
-        tuple[list[DDP], MegatronOptimizer, OptimizerParamScheduler, int]:
-            DDP-wrapped model chunks, optimizer, scheduler, and iteration index.
+        tuple[list[DDP], MegatronOptimizer, OptimizerParamScheduler, LoadCheckpointOutput]:
+            DDP-wrapped model chunks, optimizer, scheduler, and what the load answered.
     """
+    model, optimizer, opt_param_scheduler = build_model_and_optimizer(args, role=role)
+
+    load_output = load_model_state(
+        args,
+        model=model,
+        optimizer=optimizer,
+        opt_param_scheduler=opt_param_scheduler,
+        role=role,
+        checkpointing_context=checkpointing_context,
+    )
+    return model, optimizer, opt_param_scheduler, load_output
+
+
+def build_model_and_optimizer(
+    args: Namespace, *, role: str
+) -> tuple[list[DDP], MegatronOptimizer | None, OptimizerParamScheduler | None]:
     model, optimizer, opt_param_scheduler = setup_model_and_optimizer(args, role)
     model[0].role = role
     clear_memory()
+    return model, optimizer, opt_param_scheduler
 
+
+@dataclasses.dataclass(frozen=True)
+class LoadCheckpointOutput:
+    loaded_rollout_id: int
+    start_rollout_id: int
+
+
+def load_model_state(
+    args: Namespace,
+    *,
+    model: list[DDP],
+    optimizer: MegatronOptimizer | None,
+    opt_param_scheduler: OptimizerParamScheduler | None,
+    role: str,
+    checkpointing_context: dict | None,
+) -> LoadCheckpointOutput:
     if is_multi_lora_enabled(args):
         # Hide adapter params so the bridge's conversion-task walk doesn't see them
         # while loading the base checkpoint.
@@ -915,10 +975,11 @@ def initialize_model_and_optimizer(
         load_ctx = nullcontext()
 
     load_dir = getattr(args, "load", None)
+    native_optimizer_restored = False
     # --load may be unset: setup_model_and_optimizer already asserted pretrained_checkpoint covers it.
     if load_dir is None or _has_loadable_ckpt(load_dir):
         with load_ctx:
-            iteration, _ = load_checkpoint(
+            iteration, _, native_optimizer_restored = load_checkpoint(
                 model,
                 optimizer,
                 opt_param_scheduler,
@@ -937,7 +998,7 @@ def initialize_model_and_optimizer(
         and getattr(args, "lora_adapter_path", None)
         and "inkling" in (getattr(args, "custom_model_provider_path", None) or "")
     ):
-        if (Path(args.lora_adapter_path) / "adapter_model.safetensors").exists():
+        if (Path(args.lora_adapter_path) / "adapter_model.safetensors").exists() and not native_optimizer_restored:
             from miles_plugins.models.inkling.lora import load_inkling_lora_adapter
 
             load_inkling_lora_adapter(model, args.lora_adapter_path)
@@ -956,4 +1017,13 @@ def initialize_model_and_optimizer(
     if opt_param_scheduler is not None and not (args.use_checkpoint_opt_param_scheduler and iteration > 0):
         opt_param_scheduler.step(increment=iteration * args.global_batch_size)
 
-    return model, optimizer, opt_param_scheduler, iteration
+    if args.finetune and not is_lora_enabled(args):
+        assert iteration == 0, (
+            f"--finetune loaded {args.load} and found iteration {iteration}, so the checkpoint and the flag disagree "
+            f"about where this run stands"
+        )
+        start_rollout_id = 0
+    else:
+        start_rollout_id = iteration + 1
+
+    return LoadCheckpointOutput(loaded_rollout_id=iteration, start_rollout_id=start_rollout_id)
