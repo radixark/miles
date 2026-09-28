@@ -15,7 +15,7 @@ from miles_plugins.models.deepseek_v4.ops.kernel.tilelang_indexer_fwd import (
     _make_causal_cu_seqlens,
     batched_indexer_fwd,
 )
-from miles_plugins.models.deepseek_v4.ops.qat import fp8_simulate_qat
+from miles_plugins.models.deepseek_v4.ops.qat import fp8_simulate_qat, resolve_fp8_qat
 from miles_plugins.models.deepseek_v4.ops.rope import apply_rotary_emb, wrapped_precompute_freqs_cis
 from miles_plugins.models.deepseek_v4.ops.thd_utils import ThdLayout, get_compress_cu_seqlens_thd, get_q_positions_thd
 from miles_plugins.models.deepseek_v4.ops.utils import rotate_activation
@@ -36,7 +36,7 @@ class V4Indexer(MegatronModule):
         self.topk_backend = config.miles_dsa_topk_backend
         self.rope_head_dim = config.qk_pos_emb_head_dim
         self.compress_ratio = 4
-        self.use_fp8_qat = config.fp8 is not None
+        self.use_fp8_qat, self.qat_scale_fmt = resolve_fp8_qat(config, is_indexer=True)
 
         if pg_collection is None:
             pg_collection = ProcessGroupCollection.use_mpu_process_groups(required_pgs=["tp", "cp"])
@@ -132,7 +132,7 @@ class V4Indexer(MegatronModule):
 
         q = rotate_activation(q)
         if self.use_fp8_qat:
-            q = fp8_simulate_qat(q, 128)
+            q = fp8_simulate_qat(q, 128, self.qat_scale_fmt)
 
         pre_grouped = thd_layout is not None and thd_layout.compressed_group_ids is not None
         k = self.compressor(thd_layout.hidden_compact if pre_grouped else x, thd_layout)
