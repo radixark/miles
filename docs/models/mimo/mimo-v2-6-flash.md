@@ -93,13 +93,13 @@ MILES_SCRIPT_EXTERNAL_RAY=1 MASTER_ADDR=<head ip> python scripts/run_mimo_v2_6_f
 
 | `--model-name` | TP | PP | CP | EP | expert-TP | GPUs | rollout engine |
 |---|---|---|---|---|---|---|---|
-| `MiMo-V2.6-Flash-RL-bf16` | 2 | 2 | 1 | 8 | 1 | 16 (2 × 8) | TP8, `--sglang-mem-fraction-static 0.8` |
+| `MiMo-V2.6-Flash-RL-bf16` | 2 | 2 | 1 | 8 | 1 | 16 (2 × 8) | one engine per node: attention TP4 × DP2 (`--sglang-enable-dp-attention --sglang-dp-size 2 --sglang-enable-dp-lm-head`), EP8, `--sglang-mem-fraction-static 0.72` |
 
-TP is capped at 4 by the four global-attention KV heads. Context parallelism is not supported. `--sequence-parallel` is on whenever TP > 1. THD packing with `--use-dynamic-batch-size` is the default; `--qkv-format bshd` runs one sample per micro-batch.
+TP is capped at 4 by the four global-attention KV heads. Context parallelism is not supported. `--sequence-parallel` is on whenever TP > 1. THD packing with `--use-dynamic-batch-size` is the default; `--qkv-format bshd` runs one sample per micro-batch. `--max-tokens-per-gpu` defaults to 16384 for the full model on H200 and to 9216 otherwise; at 16384 a 50-step full-model run peaked at 98.5% of GPU memory (PP stage 1).
 
 ### 5.2 Algorithm
 
-GRPO with `--eps-clip 0.2 --eps-clip-high 0.28 --entropy-coef 0.00` and `--rm-type math` on dapo-math-17k. No KL loss: bridge mode has no Megatron reference model (with an MXFP4 engine, `--ref-load` only names the trainer's BF16 weights).
+GRPO with `--eps-clip 0.2 --eps-clip-high 0.28 --entropy-coef 0.00` and `--rm-type math` on dapo-math-17k. `--n-samples-per-prompt` (default 8) and `--rollout-max-response-len` (default 8192) set the group size and the response cap. No KL loss: bridge mode has no Megatron reference model (with an MXFP4 engine, `--ref-load` only names the trainer's BF16 weights).
 
 ### 5.3 Optimizer
 
