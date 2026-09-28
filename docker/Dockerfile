@@ -239,21 +239,6 @@ RUN cd /sgl-workspace/sglang && \
     fi && \
     SGLANG_BUILD_RUST_EXTS=none pip install -e "python[all]" --no-deps
 
-# =========================== Mooncake structured object store wheel ===========================
-
-# Miles' Mooncake backend requires the structured object store API. Install the selected
-# CUDA 13 wheel as one coherent Python/native package; CUDA 12 keeps its base Mooncake.
-RUN if [ "${ENABLE_CUDA_13}" = "1" ]; then \
-      set -- /tmp/wheels/mooncake_transfer_engine*-*.whl; \
-      if [ "$#" -ne 1 ] || [ ! -e "$1" ]; then \
-        echo "expected exactly one mooncake wheel for cu13/${TARGETARCH}" >&2; exit 1; \
-      fi && \
-      pip install --force-reinstall --no-deps "$1" && \
-      python3 -c "from mooncake.structured_object_store import FieldSchema, MooncakeBundleTransfer, export_ref, import_ref; MooncakeBundleTransfer.put; MooncakeBundleTransfer.get; MooncakeBundleTransfer.release_result; MooncakeBundleTransfer.cleanup_dataproto"; \
-    else \
-      echo "CUDA 12 variant: keeping the base image's mooncake"; \
-    fi
-
 COPY docker/install-kube-tools.sh /tmp/install-kube-tools.sh
 RUN bash /tmp/install-kube-tools.sh "${TARGETARCH}" && rm -f /tmp/install-kube-tools.sh
 
@@ -315,6 +300,17 @@ RUN pip install --force-reinstall --no-deps "apache-tvm-ffi==0.1.11" && \
 p = inspect.signature(k.make_kwargs_wrapper).parameters; \
 assert 'map_dataclass_to_tuple' in p, \
   'apache-tvm-ffi resolves to a build too old for nvidia-cutlass-dsl 4.6.0: %s' % list(p)"
+
+# ==================== Check the base image's Mooncake ====================
+# Miles' Mooncake object-store backend imports FieldSchema, MooncakeBundleTransfer,
+# export_ref and import_ref from mooncake.structured_object_store. The SGLang base image's
+# Mooncake provides them from 0.3.12.post1 on; older releases ship the module without them.
+# Check after every other install, so an older base image or a later install that replaces
+# Mooncake fails here instead of in the first Mooncake run.
+RUN if [ "${ENABLE_CUDA_13}" = "1" ]; then \
+      command -v mooncake_master || { echo "mooncake_master is not on PATH; the base image's Mooncake is missing or incomplete" >&2; exit 1; } && \
+      python3 -c "from mooncake.structured_object_store import FieldSchema, MooncakeBundleTransfer, export_ref, import_ref; MooncakeBundleTransfer.put; MooncakeBundleTransfer.get; MooncakeBundleTransfer.release_result; MooncakeBundleTransfer.cleanup_dataproto"; \
+    fi
 
 RUN rm -rf /tmp/wheels
 
