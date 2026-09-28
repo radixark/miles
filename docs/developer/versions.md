@@ -56,9 +56,9 @@ Everything else is pinned inline where it is installed: `mbridge` and `Megatron-
 explicit versions. Transformer Engine is special: `docker/verify_transformer_engine.py`
 asserts the installed triplet is `2.17.0`, and the patches under `docker/patch/cu13/` are
 applied to it with a build failure if any patch does not apply cleanly, so an image can
-never ship silently unpatched TE. Mooncake comes from the base image unchanged; the CUDA 13
-build fails unless it provides `mooncake_master` and the structured-object API Miles imports
-from `mooncake.structured_object_store` (Mooncake 0.3.12.post1 or newer).
+never ship silently unpatched TE. Mooncake comes from the base image unchanged; Miles'
+Mooncake object-store backend needs 0.3.12.post1 or newer, the first release whose
+`mooncake.structured_object_store` has the API Miles imports.
 
 `requirements.txt` is Miles' own dependency list, and the convention there is that **a pin
 carries its reason inline**: `transformers==5.12.1` names the HF-native weight conversion and
@@ -180,7 +180,7 @@ timestamped tag; the scheduled prune keeps every timestamped tag for at least 14
 | `CUDNN_STATUS_BAD_PARAM` in a fused-attention backward | Something re-resolved cuDNN below the image's pin |
 | Build fails with "TE patch did not apply cleanly" | A `docker/patch/cu13/*.patch` no longer matches the new TE; rebase the patch or drop it if upstream fixed it |
 | TE triplet assertion at build time | The base image moved TE off `2.17.0`; update `docker/verify_transformer_engine.py` together with whatever depends on it |
-| `cannot import name 'FieldSchema' from 'mooncake.structured_object_store'`, or the CUDA 13 build fails its Mooncake check | The base image's Mooncake predates 0.3.12.post1 or is missing (no `mooncake_master` on `PATH`), typically because `SGLANG_IMAGE_TAG` points at an older base |
+| `cannot import name 'FieldSchema' from 'mooncake.structured_object_store'` | The base image's Mooncake predates 0.3.12.post1, typically because `SGLANG_IMAGE_TAG` points at an older base |
 | A test passes locally but fails in CI, or the reverse | Compare the image tag and the two dependency refs or commits CI resolved. Every job logs all three |
 
 ## Related

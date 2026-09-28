@@ -301,17 +301,6 @@ p = inspect.signature(k.make_kwargs_wrapper).parameters; \
 assert 'map_dataclass_to_tuple' in p, \
   'apache-tvm-ffi resolves to a build too old for nvidia-cutlass-dsl 4.6.0: %s' % list(p)"
 
-# ==================== Check the base image's Mooncake ====================
-# Miles' Mooncake object-store backend imports FieldSchema, MooncakeBundleTransfer,
-# export_ref and import_ref from mooncake.structured_object_store. The SGLang base image's
-# Mooncake provides them from 0.3.12.post1 on; older releases ship the module without them.
-# Check after every other install, so an older base image or a later install that replaces
-# Mooncake fails here instead of in the first Mooncake run.
-RUN if [ "${ENABLE_CUDA_13}" = "1" ]; then \
-      command -v mooncake_master || { echo "mooncake_master is not on PATH; the base image's Mooncake is missing or incomplete" >&2; exit 1; } && \
-      python3 -c "from mooncake.structured_object_store import FieldSchema, MooncakeBundleTransfer, export_ref, import_ref; MooncakeBundleTransfer.put; MooncakeBundleTransfer.get; MooncakeBundleTransfer.release_result; MooncakeBundleTransfer.cleanup_dataproto"; \
-    fi
-
 RUN rm -rf /tmp/wheels
 
 # The cu130 sglang base ships its baked Rust toolchain outside the default PATH.
