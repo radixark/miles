@@ -12,7 +12,7 @@ from tests.ci.metric_history import register_ci_gate
 from tests.e2e.megatron.test_qwen3_5_35B_A3B_mtp._common import CaseConfig, execute, prepare
 
 register_cuda_ci(
-    est_time=1600, suite="stage-c-8-gpu-h200", labels=["megatron", "qwen35"], hardware=["hopper", "blackwell"]
+    est_time=1500, suite="stage-c-8-gpu-h200", labels=["megatron", "qwen35"], hardware=["hopper", "blackwell"]
 )
 
 register_ci_gate(metric_key="train/grad_norm")
