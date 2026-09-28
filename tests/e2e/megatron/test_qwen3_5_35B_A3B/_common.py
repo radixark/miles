@@ -1,11 +1,12 @@
 """Shared setup for Qwen3.5-35B-A3B e2e cases.
 
-Cases cover speculative decoding x R3:
-- mtp1 (spec + R3): MTP training on (1 layer + loss factor); the MTP/draft weights are synced.
-- mtp0 (spec, no R3): MTP training off. Whether the MTP layer is checked is a weight-check
-  *selector* concern, not a skip-list one.
-- dp_attention (no spec, no R3) and fully_async_r3 (no spec, R3): EAGLE off, so there is no
-  draft to sync and the selector is "target".
+Cases cover speculative decoding x R3 (the {spec}_{r3} fields of each file name):
+- spec_mtptrain_r3: EAGLE with MTP training on (1 layer + loss factor); the MTP/draft weights
+  are synced.
+- spec_nor3: EAGLE from the checkpoint draft, MTP training off. Whether the MTP layer is
+  checked is a weight-check *selector* concern, not a skip-list one.
+- nospec_nor3 and nospec_r3: EAGLE off, so there is no draft to sync and the selector is
+  "target".
 
 miles has no VLM/vision implementation on the training side, so Qwen3.5's `visual.*`
 weights are never synced and must be excluded from the weight-equality check; each case
@@ -33,9 +34,8 @@ class CaseConfig:
     tp_size: int
     ep_size: int
     rollout_num_gpus_per_engine: int
-    sglang_ep_size: int
     # Whether MTP training is enabled. On -> --enable-mtp-training --mtp-num-layers 1
-    # (+ loss factor); off -> no MTP training args (effectively 0 MTP layers; note
+    # (+ loss factor); off -> --mtp-num-layers 0, so the trainer builds no MTP layer (note
     # `--enable-mtp-training --mtp-num-layers 0` would fail the arguments.py assert).
     enable_mtp_training: bool
     # Whether to enable R3 routing replay (--use-rollout-routing-replay).
@@ -48,12 +48,17 @@ class CaseConfig:
     # mismatches become non-fatal). Cases pass ("visual",): miles has no VLM/vision
     # implementation on the training side, so those weights are never synced.
     check_weight_update_skip_list: tuple[str, ...] = ()
-    # SGLang-side DeepEP; Megatron always dispatches through flex, whose default backend is DeepEP.
+    # SGLang-side DeepEP; Megatron's dispatcher is megatron_dispatcher (default flex, whose default backend is DeepEP).
     use_deepep: bool = False
+    # SGLang DeepEP dispatch dtype; None keeps "auto", which dispatches FP8 even for a BF16 model
+    # on the DeepGEMM runner, so a BF16-dispatch case passes "bf16".
+    sglang_deepep_dispatcher_output_dtype: str = None
     # Serve Qwen/Qwen3.5-35B-A3B-FP8 against bf16 training; weight updates re-quantize.
     use_fp8_rollout: bool = False
     # EAGLE speculative decoding (MTP draft) with spec v2 in the rollout.
     use_spec: bool = True
+    # None omits --sglang-ep-size, so SGLang shards the experts by TP alone (EP 1).
+    sglang_ep_size: int = None
     sglang_dp_size: int = None
     sglang_enable_dp_attention: bool = False
     megatron_dispatcher: str = "flex"
@@ -70,6 +75,8 @@ class CaseConfig:
             raise ValueError("rollout_num_gpus must be set when colocate is False")
         if not self.use_spec and (self.enable_mtp_training or self.check_weight_update_selector != "target"):
             raise ValueError("without spec there is no draft: set enable_mtp_training=False and selector 'target'")
+        if self.sglang_deepep_dispatcher_output_dtype is not None and not self.use_deepep:
+            raise ValueError("sglang_deepep_dispatcher_output_dtype requires use_deepep=True")
 
 
 def prepare(case: CaseConfig) -> None:
@@ -154,16 +161,23 @@ def build_train_args(case: CaseConfig, *, wandb_file: str) -> str:
     )
 
     # DeepEP low-latency dispatch (every decode-phase forward, incl. EAGLE verify) holds at most
-    # 128 tokens per rank; each request carries 3 draft tokens scattered over the engine's TP ranks.
-    max_running = min(128, 128 * case.rollout_num_gpus_per_engine // 3 // 8 * 8) if case.use_deepep else 512
+    # 128 tokens per rank. EAGLE verify feeds 3 tokens per request; DP attention splits
+    # --max-running-requests over the DP ranks, and each rank dispatches its attention-TP share of
+    # its DP rank's tokens, so with or without DP attention a rank dispatches at most
+    # max_running * tokens_per_request / rollout_num_gpus_per_engine tokens.
+    tokens_per_request = 3 if case.use_spec else 1
+    max_running = (
+        min(128, 128 * case.rollout_num_gpus_per_engine // tokens_per_request // 8 * 8) if case.use_deepep else 512
+    )
     sglang_args = (
         f"--rollout-num-gpus-per-engine {case.rollout_num_gpus_per_engine} "
         # 0.6 (not 0.7): colocate leaves ~11GB of resident training memory on each GPU, so
         # sglang at 0.7 OOMs in the rollout MoE forward; 0.6 leaves headroom for both.
         "--sglang-mem-fraction-static 0.6 "
-        f"--sglang-ep-size {case.sglang_ep_size} "
-        f"--sglang-max-running-requests {max_running} "
     )
+    if case.sglang_ep_size is not None:
+        sglang_args += f"--sglang-ep-size {case.sglang_ep_size} "
+    sglang_args += f"--sglang-max-running-requests {max_running} "
     if case.use_spec:
         sglang_args += (
             # EAGLE speculative decoding (MTP draft)
@@ -183,16 +197,23 @@ def build_train_args(case: CaseConfig, *, wandb_file: str) -> str:
         sglang_args += "--use-rollout-routing-replay "
     if case.use_deepep:
         sglang_args += "--sglang-moe-a2a-backend deepep --sglang-deepep-mode auto "
-        sglang_args += f"--sglang-cuda-graph-max-bs-decode {max_running} "
+        # The decode CUDA-graph batch is per DP rank: capture at most one DP rank's requests.
+        sglang_args += f"--sglang-cuda-graph-max-bs-decode {max_running // (case.sglang_dp_size or 1)} "
         if not case.use_fp8_rollout:
             # BF16 experts have SGLang DeepEP kernels only on the DeepGEMM runner.
             sglang_args += "--sglang-moe-runner-backend deep_gemm "
+        if case.sglang_deepep_dispatcher_output_dtype is not None:
+            sglang_args += f"--sglang-deepep-dispatcher-output-dtype {case.sglang_deepep_dispatcher_output_dtype} "
 
     # When MTP training is off the rollout still runs EAGLE spec from the checkpoint
-    # draft; those draft weights just never get synced (see the mtp0 case + skip-list).
-    mtp_args = ""
+    # draft; those draft weights just never get synced (the spec_nor3 case checks only the
+    # target through its selector).
     if case.enable_mtp_training:
         mtp_args = "--enable-mtp-training " "--mtp-num-layers 1 " "--mtp-loss-scaling-factor 0.2 "
+    else:
+        # The model script always passes --mtp-num-layers 1, and Megatron adds an MTP loss whenever the
+        # layer exists, even without --enable-mtp-training; this later flag overrides it.
+        mtp_args = "--mtp-num-layers 0 "
 
     ci_args = "--ci-test "
     ci_args += f"--check-weight-update-selector {case.check_weight_update_selector} "

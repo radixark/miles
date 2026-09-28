@@ -1,9 +1,11 @@
 """Qwen3.5-35B-A3B: 1 MTP layer + speculative-v2 + R3 + DeepEP on both sides + FP8 rollout.
 
-MTP training and R3 are on as in test_mtp1_spec_v2_r3 (selector "all" checks target and draft;
-vision weights are skipped). SGLang also runs DeepEP (normal mode for prefill/extend batches,
-low-latency for every decode-phase forward) and serves Qwen/Qwen3.5-35B-A3B-FP8 against bf16
-training, so every weight update re-quantizes and the equality check allows quantization error.
+MTP training is on with one draft layer, so the rollout MTP/draft weights are synced from
+training (selector "all" checks target and draft; vision weights are skipped), and R3 is on.
+The rollout runs DP attention (attention TP1 x DP4) with EP4 through DeepEP (normal mode for
+prefill/extend batches, low-latency for every decode-phase forward) and serves
+Qwen/Qwen3.5-35B-A3B-FP8 against bf16 training, so every weight update re-quantizes and the
+equality check allows quantization error.
 """
 
 import os
@@ -23,14 +25,17 @@ register_ci_gate(metric_key="train/train_rollout_kl")
 register_ci_gate(metric_key="rollout/raw_reward")
 
 CASE = CaseConfig(
-    # tp2/pp1/cp1/ep4: dense DP2 with EP4 folded over TP x DP, the only 4-GPU Qwen3.5 case
-    # with dense DP > 1. TP=4 hits the Qwen3.5 attention-output-gate sharding bug.
+    # tp2/pp1/cp1/ep4: dense DP2 with EP4 folded over TP x DP. TP=4 hits the Qwen3.5
+    # attention-output-gate sharding bug.
     num_gpus_per_node=4,
     cp_size=1,
     pp_size=1,
     tp_size=2,
     ep_size=4,
+    # One TP4 engine: attention TP1 x DP4, EP4.
     rollout_num_gpus_per_engine=4,
+    sglang_dp_size=4,
+    sglang_enable_dp_attention=True,
     sglang_ep_size=4,
     enable_mtp_training=True,
     use_r3=True,

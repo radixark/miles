@@ -1,7 +1,8 @@
-"""Qwen3.5-35B-A3B fully-async rollout with R3 and without speculative decoding.
+"""Qwen3.5-35B-A3B without speculative decoding or R3: the BF16 DeepEP case.
 
-4 train GPUs (TP1, DP4, EP4) + one 4-GPU engine with DP attention (attention TP1 x DP4, EP4),
-no DeepEP on either side. Weights reach the engine by broadcast.
+Megatron runs TP1 x CP2 with EP4 through flex (DeepEP). The rollout runs DP attention
+(attention TP2 x DP2) with EP4 through SGLang DeepEP on the DeepGEMM runner with BF16
+dispatch, serving the BF16 checkpoint.
 """
 
 import os
@@ -10,15 +11,7 @@ from tests.ci.ci_register import register_cuda_ci
 from tests.ci.metric_history import register_ci_gate
 from tests.e2e.megatron.test_qwen3_5_35B_A3B._common import CaseConfig, execute, prepare
 
-# 8x H200 because EP must stay >= 4: at EP2 each rank holds 128 of the 256 experts, and the
-# grad clip's multi_tensor_applier call then exceeds the image's fixed TransformerEngine
-# tensor-handle pool (20321; configurable only from NVIDIA/TransformerEngine#3090 on).
-register_cuda_ci(
-    est_time=2400,
-    suite="stage-c-8-gpu-h200",
-    labels=["megatron", "qwen35", "weight-update", "fully-async", "replay"],
-    hardware=["hopper", "blackwell"],
-)
+register_cuda_ci(est_time=1500, suite="stage-c-4-gpu-h200", labels=["megatron", "qwen35"], hardware=["hopper"])
 
 register_ci_gate(metric_key="train/grad_norm")
 register_ci_gate(metric_key="train/ppo_kl")
@@ -27,28 +20,30 @@ register_ci_gate(metric_key="train/train_rollout_kl")
 register_ci_gate(metric_key="rollout/raw_reward")
 
 CASE = CaseConfig(
+    # tp1/cp2/ep4 on 4x H200: dense DP2 with CP2 and no TP.
     num_gpus_per_node=4,
-    cp_size=1,
+    cp_size=2,
     pp_size=1,
     tp_size=1,
     ep_size=4,
-    megatron_dispatcher="alltoall",
-    colocate=False,
-    rollout_num_gpus=4,
+    # 4096 as in the other CP=2 case: the GatedDeltaNet backward's fla CP kernel OOMs in Triton
+    # autotune at 8192.
+    max_tokens_per_gpu=4096,
+    # One TP4 engine: attention TP2 x DP2, EP4.
     rollout_num_gpus_per_engine=4,
-    sglang_dp_size=4,
+    sglang_dp_size=2,
     sglang_enable_dp_attention=True,
     sglang_ep_size=4,
-    fully_async=True,
+    use_deepep=True,
+    # "auto" would dispatch FP8 for this BF16 model on the DeepGEMM runner.
+    sglang_deepep_dispatcher_output_dtype="bf16",
     use_spec=False,
     enable_mtp_training=False,
-    use_r3=True,
+    use_r3=False,
     check_weight_update_selector="target",
     # miles has no VLM/vision implementation on the training side, so vision weights are
     # never synced; exclude them from the weight-equality check.
     check_weight_update_skip_list=("visual",),
-    # in_place pause, as in the GLM-4.7-Flash fully-async R3 case.
-    extra_args="--pause-generation-mode in_place ",
 )
 
 
