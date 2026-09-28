@@ -1,11 +1,11 @@
-"""AMD 4-GPU variant of test_r3_mtp.py.
+"""AMD 4-GPU variant of test_spec_mtptrain_r3_bf16_sgl_tp4_meg_tp2pp2.py.
 
 Standalone rather than an IS_HIP branch in the original: the MI300X fleet is
 split into two 4-GPU runners, and keeping the variant separate means neither
-side's parallelism constrains the other. The CUDA test_r3_mtp now runs the same
-4-GPU shape on 4x H200.
+side's parallelism constrains the other. The CUDA case now runs the same 4-GPU
+shape on 4x H200.
 
-Difference from the original 8-GPU layout (now test_r3_mtp_deepep's): cp_size
+Difference from the original 8-GPU layout (tp2/pp2/cp2/ep4): cp_size
 2 -> 1 and ep_size 4 -> 2, halving the world size from 8 to 4. TP=2 and PP=2 are unchanged, so the MTP layer placement
 under test is unaffected. Both axes have to shrink because Megatron sizes the
 dense and expert grids independently -- world_size % (tp * cp * pp) == 0 and
