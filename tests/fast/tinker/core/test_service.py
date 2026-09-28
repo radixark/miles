@@ -5,6 +5,7 @@ from contextlib import suppress
 from pathlib import Path
 
 import pytest
+import miles.tinker.core.service as service_module
 from tests.fast.tinker.harness import (
     ADAM,
     await_settled,
@@ -498,6 +499,42 @@ async def test_an_unnamed_sampler_save_returns_a_sampling_session(service):
         "tenant", "save_weights_for_sampler", {"model_id": model_id, "seq_id": 2, "sampler_path": "ckpt"}
     )
     assert "sampling_session_id" not in (await await_settled(service, "tenant", named)).result
+
+
+async def test_an_unnamed_sampler_save_does_not_reopen_its_checkpoint(service, monkeypatch):
+    model_id = await created_model(service)
+
+    def fail_if_resolved(*args, **kwargs):
+        raise AssertionError("a checkpoint exported by this request must not be reopened")
+
+    monkeypatch.setattr(service_module, "resolve_sampler_checkpoint", fail_if_resolved)
+    save = service.submit("tenant", "save_weights_for_sampler", {"model_id": model_id, "seq_id": 1, "sampler_path": None})
+    result = (await await_settled(service, "tenant", save)).result
+    assert service.sampling_sessions[result["sampling_session_id"]].model_path == result["path"]
+
+
+async def test_sampler_save_waits_until_checkpoint_metadata_is_visible(service, monkeypatch):
+    model_id = await created_model(service)
+    metadata_path = str(Path(service.config.checkpoint_root) / model_id / "sampler_weights" / "1" / "META.json")
+    real_isfile = service_module.os.path.isfile
+    checks = 0
+
+    def delayed_metadata(path):
+        nonlocal checks
+        if path == metadata_path:
+            checks += 1
+            if checks < 3:
+                return False
+        return real_isfile(path)
+
+    monkeypatch.setattr(service_module.os.path, "isfile", delayed_metadata)
+    monkeypatch.setattr(service_module, "_CHECKPOINT_VISIBILITY_POLL_SECONDS", 0)
+
+    save = service.submit("tenant", "save_weights_for_sampler", {"model_id": model_id, "seq_id": 1, "sampler_path": None})
+    result = (await await_settled(service, "tenant", save)).result
+
+    assert checks == 3
+    assert result["path"] == f"tinker://{model_id}/sampler_weights/1"
 
 
 async def test_weights_info_reads_the_checkpoint_not_the_lease(service):

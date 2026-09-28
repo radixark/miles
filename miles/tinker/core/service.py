@@ -39,6 +39,19 @@ from miles.tinker.core.utils import (
 
 logger = logging.getLogger(__name__)
 
+_CHECKPOINT_VISIBILITY_TIMEOUT_SECONDS = 180.0
+_CHECKPOINT_VISIBILITY_POLL_SECONDS = 0.25
+
+
+async def _wait_for_checkpoint_metadata(checkpoint_dir: str) -> None:
+    """Wait until a cross-node checkpoint mount exposes the completed export."""
+    metadata_path = os.path.join(checkpoint_dir, "META.json")
+    deadline = time.monotonic() + _CHECKPOINT_VISIBILITY_TIMEOUT_SECONDS
+    while not os.path.isfile(metadata_path):
+        if time.monotonic() >= deadline:
+            raise TimeoutError(f"checkpoint metadata did not become visible: {metadata_path}")
+        await asyncio.sleep(_CHECKPOINT_VISIBILITY_POLL_SECONDS)
+
 
 class TinkerService:
     def __init__(self, backend, config: GatewayConfig) -> None:
@@ -385,15 +398,19 @@ class TinkerService:
         )
         if failure is not None:
             return failure
+        # export_slot may run on a different host than this gateway.  Networked
+        # checkpoint mounts can acknowledge the export before META.json becomes
+        # visible here; publishing the Tinker path sooner makes the first sample
+        # fail with "unknown checkpoint".
+        await _wait_for_checkpoint_metadata(path)
         result = {
             "op": "save_weights_for_sampler",
             "path": f"tinker://{record.model_id}/sampler_weights/{version}",
         }
         if payload.get("sampler_path") is None:
             # unnamed saves return a sampling session bound to the new version
-            result["sampling_session_id"] = self._new_sampling_session(
-                record.tenant, record.session_id, result["path"]
-            )
+            # export_slot already authored and loaded this exact checkpoint.
+            result["sampling_session_id"] = self._register_sampling_session(record.tenant, record.session_id, result["path"])
         return result
 
     def weights_info(self, tenant: str, tinker_path: str) -> dict:
@@ -426,10 +443,11 @@ class TinkerService:
     def _new_sampling_session(self, tenant: str, session_id: str, model_path: str | None) -> str:
         if model_path is not None:
             resolve_sampler_checkpoint(self.config.checkpoint_root, tenant, model_path, self.config.base_model)
+        return self._register_sampling_session(tenant, session_id, model_path)
+
+    def _register_sampling_session(self, tenant: str, session_id: str, model_path: str | None) -> str:
         sampling_session_id = f"sampling-{uuid.uuid4().hex}"
-        self.sampling_sessions[sampling_session_id] = SamplingSessionRecord(
-            tenant=tenant, model_path=model_path, session_id=session_id
-        )
+        self.sampling_sessions[sampling_session_id] = SamplingSessionRecord(tenant=tenant, model_path=model_path, session_id=session_id)
         return sampling_session_id
 
     def get_sampler(self, tenant: str, sampling_session_id: str) -> dict:
