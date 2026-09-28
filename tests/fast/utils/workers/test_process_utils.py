@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import shlex
 import signal
 import subprocess
 import sys
@@ -226,12 +227,15 @@ class TestLaunchBoundSubprocess:
         process.wait(timeout=15)
         assert out_file.read_text() == "yes"
 
-    def _launch_intermediate_parent(self, tmp_path, *, stay_alive: bool) -> tuple[subprocess.Popen, int]:
+    def _launch_intermediate_parent(
+        self, tmp_path, *, stay_alive: bool, argv: list[str] | None = None
+    ) -> tuple[subprocess.Popen, int]:
         pid_file = tmp_path / "bound_child.pid"
+        argv = argv or [sys.executable, "-c", _SLEEP_FOREVER]
         parent_code = (
             "import sys, time\n"
             "from miles.utils.workers.process_utils import launch_bound_subprocess\n"
-            f"process = launch_bound_subprocess([sys.executable, '-c', {_SLEEP_FOREVER!r}], envs={{}})\n"
+            f"process = launch_bound_subprocess({argv!r}, envs={{}})\n"
             f"open({str(pid_file)!r}, 'w').write(str(process.pid))\n" + ("time.sleep(300)\n" if stay_alive else "")
         )
         parent = subprocess.Popen([sys.executable, "-c", parent_code])
@@ -351,3 +355,24 @@ class TestLaunchBoundSubprocess:
         os.kill(parent.pid, signal.SIGKILL)
         parent.wait(timeout=15)
         assert _wait_until(lambda: not _is_alive(bound_child_pid))
+
+    @pytest.mark.skipif(sys.platform != "linux", reason="PDEATHSIG is linux-only")
+    def test_a_command_its_shell_execs_dies_when_parent_is_sigkilled(self, tmp_path):
+        """exec makes the command itself replace `/bin/sh`, so it inherits the binding instead of being orphaned."""
+        command_pid_file = tmp_path / "command.pid"
+        command_code = (
+            f"import os, time; open({str(command_pid_file)!r}, 'w').write(str(os.getpid())); time.sleep(300)"
+        )
+        shell_command = f"exec {shlex.join([sys.executable, '-c', command_code])}"
+        parent, _ = self._launch_intermediate_parent(tmp_path, stay_alive=True, argv=["/bin/sh", "-c", shell_command])
+        command_pid = int(_read_when_present(command_pid_file))
+
+        try:
+            os.kill(parent.pid, signal.SIGKILL)
+            parent.wait(timeout=15)
+            assert _wait_until(lambda: not _is_alive(command_pid))
+        finally:
+            try:
+                os.kill(command_pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
