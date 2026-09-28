@@ -52,4 +52,5 @@ class CommandActor(NodeProbeMixin):
             return
 
         logger.info(f"CommandActor exits since its subprocess exited with returncode={returncode}")
-        os._exit(returncode if 0 <= returncode <= 255 else 1)
+        # Popen reports a signal death as -signal; exit 128+signal, as a shell reports it.
+        os._exit(128 - returncode if returncode < 0 else returncode)

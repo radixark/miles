@@ -1,5 +1,6 @@
 import os
 import shlex
+import signal
 import sys
 import threading
 import time
@@ -122,14 +123,16 @@ class TestLifecycleBinding:
 
         assert fake_exit.codes == [7]
 
-    def test_exits_actor_process_with_one_on_signal_killed_subprocess(self, monkeypatch: pytest.MonkeyPatch):
-        """A signal-killed subprocess (negative returncode) maps to exit code 1."""
+    def test_exits_actor_process_with_128_plus_signal_on_signal_killed_subprocess(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        """A signal-killed subprocess (negative returncode) maps to exit code 128+signal, as a shell reports it."""
         fake_exit = _FakeExit(monkeypatch)
 
         CommandActor().run(cmd='kill -TERM "$$"', envs={})
         fake_exit.wait()
 
-        assert fake_exit.codes == [1]
+        assert fake_exit.codes == [128 + signal.SIGTERM]
 
     def test_does_not_exit_while_subprocess_is_running(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
         """The actor keeps running until the subprocess actually exits."""
@@ -217,7 +220,7 @@ class TestKillSubprocess:
         actor.kill_subprocess()
 
         fake_exit.wait()
-        assert fake_exit.codes == [1]
+        assert fake_exit.codes == [128 + signal.SIGKILL]
 
     def test_kill_before_run_is_rejected(self):
         """A crash injection into an actor with no subprocess is a caller bug."""
