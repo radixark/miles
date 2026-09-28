@@ -357,6 +357,18 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 ),
             )
             parser.add_argument(
+                "--mxfp4-qat-routed-experts",
+                action="store_true",
+                help=(
+                    "For an MXFP4 rollout engine: after every optimizer step, write the routed-expert weights "
+                    "as the values their MXFP4 encoding decodes to (the weight-sync quantizer), so the trainer "
+                    "computes with exactly the experts the engine serves; the fp32 master keeps the full "
+                    "update. Without it the engine's experts round back to their previous grid points while "
+                    "the trainer's move, and the train/rollout mismatch grows with the expert updates. "
+                    "Requires --stream-optimizer-state-to-disk and expert data parallel size 1."
+                ),
+            )
+            parser.add_argument(
                 "--stream-optimizer-state-moment-dtype",
                 type=str,
                 default="fp32",
@@ -3693,6 +3705,12 @@ def miles_validate_args(args):
         logger.info(
             f"Train offload target=disk, dir={args.offload_train_disk_dir}, "
             f"chunk={args.offload_train_disk_chunk_mb}MB"
+        )
+
+    if args.mxfp4_qat_routed_experts:
+        assert args.stream_optimizer_state_to_disk, (
+            "--mxfp4-qat-routed-experts projects the routed experts where the NVMe optimizer store copies "
+            "the fp32 mains into the params, so it requires --stream-optimizer-state-to-disk"
         )
 
     if args.stream_optimizer_state_to_disk:
