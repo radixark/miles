@@ -72,7 +72,7 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --activation-func-clamp-value 10
   --no-bias-swiglu-fusion
   --no-activation-func-clamp-shared-expert
-  --hf-checkpoint None
+  --hf-checkpoint /root/models/DeepSeek-V4-Flash-FP8
   --ref-load /root/models/DeepSeek-V4-Flash-FP8_torch_dist
   --load /root/models/260101-000000-000/checkpoints
   --save /root/models/260101-000000-000/checkpoints
@@ -81,13 +81,15 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --label-key label
   --apply-chat-template
   --rollout-shuffle
-  --rm-type math
   --num-rollout 3000
   --rollout-batch-size 32
   --n-samples-per-prompt 8
   --rollout-temperature 0.8
   --num-steps-per-rollout 1
   --balance-data
+  --rm-type dapo
+  --reward-key score
+  --eval-reward-key acc
   --prompt-data /root/datasets/dapo-math-17k/dapo-math-17k.jsonl
   --input-key prompt
   --rollout-max-response-len 8192
@@ -125,7 +127,7 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --max-tokens-per-gpu 2048 
   --eval-interval 20
   --eval-top-p 0.7
-  --eval-prompt-data aime /root/datasets/aime-2024/aime-2024.jsonl
+  --eval-config base64:<frozen-pseudo-file-1>
   --n-samples-per-eval-prompt 8
   --eval-max-response-len 4096 
   --rollout-num-gpus-per-engine 4
@@ -134,7 +136,8 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --sglang-ep-size 4
   --router-health-success-threshold 1
   --router-health-check-interval-secs 15
-  --router-health-failure-threshold 40 
+  --router-health-failure-threshold 40
+  --sglang-context-length 16384 
   --attention-dropout 0.0
   --hidden-dropout 0.0
   --attention-softmax-in-fp32
@@ -163,3 +166,12 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --fp8-recipe blockwise
   --train-env-vars '{"NVTE_FP8_BLOCK_SCALING_FP32_SCALES":"0"}'
   --no-gradient-accumulation-fusion   
+  --deploy-component all
+
+### pseudo file 1
+eval:
+  datasets:
+    - name: aime
+      path: /root/datasets/aime-2024/aime-2024.jsonl
+      rm_type: dapo_boxed
+

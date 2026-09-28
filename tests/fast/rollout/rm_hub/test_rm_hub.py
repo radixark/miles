@@ -30,6 +30,11 @@ class TestAsyncRm:
             ("math", r"\boxed{wrong}", "42", 0),
             ("f1", "hello world", "hello world", 1.0),
             ("dapo", "Answer: 42", "42", {"score": 1.0}),
+            # AIME prompts carry no "Answer:" instruction, so responses box the answer.
+            ("dapo", r"so the answer is \boxed{42}.", "42", {"score": -1.0, "acc": False}),
+            ("dapo_boxed", r"so the answer is \boxed{42}.", "42", {"score": 1.0, "acc": True}),
+            ("dapo_boxed", r"so the answer is \boxed{41}.", "42", {"score": -1.0, "acc": False}),
+            ("dapo_boxed", "Answer: 42", "42", {"score": -1.0, "acc": False}),
             ("deepscaler", r"</think>\boxed{42}", "42", 1),
             ("gpqa", "Answer: A", "A", 1.0),
             ("boxed_f1", r"Final answer is \boxed{hello world}", "hello world", 1.0),

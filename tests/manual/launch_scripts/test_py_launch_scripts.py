@@ -81,6 +81,19 @@ _HARDWARE_A_RECORDING_REPRESENTS = {
     "scripts/run_qwen3_4b.py": "H100",
 }
 
+# Launchers that read the GPU themselves, in a child process the command recorder cannot see.
+_GPU_A_RECORDING_REPRESENTS = {
+    "scripts/amd/run_deepseek_v4.py": {
+        "arch": "gfx950",
+        "name": "AMD Instinct MI355X",
+        "total_gib": 288.0,
+        "hip": True,
+        "te_version": "frozen",
+        "blockwise": [True, ""],
+        "tensorwise": [True, ""],
+    },
+}
+
 _ENTRYPOINTS_DISABLED_BY_THEIR_OWN_DEFAULTS = {
     ("scripts/run_deepseek_v4.py", "prepare_mxfp8"),
     ("scripts/run_deepseek_v4.py", "prepare_fp8"),
@@ -98,6 +111,8 @@ def recorded(request, monkeypatch, tmp_path):
     freeze_environment(monkeypatch, hardware=_HARDWARE_A_RECORDING_REPRESENTS.get(rel, FROZEN_HARDWARE))
     recording = install_command_recorder(monkeypatch)
     module = import_launch_script(REPO_ROOT / rel)
+    if (device := _GPU_A_RECORDING_REPRESENTS.get(rel)) is not None:
+        monkeypatch.setattr(module, "_probe_device", lambda: device)
     call_entrypoint(
         module,
         entrypoint,
