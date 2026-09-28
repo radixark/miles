@@ -61,6 +61,10 @@ class HfWeightIteratorDirect(MegatronHfWeightIteratorBase):
         yield from _iter_mm_tower_units(self.args, materialize=materialize)
 
     def _export_pp_local_lora(self, adapter):
+        if adapter is not None and "glm5_next" in self.model_name.lower():
+            from miles_plugins.models.glm5_next.lora import export_glm5_next_multi_lora_hf
+
+            return export_glm5_next_multi_lora_hf(self.model, adapter)
         assert adapter is None, "multi-LoRA export requires --megatron-to-hf-mode bridge"
         # TODO: will rewrite in native lora refactor
         if "kimi_k3" in self.model_name.lower():

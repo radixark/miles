@@ -2105,6 +2105,21 @@ class TestMultiLoRAValidation:
         assert args.hf_lora_targets == ["q_proj"]
         assert args.target_modules == "q_proj"
 
+    def test_registry_group_without_native_hf_model_does_not_require_bridge(self, monkeypatch):
+        def unexpected_bridge(*args, **kwargs):
+            pytest.fail("registry-expanded HF targets must not initialize Bridge")
+
+        monkeypatch.setattr(
+            "miles.backends.megatron_utils.lora.target_modules.normalize_lora_targets_to_hf",
+            unexpected_bridge,
+        )
+        args = self._parse(["--target-modules", "mlp"])
+
+        miles_validate_args(args)
+
+        assert args.hf_lora_targets
+        assert all("mlp" in target for target in args.hf_lora_targets)
+
     @pytest.mark.parametrize("exclusion", ["model.layers.*.self_attn.o_proj", "model.layers.0.self_attn.o_proj"])
     @pytest.mark.parametrize("targets", ["o_proj,down_proj", "attn,mlp", "all-linear"])
     def test_scoped_exclusion_resolves_without_bridge(self, monkeypatch, exclusion, targets):
@@ -2184,12 +2199,20 @@ class TestMultiLoRAValidation:
 
         miles_validate_args(args)
 
-    def test_rejects_pipeline_parallelism(self):
+    def test_rejects_pipeline_parallelism_with_activation_recompute(self):
         # Adapter routing is not recompute-safe under a pipelined schedule.
         args = self._parse([])
         args.pipeline_model_parallel_size = 2
-        with pytest.raises(AssertionError, match="pipeline-model-parallel-size 1"):
+        args.recompute_granularity = "full"
+        with pytest.raises(AssertionError, match="requires activation recompute to be disabled"):
             miles_validate_args(args)
+
+    def test_accepts_pipeline_parallelism_without_activation_recompute(self):
+        args = self._parse([])
+        args.pipeline_model_parallel_size = 2
+        args.recompute_granularity = None
+
+        miles_validate_args(args)
 
     def test_rejects_bshd_qkv_format(self):
         # bshd interleaves samples in the sequence-major flattening the spans assume.

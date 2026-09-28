@@ -340,6 +340,19 @@ class InferenceController:
             action=action, allow_quant_error=allow_quant_error, selector=selector, skip_list=skip_list
         )
 
+    @with_lock
+    async def load_lora_adapter(self, lora_name: str, lora_path: str, model_id: str | None = None) -> list[Any]:
+        """Load one immutable adapter snapshot into every serving cell."""
+        clients = [
+            cell.api_client
+            for srv in self._get_servers_of_model_id(model_id)
+            for cell in srv.server_cells.values()
+            if cell.is_pending_weights_or_serving
+        ]
+        return await asyncio.gather(
+            *[client.load_lora_adapter(lora_name=lora_name, lora_path=lora_path) for client in clients]
+        )
+
     # -------------------------- tick -----------------------------
 
     @with_lock

@@ -1,4 +1,5 @@
 import copy
+import os
 
 import torch
 
@@ -81,7 +82,11 @@ def _patch_reference_proj_rms() -> None:
         original_init(self, config, layer_number)
         assert not config.use_fused_mhc, "GLM-5.3 mHC requires the native (unfused) proj_rms path"
         self.norm_eps = config.layernorm_epsilon
-        self._proj_rms_op = torch.compile(_reference_proj_rms)
+        self._proj_rms_op = (
+            _reference_proj_rms
+            if os.environ.get("MILES_GLM5_NEXT_DISABLE_PROJ_RMS_COMPILE") == "1"
+            else torch.compile(_reference_proj_rms)
+        )
 
     HyperConnectionModule.__init__ = _init_with_reference_proj_rms
     hyper_connection._glm5_next_reference_proj_rms_patched = True

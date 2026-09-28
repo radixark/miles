@@ -11,7 +11,12 @@ pytest.importorskip("sglang")
 
 from miles.backends.sglang_utils import sglang_engine
 from miles.backends.sglang_utils.server_args_utils import parse_server_args_argv
-from miles.backends.sglang_utils.sglang_engine import _assert_launch_gate_served, compute_engine_launch_cmd
+from miles.backends.sglang_utils.sglang_engine import (
+    _assert_launch_gate_served,
+    _lora_target_modules_for_engine,
+    compute_engine_launch_cmd,
+    sglang_launch_gate_enabled,
+)
 from miles.utils.lora.utils import build_lora_config
 
 
@@ -163,6 +168,7 @@ class TestTheLaunchGateSglangMustServe:
     def _pretend_sglang_is(monkeypatch, server_args: type) -> None:
         monkeypatch.setattr(sglang_engine, "ServerArgs", server_args)
         _assert_launch_gate_served.cache_clear()
+        sglang_launch_gate_enabled.cache_clear()
 
     def test_an_sglang_that_serves_the_gate_is_accepted(self, monkeypatch) -> None:
         """The run launches every engine through the gate, so the one field it needs is the whole check."""
@@ -177,3 +183,22 @@ class TestTheLaunchGateSglangMustServe:
 
         with pytest.raises(AssertionError, match="--gated-launch-port"):
             _assert_launch_gate_served()
+
+    def test_an_explicit_compatibility_run_can_start_without_the_gate(self, monkeypatch) -> None:
+        self._pretend_sglang_is(monkeypatch, _SglangWithoutTheGate)
+        monkeypatch.setenv("MILES_ALLOW_UNGATED_SGLANG", "1")
+
+        assert sglang_launch_gate_enabled() is False
+
+    def test_old_fork_receives_projection_leaves_without_broadening_trainer_targets(self, monkeypatch) -> None:
+        self._pretend_sglang_is(monkeypatch, _SglangWithoutTheGate)
+        monkeypatch.setenv("MILES_ALLOW_UNGATED_SGLANG", "1")
+        args = make_engine_args(
+            lora_adapter_targets=[
+                "model.language_model.layers.*.mlp.gate_proj",
+                "model.language_model.layers.*.mlp.up_proj",
+                "model.language_model.layers.*.mlp.down_proj",
+            ]
+        )
+
+        assert _lora_target_modules_for_engine(args) == ["gate_proj", "up_proj", "down_proj"]

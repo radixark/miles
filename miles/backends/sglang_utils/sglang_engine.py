@@ -19,6 +19,17 @@ from miles.utils.workers.argv_utils import _record_field_names
 logger = logging.getLogger(__name__)
 
 
+def _lora_target_modules_for_engine(args):
+    targets = args.lora_adapter_targets
+    if targets == "all-linear":
+        return ["all"]
+    if not sglang_launch_gate_enabled():
+        # The pre-gate GLM fork accepts SGLang projection leaves rather than
+        # fully scoped HF globs. Trainer/export targets stay fully scoped.
+        return list(dict.fromkeys(target.rsplit(".", 1)[-1] for target in targets))
+    return targets
+
+
 def format_v6_uri(addr: str | None) -> str | None:
     if not addr or addr.startswith("["):
         return addr
@@ -49,10 +60,11 @@ def compute_engine_launch_cmd(
     port: int,
     disaggregation_bootstrap_port: int | None,
     engine_info_bootstrap_port: int,
-    gated_launch_port: int,
+    gated_launch_port: int | None,
     random_seed: int,
 ) -> str:
-    _assert_launch_gate_served()
+    launch_gate_enabled = sglang_launch_gate_enabled()
+    assert launch_gate_enabled == (gated_launch_port is not None)
 
     server_args_dict = _compute_server_args(
         args,
@@ -89,7 +101,7 @@ def _compute_server_args(
     engine_info_bootstrap_port: int | None,
     sglang_overrides: dict | None,
     num_gpus_per_engine: int | None,
-    gated_launch_port: int,
+    gated_launch_port: int | None,
     random_seed: int,
 ):
     _gpus_per_engine = num_gpus_per_engine or args.rollout_num_gpus_per_engine
@@ -109,7 +121,6 @@ def _compute_server_args(
         "dist_init_addr": dist_init_addr,
         "gpu_id_step": 1,
         "base_gpu_id": base_gpu_id,
-        "gated_launch_port": gated_launch_port,
         # parallel
         "tp_size": _gpus_per_engine,
         "dp_size": args.sglang_dp_size,
@@ -122,6 +133,8 @@ def _compute_server_args(
         # always serve /metrics so Prometheus scrapers can read engine stats.
         "enable_metrics": True,
     }
+    if gated_launch_port is not None:
+        kwargs["gated_launch_port"] = gated_launch_port
 
     if os.environ.get("MILES_SGLANG_DUMMY_LOAD") == "1":
         kwargs["load_format"] = "dummy"
@@ -150,16 +163,12 @@ def _compute_server_args(
         kwargs["enable_lora"] = True
         kwargs["max_loras_per_batch"] = args.multi_lora_n_adapters
         kwargs["max_lora_rank"] = max(getattr(args, "lora_rank", 0), 1)
-        kwargs["lora_target_modules"] = (
-            ["all"] if args.lora_adapter_targets == "all-linear" else args.lora_adapter_targets
-        )
+        kwargs["lora_target_modules"] = _lora_target_modules_for_engine(args)
     elif lora_rollout_enabled(args):
         kwargs["enable_lora"] = True
         kwargs["max_loras_per_batch"] = 1
         kwargs["max_lora_rank"] = max(getattr(args, "lora_rank", 0), 1)
-        kwargs["lora_target_modules"] = (
-            ["all"] if args.lora_adapter_targets == "all-linear" else args.lora_adapter_targets
-        )
+        kwargs["lora_target_modules"] = _lora_target_modules_for_engine(args)
 
         if engine_loads_adapter_from_disk(args):
             kwargs["lora_paths"] = [f"{LORA_ADAPTER_NAME}={args.lora_adapter_path}"]
@@ -217,3 +226,20 @@ def _assert_launch_gate_served() -> None:
         "this sglang has no --gated-launch-port, and miles launches every inference engine through "
         "that gate; upgrade sglang to one that serves it"
     )
+
+
+@functools.cache
+def sglang_launch_gate_enabled() -> bool:
+    """Choose gated startup, with an explicit escape hatch for model forks.
+
+    Some model-specific SGLang forks predate the launch gate. They can use the
+    v0.1.1 immediate-start behavior only when the operator opts in; otherwise
+    retain the fail-fast production guard.
+    """
+    if "gated_launch_port" in _record_field_names(ServerArgs):
+        return True
+    if os.environ.get("MILES_ALLOW_UNGATED_SGLANG") == "1":
+        logger.warning("SGLang has no launch gate; using explicitly enabled immediate startup")
+        return False
+    _assert_launch_gate_served()
+    raise AssertionError("unreachable")

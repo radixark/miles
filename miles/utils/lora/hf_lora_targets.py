@@ -119,6 +119,33 @@ def _glm_dsa_targets(config):
     return _mla_attention_targets(config), tuple(mlp)
 
 
+def _glm5_next_targets(config):
+    """LoRA projections shared by the trainer and the GLM-5.3 SGLang fork.
+
+    GLM-5.3's KDA layers use custom fused q/k/v/b/f/g projections that the
+    rollout LoRA runtime cannot wrap yet.  The DSA MLA projections, the common
+    output projection, and every dense/routed/shared MLP projection use the
+    established LoRA paths.  Keep this registry to that portable intersection
+    so a Tinker adapter cannot train weights that sampling silently ignores.
+    """
+    attention = []
+    if "deepseek_sparse_attention" in config["layer_types"]:
+        attention.extend(_mla_attention_targets(config))
+    elif "full_attention" in config["layer_types"]:
+        attention.extend(_mla_attention_targets(config))
+    if "linear_attention" in config["layer_types"]:
+        attention.extend(_prefix_paths("self_attn", "o_proj"))
+
+    mlp = []
+    if "dense" in config["mlp_layer_types"]:
+        mlp.extend(_DENSE_MLP)
+    if "sparse" in config["mlp_layer_types"]:
+        mlp.extend(_ROUTED_EXPERTS)
+        if config["n_shared_experts"]:
+            mlp.extend(_SHARED_EXPERTS)
+    return tuple(dict.fromkeys(attention)), tuple(mlp)
+
+
 def _qwen_moe_mlp_targets(config, *, shared_expert=False):
     # Qwen3MoE serializes its num_experts alias as num_local_experts.
     num_experts = config["num_experts"] if "num_experts" in config else config["num_local_experts"]
@@ -218,6 +245,13 @@ _HF_LORA_MODELS = {
     ),
     "glm4_moe": _HfLoraModelSpec(_glm4_moe_targets),
     "glm_moe_dsa": _HfLoraModelSpec(_glm_dsa_targets),
+    "glm5_next_text": _HfLoraModelSpec(_glm5_next_targets),
+    "glm5_next": _HfLoraModelSpec(
+        _glm5_next_targets,
+        layer_prefix="model.language_model.layers.*",
+        unembed="lm_head",
+        unwrap_text_config=True,
+    ),
     "inkling_text": _HfLoraModelSpec(_inkling_targets, default_train_unembed=True),
     "inkling_model": _HfLoraModelSpec(_inkling_targets, default_train_unembed=True),
     "inkling_mm_model": _HfLoraModelSpec(

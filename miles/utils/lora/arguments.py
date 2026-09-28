@@ -181,7 +181,13 @@ def _resolve_lora_targets(args, hf_config):
     targets = resolve_hf_lora_targets(hf_config.to_dict(), target_modules=targets)
     targets = exclude_hf_lora_targets(targets, exclusions)
 
-    if all(any(matches_lora_target(module, target) for module in hf_modules) for target in targets + exclusions):
+    # Custom HF implementations may not have a native Transformers model class,
+    # so HfWeightMapping cannot enumerate their modules. Registry-expanded
+    # groups are already HF selectors and do not need Bridge normalization.
+    registry_targets_without_native_model = not hf_modules and not explicit_targets
+    if registry_targets_without_native_model or all(
+        any(matches_lora_target(module, target) for module in hf_modules) for target in targets + exclusions
+    ):
         hf_targets = targets
         if exclusions:
             selected = [
@@ -230,9 +236,11 @@ def validate_multi_lora_args(args: Any) -> None:
         "multi-LoRA requires --context-parallel-size 1: the Tinker losses zip "
         "full-length per-datum vectors against log_probs, which CP would shard"
     )
-    assert getattr(args, "pipeline_model_parallel_size", 1) == 1, (
-        "Multi-LoRA requires --pipeline-model-parallel-size 1: a pipelined schedule would "
-        "recompute activations against a later micro-batch's adapter routing."
+    pipeline_size = getattr(args, "pipeline_model_parallel_size", 1)
+    assert pipeline_size == 1 or getattr(args, "recompute_granularity", None) is None, (
+        "Multi-LoRA with pipeline parallelism requires activation recompute to be disabled: "
+        "a pipelined schedule would otherwise recompute activations against a later "
+        "micro-batch's adapter routing."
     )
     # Per-slot token spans assume sequence-major contiguous sample packing, which only 'thd' provides.
     assert getattr(args, "qkv_format", "thd") == "thd", (

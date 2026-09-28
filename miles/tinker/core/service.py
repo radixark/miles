@@ -267,9 +267,7 @@ class TinkerService:
         refs = sorted(batch.datums, key=lambda ref: ref.model_queue.slot)
         slot_datums = [(ref.model_queue.slot, ref.datum) for ref in refs]
         self._batch_counter += 1
-        forward = (
-            self.backend.forward_backward if batch.op == CommandOp.FORWARD_BACKWARD else self.backend.forward_only
-        )
+        forward = self.backend.forward_backward if batch.op == CommandOp.FORWARD_BACKWARD else self.backend.forward_only
         try:
             outputs = await forward(self._batch_counter, slot_datums, batch.loss_fn, batch.loss_fn_config)
         except UserInputError as error:
@@ -283,9 +281,7 @@ class TinkerService:
         for ref, output in zip(refs, outputs, strict=True):
             request = ref.request
             if request.record_output(ref.local_index, output):
-                await self._finish_request(
-                    ref.model_queue, request, {"op": request.command.op, "outputs": request.outputs}
-                )
+                await self._finish_request(ref.model_queue, request, {"op": request.command.op, "outputs": request.outputs})
 
     async def _fail_batch(self, batch: BatchUnit, error: str, category: str) -> None:
         requests = {ref.request.command.request_id: (ref.model_queue, ref.request) for ref in batch.datums}
@@ -316,9 +312,7 @@ class TinkerService:
         raise UserInputError(f"unknown barrier op {barrier.op!r}")
 
     async def _step_optimizers(self, entries: list) -> list[dict]:
-        adam_params_by_slot = {
-            model_queue.slot: pending.command.payload["adam_params"] for model_queue, pending in entries
-        }
+        adam_params_by_slot = {model_queue.slot: pending.command.payload["adam_params"] for model_queue, pending in entries}
         slot_outcomes = await self.backend.optim_step(adam_params_by_slot)
         outcomes = []
         for model_queue, _ in entries:
@@ -351,9 +345,7 @@ class TinkerService:
         checkpoint_dir = resolve_checkpoint_dir(self.config.checkpoint_root, record.model_id, "weights", name)
         if not payload["overwrite"] and os.path.exists(checkpoint_dir):
             raise UserInputError(f"checkpoint {name!r} already exists; pass overwrite=True to replace it")
-        failure = await self.backend.save_slot(
-            record.slot, checkpoint_dir, metadata=build_checkpoint_metadata(record, self.config)
-        )
+        failure = await self.backend.save_slot(record.slot, checkpoint_dir, metadata=build_checkpoint_metadata(record, self.config))
         if failure is not None:
             return failure
         return {"op": "save_state", "path": f"tinker://{record.model_id}/weights/{name}"}
@@ -416,9 +408,7 @@ class TinkerService:
     def weights_info(self, tenant: str, tinker_path: str) -> dict:
         """What the SDK needs to rebuild a training client from a checkpoint."""
         model_id, kind, name = parse_tinker_path(tinker_path)
-        meta = read_checkpoint_metadata(
-            resolve_checkpoint_dir(self.config.checkpoint_root, model_id, kind, name), tenant, tinker_path
-        )
+        meta = read_checkpoint_metadata(resolve_checkpoint_dir(self.config.checkpoint_root, model_id, kind, name), tenant, tinker_path)
         return {
             "base_model": meta["base_model"],
             "is_lora": True,
@@ -472,9 +462,7 @@ class TinkerService:
             sampling_session_id = payload["sampling_session_id"]
             sampling_session = self.sampling_sessions.get(sampling_session_id)
             if sampling_session is None:
-                raise UserInputError(
-                    f"unknown sampling session {sampling_session_id!r}; create a sampling session first"
-                )
+                raise UserInputError(f"unknown sampling session {sampling_session_id!r}; create a sampling session first")
             if sampling_session.tenant != tenant:
                 raise OwnershipError("sampling session does not belong to this tenant")
             model_path = model_path or sampling_session.model_path
@@ -485,11 +473,7 @@ class TinkerService:
                 sampling_session.samples_by_seq[seq_id] = (request_id, sequence_ids)
                 return request_id, sequence_ids
         validate_sample_payload(payload, self.config)
-        lora_name, lora_path = (
-            resolve_sampler_checkpoint(self.config.checkpoint_root, tenant, model_path, self.config.base_model)
-            if model_path
-            else (None, None)
-        )
+        lora_name, lora_path = resolve_sampler_checkpoint(self.config.checkpoint_root, tenant, model_path, self.config.base_model) if model_path else (None, None)
         future = self.futures.create(model_path or "base", tenant)
         sequence_ids = [f"seq-{uuid.uuid4().hex}" for _ in range(payload.get("num_samples", 1))]
         task = asyncio.create_task(self._run_sample(future.request_id, sequence_ids, payload, lora_name, lora_path))
@@ -542,11 +526,7 @@ class TinkerService:
     async def _expire_sessions(self) -> None:
         async with self._trainer_lock:
             now = time.monotonic()
-            expired_sessions = {
-                session_id
-                for session_id, session in self.sessions.items()
-                if now - session.last_heartbeat >= self.config.lease_timeout_s
-            }
+            expired_sessions = {session_id for session_id, session in self.sessions.items() if now - session.last_heartbeat >= self.config.lease_timeout_s}
             for session_id in expired_sessions:
                 del self.sessions[session_id]
             for sampling_session_id, record in list(self.sampling_sessions.items()):

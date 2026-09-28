@@ -3,7 +3,41 @@
 > **Read the docs:** [Multi-LoRA training](https://miles.radixark.com/docs/advanced/lora#multi-lora-training).
 
 - `serve_qwen3_30b_a3b_tinker.py`: prepare Qwen3-30B-A3B and launch the gateway.
+- `serve_qwen_dense_tinker.py`: launch the canonical three-node, 64K dense-Qwen workloads.
+- `serve_glm5_3_flash_tinker.py`: launch the canonical three-node, 64K GLM-5.3-Flash workload.
 - `run_multi_tenant_example.py`: check marker memorization for one client or adapter isolation across concurrent tenants.
+
+## TCLI runtime-workload contract
+
+Trajectory reaches every engine through the same Tinker-compatible API. Keep the
+transport and implementation as separate selectors:
+
+```yaml
+backend: tcli
+training_engine: slime
+```
+
+`backend: tcli` selects the service boundary. `training_engine` selects the
+implementation behind it: `skyrl` for a SkyRL runtime workload or `slime` for
+this Miles runtime workload. A Miles service should publish both
+`training_engine: slime` and the more specific
+`training_backend: miles-megatron-multilora` labels so the TCLI scheduler never
+routes a Slime/Miles-only experiment to a SkyRL endpoint with the same model
+name.
+
+The canonical B300 presets are disaggregated and expose port `10613`:
+
+| Model | Training | Sampling | Parallelism | Context | LoRA scope |
+| --- | ---: | ---: | --- | ---: | --- |
+| `Qwen/Qwen3.5-4B` | 2 nodes / 16 GPUs | 1 node / 8 GPUs | TP2, PP2 | 65,504 | attention + MLP |
+| `Qwen/Qwen3.6-27B` | 2 nodes / 16 GPUs | 1 node / 8 GPUs | TP4, PP2 | 65,504 | attention + MLP |
+| `Qwen/Qwen3.8-27B` | 2 nodes / 16 GPUs | 1 node / 8 GPUs | TP4, PP2 | 65,504 | attention + MLP |
+| `zai-org/GLM-5.3-Flash` | 2 nodes / 16 GPUs | 1 node / 8 GPUs | TP8, PP2, EP8 | 65,504 | MLP/MoE only |
+
+GLM attention is intentionally excluded: SGLang cannot apply LoRA to the
+model's fused KDA attention operators yet. All presets use rank 32, dynamic
+microbatching, and activation recomputation. The Qwen presets use one-GPU
+SGLang engines; the GLM preset uses its canonical eight-GPU inference layout.
 
 ## Layout
 
@@ -33,6 +67,48 @@ Start the gateway:
 ```bash
 python examples/multi_lora/serve_qwen3_30b_a3b_tinker.py prepare   # once per node
 python examples/multi_lora/serve_qwen3_30b_a3b_tinker.py serve     # Tinker API on :10613
+```
+
+For a canonical three-node 64K service, start an external three-node Ray
+cluster, set `MILES_SCRIPT_EXTERNAL_RAY=1` on its head, and choose one preset:
+
+```bash
+uv run python examples/multi_lora/serve_qwen_dense_tinker.py serve \
+  --base-model Qwen/Qwen3.5-4B
+
+uv run python examples/multi_lora/serve_qwen_dense_tinker.py serve \
+  --base-model Qwen/Qwen3.6-27B
+
+uv run python examples/multi_lora/serve_qwen_dense_tinker.py serve \
+  --base-model Qwen/Qwen3.8-27B
+
+uv run python examples/multi_lora/serve_glm5_3_flash_tinker.py serve
+```
+
+The client always uses the TCLI-provided base URL; it does not need to know
+which training engine implements the endpoint:
+
+```python
+import tinker
+
+service = tinker.ServiceClient(base_url=BASE_URL, api_key="tau")
+training = service.create_lora_training_client(
+    base_model="Qwen/Qwen3.6-27B",
+    rank=32,
+    train_attn=True,
+    train_mlp=True,
+    train_unembed=False,
+)
+```
+
+Run the ten-step train/stale-sampler/resync gate before Tau:
+
+```bash
+uv run python examples/multi_lora/run_train_sampler_sync_test.py \
+  --base-url "$BASE_URL" \
+  --base-model Qwen/Qwen3.6-27B \
+  --steps 10 \
+  --match-p90 0.1
 ```
 
 Checkpoints default to `<output_dir>/checkpoints/<run_id>`; use `--save-dir` to choose another root.

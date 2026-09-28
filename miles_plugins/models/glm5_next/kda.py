@@ -58,6 +58,9 @@ class Glm5NextKDA(nn.Module):
         super().__init__()
         if ShortConvolution is None or chunk_kda is None:
             raise ImportError("GLM-5.3 KDA requires flash-linear-attention >= 0.4.2 (fla.ops.kda).")
+        assert head_dim > 0 and head_dim & (head_dim - 1) == 0, (
+            f"GLM-5.3 KDA requires a power-of-two head_dim, got {head_dim}"
+        )
         self.hidden_size = hidden_size
         self.num_heads = num_heads
         self.head_dim = head_dim

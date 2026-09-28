@@ -1,6 +1,9 @@
 """Translate gateway datums to trainer batches and sampling requests to SGLang."""
 
 import asyncio
+import os
+import tempfile
+from pathlib import Path
 
 import httpx
 
@@ -12,6 +15,24 @@ from tinker.types.sample_response import MASK_LOGPROB
 
 # internal datum key -> trainer batch key
 DATUM_TO_BATCH_KEYS = {"weights": "loss_weights", "advantages": "advantages", "sampling_logprobs": "rollout_log_probs"}
+
+
+def _write_exported_checkpoint(path: str, checkpoint_files: dict[str, bytes]) -> None:
+    """Publish returned trainer files safely when the checkpoint mount is shared."""
+    checkpoint = Path(path)
+    checkpoint.mkdir(parents=True, exist_ok=True)
+    for name, contents in checkpoint_files.items():
+        destination = checkpoint / name
+        if destination.parent != checkpoint:
+            raise ValueError(f"checkpoint file name must be flat: {name!r}")
+        descriptor, temporary_path = tempfile.mkstemp(prefix=f".{name}.", dir=checkpoint)
+        try:
+            with os.fdopen(descriptor, "wb") as output:
+                output.write(contents)
+            os.replace(temporary_path, destination)
+        except Exception:
+            Path(temporary_path).unlink(missing_ok=True)
+            raise
 
 
 def _pad_to_dp_multiple(slot_datums: list, dp_size: int) -> list:
@@ -44,37 +65,28 @@ def _build_train_data(slot_datums: list) -> dict:
 
 
 class MilesBackend:
-    def __init__(self, trainer, router_url: str, dp_size: int = 1) -> None:
+    def __init__(self, trainer, router_url: str, dp_size: int = 1, inference_controller=None) -> None:
         self.trainer = trainer
         self.router_url = router_url
         self.dp_size = dp_size
+        self.inference_controller = inference_controller
 
     async def trainer_dead(self) -> bool:
         return await self.trainer.has_errored_cell()
 
-    async def load_slot(
-        self, slot: int, rank: int, alpha: float, ckpt_path: str | None = None, load_optimizer: bool = True
-    ) -> dict | None:
-        return _slot_failure(
-            await self.trainer.load_slot(slot, rank, alpha, ckpt_path=ckpt_path, load_optimizer=load_optimizer)
-        )
+    async def load_slot(self, slot: int, rank: int, alpha: float, ckpt_path: str | None = None, load_optimizer: bool = True) -> dict | None:
+        return _slot_failure(await self.trainer.load_slot(slot, rank, alpha, ckpt_path=ckpt_path, load_optimizer=load_optimizer))
 
     async def unload_slot(self, slot: int) -> dict | None:
         return _slot_failure(await self.trainer.unload_slot(slot))
 
-    async def forward_backward(
-        self, batch_id: int, slot_datums: list, loss_fn: str, loss_fn_config: dict
-    ) -> list[dict] | dict:
+    async def forward_backward(self, batch_id: int, slot_datums: list, loss_fn: str, loss_fn_config: dict) -> list[dict] | dict:
         return await self._execute_batch("forward_backward", batch_id, slot_datums, loss_fn, loss_fn_config)
 
-    async def forward_only(
-        self, batch_id: int, slot_datums: list, loss_fn: str, loss_fn_config: dict
-    ) -> list[dict] | dict:
+    async def forward_only(self, batch_id: int, slot_datums: list, loss_fn: str, loss_fn_config: dict) -> list[dict] | dict:
         return await self._execute_batch("forward_only", batch_id, slot_datums, loss_fn, loss_fn_config)
 
-    async def _execute_batch(
-        self, method: str, batch_id: int, slot_datums: list, loss_fn: str, loss_fn_config: dict
-    ) -> list[dict] | dict:
+    async def _execute_batch(self, method: str, batch_id: int, slot_datums: list, loss_fn: str, loss_fn_config: dict) -> list[dict] | dict:
         train_data = _build_train_data(_pad_to_dp_multiple(slot_datums, self.dp_size))
         train_data["loss_fn"] = loss_fn
         train_data["loss_fn_config"] = loss_fn_config
@@ -107,24 +119,29 @@ class MilesBackend:
     async def save_slot(self, slot: int, path: str, metadata: dict | None = None) -> dict | None:
         return _slot_failure(await self.trainer.save_slot(slot=slot, path=path, metadata=metadata))
 
-    async def export_slot(
-        self, slot: int, rank: int, alpha: float, path: str, metadata: dict | None = None
-    ) -> dict | None:
-        return _slot_failure(
-            await self.trainer.export_slot(slot=slot, rank=rank, alpha=alpha, path=path, metadata=metadata)
+    async def export_slot(self, slot: int, rank: int, alpha: float, path: str, metadata: dict | None = None) -> dict | None:
+        worker_results = await self.trainer.export_slot(slot=slot, rank=rank, alpha=alpha, path=path, metadata=metadata)
+        failure = next(
+            (result for result in worker_results if result is not None and "error" in result),
+            None,
         )
+        if failure is not None or self.inference_controller is None:
+            return failure
+        checkpoint_files = next(result["checkpoint_files"] for result in worker_results if result is not None and "checkpoint_files" in result)
+
+        _write_exported_checkpoint(path, checkpoint_files)
+        checkpoint = Path(path)
+        assert checkpoint.parent.name == "sampler_weights", f"unexpected sampler checkpoint path: {path}"
+        lora_name = f"{checkpoint.parent.parent.name}@{checkpoint.name}"
+        await self.inference_controller.load_lora_adapter(lora_name=lora_name, lora_path=path)
+        return None
 
     # -------- sampling --------
 
     async def sample(self, payload: dict, lora_name: str | None, lora_path: str | None = None) -> dict:
         request = self._generate_request(payload, lora_name, lora_path)
         try:
-            responses = await asyncio.gather(
-                *[
-                    post(f"{self.router_url}/generate", _with_sample_seed(request, index))
-                    for index in range(payload["num_samples"])
-                ]
-            )
+            responses = await asyncio.gather(*[post(f"{self.router_url}/generate", _with_sample_seed(request, index)) for index in range(payload["num_samples"])])
         except httpx.HTTPError as error:
             return {"error": str(error)}
         sequences = [_to_sequence(response) for response in responses]

@@ -101,6 +101,8 @@ def test_native_model_coverage():
     # These entries use custom code, a Miles alias, or a version newer than the pinned Transformers.
     non_native = {
         "deepseek_v32",
+        "glm5_next",
+        "glm5_next_text",
         "kimi_k2",
         "kimi_k25",
         "kimi_k3",
@@ -214,3 +216,24 @@ def test_remote_config_with_native_class_name():
         HfWeightMapping.from_config(remote_config).parameter_names
         == HfWeightMapping.from_config(config).parameter_names
     )
+
+
+def test_glm5_next_targets_are_rollout_portable():
+    config = {
+        "model_type": "glm5_next",
+        "text_config": {
+            "layer_types": ["linear_attention", "deepseek_sparse_attention"],
+            "mlp_layer_types": ["dense", "sparse"],
+            "q_lora_rank": 16,
+            "n_shared_experts": 1,
+        },
+    }
+
+    targets = get_hf_lora_targets(config)
+
+    assert targets.unembed == ("lm_head",)
+    assert "model.language_model.layers.*.self_attn.q_a_proj" in targets.attention
+    assert "model.language_model.layers.*.self_attn.o_proj" in targets.attention
+    assert "model.language_model.layers.*.self_attn.q_proj" not in targets.attention
+    assert "model.language_model.layers.*.mlp.experts.*.gate_proj" in targets.mlp
+    assert "model.language_model.layers.*.mlp.shared_experts.down_proj" in targets.mlp

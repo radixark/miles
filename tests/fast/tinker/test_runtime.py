@@ -12,6 +12,7 @@ from miles.tinker.runtime import (
     _slot_failure,
     _to_sequence,
     _topk_prompt_logprobs,
+    _write_exported_checkpoint,
 )
 from miles.tinker.server.proto_codec import encode_sample_response
 from tinker.proto.response_conv import deserialize_sample_response
@@ -34,9 +35,7 @@ class TestBuildTrainData:
         assert train_data["dynamic_global_batch_size"] == 2
 
     def test_optional_datum_keys_map_to_batch_names(self):
-        train_data = _build_train_data(
-            [(0, _datum([1, 2], weights=[1.0], advantages=[2.0], sampling_logprobs=[-0.5]))]
-        )
+        train_data = _build_train_data([(0, _datum([1, 2], weights=[1.0], advantages=[2.0], sampling_logprobs=[-0.5]))])
         assert train_data["loss_weights"] == [[1.0]]
         assert train_data["advantages"] == [[2.0]]
         assert train_data["rollout_log_probs"] == [[-0.5]]
@@ -177,10 +176,7 @@ async def test_forward_backward_pads_the_batch_and_drops_padding_outputs():
 
     async def fake_call_trainer(method, batch_id, train_data):
         seen.update(train_data)
-        per_datum = [
-            {"sample_index": index, "loss": float(index), "logprobs": torch.tensor([-0.1])}
-            for index in range(len(train_data["tokens"]))
-        ]
+        per_datum = [{"sample_index": index, "loss": float(index), "logprobs": torch.tensor([-0.1])} for index in range(len(train_data["tokens"]))]
         return [{"per_datum": per_datum}]
 
     backend._call_trainer = fake_call_trainer
@@ -193,6 +189,64 @@ async def test_forward_backward_pads_the_batch_and_drops_padding_outputs():
 def test_an_actor_error_verdict_survives_runtime_translation():
     failure = {"error": "bad shard"}
     assert _slot_failure([None, failure]) is failure
+
+
+async def test_exported_sampler_weights_are_copied_to_inference_host(tmp_path):
+    checkpoint = tmp_path / "model-123" / "sampler_weights" / "step-7"
+
+    class Trainer:
+        async def export_slot(self, **kwargs):
+            assert kwargs["path"] == str(checkpoint)
+            return [
+                None,
+                {
+                    "checkpoint_files": {
+                        "adapter_config.json": b'{"r": 32}',
+                        "adapter_model.safetensors": b"adapter-weights",
+                        "META.json": b'{"base_model": "test-model"}',
+                    }
+                },
+            ]
+
+    class InferenceController:
+        def __init__(self):
+            self.loaded = None
+
+        async def load_lora_adapter(self, **kwargs):
+            assert (checkpoint / "adapter_config.json").read_bytes() == b'{"r": 32}'
+            assert (checkpoint / "adapter_model.safetensors").read_bytes() == b"adapter-weights"
+            assert (checkpoint / "META.json").read_bytes() == b'{"base_model": "test-model"}'
+            self.loaded = kwargs
+
+    inference = InferenceController()
+    backend = MilesBackend(Trainer(), "http://router", inference_controller=inference)
+
+    assert await backend.export_slot(0, 32, 32.0, str(checkpoint)) is None
+    assert inference.loaded == {
+        "lora_name": "model-123@step-7",
+        "lora_path": str(checkpoint),
+    }
+
+
+def test_exported_sampler_weights_replace_files_on_a_shared_mount(tmp_path):
+    checkpoint = tmp_path / "model-123" / "sampler_weights" / "step-7"
+    checkpoint.mkdir(parents=True)
+    (checkpoint / "adapter_model.safetensors").write_bytes(b"stale")
+
+    _write_exported_checkpoint(
+        str(checkpoint),
+        {
+            "adapter_config.json": b'{"r": 32}',
+            "adapter_model.safetensors": b"current",
+        },
+    )
+
+    assert (checkpoint / "adapter_config.json").read_bytes() == b'{"r": 32}'
+    assert (checkpoint / "adapter_model.safetensors").read_bytes() == b"current"
+    assert sorted(path.name for path in checkpoint.iterdir()) == [
+        "adapter_config.json",
+        "adapter_model.safetensors",
+    ]
 
 
 def test_an_aborted_sample_fails_instead_of_passing_as_a_stop():

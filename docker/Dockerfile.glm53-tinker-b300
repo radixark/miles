@@ -1,0 +1,47 @@
+FROM docker.io/radixark/miles:glm53next@sha256:66725f740a6013b00d27e21fdfd480a24b0d3b5c61840342e9405bf1e09e5162 AS runtime
+
+RUN pip install --no-cache-dir "tinker==0.26.2"
+
+# Miles #3098 depends on the companion GLM-5.3 Megatron-Bridge implementation
+# from radixark/Megatron-Bridge#35. Pin the reviewed commit so the runtime can
+# register Glm5NextForConditionalGeneration with AutoBridge.
+RUN pip install --no-cache-dir --no-deps \
+      "git+https://github.com/radixark/Megatron-Bridge.git@6527b18e8bb0db994a267e6dfd4db7dafc669df9"
+
+# The pinned GLM-5.3 image combines FLA with a Triton version that rejects a
+# host-level helper referenced from inside this JIT kernel. GLM-5.3's KDA head
+# dimension is 128, so K is already the required power-of-two block width.
+RUN sed -i \
+      's/BK: tl.constexpr = triton.next_power_of_2(K)/BK: tl.constexpr = K/' \
+      /usr/local/lib/python3.12/dist-packages/fla/ops/kda/chunk_intra_token_parallel.py
+
+# Large packed prefills can coalesce multiple requests into an MoE-LoRA segment
+# longer than SGLang's per-request max_len. Use its safe torch mapping fallback
+# instead of launching an under-sized Triton grid.
+COPY docker/compat/patch_sglang_moe_lora_grid.py /tmp/patch_sglang_moe_lora_grid.py
+RUN python3 /tmp/patch_sglang_moe_lora_grid.py
+
+# Keep the GLM-5.3-specific SGLang/Megatron environment from the pinned base,
+# while installing the current Miles Tinker gateway and adapter implementation.
+COPY miles /root/miles/miles
+COPY miles_plugins /root/miles/miles_plugins
+COPY examples/multi_lora /root/miles/examples/multi_lora
+COPY scripts /root/miles/scripts
+COPY serve_tinker.py /root/miles/serve_tinker.py
+COPY train.py /root/miles/train.py
+RUN mkdir -p /root/Megatron-LM/megatron/post_training
+COPY docker/compat/megatron_post_training_init.py /root/Megatron-LM/megatron/post_training/__init__.py
+COPY docker/compat/megatron_post_training_checkpointing.py /root/Megatron-LM/megatron/post_training/checkpointing.py
+RUN mkdir -p /usr/local/lib/python3.12/dist-packages/megatron/post_training
+COPY docker/compat/megatron_post_training_init.py /usr/local/lib/python3.12/dist-packages/megatron/post_training/__init__.py
+COPY docker/compat/megatron_post_training_checkpointing.py /usr/local/lib/python3.12/dist-packages/megatron/post_training/checkpointing.py
+
+RUN python3 -m py_compile \
+      /root/miles/serve_tinker.py \
+      /root/miles/examples/multi_lora/serve_glm5_3_flash_tinker.py \
+      /root/miles/miles/utils/lora/hf_lora_targets.py
+
+LABEL org.opencontainers.image.source="https://github.com/radixark/miles" \
+      org.opencontainers.image.revision="23d41d711f3b80544fda655898ed4f051ed644fe"
+
+FROM runtime AS final

@@ -1,4 +1,7 @@
 from contextlib import ExitStack
+from pathlib import Path
+
+import torch.distributed as dist
 
 from miles.backends.megatron_utils.actor import MegatronTrainRayActor
 from miles.backends.megatron_utils.lora import checkpoint as lora_checkpoint
@@ -39,9 +42,7 @@ class MultiLoRATrainRayActor(MegatronTrainRayActor):
             return lora_model.run_forward_backward(self.args, batch_id, self.model, rollout_data, forward_only=True)
 
     @with_logs
-    def load_slot(
-        self, slot: int, rank: int, alpha: float, ckpt_path: str | None = None, load_optimizer: bool = True
-    ) -> None:
+    def load_slot(self, slot: int, rank: int, alpha: float, ckpt_path: str | None = None, load_optimizer: bool = True) -> None:
         self.slot_optimizers[slot] = lora_model.load_slot(self.args, self.model, slot, rank, alpha)
         if ckpt_path is not None:
             lora_checkpoint.load_slot(self.model, self.slot_optimizers[slot], ckpt_path, load_optimizer)
@@ -51,13 +52,15 @@ class MultiLoRATrainRayActor(MegatronTrainRayActor):
         lora_checkpoint.save_slot(self.model, self.slot_optimizers[slot], path, metadata=metadata)
 
     @with_logs
-    def export_slot(self, slot: int, rank: int, alpha: float, path: str, metadata: dict | None = None) -> None:
+    def export_slot(self, slot: int, rank: int, alpha: float, path: str, metadata: dict | None = None) -> dict | None:
         """Write the slot's adapter as an engine-loadable dir."""
         self._heartbeat.bump()
         assert self.snapshot_publisher is not None, "adapter export requires a snapshot publisher"
-        self.snapshot_publisher.publish_adapter(
-            AdapterSpec(slot=slot, rank=rank, alpha=alpha), path, metadata=metadata
-        )
+        self.snapshot_publisher.publish_adapter(AdapterSpec(slot=slot, rank=rank, alpha=alpha), path, metadata=metadata)
+        if dist.get_rank() != 0:
+            return None
+        checkpoint = Path(path)
+        return {"checkpoint_files": {file.name: file.read_bytes() for file in checkpoint.iterdir() if file.is_file()}}
 
     @with_logs
     def unload_slot(self, slot: int) -> dict | None:

@@ -246,6 +246,11 @@ _REMAINING_POST_CASES = [
         {"lora_name": "l", "config_dict": {"r": 8}, "pinned": False},
     ),
     (
+        lambda c: c.load_lora_adapter("l", "/adapters/l"),
+        "load_lora_adapter",
+        {"lora_name": "l", "lora_path": "/adapters/l", "pinned": False},
+    ),
+    (
         lambda c: c.resume_memory_occupation(tags=["weights"]),
         "resume_memory_occupation",
         {"tags": ["weights"]},

@@ -1,0 +1,26 @@
+FROM radixark/miles:latest@sha256:d843d4669b0d59f9a619446b9a5e6bce00b31d7e82b2a23c1c51620bb903015f AS runtime
+
+RUN pip install --no-cache-dir "tinker==0.26.2"
+
+COPY miles/utils/lora/arguments.py /root/miles/miles/utils/lora/arguments.py
+COPY examples/multi_lora/serve_qwen_dense_tinker.py /root/miles/examples/multi_lora/serve_qwen_dense_tinker.py
+COPY examples/multi_lora/run_train_sampler_sync_test.py /root/miles/examples/multi_lora/run_train_sampler_sync_test.py
+
+RUN python3 -m py_compile \
+      /root/miles/miles/utils/lora/arguments.py \
+      /root/miles/examples/multi_lora/serve_qwen_dense_tinker.py \
+      /root/miles/examples/multi_lora/run_train_sampler_sync_test.py
+
+LABEL org.opencontainers.image.source="https://github.com/radixark/miles" \
+      org.opencontainers.image.revision="23d41d711f3b80544fda655898ed4f051ed644fe"
+
+FROM runtime AS unit-test
+
+COPY tests/fast/utils/test_arguments.py /root/miles/tests/fast/utils/test_arguments.py
+COPY tests/fast/tinker/test_train_sampler_sync_probe.py /root/miles/tests/fast/tinker/test_train_sampler_sync_probe.py
+
+RUN cd /root/miles && \
+    pytest -q tests/fast/utils/test_arguments.py -k pipeline_parallelism && \
+    pytest -q tests/fast/tinker/test_train_sampler_sync_probe.py
+
+FROM runtime AS final
