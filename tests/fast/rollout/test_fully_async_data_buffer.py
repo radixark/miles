@@ -200,7 +200,8 @@ async def _put(buffer: DataBuffer, group: Group) -> None:
 
 
 async def _get_one(buffer: DataBuffer, **context) -> DataBufferInput:
-    return await buffer.get(**context)
+    [entry] = await buffer.get(num_groups=1, **context)
+    return entry
 
 
 async def _settle(times: int = 20) -> None:
@@ -316,11 +317,41 @@ class TestStalenessFiltering:
         assert under_test.buffer.get_metrics()["rollout/fully_async/buffer_max_staleness"] == 12
 
 
+# ============================== batched get ===============================
+
+
+class TestBatchedGet:
+    async def test_a_get_takes_the_oldest_whole_batch_and_leaves_the_surplus_buffered(self) -> None:
+        """One get hands out exactly the batch asked for, oldest first, and the extra group stays for the next."""
+        under_test = _make_buffer(rollout_batch_size=3)
+        for group_index in (1, 2, 3, 4):
+            await _put(under_test.buffer, _make_finished_group(group_index))
+
+        entries = await under_test.buffer.get(num_groups=3)
+
+        assert [entry.group[0].group_index for entry in entries] == [1, 2, 3]
+        assert (await _get_one(under_test.buffer)).group[0].group_index == 4
+
+    async def test_a_get_waiting_for_a_whole_batch_wakes_only_once_the_batch_is_complete(self) -> None:
+        """The batch is assembled inside the buffer, so a partial one may not be handed out early."""
+        under_test = _make_buffer(rollout_batch_size=3)
+        waiting = asyncio.create_task(under_test.buffer.get(num_groups=3))
+
+        for group_index in (1, 2):
+            await _put(under_test.buffer, _make_finished_group(group_index))
+            await _settle()
+            assert not waiting.done()
+
+        await _put(under_test.buffer, _make_finished_group(3))
+
+        assert [entry.group[0].group_index for entry in await waiting] == [1, 2, 3]
+
+
 # =============================== capacity =================================
 
 
 class TestCapacity:
-    @pytest.mark.parametrize(("factor", "rollout_batch_size", "expected"), [(1.5, 4, 6), (0.5, 3, 1), (2.0, 3, 6)])
+    @pytest.mark.parametrize(("factor", "rollout_batch_size", "expected"), [(1.5, 4, 6), (1.0, 3, 3), (2.0, 3, 6)])
     def test_the_capacity_is_the_floor_of_the_factor_times_the_rollout_batch_size(
         self, factor, rollout_batch_size, expected
     ) -> None:
@@ -333,6 +364,11 @@ class TestCapacity:
         """A buffer that can hold nothing wedges the producer on its very first group."""
         with pytest.raises(AssertionError):
             _make_buffer(async_data_buffer_capacity_factor=0.0)
+
+    def test_a_capacity_below_one_whole_batch_is_refused(self) -> None:
+        """One get asks for a whole batch, so a smaller bound deadlocks the producer against the consumer."""
+        with pytest.raises(AssertionError, match="below the rollout batch"):
+            _make_buffer(async_data_buffer_capacity_factor=0.5, rollout_batch_size=4)
 
     async def test_a_blocked_put_resumes_as_soon_as_a_get_frees_a_slot(self) -> None:
         """Back pressure is the whole point of the bound, and it has to lift without a poll."""
@@ -348,6 +384,24 @@ class TestCapacity:
         await blocked
 
         assert under_test.buffer.get_metrics()["rollout/fully_async/queue_size"] == 2
+
+    async def test_one_batched_get_frees_a_slot_for_every_producer_it_unblocks(self) -> None:
+        """A whole batch leaves at once, so every put waiting on the bound resumes, not just the first."""
+        under_test = _make_buffer(async_data_buffer_capacity_factor=1.0, rollout_batch_size=4)
+        for group_index in (1, 2, 3, 4):
+            await _put(under_test.buffer, _make_finished_group(group_index))
+
+        blocked = [
+            asyncio.create_task(_put(under_test.buffer, _make_finished_group(group_index)))
+            for group_index in (5, 6, 7)
+        ]
+        await _settle()
+        assert not any(task.done() for task in blocked)
+
+        assert len(await under_test.buffer.get(num_groups=4)) == 4
+        await asyncio.gather(*blocked)
+
+        assert under_test.buffer.get_metrics()["rollout/fully_async/queue_size"] == 3
 
     async def test_a_put_that_is_rejected_by_a_filter_never_takes_a_capacity_slot(self) -> None:
         """Both filters return before the lock, so a rejected group may not cost the producer its bound."""
