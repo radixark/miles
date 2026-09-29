@@ -221,7 +221,9 @@ class MiMoV2Bridge(MegatronModelBridge):
         provider = super().provider_bridge(hf_pretrained)
         pattern = [int(p) for p in hf.hybrid_layer_pattern]
         provider.hybrid_attention_pattern = pattern
-        provider.window_size = (hf.sliding_window_size - 1, 0)
+        # A SWA layer attends the query plus sliding_window_size previous keys, like SGLang's
+        # RadixAttention (whose window excludes the query token), so rollout and training agree.
+        provider.window_size = (hf.sliding_window_size, 0)
         provider.window_attn_skip_freq = pattern
         provider.rotary_base = hf.rope_theta
         provider.rotary_base_per_layer = [hf.swa_rope_theta if p else hf.rope_theta for p in pattern]

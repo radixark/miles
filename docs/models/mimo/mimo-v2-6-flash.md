@@ -44,8 +44,7 @@ The BF16 engine needs the MiMo-V2 fixes that are not in the image yet:
 - upstream [sgl-project/sglang#40448](https://github.com/sgl-project/sglang/pull/40448) (MXFP4 MoE and BF16 router);
 - accepting the `split` attention layout of the BF16 conversion;
 - allocating the sliding-window KV pools inside the memory-saver region, otherwise a colocated engine cannot release its KV cache;
-- passing `layer_id` to the MoE top-k, otherwise `--use-rollout-routing-replay` crashes the CUDA-graph capture;
-- passing `sliding_window_size - 1` to the attention layers: SGLang's window excludes the query token, so the unmodified model attends 129 keys where the HF reference and Megatron attend 128, which shows up as rare large train/rollout log-prob gaps.
+- passing `layer_id` to the MoE top-k, otherwise `--use-rollout-routing-replay` crashes the CUDA-graph capture.
 
 ## 4. Launch
 
@@ -100,6 +99,7 @@ Adam at `--lr 1e-6`. The full model's Adam state (3.7 TB) fits neither the GPUs 
 ### 5.4 Notable quirks
 
 - **Fused attention only**: `--attention-backend fused`. The learnable sink on the sliding-window layers is implemented by TE's FusedAttention (THD needs cuDNN ≥ 9.18) and the unfused path, not by FlashAttention.
+- **Sliding window**: a SWA layer attends the query plus `sliding_window_size` (128) previous keys, 129 in total, as SGLang does; the bridge sets `window_size = (sliding_window_size, 0)`. The HF modeling code and Megatron-Bridge's `mimo_v2_flash` attend 128 keys in total (`sliding_window_size - 1` previous), so a log-prob comparison against them differs at positions past the window.
 - **Dropout**: the bridge sets `hidden_dropout = 0`. Bridge mode does not copy `--hidden-dropout` onto the provider, so a provider left at Megatron's default (0.1) trains with dropout silently.
 - **Frozen towers and `--check-weight-update-equal`**: the trainer never sends the vision/audio weights, so exclude them from the post-update check with `--check-weight-update-skip-list visual. audio_tokenizer. input_local_transformer. speech_embeddings. projection.mlp.`.
 
