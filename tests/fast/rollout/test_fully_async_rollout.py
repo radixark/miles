@@ -413,6 +413,7 @@ async def test_stale_group_recycled(monkeypatch):
     assert data_source.num_get_calls >= 1
     assert not fn._retry_buffer
     assert output.metrics["rollout/fully_async/stale_groups_filtered"] == 1
+    # max_staleness measures what training consumed, and the stale group never got that far
     assert output.metrics["rollout/fully_async/max_staleness"] == 0
 
 
