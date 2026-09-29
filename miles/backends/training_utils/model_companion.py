@@ -64,6 +64,7 @@ class ModelCompanion(torch.nn.Module):
         unexpected_keys: list[str],
         error_msgs: list[str],
     ) -> None:
+        _default_missing_entries_when_load_from_state_dict(self, state_dict, prefix=prefix)
         _reallocate_when_load_from_state_dict(self, state_dict, "sample_consumptions", prefix=prefix)
         super()._load_from_state_dict(
             state_dict, prefix, local_metadata, strict, missing_keys, unexpected_keys, error_msgs
@@ -162,11 +163,35 @@ class SampleIdentityExtractor:
         return [identity for identities in gathered if identities is not None for identity in identities]
 
 
+def _default_missing_entries_when_load_from_state_dict(
+    module: torch.nn.Module, state_dict: dict[str, torch.Tensor], *, prefix: str
+) -> None:
+    for name, parameter in module.named_parameters(recurse=False):
+        key = f"{prefix}{name}"
+        if key in state_dict and not _is_megatron_missing_tensor_placeholder(state_dict[key]):
+            continue
+        state_dict[key] = torch.zeros(tuple(parameter.shape), dtype=parameter.dtype, device=parameter.device)
+
+
+def _is_megatron_missing_tensor_placeholder(value: Any) -> bool:
+    return isinstance(value, torch.Tensor) and value.dtype == torch.uint8 and value.shape == (0,)
+
+
 def _reallocate_when_load_from_state_dict(
     module: torch.nn.Module, state_dict: dict[str, torch.Tensor], name: str, *, prefix: str
 ) -> None:
-    incoming = state_dict[f"{prefix}{name}"]
-    assert incoming.dtype == torch.int64 and incoming.ndim == 2 and incoming.shape[1] == _ROW_WIDTH
+    key = f"{prefix}{name}"
+    incoming = state_dict[key]
+    assert (
+        isinstance(incoming, torch.Tensor)
+        and incoming.dtype == torch.int64
+        and incoming.ndim == 2
+        and incoming.shape[1] == _ROW_WIDTH
+    ), (
+        f"Model companion entry {key} must be a (*, {_ROW_WIDTH}) int64 tensor, but got "
+        f"type={type(incoming).__name__} dtype={getattr(incoming, 'dtype', None)} "
+        f"shape={getattr(incoming, 'shape', None)}"
+    )
     parameter = module.get_parameter(name)
     parameter.data = torch.empty(tuple(incoming.shape), dtype=parameter.dtype, device=parameter.device)
 
