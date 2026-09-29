@@ -150,6 +150,7 @@ def _merge_sample_pair(a: Sample, b: Sample, tokenizer) -> Sample:
             Sample,
             group_index=_merge_equal_value("group_index"),
             index=_merge_equal_value("index"),
+            lineage=_merge_equal_value("lineage"),
             rollout_id=_merge_equal_value("rollout_id"),
             prompt=b.prompt,
             tokens=b.tokens,

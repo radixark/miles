@@ -980,3 +980,17 @@ class TestSpecInfo:
             spec_verify_ct=2,
             completion_tokens=7,
         )
+
+
+class TestTrainingIdentity:
+    def test_serialization_preserves_child_row_identity(self) -> None:
+        """Sample serialization restores a typed identity for generated child rows."""
+        from miles.utils.types import SampleLineage
+
+        identity = SampleLineage(source_sample_index=7, output_index=1, output_count=3)
+        sample = Sample(index=101, lineage=identity)
+
+        restored = Sample.from_dict(sample.to_dict())
+
+        assert restored.index == 101
+        assert restored.lineage == identity

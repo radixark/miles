@@ -9,12 +9,17 @@ from miles.rollout.base_types import (
 )
 from miles.rollout.filter_hub.base_types import FilterOutput
 from miles.rollout.inference_rollout.compatibility import call_rollout_function, load_rollout_function
-from miles.utils.types import Sample, WeightVersionsPerCall
+from miles.utils.types import Sample, SampleLineage, WeightVersionsPerCall
 
 
 def expected_sample(*, group_index: int | None) -> Sample:
     return Sample(
         group_index=group_index,
+        lineage=(
+            None
+            if group_index is None
+            else SampleLineage(source_sample_index=group_index, output_index=0, output_count=1)
+        ),
         index=0,
         prompt="What is 1+7?",
         tokens=[3838, 374, 220, 16, 10, 22, 30, 59, 79075, 90, 23, 92],
