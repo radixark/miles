@@ -4,6 +4,7 @@ from argparse import Namespace
 
 import pytest
 
+from miles.backends.sglang_utils.sglang_api_client import WorkerType
 from miles.backends.sglang_utils.sglang_config import (
     ServerGroupConfig,
     _compute_megatron_num_gpus,
@@ -288,7 +289,10 @@ class TestPrefillNumServersPath:
             )
         )
         groups = cfg.models[0].server_groups
-        assert [(group.worker_type, group.num_gpus) for group in groups] == [("prefill", 6), ("decode", 10)]
+        assert [(group.worker_type, group.num_gpus) for group in groups] == [
+            (WorkerType.PREFILL, 6),
+            (WorkerType.DECODE, 10),
+        ]
         assert cfg.models[0].update_weights is not multi_lora
 
     def test_prefill_consuming_all_gpus_is_rejected(self):
