@@ -2,7 +2,18 @@ import logging
 from pathlib import Path
 from types import SimpleNamespace
 
-from miles.rollout.data_source import RolloutDataSource
+from miles.rollout.data_source import DataSource, RolloutDataSource
+from miles.utils.types import Sample
+
+
+class TestReadOnlyDataSource:
+    def test_a_custom_source_only_implements_read_and_checkpoint_operations(self) -> None:
+        """A custom source can instantiate without implementing sample recycling."""
+        source = _ReadOnlyDataSource()
+
+        assert source.get_samples(num_samples=1)[0][0].prompt == "0"
+        source.save(rollout_id=0)
+        source.load(rollout_id=0)
 
 
 def _make_args(**overrides) -> SimpleNamespace:
@@ -80,3 +91,14 @@ def test_load_restores_the_state_it_finds(tmp_path: Path) -> None:
     source.load(rollout_id=3)
 
     assert (source.sample_offset, source.epoch_id) == (7, 1)
+
+
+class _ReadOnlyDataSource(DataSource):
+    def get_samples(self, num_samples: int) -> list[list[Sample]]:
+        return [[Sample(prompt=str(index))] for index in range(num_samples)]
+
+    def save(self, rollout_id: int) -> None:
+        pass
+
+    def load(self, rollout_id: int | None = None) -> None:
+        pass
