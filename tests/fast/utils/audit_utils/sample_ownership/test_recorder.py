@@ -7,10 +7,10 @@ from tests.fast.import_isolation_utils import modules_imported_by
 
 from miles.rollout.data_source import DataSource
 from miles.utils.audit_utils.event_logger.logger import EventLogger, read_events, set_event_logger
-from miles.utils.audit_utils.event_logger.models import DataSourceIssuedSamplesEvent
+from miles.utils.audit_utils.event_logger.models import DataSourceIssuedSamplesEvent, ExplicitlyDroppedSamplesEvent
 from miles.utils.audit_utils.process_identity import SimpleProcessIdentity
 from miles.utils.audit_utils.sample_ownership.recorder import SampleOwnershipRecorder
-from miles.utils.types import Sample
+from miles.utils.types import Sample, SampleLineage
 
 
 class _DataSource(DataSource):
@@ -85,6 +85,66 @@ class TestRecordDataSourceIssues:
 
         assert "get_samples" not in vars(source)
         assert source.get_samples.__func__ is _DataSource.get_samples
+        assert read_events(event_dir) == []
+
+
+class TestLogDroppedSamples:
+    def test_logs_each_source_sample_once_for_compact_rows(self, event_dir: Path) -> None:
+        """Dropping compact rows resolves their source sample once."""
+        rows = [
+            Sample(index=10, lineage=SampleLineage(source_sample_index=4, output_index=0, output_count=1)),
+            Sample(index=10, lineage=SampleLineage(source_sample_index=4, output_index=0, output_count=1)),
+        ]
+
+        SampleOwnershipRecorder.log_dropped_samples(args=_args(), samples=rows, reason="dynamic_filter")
+
+        [event] = read_events(event_dir)
+        assert isinstance(event, ExplicitlyDroppedSamplesEvent)
+        assert event.source_sample_indices == [4]
+        assert event.reason == "dynamic_filter"
+
+    def test_group_comparison_logs_only_fully_removed_sources(self, event_dir: Path) -> None:
+        """A source with any retained compact row is not reported as dropped."""
+        first = Sample(index=10, lineage=SampleLineage(source_sample_index=4, output_index=0, output_count=1))
+        second = Sample(index=10, lineage=SampleLineage(source_sample_index=4, output_index=0, output_count=1))
+        removed = Sample(index=20, lineage=SampleLineage(source_sample_index=8, output_index=0, output_count=1))
+
+        SampleOwnershipRecorder.log_dropped_groups(
+            args=_args(), before=[[first, second], [removed]], after=[[second]], reason="trim"
+        )
+
+        [event] = read_events(event_dir)
+        assert isinstance(event, ExplicitlyDroppedSamplesEvent)
+        assert event.source_sample_indices == [8]
+
+    def test_a_filter_mutating_a_group_in_place_still_reports_the_drop(self, event_dir: Path) -> None:
+        """A flattened pre-filter snapshot survives a filter that pops from an inner group list."""
+        kept = Sample(index=10, lineage=SampleLineage(source_sample_index=4, output_index=0, output_count=1))
+        popped = Sample(index=11, lineage=SampleLineage(source_sample_index=8, output_index=0, output_count=1))
+        data = [[kept, popped]]
+
+        before_filter = SampleOwnershipRecorder.flatten_samples(data)
+        data[0].pop()
+        SampleOwnershipRecorder.log_dropped_groups(
+            args=_args(), before=before_filter, after=data, reason="rollout_sample_filter"
+        )
+
+        [event] = read_events(event_dir)
+        assert isinstance(event, ExplicitlyDroppedSamplesEvent)
+        assert event.source_sample_indices == [8]
+        assert event.reason == "rollout_sample_filter"
+
+    def test_a_disabled_checker_writes_no_drop_event(self, event_dir: Path) -> None:
+        """Drop sites stay silent for a run that never turned the checker on."""
+        sample = Sample(index=10, lineage=SampleLineage(source_sample_index=4, output_index=0, output_count=1))
+        disabled = _args(enabled=False)
+
+        SampleOwnershipRecorder.log_dropped_samples(args=disabled, samples=[sample], reason="dynamic_filter")
+        SampleOwnershipRecorder.log_dropped_source_sample_indices(
+            args=disabled, source_sample_indices=[4], reason="trim"
+        )
+        SampleOwnershipRecorder.log_dropped_groups(args=disabled, before=[[sample]], after=[], reason="oversampling")
+
         assert read_events(event_dir) == []
 
 
