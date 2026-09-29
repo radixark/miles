@@ -23,6 +23,7 @@ from miles.backends.training_utils.loss import compute_advantages_and_returns, g
 from miles.backends.training_utils.parallel import get_parallel_state
 from miles.backends.training_utils.sampling_mask import get_rollout_sampling_masks
 from miles.backends.training_utils.torch_native import routing_replay
+from miles.backends.training_utils.torch_native.offload import move_train_state
 from miles.backends.training_utils.torch_native.step_runner import StepRunner
 from miles.backends.training_utils.weight_update.updater import WeightUpdater
 from miles.ray.train_actor import TrainRayActor
@@ -30,7 +31,7 @@ from miles.utils import train_metric_utils
 from miles.utils.audit_utils.witness.allocator import WitnessInfo
 from miles.utils.distributed_utils import get_gloo_group
 from miles.utils.flops_utils import flops_args_from_hf_config, fwd_tflops_per_gpu
-from miles.utils.memory_utils import clear_memory, move_optimizer_state, print_memory
+from miles.utils.memory_utils import clear_memory, print_memory
 from miles.utils.object_store import StoreObjectRef
 from miles.utils.profile_utils import TrainProfiler
 from miles.utils.timer import inverse_timer, timer
@@ -117,9 +118,7 @@ class TorchNativeTrainRayActor(TrainRayActor):
 
     def _move_to(self, device: str) -> None:
         print_memory(f"before moving the model to {device}")
-        for module in self.model_parts:
-            module.to(device)
-        move_optimizer_state(self.optimizers, device)
+        move_train_state(self.model_parts, self.optimizers, device)
         clear_memory()
         dist.barrier(group=get_gloo_group())
         print_memory(f"after moving the model to {device}")
@@ -133,7 +132,9 @@ class TorchNativeTrainRayActor(TrainRayActor):
         external_data: TrainStepOutput | None = None,
     ) -> TrainStepOutput:
         assert witness_info is None and attempt == 0
-        assert external_data is None, f"the {self.args.train_backend} backend trains no critic, so it is never handed critic values"
+        assert (
+            external_data is None
+        ), f"the {self.args.train_backend} backend trains no critic, so it is never handed critic values"
         self._heartbeat.bump()
         if self.args.offload_train:
             self.wake_up()

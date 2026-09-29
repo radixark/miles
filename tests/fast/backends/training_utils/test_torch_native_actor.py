@@ -7,7 +7,7 @@ import torch
 
 from miles.backends.training_utils.torch_native import actor as base_module
 from miles.backends.training_utils.torch_native.actor import TorchNativeTrainRayActor
-from miles.utils.memory_utils import move_optimizer_state
+from miles.backends.training_utils.torch_native.offload import _map_optimizer_state
 
 _MODULE = "miles.backends.training_utils.torch_native.actor"
 
@@ -128,15 +128,14 @@ def test_the_rollout_step_runs_ref_then_actor_then_optimizer_under_the_right_sta
     assert step["replay"].fill.call_args.kwargs["align"] is actor.align_token_side_channel
 
 
-def test_move_optimizer_state_does_not_grow_state_for_parameters_that_have_none(monkeypatch):
-    monkeypatch.setattr(torch.cuda, "synchronize", lambda *a, **k: None)
+def test_moving_optimizer_state_does_not_grow_state_for_parameters_that_have_none():
     model = torch.nn.Linear(4, 4, bias=True)
     optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
     model.weight.grad = torch.ones_like(model.weight)
     optimizer.step()
     assert model.bias not in optimizer.state
 
-    move_optimizer_state([optimizer], "cpu")
+    _map_optimizer_state([optimizer], lambda tensor: tensor.to("cpu"))
 
     assert model.bias not in optimizer.state
     assert optimizer.state[model.weight]["exp_avg"].device.type == "cpu"
