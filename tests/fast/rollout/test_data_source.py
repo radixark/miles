@@ -53,7 +53,7 @@ def test_load_says_so_when_it_finds_no_state(tmp_path: Path, caplog) -> None:
     """A dataset silently starting over is a run replaying samples its trainers already trained on."""
     source = _bare_source(rollout_global_dataset=True)
 
-    with caplog.at_level(logging.WARNING, logger="miles.rollout.data_source"):
+    with caplog.at_level(logging.WARNING, logger="miles.utils.simple_checkpointer"):
         source.load(tmp_path)
 
     assert "no dataset state under" in caplog.text

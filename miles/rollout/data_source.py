@@ -3,15 +3,13 @@ import copy
 import logging
 from pathlib import Path
 
-import torch
-
 from miles.utils.data import Dataset
 from miles.utils.function_registry import load_function
 from miles.utils.processing_utils import load_processor, load_tokenizer
+from miles.utils.simple_checkpointer import load_simple_checkpoint, save_simple_checkpoint
 from miles.utils.types import Sample
 
 logger = logging.getLogger(__name__)
-_STATE_FILENAME = "state.pt"
 
 
 class DataSource(abc.ABC):
@@ -123,22 +121,17 @@ class RolloutDataSource(DataSource):
             "sample_index": self.sample_index,
             "metadata": self.metadata,
         }
-        directory.mkdir(parents=True, exist_ok=True)
-        torch.save(state_dict, directory / _STATE_FILENAME)
+        save_simple_checkpoint(directory=directory, data=state_dict)
 
     def load(self, directory: Path) -> None:
         if not self.args.rollout_global_dataset:
             logger.warning("--disable-rollout-global-dataset: the dataset starts where a fresh run's would")
             return
 
-        path = directory / _STATE_FILENAME
-        if not path.exists():
-            logger.warning(f"no dataset state under {path}: the dataset starts where a fresh run's would")
+        logger.info(f"load metadata: {self.metadata}")
+        if (state_dict := load_simple_checkpoint(directory=directory)) is None:
             return
 
-        logger.info(f"load metadata from {path}")
-        logger.info(f"load metadata: {self.metadata}")
-        state_dict = torch.load(path)
         self.sample_offset = state_dict.get("sample_offset", 0)
         self.epoch_id = state_dict.get("epoch_id", 0)
         self.sample_group_index = state_dict.get("sample_group_index", 0)
