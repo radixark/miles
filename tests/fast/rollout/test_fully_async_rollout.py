@@ -44,7 +44,6 @@ class FakeDataSource:
     def __init__(self, scripted=None):
         self.scripted = deque(scripted or [])
         self.next_group_index = 1000
-        self.recycled = []
         self.num_get_calls = 0
 
     def get_samples(self, num_samples):
@@ -54,9 +53,6 @@ class FakeDataSource:
             return [self.scripted.popleft()]
         self.next_group_index += 1
         return [make_group(self.next_group_index)]
-
-    def add_samples(self, groups):
-        self.recycled.extend(groups)
 
 
 def make_group(
@@ -114,6 +110,8 @@ def make_args(**overrides) -> Namespace:
 def make_fn(monkeypatch, args, data_source, generate=None):
     async def default_generate(state, group, sampling_params, evaluation=False, sample_done_callback=None):
         await asyncio.sleep(0)
+        for sample in group:
+            sample.status = Sample.Status.COMPLETED
         return group
 
     monkeypatch.setattr(fully_async, "GenerateState", FakeGenerateState)
@@ -302,20 +300,51 @@ class TestKvCacheNamespace:
             assert set(stamps[marker:]) == {f"train:{trainer_model_id}:{rollout_id}"}
 
 
+class TestRetryBuffer:
+    async def test_the_next_submission_prefers_retry_prompts_over_the_data_source(self, monkeypatch) -> None:
+        """Recycled prompts are retried before advancing the read-only data source."""
+        source = FakeDataSource()
+        fn = make_fn(monkeypatch, make_args(rollout_batch_size=1), source)
+        group = make_group(7)
+        fn._recycle(group)
+
+        entry = await fn._submit_one_group()
+
+        assert entry.prompt_group == group
+        assert source.num_get_calls == 0
+        assert not fn._retry_buffer
+
+
 async def test_aborted_group_recycled(monkeypatch):
+    """An aborted prompt is submitted again before its retry can count as successful."""
     aborted = make_group(1, status=Sample.Status.ABORTED)
     for sample in aborted:
         sample.reward = None
     data_source = FakeDataSource(scripted=[aborted])
     args = make_args(rollout_batch_size=1, async_unused_samples_handler="retry")
-    fn = make_fn(monkeypatch, args, data_source)
+    calls = 0
+    retried = asyncio.Event()
+
+    async def abort_once(state, group, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls > 1 and group is aborted:
+            retried.set()
+        for sample in group:
+            sample.status = Sample.Status.ABORTED if calls == 1 else Sample.Status.COMPLETED
+            if calls > 1:
+                sample.reward = 1
+        return group
+
+    fn = make_fn(monkeypatch, args, data_source, generate=abort_once)
 
     output = await fn(RolloutFnTrainInput(rollout_id=0))
+    await asyncio.wait_for(retried.wait(), timeout=5)
 
-    assert data_source.recycled == [aborted]
+    assert calls >= 2
+    assert not fn._retry_buffer
     # reset_for_retry cleared generated outputs so the prompt can be re-sampled
     assert all(sample.response == "" and sample.weight_versions == [] for sample in aborted)
-    assert output.samples[0][0].group_index != 1
     assert output.metrics["rollout/fully_async/aborted_groups_filtered"] == 1
     assert "rollout/dynamic_filter/drop_group_has_missing_reward" not in output.metrics
 
@@ -329,7 +358,7 @@ async def test_missing_reward_group_dropped_without_recycling(monkeypatch):
 
     output = await fn(RolloutFnTrainInput(rollout_id=0))
 
-    assert data_source.recycled == []
+    assert not fn._retry_buffer
     assert output.samples[0][0].group_index != 1
     assert output.metrics["rollout/dynamic_filter/drop_group_has_missing_reward"] == 1
 
@@ -355,11 +384,20 @@ async def test_stale_group_recycled(monkeypatch):
     data_source.get_samples = get_samples_with_fresh_versions
 
     args = make_args(rollout_batch_size=1, max_weight_staleness=2, async_unused_samples_handler="retry")
-    fn = make_fn(monkeypatch, args, data_source)
+
+    async def regenerate_with_fresh_weights(state, group, **kwargs):
+        for sample in group:
+            sample.status = Sample.Status.COMPLETED
+            if not sample.weight_versions:
+                sample.weight_versions = make_group(0, weight_versions=["10"])[0].weight_versions
+        return group
+
+    fn = make_fn(monkeypatch, args, data_source, generate=regenerate_with_fresh_weights)
 
     output = await fn(RolloutFnTrainInput(rollout_id=0, weight_version=10))
 
-    assert data_source.recycled == [stale]
+    assert data_source.num_get_calls >= 1
+    assert not fn._retry_buffer
     assert output.metrics["rollout/fully_async/stale_groups_filtered"] == 1
     assert output.metrics["rollout/fully_async/max_staleness"] == 0
 
@@ -371,7 +409,7 @@ async def test_stale_group_dropped_by_default(monkeypatch):
 
     output = await fn(RolloutFnTrainInput(rollout_id=0, weight_version=10))
 
-    assert data_source.recycled == []
+    assert not fn._retry_buffer
     assert output.metrics["rollout/fully_async/stale_groups_filtered"] == 1
 
 
@@ -393,10 +431,13 @@ async def test_sample_cancellation_aborts_group_without_stopping_worker(
     handler: str,
     granularity: str,
 ) -> None:
+    """Sample cancellation settles siblings and leaves the producer usable after drop or retry."""
     prompt_group = make_group(1)
     data_source = FakeDataSource(scripted=[prompt_group])
     sibling_started = asyncio.Event()
     sibling_finished = asyncio.Event()
+    retried = asyncio.Event()
+    retried_samples: list[Sample] = []
 
     async def generate_sample(
         state: FakeGenerateState,
@@ -405,6 +446,14 @@ async def test_sample_cancellation_aborts_group_without_stopping_worker(
         evaluation: bool = False,
     ) -> Sample:
         if sample.group_index != 1:
+            return sample
+        if sibling_finished.is_set():
+            assert sample.response == "" and sample.weight_versions == []
+            retried_samples.append(sample)
+            if len(retried_samples) == len(prompt_group):
+                retried.set()
+            sample.status = Sample.Status.COMPLETED
+            sample.reward = 1
             return sample
         if sample is prompt_group[0]:
             await sibling_started.wait()
@@ -435,14 +484,16 @@ async def test_sample_cancellation_aborts_group_without_stopping_worker(
     assert sibling_finished.is_set()
     assert not fn._worker.done()
     assert output.metrics["rollout/fully_async/aborted_groups_filtered"] == 1
-    assert all(sample.group_index != 1 for group in output.samples for sample in group)
     assert all(sample.status == Sample.Status.COMPLETED for group in output.samples for sample in group)
     assert "Rollout group was cancelled" in caplog.text
     if handler == "retry":
-        assert data_source.recycled == [prompt_group]
+        await asyncio.wait_for(retried.wait(), timeout=2)
+        assert {id(sample) for sample in retried_samples} == {id(sample) for sample in prompt_group}
         assert all(sample.response == "" and sample.weight_versions == [] for sample in prompt_group)
     else:
-        assert data_source.recycled == []
+        assert not retried_samples
+        assert not fn._retry_buffer
+        assert all(sample.group_index != 1 for group in output.samples for sample in group)
         assert all(sample.status == Sample.Status.COMPLETED for sample in prompt_group)
 
     # The producer remains usable after the affected batch, not just until the
@@ -478,7 +529,7 @@ async def test_worker_cancellation_still_propagates(monkeypatch: pytest.MonkeyPa
         with pytest.raises(RuntimeError, match="disposed while a step waited"):
             await asyncio.wait_for(drain, timeout=2)
         assert fn._worker.cancelled()
-        assert data_source.recycled == []
+        assert not fn._retry_buffer
         assert fn._output.get_metrics()["rollout/fully_async/aborted_groups_filtered"] == 0
     finally:
         release.set()
@@ -529,11 +580,17 @@ async def test_nested_group_recycles_the_flat_prompt_group(monkeypatch):
     prompt_group = make_group(1)
     data_source = FakeDataSource(scripted=[prompt_group])
     submitted = []
+    retried = asyncio.Event()
 
     async def multi_sample_generate(state, group, sampling_params, evaluation=False, sample_done_callback=None):
         assert all(isinstance(sample, Sample) for sample in group), "resubmitted a nested group"
         submitted.append(group)
         if len(submitted) > 1:
+            if group is prompt_group:
+                retried.set()
+            for sample in group:
+                sample.status = Sample.Status.COMPLETED
+                sample.reward = 1
             return group
         expanded = []
         for sample in group:
@@ -544,9 +601,11 @@ async def test_nested_group_recycles_the_flat_prompt_group(monkeypatch):
     args = make_args(rollout_batch_size=1, async_unused_samples_handler="retry")
     fn = make_fn(monkeypatch, args, data_source, generate=multi_sample_generate)
     output = await fn(RolloutFnTrainInput(rollout_id=0))
+    await asyncio.wait_for(retried.wait(), timeout=5)
 
-    assert data_source.recycled == [prompt_group]
-    assert all(isinstance(sample, Sample) for sample in data_source.recycled[0])
+    assert data_source.num_get_calls >= 1
+    assert not fn._retry_buffer
+    assert all(isinstance(sample, Sample) for sample in submitted[1])
     assert len(submitted) > 1
     assert len(output.samples) == 1
 
@@ -571,7 +630,7 @@ async def test_dynamic_filter_drops_group_without_recycling(monkeypatch):
     assert len(output.samples) == 1
     assert output.samples[0][0].group_index != 1
     # Dropped even with handler="retry": filter rejections bypass the unused handler.
-    assert data_source.recycled == []
+    assert not fn._retry_buffer
     assert output.metrics["rollout/dynamic_filter/drop_rejected"] == 1
 
 
@@ -598,7 +657,7 @@ async def test_staleness_filter_off_before_the_first_weight_update(monkeypatch):
 
     output = await fn(RolloutFnTrainInput(rollout_id=0))
 
-    assert data_source.recycled == []
+    assert not fn._retry_buffer
     assert output.samples[0][0].group_index == 1
     assert "rollout/fully_async/max_staleness" not in output.metrics
 
