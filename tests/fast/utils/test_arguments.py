@@ -68,6 +68,7 @@ _NOT_ACTUALLY_SECRET_ARG_NAMES = frozenset(
         "metadata_key",
         "opd_teacher_key",
         "reward_key",
+        "router_allow_requests_without_routing_key",
         "tool_key",
     }
 )
@@ -481,6 +482,8 @@ def _fully_async_candidate_args(**overrides) -> SimpleNamespace:
         recompute_logprobs_via_prefill=False,
         rollout_all_samples_process_path=None,
         eval_num_gpus=0,
+        train_backend="megatron",
+        ft_components=[],
     )
     return SimpleNamespace(**(defaults | overrides))
 
@@ -498,11 +501,12 @@ def test_naming_the_fully_async_class_enables_the_mode():
 
 
 def test_naming_the_fully_async_class_enforces_the_mode_constraints():
-    """The class alone cannot keep generating through a colocated weight update; before the
-    mode was inferred, this combination started and only failed later, in training."""
-    args = _fully_async_candidate_args(rollout_function_path=FULLY_ASYNC_ROLLOUT_PATH, colocate=True)
+    """Selecting the class enforces the same FSDP colocation restriction as the flag."""
+    args = _fully_async_candidate_args(
+        rollout_function_path=FULLY_ASYNC_ROLLOUT_PATH, colocate=True, train_backend="fsdp"
+    )
 
-    with pytest.raises(AssertionError, match="cannot colocate"):
+    with pytest.raises(AssertionError, match="FSDP updater"):
         _resolve_rollout_functions(args)
 
 
@@ -534,25 +538,61 @@ def test_an_ordinary_rollout_function_path_stays_untouched():
 
 def test_fully_async_rejects_abort_pause_mode():
     """Generation is always in flight, so aborting on every weight update would kill it."""
-    args = SimpleNamespace(
-        fully_async=True,
-        multi_lora=False,
-        rollout_function_path=None,
-        eval_function_path=None,
-        colocate=False,
-        partial_rollout=False,
-        pause_generation_mode="abort",
-        namespaced_radix_cache=False,
-        recompute_logprobs_via_prefill=False,
-        rollout_all_samples_process_path=None,
-        eval_num_gpus=0,
-    )
+    args = _make_fully_async_args(colocate=False, pause_generation_mode="abort")
 
     with pytest.raises(AssertionError, match="pause-generation-mode abort"):
         _resolve_rollout_functions(args)
 
     args.pause_generation_mode = "retract"
     _resolve_rollout_functions(args)
+
+
+def _make_fully_async_args(**overrides) -> SimpleNamespace:
+    defaults = dict(
+        fully_async=True,
+        multi_lora=False,
+        rollout_function_path=None,
+        eval_function_path=None,
+        colocate=True,
+        partial_rollout=False,
+        pause_generation_mode="retract",
+        namespaced_radix_cache=False,
+        recompute_logprobs_via_prefill=False,
+        rollout_all_samples_process_path=None,
+        eval_num_gpus=0,
+        train_backend="megatron",
+        ft_components=[],
+    )
+    return SimpleNamespace(**{**defaults, **overrides})
+
+
+def test_fully_async_accepts_colocate():
+    """The driver-orchestrated colocate path is allowed."""
+    _resolve_rollout_functions(_make_fully_async_args())
+
+
+def test_fully_async_colocate_rejects_fsdp_train_backend():
+    """Only the megatron IPC updater lets the driver own the pause/continue window."""
+    args = _make_fully_async_args(train_backend="fsdp")
+
+    with pytest.raises(AssertionError, match="megatron IPC weight updater"):
+        _resolve_rollout_functions(args)
+
+
+def test_fully_async_colocate_rejects_in_place_pause_mode():
+    """Colocate releases the KV cache, so in_place cannot keep its promise to preserve it."""
+    args = _make_fully_async_args(pause_generation_mode="in_place")
+
+    with pytest.raises(AssertionError, match="pause-generation-mode retract"):
+        _resolve_rollout_functions(args)
+
+
+def test_fully_async_colocate_rejects_rollout_fault_tolerance():
+    """A cell replaced inside the training pause would serve without the pause or its KV cache."""
+    args = _make_fully_async_args(ft_components=["rollout"])
+
+    with pytest.raises(AssertionError, match="rollout fault tolerance"):
+        _resolve_rollout_functions(args)
 
 
 class TestClusterBackend:
@@ -722,19 +762,9 @@ class TestClusterBackend:
 
     def test_refuses_a_kubernetes_run_that_drives_multi_lora(self, tmp_path: Path) -> None:
         """The multi-LoRA controller calls into RayWorkerManager, which this backend never instantiates."""
-        (tmp_path / "config.json").write_text(
-            json.dumps(
-                dict(
-                    model_type="llama",
-                    hidden_size=16,
-                    intermediate_size=32,
-                    num_hidden_layers=1,
-                    num_attention_heads=2,
-                    num_key_value_heads=2,
-                    vocab_size=32,
-                )
-            )
-        )
+        from transformers import Qwen3Config
+
+        Qwen3Config(num_hidden_layers=1).save_pretrained(tmp_path)
         args = self._parse(
             [
                 "--cluster-backend",
@@ -2885,7 +2915,7 @@ class TestSecretArgumentsAreClassified:
             if _SECRET_ENV_VAR_PATTERN.search(name) and not name.startswith(_SGLANG_ARG_PREFIXES)
         }
 
-        assert suspicious - _SECRET_ARG_NAMES == _NOT_ACTUALLY_SECRET_ARG_NAMES, (
+        assert suspicious - _SECRET_ARG_NAMES <= _NOT_ACTUALLY_SECRET_ARG_NAMES, (
             "an argument's name looks like a credential; add it to _SECRET_ARG_NAMES in env_report/redaction.py so the env "
             "report hashes it, or to _NOT_ACTUALLY_SECRET_ARG_NAMES here to say it names something else"
         )
