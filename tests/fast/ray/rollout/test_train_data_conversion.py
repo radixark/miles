@@ -224,7 +224,16 @@ class TestConvertSamplesToTrainData:
             custom_reward_post_process_func=None,
         )
 
-        assert out["weight_versions"] == [[[{"version": "v1", "abs_start": 2, "abs_end": 4}]]]
+        assert out["weight_versions"] == [
+            [
+                {
+                    "spans": [{"version": "v1", "abs_start": 2, "abs_end": 4}],
+                    "prefill_spans": [],
+                    "output_start": None,
+                    "prompt_tokens": None,
+                }
+            ]
+        ]
 
     def test_weight_version_serialization_preserves_empty_samples_and_calls(self):
         """A sample without calls and a call without spans keep their slots, so rows and turn counts stay aligned."""
@@ -245,7 +254,56 @@ class TestConvertSamplesToTrainData:
             custom_reward_post_process_func=None,
         )
 
-        assert out["weight_versions"] == [[[], [{"version": "v1", "abs_start": 2, "abs_end": 4}]], []]
+        assert out["weight_versions"] == [
+            [
+                {"spans": [], "prefill_spans": [], "output_start": None, "prompt_tokens": None},
+                {
+                    "spans": [{"version": "v1", "abs_start": 2, "abs_end": 4}],
+                    "prefill_spans": [],
+                    "output_start": None,
+                    "prompt_tokens": None,
+                },
+            ],
+            [],
+        ]
+
+    def test_weight_version_serialization_round_trips_prefill_spans(self):
+        """Prompt KV spans reach the train data as plain values and read back as the same typed calls."""
+        args = make_args(rewards_normalization=False)
+        sample = make_sample()
+        sample.weight_versions = [
+            WeightVersionsPerCall(
+                spans=[WeightVersionSpan(version="2", abs_start=2, abs_end=4)],
+                prefill_spans=[
+                    WeightVersionSpan(version="1", abs_start=0, abs_end=1),
+                    WeightVersionSpan(version="2", abs_start=1, abs_end=2),
+                ],
+                output_start=2,
+            )
+        ]
+
+        out = convert_samples_to_train_data(
+            args,
+            [sample],
+            metadata={},
+            custom_convert_samples_to_train_data_func=None,
+            custom_reward_post_process_func=None,
+        )
+
+        assert out["weight_versions"] == [
+            [
+                {
+                    "spans": [{"version": "2", "abs_start": 2, "abs_end": 4}],
+                    "prefill_spans": [
+                        {"version": "1", "abs_start": 0, "abs_end": 1},
+                        {"version": "2", "abs_start": 1, "abs_end": 2},
+                    ],
+                    "output_start": 2,
+                    "prompt_tokens": None,
+                }
+            ]
+        ]
+        assert [WeightVersionsPerCall.from_dict(call) for call in out["weight_versions"][0]] == sample.weight_versions
 
     def test_custom_convert_func_short_circuits(self):
         args = make_args()
@@ -753,6 +811,40 @@ class TestSplitTrainDataByDp:
         for p in parts:
             assert p["raw_reward"] == [9.0, 8.0, 7.0, 6.0]
             assert p["dynamic_global_batch_size"] == 4
+
+    def test_weight_versions_survive_the_object_store_with_their_prefill_spans(self):
+        """Per-call prefill spans reach a DP shard through the store and read back as the same typed calls."""
+        args = make_args(balance_data=False)
+        calls = [
+            WeightVersionsPerCall(
+                spans=[WeightVersionSpan(version="2", abs_start=2, abs_end=4)],
+                prefill_spans=[WeightVersionSpan(version="1", abs_start=0, abs_end=2)],
+                output_start=2,
+            ),
+            WeightVersionsPerCall(
+                spans=[WeightVersionSpan(version="3", abs_start=6, abs_end=7)],
+                prefill_spans=[
+                    WeightVersionSpan(version="1", abs_start=0, abs_end=2),
+                    WeightVersionSpan(version="3", abs_start=2, abs_end=6),
+                ],
+                output_start=6,
+            ),
+        ]
+        Sample(tokens=[1, 2, 3, 4, 5, 6, 7], response_length=5, weight_versions=calls).validate()
+        data = {
+            "tokens": [[1, 2, 3, 4, 5, 6, 7]],
+            "response_lengths": [5],
+            "rewards": [0],
+            "truncated": [0],
+            "loss_masks": [[1, 1, 0, 0, 1]],
+            "sample_indices": [0],
+            "weight_versions": [[call.to_dict() for call in calls]],
+        }
+
+        refs = split_train_data_by_dp(args, data, {"dp_size": 1})
+        (part,) = [ray.get(r.payload) for r in refs]
+
+        assert [WeightVersionsPerCall.from_dict(call) for call in part["weight_versions"][0]] == calls
 
     def test_partition_indices_form_a_partition(self):
         """All partition indices together cover [0, N) exactly once."""

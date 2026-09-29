@@ -80,6 +80,8 @@ def expected_sample(
     cached_tokens: int = 0,
     prompt_tokens: int = 7,
     weight_versions: list[str | None] | None = None,
+    prefill_spans: list[WeightVersionSpan] | None = None,
+    output_starts: list[int] | None = None,
     rollout_routed_experts: np.ndarray | None = None,
     spec_info: Sample.SpecInfo | None = None,
     multimodal_inputs: dict | None = None,
@@ -90,15 +92,21 @@ def expected_sample(
     if isinstance(loss_mask, _Unset):
         loss_mask = [1] * actual_response_length if variant == "multi_turn" else None
     actual_tokens = PROMPT_TOKENS + RESPONSE_TOKENS if isinstance(tokens, _Unset) else tokens
+    versions = weight_versions if weight_versions is not None else [None]
     expected_weight_versions = [
         WeightVersionsPerCall(
             spans=(
                 []
                 if version is None
                 else [WeightVersionSpan(version, len(actual_tokens) - actual_response_length, len(actual_tokens))]
-            )
+            ),
+            prefill_spans=prefill_spans or [],
+            output_start=output_start,
+            prompt_tokens=output_start,
         )
-        for version in (weight_versions if weight_versions is not None else [None])
+        for version, output_start in zip(
+            versions, output_starts or [len(actual_tokens) - actual_response_length] * len(versions), strict=True
+        )
     ]
 
     return Sample(
@@ -224,6 +232,7 @@ class TestResumedSingleTurn:
             prompt_tokens=len(PROMPT_TOKENS) + len(tokens_after_turn1),
             status=Sample.Status.COMPLETED,
             weight_versions=[None, None],
+            output_starts=[len(PROMPT_TOKENS), len(tokens_after_turn1)],
         )
 
 
@@ -286,6 +295,33 @@ class TestMetaInfo:
         result = _run_generate(variant, generation_env)
         assert result.requests == [expected_request(variant)]
         assert listify(result.sample) == [expected_sample(variant, cached_tokens=3, weight_versions=["v1.0"])]
+
+    @pytest.mark.parametrize(
+        "generation_env",
+        [
+            {
+                "process_fn_kwargs": {
+                    "weight_version": "2",
+                    "prefill_weight_versions": [
+                        {"version": "1", "start": 0, "end": 3},
+                        {"version": "2", "start": 3, "end": PROMPT_TOKEN_LEN},
+                    ],
+                }
+            }
+        ],
+        indirect=True,
+    )
+    def test_prefill_weight_versions_reach_the_sample(self, variant, generation_env):
+        """Prompt KV version spans reported by the engine land on the call, indexed from the first prompt token."""
+        result = _run_generate(variant, generation_env)
+
+        assert listify(result.sample) == [
+            expected_sample(
+                variant,
+                weight_versions=["2"],
+                prefill_spans=[WeightVersionSpan("1", 0, 3), WeightVersionSpan("2", 3, PROMPT_TOKEN_LEN)],
+            )
+        ]
 
     @pytest.mark.parametrize(
         "generation_env",
