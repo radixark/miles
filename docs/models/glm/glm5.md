@@ -34,6 +34,24 @@ python scripts/run_glm5_744b_a40b.py prepare --model-name GLM-5 --num-nodes 16
 
 Also handled by `prepare`. Before conversion the launcher validates, via `_validate_glm_checkpoint`, that the checkpoint uses the native GLM-5 config (`model_type=glm_moe_dsa`, `architectures=[GlmMoeDsaForCausalLM]`) and fails fast if it does not, then converts it to the `glm5-744B-A40B` Megatron model type. Training itself copies the converted checkpoint from shared NFS to each node's local disk before it starts.
 
+### 3.3 DSA training implementation
+
+The raw Megatron path supports `--dsa-impl miles|megatron` for DSA models using the shared GLM-5 / DeepSeek-V3.2 spec. `miles` remains the default. To select Megatron's native DSA without Megatron-Bridge, pass the following to both `tools/convert_hf_to_torch_dist.py` and training:
+
+```bash
+--megatron-to-hf-mode raw --dsa-impl megatron --dsa-kernel-backend cudnn
+```
+
+Training uses packed `--qkv-format thd` and supports sequence parallelism. Native context parallelism uses zigzag token partitioning within each sequence and `--cp-comm-type allgather` for attention communication. Miles' `--allgather-cp` instead selects contiguous token partitioning and is rejected for native DSA when CP > 1. GLM-5.2's cross-layer index sharing schedule is preserved. Native DSA does not support `--use-indexer-replay` or `--use-rollout-indexer-replay`.
+
+`--miles-dsa-topk-backend` selects top-k for both implementations. The W4A16 test keeps `flashinfer` and `SGLANG_DSA_TOPK_FLASHINFER_TIE_BREAK=large`, preserving its top-k backend and tie policy when selecting native Megatron DSA.
+
+Native DSA defaults to `--dsa-indexer-loss-coeff 0` and freezes its indexer parameters, because native top-k selection runs without gradients when the auxiliary objective is disabled. This avoids unused trainable parameters in DDP and optimizer weight decay on the indexer. A positive coefficient keeps the indexer trainable; combining it with `--freeze-indexer` is rejected.
+
+Convert into a separate `torch_dist` directory when changing implementations: the native attention and indexer parameter names differ from the Miles checkpoint layout. Use the same implementation for conversion, checkpoint loading, and training. This selector applies to DSA training; SGLang rollout backend flags remain independent.
+
+The native cuDNN path uses Megatron's BF16 indexer weights-projection output, while the Miles implementation uses FP32. This precision difference can change indexer scores; the selected top-k backend and tie policy are separate settings.
+
 ## 4. Launch
 
 ### 4.1 Quick start
