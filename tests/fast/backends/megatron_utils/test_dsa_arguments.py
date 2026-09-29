@@ -74,7 +74,6 @@ def test_native_dsa_preserves_checkpoint_indexer_conventions(hf_overrides, inter
     assert args.dsa_indexer_rotate_activation is False
     assert args.dsa_indexer_k_norm_epsilon == 1e-6
     assert args.dsa_indexer_k_norm_fp32 is True
-    assert args.dsa_indexer_weights_proj_use_quantization is False
     assert args.dsa_kernel_backend == "cudnn"
     assert args.dsa_indexer_weights_proj_output_dtype == "bf16"
     assert args.dsa_indexer_loss_coeff == 0.0

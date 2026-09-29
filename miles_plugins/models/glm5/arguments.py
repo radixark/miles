@@ -58,7 +58,6 @@ def normalize_dsa_args(args: Namespace, hf_config) -> None:
     args.dsa_indexer_rotate_activation = False
     args.dsa_indexer_k_norm_epsilon = 1e-6
     args.dsa_indexer_k_norm_fp32 = True
-    args.dsa_indexer_weights_proj_use_quantization = False
     if getattr(args, "dsa_indexer_loss_coeff", None) is None:
         args.dsa_indexer_loss_coeff = 0.0
     if getattr(args, "freeze_indexer", False) and args.dsa_indexer_loss_coeff != 0:
