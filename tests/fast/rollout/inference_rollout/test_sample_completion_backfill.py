@@ -7,6 +7,7 @@ from argparse import Namespace
 
 import pytest
 import torch
+from tests.fast.fixtures.args_fixtures import parser_defaults
 from tests.fast.ray.rollout.conftest import make_args as make_rollout_args
 
 import miles.rollout.inference_rollout.inference_rollout_train as train
@@ -24,6 +25,9 @@ GROUP_SIZE = 4
 
 def make_args(**overrides) -> Namespace:
     defaults = dict(
+        **parser_defaults(),
+    )
+    defaults.update(
         rollout_global_dataset=True,
         rollout_batch_size=2,
         n_samples_per_prompt=GROUP_SIZE,

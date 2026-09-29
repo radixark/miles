@@ -228,7 +228,8 @@ class InferenceRolloutFn(BaseRolloutFn):
             self.data_source.get_samples,
             kv_cache_namespace=compute_kv_cache_namespace(self.state.args, input),
         )
-        self.data_source.add_samples(aborted_samples)
+        if aborted_samples:
+            self.data_source.add_samples(aborted_samples)
         return output
 
     async def _call_eval(self, input: RolloutFnEvalInput) -> RolloutFnEvalOutput:
