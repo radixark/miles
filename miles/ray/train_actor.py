@@ -45,6 +45,12 @@ def get_local_gpu_id():
         return cvd.split(",").index(str(ray.get_gpu_ids()[0]))
 
 
+def _get_nvml_pci_bus_id(device: int) -> str:
+    props = torch.cuda.get_device_properties(device)
+    # NVML's canonical nvmlPciInfo_t.busId form: 8-hex-digit domain, uppercase, function 0
+    return f"{props.pci_domain_id:08X}:{props.pci_bus_id:02X}:{props.pci_device_id:02X}.0"
+
+
 class TrainRayActor(NodeProbeMixin):
     def __init__(
         self,
@@ -146,12 +152,15 @@ class TrainRayActor(NodeProbeMixin):
 
                 pynvml.nvmlInit()
 
-                local_rank = int(os.environ["RANK"]) % args.num_gpus_per_node
-
-                handle = pynvml.nvmlDeviceGetHandleByIndex(local_rank)
+                # NVML indexes GPUs physically and ignores CUDA_VISIBLE_DEVICES, so resolve the device this
+                # process bound above by its PCI bus id rather than by a rank-derived index.
+                device = torch.cuda.current_device()
+                bus_id = _get_nvml_pci_bus_id(device)
+                handle = pynvml.nvmlDeviceGetHandleByPciBusId(bus_id)
+                nvml_index = pynvml.nvmlDeviceGetIndex(handle)
                 pynvml.nvmlDeviceSetCpuAffinity(handle)
 
-                logger.info(f"Set NUMA affinity for GPU {local_rank}")
+                logger.info(f"Set NUMA affinity for cuda:{device} (NVML index {nvml_index}, PCI bus id {bus_id})")
                 pynvml.nvmlShutdown()
 
         except ImportError:
