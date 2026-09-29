@@ -66,14 +66,18 @@ def _session_metadata(spec_info=None):
     }
 
 
-def _patch_agent(monkeypatch, tracer):
-    async def fake_create(args, *, evaluation=False, sampling_params=None):
+def _patch_agent(monkeypatch, tracer) -> list[str | None]:
+    extra_keys: list[str | None] = []
+
+    async def fake_create(args, *, evaluation=False, sampling_params=None, extra_key=None):
         tracer.evaluation = evaluation
         tracer.sampling_params = sampling_params
+        extra_keys.append(extra_key)
         return tracer
 
     monkeypatch.setattr(agentic_tool_call.OpenAIEndpointTracer, "create", fake_create)
     monkeypatch.setattr(agentic_tool_call, "load_function", lambda path: _fake_agent)
+    return extra_keys
 
 
 @pytest.mark.asyncio
@@ -214,6 +218,10 @@ async def test_v2_rejects_unavailable_metrics_from_successful_collect(monkeypatc
 _INSTANCES_ATTR_ABSENT = object()
 
 
+def _empty_tracer() -> _Tracer:
+    return _Tracer(SamplesReply(samples=[], session_metadata={}, empty_reason="no_records"))
+
+
 class TestSessionServerInstancesValidation:
     @pytest.mark.asyncio
     @pytest.mark.parametrize("instances", [_INSTANCES_ATTR_ABSENT, None, []], ids=["absent", "none", "empty"])
@@ -221,9 +229,9 @@ class TestSessionServerInstancesValidation:
         """generate() raises the documented AssertionError when session_server_instances is absent, null or empty, without creating a tracer."""
         created_for: list[object] = []
 
-        async def fake_create(args, *, evaluation=False, sampling_params=None):
+        async def fake_create(args, *, evaluation=False, sampling_params=None, extra_key=None):
             created_for.append(args)
-            return _Tracer(SamplesReply(samples=[], session_metadata={}, empty_reason="no_records"))
+            return _empty_tracer()
 
         monkeypatch.setattr(agentic_tool_call.OpenAIEndpointTracer, "create", fake_create)
         monkeypatch.setattr(agentic_tool_call, "load_function", lambda path: _fake_agent)
@@ -238,6 +246,28 @@ class TestSessionServerInstancesValidation:
             await agentic_tool_call.generate(generate_input)
 
         assert created_for == []
+
+
+class TestRadixCacheExtraKey:
+    @pytest.mark.asyncio
+    async def test_generate_hands_the_sample_key_to_the_session(self, monkeypatch):
+        """A started sample creates its session under its own namespace."""
+        extra_keys = _patch_agent(monkeypatch, _empty_tracer())
+        generate_input = _generate_input()
+        generate_input.sample.kv_cache_namespace = "train:-:7"
+
+        await agentic_tool_call.generate(generate_input)
+
+        assert extra_keys == ["train:-:7"]
+
+    @pytest.mark.asyncio
+    async def test_an_unstarted_sample_creates_an_unkeyed_session(self, monkeypatch):
+        """With the partition off the sample carries no namespace, so the session is created unkeyed."""
+        extra_keys = _patch_agent(monkeypatch, _empty_tracer())
+
+        await agentic_tool_call.generate(_generate_input())
+
+        assert extra_keys == [None]
 
 
 @pytest.mark.asyncio
