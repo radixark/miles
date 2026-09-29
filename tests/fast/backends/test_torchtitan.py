@@ -248,3 +248,19 @@ def test_resume_reads_from_load_and_writes_to_save(tmp_path, single_gpu_dims):
     )
     assert fresh.checkpoint.initial_load_path is None
     assert (fresh.checkpoint.initial_load_model_only, fresh.checkpoint.initial_load_in_hf) == (True, True)
+
+
+def test_the_replayed_router_forward_mirrors_the_pinned_torchtitan_router():
+    """routing_replay._token_router_forward is a copy of TokenChoiceTopKRouter.forward with the
+    top-k swapped for the replayed one; a torchtitan bump that changes the upstream forward must
+    re-sync the copy before this fingerprint is updated."""
+    import ast
+    import hashlib
+    import inspect
+    import textwrap
+
+    from torchtitan.models.common.moe import TokenChoiceTopKRouter
+
+    source = textwrap.dedent(inspect.getsource(TokenChoiceTopKRouter.forward))
+    fingerprint = hashlib.sha256(ast.dump(ast.parse(source)).encode()).hexdigest()
+    assert fingerprint == "e3c6e10d721ebf5bdc8d968524cc204fbc3c74e775157b30248d6ec2f1aecef9"

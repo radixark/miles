@@ -49,6 +49,7 @@ class _Router(TokenChoiceTopKRouter):
         self.top_k = 2
         self.route_norm = False
         self.route_scale = 1.0
+        self._debug_force_load_balance = False
 
 
 class _Part(nn.Module):
