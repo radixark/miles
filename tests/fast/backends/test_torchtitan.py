@@ -144,6 +144,21 @@ def test_the_lr_schedule_follows_miles_flags_not_torchtitan_defaults(tmp_path, s
     assert cosine.lr_scheduler.min_lr_factor == pytest.approx(0.1)
 
 
+def test_the_trainer_keeps_dtensor_only_on_the_model_parallel_axes(tmp_path, single_gpu_dims):
+    """torchtitan v0.3.0 defaults to the spmd_types backend, whose FSDP wrapping wants every
+    parameter distributed over the full mesh first and rejects a plain-DP model."""
+    pytest.importorskip("torchtitan")
+    from miles.backends.torchtitan_utils.config import build_trainer_config
+
+    config = build_trainer_config(
+        _config_args(),
+        hf_assets_path=_checkpoint_dir(tmp_path, tie_word_embeddings=False),
+        lr_total_steps=10,
+        dump_subdir="x",
+    )
+    assert config.parallelism.spmd_backend == "partial_dtensor"
+
+
 class _Mesh:
     def __init__(self, size: int):
         self._group = f"pg(size={size})"
