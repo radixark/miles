@@ -35,7 +35,6 @@ from miles.rollout.base_types import (
     stamp_kv_cache_namespace,
 )
 from miles.rollout.fully_async_data_buffer import (
-    NO_PROGRESS_WARN_SECS,
     DataBuffer,
     DataBufferConstructorInput,
     DataBufferInput,
@@ -183,44 +182,20 @@ class FullyAsyncRolloutFn(BaseRolloutFn):
 
     # -------------------------- consumer --------------------------
 
-    async def _next_group(self, *, current_version: int | None, trainer_model_id: str | None) -> DataBufferInput:
-        queue_get = asyncio.create_task(
-            self._output.get(num_groups=1, current_version=current_version, trainer_model_id=trainer_model_id)
-        )
-        try:
-            while True:
-                done, _ = await asyncio.wait(
-                    {queue_get, self._worker},
-                    return_when=asyncio.FIRST_COMPLETED,
-                    timeout=NO_PROGRESS_WARN_SECS,
-                )
-                # Checked before the queue: the worker loop never returns normally, so a
-                # dead worker fails the step now instead of after its backlog drains.
-                if self._worker in done:
-                    if self._worker.cancelled():
-                        raise RuntimeError("fully-async rollout was disposed while a step waited for groups")
-                    self._worker.result()
-                    raise RuntimeError("fully-async rollout worker exited without an exception")
-                if queue_get in done:
-                    [entry] = queue_get.result()
-                    return entry
-                logger.warning(f"No completed rollout groups for {NO_PROGRESS_WARN_SECS}s")
-        finally:
-            if not queue_get.done():
-                queue_get.cancel()
-
     async def _drain(self, input: RolloutFnTrainInput) -> RolloutFnTrainOutput:
         args = self.args
         assert args.rollout_global_dataset
 
-        target_data_size = args.rollout_batch_size
+        entries = await self._output.get(
+            current_version=input.weight_version,
+            num_groups=args.rollout_batch_size,
+            trainer_model_id=input.trainer_model_id,
+        )
+
         data: list[Group] = []
         do_print = True
 
-        while len(data) < target_data_size:
-            entry = await self._next_group(
-                current_version=input.weight_version, trainer_model_id=input.trainer_model_id
-            )
+        for entry in entries:
             assert len(entry.group) == args.n_samples_per_prompt
 
             if do_print:
