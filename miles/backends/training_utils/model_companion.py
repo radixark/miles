@@ -1,3 +1,4 @@
+import argparse
 from collections import Counter
 from collections.abc import Callable, Iterable, Iterator, Sequence
 from contextlib import contextmanager
@@ -27,6 +28,9 @@ class ModelCompanion(torch.nn.Module):
         counts = _RowCodec.decode(self.sample_consumptions)
         counts.update(_Row(identity=sample, is_skipped=is_skipped) for sample in samples)
         self._replace_sample_consumptions(counts)
+
+    def clear_sample_consumptions(self) -> None:
+        self._replace_sample_consumptions(Counter())
 
     def snapshot_sample_consumptions(self, *, is_skipped: bool) -> dict[SampleLineage, int]:
         return {
@@ -120,6 +124,13 @@ class ModelCompanionSampleConsumptionUtils:
         identities = list(samples)
         for companion in _get_companions_of_model(model):
             companion.record_sample_consumptions(identities, is_skipped=is_skipped)
+
+    @staticmethod
+    def clear_for_finetune(model: Sequence[torch.nn.Module], *, args: argparse.Namespace) -> None:
+        if not args.finetune:
+            return
+        for companion in _get_companions_of_model(model):
+            companion.clear_sample_consumptions()
 
     @staticmethod
     def snapshot(model: Sequence[torch.nn.Module], *, is_skipped: bool) -> dict[SampleLineage, int]:
