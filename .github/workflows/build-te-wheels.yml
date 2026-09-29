@@ -1,0 +1,190 @@
+# doc-dev: docs/developer/ci/02-docker-build.md
+name: Build TE Wheels
+
+# Builds the Transformer Engine wheel triplet from radixark/TransformerEngine
+# and syncs it into the x86_64 miles-wheels release docker/Dockerfile installs;
+# docker-build.yml's wheels fingerprint then rebuilds the image. There is no
+# ARM64 runner, so the aarch64 release is rebuilt by hand with the same
+# miles-wheels commands.
+
+on:
+  workflow_dispatch:
+    inputs:
+      te_ref:
+        description: 'radixark/TransformerEngine branch or commit'
+        required: false
+        default: 'miles-main'
+        type: string
+      force:
+        description: 'Rebuild even when the release already holds this commit'
+        required: false
+        default: false
+        type: boolean
+      keep_superseded:
+        description: 'Keep the release''s other-version TE wheels (while docker/Dockerfile still pins them)'
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+# One build at a time: two would race to replace the same release assets.
+concurrency:
+  group: build-te-wheels
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    outputs:
+      should_build: ${{ steps.check.outputs.should_build }}
+      te_commit: ${{ steps.check.outputs.te_commit }}
+      wheels_tag: ${{ steps.check.outputs.wheels_tag }}
+      cuda: ${{ steps.check.outputs.cuda }}
+      torch: ${{ steps.check.outputs.torch }}
+      sglang_image_tag: ${{ steps.check.outputs.sglang_image_tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: docker/Dockerfile
+          sparse-checkout-cone-mode: false
+
+      - name: Compare the TE ref with the release's recorded source
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TE_REF: ${{ inputs.te_ref || 'miles-main' }}
+          FORCE: ${{ inputs.force || false }}
+        run: |
+          set -euo pipefail
+
+          # The release and image the Dockerfile installs decide the build target.
+          WHEELS_TAG=$(sed -n 's/^ARG WHEELS_TAG_X86=//p' docker/Dockerfile)
+          SGLANG_IMAGE_TAG=$(sed -n 's/^ARG SGLANG_IMAGE_TAG=//p' docker/Dockerfile)
+          if ! [[ "$WHEELS_TAG" =~ ^cu([0-9]+)-torch([0-9]+)-x86_64$ ]]; then
+            echo "::error::unexpected WHEELS_TAG_X86 '${WHEELS_TAG}' in docker/Dockerfile"
+            exit 1
+          fi
+          CUDA=${BASH_REMATCH[1]}
+          TORCH=${BASH_REMATCH[2]}
+
+          TE_COMMIT=$(gh api "repos/radixark/TransformerEngine/commits/${TE_REF}" --jq .sha)
+          [[ "$TE_COMMIT" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::cannot resolve ${TE_REF}"; exit 1; }
+
+          # A missing manifest means the release holds no fork build yet; a failed
+          # release lookup fails the job instead of reading as "missing".
+          MANIFEST_URL=$(gh api "repos/yueming-yuan/miles-wheels/releases/tags/${WHEELS_TAG}" \
+            --jq '.assets[] | select(.name == "transformer_engine-source.json") | .browser_download_url')
+          BUILT=""
+          if [ -n "$MANIFEST_URL" ]; then
+            BUILT=$(curl -fsSL "$MANIFEST_URL" | jq -r .commit)
+          fi
+
+          echo "TE ${TE_REF}: ${TE_COMMIT}"
+          echo "${WHEELS_TAG} holds: ${BUILT:-none}"
+          SHOULD_BUILD=false
+          if [ "$FORCE" = "true" ] || [ "$TE_COMMIT" != "$BUILT" ]; then
+            SHOULD_BUILD=true
+          fi
+          {
+            echo "should_build=${SHOULD_BUILD}"
+            echo "te_commit=${TE_COMMIT}"
+            echo "wheels_tag=${WHEELS_TAG}"
+            echo "cuda=${CUDA}"
+            echo "torch=${TORCH}"
+            echo "sglang_image_tag=${SGLANG_IMAGE_TAG}"
+          } >> "$GITHUB_OUTPUT"
+
+  build-x86:
+    needs: check
+    if: needs.check.outputs.should_build == 'true'
+    runs-on: ["docker-build"]
+    # The manylinux recipe compiles every TE CUDA kernel from scratch.
+    timeout-minutes: 720
+    env:
+      CUDA: ${{ needs.check.outputs.cuda }}
+      TE_COMMIT: ${{ needs.check.outputs.te_commit }}
+      SGLANG_IMAGE: lmsysorg/sglang:${{ needs.check.outputs.sglang_image_tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: yueming-yuan/miles-wheels
+          path: miles-wheels
+
+      - name: Prepare the wheel directory
+        run: |
+          echo "WHEEL_DIR=${RUNNER_TEMP}/te-wheels" >> "$GITHUB_ENV"
+          rm -rf "${RUNNER_TEMP}/te-wheels"
+          PIP_BSP=""
+          pip3 install --help 2>/dev/null | grep -q -- --break-system-packages && PIP_BSP="--break-system-packages"
+          pip3 install $PIP_BSP packaging
+
+      - name: Build metapackage, core and torch sdist (manylinux recipe)
+        run: |
+          python3 miles-wheels/build_wheels.py build --cuda "$CUDA" --arch x86 \
+            --only te --te-ref "$TE_COMMIT" --te-phase sources
+
+      - name: Build transformer_engine_torch in the SGLang base image
+        run: |
+          docker run --rm --network host \
+            -v "${WHEEL_DIR}:${WHEEL_DIR}" \
+            -v "${PWD}/miles-wheels:/miles-wheels:ro" \
+            -e WHEEL_DIR \
+            "$SGLANG_IMAGE" \
+            python3 /miles-wheels/build_wheels.py build --cuda "$CUDA" --arch x86 \
+              --only te --te-phase torch
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: te-wheels-x86_64
+          path: |
+            ${{ runner.temp }}/te-wheels/*.whl
+            ${{ runner.temp }}/te-wheels/*-source.json
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+
+  # Publishes from a GitHub-hosted runner, so the miles-wheels write token
+  # never reaches the shared self-hosted build hosts.
+  publish:
+    needs: [check, build-x86]
+    runs-on: ubuntu-latest
+    env:
+      CUDA: ${{ needs.check.outputs.cuda }}
+      TORCH: ${{ needs.check.outputs.torch }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: yueming-yuan/miles-wheels
+          path: miles-wheels
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: te-wheels-x86_64
+          path: ${{ runner.temp }}/te-wheels
+
+      - name: Sync into the miles-wheels release
+        env:
+          GH_TOKEN: ${{ secrets.MILES_WHEELS_TOKEN }}
+          KEEP_SUPERSEDED: ${{ inputs.keep_superseded && '--keep-superseded' || '' }}
+        run: |
+          pip install packaging
+          WHEEL_DIR="${RUNNER_TEMP}/te-wheels" python miles-wheels/build_wheels.py upload \
+            --cuda "$CUDA" --arch x86 --torch "$TORCH" $KEEP_SUPERSEDED
+
+      - name: Summary
+        env:
+          TE_COMMIT: ${{ needs.check.outputs.te_commit }}
+          WHEELS_TAG: ${{ needs.check.outputs.wheels_tag }}
+        run: |
+          {
+            echo "Synced radixark/TransformerEngine@${TE_COMMIT} into yueming-yuan/miles-wheels \`${WHEELS_TAG}\`."
+            echo
+            echo "The aarch64 release is not rebuilt here; on an aarch64 host, follow the"
+            echo "miles-wheels README (\"Update only Transformer Engine\") with \`--arch aarch64 --te-ref ${TE_COMMIT}\`."
+          } >> "$GITHUB_STEP_SUMMARY"

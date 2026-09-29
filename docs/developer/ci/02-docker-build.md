@@ -165,6 +165,16 @@ Pushes use a Docker Hub credential, not your identity:
 - **Remote (CI)** — the workflow logs in with repo secrets `DOCKERHUB_USERNAME` / `DOCKERHUB_TOKEN`, so you don't hold the key — you just trigger the run, which needs repo **Write** access. No approval gate, but `build-and-push` runs on a `self-hosted` runner, so it only fires when one is online.
 - **Local** — `build.py --push` uses your own `docker login`; you need push rights to the target namespace (`radixark/miles`, or `rocm/sgl-dev` for ROCm).
 
+## TE wheels build (`build-te-wheels.yml`)
+
+The `yueming-yuan/miles-wheels` `te` step builds the Transformer Engine triplet from [radixark/TransformerEngine](https://github.com/radixark/TransformerEngine) `miles-main`, NVIDIA's release commit plus the fixes Miles carries. It versions the triplet `<release>+miles` and records the source commit in a `transformer_engine-source.json` release asset. `build-te-wheels.yml` rebuilds the x86_64 set:
+
+- **`check`** — resolves the TE ref and compares it with the commit recorded in the `WHEELS_TAG_X86` release, building when they differ or `force` is set. It reads `WHEELS_TAG_X86` and `SGLANG_IMAGE_TAG` from `docker/Dockerfile`, so the wheels land in the release the image installs and are compiled against its torch.
+- **`build-x86`** (self-hosted `docker-build` runner) — runs NVIDIA's manylinux recipe for the metapackage, core and torch sdist, then compiles `transformer_engine_torch` inside the SGLang base image (`lmsysorg/sglang:<SGLANG_IMAGE_TAG>`), against the torch the image ships.
+- **`publish`** (GitHub-hosted) — syncs the wheels and manifest into the release with repo secret `MILES_WHEELS_TOKEN`, which needs write access to `yueming-yuan/miles-wheels`. The release fingerprint in `check-upstream` then rebuilds the image.
+
+It runs only by `workflow_dispatch`, with inputs `te_ref` (default `miles-main`), `force`, and `keep_superseded`. `keep_superseded` keeps the release's other-version TE wheels, so a `docker/Dockerfile` still installing them keeps building. There is no ARM64 runner, so the `WHEELS_TAG_ARM64` release is rebuilt by hand on an aarch64 host with the miles-wheels README commands.
+
 ## Versioned release build (`release-docker.yml`)
 
 `release-docker.yml` checks out the supplied release ref, requires its committed `release-lock.json`, and passes the locked SGLang and Megatron-LM commits plus the checked-out Miles SHA as final `--build-arg` overrides. Rolling `docker-build.yml` keeps the branch defaults. Published tags and the guarded dispatch and retry procedure are documented in [Release a Version](/developer/ci/04-release).
