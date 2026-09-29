@@ -46,16 +46,17 @@ code that merges them.
   that already combines defaults, launch args and request values for that kind
   of value, and add the field there. Do not create a parallel path or a second
   knob for the same value.
-- **By default, the more specific layer wins and lower layers only fill gaps.**
-  A request value beats a dataset or session default, which beats a launch
-  default, and a default applies only when the more specific layer left the
-  field unset.
-- **A request never silently changes a launch constraint.** When a request sets
-  a value the launch config owns, reject it with a clear error instead of
-  overwriting it or forwarding it.
-- **Derived values must not hide user input.** When miles derives a value that
-  a user can also set, reject the conflicting user setting during validation or
-  make the replacement visible to the user.
+- **Know the override order before you change it.** Every merge already decides
+  which value wins when defaults, launch args and request values disagree. Read
+  that logic before adding a field, and keep the new field consistent with it.
+- **Default for a request field:** the request value wins, and a default applies
+  only when the request leaves the field unset.
+- **Default for a launch constraint:** a request cannot change it; a request
+  that sets a different value gets a clear error.
+- **Make every departure from these defaults explicit.** When a change makes one
+  value override another, ignores input, or forces a value, including a
+  miles-derived value replacing a user setting, add a comment at that spot
+  stating which value wins and why, and state it in the PR description.
 - **Every accepted field must reach its consumer.** A flag, config key or
   request field that parses but is never read turns a user setting into a
   silent no-op. Wire it through or refuse it.
@@ -64,13 +65,3 @@ code that merges them.
   individual call sites.
 - **Never mutate launch state per request.** Do not write to the parsed args or
   to shared default dicts from a request path; copy first.
-
-## Make forced values explicit
-
-Code sometimes has to force, override or ignore a value that a user or caller
-supplied, for example because the protocol requires it. Whenever a change does
-this, add a comment at the override stating which value wins and why, and name
-the forced value in the PR description, so reviewers can check it without
-reconstructing the merge order. For every other added or changed field, the PR
-description states its scope, its place in the override order and what happens
-on conflict.
