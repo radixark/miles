@@ -152,6 +152,19 @@ class TestLogDroppedSamples:
 
         assert read_events(event_dir) == []
 
+    def test_delivered_replay_does_not_repeat_terminal_drop_events(self, event_dir: Path) -> None:
+        """Replaying a delivered batch preserves the original trim decision exactly once."""
+        sample = Sample(index=8)
+
+        SampleOwnershipRecorder.log_dropped_samples(args=_args(), samples=[sample], reason="dp_schedule_trim")
+
+        with SampleOwnershipRecorder.suppress_drop_logging():
+            SampleOwnershipRecorder.log_dropped_samples(args=_args(), samples=[sample], reason="dp_schedule_trim")
+
+        events = read_events(event_dir)
+        assert len(events) == 1
+        assert isinstance(events[0], ExplicitlyDroppedSamplesEvent)
+
 
 class TestPublishModelCompanionInfo:
     def test_the_step_snapshot_is_appended_to_the_event_log(

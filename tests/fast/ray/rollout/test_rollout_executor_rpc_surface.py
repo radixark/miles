@@ -63,6 +63,7 @@ class TestRolloutExecutorLifecycleRpc:
         worker.args = Namespace(load=str(tmp_path), save_debug_event_data=None)
         worker.use_legacy_rollout_v1 = True
         compute_rollout_checkpoint_dir(tmp_path, rollout_id=7).mkdir(parents=True)
+        worker._output_snapshotter = SimpleNamespace(load=lambda _directory: None)
         worker.data_source = SimpleNamespace(load=load_state)
         specs = collect_rpc_method_specs(RolloutExecutor)
         assert specs["load"].is_async and specs["save"].is_async
