@@ -207,3 +207,93 @@ def test_actor_restore_wins_after_ref_switch():
     setup.backuper.restore("actor")
     for name, tensor in {**setup.params, **setup.extras}.items():
         assert torch.equal(tensor, actor_values[name]), name
+
+
+def test_main_cast_restore_resizes_dynamic_cpu_extras():
+    """Model-switch tags restore changing CPU buffer shapes and values."""
+    setup = _Setup()
+    setup.extras["extra0"].miles_dynamic_shape = True
+    setup.backuper.backup("actor")
+    actor_extra = setup.extras["extra0"].clone()
+    setup.extras["extra0"].resize_(7).fill_(7)
+    setup.backuper.backup("ref")
+
+    setup.backuper.restore("actor")
+
+    assert torch.equal(setup.extras["extra0"], actor_extra)
+
+
+def test_normal_restore_resizes_dynamic_cpu_tensors():
+    """The ordinary backup path restores a dynamic registered CPU buffer."""
+    tensor = torch.arange(4)
+    tensor.miles_dynamic_shape = True
+    backuper = TensorBackuper.create(source_getter=lambda: iter([("dynamic", tensor)]))
+    backuper.backup("actor")
+    tensor.resize_(9).fill_(9)
+
+    backuper.restore("actor")
+
+    assert torch.equal(tensor, torch.arange(4))
+
+
+def test_backup_and_copy_replace_previous_dynamic_shapes() -> None:
+    """Repeated tag updates and tag copies retain the complete resized state."""
+    tensor = torch.arange(2)
+    tensor.miles_dynamic_shape = True
+    backuper = TensorBackuper.create(source_getter=lambda: iter([("dynamic", tensor)]))
+    backuper.backup("actor")
+    backuper.backup("ref")
+    backuper.copy(src_tag="actor", dst_tag="ref")
+    tensor.resize_(5).fill_(7)
+    backuper.backup("actor")
+    backuper.copy(src_tag="actor", dst_tag="ref")
+    tensor.resize_(1).zero_()
+
+    backuper.restore("ref")
+
+    assert torch.equal(tensor, torch.full((5,), 7))
+
+
+@pytest.mark.parametrize("allow_resize", [None, False])
+def test_restore_rejects_shape_changes_without_explicit_permission(allow_resize: bool | None) -> None:
+    """Unmarked tensors retain fixed-shape restore semantics."""
+    tensor = torch.arange(4)
+    if allow_resize is not None:
+        tensor.miles_dynamic_shape = allow_resize
+    backuper = TensorBackuper.create(source_getter=lambda: iter([("fixed", tensor)]))
+    backuper.backup("actor")
+    tensor.resize_(9).fill_(9)
+
+    with pytest.raises(AssertionError, match="does not allow dynamic shape"):
+        backuper.restore("actor")
+
+    assert tensor.shape == (9,)
+
+
+@pytest.mark.parametrize("main_cast", [False, True])
+def test_backup_rejects_unmarked_shape_changes(main_cast: bool) -> None:
+    """Repeated backups cannot silently accept shape changes of ordinary tensors."""
+    if main_cast:
+        setup = _Setup()
+        tensor = setup.extras["extra0"]
+        backuper = setup.backuper
+    else:
+        tensor = torch.arange(4)
+        backuper = TensorBackuper.create(source_getter=lambda: iter([("fixed", tensor)]))
+    backuper.backup("actor")
+    tensor.resize_(9)
+
+    with pytest.raises(AssertionError, match="does not allow dynamic shape"):
+        backuper.backup("actor")
+
+
+def test_copy_rejects_unmarked_shape_changes() -> None:
+    """Tag copying keeps unmarked tensors fixed-shape."""
+    tensor = torch.arange(4)
+    backuper = TensorBackuper.create(source_getter=lambda: iter([("fixed", tensor)]))
+    backuper.backup("actor")
+    tensor.resize_(9)
+    backuper.backup("ref")
+
+    with pytest.raises(AssertionError, match="does not allow dynamic shape"):
+        backuper.copy(src_tag="ref", dst_tag="actor")
