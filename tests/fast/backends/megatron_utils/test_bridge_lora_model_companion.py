@@ -27,12 +27,13 @@ def helpers_module():
     try:
         stub("megatron", is_package=True)
         stub("megatron.core", is_package=True)
+        stub("megatron.core.tensor_parallel", {"ColumnParallelLinear": type("ColumnParallelLinear", (), {})})
         stub("megatron.core.utils", {"get_attr_wrapped_model": lambda *a, **k: None})
         install("megatron.core.parallel_state", types.SimpleNamespace())
 
-        from miles.backends.megatron_utils import bridge_lora_helpers
+        from miles.backends.megatron_utils.lora import bridge
 
-        yield bridge_lora_helpers
+        yield bridge
     finally:
         for name, previous in installed.items():
             if previous is _MISSING:
@@ -53,10 +54,11 @@ def fake_parallel_state(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_every_bridge_lora_chunk_receives_a_model_companion(helpers_module, fake_parallel_state: None) -> None:
-    """Every bridge LoRA chunk carries its own companion for sample bookkeeping."""
+    """Without a companion the first weight sync asserts on an empty version set."""
     chunks = [torch.nn.Module(), torch.nn.Module()]
 
     helpers_module._install_model_companions(chunks)
 
     assert [chunk.model_companion.chunk_index for chunk in chunks] == [0, 1]
     assert all(chunk.model_companion.snapshot_sample_consumptions(is_skipped=False) == {} for chunk in chunks)
+    assert all(chunk.model_companion.weight_version.item() == 0 for chunk in chunks)
