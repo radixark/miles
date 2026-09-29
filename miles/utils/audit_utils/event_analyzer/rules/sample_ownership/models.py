@@ -11,6 +11,15 @@ class IssuedSampleIdentityIssue(FrozenStrictBaseModel):
     identities: list[str]
 
 
+class MissingModelCompanionRecordIssue(FrozenStrictBaseModel):
+    """Produced when a cell never published a model companion record for a step that is already mature."""
+
+    description: str
+    cell_index: int
+    rollout_id: int
+    attempt: int
+
+
 class SampleResolutionIssue(FrozenStrictBaseModel):
     """Produced when an eligible source sample does not end in exactly one outcome on a current cell."""
 
@@ -24,4 +33,4 @@ class SampleResolutionIssue(FrozenStrictBaseModel):
     drop_count: int
 
 
-SampleOwnershipIssue = IssuedSampleIdentityIssue | SampleResolutionIssue
+SampleOwnershipIssue = IssuedSampleIdentityIssue | MissingModelCompanionRecordIssue | SampleResolutionIssue
