@@ -83,6 +83,10 @@ def get_weight_transfer_protocol(args: Namespace) -> WeightTransferProtocol:
         from miles.backends.training_utils.weight_update.protocols.delta import UpdateWeightFromDiskDelta
 
         return UpdateWeightFromDiskDelta(args)
+    if args.update_weight_transfer_mode == "modelexpress":
+        from miles.backends.training_utils.weight_update.protocols.modelexpress import UpdateWeightFromModelExpress
+
+        return UpdateWeightFromModelExpress(args)
     if args.update_weight_transfer_mode == "p2p":
         from miles.backends.training_utils.weight_update.protocols.p2p import UpdateWeightP2P
 

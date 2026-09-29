@@ -147,6 +147,12 @@ class SGLangApiClient:
         response.raise_for_status()
         return response.json()["remote_instance_transfer_engine_info"]
 
+    async def update_weights_from_modelexpress(self, weight_version: str, flush_cache: bool = True):
+        return await self._make_request(
+            "update_weights_from_modelexpress",
+            {"weight_version": weight_version, "flush_cache": flush_cache},
+        )
+
     async def get_parallelism_info(self, rank: int):
         response = await GeneralHttpClientProvider.client().get(
             f"{self.server_url}/parallelism_config",
