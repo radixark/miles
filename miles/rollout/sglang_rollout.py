@@ -193,6 +193,8 @@ async def generate(
     if getattr(args, "use_opd", False) and opd_top_k > 0 and opd_top_k_strategy != "only-teacher":
         payload["top_logprobs_num"] = opd_top_k
 
+    if (extra_key := sample.kv_cache_namespace) is not None:
+        payload["extra_key"] = extra_key
     if lora_rollout_enabled(args):
         payload["lora_path"] = LORA_ADAPTER_NAME
 

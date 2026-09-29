@@ -52,6 +52,24 @@ class RolloutFnEvalInput(RolloutFnBaseInput):
         return True
 
 
+def compute_kv_cache_namespace(args: Namespace, input: RolloutFnBaseInput) -> str | None:
+    if not args.namespaced_radix_cache:
+        return None
+    if input.evaluation:
+        return f"eval:-:{input.rollout_id}"
+    return f"train:{input.trainer_model_id or '-'}:{input.rollout_id}"
+
+
+def stamp_kv_cache_namespace(samples: Sample | list[Any], *, namespace: str | None) -> None:
+    if namespace is None:
+        return
+    if isinstance(samples, list):
+        for item in samples:
+            stamp_kv_cache_namespace(item, namespace=namespace)
+    elif samples.kv_cache_namespace is None:
+        samples.kv_cache_namespace = namespace
+
+
 # TODO make it frozen
 @dataclass
 class RolloutFnTrainOutput:

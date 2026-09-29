@@ -57,6 +57,7 @@ def compute_request_payload(
     multimodal_inputs: dict | None = None,
     *,
     evaluation: bool = False,
+    kv_cache_namespace: str | None = None,
 ) -> tuple[dict[str, Any] | None, Sample.Status | None]:
     sampling_params = deepcopy(sampling_params)
     max_new_tokens = sampling_params.pop("max_new_tokens", args.rollout_max_response_len)
@@ -80,6 +81,8 @@ def compute_request_payload(
         payload["lora_path"] = LORA_ADAPTER_NAME
     if image_data := (multimodal_inputs or {}).get("images"):
         payload["image_data"] = [encode_image_for_rollout_engine(image) for image in image_data]
+    if kv_cache_namespace is not None:
+        payload["extra_key"] = kv_cache_namespace
 
     return payload, None
 

@@ -4,12 +4,14 @@ from argparse import Namespace
 import pytest
 from tests.ci.ci_register import register_cpu_ci
 
+import miles.rollout.on_policy_distillation as on_policy_distillation
 from miles.rollout.on_policy_distillation import (
     _compute_topk_reverse_kl,
     _per_position_ids,
     _score_payload,
     _teacher_url_for_sample,
     parse_teacher_urls,
+    reward_func,
 )
 from miles.utils.types import Sample
 
@@ -129,6 +131,68 @@ def test_score_payload_routes_per_position_vs_flat():
     per_pos = _score_payload([1, 2, 3], token_ids_positions=[[], [5, 7], [9, 11]])
     assert per_pos["token_ids_logprob_positions"] == [[], [5, 7], [9, 11]]
     assert "token_ids_logprob" not in per_pos
+
+
+class TestScorePayloadExtraKey:
+    def test_no_extra_key_leaves_the_payload_without_one(self):
+        """Without an extra key the scoring payload has no extra_key field at all."""
+        assert "extra_key" not in _score_payload([1, 2, 3])
+
+    def test_an_extra_key_reaches_the_payload_verbatim(self):
+        """The extra key is forwarded unchanged to the scoring request."""
+        assert _score_payload([1, 2, 3], extra_key="train:-:7")["extra_key"] == "train:-:7"
+
+
+class TestRewardFuncExtraKey:
+    TEACHER_URL = "http://teacher/generate"
+    STUDENT_URL = "http://student:30000/generate"
+
+    def _args(self) -> Namespace:
+        return Namespace(
+            opd_log_prob_top_k=2,
+            opd_top_k_strategy="only-teacher",
+            opd_teacher_urls=None,
+            opd_teacher_key="opd_teacher",
+            rm_url=self.TEACHER_URL,
+            sglang_router_ip="student",
+            sglang_router_port=30000,
+        )
+
+    @staticmethod
+    def _capture_posts(monkeypatch) -> list[tuple[str, dict]]:
+        posted: list[tuple[str, dict]] = []
+
+        async def fake_post_json(url, payload, timeout_secs=None):
+            posted.append((url, payload))
+            return {"meta_info": {"input_top_logprobs": [None, [_entry(0.5, 2)], [_entry(0.8, 4)]]}}
+
+        monkeypatch.setattr(on_policy_distillation, "_post_json", fake_post_json)
+        return posted
+
+    @pytest.mark.parametrize(argnames="opd_topk_per_position", argvalues=[True, False])
+    async def test_only_the_student_score_request_carries_the_sample_key(
+        self, monkeypatch: pytest.MonkeyPatch, opd_topk_per_position: bool
+    ) -> None:
+        """The live student reads the sample's own radix namespace; the frozen teacher needs no partition."""
+        posted = self._capture_posts(monkeypatch)
+        sample = _sample()
+        sample.kv_cache_namespace = "train:-:7"
+        args = self._args()
+        args.opd_topk_per_position = opd_topk_per_position
+
+        await reward_func(args=args, sample=sample)
+
+        assert [url for url, _ in posted] == [self.TEACHER_URL, self.STUDENT_URL]
+        assert "extra_key" not in posted[0][1]
+        assert posted[1][1]["extra_key"] == "train:-:7"
+
+    async def test_an_unstarted_sample_scores_the_student_without_a_key(self, monkeypatch):
+        """A sample that never entered generate has no namespace to score under."""
+        posted = self._capture_posts(monkeypatch)
+
+        await reward_func(self._args(), _sample())
+
+        assert "extra_key" not in posted[1][1]
 
 
 # ---------------------------------------------------------------------------
