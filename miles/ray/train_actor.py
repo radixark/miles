@@ -105,6 +105,9 @@ class TrainRayActor(NodeProbeMixin):
 
     @init_once
     def _init_common(self, args: Namespace, role: str, with_ref: bool = False, with_opd_teacher: bool = False) -> None:
+        # Initialization receives fresh args after the launch policy was resolved.
+        if (channels := getattr(self.args, "_weight_update_nccl_channels", None)) is not None:
+            args._weight_update_nccl_channels = channels
         self.args = args
         self.role = role
         self.with_ref = with_ref

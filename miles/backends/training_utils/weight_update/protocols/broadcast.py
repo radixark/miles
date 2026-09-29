@@ -11,6 +11,7 @@ import torch.distributed as dist
 from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
 from miles.backends.training_utils.parallel import ParallelState, get_parallel_state
 from miles.backends.training_utils.weight_update.hf_weight_iterator import WeightUpdatePlacement
+from miles.backends.training_utils.weight_update.nccl import weight_update_nccl_options
 from miles.backends.training_utils.weight_update.protocol import WeightTransferProtocol
 from miles.backends.training_utils.weight_update.utils import get_data_replica_rank_and_size
 from miles.utils import async_utils
@@ -95,6 +96,8 @@ def connect_rollout_engines_from_distributed(
     have heterogeneous TP sizes (e.g. prefill TP=2, decode TP=4), each engine
     occupies a different number of ranks in the NCCL group.
     """
+    options = weight_update_nccl_options(getattr(args, "_weight_update_nccl_channels", None))
+    group_kwargs = {"pg_options": options} if options is not None else {}
     if engine_gpu_counts is None:
         engine_gpu_counts = [args.rollout_num_gpus_per_engine] * len(rollout_engines)
     master_address = ray._private.services.get_node_ip_address()
@@ -125,6 +128,7 @@ def connect_rollout_engines_from_distributed(
         world_size=world_size,
         rank=0,
         group_name=group_name,
+        **group_kwargs,
     )
     async_utils.wait_futures(futures)
     return model_update_groups

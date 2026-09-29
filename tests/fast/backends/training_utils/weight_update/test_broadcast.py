@@ -145,6 +145,37 @@ class TestConnectRolloutEnginesFromDistributed:
         ]
         assert init_process_group.call_args.kwargs["world_size"] == 7
 
+    def test_transfer_options_reach_only_the_transfer_group(self) -> None:
+        options = MagicMock(name="nccl_options")
+        with (
+            patch(f"{_BROADCAST_MODULE}.ray"),
+            patch(f"{_BROADCAST_MODULE}.weight_update_nccl_options", return_value=options) as create_options,
+            patch(f"{_BROADCAST_MODULE}.init_process_group") as init,
+        ):
+            connect_rollout_engines_from_distributed(
+                Namespace(rollout_num_gpus_per_engine=2, _weight_update_nccl_channels=8),
+                "weight-transfer",
+                [_AcceptingEngine()],
+            )
+        create_options.assert_called_once_with(8)
+        assert init.call_args.kwargs["pg_options"] is options
+        assert init.call_args.kwargs["group_name"] == "weight-transfer"
+
+    def test_invalid_options_fail_before_any_receiver_joins(self) -> None:
+        engine = MagicMock()
+        with (
+            patch(f"{_BROADCAST_MODULE}.weight_update_nccl_options", side_effect=ValueError("conflict")),
+            patch(f"{_BROADCAST_MODULE}.init_process_group") as init,
+        ):
+            with pytest.raises(ValueError, match="conflict"):
+                connect_rollout_engines_from_distributed(
+                    Namespace(_weight_update_nccl_channels=8),
+                    "weight-transfer",
+                    [engine],
+                )
+        engine.init_weights_update_group.assert_not_called()
+        init.assert_not_called()
+
     def test_an_engine_that_refuses_the_group_fails_the_connect(self) -> None:
         """The submitted joins are awaited, so a refusing engine surfaces instead of being dropped."""
         with (

@@ -173,6 +173,7 @@ class TestInitRunsExactlyOnce:
         actor = _ActorWithoutReloadSupport.__new__(_ActorWithoutReloadSupport)
         actor._init_once = InitOnce("TrainRayActor")
         actor._heartbeat = SimpleNamespace(bump=lambda: None)
+        actor.args = SimpleNamespace()
         rebound: list[object] = []
         monkeypatch.setattr(train_actor.torch.cuda, "set_device", lambda _device: None)
         monkeypatch.setattr(train_actor.dist, "init_process_group", lambda **_kwargs: None)
@@ -239,3 +240,25 @@ class TestTheLocalGpuIsFoundWithoutRay:
         monkeypatch.setattr(train_actor.ray, "get_gpu_ids", lambda: [5])
 
         assert train_actor.get_local_gpu_id() == 5
+
+
+@pytest.mark.parametrize("channels", [None, 8, 16])
+def test_weight_transfer_policy_survives_fresh_init_args(monkeypatch, channels):
+    actor = object.__new__(_ActorWithoutReloadSupport)
+    actor._init_once = InitOnce("TrainRayActor")
+    actor.args = SimpleNamespace()
+    if channels is not None:
+        actor.args._weight_update_nccl_channels = channels
+    args = SimpleNamespace(env_report=None)
+
+    class ReachedCudaInit(Exception):
+        pass
+
+    def stop_at_cuda_init(device):
+        raise ReachedCudaInit
+
+    monkeypatch.setattr("miles.ray.train_actor.torch.cuda.set_device", stop_at_cuda_init)
+    with pytest.raises(ReachedCudaInit):
+        actor._init_common(args, "actor")
+    assert actor.args is args
+    assert getattr(args, "_weight_update_nccl_channels", None) == channels
