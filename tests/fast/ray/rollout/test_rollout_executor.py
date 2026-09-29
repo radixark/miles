@@ -230,13 +230,12 @@ class TestOneDirectoryPerRolloutCheckpoint:
 
         assert executor.data_source.loaded == []
 
-    def test_a_rollout_directory_that_was_never_saved_starts_fresh(self, tmp_path: Path) -> None:
-        """A trainer that restored nothing may resume beside rollout state that was never written."""
+    def test_a_restored_trainer_requires_the_rollout_directory(self, tmp_path: Path) -> None:
+        """A numbered trainer checkpoint cannot resume with absent rollout-side state."""
         executor = _make_executor(tmp_path, _CountingRolloutFn())
 
-        executor.load(5)
-
-        assert executor.data_source.loaded == []
+        with pytest.raises(AssertionError, match="cannot resume that state"):
+            executor.load(5)
 
     def test_a_custom_data_source_does_not_imply_the_builtin_state_file(self, tmp_path: Path) -> None:
         """A custom source keeps its own checkpoint contract instead of writing the built-in cursor file."""
