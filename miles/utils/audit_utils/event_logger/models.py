@@ -97,6 +97,8 @@ class WitnessAllocateIdEvent(EventBase):
 class TrainGroupStepEndEvent(EventBase):
     type: Literal["train_group_step_end"] = "train_group_step_end"
     rollout_id: int
+    attempt: int
+    role: Literal["actor", "critic"]
     cell_outcomes: dict[int, Literal["error"] | list[TrainStepOutcome]]
 
 
@@ -163,6 +165,26 @@ class ExplicitlyDroppedSamplesEvent(EventBase):
     rollout_id: int | None = None
 
 
+class SampleLineagePayload(FrozenStrictBaseModel):
+    source_sample_index: int
+    output_index: int
+    output_count: int
+
+
+class OutputConsumption(FrozenStrictBaseModel):
+    sample: SampleLineagePayload
+    count: int
+
+
+class TrainerModelCompanionInfoEvent(EventBase):
+    type: Literal["trainer_model_companion_info"] = "trainer_model_companion_info"
+    cell_index: int
+    rollout_id: int
+    attempt: int
+    sample_counts: list[OutputConsumption]
+    skipped_nonfinite_sample_counts: list[OutputConsumption]
+
+
 Event = Annotated[
     TrainEngineLocalWeightChecksumEvent
     | WitnessSnapshotParamEvent
@@ -175,7 +197,8 @@ Event = Annotated[
     | EngineEnvReportEvent
     | MetricEvent
     | DataSourceIssuedSamplesEvent
-    | ExplicitlyDroppedSamplesEvent,
+    | ExplicitlyDroppedSamplesEvent
+    | TrainerModelCompanionInfoEvent,
     Discriminator("type"),
 ]
 

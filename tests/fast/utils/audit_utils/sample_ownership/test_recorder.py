@@ -5,9 +5,14 @@ from types import SimpleNamespace
 import pytest
 from tests.fast.import_isolation_utils import modules_imported_by
 
+import miles.utils.audit_utils.sample_ownership.recorder as recorder_module
 from miles.rollout.data_source import DataSource
 from miles.utils.audit_utils.event_logger.logger import EventLogger, read_events, set_event_logger
-from miles.utils.audit_utils.event_logger.models import DataSourceIssuedSamplesEvent, ExplicitlyDroppedSamplesEvent
+from miles.utils.audit_utils.event_logger.models import (
+    DataSourceIssuedSamplesEvent,
+    ExplicitlyDroppedSamplesEvent,
+    TrainerModelCompanionInfoEvent,
+)
 from miles.utils.audit_utils.process_identity import SimpleProcessIdentity
 from miles.utils.audit_utils.sample_ownership.recorder import SampleOwnershipRecorder
 from miles.utils.types import Sample, SampleLineage
@@ -146,6 +151,28 @@ class TestLogDroppedSamples:
         SampleOwnershipRecorder.log_dropped_groups(args=disabled, before=[[sample]], after=[], reason="oversampling")
 
         assert read_events(event_dir) == []
+
+
+class TestPublishModelCompanionInfo:
+    def test_the_step_snapshot_is_appended_to_the_event_log(
+        self, event_dir: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """One actor step publishes its whole consumption snapshot as one ordinary event."""
+        trained = {SampleLineage(source_sample_index=10, output_index=0, output_count=2): 1}
+        monkeypatch.setattr(
+            recorder_module.ModelCompanionSampleConsumptionUtils,
+            "snapshot",
+            staticmethod(lambda model, *, is_skipped: {} if is_skipped else trained),
+        )
+
+        SampleOwnershipRecorder.publish_model_companion_info([], rollout_id=7, attempt=3, cell_index=2)
+
+        [event] = read_events(event_dir)
+        assert isinstance(event, TrainerModelCompanionInfoEvent)
+        assert (event.cell_index, event.rollout_id, event.attempt) == (2, 7, 3)
+        assert event.sample_counts[0].sample.source_sample_index == 10
+        assert event.sample_counts[0].count == 1
+        assert event.skipped_nonfinite_sample_counts == []
 
 
 class TestRecorderImportCycle:

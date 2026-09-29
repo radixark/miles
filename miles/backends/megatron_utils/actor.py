@@ -27,6 +27,7 @@ from miles.ray.train_actor import TrainRayActor
 from miles.utils import async_utils, object_store, train_dump_utils
 from miles.utils.argparse_utils import inplace_modify_args
 from miles.utils.audit_utils.event_logger.logger import event_logger_context
+from miles.utils.audit_utils.sample_ownership.recorder import SampleOwnershipRecorder
 from miles.utils.audit_utils.witness.allocator import WitnessInfo
 from miles.utils.context_utils import with_defer
 from miles.utils.distributed_utils import get_gloo_group
@@ -64,7 +65,7 @@ from .ft.checkpoint_transfer import recv_ckpt
 from .ft.checkpoint_transfer import send_ckpt as _send_ckpt
 from .ft.in_memory_checkpoint import InMemoryCheckpointManager
 from .ft.indep_dp import reconfigure_indep_dp_group
-from .initialize import RandomState, init, is_first_replica_megatron_main_rank
+from .initialize import RandomState, init, is_first_replica_megatron_main_rank, is_local_replica_megatron_main_rank
 from .model import (
     LoadCheckpointOutput,
     TrainStepOutcome,
@@ -120,6 +121,7 @@ class MegatronTrainRayActor(TrainRayActor):
         monkey_patch_torch_dist()
 
         self._last_rollout_id: int | None = None
+        self._cell_index = indep_dp_info.cell_index
         super()._init_common(args, role, with_ref, with_opd_teacher=with_opd_teacher)
 
         for m in all_replay_managers:
@@ -614,6 +616,7 @@ class MegatronTrainRayActor(TrainRayActor):
                     attempt=attempt,
                 )
 
+            self._publish_model_companion_info(rollout_id=rollout_id, attempt=attempt, result=result)
             return result
 
     @with_logs
@@ -815,6 +818,22 @@ class MegatronTrainRayActor(TrainRayActor):
 
         self._heartbeat.bump()
         return TrainStepOutput(outcome=train_step_outcome)
+
+    def _publish_model_companion_info(self, *, rollout_id: int, attempt: int, result: TrainStepOutput) -> None:
+        if (
+            not self.args.enable_sample_ownership_checker
+            or self.role != "actor"
+            or result.outcome != TrainStepOutcome.NORMAL
+            or not is_local_replica_megatron_main_rank()
+        ):
+            return
+
+        SampleOwnershipRecorder.publish_model_companion_info(
+            self.model,
+            rollout_id=rollout_id,
+            attempt=attempt,
+            cell_index=self._cell_index,
+        )
 
     @timer
     def save_model(self, rollout_id: int, force_sync: bool = False) -> None:
