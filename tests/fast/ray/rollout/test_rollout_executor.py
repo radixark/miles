@@ -8,7 +8,7 @@ from tests.fast.ray.rollout.conftest import make_args
 
 from miles.ray.rollout import rollout_executor as rollout_executor_module
 from miles.ray.rollout.eval_fleet import EvalFleetInfo, EvalFleetPin
-from miles.ray.rollout.rollout_executor import RolloutExecutor
+from miles.ray.rollout.rollout_executor import RolloutExecutor, compute_rollout_checkpoint_dir
 from miles.rollout.base_types import RolloutFnEvalInput, RolloutFnEvalOutput, RolloutFnTrainOutput
 from miles.rollout.data_source import RolloutDataSource
 from miles.rollout.inference_rollout import inference_rollout_common
@@ -212,6 +212,14 @@ def _make_executor(tmp_path: Path, rollout_fn: _CountingRolloutFn) -> RolloutExe
     return executor
 
 
+class _CustomDataSource:
+    def save(self, directory: Path) -> None:
+        pass
+
+    def load(self, directory: Path) -> None:
+        pass
+
+
 class TestOneDirectoryPerRolloutCheckpoint:
     def test_a_step_that_was_never_trained_is_refused(self, tmp_path: Path) -> None:
         """A run whose trainer starts from scratch has no rollout state, and must not be asked for any."""
@@ -221,3 +229,37 @@ class TestOneDirectoryPerRolloutCheckpoint:
             executor.load(-1)
 
         assert executor.data_source.loaded == []
+
+    def test_a_rollout_directory_that_was_never_saved_starts_fresh(self, tmp_path: Path) -> None:
+        """A trainer that restored nothing may resume beside rollout state that was never written."""
+        executor = _make_executor(tmp_path, _CountingRolloutFn())
+
+        executor.load(5)
+
+        assert executor.data_source.loaded == []
+
+    def test_a_custom_data_source_does_not_imply_the_builtin_state_file(self, tmp_path: Path) -> None:
+        """A custom source keeps its own checkpoint contract instead of writing the built-in cursor file."""
+        executor = _make_executor(tmp_path, _CountingRolloutFn())
+        executor.data_source = _CustomDataSource()
+
+        executor.save(5)
+        executor.load(5)
+
+        assert not (compute_rollout_checkpoint_dir(tmp_path, rollout_id=5) / "data_source").exists()
+
+    def test_a_run_that_saves_nowhere_refuses_to_save(self, tmp_path: Path) -> None:
+        """Without --save the orchestration never asks for a checkpoint, so a save is a bug."""
+        executor = _make_executor(tmp_path, _CountingRolloutFn())
+        executor.args.save = None
+
+        with pytest.raises(AssertionError, match="only saves when --save"):
+            executor.save(2)
+
+        assert not (tmp_path / "rollout").exists()
+
+
+class TestRolloutCheckpointDir:
+    def test_every_rollout_gets_its_own_directory(self, tmp_path: Path) -> None:
+        """The rollout id names the directory, so two checkpoints never share one."""
+        assert compute_rollout_checkpoint_dir(tmp_path, rollout_id=3) == tmp_path / "rollout" / "3"
