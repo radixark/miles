@@ -1,6 +1,7 @@
 import logging
 from dataclasses import dataclass
 
+import torch.distributed.checkpoint as dcp
 from torchtitan.components import checkpoint as titan_checkpoint
 from torchtitan.components.dataloader import BaseDataLoader
 
@@ -46,7 +47,7 @@ class TiedCheckpointManager(titan_checkpoint.CheckpointManager):
                 )
                 hf_state = {k: v for k, v in hf_state.items() if k in available}
 
-        titan_checkpoint.dcp.load(
+        dcp.load(
             hf_state,
             storage_reader=self.sd_adapter.get_hf_storage_reader(checkpoint_id, from_quantized),
         )

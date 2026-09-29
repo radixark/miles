@@ -24,7 +24,7 @@ ARG MEGATRON_BRANCH=miles-main
 # Empty means the branch HEAD at build time; release builds set it to freeze one commit.
 ARG MEGATRON_COMMIT=""
 ARG TORCHTITAN_REPO=pytorch/torchtitan
-ARG TORCHTITAN_COMMIT=2f10a2590c76e77d6b732dd0229ab59964535318
+ARG TORCHTITAN_COMMIT=086bf6c166ec85c1298eb5596fa9bf95f6a2d840
 
 ARG ENABLE_CUDA_13=1
 
@@ -196,7 +196,7 @@ RUN pip install git+https://github.com/radixark/Megatron-Bridge.git@8cd3466d14d2
 RUN pip install megatron-energon --no-deps
 RUN pip install multi-storage-client --no-deps
 
-# torchtitan backend: the checkout is pinned to a commit because torchtitan tracks
+# torchtitan backend: pinned to the v0.3.0 release commit because torchtitan tracks
 # torch nightly and its model/adapter layouts move; --no-deps keeps its torch and
 # datasets pins from touching the versions sglang links against. Its own python
 # deps are pinned explicitly (spmd_types is a hard import in parallel_dims).
