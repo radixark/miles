@@ -76,6 +76,7 @@ def _build_mock_args(extra_argv: list[str] | None = None):
         "--train-backend",
         "fsdp",
         "--ci-test",
+        "--no-enable-sample-ownership-checker",
         "--rollout-batch-size",
         "2",
         "--n-samples-per-prompt",

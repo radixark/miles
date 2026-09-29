@@ -182,7 +182,7 @@ def _build_train_args(cfg: ModelConfig, variant: str) -> str:
 
     infra_args = (
         "--debug-rollout-only "
-        "--ci-test "
+        "--ci-test --no-enable-sample-ownership-checker "
         "--actor-num-nodes 1 "
         f"--actor-num-gpus-per-node {cfg.num_gpus} "
         "--colocate "

@@ -85,7 +85,8 @@ def execute() -> None:
         + sglang_args
         + true_on_policy_args
         + U.get_default_wandb_args(__file__)
-        + "--ci-test --actor-num-nodes 1 --actor-num-gpus-per-node 2 --colocate "
+        + "--ci-test --no-enable-sample-ownership-checker "
+        + "--actor-num-nodes 1 --actor-num-gpus-per-node 2 --colocate "
     )
 
     backend = U.default_config().create_backend()

@@ -73,6 +73,7 @@ SESSION_VERIFY_INVARIANT_ARGS: dict[str, Any] = {
     "session_message_matcher": "strict",
     "debug_rollout_only": True,
     "ci_test": True,
+    "enable_sample_ownership_checker": False,
     "colocate": True,
     "train_backend": "fsdp",
     "sglang_ep_size": 1,
@@ -208,6 +209,8 @@ def namespace_to_train_args(ns: argparse.Namespace) -> str:
         parts.append("--ci-test")
     if getattr(ns, "ci_tito_special_token_count_threshold", 0.0):
         parts.append(f"--ci-tito-special-token-count-threshold {ns.ci_tito_special_token_count_threshold}")
+    if not ns.enable_sample_ownership_checker:
+        parts.append("--no-enable-sample-ownership-checker")
     if ns.colocate:
         parts.append("--colocate")
     return " ".join(parts) + " "

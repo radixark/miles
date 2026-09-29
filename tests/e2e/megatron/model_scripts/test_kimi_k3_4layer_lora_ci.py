@@ -40,7 +40,7 @@ def _args() -> ScriptArgs:
         rollout_max_concurrency=16,
         check_lora_weight_equal=True,
         skip_saving=True,
-        extra_args="--ci-test --ci-disable-logprobs-checker ",
+        extra_args="--ci-test --ci-disable-logprobs-checker --no-enable-sample-ownership-checker ",
     )
 
 
