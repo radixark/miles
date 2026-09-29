@@ -1,3 +1,4 @@
+import logging
 from argparse import Namespace
 from types import SimpleNamespace
 
@@ -429,6 +430,39 @@ class TestCapacity:
         await _put(under_test.buffer, group)
 
         assert (await waiting).group is group
+
+
+# =========================== no progress warning ============================
+
+
+class TestNoProgressWarning:
+    async def test_stale_arrivals_do_not_hold_the_warning_off(self, caplog, monkeypatch) -> None:
+        """The window is absolute, so a producer whose groups never fill a batch is still reported."""
+        monkeypatch.setattr(fully_async_data_buffer, "NO_PROGRESS_WARN_SECS", 0.05)
+        under_test = _make_buffer(max_weight_staleness=0, rollout_batch_size=2)
+        waiting = asyncio.create_task(under_test.buffer.get(num_groups=2, current_version=10))
+
+        with caplog.at_level(logging.WARNING, logger="miles.rollout.fully_async_data_buffer"):
+            for group_index in range(8):
+                await _put(under_test.buffer, _make_finished_group(group_index, weight_version=1))
+                await asyncio.sleep(0.02)
+
+        assert "No completed rollout groups" in caplog.text
+        waiting.cancel()
+
+    async def test_a_batch_assembled_within_the_window_is_never_reported(self, caplog, monkeypatch) -> None:
+        """Puts that make real progress may not be reported as a stall however many times they wake the get."""
+        monkeypatch.setattr(fully_async_data_buffer, "NO_PROGRESS_WARN_SECS", 5.0)
+        under_test = _make_buffer(rollout_batch_size=3)
+        waiting = asyncio.create_task(under_test.buffer.get(num_groups=3, current_version=10))
+
+        with caplog.at_level(logging.WARNING, logger="miles.rollout.fully_async_data_buffer"):
+            for group_index in (1, 2, 3):
+                await _put(under_test.buffer, _make_finished_group(group_index, weight_version=10))
+                await _settle()
+            assert len(await waiting) == 3
+
+        assert "No completed rollout groups" not in caplog.text
 
 
 # ================================ metrics =================================

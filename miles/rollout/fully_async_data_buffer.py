@@ -9,6 +9,7 @@ Every group-level decision lives here — what to keep, what to hand to
 
 import asyncio
 import logging
+import time
 from abc import ABC, abstractmethod
 from argparse import ArgumentParser, Namespace
 from collections.abc import Callable, Iterable
@@ -35,6 +36,8 @@ logger = logging.getLogger(__name__)
 Group = list[Sample | list[Sample]]
 
 DATA_BUFFER_PATH_PER_MODEL_FLAG = "--custom-async-data-buffer-path-per-model"
+
+NO_PROGRESS_WARN_SECS = 30.0
 
 
 class UnusedReason(str, Enum):
@@ -203,12 +206,20 @@ class DefaultDataBuffer(DataBuffer):
         if current_version is not None:
             self._current_version = current_version
         async with self._cond:
+            deadline = time.monotonic() + NO_PROGRESS_WARN_SECS
             while True:
                 # filters at retrieving sample: staleness filter
                 self._drop_stale(current_version)
                 if len(self._buffer) >= num_groups:
                     break
-                await self._cond.wait()
+                if (remaining := deadline - time.monotonic()) <= 0:
+                    logger.warning(f"No completed rollout groups for {NO_PROGRESS_WARN_SECS}s")
+                    deadline = time.monotonic() + NO_PROGRESS_WARN_SECS
+                    remaining = NO_PROGRESS_WARN_SECS
+                try:
+                    await asyncio.wait_for(self._cond.wait(), timeout=remaining)
+                except asyncio.TimeoutError:
+                    pass
 
             entries = self._buffer[:num_groups]
             del self._buffer[:num_groups]
