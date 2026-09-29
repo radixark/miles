@@ -60,5 +60,7 @@ def normalize_dsa_args(args: Namespace, hf_config) -> None:
     args.dsa_indexer_k_norm_fp32 = True
     if getattr(args, "dsa_indexer_loss_coeff", None) is None:
         args.dsa_indexer_loss_coeff = 0.0
+    if args.dsa_indexer_loss_coeff < 0:
+        raise ValueError("--dsa-indexer-loss-coeff must be non-negative")
     if getattr(args, "freeze_indexer", False) and args.dsa_indexer_loss_coeff != 0:
         raise ValueError("--freeze-indexer requires --dsa-indexer-loss-coeff 0")

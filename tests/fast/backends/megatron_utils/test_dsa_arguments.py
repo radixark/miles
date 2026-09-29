@@ -102,6 +102,7 @@ def test_explicit_indexer_training_objective_is_preserved():
     ("overrides", "message"),
     [
         ({"freeze_indexer": True, "dsa_indexer_loss_coeff": 0.001}, "--freeze-indexer requires"),
+        ({"dsa_indexer_loss_coeff": -0.001}, "--dsa-indexer-loss-coeff must be non-negative"),
         ({"use_indexer_replay": True}, "does not support indexer replay"),
         ({"use_rollout_indexer_replay": True}, "does not support indexer replay"),
         ({"megatron_to_hf_mode": "bridge"}, "requires --megatron-to-hf-mode raw"),
@@ -109,7 +110,16 @@ def test_explicit_indexer_training_objective_is_preserved():
         ({"spec": ["miles_plugins.models.deepseek_v4", "get_dsv4_spec"]}, "requires the shared"),
         ({"context_parallel_size": 2, "allgather_cp": True}, "uses zigzag CP token partitioning"),
     ],
-    ids=["frozen-loss", "indexer-replay", "rollout-indexer-replay", "bridge", "no-spec", "v4-spec", "contiguous-cp"],
+    ids=[
+        "frozen-loss",
+        "negative-loss",
+        "indexer-replay",
+        "rollout-indexer-replay",
+        "bridge",
+        "no-spec",
+        "v4-spec",
+        "contiguous-cp",
+    ],
 )
 def test_incompatible_native_configuration_fails_early(overrides, message):
     with pytest.raises(ValueError, match=message):
