@@ -37,6 +37,10 @@ class EventLogger:
     def source(self) -> ProcessIdentity:
         return self._source
 
+    @property
+    def log_dir(self) -> Path:
+        return self._log_dir
+
     @contextmanager
     def with_context(self, ctx: dict[str, Any]) -> Generator[None, None, None]:
         """Temporarily merge extra fields into every event logged within this scope.

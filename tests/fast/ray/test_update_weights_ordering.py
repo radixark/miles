@@ -123,6 +123,7 @@ def _orchestration_args(**overrides) -> Namespace:
         ci_ft_test_actions_path=None,
         mini_ft_controller_enable=True,
         mini_ft_controller_poll_interval=0.01,
+        log_inference_engine_weight_checksums=True,
     )
     values.update(overrides)
     return Namespace(**values)
@@ -271,6 +272,14 @@ class TestTheScriptLogsTheChecksumsTheEnginesNowServe:
                 args, inference_controller=inference_controller, rollout_id=0, trainer_model_id=trainer_model_id
             )
         return inference_controller, event_logger
+
+    async def test_checksums_not_requested_does_not_call_check_weights(self):
+        """Without the explicit opt-in, no check_weights request is issued even with an event logger."""
+        inference_controller, _ = await self._log(
+            _orchestration_args(log_inference_engine_weight_checksums=False), initialized=True
+        )
+
+        inference_controller.check_weights.assert_not_called()
 
     async def test_no_event_logger_does_not_call_check_weights(self):
         """Without an initialized event logger, no check_weights request is issued."""

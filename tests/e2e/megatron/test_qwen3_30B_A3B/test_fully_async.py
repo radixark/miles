@@ -43,7 +43,10 @@ CASE = CaseConfig(
     update_weight_transfer_mode="broadcast",
     num_rollout=3,
     fully_async=True,
-    extra_args="--decoder-first-pipeline-num-layers 17 --decoder-last-pipeline-num-layers 14 ",
+    extra_args=(
+        "--decoder-first-pipeline-num-layers 17 --decoder-last-pipeline-num-layers 14 "
+        "--sample-ownership-grace-steps 4"
+    ),
 )
 
 

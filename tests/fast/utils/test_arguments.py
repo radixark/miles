@@ -1,8 +1,10 @@
 import argparse
 import json
 import logging
+import os
 import re
 import sys
+import tempfile
 from fnmatch import fnmatchcase
 from pathlib import Path
 from types import SimpleNamespace
@@ -350,6 +352,39 @@ class TestEventDirectoryDefaults:
         assert defaulted.save_debug_event_data == "/checkpoints/run/events"
         assert explicit.save_debug_event_data == "/audit/events"
 
+    def test_an_explicit_event_directory_asks_for_engine_weight_checksums(self) -> None:
+        """Requesting an event dump opts into the engine checksum event it is meant to collect."""
+        args = self._parse(["--save-debug-event-data", "/audit/events"])
+
+        miles_validate_args(args)
+
+        assert args.log_inference_engine_weight_checksums is True
+
+    def test_the_ci_event_directory_fallback_does_not_ask_for_engine_weight_checksums(self) -> None:
+        """CI gets an event directory for sample ownership without the engine checksum allocation."""
+        args = self._parse(["--ci-test", "--run-uuid", "0123456789abcdef"])
+
+        miles_validate_args(args)
+
+        assert args.save_debug_event_data is not None
+        assert args.log_inference_engine_weight_checksums is False
+
+    def test_ci_with_an_event_analyzer_collects_engine_weight_checksums(self) -> None:
+        """Enabling analysis preserves checksum evidence even with an implicit CI directory."""
+        args = self._parse(["--ci-test", "--enable-event-analyzer"])
+
+        miles_validate_args(args)
+
+        assert args.log_inference_engine_weight_checksums is True
+
+    def test_engine_weight_checksums_can_be_requested_explicitly_in_ci(self) -> None:
+        """The explicit flag overrides the directory-derived default."""
+        args = self._parse(["--ci-test", "--run-uuid", "0123456789abcdef", "--log-inference-engine-weight-checksums"])
+
+        miles_validate_args(args)
+
+        assert args.log_inference_engine_weight_checksums is True
+
     def test_dump_details_places_events_under_the_dump_root(self) -> None:
         """A dump root keeps audit events with its other debug artifacts even when checkpoints are saved."""
         args = self._parse(["--save", "/checkpoints/run", "--dump-details", "/debug/run"])
@@ -372,6 +407,33 @@ class TestSampleOwnershipCheckArguments:
         parser = argparse.ArgumentParser()
         get_miles_extra_args_provider()(parser)
         return parser.parse_args(["--num-rollout", "1", *extra, *REQUIRED_ARGS])
+
+    def test_an_enabled_checker_without_an_event_directory_is_rejected(self) -> None:
+        """An enabled checker outside CI refuses to launch without somewhere to record evidence."""
+        args = self._parse(["--enable-sample-ownership-checker", "--run-uuid", "0123456789abcdef"])
+
+        with pytest.raises(ValueError, match="needs an event directory"):
+            miles_validate_args(args)
+
+    def test_ci_falls_back_to_a_run_specific_temporary_event_directory(self) -> None:
+        """CI records evidence under a run-specific temporary directory without enabling the GPU witness."""
+        args = self._parse(["--ci-test", "--run-uuid", "0123456789abcdef"])
+
+        miles_validate_args(args)
+
+        assert args.enable_sample_ownership_checker is True
+        assert args.enable_witness is False
+        assert args.save_debug_event_data == os.path.join(
+            tempfile.gettempdir(), "miles-ci", "0123456789abcdef", "events"
+        )
+
+    def test_ci_keeps_the_checkpoint_event_directory(self) -> None:
+        """A checkpoint root supplies the event directory before the CI temporary fallback applies."""
+        args = self._parse(["--ci-test", "--save", "/checkpoints/run", "--run-uuid", "0123456789abcdef"])
+
+        miles_validate_args(args)
+
+        assert args.save_debug_event_data == "/checkpoints/run/events"
 
     def test_the_checker_is_off_unless_it_is_requested(self) -> None:
         """A run that does not ask for checking leaves witness collection and event storage untouched."""
@@ -405,11 +467,29 @@ class TestSampleOwnershipCheckArguments:
 
         assert args.enable_sample_ownership_checker is enabled
 
+    @pytest.mark.parametrize("ci_test,grace_steps", [(False, 10), (True, 2)])
+    def test_ci_shortens_the_step_grace(self, ci_test: bool, grace_steps: int) -> None:
+        """CI shortens the issued-sample grace while ordinary runs keep the longer default."""
+        args = self._checker_args(ci_test=ci_test)
+
+        _resolve_sample_ownership_check(args)
+
+        assert args.sample_ownership_grace_steps == grace_steps
+
+    def test_an_explicit_step_grace_is_preserved_in_ci(self) -> None:
+        """CI defaults do not overwrite an explicitly configured grace period."""
+        args = self._checker_args(ci_test=True, sample_ownership_grace_steps=7)
+
+        _resolve_sample_ownership_check(args)
+
+        assert args.sample_ownership_grace_steps == 7
+
     @staticmethod
     def _checker_args(**overrides) -> SimpleNamespace:
         values = dict(
             enable_sample_ownership_checker=True,
             custom_convert_samples_to_train_data_path=None,
+            sample_ownership_grace_steps=None,
             ci_test=False,
             train_backend="megatron",
             num_critic_only_steps=0,
@@ -485,6 +565,13 @@ class TestSampleOwnershipCheckArguments:
         args = self._checker_args(megatron_config="config", ci_test=True, enable_sample_ownership_checker=enabled)
 
         with pytest.raises(ValueError, match="multi-policy training has separate model companion lineages"):
+            _resolve_sample_ownership_check(args)
+
+    def test_a_negative_step_grace_is_rejected(self) -> None:
+        """A negative step grace cannot turn a required check into a dormant one."""
+        args = self._checker_args(sample_ownership_grace_steps=-1)
+
+        with pytest.raises(ValueError, match="--sample-ownership-grace-steps"):
             _resolve_sample_ownership_check(args)
 
 
