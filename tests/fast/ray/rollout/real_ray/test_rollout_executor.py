@@ -310,6 +310,8 @@ class _RecordingRolloutFn(BaseRolloutFn):
 
 
 class _RecordingEventLoggerCheckpoint:
+    SNAPSHOT_DIRNAME = "debug_events"
+
     def __init__(self) -> None:
         self.restored: list = []
         self.snapshots: list[tuple] = []

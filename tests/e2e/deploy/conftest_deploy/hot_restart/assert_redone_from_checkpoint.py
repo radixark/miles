@@ -9,7 +9,7 @@ from miles.utils.audit_utils.event_logger.logger import EVENTS_DIRNAME, read_eve
 from miles.utils.audit_utils.event_logger.models import MetricEvent
 
 DISCARDED_EVENTS_GLOB: str = ".trash_*"
-CHECKPOINT_SNAPSHOT_GLOB: str = "iter_*/debug_events"
+CHECKPOINT_SNAPSHOT_GLOB: str = "rollout/*/debug_events"
 
 
 # ================================ redone steps ================================
