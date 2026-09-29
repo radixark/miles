@@ -7,8 +7,16 @@ import torch
 
 from miles.utils.sampling_mask import RolloutSamplingMask
 
-
 LEGACY_WEIGHT_VERSIONS_KEY = "legacy_weight_versions"
+
+
+@dataclass(frozen=True)
+class SampleLineage:
+    """Tracks an output's source and position among sibling outputs."""
+
+    source_sample_index: int  # Index of the original input sample.
+    output_index: int  # Zero-based position among outputs from that input.
+    output_count: int  # Total outputs from that input before filtering.
 
 
 @dataclass(frozen=True)
