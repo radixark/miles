@@ -47,6 +47,7 @@ def _make_executor() -> RolloutExecutor:
         debug_skip_weight_update=False,
         lora_rank=0,
         update_weights_interval=1,
+        ci_inject_missing_prefetched_batch_bug=False,
     )
     executor._output_snapshotter = _RolloutExecutorOutputSnapshotter(args=executor.args)
     executor.data_source = Namespace()
