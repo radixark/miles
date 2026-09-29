@@ -54,7 +54,7 @@ Add `-f commit_sha=FULL_MAIN_SHA` to cut from a specific commit already on `main
 
 Release CUDA CI uses the CUDA 13 image and the locked `sglang_commit` and `megatron_commit`.
 
-While this run is active, do not push or cherry-pick anything onto the release branch. The workflow runs full-scope CUDA, CPU, and ROCm jobs with `cadence=release`, then records a `release-ci` commit status. [Stage](/developer/ci/00-stage) and [Labels](/developer/ci/01-label) own the cadence details; ROCm is a smoke signal because its dependencies remain baked into the image.
+While this run is active, do not push or cherry-pick anything onto the release branch. The workflow runs full-scope CUDA and CPU jobs with `cadence=release`, then records a `release-ci` commit status. [Stage](/developer/ci/00-stage) and [Labels](/developer/ci/01-label) own the cadence details. ROCm runs independently and is not part of the release gate.
 
 After the run is green, resolve the branch tip and copy the first column as `RELEASE_SHA`:
 

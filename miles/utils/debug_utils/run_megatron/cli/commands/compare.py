@@ -7,7 +7,7 @@ import typer
 
 from miles.utils.debug_utils.run_megatron.cli.commands.args import CompareArgs
 from miles.utils.debug_utils.run_megatron.logprob_comparator import compare_logprobs
-from miles.utils.external_utils.exec_command import exec_command_cpu
+from miles.utils.external_utils.command_utils.common import run_shell_command
 from miles.utils.typer_utils import dataclass_cli
 
 
@@ -66,7 +66,7 @@ def _run_activation_comparison(args: CompareArgs) -> bool:
             cmd_parts.extend([flag, str(value)])
 
     try:
-        exec_command_cpu(" ".join(cmd_parts))
+        run_shell_command(" ".join(cmd_parts))
         return True
     except subprocess.CalledProcessError:
         print("[cli] Activation comparison failed", flush=True)

@@ -1,7 +1,7 @@
 import os
 from dataclasses import dataclass
 
-import miles.utils.external_utils.command_utils as U
+from miles.utils.external_utils import command_utils
 
 MODEL_NAME = "GLM-4.7-Flash"
 MODEL_TYPE = "glm4.7-flash"
@@ -27,6 +27,7 @@ class CaseConfig:
 
 
 def prepare(case: CaseConfig) -> None:
+    U = command_utils.default_config().create_backend()
     U.exec_command_cpu("mkdir -p /root/models /root/datasets")
     U.exec_command_cpu(f"hf download zai-org/{MODEL_NAME} --local-dir /root/models/{MODEL_NAME}")
     U.hf_download_dataset("zhuzilin/dapo-math-17k")
@@ -156,7 +157,7 @@ def build_train_args(case: CaseConfig, *, wandb_file: str) -> str:
         f"{rollout_args} "
         f"{optimizer_args} "
         f"{grpo_args} "
-        f"{U.get_default_wandb_args(wandb_file)} "
+        f"{command_utils.get_default_wandb_args(wandb_file)} "
         f"{perf_args} "
         f"{eval_args} "
         f"{sglang_args} "
@@ -169,6 +170,7 @@ def build_train_args(case: CaseConfig, *, wandb_file: str) -> str:
 
 def execute(case: CaseConfig, *, wandb_file: str) -> None:
     # Loosen replay mismatch threshold for GLM-4.7-Flash with MTP
+    U = command_utils.default_config().create_backend()
     os.environ["MILES_TEST_R3_THRESHOLD"] = "0.05"
 
     train_args = build_train_args(case, wandb_file=wandb_file)

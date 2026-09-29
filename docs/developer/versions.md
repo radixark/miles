@@ -37,12 +37,12 @@ The default build-args are the version surface:
 
 | Build-arg | Default | What it selects |
 |---|---|---|
-| `SGLANG_IMAGE_TAG` | `v0.5.16` | The `lmsysorg/sglang` base image, which brings torch, CUDA and Transformer Engine |
+| `SGLANG_IMAGE_TAG` | `v0.5.20` | The `lmsysorg/sglang` base image, which brings torch, CUDA, Transformer Engine and Mooncake |
 | `SGLANG_BRANCH` | `sglang-miles` | The branch fetched into the base image's SGLang checkout |
 | `SGLANG_COMMIT` | empty | Empty means the branch HEAD at build time; set it to freeze one commit |
 | `MEGATRON_REPO` / `MEGATRON_BRANCH` / `MEGATRON_COMMIT` | `radixark/Megatron-LM` / `miles-main` / empty | The Megatron-LM checkout; an empty commit follows branch HEAD, while a release build supplies the locked commit |
 | `MILES_COMMIT` | `main` | The Miles checkout baked into the image |
-| `ENABLE_CUDA_13` | `1` | CUDA 13 plus the Mooncake structured-object-store wheel; `0` selects the CUDA 12.9 path |
+| `ENABLE_CUDA_13` | `1` | CUDA 13; `0` selects the CUDA 12.9 path |
 | `WHEELS_REPO` | `yueming-yuan/miles-wheels` | The prebuilt-wheels repository |
 | `WHEELS_TAG_X86` / `WHEELS_TAG_ARM64` | `cu130-torch213-x86_64` / `cu130-torch213-aarch64` | Two complete wheels releases, selected by `TARGETARCH` and installed verbatim |
 
@@ -56,7 +56,9 @@ Everything else is pinned inline where it is installed: `mbridge` and `Megatron-
 explicit versions. Transformer Engine is special: `docker/verify_transformer_engine.py`
 asserts the installed triplet is `2.17.0`, and the patches under `docker/patch/cu13/` are
 applied to it with a build failure if any patch does not apply cleanly, so an image can
-never ship silently unpatched TE.
+never ship silently unpatched TE. Mooncake comes from the base image unchanged; Miles'
+Mooncake object-store backend needs 0.3.12.post1 or newer, the first release whose
+`mooncake.structured_object_store` has the API Miles imports.
 
 `requirements.txt` is Miles' own dependency list, and the convention there is that **a pin
 carries its reason inline**: `transformers==5.12.1` names the HF-native weight conversion and
@@ -128,7 +130,7 @@ It never reinstalls the three source trees, because they are editable installs. 
 | SGLang or Megatron-LM code | No. Point CI at a ref instead |
 | Miles code | No |
 
-The ROCm stage is the exception: it takes SGLang and Megatron-LM from `rocm/sgl-dev` unless the run names a ref for one, and never reads `release-lock.json`. A release call can select the Miles ref, but its baked dependencies still make the run a smoke signal rather than a lock-accurate check.
+The ROCm stage is the exception: it takes SGLang and Megatron-LM from `rocm/sgl-dev` unless the run names a ref for one, and never reads `release-lock.json`. ROCm CI runs independently and is not part of the versioned release gate.
 
 ## Bumping principle
 
@@ -178,7 +180,7 @@ timestamped tag; the scheduled prune keeps every timestamped tag for at least 14
 | `CUDNN_STATUS_BAD_PARAM` in a fused-attention backward | Something re-resolved cuDNN below the image's pin |
 | Build fails with "TE patch did not apply cleanly" | A `docker/patch/cu13/*.patch` no longer matches the new TE; rebase the patch or drop it if upstream fixed it |
 | TE triplet assertion at build time | The base image moved TE off `2.17.0`; update `docker/verify_transformer_engine.py` together with whatever depends on it |
-| `mooncake.structured_object_store` import fails | A CUDA 12 image; that wheel is only installed on the cu13 path |
+| `cannot import name 'FieldSchema' from 'mooncake.structured_object_store'` | The base image's Mooncake predates 0.3.12.post1, typically because `SGLANG_IMAGE_TAG` points at an older base |
 | A test passes locally but fails in CI, or the reverse | Compare the image tag and the two dependency refs or commits CI resolved. Every job logs all three |
 
 ## Related

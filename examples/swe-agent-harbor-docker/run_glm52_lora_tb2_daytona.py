@@ -41,7 +41,7 @@ from typing import Literal
 
 import typer
 
-import miles.utils.external_utils.command_utils as U
+from miles.utils.external_utils import command_utils
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 
@@ -53,9 +53,9 @@ _DEFAULT_TARGET_MODULES = "o_proj,q_a_proj,kv_a_proj_with_mqa,q_b_proj,kv_b_proj
 
 
 @dataclass
-class ScriptArgs(U.ExecuteTrainConfig):
+class ScriptArgs(command_utils.ExecuteTrainConfig):
     mode: Literal["normal", "debug_rollout_only"] = "normal"
-    run_id: str = U.create_run_id()
+    run_id: str = command_utils.create_run_id()
     megatron_model_type: str = "glm5.2-744B-A40B_lora"
     num_gpus_per_node: int = 8
     megatron_path: str = "/root/Megatron-LM"
@@ -252,6 +252,7 @@ def _write_sglang_fp8_config(args: ScriptArgs) -> str:
 
 
 def execute(args: ScriptArgs):
+    U = args.create_backend()
     ckpt_args = (
         f"--hf-checkpoint {args.hf_checkpoint} "
         "--megatron-to-hf-mode bridge "
@@ -403,7 +404,7 @@ def execute(args: ScriptArgs):
         f"{debug_args}"
     )
 
-    miles_root = U.repo_base_dir
+    miles_root = command_utils.repo_base_dir
 
     extra_env_vars = {
         "PYTHONPATH": f"{args.megatron_path}:{SCRIPT_DIR}:{miles_root}",
@@ -427,7 +428,6 @@ def execute(args: ScriptArgs):
 
     U.execute_train(
         train_args=train_args,
-        config=args,
         num_gpus_per_node=args.num_gpus_per_node,
         megatron_model_type=args.megatron_model_type,
         megatron_path=args.megatron_path,
@@ -435,7 +435,7 @@ def execute(args: ScriptArgs):
     )
 
 
-@U.dataclass_cli
+@command_utils.dataclass_cli
 def main(args: ScriptArgs):
     cleanup()
     execute(args)

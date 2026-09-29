@@ -11,6 +11,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from miles.utils.lora.hf_lora_targets import resolve_hf_lora_targets
+from miles_plugins.models.normalization import rms_norm as _rmsnorm
 
 logger = logging.getLogger(__name__)
 
@@ -35,13 +36,6 @@ class InklingLoRAAdapter(nn.Module):
     def sharded_state_dict(self, prefix="", sharded_offsets=(), metadata=None):
         del prefix, sharded_offsets, metadata
         return {}
-
-
-def _rmsnorm(inputs: torch.Tensor, gamma: torch.Tensor, eps: float) -> torch.Tensor:
-    """Recompute the RMSNorm fused into TELayerNormColumnParallelLinear (eager, fp32 internals)."""
-    x = inputs.float()
-    x = x * torch.rsqrt(x.pow(2).mean(-1, keepdim=True) + eps)
-    return (x * gamma.float()).to(inputs.dtype)
 
 
 def _new_param(

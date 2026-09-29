@@ -266,6 +266,7 @@ def get_batch(
                 tokens = F.pad(tokens, (0, pad), value=pad_token_id)
                 cu_seqlens_list.append(cu_seqlens_list[-1] + pad)
 
+            cu_seqlens_host = tuple(cu_seqlens_list)
             cu_seqlens = torch.tensor(cu_seqlens_list, dtype=torch.int, device=torch.cuda.current_device())
             tokens = tokens.chunk(cp_size, dim=0)[cp_rank]
         else:
@@ -285,6 +286,7 @@ def get_batch(
                 cu_seqlens.append(cu_seqlens[-1] + pad)
 
             # thd requires the cu_seqlens to be of the origin length
+            cu_seqlens_host = tuple(boundary * cp_size for boundary in cu_seqlens)
             cu_seqlens = torch.tensor(cu_seqlens, dtype=torch.int).cuda() * cp_size
 
         max_seqlen = (cu_seqlens[1:] - cu_seqlens[:-1]).max().item()
@@ -292,6 +294,8 @@ def get_batch(
         tokens = tokens.unsqueeze(0)
 
         batch["cu_seqlens"] = cu_seqlens
+        # the same boundaries on the host, for consumers that must not sync the device to read them
+        batch["cu_seqlens_host"] = cu_seqlens_host
         batch["max_seqlen"] = max_seqlen
     else:
         raise ValueError(f"Unsupported qkv_format: {qkv_format}")
