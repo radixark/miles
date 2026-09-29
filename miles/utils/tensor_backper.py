@@ -68,7 +68,9 @@ class _TensorBackuperNormal(TensorBackuper):
         backup_dict = self._backups[tag]
         for name, param in self._source_getter():
             if name not in backup_dict:
-                backup_dict[name] = torch.empty_like(param, device=torch.device("cpu"), pin_memory=True)
+                backup_dict[name] = torch.empty_like(
+                    param, device=torch.device("cpu"), pin_memory=param.device.type == "cuda"
+                )
             backup_dict[name].copy_(param.detach(), non_blocking=True)
         torch.cuda.synchronize()
 
@@ -116,7 +118,9 @@ class _TensorBackuperMainCast(TensorBackuper):
             return self._others.backup(tag)
         for name, tensor in self._ctx.extras_getter():
             if name not in self._extras_backup:
-                self._extras_backup[name] = torch.empty_like(tensor, device=torch.device("cpu"), pin_memory=True)
+                self._extras_backup[name] = torch.empty_like(
+                    tensor, device=torch.device("cpu"), pin_memory=tensor.device.type == "cuda"
+                )
             self._extras_backup[name].copy_(tensor.detach(), non_blocking=True)
             self._extras_backup_by_id[id(tensor)] = self._extras_backup[name]
         torch.cuda.synchronize()
