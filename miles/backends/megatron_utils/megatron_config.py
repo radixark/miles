@@ -362,11 +362,11 @@ def resolve_args_checkpoint_load(args: Namespace) -> None:
         # Fresh runs pass a not-yet-created `--load` dir; fall back to the reference
         # weights (loaded via the HF bridge) instead of asserting in load_checkpoint.
         # Mirrors the non-bridge branch below.
-        if not _has_megatron_checkpoint(args.load):
+        if not has_megatron_checkpoint(args.load):
             args.load = args.ref_load or args.hf_checkpoint
             args.start_rollout_id = 0
     else:
-        if not _has_megatron_checkpoint(args.load):
+        if not has_megatron_checkpoint(args.load):
             args.no_load_optim = True
             args.no_load_rng = True
             args.finetune = True
@@ -376,7 +376,7 @@ def resolve_args_checkpoint_load(args: Namespace) -> None:
             args.start_rollout_id = 0
 
 
-def _has_megatron_checkpoint(load_dir: str | None) -> bool:
+def has_megatron_checkpoint(load_dir: str | None) -> bool:
     return (
         load_dir is not None
         and os.path.exists(load_dir)
