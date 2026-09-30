@@ -211,6 +211,20 @@ class TestPlanP2P:
 
         assert {task.source_shard for task in tasks} == {2}
 
+    def test_an_engine_declaring_no_gpu_is_rejected(self, p2p_transfer_utils: ModuleType) -> None:
+        """An engine without a rank has nothing to receive the weights, so the plan cannot be built."""
+        plan = _plan(p2p_transfer_utils, gathered_dp_rank=0, gathered_dp_size=2)
+
+        with pytest.raises(AssertionError, match="engine 1 declares 0 GPUs"):
+            plan.plan_p2p([2, 0])
+
+    def test_a_negative_gpu_count_is_rejected(self, p2p_transfer_utils: ModuleType) -> None:
+        """A negative count would silently plan no target for that engine instead of failing."""
+        plan = _plan(p2p_transfer_utils, gathered_dp_rank=0, gathered_dp_size=2)
+
+        with pytest.raises(AssertionError, match="engine 0 declares -1 GPUs"):
+            plan.plan_p2p([-1, 2])
+
 
 class TestRegisterCPUMemory:
     def test_each_buffer_is_registered_at_its_own_address_and_byte_size(

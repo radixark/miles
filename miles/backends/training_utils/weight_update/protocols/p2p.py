@@ -151,9 +151,10 @@ class UpdateWeightP2P(WeightTransferProtocol):
           replica that mirrors the target's sharding layout, enabling correct
           weight format conversion before transfer.
         """
-        assert len(engine_cell_ids) == len(rollout_engines), (
-            f"[P2P-Shared] {len(engine_cell_ids)} cell ids for {len(rollout_engines)} rollout engines; "
-            f"the per-engine metadata must describe the same engines"
+        assert engine_gpu_counts is not None, "[P2P-Shared] the per-engine GPU counts are required to plan transfers"
+        assert len(engine_cell_ids) == len(rollout_engines) == len(engine_gpu_counts), (
+            f"[P2P-Shared] {len(engine_cell_ids)} cell ids and {len(engine_gpu_counts)} GPU counts "
+            f"for {len(rollout_engines)} rollout engines; the per-engine metadata must describe the same engines"
         )
 
         self.disconnect()
@@ -193,6 +194,12 @@ class UpdateWeightP2P(WeightTransferProtocol):
                 rank_session_ids = [
                     targets_to_session_id[(t.rollout_engine_ind, t.rollout_engine_rank)] for t in rank_targets
                 ]
+                _assert_one_shard_layout(
+                    rollout_engine_rank=rollout_engine_rank,
+                    session_ids=rank_session_ids,
+                    remote_weight_infos_by_session_id=self.remote_weight_infos_by_session_id,
+                    session_id_to_server_args=self.session_id_to_server_args,
+                )
                 model_replica = self._cpu_replicas.get_or_create_replica(
                     parallelism_info=self.remote_weight_infos_by_session_id[rank_session_ids[0]][1],
                     server_args=self.session_id_to_server_args[rank_session_ids[0]],
@@ -219,6 +226,24 @@ class UpdateWeightP2P(WeightTransferProtocol):
         self.rollout_engines = []
         self.is_sender = False
         self._model_param_stager = ModelParamStager()
+
+
+def _assert_one_shard_layout(
+    rollout_engine_rank: int,
+    session_ids: list[str],
+    remote_weight_infos_by_session_id: dict[str, tuple],
+    session_id_to_server_args: dict[str, ServerArgs],
+) -> None:
+    keys_by_session = {
+        session_id: _shard_layout_key(
+            remote_weight_infos_by_session_id[session_id][1], session_id_to_server_args[session_id]
+        )
+        for session_id in session_ids
+    }
+    assert len(set(keys_by_session.values())) == 1, (
+        f"[P2P-Shared] The targets of rollout engine rank {rollout_engine_rank} hold different shard layouts and "
+        f"cannot share one CPU replica: {keys_by_session}"
+    )
 
 
 def _assign_p2p_targets(
@@ -333,6 +358,11 @@ def _create_cpu_replica(
     else:
         for name, param in model.named_parameters():
             assert name in shared_params_dict, f"[P2P-Shared] Parameter {name} not found in shared buffers"
-            param.data = shared_params_dict[name]
+            shared = shared_params_dict[name]
+            assert param.shape == shared.shape and param.dtype == shared.dtype, (
+                f"[P2P-Shared] Parameter {name} cannot alias the shared buffer: "
+                f"replica {tuple(param.shape)}/{param.dtype} vs shared {tuple(shared.shape)}/{shared.dtype}"
+            )
+            param.data = shared
 
     return model
