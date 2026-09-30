@@ -9,7 +9,6 @@ from tests.e2e.ft.conftest_ft.app import resolve_dump_dir
 from tests.e2e.ft.conftest_ft.execution import (
     DATA_DIR,
     MODEL_DIR,
-    get_api_server_args,
 )
 from tests.e2e.ft.conftest_ft.fault_injection.entrypoint import (
     API_SERVER_PORT,
@@ -21,6 +20,7 @@ from tests.utils.cluster_backends import create_backend_for_run
 from tests.utils.ft.launch import get_fully_async_args, get_train_script
 from tests.utils.soak.core.event_log import EventLog
 from tests.utils.soak.core.events import LaunchOutcome
+from tests.utils.soak.core.utils import API_SERVER_ARGS
 
 from miles.utils.audit_utils.event_logger.logger import EVENTS_DIRNAME
 from miles.utils.external_utils import command_utils
@@ -138,7 +138,6 @@ def run_realistic_gsm8k(
     os.makedirs(dump_dir, exist_ok=True)
 
     train_args = get_gsm8k_train_args(
-        config=config,
         seed=seed,
         num_rollout=num_rollout,
         metric_threshold=metric_threshold,
@@ -204,7 +203,6 @@ def prepare_gsm8k(U: BaseCommandBackend) -> None:
 
 def get_gsm8k_train_args(
     *,
-    config: command_utils.ExecuteTrainConfig,
     seed: int,
     num_rollout: int,
     test_name: str,
@@ -265,7 +263,7 @@ def get_gsm8k_train_args(
         "--sglang-enable-metrics "
     )
 
-    fault_tolerance_args = get_api_server_args(config)
+    fault_tolerance_args = API_SERVER_ARGS
     if enable_fault_tolerance:
         fault_tolerance_args += (
             "--use-fault-tolerance " f"--ft-components {' '.join(FT_COMPONENTS)} " "--mini-ft-controller-enable "

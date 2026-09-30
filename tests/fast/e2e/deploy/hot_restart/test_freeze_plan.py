@@ -10,9 +10,9 @@ from tests.e2e.deploy.conftest_deploy.hot_restart.freeze_plan import (
     write_freeze_plan,
 )
 from tests.e2e.ft.conftest_ft import app as ft_app
-from tests.e2e.ft.conftest_ft import execution as ft_execution
 from tests.e2e.ft.conftest_ft.app import TARGET_SIDE, RunSideRequest
 from tests.e2e.ft.conftest_ft.modes import FTTestMode
+from tests.utils.ft import launch
 
 from miles.utils.external_utils.command_utils.base_backend import ExecuteTrainConfig
 from miles.utils.external_utils.command_utils.common import ArgvManipulator
@@ -110,7 +110,7 @@ class TestWhereTheFreezePlanLives:
         side_dump.mkdir(parents=True, exist_ok=True)
         (side_dump / "leftover.txt").write_text("from a previous run")
 
-        monkeypatch.setattr(ft_execution, "_resolve_config", lambda config: _FakeConfig())
+        monkeypatch.setattr(launch, "resolve_config", lambda config: _FakeConfig())
         ft_app.run_one_release(
             RunSideRequest(
                 side=TARGET_SIDE,

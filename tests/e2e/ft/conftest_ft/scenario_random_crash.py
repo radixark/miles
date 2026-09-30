@@ -2,11 +2,11 @@
 # WARNING: Do NOT relax any assert logic in this file. All assertions must remain strict.
 
 
+import asyncio
 from collections import Counter
 from pathlib import Path
 
 import typer
-from tests.e2e.ft.conftest_ft.app import resolve_dump_dir
 from tests.e2e.ft.conftest_ft.cli_options import (
     FullyAsyncOption,
     ModeOption,
@@ -16,25 +16,14 @@ from tests.e2e.ft.conftest_ft.cli_options import (
     TrainerCrashIntervalSecondsOption,
 )
 from tests.e2e.ft.conftest_ft.execution import (
-    get_api_server_args,
     get_common_train_args,
     get_ft_args,
     materialize_cyclic_debug_rollout_data,
     prepare,
     run_training,
 )
-from tests.e2e.ft.conftest_ft.fault_injection.entrypoint import (
-    API_SERVER_PORT,
-    FaultInjectorHandle,
-    spawn_fault_injector,
-)
-from tests.e2e.ft.conftest_ft.fault_injection.fault_forms import (
-    ACTOR_CELL_TYPE,
-    CELL_TYPE_OF_FT_COMPONENT,
-    ROLLOUT_CELL_TYPE,
-    compute_mean_interval_seconds_of_cell_type,
-    create_cell_fault_forms,
-)
+from tests.e2e.ft.conftest_ft.fault_injection.entrypoint import FaultInjectorHandle
+from tests.e2e.ft.conftest_ft.fault_injection.fault_forms import CELL_TYPE_OF_FT_COMPONENT
 from tests.e2e.ft.conftest_ft.fault_injection.views import (
     compute_cells_not_serving_after_injection,
     compute_forms_drawn_without_success,
@@ -45,13 +34,27 @@ from tests.e2e.ft.conftest_ft.fault_injection.views import (
 )
 from tests.e2e.ft.conftest_ft.modes import FTTestMode, resolve_mode
 from tests.utils.ft.launch import get_fully_async_args, get_train_script
+from tests.utils.soak.core.config import SoakRunnerConfig, SoakTailConfig, SoakTargetConfig
+from tests.utils.soak.core.event_log import EventLog
+from tests.utils.soak.core.runner import SoakRunner
+from tests.utils.soak.core.utils import (
+    API_SERVER_ARGS,
+    assert_fresh_dump_dir,
+    create_soak_config,
+    evidence_directory,
+    note_launch_outcome,
+    resolve_dump_dir,
+)
+from tests.utils.soak.ft.actions.factory import compute_mean_interval_seconds_of_kind
+from tests.utils.soak.ft.checkers import healing
 from tests.utils.soak.ft.checkers.reconfigure import (
     assert_min_soak_injections,
     assert_soak_reconfigure_events,
     load_reconfigure_events,
 )
+from tests.utils.soak.ft.entrypoint import run_cell_soak
+from tests.utils.soak.ft.types import ACTOR_CELL_TYPE, ROLLOUT_CELL_TYPE
 
-from miles.utils.audit_utils.event_logger.logger import EVENTS_DIRNAME
 from miles.utils.external_utils import command_utils
 from miles.utils.workers.naming import parse_cell_id
 
@@ -76,7 +79,7 @@ def run_ci(
 ) -> None:
     """Random failure soak test, for whichever components the mode enables ft on.
 
-    Starts a background thread that injects faults at random intervals via the
+    Runs an async session that injects faults at random intervals via the
     api server HTTP API. The mini FT controller auto-recovers; the test passes
     if training completes without hanging.
 
@@ -87,11 +90,11 @@ def run_ci(
     if fully_async:
         assert_mode_supports_fully_async(ft_mode, mode=mode)
 
-    config = command_utils.default_config()
+    config = create_soak_config(command_utils.default_config())
     test_name: str = f"{TEST_NAME}_fully_async" if fully_async else TEST_NAME
     dump_dir: str = resolve_dump_dir(f"{test_name}_{mode}", run_id=config.run_id)
     print(f"Dump directory: {dump_dir}")
-    mean_interval_seconds_of_cell_type: dict[str, float] = compute_mean_interval_seconds_of_cell_type(
+    mean_interval_seconds_of_cell_type: dict[str, float] = compute_mean_interval_seconds_of_kind(
         ft_mode.ft_components,
         trainer_crash_interval_seconds=trainer_crash_interval_seconds,
         rollout_crash_interval_seconds=rollout_crash_interval_seconds,
@@ -101,46 +104,91 @@ def run_ci(
     print(f"Train script: {get_train_script(fully_async=fully_async)}")
 
     prepare(ft_mode, config=config)
+    train_args = _build_train_args(
+        ft_mode, config=config, dump_dir=dump_dir, num_steps=num_steps, fully_async=fully_async
+    )
 
+    injector = _run_soak(
+        ft_mode,
+        config=config,
+        dump_dir=dump_dir,
+        seed=seed,
+        num_steps=num_steps,
+        mean_interval_seconds_of_cell_type=mean_interval_seconds_of_cell_type,
+        train_args=train_args,
+        fully_async=fully_async,
+    )
+
+    healing.assert_healing(
+        ft_mode.ft_components,
+        events=injector.event_log.events,
+        forms=injector.forms,
+        context=f"{test_name} {mode}",
+    )
+
+    print(f"Random failure soak test PASSED ({test_name}, mode={mode}, seed={seed}, steps={num_steps})")
+
+
+def _build_train_args(
+    ft_mode: FTTestMode, *, config: command_utils.ExecuteTrainConfig, dump_dir: str, num_steps: int, fully_async: bool
+) -> str:
     debug_rollout_data_dir = None if ft_mode.has_real_rollout else materialize_cyclic_debug_rollout_data(num_steps)
     train_args = (
         get_common_train_args(
             ft_mode, dump_dir=dump_dir, num_steps=num_steps, debug_rollout_data_dir=debug_rollout_data_dir
         )
-        + get_ft_args(ft_mode)
+        + get_ft_args(ft_mode, api_server_args=API_SERVER_ARGS)
         + get_fully_async_args(fully_async=fully_async)
-        + get_api_server_args(config)
         + "--mini-ft-controller-enable "
     )
+    assert_fresh_dump_dir(Path(dump_dir))
+    return train_args
 
-    base_url = f"http://{config.create_backend().api_server_host(config)}:{API_SERVER_PORT}"
-    injector = spawn_fault_injector(
-        base_url=base_url,
-        seed=seed,
-        mean_interval_seconds_of_cell_type=mean_interval_seconds_of_cell_type,
-        cell_fault_forms=create_cell_fault_forms(base_url=base_url, config=config),
-    )
 
-    try:
-        run_training(
-            train_args=train_args,
-            mode=ft_mode,
-            dump_dir=dump_dir,
-            extra_env_vars={},
+def _run_soak(
+    ft_mode: FTTestMode,
+    *,
+    config: command_utils.ExecuteTrainConfig,
+    dump_dir: str,
+    seed: int,
+    num_steps: int,
+    mean_interval_seconds_of_cell_type: dict[str, float],
+    train_args: str,
+    fully_async: bool,
+) -> SoakRunner:
+    expected_counts: dict[str, int] = {
+        ACTOR_CELL_TYPE: ft_mode.num_cells,
+        ROLLOUT_CELL_TYPE: ft_mode.rollout_num_engines,
+    }
+    evidence_dir = evidence_directory(Path(dump_dir))
+    event_log = EventLog(evidence_dir / "events.jsonl")
+    return asyncio.run(
+        run_cell_soak(
             config=config,
-            train_script=get_train_script(fully_async=fully_async),
+            dump_dir=Path(dump_dir),
+            sut_run=note_launch_outcome(
+                event_log=event_log,
+                request_id=None,
+                launching=asyncio.to_thread(
+                    run_training,
+                    train_args=train_args,
+                    mode=ft_mode,
+                    config=config,
+                    train_script=get_train_script(fully_async=fully_async),
+                ),
+            ),
+            runner_config=SoakRunnerConfig(
+                seed=seed,
+                target_configs={
+                    kind: SoakTargetConfig(expected_count=expected_counts[kind], mean_interval_seconds=interval)
+                    for kind, interval in mean_interval_seconds_of_cell_type.items()
+                },
+                tail=SoakTailConfig.create(num_rollout=num_steps),
+            ),
+            event_log=event_log,
+            evidence_dir=evidence_dir,
         )
-    finally:
-        injector.stop_and_join()
-
-    assert_healing(
-        ft_mode.ft_components,
-        injector=injector,
-        event_dir=Path(dump_dir) / EVENTS_DIRNAME,
-        context=f"{test_name} {mode}",
     )
-
-    print(f"Random failure soak test PASSED ({test_name}, mode={mode}, seed={seed}, steps={num_steps})")
 
 
 def assert_mode_supports_fully_async(ft_mode: FTTestMode, *, mode: str) -> None:

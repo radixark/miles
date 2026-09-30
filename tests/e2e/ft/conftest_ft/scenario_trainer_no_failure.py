@@ -6,6 +6,7 @@ from tests.e2e.ft.conftest_ft.app import BASELINE_SIDE, TARGET_SIDE, create_comp
 from tests.e2e.ft.conftest_ft.execution import get_common_train_args, get_ft_args, get_train_env_vars_arg
 from tests.e2e.ft.conftest_ft.modes import FTTestMode
 
+from miles.utils.external_utils.command_utils.base_backend import ExecuteTrainConfig
 from miles.utils.test_utils.comparisons.dumps import (
     INPUT_TENSORS_ALLOW_FAILED_PATTERN,
     INPUT_TENSORS_SKIP_PATTERN,
@@ -16,13 +17,17 @@ from miles.utils.test_utils.comparisons.metrics import compare_metrics
 NUM_STEPS: int = 2
 
 
-def _build_baseline_args(mode: FTTestMode, dump_dir: str, enable_dumper: bool = True) -> str:
+def _build_baseline_args(
+    mode: FTTestMode, dump_dir: str, enable_dumper: bool = True, config: ExecuteTrainConfig | None = None
+) -> str:
     return get_common_train_args(
         mode, dump_dir=dump_dir, num_steps=NUM_STEPS, enable_dumper=enable_dumper
     ) + get_train_env_vars_arg(mode, deterministic=False)
 
 
-def _build_target_args(mode: FTTestMode, dump_dir: str, enable_dumper: bool = True) -> str:
+def _build_target_args(
+    mode: FTTestMode, dump_dir: str, enable_dumper: bool = True, config: ExecuteTrainConfig | None = None
+) -> str:
     return (
         get_common_train_args(mode, dump_dir=dump_dir, num_steps=NUM_STEPS, enable_dumper=enable_dumper)
         + get_ft_args(mode)
