@@ -1,4 +1,5 @@
 import abc
+import subprocess
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -21,6 +22,7 @@ class FaultHookResources:
     args: object | None = None
     controller: "TrainerController | None" = None
     cell_operations: "BaseCellOperations | None" = None
+    managed_process: subprocess.Popen | None = None
 
 
 class BaseFaultAction(FrozenStrictBaseModel, abc.ABC):

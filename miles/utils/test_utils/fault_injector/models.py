@@ -1,5 +1,9 @@
-from enum import StrEnum
 from typing import Literal
+
+try:
+    from enum import StrEnum
+except ImportError:
+    from backports.strenum import StrEnum
 
 from pydantic import Field
 
@@ -38,6 +42,7 @@ class FaultHookName(StrEnum):
 
 class FaultHookStatus(StrEnum):
     PENDING = "pending"
+    CLEARED = "cleared"
     FIRED = "fired"
     FAILED = "failed"
 
@@ -68,6 +73,15 @@ class FaultHookRequest(FrozenStrictBaseModel):
             self.rollout_id in (None, context.rollout_id)
             and self.attempt in (None, context.attempt)
             and self.weight_version in (None, context.weight_version)
+        )
+
+    def conflicts_with(self, other: "FaultHookRequest") -> bool:
+        return (
+            self.hook_name == other.hook_name
+            and self.action == other.action
+            and self.rollout_id == other.rollout_id
+            and self.attempt == other.attempt
+            and self.weight_version == other.weight_version
         )
 
 

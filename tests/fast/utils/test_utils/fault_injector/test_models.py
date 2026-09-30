@@ -122,6 +122,27 @@ class TestFaultHookRequestMatches:
         assert request.matches(context) is expected
 
 
+class TestFaultHookRequestConflicts:
+    def test_the_same_trigger_with_another_id_conflicts(self) -> None:
+        """Two requests firing the same action at the same trigger must conflict."""
+        assert _request(request_id="a").conflicts_with(_request(request_id="b"))
+
+    @pytest.mark.parametrize(
+        "change",
+        [
+            {"hook_name": FaultHookName.TRAINER_STEP_BEFORE_ALLREDUCE},
+            {"action": {"kind": "exit_process"}},
+            {"rollout_id": 4},
+            {"rollout_id": None},
+            {"attempt": 0},
+            {"weight_version": 1},
+        ],
+    )
+    def test_any_differing_trigger_field_does_not_conflict(self, change: dict[str, object]) -> None:
+        """Requests that differ in hook, action, rollout, attempt or weight version must coexist."""
+        assert not _request(request_id="a").conflicts_with(_request(request_id="b", **change))
+
+
 class TestFaultHookWireFormats:
     def test_a_record_rejects_unknown_fields(self) -> None:
         """Records must stay strict so a renamed field cannot vanish silently."""
