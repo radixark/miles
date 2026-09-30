@@ -4,10 +4,14 @@ try:
     from enum import StrEnum
 except ImportError:
     from backports.strenum import StrEnum
+
 from typing import Literal
 
 from miles.utils.pydantic_utils import StrictBaseModel
 from miles.utils.test_utils.fault_injector import FailureMode
+from miles.utils.workers.cell_operations.base import FaultTarget
+
+CELL_TYPE_LABEL: str = "miles.io/cell-type"
 
 
 class TriState(StrEnum):
@@ -92,6 +96,7 @@ class CellPatch(StrictBaseModel):
 class FaultInjection(StrictBaseModel):
     mode: FailureMode
     sub_index: int = 0
+    expected_target: FaultTarget | None = None
 
 
 class K8sStatus(StrictBaseModel):
