@@ -278,3 +278,43 @@ class TestWeightUpdateOutputMerge:
 
         with pytest.raises(AssertionError, match="more than one trainer cell"):
             WeightUpdateOutput.merge(outputs)
+
+    def test_every_target_failing_still_merges_into_one_report(self):
+        """The caller decides what a total failure means, so merge itself must not raise on it."""
+        outputs = [
+            WeightUpdateOutput(weight_version=None, failed_cell_ids=("rollout-1",)),
+            WeightUpdateOutput(weight_version=None, failed_cell_ids=("rollout-2",)),
+        ]
+
+        merged = WeightUpdateOutput.merge(outputs)
+
+        assert merged.weight_version is None
+        assert set(merged.failed_cell_ids) == {"rollout-1", "rollout-2"}
+
+    def test_a_trainer_cell_that_published_no_version_does_not_erase_a_surviving_ones(self):
+        """A dead trainer's report carries no version, and answering None would republish nothing to the engines."""
+        outputs = [
+            WeightUpdateOutput(weight_version=None, failed_cell_ids=("rollout-1",)),
+            WeightUpdateOutput(weight_version=9, failed_cell_ids=()),
+        ]
+
+        assert WeightUpdateOutput.merge(outputs).weight_version == 9
+
+    def test_trainer_cells_that_disagree_on_the_version_are_rejected(self):
+        """Two live versions mean the engines now serve different weights under one version number."""
+        outputs = [
+            WeightUpdateOutput(weight_version=5, failed_cell_ids=()),
+            WeightUpdateOutput(weight_version=6, failed_cell_ids=()),
+        ]
+
+        with pytest.raises(AssertionError, match="disagree on the weight version"):
+            WeightUpdateOutput.merge(outputs)
+
+    def test_a_skipped_broadcast_from_every_trainer_cell_answers_no_version(self):
+        """--debug-skip-weight-update returns None everywhere, which must reach the driver as None."""
+        outputs = [
+            WeightUpdateOutput(weight_version=None, failed_cell_ids=()),
+            WeightUpdateOutput(weight_version=None, failed_cell_ids=()),
+        ]
+
+        assert WeightUpdateOutput.merge(outputs) == WeightUpdateOutput(weight_version=None, failed_cell_ids=())
