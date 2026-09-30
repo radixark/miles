@@ -1,5 +1,7 @@
 from itertools import pairwise
+from typing import Any
 
+from miles.utils.audit_utils.event_analyzer.rules.utils import trainer_args
 from miles.utils.audit_utils.event_logger.models import (
     Event,
     InferenceEngineWeightChecksumEvent,
@@ -9,6 +11,8 @@ from miles.utils.audit_utils.event_logger.models import (
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
 
 __all__ = ["check"]
+
+_APPLICABILITY_ARG_NAMES: tuple[str, ...] = ("lora_rank", "lora_adapter_path", "update_weights_interval")
 
 
 class WeightMovementIssue(FrozenStrictBaseModel):
@@ -21,6 +25,9 @@ class WeightMovementIssue(FrozenStrictBaseModel):
 
 def check(events: list[Event], *, include_latest: bool = False) -> list[WeightMovementIssue]:
     """Check: every tensor changes between adjacent published versions of one trainer load state."""
+    if (args := trainer_args(events, names=_APPLICABILITY_ARG_NAMES)) is None or not _applies(args):
+        return []
+
     latest = max(
         (event.timestamp for event in events if isinstance(event, (WeightUpdateResultEvent, TrainGroupStepEndEvent))),
         default=None,
@@ -55,3 +62,7 @@ def check(events: list[Event], *, include_latest: bool = False) -> list[WeightMo
                 )
             )
     return issues
+
+
+def _applies(args: dict[str, Any]) -> bool:
+    return args["lora_rank"] == 0 and args["lora_adapter_path"] is None and args["update_weights_interval"] == 1
