@@ -115,8 +115,35 @@ class StoredEvent(FrozenStrictBaseModel):
 
 
 def read_events(path: Path, *, require_closed: bool = True) -> list[SoakEvent]:
-    raise NotImplementedError
+    events: list[SoakEvent] = []
+
+    with path.open() as stream:
+        for sequence, line in enumerate(stream):
+            stored = StoredEvent.model_validate_json(line)
+            assert stored.sequence == sequence, f"Missing or reordered soak event at {path}:{sequence + 1}"
+            assert not events or not isinstance(
+                events[-1], SoakCollectionClosedEvent
+            ), f"Events after closure in {path}"
+            events.append(stored.event)
+
+    if require_closed:
+        assert events and isinstance(events[-1], SoakCollectionClosedEvent), f"Soak evidence is incomplete: {path}"
+
+    _assert_archived_files_unchanged(path, events)
+
+    return events
 
 
 def file_sha256(path: Path) -> str:
     raise NotImplementedError
+
+
+def _assert_archived_files_unchanged(path: Path, events: list[SoakEvent]) -> None:
+    for event in events:
+        if isinstance(event, SoakEvidenceArchivedEvent):
+            for relative, expected in event.sha256_of_file.items():
+                source = path.parent / relative
+                assert source.resolve().is_relative_to(
+                    path.parent.resolve()
+                ), f"Evidence path escapes its archive: {relative}"
+                assert file_sha256(source) == expected, f"Archived evidence changed: {source}"
