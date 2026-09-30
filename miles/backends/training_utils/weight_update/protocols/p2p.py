@@ -76,7 +76,9 @@ class UpdateWeightP2P(WeightTransferProtocol):
     ) -> bool:
         """Register shared CPU pinned memory with P2P on the first sync."""
         if self.is_sender and not self._model_registered:
-            self._weight_memory_registry = register_cpu_memory(self._shared_params_dict, self._transfer_engine)
+            self._weight_memory_registry = register_cpu_memory(
+                self._cpu_replicas.shared_params_dict, self._transfer_engine
+            )
             self._model_registered = True
         return True
 
@@ -93,8 +95,8 @@ class UpdateWeightP2P(WeightTransferProtocol):
         # `ready_hf_tensors`` here are the complete tensors ready to be transferred.
         transfer_ready_params, ready_hf_tensors = self._model_param_stager.get_transfer_ready_params(
             converted_named_tensors,
-            param_mapper=self._shared_param_mapper,
-            params_dict=self._shared_params_dict,
+            param_mapper=self._cpu_replicas.shared_param_mapper,
+            params_dict=self._cpu_replicas.shared_params_dict,
         )
 
         if transfer_ready_params and ready_hf_tensors:
@@ -162,8 +164,7 @@ class UpdateWeightP2P(WeightTransferProtocol):
 
             # Create ONE transfer engine for all rollout engine ranks
             self._transfer_engine = create_transfer_engine()
-            self._shared_params_dict: dict[str, torch.Tensor] = {}
-            self._shared_param_mapper: ParameterMapper | None = None
+            self._cpu_replicas = _CPUReplicasManager(model_path=self.args.hf_checkpoint)
             # in self._rollout_engine_rank_infos: tuple of
             # - single CPU replica shared among all sessions
             # - related remote weight info
@@ -176,7 +177,6 @@ class UpdateWeightP2P(WeightTransferProtocol):
                 remote_weight_infos_by_session_id=self.remote_weight_infos_by_session_id,
             )
 
-            first_rollout_engine_rank = True
             for rollout_engine_rank, rank_targets in targets_grouped_by_rollout_engine_rank.items():
                 first_target = rank_targets[0]
                 session_id = targets_to_session_id[(first_target.rollout_engine_ind, first_target.rollout_engine_rank)]
@@ -185,17 +185,9 @@ class UpdateWeightP2P(WeightTransferProtocol):
                 )
                 server_args = self.session_id_to_server_args[session_id]
 
-                model_replica = _create_cpu_replica(
-                    parallelism_config,
-                    self.args.hf_checkpoint,
-                    server_args,
-                    shared_params_dict=self._shared_params_dict,
-                    first_rollout_engine_rank=first_rollout_engine_rank,
+                model_replica = self._cpu_replicas.create_replica(
+                    parallelism_config=parallelism_config, server_args=server_args
                 )
-                if first_rollout_engine_rank:
-                    self._shared_params_dict = dict(model_replica.named_parameters())
-                    self._shared_param_mapper = ParameterMapper.from_model(model_replica)
-                    first_rollout_engine_rank = False
 
                 rank_cell_updaters = [
                     self._cell_updaters_of_rollout_engine_ind[target.rollout_engine_ind] for target in rank_targets
@@ -232,6 +224,29 @@ class _RolloutEngineRankInfo(NamedTuple):
 
 
 # ================================= cpu replica =================================
+
+
+class _CPUReplicasManager:
+    def __init__(self, model_path: str) -> None:
+        self._model_path = model_path
+        self.replicas: list[torch.nn.Module] = []
+        self.shared_params_dict: dict[str, torch.Tensor] = {}
+        self.shared_param_mapper: ParameterMapper | None = None
+
+    def create_replica(self, parallelism_config: RankParallelismConfig, server_args: ServerArgs) -> torch.nn.Module:
+        first_rollout_engine_rank = not self.replicas
+        model_replica = _create_cpu_replica(
+            parallelism_config,
+            self._model_path,
+            server_args,
+            shared_params_dict=self.shared_params_dict,
+            first_rollout_engine_rank=first_rollout_engine_rank,
+        )
+        if first_rollout_engine_rank:
+            self.shared_params_dict = dict(model_replica.named_parameters())
+            self.shared_param_mapper = ParameterMapper.from_model(model_replica)
+        self.replicas.append(model_replica)
+        return model_replica
 
 
 def _create_cpu_replica(
