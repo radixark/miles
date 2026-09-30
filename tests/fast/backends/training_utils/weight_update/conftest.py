@@ -7,6 +7,7 @@ from types import ModuleType
 import pytest
 
 _P2P_TRANSFER_UTILS_MODULE = "miles.backends.training_utils.weight_update.protocols.p2p_transfer_utils"
+_P2P_ROLLOUT_CELL_UPDATER_MODULE = "miles.backends.training_utils.weight_update.protocols.p2p_rollout_cell_updater"
 
 
 @contextmanager
@@ -57,3 +58,14 @@ def p2p_transfer_utils() -> ModuleType:
         }
     ):
         return importlib.import_module(_P2P_TRANSFER_UTILS_MODULE)
+
+
+@pytest.fixture(scope="module")
+def p2p_rollout_cell_updater() -> ModuleType:
+    with stubbed_missing_external_sdks(
+        {
+            "mooncake.engine": {"TransferEngine": object},
+            "sglang.srt.server_args": {"ServerArgs": object},
+        }
+    ):
+        return importlib.import_module(_P2P_ROLLOUT_CELL_UPDATER_MODULE)

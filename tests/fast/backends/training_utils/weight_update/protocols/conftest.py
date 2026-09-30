@@ -10,6 +10,7 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import contextmanager, nullcontext
 from types import ModuleType, SimpleNamespace
 from typing import Any
+
 import pytest
 import torch
 
@@ -370,6 +371,11 @@ def p2p_sender(p2p_protocol: ModuleType, monkeypatch: pytest.MonkeyPatch) -> Ite
     harness = _P2PSenderHarness(p2p_protocol, monkeypatch)
     yield harness
     harness.close()
+
+
+@pytest.fixture
+def fake_transfer_engine() -> _FakeTransferEngine:
+    return _FakeTransferEngine(log=[])
 
 
 @pytest.fixture
