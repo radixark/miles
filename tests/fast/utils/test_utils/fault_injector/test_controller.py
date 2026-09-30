@@ -2,7 +2,7 @@ import asyncio
 from collections.abc import Callable
 
 import pytest
-from tests.fast.utils.test_utils.fault_injector.fakes import _CellOperations, _Clock
+from tests.fast.utils.test_utils.fault_injector.fakes import _CellOperations, _Clock, _Timer
 
 from miles.utils.test_utils.fault_injector import controller as controller_module
 from miles.utils.test_utils.fault_injector import request_executor
@@ -262,7 +262,7 @@ class TestReachEntries:
         assert fired.status == FaultHookStatus.FIRED
         assert fired.context == FaultHookContext(rollout_id=3, attempt=1)
         assert fired.set_at == 100.0
-        assert fired.reached_at == fired.changed_at == 102.0
+        assert fired.reached_at == fired.due_at == fired.changed_at == 102.0
 
     def test_an_event_log_failure_does_not_block_the_fault(
         self, runtime_hooks: _FaultHookController, operations: _CellOperations, monkeypatch: pytest.MonkeyPatch
@@ -323,3 +323,140 @@ class TestWithContext:
             record = _set(runtime_hooks, _stop(hook_name=None))
         assert record.context == context
         assert operations.stopped == ["cell-0"]
+
+
+class TestDelayedRequests:
+    def test_a_delayed_request_schedules_one_timer_for_its_exact_delay(
+        self,
+        runtime_hooks: _FaultHookController,
+        operations: _CellOperations,
+        clock: _Clock,
+        timers: list[_Timer],
+        hook_records: Callable[[], list[FaultHookRecord]],
+    ) -> None:
+        """Reaching a delayed hook must arm one daemon timer and act only when it is due."""
+        _set(runtime_hooks, _stop(rollout_id=3, delay_ms=250))
+        runtime_hooks._reach(_CELL_HOOK, {"rollout_id": 3})
+        runtime_hooks._reach(_CELL_HOOK, {"rollout_id": 3})
+        [timer] = timers
+        assert timer.started and timer.daemon
+        assert timer.interval == 0.25
+        assert operations.stopped == []
+        [_, scheduled] = hook_records()
+        assert scheduled.status == FaultHookStatus.SCHEDULED
+        assert scheduled.reached_at == 100.0 and scheduled.due_at == 100.25
+
+    def test_the_due_callback_fires_exactly_once(
+        self,
+        runtime_hooks: _FaultHookController,
+        operations: _CellOperations,
+        clock: _Clock,
+        timers: list[_Timer],
+        hook_records: Callable[[], list[FaultHookRecord]],
+    ) -> None:
+        """A due timer must run the action once even if its callback runs twice."""
+        _set(runtime_hooks, _stop(rollout_id=3, delay_ms=250))
+        runtime_hooks._reach(_CELL_HOOK, {"rollout_id": 3})
+        clock.advance(0.25)
+        timers[0].fire()
+        timers[0].fire()
+        assert operations.stopped == ["cell-0"]
+        assert _statuses(hook_records(), "stop") == [
+            FaultHookStatus.PENDING,
+            FaultHookStatus.SCHEDULED,
+            FaultHookStatus.FIRED,
+        ]
+
+    def test_a_cleared_request_ignores_its_late_callback(
+        self,
+        runtime_hooks: _FaultHookController,
+        operations: _CellOperations,
+        clock: _Clock,
+        timers: list[_Timer],
+        hook_records: Callable[[], list[FaultHookRecord]],
+    ) -> None:
+        """Clearing a scheduled request must cancel it even if the timer already started running."""
+        request = _stop(rollout_id=3, delay_ms=250)
+        _set(runtime_hooks, request)
+        runtime_hooks._reach(_CELL_HOOK, {"rollout_id": 3})
+        _clear(runtime_hooks, request)
+        assert timers[0].cancelled
+        timers[0].fire()
+        assert operations.stopped == []
+        assert _statuses(hook_records(), "stop") == [
+            FaultHookStatus.PENDING,
+            FaultHookStatus.SCHEDULED,
+            FaultHookStatus.CLEARED,
+        ]
+
+    def test_a_stale_callback_cannot_fire_the_request_rearmed_under_its_id(
+        self,
+        runtime_hooks: _FaultHookController,
+        operations: _CellOperations,
+        clock: _Clock,
+        timers: list[_Timer],
+    ) -> None:
+        """A timer of a cleared request must never fire its successor with the same ID."""
+        first = _stop(rollout_id=3, delay_ms=250)
+        _set(runtime_hooks, first)
+        runtime_hooks._reach(_CELL_HOOK, {"rollout_id": 3})
+        _clear(runtime_hooks, first)
+        _set(runtime_hooks, _stop(rollout_id=4, delay_ms=250, cell_id="cell-1"))
+        timers[0].fire()
+        assert operations.stopped == []
+        runtime_hooks._reach(_CELL_HOOK, {"rollout_id": 4})
+        timers[0].fire()
+        assert operations.stopped == []
+        timers[1].fire()
+        assert operations.stopped == ["cell-1"]
+
+    def test_a_failing_due_action_is_recorded_failed(
+        self,
+        runtime_hooks: _FaultHookController,
+        operations: _CellOperations,
+        clock: _Clock,
+        timers: list[_Timer],
+        hook_records: Callable[[], list[FaultHookRecord]],
+    ) -> None:
+        """A delayed action that fails must leave FAILED evidence and not be retried."""
+        operations.reject_stop = True
+        _set(runtime_hooks, _stop(rollout_id=3, delay_ms=250))
+        runtime_hooks._reach(_CELL_HOOK, {"rollout_id": 3})
+        with pytest.raises(RuntimeError, match="rejected the stop"):
+            timers[0].fire()
+        timers[0].fire()
+        assert operations.entered == ["cell-0"]
+        assert _statuses(hook_records(), "stop") == [
+            FaultHookStatus.PENDING,
+            FaultHookStatus.SCHEDULED,
+            FaultHookStatus.FIRED,
+            FaultHookStatus.FAILED,
+        ]
+
+    def test_an_immediate_request_with_a_delay_is_scheduled_on_set(
+        self,
+        runtime_hooks: _FaultHookController,
+        operations: _CellOperations,
+        clock: _Clock,
+        timers: list[_Timer],
+    ) -> None:
+        """A request without a hook but with a delay must wait for its timer after being set."""
+        assert _set(runtime_hooks, _stop(hook_name=None, delay_ms=100)).status == FaultHookStatus.SCHEDULED
+        assert operations.stopped == []
+        assert timers[0].interval == 0.1
+        timers[0].fire()
+        assert operations.stopped == ["cell-0"]
+
+    def test_a_scheduled_request_still_holds_its_trigger(
+        self,
+        runtime_hooks: _FaultHookController,
+        clock: _Clock,
+        timers: list[_Timer],
+    ) -> None:
+        """A request waiting on its timer must keep refusing a duplicate trigger until it fires."""
+        _set(runtime_hooks, _stop("a", rollout_id=3, delay_ms=250))
+        runtime_hooks._reach(_CELL_HOOK, {"rollout_id": 3})
+        with pytest.raises(FaultHookConflictError):
+            _set(runtime_hooks, _stop("b", rollout_id=3, delay_ms=250))
+        timers[0].fire()
+        assert _set(runtime_hooks, _stop("b", rollout_id=3, delay_ms=250)).status == FaultHookStatus.PENDING
