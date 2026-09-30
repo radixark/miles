@@ -40,8 +40,8 @@ def test_default_preserves_the_existing_miles_path():
 
 @pytest.mark.parametrize(
     "input_spec",
-    [MILES_DSA_SPEC, MEGATRON_DSA_SPEC, ("miles_plugins.models.glm5.megatron", "get_dsa_spec")],
-    ids=["miles", "native", "native-before-rename"],
+    [MILES_DSA_SPEC, MEGATRON_DSA_SPEC],
+    ids=["miles", "native"],
 )
 @pytest.mark.parametrize(
     ("hf_overrides", "interleaved", "frequency", "offset"),

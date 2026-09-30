@@ -4,8 +4,6 @@ from argparse import ArgumentParser, Namespace
 
 MILES_DSA_SPEC = ("miles_plugins.models.glm5.glm5", "get_glm5_spec")
 MEGATRON_DSA_SPEC = ("miles_plugins.models.glm5.megatron_spec", "get_dsa_spec")
-# Accept the provider path saved by checkpoints from before the module rename.
-_LEGACY_MEGATRON_DSA_SPEC = ("miles_plugins.models.glm5.megatron", "get_dsa_spec")
 
 
 def add_dsa_arguments(parser: ArgumentParser) -> ArgumentParser:
@@ -30,7 +28,7 @@ def normalize_dsa_args(args: Namespace, hf_config) -> None:
         return
     if getattr(args, "megatron_to_hf_mode", "raw") != "raw":
         raise ValueError("--dsa-impl megatron requires --megatron-to-hf-mode raw")
-    if tuple(getattr(args, "spec", None) or ()) not in (MILES_DSA_SPEC, MEGATRON_DSA_SPEC, _LEGACY_MEGATRON_DSA_SPEC):
+    if tuple(getattr(args, "spec", None) or ()) not in (MILES_DSA_SPEC, MEGATRON_DSA_SPEC):
         raise ValueError("--dsa-impl megatron requires the shared DeepSeek-V3.2/GLM DSA spec")
     if hf_config.model_type not in ("deepseek_v32", "glm_moe_dsa"):
         raise ValueError(f"--dsa-impl megatron does not support model_type={hf_config.model_type!r}")
