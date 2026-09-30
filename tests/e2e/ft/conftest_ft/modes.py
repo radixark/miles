@@ -107,6 +107,17 @@ def _compute_parallelism_segment(mode: FTTestMode) -> str:
 
 
 MODES: dict[str, FTTestMode] = {
+    "kill_rollout__dp4": FTTestMode(
+        model_name=DENSE_MODEL_NAME,
+        model_hf_repo=DENSE_MODEL_HF_REPO,
+        megatron_model_type=DENSE_MODEL_TYPE,
+        num_cells=4,
+        train_gpus_per_node=4,
+        rollout_num_engines=4,
+        rollout_gpus_per_engine=1,
+        ft_components=("rollout",),
+        parallel_args="",
+    ),
     # --- 1-node (8 GPUs) variants ---
     "kill_train__dp2_cp2_tp2_ep2__fake_rollout__moe_5layer": FTTestMode(
         model_name=MODEL_NAME,
@@ -171,19 +182,6 @@ MODES: dict[str, FTTestMode] = {
         rollout_gpus_per_engine=1,
         ft_components=("train", "rollout"),
         parallel_args="--context-parallel-size 2",
-    ),
-    # --- 1-node (8 GPUs) colocated: engines share the trainer's gpus ---
-    "kill_rollout__dp4__colocate": FTTestMode(
-        model_name=DENSE_MODEL_NAME,
-        model_hf_repo=DENSE_MODEL_HF_REPO,
-        megatron_model_type=DENSE_MODEL_TYPE,
-        num_cells=4,
-        train_gpus_per_node=4,
-        rollout_num_engines=4,
-        rollout_gpus_per_engine=1,
-        colocate=True,
-        ft_components=("rollout",),
-        parallel_args="",
     ),
     # --- 6-node (48 GPUs) disaggregated: 4 train nodes + 2 rollout nodes ---
     "kill_train__dp4_cp2_tp2_pp2_ep2_etp2__moe_full": FTTestMode(

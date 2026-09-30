@@ -46,8 +46,10 @@ FIRST_ROLLOUT_POLL_SECONDS: float = 5.0
 TERMINAL_FAULT_FREE_ROLLOUTS: int = 2
 
 
-COLOCATED_MEM_FRACTION_STATIC: float = 0.4
-DETERMINISTIC_INFERENCE_ENV_VARS: dict[str, str] = {"SGLANG_BATCH_INVARIANT_OPS_ENABLE_MM_FALLBACK_VARIANT": "false"}
+DETERMINISTIC_INFERENCE_ENV_VARS: dict[str, str] = {
+    "SGLANG_BATCH_INVARIANT_OPS_ENABLE_MM_FALLBACK_VARIANT": "false",
+    "SGLANG_ENABLE_JIT_DEEPGEMM": "false",
+}
 
 
 def _build_args(mode: FTTestMode, dump_dir: str, enable_dumper: bool = True) -> str:
@@ -63,8 +65,7 @@ def _build_args(mode: FTTestMode, dump_dir: str, enable_dumper: bool = True) -> 
     args += "--mini-ft-controller-enable "
     args += "--debug-deterministic-collective "
     args += "--sglang-disable-radix-cache "
-    if mode.colocate:
-        args += f"--sglang-mem-fraction-static {COLOCATED_MEM_FRACTION_STATIC} "
+    args += "--update-weight-transfer-mode p2p --sglang-router-policy round_robin "
     args += f"--rollout-health-check-interval {HEALTH_CHECK_INTERVAL_SECONDS} "
     args += "--weight-decay 0 "
     args += get_train_env_vars_arg(

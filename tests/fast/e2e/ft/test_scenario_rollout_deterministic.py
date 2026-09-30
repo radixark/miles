@@ -15,7 +15,7 @@ _BASE = datetime(2026, 8, 17, 12, 0, tzinfo=timezone.utc)
 
 def test_rollout_deterministic_uses_the_shared_deterministic_recipe_without_true_on_policy(tmp_path: Path) -> None:
     """The rollout-FT comparison must use pure deterministic inference rather than true-on-policy."""
-    args = _build_args(MODES["kill_rollout__dp4__colocate"], dump_dir=str(tmp_path))
+    args = _build_args(MODES["kill_rollout__dp4"], dump_dir=str(tmp_path))
 
     assert "--sglang-enable-deterministic-inference " in args
     assert "--sglang-attention-backend flashinfer " in args
