@@ -32,6 +32,9 @@ from miles.utils.init_once import InitOnce, init_once
 from miles.utils.logging_utils import configure_logger
 from miles.utils.misc import split_evenly
 from miles.utils.retry_utils import NonRetryableError, retry, retry_until_deadline
+from miles.utils.test_utils.fault_injector.actions.base import FaultHookResources
+from miles.utils.test_utils.fault_injector.controller import fault_hook_controller, reach_fault_hook_async
+from miles.utils.test_utils.fault_injector.models import FaultHookName, FaultHookOwner
 from miles.utils.test_utils.ft_test_actions import FTTestActionControllerExecutor
 from miles.utils.tracking_utils.structured_log import log_structured
 from miles.utils.workers.cell_operations.base import BaseCellOperations
@@ -231,6 +234,7 @@ class TrainerController:
         worker_results = await retry(_fn, max_attempts=_RETRY_MAX_ATTEMPTS)
 
         await self._test_action_executor.run_after_step(rollout_id=rollout_id)
+        await reach_fault_hook_async(FaultHookName.TRAINER_CONTROLLER_STEP_END, rollout_id=rollout_id)
 
         return worker_results
 
@@ -310,8 +314,7 @@ class TrainerController:
         discarded = [
             c.cell_index
             for c, r in paired
-            if not isinstance(r, BaseException)
-            and any(o.outcome == TrainStepOutcome.DISCARDED_SHOULD_RETRY for o in r)
+            if not isinstance(r, BaseException) and any(o.outcome == TrainStepOutcome.DISCARDED_SHOULD_RETRY for o in r)
         ]
         normal = [c.cell_index for c, r in paired if c.cell_index not in errored and c.cell_index not in discarded]
         return {"errored": errored, "discarded": discarded, "normal": normal}
@@ -345,6 +348,9 @@ class TrainerController:
 
         self._test_action_executor = FTTestActionControllerExecutor.from_args(
             args, controller=self, cell_operations=self._cell_operations
+        )
+        fault_hook_controller.configure(
+            resources=FaultHookResources(args=args), owner=FaultHookOwner.TRAINER_CONTROLLER
         )
 
         self._watcher_disposer = await self._provider.watch_cells(self._reconcile)
@@ -502,9 +508,7 @@ class TrainerController:
         return await self._execute_slots("save_slot", slot=slot, path=path, metadata=metadata)
 
     async def export_slot(self, slot: int, rank: int, alpha: float, path: str, metadata: dict | None = None) -> list:
-        return await self._execute_slots(
-            "export_slot", slot=slot, rank=rank, alpha=alpha, path=path, metadata=metadata
-        )
+        return await self._execute_slots("export_slot", slot=slot, rank=rank, alpha=alpha, path=path, metadata=metadata)
 
     async def unload_slot(self, slot: int) -> list:
         return await self._execute_slots("unload_slot", slot=slot)

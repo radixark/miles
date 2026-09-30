@@ -61,9 +61,14 @@ class FaultHookRequest(FrozenStrictBaseModel):
     target: DeclaredFaultHookTarget = DeclaredFaultHookTarget()
     rollout_id: int | None = Field(default=None, ge=0)
     attempt: int | None = Field(default=None, ge=0)
+    weight_version: int | None = Field(default=None, ge=0)
 
     def matches(self, context: FaultHookContext) -> bool:
-        return self.rollout_id in (None, context.rollout_id) and self.attempt in (None, context.attempt)
+        return (
+            self.rollout_id in (None, context.rollout_id)
+            and self.attempt in (None, context.attempt)
+            and self.weight_version in (None, context.weight_version)
+        )
 
 
 class FaultHookRecord(FrozenStrictBaseModel):
