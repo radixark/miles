@@ -14,6 +14,9 @@ name: Build Wheels
 # by hand with the miles-wheels README commands.
 
 on:
+  # TEMPORARY: runs this branch's workflow before it reaches main. Remove before merging.
+  push:
+    branches: [jiajun/te-wheels-pipeline]
   schedule:
     # Hourly, off the top of the hour, where GitHub delays or drops scheduled runs.
     - cron: '17 * * * *'
@@ -146,7 +149,7 @@ jobs:
           if wanted int4_qat; then
             if stale "$INT4_SHA" "$TAG_X86" fake_int4_quant_cuda-source.json; then INT4_X86=true; fi
           fi
-          if wanted te && { [ "$EVENT" != schedule ] || [ "$TE_ON_SCHEDULE" = true ]; }; then
+          if wanted te && { [ "$EVENT" = workflow_dispatch ] || [ "$TE_ON_SCHEDULE" = true ]; }; then
             if stale "$TE_SHA" "$TAG_X86" transformer_engine-source.json; then TE_X86=true; fi
           fi
 
