@@ -4,6 +4,7 @@ from collections.abc import Callable
 from types import SimpleNamespace
 from typing import Any
 
+import httpx
 import pytest
 
 from miles.utils.test_utils.fault_injector import controller
@@ -135,3 +136,25 @@ def _arm_marker_hook(
     hooks.apply(FaultHookCommand(operation=FaultHookOperation.SET, request=request))
     monkeypatch.setattr(controller, "fault_hook_controller", hooks)
     return hooks
+
+
+class _ApiServer:
+    def __init__(self, *, target: dict[str, object], get_status: int = 200, post_status: int = 200) -> None:
+        self.target = target
+        self.get_status = get_status
+        self.post_status = post_status
+        self.post_error: Exception | None = None
+        self.requests: list[httpx.Request] = []
+        self.client_timeouts: list[object] = []
+
+    def client(self, *, timeout: float) -> httpx.AsyncClient:
+        self.client_timeouts.append(timeout)
+        return httpx.AsyncClient(transport=httpx.MockTransport(self._handle), timeout=timeout)
+
+    def _handle(self, request: httpx.Request) -> httpx.Response:
+        self.requests.append(request)
+        if request.method == "GET":
+            return httpx.Response(self.get_status, json=self.target)
+        if self.post_error is not None:
+            raise self.post_error
+        return httpx.Response(self.post_status, json={})
