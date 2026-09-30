@@ -3,11 +3,20 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-from tests.e2e.ft.conftest_ft.execution import DATA_DIR, MODEL_DIR
-from tests.utils.ft.launch import get_fully_async_args
+from tests.utils.cluster_backends import create_backend_for_run
+from tests.utils.ft.launch import MEGATRON_PATH, get_fully_async_args, get_train_script
 from tests.utils.soak.core.event_log import EventLog
 from tests.utils.soak.core.events import LaunchOutcome
-from tests.utils.soak.core.utils import API_SERVER_ARGS
+from tests.utils.soak.core.utils import (
+    API_SERVER_ARGS,
+    DATA_DIR,
+    MODEL_DIR,
+    assert_fresh_dump_dir,
+    compute_base_url,
+    create_soak_config,
+    evidence_directory,
+    resolve_dump_dir,
+)
 
 from miles.utils.audit_utils.event_logger.logger import EVENTS_DIRNAME
 from miles.utils.external_utils import command_utils
@@ -62,7 +71,63 @@ def prepare_gsm8k_run(
     fully_async: bool = False,
     enable_fault_tolerance: bool = True,
 ) -> Gsm8kRun:
-    raise NotImplementedError
+    config = create_soak_config(config)
+    print(f"Seed: {seed}, Rollouts: {num_rollout}")
+    print(f"Test: {test_name}, train script: {get_train_script(fully_async=fully_async)}")
+
+    dump_dir = _prepare_dump_dir(config=config, test_name=test_name)
+    train_args = _build_gsm8k_train_args(
+        dump_dir=dump_dir,
+        seed=seed,
+        num_rollout=num_rollout,
+        metric_threshold=metric_threshold,
+        fully_async=fully_async,
+        test_name=test_name,
+        enable_fault_tolerance=enable_fault_tolerance,
+        build_extra_train_args=build_extra_train_args,
+    )
+
+    evidence_dir = evidence_directory(Path(dump_dir))
+    return Gsm8kRun(
+        base_url=compute_base_url(config),
+        dump_dir=dump_dir,
+        evidence_dir=evidence_dir,
+        launch_spec=Gsm8kLaunchSpec(config=config, train_args=train_args, fully_async=fully_async),
+        event_log=EventLog(evidence_dir / "events.jsonl"),
+    )
+
+
+def _prepare_dump_dir(*, config: command_utils.ExecuteTrainConfig, test_name: str) -> str:
+    prepare_gsm8k(create_backend_for_run(config))
+    for proxy_var in ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY"):
+        os.environ.pop(proxy_var, None)
+
+    dump_dir: str = resolve_dump_dir(test_name, run_id=config.run_id)
+    assert_fresh_dump_dir(Path(dump_dir))
+    return dump_dir
+
+
+def _build_gsm8k_train_args(
+    *,
+    dump_dir: str,
+    seed: int,
+    num_rollout: int,
+    metric_threshold: float,
+    fully_async: bool,
+    test_name: str,
+    enable_fault_tolerance: bool,
+    build_extra_train_args: Callable[[str], str],
+) -> str:
+    train_args = get_gsm8k_train_args(
+        seed=seed,
+        num_rollout=num_rollout,
+        metric_threshold=metric_threshold,
+        fully_async=fully_async,
+        test_name=test_name,
+        enable_fault_tolerance=enable_fault_tolerance,
+    )
+    train_args += f"--save-debug-event-data {dump_dir}/{EVENTS_DIRNAME} "
+    return train_args + build_extra_train_args(dump_dir)
 
 
 async def execute_gsm8k_session(run: Gsm8kRun) -> LaunchOutcome:
@@ -82,7 +147,7 @@ def prepare_gsm8k(U: BaseCommandBackend) -> None:
         num_gpus_per_node=TRAIN_GPUS,
         hf_checkpoint=f"{MODEL_DIR}/{MODEL_NAME}",
         dir_dst=MODEL_DIR,
-        megatron_path=os.environ.get("MILES_SCRIPT_MEGATRON_PATH", "/root/Megatron-LM"),
+        megatron_path=MEGATRON_PATH,
     )
     U.hf_download_dataset("zhuzilin/gsm8k", data_dir=DATA_DIR)
 
@@ -124,11 +189,7 @@ def get_gsm8k_train_args(
     )
 
     perf_args = (
-        # Parallelism mirrors the kill_train__dp2_cp2__moe_5layer mode (2 cells x CP2), not
-        # the no-fault baseline test.
-        "--context-parallel-size 2 "
-        "--use-dynamic-batch-size "
-        "--max-tokens-per-gpu 9216 "
+        f"--context-parallel-size {CONTEXT_PARALLEL_SIZE} " "--use-dynamic-batch-size " "--max-tokens-per-gpu 9216 "
     )
 
     grpo_args = "--advantage-estimator grpo " "--entropy-coef 0.00 " "--eps-clip 0.2 " "--eps-clip-high 0.28 "
@@ -144,12 +205,13 @@ def get_gsm8k_train_args(
 
     sglang_args = (
         f"--rollout-num-gpus {ROLLOUT_GPUS} "
-        "--rollout-num-gpus-per-engine 1 "
+        f"--rollout-num-gpus-per-engine {ROLLOUT_GPUS_PER_ENGINE} "
         "--sglang-mem-fraction-static 0.7 "
         "--sglang-enable-metrics "
     )
 
     fault_tolerance_args = API_SERVER_ARGS
+    fault_tolerance_args += "--update-weight-transfer-mode p2p "
     if enable_fault_tolerance:
         fault_tolerance_args += (
             "--use-fault-tolerance " f"--ft-components {' '.join(FT_COMPONENTS)} " "--mini-ft-controller-enable "
