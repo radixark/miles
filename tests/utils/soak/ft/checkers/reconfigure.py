@@ -1,5 +1,7 @@
 from pathlib import Path
 
+from tests.utils.soak.ft.checkers.healing import MIN_SOAK_INJECTIONS
+
 from miles.utils.audit_utils.event_logger.logger import read_events
 from miles.utils.audit_utils.event_logger.models import CellReconfigureEvent
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
@@ -29,7 +31,6 @@ def assert_reconfigure_events(event_dir: Path, *, expected: list[ReconfigureInfo
     )
 
 
-MIN_SOAK_INJECTIONS: int = 2
 MIN_SOAK_HEALINGS: int = 2
 
 

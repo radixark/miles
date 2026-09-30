@@ -2,8 +2,8 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from tests.utils.soak.ft.checkers.healing import MIN_SOAK_INJECTIONS
 from tests.utils.soak.ft.checkers.reconfigure import (
-    MIN_SOAK_INJECTIONS,
     ReconfigureInfo,
     assert_min_soak_injections,
     assert_reconfigure_events,

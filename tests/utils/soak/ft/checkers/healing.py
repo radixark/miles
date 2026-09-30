@@ -1,0 +1,1 @@
+MIN_SOAK_INJECTIONS: int = 2
