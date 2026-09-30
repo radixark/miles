@@ -457,6 +457,27 @@ class TestSendBucket:
         with pytest.raises(AssertionError, match="not transferred"):
             protocol.after_base_weights()
 
+    def test_a_failed_write_gives_up_its_cell_and_the_other_cell_still_gets_every_rank(
+        self, p2p_sender: Any, make_rollout_api: Any, make_bucket: Any
+    ) -> None:
+        """One broken cell must not abort the update of the cells that share its rollout engine ranks."""
+        protocol = p2p_sender.make_protocol()
+        broken, healthy = make_rollout_api("cell-a", gpu_count=2), make_rollout_api("cell-b", gpu_count=2)
+        p2p_sender.connect(protocol, [broken, healthy])
+        protocol.begin_sync(weight_version=1, iter_buckets=None)
+        p2p_sender.transfer_engine.failing_sessions.add(broken.session_id(0))
+
+        protocol.send_bucket(make_bucket("hf.w"))
+        protocol.after_base_weights()
+
+        assert protocol.cell_updaters_of_cell_id["cell-a"].is_errored
+        assert not protocol.cell_updaters_of_cell_id["cell-b"].is_errored
+        assert sorted(p2p_sender.transfer_engine.written_sessions()) == [
+            broken.session_id(0),
+            healthy.session_id(0),
+            healthy.session_id(1),
+        ]
+
 
 class TestCreateCPUReplica:
     def test_the_loader_post_load_hook_is_a_noop_only_while_the_model_loads(

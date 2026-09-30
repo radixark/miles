@@ -2,8 +2,7 @@ import dataclasses
 import logging
 from argparse import Namespace
 from collections import defaultdict
-from collections.abc import Callable, Sequence
-from concurrent.futures import Future, ThreadPoolExecutor
+from collections.abc import Sequence
 from typing import NamedTuple
 
 import ray
@@ -146,28 +145,6 @@ class RemoteWeightInfo:
 
     session_id: str
     weights_info: dict[str, RemoteWeightLocation]  # name -> (remote_address, numel, element_size)
-
-
-class P2PTransferManager:
-    """Generic async task manager for P2P writes.
-
-    Accepts arbitrary callables via submit() and runs them in a thread pool.
-    """
-
-    def __init__(self, num_workers: int = 8, transfer_timeout: float = 30.0):
-        self.num_workers = num_workers
-        self.transfer_timeout = transfer_timeout
-        self.executor: ThreadPoolExecutor | None = None
-
-    def ensure_started(self) -> None:
-        if self.executor is None:
-            # NOTE: RDMA ops won't be affected by the python GIL
-            self.executor = ThreadPoolExecutor(max_workers=self.num_workers)
-
-    def submit(self, fn: Callable, *args) -> Future:
-        """Submit a callable and return its future."""
-        self.ensure_started()
-        return self.executor.submit(fn, *args)
 
 
 def create_server_args_from_dict(data_dict: dict) -> ServerArgs:

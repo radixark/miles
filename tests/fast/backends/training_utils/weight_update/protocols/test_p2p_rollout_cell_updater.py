@@ -1,6 +1,8 @@
 import threading
+import time
+
+_TRANSFER_TIMEOUT = 30.0
 from argparse import Namespace
-from concurrent.futures import Future
 from types import ModuleType
 from typing import Any
 
@@ -118,20 +120,6 @@ class TestDoP2PWriteOneSession:
             )
 
 
-class _RecordingTransferManager:
-    def __init__(self) -> None:
-        self.submissions: list[tuple] = []
-
-    def submit(self, fn, *args) -> Future:
-        self.submissions.append(args)
-        future: Future = Future()
-        try:
-            future.set_result(fn(*args))
-        except Exception as e:
-            future.set_exception(e)
-        return future
-
-
 def _cell_updater(p2p_rollout_cell_updater: ModuleType, cell_id: str = "cell-a") -> Any:
     return p2p_rollout_cell_updater._P2PRolloutCellUpdater(
         args=Namespace(update_weight_engine_request_timeout=10.0), cell_id=cell_id, api_client=None
@@ -150,7 +138,6 @@ class TestSubmitWrite:
             0: _remote_session(p2p_rollout_cell_updater, p2p_transfer_utils, "session-0", {"w": (0x1000, 2, 4)}),
             1: _remote_session(p2p_rollout_cell_updater, p2p_transfer_utils, "session-1", {"w": (0x2000, 2, 4)}),
         }
-        manager = _RecordingTransferManager()
         engine = _RecordingTransferEngine()
 
         updater.submit_write(
@@ -158,7 +145,6 @@ class TestSubmitWrite:
             names=["w"],
             weight_memory_registry={"w": (0x30, 2, 4)},
             transfer_engine=engine,
-            transfer_manager=manager,
         )
 
         assert [session_id for session_id, _, _, _ in engine.calls] == ["session-1"]
@@ -171,7 +157,6 @@ class TestSubmitWrite:
         updater.targets_by_rollout_engine_rank = {
             0: _remote_session(p2p_rollout_cell_updater, p2p_transfer_utils, "session-0", {"w": (0x1000, 2, 4)})
         }
-        manager = _RecordingTransferManager()
         engine = _RecordingTransferEngine()
         for _ in range(2):
             updater.submit_write(
@@ -179,13 +164,11 @@ class TestSubmitWrite:
                 names=["w"],
                 weight_memory_registry={"w": (0x30, 2, 4)},
                 transfer_engine=engine,
-                transfer_manager=manager,
             )
 
-        updater.wait_for_pending_writes()
-        updater.wait_for_pending_writes()
+        updater.wait_for_pending_writes(timeout=_TRANSFER_TIMEOUT)
+        updater.wait_for_pending_writes(timeout=_TRANSFER_TIMEOUT)
 
-        assert len(manager.submissions) == 2
         assert updater._pending_writes == []
 
     def test_a_broken_write_is_blamed_on_the_cell_it_was_addressed_to(
@@ -198,24 +181,21 @@ class TestSubmitWrite:
             updater.targets_by_rollout_engine_rank = {
                 0: _remote_session(p2p_rollout_cell_updater, p2p_transfer_utils, session, {"w": (0x1000, 2, 4)})
             }
-        manager = _RecordingTransferManager()
         broken.submit_write(
             rollout_engine_rank=0,
             names=["w"],
             weight_memory_registry={"w": (0x30, 2, 4)},
             transfer_engine=_RecordingTransferEngine(return_code=-1),
-            transfer_manager=manager,
         )
         healthy.submit_write(
             rollout_engine_rank=0,
             names=["w"],
             weight_memory_registry={"w": (0x30, 2, 4)},
             transfer_engine=_RecordingTransferEngine(),
-            transfer_manager=manager,
         )
 
-        broken.wait_for_pending_writes()
-        healthy.wait_for_pending_writes()
+        broken.wait_for_pending_writes(timeout=_TRANSFER_TIMEOUT)
+        healthy.wait_for_pending_writes(timeout=_TRANSFER_TIMEOUT)
 
         assert (broken.is_errored, healthy.is_errored) == (True, False)
 
@@ -252,7 +232,6 @@ class TestErroredCellDropsItsWrites:
             names=["w"],
             weight_memory_registry={"w": (0x30, 2, 4)},
             transfer_engine=engine,
-            transfer_manager=_RecordingTransferManager(),
         )
 
         assert engine.calls == []
@@ -278,17 +257,15 @@ class TestErroredCellDropsItsWrites:
         updater.targets_by_rollout_engine_rank = {
             0: _remote_session(p2p_rollout_cell_updater, p2p_transfer_utils, "session-0", {"w": (0x1000, 2, 4)})
         }
-        manager = _RecordingTransferManager()
         updater.submit_write(
             rollout_engine_rank=0,
             names=["w"],
             weight_memory_registry={"w": (0x30, 2, 4)},
             transfer_engine=_RecordingTransferEngine(),
-            transfer_manager=manager,
         )
         updater.mark_errored(RuntimeError("lost"))
 
-        updater.wait_for_pending_writes()
+        updater.wait_for_pending_writes(timeout=_TRANSFER_TIMEOUT)
 
         assert len(updater._pending_writes) == 1
 
@@ -309,10 +286,9 @@ class TestDrainingBlamesTheCell:
             names=["w"],
             weight_memory_registry={"w": (0x30, 2, 4)},
             transfer_engine=_RecordingTransferEngine(return_code=-1),
-            transfer_manager=_RecordingTransferManager(),
         )
 
-        updater.wait_for_pending_writes()
+        updater.wait_for_pending_writes(timeout=_TRANSFER_TIMEOUT)
 
         assert updater.is_errored is True
 
@@ -329,9 +305,126 @@ class TestDrainingBlamesTheCell:
             names=["w"],
             weight_memory_registry={"w": (0x30, 2, 4)},
             transfer_engine=_RecordingTransferEngine(),
-            transfer_manager=_RecordingTransferManager(),
         )
 
-        updater.wait_for_pending_writes()
+        updater.wait_for_pending_writes(timeout=_TRANSFER_TIMEOUT)
 
         assert updater._pending_writes == []
+
+
+def _make_args() -> Namespace:
+    return Namespace(update_weight_engine_request_timeout=10.0, p2p_transfer_timeout=_TRANSFER_TIMEOUT)
+
+
+class _FakeFuture:
+    def __init__(self, *, error: BaseException | None = None, blocks: bool = False) -> None:
+        self.result_calls = 0
+        self.cancelled = False
+        self._error = error
+        self._blocks = blocks
+
+    def result(self, timeout: float | None = None) -> None:
+        self.result_calls += 1
+        if self._error is not None:
+            raise self._error
+        if self._blocks:
+            assert timeout is not None
+            time.sleep(timeout)
+            raise TimeoutError("the write never finished")
+
+    def cancel(self) -> bool:
+        self.cancelled = True
+        return True
+
+
+class _FakeExecutor:
+    def __init__(self, futures: list[_FakeFuture]) -> None:
+        self.submitted = 0
+        self._futures = futures
+
+    def submit(self, fn: Any, *args: Any) -> _FakeFuture:
+        future = self._futures[self.submitted]
+        self.submitted += 1
+        return future
+
+
+def _make_updater(p2p_rollout_cell_updater: ModuleType, p2p_transfer_utils: ModuleType, *, cell_id: str = "cell-0"):
+    updater = p2p_rollout_cell_updater._P2PRolloutCellUpdater(args=_make_args(), cell_id=cell_id, api_client=object())
+    updater.targets_by_rollout_engine_rank = {
+        0: p2p_transfer_utils.RemoteWeightInfo(
+            session_id=f"session-{cell_id}",
+            weights_info={"w": p2p_transfer_utils.RemoteWeightLocation(address=0x2000, numel=4, element_size=2)},
+        )
+    }
+    return updater
+
+
+_REGISTRY = {"w": (0x1000, 4, 2)}
+
+
+class TestPerCellWriteThread:
+    def test_a_stuck_cell_does_not_hold_up_another_cells_write(
+        self, p2p_rollout_cell_updater: ModuleType, p2p_transfer_utils: ModuleType
+    ) -> None:
+        """A shared pool lets one hung engine occupy the workers the healthy cells need."""
+        stuck = _make_updater(p2p_rollout_cell_updater, p2p_transfer_utils, cell_id="cell-stuck")
+        healthy = _make_updater(p2p_rollout_cell_updater, p2p_transfer_utils, cell_id="cell-healthy")
+        gate = threading.Event()
+        stuck_engine = _RecordingTransferEngine(gate=gate)
+        healthy_engine = _RecordingTransferEngine()
+
+        try:
+            stuck.submit_write(
+                rollout_engine_rank=0, names=["w"], weight_memory_registry=_REGISTRY, transfer_engine=stuck_engine
+            )
+            assert stuck_engine.entered.wait(timeout=10)
+            healthy.submit_write(
+                rollout_engine_rank=0, names=["w"], weight_memory_registry=_REGISTRY, transfer_engine=healthy_engine
+            )
+            healthy.wait_for_pending_writes(timeout=_TRANSFER_TIMEOUT)
+
+            assert healthy_engine.calls != []
+            assert stuck_engine.calls == []
+            assert not healthy.is_errored
+        finally:
+            gate.set()
+
+    def test_two_cells_write_on_two_different_threads(
+        self, p2p_rollout_cell_updater: ModuleType, p2p_transfer_utils: ModuleType
+    ) -> None:
+        """One worker per cell is what keeps a hung write confined to its own cell."""
+        first = _make_updater(p2p_rollout_cell_updater, p2p_transfer_utils, cell_id="cell-a")
+        second = _make_updater(p2p_rollout_cell_updater, p2p_transfer_utils, cell_id="cell-b")
+        gate = threading.Event()
+        first_engine = _RecordingTransferEngine(gate=gate)
+        second_engine = _RecordingTransferEngine()
+
+        try:
+            first.submit_write(
+                rollout_engine_rank=0, names=["w"], weight_memory_registry=_REGISTRY, transfer_engine=first_engine
+            )
+            assert first_engine.entered.wait(timeout=10)
+            second.submit_write(
+                rollout_engine_rank=0, names=["w"], weight_memory_registry=_REGISTRY, transfer_engine=second_engine
+            )
+            second.wait_for_pending_writes(timeout=_TRANSFER_TIMEOUT)
+
+            assert first_engine.thread_idents[0] != second_engine.thread_idents[0]
+        finally:
+            gate.set()
+
+    def test_one_cell_writes_its_own_buckets_in_submission_order(
+        self, p2p_rollout_cell_updater: ModuleType, p2p_transfer_utils: ModuleType
+    ) -> None:
+        """A single worker per cell is what keeps a later bucket from overtaking an earlier one."""
+        updater = _make_updater(p2p_rollout_cell_updater, p2p_transfer_utils)
+        engine = _RecordingTransferEngine()
+
+        for _ in range(4):
+            updater.submit_write(
+                rollout_engine_rank=0, names=["w"], weight_memory_registry=_REGISTRY, transfer_engine=engine
+            )
+        updater.wait_for_pending_writes(timeout=_TRANSFER_TIMEOUT)
+
+        assert len(engine.calls) == 4
+        assert len(set(engine.thread_idents)) == 1
