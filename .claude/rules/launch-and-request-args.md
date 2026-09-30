@@ -2,13 +2,14 @@
 paths:
   - "miles/**/arguments.py"
   - "miles/**/*args*.py"
-  - "miles/utils/eval_config.py"
+  - "miles/utils/*.py"
   - "miles/utils/chat_template_utils/**/*.py"
   - "miles/backends/sglang_utils/**/*.py"
   - "miles/rollout/**/*.py"
   - "miles/router/**/*.py"
   - "miles/tinker/**/*.py"
   - "miles/ray/rollout/**/*.py"
+  - "miles/ray/specs/**/*.py"
   - "examples/**/*.py"
 ---
 
@@ -34,6 +35,17 @@ code that merges them.
   different values? If so, the field is a request field with an optional launch
   default. If the run is only correct when every request uses the same value,
   the field is a launch constraint, and request input must not change it.
+  Answer it per mode: a field can be free in evaluation but fixed in training,
+  or fixed only while a feature is enabled.
+- **A field can have two roles.** When a request field is both something the
+  caller controls for itself and something the run needs at a fixed value, the
+  run's requirement is a launch constraint. Rejecting a differing caller value
+  is the default; merging the two, for example by taking the larger, or
+  overriding the caller is a departure.
+- **External limits and environment variables are launch constraints too.** A
+  capability or version limit of an engine, router or other external component,
+  and an environment variable that changes behavior, follow the same rules as
+  launch args.
 - **Do not widen either side.** Do not add a launch flag because one call site
   wants a different value; pass it with the request or the dataset config. Do
   not add a request field that lets a caller change a launch constraint. Do not
@@ -54,6 +66,12 @@ code that merges them.
   only when the request leaves the field unset.
 - **Default for a launch constraint:** a request cannot change it; a request
   that sets a different value gets a clear error.
+- **Fail where the user will see it, and confirm the result.** Reject a violated
+  launch constraint at startup whenever it can be known then. Otherwise fail
+  with an error that stops or clearly surfaces in the run, not only a
+  per-sample warning. When miles forces a value on an engine, router or other
+  component, check the response to confirm it was honored instead of silently
+  padding or truncating the result.
 - **Make every departure from these defaults explicit.** When a change makes one
   value override another, ignores input, or forces a value, including a
   miles-derived value replacing a user setting, add a comment at that spot
@@ -61,8 +79,8 @@ code that merges them.
 - **Every accepted field must reach its consumer.** A flag, config key or
   request field that parses but is never read turns a user setting into a
   silent no-op. Wire it through or refuse it.
-- **Keep train and eval differences in the merge.** When evaluation relaxes or
-  tightens a launch constraint, implement that where values are merged, not at
-  individual call sites.
+- **Keep mode differences in the merge.** When evaluation or an enabled feature
+  relaxes or tightens a constraint, implement that where values are merged, not
+  at individual call sites.
 - **Never mutate launch state per request.** Do not write to the parsed args or
   to shared default dicts from a request path; copy first.
