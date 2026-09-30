@@ -26,11 +26,6 @@ class TestRunCellSoak:
         monkeypatch.setattr(ft_entrypoint, "run_soak", run_soak)
         actor_form = InjectFaultForm(base_url="http://localhost:18080", action=ExitProcessAction())
         rollout_form = InjectFaultForm(base_url="http://localhost:18080", action=KillProcessAction())
-        monkeypatch.setattr(
-            ft_entrypoint,
-            "create_cell_fault_forms",
-            lambda *, base_url, config: {"actor": [actor_form], "rollout": [rollout_form]},
-        )
         config = ExecuteTrainConfig(cluster_backend=ClusterBackend.RAY, run_id="260926-120000-000")
         runner_config = SoakRunnerConfig(
             seed=0, target_configs={"actor": SoakTargetConfig(expected_count=2, mean_interval_seconds=60.0)}
@@ -43,6 +38,7 @@ class TestRunCellSoak:
             runner_config=runner_config,
             event_log=EventLog(tmp_path / "events.jsonl"),
             evidence_dir=tmp_path / "evidence",
+            cell_fault_forms={"actor": [actor_form], "rollout": [rollout_form]},
         )
 
         assert recorded["forms"] == {"actor": [actor_form]}

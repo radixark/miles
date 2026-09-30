@@ -6,7 +6,6 @@ from tests.e2e.ft.conftest_ft import scenario_realistic_gsm8k
 from tests.fast.e2e.scenario_harness import SCENARIO_RUN_ID, ScenarioHarness, parse_fault_tolerance_args
 from tests.utils.soak.core.config import SoakTailConfig, SoakTargetConfig
 from tests.utils.soak.core.events import LaunchOutcome
-from tests.utils.soak.core.utils import compute_base_url
 from tests.utils.soak.ft.actions.factory import create_cell_fault_forms
 from tests.utils.soak.ft.types import ACTOR_CELL_TYPE, ROLLOUT_CELL_TYPE
 from tests.utils.soak.recipes import gsm8k
@@ -41,7 +40,7 @@ class TestTheSoakTheGsm8kRunSchedules:
         _run(seed=5, num_rollout=40)
 
         (soak,) = harness.soaks
-        expected = create_cell_fault_forms(base_url=compute_base_url(soak["config"]), config=soak["config"])
+        expected = create_cell_fault_forms(soak["config"])
         assert {kind: [form.name for form in forms] for kind, forms in soak["forms"].items()} == {
             kind: [form.name for form in expected[kind]] for kind in (ACTOR_CELL_TYPE, ROLLOUT_CELL_TYPE)
         }
