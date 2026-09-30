@@ -5,18 +5,18 @@ from typing import Any
 
 import pytest
 from tests.e2e.deploy.conftest_deploy.hot_restart import fault_form as fault_form_module
-from tests.e2e.deploy.conftest_deploy.hot_restart.cluster_observer import compute_hot_restart_workloads
 from tests.e2e.deploy.conftest_deploy.hot_restart.driver import (
     HOT_RESTART_ARG,
     REPLACED_LAUNCH_EXIT_CODE,
     compute_release_of_config,
 )
-from tests.e2e.deploy.conftest_deploy.hot_restart.evidence import HotRestartRecord, RunProgress
 from tests.e2e.deploy.conftest_deploy.hot_restart.fault_form import (
     HOT_RESTART_FORM_NAME,
     HotRestartFaultForm,
     restamped_replaced_workloads,
 )
+from tests.utils.deploy.hot_restart.cluster_observer import compute_hot_restart_workloads
+from tests.utils.deploy.hot_restart.evidence import HotRestartRecord, RunProgress
 
 from miles.ray.specs.rollout import ROLLOUT_EXECUTOR_POOL_ID
 from miles.utils.external_utils.command_utils.base_backend import ExecuteTrainConfig

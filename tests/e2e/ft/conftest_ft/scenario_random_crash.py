@@ -46,14 +46,14 @@ from tests.e2e.ft.conftest_ft.fault_injection.views import (
     compute_successful_form_names,
 )
 from tests.e2e.ft.conftest_ft.modes import FTTestMode, resolve_mode
-
-from miles.utils.audit_utils.event_logger.logger import EVENTS_DIRNAME
-from miles.utils.external_utils import command_utils
-from miles.utils.test_utils.reconfigure_assertions import (
+from tests.utils.soak.ft.checkers.reconfigure import (
     assert_min_soak_injections,
     assert_soak_reconfigure_events,
     load_reconfigure_events,
 )
+
+from miles.utils.audit_utils.event_logger.logger import EVENTS_DIRNAME
+from miles.utils.external_utils import command_utils
 from miles.utils.workers.naming import parse_cell_id
 
 app: typer.Typer = typer.Typer()

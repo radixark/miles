@@ -8,7 +8,6 @@ import pytest
 import tests.e2e.deploy
 from tests.e2e.deploy.conftest_deploy.hot_restart import scenario_hot_restart_deterministic as scenario
 from tests.e2e.deploy.conftest_deploy.hot_restart.driver import ScheduledFreeze
-from tests.e2e.deploy.conftest_deploy.hot_restart.evidence import HotRestartEvidence, HotRestartRecord
 from tests.e2e.deploy.conftest_deploy.hot_restart.freeze_plan import compute_freeze_plan_path
 from tests.e2e.deploy.conftest_deploy.hot_restart.scenario_hot_restart_deterministic import (
     HotRestartMode,
@@ -16,6 +15,7 @@ from tests.e2e.deploy.conftest_deploy.hot_restart.scenario_hot_restart_determini
     read_installed_args,
 )
 from tests.e2e.ft.conftest_ft.app import BASELINE_SIDE, TARGET_SIDE
+from tests.utils.deploy.hot_restart.evidence import HotRestartEvidence, HotRestartRecord
 
 from miles.utils.external_utils.command_utils.base_backend import ExecuteTrainConfig
 from miles.utils.external_utils.command_utils.common import ArgvManipulator

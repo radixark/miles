@@ -3,7 +3,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from tests.e2e.deploy.conftest_deploy.hot_restart.driver import ScheduledFreeze
-from tests.e2e.deploy.conftest_deploy.hot_restart.evidence import TRAIN_STEP_METRIC_KEY, HotRestartRecord
+from tests.utils.deploy.hot_restart.evidence import TRAIN_STEP_METRIC_KEY, HotRestartRecord
 
 from miles.utils.audit_utils.event_logger.logger import EVENTS_DIRNAME, read_events
 from miles.utils.audit_utils.event_logger.models import MetricEvent
