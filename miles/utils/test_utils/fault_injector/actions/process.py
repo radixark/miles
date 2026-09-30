@@ -8,6 +8,9 @@ import logging
 import os
 import signal
 from enum import Enum
+from typing import Literal
+
+from miles.utils.test_utils.fault_injector.actions.base import BaseFaultAction, FaultHookContext, FaultHookResources
 
 logger = logging.getLogger(__name__)
 
@@ -39,3 +42,10 @@ def inject_fault(mode: str) -> None:
             libc.sleep.argtypes = (ctypes.c_uint,)
             libc.sleep.restype = ctypes.c_uint
             libc.sleep(600)
+
+
+class ObserveAction(BaseFaultAction):
+    kind: Literal["observe"] = "observe"
+
+    async def __call__(self, *, context: FaultHookContext, resources: FaultHookResources) -> None:
+        return None
