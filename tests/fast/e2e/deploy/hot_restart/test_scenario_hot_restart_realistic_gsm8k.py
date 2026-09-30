@@ -142,7 +142,9 @@ class TestTheLaunchATakeOverResumes:
         (launch,) = harness.launches
         parsed = parse_fault_tolerance_args(launch.request.train_args)
         assert launch.value_of("--wandb-run-id") == SCENARIO_RUN_ID
-        assert "--save-inference-engine-weight-checksum" in launch.argv
+        assert launch.value_of("--save-debug-event-data") is not None
+        assert "--save-inference-engine-weight-checksum" not in launch.argv
+        assert "--no-log-inference-engine-weight-checksums" not in launch.argv
         assert "--ci-disable-weight-update-checker" in launch.argv
         assert parsed.ft_components == []
         assert not parsed.mini_ft_controller_enable

@@ -31,6 +31,7 @@ def create_fault_hook_comparison_app(
     test_name: str,
     num_rollouts: int,
     ft_components: tuple[str, ...],
+    extra_ft_components: tuple[str, ...],
     extra_train_args: str,
     build_fault_hooks: BuildFaultHooksFn,
     expected_target_reconfigures: TargetReconfiguresFn,
@@ -49,7 +50,12 @@ def create_fault_hook_comparison_app(
             f"got ft_components={mode.ft_components}"
         )
         args = get_deterministic_p2p_train_args(
-            mode, dump_dir=dump_dir, num_steps=num_rollouts, enable_dumper=enable_dumper, test_name=test_name
+            mode,
+            dump_dir=dump_dir,
+            num_steps=num_rollouts,
+            enable_dumper=enable_dumper,
+            test_name=test_name,
+            extra_ft_components=extra_ft_components,
         )
         args += extra_train_args
         if is_target:

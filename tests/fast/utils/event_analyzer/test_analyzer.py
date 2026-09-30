@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from tests.fast.utils.event_analyzer.rules.weight_event_fakes import make_result, make_step_end
 
 from miles.backends.megatron_utils.ft.types import TrainStepOutcome
 from miles.utils.audit_utils.event_analyzer import analyzer as analyzer_module
@@ -15,6 +16,9 @@ from miles.utils.audit_utils.event_analyzer.analyzer import (
     run_analysis,
     run_analysis_from_args,
     run_sample_ownership_analysis,
+)
+from miles.utils.audit_utils.event_analyzer.rules.inference_engine_weight_checksum_coverage import (
+    WeightUpdateCoverageIssue,
 )
 from miles.utils.audit_utils.event_logger.logger import EventLogger
 from miles.utils.audit_utils.event_logger.models import (
@@ -166,6 +170,26 @@ class TestInferenceEngineChecksumRuleWiredIn:
         event_logger.close()
 
         assert run_analysis(event_dir=tmp_path) == []
+
+
+class TestWeightPublicationRulesWiredIn:
+    @staticmethod
+    def _write(tmp_path: Path, events: list[Any]) -> None:
+        (tmp_path / "e.jsonl").write_text("".join(event.model_dump_json() + "\n" for event in events))
+
+    def test_an_uncovered_settled_publication_is_reported(self, tmp_path: Path) -> None:
+        """run_analysis runs the publication coverage rule on every model partition."""
+        self._write(
+            tmp_path,
+            [
+                make_result(second=1.0, update_id="u1", published_version=1, cell_hashes={"a": "h"}, updated=["a"]),
+                make_step_end(second=2.0),
+            ],
+        )
+
+        [issue] = run_analysis(event_dir=tmp_path)
+
+        assert isinstance(issue, WeightUpdateCoverageIssue)
 
 
 class TestRunAnalysisFromArgs:

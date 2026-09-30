@@ -65,6 +65,7 @@ app, run_ci = create_fault_hook_comparison_app(
     test_name=TEST_NAME,
     num_rollouts=NUM_ROLLOUTS,
     ft_components=("rollout",),
+    extra_ft_components=(),
     extra_train_args="",
     build_fault_hooks=_build_fault_hooks,
     expected_target_reconfigures=lambda mode: [],

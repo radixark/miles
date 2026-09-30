@@ -166,9 +166,11 @@ def get_debug_dump_args(*, dump_dir: str, enable_dumper: bool) -> str:
     return f"--save-debug-event-data {shlex.quote(str(Path(dump_dir) / EVENTS_DIRNAME))} {dumper_args}"
 
 
-def get_ft_args(mode: FTTestMode, *, api_server_args: str = "--api-server-port 0 ") -> str:
-    checksum_args = "--save-inference-engine-weight-checksum " if mode.has_real_rollout else ""
-    return f"--use-fault-tolerance --ft-components {' '.join(mode.ft_components)} {api_server_args}{checksum_args}"
+def get_ft_args(
+    mode: FTTestMode, *, api_server_args: str = "--api-server-port 0 ", extra_ft_components: tuple[str, ...] = ()
+) -> str:
+    ft_components = [*mode.ft_components, *extra_ft_components]
+    return f"--use-fault-tolerance --ft-components {' '.join(ft_components)} {api_server_args}"
 
 
 DETERMINISTIC_ROLLOUT_ARGS: str = (
@@ -182,12 +184,18 @@ ROLLOUT_HEALTH_CHECK_INTERVAL_SECONDS: float = 1.0
 
 
 def get_deterministic_p2p_train_args(
-    mode: FTTestMode, *, dump_dir: str, num_steps: int, enable_dumper: bool, test_name: str
+    mode: FTTestMode,
+    *,
+    dump_dir: str,
+    num_steps: int,
+    enable_dumper: bool,
+    test_name: str,
+    extra_ft_components: tuple[str, ...] = (),
 ) -> str:
     assert mode.has_real_rollout, f"{test_name} transfers weights to engines, but mode {mode.model_name} has none"
 
     args = get_common_train_args(mode, dump_dir=dump_dir, num_steps=num_steps, enable_dumper=enable_dumper)
-    args += get_ft_args(mode, api_server_args=API_SERVER_ARGS)
+    args += get_ft_args(mode, api_server_args=API_SERVER_ARGS, extra_ft_components=extra_ft_components)
     args += "--mini-ft-controller-enable "
     args += "--debug-deterministic-collective "
     args += "--sglang-disable-radix-cache "

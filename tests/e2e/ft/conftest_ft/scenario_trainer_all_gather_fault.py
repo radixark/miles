@@ -63,6 +63,7 @@ app, run_ci = create_fault_hook_comparison_app(
     test_name=TEST_NAME,
     num_rollouts=NUM_ROLLOUTS,
     ft_components=("train",),
+    extra_ft_components=("rollout",),
     extra_train_args=f"--update-weights-timeout {UPDATE_WEIGHTS_TIMEOUT_SECONDS} ",
     build_fault_hooks=_build_fault_hooks,
     expected_target_reconfigures=_expected_reconfigures,

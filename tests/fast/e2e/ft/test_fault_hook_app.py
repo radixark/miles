@@ -39,7 +39,12 @@ _HOOKS = [
 _HEAL = ReconfigureInfo(rollout_id=3, src_cell_index=0, healed_cell_indices=[1], alive_cell_indices_after=[0, 1])
 
 
-def _create_run_ci(harness: ScenarioHarness, *, ft_components: tuple[str, ...] = ("train",)) -> Callable[[str], None]:
+def _create_run_ci(
+    harness: ScenarioHarness,
+    *,
+    ft_components: tuple[str, ...] = ("train",),
+    extra_ft_components: tuple[str, ...] = (),
+) -> Callable[[str], None]:
     def build_fault_hooks(mode: FTTestMode, config: ExecuteTrainConfig) -> list[FaultHookRequest]:
         harness.checks.append(("build_fault_hooks", (mode, config), {}))
         return _HOOKS
@@ -48,6 +53,7 @@ def _create_run_ci(harness: ScenarioHarness, *, ft_components: tuple[str, ...] =
         test_name="fault_hook_app",
         num_rollouts=_NUM_ROLLOUTS,
         ft_components=ft_components,
+        extra_ft_components=extra_ft_components,
         extra_train_args="--update-weights-timeout 120.0 ",
         build_fault_hooks=build_fault_hooks,
         expected_target_reconfigures=lambda mode: [_HEAL],
@@ -109,6 +115,13 @@ class TestTheTwoSidesOfTheFaultHookComparison:
         baseline, target = (launch.config.ray_submission_id for launch in harness.launches)
         assert baseline != target
         assert baseline.startswith("miles-soak-") and target.startswith("miles-soak-")
+
+    def test_extra_ft_components_widen_the_launch_but_not_the_declared_faults(self, harness: ScenarioHarness) -> None:
+        """Rollout ft can replace engines a faulted trainer left errored while the mode still names only trainer faults."""
+        _create_run_ci(harness, extra_ft_components=("rollout",))(_MODE)
+
+        for launch in harness.launches:
+            assert parse_fault_tolerance_args(launch.request.train_args).ft_components == ["train", "rollout"]
 
     def test_a_mode_with_other_fault_tolerant_components_is_refused_before_launching(
         self, harness: ScenarioHarness

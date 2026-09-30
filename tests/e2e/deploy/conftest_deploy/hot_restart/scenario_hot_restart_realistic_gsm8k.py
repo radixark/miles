@@ -95,11 +95,7 @@ def _assert_hot_restarts_healthy(
 
 
 def _build_train_args(dump_dir: str, *, wandb_run_id: str) -> str:
-    return (
-        build_checkpoint_args(dump_dir)
-        + f"--wandb-run-id {wandb_run_id} "
-        + "--ci-disable-weight-update-checker --save-inference-engine-weight-checksum "
-    )
+    return build_checkpoint_args(dump_dir) + f"--wandb-run-id {wandb_run_id} " + "--ci-disable-weight-update-checker "
 
 
 def build_checkpoint_args(dump_dir: str) -> str:

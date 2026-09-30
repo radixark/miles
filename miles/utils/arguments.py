@@ -3283,6 +3283,12 @@ def _resolve_event_logging(args: argparse.Namespace) -> None:
 
     if args.log_inference_engine_weight_checksums is None:
         args.log_inference_engine_weight_checksums = event_directory_was_requested or args.enable_event_analyzer
+    if args.enable_event_analyzer and not args.log_inference_engine_weight_checksums:
+        raise ValueError(
+            "--enable-event-analyzer (also implied by train fault tolerance) requires every published weight "
+            "version to carry engine weight checksums, so it cannot run with "
+            "--no-log-inference-engine-weight-checksums"
+        )
 
 
 def _resolve_sample_ownership_check(args: argparse.Namespace) -> None:
