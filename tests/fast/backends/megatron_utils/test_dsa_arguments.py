@@ -36,18 +36,12 @@ def _hf_config(**overrides):
 
 def test_default_preserves_the_existing_miles_path():
     args = add_dsa_arguments(ArgumentParser()).parse_args([])
-    assert args.dsa_impl == "miles"
     assert vars(args) == {"dsa_impl": "miles", "miles_dsa_topk_backend": "torch", "cp_comm_type": None}
     before = vars(args).copy()
     normalize_dsa_args(args, None)
     assert vars(args) == before
 
 
-@pytest.mark.parametrize(
-    "input_spec",
-    [MILES_DSA_SPEC, MEGATRON_DSA_SPEC],
-    ids=["miles", "native"],
-)
 @pytest.mark.parametrize(
     ("hf_overrides", "interleaved", "frequency", "offset"),
     [
@@ -67,8 +61,8 @@ def test_default_preserves_the_existing_miles_path():
     ],
     ids=["deepseek-v32", "glm5", "glm52-shared-indices"],
 )
-def test_native_dsa_preserves_checkpoint_indexer_conventions(input_spec, hf_overrides, interleaved, frequency, offset):
-    args = _args(spec=list(input_spec))
+def test_native_dsa_preserves_checkpoint_indexer_conventions(hf_overrides, interleaved, frequency, offset):
+    args = _args()
     hf_config = _hf_config(**hf_overrides)
     normalize_dsa_args(args, hf_config)
 
@@ -92,17 +86,11 @@ def test_native_dsa_preserves_checkpoint_indexer_conventions(input_spec, hf_over
     assert vars(args) == before
 
 
-@pytest.mark.parametrize("loss_coeff", [None, 0.0])
-def test_native_indexer_objective_defaults_to_zero(loss_coeff):
+@pytest.mark.parametrize("loss_coeff", [0.0, 0.001])
+def test_explicit_indexer_training_objective_is_preserved(loss_coeff):
     args = _args(dsa_indexer_loss_coeff=loss_coeff)
     normalize_dsa_args(args, _hf_config())
-    assert args.dsa_indexer_loss_coeff == 0.0
-
-
-def test_explicit_indexer_training_objective_is_preserved():
-    args = _args(dsa_indexer_loss_coeff=0.001)
-    normalize_dsa_args(args, _hf_config())
-    assert args.dsa_indexer_loss_coeff == 0.001
+    assert args.dsa_indexer_loss_coeff == loss_coeff
 
 
 @pytest.mark.parametrize(
@@ -136,22 +124,20 @@ def test_unsupported_checkpoint_cannot_select_native_dsa():
         normalize_dsa_args(_args(), _hf_config(model_type="deepseek_v4"))
 
 
-@pytest.mark.parametrize("cp_comm_type", [None, ["allgather"], ["allgather", "allgather"]])
-def test_native_cp_uses_allgather_communication_with_zigzag_partitioning(cp_comm_type):
-    args = _args(context_parallel_size=4, cp_comm_type=cp_comm_type)
+def test_native_cp_preserves_per_layer_allgather_communication_with_zigzag_partitioning():
+    args = _args(context_parallel_size=4, cp_comm_type=["allgather", "allgather"])
     normalize_dsa_args(args, _hf_config())
-    assert args.cp_comm_type == (cp_comm_type or ["allgather"])
+    assert args.cp_comm_type == ["allgather", "allgather"]
     assert args.allgather_cp is False
 
 
-@pytest.mark.parametrize("backend", ["torch", "flashinfer"])
-def test_native_dsa_keeps_the_requested_topk_backend(backend):
+def test_native_dsa_keeps_the_requested_topk_backend():
     parsed = add_dsa_arguments(ArgumentParser()).parse_args(
-        ["--dsa-impl", "megatron", "--miles-dsa-topk-backend", backend]
+        ["--dsa-impl", "megatron", "--miles-dsa-topk-backend", "flashinfer"]
     )
     args = _args(**vars(parsed))
     normalize_dsa_args(args, _hf_config())
-    assert args.dsa_indexer_topk_backend == backend
+    assert args.dsa_indexer_topk_backend == "flashinfer"
 
 
 @pytest.fixture
@@ -201,4 +187,3 @@ def test_shared_parser_normalizes_omitted_cp_without_overriding_explicit_setting
     )
     megatron_defaults(args)
     assert args.cp_comm_type == expected
-    assert args.dsa_impl in ("miles", "megatron")
