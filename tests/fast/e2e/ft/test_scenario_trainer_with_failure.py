@@ -40,8 +40,8 @@ def test_fake_rollout_modes_keep_the_production_collective() -> None:
 def test_injection_starts_after_the_fault_rollout() -> None:
     """Only post-fault rollouts may inject baseline data; the fault rollout trains live samples."""
     target_tokens = _phase_b_tokens(_REAL_ROLLOUT_MODE, "target")
-    actions = json.loads(_option_value(target_tokens, "--ci-ft-test-actions"))
-    fault_rollout_ids = {action["at_rollout"] for action in actions}
+    actions = json.loads(_option_value(target_tokens, "--ci-fault-hooks"))
+    fault_rollout_ids = {action["rollout_id"] for action in actions}
     start = int(_option_value(target_tokens, "--ci-inject-rollout-data-start-rollout-id"))
 
     assert fault_rollout_ids == {NUM_PHASE_A_STEPS + 1}

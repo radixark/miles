@@ -1,9 +1,8 @@
 import asyncio
-import json
 import time
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
 import ray
@@ -12,6 +11,7 @@ from tests.fast.ray.train.conftest import get_raw_actor_handles, make_deployment
 from tests.fast.train_parallel_config_utils import make_train_parallel_config
 
 import miles.ray.train.group as group_module
+import miles.utils.test_utils.fault_injector.controller as fault_hook_module
 from miles.backends.megatron_utils.ft.types import TrainStepOutcome, TrainStepOutput
 from miles.ray.rollout.inference_controller import UpdatableEngines
 from miles.ray.train.group import TrainerController, compute_trainer_health_checker_config
@@ -30,6 +30,10 @@ from miles.utils.dp_schedule import TrainParallelConfig
 from miles.utils.object_store import _MooncakeStoreObjectRef
 from miles.utils.ray_utils import Box
 from miles.utils.retry_utils import NonRetryableError
+from miles.utils.test_utils.fault_injector.actions.cell import StopCellAction
+from miles.utils.test_utils.fault_injector.controller import _FaultHookController
+from miles.utils.test_utils.fault_injector.models import FaultHookName, FaultHookRequest
+from miles.utils.test_utils.fault_injector.static_source import render_fault_hooks
 from miles.utils.workers.naming import compute_cell_id
 
 pytestmark = pytest.mark.asyncio
@@ -43,8 +47,8 @@ def _make_mock_args(
     enable_witness: bool = False,
     gpus_per_cell: int = 1,
     num_cells: int = 3,
-    ci_ft_test_actions: str | None = None,
-    ci_ft_test_actions_path: str | None = None,
+    ci_fault_hooks: str | None = None,
+    ci_fault_hooks_path: str | None = None,
     colocate: bool = True,
     update_weight_transfer_mode: str = "broadcast",
 ) -> SimpleNamespace:
@@ -62,8 +66,8 @@ def _make_mock_args(
         trainer_heartbeat_checker_timeout=10.0,
         trainer_heartbeat_checker_first_wait=300.0,
         trainer_heartbeat_checker_failure_threshold=3,
-        ci_ft_test_actions=ci_ft_test_actions,
-        ci_ft_test_actions_path=ci_ft_test_actions_path,
+        ci_fault_hooks=ci_fault_hooks,
+        ci_fault_hooks_path=ci_fault_hooks_path,
         debug_train_only=False,
         debug_rollout_only=False,
         # compute_megatron_world_size_except_dp(args) = TP * PP * CP. Set CP to
@@ -88,7 +92,7 @@ def _make_controller(
     actor_count_per_cell: int = 1,
     with_ref: bool = False,
     with_opd_teacher: bool = False,
-    ci_ft_test_actions: str | None = None,
+    ci_fault_hooks: str | None = None,
 ) -> TrainerController:
     """Create a TrainerController and let it observe every cell, as the watcher would."""
     train_conftest.fake_worker_manager.num_cells = num_cells
@@ -106,8 +110,8 @@ def _make_controller(
         indep_dp=True,
         gpus_per_cell=actor_count_per_cell,
         num_cells=num_cells,
-        ci_ft_test_actions=ci_ft_test_actions,
-        ci_ft_test_actions_path=None,
+        ci_fault_hooks=ci_fault_hooks,
+        ci_fault_hooks_path=None,
     )
     group._health_checker_config = compute_trainer_health_checker_config(
         group.args, expected_num_cells=group._expected_num_cells
@@ -171,6 +175,10 @@ async def _make_alive_controller(*, num_cells: int = 3, **kwargs) -> TrainerCont
 
 def _output(weight_version: int | None, *failed_cell_ids: str) -> WeightUpdateOutput:
     return WeightUpdateOutput(weight_version=weight_version, failed_cell_ids=failed_cell_ids)
+
+
+def _outcome_of(output: WeightUpdateOutput) -> tuple[int | None, tuple[str, ...]]:
+    return output.weight_version, output.failed_cell_ids
 
 
 def _make_broadcast_args() -> SimpleNamespace:
@@ -1274,6 +1282,7 @@ class TestUpdateWeightsReturnsTheVersion:
         group = TrainerController.__new__(TrainerController)
         group.args = _make_broadcast_args()
         group._trainer_id = "trainer-0"
+        group._debug_trainer_load_state_timestamp = 0.0
         group._execute_first_alive = AsyncMock(return_value=per_worker_outputs)
         return group
 
@@ -1281,7 +1290,7 @@ class TestUpdateWeightsReturnsTheVersion:
         """The driver can only publish the version to the executor if the controller hands it back."""
         group = self._make_group(per_worker_outputs=[_output(1), _output(1)])
 
-        assert await group.update_weights(info=MagicMock()) == _output(1)
+        assert _outcome_of(await group.update_weights(info=MagicMock())) == _outcome_of(_output(1))
 
     async def test_a_trainer_that_skipped_the_broadcast_answers_nothing(self):
         """--debug-skip-weight-update returns None from every worker, which must reach the driver as None."""
@@ -1297,7 +1306,11 @@ class TestUpdateWeightsReturnsTheVersion:
         await group.update_weights(info=info)
 
         group._execute_first_alive.assert_awaited_once_with(
-            "update_weights", timeout=group.args.update_weights_timeout, info=info
+            "update_weights",
+            timeout=group.args.update_weights_timeout,
+            info=info,
+            debug_weight_update_id=ANY,
+            rollout_id=None,
         )
 
 
@@ -1308,6 +1321,7 @@ class TestModelOwnedWeightVersions:
         controller = TrainerController.__new__(TrainerController)
         controller.args = _make_broadcast_args()
         controller._trainer_id = "trainer-0"
+        controller._debug_trainer_load_state_timestamp = 0.0
         controller._execute_first_alive = AsyncMock(
             side_effect=[[_output(version), _output(version)] for version in versions]
         )
@@ -1323,6 +1337,7 @@ class TestModelOwnedWeightVersions:
         controller = TrainerController.__new__(TrainerController)
         controller.args = _make_broadcast_args()
         controller._trainer_id = "trainer-0"
+        controller._debug_trainer_load_state_timestamp = 0.0
         controller._execute_first_alive = AsyncMock(
             side_effect=[RuntimeError("cell died"), [_output(12), _output(12)]]
         )
@@ -1345,28 +1360,58 @@ class TestInitForwardsModelFlags:
                 assert init_call[2]["with_opd_teacher"] is True
 
 
-class TestTrainRunsFTTestActions:
-    async def test_train_applies_the_action_armed_for_that_rollout_before_returning(self):
-        """The FT scenario's stop must have landed by the time the driver starts the next rollout."""
-        actions = json.dumps(
-            [{"at_rollout": 4, "action": "stop_cell_at_end", "cell_id": "trainer-engine-actor-00002"}]
+class TestTrainRunsFaultHooks:
+    async def test_train_applies_the_hook_armed_for_that_rollout_before_returning(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The declared stop must finish before the caller can begin the next rollout."""
+        _isolate_fault_hook_controller(monkeypatch)
+        requests = render_fault_hooks(
+            [
+                FaultHookRequest(
+                    request_id="stop-cell-2",
+                    hook_name=FaultHookName.TRAINER_CONTROLLER_STEP_END,
+                    rollout_id=4,
+                    action=StopCellAction(cell_id="trainer-engine-actor-00002"),
+                )
+            ]
         )
-        group = await _make_alive_controller(num_cells=3, ci_ft_test_actions=actions)
+        group = await _make_alive_controller(num_cells=3, ci_fault_hooks=requests)
 
         await group.train(rollout_id=4, rollout_data_pack=_DUMMY_DATA_PACK)
 
         group._cell_operations.suspend.assert_awaited_once_with(cell_id="trainer-engine-actor-00002")
 
-    async def test_train_leaves_the_pool_alone_on_a_rollout_no_action_names(self):
-        """An action that fires on every rollout would tear the pool down for the whole run."""
-        actions = json.dumps(
-            [{"at_rollout": 4, "action": "stop_cell_at_end", "cell_id": "trainer-engine-actor-00002"}]
+    async def test_train_leaves_the_pool_alone_until_the_declared_rollout(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An unmatched rollout must preserve the pending stop for its declared step."""
+        _isolate_fault_hook_controller(monkeypatch)
+        requests = render_fault_hooks(
+            [
+                FaultHookRequest(
+                    request_id="stop-cell-2",
+                    hook_name=FaultHookName.TRAINER_CONTROLLER_STEP_END,
+                    rollout_id=4,
+                    action=StopCellAction(cell_id="trainer-engine-actor-00002"),
+                )
+            ]
         )
-        group = await _make_alive_controller(num_cells=3, ci_ft_test_actions=actions)
+        group = await _make_alive_controller(num_cells=3, ci_fault_hooks=requests)
 
         await group.train(rollout_id=3, rollout_data_pack=_DUMMY_DATA_PACK)
 
         group._cell_operations.suspend.assert_not_awaited()
+
+        await group.train(rollout_id=4, rollout_data_pack=_DUMMY_DATA_PACK)
+
+        group._cell_operations.suspend.assert_awaited_once_with(cell_id="trainer-engine-actor-00002")
+
+
+def _isolate_fault_hook_controller(monkeypatch: pytest.MonkeyPatch) -> None:
+    controller = _FaultHookController()
+    monkeypatch.setattr(group_module, "fault_hook_controller", controller)
+    monkeypatch.setattr(fault_hook_module, "fault_hook_controller", controller)
 
 
 class TestSaveModel:
@@ -1399,12 +1444,14 @@ class TestExportHf:
 class TestUpdateWeightsReachesTheWorker:
     async def test_the_engine_snapshot_reaches_the_worker_and_its_version_comes_back(self):
         """A worker that never sees the snapshot broadcasts to engines that were not part of the update window."""
-        info = SimpleNamespace(snapshot_cell_id_to_hashes={"trainer-actor-0": "workers-hash-9"})
+        info = SimpleNamespace(
+            engine_cell_ids=["trainer-actor-0"], snapshot_cell_id_to_hashes={"trainer-actor-0": "workers-hash-9"}
+        )
         group = await _make_alive_controller(num_cells=1)
         for handle in get_raw_actor_handles(_cell(group, 0)):
             ray.get(handle.set_update_weights_return_value.remote(_output(1)))
 
-        assert await group.update_weights(info=info, rollout_id=3) == _output(1)
+        assert _outcome_of(await group.update_weights(info=info, rollout_id=3)) == _outcome_of(_output(1))
 
         for handle in get_raw_actor_handles(_cell(group, 0)):
             [update_call] = [c for c in ray.get(handle.get_calls.remote()) if c[0] == "update_weights"]
@@ -1413,18 +1460,18 @@ class TestUpdateWeightsReachesTheWorker:
 
     async def test_reloading_the_trainer_state_does_not_rewind_the_published_version(self):
         """A hot restart reloads the cells while the controller survives, and restarting at version 1 would republish an old ordinal."""
-        info = SimpleNamespace(snapshot_cell_id_to_hashes={})
+        info = SimpleNamespace(engine_cell_ids=[], snapshot_cell_id_to_hashes={})
         group = await _make_alive_controller(num_cells=1)
         handles = get_raw_actor_handles(_cell(group, 0))
         for handle in handles:
             ray.get(handle.set_update_weights_return_value.remote(_output(1)))
-        assert await group.update_weights(info=info) == _output(1)
+        assert _outcome_of(await group.update_weights(info=info)) == _outcome_of(_output(1))
 
         await group.load_state()
         for handle in handles:
             ray.get(handle.set_update_weights_return_value.remote(_output(2)))
 
-        assert await group.update_weights(info=info) == _output(2)
+        assert _outcome_of(await group.update_weights(info=info)) == _outcome_of(_output(2))
 
         for handle in handles:
             calls = [c for c in ray.get(handle.get_calls.remote()) if c[0] == "update_weights"]
@@ -1439,7 +1486,9 @@ class TestUpdateWeightsCarriesTheRollout:
         for handle in get_raw_actor_handles(_cell(group, 0)):
             ray.get(handle.set_update_weights_return_value.remote(_output(1)))
 
-        output = await group.update_weights(info=SimpleNamespace(snapshot_cell_id_to_hashes={}), rollout_id=rollout_id)
+        output = await group.update_weights(
+            info=SimpleNamespace(engine_cell_ids=[], snapshot_cell_id_to_hashes={}), rollout_id=rollout_id
+        )
 
         for handle in get_raw_actor_handles(_cell(group, 0)):
             [update_call] = [c for c in ray.get(handle.get_calls.remote()) if c[0] == "update_weights"]
@@ -1503,6 +1552,7 @@ def _make_partial_target_controller(cells: list[_FakeTrainerCell], *, timeout: f
     )
     controller._trainer_id = "trainer-0"
     controller._cells_by_id = {cell.cell_id: cell for cell in cells}
+    controller._debug_trainer_load_state_timestamp = None
     return controller
 
 
@@ -1606,7 +1656,7 @@ class TestUpdateWeightsFromEveryAliveCell:
 
         output = await controller.update_weights(info=_make_engines(0))
 
-        assert output == WeightUpdateOutput(weight_version=None, failed_cell_ids=())
+        assert _outcome_of(output) == (None, ())
         assert _targets_of(cells[0]) == []
 
     async def test_a_broadcast_run_still_sends_from_a_single_cell(self):
@@ -1617,9 +1667,11 @@ class TestUpdateWeightsFromEveryAliveCell:
         controller._execute_first_alive = AsyncMock(return_value=[_output(3), _output(3)])
         info = _make_engines(4)
 
-        assert await controller.update_weights(info=info) == _output(3)
+        assert _outcome_of(await controller.update_weights(info=info)) == _outcome_of(_output(3))
 
-        controller._execute_first_alive.assert_awaited_once_with("update_weights", timeout=60.0, info=info)
+        controller._execute_first_alive.assert_awaited_once_with(
+            "update_weights", timeout=60.0, info=info, debug_weight_update_id=ANY, rollout_id=None
+        )
         assert _targets_of(cells[0]) == []
 
     async def test_each_share_carries_the_layout_and_snapshot_of_its_own_engines(self) -> None:
@@ -1655,7 +1707,7 @@ class TestUpdateWeightsFromEveryAliveCell:
         controller.args.colocate = True
         controller._execute_first_alive = AsyncMock(return_value=[_output(3)])
 
-        assert await controller.update_weights(info=_make_engines(4)) == _output(3)
+        assert _outcome_of(await controller.update_weights(info=_make_engines(4))) == _outcome_of(_output(3))
 
         assert _targets_of(cells[0]) == []
 
@@ -1757,7 +1809,7 @@ class TestUpdateWeightsGivesUpOnADeadTrainersTargets:
 
         output = await controller.update_weights(info=_make_engines(2))
 
-        assert output == _output(4, "rollout-0")
+        assert _outcome_of(output) == _outcome_of(_output(4, "rollout-0"))
 
 
 class TestBlameTheSenderThatReachedNoneOfItsTargets:

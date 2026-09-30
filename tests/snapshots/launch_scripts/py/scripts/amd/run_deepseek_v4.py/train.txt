@@ -163,3 +163,4 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --fp8-recipe blockwise
   --train-env-vars '{"NVTE_FP8_BLOCK_SCALING_FP32_SCALES":"0"}'
   --no-gradient-accumulation-fusion   
+  --deploy-component all

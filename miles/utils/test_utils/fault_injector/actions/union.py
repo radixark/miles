@@ -1,4 +1,4 @@
-from typing import Annotated, Union
+from typing import Annotated
 
 from pydantic import Discriminator
 
@@ -16,18 +16,16 @@ from miles.utils.test_utils.fault_injector.actions.process import (
 from miles.utils.test_utils.fault_injector.actions.remote import ApiServerFaultAction
 
 FaultAction = Annotated[
-    Union[
-        ObserveAction,
-        KillProcessAction,
-        StopProcessAction,
-        ExitProcessAction,
-        SegfaultProcessAction,
-        FreezeProcessAction,
-        DeadlockThreadAction,
-        StopCellAction,
-        StartCellAction,
-        SleepForeverAction,
-        ApiServerFaultAction,
-    ],
+    ObserveAction
+    | KillProcessAction
+    | StopProcessAction
+    | ExitProcessAction
+    | SegfaultProcessAction
+    | FreezeProcessAction
+    | DeadlockThreadAction
+    | StopCellAction
+    | StartCellAction
+    | SleepForeverAction
+    | ApiServerFaultAction,
     Discriminator("kind"),
 ]

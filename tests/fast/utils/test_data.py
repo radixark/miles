@@ -172,6 +172,7 @@ _TRAIN_PARALLEL_CONFIG = make_train_parallel_config(
 def _delay_split_args(**overrides: Any) -> Namespace:
     fields: dict[str, Any] = dict(
         delay_split_train_data_by_dp=True,
+        enable_sample_ownership_checker=False,
         global_batch_size=_NUM_SAMPLES,
         use_dynamic_batch_size=True,
         max_tokens_per_gpu=64,

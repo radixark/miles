@@ -147,7 +147,16 @@ def _log_inference_engine_checksum_event(
 ) -> None:
     event_logger.log(
         InferenceEngineWeightChecksumEvent,
-        dict(rollout_id=rollout_id, engine_checksums=engine_checksums),
+        dict(
+            rollout_id=rollout_id,
+            weight_version=rollout_id + 1,
+            debug_trainer_load_state_timestamp=0.0,
+            debug_weight_update_id=f"update-{rollout_id + 1}",
+            engine_snapshots=[
+                dict(cell_id=f"cell-{index}", workers_hash=f"incarnation-{index}", tensor_checksums=checksums)
+                for index, checksums in enumerate(engine_checksums)
+            ],
+        ),
     )
 
 
@@ -189,7 +198,7 @@ class TestWeightPublicationRulesWiredIn:
             tmp_path,
             [
                 make_result(second=1.0, update_id="u1", published_version=1, cell_hashes={"a": "h"}, updated=["a"]),
-                make_step_end(second=2.0),
+                make_step_end(second=2.0, cell_outcomes={}),
             ],
         )
 
@@ -212,7 +221,7 @@ class TestWeightPublicationRulesWiredIn:
                     )
                     for version in (1, 2)
                 ],
-                make_step_end(second=9.0),
+                make_step_end(second=9.0, cell_outcomes={}),
             ],
         )
 

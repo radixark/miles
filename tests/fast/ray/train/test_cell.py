@@ -419,10 +419,17 @@ class TestFullLifecycle:
 class _HangingWorkerHandle:
     def __init__(self, released: asyncio.Event) -> None:
         self._released = released
+        self.killed = False
 
     async def update_weights(self, **_kwargs) -> str:
         await self._released.wait()
         return "done"
+
+    async def kill_self(self) -> None:
+        self.killed = True
+
+    async def wait_dead(self, *, timeout: float) -> None:
+        assert self.killed
 
 
 class _SlowWorkerHandle:
@@ -441,12 +448,14 @@ class TestExecuteDeadline:
         """A trainer cell hung on a weight update would stall the whole run instead of being replaced."""
         cell = make_alive_cell(0, alive_cell_indices=[0])
         released = asyncio.Event()
-        monkeypatch.setattr(cell, "_get_worker_handles", lambda: [_HangingWorkerHandle(released) for _ in range(2)])
+        handles = [_HangingWorkerHandle(released) for _ in range(2)]
+        monkeypatch.setattr(cell, "_get_worker_handles", lambda: handles)
 
         with pytest.raises(TimeoutError):
             await cell.execute("update_weights", timeout=0.05, info=None)
 
         assert cell.is_errored
+        assert all(handle.killed for handle in handles)
 
     async def test_a_call_that_beats_its_deadline_returns_normally(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """A deadline that fires on a healthy update would recycle cells that are doing their job."""

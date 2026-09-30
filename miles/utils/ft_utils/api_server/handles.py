@@ -56,7 +56,9 @@ class _CellHandler:
     async def list_cells(self) -> list[Cell]:
         cell_infos = await self._get_cell_infos()
         statuses = await self._get_cell_statuses()
-        return [self._compute_cell(cell_id, cell_infos=cell_infos, statuses=statuses) for cell_id in sorted(cell_infos)]
+        return [
+            self._compute_cell(cell_id, cell_infos=cell_infos, statuses=statuses) for cell_id in sorted(cell_infos)
+        ]
 
     async def get_cell(self, cell_id: str) -> Cell:
         return self._compute_cell(

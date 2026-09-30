@@ -92,7 +92,10 @@ class TestTheSoakOfOneDeployment:
         assert form.event_log is soak["event_log"]
         assert launch.config is soak["config"]
         assert form.launch_spec.config == soak["config"]
-        assert form.launch_spec.train_args == launch.request.train_args
+        assert (
+            f"{form.launch_spec.train_args} --deploy-component {launch.config.deploy_component.value}"
+            == launch.request.train_args
+        )
 
     def test_the_observer_watches_the_release_checkpoints_and_events_of_this_run(
         self, harness: ScenarioHarness

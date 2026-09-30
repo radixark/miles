@@ -3,14 +3,12 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from miles.utils.test_utils.fault_injector.actions.process import FailureMode
 from miles.utils.test_utils.fault_injector.controller import FaultHookCommand, FaultHookConflictError
 from miles.utils.test_utils.fault_injector.models import FaultHookRecord, ObservedFaultHookTarget
 from miles.utils.workers.cell_operations.base import BaseCellOperations, StaleFaultTargetError
 from miles.utils.workers.k8s_client import core_v1_api
 from miles.utils.workers.rpc.client.misc import RpcWorkerCallError, ServerRestartedError
 from miles.utils.workers.rpc.common.protocol import exception_type_name
-from miles.utils.workers.worker_handle import BaseWorkerHandle, WorkerUnreachableError
 from miles.utils.workers.worker_provider.base import CellInfo, StopWatchFn
 from miles.utils.workers.worker_provider.kubernetes.core.provider import KubernetesWorkerProvider
 from miles.utils.workers.worker_provider.utils import build_rpc_handle_of_worker_info
@@ -107,4 +105,6 @@ async def _ignore_cell(cell_id: str, info: CellInfo | None) -> None:
 
 async def _delete_pods(*, namespace: str, pod_names: list[str]) -> None:
     async with core_v1_api() as api:
-        await asyncio.gather(*(api.delete_namespaced_pod(name=pod_name, namespace=namespace) for pod_name in pod_names))
+        await asyncio.gather(
+            *(api.delete_namespaced_pod(name=pod_name, namespace=namespace) for pod_name in pod_names)
+        )

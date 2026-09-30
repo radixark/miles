@@ -32,10 +32,13 @@ def record_commands(monkeypatch) -> list[str]:
         commands.append(f"[multi_node num_nodes={num_nodes}] {cmd}")
         return ["0"]
 
-    def fake_run_launcher_owned_job(*, address, entrypoint, runtime_env):
+    def fake_run_launcher_owned_job(
+        *, address: str, entrypoint: str, runtime_env: dict, submission_id: str | None = None
+    ) -> None:
+        submission_args = f"--submission-id={shlex.quote(submission_id)} " if submission_id else ""
         commands.append(
             f"[launcher lifetime] ray job submit --address={shlex.quote(address)} "
-            f"--runtime-env-json={shlex.quote(json.dumps(runtime_env))} -- {entrypoint}"
+            f"{submission_args}--runtime-env-json={shlex.quote(json.dumps(runtime_env))} -- {entrypoint}"
         )
 
     monkeypatch.setattr(ray_job, "exec_command_cpu", lambda cmd, **kwargs: fake_exec_command(None, cmd, **kwargs))

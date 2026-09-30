@@ -225,7 +225,7 @@ class TestEndWeightUpdate:
         """Resuming an engine whose weights were never written would serve a half-written model."""
         args = _make_args()
         healthy = _RecordingClient()
-        updaters = _make_updaters([healthy, _FailingClient()], args)
+        updaters = _make_updaters([healthy, _FailingClient()])
 
         maybe_pause_engines(args, updaters)
         maybe_resume_engines(args, updaters)

@@ -126,7 +126,18 @@ def _make_targets(module, pairs: list[tuple[int, int]]) -> list:
 
 
 def _query(module, engines: list[_FakeRolloutEngine], pairs: list[tuple[int, int]]):
-    return module.query_remote_weight_infos(engines, _make_targets(module, pairs))
+    cell_ids = [f"cell-{index}" for index in range(len(engines))]
+    cell_updaters = {
+        cell_id: _RolloutCellUpdater(
+            args=Namespace(update_weight_engine_request_timeout=10.0), cell_id=cell_id, api_client=engine
+        )
+        for cell_id, engine in zip(cell_ids, engines, strict=True)
+    }
+    return module.query_remote_weight_infos(
+        cell_updaters_of_cell_id=cell_updaters,
+        engine_cell_ids=cell_ids,
+        targets=_make_targets(module, pairs),
+    )
 
 
 @pytest.mark.parametrize(

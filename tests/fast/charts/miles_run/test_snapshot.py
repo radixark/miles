@@ -165,6 +165,7 @@ SCENARIO_ARGV = [
 
 @pytest.fixture(autouse=True)
 def parser_process_env(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    monkeypatch.setattr(sys, "orig_argv", [sys.executable, "-m", "pytest"])
     for name, value in PARSER_ENV.items():
         monkeypatch.setenv(name, value)
     tuning_env_name = "SGLANG_OPT_USE_CUSTOM_ALL_REDUCE_V2"

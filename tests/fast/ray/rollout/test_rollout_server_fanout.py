@@ -104,7 +104,7 @@ class TestCheckWeightsFanOut:
                 action="snapshot", allow_quant_error=True, selector="lora", skip_list=["x"]
             )
 
-        assert results == [f"checked-{i}" for i in range(3)]
+        assert results == [(cell.meta, f"checked-{i}") for i, cell in enumerate(cells)]
         assert all(
             cell.calls
             == [
