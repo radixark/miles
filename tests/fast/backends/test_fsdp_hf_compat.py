@@ -480,7 +480,7 @@ from miles.backends.fsdp_utils.actor import FSDPTrainRayActor
 def _model_cls(**config_fields):
     actor = object.__new__(FSDPTrainRayActor)
     actor.hf_config = SimpleNamespace(**config_fields)
-    return actor.get_model_cls()
+    return actor._get_model_cls()
 
 
 def test_native_vlm_routes_to_image_text_to_text():

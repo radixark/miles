@@ -1,5 +1,9 @@
 import os
+import shlex
+import signal
+import sys
 import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -9,6 +13,20 @@ from miles.utils.misc import get_current_node_ip
 from miles.utils.test_utils import fault_injector
 from miles.utils.workers import process_utils
 from miles.utils.workers.command_actor import CommandActor
+
+_DRAINING_SOURCE = """
+import os, signal, sys, time
+
+def drain(*_):
+    time.sleep(1)
+    with open(sys.argv[2], "w") as f:
+        f.write("drained")
+    sys.exit(0)
+
+signal.signal(signal.SIGTERM, drain)
+os.close(os.open(sys.argv[1], os.O_CREAT | os.O_WRONLY))
+time.sleep(300)
+"""
 
 
 class _FakeExit:
@@ -105,14 +123,16 @@ class TestLifecycleBinding:
 
         assert fake_exit.codes == [7]
 
-    def test_exits_actor_process_with_one_on_signal_killed_subprocess(self, monkeypatch: pytest.MonkeyPatch):
-        """A signal-killed subprocess (negative returncode) maps to exit code 1."""
+    def test_exits_actor_process_with_128_plus_signal_on_signal_killed_subprocess(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        """A signal-killed subprocess (negative returncode) maps to exit code 128+signal, as a shell reports it."""
         fake_exit = _FakeExit(monkeypatch)
 
         CommandActor().run(cmd='kill -TERM "$$"', envs={})
         fake_exit.wait()
 
-        assert fake_exit.codes == [1]
+        assert fake_exit.codes == [128 + signal.SIGTERM]
 
     def test_does_not_exit_while_subprocess_is_running(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
         """The actor keeps running until the subprocess actually exits."""
@@ -175,6 +195,20 @@ class TestShutdown:
 
         actor.shutdown()
 
+    def test_an_exec_command_finishes_its_sigterm_handling_before_shutdown_returns(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ):
+        """Shutdown's SIGTERM reaches the exec'd command itself, which gets its grace period to drain."""
+        _FakeExit(monkeypatch)
+        ready_path, drained_path = tmp_path / "ready", tmp_path / "drained"
+        actor = CommandActor()
+        actor.run(cmd=_exec_command(_DRAINING_SOURCE, ready_path, drained_path), envs={})
+        _wait_for_path(ready_path)
+
+        actor.shutdown()
+
+        assert drained_path.read_text() == "drained"
+
 
 class TestKillSubprocess:
     def test_killing_the_subprocess_surfaces_as_the_actor_crash_exit(self, monkeypatch: pytest.MonkeyPatch):
@@ -186,7 +220,7 @@ class TestKillSubprocess:
         actor.kill_subprocess()
 
         fake_exit.wait()
-        assert fake_exit.codes == [1]
+        assert fake_exit.codes == [128 + signal.SIGKILL]
 
     def test_kill_before_run_is_rejected(self):
         """A crash injection into an actor with no subprocess is a caller bug."""
@@ -195,18 +229,106 @@ class TestKillSubprocess:
 
 
 class TestInjectFault:
-    def test_inject_fault_forwards_the_requested_mode(self, monkeypatch: pytest.MonkeyPatch):
-        """The actor hands the caller's failure mode to the fault injector unchanged."""
-        injected_modes: list[str] = []
+    def test_a_sigkill_reaches_the_worker_process_group(self, monkeypatch: pytest.MonkeyPatch):
+        """Crashing a worker must include every subprocess that belongs to that worker."""
+        killed: list[int] = []
+        monkeypatch.setattr(process_utils, "kill_process", _refuse_to_kill)
+        monkeypatch.setattr(process_utils, "kill_process_tree", lambda process: killed.append(process.pid))
+        actor = CommandActor()
+        actor._process = _FakeProcess(pid=4321)
 
-        def _record_injected_mode(mode: str) -> None:
-            injected_modes.append(mode)
+        actor.inject_fault("sigkill")
 
-        monkeypatch.setattr(fault_injector, "inject_fault", _record_injected_mode)
+        assert killed == [4321]
 
-        CommandActor().inject_fault(mode="segfault")
+    def test_a_sigkill_does_not_leave_a_spawned_engine_process_behind(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """A worker crash must not orphan an engine child that can retain its GPU allocation."""
+        fake_exit = _FakeExit(monkeypatch)
+        child_pid_path = tmp_path / "child-pid"
+        actor = CommandActor()
+        actor.run(cmd=f"sleep 300 & printf '%s' \"$!\" > {shlex.quote(str(child_pid_path))}; wait", envs={})
+        _wait_for_path(child_pid_path)
+        child_pid = int(child_pid_path.read_text())
 
-        assert injected_modes == ["segfault"]
+        try:
+            actor.inject_fault("sigkill")
+
+            fake_exit.wait()
+            _wait_for_process_exit(child_pid)
+        finally:
+            process_utils.kill_process_tree(actor._process)
+
+    @pytest.mark.parametrize("mode", ["exit", "segfault", "deadlock"])
+    def test_every_other_failure_mode_is_rejected(self, monkeypatch: pytest.MonkeyPatch, mode: str):
+        """A process exits, segfaults and deadlocks from the inside; no signal an outsider sends reproduces that."""
+        monkeypatch.setattr(process_utils, "kill_process_tree", _refuse_to_kill)
+        actor = CommandActor()
+        actor._process = _FakeProcess(pid=4321)
+
+        with pytest.raises(AssertionError, match="only sigkill"):
+            actor.inject_fault(mode)
+
+    def test_an_unknown_mode_is_rejected(self):
+        """A misspelt mode must not be waved through as some default crash."""
+        actor = CommandActor()
+        actor._process = _FakeProcess(pid=4321)
+
+        with pytest.raises(ValueError):
+            actor.inject_fault("nuke")
+
+    def test_the_actor_process_survives_the_injection(self, monkeypatch: pytest.MonkeyPatch):
+        """Production loses the engine, not its supervisor, so crashing the actor would be the wrong fault."""
+        monkeypatch.setattr(fault_injector, "inject_fault", _refuse_to_inject)
+        monkeypatch.setattr(process_utils, "kill_process_tree", lambda process: None)
+        actor = CommandActor()
+        actor._process = _FakeProcess(pid=4321)
+
+        actor.inject_fault("sigkill")
+
+    def test_an_actor_without_a_subprocess_is_rejected(self, monkeypatch: pytest.MonkeyPatch):
+        """Falling back to killing the actor would inject a fault production never produces."""
+        monkeypatch.setattr(fault_injector, "inject_fault", _refuse_to_inject)
+
+        with pytest.raises(AssertionError, match="no subprocess"):
+            CommandActor().inject_fault("sigkill")
+
+
+class _FakeProcess:
+    def __init__(self, *, pid: int) -> None:
+        self.pid = pid
+
+
+def _refuse_to_inject(mode: str) -> None:
+    raise AssertionError(f"the actor process must not crash itself, but {mode} was injected into it")
+
+
+def _refuse_to_kill(process) -> None:
+    raise AssertionError(f"no kill was expected, but pid {process.pid} was killed")
+
+
+def _wait_for_path(path: Path) -> None:
+    deadline = time.monotonic() + 10
+    while not path.exists() and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert path.exists()
+
+
+def _exec_command(source: str, *args: Path) -> str:
+    # Mirrors how the worker manager hands a spec's command to its actor.
+    return f"exec {shlex.join([sys.executable, '-c', source, *map(str, args)])}"
+
+
+def _wait_for_process_exit(pid: int) -> None:
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return
+        time.sleep(0.01)
+    raise AssertionError(f"process {pid} survived the worker fault")
 
 
 class TestNodeAddress:

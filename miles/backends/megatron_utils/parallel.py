@@ -1,6 +1,7 @@
 import logging
 from argparse import Namespace
 from collections.abc import Sequence
+from dataclasses import dataclass, field
 
 import torch
 from megatron.core import mpu
@@ -89,14 +90,22 @@ def verify_megatron_parallel_state(
         ), f"microbatch_group_size_per_vp_stage mismatch: ParallelState has {actual}, model config has {expected}"
 
 
+@dataclass
+class PackedSeqParamsWithHostCuSeqlens(PackedSeqParams):
+    """``PackedSeqParams`` plus the host copy of ``cu_seqlens_q`` that ``get_batch`` already built."""
+
+    cu_seqlens_host: tuple[int, ...] = field(kw_only=True)
+
+
 def get_packed_seq_params(batch: dict[str, torch.Tensor], args: Namespace) -> PackedSeqParams:
     if args.qkv_format == "thd":
-        packed_seq_params = PackedSeqParams(
+        packed_seq_params = PackedSeqParamsWithHostCuSeqlens(
             cu_seqlens_q=batch["cu_seqlens"],
             cu_seqlens_kv=batch["cu_seqlens"],
             max_seqlen_q=batch["max_seqlen"],
             max_seqlen_kv=batch["max_seqlen"],
             qkv_format="thd",
+            cu_seqlens_host=batch["cu_seqlens_host"],
         )
         batch["packed_seq_params"] = packed_seq_params
         return packed_seq_params

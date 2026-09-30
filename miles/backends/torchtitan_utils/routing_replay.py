@@ -55,6 +55,9 @@ def _token_router_forward(self, x_BLD: torch.Tensor, expert_bias_E: torch.Tensor
 
     topk_scores_BLK = scores_BLE.gather(dim=-1, index=topk_expert_ids_BLK)
 
+    if self._debug_force_load_balance:
+        topk_expert_ids_BLK, topk_scores_BLK = self._debug_force_load_balance_routing(scores_BLE)
+
     if self.route_norm:
         denominator = topk_scores_BLK.sum(dim=-1, keepdim=True) + 1e-20
         topk_scores_BLK = topk_scores_BLK / denominator

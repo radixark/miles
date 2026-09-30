@@ -71,15 +71,18 @@ class TestHandleConstruction:
         with pytest.raises(TypeError, match="shadow"):
             RpcWorkerHandle(Shadowing, server_url="http://127.0.0.1:9")
 
-    def test_worker_without_public_methods_is_rejected(self):
-        """A worker with nothing to expose is refused."""
+    def test_worker_without_public_methods_exposes_nothing_to_call(self):
+        """A worker whose whole value is a lifecycle side effect answers no call, and is still servable."""
 
         class Empty:
             def _demo_hidden(self) -> int:
                 return 1
 
-        with pytest.raises(TypeError):
-            RpcWorkerHandle(Empty, server_url="http://127.0.0.1:9")
+        handle = RpcWorkerHandle(Empty, server_url="http://127.0.0.1:9")
+
+        assert handle._specs == {}
+        with pytest.raises(AttributeError, match="no rpc method"):
+            _ = handle.demo_hidden
 
     def test_worker_with_unannotated_method_is_rejected(self):
         """A method missing annotations is refused on the client too, matching the server."""

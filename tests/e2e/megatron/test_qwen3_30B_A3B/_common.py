@@ -1,7 +1,7 @@
 import os
 from dataclasses import dataclass, field
 
-import miles.utils.external_utils.command_utils as U
+from miles.utils.external_utils import command_utils
 
 MODEL_NAME = "Qwen3-30B-A3B"
 MODEL_TYPE = "qwen3-30B-A3B"
@@ -17,9 +17,11 @@ class CaseConfig:
     tp_size: int
     ep_size: int
     rollout_num_gpus_per_engine: int
+    etp_size: int = 1
     sglang_ep_size: int = None
     sglang_dp_size: int = None
     sglang_enable_dp_attention: bool = False
+    sglang_max_running_requests: int = 512
     use_deepep: bool = False
     use_fp8_rollout: bool = False
     use_int4_rollout: bool = False
@@ -57,6 +59,7 @@ class CaseConfig:
 
 
 def prepare(case: CaseConfig, *, need_fp8: bool, need_int4: bool, all_bridge: bool) -> None:
+    U = command_utils.default_config().create_backend()
     U.exec_command_cpu("mkdir -p /root/models /root/datasets")
     U.exec_command_cpu("hf download Qwen/Qwen3-30B-A3B --local-dir /root/models/Qwen3-30B-A3B")
     if need_fp8:
@@ -134,7 +137,7 @@ def build_train_args(case: CaseConfig, *, wandb_file: str) -> str:
         f"--pipeline-model-parallel-size {case.pp_size} "
         f"--context-parallel-size {case.cp_size} "
         f"--expert-model-parallel-size {case.ep_size} "
-        "--expert-tensor-parallel-size 1 "
+        f"--expert-tensor-parallel-size {case.etp_size} "
         "--recompute-granularity full "
         "--recompute-method uniform "
         "--recompute-num-layers 1 "
@@ -176,7 +179,7 @@ def build_train_args(case: CaseConfig, *, wandb_file: str) -> str:
     sglang_args = (
         f"--rollout-num-gpus-per-engine {case.rollout_num_gpus_per_engine} "
         "--sglang-mem-fraction-static 0.7 "
-        "--sglang-max-running-requests 512 "
+        f"--sglang-max-running-requests {case.sglang_max_running_requests} "
         "--sglang-enable-metrics "
     )
 
@@ -218,7 +221,7 @@ def build_train_args(case: CaseConfig, *, wandb_file: str) -> str:
         misc_args += "--fully-async "
 
     if case.use_mooncake:
-        misc_args += U.get_mooncake_object_store_args()
+        misc_args += command_utils.get_mooncake_object_store_args()
 
     if case.use_deepep:
         misc_args += "--moe-token-dispatcher-type flex --moe-enable-deepep "
@@ -230,7 +233,7 @@ def build_train_args(case: CaseConfig, *, wandb_file: str) -> str:
         f"{rollout_args} "
         f"{optimizer_args} "
         f"{grpo_args} "
-        f"{U.get_default_wandb_args(wandb_file)} "
+        f"{command_utils.get_default_wandb_args(wandb_file)} "
         f"{perf_args} "
         f"{eval_args} "
         f"{sglang_args} "
@@ -242,6 +245,7 @@ def build_train_args(case: CaseConfig, *, wandb_file: str) -> str:
 
 
 def execute(case: CaseConfig, *, wandb_file: str) -> None:
+    U = command_utils.default_config().create_backend()
     train_args = build_train_args(case, wandb_file=wandb_file)
 
     extra_env_vars = {}
@@ -256,7 +260,6 @@ def execute(case: CaseConfig, *, wandb_file: str) -> None:
         train_args=train_args,
         num_gpus_per_node=case.num_gpus_per_node + (0 if case.colocate else case.rollout_num_gpus),
         megatron_model_type=MODEL_TYPE,
-        before_ray_job_submit=U.start_mooncake_master if case.use_mooncake else None,
         train_script="train_async.py" if case.fully_async else "train.py",
         extra_env_vars=extra_env_vars,
     )

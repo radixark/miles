@@ -27,6 +27,7 @@ from megatron.core.transformer.transformer_config import MLATransformerConfig
 from miles.utils.hf_utils.config import load_hf_config
 
 from miles.utils.replay_base import indexer_replay_manager
+from miles_plugins.models.normalization import rms_norm
 
 from .ops.indexer import generate_varlen_mask_params, lighting_indexer
 from .ops.sparse_mla import SparseMLA
@@ -632,6 +633,13 @@ class DSAMLASelfAttention(DSAMultiLatentAttention):
         # =========================================
         # Project queries and keys
         q_compressed = q_compressed.detach()
+        # The query RMSNorm is fused into linear_q_up_proj, so q_compressed
+        # still holds its unnormalized input. Share the norm with the indexer
+        # without sending indexer gradients into the attention parameters.
+        q_norm_weight = self.linear_q_up_proj.layer_norm_weight.detach()
+        if self.config.layernorm_zero_centered_gamma:
+            q_norm_weight = q_norm_weight.float() + 1
+        q_compressed = rms_norm(q_compressed, q_norm_weight, self.config.layernorm_epsilon)
         hidden_states = hidden_states.detach()
         rotary_pos_emb = rotary_pos_emb.detach()
 

@@ -1,6 +1,5 @@
 import logging
 import os
-from argparse import Namespace
 from contextlib import contextmanager, nullcontext
 from functools import partial
 
@@ -20,6 +19,7 @@ from miles.utils.profile_utils import TrainProfiler
 from miles.utils.replay_base import routing_replay_manager
 from miles.utils.timer import Timer
 from miles.utils.tracking_utils.tracking import init_tracking
+from miles.utils.workers.rpc.common.wire_types import Pickled
 
 from .adaptations.class_patches import apply_class_patches, apply_model_instance_patches
 from .adaptations.packing import apply_packing
@@ -36,19 +36,21 @@ class FSDPTrainRayActor(TorchNativeTrainRayActor):
     @with_defer(lambda: Timer().start("train_wait"))
     def init(
         self,
-        args: Namespace,
+        args: Pickled,
         role: str,
         *,
         with_ref: bool = False,
         with_opd_teacher: bool = False,
         recv_ckpt_src_rank: int | None = None,
         indep_dp_info: IndepDPInfo,
+        indep_dp_store_addr: str | None,
     ) -> int | None:  # type: ignore[override]
-        super().init(args, role, with_ref, with_opd_teacher=with_opd_teacher)
+        super()._init_common(args, role, with_ref, with_opd_teacher=with_opd_teacher)
 
         # Unsupported
         assert recv_ckpt_src_rank is None
         assert indep_dp_info.quorum_id == 0
+        assert indep_dp_store_addr is None
 
         if args.dumper_enable:
             from sglang.srt.debug_utils.dumper import dumper
@@ -177,7 +179,7 @@ class FSDPTrainRayActor(TorchNativeTrainRayActor):
         auto_map = getattr(self.hf_config, "auto_map", None)
         return not auto_map or "AutoModelForImageTextToText" in auto_map
 
-    def get_model_cls(self):
+    def _get_model_cls(self):
         if self._has_image_text_to_text_impl():
             from transformers import AutoModelForImageTextToText
 
@@ -203,7 +205,7 @@ class FSDPTrainRayActor(TorchNativeTrainRayActor):
         effective_attn = "eager" if use_triton_bridge else self.args.attn_implementation
 
         with init_context():
-            model = self.get_model_cls().from_pretrained(
+            model = self._get_model_cls().from_pretrained(
                 checkpoint_path,
                 trust_remote_code=True,
                 attn_implementation=effective_attn,

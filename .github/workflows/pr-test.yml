@@ -233,6 +233,8 @@ jobs:
         ${{ github.event_name == 'workflow_dispatch' && '--match-all-labels' || '' }}
     secrets: inherit
 
+  # No partition matrix: the tests left on 8x H100 fit one runner's run, so one
+  # job keeps the second H100 host free for other runs.
   stage-c-8-gpu-h100:
     needs: [resolve-ci-policy, resolve-ci-image, stage-a-cpu]
     if: |
@@ -242,11 +244,6 @@ jobs:
       !contains(fromJSON(needs.resolve-ci-policy.outputs.skipped_stages || '[]'), 'stage-c-8-gpu-h100') &&
       (needs.stage-a-cpu.result == 'success' ||
         needs.resolve-ci-policy.outputs.bypass_fastfail == 'true')
-    strategy:
-      fail-fast: false
-      max-parallel: ${{ needs.resolve-ci-policy.outputs.cadence == 'weekly' && 1 || 2 }}
-      matrix:
-        partition_id: [0, 1]
     uses: ./.github/workflows/_run-ci.yml
     with:
       runs_on: '["h100", "8gpu"]'
@@ -254,7 +251,6 @@ jobs:
       ref: ${{ inputs.ref || '' }}
       execute_command: >-
         python tests/ci/run_suite.py --hw cuda --suite stage-c-8-gpu-h100
-        --auto-partition-id ${{ matrix.partition_id }} --auto-partition-size 2
         --cadence ${{ needs.resolve-ci-policy.outputs.cadence }}
         --labels ${{ needs.resolve-ci-policy.outputs.raw_labels }}
         ${{ github.event_name == 'workflow_dispatch' && '--match-all-labels' || '' }}
