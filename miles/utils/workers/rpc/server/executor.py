@@ -11,7 +11,7 @@ from typing import Any
 
 from miles.utils.tracking_utils.structured_log import log_structured
 from miles.utils.workers.rpc.common.metadata import RpcMethodSpec
-from miles.utils.workers.rpc.common.protocol import CallStatusResponse
+from miles.utils.workers.rpc.common.protocol import CallStatusResponse, exception_type_name
 
 logger = logging.getLogger(__name__)
 
@@ -49,11 +49,15 @@ class RpcCallExecutor:
             )
         except asyncio.CancelledError as e:
             log_structured(logger.warning, phase="end", ok=False, cancelled=True, **log_fields)
-            finish(outcome=CallStatusResponse(status="failed", error=repr(e)))
+            finish(outcome=CallStatusResponse(status="failed", error=repr(e), error_type=exception_type_name(type(e))))
             raise
         except Exception as e:
             log_structured(logger.error, phase="end", ok=False, **log_fields, exc_info=True)
-            outcome = CallStatusResponse(status="failed", error="".join(traceback.format_exception(e)))
+            outcome = CallStatusResponse(
+                status="failed",
+                error="".join(traceback.format_exception(e)),
+                error_type=exception_type_name(type(e)),
+            )
 
         finish(outcome=outcome)
 
