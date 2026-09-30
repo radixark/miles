@@ -118,6 +118,7 @@ def test_mla_norm_mbridge_round_trip_keeps_hf_order(bridge_module, norm, layout)
     torch.testing.assert_close(exported, weight, rtol=0, atol=0)
     torch.testing.assert_close(bridge._weight_to_mcore_format(name, [exported]), weight, rtol=0, atol=0)
 
+
 @pytest.fixture(scope="module")
 def native_indexer():
     # Optional MCore import; the numerical test itself uses only CPU tensors.
@@ -159,10 +160,17 @@ def _indexer_scores(q, k, gates):
 @pytest.mark.parametrize("exporter", ["raw", "mbridge"])
 @pytest.mark.parametrize("interleave", [False, True], ids=["deepseek-v32", "glm5"])
 @pytest.mark.parametrize("rope_dim", [32, 64])
-def test_native_indexer_export_preserves_projected_rope_and_scores(raw_converter, native_indexer, request, exporter, interleave, rope_dim):
+def test_native_indexer_export_preserves_projected_rope_and_scores(
+    raw_converter, native_indexer, request, exporter, interleave, rope_dim
+):
     generator = torch.Generator().manual_seed(713)
-    weights = {hf_suffix: torch.randn(shape, generator=generator, dtype=torch.float64) for hf_suffix, _, shape in _INDEXER_WEIGHTS}
-    args = SimpleNamespace(hidden_size=8, num_attention_heads=2, num_query_groups=1, indexer_rope_interleave=interleave)
+    weights = {
+        hf_suffix: torch.randn(shape, generator=generator, dtype=torch.float64)
+        for hf_suffix, _, shape in _INDEXER_WEIGHTS
+    }
+    args = SimpleNamespace(
+        hidden_size=8, num_attention_heads=2, num_query_groups=1, indexer_rope_interleave=interleave
+    )
     if exporter == "mbridge":
         bridge_module = request.getfixturevalue("bridge_module")
         bridge_type = bridge_module.GlmMoeDsaBridge if interleave else bridge_module.DeepseekV32Bridge
@@ -203,7 +211,9 @@ def test_native_indexer_export_preserves_projected_rope_and_scores(raw_converter
     hf_q = _hf_indexer_rope(hf_q, angles, interleave)
     hf_k = _hf_indexer_rope(hf_k, angles, interleave)
     for native, hf in ((native_q, hf_q), (native_k, hf_k)):
-        torch.testing.assert_close(_native_rope_in_hf_activation_order(native, rope_dim, interleave), hf, rtol=1e-12, atol=1e-12)
+        torch.testing.assert_close(
+            _native_rope_in_hf_activation_order(native, rope_dim, interleave), hf, rtol=1e-12, atol=1e-12
+        )
     torch.testing.assert_close(
         _indexer_scores(native_q, native_k, native_gates),
         _indexer_scores(hf_q, hf_k, hf_gates),
