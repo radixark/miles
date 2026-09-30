@@ -61,7 +61,6 @@ class UpdateWeightP2P(WeightTransferProtocol):
         self.global_rank = dist.get_rank(group=get_gloo_group())
         self._model_registered = False
         self._model_param_stager = ModelParamStager()
-        self._cell_updaters_of_cell_id: dict[str, _P2PRolloutCellUpdater] = {}
         self.transfer_manager = P2PTransferManager(
             num_workers=getattr(args, "p2p_transfer_num_workers", 4),
             transfer_timeout=getattr(args, "p2p_transfer_timeout", 30.0),
@@ -159,8 +158,9 @@ class UpdateWeightP2P(WeightTransferProtocol):
 
         self.disconnect()
         self.rollout_engines = rollout_engines
-        self._cell_updaters_of_cell_id = {
-            cell_id: _P2PRolloutCellUpdater(cell_id=cell_id) for cell_id in engine_cell_ids
+        self.cell_updaters_of_cell_id = {
+            cell_id: _P2PRolloutCellUpdater(cell_id=cell_id, api_client=api_client)
+            for api_client, cell_id in zip(rollout_engines, engine_cell_ids, strict=True)
         }
 
         targets = self.transfer_plan.plan_p2p(engine_gpu_counts)
@@ -183,7 +183,7 @@ class UpdateWeightP2P(WeightTransferProtocol):
                 self._transfer_engine = create_transfer_engine()
 
             _assign_p2p_targets(
-                self._cell_updaters_of_cell_id,
+                self.cell_updaters_of_cell_id,
                 targets=targets,
                 targets_to_session_id=targets_to_session_id,
                 remote_weight_infos_by_session_id=self.remote_weight_infos_by_session_id,
@@ -206,7 +206,7 @@ class UpdateWeightP2P(WeightTransferProtocol):
                 )
 
                 rank_cell_updaters = [
-                    self._cell_updaters_of_cell_id[engine_cell_ids[target.rollout_engine_ind]]
+                    self.cell_updaters_of_cell_id[engine_cell_ids[target.rollout_engine_ind]]
                     for target in rank_targets
                 ]
 
