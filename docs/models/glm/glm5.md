@@ -52,7 +52,7 @@ Native DSA defaults to `--dsa-indexer-loss-coeff 0` and freezes its indexer para
 
 Convert into a separate `torch_dist` directory when changing implementations: the native attention and indexer parameter names differ from the Miles checkpoint layout. Use the same implementation for conversion, checkpoint loading, and training. This selector applies to DSA training; SGLang rollout backend flags remain independent.
 
-The native cuDNN path uses Megatron's BF16 indexer weights-projection output, while the Miles implementation uses FP32. This precision difference can change indexer scores; the selected top-k backend and tie policy are separate settings.
+With BF16 training, native cuDNN uses BF16 head weights; Miles produces FP32 head weights from BF16 projection operands. [cuDNN Frontend PR #1311](https://github.com/NVIDIA/cudnn-frontend/pull/1311) adds FP32 input support to forward scoring only. This wiring remains BF16; FP32 projection and auxiliary-loss recompute/backward support are separate work. Head-weight precision affects scores independently of the top-k backend and tie policy.
 
 ## 4. Launch
 
