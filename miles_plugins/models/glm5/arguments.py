@@ -19,7 +19,6 @@ def add_dsa_arguments(parser: ArgumentParser) -> ArgumentParser:
             "DeepSeek-V4 uses --dsv4-impl instead; bridge mode uses --dsa-attention-backend."
         ),
     )
-    group.add_argument("--freeze-indexer", action="store_true", default=False)
     return parser
 
 
@@ -62,5 +61,3 @@ def normalize_dsa_args(args: Namespace, hf_config) -> None:
         args.dsa_indexer_loss_coeff = 0.0
     if args.dsa_indexer_loss_coeff < 0:
         raise ValueError("--dsa-indexer-loss-coeff must be non-negative")
-    if getattr(args, "freeze_indexer", False) and args.dsa_indexer_loss_coeff != 0:
-        raise ValueError("--freeze-indexer requires --dsa-indexer-loss-coeff 0")

@@ -46,7 +46,7 @@ Training uses packed `--qkv-format thd` and supports sequence parallelism. Nativ
 
 `--miles-dsa-topk-backend` selects top-k for both implementations. The W4A16 test keeps `flashinfer` and `SGLANG_DSA_TOPK_FLASHINFER_TIE_BREAK=large`, preserving its top-k backend and tie policy when selecting native Megatron DSA.
 
-Native DSA defaults to `--dsa-indexer-loss-coeff 0` and freezes its indexer parameters, because native top-k selection runs without gradients when the auxiliary objective is disabled. This avoids unused trainable parameters in DDP and optimizer weight decay on the indexer. A positive coefficient keeps the indexer trainable; combining it with `--freeze-indexer` is rejected.
+Miles DSA freezes its indexer parameters automatically because it uses only integer top-k indices and has no indexer training objective. Native DSA defaults to `--dsa-indexer-loss-coeff 0` and also freezes its indexer parameters, because native top-k selection runs without gradients when the auxiliary objective is disabled. This excludes unused parameters from DDP and optimizer weight decay. A positive native loss coefficient keeps the indexer trainable.
 
 Convert into a separate `torch_dist` directory when changing implementations: the native attention and indexer parameter names differ from the Miles checkpoint layout. Use the same implementation for conversion, checkpoint loading, and training. This selector applies to DSA training; SGLang rollout backend flags remain independent.
 

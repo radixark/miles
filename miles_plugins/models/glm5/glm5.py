@@ -502,10 +502,9 @@ class DSAMLASelfAttention(DSAMultiLatentAttention):
         )
         self.weights_proj.weight._skip_gather = True
 
-        if getattr(self.config, "freeze_indexer", False):
-            for module in (self.wq_b, self.wk, self.k_norm, self.weights_proj):
-                for param in module.parameters():
-                    param.requires_grad = False
+        # Miles uses only integer top-k indices and has no indexer training objective.
+        for module in (self.wq_b, self.wk, self.k_norm, self.weights_proj):
+            module.requires_grad_(False)
 
         # Index-share skip layers carry no indexer weights -- drop the modules built
         # above so the parameter set matches the checkpoint (which only stores indexer
@@ -753,7 +752,6 @@ def get_glm5_spec(args, config, vp_stage):
     config.index_num_attention_heads = hf_config.index_n_heads
     config.index_head_dim = hf_config.index_head_dim
     config.indexer_rope_interleave = bool(getattr(hf_config, "indexer_rope_interleave", False))
-    config.freeze_indexer = getattr(args, "freeze_indexer", False)
     # Optional cross-layer index-sharing schedule. Present on DSA checkpoints that only
     # store indexer weights on a subset of "computing" layers (e.g. GLM-5.2). When absent,
     # every layer computes its own top-k (plain DSA) and DSAMLASelfAttention runs the

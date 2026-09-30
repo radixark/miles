@@ -36,7 +36,7 @@ def _args() -> ScriptArgs:
         num_rollout=2,
         no_save=True,
         extra_args=(
-            "--ci-test --check-weight-update-allow-quant-error --bf16 --freeze-indexer "
+            "--ci-test --check-weight-update-allow-quant-error --bf16 "
             "--use-rollout-routing-replay "
             "--skip-actor-forward-only "
             "--sglang-disable-shared-experts-fusion "

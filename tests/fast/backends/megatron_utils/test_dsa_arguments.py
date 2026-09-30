@@ -20,7 +20,6 @@ def _args(**overrides):
         allgather_cp=False,
         dsa_kernel_backend="cudnn",
         dsa_indexer_loss_coeff=None,
-        freeze_indexer=False,
     )
     return Namespace(**(values | overrides))
 
@@ -33,7 +32,7 @@ def _hf_config(**overrides):
 def test_default_preserves_the_existing_miles_path():
     args = add_dsa_arguments(ArgumentParser()).parse_args([])
     assert args.dsa_impl == "miles"
-    assert args.freeze_indexer is False
+    assert vars(args) == {"dsa_impl": "miles"}
     before = vars(args).copy()
     normalize_dsa_args(args, None)
     assert vars(args) == before
@@ -84,10 +83,9 @@ def test_native_dsa_preserves_checkpoint_indexer_conventions(hf_overrides, inter
 
 
 @pytest.mark.parametrize("loss_coeff", [None, 0.0])
-def test_frozen_indexer_has_no_auxiliary_objective(loss_coeff):
-    args = _args(freeze_indexer=True, dsa_indexer_loss_coeff=loss_coeff)
+def test_native_indexer_objective_defaults_to_zero(loss_coeff):
+    args = _args(dsa_indexer_loss_coeff=loss_coeff)
     normalize_dsa_args(args, _hf_config())
-    assert args.freeze_indexer
     assert args.dsa_indexer_loss_coeff == 0.0
 
 
@@ -100,7 +98,6 @@ def test_explicit_indexer_training_objective_is_preserved():
 @pytest.mark.parametrize(
     ("overrides", "message"),
     [
-        ({"freeze_indexer": True, "dsa_indexer_loss_coeff": 0.001}, "--freeze-indexer requires"),
         ({"dsa_indexer_loss_coeff": -0.001}, "--dsa-indexer-loss-coeff must be non-negative"),
         ({"use_indexer_replay": True}, "does not support indexer replay"),
         ({"use_rollout_indexer_replay": True}, "does not support indexer replay"),
@@ -110,7 +107,6 @@ def test_explicit_indexer_training_objective_is_preserved():
         ({"context_parallel_size": 2, "allgather_cp": True}, "uses zigzag CP token partitioning"),
     ],
     ids=[
-        "frozen-loss",
         "negative-loss",
         "indexer-replay",
         "rollout-indexer-replay",
