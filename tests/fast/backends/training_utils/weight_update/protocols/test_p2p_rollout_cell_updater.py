@@ -185,10 +185,10 @@ class TestSubmitWrite:
         assert len(manager.submissions) == 2
         assert updater._pending_writes == []
 
-    def test_a_broken_write_surfaces_when_its_own_updater_is_drained(
+    def test_a_broken_write_is_blamed_on_the_cell_it_was_addressed_to(
         self, p2p_rollout_cell_updater: ModuleType, p2p_transfer_utils: ModuleType
     ) -> None:
-        """The failure must reach the cell whose write it was, not whichever cell is drained first."""
+        """The failure must mark the cell whose write it was, not whichever cell is drained first."""
         broken = _cell_updater(p2p_rollout_cell_updater, cell_id="cell-broken")
         healthy = _cell_updater(p2p_rollout_cell_updater, cell_id="cell-healthy")
         for updater, session in ((broken, "session-broken"), (healthy, "session-healthy")):
@@ -211,9 +211,10 @@ class TestSubmitWrite:
             transfer_manager=manager,
         )
 
-        with pytest.raises(RuntimeError):
-            broken.wait_for_pending_writes()
+        broken.wait_for_pending_writes()
         healthy.wait_for_pending_writes()
+
+        assert (broken.is_errored, healthy.is_errored) == (True, False)
 
     def test_each_updater_keeps_the_targets_of_its_own_rollout_cell(
         self, p2p_rollout_cell_updater: ModuleType, p2p_transfer_utils: ModuleType
@@ -287,3 +288,47 @@ class TestErroredCellDropsItsWrites:
         updater.wait_for_pending_writes()
 
         assert len(updater._pending_writes) == 1
+
+
+class TestDrainingBlamesTheCell:
+    """Draining a cell's queue turns a broken write into that cell's error instead of raising."""
+
+    def test_a_failed_write_is_reported_as_the_cells_error_and_not_raised(
+        self, p2p_rollout_cell_updater: ModuleType, p2p_transfer_utils: ModuleType
+    ) -> None:
+        """Raising here would abort the whole trainer instead of only giving up on this cell."""
+        updater = _cell_updater(p2p_rollout_cell_updater)
+        updater.targets_by_rollout_engine_rank = {
+            0: _remote_session(p2p_rollout_cell_updater, p2p_transfer_utils, "session-0", {"w": (0x1000, 2, 4)})
+        }
+        updater.submit_write(
+            rollout_engine_rank=0,
+            names=["w"],
+            weight_memory_registry={"w": (0x30, 2, 4)},
+            transfer_engine=_RecordingTransferEngine(return_code=-1),
+            transfer_manager=_RecordingTransferManager(),
+        )
+
+        updater.wait_for_pending_writes()
+
+        assert updater.is_errored is True
+
+    def test_a_drained_queue_is_not_waited_on_again(
+        self, p2p_rollout_cell_updater: ModuleType, p2p_transfer_utils: ModuleType
+    ) -> None:
+        """A future left behind would be re-raised against the next bucket that drains the cell."""
+        updater = _cell_updater(p2p_rollout_cell_updater)
+        updater.targets_by_rollout_engine_rank = {
+            0: _remote_session(p2p_rollout_cell_updater, p2p_transfer_utils, "session-0", {"w": (0x1000, 2, 4)})
+        }
+        updater.submit_write(
+            rollout_engine_rank=0,
+            names=["w"],
+            weight_memory_registry={"w": (0x30, 2, 4)},
+            transfer_engine=_RecordingTransferEngine(),
+            transfer_manager=_RecordingTransferManager(),
+        )
+
+        updater.wait_for_pending_writes()
+
+        assert updater._pending_writes == []

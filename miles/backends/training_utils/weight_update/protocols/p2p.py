@@ -52,7 +52,7 @@ class UpdateWeightP2P(WeightTransferProtocol):
     For each rollout engine rank:
         load_weights(shared buffer) → P2P write
         where the last rank's write is submitted to a background thread
-    wait_transfers() at finish to collect all background writes
+    each cell updater collects its own background writes at finish
     """
 
     def __init__(self, args: Namespace) -> None:
@@ -76,7 +76,8 @@ class UpdateWeightP2P(WeightTransferProtocol):
         """Wait for all background P2P writes to complete."""
         if not self.is_sender:
             return
-        self.transfer_manager.wait_transfers()
+        for cell_updater in self.cell_updaters_of_cell_id.values():
+            cell_updater.wait_for_pending_writes()
         self._model_param_stager.assert_all_done()
 
     def begin_sync(
@@ -219,7 +220,8 @@ class UpdateWeightP2P(WeightTransferProtocol):
                 )
 
     def disconnect(self) -> None:
-        self.transfer_manager.wait_transfers()
+        for cell_updater in self.cell_updaters_of_cell_id.values():
+            cell_updater.wait_for_pending_writes()
         self._rollout_engine_rank_infos = []
         self.remote_weight_infos_by_session_id = {}
         self.session_id_to_server_args = {}
