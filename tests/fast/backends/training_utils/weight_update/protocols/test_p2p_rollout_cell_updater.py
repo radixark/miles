@@ -362,6 +362,72 @@ def _make_updater(p2p_rollout_cell_updater: ModuleType, p2p_transfer_utils: Modu
 _REGISTRY = {"w": (0x1000, 4, 2)}
 
 
+class TestStopDrainingAfterTheFirstFailure:
+    def test_the_writes_behind_a_failed_one_are_cancelled_instead_of_waited_on(
+        self, p2p_rollout_cell_updater: ModuleType, p2p_transfer_utils: ModuleType
+    ) -> None:
+        """Waiting a full timeout on each queued write would exhaust the trainer cell's deadline."""
+        updater = _make_updater(p2p_rollout_cell_updater, p2p_transfer_utils)
+        futures = [_FakeFuture(), _FakeFuture(error=RuntimeError("write failed")), _FakeFuture(blocks=True)]
+        updater._executor = _FakeExecutor(futures)
+        for _ in futures:
+            updater.submit_write(
+                rollout_engine_rank=0,
+                names=["w"],
+                weight_memory_registry=_REGISTRY,
+                transfer_engine=_RecordingTransferEngine(),
+            )
+
+        start = time.monotonic()
+        updater.wait_for_pending_writes(timeout=_TRANSFER_TIMEOUT)
+        elapsed = time.monotonic() - start
+
+        assert elapsed < _TRANSFER_TIMEOUT / 2
+        assert updater.is_errored
+        assert futures[2].result_calls == 0
+        assert futures[2].cancelled
+        assert not futures[0].cancelled
+
+    def test_the_cell_keeps_the_error_of_the_write_that_failed_first(
+        self, p2p_rollout_cell_updater: ModuleType, p2p_transfer_utils: ModuleType
+    ) -> None:
+        """The first failure is the diagnosis; the ones behind it are only fallout."""
+        updater = _make_updater(p2p_rollout_cell_updater, p2p_transfer_utils)
+        first_error = RuntimeError("first write failed")
+        futures = [_FakeFuture(error=first_error), _FakeFuture(error=RuntimeError("second write failed"))]
+        updater._executor = _FakeExecutor(futures)
+        for _ in futures:
+            updater.submit_write(
+                rollout_engine_rank=0,
+                names=["w"],
+                weight_memory_registry=_REGISTRY,
+                transfer_engine=_RecordingTransferEngine(),
+            )
+
+        updater.wait_for_pending_writes(timeout=_TRANSFER_TIMEOUT)
+
+        assert updater._error is first_error
+
+    def test_a_drained_queue_is_not_waited_on_again(
+        self, p2p_rollout_cell_updater: ModuleType, p2p_transfer_utils: ModuleType
+    ) -> None:
+        """Re-waiting settled writes would pay the drain cost once per bucket."""
+        updater = _make_updater(p2p_rollout_cell_updater, p2p_transfer_utils)
+        future = _FakeFuture()
+        updater._executor = _FakeExecutor([future])
+        updater.submit_write(
+            rollout_engine_rank=0,
+            names=["w"],
+            weight_memory_registry=_REGISTRY,
+            transfer_engine=_RecordingTransferEngine(),
+        )
+
+        updater.wait_for_pending_writes(timeout=_TRANSFER_TIMEOUT)
+        updater.wait_for_pending_writes(timeout=_TRANSFER_TIMEOUT)
+
+        assert future.result_calls == 1
+
+
 class TestPerCellWriteThread:
     def test_a_stuck_cell_does_not_hold_up_another_cells_write(
         self, p2p_rollout_cell_updater: ModuleType, p2p_transfer_utils: ModuleType
