@@ -14,9 +14,6 @@ name: Build Wheels
 # by hand with the miles-wheels README commands.
 
 on:
-  # TEMPORARY: runs this branch's workflow before it reaches main. Remove before merging.
-  push:
-    branches: [jiajun/te-wheels-pipeline]
   schedule:
     # Hourly, off the top of the hour, where GitHub delays or drops scheduled runs.
     - cron: '17 * * * *'
