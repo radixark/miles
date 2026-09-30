@@ -9,7 +9,7 @@ from tests.utils.soak.ft.entrypoint import run_cell_soak
 from tests.utils.soak.ft.observers import CellObserver
 
 from miles.utils.external_utils.command_utils.base_backend import ExecuteTrainConfig
-from miles.utils.test_utils.fault_injector import FailureMode
+from miles.utils.test_utils.fault_injector.actions.process import FailureMode
 from miles.utils.workers.types import ClusterBackend
 
 

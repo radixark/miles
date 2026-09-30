@@ -4,7 +4,7 @@ import subprocess
 import threading
 
 from miles.utils.misc import NodeProbeMixin
-from miles.utils.test_utils import fault_injector
+from miles.utils.test_utils.fault_injector.actions.process import FailureMode
 from miles.utils.workers import process_utils
 
 logger = logging.getLogger(__name__)
@@ -36,7 +36,7 @@ class CommandActor(NodeProbeMixin):
 
     def inject_fault(self, mode: str) -> None:
         assert self._process is not None, "CommandActor has no subprocess to inject a fault into"
-        assert (failure_mode := fault_injector.FailureMode(mode)) is fault_injector.FailureMode.SIGKILL, (
+        assert (failure_mode := FailureMode(mode)) is FailureMode.SIGKILL, (
             f"{failure_mode.value} is a fault a process inflicts on itself from the inside, and no signal reproduces "
             f"it from the outside, so only sigkill can be injected into a subprocess"
         )

@@ -5,7 +5,7 @@ import abc
 from pydantic import Field
 
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
-from miles.utils.test_utils.fault_injector import FailureMode
+from miles.utils.test_utils.fault_injector.actions.process import FailureMode
 from miles.utils.workers.worker_provider.base import CellInfo
 
 
