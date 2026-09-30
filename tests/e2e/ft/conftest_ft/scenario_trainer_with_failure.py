@@ -17,7 +17,9 @@ from miles.utils.test_utils.comparisons.dumps import (
     compare_dumps,
 )
 from miles.utils.test_utils.comparisons.metrics import compare_metrics
-from miles.utils.test_utils.fault_injector.static_source import compute_ft_test_actions_arg
+from miles.utils.test_utils.fault_injector.actions.process import ExitProcessAction
+from miles.utils.test_utils.fault_injector.models import DeclaredFaultHookTarget, FaultHookName, FaultHookRequest
+from miles.utils.test_utils.fault_injector.static_source import compute_fault_hooks_arg, compute_ft_test_actions_arg
 from miles.utils.workers.naming import compute_cell_id
 
 NUM_PHASE_A_STEPS: int = 1
@@ -58,16 +60,24 @@ _POST_FAULT_DIFF_THRESHOLDS: list[tuple[str, str]] = [
 
 
 # rollout_id in phase_b starts from NUM_PHASE_A_STEPS (ckpt resume offset)
+def _build_fault_hooks(num_cells: int) -> list[FaultHookRequest]:
+    rollout_id: int = NUM_PHASE_A_STEPS + 1
+    target_cell_id: str = compute_cell_id(pool_id=compute_trainer_pool_id("actor"), cell_index=num_cells - 1)
+    return [
+        FaultHookRequest(
+            request_id=f"exit_before_allreduce_at_{rollout_id}",
+            hook_name=FaultHookName.TRAINER_STEP_BEFORE_ALLREDUCE,
+            action=ExitProcessAction(),
+            target=DeclaredFaultHookTarget(cell_id=target_cell_id, rank=0),
+            rollout_id=rollout_id,
+            attempt=0,
+        ),
+    ]
+
+
 def _build_actions(num_cells: int) -> list[dict]:
     target_cell_id: str = compute_cell_id(pool_id=compute_trainer_pool_id("actor"), cell_index=num_cells - 1)
     return [
-        {
-            "at_rollout": NUM_PHASE_A_STEPS + 1,
-            "action": "crash_before_allreduce",
-            "cell_id": target_cell_id,
-            "rank": 0,
-            "attempt": 0,
-        },
         {"at_rollout": NUM_PHASE_A_STEPS + 1, "action": "stop_cell_at_end", "cell_id": target_cell_id},
         {"at_rollout": NUM_PHASE_A_STEPS + 1, "action": "start_cell_at_end", "cell_id": target_cell_id},
     ]
@@ -110,6 +120,7 @@ def _build_phase_args(mode: FTTestMode, dump_dir: str, *, is_target: bool, enabl
         phase_a_dir = dump_dir.replace("/phase_b", "/phase_a")
         base += f"--load {phase_a_dir}/ckpt "
         if is_target:
+            base += compute_fault_hooks_arg(_build_fault_hooks(num_cells=mode.num_cells))
             base += compute_ft_test_actions_arg(_build_actions(num_cells=mode.num_cells))
             if mode.has_real_rollout:
                 # Post-fault rollouts inject the baseline's recorded data (see README).

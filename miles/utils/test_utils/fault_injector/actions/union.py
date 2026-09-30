@@ -2,6 +2,19 @@ from typing import Annotated, Union
 
 from pydantic import Discriminator
 
-from miles.utils.test_utils.fault_injector.actions.process import ObserveAction
+from miles.utils.test_utils.fault_injector.actions.process import (
+    ExitProcessAction,
+    KillProcessAction,
+    ObserveAction,
+    SegfaultProcessAction,
+)
 
-FaultAction = Annotated[Union[ObserveAction], Discriminator("kind")]
+FaultAction = Annotated[
+    Union[
+        ObserveAction,
+        KillProcessAction,
+        ExitProcessAction,
+        SegfaultProcessAction,
+    ],
+    Discriminator("kind"),
+]

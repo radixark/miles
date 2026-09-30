@@ -16,7 +16,7 @@ _SEND = FaultHookName.TRAINER_WEIGHT_UPDATE_BEFORE_SEND
 
 def _request(**change: object) -> FaultHookRequest:
     return FaultHookRequest.model_validate(
-        {"request_id": "r", "hook_name": _SEND, "action": {"kind": "observe"}, "rollout_id": 3} | change
+        {"request_id": "r", "hook_name": _SEND, "action": {"kind": "kill_process"}, "rollout_id": 3} | change
     )
 
 
@@ -86,6 +86,8 @@ class TestFaultHookRequestValidation:
         "action",
         [
             {"kind": "observe"},
+            {"kind": "segfault_process"},
+            {"kind": "exit_process"},
         ],
     )
     def test_every_action_kind_round_trips_through_json(self, action: dict[str, object]) -> None:
