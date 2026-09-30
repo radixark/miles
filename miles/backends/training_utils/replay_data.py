@@ -27,6 +27,27 @@ def register_replay_list_sequential(replay_list, replay_data, **_kwargs):
         replay.record(replay_data[:, stream_idx])
 
 
+def _bshd_replay_to_megatron_order(
+    replay_data: torch.Tensor,
+    *,
+    sequence_parallel: bool,
+    tp_rank: int,
+    tp_size: int,
+) -> torch.Tensor:
+    """Convert rollout ``[B, S, ...]`` replay to Megatron ``[S, B, ...]`` order."""
+
+    assert replay_data.ndim == 4, replay_data.shape
+    replay_data = replay_data.transpose(0, 1).contiguous()
+    if sequence_parallel:
+        seqlen = replay_data.size(0)
+        assert seqlen % tp_size == 0
+        start = seqlen // tp_size * tp_rank
+        end = seqlen // tp_size * (tp_rank + 1)
+        replay_data = replay_data[start:end]
+    seqlen, batch_size, num_streams, topk = replay_data.shape
+    return replay_data.reshape(seqlen * batch_size, num_streams, topk)
+
+
 def fill_replay_data(
     *,
     args,
@@ -94,9 +115,12 @@ def fill_replay_data(
                 replay_data = [pad_func(r, max_seqlen - r.size(0))[start : start + local_len] for r in replay_data]
             else:
                 replay_data = [slice_with_cp(r, pad_func, qkv_format, max_seqlen) for r in replay_data]
-            replay_data = torch.stack(replay_data, dim=0)
-            batch_size, seqlen, num_layers, topk = replay_data.shape
-            replay_data = replay_data.reshape(batch_size * seqlen, num_layers, topk)
+            replay_data = _bshd_replay_to_megatron_order(
+                torch.stack(replay_data, dim=0),
+                sequence_parallel=getattr(args, "sequence_parallel", False) and if_sp_region,
+                tp_rank=tp_rank,
+                tp_size=tp_size,
+            )
         else:
             pad_size = parallel_state.tp.size * args.data_pad_size_multiplier
             if args.allgather_cp and cp_size > 1:
@@ -119,8 +143,9 @@ def fill_replay_data(
                 if pad != 0:
                     replay_data = pad_func(replay_data, pad)
 
-        # sequence_parallel is Megatron-only; FSDP has tp_size == 1 so the slice is a no-op there.
-        if getattr(args, "sequence_parallel", False) and if_sp_region:
+        # BSHD is already sequence-major and SP-sharded above. THD is token-major,
+        # so its existing flat SP slice remains correct.
+        if qkv_format != "bshd" and getattr(args, "sequence_parallel", False) and if_sp_region:
             seqlen = replay_data.size(0)
             assert seqlen % tp_size == 0
             start, end = seqlen // tp_size * tp_rank, seqlen // tp_size * (tp_rank + 1)
