@@ -81,7 +81,7 @@ def evidence_directory(dump_dir: Path) -> Path:
 
 
 async def note_launch_outcome(
-    *, event_log: EventLog, request_id: str | None, launching: Awaitable[None]
+    *, event_log: EventLog, request_id: str | None, launching: Awaitable[None], accept_replaced: bool
 ) -> LaunchOutcome:
     def record(outcome: LaunchOutcome, *, error: BaseException | None = None) -> LaunchOutcome:
         event_log.append(
@@ -94,7 +94,7 @@ async def note_launch_outcome(
     try:
         await launching
     except RunExitedError as error:
-        if error.exit_code != REPLACED_LAUNCH_EXIT_CODE:
+        if not (accept_replaced and error.exit_code == REPLACED_LAUNCH_EXIT_CODE):
             record(LaunchOutcome.FAILED, error=error)
             raise RuntimeError(f"Launcher exited with code {error.exit_code}") from error
         return record(LaunchOutcome.REPLACED)

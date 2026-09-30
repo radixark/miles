@@ -65,7 +65,7 @@ def run_ci(
         run_cell_soak(
             config=run.launch_spec.config,
             dump_dir=Path(run.dump_dir),
-            sut_run=execute_gsm8k_session(run),
+            sut_run=execute_gsm8k_session(run, accept_replaced=False),
             runner_config=_build_runner_config(
                 seed=seed,
                 num_rollout=num_rollout,

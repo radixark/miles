@@ -100,6 +100,7 @@ def _run_side(request: RunSideRequest) -> None:
                 launching=asyncio.to_thread(
                     run_training, train_args=request.train_args, mode=request.mode, config=config
                 ),
+                accept_replaced=False,
             ),
             runner_config=SoakRunnerConfig(
                 seed=SEED,
