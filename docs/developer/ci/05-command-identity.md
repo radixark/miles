@@ -45,7 +45,7 @@ The reaction and file-run status jobs have `issues: write` plus `pull-requests: 
 
 Label commands execute on a command-App token minted with `Issues: write` plus `Pull requests: write`: a label added with `GITHUB_TOKEN` would never fire the `pull_request(labeled)` CI workflows, and the label mutation is gated on the pull-requests scope like the reaction above. `Pull requests: write` also lets its holder submit reviews, including approvals, and branch protection on `main` does not contain that: its code-owner review requirement covers only code-owned paths such as `.github/workflows/` and `miles/`, where an App cannot be a code owner, so an App approval counts on a pull request touching only unowned paths. The containment is the fixed handler code, which never calls a review endpoint, and the token's revocation when the label-command job ends. Neither token reaches the jobs that execute PR code.
 
-`build-wheels.yml` uses a separate App installed only on `radixark/miles-wheels` with `Contents: write`. The CI command App must remain installed only on `radixark/miles`, without `Contents: write`; per-token scoping cannot remove permissions from a leaked App private key. See the [wheels publishing setup](/developer/ci/02-docker-build#wheels-build-build-wheelsyml) for migration from a shared App.
+`build-wheels.yml` uses a separate App installed only on `radixark/miles-wheels` with `Contents: write`. The CI command App must remain installed only on `radixark/miles`, without `Contents: write`; per-token scoping cannot remove permissions from a leaked App private key. See the [wheels publishing setup](/developer/ci/06-build-wheels#publish-setup) for migration from a shared App.
 
 ## Non-goals
 

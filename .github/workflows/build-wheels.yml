@@ -1,4 +1,4 @@
-# doc-dev: docs/developer/ci/02-docker-build.md
+# doc-dev: docs/developer/ci/06-build-wheels.md
 name: Build Wheels
 
 # Rebuilds the radixark/miles-wheels assets that follow a moving source and
