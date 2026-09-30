@@ -31,7 +31,7 @@ register_ci_gate(metric_key="rollout/raw_reward")
 
 CASE = CaseConfig(
     # tp2/cp2/ep4: TP=4 hits a Qwen3.5 attention-output-gate sharding bug, so stay at TP=2.
-    # PP=1 on 4 GPUs: PP=2 stays covered by test_nospec_nor3_bf16_sgl_dpattn2x2_meg_tp2pp2_dist_muon.
+    # PP=1 on 4 GPUs: PP=2 stays covered by test_nospec_nor3_bf16_sgl_dpattn2x2_meg_tp2pp2.
     num_gpus_per_node=4,
     cp_size=2,
     pp_size=1,
