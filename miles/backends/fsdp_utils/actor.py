@@ -624,7 +624,9 @@ class FSDPTrainRayActor(TrainRayActor):
         return log_dict
 
     @timer
-    def update_weights(self, info: UpdatableEngines, debug_weight_update_id: str) -> WeightUpdateOutput:  # type: ignore[override]
+    def update_weights(
+        self, info: UpdatableEngines, debug_weight_update_id: str, rollout_id: int | None
+    ) -> WeightUpdateOutput:
         """Synchronize actor weights to rollout engines (colocated or distributed; wakes params in offload mode)."""
         if self.args.debug_train_only or self.args.debug_rollout_only:
             return WeightUpdateOutput(weight_version=None, failed_cell_ids=())

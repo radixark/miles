@@ -415,11 +415,11 @@ class TrainerController:
 
         if supports_partial_target_weight_update(self.args):
             output = await self._update_weights_on_every_alive_cell(
-                info, debug_weight_update_id=debug_weight_update_id
+                info, debug_weight_update_id=debug_weight_update_id, rollout_id=rollout_id
             )
         else:
             output = await self._update_weights_on_first_alive_cell(
-                info, debug_weight_update_id=debug_weight_update_id
+                info, debug_weight_update_id=debug_weight_update_id, rollout_id=rollout_id
             )
         output = replace(
             output,
@@ -446,7 +446,7 @@ class TrainerController:
         return output
 
     async def _update_weights_on_first_alive_cell(
-        self, info: UpdatableEngines, *, debug_weight_update_id: str
+        self, info: UpdatableEngines, *, debug_weight_update_id: str, rollout_id: int | None
     ) -> WeightUpdateOutput:
         # Catch with vanilla retry: cells w/ exceptions are auto marked errored, thus retry will find the next one
         outputs = await retry(
@@ -455,13 +455,14 @@ class TrainerController:
                 timeout=self.args.update_weights_timeout,
                 info=info,
                 debug_weight_update_id=debug_weight_update_id,
+                rollout_id=rollout_id,
             ),
             max_attempts=_RETRY_MAX_ATTEMPTS,
         )
         return _unique(outputs)
 
     async def _update_weights_on_every_alive_cell(
-        self, info: UpdatableEngines, *, debug_weight_update_id: str
+        self, info: UpdatableEngines, *, debug_weight_update_id: str, rollout_id: int | None
     ) -> WeightUpdateOutput:
         alive_cells = [c for c in self._cells if c.is_alive]
         if not alive_cells:
@@ -478,6 +479,7 @@ class TrainerController:
                     timeout=self.args.update_weights_timeout,
                     info=s,
                     debug_weight_update_id=debug_weight_update_id,
+                    rollout_id=rollout_id,
                 )
                 for c, s in cells_and_splitted_infos
             ],
