@@ -212,7 +212,7 @@ Fault injection: --ci-fault-hooks, JSON list of FaultHookRequest {request_id, ho
   rollout_id, attempt, weight_version, delay_ms}; the same requests can be set at runtime through the api server
   hook_name trainer_step_before_allreduce: inside the targeted actor rank, matched on rollout_id and attempt
   hook_name trainer_controller_step_end: trainer controller, actions stop_cell / start_cell via cell_operations
-  action exit_process / kill_process: os._exit(1) or SIGKILL
+  action exit_process / kill_process / stop_process / deadlock_thread: os._exit(1), SIGKILL, SIGSTOP or hang the reaching thread
 
 Healing witness: target phase_b event dir, exactly two CellReconfigureEvents
   rollout 2: shrink, alive N -> N-1
