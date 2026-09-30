@@ -198,7 +198,7 @@ def get_log_probs_and_entropy(
 
     For each sample, extracts response-aligned logits and tokens, then computes
     log-probabilities via softmax across the tensor-parallel group. Log-probs
-    are squeezed from `[R, 1]` to `[R]`. Entropy is computed and returned only
+    are normalized from `[R, 1]` or `[R]` to `[R]`. Entropy is computed and returned only
     when requested.
 
     Args:
@@ -264,7 +264,7 @@ def get_log_probs_and_entropy(
             debug_unified_grad_fused_logprob=args.debug_unified_grad_fused_logprob,
         )
 
-        log_probs_list.append(log_prob.squeeze(-1))
+        log_probs_list.append(log_prob.reshape(-1))
         if with_entropy:
             entropy_list.append(entropy)
 
