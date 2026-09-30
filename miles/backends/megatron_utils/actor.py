@@ -26,7 +26,7 @@ from miles.backends.training_utils.weight_update.updater import WeightUpdater
 from miles.dashboard import hooks as dashboard_hooks
 from miles.ray.rollout.inference_controller import UpdatableEngines
 from miles.ray.specs.train import compute_trainer_pool_id
-from miles.ray.train_actor import TrainRayActor
+from miles.ray.train_actor import TrainRayActor, WeightUpdateOutput
 from miles.utils import async_utils, object_store, train_dump_utils
 from miles.utils.argparse_utils import inplace_modify_args
 from miles.utils.audit_utils.event_logger.logger import event_logger_context
@@ -38,6 +38,7 @@ from miles.utils.ft_utils.indep_dp import IndepDPInfo
 from miles.utils.hf_utils.config import load_hf_config
 from miles.utils.lora.utils import build_lora_config, is_multi_lora_enabled
 from miles.utils.memory_utils import clear_memory, print_memory
+from miles.utils.misc import partition
 from miles.utils.object_store import StoreObjectRef, ValueSpec
 from miles.utils.processing_utils import load_tokenizer
 from miles.utils.reloadable_process_group import destroy_process_groups, monkey_patch_torch_dist, reload_process_groups
@@ -921,10 +922,10 @@ class MegatronTrainRayActor(TrainRayActor):
 
     @with_logs
     @timer
-    def update_weights(self, info: UpdatableEngines) -> int | None:
+    def update_weights(self, info: UpdatableEngines) -> WeightUpdateOutput:
         self._heartbeat.bump()
         if self.args.debug_train_only or self.args.debug_rollout_only:
-            return None
+            return WeightUpdateOutput(weight_version=None, failed_cell_ids=())
 
         assert self.weight_updater is not None, "weight update requires a weight updater"
         rollout_engines = info.rollout_engines
@@ -959,7 +960,7 @@ class MegatronTrainRayActor(TrainRayActor):
                 torch_memory_saver.pause(tag="param_buffer")
             if process_groups_are_temporary:
                 destroy_process_groups()
-            return None
+            return WeightUpdateOutput(weight_version=None, failed_cell_ids=())
 
         with torch_memory_saver.disable() if self.args.offload_train else nullcontext():
             print_memory("before update_weights")
@@ -967,8 +968,16 @@ class MegatronTrainRayActor(TrainRayActor):
             self.weight_updater.update_weights(weight_version=weight_version)
             print_memory("after update_weights")
 
-            if self.args.ci_test and len(rollout_engines) > 0 and not is_lora_enabled(self.args):
-                engine = random.choice(rollout_engines)
+            cell_updaters = self.weight_updater.protocol.cell_updaters_of_cell_id
+            failed_cells, updated_cells = partition(cell_updaters.items(), lambda kv: not kv[1].is_errored)
+            updated_cell_ids = tuple(cell_id for cell_id, _ in updated_cells)
+            failed_cell_ids = tuple(cell_id for cell_id, _ in failed_cells)
+
+            updated_engines = [
+                e for e, c in zip(rollout_engines, engine_cell_ids, strict=True) if c in updated_cell_ids
+            ]
+            if self.args.ci_test and len(updated_engines) > 0 and not is_lora_enabled(self.args):
+                engine = random.choice(updated_engines)
                 engine_version = async_utils.run(engine.get_weight_version())
                 if str(engine_version) != str(weight_version):
                     raise RuntimeError(f"Weight version mismatch! Engine: {engine_version}, Updater: {weight_version}")
@@ -989,7 +998,7 @@ class MegatronTrainRayActor(TrainRayActor):
         if process_groups_are_temporary:
             destroy_process_groups()
 
-        return weight_version
+        return WeightUpdateOutput(weight_version=weight_version, failed_cell_ids=failed_cell_ids)
 
     @with_logs
     def load_other_checkpoint(self, model_tag: str, path: str) -> None:

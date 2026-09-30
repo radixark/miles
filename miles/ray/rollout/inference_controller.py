@@ -27,7 +27,7 @@ from miles.utils.context_lock import (
 from miles.utils.ft_utils.api_server.models import CellStatus
 from miles.utils.init_once import InitOnce, init_once
 from miles.utils.logging_utils import configure_logger
-from miles.utils.misc import SimpleTicker
+from miles.utils.misc import SimpleTicker, partition
 from miles.utils.test_utils.fault_injector import FailureMode
 from miles.utils.workers.registration.hub import RegistrationHub
 from miles.utils.workers.registration.models import RegistrationSnapshot
@@ -260,17 +260,18 @@ class InferenceController:
         pass
 
     @releases_lock
-    async def end_update_weights(self, snapshot_cell_id_to_hashes: dict[str, str]) -> None:
-        await asyncio.gather(
-            *[
-                cell.mark_weights_ready()
-                for srv in self.servers.values()
-                for cell_id, cell in srv.all_server_cells.items()
-                if cell_id in snapshot_cell_id_to_hashes
-                and snapshot_cell_id_to_hashes[cell_id] == cell.meta.workers_hash
-                and cell.is_pending_weights
-            ]
-        )
+    async def end_update_weights(
+        self, snapshot_cell_id_to_hashes: dict[str, str], failed_cell_ids: Sequence[str]
+    ) -> None:
+        cells = [
+            (cell_id, cell)
+            for srv in self.servers.values()
+            for cell_id, cell in srv.all_server_cells.items()
+            if cell_id in snapshot_cell_id_to_hashes and snapshot_cell_id_to_hashes[cell_id] == cell.meta.workers_hash
+        ]
+        failed_cells, updated_cells = partition(cells, lambda kv: kv[0] not in failed_cell_ids)
+        await asyncio.gather(*[cell.mark_errored() for _, cell in failed_cells])
+        await asyncio.gather(*[cell.mark_weights_ready() for _, cell in updated_cells if cell.is_pending_weights])
 
     @requires_lock
     async def _ensure_cells_ready(self, model_id: str | None = None) -> None:
