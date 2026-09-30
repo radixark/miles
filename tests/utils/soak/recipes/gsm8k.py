@@ -19,10 +19,13 @@ from tests.e2e.ft.conftest_ft.fault_injection.entrypoint import (
 from tests.e2e.ft.conftest_ft.fault_injection.fault_forms import CellFaultForms
 from tests.utils.cluster_backends import create_backend_for_run
 from tests.utils.ft.launch import get_fully_async_args, get_train_script
+from tests.utils.soak.core.event_log import EventLog
+from tests.utils.soak.core.events import LaunchOutcome
 
 from miles.utils.audit_utils.event_logger.logger import EVENTS_DIRNAME
 from miles.utils.external_utils import command_utils
-from miles.utils.external_utils.command_utils.base_backend import BaseCommandBackend
+from miles.utils.external_utils.command_utils.base_backend import BaseCommandBackend, ExecuteTrainConfig, LaunchGuard
+from miles.utils.pydantic_utils import FrozenStrictBaseModel
 
 FT_COMPONENTS: tuple[str, ...] = ("train", "rollout")
 DEFAULT_SEED: int = 42
@@ -38,10 +41,53 @@ MODEL_TYPE: str = "qwen2.5-0.5B"
 # 4 training GPUs, plus 4 rollout engines x 1 GPU.
 TRAIN_GPUS: int = 4
 ROLLOUT_GPUS: int = 4
+CONTEXT_PARALLEL_SIZE: int = 2
+ROLLOUT_GPUS_PER_ENGINE: int = 1
+
+
+class Gsm8kLaunchSpec(FrozenStrictBaseModel):
+    config: ExecuteTrainConfig
+    train_args: str
+    fully_async: bool = False
 
 
 @dataclass(frozen=True)
 class Gsm8kRun:
+    base_url: str
+    dump_dir: str
+    evidence_dir: Path
+    launch_spec: Gsm8kLaunchSpec
+    event_log: EventLog
+
+    @property
+    def events_dir(self) -> Path:
+        return Path(self.dump_dir) / EVENTS_DIRNAME
+
+
+def prepare_gsm8k_run(
+    *,
+    config: command_utils.ExecuteTrainConfig,
+    test_name: str,
+    seed: int,
+    num_rollout: int,
+    build_extra_train_args: Callable[[str], str],
+    metric_threshold: float = DEFAULT_METRIC_THRESHOLD,
+    fully_async: bool = False,
+    enable_fault_tolerance: bool = True,
+) -> Gsm8kRun:
+    raise NotImplementedError
+
+
+async def execute_gsm8k_session(run: Gsm8kRun) -> LaunchOutcome:
+    raise NotImplementedError
+
+
+async def launch(spec: Gsm8kLaunchSpec, *, guard: LaunchGuard | None = None) -> None:
+    raise NotImplementedError
+
+
+@dataclass(frozen=True)
+class _LegacyGsm8kRun:
     base_url: str
     config: command_utils.ExecuteTrainConfig
     dump_dir: str
@@ -55,11 +101,11 @@ class Gsm8kRun:
 
 @dataclass(frozen=True)
 class Gsm8kOutcome:
-    run: Gsm8kRun
+    run: _LegacyGsm8kRun
     injector: FaultInjectorHandle
 
 
-CreateCellFaultFormsFn = Callable[[Gsm8kRun], CellFaultForms]
+CreateCellFaultFormsFn = Callable[[_LegacyGsm8kRun], CellFaultForms]
 
 
 def run_realistic_gsm8k(
@@ -103,7 +149,7 @@ def run_realistic_gsm8k(
     train_args += f"--save-debug-event-data {dump_dir}/{EVENTS_DIRNAME} "
     train_args += build_extra_train_args(dump_dir)
 
-    run = Gsm8kRun(
+    run = _LegacyGsm8kRun(
         base_url=f"http://{U.api_server_host(config)}:{API_SERVER_PORT}",
         config=config,
         dump_dir=dump_dir,
@@ -161,9 +207,9 @@ def get_gsm8k_train_args(
     config: command_utils.ExecuteTrainConfig,
     seed: int,
     num_rollout: int,
-    metric_threshold: float,
-    fully_async: bool,
     test_name: str,
+    metric_threshold: float = DEFAULT_METRIC_THRESHOLD,
+    fully_async: bool = False,
     enable_fault_tolerance: bool = True,
 ) -> str:
     ckpt_args = f"--hf-checkpoint {MODEL_DIR}/{MODEL_NAME}/ " f"--ref-load {MODEL_DIR}/{MODEL_NAME}_torch_dist "
