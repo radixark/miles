@@ -1,14 +1,25 @@
 from datetime import datetime, timedelta, timezone
+from typing import Any
 
 from miles.backends.megatron_utils.ft.types import TrainStepOutcome
 from miles.utils.audit_utils.event_logger.models import (
+    EnvReport,
+    EnvReportArgsDump,
+    EnvReportEvent,
+    EnvReportProcessFacts,
     InferenceEngineWeightChecksumEvent,
     TrainGroupStepEndEvent,
     WeightUpdateResultEvent,
 )
-from miles.utils.audit_utils.process_identity import SimpleProcessIdentity, TrainerControllerProcessIdentity
+from miles.utils.audit_utils.process_identity import (
+    SimpleProcessIdentity,
+    TrainerControllerProcessIdentity,
+    TrainProcessIdentity,
+)
 
 START = datetime(2026, 9, 26, tzinfo=timezone.utc)
+
+MOVEMENT_ARGS: dict[str, Any] = dict(lora_rank=0, lora_adapter_path=None, update_weights_interval=1)
 
 
 def at(seconds: float) -> datetime:
@@ -71,4 +82,25 @@ def make_step_end(*, second: float, rollout_id: int = 0) -> TrainGroupStepEndEve
         attempt=0,
         role="actor",
         cell_outcomes={0: [TrainStepOutcome.NORMAL]},
+    )
+
+
+def make_trainer_args(*, rank: int = 0, **overrides: Any) -> EnvReportEvent:
+    return EnvReportEvent(
+        timestamp=START,
+        source=TrainProcessIdentity(component="actor", cell_index=0, rank_within_cell=rank),
+        report=EnvReport(
+            process=EnvReportProcessFacts(
+                hostname="node-0",
+                argv=[],
+                args=EnvReportArgsDump(values={**MOVEMENT_ARGS, **overrides}, skipped_names=[]),
+                env_vars={},
+                launcher_env_report=None,
+            ),
+            key_versions={},
+            editable_packages=[],
+            git_repos=[],
+            full_pip_list=[],
+            packages_probed=False,
+        ),
     )

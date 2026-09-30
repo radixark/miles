@@ -7,7 +7,12 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
-from tests.fast.utils.event_analyzer.rules.weight_event_fakes import make_result, make_step_end
+from tests.fast.utils.event_analyzer.rules.weight_event_fakes import (
+    make_checksum,
+    make_result,
+    make_step_end,
+    make_trainer_args,
+)
 
 from miles.backends.megatron_utils.ft.types import TrainStepOutcome
 from miles.utils.audit_utils.event_analyzer import analyzer as analyzer_module
@@ -20,6 +25,7 @@ from miles.utils.audit_utils.event_analyzer.analyzer import (
 from miles.utils.audit_utils.event_analyzer.rules.inference_engine_weight_checksum_coverage import (
     WeightUpdateCoverageIssue,
 )
+from miles.utils.audit_utils.event_analyzer.rules.inference_engine_weight_movement import WeightMovementIssue
 from miles.utils.audit_utils.event_logger.logger import EventLogger
 from miles.utils.audit_utils.event_logger.models import (
     InferenceEngineWeightChecksumEvent,
@@ -190,6 +196,29 @@ class TestWeightPublicationRulesWiredIn:
         [issue] = run_analysis(event_dir=tmp_path)
 
         assert isinstance(issue, WeightUpdateCoverageIssue)
+
+    def test_an_unchanged_tensor_between_settled_versions_is_reported(self, tmp_path: Path) -> None:
+        """run_analysis runs the per-tensor movement rule when the trainer arguments allow it."""
+        self._write(
+            tmp_path,
+            [
+                make_trainer_args(),
+                *[
+                    make_checksum(
+                        second=float(version),
+                        update_id=f"u{version}",
+                        weight_version=version,
+                        snapshots={"a": ("h", {"w": "same"})},
+                    )
+                    for version in (1, 2)
+                ],
+                make_step_end(second=9.0),
+            ],
+        )
+
+        [issue] = run_analysis(event_dir=tmp_path)
+
+        assert isinstance(issue, WeightMovementIssue)
 
 
 class TestRunAnalysisFromArgs:
