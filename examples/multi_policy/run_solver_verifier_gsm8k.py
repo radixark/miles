@@ -108,6 +108,7 @@ def build_train_args(
 
     rollout_args = (
         "--fully-async "
+        "--max-weight-staleness 3 "
         f"--prompt-data {args.data_dir}/gsm8k/train.parquet "
         "--input-key messages "
         "--label-key label "
@@ -158,7 +159,7 @@ def build_train_args(
 
     ci_args = (
         "--ci-test --no-enable-sample-ownership-checker "
-        "--ci-assert-prefill-lag-max 3 "
+        "--ci-assert-prefill-lag-max 5 "
         f"--save-debug-event-data {events_dir} "
         f"--save-debug-rollout-data {compute_rollout_data_path_template(args)} "
     )

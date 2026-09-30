@@ -258,7 +258,6 @@ def _execute_train(args: ScriptArgs):
         f"--actor-num-gpus-per-node {args.actor_num_gpus_per_node} "
         f"--num-gpus-per-node {args.num_gpus_per_node} "
         f"--rollout-num-gpus {args.rollout_num_gpus} "
-        "--use-fault-tolerance "
         # f"--dump-details {args.output_dir}/{args.run_id}/dump_details "
     )
     misc_env_vars = {

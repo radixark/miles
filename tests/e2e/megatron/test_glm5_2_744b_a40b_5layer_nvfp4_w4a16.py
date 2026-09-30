@@ -250,7 +250,6 @@ def execute():
         f"--actor-num-gpus-per-node {ACTOR_NUM_GPUS} "
         f"--num-gpus-per-node {NUM_GPUS} "
         f"--rollout-num-gpus {ROLLOUT_NUM_GPUS} "
-        "--use-fault-tolerance "
         "--moe-enable-deepep "
         "--moe-token-dispatcher-type flex "
         # Event logging requests weight checksums that SGLang does not support for NVFP4.

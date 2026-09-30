@@ -50,7 +50,7 @@ class TestLongPollTiming:
         await asyncio.sleep(1.0)
 
         body = (await raw.get(f"/v1/calls/{tag}", params={"timeout": 0.0})).json()
-        assert body == {"status": "success", "result": 3, "error": None}
+        assert body == {"status": "success", "result": 3, "error": None, "error_type": None}
 
     async def test_many_waiters_are_all_woken(self, raw, handle, tag):
         """Every concurrent poller of one call is released when it completes."""

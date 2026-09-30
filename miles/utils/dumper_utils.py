@@ -15,6 +15,7 @@ import torch.distributed as dist
 from sglang.srt.debug_utils.dumper import DumperConfig, _get_rank, dumper
 
 from miles.backends.sglang_utils.sglang_config import resolve_sglang_config
+from miles.backends.training_utils.model_companion import ModelCompanionInstallationUtils
 from miles.backends.training_utils.parallel import get_parallel_state
 from miles.utils.ft_utils.process_group_utils import GeneralPGUtil
 from miles.utils.retry_utils import retry_until_deadline
@@ -133,20 +134,21 @@ class DumperMegatronUtil:
         if not self.enabled:
             return
 
-        extracted_model = self._extract_model(model)
-        get_grad: Callable[[torch.nn.Parameter], torch.Tensor | None] | None = None
-        if self.phase is DumperPhase.FWD_BWD and self.overrides.get("enable_model_grad"):
-            _log_model_grad_coverage(extracted_model)
-            get_grad = _build_full_grad_getter(extracted_model)
+        with ModelCompanionInstallationUtils.hide(model):
+            extracted_model = self._extract_model(model)
+            get_grad: Callable[[torch.nn.Parameter], torch.Tensor | None] | None = None
+            if self.phase is DumperPhase.FWD_BWD and self.overrides.get("enable_model_grad"):
+                _log_model_grad_coverage(extracted_model)
+                get_grad = _build_full_grad_getter(extracted_model)
 
-        # Weights/grads are a once-per-rollout end-state, so pin them to step 0 instead of
-        # the running per-microbatch step. _configure already cleaned the scoped paths;
-        # disable lazy cleanup after reset to preserve activations from this rollout.
-        dumper.reset()
-        dumper.configure(cleanup_previous=False)
-        dumper.dump_model(extracted_model, get_grad=get_grad)
-        dumper.step()
-        dumper.configure(enable=False)
+            # Weights/grads are a once-per-rollout end-state, so pin them to step 0 instead of
+            # the running per-microbatch step. _configure already cleaned the scoped paths;
+            # disable lazy cleanup after reset to preserve activations from this rollout.
+            dumper.reset()
+            dumper.configure(cleanup_previous=False)
+            dumper.dump_model(extracted_model, get_grad=get_grad)
+            dumper.step()
+            dumper.configure(enable=False)
 
     @staticmethod
     def _extract_model(model: Sequence[torch.nn.Module]) -> torch.nn.Module:

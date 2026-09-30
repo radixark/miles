@@ -306,7 +306,6 @@ def execute(args: ScriptArgs):
         f"--num-gpus-per-node {args.num_gpus_per_node} "
         f"--rollout-num-gpus {rollout_gpus} "
         "--grad-reduce-in-bf16 "
-        "--use-fault-tolerance "
         f"--rollout-health-check-first-wait {args.rollout_health_check_first_wait} "
     )
     if args.accumulate_allreduce_grads_in_fp32:

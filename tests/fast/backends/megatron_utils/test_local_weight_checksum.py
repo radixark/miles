@@ -25,6 +25,7 @@ def _make_mock_model_chunk(
 
     param_list = sorted(params.items(), key=lambda x: x[0])
     for _name, tensor in param_list:
+        tensor.requires_grad_(True)
         tensor.main_param = tensor
 
     chunk.named_parameters.return_value = param_list
@@ -210,11 +211,39 @@ class TestFailFastAssertions:
         from miles.backends.megatron_utils.local_weight_checksum import _build_name_by_tensor_id
 
         chunk = MagicMock()
-        param = torch.randn(2, 2)
+        param = torch.nn.Parameter(torch.randn(2, 2))
         chunk.named_parameters.return_value = [("weight", param)]
 
         with pytest.raises(AssertionError, match="main_param is None"):
-            _build_name_by_tensor_id([chunk])
+            _build_name_by_tensor_id([chunk], skip_no_grad_param=True)
+
+    def test_a_frozen_param_without_main_param_is_hashed_but_not_mapped_to_the_optimizer(self) -> None:
+        """A requires_grad=False param such as the model companion's has no optimizer copy yet must still be hashed."""
+        from miles.backends.megatron_utils.local_weight_checksum import _build_name_by_tensor_id
+
+        trainable = torch.nn.Parameter(torch.randn(2, 2))
+        trainable.main_param = trainable
+        frozen = torch.nn.Parameter(torch.zeros((0, 5), dtype=torch.int64), requires_grad=False)
+        chunk = MagicMock()
+        chunk.named_parameters.return_value = [("companion.rows", frozen), ("weight", trainable)]
+        chunk.named_buffers.return_value = []
+        optimizer = _make_mock_optimizer_with_state_dict([trainable])
+
+        assert list(_build_name_by_tensor_id([chunk], skip_no_grad_param=True).values()) == ["pp0.weight"]
+        state = _compute_weight_checksum_state(model=[chunk], optimizer=optimizer)
+        assert set(state.param_hashes) == {"pp0.companion.rows", "pp0.weight"}
+        assert state.optimizer_hashes[0].param_names == {0: "pp0.weight"}
+
+    def test_a_frozen_param_without_main_param_fails_when_no_grad_params_are_not_skipped(self) -> None:
+        """Without skip_no_grad_param a frozen param gets the same main_param assertion as any other."""
+        from miles.backends.megatron_utils.local_weight_checksum import _build_name_by_tensor_id
+
+        frozen = torch.nn.Parameter(torch.zeros((0, 5), dtype=torch.int64), requires_grad=False)
+        chunk = MagicMock()
+        chunk.named_parameters.return_value = [("companion.rows", frozen)]
+
+        with pytest.raises(AssertionError, match="main_param is None"):
+            _build_name_by_tensor_id([chunk], skip_no_grad_param=False)
 
     def test_assert_unmapped_fp32_param_fails(self) -> None:
         from miles.backends.megatron_utils.local_weight_checksum import _build_param_names_for_optimizer

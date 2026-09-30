@@ -21,7 +21,7 @@ from miles.backends.training_utils.loss import compute_advantages_and_returns, g
 from miles.backends.training_utils.parallel import get_parallel_state, set_parallel_state
 from miles.backends.training_utils.sampling_mask import get_rollout_sampling_masks
 from miles.ray.rollout.inference_controller import UpdatableEngines
-from miles.ray.train_actor import TrainRayActor
+from miles.ray.train_actor import TrainRayActor, WeightUpdateOutput
 from miles.utils import async_utils, train_dump_utils, train_metric_utils
 from miles.utils.audit_utils.witness.allocator import WitnessInfo
 from miles.utils.context_utils import with_defer
@@ -86,9 +86,7 @@ class FSDPTrainRayActor(TrainRayActor):
 
         torch.manual_seed(args.seed)
 
-        self.train_parallel_config = {
-            "dp_size": get_parallel_state().intra_dp.size,
-        }
+        self.train_parallel_config = get_parallel_state().train_parallel_config(supports_precomputed_schedule=False)
 
         if self.args.debug_rollout_only:
             return 0
@@ -462,7 +460,12 @@ class FSDPTrainRayActor(TrainRayActor):
             self.wake_up()
 
         with inverse_timer("train_wait"), timer("train"), ExitStack() as stack:
-            rollout_data, store_get_result = get_rollout_data(self.args, rollout_data_ref, witness_info=None)
+            rollout_data, store_get_result = get_rollout_data(
+                args=self.args,
+                rollout_data_ref=rollout_data_ref,
+                witness_info=None,
+                train_parallel_config=self.train_parallel_config,
+            )
             stack.enter_context(store_get_result)
             if self.args.debug_rollout_only:
                 return TrainStepOutput(outcome=TrainStepOutcome.NORMAL)
@@ -621,15 +624,18 @@ class FSDPTrainRayActor(TrainRayActor):
         return log_dict
 
     @timer
-    def update_weights(self, info: UpdatableEngines) -> int | None:  # type: ignore[override]
+    def update_weights(
+        self, info: UpdatableEngines, debug_weight_update_id: str, rollout_id: int | None
+    ) -> WeightUpdateOutput:
         """Synchronize actor weights to rollout engines (colocated or distributed; wakes params in offload mode)."""
         if self.args.debug_train_only or self.args.debug_rollout_only:
-            return None
+            return WeightUpdateOutput(weight_version=None, failed_cell_ids=())
 
         rollout_engines = info.rollout_engines
         snapshot_cell_id_to_hashes = info.snapshot_cell_id_to_hashes
         engine_gpu_counts = info.engine_gpu_counts
         engine_gpu_offsets = info.engine_gpu_offsets
+        engine_cell_ids = info.engine_cell_ids
         del info
 
         needs_reconnect = self.weight_updater.conn_status.needs_reconnect(snapshot_cell_id_to_hashes)
@@ -638,6 +644,7 @@ class FSDPTrainRayActor(TrainRayActor):
                 rollout_engines,
                 engine_gpu_counts=engine_gpu_counts,
                 engine_gpu_offsets=engine_gpu_offsets,
+                engine_cell_ids=engine_cell_ids,
             )
             self.weight_updater.conn_status.mark_reconnected(snapshot_cell_id_to_hashes)
             dist.barrier(group=get_gloo_group())
@@ -654,7 +661,10 @@ class FSDPTrainRayActor(TrainRayActor):
 
         clear_memory()
 
-        return self.weight_updater.weight_version
+        return WeightUpdateOutput(
+            weight_version=self.weight_updater.weight_version,
+            failed_cell_ids=(),
+        )
 
     def _create_ref_model(self, ref_load_path: str | None):
         """Create a separate FSDP2 ref model. ALWAYS uses CPUOffloadPolicy (regardless of the actor's

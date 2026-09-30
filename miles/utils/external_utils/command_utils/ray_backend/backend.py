@@ -5,6 +5,7 @@ from miles.utils.external_utils.command_utils.base_backend import (
     BaseCommandBackend,
     ExecuteTrainConfig,
     ExecuteTrainRequest,
+    LaunchGuard,
 )
 from miles.utils.external_utils.command_utils.common import (
     MOONCAKE_BACKEND_NAME,
@@ -25,7 +26,9 @@ from miles.utils.external_utils.ray_job import run_ray_job
 
 
 class RayCommandBackend(BaseCommandBackend):
-    def _execute_train_inner(self, *, request: ExecuteTrainRequest, config: ExecuteTrainConfig) -> None:
+    def _execute_train_inner(
+        self, *, request: ExecuteTrainRequest, config: ExecuteTrainConfig, guard: LaunchGuard | None
+    ) -> None:
         assert not request.extra_manifests, (
             "extra_manifests are objects a helm release installs beside the run, and a ray launch installs no "
             "release; launch onto kubernetes, or start what they describe yourself"
@@ -66,6 +69,7 @@ class RayCommandBackend(BaseCommandBackend):
                     entrypoint=f"python3 {shlex.quote(request.train_script)} {model_args} {request.train_args}",
                     runtime_env={"env_vars": runtime_env_vars},
                     job_lifetime=request.job_lifetime,
+                    submission_id=config.ray_submission_id,
                 )
             finally:
                 if request.job_lifetime == "launcher" and not external_ray:

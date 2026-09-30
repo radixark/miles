@@ -1,7 +1,7 @@
 import asyncio
 import logging
 import os
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Iterable, Sequence
 from dataclasses import dataclass
 from typing import Any, Generic, TypeVar
 
@@ -24,6 +24,25 @@ _T = TypeVar("_T")
 @dataclass
 class MutableBox(Generic[_T]):
     value: _T
+
+
+def split_evenly(total: int, num_parts: int) -> list[slice]:
+    quotient, remainder = divmod(total, num_parts)
+    slices = []
+    start = 0
+    for i in range(num_parts):
+        stop = start + quotient + (1 if i < remainder else 0)
+        slices.append(slice(start, stop))
+        start = stop
+    return slices
+
+
+def partition(xs: Iterable[_T], predicate: Callable[[_T], bool]) -> tuple[list[_T], list[_T]]:
+    falses: list[_T] = []
+    trues: list[_T] = []
+    for x in xs:
+        (trues if predicate(x) else falses).append(x)
+    return falses, trues
 
 
 def merge_asserting_consistency(a: dict[_K, _V], b: dict[_K, _V]) -> dict[_K, _V]:

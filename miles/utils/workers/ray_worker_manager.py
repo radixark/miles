@@ -17,9 +17,12 @@ from miles.utils.http_utils import wrap_ipv6
 from miles.utils.logging_utils import configure_logger
 from miles.utils.misc import NodeProbeMixin
 from miles.utils.ray_utils import compute_ray_pin_head_options
+from miles.utils.test_utils.fault_injector.controller import FaultHookCommand
+from miles.utils.test_utils.fault_injector.models import FaultHookRecord, ObservedFaultHookTarget
 from miles.utils.workers.addr_allocator import PortAllocator
 from miles.utils.workers.backend_capability.base import BackendCapability, DeferredBackendCapability
 from miles.utils.workers.backend_capability.ray import RayBackendCapability
+from miles.utils.workers.cell_operations.base import StaleFaultTargetError
 from miles.utils.workers.command_actor import CommandActor
 from miles.utils.workers.naming import compute_cell_id, compute_worker_name
 from miles.utils.workers.ray_worker_handle import RayWorkerHandle
@@ -102,16 +105,19 @@ class RayWorkerManager:
         async with self._membership_lock:
             await asyncio.gather(*[cell.stop() for cell in self._all_cells()])
 
-    def inject_fault(self, cell_id: str, *, mode: str, worker_in_cell_index: int) -> None:
+    def observe_fault_target(self, cell_id: str, *, rank: int) -> ObservedFaultHookTarget:
         cell = self._find_cell(cell_id)
-        if not cell.alive:
-            raise RuntimeError(f"Cell {cell_id} is not alive, cannot inject fault")
-        if not 0 <= worker_in_cell_index < len(cell.actors):
-            raise IndexError(
-                f"worker_in_cell_index {worker_in_cell_index} out of range for cell {cell_id} "
-                f"(has {len(cell.actors)} workers)"
-            )
-        cell.actors[worker_in_cell_index].actor_handle.inject_fault.remote(mode)
+        if not cell.alive or not 0 <= rank < len(cell.actors):
+            raise StaleFaultTargetError(f"Cell {cell_id} has no live worker at index {rank}")
+        return ObservedFaultHookTarget(cell_id=cell_id, rank=rank, workers_hash=cell.get_info().workers_hash)
+
+    async def control_fault_hook(self, command: FaultHookCommand) -> FaultHookRecord:
+        target = command.request.target
+        assert isinstance(target, ObservedFaultHookTarget), "A fault hook sent to a cell names the worker it observed"
+        if self.observe_fault_target(cell_id=target.cell_id, rank=target.rank) != target:
+            raise StaleFaultTargetError("Fault hook target no longer matches the observed worker")
+        actor = self._find_cell(target.cell_id).actors[target.rank].actor_handle
+        return await actor.control_fault_hook.remote(command=command)
 
     def get_worker_addrs(self, worker_name: str) -> NamedHostAndPorts:
         addrs = self._find_actor(worker_name).self_addrs

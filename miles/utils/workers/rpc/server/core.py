@@ -88,4 +88,4 @@ class RpcServer:
         outcome = await self._store.wait(call_id=call_id, timeout=min(timeout, MAX_POLL_TIMEOUT_SECONDS))
         if outcome is None:
             return CallStatusResponse(status="pending")
-        return CallStatusResponse(status=outcome.status, result=outcome.result, error=outcome.error)
+        return outcome

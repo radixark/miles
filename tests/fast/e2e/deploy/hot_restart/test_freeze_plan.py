@@ -10,31 +10,37 @@ from tests.e2e.deploy.conftest_deploy.hot_restart.freeze_plan import (
     write_freeze_plan,
 )
 from tests.e2e.ft.conftest_ft import app as ft_app
-from tests.e2e.ft.conftest_ft import execution as ft_execution
 from tests.e2e.ft.conftest_ft.app import TARGET_SIDE, RunSideRequest
 from tests.e2e.ft.conftest_ft.modes import FTTestMode
+from tests.utils.ft import launch
 
 from miles.utils.external_utils.command_utils.base_backend import ExecuteTrainConfig
 from miles.utils.external_utils.command_utils.common import ArgvManipulator
-from miles.utils.test_utils.ft_test_actions import (
-    CI_FT_TEST_ACTIONS_PATH_FLAG,
-    SLEEP_FOREVER_AT_END_ACTION,
-    FTTestAction,
+from miles.utils.test_utils.fault_injector.actions.frozen import (
+    SleepForeverAction,
     read_frozen_rollout_id,
     write_frozen_sentinel,
 )
+
+from miles.utils.test_utils.fault_injector.models import FaultHookName, FaultHookRequest
+from miles.utils.test_utils.fault_injector.static_source import CI_FAULT_HOOKS_PATH_FLAG
 
 
 # TODO ad hoc hack: revert after the args refactor
 class TestTheFreezePlanFile:
     def test_the_plan_a_relaunch_writes_replaces_the_one_the_run_was_installed_with(self, tmp_path):
-        """The run rereads this one path every step, so a second plan beside it would never be seen."""
+        """Each replacement reads the same path, so a second plan beside it would never be seen."""
         path = compute_freeze_plan_path(f"{tmp_path}/target")
         write_freeze_plan(path, frozen_rollout_id=2)
         write_freeze_plan(path, frozen_rollout_id=4)
 
-        assert [FTTestAction(**one) for one in json.loads(path.read_text())] == [
-            FTTestAction(at_rollout=4, action=SLEEP_FOREVER_AT_END_ACTION)
+        assert [FaultHookRequest.model_validate(one) for one in json.loads(path.read_text())] == [
+            FaultHookRequest(
+                request_id="sleep_forever_at_4",
+                hook_name=FaultHookName.ORCHESTRATOR_STEP_END,
+                action=SleepForeverAction(),
+                rollout_id=4,
+            )
         ]
 
     def test_arming_a_run_clears_what_the_previous_run_froze_at(self, tmp_path):
@@ -53,11 +59,11 @@ class TestTheFreezePlanFile:
         assert compute_freeze_plan_path(f"{tmp_path}/target") != compute_freeze_plan_path(f"{tmp_path}/baseline")
 
     def test_a_partial_write_is_never_what_the_run_reads(self, tmp_path):
-        """The run rereads the plan every step, so it may only ever see a whole one."""
+        """A replacement reading the shared plan may only ever see a complete request list."""
         path = compute_freeze_plan_path(f"{tmp_path}/target")
         write_freeze_plan(path, frozen_rollout_id=2)
 
-        assert json.loads(path.read_text()) == compute_freeze_plan(2)
+        assert [FaultHookRequest.model_validate(one) for one in json.loads(path.read_text())] == compute_freeze_plan(2)
         assert list(path.parent.glob("*.partial")) == []
 
 
@@ -68,7 +74,7 @@ class TestTheArgumentsThatNameThePlan:
         path = compute_freeze_plan_path(f"{tmp_path}/target")
         args = with_freeze_plan_of("--save /ckpt --num-rollout 6 ", plan_path=path)
 
-        assert ArgvManipulator.get(shlex.split(args), CI_FT_TEST_ACTIONS_PATH_FLAG) == [str(path)]
+        assert ArgvManipulator.get(shlex.split(args), CI_FAULT_HOOKS_PATH_FLAG) == [str(path)]
         assert "--save /ckpt" in args
 
     def test_the_arguments_of_a_relaunch_are_the_ones_the_run_is_already_up_with(self, tmp_path):
@@ -84,7 +90,7 @@ class TestTheArgumentsThatNameThePlan:
         """The path reaches the pods as one argument, so an unquoted one would arrive as several."""
         args = with_freeze_plan_of("--save /ckpt ", plan_path=compute_freeze_plan_path(f"{tmp_path}/a dir/target"))
 
-        assert len(ArgvManipulator.get(shlex.split(args), CI_FT_TEST_ACTIONS_PATH_FLAG)) == 1
+        assert len(ArgvManipulator.get(shlex.split(args), CI_FAULT_HOOKS_PATH_FLAG)) == 1
 
 
 # TODO ad hoc hack: revert after the args refactor
@@ -110,7 +116,7 @@ class TestWhereTheFreezePlanLives:
         side_dump.mkdir(parents=True, exist_ok=True)
         (side_dump / "leftover.txt").write_text("from a previous run")
 
-        monkeypatch.setattr(ft_execution, "_resolve_config", lambda config: _FakeConfig())
+        monkeypatch.setattr(launch, "resolve_config", lambda config: _FakeConfig())
         ft_app.run_one_release(
             RunSideRequest(
                 side=TARGET_SIDE,

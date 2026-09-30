@@ -3,8 +3,9 @@ import logging
 import os
 import random
 from argparse import Namespace
+from dataclasses import dataclass
 from datetime import timedelta
-from typing import Any, Literal
+from typing import Literal
 
 import ray
 import torch
@@ -17,6 +18,7 @@ from miles.utils import object_store
 from miles.utils.audit_utils.process_identity import TrainProcessIdentity
 from miles.utils.audit_utils.witness.allocator import WitnessInfo
 from miles.utils.distributed_utils import init_gloo_group
+from miles.utils.dp_schedule import TrainParallelConfig
 from miles.utils.ft_utils.heartbeat_utils import HeartbeatStatus, SimpleHeartbeat
 from miles.utils.ft_utils.indep_dp import IndepDPInfo
 from miles.utils.init_once import InitOnce, init_once
@@ -25,13 +27,35 @@ from miles.utils.memory_utils import clear_memory, print_memory
 from miles.utils.misc import NodeProbeMixin, get_current_node_ip, get_free_port
 from miles.utils.object_store import StoreObjectRef
 from miles.utils.test_utils.det_process_group import DET_NCCL_BACKEND_NAME, register_det_nccl_backend
-from miles.utils.test_utils.fault_injector import inject_fault as _inject_fault
+from miles.utils.test_utils.fault_injector.controller import FaultHookCommand, fault_hook_controller
+from miles.utils.test_utils.fault_injector.models import FaultHookRecord
 from miles.utils.workers.env_vars import CELL_INDEX_ENV_VAR
 from miles.utils.workers.rpc.common.metadata import rpc
 from miles.utils.workers.rpc.common.wire_types import Pickled
 from miles.utils.workers.serving.worker_identity import read_worker_in_pod_index
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class WeightUpdateOutput:
+    weight_version: int | None
+    failed_cell_ids: tuple[str, ...]
+    debug_trainer_load_state_timestamp: float | None = None
+    debug_weight_update_id: str | None = None
+
+    @classmethod
+    def merge(cls, outputs: list["WeightUpdateOutput"]) -> "WeightUpdateOutput":
+        if not outputs:
+            return cls(weight_version=None, failed_cell_ids=())
+        weight_versions = {output.weight_version for output in outputs if output.weight_version is not None}
+        assert len(weight_versions) <= 1, f"trainer cells disagree on the weight version: {weight_versions}"
+        failed_cell_ids = [cell_id for output in outputs for cell_id in output.failed_cell_ids]
+        assert len(failed_cell_ids) == len(
+            set(failed_cell_ids)
+        ), f"a cell failed under more than one trainer cell: {failed_cell_ids}"
+        [weight_version] = weight_versions or {None}
+        return cls(weight_version=weight_version, failed_cell_ids=tuple(failed_cell_ids))
 
 
 def get_local_gpu_id():
@@ -172,8 +196,8 @@ class TrainRayActor(NodeProbeMixin):
         return self._heartbeat.status()
 
     @rpc(concurrency_group="fault_injector")
-    def inject_fault(self, mode: str) -> None:
-        _inject_fault(mode=mode)
+    def control_fault_hook(self, command: FaultHookCommand) -> FaultHookRecord:
+        return fault_hook_controller.apply(command)
 
     @rpc(concurrency_group="kill_self")
     def kill_self(self) -> None:
@@ -212,12 +236,14 @@ class TrainRayActor(NodeProbeMixin):
         raise NotImplementedError(f"{type(self).__name__} does not support HF export")
 
     @abc.abstractmethod
-    def update_weights(self, info: UpdatableEngines) -> int | None:
+    def update_weights(
+        self, info: UpdatableEngines, debug_weight_update_id: str, rollout_id: int | None
+    ) -> WeightUpdateOutput:
         raise NotImplementedError
 
     @abc.abstractmethod
     def _get_parallel_config(self):
         raise NotImplementedError
 
-    def get_train_parallel_config(self) -> dict[str, Any]:
+    def get_train_parallel_config(self) -> TrainParallelConfig | None:
         return self.train_parallel_config

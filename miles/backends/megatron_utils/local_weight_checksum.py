@@ -6,7 +6,6 @@ raise an error rather than skip it — incomplete checksums defeat the purpose o
 cross-replica consistency verification.
 """
 
-import hashlib
 import logging
 from argparse import Namespace
 from collections.abc import Iterator, Sequence
@@ -16,7 +15,7 @@ import torch
 from megatron.core.distributed import DistributedDataParallel as DDP
 from megatron.core.optimizer.optimizer import MegatronOptimizer
 
-from miles.backends.megatron_utils.ci_utils import _hash_tensor_bytes
+from miles.backends.training_utils.weight_update.checksum_utils import hash_tensor_sha256
 
 if TYPE_CHECKING:
     from miles.utils.audit_utils.event_logger.models import OptimizerStateInfo, TrainEngineLocalWeightChecksumState
@@ -91,7 +90,7 @@ def _hash_named_tensors(model: Sequence[DDP], *, accessor: str) -> dict[str, str
     for pp_idx, model_chunk in enumerate(model):
         for name, tensor in sorted(getattr(model_chunk, accessor)(), key=lambda x: x[0]):
             assert tensor is not None, f"pp{pp_idx}.{name}: tensor is None"
-            hashes[f"pp{pp_idx}.{name}"] = _hash_tensor_sha256(tensor)
+            hashes[f"pp{pp_idx}.{name}"] = hash_tensor_sha256(tensor)
     return hashes
 
 
@@ -102,7 +101,7 @@ def _collect_optimizer_hashes(
     """Collect optimizer state snapshots with tensors replaced by hashes."""
     from miles.utils.audit_utils.event_logger.models import OptimizerStateInfo
 
-    name_by_tensor_id = _build_name_by_tensor_id(model)
+    name_by_tensor_id = _build_name_by_tensor_id(model, skip_no_grad_param=True)
     result: list[OptimizerStateInfo] = []
 
     for sub_opt in _iter_sub_optimizers(optimizer):
@@ -123,12 +122,14 @@ def _collect_optimizer_hashes(
     return result
 
 
-def _build_name_by_tensor_id(model: Sequence[DDP]) -> dict[_MainParamId, str]:
+def _build_name_by_tensor_id(model: Sequence[DDP], *, skip_no_grad_param: bool) -> dict[_MainParamId, str]:
     """Build _MainParamId(fp32_main_param) → name mapping from model parameters."""
     name_map: dict[_MainParamId, str] = {}
     for pp_idx, model_chunk in enumerate(model):
         for name, param in model_chunk.named_parameters():
             assert param is not None, f"pp{pp_idx}.{name}: param is None"
+            if skip_no_grad_param and not param.requires_grad:
+                continue
             main_param = getattr(param, "main_param", None)
             if main_param is None:
                 assert getattr(param, "main_param_sharded", False), (
@@ -160,7 +161,7 @@ def _build_param_names_for_optimizer(
 def _transform_tensor_to_hash(obj: Any) -> Any:
     """Recursively replace all tensors in a nested structure with their SHA-256 hashes."""
     if isinstance(obj, torch.Tensor):
-        return _hash_tensor_sha256(obj)
+        return hash_tensor_sha256(obj)
     if isinstance(obj, dict):
         return {k: _transform_tensor_to_hash(v) for k, v in obj.items()}
     if isinstance(obj, (list, tuple)):
@@ -175,8 +176,3 @@ def _iter_sub_optimizers(optimizer: MegatronOptimizer) -> Iterator[MegatronOptim
             yield from _iter_sub_optimizers(sub)
     else:
         yield optimizer
-
-
-def _hash_tensor_sha256(tensor: torch.Tensor) -> str:
-    raw_bytes = _hash_tensor_bytes(tensor)
-    return hashlib.sha256(raw_bytes).hexdigest()

@@ -3,13 +3,16 @@
 from abc import ABC, abstractmethod
 from argparse import Namespace
 from collections.abc import Callable, Iterator, Sequence
-from typing import ClassVar
+from typing import TYPE_CHECKING, ClassVar
 
 import torch
 
 from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
 from miles.backends.training_utils.parallel import ParallelState
 from miles.backends.training_utils.weight_update.hf_weight_iterator import WeightUpdatePlacement
+
+if TYPE_CHECKING:
+    from miles.backends.training_utils.weight_update.rollout_cell_updater import _RolloutCellUpdater
 
 
 class WeightTransferProtocol(ABC):
@@ -32,6 +35,7 @@ class WeightTransferProtocol(ABC):
         self.is_sender: bool | None = None
         self.group_name = "miles"
         self.update_weight_metrics: dict[str, float] = {}
+        self.cell_updaters_of_cell_id: dict[str, _RolloutCellUpdater] = {}
 
     @abstractmethod
     def connect(
@@ -39,6 +43,7 @@ class WeightTransferProtocol(ABC):
         rollout_engines: Sequence[SGLangApiClient],
         engine_gpu_counts: Sequence[int] | None,
         engine_gpu_offsets: Sequence[int] | None,
+        engine_cell_ids: Sequence[str],
         parallel_state: ParallelState,
         placement: WeightUpdatePlacement,
         selector: str,

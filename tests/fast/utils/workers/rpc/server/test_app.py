@@ -122,13 +122,18 @@ class TestRoundtrip:
         """A sync method roundtrips its typed result through submit + query."""
         async with _client(_Worker()) as client:
             body = await _call(client, "demo_sync", {"a": 1, "b": 2})
-            assert body == {"status": "success", "result": 3, "error": None}
+            assert body == {"status": "success", "result": 3, "error": None, "error_type": None}
 
     async def test_async_method_success(self):
         """An async method runs on the event loop and returns a model result."""
         async with _client(_Worker()) as client:
             body = await _call(client, "demo_async_model", {"name": "abc"})
-            assert body == {"status": "success", "result": {"name": "abc", "value": 3}, "error": None}
+            assert body == {
+                "status": "success",
+                "result": {"name": "abc", "value": 3},
+                "error": None,
+                "error_type": None,
+            }
 
     async def test_business_exception_becomes_failed_envelope(self):
         """Worker exceptions surface as 200 + failed envelope with a traceback."""
@@ -236,7 +241,12 @@ class TestProtocolErrors:
 
             accepted = await _submit(client, "demo_sync", {"a": 1, "b": 2}, call_id="reused")
             assert accepted.response.status_code == 200
-            assert await _poll_until_done(client, "reused") == {"status": "success", "result": 3, "error": None}
+            assert await _poll_until_done(client, "reused") == {
+                "status": "success",
+                "result": 3,
+                "error": None,
+                "error_type": None,
+            }
 
     async def test_invalid_poll_timeout_400(self):
         """A negative long-poll timeout is a client error, reported as 400."""
@@ -312,7 +322,7 @@ class TestPendingAndCompletion:
 
             worker.release_slow.set()
             body = await _poll_until_done(client, submitted.call_id)
-            assert body == {"status": "success", "result": "s", "error": None}
+            assert body == {"status": "success", "result": "s", "error": None, "error_type": None}
 
     async def test_sync_call_completes_without_polling(self):
         """A submitted sync call runs to completion even if never polled."""

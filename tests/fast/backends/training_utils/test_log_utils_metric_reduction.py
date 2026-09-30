@@ -5,12 +5,13 @@ Averaging them (the old behavior) systematically under-reports the global
 maximum and over-reports the global minimum.
 """
 
+from argparse import Namespace
 from types import SimpleNamespace
 
 import pytest
 import torch
 
-from miles.backends.training_utils import log_utils
+from miles.backends.training_utils import cp_utils, log_utils
 
 
 def test_min_max_keys_reduce_to_global_extrema():
@@ -134,3 +135,46 @@ def test_log_multi_turn_data_passes_explicit_extrema_reductions(monkeypatch):
     assert captured["metric_name"] == "multi_turn"
     assert captured["rollout_id"] == 7
     assert captured["reduction_by_key"] == log_utils._MULTI_TURN_REDUCTION_BY_KEY
+
+
+class TestLogRolloutDataCountShare:
+    def test_the_count_share_divides_by_the_effective_dp_size(self, monkeypatch):
+        """Independent cells gather over effective_dp_cp, so the per-cell count must be num_rollouts / live cells."""
+        captured = {}
+        parallel_state = SimpleNamespace(
+            tp=SimpleNamespace(rank=0),
+            cp=SimpleNamespace(size=1),
+            effective_dp=SimpleNamespace(size=3),
+            is_pp_last_stage=True,
+        )
+        monkeypatch.setattr(log_utils, "get_parallel_state", lambda: parallel_state)
+        monkeypatch.setattr(cp_utils, "get_parallel_state", lambda: parallel_state)
+        monkeypatch.setattr(
+            log_utils,
+            "gather_log_data",
+            lambda metric_name, args, rollout_id, log_dict: captured.setdefault("log_dict", log_dict),
+        )
+        rollout_data = {
+            "tokens": [torch.tensor([1, 2, 3])],
+            "total_lengths": [3],
+            "response_lengths": [2],
+            "loss_masks": [torch.tensor([1, 1], dtype=torch.int32)],
+            "log_probs": [torch.tensor([-1.0, -3.0])],
+            "num_rollouts": [256],
+        }
+
+        log_utils.log_rollout_data(
+            0,
+            Namespace(
+                ci_test=False,
+                qkv_format="thd",
+                log_multi_turn=False,
+                log_passrate=False,
+                log_correct_samples=False,
+            ),
+            rollout_data,
+        )
+
+        per_rank_sum, count = captured["log_dict"]["log_probs"]
+        assert per_rank_sum == pytest.approx(-2.0)
+        assert count == pytest.approx(256 / 3)

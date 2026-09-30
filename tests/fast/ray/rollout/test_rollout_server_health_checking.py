@@ -44,7 +44,7 @@ def _make_meta(cell_id: str = "cell-0", **overrides) -> ServerCellMetadata:
 
 def _make_server(*, ft_components=("rollout",), **overrides) -> RolloutServer:
     return RolloutServer(
-        server_cells={},
+        all_server_cells={},
         args=make_args(colocate=True, ft_components=list(ft_components)),
         context_lock=ContextLock("InferenceController"),
         engine_provider=_StubProvider(),
@@ -149,7 +149,7 @@ class TestAddCellHealthChecker:
         async with srv.context_lock:
             await srv.add_cell(_make_meta(needs_offload=True))
 
-            checker = srv.server_cells["cell-0"]._health_checker
+            checker = srv.all_server_cells["cell-0"]._health_checker
             assert isinstance(checker, SimpleHealthChecker)
             assert checker._task is not None
             await srv.dispose()
@@ -162,7 +162,7 @@ class TestAddCellHealthChecker:
         async with srv.context_lock:
             await srv.add_cell(_make_meta(needs_offload=True))
 
-            assert not srv.server_cells["cell-0"]._get_health_checker_active_and_epoch().active
+            assert not srv.all_server_cells["cell-0"]._get_health_checker_active_and_epoch().active
             await srv.dispose()
 
     async def test_no_checker_is_created_without_rollout_fault_tolerance(self):
@@ -172,7 +172,7 @@ class TestAddCellHealthChecker:
         async with srv.context_lock:
             await srv.add_cell(_make_meta(needs_offload=True))
 
-            assert isinstance(srv.server_cells["cell-0"]._health_checker, NoopHealthChecker)
+            assert isinstance(srv.all_server_cells["cell-0"]._health_checker, NoopHealthChecker)
             await srv.dispose()
 
 

@@ -8,13 +8,13 @@ from tests.e2e.conftest_multi_policy import execute
 from miles.utils.external_utils import command_utils
 
 register_cuda_ci(
-    est_time=3000,
+    est_time=8000,
     suite="stage-c-4-gpu-h200",
     labels=["short", "multi-policy", "fully-async"],
     hardware=["hopper", "blackwell"],
 )
 
-NUM_ROLLOUT = int(os.environ.get("MILES_TEST_NUM_ROLLOUT", "5"))
+NUM_ROLLOUT = int(os.environ.get("MILES_TEST_NUM_ROLLOUT", "15"))
 SAVE_INTERVAL = 2
 
 

@@ -7,20 +7,21 @@ from typing import Any
 import pytest
 from tests.e2e.deploy.conftest_deploy.hot_restart import driver as driver_module
 from tests.e2e.deploy.conftest_deploy.hot_restart.driver import (
-    HOT_RESTART_ARG,
     HotRestartDriver,
     ScheduledFreeze,
     compute_freeze_plan,
     driving_hot_restarts,
     relaunch_with_hot_restart,
 )
-from tests.e2e.deploy.conftest_deploy.hot_restart.evidence import HotRestartRecord, RunProgress
 from tests.e2e.ft.conftest_ft.modes import FTTestMode
 from tests.fast.e2e.deploy.hot_restart.cluster_facts import NAMESPACE, RELEASE
+from tests.utils.deploy.hot_restart.evidence import HotRestartRecord, RunProgress
+from tests.utils.soak.deploy.utils import HOT_RESTART_ARG
 
 from miles.utils.external_utils.command_utils.base_backend import ExecuteTrainConfig
 from miles.utils.external_utils.command_utils.helm_backend.launcher.entrypoint import RunExitedError
-from miles.utils.test_utils.ft_test_actions import SLEEP_FOREVER_AT_END_ACTION, FTTestAction
+from miles.utils.test_utils.fault_injector.actions.frozen import SleepForeverAction
+from miles.utils.test_utils.fault_injector.models import FaultHookName, FaultHookRequest
 from miles.utils.workers.types import HotRestartComponent
 
 _CHECKPOINTED: ScheduledFreeze = ScheduledFreeze(frozen_rollout_id=2, saved_iteration=1)
@@ -56,9 +57,14 @@ class TestScheduledFreeze:
 class TestTheFreezePlan:
     def test_the_plan_arms_the_sleep_forever_action_at_the_pinned_step(self):
         """The run reads this plan, and it is the only thing that decides where the run stands still."""
-        [action] = [FTTestAction(**one) for one in compute_freeze_plan(3)]
+        [action] = compute_freeze_plan(3)
 
-        assert action == FTTestAction(at_rollout=3, action=SLEEP_FOREVER_AT_END_ACTION)
+        assert action == FaultHookRequest(
+            request_id="sleep_forever_at_3",
+            hook_name=FaultHookName.ORCHESTRATOR_STEP_END,
+            action=SleepForeverAction(),
+            rollout_id=3,
+        )
 
     def test_a_run_with_no_freeze_left_carries_an_empty_plan(self):
         """The last relaunch has to train to the end, and a plan repeating the old step would freeze it again."""

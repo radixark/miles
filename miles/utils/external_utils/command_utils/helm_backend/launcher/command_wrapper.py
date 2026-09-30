@@ -36,8 +36,13 @@ class Helm:
         chart: str | Path,
         values_files: list[str | Path],
         ci_run: bool,
+        timeout: float | None = None,
     ) -> None:
-        _run(Helm.upgrade_command(release, namespace, chart, values_files, ci_run=ci_run), capture_output=False)
+        _run(
+            Helm.upgrade_command(release, namespace, chart, values_files, ci_run=ci_run),
+            capture_output=False,
+            timeout=timeout,
+        )
 
     @staticmethod
     def render_upgrade(*, release: str, namespace: str, chart: str | Path, values_files: list[str | Path]) -> Manifest:
@@ -279,8 +284,8 @@ def _compute_helm_args(values: dict[str, Any]) -> list[str]:
     return arguments
 
 
-def _run(command: list[str], capture_output: bool) -> subprocess.CompletedProcess[str]:
-    return run_process(command, capture_output=capture_output, check=True)
+def _run(command: list[str], capture_output: bool, timeout: float | None = None) -> subprocess.CompletedProcess[str]:
+    return run_process(command, capture_output=capture_output, check=True, timeout=timeout)
 
 
 def _locked_dependency_names(chart: str | Path) -> list[str]:

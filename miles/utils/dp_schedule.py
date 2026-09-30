@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import Any, NamedTuple
 
 from miles.utils.flops_utils import calculate_fwd_flops
+from miles.utils.pydantic_utils import FrozenStrictBaseModel
 from miles.utils.seqlen_balancing import (
     expand_bins_by_splitting,
     first_fit_decreasing_pack,
@@ -14,14 +15,22 @@ from miles.utils.seqlen_balancing import (
 
 logger = logging.getLogger(__name__)
 
-SCHEDULE_CONFIG_KEYS = ("dp_size", "cp_size", "vpp_size", "microbatch_group_size_per_vp_stage")
+
+class TrainParallelConfig(FrozenStrictBaseModel):
+    dp_size: int
+    cp_size: int
+    vpp_size: int | None
+    microbatch_group_size_per_vp_stage: int | None
+    independent_dp: bool
+    supports_precomputed_schedule: bool
 
 
-def has_full_schedule_config(train_parallel_config: dict | None) -> bool:
-    """True when the backend advertised every field build_dp_schedule needs."""
-    if not train_parallel_config:
-        return False
-    return all(key in train_parallel_config for key in SCHEDULE_CONFIG_KEYS)
+class DPSchedule(NamedTuple):
+    partitions: list[list[int]]  # (num_ranks, num_local_samples): global sample indices
+    # (num_ranks, num_local_microbatches, num_samples_in_microbatch): indices into partitions[rank]
+    micro_batch_indices: list[list[list[int]]]
+    num_microbatches: list[int]  # (num_steps,): shared micro-batch counts for every rank
+    num_rollouts: list[int]  # (num_steps,): distinct rollout counts
 
 
 def _calculate_workloads(step_lengths, args):
@@ -30,18 +39,18 @@ def _calculate_workloads(step_lengths, args):
 
 def build_dp_schedule(
     args: Any,
-    train_parallel_config: dict,
+    train_parallel_config: TrainParallelConfig,
     total_lengths: list[int],
     *,
     global_batch_size: int,
     rollout_indices: list[int],
-) -> tuple[list[list[int]], list[list[list[int]]], list[int], list[int]]:
-    """Compute per-rank ``(partitions, micro_batch_indices, num_microbatches, num_rollouts)``;
+) -> DPSchedule:
+    """Compute ``DPSchedule``;
     ``global_batch_size`` counts rollouts, not training samples."""
-    dp_size = train_parallel_config["dp_size"]
-    cp_size = train_parallel_config["cp_size"]
-    vpp_size = train_parallel_config["vpp_size"] or 1
-    mb_group = train_parallel_config["microbatch_group_size_per_vp_stage"]
+    dp_size = train_parallel_config.dp_size
+    cp_size = train_parallel_config.cp_size
+    vpp_size = train_parallel_config.vpp_size or 1
+    mb_group = train_parallel_config.microbatch_group_size_per_vp_stage
 
     # micro-batch size per step must divide evenly across dp and vpp
     align_to = dp_size * (mb_group if vpp_size > 1 else 1)
@@ -152,4 +161,9 @@ def build_dp_schedule(
                 partitions[rank].extend(sample_indices[i] for i in micro_batch)
                 micro_batch_indices[rank].append(list(range(local_start, local_start + len(micro_batch))))
 
-    return partitions, micro_batch_indices, num_microbatches, num_rollouts
+    return DPSchedule(
+        partitions=partitions,
+        micro_batch_indices=micro_batch_indices,
+        num_microbatches=num_microbatches,
+        num_rollouts=num_rollouts,
+    )

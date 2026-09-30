@@ -12,6 +12,7 @@ from pydantic import ValidationError
 import miles.utils.audit_utils.event_logger.logger as event_logger_module
 from miles.utils.audit_utils.event_logger.logger import (
     EventLogger,
+    EventReader,
     event_logger_context,
     get_event_logger,
     read_events,
@@ -229,6 +230,118 @@ class TestReadEvents:
 
         events = read_events(tmp_path)
         assert len(events) == 3
+
+
+class TestEventReader:
+    @staticmethod
+    def _log(log_dir: Path, *, rollout_id: int, file_name: str = "events.jsonl") -> None:
+        _make_logger(log_dir, file_name=file_name).log(
+            _EVENT_CLS, dict(_EVENT_PARTIAL, rollout_id=rollout_id), print_log=False
+        )
+
+    @staticmethod
+    def _count_parses(monkeypatch: pytest.MonkeyPatch) -> list[bytes]:
+        parsed: list[bytes] = []
+        adapter = event_logger_module._event_adapter
+
+        class _CountingAdapter:
+            def validate_json(self, raw: bytes):
+                parsed.append(raw)
+                return adapter.validate_json(raw)
+
+        monkeypatch.setattr(event_logger_module, "_event_adapter", _CountingAdapter())
+        return parsed
+
+    def test_a_repeat_read_parses_only_the_appended_lines(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Earlier lines are parsed once; later reads still return every event in file order."""
+        reader = EventReader(tmp_path)
+        self._log(tmp_path, rollout_id=0)
+        self._log(tmp_path, rollout_id=1)
+        assert [e.rollout_id for e in reader.read()] == [0, 1]
+
+        parsed = self._count_parses(monkeypatch)
+        self._log(tmp_path, rollout_id=2)
+
+        assert [e.rollout_id for e in reader.read()] == [0, 1, 2]
+        assert len(parsed) == 1
+
+    def test_a_repeat_read_matches_a_fresh_read_across_several_files(self, tmp_path: Path) -> None:
+        """Files and lines keep the order a one-off read_events returns."""
+        reader = EventReader(tmp_path)
+        self._log(tmp_path, rollout_id=0, file_name="b.jsonl")
+        reader.read()
+        self._log(tmp_path, rollout_id=1, file_name="a.jsonl")
+        self._log(tmp_path, rollout_id=2, file_name="b.jsonl")
+
+        assert reader.read() == read_events(tmp_path)
+
+    def test_a_replaced_file_is_parsed_again_from_its_start(self, tmp_path: Path) -> None:
+        """A restore swaps in another file at the same path, so the cached events of the old one are dropped."""
+        events_dir, restored_dir = tmp_path / "events", tmp_path / "restored"
+        self._log(events_dir, rollout_id=0)
+        self._log(events_dir, rollout_id=1)
+        reader = EventReader(events_dir)
+        reader.read()
+
+        self._log(restored_dir, rollout_id=5)
+        self._log(restored_dir, rollout_id=6)
+        self._log(restored_dir, rollout_id=7)
+        (restored_dir / "events.jsonl").replace(events_dir / "events.jsonl")
+
+        assert [e.rollout_id for e in reader.read()] == [5, 6, 7]
+
+    def test_a_file_rewritten_in_place_is_parsed_again_from_its_start(self, tmp_path: Path) -> None:
+        """Keeping the inode but not the already-read bytes does not reuse the stale events."""
+        reader = EventReader(tmp_path)
+        self._log(tmp_path, rollout_id=0)
+        reader.read()
+
+        path = tmp_path / "events.jsonl"
+        path.write_text("")
+        self._log(tmp_path, rollout_id=3)
+        self._log(tmp_path, rollout_id=4)
+
+        assert [e.rollout_id for e in reader.read()] == [3, 4]
+
+    def test_a_same_size_rewrite_keeping_the_last_line_is_parsed_again(self, tmp_path: Path) -> None:
+        """The prefix check spans lines, so an unchanged trailing line cannot hide a rewritten event before it."""
+        reader = EventReader(tmp_path)
+        self._log(tmp_path, rollout_id=1)
+        path = tmp_path / "events.jsonl"
+        with open(path, "a") as f:
+            f.write("\n")
+        reader.read()
+
+        path.write_bytes(path.read_bytes().replace(b'"rollout_id":1', b'"rollout_id":2'))
+
+        assert [e.rollout_id for e in reader.read()] == [2]
+
+    def test_an_unterminated_last_line_is_parsed_again_once_complete(self, tmp_path: Path) -> None:
+        """A line still being written is not taken as read, so its completed form is returned later."""
+        reader = EventReader(tmp_path)
+        self._log(tmp_path, rollout_id=0)
+        path = tmp_path / "events.jsonl"
+        line = path.read_bytes()
+        with open(path, "ab") as f:
+            f.write(line[: len(line) // 2])
+
+        assert [e.rollout_id for e in reader.read()] == [0]
+
+        with open(path, "ab") as f:
+            f.write(line[len(line) // 2 :])
+
+        assert [e.rollout_id for e in reader.read()] == [0, 0]
+
+    def test_an_unterminated_malformed_last_line_raises_when_strict(self, tmp_path: Path) -> None:
+        """Strict reading fails on a broken last line just as a one-off read does."""
+        self._log(tmp_path, rollout_id=0)
+        with open(tmp_path / "events.jsonl", "a") as f:
+            f.write("this is not valid json")
+
+        with pytest.raises(ValidationError):
+            EventReader(tmp_path, strict=True).read()
 
 
 class TestEventLoggerKeepsNonFiniteMetrics:

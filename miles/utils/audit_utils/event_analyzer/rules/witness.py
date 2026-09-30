@@ -11,6 +11,7 @@ from miles.utils.audit_utils.event_logger.models import (
     WitnessAllocateIdEvent,
     WitnessSnapshotParamEvent,
 )
+from miles.utils.audit_utils.witness.utils import exclude_id_ranges
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
 
 logger = logging.getLogger(__name__)
@@ -49,7 +50,7 @@ def check(events: list[Event]) -> list[WitnessIssue]:
     Remarks:
     * To correlate witness_id vs sample_index utilize WitnessAllocateIdEvent.
     * Witness' ring buffer will remove old data, thus we need to ignore the appearance/disappearance of
-      all values in `WitnessSnapshotParamEvent.stale_ids`
+      all values in `WitnessSnapshotParamEvent.stale_id_ranges`
     """
 
     allocated_witness_ids_by_rollout = _compute_allocated_witness_ids_by_rollout(
@@ -230,9 +231,8 @@ def _compare_snapshot(
     cell_index: int,
     zero_adv_excused_ids: set[int],
 ) -> WitnessDataMismatchIssue | None:
-    stale_set = set(event.stale_ids)
-    filtered_expected = expected - stale_set - zero_adv_excused_ids
-    filtered_actual = set(event.nonzero_witness_ids) - stale_set
+    filtered_expected = exclude_id_ranges(expected - zero_adv_excused_ids, event.stale_id_ranges)
+    filtered_actual = exclude_id_ranges(event.nonzero_witness_ids, event.stale_id_ranges)
 
     if filtered_expected == filtered_actual:
         return None

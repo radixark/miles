@@ -5,11 +5,14 @@ from pathlib import Path
 from tests.e2e.deploy.conftest_deploy.hot_restart.assert_redone_from_checkpoint import (
     compute_expected_attempts,
     read_checkpoint_snapshot_dirs,
-    read_discarded_event_dirs,
-    read_step_events,
 )
 from tests.e2e.deploy.conftest_deploy.hot_restart.driver import ScheduledFreeze
-from tests.e2e.deploy.conftest_deploy.hot_restart.evidence import HotRestartRecord, read_last_saved_iteration
+from tests.utils.deploy.hot_restart.evidence import (
+    HotRestartRecord,
+    read_discarded_event_dirs,
+    read_finished_steps_once,
+    read_last_saved_iteration,
+)
 
 from miles.utils.audit_utils.event_logger.logger import EVENTS_DIRNAME
 
@@ -42,13 +45,13 @@ def assert_unsaved_run_redone_from_scratch(
     )
     [discarded_dir] = discarded_dirs
 
-    discarded_log = _read_steps_written_once(discarded_dir, what=discarded_dir.name)
+    discarded_log = read_finished_steps_once(discarded_dir, what=discarded_dir.name)
     assert sorted(discarded_log) == list(range(scheduled.frozen_rollout_id + 1)), (
         f"the run was frozen after step {scheduled.frozen_rollout_id}, and the log moved aside describes "
         f"{sorted(discarded_log)}: what the take-over threw away is every step the frozen run had trained"
     )
 
-    surviving_log = _read_steps_written_once(Path(dump_dir) / EVENTS_DIRNAME, what="the surviving event log")
+    surviving_log = read_finished_steps_once(Path(dump_dir) / EVENTS_DIRNAME, what="the surviving event log")
     assert sorted(surviving_log) == list(range(num_rollouts)), (
         f"the surviving event log describes {sorted(surviving_log)}, not each of the {num_rollouts} steps exactly "
         f"once: a take-over of a run holding no checkpoint restarts it at step 0 and it trains to the end from there"
@@ -76,16 +79,6 @@ def assert_unsaved_run_redone_from_scratch(
     )
 
     return RedoneFromScratch(frozen_rollout_id=scheduled.frozen_rollout_id, attempts_of_rollout_id=attempts)
-
-
-def _read_steps_written_once(events_dir: Path, *, what: str) -> dict[int, str]:
-    logged = read_step_events(events_dir)
-    repeated = {rollout_id: len(events) for rollout_id, events in logged.items() if len(events) != 1}
-    assert not repeated, (
-        f"{what} describes the step(s) {repeated} more than once; a run that starts over writes what it retrains "
-        f"into a log of its own, so no one log carries a step twice"
-    )
-    return {rollout_id: events[0] for rollout_id, events in logged.items()}
 
 
 def _read_only_freeze_without_prior_save(

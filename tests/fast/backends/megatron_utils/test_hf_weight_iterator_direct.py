@@ -1,6 +1,7 @@
 import sys
 import types
 from argparse import Namespace
+from types import SimpleNamespace
 
 from tests.ci.ci_register import register_cpu_ci
 
@@ -8,7 +9,9 @@ register_cpu_ci(est_time=60, suite="stage-a-cpu", labels=[])
 
 import pytest
 import torch
+from tests.fast.utils.test_utils.fault_injector.fakes import _arm_marker_hook
 
+from miles.utils.test_utils.fault_injector.models import FaultHookName
 from miles.utils.types import ParamInfo
 
 
@@ -114,3 +117,214 @@ def test_gather_batches_pack_by_size_only(direct_module, monkeypatch):
         Namespace(update_weight_buffer_size=6), params, size_multiplier=2
     )
     assert [[param.name for param in batch] for batch in batches] == [["layer.a"], ["layer.b"], ["layer.c"]]
+
+
+class _GatherLog:
+    def __init__(self) -> None:
+        self.log: list[object] = []
+
+    def all_gather(self, buffers: list[torch.Tensor], tensor: torch.Tensor, *, group: str, async_op: bool) -> "_Done":
+        self.log.append(("gather", group))
+        for buffer in buffers:
+            buffer.copy_(tensor)
+        return _Done()
+
+    def get_rank(self) -> int:
+        return 0
+
+    def all_gather_object(self, output: list[object], obj: object, *, group: str) -> None:
+        self.log.append(("gather_names", group))
+        output[:] = [list(obj) for _ in output]
+
+
+class _Done:
+    def wait(self) -> None:
+        pass
+
+
+def _tp_param(size: int, *, tensor_model_parallel: bool = True) -> torch.Tensor:
+    param = torch.arange(size, dtype=torch.float32)
+    param.tensor_model_parallel = tensor_model_parallel
+    param.partition_dim = 0
+    param.partition_stride = 1
+    return param
+
+
+@pytest.fixture
+def gather_log(direct_module, monkeypatch) -> _GatherLog:
+    fake = _GatherLog()
+    monkeypatch.setattr(direct_module, "dist", fake)
+    return fake
+
+
+class TestTensorParallelGatherFaultHook:
+    def test_the_hook_fires_before_the_first_tensor_parallel_all_gather(
+        self, direct_module, gather_log: _GatherLog, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A trainer fault armed at the all-gather must strike before any TP collective starts."""
+        monkeypatch.setattr(
+            direct_module,
+            "get_parallel_state",
+            lambda: SimpleNamespace(tp=SimpleNamespace(size=2, group="tp"), etp=SimpleNamespace(size=1, group="etp")),
+        )
+        _arm_marker_hook(
+            monkeypatch, log=gather_log.log, hook_name=FaultHookName.TRAINER_WEIGHT_UPDATE_BEFORE_ALL_GATHER
+        )
+        names = ["decoder.layers.0.self_attention.linear_proj.weight", "decoder.layers.0.mlp.linear_fc2.bias"]
+
+        gathered = direct_module.all_gather_params_async(
+            Namespace(swiglu=False), [(_param(name, 2), _tp_param(2)) for name in names]
+        )
+
+        assert gather_log.log == [
+            ("hook", FaultHookName.TRAINER_WEIGHT_UPDATE_BEFORE_ALL_GATHER.value),
+            ("gather", "tp"),
+            ("gather", "tp"),
+        ]
+        assert [param.tolist() for param in gathered] == [[0.0, 1.0, 0.0, 1.0]] * 2
+
+    @pytest.mark.parametrize("tp_size,tensor_model_parallel", [(1, True), (2, False)])
+    def test_a_batch_without_any_collective_never_reaches_the_hook(
+        self,
+        direct_module,
+        gather_log: _GatherLog,
+        monkeypatch: pytest.MonkeyPatch,
+        tp_size: int,
+        tensor_model_parallel: bool,
+    ) -> None:
+        """Replicated params or a single TP rank must leave the all-gather fault armed for a real gather."""
+        monkeypatch.setattr(
+            direct_module,
+            "get_parallel_state",
+            lambda: SimpleNamespace(
+                tp=SimpleNamespace(size=tp_size, group="tp"), etp=SimpleNamespace(size=1, group="etp")
+            ),
+        )
+        _arm_marker_hook(
+            monkeypatch, log=gather_log.log, hook_name=FaultHookName.TRAINER_WEIGHT_UPDATE_BEFORE_ALL_GATHER
+        )
+
+        direct_module.all_gather_params_async(
+            Namespace(swiglu=False),
+            [(_param("decoder.final_layernorm.weight", 2), _tp_param(2, tensor_model_parallel=tensor_model_parallel))],
+        )
+
+        assert gather_log.log == []
+
+    def test_a_failing_hook_starts_no_collective(
+        self, direct_module, gather_log: _GatherLog, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A hook failure must abort the update before this rank enters the TP all-gather."""
+        monkeypatch.setattr(
+            direct_module,
+            "get_parallel_state",
+            lambda: SimpleNamespace(tp=SimpleNamespace(size=2, group="tp"), etp=SimpleNamespace(size=1, group="etp")),
+        )
+        _arm_marker_hook(
+            monkeypatch, log=gather_log.log, hook_name=FaultHookName.TRAINER_WEIGHT_UPDATE_BEFORE_ALL_GATHER, fail=True
+        )
+
+        with pytest.raises(RuntimeError, match="failed"):
+            direct_module.all_gather_params_async(
+                Namespace(swiglu=False),
+                [(_param("decoder.layers.0.self_attention.linear_proj.weight", 2), _tp_param(2))],
+            )
+
+        assert gather_log.log == [("hook", FaultHookName.TRAINER_WEIGHT_UPDATE_BEFORE_ALL_GATHER.value)]
+
+
+_EXPERT_NAMES = [
+    "decoder.layers.0.mlp.experts.linear_fc1.weight0",
+    "decoder.layers.0.mlp.experts.linear_fc2.weight0",
+]
+
+
+def _expert_info(name: str) -> ParamInfo:
+    return ParamInfo(
+        name=name,
+        dtype=torch.float32,
+        shape=torch.Size([2]),
+        attrs={"tensor_model_parallel": False, "partition_dim": -1, "partition_stride": 1},
+        size=2,
+        src_rank=0,
+    )
+
+
+@pytest.fixture
+def expert_parallel(direct_module, gather_log: _GatherLog, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(torch.cuda, "current_device", lambda: "cpu")
+    monkeypatch.setattr(torch.cuda, "synchronize", lambda: None)
+    monkeypatch.setattr(
+        direct_module,
+        "get_parallel_state",
+        lambda: SimpleNamespace(
+            tp=SimpleNamespace(size=1, group="tp"),
+            etp=SimpleNamespace(size=1, group="etp"),
+            ep=SimpleNamespace(size=2, group="ep"),
+        ),
+    )
+
+
+def _materialize_experts(direct_module) -> list[tuple[str, torch.Tensor]]:
+    return direct_module._materialize_expert_batch(
+        Namespace(swiglu=False),
+        [_expert_info(name) for name in _EXPERT_NAMES],
+        {name: torch.full((2,), float(index)) for index, name in enumerate(_EXPERT_NAMES)},
+        gather_pp=False,
+    )
+
+
+class TestExpertParallelGatherFaultHook:
+    def test_the_hook_fires_before_the_first_expert_parallel_all_gather(
+        self, direct_module, gather_log: _GatherLog, expert_parallel: None, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """On an EP run the all-gather fault must strike before the first expert collective, after the name exchange."""
+        _arm_marker_hook(
+            monkeypatch, log=gather_log.log, hook_name=FaultHookName.TRAINER_WEIGHT_UPDATE_BEFORE_ALL_GATHER
+        )
+
+        gathered = _materialize_experts(direct_module)
+
+        assert gather_log.log == [
+            ("gather_names", "ep"),
+            ("hook", FaultHookName.TRAINER_WEIGHT_UPDATE_BEFORE_ALL_GATHER.value),
+            ("gather", "ep"),
+            ("gather", "ep"),
+        ]
+        assert [name for name, _ in gathered] == _EXPERT_NAMES * 2
+
+    def test_a_failing_hook_starts_no_expert_collective(
+        self, direct_module, gather_log: _GatherLog, expert_parallel: None, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A hook failure must abort before this rank enters the EP all-gather its peers wait on."""
+        _arm_marker_hook(
+            monkeypatch,
+            log=gather_log.log,
+            hook_name=FaultHookName.TRAINER_WEIGHT_UPDATE_BEFORE_ALL_GATHER,
+            fail=True,
+        )
+
+        with pytest.raises(RuntimeError, match="failed"):
+            _materialize_experts(direct_module)
+
+        assert ("gather", "ep") not in gather_log.log
+
+    def test_a_single_expert_rank_never_reaches_the_hook(
+        self, direct_module, gather_log: _GatherLog, expert_parallel: None, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Without EP peers there is no expert all-gather, so the one-shot fault must stay armed."""
+        monkeypatch.setattr(
+            direct_module,
+            "get_parallel_state",
+            lambda: SimpleNamespace(
+                tp=SimpleNamespace(size=1, group="tp"),
+                etp=SimpleNamespace(size=1, group="etp"),
+                ep=SimpleNamespace(size=1, group="ep"),
+            ),
+        )
+        _arm_marker_hook(
+            monkeypatch, log=gather_log.log, hook_name=FaultHookName.TRAINER_WEIGHT_UPDATE_BEFORE_ALL_GATHER
+        )
+
+        assert [name for name, _ in _materialize_experts(direct_module)] == _EXPERT_NAMES
+        assert gather_log.log == []

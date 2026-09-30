@@ -80,7 +80,7 @@ class ScriptArgs(command_utils.ExecuteTrainConfig):
     actor_num_gpus_per_node: int = field(init=False)
     rollout_num_gpus: int = field(init=False)
     optimizer_offload: bool = True
-    use_fault_tolerance: bool = True
+    use_fault_tolerance: bool = False
 
     # debug configs
     dump_details: bool = False

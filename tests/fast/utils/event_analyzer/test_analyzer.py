@@ -7,6 +7,12 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from tests.fast.utils.event_analyzer.rules.weight_event_fakes import (
+    make_checksum,
+    make_result,
+    make_step_end,
+    make_trainer_args,
+)
 
 from miles.backends.megatron_utils.ft.types import TrainStepOutcome
 from miles.utils.audit_utils.event_analyzer import analyzer as analyzer_module
@@ -15,6 +21,9 @@ from miles.utils.audit_utils.event_analyzer.analyzer import (
     run_analysis,
     run_analysis_from_args,
     run_sample_ownership_analysis,
+)
+from miles.utils.audit_utils.event_analyzer.rules.inference_engine_weight_checksum_coverage import (
+    WeightUpdateCoverageIssue,
 )
 from miles.utils.audit_utils.event_logger.logger import EventLogger
 from miles.utils.audit_utils.event_logger.models import (
@@ -137,7 +146,16 @@ def _log_inference_engine_checksum_event(
 ) -> None:
     event_logger.log(
         InferenceEngineWeightChecksumEvent,
-        dict(rollout_id=rollout_id, engine_checksums=engine_checksums),
+        dict(
+            rollout_id=rollout_id,
+            weight_version=rollout_id + 1,
+            debug_trainer_load_state_timestamp=0.0,
+            debug_weight_update_id=f"update-{rollout_id + 1}",
+            engine_snapshots=[
+                dict(cell_id=f"cell-{index}", workers_hash=f"incarnation-{index}", tensor_checksums=checksums)
+                for index, checksums in enumerate(engine_checksums)
+            ],
+        ),
     )
 
 
@@ -166,6 +184,74 @@ class TestInferenceEngineChecksumRuleWiredIn:
         event_logger.close()
 
         assert run_analysis(event_dir=tmp_path) == []
+
+
+class TestWeightPublicationRulesWiredIn:
+    @staticmethod
+    def _write(tmp_path: Path, events: list[Any]) -> None:
+        (tmp_path / "e.jsonl").write_text("".join(event.model_dump_json() + "\n" for event in events))
+
+    def test_an_uncovered_settled_publication_is_reported(self, tmp_path: Path) -> None:
+        """run_analysis runs the publication coverage rule on every model partition."""
+        self._write(
+            tmp_path,
+            [
+                make_result(second=1.0, update_id="u1", published_version=1, cell_hashes={"a": "h"}, updated=["a"]),
+                make_step_end(second=2.0, cell_outcomes={}),
+            ],
+        )
+
+        [issue] = run_analysis(event_dir=tmp_path)
+
+        assert isinstance(issue, WeightUpdateCoverageIssue)
+
+    def test_an_unchanged_tensor_between_settled_versions_is_only_a_warning(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A bf16 tensor can stay unchanged under a small learning rate, so the reported issue only warns."""
+        caplog.set_level(logging.WARNING)
+        self._write(
+            tmp_path,
+            [
+                make_trainer_args(),
+                *[
+                    make_checksum(
+                        second=float(version),
+                        update_id=f"u{version}",
+                        weight_version=version,
+                        snapshots={"a": ("h", {"w": "same"})},
+                    )
+                    for version in (1, 2)
+                ],
+                make_step_end(second=9.0, cell_outcomes={}),
+            ],
+        )
+
+        [issue] = run_analysis(event_dir=tmp_path)
+        run_analysis_from_args(Namespace(enable_event_analyzer=True, save_debug_event_data=str(tmp_path)))
+
+        assert issue.kind == "unchanged_tensors"
+        assert [
+            record.getMessage() for record in caplog.records if "unchanged tensor checksums" in record.getMessage()
+        ]
+
+    def test_a_changed_tensor_set_between_settled_versions_still_fails(self, tmp_path: Path) -> None:
+        """Rounding explains an unchanged value but never a vanished tensor, so a set change stays a failure."""
+        self._write(
+            tmp_path,
+            [
+                make_trainer_args(),
+                make_checksum(
+                    second=1.0, update_id="u1", weight_version=1, snapshots={"a": ("h1", {"w": "1", "b": "1"})}
+                ),
+                make_checksum(second=2.0, update_id="u2", weight_version=2, snapshots={"a": ("h2", {"w": "2"})}),
+                make_step_end(second=9.0, cell_outcomes={}),
+            ],
+        )
+
+        [issue] = run_analysis(event_dir=tmp_path)
+
+        assert (issue.kind, issue.description) == ("tensor_set_changed", "tensor set changed")
 
 
 class TestRunAnalysisFromArgs:
@@ -209,6 +295,21 @@ class TestRunAnalysisFromArgs:
 
         args = Namespace(enable_event_analyzer=True, save_debug_event_data=str(tmp_path))
         run_analysis_from_args(args)
+
+    def test_a_mismatch_appended_after_a_passing_analysis_is_caught_by_the_next_one(self, tmp_path: Path) -> None:
+        """Reusing the parsed events of earlier passes still analyzes the events appended since."""
+        logger_a = EventLogger(log_dir=tmp_path, file_name="a.jsonl", source=_make_source(cell_index=0, rank=0))
+        logger_b = EventLogger(log_dir=tmp_path, file_name="b.jsonl", source=_make_source(cell_index=1, rank=0))
+        _log_checksum_event(logger_a, rollout_id=0, param_hashes={"pp0.w": "aaa"})
+        _log_checksum_event(logger_b, rollout_id=0, param_hashes={"pp0.w": "aaa"})
+        args = Namespace(enable_event_analyzer=True, save_debug_event_data=str(tmp_path))
+        run_analysis_from_args(args)
+
+        _log_checksum_event(logger_a, rollout_id=1, param_hashes={"pp0.w": "bbb"})
+        _log_checksum_event(logger_b, rollout_id=1, param_hashes={"pp0.w": "zzz"})
+
+        with pytest.raises(ValueError, match="rollout_1"):
+            run_analysis_from_args(args)
 
 
 class TestRunSampleOwnershipAnalysis:
@@ -271,7 +372,9 @@ class TestRunSampleOwnershipAnalysis:
 
     def test_a_disabled_check_reads_nothing(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Disabled checking does not even open the event log."""
-        monkeypatch.setattr(analyzer_module, "read_events", lambda *args, **kwargs: pytest.fail("disabled check ran"))
+        monkeypatch.setattr(
+            analyzer_module, "_event_reader", lambda *args, **kwargs: pytest.fail("disabled check ran")
+        )
 
         run_sample_ownership_analysis(args=self._args(enable_sample_ownership_checker=False))
 

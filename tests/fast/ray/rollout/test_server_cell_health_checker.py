@@ -10,7 +10,13 @@ import pytest
 from tests.fast.ray.rollout.conftest import make_args, track_server_cell
 
 from miles.ray.rollout import server_cell as server_cell_module
-from miles.ray.rollout.cell_state import CellAddrInfo, StatePendingWeights, StateServing, StateUninitialized
+from miles.ray.rollout.cell_state import (
+    CellAddrInfo,
+    StateErrored,
+    StatePendingWeights,
+    StateServing,
+    StateUninitialized,
+)
 from miles.ray.rollout.inference_controller import InferenceController
 from miles.ray.rollout.rollout_server import RolloutServer
 from miles.ray.rollout.server_cell import ServerCell, ServerCellMetadata
@@ -142,6 +148,7 @@ class TestRolloutCellHealthCheckerActiveness:
             (StateUninitialized(), False),
             (StatePendingWeights(addr_info=_addr_info()), True),
             (StateServing(addr_info=_addr_info()), True),
+            (StateErrored(addr_info=_addr_info()), False),
         ],
     )
     async def test_only_a_started_engine_is_probed(self, state, expected):
@@ -277,6 +284,31 @@ class TestRolloutCellHealthConditionDuringPause:
         checker.stop()
 
 
+class TestRolloutCellHealthCheckerAfterAnError:
+    async def test_marking_a_cell_errored_stops_its_checker(self, monkeypatch):
+        """A cell taken out of service is never healed back, so its probe loop would poll a dead engine forever."""
+        monkeypatch.setattr(server_cell_module, "SGLangApiClient", _NoopEngineApiClient)
+        cell = _make_cell(ft_components=["rollout"])
+        cell.router_api_client = _NoopRouterApiClient()
+        cell._state = StateServing(addr_info=_addr_info())
+        assert cell._health_checker._task is not None
+
+        await cell.mark_errored()
+
+        assert cell._health_checker._task is None
+
+    async def test_an_errored_cell_is_never_probed_again_even_while_the_controller_is_active(self, monkeypatch):
+        """The global activeness flips back on after every weight update, and must not revive this cell."""
+        monkeypatch.setattr(server_cell_module, "SGLangApiClient", _NoopEngineApiClient)
+        cell = _make_cell(ft_components=["rollout"], global_activeness=True)
+        cell.router_api_client = _NoopRouterApiClient()
+        cell._state = StateServing(addr_info=_addr_info())
+
+        await cell.mark_errored()
+
+        assert cell._health_checker._get_activeness().active is False
+
+
 class TestRolloutCellHealthCheckerDisposal:
     async def test_disposing_a_cell_stops_its_checker(self):
         """A removed cell whose loop keeps polling leaks the task and the whole cell it closes over."""
@@ -312,7 +344,7 @@ async def _make_controller_with_serving_cell(
     controller.context_lock = ContextLock("InferenceController")
 
     srv = RolloutServer(
-        server_cells={},
+        all_server_cells={},
         args=args,
         context_lock=controller.context_lock,
         engine_provider=_StubProvider(),
@@ -322,7 +354,7 @@ async def _make_controller_with_serving_cell(
     async with controller.context_lock:
         await srv.add_cell(_make_meta(needs_offload=True))
 
-    cell: ServerCell = track_server_cell(srv.server_cells["inference-engine-0-0-0"])
+    cell: ServerCell = track_server_cell(srv.all_server_cells["inference-engine-0-0-0"])
     cell.router_api_client = _NoopRouterApiClient()
     cell._state = StateServing(addr_info=_addr_info())
     return controller, cell

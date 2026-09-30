@@ -672,6 +672,10 @@ spec:
               value: "/root/miles:/root/Megatron-LM:/sgl-workspace/sglang/python"
             - name: "PYTHONUNBUFFERED"
               value: "1"
+            - name: MILES_POD_UID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.uid
           ports:
             - name: "rpc"
               containerPort: 8000
@@ -786,6 +790,10 @@ spec:
               value: "/root/miles:/root/Megatron-LM:/sgl-workspace/sglang/python"
             - name: "PYTHONUNBUFFERED"
               value: "1"
+            - name: MILES_POD_UID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.uid
           ports:
             - name: "rpc"
               containerPort: 8000
@@ -903,6 +911,10 @@ spec:
               value: "/root/miles:/root/Megatron-LM:/sgl-workspace/sglang/python"
             - name: "PYTHONUNBUFFERED"
               value: "1"
+            - name: MILES_POD_UID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.uid
           ports:
             - name: "primary"
               containerPort: 8000
@@ -1011,6 +1023,10 @@ spec:
               value: "/root/miles:/root/Megatron-LM:/sgl-workspace/sglang/python"
             - name: "PYTHONUNBUFFERED"
               value: "1"
+            - name: MILES_POD_UID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.uid
           ports:
             - name: "primary"
               containerPort: 8000
@@ -1125,6 +1141,10 @@ spec:
               value: "/root/miles:/root/Megatron-LM:/sgl-workspace/sglang/python"
             - name: "PYTHONUNBUFFERED"
               value: "1"
+            - name: MILES_POD_UID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.uid
           ports:
             - name: "rpc"
               containerPort: 8000
@@ -1320,6 +1340,10 @@ spec:
                 value: "true"
               - name: "SGLANG_OPT_USE_CUSTOM_ALL_REDUCE_V2"
                 value: "1"
+              - name: MILES_POD_UID
+                valueFrom:
+                  fieldRef:
+                    fieldPath: metadata.uid
             ports:
               - name: "primary"
                 containerPort: 8000
@@ -1523,6 +1547,10 @@ spec:
                 value: "true"
               - name: "SGLANG_OPT_USE_CUSTOM_ALL_REDUCE_V2"
                 value: "1"
+              - name: MILES_POD_UID
+                valueFrom:
+                  fieldRef:
+                    fieldPath: metadata.uid
             ports:
               - name: "primary"
                 containerPort: 8000
@@ -1647,6 +1675,10 @@ spec:
                 value: "/root/miles:/root/Megatron-LM:/sgl-workspace/sglang/python"
               - name: "PYTHONUNBUFFERED"
                 value: "1"
+              - name: MILES_POD_UID
+                valueFrom:
+                  fieldRef:
+                    fieldPath: metadata.uid
             ports:
               - name: "master"
                 containerPort: 9000

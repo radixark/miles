@@ -18,6 +18,7 @@ from miles.utils.audit_utils.event_logger.models import (
     WitnessSnapshotParamEvent,
 )
 from miles.utils.audit_utils.process_identity import SimpleProcessIdentity, TrainProcessIdentity
+from miles.utils.audit_utils.witness.utils import compute_id_ranges
 
 _event_adapter = TypeAdapter(Event)
 
@@ -45,7 +46,7 @@ def _make_snapshot(
         attempt=attempt,
         instance_id=instance_id,
         nonzero_witness_ids=nonzero_witness_ids,
-        stale_ids=stale_ids or [],
+        stale_id_ranges=compute_id_ranges(stale_ids or []),
     )
 
 
@@ -268,6 +269,15 @@ class TestWitnessCheck:
         # expected cumulative = {0..9}, minus stale {3,4,5} = {0,1,2,6,7,8,9} — matches actual
         assert check(events) == []
 
+    def test_stale_ids_wrapping_past_the_buffer_end_are_ignored(self) -> None:
+        """A stale window split by the ring wrap still excludes both of its pieces."""
+        events: list[Event] = [
+            _make_allocate(rollout_id=0, witness_id_to_sample_index={i: i for i in range(10)}),
+            _make_snapshot(rollout_id=0, nonzero_witness_ids=[1, 2, 3, 4, 5, 6, 7], stale_ids=[8, 9, 0]),
+            _make_step_end(rollout_id=0, cell_outcomes={0: [TrainStepOutcome.NORMAL]}),
+        ]
+        assert check(events) == []
+
     def test_ring_buffer_wrap_detects_mismatch(self) -> None:
         """After wrap, a genuinely missing non-stale ID should still be caught."""
         events: list[Event] = [
@@ -303,7 +313,7 @@ class TestWitnessEventSerialization:
         assert parsed.rollout_id == 5
         assert parsed.instance_id == "pp0.tail"
         assert parsed.nonzero_witness_ids == [10, 20]
-        assert parsed.stale_ids == [0, 1, 2]
+        assert parsed.stale_id_ranges == [(0, 3)]
 
 
 class TestZeroAdvantageExclusion:
