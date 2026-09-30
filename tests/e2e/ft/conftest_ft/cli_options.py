@@ -22,7 +22,7 @@ FaultTriggersOption = Annotated[
     typer.Option(
         "--fault-triggers",
         help="Fault triggers to draw from: timer lands a fault at a random wall-clock instant, hook when a worker "
-        "reaches a named fault hook after a random delay (default: timer)",
+        "reaches a named fault hook after a random delay (default: both)",
     ),
 ]
 TrainerCrashIntervalSecondsOption = Annotated[float, typer.Option(help="Mean seconds between trainer cell injections")]
