@@ -96,26 +96,19 @@ class UpdateWeightP2P(WeightTransferProtocol):
             for i, meta in enumerate(self._transfer_engine_meta_list):
                 meta.model_replica.load_weights(ready_hf_tensors)
 
-                is_last = i == last_idx
-                if is_last:
-                    # Last engine rank: fire-and-forget all sessions to background,
-                    # as the weight will no longer be overwritten
-                    for remote_session in meta.remote_weight_infos:
-                        self.transfer_manager.submit(
-                            self._do_p2p_write_one_session,
-                            remote_session,
-                            transfer_ready_params,
-                        )
-                else:
+                # Last engine rank: fire-and-forget all sessions to background,
+                # as the weight will no longer be overwritten
+                futures = [
+                    self.transfer_manager.submit(
+                        self._do_p2p_write_one_session,
+                        remote_session,
+                        transfer_ready_params,
+                    )
+                    for remote_session in meta.remote_weight_infos
+                ]
+
+                if i != last_idx:
                     # Non-last engine rank needs to be fully written to target before next update can happen.
-                    futures = [
-                        self.transfer_manager.submit_returning_future(
-                            self._do_p2p_write_one_session,
-                            remote_session,
-                            transfer_ready_params,
-                        )
-                        for remote_session in meta.remote_weight_infos
-                    ]
                     for f in futures:
                         f.result()
 
