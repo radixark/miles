@@ -1,6 +1,7 @@
 import logging
 from argparse import Namespace
 from collections.abc import Callable, Iterator, Sequence
+from typing import NamedTuple
 
 import torch
 import torch.distributed as dist
@@ -23,18 +24,21 @@ from miles.backends.training_utils.weight_update.protocol import WeightTransferP
 from miles.backends.training_utils.weight_update.utils import ModelParamStager
 from miles.utils.distributed_utils import get_gloo_group
 
-from .p2p_rollout_cell_updater import _do_p2p_write_one_session
+from .p2p_rollout_cell_updater import _P2PRolloutCellUpdater
 from .p2p_transfer_utils import (
     P2PTransferManager,
     RemoteTransferPlan,
     RemoteWeightInfo,
-    RolloutEngineRankInfo,
+    TransferTaskP2PMeta,
     create_transfer_engine,
     query_remote_weight_infos,
     register_cpu_memory,
 )
 
 logger = logging.getLogger(__name__)
+
+
+# ============================== transfer protocol ==============================
 
 
 class UpdateWeightP2P(WeightTransferProtocol):
@@ -54,6 +58,7 @@ class UpdateWeightP2P(WeightTransferProtocol):
         self.global_rank = dist.get_rank(group=get_gloo_group())
         self._model_registered = False
         self._model_param_stager = ModelParamStager()
+        self._cell_updaters_of_rollout_engine_ind: dict[int, _P2PRolloutCellUpdater] = {}
         self.transfer_manager = P2PTransferManager(
             num_workers=getattr(args, "p2p_transfer_num_workers", 4),
             transfer_timeout=getattr(args, "p2p_transfer_timeout", 30.0),
@@ -99,21 +104,19 @@ class UpdateWeightP2P(WeightTransferProtocol):
 
                 # Last rollout engine rank: fire-and-forget all sessions to background,
                 # as the weight will no longer be overwritten
-                futures = [
-                    self.transfer_manager.submit(
-                        _do_p2p_write_one_session,
-                        self._transfer_engine,
-                        remote_session,
-                        transfer_ready_params,
-                        self._weight_memory_registry,
+                for cell_updater in meta.target_cell_updaters:
+                    cell_updater.submit_write(
+                        rollout_engine_rank=meta.rollout_engine_rank,
+                        names=transfer_ready_params,
+                        weight_memory_registry=self._weight_memory_registry,
+                        transfer_engine=self._transfer_engine,
+                        transfer_manager=self.transfer_manager,
                     )
-                    for remote_session in meta.remote_weight_infos
-                ]
 
                 if i != last_idx:
                     # Non-last rollout engine rank needs to be fully written to target before next update can happen.
-                    for f in futures:
-                        f.result()
+                    for cell_updater in meta.target_cell_updaters:
+                        cell_updater.wait_for_pending_writes()
 
         converted_named_tensors.clear()
 
@@ -137,6 +140,10 @@ class UpdateWeightP2P(WeightTransferProtocol):
           weight format conversion before transfer.
         """
         self.rollout_engines = rollout_engines
+        self._cell_updaters_of_rollout_engine_ind = {
+            rollout_engine_ind: _P2PRolloutCellUpdater(rollout_engine_ind=rollout_engine_ind)
+            for rollout_engine_ind in range(len(rollout_engines))
+        }
 
         self.is_sender = self.transfer_plan._gathered_dp_rank < self.transfer_plan._rollout_num_gpus
 
@@ -160,9 +167,17 @@ class UpdateWeightP2P(WeightTransferProtocol):
             # in self._rollout_engine_rank_infos: tuple of
             # - single CPU replica shared among all sessions
             # - related remote weight info
-            self._rollout_engine_rank_infos: list[RolloutEngineRankInfo] = []
+            self._rollout_engine_rank_infos: list[_RolloutEngineRankInfo] = []
+
+            _assign_p2p_targets(
+                self._cell_updaters_of_rollout_engine_ind,
+                targets=targets,
+                targets_to_session_id=targets_to_session_id,
+                remote_weight_infos_by_session_id=self.remote_weight_infos_by_session_id,
+            )
+
             first_rollout_engine_rank = True
-            for rank_targets in targets_grouped_by_rollout_engine_rank.values():
+            for rollout_engine_rank, rank_targets in targets_grouped_by_rollout_engine_rank.items():
                 first_target = rank_targets[0]
                 session_id = targets_to_session_id[(first_target.rollout_engine_ind, first_target.rollout_engine_rank)]
                 parallelism_config = RankParallelismConfig.from_dict(
@@ -182,19 +197,41 @@ class UpdateWeightP2P(WeightTransferProtocol):
                     self._shared_param_mapper = ParameterMapper.from_model(model_replica)
                     first_rollout_engine_rank = False
 
-                remote_infos = [
-                    RemoteWeightInfo(
-                        targets_to_session_id[(t.rollout_engine_ind, t.rollout_engine_rank)],
-                        self.remote_weight_infos_by_session_id[
-                            targets_to_session_id[(t.rollout_engine_ind, t.rollout_engine_rank)]
-                        ][0],
-                    )
-                    for t in rank_targets
+                rank_cell_updaters = [
+                    self._cell_updaters_of_rollout_engine_ind[target.rollout_engine_ind] for target in rank_targets
                 ]
 
                 self._rollout_engine_rank_infos.append(
-                    RolloutEngineRankInfo(model_replica=model_replica, remote_weight_infos=remote_infos)
+                    _RolloutEngineRankInfo(
+                        rollout_engine_rank=rollout_engine_rank,
+                        model_replica=model_replica,
+                        target_cell_updaters=rank_cell_updaters,
+                    )
                 )
+
+
+def _assign_p2p_targets(
+    cell_updaters: dict[int, _P2PRolloutCellUpdater],
+    targets: list[TransferTaskP2PMeta],
+    targets_to_session_id: dict[tuple[int, int], str],
+    remote_weight_infos_by_session_id: dict[str, tuple],
+) -> None:
+    for target in targets:
+        session_id = targets_to_session_id[(target.rollout_engine_ind, target.rollout_engine_rank)]
+        cell_targets = cell_updaters[target.rollout_engine_ind].targets_by_rollout_engine_rank
+        assert target.rollout_engine_rank not in cell_targets
+        cell_targets[target.rollout_engine_rank] = RemoteWeightInfo(
+            session_id, remote_weight_infos_by_session_id[session_id][0]
+        )
+
+
+class _RolloutEngineRankInfo(NamedTuple):
+    rollout_engine_rank: int
+    model_replica: torch.nn.Module
+    target_cell_updaters: list[_P2PRolloutCellUpdater]
+
+
+# ================================= cpu replica =================================
 
 
 def _create_cpu_replica(
