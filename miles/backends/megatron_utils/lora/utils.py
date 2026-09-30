@@ -10,7 +10,7 @@ from typing import Any
 import torch
 import torch.distributed as dist
 
-from miles.backends.training_utils.checkpoint_io import write_checkpoint_dir
+from miles.backends.training_utils.checkpoint.io import write_checkpoint_dir
 from miles.backends.training_utils.parallel import get_parallel_state
 from miles.backends.training_utils.weight_update.snapshot_publisher import SnapshotPublisher
 from miles.utils.lora.utils import (  # noqa: F401  (re-exported)

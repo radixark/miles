@@ -9,8 +9,8 @@ import pytest
 import torch.nn as nn
 
 from miles.backends.fsdp_utils.adaptations import routing_replay
+from miles.backends.training_utils.replay.base import routing_replay_manager
 from miles.utils.arguments import resolve_fsdp_num_layers
-from miles.utils.replay_base import routing_replay_manager
 
 
 class _FakeRouter(nn.Module):

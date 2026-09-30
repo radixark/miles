@@ -8,8 +8,8 @@ import pytest
 import torch
 
 from miles.backends.fsdp_utils import actor as actor_module
-from miles.backends.megatron_utils.ft.types import TrainStepOutcome, TrainStepOutput
 from miles.backends.training_utils.torch_native import actor as base_module
+from miles.backends.training_utils.types import TrainStepOutcome, TrainStepOutput
 
 
 @contextmanager

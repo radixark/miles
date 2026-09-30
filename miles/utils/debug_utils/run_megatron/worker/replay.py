@@ -9,8 +9,8 @@ from typing import NamedTuple
 
 import torch
 
+from miles.backends.training_utils.replay.base import routing_replay_manager
 from miles.utils.debug_utils.run_megatron.worker.script_args import WorkerScriptArgs
-from miles.utils.replay_base import routing_replay_manager
 
 
 class _ParallelRanks(NamedTuple):

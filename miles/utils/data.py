@@ -15,7 +15,7 @@ from miles.utils.pydantic_utils import StrictBaseModel
 from .audit_utils.witness.allocator import WitnessInfo
 
 if TYPE_CHECKING:
-    from miles.backends.megatron_utils.ft.types import TrainStepOutput
+    from miles.backends.training_utils.types import TrainStepOutput
 
 try:
     import pyarrow.parquet as pq

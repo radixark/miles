@@ -6,7 +6,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from miles.utils.replay_base import routing_replay_manager
+from miles.backends.training_utils.replay.base import routing_replay_manager
 
 
 def _qwen3_router_forward(self, hidden_states):

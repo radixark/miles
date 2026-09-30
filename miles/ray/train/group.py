@@ -5,7 +5,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
-from miles.backends.megatron_utils.ft.types import TrainStepOutcome, TrainStepOutput
+from miles.backends.training_utils.types import TrainStepOutcome, TrainStepOutput
 from miles.ray.rollout.inference_controller import UpdatableEngines
 from miles.ray.specs.train import compute_trainer_num_cells, compute_trainer_pool_id
 from miles.ray.train.cell import TrainerCell

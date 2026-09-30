@@ -412,7 +412,7 @@ class InklingRouter(TopKRouter):
         logits = self.gating(input).view(-1, nr).float()
         shared_logits = input.reshape(-1, H).float() @ self.shared_gate.float().t()
         score = logits.sigmoid() + self.expert_bias.float()
-        from miles.utils.replay_base import routing_replay_manager
+        from miles.backends.training_utils.replay.base import routing_replay_manager
 
         _sel_topk = routing_replay_manager.get_topk_fn(lambda s, k: s.topk(k, dim=-1).indices, return_probs=False)
         topk_ids = _sel_topk(score, topk).long()

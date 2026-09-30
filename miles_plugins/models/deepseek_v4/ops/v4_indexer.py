@@ -7,7 +7,7 @@ from megatron.core.tensor_parallel.mappings import gather_from_sequence_parallel
 from megatron.core.transformer.module import MegatronModule
 from megatron.core.transformer.transformer_config import TransformerConfig
 
-from miles.utils.replay_base import indexer_replay_manager
+from miles.backends.training_utils.replay.base import indexer_replay_manager
 from miles_plugins.models.deepseek_v4.ops.compressor import DeepSeekV4Compressor
 from miles_plugins.models.deepseek_v4.ops.cp_row_balance import (
     LocalRows,

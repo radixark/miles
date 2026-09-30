@@ -9,11 +9,28 @@ import torch.distributed as dist
 from megatron.training.async_utils import maybe_finalize_async_save
 from torch_memory_saver import torch_memory_saver
 
-from miles.backends.megatron_utils.ft.types import TrainStepOutput
 from miles.backends.megatron_utils.hf_export import save_hf_model
 from miles.backends.megatron_utils.lora.utils import is_lora_enabled, lora_rollout_enabled
 from miles.backends.megatron_utils.rematerialize_utils import build_main_cast_context
 from miles.backends.megatron_utils.update_weight.hf_weight_iterator import get_hf_weight_iterator
+from miles.backends.training_utils.checkpoint.tracker import read_checkpoint_tracker_iteration
+from miles.backends.training_utils.data.rollout import (
+    DataIterator,
+    get_data_iterator,
+    get_num_rollouts,
+    get_rollout_data,
+)
+from miles.backends.training_utils.loss.objective import (
+    compute_advantages_and_returns,
+    get_log_probs_and_entropy,
+    get_values,
+    log_train_advantage_computation_event,
+)
+from miles.backends.training_utils.metrics import train_dump
+from miles.backends.training_utils.metrics.log_utils import log_cpu_memory, log_perf_data, log_rollout_data
+from miles.backends.training_utils.replay.base import all_replay_managers, routing_replay_manager
+from miles.backends.training_utils.replay.data import fill_replay_data, register_replay_list_sequential
+from miles.backends.training_utils.types import TrainStepOutput
 from miles.backends.training_utils.weight_update.hf_weight_iterator import WeightUpdatePlacement
 from miles.backends.training_utils.weight_update.snapshot_publisher import SnapshotPublisher
 from miles.backends.training_utils.weight_update.updater import WeightUpdater
@@ -21,7 +38,7 @@ from miles.dashboard import hooks as dashboard_hooks
 from miles.ray.rollout.inference_controller import UpdatableEngines
 from miles.ray.specs.train import compute_trainer_pool_id
 from miles.ray.train_actor import TrainRayActor
-from miles.utils import object_store, train_dump_utils
+from miles.utils import object_store
 from miles.utils.argparse_utils import inplace_modify_args
 from miles.utils.audit_utils.event_logger.logger import event_logger_context
 from miles.utils.audit_utils.witness.allocator import WitnessInfo
@@ -32,7 +49,6 @@ from miles.utils.lora.utils import build_lora_config, is_multi_lora_enabled
 from miles.utils.memory_utils import clear_memory, print_memory
 from miles.utils.object_store import StoreObjectRef, ValueSpec
 from miles.utils.reloadable_process_group import destroy_process_groups, monkey_patch_torch_dist, reload_process_groups
-from miles.utils.replay_base import all_replay_managers, routing_replay_manager
 from miles.utils.test_utils.ft_test_actions import FTTestActionActorExecutor
 from miles.utils.timer import Timer, inverse_timer, timer
 from miles.utils.tracking_utils.structured_log import with_logs
@@ -43,18 +59,8 @@ from miles.utils.workers.rpc.common.wire_types import Pickled
 
 from ...utils.profile_utils import TrainProfiler
 from ...utils.tensor_backper import TensorBackuper
-from ..training_utils.data.rollout import DataIterator, get_data_iterator, get_num_rollouts, get_rollout_data
-from ..training_utils.loss.objective import (
-    compute_advantages_and_returns,
-    get_log_probs_and_entropy,
-    get_values,
-    log_train_advantage_computation_event,
-)
-from ..training_utils.metrics.log_utils import log_cpu_memory, log_perf_data, log_rollout_data
 from ..training_utils.parallel import get_parallel_state
-from ..training_utils.replay.replay_data import fill_replay_data, register_replay_list_sequential
 from .checkpoint import load_checkpoint
-from .checkpoint_tracker import read_checkpoint_tracker_iteration
 from .ft.checkpoint_transfer import recv_ckpt
 from .ft.checkpoint_transfer import send_ckpt as _send_ckpt
 from .ft.in_memory_checkpoint import InMemoryCheckpointManager
@@ -771,7 +777,7 @@ class MegatronTrainRayActor(TrainRayActor):
 
             self.prof.step(rollout_id=rollout_id)
 
-        train_dump_utils.save_debug_train_data(self.args, rollout_id=rollout_id, rollout_data=rollout_data)
+        train_dump.save_debug_train_data(self.args, rollout_id=rollout_id, rollout_data=rollout_data)
 
         for m in all_replay_managers:
             if m.enabled:

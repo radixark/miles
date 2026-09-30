@@ -11,7 +11,7 @@ import torch
 import torch.distributed as dist
 
 import miles.utils.eval_config
-from miles.backends.megatron_utils.ft.types import TrainStepOutput
+from miles.backends.training_utils.types import TrainStepOutput
 from miles.ray.rollout.inference_controller import UpdatableEngines
 from miles.utils import object_store
 from miles.utils.audit_utils.process_identity import TrainProcessIdentity

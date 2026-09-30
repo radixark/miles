@@ -2,7 +2,7 @@ from argparse import Namespace
 
 import pytest
 
-from miles.backends.training_utils.loss.checks import check_kl
+from miles.backends.training_utils.metrics.checks import check_kl
 
 
 class TestCheckKl:

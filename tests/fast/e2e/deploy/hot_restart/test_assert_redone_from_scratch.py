@@ -11,7 +11,7 @@ from tests.e2e.deploy.conftest_deploy.hot_restart.driver import ScheduledFreeze
 from tests.e2e.deploy.conftest_deploy.hot_restart.evidence import HotRestartRecord
 from tests.e2e.deploy.conftest_deploy.hot_restart.scenario_hot_restart_deterministic import compute_checkpoint_dir
 
-from miles.backends.megatron_utils.checkpoint_tracker import read_checkpoint_tracker_iteration
+from miles.backends.training_utils.checkpoint.tracker import read_checkpoint_tracker_iteration
 from miles.utils.audit_utils.event_logger import checkpoint as event_logger_checkpoint
 from miles.utils.audit_utils.event_logger.logger import EVENTS_DIRNAME, EventLogger
 from miles.utils.audit_utils.event_logger.models import MetricEvent
