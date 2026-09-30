@@ -157,8 +157,10 @@ class TestWhatTheComparisonIsJudgedBy:
         ((_, windows_kwargs),) = harness.calls_of("assert_faults_span_progress_windows")
         assert windows_kwargs["dump_dir"] == str(target["dump_dir"])
 
-    def test_the_sides_are_compared_once_both_have_run(self, harness: ScenarioHarness) -> None:
-        """Comparing before both sides finished, or twice, would judge a half-written run."""
+    def test_the_sides_are_compared_once_both_have_run_without_expected_reconfigures(
+        self, harness: ScenarioHarness
+    ) -> None:
+        """A rollout-only soak must not reconfigure the trainer, so any reconfigure is a comparison failure."""
         scenario_rollout_deterministic.run_ci(_MODE)
 
         root = _dump_root(harness)
@@ -168,6 +170,7 @@ class TestWhatTheComparisonIsJudgedBy:
             "baseline_dir": f"{root}/baseline",
             "target_dir": f"{root}/target",
             "min_trained_rollouts": 2,
+            "expected_target_reconfigures": [],
         }
 
     def test_a_failed_launch_is_raised_and_never_compared(self, harness: ScenarioHarness) -> None:
