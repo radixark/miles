@@ -566,6 +566,36 @@ class TestRefreshCellsReconfigureEvent:
 
         assert self._read_reconfigure_events(_event_log_dir) == []
 
+    async def test_healing_records_the_new_hash_of_the_healed_cell_and_the_kept_hash_of_the_rest(
+        self, _event_log_dir: Path
+    ) -> None:
+        """The event maps exactly the alive cells to the incarnation each one has after the heal."""
+        group = await _make_alive_controller(num_cells=3)
+        await _stop_cell(group, 2)
+        _start_cell(group, 2)
+
+        await group._refresh_cells(rollout_id=7)
+
+        (event,) = self._read_reconfigure_events(_event_log_dir)
+        assert event.cell_incarnations_after == {
+            compute_cell_id(pool_id=group._pool_id, cell_index=0): "pseudo-hash-1",
+            compute_cell_id(pool_id=group._pool_id, cell_index=1): "pseudo-hash-1",
+            compute_cell_id(pool_id=group._pool_id, cell_index=2): "pseudo-hash-2",
+        }
+
+    async def test_a_shrink_leaves_the_dead_cell_out_of_the_incarnations(self, _event_log_dir: Path) -> None:
+        """A cell that is gone after the reconfigure has no incarnation a checker could match against."""
+        group = await _make_alive_controller(num_cells=3)
+        await _stop_cell(group, 1)
+
+        await group._refresh_cells(rollout_id=4)
+
+        (event,) = self._read_reconfigure_events(_event_log_dir)
+        assert event.cell_incarnations_after == {
+            compute_cell_id(pool_id=group._pool_id, cell_index=0): "pseudo-hash-1",
+            compute_cell_id(pool_id=group._pool_id, cell_index=2): "pseudo-hash-1",
+        }
+
 
 class TestRefreshCellsNoOp:
     async def test_repeated_refresh_without_change_does_not_reconfigure(self):
