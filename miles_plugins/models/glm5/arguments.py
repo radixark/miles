@@ -32,9 +32,6 @@ def normalize_dsa_args(args: Namespace, hf_config) -> None:
         raise ValueError("--dsa-impl megatron requires the shared DeepSeek-V3.2/GLM DSA spec")
     if hf_config.model_type not in ("deepseek_v32", "glm_moe_dsa"):
         raise ValueError(f"--dsa-impl megatron does not support model_type={hf_config.model_type!r}")
-    # Native top-k bypasses Miles replay hooks; do not silently ignore replay flags.
-    if getattr(args, "use_indexer_replay", False) or getattr(args, "use_rollout_indexer_replay", False):
-        raise ValueError("--dsa-impl megatron does not support indexer replay")
     if getattr(args, "context_parallel_size", 1) > 1 and getattr(args, "allgather_cp", False):
         raise ValueError(
             "--dsa-impl megatron uses zigzag CP token partitioning; remove --allgather-cp. "

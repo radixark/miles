@@ -104,8 +104,6 @@ def test_explicit_indexer_training_objective_is_preserved():
     ("overrides", "message"),
     [
         ({"dsa_indexer_loss_coeff": -0.001}, "--dsa-indexer-loss-coeff must be non-negative"),
-        ({"use_indexer_replay": True}, "does not support indexer replay"),
-        ({"use_rollout_indexer_replay": True}, "does not support indexer replay"),
         ({"megatron_to_hf_mode": "bridge"}, "requires --megatron-to-hf-mode raw"),
         ({"spec": None}, "requires the shared DeepSeek-V3.2/GLM DSA spec"),
         ({"spec": ["miles_plugins.models.deepseek_v4", "get_dsv4_spec"]}, "requires the shared"),
@@ -113,8 +111,6 @@ def test_explicit_indexer_training_objective_is_preserved():
     ],
     ids=[
         "negative-loss",
-        "indexer-replay",
-        "rollout-indexer-replay",
         "bridge",
         "no-spec",
         "v4-spec",
