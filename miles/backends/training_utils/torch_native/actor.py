@@ -3,7 +3,7 @@ import logging
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import AbstractContextManager, nullcontext
 from functools import partial
-from typing import TYPE_CHECKING
+from typing import ClassVar
 
 import torch
 import torch.distributed as dist
@@ -31,6 +31,7 @@ from miles.backends.training_utils.torch_native.offload import move_train_state
 from miles.backends.training_utils.torch_native.step_runner import StepRunner
 from miles.backends.training_utils.types import TrainStepOutcome, TrainStepOutput
 from miles.backends.training_utils.weight_update.updater import WeightUpdater
+from miles.ray.rollout.inference_controller import UpdatableEngines
 from miles.ray.train_actor import TrainRayActor
 from miles.utils.audit_utils.witness.allocator import WitnessInfo
 from miles.utils.distributed_utils import get_gloo_group
@@ -39,9 +40,6 @@ from miles.utils.memory_utils import clear_memory, print_memory
 from miles.utils.object_store import StoreObjectRef
 from miles.utils.profile_utils import TrainProfiler
 from miles.utils.timer import inverse_timer, timer
-
-if TYPE_CHECKING:
-    from miles.ray.rollout.inference_controller import UpdatableEngines
 
 logger = logging.getLogger(__name__)
 
@@ -64,6 +62,7 @@ SAMPLING_MASK_KEYS = ["rollout_sampling_mask_ids", "rollout_sampling_mask_offset
 
 
 class TorchNativeTrainRayActor(TrainRayActor):
+    backend_name: ClassVar[str]
     model_parts: Sequence[torch.nn.Module]
     optimizers: Sequence[torch.optim.Optimizer]
     weight_updater: WeightUpdater
@@ -73,13 +72,13 @@ class TorchNativeTrainRayActor(TrainRayActor):
     ref_runner: StepRunner | None = None
     align_token_side_channel: Callable[[torch.Tensor, int], torch.Tensor] | None = None
 
-    def step_runner(self) -> StepRunner:
+    def _step_runner(self) -> StepRunner:
         raise NotImplementedError
 
-    def ref_context(self) -> AbstractContextManager:
+    def _ref_context(self) -> AbstractContextManager:
         return nullcontext()
 
-    def after_rollout(self, rollout_id: int, rollout_data: dict) -> None:
+    def _after_rollout(self, rollout_id: int, rollout_data: dict) -> None:
         pass
 
     @property
@@ -147,7 +146,7 @@ class TorchNativeTrainRayActor(TrainRayActor):
         assert witness_info is None and attempt == 0
         assert (
             external_data is None
-        ), f"the {self.args.train_backend} backend trains no critic, so it is never handed critic values"
+        ), f"the {self.backend_name} backend trains no critic, so it is never handed critic values"
         self._heartbeat.bump()
         if self.args.offload_train:
             self.wake_up()
@@ -180,10 +179,10 @@ class TorchNativeTrainRayActor(TrainRayActor):
             align=self.align_token_side_channel,
         )
         data_iterator = data_iterators[0]
-        runner = self.step_runner()
+        runner = self._step_runner()
 
         if self.ref_runner is not None:
-            with routing_replay.stage(routing_replay.FALLTHROUGH), self.ref_context():
+            with routing_replay.stage(routing_replay.FALLTHROUGH), self._ref_context():
                 rollout_data.update(self._log_probs(self.ref_runner, data_iterator, num_microbatches, "ref_"))
         with routing_replay.stage(routing_replay.log_prob_stage(self.args)):
             rollout_data.update(self._log_probs(runner, data_iterator, num_microbatches))
@@ -197,7 +196,7 @@ class TorchNativeTrainRayActor(TrainRayActor):
         routing_replay.reset()
 
         self.prof.step(rollout_id=rollout_id)
-        self.after_rollout(rollout_id, rollout_data)
+        self._after_rollout(rollout_id, rollout_data)
 
     @torch.no_grad()
     def _log_probs(
@@ -280,7 +279,7 @@ class TorchNativeTrainRayActor(TrainRayActor):
             )
 
     @timer
-    def update_weights(self, info: "UpdatableEngines") -> int | None:  # type: ignore[override]
+    def update_weights(self, info: UpdatableEngines) -> int | None:  # type: ignore[override]
         if self.args.debug_train_only or self.args.debug_rollout_only:
             return None
         self.weight_updater.reconnect_if_needed(info)
