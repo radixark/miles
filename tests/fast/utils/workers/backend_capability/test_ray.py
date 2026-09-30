@@ -1,71 +1,82 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+import inspect
+from dataclasses import dataclass, field
+from typing import Any
 
-import pytest
-
-import miles.utils.workers.worker_provider.ray as ray_worker_provider_mod
+import miles.utils.workers.backend_capability.ray as backend_capability_ray_mod
+from miles.utils.test_utils.fault_injector import FailureMode
 from miles.utils.workers.backend_capability.ray import RayBackendCapability
-from miles.utils.workers.worker_info import WorkerInfo
-from miles.utils.workers.worker_spec import HostAndPort
-
-
-class _FakeRemoteMethod:
-    def __init__(self) -> None:
-        self.suspended_cell_ids: list[str] = []
-
-    async def remote(self, *, cell_id: str) -> None:
-        self.suspended_cell_ids.append(cell_id)
+from miles.utils.workers.cell_operations.ray import RayCellOperations
 
 
 @dataclass
-class _FakeInferenceControllerActor:
-    stop_cell_between_weight_updates: _FakeRemoteMethod
+class _RecordingRemoteMethod:
+    calls: list[tuple[tuple[Any, ...], dict[str, Any]]] = field(default_factory=list)
 
-
-@dataclass
-class _FakeGetWorkerInfosMethod:
-    controller_info: WorkerInfo
-
-    def remote(self, cell_id: str) -> list[WorkerInfo]:
-        return [self.controller_info]
-
-
-@dataclass
-class _FakeGetActorHandleMethod:
-    controller: _FakeInferenceControllerActor
-
-    def remote(self, worker_name: str, *, expected_generation: int) -> _FakeInferenceControllerActor:
-        return self.controller
+    async def remote(self, *args: Any, **kwargs: Any) -> None:
+        self.calls.append((args, kwargs))
 
 
 @dataclass
 class _FakeWorkerManagerHandle:
-    get_worker_infos: _FakeGetWorkerInfosMethod
-    get_actor_handle: _FakeGetActorHandleMethod
+    stop_cells: _RecordingRemoteMethod = field(default_factory=_RecordingRemoteMethod)
+    start_cells: _RecordingRemoteMethod = field(default_factory=_RecordingRemoteMethod)
+    inject_fault: _RecordingRemoteMethod = field(default_factory=_RecordingRemoteMethod)
+    get_cell_infos: _RecordingRemoteMethod = field(default_factory=_RecordingRemoteMethod)
 
 
 class TestRayBackendCapabilityCellOperations:
-    async def test_suspend_reaches_the_inference_controller_served_by_the_worker_manager(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """Suspending through a capability reaches its registered inference controller."""
-        controller = _FakeInferenceControllerActor(stop_cell_between_weight_updates=_FakeRemoteMethod())
-        controller_info = WorkerInfo(
-            name="inference-controller-00000-00000",
-            generation=3,
-            self_addrs={"primary": HostAndPort(host="10.0.0.7", port=15000)},
-            gpu_ids=[],
-            worker_class=None,
-        )
-        worker_manager = _FakeWorkerManagerHandle(
-            get_worker_infos=_FakeGetWorkerInfosMethod(controller_info=controller_info),
-            get_actor_handle=_FakeGetActorHandleMethod(controller=controller),
-        )
-        monkeypatch.setattr(ray_worker_provider_mod.ray, "get", lambda value: value)
+    async def test_suspend_reaches_the_worker_manager_directly(self) -> None:
+        """Nothing may route a suspend through the inference controller, whose lock a weight update holds."""
+        worker_manager = _FakeWorkerManagerHandle()
         capability = RayBackendCapability(worker_manager_handle=worker_manager)
 
-        operations = capability.cell_operations()
-        await operations.suspend(cell_id="cell-2")
+        await capability.cell_operations().suspend(cell_id="cell-2")
 
-        assert controller.stop_cell_between_weight_updates.suspended_cell_ids == ["cell-2"]
+        assert worker_manager.stop_cells.calls == [((["cell-2"],), {})]
+
+    async def test_a_fault_reaches_the_worker_manager_directly(self) -> None:
+        """Fault injection took the same controller detour as suspend, and must take the same direct path now."""
+        worker_manager = _FakeWorkerManagerHandle()
+        capability = RayBackendCapability(worker_manager_handle=worker_manager)
+
+        await capability.cell_operations().inject_fault(cell_id="cell-2", mode=FailureMode.SIGKILL, sub_index=1)
+
+        assert worker_manager.inject_fault.calls == [(("cell-2",), {"mode": "sigkill", "worker_in_cell_index": 1})]
+
+    async def test_a_resume_reaches_the_worker_manager_directly(self) -> None:
+        """Resume never went through the controller, and the shared path must not have changed it."""
+        worker_manager = _FakeWorkerManagerHandle()
+        capability = RayBackendCapability(worker_manager_handle=worker_manager)
+
+        await capability.cell_operations().resume(cell_id="cell-2")
+
+        assert worker_manager.start_cells.calls == [((["cell-2"],), {})]
+
+    def test_the_capability_builds_a_ray_cell_operations_bound_to_its_own_handle(self) -> None:
+        """A capability that handed out operations wired to anything else would heal the wrong fleet."""
+        worker_manager = _FakeWorkerManagerHandle()
+
+        operations = RayBackendCapability(worker_manager_handle=worker_manager).cell_operations()
+
+        assert isinstance(operations, RayCellOperations)
+        assert operations._worker_manager_handle is worker_manager
+
+    def test_building_cell_operations_needs_no_inference_controller(self) -> None:
+        """Resolving one at construction time is what forced this layer to import miles.ray."""
+        worker_manager = _FakeWorkerManagerHandle()
+
+        first = RayBackendCapability(worker_manager_handle=worker_manager).cell_operations()
+        second = RayBackendCapability(worker_manager_handle=worker_manager).cell_operations()
+
+        assert first is not second
+        assert list(vars(first)) == ["_worker_manager_handle"]
+
+    def test_the_module_does_not_import_the_ray_application_layer(self) -> None:
+        """The deliberate layering violation existed only to resolve the inference controller."""
+        source = inspect.getsource(backend_capability_ray_mod)
+
+        assert "miles.ray.specs" not in source
+        assert "create_inference_controller_handle" not in source
+        assert not hasattr(backend_capability_ray_mod, "create_inference_controller_handle")
