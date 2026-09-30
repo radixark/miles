@@ -86,9 +86,9 @@ def test_reused_training_log_probs_match_an_explicit_detached_baseline(
         args=args,
     )
 
-    gather_spy = Mock(wraps=losses_module.all_gather_with_cp)
+    sequence_kl_spy = Mock(wraps=losses_module.compute_sequence_kl)
     if advantage_estimator == "gspo":
-        monkeypatch.setattr(losses_module, "all_gather_with_cp", gather_spy)
+        monkeypatch.setattr(losses_module, "compute_sequence_kl", sequence_kl_spy)
 
     reuse_batch = make_batch(inputs, "policy_loss")
     del reuse_batch["log_probs"]
@@ -99,7 +99,7 @@ def test_reused_training_log_probs_match_an_explicit_detached_baseline(
         skip_actor_forward_only=True,
     )
     if advantage_estimator == "gspo":
-        assert gather_spy.call_count == len(inputs["response_lens"])
+        assert sequence_kl_spy.call_count == 1
 
     baseline_batch = make_batch(inputs, "policy_loss")
     baseline_batch["log_probs"] = [
