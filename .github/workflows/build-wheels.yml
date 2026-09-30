@@ -323,7 +323,9 @@ jobs:
 
   # Publishes from a GitHub-hosted runner, so the miles-wheels write token never
   # reaches the shared self-hosted build hosts. Nothing is published when any
-  # selected build failed.
+  # selected build failed. The token comes from a dedicated App installed only on
+  # radixark/miles-wheels with Contents: write; the CI command App must not hold
+  # that permission (docs/developer/ci/01-label.md).
   publish:
     needs: [check, build-router, build-int4-x86, build-te-x86]
     if: >-
@@ -341,8 +343,8 @@ jobs:
       - uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1
         id: token
         with:
-          client-id: ${{ vars.CI_COMMAND_APP_CLIENT_ID }}
-          private-key: ${{ secrets.CI_COMMAND_APP_PRIVATE_KEY }}
+          client-id: ${{ vars.WHEELS_APP_CLIENT_ID }}
+          private-key: ${{ secrets.WHEELS_APP_PRIVATE_KEY }}
           owner: radixark
           repositories: miles-wheels
           permission-contents: write
