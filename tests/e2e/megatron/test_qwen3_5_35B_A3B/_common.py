@@ -18,6 +18,7 @@ colocation and fully-async are per-case.
 
 import os
 from dataclasses import dataclass
+from typing import Literal
 
 from miles.utils.external_utils import command_utils
 
@@ -66,9 +67,12 @@ class CaseConfig:
     colocate: bool = True
     rollout_num_gpus: int = None
     fully_async: bool = False
+    optimizer: Literal["adam", "dist_muon"] = "adam"
     extra_args: str = ""
 
     def __post_init__(self):
+        if self.optimizer not in ("adam", "dist_muon"):
+            raise ValueError(f"unsupported optimizer: {self.optimizer}")
         if self.fully_async and self.colocate:
             raise ValueError("fully_async requires colocate=False: train_async.py rejects colocation")
         if not self.colocate and self.rollout_num_gpus is None:
@@ -149,16 +153,24 @@ def build_train_args(case: CaseConfig, *, wandb_file: str) -> str:
     )
 
     optimizer_args = (
-        "--optimizer adam "
+        f"--optimizer {case.optimizer} "
         "--lr 1e-6 "
         "--lr-decay-style constant "
         "--weight-decay 0.1 "
         "--adam-beta1 0.9 "
         "--adam-beta2 0.98 "
-        "--optimizer-cpu-offload "
-        "--overlap-cpu-optimizer-d2h-h2d "
-        "--use-precision-aware-optimizer "
     )
+    if case.optimizer == "dist_muon":
+        # Muon offloads through LayerWise; HybridDeviceOptimizer is Adam-only.
+        optimizer_args += (
+            "--chunked-optimizer-state-offload "
+            "--optimizer-state-offload-fraction 1.0 "
+            "--optimizer-state-offload-chunk-size-mb 1024 "
+        )
+    else:
+        optimizer_args += (
+            "--optimizer-cpu-offload " "--overlap-cpu-optimizer-d2h-h2d " "--use-precision-aware-optimizer "
+        )
 
     # DeepEP low-latency dispatch (every decode-phase forward, incl. EAGLE verify) holds at most
     # 128 tokens per rank. EAGLE verify feeds 3 tokens per request; DP attention splits
@@ -238,7 +250,7 @@ def build_train_args(case: CaseConfig, *, wandb_file: str) -> str:
     if case.fully_async:
         misc_args += "--fully-async "
     misc_args += f"--moe-token-dispatcher-type {case.megatron_dispatcher} "
-    if case.colocate:
+    if case.colocate and case.optimizer == "adam":
         misc_args += "--rematerialize-param-from-master-weight "
 
     train_args = (

@@ -1,4 +1,4 @@
-"""Qwen3.5-35B-A3B without speculative decoding or R3: the plain BF16 precision case.
+"""Qwen3.5-35B-A3B without speculative decoding or R3: the BF16 precision case with distributed Muon.
 
 The rollout runs DP attention (attention TP2 x DP2) with EP4 MoE and no DeepEP on either side.
 """
@@ -20,6 +20,7 @@ register_ci_gate(metric_key="train/train_rollout_kl")
 register_ci_gate(metric_key="rollout/raw_reward")
 
 CASE = CaseConfig(
+    optimizer="dist_muon",
     # tp2/pp2/ep2 (no CP) on 4x H200: the only 4-GPU Qwen3.5 case with PP.
     num_gpus_per_node=4,
     cp_size=1,

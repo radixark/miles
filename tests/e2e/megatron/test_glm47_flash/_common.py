@@ -1,5 +1,6 @@
 import os
 from dataclasses import dataclass
+from typing import Literal
 
 from miles.utils.external_utils import command_utils
 
@@ -49,9 +50,12 @@ class CaseConfig:
     update_weight_transfer_mode: str = None
     num_rollout: int = 2
     fully_async: bool = False
+    optimizer: Literal["adam", "dist_muon"] = "adam"
     extra_args: str = ""
 
     def __post_init__(self):
+        if self.optimizer not in ("adam", "dist_muon"):
+            raise ValueError(f"unsupported optimizer: {self.optimizer}")
         # Validation only — topology values are passed explicitly, not inferred.
         if self.fully_async and self.colocate:
             raise ValueError("fully_async requires colocate=False: train_async.py rejects colocation")
@@ -171,7 +175,7 @@ def build_train_args(case: CaseConfig, *, wandb_file: str) -> str:
     else:
         perf_args += f"--use-dynamic-batch-size --max-tokens-per-gpu {case.max_tokens_per_gpu} "
 
-    if TIGHT_HOST_MEMORY:
+    if TIGHT_HOST_MEMORY and case.optimizer == "adam":
         perf_args += "--exp-avg-dtype fp16 "
         perf_args += "--exp-avg-sq-dtype fp16 "
         perf_args += "--main-params-dtype fp16 "
@@ -189,16 +193,24 @@ def build_train_args(case: CaseConfig, *, wandb_file: str) -> str:
         grpo_args += "--use-rollout-routing-replay "
 
     optimizer_args = (
-        "--optimizer adam "
+        f"--optimizer {case.optimizer} "
         "--lr 1e-6 "
         "--lr-decay-style constant "
         "--weight-decay 0.1 "
         "--adam-beta1 0.9 "
         "--adam-beta2 0.98 "
-        "--optimizer-cpu-offload "
-        "--overlap-cpu-optimizer-d2h-h2d "
-        "--use-precision-aware-optimizer "
     )
+    if case.optimizer == "dist_muon":
+        # Muon offloads through LayerWise; HybridDeviceOptimizer is Adam-only.
+        optimizer_args += (
+            "--chunked-optimizer-state-offload "
+            "--optimizer-state-offload-fraction 1.0 "
+            "--optimizer-state-offload-chunk-size-mb 1024 "
+        )
+    else:
+        optimizer_args += (
+            "--optimizer-cpu-offload " "--overlap-cpu-optimizer-d2h-h2d " "--use-precision-aware-optimizer "
+        )
 
     sglang_args = (
         f"--rollout-num-gpus-per-engine {case.rollout_num_gpus_per_engine} " "--sglang-mem-fraction-static 0.7 "
