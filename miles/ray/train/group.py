@@ -35,7 +35,6 @@ from miles.utils.retry_utils import NonRetryableError, retry, retry_until_deadli
 from miles.utils.test_utils.fault_injector.actions.base import FaultHookResources
 from miles.utils.test_utils.fault_injector.controller import fault_hook_controller, reach_fault_hook_async
 from miles.utils.test_utils.fault_injector.models import FaultHookName, FaultHookOwner
-from miles.utils.test_utils.ft_test_actions import FTTestActionControllerExecutor
 from miles.utils.tracking_utils.structured_log import log_structured
 from miles.utils.workers.cell_operations.base import BaseCellOperations
 from miles.utils.workers.rpc.common.wire_types import Pickled
@@ -233,7 +232,6 @@ class TrainerController:
 
         worker_results = await retry(_fn, max_attempts=_RETRY_MAX_ATTEMPTS)
 
-        await self._test_action_executor.run_after_step(rollout_id=rollout_id)
         await reach_fault_hook_async(FaultHookName.TRAINER_CONTROLLER_STEP_END, rollout_id=rollout_id)
 
         return worker_results
@@ -346,11 +344,9 @@ class TrainerController:
         if self._witness_allocator is not None and args.save_debug_event_data is not None:
             self._witness_allocator.resume(read_persisted_witness_counter(Path(args.save_debug_event_data)))
 
-        self._test_action_executor = FTTestActionControllerExecutor.from_args(
-            args, controller=self, cell_operations=self._cell_operations
-        )
         fault_hook_controller.configure(
-            resources=FaultHookResources(args=args), owner=FaultHookOwner.TRAINER_CONTROLLER
+            resources=FaultHookResources(args=args, controller=self, cell_operations=self._cell_operations),
+            owner=FaultHookOwner.TRAINER_CONTROLLER,
         )
 
         self._watcher_disposer = await self._provider.watch_cells(self._reconcile)

@@ -88,6 +88,7 @@ class TestFaultHookRequestValidation:
             {"kind": "observe"},
             {"kind": "segfault_process"},
             {"kind": "exit_process"},
+            {"kind": "start_cell", "cell_id": "c"},
         ],
     )
     def test_every_action_kind_round_trips_through_json(self, action: dict[str, object]) -> None:
