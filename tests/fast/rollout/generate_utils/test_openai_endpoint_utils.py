@@ -196,7 +196,10 @@ class TestOpenAIEndpointTracerCreate:
         bodies = self._capture_session_posts(monkeypatch)
 
         await OpenAIEndpointTracer.create(
-            SimpleNamespace(session_server_addrs=["127.0.0.1:12345"], use_sampling_support_replay=False),
+            SimpleNamespace(
+                session_server_instances=[SessionServerInstance(addr="127.0.0.1:12345")],
+                use_sampling_support_replay=False,
+            ),
             extra_key=extra_key,
         )
 

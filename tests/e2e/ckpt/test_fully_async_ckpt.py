@@ -9,6 +9,7 @@ from miles.utils.audit_utils.event_analyzer.analyzer import run_sample_ownership
 from miles.utils.audit_utils.event_analyzer.rules.sample_ownership.check import completed_actor_steps
 from miles.utils.audit_utils.event_analyzer.rules.sample_ownership.models import SampleOwnershipViolation
 from miles.utils.audit_utils.event_logger.logger import read_events
+from miles.utils.audit_utils.event_logger.models import DataSourceIssuedSamplesEvent
 from miles.utils.external_utils import command_utils
 from miles.utils.simple_checkpointer import load_simple_checkpoint
 
@@ -189,7 +190,21 @@ def _prefetched_sample_indices() -> set[int]:
 
 def _assert_missing_sample(*, expected_missing: set[int]) -> None:
     directory = Path(f"/root/models/{MODEL_NAME}_miles/events")
-    assert completed_actor_steps(read_events(directory, strict=True)), "the resumed run recorded no completed step"
+    events = read_events(directory, strict=True)
+    steps = completed_actor_steps(events)
+    assert steps, "the resumed run recorded no completed step"
+    latest_completed_rollout_id = max(step.rollout_id for step in steps)
+    expected_mature = {
+        sample_index
+        for event in events
+        if isinstance(event, DataSourceIssuedSamplesEvent)
+        and latest_completed_rollout_id - event.rollout_id >= SAMPLE_OWNERSHIP_GRACE_STEPS
+        for group in event.groups
+        for sample_index in group.sample_indices
+        if sample_index in expected_missing
+    }
+    assert expected_mature, "the resumed run failed before any injected missing sample matured"
+
     args = Namespace(
         enable_sample_ownership_checker=True,
         sample_ownership_grace_steps=SAMPLE_OWNERSHIP_GRACE_STEPS,
@@ -201,7 +216,7 @@ def _assert_missing_sample(*, expected_missing: set[int]) -> None:
         untrained = [
             issue for issue in violation.issues if issue.description == "source sample had no training outcome"
         ]
-        assert expected_missing <= {issue.sample_index for issue in untrained}, violation.issues
+        assert expected_mature <= {issue.sample_index for issue in untrained}, violation.issues
     else:
         raise AssertionError("The injected batch loss left no sample ownership violation behind")
 

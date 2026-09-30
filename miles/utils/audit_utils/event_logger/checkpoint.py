@@ -27,22 +27,18 @@ def snapshot(args: Namespace, directory: Path) -> None:
 
 
 def restore(args: Namespace) -> None:
-    if args.save_debug_event_data is None or args.requested_load is None:
-        return
-
-    requested_load = Path(args.requested_load)
-    iteration = _read_checkpoint_iteration(args)
-    if iteration is None:
-        return
-
-    src = _snapshot_dir(requested_load, iteration)
-    if not src.is_dir():
+    if args.save_debug_event_data is None:
         return
 
     dst = Path(args.save_debug_event_data)
     if dst.exists():
         trash = _move_aside(dst)
         logger.info("Moved pre-restore event dir %s -> %s", dst, trash)
+
+    src = _restorable_snapshot_dir(args)
+    if src is None:
+        return
+
     shutil.copytree(src, dst)
     logger.info("Restored event dir %s <- %s", dst, src)
 
@@ -60,6 +56,18 @@ def discard(args: Namespace) -> None:
     trash = _move_aside(dst)
     dst.mkdir(parents=True)
     logger.info("Moved the log of the run a hot restart takes over %s -> %s", dst, trash)
+
+
+def _restorable_snapshot_dir(args: Namespace) -> Path | None:
+    if args.requested_load is None:
+        return None
+
+    iteration = _read_checkpoint_iteration(args)
+    if iteration is None:
+        return None
+
+    src = _snapshot_dir(Path(args.requested_load), iteration)
+    return src if src.is_dir() else None
 
 
 def _read_checkpoint_iteration(args: Namespace) -> int | None:

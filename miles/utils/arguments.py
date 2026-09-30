@@ -4,6 +4,7 @@ import logging
 import os
 import re
 import tempfile
+from pathlib import Path
 from string import Formatter
 from typing import Any
 
@@ -100,6 +101,13 @@ def _resolve_rollout_functions(args) -> None:
             assert args.pause_generation_mode != "in_place", (
                 "--fully-async --colocate releases the KV cache to make room for training, so the "
                 "in_place promise to keep it cannot hold: use --pause-generation-mode retract"
+            )
+            assert not (
+                args.offload_rollout and "weight" in args.offload_rollout_level and args.update_weights_interval > 1
+            ), (
+                "--fully-async --colocate with rollout weight offload requires --update-weights-interval 1: "
+                "offloaded weights must be republished before generation resumes. "
+                "Use --offload-rollout-level kv_cache to retain weights between updates."
             )
             assert "rollout" not in args.ft_components, (
                 "--fully-async --colocate does not support rollout fault tolerance: a cell replaced while "
@@ -2171,7 +2179,15 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 type=str,
                 default=None,
                 help="Where the audit events of this run go, including the env report. Defaults to <save>/events "
-                "(or <dump-details>/events); --ci-test falls back to a run-specific temporary directory.",
+                "(or <dump-details>/events); --ci-test falls back to a run-specific directory under --ci-event-root.",
+            )
+            parser.add_argument(
+                "--ci-event-root",
+                type=str,
+                default=None,
+                help="Root for automatic CI event directories. Defaults to the system temporary directory; "
+                "the Kubernetes launcher supplies its shared run root. Explicit event, save, and dump directories "
+                "take precedence.",
             )
             parser.add_argument(
                 "--dump-details",
@@ -3254,7 +3270,8 @@ def _resolve_event_logging(args: argparse.Namespace) -> None:
     event_directory_was_requested = args.save_debug_event_data is not None
 
     if not event_directory_was_requested and args.ci_test:
-        args.save_debug_event_data = os.path.join(tempfile.gettempdir(), "miles-ci", args.run_uuid, EVENTS_DIRNAME)
+        root = Path(args.ci_event_root) if args.ci_event_root is not None else Path(tempfile.gettempdir())
+        args.save_debug_event_data = str(root / "miles-ci" / args.run_uuid / EVENTS_DIRNAME)
 
     if args.log_inference_engine_weight_checksums is None:
         args.log_inference_engine_weight_checksums = event_directory_was_requested or args.enable_event_analyzer
@@ -3857,6 +3874,8 @@ def miles_validate_args(args):
             f"so one group already puts n_samples_per_prompt trajectories in flight"
         )
 
+    _resolve_rollout_functions(args)
+
     if args.namespaced_radix_cache is None:
         args.namespaced_radix_cache = args.fully_async and args.pause_generation_mode == "in_place"
         if args.namespaced_radix_cache:
@@ -3872,8 +3891,6 @@ def miles_validate_args(args):
             "--namespaced-radix-cache requires the class-based rollout API; "
             "unset MILES_USE_LEGACY_ROLLOUT_V1 or pass --no-namespaced-radix-cache"
         )
-
-    _resolve_rollout_functions(args)
 
     # Both snapshot postures drive the same RolloutManager._eval_checkpoint path.
     # (The fleet-vs-CheckpointEvalFn conflict is asserted where the posture is derived.)

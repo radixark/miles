@@ -82,7 +82,7 @@ def check(events: list[Event], *, grace_steps: int) -> list[SampleOwnershipIssue
     - ``cell``: one trainer data-parallel cell, identified by ``cell_index``; every cell trains every batch.
     - ``trained`` vs ``skipped``: outputs the optimizer consumed vs outputs skipped as nonfinite.
     - ``explicit drop``: an ``ExplicitlyDroppedSamplesEvent`` naming the source.
-    - ``actor step``: an all-NORMAL ``TrainGroupStepEndEvent`` of the actor role.
+    - ``actor step``: a committed ``TrainGroupStepEndEvent`` of the actor role with normal surviving cells.
     - ``issued``, ``issuing step``: the ``DataSourceIssuedSamplesEvent`` carrying the source, and its ``rollout_id``.
     """
     if grace_steps < 0:
@@ -194,12 +194,15 @@ def _missing_model_companion_record_issues(
 
 
 def completed_actor_steps(events: list[Event]) -> list[TrainGroupStepEndEvent]:
-    """Return the actor step ends whose every cell trained normally, oldest first."""
-    steps = [
-        event
-        for event in events
-        if isinstance(event, TrainGroupStepEndEvent) and event.role == "actor" and _every_cell_is_normal(event)
-    ]
+    """Return committed actor step ends with their surviving cells, oldest first."""
+    steps = []
+    for event in events:
+        if not isinstance(event, TrainGroupStepEndEvent) or event.role != "actor":
+            continue
+        cell_outcomes = {cell: outcomes for cell, outcomes in event.cell_outcomes.items() if outcomes != "error"}
+        step = event.model_copy(update={"cell_outcomes": cell_outcomes})
+        if _every_cell_is_normal(step):
+            steps.append(step)
     return sorted(steps, key=lambda event: event.timestamp)
 
 

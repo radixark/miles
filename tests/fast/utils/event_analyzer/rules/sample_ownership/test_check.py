@@ -180,7 +180,6 @@ class TestCurrentStepSelection:
     @pytest.mark.parametrize(
         "cell_outcomes",
         [
-            {0: [TrainStepOutcome.NORMAL], 1: "error"},
             {0: [TrainStepOutcome.NORMAL, TrainStepOutcome.DISCARDED_SHOULD_RETRY], 1: [TrainStepOutcome.NORMAL]},
             {0: [], 1: [TrainStepOutcome.NORMAL]},
             {},
@@ -189,7 +188,7 @@ class TestCurrentStepSelection:
     def test_a_step_that_did_not_train_normally_everywhere_reaches_no_verdict(
         self, cell_outcomes: dict[int, Literal["error"] | list[TrainStepOutcome]]
     ) -> None:
-        """A step with an error, a discarded outcome, or no outcome on some cell is not a completed step."""
+        """A surviving cell with a discarded or absent outcome prevents a completed step."""
         events = [
             _issued([(7, [10])]),
             _witness([], cell_index=0),
@@ -197,6 +196,15 @@ class TestCurrentStepSelection:
             _step_with_outcomes(cell_outcomes),
         ]
         assert check(events, grace_steps=0) == []
+
+    def test_a_committed_survivor_is_checked_without_a_failed_cell_record(self) -> None:
+        """A failed cell cannot hide missing consumption on a committed surviving cell."""
+        events = [
+            _issued([(7, [10])]),
+            _witness([], cell_index=0),
+            _step_with_outcomes({0: [TrainStepOutcome.NORMAL], 1: "error"}),
+        ]
+        assert _keys(check(events, grace_steps=0)) == [(10, 0)]
 
     def test_a_failed_later_step_leaves_the_earlier_completed_step_current(self) -> None:
         """A step that failed after a completed one does not hide what the completed one recorded."""
@@ -982,17 +990,17 @@ class TestCompletedActorSteps:
         [
             ({0: [TrainStepOutcome.NORMAL]}, True),
             ({0: [TrainStepOutcome.NORMAL, TrainStepOutcome.NORMAL], 1: [TrainStepOutcome.NORMAL]}, True),
-            ({0: [TrainStepOutcome.NORMAL], 1: "error"}, False),
+            ({0: [TrainStepOutcome.NORMAL], 1: "error"}, True),
             ({0: [TrainStepOutcome.DISCARDED_SHOULD_RETRY]}, False),
             ({0: [TrainStepOutcome.NORMAL, TrainStepOutcome.DISCARDED_SHOULD_RETRY]}, False),
             ({0: []}, False),
             ({}, False),
         ],
     )
-    def test_only_steps_whose_every_cell_trained_normally_are_completed(
+    def test_only_steps_with_normally_trained_survivors_are_completed(
         self, cell_outcomes: dict[int, Literal["error"] | list[TrainStepOutcome]], completed: bool
     ) -> None:
-        """A step counts only when it lists a cell and every listed cell reports nothing but normal outcomes."""
+        """A step counts only when at least one survivor remains and every survivor trained normally."""
         assert (completed_actor_steps([_step_with_outcomes(cell_outcomes)]) != []) is completed
 
     def test_critic_steps_are_never_completed_actor_steps(self) -> None:
@@ -1164,13 +1172,15 @@ def test_retries_preserve_the_previous_rollout_until_the_new_attempt_completes(t
     assert (record.rollout_id, record.attempt) == (2, 4)
 
 
-def test_a_failed_cell_leaves_the_step_out_of_the_current_record(tmp_path: Path) -> None:
-    """A step whose cells did not all train normally is not a record of current state."""
+def test_a_failed_cell_preserves_the_surviving_cell_current_record(tmp_path: Path) -> None:
+    """A failed cell does not discard the current record of a committed surviving cell."""
     event_logger = EventLogger(log_dir=tmp_path, source=_SOURCE)
     _publish(event_logger, rollout_id=1)
     _complete(event_logger, rollout_id=1, cell_outcomes={0: [TrainStepOutcome.NORMAL], 1: "error"})
 
-    assert _read_latest(tmp_path) is None
+    records = _read_latest(tmp_path)
+    assert records is not None
+    assert [(record.cell_index, record.rollout_id) for record in records] == [(0, 1)]
 
 
 def test_a_step_missing_one_cell_record_is_skipped(tmp_path: Path) -> None:

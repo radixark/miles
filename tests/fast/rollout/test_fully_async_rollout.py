@@ -97,6 +97,8 @@ def make_group(
 def make_args(**overrides) -> Namespace:
     defaults = dict(
         rollout_global_dataset=True,
+        debug_rollout_only=False,
+        debug_skip_weight_update=False,
         rollout_batch_size=2,
         n_samples_per_prompt=N_SAMPLES_PER_PROMPT,
         max_weight_staleness=None,
