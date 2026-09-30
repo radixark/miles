@@ -499,7 +499,7 @@ def test_notifier_workflow_pins_its_identity_boundaries():
     assert "permission-pull-requests: read" in workflow
     assert "permission-issues" not in workflow and "permission-actions: write" not in workflow
     assert "CI_FAILURE_ANALYSIS_APP_CLIENT_ID" in workflow
-    assert "CI_COMMAND_APP" not in workflow
+    assert "CI_APP" not in workflow
     assert "OPENAI_API_KEY" not in workflow
     assert "actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683" in workflow
     assert "actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065" in workflow

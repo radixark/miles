@@ -183,14 +183,16 @@ def test_publish_retains_only_te_during_transition(
         assert upload["args"] == expected
 
 
-def test_wheels_publish_uses_a_separate_app():
+def test_wheels_publish_scopes_the_ci_app_token():
     token = next(
         step["with"]
         for step in WORKFLOW["jobs"]["publish"]["steps"]
         if step.get("uses", "").startswith("actions/create-github-app-token@")
     )
-    assert token["client-id"] == "${{ vars.WHEELS_APP_CLIENT_ID }}"
-    assert token["private-key"] == "${{ secrets.WHEELS_APP_PRIVATE_KEY }}"
+    assert token["client-id"] == "${{ vars.CI_APP_CLIENT_ID }}"
+    assert token["private-key"] == "${{ secrets.CI_APP_PRIVATE_KEY }}"
     assert token["owner"] == "radixark"
     assert token["repositories"] == "miles-wheels"
-    assert token["permission-contents"] == "write"
+    assert {key: value for key, value in token.items() if key.startswith("permission-")} == {
+        "permission-contents": "write"
+    }

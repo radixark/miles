@@ -16,7 +16,9 @@ Three `radixark/miles-wheels` asset sets follow a moving source. Each build writ
 
 ## Publish setup
 
-Before publishing, install a dedicated GitHub App only on `radixark/miles-wheels` with `Contents: write`, and store its client ID and private key in the `radixark/miles` variable `WHEELS_APP_CLIENT_ID` and secret `WHEELS_APP_PRIVATE_KEY`. Do not reuse the CI command App. If migrating from the shared App, remove its `Contents: write` permission and its `miles-wheels` repository access after configuring the dedicated App; changing the workflow alone does not revoke the shared key's existing authority.
+Use the shared `radixark-miles-ci` GitHub App installed on `radixark/miles` and `radixark/miles-wheels`. Grant `Contents: write` for wheel publishing and `Issues: write` plus `Pull requests: write` for [label commands](/developer/ci/01-label). Store its client ID in the `radixark/miles` repository variable `CI_APP_CLIENT_ID` and its private key in the repository secret `CI_APP_PRIVATE_KEY`; both workflows use the same credentials.
+
+The publish job requests only `Contents: write` on `radixark/miles-wheels`. `CI_APP_ENABLED` controls label commands and does not gate wheel publishing. When migrating existing configuration, add the new names before deploying the workflows and retain the old entries until workflows on the default branch and active runs no longer reference them.
 
 ## Schedule and manual runs
 
@@ -38,6 +40,6 @@ The `check` job summary lists each selected source commit and which architecture
 
 - **`check`** — resolves only the selected sources and reads the commit their manifests record in the `WHEELS_TAG_X86` / `WHEELS_TAG_ARM64` release. Scheduled runs also skip resolving TE while `TE_ON_SCHEDULE` is false. A lookup failure for a selected source or release fails the job. It takes the repository, tags and `SGLANG_IMAGE_TAG` from `docker/Dockerfile`, so assets land in the releases the image installs and compile against its torch.
 - **`build-router`**, **`build-int4-x86`**, **`build-te-x86`** — build only the stale sets. The router job also checks that the wheel and the binary forward a `/generate` request. `te` runs NVIDIA's manylinux recipe on the host, then compiles `transformer_engine_torch` inside the SGLang base image (`lmsysorg/sglang:<SGLANG_IMAGE_TAG>`).
-- **`publish`** (GitHub-hosted) — when no selected build failed, syncs each arch's assets and manifests into its release with a dedicated wheels App token (`vars.WHEELS_APP_CLIENT_ID` / `secrets.WHEELS_APP_PRIVATE_KEY`) minted with only `Contents: write` on `radixark/miles-wheels`. Each wheel set is uploaded separately so TE can retain its pinned version without retaining old router or int4_qat wheels. The release fingerprint in `check-upstream` then rebuilds the image.
+- **`publish`** (GitHub-hosted) — when no selected build failed, syncs each arch's assets and manifests into its release with a CI App token (`vars.CI_APP_CLIENT_ID` / `secrets.CI_APP_PRIVATE_KEY`) minted with only `Contents: write` on `radixark/miles-wheels`. Each wheel set is uploaded separately so TE can retain its pinned version without retaining old router or int4_qat wheels. The release fingerprint in `check-upstream` then rebuilds the image.
 
 Runs are serialized across the whole workflow to prevent overlapping source snapshots from replacing newer assets. A long manual TE build can therefore delay the hourly router/int4_qat runs. A failed selected build blocks publishing for both architectures.

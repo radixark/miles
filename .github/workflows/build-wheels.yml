@@ -324,7 +324,7 @@ jobs:
 
   # Publishes from a GitHub-hosted runner, so the miles-wheels write token never
   # reaches the shared self-hosted build hosts. Nothing is published when any
-  # selected build failed. The dedicated App is installed only on miles-wheels.
+  # selected build failed. The CI App token is scoped to miles-wheels.
   publish:
     needs: [check, build-router, build-int4-x86, build-te-x86]
     if: >-
@@ -342,8 +342,8 @@ jobs:
       - uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1
         id: token
         with:
-          client-id: ${{ vars.WHEELS_APP_CLIENT_ID }}
-          private-key: ${{ secrets.WHEELS_APP_PRIVATE_KEY }}
+          client-id: ${{ vars.CI_APP_CLIENT_ID }}
+          private-key: ${{ secrets.CI_APP_PRIVATE_KEY }}
           owner: radixark
           repositories: miles-wheels
           permission-contents: write
