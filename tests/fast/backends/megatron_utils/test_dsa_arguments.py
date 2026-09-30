@@ -1,4 +1,7 @@
+import importlib.util
+import sys
 from argparse import ArgumentParser, Namespace
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -20,6 +23,8 @@ def _args(**overrides):
         allgather_cp=False,
         dsa_kernel_backend="cudnn",
         dsa_indexer_loss_coeff=None,
+        miles_dsa_topk_backend="torch",
+        cp_comm_type=None,
     )
     return Namespace(**(values | overrides))
 
@@ -32,7 +37,7 @@ def _hf_config(**overrides):
 def test_default_preserves_the_existing_miles_path():
     args = add_dsa_arguments(ArgumentParser()).parse_args([])
     assert args.dsa_impl == "miles"
-    assert vars(args) == {"dsa_impl": "miles"}
+    assert vars(args) == {"dsa_impl": "miles", "miles_dsa_topk_backend": "torch", "cp_comm_type": None}
     before = vars(args).copy()
     normalize_dsa_args(args, None)
     assert vars(args) == before
@@ -108,6 +113,8 @@ def test_explicit_indexer_training_objective_is_preserved():
         ({"spec": None}, "requires the shared DeepSeek-V3.2/GLM DSA spec"),
         ({"spec": ["miles_plugins.models.deepseek_v4", "get_dsv4_spec"]}, "requires the shared"),
         ({"context_parallel_size": 2, "allgather_cp": True}, "uses zigzag CP token partitioning"),
+        ({"cp_comm_type": ["p2p"]}, "requires --cp-comm-type allgather"),
+        ({"cp_comm_type": ["allgather", "a2a"]}, "requires --cp-comm-type allgather"),
     ],
     ids=[
         "negative-loss",
@@ -115,6 +122,8 @@ def test_explicit_indexer_training_objective_is_preserved():
         "no-spec",
         "v4-spec",
         "contiguous-cp",
+        "explicit-p2p",
+        "mixed-cp",
     ],
 )
 def test_incompatible_native_configuration_fails_early(overrides, message):
@@ -127,15 +136,69 @@ def test_unsupported_checkpoint_cannot_select_native_dsa():
         normalize_dsa_args(_args(), _hf_config(model_type="deepseek_v4"))
 
 
-def test_native_cp_uses_allgather_communication_with_zigzag_partitioning():
-    args = _args(context_parallel_size=4, cp_comm_type=["p2p"])
+@pytest.mark.parametrize("cp_comm_type", [None, ["allgather"], ["allgather", "allgather"]])
+def test_native_cp_uses_allgather_communication_with_zigzag_partitioning(cp_comm_type):
+    args = _args(context_parallel_size=4, cp_comm_type=cp_comm_type)
     normalize_dsa_args(args, _hf_config())
-    assert args.cp_comm_type == ["allgather"]
+    assert args.cp_comm_type == (cp_comm_type or ["allgather"])
     assert args.allgather_cp is False
 
 
 @pytest.mark.parametrize("backend", ["torch", "flashinfer"])
 def test_native_dsa_keeps_the_requested_topk_backend(backend):
-    args = _args(miles_dsa_topk_backend=backend)
+    parsed = add_dsa_arguments(ArgumentParser()).parse_args(
+        ["--dsa-impl", "megatron", "--miles-dsa-topk-backend", backend]
+    )
+    args = _args(**vars(parsed))
     normalize_dsa_args(args, _hf_config())
     assert args.dsa_indexer_topk_backend == backend
+
+
+@pytest.fixture
+def megatron_defaults(monkeypatch):
+    # Exercise the real normalization entrypoint without importing GPU startup dependencies.
+    monkeypatch.setitem(
+        sys.modules,
+        "megatron.core.tokenizers.utils.build_tokenizer",
+        SimpleNamespace(vocab_size_with_padding=lambda size, args: size),
+    )
+    monkeypatch.setitem(
+        sys.modules, "megatron.training.arguments", SimpleNamespace(parse_args=None, validate_args=None)
+    )
+    monkeypatch.setitem(
+        sys.modules, "miles.utils.hf_utils.config", SimpleNamespace(load_hf_config=lambda path: _hf_config())
+    )
+    path = Path(__file__).resolve().parents[4] / "miles/backends/megatron_utils/arguments.py"
+    spec = importlib.util.spec_from_file_location("dsa_megatron_arguments_under_test", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.set_default_megatron_args
+
+
+@pytest.mark.parametrize(
+    ("argv", "expected"),
+    [
+        ([], ["p2p"]),
+        (["--cp-comm-type", "a2a"], ["a2a"]),
+        (["--dsa-impl", "megatron"], ["allgather"]),
+        (["--dsa-impl", "megatron", "--cp-comm-type", "allgather"], ["allgather"]),
+    ],
+    ids=["default-miles", "explicit-miles-cp", "default-native", "explicit-native-cp"],
+)
+def test_shared_parser_normalizes_omitted_cp_without_overriding_explicit_settings(megatron_defaults, argv, expected):
+    parser = ArgumentParser()
+    parser.add_argument("--cp-comm-type", nargs="+", default=["p2p"])
+    add_dsa_arguments(parser)
+    args = _args(
+        **vars(parser.parse_args(argv)),
+        optimizer="adam",
+        fp16=False,
+        seq_length=None,
+        vocab_size=None,
+        tokenizer_model=None,
+        tokenizer_type=None,
+        hf_checkpoint="/model",
+    )
+    megatron_defaults(args)
+    assert args.cp_comm_type == expected
+    assert args.dsa_impl in ("miles", "megatron")

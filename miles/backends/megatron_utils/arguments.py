@@ -54,13 +54,12 @@ def set_default_megatron_args(args):
 
     args.trust_remote_code = True
 
-    if not hasattr(args, "miles_dsa_topk_backend"):
-        args.miles_dsa_topk_backend = "torch"
-
     if is_dsv4_model(args):
         normalize_dsv4_args(args)
 
-    if getattr(args, "dsa_impl", "miles") == "megatron":
+    if args.dsa_impl == "megatron":
         normalize_dsa_args(args, load_hf_config(args.hf_checkpoint))
+    elif args.cp_comm_type is None:
+        args.cp_comm_type = ["p2p"]
 
     return args

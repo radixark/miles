@@ -37,9 +37,12 @@ from miles.utils.debug_utils.run_megatron.worker.replay import (
     save_replay_data,
     setup_replay_before_model,
 )
-from miles.utils.debug_utils.run_megatron.worker.script_args import WORKER_SCRIPT_ARGS_BRIDGE, WorkerScriptArgs
+from miles.utils.debug_utils.run_megatron.worker.script_args import (
+    WORKER_SCRIPT_ARGS_BRIDGE,
+    WorkerScriptArgs,
+    register_worker_arguments,
+)
 from miles.utils.debug_utils.run_megatron.worker.top_k_print import print_top_k
-from miles_plugins.models.deepseek_v4.arguments import add_dsv4_arguments
 
 
 def main() -> None:
@@ -107,15 +110,8 @@ def main() -> None:
     dist.destroy_process_group()
 
 
-def _register_worker_arguments(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
-    """Worker arguments plus the plugin arguments the model scripts pass through."""
-    WORKER_SCRIPT_ARGS_BRIDGE.register_on_parser(parser)
-    add_dsv4_arguments(parser)
-    return parser
-
-
 def _parse_args() -> tuple[argparse.Namespace, WorkerScriptArgs]:
-    args: argparse.Namespace = parse_args(extra_args_provider=_register_worker_arguments)
+    args: argparse.Namespace = parse_args(extra_args_provider=register_worker_arguments)
     script_args: WorkerScriptArgs = WORKER_SCRIPT_ARGS_BRIDGE.from_namespace(args)
 
     if script_args.ref_load is not None:

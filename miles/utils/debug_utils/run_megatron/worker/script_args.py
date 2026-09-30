@@ -8,9 +8,12 @@ serialization (CLI → worker) and deserialization (worker argparse) are automat
 from __future__ import annotations
 
 import dataclasses
+from argparse import ArgumentParser
 from pathlib import Path
 
 from miles.utils.argparse_utils import DataclassArgparseBridge
+from miles_plugins.models.deepseek_v4.arguments import add_dsv4_arguments
+from miles_plugins.models.glm5.arguments import add_dsa_arguments
 
 
 @dataclasses.dataclass(frozen=True)
@@ -32,3 +35,11 @@ WORKER_SCRIPT_ARGS_BRIDGE: DataclassArgparseBridge[WorkerScriptArgs] = Dataclass
     prefix="script",
     group_title="run_megatron script args",
 )
+
+
+def register_worker_arguments(parser: ArgumentParser) -> ArgumentParser:
+    """Register script and model-plugin arguments before Megatron normalization."""
+    WORKER_SCRIPT_ARGS_BRIDGE.register_on_parser(parser)
+    add_dsv4_arguments(parser)
+    add_dsa_arguments(parser)
+    return parser

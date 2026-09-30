@@ -1,12 +1,38 @@
 import dataclasses
+from argparse import ArgumentParser
 from pathlib import Path
 
 import pytest
 
-from miles.utils.debug_utils.run_megatron.worker.script_args import WORKER_SCRIPT_ARGS_BRIDGE, WorkerScriptArgs
+from miles.utils.debug_utils.run_megatron.worker.script_args import (
+    WORKER_SCRIPT_ARGS_BRIDGE,
+    WorkerScriptArgs,
+    register_worker_arguments,
+)
 
 
 class TestWorkerScriptArgs:
+    @pytest.mark.parametrize("argv,implementation", [([], "miles"), (["--dsa-impl", "megatron"], "megatron")])
+    def test_worker_parser_registers_dsa_arguments(self, argv: list[str], implementation: str) -> None:
+        parser = ArgumentParser()
+        parser.add_argument("--cp-comm-type", nargs="+", default=["p2p"])
+        register_worker_arguments(parser)
+        args = parser.parse_args(
+            [
+                "--script-hf-checkpoint",
+                "/hf",
+                "--script-token-ids-file",
+                "/tokens.json",
+                "--miles-dsa-topk-backend",
+                "flashinfer",
+            ]
+            + argv
+        )
+        assert args.dsa_impl == implementation
+        assert args.miles_dsa_topk_backend == "flashinfer"
+        assert args.cp_comm_type is None
+        assert WORKER_SCRIPT_ARGS_BRIDGE.from_namespace(args).hf_checkpoint == Path("/hf")
+
     def test_frozen(self) -> None:
         args = WorkerScriptArgs(hf_checkpoint=Path("/hf"), token_ids_file=Path("/tokens.json"))
         with pytest.raises(dataclasses.FrozenInstanceError):

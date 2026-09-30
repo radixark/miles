@@ -42,11 +42,13 @@ The raw Megatron path supports `--dsa-impl miles|megatron` for DSA models using 
 --megatron-to-hf-mode raw --dsa-impl megatron --dsa-kernel-backend cudnn
 ```
 
-Training uses packed `--qkv-format thd` and supports sequence parallelism. Native context parallelism uses zigzag token partitioning within each sequence and `--cp-comm-type allgather` for attention communication. Miles' `--allgather-cp` instead selects contiguous token partitioning and is rejected for native DSA when CP > 1. GLM-5.2's cross-layer index sharing schedule is preserved. Indexer replay is outside the scope of this backend integration.
+Training uses packed `--qkv-format thd` and supports sequence parallelism. Native context parallelism uses zigzag token partitioning within each sequence and `--cp-comm-type allgather` for attention communication. Omitting `--cp-comm-type` selects `allgather` for native DSA; explicitly selecting another communication type is rejected. Miles' `--allgather-cp` instead selects contiguous token partitioning and is rejected for native DSA when CP > 1. GLM-5.2's cross-layer index sharing schedule is preserved. Indexer replay is outside the scope of this backend integration.
 
-`--miles-dsa-topk-backend` selects top-k for both implementations. The W4A16 test keeps `flashinfer` and `SGLANG_DSA_TOPK_FLASHINFER_TIE_BREAK=large`, preserving its top-k backend and tie policy when selecting native Megatron DSA.
+The fused cuDNN indexer supports CP1, single-sequence CP batches, and complete multi-sequence CP query partitions. TP-local query slices of multi-sequence CP batches are rejected; select the reference implementation explicitly for that layout. Fused execution uses the configured cuDNN frontend directly and does not silently switch to reference scoring.
 
-Native DSA defaults to `--dsa-indexer-loss-coeff 0` and freezes its indexer parameters, because native top-k selection runs without gradients when the auxiliary objective is disabled. This excludes unused parameters from DDP and optimizer weight decay. A positive native loss coefficient keeps the indexer trainable.
+`--miles-dsa-topk-backend` selects top-k for both implementations and is accepted by conversion, training, and the standalone `run_megatron` debug worker. This runtime selection does not change the checkpoint layout. The W4A16 test keeps `flashinfer` and `SGLANG_DSA_TOPK_FLASHINFER_TIE_BREAK=large`, preserving its top-k backend and tie policy when selecting native Megatron DSA.
+
+Native DSA defaults to `--dsa-indexer-loss-coeff 0` and freezes its indexer parameters, because native top-k selection runs without gradients when the auxiliary objective is disabled. This excludes unused parameters from DDP and optimizer weight decay. A positive native loss coefficient keeps the indexer trainable and requires explicitly selecting the reference implementation with `--dsa-kernel-backend none` or `--attention-backend unfused` when using an external top-k backend.
 
 Convert into a separate `torch_dist` directory when changing implementations: the native attention and indexer parameter names differ from the Miles checkpoint layout. Use the same implementation for conversion, checkpoint loading, and training. This selector applies to DSA training; SGLang rollout backend flags remain independent.
 

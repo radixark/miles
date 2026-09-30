@@ -7,6 +7,8 @@ MEGATRON_DSA_SPEC = ("miles_plugins.models.glm5.megatron_spec", "get_dsa_spec")
 
 
 def add_dsa_arguments(parser: ArgumentParser) -> ArgumentParser:
+    # Distinguish an omitted Megatron CP setting from an explicit incompatible choice.
+    parser.set_defaults(cp_comm_type=None)
     group = parser.add_argument_group(title="deepseek-sparse-attention")
     group.add_argument(
         "--dsa-impl",
@@ -19,12 +21,18 @@ def add_dsa_arguments(parser: ArgumentParser) -> ArgumentParser:
             "DeepSeek-V4 uses --dsv4-impl instead; bridge mode uses --dsa-attention-backend."
         ),
     )
+    group.add_argument(
+        "--miles-dsa-topk-backend",
+        choices=["torch", "flashinfer"],
+        default="torch",
+        help="DSA indexer top-k backend for both raw DSA implementations.",
+    )
     return parser
 
 
 def normalize_dsa_args(args: Namespace, hf_config) -> None:
     """Map the shared Miles DSA spec and HF indexer conventions to native Megatron."""
-    if getattr(args, "dsa_impl", "miles") != "megatron":
+    if args.dsa_impl != "megatron":
         return
     if getattr(args, "megatron_to_hf_mode", "raw") != "raw":
         raise ValueError("--dsa-impl megatron requires --megatron-to-hf-mode raw")
@@ -37,12 +45,15 @@ def normalize_dsa_args(args: Namespace, hf_config) -> None:
             "--dsa-impl megatron uses zigzag CP token partitioning; remove --allgather-cp. "
             "Megatron's attention communication still uses --cp-comm-type allgather."
         )
+    if args.cp_comm_type is None:
+        args.cp_comm_type = ["allgather"]
+    elif any(comm_type != "allgather" for comm_type in args.cp_comm_type):
+        raise ValueError("--dsa-impl megatron requires --cp-comm-type allgather")
 
     args.spec = list(MEGATRON_DSA_SPEC)
     args.experimental_attention_variant = "dsa"
     args.enable_experimental = True
-    args.dsa_indexer_topk_backend = getattr(args, "miles_dsa_topk_backend", "torch")
-    args.cp_comm_type = ["allgather"]
+    args.dsa_indexer_topk_backend = args.miles_dsa_topk_backend
     args.dsa_indexer_n_heads = hf_config.index_n_heads
     args.dsa_indexer_head_dim = hf_config.index_head_dim
     args.dsa_indexer_topk = hf_config.index_topk
