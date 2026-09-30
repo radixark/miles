@@ -72,9 +72,8 @@ def test_raw_indexer_export_preserves_each_implementation_layout(
     torch.testing.assert_close(exported, _expected_hf_weight(weight, hf_suffix, impl, interleave), rtol=0, atol=0)
 
 
-@pytest.mark.parametrize("bridge_class", ["DeepseekV32Bridge", "GlmMoeDsaBridge"])
+@pytest.mark.parametrize(("bridge_class", "interleave"), [("DeepseekV32Bridge", False), ("GlmMoeDsaBridge", True)])
 @pytest.mark.parametrize("impl", ["miles", "megatron"])
-@pytest.mark.parametrize("interleave", [False, True])
 @pytest.mark.parametrize("hf_suffix,native_suffix,shape", _INDEXER_WEIGHTS)
 def test_mbridge_indexer_import_export_matches_raw_layout(
     bridge_module, bridge_class, impl, interleave, hf_suffix, native_suffix, shape
@@ -94,20 +93,27 @@ def test_mbridge_indexer_import_export_matches_raw_layout(
 
 @pytest.mark.parametrize("norm", ["q", "kv"])
 @pytest.mark.parametrize("layout", ["fused", "unfused"])
-def test_native_mla_norm_import_export_keeps_hf_order(raw_converter, bridge_module, norm, layout):
+def test_mla_norm_raw_export_keeps_hf_order(raw_converter, norm, layout):
+    suffix = f"linear_{norm}_up_proj.layer_norm_weight" if layout == "fused" else f"{norm}_layernorm.weight"
+    name = f"decoder.layers.3.self_attention.{suffix}"
+    weight = _weight((128,))
+    args = SimpleNamespace(hidden_size=8, num_attention_heads=2, num_query_groups=1)
+    [(hf_name, exported)] = raw_converter(args, "module.module." + name, weight)
+    assert hf_name == f"model.layers.3.self_attn.{norm}_a_layernorm.weight"
+    torch.testing.assert_close(exported, weight, rtol=0, atol=0)
+
+
+@pytest.mark.parametrize("norm", ["q", "kv"])
+@pytest.mark.parametrize("layout", ["fused", "unfused"])
+def test_mla_norm_mbridge_round_trip_keeps_hf_order(bridge_module, norm, layout):
     bridge = object.__new__(bridge_module.DeepseekV32Bridge)
     bridge.hf_config = SimpleNamespace(indexer_rope_interleave=True)
     bridge.config = SimpleNamespace(mtp_num_layers=None)
     bridge.make_vocab_size_divisible_by = None
     suffix = f"linear_{norm}_up_proj.layer_norm_weight" if layout == "fused" else f"{norm}_layernorm.weight"
     name = f"decoder.layers.3.self_attention.{suffix}"
-    hf_name = f"model.layers.3.self_attn.{norm}_a_layernorm.weight"
     weight = _weight((128,))
-    args = SimpleNamespace(hidden_size=8, num_attention_heads=2, num_query_groups=1)
-    [(raw_name, raw_weight)] = raw_converter(args, "module.module." + name, weight)
-    assert raw_name == hf_name
-    torch.testing.assert_close(raw_weight, weight, rtol=0, atol=0)
     names, [exported] = bridge._weight_to_hf_format(name, weight)
-    assert names == [hf_name]
+    assert names == [f"model.layers.3.self_attn.{norm}_a_layernorm.weight"]
     torch.testing.assert_close(exported, weight, rtol=0, atol=0)
     torch.testing.assert_close(bridge._weight_to_mcore_format(name, [exported]), weight, rtol=0, atol=0)

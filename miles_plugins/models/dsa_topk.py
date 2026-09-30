@@ -15,6 +15,7 @@ def torch_dsa_topk(logits: torch.Tensor, topk: int) -> torch.Tensor:
 
 def flashinfer_dsa_topk(logits: torch.Tensor, topk: int) -> torch.Tensor:
     import flashinfer
+    from sglang.srt.environ import envs
 
     orig_shape = logits.shape
     if logits.dim() > 2:
@@ -24,7 +25,8 @@ def flashinfer_dsa_topk(logits: torch.Tensor, topk: int) -> torch.Tensor:
         logits,
         topk,
         sorted=False,
-        **get_flashinfer_dsa_topk_options(),
+        deterministic=envs.SGLANG_DSA_TOPK_FLASHINFER_DETERMINISTIC.get(),
+        tie_break=_flashinfer_tie_break_value(),
         dsa_graph_safe=True,
     )
     indices = indices.to(torch.int32)

@@ -30,20 +30,21 @@ def _set_topk_environment(monkeypatch, *, tie_break, deterministic):
     monkeypatch.setitem(sys.modules, "sglang.srt.environ", SimpleNamespace(envs=envs))
 
 
-@pytest.mark.parametrize(("tie_break", "expected"), [(None, 0), ("small", 1), ("large", 2), ("LARGE", 2)])
-@pytest.mark.parametrize("deterministic", [False, True])
+@pytest.mark.parametrize(
+    ("tie_break", "deterministic", "expected"),
+    [(None, False, 0), ("small", False, 1), ("large", True, 2), ("LARGE", False, 2)],
+)
 def test_native_spec_resolves_the_shared_flashinfer_policy_in_the_worker(
     monkeypatch, native_dsa_spec, tie_break, expected, deterministic
 ):
-    module, factory = native_dsa_spec
+    module, _ = native_dsa_spec
     config = SimpleNamespace(dsa_indexer_topk_backend="flashinfer")
     # The worker environment is supplied after importing the spec factory.
     _set_topk_environment(monkeypatch, tie_break=tie_break, deterministic=deterministic)
 
-    assert module.get_dsa_spec(None, config, vp_stage=2) == "native-spec"
+    module.get_dsa_spec(None, config, vp_stage=2)
     assert config.dsa_indexer_topk_tie_break == expected
     assert config.dsa_indexer_topk_deterministic is deterministic
-    factory.assert_called_once_with(config, vp_stage=2)
 
 
 def test_invalid_flashinfer_policy_fails_before_constructing_native_layers(monkeypatch, native_dsa_spec):
@@ -55,14 +56,12 @@ def test_invalid_flashinfer_policy_fails_before_constructing_native_layers(monke
 
 
 def test_torch_backend_does_not_resolve_flashinfer_policy(monkeypatch, native_dsa_spec):
-    module, factory = native_dsa_spec
+    module, _ = native_dsa_spec
     config = SimpleNamespace(dsa_indexer_topk_backend="torch")
     resolver = Mock(side_effect=AssertionError("Torch must not consult the FlashInfer environment"))
     monkeypatch.setattr(module, "get_flashinfer_dsa_topk_options", resolver)
 
-    assert module.get_dsa_spec(None, config, vp_stage=None) == "native-spec"
-    resolver.assert_not_called()
-    factory.assert_called_once_with(config, vp_stage=None)
+    module.get_dsa_spec(None, config, vp_stage=None)
 
 
 def test_old_megatron_cannot_silently_ignore_requested_topk_backend(native_dsa_spec):

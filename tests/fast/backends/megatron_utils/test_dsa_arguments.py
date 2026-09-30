@@ -20,7 +20,6 @@ def _args(**overrides):
         allgather_cp=False,
         dsa_kernel_backend="cudnn",
         dsa_indexer_loss_coeff=None,
-        dsa_indexer_weights_proj_output_dtype="bf16",
         freeze_indexer=False,
     )
     return Namespace(**(values | overrides))
@@ -75,8 +74,8 @@ def test_native_dsa_preserves_checkpoint_indexer_conventions(hf_overrides, inter
     assert args.dsa_indexer_k_norm_epsilon == 1e-6
     assert args.dsa_indexer_k_norm_fp32 is True
     assert args.dsa_kernel_backend == "cudnn"
-    assert args.dsa_indexer_weights_proj_output_dtype == "bf16"
     assert args.dsa_indexer_loss_coeff == 0.0
+    assert args.dsa_indexer_topk_backend == "torch"
 
     # Checkpoint conversion and training can both normalize an already native spec.
     before = vars(args).copy()
@@ -143,9 +142,3 @@ def test_native_dsa_keeps_the_requested_topk_backend(backend):
     args = _args(miles_dsa_topk_backend=backend)
     normalize_dsa_args(args, _hf_config())
     assert args.dsa_indexer_topk_backend == backend
-
-
-def test_native_dsa_defaults_to_the_existing_torch_topk_backend():
-    args = _args()
-    normalize_dsa_args(args, _hf_config())
-    assert args.dsa_indexer_topk_backend == "torch"
