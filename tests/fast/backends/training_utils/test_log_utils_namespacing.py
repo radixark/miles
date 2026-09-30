@@ -4,7 +4,7 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from miles.backends.training_utils import log_utils
+from miles.backends.training_utils import cp_utils, log_utils
 from miles.utils.metric_utils import strip_metrics_namespace
 
 
@@ -120,6 +120,7 @@ class TestLogRolloutData:
             is_pp_last_stage=True,
         )
         monkeypatch.setattr(log_utils, "get_parallel_state", lambda: parallel_state)
+        monkeypatch.setattr(cp_utils, "get_parallel_state", lambda: parallel_state)
         monkeypatch.setattr(
             log_utils.MultiPGUtil, "gather_object", staticmethod(lambda obj, groups_inner_to_outer: [obj])
         )
