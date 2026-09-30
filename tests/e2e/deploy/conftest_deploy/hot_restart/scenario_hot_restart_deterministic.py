@@ -223,11 +223,6 @@ def _build_script_args(
         f"{restart_mode.test_name} replaces the rollout executor of a live run, and mode {mode.model_name} has no "
         f"engines for it to drive"
     )
-    assert not mode.colocate, (
-        f"{restart_mode.test_name} keeps a run's trainers and engines up while their script is replaced, and mode "
-        f"{mode.model_name} colocates them on shared gpus"
-    )
-
     assert_freeze_schedule_leaves_redo_window(restart_mode)
 
     return build_script_args(

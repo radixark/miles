@@ -55,10 +55,6 @@ class TestMode:
         """A single engine deployment is a shape the unsplit baseline already covers."""
         assert mode.rollout_num_engines > 1
 
-    def test_the_scenario_shares_no_gpus_between_the_trainer_and_the_engines(self, mode):
-        """Separate deployments cannot be colocated, and a mode that asked for it would fail deep inside helm."""
-        assert not mode.colocate
-
 
 class TestBuildDeployments:
     def test_the_engines_of_a_run_are_deployed_one_group_at_a_time(self, deployments, mode):
@@ -188,11 +184,6 @@ class TestBuildArgs:
         """Weight decay moves weights on its own, which would let a run that learned nothing pass the moved gate."""
         assert value_of(scenario._build_args(mode, DUMP_DIR), "--weight-decay") == "0"
 
-    def test_a_colocated_mode_is_refused(self, mode):
-        """Colocation shares gpus between the very deployments this scenario installs apart."""
-        with pytest.raises(AssertionError, match="colocates them on shared gpus"):
-            scenario._build_args(_colocated(mode), DUMP_DIR)
-
     def test_a_mode_without_engines_is_refused(self, mode):
         """There would be no engine deployment left to install, and the scenario would test nothing."""
         with pytest.raises(AssertionError, match="engines to deploy"):
@@ -213,21 +204,6 @@ def _request(mode: FTTestMode, *, side: str = TARGET_SIDE) -> RunSideRequest:
             cluster_backend=ClusterBackend.KUBERNETES, namespace=NAMESPACE, run_id=RUN_ID, run_uuid=RUN_UUID
         ),
         enable_dumper=True,
-    )
-
-
-def _colocated(mode: FTTestMode) -> FTTestMode:
-    return FTTestMode(
-        model_name=mode.model_name,
-        model_hf_repo=mode.model_hf_repo,
-        megatron_model_type=mode.megatron_model_type,
-        num_cells=mode.num_cells,
-        train_gpus_per_node=mode.train_gpus_per_node,
-        rollout_num_engines=mode.rollout_num_engines,
-        rollout_gpus_per_engine=mode.rollout_gpus_per_engine,
-        colocate=True,
-        ft_components=("rollout",),
-        parallel_args=mode.parallel_args,
     )
 
 
