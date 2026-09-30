@@ -1,6 +1,8 @@
 import threading
 import time
 
+from pathlib import Path
+
 import pytest
 from tests.fast.e2e.deploy.hot_restart.cluster_facts import (
     ENGINE_POOL,
@@ -20,12 +22,15 @@ from tests.utils.deploy.hot_restart.cluster_observer import (
     ClusterObserver,
     ClusterSnapshot,
     PodFact,
+    WorkloadFact,
     compute_trainer_rpc_url,
     parse_pod_facts,
     parse_workload_facts,
 )
 
 from miles.utils.external_utils.command_utils.helm_backend.launcher.manifest_types import RESTART_AT_ANNOTATION
+from miles.utils.external_utils.command_utils.helm_backend.naming import ORCHESTRATOR_COMPONENT, RunNames
+from miles.utils.external_utils.command_utils.helm_backend.orchestrator.state import STATE_FILE_FLAG
 
 
 class TestComputeTrainerRpcUrl:
@@ -63,10 +68,13 @@ class TestParseWorkloadFacts:
         payload = {
             "items": [
                 {
-                    "metadata": {"name": ORCHESTRATOR, "generation": 2},
+                    "metadata": {"name": ORCHESTRATOR, "uid": "uid-o", "generation": 2},
                     "spec": {"template": {"metadata": {"annotations": {RESTART_AT_ANNOTATION: "t1"}}}},
                 },
-                {"metadata": {"name": TRAINER, "generation": 1}, "spec": {"template": {"metadata": {}}}},
+                {
+                    "metadata": {"name": TRAINER, "uid": "uid-t", "generation": 1},
+                    "spec": {"template": {"metadata": {}}},
+                },
             ]
         }
 
@@ -92,7 +100,7 @@ class TestParseWorkloadFacts:
         payload = {
             "items": [
                 {
-                    "metadata": {"name": ENGINE_POOL, "generation": 3},
+                    "metadata": {"name": ENGINE_POOL, "uid": "uid-e", "generation": 3},
                     "spec": {
                         "leaderWorkerTemplate": {
                             "workerTemplate": {"metadata": {"annotations": {RESTART_AT_ANNOTATION: "t1"}}}
@@ -117,7 +125,7 @@ class TestParseWorkloadFacts:
         first = {
             "items": [
                 {
-                    "metadata": {"name": TRAINER, "generation": 1},
+                    "metadata": {"name": TRAINER, "uid": "uid-t", "generation": 1},
                     "spec": {"template": {"metadata": {"labels": {"a": "1", "b": "2"}}, "spec": {}}},
                 }
             ]
@@ -125,7 +133,7 @@ class TestParseWorkloadFacts:
         second = {
             "items": [
                 {
-                    "metadata": {"generation": 2, "name": TRAINER},
+                    "metadata": {"generation": 2, "name": TRAINER, "uid": "uid-t"},
                     "spec": {"template": {"spec": {}, "metadata": {"labels": {"b": "2", "a": "1"}}}},
                 }
             ]
@@ -142,7 +150,7 @@ class TestParseWorkloadFacts:
         payload = {
             "items": [
                 {
-                    "metadata": {"name": ENGINE_POOL, "generation": 3},
+                    "metadata": {"name": ENGINE_POOL, "uid": "uid-e", "generation": 3},
                     "spec": {
                         "leaderWorkerTemplate": {
                             "leaderTemplate": {"metadata": {"annotations": {RESTART_AT_ANNOTATION: "t1"}}},
@@ -155,6 +163,124 @@ class TestParseWorkloadFacts:
 
         with pytest.raises(AssertionError, match="restart stamps"):
             parse_workload_facts(payload, kind=LEADER_WORKER_SET_KIND)
+
+
+_ORCHESTRATOR_OBJECT: str = RunNames.orchestrator_object(release=RELEASE)
+
+
+class TestWorkloadUid:
+    def test_a_workload_recreated_under_the_same_name_is_told_apart_by_its_uid(self) -> None:
+        """A guard comparing names and generations alone would accept a workload deleted and created again."""
+        before = parse_workload_facts(_statefulset_payload(uid="uid-o-1"), kind=STATEFUL_SET_KIND)
+        after = parse_workload_facts(_statefulset_payload(uid="uid-o-2"), kind=STATEFUL_SET_KIND)
+
+        assert [one.uid for one in before] == ["uid-o-1"]
+        assert [one.uid for one in after] == ["uid-o-2"]
+        assert before != after
+
+
+class TestReadClusterSnapshot:
+    def test_the_state_file_is_the_one_the_installed_orchestrator_is_told_to_write(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A take-over must be judged against the verdict file of the generation that is actually running."""
+        _install_objects(monkeypatch, statefulsets=_statefulset_payload(uid="uid-o-1", state_file="/shared/a.state"))
+
+        snapshot = _read_snapshot()
+
+        assert snapshot.orchestrator_state_file == Path("/shared/a.state")
+        assert snapshot.trainer_boot_uuid == "boot-a"
+
+    def test_a_release_without_an_orchestrator_names_no_state_file(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A trainer-only release has no verdict file, and inventing one would point the guard at nothing."""
+        _install_objects(
+            monkeypatch, statefulsets={"items": [_statefulset_item(name=TRAINER, uid="uid-t", command=["python"])]}
+        )
+
+        assert _read_snapshot().orchestrator_state_file is None
+
+    @pytest.mark.parametrize("missing", [STATEFUL_SET_KIND, LEADER_WORKER_SET_KIND])
+    def test_a_failed_workload_read_names_no_state_file_and_says_what_is_missing(
+        self, monkeypatch: pytest.MonkeyPatch, missing: str
+    ) -> None:
+        """Reading the state file off half a listing could miss the orchestrator and report the wrong generation."""
+        _install_objects(
+            monkeypatch,
+            statefulsets=_statefulset_payload(uid="uid-o-1", state_file="/shared/a.state"),
+            missing=missing,
+        )
+
+        snapshot = _read_snapshot()
+
+        assert snapshot.orchestrator_state_file is None
+        assert snapshot.reads_missing == (missing,)
+        assert not snapshot.describes_whole_release
+
+    def test_workloads_of_both_kinds_are_listed_with_their_uids_in_a_stable_order(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Snapshots are compared across polls, so the same cluster must always read as the same tuple."""
+        engines = {
+            "items": [
+                {
+                    "apiVersion": "leaderworkerset.x-k8s.io/v1",
+                    "kind": "LeaderWorkerSet",
+                    "metadata": {"name": ENGINE_POOL, "uid": "uid-e", "generation": 1},
+                    "spec": {"leaderWorkerTemplate": {"workerTemplate": {"metadata": {}}}},
+                }
+            ]
+        }
+        _install_objects(
+            monkeypatch,
+            statefulsets=_statefulset_payload(uid="uid-o-1", state_file="/shared/a.state"),
+            leader_worker_sets=engines,
+        )
+
+        snapshot = _read_snapshot()
+
+        assert [(one.kind, one.name, one.uid) for one in snapshot.workloads] == [
+            (LEADER_WORKER_SET_KIND, ENGINE_POOL, "uid-e"),
+            (STATEFUL_SET_KIND, _ORCHESTRATOR_OBJECT, "uid-o-1"),
+        ]
+        assert all(isinstance(one, WorkloadFact) for one in snapshot.workloads)
+
+
+def _read_snapshot() -> ClusterSnapshot:
+    return cluster_module.read_cluster_snapshot(release=RELEASE, namespace=NAMESPACE, trainer_rpc_url="http://x")
+
+
+def _install_objects(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    statefulsets: dict,
+    leader_worker_sets: dict | None = None,
+    missing: str | None = None,
+) -> None:
+    payload_of_kind = {
+        POD_KIND: {"items": [{"metadata": {"name": f"{ORCHESTRATOR}-0", "uid": "uid-p"}, "status": {}}]},
+        STATEFUL_SET_KIND: statefulsets,
+        LEADER_WORKER_SET_KIND: leader_worker_sets if leader_worker_sets is not None else {"items": []},
+    }
+    monkeypatch.setattr(
+        cluster_module,
+        "_read_objects",
+        lambda *, kind, release, namespace: None if kind == missing else payload_of_kind[kind],
+    )
+    monkeypatch.setattr(cluster_module, "read_boot_uuid", lambda _url: "boot-a")
+
+
+def _statefulset_payload(*, uid: str, state_file: str = "/shared/a.state") -> dict:
+    command = ["python", "-m", "wrapper", STATE_FILE_FLAG, state_file, "--", "python", "train.py"]
+    return {"items": [_statefulset_item(name=_ORCHESTRATOR_OBJECT, uid=uid, command=command)]}
+
+
+def _statefulset_item(*, name: str, uid: str, command: list[str]) -> dict:
+    return {
+        "apiVersion": "apps/v1",
+        "kind": "StatefulSet",
+        "metadata": {"name": name, "uid": uid, "generation": 1},
+        "spec": {"template": {"spec": {"containers": [{"name": ORCHESTRATOR_COMPONENT, "command": command}]}}},
+    }
 
 
 def _observer() -> ClusterObserver:
@@ -277,7 +403,7 @@ class TestClusterObserver:
             observer.observe_once()
 
         assert observer.snapshots == [_settled_snapshot()]
-        assert observer._settled_workloads == frozenset({ORCHESTRATOR, TRAINER})
+        assert observer.recorder._settled_workloads == frozenset({ORCHESTRATOR, TRAINER})
 
     def test_a_partial_listing_of_a_settled_release_is_not_recorded(self, monkeypatch):
         """A missing workload leaves an empty pod set, which reads as a healthy pod having been replaced."""

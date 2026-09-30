@@ -7,7 +7,9 @@ from tests.utils.deploy.hot_restart.evidence import (
     HotRestartEvidence,
     HotRestartRecord,
     RunProgress,
+    read_discarded_event_dirs,
     read_finished_rollout_ids,
+    read_finished_steps_once,
     read_last_saved_iteration,
     read_run_progress,
 )
@@ -110,3 +112,38 @@ class TestHotRestartEvidence:
         """A missing file would otherwise read as a run that redid nothing."""
         with pytest.raises(AssertionError):
             HotRestartEvidence.load(dump_dir=str(tmp_path))
+
+
+class TestReadFinishedStepsOnce:
+    def test_each_finished_step_maps_to_the_one_event_that_logged_it(self, tmp_path: Path) -> None:
+        """The redo checks compare steps by their logged event, so every finished step must be keyed once."""
+        events_dir = tmp_path / "events"
+        _write_metric_event(events_dir, rollout_id=1, metrics={"train/grad_norm": 1.0})
+        _write_metric_event(events_dir, rollout_id=0, metrics={"train/grad_norm": 2.0})
+        _write_metric_event(events_dir, rollout_id=2, metrics={"rollout/response_length": 3.0})
+
+        steps = read_finished_steps_once(events_dir, what="the target log")
+
+        assert list(steps) == [0, 1]
+        assert '"train/grad_norm":2.0' in steps[0].replace(" ", "")
+
+    def test_a_step_logged_twice_is_refused_naming_the_log_and_the_step(self, tmp_path: Path) -> None:
+        """A take-over that failed to roll the log back would otherwise pass with two copies of one step."""
+        events_dir = tmp_path / "events"
+        for rollout_id in (0, 1, 1):
+            _write_metric_event(events_dir, rollout_id=rollout_id, metrics={"train/grad_norm": 1.0})
+
+        with pytest.raises(AssertionError, match=r"the target log describes the step\(s\) \{1: 2\}"):
+            read_finished_steps_once(events_dir, what="the target log")
+
+
+class TestReadDiscardedEventDirs:
+    def test_only_the_rolled_aside_logs_are_listed_in_name_order(self, tmp_path: Path) -> None:
+        """The checks walk rolled-aside logs oldest first, and the live log must never be read as discarded."""
+        for name in (".trash_20260102-000000", "events", ".trash_20260101-000000", "trash_unmarked"):
+            (tmp_path / name).mkdir()
+
+        assert read_discarded_event_dirs(str(tmp_path)) == [
+            tmp_path / ".trash_20260101-000000",
+            tmp_path / ".trash_20260102-000000",
+        ]

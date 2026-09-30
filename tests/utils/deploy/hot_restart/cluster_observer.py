@@ -5,12 +5,16 @@ import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
+from pathlib import Path
 
 import requests
 
 from miles.ray.specs.rollout import ROLLOUT_EXECUTOR_POOL_ID
 from miles.ray.specs.train import compute_trainer_controller_pool_id
-from miles.utils.external_utils.command_utils.helm_backend.launcher.manifest_types import RESTART_AT_ANNOTATION
+from miles.utils.external_utils.command_utils.helm_backend.launcher.manifest_types import (
+    RESTART_AT_ANNOTATION,
+    Manifest,
+)
 from miles.utils.external_utils.command_utils.helm_backend.naming import ORCHESTRATOR_COMPONENT, RunNames
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
 from miles.utils.test_utils.kubectl_reads import read_objects_of_release
@@ -46,6 +50,7 @@ class PodFact(FrozenStrictBaseModel):
 class WorkloadFact(FrozenStrictBaseModel):
     kind: str
     name: str
+    uid: str
     generation: int
     pod_template_fingerprint: str
     restart_at: str | None
@@ -55,6 +60,7 @@ class ClusterSnapshot(FrozenStrictBaseModel):
     pods: tuple[PodFact, ...]
     workloads: tuple[WorkloadFact, ...]
     trainer_boot_uuid: str | None
+    orchestrator_state_file: Path | None
     reads_missing: tuple[str, ...] = ()
 
     @property
@@ -74,34 +80,17 @@ class ClusterSnapshot(FrozenStrictBaseModel):
 
 
 @dataclass
-class ClusterObserver:
+class SnapshotRecorder:
     release: str
-    namespace: str
-    trainer_id: str
     snapshots: list[ClusterSnapshot] = field(default_factory=list)
     attempts: int = 0
     failures: int = 0
-    release_seen_up: bool = False
-    _settled_workloads: frozenset[str] | None = field(default=None, init=False)
-    _topology_read_before: tuple[frozenset[str], frozenset[str]] | None = field(default=None, init=False)
+    _settled_workloads: frozenset[str] | None = None
+    _topology_read_before: tuple[frozenset[str], frozenset[str]] | None = None
 
-    def observe_once_or_warn(self) -> None:
-        try:
-            self.observe_once()
-        except BaseException:
-            self._record_failed_read()
-            logger.warning("Failed to observe the cluster of a run being hot restarted", exc_info=True)
-
-    def observe_once(self) -> None:
-        snapshot = read_cluster_snapshot(
-            release=self.release,
-            namespace=self.namespace,
-            trainer_rpc_url=compute_trainer_rpc_url(
-                release=self.release, namespace=self.namespace, trainer_id=self.trainer_id
-            ),
-        )
+    def record(self, snapshot: ClusterSnapshot) -> None:
         if not snapshot.describes_whole_release:
-            self._record_failed_read()
+            self.record_failed_read()
             logger.warning(
                 f"Observing {self.release} could not read {list(snapshot.reads_missing)}, so this is a read that "
                 f"failed rather than a run whose pods changed"
@@ -114,40 +103,74 @@ class ClusterObserver:
                 f"were replaced"
             )
             return
-        if not self._describes_settled_release(snapshot):
-            return
 
-        self.release_seen_up = True
-        self.attempts += 1
-        self.snapshots.append(snapshot)
-
-    def _describes_settled_release(self, snapshot: ClusterSnapshot) -> bool:
         workload_names = frozenset(snapshot.workload_names)
-        pod_names = frozenset(one.name for one in snapshot.pods)
         if self._settled_workloads is None:
-            if (workload_names, pod_names) != self._topology_read_before:
-                self._topology_read_before = (workload_names, pod_names)
+            pod_names = frozenset(one.name for one in snapshot.pods)
+            topology = (workload_names, pod_names)
+            if topology != self._topology_read_before:
+                self._topology_read_before = topology
                 logger.warning(
                     f"Observed {self.release} holding {sorted(workload_names)} over {sorted(pod_names)}, which no "
                     f"read before it had seen, so the release is still being installed rather than being watched"
                 )
-                return False
+                return
             self._settled_workloads = workload_names
-            logger.info(f"{self.release} settled into {sorted(self._settled_workloads)}; recording from here on")
-            return True
-
-        if missing := self._settled_workloads - workload_names:
+            logger.info(f"{self.release} settled into {sorted(workload_names)}; recording from here on")
+        elif missing := self._settled_workloads - workload_names:
             logger.warning(
                 f"Observing {self.release} listed neither {sorted(missing)} nor a release that is gone, so this is "
                 f"a partial listing rather than a run whose workloads were removed"
             )
-            return False
-        return True
+            return
 
-    def _record_failed_read(self) -> None:
+        self.attempts += 1
+        self.snapshots.append(snapshot)
+
+    def record_failed_read(self) -> None:
         self.failures += 1
-        if self.release_seen_up:
+        if self.snapshots:
             self.attempts += 1
+
+
+@dataclass
+class ClusterObserver:
+    release: str
+    namespace: str
+    trainer_id: str
+    recorder: SnapshotRecorder = field(init=False)
+
+    def __post_init__(self) -> None:
+        self.recorder = SnapshotRecorder(release=self.release)
+
+    @property
+    def snapshots(self) -> list[ClusterSnapshot]:
+        return self.recorder.snapshots
+
+    @property
+    def attempts(self) -> int:
+        return self.recorder.attempts
+
+    @property
+    def failures(self) -> int:
+        return self.recorder.failures
+
+    def observe_once_or_warn(self) -> None:
+        try:
+            self.observe_once()
+        except BaseException:
+            self.recorder.record_failed_read()
+            logger.warning("Failed to observe the cluster of a run being hot restarted", exc_info=True)
+
+    def observe_once(self) -> None:
+        snapshot = read_cluster_snapshot(
+            release=self.release,
+            namespace=self.namespace,
+            trainer_rpc_url=compute_trainer_rpc_url(
+                release=self.release, namespace=self.namespace, trainer_id=self.trainer_id
+            ),
+        )
+        self.recorder.record(snapshot)
 
 
 @contextmanager
@@ -200,6 +223,7 @@ def read_cluster_snapshot(*, release: str, namespace: str, trainer_rpc_url: str)
         pods=parse_pod_facts(pods) if pods is not None else (),
         workloads=tuple(sorted(workloads, key=lambda one: (one.kind, one.name))),
         trainer_boot_uuid=boot_uuid,
+        orchestrator_state_file=_read_orchestrator_state_file(payload_of_kind, release=release, namespace=namespace),
         reads_missing=tuple(kind for kind, payload in payload_of_kind.items() if payload is None),
     )
 
@@ -249,6 +273,7 @@ def parse_workload_facts(payload: dict, *, kind: str) -> tuple[WorkloadFact, ...
         WorkloadFact(
             kind=kind,
             name=item["metadata"]["name"],
+            uid=item["metadata"]["uid"],
             generation=int(item["metadata"]["generation"]),
             pod_template_fingerprint=_compute_pod_template_fingerprint(item),
             restart_at=_read_restart_at(item),
@@ -256,6 +281,18 @@ def parse_workload_facts(payload: dict, *, kind: str) -> tuple[WorkloadFact, ...
         for item in payload["items"]
     ]
     return tuple(sorted(facts, key=lambda one: one.name))
+
+
+def _read_orchestrator_state_file(
+    payload_of_kind: dict[str, dict | None], *, release: str, namespace: str
+) -> Path | None:
+    payloads = [payload_of_kind[kind] for kind in WORKLOAD_KINDS]
+    if any(payload is None for payload in payloads):
+        return None
+    items = [item for payload in payloads for item in payload["items"]]
+    return Manifest(objects=items, namespace=namespace).state_file(
+        stateful_set=RunNames.orchestrator_object(release=release), container=ORCHESTRATOR_COMPONENT
+    )
 
 
 def _read_objects(*, kind: str, release: str, namespace: str) -> dict | None:

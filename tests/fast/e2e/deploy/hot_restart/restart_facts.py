@@ -20,6 +20,7 @@ def restart_snapshot(
             WorkloadFact(
                 kind=STATEFUL_SET_KIND,
                 name=name,
+                uid=f"uid-{name}",
                 generation=1 if stamp is None else 2,
                 pod_template_fingerprint="template-base" if stamp is None else f"template-{stamp}",
                 restart_at=stamp,
@@ -27,6 +28,7 @@ def restart_snapshot(
             for name, stamp in sorted(stamp_of_workload.items())
         ),
         trainer_boot_uuid=boot_uuid,
+        orchestrator_state_file=None,
     )
 
 
