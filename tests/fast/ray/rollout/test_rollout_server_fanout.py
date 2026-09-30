@@ -116,6 +116,17 @@ class TestCheckWeightsFanOut:
             for cell in cells
         )
 
+    async def test_named_cells_limit_the_check_to_them(self):
+        """A caller naming cells must not wait on another cell, which may be hanging under a fault."""
+        cells = [_RecordingCell(cell_id=str(i), needs_offload=False) for i in range(3)]
+        srv = _make_server(cells)
+
+        async with srv.context_lock:
+            results = await srv.check_weights(action="checksum", cell_ids=["0", "2"])
+
+        assert [meta.cell_id for meta, _body in results] == ["0", "2"]
+        assert cells[1].calls == []
+
     async def test_a_cell_without_an_address_yet_is_not_checked(self):
         """The check runs during the weight update window, which a gated cell has not entered."""
         gated = _RecordingCell(cell_id="gated", needs_offload=False, addressable=False)
