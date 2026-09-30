@@ -22,8 +22,6 @@ from tests.e2e.ft.conftest_ft.execution import (
     DATA_DIR,
     MODEL_DIR,
     get_api_server_args,
-    get_fully_async_args,
-    get_train_script,
 )
 from tests.e2e.ft.conftest_ft.fault_injection.entrypoint import (
     API_SERVER_PORT,
@@ -36,7 +34,8 @@ from tests.e2e.ft.conftest_ft.fault_injection.fault_forms import (
     create_cell_fault_forms,
 )
 from tests.e2e.ft.conftest_ft.scenario_random_crash import assert_healing
-from tests.fast.cluster_backends import create_backend_for_run
+from tests.utils.cluster_backends import create_backend_for_run
+from tests.utils.ft.launch import get_fully_async_args, get_train_script
 
 from miles.utils.audit_utils.event_logger.logger import EVENTS_DIRNAME
 from miles.utils.external_utils import command_utils

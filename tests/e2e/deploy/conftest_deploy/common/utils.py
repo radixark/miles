@@ -2,7 +2,11 @@ from collections.abc import Callable
 
 from tests.e2e.ft.conftest_ft import comparisons
 from tests.e2e.ft.conftest_ft.app import BASELINE_SIDE, TARGET_SIDE
-from tests.fast.cluster_backends import RUN_NAMESPACE_ENV_VAR, compute_missing_namespace_reason, create_backend_for_run
+from tests.utils.cluster_backends import (
+    RUN_NAMESPACE_ENV_VAR,
+    compute_missing_namespace_reason,
+    create_backend_for_run,
+)
 
 from miles.utils.external_utils import command_utils
 from miles.utils.test_utils.comparisons.inference_engine_checksums import assert_engine_count
