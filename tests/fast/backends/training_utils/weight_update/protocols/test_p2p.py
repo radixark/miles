@@ -1,6 +1,12 @@
+from types import ModuleType, SimpleNamespace
 from typing import Any
 
 import pytest
+import torch
+
+
+def _server_args(rl_quant_profile: str | None = None) -> Any:
+    return SimpleNamespace(rl_quant_profile=rl_quant_profile)
 
 
 class TestSendBucket:
@@ -112,3 +118,60 @@ class TestSendBucket:
 
         with pytest.raises(AssertionError, match="not transferred"):
             protocol.after_base_weights()
+
+
+class TestCreateCPUReplica:
+    def test_the_loader_post_load_hook_is_a_noop_only_while_the_model_loads(
+        self, p2p_protocol: ModuleType, model_loader_sdk: Any, shared_buffers: dict[str, torch.Tensor]
+    ) -> None:
+        """get_model runs the hook internally and it may launch CUDA kernels, but it must come back afterwards."""
+        p2p_protocol._create_cpu_replica({"tp_rank": 1}, "/model", _server_args(), shared_params_dict=shared_buffers)
+
+        assert model_loader_sdk.hook_result_during_load is None
+        assert model_loader_sdk.loader.post_load_weights is model_loader_sdk.original_post_load_weights
+
+    def test_a_failing_model_load_still_restores_the_loader_post_load_hook(
+        self, p2p_protocol: ModuleType, model_loader_sdk: Any, shared_buffers: dict[str, torch.Tensor]
+    ) -> None:
+        """A leaked no-op hook would silently skip post-processing for every later sglang model load."""
+        model_loader_sdk.load_error = RuntimeError("checkpoint unreadable")
+
+        with pytest.raises(RuntimeError, match="checkpoint unreadable"):
+            p2p_protocol._create_cpu_replica(
+                {"tp_rank": 1}, "/model", _server_args(), shared_params_dict=shared_buffers
+            )
+
+        assert model_loader_sdk.loader.post_load_weights is model_loader_sdk.original_post_load_weights
+
+    def test_the_replicas_own_post_load_hook_is_a_noop(
+        self, p2p_protocol: ModuleType, model_loader_sdk: Any, shared_buffers: dict[str, torch.Tensor]
+    ) -> None:
+        """Later load_weights calls invoke the model's hook, which would run CUDA-only code on the CPU replica."""
+        replica = p2p_protocol._create_cpu_replica(
+            {"tp_rank": 1}, "/model", _server_args(), shared_params_dict=shared_buffers
+        )
+
+        assert replica.post_load_weights() is None
+
+    def test_a_later_replica_aliases_every_parameter_to_the_shared_buffers(
+        self, p2p_protocol: ModuleType, model_loader_sdk: Any, shared_buffers: dict[str, torch.Tensor]
+    ) -> None:
+        """A copy instead of an alias would load into memory the transfer engine never reads."""
+        replica = p2p_protocol._create_cpu_replica(
+            {"tp_rank": 1}, "/model", _server_args(), shared_params_dict=shared_buffers
+        )
+
+        assert {name: param.data_ptr() for name, param in replica.named_parameters()} == {
+            name: tensor.data_ptr() for name, tensor in shared_buffers.items()
+        }
+
+    def test_a_parameter_missing_from_the_shared_buffers_is_rejected(
+        self, p2p_protocol: ModuleType, model_loader_sdk: Any, shared_buffers: dict[str, torch.Tensor]
+    ) -> None:
+        """A parameter with no shared buffer has no registered memory to be written from."""
+        del shared_buffers["b"]
+
+        with pytest.raises(AssertionError, match="Parameter b not found in shared buffers"):
+            p2p_protocol._create_cpu_replica(
+                {"tp_rank": 1}, "/model", _server_args(), shared_params_dict=shared_buffers
+            )

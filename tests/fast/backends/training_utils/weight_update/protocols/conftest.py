@@ -7,7 +7,7 @@ import time
 from argparse import Namespace
 from collections.abc import Callable, Iterator
 from concurrent.futures import Future, ThreadPoolExecutor
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from types import ModuleType, SimpleNamespace
 from typing import Any
 import pytest
@@ -218,19 +218,7 @@ class _P2PSenderHarness:
         self.waiting_threads: set[int] = set()
 
         monkeypatch.setattr(p2p_protocol, "create_transfer_engine", self._create_transfer_engine)
-        monkeypatch.setattr(
-            p2p_protocol.UpdateWeightP2P,
-            "_create_cpu_replica",
-            lambda protocol, parallelism_config, model_path, server_args, first_engine_rank=False: (
-                self._create_cpu_replica(
-                    parallelism_config,
-                    model_path,
-                    server_args,
-                    shared_params_dict=protocol._shared_params_dict,
-                    first_engine_rank=first_engine_rank,
-                )
-            ),
-        )
+        monkeypatch.setattr(p2p_protocol, "_create_cpu_replica", self._create_cpu_replica)
         monkeypatch.setattr(
             p2p_protocol, "ParameterMapper", SimpleNamespace(from_model=lambda model: _FakeParameterMapper())
         )
@@ -395,3 +383,55 @@ def make_bucket() -> Callable[..., list[tuple[str, torch.Tensor]]]:
         return [(name, torch.tensor(_BUCKET_VALUES[name])) for name in names]
 
     return _make
+
+
+class _LoadedModel(torch.nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        self.a = torch.nn.Parameter(torch.zeros(2), requires_grad=False)
+        self.b = torch.nn.Parameter(torch.zeros(3), requires_grad=False)
+
+    def post_load_weights(self) -> None:
+        raise RuntimeError("the real post_load_weights needs CUDA")
+
+
+class _FakeModelLoaderSdk:
+    def __init__(self, p2p_protocol: ModuleType, monkeypatch: pytest.MonkeyPatch) -> None:
+        self.loader = ModuleType("sglang.srt.model_loader.loader")
+        self.loader.post_load_weights = self.original_post_load_weights
+        self.load_error: Exception | None = None
+        self.hook_result_during_load: object = None
+
+        package = importlib.import_module("sglang.srt.model_loader")
+        monkeypatch.setitem(sys.modules, "sglang.srt.model_loader.loader", self.loader)
+        monkeypatch.setattr(package, "loader", self.loader, raising=False)
+        monkeypatch.setattr(
+            p2p_protocol, "server_args_module", SimpleNamespace(set_global_server_args_for_scheduler=lambda args: None)
+        )
+        for initializer in ("initialize_moe_config", "initialize_fp8_gemm_config", "initialize_fp4_gemm_config"):
+            monkeypatch.setattr(p2p_protocol, initializer, lambda: None)
+        monkeypatch.setattr(p2p_protocol, "LoadConfig", lambda **kwargs: SimpleNamespace(**kwargs))
+        monkeypatch.setattr(p2p_protocol, "ModelConfig", lambda model_path: model_path)
+        monkeypatch.setattr(p2p_protocol, "DeviceConfig", lambda device: device)
+        monkeypatch.setattr(p2p_protocol, "ParallelismContext", lambda parallelism_config: nullcontext())
+        monkeypatch.setattr(p2p_protocol, "get_model", self._get_model)
+
+    @staticmethod
+    def original_post_load_weights(*args: Any, **kwargs: Any) -> str:
+        return "ran the real post_load_weights"
+
+    def _get_model(self, *, model_config: str, load_config: Any, device_config: str) -> _LoadedModel:
+        self.hook_result_during_load = self.loader.post_load_weights()
+        if self.load_error is not None:
+            raise self.load_error
+        return _LoadedModel()
+
+
+@pytest.fixture
+def model_loader_sdk(p2p_protocol: ModuleType, monkeypatch: pytest.MonkeyPatch) -> _FakeModelLoaderSdk:
+    return _FakeModelLoaderSdk(p2p_protocol, monkeypatch)
+
+
+@pytest.fixture
+def shared_buffers() -> dict[str, torch.Tensor]:
+    return {"a": torch.zeros(2), "b": torch.zeros(3)}
