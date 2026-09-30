@@ -11,7 +11,6 @@ register_cuda_ci(
     suite="stage-c-8-gpu-h200",
     labels=["ft-long"],
     hardware=["hopper", "blackwell"],
-    disabled="FT soak tests pending CI infra support",
 )
 
 _MODE: str = "kill_train_rollout__dp2_cp2"
