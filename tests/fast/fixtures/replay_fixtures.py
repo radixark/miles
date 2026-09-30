@@ -1,6 +1,6 @@
 """Shared helpers for routing-replay tests."""
 
-from miles.backends.training_utils.replay.base import routing_replay_manager
+from miles.utils.replay_base import routing_replay_manager
 
 
 class CpuReplay:

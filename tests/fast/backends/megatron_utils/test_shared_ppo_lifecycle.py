@@ -11,11 +11,11 @@ import pytest
 import ray
 import torch
 
-from miles.backends.training_utils.replay.base import IndexerReplayManager, RoutingReplayManager
 from miles.backends.training_utils.types import TrainStepOutcome, TrainStepOutput
 from miles.backends.training_utils.weight_update.conn_status import ConnStatusManager
 from miles.utils import object_store
 from miles.utils.ray_utils import Box
+from miles.utils.replay_base import IndexerReplayManager, RoutingReplayManager
 from miles.utils.tensor_backper import MainCastContext, TensorBackuper
 
 

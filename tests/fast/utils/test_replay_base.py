@@ -4,7 +4,7 @@ register_cpu_ci(est_time=60, suite="stage-a-cpu", labels=[])
 
 import torch
 
-from miles.backends.training_utils.replay.base import BaseReplayManager
+from miles.utils.replay_base import BaseReplayManager
 
 
 class _FakeReplay:
