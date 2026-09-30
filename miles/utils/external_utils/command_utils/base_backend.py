@@ -87,6 +87,7 @@ class ExecuteTrainConfig(CommandUtilConfig):
     run_uuid: str | None = None
     skip_upgrade_check: bool = False
     external_mooncake: bool = False
+    ray_submission_id: str | None = None
 
     @property
     def parsed_hot_restart(self) -> list[HotRestartComponent]:

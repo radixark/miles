@@ -1,8 +1,13 @@
+import os
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from typing import Any
+
 import pytest
 
-from miles.utils.external_utils.command_utils.ray_backend import command
+from miles.utils.external_utils.command_utils import base_backend
+from miles.utils.external_utils.command_utils.ray_backend import backend, command
+from miles.utils.typer_utils import SCRIPT_ENV_VAR_PREFIX
 
 
 @dataclass(frozen=True)
@@ -64,3 +69,28 @@ def fake_ray_factory(
         return fake_ray, ray_execution
 
     return create
+
+
+@dataclass
+class RecordedRayLaunch:
+    cpu_commands: list[str] = field(default_factory=list)
+    submitted: list[dict[str, Any]] = field(default_factory=list)
+    submit_error: Exception | None = None
+
+    def run_ray_job(self, **kwargs: Any) -> None:
+        self.submitted.append(kwargs)
+        if self.submit_error is not None:
+            raise self.submit_error
+
+
+@pytest.fixture
+def recorded_ray_launch(monkeypatch: pytest.MonkeyPatch) -> RecordedRayLaunch:
+    recorded = RecordedRayLaunch()
+    for name in [name for name in os.environ if name.startswith(SCRIPT_ENV_VAR_PREFIX)]:
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("NCCL_NVLS_ENABLE", "0")
+    monkeypatch.setattr(
+        base_backend, "run_shell_command", lambda cmd, capture_output=False: recorded.cpu_commands.append(cmd)
+    )
+    monkeypatch.setattr(backend, "run_ray_job", recorded.run_ray_job)
+    return recorded
