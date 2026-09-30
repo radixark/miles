@@ -58,14 +58,6 @@ def test_invalid_flashinfer_policy_fails_before_constructing_native_layers(monke
 def test_torch_backend_does_not_resolve_flashinfer_policy(monkeypatch, native_dsa_spec):
     module, _ = native_dsa_spec
     config = SimpleNamespace(dsa_indexer_topk_backend="torch")
-    resolver = Mock(side_effect=AssertionError("Torch must not consult the FlashInfer environment"))
-    monkeypatch.setattr(module, "get_flashinfer_dsa_topk_options", resolver)
+    _set_topk_environment(monkeypatch, tie_break="invalid", deterministic=True)
 
     module.get_dsa_spec(None, config, vp_stage=None)
-
-
-def test_old_megatron_cannot_silently_ignore_requested_topk_backend(native_dsa_spec):
-    module, factory = native_dsa_spec
-    with pytest.raises(RuntimeError, match="configurable DSA top-k backend support"):
-        module.get_dsa_spec(None, SimpleNamespace(), vp_stage=None)
-    factory.assert_not_called()

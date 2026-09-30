@@ -36,15 +36,6 @@ def flashinfer_dsa_topk(logits: torch.Tensor, topk: int) -> torch.Tensor:
     return indices
 
 
-def get_flashinfer_dsa_topk_options() -> dict:
-    from sglang.srt.environ import envs
-
-    return {
-        "deterministic": envs.SGLANG_DSA_TOPK_FLASHINFER_DETERMINISTIC.get(),
-        "tie_break": _flashinfer_tie_break_value(),
-    }
-
-
 def get_dsa_topk_fn(topk_backend: str):
     if topk_backend == "torch":
         return torch_dsa_topk

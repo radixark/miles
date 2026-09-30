@@ -1,3 +1,5 @@
+import argparse
+import ast
 import importlib.util
 import sys
 from argparse import ArgumentParser, Namespace
@@ -6,6 +8,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from miles.utils.debug_utils.run_megatron.worker.script_args import WORKER_SCRIPT_ARGS_BRIDGE
+from miles_plugins.models.deepseek_v4.arguments import add_dsv4_arguments
 from miles_plugins.models.glm5.arguments import (
     MEGATRON_DSA_SPEC,
     MILES_DSA_SPEC,
@@ -187,3 +191,38 @@ def test_shared_parser_normalizes_omitted_cp_without_overriding_explicit_setting
     )
     megatron_defaults(args)
     assert args.cp_comm_type == expected
+
+
+@pytest.mark.parametrize("argv,implementation", [([], "miles"), (["--dsa-impl", "megatron"], "megatron")])
+def test_worker_parser_registers_dsa_arguments(argv, implementation):
+    # Exercise the real registrar without importing the worker's GPU startup stack.
+    path = Path(__file__).resolve().parents[4] / "miles/utils/debug_utils/run_megatron/worker/main.py"
+    tree = ast.parse(path.read_text())
+    registrar = next(
+        node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "_register_worker_arguments"
+    )
+    namespace = {
+        "argparse": argparse,
+        "WORKER_SCRIPT_ARGS_BRIDGE": WORKER_SCRIPT_ARGS_BRIDGE,
+        "add_dsv4_arguments": add_dsv4_arguments,
+        "add_dsa_arguments": add_dsa_arguments,
+    }
+    exec(compile(ast.Module(body=[registrar], type_ignores=[]), str(path), "exec"), namespace)
+    parser = ArgumentParser()
+    parser.add_argument("--cp-comm-type", nargs="+", default=["p2p"])
+    namespace["_register_worker_arguments"](parser)
+    args = parser.parse_args(
+        [
+            "--script-hf-checkpoint",
+            "/hf",
+            "--script-token-ids-file",
+            "/tokens.json",
+            "--miles-dsa-topk-backend",
+            "flashinfer",
+        ]
+        + argv
+    )
+    assert args.dsa_impl == implementation
+    assert args.miles_dsa_topk_backend == "flashinfer"
+    assert args.cp_comm_type is None
+    assert WORKER_SCRIPT_ARGS_BRIDGE.from_namespace(args).hf_checkpoint == Path("/hf")
