@@ -147,7 +147,7 @@ class RemoteWeightInfo:
     weights_info: dict[str, RemoteWeightLocation]  # name -> (remote_address, numel, element_size)
 
 
-class TransferEngineMeta(NamedTuple):
+class RolloutEngineRankInfo(NamedTuple):
     model_replica: torch.nn.Module
     remote_weight_infos: list[RemoteWeightInfo]
 

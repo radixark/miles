@@ -28,7 +28,7 @@ from .p2p_transfer_utils import (
     P2PTransferManager,
     RemoteTransferPlan,
     RemoteWeightInfo,
-    TransferEngineMeta,
+    RolloutEngineRankInfo,
     create_transfer_engine,
     query_remote_weight_infos,
     register_cpu_memory,
@@ -93,8 +93,8 @@ class UpdateWeightP2P(WeightTransferProtocol):
         )
 
         if transfer_ready_params and ready_hf_tensors:
-            last_idx = len(self._transfer_engine_meta_list) - 1
-            for i, meta in enumerate(self._transfer_engine_meta_list):
+            last_idx = len(self._rollout_engine_rank_infos) - 1
+            for i, meta in enumerate(self._rollout_engine_rank_infos):
                 meta.model_replica.load_weights(ready_hf_tensors)
 
                 # Last rollout engine rank: fire-and-forget all sessions to background,
@@ -157,10 +157,10 @@ class UpdateWeightP2P(WeightTransferProtocol):
             self._transfer_engine = create_transfer_engine()
             self._shared_params_dict: dict[str, torch.Tensor] = {}
             self._shared_param_mapper: ParameterMapper | None = None
-            # in self._transfer_engine_meta_list: tuple of
+            # in self._rollout_engine_rank_infos: tuple of
             # - single CPU replica shared among all sessions
             # - related remote weight info
-            self._transfer_engine_meta_list: list[TransferEngineMeta] = []
+            self._rollout_engine_rank_infos: list[RolloutEngineRankInfo] = []
             first_rollout_engine_rank = True
             for rank_targets in targets_grouped_by_rollout_engine_rank.values():
                 first_target = rank_targets[0]
@@ -192,8 +192,8 @@ class UpdateWeightP2P(WeightTransferProtocol):
                     for t in rank_targets
                 ]
 
-                self._transfer_engine_meta_list.append(
-                    TransferEngineMeta(model_replica=model_replica, remote_weight_infos=remote_infos)
+                self._rollout_engine_rank_infos.append(
+                    RolloutEngineRankInfo(model_replica=model_replica, remote_weight_infos=remote_infos)
                 )
 
 
