@@ -131,8 +131,8 @@ class _RecordingTransferManager:
         return future
 
 
-def _cell_updater(p2p_rollout_cell_updater: ModuleType, rollout_engine_ind: int = 0) -> Any:
-    return p2p_rollout_cell_updater._P2PRolloutCellUpdater(rollout_engine_ind=rollout_engine_ind)
+def _cell_updater(p2p_rollout_cell_updater: ModuleType, cell_id: str = "cell-a") -> Any:
+    return p2p_rollout_cell_updater._P2PRolloutCellUpdater(cell_id=cell_id, api_client=None)
 
 
 class TestSubmitWrite:
@@ -189,8 +189,8 @@ class TestSubmitWrite:
         self, p2p_rollout_cell_updater: ModuleType, p2p_transfer_utils: ModuleType
     ) -> None:
         """The failure must reach the cell whose write it was, not whichever cell is drained first."""
-        broken = _cell_updater(p2p_rollout_cell_updater, rollout_engine_ind=0)
-        healthy = _cell_updater(p2p_rollout_cell_updater, rollout_engine_ind=1)
+        broken = _cell_updater(p2p_rollout_cell_updater, cell_id="cell-broken")
+        healthy = _cell_updater(p2p_rollout_cell_updater, cell_id="cell-healthy")
         for updater, session in ((broken, "session-broken"), (healthy, "session-healthy")):
             updater.targets_by_rollout_engine_rank = {
                 0: _remote_session(p2p_rollout_cell_updater, p2p_transfer_utils, session, {"w": (0x1000, 2, 4)})
@@ -219,11 +219,71 @@ class TestSubmitWrite:
         self, p2p_rollout_cell_updater: ModuleType, p2p_transfer_utils: ModuleType
     ) -> None:
         """Sharing one target map across cells would send a cell's weights into another cell's memory."""
-        first = _cell_updater(p2p_rollout_cell_updater, rollout_engine_ind=0)
-        second = _cell_updater(p2p_rollout_cell_updater, rollout_engine_ind=1)
+        first = _cell_updater(p2p_rollout_cell_updater, cell_id="cell-a")
+        second = _cell_updater(p2p_rollout_cell_updater, cell_id="cell-b")
         first.targets_by_rollout_engine_rank = {
             0: _remote_session(p2p_rollout_cell_updater, p2p_transfer_utils, "session-first", {"w": (0x1000, 2, 4)})
         }
 
         assert second.targets_by_rollout_engine_rank == {}
-        assert (first.rollout_engine_ind, second.rollout_engine_ind) == (0, 1)
+        assert (first.cell_id, second.cell_id) == ("cell-a", "cell-b")
+
+
+class TestErroredCellDropsItsWrites:
+    """Once a cell has lost the update, nothing more may be written into its memory."""
+
+    def test_a_write_submitted_after_the_failure_never_reaches_the_transfer_engine(
+        self, p2p_rollout_cell_updater: ModuleType, p2p_transfer_utils: ModuleType
+    ) -> None:
+        """The remote may already be serving again, so a late write would corrupt what it serves."""
+        updater = _cell_updater(p2p_rollout_cell_updater)
+        updater.targets_by_rollout_engine_rank = {
+            0: _remote_session(p2p_rollout_cell_updater, p2p_transfer_utils, "session-0", {"w": (0x1000, 2, 4)})
+        }
+        updater.mark_errored(RuntimeError("lost"))
+        engine = _RecordingTransferEngine()
+
+        updater.submit_write(
+            rollout_engine_rank=0,
+            names=["w"],
+            weight_memory_registry={"w": (0x30, 2, 4)},
+            transfer_engine=engine,
+            transfer_manager=_RecordingTransferManager(),
+        )
+
+        assert engine.calls == []
+
+    def test_a_write_already_queued_is_skipped_when_the_cell_fails_before_it_runs(
+        self, p2p_rollout_cell_updater: ModuleType, p2p_transfer_utils: ModuleType
+    ) -> None:
+        """The queue is drained by another thread, so the check has to happen where the write runs."""
+        updater = _cell_updater(p2p_rollout_cell_updater)
+        target = _remote_session(p2p_rollout_cell_updater, p2p_transfer_utils, "session-0", {"w": (0x1000, 2, 4)})
+        engine = _RecordingTransferEngine()
+        updater.mark_errored(RuntimeError("lost"))
+
+        updater._write_if_active(engine, target, ["w"], {"w": (0x30, 2, 4)})
+
+        assert engine.calls == []
+
+    def test_draining_an_errored_cell_is_a_noop(
+        self, p2p_rollout_cell_updater: ModuleType, p2p_transfer_utils: ModuleType
+    ) -> None:
+        """Waiting on the writes of a cell nobody will hear from again only burns the deadline."""
+        updater = _cell_updater(p2p_rollout_cell_updater)
+        updater.targets_by_rollout_engine_rank = {
+            0: _remote_session(p2p_rollout_cell_updater, p2p_transfer_utils, "session-0", {"w": (0x1000, 2, 4)})
+        }
+        manager = _RecordingTransferManager()
+        updater.submit_write(
+            rollout_engine_rank=0,
+            names=["w"],
+            weight_memory_registry={"w": (0x30, 2, 4)},
+            transfer_engine=_RecordingTransferEngine(),
+            transfer_manager=manager,
+        )
+        updater.mark_errored(RuntimeError("lost"))
+
+        updater.wait_for_pending_writes()
+
+        assert len(updater._pending_writes) == 1
