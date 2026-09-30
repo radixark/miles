@@ -240,7 +240,7 @@ class TestConnectReusesOneShotResources:
         protocol.after_base_weights()
         written_while_connected = p2p_sender.transfer_engine.written_sessions()
 
-        p2p_sender.connect(protocol, [])
+        p2p_sender.connect(protocol, [make_rollout_api("cell-a", gpu_count=2, generation=2, unreachable=True)])
         protocol.begin_sync(weight_version=2, iter_buckets=None)
         protocol.send_bucket(make_bucket("hf.w"))
         protocol.after_base_weights()
@@ -262,6 +262,53 @@ class TestConnectReusesOneShotResources:
         assert p2p_sender.transfer_engines_created == 1
         assert p2p_sender.replicas_created == [(0, True), (1, False)]
         assert len(p2p_sender.transfer_engine.registered) == 2
+
+
+class TestConnectFiltersPeersWithoutMetadata:
+    def test_a_cell_whose_metadata_query_fails_is_left_out_of_the_writes(
+        self, p2p_sender: Any, make_rollout_api: Any, make_bucket: Any
+    ) -> None:
+        """Planning a write to a cell with no session would crash the connect of every healthy cell."""
+        protocol = p2p_sender.make_protocol()
+        broken = make_rollout_api("cell-a", gpu_count=1, unreachable=True)
+        healthy = make_rollout_api("cell-b", gpu_count=1)
+
+        p2p_sender.connect(protocol, [broken, healthy])
+        protocol.begin_sync(weight_version=1, iter_buckets=None)
+        protocol.send_bucket(make_bucket("hf.w"))
+        protocol.after_base_weights()
+
+        assert protocol.is_sender
+        assert protocol.cell_updaters_of_cell_id["cell-a"].is_errored
+        assert p2p_sender.transfer_engine.written_sessions() == [healthy.session_id(0)]
+
+    def test_no_reachable_peer_leaves_the_rank_a_non_sender(
+        self, p2p_sender: Any, make_rollout_api: Any, make_bucket: Any
+    ) -> None:
+        """A rank left with no target must neither build the RDMA engine nor stage any weight."""
+        protocol = p2p_sender.make_protocol()
+
+        p2p_sender.connect(protocol, [make_rollout_api("cell-a", gpu_count=1, unreachable=True)])
+        protocol.begin_sync(weight_version=1, iter_buckets=None)
+        protocol.send_bucket(make_bucket("hf.q"))
+        protocol.after_base_weights()
+
+        assert protocol.is_sender is False
+        assert p2p_sender.transfer_engines_created == 0
+        assert p2p_sender.replicas_created == []
+        assert p2p_sender.log == []
+
+    def test_a_rank_the_plan_assigns_nothing_never_queries_the_engines(
+        self, p2p_sender: Any, make_rollout_api: Any
+    ) -> None:
+        """Querying engines this rank never writes to only spends the metadata deadline of every other rank."""
+        protocol = p2p_sender.make_protocol(gathered_dp_rank=1, gathered_dp_size=2)
+        api = make_rollout_api("cell-a", gpu_count=1)
+
+        p2p_sender.connect(protocol, [api])
+
+        assert protocol.is_sender is False
+        assert api.calls == []
 
 
 class TestDisconnect:

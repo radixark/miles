@@ -1,4 +1,6 @@
+import asyncio
 import logging
+from argparse import Namespace
 from collections.abc import Coroutine, Sequence
 from concurrent.futures import Future
 from typing import Any
@@ -10,7 +12,8 @@ logger = logging.getLogger(__name__)
 
 
 class _RolloutCellUpdater:
-    def __init__(self, cell_id: str, api_client: SGLangApiClient) -> None:
+    def __init__(self, args: Namespace, cell_id: str, api_client: SGLangApiClient) -> None:
+        self._args = args
         self.cell_id = cell_id
         self._api_client = api_client
         self._error: BaseException | None = None
@@ -35,16 +38,16 @@ class _RolloutCellUpdater:
 
     async def _run_guarded(self, request: Coroutine[Any, Any, Any]) -> object | None:
         try:
-            return await request
+            return await asyncio.wait_for(request, timeout=self._args.update_weight_engine_request_timeout)
         except Exception as error:
             self.mark_errored(error)
             return None
 
 
 def create_rollout_cell_updaters(
-    rollout_engines: Sequence[SGLangApiClient], engine_cell_ids: Sequence[str]
+    args: Namespace, rollout_engines: Sequence[SGLangApiClient], engine_cell_ids: Sequence[str]
 ) -> dict[str, _RolloutCellUpdater]:
     return {
-        cell_id: _RolloutCellUpdater(cell_id=cell_id, api_client=api_client)
+        cell_id: _RolloutCellUpdater(args=args, cell_id=cell_id, api_client=api_client)
         for api_client, cell_id in zip(rollout_engines, engine_cell_ids, strict=True)
     }
