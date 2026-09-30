@@ -13,6 +13,7 @@ from tests.fast.utils.soak.soak_fakes import (
     _RecordingTeardown,
     _runner_config,
     _ScriptedObserver,
+    _ScriptedScheduler,
     _ScriptedSutFeed,
     _step_end,
     _wait_until,
@@ -111,6 +112,7 @@ class TestSoakRunnerLifecycle:
         with pytest.raises(ValueError, match="live training events"):
             SoakRunner(
                 observer=_healthy_observer(),
+                scheduler=_ScriptedScheduler(),
                 forms={},
                 event_log=EventLog(tmp_path / "events.jsonl"),
                 config=_runner_config(tail=SoakTailConfig(close_after_rollout_id=1)),
