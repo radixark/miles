@@ -8,6 +8,7 @@ from tests.fast.fixtures.session_fixtures import make_session_server_config
 
 from miles.rollout.session.errors import MessageValidationError
 from miles.rollout.session.request_args import (
+    ClientResponseIntent,
     apply_session_sampling_defaults,
     filter_turn_args,
     prepare_chat_request,
@@ -36,6 +37,24 @@ class TestResolveRequestArgsByConfig:
         }
         assert list(wire)[:4] == ["model", "temperature", "unknown", "messages"]
         assert wire is request_args
+
+    @pytest.mark.parametrize(
+        "client_args, expected",
+        [
+            ({}, ClientResponseIntent(stream=False, logprobs=False, meta_info=False)),
+            (
+                {"logprobs": True, "return_meta_info": True, "stream": True},
+                ClientResponseIntent(stream=True, logprobs=True, meta_info=True),
+            ),
+            ({"logprobs": False}, ClientResponseIntent(stream=False, logprobs=False, meta_info=False)),
+        ],
+        ids=["omitted", "all-asked", "explicit-false"],
+    )
+    def test_response_intent_keeps_the_client_values_the_backend_request_overrides(self, client_args, expected):
+        wire, intent = resolve_request_args_by_config(dict(client_args), make_session_server_config())
+
+        assert wire["logprobs"] is True and wire["return_meta_info"] is True and "stream" not in wire
+        assert intent == expected
 
     def test_replay_flags_follow_the_launch_flags(self):
         config = make_session_server_config(use_rollout_routing_replay=True, use_rollout_indexer_replay=True)
@@ -219,7 +238,7 @@ class TestPrepareChatRequest:
         assert prepared.body["temperature"] == 0.3
         assert prepared.body["unknown"] == {"values": [1, 2]}
         assert prepared.template_args == {"model_option": True}
-        assert prepared.client_stream is True
+        assert prepared.response_intent.stream is True
 
 
 def test_template_projection_only_selects_render_fields():

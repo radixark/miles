@@ -287,7 +287,7 @@ class TestSessionProxy:
 
         payload = {
             "messages": [{"role": "user", "content": "What is 2+2?"}],
-            "return_logprob": True,
+            "return_meta_info": True,
         }
         resp = requests.post(
             f"{router_env.url}/sessions/{session_id}/v1/chat/completions",
@@ -305,6 +305,28 @@ class TestSessionProxy:
         record_meta = record["response"]["choices"][0]["meta_info"]
         assert record_meta["routed_experts"] == [[0, 1], [2, 3]]
         assert record_meta["indexer_topk"] == [[4], [5]]
+
+    @pytest.mark.parametrize(
+        "client_flags, expected_fields",
+        [({}, set()), ({"logprobs": True}, {"logprobs"}), ({"return_meta_info": True}, {"meta_info"})],
+        ids=["nothing-asked", "logprobs", "meta-info"],
+    )
+    def test_chat_response_carries_only_the_forced_fields_the_client_asked_for(
+        self, router_env, client_flags, expected_fields
+    ):
+        session_id = _create_session(router_env.url)
+
+        resp = _post_chat(
+            router_env.url, session_id, {"messages": [{"role": "user", "content": "What is 3+3?"}], **client_flags}
+        )
+
+        assert resp.status_code == 200
+        assert {"logprobs", "meta_info"} & resp.json()["choices"][0].keys() == expected_fields
+        # The record keeps both for TITO and training, whatever the client asked for.
+        record = requests.get(f"{router_env.url}/sessions/{session_id}", timeout=5.0).json()["records"][0]
+        record_choice = record["response"]["choices"][0]
+        assert record_choice["logprobs"]["content"]
+        assert record_choice["meta_info"]["output_token_logprobs"]
 
 
 class TestChatFakeStreaming:
