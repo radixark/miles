@@ -286,9 +286,9 @@ Cross-cell check: --use-fault-tolerance --ft-components train auto-enables
   cross_replica_weight_checksum: cell-to-cell bitwise equality, every rollout attempt,
     post-healing included
 Engine checksum (real-rollout modes only): one InferenceEngineWeightChecksumEvent per
-  update_weights, carrying every engine's checksum
-  _compare, per phase: baseline and target pushed identical weights per (rollout, engine)
-  inference_engine_weight_checksum_consistency: all engines of one rollout agree
+  published weight version, carrying every updated engine's checksum
+  _compare, per phase: baseline and target pushed identical weights per weight version
+  inference_engine_weight_checksum_consistency: all engines of one weight version agree
 
 Healing witness: one heal per target phase, at P+2 (healed = last cell, ckpt src = cell 0,
   alive back to N); no standalone shrink - one _refresh_cells absorbs the stop+start pair
@@ -337,8 +337,8 @@ Assertions:
   1. Reconfigure events: zero on BOTH sides - crashing an engine must not reconfigure trainer cells
   2. Metrics: rtol=atol=0 over train/* and rollout/*
   3. Dumps: rel <= 0
-  4. Engine checksums: baseline and target pushed identical weights per (rollout, engine)
-  5. Weights moved, per side: the engine weight checksum is not identical across all rollouts
+  4. Engine checksums: baseline and target pushed identical weights per weight version
+  5. Weights moved, per side: the engine weight checksum is not identical across all weight versions
 ```
 
 - **Why it exists**: an engine dying and a fresh one taking over mid-generation is supposed to be invisible to training, and "invisible" is a claim about bits; the rollout soak asserts survival only.

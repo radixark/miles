@@ -7,23 +7,20 @@ __all__ = ["check"]
 
 
 def check(events: list[Event]) -> list[ChecksumMismatchIssue]:
-    """Check: all engines of one rollout must hold exactly the same weights."""
+    """Check: all engines of one weight publication must hold exactly the same weights."""
     issues: list[ChecksumMismatchIssue] = []
     for event in events:
         if isinstance(event, InferenceEngineWeightChecksumEvent):
-            issues += list(_check_one_rollout(event))
+            issues += list(_check_one_publication(event))
     return issues
 
 
-def _check_one_rollout(event: InferenceEngineWeightChecksumEvent) -> Iterable[ChecksumMismatchIssue]:
-    engines = event.engine_checksums
-    if len(engines) < 2:
-        return
-    baseline = engines[0]
-    for engine_index in range(1, len(engines)):
+def _check_one_publication(event: InferenceEngineWeightChecksumEvent) -> Iterable[ChecksumMismatchIssue]:
+    baseline, *others = event.engine_snapshots
+    for snapshot in others:
         yield from compare_flat_dicts(
-            a=baseline,
-            b=engines[engine_index],
-            label_a=f"rollout_{event.rollout_id}/engine_0",
-            label_b=f"rollout_{event.rollout_id}/engine_{engine_index}",
+            a=baseline.tensor_checksums,
+            b=snapshot.tensor_checksums,
+            label_a=f"version_{event.weight_version}/cell_{baseline.cell_id}",
+            label_b=f"version_{event.weight_version}/cell_{snapshot.cell_id}",
         )
