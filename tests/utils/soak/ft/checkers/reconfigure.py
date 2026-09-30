@@ -1,7 +1,5 @@
 from pathlib import Path
 
-from tests.utils.soak.ft.checkers.healing import MIN_SOAK_INJECTIONS
-
 from miles.utils.audit_utils.event_logger.logger import read_events
 from miles.utils.audit_utils.event_logger.models import CellReconfigureEvent
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
@@ -28,36 +26,6 @@ def assert_reconfigure_events(event_dir: Path, *, expected: list[ReconfigureInfo
     actual = [ReconfigureInfo.from_event(event) for event in load_reconfigure_events(event_dir)]
     assert actual == expected, (
         f"CellReconfigureEvent sequence mismatch in {event_dir}:\n" f"  expected: {expected}\n" f"  actual:   {actual}"
-    )
-
-
-MIN_SOAK_HEALINGS: int = 2
-
-
-def assert_min_soak_injections(num_successful_injections: int, *, context: str) -> None:
-    assert num_successful_injections >= MIN_SOAK_INJECTIONS, (
-        f"Soak proved too little in {context}: the fault injector reported only "
-        f"{num_successful_injections} successful injection(s), need >= {MIN_SOAK_INJECTIONS} "
-        f"to exercise fault recovery more than once"
-    )
-
-
-def assert_soak_reconfigure_events(event_dir: Path, *, num_successful_injections: int) -> None:
-    assert event_dir.is_dir(), f"Event directory {event_dir} does not exist or is not a directory"
-    events = load_reconfigure_events(event_dir)
-    healed_cell_indices = [cell_index for event in events for cell_index in event.healed_cell_indices]
-
-    assert_min_soak_injections(num_successful_injections, context=str(event_dir))
-    assert len(healed_cell_indices) >= MIN_SOAK_HEALINGS, (
-        f"Healing witness failed in {event_dir}: {num_successful_injections} successful injection(s) "
-        f"but only {len(healed_cell_indices)} healed cell(s), need >= {MIN_SOAK_HEALINGS} "
-        f"(reconfigure events: {[ReconfigureInfo.from_event(event) for event in events]})"
-    )
-
-    print(
-        f"Soak reconfigure witness assertion passed: {len(events)} reconfigure event(s) "
-        f"({len(healed_cell_indices)} healed cell(s)) for {num_successful_injections} successful injection(s) "
-        f"in {event_dir}"
     )
 
 

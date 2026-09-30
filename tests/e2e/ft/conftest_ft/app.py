@@ -28,8 +28,6 @@ from miles.utils.workers.types import ClusterBackend
 BASELINE_SIDE: str = "baseline"
 TARGET_SIDE: str = "target"
 
-_DUMPS_ROOT_ENV = "MILES_TEST_DUMPS_ROOT"
-
 BuildArgsFn = Callable[[FTTestMode, str, bool, command_utils.ExecuteTrainConfig], str]
 ConfigForSideFn = Callable[[str, command_utils.ExecuteTrainConfig], command_utils.ExecuteTrainConfig]
 TargetSideContextFn = Callable[
