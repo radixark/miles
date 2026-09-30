@@ -272,8 +272,8 @@ def test_the_replayed_router_forward_mirrors_the_pinned_torchtitan_router():
     import inspect
     import textwrap
 
-    from torchtitan.models.common.moe import TokenChoiceTopKRouter
+    moe = pytest.importorskip("torchtitan.models.common.moe")
 
-    source = textwrap.dedent(inspect.getsource(TokenChoiceTopKRouter.forward))
+    source = textwrap.dedent(inspect.getsource(moe.TokenChoiceTopKRouter.forward))
     fingerprint = hashlib.sha256(ast.dump(ast.parse(source)).encode()).hexdigest()
     assert fingerprint == "e3c6e10d721ebf5bdc8d968524cc204fbc3c74e775157b30248d6ec2f1aecef9"
