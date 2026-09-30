@@ -15,7 +15,7 @@ def native_dsa_spec(monkeypatch):
         "megatron.core.models.gpt.experimental_attention_variant_module_specs",
         SimpleNamespace(get_transformer_block_with_experimental_attention_variant_spec=factory),
     )
-    path = Path(__file__).resolve().parents[4] / "miles_plugins/models/glm5/megatron.py"
+    path = Path(__file__).resolve().parents[4] / "miles_plugins/models/glm5/megatron_spec.py"
     spec = importlib.util.spec_from_file_location("native_dsa_spec_under_test", path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)

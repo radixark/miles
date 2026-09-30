@@ -1,4 +1,4 @@
-"""Megatron's ordinary DSA implementation for the raw model-provider path."""
+"""Native Megatron DSA spec provider for the raw model-provider path."""
 
 from megatron.core.models.gpt.experimental_attention_variant_module_specs import (
     get_transformer_block_with_experimental_attention_variant_spec,

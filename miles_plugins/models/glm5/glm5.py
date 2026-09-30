@@ -502,10 +502,6 @@ class DSAMLASelfAttention(DSAMultiLatentAttention):
         )
         self.weights_proj.weight._skip_gather = True
 
-        # Miles uses only integer top-k indices and has no indexer training objective.
-        for module in (self.wq_b, self.wk, self.k_norm, self.weights_proj):
-            module.requires_grad_(False)
-
         # Index-share skip layers carry no indexer weights -- drop the modules built
         # above so the parameter set matches the checkpoint (which only stores indexer
         # weights on computing layers) and weight export to HF omits them on skip layers.

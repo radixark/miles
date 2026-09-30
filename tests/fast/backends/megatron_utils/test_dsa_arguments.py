@@ -39,6 +39,11 @@ def test_default_preserves_the_existing_miles_path():
 
 
 @pytest.mark.parametrize(
+    "input_spec",
+    [MILES_DSA_SPEC, MEGATRON_DSA_SPEC, ("miles_plugins.models.glm5.megatron", "get_dsa_spec")],
+    ids=["miles", "native", "native-before-rename"],
+)
+@pytest.mark.parametrize(
     ("hf_overrides", "interleaved", "frequency", "offset"),
     [
         ({"model_type": "deepseek_v32"}, False, 1, 0),
@@ -57,8 +62,8 @@ def test_default_preserves_the_existing_miles_path():
     ],
     ids=["deepseek-v32", "glm5", "glm52-shared-indices"],
 )
-def test_native_dsa_preserves_checkpoint_indexer_conventions(hf_overrides, interleaved, frequency, offset):
-    args = _args()
+def test_native_dsa_preserves_checkpoint_indexer_conventions(input_spec, hf_overrides, interleaved, frequency, offset):
+    args = _args(spec=list(input_spec))
     hf_config = _hf_config(**hf_overrides)
     normalize_dsa_args(args, hf_config)
 
