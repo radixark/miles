@@ -513,3 +513,20 @@ class _FakeKubectl:
         if isinstance(reply, BaseException):
             raise reply
         return subprocess.CompletedProcess(argv, 0, stdout=reply.model_dump_json(), stderr="")
+
+
+def _with_fault_target(target: CellTarget) -> CellTarget:
+    return target.model_copy(update={"fault_target": _fault_target(target.identity, workers_hash=target.incarnation)})
+
+
+def _raising_injection_transport(api: _FakeCellApi) -> _FakeCellApi:
+    handle = api.handle
+
+    def raise_on_injection(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/inject-fault"):
+            handle(request)
+            raise httpx.ReadTimeout("lost reply", request=request)
+        return handle(request)
+
+    api.handle = raise_on_injection
+    return api

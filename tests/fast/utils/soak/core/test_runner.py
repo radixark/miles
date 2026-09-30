@@ -1,16 +1,21 @@
 import asyncio
+import contextlib
+from collections.abc import Callable
 from datetime import timedelta
 from pathlib import Path
 
 import pytest
 from tests.fast.utils.soak.soak_fakes import (
     _cell_target,
+    _FakeForm,
     _flatten_errors,
     _healthy_observer,
     _make_runner,
     _now,
     _observation,
+    _pod_evidence,
     _RecordingTeardown,
+    _request,
     _runner_config,
     _ScriptedObserver,
     _ScriptedScheduler,
@@ -21,12 +26,16 @@ from tests.fast.utils.soak.soak_fakes import (
 from tests.utils.soak.core.config import SoakTailConfig, SoakTimeoutConfig
 from tests.utils.soak.core.event_log import EventLog
 from tests.utils.soak.core.events import (
+    SoakActionAppliedEvent,
+    SoakActionResultEvent,
     SoakAdmissionClosedEvent,
     SoakCollectionClosedEvent,
+    SoakEvent,
     SoakObservationEvent,
     read_events,
 )
 from tests.utils.soak.core.runner import SoakRunner, _assert_within_tail_budget
+from tests.utils.soak.core.types import SoakActionEvidence, SoakActionRequest
 
 
 async def _hang() -> None:
@@ -106,6 +115,47 @@ class TestSoakRunnerLifecycle:
         observations = [event for event in runner.event_log.events if isinstance(event, SoakObservationEvent)]
         assert len(observations) >= 2
         assert all(one.targets is None and "observation" in one.errors for one in observations)
+
+    async def test_an_action_still_running_at_the_end_fails_the_soak(self, tmp_path: Path) -> None:
+        """A cancelled in-flight action is recorded as not returned and the soak is refused."""
+        form = _FakeForm(execute=lambda request, report_applied: _hang())
+        scheduler = _ScriptedScheduler([_request(_cell_target())])
+        runner = _make_runner(tmp_path, observer=_healthy_observer(), forms={"actor": [form]}, scheduler=scheduler)
+
+        with pytest.raises(AssertionError, match="did not finish"):
+            await runner.run(_wait_until(lambda: bool(form.executed)), teardown=_RecordingTeardown(runner.event_log))
+
+        [result] = [event for event in runner.event_log.events if isinstance(event, SoakActionResultEvent)]
+        assert result.returned is False
+        assert "CancelledError" in result.error
+
+    async def test_an_unrecovered_action_fails_the_soak(self, tmp_path: Path) -> None:
+        """A finished action whose target never recovered cannot end in a passing soak."""
+        form = _FakeForm(recovered=False)
+        scheduler = _ScriptedScheduler([_request(_cell_target())])
+        runner = _make_runner(tmp_path, observer=_healthy_observer(), forms={"actor": [form]}, scheduler=scheduler)
+
+        with pytest.raises(AssertionError, match="did not recover"):
+            await runner.run(
+                _wait_until(lambda: any(isinstance(e, SoakActionResultEvent) for e in runner.event_log.events)),
+                teardown=_RecordingTeardown(runner.event_log),
+            )
+
+    async def test_a_failed_final_check_still_tears_down_and_closes_the_evidence(self, tmp_path: Path) -> None:
+        """Rejecting an unrecovered action must not leak the run or leave its evidence unarchived."""
+        form = _FakeForm(recovered=False)
+        scheduler = _ScriptedScheduler([_request(_cell_target())])
+        runner = _make_runner(tmp_path, observer=_healthy_observer(), forms={"actor": [form]}, scheduler=scheduler)
+        teardown = _RecordingTeardown(runner.event_log)
+
+        with pytest.raises(AssertionError, match="did not recover"):
+            await runner.run(
+                _wait_until(lambda: any(isinstance(e, SoakActionResultEvent) for e in runner.event_log.events)),
+                teardown=teardown,
+            )
+
+        assert teardown.calls == 1
+        assert isinstance(runner.event_log.events[-1], SoakCollectionClosedEvent)
 
     def test_a_recovery_tail_without_live_training_events_is_refused(self, tmp_path: Path) -> None:
         """Closing admission depends on training progress, so a tail needs the training event feed."""
@@ -200,3 +250,77 @@ class TestAssertWithinTailBudget:
     def test_a_tail_within_its_budget_passes(self) -> None:
         """A recent closure is still inside the tail budget."""
         _assert_within_tail_budget([SoakAdmissionClosedEvent(timestamp=_now())], tail_seconds=60.0)
+
+
+class TestSoakRunnerActions:
+    async def _run_one(self, tmp_path: Path, form: _FakeForm) -> list[SoakEvent]:
+        request = _request(_cell_target())
+        runner = _make_runner(
+            tmp_path, observer=_healthy_observer(), forms={"actor": [form]}, scheduler=_ScriptedScheduler([request])
+        )
+        with contextlib.suppress(AssertionError):
+            await runner.run(
+                _wait_until(lambda: any(isinstance(e, SoakActionResultEvent) for e in runner.event_log.events)),
+                teardown=_RecordingTeardown(runner.event_log),
+            )
+        return runner.event_log.events
+
+    async def test_a_request_is_recorded_before_its_effect_and_its_result(self, tmp_path: Path) -> None:
+        """The request is logged first, then the reported effect, then a returned result."""
+        form = _FakeForm()
+
+        events = await self._run_one(tmp_path, form)
+
+        kinds = [event.kind for event in events if event.kind.startswith("action_")]
+        assert kinds == ["action_requested", "action_applied", "action_result"]
+        [request] = form.executed
+        requested, applied, result = (event for event in events if event.kind.startswith("action_"))
+        assert requested.request == request
+        assert applied.request_id == result.request_id == request.request_id
+        assert result.returned is True and result.error is None
+
+    async def test_a_form_failing_before_its_effect_records_no_effect_and_a_failed_result(
+        self, tmp_path: Path
+    ) -> None:
+        """An exception before any effect is a failed action, never an applied one."""
+
+        async def refuse(request: SoakActionRequest, report_applied: Callable[[SoakActionEvidence], None]) -> None:
+            raise RuntimeError("refused")
+
+        events = await self._run_one(tmp_path, _FakeForm(execute=refuse))
+
+        assert not any(isinstance(event, SoakActionAppliedEvent) for event in events)
+        [result] = [event for event in events if isinstance(event, SoakActionResultEvent)]
+        assert result.returned is False
+        assert "refused" in result.error
+
+    async def test_a_form_failing_after_its_effect_keeps_the_effect_and_fails_the_result(self, tmp_path: Path) -> None:
+        """The effect already happened, so it stays recorded next to the failed result."""
+
+        async def apply_then_fail(
+            request: SoakActionRequest, report_applied: Callable[[SoakActionEvidence], None]
+        ) -> None:
+            report_applied(_pod_evidence())
+            raise RuntimeError("late failure")
+
+        events = await self._run_one(tmp_path, _FakeForm(execute=apply_then_fail))
+
+        kinds = [event.kind for event in events if event.kind.startswith("action_")]
+        assert kinds == ["action_requested", "action_applied", "action_result"]
+        assert events[[event.kind for event in events].index("action_result")].returned is False
+
+    async def test_reporting_an_effect_twice_fails_the_action(self, tmp_path: Path) -> None:
+        """One request has exactly one applied effect."""
+
+        async def apply_twice(
+            request: SoakActionRequest, report_applied: Callable[[SoakActionEvidence], None]
+        ) -> None:
+            report_applied(_pod_evidence())
+            report_applied(_pod_evidence())
+
+        events = await self._run_one(tmp_path, _FakeForm(execute=apply_twice))
+
+        assert sum(isinstance(event, SoakActionAppliedEvent) for event in events) == 1
+        [result] = [event for event in events if isinstance(event, SoakActionResultEvent)]
+        assert result.returned is False
+        assert "twice" in result.error
