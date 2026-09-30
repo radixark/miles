@@ -129,3 +129,21 @@ class TestRunSoak:
             await world.run()
         assert isinstance(world.event_log.events[-1], SoakCollectionClosedEvent)
         assert processes.calls
+
+    async def test_a_run_ending_with_an_unready_target_is_rejected(
+        self, tmp_path: Path, processes: _RecordingProcesses
+    ) -> None:
+        """The final observation must show every expected target alive and ready."""
+        world = _SoakWorld(tmp_path, ready_until_call=4)
+
+        with pytest.raises(AssertionError, match="not alive and ready"):
+            await world.run()
+
+    async def test_a_run_ending_with_fewer_targets_than_expected_is_rejected(
+        self, tmp_path: Path, processes: _RecordingProcesses
+    ) -> None:
+        """The end-state check uses the configured target count of every kind."""
+        world = _SoakWorld(tmp_path)
+
+        with pytest.raises(AssertionError, match="1 actor targets, expected 2"):
+            await world.run(expected_count=2)
