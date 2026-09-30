@@ -125,8 +125,5 @@ class TorchtitanTrainRayActor(TorchNativeTrainRayActor):
                 part.cpu()
             torch.cuda.empty_cache()
 
-    def save_model(self, rollout_id: int, force_sync: bool = False) -> None:
-        if self.args.debug_rollout_only or self.args.save is None:
-            return
-        assert not self.args.async_save, "TorchtitanTrainRayActor does not support async_save yet."
+    def _save_checkpoint(self, rollout_id: int) -> None:
         self.trainer.checkpointer.save(self.trainer.step, last_step=True)

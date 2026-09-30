@@ -281,12 +281,7 @@ class FSDPTrainRayActor(TorchNativeTrainRayActor):
 
         return model
 
-    def save_model(self, rollout_id: int, force_sync: bool = False) -> None:
-        """Delegate checkpoint saving to the shared checkpoint utilities."""
-        if self.args.debug_rollout_only or self.args.save is None:
-            return
-
-        assert not self.args.async_save, "FSDPTrainRayActor does not support async_save yet."
+    def _save_checkpoint(self, rollout_id: int) -> None:
         checkpoint.save(self, rollout_id)
 
     @contextmanager

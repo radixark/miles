@@ -110,6 +110,15 @@ class TorchNativeTrainRayActor(TrainRayActor):
             return None
         return lambda seq_lens: fwd_tflops_per_gpu(seq_lens, flops_args, dist.get_world_size())
 
+    def save_model(self, rollout_id: int, force_sync: bool = False) -> None:
+        if self.args.debug_rollout_only or self.args.save is None:
+            return
+        assert not self.args.async_save, f"{type(self).__name__} does not support async_save yet."
+        self._save_checkpoint(rollout_id)
+
+    def _save_checkpoint(self, rollout_id: int) -> None:
+        raise NotImplementedError
+
     @timer
     def sleep(self) -> None:
         if self.args.offload_train:
