@@ -2,6 +2,7 @@ from collections.abc import Awaitable
 from functools import partial
 from pathlib import Path
 
+from tests.utils.soak.core.checkers.tail_completeness import assert_tail_complete
 from tests.utils.soak.core.config import SoakRunnerConfig
 from tests.utils.soak.core.event_log import EventLog
 from tests.utils.soak.core.events import SoakRunContext, SoakRunContextEvent
@@ -41,6 +42,7 @@ async def run_soak(
         teardown=partial(teardown_run, config=config, event_log=runner.event_log, evidence_dir=evidence_dir),
     )
 
+    assert_tail_complete(runner.event_log.events)
     return runner
 
 
