@@ -33,7 +33,7 @@ def _run(dump_dir: str) -> gsm8k._LegacyGsm8kRun:
 class TestTheRecipeIsTheOneFtConverges:
     def test_the_run_is_the_realistic_gsm8k_run_and_not_a_copy_of_it(self):
         """A second recipe would drift from the one whose reward bounds this test inherits."""
-        assert scenario.run_realistic_gsm8k is scenario_realistic_gsm8k.run_realistic_gsm8k
+        assert scenario.run_realistic_gsm8k is gsm8k.run_realistic_gsm8k
 
     def test_the_bounds_the_run_is_graded_against_are_the_ones_ft_declares(self):
         """The reward improvement is asserted by the run itself, off this threshold."""
