@@ -4,19 +4,24 @@ from pathlib import Path
 
 import pytest
 from tests.utils.soak.core import utils as utils_module
+from tests.utils.soak.core.event_log import EventLog
+from tests.utils.soak.core.events import LaunchOutcome, SoakLaunchFinishedEvent
 from tests.utils.soak.core.utils import (
     API_SERVER_PORT,
+    REPLACED_LAUNCH_EXIT_CODE,
     assert_fresh_dump_dir,
     compute_base_url,
     compute_release_of_config,
     create_soak_config,
     evidence_directory,
     get_dumps_root,
+    note_launch_outcome,
     recording_error,
     resolve_dump_dir,
 )
 
 from miles.utils.external_utils.command_utils.base_backend import ExecuteTrainConfig
+from miles.utils.external_utils.command_utils.helm_backend.launcher.entrypoint import RunExitedError
 from miles.utils.workers.types import ClusterBackend, DeployComponent
 from miles.utils.workers.worker_provider.kubernetes.helm.naming import CHART_NAME
 
@@ -173,3 +178,91 @@ class TestRecordingError:
             pass
 
         assert errors == {}
+
+
+class TestNoteLaunchOutcome:
+    async def test_a_launch_that_returns_is_recorded_finished(self, tmp_path: Path) -> None:
+        """A launcher that ran the job to its end is recorded as FINISHED under its request id."""
+        event_log = EventLog(tmp_path / "events.jsonl")
+
+        outcome = await note_launch_outcome(event_log=event_log, request_id="req-1", launching=_returns())
+
+        assert outcome is LaunchOutcome.FINISHED
+        assert _launch_events(event_log) == [("req-1", LaunchOutcome.FINISHED, None)]
+
+    async def test_a_sigterm_exit_is_recorded_replaced_and_not_raised(self, tmp_path: Path) -> None:
+        """Exit 128+SIGTERM is how a take-over ends the launcher it replaces, so it is no failure."""
+        event_log = EventLog(tmp_path / "events.jsonl")
+
+        outcome = await note_launch_outcome(
+            event_log=event_log, request_id=None, launching=_raises(RunExitedError(REPLACED_LAUNCH_EXIT_CODE))
+        )
+
+        assert outcome is LaunchOutcome.REPLACED
+        assert _launch_events(event_log) == [(None, LaunchOutcome.REPLACED, None)]
+
+    @pytest.mark.parametrize(
+        "error",
+        [
+            pytest.param(RunExitedError(1), id="other_exit_code"),
+            pytest.param(RunExitedError(137), id="sigkill_exit"),
+        ],
+    )
+    async def test_any_other_exit_is_recorded_failed_and_raised_as_an_ordinary_error(
+        self, tmp_path: Path, error: RunExitedError
+    ) -> None:
+        """A failed launcher exit is evidence and reaches the caller as an Exception chained to the exit."""
+        event_log = EventLog(tmp_path / "events.jsonl")
+
+        with pytest.raises(RuntimeError, match=f"exited with code {error.exit_code}") as info:
+            await note_launch_outcome(event_log=event_log, request_id="req-1", launching=_raises(error))
+
+        assert info.value.__cause__ is error
+        assert _launch_events(event_log) == [("req-1", LaunchOutcome.FAILED, repr(error))]
+
+    async def test_a_launcher_exception_is_recorded_failed_and_reraised(self, tmp_path: Path) -> None:
+        """A launcher failure must be both in the evidence and propagated to the caller."""
+        event_log = EventLog(tmp_path / "events.jsonl")
+        error = RuntimeError("helm upgrade failed")
+
+        with pytest.raises(RuntimeError) as info:
+            await note_launch_outcome(event_log=event_log, request_id="req-1", launching=_raises(error))
+
+        assert info.value is error
+        assert _launch_events(event_log) == [("req-1", LaunchOutcome.FAILED, repr(error))]
+
+    async def test_a_cancelled_launch_is_recorded_failed_and_stays_cancelled(self, tmp_path: Path) -> None:
+        """Cancelling a launcher leaves a FAILED record and still propagates the cancellation."""
+        event_log = EventLog(tmp_path / "events.jsonl")
+        started = asyncio.Event()
+
+        async def _hangs() -> None:
+            started.set()
+            await asyncio.Event().wait()
+
+        task = asyncio.create_task(note_launch_outcome(event_log=event_log, request_id="req-1", launching=_hangs()))
+        await started.wait()
+        task.cancel()
+
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        [(request_id, outcome, error)] = _launch_events(event_log)
+        assert (request_id, outcome) == ("req-1", LaunchOutcome.FAILED)
+        assert error is not None and "CancelledError" in error
+
+
+async def _returns() -> None:
+    return None
+
+
+async def _raises(error: BaseException) -> None:
+    raise error
+
+
+def _launch_events(event_log: EventLog) -> list[tuple[str | None, LaunchOutcome, str | None]]:
+    return [
+        (event.request_id, event.outcome, event.error)
+        for event in event_log.events
+        if isinstance(event, SoakLaunchFinishedEvent)
+    ]
