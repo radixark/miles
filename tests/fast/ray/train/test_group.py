@@ -1695,3 +1695,85 @@ class TestUpdateWeightsGivesUpOnADeadTrainersTargets:
         output = await controller.update_weights(info=_make_engines(2))
 
         assert output == _output(4, "rollout-0")
+
+
+class TestBlameTheSenderThatReachedNoneOfItsTargets:
+    async def test_a_sender_that_missed_all_of_its_several_targets_is_killed(self):
+        """A trainer with a dead link would otherwise be handed a fresh share on every update until none are left."""
+        cells = [
+            _FakeTrainerCell(cell_index=0, output=_output(4, "rollout-0", "rollout-1")),
+            _FakeTrainerCell(cell_index=1, output=_output(4)),
+        ]
+        controller = _make_partial_target_controller(cells)
+
+        await controller.update_weights(info=_make_engines(4))
+
+        assert cells[0].killed
+        assert not cells[1].killed
+
+    async def test_a_sender_that_raised_on_all_of_its_several_targets_is_killed(self):
+        """A raise is at least as damning as a report of failure, and the cell must not be reused either way."""
+        cells = [
+            _FakeTrainerCell(cell_index=0, error=RuntimeError("trainer died")),
+            _FakeTrainerCell(cell_index=1, output=_output(4)),
+        ]
+        controller = _make_partial_target_controller(cells)
+
+        await controller.update_weights(info=_make_engines(3))
+
+        assert cells[0].killed
+
+    async def test_a_sender_with_a_single_failed_target_is_left_alone(self):
+        """One unreachable engine is far more likely the engine's fault than the sender's."""
+        cells = [
+            _FakeTrainerCell(cell_index=0, output=_output(4, "rollout-0")),
+            _FakeTrainerCell(cell_index=1, output=_output(4)),
+        ]
+        controller = _make_partial_target_controller(cells)
+
+        await controller.update_weights(info=_make_engines(2))
+
+        assert not cells[0].killed
+
+    async def test_a_sender_that_reached_some_of_its_targets_is_left_alone(self):
+        """Its link demonstrably works, so killing it would throw away a healthy trainer cell."""
+        cells = [
+            _FakeTrainerCell(cell_index=0, output=_output(4, "rollout-0")),
+            _FakeTrainerCell(cell_index=1, output=_output(4)),
+        ]
+        controller = _make_partial_target_controller(cells)
+
+        await controller.update_weights(info=_make_engines(4))
+
+        assert not cells[0].killed
+
+    async def test_a_killed_sender_is_handed_no_share_on_the_next_update(self) -> None:
+        """Handing the blamed sender another share would lose those engines again on every update."""
+        cells = [
+            _FakeTrainerCell(cell_index=0, output=_output(4, "rollout-0", "rollout-1")),
+            _FakeTrainerCell(cell_index=1, output=_output(4)),
+        ]
+        controller = _make_partial_target_controller(cells)
+        await controller.update_weights(info=_make_engines(4))
+
+        await controller.update_weights(info=_make_engines(4))
+
+        assert cells[0].killed
+        assert _targets_of(cells[0]) == [["rollout-0", "rollout-1"]]
+        assert _targets_of(cells[1]) == [
+            ["rollout-2", "rollout-3"],
+            ["rollout-0", "rollout-1", "rollout-2", "rollout-3"],
+        ]
+
+    async def test_the_senders_are_blamed_before_the_update_is_declared_a_total_loss(self):
+        """Leaving a broken sender alive because the update failed outright would repeat the failure next time."""
+        cells = [
+            _FakeTrainerCell(cell_index=0, output=_output(4, "rollout-0", "rollout-1")),
+            _FakeTrainerCell(cell_index=1, output=_output(4, "rollout-2", "rollout-3")),
+        ]
+        controller = _make_partial_target_controller(cells)
+
+        with pytest.raises(NonRetryableError, match="No inference cell received the weights"):
+            await controller.update_weights(info=_make_engines(4))
+
+        assert cells[0].killed and cells[1].killed

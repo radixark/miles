@@ -437,6 +437,10 @@ class TrainerController:
             )
             for (_, s), outcome in zip(cells_and_splitted_infos, outcomes, strict=True)
         ]
+        for (c, s), output in zip(cells_and_splitted_infos, outputs, strict=True):
+            if len(s.engine_cell_ids) >= 2 and set(output.failed_cell_ids) == set(s.engine_cell_ids):
+                logger.error(f"trainer cell {c.cell_id} reached none of its {len(s.engine_cell_ids)} targets")
+                await c.mark_errored_and_kill()
         output = WeightUpdateOutput.merge(outputs)
         if info.engine_cell_ids and set(output.failed_cell_ids) == set(info.engine_cell_ids):
             raise NonRetryableError("No inference cell received the weights")
