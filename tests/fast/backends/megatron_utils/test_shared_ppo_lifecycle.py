@@ -10,10 +10,13 @@ from unittest.mock import Mock, call
 import pytest
 import ray
 import torch
+from tests.fast.train_parallel_config_utils import make_train_parallel_config
 
 from miles.backends.megatron_utils.ft.types import TrainStepOutcome, TrainStepOutput
 from miles.backends.training_utils.conn_status import ConnStatusManager
+from miles.backends.training_utils.parallel import GroupInfo, ParallelState
 from miles.utils import object_store
+from miles.utils.dp_schedule import TrainParallelConfig
 from miles.utils.ray_utils import Box
 from miles.utils.replay_base import IndexerReplayManager, RoutingReplayManager
 from miles.utils.tensor_backper import MainCastContext, TensorBackuper
@@ -85,8 +88,9 @@ def test_critic_train_wakes_and_leaves_offload_to_driver(actor_module, monkeypat
     worker = _worker(actor_module, "critic")
     critic_output = TrainStepOutput(outcome=TrainStepOutcome.NORMAL, values=Box("cpu-values-ref"))
     worker._train_critic = Mock(return_value=critic_output)
+    monkeypatch.setattr(actor_module, "get_rollout_data", lambda **_kwargs: ({"tokens": []}, nullcontext()))
     monkeypatch.setattr(
-        actor_module, "get_rollout_data", lambda _args, _ref, **_kwargs: ({"tokens": []}, nullcontext())
+        actor_module, "get_parallel_state", lambda: SimpleNamespace(train_parallel_config=make_train_parallel_config)
     )
     phases = []
 
@@ -111,8 +115,9 @@ def test_critic_train_wakes_and_leaves_offload_to_driver(actor_module, monkeypat
 def test_actor_receives_critic_payload_and_leaves_offload_to_driver(actor_module, monkeypatch):
     worker = _worker(actor_module, "actor")
     worker._train_actor = Mock(return_value=None)
+    monkeypatch.setattr(actor_module, "get_rollout_data", lambda **_kwargs: ({"tokens": []}, nullcontext()))
     monkeypatch.setattr(
-        actor_module, "get_rollout_data", lambda _args, _ref, **_kwargs: ({"tokens": []}, nullcontext())
+        actor_module, "get_parallel_state", lambda: SimpleNamespace(train_parallel_config=make_train_parallel_config)
     )
     values = TrainStepOutput(outcome=TrainStepOutcome.NORMAL, values=Box("cpu-values-ref"))
 
@@ -128,14 +133,110 @@ def test_actor_receives_critic_payload_and_leaves_offload_to_driver(actor_module
 def test_train_keeps_model_resident(actor_module, monkeypatch):
     worker = _worker(actor_module, "actor", asleep=False)
     worker._train_actor = Mock(return_value=None)
+    monkeypatch.setattr(actor_module, "get_rollout_data", lambda **_kwargs: ({"tokens": []}, nullcontext()))
     monkeypatch.setattr(
-        actor_module, "get_rollout_data", lambda _args, _ref, **_kwargs: ({"tokens": []}, nullcontext())
+        actor_module, "get_parallel_state", lambda: SimpleNamespace(train_parallel_config=make_train_parallel_config)
     )
 
     worker.train(5, object())
 
     worker.wake_up.assert_not_called()
     worker.sleep.assert_not_called()
+
+
+class TestTrainParallelConfigWiring:
+    def test_megatron_train_reads_the_live_three_cell_topology(
+        self, actor_module: ModuleType, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Training after a cell loss passes the current DP, CP and VPP layout to the loader, not a cached one."""
+        worker = _worker(actor_module, "actor", asleep=False)
+        worker.args.debug_rollout_only = True
+        trivial = GroupInfo(rank=0, size=1, group=None)
+        state = ParallelState(
+            intra_dp=trivial,
+            intra_dp_cp=trivial,
+            cp=GroupInfo(rank=1, size=2, group=None),
+            tp=trivial,
+            pp=trivial,
+            ep=trivial,
+            etp=trivial,
+            indep_dp=GroupInfo(rank=2, size=4, group=None),
+            vpp_size=2,
+            microbatch_group_size_per_vp_stage=4,
+        )
+        worker.train_parallel_config = state.train_parallel_config(supports_precomputed_schedule=True)
+        state.indep_dp = GroupInfo(rank=2, size=3, group=None)
+        received: list[TrainParallelConfig] = []
+
+        def load_rollout_data(
+            *,
+            args: Namespace,
+            rollout_data_ref: object,
+            witness_info: object,
+            train_parallel_config: TrainParallelConfig,
+        ) -> tuple[dict[str, list], object]:
+            received.append(train_parallel_config)
+            return {"tokens": []}, nullcontext()
+
+        monkeypatch.setattr(actor_module, "get_parallel_state", lambda: state)
+        monkeypatch.setattr(actor_module, "get_rollout_data", load_rollout_data)
+        monkeypatch.setattr(actor_module, "log_rollout_data", lambda *_args: None)
+
+        worker.train(rollout_id=3, rollout_data_ref=object())
+
+        assert len(received) == 1
+        config = received[0]
+        assert (config.dp_size, config.cp_size, config.vpp_size) == (3, 2, 2)
+        assert config.microbatch_group_size_per_vp_stage == 4
+        assert config.independent_dp
+        assert config.supports_precomputed_schedule
+
+    @pytest.mark.parametrize("method_name", ["forward_backward", "forward_only"])
+    def test_multi_lora_entry_uses_the_live_topology(
+        self, actor_module: ModuleType, monkeypatch: pytest.MonkeyPatch, method_name: str
+    ) -> None:
+        """Both MultiLoRA entry points send the post-loss cell topology to data loading, not a cached one."""
+        lora_actor_module = importlib.import_module("miles.backends.megatron_utils.lora.actor")
+        worker = object.__new__(lora_actor_module.MultiLoRATrainRayActor)
+        worker.args = Namespace()
+        worker.model = object()
+        worker._heartbeat = Mock()
+        trivial = GroupInfo(rank=0, size=1, group=None)
+        state = ParallelState(
+            intra_dp=trivial,
+            intra_dp_cp=trivial,
+            cp=GroupInfo(rank=1, size=2, group=None),
+            tp=trivial,
+            pp=trivial,
+            ep=trivial,
+            etp=trivial,
+            indep_dp=GroupInfo(rank=1, size=4, group=None),
+            vpp_size=2,
+            microbatch_group_size_per_vp_stage=4,
+        )
+        worker.train_parallel_config = state.train_parallel_config(supports_precomputed_schedule=True)
+        state.indep_dp = GroupInfo(rank=1, size=3, group=None)
+        received: list[TrainParallelConfig] = []
+
+        def load_rollout_data(
+            *, args: Namespace, rollout_data_ref: object, train_parallel_config: TrainParallelConfig
+        ) -> tuple[dict[str, list], object]:
+            received.append(train_parallel_config)
+            return {"tokens": []}, nullcontext()
+
+        monkeypatch.setattr(lora_actor_module, "get_parallel_state", lambda: state)
+        monkeypatch.setattr(lora_actor_module, "get_rollout_data", load_rollout_data)
+        monkeypatch.setattr(lora_actor_module.lora_model, "run_forward_backward", lambda *_args, **_kwargs: {})
+
+        method = worker.forward_backward if method_name == "forward_backward" else worker.forward_only
+        method(batch_id=7, rollout_data_ref=object())
+
+        assert len(received) == 1
+        config = received[0]
+        assert (config.dp_size, config.cp_size, config.vpp_size) == (3, 2, 2)
+        assert config.microbatch_group_size_per_vp_stage == 4
+        assert config.independent_dp
+        assert config.supports_precomputed_schedule
 
 
 @pytest.mark.parametrize(
@@ -656,8 +757,9 @@ def test_debug_rollout_only_train_answers_with_a_normal_train_step_output(
     worker.args.debug_rollout_only = True
     worker._train_actor = Mock()
     worker._train_critic = Mock()
+    monkeypatch.setattr(actor_module, "get_rollout_data", lambda **_kwargs: ({"tokens": []}, nullcontext()))
     monkeypatch.setattr(
-        actor_module, "get_rollout_data", lambda _args, _ref, **_kwargs: ({"tokens": []}, nullcontext())
+        actor_module, "get_parallel_state", lambda: SimpleNamespace(train_parallel_config=make_train_parallel_config)
     )
     monkeypatch.setattr(actor_module, "log_rollout_data", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(actor_module, "timer", _noop_timer)
