@@ -112,8 +112,12 @@ def p2p_transfer_utils():
 
 def _make_targets(module, pairs: list[tuple[int, int]]) -> list:
     return [
-        module.TransferTaskP2PMeta(engine_ind=engine_ind, engine_rank=engine_rank, source_shard=source_shard)
-        for source_shard, (engine_ind, engine_rank) in enumerate(pairs)
+        module.TransferTaskP2PMeta(
+            rollout_engine_ind=rollout_engine_ind,
+            rollout_engine_rank=rollout_engine_rank,
+            source_shard=source_shard,
+        )
+        for source_shard, (rollout_engine_ind, rollout_engine_rank) in enumerate(pairs)
     ]
 
 

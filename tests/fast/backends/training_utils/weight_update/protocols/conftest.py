@@ -291,13 +291,13 @@ class _P2PSenderHarness:
         model_path: str,
         server_args: Any,
         shared_params_dict: dict[str, torch.Tensor],
-        first_engine_rank: bool = False,
+        first_rollout_engine_rank: bool = False,
     ) -> _SharedBufferReplica:
         replica = _SharedBufferReplica(tp_rank=parallelism_config["tp_rank"], harness=self)
-        if not first_engine_rank:
+        if not first_rollout_engine_rank:
             for name, param in replica.named_parameters():
                 param.data = shared_params_dict[name]
-        self.replicas_created.append((replica.tp_rank, first_engine_rank))
+        self.replicas_created.append((replica.tp_rank, first_rollout_engine_rank))
         return replica
 
 

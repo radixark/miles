@@ -12,7 +12,7 @@ def _do_p2p_write_one_session(
     """P2P write from shared CPU pinned buffers to a single remote session.
 
     Used by the parallelized submission path where each session within an
-    engine rank is submitted as a separate task to P2PTransferManager.
+    rollout engine rank is submitted as a separate task to P2PTransferManager.
     """
     source_ptrs, source_lens = [], []
     valid_names = []
