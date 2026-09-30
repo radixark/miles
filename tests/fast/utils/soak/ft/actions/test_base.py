@@ -4,9 +4,9 @@ from tests.utils.soak.core.views import project_actions
 from tests.utils.soak.ft.actions.inject_fault import InjectFaultForm
 
 from miles.backends.megatron_utils.ft.types import TrainStepOutcome
-from miles.utils.test_utils.fault_injector.actions.process import FailureMode
+from miles.utils.test_utils.fault_injector.actions.process import KillProcessAction
 
-_FORM = InjectFaultForm(base_url="http://api:18080", failure_mode=FailureMode.SIGKILL)
+_FORM = InjectFaultForm(base_url="http://api:18080", action=KillProcessAction())
 
 
 def _is_recovered(events: list[SoakEvent]) -> bool:

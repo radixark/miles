@@ -18,7 +18,7 @@ from tests.utils.soak.ft.types import CellTarget
 
 from miles.utils.external_utils.command_utils.base_backend import ExecuteTrainConfig
 from miles.utils.ft_utils.api_server.models import TriState
-from miles.utils.test_utils.fault_injector.actions.process import FailureMode
+from miles.utils.test_utils.fault_injector.actions.process import KillProcessAction
 from miles.utils.workers.naming import compute_cell_id
 from miles.utils.workers.types import ClusterBackend
 
@@ -266,7 +266,7 @@ class TestCreateCellObserver:
         observer = create_cell_observer(
             base_url=_BASE_URL,
             cell_types={"actor"},
-            forms={"actor": [InjectFaultForm(base_url=_BASE_URL, failure_mode=FailureMode.SIGKILL)]},
+            forms={"actor": [InjectFaultForm(base_url=_BASE_URL, action=KillProcessAction())]},
             config=ExecuteTrainConfig(cluster_backend=ClusterBackend.RAY, run_id="260926-120000-000"),
         )
 

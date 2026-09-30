@@ -17,10 +17,10 @@ from tests.utils.soak.core.types import SoakForms
 from tests.utils.soak.ft.actions.inject_fault import InjectFaultForm
 from tests.utils.soak.ft.checkers.healing import assert_healing
 
-from miles.utils.test_utils.fault_injector.actions.process import FailureMode
+from miles.utils.test_utils.fault_injector.actions.process import ExitProcessAction, KillProcessAction
 
-_KILL = InjectFaultForm(base_url="http://api:18080", failure_mode=FailureMode.SIGKILL)
-_EXIT = InjectFaultForm(base_url="http://api:18080", failure_mode=FailureMode.EXIT)
+_KILL = InjectFaultForm(base_url="http://api:18080", action=KillProcessAction())
+_EXIT = InjectFaultForm(base_url="http://api:18080", action=ExitProcessAction())
 
 
 def _forms(**extra: list) -> SoakForms:

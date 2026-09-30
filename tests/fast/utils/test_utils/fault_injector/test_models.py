@@ -112,6 +112,22 @@ class TestFaultHookRequestValidation:
             _request(**change)
 
     @pytest.mark.parametrize(
+        "hook_name", [FaultHookName.TRAINER_CONTROLLER_STEP_END, FaultHookName.ORCHESTRATOR_STEP_END]
+    )
+    @pytest.mark.parametrize("target", [{"kind": "declared", "rank": 0}, _OBSERVED.model_dump(mode="json")])
+    def test_a_hook_reached_outside_cells_cannot_name_a_target(
+        self, hook_name: FaultHookName, target: dict[str, object]
+    ) -> None:
+        """Controller and orchestrator hooks must reject any non-wildcard target."""
+        with pytest.raises(ValidationError, match="outside any cell"):
+            _request(hook_name=hook_name, target=target)
+
+    @pytest.mark.parametrize("hook_name", [None, FaultHookName.TRAINER_STEP_BEFORE_ALLREDUCE])
+    def test_actor_and_immediate_requests_may_name_an_observed_target(self, hook_name: FaultHookName | None) -> None:
+        """Requests reached inside a cell must keep their observed target."""
+        assert _request(hook_name=hook_name, target=_OBSERVED.model_dump(mode="json")).target == _OBSERVED
+
+    @pytest.mark.parametrize(
         "action",
         [
             {"kind": "observe"},
@@ -170,6 +186,11 @@ class TestFaultHookRequestConflicts:
     def test_any_differing_trigger_field_does_not_conflict(self, change: dict[str, object]) -> None:
         """Requests that differ in hook, action, rollout, attempt or weight version must coexist."""
         assert not _request(request_id="a").conflicts_with(_request(request_id="b", **change))
+
+    def test_immediate_requests_never_conflict(self) -> None:
+        """Requests without a hook must never be refused as a duplicate trigger."""
+        immediate = _request(hook_name=None, rollout_id=None)
+        assert not immediate.conflicts_with(immediate.model_copy(update={"request_id": "b"}))
 
 
 class TestFaultHookWireFormats:
