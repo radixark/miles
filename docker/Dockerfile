@@ -26,7 +26,7 @@ ARG MEGATRON_COMMIT=""
 
 ARG ENABLE_CUDA_13=1
 
-ARG WHEELS_REPO=yueming-yuan/miles-wheels
+ARG WHEELS_REPO=radixark/miles-wheels
 # Two complete wheels release tags (the wheels repo's own names). The build picks
 # one by TARGETARCH and installs it verbatim — no on-the-fly tag assembly here.
 ARG TARGETARCH

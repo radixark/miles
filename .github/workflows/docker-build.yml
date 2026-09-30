@@ -112,7 +112,7 @@ jobs:
           # so fingerprint the asset list rather than a commit SHA.
           wheels_fp() {
             local fp
-            fp=$(gh_api "repos/yueming-yuan/miles-wheels/releases/tags/$1" \
+            fp=$(gh_api "repos/radixark/miles-wheels/releases/tags/$1" \
               | python3 -c "import sys,json,hashlib; a=json.load(sys.stdin).get('assets',[]); fp=sorted([x['name'],x['id'],x['size'],x['updated_at']] for x in a); print(hashlib.sha256(repr(fp).encode()).hexdigest() if a else '')") \
               && [[ "$fp" =~ ^[0-9a-f]{64}$ ]] && echo "$fp"
           }
