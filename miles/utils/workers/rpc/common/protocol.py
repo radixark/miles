@@ -39,5 +39,10 @@ class HealthResponse(StrictBaseModel):
     status: Literal["ok"] = "ok"
 
 
+class ServerHealth(StrictBaseModel):
+    boot_uuid: str | None
+    pod_uid: str | None
+
+
 class InFlightResponse(StrictBaseModel):
     call_ids: list[str]
