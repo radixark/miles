@@ -38,7 +38,6 @@ RAY_USING_MODULES = {
     "miles/dashboard/hooks.py": "known debt: the dashboard reads its gpu ids from ray, tracked outside M23",
     "miles/utils/tracking_utils/prometheus_utils.py": "known debt: the prometheus collector is a ray actor, skipped under kubernetes",
     "miles/ray/train_actor.py": "launcher closure: a launched actor reads the gpu ids ray gave it",
-    "miles/backends/fsdp_utils/update_weight_utils.py": "node ip lookup for a collective, not a call to another worker",
     "miles/backends/training_utils/weight_update/protocols/broadcast.py": "node ip lookup for a collective, not a call to another worker",
     "miles/backends/training_utils/weight_update/protocols/p2p_transfer_utils.py": "node ip lookup for a collective, not a call to another worker",
     "miles/utils/debug_utils/replay_reward_fn.py": "tooling: a standalone debugging script",
