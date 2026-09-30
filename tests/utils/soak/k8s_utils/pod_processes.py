@@ -1,9 +1,14 @@
+import os
+import re
+import sys
 from enum import StrEnum
+from pathlib import Path
 from typing import Literal
 
 from pydantic import Field
 
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
+from miles.utils.workers.env_vars import POD_UID_ENV_VAR
 
 
 class ProcessSignal(StrEnum):
@@ -37,4 +42,33 @@ class ProcessSignalReceipt(FrozenStrictBaseModel):
 
 
 def observe_processes(*, pod_uid: str, pattern: str) -> ProcessTarget:
-    raise NotImplementedError
+    assert os.environ[POD_UID_ENV_VAR] == pod_uid, "Pod identity changed"
+    matcher = re.compile(pattern)
+    processes = []
+    for path in Path("/proc").iterdir():
+        if not path.name.isdigit() or int(path.name) in {1, os.getpid(), os.getppid()}:
+            continue
+        try:
+            start_ticks = _start_ticks(int(path.name))
+            command = (path / "cmdline").read_bytes().replace(b"\0", b" ").decode(errors="replace")
+            if matcher.search(command) and _start_ticks(int(path.name)) == start_ticks:
+                processes.append(ProcessIdentity(pid=int(path.name), start_ticks=start_ticks))
+        except FileNotFoundError:
+            continue
+    _log(f"Observed pids {sorted(process.pid for process in processes)} matching {pattern!r} in pod {pod_uid}")
+    return ProcessTarget(
+        pod_uid=pod_uid,
+        boot_id=Path("/proc/sys/kernel/random/boot_id").read_text().strip(),
+        pid_namespace=os.readlink("/proc/self/ns/pid"),
+        init_start_ticks=_start_ticks(1),
+        pattern=pattern,
+        processes=sorted(processes, key=lambda process: process.pid),
+    )
+
+
+def _start_ticks(pid: int) -> int:
+    return int((Path("/proc") / str(pid) / "stat").read_text().rsplit(")", 1)[1].split()[19])
+
+
+def _log(message: str) -> None:
+    print(f"[pod_processes] {message}", file=sys.stderr, flush=True)
