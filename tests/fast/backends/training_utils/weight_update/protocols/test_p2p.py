@@ -83,6 +83,177 @@ class TestCPUReplicasManager:
         assert manager.replicas == [first, second]
 
 
+class TestShardLayoutKey:
+    """What makes two rollout engine ranks able to share one CPU replica."""
+
+    def test_ranks_differing_only_in_placement_share_one_shard_layout(self, p2p_protocol: ModuleType) -> None:
+        """The process a rank runs in says nothing about which slice of the weights it holds."""
+        first = p2p_protocol._shard_layout_key({"tp_rank": 0, "global_rank": 3, "local_rank": 3}, _server_args())
+        second = p2p_protocol._shard_layout_key({"tp_rank": 0, "global_rank": 9, "local_rank": 1}, _server_args())
+
+        assert first == second
+
+    def test_a_different_shard_index_is_a_different_shard_layout(self, p2p_protocol: ModuleType) -> None:
+        """Two tp ranks hold different slices, so one replica cannot serve both."""
+        first = p2p_protocol._shard_layout_key({"tp_rank": 0, "global_rank": 0}, _server_args())
+        second = p2p_protocol._shard_layout_key({"tp_rank": 1, "global_rank": 0}, _server_args())
+
+        assert first != second
+
+    def test_a_different_quantization_profile_is_a_different_shard_layout(self, p2p_protocol: ModuleType) -> None:
+        """The quantization profile decides the dtype of every buffer the replica allocates."""
+        first = p2p_protocol._shard_layout_key({"tp_rank": 0}, _server_args(rl_quant_profile=None))
+        second = p2p_protocol._shard_layout_key({"tp_rank": 0}, _server_args(rl_quant_profile="fp8"))
+
+        assert first != second
+
+    def test_the_key_does_not_depend_on_the_order_of_the_parallelism_fields(self, p2p_protocol: ModuleType) -> None:
+        """The remote answers a mapping, whose iteration order must not split one layout into two."""
+        first = p2p_protocol._shard_layout_key({"tp_rank": 1, "ep_rank": 2}, _server_args())
+        second = p2p_protocol._shard_layout_key({"ep_rank": 2, "tp_rank": 1}, _server_args())
+
+        assert first == second
+
+
+class TestGetOrCreateReplica:
+    """One replica per shard layout, reused across reconnects."""
+
+    def test_one_shard_layout_is_built_only_once(self, p2p_protocol: ModuleType, monkeypatch) -> None:
+        """Rebuilding a replica the sender already holds wastes host memory and re-registers its buffers."""
+        first, second = _FakeReplica("first"), _FakeReplica("second")
+        manager, created = _manager(p2p_protocol, [first, second], monkeypatch)
+        monkeypatch.setattr(
+            p2p_protocol, "RankParallelismConfig", type("_Cfg", (), {"from_dict": staticmethod(lambda d: d)})
+        )
+
+        replica = manager.get_or_create_replica(parallelism_info={"tp_rank": 0}, server_args=_server_args())
+        again = manager.get_or_create_replica(parallelism_info={"tp_rank": 0}, server_args=_server_args())
+
+        assert (replica, again) == (first, first)
+        assert created == [True]
+
+    def test_another_shard_layout_gets_its_own_replica(self, p2p_protocol: ModuleType, monkeypatch) -> None:
+        """Two ranks sharded differently cannot read the same replica without sending each other's shard."""
+        first, second = _FakeReplica("first"), _FakeReplica("second")
+        manager, created = _manager(p2p_protocol, [first, second], monkeypatch)
+        monkeypatch.setattr(
+            p2p_protocol, "RankParallelismConfig", type("_Cfg", (), {"from_dict": staticmethod(lambda d: d)})
+        )
+
+        manager.get_or_create_replica(parallelism_info={"tp_rank": 0}, server_args=_server_args())
+        manager.get_or_create_replica(parallelism_info={"tp_rank": 1}, server_args=_server_args())
+
+        assert manager.replicas == [first, second]
+        assert created == [True, False]
+
+
+class TestConnectReusesOneShotResources:
+    def test_a_reconnect_with_the_same_layout_reuses_the_transfer_engine_replicas_and_registration(
+        self, p2p_sender: Any, make_rollout_api: Any
+    ) -> None:
+        """Rebuilding the replicas or the engine on reconnect would reallocate and re-register the pinned buffers."""
+        protocol = p2p_sender.make_protocol()
+
+        p2p_sender.connect(protocol, [make_rollout_api("cell-a", gpu_count=2)])
+        protocol.begin_sync(weight_version=1, iter_buckets=None)
+        p2p_sender.connect(protocol, [make_rollout_api("cell-a", gpu_count=2, generation=2)])
+        protocol.begin_sync(weight_version=2, iter_buckets=None)
+
+        assert p2p_sender.transfer_engines_created == 1
+        assert p2p_sender.replicas_created == [(0, True), (1, False)]
+        assert len(p2p_sender.transfer_engine.registered) == 2
+
+    def test_a_reconnect_writes_only_to_the_sessions_of_the_new_peers(
+        self, p2p_sender: Any, make_rollout_api: Any, make_bucket: Any
+    ) -> None:
+        """A restarted engine gets new sessions, so a leftover mapping would write into memory it released."""
+        protocol = p2p_sender.make_protocol()
+        p2p_sender.connect(
+            protocol, [make_rollout_api("cell-a", gpu_count=2), make_rollout_api("cell-b", gpu_count=2)]
+        )
+        restarted = make_rollout_api("cell-a", gpu_count=2, generation=2)
+
+        p2p_sender.connect(protocol, [restarted])
+        protocol.begin_sync(weight_version=1, iter_buckets=None)
+        protocol.send_bucket(make_bucket("hf.w"))
+        protocol.after_base_weights()
+
+        assert sorted(p2p_sender.transfer_engine.written_sessions()) == [
+            restarted.session_id(0),
+            restarted.session_id(1),
+        ]
+        assert list(protocol._cell_updaters_of_rollout_engine_ind) == [0]
+
+    def test_a_round_without_reachable_peers_cuts_off_the_old_peers_and_keeps_the_resources(
+        self, p2p_sender: Any, make_rollout_api: Any, make_bucket: Any
+    ) -> None:
+        """A sender left without peers must stop writing to the last round's sessions yet keep its buffers for later."""
+        protocol = p2p_sender.make_protocol()
+        p2p_sender.connect(protocol, [make_rollout_api("cell-a", gpu_count=2)])
+        protocol.begin_sync(weight_version=1, iter_buckets=None)
+        protocol.send_bucket(make_bucket("hf.w"))
+        protocol.after_base_weights()
+        written_while_connected = p2p_sender.transfer_engine.written_sessions()
+
+        p2p_sender.connect(protocol, [])
+        protocol.begin_sync(weight_version=2, iter_buckets=None)
+        protocol.send_bucket(make_bucket("hf.w"))
+        protocol.after_base_weights()
+        written_while_cut_off = p2p_sender.transfer_engine.written_sessions()[len(written_while_connected) :]
+        sender_while_cut_off = protocol.is_sender
+
+        returned = make_rollout_api("cell-a", gpu_count=2, generation=3)
+        p2p_sender.connect(protocol, [returned])
+        protocol.begin_sync(weight_version=3, iter_buckets=None)
+        protocol.send_bucket(make_bucket("hf.w"))
+        protocol.after_base_weights()
+
+        assert sender_while_cut_off is False
+        assert written_while_cut_off == []
+        assert sorted(p2p_sender.transfer_engine.written_sessions()[len(written_while_connected) :]) == [
+            returned.session_id(0),
+            returned.session_id(1),
+        ]
+        assert p2p_sender.transfer_engines_created == 1
+        assert p2p_sender.replicas_created == [(0, True), (1, False)]
+        assert len(p2p_sender.transfer_engine.registered) == 2
+
+
+class TestDisconnect:
+    def test_a_disconnect_returns_only_after_the_write_in_flight_finished(
+        self, p2p_sender: Any, make_rollout_api: Any, make_bucket: Any
+    ) -> None:
+        """Forgetting a peer mid-write would let the next round overwrite the buffer that write still reads."""
+        protocol = p2p_sender.make_protocol()
+        api = make_rollout_api("cell-a", gpu_count=1)
+        p2p_sender.connect(protocol, [api])
+        protocol.begin_sync(weight_version=1, iter_buckets=None)
+        hold = p2p_sender.transfer_engine.hold(api.session_id(0))
+        protocol.send_bucket(make_bucket("hf.w"))
+        assert hold.entered.wait(timeout=10)
+
+        disconnect = p2p_sender.call_in_thread(protocol.disconnect)
+        state = disconnect.wait_until_draining_or_returned()
+        hold.release.set()
+        disconnect.join()
+
+        assert state == "draining"
+        assert ("write", api.session_id(0)) in disconnect.log_at_return
+
+    def test_a_shard_staged_before_a_reconnect_does_not_leak_into_the_next_round(
+        self, p2p_sender: Any, make_rollout_api: Any, make_bucket: Any
+    ) -> None:
+        """A half-staged fused parameter from a lost round must not fail the next round's completeness check."""
+        protocol = p2p_sender.make_protocol()
+        p2p_sender.connect(protocol, [make_rollout_api("cell-a", gpu_count=1)])
+        protocol.begin_sync(weight_version=1, iter_buckets=None)
+        protocol.send_bucket(make_bucket("hf.q"))
+
+        p2p_sender.connect(protocol, [make_rollout_api("cell-a", gpu_count=1, generation=2)])
+        protocol.send_bucket(make_bucket("hf.w"))
+        protocol.after_base_weights()
+
+
 class TestSendBucket:
     def test_a_rank_is_written_before_the_next_rank_overwrites_the_shared_buffer(
         self, p2p_sender: Any, make_rollout_api: Any, make_bucket: Any
