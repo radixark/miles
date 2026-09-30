@@ -101,7 +101,7 @@ class TestCellObserverFaultTargets:
         targets = _targets_by_identity(observation.targets)
         assert targets[_ACTOR_0].fault_target == _fault_target(_ACTOR_0)
         assert targets[_ROLLOUT_0].fault_target is None
-        assert f"GET /api/v1/cells/{_ACTOR_0}/fault-target?sub_index=0" in api.paths
+        assert f"GET /api/v1/cells/{_ACTOR_0}/fault-target?rank=0" in api.paths
         assert not any(_ROLLOUT_0 in path for path in api.paths)
 
     @pytest.mark.parametrize(

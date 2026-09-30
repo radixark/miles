@@ -14,7 +14,9 @@ from miles.utils.ft_utils.api_server.models import (
     TriState,
 )
 from miles.utils.test_utils.fault_injector.actions.process import FailureMode
-from miles.utils.workers.cell_operations.base import BaseCellOperations, FaultTarget
+from miles.utils.test_utils.fault_injector.controller import FaultHookCommand
+from miles.utils.test_utils.fault_injector.models import FaultHookRecord, ObservedFaultHookTarget
+from miles.utils.workers.cell_operations.base import BaseCellOperations
 from miles.utils.workers.worker_provider.base import CellInfo
 
 
@@ -55,9 +57,7 @@ class _CellHandler:
     async def list_cells(self) -> list[Cell]:
         cell_infos = await self._get_cell_infos()
         statuses = await self._get_cell_statuses()
-        return [
-            self._compute_cell(cell_id, cell_infos=cell_infos, statuses=statuses) for cell_id in sorted(cell_infos)
-        ]
+        return [self._compute_cell(cell_id, cell_infos=cell_infos, statuses=statuses) for cell_id in sorted(cell_infos)]
 
     async def get_cell(self, cell_id: str) -> Cell:
         return self._compute_cell(
@@ -99,8 +99,8 @@ class _CellHandler:
     async def resume(self, cell_id: str) -> None:
         await self._operations.resume(cell_id=cell_id)
 
-    async def observe_fault_target(self, cell_id: str, *, sub_index: int) -> FaultTarget:
-        return await self._operations.observe_fault_target(cell_id=cell_id, sub_index=sub_index)
+    async def observe_fault_target(self, cell_id: str, *, rank: int) -> ObservedFaultHookTarget:
+        return await self._operations.observe_fault_target(cell_id=cell_id, rank=rank)
 
     async def inject_fault(
         self,
@@ -108,11 +108,14 @@ class _CellHandler:
         *,
         mode: FailureMode,
         sub_index: int,
-        expected_target: FaultTarget | None = None,
+        expected_target: ObservedFaultHookTarget | None = None,
     ) -> None:
         await self._operations.inject_fault(
             cell_id=cell_id, mode=mode, sub_index=sub_index, expected_target=expected_target
         )
+
+    async def control_fault_hook(self, command: FaultHookCommand) -> FaultHookRecord:
+        return await self._operations.control_fault_hook(command)
 
 
 def _compute_status_of_generation(status: CellStatus | None, *, workers_hash: str) -> CellStatus:

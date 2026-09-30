@@ -6,8 +6,11 @@ from typing import Any
 import pytest
 
 from miles.utils.test_utils.fault_injector import FailureMode
+from miles.utils.test_utils.fault_injector.actions.process import KillProcessAction
+from miles.utils.test_utils.fault_injector.controller import FaultHookCommand, FaultHookOperation
+from miles.utils.test_utils.fault_injector.models import FaultHookName, FaultHookRequest, ObservedFaultHookTarget
 from miles.utils.workers.cell_operations import kubernetes as cell_operations_kubernetes
-from miles.utils.workers.cell_operations.base import FaultTarget, StaleFaultTargetError
+from miles.utils.workers.cell_operations.base import StaleFaultTargetError
 from miles.utils.workers.cell_operations.kubernetes import KubernetesCellOperations
 from miles.utils.workers.rpc.client.misc import ServerRestartedError
 from miles.utils.workers.rpc.common.protocol import ServerHealth
@@ -431,8 +434,8 @@ class _IdentityHandle:
         default = ServerHealth(boot_uuid=f"boot-{self._name}", pod_uid=f"uid-{self._name}")
         return self._provider.healths.get(self._name, default)
 
-    async def submit_without_result(self, method_name: str, /, **kwargs: Any) -> None:
-        self._provider.dispatched.append((self._name, (method_name, kwargs)))
+    async def control_fault_hook(self, *, command: FaultHookCommand) -> None:
+        self._provider.dispatched.append((self._name, command))
         if self._provider.handle_effect is not None:
             raise self._provider.handle_effect
 
@@ -464,10 +467,10 @@ class TestObserveFaultTarget:
             monkeypatch, {"engine-0": _identity_info("engine-0", ("engine-0-0", "engine-0-1"))}
         )
 
-        target = await operations.observe_fault_target(cell_id="engine-0", sub_index=1)
+        target = await operations.observe_fault_target(cell_id="engine-0", rank=1)
 
-        assert target == FaultTarget(
-            cell_id="engine-0", sub_index=1, workers_hash="h", boot_uuid="boot-engine-0-1", pod_uid="uid-engine-0-1"
+        assert target == ObservedFaultHookTarget(
+            cell_id="engine-0", rank=1, workers_hash="h", boot_uuid="boot-engine-0-1", pod_uid="uid-engine-0-1"
         )
         assert operations._provider.boot_pins == [None]
 
@@ -483,7 +486,7 @@ class TestObserveFaultTarget:
         operations._provider.healths["engine-0-0"] = health
 
         with pytest.raises(StaleFaultTargetError, match="no boot or pod identity"):
-            await operations.observe_fault_target(cell_id="engine-0", sub_index=0)
+            await operations.observe_fault_target(cell_id="engine-0", rank=0)
 
     async def test_a_worker_answering_from_a_pod_the_cell_no_longer_lists_is_not_a_target(
         self, monkeypatch: pytest.MonkeyPatch
@@ -493,7 +496,7 @@ class TestObserveFaultTarget:
         operations._provider.listed_pod_uids["engine-0"] = ["uid-replacement"]
 
         with pytest.raises(StaleFaultTargetError, match="no longer lists"):
-            await operations.observe_fault_target(cell_id="engine-0", sub_index=0)
+            await operations.observe_fault_target(cell_id="engine-0", rank=0)
 
     async def test_a_cell_that_disappears_while_being_observed_is_not_a_target(
         self, monkeypatch: pytest.MonkeyPatch
@@ -503,34 +506,39 @@ class TestObserveFaultTarget:
         operations._provider.vanished_cells.add("engine-0")
 
         with pytest.raises(StaleFaultTargetError, match="has disappeared"):
-            await operations.observe_fault_target(cell_id="engine-0", sub_index=0)
+            await operations.observe_fault_target(cell_id="engine-0", rank=0)
 
     async def test_a_cell_that_no_longer_exists_has_no_target(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Observing an unknown cell is stale rather than an index error."""
         operations = _identity_operations(monkeypatch, {})
 
         with pytest.raises(StaleFaultTargetError, match="no worker at index 0"):
-            await operations.observe_fault_target(cell_id="engine-0", sub_index=0)
+            await operations.observe_fault_target(cell_id="engine-0", rank=0)
 
 
-class TestInjectFaultRejectsAChangedTarget:
+class TestControlFaultHookRejectsAChangedTarget:
     async def test_a_new_cell_hash_is_refused_without_dispatch(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """A cell whose membership moved on since the observation must not receive the fault."""
         operations = _identity_operations(monkeypatch, {"engine-0": _identity_info("engine-0", ("engine-0-0",))})
         operations._provider._infos["engine-0"] = _identity_info("engine-0", ("engine-0-0",), workers_hash="h2")
 
         with pytest.raises(StaleFaultTargetError, match="no longer matches"):
-            await operations.inject_fault(
-                cell_id="engine-0",
-                mode=FailureMode.SIGKILL,
-                sub_index=0,
-                expected_target=FaultTarget(
-                    cell_id="engine-0",
-                    sub_index=0,
-                    workers_hash="h",
-                    boot_uuid="boot-engine-0-0",
-                    pod_uid="uid-engine-0-0",
-                ),
+            await operations.control_fault_hook(
+                FaultHookCommand(
+                    operation=FaultHookOperation.SET,
+                    request=FaultHookRequest(
+                        request_id="test",
+                        hook_name=FaultHookName.TRAINER_STEP_BEFORE_ALLREDUCE,
+                        action=KillProcessAction(),
+                        target=ObservedFaultHookTarget(
+                            cell_id="engine-0",
+                            rank=0,
+                            workers_hash="h",
+                            boot_uuid="boot-engine-0-0",
+                            pod_uid="uid-engine-0-0",
+                        ),
+                    ),
+                )
             )
 
         assert operations._provider.dispatched == []
@@ -541,17 +549,22 @@ class TestInjectFaultRejectsAChangedTarget:
         operations._provider.healths["engine-0-0"] = ServerHealth(boot_uuid="boot-new", pod_uid="uid-engine-0-0")
 
         with pytest.raises(StaleFaultTargetError, match="no longer matches"):
-            await operations.inject_fault(
-                cell_id="engine-0",
-                mode=FailureMode.SIGKILL,
-                sub_index=0,
-                expected_target=FaultTarget(
-                    cell_id="engine-0",
-                    sub_index=0,
-                    workers_hash="h",
-                    boot_uuid="boot-engine-0-0",
-                    pod_uid="uid-engine-0-0",
-                ),
+            await operations.control_fault_hook(
+                FaultHookCommand(
+                    operation=FaultHookOperation.SET,
+                    request=FaultHookRequest(
+                        request_id="test",
+                        hook_name=FaultHookName.TRAINER_STEP_BEFORE_ALLREDUCE,
+                        action=KillProcessAction(),
+                        target=ObservedFaultHookTarget(
+                            cell_id="engine-0",
+                            rank=0,
+                            workers_hash="h",
+                            boot_uuid="boot-engine-0-0",
+                            pod_uid="uid-engine-0-0",
+                        ),
+                    ),
+                )
             )
 
         assert operations._provider.dispatched == []
@@ -565,17 +578,22 @@ class TestInjectFaultRejectsAChangedTarget:
         operations._provider.listed_pod_uids["engine-0"] = ["uid-new"]
 
         with pytest.raises(StaleFaultTargetError, match="no longer matches"):
-            await operations.inject_fault(
-                cell_id="engine-0",
-                mode=FailureMode.SIGKILL,
-                sub_index=0,
-                expected_target=FaultTarget(
-                    cell_id="engine-0",
-                    sub_index=0,
-                    workers_hash="h",
-                    boot_uuid="boot-engine-0-0",
-                    pod_uid="uid-engine-0-0",
-                ),
+            await operations.control_fault_hook(
+                FaultHookCommand(
+                    operation=FaultHookOperation.SET,
+                    request=FaultHookRequest(
+                        request_id="test",
+                        hook_name=FaultHookName.TRAINER_STEP_BEFORE_ALLREDUCE,
+                        action=KillProcessAction(),
+                        target=ObservedFaultHookTarget(
+                            cell_id="engine-0",
+                            rank=0,
+                            workers_hash="h",
+                            boot_uuid="boot-engine-0-0",
+                            pod_uid="uid-engine-0-0",
+                        ),
+                    ),
+                )
             )
 
         assert operations._provider.dispatched == []
@@ -590,17 +608,22 @@ class TestInjectFaultRejectsAChangedTarget:
         operations._provider._infos["engine-0"] = _identity_info("engine-0", ("engine-0-1", "engine-0-0"))
 
         with pytest.raises(StaleFaultTargetError, match="no longer matches"):
-            await operations.inject_fault(
-                cell_id="engine-0",
-                mode=FailureMode.SIGKILL,
-                sub_index=1,
-                expected_target=FaultTarget(
-                    cell_id="engine-0",
-                    sub_index=1,
-                    workers_hash="h",
-                    boot_uuid="boot-engine-0-1",
-                    pod_uid="uid-engine-0-1",
-                ),
+            await operations.control_fault_hook(
+                FaultHookCommand(
+                    operation=FaultHookOperation.SET,
+                    request=FaultHookRequest(
+                        request_id="test",
+                        hook_name=FaultHookName.TRAINER_STEP_BEFORE_ALLREDUCE,
+                        action=KillProcessAction(),
+                        target=ObservedFaultHookTarget(
+                            cell_id="engine-0",
+                            rank=1,
+                            workers_hash="h",
+                            boot_uuid="boot-engine-0-1",
+                            pod_uid="uid-engine-0-1",
+                        ),
+                    ),
+                )
             )
 
         assert operations._provider.dispatched == []
@@ -611,17 +634,22 @@ class TestInjectFaultRejectsAChangedTarget:
         del operations._provider._infos["engine-0"]
 
         with pytest.raises(StaleFaultTargetError):
-            await operations.inject_fault(
-                cell_id="engine-0",
-                mode=FailureMode.SIGKILL,
-                sub_index=0,
-                expected_target=FaultTarget(
-                    cell_id="engine-0",
-                    sub_index=0,
-                    workers_hash="h",
-                    boot_uuid="boot-engine-0-0",
-                    pod_uid="uid-engine-0-0",
-                ),
+            await operations.control_fault_hook(
+                FaultHookCommand(
+                    operation=FaultHookOperation.SET,
+                    request=FaultHookRequest(
+                        request_id="test",
+                        hook_name=FaultHookName.TRAINER_STEP_BEFORE_ALLREDUCE,
+                        action=KillProcessAction(),
+                        target=ObservedFaultHookTarget(
+                            cell_id="engine-0",
+                            rank=0,
+                            workers_hash="h",
+                            boot_uuid="boot-engine-0-0",
+                            pod_uid="uid-engine-0-0",
+                        ),
+                    ),
+                )
             )
 
         assert operations._provider.dispatched == []
@@ -637,17 +665,22 @@ class TestInjectFaultRejectsAChangedTarget:
         )
 
         with pytest.raises(StaleFaultTargetError, match="changed its boot identity"):
-            await operations.inject_fault(
-                cell_id="engine-0",
-                mode=FailureMode.SIGKILL,
-                sub_index=0,
-                expected_target=FaultTarget(
-                    cell_id="engine-0",
-                    sub_index=0,
-                    workers_hash="h",
-                    boot_uuid="boot-engine-0-0",
-                    pod_uid="uid-engine-0-0",
-                ),
+            await operations.control_fault_hook(
+                FaultHookCommand(
+                    operation=FaultHookOperation.SET,
+                    request=FaultHookRequest(
+                        request_id="test",
+                        hook_name=FaultHookName.TRAINER_STEP_BEFORE_ALLREDUCE,
+                        action=KillProcessAction(),
+                        target=ObservedFaultHookTarget(
+                            cell_id="engine-0",
+                            rank=0,
+                            workers_hash="h",
+                            boot_uuid="boot-engine-0-0",
+                            pod_uid="uid-engine-0-0",
+                        ),
+                    ),
+                )
             )
 
         assert operations._provider.boot_pins == [None, "boot-engine-0-0"]
