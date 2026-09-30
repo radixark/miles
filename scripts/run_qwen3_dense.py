@@ -80,8 +80,6 @@ _RECIPES: dict[str, _Recipe] = {
         num_rollout=5,
         extra_sglang_args=f"--sglang-cuda-graph-bs-decode {_QWEN3_32B_CUDA_GRAPH_BS} ",
     ),
-    # SGLang TP>1 produces garbage output for Qwen3.5 on 0.5.9, which miles still pins
-    # (https://github.com/sgl-project/sglang/issues/21039), hence one GPU per engine.
     "Qwen3.5-4B": _Recipe("qwen3.5-4B", 2, 9216, 1, 0.7, False),
     "Qwen3.5-9B": _Recipe("qwen3.5-9B", 2, 9216, 1, 0.6, False),
     "Qwen3.5-27B": _Recipe("qwen3.5-27B", 4, 8192, 1, 0.5, True),

@@ -100,7 +100,6 @@ def execute(mode: str = "", ckpt_step: int | None = None):
     )
 
     sglang_args = (
-        # One GPU per engine: SGLang TP>1 garbles dense Qwen3.5 (see scripts/run_qwen3_dense.py).
         "--rollout-num-gpus-per-engine 1 --sglang-mem-fraction-static 0.7 --sglang-cuda-graph-bs-decode 1 2 4 8 16 "
     )
 
