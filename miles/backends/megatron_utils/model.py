@@ -495,7 +495,7 @@ def run_forward_backward_pass(
 
             set_tokens_per_adapter_slot(model, batch["adapter_token_counts"])
 
-        from miles.backends.training_utils.replay.base import all_replay_managers
+        from miles.utils.replay_base import all_replay_managers
 
         old_stages = [m.stage for m in all_replay_managers]
         for m in all_replay_managers:

@@ -3,7 +3,7 @@ import triton
 import triton.language as tl
 from triton.language.extra import libdevice
 
-from miles.backends.training_utils.replay.base import indexer_replay_manager
+from miles.utils.replay_base import indexer_replay_manager
 
 SPARSE_MLA_BLOCK = 64
 _SELECT_BLOCK = 256

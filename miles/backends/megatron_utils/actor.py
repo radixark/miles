@@ -28,7 +28,6 @@ from miles.backends.training_utils.loss.objective import (
 )
 from miles.backends.training_utils.metrics import train_dump
 from miles.backends.training_utils.metrics.log_utils import log_cpu_memory, log_perf_data, log_rollout_data
-from miles.backends.training_utils.replay.base import all_replay_managers, routing_replay_manager
 from miles.backends.training_utils.replay.data import fill_replay_data, register_replay_list_sequential
 from miles.backends.training_utils.types import TrainStepOutput
 from miles.backends.training_utils.weight_update.hf_weight_iterator import WeightUpdatePlacement
@@ -49,6 +48,7 @@ from miles.utils.lora.utils import build_lora_config, is_multi_lora_enabled
 from miles.utils.memory_utils import clear_memory, print_memory
 from miles.utils.object_store import StoreObjectRef, ValueSpec
 from miles.utils.reloadable_process_group import destroy_process_groups, monkey_patch_torch_dist, reload_process_groups
+from miles.utils.replay_base import all_replay_managers, routing_replay_manager
 from miles.utils.test_utils.ft_test_actions import FTTestActionActorExecutor
 from miles.utils.timer import Timer, inverse_timer, timer
 from miles.utils.tracking_utils.structured_log import with_logs
