@@ -5,6 +5,7 @@ from tests.utils.soak.core.events import (
     SoakActionAppliedEvent,
     SoakActionRequestedEvent,
     SoakActionResultEvent,
+    SoakAdmissionClosedEvent,
     SoakEvent,
     SoakObservationEvent,
 )
@@ -17,6 +18,13 @@ class SoakActionRecord:
     requested: SoakActionRequestedEvent
     applied: SoakActionAppliedEvent | None = None
     result: SoakActionResultEvent | None = None
+
+
+# ================================= scheduling =================================
+
+
+def admission_closed(events: list[SoakEvent]) -> SoakAdmissionClosedEvent | None:
+    return next((event for event in events if isinstance(event, SoakAdmissionClosedEvent)), None)
 
 
 # ================================ sut progress ================================
