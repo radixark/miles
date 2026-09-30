@@ -8,9 +8,9 @@ from .p2p_transfer_utils import P2PTransferManager, RemoteWeightInfo
 class _P2PRolloutCellUpdater:
     def __init__(
         self,
-        rollout_engine_ind: int,
+        cell_id: str,
     ) -> None:
-        self.rollout_engine_ind = rollout_engine_ind
+        self.cell_id = cell_id
         self.targets_by_rollout_engine_rank: dict[int, RemoteWeightInfo] = {}
         self._pending_writes: list[Future[None]] = []
 
