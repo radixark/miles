@@ -6,6 +6,9 @@ import torch
 import torch.distributed as dist
 import torch.nn.functional as F
 
+from miles.backends.training_utils.data.context_parallel import slice_log_prob_with_cp, slice_with_cp
+from miles.backends.training_utils.data.multimodal import expand_multimodal_rollout_data_in_place
+from miles.backends.training_utils.parallel import get_parallel_state
 from miles.utils.audit_utils.witness.allocator import WitnessInfo
 from miles.utils.data import get_minimum_num_micro_batch_size, process_rollout_data
 from miles.utils.ft_utils.process_group_utils import GeneralPGUtil
@@ -13,10 +16,6 @@ from miles.utils.object_store import ObjectStoreGetResult
 from miles.utils.ray_utils import Box
 from miles.utils.seqlen_balancing import get_seqlen_balanced_partitions
 from miles.utils.types import RolloutBatch
-
-from ..parallel import get_parallel_state
-from .context_parallel import slice_log_prob_with_cp, slice_with_cp
-from .multimodal import expand_multimodal_rollout_data_in_place
 
 logger = logging.getLogger(__name__)
 
@@ -265,6 +264,7 @@ def get_batch(
                 tokens = F.pad(tokens, (0, pad), value=pad_token_id)
                 cu_seqlens_list.append(cu_seqlens_list[-1] + pad)
 
+            cu_seqlens_host = tuple(cu_seqlens_list)
             cu_seqlens = torch.tensor(cu_seqlens_list, dtype=torch.int, device=torch.cuda.current_device())
             tokens = tokens.chunk(cp_size, dim=0)[cp_rank]
         else:
@@ -284,6 +284,7 @@ def get_batch(
                 cu_seqlens.append(cu_seqlens[-1] + pad)
 
             # thd requires the cu_seqlens to be of the origin length
+            cu_seqlens_host = tuple(boundary * cp_size for boundary in cu_seqlens)
             cu_seqlens = torch.tensor(cu_seqlens, dtype=torch.int).cuda() * cp_size
 
         max_seqlen = (cu_seqlens[1:] - cu_seqlens[:-1]).max().item()
@@ -291,6 +292,8 @@ def get_batch(
         tokens = tokens.unsqueeze(0)
 
         batch["cu_seqlens"] = cu_seqlens
+        # the same boundaries on the host, for consumers that must not sync the device to read them
+        batch["cu_seqlens_host"] = cu_seqlens_host
         batch["max_seqlen"] = max_seqlen
     else:
         raise ValueError(f"Unsupported qkv_format: {qkv_format}")

@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 
 from pydantic import TypeAdapter
 
-from miles.backends.megatron_utils.ft.types import TrainStepOutcome
+from miles.backends.training_utils.types import TrainStepOutcome
 from miles.utils.audit_utils.event_analyzer.rules.witness import (
     WitnessDataMismatchIssue,
     WitnessMissingSnapshotIssue,
@@ -17,12 +17,12 @@ from miles.utils.audit_utils.event_logger.models import (
     WitnessAllocateIdEvent,
     WitnessSnapshotParamEvent,
 )
-from miles.utils.audit_utils.process_identity import MainProcessIdentity, TrainProcessIdentity
+from miles.utils.audit_utils.process_identity import SimpleProcessIdentity, TrainProcessIdentity
 
 _event_adapter = TypeAdapter(Event)
 
 _FIXED_TS = datetime(2026, 1, 1, tzinfo=timezone.utc)
-_MAIN_SOURCE = MainProcessIdentity()
+_MAIN_SOURCE = SimpleProcessIdentity(component="main")
 
 
 def _make_source(cell_index: int = 0, rank_within_cell: int = 0) -> TrainProcessIdentity:

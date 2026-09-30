@@ -14,7 +14,7 @@ from dataclasses import dataclass
 
 import typer
 
-import miles.utils.external_utils.command_utils as U
+import miles.utils.external_utils.command_utils.legacy as U
 
 HF_REPO = "Qwen/Qwen3-0.6B"
 MODEL_NAME = "Qwen3-0.6B"

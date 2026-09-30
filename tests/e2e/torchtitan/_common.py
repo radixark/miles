@@ -13,7 +13,7 @@ loop is told cp=1 either way.
 import os
 from dataclasses import dataclass
 
-import miles.utils.external_utils.command_utils as U
+import miles.utils.external_utils.command_utils.legacy as U
 
 
 @dataclass

@@ -1,21 +1,21 @@
 from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
 from tests.ci.metric_history import register_ci_gate
 
-import miles.utils.external_utils.command_utils as U
+from miles.utils.external_utils import command_utils
 
 MODEL_NAME = "Qwen3-4B"
 MODEL_TYPE = "qwen3-4B"
-NUM_GPUS = 8
+NUM_GPUS = 4
 
 register_cuda_ci(
-    est_time=600,
-    suite="stage-c-8-gpu-h100",
+    est_time=400,
+    suite="stage-c-4-gpu-h200",
     labels=["megatron", "weight-update"],
     hardware=["hopper", "blackwell"],
 )
 register_rocm_ci(
     est_time=500,
-    suite="nightly-stage-c-8-gpu-mi350",
+    suite="nightly-stage-c-4-gpu-mi350",
     labels=["megatron", "weight-update"],
 )
 
@@ -27,6 +27,7 @@ register_ci_gate(metric_key="rollout/raw_reward")
 
 
 def prepare():
+    U = command_utils.default_config().create_backend()
     U.exec_command_cpu("mkdir -p /root/models /root/datasets")
     U.exec_command_cpu("hf download Qwen/Qwen3-4B --local-dir /root/models/Qwen3-4B")
     U.hf_download_dataset("zhuzilin/dapo-math-17k")
@@ -34,6 +35,7 @@ def prepare():
 
 
 def execute():
+    U = command_utils.default_config().create_backend()
     ckpt_args = f"--hf-checkpoint /root/models/{MODEL_NAME}/ " f"--ref-load /root/{MODEL_NAME}_torch_dist "
 
     rollout_args = (
@@ -56,7 +58,7 @@ def execute():
         "--tensor-model-parallel-size 2 "
         "--sequence-parallel "
         "--pipeline-model-parallel-size 1 "
-        "--context-parallel-size 2 "
+        "--context-parallel-size 1 "
         "--recompute-granularity full "
         "--recompute-method uniform "
         "--recompute-num-layers 1 "
@@ -83,7 +85,7 @@ def execute():
     )
 
     sglang_args = (
-        "--rollout-num-gpus-per-engine 2 " f"--rollout-num-gpus {NUM_GPUS // 2} " "--sglang-mem-fraction-static 0.8 "
+        "--rollout-num-gpus-per-engine 1 " f"--rollout-num-gpus {NUM_GPUS // 2} " "--sglang-mem-fraction-static 0.8 "
     )
 
     ci_args = "--ci-test "
@@ -110,7 +112,7 @@ def execute():
         f"{rollout_args} "
         f"{optimizer_args} "
         f"{grpo_args} "
-        f"{U.get_default_wandb_args(__file__)} "
+        f"{command_utils.get_default_wandb_args(__file__)} "
         f"{perf_args} "
         f"{sglang_args} "
         f"{ci_args} "

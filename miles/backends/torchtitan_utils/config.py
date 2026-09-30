@@ -78,6 +78,7 @@ def build_trainer_config(args: Namespace, *, hf_assets_path: str, lr_total_steps
     config.parallelism.context_parallel_degree = args.context_parallel_size
     config.parallelism.expert_parallel_degree = args.expert_model_parallel_size
     config.parallelism.pipeline_parallel_microbatch_size = 1
+    config.parallelism.spmd_backend = "partial_dtensor"
     parallel_dims = parallel_dims_from_config(config.parallelism)
     dp_size = parallel_dims.dp_replicate * parallel_dims.dp_shard
 

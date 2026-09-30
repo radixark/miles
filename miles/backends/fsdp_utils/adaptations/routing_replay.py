@@ -18,6 +18,7 @@ from typing import Any
 
 import torch.nn as nn
 
+from miles.backends.training_utils.replay.base import routing_replay_manager
 from miles.backends.training_utils.replay.routing_replay import (
     FALLTHROUGH,
     RECORD,
@@ -31,7 +32,6 @@ from miles.backends.training_utils.replay.routing_replay import (
     stage,
     uses_rollout_replay,
 )
-from miles.utils.replay_base import routing_replay_manager
 
 logger = logging.getLogger(__name__)
 

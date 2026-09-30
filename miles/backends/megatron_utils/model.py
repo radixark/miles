@@ -26,10 +26,18 @@ from megatron.training.global_vars import get_args
 from megatron.training.training import get_model
 
 from miles.backends.megatron_utils.ft.indep_dp import allreduce_grads_and_losses_across_replicas
-from miles.backends.megatron_utils.ft.types import TrainStepOutcome
 from miles.backends.megatron_utils.local_weight_checksum import dump_local_weight_checksums
 from miles.backends.megatron_utils.optimizer_state_reset import reset_optimizer_states
+from miles.backends.training_utils.data.rollout import DataIterator, get_batch
 from miles.backends.training_utils.data.sampling_mask import get_rollout_sampling_masks
+from miles.backends.training_utils.loss.objective import loss_function
+from miles.backends.training_utils.metrics.checks import check_grad_norm, check_kl
+from miles.backends.training_utils.metrics.log_utils import (
+    aggregate_forward_results,
+    aggregate_train_losses,
+    log_train_step,
+)
+from miles.backends.training_utils.types import TrainStepOutcome
 from miles.backends.training_utils.weight_update.snapshot_publisher import SnapshotPublisher
 from miles.utils.audit_utils.witness.allocator import WitnessInfo
 from miles.utils.audit_utils.witness.module import witness_dump_and_clear_stale
@@ -40,10 +48,6 @@ from miles.utils.test_utils.ft_test_actions import FTTestActionActorExecutor
 from miles.utils.tracking_utils.structured_log import log_structured
 
 from ...utils.misc import filter_keys
-from ..training_utils.data.rollout import DataIterator, get_batch
-from ..training_utils.loss.checks import check_grad_norm, check_kl
-from ..training_utils.loss.objective import loss_function
-from ..training_utils.metrics.log_utils import aggregate_forward_results, aggregate_train_losses, log_train_step
 from ..training_utils.parallel import get_parallel_state
 from .checkpoint import load_checkpoint, save_checkpoint, save_checkpoint_with_lora
 from .ci_utils import (
@@ -491,7 +495,7 @@ def run_forward_backward_pass(
 
             set_tokens_per_adapter_slot(model, batch["adapter_token_counts"])
 
-        from miles.utils.replay_base import all_replay_managers
+        from miles.backends.training_utils.replay.base import all_replay_managers
 
         old_stages = [m.stage for m in all_replay_managers]
         for m in all_replay_managers:
@@ -916,7 +920,7 @@ def initialize_model_and_optimizer(
     args: Namespace,
     role: str = "actor",
     checkpointing_context=None,
-) -> tuple[list[DDP], MegatronOptimizer | None, OptimizerParamScheduler | None, int]:
+) -> tuple[list[DDP], MegatronOptimizer | None, OptimizerParamScheduler | None, LoadCheckpointOutput]:
     """Initialize model(s), optimizer, scheduler, and load from checkpoint.
 
     Args:
@@ -925,13 +929,46 @@ def initialize_model_and_optimizer(
         checkpointing_context: pass-through checkpointing context
 
     Returns:
-        tuple[list[DDP], MegatronOptimizer, OptimizerParamScheduler, int]:
-            DDP-wrapped model chunks, optimizer, scheduler, and iteration index.
+        tuple[list[DDP], MegatronOptimizer, OptimizerParamScheduler, LoadCheckpointOutput]:
+            DDP-wrapped model chunks, optimizer, scheduler, and what the load answered.
     """
+    model, optimizer, opt_param_scheduler = build_model_and_optimizer(args, role=role)
+
+    load_output = load_model_state(
+        args,
+        model=model,
+        optimizer=optimizer,
+        opt_param_scheduler=opt_param_scheduler,
+        role=role,
+        checkpointing_context=checkpointing_context,
+    )
+    return model, optimizer, opt_param_scheduler, load_output
+
+
+def build_model_and_optimizer(
+    args: Namespace, *, role: str
+) -> tuple[list[DDP], MegatronOptimizer | None, OptimizerParamScheduler | None]:
     model, optimizer, opt_param_scheduler = setup_model_and_optimizer(args, role)
     model[0].role = role
     clear_memory()
+    return model, optimizer, opt_param_scheduler
 
+
+@dataclasses.dataclass(frozen=True)
+class LoadCheckpointOutput:
+    loaded_rollout_id: int
+    start_rollout_id: int
+
+
+def load_model_state(
+    args: Namespace,
+    *,
+    model: list[DDP],
+    optimizer: MegatronOptimizer | None,
+    opt_param_scheduler: OptimizerParamScheduler | None,
+    role: str,
+    checkpointing_context: dict | None,
+) -> LoadCheckpointOutput:
     if is_multi_lora_enabled(args):
         # Hide adapter params so the bridge's conversion-task walk doesn't see them
         # while loading the base checkpoint.
@@ -984,4 +1021,13 @@ def initialize_model_and_optimizer(
     if opt_param_scheduler is not None and not (args.use_checkpoint_opt_param_scheduler and iteration > 0):
         opt_param_scheduler.step(increment=iteration * args.global_batch_size)
 
-    return model, optimizer, opt_param_scheduler, iteration
+    if args.finetune and not is_lora_enabled(args):
+        assert iteration == 0, (
+            f"--finetune loaded {args.load} and found iteration {iteration}, so the checkpoint and the flag disagree "
+            f"about where this run stands"
+        )
+        start_rollout_id = 0
+    else:
+        start_rollout_id = iteration + 1
+
+    return LoadCheckpointOutput(loaded_rollout_id=iteration, start_rollout_id=start_rollout_id)

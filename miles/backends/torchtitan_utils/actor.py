@@ -20,6 +20,7 @@ from miles.utils.memory_utils import clear_memory
 from miles.utils.profile_utils import TrainProfiler
 from miles.utils.timer import Timer
 from miles.utils.tracking_utils.tracking import init_tracking
+from miles.utils.workers.rpc.common.wire_types import Pickled
 
 logger = logging.getLogger(__name__)
 
@@ -32,17 +33,19 @@ class TorchtitanTrainRayActor(TorchNativeTrainRayActor):
     @with_defer(lambda: Timer().start("train_wait"))
     def init(
         self,
-        args: Namespace,
+        args: Pickled,
         role: str,
         *,
         with_ref: bool = False,
         with_opd_teacher: bool = False,
         recv_ckpt_src_rank: int | None = None,
-        indep_dp_info: IndepDPInfo | None = None,
+        indep_dp_info: IndepDPInfo,
+        indep_dp_store_addr: str | None,
     ) -> int | None:  # type: ignore[override]
         compat.install()
-        super().init(args, role, with_ref, with_opd_teacher=with_opd_teacher)
-        assert indep_dp_info is None or indep_dp_info.quorum_id == 0
+        super()._init_common(args, role, with_ref, with_opd_teacher=with_opd_teacher)
+        assert indep_dp_info.quorum_id == 0
+        assert indep_dp_store_addr is None
 
         assert recv_ckpt_src_rank is None, "torchtitan backend does not support checkpoint healing"
         assert not with_opd_teacher, "torchtitan backend does not support on-policy distillation yet"
@@ -122,8 +125,5 @@ class TorchtitanTrainRayActor(TorchNativeTrainRayActor):
                 part.cpu()
             torch.cuda.empty_cache()
 
-    def save_model(self, rollout_id: int, force_sync: bool = False) -> None:
-        if self.args.debug_rollout_only or self.args.save is None:
-            return
-        assert not self.args.async_save, "TorchtitanTrainRayActor does not support async_save yet."
+    def _save_checkpoint(self, rollout_id: int) -> None:
         self.trainer.checkpointer.save(self.trainer.step, last_step=True)

@@ -12,7 +12,7 @@ from miles.backends.fsdp_utils.models.replay_routers import (
     install_glm4_moe_lite_router_replay,
     install_qwen3_router_replay,
 )
-from miles.utils.replay_base import routing_replay_manager
+from miles.backends.training_utils.replay.base import routing_replay_manager
 
 
 @pytest.fixture(autouse=True)

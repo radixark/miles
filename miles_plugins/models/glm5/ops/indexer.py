@@ -1,6 +1,6 @@
 import torch
 
-from miles.utils.replay_base import indexer_replay_manager
+from miles.backends.training_utils.replay.base import indexer_replay_manager
 from miles_plugins.models.dsa_topk import get_dsa_topk_fn
 
 from .tilelang_indexer_bwd import indexer_bwd_interface
