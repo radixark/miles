@@ -552,3 +552,84 @@ class TestCreateCPUReplica:
             p2p_protocol._create_cpu_replica(
                 {"tp_rank": 1}, "/model", _server_args(), shared_params_dict=shared_buffers
             )
+
+
+class TestWriteChecksums:
+    @staticmethod
+    def _send(p2p_sender: Any, protocol: Any, apis: list[Any], bucket: list[tuple[str, torch.Tensor]]) -> None:
+        p2p_sender.connect(protocol, apis)
+        protocol.begin_sync(weight_version=1, iter_buckets=None)
+        protocol.send_bucket(bucket)
+        protocol.after_base_weights()
+
+    def test_every_written_rank_is_verified_against_the_bytes_it_received(
+        self, p2p_sender: Any, make_rollout_api: Any, make_bucket: Any
+    ) -> None:
+        """Each rank gets its own shard, so the sent hash must be taken per rank from the reloaded buffer."""
+        protocol = p2p_sender.make_protocol(check_weight_transfer_checksum=True)
+        apis = [make_rollout_api("cell-a", gpu_count=2), make_rollout_api("cell-b", gpu_count=1)]
+
+        self._send(p2p_sender, protocol, apis, make_bucket("hf.w"))
+
+        assert [api.check_weights_calls for api in apis] == [
+            [dict(action="raw_checksum", names=["w"])] * 2,
+            [dict(action="raw_checksum", names=["w"])],
+        ]
+        assert not any(updater.is_errored for updater in protocol.cell_updaters_of_cell_id.values())
+
+    def test_a_fused_parameter_is_verified_once_under_its_engine_name(
+        self, p2p_sender: Any, make_rollout_api: Any, make_bucket: Any
+    ) -> None:
+        """Only complete, transfer-ready engine tensors are written, so only they may be checked."""
+        protocol = p2p_sender.make_protocol(check_weight_transfer_checksum=True)
+        api = make_rollout_api("cell-a", gpu_count=1)
+        p2p_sender.connect(protocol, [api])
+        protocol.begin_sync(weight_version=1, iter_buckets=None)
+
+        protocol.send_bucket(make_bucket("hf.q"))
+        protocol.send_bucket(make_bucket("hf.k"))
+        protocol.after_base_weights()
+
+        assert api.check_weights_calls == [dict(action="raw_checksum", names=["qk"])]
+        assert not protocol.cell_updaters_of_cell_id["cell-a"].is_errored
+
+    def test_a_corrupted_receiver_fails_only_its_own_cell(
+        self, p2p_sender: Any, make_rollout_api: Any, make_bucket: Any
+    ) -> None:
+        """A single engine that received wrong bytes is dropped while its peers keep the update."""
+        protocol = p2p_sender.make_protocol(check_weight_transfer_checksum=True)
+        healthy, corrupted = make_rollout_api("cell-a", gpu_count=1), make_rollout_api("cell-b", gpu_count=1)
+        corrupted.corrupted_ranks.add(0)
+
+        self._send(p2p_sender, protocol, [healthy, corrupted], make_bucket("hf.w"))
+
+        updaters = protocol.cell_updaters_of_cell_id
+        assert (updaters["cell-a"].is_errored, updaters["cell-b"].is_errored) == (False, True)
+        assert "cell-b rank 0" in str(updaters["cell-b"]._error)
+
+    def test_a_mismatch_on_an_early_rank_stops_writing_that_cell(
+        self, p2p_sender: Any, make_rollout_api: Any, make_bucket: Any
+    ) -> None:
+        """The earlier rank is drained before the next one, so its failure must keep later ranks of the cell unwritten."""
+        protocol = p2p_sender.make_protocol(check_weight_transfer_checksum=True)
+        api = make_rollout_api("cell-a", gpu_count=2)
+        api.corrupted_ranks.add(0)
+
+        self._send(p2p_sender, protocol, [api], make_bucket("hf.w"))
+
+        assert protocol.cell_updaters_of_cell_id["cell-a"].is_errored
+        assert p2p_sender.transfer_engine.written_sessions() == [api.session_id(0)]
+
+    def test_disabled_checksums_send_no_request_and_blame_nobody(
+        self, p2p_sender: Any, make_rollout_api: Any, make_bucket: Any
+    ) -> None:
+        """With the flag off even a corrupting receiver is neither asked nor failed."""
+        protocol = p2p_sender.make_protocol()
+        api = make_rollout_api("cell-a", gpu_count=2)
+        api.corrupted_ranks.add(0)
+
+        self._send(p2p_sender, protocol, [api], make_bucket("hf.w"))
+
+        assert api.check_weights_calls == []
+        assert not protocol.cell_updaters_of_cell_id["cell-a"].is_errored
+        assert sorted(p2p_sender.transfer_engine.written_sessions()) == [api.session_id(0), api.session_id(1)]

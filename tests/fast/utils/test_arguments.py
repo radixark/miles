@@ -586,6 +586,28 @@ class TestSampleOwnershipCheckArguments:
             _resolve_sample_ownership_check(args)
 
 
+class TestWeightTransferChecksumArguments:
+    @pytest.mark.parametrize(
+        "extra,enabled",
+        [
+            ([], False),
+            (["--ci-test"], True),
+            (["--check-weight-transfer-checksum"], True),
+            (["--ci-test", "--no-check-weight-transfer-checksum"], False),
+        ],
+        ids=["default-off", "ci-default-on", "explicit-on", "ci-explicit-off"],
+    )
+    def test_ci_enables_the_check_unless_the_flag_says_otherwise(self, extra: list[str], enabled: bool) -> None:
+        """Every P2P write is checked in CI by default, and an explicit flag wins either way."""
+        parser = argparse.ArgumentParser()
+        get_miles_extra_args_provider()(parser)
+        args = parser.parse_args(["--num-rollout", "1", "--run-uuid", "0123456789abcdef", *extra, *REQUIRED_ARGS])
+
+        miles_validate_args(args)
+
+        assert args.check_weight_transfer_checksum is enabled
+
+
 class TestMaybeApplyDumperOverrides:
     def _make_args(
         self,
