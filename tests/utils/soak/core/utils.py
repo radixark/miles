@@ -27,7 +27,11 @@ DATA_DIR: str = get_test_data_dir()
 
 @contextmanager
 def recording_error(errors: dict[str, str], key: str) -> Iterator[None]:
-    raise NotImplementedError
+    try:
+        yield
+    except Exception as error:
+        logger.warning("Observation %s failed", key, exc_info=True)
+        errors[key] = repr(error)
 
 
 def compute_base_url(config: command_utils.ExecuteTrainConfig) -> str:

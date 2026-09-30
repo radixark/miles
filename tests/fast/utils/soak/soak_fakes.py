@@ -7,6 +7,8 @@ from collections.abc import Awaitable, Callable
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import httpx
+import pytest
 from tests.utils.soak.core.config import SoakRunnerConfig
 from tests.utils.soak.core.event_log import EventLog
 from tests.utils.soak.core.events import (
@@ -37,6 +39,18 @@ from miles.backends.megatron_utils.ft.types import TrainStepOutcome
 from miles.backends.megatron_utils.megatron_config import ACTOR_ROLE
 from miles.utils.audit_utils.event_logger.models import CellReconfigureEvent, Event, TrainGroupStepEndEvent
 from miles.utils.audit_utils.process_identity import SimpleProcessIdentity, TrainerControllerProcessIdentity
+from miles.utils.ft_utils.api_server.models import (
+    CELL_TYPE_LABEL,
+    Cell,
+    CellCondition,
+    CellList,
+    CellMetadata,
+    CellSpec,
+    CellStatus,
+    FaultInjection,
+    TriState,
+)
+from miles.utils.workers.cell_operations.base import FaultTarget
 from miles.utils.workers.naming import compute_cell_id
 
 _BASE = datetime(2026, 9, 26, 12, 0, tzinfo=timezone.utc)
@@ -358,4 +372,85 @@ def _make_runner(
         event_log=EventLog(tmp_path / "evidence" / "events.jsonl"),
         config=config or _runner_config(),
         sut_events=sut_events,
+    )
+
+
+# ============================== cell api boundary ==============================
+
+
+def _cell(
+    name: str,
+    *,
+    cell_type: str,
+    workers_hash: str = "hash-a",
+    phase: str = "Running",
+    healthy: TriState = TriState.TRUE,
+    serving: TriState = TriState.TRUE,
+) -> Cell:
+    return Cell(
+        metadata=CellMetadata(name=name, labels={CELL_TYPE_LABEL: cell_type}),
+        spec=CellSpec(),
+        status=CellStatus(
+            phase=phase,
+            conditions=[CellCondition(type="Healthy", status=healthy), CellCondition(type="Serving", status=serving)],
+            workers_hash=workers_hash,
+        ),
+    )
+
+
+_CellReply = int | Cell | Exception
+
+
+class _FakeCellApi:
+    def __init__(self, cells: list[Cell]) -> None:
+        self.cells = {cell.metadata.name: cell for cell in cells}
+        self.list_reply: int | dict | None = None
+        self.fault_targets: dict[str, FaultTarget | int] = {}
+        self.cell_replies: dict[str, list[_CellReply]] = {}
+        self.injection_status = 200
+        self.injection_posts: list[tuple[str, FaultInjection]] = []
+        self.paths: list[str] = []
+
+    def handle(self, request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        self.paths.append(f"{request.method} {path}?{request.url.query.decode()}".rstrip("?"))
+        parts = path.removeprefix("/api/v1/cells").strip("/").split("/")
+
+        if parts == [""]:
+            if isinstance(self.list_reply, int):
+                return httpx.Response(self.list_reply)
+            if isinstance(self.list_reply, dict):
+                return httpx.Response(200, json=self.list_reply)
+            return httpx.Response(200, json=CellList(items=list(self.cells.values())).model_dump(mode="json"))
+
+        name = parts[0]
+        if parts[1:] == ["fault-target"]:
+            match self.fault_targets.get(name, 404):
+                case int() as status:
+                    return httpx.Response(status)
+                case target:
+                    return httpx.Response(200, json=target.model_dump(mode="json"))
+        if parts[1:] == ["inject-fault"]:
+            self.injection_posts.append((name, FaultInjection.model_validate_json(request.content)))
+            return httpx.Response(self.injection_status)
+
+        replies = self.cell_replies.get(name)
+        reply: _CellReply = (
+            (replies.pop(0) if len(replies) > 1 else replies[0]) if replies else self.cells.get(name, 404)
+        )
+        match reply:
+            case int() as status:
+                return httpx.Response(status)
+            case Exception() as error:
+                raise error
+            case cell:
+                return httpx.Response(200, json=cell.model_dump(mode="json"))
+
+
+def _patch_http(monkeypatch: pytest.MonkeyPatch, api: _FakeCellApi) -> None:
+    real_client = httpx.AsyncClient
+    monkeypatch.setattr(
+        httpx,
+        "AsyncClient",
+        lambda **kwargs: real_client(transport=httpx.MockTransport(api.handle), **kwargs),
     )
