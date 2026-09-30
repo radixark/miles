@@ -42,7 +42,7 @@ The raw Megatron path supports `--dsa-impl miles|megatron` for DSA models using 
 --megatron-to-hf-mode raw --dsa-impl megatron --dsa-kernel-backend cudnn
 ```
 
-Training uses packed `--qkv-format thd` and supports sequence parallelism. Native context parallelism uses zigzag token partitioning within each sequence and `--cp-comm-type allgather` for attention communication. Miles' `--allgather-cp` instead selects contiguous token partitioning and is rejected for native DSA when CP > 1. GLM-5.2's cross-layer index sharing schedule is preserved. Native DSA does not support `--use-indexer-replay` or `--use-rollout-indexer-replay`.
+Training uses packed `--qkv-format thd` and supports sequence parallelism. Native context parallelism uses zigzag token partitioning within each sequence and `--cp-comm-type allgather` for attention communication. Miles' `--allgather-cp` instead selects contiguous token partitioning and is rejected for native DSA when CP > 1. GLM-5.2's cross-layer index sharing schedule is preserved. Native DSA does not support `--use-indexer-replay` or `--use-rollout-indexer-replay`. Its top-k path does not use Miles replay hooks; the existing Miles replay path is unchanged and its stability is not validated here.
 
 `--miles-dsa-topk-backend` selects top-k for both implementations. The W4A16 test keeps `flashinfer` and `SGLANG_DSA_TOPK_FLASHINFER_TIE_BREAK=large`, preserving its top-k backend and tie policy when selecting native Megatron DSA.
 

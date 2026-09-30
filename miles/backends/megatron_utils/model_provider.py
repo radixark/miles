@@ -350,15 +350,12 @@ def get_model_provider_func(
 
 
 def _maybe_freeze_native_dsa_indexer(args: argparse.Namespace, model: GPTModel) -> None:
-    if getattr(args, "dsa_impl", "miles") != "megatron":
-        return
-    if (model.config.dsa_indexer_loss_coeff or 0.0) != 0:
-        return
-    # Native DSA runs its indexer under no_grad without the auxiliary objective.
-    # Exclude these unused parameters from DDP and optimizer weight decay.
-    for name, parameter in model.named_parameters():
-        if ".self_attention.core_attention.indexer." in name:
-            parameter.requires_grad_(False)
+    if args.dsa_impl == "megatron" and model.config.dsa_indexer_loss_coeff == 0:
+        # Native DSA runs its indexer under no_grad without the auxiliary objective.
+        # Exclude these unused parameters from DDP and optimizer weight decay.
+        for name, parameter in model.named_parameters():
+            if ".self_attention.core_attention.indexer." in name:
+                parameter.requires_grad_(False)
 
 
 def _maybe_install_witness(
