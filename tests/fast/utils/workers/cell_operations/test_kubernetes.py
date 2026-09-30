@@ -7,10 +7,13 @@ import pytest
 
 from miles.utils.test_utils.fault_injector import FailureMode
 from miles.utils.workers.cell_operations import kubernetes as cell_operations_kubernetes
+from miles.utils.workers.cell_operations.base import FaultTarget, StaleFaultTargetError
 from miles.utils.workers.cell_operations.kubernetes import KubernetesCellOperations
+from miles.utils.workers.rpc.common.protocol import ServerHealth
 from miles.utils.workers.worker_handle import WorkerUnreachableError
 from miles.utils.workers.worker_info import WorkerInfo
 from miles.utils.workers.worker_provider.base import CellInfo
+from miles.utils.workers.worker_provider.kubernetes.core.cell_view import CellIncarnation, PodIdentity
 
 
 class FakeHandle:
@@ -376,3 +379,134 @@ class TestInjectFault:
 
 async def _stop_watching() -> None:
     return None
+
+
+# ======================== fault target identity ========================
+
+
+class _IdentityProvider:
+    def __init__(self, infos: dict[str, CellInfo], *, handle_effect: Exception | None = None) -> None:
+        self._infos = infos
+        self.handle_effect = handle_effect
+        self.healths: dict[str, ServerHealth] = {}
+        self.listed_pod_uids: dict[str, list[str]] = {}
+        self.vanished_cells: set[str] = set()
+        self.dispatched: list[tuple[str, object]] = []
+        self.boot_pins: list[str | None] = []
+
+    async def watch_cells(self, reconcile: object) -> object:
+        return _stop_watching_identity
+
+    def get_worker_infos(self, *, cell_ids: list[str]) -> list[list[WorkerInfo]]:
+        return [
+            [
+                WorkerInfo(name=name, generation=0, self_addrs={}, gpu_ids=[], worker_class="fake.Worker")
+                for name in (info.worker_names if (info := self._infos.get(cell_id)) is not None else [])
+            ]
+            for cell_id in cell_ids
+        ]
+
+    def debug_cell_incarnation(self, cell_id: str) -> CellIncarnation | None:
+        if cell_id in self.vanished_cells or (info := self._infos.get(cell_id)) is None:
+            return None
+        uids = self.listed_pod_uids.get(cell_id, [f"uid-{name}" for name in info.worker_names])
+        return CellIncarnation(
+            cell_id=cell_id,
+            workers_hash=info.workers_hash,
+            pods=[PodIdentity(name=name, uid=uid) for name, uid in zip(info.worker_names, uids, strict=True)],
+        )
+
+    def handle_of(self, info: WorkerInfo, *, expected_boot_uuid: str | None = None) -> "_IdentityHandle":
+        self.boot_pins.append(expected_boot_uuid)
+        return _IdentityHandle(info.name, provider=self)
+
+
+class _IdentityHandle:
+    def __init__(self, name: str, *, provider: _IdentityProvider) -> None:
+        self._name = name
+        self._provider = provider
+
+    async def read_health(self) -> ServerHealth:
+        default = ServerHealth(boot_uuid=f"boot-{self._name}", pod_uid=f"uid-{self._name}")
+        return self._provider.healths.get(self._name, default)
+
+    async def submit_without_result(self, method_name: str, /, **kwargs: Any) -> None:
+        self._provider.dispatched.append((self._name, (method_name, kwargs)))
+        if self._provider.handle_effect is not None:
+            raise self._provider.handle_effect
+
+
+def _identity_info(cell_id: str, workers: tuple[str, ...], workers_hash: str = "h") -> CellInfo:
+    return CellInfo(
+        cell_id=cell_id, pool_id="engine", alive=True, worker_names=list(workers), workers_hash=workers_hash, meta={}
+    )
+
+
+def _identity_operations(
+    monkeypatch: pytest.MonkeyPatch, infos: dict[str, CellInfo], *, handle_effect: Exception | None = None
+) -> KubernetesCellOperations:
+    provider = _IdentityProvider(infos, handle_effect=handle_effect)
+    monkeypatch.setattr(cell_operations_kubernetes, "build_rpc_handle_of_worker_info", provider.handle_of)
+    return KubernetesCellOperations(provider=provider, namespace="rl")
+
+
+async def _stop_watching_identity() -> None:
+    return None
+
+
+class TestObserveFaultTarget:
+    async def test_names_the_rank_the_caller_picked_with_its_live_identity(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The observation binds the chosen rank to the cell hash, boot uuid and pod uid it answered with."""
+        operations = _identity_operations(
+            monkeypatch, {"engine-0": _identity_info("engine-0", ("engine-0-0", "engine-0-1"))}
+        )
+
+        target = await operations.observe_fault_target(cell_id="engine-0", sub_index=1)
+
+        assert target == FaultTarget(
+            cell_id="engine-0", sub_index=1, workers_hash="h", boot_uuid="boot-engine-0-1", pod_uid="uid-engine-0-1"
+        )
+        assert operations._provider.boot_pins == [None]
+
+    @pytest.mark.parametrize(
+        "health",
+        [ServerHealth(boot_uuid=None, pod_uid="uid-engine-0-0"), ServerHealth(boot_uuid="boot", pod_uid=None)],
+    )
+    async def test_a_worker_that_cannot_prove_its_identity_is_not_a_target(
+        self, monkeypatch: pytest.MonkeyPatch, health: ServerHealth
+    ) -> None:
+        """A missing boot uuid or pod uid would leave the later write unable to tell a replacement apart."""
+        operations = _identity_operations(monkeypatch, {"engine-0": _identity_info("engine-0", ("engine-0-0",))})
+        operations._provider.healths["engine-0-0"] = health
+
+        with pytest.raises(StaleFaultTargetError, match="no boot or pod identity"):
+            await operations.observe_fault_target(cell_id="engine-0", sub_index=0)
+
+    async def test_a_worker_answering_from_a_pod_the_cell_no_longer_lists_is_not_a_target(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An old pod still answering at the address must not be taken for the cell's current member."""
+        operations = _identity_operations(monkeypatch, {"engine-0": _identity_info("engine-0", ("engine-0-0",))})
+        operations._provider.listed_pod_uids["engine-0"] = ["uid-replacement"]
+
+        with pytest.raises(StaleFaultTargetError, match="no longer lists"):
+            await operations.observe_fault_target(cell_id="engine-0", sub_index=0)
+
+    async def test_a_cell_that_disappears_while_being_observed_is_not_a_target(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A cell gone between the worker listing and the incarnation read reports stale, not a half target."""
+        operations = _identity_operations(monkeypatch, {"engine-0": _identity_info("engine-0", ("engine-0-0",))})
+        operations._provider.vanished_cells.add("engine-0")
+
+        with pytest.raises(StaleFaultTargetError, match="has disappeared"):
+            await operations.observe_fault_target(cell_id="engine-0", sub_index=0)
+
+    async def test_a_cell_that_no_longer_exists_has_no_target(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Observing an unknown cell is stale rather than an index error."""
+        operations = _identity_operations(monkeypatch, {})
+
+        with pytest.raises(StaleFaultTargetError, match="no worker at index 0"):
+            await operations.observe_fault_target(cell_id="engine-0", sub_index=0)
