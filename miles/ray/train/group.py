@@ -395,7 +395,7 @@ class TrainerController:
         # TODO: allow using all cells to update weights (instead of first alive cell)
         # Catch with vanilla retry: cells w/ exceptions are auto marked errored, thus retry will find the next one
         weight_versions = await retry(
-            lambda _: self._execute_first_alive("update_weights", info=info),
+            lambda _: self._execute_first_alive("update_weights", timeout=self.args.update_weights_timeout, info=info),
             max_attempts=_RETRY_MAX_ATTEMPTS,
         )
         return weight_versions[0]
