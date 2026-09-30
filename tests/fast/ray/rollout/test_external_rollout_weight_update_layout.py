@@ -60,7 +60,7 @@ async def _discovered_server(
         meta = _compute_server_cell_meta_from_info(info)
         cells[info.cell_id] = SimpleNamespace(meta=meta, api_client=f"client-{meta.gpu_offset}")
     return RolloutServer(
-        server_cells=cells,
+        all_server_cells=cells,
         args=args,
         context_lock=ContextLock("InferenceController"),
         engine_provider=provider,

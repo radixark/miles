@@ -312,7 +312,7 @@ async def _make_controller_with_serving_cell(
     controller.context_lock = ContextLock("InferenceController")
 
     srv = RolloutServer(
-        server_cells={},
+        all_server_cells={},
         args=args,
         context_lock=controller.context_lock,
         engine_provider=_StubProvider(),
@@ -322,7 +322,7 @@ async def _make_controller_with_serving_cell(
     async with controller.context_lock:
         await srv.add_cell(_make_meta(needs_offload=True))
 
-    cell: ServerCell = track_server_cell(srv.server_cells["inference-engine-0-0-0"])
+    cell: ServerCell = track_server_cell(srv.all_server_cells["inference-engine-0-0-0"])
     cell.router_api_client = _NoopRouterApiClient()
     cell._state = StateServing(addr_info=_addr_info())
     return controller, cell

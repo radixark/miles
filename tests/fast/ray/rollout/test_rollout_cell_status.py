@@ -198,8 +198,8 @@ class TestGetCellStatuses:
         cell_b = _make_cell(StateUninitialized())
         controller = self._controller(
             {
-                "actor": SimpleNamespace(server_cells={"engine-0": cell_a}),
-                "critic": SimpleNamespace(server_cells={"engine-1": cell_b}),
+                "actor": SimpleNamespace(all_server_cells={"engine-0": cell_a}),
+                "critic": SimpleNamespace(all_server_cells={"engine-1": cell_b}),
             }
         )
 
@@ -215,7 +215,9 @@ class TestGetCellStatuses:
         controller = self._controller(
             {
                 "actor": SimpleNamespace(
-                    server_cells={"engine-0": _make_cell(StateServing(addr_info=_ADDR_INFO), workers_hash="hash-7")}
+                    all_server_cells={
+                        "engine-0": _make_cell(StateServing(addr_info=_ADDR_INFO), workers_hash="hash-7")
+                    }
                 )
             }
         )
@@ -233,7 +235,7 @@ class TestGetCellStatuses:
         controller = self._controller(
             {
                 "actor": SimpleNamespace(
-                    server_cells={
+                    all_server_cells={
                         "engine-0": _make_cell(StateUninitialized()),
                         "engine-1": _make_cell(StateUninitialized()),
                     }

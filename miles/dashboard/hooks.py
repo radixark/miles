@@ -368,7 +368,7 @@ def _alive_engine_cells(servers) -> list:
     until recovery completes."""
     cells = []
     for server in servers.values():
-        for cell in server.server_cells.values():
+        for cell in server.all_server_cells.values():
             if cell.is_pending_weights_or_serving:
                 cells.append(cell)
     return cells

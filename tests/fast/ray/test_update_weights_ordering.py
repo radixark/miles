@@ -57,8 +57,8 @@ class _ColocatedCellStub:
 
 
 class _ServerStub:
-    def __init__(self, server_cells: dict[str, _ColocatedCellStub]) -> None:
-        self.server_cells = server_cells
+    def __init__(self, all_server_cells: dict[str, _ColocatedCellStub]) -> None:
+        self.all_server_cells = all_server_cells
         self.health_checker_activeness = ActivenessTracker(active=True)
 
 

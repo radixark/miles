@@ -542,7 +542,7 @@ class TestEveryCellOfAServerIsAborted:
     @staticmethod
     def _server(cells: list[_AbortingCell]) -> RolloutServer:
         return RolloutServer(
-            server_cells={cell.meta.cell_id: cell for cell in cells},
+            all_server_cells={cell.meta.cell_id: cell for cell in cells},
             args=SimpleNamespace(colocate=True),
             context_lock=ContextLock("InferenceController"),
             engine_provider=_UnaddressedEngineProvider(),
@@ -583,7 +583,7 @@ class TestEveryServerOfTheFleetIsAborted:
         controller.context_lock = context_lock
         controller.servers = {
             model_name: RolloutServer(
-                server_cells={cell.meta.cell_id: cell},
+                all_server_cells={cell.meta.cell_id: cell},
                 args=SimpleNamespace(colocate=True),
                 context_lock=context_lock,
                 engine_provider=_UnaddressedEngineProvider(),
