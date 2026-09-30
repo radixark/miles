@@ -30,6 +30,8 @@ def _steps_per_rollout(args: Namespace) -> int:
 
 
 class TorchtitanTrainRayActor(TorchNativeTrainRayActor):
+    backend_name = "torchtitan"
+
     @with_defer(lambda: Timer().start("train_wait"))
     def init(
         self,
@@ -95,7 +97,7 @@ class TorchtitanTrainRayActor(TorchNativeTrainRayActor):
         self.prof.on_init_end()
         return args.start_rollout_id if args.start_rollout_id is not None else start_rollout_id
 
-    def step_runner(self):
+    def _step_runner(self):
         return self.trainer.step_runner()
 
     def _build_ref_runner(self, args: Namespace):
@@ -115,7 +117,7 @@ class TorchtitanTrainRayActor(TorchNativeTrainRayActor):
         return ref_trainer.step_runner()
 
     @contextmanager
-    def ref_context(self):
+    def _ref_context(self):
         for part in self._ref_parts:
             part.cuda()
         try:

@@ -63,7 +63,7 @@ class _Provider(TorchNativeTrainRayActor):
         self.align_token_side_channel = lambda t, pad: t
         self._heartbeat = MagicMock()
 
-    def step_runner(self):
+    def _step_runner(self):
         return self.runner
 
 
@@ -104,7 +104,7 @@ def step(monkeypatch):
 def test_the_rollout_step_runs_ref_then_actor_then_optimizer_under_the_right_stages(step):
     actor = _Provider()
     actor.ref_runner = object()
-    actor.ref_context = lambda: _recording(step["stages"], "ref")
+    actor._ref_context = lambda: _recording(step["stages"], "ref")
     rollout_data = {}
 
     actor._train_core(rollout_id=3, rollout_data=rollout_data)

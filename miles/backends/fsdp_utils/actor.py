@@ -33,6 +33,8 @@ logger = logging.getLogger(__name__)
 
 
 class FSDPTrainRayActor(TorchNativeTrainRayActor):
+    backend_name = "fsdp"
+
     @with_defer(lambda: Timer().start("train_wait"))
     def init(
         self,
@@ -290,7 +292,7 @@ class FSDPTrainRayActor(TorchNativeTrainRayActor):
         checkpoint.save(self, rollout_id)
 
     @contextmanager
-    def ref_context(self):
+    def _ref_context(self):
         if self.ref_model is None:
             yield
             return
@@ -316,10 +318,10 @@ class FSDPTrainRayActor(TorchNativeTrainRayActor):
         with precision_forward_context(self.precision_policy):
             return model(**model_args).logits
 
-    def step_runner(self) -> LinearStepRunner:
+    def _step_runner(self) -> LinearStepRunner:
         return LinearStepRunner(self._forward, self._zero_grad, self._apply_step)
 
-    def after_rollout(self, rollout_id: int, rollout_data) -> None:
+    def _after_rollout(self, rollout_id: int, rollout_data) -> None:
         if self.args.save_debug_train_data is not None:
             train_dump_utils.save_debug_train_data(self.args, rollout_id=rollout_id, rollout_data=rollout_data)
 
