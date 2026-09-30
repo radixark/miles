@@ -75,7 +75,8 @@
 - **Broad scopes**: `run-ci-all` includes both; the nightly cadence includes `ft-short` but not `ft-long`; `run-ci-image` excludes both.
 - **Suite**: `suite="stage-c-8-gpu-h200"`, run by the job of the same name in `.github/workflows/pr-test.yml`.
 - **Hardware**: every entry declares `hardware=["hopper", "blackwell"]`.
-- **ft-long is disabled**: every ft-long entry passes `disabled="FT soak tests pending CI infra support"`, and `tests/ci/run_suite.py` drops every test with a non-`None` `disabled`, so `run-ci-ft-long` executes nothing. Unblocked by an ft-long capable lane; nothing in the tests is known broken.
+- **ft-long is disabled**: `tests/ci/run_suite.py` drops every test with a non-`None` `disabled`, and every ft-long entry passes one, so `run-ci-ft-long` executes nothing. Unblocked by an ft-long capable lane; the tests themselves have no open failure.
+- **Disabled reasons**: entries here start theirs with `FT soak tests pending CI infra support`; `tests/e2e/deploy/test_hot_restart_realistic_gsm8k.py` starts with `needs a Kubernetes cluster backend`.
 - **Fast-layer stand-in**: `tests/fast/e2e/ft/test_rollout_gated_recovery.py` covers suspend → gated relaunch → recovery on CPU meanwhile.
 - **Add a `(scenario, mode)`**: copy an entry file, change `_MODE`.
 - **Add a label**: an entry in `tests/ci/labels.py` plus the matching `run-ci-<key>` GitHub label; the workflow needs no edit.
@@ -104,7 +105,7 @@ PYTHONPATH=. python tests/e2e/ft/conftest_ft/scenario_trainer_no_failure.py run 
 - **`scenario_random_crash`**: only `run`, with `--mode` / `--seed` / `--num-steps` / `--trainer-crash-interval-seconds` / `--rollout-crash-interval-seconds` / `--fully-async`.
 - **`scenario_realistic_gsm8k`**: only `run`, with `--seed` / `--num-rollout` / `--trainer-crash-interval-seconds` / `--rollout-crash-interval-seconds` / `--metric-threshold` / `--fully-async`; no `--mode`.
 - **`scenario_*_fully_async`**: only `run`, with the same options minus `--fully-async`, which they pin.
-- **Dumps**: `resolve_dump_dir` in `conftest_ft/app.py` puts them under `$MILES_TEST_DUMPS_ROOT/<run_id>/<test_name>/`, falling back to `/node_public/dumps` when the cluster sets no root. A comparison scenario's `run` deletes them when it ends; the soak scenarios (`scenario_random_crash`, `scenario_realistic_gsm8k`) only clear a stale directory before starting, so a finished soak leaves its dumps behind for inspection. The run id is what stops two agents running the same test from deleting each other's dumps.
+- **Dumps**: `resolve_dump_dir` in `tests/utils/soak/core/utils.py` puts them under `$MILES_TEST_DUMPS_ROOT/<run_id>/<test_name>/`, falling back to `/node_public/dumps` when the cluster sets no root. A comparison scenario's `run` deletes them when it ends; the soak scenarios refuse a nonempty dump directory and never delete it. The run id is what stops two agents running the same test from deleting each other's dumps.
 
 ### Cluster Backend
 
@@ -155,13 +156,13 @@ hf upload --repo-type dataset fzyzcjy/miles-test-rollout-Qwen3-30B-A3B-5layer \
 | ray | actor | `inject_fault:sigkill`, `inject_fault:exit`, `inject_fault:segfault` |
 | ray | rollout | `inject_fault:sigkill` |
 | kubernetes | actor | those three kills, plus `delete_pod` |
-| kubernetes | rollout | `exec_sigkill`, `delete_pod` |
+| kubernetes | rollout | `exec_sigkill`, `exec_sigstop`, `delete_pod` |
 
 - **Each `FailureMode` is its own form**: pod deletion is a quarter of a kubernetes trainer injection, not half of it.
 - **The actor class decides what a kill means**, since an injection carries only a mode and a `sub_index`: `TrainRayActor` and `ServeActor` crash their own process, the only thing that costs torchft a member, while `CommandActor` SIGKILLs the isolated process group rooted at the engine subprocess. That includes the launch shell and every engine child it spawned, so a dead cell cannot leave an orphaned scheduler holding GPU memory while its replacement starts; the Ray actor observes the subprocess exit and reports the death as production sees it.
-- **Why an engine takes sigkill alone**: exiting and segfaulting are what a process does to itself from the inside, and no signal reproduces them from outside — SIGTERM is a clean shutdown, SIGSEGV is delivered rather than provoked. The other modes are refused, not approximated.
+- **Why an engine never exits or segfaults**: exiting and segfaulting are what a process does to itself from the inside, and no signal reproduces them from outside — SIGTERM is a clean shutdown, SIGSEGV is delivered rather than provoked. An engine takes SIGKILL, plus SIGSTOP on kubernetes; the other modes are refused, not approximated.
 - **How a kubernetes engine takes a kill**: its pod runs sglang as the entrypoint (`CommandWorkerSpec`), so no actor and no rpc server exist to receive `inject_fault`. The kill is delivered from outside instead, as a `kubectl exec` SIGKILL of the sglang processes in the engine container, and deleting the pod is the second, coarser form — the engine *is* the pod.
-- **Deletion is the test layer's own `kubectl delete pod`**, timeout-bounded and selecting on release, pool and cell index. It models an outsider, and deliberately avoids the production heal path `KubernetesCellOperations.suspend`, whose bugs an injector sharing it would hide.
+- **Deletion is the test layer's own**: the async Kubernetes client deletes the observed pod under UID and resource-version preconditions, timeout-bounded, and waits until that UID is absent. It models an outsider, and deliberately avoids the production heal path `KubernetesCellOperations.suspend`, whose bugs an injector sharing it would hide.
 
 ### `scenario_trainer_no_failure`
 
@@ -305,8 +306,8 @@ Healing witness: one heal per target phase, at P+2 (healed = last cell, ckpt src
 ### `scenario_rollout_deterministic`
 
 ```
-Type: comparison; both sides run the identical command, only the target is wrapped in the
-      fault injector, through the pipeline's target_side_context hook
+Type: comparison; both sides run the identical command through run_cell_soak, the comparison
+      app's run_side; the baseline side declares no targets, so it is never faulted
 Entry: test_rollout_deterministic__kill_rollout__dp4.py, ft-long
 Steps: 8 rollouts (NUM_ROLLOUTS)
 Requires: mode.has_real_rollout, and ft_components == ("rollout",) exactly
@@ -318,15 +319,19 @@ Regime (both sides):
     --sglang-attention-backend flashinfer and --deterministic-mode
   - --debug-deterministic-collective and scenario_trainer_deterministic's deterministic env vars
   - --sglang-disable-radix-cache
+  - --update-weight-transfer-mode p2p --sglang-router-policy round_robin: disaggregated P2P only
   - --rollout-health-check-interval 1
 
 Injection (target side only):
   1. Rollout cells, seed 42, exponential mean CRASH_INTERVAL_SECONDS (30s)
   2. Forms drawn per (cluster backend, cell type), as in the soaks
-  3. Stop accepting faults after six completed rollouts, leaving the final two rollouts for recovery
-  4. Stop the injector, waiting out a mid-flight injection for at most
-     STOP_AND_JOIN_TIMEOUT_SECONDS (180s), then re-use the soak's rollout witnesses: >= 2
-     accepted rollout injections, each paired with one completed recovery cycle
+  3. start_after_rollout_id=0: no fault is admitted before rollout 0 finishes as a normal step
+  4. SoakTailConfig.create(num_rollout=8) closes admission once rollout 4 finishes, leaving the
+     final three rollouts for recovery
+  5. After the runner returns: assert_min_injections (>= 2 rollout injections),
+     assert_injections_recovered (every applied fault recovered, as its form defines it) and
+     assert_faults_span_progress_windows (faults land in >= MIN_FAULT_PROGRESS_WINDOWS (2)
+     windows separated by completed rollouts)
 
 Assertions:
   1. Reconfigure events: zero on BOTH sides - crashing an engine must not reconfigure trainer cells
@@ -336,14 +341,15 @@ Assertions:
   5. Weights moved, per side: the engine weight checksum is not identical across all rollouts
 ```
 
-- **Why it exists**: an engine dying and being replaced mid-generation is supposed to be invisible to training, and "invisible" is a claim about bits; the rollout soak only ever asserted survival.
+- **Why it exists**: an engine dying and a fresh one taking over mid-generation is supposed to be invisible to training, and "invisible" is a claim about bits; the rollout soak asserts survival only.
 - **Why the shared deterministic recipe**: the assertion is deterministic replay across fresh inference engines, not true-on-policy training. Reusing the same FlashInfer recipe as the main deterministic trainer-FT test avoids a second, incompatible attention-backend contract.
 - **Why `--sglang-disable-radix-cache`**: a replacement engine serves with a cold prefix cache where the baseline's was warm, and deterministic inference is nowhere documented as prefix-cache-length invariant.
 - **Why this recipe disables batch-variant MM fallback**: a rollout worker loss changes co-batching while the pool is healing; permitting an `einsum` fallback would make the same seeded request depend on that temporary batch shape. The scenario injects the environment override without changing the production default.
 - **Why `--rollout-health-check-interval 1`**: healthy generation can finish between two five-second polls; the short scenario needs at least one fresh Serving observation for its rollout witness.
 - **Why this scenario polls the fault window every 0.2 seconds**: generation windows are only a few seconds long, so the generic two-second scheduler cadence can miss every Serving observation in an eight-rollout run.
-- **Why one quiescent poll on Ray only**: a fault may land during a weight update or an offloaded phase by design, so a stable-serving gate would only delay it. The Kubernetes forms (`exec_sigkill`, `delete_pod`) keep the generic 60-poll gate.
-- **Why the final two rollouts accept no new fault**: the scheduler keeps observing recovery but closes admission after rollout 5, so teardown cannot race a newly accepted replacement.
+- **Why one quiescent poll on Ray only**: a fault may land during a weight update by design, so a stable-serving gate would only delay it. On Kubernetes the rollout forms (`exec_sigkill`, `exec_sigstop`, `delete_pod`) keep the generic 60-poll gate.
+- **Why the final three rollouts accept no new fault**: the runner keeps observing recovery after admission closes, so teardown cannot race a newly accepted replacement.
+- **Why the progress-window witness**: faults confined to one window between completed rollouts only show that one rollout survived a fault, not that faults cost the run nothing across its rollouts.
 - **Why every namespace, not just `train/`**: an engine crash shows up first in `rollout/raw_reward` or `rollout/log_probs`. `perf/` is left out by name, being wall-clock and throughput that a relaunch moves by definition, and a metric in neither namespace fails the run rather than being dropped quietly.
 - **Why the weights-moved gate**: bitwise equality is also satisfied by two runs that trained on nothing.
 - **Why not a loss or reward curve**: neither is a progress signal here — the reward is `deterministic_random`, a hash of the response, and GRPO's surrogate loss is not monotone even while a run learns. Over eight rollouts neither moves for a reason worth asserting, and the weights either changed or they did not.
@@ -365,50 +371,53 @@ Targeting and assertions follow the mode's ft_components:
     that does not exist, so FTTestMode refuses to be constructed at all
 
 Architecture (external fault injection, not inside the training loop):
-  1. Start indep_dp training + api server (port 18080) + --mini-ft-controller-enable
-  2. A background daemon thread iterates every 2s:
-     a. GET /api/v1/cells, keeping only the targeted cell types
-     b. Append that whole snapshot to the injector's event log, its only state
+  1. Start indep_dp training + api server + --mini-ft-controller-enable, in a worker thread
+     of the test process
+  2. SoakRunner (tests/utils/soak/core/) iterates every 2s on one asyncio loop:
+     a. Observe the targeted cells and append the snapshot to the event log
+     b. Admit nothing until every earlier action has recovered
      c. Collect the cell kinds whose own schedule is due; stop here if none
-     d. A due kind is ready only at a quiescent point: every replica of that kind present
-        and Healthy for 60 consecutive polls (~120s) - long enough to outlast the ~95s
-        stale-status window - and at least one spare replica to survive the kill
-     e. Draw a ready kind, a cell of that kind and one of its fault forms - preferring a form
-        the log shows has never worked - apply it, record the attempt, reset that kind's
-        quiescence streak, then draw its next injection time
-  3. inject_fault() runs on the actor's own ray concurrency group thread and kills the process,
-     or the test layer deletes the pod on kubernetes
-  4. The health checker notices by heartbeat timeout
-  5. The mini FT controller recovers it (suspend -> resume)
-  6. Verify: training completes, no hangs, prod assertions pass
+     d. A due kind is ready only at a quiescent point: every expected replica present and
+        Healthy for 60 consecutive polls (~120s); every request resets its kind's streak
+     e. Draw a ready kind and one of its fault forms - preferring one the log shows has never
+        worked - then a cell that form may hit: all replicas ready, >= 2 of them when the
+        form harms its target
+     f. Record the request, apply it as its own task, and draw that kind's next injection
+        time once the fault is applied
+  3. inject_fault() kills the actor's process; on kubernetes the test layer also signals
+     engine processes or deletes the pod
+  4. The mini FT controller recovers the cell (suspend -> resume)
+  5. Admission closes once rollout num_steps - max(3, num_steps // 5) - 1 finishes
+  6. Whether training passes or fails: close admission, a final observation in which every
+     action must have returned and recovered, teardown, then the evidence archive
 
 Per-kind schedules: exponential, mean that kind's --*-crash-interval-seconds
 
 Witnesses, counted per kind:
-  forms   -> every form the enabled components make available succeeded at least once, so a
-             soak that clears the injection floors on one form still has to draw the others
-  train   -> >= 2 accepted actor injections, >= 2 healed cells across the
-             CellReconfigureEvents, and every injected cell index paired with a healing of
-             that same index - no debt left when training ends
-  rollout -> >= 2 accepted rollout injections, and every injected cell observed Serving
-             at least once on a reading taken >= 120s after its last injection - late
-             enough that the ~95s stale-status window cannot have produced it
+  forms   -> every form the enabled components make available applied at least once
+  train   -> >= 2 applied actor injections, each recovered: a new incarnation of the same
+             cell ready and named by a CellReconfigureEvent healing that index, then a
+             normal training step
+  rollout -> >= 2 applied rollout injections, each recovered: a new incarnation of the same
+             cell observed Serving, then a normal training step
+  tail    -> every action returned and recovered, then a normal training step after
+             admission closed
+  end     -> the final observation holds every expected cell of each kind alive and ready
 
-Faults are random, so beyond the witnesses neither an exact sequence nor the end-state
-membership is asserted.
+Faults are random, so beyond the witnesses no exact sequence is asserted.
 ```
 
 - **Why per-kind schedules and counting**: each kind's cadence stays what it would be in a single-kind soak, and the trainer assertion reads only `actor` injections while the rollout one reads only `rollout` — a mixed soak cannot let one kind's crashes pay for the other's missing heal.
 - **Why rollout gets the longer interval**: the replacement pays a full sglang launch plus a weight sync before it can serve again.
 - **No per-kind quota**: when the trainer has no spare replica for a long stretch every injection lands on rollout, and the failure form is a loud "too few trainer injections" rather than a silent pass.
-- **Why injections wait for quiescence**: the api server reports a just-killed cell Healthy for ~95s, far longer than the poll interval, and indep_dp cannot heal from zero survivors, so a naive Healthy count would eventually kill the last replica. A 60-poll all-healthy streak (~120s, the same bound the recovery witness uses) outlasts that window, so by the time a kind is ready again its readings are fresh and every replica really is back; the injector itself keeps no per-cell recovery state to corrupt. A failed injection attempt forfeits the streak too - the kill, not the response, may be what survived the failure.
-- **A form that leaves its cell running**: `BaseFaultForm.harms_cell` is false for it, so the draw is recorded without charging that cell a recovery; the reset quiescence streak alone paces the next injection.
-- **Why quiescence counts replicas against the most ever seen**: a deleted pod vanishes from the listing instead of reading unhealthy, and the survivors all read healthy; only the missing replica says the kind is still recovering.
+- **Why injections wait for quiescence**: the api server reports a just-killed cell Healthy for ~95s, far longer than the poll interval, and indep_dp cannot heal from zero survivors, so a naive Healthy count would eventually kill the last replica. A 60-poll all-healthy streak (~120s) outlasts that window.
+- **Why quiescence counts replicas against `SoakTargetConfig.expected_count`**: a deleted pod vanishes from the listing rather than reading unhealthy, and the survivors all read healthy; only the missing replica says the kind is still recovering.
 - **Why every enabled form has to land**: the floors count injections, not forms, so `inject_fault:sigkill` alone could clear them while `delete_pod` is never tried. This witness makes the draw's preference for an untried form binding.
-- **Why the per-cell pairing**: a floor of ">= 2 healings" passes whenever the last crash never recovered. The default intervals are short enough that a soak reliably clears the floors.
+- **Why every injection recovers on its own cell**: a floor of ">= 2 healings" passes whenever the last crash never recovered. The default intervals are short enough that a soak reliably clears the floors.
 - **Why the step budget is 60**: a rollout injection needs a 60-poll (~120s) quiescent streak plus a mean-240s exponential wait, so the second accepted rollout injection the witness demands takes well over ten minutes. The budget buys that time instead of lowering the quiescence gate that keeps the injector from killing a kind's last live replica.
-- **Why the rollout witness is one-sided**: the trainer witness reads the run's own CellReconfigureEvents, which miss nothing; the rollout witness reads sampled polls, which miss windows by construction. It therefore never demands seeing the down half of a recovery - it demands a Serving reading fresh enough (>= 120s after the cell's last injection, past the ~95s staleness) to prove the survivor really serves. Undercounting an intermediate recovery cannot fail the run; claiming one that never happened cannot pass it.
-- **Stopping the injector**: `stop_and_join` asserts the thread actually stopped, since a thread still mid-injection could crash a cell nothing will heal, and would race the witness being read.
+- **Why the rollout witness is one-sided**: sampled polls miss windows by construction, so it never demands seeing the down half of a recovery. It demands a new incarnation of the cell observed Serving after the fault applied; a stale Healthy reading of the old incarnation cannot satisfy it.
+- **Evidence**: typed events in `<dump_dir>-soak/<session_id>/events.jsonl`, requests flushed before dispatch; after teardown the training-event logs, discarded generations included, are copied under `sources/` with SHA-256 digests, and the checks read those copies.
+- **Code**: the soak engine lives in `tests/utils/soak/core/`, the FT forms, observers and checkers in `tests/utils/soak/ft/`.
 
 ### `scenario_realistic_gsm8k`
 
@@ -424,14 +433,14 @@ Recipe: Qwen2.5-0.5B-Instruct, GRPO, 250 rollouts, over the gsm8k RL recipe of
         reference wandb curves
 Layout: mirrors kill_train__dp2_cp2__moe_5layer - 2 cells x CP2 on 4 train GPUs + 4 rollout engines
         x 1 GPU, disaggregated
-Faults: scenario_random_crash's injection loop (shared conftest_ft/fault_injection/), with
+Faults: scenario_random_crash's soak runner (run_cell_soak over prepare_gsm8k_run's run), with
         --ft-components train rollout asked for outright, so both trainer cells and engines crash
 
 Assertions:
   1. --ci-metric-checker-key eval/gsm8k against a threshold that must stay identical to the
      no-fault baseline's (0.55); passes if ANY eval reaches it
-  2. assert_healing, shared with scenario_random_crash, so both the trainer reconfigure
-     assertions and the rollout recovery witness apply here
+  2. assert_healing, shared with scenario_random_crash, so the trainer and rollout injection
+     floors, their recovery witnesses and the every-enabled-form witness apply here
 
 Fault recovery must not cost end-to-end learning, which the comparison scenarios cannot observe.
 ```
@@ -446,11 +455,11 @@ Entries: test_random_crash_fully_async__kill_train_rollout__dp2_cp2.py,
          test_realistic_gsm8k_fully_async__kill_train_rollout.py (no mode)
 Differs from the twin: train_async.py instead of train.py, plus --fully-async
                        --pause-generation-mode in_place; test name gains a _fully_async suffix,
-                       which separates the dump dirs and wandb runs
+                       which separates the dump dirs, and for the gsm8k twin the wandb run
 Same as the twin: model, parallelism, batch sizes, CLI and every assertion, by construction
 ```
 
 - **Why it matters**: production fully-async keeps the engines generating across weight updates, so a crash lands the system in states no strictly-alternating soak reaches.
 - **Why `--pause-generation-mode in_place`**: the default retract mode can deadlock `flush_cache` under load, and a soak whose verdict is "training finished without hanging" cannot tell that deadlock from the failure it exists to catch.
-- **Asserted before the cluster comes up**: the mode has real engines. Recorded rollout data would prove nothing about generating while training.
+- **Asserted before the cluster comes up**: `scenario_random_crash_fully_async`'s mode has real engines. Recorded rollout data would prove nothing about generating while training.
 - **Deliberately uncovered**: `train_async.py` without `--fully-async`, the strictly easier case, at tens of minutes to hours of 8-GPU time per soak.

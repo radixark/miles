@@ -17,9 +17,10 @@ PYTHONPATH=. python tests/e2e/deploy/conftest_deploy/hot_restart/scenario_hot_re
   `generate-data`; the multi policy one exposes `run` / `verify`; the realistic soak exposes `run`
   only; hot restart deterministic nests these under one subcommand per mode.
 - **Dump dirs**: `$MILES_TEST_DUMPS_ROOT/<run_id>/<TEST_NAME>/`, defaulting to `/node_public/dumps` when
-  the cluster sets no root (only `run` deletes it, and only its own run id's subtree; `--dump-dir`
-  overrides for `baseline` / `target` / `compare`); multi policy:
+  the cluster sets no root; `--dump-dir` overrides for `baseline` / `target` / `compare`; multi policy:
   `<output_dir>/multi_policy_solver_verifier/<run_id>/`.
+- **Dump deletion**: a comparison `run` deletes its dump dir when it ends; the realistic soak refuses a
+  nonempty dump dir and never deletes it.
 
 ## Test Specifications
 
@@ -103,37 +104,14 @@ over at rollout 0 with the run.
 
 ### `scenario_hot_restart_realistic_gsm8k`
 
-```
-Type: single run, ft's scenario_realistic_gsm8k with hot restarts instead of kills
-Steps: as scenario_realistic_gsm8k
-Injection: HotRestartFaultForm at random intervals through the ordinary cell fault scheduler,
-        seed logged
-Eligibility: two healthy virtual cells; the form does not harm its target, so both remain eligible
-        after a take-over without pretending a real trainer or rollout cell was targeted
-Terminal lifecycle: the form reads progress from the same dump directory as checkpoints and events;
-        the virtual-cell provider returns no targets after rollout 234, leaving rollouts 235-249
-        free of new take-overs
-Landing signal: both replaced workloads (orchestrator, rollout-executor) carry a stamp other
-        than the one they carried at the draw - rewritten, not added
-Observation: as in scenario_hot_restart_deterministic - snapshots start after the release settles
-Load-bearing: adds --save/--load and --save-interval 3 (bounds one take-over's cost); mean draw
-        interval 600s (--hot-restart-interval-seconds)
-
-1. Run the realistic gsm8k recipe while the plan injects hot restarts
-2. Assert: gsm8k reward improves as in scenario_realistic_gsm8k
-3. Assert: >= MIN_HOT_RESTARTS take-overs landed; no injection attempt failed; every relaunch
-   thread finished without raising (where the run's own metric verdict surfaces); each landed
-   take-over stamped orchestrator and rollout-executor once; no other workload rolled or lost a
-   pod; one trainer boot uuid throughout, first read before any take-over stamped a workload; no
-   take-over threw away more than MAX_REDONE_STEPS_PER_TAKE_OVER = SAVE_INTERVAL + 1 steps - one
-   save interval, plus the one step the checkpoint tracker read at the draw may still lag the
-   save the run had just written; and the same bound again against the resume point measured
-   after the fact - one .trash_* per take-over, read in the order the logs were rolled aside (a
-   take-over can fire while the run is still catching up, so how far a log trained says nothing
-   about which take-over left it), the log that followed one keeping a prefix of the log it
-   replaced, and the steps past that prefix being what the take-over cost
-4. Artifact: per take-over cost (index, checkpoint held, step reached) in
-   <dump_dir>/hot_restart/evidence.json
-
-Hot restart rides the ft injection machinery so a future soak can mix it with pod kills.
-```
+- **Code**: entry `run_ci` in `conftest_deploy/hot_restart/scenario_hot_restart_realistic_gsm8k.py`; soak engine as in the ft README; deployment adapters and checkers in `tests/utils/soak/deploy/`; shared hot restart facts in `tests/utils/deploy/hot_restart/`.
+- **Training**: the gsm8k recipe of `tests/utils/soak/recipes/gsm8k.py`, synchronous, 250 rollouts by default, disaggregated P2P weight transfer, `--save-interval 3`, fault tolerance off (`enable_fault_tolerance=False`).
+- **Accuracy**: the threshold is the recipe's `DEFAULT_METRIC_THRESHOLD` (0.55); the CLI takes no `--metric-threshold`.
+- **Take-overs**: exponential, mean 600s (`--hot-restart-interval-seconds`); at least `MIN_HOT_RESTARTS` (2) applied.
+- **Eligibility**: a take-over needs the target ready, a finished rollout id and a saved checkpoint.
+- **Recovery**: a take-over has recovered once any later observation shows the release ready with the restamped workloads, a newer saved checkpoint and a later finished rollout; the next take-over waits for it.
+- **Launches**: every launch runs in a worker thread of the test process and records its `LaunchOutcome`; no launch may end `FAILED`, and one superseded by a take-over needs that next take-over applied and requested before it ended.
+- **Tail**: admission closes before the final 20 percent of rollouts; after it closes every take-over must have returned and recovered.
+- **Assertions**: only the orchestration workloads roll, the trainer never reboots, and each take-over redoes at most `SAVE_INTERVAL + 1` steps, measured at the draw and again from the discarded event logs.
+- **Artifacts**: `<dump_dir>-soak/<session_id>/{events.jsonl, hot_restart/evidence.json, sources/}`; `sources/` holds the active and discarded training-event logs with SHA-256 digests.
+- **CI**: suite `stage-c-8-gpu-h200`, labels `deploy` and `ft-long`, registered `disabled`: it needs a Kubernetes backend, which the CI lane does not provide.
