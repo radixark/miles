@@ -12,6 +12,7 @@ from miles.ray.train.cell import TrainerCell
 from miles.ray.train.cell_monitor import create_trainer_cell_health_checker
 from miles.ray.train_actor import WeightUpdateOutput
 from miles.utils import object_store
+from miles.utils.arguments import supports_partial_target_weight_update
 from miles.utils.async_utils import AsyncioGatherUtils, gather_and_raise_first
 from miles.utils.audit_utils.event_analyzer import analyzer as event_analyzer
 from miles.utils.audit_utils.event_logger.logger import get_event_logger, is_event_logger_initialized
@@ -29,6 +30,7 @@ from miles.utils.ft_utils.health_checker import ActivenessTracker, NoopHealthChe
 from miles.utils.ft_utils.indep_dp import IndepDPInfo, create_tcp_store
 from miles.utils.init_once import InitOnce, init_once
 from miles.utils.logging_utils import configure_logger
+from miles.utils.misc import split_evenly
 from miles.utils.retry_utils import NonRetryableError, retry, retry_until_deadline
 from miles.utils.test_utils.ft_test_actions import FTTestActionControllerExecutor
 from miles.utils.tracking_utils.structured_log import log_structured
@@ -395,13 +397,36 @@ class TrainerController:
     async def update_weights(self, info: UpdatableEngines, rollout_id: int | None = None) -> WeightUpdateOutput:
         """Broadcast weights to rollout engines and return which of them now serve which version."""
         log_structured(logger.info, tag="ft", op="update_weights", phase="start", rollout=rollout_id)
-        # TODO: allow using all cells to update weights (instead of first alive cell)
+        if supports_partial_target_weight_update(self.args):
+            return await self._update_weights_on_every_alive_cell(info)
+        else:
+            return await self._update_weights_on_first_alive_cell(info)
+
+    async def _update_weights_on_first_alive_cell(self, info: UpdatableEngines) -> WeightUpdateOutput:
         # Catch with vanilla retry: cells w/ exceptions are auto marked errored, thus retry will find the next one
         outputs = await retry(
             lambda _: self._execute_first_alive("update_weights", timeout=self.args.update_weights_timeout, info=info),
             max_attempts=_RETRY_MAX_ATTEMPTS,
         )
         return _unique(outputs)
+
+    async def _update_weights_on_every_alive_cell(self, info: UpdatableEngines) -> WeightUpdateOutput:
+        alive_cells = [c for c in self._cells if c.is_alive]
+        if not alive_cells:
+            raise NonRetryableError("No alive cells, therefore cannot update weights")
+        splitted_infos = [info[sli] for sli in split_evenly(len(info.engine_cell_ids), len(alive_cells))]
+        cells_and_splitted_infos = [
+            (c, s) for c, s in zip(alive_cells, splitted_infos, strict=True) if s.engine_cell_ids
+        ]
+
+        outputs_per_cell = await asyncio.gather(
+            *[
+                c.execute("update_weights", timeout=self.args.update_weights_timeout, info=s)
+                for c, s in cells_and_splitted_infos
+            ]
+        )
+
+        return WeightUpdateOutput.merge([_unique(outputs) for outputs in outputs_per_cell])
 
     async def get_deployment_identity(self) -> DeploymentIdentity:
         return self._deployment_identity

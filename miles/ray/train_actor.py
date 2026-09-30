@@ -41,6 +41,16 @@ class WeightUpdateOutput:
     weight_version: int | None
     failed_cell_ids: tuple[str, ...]
 
+    @classmethod
+    def merge(cls, outputs: list["WeightUpdateOutput"]) -> "WeightUpdateOutput":
+        if not outputs:
+            return cls(weight_version=None, failed_cell_ids=())
+        failed_cell_ids = [cell_id for output in outputs for cell_id in output.failed_cell_ids]
+        assert len(failed_cell_ids) == len(
+            set(failed_cell_ids)
+        ), f"a cell failed under more than one trainer cell: {failed_cell_ids}"
+        return cls(weight_version=outputs[0].weight_version, failed_cell_ids=tuple(failed_cell_ids))
+
 
 def get_local_gpu_id():
     if CELL_INDEX_ENV_VAR in os.environ:
