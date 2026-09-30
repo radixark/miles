@@ -56,13 +56,20 @@ class EventLogger:
             assert self._context_var.get() == merged
             self._context_var.reset(token)
 
-    def log(self, event_cls: type[EventBase], partial: dict[str, Any], *, print_log: bool = True) -> None:
+    def log(
+        self,
+        event_cls: type[EventBase],
+        partial: dict[str, Any],
+        *,
+        print_log: bool = True,
+        include_context: bool = True,
+    ) -> None:
         event = event_cls(
             **{
                 **partial,
                 "timestamp": datetime.now(timezone.utc),
                 "source": self._source,
-                **self._context_var.get({}),
+                **(self._context_var.get({}) if include_context else {}),
             }
         )
         line = event.model_dump_json() + "\n"
