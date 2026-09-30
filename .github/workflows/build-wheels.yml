@@ -40,7 +40,7 @@ on:
         default: 'miles-main'
         type: string
       keep_superseded:
-        description: 'Keep the releases'' other-version wheels (while docker/Dockerfile still pins them)'
+        description: 'Keep other-version wheels; TE always keeps them while TE_ON_SCHEDULE is false'
         required: false
         default: false
         type: boolean
@@ -109,13 +109,6 @@ jobs:
           SGLANG_IMAGE="lmsysorg/sglang:$(dockerfile_arg SGLANG_IMAGE_TAG)"
 
           is_sha() { [[ "$1" =~ ^[0-9a-f]{40}$ ]]; }
-          ROUTER_SHA=$(gh api "repos/${ROUTER_REPO}/commits/${ROUTER_REF}" --jq .sha)
-          is_sha "$ROUTER_SHA" || fail "cannot resolve ${ROUTER_REPO}@${ROUTER_REF}"
-          # int4_qat follows the kernel directory, not every miles main commit.
-          INT4_SHA=$(gh api "repos/${GITHUB_REPOSITORY}/commits?sha=main&path=${INT4_QAT_PATH}&per_page=1" --jq '.[0].sha')
-          is_sha "$INT4_SHA" || fail "cannot resolve ${INT4_QAT_PATH} on main"
-          TE_SHA=$(gh api "repos/${TE_REPO}/commits/${TE_REF}" --jq .sha)
-          is_sha "$TE_SHA" || fail "cannot resolve ${TE_REPO}@${TE_REF}"
 
           # Sets BUILT to the commit release $1's manifest $2 records, empty when the
           # release holds none yet. A failed lookup fails the job instead of reading
@@ -139,14 +132,22 @@ jobs:
           wanted() { [ "$WHEELS_INPUT" = all ] || [ "$WHEELS_INPUT" = "$1" ]; }
 
           ROUTER_X86=false; ROUTER_ARM64=false; INT4_X86=false; TE_X86=false
+          ROUTER_SHA=""; INT4_SHA=""; TE_SHA=""
           if wanted sgl-router; then
+            ROUTER_SHA=$(gh api "repos/${ROUTER_REPO}/commits/${ROUTER_REF}" --jq .sha)
+            is_sha "$ROUTER_SHA" || fail "cannot resolve ${ROUTER_REPO}@${ROUTER_REF}"
             if stale "$ROUTER_SHA" "$TAG_X86" sglang_router-source.json; then ROUTER_X86=true; fi
             if stale "$ROUTER_SHA" "$TAG_ARM64" sglang_router-source.json; then ROUTER_ARM64=true; fi
           fi
           if wanted int4_qat; then
+            # int4_qat follows the kernel directory, not every miles main commit.
+            INT4_SHA=$(gh api "repos/${GITHUB_REPOSITORY}/commits?sha=main&path=${INT4_QAT_PATH}&per_page=1" --jq '.[0].sha')
+            is_sha "$INT4_SHA" || fail "cannot resolve ${INT4_QAT_PATH} on main"
             if stale "$INT4_SHA" "$TAG_X86" fake_int4_quant_cuda-source.json; then INT4_X86=true; fi
           fi
           if wanted te && { [ "$EVENT" = workflow_dispatch ] || [ "$TE_ON_SCHEDULE" = true ]; }; then
+            TE_SHA=$(gh api "repos/${TE_REPO}/commits/${TE_REF}" --jq .sha)
+            is_sha "$TE_SHA" || fail "cannot resolve ${TE_REPO}@${TE_REF}"
             if stale "$TE_SHA" "$TAG_X86" transformer_engine-source.json; then TE_X86=true; fi
           fi
 
@@ -323,8 +324,7 @@ jobs:
 
   # Publishes from a GitHub-hosted runner, so the miles-wheels write token never
   # reaches the shared self-hosted build hosts. Nothing is published when any
-  # selected build failed. The CI command App token is minted with Contents: write
-  # on radixark/miles-wheels only (docs/developer/ci/01-label.md).
+  # selected build failed. The dedicated App is installed only on miles-wheels.
   publish:
     needs: [check, build-router, build-int4-x86, build-te-x86]
     if: >-
@@ -342,8 +342,8 @@ jobs:
       - uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1
         id: token
         with:
-          client-id: ${{ vars.CI_COMMAND_APP_CLIENT_ID }}
-          private-key: ${{ secrets.CI_COMMAND_APP_PRIVATE_KEY }}
+          client-id: ${{ vars.WHEELS_APP_CLIENT_ID }}
+          private-key: ${{ secrets.WHEELS_APP_PRIVATE_KEY }}
           owner: radixark
           repositories: miles-wheels
           permission-contents: write
@@ -360,15 +360,23 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           pattern: wheels-${{ matrix.arch }}-*
-          merge-multiple: true
+          merge-multiple: false
           path: ${{ runner.temp }}/wheels
 
       - name: Sync into the miles-wheels release
         env:
           GH_TOKEN: ${{ steps.token.outputs.token }}
           KEEP_SUPERSEDED: ${{ inputs.keep_superseded && '--keep-superseded' || '' }}
+          ARCH: ${{ matrix.arch }}
+          BUILD_ARCH: ${{ matrix.build_arch }}
         run: |
           pip install packaging
-          ls -l "${RUNNER_TEMP}/wheels"
-          WHEEL_DIR="${RUNNER_TEMP}/wheels" python miles-wheels/build_wheels.py upload \
-            --cuda "$CUDA" --arch ${{ matrix.build_arch }} --torch "$TORCH" $KEEP_SUPERSEDED
+          for wheel_dir in "${RUNNER_TEMP}/wheels/wheels-${ARCH}-"*; do
+            keep_superseded=()
+            if [ "$KEEP_SUPERSEDED" = --keep-superseded ] \
+              || { [ "$TE_ON_SCHEDULE" = false ] && [ "${wheel_dir##*/}" = "wheels-${ARCH}-te" ]; }; then
+              keep_superseded=(--keep-superseded)
+            fi
+            WHEEL_DIR="$wheel_dir" python miles-wheels/build_wheels.py upload \
+              --cuda "$CUDA" --arch "$BUILD_ARCH" --torch "$TORCH" "${keep_superseded[@]}"
+          done
