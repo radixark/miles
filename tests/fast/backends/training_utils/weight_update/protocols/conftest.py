@@ -258,10 +258,6 @@ class _P2PSenderHarness:
             self._p2p_protocol.RemoteTransferPlan = original_plan
 
     def connect(self, protocol: Any, apis: list[_FakeRolloutApi]) -> None:
-        (gpu_count,) = {api.gpu_count for api in apis} or {1}
-        protocol.transfer_plan._rollout_num_gpu_per_engine = gpu_count
-        protocol.transfer_plan._rollout_engine_count = len(apis)
-        protocol.transfer_plan._rollout_num_gpus = gpu_count * len(apis)
         protocol.connect(
             rollout_engines=apis,
             engine_gpu_counts=[api.gpu_count for api in apis],
