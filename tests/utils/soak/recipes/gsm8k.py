@@ -227,6 +227,7 @@ def get_gsm8k_train_args(
 
     fault_tolerance_args = API_SERVER_ARGS
     fault_tolerance_args += "--update-weight-transfer-mode p2p "
+    fault_tolerance_args += "--sglang-remote-instance-weight-loader-start-seed-via-transfer-engine "
     if enable_fault_tolerance:
         fault_tolerance_args += (
             "--use-fault-tolerance " f"--ft-components {' '.join(FT_COMPONENTS)} " "--mini-ft-controller-enable "

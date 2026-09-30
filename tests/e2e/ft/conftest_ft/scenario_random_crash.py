@@ -128,6 +128,7 @@ def _build_train_args(
     )
     if ft_mode.has_real_rollout:
         train_args += "--update-weight-transfer-mode p2p "
+        train_args += "--sglang-remote-instance-weight-loader-start-seed-via-transfer-engine "
     assert_fresh_dump_dir(Path(dump_dir))
     return train_args
 

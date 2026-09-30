@@ -320,6 +320,7 @@ Regime (both sides):
   - --debug-deterministic-collective and scenario_trainer_deterministic's deterministic env vars
   - --sglang-disable-radix-cache
   - --update-weight-transfer-mode p2p --sglang-router-policy round_robin: disaggregated P2P only
+  - --sglang-remote-instance-weight-loader-start-seed-via-transfer-engine: the engines must start their transfer engine for trainers to write into them
   - --rollout-health-check-interval 1
 
 Injection (target side only):
