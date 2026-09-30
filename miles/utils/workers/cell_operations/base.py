@@ -32,7 +32,14 @@ class BaseCellOperations(abc.ABC):
     async def resume(self, *, cell_id: str) -> None: ...
 
     @abc.abstractmethod
-    async def inject_fault(self, *, cell_id: str, mode: FailureMode, sub_index: int) -> None: ...
+    async def inject_fault(
+        self,
+        *,
+        cell_id: str,
+        mode: FailureMode,
+        sub_index: int,
+        expected_target: FaultTarget | None = None,
+    ) -> None: ...
 
     @abc.abstractmethod
     async def observe_fault_target(self, *, cell_id: str, sub_index: int) -> FaultTarget: ...
