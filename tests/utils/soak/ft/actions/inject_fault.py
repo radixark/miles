@@ -7,7 +7,6 @@ from dataclasses import dataclass
 import httpx
 from tests.utils.soak.core.events import SoakActionRequestedEvent, SoakEvent, SoakObservationEvent
 from tests.utils.soak.core.types import SoakActionEvidence, SoakActionRequest
-from tests.utils.soak.core.views import alive_targets_of_kind
 from tests.utils.soak.ft.actions.base import BaseCellFaultForm
 from tests.utils.soak.ft.cells import cell_is_alive
 from tests.utils.soak.ft.types import (
@@ -19,6 +18,7 @@ from tests.utils.soak.ft.types import (
 )
 
 from miles.utils.ft_utils.api_server.models import Cell
+from miles.utils.misc import split_evenly
 from miles.utils.test_utils.fault_injector.actions.remote import ApiServerFaultAction
 from miles.utils.test_utils.fault_injector.actions.union import FaultAction
 from miles.utils.test_utils.fault_injector.controller import FaultHookCommand, FaultHookOperation
@@ -62,7 +62,7 @@ class InjectFaultForm(BaseCellFaultForm):
             return None
         hook_target = fault_target
         if self.through_trainer_hook:
-            hook_target = _draw_trainer_hook_target(target=target, observation=observation, events=events, rng=rng)
+            hook_target = _find_sender_hook_target(target=target, observation=observation, events=events)
             if hook_target is None:
                 return None
         return self._create_request(
@@ -120,7 +120,11 @@ class InjectFaultForm(BaseCellFaultForm):
         if hook_target == fault_target:
             return self.action
         return ApiServerFaultAction(
-            base_url=self.base_url, cell_id=fault_target.cell_id, rank=fault_target.rank, inner=self.action
+            base_url=self.base_url,
+            cell_id=fault_target.cell_id,
+            rank=fault_target.rank,
+            workers_hash=fault_target.workers_hash,
+            inner=self.action,
         )
 
     async def _read_effect(
@@ -178,20 +182,30 @@ def _resolve_fault_target(target: CellTarget) -> ObservedFaultHookTarget | None:
     return fault_target
 
 
-def _draw_trainer_hook_target(
-    *, target: CellTarget, observation: SoakObservationEvent, events: list[SoakEvent], rng: random.Random
+def _find_sender_hook_target(
+    *, target: CellTarget, observation: SoakObservationEvent, events: list[SoakEvent]
 ) -> ObservedFaultHookTarget | None:
     harmed = {
         (event.request.target.identity, event.request.target.incarnation)
         for event in events
-        if isinstance(event, SoakActionRequestedEvent) and event.request.target.kind == ACTOR_CELL_TYPE
+        if isinstance(event, SoakActionRequestedEvent)
     }
-    candidates = [
-        fault_target
-        for trainer in alive_targets_of_kind(observation, ACTOR_CELL_TYPE)
-        if isinstance(trainer, CellTarget)
-        and trainer.identity != target.identity
-        and (trainer.identity, trainer.incarnation) not in harmed
-        and (fault_target := _resolve_fault_target(trainer)) is not None
+    trainers = _cell_targets_of_kind(observation, ACTOR_CELL_TYPE)
+    receivers = _cell_targets_of_kind(observation, target.kind)
+    if not trainers or any(
+        not cell.alive or (cell.identity, cell.incarnation) in harmed for cell in [*trainers, *receivers]
+    ):
+        return None
+    [sender] = [
+        trainer
+        for trainer, receiver_slice in zip(trainers, split_evenly(len(receivers), len(trainers)), strict=True)
+        if target.identity in {receiver.identity for receiver in receivers[receiver_slice]}
     ]
-    return rng.choice(candidates) if candidates else None
+    return _resolve_fault_target(sender)
+
+
+def _cell_targets_of_kind(observation: SoakObservationEvent, kind: str) -> list[CellTarget]:
+    return sorted(
+        (one for one in observation.targets or [] if isinstance(one, CellTarget) and one.kind == kind),
+        key=lambda one: one.identity,
+    )

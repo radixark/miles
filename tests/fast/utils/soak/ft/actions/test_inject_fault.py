@@ -105,8 +105,8 @@ class TestInjectFaultFormRequest:
         """A zero maximum delay yields an immediate fault."""
         assert _create(_form(), _with_fault_target(_cell_target())).details.delay_ms == 0
 
-    def test_a_trainer_routed_request_hooks_a_live_untouched_trainer(self) -> None:
-        """The rollout fault fires from a live trainer that no earlier request has harmed."""
+    def test_a_trainer_routed_request_is_declined_while_a_trainer_is_harmed_or_dead(self) -> None:
+        """A dead or harmed trainer may change the next split of receivers, so no sender can be named."""
         rollout = _with_fault_target(_cell_target(kind="rollout"))
         harmed = _with_fault_target(_cell_target(cell_index=0))
         dead = _with_fault_target(_cell_target(cell_index=1, alive=False))
@@ -117,15 +117,10 @@ class TestInjectFaultFormRequest:
             details=InjectFaultDetails(fault_target=harmed.fault_target, hook_target=harmed.fault_target),
         )
 
-        request = _create(
-            _form(through_trainer_hook=True),
-            rollout,
-            trainers=[harmed, dead, untouched],
-            events=[_requested(earlier, at=_at(0))],
-        )
+        form = _form(through_trainer_hook=True)
 
-        assert request.details.fault_target == rollout.fault_target
-        assert request.details.hook_target == untouched.fault_target
+        assert _create(form, rollout, trainers=[harmed, untouched], events=[_requested(earlier, at=_at(0))]) is None
+        assert _create(form, rollout, trainers=[dead, untouched]) is None
 
     def test_a_replaced_trainer_is_eligible_again(self) -> None:
         """A harmed trainer's new incarnation is untouched and may carry the hook."""
@@ -308,7 +303,11 @@ class TestInjectFaultFormExecute:
         [(cell_id, command)] = api.hook_posts
         assert cell_id == _ACTOR_0
         assert command.request.action == ApiServerFaultAction(
-            base_url=_BASE_URL, cell_id=_ROLLOUT_0, rank=0, inner=KillProcessAction()
+            base_url=_BASE_URL,
+            cell_id=_ROLLOUT_0,
+            rank=0,
+            workers_hash=rollout.fault_target.workers_hash,
+            inner=KillProcessAction(),
         )
         assert evidence.target == rollout.fault_target
         assert evidence.observed is ObservedCellFaultKind.MISSING
@@ -347,29 +346,18 @@ class TestHookTriggeredRequests:
         assert command.request.delay_ms == request.details.delay_ms > 0
         assert command.request.hook_name == _HOOK
 
-    def test_a_trainer_target_never_carries_its_own_routed_hook(self) -> None:
-        """Routing a trainer's fault through itself would make the victim fire its own fault."""
-        victim = _with_fault_target(_cell_target(cell_index=0))
-        other = _with_fault_target(_cell_target(cell_index=1))
+    def test_the_routing_trainer_is_the_sender_the_update_assigns_the_receiver_to(self) -> None:
+        """Alive trainers split the receivers evenly in order, so the hook goes to the receiver's own sender."""
+        rollouts = [_with_fault_target(_cell_target(kind="rollout", cell_index=index)) for index in range(4)]
+        trainers = [_with_fault_target(_cell_target(cell_index=index)) for index in range(2)]
+        observation = _observation([*rollouts, *trainers], at=_at(0))
         form = _form(through_trainer_hook=True)
 
-        assert _create(form, victim, trainers=[other]).details.hook_target == other.fault_target
-        assert _create(form, victim) is None
+        request = form.maybe_create_request(
+            target=rollouts[2], observation=observation, events=[], rng=random.Random(0)
+        )
 
-    def test_the_routing_trainer_is_drawn_from_the_seed(self) -> None:
-        """The same seed must pick the same trainer among several eligible ones."""
-        rollout = _with_fault_target(_cell_target(kind="rollout"))
-        trainers = [_with_fault_target(_cell_target(cell_index=index)) for index in range(4)]
-        observation = _observation([rollout, *trainers], at=_at(0))
-        form = _form(through_trainer_hook=True)
-
-        def _pick(seed: int) -> object:
-            return form.maybe_create_request(
-                target=rollout, observation=observation, events=[], rng=random.Random(seed)
-            ).details.hook_target
-
-        assert _pick(11) == _pick(11)
-        assert _pick(11) in [trainer.fault_target for trainer in trainers]
+        assert request.details.hook_target == trainers[1].fault_target
 
 
 class TestEffectTimeout:
