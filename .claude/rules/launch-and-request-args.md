@@ -1,6 +1,14 @@
 ---
 paths:
-  - "miles/**/*.py"
+  - "miles/**/arguments.py"
+  - "miles/**/*args*.py"
+  - "miles/utils/eval_config.py"
+  - "miles/utils/chat_template_utils/**/*.py"
+  - "miles/backends/sglang_utils/**/*.py"
+  - "miles/rollout/**/*.py"
+  - "miles/router/**/*.py"
+  - "miles/tinker/**/*.py"
+  - "miles/ray/rollout/**/*.py"
   - "examples/**/*.py"
 ---
 
