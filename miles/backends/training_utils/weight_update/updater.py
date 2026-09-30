@@ -18,6 +18,7 @@ from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
 from miles.backends.training_utils.conn_status import ConnStatusManager
 from miles.backends.training_utils.parallel import ParallelState
 from miles.backends.training_utils.weight_update.protocol import get_weight_transfer_protocol
+from miles.backends.training_utils.weight_update.rollout_cell_updater import _RolloutCellUpdater
 from miles.backends.training_utils.weight_update.session import (
     begin_weight_update,
     end_weight_update,
@@ -108,6 +109,7 @@ class WeightUpdater:
             maybe_pause_engines(self.args, cell_updaters)
             self._register_new_lora_adapters(protocol.rollout_engines, adapters)
             begin_weight_update(cell_updaters, self._hf_weight_iterator.weight_update_selector, sync_base=sync_base)
+        _mark_cells_errored_on_any_rank(cell_updaters)
         dist.barrier(group=get_gloo_group())
 
         checksums = {name: {} for name, _ in adapters} if self.is_lora and self.args.check_lora_weight_equal else None
@@ -133,10 +135,12 @@ class WeightUpdater:
 
         with timer("finalize_and_resume_engines"):
             protocol.finalize(weight_version)
+            _mark_cells_errored_on_any_rank(cell_updaters)
             if protocol.use_weight_update_session and driver:
                 end_weight_update(cell_updaters, expected_lora_checksums=checksums)
                 set_weight_version(cell_updaters, weight_version)
                 maybe_resume_engines(self.args, cell_updaters)
+            _mark_cells_errored_on_any_rank(cell_updaters)
             dist.barrier(group=get_gloo_group())
         protocol.after_engines_resumed()
 
@@ -161,3 +165,16 @@ class WeightUpdater:
                 config = config | {"r": adapter.rank, "lora_alpha": adapter.alpha}
             register_lora_adapter(rollout_engines, lora_name=lora_name, lora_config=config)
             self._registered_adapters.add(lora_name)
+
+
+def _mark_cells_errored_on_any_rank(cell_updaters: Sequence[_RolloutCellUpdater]) -> None:
+    group = get_gloo_group()
+    errored_cell_ids_per_rank: list[list[str] | None] = [None] * dist.get_world_size(group=group)
+    dist.all_gather_object(errored_cell_ids_per_rank, [u.cell_id for u in cell_updaters if u.is_errored], group=group)
+
+    errored_cell_ids = {cell_id for cell_ids in errored_cell_ids_per_rank for cell_id in cell_ids}
+    for cell_updater in cell_updaters:
+        if cell_updater.cell_id in errored_cell_ids and not cell_updater.is_errored:
+            cell_updater.mark_errored(
+                RuntimeError(f"another trainer rank failed to update cell {cell_updater.cell_id}")
+            )
