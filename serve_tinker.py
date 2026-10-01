@@ -38,13 +38,14 @@ async def serve(args, *, disposer: Disposer):
         max_tokens_per_datum = min(max_tokens_per_datum, trainer_token_limit)
     assert max_tokens_per_datum > 0, "trainer token budget must fit at least one padding block"
     _worker_manager = init_orchestration_script(args, disposer=disposer)
-    init_http_client(args)
 
     capability = get_backend_capability(args)
     await resolve_router_addrs(args, router_providers=compute_router_providers(args, capability=capability))
     inference_controller = create_inference_controller_handle(capability=capability)
     await inference_controller.init()
     disposer.add(inference_controller)
+    args.inference_runtime_mut_state.set_(await inference_controller.get_inference_runtime_immut_state())
+    init_http_client(args)
 
     trainer_configs = compute_trainer_configs(args)
     [actor_config] = [config for config in trainer_configs if config.role == ACTOR_ROLE]
