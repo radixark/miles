@@ -28,6 +28,7 @@ class Arg:
     action: str | type[argparse.Action] | None = None
     const: Any = _UNSET
     metavar: str | tuple[str, ...] | None = None
+    reset: bool = False
 
 
 # Adapted from sglang/srt/arg_groups/arg_utils.py:add_cli_args_from_dataclass.
@@ -63,15 +64,22 @@ def _add_argument(
     argument: Arg,
 ) -> None:
     flags = (argument.cli_name or "--" + name.replace("_", "-"), *argument.aliases)
+    if argument.reset and len(flags) != 1:
+        raise ValueError("Reset arguments require exactly one argument name")
     kwargs = _argument_kwargs(name=name, annotation=annotation, field=field, argument=argument)
-    parser.add_argument(*flags, **kwargs)
+    if argument.reset:
+        from miles.utils.arguments import reset_arg
+
+        reset_arg(parser=parser, name=flags[0], **kwargs)
+    else:
+        parser.add_argument(*flags, **kwargs)
 
 
 def _argument_kwargs(*, name: str, annotation: Any, field: FieldInfo, argument: Arg) -> dict[str, Any]:
     kwargs = {
         key: value
         for key, value in vars(argument).items()
-        if key not in {"aliases", "cli_name", "type_parser"} and value is not None and value is not _UNSET
+        if key not in {"aliases", "cli_name", "type_parser", "reset"} and value is not None and value is not _UNSET
     }
     if (argument.cli_name or "--" + name.replace("_", "-")).startswith("-"):
         kwargs["dest"] = name
