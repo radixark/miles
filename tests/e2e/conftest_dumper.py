@@ -144,7 +144,14 @@ patches:
           dumper.dump('pre_mlp_residual', forward_batch.residual_stream.residual, dims='t h # tp:replicated dp:=attn_dp')
           dumper.dump('pre_mlp_layernorm_output', hidden_states, dims='t h # tp:replicated')
       - match: "hidden_states = self.mlp(hidden_states, forward_batch)"
-        append: "dumper.dump('mlp_output', hidden_states, dims='t h # tp:replicated')"
+        append: |
+          # The exit may defer TP reduction beyond this capture point.
+          mlp_output_dims = (
+              't h[tp:partial]'
+              if ffn_exit.fuse_mlp_allreduce or ffn_exit.mlp_reduce_scatter
+              else 't h # tp:replicated'
+          )
+          dumper.dump('mlp_output', hidden_states, dims=mlp_output_dims)
 
   # --- attention internals ---
   - target: sglang.srt.models.qwen3_moe.Qwen3MoeAttention.forward_core
