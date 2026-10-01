@@ -1,8 +1,12 @@
+from typing import ClassVar
+
 from miles.utils.args.schema import A, Arg, BaseConfig
 
 
 # mlflow
 class MlflowConfig(BaseConfig):
+    _mutable_fields: ClassVar[frozenset[str]] = frozenset({"mlflow_run_id"})
+
     use_mlflow: A[bool, Arg()] = False
     mlflow_tracking_uri: A[
         str | None,

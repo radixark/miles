@@ -1,5 +1,5 @@
 import argparse
-from typing import Any
+from typing import Any, ClassVar
 
 from sglang_router.launch_router import RouterArgs
 
@@ -11,6 +11,10 @@ _ROUTER_DEST_PREFIX = "router_"
 
 # TODO: use all sglang router arguments with `--sglang-router` prefix
 class RouterConfig(BaseConfig):
+    _mutable_fields: ClassVar[frozenset[str]] = frozenset(
+        {"sglang_model_routers", "sglang_router_ip", "sglang_router_port"}
+    )
+
     sglang_model_routers: dict[str, tuple[str, int]] | None
     sglang_router_ip: A[str | None, Arg(help="IP address of the SGLang router")] = None
     sglang_router_port: A[int | None, Arg(help="Port of the SGLang router")] = None

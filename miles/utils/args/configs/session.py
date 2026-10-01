@@ -1,9 +1,13 @@
+from typing import ClassVar
+
 from miles.rollout.session.types import SessionServerInstance
 from miles.utils.args.schema import A, Arg, BaseConfig
 from miles.utils.chat_template_utils.tito_tokenizer import TITOTokenizerType
 
 
 class SessionConfig(BaseConfig):
+    _mutable_fields: ClassVar[frozenset[str]] = frozenset({"session_server_instances"})
+
     session_server_instances: list[SessionServerInstance] | None = None
     use_session_server: A[
         str | bool,
