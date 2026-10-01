@@ -19,7 +19,7 @@ from miles.rollout.filter_hub.common_filters import apply_preput_filters
 from miles.rollout.inference_rollout.compatibility import load_generate_function
 from miles.rollout.inference_rollout.inference_rollout_common import stamp_sample_lineage
 from miles.utils import dumper_utils
-from miles.utils.async_utils import run
+from miles.utils.async_utils import DynamicLimitSemaphore, run
 from miles.utils.audit_utils.sample_ownership.recorder import SampleOwnershipRecorder
 from miles.utils.data import Dataset
 from miles.utils.eval_config import EvalDatasetConfig
@@ -84,8 +84,8 @@ class GenerateState(metaclass=SingletonMeta):
         )
         self.processor = load_processor(args.hf_checkpoint, trust_remote_code=True)
 
-        self.semaphore = asyncio.Semaphore(
-            args.sglang_server_concurrency * args.rollout_num_gpus // args.rollout_num_gpus_per_engine
+        self.semaphore = DynamicLimitSemaphore(
+            lambda: args.sglang_server_concurrency * max(args.inference_runtime_mut_state.engine_count, 1)
         )
         self.sampling_params: dict[str, Any] = dict(
             temperature=args.rollout_temperature,
