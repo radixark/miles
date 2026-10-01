@@ -40,6 +40,12 @@ _FIELDS_WITHOUT_A_RENDERABLE_CLI: dict[str, str] = {
     "_radix_eviction_policy_explicitly_set": (
         "Derived during resolution and declared Arg(no_cli=True); sglang registers no CLI option for it."
     ),
+    "_swa_full_tokens_ratio_explicitly_set": (
+        "Derived by the cache hook and declared Arg(no_cli=True); sglang registers no CLI option for it."
+    ),
+    "speculative_boundary_reduction": (
+        "Derived from boundary_reduction and declared Arg(no_cli=True); sglang registers no CLI option for it."
+    ),
     "grpc_worker_threads": (
         "Env-only (SGLANG_GRPC_WORKER_THREADS) and declared Arg(no_cli=True); sglang registers no CLI option for it."
     ),
