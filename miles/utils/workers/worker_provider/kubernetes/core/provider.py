@@ -32,9 +32,11 @@ class KubernetesWorkerProvider(BaseWorkerProvider):
         run: KubernetesRunInfo,
         pool_ids: list[str] | None,
         resync_period: float | None,
+        category: str | None = None,
     ) -> None:
         self._run = run
         self._pool_ids = pool_ids
+        self._category = category
         self._resync_period = resync_period
         self._loop: ReconcileLoop | None = None
 
@@ -93,6 +95,8 @@ class KubernetesWorkerProvider(BaseWorkerProvider):
         if parsed is None or (self._pool_ids is not None and parsed.pool_id not in self._pool_ids):
             return None
         if not parsed.worker_metadata.dynamic_pool:
+            return None
+        if self._category is not None and parsed.worker_metadata.category != self._category:
             return None
         return parsed.cell_id
 
