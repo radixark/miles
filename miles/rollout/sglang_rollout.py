@@ -109,6 +109,10 @@ class GenerateState(metaclass=SingletonMeta):
 
         self.reset()
 
+    @classmethod
+    def _validate_reuse(cls, instance: "GenerateState", args: Namespace) -> None:
+        assert instance.args == args
+
     @contextmanager
     def dp_rank_context(self):
         candidates = [i for i, count in enumerate(self.dp_counts) if count == min(self.dp_counts)]

@@ -89,10 +89,14 @@ class SingletonMeta(type):
 
     _instances = {}
 
-    def __call__(cls, *args, **kwargs):
+    def __call__(cls, *args: Any, **kwargs: Any) -> Any:
         if cls not in cls._instances:
             instance = super().__call__(*args, **kwargs)
             cls._instances[cls] = instance
+        elif (
+            validate_reuse := getattr(cls, "_validate_reuse", None)
+        ) is not None:  # config-access-exempt: optional singleton reuse protocol
+            validate_reuse(cls._instances[cls], *args, **kwargs)
         return cls._instances[cls]
 
     @staticmethod
