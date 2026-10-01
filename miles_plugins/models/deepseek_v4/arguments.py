@@ -8,7 +8,7 @@ Imports nothing from megatron or the plugin's kernels: argument parsing runs lon
 before tilelang can be loaded.
 """
 
-from argparse import ArgumentParser, Namespace
+from argparse import Namespace
 
 DSV4_SPEC_MODULE = "miles_plugins.models.deepseek_v4.deepseek_v4"
 
@@ -19,26 +19,6 @@ def is_dsv4_model(args: Namespace) -> bool:
         args, "spec", None
     )  # config-access-exempt: native Megatron namespaces may omit the optional model spec
     return bool(spec) and spec[0] == DSV4_SPEC_MODULE
-
-
-def add_dsv4_arguments(parser: ArgumentParser) -> ArgumentParser:
-    """Declare the DeepSeek-V4 arguments."""
-    group = parser.add_argument_group(title="deepseek-v4")
-    group.add_argument(
-        "--dsv4-impl",
-        type=str,
-        choices=["miles", "megatron"],
-        default="megatron",
-        help=(
-            "Which DeepSeek-V4 attention implementation to train with. 'miles' is the plugin path "
-            "(BSHD, sparse context parallelism, tilelang kernels, miles' hyper-connections) and is "
-            "the only one that supports tensor parallelism. 'megatron' is Megatron's native "
-            "dsv4_hybrid path (THD, cuDNN or unfused kernels, native hyper-connections). The two "
-            "read the same HuggingFace checkpoint but their torch_dist checkpoints are not "
-            "interchangeable."
-        ),
-    )
-    return parser
 
 
 def normalize_dsv4_args(args: Namespace) -> None:
