@@ -93,7 +93,7 @@ class KubernetesWorkerProvider(BaseWorkerProvider):
         parsed = pod_view.parse_pod(pod, self._run.label_keys)
         if parsed is None or (self._pool_ids is not None and parsed.pool_id not in self._pool_ids):
             return None
-        if parsed.pool_id not in self._run.specs:
+        if not parsed.worker_metadata.dynamic_pool:
             return None
         return parsed.cell_id
 
