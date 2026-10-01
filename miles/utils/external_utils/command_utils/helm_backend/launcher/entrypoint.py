@@ -12,9 +12,9 @@ import yaml
 from miles.ray.specs.entrypoint import compute_specs
 from miles.ray.specs.train import (
     TRAINER_CONTROLLER_ADDRS_FLAG,
+    TrainerControllerSpec,
     compute_trainer_controller_pool_id,
     compute_trainer_ids,
-    specs_trainer_controller,
 )
 from miles.utils.arguments import parse_args
 from miles.utils.env_report.launcher_report import LAUNCHER_REPORT_ENV_VAR
@@ -240,7 +240,8 @@ def execute_train(
 
 
 def _compute_trainer_controller_addrs(args: Any, *, release: str, namespace: str) -> dict[str, str]:
-    specs_by_pool_id = {spec.name: spec for spec in specs_trainer_controller(args)}
+    specs = map(TrainerControllerSpec.create, TrainerControllerSpec.slice_configs(args))
+    specs_by_pool_id = {spec.name: spec for spec in specs}
     addrs = {}
     for trainer_id in compute_trainer_ids(args):
         spec = specs_by_pool_id[compute_trainer_controller_pool_id(trainer_id)]

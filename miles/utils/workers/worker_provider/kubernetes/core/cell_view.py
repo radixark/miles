@@ -148,10 +148,7 @@ def _has_all_pods(pods: list[pod_view.ParsedPod]) -> bool:
 
 
 def _spec_meta_of_pod(pod: pod_view.ParsedPod, *, run: KubernetesRunInfo) -> dict[str, Any]:
-    compute_meta = run.specs[pod.pool_id].meta
-    if compute_meta is None:
-        return {}
-    return dict(compute_meta(WorkerMetaContext(cell_index=pod.cell_index)))
+    return dict(run.specs[pod.pool_id].meta(WorkerMetaContext(cell_index=pod.cell_index)))
 
 
 def _pod_meta_of_cell(pods: list[pod_view.ParsedPod]) -> dict[str, str]:

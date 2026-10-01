@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import shlex
+from typing import Any
 
 from miles.utils.external_utils.colocate_pairing.config import PairingLayout
 from miles.utils.external_utils.command_utils.base_backend import TRAINER_ROLE
@@ -55,6 +56,7 @@ def build_entry(
     is_sub_node = _is_sub_node(pairing_layout)
     context = _launch_context(
         spec,
+        args=spec.args,
         addresses=addresses,
         cell_index=RENDERED_CELL_INDEX,
         worker_in_cell_index=WORKER_INDEX_SENTINEL,
@@ -100,6 +102,7 @@ def _command_env_of_spec(
         spec.env_var(
             _launch_context(
                 spec,
+                args=context.args,
                 addresses=addresses,
                 cell_index=1,
                 worker_in_cell_index=1,
@@ -142,6 +145,7 @@ def _launch_context(
     spec: BaseSpec,
     addresses: dict[str, dict[str, NamedHostAndPorts]],
     *,
+    args: Any,
     cell_index: int,
     worker_in_cell_index: int,
     is_sub_node: bool = False,
@@ -155,6 +159,7 @@ def _launch_context(
     }
     pod_gpu_ids = real_or_sentinel_gpu_ids(spec, is_sub_node=is_sub_node)
     return LaunchCommandContext(
+        args=args,
         cell_index=cell_index,
         worker_in_cell_index=worker_in_cell_index,
         gpu_ids=pod_gpu_ids,

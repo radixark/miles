@@ -21,6 +21,7 @@ def main() -> None:
     identity = read_worker_identity(scheduling=spec.scheduling, environ=os.environ)
     env_vars = spec.env_var(
         WorkerLaunchContext(
+            args=spec.args,
             cell_index=identity.cell_index,
             worker_in_cell_index=identity.worker_in_cell_index,
             gpu_ids=identity.gpu_ids,
