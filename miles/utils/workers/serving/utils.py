@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import socket
 import sys
 from collections.abc import Iterator
 from contextlib import contextmanager
 
+from miles.utils.args.schema import validate_complete_config
 from miles.utils.workers.serving.worker_config import ServeWorkerConfig
 
 IPV4_WILDCARD_HOST = "0.0.0.0"
@@ -62,4 +64,4 @@ def parse_own_args(own_argv: list[str]) -> argparse.Namespace:
 
 
 def parse_serve_worker_config(value: str) -> ServeWorkerConfig:
-    return ServeWorkerConfig.model_validate_json(value)
+    return validate_complete_config(config_class=ServeWorkerConfig, payload=json.loads(value))
