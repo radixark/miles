@@ -745,7 +745,7 @@ def get_glm5_spec(args, config, vp_stage):
     config.index_num_attention_heads = hf_config.index_n_heads
     config.index_head_dim = hf_config.index_head_dim
     config.indexer_rope_interleave = bool(getattr(hf_config, "indexer_rope_interleave", False))
-    config.freeze_indexer = getattr(args, "freeze_indexer", False)
+    config.freeze_indexer = args.freeze_indexer
     # Optional cross-layer index-sharing schedule. Present on DSA checkpoints that only
     # store indexer weights on a subset of "computing" layers (e.g. GLM-5.2). When absent,
     # every layer computes its own top-k (plain DSA) and DSAMLASelfAttention runs the

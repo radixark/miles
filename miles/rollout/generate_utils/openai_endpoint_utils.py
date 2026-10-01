@@ -57,7 +57,7 @@ class OpenAIEndpointTracer:
         sampling_params: dict | None = None,
         extra_key: str | None = None,
     ):
-        instances = getattr(args, "session_server_instances", None)
+        instances = args.session_server_instances
         if not instances:
             raise RuntimeError(
                 "session_server_instances is not set. Pass --use-session-server to start the session server."
@@ -73,7 +73,7 @@ class OpenAIEndpointTracer:
         body = CreateSessionRequest.model_validate(
             {**session_params, "evaluation": evaluation, "extra_key": extra_key}
         )
-        use_v2 = getattr(args, "use_session_server", None) == "v2"
+        use_v2 = args.use_session_server == "v2"
         samples_wire_fields = COMPUTED_FIELDS_V2 if use_v2 else COMPUTED_FIELDS
         if should_return_sampling_mask(args, sampling_params, evaluation=evaluation):
             samples_wire_fields += ROLLOUT_SAMPLING_MASK_FIELDS

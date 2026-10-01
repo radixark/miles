@@ -56,8 +56,8 @@ def quantize_params_nvfp4(args, megatron_name, converted_named_params, quantizat
     if args is not None and bool(getattr(args, "fp4_param", False) or getattr(args, "fp4_param_gather", False)):
         raise NotImplementedError("fp4-param-gather is unsupported for Miles NVFP4 checkpoint export.")
 
-    if getattr(args, "extra_high_precision_layers_megatron", False):
-        for layer_name in getattr(args, "extra_high_precision_layers_megatron", ()):
+    if args is not None and args.extra_high_precision_layers_megatron:
+        for layer_name in args.extra_high_precision_layers_megatron:
             if layer_name in megatron_name:
                 return converted_named_params
 

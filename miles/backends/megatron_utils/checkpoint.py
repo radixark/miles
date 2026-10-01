@@ -160,7 +160,7 @@ def load_checkpoint(
     # Load LoRA adapter weights if available
     native_optimizer_restored = False
     if is_lora_enabled(args):
-        adapter_path = getattr(args, "lora_adapter_path", None)
+        adapter_path = args.lora_adapter_path
         if adapter_path is not None:
             loaded, adapter_iteration, native_optimizer_restored = load_lora_adapter(
                 ddp_model,

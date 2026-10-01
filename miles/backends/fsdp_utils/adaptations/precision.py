@@ -36,7 +36,7 @@ def register_precision_policy(hook: PrecisionPolicyHook) -> None:
 def resolve_precision_policy(hf_config, args) -> PrecisionPolicy:
     """Resolve compute, reduction, master-weight, and forward-autocast precision."""
     policy = PrecisionPolicy(
-        param_dtype=torch.float16 if getattr(args, "fp16", False) else torch.bfloat16,
+        param_dtype=torch.float16 if args.fp16 else torch.bfloat16,
         reduce_dtype=torch.float32,
         keep_fp32_master=args.keep_fp32_master,
     )

@@ -24,10 +24,10 @@ logger = logging.getLogger(__name__)
 
 
 def _rollout_logprob_dtype(args: Namespace) -> torch.dtype:
-    if getattr(args, "true_on_policy_mode", False):
-        if getattr(args, "bf16", False):
+    if args.true_on_policy_mode:
+        if args.bf16:
             return torch.bfloat16
-        if getattr(args, "fp16", False):
+        if args.fp16:
             return torch.float16
     return torch.float32
 

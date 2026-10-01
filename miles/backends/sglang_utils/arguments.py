@@ -129,7 +129,7 @@ def validate_args(args):
     if args.true_on_policy_mode:
         args.sglang_enable_deterministic_inference = True
 
-    if getattr(args, "recompute_logprobs_via_prefill", False):
+    if args.recompute_logprobs_via_prefill:
         args.sglang_enable_prefill_only_deterministic_inference = True
         args.sglang_enable_deterministic_inference = True
 
@@ -144,5 +144,5 @@ def validate_args(args):
         if args.router_assignment_mode == "random":
             args.router_assignment_mode = "min_load"
 
-    if getattr(args, "sglang_router_ip", None):
+    if args.sglang_router_ip:
         args.sglang_router_ip = wrap_ipv6(args.sglang_router_ip)

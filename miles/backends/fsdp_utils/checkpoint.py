@@ -83,7 +83,7 @@ def load(actor: Any) -> dict[str, Any] | None:
     Loads model weights and optionally optimizer state from separate directories.
     This allows loading weights without optimizer or deleting optimizer before loading.
     """
-    load_root = getattr(actor.args, "load", None)
+    load_root = actor.args.load
     if load_root is None:
         return None
 
@@ -92,7 +92,7 @@ def load(actor: Any) -> dict[str, Any] | None:
         logger.info(f"[FSDP] Checkpoint directory {root_path} not found; skipping load.")
         return None
 
-    target_step = getattr(actor.args, "ckpt_step", None)
+    target_step = actor.args.ckpt_step
     if target_step is None:
         tracker_file = root_path / "latest_checkpointed_iteration.txt"
         if not tracker_file.exists():
@@ -125,7 +125,7 @@ def load(actor: Any) -> dict[str, Any] | None:
         return None
 
     # Load optimizer state (optional)
-    load_optimizer = not getattr(actor.args, "no_load_optim", False) and hasattr(actor, "optimizer")
+    load_optimizer = not actor.args.no_load_optim and hasattr(actor, "optimizer")
     if load_optimizer and optimizer_dir.exists():
         optimizer_state = OptimizerState(actor.model, actor.optimizer)
         optim_state_dict = {"optim_state": optimizer_state}
@@ -169,7 +169,7 @@ def finalize_load(actor: Any, checkpoint_payload: dict[str, Any] | None) -> None
         dist.barrier()
         return
 
-    if checkpoint_payload.get("rng") is not None and not getattr(actor.args, "no_load_rng", False):
+    if checkpoint_payload.get("rng") is not None and not actor.args.no_load_rng:
         rng_state = checkpoint_payload["rng"]
         if "torch" in rng_state:
             torch.set_rng_state(rng_state["torch"])
@@ -185,7 +185,7 @@ def finalize_load(actor: Any, checkpoint_payload: dict[str, Any] | None) -> None
         if next_rollout is not None:
             actor.args.start_rollout_id = next_rollout
     elif iteration is not None:
-        if getattr(actor.args, "start_rollout_id", None) is None:
+        if actor.args.start_rollout_id is None:
             actor.args.start_rollout_id = iteration
 
     torch.cuda.synchronize()
@@ -220,7 +220,7 @@ def save(actor: Any, iteration: int) -> None:
     dcp.save(state_dict, checkpoint_id=str(model_dir))
 
     # Save optimizer state (skip if --no-save-optim is set)
-    save_optimizer_state = not getattr(actor.args, "no_save_optim", False)
+    save_optimizer_state = not actor.args.no_save_optim
     if save_optimizer_state and hasattr(actor, "optimizer") and actor.optimizer is not None:
         optimizer_state = OptimizerState(actor.model, actor.optimizer)
         optim_state_dict = {"optim_state": optimizer_state}
