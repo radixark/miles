@@ -102,6 +102,7 @@ class WorkerLaunchContext(FrozenStrictBaseModel):
     args: Any
     cell_index: int
     worker_in_cell_index: int
+    num_workers_per_cell: int
     gpu_ids: list[int]
 
 

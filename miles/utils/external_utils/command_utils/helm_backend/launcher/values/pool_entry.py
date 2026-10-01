@@ -179,6 +179,7 @@ def _launch_context(
         args=args,
         cell_index=cell_index,
         worker_in_cell_index=worker_in_cell_index,
+        num_workers_per_cell=spec.scheduling(scaling).num_workers_per_cell,
         gpu_ids=pod_gpu_ids,
         local_gpu_ids=pod_gpu_ids,
         self_addrs=self_addrs,
