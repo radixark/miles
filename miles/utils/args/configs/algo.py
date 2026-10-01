@@ -3,9 +3,7 @@ from miles.utils.args.schema import A, Arg, BaseConfig
 
 class AlgoConfig(BaseConfig):
     requested_load: str | None
-    ckpt_step: int | None
     use_critic: bool
-    rollout_indexer_topk_num_streams: int | None = None
 
     ref_load: A[
         str | None,
@@ -20,10 +18,6 @@ class AlgoConfig(BaseConfig):
         int | None,
         Arg(help="The checkpoint step for reference model. "),
     ] = None
-    load: A[str | None, Arg(reset=True)] = None
-    save: A[str | None, Arg(reset=True)] = None
-    save_interval: A[int | None, Arg(reset=True)] = None
-    async_save: A[bool, Arg(reset=True)]
     save_hf: A[
         str | None,
         Arg(
@@ -52,7 +46,6 @@ class AlgoConfig(BaseConfig):
             )
         ),
     ] = None
-    seed: A[int, Arg(reset=True)] = 1234
     num_critic_only_steps: A[
         int,
         Arg(
