@@ -7,6 +7,7 @@ import subprocess
 import sys
 from dataclasses import dataclass, field
 from typing import Any
+from miles.utils.args.utils import config_values
 from miles.utils.audit_utils.event_logger.models import (
     EnvReport,
     EnvReportArgsDump,
@@ -107,7 +108,7 @@ def _collect_key_versions(full_pip_list: list[dict[str, str]]) -> dict[str, str]
 
 
 def _dump_args(args: Any) -> EnvReportArgsDump:
-    declared = dict(vars(args))
+    declared = config_values(args)
     if (serializable := _json_snapshot(declared)) is None:
         serializable = {
             name: snapshot[name]

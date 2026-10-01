@@ -5,6 +5,7 @@ from copy import deepcopy
 import wandb
 from wandb.sdk.lib.runid import generate_id
 
+from miles.utils.args.utils import config_values
 from miles.utils.env_report.launcher_report import read_launcher_report
 
 logger = logging.getLogger(__name__)
@@ -89,7 +90,7 @@ def init_wandb_primary(args):
 
 
 def _compute_config_for_logging(args):
-    output = deepcopy(args.__dict__)
+    output = deepcopy(config_values(args))
 
     whitelist_env_vars = [
         "SLURM_JOB_ID",
@@ -144,7 +145,7 @@ def init_wandb_secondary(args, router_addr=None):
         "id": wandb_run_id,
         "entity": args.wandb_team,
         "project": args.wandb_project,
-        "config": args.__dict__,
+        "config": config_values(args),
         "resume": "allow",
         "reinit": True,
         "settings": _wandb_settings(**settings_kwargs),

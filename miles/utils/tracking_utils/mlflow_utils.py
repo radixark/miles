@@ -15,6 +15,8 @@ import re
 from copy import deepcopy
 from typing import Any
 
+from miles.utils.args.utils import config_values
+
 logger = logging.getLogger(__name__)
 
 
@@ -25,7 +27,7 @@ def _sanitize_key(key: str) -> str:
 
 def _compute_config_for_logging(args) -> dict[str, str]:
     # Build a flat param dict from *args*, mirroring ``wandb_utils._compute_config_for_logging``.
-    raw = deepcopy(args.__dict__)
+    raw = deepcopy(config_values(args))
 
     whitelist_env_vars = ["SLURM_JOB_ID"]
     raw["env_vars"] = {k: v for k, v in os.environ.items() if k in whitelist_env_vars}
