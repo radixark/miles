@@ -14,11 +14,11 @@ from miles.backends.megatron_utils import megatron_config as megatron_config_mod
 from miles.backends.megatron_utils.megatron_config import (
     MODEL_DEFINITION_ARGS,
     PER_POLICY_ARGS,
-    _has_megatron_checkpoint,
     _resolve_overrides,
     compute_trainer_args,
     compute_trainer_checkpoint_dir,
     get_megatron_arg_parser,
+    has_megatron_checkpoint,
     resolve_args_checkpoint_load,
     resolve_megatron_config,
 )
@@ -454,21 +454,21 @@ class TestResolveArgsCheckpointLoad:
 class TestHasMegatronCheckpoint:
     def test_a_directory_holding_the_tracker_file_is_a_checkpoint(self, tmp_path):
         """This is the one shape both branches treat as a resume."""
-        assert _has_megatron_checkpoint(_write_megatron_checkpoint(tmp_path)) is True
+        assert has_megatron_checkpoint(_write_megatron_checkpoint(tmp_path)) is True
 
     def test_a_directory_without_the_tracker_file_is_not_a_checkpoint(self, tmp_path):
         """A --save directory exists from the moment the run starts, long before it holds a checkpoint."""
         (tmp_path / "save").mkdir()
 
-        assert _has_megatron_checkpoint(str(tmp_path / "save")) is False
+        assert has_megatron_checkpoint(str(tmp_path / "save")) is False
 
     def test_a_missing_directory_is_not_a_checkpoint(self, tmp_path):
         """The first run of a job passes a --load path nothing has created yet."""
-        assert _has_megatron_checkpoint(str(tmp_path / "nope")) is False
+        assert has_megatron_checkpoint(str(tmp_path / "nope")) is False
 
     def test_no_load_directory_at_all_is_not_a_checkpoint(self):
         """--load is optional, and None must not reach os.path.exists."""
-        assert _has_megatron_checkpoint(None) is False
+        assert has_megatron_checkpoint(None) is False
 
 
 class TestComputeTrainerArgs:

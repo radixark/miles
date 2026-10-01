@@ -4,7 +4,7 @@ import sys
 from argparse import Namespace
 from pathlib import Path
 from types import ModuleType
-from typing import Any, NamedTuple
+from typing import Any
 from unittest.mock import Mock
 
 import pytest
@@ -12,12 +12,6 @@ import pytest
 from miles.utils.init_once import InitOnce
 
 _ACTOR_MODULE_NAME = "miles.backends.megatron_utils.actor"
-
-
-class _CheckpointLoadResult(NamedTuple):
-    iteration: int
-    num_floating_point_operations_so_far: int
-    native_optimizer_restored: bool
 
 
 class _FakeRandomState:
@@ -133,13 +127,17 @@ def _actor(actor_module, *, role: str, args: Namespace):
 
 
 def _watch_load(actor_module, monkeypatch, *, args: Namespace, iteration: int) -> dict[str, Any]:
+    from miles.backends.megatron_utils.checkpoint import _CheckpointLoadResult
+
     model_module = importlib.import_module("miles.backends.megatron_utils.model")
     seen: dict[str, Any] = {}
 
     def fake_load_checkpoint(*_args: Any, **_kwargs: Any) -> _CheckpointLoadResult:
         seen["args_during_load"] = vars(args).copy()
         return _CheckpointLoadResult(
-            iteration=iteration, num_floating_point_operations_so_far=0, native_optimizer_restored=False
+            iteration=iteration,
+            restored_trained_iteration=not args.finetune or iteration > 0,
+            native_optimizer_restored=False,
         )
 
     monkeypatch.setattr(model_module, "load_checkpoint", fake_load_checkpoint)

@@ -163,3 +163,13 @@ def is_first_replica_megatron_main_rank():
         and get_parallel_state().tp.rank == 0
         and get_parallel_state().pp.rank == get_parallel_state().pp.size - 1
     )
+
+
+def is_local_replica_megatron_main_rank() -> bool:
+    parallel = get_parallel_state()
+    return (
+        parallel.intra_dp.rank == 0
+        and parallel.cp.rank == 0
+        and parallel.tp.rank == 0
+        and parallel.pp.rank == parallel.pp.size - 1
+    )

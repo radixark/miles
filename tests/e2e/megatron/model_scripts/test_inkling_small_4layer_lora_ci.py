@@ -38,7 +38,7 @@ def _args() -> ScriptArgs:
         rollout_max_response_len=512,
         sglang_context_length=1024,
         extra_args=(
-            "--ci-test "
+            "--ci-test --no-enable-sample-ownership-checker "
             "--ci-disable-kl-checker "
             # frozen towers and the engine-derived adapter buffers never match the snapshot
             "--check-weight-update-skip-list visual. audio. ._w1_delta ._a_cat "

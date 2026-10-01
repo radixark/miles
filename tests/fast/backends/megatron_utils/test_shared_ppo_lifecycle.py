@@ -72,7 +72,7 @@ def actor_module():
 
 def _worker(actor_module, role, *, asleep=True):
     worker = object.__new__(actor_module.MegatronTrainRayActor)
-    worker.args = Namespace(offload_train=True, debug_rollout_only=False)
+    worker.args = Namespace(offload_train=True, debug_rollout_only=False, enable_sample_ownership_checker=False)
     worker.role = role
     worker._asleep = asleep
     worker._heartbeat = Mock()
@@ -347,6 +347,7 @@ def _actor_train_args(**overrides):
         keep_old_actor=False,
         get_mismatch_metrics=False,
         skip_actor_forward_only=False,
+        enable_sample_ownership_checker=False,
     )
     return Namespace(**(defaults | overrides))
 
@@ -700,7 +701,6 @@ class _RecordingWeightUpdater:
         self.conn_status = ConnStatusManager()
         self.connect_calls: list[dict[str, Any]] = []
         self.update_weights_calls: int = 0
-        self.weight_version: int = 0
 
     def connect_rollout_engines(
         self,
@@ -716,9 +716,8 @@ class _RecordingWeightUpdater:
             )
         )
 
-    def update_weights(self) -> None:
+    def update_weights(self, weight_version: int) -> None:
         self.update_weights_calls += 1
-        self.weight_version += 1
 
 
 def _weight_update_worker(actor_module: Any, monkeypatch: pytest.MonkeyPatch) -> Any:
@@ -734,7 +733,17 @@ def _weight_update_worker(actor_module: Any, monkeypatch: pytest.MonkeyPatch) ->
     )
     worker._asleep = False
     worker._heartbeat = Mock()
+    worker.args.colocate = False
+    worker._active_model_tag = "actor"
+    from miles.backends.training_utils.model_companion import ModelCompanion
+
+    worker.args.megatron_to_hf_mode = "bridge"
+    worker.model = [torch.nn.Module()]
+    worker.model[0].add_module("model_companion", ModelCompanion(pipeline_rank=0, chunk_index=0, replica_id=(0, 0, 0)))
+    worker.model[0].model_companion.weight_version.fill_(3)
     worker.weight_updater = _RecordingWeightUpdater()
+    worker.weights_backuper = Mock()
+    worker.weights_backuper.get.return_value = dict(worker.model[0].named_parameters())
     monkeypatch.setattr(actor_module, "print_memory", Mock())
     monkeypatch.setattr(actor_module, "get_gloo_group", lambda: None)
     monkeypatch.setattr(actor_module.dist, "barrier", lambda **_kwargs: None)
@@ -905,6 +914,20 @@ def test_update_weights_reconnects_once_per_rollout_snapshot(
     assert not updater.conn_status.needs_reconnect({"cell-0": "hash-b"})
 
 
+@pytest.mark.parametrize("weight_version", [0, 7])
+def test_actor_returns_model_version_after_update_weights_returns(
+    actor_module: Any, monkeypatch: pytest.MonkeyPatch, weight_version: int
+) -> None:
+    """A normal updater return preserves the actor model version, including zero."""
+    worker = _weight_update_worker(actor_module, monkeypatch)
+    worker.model[0].model_companion.weight_version.fill_(weight_version)
+
+    result = worker.update_weights(_updatable_engines([object()], {"cell-0": "hash-a"}, gpu_count=4))
+
+    assert type(result) is int
+    assert result == weight_version
+
+
 def test_reconfigure_indep_dp_forces_the_next_weight_update_to_reconnect(
     actor_module: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -975,3 +998,55 @@ def test_switch_model_rebuilds_the_active_actor_for_main_cast(
     worker._switch_model("actor")
 
     cast_main_to_params.assert_called_once_with()
+
+
+class TestActorPublicationSource:
+    def test_a_live_reference_model_does_not_supply_the_actor_publication_version(
+        self, actor_module: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The published version and parameters come from the same actor backup."""
+        import torch
+
+        worker = _weight_update_worker(actor_module, monkeypatch)
+        worker._active_model_tag = "ref"
+        actor_weight = torch.tensor([7.0])
+        worker.weights_backuper = Mock()
+        worker.weights_backuper.get.return_value = {
+            "weight": actor_weight,
+            "model_companion.weight_version": torch.tensor(9, dtype=torch.int64),
+        }
+
+        assert worker._get_actor_weight_version() == 9
+        assert worker._get_actor_weights() == {"weight": actor_weight}
+        assert worker.model[0].model_companion.weight_version.item() == 3
+
+    def test_reading_host_backups_still_finds_the_companion_version(
+        self, actor_module: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Colocated LoRA translates live weights to host backups and must tolerate the host-resident companion."""
+        worker = _weight_update_worker(actor_module, monkeypatch)
+        monkeypatch.setattr(type(worker), "_weight_sync_reads_tms_backup", property(lambda _self: True))
+
+        assert worker._get_actor_weight_version() == 3
+
+
+@pytest.mark.parametrize("use_tms_backup", [False, True])
+@pytest.mark.parametrize("include_model_companion", [False, True])
+def test_actor_weight_getter_forwards_companion_selection_to_live_source(
+    actor_module: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    use_tms_backup: bool,
+    include_model_companion: bool,
+) -> None:
+    """Live and TMS sources honor the same companion inclusion flag."""
+    worker = _weight_update_worker(actor_module, monkeypatch)
+    monkeypatch.setattr(type(worker), "_weight_sync_reads_tms_backup", property(lambda self: use_tms_backup))
+    tensor = torch.tensor([1.0])
+    worker._named_actor_weights = Mock(return_value=[("weight", tensor)])
+
+    assert worker._get_actor_weights(include_model_companion=include_model_companion) == {"weight": tensor}
+
+    expected = {"include_model_companion": include_model_companion}
+    if use_tms_backup:
+        expected["translate_gpu_to_cpu"] = True
+    worker._named_actor_weights.assert_called_once_with(**expected)

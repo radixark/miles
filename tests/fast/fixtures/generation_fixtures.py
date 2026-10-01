@@ -160,6 +160,7 @@ def make_args(
         "--train-backend",
         "fsdp",
         "--ci-test",
+        "--no-enable-sample-ownership-checker",
         "--rollout-batch-size",
         "1",
         "--num-rollout",
@@ -278,6 +279,7 @@ def generation_env(request, variant):
             cached_tokens=x.get("cached_tokens", 0),
             meta_info=ProcessResultMetaInfo(
                 weight_version=x.get("weight_version"),
+                prefill_weight_versions=x.get("prefill_weight_versions"),
                 routed_experts=x.get("routed_experts"),
                 spec_num_correct_drafts=x.get("spec_num_correct_drafts"),
                 spec_num_proposed_drafts=x.get("spec_num_proposed_drafts"),

@@ -72,6 +72,8 @@ def _make_step_end(
         timestamp=_FIXED_TS,
         source=_MAIN_SOURCE,
         rollout_id=rollout_id,
+        attempt=0,
+        role="actor",
         cell_outcomes=cell_outcomes,
     )
 

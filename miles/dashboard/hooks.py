@@ -404,7 +404,7 @@ async def _compute_engine_infos(cells, worker_infos_per_cell, *, provider: BaseW
         engines.append(
             EngineInfo(
                 addr=cell.server_url,
-                worker_type=cell.meta.worker_type,
+                worker_type=cell.meta.worker_type.value,
                 engine_rank=engine_rank,
                 gpus=[
                     [info.self_addrs["primary"].host.strip("[]"), gpu_id]

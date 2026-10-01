@@ -13,6 +13,8 @@ const DEFAULT_COLUMNS = [
   "truncated",
   "versions",
   "staleness",
+  "prefill_weight_version_min",
+  "prefill_lag",
   "turns",
   "tool_calls",
   "mean_abs_lp_diff",

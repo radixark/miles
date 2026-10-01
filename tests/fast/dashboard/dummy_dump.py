@@ -161,6 +161,7 @@ def _make_args(dump_dir: Path, *, num_prompts: int, n_samples_per_prompt: int) -
         n_samples_per_prompt=n_samples_per_prompt,
         reward_key=None,
         qkv_format="thd",
+        enable_sample_ownership_checker=False,
     )
 
 

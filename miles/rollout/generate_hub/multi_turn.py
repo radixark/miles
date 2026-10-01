@@ -56,6 +56,7 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
             sample.tokens,
             input.sampling_params,
             evaluation=input.evaluation,
+            kv_cache_namespace=sample.kv_cache_namespace,
         )
         if payload is None:
             sample.status = halt_status

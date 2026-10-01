@@ -235,11 +235,20 @@ class TestCreatePolicyTrainers:
         assert [entry["resumed"] for entry in created] == [True, True]
         rollout_executor.load.assert_awaited_once_with(3)
 
+    async def test_a_fresh_run_leaves_the_executor_unloaded(self, monkeypatch):
+        """Every policy starts before rollout 0, so there is no rollout state for the executor to restore."""
+        self._stub_create_training_model(monkeypatch, dict(a=0, b=0))
+        rollout_executor = AsyncMock()
+
+        await multi_policy_utils.create_trainers(_make_trainer_args("a", "b"), rollout_executor=rollout_executor)
+
+        rollout_executor.load.assert_not_awaited()
+
     async def test_a_resume_without_the_global_rollout_state_is_refused(self, monkeypatch, tmp_path):
         """The models would resume at rollout 4 while the data source silently restarts at the first prompt."""
         self._stub_create_training_model(monkeypatch, dict(a=4, b=4))
 
-        with pytest.raises(AssertionError, match="global_dataset_state_dict_3.pt is missing"):
+        with pytest.raises(AssertionError, match="rollout/3 is missing"):
             await multi_policy_utils.create_trainers(
                 _make_trainer_args("a", "b", load=str(tmp_path)), rollout_executor=AsyncMock()
             )
@@ -247,9 +256,7 @@ class TestCreatePolicyTrainers:
     async def test_a_resume_with_the_global_rollout_state_loads_it(self, monkeypatch, tmp_path):
         """The supported resume shape has to stay reachable, or no multi policy run could ever restart."""
         self._stub_create_training_model(monkeypatch, dict(a=4, b=4))
-        state = tmp_path / "rollout" / "global_dataset_state_dict_3.pt"
-        state.parent.mkdir(parents=True)
-        state.write_bytes(b"")
+        (tmp_path / "rollout" / "3").mkdir(parents=True)
         rollout_executor = AsyncMock()
 
         await multi_policy_utils.create_trainers(
