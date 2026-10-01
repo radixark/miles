@@ -10,7 +10,7 @@ from miles.utils.workers.naming import compute_worker_name
 from miles.utils.workers.worker_info import WorkerInfo
 from miles.utils.workers.worker_provider.base import CellInfo
 from miles.utils.workers.worker_provider.kubernetes.core import pod_view
-from miles.utils.workers.worker_spec import RPC_PORT_NAME, BaseServeSpec, HostAndPort, NamedHostAndPorts
+from miles.utils.workers.worker_spec import BaseServeSpec, HostAndPort, NamedHostAndPorts, PortInfo
 
 if TYPE_CHECKING:
     from miles.utils.workers.worker_provider.kubernetes.core.provider import KubernetesRunInfo
@@ -81,8 +81,11 @@ def addrs_of_worker(worker: KubernetesWorkerInfo, *, run: KubernetesRunInfo) -> 
     ports = _ports_of_pool(worker.pod.pool_id, run=run)
     assert ports, f"spec {worker.pod.pool_id} declares no ports, so {worker.name} has no address"
     return {
-        name: HostAndPort(host=host, port=port + (worker.worker_in_pod_index if name == RPC_PORT_NAME else 0))
-        for name, port in ports.items()
+        port.name: HostAndPort(
+            host=host,
+            port=port.effective_static_port(worker_in_pod_index=worker.worker_in_pod_index),
+        )
+        for port in ports
     }
 
 
@@ -123,8 +126,8 @@ def _workers_of_pod(pod: pod_view.ParsedPod, *, run: KubernetesRunInfo) -> list[
     ]
 
 
-def _ports_of_pool(pool_id: str, *, run: KubernetesRunInfo) -> dict[str, int]:
-    return {port.name: port.static_port for port in run.specs[pool_id].port_infos}
+def _ports_of_pool(pool_id: str, *, run: KubernetesRunInfo) -> list[PortInfo]:
+    return run.specs[pool_id].port_infos
 
 
 def _host_of_pod(pod: pod_view.ParsedPod, *, namespace: str) -> str:
