@@ -3,9 +3,10 @@ from __future__ import annotations
 import os
 import sys
 
+from miles.ray.specs.entrypoint import SERVE_SPEC_CLASSES
 from miles.utils.workers.argv_utils import python_argv_prefix
 from miles.utils.workers.env_vars import PLATFORM_IDENTITY_ENV_VARS
-from miles.utils.workers.serving.utils import compute_serve_worker_spec, parse_own_args, split_worker_argv
+from miles.utils.workers.serving.utils import parse_own_args, parse_serve_worker_config
 from miles.utils.workers.serving.worker_identity import read_worker_identity
 from miles.utils.workers.worker_spec import WorkerLaunchContext
 
@@ -13,11 +14,11 @@ SERVE_INNER_MODULE = "miles.utils.workers.serving.serve_inner"
 
 
 def main() -> None:
-    own_argv, worker_argv = split_worker_argv(sys.argv[1:])
-    args = parse_own_args(own_argv)
-    _log(f"start own_argv={own_argv} worker_argv={worker_argv}")
+    own_args = parse_own_args(sys.argv[1:])
 
-    spec = compute_serve_worker_spec(specs_fn=args.specs, pool_id=args.pool_id, worker_argv=worker_argv)
+    worker_config = parse_serve_worker_config(own_args.config)
+    spec_class = SERVE_SPEC_CLASSES[worker_config.worker_type]
+    spec = spec_class.create(spec_class.config_class.model_validate(worker_config.args))
     identity = read_worker_identity(os.environ)
     env_vars = spec.env_var(
         WorkerLaunchContext(
@@ -29,13 +30,13 @@ def main() -> None:
     )
     overridden = sorted(name for name in PLATFORM_IDENTITY_ENV_VARS if name in env_vars)
     assert not overridden, (
-        f"spec {args.pool_id} sets {overridden}, which the platform owns; a worker that read the spec's value "
+        f"spec {spec.name} sets {overridden}, which the platform owns; a worker that read the spec's value "
         f"would report the identity of another worker and bind that worker's ports"
     )
-    _log(f"pool_id={args.pool_id} env_vars={env_vars}")
+    _log(f"pool_id={spec.name} env_vars={env_vars}")
 
-    inner_argv = [*python_argv_prefix(), "-m", SERVE_INNER_MODULE, *own_argv, "--", *worker_argv]
-    _log(f"exec {inner_argv}")
+    inner_argv = [*python_argv_prefix(), "-m", SERVE_INNER_MODULE, *sys.argv[1:]]
+    _log(f"exec {SERVE_INNER_MODULE} pool_id={spec.name}")
     os.execve(sys.executable, inner_argv, dict(os.environ) | env_vars)
 
 

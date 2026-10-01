@@ -21,6 +21,7 @@ from miles.utils.external_utils.command_utils.helm_backend.launcher.values.misc 
 )
 from miles.utils.external_utils.command_utils.helm_backend.launcher.values.pool_entry import build_entry
 from miles.utils.external_utils.command_utils.helm_backend.naming import RunNames
+from miles.utils.workers.connection_config import build_static_conn_config
 from miles.utils.workers.naming import compute_cell_id
 from miles.utils.workers.types import PlatformAccess
 from miles.utils.workers.worker_provider.kubernetes.helm.naming import static_cell_addrs
@@ -43,6 +44,7 @@ def _build_run_values(specs: list[BaseSpec], plan: LaunchPlan) -> RunValues:
         if isinstance(spec, BaseServeSpec):
             _assert_worker_ports_fit(spec)
     addresses = _compute_addresses(specs, plan.release)
+    static_connections = build_static_conn_config(specs=specs)
 
     colocate = _pairing_config(specs, plan)
     layout_of_pool = {pool.pool_id: pool.layout for pool in colocate.inference_pools} if colocate else {}
@@ -54,7 +56,13 @@ def _build_run_values(specs: list[BaseSpec], plan: LaunchPlan) -> RunValues:
     }
     for spec in specs:
         section = SECTION_OF_CATEGORY[spec.category]
-        entry = build_entry(spec, plan=plan, addresses=addresses, pairing_layout=layout_of_pool.get(spec.name))
+        entry = build_entry(
+            spec,
+            plan=plan,
+            addresses=addresses,
+            pairing_layout=layout_of_pool.get(spec.name),
+            static_connections=static_connections,
+        )
         assert section == STATIC_WORKERS_SECTION or entry.restart_at is None, (
             f"only the {STATIC_WORKERS_SECTION} template renders a restart stamp, so stamping {spec.name} in "
             f"{section} would roll nothing while this launch believes it rolled a pod"
