@@ -81,4 +81,6 @@ def test_bridge_mtp_detachment(
     apply_bridge_runtime_config(provider, runtime_args)
 
     assert provider.mtp_detach_heads is expected_detach
-    assert provider.mtp_num_layers == 1
+    # Megatron backprops the MTP loss whenever the block exists, so it must only be built
+    # when MTP training is requested.
+    assert provider.mtp_num_layers == (1 if enabled else None)

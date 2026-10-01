@@ -49,9 +49,14 @@ def _apply_bridge_runtime_config(provider, args: argparse.Namespace) -> None:
     provider.calculate_per_token_loss = args.calculate_per_token_loss  # CP>1 VL models assert this
     provider.variable_seq_lengths = args.variable_seq_lengths
 
-    # Match the non-bridge path: MTP must only train its own draft parameters.
+    # The bridge copies mtp_num_layers from the HF config, and once the MTP block exists
+    # Megatron computes and backprops its loss on every training forward (labels derived
+    # from input_ids). Build it only when MTP training is requested.
     if getattr(args, "enable_mtp_training", False):
+        # Match the non-bridge path: MTP must only train its own draft parameters.
         provider.mtp_detach_heads = True
+    else:
+        provider.mtp_num_layers = None
 
     # numerics (training infra, not model-defining)
     provider.attention_softmax_in_fp32 = args.attention_softmax_in_fp32
@@ -239,6 +244,10 @@ def get_model_provider_func(
             # Detach the MTP heads so RL MTP gradients do not flow into the shared
             # output layer / embedding.
             config.mtp_detach_heads = True
+        elif config.mtp_num_layers:
+            # The block is kept for checkpoint compatibility, but Megatron backprops its loss
+            # whenever it exists; zero the loss so it cannot train the decoder.
+            config.mtp_loss_scaling_factor = 0.0
 
         if args.spec is not None:
             transformer_layer_spec = import_module(args.spec)
