@@ -4,8 +4,10 @@ import ray
 from ray.actor import ActorHandle
 
 from miles.ray.specs.entrypoint import compute_specs
+from miles.utils.args.runtime import AllConfig
 from miles.utils.workers.backend_capability import factory
 from miles.utils.workers.backend_capability.base import BackendCapability
+from miles.utils.workers.connection_config import build_static_conn_config
 from miles.utils.workers.ray_worker_manager import RayWorkerManager
 from miles.utils.workers.types import ClusterBackend, WorkerCommBackend
 
@@ -27,9 +29,12 @@ async def shutdown_worker_manager(worker_manager_handle: ActorHandle | None) -> 
         ray.kill(worker_manager_handle)
 
 
-def get_backend_capability(args) -> BackendCapability:
+def get_backend_capability(args: AllConfig) -> BackendCapability:
+    specs = compute_specs(args)
     return factory.get_backend_capability(
-        specs=compute_specs(args), cluster_backend=ClusterBackend(args.cluster_backend)
+        specs=specs,
+        static_connections=build_static_conn_config(specs=specs),
+        cluster_backend=ClusterBackend(args.cluster_backend),
     )
 
 

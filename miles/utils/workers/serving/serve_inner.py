@@ -10,6 +10,7 @@ from miles.utils.arguments import parse_args
 from miles.utils.function_registry import load_function
 from miles.utils.workers.backend_capability.base import BackendCapability, DeferredBackendCapability
 from miles.utils.workers.backend_capability.factory import get_backend_capability
+from miles.utils.workers.connection_config import build_static_conn_config
 from miles.utils.workers.rpc.server.app import create_rpc_app
 from miles.utils.workers.serving.utils import (
     compute_serve_worker_spec,
@@ -50,7 +51,9 @@ def create_worker(spec: BaseServeSpec, *, specs_fn: str, worker_argv: list[str])
 def _backend_capability(specs_fn: str, worker_argv: list[str]) -> BackendCapability:
     with override_argv(worker_argv):
         cluster_backend = ClusterBackend(parse_args().cluster_backend)
-    return get_backend_capability(specs=load_function(specs_fn)(worker_argv), cluster_backend=cluster_backend)
+    specs = load_function(specs_fn)(worker_argv)
+    static_connections = build_static_conn_config(specs=specs)
+    return get_backend_capability(specs=specs, cluster_backend=cluster_backend, static_connections=static_connections)
 
 
 def _rpc_port_of(spec: BaseServeSpec) -> PortInfo:
