@@ -1,3 +1,5 @@
+import argparse
+
 from miles.utils.args.schema import A, Arg, BaseConfig
 
 
@@ -27,3 +29,7 @@ class DashboardConfig(BaseConfig):
         bool,
         Arg(help="also push dashboard gauges to the --use-prometheus collector for external Grafana"),
     ] = False
+
+    @classmethod
+    def add_arguments(cls, parser: argparse.ArgumentParser) -> None:
+        super().add_arguments(parser=parser.add_argument_group("miles dashboard"))

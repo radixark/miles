@@ -124,6 +124,7 @@ class HotRestartDriver:
             release=self.release,
             observation_attempts=self._observer.attempts,
             observation_failures=self._observer.failures,
+            commands_of_pod_uid=self._observer.commands_of_pod_uid,
         )
 
     def start(self) -> None:

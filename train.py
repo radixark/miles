@@ -11,20 +11,24 @@ from miles.ray.placement_group import (
     update_weights,
 )
 from miles.ray.rollout.eval_dispatch import EvalDispatcher
-from miles.utils.arguments import parse_args
 from miles.utils.async_utils import Disposer, with_disposer
 from miles.utils.data import remove_rollout_data_refs, remove_train_output_refs
 from miles.utils.ft_utils.mini_ft_controller import maybe_start_mini_ft_controller
 from miles.utils.lora.utils import lora_rollout_enabled
 from miles.utils.misc import should_run_periodic_action
-from miles.utils.orchestration_utils import init_orchestration_script
+from miles.utils.orchestration_utils import (
+    OrchestratorStartupInfo,
+    init_orchestration_script,
+    parse_orchestrator_startup_info,
+)
 
 logger = logging.getLogger(__name__)
 
 
-async def train(args, *, disposer: Disposer):
+async def train(startup_info: OrchestratorStartupInfo, *, disposer: Disposer):
+    args = startup_info.args
     assert not args.fully_async, "--fully-async requires the async driver: run train_async.py"
-    _worker_manager = init_orchestration_script(args, disposer=disposer)
+    capability = init_orchestration_script(startup_info, disposer=disposer)
 
     if args.colocate_memory_peak_device == "gpu":
         assert (
@@ -34,14 +38,18 @@ async def train(args, *, disposer: Disposer):
 
     # create the rollout manager, with sglang engines inside.
     # need to initialize rollout manager first to calculate num_rollout
-    inference_controller, rollout_executor, num_rollout_per_epoch = await create_rollout_components(args)
+    inference_controller, rollout_executor, num_rollout_per_epoch = await create_rollout_components(
+        args, capability=capability
+    )
     disposer.add(inference_controller, rollout_executor)
 
     # create the actor and critic models
-    actor_model, critic_model = await create_training_models(args, rollout_executor)
+    actor_model, critic_model = await create_training_models(args, rollout_executor, capability=capability)
     disposer.add(critic_model, actor_model)
 
-    maybe_start_api_server(args, trainer_models={"actor": actor_model}, inference_controller=inference_controller)
+    maybe_start_api_server(
+        args, trainer_models={"actor": actor_model}, inference_controller=inference_controller, capability=capability
+    )
     maybe_start_mini_ft_controller(args)
 
     # always update weight first so that sglang has the loaded weights from training.
@@ -171,5 +179,4 @@ async def train(args, *, disposer: Disposer):
 
 
 if __name__ == "__main__":
-    args = parse_args()
-    asyncio.run(with_disposer(train, args))
+    asyncio.run(with_disposer(train, parse_orchestrator_startup_info()))

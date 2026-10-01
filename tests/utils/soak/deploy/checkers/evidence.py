@@ -32,4 +32,5 @@ def project_hot_restart_evidence(events: list[SoakEvent], *, release: str) -> Ho
         release=release,
         observation_attempts=recorder.attempts,
         observation_failures=recorder.failures,
+        commands_of_pod_uid=recorder.commands_of_pod_uid,
     )

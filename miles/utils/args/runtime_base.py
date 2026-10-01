@@ -1,3 +1,4 @@
+import argparse
 from typing import Any, ClassVar
 
 from pydantic import ConfigDict
@@ -8,6 +9,12 @@ from miles.utils.args.schema import BaseConfig
 class BaseLeafConfig(BaseConfig):
     model_config = ConfigDict(arbitrary_types_allowed=True, validate_assignment=True)
     _mutable_fields: ClassVar[frozenset[str]] = frozenset()
+
+    @classmethod
+    def add_arguments(cls, parser: argparse.ArgumentParser) -> None:
+        for trait in cls.__bases__:
+            if trait is not BaseLeafConfig:
+                trait.add_arguments(parser=parser)
 
     @classmethod
     def __pydantic_init_subclass__(cls, **kwargs: Any) -> None:

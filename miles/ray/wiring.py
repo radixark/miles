@@ -30,7 +30,7 @@ async def shutdown_worker_manager(worker_manager_handle: ActorHandle | None) -> 
         ray.kill(worker_manager_handle)
 
 
-def get_backend_capability(args: AllConfig) -> BackendCapability:
+def compute_backend_capability(args: AllConfig) -> BackendCapability:
     return factory.get_backend_capability(
         static_connections=build_static_conn_config(specs=compute_specs(args), scaling=ScalingConfig.slice_from(args)),
         cluster_backend=ClusterBackend(args.cluster_backend),

@@ -1,4 +1,3 @@
-import argparse
 import os
 import sys
 from collections.abc import Iterator
@@ -18,7 +17,6 @@ class ResultScenario:
     legacy: bool = False
     error: type[Exception] | None = None
     message: str = ""
-    custom: bool = False
 
 
 def capture_result(*, scenario: ResultScenario, directory: Path) -> dict[str, Any]:
@@ -42,7 +40,7 @@ def capture_result(*, scenario: ResultScenario, directory: Path) -> dict[str, An
 
     with _environment(arguments=arguments, legacy=scenario.legacy):
         try:
-            args = parse_args(add_custom_arguments=_custom_arguments if scenario.custom else None)
+            args = parse_args()
         except (AssertionError, ValueError, NotImplementedError, FileNotFoundError) as error:
             if scenario.error is None or type(error) is not scenario.error or scenario.message not in str(error):
                 raise
@@ -53,11 +51,6 @@ def capture_result(*, scenario: ResultScenario, directory: Path) -> dict[str, An
             result = {"config": snapshot_values(args)}
 
     return _normalize(result, directory=directory)
-
-
-def _custom_arguments(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
-    parser.add_argument("--snapshot-custom", type=int, default=17)
-    return parser
 
 
 def _normalize(value: Any, *, directory: Path) -> Any:

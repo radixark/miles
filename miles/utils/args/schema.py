@@ -55,6 +55,39 @@ class BaseConfig(StrictBaseModel):
                 )
 
 
+def reset_arg(parser: argparse.ArgumentParser, name: str, **kwargs: Any) -> None:
+    """
+    Reset the default value of a Megatron argument.
+    :param parser: The argument parser.
+    :param name: The name of the argument to reset.
+    :param default: The new default value.
+    """
+    for action in parser._actions:
+        if name in action.option_strings:
+            _assert_reset_arg_compatible(parser=parser, action=action, name=name, kwargs=kwargs)
+            if "default" in kwargs:
+                action.default = kwargs["default"]
+            break
+    else:
+        parser.add_argument(name, **kwargs)
+
+
+def _assert_reset_arg_compatible(
+    *, parser: argparse.ArgumentParser, action: argparse.Action, name: str, kwargs: dict[str, Any]
+) -> None:
+    action_type = kwargs.get("action", "store")
+    expected_action = parser._registry_get("action", action_type, action_type)
+    assert (
+        type(action) is expected_action
+    ), f"Cannot reset {name}: action {type(action)} does not match {expected_action}"
+    expected = {"type": None, **kwargs}
+    for key, value in expected.items():
+        if key in {"action", "default", "help"}:
+            continue
+        actual = vars(action)[key]
+        assert actual == value, f"Cannot reset {name}: {key}={actual!r} does not match {value!r}"
+
+
 def validate_complete_config(config_class: type[_ConfigT], payload: Mapping[str, Any]) -> _ConfigT:
     config = config_class.model_validate(payload)
     _validate_complete_value(value=config, path=config_class.__name__)
@@ -81,8 +114,6 @@ def _add_argument(
         raise ValueError("Reset arguments require exactly one argument name")
     kwargs = _argument_kwargs(name=name, annotation=annotation, field=field, argument=argument)
     if argument.reset:
-        from miles.utils.arguments import reset_arg
-
         reset_arg(parser=parser, name=flags[0], **kwargs)
     else:
         parser.add_argument(*flags, **kwargs)

@@ -7,10 +7,10 @@ from tests.utils.soak.core.runner import SoakRunner
 from tests.utils.soak.core.utils import compute_release_of_config
 from tests.utils.soak.deploy.actions.hot_restart import HotRestartForm
 from tests.utils.soak.deploy.observers import DeploymentObserver
-from tests.utils.soak.deploy.session import LauncherChain, execute_hot_restart_session
+from tests.utils.soak.deploy.session import LauncherChain, follow_launchers
 from tests.utils.soak.deploy.types import DEPLOYMENT_TARGET_KIND
 from tests.utils.soak.deploy.utils import compute_checkpoint_dir
-from tests.utils.soak.recipes.gsm8k import Gsm8kRun
+from tests.utils.soak.recipes.gsm8k import Gsm8kRun, execute_gsm8k_session
 
 
 async def run_hot_restart_soak(
@@ -34,7 +34,7 @@ async def run_hot_restart_soak(
     return await run_soak(
         config=config,
         dump_dir=Path(run.dump_dir),
-        sut_run=execute_hot_restart_session(run, chain=chain),
+        sut_run=follow_launchers(execute_gsm8k_session(run), chain=chain),
         runner_config=runner_config,
         forms=forms,
         event_log=run.event_log,

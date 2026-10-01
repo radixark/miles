@@ -4,8 +4,9 @@ from typing import Any, ClassVar, Self
 
 from miles.backends.megatron_utils.megatron_config import ACTOR_ROLE, CRITIC_ROLE, MegatronTrainerConfig
 from miles.ray.utils import NOSET_VISIBLE_DEVICES_ENV_VARS_LIST
+from miles.utils.args.configs.backend_fields import RawTrainerBackendConfig
 from miles.utils.args.configs.scaling import ScalingConfig
-from miles.utils.args.runtime import AllConfig, TrainerConfig
+from miles.utils.args.runtime import TrainerConfig
 from miles.utils.args.trainer_utils import compute_trainer_config, compute_trainer_total_gpus
 from miles.utils.environ import default_fp8_block_scaling_fp32_scales
 from miles.utils.lora.utils import is_multi_lora_enabled
@@ -76,22 +77,19 @@ class TrainerControllerSpec(BaseServeSpec):
     def ctor_kwargs(self, ctx: WorkerCtorContext) -> dict[str, Any]:
         args = ctx.args
         return dict(
+            args=args,
             deployment_identity=DeploymentIdentity(
                 run_uuid=args.run_uuid,
                 deploy_component=args.deploy_component,
                 deploy_instance_id=args.deploy_instance_id,
                 trainer_id=args.trainer_id,
             ),
-            trainer_id=args.trainer_id,
-            role=args.trainer_role,
-            with_ref=(args.trainer_role != CRITIC_ROLE) and (args.kl_coef != 0 or args.use_kl_loss),
-            with_opd_teacher=(args.trainer_role != CRITIC_ROLE) and args.use_opd and args.opd_type == "megatron",
             cell_provider=ctx.capability.dynamic_worker_provider(pool_ids=[compute_trainer_pool_id(args.trainer_id)]),
             cell_operations=ctx.capability.cell_operations(),
         )
 
 
-def compute_trainer_configs(args: AllConfig) -> list[MegatronTrainerConfig]:
+def compute_trainer_configs(args: RawTrainerBackendConfig) -> list[MegatronTrainerConfig]:
     return args.raw_megatron.trainers
 
 

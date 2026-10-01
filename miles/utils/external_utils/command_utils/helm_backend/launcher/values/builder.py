@@ -22,7 +22,7 @@ from miles.utils.external_utils.command_utils.helm_backend.launcher.values.misc 
 )
 from miles.utils.external_utils.command_utils.helm_backend.launcher.values.pool_entry import build_entry
 from miles.utils.external_utils.command_utils.helm_backend.naming import RunNames
-from miles.utils.workers.connection_config import build_static_conn_config
+from miles.utils.workers.connection_config import StaticConnConfig, build_static_conn_config
 from miles.utils.workers.naming import compute_cell_id
 from miles.utils.workers.types import PlatformAccess
 from miles.utils.workers.worker_provider.kubernetes.helm.naming import static_cell_addrs
@@ -31,13 +31,22 @@ from miles.utils.workers.worker_spec import RPC_PORT_NAME, BaseServeSpec, BaseSp
 _COLOCATE_PAIRING_COMPONENT = "colocate-pairing"
 
 
-def build_values(specs: list[BaseSpec], plan: LaunchPlan, *, scaling: ScalingConfig) -> MilesRunChartValues:
+def build_values(
+    specs: list[BaseSpec], plan: LaunchPlan, *, scaling: ScalingConfig, static_connections: StaticConnConfig
+) -> MilesRunChartValues:
     return MilesRunChartValues(
-        run=_build_run_values(specs, plan, scaling=scaling), extra_manifests=plan.extra_manifests or None
+        run=_build_run_values(specs, plan, scaling=scaling, static_connections=static_connections),
+        extra_manifests=plan.extra_manifests or None,
     )
 
 
-def _build_run_values(specs: list[BaseSpec], plan: LaunchPlan, *, scaling: ScalingConfig) -> RunValues:
+def compute_static_connections(specs: list[BaseSpec], *, scaling: ScalingConfig) -> StaticConnConfig:
+    return build_static_conn_config(specs=_deployed_specs(specs, scaling=scaling), scaling=scaling)
+
+
+def _build_run_values(
+    specs: list[BaseSpec], plan: LaunchPlan, *, scaling: ScalingConfig, static_connections: StaticConnConfig
+) -> RunValues:
     assert bool(plan.orchestrator_command) == bool(plan.state_file), (
         "The orchestration script and the exit file it writes come together: a release carries both, or it carries "
         "neither and is a deployment of workers that outlives any one run"
@@ -47,7 +56,6 @@ def _build_run_values(specs: list[BaseSpec], plan: LaunchPlan, *, scaling: Scali
         if isinstance(spec, BaseServeSpec):
             _assert_worker_ports_fit(spec, scaling=scaling)
     addresses = _compute_addresses(specs, plan.release, scaling=scaling)
-    static_connections = build_static_conn_config(specs=specs, scaling=scaling)
 
     colocate = _pairing_config(specs, plan, scaling=scaling)
     layout_of_pool = {pool.pool_id: pool.layout for pool in colocate.inference_pools} if colocate else {}

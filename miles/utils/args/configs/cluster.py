@@ -64,11 +64,11 @@ class ClusterConfig(BaseConfig):
         Arg(
             type_parser=int,
             help=(
-                "How many engine cells per model this run waits for before it starts, when the engines are "
-                "deployed elsewhere and register themselves into it. The run cannot derive the number, because "
-                "the engine deployments are launched separately and may arrive late; declare here how many "
-                "cells the first rollout needs. It gates startup only, and the run keeps serving whatever "
-                "registers or leaves afterwards."
+                "How many engine cells per model this run waits for before it starts. Defaults to the cell count "
+                "the run's own engines are deployed as; declare it when the engines are deployed elsewhere and "
+                "register themselves into the run, which cannot derive the number, or to keep every config "
+                "unchanged while the engine deployment scales. It gates startup only, and the run keeps serving "
+                "whatever registers or leaves afterwards."
             ),
         ),
     ] = None
