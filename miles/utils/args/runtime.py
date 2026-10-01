@@ -1,5 +1,6 @@
 from pydantic import ConfigDict
 
+from miles.backends.megatron_utils.megatron_config import MegatronConfig
 from miles.backends.sglang_utils.sglang_config import SglangConfig
 
 from miles.utils.args.configs.algo import AlgoConfig
@@ -57,6 +58,7 @@ class AllConfig(
     # TODO: Remove extra="allow" after backend, custom, and derived fields have explicit config owners.
     model_config = ConfigDict(extra="allow")
 
+    raw_megatron: MegatronConfig
     sglang: SglangConfig
 
     # TODO: Remove this temporary override after separating CLI input types from normalized config types.

@@ -6,7 +6,6 @@ import os
 from argparse import Namespace
 from pathlib import Path
 
-from miles.backends.megatron_utils.megatron_config import resolve_megatron_config
 from miles.ray.placement_group import create_rollout_components, maybe_start_api_server, update_weights
 from miles.ray.specs.train import compute_trainer_configs
 from miles.utils.arguments import parse_args
@@ -30,7 +29,7 @@ logger = logging.getLogger(__name__)
 
 
 async def train_multi_policy(args, *, disposer: Disposer) -> None:
-    megatron_config = resolve_megatron_config(args)
+    megatron_config = args.raw_megatron
     validate_multi_policy_args(args, megatron_config=megatron_config)
     _worker_manager = init_orchestration_script(args, disposer=disposer)
 
