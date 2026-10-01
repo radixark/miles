@@ -49,6 +49,7 @@ from miles.utils.args.configs.session import SessionConfig
 from miles.utils.args.configs.tensorboard import TensorboardConfig
 from miles.utils.args.configs.train import TrainConfig
 from miles.utils.args.configs.wandb import WandbConfig
+from miles.utils.args.custom_function import add_user_provided_function_arguments
 from miles.utils.args.runtime import AllConfig
 from miles.utils.audit_utils.event_logger.logger import EVENTS_DIRNAME
 from miles.utils.chat_template_utils.tito_tokenizer import TITOTokenizerType
@@ -77,7 +78,7 @@ logger = logging.getLogger(__name__)
 FULLY_ASYNC_ROLLOUT_PATH = "miles.rollout.fully_async_rollout.FullyAsyncRolloutFn"
 
 
-def resolve_rollout_function_paths(args) -> tuple[str, str]:
+def resolve_rollout_function_paths(args: argparse.Namespace) -> None:
     """The (rollout, eval) function paths the arguments select."""
     if use_legacy_rollout_v1():
         standard_path = "miles.rollout.sglang_rollout.generate_rollout"
@@ -88,7 +89,8 @@ def resolve_rollout_function_paths(args) -> tuple[str, str]:
         rollout_path = FULLY_ASYNC_ROLLOUT_PATH
     # Resolved after the override: shared-engine eval must reach the producer it pauses.
     eval_path = args.eval_function_path or rollout_path
-    return rollout_path, eval_path
+    args.rollout_function_path = rollout_path
+    args.eval_function_path = eval_path
 
 
 def driver_owns_generation_pause(args) -> bool:
@@ -147,7 +149,7 @@ def _resolve_rollout_functions(args) -> None:
         ), "--fully-async does not support --rollout-all-samples-process-path"
 
     user_eval_path = args.eval_function_path
-    args.rollout_function_path, args.eval_function_path = resolve_rollout_function_paths(args)
+    resolve_rollout_function_paths(args)
     # An inherited eval path is the rollout fn serving eval itself, never a checkpoint
     # backend: skip the resolve so custom rollout modules are not imported on the driver.
     checkpoint_backend = user_eval_path is not None and is_checkpoint_eval_fn(args.eval_function_path)
@@ -195,8 +197,6 @@ def _assert_reset_arg_compatible(
 
 
 def get_miles_extra_args_provider(add_custom_arguments=None):
-    from miles.utils.args.custom_function import add_user_provided_function_arguments
-
     def add_miles_arguments(parser):
         parser.set_defaults(entry="train")
 
@@ -250,7 +250,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
         CiConfig.add_arguments(parser=parser)
         CustomMegatronPluginsConfig.add_arguments(parser=parser)
         Dsv4MegatronPluginsConfig.add_arguments(parser=parser)
-        parser = add_user_provided_function_arguments(parser)
+        parser = add_user_provided_function_arguments(parser, modify_args=resolve_rollout_function_paths)
 
         reset_arg(
             parser,
