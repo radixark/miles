@@ -5,7 +5,7 @@ import functools
 import json
 import os
 from argparse import Namespace
-from typing import Any
+from typing import Any, get_args, get_type_hints
 
 import pytest
 from tests.fast.backends.sglang_utils.conftest import make_engine_args as _args
@@ -13,7 +13,7 @@ from tests.fast.backends.sglang_utils.conftest import tiny_model_path
 
 pytest.importorskip("sglang")
 
-from sglang.srt.server_args import ServerArgs
+from sglang.srt.server_args import Arg, ServerArgs
 
 from miles.backends.sglang_utils.server_args_utils import parse_server_args_argv, server_args_to_argv
 from miles.backends.sglang_utils.sglang_engine import _compute_server_args
@@ -30,19 +30,15 @@ def _assert_sweep_restores_env():
     os.environ.update(saved)
 
 
+_FIELDS_WITHOUT_AUTOMATIC_CLI = {
+    name
+    for name, annotation in get_type_hints(ServerArgs, include_extras=True).items()
+    if any(isinstance(metadata, Arg) and metadata.no_cli for metadata in get_args(annotation)[1:])
+}
+
 _FIELDS_WITHOUT_A_RENDERABLE_CLI: dict[str, str] = {
     "custom_sigquit_handler": "A Python-only callable hook; sglang registers no CLI option for it.",
     "stat_loggers": "A Python-only injection point; sglang registers no CLI option for it.",
-    "uses_mamba_radix_cache": "Derived inside __post_init__; sglang registers no CLI option for it.",
-    "_speculative_draft_quantization_explicitly_set": (
-        "Derived inside __post_init__ and declared Arg(no_cli=True); sglang registers no CLI option for it."
-    ),
-    "_radix_eviction_policy_explicitly_set": (
-        "Derived during resolution and declared Arg(no_cli=True); sglang registers no CLI option for it."
-    ),
-    "grpc_worker_threads": (
-        "Env-only (SGLANG_GRPC_WORKER_THREADS) and declared Arg(no_cli=True); sglang registers no CLI option for it."
-    ),
     "cuda_graph_config": (
         "The CLI parses a validated per-phase JSON object while ServerArgs holds a CudaGraphConfig "
         "instance, so no generically rendered token parses back to the same value."
@@ -223,7 +219,7 @@ class TestSglangPrefixedPassthrough:
         _assert_roundtrips(server_args)
 
 
-class TestEveryServerArgsFieldIsRenderable:
+class TestEveryServerArgsFieldCliContract:
     @pytest.mark.parametrize(
         "field_name",
         [
@@ -239,10 +235,16 @@ class TestEveryServerArgsFieldIsRenderable:
             for name in _record_field_names(ServerArgs)
         ],
     )
-    def test_a_field_renders_to_argv_that_parses_back_to_the_same_value(self, field_name: str) -> None:
-        """Every ServerArgs field resolves to a CLI action that round-trips a value of its own shape."""
+    def test_a_field_roundtrips_or_is_explicitly_non_cli(self, field_name: str) -> None:
+        """CLI fields round-trip; declared internal fields reject CLI rendering."""
         parser = _make_server_args_parser()
-        action = _resolve_action(_actions_by_dest(parser), field_name=field_name, field_to_dest={})
+        actions = _actions_by_dest(parser)
+        # no_cli suppresses automatic registration; manual aliases still need to round-trip.
+        if field_name in _FIELDS_WITHOUT_AUTOMATIC_CLI and field_name not in actions:
+            with pytest.raises(AssertionError, match="the parser registers no option"):
+                _resolve_action(actions, field_name=field_name, field_to_dest={})
+            return
+        action = _resolve_action(actions, field_name=field_name, field_to_dest={})
         default_value = getattr(_baseline_namespace(), action.dest, None)
 
         accepted = _first_roundtripping_value(action=action, default_value=default_value)
