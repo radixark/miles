@@ -148,40 +148,10 @@ def collect_eval_sglang_overrides(args) -> dict:
     }
 
 
-def add_sglang_arguments(parser):
-    """
-    Add arguments to the parser for the SGLang server.
-    """
-    parser = add_sglang_router_arguments(parser)
-    parser.add_argument("--sglang-server-concurrency", type=int, default=512)
+def add_sglang_arguments(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
+    from miles.backends.sglang_utils.sglang_config import SglangConfig
 
-    _add_prefixed_server_args(
-        parser, flag_prefix="sglang", dest_prefix="sglang_", skipped_args=_SKIPPED_SERVER_ARGS, inherit=False
-    )
-    _add_prefixed_server_args(
-        parser,
-        flag_prefix="eval-sglang",
-        dest_prefix="eval_sglang_",
-        skipped_args=_EVAL_SKIPPED_SERVER_ARGS,
-        inherit=True,
-    )
-
-    parser.add_argument(
-        "--sglang-config",
-        type=str,
-        default=None,
-        help=(
-            "Path to a YAML config for SGLang engine deployment. "
-            "Defines server_groups with worker_type (regular/prefill/decode/placeholder), "
-            "num_gpus per group, and optional per-group 'overrides' dict of "
-            "ServerArgs field names that override the base --sglang-* CLI args. "
-            "Placeholder groups reserve GPU slots without creating engines. "
-            "A 'name: eval' model is filled in from the --eval-* args (model_path, "
-            "num_gpus_per_engine, --eval-sglang-* overrides) wherever the YAML leaves them unset. "
-            "Mutually exclusive with --prefill-num-servers."
-        ),
-    )
-
+    SglangConfig.add_arguments(parser)
     return parser
 
 
