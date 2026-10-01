@@ -78,7 +78,7 @@ class InferenceController:
             engine_provider=self._engine_provider,
             router_addrs=router_addrs,
         )
-        if self.args.eval_num_gpus > 0:
+        if "eval" in self.servers:
             self._eval_fleet = InferenceControllerEvalFleet(self.args, srv=self.servers["eval"])
 
         self._watcher_disposers.append(await self._engine_provider.watch_cells(self._reconcile))
