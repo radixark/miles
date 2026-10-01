@@ -72,6 +72,18 @@ class ClusterConfig(BaseConfig):
             ),
         ),
     ] = None
+    trainer_init_expected_num_cells: A[
+        int | dict[str, int] | None,
+        Arg(
+            type_parser=int,
+            help=(
+                "How many cells per trainer this run waits for before it starts, keyed by trainer id. Defaults "
+                "to the cell count the trainer's GPUs are deployed as; declare it to keep the trainer configs "
+                "unchanged while the deployment scales. It gates startup only, and the trainer keeps using "
+                "whatever cells appear or leave afterwards."
+            ),
+        ),
+    ] = None
     trainer_controller_addrs: A[
         list[str] | None,
         Arg(
