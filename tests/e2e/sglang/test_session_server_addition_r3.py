@@ -13,6 +13,7 @@ from tests.ci.ci_register import register_cuda_ci
 from tests.e2e.sglang.utils.sglang_server import start_sglang_server
 from tests.fast.fixtures.sglang_config_fixtures import make_sglang_config
 
+from miles.backends.megatron_utils.megatron_config import MegatronConfig
 from miles.rollout.session.config import compute_session_server_config
 from miles.rollout.session.samples.codec import decode_samples_and_merge_input_sample
 from miles.rollout.session.server import SessionServer
@@ -77,6 +78,7 @@ def _serve_session(backend_url: str) -> Iterator[str]:
         apply_chat_template_kwargs={"enable_thinking": False},
         tito_model="qwen3",
         sglang=make_sglang_config(speculative_algorithm=None),
+        raw_megatron=MegatronConfig(trainers=[], base_args={}),
         use_session_server="v1",
         use_rollout_routing_replay=True,
         use_rollout_indexer_replay=False,

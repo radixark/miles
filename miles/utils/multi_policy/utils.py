@@ -132,10 +132,6 @@ def validate_multi_policy_args(args, *, megatron_config: MegatronConfig) -> None
         "(--eval-num-gpus or a CheckpointEvalFn --eval-function-path) exports the checkpoint of one trainer, "
         "which cannot represent a run of several policies"
     )
-    assert args.sglang_config is not None, (
-        "multi policy training needs --sglang-config to deploy one inference model per policy, so that a "
-        "weight update reaches exactly the engines of its own policy"
-    )
     trainable = [model.name for model in args.sglang.models if model.update_weights]
     missing = [model_id for model_id in megatron_config.model_ids if model_id not in trainable]
     assert not missing, (
