@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from argparse import Namespace
 from typing import Any, NamedTuple
 
 from miles.utils.flops_utils import calculate_fwd_flops
@@ -34,7 +35,9 @@ class DPSchedule(NamedTuple):
 
 
 def _calculate_workloads(step_lengths, args):
-    return [calculate_fwd_flops([sl], args) for sl in step_lengths]
+    backend_values = args.raw_megatron.base_args if args.train_backend == "megatron" else vars(args.raw_fsdp)
+    flops_args = Namespace(**(dict(args) | backend_values))
+    return [calculate_fwd_flops([sl], flops_args) for sl in step_lengths]
 
 
 def build_dp_schedule(

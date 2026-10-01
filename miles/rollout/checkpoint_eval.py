@@ -14,7 +14,6 @@ Requires ``train_async.py`` and a snapshot source (``--eval-hf-dir`` or ``--save
 """
 
 import abc
-import copy
 import inspect
 import logging
 from argparse import Namespace
@@ -39,12 +38,13 @@ def retarget_args(args: Namespace, router_ip, router_port, num_gpus: int, num_gp
     semaphore off the GPU counts, so a retargeted copy runs the standard eval path
     against a different set of engines unchanged.
     """
-    eval_args = copy.copy(args)
-    eval_args.sglang_router_ip = router_ip
-    eval_args.sglang_router_port = router_port
-    eval_args.rollout_num_gpus = num_gpus
-    eval_args.rollout_num_gpus_per_engine = num_gpus_per_engine
-    return eval_args
+    values = dict(args) | {
+        "sglang_router_ip": router_ip,
+        "sglang_router_port": router_port,
+        "rollout_num_gpus": num_gpus,
+        "rollout_num_gpus_per_engine": num_gpus_per_engine,
+    }
+    return type(args).model_validate(values)
 
 
 class EvalSkip(Exception):
