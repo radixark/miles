@@ -30,7 +30,7 @@ _SUBSTITUTIONS = (
 
 
 def real_or_sentinel_gpu_ids(spec: BaseSpec, *, is_sub_node: bool, scaling: ScalingConfig) -> list[int]:
-    gpus_per_pod = max(1, spec.scheduling.gpus_per_pod())
+    gpus_per_pod = max(1, spec.scheduling(scaling).gpus_per_pod())
     if is_sub_node:
         return [_BASE_GPU_ID_SENTINEL] * gpus_per_pod
     return list(range(gpus_per_pod))

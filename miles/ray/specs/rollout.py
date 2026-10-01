@@ -5,6 +5,7 @@ from miles.ray.specs.inference import (
     compute_inference_controller_provider,
     compute_router_providers,
 )
+from miles.utils.args.configs.scaling import ScalingConfig
 from miles.utils.args.runtime import RolloutConfig
 from miles.utils.workers.backend_capability.base import BackendCapability
 from miles.utils.workers.naming import compute_cell_id, compute_worker_name
@@ -24,15 +25,15 @@ class RolloutExecutorSpec(BaseServeSpec):
 
     @classmethod
     def create(cls, config: RolloutConfig) -> Self:
-        return cls(
-            args=config,
-            scheduling=SchedulingSpec(
-                num_cells=1,
-                num_workers_per_cell=1,
-                num_gpus_per_worker=0,
-                num_cpus_per_worker=1,
-                pin_to_head=config.pin_rollout_manager_to_head,
-            ),
+        return cls(args=config)
+
+    def scheduling(self, scaling: ScalingConfig) -> SchedulingSpec:
+        return SchedulingSpec(
+            num_cells=1,
+            num_workers_per_cell=1,
+            num_gpus_per_worker=0,
+            num_cpus_per_worker=1,
+            pin_to_head=self.args.pin_rollout_manager_to_head,
         )
 
     def ctor_kwargs(self, ctx: WorkerCtorContext) -> dict[str, Any]:

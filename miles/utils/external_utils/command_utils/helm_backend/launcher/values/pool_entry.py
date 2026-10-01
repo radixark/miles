@@ -54,8 +54,9 @@ def build_entry(
     static_connections: StaticConnConfig,
     scaling: ScalingConfig,
 ) -> PoolEntry:
-    assert spec.scheduling.num_cells > 0, (
-        f"Spec '{spec.name}' asks for {spec.scheduling.num_cells} cells; a spec a run has turned off is dropped "
+    scheduling = spec.scheduling(scaling)
+    assert scheduling.num_cells > 0, (
+        f"Spec '{spec.name}' asks for {scheduling.num_cells} cells; a spec a run has turned off is dropped "
         f"before conversion, because a values entry always renders at least one pod"
     )
     is_sub_node = _is_sub_node(pairing_layout)
@@ -68,8 +69,8 @@ def build_entry(
         is_sub_node=is_sub_node,
         scaling=scaling,
     )
-    pods_per_cell = spec.scheduling.pods_per_cell()
-    gpus_per_pod = spec.scheduling.gpus_per_pod()
+    pods_per_cell = scheduling.pods_per_cell()
+    gpus_per_pod = scheduling.gpus_per_pod()
 
     return PoolEntry(
         name=spec.name,
@@ -86,7 +87,7 @@ def build_entry(
         meta=_meta_of_spec(spec, scaling=scaling) or None,
         annotations=build_worker_annotations(spec=spec, scaling=scaling),
         service_account_name=_service_account_name(spec, plan=plan),
-        replicas=spec.scheduling.num_cells,
+        replicas=scheduling.num_cells,
         size=pods_per_cell if pods_per_cell > 1 else None,
         resources={"limits": {"nvidia.com/gpu": gpus_per_pod}} if gpus_per_pod else None,
         restart_at=plan.rendered_restart_at(spec.name),
@@ -139,9 +140,10 @@ def _with_prepare_cmd(command: list[str], spec: BaseSpec, *, plan: LaunchPlan, s
     if not prepare:
         return command
 
-    assert spec.scheduling.gpus_per_pod() >= spec.scheduling.num_gpus_per_node, (
+    scheduling = spec.scheduling(scaling)
+    assert scheduling.gpus_per_pod() >= scheduling.num_gpus_per_node, (
         f"A prepare command runs once per pod of '{spec.name}', but that pool takes "
-        f"{spec.scheduling.gpus_per_pod()} of a node's {spec.scheduling.num_gpus_per_node} gpus, so two of its "
+        f"{scheduling.gpus_per_pod()} of a node's {scheduling.num_gpus_per_node} gpus, so two of its "
         f"pods can land on one node and run the command against the same node-local path at the same time; "
         f"give the pool whole nodes, or serialize the command yourself with flock"
     )
@@ -149,7 +151,7 @@ def _with_prepare_cmd(command: list[str], spec: BaseSpec, *, plan: LaunchPlan, s
 
 
 def _meta_of_spec(spec: BaseSpec, *, scaling: ScalingConfig) -> dict[str, str]:
-    gpus_per_pod = spec.scheduling.gpus_per_pod()
+    gpus_per_pod = spec.scheduling(scaling).gpus_per_pod()
     if not gpus_per_pod:
         return {}
     return {env.DEFAULT_LABEL_KEYS.gpu_ids_meta: ",".join(str(gpu_id) for gpu_id in range(gpus_per_pod))}
@@ -198,7 +200,7 @@ def _command_of_spec(
 
 def _serve_command(spec: BaseServeSpec, *, static_connections: StaticConnConfig, scaling: ScalingConfig) -> list[str]:
     interpreter_prefix = python_argv_prefix()
-    workers_per_pod = spec.scheduling.workers_per_pod()
+    workers_per_pod = spec.scheduling(scaling).workers_per_pod()
     worker_config = ServeWorkerConfig(
         worker_type=spec.worker_type,
         args=spec.args.model_dump(mode="json"),
