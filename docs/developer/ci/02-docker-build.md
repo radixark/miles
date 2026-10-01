@@ -17,6 +17,8 @@ GPU CI runs inside `radixark/miles`. This doc maps which Dockerfiles exist, the 
 
 The Dockerfile is the build recipe: it provides the cu13 defaults and emits one image. `build.py` owns the variant → build-arg overrides (see Build script), including the cu12 base and wheels release.
 
+The CUDA 13 defaults use `lmsysorg/sglang:v0.5.21` and the validation branch `sglang-miles-v0.5.21`. `SGLANG_COMMIT` remains empty unless the caller pins a revision. CUDA 12 remains frozen to its v0.5.19 base and `sglang-miles-v0.5.19-final`; ROCm variants keep their separate base and wheels pins in `docker/build.py`.
+
 **Inputs (build-args)**
 
 
@@ -32,7 +34,7 @@ The Dockerfile is the build recipe: it provides the cu13 defaults and emits one 
 
 **Output** — one `radixark/miles` image for the platform buildx targets: the SGLang base, then the Python dependencies declared in `requirements.txt`, Megatron-LM at its branch default or caller-pinned commit, Miles, and the prebuilt wheels (`sgl-router` among them). It also carries `kubectl`, `helm` and `tmux`, which the k8s-native launch path drives the cluster with. A multi-arch build is one `buildx` run executed once per platform — `TARGETARCH` differs each time, so each arch installs its own wheels — and buildx pushes the two as a single manifest.
 
-`docker/Dockerfile.rocm` is the ROCm counterpart (build-args `GPU_ARCH`, a ROCm `SGLANG_IMAGE_TAG`, and a `WHEELS_TAG_ROCM` release from `XinyuJiangCMU/miles-wheels-rocm`). Both ROCm variants build on the `lmsysorg/sglang` ROCm images of the same SGLang release as the CUDA base. `rocm724-mi35x` uses the Python 3.12 base and ROCm 7.2.4 wheels from the `rocm724-gfx950-v0.5.20` release. It sets `APPLY_ROCR_VMMFIX=1` to install the point-release-matched ROCr VMM-pause fix; ROCm 10 has the fix upstream.
+`docker/Dockerfile.rocm` is the ROCm counterpart (build-args `GPU_ARCH`, a ROCm `SGLANG_IMAGE_TAG`, and a `WHEELS_TAG_ROCM` release from `XinyuJiangCMU/miles-wheels-rocm`). Both ROCm variants build on the `lmsysorg/sglang` ROCm releases pinned in `docker/build.py`. `rocm724-mi35x` uses the Python 3.12 base and ROCm 7.2.4 wheels from the `rocm724-gfx950-v0.5.20` release. It sets `APPLY_ROCR_VMMFIX=1` to install the point-release-matched ROCr VMM-pause fix; ROCm 10 has the fix upstream.
 
 ### `docker/install-kube-tools.sh`
 
