@@ -107,6 +107,12 @@ class TrainerConfig(
         assert self.train_backend == self.backend.backend_name, "train_backend must match backend.backend_name"
         return self
 
+    @model_validator(mode="after")
+    def _validate_no_duplicated_backend_fields(self) -> Self:
+        duplicated_fields = type(self).model_fields.keys() & vars(self.backend).keys()
+        assert not duplicated_fields, f"Duplicated trainer backend fields: {sorted(duplicated_fields)}"
+        return self
+
 
 class InferenceControllerConfig(
     BaseLeafConfig,
