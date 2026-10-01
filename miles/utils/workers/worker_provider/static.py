@@ -5,13 +5,14 @@ from collections.abc import Iterable
 
 from miles.utils.function_registry import load_function
 from miles.utils.http_utils import wait_tcp_ready_async, wrap_ipv6
+from miles.utils.workers.connection_config import StaticPoolConnInfo
 from miles.utils.workers.naming import compute_worker_name
 from miles.utils.workers.worker_handle import BaseWorkerHandle
 from miles.utils.workers.worker_info import WorkerInfo
 from miles.utils.workers.worker_provider.base import BaseWorkerProvider
 from miles.utils.workers.worker_provider.kubernetes.helm import naming
 from miles.utils.workers.worker_provider.utils import build_rpc_handle
-from miles.utils.workers.worker_spec import RPC_PORT_NAME, BaseServeSpec, BaseSpec, HostAndPort, NamedHostAndPorts
+from miles.utils.workers.worker_spec import RPC_PORT_NAME, HostAndPort, NamedHostAndPorts
 
 _STATIC_ADDRS_READY_TIMEOUT_SECONDS = 600.0
 
@@ -26,27 +27,27 @@ class StaticWorkerProvider(BaseWorkerProvider):
         self._worker_class = worker_class
 
     @classmethod
-    def of_release(cls, *, release: str, spec: BaseSpec) -> StaticWorkerProvider:
-        scheduling = spec.scheduling
-        assert scheduling.pods_per_cell() == 1, (
-            f"pool {spec.name} spreads a cell over {scheduling.pods_per_cell()} pods, "
+    def of_release(cls, *, release: str, config: StaticPoolConnInfo) -> StaticWorkerProvider:
+        assert config.pods_per_cell == 1, (
+            f"pool {config.name} spreads a cell over {config.pods_per_cell} pods, "
             f"so its workers do not share one host"
         )
         return cls(
-            pool_id=spec.name,
+            pool_id=config.name,
             addrs_by_worker={
                 compute_worker_name(
-                    pool_id=spec.name, cell_index=cell_index, worker_in_cell_index=worker_in_cell_index
-                ): naming.static_cell_addrs(
-                    spec=spec,
-                    release=release,
-                    cell_index=cell_index,
-                    worker_in_pod_index=worker_in_cell_index,
-                )
-                for cell_index in range(scheduling.num_cells)
-                for worker_in_cell_index in range(scheduling.num_workers_per_cell)
+                    pool_id=config.name, cell_index=cell_index, worker_in_cell_index=worker_in_cell_index
+                ): {
+                    port.name: HostAndPort(
+                        host=naming.static_worker_host(release=release, component=config.name, cell_index=cell_index),
+                        port=port.effective_static_port(worker_in_pod_index=worker_in_cell_index),
+                    )
+                    for port in config.port_infos
+                }
+                for cell_index in range(config.num_cells)
+                for worker_in_cell_index in range(config.num_workers_per_cell)
             },
-            worker_class=spec.worker_class if isinstance(spec, BaseServeSpec) else None,
+            worker_class=config.worker_class,
         )
 
     @classmethod

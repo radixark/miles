@@ -21,7 +21,7 @@ def compute_helm_backend_capability(*, specs: list[BaseSpec], config: StaticConn
     return KubernetesBackendCapability(
         run=run,
         release=release,
-        static_specs={spec.name: spec for spec in specs if not spec.scheduling.declares_dynamic_pool()},
+        config=config,
         cell_operations=KubernetesCellOperations(
             provider=KubernetesWorkerProvider(
                 run=run, pool_ids=sorted(run.specs), resync_period=DEFAULT_RESYNC_PERIOD
