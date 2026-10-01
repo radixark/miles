@@ -158,6 +158,8 @@ class UpdateWeightFromTensor(UpdateWeight):
     ) -> None:
         """Attach rollout engines and create per-engine IPC (Gloo) groups (sets gather src rank, engine, tp_rank)."""
         self.rollout_engines = rollout_engines
+        assert engine_gpu_counts is not None and len(engine_gpu_counts) == len(rollout_engines)
+        assert engine_gpu_offsets is not None and len(engine_gpu_offsets) == len(rollout_engines)
 
         # Here we assume the gpu id of rollout engines and train actors are the same.
         for i, engine in enumerate(self.rollout_engines):
@@ -251,6 +253,7 @@ class UpdateWeightFromDistributed(UpdateWeight):
     ) -> None:
         """On rank 0, initialize a temporary NCCL group for parameter broadcast."""
         self.rollout_engines = rollout_engines
+        assert engine_gpu_counts is not None and len(engine_gpu_counts) == len(rollout_engines)
 
         # TP weight sync: AllGather params to rank 0, then broadcast from rank 0 to all sglang engines
         self._is_src_rank = dist.get_rank() == 0

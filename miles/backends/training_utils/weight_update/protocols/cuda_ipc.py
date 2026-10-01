@@ -78,15 +78,8 @@ class UpdateWeightFromTensor(WeightTransferProtocol):
         self.cell_updaters_of_cell_id = create_rollout_cell_updaters(self.args, self.rollout_engines, engine_cell_ids)
         self._selector = selector
 
-        if engine_gpu_counts is None:
-            engine_gpu_counts = [self.args.rollout_num_gpus_per_engine] * len(rollout_engines)
-        if engine_gpu_offsets is None:
-            # Fallback: assume engines are densely packed (no placeholder gaps).
-            engine_gpu_offsets = []
-            offset = 0
-            for c in engine_gpu_counts:
-                engine_gpu_offsets.append(offset)
-                offset += c
+        assert engine_gpu_counts is not None and len(engine_gpu_counts) == len(rollout_engines)
+        assert engine_gpu_offsets is not None and len(engine_gpu_offsets) == len(rollout_engines)
 
         # Compute colocated engine count: engines whose GPUs fall within actor GPU range.
         total_actor_gpus = self.args.actor_num_nodes * self.args.actor_num_gpus_per_node
@@ -113,12 +106,9 @@ class UpdateWeightFromTensor(WeightTransferProtocol):
             self.group_name = "miles"
             if self._is_distributed_src_rank:
                 if (g := self._model_update_groups) is not None:
-                    disconnect_rollout_engines_from_distributed(
-                        self.args, self.group_name, g, self.distributed_rollout_engines
-                    )
+                    disconnect_rollout_engines_from_distributed(self.group_name, g, self.distributed_rollout_engines)
 
                 self._model_update_groups = connect_rollout_engines_from_distributed(
-                    self.args,
                     self.group_name,
                     self.distributed_rollout_engines,
                     engine_gpu_counts=distributed_gpu_counts,
