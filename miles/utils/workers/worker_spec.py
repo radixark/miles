@@ -161,6 +161,10 @@ class LaunchCommandContext(WorkerLaunchContext):
 
 
 class BaseCommandSpec(BaseSpec):
+    @classmethod
+    def slice_configs(cls, args: Any) -> list[Any]:
+        return [args]
+
     @abstractmethod
     def launch_command(self, ctx: LaunchCommandContext) -> str: ...
 
@@ -171,6 +175,10 @@ class BaseServeSpec(BaseSpec):
     worker_class: str
     port_infos: list[PortInfo] = [DEFAULT_RPC_PORT_INFO]
     concurrency_groups: dict[str, int] | None = None
+
+    @classmethod
+    def slice_configs(cls, args: Any) -> list[BaseLeafConfig]:
+        return [cls.config_class.slice_from(args)]
 
     @classmethod
     @abstractmethod

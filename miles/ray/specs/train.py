@@ -5,6 +5,7 @@ from typing import Any, ClassVar, Self
 from miles.backends.megatron_utils.megatron_config import ACTOR_ROLE, CRITIC_ROLE, MegatronTrainerConfig
 from miles.ray.utils import NOSET_VISIBLE_DEVICES_ENV_VARS_LIST
 from miles.utils.args.runtime import AllConfig, TrainerConfig
+from miles.utils.args.trainer_utils import compute_trainer_config
 from miles.utils.environ import default_fp8_block_scaling_fp32_scales
 from miles.utils.lora.utils import is_multi_lora_enabled
 from miles.utils.megatron_args_utils import compute_megatron_world_size_except_dp
@@ -53,6 +54,10 @@ class TrainerControllerSpec(BaseServeSpec):
     deploy_component: DeployComponent = DeployComponent.TRAINER
     platform_access: PlatformAccess = PlatformAccess.READ_DELETE
     worker_class: str = TRAINER_CONTROLLER_WORKER_CLASS
+
+    @classmethod
+    def slice_configs(cls, args: Any) -> list[TrainerConfig]:
+        return [compute_trainer_config(args, trainer) for trainer in compute_trainer_configs(args)]
 
     @classmethod
     def create(cls, config: TrainerConfig) -> Self:
@@ -139,6 +144,10 @@ class TrainerSpec(BaseServeSpec):
     category: str = POOL_CATEGORY_TRAINER_ENGINE
     deploy_component: DeployComponent = DeployComponent.TRAINER
     fp8_block_scaling_fp32_scales: str
+
+    @classmethod
+    def slice_configs(cls, args: Any) -> list[TrainerConfig]:
+        return [compute_trainer_config(args, trainer) for trainer in compute_trainer_configs(args)]
 
     @classmethod
     def create(cls, config: TrainerConfig) -> Self:
