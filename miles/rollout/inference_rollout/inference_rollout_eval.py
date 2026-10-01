@@ -91,7 +91,7 @@ async def eval_rollout_single_dataset(
             sample.index = sample_index
             sample_index += 1
             sample.metadata = dataset_cfg.inject_metadata(sample.metadata)
-            sample.generate_function_path = dataset_cfg.custom_generate_function_path
+            sample.generate_function_path = x.path if (x := dataset_cfg.custom_generate_function_path) else None
             stamp_kv_cache_namespace(sample, namespace=kv_cache_namespace)
             if policy_uses_routing_key(args):
                 sample.routing_key = str(uuid.uuid4())
