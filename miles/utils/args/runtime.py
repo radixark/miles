@@ -7,34 +7,37 @@ from miles.utils.args.component_orchestrator import OrchestratorOnlyConfig
 from miles.utils.args.component_rollout import InferenceControllerOnlyConfig, RolloutOnlyConfig
 from miles.utils.args.component_shared import SglangFieldsConfig
 from miles.utils.args.component_trainer import TrainerOnlyConfig
-from miles.utils.args.configs.algo import AlgoConfig
+from miles.utils.args.configs.algo import AlgoConfig, AlgoRolloutOnlyConfig
 from miles.utils.args.configs.backend_fields import RawTrainerBackendConfig, TrainerBackendTraitConfig
-from miles.utils.args.configs.ci import CiConfig
+from miles.utils.args.configs.ci import CiConfig, CiRolloutOnlyConfig
 from miles.utils.args.configs.cluster import ClusterConfig
 from miles.utils.args.configs.custom_megatron_plugins import CustomMegatronPluginsConfig, Dsv4MegatronPluginsConfig
 from miles.utils.args.configs.dashboard import DashboardConfig
 from miles.utils.args.configs.data import DataConfig
-from miles.utils.args.configs.debug import DebugConfig
-from miles.utils.args.configs.eval import EvalConfig
+from miles.utils.args.configs.debug import DebugConfig, DebugRolloutOnlyConfig
+from miles.utils.args.configs.eval import EvalConfig, EvalRolloutOnlyConfig
 from miles.utils.args.configs.fault_tolerance import FaultToleranceConfig
 from miles.utils.args.configs.lora import LoraConfig
 from miles.utils.args.configs.mlflow import MlflowConfig
 from miles.utils.args.configs.mtp_training import MtpTrainingConfig
 from miles.utils.args.configs.network import NetworkConfig
-from miles.utils.args.configs.on_policy_distillation import OnPolicyDistillationConfig
+from miles.utils.args.configs.on_policy_distillation import (
+    OnPolicyDistillationConfig,
+    OnPolicyDistillationRolloutOnlyConfig,
+)
 from miles.utils.args.configs.prefill_decode_disaggregation import PrefillDecodeDisaggregationConfig
 from miles.utils.args.configs.prometheus import PrometheusConfig
-from miles.utils.args.configs.reward_model import RewardModelConfig
-from miles.utils.args.configs.rollout import RolloutRelatedConfig
-from miles.utils.args.configs.rollout_buffer import RolloutBufferConfig
+from miles.utils.args.configs.reward_model import RewardModelConfig, RewardModelRolloutOnlyConfig
+from miles.utils.args.configs.rollout import RolloutRelatedConfig, RolloutRelatedRolloutOnlyConfig
+from miles.utils.args.configs.rollout_buffer import RolloutBufferConfig, RolloutBufferRolloutOnlyConfig
 from miles.utils.args.configs.router import RouterConfig
 from miles.utils.args.configs.run_uuid import RunUuidConfig
 from miles.utils.args.configs.scaling import ScalingConfig
 from miles.utils.args.configs.session import SessionConfig
 from miles.utils.args.configs.tensorboard import TensorboardConfig
 from miles.utils.args.configs.tinker import TinkerConfig
-from miles.utils.args.configs.train import TrainConfig
-from miles.utils.args.configs.wandb import WandbConfig
+from miles.utils.args.configs.train import TrainConfig, TrainRolloutOnlyConfig
+from miles.utils.args.configs.wandb import WandbConfig, WandbRolloutOnlyConfig
 from miles.utils.args.runtime_base import BaseLeafConfig
 
 
@@ -181,6 +184,16 @@ class RolloutConfig(
     RawTrainerBackendConfig,
     TrainerBackendTraitConfig,
     RolloutOnlyConfig,
+    AlgoRolloutOnlyConfig,
+    CiRolloutOnlyConfig,
+    DebugRolloutOnlyConfig,
+    EvalRolloutOnlyConfig,
+    OnPolicyDistillationRolloutOnlyConfig,
+    RewardModelRolloutOnlyConfig,
+    RolloutRelatedRolloutOnlyConfig,
+    RolloutBufferRolloutOnlyConfig,
+    TrainRolloutOnlyConfig,
+    WandbRolloutOnlyConfig,
     RunUuidConfig,
     ClusterConfig,
     TrainConfig,
@@ -281,6 +294,16 @@ class AllConfig(
     SglangFieldsConfig,
     OrchestratorOnlyConfig,
     RolloutOnlyConfig,
+    AlgoRolloutOnlyConfig,
+    CiRolloutOnlyConfig,
+    DebugRolloutOnlyConfig,
+    EvalRolloutOnlyConfig,
+    OnPolicyDistillationRolloutOnlyConfig,
+    RewardModelRolloutOnlyConfig,
+    RolloutRelatedRolloutOnlyConfig,
+    RolloutBufferRolloutOnlyConfig,
+    TrainRolloutOnlyConfig,
+    WandbRolloutOnlyConfig,
     InferenceControllerOnlyConfig,
     MultiLoraOnlyConfig,
     TinkerConfig,

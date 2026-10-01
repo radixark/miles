@@ -49,10 +49,6 @@ class WandbConfig(BaseConfig):
         bool,
         Arg(help="Whether to log information for multi-turn rollout."),
     ] = False
-    log_passrate: A[
-        bool,
-        Arg(help="Whether to turn on passrate logging, which will log the pass@n of the responses in the rollout."),
-    ] = False
     log_reward_category: A[
         str | None,
         Arg(
@@ -67,3 +63,10 @@ class WandbConfig(BaseConfig):
         Arg(help="Explicitly log metrics for correct samples."),
     ] = False
     wandb_run_id: A[str | None, Arg()] = None
+
+
+class WandbRolloutOnlyConfig(BaseConfig):
+    log_passrate: A[
+        bool,
+        Arg(help="Whether to turn on passrate logging, which will log the pass@n of the responses in the rollout."),
+    ] = False

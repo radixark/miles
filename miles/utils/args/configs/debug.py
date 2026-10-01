@@ -9,16 +9,6 @@ from miles.utils.env_report.launcher_report import LAUNCHER_REPORT_ENV_VAR
 
 # debug
 class DebugConfig(BaseConfig):
-    save_debug_rollout_data: A[
-        str | None,
-        Arg(
-            help=(
-                "Save the rollout data to this path for debugging. "
-                "The file will be saved to `save_debug_rollout_data.format(rollout_id)`, "
-                "so the template must contain the `{rollout_id}` placeholder."
-            )
-        ),
-    ] = None
     save_debug_trajectory_data: A[
         str | None,
         Arg(
@@ -38,10 +28,6 @@ class DebugConfig(BaseConfig):
                 "When this is enabled, miles will not instantiate sglang servers."
             )
         ),
-    ] = None
-    load_debug_rollout_data_subsample: A[
-        float | None,
-        Arg(help="Subsample a portion of the debug rollout data for faster debugging."),
     ] = None
     debug_rollout_only: A[
         bool,
@@ -257,24 +243,6 @@ class DebugConfig(BaseConfig):
             )
         ),
     ] = None
-    ci_inject_rollout_data_start_rollout_id: A[
-        int | None,
-        Arg(
-            help=(
-                "First rollout_id whose training data is replaced by the " "--ci-inject-rollout-data-path recordings."
-            )
-        ),
-    ] = None
-    ci_inject_rollout_data_min_match_ratio: A[
-        float,
-        Arg(
-            help=(
-                "Minimum mean response-token match ratio between the discarded generated "
-                "data and the injected recording. Below this the engine weights are considered "
-                "wrong (legitimate ulp-level drift only flips occasional sampled tokens)."
-            )
-        ),
-    ] = 0.9
     env_report: A[
         str,
         Arg(
@@ -311,3 +279,38 @@ class DebugConfig(BaseConfig):
             )
         ),
     ] = False
+
+
+class DebugRolloutOnlyConfig(BaseConfig):
+    save_debug_rollout_data: A[
+        str | None,
+        Arg(
+            help=(
+                "Save the rollout data to this path for debugging. "
+                "The file will be saved to `save_debug_rollout_data.format(rollout_id)`, "
+                "so the template must contain the `{rollout_id}` placeholder."
+            )
+        ),
+    ] = None
+    load_debug_rollout_data_subsample: A[
+        float | None,
+        Arg(help="Subsample a portion of the debug rollout data for faster debugging."),
+    ] = None
+    ci_inject_rollout_data_start_rollout_id: A[
+        int | None,
+        Arg(
+            help=(
+                "First rollout_id whose training data is replaced by the " "--ci-inject-rollout-data-path recordings."
+            )
+        ),
+    ] = None
+    ci_inject_rollout_data_min_match_ratio: A[
+        float,
+        Arg(
+            help=(
+                "Minimum mean response-token match ratio between the discarded generated "
+                "data and the injected recording. Below this the engine weights are considered "
+                "wrong (legitimate ulp-level drift only flips occasional sampled tokens)."
+            )
+        ),
+    ] = 0.9
