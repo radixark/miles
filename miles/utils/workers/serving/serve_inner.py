@@ -53,7 +53,7 @@ def _backend_capability(specs_fn: str, worker_argv: list[str]) -> BackendCapabil
         cluster_backend = ClusterBackend(parse_args().cluster_backend)
     specs = load_function(specs_fn)(worker_argv)
     static_connections = build_static_conn_config(specs=specs)
-    return get_backend_capability(specs=specs, cluster_backend=cluster_backend, static_connections=static_connections)
+    return get_backend_capability(cluster_backend=cluster_backend, static_connections=static_connections)
 
 
 def _rpc_port_of(spec: BaseServeSpec) -> PortInfo:
