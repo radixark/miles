@@ -12,6 +12,7 @@ from examples.multi_policy.run_solver_verifier_gsm8k import (
     launch_train,
 )
 
+from miles.utils.args.runtime import TrainerConfig
 from miles.utils.audit_utils.event_logger.logger import read_events
 from miles.utils.audit_utils.event_logger.models import EnvReportEvent, MetricEvent
 from miles.utils.audit_utils.process_identity import TrainProcessIdentity
@@ -90,7 +91,9 @@ def assert_ranks_trained_with_policy_args(events_dir: Path, *, megatron_config: 
                 f"rank {report.source.to_name()} reports trainer_model_id {values['trainer_model_id']!r} while its "
                 f"process identity says {model_id!r}"
             )
-            actual = {key: values[key] for key in expected}
+            actual = {
+                key: values[key] if key in TrainerConfig.model_fields else values["backend"][key] for key in expected
+            }
             assert len(actual) == len(expected), f"{sorted(set(expected) - set(actual))} never reached the report"
             assert actual == expected, (
                 f"rank {report.source.to_name()} of policy {model_id!r} was built with {actual}, but its "

@@ -13,7 +13,7 @@ from miles.utils.audit_utils.config_snapshot.models import (
 )
 from miles.utils.audit_utils.config_snapshot.storage import ConfigSnapshotStorage
 from miles.utils.audit_utils.process_identity import ProcessIdentity
-from miles.utils.env_report.redaction import redact_arg, redact_env_vars, redact_server_info
+from miles.utils.env_report.redaction import redact_config_values
 from miles.utils.test_utils.snapshot import SNAPSHOT_RECORD_DIR_ENV_VAR, snapshot_values
 
 
@@ -60,22 +60,6 @@ class ConfigSnapshotDumper:
         record = ConfigSnapshotRecord(
             context=state.context,
             point=ConfigSnapshotPoint(stage=stage, index=index),
-            config=_redact(snapshot_values(config)),
+            config=redact_config_values(snapshot_values(config)),
         )
         state.storage.write(record)
-
-
-def _redact(value: Any) -> Any:
-    if isinstance(value, list):
-        return [_redact(item) for item in value]
-    if not isinstance(value, dict):
-        return value
-
-    return {
-        name: _redact(
-            redact_env_vars(item)
-            if name in {"env", "env_vars", "train_env_vars"} and isinstance(item, dict)
-            else redact_arg(name, item)
-        )
-        for name, item in redact_server_info(value).items()
-    }
