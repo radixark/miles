@@ -133,8 +133,10 @@ class RayWorkerManager:
         cell = self._find_cell(cell_id)
         return [self._compute_worker_info(actor) for actor in (cell.actors if cell.actors is not None else [])]
 
-    def get_cell_infos(self, *, pool_ids: list[str]) -> dict[str, CellInfo]:
+    def get_cell_infos(self, *, pool_ids: list[str] | None) -> dict[str, CellInfo]:
         # TODO: about `get_worker_infos` (which is only used by dashboard)
+        if pool_ids is None:
+            pool_ids = [name for name, pool in self._pools.items() if pool.spec.scheduling.declares_dynamic_pool()]
         unknown = set(pool_ids) - set(self._pools)
         assert not unknown, f"{unknown=} {sorted(self._pools)=}"
         infos = [c.get_info() for name in pool_ids for c in self._pools[name].cells]
