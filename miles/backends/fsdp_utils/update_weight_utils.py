@@ -3,6 +3,7 @@ import logging
 import socket
 from argparse import Namespace
 from collections.abc import Sequence
+from itertools import accumulate
 from typing import TYPE_CHECKING
 
 import ray
@@ -162,9 +163,8 @@ class UpdateWeightFromTensor(UpdateWeight):
         assert engine_gpu_offsets is not None and len(engine_gpu_offsets) == len(rollout_engines)
 
         # Here we assume the gpu id of rollout engines and train actors are the same.
-        for i, engine in enumerate(self.rollout_engines):
-            start_rank = i * self.args.rollout_num_gpus_per_engine
-            end_rank = (i + 1) * self.args.rollout_num_gpus_per_engine
+        for engine, start_rank, count in zip(self.rollout_engines, engine_gpu_offsets, engine_gpu_counts, strict=True):
+            end_rank = start_rank + count
             group_ranks = list(range(start_rank, end_rank))
             new_group = dist.new_group(
                 ranks=group_ranks,
@@ -264,20 +264,21 @@ class UpdateWeightFromDistributed(UpdateWeight):
                 sock.bind(("", 0))
                 master_port = sock.getsockname()[1]
             # +1 for the trainer's source rank (rank 0); rollout engine ranks start at 1
-            world_size = self.args.rollout_num_gpus + 1
+            world_size = sum(engine_gpu_counts) + 1
+            rank_offsets = list(accumulate(engine_gpu_counts, initial=1))[:-1]
 
             futures = [
                 async_utils.submit(
                     api_client.init_weights_update_group(
                         master_address,
                         master_port,
-                        i * self.args.rollout_num_gpus_per_engine + 1,
+                        rank_offset,
                         world_size,
                         self._group_name,
                         backend="nccl",
                     )
                 )
-                for i, api_client in enumerate(self.rollout_engines)
+                for api_client, rank_offset in zip(self.rollout_engines, rank_offsets, strict=True)
             ]
             self._model_update_groups = init_process_group(
                 backend="nccl",
