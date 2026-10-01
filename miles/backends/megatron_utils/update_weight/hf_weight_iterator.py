@@ -150,7 +150,7 @@ def _iter_mm_tower_units(args, *, materialize):
     Goes away when the towers become real megatron params (Kimi-style) or the
     engine keeps them across offload."""
     global _MM_TOWER_CACHE
-    if "inkling_mm_model_provider" not in (args.custom_model_provider_path or ""):
+    if (provider := args.custom_model_provider_path) is None or "inkling_mm_model_provider" not in provider.path:
         return
     if not materialize:
         return

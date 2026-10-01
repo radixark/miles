@@ -1,6 +1,7 @@
 import json
 from typing import Any, ClassVar
 
+from miles.utils.args.custom_function import CustomFunctionConfig
 from miles.utils.args.schema import A, Arg, BaseConfig
 
 
@@ -44,9 +45,10 @@ class DataConfig(BaseConfig):
             ),
         ),
     ] = True
-    data_source_path: A[str, Arg(help="The data source class for rollout data.")] = (
-        "miles.rollout.data_source.RolloutDataSource"
-    )
+    data_source_path: A[
+        CustomFunctionConfig,
+        Arg(help="The data source class for rollout data."),
+    ] = CustomFunctionConfig(path="miles.rollout.data_source.RolloutDataSource")
     prompt_data: A[
         str | None,
         Arg(

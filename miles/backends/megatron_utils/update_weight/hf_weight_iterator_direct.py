@@ -69,7 +69,7 @@ class HfWeightIteratorDirect(MegatronHfWeightIteratorBase):
             from miles_plugins.models.kimi_k3.lora import export_kimi_k3_lora_hf_chunks
 
             return [named_tensor for chunk in export_kimi_k3_lora_hf_chunks(self.model) for named_tensor in chunk]
-        if "inkling" in (self.args.custom_model_provider_path or ""):
+        if (provider := self.args.custom_model_provider_path) is not None and "inkling" in provider.path:
             from miles_plugins.models.inkling.lora import export_inkling_lora_hf_named
 
             return export_inkling_lora_hf_named(self.model, hf_checkpoint=self.args.hf_checkpoint)
