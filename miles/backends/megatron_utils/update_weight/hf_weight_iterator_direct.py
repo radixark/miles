@@ -72,7 +72,7 @@ class HfWeightIteratorDirect(MegatronHfWeightIteratorBase):
         if "inkling" in (self.args.custom_model_provider_path or ""):
             from miles_plugins.models.inkling.lora import export_inkling_lora_hf_named
 
-            return export_inkling_lora_hf_named(self.model)
+            return export_inkling_lora_hf_named(self.model, hf_checkpoint=self.args.hf_checkpoint)
         raise NotImplementedError(f"Raw LoRA export is not implemented for model {self.model_name!r}")
 
     def _convert_to_hf_param_units(self, named_params: Sequence[tuple[str, torch.Tensor]]):

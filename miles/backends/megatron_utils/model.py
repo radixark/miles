@@ -21,7 +21,6 @@ from megatron.core.optimizer.optimizer import MegatronOptimizer
 from megatron.core.optimizer_param_scheduler import OptimizerParamScheduler
 from megatron.core.pipeline_parallel import get_forward_backward_func
 from megatron.core.utils import get_model_config
-from megatron.training.global_vars import get_args
 from megatron.training.training import get_model
 
 from miles.backends.megatron_utils.ft.indep_dp import allreduce_grads_and_losses_across_replicas
@@ -581,7 +580,6 @@ def train_one_step(
     attempt: int,
 ) -> tuple[dict[str, float], float, TrainStepOutcome]:
     """Run pipeline forward/backward, then step the optimizer and scheduler when gradients are valid."""
-    args = get_args()
     parallel_state = get_parallel_state()
     dumper_phase_util = DumperMegatronUtil(args, model, DumperPhase.FWD_BWD, rollout_id=rollout_id)
     disable_optimizer = args.debug_disable_optimizer or optimizer is None
@@ -737,6 +735,7 @@ def setup_train_iteration_config(args, model, optimizer, disable_optimizer):
 
 
 def train(
+    args: TrainerConfig,
     rollout_id: int,
     model: Sequence[DDP],
     optimizer: MegatronOptimizer | None,
@@ -762,7 +761,6 @@ def train(
         num_rollouts (Sequence[int]): Rollout count per step (total across DP).
     """
     parallel_state = get_parallel_state()
-    args = get_args()
     disable_optimizer = args.debug_disable_optimizer or optimizer is None
 
     assert len(num_microbatches) == len(num_rollouts), (
@@ -910,6 +908,7 @@ def train(
 
 
 def save(
+    args: TrainerConfig,
     iteration: int,
     model: Sequence[DDP],
     optimizer: MegatronOptimizer | None,
@@ -930,7 +929,6 @@ def save(
             (e.g. ``{'local_checkpoint_manager': manager}`` for in-memory checkpoints).
         non_persistent_ckpt (bool): If True, save a non-persistent (in-memory) checkpoint.
     """
-    args = get_args()
     hashes = None
     if args.ci_test and args.ci_save_model_hash:
         hashes = compute_model_hashes_by_layer(model)
@@ -938,7 +936,9 @@ def save(
         disable_forward_pre_hook(model)
 
     if is_lora_model(model):
-        save_checkpoint_with_lora(iteration, model, optimizer, opt_param_scheduler, publisher=snapshot_publisher)
+        save_checkpoint_with_lora(
+            iteration, model, optimizer, opt_param_scheduler, args=args, publisher=snapshot_publisher
+        )
     else:
         save_checkpoint(
             iteration,
@@ -1031,6 +1031,7 @@ def load_model_state(
                 optimizer,
                 opt_param_scheduler,
                 checkpointing_context=checkpointing_context,
+                args=args,
                 skip_load_to_model_and_opt=False,
             )
     else:

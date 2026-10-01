@@ -13,11 +13,11 @@ from megatron.core.utils import unwrap_model
 # TODO: may need to copy those 2 functions and do refactoring.
 from megatron.training.checkpointing import load_checkpoint as _load_checkpoint_megatron
 from megatron.training.checkpointing import save_checkpoint
-from megatron.training.global_vars import get_args
 
 from miles.backends.training_utils.model_companion import ModelCompanionSampleConsumptionUtils
 from miles.backends.training_utils.weight_update.snapshot_publisher import SnapshotPublisher
 from miles.utils import megatron_bridge_utils
+from miles.utils.args.runtime import TrainerConfig
 from miles.utils.audit_utils.config_snapshot.dumper import ConfigSnapshotDumper
 from miles_plugins.models.deepseek_v4.arguments import assert_checkpoint_is_current, is_dsv4_model
 
@@ -119,9 +119,10 @@ def load_checkpoint(
     opt_param_scheduler: Any | None,
     checkpointing_context: dict[str, Any] | None,
     skip_load_to_model_and_opt: bool,
+    *,
+    args: TrainerConfig,
 ) -> _CheckpointLoadResult:
     # ref: how megatron `load_checkpoint` gets directory
-    args = get_args()
 
     load_path = args.backend.load
 
@@ -192,10 +193,15 @@ def load_checkpoint(
 
 
 def save_checkpoint_with_lora(
-    iteration, model, optimizer, opt_param_scheduler, *, publisher: SnapshotPublisher | None = None
+    iteration,
+    model,
+    optimizer,
+    opt_param_scheduler,
+    *,
+    args: TrainerConfig,
+    publisher: SnapshotPublisher | None = None,
 ):
     """Extended save that handles LoRA adapters separately."""
-    args = get_args()
 
     if is_lora_model(model):
         assert (
