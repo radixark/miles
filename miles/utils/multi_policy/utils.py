@@ -2,10 +2,11 @@ import logging
 from dataclasses import dataclass
 from pathlib import Path
 
-from miles.backends.megatron_utils.megatron_config import MegatronConfig, compute_trainer_args
+from miles.backends.megatron_utils.megatron_config import MegatronConfig
 from miles.ray.placement_group import create_trainer_handles, create_training_model, take_over_trainers
 from miles.ray.rollout.rollout_executor import compute_rollout_checkpoint_dir
 from miles.ray.specs.train import compute_trainer_configs
+from miles.utils.args.trainer_utils import compute_trainer_config
 from miles.utils.arguments import validate_async_off_policy_correction
 from miles.utils.multi_policy.checkpoint_state import MultiPolicyCheckpointState
 from miles.utils.tracking_utils.tracking import define_step_key_metric_group
@@ -31,7 +32,7 @@ async def create_trainers(args, *, rollout_executor: BaseWorkerHandle) -> dict[s
         model_id = trainer_config.model_id
         assert model_id is not None, f"{trainer_config} carries no policy model id"
         created = await create_training_model(
-            compute_trainer_args(args, trainer_config),
+            compute_trainer_config(args, trainer_config),
             handle=handles[trainer_config.trainer_id],
             trainer_id=trainer_config.trainer_id,
             resumed=resumed,

@@ -29,3 +29,6 @@ def configure_tinker_args(args):
     assert set(groups) <= set(LORA_TARGET_GROUPS), "Tinker --target-modules accepts only attn,mlp,unembed groups"
     args.tinker_lora_groups = groups
     args.target_modules = groups
+    # commands ship one work unit at a time; its size is the batch size
+    args.use_dynamic_global_batch_size = True
+    args.delay_split_train_data_by_dp = True
