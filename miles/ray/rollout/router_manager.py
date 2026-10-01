@@ -114,7 +114,7 @@ async def wait_session_server_ready(args, *, provider: BaseWorkerProvider | None
 
 
 def _compute_external_addr(args, addr: HostAndPort) -> str:
-    # spec_session_server keeps every instance on the head whenever this host is set
+    # SessionServerSpec keeps every instance on the head whenever this host is set
     if args.session_server_external_host:
         return f"{args.session_server_external_host}:{addr.port}"
     return addr.external_netloc
