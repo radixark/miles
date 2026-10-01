@@ -106,6 +106,11 @@ def validate_multi_policy_args(args, *, megatron_config: MegatronConfig) -> None
         f"train_multi_policy.py trains several policies, but --megatron-config names "
         f"only {megatron_config.model_ids}; run train_async.py instead"
     )
+    if args.push_to_hub or any(trainer.overrides.get("push_to_hub", False) for trainer in megatron_config.trainers):
+        raise ValueError(
+            "--push-to-hub is not supported in multi-policy training: policies need separate "
+            "Hub destinations and independent final-save handling"
+        )
     assert not args.colocate, "multi policy training does not support --colocate"
     assert args.fully_async, (
         f"multi policy training {megatron_config.model_ids} is only supported for --fully-async: every other rollout "

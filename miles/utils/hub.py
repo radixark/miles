@@ -71,10 +71,17 @@ def push_model_to_hub(
             repo_type="model",
             folder_path=checkpoint_dir,
             commit_message=f"Upload Miles model at rollout {rollout_id}",
-            ignore_patterns=[".complete"],
+            # Exported base-model documentation must not replace destination model cards.
+            ignore_patterns=[".complete", "*.md", "*.rst", "LICENSE*", "NOTICE*"],
             # Remove obsolete shards in the same commit without deleting a
             # user-maintained model card or other repository documentation.
-            delete_patterns=["*.safetensors", "pytorch_model*.bin", "*.index.json", "adapter/*"],
+            delete_patterns=[
+                "*.safetensors",
+                "pytorch_model*.bin",
+                "adapter_model.bin",
+                "adapter/adapter_model.bin",
+                "*.index.json",
+            ],
         )
     except Exception as error:
         # Publishing is optional. Avoid exception payloads that may include

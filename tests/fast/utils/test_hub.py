@@ -4,6 +4,7 @@ from unittest.mock import create_autospec
 
 import pytest
 from huggingface_hub import HfApi
+from huggingface_hub.utils import filter_repo_objects
 
 from miles.utils import hub
 
@@ -125,8 +126,14 @@ def test_publishes_model_at_root(api, checkpoint):
         repo_type="model",
         folder_path=checkpoint,
         commit_message="Upload Miles model at rollout 19",
-        ignore_patterns=[".complete"],
-        delete_patterns=["*.safetensors", "pytorch_model*.bin", "*.index.json", "adapter/*"],
+        ignore_patterns=[".complete", "*.md", "*.rst", "LICENSE*", "NOTICE*"],
+        delete_patterns=[
+            "*.safetensors",
+            "pytorch_model*.bin",
+            "adapter_model.bin",
+            "adapter/adapter_model.bin",
+            "*.index.json",
+        ],
     )
 
 
@@ -157,3 +164,42 @@ def test_remote_failure_preserves_checkpoint(api, checkpoint, caplog, operation)
     assert (Path(checkpoint) / "model.safetensors").read_bytes() == b"weights"
     assert "Hub upload failed (RuntimeError)" in caplog.text
     assert "synthetic-private-details" not in caplog.text
+
+
+@pytest.mark.parametrize("document", ["README.md", "adapter/README.md", "docs/guide.rst", "LICENSE", "NOTICE.txt"])
+def test_publishing_preserves_destination_documentation(api, checkpoint, document):
+    hub.push_model_to_hub(
+        checkpoint_dir=checkpoint,
+        repo_id="user/model",
+        private=False,
+        strategy="every_save",
+        rollout_id=19,
+        is_final=False,
+    )
+    options = api.upload_folder.call_args.kwargs
+    assert list(filter_repo_objects([document], ignore_patterns=options["ignore_patterns"])) == []
+    assert list(filter_repo_objects([document], allow_patterns=options["delete_patterns"])) == []
+
+
+@pytest.mark.parametrize(
+    "weight",
+    [
+        "model-00001-of-00002.safetensors",
+        "model.safetensors.index.json",
+        "pytorch_model.bin",
+        "adapter/adapter_model.bin",
+        "adapter/adapter_model.safetensors",
+    ],
+)
+def test_publishing_still_replaces_old_weights(api, checkpoint, weight):
+    hub.push_model_to_hub(
+        checkpoint_dir=checkpoint,
+        repo_id="user/model",
+        private=False,
+        strategy="every_save",
+        rollout_id=19,
+        is_final=False,
+    )
+    options = api.upload_folder.call_args.kwargs
+    assert list(filter_repo_objects([weight], ignore_patterns=options["ignore_patterns"])) == [weight]
+    assert list(filter_repo_objects([weight], allow_patterns=options["delete_patterns"])) == [weight]

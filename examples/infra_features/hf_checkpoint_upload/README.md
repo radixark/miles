@@ -18,6 +18,9 @@ if necessary:
 --hub-strategy every_save
 ```
 
+Multi-policy training is not supported, including enabling publishing through
+per-trainer overrides.
+
 No custom post-save hook is needed. Publishing requires the Megatron backend,
 `--save`, `--save-hf`, and a positive `--save-interval`. The normal training loop
 also saves at the final iteration, even when it does not match the interval.
@@ -33,7 +36,9 @@ also saves at the final iteration, even when it does not match the interval.
 Both strategies update the model at the repository root. Previous published
 versions remain accessible through Hub commit history; Miles logs the commit ID.
 Obsolete weight shards are removed in the same commit, while repository
-documentation such as a model card is preserved. Use a dedicated repository for
+documentation such as a model card is preserved. Markdown, reStructuredText,
+license, and notice files are excluded from automatic uploads; create or update
+the destination model card separately. Use a dedicated repository for
 each run to avoid concurrent writers overwriting each other's models.
 
 The Hub receives exported model weights and configuration, plus the adapter

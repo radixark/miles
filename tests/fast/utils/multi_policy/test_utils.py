@@ -56,6 +56,17 @@ class TestValidateMultiPolicyArgs:
 
         self._validate(_make_args("a", "b"))
 
+    def test_hub_publishing_is_rejected(self):
+        with pytest.raises(ValueError, match="--push-to-hub is not supported in multi-policy"):
+            self._validate(_make_args("a", "b", push_to_hub=True))
+
+    def test_trainer_override_cannot_enable_hub_publishing(self):
+        args = _make_args("a", "b")
+        config = resolve_megatron_config(args)
+        config.trainers[0].overrides["push_to_hub"] = True
+        with pytest.raises(ValueError, match="--push-to-hub is not supported in multi-policy"):
+            multi_policy_utils.validate_multi_policy_args(args, megatron_config=config)
+
     def test_a_policy_without_a_matching_sglang_model_is_refused(self, monkeypatch):
         """This is the only startup check that stops a weight update from finding no engine at all."""
         _stub_sglang_models(monkeypatch, ("a", True))
