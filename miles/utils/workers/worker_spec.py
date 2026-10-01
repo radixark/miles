@@ -57,6 +57,9 @@ class SchedulingSpec(FrozenStrictBaseModel):
     def gpus_per_cell(self) -> int:
         return self.num_workers_per_cell * self.num_gpu_slots_per_worker
 
+    def declares_dynamic_pool(self) -> bool:
+        return self.gpus_per_cell() > 0
+
     def pods_per_cell(self) -> int:
         gpus_per_cell = self.gpus_per_cell()
         if gpus_per_cell <= self.num_gpus_per_node:
