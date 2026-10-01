@@ -18,6 +18,7 @@ from unittest.mock import patch
 import httpx
 import numpy as np
 from tests.fast.fixtures.session_fixtures import make_session_server_config
+from tests.fast.fixtures.sglang_config_fixtures import make_sglang_config
 
 from miles.rollout.base_types import GenerateFnInput
 from miles.rollout.generate_hub import agentic_tool_call
@@ -239,7 +240,7 @@ def _serve_session(*, backend_url: str, hf_checkpoint: str, version: str) -> Ite
         chat_template_path=None,
         apply_chat_template_kwargs={"enable_thinking": False},
         tito_model="qwen3",
-        sglang_speculative_algorithm=None,
+        sglang=make_sglang_config(speculative_algorithm=None),
         use_session_server=version,
         use_rollout_routing_replay=False,
         use_rollout_indexer_replay=False,

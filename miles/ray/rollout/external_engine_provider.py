@@ -47,7 +47,7 @@ class StaticInferenceEngineWorkerProvider(BaseWorkerProvider):
 
     async def init(self) -> None:
         urls = _compute_external_engine_urls(self._args)
-        engines = await _discover_external_engines(urls, api_key=self._args.sglang_api_key)
+        engines = await _discover_external_engines(urls, api_key=self._args.sglang.base_args["api_key"])
         _assert_engines_match_args(self._args, engines=engines)
 
         self._cells = _compute_cells(args=self._args, engines=engines)
@@ -134,7 +134,7 @@ def _compute_cells(*, args: Any, engines: list[_ExternalEngineInfo]) -> dict[str
                     worker_type=engine.worker_type.value,
                     num_gpus_per_engine=engine.num_gpus,
                     gpu_offset=gpu_offset,
-                    sglang_api_key=args.sglang_api_key,
+                    sglang_api_key=args.sglang.base_args["api_key"],
                     needs_offload=False,
                     update_weights=True,
                 ),

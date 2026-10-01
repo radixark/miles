@@ -148,7 +148,8 @@ def _get_scale_format(args, name, weight_block_size):
         return "ue8m0"
 
     # MoE expert weights: only ue8m0 when runner is deep_gemm
-    is_deepgemm_moe_backend = args.sglang_moe_runner_backend == "deep_gemm" or (
-        args.sglang_moe_runner_backend == "auto" and args.sglang_moe_a2a_backend in ["deepep", "mooncake"]
+    is_deepgemm_moe_backend = args.sglang.common_value("moe_runner_backend") == "deep_gemm" or (
+        args.sglang.common_value("moe_runner_backend") == "auto"
+        and args.sglang.common_value("moe_a2a_backend") in ["deepep", "mooncake"]
     )
     return "ue8m0" if is_deepgemm_moe_backend else None

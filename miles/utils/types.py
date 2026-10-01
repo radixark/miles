@@ -477,7 +477,7 @@ class Sample:
         Update the sample with new information from meta_info returned by the rollout engine.
         And extract
         """
-        if args.sglang_speculative_algorithm:
+        if args.sglang.common_value("speculative_algorithm"):
             # cannot directly use spec info from sglang because of partial rollout.
             self.spec_info.add(meta_info=meta_info)
 
