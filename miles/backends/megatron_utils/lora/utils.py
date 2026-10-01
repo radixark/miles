@@ -197,7 +197,7 @@ def save_lora_checkpoint(
         }
         training_state = None
         if optimizer is not None:
-            save_optimizer = not args.no_save_optim
+            save_optimizer = not args.backend.no_save_optim
             training_state = {
                 "iteration": iteration,
                 "optimizer": optimizer.state_dict() if save_optimizer else None,

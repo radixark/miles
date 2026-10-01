@@ -536,7 +536,7 @@ def setup_optimizer_state_streaming(args, optimizer) -> None:
             dir_root,
             args.offload_train_disk_chunk_mb,
             args.stream_optimizer_state_moment_dtype,
-            allow_fresh_state=args.no_load_optim,
+            allow_fresh_state=args.backend.no_load_optim,
         )
         written = store.initialize_main_from_model_params()
         logger.info(

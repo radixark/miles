@@ -72,7 +72,7 @@ def _hash_file_path(base_dir: str | Path, iteration: int) -> Path:
 def save_model_hashes(args, model: Sequence[DDP], iteration: int, hashes: dict[str, str]) -> None:
     if not args.ci_test or not args.ci_save_model_hash:
         return
-    path = _hash_file_path(args.save, iteration)
+    path = _hash_file_path(args.backend.save, iteration)
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as f:
         json.dump(hashes, f, indent=2, sort_keys=True)
@@ -82,7 +82,7 @@ def save_model_hashes(args, model: Sequence[DDP], iteration: int, hashes: dict[s
 def check_model_hashes(args, model: Sequence[DDP], iteration: int) -> None:
     if not args.ci_test or not args.ci_check_model_hash:
         return
-    path = _hash_file_path(args.load, iteration)
+    path = _hash_file_path(args.backend.load, iteration)
     if not path.is_file():
         raise AssertionError(f"[CI hash] Hash file missing: {path}")
     with path.open("r", encoding="utf-8") as f:
@@ -163,7 +163,7 @@ def check_mtp_only_grad(model: Sequence[DDP], step_id: int) -> None:
 
 def check_peak_gpu_memory_after_load(args) -> None:
     """Assert that peak GPU memory stays below threshold when --low-memory-resume is active."""
-    if not args.ci_test or not args.low_memory_resume:
+    if not args.ci_test or not args.backend.low_memory_resume:
         return
 
     hf_ckpt = args.hf_checkpoint or ""

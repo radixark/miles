@@ -61,7 +61,7 @@ def check_model_type_verified(hf_config, args=None) -> None:
     model_type = str(
         getattr(hf_config, "model_type", "") or ""
     )  # config-access-exempt: model-family schemas differ in optional model_type metadata
-    if model_type not in VERIFIED_MODEL_TYPES and args.rank == 0:
+    if model_type not in VERIFIED_MODEL_TYPES and args.backend.rank == 0:
         logger.warning(
             "[fsdp class_patches] model_type=%r has no recorded FSDP validation; "
             "it will load via the generic HF path — correctness is not guaranteed.",

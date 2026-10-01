@@ -47,6 +47,6 @@ def apply_dsa_backend_args(provider, args) -> None:
         provider, "dsa_kernel_backend"
     ):  # config-access-exempt: third-party providers differ in dsa_kernel_backend support
         explicit = getattr(
-            args, "dsa_kernel_backend", None
+            args.backend, "dsa_kernel_backend", None
         )  # config-access-exempt: older Megatron parsers omit the DSA kernel backend switch
         provider.dsa_kernel_backend = explicit or {"tilelang": "tilelang", "megatron": "none"}[backend]

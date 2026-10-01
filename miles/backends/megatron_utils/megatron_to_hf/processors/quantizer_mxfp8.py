@@ -27,14 +27,14 @@ def quantize_params_mxfp8(args, megatron_name, converted_named_params, quantizat
 
     # Skip quantization for BF16 tail of main decoder layers.
     if getattr(
-        args, "first_last_layers_bf16", False
+        args.backend, "first_last_layers_bf16", False
     ):  # config-access-exempt: BF16 layer options are absent in older Megatron parsers
-        num_layers = int(args.num_layers)
+        num_layers = int(args.backend.num_layers)
         num_layers_at_start_in_bf16 = int(
-            getattr(args, "num_layers_at_start_in_bf16", 0)
+            getattr(args.backend, "num_layers_at_start_in_bf16", 0)
         )  # config-access-exempt: BF16 layer options are absent in older Megatron parsers
         num_layers_at_end_in_bf16 = int(
-            getattr(args, "num_layers_at_end_in_bf16", 0)
+            getattr(args.backend, "num_layers_at_end_in_bf16", 0)
         )  # config-access-exempt: BF16 layer options are absent in older Megatron parsers
         head_end_idx = num_layers_at_start_in_bf16
         tail_start_idx = num_layers - num_layers_at_end_in_bf16
@@ -92,7 +92,7 @@ def quantize_params_mxfp8(args, megatron_name, converted_named_params, quantizat
         "self_attention.core_attention.indexer.linear_wq_b.weight",
     ]
     if not getattr(
-        args, "indexer_rope_interleave", False
+        args.backend, "indexer_rope_interleave", False
     ):  # config-access-exempt: only DSA model normalization introduces the indexer flag
         # Non-interleaved indexers keep wk as a standalone quantized parameter in
         # SGLang; interleaved ones fuse wk into the bf16 wk_weights_proj, whose

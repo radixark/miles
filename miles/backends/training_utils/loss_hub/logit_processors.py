@@ -60,9 +60,9 @@ def _iter_response_chunks(
     if args.true_on_policy_mode:
         if logits.size(-1) > 1 and args.rollout_temperature > 0 and args.rollout_temperature != 1.0:
             logits = logits.div(args.rollout_temperature)
-        if args.bf16:
+        if args.backend.bf16:
             logits = logits.to(torch.bfloat16)
-        elif args.fp16:
+        elif args.backend.fp16:
             logits = logits.to(torch.float16)
 
     parallel_state = get_parallel_state()
@@ -258,7 +258,7 @@ def get_log_probs_and_entropy(
             entropy_requires_grad=entropy_requires_grad,
             chunk_size=args.log_probs_chunk_size,
             true_on_policy=args.true_on_policy_mode,
-            vocab_size=args.vocab_size,
+            vocab_size=args.backend.vocab_size,
             sampling_mask=sampling_mask,
             temperature=1.0 if args.true_on_policy_mode else args.rollout_temperature,
             debug_unified_grad_fused_logprob=args.debug_unified_grad_fused_logprob,

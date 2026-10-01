@@ -42,13 +42,13 @@ def _set_random_seed(
 
 
 def set_random_seed_from_args(args) -> None:
-    if args.rank == 0:
-        logger.info(f"> setting random seeds to {args.seed} ...")
+    if args.backend.rank == 0:
+        logger.info(f"> setting random seeds to {args.backend.seed} ...")
     _set_random_seed(
-        args.seed,
-        args.data_parallel_random_init,
-        args.te_rng_tracker,
-        args.inference_rng_tracker,
+        args.backend.seed,
+        args.backend.data_parallel_random_init,
+        args.backend.te_rng_tracker,
+        args.backend.inference_rng_tracker,
     )
 
 
@@ -73,21 +73,21 @@ def _initialize_distributed(args, get_embedding_ranks=None, get_position_embeddi
     # Set the tensor model-parallel, pipeline model-parallel, and
     # data-parallel communicators.
     mpu.initialize_model_parallel(
-        args.tensor_model_parallel_size,
-        args.pipeline_model_parallel_size,
-        args.virtual_pipeline_model_parallel_size,
-        pipeline_model_parallel_comm_backend=args.pipeline_model_parallel_comm_backend,
-        context_parallel_size=args.context_parallel_size,
-        hierarchical_context_parallel_sizes=args.hierarchical_context_parallel_sizes,
-        expert_model_parallel_size=args.expert_model_parallel_size,
-        num_distributed_optimizer_instances=args.num_distributed_optimizer_instances,
-        expert_tensor_parallel_size=args.expert_tensor_parallel_size,
-        distributed_timeout_minutes=args.distributed_timeout_minutes,
-        nccl_communicator_config_path=args.nccl_communicator_config_path,
-        order="tp-cp-ep-dp-pp" if not args.use_tp_pp_dp_mapping else "tp-cp-ep-pp-dp",
+        args.backend.tensor_model_parallel_size,
+        args.backend.pipeline_model_parallel_size,
+        args.backend.virtual_pipeline_model_parallel_size,
+        pipeline_model_parallel_comm_backend=args.backend.pipeline_model_parallel_comm_backend,
+        context_parallel_size=args.backend.context_parallel_size,
+        hierarchical_context_parallel_sizes=args.backend.hierarchical_context_parallel_sizes,
+        expert_model_parallel_size=args.backend.expert_model_parallel_size,
+        num_distributed_optimizer_instances=args.backend.num_distributed_optimizer_instances,
+        expert_tensor_parallel_size=args.backend.expert_tensor_parallel_size,
+        distributed_timeout_minutes=args.backend.distributed_timeout_minutes,
+        nccl_communicator_config_path=args.backend.nccl_communicator_config_path,
+        order="tp-cp-ep-dp-pp" if not args.backend.use_tp_pp_dp_mapping else "tp-cp-ep-pp-dp",
         get_embedding_ranks=get_embedding_ranks,
         get_position_embedding_ranks=get_position_embedding_ranks,
-        create_gloo_process_groups=args.use_gloo_process_groups,
+        create_gloo_process_groups=args.backend.use_gloo_process_groups,
     )
 
 
@@ -99,8 +99,8 @@ def init(
     if indep_dp_info is None:
         indep_dp_info = IndepDPInfo.create_trivial()
 
-    set_args(args)
-    if args.enable_experimental:
+    set_args(args.backend)
+    if args.backend.enable_experimental:
         logger.info("Enable megatron experimental")
         set_experimental_flag(True)
 
@@ -118,33 +118,33 @@ def init(
 
     # sanity check
     if args.indep_dp:
-        assert args.data_parallel_size == 1
+        assert args.backend.data_parallel_size == 1
 
     # Random seeds for reproducibility.
     set_random_seed_from_args(args)
     register_hf_config_aliases()
-    _build_tokenizer(args)
+    _build_tokenizer(args.backend)
     # We won't use this. initialize to pass some validation in megatron.
     init_num_microbatches_calculator(
-        args.rank,
-        args.rampup_batch_size,
-        args.global_batch_size,
-        args.micro_batch_size,
-        args.data_parallel_size,
-        args.decrease_batch_size_if_needed,
+        args.backend.rank,
+        args.backend.rampup_batch_size,
+        args.backend.global_batch_size,
+        args.backend.micro_batch_size,
+        args.backend.data_parallel_size,
+        args.backend.decrease_batch_size_if_needed,
     )
 
-    if args.deterministic_mode:
-        if args.rank == 0:
+    if args.backend.deterministic_mode:
+        if args.backend.rank == 0:
             logger.info("> running in deterministic mode")
         torch.backends.cudnn.deterministic = True
         torch.backends.cudnn.benchmark = False
         torch.use_deterministic_algorithms(True, warn_only=False)
 
     if args.debug_deterministic_collective:
-        assert not args.overlap_grad_reduce, "deterministic collectives require synchronous grad sync"
+        assert not args.backend.overlap_grad_reduce, "deterministic collectives require synchronous grad sync"
 
-    if args.tp_comm_overlap:
+    if args.backend.tp_comm_overlap:
         from megatron.training.initialize import _initialize_tp_communicators
 
         _initialize_tp_communicators()

@@ -145,7 +145,7 @@ def get_qwen3_8_next_spec(args, config, vp_stage=None):
             "simplified. Run with --num-layers-per-virtual-pipeline-stage unset."
         )
 
-    if not args.num_experts:
+    if not args.backend.num_experts:
         config.moe_layer_freq = [0] * config.num_layers
 
     kwargs = {"use_transformer_engine": True}
