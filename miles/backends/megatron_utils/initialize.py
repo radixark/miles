@@ -152,11 +152,13 @@ def init(
 
         _initialize_tp_communicators()
 
-    if args.custom_megatron_init_path:
+    if (x := args.custom_megatron_init_path) is not None:
+        from miles.utils.args.custom_view import compute_custom_function_config
         from miles.utils.function_registry import load_function
 
-        custom_init = load_function(args.custom_megatron_init_path)
-        custom_init(args)
+        custom_init = load_function(x)
+        fn_args = compute_custom_function_config(args, x)
+        custom_init(fn_args)
 
 
 # TODO shall we use a simpler method to determine which rank to init wandb?

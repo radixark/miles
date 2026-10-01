@@ -40,6 +40,10 @@ def load_function(path, *, sync_required=False):
         loaded function synchronously on an event loop.
     :return: The function object.
     """
+    from miles.utils.args.custom_function import CustomFunctionConfig
+
+    if isinstance(path, CustomFunctionConfig):
+        path = path.path
     if not path:
         return None
 

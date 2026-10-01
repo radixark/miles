@@ -20,6 +20,7 @@ from miles.backends.training_utils.loss_hub.math_utils import (
 )
 from miles.backends.training_utils.parallel import get_parallel_state
 from miles.backends.training_utils.sampling_mask import get_rollout_sampling_masks
+from miles.utils.args.custom_view import compute_custom_function_config
 from miles.utils.function_registry import load_function
 from miles.utils.types import RolloutBatch
 
@@ -239,16 +240,18 @@ def policy_loss_function(
         # Keep a copy of the original reducer (based on `batch["loss_masks"]`) for metric aggregation.
         sum_of_sample_mean_for_mismatch_metrics = sum_of_sample_mean
 
-        if args.custom_tis_function_path is not None:
-            tis_func = load_function(args.custom_tis_function_path)
+        if (x := args.custom_tis_function_path) is not None:
+            tis_func = load_function(x)
+            fn_args = compute_custom_function_config(args, x)
         else:
             assert trainer_scored_log_probs is not None, "log_probs must be provided for built-in TIS"
             assert rollout_old_log_probs is not None, "rollout_log_probs must be provided for built-in TIS"
             tis_func = vanilla_tis_function
+            fn_args = args
 
         ois = (-ppo_kl).exp()
         tis_kwargs = {
-            "args": args,
+            "args": fn_args,
             "pg_loss": pg_loss,
             "train_log_probs": trainer_scored_log_probs,
             "rollout_log_probs": rollout_old_log_probs,
