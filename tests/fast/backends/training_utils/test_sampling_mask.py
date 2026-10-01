@@ -150,6 +150,7 @@ def test_get_log_probs_and_entropy_applies_per_response_sampling_support(monkeyp
         cp=SimpleNamespace(rank=0, size=1),
     )
     monkeypatch.setattr(logit_processors, "get_parallel_state", lambda: parallel_state)
+    monkeypatch.setattr(cp_utils, "get_parallel_state", lambda: parallel_state)
     args = SimpleNamespace(
         qkv_format="thd",
         rollout_temperature=1.0,
@@ -212,6 +213,7 @@ def test_get_log_probs_and_entropy_rejects_mask_shorter_than_response(monkeypatc
 def test_allgather_cp_response_rows_keep_global_response_indices(monkeypatch, cp_rank, expected_indices):
     parallel_state = SimpleNamespace(cp=SimpleNamespace(rank=cp_rank, size=2))
     monkeypatch.setattr(logit_processors, "get_parallel_state", lambda: parallel_state)
+    monkeypatch.setattr(cp_utils, "get_parallel_state", lambda: parallel_state)
     args = SimpleNamespace(
         qkv_format="thd",
         rollout_temperature=1.0,

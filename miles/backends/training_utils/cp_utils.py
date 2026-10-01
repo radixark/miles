@@ -1,5 +1,5 @@
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Iterator, Sequence
 
 import torch
 import torch.distributed as dist
@@ -59,6 +59,135 @@ def get_logits_and_tokens_offset_with_cp(
         token_1 = (0, 0)
 
     return chunk_size, (chunk_0, chunk_1), (logits_0, logits_1), (token_0, token_1)
+
+
+def iter_local_response_rows(
+    num_rows: int,
+    *,
+    unconcat_tokens: list[torch.Tensor],
+    total_lengths: list[int],
+    response_lengths: list[int],
+    qkv_format: str,
+    allgather_cp: bool,
+    max_seq_lens: list[int] | None = None,
+    include_response_indices: bool,
+) -> Iterator[tuple[tuple[tuple[int, int], ...], torch.Tensor, Sequence[int]]]:
+    """Yield, per sample, the rows of this rank's flattened ``[num_rows, V]`` logits that score its response.
+
+    Logit row ``t`` scores token ``t + 1``. Without context parallelism a response is one run of
+    rows. Under all-gather CP this rank holds at most one run of it; under zigzag CP it holds two,
+    one per zigzag half, and either may be empty.
+
+    Yields:
+        ``(row_ranges, tokens, response_indices)``: half-open ``(start, end)`` row runs within
+        ``[0, num_rows]``, in order, whose rows score ``tokens`` (1D int64) one to one, and the index
+        in the full response of every such row (empty unless ``include_response_indices``).
+    """
+    cp = get_parallel_state().cp
+    local_start = 0  # first local row of the sample's slot, without CP or under zigzag CP
+    seq_start = 0  # first global token of the sample, under all-gather CP
+    for i, (tokens, total_length, response_length) in enumerate(
+        zip(unconcat_tokens, total_lengths, response_lengths, strict=False)
+    ):
+        max_seq_len = max_seq_lens[i] if max_seq_lens is not None else None
+        if cp.size == 1:
+            if qkv_format == "bshd":
+                local_start = max_seq_len * i
+            rows = _response_rows_without_cp(
+                tokens,
+                slot_start=local_start,
+                total_length=total_length,
+                response_length=response_length,
+                include_response_indices=include_response_indices,
+            )
+            local_start += total_length
+        elif allgather_cp:
+            rows = _response_rows_allgather_cp(
+                tokens,
+                chunk_start=cp.rank * num_rows,
+                num_rows=num_rows,
+                seq_start=seq_start,
+                total_length=total_length,
+                response_length=response_length,
+                include_response_indices=include_response_indices,
+            )
+        else:
+            rows, slot_rows = _response_rows_zigzag_cp(
+                tokens,
+                slot_start=local_start,
+                total_length=total_length,
+                response_length=response_length,
+                qkv_format=qkv_format,
+                max_seq_len=max_seq_len,
+                include_response_indices=include_response_indices,
+            )
+            local_start += slot_rows
+        seq_start += total_length
+
+        row_ranges, tokens_chunk, response_indices = rows
+        assert all(0 <= start <= end <= num_rows for start, end in row_ranges), f"{row_ranges} vs {num_rows} rows"
+        assert sum(end - start for start, end in row_ranges) == tokens_chunk.size(0)
+        if include_response_indices:
+            assert len(response_indices) == tokens_chunk.size(0)
+        yield rows
+
+
+def _response_rows_without_cp(tokens, *, slot_start, total_length, response_length, include_response_indices):
+    """One run: the response ends the sample, whose slot starts at local row ``slot_start``."""
+    end = slot_start + total_length - 1
+    row_ranges = ((end - response_length, end),)
+    tokens_chunk = tokens[-response_length:] if response_length else tokens[0:0]
+    return row_ranges, tokens_chunk, (range(response_length) if include_response_indices else ())
+
+
+def _response_rows_allgather_cp(
+    tokens, *, chunk_start, num_rows, seq_start, total_length, response_length, include_response_indices
+):
+    """At most one run: the response's global logit rows within this rank's contiguous piece."""
+    logit_start = seq_start + total_length - response_length - 1
+    logit_end = seq_start + total_length - 1
+    start, end = max(logit_start, chunk_start), min(logit_end, chunk_start + num_rows)
+    if end <= start:
+        return ((0, 0),), tokens[0:0], ()
+    row_ranges = ((start - chunk_start, end - chunk_start),)
+    tokens_chunk = tokens[start + 1 - seq_start : end + 1 - seq_start]
+    response_indices = range(start - logit_start, end - logit_start) if include_response_indices else ()
+    return row_ranges, tokens_chunk, response_indices
+
+
+def _response_rows_zigzag_cp(
+    tokens, *, slot_start, total_length, response_length, qkv_format, max_seq_len, include_response_indices
+):
+    """Two runs, one per zigzag half, and the number of local rows the sample's slot takes."""
+    chunk_size, chunks_offset, logits_offset, tokens_offset = get_logits_and_tokens_offset_with_cp(
+        total_length, response_length, qkv_format, max_seq_len
+    )
+    row_ranges = tuple(
+        _zigzag_half_rows(half_start, logits_offset[half], chunks_offset[half][0])
+        for half, half_start in enumerate((slot_start, slot_start + chunk_size))
+    )
+    token_halves = [tokens[start:end] for start, end in tokens_offset]
+    for (row_start, row_end), token_half in zip(row_ranges, token_halves, strict=True):
+        assert row_end - row_start == token_half.size(0), f"{row_end - row_start} vs {token_half.size(0)}"
+    prompt_length = total_length - response_length
+    response_indices = (
+        [index - prompt_length for start, end in tokens_offset for index in range(start, end)]
+        if include_response_indices
+        else ()
+    )
+    return (row_ranges, torch.cat(token_halves, dim=0), response_indices), 2 * chunk_size
+
+
+def _zigzag_half_rows(half_start: int, logits_range: tuple[int, int], chunk_start: int) -> tuple[int, int]:
+    """Local rows of one zigzag half; a half holding none of the response stays empty at its start.
+
+    ``get_logits_and_tokens_offset_with_cp`` marks such a half as ``(0, 0)`` in sequence
+    coordinates, which would otherwise map to a negative local row.
+    """
+    start, end = logits_range
+    if start >= end:
+        return half_start, half_start
+    return half_start + start - chunk_start, half_start + end - chunk_start
 
 
 def _slice_loss_mask_for_local_cp(
@@ -368,7 +497,11 @@ def allgather_cp_redistribute(
             s = max(logit_global_start, chunk_start)
             e = min(logit_global_end, chunk_end)
 
-            if e <= s:
+            if e <= s and value.requires_grad:
+                # No response logprobs here, but the empty value is still an output of the
+                # log-prob op; padding it keeps the logits in the graph on this rank
+                full_resp = F.pad(value, (0, response_length))
+            elif e <= s:
                 # This rank has no response logprobs for this sample
                 full_resp = torch.zeros(
                     response_length,

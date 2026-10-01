@@ -10,7 +10,11 @@ from miles.backends.training_utils.cp_utils import (
     get_sum_of_sample_mean,
 )
 from miles.backends.training_utils.loss_hub.corrections import vanilla_tis_function
-from miles.backends.training_utils.loss_hub.logit_processors import get_log_probs_and_entropy, get_values
+from miles.backends.training_utils.loss_hub.logit_processors import (
+    get_log_probs_and_entropy,
+    get_values,
+    uses_fused_log_probs,
+)
 from miles.backends.training_utils.loss_hub.math_utils import (
     compute_approx_kl,
     compute_ess_ratio_contribution,
@@ -337,7 +341,7 @@ def policy_loss_function(
             loss = loss + args.kl_loss_coef * kl_loss
 
     # make sure the gradient could backprop correctly; fp32 sum avoids fp16 inf -> nan
-    if log_probs.numel() == 0:
+    if log_probs.numel() == 0 and not uses_fused_log_probs(args):
         loss += 0 * logits.sum(dtype=torch.float32)
 
     train_rollout_logprob_abs_diff = None
@@ -501,7 +505,7 @@ def sft_loss_function(
     loss = -sum_of_sample_mean(log_probs)
 
     # make sure the gradient could backprop correctly; fp32 sum avoids fp16 inf -> nan
-    if log_probs.numel() == 0:
+    if log_probs.numel() == 0 and not uses_fused_log_probs(args):
         loss += 0 * logits.sum(dtype=torch.float32)
 
     return (

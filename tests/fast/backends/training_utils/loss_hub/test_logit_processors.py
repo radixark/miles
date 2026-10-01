@@ -4,6 +4,7 @@ from types import SimpleNamespace
 import pytest
 import torch
 
+from miles.backends.training_utils import cp_utils
 from miles.backends.training_utils.loss_hub import logit_processors
 
 
@@ -19,6 +20,7 @@ class TestGetLogProbsAndEntropy:
             cp=SimpleNamespace(rank=0, size=1),
         )
         monkeypatch.setattr(logit_processors, "get_parallel_state", lambda: parallel_state)
+        monkeypatch.setattr(cp_utils, "get_parallel_state", lambda: parallel_state)
         args = Namespace(
             qkv_format="thd",
             rollout_temperature=1.0,

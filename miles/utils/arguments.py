@@ -573,6 +573,19 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "--log-probs-chunk-size", type=int, default=-1, help="Chunk size to compute log probs to save memory"
             )
             parser.add_argument(
+                "--log-probs-backend",
+                type=str,
+                choices=["torch", "fused"],
+                default="torch",
+                help=(
+                    "How per-token log-probs and entropy are computed from the logits. 'torch' upcasts each "
+                    "response chunk to fp32 and keeps its softmax for backward. 'fused' streams the logits "
+                    "through Triton kernels, keeps three numbers per token and writes the gradient in place. "
+                    "'fused' falls back to 'torch' under --true-on-policy-mode and under sampling-support "
+                    "replay (--rollout-top-p below 1 or a positive --rollout-top-k)."
+                ),
+            )
+            parser.add_argument(
                 "--indep-dp",
                 action="store_true",
                 default=False,
@@ -3285,6 +3298,15 @@ def miles_validate_args(args):
             raise ValueError(
                 "sampling-support replay cannot currently be combined with reference KL or teacher distillation; "
                 "those objectives require a separate full-policy actor score"
+            )
+
+    if args.log_probs_backend == "fused":
+        if args.true_on_policy_mode:
+            logger.warning("--log-probs-backend fused falls back to torch under --true-on-policy-mode.")
+        elif args.use_sampling_support_replay:
+            logger.warning(
+                "--log-probs-backend fused falls back to torch under sampling-support replay "
+                f"(--rollout-top-p {args.rollout_top_p}, --rollout-top-k {args.rollout_top_k})."
             )
 
     if not args.use_session_server and args.tito_model != TITOTokenizerType.DEFAULT.value:

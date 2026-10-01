@@ -4,7 +4,11 @@ from torch.utils.checkpoint import checkpoint
 
 from miles.backends.training_utils.cp_utils import get_local_response_loss_masks, get_sum_of_sample_mean
 from miles.backends.training_utils.loss_hub.advantages import compute_advantages, normalize_advantages
-from miles.backends.training_utils.loss_hub.logit_processors import get_log_probs_and_entropy, get_values  # noqa: F401
+from miles.backends.training_utils.loss_hub.logit_processors import (  # noqa: F401
+    get_log_probs_and_entropy,
+    get_values,
+    uses_fused_log_probs,
+)
 from miles.backends.training_utils.loss_hub.losses import get_loss_function
 from miles.backends.training_utils.loss_hub.math_utils import compute_approx_kl
 from miles.backends.training_utils.loss_hub.opd import apply_opd_kl_to_advantages
@@ -189,7 +193,12 @@ def loss_function(
 
     # Forces autograd to traverse the full graph on every rank to avoid hang.
     # fp32 sum: an fp16 logits sum can overflow to inf, and 0 * inf is nan.
-    if parallel_state.cp.size > 1 and args.allgather_cp:
+    # A loss that reads the logits through the fused log-prob op already gives them a gradient
+    # on every rank; the anchor's gradient would only add a second [T, V] buffer.
+    reads_fused_log_probs = uses_fused_log_probs(args) and (
+        args.loss_type in ("policy_loss", "sft_loss") or batch.get("loss_fn") is not None
+    )
+    if parallel_state.cp.size > 1 and args.allgather_cp and not reads_fused_log_probs:
         loss = loss + 0 * logits.sum(dtype=torch.float32)
 
     # Here we need to divide by cp_size because to cancel the multiply in Megatron.
