@@ -6,6 +6,9 @@ from miles.utils.workers.types import ClusterBackend, DeployComponent, WorkerCom
 
 # Ray
 class ClusterConfig(BaseConfig):
+    starts_inference_engines: bool
+    rollout_external: bool
+
     cluster_backend: A[
         str,
         Arg(

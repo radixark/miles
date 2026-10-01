@@ -5,6 +5,10 @@ from miles.utils.args.schema import A, Arg, BaseConfig
 
 
 class TrainConfig(BaseConfig):
+    num_layers: int | None
+    trainer_id: str
+    trainer_model_id: str | None
+
     train_backend: A[str, Arg(choices=["megatron", "fsdp"], help="The backend for training.")] = "megatron"
     qkv_format: A[str, Arg(choices=["thd", "bshd"], help="The qkv layout.")] = "thd"
     linear_attention_backend: A[

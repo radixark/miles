@@ -2,6 +2,11 @@ from miles.utils.args.schema import A, Arg, BaseConfig
 
 
 class AlgoConfig(BaseConfig):
+    requested_load: str | None
+    ckpt_step: int | None
+    use_critic: bool
+    rollout_indexer_topk_num_streams: int | None = None
+
     ref_load: A[
         str | None,
         Arg(

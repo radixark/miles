@@ -1,8 +1,16 @@
+from typing import Literal
+
 from miles.utils.args.schema import A, Arg, BaseConfig
 
 
 class LoraConfig(BaseConfig):
     """Add LoRA-related arguments for Megatron backend."""
+
+    lora_A_init_method: str
+    lora_B_init_method: str
+    multi_lora: bool
+    hf_lora_targets: list[str] | None = None
+    lora_adapter_targets: list[str] | Literal["all-linear"] | None = None
 
     sglang_lora_use_virtual_experts: A[
         bool,
@@ -24,14 +32,16 @@ class LoraConfig(BaseConfig):
             help="LoRA variant to use: 'lora' (standard) or 'canonical_lora' (split Q/K/V) (default: lora)",
         ),
     ] = "lora"
+    # TODO: Remove this temporary override after separating CLI input types from normalized config types.
     target_modules: A[
-        str | None,
+        str | list[str] | None,
         Arg(
+            type_parser=str,
             help=(
                 "LoRA targets: omit or use 'all-linear' for the HF model defaults, or provide "
                 "comma-separated groups (attn,mlp,unembed), HF targets, or a mix of both. "
                 "Megatron module names are also accepted by the Bridge backend."
-            )
+            ),
         ),
     ] = None
     exclude_modules: A[str | None, Arg(help="Modules to exclude from LoRA (comma-separated)")] = None

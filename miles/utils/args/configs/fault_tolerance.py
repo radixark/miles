@@ -8,6 +8,15 @@ _DEFAULT_FT_API_SERVER_PORT = 18080
 
 
 class FaultToleranceConfig(BaseConfig):
+    trainer_heartbeat_checker_interval: float
+    trainer_heartbeat_checker_timeout: float
+    trainer_heartbeat_checker_first_wait: float
+    trainer_heartbeat_checker_failure_threshold: int
+    rollout_health_check_interval: float
+    rollout_health_check_timeout: float
+    rollout_health_check_first_wait: float
+    rollout_health_check_failure_threshold: int
+
     use_fault_tolerance: A[
         bool,
         Arg(help="Enable fault tolerance. Use --ft-components to select which components."),
