@@ -11,8 +11,8 @@ logger = logging.getLogger(__name__)
 
 
 def add_hub_arguments(parser: argparse.ArgumentParser) -> None:
-    """Register optional Hub publishing for Megatron HF exports."""
-    parser.add_argument("--push-to-hub", action="store_true", help="Publish Megatron HF exports to the Hub.")
+    """Register optional Hub publishing for HF exports."""
+    parser.add_argument("--push-to-hub", action="store_true", help="Publish HF exports to the Hub.")
     parser.add_argument("--hub-model-id", type=str, default=None, help="Hub model repository, e.g. username/model.")
     parser.add_argument(
         "--hub-private-repo",

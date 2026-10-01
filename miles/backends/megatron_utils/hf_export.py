@@ -1,4 +1,4 @@
-"""Backend selection and checkpoint writing for Megatron HF exports."""
+"""Backend selection and checkpoint writing for HF exports."""
 
 import logging
 from collections.abc import Sequence

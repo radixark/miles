@@ -1,6 +1,6 @@
 ---
 title: "Hugging Face model publishing"
-description: "Uploads intermediate Megatron HF checkpoints to the Hugging Face Hub."
+description: "Uploads intermediate HF checkpoints to the Hugging Face Hub."
 # Generated from examples/infra_features/hf_checkpoint_upload/README.md by scripts/tools/sync_example_docs.py. Edit that README, not this file.
 ---
 Publish intermediate or final Megatron model exports to the Hugging Face Hub
