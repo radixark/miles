@@ -196,3 +196,26 @@ def test_wheels_publish_scopes_the_ci_app_token():
     assert {key: value for key, value in token.items() if key.startswith("permission-")} == {
         "permission-contents": "write"
     }
+
+
+def test_failure_notifier_covers_all_jobs_without_build_or_publish_credentials():
+    notify = WORKFLOW["jobs"]["notify-build-failure"]
+    assert set(notify["needs"]) == set(WORKFLOW["jobs"]) - {"notify-build-failure"}
+    assert "always()" in notify["if"]
+    assert "contains(needs.*.result, 'failure')" in notify["if"]
+    assert "github.repository == 'radixark/miles'" in notify["if"]
+    assert "github.event_name" not in notify["if"]
+    assert notify["runs-on"] == "ubuntu-latest"
+    assert notify["permissions"] == {"actions": "read", "contents": "read"}
+    checkout = notify["steps"][0]["with"]
+    assert checkout["persist-credentials"] is False
+    assert set(checkout["sparse-checkout"].splitlines()) == {
+        ".github/workflows/scripts/lark_notify.py",
+        ".github/workflows/scripts/ci_failure_analysis.py",
+    }
+    post = notify["steps"][-1]
+    assert "lark_notify.py wheels-build-failure" in post["run"]
+    assert post["env"]["LARK_WEBHOOK"] == "${{ secrets.LARK_WEBHOOK }}"
+    assert post["env"]["GITHUB_TOKEN"] == "${{ github.token }}"
+    assert post["env"]["RUN_ID"] == "${{ github.run_id }}"
+    assert "CI_APP" not in json.dumps(notify)

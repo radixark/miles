@@ -540,7 +540,7 @@ def test_failed_docker_build_posts_one_card_naming_the_failed_job_and_step(monke
     posted = []
     monkeypatch.setattr(HANDLER, "post_card", lambda card, webhook, dry_run: posted.append(card))
     check = {"id": 30, "name": "check-upstream", "conclusion": "success", "html_url": "https://example/jobs/30"}
-    HANDLER.cmd_docker_build_failure(args(), FakeGitHub(docker_run(), [check, build_job()]))
+    HANDLER.cmd_build_failure(args(), FakeGitHub(docker_run(), [check, build_job()]))
     assert len(posted) == 1
     header = posted[0]["card"]["header"]
     assert header["title"]["content"] == "Docker Build & Push: FAILED" and header["template"] == "red"
@@ -551,14 +551,14 @@ def test_failed_docker_build_posts_one_card_naming_the_failed_job_and_step(monke
 
 
 def test_push_triggered_build_failure_names_its_branch():
-    card = HANDLER.render_docker_build_failure(docker_run(event="push", head_branch="main"), [build_job()])
+    card = HANDLER.render_build_failure(docker_run(event="push", head_branch="main"), [build_job()])
     assert "push to main" in json.dumps(card)
 
 
 def test_docker_build_notifier_skips_a_run_without_failed_jobs(monkeypatch, capsys):
     posted = []
     monkeypatch.setattr(HANDLER, "post_card", lambda *values: posted.append(values))
-    HANDLER.cmd_docker_build_failure(args(), FakeGitHub(docker_run(), [build_job("success")]))
+    HANDLER.cmd_build_failure(args(), FakeGitHub(docker_run(), [build_job("success")]))
     assert posted == []
     assert "no failed job" in capsys.readouterr().out
 
@@ -577,3 +577,55 @@ def test_docker_build_workflow_reports_only_failed_automatic_builds():
     for relative in (".github/workflows/scripts/lark_notify.py", ".github/workflows/scripts/ci_failure_analysis.py"):
         assert f"\n            {relative}\n" in job
     assert "write" not in job.split("steps:", 1)[0]
+
+
+@pytest.mark.parametrize("event", ["schedule", "workflow_dispatch"])
+@pytest.mark.parametrize(
+    "failed_name,failed_step",
+    [
+        ("check", "Compare each source with the commit its release records"),
+        ("build-te-x86", "Build transformer_engine_torch in the SGLang base image"),
+        ("publish (x86_64, x86)", "Sync into the miles-wheels release"),
+    ],
+)
+def test_wheels_failure_cli_renders_one_card_without_rerunning(monkeypatch, capsys, event, failed_name, failed_step):
+    failed = job(name=failed_name)
+    failed["steps"] = [
+        {"name": "Set up job", "conclusion": "success"},
+        {"name": failed_step, "conclusion": "failure"},
+    ]
+    gh = FakeGitHub(
+        run(name="Build Wheels", event=event, head_branch="main", status="in_progress", conclusion=None),
+        [failed, job(20, "unchanged", "skipped"), job(30, "finished", "success"), job(40, "notifier", None)],
+    )
+    monkeypatch.setattr(HANDLER, "GitHub", lambda *unused: gh)
+    monkeypatch.delenv("LARK_WEBHOOK", raising=False)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["lark_notify.py", "--token", "test-token", "--dry-run", "wheels-build-failure", "--run-id", "123"],
+    )
+
+    assert HANDLER.main() == 0
+    card = json.loads(capsys.readouterr().out)
+    assert card["card"]["header"] == {
+        "title": {"tag": "plain_text", "content": "Build Wheels: FAILED"},
+        "template": "red",
+    }
+    content = markdown(card)
+    assert f"- [{failed_name}](https://example/jobs/10) at `{failed_step}`" in content
+    assert all(name not in content for name in ["unchanged", "finished", "notifier", "Set up job"])
+    trigger = "Scheduled rebuild" if event == "schedule" else "workflow_dispatch to main"
+    assert trigger in json.dumps(card)
+    assert card["card"]["body"]["elements"][-1]["behaviors"][0]["default_url"] == run()["html_url"]
+    assert not gh.rerun_calls()
+
+
+@pytest.mark.parametrize("conclusion", ["success", "skipped", "cancelled", None])
+def test_wheels_without_failed_jobs_do_not_post(monkeypatch, conclusion):
+    posted = []
+    monkeypatch.setattr(HANDLER, "post_card", lambda *values: posted.append(values))
+    HANDLER.cmd_build_failure(
+        args(), FakeGitHub(run(name="Build Wheels", run_attempt=2), [job(conclusion=conclusion)])
+    )
+    assert not posted
