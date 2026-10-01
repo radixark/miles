@@ -104,6 +104,30 @@ class TrainerConfig(
     DashboardConfig,
     SglangFieldsConfig,
 ):
+    # ========================== same-name delegates ===========================
+
+    @property
+    def global_batch_size(self) -> int | None:
+        return self.backend.global_batch_size
+
+    @property
+    def wandb_project(self) -> str | None:
+        return self.backend.wandb_project
+
+    @property
+    def tensor_model_parallel_size(self) -> int:
+        return self.backend.tensor_model_parallel_size
+
+    @property
+    def pipeline_model_parallel_size(self) -> int:
+        return self.backend.pipeline_model_parallel_size
+
+    @property
+    def context_parallel_size(self) -> int:
+        return self.backend.context_parallel_size
+
+    # ======================== end same-name delegates =========================
+
     @model_validator(mode="after")
     def _validate_backend_name(self) -> Self:
         assert self.train_backend == self.backend.backend_name, "train_backend must match backend.backend_name"
