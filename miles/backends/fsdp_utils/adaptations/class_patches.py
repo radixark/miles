@@ -56,7 +56,7 @@ def check_fp8_checkpoint(hf_config) -> None:
 VERIFIED_MODEL_TYPES = frozenset({"glm4_moe_lite", "nemotron_h", "qwen3", "qwen3_moe", "qwen3_vl"})
 
 
-def check_model_type_verified(hf_config, args=None) -> None:
+def check_model_type_verified(hf_config, args) -> None:
     """Warn from rank 0 when the arch has no recorded FSDP validation."""
     model_type = str(
         getattr(hf_config, "model_type", "") or ""
@@ -116,14 +116,14 @@ register_model_patch(
 # Per-arch model patches register in their spec (adaptations/specs/); this module keeps only generic ones.
 
 
-def apply_class_patches(hf_config=None, args=None) -> None:
+def apply_class_patches(hf_config, args) -> None:
     """Apply all registered ModelPatchHooks. Safe to call once at actor init."""
     for hook in _MODEL_PATCH_HOOKS:
         if hook.applies_to(hf_config):
             hook.apply(hf_config, args)
 
 
-def apply_model_instance_patches(model, hf_config=None, args=None) -> None:
+def apply_model_instance_patches(model, hf_config, args) -> None:
     """Apply matching instance-local patches after model construction."""
     for hook in _MODEL_INSTANCE_PATCH_HOOKS:
         if hook.applies_to(hf_config, args):

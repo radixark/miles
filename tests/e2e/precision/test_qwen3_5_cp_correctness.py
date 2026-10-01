@@ -10,6 +10,7 @@ consistent with the non-CP (single-rank full-sequence) baseline.
 
 import os
 import sys
+from types import SimpleNamespace
 
 import torch
 import torch.distributed as dist
@@ -46,7 +47,9 @@ def build_gdn_module(device, dtype=torch.bfloat16):
 
     from miles_plugins.models.qwen3_5 import Qwen3_5GatedDeltaNet
 
-    return Qwen3_5GatedDeltaNet(FakeConfig, layer_idx=0).to(device=device, dtype=dtype)
+    return Qwen3_5GatedDeltaNet(FakeConfig, layer_idx=0, args=SimpleNamespace(linear_attention_backend="fla")).to(
+        device=device, dtype=dtype
+    )
 
 
 def test_cp_forward_backward(rank, world_size):

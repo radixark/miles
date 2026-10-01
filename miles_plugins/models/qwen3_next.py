@@ -28,7 +28,7 @@ class Qwen3NextGatedDeltaNet(nn.Module):
     Qwen3NextGatedDeltaNet with varlen support
     """
 
-    def __init__(self, config, layer_idx: int, args=None):
+    def __init__(self, config, layer_idx: int, args):
         super().__init__()
         self.gdn_backend = args.linear_attention_backend
         self.chunk_gated_delta_rule = get_chunk_gated_delta_rule(self.gdn_backend)
