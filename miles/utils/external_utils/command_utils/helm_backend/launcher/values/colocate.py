@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from miles.utils.args.configs.scaling import ScalingConfig
 from miles.utils.external_utils.colocate_pairing.config import InferencePool, PairingConfig, PairingLayout
 from miles.utils.external_utils.command_utils.helm_backend.launcher.values.misc import (
     INFERENCE_ENGINES_SECTION,
@@ -10,7 +11,7 @@ from miles.utils.external_utils.command_utils.helm_backend.launcher.values.misc 
 from miles.utils.workers.worker_spec import BaseSpec
 
 
-def pairing_config(specs: list[BaseSpec], plan: LaunchPlan) -> PairingConfig:
+def pairing_config(specs: list[BaseSpec], plan: LaunchPlan, *, scaling: ScalingConfig) -> PairingConfig:
     inference_specs = [spec for spec in specs if SECTION_OF_CATEGORY[spec.category] == INFERENCE_ENGINES_SECTION]
     trainer_specs = [spec for spec in specs if SECTION_OF_CATEGORY[spec.category] == TRAINER_ENGINES_SECTION]
     assert len(trainer_specs) == 1, (
@@ -31,7 +32,7 @@ def pairing_config(specs: list[BaseSpec], plan: LaunchPlan) -> PairingConfig:
     )
 
     pairing_layouts = [
-        (inference.name, _compute_pairing_layout(inference=inference, trainer=trainer))
+        (inference.name, _compute_pairing_layout(inference=inference, trainer=trainer, scaling=scaling))
         for inference in colocated_inference_specs
     ]
 
@@ -45,7 +46,7 @@ def pairing_config(specs: list[BaseSpec], plan: LaunchPlan) -> PairingConfig:
     )
 
 
-def _compute_pairing_layout(*, inference: BaseSpec, trainer: BaseSpec) -> PairingLayout:
+def _compute_pairing_layout(*, inference: BaseSpec, trainer: BaseSpec, scaling: ScalingConfig) -> PairingLayout:
     _assert_colocate_supported(
         num_gpus_per_node=trainer.scheduling.num_gpus_per_node,
         gpus_per_inference_pod=inference.scheduling.gpus_per_pod(),

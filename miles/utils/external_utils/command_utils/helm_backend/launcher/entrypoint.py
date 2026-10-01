@@ -16,6 +16,7 @@ from miles.ray.specs.train import (
     compute_trainer_controller_pool_id,
     compute_trainer_ids,
 )
+from miles.utils.args.configs.scaling import ScalingConfig
 from miles.utils.arguments import parse_args
 from miles.utils.env_report.launcher_report import LAUNCHER_REPORT_ENV_VAR
 from miles.utils.external_utils.command_utils.base_backend import (
@@ -156,7 +157,9 @@ def execute_train(
                 ),
             }
         )
-        _write_helm_values(values_path, build_values(specs, rendered).as_values())
+        _write_helm_values(
+            values_path, build_values(specs, rendered, scaling=ScalingConfig.slice_from(args)).as_values()
+        )
         return computed, Helm.render_upgrade(
             release=release, namespace=namespace, chart=chart, values_files=values_files
         )

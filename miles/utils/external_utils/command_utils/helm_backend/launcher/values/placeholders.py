@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import NamedTuple
 
+from miles.utils.args.configs.scaling import ScalingConfig
 from miles.utils.workers import env_vars as worker_env_vars
 from miles.utils.workers.worker_spec import BaseSpec
 
@@ -28,7 +29,7 @@ _SUBSTITUTIONS = (
 )
 
 
-def real_or_sentinel_gpu_ids(spec: BaseSpec, *, is_sub_node: bool) -> list[int]:
+def real_or_sentinel_gpu_ids(spec: BaseSpec, *, is_sub_node: bool, scaling: ScalingConfig) -> list[int]:
     gpus_per_pod = max(1, spec.scheduling.gpus_per_pod())
     if is_sub_node:
         return [_BASE_GPU_ID_SENTINEL] * gpus_per_pod

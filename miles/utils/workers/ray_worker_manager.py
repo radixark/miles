@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any, Generic, TypeVar
 import ray
 from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 
+from miles.utils.args.configs.scaling import ScalingConfig
 from miles.utils.audit_utils.process_identity import SimpleProcessIdentity
 from miles.utils.function_registry import load_function
 from miles.utils.http_utils import wrap_ipv6
@@ -74,6 +75,7 @@ class RayWorkerManager:
     ):
         configure_logger(args, source=SimpleProcessIdentity(component="worker_manager"))
 
+        self.scaling = ScalingConfig.slice_from(args)
         self.comm_backend = comm_backend
         self.pgs = pgs
         self._pools = {spec.name: _PoolManager.initial(spec, self) for spec in specs}

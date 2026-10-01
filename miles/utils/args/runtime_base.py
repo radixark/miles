@@ -1,19 +1,13 @@
-from typing import Any, ClassVar, Self
+from typing import Any, ClassVar
 
 from pydantic import ConfigDict
 
-from miles.utils.pydantic_utils import StrictBaseModel
+from miles.utils.args.schema import BaseConfig
 
 
-class BaseLeafConfig(StrictBaseModel):
+class BaseLeafConfig(BaseConfig):
     model_config = ConfigDict(arbitrary_types_allowed=True, validate_assignment=True)
     _mutable_fields: ClassVar[frozenset[str]] = frozenset()
-
-    @classmethod
-    def slice_from(cls, source: "BaseLeafConfig") -> Self:
-        missing = cls.model_fields.keys() - type(source).model_fields.keys()
-        assert not missing, f"{cls.__name__} cannot be sliced from {type(source).__name__}: it lacks {sorted(missing)}"
-        return cls.model_validate({name: value for name, value in source if name in cls.model_fields})
 
     @classmethod
     def __pydantic_init_subclass__(cls, **kwargs: Any) -> None:

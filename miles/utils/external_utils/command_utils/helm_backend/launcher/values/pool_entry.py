@@ -3,6 +3,7 @@ from __future__ import annotations
 import shlex
 from typing import Any
 
+from miles.utils.args.configs.scaling import ScalingConfig
 from miles.utils.external_utils.colocate_pairing.config import PairingLayout
 from miles.utils.external_utils.command_utils.base_backend import TRAINER_ROLE
 from miles.utils.external_utils.command_utils.helm_backend import naming
@@ -51,6 +52,7 @@ def build_entry(
     pairing_layout: PairingLayout | None = None,
     *,
     static_connections: StaticConnConfig,
+    scaling: ScalingConfig,
 ) -> PoolEntry:
     assert spec.scheduling.num_cells > 0, (
         f"Spec '{spec.name}' asks for {spec.scheduling.num_cells} cells; a spec a run has turned off is dropped "
@@ -64,6 +66,7 @@ def build_entry(
         cell_index=RENDERED_CELL_INDEX,
         worker_in_cell_index=WORKER_INDEX_SENTINEL,
         is_sub_node=is_sub_node,
+        scaling=scaling,
     )
     pods_per_cell = spec.scheduling.pods_per_cell()
     gpus_per_pod = spec.scheduling.gpus_per_pod()
@@ -73,12 +76,15 @@ def build_entry(
         object_name=naming.component_name(plan.release, spec.name),
         pool_id=spec.name,
         command=_with_prepare_cmd(
-            _command_of_spec(spec, context, static_connections=static_connections), spec, plan=plan
+            _command_of_spec(spec, context, static_connections=static_connections, scaling=scaling),
+            spec,
+            plan=plan,
+            scaling=scaling,
         ),
         ports=[PortEntry(name=compute_port_name(port.name), port=port.static_port) for port in spec.port_infos],
-        env=_command_env_of_spec(spec, context, addresses=addresses, is_sub_node=is_sub_node) or None,
-        meta=_meta_of_spec(spec) or None,
-        annotations=build_worker_annotations(spec=spec),
+        env=_command_env_of_spec(spec, context, addresses=addresses, is_sub_node=is_sub_node, scaling=scaling) or None,
+        meta=_meta_of_spec(spec, scaling=scaling) or None,
+        annotations=build_worker_annotations(spec=spec, scaling=scaling),
         service_account_name=_service_account_name(spec, plan=plan),
         replicas=spec.scheduling.num_cells,
         size=pods_per_cell if pods_per_cell > 1 else None,
@@ -99,6 +105,7 @@ def _command_env_of_spec(
     *,
     addresses: dict[str, dict[str, NamedHostAndPorts]],
     is_sub_node: bool,
+    scaling: ScalingConfig,
 ) -> dict[str, str]:
     if isinstance(spec, BaseServeSpec):
         return {}
@@ -113,6 +120,7 @@ def _command_env_of_spec(
                 cell_index=1,
                 worker_in_cell_index=1,
                 is_sub_node=is_sub_node,
+                scaling=scaling,
             )
         )
     )
@@ -124,7 +132,7 @@ def _command_env_of_spec(
     return {name: sentinel_to_placeholder(value, spec) for name, value in first.items()}
 
 
-def _with_prepare_cmd(command: list[str], spec: BaseSpec, plan: LaunchPlan) -> list[str]:
+def _with_prepare_cmd(command: list[str], spec: BaseSpec, *, plan: LaunchPlan, scaling: ScalingConfig) -> list[str]:
     if SECTION_OF_CATEGORY[spec.category] != TRAINER_ENGINES_SECTION:
         return command
     prepare = plan.prepare_cmd.get(TRAINER_ROLE)
@@ -140,7 +148,7 @@ def _with_prepare_cmd(command: list[str], spec: BaseSpec, plan: LaunchPlan) -> l
     return ["bash", "-c", f"{prepare} && exec {shlex.join(command)}"]
 
 
-def _meta_of_spec(spec: BaseSpec) -> dict[str, str]:
+def _meta_of_spec(spec: BaseSpec, *, scaling: ScalingConfig) -> dict[str, str]:
     gpus_per_pod = spec.scheduling.gpus_per_pod()
     if not gpus_per_pod:
         return {}
@@ -155,6 +163,7 @@ def _launch_context(
     cell_index: int,
     worker_in_cell_index: int,
     is_sub_node: bool = False,
+    scaling: ScalingConfig,
 ) -> LaunchCommandContext:
     self_addrs = {
         port.name: HostAndPort(
@@ -163,7 +172,7 @@ def _launch_context(
         )
         for port in spec.port_infos
     }
-    pod_gpu_ids = real_or_sentinel_gpu_ids(spec, is_sub_node=is_sub_node)
+    pod_gpu_ids = real_or_sentinel_gpu_ids(spec, is_sub_node=is_sub_node, scaling=scaling)
     return LaunchCommandContext(
         args=args,
         cell_index=cell_index,
@@ -176,18 +185,18 @@ def _launch_context(
 
 
 def _command_of_spec(
-    spec: BaseSpec, context: LaunchCommandContext, *, static_connections: StaticConnConfig
+    spec: BaseSpec, context: LaunchCommandContext, *, static_connections: StaticConnConfig, scaling: ScalingConfig
 ) -> list[str]:
     match spec:
         case BaseCommandSpec():
             return sentinels_to_placeholders(shlex.split(spec.launch_command(context)), spec)
         case BaseServeSpec():
-            return _serve_command(spec, static_connections=static_connections)
+            return _serve_command(spec, static_connections=static_connections, scaling=scaling)
         case _:
             raise AssertionError(f"{spec.name} is neither launched by a command nor served over rpc: {spec}")
 
 
-def _serve_command(spec: BaseServeSpec, *, static_connections: StaticConnConfig) -> list[str]:
+def _serve_command(spec: BaseServeSpec, *, static_connections: StaticConnConfig, scaling: ScalingConfig) -> list[str]:
     interpreter_prefix = python_argv_prefix()
     workers_per_pod = spec.scheduling.workers_per_pod()
     worker_config = ServeWorkerConfig(
