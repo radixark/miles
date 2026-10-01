@@ -29,7 +29,7 @@ def _inject_kwarg(fn, key, value):
 
 def _patch_gdn_forward(gdn_cls):
     orig = gdn_cls.forward
-    if getattr(orig, "_gdn_packing", False):
+    if getattr(orig, "_gdn_packing", False):  # config-access-exempt: probe Qwen patch markers and attention state
         return
 
     # rebind the kernel instance-attrs for the duration of the forward to inject per-doc boundaries
@@ -41,14 +41,16 @@ def _patch_gdn_forward(gdn_cls):
 
     @functools.wraps(orig)
     def forward(self, *args, **kwargs):
-        cu = getattr(self, "_gdn_cu_seqlens", None)
-        si = getattr(self, "_gdn_seq_idx", None)
+        cu = getattr(
+            self, "_gdn_cu_seqlens", None
+        )  # config-access-exempt: probe Qwen patch markers and attention state
+        si = getattr(self, "_gdn_seq_idx", None)  # config-access-exempt: probe Qwen patch markers and attention state
         if cu is None and si is None:
             return orig(self, *args, **kwargs)
         saved = {}
         for attr, key in _INJECT:
             value = cu if key == "cu_seqlens" else si
-            fn = getattr(self, attr, None)
+            fn = getattr(self, attr, None)  # config-access-exempt: attribute selected at runtime from attr
             if fn is not None and value is not None:
                 saved[attr] = fn
                 setattr(self, attr, _inject_kwarg(fn, key, value))
@@ -64,7 +66,7 @@ def _patch_gdn_forward(gdn_cls):
 
 def _patch_decoder_forward(dl_cls, gdn_cls):
     orig = dl_cls.forward
-    if getattr(orig, "_gdn_packing", False):
+    if getattr(orig, "_gdn_packing", False):  # config-access-exempt: probe Qwen patch markers and attention state
         return
 
     @functools.wraps(orig)
@@ -83,7 +85,7 @@ def _patch_decoder_forward(dl_cls, gdn_cls):
 def _find_class(mod, suffix):
     for name in dir(mod):
         if name.endswith(suffix):
-            return getattr(mod, name)
+            return getattr(mod, name)  # config-access-exempt: attribute selected at runtime from name
     return None
 
 

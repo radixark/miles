@@ -11,7 +11,9 @@ from ..precision import PrecisionPolicyHook, register_precision_policy
 
 
 def _is_qwen3(hf_config) -> bool:
-    return str(getattr(hf_config, "model_type", "") or "") == "qwen3"
+    return (
+        str(getattr(hf_config, "model_type", "") or "") == "qwen3"
+    )  # config-access-exempt: model-family schemas differ in optional model_type metadata
 
 
 def _uses_formal_contract(hf_config, args) -> bool:

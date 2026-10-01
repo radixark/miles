@@ -118,7 +118,9 @@ def check_mtp_only_grad(model: Sequence[DDP], step_id: int) -> None:
     for model_chunk in model:
         for name, param in model_chunk.named_parameters():
             # Get the main_grad from the distributed optimizer if available
-            grad = getattr(param, "main_grad", None)
+            grad = getattr(
+                param, "main_grad", None
+            )  # config-access-exempt: main_grad is optional backend-attached tensor metadata
             if grad is None:
                 grad = param.grad
             if grad is None:

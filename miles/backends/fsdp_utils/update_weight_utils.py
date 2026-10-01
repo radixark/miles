@@ -91,8 +91,12 @@ class UpdateWeight(abc.ABC):
 
         bucket = []
         bucket_size = 0
-        model_type = getattr(getattr(self.model, "config", None), "model_type", "")
-        sync_dtypes = getattr(self.model, "_fsdp_sync_dtypes", None)
+        model_type = getattr(
+            getattr(self.model, "config", None), "model_type", ""
+        )  # config-access-exempt: model wrappers and transports expose optional weight-update capabilities
+        sync_dtypes = getattr(
+            self.model, "_fsdp_sync_dtypes", None
+        )  # config-access-exempt: model wrappers and transports expose optional weight-update capabilities
         for raw_name, raw_param in self.model.state_dict().items():
             for name, param in _iter_sync_named_params(raw_name, raw_param, model_type, self.model, sync_dtypes):
                 param_size = param.numel() * param.element_size()
@@ -127,7 +131,9 @@ class UpdateWeight(abc.ABC):
     def wait_and_update_bucket_weights(self, bucket):
         resolved = []
         for name, param, target_dtype in bucket:
-            if hasattr(param, "wait"):
+            if hasattr(
+                param, "wait"
+            ):  # config-access-exempt: model wrappers and transports expose optional weight-update capabilities
                 param = param.wait()
             if target_dtype is not None and param.dtype != target_dtype:
                 param = param.to(target_dtype)
@@ -218,8 +224,12 @@ class UpdateWeightFromTensor(UpdateWeight):
                     success = result.get("success", True)
                     error_msg = result.get("error_message") or result.get("message", "unknown error")
                 else:
-                    success = getattr(result, "success", True)
-                    error_msg = getattr(result, "error_message", "unknown error")
+                    success = getattr(
+                        result, "success", True
+                    )  # config-access-exempt: model wrappers and transports expose optional weight-update capabilities
+                    error_msg = getattr(
+                        result, "error_message", "unknown error"
+                    )  # config-access-exempt: model wrappers and transports expose optional weight-update capabilities
                 if not success:
                     raise RuntimeError(
                         f"Weight sync failed on rollout engine: {error_msg}. " f"Check SGLang version compatibility."

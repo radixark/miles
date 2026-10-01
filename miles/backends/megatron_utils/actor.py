@@ -195,7 +195,9 @@ class MegatronTrainRayActor(TrainRayActor):
 
         if role != "critic":
             for m in all_replay_managers:
-                m.enabled = getattr(self.args, f"use_{m.name}_replay", False)
+                m.enabled = getattr(
+                    self.args, f"use_{m.name}_replay", False
+                )  # config-access-exempt: attribute selected at runtime from f'use_{m.name}_replay'
                 m.enable_check_replay_result = m.enabled and self.args.ci_test
 
         checkpointing_context = None
@@ -282,7 +284,9 @@ class MegatronTrainRayActor(TrainRayActor):
     def _init_weight_updater_and_publisher(self, *, update_weights: bool, publish_snapshots: bool) -> None:
         args = self.args
         model_name = type(self.hf_config).__name__.lower() if args.model_name is None else args.model_name
-        quantization_config = getattr(self.hf_config, "quantization_config", None)
+        quantization_config = getattr(
+            self.hf_config, "quantization_config", None
+        )  # config-access-exempt: model-family schemas differ in optional quantization_config metadata
         self.weight_updater = None
         self.snapshot_publisher = None
 
@@ -667,7 +671,9 @@ class MegatronTrainRayActor(TrainRayActor):
         return TrainStepOutput(outcome=train_step_outcome, values=values)
 
     def _use_rollout_replay(self, m) -> bool:
-        return getattr(self.args, f"use_rollout_{m.name}_replay", False)
+        return getattr(
+            self.args, f"use_rollout_{m.name}_replay", False
+        )  # config-access-exempt: attribute selected at runtime from f'use_rollout_{m.name}_replay'
 
     @with_logs
     def _train_actor(
@@ -828,9 +834,7 @@ class MegatronTrainRayActor(TrainRayActor):
 
     def _log_first_train_config(self) -> None:
         if not self._config_snapshot_train_recorded:
-            ConfigSnapshotDumper.dump(
-                stage="train_first_step", config={"args": self.args, "role": self.role}
-            )
+            ConfigSnapshotDumper.dump(stage="train_first_step", config={"args": self.args, "role": self.role})
             self._config_snapshot_train_recorded = True
 
     def _publish_model_companion_info(self, *, rollout_id: int, attempt: int, result: TrainStepOutput) -> None:

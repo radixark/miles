@@ -119,7 +119,7 @@ async def wait_cancelling_pending_on_first_completion(
 
 
 def _exception_add_note_or_log(e: BaseException, msg: str) -> None:
-    if hasattr(e, "add_note"):
+    if hasattr(e, "add_note"):  # config-access-exempt: exception notes are unavailable on older Python versions
         e.add_note(msg)
     else:
         logger.error(msg)
@@ -204,7 +204,9 @@ class Disposer:
         for item in items:
             if item is None:
                 continue
-            teardown = item.dispose if hasattr(item, "dispose") else item
+            teardown = (
+                item.dispose if hasattr(item, "dispose") else item
+            )  # config-access-exempt: cleanup accepts either disposable objects or callbacks
             assert callable(teardown), teardown
             if inspect.iscoroutinefunction(teardown):
                 self._stack.push_async_callback(teardown)

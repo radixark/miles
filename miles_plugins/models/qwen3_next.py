@@ -249,8 +249,10 @@ def get_qwen3_next_spec(args, config, vp_stage):
     hf_config = AutoConfig.from_pretrained(args.hf_checkpoint, trust_remote_code=True)
 
     # Compute layer_types if the config class doesn't expose it
-    if not hasattr(hf_config, "layer_types"):
-        interval = getattr(hf_config, "full_attention_interval", 4)
+    if not hasattr(hf_config, "layer_types"):  # config-access-exempt: older HF checkpoints omit explicit layer_types
+        interval = getattr(
+            hf_config, "full_attention_interval", 4
+        )  # config-access-exempt: older HF checkpoints encode full-attention cadence with this optional field
         n = hf_config.num_hidden_layers
         hf_config.layer_types = ["full_attention" if (i + 1) % interval == 0 else "linear_attention" for i in range(n)]
 

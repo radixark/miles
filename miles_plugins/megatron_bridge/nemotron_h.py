@@ -82,35 +82,49 @@ def _build_bridge_subclass():
             provider = super().provider_bridge(hf_pretrained)
             hf = hf_pretrained.config
 
-            n_exp = int(getattr(hf, "num_experts", None) or getattr(hf, "n_routed_experts", None) or 0)
+            n_exp = int(
+                getattr(hf, "num_experts", None) or getattr(hf, "n_routed_experts", None) or 0
+            )  # config-access-exempt: HF variants use different names for expert count
             if n_exp == 0:
                 return provider
 
             provider.num_moe_experts = n_exp
-            provider.moe_router_topk = int(getattr(hf, "num_experts_per_tok", 1))
+            provider.moe_router_topk = int(
+                getattr(hf, "num_experts_per_tok", 1)
+            )  # config-access-exempt: HF checkpoints may omit routed expert count per token
             provider.moe_router_score_function = "sigmoid"
             provider.moe_router_enable_expert_bias = True
             provider.moe_router_dtype = "fp32"
             provider.moe_grouped_gemm = True
-            provider.moe_ffn_hidden_size = int(getattr(hf, "moe_intermediate_size", None) or provider.ffn_hidden_size)
+            provider.moe_ffn_hidden_size = int(
+                getattr(hf, "moe_intermediate_size", None) or provider.ffn_hidden_size
+            )  # config-access-exempt: HF checkpoints may omit expert intermediate size
 
             # hybrid_override_pattern ('MEMEM*...') marks which layers are MoE.
             # Mirror to moe_layer_freq so miles' replay_utils registers the
             # rollout routing replay once per real MoE layer, not per transformer layer.
-            pattern = getattr(provider, "hybrid_override_pattern", None) or getattr(
+            pattern = getattr(
+                provider, "hybrid_override_pattern", None
+            ) or getattr(  # config-access-exempt: hybrid patterns may be stored on either provider or HF config
                 hf, "hybrid_override_pattern", None
             )
             if pattern:
                 provider.moe_layer_freq = [1 if ch == "E" else 0 for ch in pattern][: int(provider.num_layers)]
 
-            shared_size = getattr(hf, "moe_shared_expert_intermediate_size", None)
+            shared_size = getattr(
+                hf, "moe_shared_expert_intermediate_size", None
+            )  # config-access-exempt: HF variants optionally declare shared expert width
             if shared_size is not None:
                 provider.moe_shared_expert_intermediate_size = int(shared_size)
-            elif getattr(hf, "n_shared_experts", 0):
+            elif getattr(
+                hf, "n_shared_experts", 0
+            ):  # config-access-exempt: HF variants alternatively declare shared expert count
                 provider.moe_shared_expert_intermediate_size = provider.moe_ffn_hidden_size * int(hf.n_shared_experts)
 
             for hf_name, prov_name, cast in _NEMOTRONH_MOE_ROUTING_FIELDS:
-                val = getattr(hf, hf_name, None)
+                val = getattr(
+                    hf, hf_name, None
+                )  # config-access-exempt: routing field names come from the bridge mapping table
                 if val is not None:
                     setattr(provider, prov_name, cast(val))
 
@@ -119,7 +133,9 @@ def _build_bridge_subclass():
             # and routed experts get the wrong input dim (hidden_size vs moe_latent_size).
             # Megatron's moe_layer.preprocess() asserts the two are mutually exclusive,
             # so disable shared-expert overlap whenever a latent bottleneck is in use.
-            latent_size = getattr(hf, "moe_latent_size", None)
+            latent_size = getattr(
+                hf, "moe_latent_size", None
+            )  # config-access-exempt: only latent-MoE checkpoints declare a latent size
             if latent_size is not None:
                 provider.moe_latent_size = int(latent_size)
                 provider.moe_shared_expert_overlap = False
@@ -140,7 +156,9 @@ def _build_bridge_subclass():
             # Append MoE mappings unconditionally. Dense variants do not carry
             # the extra megatron params so these mappings are simply unreferenced.
             registry = super().mapping_registry()
-            base = list(registry.mappings if hasattr(registry, "mappings") else registry._mappings)
+            base = list(
+                registry.mappings if hasattr(registry, "mappings") else registry._mappings
+            )  # config-access-exempt: bridge versions expose registry mappings under different names
             extras = [AutoMapping(megatron_param=m, hf_param=h) for m, h in _NEMOTRONH_MOE_MAPPINGS.items()]
             known_names = {mapping.megatron_param for mapping in base}
             mamba = [
@@ -167,7 +185,9 @@ def _install_nemotronh_hybrid_layer_shims() -> None:
     """
     from megatron.core.transformer.transformer_layer import TransformerLayer
 
-    if getattr(TransformerLayer, "_miles_nemotron_hybrid_shim_installed", False):
+    if getattr(
+        TransformerLayer, "_miles_nemotron_hybrid_shim_installed", False
+    ):  # config-access-exempt: the shim marker exists only after patch installation
         return
 
     _orig_fwd_attn = TransformerLayer._forward_attention
@@ -198,7 +218,9 @@ def _install_mamba_model_loss_mask_shim() -> None:
     """
     from megatron.core.models.mamba import MambaModel
 
-    if getattr(MambaModel, "_miles_loss_mask_shim_installed", False):
+    if getattr(
+        MambaModel, "_miles_loss_mask_shim_installed", False
+    ):  # config-access-exempt: the shim marker exists only after patch installation
         return
 
     _orig_forward = MambaModel.forward

@@ -82,12 +82,14 @@ def calculate_fwd_flops(
         num_dense_layers = args.num_layers
         num_moe_layers = 0
     else:
-        shared_expert_ffn = getattr(args, "moe_shared_expert_intermediate_size", None)
+        shared_expert_ffn = getattr(
+            args, "moe_shared_expert_intermediate_size", None
+        )  # config-access-exempt: FLOPs inputs differ between dense and shared-expert model schemas
         if shared_expert_ffn is None:
             shared_expert_ffn = 0
 
         moe_ffn = args.moe_ffn_hidden_size * args.moe_router_topk + shared_expert_ffn
-        if hasattr(args, "moe_layer_freq"):
+        if hasattr(args, "moe_layer_freq"):  # config-access-exempt: FLOPs inputs may omit mixed dense/MoE layout
             if isinstance(args.moe_layer_freq, list):
                 num_dense_layers = sum(1 for freq in args.moe_layer_freq if freq == 0)
                 num_moe_layers = sum(1 for freq in args.moe_layer_freq if freq > 0)
@@ -136,7 +138,7 @@ def fwd_tflops_per_gpu(seqlens, args, world_size):
 
 def _first(config, *names, default=None):
     for name in names:
-        value = getattr(config, name, None)
+        value = getattr(config, name, None)  # config-access-exempt: attribute selected at runtime from name
         if value is not None:
             return value
     return default
@@ -145,17 +147,27 @@ def _first(config, *names, default=None):
 def _moe_layer_pattern(config, num_layers, num_experts):
     if num_experts is None:
         return None
-    first_dense = getattr(config, "first_k_dense_replace", None)
+    first_dense = getattr(
+        config, "first_k_dense_replace", None
+    )  # config-access-exempt: model-family schemas differ in optional first_k_dense_replace metadata
     if first_dense is not None:
         return [0 if i < first_dense else 1 for i in range(num_layers)]
-    mlp_only = set(getattr(config, "mlp_only_layers", None) or ())
-    step = getattr(config, "decoder_sparse_step", 1) or 1
+    mlp_only = set(
+        getattr(config, "mlp_only_layers", None) or ()
+    )  # config-access-exempt: model-family schemas differ in optional mlp_only_layers metadata
+    step = (
+        getattr(config, "decoder_sparse_step", 1) or 1
+    )  # config-access-exempt: model-family schemas differ in optional decoder_sparse_step metadata
     return [0 if i in mlp_only or (i + 1) % step != 0 else 1 for i in range(num_layers)]
 
 
 def flops_args_from_hf_config(config):
-    getter = getattr(config, "get_text_config", None)
-    config = (getter() if callable(getter) else getattr(config, "text_config", None)) or config
+    getter = getattr(
+        config, "get_text_config", None
+    )  # config-access-exempt: model-family schemas differ in optional get_text_config metadata
+    config = (
+        getter() if callable(getter) else getattr(config, "text_config", None)
+    ) or config  # config-access-exempt: model-family schemas differ in optional text_config metadata
 
     num_attention_heads = config.num_attention_heads
     hidden_size = config.hidden_size
@@ -163,14 +175,22 @@ def flops_args_from_hf_config(config):
     assert num_layers is not None, f"no layer count on {type(config).__name__}; cannot size the FLOPs model"
     num_experts = _first(config, "n_routed_experts", "num_experts", "num_local_experts")
 
-    dense_ffn = getattr(config, "intermediate_size", None)
+    dense_ffn = getattr(
+        config, "intermediate_size", None
+    )  # config-access-exempt: model-family schemas differ in optional intermediate_size metadata
 
-    moe_ffn = getattr(config, "moe_intermediate_size", None)
+    moe_ffn = getattr(
+        config, "moe_intermediate_size", None
+    )  # config-access-exempt: model-family schemas differ in optional moe_intermediate_size metadata
     if num_experts is not None and moe_ffn is None:
         moe_ffn = dense_ffn
 
-    shared_ffn = getattr(config, "shared_expert_intermediate_size", None)
-    if shared_ffn is None and getattr(config, "n_shared_experts", None):
+    shared_ffn = getattr(
+        config, "shared_expert_intermediate_size", None
+    )  # config-access-exempt: model-family schemas differ in optional shared_expert_intermediate_size metadata
+    if shared_ffn is None and getattr(
+        config, "n_shared_experts", None
+    ):  # config-access-exempt: model-family schemas differ in optional n_shared_experts metadata
         shared_ffn = config.n_shared_experts * moe_ffn
 
     moe_layer_freq = _moe_layer_pattern(config, num_layers, num_experts)
@@ -195,9 +215,16 @@ def flops_args_from_hf_config(config):
         moe_router_topk=_first(config, "num_experts_per_tok", "moe_topk", default=1),
         moe_shared_expert_intermediate_size=shared_ffn,
         moe_layer_freq=moe_layer_freq,
-        q_lora_rank=getattr(config, "q_lora_rank", None),
-        kv_lora_rank=getattr(config, "kv_lora_rank", None),
-        qk_head_dim=getattr(config, "qk_nope_head_dim", None) or 0,
-        qk_pos_emb_head_dim=getattr(config, "qk_rope_head_dim", None) or 0,
-        v_head_dim=getattr(config, "v_head_dim", None) or 0,
+        q_lora_rank=getattr(
+            config, "q_lora_rank", None
+        ),  # config-access-exempt: model-family schemas differ in optional q_lora_rank metadata
+        kv_lora_rank=getattr(
+            config, "kv_lora_rank", None
+        ),  # config-access-exempt: model-family schemas differ in optional kv_lora_rank metadata
+        qk_head_dim=getattr(config, "qk_nope_head_dim", None)
+        or 0,  # config-access-exempt: model-family schemas differ in optional qk_nope_head_dim metadata
+        qk_pos_emb_head_dim=getattr(config, "qk_rope_head_dim", None)
+        or 0,  # config-access-exempt: model-family schemas differ in optional qk_rope_head_dim metadata
+        v_head_dim=getattr(config, "v_head_dim", None)
+        or 0,  # config-access-exempt: model-family schemas differ in optional v_head_dim metadata
     )

@@ -27,9 +27,13 @@ from miles_plugins.models.qwen3_8_next.ops.attention import Qwen38NextAttention
 
 def _layer_types(text_config):
     """Per-layer ``linear_attention`` / ``full_attention`` labels, with Qwen3.5's fallback."""
-    if hasattr(text_config, "layer_types") and text_config.layer_types:
+    if (
+        hasattr(text_config, "layer_types") and text_config.layer_types
+    ):  # config-access-exempt: older HF checkpoints omit explicit layer_types
         return list(text_config.layer_types)
-    interval = getattr(text_config, "full_attention_interval", 4)
+    interval = getattr(
+        text_config, "full_attention_interval", 4
+    )  # config-access-exempt: model-family schemas differ in optional full_attention_interval metadata
     n = text_config.num_hidden_layers
     return ["full_attention" if (i + 1) % interval == 0 else "linear_attention" for i in range(n)]
 
@@ -47,7 +51,9 @@ def _strip_block_layernorms(layer_spec):
     """Replace the fused-layernorm qkv with a plain TE linear, and drop pre_mlp_layernorm."""
     submodules = layer_spec.submodules
     attn = submodules.self_attention
-    if getattr(attn, "submodules", None) is not None and hasattr(attn.submodules, "linear_qkv"):
+    if getattr(attn, "submodules", None) is not None and hasattr(
+        attn.submodules, "linear_qkv"
+    ):  # config-access-exempt: attention specs differ in submodule layout
         attn.submodules.linear_qkv = TEColumnParallelLinear
     submodules.input_layernorm = IdentityOp
     submodules.pre_mlp_layernorm = IdentityOp
@@ -71,23 +77,53 @@ def _apply_qwen3_8_next_config(config, text_config) -> None:
     Megatron has no CLI flags for them; mirrors ``Qwen38NextBridge._build_config``.
     """
     config.enable_hyper_connections = True
-    config.num_residual_streams = getattr(text_config, "hc_count", 4)
-    config.qwen3_8_next_hc_lowrank = getattr(text_config, "hc_lowrank", 320)
+    config.num_residual_streams = getattr(
+        text_config, "hc_count", 4
+    )  # config-access-exempt: model-family schemas differ in optional hc_count metadata
+    config.qwen3_8_next_hc_lowrank = getattr(
+        text_config, "hc_lowrank", 320
+    )  # config-access-exempt: model-family schemas differ in optional hc_lowrank metadata
 
-    config.qwen3_8_next_ple_layer_ids = sorted({int(i) - 1 for i in getattr(text_config, "ple_layer_ids", None) or []})
-    config.qwen3_8_next_ple_embed_dim = getattr(text_config, "ple_embed_dim", 2560)
-    config.qwen3_8_next_ngram_size = getattr(text_config, "ngram_size", 3)
-    config.qwen3_8_next_heads_per_ngram = getattr(text_config, "heads_per_ngram", 8)
-    config.qwen3_8_next_ngram_vocab_size_base = getattr(text_config, "ngram_vocab_size_base", 20000000)
-    config.qwen3_8_next_split_ngram_parts = getattr(text_config, "split_ngram_parts", 128)
-    config.qwen3_8_next_ple_conv_kernel_size = getattr(text_config, "ple_conv_kernel_size", 4)
-    config.qwen3_8_next_eos_token_id = getattr(text_config, "eos_token_id", 0)
+    config.qwen3_8_next_ple_layer_ids = sorted(
+        {int(i) - 1 for i in getattr(text_config, "ple_layer_ids", None) or []}
+    )  # config-access-exempt: model-family schemas differ in optional ple_layer_ids metadata
+    config.qwen3_8_next_ple_embed_dim = getattr(
+        text_config, "ple_embed_dim", 2560
+    )  # config-access-exempt: model-family schemas differ in optional ple_embed_dim metadata
+    config.qwen3_8_next_ngram_size = getattr(
+        text_config, "ngram_size", 3
+    )  # config-access-exempt: model-family schemas differ in optional ngram_size metadata
+    config.qwen3_8_next_heads_per_ngram = getattr(
+        text_config, "heads_per_ngram", 8
+    )  # config-access-exempt: model-family schemas differ in optional heads_per_ngram metadata
+    config.qwen3_8_next_ngram_vocab_size_base = getattr(
+        text_config, "ngram_vocab_size_base", 20000000
+    )  # config-access-exempt: model-family schemas differ in optional ngram_vocab_size_base metadata
+    config.qwen3_8_next_split_ngram_parts = getattr(
+        text_config, "split_ngram_parts", 128
+    )  # config-access-exempt: model-family schemas differ in optional split_ngram_parts metadata
+    config.qwen3_8_next_ple_conv_kernel_size = getattr(
+        text_config, "ple_conv_kernel_size", 4
+    )  # config-access-exempt: model-family schemas differ in optional ple_conv_kernel_size metadata
+    config.qwen3_8_next_eos_token_id = getattr(
+        text_config, "eos_token_id", 0
+    )  # config-access-exempt: model-family schemas differ in optional eos_token_id metadata
 
-    config.qwen3_8_next_indexer_budget = getattr(text_config, "indexer_budget", 2048)
-    config.qwen3_8_next_indexer_compress_ratio = getattr(text_config, "indexer_compress_ratio", 4)
-    config.qwen3_8_next_indexer_n_heads = getattr(text_config, "indexer_n_heads", 4)
-    config.qwen3_8_next_indexer_head_dim = getattr(text_config, "indexer_head_dim", 128)
-    config.qwen3_8_next_indexer_kv_heads = getattr(text_config, "indexer_kv_heads", 1)
+    config.qwen3_8_next_indexer_budget = getattr(
+        text_config, "indexer_budget", 2048
+    )  # config-access-exempt: model-family schemas differ in optional indexer_budget metadata
+    config.qwen3_8_next_indexer_compress_ratio = getattr(
+        text_config, "indexer_compress_ratio", 4
+    )  # config-access-exempt: model-family schemas differ in optional indexer_compress_ratio metadata
+    config.qwen3_8_next_indexer_n_heads = getattr(
+        text_config, "indexer_n_heads", 4
+    )  # config-access-exempt: model-family schemas differ in optional indexer_n_heads metadata
+    config.qwen3_8_next_indexer_head_dim = getattr(
+        text_config, "indexer_head_dim", 128
+    )  # config-access-exempt: model-family schemas differ in optional indexer_head_dim metadata
+    config.qwen3_8_next_indexer_kv_heads = getattr(
+        text_config, "indexer_kv_heads", 1
+    )  # config-access-exempt: model-family schemas differ in optional indexer_kv_heads metadata
 
 
 def get_qwen3_8_next_spec(args, config, vp_stage=None):
@@ -99,7 +135,9 @@ def get_qwen3_8_next_spec(args, config, vp_stage=None):
     _apply_qwen3_8_next_config(config, text_config)
     config.qwen3_8_next_hf_checkpoint = args.hf_checkpoint
 
-    if getattr(config, "virtual_pipeline_model_parallel_size", None):
+    if getattr(
+        config, "virtual_pipeline_model_parallel_size", None
+    ):  # config-access-exempt: Megatron configs set virtual pipeline size only when enabled
         raise NotImplementedError(
             "Qwen3.8-Next + interleaved pipeline parallelism is unverified: "
             "megatron/core/pipeline_parallel/schedules.py widens every intermediate "

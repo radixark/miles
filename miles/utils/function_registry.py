@@ -47,7 +47,7 @@ def load_function(path, *, sync_required=False):
     if fn is None:
         module_path, _, attr = path.rpartition(".")
         module = importlib.import_module(module_path)
-        fn = getattr(module, attr)
+        fn = getattr(module, attr)  # config-access-exempt: attribute selected at runtime from attr
     if sync_required:
         if not callable(fn):
             raise ValueError(f"load_function({path!r}) did not resolve to a callable")

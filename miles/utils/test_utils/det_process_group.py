@@ -312,7 +312,9 @@ def _gather_into(group: dist.ProcessGroup, output: torch.Tensor, input: torch.Te
 
 def _reduce_op_of(opts: object) -> object:
     """Extract the ReduceOp from an options object (or pass a bare ReduceOp through)."""
-    return opts.reduceOp if hasattr(opts, "reduceOp") else opts
+    return (
+        opts.reduceOp if hasattr(opts, "reduceOp") else opts
+    )  # config-access-exempt: accept either ReduceOp or collective options wrappers
 
 
 class _CompletedWork(Work):

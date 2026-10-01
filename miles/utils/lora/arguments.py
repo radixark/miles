@@ -29,11 +29,13 @@ def validate_lora_args(args):
     args.hf_lora_targets, args.lora_adapter_targets = _resolve_lora_targets(args, hf_config)
 
     # Training and serving must agree on shared-outer grouped-expert LoRA (expert_dim=1).
-    if args.experts_shared_outer_loras and hasattr(args, "sglang_experts_shared_outer_loras"):
+    if args.experts_shared_outer_loras and hasattr(
+        args, "sglang_experts_shared_outer_loras"
+    ):  # config-access-exempt: older SGLang parsers omit the expert-LoRA switch
         args.sglang_experts_shared_outer_loras = True
     assert args.experts_shared_outer_loras == bool(
         getattr(args, "sglang_experts_shared_outer_loras", args.experts_shared_outer_loras)
-    ), "experts_shared_outer_loras and sglang_experts_shared_outer_loras must agree"
+    ), "experts_shared_outer_loras and sglang_experts_shared_outer_loras must agree"  # config-access-exempt: older SGLang parsers omit the expert-LoRA switch
     if targets_expert_leaves(args.hf_lora_targets):
         logger.warning(
             "MoE-expert LoRA layout: %s (--experts-shared-outer-loras).",

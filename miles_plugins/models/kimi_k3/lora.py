@@ -190,7 +190,9 @@ def _apply_attention_lora(attention, args, layer_idx: int, scale: float, dropout
             ("q_a_proj", attention.q_lora_rank),
             ("kv_a_proj_with_mqa", attention.kv_lora_rank + attention.qk_extra_head_dim),
         ):
-            module = getattr(attention, module_name)
+            module = getattr(
+                attention, module_name
+            )  # config-access-exempt: attribute selected at runtime from module_name
             prefix = "q_a" if module_name == "q_a_proj" else "kv_a"
             _register_param(
                 adapter,
@@ -207,8 +209,12 @@ def _apply_attention_lora(attention, args, layer_idx: int, scale: float, dropout
                 init="zero",
             )
             original_forward = module.forward
-            lora_a = getattr(adapter, f"{prefix}_lora_A")
-            lora_b = getattr(adapter, f"{prefix}_lora_B")
+            lora_a = getattr(
+                adapter, f"{prefix}_lora_A"
+            )  # config-access-exempt: attribute selected at runtime from prefix
+            lora_b = getattr(
+                adapter, f"{prefix}_lora_B"
+            )  # config-access-exempt: attribute selected at runtime from prefix
 
             def duplicated_forward(
                 inputs,
@@ -555,7 +561,9 @@ class _GatherBatch:
 
 def _unwrap_model_chunks(model_chunks):
     for chunk in model_chunks:
-        while hasattr(chunk, "module"):
+        while hasattr(
+            chunk, "module"
+        ):  # config-access-exempt: model wrappers nest the underlying module to varying depths
             chunk = chunk.module
         yield chunk
 
@@ -572,7 +580,7 @@ def _validate_adapter_layout(models, adapters: list[KimiK3LoRAAdapter]) -> None:
                     f"language_model.model.layers.{layer_idx}.self_attn.",
                 )
             )
-            if hasattr(layer.mlp, "experts"):
+            if hasattr(layer.mlp, "experts"):  # config-access-exempt: only MoE layers carry experts
                 expected.extend(
                     (
                         (

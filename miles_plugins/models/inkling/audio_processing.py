@@ -25,7 +25,7 @@ class InklingAudioEncoderParams:
 def _load_audio_bytes(audio) -> bytes:
     if isinstance(audio, (bytes, bytearray)):
         return bytes(audio)
-    if hasattr(audio, "read"):
+    if hasattr(audio, "read"):  # config-access-exempt: audio inputs may be file-like objects or raw bytes
         return audio.read()
     if isinstance(audio, str):
         path = audio[len("file://") :] if audio.startswith("file://") else audio
@@ -165,7 +165,9 @@ class InklingAudioDmelExtractor:
         merged = InklingAudioEncoderParams()
         if params:
             for k, v in params.items():
-                if hasattr(merged, k):
+                if hasattr(
+                    merged, k
+                ):  # config-access-exempt: user-provided audio overrides are matched against parameter names
                     setattr(merged, k, v)
         self.params = merged
 

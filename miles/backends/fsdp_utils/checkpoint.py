@@ -125,7 +125,9 @@ def load(actor: Any) -> dict[str, Any] | None:
         return None
 
     # Load optimizer state (optional)
-    load_optimizer = not actor.args.no_load_optim and hasattr(actor, "optimizer")
+    load_optimizer = not actor.args.no_load_optim and hasattr(
+        actor, "optimizer"
+    )  # config-access-exempt: optimizer is absent when the actor has no training state
     if load_optimizer and optimizer_dir.exists():
         optimizer_state = OptimizerState(actor.model, actor.optimizer)
         optim_state_dict = {"optim_state": optimizer_state}
@@ -138,7 +140,9 @@ def load(actor: Any) -> dict[str, Any] | None:
         logger.info(f"[FSDP] Optimizer checkpoint not found at {optimizer_dir}, skipping optimizer load.")
 
     # Load LR scheduler state (optional)
-    load_lr_scheduler = hasattr(actor, "lr_scheduler") and lr_scheduler_dir.exists()
+    load_lr_scheduler = (
+        hasattr(actor, "lr_scheduler") and lr_scheduler_dir.exists()
+    )  # config-access-exempt: lr_scheduler is absent when the actor has no training state
     if load_lr_scheduler:
         lr_scheduler_state = LRSchedulerState(actor.lr_scheduler)
         lr_scheduler_state_dict = {"lr_scheduler_state": lr_scheduler_state}
@@ -147,7 +151,9 @@ def load(actor: Any) -> dict[str, Any] | None:
             logger.info(f"[FSDP] Loaded LR scheduler from {lr_scheduler_dir}")
         except Exception as e:
             logger.warning(f"[FSDP] Failed to load LR scheduler from {lr_scheduler_dir}: {e}")
-    elif hasattr(actor, "lr_scheduler"):
+    elif hasattr(
+        actor, "lr_scheduler"
+    ):  # config-access-exempt: lr_scheduler is absent when the actor has no training state
         logger.info(f"[FSDP] LR scheduler checkpoint not found at {lr_scheduler_dir}, skipping LR scheduler load.")
 
     rng_state = None
@@ -221,13 +227,17 @@ def save(actor: Any, iteration: int) -> None:
 
     # Save optimizer state (skip if --no-save-optim is set)
     save_optimizer_state = not actor.args.no_save_optim
-    if save_optimizer_state and hasattr(actor, "optimizer") and actor.optimizer is not None:
+    if (
+        save_optimizer_state and hasattr(actor, "optimizer") and actor.optimizer is not None
+    ):  # config-access-exempt: optimizer is absent when the actor has no training state
         optimizer_state = OptimizerState(actor.model, actor.optimizer)
         optim_state_dict = {"optim_state": optimizer_state}
         dcp.save(optim_state_dict, checkpoint_id=str(optimizer_dir))
 
     # Save LR scheduler state (skip if --no-save-optim is set)
-    if save_optimizer_state and hasattr(actor, "lr_scheduler") and actor.lr_scheduler is not None:
+    if (
+        save_optimizer_state and hasattr(actor, "lr_scheduler") and actor.lr_scheduler is not None
+    ):  # config-access-exempt: lr_scheduler is absent when the actor has no training state
         lr_scheduler_state = LRSchedulerState(actor.lr_scheduler)
         lr_scheduler_state_dict = {"lr_scheduler_state": lr_scheduler_state}
         dcp.save(lr_scheduler_state_dict, checkpoint_id=str(lr_scheduler_dir))

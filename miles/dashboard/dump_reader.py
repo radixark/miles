@@ -52,7 +52,9 @@ STEP_AGGREGATE_METRICS = (
 def _weight_version_summary(sample: Sample) -> tuple[list[str], int | None]:
     if sample.weight_versions:
         return [span.version for span in sample.all_weight_version_spans], len(sample.weight_versions)
-    legacy = list(getattr(sample, LEGACY_WEIGHT_VERSIONS_KEY, None) or [])
+    legacy = list(
+        getattr(sample, LEGACY_WEIGHT_VERSIONS_KEY, None) or []
+    )  # config-access-exempt: attribute selected at runtime from LEGACY_WEIGHT_VERSIONS_KEY
     return legacy, len(legacy) or None
 
 
@@ -332,7 +334,7 @@ def _resolve_per_token_fields(row: TrainRow, handles: list[dict], locations: lis
 
     # a field that is not response-aligned would be scored against a full-length mask
     for field in _CP_SHARDED_FIELDS:
-        values = getattr(row, field)
+        values = getattr(row, field)  # config-access-exempt: attribute selected at runtime from field
         if values is not None and len(values) != row.response_length:
             setattr(row, field, None)
             row.alignment_failed = True

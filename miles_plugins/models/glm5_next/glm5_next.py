@@ -21,24 +21,34 @@ _MHC_EPS = 1e-6
 
 
 def full_attn_layers(text_config) -> list[int]:
-    linear_attn_config = getattr(text_config, "linear_attn_config", None)
+    linear_attn_config = getattr(
+        text_config, "linear_attn_config", None
+    )  # config-access-exempt: model-family schemas differ in optional linear_attn_config metadata
     if isinstance(linear_attn_config, dict) and linear_attn_config.get("full_attn_layers") is not None:
         return sorted(int(i) for i in linear_attn_config["full_attn_layers"])
-    layer_types = getattr(text_config, "layer_types", None)
+    layer_types = getattr(
+        text_config, "layer_types", None
+    )  # config-access-exempt: model-family schemas differ in optional layer_types metadata
     if layer_types:
         return [i for i, layer_type in enumerate(layer_types) if layer_type != "linear_attention"]
     return [i for i in range(text_config.num_hidden_layers) if i % 4 == 3]
 
 
 def _apply_glm5_next_config(config, text_config) -> None:
-    hc_eps = getattr(text_config, "hc_eps", _MHC_EPS)
+    hc_eps = getattr(
+        text_config, "hc_eps", _MHC_EPS
+    )  # config-access-exempt: model-family schemas differ in optional hc_eps metadata
     assert hc_eps == _MHC_EPS, (
         f"GLM-5.3 hc_eps={hc_eps} but Megatron's mHC sinkhorn/compute-h eps are the "
         f"constants _MHC_SINKHORN_EPS=_MHC_COMPUTE_H_EPS={_MHC_EPS}"
     )
     config.enable_hyper_connections = True
-    config.num_residual_streams = getattr(text_config, "hc_mult", 4)
-    config.mhc_sinkhorn_iterations = getattr(text_config, "hc_sinkhorn_iters", 20)
+    config.num_residual_streams = getattr(
+        text_config, "hc_mult", 4
+    )  # config-access-exempt: model-family schemas differ in optional hc_mult metadata
+    config.mhc_sinkhorn_iterations = getattr(
+        text_config, "hc_sinkhorn_iters", 20
+    )  # config-access-exempt: model-family schemas differ in optional hc_sinkhorn_iters metadata
     config.use_fused_mhc = False
 
     config.index_num_attention_heads = text_config.index_n_heads
@@ -49,7 +59,7 @@ def _apply_glm5_next_config(config, text_config) -> None:
         text_config.index_kpool > 1
         and getattr(text_config, "index_kpool_compress", False)
         and getattr(text_config, "index_kpool_always_select_tail", False)
-    ), "GLM-5.3 kpool indexer expects index_kpool>1 with compress and always_select_tail"
+    ), "GLM-5.3 kpool indexer expects index_kpool>1 with compress and always_select_tail"  # config-access-exempt: model-family schemas differ in optional index_kpool_compress metadata
 
     config.glm5_next_full_attn_layers = full_attn_layers(text_config)
 
@@ -72,7 +82,9 @@ def _reference_proj_rms(x, weight, eps):
 
 
 def _patch_reference_proj_rms() -> None:
-    if getattr(hyper_connection, "_glm5_next_reference_proj_rms_patched", False):
+    if getattr(
+        hyper_connection, "_glm5_next_reference_proj_rms_patched", False
+    ):  # config-access-exempt: the shim marker exists only after patch installation
         return
 
     original_init = HyperConnectionModule.__init__

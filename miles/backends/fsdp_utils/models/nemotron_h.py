@@ -80,19 +80,23 @@ def _inject_seq_idx(fn, seq_idx):
 
 def _patch_mixer_forward(mixer_cls):
     orig = mixer_cls.cuda_kernels_forward
-    if getattr(orig, "_nemotron_packing", False):
+    if getattr(
+        orig, "_nemotron_packing", False
+    ):  # config-access-exempt: probe Nemotron patch markers and model-specific mixer state
         return
 
     @functools.wraps(orig)
     def cuda_kernels_forward(self, hidden_states, *args, **kwargs):
-        seq_idx = getattr(self, "_packing_seq_idx", None)
+        seq_idx = getattr(
+            self, "_packing_seq_idx", None
+        )  # config-access-exempt: probe Nemotron patch markers and model-specific mixer state
         cache_params = args[0] if args else kwargs.get("cache_params")
         if seq_idx is None or cache_params is not None:
             return orig(self, hidden_states, *args, **kwargs)
         mod = sys.modules[mixer_cls.__module__]
         saved = {}
         for n in ("causal_conv1d_fn", "mamba_chunk_scan_combined"):
-            fn = getattr(mod, n, None)
+            fn = getattr(mod, n, None)  # config-access-exempt: attribute selected at runtime from n
             if fn is not None:
                 saved[n] = fn
                 setattr(mod, n, _inject_seq_idx(fn, seq_idx))
@@ -111,7 +115,9 @@ def _patch_mixer_forward(mixer_cls):
 
 def _patch_attn_forward(attn_cls):
     orig = attn_cls.forward
-    if getattr(orig, "_nemotron_packing", False):
+    if getattr(
+        orig, "_nemotron_packing", False
+    ):  # config-access-exempt: probe Nemotron patch markers and model-specific mixer state
         return
 
     try:
@@ -121,7 +127,9 @@ def _patch_attn_forward(attn_cls):
 
     @functools.wraps(orig)
     def forward(self, hidden_states, *args, **kwargs):
-        cu = getattr(self, "_packing_cu_seqlens", None)
+        cu = getattr(
+            self, "_packing_cu_seqlens", None
+        )  # config-access-exempt: probe Nemotron patch markers and model-specific mixer state
         cache = kwargs.get("past_key_values", kwargs.get("cache_params"))
         if cu is None or cache is not None or flash_attn_varlen_func is None:
             return orig(self, hidden_states, *args, **kwargs)
@@ -143,7 +151,9 @@ def _patch_attn_forward(attn_cls):
 
 def _patch_causallm_forward(causallm_cls, mixer_cls, attn_cls):
     orig = causallm_cls.forward
-    if getattr(orig, "_nemotron_packing", False):
+    if getattr(
+        orig, "_nemotron_packing", False
+    ):  # config-access-exempt: probe Nemotron patch markers and model-specific mixer state
         return
     import inspect
 
@@ -177,9 +187,13 @@ def apply_nemotron_h_sglang_match_patch(model):
     mixer_cls = attn_cls = None
     for mod in model.modules():
         cn = type(mod).__name__
-        if mixer_cls is None and cn.endswith("Mamba2Mixer") and hasattr(type(mod), "cuda_kernels_forward"):
+        if (
+            mixer_cls is None and cn.endswith("Mamba2Mixer") and hasattr(type(mod), "cuda_kernels_forward")
+        ):  # config-access-exempt: probe Nemotron patch markers and model-specific mixer state
             mixer_cls = type(mod)
-        if attn_cls is None and getattr(mod, "block_type", None) == "attention" and hasattr(mod, "mixer"):
+        if (
+            attn_cls is None and getattr(mod, "block_type", None) == "attention" and hasattr(mod, "mixer")
+        ):  # config-access-exempt: probe Nemotron patch markers and model-specific mixer state
             attn_cls = type(mod.mixer)
     if mixer_cls is None:
         return False

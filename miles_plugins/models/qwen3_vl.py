@@ -37,8 +37,12 @@ def _patch_allgather_vision_embeddings_kwarg() -> None:
         model_mod = importlib.import_module("megatron.bridge.models.qwen_vl.modelling_qwen3_vl.model")
     except ImportError:
         return
-    orig = getattr(model_mod, "AllGatherVisionEmbeddings", None)
-    if orig is None or getattr(orig, "_miles_kwarg_shim", False):
+    orig = getattr(
+        model_mod, "AllGatherVisionEmbeddings", None
+    )  # config-access-exempt: the vision gather symbol varies across Transformers versions
+    if orig is None or getattr(
+        orig, "_miles_kwarg_shim", False
+    ):  # config-access-exempt: the shim marker exists only after patch installation
         return
 
     class _AllGatherVisionEmbeddingsKwargShim:
@@ -58,7 +62,9 @@ def _patch_rotary_signature() -> None:
     except ImportError:
         return
     for name in ("Qwen3VLTextRotaryEmbedding", "Qwen3VLMoETextRotaryEmbedding"):
-        cls = getattr(text_model, name, None)
+        cls = getattr(
+            text_model, name, None
+        )  # config-access-exempt: attention implementation classes are selected by dynamic names
         if cls is None or cls.__dict__.get(_PATCHED, False):
             continue
         _orig = cls.forward
@@ -78,13 +84,17 @@ def _patch_model_forward_and_rope_index() -> None:
         model_mod = importlib.import_module("megatron.bridge.models.qwen_vl.modelling_qwen3_vl.model")
     except ImportError:
         return
-    if getattr(model_mod, _PATCHED, False):
+    if getattr(
+        model_mod, _PATCHED, False
+    ):  # config-access-exempt: the patch marker exists only after patch installation
         return
 
     orig_get_rope_index = model_mod.get_rope_index
 
     def patched_get_rope_index(*args, **kwargs):
-        pending = getattr(_tls, "packed_positions", None)
+        pending = getattr(
+            _tls, "packed_positions", None
+        )  # config-access-exempt: thread-local packed positions exist only during patched forward
         if pending is not None:
             return pending, None
         return orig_get_rope_index(*args, **kwargs)
@@ -97,9 +107,13 @@ def _patch_model_forward_and_rope_index() -> None:
     # attention still sees the full cu_seqlens) instead of re-splitting the already-local data.
     _patch_preprocess_packed_seqs_identity(model_mod)
 
-    Qwen3VLModel = getattr(model_mod, "Qwen3VLModel", None)
+    Qwen3VLModel = getattr(
+        model_mod, "Qwen3VLModel", None
+    )  # config-access-exempt: Qwen3VLModel availability varies across Transformers versions
     # The bridge selects CP-local vision embeds natively; warn when running an old one.
-    if Qwen3VLModel is not None and not hasattr(Qwen3VLModel, "_cp_local_vision_embed_indices"):
+    if Qwen3VLModel is not None and not hasattr(
+        Qwen3VLModel, "_cp_local_vision_embed_indices"
+    ):  # config-access-exempt: the context-parallel helper is installed lazily
         logger.warning(
             "megatron-bridge Qwen3VLModel lacks native CP-local vision-embed selection; "
             "CP runs with vision tokens will mis-place vision embeddings. "
@@ -132,12 +146,18 @@ def _patch_model_forward_and_rope_index() -> None:
 
 
 def _patch_preprocess_packed_seqs_identity(model_mod) -> None:
-    orig = getattr(model_mod, "preprocess_packed_seqs", None)
-    if orig is None or getattr(orig, "_miles_identity_wrapped", False):
+    orig = getattr(
+        model_mod, "preprocess_packed_seqs", None
+    )  # config-access-exempt: packed-sequence preprocessing availability varies across versions
+    if orig is None or getattr(
+        orig, "_miles_identity_wrapped", False
+    ):  # config-access-exempt: the wrapper marker exists only after patch installation
         return
 
     def wrapped(input_ids, attention_mask, *args, **kwargs):
-        ctx = getattr(_tls, "cp_local", None)
+        ctx = getattr(
+            _tls, "cp_local", None
+        )  # config-access-exempt: thread-local context exists only during patched forward
         if ctx is not None:
             # Already CP-local: skip re-sharding and hand back miles' full-cu packed_seq_params.
             return input_ids, ctx["psp"]
@@ -167,11 +187,15 @@ def _parse_packed_thd(args, kwargs):
     if input_ids is None and args:
         input_ids = args[0]
     psp = kwargs.get("packed_seq_params")
-    if psp is None or getattr(psp, "qkv_format", None) != "thd":
+    if (
+        psp is None or getattr(psp, "qkv_format", None) != "thd"
+    ):  # config-access-exempt: packed-sequence implementations may omit the format marker
         return None
     if input_ids is None or input_ids.dim() != 2 or input_ids.shape[0] != 1:
         return None
-    cu_t = getattr(psp, "cu_seqlens_q", None)
+    cu_t = getattr(
+        psp, "cu_seqlens_q", None
+    )  # config-access-exempt: packed-sequence implementations may omit cumulative lengths
     if cu_t is None or cu_t.numel() < 2:
         return None
     flat = input_ids.reshape(-1)

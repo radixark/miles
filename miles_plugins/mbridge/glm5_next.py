@@ -66,30 +66,44 @@ class Glm5NextBridge(GlmMoeDsaBridge):
     }
 
     def __init__(self, hf_config, *args, **kwargs):
-        text_config = getattr(hf_config, "text_config", None) or hf_config
+        text_config = (
+            getattr(hf_config, "text_config", None) or hf_config
+        )  # config-access-exempt: HF configs may wrap text_config for multimodal checkpoints
         super().__init__(text_config, *args, **kwargs)
 
     def _get_rope_theta(self):
-        rope_theta = getattr(self.hf_config, "rope_theta", None)
+        rope_theta = getattr(
+            self.hf_config, "rope_theta", None
+        )  # config-access-exempt: model-family schemas differ in optional rope_theta metadata
         if rope_theta is None:
-            rope_parameters = getattr(self.hf_config, "rope_parameters", None)
+            rope_parameters = getattr(
+                self.hf_config, "rope_parameters", None
+            )  # config-access-exempt: model-family schemas differ in optional rope_parameters metadata
             if isinstance(rope_parameters, dict):
                 rope_theta = rope_parameters.get("rope_theta")
         if rope_theta is None:
-            if int(getattr(self.hf_config, "qk_rope_head_dim", 0) or 0) == 0:
+            if (
+                int(getattr(self.hf_config, "qk_rope_head_dim", 0) or 0) == 0
+            ):  # config-access-exempt: model-family schemas differ in optional qk_rope_head_dim metadata
                 return 10000.0
             raise ValueError("GLM-5.3 config must provide rope_theta (directly or via rope_parameters)")
         return float(rope_theta)
 
     def _get_rope_scaling(self):
-        rope_scaling = getattr(self.hf_config, "rope_parameters", None)
+        rope_scaling = getattr(
+            self.hf_config, "rope_parameters", None
+        )  # config-access-exempt: model-family schemas differ in optional rope_parameters metadata
         if not isinstance(rope_scaling, dict):
-            rope_scaling = getattr(self.hf_config, "rope_scaling", None)
+            rope_scaling = getattr(
+                self.hf_config, "rope_scaling", None
+            )  # config-access-exempt: model-family schemas differ in optional rope_scaling metadata
         return self._normalize_rope_scaling(rope_scaling)
 
     def _build_base_config(self, **kwargs):
         assert self.hf_config.vocab_size == _GLM5_NEXT_VOCAB_SIZE
-        hc_eps = getattr(self.hf_config, "hc_eps", 1e-6)
+        hc_eps = getattr(
+            self.hf_config, "hc_eps", 1e-6
+        )  # config-access-exempt: model-family schemas differ in optional hc_eps metadata
         assert hc_eps == 1e-6, f"Megatron mHC eps constants are 1e-6, config says {hc_eps}"
         kwargs.pop("mtp_num_layers", None)
         kwargs.pop("mtp_loss_scaling_factor", None)
@@ -98,7 +112,7 @@ class Glm5NextBridge(GlmMoeDsaBridge):
             num_residual_streams=getattr(self.hf_config, "hc_mult", 4),
             mhc_sinkhorn_iterations=getattr(self.hf_config, "hc_sinkhorn_iters", 20),
             use_fused_mhc=False,
-        )
+        )  # config-access-exempt: model-family schemas differ in optional hc_mult metadata
         return super()._build_base_config(**kwargs)
 
     @staticmethod
@@ -123,7 +137,9 @@ class Glm5NextBridge(GlmMoeDsaBridge):
                 assert len(hf_weights) == 1
                 return hf_weights[0].reshape(-1)[alpha_slice].clone()
         if len(hf_weights) == 1 and hf_weights[0].dtype == torch.float32:
-            saved_dtype = getattr(self, "dtype", None)
+            saved_dtype = getattr(
+                self, "dtype", None
+            )  # config-access-exempt: the bridge sets dtype only after conversion starts
             self.dtype = None
             try:
                 return DeepseekV3Bridge._weight_to_mcore_format(self, mcore_weights_name, hf_weights)

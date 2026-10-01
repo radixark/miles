@@ -174,8 +174,12 @@ class DSAMultiLatentAttention(Attention):
         # "skip" layers reuse the most recent computing layer's ``topk_indices``.
         # When those attrs are absent (``freq`` defaults to 1) every layer computes
         # its own top-k and ``skip_topk`` is always False -- i.e. the plain DSA path.
-        self.index_topk_freq = getattr(self.config, "index_topk_freq", 1) or 1
-        self.skip_topk_offset = getattr(self.config, "index_skip_topk_offset", 0) or 0
+        self.index_topk_freq = (
+            getattr(self.config, "index_topk_freq", 1) or 1
+        )  # config-access-exempt: index sharing is an optional model-specific TransformerConfig extension
+        self.skip_topk_offset = (
+            getattr(self.config, "index_skip_topk_offset", 0) or 0
+        )  # config-access-exempt: index sharing offsets are optional TransformerConfig extensions
         self.index_share = self.index_topk_freq > 1
         self.skip_topk = self.index_share and is_skip_topk_layer(
             self.layer_number, self.skip_topk_offset, self.index_topk_freq
@@ -272,7 +276,9 @@ class DSAMultiLatentAttention(Attention):
             # clobber under PP 1F1B) AND recompute safety. A stage always starts on a
             # computing layer (asserted in ``get_glm5_spec``), so a skip layer's source is
             # always in-stage.
-            holder = getattr(packed_seq_params, self._HOLDER_ATTR, None)
+            holder = getattr(
+                packed_seq_params, self._HOLDER_ATTR, None
+            )  # config-access-exempt: the packed-sequence cache is attached lazily under a dynamic key
             if holder is None:
                 holder = {}
                 setattr(packed_seq_params, self._HOLDER_ATTR, holder)
@@ -501,7 +507,9 @@ class DSAMLASelfAttention(DSAMultiLatentAttention):
         )
         self.weights_proj.weight._skip_gather = True
 
-        if getattr(self.config, "freeze_indexer", False):
+        if getattr(
+            self.config, "freeze_indexer", False
+        ):  # config-access-exempt: indexer freezing is an optional TransformerConfig extension
             for module in (self.wq_b, self.wk, self.k_norm, self.weights_proj):
                 for param in module.parameters():
                     param.requires_grad = False
@@ -511,7 +519,9 @@ class DSAMLASelfAttention(DSAMultiLatentAttention):
         # weights on computing layers) and weight export to HF omits them on skip layers.
         if self.skip_topk:
             for name in _INDEXER_SUBMODULE_NAMES:
-                if hasattr(self, name):
+                if hasattr(
+                    self, name
+                ):  # config-access-exempt: skip layers delete optional submodules by registered names
                     delattr(self, name)
 
     def get_absorb_query_key_value_tensors(
@@ -720,19 +730,25 @@ class DSAMLASelfAttention(DSAMultiLatentAttention):
     def set_for_recompute_input_layernorm(self):
         """Set the attention layer for recompute input_layernorm. Only needed for fp8."""
         if self.config.q_lora_rank is not None:
-            if hasattr(self.linear_q_down_proj, "save_original_input"):
+            if hasattr(
+                self.linear_q_down_proj, "save_original_input"
+            ):  # config-access-exempt: only compatible projection implementations support input replay
                 self.linear_q_down_proj.save_original_input = True
             else:
                 raise ValueError(
                     "layernorm recompute for fp8 with MLASelfAttention needs " "transformer-engine>=2.6.0dev0."
                 )
-        if hasattr(self.linear_kv_down_proj, "save_original_input"):
+        if hasattr(
+            self.linear_kv_down_proj, "save_original_input"
+        ):  # config-access-exempt: only compatible projection implementations support input replay
             self.linear_kv_down_proj.save_original_input = True
         else:
             raise ValueError(
                 "layernorm recompute for fp8 with MLASelfAttention needs " "transformer-engine>=2.6.0dev0."
             )
-        if hasattr(self.linear_proj, "save_original_input"):
+        if hasattr(
+            self.linear_proj, "save_original_input"
+        ):  # config-access-exempt: only compatible projection implementations support input replay
             self.linear_proj.save_original_input = True
         else:
             raise ValueError(
@@ -744,14 +760,20 @@ def get_glm5_spec(args, config, vp_stage):
     hf_config = load_hf_config(args.hf_checkpoint)
     config.index_num_attention_heads = hf_config.index_n_heads
     config.index_head_dim = hf_config.index_head_dim
-    config.indexer_rope_interleave = bool(getattr(hf_config, "indexer_rope_interleave", False))
+    config.indexer_rope_interleave = bool(
+        getattr(hf_config, "indexer_rope_interleave", False)
+    )  # config-access-exempt: HF checkpoints may omit indexer rotary interleaving
     config.freeze_indexer = args.freeze_indexer
     # Optional cross-layer index-sharing schedule. Present on DSA checkpoints that only
     # store indexer weights on a subset of "computing" layers (e.g. GLM-5.2). When absent,
     # every layer computes its own top-k (plain DSA) and DSAMLASelfAttention runs the
     # non-shared path.
-    config.index_topk_freq = getattr(hf_config, "index_topk_freq", 1) or 1
-    config.index_skip_topk_offset = getattr(hf_config, "index_skip_topk_offset", 0) or 0
+    config.index_topk_freq = (
+        getattr(hf_config, "index_topk_freq", 1) or 1
+    )  # config-access-exempt: HF checkpoints may omit index sharing frequency
+    config.index_skip_topk_offset = (
+        getattr(hf_config, "index_skip_topk_offset", 0) or 0
+    )  # config-access-exempt: HF checkpoints may omit index sharing offsets
     # Define the decoder block spec
     kwargs = {
         "use_transformer_engine": True,

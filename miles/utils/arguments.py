@@ -216,7 +216,9 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                     fn = load_function(path)
                 except (ModuleNotFoundError, ValueError):
                     continue
-                if fn is not None and callable(getattr(fn, "add_arguments", None)):
+                if fn is not None and callable(
+                    getattr(fn, "add_arguments", None)
+                ):  # config-access-exempt: custom hooks may optionally register CLI arguments
                     fn.add_arguments(parser)
             return parser
 
@@ -348,15 +350,25 @@ def parse_args_and_get_parser(
         args.rollout_indexer_topk_num_streams = None
         if args.hf_checkpoint:
             hf_config = load_hf_config(args.hf_checkpoint)
-            args.compress_ratios = getattr(hf_config, "compress_ratios", None)
+            args.compress_ratios = getattr(
+                hf_config, "compress_ratios", None
+            )  # config-access-exempt: model-family schemas differ in optional compress_ratios metadata
             hf_validate_args(args, hf_config)
 
             if is_dsa(hf_config):
-                getter = getattr(hf_config, "get_text_config", None)
-                text_config = (getter() if callable(getter) else getattr(hf_config, "text_config", None)) or hf_config
-                args.indexer_rope_interleave = bool(getattr(text_config, "indexer_rope_interleave", False))
+                getter = getattr(
+                    hf_config, "get_text_config", None
+                )  # config-access-exempt: model-family schemas differ in optional get_text_config metadata
+                text_config = (
+                    getter() if callable(getter) else getattr(hf_config, "text_config", None)
+                ) or hf_config  # config-access-exempt: HF configs may wrap text_config for multimodal checkpoints
+                args.indexer_rope_interleave = bool(
+                    getattr(text_config, "indexer_rope_interleave", False)
+                )  # config-access-exempt: model-family schemas differ in optional indexer_rope_interleave metadata
                 logger.info(f"Setting indexer_rope_interleave: {args.indexer_rope_interleave} into args")
-                linear_attn_config = getattr(text_config, "linear_attn_config", None)
+                linear_attn_config = getattr(
+                    text_config, "linear_attn_config", None
+                )  # config-access-exempt: model-family schemas differ in optional linear_attn_config metadata
                 kda_layers = set((linear_attn_config or {}).get("kda_layers") or [])
                 args.rollout_indexer_topk_num_streams = text_config.num_hidden_layers - len(kda_layers)
 
@@ -826,8 +838,10 @@ def miles_validate_args(args):
     if args.custom_config_path:
         data = yaml.safe_load(resolve_file_arg(args.custom_config_path)) or {}
         for k, v in data.items():
-            if hasattr(args, k):
-                logger.info(f"Warning: Argument {k} is already set to {getattr(args, k)}, will override with {v}.")
+            if hasattr(args, k):  # config-access-exempt: attribute selected at runtime from k
+                logger.info(
+                    f"Warning: Argument {k} is already set to {getattr(args, k)}, will override with {v}."
+                )  # config-access-exempt: attribute selected at runtime from k
             setattr(args, k, v)
 
     validate_dashboard_args(args)
@@ -1312,7 +1326,7 @@ def miles_validate_args(args):
     if (args.offload_train_target == "disk" or args.stream_optimizer_state_to_disk) and (
         args.offload_train_disk_dir is None
     ):
-        uid = os.getuid() if hasattr(os, "getuid") else 0
+        uid = os.getuid() if hasattr(os, "getuid") else 0  # config-access-exempt: os.getuid is platform-dependent
         args.offload_train_disk_dir = os.path.join(os.environ.get("SCRATCH", "/scratch"), f"miles_train_offload_{uid}")
 
     if args.offload_train_target == "disk":
@@ -1702,12 +1716,20 @@ def resolve_fsdp_num_layers(hf_config) -> int | None:
     text config wins when present, since a top-level ``num_hidden_layers`` may describe a vision
     tower instead.
     """
-    getter = getattr(hf_config, "get_text_config", None)
-    text_config = (getter() if callable(getter) else getattr(hf_config, "text_config", None)) or hf_config
+    getter = getattr(
+        hf_config, "get_text_config", None
+    )  # config-access-exempt: model-family schemas differ in optional get_text_config metadata
+    text_config = (
+        getter() if callable(getter) else getattr(hf_config, "text_config", None)
+    ) or hf_config  # config-access-exempt: model-family schemas differ in optional text_config metadata
 
-    num_layers = getattr(text_config, "num_hidden_layers", None)
+    num_layers = getattr(
+        text_config, "num_hidden_layers", None
+    )  # config-access-exempt: model-family schemas differ in optional num_hidden_layers metadata
     if num_layers is None:
-        num_layers = getattr(hf_config, "num_hidden_layers", None)
+        num_layers = getattr(
+            hf_config, "num_hidden_layers", None
+        )  # config-access-exempt: model-family schemas differ in optional num_hidden_layers metadata
     return num_layers
 
 
@@ -1718,10 +1740,14 @@ def hf_validate_args(args, hf_config):
     errors = []
 
     # multimodal models have different config structure
-    if hasattr(hf_config, "text_config"):
+    if hasattr(
+        hf_config, "text_config"
+    ):  # config-access-exempt: model-family schemas differ in optional text_config metadata
         hf_config = hf_config.text_config
 
-    if hasattr(hf_config, "rope_parameters") and isinstance(hf_config.rope_parameters, dict):
+    if hasattr(hf_config, "rope_parameters") and isinstance(
+        hf_config.rope_parameters, dict
+    ):  # config-access-exempt: model-family schemas differ in optional rope_parameters metadata
         if "rope_theta" in hf_config.rope_parameters:
             hf_config.rope_theta = hf_config.rope_parameters["rope_theta"]
         else:
@@ -1750,15 +1776,23 @@ def hf_validate_args(args, hf_config):
         ("rope_theta", "rotary_base", equal),
     ]:
         # FIXME: Qwen3.5 transfomers has bug.
-        if getattr(hf_config, "model_type", "") == "qwen3_5_moe_text" and hf_config_name == "intermediate_size":
+        if (
+            getattr(hf_config, "model_type", "") == "qwen3_5_moe_text" and hf_config_name == "intermediate_size"
+        ):  # config-access-exempt: model-family schemas differ in optional model_type metadata
             continue
-        if getattr(hf_config, "model_type", "") == "deepseek_v4" and hf_config_name == "intermediate_size":
+        if (
+            getattr(hf_config, "model_type", "") == "deepseek_v4" and hf_config_name == "intermediate_size"
+        ):  # config-access-exempt: model-family schemas differ in optional model_type metadata
             continue
-        if hasattr(hf_config, hf_config_name):
-            if not compare_fn(getattr(hf_config, hf_config_name), getattr(args, megatron_config_name)):
+        if hasattr(
+            hf_config, hf_config_name
+        ):  # config-access-exempt: attribute selected at runtime from hf_config_name
+            if not compare_fn(
+                getattr(hf_config, hf_config_name), getattr(args, megatron_config_name)
+            ):  # config-access-exempt: attribute selected at runtime from hf_config_name; attribute selected at runtime from megatron_config_name
                 errors.append(
-                    f"{hf_config_name} in hf config {getattr(hf_config, hf_config_name)} is not equal to "
-                    f"{megatron_config_name} {getattr(args, megatron_config_name)}, please check the config."
+                    f"{hf_config_name} in hf config {getattr(hf_config, hf_config_name)} is not equal to "  # config-access-exempt: attribute selected at runtime from hf_config_name
+                    f"{megatron_config_name} {getattr(args, megatron_config_name)}, please check the config."  # config-access-exempt: attribute selected at runtime from megatron_config_name
                 )
 
     if len(errors) > 0:

@@ -70,7 +70,9 @@ def _apply_bridge_runtime_config(provider, args: argparse.Namespace) -> None:
     provider.cpu_offloading_num_layers = args.cpu_offloading_num_layers
     provider.distribute_saved_activations = args.distribute_saved_activations
     # cpu_offloading is derived, set only when cpu_offloading_num_layers>0; guard its presence.
-    if hasattr(args, "cpu_offloading"):
+    if hasattr(
+        args, "cpu_offloading"
+    ):  # config-access-exempt: Megatron creates this flag only when CPU offload is enabled
         provider.cpu_offloading = args.cpu_offloading
 
     # communication overlap
@@ -360,5 +362,7 @@ def _maybe_install_witness(
         install_witness(
             model,
             buffer_size=args.witness_buffer_size,
-            sequence_parallel=getattr(model.config, "sequence_parallel", False),
+            sequence_parallel=getattr(
+                model.config, "sequence_parallel", False
+            ),  # config-access-exempt: third-party providers differ in sequence_parallel support
         )

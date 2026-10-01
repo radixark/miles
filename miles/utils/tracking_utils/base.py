@@ -178,7 +178,7 @@ class TrackingManager:
 
     def init(self, args, *, primary: bool = True, **kwargs) -> None:
         for name, (cls, flag) in self._registry.items():
-            if not getattr(args, flag, False):
+            if not getattr(args, flag, False):  # config-access-exempt: attribute selected at runtime from flag
                 continue
             if not cls.is_supported(args):
                 logger.warning("Skipping tracking backend %s: unsupported on this cluster backend", name)

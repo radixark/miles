@@ -31,7 +31,9 @@ def merge_samples(samples: list[Sample], tokenizer) -> Sample:
 
 
 def _introduces_replay_gap(a: Sample, b: Sample) -> bool:
-    return any(getattr(a, field) is not None and getattr(b, field) is None for field in _REPLAY_FIELDS)
+    return any(
+        getattr(a, field) is not None and getattr(b, field) is None for field in _REPLAY_FIELDS
+    )  # config-access-exempt: attribute selected at runtime from field
 
 
 def _merge_sample_pair(a: Sample, b: Sample, tokenizer) -> Sample:
@@ -39,8 +41,8 @@ def _merge_sample_pair(a: Sample, b: Sample, tokenizer) -> Sample:
     a, b = deepcopy(a), deepcopy(b)
 
     def _merge_equal_value(field):
-        x = getattr(a, field)
-        y = getattr(b, field)
+        x = getattr(a, field)  # config-access-exempt: attribute selected at runtime from field
+        y = getattr(b, field)  # config-access-exempt: attribute selected at runtime from field
         assert x == y, f"{field} mismatch: a.{field}={x}, b.{field}={y}"
         return x
 
@@ -53,7 +55,7 @@ def _merge_sample_pair(a: Sample, b: Sample, tokenizer) -> Sample:
     def _merge_optional_per_token(field):
         # Optional OPD per-token lists (teacher_log_probs, opd_reverse_kl): merge like
         # rollout_log_probs when present (zeros over the injected observation span), else keep None.
-        av, bv = getattr(a, field), getattr(b, field)
+        av, bv = getattr(a, field), getattr(b, field)  # config-access-exempt: attribute selected at runtime from field
         if av is None and bv is None:
             return None
         av = av if av is not None else [0.0] * a.response_length
@@ -182,14 +184,14 @@ def _merge_sample_pair(a: Sample, b: Sample, tokenizer) -> Sample:
             prefix_cache_info=_merge_prefix_cache_info(a.prefix_cache_info, b.prefix_cache_info),
         )
     except AssertionError as e:
-        if hasattr(e, "add_note"):
+        if hasattr(e, "add_note"):  # config-access-exempt: exception notes are unavailable on older Python versions
             e.add_note(f"{a=} {b=}")
         raise
 
 
 def _merge_spec_info(a: Sample.SpecInfo, b: Sample.SpecInfo) -> Sample.SpecInfo:
     def _merge_plus_value(field):
-        return getattr(a, field) + getattr(b, field)
+        return getattr(a, field) + getattr(b, field)  # config-access-exempt: attribute selected at runtime from field
 
     return _create_with_all_fields(
         Sample.SpecInfo,
@@ -202,7 +204,7 @@ def _merge_spec_info(a: Sample.SpecInfo, b: Sample.SpecInfo) -> Sample.SpecInfo:
 
 def _merge_prefix_cache_info(a: Sample.PrefixCacheInfo, b: Sample.PrefixCacheInfo) -> Sample.PrefixCacheInfo:
     def _merge_plus_value(field):
-        return getattr(a, field) + getattr(b, field)
+        return getattr(a, field) + getattr(b, field)  # config-access-exempt: attribute selected at runtime from field
 
     return _create_with_all_fields(
         Sample.PrefixCacheInfo,
