@@ -1,5 +1,4 @@
 # Adapt from https://github.com/NVIDIA/Megatron-LM/blob/b1efb3c7126ef7615e8c333432d76e08038e17ff/pretrain_gpt.py
-import argparse
 import inspect
 import logging
 from contextlib import nullcontext
@@ -18,6 +17,7 @@ from megatron.core.transformer.transformer_config import TransformerConfig
 from megatron.training.arguments import core_transformer_config_from_args
 
 from miles.backends.training_utils.model_companion import ModelCompanionInstallationUtils
+from miles.utils.args.runtime import TrainerConfig
 from miles.utils.audit_utils.witness.module import install_witness
 from miles.utils.function_registry import load_function
 from miles.utils.replay_base import routing_replay_manager
@@ -25,7 +25,7 @@ from miles.utils.replay_base import routing_replay_manager
 logger = logging.getLogger(__name__)
 
 
-def _apply_bridge_runtime_config(provider, args: argparse.Namespace) -> None:
+def _apply_bridge_runtime_config(provider, args: TrainerConfig) -> None:
     """Copy the runtime config from args onto a bridge-built provider.
 
     Bridge mode builds the model from the HF checkpoint and skips
@@ -139,7 +139,7 @@ class LinearForLastLayer(torch.nn.Linear):
 
 
 def get_model_provider_func(
-    args: argparse.Namespace,
+    args: TrainerConfig,
     role: Literal["actor", "critic"] = "actor",
 ):
     # Support custom model provider path (similar to --custom-rm-path for reward models)
@@ -352,7 +352,7 @@ def get_model_provider_func(
 
 
 def _maybe_install_witness(
-    args: argparse.Namespace,
+    args: TrainerConfig,
     model: GPTModel,
     *,
     vp_stage: int | None,

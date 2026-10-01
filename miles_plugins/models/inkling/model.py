@@ -6,6 +6,7 @@ from __future__ import annotations
 import logging
 import os
 from functools import partial
+from typing import TYPE_CHECKING
 
 import torch
 import transformer_engine.pytorch as te
@@ -22,6 +23,9 @@ from miles_plugins.models.inkling.layers import (
     InklingSelfAttention,
     InklingSharedExperts,
 )
+
+if TYPE_CHECKING:
+    from miles.utils.args.runtime import TrainerConfig
 
 logger = logging.getLogger(__name__)
 
@@ -176,7 +180,7 @@ def get_inkling_block_spec(config, vp_stage=None):
     return TransformerBlockSubmodules(layer_specs=local, layer_norm=base.layer_norm)
 
 
-def get_inkling_spec(args, config, vp_stage=None):
+def get_inkling_spec(args: TrainerConfig, config: TransformerConfig, vp_stage: int | None = None) -> ModuleSpec:
     """--spec entry for the miles standard provider path."""
     import json
 
