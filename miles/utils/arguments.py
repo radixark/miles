@@ -330,9 +330,13 @@ def parse_args_and_get_parser(
 
     add_miles_arguments = get_miles_extra_args_provider(add_custom_arguments)
     parser: argparse.ArgumentParser | None = None
+    # TODO: Revisit this after Zhichen's training backend refactor.
+    training_backend_arg_names: set[str] = set()
 
     def add_miles_arguments_and_capture_parser(value: argparse.ArgumentParser) -> argparse.ArgumentParser:
         nonlocal parser
+        if backend == "megatron":
+            training_backend_arg_names.update(action.dest for action in value._actions)
         parser = add_miles_arguments(value)
         return parser
 
@@ -343,6 +347,10 @@ def parse_args_and_get_parser(
         from miles.backends.megatron_utils.arguments import validate_args as megatron_validate_args
 
         args = megatron_parse_args(extra_args_provider=add_miles_arguments_and_capture_parser)
+        training_backend_arg_names.update(
+            vars(args).keys() - {action.dest for action in parser._actions} - parser._defaults.keys()
+        )
+        previous_arg_names = set(vars(args))
         args.compress_ratios = None
         args.rollout_indexer_topk_num_streams = None
         if args.hf_checkpoint:
@@ -363,6 +371,7 @@ def parse_args_and_get_parser(
         args.rank = 0
         args.world_size = args.actor_num_nodes * args.actor_num_gpus_per_node
         args = set_default_megatron_args(args)
+        training_backend_arg_names.update(vars(args).keys() - previous_arg_names)
     else:
         from miles.backends.fsdp_utils.arguments import load_fsdp_args
 
@@ -386,6 +395,7 @@ def parse_args_and_get_parser(
     miles_validate_args(args)
 
     if backend == "megatron":
+        previous_arg_names = set(vars(args))
         megatron_validate_args(args)
 
         # always use varlen
@@ -402,6 +412,7 @@ def parse_args_and_get_parser(
                 "decoder_first_pipeline_num_layers and decoder_last_pipeline_num_layers should be None when "
                 "pipeline_model_parallel_size is 1."
             )
+        training_backend_arg_names.update(vars(args).keys() - previous_arg_names)
     else:
         from miles.backends.fsdp_utils.arguments import validate_hybrid_shard_args
 
