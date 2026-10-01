@@ -2,11 +2,13 @@ from argparse import Namespace
 
 from miles.backends.fsdp_utils.config import FsdpArgsNamespace
 from miles.backends.megatron_utils.megatron_config import (
+    CRITIC_ROLE,
     MegatronArgsNamespace,
     MegatronTrainerConfig,
     compute_trainer_args,
 )
 from miles.utils.args.configs.backend_fields import TrainerBackendTraitConfig
+from miles.utils.args.configs.scaling import ScalingConfig
 from miles.utils.args.runtime import AllConfig, TrainerConfig
 
 
@@ -24,3 +26,10 @@ def compute_trainer_config(all_config: AllConfig, trainer: MegatronTrainerConfig
     )
 
     return TrainerConfig.model_validate({name: values[name] for name in TrainerConfig.model_fields if name in values})
+
+
+# TODO: support different sizes after the args refactor
+def compute_trainer_total_gpus(scaling: ScalingConfig, *, role: str) -> int:
+    if role == CRITIC_ROLE:
+        return scaling.critic_num_nodes * scaling.critic_num_gpus_per_node
+    return scaling.actor_num_nodes * scaling.actor_num_gpus_per_node

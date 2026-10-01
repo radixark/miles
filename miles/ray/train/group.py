@@ -10,11 +10,12 @@ from uuid import uuid4
 
 from miles.backends.megatron_utils.ft.types import TrainStepOutcome, TrainStepOutput
 from miles.ray.rollout.inference_controller import UpdatableEngines
-from miles.ray.specs.train import compute_trainer_num_cells, compute_trainer_pool_id
+from miles.ray.specs.train import compute_trainer_pool_id
 from miles.ray.train.cell import TrainerCell
 from miles.ray.train.cell_monitor import create_trainer_cell_health_checker
 from miles.ray.train_actor import WeightUpdateOutput
 from miles.utils import object_store
+from miles.utils.args.trainer_utils import compute_trainer_total_gpus
 from miles.utils.arguments import supports_partial_target_weight_update
 from miles.utils.async_utils import AsyncioGatherUtils, gather_and_raise_first
 from miles.utils.audit_utils.event_analyzer import analyzer as event_analyzer
@@ -34,6 +35,7 @@ from miles.utils.ft_utils.health_checker import ActivenessTracker, NoopHealthChe
 from miles.utils.ft_utils.indep_dp import IndepDPInfo, create_tcp_store
 from miles.utils.init_once import InitOnce, init_once
 from miles.utils.logging_utils import configure_logger
+from miles.utils.megatron_args_utils import compute_trainer_num_cells
 from miles.utils.misc import split_evenly
 from miles.utils.retry_utils import NonRetryableError, retry, retry_until_deadline
 from miles.utils.test_utils.fault_injector.actions.base import FaultHookResources
@@ -103,7 +105,7 @@ class TrainerController:
 
     @property
     def _expected_num_cells(self) -> int:
-        return compute_trainer_num_cells(self.args, role=self._role)
+        return compute_trainer_num_cells(self.args, total_gpus=compute_trainer_total_gpus(self.args, role=self._role))
 
     @property
     def _cells(self) -> list[TrainerCell]:
