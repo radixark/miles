@@ -44,6 +44,7 @@ from typing import Any
 
 from PIL import Image as PILImage
 
+from miles.utils.args.schema import A, Arg, BaseConfig
 from miles.utils.types import Sample
 
 logger = logging.getLogger(__name__)
@@ -51,6 +52,18 @@ logger = logging.getLogger(__name__)
 _runtime = None
 _runtime_lock = threading.Lock()
 _gate: asyncio.Semaphore | None = None
+
+
+class HudConfig(BaseConfig):
+    hud_env_dir: A[str, Arg()]
+    hud_snapshot_name: A[str, Arg()]
+    hud_max_steps: A[int, Arg()] = 24
+    hud_shot_width: A[int, Arg()] = 512
+    hud_max_tokens_per_turn: A[int, Arg()] = 512
+    hud_max_sandboxes: A[int, Arg()] = 32
+    hud_episode_timeout_s: A[int, Arg()] = 1800
+    hud_daytona_key_file: A[str | None, Arg()] = None
+    hud_system_prompt: A[str | None, Arg()] = None
 
 
 def _load_daytona_key(args: Any) -> None:
@@ -459,3 +472,7 @@ async def reward_func(args, samples: Sample | list[Sample], **kwargs) -> float |
     if isinstance(samples, list):
         return [s.metadata.get("reward", 0.0) for s in samples]
     return samples.metadata.get("reward", 0.0)
+
+
+generate.config_class = HudConfig
+reward_func.config_class = HudConfig
