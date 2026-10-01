@@ -31,10 +31,13 @@ spec:
         labels:
           {{- include "miles-run.labels" $labels | nindent 10 }}
           miles.radixark.io/pool: {{ default $pool.name $pool.poolId | quote }}
-        {{- with $pool.meta }}
+        {{- if or $pool.meta $pool.annotations }}
         annotations:
-          {{- range $key, $value := . }}
+          {{- range $key, $value := $pool.meta }}
           miles.radixark.io/meta-{{ $key }}: {{ $value | quote }}
+          {{- end }}
+          {{- range $key, $value := $pool.annotations }}
+          {{ $key }}: {{ $value | quote }}
           {{- end }}
         {{- end }}
       spec:
@@ -58,6 +61,7 @@ spec:
             {{- $entry = merge (dict "env" (merge (dict "NVIDIA_VISIBLE_DEVICES" "all") (deepCopy ($pool.env | default dict)))) (deepCopy $pool) }}
             {{- end }}
             env:
+              {{- include "miles-run.annotationEnv" (dict "name" "MILES_WORKER_METADATA" "annotation" "miles.radixark.io/worker-metadata") | trim | nindent 14 }}
               {{- include "miles-run.labelEnv" (dict "name" "MILES_CELL_INDEX" "label" "leaderworkerset.sigs.k8s.io/group-index") | trim | nindent 14 }}
               {{- include "miles-run.labelEnv" (dict "name" "MILES_POD_INDEX" "label" "leaderworkerset.sigs.k8s.io/worker-index") | trim | nindent 14 }}
               {{- if $gated }}
