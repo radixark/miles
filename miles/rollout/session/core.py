@@ -2,8 +2,7 @@
 
 HTTP-agnostic: the FastAPI adapter (``sessions.py`` + ``server.py``) turns each request into primitives and calls these methods. Owns one ``SessionRegistry`` (per-session TITO/trajectory state) and one proxy ``backend``.
 
-- ``chat_completions`` strips training-only replay payloads from the client reply copy-on-write; the
-  ``SessionRecord`` keeps the full response for the training path (``GET /sessions/{id}``).
+- `chat_completions` omits choice `meta_info` from client replies without modifying the stored response; `SessionRecord` retains it for sample collection and `GET /sessions/{id}`.
 - ``chat_completions`` holds the per-session lock for prep and state update but not across the proxy call; ``closing`` re-checks and the ``num_assistant`` check gate concurrent DELETE/chat.
 - ``stream: true`` is served as fake streaming: the backend call stays non-streaming (TITO needs the complete message + meta_info) and the full response is re-rendered as a single SSE chunk plus ``data: [DONE]``. Errors all happen before the SSE body is built, so they keep their real status codes as JSON.
 - ``collect_samples`` assembles training Samples from the session's records on the server (compute -> truncate -> merge, synchronously on the loop like the lock-free ``get_session``); deterministic assembly failures return 422 with the assertion text.
@@ -73,24 +72,11 @@ def _samples_response(payload: bytes) -> Response:
     return Response(content=payload, status_code=200, media_type="application/octet-stream")
 
 
-_CLIENT_STRIPPED_META_KEYS = (
-    "routed_experts",
-    "indexer_topk",
-    "output_token_sampling_mask",
-    "output_token_sampling_logprobs",
-    "output_token_sampling_mask_length",
-)
-
-
-def _strip_replay_payloads(response: dict) -> dict:
-    stripped_choices = []
-    for choice in response.get("choices", []):
-        meta = choice.get("meta_info")
-        if isinstance(meta, dict) and any(k in meta for k in _CLIENT_STRIPPED_META_KEYS):
-            meta = {k: v for k, v in meta.items() if k not in _CLIENT_STRIPPED_META_KEYS}
-            choice = {**choice, "meta_info": meta}
-        stripped_choices.append(choice)
-    return {**response, "choices": stripped_choices}
+def _strip_meta_info(response: dict) -> dict:
+    return {
+        **response,
+        "choices": [{k: v for k, v in choice.items() if k != "meta_info"} for choice in response.get("choices", [])],
+    }
 
 
 def _response_to_stream_chunk(response: dict) -> dict:
@@ -136,7 +122,7 @@ def _chat_client_response(result: dict, response: dict, client_stream: bool) -> 
         )
     headers = {k: v for k, v in result["headers"].items() if k.lower() not in _DROP_RESPONSE_HEADERS}
     return Response(
-        content=_render_json(_strip_replay_payloads(response)),
+        content=_render_json(_strip_meta_info(response)),
         status_code=result["status_code"],
         headers=headers,
         media_type=JSON_MEDIA_TYPE,
