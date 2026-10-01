@@ -20,6 +20,7 @@ from miles.utils.object_store_config import (
     MOONCAKE_MASTER_PORT,
     compute_mooncake_init_kwargs_vanilla,
 )
+from miles.utils.test_utils.snapshot import SNAPSHOT_RECORD_DIR_ENV_VAR, SNAPSHOT_UPDATE_ENV_VAR
 from miles.utils.workers.argv_utils import parse_declared_args
 from miles.utils.workers.worker_provider.kubernetes.helm.naming import CHART_NAME
 
@@ -53,6 +54,8 @@ def train_env_vars(
     return {
         # exported for the submitting client too, but only the runtime env reaches the ray workers
         "PYTHONUNBUFFERED": "1",
+        SNAPSHOT_UPDATE_ENV_VAR: os.environ.get(SNAPSHOT_UPDATE_ENV_VAR, ""),
+        SNAPSHOT_RECORD_DIR_ENV_VAR: os.environ.get(SNAPSHOT_RECORD_DIR_ENV_VAR, ""),
         # If setting this in FSDP, the computation communication overlapping may have issues
         **(
             {}

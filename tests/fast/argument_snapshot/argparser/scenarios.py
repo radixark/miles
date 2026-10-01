@@ -6,7 +6,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any
 
-from tests.fast.argument_snapshot.schema import snapshot_parser
+from tests.fast.argument_snapshot.argparser.schema import snapshot_parser
 
 
 @dataclass(frozen=True)
@@ -32,10 +32,10 @@ def capture_scenarios(selected: list[str] | None = None) -> dict[str, Any]:
         "inference": "--custom-inference-engine-provider-path",
     }.items():
         scenarios[f"hook_{name}"] = _Scenario(
-            backend="megatron", arguments=(flag, "tests.fast.argument_snapshot.scenarios._Hook")
+            backend="megatron", arguments=(flag, "tests.fast.argument_snapshot.argparser.scenarios._Hook")
         )
         scenarios[f"legacy_hook_{name}"] = _Scenario(
-            backend="megatron", arguments=(flag, "tests.fast.argument_snapshot.scenarios._Hook"), legacy=True
+            backend="megatron", arguments=(flag, "tests.fast.argument_snapshot.argparser.scenarios._Hook"), legacy=True
         )
     scenarios["missing_hook_module"] = _Scenario(
         backend="megatron", arguments=("--custom-generate-function-path", "miles_snapshot_missing.module")
@@ -48,11 +48,11 @@ def capture_scenarios(selected: list[str] | None = None) -> dict[str, Any]:
     )
     scenarios["hook_function"] = _Scenario(
         backend="megatron",
-        arguments=("--custom-generate-function-path", "tests.fast.argument_snapshot.scenarios._hook_function"),
+        arguments=("--custom-generate-function-path", "tests.fast.argument_snapshot.argparser.scenarios._hook_function"),
     )
     scenarios["hook_fsdp"] = _Scenario(
         backend="fsdp",
-        arguments=("--custom-inference-engine-provider-path", "tests.fast.argument_snapshot.scenarios._Hook"),
+        arguments=("--custom-inference-engine-provider-path", "tests.fast.argument_snapshot.argparser.scenarios._Hook"),
     )
     scenarios["megatron_repeat"] = _Scenario(backend="megatron")
     names = list(scenarios) if selected is None else selected

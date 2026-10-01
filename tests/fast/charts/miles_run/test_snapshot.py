@@ -19,7 +19,7 @@ from tests.fast.charts.utils import (
     objects_of_kind,
     requires_helm,
 )
-from tests.fast.launch_scripts.sh_harness import REPO_ROOT, SANDBOX_PLACEHOLDER, assert_matches_snapshot
+from tests.fast.launch_scripts.sh_harness import REPO_ROOT, SANDBOX_PLACEHOLDER
 
 from miles.ray.specs.entrypoint import compute_specs
 from miles.utils.arguments import parse_args
@@ -27,6 +27,7 @@ from miles.utils.external_utils.command_utils.common import rsync_cmd
 from miles.utils.external_utils.command_utils.helm_backend.launcher.values.builder import build_values
 from miles.utils.external_utils.command_utils.helm_backend.launcher.values.misc import LaunchPlan
 from miles.utils.external_utils.model_args_utils import load_model_args
+from miles.utils.test_utils.snapshot import assert_matches_snapshot
 from miles.utils.workers.serving.utils import override_argv
 
 SNAPSHOT_DIR = REPO_ROOT / "tests" / "snapshots" / "charts" / "miles-run"
