@@ -16,7 +16,7 @@ from miles.utils.external_utils.command_utils.helm_backend.launcher.values.misc 
 from miles.utils.external_utils.command_utils.helm_backend.naming import ReleaseName
 from miles.utils.external_utils.command_utils.helm_backend.orchestrator import state as orchestrator_state
 from miles.utils.workers.types import DeployComponent
-from miles.utils.workers.worker_spec import CommandWorkerSpec, PortInfo, SchedulingSpec, ServeWorkerSpec
+from miles.utils.workers.worker_spec import BaseCommandSpec, BaseServeSpec, PortInfo, SchedulingSpec
 
 RUN_ID = "260101-000000-000"
 NAMESPACE = "myns"
@@ -30,8 +30,8 @@ def _engine(
     workers_per_cell: int,
     name: str = "inference-engine-0-0",
     gpu_offset: int = 0,
-) -> CommandWorkerSpec:
-    return CommandWorkerSpec(
+) -> BaseCommandSpec:
+    return BaseCommandSpec(
         name=name,
         category=POOL_CATEGORY_INFERENCE_ENGINE,
         port_infos=[PortInfo(name="primary", static_port=8000)],
@@ -48,8 +48,8 @@ def _engine(
     )
 
 
-def _trainer(*, num_cells: int, workers_per_cell: int) -> ServeWorkerSpec:
-    return ServeWorkerSpec(
+def _trainer(*, num_cells: int, workers_per_cell: int) -> BaseServeSpec:
+    return BaseServeSpec(
         name="trainer-engine-actor",
         category=POOL_CATEGORY_TRAINER_ENGINE,
         port_infos=[PortInfo(name="master", static_port=9000, mode="master")],

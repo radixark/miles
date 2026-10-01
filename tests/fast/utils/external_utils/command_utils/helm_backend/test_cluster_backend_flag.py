@@ -24,7 +24,7 @@ from miles.utils.external_utils.command_utils.helm_backend.launcher.values.misc 
 from miles.utils.external_utils.command_utils.helm_backend.naming import ReleaseName
 from miles.utils.run_uuid import RUN_UUID_LENGTH
 from miles.utils.workers.types import ClusterBackend, DeployComponent
-from miles.utils.workers.worker_spec import CommandWorkerSpec, PortInfo, SchedulingSpec
+from miles.utils.workers.worker_spec import BaseCommandSpec, PortInfo, SchedulingSpec
 
 
 def declared_cluster_backends(argv: list[str]) -> list[str]:
@@ -72,8 +72,8 @@ def _request(train_args: str) -> ExecuteTrainRequest:
     )
 
 
-def _router() -> CommandWorkerSpec:
-    return CommandWorkerSpec(
+def _router() -> BaseCommandSpec:
+    return BaseCommandSpec(
         name="inference-router-0",
         port_infos=[PortInfo(name="primary", static_port=30000)],
         env_var=lambda context: {},
@@ -103,7 +103,7 @@ def launch_argv(
 ) -> list[str]:
     recorded: list[list[str]] = []
 
-    def fake_compute_specs(args: Any) -> list[CommandWorkerSpec]:
+    def fake_compute_specs(args: Any) -> list[BaseCommandSpec]:
         recorded.append(list(args.argv))
         return [_router()]
 

@@ -22,7 +22,7 @@ from miles.utils.workers.worker_provider.kubernetes.core import provider as core
 from miles.utils.workers.worker_provider.kubernetes.helm import env
 from miles.utils.workers.worker_provider.kubernetes.helm.builder import compute_helm_backend_capability
 from miles.utils.workers.worker_provider.kubernetes.helm.env import DEFAULT_LABEL_KEYS
-from miles.utils.workers.worker_spec import CommandWorkerSpec, PortInfo, SchedulingSpec
+from miles.utils.workers.worker_spec import BaseCommandSpec, PortInfo, SchedulingSpec
 
 NAMESPACE = "rl"
 _RELEASE = "miles-run-260101-000000-000"
@@ -61,7 +61,7 @@ def _fake_pod_api(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(core_provider, "_kubernetes_pod_api", fake_pod_api.installed)
 
 
-def engine_spec(*, num_cells: int = 2, gpu_offset: int = 0) -> CommandWorkerSpec:
+def engine_spec(*, num_cells: int = 2, gpu_offset: int = 0) -> BaseCommandSpec:
     scheduling = SchedulingSpec(
         num_cells=num_cells,
         num_workers_per_cell=1,
@@ -71,7 +71,7 @@ def engine_spec(*, num_cells: int = 2, gpu_offset: int = 0) -> CommandWorkerSpec
         pg_name="rollout",
         pg_slot_offset=gpu_offset,
     )
-    return CommandWorkerSpec(
+    return BaseCommandSpec(
         name=ENGINE_POOL_ID,
         category=POOL_CATEGORY_INFERENCE_ENGINE,
         port_infos=[PortInfo(name="primary", static_port=8000)],

@@ -9,7 +9,7 @@ from miles.utils.workers.rpc.client.handle import RpcWorkerHandle
 from miles.utils.workers.worker_provider import static
 from miles.utils.workers.worker_provider.kubernetes.helm import naming
 from miles.utils.workers.worker_provider.static import StaticWorkerProvider, parse_host_and_port
-from miles.utils.workers.worker_spec import CommandWorkerSpec, PortInfo, SchedulingSpec, ServeWorkerSpec
+from miles.utils.workers.worker_spec import BaseCommandSpec, BaseServeSpec, PortInfo, SchedulingSpec
 
 _RELEASE = "miles-run-c0ffee"
 _ADDR_POOL_ID = "trainer-controller-actor"
@@ -20,8 +20,8 @@ class FakeController:
         return 1
 
 
-def _served_spec(*, num_cells: int = 2) -> ServeWorkerSpec:
-    return ServeWorkerSpec(
+def _served_spec(*, num_cells: int = 2) -> BaseServeSpec:
+    return BaseServeSpec(
         name="trainer-controller",
         port_infos=[PortInfo(name="primary", static_port=7000), PortInfo(name="rpc", static_port=8000)],
         env_var=lambda context: {},
@@ -31,8 +31,8 @@ def _served_spec(*, num_cells: int = 2) -> ServeWorkerSpec:
     )
 
 
-def _command_spec() -> CommandWorkerSpec:
-    return CommandWorkerSpec(
+def _command_spec() -> BaseCommandSpec:
+    return BaseCommandSpec(
         name="inference-router-0",
         port_infos=[PortInfo(name="primary", static_port=8000)],
         env_var=lambda context: {},

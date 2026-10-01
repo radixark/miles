@@ -20,7 +20,7 @@ from miles.utils.workers.serving.utils import (
 )
 from miles.utils.workers.serving.worker_identity import read_worker_identity, read_worker_in_pod_index
 from miles.utils.workers.types import ClusterBackend
-from miles.utils.workers.worker_spec import RPC_PORT_NAME, PortInfo, ServeWorkerSpec
+from miles.utils.workers.worker_spec import RPC_PORT_NAME, BaseServeSpec, PortInfo
 
 
 def main() -> None:
@@ -39,7 +39,7 @@ def main() -> None:
         uvicorn.Server(uvicorn.Config(app)).run(sockets=[server_socket])
 
 
-def create_worker(spec: ServeWorkerSpec, *, specs_fn: str, worker_argv: list[str]) -> Any:
+def create_worker(spec: BaseServeSpec, *, specs_fn: str, worker_argv: list[str]) -> Any:
     identity = read_worker_identity(scheduling=spec.scheduling, environ=os.environ)
     _log(f"identity={identity}")
     capability = DeferredBackendCapability(create=lambda: _backend_capability(specs_fn, worker_argv))
@@ -52,7 +52,7 @@ def _backend_capability(specs_fn: str, worker_argv: list[str]) -> BackendCapabil
     return get_backend_capability(specs=load_function(specs_fn)(worker_argv), cluster_backend=cluster_backend)
 
 
-def _rpc_port_of(spec: ServeWorkerSpec) -> PortInfo:
+def _rpc_port_of(spec: BaseServeSpec) -> PortInfo:
     ports = [port_info for port_info in spec.port_infos if port_info.name == RPC_PORT_NAME]
     assert len(ports) == 1, f"spec '{spec.name}' declares {len(ports)} rpc ports, so this process cannot pick one"
     return ports[0]

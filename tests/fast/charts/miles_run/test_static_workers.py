@@ -16,11 +16,11 @@ from tests.fast.charts.utils import (
 
 from miles.utils.external_utils.command_utils.helm_backend.launcher.values.builder import build_values
 from miles.utils.external_utils.command_utils.helm_backend.launcher.values.misc import LaunchPlan
-from miles.utils.workers.worker_spec import SchedulingSpec, ServeWorkerSpec
+from miles.utils.workers.worker_spec import BaseServeSpec, SchedulingSpec
 
 
-def _rollout_executor() -> ServeWorkerSpec:
-    return ServeWorkerSpec(
+def _rollout_executor() -> BaseServeSpec:
+    return BaseServeSpec(
         name="rollout-executor",
         port_infos=[],
         env_var=lambda context: {},

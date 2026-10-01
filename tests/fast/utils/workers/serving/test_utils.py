@@ -8,7 +8,7 @@ import pytest
 from miles.utils.function_registry import function_registry
 from miles.utils.workers.serving import utils as serving_utils
 from miles.utils.workers.serving.utils import compute_serve_worker_spec, override_argv, override_env, split_worker_argv
-from miles.utils.workers.worker_spec import CommandWorkerSpec, PortInfo, SchedulingSpec, ServeWorkerSpec
+from miles.utils.workers.worker_spec import BaseCommandSpec, BaseServeSpec, PortInfo, SchedulingSpec
 
 SPECS_FN = "test:serving-utils-specs"
 POOL_ID = "trainer"
@@ -23,8 +23,8 @@ def _base_spec_fields() -> dict[str, object]:
     }
 
 
-def _serve_spec() -> ServeWorkerSpec:
-    return ServeWorkerSpec(
+def _serve_spec() -> BaseServeSpec:
+    return BaseServeSpec(
         **_base_spec_fields(),
         worker_class="test.worker",
         ctor_kwargs=lambda context: {},
@@ -67,17 +67,17 @@ class TestComputeServeWorkerSpec:
         [
             ([_serve_spec(), _serve_spec()], "not one spec named"),
             (
-                [CommandWorkerSpec(**_base_spec_fields(), launch_command=lambda context: "true")],
-                "CommandWorkerSpec, which is not served",
+                [BaseCommandSpec(**_base_spec_fields(), launch_command=lambda context: "true")],
+                "BaseCommandSpec, which is not served",
             ),
         ],
     )
     def test_a_pool_must_match_exactly_one_serve_worker_spec(
-        self, specs: list[ServeWorkerSpec | CommandWorkerSpec], error_match: str
+        self, specs: list[BaseServeSpec | BaseCommandSpec], error_match: str
     ) -> None:
         """A pool is rejected when its name is ambiguous or belongs to a non-served spec."""
 
-        def compute_specs(worker_argv: list[str]) -> list[ServeWorkerSpec | CommandWorkerSpec]:
+        def compute_specs(worker_argv: list[str]) -> list[BaseServeSpec | BaseCommandSpec]:
             return specs
 
         with function_registry.temporary(SPECS_FN, compute_specs):

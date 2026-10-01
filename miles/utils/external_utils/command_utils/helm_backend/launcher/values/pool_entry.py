@@ -27,12 +27,12 @@ from miles.utils.workers.naming import compute_port_name
 from miles.utils.workers.types import PlatformAccess
 from miles.utils.workers.worker_provider.kubernetes.helm import env
 from miles.utils.workers.worker_spec import (
-    BaseWorkerSpec,
-    CommandWorkerSpec,
+    BaseCommandSpec,
+    BaseServeSpec,
+    BaseSpec,
     HostAndPort,
     LaunchCommandContext,
     NamedHostAndPorts,
-    ServeWorkerSpec,
 )
 
 _BIND_HOST = "0.0.0.0"
@@ -43,7 +43,7 @@ _SPECS_FN = "miles.ray.specs.entrypoint.compute_specs_from_argv"
 
 
 def build_entry(
-    spec: BaseWorkerSpec,
+    spec: BaseSpec,
     plan: LaunchPlan,
     addresses: dict[str, dict[str, NamedHostAndPorts]],
     pairing_layout: PairingLayout | None = None,
@@ -79,20 +79,20 @@ def build_entry(
     )
 
 
-def _service_account_name(spec: BaseWorkerSpec, *, plan: LaunchPlan) -> str | None:
+def _service_account_name(spec: BaseSpec, *, plan: LaunchPlan) -> str | None:
     if (access := spec.platform_access) is PlatformAccess.NONE:
         return None
     return naming.platform_account_name(release=plan.release, access=access)
 
 
 def _command_env_of_spec(
-    spec: BaseWorkerSpec,
+    spec: BaseSpec,
     context: LaunchCommandContext,
     *,
     addresses: dict[str, dict[str, NamedHostAndPorts]],
     is_sub_node: bool,
 ) -> dict[str, str]:
-    if isinstance(spec, ServeWorkerSpec):
+    if isinstance(spec, BaseServeSpec):
         return {}
 
     first = dict(spec.env_var(context))
@@ -115,7 +115,7 @@ def _command_env_of_spec(
     return {name: sentinel_to_placeholder(value, spec) for name, value in first.items()}
 
 
-def _with_prepare_cmd(command: list[str], spec: BaseWorkerSpec, plan: LaunchPlan) -> list[str]:
+def _with_prepare_cmd(command: list[str], spec: BaseSpec, plan: LaunchPlan) -> list[str]:
     if SECTION_OF_CATEGORY[spec.category] != TRAINER_ENGINES_SECTION:
         return command
     prepare = plan.prepare_cmd.get(TRAINER_ROLE)
@@ -131,7 +131,7 @@ def _with_prepare_cmd(command: list[str], spec: BaseWorkerSpec, plan: LaunchPlan
     return ["bash", "-c", f"{prepare} && exec {shlex.join(command)}"]
 
 
-def _meta_of_spec(spec: BaseWorkerSpec) -> dict[str, str]:
+def _meta_of_spec(spec: BaseSpec) -> dict[str, str]:
     gpus_per_pod = spec.scheduling.gpus_per_pod()
     if not gpus_per_pod:
         return {}
@@ -139,7 +139,7 @@ def _meta_of_spec(spec: BaseWorkerSpec) -> dict[str, str]:
 
 
 def _launch_context(
-    spec: BaseWorkerSpec,
+    spec: BaseSpec,
     addresses: dict[str, dict[str, NamedHostAndPorts]],
     *,
     cell_index: int,
@@ -164,17 +164,17 @@ def _launch_context(
     )
 
 
-def _command_of_spec(spec: BaseWorkerSpec, context: LaunchCommandContext, plan: LaunchPlan) -> list[str]:
+def _command_of_spec(spec: BaseSpec, context: LaunchCommandContext, plan: LaunchPlan) -> list[str]:
     match spec:
-        case CommandWorkerSpec():
+        case BaseCommandSpec():
             return sentinels_to_placeholders(shlex.split(spec.launch_command(context)), spec)
-        case ServeWorkerSpec():
+        case BaseServeSpec():
             return _serve_command(spec, plan)
         case _:
             raise AssertionError(f"{spec.name} is neither launched by a command nor served over rpc: {spec}")
 
 
-def _serve_command(spec: ServeWorkerSpec, plan: LaunchPlan) -> list[str]:
+def _serve_command(spec: BaseServeSpec, plan: LaunchPlan) -> list[str]:
     interpreter_prefix = python_argv_prefix()
     workers_per_pod = spec.scheduling.workers_per_pod()
     serve = [

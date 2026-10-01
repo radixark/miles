@@ -25,7 +25,7 @@ from miles.utils.workers.rpc.common.metadata import collect_rpc_method_specs, rp
 from miles.utils.workers.serving.serve_actor import ServeActor
 from miles.utils.workers.types import WorkerCommBackend
 from miles.utils.workers.worker_provider.utils import build_rpc_handle_of_worker_info
-from miles.utils.workers.worker_spec import PortInfo, SchedulingSpec, ServeWorkerSpec, WorkerLaunchContext
+from miles.utils.workers.worker_spec import BaseServeSpec, PortInfo, SchedulingSpec, WorkerLaunchContext
 
 pytestmark = pytest.mark.asyncio
 
@@ -102,8 +102,8 @@ def _make_spec(
     pg_name: str | None = None,
     env_var=None,
     worker_class: str = _WORKER_CLASS_PATH,
-) -> ServeWorkerSpec:
-    return ServeWorkerSpec(
+) -> BaseServeSpec:
+    return BaseServeSpec(
         name=name,
         port_infos=[PortInfo(name="master", static_port=9000, mode="master", allow_dynamic=True)],
         env_var=env_var if env_var is not None else (lambda _ctx: {}),
@@ -525,7 +525,7 @@ class DemoRpcServeWorker:
 _RPC_WORKER_CLASS_PATH = f"{DemoRpcServeWorker.__module__}.{DemoRpcServeWorker.__qualname__}"
 
 
-async def _launch_rpc(spec: ServeWorkerSpec) -> RayWorkerManager:
+async def _launch_rpc(spec: BaseServeSpec) -> RayWorkerManager:
     return await _launch([spec], comm_backend=WorkerCommBackend.RPC)
 
 

@@ -14,7 +14,7 @@ from pathlib import Path
 
 from miles.utils.pydantic_utils import StrictBaseModel
 from miles.utils.workers.rpc.common.metadata import rpc
-from miles.utils.workers.worker_spec import PortInfo, SchedulingSpec, ServeWorkerSpec
+from miles.utils.workers.worker_spec import BaseServeSpec, PortInfo, SchedulingSpec
 
 POOL_ID = "e2e-pool"
 RPC_PORT_FLAG = "--rpc-port"
@@ -346,13 +346,13 @@ class E2eWorker:
             return self._async_gates.setdefault(tag, asyncio.Event())
 
 
-def compute_specs(worker_argv: list[str]) -> list[ServeWorkerSpec]:
+def compute_specs(worker_argv: list[str]) -> list[BaseServeSpec]:
     return [spec_of(worker_argv, env_var=lambda context: {"MILES_E2E_ARGV": ",".join(worker_argv)})]
 
 
-def spec_of(worker_argv: list[str], *, env_var) -> ServeWorkerSpec:
+def spec_of(worker_argv: list[str], *, env_var) -> BaseServeSpec:
     args = parse_run_args(worker_argv)
-    return ServeWorkerSpec(
+    return BaseServeSpec(
         name=POOL_ID,
         port_infos=[PortInfo(name="rpc", static_port=args.rpc_port)],
         env_var=env_var,

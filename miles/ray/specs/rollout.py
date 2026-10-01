@@ -6,14 +6,14 @@ from miles.ray.specs.inference import (
 from miles.utils.workers.backend_capability.base import BackendCapability
 from miles.utils.workers.naming import compute_cell_id, compute_worker_name
 from miles.utils.workers.worker_handle import BaseWorkerHandle
-from miles.utils.workers.worker_spec import SchedulingSpec, ServeWorkerSpec
+from miles.utils.workers.worker_spec import BaseServeSpec, SchedulingSpec
 
 ROLLOUT_EXECUTOR_POOL_ID = "rollout-executor"
 ROLLOUT_EXECUTOR_WORKER_CLASS = "miles.ray.rollout.rollout_executor.RolloutExecutor"
 
 
-def spec_rollout_executor(args) -> ServeWorkerSpec:
-    return ServeWorkerSpec(
+def spec_rollout_executor(args) -> BaseServeSpec:
+    return BaseServeSpec(
         name=ROLLOUT_EXECUTOR_POOL_ID,
         port_infos=[],
         env_var=lambda _ctx: {},

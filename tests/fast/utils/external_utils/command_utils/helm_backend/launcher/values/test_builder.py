@@ -14,7 +14,7 @@ from miles.utils.external_utils.command_utils.helm_backend import naming
 from miles.utils.external_utils.command_utils.helm_backend.launcher.values import builder
 from miles.utils.external_utils.command_utils.helm_backend.launcher.values.builder import build_values
 from miles.utils.external_utils.command_utils.helm_backend.launcher.values.misc import LaunchPlan
-from miles.utils.workers.worker_spec import BaseWorkerSpec
+from miles.utils.workers.worker_spec import BaseSpec
 
 _STAMP = "2026-08-12T09:00:00+00:00"
 
@@ -325,18 +325,18 @@ class TestPodsPerCell:
         assert _rendered_pods_per_cell(spec) == spec.scheduling.pods_per_cell() == 1
 
 
-def _launched_workers_per_pod(spec: BaseWorkerSpec) -> int:
+def _launched_workers_per_pod(spec: BaseSpec) -> int:
     command = _rendered_entry(spec)["command"]
     if "--num-subprocesses" not in command:
         return 1
     return int(command[command.index("--num-subprocesses") + 1])
 
 
-def _rendered_pods_per_cell(spec: BaseWorkerSpec) -> int:
+def _rendered_pods_per_cell(spec: BaseSpec) -> int:
     return _rendered_entry(spec).get("size", 1)
 
 
-def _rendered_entry(spec: BaseWorkerSpec) -> dict:
+def _rendered_entry(spec: BaseSpec) -> dict:
     values = build_values(
         [spec],
         LaunchPlan(

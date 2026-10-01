@@ -37,7 +37,7 @@ from miles.utils.workers.worker_provider.kubernetes.core.provider import Kuberne
 from miles.utils.workers.worker_provider.kubernetes.helm import env, naming
 from miles.utils.workers.worker_provider.kubernetes.helm.builder import compute_helm_backend_capability
 from miles.utils.workers.worker_provider.kubernetes.helm.env import NAMESPACE_ENV_VAR, RELEASE_ENV_VAR
-from miles.utils.workers.worker_spec import HostAndPort, PortInfo, SchedulingSpec, ServeWorkerSpec
+from miles.utils.workers.worker_spec import BaseServeSpec, HostAndPort, PortInfo, SchedulingSpec
 
 NAMESPACE = "rl"
 _RELEASE = "miles-run-260805"
@@ -206,8 +206,8 @@ class _PerHostTransport(httpx.AsyncBaseTransport):
         return await transport.handle_async_request(request)
 
 
-def trainer_spec(*, num_workers_per_cell: int, num_gpus_per_node: int) -> ServeWorkerSpec:
-    return ServeWorkerSpec(
+def trainer_spec(*, num_workers_per_cell: int, num_gpus_per_node: int) -> BaseServeSpec:
+    return BaseServeSpec(
         name=POOL,
         category=POOL_CATEGORY_TRAINER_ENGINE,
         port_infos=[PortInfo(name="master", static_port=9000, mode="master")],

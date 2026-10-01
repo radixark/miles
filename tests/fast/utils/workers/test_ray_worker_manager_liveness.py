@@ -11,7 +11,7 @@ from miles.utils.workers import ray_worker_manager
 from miles.utils.workers.ray_worker_manager import RayWorkerManager
 from miles.utils.workers.types import WorkerCommBackend
 from miles.utils.workers.worker_provider.ray import RayWorkerProvider
-from miles.utils.workers.worker_spec import PortInfo, SchedulingSpec, ServeWorkerSpec
+from miles.utils.workers.worker_spec import BaseServeSpec, PortInfo, SchedulingSpec
 
 
 class DemoWorker:
@@ -22,8 +22,8 @@ class DemoWorker:
 _WORKER_CLASS_PATH = f"{DemoWorker.__module__}.{DemoWorker.__qualname__}"
 
 
-def _make_spec(name: str, *, num_cells: int = 1, num_workers_per_cell: int = 1) -> ServeWorkerSpec:
-    return ServeWorkerSpec(
+def _make_spec(name: str, *, num_cells: int = 1, num_workers_per_cell: int = 1) -> BaseServeSpec:
+    return BaseServeSpec(
         name=name,
         port_infos=[PortInfo(name="master", static_port=9000, mode="master", allow_dynamic=True)],
         env_var=lambda _ctx: {},
@@ -35,7 +35,7 @@ def _make_spec(name: str, *, num_cells: int = 1, num_workers_per_cell: int = 1) 
     )
 
 
-async def _launch(specs: list[ServeWorkerSpec], *, comm_backend: WorkerCommBackend) -> RayWorkerManager:
+async def _launch(specs: list[BaseServeSpec], *, comm_backend: WorkerCommBackend) -> RayWorkerManager:
     manager = RayWorkerManager()
     await manager.init(worker_manager_args(), specs, {}, comm_backend=comm_backend)
     return manager

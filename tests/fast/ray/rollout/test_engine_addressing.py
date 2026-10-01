@@ -12,7 +12,7 @@ from miles.ray.specs.inference import specs_inference_engine
 from miles.utils.workers.naming import compute_worker_name
 from miles.utils.workers.ray_worker_manager import RayWorkerManager
 from miles.utils.workers.types import WorkerCommBackend
-from miles.utils.workers.worker_spec import CommandWorkerSpec, LaunchCommandContext, NamedHostAndPorts
+from miles.utils.workers.worker_spec import BaseCommandSpec, LaunchCommandContext, NamedHostAndPorts
 
 
 @pytest.fixture
@@ -47,7 +47,7 @@ async def _launch_engines(args: Namespace) -> dict[str, LaunchCommandContext]:
     """Run the real launch pipeline and return, per worker name, the context its launch command got."""
     contexts: dict[str, LaunchCommandContext] = {}
 
-    def _recording_spec(spec: CommandWorkerSpec) -> CommandWorkerSpec:
+    def _recording_spec(spec: BaseCommandSpec) -> BaseCommandSpec:
         def _record(ctx: LaunchCommandContext) -> str:
             worker_name = compute_worker_name(
                 pool_id=spec.name, cell_index=ctx.cell_index, worker_in_cell_index=ctx.worker_in_cell_index

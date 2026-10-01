@@ -11,13 +11,7 @@ from miles.utils.workers.worker_info import WorkerInfo
 from miles.utils.workers.worker_provider.base import BaseWorkerProvider
 from miles.utils.workers.worker_provider.kubernetes.helm import naming
 from miles.utils.workers.worker_provider.utils import build_rpc_handle
-from miles.utils.workers.worker_spec import (
-    RPC_PORT_NAME,
-    BaseWorkerSpec,
-    HostAndPort,
-    NamedHostAndPorts,
-    ServeWorkerSpec,
-)
+from miles.utils.workers.worker_spec import RPC_PORT_NAME, BaseServeSpec, BaseSpec, HostAndPort, NamedHostAndPorts
 
 _STATIC_ADDRS_READY_TIMEOUT_SECONDS = 600.0
 
@@ -32,7 +26,7 @@ class StaticWorkerProvider(BaseWorkerProvider):
         self._worker_class = worker_class
 
     @classmethod
-    def of_release(cls, *, release: str, spec: BaseWorkerSpec) -> StaticWorkerProvider:
+    def of_release(cls, *, release: str, spec: BaseSpec) -> StaticWorkerProvider:
         scheduling = spec.scheduling
         assert scheduling.pods_per_cell() == 1, (
             f"pool {spec.name} spreads a cell over {scheduling.pods_per_cell()} pods, "
@@ -52,7 +46,7 @@ class StaticWorkerProvider(BaseWorkerProvider):
                 for cell_index in range(scheduling.num_cells)
                 for worker_in_cell_index in range(scheduling.num_workers_per_cell)
             },
-            worker_class=spec.worker_class if isinstance(spec, ServeWorkerSpec) else None,
+            worker_class=spec.worker_class if isinstance(spec, BaseServeSpec) else None,
         )
 
     @classmethod
