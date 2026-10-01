@@ -1,12 +1,16 @@
 from pydantic import ConfigDict
 
 from miles.backends.megatron_utils.megatron_config import MegatronConfig
-from miles.backends.sglang_utils.sglang_config import SglangConfig
-
+from miles.utils.args.component_multi_lora import MultiLoraOnlyConfig
+from miles.utils.args.component_orchestrator import OrchestratorOnlyConfig
+from miles.utils.args.component_rollout import InferenceControllerOnlyConfig, RolloutOnlyConfig
+from miles.utils.args.component_shared import SglangFieldsConfig
+from miles.utils.args.component_trainer import TrainerOnlyConfig
 from miles.utils.args.configs.algo import AlgoConfig
 from miles.utils.args.configs.ci import CiConfig
 from miles.utils.args.configs.cluster import ClusterConfig
 from miles.utils.args.configs.custom_megatron_plugins import CustomMegatronPluginsConfig
+from miles.utils.args.configs.dashboard import DashboardConfig
 from miles.utils.args.configs.data import DataConfig
 from miles.utils.args.configs.debug import DebugConfig
 from miles.utils.args.configs.eval import EvalConfig
@@ -27,9 +31,12 @@ from miles.utils.args.configs.session import SessionConfig
 from miles.utils.args.configs.tensorboard import TensorboardConfig
 from miles.utils.args.configs.train import TrainConfig
 from miles.utils.args.configs.wandb import WandbConfig
+from miles.utils.args.runtime_base import BaseLeafConfig
 
 
-class AllConfig(
+class OrchestratorConfig(
+    BaseLeafConfig,
+    OrchestratorOnlyConfig,
     RunUuidConfig,
     ClusterConfig,
     TrainConfig,
@@ -54,12 +61,178 @@ class AllConfig(
     PrometheusConfig,
     TensorboardConfig,
     WandbConfig,
+    DashboardConfig,
+    SglangFieldsConfig,
+):
+    pass
+
+
+class TrainerConfig(
+    BaseLeafConfig,
+    TrainerOnlyConfig,
+    RunUuidConfig,
+    ClusterConfig,
+    TrainConfig,
+    RolloutRelatedConfig,
+    FaultToleranceConfig,
+    DataConfig,
+    EvalConfig,
+    AlgoConfig,
+    OnPolicyDistillationConfig,
+    LoraConfig,
+    RouterConfig,
+    DebugConfig,
+    NetworkConfig,
+    RewardModelConfig,
+    RolloutBufferConfig,
+    CustomMegatronPluginsConfig,
+    MtpTrainingConfig,
+    PrefillDecodeDisaggregationConfig,
+    CiConfig,
+    SessionConfig,
+    MlflowConfig,
+    PrometheusConfig,
+    TensorboardConfig,
+    WandbConfig,
+    DashboardConfig,
+    SglangFieldsConfig,
+):
+    pass
+
+
+class InferenceControllerConfig(
+    BaseLeafConfig,
+    InferenceControllerOnlyConfig,
+    RunUuidConfig,
+    ClusterConfig,
+    TrainConfig,
+    RolloutRelatedConfig,
+    FaultToleranceConfig,
+    DataConfig,
+    EvalConfig,
+    AlgoConfig,
+    OnPolicyDistillationConfig,
+    LoraConfig,
+    RouterConfig,
+    DebugConfig,
+    NetworkConfig,
+    RewardModelConfig,
+    RolloutBufferConfig,
+    CustomMegatronPluginsConfig,
+    MtpTrainingConfig,
+    PrefillDecodeDisaggregationConfig,
+    CiConfig,
+    SessionConfig,
+    MlflowConfig,
+    PrometheusConfig,
+    TensorboardConfig,
+    WandbConfig,
+    DashboardConfig,
+    SglangFieldsConfig,
+):
+    pass
+
+
+class RolloutConfig(
+    BaseLeafConfig,
+    RolloutOnlyConfig,
+    RunUuidConfig,
+    ClusterConfig,
+    TrainConfig,
+    RolloutRelatedConfig,
+    FaultToleranceConfig,
+    DataConfig,
+    EvalConfig,
+    AlgoConfig,
+    OnPolicyDistillationConfig,
+    LoraConfig,
+    RouterConfig,
+    DebugConfig,
+    NetworkConfig,
+    RewardModelConfig,
+    RolloutBufferConfig,
+    CustomMegatronPluginsConfig,
+    MtpTrainingConfig,
+    PrefillDecodeDisaggregationConfig,
+    CiConfig,
+    SessionConfig,
+    MlflowConfig,
+    PrometheusConfig,
+    TensorboardConfig,
+    WandbConfig,
+    DashboardConfig,
+    SglangFieldsConfig,
+):
+    pass
+
+
+class MultiLoraConfig(
+    BaseLeafConfig,
+    MultiLoraOnlyConfig,
+    RunUuidConfig,
+    ClusterConfig,
+    TrainConfig,
+    RolloutRelatedConfig,
+    FaultToleranceConfig,
+    DataConfig,
+    EvalConfig,
+    AlgoConfig,
+    OnPolicyDistillationConfig,
+    LoraConfig,
+    RouterConfig,
+    DebugConfig,
+    NetworkConfig,
+    RewardModelConfig,
+    RolloutBufferConfig,
+    CustomMegatronPluginsConfig,
+    MtpTrainingConfig,
+    PrefillDecodeDisaggregationConfig,
+    CiConfig,
+    SessionConfig,
+    MlflowConfig,
+    PrometheusConfig,
+    TensorboardConfig,
+    WandbConfig,
+    DashboardConfig,
+    SglangFieldsConfig,
+):
+    pass
+
+
+class AllConfig(
+    BaseLeafConfig,
+    RunUuidConfig,
+    ClusterConfig,
+    TrainConfig,
+    RolloutRelatedConfig,
+    FaultToleranceConfig,
+    DataConfig,
+    EvalConfig,
+    AlgoConfig,
+    OnPolicyDistillationConfig,
+    LoraConfig,
+    RouterConfig,
+    DebugConfig,
+    NetworkConfig,
+    RewardModelConfig,
+    RolloutBufferConfig,
+    CustomMegatronPluginsConfig,
+    MtpTrainingConfig,
+    PrefillDecodeDisaggregationConfig,
+    CiConfig,
+    SessionConfig,
+    MlflowConfig,
+    PrometheusConfig,
+    TensorboardConfig,
+    WandbConfig,
+    DashboardConfig,
+    SglangFieldsConfig,
+    OrchestratorOnlyConfig,
+    RolloutOnlyConfig,
+    InferenceControllerOnlyConfig,
+    MultiLoraOnlyConfig,
 ):
     # TODO: Remove extra="allow" after backend, custom, and derived fields have explicit config owners.
     model_config = ConfigDict(extra="allow")
 
     raw_megatron: MegatronConfig
-    sglang: SglangConfig
-
-    # TODO: Remove this temporary override after separating CLI input types from normalized config types.
-    target_modules: str | list[str] | None = None
