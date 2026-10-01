@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import time
 from pathlib import Path
 from typing import Any
@@ -12,7 +13,13 @@ import torch.distributed.checkpoint as dcp
 from torch.distributed.checkpoint.state_dict import get_state_dict, set_state_dict
 from torch.distributed.checkpoint.stateful import Stateful
 
+from miles.backends.training_utils.checkpoint_io import write_checkpoint_dir
+from miles.utils.distributed_utils import run_on_rank0
+
 logger = logging.getLogger(__name__)
+
+# dcp.save writes this last, after every rank's shards, so its presence marks a complete save.
+_DCP_METADATA = ".metadata"
 
 
 class ModelState(Stateful):
@@ -69,10 +76,17 @@ def _read_checkpoint_metadata(path: Path) -> dict[str, Any]:
         return {}
 
 
-def _write_checkpoint_metadata(path: Path, metadata: dict[str, Any]) -> None:
+def _atomic_write_text(path: Path, text: str) -> None:
     tmp_path = path.with_suffix(path.suffix + ".tmp")
-    tmp_path.write_text(json.dumps(metadata, indent=2, sort_keys=True))
+    with tmp_path.open("w") as f:
+        f.write(text)
+        f.flush()
+        os.fsync(f.fileno())
     tmp_path.replace(path)
+
+
+def _write_checkpoint_metadata(path: Path, metadata: dict[str, Any]) -> None:
+    _atomic_write_text(path, json.dumps(metadata, indent=2, sort_keys=True))
 
 
 def load(actor: Any) -> dict[str, Any] | None:
@@ -121,7 +135,7 @@ def load(actor: Any) -> dict[str, Any] | None:
 
     # Load optimizer state (optional)
     load_optimizer = not getattr(actor.args, "no_load_optim", False) and hasattr(actor, "optimizer")
-    if load_optimizer and optimizer_dir.exists():
+    if load_optimizer and (optimizer_dir / _DCP_METADATA).exists():
         optimizer_state = OptimizerState(actor.model, actor.optimizer)
         optim_state_dict = {"optim_state": optimizer_state}
         try:
@@ -133,7 +147,7 @@ def load(actor: Any) -> dict[str, Any] | None:
         logger.info(f"[FSDP] Optimizer checkpoint not found at {optimizer_dir}, skipping optimizer load.")
 
     # Load LR scheduler state (optional)
-    load_lr_scheduler = hasattr(actor, "lr_scheduler") and lr_scheduler_dir.exists()
+    load_lr_scheduler = hasattr(actor, "lr_scheduler") and (lr_scheduler_dir / _DCP_METADATA).exists()
     if load_lr_scheduler:
         lr_scheduler_state = LRSchedulerState(actor.lr_scheduler)
         lr_scheduler_state_dict = {"lr_scheduler_state": lr_scheduler_state}
@@ -198,53 +212,52 @@ def save(actor: Any, iteration: int) -> None:
     base_dir = Path(actor.args.save).expanduser()
     step_id = iteration + 1
     checkpoint_dir = base_dir / f"iter_{step_id:07d}"
-    model_dir = checkpoint_dir / "model"
-    optimizer_dir = checkpoint_dir / "optimizer"
-    lr_scheduler_dir = checkpoint_dir / "lr_scheduler"
+    is_rank0 = dist.get_rank() == 0
 
-    if dist.get_rank() == 0:
-        checkpoint_dir.mkdir(parents=True, exist_ok=True)
-        model_dir.mkdir(parents=True, exist_ok=True)
-        optimizer_dir.mkdir(parents=True, exist_ok=True)
-        lr_scheduler_dir.mkdir(parents=True, exist_ok=True)
-    dist.barrier()
+    def write_shards(directory: Path) -> None:
+        # dcp.save creates each directory it writes into
+        model_state = ModelState(actor.model)
+        state_dict = {"model_state": model_state}
+        dcp.save(state_dict, checkpoint_id=str(directory / "model"))
 
-    # Save model weights
-    model_state = ModelState(actor.model)
-    state_dict = {"model_state": model_state}
-    dcp.save(state_dict, checkpoint_id=str(model_dir))
+        # Save optimizer state (skip if --no-save-optim is set)
+        save_optimizer_state = not getattr(actor.args, "no_save_optim", False)
+        if save_optimizer_state and hasattr(actor, "optimizer") and actor.optimizer is not None:
+            optimizer_state = OptimizerState(actor.model, actor.optimizer)
+            optim_state_dict = {"optim_state": optimizer_state}
+            dcp.save(optim_state_dict, checkpoint_id=str(directory / "optimizer"))
 
-    # Save optimizer state (skip if --no-save-optim is set)
-    save_optimizer_state = not getattr(actor.args, "no_save_optim", False)
-    if save_optimizer_state and hasattr(actor, "optimizer") and actor.optimizer is not None:
-        optimizer_state = OptimizerState(actor.model, actor.optimizer)
-        optim_state_dict = {"optim_state": optimizer_state}
-        dcp.save(optim_state_dict, checkpoint_id=str(optimizer_dir))
+        # Save LR scheduler state (skip if --no-save-optim is set)
+        if save_optimizer_state and hasattr(actor, "lr_scheduler") and actor.lr_scheduler is not None:
+            lr_scheduler_state = LRSchedulerState(actor.lr_scheduler)
+            lr_scheduler_state_dict = {"lr_scheduler_state": lr_scheduler_state}
+            dcp.save(lr_scheduler_state_dict, checkpoint_id=str(directory / "lr_scheduler"))
 
-    # Save LR scheduler state (skip if --no-save-optim is set)
-    if save_optimizer_state and hasattr(actor, "lr_scheduler") and actor.lr_scheduler is not None:
-        lr_scheduler_state = LRSchedulerState(actor.lr_scheduler)
-        lr_scheduler_state_dict = {"lr_scheduler_state": lr_scheduler_state}
-        dcp.save(lr_scheduler_state_dict, checkpoint_id=str(lr_scheduler_dir))
+        if is_rank0:
+            rng_state = {"torch": torch.get_rng_state()}
+            rng_state["cuda"] = torch.cuda.get_rng_state_all()
+            torch.save(rng_state, directory / "rng.pt")
 
-    if dist.get_rank() == 0:
-        rng_state = {"torch": torch.get_rng_state()}
-        rng_state["cuda"] = torch.cuda.get_rng_state_all()
-        torch.save(rng_state, checkpoint_dir / "rng.pt")
+            metadata = {
+                "iteration": step_id,
+                "rollout_id": iteration,
+                "next_rollout_id": iteration + 1,
+                "global_step": actor.global_step,
+                "micro_step": actor.micro_step,
+                "world_size": dist.get_world_size(),
+                "timestamp": time.time(),
+            }
+            _write_checkpoint_metadata(directory / "meta.json", metadata)
 
-        metadata = {
-            "iteration": step_id,
-            "rollout_id": iteration,
-            "next_rollout_id": iteration + 1,
-            "global_step": actor.global_step,
-            "micro_step": actor.micro_step,
-            "world_size": dist.get_world_size(),
-            "timestamp": time.time(),
-        }
-        _write_checkpoint_metadata(checkpoint_dir / "meta.json", metadata)
+    write_checkpoint_dir(checkpoint_dir, write_shards)
 
-        tracker_file = base_dir / "latest_checkpointed_iteration.txt"
-        tracker_file.write_text(str(step_id))
+    # The tracker is overwritten on every save and isn't protected by write_checkpoint_dir. Writing it in
+    # place risks a crash leaving it empty, which would make every later --load fail, so write-then-rename.
+    run_on_rank0(
+        "writing the FSDP checkpoint tracker",
+        _atomic_write_text,
+        base_dir / "latest_checkpointed_iteration.txt",
+        str(step_id),
+    )
+    if is_rank0:
         logger.info(f"[FSDP] Saved checkpoint to {checkpoint_dir}")
-
-    dist.barrier()

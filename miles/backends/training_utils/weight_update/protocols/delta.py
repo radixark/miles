@@ -24,7 +24,7 @@ from miles.backends.training_utils.weight_update.session import check_weight_syn
 from miles.backends.training_utils.weight_update.utils import get_data_replica_rank_and_size
 from miles.utils import async_utils
 from miles.utils.disk_delta import NUM_WORKERS, checksum, make_tensor_reader, overwrite_encode
-from miles.utils.distributed_utils import get_gloo_group
+from miles.utils.distributed_utils import get_gloo_group, raise_if_any_rank_failed
 
 logger = logging.getLogger(__name__)
 
@@ -217,18 +217,7 @@ class UpdateWeightFromDiskDelta(WeightTransferProtocol):
                 # collectives. Defer the error until iteration finishes, then make every rank fail.
                 local_error = error
 
-        group = get_gloo_group()
-        error_messages: list[str | None] = [None] * dist.get_world_size(group=group)
-        local_error_message = None if local_error is None else f"{type(local_error).__name__}: {local_error}"
-        dist.all_gather_object(error_messages, local_error_message, group=group)
-        if any(error_messages):
-            failed_rank, error_message = next(
-                (rank, message) for rank, message in enumerate(error_messages) if message is not None
-            )
-            error = RuntimeError(f"Disk-delta baseline validation failed on rank {failed_rank}: {error_message}")
-            if local_error is not None:
-                raise error from local_error
-            raise error
+        raise_if_any_rank_failed("Disk-delta baseline validation", local_error)
 
         if dist.get_rank() == 0:
             check_weight_sync_results(async_utils.wait_futures(pulls), is_lora=False)

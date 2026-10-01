@@ -1,9 +1,11 @@
+from collections.abc import Callable
 from datetime import timedelta
-from typing import Any
+from typing import Any, TypeVar
 
 import torch
 import torch.distributed as dist
 from packaging.version import parse
+from torch.distributed.checkpoint.api import CheckpointException
 from torch.distributed.distributed_c10d import (
     Backend,
     PrefixStore,
@@ -17,6 +19,8 @@ from torch.distributed.distributed_c10d import (
 from miles.utils.ft_utils.process_group_utils import GeneralPGUtil
 
 GLOO_GROUP = None
+
+_T = TypeVar("_T")
 
 
 def init_gloo_group():
@@ -33,6 +37,53 @@ def get_gloo_group():
     if GLOO_GROUP is None:
         raise RuntimeError("Gloo group has not been initialized. Call _init_gloo_group() first.")
     return GLOO_GROUP
+
+
+class RankFailureError(RuntimeError):
+    """Raised on every rank when a rank-local step failed on at least one rank."""
+
+
+# torch.distributed.checkpoint raises CheckpointException, which derives from BaseException, not Exception.
+RANK_LOCAL_ERRORS = (Exception, CheckpointException)
+
+
+def raise_if_any_rank_failed(step: str, local_error: BaseException | None) -> None:
+    """Collectively share rank-local errors over gloo so no rank waits on a collective a failed peer skips.
+
+    Every rank must call. Without a process group the local error is re-raised unchanged.
+    """
+    if not dist.is_initialized():
+        if local_error is not None:
+            raise local_error
+        return
+    errors: list[str | None] = [None] * dist.get_world_size()
+    local_message = None if local_error is None else f"{type(local_error).__name__}: {str(local_error).strip()}"
+    dist.all_gather_object(errors, local_message, group=get_gloo_group())
+    if any(errors):
+        details = "; ".join(f"rank {rank}: {error}" for rank, error in enumerate(errors) if error is not None)
+        raise RankFailureError(f"{step} failed ({details})") from local_error
+
+
+def run_on_all_ranks(step: str, operation: Callable[..., _T], *args, **kwargs) -> _T:
+    """Every rank runs the operation; every rank raises if it failed on any rank."""
+    result, local_error = None, None
+    try:
+        result = operation(*args, **kwargs)
+    except RANK_LOCAL_ERRORS as error:
+        local_error = error
+    raise_if_any_rank_failed(step, local_error)
+    return result
+
+
+def run_on_rank0(step: str, operation: Callable[..., None], *args, **kwargs) -> None:
+    """Rank 0 runs the operation; every rank raises if it failed there."""
+    local_error = None
+    if not dist.is_initialized() or dist.get_rank() == 0:
+        try:
+            operation(*args, **kwargs)
+        except RANK_LOCAL_ERRORS as error:
+            local_error = error
+    raise_if_any_rank_failed(step, local_error)
 
 
 # Copy from pytorch to allow creating multiple main groups.

@@ -13,6 +13,7 @@ from miles.backends.megatron_utils.lora.utils import (
     load_lora_adapter,
     save_lora_checkpoint,
 )
+from miles.utils import distributed_utils
 from miles.utils.lora.utils import LORA_ADAPTER_NAME, is_lora_weight_name
 
 # ---------------------------------------------------------------------------
@@ -140,6 +141,51 @@ def test_load_lora_adapter_rejects_shards_saved_under_another_layout(tmp_path, m
         lora_utils.load_lora_adapter([_AdapterModel()], str(tmp_path))
 
 
+def _write_adapter_shard(tmp_path):
+    torch.save({"lora_A": torch.ones(1, 2), "lora_B": torch.ones(2, 1)}, tmp_path / "adapter_megatron_rank0.pt")
+
+
+def _as_rank0_of_two(monkeypatch, peer_messages):
+    """Rank 1 answers each gloo exchange with the next of ``peer_messages``."""
+    peers = iter(peer_messages)
+
+    def all_gather_object(output, local_message, group):
+        output[:] = [local_message, next(peers)]
+
+    monkeypatch.setattr(lora_utils.dist, "is_initialized", lambda: True)
+    monkeypatch.setattr(lora_utils.dist, "get_rank", lambda: 0)
+    monkeypatch.setattr(lora_utils.dist, "get_world_size", lambda: 2)
+    monkeypatch.setattr(lora_utils.dist, "all_gather_object", all_gather_object)
+    monkeypatch.setattr(distributed_utils, "GLOO_GROUP", object())
+
+
+def test_load_lora_adapter_fails_when_ranks_restore_different_state(tmp_path, monkeypatch):
+    """A peer that found no training state would silently resume with a fresh optimizer and step."""
+    _single_rank(monkeypatch)
+    _write_adapter_shard(tmp_path)
+    _as_rank0_of_two(monkeypatch, [None, (True, 11, True)])
+
+    with pytest.raises(RuntimeError, match="restored differently across ranks"):
+        lora_utils.load_lora_adapter([_AdapterModel()], str(tmp_path))
+
+
+def test_load_lora_adapter_fails_on_every_rank_when_a_peer_fails(tmp_path, monkeypatch):
+    _single_rank(monkeypatch)
+    _write_adapter_shard(tmp_path)
+    _as_rank0_of_two(monkeypatch, ["FileNotFoundError: no shard for global rank 1"])
+
+    with pytest.raises(distributed_utils.RankFailureError, match="rank 1: FileNotFoundError"):
+        lora_utils.load_lora_adapter([_AdapterModel()], str(tmp_path))
+
+
+def test_load_lora_adapter_agrees_across_ranks(tmp_path, monkeypatch):
+    _single_rank(monkeypatch)
+    _write_adapter_shard(tmp_path)
+    _as_rank0_of_two(monkeypatch, [None, (True, None, False)])
+
+    assert lora_utils.load_lora_adapter([_AdapterModel()], str(tmp_path)) == (True, None, False)
+
+
 class TestSaveLoraCheckpointTrainingState:
     def _save(self, tmp_path, *, no_save_optim, scheduler=None):
         publisher = SimpleNamespace(write_adapter=lambda *_: None)
@@ -167,7 +213,7 @@ class TestSaveLoraCheckpointTrainingState:
         scheduler = SimpleNamespace(state_dict=lambda: {"lr": 0.5})
         files = self._save(tmp_path, no_save_optim=False, scheduler=scheduler)
 
-        assert files == ["adapter_megatron_rank0.pt", "training_state_rank0.pt"]
+        assert files == [".complete", "adapter_megatron_rank0.pt", "training_state_rank0.pt"]
         state = self._state(tmp_path)
         assert state["optimizer"] == {"step": 7}
         assert state["opt_param_scheduler"] == {"lr": 0.5}
@@ -179,7 +225,7 @@ class TestSaveLoraCheckpointTrainingState:
         scheduler = SimpleNamespace(state_dict=lambda: {"lr": 0.5})
         files = self._save(tmp_path, no_save_optim=True, scheduler=scheduler)
 
-        assert files == ["adapter_megatron_rank0.pt", "training_state_rank0.pt"]
+        assert files == [".complete", "adapter_megatron_rank0.pt", "training_state_rank0.pt"]
         state = self._state(tmp_path)
         assert state["optimizer"] is None
         assert state["opt_param_scheduler"] == {"lr": 0.5}
