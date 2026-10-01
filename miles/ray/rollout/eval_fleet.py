@@ -16,6 +16,7 @@ from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
 from miles.ray.specs.inference import inference_controller_worker_name
 from miles.rollout.checkpoint_eval import EvalSkip, retarget_args
 from miles.rollout.inference_rollout.inference_rollout_common import GenerateState
+from miles.utils.args.component_rollout import InferenceRuntimeMutState
 from miles.utils.http_utils import wait_http_ok
 from miles.utils.workers.rpc.client.misc import ServerRestartedError
 from miles.utils.workers.worker_handle import BaseWorkerHandle, WorkerUnreachableError
@@ -30,8 +31,7 @@ EVAL_WEIGHT_LOAD_TIMEOUT_SECS = 600.0
 @dataclasses.dataclass(frozen=True)
 class EvalFleetInfo:
     router: HostAndPort
-    num_gpus: int
-    num_gpus_per_engine: int
+    engine_gpu_counts: list[int]
 
 
 @dataclasses.dataclass(frozen=True)
@@ -52,7 +52,12 @@ class RolloutExecutorEvalFleet:
             inference_controller_worker_name()
         )
         self._state = GenerateState(
-            retarget_args(args, info.router.host, info.router.port, info.num_gpus, info.num_gpus_per_engine)
+            retarget_args(
+                args=args,
+                router_ip=info.router.host,
+                router_port=info.router.port,
+                engine_gpu_counts=info.engine_gpu_counts,
+            )
         )
 
     async def pin(self, checkpoint_dir: str, weight_version: str) -> GenerateState:
@@ -60,12 +65,18 @@ class RolloutExecutorEvalFleet:
             pin = await self._inference_controller.pin_eval_fleet(
                 checkpoint_dir=checkpoint_dir, weight_version=weight_version
             )
+            info = await self._inference_controller.get_eval_fleet_info()
         except UNREACHABLE_CONTROLLER_ERRORS as e:
             logger.warning(f"Eval fleet controller could not be reached: {e!r}")
             raise EvalSkip("controller_unreachable") from e
 
         if (skip_reason := pin.skip_reason) is not None:
             raise EvalSkip(skip_reason)
+        if info is None:
+            raise EvalSkip("controller_unreachable")
+        self._state.args.inference_runtime_mut_state.set_(
+            InferenceRuntimeMutState(engine_count=len(info.engine_gpu_counts), gpu_count=sum(info.engine_gpu_counts))
+        )
         return self._state
 
 
@@ -80,8 +91,7 @@ class InferenceControllerEvalFleet:
     def info(self) -> EvalFleetInfo:
         return EvalFleetInfo(
             router=HostAndPort(host=self._srv.router_ip, port=self._srv.router_port),
-            num_gpus=self.args.eval_num_gpus,
-            num_gpus_per_engine=self.args.eval_num_gpus_per_engine,
+            engine_gpu_counts=self._srv.engine_gpu_counts,
         )
 
     async def pin(self, checkpoint_dir: str, weight_version: str) -> EvalFleetPin:

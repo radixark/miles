@@ -16,9 +16,11 @@ Requires ``train_async.py`` and a snapshot source (``--eval-hf-dir`` or ``--save
 import abc
 import inspect
 import logging
-from argparse import Namespace
+from collections.abc import Sequence
 
 from miles.rollout.base_types import BaseRolloutFn, RolloutFnEvalInput, RolloutFnEvalOutput, RolloutFnInput
+from miles.utils.args.component_rollout import InferenceRuntimeMutState
+from miles.utils.args.custom_view import ImmutableNamespace
 from miles.utils.function_registry import load_function
 
 __all__ = [
@@ -31,18 +33,20 @@ __all__ = [
 logger = logging.getLogger(__name__)
 
 
-def retarget_args(args: Namespace, router_ip, router_port, num_gpus: int, num_gpus_per_engine: int) -> Namespace:
+def retarget_args(
+    *, args: ImmutableNamespace, router_ip: str, router_port: int, engine_gpu_counts: Sequence[int]
+) -> ImmutableNamespace:
     """Shallow-copy ``args`` with the router address and GPU sizing swapped for eval.
 
     Generate functions read the router from ``args`` and ``GenerateState`` sizes its
     semaphore off the GPU counts, so a retargeted copy runs the standard eval path
     against a different set of engines unchanged.
     """
+    runtime = InferenceRuntimeMutState(engine_count=len(engine_gpu_counts), gpu_count=sum(engine_gpu_counts))
     values = dict(args) | {
+        "inference_runtime_mut_state": runtime,
         "sglang_router_ip": router_ip,
         "sglang_router_port": router_port,
-        "rollout_num_gpus": num_gpus,
-        "rollout_num_gpus_per_engine": num_gpus_per_engine,
     }
     return type(args).model_validate(values)
 
