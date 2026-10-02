@@ -11,9 +11,10 @@ GPU CI runs inside `radixark/miles`. This doc maps which Dockerfiles exist, the 
 | ------------------------ | ------------------------ | -------------------------------------- |
 | `docker/Dockerfile`      | `radixark/miles` (CUDA)  | `docker-build.yml`, `release-docker.yml` |
 | `docker/Dockerfile.rocm` | AMD ROCm (MI35x) | `docker-build.yml` (`rocm*-mi35x` variants) |
+| `docker/Dockerfile.cu12` | Deprecated CUDA 12.9 (x86_64), unmaintained | Manual builds only |
 
 
-CUDA 12 image builds are retired, following [SGLang v0.5.20](https://github.com/sgl-project/sglang/releases/tag/v0.5.20). Existing CUDA 12 image tags remain available, but are no longer rebuilt, retagged, or pruned by this workflow.
+CUDA 12 image builds are retired, following [SGLang v0.5.20](https://github.com/sgl-project/sglang/releases/tag/v0.5.20). Existing CUDA 12 image tags remain available, but are no longer rebuilt, retagged, or pruned by this workflow. The old recipe is preserved in `docker/Dockerfile.cu12` with the former `cu12-x86` defaults (`v0.5.19-cu129`, `sglang-miles-v0.5.19-final`, and `cu129-x86_64`); it is deprecated and no longer maintained.
 
 ### `docker/Dockerfile` — inputs & output
 
