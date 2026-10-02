@@ -29,6 +29,7 @@ on:
           - cu12-x86
           - rocm724-mi35x
           - rocm10-mi35x
+          - rocm10-mi30x
       image_tag:
         description: 'Tag mode: latest, dev (rolling + timestamped), or custom'
         required: true

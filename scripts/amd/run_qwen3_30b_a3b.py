@@ -13,7 +13,7 @@ class ScriptArgs(command_utils.ExecuteTrainConfig):
     model_name: str = "Qwen3-30B-A3B"
     megatron_model_type: str = "qwen3-30B-A3B"
     num_gpus_per_node: int | None = None
-    hardware: Literal["auto", "MI350X", "MI355X"] = "auto"
+    hardware: Literal["auto", "MI300X", "MI325X", "MI350X", "MI355X"] = "auto"
     enable_eval: bool = True
     extra_args: str = ""
     data_dir: str = "/root/datasets"
@@ -170,7 +170,7 @@ def execute(args: ScriptArgs):
         misc_args += "--megatron-to-hf-mode bridge "
 
     match (args.hardware, args.num_nodes):
-        case ("MI350X" | "MI355X", 1 | 2):
+        case ("MI300X" | "MI325X" | "MI350X" | "MI355X", 1 | 2):
             perf_args += (
                 "--tensor-model-parallel-size 1 "
                 "--sequence-parallel "

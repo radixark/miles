@@ -1060,10 +1060,14 @@ class TestDetectHardware:
 
         assert command_utils.detect_hardware() == expected
 
-    def test_rocm_reads_the_device_name(self, monkeypatch):
-        _fake_torch(monkeypatch, capability=(9, 5), machine="x86_64", name="AMD Instinct MI355X", hip="6.4")
+    @pytest.mark.parametrize(
+        ("capability", "expected"),
+        [((9, 4), "MI300X"), ((9, 4), "MI325X"), ((9, 5), "MI350X"), ((9, 5), "MI355X")],
+    )
+    def test_rocm_reads_the_device_name(self, monkeypatch, capability, expected):
+        _fake_torch(monkeypatch, capability=capability, machine="x86_64", name=f"AMD Instinct {expected}", hip="6.4")
 
-        assert command_utils.detect_hardware() == "MI355X"
+        assert command_utils.detect_hardware() == expected
 
     def test_an_unrecognized_device_asks_for_an_explicit_hardware(self, monkeypatch):
         """Silently guessing the wrong profile costs a whole run; a launcher flag is one word."""
