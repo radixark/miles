@@ -2,15 +2,15 @@
 # ROCm / gfx950 image for Miles (built on a prebuilt sglang base):
 #
 # 1. rocm724-mi35x  (gfx950, ROCm 7.2.4 / MI350 / MI355X, Python 3.12 base)
-#    build-arg:SGLANG_IMAGE_REPO=rocm/sgl-dev  SGLANG_IMAGE_TAG=v0.5.20-rocm724-mi35x-20260919
+#    build-arg:SGLANG_IMAGE_REPO=lmsysorg/sglang  SGLANG_IMAGE_TAG=v0.5.20-rocm724-mi35x
 #                WHEELS_TAG_ROCM=rocm724-gfx950-v0.5.20  TE_USE_WHEEL=1  APPLY_ROCR_VMMFIX=1
 #
 # 2. rocm10-mi35x   (gfx950, ROCm 10 / MI350 / MI355X, Python 3.12 base)
-#    build-arg:SGLANG_IMAGE_REPO=rocm/sgl-dev  SGLANG_IMAGE_TAG=v0.5.20-rocm10-mi35x-20260919
+#    build-arg:SGLANG_IMAGE_REPO=lmsysorg/sglang  SGLANG_IMAGE_TAG=v0.5.20-rocm10-mi35x
 #                WHEELS_TAG_ROCM=rocm10-gfx950-v0.5.18  TE_USE_WHEEL=1  APEX_USE_PREBUILT=1   (cp312 shelf)
 
-ARG SGLANG_IMAGE_REPO=rocm/sgl-dev
-ARG SGLANG_IMAGE_TAG=v0.5.20-rocm724-mi35x-20260919
+ARG SGLANG_IMAGE_REPO=lmsysorg/sglang
+ARG SGLANG_IMAGE_TAG=v0.5.20-rocm724-mi35x
 FROM ${SGLANG_IMAGE_REPO}:${SGLANG_IMAGE_TAG} AS sglang
 
 SHELL ["/bin/bash", "-ceuxo", "pipefail"]

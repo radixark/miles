@@ -31,7 +31,7 @@ DRIVEN_METHODS = (
 )
 
 
-MEGATRON_ONLY_DRIVEN_METHODS = frozenset({"reconfigure_indep_dp", "send_ckpt", "reconcile_adapters"})
+MEGATRON_ONLY_DRIVEN_METHODS = frozenset({"reconfigure_indep_dp", "send_ckpt"})
 
 
 class TestTheTrainerSurfaceIsCallableOverRpc:

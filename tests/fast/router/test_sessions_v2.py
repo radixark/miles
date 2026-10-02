@@ -99,8 +99,7 @@ def router_env():
         choice["meta_info"] = {
             "output_token_logprobs": output_token_logprobs,
             "completion_tokens": len(output_token_logprobs),
-            # R3 replay payloads: must reach the session record but never the
-            # client-facing chat response (see _strip_replay_payloads).
+            # Replay payloads stay in the record along with the rest of meta_info.
             "routed_experts": [[0, 1], [2, 3]],
             "indexer_topk": [[4], [5]],
         }
@@ -169,9 +168,12 @@ def test_proxy_chat_postprocesses_completion_before_commit(router_env, monkeypat
 
     assert response.status_code == 200
     assert response.json()["choices"][0]["message"]["reasoning_content"] == "parsed"
+    assert "meta_info" not in response.json()["choices"][0]
     assert len(calls) == 1
     assert calls[0][2]
     assert committed_messages == [{**calls[0][1], "reasoning_content": "parsed", "_server_state": "stored"}]
+    record = requests.get(f"{router_env.url}/sessions/{session_id}", timeout=5.0).json()["records"][0]
+    assert record["response"]["choices"][0]["meta_info"] == calls[0][0]["meta_info"]
 
 
 class TestHealth:

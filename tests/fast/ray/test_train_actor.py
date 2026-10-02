@@ -1,5 +1,6 @@
 import os
 import socket
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -239,3 +240,88 @@ class TestTheLocalGpuIsFoundWithoutRay:
         monkeypatch.setattr(train_actor.ray, "get_gpu_ids", lambda: [5])
 
         assert train_actor.get_local_gpu_id() == 5
+
+
+# PCI bus numbers of the eight GPUs on an HGX H200 board, in NVML (physical) index order.
+_PHYSICAL_GPU_PCI_BUSES = [0x18, 0x2A, 0x3A, 0x5D, 0x9A, 0xAB, 0xBA, 0xDB]
+
+
+class _FakeCuda:
+    """torch.cuda under a device mask: local device i is the i-th physical GPU of the mask."""
+
+    def __init__(self, *, visible_physical_gpus: list[int]) -> None:
+        self._visible_physical_gpus = visible_physical_gpus
+        self._current_device: int | None = None
+
+    def set_device(self, device: str) -> None:
+        self._current_device = int(device.removeprefix("cuda:"))
+
+    def current_device(self) -> int:
+        return self._current_device
+
+    def get_device_properties(self, device: int) -> SimpleNamespace:
+        bus = _PHYSICAL_GPU_PCI_BUSES[self._visible_physical_gpus[device]]
+        return SimpleNamespace(pci_domain_id=0, pci_bus_id=bus, pci_device_id=0)
+
+
+class _FakeNvml:
+    """NVML indexes every GPU on the host physically, whatever CUDA_VISIBLE_DEVICES says.
+
+    Bus ids are matched in the canonical form NVML itself reports (nvmlPciInfo_t.busId).
+    """
+
+    def __init__(self) -> None:
+        self._bus_ids = [f"00000000:{bus:02X}:00.0" for bus in _PHYSICAL_GPU_PCI_BUSES]
+        self.affinity_set_for: list[int] = []
+
+    def nvmlInit(self) -> None:
+        pass
+
+    def nvmlShutdown(self) -> None:
+        pass
+
+    def nvmlDeviceGetHandleByIndex(self, index: int) -> int:
+        return index
+
+    def nvmlDeviceGetHandleByPciBusId(self, bus_id: str) -> int:
+        return self._bus_ids.index(bus_id)
+
+    def nvmlDeviceGetIndex(self, handle: int) -> int:
+        return handle
+
+    def nvmlDeviceSetCpuAffinity(self, handle: int) -> None:
+        self.affinity_set_for.append(handle)
+
+
+class TestNumaAffinity:
+    def test_a_masked_rank_takes_the_cpus_of_the_gpu_it_runs_on(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Under mask 4,5,6,7 local rank 0 runs on GPU 4, so it must take GPU 4's NUMA node, not GPU 0's."""
+        args = SimpleNamespace(
+            debug_deterministic_collective=False,
+            distributed_backend="nccl",
+            distributed_timeout_minutes=1,
+            fsdp_cpu_offload=False,
+            num_gpus_per_node=4,
+        )
+        actor = _ActorWithoutReloadSupport.__new__(_ActorWithoutReloadSupport)
+        actor._init_once = InitOnce("TrainRayActor")
+        actor._heartbeat = SimpleNamespace(bump=lambda: None)
+        cuda = _FakeCuda(visible_physical_gpus=[4, 5, 6, 7])
+        nvml = _FakeNvml()
+        monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "4,5,6,7")
+        monkeypatch.setenv("LOCAL_RANK", "0")
+        monkeypatch.setenv("RANK", "0")
+        monkeypatch.setitem(sys.modules, "pynvml", nvml)
+        monkeypatch.setattr(train_actor.torch.version, "hip", None)
+        monkeypatch.setattr(train_actor.torch.cuda, "set_device", cuda.set_device)
+        monkeypatch.setattr(train_actor.torch.cuda, "current_device", cuda.current_device)
+        monkeypatch.setattr(train_actor.torch.cuda, "get_device_properties", cuda.get_device_properties)
+        monkeypatch.setattr(train_actor.dist, "init_process_group", lambda **_kwargs: None)
+        monkeypatch.setattr(train_actor.dist, "get_rank", lambda: 0)
+        monkeypatch.setattr(train_actor.dist, "get_world_size", lambda: 4)
+        monkeypatch.setattr(train_actor, "init_gloo_group", lambda: None)
+        monkeypatch.setattr(train_actor, "rebind_env_reporting", lambda _args: None)
+
+        actor._init_common(args=args, role="actor")
+
+        assert nvml.affinity_set_for == [4]
