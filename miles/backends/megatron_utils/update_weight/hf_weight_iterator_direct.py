@@ -179,7 +179,9 @@ def _load_or_allocate_params(param_infos: Sequence[ParamInfo], megatron_local_we
             )
         else:
             params.append(torch.empty(info.shape, dtype=info.dtype, device=torch.cuda.current_device()))
-    torch.cuda.synchronize()
+    # Copies and subsequent PP/TP collectives use the current CUDA stream;
+    # ProcessGroupNCCL carries that dependency into its communication stream.
+    # A device-wide fence here would also drain unrelated delta encoders.
     return params
 
 

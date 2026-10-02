@@ -50,7 +50,7 @@ def validate_receipts(response: Mapping, expected: list[dict], *, state: str, se
     return receipts
 
 
-async def activate_publication(clients, descriptions, publication, *, staging: str, session_id: str | None = None):
+async def activate_publication(clients, descriptions, publication, *, session_id: str | None = None):
     """Prepare everyone while serving, then apply/commit/resume with exact cohorts.
 
     Every fanout settles before the next phase. After pause/apply starts, failures
@@ -77,7 +77,6 @@ async def activate_publication(clients, descriptions, publication, *, staging: s
                 participants=participants,
                 cohort=cohort,
                 expected_engines=engine_ids,
-                staging=staging,
             )
             for client, engine_id, participants in zip(clients, engine_ids, expected, strict=True)
         ],

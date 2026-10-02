@@ -77,6 +77,7 @@ class _Engine:
 
     async def prepare_weights_from_delta(self, **kwargs):
         self.args = kwargs
+        assert "staging" not in kwargs
         assert kwargs["participants"] == self.identities
         assert len(kwargs["cohort"]) == 4
         await asyncio.sleep(0.01 if self.index else 0)
@@ -143,7 +144,7 @@ class _Engine:
 def test_every_engine_prepared_then_quiesced_then_applied_then_committed_before_resume():
     clients, descriptions, publication, events = _setup()
     result = asyncio.run(
-        session.activate_publication(clients, descriptions, publication, staging="tensor", session_id="s")
+        session.activate_publication(clients, descriptions, publication, session_id="s")
     )
     assert len(result["receipts"]) == 4
     assert len(result["resumed_receipts"]) == 4
@@ -156,7 +157,7 @@ def test_every_engine_prepared_then_quiesced_then_applied_then_committed_before_
 def test_failure_never_resumes_or_blindly_replays(failure):
     clients, descriptions, publication, events = _setup(failure)
     with pytest.raises(RuntimeError):
-        asyncio.run(session.activate_publication(clients, descriptions, publication, staging="full", session_id="s"))
+        asyncio.run(session.activate_publication(clients, descriptions, publication, session_id="s"))
     assert not any(event == "resumed" for _, event in events)
     if failure == "prepare":
         assert sum(event == "abort" for _, event in events) == 2
