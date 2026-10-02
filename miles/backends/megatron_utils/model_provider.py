@@ -55,6 +55,8 @@ def _apply_bridge_runtime_config(provider, args: argparse.Namespace) -> None:
     if getattr(args, "enable_mtp_training", False):
         # Match the non-bridge path: MTP must only train its own draft parameters.
         provider.mtp_detach_heads = True
+        # Otherwise the bridge's per-model default wins (e.g. 0.1 for Qwen3.5) and the flag is ignored.
+        provider.mtp_loss_scaling_factor = args.mtp_loss_scaling_factor
     else:
         provider.mtp_num_layers = None
 
