@@ -177,7 +177,7 @@ def test_backing_buffer_lives_through_collective_wait_and_bucket_clears_after_re
     assert client.update_weights_from_distributed.call_args.kwargs["load_format"] == "flattened_bucket"
 
 
-@pytest.mark.parametrize("backend,colocate", [("megatron", True), ("fsdp", False)])
+@pytest.mark.parametrize("backend,colocate", [("megatron", True), ("fsdp", False), ("fsdp", True)])
 def test_packed_mode_rejects_backends_that_would_ignore_it(backend, colocate):
     args = Namespace(train_backend=backend, colocate=colocate, update_weight_transfer_mode="broadcast_packed")
     with pytest.raises(ValueError, match="requires Megatron non-colocated"):
