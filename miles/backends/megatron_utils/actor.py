@@ -243,6 +243,9 @@ class MegatronTrainRayActor(TrainRayActor):
         load_output = self._load_state_core(
             checkpointing_context=checkpointing_context, overrider_for_loading=heal_load_overrides
         )
+        self.weight_updater.weight_version = (
+            args.start_rollout_id if args.start_rollout_id is not None else start_rollout_id
+        )
 
         self._init_training_state()
 
