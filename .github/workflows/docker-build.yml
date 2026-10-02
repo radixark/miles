@@ -27,6 +27,7 @@ on:
           - cu13-x86
           - cu13-aarch64
           - cu12-x86
+          - rubin
           - rocm724-mi35x
           - rocm10-mi35x
       image_tag:

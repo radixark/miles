@@ -102,7 +102,7 @@ class ScriptArgs(command_utils.ExecuteTrainConfig):
 
     # performance configs
     num_gpus_per_node: int | None = None
-    hardware: Literal["auto", "H100", "H200", "B200", "B300", "GB200", "GB300"] = "auto"
+    hardware: Literal["auto", "H100", "H200", "B200", "B300", "GB200", "GB300", "Rubin"] = "auto"
     # use colocate by default. will switch to disaggregated mode when 0 < rollout_num_nodes < num_nodes
     rollout_num_nodes: int = 0
     colocate: bool = field(init=False)

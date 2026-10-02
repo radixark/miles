@@ -53,6 +53,13 @@ VARIANTS = {
             "WHEELS_TAG_X86": "cu129-x86_64",
         },
     },
+    "rubin": {
+        "image": "radixark/miles",
+        "platforms": ["linux/arm64"],
+        "tag_postfix": "-rubin",
+        "dockerfile": "docker/Dockerfile.rubin",
+        "build_args": {},
+    },
     "rocm724-mi35x": {
         "image": "rocm/sgl-dev",
         "tag_postfix": "-rocm724-mi35x",
@@ -175,6 +182,7 @@ class Variant(str, Enum):
     cu13_x86 = "cu13-x86"
     cu13_aarch64 = "cu13-aarch64"
     cu12_x86 = "cu12-x86"
+    rubin = "rubin"
     rocm724_mi35x = "rocm724-mi35x"
     rocm10_mi35x = "rocm10-mi35x"
 
