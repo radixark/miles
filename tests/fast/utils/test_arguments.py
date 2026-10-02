@@ -178,6 +178,15 @@ class TestRolloutExternalDerivation:
 
         assert _compute_rollout_external(args) is True
 
+    def test_an_opaque_endpoint_implies_external_rollout(self):
+        args = SimpleNamespace(
+            rollout_endpoint_url="https://rollout.example",
+            rollout_external_engine_addrs=None,
+            custom_inference_engine_provider_path=None,
+        )
+
+        assert _compute_rollout_external(args) is True
+
     def test_without_either_arg_rollout_stays_internal(self):
         """The default run keeps launching its own engines."""
         args = SimpleNamespace(rollout_external_engine_addrs=None, custom_inference_engine_provider_path=None)
@@ -197,6 +206,15 @@ class TestRolloutExternalDerivation:
 
 
 class TestEngineProviderPathAutofill:
+    def test_an_opaque_endpoint_has_no_engine_provider(self):
+        args = SimpleNamespace(
+            rollout_endpoint_url="https://rollout.example",
+            rollout_external_engine_addrs=None,
+            custom_inference_engine_provider_path=None,
+        )
+
+        assert _compute_custom_inference_engine_provider_path(args) is None
+
     def test_a_user_given_path_is_never_overwritten(self):
         """The custom hook is the escape hatch, so validation must not replace it with a builtin."""
         args = SimpleNamespace(
@@ -328,6 +346,47 @@ class TestExternalRolloutValidation:
         miles_validate_args(args)
 
         assert args.rollout_external is False
+
+
+class TestOpaqueRolloutEndpointValidation:
+    def _parse(self, tmp_path, extra: list[str] | None = None):
+        parser = argparse.ArgumentParser()
+        get_miles_extra_args_provider()(parser)
+        return parser.parse_args(
+            [
+                "--num-rollout",
+                "1",
+                "--hf-checkpoint",
+                str(tmp_path),
+                "--rollout-endpoint-url",
+                "https://rollout.example/",
+                "--rollout-num-gpus",
+                "0",
+                "--update-weight-transfer-mode",
+                "disk-delta",
+                "--update-weight-disk-dir",
+                str(tmp_path),
+                *(extra or []),
+                *REQUIRED_ARGS,
+            ]
+        )
+
+    def test_endpoint_owns_no_engine_provider_or_local_checkpoint(self, tmp_path):
+        args = self._parse(tmp_path, ["--update-weight-initial-version", "17"])
+
+        miles_validate_args(args)
+
+        assert args.rollout_endpoint_url == "https://rollout.example"
+        assert args.rollout_external is True
+        assert args.custom_inference_engine_provider_path is None
+        assert args.update_weight_local_checkpoint_dir is None
+        assert args.update_weight_initial_version == 17
+
+    def test_rollout_only_mode_is_rejected_instead_of_deriving_a_zero_gpu_placement(self, tmp_path):
+        args = self._parse(tmp_path, ["--debug-rollout-only"])
+
+        with pytest.raises(ValueError, match="debug-rollout-only"):
+            miles_validate_args(args)
 
 
 class TestEventDirectoryDefaults:

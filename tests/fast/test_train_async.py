@@ -47,6 +47,8 @@ def _make_args(**overrides: Any) -> SimpleNamespace:
         save_trigger_sentinel=None,
         skip_eval_before_train=False,
         start_rollout_id=0,
+        rollout_endpoint_url=None,
+        update_weight_transfer_mode="broadcast",
         update_weights_interval=1,
         use_critic=False,
         use_rollout_logprobs=False,
@@ -150,6 +152,23 @@ class TestWeightEqualityCheck:
 
 
 class TestPipelinedGeneration:
+    async def test_external_delta_baseline_overlaps_first_rollout_but_finishes_before_training(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        events: list[str] = []
+        args = _make_args(
+            num_rollout=1,
+            rollout_endpoint_url="https://rollout.example",
+            update_weight_transfer_mode="disk-delta",
+        )
+        components = _install_driver_fakes(monkeypatch, args, events)
+
+        await with_disposer(train_async_driver.train, args)
+
+        assert events.index("generate_start:0") < events.index("update_weights:None")
+        assert events.index("update_weights:None") < events.index("actor_train:0")
+        assert components.actor_model.trained == [0]
+
     async def test_inflight_next_rollout_finishes_before_weight_publication(self, monkeypatch: pytest.MonkeyPatch):
         """Generation for the next rollout starts while this one trains, but must settle before new weights ship."""
         events: list[str] = []

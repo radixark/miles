@@ -3,12 +3,22 @@ from fastapi import FastAPI
 from tests.fast.fixtures.session_fixtures import make_session_server_config
 
 from miles.rollout.session import sessions
+from miles.rollout.session.core import SessionCore
 from miles.rollout.session.sessions import setup_session_routes
 
 
 class _UnusedBackend:
     async def do_proxy(self, *args, **kwargs):
         raise AssertionError("setup_session_routes must not touch the proxy backend")
+
+
+class _RecordingBackend:
+    def __init__(self):
+        self.headers = None
+
+    async def do_proxy(self, *args, **kwargs):
+        self.headers = kwargs["headers"]
+        return {"response_body": b"{}", "status_code": 200, "headers": {"content-type": "application/json"}}
 
 
 class TestSetupSessionRoutes:
@@ -29,3 +39,17 @@ class TestSetupSessionRoutes:
         assert tokenizer_calls == []
         assert [route.path for route in app.routes] == before
         assert "/health" not in before
+
+
+@pytest.mark.asyncio
+async def test_proxy_uses_the_configured_session_affinity_header():
+    backend = _RecordingBackend()
+    core = SessionCore(
+        backend,
+        registry=None,
+        config=make_session_server_config(rollout_session_affinity_header="Modal-Session-ID"),
+    )
+
+    await core.proxy("session-1", "health", method="GET", query="", headers={}, body=b"")
+
+    assert backend.headers == {"Modal-Session-ID": "session-1"}

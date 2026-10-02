@@ -254,6 +254,26 @@ class TestComputeSpecRouterLaunchCommand:
 
 
 class TestComputeSpecSessionServer:
+    def test_external_endpoint_is_the_session_backend_without_a_router_pool(self):
+        args = _make_session_server_args(
+            rollout_endpoint_url="https://rollout.example/api",
+            rollout_session_affinity_header="Modal-Session-ID",
+        )
+        spec = spec_session_server(args)
+        ctx = LaunchCommandContext(
+            cell_index=0,
+            worker_in_cell_index=0,
+            self_addrs=dict(primary=HostAndPort(host="127.0.0.1", port=5006)),
+            pool_addrs={},
+            gpu_ids=[],
+            local_gpu_ids=[],
+        )
+
+        config = parse_config_argv(SessionServerConfig, shlex.split(spec.launch_command(ctx))[3:])
+
+        assert config.backend_url == "https://rollout.example/api"
+        assert config.rollout_session_affinity_header == "Modal-Session-ID"
+
     def test_launch_command_wires_the_router_backend_and_roundtrips(self):
         """The session server command targets the router addr from pool_addrs and its config parses back losslessly."""
         args = make_args(
@@ -520,6 +540,9 @@ class TestInferenceEngineEnvVars:
 
 
 class TestSpecsInferenceEngine:
+    def test_opaque_endpoint_needs_no_engine_specs(self):
+        assert specs_inference_engine(make_args(rollout_endpoint_url="https://rollout.example")) == []
+
     def test_pg_slot_offsets_accumulate_and_placeholder_groups_keep_their_slots(self, tmp_path):
         """Group offsets follow the config order and a skipped placeholder group still occupies its gpu span."""
         config_path = tmp_path / "sglang.yaml"
@@ -577,6 +600,9 @@ class TestSpecsInferenceEngine:
 
 
 class TestSpecsRouter:
+    def test_opaque_endpoint_needs_no_miles_router(self):
+        assert specs_router(make_args(rollout_endpoint_url="https://rollout.example")) == []
+
     def test_one_router_spec_per_model_is_specced_by_default(self, tmp_path):
         """Rollout runs still get their router, one per model in the sglang config."""
         config_path = tmp_path / "sglang.yaml"
@@ -1252,6 +1278,17 @@ class TestSpecInferenceController:
 
     def _ctor_context(self, capability: FakeBackendCapability) -> WorkerCtorContext:
         return WorkerCtorContext(cell_index=0, worker_in_cell_index=0, gpu_ids=[], capability=capability)
+
+    def test_opaque_endpoint_has_no_engine_or_router_provider(self):
+        capability = FakeBackendCapability(cells_provider=object(), static_provider=object())
+        args = make_args(rollout_endpoint_url="https://rollout.example")
+
+        kwargs = spec_inference_controller(args).ctor_kwargs(self._ctor_context(capability))
+
+        assert kwargs["engine_provider"] is None
+        assert kwargs["router_providers"] == []
+        assert capability.requested_pool_ids == []
+        assert capability.requested_static_pool_ids == []
 
     def test_every_run_gets_exactly_one_gpuless_controller(self, tmp_path):
         """It is a control-plane worker on both backends; a gpu request would reserve a whole node for it."""

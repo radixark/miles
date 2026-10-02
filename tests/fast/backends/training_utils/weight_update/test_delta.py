@@ -83,3 +83,20 @@ class TestReloadEnginesFailureTransitions:
                 protocol._reload_engines(7)
 
         assert [name for name, _kwargs in calls] == expected_calls
+
+
+def test_artifact_only_sync_publishes_without_engine_calls() -> None:
+    protocol = UpdateWeightFromDiskDelta.__new__(UpdateWeightFromDiskDelta)
+    protocol.args = Namespace()
+    protocol.rollout_engines = []
+    protocol._post_write_hook = MagicMock()
+    protocol._version_dir = "/shared/delta/weight_v000007"
+
+    with (
+        patch(f"{_DELTA_MODULE}.dist") as dist_mock,
+        patch(f"{_DELTA_MODULE}.get_gloo_group", return_value=MagicMock()),
+    ):
+        protocol._reload_engines(7)
+
+    protocol._post_write_hook.assert_called_once_with(protocol.args, protocol._version_dir, [])
+    dist_mock.barrier.assert_called_once()

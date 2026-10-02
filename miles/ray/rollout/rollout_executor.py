@@ -77,12 +77,17 @@ class RolloutExecutor:
     @init_once
     async def init(self) -> None:
         args = self.args
-        if not args.debug_train_only or args.eval_num_gpus > 0:
+        if args.rollout_endpoint_url is None and (not args.debug_train_only or args.eval_num_gpus > 0):
             await resolve_router_addrs(args, router_providers=self._router_providers)
-            await wait_session_server_ready(args, provider=self._session_server_provider)
+        await wait_session_server_ready(args, provider=self._session_server_provider)
 
         # TODO make args immutable
-        init_tracking(args, primary=False, router_addr=f"http://{args.sglang_router_ip}:{args.sglang_router_port}")
+        router_addr = (
+            None
+            if args.rollout_endpoint_url is not None
+            else f"http://{args.sglang_router_ip}:{args.sglang_router_port}"
+        )
+        init_tracking(args, primary=False, router_addr=router_addr)
         object_store.init_instance(args, contribute_segment=False)
 
         init_http_client(args)

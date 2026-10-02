@@ -57,7 +57,11 @@ def spec_inference_controller(args) -> ServeWorkerSpec:
         worker_class=INFERENCE_CONTROLLER_WORKER_CLASS,
         ctor_kwargs=lambda ctx: dict(
             args=args,
-            engine_provider=_compute_controller_engine_provider(args, capability=ctx.capability),
+            engine_provider=(
+                None
+                if args.rollout_endpoint_url is not None
+                else _compute_controller_engine_provider(args, capability=ctx.capability)
+            ),
             router_providers=compute_router_providers(args, capability=ctx.capability),
         ),
     )
@@ -114,6 +118,8 @@ def backend_inference_engine_provider(args, *, capability: BackendCapability) ->
 
 
 def compute_router_providers(args, *, capability: BackendCapability) -> list[BaseWorkerProvider]:
+    if args.rollout_endpoint_url is not None:
+        return []
     config = resolve_sglang_config(args)
     return [
         capability.static_worker_provider(pool_id=compute_router_pool_id(model_idx))
@@ -146,6 +152,8 @@ def inference_controller_worker_name() -> str:
 
 
 def specs_router(args) -> list[CommandWorkerSpec]:
+    if args.rollout_endpoint_url is not None:
+        return []
     config = resolve_sglang_config(args)  # TODO avoid resolve repeatedly
     return [
         _compute_spec_router(args, model_idx=model_idx, model_cfg=model_cfg)
@@ -216,18 +224,22 @@ def _compute_router_primary_port_info(args, model_idx: int) -> PortInfo:
 
 
 def spec_session_server(args) -> CommandWorkerSpec:
-    config = resolve_sglang_config(args)  # TODO avoid resolve repeatedly
+    model_config = None if args.rollout_endpoint_url is not None else resolve_sglang_config(args)
     interpreter_prefix = python_argv_prefix()
 
     def _compute_launch_command(ctx: LaunchCommandContext) -> str:
-        (router_addrs,) = ctx.pool_addrs[compute_router_pool_id(0)]
+        if args.rollout_endpoint_url is not None:
+            backend_url = args.rollout_endpoint_url
+        else:
+            (router_addrs,) = ctx.pool_addrs[compute_router_pool_id(0)]
+            backend_url = router_addrs["primary"].addr
         config = compute_session_server_config(
             args,
             host=args.session_server_ip or ctx.self_addrs["primary"].host,
             port=ctx.self_addrs["primary"].port,
             # TODO: make the indexing it k8s native compatible
             instance_id=compute_session_server_instance_id(args, ctx.cell_index),
-            backend_url=router_addrs["primary"].addr,
+            backend_url=backend_url,
         )
         launch_argv = [*interpreter_prefix, "-m", "miles.rollout.session.server", *config_to_argv(config)]
         return shlex.join(launch_argv)
@@ -239,7 +251,11 @@ def spec_session_server(args) -> CommandWorkerSpec:
         ],
         env_var=lambda _ctx: {},
         scheduling=SchedulingSpec(
-            num_cells=(args.session_server_workers if args.use_session_server and config.models else 0),
+            num_cells=(
+                args.session_server_workers
+                if args.use_session_server and (args.rollout_endpoint_url is not None or model_config.models)
+                else 0
+            ),
             num_workers_per_cell=1,
             num_gpus_per_worker=0,
             num_cpus_per_worker=0,
@@ -266,7 +282,7 @@ def compute_engine_pool_id(args, *, model_idx: int, group_index: int) -> str:
 
 
 def specs_inference_engine(args) -> list[CommandWorkerSpec]:
-    if args.rollout_external:
+    if args.rollout_endpoint_url is not None or args.rollout_external:
         return []
 
     config = resolve_sglang_config(args)  # TODO avoid resolve repeatedly

@@ -20,6 +20,40 @@ def _inited_executor() -> RolloutExecutor:
 
 
 class TestInitRunsExactlyOnce:
+    async def test_opaque_endpoint_skips_router_resolution_but_waits_for_session_servers(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        args = make_args(rollout_endpoint_url="https://rollout.example", use_session_server=True)
+        provider = MagicMock()
+        executor = RolloutExecutor(
+            args=args,
+            router_providers=[],
+            session_server_provider=provider,
+            inference_controller_provider=MagicMock(),
+        )
+        calls = []
+
+        async def no_router(*_args, **_kwargs) -> dict:
+            raise AssertionError("an opaque endpoint has no miles router")
+
+        async def resolve_session(call_args, *, provider) -> None:
+            calls.append((call_args, provider))
+
+        class StopAfterAddressResolution(Exception):
+            pass
+
+        def stop_tracking(*_args, **_kwargs) -> None:
+            raise StopAfterAddressResolution
+
+        monkeypatch.setattr(executor_module, "resolve_router_addrs", no_router)
+        monkeypatch.setattr(executor_module, "wait_session_server_ready", resolve_session)
+        monkeypatch.setattr(executor_module, "init_tracking", stop_tracking)
+
+        with pytest.raises(StopAfterAddressResolution):
+            await executor.init()
+
+        assert calls == [(args, provider)]
+
     async def test_train_only_eval_resolves_addresses_in_the_executor_process(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

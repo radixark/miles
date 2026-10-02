@@ -372,7 +372,8 @@ async def create_rollout_components(args) -> RolloutComponents:
     capability = get_backend_capability(args)
 
     if not args.debug_train_only or args.eval_num_gpus > 0:
-        await resolve_router_addrs(args, router_providers=compute_router_providers(args, capability=capability))
+        if args.rollout_endpoint_url is None:
+            await resolve_router_addrs(args, router_providers=compute_router_providers(args, capability=capability))
 
         session_server_provider = (
             capability.static_worker_provider(pool_id=SESSION_SERVER_POOL_ID) if args.use_session_server else None

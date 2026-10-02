@@ -7,7 +7,7 @@ from miles.backends.training_utils.weight_update.updater import WeightUpdater
 _UPDATER_MODULE = "miles.backends.training_utils.weight_update.updater"
 
 
-def _build_updater() -> WeightUpdater:
+def _build_updater(*, initial_weight_version: int = 0) -> WeightUpdater:
     with patch(f"{_UPDATER_MODULE}.get_weight_transfer_protocol", return_value=MagicMock(supports_lora=False)):
         return WeightUpdater(
             Namespace(),
@@ -18,6 +18,7 @@ def _build_updater() -> WeightUpdater:
             iterator_factory=lambda *a, **k: MagicMock(name="hf_weight_iterator"),
             parallel_state=MagicMock(),
             is_lora=False,
+            initial_weight_version=initial_weight_version,
         )
 
 
@@ -34,3 +35,6 @@ class TestWeightUpdaterConnectionContract:
         assert updater.conn_status.needs_reconnect({"cell-0": "hash-1"}) is True
         updater.conn_status.mark_trainer_stale()
         assert updater.conn_status.needs_reconnect(snapshot_cell_id_to_hashes) is True
+
+    def test_initial_weight_version_is_the_next_publication_base(self) -> None:
+        assert _build_updater(initial_weight_version=17).weight_version == 17

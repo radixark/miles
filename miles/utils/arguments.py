@@ -5,6 +5,7 @@ import os
 import re
 from string import Formatter
 from typing import Any
+from urllib.parse import urlparse
 
 import yaml
 from sglang_router.launch_router import RouterArgs
@@ -1005,6 +1006,21 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 ),
             )
             parser.add_argument(
+                "--rollout-endpoint-url",
+                type=str,
+                default=None,
+                help=(
+                    "Base URL of an opaque rollout service. miles sends rollout requests to this "
+                    "endpoint and does not launch or manage its router or inference engines."
+                ),
+            )
+            parser.add_argument(
+                "--rollout-session-affinity-header",
+                type=str,
+                default="X-SMG-Routing-Key",
+                help="Header carrying the session ID from a session server to its rollout backend.",
+            )
+            parser.add_argument(
                 "--rollout-external-router-pd",
                 action="store_true",
                 default=False,
@@ -1038,13 +1054,23 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 ),
             )
             parser.add_argument(
+                "--update-weight-initial-version",
+                type=int,
+                default=0,
+                help=(
+                    "Weight version already served before this trainer starts publishing. "
+                    "Use 0 for a fresh fleet; a persistent external fleet must supply its "
+                    "current version when the trainer resumes."
+                ),
+            )
+            parser.add_argument(
                 "--update-weight-disk-dir",
                 type=str,
                 default=None,
                 help=(
-                    "Filesystem directory disk-delta weight sync publishes to: one delta directory "
-                    "(changed tensors only) per sync, written by the trainer and read by every "
-                    "rollout host. Required for --update-weight-transfer-mode=disk-delta."
+                    "Filesystem directory where disk-delta publishes one changed-tensor artifact "
+                    "per sync. Rollout hosts may read it directly, or a post-write hook may publish "
+                    "it to an external consumer. Required for --update-weight-transfer-mode=disk-delta."
                 ),
             )
             parser.add_argument(
@@ -2907,14 +2933,20 @@ def _resolve_eval_datasets(args) -> list[EvalDatasetConfig]:
 
 
 def _compute_rollout_external(args: argparse.Namespace) -> bool:
-    return args.rollout_external_engine_addrs is not None or args.custom_inference_engine_provider_path is not None
+    return (
+        getattr(args, "rollout_endpoint_url", None) is not None
+        or args.rollout_external_engine_addrs is not None
+        or args.custom_inference_engine_provider_path is not None
+    )
 
 
 _BACKEND_ENGINE_PROVIDER_PATH = "miles.ray.specs.inference.backend_inference_engine_provider"
 _STATIC_EXTERNAL_ENGINE_PROVIDER_PATH = "miles.ray.rollout.external_engine_provider.static_inference_engine_provider"
 
 
-def _compute_custom_inference_engine_provider_path(args: argparse.Namespace) -> str:
+def _compute_custom_inference_engine_provider_path(args: argparse.Namespace) -> str | None:
+    if getattr(args, "rollout_endpoint_url", None) is not None:
+        return None
     if (path := args.custom_inference_engine_provider_path) is not None:
         return path
     if args.rollout_external_engine_addrs is not None:
@@ -3190,6 +3222,53 @@ def miles_validate_args(args):
             if hasattr(args, k):
                 logger.info(f"Warning: Argument {k} is already set to {getattr(args, k)}, will override with {v}.")
             setattr(args, k, v)
+
+    if args.rollout_endpoint_url is not None:
+        args.rollout_endpoint_url = args.rollout_endpoint_url.rstrip("/")
+        endpoint = urlparse(args.rollout_endpoint_url)
+        if endpoint.scheme not in ("http", "https") or not endpoint.netloc:
+            raise ValueError(
+                f"Invalid --rollout-endpoint-url {args.rollout_endpoint_url!r}; expected an absolute HTTP URL."
+            )
+        if endpoint.query or endpoint.fragment:
+            raise ValueError("--rollout-endpoint-url must not contain a query or fragment.")
+        if args.rollout_num_gpus != 0:
+            raise ValueError(
+                "--rollout-endpoint-url describes a service whose GPUs miles does not own; "
+                "set --rollout-num-gpus 0."
+            )
+        if args.eval_num_gpus != 0:
+            raise ValueError(
+                "--rollout-endpoint-url cannot be combined with a miles-managed eval fleet; " "set --eval-num-gpus 0."
+            )
+        if args.rollout_external_engine_addrs is not None:
+            raise ValueError(
+                "--rollout-endpoint-url and --rollout-external-engine-addrs select different external rollout APIs."
+            )
+        if args.custom_inference_engine_provider_path is not None:
+            raise ValueError(
+                "--rollout-endpoint-url hides engine topology, so it cannot be combined with "
+                "--custom-inference-engine-provider-path."
+            )
+        if args.debug_rollout_only:
+            raise ValueError(
+                "--debug-rollout-only derives its worker placement from miles-owned rollout GPUs and "
+                "does not support --rollout-endpoint-url."
+            )
+        if args.update_weight_transfer_mode != "disk-delta":
+            raise ValueError(
+                "Training through --rollout-endpoint-url requires "
+                "--update-weight-transfer-mode disk-delta; miles has no engine handles for other transports."
+            )
+        if args.rollout_external_router_pd:
+            raise ValueError("--rollout-external-router-pd applies to individually attached engines, not an endpoint.")
+
+    if not args.rollout_session_affinity_header:
+        raise ValueError("--rollout-session-affinity-header must not be empty.")
+    if args.update_weight_initial_version < 0:
+        raise ValueError("--update-weight-initial-version must be non-negative.")
+    if args.update_weight_initial_version and args.rollout_endpoint_url is None:
+        raise ValueError("--update-weight-initial-version currently requires --rollout-endpoint-url.")
 
     validate_dashboard_args(args)
 
@@ -3561,6 +3640,11 @@ def miles_validate_args(args):
     ):
         args.check_weight_update_equal = True
 
+    if args.rollout_endpoint_url is not None and args.check_weight_update_equal:
+        raise ValueError(
+            "--check-weight-update-equal requires engine handles and cannot inspect an opaque rollout endpoint."
+        )
+
     # always true on offload for colocate at the moment.
     if args.update_weight_transfer_mode == "p2p":
         assert not args.colocate, (
@@ -3576,6 +3660,7 @@ def miles_validate_args(args):
         ), f"{args.update_weight_transfer_mode} mode is not supported when use megatron-bridge"
 
     if args.update_weight_transfer_mode == "disk-delta":
+        assert args.train_backend == "megatron", "Disk-delta weight transfer currently requires Megatron."
         assert not args.colocate, (
             "Disk-delta weight transfer mode is not compatible with --colocate. Colocate transfers "
             "weights via CUDA IPC (only a handle crosses processes), so the delta bookkeeping "
@@ -3589,10 +3674,11 @@ def miles_validate_args(args):
             "--update-weight-transfer-mode=disk-delta requires --update-weight-disk-dir to point at "
             "a filesystem shared between the trainer and the rollout engines."
         )
-        assert args.update_weight_local_checkpoint_dir, (
-            "--update-weight-transfer-mode=disk-delta requires --update-weight-local-checkpoint-dir "
-            "(a rollout-host-local directory, e.g. NVMe)."
-        )
+        if args.rollout_endpoint_url is None:
+            assert args.update_weight_local_checkpoint_dir, (
+                "--update-weight-transfer-mode=disk-delta requires --update-weight-local-checkpoint-dir "
+                "(a rollout-host-local directory, e.g. NVMe)."
+            )
         assert os.path.isdir(args.hf_checkpoint), (
             "--update-weight-transfer-mode=disk-delta requires --hf-checkpoint to be a local directory: "
             "the baseline snapshot is seeded from its safetensors bytes."

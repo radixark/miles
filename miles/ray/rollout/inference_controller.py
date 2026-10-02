@@ -49,7 +49,7 @@ class InferenceController:
         self,
         args,
         *,
-        engine_provider: BaseWorkerProvider,
+        engine_provider: BaseWorkerProvider | None,
         router_providers: Sequence[BaseWorkerProvider],
     ) -> None:
         self._init_once = InitOnce(type(self).__name__)
@@ -70,6 +70,11 @@ class InferenceController:
         if not self.args.starts_inference_engines:
             return
 
+        if self.args.rollout_endpoint_url is not None:
+            logger.info("Using external rollout service at %s", self.args.rollout_endpoint_url)
+            return
+
+        assert self._engine_provider is not None
         await self._engine_provider.init()
         router_addrs = await resolve_router_addrs(self.args, router_providers=self._router_providers)
         self.servers = await create_rollout_servers(
@@ -148,7 +153,10 @@ class InferenceController:
 
     @with_lock
     async def prepare_rollout(self, rollout_id: int, model_id: str | None = None) -> None:
+        if self.args.rollout_endpoint_url is not None:
+            return
         await self._health_monitoring_resume(model_id)
+        assert self._engine_provider is not None
         await dashboard_hooks.register_engines(self.servers, provider=self._engine_provider)
 
     @with_lock

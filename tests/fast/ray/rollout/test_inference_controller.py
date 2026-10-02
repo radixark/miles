@@ -252,6 +252,7 @@ def _make_controller(
         ci_test=False,
         colocate=False,
         offload_rollout_level=["kv_cache", "weight"],
+        rollout_endpoint_url=None,
         run_uuid=_RUN_UUID,
     )
     controller.servers = servers
@@ -1077,6 +1078,28 @@ class TestInitLifecycle:
             engine_provider=engine_provider if engine_provider is not None else _FakeWorkerProvider([]),
             router_providers=[_FakeWorkerProvider([])],
         )
+
+    @pytest.mark.asyncio
+    async def test_opaque_endpoint_init_owns_no_engine_lifecycle(self, monkeypatch: pytest.MonkeyPatch):
+        async def _no_servers(args: Namespace, **kwargs: Any) -> dict:
+            raise AssertionError("an opaque endpoint has no miles rollout servers")
+
+        async def _no_router_addrs(args: Namespace, **kwargs: Any) -> dict:
+            raise AssertionError("an opaque endpoint has no miles router")
+
+        monkeypatch.setattr(inference_controller_module, "create_rollout_servers", _no_servers)
+        monkeypatch.setattr(inference_controller_module, "resolve_router_addrs", _no_router_addrs)
+        controller = InferenceController(
+            make_args(rollout_endpoint_url="https://rollout.example"),
+            engine_provider=None,
+            router_providers=[],
+        )
+
+        await controller.init()
+
+        assert controller.servers == {}
+        assert controller._watcher_disposers == []
+        assert controller._ticker is None
 
     @pytest.mark.asyncio
     async def test_debug_train_only_init_has_no_rollout_side_effects(self, monkeypatch: pytest.MonkeyPatch):

@@ -6,6 +6,7 @@ from typing import Any
 import aiohttp
 import torch
 
+from miles.rollout.endpoint import get_rollout_url
 from miles.utils.types import Sample
 
 TopLogprobs = list[list[Any]]
@@ -136,7 +137,7 @@ def _per_position_ids(top_logprobs: TopLogprobs, prompt_len: int) -> list[list[i
 
 
 def _student_score_url(args: Namespace) -> str:
-    return f"http://{args.sglang_router_ip}:{args.sglang_router_port}/generate"
+    return get_rollout_url(args, "/generate")
 
 
 async def _post_json(url: str, payload: dict[str, Any], timeout_secs: int | float | None = None) -> dict[str, Any]:

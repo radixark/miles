@@ -45,14 +45,14 @@ the prefill and decode phases inside an SGLang deployment.
 | Attached SGLang engines | Owned by the deployment | Fixed engine addresses supplied with `--rollout-external-engine-addrs` | miles still addresses and controls each engine through its engine handle |
 | External rollout service | Independent and dynamically scaled | One stable rollout endpoint | miles publishes versions; the rollout service materializes and activates them across its replicas |
 
-miles supports the first two topologies today. The single-endpoint external
-rollout service is coming soon and extends that separation from GPU placement
-to independent scaling, routing, and lifecycle.
+miles supports all three topologies. The single-endpoint external rollout
+service extends that separation from GPU placement to independent scaling,
+routing, and lifecycle.
 
-`--rollout-external` is the second row, not the third. It prevents miles from
-launching SGLang, but miles still knows the individual engine addresses, checks
-their configuration, registers them with its router, and calls their
-weight-update lifecycle.
+`--rollout-external-engine-addrs` selects the second row, not the third. It
+prevents miles from launching SGLang, but miles still knows the individual
+engine addresses, checks their configuration, registers them with its router,
+and calls their weight-update lifecycle.
 
 An external rollout service is a narrower interface. miles sends rollout
 requests to one endpoint and publishes new policy versions without needing an
@@ -88,8 +88,28 @@ addresses explicitly:
 
 The engines must be reachable from the miles job and must have server settings
 compatible with the rollout configuration. Because miles retains individual
-engine handles, `--rollout-external` does not hand off weight-update ownership:
-miles still runs the selected weight-update lifecycle.
+engine handles, attached engines do not hand off weight-update ownership: miles
+still runs the selected weight-update lifecycle.
+
+To use an opaque rollout service, give miles its stable endpoint and publish
+disk-delta artifacts for that service to consume:
+
+```bash
+--rollout-endpoint-url https://rollout.example \
+--rollout-num-gpus 0 \
+--update-weight-transfer-mode disk-delta \
+--update-weight-disk-dir /shared/miles/weight-updates
+```
+
+miles launches no inference router or engine for this topology. In fully async
+mode, `--async-max-concurrent-samples` bounds the work admitted to the endpoint;
+otherwise the bound is `--rollout-batch-size * --n-samples-per-prompt`. The
+external service owns capacity and backpressure behind the endpoint.
+
+Session serving is orthogonal to rollout placement. Agentic rollouts may still
+use `--use-session-server`; set `--rollout-session-affinity-header` if the
+external ingress expects the session ID in a header other than
+`X-SMG-Routing-Key`.
 
 ## Weight synchronization
 
@@ -121,6 +141,10 @@ directory for each rollout host:
 --update-weight-disk-dir /shared/miles/weight-updates \
 --update-weight-local-checkpoint-dir /local-nvme/miles-rollout-checkpoint
 ```
+
+An opaque endpoint omits `--update-weight-local-checkpoint-dir`: miles owns only
+publication, while the external service owns replica-local materialization and
+activation.
 
 The current lifecycle is:
 
@@ -173,10 +197,9 @@ general FSDP weight-update path.
 
 ## External rollout service contract
 
-The coming single-endpoint integration builds on the current disk-delta
-publication path and removes the need for miles to hold one handle per rollout
-engine. The commands above cover miles-managed and attached-engine deployments;
-this section defines the external-service boundary.
+The single-endpoint integration builds on disk-delta publication and removes
+the need for miles to hold one handle per rollout engine. This section defines
+the external-service boundary.
 
 The intended boundary has two independent data paths:
 
@@ -204,6 +227,11 @@ ownership:
 The rollout endpoint and the version store are separate interfaces. The
 request path should not have to carry model-sized weights, and publishing a new
 version should not require miles to enumerate the current replicas.
+
+If a trainer restarts while the external fleet keeps serving version `N`, pass
+`--update-weight-initial-version N`. The trainer checkpoint used for the
+restart must represent that same version; the first subsequent publication is
+then `N + 1`. Fresh runs leave the option at zero.
 
 One open-source package implementing the rollout-service side is
 [Stitch](https://github.com/modal-projects/stitch). It connects miles policy

@@ -37,8 +37,15 @@ async def train(args, *, disposer: Disposer):
     maybe_start_api_server(args, trainer_models={"actor": actor_model}, inference_controller=inference_controller)
     maybe_start_mini_ft_controller(args)
 
-    # always update weight first so that sglang has the loaded weights from training.
-    await update_weights(args, actor_model, rollout_executor, inference_controller)
+    overlap_initial_weight_sync = (
+        args.update_weight_transfer_mode == "disk-delta"
+        and args.rollout_endpoint_url is not None
+        and args.start_rollout_id < args.num_rollout
+        and not args.check_weight_update_equal
+        and not (args.eval_interval is not None and args.start_rollout_id == 0 and not args.skip_eval_before_train)
+    )
+    if not overlap_initial_weight_sync:
+        await update_weights(args, actor_model, rollout_executor, inference_controller)
 
     if args.check_weight_update_equal:
         await inference_controller.check_weights(
@@ -68,6 +75,8 @@ async def train(args, *, disposer: Disposer):
 
     # async train loop.
     rollout_data_next_future = await eager_create_task(prepare_and_generate(args.start_rollout_id))
+    if overlap_initial_weight_sync:
+        await update_weights(args, actor_model, rollout_executor, inference_controller)
     for rollout_id in range(args.start_rollout_id, args.num_rollout):
         # Sync the last generation
         if rollout_data_next_future is not None:
