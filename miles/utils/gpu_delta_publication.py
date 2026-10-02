@@ -19,6 +19,7 @@ import numpy as np
 import zstandard
 
 FRAME_BYTES = 1 << 20
+_FRAME_PROFILES = {1 << 16: "64kib", FRAME_BYTES: "1mib"}
 DTYPE_BYTES = {
     "BOOL": 1,
     "U8": 1,
@@ -64,6 +65,11 @@ def _bytes_view(value) -> np.ndarray:
             raise ValueError("Canonical buffers must be contiguous")
         return value.reshape(-1).view(np.uint8)
     return np.frombuffer(value, dtype=np.uint8)
+
+
+def _check_frame_bytes(frame_bytes):
+    if type(frame_bytes) is not int or frame_bytes not in _FRAME_PROFILES:
+        raise ValueError("GPU-delta frame_bytes must be 64 KiB or 1 MiB")
 
 
 def selected_bytes(data, *, shape: list[int], dtype: str, slices: list[list[int]]) -> np.ndarray:
@@ -120,6 +126,7 @@ def encode_tensor(
     codec: str,
     views: list[dict] | None = None,
     encoding: str = "xor_bytes",
+    frame_bytes: int = FRAME_BYTES,
 ) -> tuple[dict, list[bytes]]:
     """Encode one known W0/W1 tensor without changing either caller's buffer."""
     previous, current = _bytes_view(old), _bytes_view(new)
@@ -129,6 +136,7 @@ def encode_tensor(
         raise ValueError(f"Canonical tensor byte count differs for {name}")
     if codec not in ("zstd", "snappy"):
         raise ValueError("Unsupported gpu-delta codec")
+    _check_frame_bytes(frame_bytes)
     if codec == "snappy":
         # Optional at import time; the explicitly selected profile requires it.
         import snappy
@@ -137,8 +145,8 @@ def encode_tensor(
     else:
         compress = zstandard.ZstdCompressor(level=1, write_content_size=True).compress
     payloads, changed = [], 0
-    for offset in range(0, nbytes, FRAME_BYTES):
-        end = min(nbytes, offset + FRAME_BYTES)
+    for offset in range(0, nbytes, frame_bytes):
+        end = min(nbytes, offset + frame_bytes)
         delta = np.bitwise_xor(previous[offset:end], current[offset:end])
         nonzero = int(np.count_nonzero(delta))
         changed += nonzero
@@ -192,6 +200,7 @@ class PublicationWriter:
         codec: str | None = None,
         owner: int = 0,
         publication_id: str | None = None,
+        frame_bytes: int = FRAME_BYTES,
     ):
         if (
             not stream_id
@@ -201,6 +210,8 @@ class PublicationWriter:
             or target_version != base_version + 1
         ):
             raise ValueError("GPU-delta versions must be consecutive")
+        _check_frame_bytes(frame_bytes)
+        self.frame_bytes = frame_bytes
         self.directory = Path(directory)
         self.directory.mkdir(parents=True, exist_ok=True)
         self.codec = codec or settings_from_env()[0]
@@ -214,7 +225,7 @@ class PublicationWriter:
             "target_version": target_version,
             "plan_digest": plan_digest,
             "payload_checksum_format": "sha256",
-            "codec_profile": self.codec + "-independent-1mib-v1",
+            "codec_profile": f"{self.codec}-independent-{_FRAME_PROFILES[frame_bytes]}-v1",
         }
         self._filename = f"owner-{owner:05d}.bin"
         self._file = (self.directory / self._filename).open("xb")
@@ -225,7 +236,15 @@ class PublicationWriter:
 
     def add_tensor(self, name: str, old, new, *, dtype: str, shape: list[int], views=None, encoding="xor_bytes"):
         entry, payloads = encode_tensor(
-            name, old, new, dtype=dtype, shape=shape, codec=self.codec, views=views, encoding=encoding
+            name,
+            old,
+            new,
+            dtype=dtype,
+            shape=shape,
+            codec=self.codec,
+            views=views,
+            encoding=encoding,
+            frame_bytes=self.frame_bytes,
         )
         return self._append_tensor(entry, payloads)
 
@@ -245,8 +264,8 @@ class PublicationWriter:
                 type(offset) is not int
                 or type(size) is not int
                 or offset < end
-                or offset % FRAME_BYTES != 0
-                or size != min(FRAME_BYTES, entry["nbytes"] - offset)
+                or offset % self.frame_bytes != 0
+                or size != min(self.frame_bytes, entry["nbytes"] - offset)
                 or size <= 0
                 or (encoding == "replace_bytes" and offset != end)
             ):

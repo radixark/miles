@@ -69,7 +69,7 @@ def test_raw_fallback_and_noncontiguous_tp_view_metadata():
     np.testing.assert_array_equal(_decode(entry, payloads, base.reshape(-1)), target.reshape(-1))
 
 
-def _writer(path, owner=0):
+def _writer(path, owner=0, *, frame_bytes=gpu_delta_publication.FRAME_BYTES):
     return gpu_delta_publication.PublicationWriter(
         path,
         stream_id="stream",
@@ -79,6 +79,7 @@ def _writer(path, owner=0):
         plan_digest="b" * 64,
         codec="zstd",
         owner=owner,
+        frame_bytes=frame_bytes,
     )
 
 
@@ -174,16 +175,23 @@ def test_buffer_encoding_preserves_frame_bytes_hashes_and_payload_ownership(code
 
 @pytest.mark.parametrize("codec", ["zstd", "snappy"])
 @pytest.mark.parametrize("encoding", ["xor_bytes", "replace_bytes"])
-def test_preencoded_frames_use_the_same_immutable_wire_contract(tmp_path, codec, encoding):
-    base = np.zeros(gpu_delta_publication.FRAME_BYTES + 139, dtype=np.uint8)
+@pytest.mark.parametrize("frame_bytes", [1 << 16, gpu_delta_publication.FRAME_BYTES])
+def test_preencoded_frames_use_the_same_immutable_wire_contract(tmp_path, codec, encoding, frame_bytes):
+    base = np.zeros(frame_bytes + 139, dtype=np.uint8)
     target = base.copy()
     target[::4096] = 17
     target[-139:] = np.random.default_rng(14).integers(0, 256, 139, dtype=np.uint8)
     expected, payloads = gpu_delta_publication.encode_tensor(
-        "w", base, target, dtype="U8", shape=[base.size], codec=codec, encoding=encoding
+        "w", base, target, dtype="U8", shape=[base.size], codec=codec, encoding=encoding, frame_bytes=frame_bytes
     )
     writer = gpu_delta_publication.PublicationWriter(
-        tmp_path, stream_id="s", base_version=0, target_version=1, plan_digest="b" * 64, codec=codec
+        tmp_path,
+        stream_id="s",
+        base_version=0,
+        target_version=1,
+        plan_digest="b" * 64,
+        codec=codec,
+        frame_bytes=frame_bytes,
     )
     entry = writer.add_encoded_tensor(
         "w",
@@ -195,11 +203,61 @@ def test_preencoded_frames_use_the_same_immutable_wire_contract(tmp_path, codec,
         encoding=encoding,
     )
     shard = writer.finish_shard()
+    profile = "64kib" if frame_bytes == 1 << 16 else "1mib"
+    assert shard["metadata"]["codec_profile"] == f"{codec}-independent-{profile}-v1"
     gpu_delta_publication.seal_publication(tmp_path, [shard])
     encoded = (tmp_path / shard["files"][0]["name"]).read_bytes()
     retained = [encoded[f["encoded_offset"] : f["encoded_offset"] + f["encoded_bytes"]] for f in entry["frames"]]
     assert retained == payloads
     np.testing.assert_array_equal(_decode(entry, retained, base), target)
+
+
+def test_64kib_profile_preserves_zero_frame_gaps_and_exact_tail_without_changing_default(tmp_path):
+    size = 1 << 16
+    base = np.zeros(2 * size + 137, dtype=np.uint8)
+    target = base.copy()
+    target[0] = 9
+    target[-1] = 7
+    writer = _writer(tmp_path / "small", frame_bytes=size)
+    entry = writer.add_tensor("w", base, target, dtype="U8", shape=[base.size])
+    assert [(frame["decoded_offset"], frame["decoded_bytes"]) for frame in entry["frames"]] == [
+        (0, size),
+        (2 * size, 137),
+    ]
+    small = writer.finish_shard()
+    wire = (tmp_path / "small" / small["files"][0]["name"]).read_bytes()
+    payloads = [wire[f["encoded_offset"] : f["encoded_offset"] + f["encoded_bytes"]] for f in entry["frames"]]
+    np.testing.assert_array_equal(_decode(entry, payloads, base), target)
+    default = _writer(tmp_path / "default")
+    assert default.frame_bytes == gpu_delta_publication.FRAME_BYTES == 1 << 20
+    assert default.metadata["codec_profile"] == "zstd-independent-1mib-v1"
+    default.close()
+
+
+@pytest.mark.parametrize("offset,size", [(1, 65536), (0, 65535), (0, 131072)])
+def test_64kib_preencoded_ranges_reject_unaligned_short_and_oversized_frames(tmp_path, offset, size):
+    writer = _writer(tmp_path, frame_bytes=1 << 16)
+    try:
+        with pytest.raises(ValueError, match="canonical range"):
+            writer.add_encoded_tensor(
+                "w",
+                [{"decoded_offset": offset, "decoded_bytes": size, "encoded_bytes": size, "codec": "none"}],
+                [bytes(size)],
+                changed_bytes=0,
+                dtype="U8",
+                shape=[2 * (1 << 16) + 137],
+            )
+        assert writer.finish_shard()["tensors"] == []
+    finally:
+        writer.close()
+
+
+@pytest.mark.parametrize("frame_bytes", [0, 1 << 15, 1 << 21, 65536.0, True])
+def test_invalid_frame_profile_fails_before_creating_publication(tmp_path, frame_bytes):
+    directory = tmp_path / "invalid"
+    with pytest.raises(ValueError, match="frame_bytes"):
+        _writer(directory, frame_bytes=frame_bytes)
+    assert not directory.exists()
 
 
 def test_preencoded_replacement_cannot_omit_a_zero_or_tail_frame(tmp_path):
