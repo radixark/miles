@@ -228,6 +228,13 @@ RUN cd /sgl-workspace/sglang && \
     fi && \
     SGLANG_BUILD_RUST_EXTS=none pip install -e "python[all]" --no-deps
 
+# GPU-delta compression and decoding use the prebuilt nvCOMP C library. Keep the
+# image's Torch/CUDA dependency closure intact; never install or compile at update
+# time. The initial receiver profile is qualified on the CUDA 13 Miles image.
+RUN if [ "${ENABLE_CUDA_13}" = "1" ]; then \
+      pip install --no-deps nvidia-libnvcomp-cu13==5.3.0.16; \
+    fi
+
 COPY docker/install-kube-tools.sh /tmp/install-kube-tools.sh
 RUN bash /tmp/install-kube-tools.sh "${TARGETARCH}" && rm -f /tmp/install-kube-tools.sh
 

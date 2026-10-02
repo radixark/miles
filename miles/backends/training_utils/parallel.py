@@ -43,6 +43,9 @@ class ParallelState:
     ep: GroupInfo
     etp: GroupInfo
     indep_dp: GroupInfo
+    # Megatron expert replicas, including context-parallel replication.
+    edp: GroupInfo | None = None
+    tp_dp_cp: GroupInfo | None = None
     meshes: dict[str, DeviceMesh] = field(default_factory=dict)
     cp_comm_type: str | list[str] | tuple[str, ...] | None = None
     is_pp_last_stage: bool = True
