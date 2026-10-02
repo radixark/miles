@@ -11,7 +11,7 @@ import zstandard
 from miles.utils import gpu_delta_publication
 
 
-def _decode(entry, payloads, base):
+def _decode(entry, payloads, base, *, frame_bytes=gpu_delta_publication.FRAME_BYTES):
     result = np.zeros_like(base)
     for frame, payload in zip(entry["frames"], payloads, strict=True):
         assert hashlib.sha256(payload).hexdigest() == frame["encoded_sha256"]
@@ -23,7 +23,7 @@ def _decode(entry, payloads, base):
             raw = snappy.decompress(payload)
         else:
             raw = payload
-        assert len(raw) == frame["decoded_bytes"] <= gpu_delta_publication.FRAME_BYTES
+        assert len(raw) == frame["decoded_bytes"] <= frame_bytes
         start = frame["decoded_offset"]
         result[start : start + len(raw)] = np.frombuffer(raw, dtype=np.uint8)
     return result ^ base if entry["encoding"] == "xor_bytes" else result
@@ -175,7 +175,7 @@ def test_buffer_encoding_preserves_frame_bytes_hashes_and_payload_ownership(code
 
 @pytest.mark.parametrize("codec", ["zstd", "snappy"])
 @pytest.mark.parametrize("encoding", ["xor_bytes", "replace_bytes"])
-@pytest.mark.parametrize("frame_bytes", [1 << 16, gpu_delta_publication.FRAME_BYTES])
+@pytest.mark.parametrize("frame_bytes", [1 << 16, gpu_delta_publication.FRAME_BYTES, 1 << 21])
 def test_preencoded_frames_use_the_same_immutable_wire_contract(tmp_path, codec, encoding, frame_bytes):
     base = np.zeros(frame_bytes + 139, dtype=np.uint8)
     target = base.copy()
@@ -203,17 +203,17 @@ def test_preencoded_frames_use_the_same_immutable_wire_contract(tmp_path, codec,
         encoding=encoding,
     )
     shard = writer.finish_shard()
-    profile = "64kib" if frame_bytes == 1 << 16 else "1mib"
+    profile = {1 << 16: "64kib", 1 << 20: "1mib", 1 << 21: "2mib"}[frame_bytes]
     assert shard["metadata"]["codec_profile"] == f"{codec}-independent-{profile}-v1"
     gpu_delta_publication.seal_publication(tmp_path, [shard])
     encoded = (tmp_path / shard["files"][0]["name"]).read_bytes()
     retained = [encoded[f["encoded_offset"] : f["encoded_offset"] + f["encoded_bytes"]] for f in entry["frames"]]
     assert retained == payloads
-    np.testing.assert_array_equal(_decode(entry, retained, base), target)
+    np.testing.assert_array_equal(_decode(entry, retained, base, frame_bytes=frame_bytes), target)
 
 
-def test_64kib_profile_preserves_zero_frame_gaps_and_exact_tail_without_changing_default(tmp_path):
-    size = 1 << 16
+@pytest.mark.parametrize("size", [1 << 16, 1 << 21])
+def test_explicit_profile_preserves_zero_frame_gaps_and_exact_tail_without_changing_default(tmp_path, size):
     base = np.zeros(2 * size + 137, dtype=np.uint8)
     target = base.copy()
     target[0] = 9
@@ -227,7 +227,7 @@ def test_64kib_profile_preserves_zero_frame_gaps_and_exact_tail_without_changing
     small = writer.finish_shard()
     wire = (tmp_path / "small" / small["files"][0]["name"]).read_bytes()
     payloads = [wire[f["encoded_offset"] : f["encoded_offset"] + f["encoded_bytes"]] for f in entry["frames"]]
-    np.testing.assert_array_equal(_decode(entry, payloads, base), target)
+    np.testing.assert_array_equal(_decode(entry, payloads, base, frame_bytes=size), target)
     default = _writer(tmp_path / "default")
     assert default.frame_bytes == gpu_delta_publication.FRAME_BYTES == 1 << 20
     assert default.metadata["codec_profile"] == "zstd-independent-1mib-v1"
@@ -252,7 +252,7 @@ def test_64kib_preencoded_ranges_reject_unaligned_short_and_oversized_frames(tmp
         writer.close()
 
 
-@pytest.mark.parametrize("frame_bytes", [0, 1 << 15, 1 << 21, 65536.0, True])
+@pytest.mark.parametrize("frame_bytes", [0, 1 << 15, 1 << 22, 65536.0, True])
 def test_invalid_frame_profile_fails_before_creating_publication(tmp_path, frame_bytes):
     directory = tmp_path / "invalid"
     with pytest.raises(ValueError, match="frame_bytes"):

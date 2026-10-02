@@ -161,6 +161,8 @@ class GpuBatchEncoder:
     ``encode`` takes ``[(old_pinned_u8, new_pinned_u8, encoding), ...]``. Neither
     input may be modified concurrently. Returned payload memoryviews retain an
     immutable, separately allocated host slab, including across later calls.
+    The 2 MiB frame variant is for producer benchmarks; the current streaming
+    receiver accepts decoded frames no larger than 1 MiB.
     """
 
     def __init__(self, codec: str, device: torch.device, frame_bytes: int = FRAME_BYTES):
@@ -169,8 +171,8 @@ class GpuBatchEncoder:
 
         if triton is None:
             raise RuntimeError("GPU batch XOR/compression requires Triton")
-        if type(frame_bytes) is not int or frame_bytes not in (1 << 16, FRAME_BYTES):
-            raise ValueError("GPU delta frame_bytes must be 64 KiB or 1 MiB")
+        if type(frame_bytes) is not int or frame_bytes not in (1 << 16, FRAME_BYTES, 1 << 21):
+            raise ValueError("GPU delta frame_bytes must be 64 KiB, 1 MiB or 2 MiB")
         self.codec, self.device, self.frame_bytes = codec, torch.device(device), frame_bytes
         self.timing = os.environ.get("WEIGHT_DELTA_TIMING", "0") == "1"
         self.stream = torch.cuda.Stream(device=self.device)

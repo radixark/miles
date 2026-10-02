@@ -19,7 +19,8 @@ import numpy as np
 import zstandard
 
 FRAME_BYTES = 1 << 20
-_FRAME_PROFILES = {1 << 16: "64kib", FRAME_BYTES: "1mib"}
+# 2 MiB is a producer benchmark profile, not a streaming-receiver capability.
+_FRAME_PROFILES = {1 << 16: "64kib", FRAME_BYTES: "1mib", 1 << 21: "2mib"}
 DTYPE_BYTES = {
     "BOOL": 1,
     "U8": 1,
@@ -69,7 +70,7 @@ def _bytes_view(value) -> np.ndarray:
 
 def _check_frame_bytes(frame_bytes):
     if type(frame_bytes) is not int or frame_bytes not in _FRAME_PROFILES:
-        raise ValueError("GPU-delta frame_bytes must be 64 KiB or 1 MiB")
+        raise ValueError("GPU-delta frame_bytes must be 64 KiB, 1 MiB or 2 MiB")
 
 
 def selected_bytes(data, *, shape: list[int], dtype: str, slices: list[list[int]]) -> np.ndarray:

@@ -30,6 +30,8 @@ ARMS = (
     ("gpu-snappy", "gpu", "snappy", 1 << 20),
     ("gpu-zstd-64k", "gpu", "zstd", 1 << 16),
     ("gpu-snappy-64k", "gpu", "snappy", 1 << 16),
+    ("gpu-zstd-2m", "gpu", "zstd", 1 << 21),
+    ("gpu-snappy-2m", "gpu", "snappy", 1 << 21),
 )
 NVFP4_ENV = {
     "SGLANG_NVFP4_CKPT_FP8_GEMM_IN_ATTN": "0",
@@ -351,7 +353,8 @@ def _verify_publication(publication, plan, *, codec, frame_bytes):
     if hashlib.sha256(raw).hexdigest() != publication["manifest_sha256"]:
         raise ValueError("Publication manifest checksum mismatch")
     manifest = json.loads(raw)
-    profile = f"{codec}-independent-{'64kib' if frame_bytes == 1 << 16 else '1mib'}-v1"
+    frame_profile = {1 << 16: "64kib", 1 << 20: "1mib", 1 << 21: "2mib"}[frame_bytes]
+    profile = f"{codec}-independent-{frame_profile}-v1"
     if manifest["codec_profile"] != profile:
         raise ValueError("Sealed publication frame profile differs from the benchmark arm")
     if {tensor["name"] for tensor in manifest["tensors"]} != {tensor["name"] for tensor in plan}:
@@ -449,7 +452,7 @@ def _versions(options, protocols, iterator, weights, plan):
                 version=version,
             )
         )
-        # Three cumulative versions rotate six arms, but do not fully balance
+        # Three cumulative versions rotate eight arms, but do not fully balance
         # execution positions or provide repeated measurements of one target.
         order = _arm_order(version, list(protocols))
         arms = {}
@@ -543,6 +546,10 @@ def run(options):
             "arm_configs": {
                 name: {"encoder": encoder, "codec": codec, "frame_bytes": frame_bytes}
                 for name, encoder, codec, frame_bytes in ARMS
+            },
+            "receiver_compatibility": {
+                "max_admitted_frame_bytes": 1 << 20,
+                "producer_only_arms": [name for name, _encoder, _codec, size in ARMS if size > 1 << 20],
             },
             "producer_pipelines": {
                 "cpu": "export-overlapped-cpu-workers-v1",

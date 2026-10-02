@@ -61,11 +61,12 @@ per-tensor GPU timings do not measure this new pipeline.
 Routed experts retain exporter EP/EDP ownership; non-routed tensors retain the
 existing data-replica sender. The producer-only comparison is documented in
 [bench_gpu_delta_producer.md](bench_gpu_delta_producer.md). It compares the four
-1 MiB encoder/codec combinations plus controlled GPU Zstd/Snappy 64 KiB variants,
-using the same three cumulative targets across all six arms. Frame size is an
+1 MiB encoder/codec combinations plus GPU Zstd/Snappy 64 KiB and 2 MiB controls,
+using the same three cumulative targets across all eight arms. Frame size is an
 internal benchmark control; production retains 1 MiB with no new tuning knob.
-Rotating six arms over three versions is not fully balanced repeated sampling
-of a fixed target.
+The paired receiver admits at most 1 MiB decoded frames: 2 MiB publications are
+producer-only experiments and are not receiver-compatible. Rotating eight arms
+over three versions is not fully balanced repeated sampling of a fixed target.
 
 CPU SHA-256 checks encoded files during background preparation. Runtime updates
 do not hash old or new weights. Session/version/incarnation checks prevent stale
