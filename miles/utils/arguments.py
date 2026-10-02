@@ -1028,13 +1028,15 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             )
             parser.add_argument(
                 "--update-weight-transfer-mode",
-                choices=["broadcast", "p2p", "disk-delta"],
+                choices=["broadcast", "p2p", "disk-delta", "gpu-delta"],
                 default="broadcast",
                 help=(
                     "The method to transfer weights to remote rollout engines during update weight. "
                     "'disk-delta' diffs each sync against a CPU snapshot of the previous one and publishes "
                     "only the changed bytes to --update-weight-disk-dir; each engine's /pull_weights applies "
-                    "them into a host-local checkpoint that the engine reloads from."
+                    "them into a host-local checkpoint that the engine reloads from. "
+                    "'gpu-delta' publishes canonical CPU-encoded frames for in-place SGLang GPU apply. "
+                    "WEIGHT_DELTA_CODEC=zstd|snappy|none and WEIGHT_DELTA_STAGING=full|tensor select its codec/staging."
                 ),
             )
             parser.add_argument(
@@ -1044,7 +1046,8 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help=(
                     "Filesystem directory disk-delta weight sync publishes to: one delta directory "
                     "(changed tensors only) per sync, written by the trainer and read by every "
-                    "rollout host. Required for --update-weight-transfer-mode=disk-delta."
+                    "rollout host. Also stores immutable framed publications for gpu-delta. "
+                    "Required for disk-delta and gpu-delta."
                 ),
             )
             parser.add_argument(
@@ -3593,6 +3596,27 @@ def miles_validate_args(args):
         assert args.update_weight_delta_encoding == "xor", "GPU expert deltas require xor encoding"
         assert args.update_weight_delta_checksum == "adler32", "GPU expert deltas require the GPU adler32 checksum"
 
+    if args.update_weight_transfer_mode == "gpu-delta":
+        assert not args.colocate, "GPU delta requires separate training and rollout GPUs"
+        assert (
+            args.train_backend == "megatron" and args.megatron_to_hf_mode != "bridge"
+        ), "GPU delta requires the direct Megatron exporter"
+        assert args.pipeline_model_parallel_size == 1, "GPU delta currently requires PP=1"
+        assert args.expert_tensor_parallel_size == 1, "GPU delta requires expert TP=1"
+        assert args.lora_rank <= 0, "GPU delta does not support LoRA"
+        assert getattr(args, "prefill_num_servers", None) is None, "GPU delta does not support PD"
+        assert args.pause_generation_mode == "retract", "GPU delta requires retract pause"
+        assert (
+            not args.check_weight_update_equal
+        ), "GPU delta requires an independent, non-destructive correctness check"
+        assert not args.use_fault_tolerance, "GPU delta cannot resume a stream with replacement engine identities"
+        assert args.update_weight_disk_dir and os.path.isdir(
+            args.hf_checkpoint
+        ), "GPU delta requires a shared publication directory and a local canonical HF checkpoint"
+        from miles.utils.gpu_delta_publication import settings_from_env
+
+        settings_from_env()
+
     if args.update_weight_transfer_mode == "disk-delta":
         assert not args.colocate, (
             "Disk-delta weight transfer mode is not compatible with --colocate. Colocate transfers "
@@ -3656,6 +3680,8 @@ def miles_validate_args(args):
         args.offload_train = False
     if args.offload_rollout is None:
         args.offload_rollout = False
+    if args.update_weight_transfer_mode == "gpu-delta":
+        assert not args.offload_rollout, "GPU delta requires resident original rollout weight storage"
 
     if args.offload_train:
         args.disable_grad_buffers_cpu_backup = True
