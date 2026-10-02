@@ -17,7 +17,7 @@ GPU CI runs inside `radixark/miles`. This doc maps which Dockerfiles exist, the 
 
 The Dockerfile is the build recipe: it provides the cu13 defaults and emits one image. `build.py` owns the variant → build-arg overrides (see Build script), including the cu12 base and wheels release.
 
-The CUDA 13 defaults use `lmsysorg/sglang:v0.5.21` and the validation branch `sglang-miles-v0.5.21`. `SGLANG_COMMIT` remains empty unless the caller pins a revision. CUDA 12 remains frozen to its v0.5.19 base and `sglang-miles-v0.5.19-final`; ROCm variants keep their separate base and wheels pins in `docker/build.py`.
+The CUDA 13 defaults use `lmsysorg/sglang:v0.5.21` and the stable branch `sglang-miles`. `SGLANG_COMMIT` remains empty unless the caller pins a revision. CUDA 12 remains frozen to its v0.5.19 base and `sglang-miles-v0.5.19-final`; ROCm variants keep their separate base and wheels pins in `docker/build.py`.
 
 **Inputs (build-args)**
 
