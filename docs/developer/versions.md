@@ -37,12 +37,11 @@ The default build-args are the version surface:
 
 | Build-arg | Default | What it selects |
 |---|---|---|
-| `SGLANG_IMAGE_TAG` | `v0.5.20` | The `lmsysorg/sglang` base image, which brings torch, CUDA, Transformer Engine and Mooncake |
+| `SGLANG_IMAGE_TAG` | `v0.5.21` | The `lmsysorg/sglang` base image, which brings torch, CUDA, Transformer Engine and Mooncake |
 | `SGLANG_BRANCH` | `sglang-miles` | The branch fetched into the base image's SGLang checkout |
 | `SGLANG_COMMIT` | empty | Empty means the branch HEAD at build time; set it to freeze one commit |
 | `MEGATRON_REPO` / `MEGATRON_BRANCH` / `MEGATRON_COMMIT` | `radixark/Megatron-LM` / `miles-main` / empty | The Megatron-LM checkout; an empty commit follows branch HEAD, while a release build supplies the locked commit |
 | `MILES_COMMIT` | `main` | The Miles checkout baked into the image |
-| `ENABLE_CUDA_13` | `1` | CUDA 13; `0` selects the CUDA 12.9 path |
 | `WHEELS_REPO` | `radixark/miles-wheels` | The prebuilt-wheels repository |
 | `WHEELS_TAG_X86` / `WHEELS_TAG_ARM64` | `cu130-torch213-x86_64` / `cu130-torch213-aarch64` | Two complete wheels releases, selected by `TARGETARCH` and installed verbatim |
 
@@ -93,7 +92,6 @@ fleet's image is.
 |---|---|---|
 | `cu13` | `radixark/miles:dev` | `linux/amd64` + `linux/arm64`, one manifest. This is the daily image |
 | `cu13-x86` / `cu13-aarch64` | `radixark/miles:dev` | Single-arch rebuilds of the same image |
-| `cu12-x86` | `radixark/miles:dev-cu12` | `linux/amd64`, CUDA 12.9 legacy |
 | `rocm724-mi35x` / `rocm10-mi35x` | `rocm/sgl-dev:miles-rocm*-mi35x` | Native |
 
 `--image-tag dev` also publishes a timestamped sibling. Scheduled retention and manual tag behavior are documented in [Docker build](/developer/ci/02-docker-build).
@@ -107,7 +105,7 @@ python docker/build.py --variant cu13-x86 --image-tag custom --custom-tag my-exp
 [Docker build](/developer/ci/02-docker-build) is the full reference for the build script, the
 workflow and the tag rules.
 
-Official versioned releases add `radixark/miles:v<exact-version>` for the CUDA 13 multi-arch image. Starting with v0.1.1, CUDA 12 release images are not published; previously published CUDA 12 tags remain available. Publishing a release does not move the rolling `dev` or `latest` families.
+Official versioned releases add `radixark/miles:v<exact-version>` for the CUDA 13 multi-arch image. CUDA 12 image builds are retired, including rolling builds; previously published CUDA 12 tags remain available. Publishing a release does not move the rolling `dev` or `latest` families.
 
 ## What CI moves, and what it does not
 
