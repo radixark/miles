@@ -105,7 +105,7 @@ class TestSetEvalFleetInfo:
         executor._eval_fleet = None
         executor._eval_lock = asyncio.Lock()
         executor.eval_generate_rollout = eval_function
-        executor.rollout_id = 9
+        executor.last_get_rollout_id_of_model_id = {None: 9}
         executor._metric_checker = None
         info = EvalFleetInfo(
             router=HostAndPort(host="10.0.0.2", port=31000),

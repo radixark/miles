@@ -1,4 +1,5 @@
 import asyncio
+import threading
 from argparse import Namespace
 from collections import defaultdict
 from types import SimpleNamespace
@@ -8,7 +9,7 @@ import pytest
 
 from miles.ray.rollout import rollout_executor as rollout_executor_module
 from miles.ray.rollout.rollout_executor import RolloutExecutor
-from miles.rollout.base_types import RolloutFnTrainInput
+from miles.rollout.base_types import RolloutFnEvalOutput, RolloutFnTrainInput
 from miles.utils.timer import Timer
 from miles.utils.weight_version import (
     assert_weight_version_is_published,
@@ -48,7 +49,11 @@ def _make_executor() -> RolloutExecutor:
     executor._weight_versions_of_model_id = {}
     executor._train_parallel_configs_of_model_id = {}
     executor._rollouts_since_publish_of_model_id = defaultdict(int)
-    executor.rollout_id = -1
+    executor.last_get_rollout_id_of_model_id = {}
+    executor._eval_lock = asyncio.Lock()
+    executor._eval_fleet = None
+    executor._metric_checker = None
+    executor.eval_generate_rollout = lambda eval_input: RolloutFnEvalOutput(data={})
     return executor
 
 
@@ -85,6 +90,29 @@ def _record_logged_model_ids(monkeypatch) -> list[str | None]:
         lambda *a, trainer_model_id=None, **kw: logged.append(trainer_model_id),
     )
     return logged
+
+
+def _make_ready_executor(*model_ids: str | None) -> RolloutExecutor:
+    executor = _make_executor()
+    for model_id in model_ids:
+        executor.set_weight_version(1, trainer_model_id=model_id)
+        executor.set_train_parallel_config({"dp_size": 4}, trainer_model_id=model_id)
+
+    async def _get_rollout_data(rollout_id, trainer_model_id=None):
+        return [], None, None
+
+    executor._get_rollout_data = _get_rollout_data
+    return executor
+
+
+def _record_eval_metrics(monkeypatch) -> dict[str, Any]:
+    extra_metrics: dict[str, Any] = {}
+    monkeypatch.setattr(
+        rollout_executor_module,
+        "log_eval_rollout_data",
+        lambda rollout_id, args, data, extra: extra_metrics.update(extra),
+    )
+    return extra_metrics
 
 
 class TestPerPolicyKeying:
@@ -181,6 +209,109 @@ class TestPerPolicyKeying:
             await executor.get(0, trainer_model_id="a")
 
 
+class TestLastGetRolloutId:
+    async def test_two_policies_each_keep_their_own_last_fetched_rollout_id(self, monkeypatch):
+        """Each policy's training loop calls get at its own pace, so one shared field flips between them."""
+        _record_logged_model_ids(monkeypatch)
+        executor = _make_ready_executor("a", "b")
+
+        await executor.get(0, trainer_model_id="a")
+        await executor.get(0, trainer_model_id="b")
+        await executor.get(1, trainer_model_id="a")
+        await executor.get(2, trainer_model_id="a")
+        await executor.get(1, trainer_model_id="b")
+
+        assert executor.last_get_rollout_id_of_model_id == {"a": 2, "b": 1}
+
+    async def test_a_single_policy_run_keys_its_last_fetched_rollout_id_under_none(self, monkeypatch):
+        """None is the single-policy key, so the base path must not grow a name of its own."""
+        _record_logged_model_ids(monkeypatch)
+        executor = _make_ready_executor(None)
+
+        await executor.get(0)
+        await executor.get(1)
+
+        assert executor.last_get_rollout_id_of_model_id == {None: 1}
+
+    @pytest.mark.parametrize(
+        "last_get_rollout_ids, expected_lag",
+        [({None: 9}, 4), ({None: 4}, 0), ({"a": 9}, 4)],
+    )
+    async def test_eval_lag_is_the_single_policy_last_fetched_rollout_id_minus_the_eval_step_floored_at_zero(
+        self, monkeypatch, last_get_rollout_ids, expected_lag
+    ):
+        """The lag is the one policy's last fetched rollout id minus the eval step, floored at zero."""
+        executor = _make_executor()
+        executor.last_get_rollout_id_of_model_id = last_get_rollout_ids
+        extra_metrics = _record_eval_metrics(monkeypatch)
+
+        await executor._eval_checkpoint(
+            rollout_id=5, hf_dir="/snap/step_5", export_time_seconds=None, require_marker=False
+        )
+
+        assert extra_metrics["eval/lag_steps"] == expected_lag
+
+    async def test_eval_lag_is_absent_before_the_first_get(self, monkeypatch):
+        """An eval before any training fetch reports no lag rather than a made-up zero."""
+        executor = _make_executor()
+        executor.last_get_rollout_id_of_model_id = {}
+        extra_metrics = _record_eval_metrics(monkeypatch)
+
+        await executor._eval_checkpoint(
+            rollout_id=5, hf_dir="/snap/step_5", export_time_seconds=None, require_marker=False
+        )
+
+        assert "eval/lag_steps" not in extra_metrics
+
+    async def test_eval_lag_refuses_more_than_one_policy(self, monkeypatch):
+        """Multi-policy runs never reach the snapshot eval, so two recorded policies are a bug, not a max."""
+        executor = _make_executor()
+        executor.last_get_rollout_id_of_model_id = {"a": 9, "b": 4}
+        _record_eval_metrics(monkeypatch)
+
+        with pytest.raises(AssertionError):
+            await executor._eval_checkpoint(
+                rollout_id=5, hf_dir="/snap/step_5", export_time_seconds=None, require_marker=False
+            )
+
+    async def test_eval_lag_counts_a_get_that_started_while_the_eval_was_running(self, monkeypatch):
+        """get records its rollout id on entry and eval reads it on completion, so an overlapping get is not missed."""
+        _record_logged_model_ids(monkeypatch)
+        executor = _make_ready_executor(None)
+        extra_metrics = _record_eval_metrics(monkeypatch)
+        eval_may_finish = threading.Event()
+        get_entered = asyncio.Event()
+        get_may_finish = asyncio.Event()
+
+        def _eval_generate_rollout(eval_input):
+            assert eval_may_finish.wait(timeout=5)
+            return RolloutFnEvalOutput(data={})
+
+        async def _get_rollout_data(rollout_id, trainer_model_id=None):
+            get_entered.set()
+            await asyncio.wait_for(get_may_finish.wait(), timeout=5)
+            return [], None, None
+
+        executor.eval_generate_rollout = _eval_generate_rollout
+        executor._get_rollout_data = _get_rollout_data
+
+        eval_task = asyncio.ensure_future(
+            executor._eval_checkpoint(
+                rollout_id=5, hf_dir="/snap/step_5", export_time_seconds=None, require_marker=False
+            )
+        )
+        await asyncio.sleep(0)
+        get_task = asyncio.ensure_future(executor.get(9))
+        await asyncio.wait_for(get_entered.wait(), timeout=5)
+        eval_may_finish.set()
+        await asyncio.wait_for(eval_task, timeout=5)
+
+        assert extra_metrics["eval/lag_steps"] == 4
+
+        get_may_finish.set()
+        await asyncio.wait_for(get_task, timeout=5)
+
+
 class TestRolloutTimerNaming:
     async def test_two_policies_may_be_generating_at_the_same_time(self, monkeypatch):
         """The rollout timer is a process singleton that refuses a second start under the same name."""
@@ -235,24 +366,11 @@ class TestWeightVersionWatchdog:
             rollout_executor_module, "assert_weight_version_is_published", assert_weight_version_is_published
         )
 
-    @staticmethod
-    def _make_ready_executor(*model_ids: str | None) -> RolloutExecutor:
-        executor = _make_executor()
-        for model_id in model_ids:
-            executor.set_weight_version(1, trainer_model_id=model_id)
-            executor.set_train_parallel_config({"dp_size": 4}, trainer_model_id=model_id)
-
-        async def _get_rollout_data(rollout_id, trainer_model_id=None):
-            return [], None, None
-
-        executor._get_rollout_data = _get_rollout_data
-        return executor
-
     async def test_one_round_of_more_policies_than_the_threshold_is_not_a_stall(self, monkeypatch):
         """A shared counter turns the fourth policy's first rollout into a false 'nobody published' failure."""
         _record_logged_model_ids(monkeypatch)
         model_ids = ["a", "b", "c", "d"]
-        executor = self._make_ready_executor(*model_ids)
+        executor = _make_ready_executor(*model_ids)
 
         for model_id in model_ids:
             await executor.get(0, trainer_model_id=model_id)
@@ -260,7 +378,7 @@ class TestWeightVersionWatchdog:
     async def test_a_publishing_policy_does_not_clear_a_frozen_one(self, monkeypatch):
         """Otherwise a policy whose weights never move again is covered by its neighbour's updates."""
         _record_logged_model_ids(monkeypatch)
-        executor = self._make_ready_executor("a", "b")
+        executor = _make_ready_executor("a", "b")
         max_rollouts = max_rollouts_without_published_weight_version(executor.args)
 
         for rollout_id in range(max_rollouts):
