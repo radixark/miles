@@ -37,7 +37,7 @@ from megatron.core.transformer.moe.moe_layer import MoELayer
 from megatron.core.transformer.spec_utils import get_submodules
 from megatron.core.transformer.transformer_config import TransformerConfig
 
-import miles.utils.grouped_nvfp4_qdq as grouped
+import miles.utils.fused_nvfp4_qdq as grouped
 from miles.utils.fused_nvfp4_qdq import compute_nvfp4_amax, current_nvfp4_qdq_config, fused_nvfp4_qdq
 
 E, H, FFN = 8, 128, 128

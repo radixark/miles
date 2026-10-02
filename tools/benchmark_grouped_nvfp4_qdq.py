@@ -19,8 +19,14 @@ import torch
 import transformer_engine
 from transformer_engine.pytorch.tensor.grouped_tensor import GroupedTensor
 
-from miles.utils.fused_nvfp4_qdq import NVFP4QDQConfig, NVFP4QDQErrorMode, compute_nvfp4_amax, fused_nvfp4_qdq
-from miles.utils.grouped_nvfp4_qdq import compute_grouped_nvfp4_amax, fused_grouped_nvfp4_qdq
+from miles.utils.fused_nvfp4_qdq import (
+    NVFP4QDQConfig,
+    NVFP4QDQErrorMode,
+    compute_grouped_nvfp4_amax,
+    compute_nvfp4_amax,
+    fused_grouped_nvfp4_qdq,
+    fused_nvfp4_qdq,
+)
 from miles.utils.nvfp4_fake_qat import maybe_fake_quantize_nvfp4_weight_tensors
 
 

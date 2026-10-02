@@ -23,11 +23,11 @@ te = pytest.importorskip("transformer_engine.pytorch")
 from tests.ci.ci_register import register_cuda_ci
 
 from miles.utils.fused_nvfp4_qdq import NVFP4QDQConfig, NVFP4QDQErrorMode
+from miles.utils.fused_nvfp4_qdq import compute_grouped_nvfp4_amax as compute_nvfp4_amax
 from miles.utils.fused_nvfp4_qdq import compute_nvfp4_amax as scalar_amax  # noqa: E402
+from miles.utils.fused_nvfp4_qdq import fake_grouped_nvfp4_quantization_ste as fake_nvfp4_quantization_ste
+from miles.utils.fused_nvfp4_qdq import fused_grouped_nvfp4_qdq as fused_nvfp4_qdq
 from miles.utils.fused_nvfp4_qdq import fused_nvfp4_qdq as scalar_qdq
-from miles.utils.grouped_nvfp4_qdq import compute_grouped_nvfp4_amax as compute_nvfp4_amax
-from miles.utils.grouped_nvfp4_qdq import fake_grouped_nvfp4_quantization_ste as fake_nvfp4_quantization_ste
-from miles.utils.grouped_nvfp4_qdq import fused_grouped_nvfp4_qdq as fused_nvfp4_qdq
 from miles.utils.nvfp4_fake_qat import maybe_fake_quantize_nvfp4_weight_tensors
 
 register_cuda_ci(est_time=60, suite="stage-c-8-gpu-b200", labels=["precision"], hardware=["blackwell"])

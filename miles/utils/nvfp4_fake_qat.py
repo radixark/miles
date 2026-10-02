@@ -49,7 +49,7 @@ class _GroupedWeightQDQSTE(torch.autograd.Function):
         # These dependencies are needed only when fake QAT sees a native packed weight.
         from transformer_engine.pytorch.tensor.grouped_tensor import GroupedTensor
 
-        from miles.utils.grouped_nvfp4_qdq import compute_grouped_nvfp4_amax, fused_grouped_nvfp4_qdq
+        from miles.utils.fused_nvfp4_qdq import compute_grouped_nvfp4_amax, fused_grouped_nvfp4_qdq
 
         storage = _grouped_weight_storage(weight)
         output = fused_grouped_nvfp4_qdq(storage, compute_grouped_nvfp4_amax(storage), config)
@@ -85,7 +85,7 @@ def _fake_quantize_grouped_weight(weight, config):
         return output
 
     # Keep CuTe DSL optional until the packed path is actually selected.
-    from miles.utils.grouped_nvfp4_qdq import fake_grouped_nvfp4_quantization_ste
+    from miles.utils.fused_nvfp4_qdq import fake_grouped_nvfp4_quantization_ste
 
     return fake_grouped_nvfp4_quantization_ste(weight, config)
 
