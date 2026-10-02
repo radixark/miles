@@ -131,3 +131,43 @@ def test_rejects_invalid_view_or_canonical_byte_count():
         )
     with pytest.raises(ValueError, match="byte count"):
         gpu_delta_publication.encode_tensor("w", b"ab", b"cd", dtype="BF16", shape=[2], codec="none")
+
+
+@pytest.mark.parametrize("codec", ["none", "zstd", "snappy"])
+@pytest.mark.parametrize("encoding", ["xor_bytes", "replace_bytes"])
+def test_buffer_encoding_preserves_frame_bytes_hashes_and_payload_ownership(codec, encoding):
+    import snappy
+
+    frame_bytes = gpu_delta_publication.FRAME_BYTES
+    base = np.zeros(frame_bytes + 137, dtype=np.uint8)
+    target = base.copy()
+    target[::4096] = 7
+    target[-137:] = np.random.default_rng(91).integers(0, 256, 137, dtype=np.uint8)
+    compress = {
+        "none": bytes,
+        "zstd": zstandard.ZstdCompressor(level=1, write_content_size=True).compress,
+        "snappy": snappy.compress,
+    }[codec]
+    # Compare against the original bytes-input codec contract, including the
+    # compressible full frame and incompressible raw-fallback tail.
+    expected = []
+    for start in range(0, target.size, frame_bytes):
+        raw = target[start : start + frame_bytes].tobytes()
+        compressed = compress(raw)
+        expected.append(compressed if len(compressed) < len(raw) else raw)
+    entry, payloads = gpu_delta_publication.encode_tensor(
+        "w",
+        base,
+        target,
+        dtype="U8",
+        shape=[target.size],
+        codec=codec,
+        encoding=encoding,
+    )
+    base.fill(0x55)
+    target.fill(0xAA)
+    assert payloads == expected
+    assert all(type(payload) is bytes for payload in payloads)
+    assert [frame["encoded_sha256"] for frame in entry["frames"]] == [
+        hashlib.sha256(payload).hexdigest() for payload in expected
+    ]
