@@ -24,6 +24,7 @@ from miles.backends.training_utils.weight_update.protocols.delta import (
     _PLAIN_FLOAT_DTYPE_BY_SAFETENSORS_DTYPE,
     _safetensors_dtype,
 )
+from miles.backends.training_utils.weight_update.session import set_weight_version
 from miles.backends.training_utils.weight_update.utils import get_data_replica_rank_and_size
 from miles.utils import async_utils, disk_delta, gpu_delta_publication
 from miles.utils.distributed_utils import get_gloo_group
@@ -161,6 +162,12 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
             raise RuntimeError(f"GPU-delta mutable inventory/ownership mismatch: missing={missing}, extra={extra}")
         self._stream_id = _on_root(lambda: uuid.uuid4().hex)
         self._stream_dir = Path(self.args.update_weight_disk_dir) / self._stream_id
+        # The startup checkpoint is base version 0, not a learned update. Wait
+        # for every engine's scheduler/tokenizer acknowledgement before rollout;
+        # an ambiguous partial acknowledgement must not be automatically retried.
+        self._uncommitted = True
+        _on_root(lambda: set_weight_version(self.rollout_engines, 0), broadcast_value=False)
+        self._uncommitted = False
         self._baseline_captured = True
         if dist.get_rank() == 0:
             logger.info(
