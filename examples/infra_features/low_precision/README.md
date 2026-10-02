@@ -58,11 +58,14 @@ Here's a quick explanation of how FP8 training is currently implemented in miles
 
 ### MoE weight updates
 
-With `--megatron-to-hf-mode raw`, MoE weight updates require
-`--expert-tensor-parallel-size 1`, including unquantized updates. EP ranks convert
+With `--megatron-to-hf-mode raw` and `--expert-tensor-parallel-size 1`, EP ranks convert
 and quantize their complete local routed experts in parallel. Expert-DP replicas
 split that work into contiguous ranges of whole experts, so each expert is
 processed once; individual expert tensors are never split across expert DP.
+
+With expert tensor parallelism greater than one, updates use the existing path:
+gather unquantized ETP shards and EP experts before conversion and quantization.
+Both paths support unquantized updates.
 
 For 256 experts with EP64 and EDP8, each EP rank has four local experts: four
 replicas process one expert each, and four process none. All replicas participate

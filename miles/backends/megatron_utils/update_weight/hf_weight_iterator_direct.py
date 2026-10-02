@@ -29,24 +29,25 @@ class _ExpertBatch:
 
 
 class HfWeightIteratorDirect(MegatronHfWeightIteratorBase):
-    # TP/EP are always gathered; PP follows the requirement. Routed experts require ETP1.
+    # Lower bound: TP/ETP/EP are always gathered; PP follows the requirement.
     forced_placement = WeightUpdatePlacement(gather_pp=False)
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         parallel = get_parallel_state()
-        if self.args.num_experts and parallel.etp.size != 1:
-            raise ValueError(
-                "Direct MoE weight updates require --expert-tensor-parallel-size 1 "
-                "so each EP rank owns complete routed experts."
-            )
+        self._convert_experts_before_gather = parallel.etp.size == 1
         non_expert_infos, expert_infos = _get_megatron_local_param_infos(
             self.args, self.model, gather_pp=self.placement.gather_pp
         )
         ep_size = parallel.ep.size
         self._non_expert_batches = _pack_param_infos_by_size(self.args, non_expert_infos)
         self._expert_batches = []
-        if expert_infos:
+        if not self._convert_experts_before_gather:
+            self._expert_batches = [
+                _ExpertBatch(param_infos=infos, gathers=())
+                for infos in _pack_param_infos_by_size(self.args, expert_infos, size_multiplier=ep_size)
+            ]
+        elif expert_infos:
             edp = parallel.edp
             assert edp is not None, "Expert data parallel state is required for MoE weight updates"
             owner_infos = _partition_expert_infos(
@@ -90,10 +91,19 @@ class HfWeightIteratorDirect(MegatronHfWeightIteratorBase):
             del named_params
             pbar.update(1)
         for batch in self._expert_batches:
-            units = self._materialize_expert_batch(batch, weights)
-            if materialize:
-                yield from units
-            del units
+            if self._convert_experts_before_gather:
+                units = self._materialize_expert_batch(batch, weights)
+                if materialize:
+                    yield from units
+                del units
+            else:
+                # ETP shards must form complete experts before conversion/quantization.
+                named_params = _materialize_expert_batch(
+                    self.args, batch.param_infos, weights, gather_pp=self.placement.gather_pp
+                )
+                if materialize:
+                    yield from self._convert_to_hf_param_units(named_params)
+                del named_params
             pbar.update(1)
         pbar.close()
         yield from _iter_mm_tower_units(self.args, materialize=materialize)
@@ -189,6 +199,50 @@ def _materialize_non_expert_batch(
     return [(info.name, param) for info, param in zip(param_infos, gathered, strict=True)]
 
 
+def _materialize_expert_batch(
+    args: Namespace,
+    param_infos: Sequence[ParamInfo],
+    megatron_local_weights,
+    *,
+    gather_pp: bool,
+) -> list[tuple[str, torch.Tensor]]:
+    """Load -> PP broadcast (when gather_pp) -> ETP all_gather -> EP all_gather.
+
+    Expert metadata is EP-local; the full expert set is materialized by a
+    symmetric EP all_gather with a name exchange.
+    """
+    monkey_patch_torch_reductions()
+    params = _load_or_allocate_params(param_infos, megatron_local_weights)
+    if gather_pp:
+        _broadcast_across_pp(param_infos, params)
+    _set_tp_attrs(param_infos, params)
+    etp_gathered = all_gather_params_async(args, list(zip(param_infos, params, strict=True)))
+
+    ep = get_parallel_state().ep
+    if ep.size == 1:
+        return [(info.name, param) for info, param in zip(param_infos, etp_gathered, strict=True)]
+
+    names = [info.name for info in param_infos]
+    all_names: list = [None] * ep.size
+    dist.all_gather_object(all_names, names, group=ep.group)
+    for ep_names in all_names:
+        assert len(ep_names) == len(
+            names
+        ), f"EP-asymmetric expert batch: {len(names)} params locally vs {len(ep_names)} on a peer rank"
+
+    all_gathered: list[list[tuple[str, torch.Tensor]]] = [[] for _ in range(ep.size)]
+    handles = []
+    for i, param in enumerate(etp_gathered):
+        buffers = [torch.empty_like(param, device=torch.cuda.current_device()) for _ in range(ep.size)]
+        handles.append(dist.all_gather(buffers, param, group=ep.group, async_op=True))
+        for ep_rank, ep_names in enumerate(all_names):
+            all_gathered[ep_rank].append((ep_names[i], buffers[ep_rank]))
+    for handle in handles:
+        handle.wait()
+
+    return [named for per_rank in all_gathered for named in per_rank]
+
+
 def _pack_param_infos_by_size(
     args: Namespace, param_infos: list[ParamInfo], *, size_multiplier: int = 1
 ) -> list[list[ParamInfo]]:
@@ -223,7 +277,11 @@ def _partition_expert_infos(
 
 
 def _get_param_full_size(info: ParamInfo) -> int:
-    return info.size if is_routed_expert_param(info.name) else info.size * get_parallel_state().tp.size
+    if is_routed_expert_param(info.name):
+        tp_size = get_parallel_state().etp.size
+    else:
+        tp_size = get_parallel_state().tp.size
+    return info.size * tp_size
 
 
 def _get_megatron_local_param_infos(
@@ -320,6 +378,19 @@ def is_routed_expert_param(name: str) -> bool:
     return ".experts." in name and ".shared_experts." not in name
 
 
+def _is_unmarked_grouped_expert_weight(name: str, param: torch.nn.Parameter) -> bool:
+    """TEGroupedLinear never marks its per-expert weight0..weightN, so Megatron fills in
+    the defaults (tensor_model_parallel=False, partition_dim=-1) and the tensor claims to
+    be unsharded. It is expert-TP sharded whenever etp > 1, so the gather must still run.
+    """
+    return (
+        is_routed_expert_param(name)
+        and ("linear_fc1.weight" in name or "linear_fc2.weight" in name)
+        and not param.tensor_model_parallel
+        and get_parallel_state().etp.size > 1
+    )
+
+
 def _check_and_fix_partition(args: Namespace, name: str, partition_stride: int, partition_dim: int) -> tuple[int, int]:
     """Validate partition_stride values for known parameter patterns.
 
@@ -345,8 +416,9 @@ def all_gather_params_async(
     param_infos_and_params: list[tuple[ParamInfo, torch.Tensor]],
 ) -> list[torch.Tensor]:
     """
-    Gather nonexpert TP shards, including shared experts. Launch each all-gather,
-    wait for all handles, then concatenate partitions with any GLU rechunking.
+    Parallel TP all-gather for multiple params. Loop 1: for each TP param, allocate buffers +
+    dist.all_gather(async_op=True) on expert-TP/regular-TP group (skip expert_bias/non-TP/duplicated).
+    Loop 2: wait all NCCL handles (enables overlap). Loop 3: concat partitions + apply GLU rechunk/MoE dim fix.
     """
     # Phase 1: Start all async all_gather operations
     gather_tasks = []
@@ -357,13 +429,19 @@ def all_gather_params_async(
         if "expert_bias" in info.name:
             gather_tasks.append((info, param, None, None, None, None))
             handles.append(None)
-        elif getattr(param, "parallel_mode", None) == "duplicated" or not param.tensor_model_parallel:
+        elif getattr(param, "parallel_mode", None) == "duplicated" or (
+            not param.tensor_model_parallel and not _is_unmarked_grouped_expert_weight(info.name, param)
+        ):
             gather_tasks.append((info, param.data, None, None, None, None))
             handles.append(None)
         else:
             # Start async all_gather
-            tp_size = get_parallel_state().tp.size
-            tp_group = get_parallel_state().tp.group
+            if is_routed_expert_param(info.name):
+                tp_size = get_parallel_state().etp.size
+                tp_group = get_parallel_state().etp.group
+            else:
+                tp_size = get_parallel_state().tp.size
+                tp_group = get_parallel_state().tp.group
 
             if tp_size <= 1:
                 gather_tasks.append((info, param.data, None, None, None, None))
