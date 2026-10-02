@@ -2,8 +2,8 @@
 
 This manual benchmark compares **CPU XOR + Zstd**, **CPU XOR + Snappy**,
 **GPU XOR + Zstd**, and **GPU XOR + Snappy** using the actual Megatron direct
-exporter and GPU-delta publication protocol. Six controlled arms retain all four
-encoder/codec combinations at 1 MiB framing and add GPU Zstd/Snappy at 64 KiB.
+exporter and GPU-delta publication protocol. Eight controlled arms retain all four
+encoder/codec combinations at 1 MiB framing and add GPU Zstd/Snappy at 64 KiB and 2 MiB.
 It runs on eight GPUs with TP1/PP1/CP1/EP8/ETP1 and the
 native GLM-5.2 five-layer model (three dense layers and two routed MoE layers).
 It constructs and loads the real model, exports W4A16 NVFP4 using TE 4over6,
@@ -24,7 +24,7 @@ forward/backward, an optimizer, or an activation RPC.
   of each floating matrix's elements and multiply them by
   `1 + --perturb-relative-scale`. The deterministic selection depends on the
   global parameter name and version, so replicated dense weights agree.
-  The model is then unchanged while all six arms export it. Defaults select
+  The model is then unchanged while all eight arms export it. Defaults select
   about 0.1% of elements and multiply those by 1.03125. These are controlled
   model perturbations, not learned optimizer steps, and do not target a fixed
   post-quantization density or compression ratio.
@@ -38,15 +38,15 @@ forward/backward, an optimizer, or an activation RPC.
   receiver activation or acceptance proof. Arm order rotates between versions,
   starting from
   CPU Zstd, CPU Snappy, GPU Zstd, GPU Snappy, GPU Zstd 64 KiB, GPU Snappy
-  64 KiB. The default three cumulative versions do not fully balance all six
-  execution positions and are not repeated measurements of one fixed target. The initial discovery and six
+  64 KiB, GPU Zstd 2 MiB, GPU Snappy 2 MiB. The default three cumulative versions do not fully balance all eight
+  execution positions and are not repeated measurements of one fixed target. The initial discovery and eight
   baseline exports warm the exporter before measurement;
   their durations are reported separately.
 - **Compression:** nvCOMP GPU compression runs GPU SM kernels for both codecs.
   Blackwell's decompression engine does not accelerate compression. The CPU
   arms use the existing owner worker pool, CPU XOR with Zstd or Snappy, and publication writer.
   All GPU arms use the same production bulk GPU encoder described below;
-  the two 64 KiB arms change only the per-instance frame size.
+  the four 64 KiB/2 MiB arms change only the per-instance frame size.
 
 The GPU path first stages the full new canonical snapshot to pinned CPU memory
 as export proceeds. After that D2H work finishes, it encodes deterministic
@@ -54,7 +54,7 @@ name-sorted batches using the existing `update_weight_buffer_size` target
 (512 MiB in this benchmark). A larger individual tensor stands alone; the
 value is a batching target, not a hard workspace-memory ceiling. Each batch
 uploads old and new bytes, computes XOR/counts, compresses all independent 1 MiB
-frames together (64 KiB in the explicit small-frame arms), and returns encoded
+frames together (64 KiB or 2 MiB in the explicit framing controls), and returns encoded
 payloads to pinned CPU memory. After all
 GPU batches complete, the owner hashes/writes the payloads and seals the
 publication. The old CPU snapshot stays unchanged until acknowledgment.
@@ -80,11 +80,22 @@ or fallback is added by this benchmark.
 | `gpu-snappy` | `gpu` | `snappy` | 1,048,576 | GPU XOR, nvCOMP CUDA compression |
 | `gpu-zstd-64k` | `gpu` | `zstd` | 65,536 | Same GPU encoder, per-instance framing control |
 | `gpu-snappy-64k` | `gpu` | `snappy` | 65,536 | Same GPU encoder, per-instance framing control |
+| `gpu-zstd-2m` | `gpu` | `zstd` | 2,097,152 | Experimental producer-only framing control |
+| `gpu-snappy-2m` | `gpu` | `snappy` | 2,097,152 | Experimental producer-only framing control |
 
-The last two arms are benchmark variants, not a new production environment or
+The last four arms are benchmark variants, not a new production environment or
 CLI knob. Production retains 1 MiB. Each variant owns a separate encoder and
 publication stream; no process-global frame-size monkeypatch can leak into a
-later arm. The publication records its frame profile explicitly.
+later arm. The publication records its frame profile explicitly:
+`<codec>-independent-64kib-v1`, `<codec>-independent-1mib-v1`, or
+`<codec>-independent-2mib-v1`; the benchmark checks this against the arm.
+
+**Receiver compatibility:** the paired SGLang receiver currently admits at most
+1 MiB decoded frames. The 2 MiB arms are producer-only experiments and their
+publications must not be sent to that receiver. Native producer round trips
+can qualify compression bytes independently; they do not establish receiver
+admission. Production retains 1 MiB and the receiver interoperability suite
+remains scoped to 64 KiB/1 MiB.
 
 Receiver decode is determined by codec, independently of the producer's CPU/GPU
 choice: Zstd uses CUDA decoding; Snappy requires Blackwell hardware decompression.
@@ -120,20 +131,22 @@ torchrun --standalone --nproc-per-node=8 \
 ```
 
 The output directory must be new. Raw per-arm/version receipts and publications
-are kept even if a later arm fails. `result.json` is written only after all six
+are kept even if a later arm fails. `result.json` is written only after all eight
 arms in every version pass the identical-target check. `setup.json` records initialization,
 discovery, baseline capture, rank ownership, the ordered `arms` list and exact
 `arm_order_by_version`. `arm_configs` records each arm's encoder, codec and
-frame bytes. It also binds the `producer_pipelines` labels and existing
+frame bytes. `receiver_compatibility` identifies the two producer-only 2 MiB
+arms and current receiver frame limit. It also binds the `producer_pipelines` labels and existing
 `gpu_batch_target_bytes` (also per GPU arm) to the captured source. `plan.json`
 contains the exact mutable canonical inventory;
-every completed version repeats its actual `order`.
+every completed version repeats its actual `order`. Three versions produce 24
+arm/version observations, not repeated samples of a fixed target.
 Every completed version also gets its own JSON
 and a concise JSON line on stdout. Nonzero `torchrun` exits remain failures;
 do not use an earlier successful partial receipt as complete-run acceptance.
 
 The flags select only this benchmark. Codec and encoder choices are fixed
-explicitly for all six arms; no production defaults or live serving settings
+explicitly for all eight arms; no production defaults or live serving settings
 are changed. To measure event overhead, rerun into a separate output directory
 without `--timing`, using the same inputs and perturbation arguments. Never
 merge timing-enabled and timing-disabled samples into one distribution.

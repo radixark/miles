@@ -43,7 +43,7 @@ def _snapshots(frame_bytes=FRAME_BYTES):
 
 @pytest.mark.parametrize("codec", ["zstd", "snappy"])
 @pytest.mark.parametrize("timing", ["0", "1"])
-@pytest.mark.parametrize("frame_bytes", [FRAME_BYTES, 1 << 16])
+@pytest.mark.parametrize("frame_bytes", [FRAME_BYTES, 1 << 16, 1 << 21])
 def test_cross_tensor_batch_exact_bytes_immutable_snapshots_and_owned_slab(codec, timing, frame_bytes, monkeypatch):
     monkeypatch.setenv("WEIGHT_DELTA_TIMING", timing)
     device = torch.device("cuda", torch.cuda.current_device())
