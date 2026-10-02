@@ -169,13 +169,6 @@ Sections mirror the launch-script argument groups.
 | `--model-name` | str | – | Set in multi-node to avoid `transformers` file-system race. |
 | `--spec` | `<module> <fn>` | – | Plugin spec for custom architectures (e.g. `miles_plugins.models.qwen3_5 get_qwen3_5_spec`). |
 
-Hub publishing requires `--save`, `--save-hf`, and a positive `--save-interval`.
-Multi-policy training, dumper mode, and `--debug-rollout-only` are not supported.
-Uploads are synchronous and publish model weights at the repository root; optimizer
-state remains in the native training checkpoint. Previous published versions remain
-accessible through Hub commit history. See [Hugging Face model publishing](/examples/infra-features/hf-checkpoint-upload)
-for authentication, examples, and transfer behavior.
-
 ### Rollout: data and batching
 
 | Flag | Type | Default | Notes |
