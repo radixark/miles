@@ -174,12 +174,21 @@ general FSDP weight-update path.
 
 ### ModelExpress S3 delta refit
 
-Install the optional ModelExpress Python client exposing `modelexpress_rl` on
-both roles, and use an SGLang build with the
-`/update_weights_from_modelexpress` endpoint. Keep the existing engine CUDA and
-PyTorch dependencies when installing the client. This path uses Megatron with
-separate training and rollout GPUs; LoRA and in-place generation pausing are
-unsupported.
+<Warning>
+**Development version:** This integration uses unreleased ModelExpress features
+planned for v0.8.0 and may introduce breaking changes. Until
+[ModelExpress #826](https://github.com/ai-dynamo/modelexpress/pull/826) merges,
+install the integration branch shown below; use `main` after it merges.
+</Warning>
+
+Install the optional ModelExpress client on every trainer and rollout worker.
+In the Miles image, prepare the S3 dependencies before installing MX:
+
+```bash
+uv pip install 'boto3>=1.35.2' 'protobuf>=5.27.2,<7'
+uv pip install --no-deps \
+  "git+https://github.com/ai-dynamo/modelexpress@hwoo/delta-refit-miles#subdirectory=modelexpress_client/python"
+```
 
 ```mermaid
 flowchart LR

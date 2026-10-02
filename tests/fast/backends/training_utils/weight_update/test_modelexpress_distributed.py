@@ -19,8 +19,8 @@ pytest.importorskip("modelexpress_rl")
 
 from modelexpress_rl import WeightPayloadFormat, refit_pb2
 from modelexpress_rl.train import runtime as mx_runtime
+from modelexpress_rl.train.frameworks.miles import modelexpress as mx
 
-from miles.backends.training_utils.weight_update.protocols import modelexpress as mx
 from miles.backends.training_utils.weight_update.updater import WeightUpdater
 from miles.utils import distributed_utils
 

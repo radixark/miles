@@ -7,7 +7,8 @@ import torch
 
 pytest.importorskip("modelexpress_rl")
 
-from miles.backends.training_utils.weight_update.protocols import modelexpress as mx
+from modelexpress_rl.train.frameworks.miles import modelexpress as mx
+
 from miles.backends.training_utils.weight_update.updater import WeightUpdater
 
 
