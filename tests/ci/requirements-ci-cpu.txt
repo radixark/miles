@@ -14,3 +14,8 @@ torch==2.11.0
 torchvision==0.26.0
 typed-argument-parser>=1.10,<2
 xgrammar==0.2.1
+
+# Build requirements for optional Megatron Bridge overrides (--no-build-isolation).
+setuptools<80.0.0
+pybind11
+wheel
