@@ -32,7 +32,9 @@ ARMS = (
     ("gpu-snappy-64k", "gpu", "snappy", 1 << 16),
     ("gpu-zstd-2m", "gpu", "zstd", 1 << 21),
     ("gpu-snappy-2m", "gpu", "snappy", 1 << 21),
+    ("gpu-snappy-zstd", "gpu", "snappy", 1 << 20),
 )
+DEFAULT_ARMS = [arm[0] for arm in ARMS if arm[0] != "gpu-snappy-zstd"]
 NVFP4_ENV = {
     "SGLANG_NVFP4_CKPT_FP8_GEMM_IN_ATTN": "0",
     "OPEN_TRAINING_NVFP4_FAKE_QAT_FLAG": "1",
@@ -56,12 +58,18 @@ def parse_args():
     parser.add_argument("--load", type=Path, required=True, help="Matching native-DSA Megatron torch_dist checkpoint")
     parser.add_argument("--output", type=Path, required=True, help="New directory; existing output is rejected")
     parser.add_argument("--versions", type=int, default=3)
+    parser.add_argument(
+        "--arms", nargs="+", choices=[arm[0] for arm in ARMS], default=DEFAULT_ARMS,
+        help="Matched arms; use gpu-snappy gpu-snappy-zstd for the CPU outer-Zstd comparison",
+    )
     parser.add_argument("--perturb-fraction", type=float, default=0.001, help="Approximate fraction of matrix elements selected")
     parser.add_argument("--perturb-relative-scale", type=float, default=0.03125, help="Selected weights multiply by 1 + this value")
     parser.add_argument("--timing", action="store_true", help="Record optional CUDA phase events; changes instrumentation overhead")
     args = parser.parse_args()
     if args.versions < 1 or not 0 < args.perturb_fraction <= 1 or not 0 < args.perturb_relative_scale < 1:
         parser.error("versions must be positive, fraction in (0, 1], and relative scale in (0, 1)")
+    if len(args.arms) < 2 or len(set(args.arms)) != len(args.arms):
+        parser.error("--arms requires at least two distinct matched arms")
     if int(os.environ.get("WORLD_SIZE", "0")) != 8:
         parser.error("Launch with torchrun --standalone --nproc-per-node=8")
     return args
@@ -293,16 +301,17 @@ def _make_protocol(args, plan, arm, output):
     name, encoder, codec, _frame_bytes = arm
     os.environ["WEIGHT_DELTA_ENCODER"] = encoder
     os.environ["WEIGHT_DELTA_CODEC"] = codec
+    os.environ["WEIGHT_DELTA_SNAPPY_ZSTD"] = str(int(name == "gpu-snappy-zstd"))
     arm_args = copy.copy(args)
     arm_args.update_weight_disk_dir = str(output / name / "publications")
     return ProducerOnlyProtocol(arm_args)
 
 
-def _setup_protocols(args, plan, iterator, weights, output):
+def _setup_protocols(args, plan, iterator, weights, output, arms):
     from miles.backends.training_utils.parallel import get_parallel_state
 
     protocols, setup = {}, []
-    for arm in ARMS:
+    for arm in arms:
         started = time.monotonic()
         protocol = _make_protocol(args, plan, arm, output)
         protocol.connect([], [], [], get_parallel_state(), iterator.placement, "target")
@@ -347,16 +356,18 @@ def _perturb(weights, *, fraction, relative_scale, version):
     return {"selected_elements": selected, "eligible_elements": eligible, "stride": stride}
 
 
-def _verify_publication(publication, plan, *, codec, frame_bytes):
+def _verify_publication(publication, plan, *, codec, frame_bytes, snappy_zstd=False):
     path = Path(publication["manifest_path"])
     raw = path.read_bytes()
     if hashlib.sha256(raw).hexdigest() != publication["manifest_sha256"]:
         raise ValueError("Publication manifest checksum mismatch")
     manifest = json.loads(raw)
     frame_profile = {1 << 16: "64kib", 1 << 20: "1mib", 1 << 21: "2mib"}[frame_bytes]
-    profile = f"{codec}-independent-{frame_profile}-v1"
+    profile = f"{codec}-independent-{frame_profile}{'-zstd' if snappy_zstd else ''}-v1"
     if manifest["codec_profile"] != profile:
         raise ValueError("Sealed publication frame profile differs from the benchmark arm")
+    if manifest["protocol_version"] != (3 if snappy_zstd else 2):
+        raise ValueError("Sealed publication protocol differs from the benchmark arm")
     if {tensor["name"] for tensor in manifest["tensors"]} != {tensor["name"] for tensor in plan}:
         raise ValueError("Sealed publication does not cover the exact mutable exporter inventory")
     for item in manifest["files"]:
@@ -370,6 +381,10 @@ def _verify_publication(publication, plan, *, codec, frame_bytes):
         "tensor_count": len(manifest["tensors"]),
         "codec_profile": manifest["codec_profile"],
         "frame_bytes": frame_bytes,
+        "snappy_zstd": snappy_zstd,
+        "inner_encoded_frame_bytes": sum(frame["encoded_bytes"] for tensor in manifest["tensors"] for frame in tensor["frames"]),
+        "outer_stored_bytes": sum(tensor.get("outer", {}).get("encoded_bytes", 0) for tensor in manifest["tensors"]),
+        "outer_decoded_arena_bytes": sum(tensor.get("outer", {}).get("decoded_bytes", 0) for tensor in manifest["tensors"]),
     }
 
 
@@ -411,11 +426,18 @@ def _run_arm(protocol, iterator, weights, version, plan):
     if dist.get_rank() == 0:
         try:
             frame_bytes = protocol._gpu_encoder.frame_bytes if protocol.encoder_backend == "gpu" else 1 << 20
-            sizes = _verify_publication(publication, plan, codec=protocol.codec, frame_bytes=frame_bytes)
+            sizes = _verify_publication(
+                publication, plan, codec=protocol.codec, frame_bytes=frame_bytes,
+                snappy_zstd=protocol.snappy_zstd,
+            )
         except Exception as caught:
             error = caught
     _check(error, "sealed publication validation")
-    return {"ranks": _gather(measurement), "publication": publication, "sizes": sizes}
+    return {
+        "version": version,
+        "measurement_phase": "first-use-allocation" if version == 1 else "warm-update",
+        "ranks": _gather(measurement), "publication": publication, "sizes": sizes,
+    }
 
 
 def _verify_equal_targets(protocols):
@@ -452,7 +474,7 @@ def _versions(options, protocols, iterator, weights, plan):
                 version=version,
             )
         )
-        # Three cumulative versions rotate eight arms, but do not fully balance
+        # Cumulative versions rotate selected arms, but do not fully balance
         # execution positions or provide repeated measurements of one target.
         order = _arm_order(version, list(protocols))
         arms = {}
@@ -476,6 +498,7 @@ def _versions(options, protocols, iterator, weights, plan):
         _check(error, "producer-only baseline commit")
         result = {
             "version": version, "order": order, "perturbation": perturbation,
+            "measurement_phase": "first-use-allocation" if version == 1 else "warm-update",
             "arms": arms, "equality": _gather(equality),
             "baseline_commit": "producer-only-after-sealing-and-all-rank-target-equality",
         }
@@ -527,7 +550,9 @@ def run(options):
     discover_started = time.monotonic()
     plan, ownership = _discover_plan(args, iterator, weights)
     discovery_s = time.monotonic() - discover_started
-    protocols, baseline_setup = _setup_protocols(args, plan, iterator, weights, options.output)
+    arm_by_name = {arm[0]: arm for arm in ARMS}
+    arms = [arm_by_name[name] for name in options.arms]
+    protocols, baseline_setup = _setup_protocols(args, plan, iterator, weights, options.output, arms)
     runtime, error = None, None
     try:
         runtime = _runtime_metadata()
@@ -542,14 +567,14 @@ def run(options):
             "model_args": model_argv,
             "env": NVFP4_ENV,
             "timing": options.timing,
-            "arms": [arm[0] for arm in ARMS],
+            "arms": [arm[0] for arm in arms],
             "arm_configs": {
-                name: {"encoder": encoder, "codec": codec, "frame_bytes": frame_bytes}
-                for name, encoder, codec, frame_bytes in ARMS
+                name: {"encoder": encoder, "codec": codec, "frame_bytes": frame_bytes, "snappy_zstd": name == "gpu-snappy-zstd"}
+                for name, encoder, codec, frame_bytes in arms
             },
             "receiver_compatibility": {
                 "max_admitted_frame_bytes": 1 << 20,
-                "producer_only_arms": [name for name, _encoder, _codec, size in ARMS if size > 1 << 20],
+                "producer_only_arms": [name for name, _encoder, _codec, size in arms if size > 1 << 20],
             },
             "producer_pipelines": {
                 "cpu": "export-overlapped-cpu-workers-v1",
@@ -558,16 +583,17 @@ def run(options):
             "gpu_batch_target_bytes": args.update_weight_buffer_size,
             "gpu_batch_target_bytes_by_arm": {
                 name: args.update_weight_buffer_size
-                for name, encoder, _codec, _frame_bytes in ARMS if encoder == "gpu"
+                for name, encoder, _codec, _frame_bytes in arms if encoder == "gpu"
             },
             "baseline_commit_scope": "producer-only-simulated-activation-after-target-equality",
             "arm_order_by_version": {
-                str(version): _arm_order(version, [arm[0] for arm in ARMS])
+                str(version): _arm_order(version, [arm[0] for arm in arms])
                 for version in range(1, options.versions + 1)
             },
             "ranks": setup,
             "options": {k: str(v) if isinstance(v, Path) else v for k, v in vars(options).items()},
             "source_digest": os.environ.get("GPU_DELTA_SOURCE_DIGEST"),
+            "timing_interpretation": "Version 1 includes first-use allocation/compilation; compare warm versions 2/3 separately. Selected arms use identical per-version canonical targets, not repeated fixed-target samples.",
         },
     )
     results = _versions(options, protocols, iterator, weights, plan)

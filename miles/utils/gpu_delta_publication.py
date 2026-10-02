@@ -11,6 +11,7 @@ import json
 import math
 import os
 import threading
+import time
 import uuid
 from collections.abc import Iterable, Mapping
 from pathlib import Path
@@ -57,7 +58,48 @@ def settings_from_env() -> tuple[str, str]:
         raise ValueError("Expected WEIGHT_DELTA_CODEC=zstd|snappy and WEIGHT_DELTA_ENCODER=gpu|cpu")
     if "WEIGHT_DELTA_STAGING" in os.environ:
         raise ValueError("WEIGHT_DELTA_STAGING was removed; GPU-delta receivers always stream tensors")
+    snappy_zstd_from_env(codec, encoder)
     return codec, encoder
+
+
+def snappy_zstd_from_env(codec: str, encoder: str) -> bool:
+    value = os.environ.get("WEIGHT_DELTA_SNAPPY_ZSTD", "0")
+    if value not in ("0", "1"):
+        raise ValueError("Expected WEIGHT_DELTA_SNAPPY_ZSTD=0|1")
+    if value == "1" and (codec != "snappy" or encoder != "gpu"):
+        raise ValueError("WEIGHT_DELTA_SNAPPY_ZSTD=1 requires GPU Snappy encoding")
+    return value == "1"
+
+
+def _inner_payload_layout(payloads):
+    """Preserve payload leases; expose an existing aligned arena when possible."""
+    views = [memoryview(payload).cast("B") for payload in payloads]
+    offsets, end = [], 0
+    for view in views:
+        offset = (end + 15) // 16 * 16
+        offsets.append(offset)
+        end = offset + len(view)
+    if len(views) == 1:
+        return views, offsets, end, views[0]
+    if views and all(view.obj is views[0].obj for view in views):
+        parent = memoryview(views[0].obj).cast("B")
+        parent_address = np.frombuffer(parent, dtype=np.uint8).ctypes.data
+        start = np.frombuffer(views[0], dtype=np.uint8).ctypes.data - parent_address
+        if (
+            0 <= start
+            and start + end <= len(parent)
+            and all(
+                np.frombuffer(view, dtype=np.uint8).ctypes.data == parent_address + start + offset
+                for view, offset in zip(views, offsets, strict=True)
+            )
+        ):
+            arena = parent[start : start + end]
+            ends = [0] + [offset + len(view) for offset, view in zip(offsets[:-1], views[:-1], strict=True)]
+            if all(not any(arena[end:offset]) for end, offset in zip(ends, offsets, strict=True)):
+                return views, offsets, end, arena
+    # Packed GPU batches normally lack inter-frame alignment padding. Stream
+    # these immutable views plus tiny zero gaps instead of copying the tensor.
+    return views, offsets, end, None
 
 
 def _bytes_view(value) -> np.ndarray:
@@ -202,6 +244,7 @@ class PublicationWriter:
         owner: int = 0,
         publication_id: str | None = None,
         frame_bytes: int = FRAME_BYTES,
+        snappy_zstd: bool = False,
     ):
         if (
             not stream_id
@@ -218,15 +261,30 @@ class PublicationWriter:
         self.codec = codec or settings_from_env()[0]
         if self.codec not in ("zstd", "snappy"):
             raise ValueError("Unknown gpu-delta codec")
+        if type(snappy_zstd) is not bool or (snappy_zstd and self.codec != "snappy"):
+            raise ValueError("Outer Zstd wrapping requires Snappy frames")
+        self.snappy_zstd = snappy_zstd
+        self._outer_compressor = (
+            zstandard.ZstdCompressor(level=1, threads=0, write_content_size=True) if snappy_zstd else None
+        )
+        self.outer_metrics = dict(
+            outer_compress_s=0.0,
+            outer_hash_write_s=0.0,
+            inner_hash_s=0.0,
+            outer_input_bytes=0,
+            outer_output_bytes=0,
+            outer_contiguous_tensors=0,
+            outer_streamed_tensors=0,
+        )
         self.metadata = {
-            "protocol_version": 2,
+            "protocol_version": 3 if snappy_zstd else 2,
             "stream_id": stream_id,
             "publication_id": publication_id or uuid.uuid4().hex,
             "base_version": base_version,
             "target_version": target_version,
             "plan_digest": plan_digest,
             "payload_checksum_format": "sha256",
-            "codec_profile": f"{self.codec}-independent-{_FRAME_PROFILES[frame_bytes]}-v1",
+            "codec_profile": f"{self.codec}-independent-{_FRAME_PROFILES[frame_bytes]}{'-zstd' if snappy_zstd else ''}-v1",
         }
         self._filename = f"owner-{owner:05d}.bin"
         self._file = (self.directory / self._filename).open("xb")
@@ -236,6 +294,8 @@ class PublicationWriter:
         self._closed = False
 
     def add_tensor(self, name: str, old, new, *, dtype: str, shape: list[int], views=None, encoding="xor_bytes"):
+        if self.snappy_zstd:
+            raise ValueError("Outer Zstd wrapping requires GPU-produced encoded frames")
         entry, payloads = encode_tensor(
             name,
             old,
@@ -257,7 +317,7 @@ class PublicationWriter:
         if type(changed_bytes) is not int or not 0 <= changed_bytes <= entry["nbytes"]:
             raise ValueError("Invalid changed-byte count")
         entry["changed_bytes"] = changed_bytes
-        end = 0
+        end, hash_s = 0, 0.0
         for frame, payload in zip(frames, payloads, strict=True):
             frame = dict(frame)
             offset, size = frame["decoded_offset"], frame["decoded_bytes"]
@@ -275,27 +335,79 @@ class PublicationWriter:
                 raise ValueError("Encoded frame profile or size mismatch")
             if not payload or (frame["codec"] == "none" and len(payload) != size):
                 raise ValueError("Invalid raw frame byte count")
+            started = time.monotonic() if self.snappy_zstd else 0.0
             frame["encoded_sha256"] = sha256(payload)
+            if self.snappy_zstd:
+                hash_s += time.monotonic() - started
             entry["frames"].append(frame)
             end = offset + size
         if encoding == "replace_bytes" and end != entry["nbytes"]:
             raise ValueError("Replacement frames must cover the complete canonical tensor")
-        return self._append_tensor(entry, payloads)
+        return self._append_tensor(entry, payloads, inner_hash_s=hash_s)
 
-    def _append_tensor(self, entry, payloads):
+    def _append_tensor(self, entry, payloads, *, inner_hash_s=0.0):
         name = entry["name"]
         with self._lock:
             if self._closed or name in self._entries:
                 raise ValueError("Publication is sealed or tensor was already published")
-            for frame, payload in zip(entry["frames"], payloads, strict=True):
-                padding = bytes((-self._file.tell()) % 16)
-                self._file.write(padding)
-                self._hash.update(padding)
-                frame.update(file=self._filename, encoded_offset=self._file.tell())
-                self._file.write(payload)
-                self._hash.update(payload)
+            if self.snappy_zstd:
+                self.outer_metrics["inner_hash_s"] += inner_hash_s
+                self._append_outer(entry, payloads)
+            else:
+                for frame, payload in zip(entry["frames"], payloads, strict=True):
+                    padding = bytes((-self._file.tell()) % 16)
+                    self._file.write(padding)
+                    self._hash.update(padding)
+                    frame.update(file=self._filename, encoded_offset=self._file.tell())
+                    self._file.write(payload)
+                    self._hash.update(payload)
             self._entries[name] = entry
         return entry
+
+    def _write_outer_bytes(self, data):
+        if not data:
+            return
+        started = time.monotonic()
+        self._file.write(data)
+        self._hash.update(data)
+        self.outer_metrics["outer_hash_write_s"] += time.monotonic() - started
+
+    def _append_outer(self, entry, payloads):
+        if not entry["frames"]:
+            return
+        views, offsets, size, arena = _inner_payload_layout(payloads)
+        for frame, offset in zip(entry["frames"], offsets, strict=True):
+            frame.update(file=self._filename, encoded_offset=offset)
+        self._write_outer_bytes(bytes((-self._file.tell()) % 16))
+        start = self._file.tell()
+        if arena is not None:
+            started = time.monotonic()
+            encoded = self._outer_compressor.compress(arena)
+            self.outer_metrics["outer_compress_s"] += time.monotonic() - started
+            self._write_outer_bytes(encoded)
+            self.outer_metrics["outer_contiguous_tensors"] += 1
+        else:
+            compressor = self._outer_compressor.compressobj(size=size)
+            end = 0
+            for view, offset in zip(views, offsets, strict=True):
+                parts = (bytes(offset - end), view) if offset > end else (view,)
+                for part in parts:
+                    started = time.monotonic()
+                    encoded = compressor.compress(part)
+                    self.outer_metrics["outer_compress_s"] += time.monotonic() - started
+                    self._write_outer_bytes(encoded)
+                end = offset + len(view)
+            started = time.monotonic()
+            encoded = compressor.flush()
+            self.outer_metrics["outer_compress_s"] += time.monotonic() - started
+            self._write_outer_bytes(encoded)
+            self.outer_metrics["outer_streamed_tensors"] += 1
+        encoded_size = self._file.tell() - start
+        entry["outer"] = dict(
+            codec="zstd", file=self._filename, encoded_offset=start, encoded_bytes=encoded_size, decoded_bytes=size
+        )
+        self.outer_metrics["outer_input_bytes"] += size
+        self.outer_metrics["outer_output_bytes"] += encoded_size
 
     def finish_shard(self) -> dict:
         with self._lock:

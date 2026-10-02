@@ -1,6 +1,7 @@
 """Startup checkpoint version declaration must precede the first rollout."""
 
 import asyncio
+import threading
 import time
 from argparse import Namespace
 from unittest.mock import Mock, patch
@@ -48,6 +49,7 @@ def _setup(tmp_path, *, fail=False):
 @pytest.fixture
 def single_rank(monkeypatch):
     monkeypatch.setenv("WEIGHT_DELTA_ENCODER", "cpu")
+    monkeypatch.delenv("WEIGHT_DELTA_SNAPPY_ZSTD", raising=False)
     with (
         patch.object(gpu_delta, "_gather_all", side_effect=lambda value: [value]),
         patch.object(gpu_delta, "get_gloo_group", return_value=None),
@@ -91,12 +93,13 @@ def test_inventory_failure_never_declares_base_version(tmp_path, single_rank):
     assert not events and not protocol._baseline_captured
 
 
-def _gpu_pending(monkeypatch, *, fail_batch=None, omit=None):
+def _gpu_pending(monkeypatch, *, fail_batch=None, omit=None, wrapped=False):
     """Exercise protocol ordering on CPU; native tests cover CUDA encode/copy."""
     protocol = gpu_delta.UpdateWeightFromGpuDelta(
         Namespace(update_weight_buffer_size=5, custom_update_weight_post_write_path=None)
     )
     protocol.encoder_backend = "gpu"
+    protocol.snappy_zstd = wrapped
     # Deliberately insert names out of order; c exceeds the batch target.
     sizes = {"d": 1, "b": 3, "c": 7, "a": 2}
     protocol._snapshot = {name: torch.zeros(size, dtype=torch.uint8) for name, size in sizes.items()}
@@ -109,6 +112,7 @@ def _gpu_pending(monkeypatch, *, fail_batch=None, omit=None):
     protocol._encoding_metrics = []
     protocol._gpu_batch_count = 0
     protocol._bulk_encode_s = protocol._encoded_hash_write_s = 0.0
+    protocol._outer_cpu_work_s = protocol._outer_tail_wait_s = 0.0
     protocol._staging_stream = object()
     protocol._started = time.monotonic()
     events = []
@@ -123,7 +127,8 @@ def _gpu_pending(monkeypatch, *, fail_batch=None, omit=None):
 
     def encode(tensors):
         assert "ready" in events
-        assert not any(isinstance(event, tuple) and event[0] == "write" for event in events)
+        if not wrapped:
+            assert not any(isinstance(event, tuple) and event[0] == "write" for event in events)
         events.append(("encode", [current.numel() for old, current, encoding in tensors]))
         if sum(isinstance(event, tuple) and event[0] == "encode" for event in events) == fail_batch:
             raise RuntimeError("decoder-independent producer failure")
@@ -135,6 +140,7 @@ def _gpu_pending(monkeypatch, *, fail_batch=None, omit=None):
 
     protocol._gpu_encoder = Mock(encode=Mock(side_effect=encode))
     protocol._writer = Mock()
+    protocol._writer.outer_metrics = {"inner_hash_s": 0.02, "outer_hash_write_s": 0.03}
     protocol._writer.add_encoded_tensor.side_effect = lambda name, *args, **kwargs: events.append(("write", name))
     monkeypatch.setattr(gpu_delta.torch.cuda, "Event", Ready)
     return protocol, events
@@ -213,3 +219,59 @@ def test_gpu_baseline_swaps_only_after_successful_receiver_activation(monkeypatc
         assert not protocol._uncommitted
         with pytest.raises(RuntimeError, match="successfully published"):
             protocol.commit_pending_baseline()
+
+
+@pytest.mark.parametrize("cpu_fails,gpu_fails", [(False, False), (True, False), (False, True)])
+def test_outer_worker_overlaps_later_gpu_batch_and_drains_before_error_close(
+    monkeypatch, single_rank, cpu_fails, gpu_fails
+):
+    protocol, events = _gpu_pending(monkeypatch, wrapped=True, fail_batch=2 if gpu_fails else None)
+    original_encode = protocol._gpu_encoder.encode.side_effect
+    write_started, second_encode = threading.Event(), threading.Event()
+    active = set()
+
+    def encode(tensors):
+        if protocol._gpu_encoder.encode.call_count == 2:
+            assert write_started.wait(2), "First CPU write did not overlap later GPU encoding"
+            second_encode.set()
+        return original_encode(tensors)
+
+    def write(name, frames, payloads, **kwargs):
+        active.add(name)
+        try:
+            if name == "a":
+                write_started.set()
+                assert second_encode.wait(2), "CPU work was awaited before submitting the next GPU batch"
+                if cpu_fails:
+                    raise RuntimeError("outer write failed")
+            events.append(("write", name))
+        finally:
+            active.remove(name)
+
+    def close():
+        assert not active
+        expected = ["b"] if gpu_fails else ["c", "d"]
+        # A failed batch stops at its first failed tensor, but later queued
+        # batches must still settle before closing their shared owner file.
+        assert all(("write", name) in events for name in expected)
+        events.append("closed")
+
+    protocol._gpu_encoder.encode.side_effect = encode
+    protocol._writer.add_encoded_tensor.side_effect = write
+    protocol._writer.close.side_effect = close
+    if cpu_fails or gpu_fails:
+        with pytest.raises(RuntimeError, match="GPU-delta encoding failed"):
+            protocol.after_base_weights()
+        assert events[-1] == "closed"
+        protocol._writer.finish_shard.assert_not_called()
+        assert not protocol._pending_ready and protocol._uncommitted
+        assert all(torch.count_nonzero(value) == 0 for value in protocol._snapshot.values())
+    else:
+        protocol.after_base_weights()
+        assert [("write", name) for name in ("a", "b", "c", "d")] == [
+            event for event in events if isinstance(event, tuple) and event[0] == "write"
+        ]
+        assert protocol._outer_cpu_work_s > 0 and protocol._outer_tail_wait_s > 0
+        assert protocol._encoded_hash_write_s == 0.05
+        assert protocol.pending_baseline is protocol._next_snapshot
+        protocol._writer.close.assert_not_called()

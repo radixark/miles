@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import copy
 import hashlib
 import json
 import os
@@ -34,6 +35,7 @@ import subprocess
 import sys
 import time
 from contextlib import asynccontextmanager
+from contextlib import ExitStack
 from pathlib import Path
 
 import httpx
@@ -48,6 +50,7 @@ from miles.utils.gpu_delta_publication import (
     canonical_json,
     settings_from_env,
     sha256,
+    snappy_zstd_from_env,
 )
 
 # Same rollout topology/precision/MTP as the GLM5.2 W4A16 recipe. CuTe DSL + no
@@ -205,6 +208,7 @@ def _fixture(args):
         "canonical_denominator": "Sum of mutable canonical tensors in the negotiated receiver plan; excludes frozen draft and non-updated checkpoint entries.",
         "changed_bytes_definition": "Count of unequal storage bytes, not changed bits or compressed size.",
         "codecs": args.codecs,
+        "inner_snappy_origin": "CPU snappy.compress in the fixture builder; independent frames compatible with nvCOMP decode. No GPU producer ran while building this fixture.",
     }
     denominator = sum(index[t["name"]]["nbytes"] for t in plan)
     for version in range(1, args.versions + 1):
@@ -279,6 +283,179 @@ def _fixture(args):
         print(json.dumps({k: v for k, v in row.items() if k != "publications"}), flush=True)
 
 
+def _file_sha256(path):
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        for block in iter(lambda: source.read(8 << 20), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def _open_payloads(stack, manifest_path, manifest):
+    files = {}
+    for item in manifest["files"]:
+        if Path(item["name"]).name != item["name"] or item["name"] in files:
+            raise ValueError("Expected distinct local publication payload files")
+        path = manifest_path.parent / item["name"]
+        if path.stat().st_size != item["nbytes"] or _file_sha256(path) != item["sha256"]:
+            raise ValueError(f"Source encoded file changed: {path}")
+        files[item["name"]] = (stack.enter_context(path.open("rb")), item["nbytes"])
+    return files
+
+
+def _payload_bytes(files, frame):
+    source, nbytes = files[frame["file"]]
+    start, size = frame["encoded_offset"], frame["encoded_bytes"]
+    if type(start) is not int or type(size) is not int or start < 0 or size <= 0 or start + size > nbytes:
+        raise ValueError("Invalid encoded source frame range")
+    source.seek(start)
+    payload = source.read(size)
+    if len(payload) != size:
+        raise ValueError("Truncated encoded source frame")
+    return payload
+
+
+def _verify_wrapped_publication(publication, source_manifest, source_files):
+    path = Path(publication["manifest_path"])
+    raw = path.read_bytes()
+    if sha256(raw) != publication["manifest_sha256"]:
+        raise ValueError("Derived manifest digest differs")
+    manifest = json.loads(raw)
+    if manifest["protocol_version"] != 3 or manifest["codec_profile"] != source_manifest["codec_profile"].removesuffix("-v1") + "-zstd-v1":
+        raise ValueError("Derived publication profile differs")
+    for key in ("plan_digest", "stream_id", "publication_id", "base_version", "target_version"):
+        if manifest[key] != source_manifest[key]:
+            raise ValueError(f"Derived publication identity differs: {key}")
+    original = {tensor["name"]: tensor for tensor in source_manifest["tensors"]}
+    if len(original) != len(manifest["tensors"]):
+        raise ValueError("Derived tensor inventory differs")
+    inner_bytes = outer_bytes = decoded_bytes = 0
+    with ExitStack() as stack:
+        files = _open_payloads(stack, path, manifest)
+        for tensor in manifest["tensors"]:
+            previous = original.pop(tensor["name"])
+            for key in ("name", "dtype", "shape", "nbytes", "byte_order", "encoding", "views", "changed_bytes"):
+                if tensor[key] != previous[key]:
+                    raise ValueError(f"Derived canonical definition changed: {tensor['name']} {key}")
+            if not previous["frames"]:
+                if tensor["frames"] or "outer" in tensor:
+                    raise ValueError("Empty XOR tensor acquired a payload")
+                continue
+            outer = tensor["outer"]
+            if outer["codec"] != "zstd":
+                raise ValueError("Expected CPU Zstd envelope")
+            arena = zstandard.ZstdDecompressor().decompress(
+                _payload_bytes(files, outer), max_output_size=outer["decoded_bytes"]
+            )
+            if len(arena) != outer["decoded_bytes"]:
+                raise ValueError("Derived inner arena length differs")
+            end = 0
+            for old, new in zip(previous["frames"], tensor["frames"], strict=True):
+                for key in ("decoded_offset", "decoded_bytes", "encoded_bytes", "codec", "encoded_sha256"):
+                    if old[key] != new[key]:
+                        raise ValueError("Derived inner frame metadata changed")
+                start, size = new["encoded_offset"], new["encoded_bytes"]
+                if start != (end + 15) // 16 * 16 or any(arena[end:start]):
+                    raise ValueError("Derived inner arena padding differs")
+                expected = _payload_bytes(source_files, old)
+                if arena[start : start + size] != expected or sha256(expected) != old["encoded_sha256"]:
+                    raise ValueError("Derived inner Snappy/raw bytes differ")
+                end = start + size
+                inner_bytes += size
+            if end != len(arena):
+                raise ValueError("Derived inner arena has trailing bytes")
+            outer_bytes += outer["encoded_bytes"]
+            decoded_bytes += len(arena)
+    if original:
+        raise ValueError("Derived tensor inventory is incomplete")
+    payload_bytes = sum(item["nbytes"] for item in manifest["files"])
+    return {
+        "encoded_frame_bytes": inner_bytes,
+        "outer_encoded_bytes": outer_bytes,
+        "outer_decoded_arena_bytes": decoded_bytes,
+        "payload_file_bytes": payload_bytes,
+        "alignment_bytes": payload_bytes - outer_bytes,
+        "manifest_bytes": len(raw),
+        "publication_bytes": payload_bytes + len(raw),
+        "exact_inner_payloads_verified": True,
+    }
+
+
+def _wrap_publication(publication, row, fixture, output):
+    path = Path(publication["manifest_path"])
+    raw = path.read_bytes()
+    if sha256(raw) != publication["manifest_sha256"]:
+        raise ValueError("Source fixture manifest digest differs")
+    manifest = json.loads(raw)
+    frame_bytes = {"snappy-independent-64kib-v1": 1 << 16, "snappy-independent-1mib-v1": FRAME_BYTES}.get(manifest["codec_profile"])
+    if manifest["protocol_version"] != 2 or frame_bytes is None:
+        raise ValueError("wrap-fixture requires unwrapped receiver-compatible Snappy publications")
+    expected = {
+        "plan_digest": fixture["plan_digest"], "stream_id": fixture["stream_id"],
+        "base_version": row["version"] - 1, "target_version": row["version"],
+    }
+    if any(manifest[key] != value for key, value in expected.items()):
+        raise ValueError("Source fixture plan/stream/version differs")
+    with ExitStack() as stack:
+        files = _open_payloads(stack, path, manifest)
+        writer = PublicationWriter(
+            output / "snappy-zstd" / f"v{row['version']}", codec="snappy", snappy_zstd=True,
+            frame_bytes=frame_bytes, publication_id=manifest["publication_id"], **expected,
+        )
+        try:
+            for tensor in manifest["tensors"]:
+                payloads = [_payload_bytes(files, frame) for frame in tensor["frames"]]
+                writer.add_encoded_tensor(
+                    tensor["name"], tensor["frames"], payloads, changed_bytes=tensor["changed_bytes"],
+                    dtype=tensor["dtype"], shape=tensor["shape"], views=tensor["views"], encoding=tensor["encoding"],
+                )
+            derived = writer.finish()
+        finally:
+            writer.close()
+        accounting = _verify_wrapped_publication(derived, manifest, files)
+    return derived, accounting
+
+
+def _wrap_fixture(args):
+    source_path = args.fixture / "fixture.json"
+    raw = source_path.read_bytes()
+    if sha256(raw) != args.fixture_sha256:
+        raise ValueError("Source fixture digest differs from --fixture-sha256")
+    source = json.loads(raw)
+    report = copy.deepcopy(source)
+    if "snappy-zstd" in report["codecs"] or any("snappy" not in row["publications"] for row in report["rounds"]):
+        raise ValueError("Expected an unwrapped fixture with Snappy in every round")
+    receipt = {
+        "status": "deriving", "source_fixture": str(source_path.resolve()), "source_fixture_sha256": sha256(raw),
+        "plan_digest": source["plan_digest"], "stream_id": source["stream_id"], "target_checkpoint": source["target_checkpoint"],
+        "proof": "Per-tensor CPU Zstd envelopes preserve every inner Snappy/raw byte, canonical definition and version. No model tensor bytes are read or re-exported.",
+        "inner_snappy_origin": source.get("inner_snappy_origin", "Historical fixture builder CPU snappy.compress; nvCOMP-compatible independent frames. This derivation does not run GPU compression."),
+        "rounds": [],
+    }
+    _save(args.output / "derivation.json", receipt)
+    try:
+        for version, row in enumerate(report["rounds"], start=1):
+            if row["version"] != version:
+                raise ValueError("Expected consecutive fixture versions beginning at 1")
+            started = time.monotonic()
+            publication, accounting = _wrap_publication(row["publications"]["snappy"], row, source, args.output)
+            row["publications"]["snappy-zstd"] = publication
+            row["accounting"]["snappy-zstd"] = accounting
+            row["ratios"]["snappy-zstd"] = accounting["publication_bytes"] / row["canonical_bytes"]
+            row["encoded_frame_ratios"]["snappy-zstd"] = accounting["encoded_frame_bytes"] / row["canonical_bytes"]
+            receipt["rounds"].append({"version": version, "publication": publication, "accounting": accounting, "derive_and_verify_s": time.monotonic() - started})
+            _save(args.output / "derivation.json", receipt)
+        report["codecs"].append("snappy-zstd")
+        report["outer_zstd_derivation"] = {key: value for key, value in receipt.items() if key not in {"status", "rounds"}}
+        _save(args.output / "fixture.json", report)
+        receipt.update(status="completed", fixture_sha256=_file_sha256(args.output / "fixture.json"))
+        _save(args.output / "derivation.json", receipt)
+    except Exception as error:
+        receipt.update(status="failed", error=f"{type(error).__name__}: {error}")
+        _save(args.output / "derivation.json", receipt)
+        raise
+
+
 async def _request(client, endpoint, payload=None, *, timeout=1200):
     async with httpx.AsyncClient(trust_env=False, timeout=timeout) as http:
         response = await (
@@ -351,7 +528,7 @@ async def _engines(args, model):
             args.output / "launch.json",
             {
                 "engines": commands,
-                "feature_env": {key: os.environ.get(key) for key in ("WEIGHT_DELTA_CODEC", "WEIGHT_DELTA_TIMING")},
+                "feature_env": {key: os.environ.get(key) for key in ("WEIGHT_DELTA_CODEC", "WEIGHT_DELTA_SNAPPY_ZSTD", "WEIGHT_DELTA_TIMING")},
             },
         )
         started = time.monotonic()
@@ -394,10 +571,12 @@ async def _generation(clients):
 
 
 async def _run(args):
-    codec, _ = settings_from_env()
+    codec, encoder = settings_from_env()
+    wrapped = snappy_zstd_from_env(codec, encoder)
+    fixture_key = "snappy-zstd" if wrapped else codec
     fixture = json.loads((args.fixture / "fixture.json").read_text()) if args.fixture else None
-    if args.phase == "run" and any(codec not in row["publications"] for row in fixture["rounds"]):
-        raise ValueError(f"Fixture does not contain codec {codec}; recreate with --codecs including it")
+    if args.phase == "run" and any(fixture_key not in row["publications"] for row in fixture["rounds"]):
+        raise ValueError(f"Fixture does not contain {fixture_key}; create or derive the required publication first")
     model = Path(fixture["target_checkpoint"]) if args.phase == "oracle" else args.model
     async with _engines(args, model) as clients:
         if args.phase == "oracle":
@@ -418,11 +597,15 @@ async def _run(args):
         for version in fixture["rounds"]:
             started = time.monotonic()
             try:
-                receipt = await activate_publication(clients, descriptions, version["publications"][codec])
+                receipt = await activate_publication(clients, descriptions, version["publications"][fixture_key])
                 result = {
                     "version": version["version"],
                     "coordinator_s": time.monotonic() - started,
                     "codec": codec,
+                    "snappy_zstd": wrapped,
+                    "fixture_publication": fixture_key,
+                    "inner_snappy_origin": fixture.get("inner_snappy_origin", fixture.get("outer_zstd_derivation", {}).get("inner_snappy_origin")),
+                    "measurement_phase": "first-use-allocation" if version["version"] == 1 else "warm-update",
                     "receipt": receipt,
                 }
                 _save(args.output / f"update-{version['version']}.json", result)
@@ -439,11 +622,12 @@ async def _run(args):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("phase", choices=("inventory", "fixture", "run", "oracle"))
-    parser.add_argument("--model", type=Path, required=True)
+    parser.add_argument("phase", choices=("inventory", "fixture", "wrap-fixture", "run", "oracle"))
+    parser.add_argument("--model", type=Path, help="Required except for CPU-only wrap-fixture")
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--inventory", type=Path)
     parser.add_argument("--fixture", type=Path)
+    parser.add_argument("--fixture-sha256", help="Required by wrap-fixture: pinned SHA-256 of source fixture.json")
     parser.add_argument("--versions", type=int, default=3)
     parser.add_argument(
         "--codecs",
@@ -457,11 +641,19 @@ def main():
     parser.add_argument("--ports", type=int, nargs=1, default=(31000,))
     parser.add_argument("--startup-timeout", type=float, default=3600)
     args = parser.parse_args()
-    args.model = args.model.resolve(strict=True)
+    if args.phase != "wrap-fixture" and args.model is None:
+        parser.error("--model is required except for wrap-fixture")
+    if args.model is not None:
+        args.model = args.model.resolve(strict=True)
     if args.phase == "fixture" and args.inventory is None:
         parser.error("fixture requires --inventory")
-    if args.phase in {"run", "oracle"} and args.fixture is None:
-        parser.error("run/oracle requires --fixture")
+    if args.phase in {"run", "oracle", "wrap-fixture"} and args.fixture is None:
+        parser.error("run/oracle/wrap-fixture requires --fixture")
+    if args.phase == "wrap-fixture" and (
+        args.fixture_sha256 is None or len(args.fixture_sha256) != 64
+        or any(c not in "0123456789abcdef" for c in args.fixture_sha256)
+    ):
+        parser.error("wrap-fixture requires a lowercase --fixture-sha256")
     if len(set(args.ports)) != 1 or any(not 0 < port < 65536 for port in args.ports):
         parser.error("--ports requires one valid TCP port")
     if args.versions < 1 or not 0 < args.ratio < 0.1:
@@ -471,6 +663,8 @@ def main():
     args.output.mkdir(parents=True, exist_ok=False)
     if args.phase == "fixture":
         _fixture(args)
+    elif args.phase == "wrap-fixture":
+        _wrap_fixture(args)
     else:
         asyncio.run(_run(args))
 

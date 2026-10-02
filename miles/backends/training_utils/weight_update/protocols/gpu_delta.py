@@ -41,6 +41,7 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
     def __init__(self, args):
         super().__init__(args)
         self.codec, self.encoder_backend = gpu_delta_publication.settings_from_env()
+        self.snappy_zstd = gpu_delta_publication.snappy_zstd_from_env(self.codec, self.encoder_backend)
         self._timing = os.environ.get("WEIGHT_DELTA_TIMING", "0") == "1"
         self._snapshot = {}
         self._next_snapshot = {}
@@ -122,6 +123,7 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
         self._encoding_metrics = []
         self._backpressure_wait_s = self._encoding_tail_wait_s = 0.0
         self._export_staging_wait_s = self._bulk_encode_s = self._encoded_hash_write_s = 0.0
+        self._outer_cpu_work_s = self._outer_tail_wait_s = 0.0
         self._gpu_batch_count = 0
         self._pending_ready = self._published = False
         self._pool = self._writer = None
@@ -140,6 +142,7 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
                 target_version=weight_version,
                 plan_digest=self._plan_digest,
                 codec=self.codec,
+                snappy_zstd=self.snappy_zstd,
                 owner=dist.get_rank(),
                 frame_bytes=(
                     self._gpu_encoder.frame_bytes
@@ -309,24 +312,42 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
         # All owned current tensors have reached pinned CPU memory. The old
         # snapshot remains immutable until receiver commit, including on error.
         started = time.monotonic()
-        encoded = []
-        for names in self._gpu_batches():
-            results = self._gpu_encoder.encode(
-                [(self._snapshot[name], self._next_snapshot[name], self._plan[name]["encoding"]) for name in names]
-            )
-            if len(results) != len(names):
-                raise RuntimeError("GPU delta encoder returned an incomplete batch")
-            self._gpu_batch_count += 1
-            for name, result in zip(names, results, strict=True):
-                frames, payloads, changed, metrics = result
-                # Batch timing appears only once in encoder metrics; never
-                # duplicate it across tensors or apportion overlapping spans.
-                self._encoding_metrics.append(dict(metrics, name=name))
-                encoded.append((name, frames, payloads, changed))
-        self._bulk_encode_s = time.monotonic() - started
+        encoded, jobs = [], []
+        pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="gpu-delta-outer") if self.snappy_zstd else None
+        try:
+            for names in self._gpu_batches():
+                results = self._gpu_encoder.encode(
+                    [(self._snapshot[name], self._next_snapshot[name], self._plan[name]["encoding"]) for name in names]
+                )
+                if len(results) != len(names):
+                    raise RuntimeError("GPU delta encoder returned an incomplete batch")
+                self._gpu_batch_count += 1
+                batch = []
+                for name, result in zip(names, results, strict=True):
+                    frames, payloads, changed, metrics = result
+                    # Batch timing appears only once, never per tensor.
+                    self._encoding_metrics.append(dict(metrics, name=name))
+                    batch.append((name, frames, payloads, changed))
+                if pool is None:
+                    encoded.extend(batch)
+                else:
+                    # The queued batch owns immutable pinned payload views.
+                    # One CPU worker overlaps wrapping with later GPU batches.
+                    jobs.append(pool.submit(self._write_gpu_batch, batch))
+        finally:
+            self._bulk_encode_s = time.monotonic() - started
+            if pool is not None:
+                self._drain_outer_jobs(pool, jobs)
+        if pool is not None:
+            metrics = self._writer.outer_metrics
+            self._encoded_hash_write_s = metrics["inner_hash_s"] + metrics["outer_hash_write_s"]
+            return
         # Returned payloads own immutable pinned storage. Retain them through
         # all compression so filesystem work cannot hold the GPU encoder idle.
-        write_started = time.monotonic()
+        self._encoded_hash_write_s = self._write_gpu_batch(encoded)
+
+    def _write_gpu_batch(self, encoded):
+        started = time.monotonic()
         for name, frames, payloads, changed in encoded:
             spec = self._plan[name]
             self._writer.add_encoded_tensor(
@@ -339,7 +360,24 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
                 views=spec["views"],
                 encoding=spec["encoding"],
             )
-        self._encoded_hash_write_s = time.monotonic() - write_started
+        return time.monotonic() - started
+
+    def _drain_outer_jobs(self, pool, jobs):
+        started = time.monotonic()
+        error = None
+        try:
+            for job in jobs:
+                try:
+                    self._outer_cpu_work_s += job.result()
+                except Exception as caught:
+                    error = error or caught
+        finally:
+            # Never close a payload file or release queued buffer leases while
+            # a worker is still using them, even when GPU encoding failed.
+            pool.shutdown(wait=True)
+            self._outer_tail_wait_s += time.monotonic() - started
+        if error is not None:
+            raise error
 
     def _gpu_batches(self):
         """Stable canonical-byte batches; a tensor larger than the target stands alone."""
@@ -451,6 +489,13 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
             # Retain the existing transfer key, now counting export of the
             # current snapshot; the old pinned baseline is never written back.
             self.publication_metrics["baseline_d2h_bytes"] += sum(t.nbytes for t in self._next_snapshot.values())
+        if self.snappy_zstd:
+            self.publication_metrics.update(
+                snappy_zstd=True,
+                outer_cpu_work_s=self._outer_cpu_work_s,
+                outer_tail_wait_s=self._outer_tail_wait_s,
+                **self._writer.outer_metrics,
+            )
         if self._timing:
             self.publication_metrics["tensor_phases"] = self._encoding_metrics
         shard["producer_metrics"] = self.publication_metrics
