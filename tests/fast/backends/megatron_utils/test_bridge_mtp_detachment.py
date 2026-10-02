@@ -7,6 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+import torch
 
 from tests.ci.ci_register import register_cpu_ci
 
@@ -21,7 +22,7 @@ def apply_bridge_runtime_config() -> Callable:
     function = next(
         node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "_apply_bridge_runtime_config"
     )
-    namespace = {"argparse": argparse}
+    namespace = {"argparse": argparse, "torch": torch}
     exec(compile(ast.Module(body=[function], type_ignores=[]), str(path), "exec"), namespace)
     return namespace["_apply_bridge_runtime_config"]
 
@@ -82,3 +83,51 @@ def test_bridge_mtp_detachment(
 
     assert provider.mtp_detach_heads is expected_detach
     assert provider.mtp_num_layers == 1
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+@pytest.mark.parametrize("gated", [False, True])
+def test_bridge_gelu_fusion(apply_bridge_runtime_config, runtime_args, enabled, gated):
+    runtime_args.bias_gelu_fusion = enabled
+    runtime_args.bias_swiglu_fusion = not enabled
+    provider = SimpleNamespace(
+        activation_func=torch.nn.functional.gelu, gated_linear_unit=gated, bias_activation_fusion=not enabled
+    )
+    apply_bridge_runtime_config(provider, runtime_args)
+    assert provider.bias_activation_fusion is enabled
+    assert provider.activation_func is torch.nn.functional.gelu
+    assert provider.gated_linear_unit is gated
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+def test_bridge_swiglu_fusion_uses_provider_activation(apply_bridge_runtime_config, runtime_args, enabled):
+    runtime_args.swiglu = False  # Megatron CLI default does not describe the HF model.
+    runtime_args.bias_swiglu_fusion = enabled
+    runtime_args.bias_gelu_fusion = not enabled
+    provider = SimpleNamespace(
+        activation_func=torch.nn.functional.silu, gated_linear_unit=True, bias_activation_fusion=not enabled
+    )
+    apply_bridge_runtime_config(provider, runtime_args)
+    assert provider.bias_activation_fusion is enabled
+    assert provider.activation_func is torch.nn.functional.silu
+    assert provider.gated_linear_unit is True
+
+
+@pytest.mark.parametrize("activation,gated", [(torch.nn.functional.relu, False), (torch.nn.functional.silu, False)])
+@pytest.mark.parametrize("initial", [False, True])
+def test_bridge_preserves_other_activations(apply_bridge_runtime_config, runtime_args, activation, gated, initial):
+    runtime_args.bias_swiglu_fusion = not initial
+    runtime_args.bias_gelu_fusion = not initial
+    provider = SimpleNamespace(activation_func=activation, gated_linear_unit=gated, bias_activation_fusion=initial)
+    apply_bridge_runtime_config(provider, runtime_args)
+    assert provider.bias_activation_fusion is initial
+    assert provider.activation_func is activation
+    assert provider.gated_linear_unit is gated
+
+
+@pytest.mark.parametrize("activation,gated", [(torch.nn.functional.silu, True), (torch.nn.functional.gelu, False)])
+@pytest.mark.parametrize("initial", [False, True])
+def test_bridge_missing_activation_fusion_flag(apply_bridge_runtime_config, runtime_args, activation, gated, initial):
+    provider = SimpleNamespace(activation_func=activation, gated_linear_unit=gated, bias_activation_fusion=initial)
+    apply_bridge_runtime_config(provider, runtime_args)
+    assert provider.bias_activation_fusion is initial
