@@ -23,7 +23,12 @@ import numpy as np
 import torch
 import torch.distributed as dist
 
-ARMS = (("cpu-zstd", "cpu", "zstd"), ("gpu-zstd", "gpu", "zstd"), ("gpu-snappy", "gpu", "snappy"))
+ARMS = (
+    ("cpu-zstd", "cpu", "zstd"),
+    ("cpu-snappy", "cpu", "snappy"),
+    ("gpu-zstd", "gpu", "zstd"),
+    ("gpu-snappy", "gpu", "snappy"),
+)
 NVFP4_ENV = {
     "SGLANG_NVFP4_CKPT_FP8_GEMM_IN_ATTN": "0",
     "OPEN_TRAINING_NVFP4_FAKE_QAT_FLAG": "1",
@@ -412,6 +417,11 @@ def _verify_equal_targets(protocols):
     return {"rank": dist.get_rank(), "equal": True, "canonical_bytes": byte_count, "tensor_count": len(snapshots[0])}
 
 
+def _arm_order(version, names):
+    offset = (version - 1) % len(names)
+    return list(names[offset:]) + list(names[:offset])
+
+
 def _versions(options, protocols, iterator, weights, plan):
     results = []
     for version in range(1, options.versions + 1):
@@ -423,10 +433,9 @@ def _versions(options, protocols, iterator, weights, plan):
                 version=version,
             )
         )
-        # Rotate order so a single arm does not always see the first export.
-        order = list(protocols)
-        offset = (version - 1) % len(order)
-        order = order[offset:] + order[:offset]
+        # Three cumulative versions rotate four arms, but do not fully balance
+        # execution positions or provide repeated measurements of one target.
+        order = _arm_order(version, list(protocols))
         arms = {}
         for name in order:
             arms[name] = _run_arm(protocols[name], iterator, weights, version, plan)
@@ -447,7 +456,15 @@ def _versions(options, protocols, iterator, weights, plan):
 
 def _runtime_metadata():
     versions = {}
-    for package in ("torch", "transformer-engine", "flashinfer-python", "nvidia-libnvcomp-cu13"):
+    for package in (
+        "torch",
+        "transformer-engine",
+        "flashinfer-python",
+        "nvidia-libnvcomp-cu13",
+        "zstandard",
+        "python-snappy",
+        "cramjam",
+    ):
         try:
             versions[package] = importlib.metadata.version(package)
         except importlib.metadata.PackageNotFoundError:
@@ -493,6 +510,11 @@ def run(options):
             "model_args": model_argv,
             "env": NVFP4_ENV,
             "timing": options.timing,
+            "arms": [arm[0] for arm in ARMS],
+            "arm_order_by_version": {
+                str(version): _arm_order(version, [arm[0] for arm in ARMS])
+                for version in range(1, options.versions + 1)
+            },
             "ranks": setup,
             "options": {k: str(v) if isinstance(v, Path) else v for k, v in vars(options).items()},
             "source_digest": os.environ.get("GPU_DELTA_SOURCE_DIGEST"),
