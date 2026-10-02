@@ -21,6 +21,7 @@ def create_megatron_parallel_state(
 ) -> ParallelState:
     vpp_size, microbatch_group_size_per_vp_stage = _compute_vpp_fields()
     args = get_args()
+    tp_dp_cp_group = mpu.get_tensor_and_data_parallel_group(with_context_parallel=True)
 
     def _create_intra_dp(with_context_parallel: bool):
         return GroupInfo(
@@ -58,6 +59,16 @@ def create_megatron_parallel_state(
             rank=mpu.get_expert_tensor_parallel_rank(),
             size=mpu.get_expert_tensor_parallel_world_size(),
             group=mpu.get_expert_tensor_parallel_group(),
+        ),
+        edp=GroupInfo(
+            rank=mpu.get_expert_data_parallel_rank(),
+            size=mpu.get_expert_data_parallel_world_size(),
+            group=mpu.get_expert_data_parallel_group(),
+        ),
+        tp_dp_cp=GroupInfo(
+            rank=torch.distributed.get_rank(tp_dp_cp_group),
+            size=torch.distributed.get_world_size(tp_dp_cp_group),
+            group=tp_dp_cp_group,
         ),
         indep_dp=indep_dp,
         is_pp_last_stage=mpu.is_pipeline_last_stage(),
