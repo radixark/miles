@@ -135,11 +135,15 @@ def encode_tensor(
         changed += nonzero
         if encoding == "xor_bytes" and not nonzero:
             continue
-        raw = delta.tobytes() if encoding == "xor_bytes" else current[offset:end].tobytes()
+        # Both CPU codecs consume contiguous buffers synchronously. Only raw
+        # retained frames need an owned copy of the uncompressed input bytes.
+        raw = memoryview(delta if encoding == "xor_bytes" else current[offset:end])
         payload = compress(raw)
         frame_codec = codec
         if len(payload) >= len(raw):
-            payload, frame_codec = raw, "none"
+            if codec != "none":
+                payload = bytes(raw)
+            frame_codec = "none"
         entry["frames"].append(
             {
                 "decoded_offset": offset,
