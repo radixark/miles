@@ -45,8 +45,9 @@ forward/backward, an optimizer, or an activation RPC.
 - **Compression:** nvCOMP GPU compression runs GPU SM kernels for both codecs.
   Blackwell's decompression engine does not accelerate compression. The CPU
   arms use the existing owner worker pool, CPU XOR with Zstd or Snappy, and publication writer.
-  All GPU arms use the same production bulk GPU encoder described below;
-  the four 64 KiB/2 MiB arms change only the per-instance frame size.
+  All GPU arms use the sole production bulk GPU encoder described below;
+  the four 64 KiB/2 MiB arms change only the per-instance frame size. The earlier
+  per-tensor GPU encoder has been removed; its saved results are historical controls.
 
 The GPU path first stages the full new canonical snapshot to pinned CPU memory
 as export proceeds. After that D2H work finishes, it encodes deterministic

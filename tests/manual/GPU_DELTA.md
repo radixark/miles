@@ -45,6 +45,10 @@ Receiver decode depends on the codec, not the encoder location: either CPU- or
 GPU-produced Zstd uses CUDA decoding, and either Snappy producer requires the
 qualified Blackwell hardware decoder. There is no silent execution fallback.
 
+Both GPU codecs use the same bulk encoder. It replaces the earlier per-tensor
+GPU implementation; there is no legacy GPU selection or fallback. The CPU
+encoders remain independent choices in the matrix above.
+
 The GPU producer keeps old canonical bytes in pinned CPU memory and stages the
 full new snapshot D2H during export. It then encodes name-sorted batches using
 the existing `update_weight_buffer_size` target: upload old and new bytes,
