@@ -55,6 +55,7 @@ class TestLoraConstructorConfig:
 
         assert type(adapter) is bridge_constructors.multi_lora
         assert adapter.n_adapters == 3
+        assert adapter.experts_shared_outer_loras is False
         assert adapter.dim == 4
         assert adapter.alpha == 12
         assert adapter.dropout == 0.25

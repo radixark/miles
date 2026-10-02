@@ -29,6 +29,7 @@ class _CanonicalLoRA(_AdapterConfig):
 @dataclass(kw_only=True)
 class _MultiLoRA(_AdapterConfig):
     n_adapters: int
+    experts_shared_outer_loras: bool = False
 
 
 @dataclass(frozen=True)

@@ -54,7 +54,9 @@ def bridge_provider(monkeypatch: pytest.MonkeyPatch, bridge_sdk: Mock) -> _Provi
     fusions.validate_rope_fusion_compatibility = lambda provider: False
     conversion = ModuleType("megatron.bridge.models.conversion.model_bridge")
     conversion._megatron_local_name_to_global = Mock(side_effect=AssertionError("No model weights are converted"))
-    for module in (config, fusions, conversion):
+    peft_utils = ModuleType("megatron.bridge.peft.utils")
+    peft_utils.enable_expert_parallel_grad_sync_in_finalize = lambda model: None
+    for module in (config, fusions, conversion, peft_utils):
         monkeypatch.setitem(sys.modules, module.__name__, module)
     return provider
 
