@@ -1,18 +1,20 @@
-"""CPU canonical delta publication with guarded, in-place SGLang GPU activation.
+"""Owner-local GPU delta publication with guarded, in-place SGLang activation.
 
 Routed experts are encoded by their exporter owners before the usual gather.
-Encoding overlaps subsequent exports; the legacy GPU delta encoder is not involved.
+GPU encoding overlaps subsequent exports; CPU encoding remains an explicit reference.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import time
 import uuid
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from queue import SimpleQueue
 
 import numpy as np
 import torch
@@ -39,7 +41,8 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
 
     def __init__(self, args):
         super().__init__(args)
-        self.codec, self.staging = gpu_delta_publication.settings_from_env()
+        self.codec, self.encoder_backend = gpu_delta_publication.settings_from_env()
+        self._timing = os.environ.get("WEIGHT_DELTA_TIMING", "0") == "1"
         self._snapshot = {}
         self._plan = {}
         self._descriptions = None
@@ -48,6 +51,8 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
         self._uncommitted = False
         self._error = None
         self._staging_stream = None
+        self._gpu_encoders = None
+        self.publication_metrics = {}
         self._post_write_hook = None
         if args.custom_update_weight_post_write_path:
             from miles.utils.function_registry import load_function
@@ -71,6 +76,19 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
         self.group_name = "miles-gpu-delta"
         replica_rank, _ = get_data_replica_rank_and_size(parallel_state, placement)
         self.is_sender = replica_rank == 0
+        error = None
+        if self.encoder_backend == "gpu" and self._gpu_encoders is None:
+            try:
+                from miles.utils.gpu_delta_encoder import GpuTensorEncoder
+
+                encoders = SimpleQueue()
+                device = torch.device("cuda", torch.cuda.current_device())
+                for _ in range(2):
+                    encoders.put(GpuTensorEncoder(self.codec, device))
+                self._gpu_encoders = encoders
+            except Exception as caught:
+                error = caught
+        _collective_check(error, "nvCOMP producer admission")
         descriptions = _on_root(lambda: async_utils.run(self._describe()))
         plan, cohort, digest = gpu_delta_session.merge_plans(descriptions)
         if self._descriptions is not None and descriptions != self._descriptions:
@@ -103,9 +121,11 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
         self._started = time.monotonic()
         self._version_dir = self._stream_dir / f"weight_v{weight_version:06d}"
         self._inflight = deque()
+        self._encoding_metrics = []
+        self._backpressure_wait_s = self._encoding_tail_wait_s = 0.0
         self._pool = self._writer = None
         try:
-            if self._staging_stream is None:
+            if self.encoder_backend == "cpu" and self._staging_stream is None:
                 self._staging_stream = torch.cuda.Stream(device=torch.cuda.current_device())
             self._pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="gpu-delta")
             self._writer = gpu_delta_publication.PublicationWriter(
@@ -166,7 +186,7 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
         # for every engine's scheduler/tokenizer acknowledgement before rollout;
         # an ambiguous partial acknowledgement must not be automatically retried.
         self._uncommitted = True
-        _on_root(lambda: set_weight_version(self.rollout_engines, 0), broadcast_value=False)
+        self._declare_baseline()
         self._uncommitted = False
         self._baseline_captured = True
         if dist.get_rank() == 0:
@@ -175,6 +195,9 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
                 len(entries),
                 self._stream_id,
             )
+
+    def _declare_baseline(self):
+        _on_root(lambda: set_weight_version(self.rollout_engines, 0), broadcast_value=False)
 
     def _match_layout(self, name, tensor):
         spec = self._plan.get(name)
@@ -205,37 +228,45 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
                     raise ValueError(f"Duplicate canonical tensor owner for {name!r}")
                 self._seen.add(name)
                 if self._capturing:
-                    self._snapshot[name] = self._read_baseline(
+                    original = self._read_baseline(
                         name, expected_dtype=self._plan[name]["dtype"], expected_shape=tuple(tensor.shape)
-                    ).copy()
+                    )
+                    self._snapshot[name] = (
+                        torch.from_numpy(original).pin_memory() if self.encoder_backend == "gpu" else original.copy()
+                    )
                     continue
                 if name not in self._snapshot:
                     raise ValueError(f"Canonical ownership changed for {name!r}")
-                # Two in-flight tensors per owner bounds pinned staging and CPU
-                # encoding memory; workers encode while later exports/gathers run.
+                # Two in-flight tensors per owner bound encoding/staging work;
+                # workers encode while subsequent exports/gathers run.
                 while len(self._inflight) >= 2:
-                    self._collect(self._inflight.popleft())
+                    self._collect(self._inflight.popleft(), backpressure=True)
                 if self._error is not None:
                     return
                 flat = tensor.detach().contiguous().reshape(-1).view(torch.uint8)
-                host = torch.empty(flat.numel(), dtype=torch.uint8, pin_memory=True)
-                # Export outputs are immutable until this update returns. Keep
-                # their storage alive and record allocator use on the copy stream;
-                # its wait captures only the producer work already submitted.
-                self._staging_stream.wait_stream(torch.cuda.current_stream())
-                with torch.cuda.stream(self._staging_stream):
-                    host.copy_(flat, non_blocking=True)
-                    ready = torch.cuda.Event()
-                    ready.record()
-                flat.record_stream(self._staging_stream)
-                self._inflight.append(self._pool.submit(self._encode, name, host, ready, flat))
+                if self.encoder_backend == "gpu":
+                    produced = torch.cuda.Event()
+                    produced.record()
+                    self._inflight.append(self._pool.submit(self._encode_gpu, name, flat, produced))
+                else:
+                    host = torch.empty(flat.numel(), dtype=torch.uint8, device="cpu", pin_memory=True)
+                    self._staging_stream.wait_stream(torch.cuda.current_stream())
+                    with torch.cuda.stream(self._staging_stream):
+                        host.copy_(flat, non_blocking=True)
+                        ready = torch.cuda.Event()
+                        ready.record()
+                    flat.record_stream(self._staging_stream)
+                    self._inflight.append(self._pool.submit(self._encode_cpu, name, host, ready, flat))
             except Exception as error:
                 self._error = error
 
-    def _encode(self, name, host, ready, source):
+    def _encode_cpu(self, name, host, ready, source):
+        started = time.monotonic()
         ready.synchronize()
+        staging_wait_s = time.monotonic() - started
         del source  # D2H completed; its allocator lease is no longer needed.
         spec, current, previous = self._plan[name], host.numpy(), self._snapshot[name]
+        encode_started = time.monotonic()
         self._writer.add_tensor(
             name,
             previous,
@@ -248,12 +279,50 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
         # This pending baseline is never reused unless all receivers commit. A
         # failure is terminal for the stream, avoiding another full CPU snapshot.
         np.copyto(previous, current)
+        return {
+            "encode_wall_s": time.monotonic() - started,
+            "baseline_h2d_bytes": 0,
+            "baseline_d2h_bytes": current.nbytes,
+            "encoded_d2h_bytes": 0,
+            "staging_wait_s": staging_wait_s,
+            "cpu_encode_write_s": time.monotonic() - encode_started,
+        }
 
-    def _collect(self, future):
+    def _encode_gpu(self, name, current, produced):
+        encoder = self._gpu_encoders.get()
         try:
-            future.result()
+            spec = self._plan[name]
+            frames, payloads, changed, metrics = encoder.encode(
+                self._snapshot[name], current, produced, encoding=spec["encoding"]
+            )
+            write_started = time.monotonic()
+            self._writer.add_encoded_tensor(
+                name,
+                frames,
+                payloads,
+                changed_bytes=changed,
+                dtype=spec["dtype"],
+                shape=spec["shape"],
+                views=spec["views"],
+                encoding=spec["encoding"],
+            )
+            metrics["encoded_hash_write_s"] = time.monotonic() - write_started
+            return metrics
+        finally:
+            self._gpu_encoders.put(encoder)
+
+    def _collect(self, future, *, backpressure=False):
+        started = time.monotonic()
+        try:
+            self._encoding_metrics.append(future.result())
         except Exception as error:
             self._error = self._error or error
+        finally:
+            waited = time.monotonic() - started
+            if backpressure:
+                self._backpressure_wait_s += waited
+            else:
+                self._encoding_tail_wait_s += waited
 
     def after_base_weights(self):
         while self._inflight:
@@ -267,44 +336,76 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
             self._writer.close()
             raise
 
-    def finalize(self, weight_version):
+    def publish(self, weight_version):
+        """Seal owner payloads independently of receiver activation."""
+        seal_started = time.monotonic()
         shard, error = None, None
         try:
             shard = self._writer.finish_shard()
         except Exception as caught:
             error = caught
         _collective_check(error, "payload sealing")
+        self.publication_metrics = {
+            "owner_rank": dist.get_rank(),
+            "encoder": self.encoder_backend,
+            "codec": self.codec,
+            "tensor_count": len(shard["tensors"]),
+            "canonical_bytes": sum(t["nbytes"] for t in shard["tensors"]),
+            "changed_bytes": sum(t["changed_bytes"] for t in shard["tensors"]),
+            "wire_bytes": sum(f["nbytes"] for f in shard["files"]),
+            "producer_wall_s": time.monotonic() - self._started,
+            "encode_tensor_wall_sum_s": sum(item["encode_wall_s"] for item in self._encoding_metrics),
+            "backpressure_wait_s": self._backpressure_wait_s,
+            "encoding_tail_wait_s": self._encoding_tail_wait_s,
+            "owner_seal_s": time.monotonic() - seal_started,
+            **{
+                key: sum(item[key] for item in self._encoding_metrics)
+                for key in ("baseline_h2d_bytes", "baseline_d2h_bytes", "encoded_d2h_bytes")
+            },
+        }
+        if self._timing:
+            self.publication_metrics["tensor_phases"] = self._encoding_metrics
+        shard["producer_metrics"] = self.publication_metrics
         shards = [None] * dist.get_world_size() if dist.get_rank() == 0 else None
         dist.gather_object(shard, shards, dst=0, group=get_gloo_group())
-        publication = _on_root(lambda: gpu_delta_publication.seal_publication(self._version_dir, shards))
+
+        def seal():
+            descriptor = gpu_delta_publication.seal_publication(self._version_dir, shards)
+            descriptor["summary_counts"] = {
+                key: sum(owner["producer_metrics"][key] for owner in shards)
+                for key in ("tensor_count", "wire_bytes", "changed_bytes", "canonical_bytes")
+            }
+            return descriptor
+
+        publication = _on_root(seal)
+        # Keep full owner timing distributions on root; other trainers need only
+        # the small publication descriptor, not all owners' diagnostics.
+        if dist.get_rank() == 0:
+            publication["producer_metrics"] = [owner["producer_metrics"] for owner in shards]
         try:
             if self._post_write_hook is not None:
                 self._post_write_hook(self.args, str(self._version_dir), list(self.rollout_engines))
         except Exception as caught:
             error = caught
         _collective_check(error, "publication visibility")
+        return publication
+
+    def finalize(self, weight_version):
+        publication = self.publish(weight_version)
         _on_root(
             lambda: async_utils.run(
-                gpu_delta_session.activate_publication(
-                    self.rollout_engines, self._descriptions, publication, staging=self.staging
-                )
+                gpu_delta_session.activate_publication(self.rollout_engines, self._descriptions, publication)
             ),
             broadcast_value=False,
         )
         self._uncommitted = False
-        local_tensors = shard["tensors"]
-        counts = torch.tensor(
-            [
-                len(local_tensors),
-                sum(f["nbytes"] for f in shard["files"]),
-                sum(t["changed_bytes"] for t in local_tensors),
-                sum(t["nbytes"] for t in local_tensors),
-            ],
-            dtype=torch.int64,
+        counts = publication["summary_counts"]
+        tensor_count, wire, changed, total = (
+            counts[key] for key in ("tensor_count", "wire_bytes", "changed_bytes", "canonical_bytes")
         )
-        dist.all_reduce(counts, group=get_gloo_group())
-        tensor_count, wire, changed, total = counts.tolist()
         elapsed = time.monotonic() - self._started
+        # The metrics logger can live on the last PP stage instead of global
+        # rank 0. Broadcast only these four scalars, not full owner diagnostics.
         self.update_weight_metrics = {
             "perf/update_weights_density": changed / max(total, 1),
             "perf/update_weights_wire_bytes": wire,

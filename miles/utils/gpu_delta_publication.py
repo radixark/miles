@@ -49,11 +49,13 @@ def sha256(data) -> str:
 
 
 def settings_from_env() -> tuple[str, str]:
-    codec = os.environ.get("WEIGHT_DELTA_CODEC", "zstd")
-    staging = os.environ.get("WEIGHT_DELTA_STAGING", "full")
-    if codec not in ("zstd", "snappy", "none") or staging not in ("full", "tensor"):
-        raise ValueError("Expected WEIGHT_DELTA_CODEC=zstd|snappy|none and WEIGHT_DELTA_STAGING=full|tensor")
-    return codec, staging
+    codec = os.environ.get("WEIGHT_DELTA_CODEC", "snappy")
+    encoder = os.environ.get("WEIGHT_DELTA_ENCODER", "gpu")
+    if codec not in ("zstd", "snappy") or encoder not in ("gpu", "cpu"):
+        raise ValueError("Expected WEIGHT_DELTA_CODEC=zstd|snappy and WEIGHT_DELTA_ENCODER=gpu|cpu")
+    if "WEIGHT_DELTA_STAGING" in os.environ:
+        raise ValueError("WEIGHT_DELTA_STAGING was removed; GPU-delta receivers always stream tensors")
+    return codec, encoder
 
 
 def _bytes_view(value) -> np.ndarray:
@@ -77,35 +79,13 @@ def selected_bytes(data, *, shape: list[int], dtype: str, slices: list[list[int]
     return np.ascontiguousarray(raw.reshape(*shape, itemsize)[selection]).reshape(-1)
 
 
-def encode_tensor(
-    name: str,
-    old,
-    new,
-    *,
-    dtype: str,
-    shape: list[int],
-    codec: str,
-    views: list[dict] | None = None,
-    encoding: str = "xor_bytes",
-) -> tuple[dict, list[bytes]]:
-    """Encode one known W0/W1 tensor without changing either caller's buffer."""
-    previous, current = _bytes_view(old), _bytes_view(new)
+def tensor_metadata(name: str, *, dtype: str, shape: list[int], views=None, encoding="xor_bytes") -> dict:
+    """Canonical tensor schema shared by CPU and GPU encoders."""
     if not name or dtype not in DTYPE_BYTES or any(type(n) is not int or n < 0 for n in shape):
         raise ValueError("Invalid canonical tensor schema")
+    if encoding not in ("xor_bytes", "replace_bytes"):
+        raise ValueError("Unsupported gpu-delta encoding")
     nbytes = math.prod(shape) * DTYPE_BYTES[dtype]
-    if previous.size != nbytes or current.size != nbytes:
-        raise ValueError(f"Canonical tensor byte count differs for {name}")
-    if encoding not in ("xor_bytes", "replace_bytes") or codec not in ("zstd", "snappy", "none"):
-        raise ValueError("Unsupported gpu-delta encoding/codec")
-    if codec == "snappy":
-        # Optional at import time; the explicitly selected profile requires it.
-        import snappy
-
-        compress = snappy.compress
-    elif codec == "zstd":
-        compress = zstandard.ZstdCompressor(level=1, write_content_size=True).compress
-    else:
-        compress = bytes
     definitions = views if views is not None else [{"id": "full", "slices": [[0, n] for n in shape]}]
     if len({v["id"] for v in definitions}) != len(definitions):
         raise ValueError("Duplicate canonical view id")
@@ -127,6 +107,35 @@ def encode_tensor(
             if len(bounds) != 2 or any(type(x) is not int for x in bounds) or not 0 <= bounds[0] <= bounds[1] <= size:
                 raise ValueError("Invalid canonical half-open view bounds")
         entry["views"].append({"id": view["id"], "slices": slices})
+    return entry
+
+
+def encode_tensor(
+    name: str,
+    old,
+    new,
+    *,
+    dtype: str,
+    shape: list[int],
+    codec: str,
+    views: list[dict] | None = None,
+    encoding: str = "xor_bytes",
+) -> tuple[dict, list[bytes]]:
+    """Encode one known W0/W1 tensor without changing either caller's buffer."""
+    previous, current = _bytes_view(old), _bytes_view(new)
+    entry = tensor_metadata(name, dtype=dtype, shape=shape, views=views, encoding=encoding)
+    nbytes = entry["nbytes"]
+    if previous.size != nbytes or current.size != nbytes:
+        raise ValueError(f"Canonical tensor byte count differs for {name}")
+    if codec not in ("zstd", "snappy"):
+        raise ValueError("Unsupported gpu-delta codec")
+    if codec == "snappy":
+        # Optional at import time; the explicitly selected profile requires it.
+        import snappy
+
+        compress = snappy.compress
+    else:
+        compress = zstandard.ZstdCompressor(level=1, write_content_size=True).compress
     payloads, changed = [], 0
     for offset in range(0, nbytes, FRAME_BYTES):
         end = min(nbytes, offset + FRAME_BYTES)
@@ -141,8 +150,7 @@ def encode_tensor(
         payload = compress(raw)
         frame_codec = codec
         if len(payload) >= len(raw):
-            if codec != "none":
-                payload = bytes(raw)
+            payload = bytes(raw)
             frame_codec = "none"
         entry["frames"].append(
             {
@@ -196,7 +204,7 @@ class PublicationWriter:
         self.directory = Path(directory)
         self.directory.mkdir(parents=True, exist_ok=True)
         self.codec = codec or settings_from_env()[0]
-        if self.codec not in ("zstd", "snappy", "none"):
+        if self.codec not in ("zstd", "snappy"):
             raise ValueError("Unknown gpu-delta codec")
         self.metadata = {
             "protocol_version": 2,
@@ -219,6 +227,43 @@ class PublicationWriter:
         entry, payloads = encode_tensor(
             name, old, new, dtype=dtype, shape=shape, codec=self.codec, views=views, encoding=encoding
         )
+        return self._append_tensor(entry, payloads)
+
+    def add_encoded_tensor(
+        self, name, frames, payloads, *, changed_bytes, dtype, shape, views=None, encoding="xor_bytes"
+    ):
+        """Append GPU-produced frames; hash only encoded CPU buffers for transport."""
+        entry = tensor_metadata(name, dtype=dtype, shape=shape, views=views, encoding=encoding)
+        if type(changed_bytes) is not int or not 0 <= changed_bytes <= entry["nbytes"]:
+            raise ValueError("Invalid changed-byte count")
+        entry["changed_bytes"] = changed_bytes
+        end = 0
+        for frame, payload in zip(frames, payloads, strict=True):
+            frame = dict(frame)
+            offset, size = frame["decoded_offset"], frame["decoded_bytes"]
+            if (
+                type(offset) is not int
+                or type(size) is not int
+                or offset < end
+                or offset % FRAME_BYTES != 0
+                or size != min(FRAME_BYTES, entry["nbytes"] - offset)
+                or size <= 0
+                or (encoding == "replace_bytes" and offset != end)
+            ):
+                raise ValueError("Invalid independently framed canonical range")
+            if frame["codec"] not in (self.codec, "none") or frame["encoded_bytes"] != len(payload):
+                raise ValueError("Encoded frame profile or size mismatch")
+            if not payload or (frame["codec"] == "none" and len(payload) != size):
+                raise ValueError("Invalid raw frame byte count")
+            frame["encoded_sha256"] = sha256(payload)
+            entry["frames"].append(frame)
+            end = offset + size
+        if encoding == "replace_bytes" and end != entry["nbytes"]:
+            raise ValueError("Replacement frames must cover the complete canonical tensor")
+        return self._append_tensor(entry, payloads)
+
+    def _append_tensor(self, entry, payloads):
+        name = entry["name"]
         with self._lock:
             if self._closed or name in self._entries:
                 raise ValueError("Publication is sealed or tensor was already published")

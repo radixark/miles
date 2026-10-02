@@ -97,7 +97,7 @@ def test_three_versions_share_targets_across_codecs_and_preserve_source_and_draf
             seed=7,
             ratio=0.002,
             versions=3,
-            codecs=["zstd", "snappy", "none"],
+            codecs=["zstd", "snappy"],
         )
     )
     report = json.loads((output / "fixture.json").read_text())
@@ -110,7 +110,6 @@ def test_three_versions_share_targets_across_codecs_and_preserve_source_and_draf
             _replay(publication, states[codec])
         for name in original:
             np.testing.assert_array_equal(states["zstd"][name], states["snappy"][name])
-            np.testing.assert_array_equal(states["zstd"][name], states["none"][name])
         for name in experts:
             assert np.any(states["zstd"][name] != previous[name])
     final = _read_tensors(Path(report["target_checkpoint"]))

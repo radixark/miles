@@ -12,21 +12,30 @@ and eight Blackwell GPUs. The benchmark starts one TP8/DP8/EP8 engine with
 GLM5.2 NVFP4 W4A16, CuTe DSL MoE, no MoE A2A and a static bundled MTP draft.
 The original checkpoint must already be available and is never modified.
 
-Install the prebuilt decoder without changing the image's dependency closure:
+Install the prebuilt encoder/decoder without changing the image's dependency closure:
 
 ```bash
 python -m pip install --no-deps nvidia-libnvcomp-cu13==5.3.0.16
 ```
 
-No custom C++/CUDA extension is built. Zstd uses nvCOMP's CUDA backend; Snappy
+No custom C++/CUDA extension is built. GPU production uses nvCOMP CUDA
+compression for both codecs; Zstd decoding uses its CUDA backend; Snappy
 explicitly requests hardware decompression and rejects unsupported hardware or
 allocation modes. Both decode from HBM. Pinned host memory supplies H2D copies.
 
 | Environment variable | Meaning |
 | --- | --- |
-| `WEIGHT_DELTA_CODEC=zstd\|snappy\|none` | Producer codec; each immutable frame records its actual codec, including raw fallback for incompressible frames. Default: `zstd`. |
-| `WEIGHT_DELTA_STAGING=full\|tensor` | Upload the complete publication during background preparation, or upload each locally needed tensor inside the apply loop. Default: `full`. |
+| `WEIGHT_DELTA_CODEC=zstd\|snappy` | Producer codec; each immutable frame records its actual codec, including raw fallback for incompressible frames. Default: `snappy`. |
+| `WEIGHT_DELTA_ENCODER=gpu\|cpu` | GPU XOR/compression with a pinned CPU baseline, or the explicit CPU reference encoder. Default: `gpu`. |
 | `WEIGHT_DELTA_TIMING=1` | Record per-phase CUDA events for profiling. Default: off; event instrumentation can perturb timing. |
+
+The producer keeps old canonical bytes in pinned CPU memory. Two workers per
+owner overlap old-byte H2D, GPU XOR/compression, new-baseline D2H and encoded
+payload writes with subsequent exports. Export, worker backpressure, final
+encoding drain and publication/activation barriers still block the trainer.
+Routed experts retain exporter EP/EDP ownership; non-routed tensors retain the
+existing data-replica sender. The producer-only comparison is documented in
+[bench_gpu_delta_producer.md](bench_gpu_delta_producer.md).
 
 CPU SHA-256 checks encoded files during background preparation. Runtime updates
 do not hash old or new weights. Session/version/incarnation checks prevent stale
@@ -55,20 +64,17 @@ changed weights; Snappy is not independently tuned to 0.2%. Scale tensors and
 static draft weights remain unchanged in the large proxy; focused receiver tests
 cover scale changes. The altered checkpoint contains the final version.
 
-## Compare all three arms
+## Compare both receiver codecs
 
 Each invocation starts a fresh engine from the same original checkpoint. It
 applies all three immutable publications to the engine and saves
 all original-rank receipts, server logs and generation through DP routes 0–7.
 
 ```bash
-WEIGHT_DELTA_CODEC=zstd WEIGHT_DELTA_STAGING=tensor WEIGHT_DELTA_TIMING=1 \
+WEIGHT_DELTA_CODEC=zstd WEIGHT_DELTA_TIMING=1 \
   python tests/manual/bench_gpu_delta.py run --model /models/GLM5.2-NVFP4 \
   --fixture /data/gpu-delta/fixture --output /data/gpu-delta/zstd-tensor
-WEIGHT_DELTA_CODEC=zstd WEIGHT_DELTA_STAGING=full WEIGHT_DELTA_TIMING=1 \
-  python tests/manual/bench_gpu_delta.py run --model /models/GLM5.2-NVFP4 \
-  --fixture /data/gpu-delta/fixture --output /data/gpu-delta/zstd-full
-WEIGHT_DELTA_CODEC=snappy WEIGHT_DELTA_STAGING=tensor WEIGHT_DELTA_TIMING=1 \
+WEIGHT_DELTA_CODEC=snappy WEIGHT_DELTA_TIMING=1 \
   python tests/manual/bench_gpu_delta.py run --model /models/GLM5.2-NVFP4 \
   --fixture /data/gpu-delta/fixture --output /data/gpu-delta/snappy-tensor
 python tests/manual/bench_gpu_delta.py oracle --model /models/GLM5.2-NVFP4 \
@@ -81,11 +87,11 @@ every live weight byte. Exact decode/layout/application comparisons belong to
 receiver unit tests. The updated five-layer W4A16 E2E additionally exercises real
 training-driven publications; it is not a full-model RL validation.
 
-Separate coordinator wall time, background read/hash/pin/full-copy preparation,
+Separate coordinator wall time, background read/hash/pin preparation,
 actual scheduler pause, GPU H2D, decode, layout/application and derived refresh.
-Do not add nested event spans or sum concurrent ranks. Full mode transfers the
-whole publication to every GPU; tensor mode can skip unowned expert payloads.
-Compare transferred bytes as well as timing. No throughput claim follows from
+Do not add nested event spans or sum concurrent ranks. Receivers stream only the
+current locally needed tensor to HBM and skip unowned expert payloads. Compare
+transferred bytes as well as timing. No throughput claim follows from
 this idle-engine benchmark; preparation overlap under generation load needs its
 own measurement.
 

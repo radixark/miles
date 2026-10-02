@@ -45,7 +45,8 @@ def _setup(tmp_path, *, fail=False):
 
 
 @pytest.fixture
-def single_rank():
+def single_rank(monkeypatch):
+    monkeypatch.setenv("WEIGHT_DELTA_ENCODER", "cpu")
     with (
         patch.object(gpu_delta, "_gather_all", side_effect=lambda value: [value]),
         patch.object(gpu_delta, "get_gloo_group", return_value=None),

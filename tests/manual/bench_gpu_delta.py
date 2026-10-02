@@ -1,4 +1,4 @@
-"""One EP8 GLM5.2 W4A16 engines: direct GPU delta fixture and timing harness.
+"""One EP8 GLM5.2 W4A16 engine: direct GPU delta fixture and timing harness.
 
 Requires paired SGLang GPU-delta sources, eight Blackwell GPUs, the Miles image,
 prebuilt nvCOMP >=5.3 and an immutable NVFP4 checkpoint with bundled MTP weights.
@@ -9,11 +9,11 @@ Example (run from the Miles checkout with paired SGLang on PYTHONPATH)::
     python tests/manual/bench_gpu_delta.py inventory --model /models/base --output /data/inventory
     python tests/manual/bench_gpu_delta.py fixture --model /models/base \
         --inventory /data/inventory/inventory.json --output /data/fixture
-    WEIGHT_DELTA_CODEC=zstd WEIGHT_DELTA_STAGING=tensor WEIGHT_DELTA_TIMING=1 \
+    WEIGHT_DELTA_CODEC=zstd WEIGHT_DELTA_TIMING=1 \
         python tests/manual/bench_gpu_delta.py run --model /models/base \
-        --fixture /data/fixture --output /data/zstd-tensor
+        --fixture /data/fixture --output /data/zstd
 
-Repeat run with zstd/full and snappy/tensor. Each run starts one fresh engine;
+Repeat run with Snappy. Each run starts one fresh engine;
 never reset a live delta stream with a disk reload. ``oracle`` starts from the
 altered target checkpoint while keeping the original static draft, outside update
 timing. Compare its generation/logprob records with the last delta round.
@@ -351,10 +351,7 @@ async def _engines(args, model):
             args.output / "launch.json",
             {
                 "engines": commands,
-                "feature_env": {
-                    key: os.environ.get(key)
-                    for key in ("WEIGHT_DELTA_CODEC", "WEIGHT_DELTA_STAGING", "WEIGHT_DELTA_TIMING")
-                },
+                "feature_env": {key: os.environ.get(key) for key in ("WEIGHT_DELTA_CODEC", "WEIGHT_DELTA_TIMING")},
             },
         )
         started = time.monotonic()
@@ -397,7 +394,7 @@ async def _generation(clients):
 
 
 async def _run(args):
-    codec, staging = settings_from_env()
+    codec, _ = settings_from_env()
     fixture = json.loads((args.fixture / "fixture.json").read_text()) if args.fixture else None
     if args.phase == "run" and any(codec not in row["publications"] for row in fixture["rounds"]):
         raise ValueError(f"Fixture does not contain codec {codec}; recreate with --codecs including it")
@@ -421,14 +418,11 @@ async def _run(args):
         for version in fixture["rounds"]:
             started = time.monotonic()
             try:
-                receipt = await activate_publication(
-                    clients, descriptions, version["publications"][codec], staging=staging
-                )
+                receipt = await activate_publication(clients, descriptions, version["publications"][codec])
                 result = {
                     "version": version["version"],
                     "coordinator_s": time.monotonic() - started,
                     "codec": codec,
-                    "staging": staging,
                     "receipt": receipt,
                 }
                 _save(args.output / f"update-{version['version']}.json", result)
@@ -454,9 +448,9 @@ def main():
     parser.add_argument(
         "--codecs",
         nargs="+",
-        choices=("zstd", "snappy", "none"),
+        choices=("zstd", "snappy"),
         default=["zstd", "snappy"],
-        help="Fixture codecs. Raw none is optional because it can require model-sized storage per version.",
+        help="Fixture codecs; incompressible frames are stored raw within either profile.",
     )
     parser.add_argument("--seed", type=int, default=20261001)
     parser.add_argument("--ratio", type=float, default=0.002)

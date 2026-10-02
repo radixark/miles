@@ -335,8 +335,8 @@ def execute(
         misc_args += "--use-fault-tolerance "
 
     delta_env = {
-        "WEIGHT_DELTA_CODEC": os.environ.get("WEIGHT_DELTA_CODEC", "zstd"),
-        "WEIGHT_DELTA_STAGING": os.environ.get("WEIGHT_DELTA_STAGING", "full"),
+        "WEIGHT_DELTA_CODEC": os.environ.get("WEIGHT_DELTA_CODEC", "snappy"),
+        "WEIGHT_DELTA_ENCODER": os.environ.get("WEIGHT_DELTA_ENCODER", "gpu"),
     }
     train_args = (
         f"{ckpt_args} "
