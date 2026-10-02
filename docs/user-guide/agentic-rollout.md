@@ -168,6 +168,32 @@ payloads can become very large.
 Set `--max-seq-len` to cap the context length. Miles also includes this value in the
 metadata passed to your agent so an external environment can stop early.
 
+### Customize backend request policy
+
+Use `--custom-rollout-request-hook-path` when the inference backend requires
+request-scoped metadata such as a minimum model version. The hook receives an
+opaque JSON configuration, the session ID, and the outgoing payload and headers:
+
+```python
+async def prepare_request(hook_args, session_id, request):
+    request["payload"]["weight_version"] = {
+        "min_version": await read_latest_version(hook_args["version_store"])
+    }
+    request["headers"]["X-Session-ID"] = session_id
+```
+
+Pass the static configuration as JSON with
+`--custom-rollout-request-hook-args`. The hook mutates `request["payload"]` or
+`request["headers"]` and returns `None`. A synchronous hook must not perform
+blocking I/O because it runs on the session server's event loop.
+
+Retries are opt-in through `--rollout-request-max-attempts`; miles retries only
+connection failures known to occur before dispatch and explicit HTTP 409/429
+admission rejections. It does not retry read/write failures or generic server
+errors because the backend may already have advanced the stateful session. Set
+`--rollout-request-retry-interval` to control the delay between attempts. The
+whole proxy operation remains bounded by `--miles-router-timeout`.
+
 ### Pick your `--tito-model`
 
 There is no auto-detection. Pick the family matching your model. Each named

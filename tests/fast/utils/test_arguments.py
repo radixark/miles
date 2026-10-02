@@ -1728,6 +1728,68 @@ class TestSessionServerScalingArguments:
             self._parse(["--session-server-port", "30000", "30004"])
 
 
+class TestRolloutRequestHookArguments:
+    def _parse(self, extra):
+        parser = argparse.ArgumentParser()
+        get_miles_extra_args_provider()(parser)
+        return parser.parse_args(extra + ["--num-rollout", "1"] + REQUIRED_ARGS)
+
+    def test_parses_hook_and_json_args(self):
+        args = self._parse(
+            [
+                "--use-session-server",
+                "--custom-rollout-request-hook-path",
+                "hooks.prepare_request",
+                "--custom-rollout-request-hook-args",
+                '{"version_store":"s3://weights"}',
+                "--rollout-request-max-attempts",
+                "10",
+                "--rollout-request-retry-interval",
+                "0.25",
+            ]
+        )
+
+        miles_validate_args(args)
+
+        assert args.custom_rollout_request_hook_args == {"version_store": "s3://weights"}
+        assert args.rollout_request_max_attempts == 10
+        assert args.rollout_request_retry_interval == 0.25
+
+    def test_rejects_hook_without_session_server(self):
+        args = self._parse(["--custom-rollout-request-hook-path", "hooks.prepare_request"])
+
+        with pytest.raises(ValueError, match="requires --use-session-server"):
+            miles_validate_args(args)
+
+    def test_rejects_hook_args_without_hook(self):
+        args = self._parse(["--use-session-server", "--custom-rollout-request-hook-args", '{"key":"value"}'])
+
+        with pytest.raises(ValueError, match="requires --custom-rollout-request-hook-path"):
+            miles_validate_args(args)
+
+    @pytest.mark.parametrize(
+        ("extra", "match"),
+        [
+            (["--rollout-request-max-attempts", "0"], "must be at least 1"),
+            (
+                [
+                    "--use-session-server",
+                    "--rollout-request-max-attempts",
+                    "2",
+                    "--rollout-request-retry-interval",
+                    "-1",
+                ],
+                "must be non-negative",
+            ),
+            (["--rollout-request-max-attempts", "2"], "requires --use-session-server"),
+            (["--rollout-request-retry-interval", "0.5"], "requires --rollout-request-max-attempts"),
+        ],
+    )
+    def test_rejects_invalid_retry_policy(self, extra, match):
+        with pytest.raises(ValueError, match=match):
+            miles_validate_args(self._parse(extra))
+
+
 class TestSessionMessageMatcherArgument:
     def _parse(self, extra):
         parser = argparse.ArgumentParser()

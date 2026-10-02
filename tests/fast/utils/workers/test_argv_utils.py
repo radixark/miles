@@ -138,6 +138,10 @@ class TestConfigToArgv:
             pause_generation_mode=None,
             session_sample_picker_path="miles.rollout.session.v2.picker_hub.drop_same_prompt_retries",
             session_sample_postprocessor_path=("miles.rollout.session.v2.postprocessor_hub.default_postprocess"),
+            custom_rollout_request_hook_path=None,
+            custom_rollout_request_hook_args={},
+            rollout_request_max_attempts=1,
+            rollout_request_retry_interval=1.0,
         )
         assert parse_config_argv(SessionServerConfig, config_to_argv(session_config)) == session_config
 
