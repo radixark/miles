@@ -29,6 +29,7 @@ data and weights around.
 - **[fully_async](/examples/infra-features/fully-async)**: Demonstrates fully asynchronous rollout generation for higher efficiency.
 - **[hot_restart](/examples/infra-features/hot-restart)**: Replaces the orchestration script and rollout executor of a live run, keeping trainers and engines up.
 - **[low_precision](/examples/infra-features/low-precision)**: Examples of FP8 training and inference, plus INT4 QAT, for improved throughput and stability.
+- **[nccl_m2n](/examples/nccl-m2n)**: Four-GPU smoke example for M2N weight refits, concurrent trainer PP stages, and residual broadcasts.
 - **[p2p_weight_transfer](/examples/infra-features/p2p-weight-transfer)**: Point-to-point weight transfer between training and rollout engines.
 - **[random_async](/examples/infra-features/random-async)**: Dataset-free stress test of the async rollout ↔ trainer loop.
 - **[split_deployment](/examples/infra-features/split-deployment)**: Installs one run as several helm releases — trainer, engines and orchestration script apart.

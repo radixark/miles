@@ -68,6 +68,7 @@ class WeightUpdater:
             model_name=model_name,
             quantization_config=quantization_config,
         )
+        self.protocol.configure_model(self._hf_weight_iterator)
         self.weights_getter = weights_getter
         self.weight_version = 0
         self.is_lora = is_lora
@@ -132,12 +133,16 @@ class WeightUpdater:
         adapters = self._get_updated_adapters()
 
         driver = dist.get_rank() == 0
-        if protocol.use_weight_update_session and driver:
+
+        def prepare_engines():
             pause_engines(self.args, protocol.rollout_engines)
             self._register_new_lora_adapters(protocol.rollout_engines, adapters)
             begin_weight_update(
                 protocol.rollout_engines, self._hf_weight_iterator.weight_update_selector, sync_base=sync_base
             )
+
+        if protocol.use_weight_update_session:
+            protocol.run_engine_session(prepare_engines)
         dist.barrier(group=get_gloo_group())
 
         checksums = {name: {} for name, _ in adapters} if self.is_lora and self.args.check_lora_weight_equal else None
@@ -146,9 +151,12 @@ class WeightUpdater:
                 self._hf_weight_iterator.placement.gather_pp
             ), "the LoRA checksum manifest is recorded on one rank, which must hold the full adapter"
         with timer("update_weights_implementation"):
+            weights = self.weights_getter()
+            if sync_base:
+                protocol.before_base_weights(weights)
             pbar = tqdm(desc=f"[{protocol.group_name}] Update weights", total=0) if protocol.is_sender else None
             for bucket in self._hf_weight_iterator.iter_hf_weights(
-                self.weights_getter(),
+                weights,
                 include_base=sync_base,
                 adapters=adapters,
                 materialize=protocol.is_sender,
@@ -163,10 +171,14 @@ class WeightUpdater:
 
         with timer("finalize_and_resume_engines"):
             protocol.finalize(self.weight_version)
-            if protocol.use_weight_update_session and driver:
+
+            def finalize_engines():
                 end_weight_update(protocol.rollout_engines, expected_lora_checksums=checksums)
                 set_weight_version(protocol.rollout_engines, self.weight_version)
                 resume_engines(protocol.rollout_engines)
+
+            if protocol.use_weight_update_session:
+                protocol.run_engine_session(finalize_engines)
             dist.barrier(group=get_gloo_group())
         protocol.after_engines_resumed()
 

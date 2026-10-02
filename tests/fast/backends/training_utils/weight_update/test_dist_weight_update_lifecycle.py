@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from miles.backends.training_utils.weight_update import updater as updater_module
 from miles.backends.training_utils.weight_update.updater import WeightUpdater
 from miles.utils import async_utils
 
@@ -80,6 +81,9 @@ def _make_updater(engines: list[_RecordingApiClient], *, pause_generation_mode: 
         rollout_engines=engines,
         required_placement=MagicMock(),
         supports_lora=False,
+        configure_model=lambda iterator: None,
+        before_base_weights=lambda weights: None,
+        run_engine_session=lambda operation: operation() if updater_module.dist.get_rank() == 0 else None,
         begin_sync=lambda weight_version, iter_buckets: True,
         send_bucket=MagicMock(),
         after_base_weights=MagicMock(),

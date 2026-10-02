@@ -24,6 +24,7 @@ from miles.utils.arguments import (
     _resolve_rollout_functions,
     _resolve_run_uuid,
     _validate_deploy_component,
+    _validate_nccl_m2n_args,
     _validate_rematerialize_param_from_master_weight,
     get_miles_extra_args_provider,
     miles_validate_args,
@@ -1863,6 +1864,33 @@ class TestSnapshotEvalValidation:
 
         assert args.rollout_num_gpus == 0
         assert args.starts_inference_engines is False
+
+
+@pytest.mark.parametrize(
+    "overrides,error",
+    [
+        ({}, None),
+        ({"colocate": True}, "disaggregated"),
+        ({"train_backend": "fsdp"}, "megatron"),
+        ({"m2n_pp_concurrency": 0}, "m2n-pp-concurrency"),
+        ({"expert_tensor_parallel_size": 2}, "ETP=1"),
+    ],
+)
+def test_nccl_m2n_critical_configuration(overrides, error):
+    values = dict(
+        colocate=False,
+        train_backend="megatron",
+        expert_tensor_parallel_size=1,
+        sglang_pp_size=1,
+        sglang_dp_size=1,
+        lora_rank=0,
+    )
+    args = SimpleNamespace(**(values | overrides))
+    if error:
+        with pytest.raises(AssertionError, match=error):
+            _validate_nccl_m2n_args(args)
+    else:
+        _validate_nccl_m2n_args(args)
 
 
 class TestTitoFixedTemplateConfiguration:

@@ -2,14 +2,15 @@
 
 from abc import ABC, abstractmethod
 from argparse import Namespace
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from typing import ClassVar
 
 import torch
+import torch.distributed as dist
 
 from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
 from miles.backends.training_utils.parallel import ParallelState
-from miles.backends.training_utils.weight_update.hf_weight_iterator import WeightUpdatePlacement
+from miles.backends.training_utils.weight_update.hf_weight_iterator import HfWeightIteratorBase, WeightUpdatePlacement
 
 
 class WeightTransferProtocol(ABC):
@@ -44,6 +45,17 @@ class WeightTransferProtocol(ABC):
         selector: str,
     ) -> None: ...
 
+    def configure_model(self, iterator: HfWeightIteratorBase) -> None:  # noqa: B027
+        """Optional access to native model metadata for shard-aware transports."""
+
+    def before_base_weights(self, weights: Mapping[str, torch.Tensor]) -> None:  # noqa: B027
+        """Collective hook inside the session, before the residual HF stream."""
+
+    def run_engine_session(self, operation: Callable[[], None]) -> None:
+        """Run driver-only session RPCs; transports may propagate errors collectively."""
+        if dist.get_rank() == 0:
+            operation()
+
     def begin_sync(
         self,
         weight_version: int,
@@ -75,6 +87,10 @@ def get_weight_transfer_protocol(args: Namespace) -> WeightTransferProtocol:
         from miles.backends.training_utils.weight_update.protocols.cuda_ipc import UpdateWeightFromTensor
 
         return UpdateWeightFromTensor(args)
+    if args.update_weight_transfer_mode == "nccl-m2n":
+        from miles.backends.training_utils.weight_update.protocols.nccl_m2n import UpdateWeightFromNcclM2N
+
+        return UpdateWeightFromNcclM2N(args)
     if args.update_weight_transfer_mode == "broadcast":
         from miles.backends.training_utils.weight_update.protocols.broadcast import UpdateWeightFromDistributed
 
