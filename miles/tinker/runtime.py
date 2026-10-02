@@ -40,6 +40,8 @@ def _build_train_data(slot_datums: list) -> dict:
     for datum_key, batch_key in DATUM_TO_BATCH_KEYS.items():
         if datum_key in datums[0]:
             train_data[batch_key] = [datum[datum_key] for datum in datums]
+    if any(datum.get("multimodal_train_inputs") is not None for datum in datums):
+        train_data["multimodal_train_inputs"] = [datum.get("multimodal_train_inputs") for datum in datums]
     return train_data
 
 
@@ -161,6 +163,8 @@ class MilesBackend:
             else:
                 sampling_params["stop"] = stop
         request = {"input_ids": payload["prompt_tokens"], "sampling_params": sampling_params, "return_logprob": True}
+        if payload.get("image_data"):
+            request["image_data"] = payload["image_data"]
         if payload["prompt_logprobs"] or payload["topk_prompt_logprobs"]:
             request["logprob_start_len"] = 0
         if payload["topk_prompt_logprobs"]:

@@ -20,6 +20,7 @@ from miles.utils.async_utils import Disposer, with_disposer
 from miles.utils.hf_utils.config import load_hf_config
 from miles.utils.http_utils import init_http_client
 from miles.utils.orchestration_utils import init_orchestration_script
+from miles.utils.processing_utils import load_processor
 
 logger = logging.getLogger(__name__)
 
@@ -73,7 +74,10 @@ async def serve(args, *, disposer: Disposer):
 
     server = uvicorn.Server(
         uvicorn.Config(
-            build_app(service), host=args.tinker_server_host, port=args.tinker_server_port, log_level="info"
+            build_app(service, processor=load_processor(args.hf_checkpoint, trust_remote_code=True)),
+            host=args.tinker_server_host,
+            port=args.tinker_server_port,
+            log_level="info",
         )
     )
     logger.info(f"tinker gateway serving {config.base_model} on :{args.tinker_server_port}")

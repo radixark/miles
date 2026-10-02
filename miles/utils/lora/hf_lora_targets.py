@@ -190,6 +190,12 @@ _HF_LORA_MODELS = {
     "qwen2": _HfLoraModelSpec(_dense_targets),
     "qwen3": _HfLoraModelSpec(_dense_targets),
     "qwen3_moe": _HfLoraModelSpec(_qwen3_moe_targets),
+    "qwen3_vl": _HfLoraModelSpec(
+        _dense_targets, layer_prefix="model.language_model.layers.*", unwrap_text_config=True
+    ),
+    "qwen3_vl_moe": _HfLoraModelSpec(
+        _qwen3_moe_targets, layer_prefix="model.language_model.layers.*", unwrap_text_config=True
+    ),
     "qwen3_next": _HfLoraModelSpec(_qwen3_next_targets),
     "qwen3_5_text": _HfLoraModelSpec(_qwen3_5_targets),
     "qwen3_5_moe_text": _HfLoraModelSpec(_qwen3_5_moe_targets),
