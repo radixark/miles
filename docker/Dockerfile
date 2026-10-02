@@ -11,7 +11,7 @@
 # release for the current arch picked from TARGETARCH — WHEELS_TAG_X86 on amd64,
 # WHEELS_TAG_ARM64 on arm64 (cu12-x86 overrides WHEELS_TAG_X86).
 
-ARG SGLANG_IMAGE_TAG=v0.5.20
+ARG SGLANG_IMAGE_TAG=v0.5.21
 FROM lmsysorg/sglang:${SGLANG_IMAGE_TAG} AS sglang
 
 # ======================================== Arguments =============================================
@@ -23,10 +23,12 @@ ARG MEGATRON_REPO=radixark/Megatron-LM
 ARG MEGATRON_BRANCH=miles-main
 # Empty means the branch HEAD at build time; release builds set it to freeze one commit.
 ARG MEGATRON_COMMIT=""
+ARG TORCHTITAN_REPO=pytorch/torchtitan
+ARG TORCHTITAN_COMMIT=086bf6c166ec85c1298eb5596fa9bf95f6a2d840
 
 ARG ENABLE_CUDA_13=1
 
-ARG WHEELS_REPO=yueming-yuan/miles-wheels
+ARG WHEELS_REPO=radixark/miles-wheels
 # Two complete wheels release tags (the wheels repo's own names). The build picks
 # one by TARGETARCH and installs it verbatim — no on-the-fly tag assembly here.
 ARG TARGETARCH
@@ -196,6 +198,15 @@ RUN pip install "nvidia-modelopt[torch]>=0.37.0" --no-build-isolation
 RUN pip install git+https://github.com/radixark/Megatron-Bridge.git@8cd3466d14d2337c8492827b3712482c2b3e4866 --no-deps --no-build-isolation
 RUN pip install megatron-energon --no-deps
 RUN pip install multi-storage-client --no-deps
+
+# torchtitan backend: pinned to the v0.3.0 release commit because torchtitan tracks
+# torch nightly and its model/adapter layouts move; --no-deps keeps its torch and
+# datasets pins from touching the versions sglang links against. Its own python
+# deps are pinned explicitly (spmd_types is a hard import in parallel_dims).
+RUN git clone https://github.com/${TORCHTITAN_REPO}.git torchtitan && \
+    cd torchtitan && git checkout -f ${TORCHTITAN_COMMIT} && \
+    pip install --no-deps -e .
+RUN pip install "spmd_types==0.2.3" "tyro>=1.0.5" && pip install --no-deps "torchdata>=0.8.0"
 
 COPY requirements.txt /tmp/requirements.txt
 RUN rm -rf /usr/lib/python3/dist-packages/jwt /usr/lib/python3/dist-packages/PyJWT* && pip install -r /tmp/requirements.txt

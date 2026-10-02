@@ -5,8 +5,8 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from miles.backends.training_utils import cp_utils
-from miles.backends.training_utils import data as data_utils
+from miles.backends.training_utils.data import context_parallel
+from miles.backends.training_utils.data import rollout as data_utils
 
 
 @pytest.mark.parametrize("allgather_cp", [False, True])
@@ -27,7 +27,7 @@ def test_the_host_cu_seqlens_match_the_device_tensor(
     for cp_rank in range(cp_size):
         state = SimpleNamespace(cp=SimpleNamespace(rank=cp_rank, size=cp_size), tp=SimpleNamespace(rank=0, size=1))
         monkeypatch.setattr(data_utils, "get_parallel_state", lambda state=state: state)
-        monkeypatch.setattr(cp_utils, "get_parallel_state", lambda state=state: state)
+        monkeypatch.setattr(context_parallel, "get_parallel_state", lambda state=state: state)
         batch = data_utils.get_batch(
             data_utils.DataIterator(rollout, micro_batch_size=len(lengths)),
             list(rollout),

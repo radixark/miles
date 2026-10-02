@@ -1,7 +1,7 @@
 import pytest
 import torch
 
-from miles.backends.training_utils.loss_hub.math_utils import calculate_log_probs_and_entropy
+from miles.backends.training_utils.loss.hub.math_utils import calculate_log_probs_and_entropy
 
 
 class TestCalculateLogProbsAndEntropy:

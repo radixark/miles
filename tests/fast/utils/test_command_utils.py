@@ -986,6 +986,37 @@ class TestHardwareTables:
         """Every launcher reads the GPU count, while only some read the generation."""
         assert command_utils.GENERATION_HARDWARE.keys() <= command_utils.NUM_GPUS_OF_HARDWARE.keys()
 
+    def test_rejects_torchtitan_with_a_megatron_model_type(self, commands):
+        with pytest.raises(AssertionError):
+            _backend().execute_train(
+                train_args="--train-backend torchtitan", num_gpus_per_node=8, megatron_model_type="qwen"
+            )
+
+    def test_an_unknown_backend_is_not_classified_as_megatron(self, commands):
+        """The classification is an allowlist, so a backend added later is not read as
+        Megatron and handed Megatron's checkpoint conversion and TP-overlap env var."""
+        with pytest.raises(AssertionError):
+            _backend().execute_train(
+                train_args="--train-backend somethingnew", num_gpus_per_node=8, megatron_model_type="qwen"
+            )
+
+    def test_tp_overlap_env_var_is_megatron_only(self, commands):
+        """CUDA_DEVICE_MAX_CONNECTIONS=1 serializes copy engines, which costs the
+        torch-native backends the compute/communication overlap they rely on."""
+
+        def last_runtime_env():
+            submit = next(c for c in reversed(commands) if "--runtime-env-json=" in c)
+            return _runtime_env(submit)
+
+        _backend().execute_train(train_args="", num_gpus_per_node=8, megatron_model_type="qwen3-4B")
+        assert last_runtime_env()["CUDA_DEVICE_MAX_CONNECTIONS"] == "1"
+
+        for backend in ("fsdp", "torchtitan"):
+            _backend().execute_train(
+                train_args=f"--train-backend {backend}", num_gpus_per_node=8, megatron_model_type=None
+            )
+            assert "CUDA_DEVICE_MAX_CONNECTIONS" not in last_runtime_env()
+
 
 def _fake_torch(monkeypatch, *, capability, machine, total_memory=141 * 1024**3, name="fake", hip=None):
     monkeypatch.setattr(platform, "machine", lambda: machine)

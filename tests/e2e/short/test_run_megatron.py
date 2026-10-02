@@ -39,7 +39,7 @@ NUM_LAYERS: int = 5
 
 _RUN_DIR: Path = Path(tempfile.mkdtemp(prefix="test_run_megatron_"))
 
-register_cuda_ci(est_time=200, suite="stage-c-8-gpu-h100", labels=["short"], hardware=["hopper", "blackwell"])
+register_cuda_ci(est_time=300, suite="stage-c-8-gpu-h100", labels=["short"], hardware=["hopper", "blackwell"])
 register_rocm_ci(est_time=300, suite="nightly-stage-c-8-gpu-mi350", labels=["short"])
 
 

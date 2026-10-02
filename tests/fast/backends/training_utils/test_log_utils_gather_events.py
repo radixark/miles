@@ -4,9 +4,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from miles.backends.training_utils import log_utils
+from miles.backends.training_utils.metrics import log_utils
 
-_LOG_UTILS_LOGGER = "miles.backends.training_utils.log_utils"
+_LOG_UTILS_LOGGER = "miles.backends.training_utils.metrics.log_utils"
 
 
 class _FakeMultiPGUtil:

@@ -69,6 +69,10 @@ class ParallelState:
         }[self._dp_mode]
 
     @property
+    def is_metrics_rank(self) -> bool:
+        return self.effective_dp_cp.rank == 0 and self.tp.rank == 0 and self.is_pp_last_stage
+
+    @property
     def is_ulysses_cp(self) -> bool:
         cp_comm_type = self.cp_comm_type
         if isinstance(cp_comm_type, (list, tuple)):

@@ -5,7 +5,7 @@ from tests.ci.metric_history import register_ci_gate
 from tests.e2e.megatron.test_glm47_flash._common import CaseConfig, execute, prepare
 
 register_cuda_ci(
-    est_time=1300,
+    est_time=1700,
     suite="stage-c-4-gpu-h200",
     labels=["megatron", "weight-update", "replay"],
     hardware=["hopper", "blackwell"],

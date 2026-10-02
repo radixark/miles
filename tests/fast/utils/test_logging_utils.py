@@ -142,6 +142,8 @@ class TestServedWorkerLogging:
     def test_worker_configures_its_logger(self, worker_class_path: str) -> None:
         """Every served worker owns a process, and configure_logger is where that process names
         itself, opens its event log and reports its environment."""
+        if ".torchtitan_utils." in worker_class_path:
+            pytest.importorskip("torchtitan", reason="torchtitan ships with the gpu image, not the cpu lane")
         assert _configures_logger(
             _load_class(worker_class_path)
         ), f"{worker_class_path} runs as its own process but never calls configure_logger"

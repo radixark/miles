@@ -18,7 +18,7 @@ from transformers import AutoTokenizer
 from miles.utils.external_utils import command_utils
 
 register_cuda_ci(
-    est_time=600,
+    est_time=300,
     suite="stage-c-2-gpu-h200",
     labels=["short", "eval", "megatron"],
     hardware=["hopper", "blackwell"],

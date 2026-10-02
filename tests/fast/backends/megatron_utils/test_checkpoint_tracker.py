@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from miles.backends.megatron_utils.checkpoint_tracker import (
+from miles.backends.training_utils.checkpoint.tracker import (
     CHECKPOINT_TRACKER_FILENAME,
     read_checkpoint_tracker_iteration,
 )

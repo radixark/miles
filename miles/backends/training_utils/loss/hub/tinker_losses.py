@@ -9,7 +9,7 @@ from collections.abc import Callable
 
 import torch
 
-from miles.backends.training_utils.loss_hub.logit_processors import get_log_probs_and_entropy
+from miles.backends.training_utils.loss.hub.logit_processors import get_log_probs_and_entropy
 from miles.utils.types import RolloutBatch
 
 PPO_DEFAULTS = {"clip_low_threshold": 0.8, "clip_high_threshold": 1.2}

@@ -1,6 +1,6 @@
 """CP token-layout helpers used inside model plugin ``forward`` implementations.
 
-Distinct from ``miles.backends.training_utils.cp_utils``, which owns the CP
+Distinct from ``miles.backends.training_utils.data.context_parallel``, which owns the CP
 helpers the training backend applies *around* the model (slicing data, masks,
 logprobs and logits). Everything here runs inside a layer.
 

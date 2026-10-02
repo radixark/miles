@@ -2477,21 +2477,21 @@ def test_workflow_runs_only_trusted_code_with_minimal_permissions():
     assert "ref: ${{ github.sha }}" in workflow
     assert "persist-credentials: false" in workflow
     assert "actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683" in workflow
-    # The command App exists only for the issues capability: label mutations
+    # This gateway mints a CI App token only for the issues capability: label mutations
     # made with GITHUB_TOKEN would never trigger the labeled CI workflows.
     assert workflow.count("actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1") == 1
-    assert workflow.count("client-id: ${{ vars.CI_COMMAND_APP_CLIENT_ID }}") == 1
-    assert workflow.count("private-key: ${{ secrets.CI_COMMAND_APP_PRIVATE_KEY }}") == 1
+    assert workflow.count("client-id: ${{ vars.CI_APP_CLIENT_ID }}") == 1
+    assert workflow.count("private-key: ${{ secrets.CI_APP_PRIVATE_KEY }}") == 1
     assert "permission-issues: write" in workflow
     assert "permission-actions" not in workflow
     assert "CI_COMMAND_API_TOKEN: ${{ github.token }}" in workflow
     assert "CI_COMMAND_API_TOKEN: ${{ steps.issues-token.outputs.token }}" in workflow
-    assert "CI_COMMAND_APP_TOKEN" not in workflow
+    assert "CI_APP_TOKEN" not in workflow
     assert workflow.index("CI_COMMAND_PREFLIGHT") < workflow.index("actions/create-github-app-token@")
     # The actions capability never waits on the App gate; label commands fail
     # loudly when the App is not enabled instead of skipping silently.
-    assert "vars.CI_COMMAND_APP_ENABLED != 'true'" in workflow
-    assert "vars.CI_COMMAND_APP_ENABLED == 'true'" not in workflow
+    assert "vars.CI_APP_ENABLED != 'true'" in workflow
+    assert "vars.CI_APP_ENABLED == 'true'" not in workflow
     assert "steps.authorize.outputs.capability != 'none'" in workflow
     assert "steps.authorize.outputs.capability != 'issues'" in workflow
     assert "steps.authorize.outputs.capability != 'actions'" in workflow
@@ -2512,8 +2512,9 @@ def test_workflow_runs_only_trusted_code_with_minimal_permissions():
     assert "\n          permission-issues: write\n" in issues_token
     assert "\n          permission-pull-requests: write\n" in issues_token
     assert "permission-pull-requests: read" not in issues_token
-    assert "Require the command App for label commands" in handle_job
-    assert handle_job.index("Require the command App for label commands") < handle_job.index(
+    assert "permission-contents" not in issues_token
+    assert "Require the CI App for label commands" in handle_job
+    assert handle_job.index("Require the CI App for label commands") < handle_job.index(
         "Mint the issues-scoped App token"
     )
     # Each GITHUB_TOKEN job scopes its own permissions; only the actions job

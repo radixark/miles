@@ -193,7 +193,7 @@ def test_target_workflow_keeps_orchestration_trusted_and_checks_out_exact_head()
     assert "DISPATCHED_SHA" not in workflow
     assert "checkout_ref" not in workflow
     assert "secrets: inherit" not in workflow
-    assert "CI_COMMAND_APP_PRIVATE_KEY" not in workflow
+    assert "CI_APP_PRIVATE_KEY" not in workflow
     assert "NEON_DATABASE_URL" not in workflow
     # Fork-ness comes from the live PR, and fork heads run without repository
     # secrets, matching the pr-test fork policy.

@@ -425,7 +425,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             parser.add_argument(
                 "--train-backend",
                 type=str,
-                choices=["megatron", "fsdp"],
+                choices=["megatron", "fsdp", "torchtitan"],
                 default="megatron",
                 help="The backend for training.",
             )
@@ -446,13 +446,6 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                     "'fla' (flash-linear-attention) is portable and runs on any supported GPU. "
                     "'flashqla' (FlashQLA) requires NVIDIA SM90 (Hopper) or newer, CUDA 12.8+, and PyTorch 2.8+."
                 ),
-            )
-            parser.add_argument(
-                "--miles-dsa-topk-backend",
-                type=str,
-                choices=["torch", "flashinfer"],
-                default="torch",
-                help="Top-k backend for Miles DSA indexer.",
             )
             parser.add_argument(
                 "--true-on-policy-mode",
@@ -2491,13 +2484,10 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             This is a placeholder for any additional arguments that might be needed.
             """
             from miles_plugins.models.deepseek_v4.arguments import add_dsv4_arguments
+            from miles_plugins.models.glm5.arguments import add_dsa_arguments
 
             add_dsv4_arguments(parser)
-            parser.add_argument(
-                "--freeze-indexer",
-                action="store_true",
-                default=False,
-            )
+            add_dsa_arguments(parser)
             parser.add_argument(
                 "--custom-megatron-init-path",
                 type=str,
@@ -2806,9 +2796,14 @@ def parse_args(add_custom_arguments=None, entry="train", preprocess_args=None):
         args.world_size = args.actor_num_nodes * args.actor_num_gpus_per_node
         args = set_default_megatron_args(args)
     else:
-        from miles.backends.fsdp_utils.arguments import load_fsdp_args
+        if backend == "torchtitan":
+            from miles.backends.torchtitan_utils.arguments import load_torchtitan_args
 
-        args = load_fsdp_args(extra_args_provider=add_miles_arguments)
+            args = load_torchtitan_args(extra_args_provider=add_miles_arguments)
+        else:
+            from miles.backends.fsdp_utils.arguments import load_fsdp_args
+
+            args = load_fsdp_args(extra_args_provider=add_miles_arguments)
         # TODO: unify this .rank and .world_size w/ indep_dp logics
         args.rank = 0  # Primary process rank for wandb initialization
         args.world_size = args.actor_num_nodes * args.actor_num_gpus_per_node
@@ -2816,7 +2811,8 @@ def parse_args(add_custom_arguments=None, entry="train", preprocess_args=None):
         if args.hf_checkpoint:
             args.num_layers = resolve_fsdp_num_layers(load_hf_config(args.hf_checkpoint))
 
-        assert args.context_parallel_size == 1, "Context parallelism is not supported for FSDP backend."
+        if backend == "fsdp":
+            assert args.context_parallel_size == 1, "Context parallelism is not supported for FSDP backend."
 
     # On iff the CI harness injected MILES_CI_GATE_RECORD_DIR (the same env var
     # locates the per-test record). No CLI flag: non-CI runs always stay False.
@@ -2844,6 +2840,10 @@ def parse_args(add_custom_arguments=None, entry="train", preprocess_args=None):
                 "decoder_first_pipeline_num_layers and decoder_last_pipeline_num_layers should be None when "
                 "pipeline_model_parallel_size is 1."
             )
+    elif backend == "torchtitan":
+        from miles.backends.torchtitan_utils.arguments import validate_torchtitan_args
+
+        validate_torchtitan_args(args)
     else:
         from miles.backends.fsdp_utils.arguments import validate_hybrid_shard_args, validate_kernel_backend_args
 

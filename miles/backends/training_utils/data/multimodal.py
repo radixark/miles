@@ -13,10 +13,9 @@ from collections.abc import Sequence
 
 import torch
 
+from miles.backends.training_utils.data.context_parallel import all_gather_with_cp, slice_log_prob_with_cp
+from miles.backends.training_utils.parallel import get_parallel_state
 from miles.utils.types import RolloutBatch
-
-from .cp_utils import all_gather_with_cp, slice_log_prob_with_cp
-from .parallel import get_parallel_state
 
 logger = logging.getLogger(__name__)
 

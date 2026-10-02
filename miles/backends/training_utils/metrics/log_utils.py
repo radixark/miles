@@ -7,17 +7,16 @@ import psutil
 import torch
 import torch.distributed as dist
 
-from miles.utils import train_metric_utils
+from miles.backends.training_utils.data.context_parallel import get_sum_of_sample_mean
+from miles.backends.training_utils.data.rollout import DataIterator
+from miles.backends.training_utils.metrics import perf
+from miles.backends.training_utils.parallel import get_parallel_state
 from miles.utils.flops_utils import fwd_tflops_per_gpu
 from miles.utils.ft_utils.process_group_utils import MultiPGUtil
 from miles.utils.metric_utils import compute_rollout_step, namespace_metrics, strip_metrics_namespace
+from miles.utils.tracking_utils import tracking
 from miles.utils.tracking_utils.structured_log import log_structured
 from miles.utils.types import RolloutBatch
-
-from ...utils.tracking_utils import tracking
-from .cp_utils import get_sum_of_sample_mean
-from .data import DataIterator
-from .parallel import get_parallel_state
 
 logger = logging.getLogger(__name__)
 
@@ -412,7 +411,7 @@ def log_multi_turn_data(rollout_id: int, args: Namespace, rollout_data: RolloutB
 
 def log_perf_data(rollout_id: int, args: Namespace, extra_metrics: dict | None = None) -> None:
     parallel_state = get_parallel_state()
-    train_metric_utils.log_perf_data_raw(
+    perf.log_perf_data_raw(
         rollout_id=rollout_id,
         args=args,
         is_primary_rank=(

@@ -5,7 +5,7 @@ from types import ModuleType
 import pytest
 
 from miles.backends.fsdp_utils import actor as actor_module
-from miles.backends.megatron_utils.ft.types import TrainStepOutcome, TrainStepOutput
+from miles.backends.training_utils.types import TrainStepOutcome, TrainStepOutput
 from miles.utils import distributed_utils
 from miles.utils.ft_utils.heartbeat_utils import SimpleHeartbeat
 from miles.utils.ft_utils.indep_dp import IndepDPInfo

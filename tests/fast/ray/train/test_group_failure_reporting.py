@@ -5,7 +5,7 @@ import pytest
 import ray
 from tests.fast.ray.train.conftest import get_raw_actor_handles, make_alive_cell, make_cell
 
-from miles.backends.megatron_utils.ft.types import TrainStepOutcome
+from miles.backends.training_utils.types import TrainStepOutcome
 from miles.ray.train.group import TrainerController
 from miles.utils import object_store
 from miles.utils.data import RolloutDataPack

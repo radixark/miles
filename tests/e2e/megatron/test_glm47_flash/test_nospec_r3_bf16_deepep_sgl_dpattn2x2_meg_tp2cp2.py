@@ -1,4 +1,4 @@
-"""GLM-4.7-Flash with R3 and DeepEP on both sides, without speculative decoding.
+"""GLM-4.7-Flash with distributed Muon, R3 and DeepEP on both sides, without speculative decoding.
 
 Colocated on 4 GPUs: Megatron trains at TP2 x CP2 with EP4 over DeepEP, and one BF16 SGLang engine
 runs DP attention (attention TP2 x DP2) with EP4 and DeepEP auto (normal dispatch for prefill,
@@ -21,6 +21,7 @@ register_ci_gate(metric_key="train/train_rollout_kl")
 register_ci_gate(metric_key="rollout/raw_reward")
 
 CASE = CaseConfig(
+    optimizer="dist_muon",
     use_deepep=True,
     num_gpus_per_node=4,
     cp_size=2,

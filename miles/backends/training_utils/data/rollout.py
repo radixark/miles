@@ -6,18 +6,16 @@ import torch
 import torch.distributed as dist
 import torch.nn.functional as F
 
+from miles.backends.training_utils.data.context_parallel import slice_log_prob_with_cp, slice_with_cp
+from miles.backends.training_utils.data.multimodal import expand_multimodal_rollout_data_in_place
+from miles.backends.training_utils.parallel import get_parallel_state
 from miles.utils.audit_utils.witness.allocator import WitnessInfo
-from miles.utils.data import get_minimum_num_micro_batch_size
+from miles.utils.data import get_minimum_num_micro_batch_size, process_rollout_data
 from miles.utils.ft_utils.process_group_utils import GeneralPGUtil
 from miles.utils.object_store import ObjectStoreGetResult
+from miles.utils.ray_utils import Box
 from miles.utils.seqlen_balancing import get_seqlen_balanced_partitions
 from miles.utils.types import RolloutBatch
-
-from ...utils.data import process_rollout_data
-from ...utils.ray_utils import Box
-from .cp_utils import slice_log_prob_with_cp, slice_with_cp
-from .mm_data import expand_multimodal_rollout_data_in_place
-from .parallel import get_parallel_state
 
 logger = logging.getLogger(__name__)
 

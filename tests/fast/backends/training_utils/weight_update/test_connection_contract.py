@@ -1,7 +1,7 @@
 from argparse import Namespace
 from unittest.mock import MagicMock, patch
 
-from miles.backends.training_utils.conn_status import ConnStatusManager
+from miles.backends.training_utils.weight_update.conn_status import ConnStatusManager
 from miles.backends.training_utils.weight_update.updater import WeightUpdater
 
 _UPDATER_MODULE = "miles.backends.training_utils.weight_update.updater"

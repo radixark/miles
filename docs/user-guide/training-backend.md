@@ -1,15 +1,16 @@
 ---
 title: Training Backends
-description: The contract Megatron-LM and FSDP both implement, which one to pick, and how to configure parallelism, GPU layout, offload, and checkpoints for each.
+description: The contract Megatron-LM, FSDP and torchtitan all implement, which one to pick, and how to configure parallelism, GPU layout, offload, and checkpoints for each.
 ---
 In Miles a training backend is one class: a `TrainRayActor` subclass that owns the model on
 the GPU. `--train-backend` decides which one `miles/ray/train/actor_factory.py` instantiates
-on every trainer rank, and there are two choices.
+on every trainer rank, and there are three choices.
 
 | Value | Class | What it is | Default |
 |---|---|---|---|
 | [`megatron`](#megatron-lm) | `MegatronTrainRayActor` | Megatron-LM: five parallel dimensions, `torch_dist` checkpoints | ✅ |
 | [`fsdp`](#fsdp) | `FSDPTrainRayActor` | The model's own HuggingFace implementation under PyTorch FSDP2 | |
+| [`torchtitan`](#torchtitan) | `TorchtitanTrainRayActor` | torchtitan's own `Trainer`, driven as a black box | |
 
 Whichever you pick, the rest of the job talks to it through the same handful of methods, and
 that short list is the whole contract between a backend and everything else in Miles:
@@ -21,6 +22,11 @@ that short list is the whole contract between a backend and everything else in M
 | `update_weights` | Push the freshly trained weights into the SGLang engines |
 | `save_model` | Write a checkpoint, in whatever format this backend uses |
 | `sleep` / `wake_up` | Move the model and optimizer off the GPU and back, so a colocated SGLang engine can use the memory in between |
+
+FSDP and torchtitan implement `train`, `update_weights` and `sleep` / `wake_up` once, in the
+shared `TorchNativeTrainRayActor`; each supplies only its model, optimizer and step runner.
+Megatron implements the contract on its own, because its microbatch loop belongs to the
+pipeline schedule and its checkpoints to `torch_dist`.
 
 That is also why switching backends does not touch the rest of your launch script. Rollout,
 reward, eval, the RL algorithm and the SGLang engine all sit above this line, and so does
@@ -43,19 +49,22 @@ directory as-is, with no conversion step and no architecture flags to write, whi
 the fast path for bringing up a new architecture, for checking trainer numerics against the
 HF reference, and for models that fit under data parallelism alone.
 
+**Use torchtitan when you want its model implementations and its parallelism.** It brings
+full parallelism like Megatron-LM and loads an HF directory like FSDP, but the architecture
+has to be one torchtitan itself implements — that list, not a spec you write, is the limit.
+
 The rest follows from that split:
 
-| | Megatron-LM | FSDP |
-|---|---|---|
-| Model splitting | TP × PP × CP × EP × ETP, plus DP | `dp_replicate` × `dp_shard` |
-| Model input | `torch_dist` checkpoint (offline conversion step) | HF directory, loaded as-is |
-| Architecture definition | `scripts/models/<megatron_model_type>.py` plus a Megatron spec for anything non-standard | HF `config.json`, plus an optional adaptation spec |
-| Checkpoints written | Megatron `torch_dist` | PyTorch Distributed Checkpoint |
-| Activation recompute | `--recompute-granularity / method / num-layers` | `--gradient-checkpointing` |
-| Optimizer on CPU | `--optimizer-cpu-offload` | `--fsdp-cpu-offload` |
-| Offload beyond host RAM | `--offload-train-target disk`, `--stream-optimizer-state-to-disk` | Not supported |
-| Attention backend | Chosen by Megatron Core | `--attn-implementation` |
-| LoRA | Supported | Not supported |
+| | Megatron-LM | FSDP | torchtitan |
+|---|---|---|---|
+| Model splitting | TP × PP × CP × EP × ETP, plus DP | `dp_replicate` × `dp_shard` | TP × PP × CP × EP, plus `dp_replicate` × `dp_shard` |
+| Model input | `torch_dist` checkpoint (offline conversion step) | HF directory, loaded as-is | HF directory, loaded as-is |
+| Architecture definition | `scripts/models/<megatron_model_type>.py` plus a Megatron spec for anything non-standard | HF `config.json`, plus an optional adaptation spec | a torchtitan model name + flavor |
+| Checkpoints written | Megatron `torch_dist` | PyTorch Distributed Checkpoint | torchtitan's own DCP checkpointer |
+| Activation recompute | `--recompute-granularity / method / num-layers` | `--gradient-checkpointing` | `--gradient-checkpointing` |
+| Optimizer on CPU | `--optimizer-cpu-offload` | `--fsdp-cpu-offload` | Not supported |
+| Offload beyond host RAM | `--offload-train-target disk`, `--stream-optimizer-state-to-disk` | Not supported | Not supported |
+| LoRA | Supported | Not supported | Not supported |
 
 ---
 
@@ -523,6 +532,152 @@ the two backends on one model, `scripts/run_mcore_fsdp.py` takes `--train-backen
 For profiling: `--use-pytorch-profiler` with `--profile-step-start` / `--profile-step-end`,
 `--record-memory-history` with `--memory-snapshot-path`, and `--tensorboard-dir`. See
 [Monitoring & Logging](/user-guide/monitoring).
+
+---
+
+## torchtitan
+
+The torchtitan backend lives at `miles/backends/torchtitan_utils/`. One idea explains the
+whole thing: **torchtitan's `Trainer` is the black box.** Miles does not assemble torchtitan
+parts — it builds one `Trainer.Config` from your flags, hands it to torchtitan, and from then
+on owns only three things: feeding it microbatches, taking the optimizer step, and streaming
+the resulting weights to SGLang. Model construction, every parallelism, the pipeline
+schedule, the HF checkpoint load, the optimizer and the LR schedule are all torchtitan's.
+
+That is why the flags below are torchtitan's own field names: they are copied verbatim into
+the config a torchtitan user would write by hand.
+
+### 1. Picking a model
+
+```bash
+--train-backend torchtitan \
+--titan-model-name qwen3 \
+--titan-model-flavor 30B-A3B \
+--hf-checkpoint /root/models/Qwen3-30B-A3B \
+--seq-length 16384
+```
+
+`--titan-model-name` names a model package and `--titan-model-flavor` one of the sizes it
+registers. The name is looked up first under `miles/backends/torchtitan_utils/models/`, then
+under `torchtitan/models/`, so a model torchtitan does not ship can be added on the miles side
+without touching torchtitan (see [below](#going-deeper-a-model-torchtitan-does-not-ship)). `--hf-checkpoint` supplies the weights and tokenizer;
+torchtitan's own state-dict adapter converts them, so there is no offline conversion step.
+
+`--seq-length` sizes the rotary tables and the buffers pipeline stages exchange, so it has
+to be at least as long as the longest sequence you will train on — prompt plus response.
+Miles rejects a value that leaves no room for a prompt rather than letting it fail inside a
+kernel later.
+
+### 2. Choosing the parallelism
+
+```bash
+--tensor-model-parallel-size 2 \
+--pipeline-model-parallel-size 2 \
+--context-parallel-size 2 \
+--expert-model-parallel-size 2 \
+--dp-replicate-size 1
+```
+
+These are the same flags Megatron takes, so a recipe moves between the two backends without
+renaming its parallelism. The FSDP shard degree is not a flag: torchtitan infers it from what
+the other degrees leave over, so these five settings plus the GPU count fully determine the
+layout. All of them compose — tensor, pipeline, context, expert and FSDP have been run together
+on one job. `--recompute-granularity full` and `--bf16` are accepted with Megatron's meaning as
+well (`--gradient-checkpointing` stays as the FSDP-side spelling).
+
+Two notes on how they behave here:
+
+- **Context parallelism is internal.** The trainer shards the sequence for attention and
+  gathers the logits back before the loss sees them, so the RL loss and its metrics behave
+  exactly as at `cp=1` and cost the same memory.
+- **Pipeline parallelism needs one shape for the whole run**, so every microbatch is padded
+  to `--seq-length`. Weight-tied flavors (qwen3 0.6B / 1.7B / 4B) cannot be pipelined —
+  torchtitan refuses, by design.
+
+### 3. Fitting it in memory
+
+```bash
+--gradient-checkpointing \
+--micro-batch-size 1
+```
+
+`--gradient-checkpointing` selects torchtitan's full activation checkpointing. Per-rank
+memory is set by the shard, pipeline and tensor degrees together; MoE dispatch buffers do
+*not* shrink with sharding, so adding nodes only helps if it raises the shard degree —
+replication alone does not.
+
+### 4. Getting weights in and out
+
+Nothing to configure: weights are streamed to SGLang under HF names through the model's own
+state-dict adapter, over IPC when the engines are colocated and over NCCL broadcast when they
+are not. `--fully-async` works, and requires the disaggregated layout, since generation
+continues while training runs.
+
+Checkpoints are torchtitan's, written under `--save`; a resumed run picks up the trainer's
+own step counter. Resuming needs `--ci-disable-weight-update-checker` if `--ci-test` is on,
+because that check compares the engine against the original HF checkpoint.
+
+### Limits
+
+<Warning>
+
+**The architecture must be one torchtitan implements or one registered under
+`miles/backends/torchtitan_utils/models/`.** There is no per-architecture spec to write; a
+new model is a Python package that assembles torchtitan's own blocks.
+
+**No LoRA, no optimizer CPU offload, no disk offload, no on-policy distillation, and
+`--ref-update-interval` is rejected** rather than silently ignored.
+
+</Warning>
+
+MoE works, including expert parallelism and `--use-rollout-routing-replay` (R3). R3 matters
+more than it looks on MoE: without it, training and rollout routing drift apart as the policy
+moves, and the disagreement compounds over rollouts rather than staying flat.
+
+### Going deeper: a model torchtitan does not ship
+
+torchtitan finds a model by importing `torchtitan.models.<name>` and calling its
+`model_registry(flavor, attn_backend)`, which returns a `ModelSpec`: the model config, the
+parallelize and pipelining functions, and the state-dict adapter that maps HF names to
+torchtitan's. Miles looks in `miles/backends/torchtitan_utils/models/<name>/` first and expects
+exactly the same function, so a miles-side package is a drop-in peer of a torchtitan one.
+
+Most new architectures are a recombination of blocks torchtitan already has — MLA or GQA
+attention, the sigmoid or softmax token-choice router, grouped experts, shared experts — and
+then the package is a flavor table plus a `model_registry` that points at an existing
+`parallelize_fn` and adapter. `models/glm4_moe_lite/` is the worked example: GLM-4.7-Flash is
+DeepSeek-V3's layer with different dimensions and the same HF parameter names, so its package
+builds the layer list with torchtitan's DeepSeek-V3 helpers, sets the GLM sizes, and reuses
+`DeepSeekV3StateDictAdapter` unchanged.
+
+```bash
+--train-backend torchtitan \
+--titan-model-name glm4_moe_lite \
+--titan-model-flavor 30B-A3B \
+--hf-checkpoint /root/models/GLM-4.7-Flash
+```
+
+When the architecture genuinely differs, the package grows in this order: a `model.py` with
+the new block (subclassing torchtitan's `TransformerBlock` / `BaseAttention`), then a
+`state_dict_adapter.py` if the HF names differ, and only then a `parallelize.py` if the
+existing sharding plans do not apply. Two checks belong with every package: a fast test that pins the flavor's dimensions to the values recorded from the model's `config.json` and checks the adapter's map covers every key pattern recorded from `model.safetensors.index.json`, and an e2e case under `tests/e2e/torchtitan/` — SGLang has to implement the architecture too, since it is what consumes the streamed weights.
+
+### Try it
+
+```bash
+export WANDB_API_KEY=<key>
+
+# downloads model + datasets itself, no conversion step
+python3 scripts/run_qwen3_0_6b_torchtitan.py
+
+# same recipe with tensor parallelism
+python3 scripts/run_qwen3_0_6b_torchtitan.py --tp-size 2
+```
+
+That launcher mirrors `scripts/run_qwen3_0_6b_fsdp.py` flag for flag, so the two backends'
+training curves can be read against each other on one model. The cases in
+`tests/e2e/torchtitan/` are the other reference: one per topology, each naming the mechanism
+it exercises.
 
 ---
 

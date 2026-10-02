@@ -7,8 +7,8 @@ import uuid
 from argparse import Namespace
 from pathlib import Path
 
-from miles.backends.megatron_utils.checkpoint_tracker import read_checkpoint_tracker_iteration
 from miles.backends.megatron_utils.megatron_config import compute_trainer_checkpoint_dir, resolve_megatron_config
+from miles.backends.training_utils.checkpoint.tracker import read_checkpoint_tracker_iteration
 
 logger = logging.getLogger(__name__)
 

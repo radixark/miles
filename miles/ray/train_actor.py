@@ -11,19 +11,21 @@ import torch
 import torch.distributed as dist
 
 import miles.utils.eval_config
-from miles.backends.megatron_utils.ft.types import TrainStepOutput
+from miles.backends.training_utils.types import TrainStepOutput
 from miles.ray.rollout.inference_controller import UpdatableEngines
 from miles.utils import object_store
 from miles.utils.audit_utils.process_identity import TrainProcessIdentity
 from miles.utils.audit_utils.witness.allocator import WitnessInfo
-from miles.utils.distributed_utils import init_gloo_group
+from miles.utils.distributed_utils import init_gloo_group, one_rank_at_a_time
 from miles.utils.ft_utils.heartbeat_utils import HeartbeatStatus, SimpleHeartbeat
 from miles.utils.ft_utils.indep_dp import IndepDPInfo
+from miles.utils.hf_utils.config import load_hf_config
 from miles.utils.init_once import InitOnce, init_once
 from miles.utils.logging_utils import configure_logger, rebind_env_reporting
 from miles.utils.memory_utils import clear_memory, print_memory
 from miles.utils.misc import NodeProbeMixin, get_current_node_ip, get_free_port
 from miles.utils.object_store import StoreObjectRef
+from miles.utils.processing_utils import load_processor, load_tokenizer
 from miles.utils.test_utils.det_process_group import DET_NCCL_BACKEND_NAME, register_det_nccl_backend
 from miles.utils.test_utils.fault_injector import inject_fault as _inject_fault
 from miles.utils.workers.env_vars import CELL_INDEX_ENV_VAR
@@ -86,6 +88,15 @@ class TrainRayActor(NodeProbeMixin):
         )
 
         object_store.init_instance(args)
+
+    def load_hf_assets(self, *, with_processor: bool = False) -> None:
+        with one_rank_at_a_time():
+            self.hf_config = load_hf_config(self.args.hf_checkpoint)
+            self.tokenizer = load_tokenizer(
+                self.args.hf_checkpoint, chat_template_path=self.args.chat_template_path, trust_remote_code=True
+            )
+            if with_processor and hasattr(self.hf_config, "vision_config"):
+                self.processor = load_processor(self.args.hf_checkpoint, trust_remote_code=True)
 
     def propose_master_addr_and_port(self) -> tuple[str, int]:
         return get_current_node_ip(), get_free_port(start_port=random.randint(20000, 21000))
