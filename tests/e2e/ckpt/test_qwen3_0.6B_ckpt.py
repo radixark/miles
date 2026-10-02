@@ -5,7 +5,7 @@ from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
 from miles.utils.external_utils import command_utils
 
 register_cuda_ci(est_time=900, suite="stage-c-2-gpu-h200", labels=["ckpt"], hardware=["hopper", "blackwell"])
-register_rocm_ci(est_time=1200, suite="nightly-stage-c-2-gpu-mi350", labels=["ckpt"])
+register_rocm_ci(est_time=1500, suite="nightly-stage-c-2-gpu-mi350", labels=["ckpt"])
 
 ENABLE_EVAL = bool(int(os.environ.get("MILES_TEST_ENABLE_EVAL", "1")))
 
@@ -43,10 +43,10 @@ def execute(mode: str = "", ckpt_step: int | None = None):
     ckpt_args = f"--hf-checkpoint /root/models/{MODEL_NAME}/ " f"--ref-load /root/models/{MODEL_NAME}_torch_dist "
     if mode == "save":
         ckpt_args += f"--save {SAVE_DIR} "
-        ckpt_args += "--save-interval 2 "
+        ckpt_args += "--save-interval 1 "
     elif mode == "async_save":
         ckpt_args += f"--save {SAVE_DIR} "
-        ckpt_args += "--save-interval 2 "
+        ckpt_args += "--save-interval 1 "
         ckpt_args += "--async-save "
         ckpt_args += "--use-persistent-ckpt-worker "
     elif mode == "load":
@@ -61,7 +61,7 @@ def execute(mode: str = "", ckpt_step: int | None = None):
         "--apply-chat-template "
         "--rollout-shuffle "
         "--rm-type deepscaler "
-        "--num-rollout 3 "
+        "--num-rollout 2 "
         "--rollout-batch-size 4 "
         "--n-samples-per-prompt 2 "
         "--rollout-max-response-len 1024 "

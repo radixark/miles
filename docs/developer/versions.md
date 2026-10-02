@@ -43,7 +43,7 @@ The default build-args are the version surface:
 | `MEGATRON_REPO` / `MEGATRON_BRANCH` / `MEGATRON_COMMIT` | `radixark/Megatron-LM` / `miles-main` / empty | The Megatron-LM checkout; an empty commit follows branch HEAD, while a release build supplies the locked commit |
 | `MILES_COMMIT` | `main` | The Miles checkout baked into the image |
 | `ENABLE_CUDA_13` | `1` | CUDA 13; `0` selects the CUDA 12.9 path |
-| `WHEELS_REPO` | `yueming-yuan/miles-wheels` | The prebuilt-wheels repository |
+| `WHEELS_REPO` | `radixark/miles-wheels` | The prebuilt-wheels repository |
 | `WHEELS_TAG_X86` / `WHEELS_TAG_ARM64` | `cu130-torch213-x86_64` / `cu130-torch213-aarch64` | Two complete wheels releases, selected by `TARGETARCH` and installed verbatim |
 
 Two design choices are worth naming. The Dockerfile holds the defaults and `build.py` owns
@@ -114,10 +114,7 @@ Official versioned releases add `radixark/miles:v<exact-version>` for the CUDA 1
 This is the part that decides whether your change needs a new image. A CUDA CI job starts
 from `radixark/miles:<tag>` and then:
 
-1. Runs `pip install -r requirements.txt`, then restores the image's own cuDNN pin. The
-   restore is not cosmetic: TE's fused attention needs a newer cuDNN than torch pins, a
-   plain resolve drags it back down, and the symptom is a fused-attention backward failing
-   with `CUDNN_STATUS_BAD_PARAM`.
+1. Installs `examples/multi_lora/requirements.txt` before `requirements.txt` through `tests/ci/reconcile_dependencies.py`. It preserves installed CUDA 12/13 cuDNN versions with uv overrides because TE needs a newer cuDNN than torch's exact pin; images without cuDNN use pip. Before each install, a dry-run gate rejects replacement of installed GPU runtimes or packages with at least 100 MiB of recorded installed files, including same-version reinstalls. Update these packages in the image.
 2. Resets both dependency checkouts and fetches the selected refs. Explicit dispatch or PR-body overrides win first, `release-lock.json` commits win when no override exists, and the moving `sglang-miles` / `miles-main` heads are the final defaults.
 3. Sets `PYTHONPATH` to the Miles workspace plus both source roots.
 
@@ -125,7 +122,7 @@ It never reinstalls the three source trees, because they are editable installs. 
 
 | Your change | Needs a new image? |
 |---|---|
-| `requirements.txt` | No. The next CI run installs it. |
+| `requirements.txt` | Only when replacing an installed GPU runtime or a package with at least 100 MiB of recorded installed files; other changes install in the next CI run. |
 | A Dockerfile layer: a pinned wheel, an inline commit, a TE patch, the base image | Yes |
 | SGLang or Megatron-LM code | No. Point CI at a ref instead |
 | Miles code | No |
@@ -134,10 +131,7 @@ The ROCm stage is the exception: it takes SGLang and Megatron-LM from `rocm/sgl-
 
 ## Bumping principle
 
-**Bump where the pin lives, exactly once.** A Python dependency moves in
-`requirements.txt`; an image layer moves in `docker/Dockerfile`; a variant-only difference
-moves in `docker/build.py`. If a bump needs edits in two of the three, one of them is in the
-wrong place.
+**Bump where the pin lives.** Python dependency requirements live in `requirements.txt`; image layers live in `docker/Dockerfile`; variant-only differences live in `docker/build.py`. A requirement change that replaces an installed GPU runtime or a package with at least 100 MiB of recorded installed files also needs an image rebuild so the dependency gate can retain the new image version.
 
 **Prefer moving the branch to pinning a commit during rolling development.** `SGLANG_COMMIT` and `MEGATRON_COMMIT` are empty by default, so ordinary images follow `sglang-miles` and `miles-main` together. A versioned release is the deliberate exception: its lockfile supplies both exact commits to CI and the final image build.
 

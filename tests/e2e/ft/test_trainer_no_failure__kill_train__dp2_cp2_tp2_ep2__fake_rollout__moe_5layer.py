@@ -3,7 +3,7 @@
 # (the CUDA CI runner's execution model). Scenario logic lives in
 # tests/e2e/ft/conftest_ft/scenario_trainer_no_failure.py.
 
-from tests.ci.ci_register import register_cuda_ci
+from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
 from tests.e2e.ft.conftest_ft.scenario_trainer_no_failure import run_ci
 
 register_cuda_ci(
@@ -12,6 +12,7 @@ register_cuda_ci(
     labels=["ft-short"],
     hardware=["hopper", "blackwell"],
 )
+register_rocm_ci(est_time=1000, suite="nightly-stage-c-8-gpu-mi350", labels=["ft-short"])
 
 _MODE: str = "kill_train__dp2_cp2_tp2_ep2__fake_rollout__moe_5layer"
 

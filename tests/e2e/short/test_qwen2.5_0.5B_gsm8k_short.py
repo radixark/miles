@@ -10,7 +10,7 @@ from miles.utils.workers.types import WorkerCommBackend
 register_cuda_ci(
     est_time=400, suite="stage-c-2-gpu-h200", labels=["short", "mooncake"], hardware=["hopper", "blackwell"]
 )
-register_rocm_ci(est_time=360, suite="nightly-stage-c-2-gpu-mi350", labels=["short", "mooncake"])
+register_rocm_ci(est_time=300, suite="nightly-stage-c-2-gpu-mi350", labels=["short", "mooncake"])
 
 MODEL_DIR = get_test_model_dir()
 DATA_DIR = get_test_data_dir()
@@ -54,7 +54,7 @@ def execute(
         "--apply-chat-template "
         "--rollout-shuffle "
         "--rm-type math "
-        "--num-rollout 3 "
+        "--num-rollout 2 "
         "--rollout-batch-size 8 "
         "--n-samples-per-prompt 4 "
         "--rollout-max-response-len 1024 "

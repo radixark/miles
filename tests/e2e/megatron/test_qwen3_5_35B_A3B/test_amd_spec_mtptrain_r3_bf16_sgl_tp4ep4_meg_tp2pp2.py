@@ -1,21 +1,20 @@
-"""AMD 4-GPU variant of test_mtp1_spec_v2_r3.py.
+"""AMD 4-GPU Qwen3.5-35B-A3B case: 1 MTP layer + speculative-v2 + R3.
 
-Qwen3.5-35B-A3B: 1 MTP layer + speculative-v2 + R3, on 4 GPUs.
+MTP training is on with one draft layer, so the rollout MTP/draft weights are synced
+from training (selector "all" checks target and draft; vision weights are skipped).
+Training runs TP2 x PP2 with EP2, which keeps PP2 * EP2 * expert-TP1 equal to world
+size 4; the rollout is one TP4 engine with EP4.
 
-Standalone rather than an IS_HIP branch in the original: the MI300X fleet is
-split into two 4-GPU runners, so the 8-GPU CUDA case cannot run there as
-written, and keeping the variant separate means neither side's parallelism
+A standalone AMD file rather than an IS_HIP branch in a CUDA case: the AMD fleet runs
+4-GPU runners, and keeping the file separate means neither side's parallelism
 constrains the other.
-
-Compared with the CUDA case, the world size drops from 8 to 4, so training EP
-drops from 4 to 2. This keeps PP2 * EP2 * expert-TP1 equal to world size 4.
 """
 
 import os
 
 from tests.ci.ci_register import register_rocm_ci
 from tests.ci.metric_history import register_ci_gate
-from tests.e2e.megatron.test_qwen3_5_35B_A3B_mtp._common import CaseConfig, execute, prepare
+from tests.e2e.megatron.test_qwen3_5_35B_A3B._common import CaseConfig, execute, prepare
 
 register_rocm_ci(
     est_time=1600,

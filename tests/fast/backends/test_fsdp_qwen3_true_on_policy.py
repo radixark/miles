@@ -178,6 +178,7 @@ def test_qwen3_ref_model_uses_fp32_master_storage(monkeypatch):
     actor = object.__new__(actor_module.FSDPTrainRayActor)
     actor.args = args
     actor.hf_config = config
+    actor.hub_kernels = actor_module.HubKernels()
     actor.precision_policy = resolve_precision_policy(config, args)
     actor._get_init_weight_context_manager = lambda: nullcontext
     actor._get_model_cls = lambda: SimpleNamespace(

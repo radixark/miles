@@ -4,9 +4,10 @@ Only sampled rows have autograd references, keeping the test smaller than a full
 model. Inputs vary across rows and channels so a wrong in-bounds address also fails.
 """
 
-from tests.ci.ci_register import register_cuda_ci
+from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
 
 register_cuda_ci(est_time=180, suite="stage-b-2-gpu-h200", labels=["miles-plugin"], hardware=["hopper", "blackwell"])
+register_rocm_ci(est_time=40, suite="nightly-stage-c-2-gpu-mi350", labels=["miles-plugin"])
 
 import math
 

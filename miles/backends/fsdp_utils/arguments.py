@@ -29,6 +29,12 @@ class FSDPArgs:
 
     attn_implementation: str = "flash_attention_2"
 
+    # Compute kernels. "hub" resolves the module-level kernels in plugins/hf_kernels/presets.py
+    # from the Hugging Face Hub instead of the image's wheels; see plugins/hf_kernels/loader.py.
+    kernel_backend: str = "native"  # {"native", "hub"}
+    kernel_mapping_path: str = ""  # dotted path to a (args) -> dict[str, HubKernelSpec] provider
+    kernel_strict: bool = False  # raise instead of falling back to the native kernel
+
     # Logging
     wandb_project: str = "miles-fsdp"
     wandb_run_name: str | None = None
@@ -131,6 +137,26 @@ def load_args_from_parser(parser: argparse.ArgumentParser):
 
 def load_fsdp_args(extra_args_provider=None):
     return load_args_from_parser(build_fsdp_parser(extra_args_provider))
+
+
+def validate_kernel_backend_args(args) -> None:
+    """Validate --kernel-backend and keep hub kernels out of the bit-exact run modes.
+
+    --true-on-policy-mode requires the training-side kernel to match SGLang's build exactly;
+    until that equivalence is established per hub kernel, the two stay mutually exclusive.
+    """
+    if args.kernel_backend not in ("native", "hub"):
+        raise ValueError(f"--kernel-backend must be one of ('native', 'hub'), got {args.kernel_backend!r}")
+
+    if args.kernel_backend != "hub":
+        if args.kernel_strict:
+            raise ValueError("--kernel-strict only applies with --kernel-backend hub")
+        if args.kernel_mapping_path:
+            raise ValueError("--kernel-mapping-path only applies with --kernel-backend hub")
+        return
+
+    if args.true_on_policy_mode or args.deterministic_mode:
+        raise ValueError("--kernel-backend hub is incompatible with --true-on-policy-mode / --deterministic-mode")
 
 
 def validate_hybrid_shard_args(args) -> None:

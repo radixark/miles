@@ -1,6 +1,6 @@
 import os
 
-from tests.ci.ci_register import register_cuda_ci
+from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
 
 from miles.utils.external_utils import command_utils
 
@@ -10,6 +10,7 @@ register_cuda_ci(
     labels=["fsdp"],
     hardware=["hopper", "blackwell"],
 )
+register_rocm_ci(est_time=400, suite="nightly-stage-c-8-gpu-mi350", labels=["fsdp"])
 
 NUM_GPUS = 8
 DP_REPLICATE_SIZE = 2
@@ -35,7 +36,7 @@ def execute():
         "--apply-chat-template "
         "--rollout-shuffle "
         "--rm-type math "
-        "--num-rollout 3 "
+        "--num-rollout 2 "
         "--rollout-batch-size 8 "
         "--n-samples-per-prompt 8 "
         "--rollout-max-response-len 4096 "

@@ -301,6 +301,7 @@
        "ci/00-stage",
        "ci/01-label",
        "ci/02-docker-build",
+       "developer/ci/06-build-wheels",
        "ci/03-metric-history-gate",
        "ci/04-release",
        "ci/05-command-identity"

@@ -28,6 +28,7 @@ from .adaptations.precision import apply_fp32_master, precision_forward_context,
 from .hf_weight_iterator import FSDPHfWeightIterator
 from .lr_scheduler import get_lr_scheduler
 from .parallel import create_fsdp_parallel_state
+from .plugins.hf_kernels import HubKernels
 
 logger = logging.getLogger(__name__)
 
@@ -90,6 +91,9 @@ class FSDPTrainRayActor(TorchNativeTrainRayActor):
         apply_class_patches(self.hf_config, self.args)
         apply_packing(None, self.hf_config, "config")
 
+        # Collective across all ranks; inert unless --kernel-backend hub.
+        self.hub_kernels = HubKernels.prepare(self.args)
+
         # backend-level true-on-policy setup (batch-invariant ops)
         self._enable_true_on_policy_optimizations(args)
 
@@ -100,6 +104,7 @@ class FSDPTrainRayActor(TorchNativeTrainRayActor):
             logger.info(f"FSDPTrainRayActor applied triton attention patch to {n} layer(s)")
 
         apply_model_instance_patches(model, self.hf_config, self.args)
+        self.hub_kernels.bind(model)
         routing_replay.install(model, self.hf_config)
         if self.precision_policy.keep_fp32_master:
             model = apply_fp32_master(model, self.precision_policy.sync_dtype_resolver)
@@ -375,6 +380,7 @@ class FSDPTrainRayActor(TorchNativeTrainRayActor):
                 )
 
             apply_model_instance_patches(ref_model, self.hf_config, self.args)
+            self.hub_kernels.bind(ref_model)
             if self.precision_policy.keep_fp32_master and self.precision_policy.param_dtype is torch.float32:
                 ref_model = apply_fp32_master(ref_model, self.precision_policy.sync_dtype_resolver)
             full_state = ref_model.state_dict()
