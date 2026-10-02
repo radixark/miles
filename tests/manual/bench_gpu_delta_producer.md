@@ -47,8 +47,8 @@ compiled extension. Record the image tag/digest with the result. The script
 records package versions, GPU model, topology arguments, and the required
 quantization environment. It rejects conflicting environment values. If sources
 are overlaid onto an image checkout, set `GPU_DELTA_SOURCE_DIGEST` to the externally
-verified source manifest digest. `checkout_git_head` records checkout metadata
-only and must not be used as the tested revision of an overlaid source tree.
+verified source manifest digest. The benchmark does not require a Git checkout;
+the recorded source digest identifies the externally verified source tree.
 
 From the Miles checkout, with its dependencies and native-DSA checkpoint
 conversion already prepared:
