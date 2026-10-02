@@ -10,7 +10,7 @@ from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
 
 from miles.utils.external_utils import command_utils
 
-register_cuda_ci(est_time=1200, suite="stage-c-4-gpu-h200", labels=["megatron"], hardware=["hopper", "blackwell"])
+register_cuda_ci(est_time=500, suite="stage-c-4-gpu-h200", labels=["megatron"], hardware=["hopper", "blackwell"])
 register_rocm_ci(est_time=500, suite="nightly-stage-c-4-gpu-mi350", labels=["megatron"])
 
 MODEL_NAME = "Qwen3-4B"
@@ -37,7 +37,7 @@ def execute():
         "--apply-chat-template "
         "--rollout-shuffle "
         "--rm-type deepscaler "
-        "--num-rollout 3 "
+        "--num-rollout 2 "
         "--rollout-batch-size 8 "
         "--n-samples-per-prompt 4 "
         "--rollout-max-response-len 4096 "

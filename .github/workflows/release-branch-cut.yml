@@ -116,7 +116,7 @@ jobs:
           # Wheels release fingerprints (audit only: rolling tags can have assets
           # replaced in place, so they cannot be pinned by name — see docker-build.yml).
           wheels_fp() {
-            curl -s "https://api.github.com/repos/yueming-yuan/miles-wheels/releases/tags/$1" \
+            curl -s "https://api.github.com/repos/radixark/miles-wheels/releases/tags/$1" \
               | python3 -c "import sys,json,hashlib; a=json.load(sys.stdin).get('assets',[]); fp=sorted([x['name'],x['id'],x['size'],x['updated_at']] for x in a); print(hashlib.sha256(repr(fp).encode()).hexdigest() if a else '')"
           }
 

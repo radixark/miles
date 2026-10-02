@@ -18,7 +18,7 @@ from miles.utils.external_utils.command_utils.helm_backend.launcher.values.helm_
 from miles.utils.external_utils.command_utils.helm_backend.launcher.values.misc import InfraInfo
 from miles.utils.workers.types import ClusterBackend
 
-register_cuda_ci(est_time=700, suite="stage-c-4-gpu-h200", labels=["short"], hardware=["hopper", "blackwell"])
+register_cuda_ci(est_time=300, suite="stage-c-4-gpu-h200", labels=["short"], hardware=["hopper", "blackwell"])
 
 MODEL_NAME = "Qwen2.5-0.5B-Instruct"
 MODEL_TYPE = "qwen2.5-0.5B"

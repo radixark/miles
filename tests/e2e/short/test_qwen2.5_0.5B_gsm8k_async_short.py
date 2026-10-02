@@ -7,7 +7,7 @@ from miles.utils.external_utils import command_utils
 register_cuda_ci(
     est_time=400, suite="stage-c-4-gpu-h200", labels=["short", "mooncake"], hardware=["hopper", "blackwell"]
 )
-register_rocm_ci(est_time=240, suite="nightly-stage-c-4-gpu-mi350", labels=["short", "mooncake"])
+register_rocm_ci(est_time=300, suite="nightly-stage-c-4-gpu-mi350", labels=["short", "mooncake"])
 
 MODEL_NAME = "Qwen2.5-0.5B-Instruct"
 MODEL_TYPE = "qwen2.5-0.5B"
@@ -34,6 +34,8 @@ def execute():
         "--apply-chat-template "
         "--rollout-shuffle "
         "--rm-type math "
+        # 3, not 2: train_async.py prefetches rollout k+1 during train k, so rollout 2 is the first
+        # one generated on updated weights.
         "--num-rollout 3 "
         "--rollout-batch-size 8 "
         "--n-samples-per-prompt 4 "

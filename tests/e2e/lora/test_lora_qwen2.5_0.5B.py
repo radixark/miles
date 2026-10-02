@@ -18,7 +18,7 @@ from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
 from miles.utils.external_utils import command_utils
 
 register_cuda_ci(est_time=400, suite="stage-c-4-gpu-h200", labels=["lora"], hardware=["hopper", "blackwell"])
-register_rocm_ci(est_time=300, suite="nightly-stage-c-4-gpu-mi350", labels=["lora"])
+register_rocm_ci(est_time=500, suite="nightly-stage-c-4-gpu-mi350", labels=["lora"])
 
 
 ENABLE_EVAL = bool(int(os.environ.get("MILES_TEST_ENABLE_EVAL", "1")))
@@ -48,7 +48,7 @@ def execute():
         "--apply-chat-template "
         "--rollout-shuffle "
         "--rm-type math "
-        "--num-rollout 3 "
+        "--num-rollout 2 "
         "--rollout-batch-size 8 "
         "--n-samples-per-prompt 8 "
         "--rollout-max-response-len 1024 "

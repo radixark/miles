@@ -20,7 +20,7 @@ from miles.utils.test_utils.comparisons.metrics import compare_metrics
 from miles.utils.types import Sample
 
 register_cuda_ci(
-    est_time=1000,
+    est_time=1100,
     suite="stage-c-4-gpu-h200",
     labels=["precision", "long"],
     hardware=["hopper"],

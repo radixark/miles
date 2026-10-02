@@ -14,8 +14,7 @@ register_ci_gate(metric_key="rollout/raw_reward")
 
 CASE = CaseConfig(
     use_deepep=False,
-    # tp2/pp2/cp1/ep2 on 4 GPUs (same shape as test_amd_r3_mtp); the 8-GPU tp2/pp2/cp2/ep4
-    # shape is test_r3_mtp_deepep's on 8x H200, which is disabled.
+    # tp2/pp2/cp1/ep2 on 4 GPUs, the same shape as test_amd_spec_mtptrain_r3_bf16_sgl_tp4_meg_tp2pp2.
     num_gpus_per_node=4,
     cp_size=1,
     pp_size=2,
