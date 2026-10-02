@@ -44,9 +44,8 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          # 3.11 required for BaseException.add_note (PEP 678), used in miles
-          # source (e.g. miles/rollout/generate_utils/sample_utils.py).
-          python-version: '3.11'
+          # Match the Miles Docker runtime.
+          python-version: '3.12'
 
       - name: Install uv
         uses: astral-sh/setup-uv@v5
