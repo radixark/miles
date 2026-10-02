@@ -29,13 +29,31 @@ allocation modes. Both decode from HBM. Pinned host memory supplies H2D copies.
 | `WEIGHT_DELTA_ENCODER=gpu\|cpu` | GPU XOR/compression with a pinned CPU baseline, or the explicit CPU reference encoder. Default: `gpu`. |
 | `WEIGHT_DELTA_TIMING=1` | Record per-phase CUDA events for profiling. Default: off; event instrumentation can perturb timing. |
 
-The producer keeps old canonical bytes in pinned CPU memory. Two workers per
+Codec and producer execution are independent settings. All four combinations
+are supported by the existing GPU-delta publication path:
+
+| Producer | Configuration | Compression implementation |
+| --- | --- | --- |
+| CPU Zstd | `WEIGHT_DELTA_ENCODER=cpu WEIGHT_DELTA_CODEC=zstd` | CPU Zstd worker |
+| CPU Snappy | `WEIGHT_DELTA_ENCODER=cpu WEIGHT_DELTA_CODEC=snappy` | CPU Snappy worker |
+| GPU Zstd | `WEIGHT_DELTA_ENCODER=gpu WEIGHT_DELTA_CODEC=zstd` | nvCOMP CUDA compression |
+| GPU Snappy (default) | `WEIGHT_DELTA_ENCODER=gpu WEIGHT_DELTA_CODEC=snappy` | nvCOMP CUDA compression |
+
+The CPU choices compute XOR and compression on CPU; the GPU choices compute
+both on GPU. CPU Snappy requires the existing `python-snappy` dependency.
+Receiver decode depends on the codec, not the encoder location: either CPU- or
+GPU-produced Zstd uses CUDA decoding, and either Snappy producer requires the
+qualified Blackwell hardware decoder. There is no silent execution fallback.
+
+The GPU producer keeps old canonical bytes in pinned CPU memory. Two workers per
 owner overlap old-byte H2D, GPU XOR/compression, new-baseline D2H and encoded
 payload writes with subsequent exports. Export, worker backpressure, final
 encoding drain and publication/activation barriers still block the trainer.
 Routed experts retain exporter EP/EDP ownership; non-routed tensors retain the
-existing data-replica sender. The producer-only comparison is documented in
+existing data-replica sender. The producer-only four-arm comparison is documented in
 [bench_gpu_delta_producer.md](bench_gpu_delta_producer.md).
+It preserves three cumulative update versions and rotates the four arms; this
+is not fully balanced repeated sampling of a fixed target.
 
 CPU SHA-256 checks encoded files during background preparation. Runtime updates
 do not hash old or new weights. Session/version/incarnation checks prevent stale

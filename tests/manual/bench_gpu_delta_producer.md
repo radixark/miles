@@ -1,7 +1,7 @@
 # GLM-5.2 producer comparison on one node
 
-This manual benchmark compares **CPU XOR + Zstd**, **GPU XOR + Zstd**, and
-**GPU XOR + Snappy** using the actual Megatron direct exporter and GPU-delta
+This manual benchmark compares **CPU XOR + Zstd**, **CPU XOR + Snappy**,
+**GPU XOR + Zstd**, and **GPU XOR + Snappy** using the actual Megatron direct exporter and GPU-delta
 publication protocol. It runs on eight GPUs with TP1/PP1/CP1/EP8/ETP1 and the
 native GLM-5.2 five-layer model (three dense layers and two routed MoE layers).
 It constructs and loads the real model, exports W4A16 NVFP4 using TE 4over6,
@@ -22,20 +22,40 @@ forward/backward, an optimizer, or an activation RPC.
   of each floating matrix's elements and multiply them by
   `1 + --perturb-relative-scale`. The deterministic selection depends on the
   global parameter name and version, so replicated dense weights agree.
-  The model is then unchanged while all three arms export it. Defaults select
+  The model is then unchanged while all four arms export it. Defaults select
   about 0.1% of elements and multiply those by 1.03125. These are controlled
   model perturbations, not learned optimizer steps, and do not target a fixed
   post-quantization density or compression ratio.
 - **Comparison:** each arm has an independent canonical CPU baseline and
   publication stream. After all arms finish each version, compare their
   canonical CPU snapshots byte for byte, outside the measured intervals.
-  Differences fail the run. Arm order rotates between versions. The initial
-  discovery and three baseline exports warm the exporter before measurement;
+  Differences fail the run. Arm order rotates between versions, starting from
+  CPU Zstd, CPU Snappy, GPU Zstd, GPU Snappy. The default three cumulative
+  versions do not fully balance all four execution positions and are not
+  repeated measurements of one fixed target. The initial discovery and four
+  baseline exports warm the exporter before measurement;
   their durations are reported separately.
 - **Compression:** nvCOMP GPU compression runs GPU SM kernels for both codecs.
   Blackwell's decompression engine does not accelerate compression. The CPU
-  arm uses the existing owner worker pool, CPU XOR/Zstd and publication writer.
+  arms use the existing owner worker pool, CPU XOR with Zstd or Snappy, and publication writer.
   Both GPU arms use the same production bounded asynchronous encoder path.
+
+## Supported producer configurations
+
+All four combinations use the existing `gpu-delta` publication protocol. CPU
+Snappy is selected through the existing CPU encoder; no separate implementation
+or fallback is added by this benchmark.
+
+| Arm | `WEIGHT_DELTA_ENCODER` | `WEIGHT_DELTA_CODEC` | XOR/compression execution |
+| --- | --- | --- | --- |
+| `cpu-zstd` | `cpu` | `zstd` | CPU worker pool, Zstd |
+| `cpu-snappy` | `cpu` | `snappy` | CPU worker pool, Snappy |
+| `gpu-zstd` | `gpu` | `zstd` | GPU XOR, nvCOMP CUDA compression |
+| `gpu-snappy` | `gpu` | `snappy` | GPU XOR, nvCOMP CUDA compression |
+
+Receiver decode is determined by codec, independently of the producer's CPU/GPU
+choice: Zstd uses CUDA decoding; Snappy requires Blackwell hardware decompression.
+The benchmark itself has no receiver. Production defaults remain GPU Snappy.
 
 ## Run
 
@@ -67,15 +87,17 @@ torchrun --standalone --nproc-per-node=8 \
 ```
 
 The output directory must be new. Raw per-arm/version receipts and publications
-are kept even if a later arm fails. `result.json` is written only after every
-version passes the identical-target check. `setup.json` records initialization,
-discovery, baseline capture, and rank ownership; `plan.json` contains the exact
-mutable canonical inventory. Every completed version also gets its own JSON
+are kept even if a later arm fails. `result.json` is written only after all four
+arms in every version pass the identical-target check. `setup.json` records initialization,
+discovery, baseline capture, rank ownership, the ordered `arms` list and exact
+`arm_order_by_version`. `plan.json` contains the exact mutable canonical inventory;
+every completed version repeats its actual `order`.
+Every completed version also gets its own JSON
 and a concise JSON line on stdout. Nonzero `torchrun` exits remain failures;
 do not use an earlier successful partial receipt as complete-run acceptance.
 
 The flags select only this benchmark. Codec and encoder choices are fixed
-explicitly for all three arms; no production defaults or live serving settings
+explicitly for all four arms; no production defaults or live serving settings
 are changed. To measure event overhead, rerun into a separate output directory
 without `--timing`, using the same inputs and perturbation arguments. Never
 merge timing-enabled and timing-disabled samples into one distribution.
