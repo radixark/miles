@@ -16,6 +16,7 @@ from miles.rollout.filter_hub.common_filters import (
     apply_reward_nonzero_std_filter,
     group_staleness,
     group_weight_version_stats,
+    retain_partial_group,
 )
 from miles.utils.function_registry import load_function
 from miles.utils.types import Sample, WeightVersionSpan, WeightVersionsPerCall
@@ -112,6 +113,27 @@ def test_iter_samples_preserves_flat_and_mixed_nested_order():
 
     assert list(iter_samples(samples)) == samples
     assert list(iter_samples([samples[0], samples[1:3], samples[3]])) == samples
+
+
+def test_retain_partial_group_drops_a_nested_aborted_trajectory():
+    kept = [make_sample(), make_sample()]
+    aborted_trajectory = [make_sample(), make_sample(status=Sample.Status.ABORTED)]
+    group = [kept[0], aborted_trajectory, kept[1]]
+
+    retained, aborted = retain_partial_group(Namespace(keep_partial_groups_on_abort=True), group)
+
+    assert retained == kept
+    assert aborted == 1
+
+
+def test_retain_partial_group_leaves_unusable_group_for_existing_filter():
+    group = [make_sample(), make_sample(status=Sample.Status.ABORTED)]
+
+    retained, aborted = retain_partial_group(Namespace(keep_partial_groups_on_abort=True), group)
+
+    assert retained is group
+    assert aborted == 1
+    assert apply_aborted_filter(Namespace(), retained).keep is False
 
 
 @pytest.mark.parametrize(

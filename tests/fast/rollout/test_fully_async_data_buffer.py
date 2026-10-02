@@ -87,6 +87,7 @@ def _make_args() -> Namespace:
         async_data_buffer_capacity_factor=1.0,
         custom_async_data_buffer_path_per_model=None,
         dynamic_sampling_filter_path=None,
+        keep_partial_groups_on_abort=False,
         max_weight_staleness=None,
         megatron_config=encode_megatron_config("solver", "verifier"),
         reward_key=None,

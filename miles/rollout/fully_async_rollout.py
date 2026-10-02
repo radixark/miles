@@ -205,7 +205,10 @@ class FullyAsyncRolloutFn(BaseRolloutFn):
             entry = await self._next_group(
                 current_version=input.weight_version, trainer_model_id=input.trainer_model_id
             )
-            assert len(entry.group) == args.n_samples_per_prompt
+            if args.keep_partial_groups_on_abort:
+                assert 2 <= len(entry.group) <= args.n_samples_per_prompt
+            else:
+                assert len(entry.group) == args.n_samples_per_prompt
 
             if do_print:
                 sample = first_sample(entry.group)

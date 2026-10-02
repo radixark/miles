@@ -29,6 +29,7 @@ def make_args(**overrides) -> Namespace:
         n_samples_per_prompt=GROUP_SIZE,
         over_sampling_batch_size=1,
         rollout_submission_granularity=None,
+        keep_partial_groups_on_abort=False,
         sglang_router_policy="round_robin",
         dynamic_sampling_filter_path=None,
         reward_key=None,
@@ -212,6 +213,44 @@ async def test_aborted_group_is_classified_before_missing_reward(monkeypatch):
     assert [group[0].group_index for group in output.samples] == [2]
     assert output.metrics["rollout/dynamic_filter/drop_group_has_aborted"] == 1
     assert "rollout/dynamic_filter/drop_group_has_missing_reward" not in output.metrics
+
+
+async def test_sync_rollout_retains_partial_group(monkeypatch):
+    harness = Harness(monkeypatch, make_args(rollout_batch_size=1, keep_partial_groups_on_abort=True))
+    task = harness.run()
+    await asyncio.sleep(0)
+
+    aborted = harness.submitted_groups[0][-1]
+    aborted.status = Sample.Status.ABORTED
+    aborted.reward = None
+    harness.finish_group(0)
+    output, _ = await task
+
+    assert harness.submitted_group_indices == [1]
+    assert len(output.samples[0]) == GROUP_SIZE - 1
+    assert all(sample.status == Sample.Status.COMPLETED for sample in output.samples[0])
+    assert output.metrics["rollout/aborted_trajectories_filtered"] == 1
+    assert output.metrics["rollout/partial_groups_retained"] == 1
+
+
+async def test_sync_rollout_refills_group_with_fewer_than_two_survivors(monkeypatch):
+    harness = Harness(monkeypatch, make_args(rollout_batch_size=1, keep_partial_groups_on_abort=True))
+    task = harness.run()
+    await asyncio.sleep(0)
+
+    for sample in harness.submitted_groups[0][1:]:
+        sample.status = Sample.Status.ABORTED
+        sample.reward = None
+    harness.finish_group(0)
+    await asyncio.sleep(0.01)
+
+    assert harness.submitted_group_indices == [1, 2]
+    harness.finish_group(1)
+    output, _ = await task
+
+    assert [group[0].group_index for group in output.samples] == [2]
+    assert output.metrics["rollout/aborted_trajectories_filtered"] == GROUP_SIZE - 1
+    assert output.metrics["rollout/partial_groups_retained"] == 0
 
 
 async def test_backfill_submits_replacement_before_the_group_returns(monkeypatch):

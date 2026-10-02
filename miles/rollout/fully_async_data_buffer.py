@@ -12,7 +12,7 @@ import logging
 from abc import ABC, abstractmethod
 from argparse import ArgumentParser, Namespace
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from miles.backends.megatron_utils.megatron_config import resolve_megatron_config
 from miles.rollout.filter_hub.base_types import MetricGatherer, call_dynamic_filter, iter_samples
@@ -22,6 +22,7 @@ from miles.rollout.filter_hub.common_filters import (
     apply_missing_reward_filter,
     group_staleness,
     group_weight_version_stats,
+    retain_partial_group,
 )
 from miles.utils.function_registry import load_function
 from miles.utils.types import Sample
@@ -108,7 +109,9 @@ class DefaultDataBuffer(DataBuffer):
 
     Rejected on put, because the verdict is fixed once the group is generated:
 
-    - aborted groups (the generate function gave up, e.g. an agentic collect timeout)
+    - aborted groups (the generate function gave up, e.g. an agentic collect timeout);
+      ``--keep-partial-groups-on-abort`` instead retains two or more surviving
+      trajectories
     - groups with a missing reward
     - groups ``--dynamic-sampling-filter-path`` does not keep
 
@@ -153,7 +156,8 @@ class DefaultDataBuffer(DataBuffer):
         self._metric_selected_versioned_samples = 0
 
     async def put(self, input: DataBufferInput) -> None:
-        if not self._preput_filter(input):
+        input = self._prepare_input(input)
+        if input is None:
             return
 
         async with self._cond:
@@ -162,24 +166,32 @@ class DefaultDataBuffer(DataBuffer):
             self._buffer.append(input)
             self._cond.notify_all()
 
-    def _preput_filter(self, input: DataBufferInput) -> bool:
+    def _prepare_input(self, input: DataBufferInput) -> DataBufferInput | None:
+        original_size = len(input.group)
+        group, aborted = retain_partial_group(self._args, input.group)
+        retained = len(group) < original_size
+        if aborted:
+            self._metric_gatherer.on_aborted_trajectories(aborted, group_retained=retained)
+        if retained:
+            input = replace(input, group=group)
+
         output = apply_aborted_filter(self._args, input.group)
         if not output.keep:
             self._metric_aborted_groups += 1
             self._unused_handler_fn(input.prompt_group)
-            return False
+            return None
 
         output = apply_missing_reward_filter(self._args, input.group)
         if not output.keep:
             self._metric_gatherer.on_dynamic_filter_drop(reason=output.reason)
-            return False
+            return None
 
         self._metric_gatherer.on_group_before_dynamic_filter(self._args, input.group)
         output = call_dynamic_filter(self._dynamic_filter, self._args, input.group)
         if not output.keep:
             self._metric_gatherer.on_dynamic_filter_drop(reason=output.reason)
-            return False
-        return True
+            return None
+        return input
 
     async def get(self, current_version: int | None = None, **_) -> DataBufferInput:
         if current_version is not None:
@@ -263,7 +275,8 @@ class DefaultDataBuffer(DataBuffer):
         self._metric_selected_versioned_tokens = 0
         self._metric_selected_samples = 0
         self._metric_selected_versioned_samples = 0
-        self._metric_aborted_groups = self._metric_stale_groups = 0
+        self._metric_aborted_groups = 0
+        self._metric_stale_groups = 0
         return metrics
 
 
