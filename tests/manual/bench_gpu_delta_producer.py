@@ -15,7 +15,6 @@ import os
 import re
 import shlex
 import socket
-import subprocess
 import sys
 import time
 from pathlib import Path
@@ -75,6 +74,16 @@ def _check(error, phase):
     errors = _gather(None if error is None else f"{type(error).__name__}: {error}")
     if any(errors):
         raise RuntimeError(f"Producer benchmark {phase} failed: {errors}") from error
+
+
+def _write_root(path, value):
+    error = None
+    if dist.get_rank() == 0:
+        try:
+            _write_json(path, value)
+        except Exception as caught:
+            error = caught
+    _check(error, f"writing {path.name}")
 
 
 def _environment(args):
@@ -421,8 +430,7 @@ def _versions(options, protocols, iterator, weights, plan):
         arms = {}
         for name in order:
             arms[name] = _run_arm(protocols[name], iterator, weights, version, plan)
-            if dist.get_rank() == 0:
-                _write_json(options.output / f"version-{version:03d}-{name}.json", arms[name])
+            _write_root(options.output / f"version-{version:03d}-{name}.json", arms[name])
         error, equality = None, None
         try:
             equality = _verify_equal_targets(protocols)
@@ -431,8 +439,8 @@ def _versions(options, protocols, iterator, weights, plan):
         _check(error, "same quantized target comparison outside measured intervals")
         result = {"version": version, "order": order, "perturbation": perturbation, "arms": arms, "equality": _gather(equality)}
         results.append(result)
+        _write_root(options.output / f"version-{version:03d}.json", result)
         if dist.get_rank() == 0:
-            _write_json(options.output / f"version-{version:03d}.json", result)
             print(json.dumps({"version": version, "same_targets": True, "arms": {name: {"sizes": value["sizes"], "blocked_s": [rank["producer_blocked_s"] for rank in value["ranks"]]} for name, value in arms.items()}}), flush=True)
     return results
 
@@ -471,25 +479,27 @@ def run(options):
     plan, ownership = _discover_plan(args, iterator, weights)
     discovery_s = time.monotonic() - discover_started
     protocols, baseline_setup = _setup_protocols(args, plan, iterator, weights, options.output)
-    setup = _gather({"load_s": load_s, "discovery_s": discovery_s, "baseline": baseline_setup, "ownership": ownership, "runtime": _runtime_metadata()})
-    if dist.get_rank() == 0:
-        _write_json(options.output / "plan.json", {"scope": "producer-only canonical full views", "tensors": plan})
-        _write_json(
-            options.output / "setup.json",
-            {
-                "model_args": model_argv,
-                "env": NVFP4_ENV,
-                "timing": options.timing,
-                "ranks": setup,
-                "options": {k: str(v) if isinstance(v, Path) else v for k, v in vars(options).items()},
-                "source_digest": os.environ.get("GPU_DELTA_SOURCE_DIGEST"),
-                "checkout_git_head": subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(),
-                "checkout_git_head_scope": "Checkout metadata only; an overlaid source tree may differ.",
-            },
-        )
+    runtime, error = None, None
+    try:
+        runtime = _runtime_metadata()
+    except Exception as caught:
+        error = caught
+    _check(error, "runtime metadata")
+    setup = _gather({"load_s": load_s, "discovery_s": discovery_s, "baseline": baseline_setup, "ownership": ownership, "runtime": runtime})
+    _write_root(options.output / "plan.json", {"scope": "producer-only canonical full views", "tensors": plan})
+    _write_root(
+        options.output / "setup.json",
+        {
+            "model_args": model_argv,
+            "env": NVFP4_ENV,
+            "timing": options.timing,
+            "ranks": setup,
+            "options": {k: str(v) if isinstance(v, Path) else v for k, v in vars(options).items()},
+            "source_digest": os.environ.get("GPU_DELTA_SOURCE_DIGEST"),
+        },
+    )
     results = _versions(options, protocols, iterator, weights, plan)
-    if dist.get_rank() == 0:
-        _write_json(options.output / "result.json", {"success": True, "scope": "producer-only; no receiver or optimizer update", "versions": results})
+    _write_root(options.output / "result.json", {"success": True, "scope": "producer-only; no receiver or optimizer update", "versions": results})
 
 
 def main():
