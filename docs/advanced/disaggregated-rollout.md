@@ -171,6 +171,58 @@ disaggregation. It also requires `--hf-checkpoint` to be a local checkpoint
 directory. The implementation is selected by the Megatron actor; it is not a
 general FSDP weight-update path.
 
+### NVFP4 routed-expert GPU deltas
+
+The optional direct Megatron path computes routed-expert NVFP4 deltas on each
+EP/EDP quantization owner. Its previous canonical expert bytes stay in pinned
+CPU memory on that owner:
+
+```bash
+--update-weight-transfer-mode disk-delta \
+--update-weight-disk-dir /shared/miles/weight-updates \
+--update-weight-local-checkpoint-dir /local/miles-rollout-checkpoint \
+--update-weight-delta-gpu \
+--update-weight-delta-encoding xor \
+--update-weight-delta-checksum adler32
+```
+
+This requires an NVFP4 checkpoint, the direct (`raw`) Megatron converter, ETP1,
+and the 64-bit NVIDIA nvCOMP >=5.3,<6 shared library for the installed CUDA release
+(`nvidia-libnvcomp-cu13==5.3.0.16` in the CUDA 13 bring-up). The public
+asynchronous C API uses Torch-owned buffers and metadata, avoiding the Python
+wrapper's implicit waits when it releases deferred output sizes. Baselines require no storage backend or GDS
+configuration; the normal shared delta publication directory is still used.
+
+Before the existing quantizer runs, the owner asynchronously prefetches the
+previous complete conversion unit from pinned CPU memory into HBM. PyTorch
+computes bytewise XOR, changed-byte counts and Adler32 on GPU; nvCOMP compresses
+the fixed-size, mostly-zero XOR into standard Zstd frames. Quantization and its
+numerics are unchanged. The receiver uses the existing XOR/Zstd/Adler32 format.
+
+Only complete routed-expert packed-weight, block-scale and global-scale families
+take this path. Shared/dense tensors and BF16 exclusions continue through ordinary
+delta sync. Handled expert families leave the iterator before expert gathering,
+including on transport non-senders. Compressed frames and small metadata move to
+CPU for publication.
+
+The first baseline comes from the canonical HF checkpoint. Each owner retains
+one pinned CPU copy of its assigned quantized expert bytes. Two bounded HBM slots
+hold old/new conversion units; events order prefetch, compression and asynchronous
+CPU writeback. The old CPU bytes cannot be overwritten until their H2D copy
+finishes, and a slot cannot be reused until compression and writeback finish.
+
+CPU baselines advance in place during preparation, as in ordinary delta sync.
+Publication then commits the version and activates the receiver. Failed preparation
+or uncommitted publication prevents reusing the exporter; recreate it with a
+matching base. There is no restart-persistent baseline or steady-state baseline
+disk I/O for these expert bytes.
+
+Budget host memory per node for its owners' pinned expert shards, ordinary
+nonexpert snapshots, ordinary staging buffers, compressed publication payloads
+and other training state. The full expert model is not duplicated on every rank.
+Each sync still transfers the assigned quantized baseline across PCIe in both
+directions; the benefit depends on GPU compression and quantization overlap.
+
 ## External rollout service contract
 
 The coming single-endpoint integration builds on the current disk-delta

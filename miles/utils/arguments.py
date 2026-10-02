@@ -1061,6 +1061,17 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 ),
             )
             parser.add_argument(
+                "--update-weight-delta-gpu",
+                action="store_true",
+                help=(
+                    "Opt in to owner-local GPU XOR/Zstd for NVFP4 routed experts. Retains each owner's "
+                    "full previous canonical expert shard in pinned CPU memory and transfers units "
+                    "to the GPU for delta computation. Requires disk-delta, "
+                    "the direct Megatron exporter, ETP1, xor/adler32 and nvCOMP Zstd. Other tensors "
+                    "retain ordinary delta sync."
+                ),
+            )
+            parser.add_argument(
                 "--update-weight-delta-encoding",
                 choices=["xor", "overwrite"],
                 default="xor",
@@ -3574,6 +3585,13 @@ def miles_validate_args(args):
         assert (
             args.megatron_to_hf_mode != "bridge"
         ), f"{args.update_weight_transfer_mode} mode is not supported when use megatron-bridge"
+
+    if getattr(args, "update_weight_delta_gpu", False):
+        assert args.update_weight_transfer_mode == "disk-delta", "GPU expert deltas require disk-delta transfer"
+        assert args.train_backend == "megatron", "GPU expert deltas require the Megatron backend"
+        assert args.megatron_to_hf_mode != "bridge", "GPU expert deltas require the direct Megatron exporter"
+        assert args.update_weight_delta_encoding == "xor", "GPU expert deltas require xor encoding"
+        assert args.update_weight_delta_checksum == "adler32", "GPU expert deltas require the GPU adler32 checksum"
 
     if args.update_weight_transfer_mode == "disk-delta":
         assert not args.colocate, (
