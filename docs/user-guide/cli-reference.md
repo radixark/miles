@@ -162,8 +162,19 @@ Sections mirror the launch-script argument groups.
 | `--async-save` | flag | off | Write Megatron checkpoint shards asynchronously. With `--save-hf`, the native write overlaps the HF export. |
 | `--save-trigger-sentinel` | path | – | If this file exists at a save point, save a checkpoint now (regardless of `--save-interval`) and remove the file. |
 | `--custom-megatron-post-save-hook-path` | `<module>.<fn>` | – | Rank-0 callback after each checkpoint save. |
+| `--push-to-hub` | flag | off | Publish completed HF exports to the Hugging Face Hub. Megatron only. |
+| `--hub-model-id` | str | – | Destination model repository, e.g. `username/model`. Required with `--push-to-hub`. |
+| `--hub-private-repo` | flag | off | Create a private repository; a new repository is public when unset. Existing repository visibility is unchanged. |
+| `--hub-strategy` | enum | `every_save` | `every_save` publishes after each save, including the final save; `end` publishes only at the final training iteration. |
 | `--model-name` | str | – | Set in multi-node to avoid `transformers` file-system race. |
 | `--spec` | `<module> <fn>` | – | Plugin spec for custom architectures (e.g. `miles_plugins.models.qwen3_5 get_qwen3_5_spec`). |
+
+Hub publishing requires `--save`, `--save-hf`, and a positive `--save-interval`.
+Multi-policy training, dumper mode, and `--debug-rollout-only` are not supported.
+Uploads are synchronous and publish model weights at the repository root; optimizer
+state remains in the native training checkpoint. Previous published versions remain
+accessible through Hub commit history. See [Hugging Face model publishing](/examples/infra-features/hf-checkpoint-upload)
+for authentication, examples, and transfer behavior.
 
 ### Rollout: data and batching
 
