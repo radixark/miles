@@ -3,6 +3,8 @@ from __future__ import annotations
 import glob
 import json
 import os
+import re
+import shutil
 import struct
 import zlib
 
@@ -16,6 +18,20 @@ NUM_WORKERS = min(32, (os.cpu_count() or 8))
 # materializing the host-local checkpoint and applying published deltas in place — lives in
 # the engine behind its /pull_weights endpoint (sglang.srt.weight_sync.local_checkpoint), so it
 # runs on every host of a multi-node engine while miles only talks to one endpoint.
+
+
+def prepare_delta_directory(delta_dir: str, *, base_version: int) -> None:
+    """Retain the replay prefix through the resume checkpoint; discard its abandoned suffix."""
+    if base_version < 0:
+        raise ValueError("base_version must be non-negative")
+    if base_version == 0:
+        shutil.rmtree(delta_dir, ignore_errors=True)
+    elif os.path.isdir(delta_dir):
+        for entry in os.scandir(delta_dir):
+            match = re.fullmatch(r"weight_v([0-9]+)", entry.name)
+            if match and int(match[1]) > base_version and entry.is_dir(follow_symlinks=False):
+                shutil.rmtree(entry.path)
+    os.makedirs(delta_dir, exist_ok=True)
 
 
 def overwrite_encode(new: np.ndarray, changed_mask: np.ndarray) -> np.ndarray:

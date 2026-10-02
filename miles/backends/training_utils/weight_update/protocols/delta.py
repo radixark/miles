@@ -4,7 +4,6 @@ import json
 import logging
 import os
 import queue
-import shutil
 from argparse import Namespace
 from collections import deque
 from collections.abc import Callable, Sequence
@@ -23,7 +22,7 @@ from miles.backends.training_utils.weight_update.protocol import WeightTransferP
 from miles.backends.training_utils.weight_update.session import check_weight_sync_results
 from miles.backends.training_utils.weight_update.utils import get_data_replica_rank_and_size
 from miles.utils import async_utils
-from miles.utils.disk_delta import NUM_WORKERS, checksum, make_tensor_reader, overwrite_encode
+from miles.utils.disk_delta import NUM_WORKERS, checksum, make_tensor_reader, overwrite_encode, prepare_delta_directory
 from miles.utils.distributed_utils import get_gloo_group
 
 logger = logging.getLogger(__name__)
@@ -118,7 +117,7 @@ class UpdateWeightFromDiskDelta(WeightTransferProtocol):
     def begin_sync(self, weight_version: int, iter_buckets) -> bool:
         # The first call only captures the baseline snapshot the next sync diffs against.
         if not self._baseline_captured:
-            self._capture_baseline(iter_buckets)
+            self._capture_baseline(iter_buckets, base_version=weight_version - 1)
             self._baseline_captured = True
             return False
         self._begin_encode(weight_version)
@@ -154,25 +153,21 @@ class UpdateWeightFromDiskDelta(WeightTransferProtocol):
         self._reload_engines(weight_version)
         self._record_metrics(weight_version)
 
-    def _capture_baseline(self, iter_buckets) -> None:
-        """Capture the baseline snapshot the first delta diffs against (no publish), and clear any
-        stale stream from a prior run. Seeds from hf_checkpoint — what each host materializes its
-        base from — so the invariant ``snapshot == engine base`` holds even where the megatron->HF
-        round-trip trims vocab-padding rows (embed/lm_head). Every emitted tensor must have the same
-        layout as that canonical checkpoint because deltas operate on raw bytes. pull_weights(0)
-        makes each host materialize its local base now, overlapped with the snapshot gather, so the
-        first real sync only pays the delta apply."""
-        # a prior run's versions would apply against the wrong base; start the dir clean
+    def _capture_baseline(self, iter_buckets, *, base_version: int) -> None:
+        """Seed byte deltas from the checkpoint while retaining history needed by lagging engines.
+
+        The checkpoint is the trainer's base at ``base_version``. Earlier deltas remain
+        available for engines whose canonical checkpoint has not reached that version.
+        """
         pulls = []
         if dist.get_rank() == 0:
-            shutil.rmtree(self.delta_dir, ignore_errors=True)
-            os.makedirs(self.delta_dir, exist_ok=True)
+            prepare_delta_directory(self.delta_dir, base_version=base_version)
             if self._post_write_hook is not None:
                 self._post_write_hook(self.args, self.delta_dir, list(self.rollout_engines))
             pulls = [
                 async_utils.submit(
                     client.pull_weights(
-                        target_version=0,
+                        target_version=base_version,
                         local_checkpoint_dir=self.args.update_weight_local_checkpoint_dir,
                         source_dir=self.args.update_weight_disk_dir,
                     )
@@ -242,7 +237,7 @@ class UpdateWeightFromDiskDelta(WeightTransferProtocol):
                         async_utils.submit(
                             client.update_weights_from_disk(
                                 model_path=self.args.update_weight_local_checkpoint_dir,
-                                weight_version="0",
+                                weight_version=str(base_version),
                             )
                         )
                         for client in self.rollout_engines
@@ -251,7 +246,7 @@ class UpdateWeightFromDiskDelta(WeightTransferProtocol):
                 check_weight_sync_results(results, is_lora=False)
             else:
                 # TODO: temporarily weaken checkers; should enhance and fix related logics
-                _update_weight_version_if_unset(self.rollout_engines, "0")
+                _update_weight_version_if_unset(self.rollout_engines, str(base_version))
             logger.info(
                 "[disk delta] captured baseline snapshot of %d tensors from %s",
                 len(self._snapshot),
