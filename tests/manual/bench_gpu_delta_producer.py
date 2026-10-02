@@ -448,9 +448,12 @@ def _runtime_metadata():
 
 
 def run(options):
+    from miles.utils.distributed_utils import init_gloo_group
+
     config = _environment(options)
     torch.cuda.set_device(int(os.environ["LOCAL_RANK"]))
     dist.init_process_group("nccl", device_id=torch.device("cuda", torch.cuda.current_device()))
+    init_gloo_group()
     # Initialization errors still retain torchrun's nonzero exit and per-rank log.
     args, model_argv = _model_args(options)
     load_started = time.monotonic()
