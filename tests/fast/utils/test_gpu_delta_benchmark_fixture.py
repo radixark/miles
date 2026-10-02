@@ -6,12 +6,13 @@ from argparse import Namespace
 from pathlib import Path
 
 import numpy as np
+import pytest
 import safetensors.torch
 import snappy
 import torch
 import zstandard
 
-from miles.utils.gpu_delta_publication import sha256
+from miles.utils.gpu_delta_publication import PublicationWriter, sha256
 
 _MODULE = Path(__file__).parents[2] / "manual" / "bench_gpu_delta.py"
 _spec = importlib.util.spec_from_file_location("bench_gpu_delta", _MODULE)
@@ -121,3 +122,84 @@ def test_three_versions_share_targets_across_codecs_and_preserve_source_and_draf
     restored = safetensors.torch.load_file(str(Path(report["target_checkpoint"]) / "model.safetensors"))
     assert torch.isfinite(restored["model.layers.0.self_attn.q_proj.weight"]).all()
     assert report["rounds"][0]["canonical_bytes"] == sum(index[t["name"]]["nbytes"] for t in plan)
+
+
+def test_wrap_saved_snappy_frames_without_checkpoint_reads(tmp_path, monkeypatch):
+    source, output = tmp_path / "source", tmp_path / "wrapped"
+    source.mkdir()
+    output.mkdir()
+    random = np.random.default_rng(20261003)
+    old = np.zeros((1 << 20) + 139, dtype=np.uint8)
+    new = old.copy()
+    new[::4096] = 1
+    new[-139:] = random.integers(0, 256, 139, dtype=np.uint8)
+    writer = PublicationWriter(source / "snappy" / "v1", stream_id="s", base_version=0, target_version=1, plan_digest="p", codec="snappy")
+    try:
+        writer.add_tensor("w", old, new, dtype="U8", shape=[old.size])
+        writer.add_tensor("empty", old[:37], old[:37], dtype="U8", shape=[37])
+        writer.add_tensor("replace", np.ones(17, dtype=np.uint8), np.zeros(17, dtype=np.uint8), dtype="U8", shape=[17], encoding="replace_bytes")
+        publication = writer.finish()
+    finally:
+        writer.close()
+    denominator = old.size + 37 + 17
+    fixture = {
+        "codecs": ["snappy"], "plan_digest": "p", "stream_id": "s",
+        "target_checkpoint": str(tmp_path / "unavailable-checkpoint"),
+        "rounds": [{"version": 1, "publications": {"snappy": publication}, "canonical_bytes": denominator,
+                    "accounting": {}, "ratios": {}, "encoded_frame_ratios": {}}],
+    }
+    raw = json.dumps(fixture).encode()
+    (source / "fixture.json").write_bytes(raw)
+    immutable = {str(path): path.read_bytes() for path in source.rglob("*") if path.is_file()}
+
+    def forbidden_model_read(*args, **kwargs):
+        raise AssertionError("Wrapping encoded fixture must not inspect model weights")
+
+    monkeypatch.setattr(bench, "_tensor_index", forbidden_model_read)
+    args = Namespace(fixture=source, fixture_sha256=sha256(raw), output=output)
+    bench._wrap_fixture(args)
+    report = json.loads((output / "fixture.json").read_text())
+    assert report["target_checkpoint"] == fixture["target_checkpoint"]
+    assert report["rounds"][0]["publications"]["snappy"] == publication
+    accounting = report["rounds"][0]["accounting"]["snappy-zstd"]
+    assert accounting["exact_inner_payloads_verified"]
+    assert accounting["outer_encoded_bytes"] > 0
+    assert accounting["outer_decoded_arena_bytes"] >= accounting["encoded_frame_bytes"]
+    assert all(Path(path).read_bytes() == data for path, data in immutable.items())
+    derived = report["rounds"][0]["publications"]["snappy-zstd"]
+    manifest = json.loads(Path(derived["manifest_path"]).read_text())
+    assert manifest["protocol_version"] == 3
+    assert manifest["codec_profile"] == "snappy-independent-1mib-zstd-v1"
+    assert json.loads((output / "derivation.json").read_text())["status"] == "completed"
+
+    # The same bytewise oracle rejects a changed source payload, even after a
+    # successful derivation; no later target or generation check is required.
+    source_manifest_path = Path(publication["manifest_path"])
+    source_manifest = json.loads(source_manifest_path.read_text())
+    first_frame = next(tensor["frames"][0] for tensor in source_manifest["tensors"] if tensor["frames"])
+    payload_path = source_manifest_path.parent / first_frame["file"]
+    payload = bytearray(payload_path.read_bytes())
+    payload[first_frame["encoded_offset"]] ^= 1
+    payload_path.write_bytes(payload)
+    failed = tmp_path / "failed"
+    failed.mkdir()
+    with pytest.raises(ValueError, match="Source encoded file changed"):
+        bench._wrap_fixture(Namespace(fixture=source, fixture_sha256=sha256(raw), output=failed))
+    assert json.loads((failed / "derivation.json").read_text())["status"] == "failed"
+
+
+def test_focused_producer_arms_keep_existing_defaults(tmp_path, monkeypatch):
+    producer_spec = importlib.util.spec_from_file_location("bench_gpu_delta_producer", _MODULE.with_name("bench_gpu_delta_producer.py"))
+    producer = importlib.util.module_from_spec(producer_spec)
+    producer_spec.loader.exec_module(producer)
+    monkeypatch.setenv("WORLD_SIZE", "8")
+    argv = ["bench", "--hf-checkpoint", str(tmp_path), "--load", str(tmp_path), "--output", str(tmp_path / "out")]
+    monkeypatch.setattr("sys.argv", argv)
+    assert len(producer.parse_args().arms) == 8
+    monkeypatch.setattr("sys.argv", argv + ["--arms", "gpu-snappy", "gpu-snappy-zstd"])
+    options = producer.parse_args()
+    assert options.arms == ["gpu-snappy", "gpu-snappy-zstd"]
+    assert [producer._arm_order(version, options.arms) for version in (1, 2, 3)] == [options.arms, options.arms[::-1], options.arms]
+    monkeypatch.setattr("sys.argv", argv + ["--arms", "gpu-snappy", "gpu-snappy"])
+    with pytest.raises(SystemExit):
+        producer.parse_args()

@@ -4,6 +4,9 @@ This manual benchmark compares **CPU XOR + Zstd**, **CPU XOR + Snappy**,
 **GPU XOR + Zstd**, and **GPU XOR + Snappy** using the actual Megatron direct
 exporter and GPU-delta publication protocol. Eight controlled arms retain all four
 encoder/codec combinations at 1 MiB framing and add GPU Zstd/Snappy at 64 KiB and 2 MiB.
+Use `--arms gpu-snappy gpu-snappy-zstd` for the separate matched comparison of
+GPU Snappy with and without a per-tensor CPU Zstd envelope. The existing eight
+arms remain the default; this focused opt-in uses the same canonical targets.
 It runs on eight GPUs with TP1/PP1/CP1/EP8/ETP1 and the
 native GLM-5.2 five-layer model (three dense layers and two routed MoE layers).
 It constructs and loads the real model, exports W4A16 NVFP4 using TE 4over6,
@@ -83,6 +86,7 @@ or fallback is added by this benchmark.
 | `gpu-snappy-64k` | `gpu` | `snappy` | 65,536 | Same GPU encoder, per-instance framing control |
 | `gpu-zstd-2m` | `gpu` | `zstd` | 2,097,152 | Experimental producer-only framing control |
 | `gpu-snappy-2m` | `gpu` | `snappy` | 2,097,152 | Experimental producer-only framing control |
+| `gpu-snappy-zstd` (opt-in) | `gpu` | `snappy` | 1,048,576 | GPU Snappy, then CPU outer Zstd level 1 |
 
 The last four arms are benchmark variants, not a new production environment or
 CLI knob. Production retains 1 MiB. Each variant owns a separate encoder and
@@ -132,7 +136,7 @@ torchrun --standalone --nproc-per-node=8 \
 ```
 
 The output directory must be new. Raw per-arm/version receipts and publications
-are kept even if a later arm fails. `result.json` is written only after all eight
+are kept even if a later arm fails. `result.json` is written only after all selected
 arms in every version pass the identical-target check. `setup.json` records initialization,
 discovery, baseline capture, rank ownership, the ordered `arms` list and exact
 `arm_order_by_version`. `arm_configs` records each arm's encoder, codec and
@@ -151,6 +155,37 @@ explicitly for all eight arms; no production defaults or live serving settings
 are changed. To measure event overhead, rerun into a separate output directory
 without `--timing`, using the same inputs and perturbation arguments. Never
 merge timing-enabled and timing-disabled samples into one distribution.
+
+For the focused outer-Zstd comparison, use a new output directory and the same
+model arguments above:
+
+```bash
+torchrun --standalone --nproc-per-node=8 \
+  tests/manual/bench_gpu_delta_producer.py \
+  --hf-checkpoint /data/models/GLM-5.2_5layer-NVFP4 \
+  --load /data/models/GLM-5.2_5layer-megatron-dsa_torch_dist \
+  --output /data/benchmarks/gpu-delta-producer-snappy-outer-001 \
+  --arms gpu-snappy gpu-snappy-zstd --versions 3 --timing
+```
+
+The harness sets `WEIGHT_DELTA_SNAPPY_ZSTD=0` or `1` before constructing each
+production protocol. The wrapped arm records protocol 3 and
+`snappy-independent-1mib-zstd-v1`; the ordinary arm retains protocol 2. The
+outer CPU worker can overlap subsequent GPU batches, while both arms retain
+the same GPU transfers. Report the production worker CPU time and final wait
+separately; neither is an additional term to add to caller blocked time.
+`inner_encoded_frame_bytes` is the pre-envelope Snappy/raw payload total;
+`outer_stored_bytes` and `outer_decoded_arena_bytes` describe only the envelope.
+The final publication ratio still uses payload files plus manifest bytes over
+the identical canonical denominator. No CPU Snappy result is substituted for
+the real GPU Snappy producer in this comparison.
+
+Version 1 is labelled `first-use-allocation`; report its allocations and any
+first-use compilation separately. Versions 2 and 3 are labelled `warm-update`.
+Compare their individual matched values rather than mixing all three versions
+into one average. The two-arm order alternates, so three versions are still
+unbalanced and contain different cumulative targets. Repeat without `--timing`
+in another new output directory to distinguish instrumentation effects.
 
 ## Timings and ratios
 

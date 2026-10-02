@@ -138,6 +138,15 @@ def prepare():
     )
 
 
+def _gpu_delta_env():
+    # Ray jobs receive an explicit environment, not every variable in this shell.
+    return {
+        "WEIGHT_DELTA_CODEC": os.environ.get("WEIGHT_DELTA_CODEC", "snappy"),
+        "WEIGHT_DELTA_ENCODER": os.environ.get("WEIGHT_DELTA_ENCODER", "gpu"),
+        "WEIGHT_DELTA_SNAPPY_ZSTD": os.environ.get("WEIGHT_DELTA_SNAPPY_ZSTD", "0"),
+    }
+
+
 def _assert_gpu_delta_weights_changed(args, version_dir, _rollout_engines):
     """Reject a successful-looking E2E whose learned publications were all no-ops."""
     import torch.distributed as dist
@@ -149,11 +158,17 @@ def _assert_gpu_delta_weights_changed(args, version_dir, _rollout_engines):
     last_version = args.num_rollout - 1
     if current["target_version"] != last_version:
         return
+    delta_env = _gpu_delta_env()
+    wrapped = delta_env["WEIGHT_DELTA_SNAPPY_ZSTD"] == "1"
+    expected_protocol = 3 if wrapped else 2
+    expected_profile = f"{delta_env['WEIGHT_DELTA_CODEC']}-independent-1mib{'-zstd' if wrapped else ''}-v1"
     changed_bytes = []
     for version in range(1, last_version + 1):
         manifest = json.loads((version_dir.parent / f"weight_v{version:06d}/manifest.json").read_text())
         assert manifest["stream_id"] == current["stream_id"]
         assert manifest["base_version"] == version - 1 and manifest["target_version"] == version
+        assert manifest["protocol_version"] == expected_protocol, "E2E publication protocol differs from requested mode"
+        assert manifest["codec_profile"] == expected_profile, "E2E publication codec profile differs from requested mode"
         changed_bytes.append(sum(tensor["changed_bytes"] for tensor in manifest["tensors"]))
     assert any(count > 0 for count in changed_bytes), (
         f"GPU-delta E2E produced only no-op learned publications: {changed_bytes}. "
@@ -335,10 +350,7 @@ def execute(
     if update_weight_transfer_mode != "gpu-delta":
         misc_args += "--use-fault-tolerance "
 
-    delta_env = {
-        "WEIGHT_DELTA_CODEC": os.environ.get("WEIGHT_DELTA_CODEC", "snappy"),
-        "WEIGHT_DELTA_ENCODER": os.environ.get("WEIGHT_DELTA_ENCODER", "gpu"),
-    }
+    delta_env = _gpu_delta_env()
     train_args = (
         f"{ckpt_args} "
         f"{rollout_args} "
