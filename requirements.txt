@@ -20,7 +20,7 @@ pylatexenc
 pytest-asyncio
 pyyaml
 qwen_vl_utils # for VLM
-ray[default]>=2.56.0
+ray[default]>=2.56.0,<2.59  # object_store needs free(), removed in https://github.com/ray-project/ray/pull/64037
 ring_flash_attn; platform_system == "Linux"
 safetensors>=0.8.0  # samples-reply wire codec; malformed-payload exception contract validated on 0.8.0
 sglang-router>=0.2.3
