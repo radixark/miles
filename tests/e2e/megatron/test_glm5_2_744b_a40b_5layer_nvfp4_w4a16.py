@@ -138,6 +138,30 @@ def prepare():
     )
 
 
+def _assert_gpu_delta_weights_changed(args, version_dir, _rollout_engines):
+    """Reject a successful-looking E2E whose learned publications were all no-ops."""
+    import torch.distributed as dist
+
+    if dist.get_rank() != 0:
+        return
+    version_dir = Path(version_dir)
+    current = json.loads((version_dir / "manifest.json").read_text())
+    last_version = args.num_rollout - 1
+    if current["target_version"] != last_version:
+        return
+    changed_bytes = []
+    for version in range(1, last_version + 1):
+        manifest = json.loads((version_dir.parent / f"weight_v{version:06d}/manifest.json").read_text())
+        assert manifest["stream_id"] == current["stream_id"]
+        assert manifest["base_version"] == version - 1 and manifest["target_version"] == version
+        changed_bytes.append(sum(tensor["changed_bytes"] for tensor in manifest["tensors"]))
+    assert any(count > 0 for count in changed_bytes), (
+        f"GPU-delta E2E produced only no-op learned publications: {changed_bytes}. "
+        "Version changes alone do not exercise a learned weight delta."
+    )
+    print(f"GPU-delta E2E learned publication changed bytes: {changed_bytes}", flush=True)
+
+
 def execute(
     *,
     num_rollout: int = 4,
@@ -166,6 +190,10 @@ def execute(
             raise ValueError("GPU-delta validation requires three learned updates (at least four rollouts).")
         publication_dir = update_weight_disk_dir or f"/root/shared_data/{RUN_ID}/gpu_delta"
         weight_transfer_args += f"--update-weight-disk-dir {shlex.quote(publication_dir)} "
+        weight_transfer_args += (
+            "--custom-update-weight-post-write-path "
+            "tests.e2e.megatron.test_glm5_2_744b_a40b_5layer_nvfp4_w4a16._assert_gpu_delta_weights_changed "
+        )
 
     if update_weight_delta_gpu:
         weight_transfer_args += (
@@ -181,13 +209,17 @@ def execute(
         f"--hf-checkpoint {MODEL_DIR}/{MODEL_NAME}-NVFP4/ " f"--ref-load {MODEL_DIR}/{MEGATRON_MODEL_NAME}_torch_dist "
     )
 
+    # A pruned model with a short response cap scores zero on math, producing
+    # zero GRPO advantages. Reuse the deterministic CI reward from Kimi's
+    # pruned-model test; the publication gate still fails if weights never move.
+    reward_model = "deterministic_random" if update_weight_transfer_mode == "gpu-delta" else "deepscaler"
     rollout_args = (
         f"--prompt-data {DATA_DIR}/dapo-math-17k/dapo-math-17k.jsonl "
         "--input-key prompt "
         "--label-key label "
         "--apply-chat-template "
         "--rollout-shuffle "
-        "--rm-type deepscaler "
+        f"--rm-type {reward_model} "
         f"--num-rollout {num_rollout} "
         "--rollout-batch-size 8 "
         "--n-samples-per-prompt 8 "
