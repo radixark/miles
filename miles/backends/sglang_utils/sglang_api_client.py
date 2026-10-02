@@ -5,8 +5,32 @@ import logging
 import httpx
 
 from miles.utils.http_utils import GeneralHttpClientProvider
+from miles.utils.retry_utils import retry_until_deadline
 
 logger = logging.getLogger(__name__)
+
+# Transport failures where the request provably never reached the server: the connection
+# was never established, so replaying it cannot duplicate a server-side side effect.
+# Safe for every endpoint, which is why these are retried unconditionally.
+_CONNECT_PHASE_ERRORS: tuple[type[Exception], ...] = (
+    httpx.ConnectError,
+    httpx.ConnectTimeout,
+    httpx.PoolTimeout,
+)
+# Transport failures on an already-established connection: the handler may have run to
+# completion and only the response was lost. Replaying is safe only where the endpoint
+# itself is idempotent, so these are opt-in per call site via `idempotent=True`.
+_RESPONSE_PHASE_ERRORS: tuple[type[Exception], ...] = (
+    httpx.ReadError,
+    httpx.ReadTimeout,
+    httpx.WriteError,
+    httpx.WriteTimeout,
+    httpx.RemoteProtocolError,
+)
+# NOTE: httpx.HTTPStatusError is deliberately absent from both tuples. A 4xx/5xx is an
+# answer from the server, not a lost one; replaying it only multiplies load and hides
+# genuine failures.
+_TRANSPORT_RETRY_TOTAL_SECONDS = 60.0
 
 
 def _compute_headers(api_key: str | None) -> dict[str, str]:
@@ -64,30 +88,70 @@ class SGLangApiClient:
     def _headers(self) -> dict[str, str]:
         return _compute_headers(self.api_key)
 
-    async def _make_request(self, endpoint: str, payload: dict | None = None, *, timeout: float | None = None):
+    async def _make_request(
+        self,
+        endpoint: str,
+        payload: dict | None = None,
+        *,
+        timeout: float | None = None,
+        idempotent: bool = False,
+        retry_seconds: float | None = _TRANSPORT_RETRY_TOTAL_SECONDS,
+    ):
         """Make a POST request to the specified endpoint with the given payload.
+
+        Retries transport failures within a bounded deadline. Connect-phase failures are
+        always retried because the request never reached the server. Response-phase
+        failures are only retried when the caller declares the endpoint idempotent.
+
+        Without this, a single transient read error on one rank kills that rank, which
+        cascades through the weight-update collective to every other rank, empties the
+        cell and ends the job -- see the retry that `RayTrainGroup.update_weights` cannot
+        use once no cell is left alive.
 
         Args:
             endpoint: The API endpoint to call
             payload: The JSON payload to send (default: empty dict)
+            timeout: Per-attempt HTTP timeout in seconds; None keeps the client's default.
+            idempotent: True when replaying the request after the server may already have
+                executed it is harmless. Defaults to False so that an endpoint which was
+                never reviewed for replay safety keeps the conservative behaviour.
+            retry_seconds: How long after the first attempt a failed attempt may still be
+                retried, or None to disable retrying entirely. It does not bound an attempt
+                that is still waiting for a response: the shared client has no read timeout,
+                so a hung request is only ended by the server or the connection. Use None for
+                best-effort calls whose caller treats failure as an expected outcome, so that
+                failing stays fast.
 
         Returns:
-            The JSON response from the server
+            The JSON response from the server, or None when it answers with an empty body
         """
         url = f"{self.server_url}/{endpoint}"
         bound: dict[str, float] = {} if timeout is None else dict(timeout=timeout)
-        response = await GeneralHttpClientProvider.client().post(
-            url, json=payload or {}, headers=self._headers, **bound
+        retry_on = _CONNECT_PHASE_ERRORS + (_RESPONSE_PHASE_ERRORS if idempotent else ())
+
+        async def _attempt(_remaining_seconds: float = 0.0):
+            response = await GeneralHttpClientProvider.client().post(
+                url, json=payload or {}, headers=self._headers, **bound
+            )
+            try:
+                response.raise_for_status()
+            except httpx.HTTPStatusError as e:
+                if hasattr(e, "add_note"):
+                    e.add_note(f"{response.text=}")
+                raise
+            if not response.content:
+                return None
+            return response.json()
+
+        if retry_seconds is None or retry_seconds <= 0:
+            return await _attempt()
+
+        return await retry_until_deadline(
+            _attempt,
+            total_seconds=retry_seconds,
+            retry_on=retry_on,
+            log_fields={"op": "sglang_api", "endpoint": endpoint, "idempotent": idempotent},
         )
-        try:
-            response.raise_for_status()
-        except httpx.HTTPStatusError as e:
-            if hasattr(e, "add_note"):
-                e.add_note(f"{response.text=}")
-            raise
-        if not response.content:
-            return None
-        return response.json()
 
     async def health_generate(self, timeout: float = 5.0) -> bool:
         """Run /health_generate on the underlying SGLang HTTP server.
@@ -134,6 +198,8 @@ class SGLangApiClient:
         return await self._make_request(
             "update_weights_from_tensor",
             payload,
+            # Replaying rewrites the same tensors from the same IPC handles.
+            idempotent=True,
         )
 
     async def get_remote_instance_transfer_engine_info(self, rank: int):
@@ -207,6 +273,8 @@ class SGLangApiClient:
         return await self._make_request(
             "load_lora_adapter_from_tensors",
             payload,
+            # Only replayable as an upsert; without it a replay hits "adapter already loaded".
+            idempotent=upsert,
         )
 
     async def load_lora_adapter_from_distributed(
@@ -274,6 +342,8 @@ class SGLangApiClient:
         return await self._make_request(
             "register_lora_adapter",
             {"lora_name": lora_name, "config_dict": config_dict, "pinned": pinned},
+            # Create-or-refresh.
+            idempotent=True,
         )
 
     async def release_memory_occupation(self, tags: list[str] = None):
@@ -282,6 +352,9 @@ class SGLangApiClient:
         return await self._make_request(
             "release_memory_occupation",
             {"tags": tags},
+            # NOT replayable: the handler re-runs _export_static_state before pausing the
+            # weights region, so a replay clones buffers whose backing is already released
+            # and overwrites the stash that resume_memory_occupation later imports.
         )
 
     async def resume_memory_occupation(self, tags: list[str] = None):
@@ -291,6 +364,8 @@ class SGLangApiClient:
         return await self._make_request(
             "resume_memory_occupation",
             {"tags": tags},
+            # NOT replayable: the handler does `self.offload_tags.remove(tag)`, and set.remove
+            # raises KeyError once the tag is gone, so a replay is guaranteed to fail.
         )
 
     async def check_weights(
@@ -300,7 +375,9 @@ class SGLangApiClient:
         if skip_list is not None:
             # sglang's CheckWeightsReqInput names this field `skip_tensor_list`.
             payload["skip_tensor_list"] = skip_list
-        return await self._make_request("weights_checker", payload)
+        # checksum reads and snapshot rewrites the same copy, so both replay safely. compare
+        # consumes the snapshot (a replay asserts on it) and reset_tensors draws new values.
+        return await self._make_request("weights_checker", payload, idempotent=action in ("checksum", "snapshot"))
 
     async def pull_weights(self, target_version: int, local_checkpoint_dir: str, source_dir: str):
         """Have the engine sync every host it spans to target_version: each host pulls the
@@ -330,7 +407,8 @@ class SGLangApiClient:
             payload["load_format"] = load_format
         if weight_version is not None:
             payload["weight_version"] = weight_version
-        return await self._make_request("update_weights_from_disk", payload)
+        # Deterministic reload from a fixed path.
+        return await self._make_request("update_weights_from_disk", payload, idempotent=True)
 
     async def init_weights_update_group(
         self, master_address, master_port, rank_offset, world_size, group_name, backend
@@ -354,6 +432,10 @@ class SGLangApiClient:
                 {
                     "group_name": group_name,
                 },
+                # Best-effort cleanup: the caller below swallows the error because a
+                # freshly created engine legitimately has no group yet. Retrying would
+                # just make that expected outcome take the full budget to arrive.
+                retry_seconds=None,
             )
         except httpx.HTTPError:
             # catch the case there the engine is just created and does not have the group.
@@ -385,23 +467,17 @@ class SGLangApiClient:
         )
 
     async def pause_generation(self, mode: str = "retract"):
-        response = await GeneralHttpClientProvider.client().post(
-            f"{self.server_url}/pause_generation",
-            json={"mode": mode},
-            headers=self._headers,
-        )
-        response.raise_for_status()
-        return response
+        # Opens every weight-update session, so it gets the same connect-phase retry as the
+        # transfer it guards. Not declared idempotent: a second pause lands on paused state.
+        return await self._make_request("pause_generation", {"mode": mode})
 
     async def continue_generation(self):
-        response = await GeneralHttpClientProvider.client().post(
-            f"{self.server_url}/continue_generation", json={}, headers=self._headers
-        )
-        response.raise_for_status()
-        return response
+        return await self._make_request("continue_generation", {})
 
     async def abort_all_requests(self, timeout: float | None = None):
-        return await self._make_request("abort_request", {"abort_all": True}, timeout=timeout)
+        # Callers bound the abort and give up on an engine that does not answer; a retried
+        # connect would only delay that decision.
+        return await self._make_request("abort_request", {"abort_all": True}, timeout=timeout, retry_seconds=None)
 
     async def begin_weight_update(self, selector: str = "all", sync_base: bool = True):
         """Open a weight-update session on the engine. sync_base=False declares an
@@ -417,6 +493,9 @@ class SGLangApiClient:
         return await self._make_request(
             "update_weight_version",
             {"new_version": weight_version, "abort_all_requests": abort_all_requests},
+            # Setting a fixed version string is idempotent, but a replayed abort would kill
+            # a second, innocent generation wave.
+            idempotent=not abort_all_requests,
         )
 
     async def start_profile(
