@@ -1,7 +1,7 @@
 """Owner-local GPU delta publication with guarded, in-place SGLang activation.
 
-Routed experts are encoded by their exporter owners before the usual gather.
-GPU encoding overlaps subsequent exports; CPU encoding remains an explicit reference.
+Routed experts are consumed by their exporter owners before the usual gather.
+GPU encoding batches complete CPU snapshots; CPU encoding remains an explicit reference.
 """
 
 from __future__ import annotations
@@ -14,7 +14,6 @@ import uuid
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from queue import SimpleQueue
 
 import numpy as np
 import torch
@@ -44,6 +43,7 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
         self.codec, self.encoder_backend = gpu_delta_publication.settings_from_env()
         self._timing = os.environ.get("WEIGHT_DELTA_TIMING", "0") == "1"
         self._snapshot = {}
+        self._next_snapshot = {}
         self._plan = {}
         self._descriptions = None
         self._capturing = False
@@ -51,7 +51,8 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
         self._uncommitted = False
         self._error = None
         self._staging_stream = None
-        self._gpu_encoders = None
+        self._gpu_encoder = None
+        self._pending_ready = self._published = False
         self.publication_metrics = {}
         self._post_write_hook = None
         if args.custom_update_weight_post_write_path:
@@ -77,15 +78,12 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
         replica_rank, _ = get_data_replica_rank_and_size(parallel_state, placement)
         self.is_sender = replica_rank == 0
         error = None
-        if self.encoder_backend == "gpu" and self._gpu_encoders is None:
+        if self.encoder_backend == "gpu" and self._gpu_encoder is None:
             try:
-                from miles.utils.gpu_delta_encoder import GpuTensorEncoder
+                from miles.utils.gpu_delta_encoder import GpuBatchEncoder
 
-                encoders = SimpleQueue()
                 device = torch.device("cuda", torch.cuda.current_device())
-                for _ in range(2):
-                    encoders.put(GpuTensorEncoder(self.codec, device))
-                self._gpu_encoders = encoders
+                self._gpu_encoder = GpuBatchEncoder(self.codec, device)
             except Exception as caught:
                 error = caught
         _collective_check(error, "nvCOMP producer admission")
@@ -123,11 +121,17 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
         self._inflight = deque()
         self._encoding_metrics = []
         self._backpressure_wait_s = self._encoding_tail_wait_s = 0.0
+        self._export_staging_wait_s = self._bulk_encode_s = self._encoded_hash_write_s = 0.0
+        self._gpu_batch_count = 0
+        self._pending_ready = self._published = False
         self._pool = self._writer = None
         try:
-            if self.encoder_backend == "cpu" and self._staging_stream is None:
+            if self._staging_stream is None:
                 self._staging_stream = torch.cuda.Stream(device=torch.cuda.current_device())
-            self._pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="gpu-delta")
+            if self.encoder_backend == "cpu":
+                self._pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="gpu-delta")
+            elif self.args.update_weight_buffer_size <= 0:
+                raise ValueError("GPU delta requires a positive update_weight_buffer_size")
             self._writer = gpu_delta_publication.PublicationWriter(
                 self._version_dir,
                 stream_id=self._stream_id,
@@ -137,6 +141,11 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
                 plan_digest=self._plan_digest,
                 codec=self.codec,
                 owner=dist.get_rank(),
+                frame_bytes=(
+                    self._gpu_encoder.frame_bytes
+                    if self.encoder_backend == "gpu"
+                    else gpu_delta_publication.FRAME_BYTES
+                ),
             )
         except Exception as error:
             self._error = error
@@ -237,17 +246,24 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
                     continue
                 if name not in self._snapshot:
                     raise ValueError(f"Canonical ownership changed for {name!r}")
-                # Two in-flight tensors per owner bound encoding/staging work;
-                # workers encode while subsequent exports/gathers run.
-                while len(self._inflight) >= 2:
-                    self._collect(self._inflight.popleft(), backpressure=True)
-                if self._error is not None:
-                    return
+                if self.encoder_backend == "cpu":
+                    # CPU reference workers continue to overlap later exports.
+                    while len(self._inflight) >= 2:
+                        self._collect(self._inflight.popleft(), backpressure=True)
+                    if self._error is not None:
+                        return
                 flat = tensor.detach().contiguous().reshape(-1).view(torch.uint8)
                 if self.encoder_backend == "gpu":
-                    produced = torch.cuda.Event()
-                    produced.record()
-                    self._inflight.append(self._pool.submit(self._encode_gpu, name, flat, produced))
+                    host = self._next_snapshot.get(name)
+                    if host is None:
+                        host = torch.empty(flat.numel(), dtype=torch.uint8, device="cpu", pin_memory=True)
+                        self._next_snapshot[name] = host
+                    self._staging_stream.wait_stream(torch.cuda.current_stream())
+                    with torch.cuda.stream(self._staging_stream):
+                        host.copy_(flat, non_blocking=True)
+                    # Preserve the export buffer's allocator lease until its D2H
+                    # read completes, without waiting for unrelated CUDA work.
+                    flat.record_stream(self._staging_stream)
                 else:
                     host = torch.empty(flat.numel(), dtype=torch.uint8, device="cpu", pin_memory=True)
                     self._staging_stream.wait_stream(torch.cuda.current_stream())
@@ -282,20 +298,37 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
         return {
             "encode_wall_s": time.monotonic() - started,
             "baseline_h2d_bytes": 0,
+            "current_h2d_bytes": 0,
             "baseline_d2h_bytes": current.nbytes,
             "encoded_d2h_bytes": 0,
             "staging_wait_s": staging_wait_s,
             "cpu_encode_write_s": time.monotonic() - encode_started,
         }
 
-    def _encode_gpu(self, name, current, produced):
-        encoder = self._gpu_encoders.get()
-        try:
-            spec = self._plan[name]
-            frames, payloads, changed, metrics = encoder.encode(
-                self._snapshot[name], current, produced, encoding=spec["encoding"]
+    def _encode_gpu_batches(self):
+        # All owned current tensors have reached pinned CPU memory. The old
+        # snapshot remains immutable until receiver commit, including on error.
+        started = time.monotonic()
+        encoded = []
+        for names in self._gpu_batches():
+            results = self._gpu_encoder.encode(
+                [(self._snapshot[name], self._next_snapshot[name], self._plan[name]["encoding"]) for name in names]
             )
-            write_started = time.monotonic()
+            if len(results) != len(names):
+                raise RuntimeError("GPU delta encoder returned an incomplete batch")
+            self._gpu_batch_count += 1
+            for name, result in zip(names, results, strict=True):
+                frames, payloads, changed, metrics = result
+                # Batch timing appears only once in encoder metrics; never
+                # duplicate it across tensors or apportion overlapping spans.
+                self._encoding_metrics.append(dict(metrics, name=name))
+                encoded.append((name, frames, payloads, changed))
+        self._bulk_encode_s = time.monotonic() - started
+        # Returned payloads own immutable pinned storage. Retain them through
+        # all compression so filesystem work cannot hold the GPU encoder idle.
+        write_started = time.monotonic()
+        for name, frames, payloads, changed in encoded:
+            spec = self._plan[name]
             self._writer.add_encoded_tensor(
                 name,
                 frames,
@@ -306,10 +339,21 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
                 views=spec["views"],
                 encoding=spec["encoding"],
             )
-            metrics["encoded_hash_write_s"] = time.monotonic() - write_started
-            return metrics
-        finally:
-            self._gpu_encoders.put(encoder)
+        self._encoded_hash_write_s = time.monotonic() - write_started
+
+    def _gpu_batches(self):
+        """Stable canonical-byte batches; a tensor larger than the target stands alone."""
+        batch, size = [], 0
+        limit = self.args.update_weight_buffer_size
+        for name in sorted(self._snapshot):
+            nbytes = self._snapshot[name].numel()
+            if batch and size + nbytes > limit:
+                yield batch
+                batch, size = [], 0
+            batch.append(name)
+            size += nbytes
+        if batch:
+            yield batch
 
     def _collect(self, future, *, backpressure=False):
         started = time.monotonic()
@@ -325,19 +369,54 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
                 self._encoding_tail_wait_s += waited
 
     def after_base_weights(self):
-        while self._inflight:
-            self._collect(self._inflight.popleft())
-        self._pool.shutdown()
+        if self.encoder_backend == "cpu":
+            while self._inflight:
+                self._collect(self._inflight.popleft())
+            self._pool.shutdown()
+        else:
+            started = time.monotonic()
+            try:
+                ready = torch.cuda.Event()
+                ready.record(self._staging_stream)
+                ready.synchronize()
+            except Exception as error:
+                self._error = self._error or error
+            self._export_staging_wait_s = time.monotonic() - started
         if self._seen != self._snapshot.keys():
             self._error = self._error or ValueError("Exporter omitted original owner tensors")
+        if self.encoder_backend == "gpu" and self._error is None:
+            started = time.monotonic()
+            try:
+                self._encode_gpu_batches()
+            except Exception as error:
+                self._error = error
+            self._encoding_tail_wait_s = time.monotonic() - started
         try:
             _collective_check(self._error, "encoding")
         except Exception:
             self._writer.close()
             raise
+        self._pending_ready = True
+
+    @property
+    def pending_baseline(self):
+        """Complete canonical target for external producer correctness checks."""
+        if not self._uncommitted or not self._pending_ready:
+            raise RuntimeError("GPU delta has no completed pending target")
+        return self._next_snapshot if self.encoder_backend == "gpu" else self._snapshot
+
+    def commit_pending_baseline(self):
+        """Advance only after activation, or an explicit producer-only benchmark acknowledgement."""
+        if not self._uncommitted or not self._pending_ready or not self._published or self._error is not None:
+            raise RuntimeError("GPU delta has no successfully published pending baseline")
+        if self.encoder_backend == "gpu":
+            self._snapshot, self._next_snapshot = self._next_snapshot, self._snapshot
+        self._pending_ready = self._published = self._uncommitted = False
 
     def publish(self, weight_version):
         """Seal owner payloads independently of receiver activation."""
+        if not self._pending_ready or self._error is not None:
+            raise RuntimeError("GPU delta cannot publish an incomplete target")
         seal_started = time.monotonic()
         shard, error = None, None
         try:
@@ -357,12 +436,21 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
             "encode_tensor_wall_sum_s": sum(item["encode_wall_s"] for item in self._encoding_metrics),
             "backpressure_wait_s": self._backpressure_wait_s,
             "encoding_tail_wait_s": self._encoding_tail_wait_s,
+            "export_staging_wait_s": self._export_staging_wait_s,
+            "bulk_encode_s": self._bulk_encode_s,
+            "encoded_hash_write_s": self._encoded_hash_write_s,
+            "encoder_batches": self._gpu_batch_count,
+            "encoding_granularity": "batch" if self.encoder_backend == "gpu" else "tensor",
             "owner_seal_s": time.monotonic() - seal_started,
             **{
                 key: sum(item[key] for item in self._encoding_metrics)
-                for key in ("baseline_h2d_bytes", "baseline_d2h_bytes", "encoded_d2h_bytes")
+                for key in ("baseline_h2d_bytes", "current_h2d_bytes", "baseline_d2h_bytes", "encoded_d2h_bytes")
             },
         }
+        if self.encoder_backend == "gpu":
+            # Retain the existing transfer key, now counting export of the
+            # current snapshot; the old pinned baseline is never written back.
+            self.publication_metrics["baseline_d2h_bytes"] += sum(t.nbytes for t in self._next_snapshot.values())
         if self._timing:
             self.publication_metrics["tensor_phases"] = self._encoding_metrics
         shard["producer_metrics"] = self.publication_metrics
@@ -388,6 +476,7 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
         except Exception as caught:
             error = caught
         _collective_check(error, "publication visibility")
+        self._published = True
         return publication
 
     def finalize(self, weight_version):
@@ -398,7 +487,7 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
             ),
             broadcast_value=False,
         )
-        self._uncommitted = False
+        self.commit_pending_baseline()
         counts = publication["summary_counts"]
         tensor_count, wire, changed, total = (
             counts[key] for key in ("tensor_count", "wire_bytes", "changed_bytes", "canonical_bytes")

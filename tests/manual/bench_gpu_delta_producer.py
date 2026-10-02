@@ -24,10 +24,12 @@ import torch
 import torch.distributed as dist
 
 ARMS = (
-    ("cpu-zstd", "cpu", "zstd"),
-    ("cpu-snappy", "cpu", "snappy"),
-    ("gpu-zstd", "gpu", "zstd"),
-    ("gpu-snappy", "gpu", "snappy"),
+    ("cpu-zstd", "cpu", "zstd", 1 << 20),
+    ("cpu-snappy", "cpu", "snappy", 1 << 20),
+    ("gpu-zstd", "gpu", "zstd", 1 << 20),
+    ("gpu-snappy", "gpu", "snappy", 1 << 20),
+    ("gpu-zstd-64k", "gpu", "zstd", 1 << 16),
+    ("gpu-snappy-64k", "gpu", "snappy", 1 << 16),
 )
 NVFP4_ENV = {
     "SGLANG_NVFP4_CKPT_FP8_GEMM_IN_ATTN": "0",
@@ -286,12 +288,7 @@ def _make_protocol(args, plan, arm, output):
         def _declare_baseline(self):
             pass  # Publication-only benchmark never sends receiver metadata RPCs.
 
-        def acknowledge_publication(self):
-            # The harness verifies the sealed publication before this call.
-            # Production clears this only after successful receiver activation.
-            self._uncommitted = False
-
-    name, encoder, codec = arm
+    name, encoder, codec, _frame_bytes = arm
     os.environ["WEIGHT_DELTA_ENCODER"] = encoder
     os.environ["WEIGHT_DELTA_CODEC"] = codec
     arm_args = copy.copy(args)
@@ -307,6 +304,18 @@ def _setup_protocols(args, plan, iterator, weights, output):
         started = time.monotonic()
         protocol = _make_protocol(args, plan, arm, output)
         protocol.connect([], [], [], get_parallel_state(), iterator.placement, "target")
+        error = None
+        if arm[3] != 1 << 20:
+            try:
+                from miles.utils.gpu_delta_encoder import GpuBatchEncoder
+
+                # Benchmark-only per-instance variant; production keeps 1 MiB.
+                protocol._gpu_encoder = GpuBatchEncoder(
+                    arm[2], torch.device("cuda", torch.cuda.current_device()), frame_bytes=arm[3]
+                )
+            except Exception as caught:
+                error = caught
+        _check(error, "benchmark frame-size admission")
         if protocol.is_sender != (dist.get_rank() == 0):
             raise ValueError("EP8/TP1/PP1/CP1 requires rank 0 as the ordinary tensor sender")
         protocol.bind_iterator(iterator)
@@ -336,12 +345,15 @@ def _perturb(weights, *, fraction, relative_scale, version):
     return {"selected_elements": selected, "eligible_elements": eligible, "stride": stride}
 
 
-def _verify_publication(publication, plan):
+def _verify_publication(publication, plan, *, codec, frame_bytes):
     path = Path(publication["manifest_path"])
     raw = path.read_bytes()
     if hashlib.sha256(raw).hexdigest() != publication["manifest_sha256"]:
         raise ValueError("Publication manifest checksum mismatch")
     manifest = json.loads(raw)
+    profile = f"{codec}-independent-{'64kib' if frame_bytes == 1 << 16 else '1mib'}-v1"
+    if manifest["codec_profile"] != profile:
+        raise ValueError("Sealed publication frame profile differs from the benchmark arm")
     if {tensor["name"] for tensor in manifest["tensors"]} != {tensor["name"] for tensor in plan}:
         raise ValueError("Sealed publication does not cover the exact mutable exporter inventory")
     for item in manifest["files"]:
@@ -353,6 +365,8 @@ def _verify_publication(publication, plan):
         "canonical_bytes": sum(tensor["nbytes"] for tensor in manifest["tensors"]),
         "changed_bytes": sum(tensor["changed_bytes"] for tensor in manifest["tensors"]),
         "tensor_count": len(manifest["tensors"]),
+        "codec_profile": manifest["codec_profile"],
+        "frame_bytes": frame_bytes,
     }
 
 
@@ -393,16 +407,18 @@ def _run_arm(protocol, iterator, weights, version, plan):
     error, sizes = None, None
     if dist.get_rank() == 0:
         try:
-            sizes = _verify_publication(publication, plan)
+            frame_bytes = protocol._gpu_encoder.frame_bytes if protocol.encoder_backend == "gpu" else 1 << 20
+            sizes = _verify_publication(publication, plan, codec=protocol.codec, frame_bytes=frame_bytes)
         except Exception as caught:
             error = caught
     _check(error, "sealed publication validation")
-    protocol.acknowledge_publication()
     return {"ranks": _gather(measurement), "publication": publication, "sizes": sizes}
 
 
 def _verify_equal_targets(protocols):
-    snapshots = [protocol._snapshot for protocol in protocols.values()]
+    # GPU committed snapshots remain the previous version until acknowledgment.
+    # Compare the new pending targets; CPU control retains its existing semantics.
+    snapshots = [protocol.pending_baseline for protocol in protocols.values()]
     if any(snapshot.keys() != snapshots[0].keys() for snapshot in snapshots[1:]):
         raise ValueError("Canonical ownership differs between benchmark arms")
     byte_count = 0
@@ -433,7 +449,7 @@ def _versions(options, protocols, iterator, weights, plan):
                 version=version,
             )
         )
-        # Three cumulative versions rotate four arms, but do not fully balance
+        # Three cumulative versions rotate six arms, but do not fully balance
         # execution positions or provide repeated measurements of one target.
         order = _arm_order(version, list(protocols))
         arms = {}
@@ -446,7 +462,20 @@ def _versions(options, protocols, iterator, weights, plan):
         except Exception as caught:
             error = caught
         _check(error, "same quantized target comparison outside measured intervals")
-        result = {"version": version, "order": order, "perturbation": perturbation, "arms": arms, "equality": _gather(equality)}
+        # Explicit producer-only acknowledgment after every publication and target
+        # check. Production commits only after successful receiver activation.
+        error = None
+        try:
+            for protocol in protocols.values():
+                protocol.commit_pending_baseline()
+        except Exception as caught:
+            error = caught
+        _check(error, "producer-only baseline commit")
+        result = {
+            "version": version, "order": order, "perturbation": perturbation,
+            "arms": arms, "equality": _gather(equality),
+            "baseline_commit": "producer-only-after-sealing-and-all-rank-target-equality",
+        }
         results.append(result)
         _write_root(options.output / f"version-{version:03d}.json", result)
         if dist.get_rank() == 0:
@@ -511,6 +540,20 @@ def run(options):
             "env": NVFP4_ENV,
             "timing": options.timing,
             "arms": [arm[0] for arm in ARMS],
+            "arm_configs": {
+                name: {"encoder": encoder, "codec": codec, "frame_bytes": frame_bytes}
+                for name, encoder, codec, frame_bytes in ARMS
+            },
+            "producer_pipelines": {
+                "cpu": "export-overlapped-cpu-workers-v1",
+                "gpu": "pinned-snapshot-bulk-gpu-v1",
+            },
+            "gpu_batch_target_bytes": args.update_weight_buffer_size,
+            "gpu_batch_target_bytes_by_arm": {
+                name: args.update_weight_buffer_size
+                for name, encoder, _codec, _frame_bytes in ARMS if encoder == "gpu"
+            },
+            "baseline_commit_scope": "producer-only-simulated-activation-after-target-equality",
             "arm_order_by_version": {
                 str(version): _arm_order(version, [arm[0] for arm in ARMS])
                 for version in range(1, options.versions + 1)

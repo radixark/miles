@@ -45,15 +45,27 @@ Receiver decode depends on the codec, not the encoder location: either CPU- or
 GPU-produced Zstd uses CUDA decoding, and either Snappy producer requires the
 qualified Blackwell hardware decoder. There is no silent execution fallback.
 
-The GPU producer keeps old canonical bytes in pinned CPU memory. Two workers per
-owner overlap old-byte H2D, GPU XOR/compression, new-baseline D2H and encoded
-payload writes with subsequent exports. Export, worker backpressure, final
-encoding drain and publication/activation barriers still block the trainer.
+The GPU producer keeps old canonical bytes in pinned CPU memory and stages the
+full new snapshot D2H during export. It then encodes name-sorted batches using
+the existing `update_weight_buffer_size` target: upload old and new bytes,
+compute XOR/counts, compress independent 1 MiB frames across tensors, and copy
+encoded payloads back to pinned CPU memory. A tensor larger than the target
+stands alone. File hash/write follows all GPU batches. Only successful receiver
+activation commits the new baseline; old and pending CPU snapshots remain
+separate until then. This bulk path removes per-tensor compression fences but
+adds new-byte H2D: N canonical bytes require 3N transfer bytes (new D2H, old/new
+H2D), plus compressed payload D2H. Export, bulk encoding, publication and
+activation still block the trainer. GPU compression no longer overlaps later
+exports; the CPU reference keeps its existing worker overlap. Earlier
+per-tensor GPU timings do not measure this new pipeline.
 Routed experts retain exporter EP/EDP ownership; non-routed tensors retain the
-existing data-replica sender. The producer-only four-arm comparison is documented in
-[bench_gpu_delta_producer.md](bench_gpu_delta_producer.md).
-It preserves three cumulative update versions and rotates the four arms; this
-is not fully balanced repeated sampling of a fixed target.
+existing data-replica sender. The producer-only comparison is documented in
+[bench_gpu_delta_producer.md](bench_gpu_delta_producer.md). It compares the four
+1 MiB encoder/codec combinations plus controlled GPU Zstd/Snappy 64 KiB variants,
+using the same three cumulative targets across all six arms. Frame size is an
+internal benchmark control; production retains 1 MiB with no new tuning knob.
+Rotating six arms over three versions is not fully balanced repeated sampling
+of a fixed target.
 
 CPU SHA-256 checks encoded files during background preparation. Runtime updates
 do not hash old or new weights. Session/version/incarnation checks prevent stale

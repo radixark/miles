@@ -1,7 +1,8 @@
-"""Bounded GPU XOR/compression work with a pinned canonical CPU baseline.
+"""Cross-tensor GPU XOR/compression from immutable pinned CPU snapshots.
 
-One worker owns one CUDA stream and nvCOMP compressor. Publication I/O consumes
-only encoded host buffers; canonical weight hashing is not part of this path.
+One owner uploads a bounded batch, compresses all of its independent frames in
+one nvCOMP call, and returns an owned pinned payload slab. Canonical bytes are
+never hashed or copied back to the CPU by this encoder.
 """
 
 from __future__ import annotations
@@ -14,17 +15,33 @@ import torch
 
 from miles.utils.gpu_delta_publication import FRAME_BYTES
 
+try:
+    import triton
+    import triton.language as tl
+except ImportError:
+    # CPU reference encoding and metadata-only tests do not require Triton.
+    triton = tl = None
 
-def _frame_counts(delta: torch.Tensor) -> torch.Tensor:
-    full, tail = divmod(delta.numel(), FRAME_BYTES)
-    counts = []
-    if full:
-        counts.append(torch.count_nonzero(delta[: full * FRAME_BYTES].view(full, FRAME_BYTES), dim=1))
-    if tail:
-        counts.append(torch.count_nonzero(delta[full * FRAME_BYTES :]).reshape(1))
-    if not counts:
-        return torch.empty(0, dtype=torch.int64, device=delta.device)
-    return counts[0] if len(counts) == 1 else torch.cat(counts)
+
+def _xor_count_kernel(parameters, counts, nframes, BLOCK: tl.constexpr):
+    frame = tl.program_id(0)
+    previous = tl.load(parameters + frame).to(tl.pointer_type(tl.uint8))
+    current = tl.load(parameters + nframes + frame).to(tl.pointer_type(tl.uint8))
+    length = tl.load(parameters + 2 * nframes + frame)
+    lanes = tl.arange(0, BLOCK)
+    changed = tl.full((), 0, tl.int32)
+    for base in range(0, length, BLOCK):
+        offset = base + lanes
+        valid = offset < length
+        delta = tl.load(previous + offset, valid, other=0) ^ tl.load(current + offset, valid, other=0)
+        tl.store(previous + offset, delta, valid)
+        changed += tl.sum(((delta != 0) & valid).to(tl.int32), axis=0)
+    tl.store(counts + frame, changed.to(tl.int64))
+
+
+if triton is not None:
+    # Batch cardinality is runtime data, not a new compilation per batch shape.
+    _xor_count_kernel = triton.jit(_xor_count_kernel, do_not_specialize=["nframes"])
 
 
 class _PhaseTimes:
@@ -43,120 +60,183 @@ class _PhaseTimes:
         self.events[name] = (start, end)
 
     def elapsed(self):
-        # The caller has already waited on the ordinary payload completion fence.
+        # One final batch completion fence precedes all event reads.
         return {name: start.elapsed_time(end) / 1000 for name, (start, end) in self.events.items()}
 
 
-def _copy_payloads(codec, encoding, frames, batch, sizes, counts, host_payloads, descriptions):
-    for index, (frame, output, size, changed) in enumerate(zip(frames, batch.outputs, sizes, counts, strict=True)):
-        if not 0 < size <= output.numel():
-            raise RuntimeError("nvCOMP compressed size exceeds its output capacity")
-        if encoding == "xor_bytes" and changed == 0:
+def _validate_snapshots(tensors):
+    for previous, current, encoding in tensors:
+        for value in (previous, current):
+            if value.device.type != "cpu" or value.dtype != torch.uint8 or value.ndim != 1 or not value.is_contiguous() or (value.numel() and not value.is_pinned()):
+                raise ValueError("GPU batch encoding requires contiguous pinned CPU uint8 snapshots")
+        if previous.numel() != current.numel() or encoding not in ("xor_bytes", "replace_bytes"):
+            raise ValueError("GPU batch snapshots must have equal byte counts and a supported encoding")
+
+
+def _xor_frames(tensors, previous_gpu, current_gpu, frame_bytes, keepalive):
+    frames, owners, old_frames, new_frames = [], [], [], []
+    for index, ((_, _, encoding), previous, current) in enumerate(zip(tensors, previous_gpu, current_gpu, strict=True)):
+        old_parts = list(previous.split(frame_bytes)) if previous.numel() else []
+        new_parts = list(current.split(frame_bytes)) if current.numel() else []
+        old_frames.extend(old_parts)
+        new_frames.extend(new_parts)
+        frames.extend(old_parts if encoding == "xor_bytes" else new_parts)
+        owners.extend((index, offset * frame_bytes) for offset in range(len(old_parts)))
+    parameters = torch.empty((3, len(frames)), dtype=torch.int64, device="cpu", pin_memory=True)
+    parameters.numpy()[:] = [[frame.data_ptr() for frame in old_frames], [frame.data_ptr() for frame in new_frames], [frame.numel() for frame in frames]]
+    keepalive["host"] = parameters
+    keepalive["device"] = parameters.to(previous_gpu[0].device, non_blocking=True)
+    counts = torch.empty(len(frames), dtype=torch.int64, device=previous_gpu[0].device)
+    # Only uploaded old scratch is mutated. The reduction stays in registers;
+    # there is no model-sized bool or int64 count intermediate.
+    _xor_count_kernel[(len(frames),)](keepalive["device"], counts, len(frames), BLOCK=4096, num_warps=4)
+    return frames, owners, counts
+
+
+def _select_payloads(tensors, frames, owners, batch, sizes, counts):
+    descriptions, ranges = [[] for _ in tensors], [[] for _ in tensors]
+    changed, selected, total = [0] * len(tensors), [], 0
+    for (owner, offset), frame, output, size, count in zip(owners, frames, batch.outputs, sizes, counts, strict=True):
+        if not 0 < size <= output.numel() or not 0 <= count <= frame.numel():
+            raise RuntimeError("nvCOMP output size or changed-byte count is outside the frame")
+        changed[owner] += count
+        if tensors[owner][2] == "xor_bytes" and count == 0:
             continue
         compressed = size < frame.numel()
-        selected = output[:size] if compressed else frame
-        host = torch.empty(selected.numel(), dtype=torch.uint8, device="cpu", pin_memory=True)
-        # Retain even a partially submitted copy until the caller's failure fence.
-        host_payloads.append(host)
-        host.copy_(selected, non_blocking=True)
-        descriptions.append(
+        payload = output[:size] if compressed else frame
+        selected.append(payload)
+        ranges[owner].append((total, payload.numel()))
+        total += payload.numel()
+        descriptions[owner].append(
             {
-                "decoded_offset": index * FRAME_BYTES,
+                "decoded_offset": offset,
                 "decoded_bytes": frame.numel(),
-                "encoded_bytes": selected.numel(),
-                "codec": codec if compressed else "none",
+                "encoded_bytes": payload.numel(),
+                "codec": "compressed" if compressed else "none",
             }
         )
+    return descriptions, ranges, changed, selected, total
 
 
-class GpuTensorEncoder:
-    """Private-stream encoder; callers bound concurrent instances and tensors."""
+def _copy_payload_slab(selected, total, transfer):
+    if not selected:
+        return
+    # Keep both slabs in the caller's container even if a later enqueue fails.
+    # Frame views remain separate until this GPU gather; no raw host repacking.
+    transfer["device"] = selected[0] if len(selected) == 1 else torch.cat(selected)
+    transfer["host"] = torch.empty(total, dtype=torch.uint8, device="cpu", pin_memory=True)
+    transfer["host"].copy_(transfer["device"], non_blocking=True)
 
-    def __init__(self, codec: str, device: torch.device):
+
+def _results(tensors, codec, descriptions, ranges, changed, transfer, batch_metrics):
+    storage = memoryview(transfer["host"].numpy()) if "host" in transfer else memoryview(b"")
+    results = []
+    for index, ((_, current, _), entries, slices, count) in enumerate(zip(tensors, descriptions, ranges, changed, strict=True)):
+        for entry in entries:
+            if entry["codec"] == "compressed":
+                entry["codec"] = codec
+        payloads = [storage[start : start + size] for start, size in slices]
+        metrics = {
+            "encode_wall_s": 0.0,
+            "baseline_h2d_bytes": current.numel(),
+            "current_h2d_bytes": current.numel(),
+            "baseline_d2h_bytes": 0,
+            "encoded_d2h_bytes": sum(size for _, size in slices),
+            "metadata_wait_s": 0.0,
+            "payload_wait_s": 0.0,
+            "cuda_phase_s": {},
+            "timing_scope": "none",
+        }
+        if index == 0:
+            # Shared batch spans are recorded once, never attributed to a tensor
+            # or multiplied by the number of returned tensor entries.
+            metrics.update(batch_metrics, timing_scope="batch", batch_tensors=len(tensors), batch_canonical_bytes=sum(value[1].numel() for value in tensors))
+        results.append((entries, payloads, count, metrics))
+    return results
+
+
+class GpuBatchEncoder:
+    """One private stream; callers bound total batch bytes and finish input D2H.
+
+    ``encode`` takes ``[(old_pinned_u8, new_pinned_u8, encoding), ...]``. Neither
+    input may be modified concurrently. Returned payload memoryviews retain an
+    immutable, separately allocated host slab, including across later calls.
+    """
+
+    def __init__(self, codec: str, device: torch.device, frame_bytes: int = FRAME_BYTES):
         # CPU-reference callers do not need nvCOMP installed or a CUDA context.
         from miles.utils.gpu_delta_nvcomp import NvcompCompressor
 
-        self.codec, self.device = codec, device
+        if triton is None:
+            raise RuntimeError("GPU batch XOR/compression requires Triton")
+        if type(frame_bytes) is not int or frame_bytes not in (1 << 16, FRAME_BYTES):
+            raise ValueError("GPU delta frame_bytes must be 64 KiB or 1 MiB")
+        self.codec, self.device, self.frame_bytes = codec, torch.device(device), frame_bytes
         self.timing = os.environ.get("WEIGHT_DELTA_TIMING", "0") == "1"
-        self.stream = torch.cuda.Stream(device=device)
-        self.compressor = NvcompCompressor(codec, device)
+        self.stream = torch.cuda.Stream(device=self.device)
+        self.compressor = NvcompCompressor(codec, self.device)
+        if frame_bytes % self.compressor._alignments.input:
+            raise ValueError("GPU delta frame_bytes must preserve nvCOMP input alignment")
 
-    def encode(self, previous: torch.Tensor, current: torch.Tensor, produced: torch.cuda.Event, *, encoding: str):
-        if (
-            previous.device.type != "cpu"
-            or not previous.is_pinned()
-            or previous.dtype != torch.uint8
-            or previous.ndim != 1
-            or not previous.is_contiguous()
-            or current.device != self.device
-            or current.dtype != torch.uint8
-            or current.ndim != 1
-            or not current.is_contiguous()
-            or previous.numel() != current.numel()
-            or encoding not in ("xor_bytes", "replace_bytes")
-        ):
-            raise ValueError("GPU encoding requires equal contiguous byte buffers and a pinned CPU baseline")
+    def encode(self, tensors):
+        _validate_snapshots(tensors)
+        if not tensors:
+            return []
         started, phases = time.monotonic(), _PhaseTimes(self.timing)
-        descriptions, host_payloads = [], []
+        transfer, xor_metadata = {}, {}
+        metadata_wait_s = payload_wait_s = 0.0
+        if not any(current.numel() for _, current, _ in tensors):
+            return _results(tensors, self.codec, [[] for _ in tensors], [[] for _ in tensors], [0] * len(tensors), transfer, {"encode_wall_s": time.monotonic() - started})
         try:
             with torch.cuda.device(self.device), torch.cuda.stream(self.stream):
-                self.stream.wait_event(produced)
-                current.record_stream(self.stream)
                 with phases.record("baseline_h2d_s"):
-                    old_device = previous.to(device=self.device, non_blocking=True)
+                    previous_gpu = [previous.to(self.device, non_blocking=True) for previous, _, _ in tensors]
+                with phases.record("current_h2d_s"):
+                    current_gpu = [current.to(self.device, non_blocking=True) for _, current, _ in tensors]
                 with phases.record("xor_count_s"):
-                    delta = torch.bitwise_xor(old_device, current)
-                    counts = _frame_counts(delta)
-                raw = delta if encoding == "xor_bytes" else current
-                frames = list(raw.split(FRAME_BYTES)) if raw.numel() else []
-                # Compress before reading any count; no host decision serializes
-                # GPU XOR/count and the batched compressor launch.
+                    frames, owners, counts = _xor_frames(tensors, previous_gpu, current_gpu, self.frame_bytes, xor_metadata)
+                # The one batch may contain frames from many allocations and
+                # tensors. No per-tensor metadata readback serializes submission.
                 with phases.record("compression_s"):
                     batch = self.compressor.compress(frames, self.stream)
                 metadata = torch.stack((counts, batch.sizes, batch.statuses.to(torch.int64)))
                 host_metadata = torch.empty(metadata.shape, dtype=torch.int64, device="cpu", pin_memory=True)
                 host_metadata.copy_(metadata, non_blocking=True)
-                metadata_ready = torch.cuda.Event()
-                metadata_ready.record()
-                # Old bytes were consumed by H2D on this stream. Reuse the
-                # pinned baseline; any failed publication poisons the protocol
-                # and cannot consume this pending baseline in another update.
-                with phases.record("baseline_d2h_s"):
-                    previous.copy_(current, non_blocking=True)
+                ready = torch.cuda.Event()
+                ready.record()
             wait_started = time.monotonic()
-            metadata_ready.synchronize()
+            ready.synchronize()
             metadata_wait_s = time.monotonic() - wait_started
             host_counts, sizes, statuses = host_metadata.tolist()
             if any(status != 0 for status in statuses):
                 raise RuntimeError(f"nvCOMP {self.codec} compression failed: statuses={statuses}")
+            descriptions, ranges, changed, selected, total = _select_payloads(tensors, frames, owners, batch, sizes, host_counts)
             with torch.cuda.device(self.device), torch.cuda.stream(self.stream):
-                with phases.record("encoded_d2h_s"):
-                    _copy_payloads(
-                        self.codec, encoding, frames, batch, sizes, host_counts, host_payloads, descriptions
-                    )
-                payloads_ready = torch.cuda.Event()
-                payloads_ready.record()
+                with phases.record("encoded_pack_d2h_s"):
+                    _copy_payload_slab(selected, total, transfer)
+                done = torch.cuda.Event()
+                done.record()
             wait_started = time.monotonic()
-            payloads_ready.synchronize()
+            done.synchronize()
             payload_wait_s = time.monotonic() - wait_started
         except Exception:
-            # Drain before this frame releases pinned metadata/payloads, current,
-            # XOR bytes or the nvCOMP batch. In particular, a status failure can
-            # arrive while the new baseline D2H is still pending.
+            # All pinned inputs, metadata, slab owners and nvCOMP pointer tables
+            # remain referenced until even partially enqueued work is drained.
             self.stream.synchronize()
             raise
-        payloads = [memoryview(host.numpy()) for host in host_payloads]
-        return (
+        return _results(
+            tensors,
+            self.codec,
             descriptions,
-            payloads,
-            sum(host_counts),
+            ranges,
+            changed,
+            transfer,
             {
                 "encode_wall_s": time.monotonic() - started,
-                "baseline_h2d_bytes": current.numel(),
-                "baseline_d2h_bytes": current.numel(),
-                "encoded_d2h_bytes": sum(len(payload) for payload in payloads),
                 "metadata_wait_s": metadata_wait_s,
                 "payload_wait_s": payload_wait_s,
                 "cuda_phase_s": phases.elapsed(),
+                "nvcomp_frames": len(frames),
+                "frame_bytes": self.frame_bytes,
             },
         )
