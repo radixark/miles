@@ -193,6 +193,91 @@ async def test_the_window_is_scoped_to_the_policy_the_script_is_publishing():
     assert calls["check_weights"] == dict(action="checksum", model_id="alpha")
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("checksum_fails", [False, True])
+async def test_completed_update_publishes_version_before_checksum_observability(checksum_fails: bool):
+    """A checksum failure after the engines resume cannot leave the executor on the old version."""
+    from miles.ray.placement_group import update_weights
+
+    order: list[str] = []
+    inference_controller = _OrderRecordingInferenceController(order)
+
+    async def _check_weights(*, action: str, model_id: str | None):
+        order.append("check_weights")
+        if checksum_fails:
+            raise RuntimeError("checksum unavailable")
+        return _checksum_response([{"w": "e0"}])
+
+    async def _set_weight_version(version: int, *, trainer_model_id: str | None):
+        order.append("set_weight_version")
+
+    inference_controller.check_weights = _check_weights
+    rollout_executor = MagicMock(set_weight_version=AsyncMock(side_effect=_set_weight_version))
+    event_logger = MagicMock()
+    event_logger.log.side_effect = lambda *_args: order.append("log_checksum_event")
+
+    with patch("miles.ray.placement_group.is_event_logger_initialized", return_value=True), patch(
+        "miles.ray.placement_group.get_event_logger", return_value=event_logger
+    ), patch("miles.ray.placement_group.flatten_inference_engine_checksums", return_value=[]):
+        if checksum_fails:
+            with pytest.raises(RuntimeError, match="checksum unavailable"):
+                await update_weights(
+                    _orchestration_args(),
+                    _actor_model(order),
+                    rollout_executor,
+                    inference_controller,
+                    trainer_model_id="alpha",
+                )
+        else:
+            await update_weights(
+                _orchestration_args(),
+                _actor_model(order),
+                rollout_executor,
+                inference_controller,
+                trainer_model_id="alpha",
+            )
+
+    rollout_executor.set_weight_version.assert_awaited_once_with(11, trainer_model_id="alpha")
+    assert order == [
+        "start_update_weights",
+        "trainer_update_weights",
+        "end_update_weights",
+        "set_weight_version",
+        "check_weights",
+        *([] if checksum_fails else ["log_checksum_event"]),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_failed_end_update_does_not_publish_or_check_weights():
+    """The controller's end call must succeed before the completed version is published."""
+    from miles.ray.placement_group import update_weights
+
+    order: list[str] = []
+    inference_controller = _OrderRecordingInferenceController(order)
+
+    async def _fail_end_update_weights(*, snapshot_cell_id_to_hashes: object):
+        order.append("end_update_weights")
+        raise RuntimeError("end update failed")
+
+    inference_controller.end_update_weights = _fail_end_update_weights
+    rollout_executor = MagicMock(set_weight_version=AsyncMock())
+
+    with patch("miles.ray.placement_group.is_event_logger_initialized", return_value=True):
+        with pytest.raises(RuntimeError, match="end update failed"):
+            await update_weights(
+                _orchestration_args(),
+                _actor_model(order),
+                rollout_executor,
+                inference_controller,
+                trainer_model_id="alpha",
+            )
+
+    assert order == ["start_update_weights", "trainer_update_weights", "end_update_weights"]
+    rollout_executor.set_weight_version.assert_not_awaited()
+    assert all(name != "check_weights" for name, _args, _kwargs in inference_controller.calls)
+
+
 def _checksum_response(engine_checksums: list[dict[str, str]]) -> list:
     """Build a flat per-engine check_weights('checksum') response."""
     return [
