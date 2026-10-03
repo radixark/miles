@@ -29,7 +29,7 @@ allocation modes. Pinned host buffers supply streamed Snappy H2D copies.
 | --- | --- |
 | `WEIGHT_DELTA_CODEC=snappy-zstd` | The sole supported value and default. Frozen at launch and matched against the receiver plan and immutable publication. |
 | `WEIGHT_DELTA_TIMING=1` | Optional per-phase CUDA events. Default off; instrumentation can perturb timing. |
-| `WEIGHT_DELTA_CPU_WORKERS=4` | CPU outer-Zstd workers for the host cache creator; total per host, not per rank. |
+| `WEIGHT_DELTA_CPU_WORKERS=32` | CPU outer-Zstd workers for the host cache creator; total per host, not per rank, plus one independent SHA worker. |
 | `WEIGHT_DELTA_HOST_CACHE_DIR` | Shared host tmpfs root; defaults to `/dev/shm/sglang-gpu-delta-<uid>`. Its persistent identity groups colocated engines. |
 
 For Ray launches, set the job `runtime_env` environment or use the provided
@@ -140,6 +140,14 @@ producer prefixes reuse the existing owner gather.
   `host_encoded_capacity_bytes` report `{min,p50,max,sum}` across distinct hosts,
   counting each host once even when several ranks or engines map its arena.
   Used bytes and retained capacity are separate quantities.
+- `creator_host_payload_decode_hash_s` measures the combined CPU decode/hash
+  wall span; `creator_host_payload_hash_wait_s` measures only the hash tail
+  waited after decode. SHA duration and decode wall overlap and must not be
+  added. The worker decode sum remains summed worker elapsed time, not CPU
+  utilization. Each span has `{min,p50,max}` across host creators.
+- `receiver_host_plan_cache_reused/{min,p50,max}` reports per-rank static-plan
+  cache reuse; each publication still validates its dynamic frame metadata.
+  Older receipts omit these optional overlap/cache metrics.
 - `receiver_host_shared_{register_calls,registered_bytes,registration_reused,
   mapping_reused,registration_capacity_bytes}/{min,p50,max}` are per-rank
   distributions. `registered_bytes` counts newly registered bytes for this

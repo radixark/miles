@@ -161,6 +161,33 @@ def test_missing_capacity_is_not_zero_and_inconsistent_shared_capacity_is_reject
         metrics.activation_metrics(activation)
 
 
+def test_overlap_spans_and_plan_reuse_remain_optional_and_separate():
+    activation = _activation()
+    for rank, receipt in enumerate(activation["receipts"]):
+        timings = receipt["result"]["timings"]
+        timings.update(
+            host_plan_cache_reused=1,
+            host_payload_decode_hash_s=5 + rank if rank % 2 == 0 else 0,
+            host_payload_hash_wait_s=0.25 + rank if rank % 2 == 0 else 0,
+        )
+    prefix = "perf/gpu_delta/"
+    result = metrics.activation_metrics(activation)
+    assert result[prefix + "receiver_host_plan_cache_reused/min"] == 1
+    assert result[prefix + "creator_host_payload_decode_hash_s/p50"] == 6
+    assert result[prefix + "creator_host_payload_hash_wait_s/p50"] == 1.25
+    # SHA and decode retain their own nested/overlapping clocks; the reducer
+    # never computes combined wall time by summing them or averages follower 0s.
+    assert result[prefix + "creator_host_payload_sha256_s/p50"] == 11
+    assert result[prefix + "creator_host_outer_zstd_worker_decode_sum_s/p50"] == 11
+    for receipt in activation["receipts"]:
+        for key in ("host_plan_cache_reused", "host_payload_decode_hash_s", "host_payload_hash_wait_s"):
+            del receipt["result"]["timings"][key]
+    result = metrics.activation_metrics(activation)
+    assert prefix + "receiver_host_plan_cache_reused/min" not in result
+    assert prefix + "creator_host_payload_decode_hash_s/p50" not in result
+    assert prefix + "creator_host_payload_hash_wait_s/p50" not in result
+
+
 @pytest.mark.parametrize("corruption", ["incarnation", "open", "clock", "host_duplicate"])
 def test_partial_or_mismatched_receipts_never_become_completed_pause_metrics(corruption):
     activation = _activation()

@@ -35,6 +35,8 @@ _RANK_TIMINGS = (
 _HOST_TIMINGS = (
     "host_payload_read_s",
     "host_payload_sha256_s",
+    "host_payload_decode_hash_s",
+    "host_payload_hash_wait_s",
     "host_outer_zstd_validate_s",
     "host_outer_zstd_decode_s",
     "host_outer_zstd_worker_decode_sum_s",
@@ -43,6 +45,7 @@ _HOST_TIMINGS = (
     "host_encoded_allocation_s",
 )
 _RANK_REGISTRATION = (
+    "host_plan_cache_reused",
     "host_shared_register_calls",
     "host_shared_registered_bytes",
     "host_shared_registration_reused",
