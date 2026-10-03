@@ -117,13 +117,14 @@ def validate_checkpoint_compatibility(meta: dict, record: ModelRecord, config: G
         "base_model": record.base_model,
         "lora_rank": record.lora_rank,
         "lora_alpha": record.lora_alpha,
+        "lora_type": config.lora_type,
         "experts_shared_outer_loras": config.experts_shared_outer_loras,
         "train_attn": config.trains_attn,
         "train_mlp": config.trains_mlp,
         "train_unembed": config.trains_unembed,
     }
-    # Checkpoints written before the layout was recorded are all per-expert.
-    meta = {"experts_shared_outer_loras": False, **meta}
+    # Checkpoints written before the layout was recorded are all fused, per-expert.
+    meta = {"lora_type": "lora", "experts_shared_outer_loras": False, **meta}
     for key, value in expected.items():
         if meta[key] != value:
             raise UserInputError(
