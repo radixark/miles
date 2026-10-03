@@ -5,11 +5,15 @@ spans remain separate. Shared-host work is sampled once from each cache creator,
 not from the zero counters on ranks that attach to its arena.
 """
 
+import logging
 import math
 from statistics import median
 
 from miles.utils.gpu_delta_publication import canonical_json
+from miles.utils.metric_utils import compute_rollout_step, namespace_metrics
+from miles.utils.tracking_utils import tracking
 
+logger = logging.getLogger(__name__)
 _PREFIX = "perf/gpu_delta/"
 _RANK_TIMINGS = (
     "host_prepare_s",
@@ -133,3 +137,30 @@ def producer_metrics(owners):
     for name in ("producer_wall_s", "export_staging_wait_s", "encoding_tail_wait_s", "owner_seal_s"):
         _distribution(metrics, "producer_prefix_" + name, [owner[name] for owner in owners])
     return metrics
+
+
+def log_completed_update(args, updater, *, rollout_id, is_primary_rank):
+    """Drain on completion, including a final update with no subsequent train call."""
+    metrics = updater.pop_metrics()
+    if not metrics or not is_primary_rank:
+        return
+    if rollout_id is None:
+        # Initial baseline capture has no completed update metrics. Never assign
+        # an unexpected pre-training publication to an invented rollout step.
+        logger.warning("GPU-delta metrics have no trained rollout; not submitting to tracking: %s", metrics)
+        return
+    log_dict, step_key = namespace_metrics(
+        metrics,
+        trainer_model_id=args.trainer_model_id,
+        step_name="rollout/step",
+        step=compute_rollout_step(args, rollout_id),
+    )
+    logger.info("GPU-delta completed update metrics at rollout %s: %s", rollout_id, metrics)
+    try:
+        tracking.log(args, log_dict, step_key=step_key)
+    except Exception:
+        # The engines have already resumed. A reporting failure must not cause
+        # the actor controller to retry an already-applied weight publication.
+        logger.exception(
+            "Tracking failed for completed GPU-delta target version %s", metrics.get(_PREFIX + "target_version")
+        )

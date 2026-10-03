@@ -113,8 +113,8 @@ workload, raw timing rows and transfer/residency metrics separate.
 
 ## Training metrics
 
-The normal training `log_perf_data`/tracking path publishes `perf/gpu_delta/*`
-to the configured backend, including W&B. No extra RPC, device synchronization,
+Successful actor weight updates publish `perf/gpu_delta/*` through the existing
+tracking backend, including W&B. No extra engine RPC, device synchronization,
 or collective is added: receiver summaries reuse the activation broadcast and
 producer prefixes reuse the existing owner gather.
 
@@ -137,17 +137,22 @@ producer prefixes reuse the existing owner gather.
   pre-publication owner gather, before receiver activation.
 - `trainer_logging_rank_blocked_s` measures this update's `begin_sync` through
   the existing final trainer barrier on the rank selected by the training logger;
-  `trainer_logging_rank` identifies it. It is not an all-trainer maximum. The older
+  `trainer_logging_rank` identifies it. It excludes actor reconnect/cleanup and
+  controller orchestration, and is not an all-trainer maximum. The older
   `perf/update_weights_gpu_delta_s` remains the local pre-final-barrier interval.
 
 All seconds use local monotonic clocks. Nested phases are not additive, and no
-metric implies GPU-idle time or an RL throughput improvement. Step attachment
-follows the existing next actor `log_perf_data` drain, rather than an independent
-W&B logging call. `base_version` and `target_version` identify the completed
-publication: use them to join weight updates rather than assume the logging
-rollout step is the update version, especially with asynchronous training or
-update intervals. The protocol retains the latest completed update until that
-existing drain; it does not create an additional logging event.
+metric implies GPU-idle time or an RL throughput improvement. After the update
+completes, every trainer drains its summary and the usual TP0/last-PP/effective
+DP-CP0 logging rank submits it at the last trained rollout's existing step axis.
+This includes the final evaluation update even when no subsequent train call
+occurs. `base_version` and `target_version` identify the publication independently
+of that rollout step, including asynchronous training and update intervals.
+Startup baseline capture emits no completed-update metrics; without a trained
+rollout, the logger never invents a completed step. A tracking submission failure
+is logged with version context and does not retry an already-applied publication.
+The normal training timer and other protocols' next-train metric drains are
+unchanged; the next train call cannot emit the same GPU-delta summary again.
 
 ## Persistent fixture
 
