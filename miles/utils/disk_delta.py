@@ -5,7 +5,6 @@ import json
 import os
 import struct
 import zlib
-from functools import cache
 
 import numpy as np
 
@@ -78,17 +77,6 @@ def _tensor_locations(ckpt_dir: str) -> dict[str, tuple[str, int, int, str, tupl
                 tuple(info["shape"]),
             )
     return locations
-
-
-# GPU-delta fixes its source checkpoint for the stream lifetime. Keep this cache
-# separate from the disk receiver, whose checkpoint can change in place.
-_immutable_tensor_locations = cache(_tensor_locations)
-
-
-def checkpoint_tensor_layout(ckpt_dir: str, name: str) -> tuple[str, tuple[int, ...]]:
-    """Return a tensor's declared safetensors dtype and shape."""
-    _, _, _, dtype, shape = _immutable_tensor_locations(ckpt_dir)[name]
-    return dtype, shape
 
 
 def make_tensor_reader(ckpt_dir: str):

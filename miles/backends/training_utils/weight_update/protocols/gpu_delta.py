@@ -211,7 +211,7 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
         spec = self._plan.get(name)
         if spec is None:
             raise ValueError(f"Exporter tensor {name!r} is absent from the receiver mutable plan")
-        checkpoint_dtype, checkpoint_shape = disk_delta.checkpoint_tensor_layout(self.args.hf_checkpoint, name)
+        checkpoint_dtype, checkpoint_shape = gpu_delta_publication.checkpoint_tensor_layout(self.args.hf_checkpoint, name)
         if list(checkpoint_shape) != spec["shape"] or checkpoint_dtype != spec["dtype"]:
             raise ValueError(f"Receiver/checkpoint canonical layout differs for {name!r}")
         if tuple(tensor.shape) != checkpoint_shape:
@@ -227,6 +227,7 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
         raise ValueError(f"Exporter/checkpoint packed dtype differs for {name!r}")
 
     def send_bucket(self, bucket):
+        staged = []
         for name, tensor in bucket:
             if self._error is not None:
                 return
@@ -248,12 +249,20 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
                 if host is None:
                     host = torch.empty(flat.numel(), dtype=torch.uint8, device="cpu", pin_memory=True)
                     self._next_snapshot[name] = host
+                staged.append((host, flat))
+            except Exception as error:
+                self._error = error
+                return
+        if staged:
+            try:
+                # All casts in this bucket were enqueued on the caller stream.
+                # One dependency covers the whole bucket; no per-tensor event.
                 self._staging_stream.wait_stream(torch.cuda.current_stream())
                 with torch.cuda.stream(self._staging_stream):
-                    host.copy_(flat, non_blocking=True)
-                # Preserve the export buffer's allocator lease until its D2H
-                # read completes, without waiting for unrelated CUDA work.
-                flat.record_stream(self._staging_stream)
+                    for host, flat in staged:
+                        host.copy_(flat, non_blocking=True)
+                        # Keep each source allocation alive through its D2H read.
+                        flat.record_stream(self._staging_stream)
             except Exception as error:
                 self._error = error
 
@@ -442,10 +451,16 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
             self.publication_metrics["tensor_phases"] = self._encoding_metrics
         shard["producer_metrics"] = self.publication_metrics
         shards = [None] * dist.get_world_size() if dist.get_rank() == 0 else None
+        gather_started = time.monotonic()
         dist.gather_object(shard, shards, dst=0, group=get_gloo_group())
+        # This duration is rank-local: the just-completed gather serialized the
+        # prefix above. Diagnostic callers can collect it outside their timer.
+        self.publication_metrics["metadata_gather_s"] = time.monotonic() - gather_started
 
         def seal():
+            manifest_started = time.monotonic()
             descriptor = gpu_delta_publication.seal_publication(self._version_dir, shards)
+            descriptor["manifest_seal_s"] = time.monotonic() - manifest_started
             descriptor["summary_counts"] = {
                 key: sum(owner["producer_metrics"][key] for owner in shards)
                 for key in (

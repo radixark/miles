@@ -113,6 +113,29 @@ def test_empty_and_all_unchanged_batches():
     assert encoder.stream.query()
 
 
+def test_tiled_xor_counts_each_wire_frame_and_partial_tile_exactly():
+    device = torch.device("cuda", torch.cuda.current_device())
+    sizes = [2 * FRAME_BYTES + (1 << 16) + 1, (1 << 16) - 1, (1 << 16) + 1]
+    masks = [np.zeros(size, dtype=np.uint8) for size in sizes]
+    # Include full changed tiles, an unchanged full frame, both sides of a tile
+    # boundary, and short final tiles. Wire-frame geometry remains unchanged.
+    masks[0][:1 << 16] = 255
+    masks[0][(1 << 16) - 1:(1 << 16) + 1] = 7
+    masks[0][2 * FRAME_BYTES:] = 3
+    masks[1][:] = 19
+    masks[2][-1] = 23
+    previous = [torch.zeros(size, dtype=torch.uint8, device=device) for size in sizes]
+    current = [torch.from_numpy(mask).to(device) for mask in masks]
+    keepalive = {}
+    frames, owners, counts = gpu_delta_encoder._xor_frames(previous, current, FRAME_BYTES, keepalive)
+    expected = [int(np.count_nonzero(masks[owner][offset:offset + frame.numel()])) for (owner, offset), frame in zip(owners, frames, strict=True)]
+    assert counts.dtype == torch.int64 and counts.cpu().tolist() == expected
+    assert [frame.numel() for frame in frames] == [FRAME_BYTES, FRAME_BYTES, (1 << 16) + 1, (1 << 16) - 1, (1 << 16) + 1]
+    for old_scratch, target, mask in zip(previous, current, masks, strict=True):
+        np.testing.assert_array_equal(old_scratch.cpu().numpy(), mask)
+        np.testing.assert_array_equal(target.cpu().numpy(), mask)
+
+
 @pytest.mark.parametrize("stage", ["snappy", "zstd"])
 def test_failed_batch_status_drains_stream_and_keeps_snapshots(stage, monkeypatch):
     encoder = gpu_delta_encoder.GpuBatchEncoder(torch.device("cuda", torch.cuda.current_device()))

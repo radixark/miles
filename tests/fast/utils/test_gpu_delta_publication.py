@@ -118,6 +118,23 @@ def test_concurrent_shards_and_raw_targets_have_exclusive_ownership(tmp_path):
         publication.seal_publication(tmp_path, shards)
 
 
+def test_unicode_manifest_authenticates_written_bytes_without_changing_plan_json(tmp_path):
+    name = "层.é.weight_scale"
+    view = {"id": "完整", "slices": []}
+    plan = {"name": name, "views": [view]}
+    expected_plan_bytes = b'{"name":"\\u5c42.\\u00e9.weight_scale","views":[{"id":"\\u5b8c\\u6574","slices":[]}]}'
+    assert publication.canonical_json(plan) == expected_plan_bytes
+    writer = _writer(tmp_path)
+    writer.add_raw_tensor(name, b"\0\0\0\0", b"1234", dtype="F32", shape=[], views=[view])
+    descriptor = writer.finish()
+    manifest_bytes = (tmp_path / "manifest.json").read_bytes()
+    manifest = json.loads(manifest_bytes)
+    assert manifest["tensors"][0]["name"] == name
+    assert manifest["tensors"][0]["views"] == [view]
+    assert descriptor["manifest_sha256"] == hashlib.sha256(manifest_bytes).hexdigest()
+    assert publication.canonical_json(plan) == expected_plan_bytes
+
+
 @pytest.mark.parametrize("conflict", ["tensor", "metadata", "file"])
 def test_conflicting_owner_shards_cannot_publish(tmp_path, conflict):
     writer = _writer(tmp_path)

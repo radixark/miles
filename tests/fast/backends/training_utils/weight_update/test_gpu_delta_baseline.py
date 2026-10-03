@@ -4,6 +4,7 @@ import asyncio
 import threading
 import time
 from argparse import Namespace
+from contextlib import contextmanager
 from unittest.mock import Mock, patch
 
 import numpy as np
@@ -63,6 +64,67 @@ def _buckets(*, materialize):
     assert materialize
     # The baseline must use the startup checkpoint, not this exported value.
     yield [("w", torch.tensor([5, 6, 7, 8], dtype=torch.uint8))]
+
+
+def test_export_bucket_stages_after_all_conversions_with_one_stream_dependency(monkeypatch):
+    protocol = gpu_delta.UpdateWeightFromGpuDelta(Namespace(custom_update_weight_post_write_path=None))
+    bucket = [(name, torch.arange(6, dtype=torch.float32).reshape(2, 3) + index) for index, name in enumerate(("a", "b"))]
+    protocol._snapshot = {name: torch.zeros(tensor.nbytes, dtype=torch.uint8) for name, tensor in bucket}
+    protocol._next_snapshot = {name: torch.empty_like(value) for name, value in protocol._snapshot.items()}
+    protocol._seen = set()
+    events, caller_stream = [], object()
+    staging_active = False
+    protocol._staging_stream = Mock()
+    protocol._staging_stream.wait_stream.side_effect = lambda stream: events.append(("wait", stream))
+    protocol._match_layout = lambda name, tensor: (events.append(("convert", name)), tensor)[1]
+
+    @contextmanager
+    def staging(stream):
+        nonlocal staging_active
+        assert stream is protocol._staging_stream
+        staging_active = True
+        yield
+        staging_active = False
+
+    copy = torch.Tensor.copy_
+
+    def record_copy(destination, source, *, non_blocking):
+        assert non_blocking and staging_active and ("wait", caller_stream) in events
+        events.append(("copy", source.data_ptr()))
+        return copy(destination, source)
+
+    monkeypatch.setattr(torch.cuda, "current_stream", lambda: caller_stream)
+    monkeypatch.setattr(torch.cuda, "stream", staging)
+    monkeypatch.setattr(torch.Tensor, "copy_", record_copy)
+    monkeypatch.setattr(torch.Tensor, "record_stream", lambda tensor, stream: events.append(("lease", tensor.data_ptr(), stream)))
+    protocol.send_bucket(bucket)
+    assert protocol._error is None
+    protocol._staging_stream.wait_stream.assert_called_once_with(caller_stream)
+    wait_index = events.index(("wait", caller_stream))
+    assert {event[1] for event in events if event[0] == "convert"} == {"a", "b"}
+    assert all(index < wait_index for index, event in enumerate(events) if event[0] == "convert")
+    copied = [event[1] for event in events if event[0] == "copy"]
+    leased = [event[1] for event in events if event[0] == "lease" and event[2] is protocol._staging_stream]
+    assert sorted(copied) == sorted(leased) == sorted(tensor.data_ptr() for _, tensor in bucket)
+    for name, tensor in bucket:
+        assert torch.equal(protocol._next_snapshot[name], tensor.reshape(-1).view(torch.uint8))
+        assert not torch.count_nonzero(protocol._snapshot[name])
+
+
+def test_invalid_export_bucket_does_not_enqueue_a_partial_snapshot(monkeypatch):
+    protocol = gpu_delta.UpdateWeightFromGpuDelta(Namespace(custom_update_weight_post_write_path=None))
+    protocol._snapshot = {"a": torch.zeros(4, dtype=torch.uint8)}
+    protocol._next_snapshot = {"a": torch.zeros(4, dtype=torch.uint8)}
+    protocol._seen = set()
+    protocol._match_layout = lambda name, tensor: tensor
+    protocol._staging_stream = Mock()
+    caller_stream = Mock()
+    monkeypatch.setattr(torch.cuda, "current_stream", caller_stream)
+    protocol.send_bucket([("a", torch.ones(4, dtype=torch.uint8)), ("a", torch.ones(4, dtype=torch.uint8))])
+    assert isinstance(protocol._error, ValueError) and "Duplicate canonical tensor owner" in str(protocol._error)
+    caller_stream.assert_not_called()
+    protocol._staging_stream.wait_stream.assert_not_called()
+    assert not torch.count_nonzero(protocol._next_snapshot["a"])
 
 
 def test_verified_startup_checkpoint_is_zero_on_every_engine_before_rollout(tmp_path, single_rank):

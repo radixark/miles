@@ -24,20 +24,21 @@ except ImportError:
     triton = tl = None
 
 
-def _xor_count_kernel(parameters, counts, nframes, BLOCK: tl.constexpr):
+def _xor_count_kernel(parameters, counts, nframes, TILE: tl.constexpr, BLOCK: tl.constexpr):
     frame = tl.program_id(0)
+    tile = tl.program_id(1)
     previous = tl.load(parameters + frame).to(tl.pointer_type(tl.uint8))
     current = tl.load(parameters + nframes + frame).to(tl.pointer_type(tl.uint8))
     length = tl.load(parameters + 2 * nframes + frame)
     lanes = tl.arange(0, BLOCK)
     changed = tl.full((), 0, tl.int32)
-    for base in range(0, length, BLOCK):
+    for base in range(tile * TILE, tl.minimum((tile + 1) * TILE, length), BLOCK):
         offset = base + lanes
         valid = offset < length
         delta = tl.load(previous + offset, valid, other=0) ^ tl.load(current + offset, valid, other=0)
         tl.store(previous + offset, delta, valid)
         changed += tl.sum(((delta != 0) & valid).to(tl.int32), axis=0)
-    tl.store(counts + frame, changed.to(tl.int64))
+    tl.store(counts + frame * tl.num_programs(1) + tile, changed)
 
 
 if triton is not None:
@@ -87,11 +88,15 @@ def _xor_frames(previous_gpu, current_gpu, frame_bytes, keepalive):
     parameters.numpy()[:] = [[frame.data_ptr() for frame in old_frames], [frame.data_ptr() for frame in new_frames], [frame.numel() for frame in frames]]
     keepalive["host"] = parameters
     keepalive["device"] = parameters.to(previous_gpu[0].device, non_blocking=True)
-    counts = torch.empty(len(frames), dtype=torch.int64, device=previous_gpu[0].device)
+    tile_bytes = 1 << 16
+    tiles = (frame_bytes + tile_bytes - 1) // tile_bytes
+    counts = torch.empty((len(frames), tiles), dtype=torch.int32, device=previous_gpu[0].device)
     # Only uploaded old scratch is mutated. The reduction stays in registers;
-    # there is no model-sized bool or int64 count intermediate.
-    _xor_count_kernel[(len(frames),)](keepalive["device"], counts, len(frames), BLOCK=4096, num_warps=4)
-    return frames, owners, counts
+    # 64 KiB tiles expose parallelism within each frame instead of assigning
+    # a serial 1 MiB loop to one CTA. Only the tiny per-tile counts are reduced;
+    # there is no model-sized bool/int64 intermediate or additional host fence.
+    _xor_count_kernel[(len(frames), tiles)](keepalive["device"], counts, len(frames), TILE=tile_bytes, BLOCK=4096, num_warps=4)
+    return frames, owners, counts.sum(dim=1, dtype=torch.int64)
 
 
 def _select_payloads(tensors, frames, owners, batch, sizes, counts):

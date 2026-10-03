@@ -37,7 +37,6 @@ EXTRA_HIGH_PRECISION_LAYERS_MEGATRON = (
 )
 
 NVFP4_ENV = {
-    "SGLANG_NVFP4_CKPT_FP8_GEMM_IN_ATTN": "0",
     "OPEN_TRAINING_NVFP4_FAKE_QAT_FLAG": "1",
     "SGLANG_FLASHINFER_CUTEDSL_NVFP4_W4A16": "1",
     "SGLANG_FLASHINFER_MOE_FUSED_FINALIZE": "0",
@@ -142,7 +141,7 @@ def _gpu_delta_env():
     # Ray jobs receive an explicit environment, not every variable in this shell.
     from miles.utils.gpu_delta_publication import configured_codec
 
-    return {"WEIGHT_DELTA_CODEC": configured_codec()}
+    return {"WEIGHT_DELTA_CODEC": configured_codec(), "SGLANG_NVFP4_CKPT_FP8_GEMM_IN_ATTN": "0"}
 
 
 def _assert_gpu_delta_weights_changed(args, version_dir, _rollout_engines):
@@ -180,20 +179,29 @@ def _assert_gpu_delta_weights_changed(args, version_dir, _rollout_engines):
     print(f"GPU-delta E2E learned publication changed bytes: {changed_bytes}", flush=True)
 
 
-def execute(*, num_rollout: int = 4, update_weight_disk_dir: str | None = None):
+def execute(*, gpu_delta: bool = False, num_rollout: int | None = None, update_weight_disk_dir: str | None = None):
     U = command_utils.default_config().create_backend()
-    if num_rollout < 4:
+    if num_rollout is None:
+        num_rollout = 4 if gpu_delta else 2
+    if gpu_delta and num_rollout < 4:
         raise ValueError("GPU-delta validation requires three learned updates (at least four rollouts).")
-    publication_dir = update_weight_disk_dir or f"/root/shared_data/{RUN_ID}/gpu_delta"
-    weight_transfer_args = (
-        "--update-weight-transfer-mode gpu-delta "
-        f"--update-weight-disk-dir {shlex.quote(publication_dir)} "
-        "--custom-update-weight-post-write-path "
-        "tests.e2e.megatron.test_glm5_2_744b_a40b_5layer_nvfp4_w4a16._assert_gpu_delta_weights_changed "
-    )
+    if update_weight_disk_dir is not None and not gpu_delta:
+        raise ValueError("--update-weight-disk-dir requires --gpu-delta")
+    weight_transfer_args = "--update-weight-transfer-mode broadcast_packed --use-fault-tolerance "
+    delta_env = {}
+    if gpu_delta:
+        publication_dir = update_weight_disk_dir or f"/root/shared_data/{RUN_ID}/gpu_delta"
+        weight_transfer_args = (
+            "--update-weight-transfer-mode gpu-delta "
+            f"--update-weight-disk-dir {shlex.quote(publication_dir)} "
+            "--custom-update-weight-post-write-path "
+            "tests.e2e.megatron.test_glm5_2_744b_a40b_5layer_nvfp4_w4a16._assert_gpu_delta_weights_changed "
+        )
+        delta_env = _gpu_delta_env()
 
     os.environ.update(NVFP4_ENV)
     os.environ.update(GLM5_ENV)
+    os.environ.update(delta_env)
     os.environ.setdefault("RAY_TMPDIR", "/tmp/ray")
     te_precision_config_path = command_utils.encode_pseudo_file(TE_PRECISION_CONFIG)
 
@@ -201,16 +209,15 @@ def execute(*, num_rollout: int = 4, update_weight_disk_dir: str | None = None):
         f"--hf-checkpoint {MODEL_DIR}/{MODEL_NAME}-NVFP4/ " f"--ref-load {MODEL_DIR}/{MEGATRON_MODEL_NAME}_torch_dist "
     )
 
-    # A pruned model with a short response cap scores zero on math, producing
-    # zero GRPO advantages. Reuse the deterministic CI reward from Kimi's
-    # pruned-model test; the publication gate still fails if weights never move.
+    # GPU-delta needs learned changes despite this pruned model's zero math
+    # score; the ordinary CI arm retains its original deepscaler reward.
     rollout_args = (
         f"--prompt-data {DATA_DIR}/dapo-math-17k/dapo-math-17k.jsonl "
         "--input-key prompt "
         "--label-key label "
         "--apply-chat-template "
         "--rollout-shuffle "
-        "--rm-type deterministic_random "
+        f"--rm-type {'deterministic_random' if gpu_delta else 'deepscaler'} "
         f"--num-rollout {num_rollout} "
         "--rollout-batch-size 8 "
         "--n-samples-per-prompt 8 "
@@ -322,7 +329,6 @@ def execute(*, num_rollout: int = 4, update_weight_disk_dir: str | None = None):
         f"--save-debug-trajectory-data /root/shared_data/{RUN_ID}/dump_details/trajectory/{{rollout_id}}.jsonl "
     )
 
-    delta_env = _gpu_delta_env()
     train_args = (
         f"{ckpt_args} "
         f"{rollout_args} "
@@ -349,20 +355,26 @@ def execute(*, num_rollout: int = 4, update_weight_disk_dir: str | None = None):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="GLM-5.2 NVFP4 W4A16 with four training and four rollout GPUs.")
     parser.add_argument(
+        "--gpu-delta", action="store_true", help="Exercise three learned GPU-delta updates instead of ordinary broadcast."
+    )
+    parser.add_argument(
         "--skip-prepare", action="store_true", help="Reuse previously prepared checkpoints and dataset."
     )
     parser.add_argument(
-        "--num-rollout", type=int, default=4, help="Four rollouts exercise three learned gpu-delta updates."
+        "--num-rollout", type=int, help="Defaults to two rollouts, or four with --gpu-delta."
     )
     parser.add_argument("--update-weight-disk-dir")
     options = parser.parse_args()
-    if options.num_rollout < 4:
-        parser.error("--num-rollout must be at least 4")
+    if options.gpu_delta and options.num_rollout is not None and options.num_rollout < 4:
+        parser.error("--gpu-delta requires --num-rollout of at least 4")
+    if options.update_weight_disk_dir is not None and not options.gpu_delta:
+        parser.error("--update-weight-disk-dir requires --gpu-delta")
     if not options.skip_prepare:
         prepare()
     for proxy_var in ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY"):
         os.environ.pop(proxy_var, None)
     execute(
+        gpu_delta=options.gpu_delta,
         num_rollout=options.num_rollout,
         update_weight_disk_dir=options.update_weight_disk_dir,
     )

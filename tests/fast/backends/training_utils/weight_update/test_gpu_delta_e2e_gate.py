@@ -1,10 +1,13 @@
 """The short GPU-delta E2E must not pass on version-only publications."""
 
 import json
+import os
+import shlex
 from argparse import Namespace
 from unittest.mock import patch
 
 import pytest
+from tests.e2e.megatron import test_glm5_2_744b_a40b_5layer_nvfp4_w4a16 as e2e
 from tests.e2e.megatron.test_glm5_2_744b_a40b_5layer_nvfp4_w4a16 import (
     _assert_gpu_delta_weights_changed,
     _gpu_delta_env,
@@ -13,8 +16,7 @@ from tests.e2e.megatron.test_glm5_2_744b_a40b_5layer_nvfp4_w4a16 import (
 
 @pytest.fixture(autouse=True)
 def _default_delta_env(monkeypatch):
-    for key in ("WEIGHT_DELTA_CODEC",):
-        monkeypatch.delenv(key, raising=False)
+    monkeypatch.delenv("WEIGHT_DELTA_CODEC", raising=False)
 
 
 def _write_series(tmp_path, changed_bytes, *, protocol=4, codec="snappy-zstd"):
@@ -63,10 +65,31 @@ def test_changed_bytes_from_another_stream_do_not_count(tmp_path):
 
 
 def test_e2e_forwards_the_sole_codec_to_ray(monkeypatch):
-    assert _gpu_delta_env() == {"WEIGHT_DELTA_CODEC": "snappy-zstd"}
+    assert _gpu_delta_env() == {"WEIGHT_DELTA_CODEC": "snappy-zstd", "SGLANG_NVFP4_CKPT_FP8_GEMM_IN_ATTN": "0"}
     monkeypatch.setenv("WEIGHT_DELTA_CODEC", "unsupported")
     with pytest.raises(ValueError, match="WEIGHT_DELTA_CODEC"):
         _gpu_delta_env()
+
+
+@pytest.mark.parametrize("gpu_delta", [False, True])
+def test_gpu_delta_is_explicit_and_preserves_the_ordinary_e2e_arm(monkeypatch, gpu_delta):
+    launch = {}
+    backend = Namespace(execute_train=lambda **kwargs: launch.update(kwargs))
+    monkeypatch.setattr(e2e.command_utils, "default_config", lambda: Namespace(create_backend=lambda: backend))
+    monkeypatch.setattr(e2e.command_utils, "encode_pseudo_file", lambda _: "/tmp/precision.yaml")
+    monkeypatch.setattr(e2e.command_utils, "get_default_wandb_args", lambda *args, **kwargs: "")
+    with patch.dict(os.environ):
+        e2e.execute(**({"gpu_delta": True, "update_weight_disk_dir": "/tmp/delta outputs"} if gpu_delta else {}))
+    args = shlex.split(launch["train_args"])
+    assert args[args.index("--update-weight-transfer-mode") + 1] == ("gpu-delta" if gpu_delta else "broadcast_packed")
+    assert args[args.index("--rm-type") + 1] == ("deterministic_random" if gpu_delta else "deepscaler")
+    assert args[args.index("--num-rollout") + 1] == ("4" if gpu_delta else "2")
+    assert ("--use-fault-tolerance" in args) is not gpu_delta
+    assert ("--custom-update-weight-post-write-path" in args) is gpu_delta
+    assert ("WEIGHT_DELTA_CODEC" in launch["extra_env_vars"]) is gpu_delta
+    assert ("SGLANG_NVFP4_CKPT_FP8_GEMM_IN_ATTN" in launch["extra_env_vars"]) is gpu_delta
+    if gpu_delta:
+        assert args[args.index("--update-weight-disk-dir") + 1] == "/tmp/delta outputs"
 
 
 @pytest.mark.parametrize("protocol,codec,error", [(3, "snappy-zstd", "protocol"), (4, "zstd", "codec")])

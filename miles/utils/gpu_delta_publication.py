@@ -14,9 +14,13 @@ import threading
 import time
 import uuid
 from collections.abc import Iterable, Mapping
+from functools import cache
 from pathlib import Path
 
 import numpy as np
+import orjson
+
+from miles.utils.disk_delta import _tensor_locations
 
 FRAME_BYTES = 1 << 20
 # 2 MiB is a producer benchmark profile, not a streaming-receiver capability.
@@ -41,6 +45,17 @@ DTYPE_BYTES = {
     "I64": 8,
     "F64": 8,
 }
+
+
+# This feature fixes its checkpoint for the stream lifetime. Ordinary disk-delta
+# readers keep their existing uncached indexing when checkpoints change in place.
+_immutable_tensor_locations = cache(_tensor_locations)
+
+
+def checkpoint_tensor_layout(ckpt_dir: str, name: str) -> tuple[str, tuple[int, ...]]:
+    """Return the immutable startup checkpoint's declared dtype and shape."""
+    _, _, _, dtype, shape = _immutable_tensor_locations(ckpt_dir)[name]
+    return dtype, shape
 
 
 def canonical_json(value: object) -> bytes:
@@ -315,7 +330,9 @@ def seal_publication(directory, shards: Iterable[Mapping]) -> dict:
         "tensors": sorted(tensors, key=lambda t: t["name"]),
         "files": sorted(files, key=lambda f: f["name"]),
     }
-    content = canonical_json(manifest)
+    # The descriptor authenticates these exact bytes. Keep canonical_json
+    # unchanged for the public plan-digest contract.
+    content = orjson.dumps(manifest, option=orjson.OPT_SORT_KEYS)
     directory = Path(directory)
     temporary = directory / "manifest.json.pending"
     _write_exclusive(temporary, content)

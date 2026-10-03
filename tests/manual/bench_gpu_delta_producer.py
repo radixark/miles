@@ -211,7 +211,7 @@ def _make_iterator(args, model, config, timing):
 
 def _discover_plan(args, iterator, weights):
     from miles.backends.training_utils.parallel import get_parallel_state
-    from miles.utils import disk_delta
+    from miles.utils.gpu_delta_publication import checkpoint_tensor_layout
 
     local, error = {}, None
     parallel = get_parallel_state()
@@ -222,7 +222,7 @@ def _discover_plan(args, iterator, weights):
             for name, tensor in unit:
                 if name in local:
                     raise ValueError(f"Repeated owner for {name}")
-                dtype, shape = disk_delta.checkpoint_tensor_layout(args.hf_checkpoint, name)
+                dtype, shape = checkpoint_tensor_layout(args.hf_checkpoint, name)
                 if tuple(tensor.shape) != shape:
                     raise ValueError(f"Exporter/checkpoint shape mismatch for {name}")
                 expert = re.search(r"\.mlp\.experts\.(\d+)\.", name)

@@ -36,8 +36,21 @@ For Ray launches, set the job `runtime_env` environment or use the provided
 `execute_train(extra_env_vars=...)` path. The submitting shell alone does not
 forward arbitrary variables into existing workers. Trainer-only settings can
 use `--train-env-vars`; receiver profiling needs the timing setting on rollout
-actors too. The five-layer E2E forwards the codec and checks every learned
-publication's protocol and codec. No old codec/encoder setting is migrated.
+actors too. The explicit five-layer GPU-delta E2E arm forwards the codec and checks
+every learned publication's protocol and codec. No old codec/encoder setting is migrated.
+
+The existing five-layer test keeps its ordinary two-rollout `broadcast_packed`
+default. Select the GPU-delta arm explicitly to exercise at least three learned
+updates with a deterministic nonzero reward and the publication-change gate:
+
+```bash
+python tests/e2e/megatron/test_glm5_2_744b_a40b_5layer_nvfp4_w4a16.py \
+  --gpu-delta --skip-prepare --num-rollout 4 \
+  --update-weight-disk-dir /data/gpu-delta/e2e-new
+```
+
+`--skip-prepare` requires the existing checkpoints and dataset. GPU-delta disables
+engine replacement and attention FP8 conversion only in its selected test arm.
 
 ## Fixed producer and receiver pipeline
 
@@ -113,6 +126,14 @@ bulk compression, publication and activation block training; compression starts
 after all exports and does not overlap later exports. Receiver preparation runs
 before pause; streamed H2D, Snappy decode and in-place mutation block rollout.
 Do not sum nested phases or add sender/receiver times from different workloads.
+
+Publication diagnostics retain `metadata_gather_s` on each sender rank and
+`manifest_seal_s` on the returned descriptor. The first is that rank's existing
+owner-metadata gather wall time; it does not measure payload transfer. The second
+is root's manifest validation, serialization, hashing and exclusive write/link
+span. Diagnostic benchmarks may collect the local values after their timed span;
+these fields add no collective or training-metric reduction. The manifest uses
+sorted orjson serialization, while canonical plan-digest JSON remains unchanged.
 
 See [bench_gpu_delta_producer.md](bench_gpu_delta_producer.md) for the producer
 benchmark. Compare new evidence with the saved matched-workload baseline, keeping source,

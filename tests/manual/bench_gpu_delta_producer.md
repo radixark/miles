@@ -32,6 +32,8 @@ It does not launch a receiver or run forward/backward, an optimizer, or activati
 ## Pipeline and memory
 
 Export stages the complete new owner-local snapshot into pinned CPU memory.
+One caller-to-staging stream dependency covers each exporter bucket; every
+source allocation retains its stream lease through its asynchronous D2H copy.
 Canonical scalars/vectors bypass XOR and both compressors; an owner CPU worker
 compares them and writes complete target values only when changed. Classification
 is fixed during baseline setup, outside the update hot loop.
@@ -39,7 +41,9 @@ is fixed during baseline setup, outside the update hot loop.
 After export D2H completes, name-sorted matrix batches use the existing
 `update_weight_buffer_size` target (512 MiB here). Larger individual tensors remain
 whole. Upload old/new pinned snapshots, compute XOR/counts and compress all
-independent 1 MiB Snappy frames in one nvCOMP submission per batch. Only compact
+independent 1 MiB Snappy frames in one nvCOMP submission per batch. XOR/counting
+uses disjoint 64 KiB tiles per frame and reduces only their small count array.
+Only compact
 aligned Snappy arenas remain in HBM as batches finish. Compress all owner-local
 outer Zstd chunks together, read sizes/status once, pack final bytes and perform
 one pinned D2H. CPU workers hash/write the final outer payload; no intermediate
@@ -87,11 +91,18 @@ historical controls, not executable alternate production paths.
 | `export_loop_s` | Actual conversion/quantization/collectives and new snapshot D2H staging. |
 | `encoding_tail_s` | Remaining export D2H, bulk GPU encoding, owner hash/write tails and collective agreement. |
 | `seal_and_visibility_s` | Owner shard sealing, metadata gather and final manifest publication. |
+| `publication.manifest_seal_s` | Root manifest validation, serialization, hash and exclusive publication, nested in seal/visibility. |
 | `conversion_host_s` | Host time advancing the real conversion iterator, nested in export. |
 | `conversion_cuda_ms` | Optional same-stream conversion events, read after final fence; includes dispatch gaps and intervening work. |
 | `publication.producer_metrics` | Per-owner nested encoding/wait/raw/write phases and source-accounted copy bytes. |
 | `gpu_memory_bytes` | Before/after/peak PyTorch allocated/reserved bytes over the isolated update. |
 | `sizes` | Changed canonical bytes, raw bytes, inner Snappy/outer Zstd/payload/manifest sizes. |
+
+The protocol also retains rank-local `publication_metrics["metadata_gather_s"]`
+after the existing gather completes. It measures metadata serialization/transport
+and rank wait, not payload transfer, and is too late for that same gather's owner
+prefix. External diagnostic observers can collect it outside the measured span;
+the production path adds no collective just for this clock.
 
 Report all rank ranges/medians plus rank0 separately. V1 includes first-use
 allocation/compilation; V2/V3 are warm cumulative versions, not independent
