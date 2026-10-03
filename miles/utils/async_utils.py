@@ -9,6 +9,8 @@ from contextlib import AsyncExitStack
 from types import TracebackType
 from typing import Any, TypeVar
 
+from miles.utils.async_diagnostics import configure_async_diagnostics
+
 logger = logging.getLogger(__name__)
 
 
@@ -37,6 +39,7 @@ class AsyncLoopThread:
 
     def _start_loop(self):
         asyncio.set_event_loop(self.loop)
+        configure_async_diagnostics(self.loop)
         self.loop.run_forever()
 
     def submit(self, coro: Coroutine[Any, Any, _T]) -> concurrent.futures.Future[_T]:
