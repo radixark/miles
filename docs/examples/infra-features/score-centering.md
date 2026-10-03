@@ -24,7 +24,7 @@ Add these arguments to an existing text-only GRPO training recipe:
 --calculate-per-token-loss
 ```
 
-Unfiltered session-server rollouts with more than 20 candidates, and filtered rollouts, need a compatible SGLang router build; see [Rollout and data contract](#rollout-and-data-contract).
+The SGLang router in the Miles Docker image supports this recipe; for other router builds, see [Rollout and data contract](#rollout-and-data-contract).
 
 Keep reward mean subtraction enabled. Disabling standard-deviation normalization gives the paper's group-centered rewards. This is a separate REINFORCE-style loss: PPO clipping parameters do not apply. Existing batch size and update scheduling still control how many updates consume a rollout batch; choose them explicitly when reproducing an experiment.
 
@@ -85,7 +85,7 @@ Native SGLang generation, the legacy rollout path, and both session-server versi
 
 Evaluation requests skip this collection and may use independent sampling settings, including greedy decoding. The built-in agentic producer marks evaluation sessions when creating them; custom session clients should create them with `POST /sessions` with JSON body `{"evaluation": true}`.
 
-Unfiltered session rollouts with more than 20 candidates need an SGLang router build that accepts the requested OpenAI `top_logprobs` value and preserves `input_ids` and `return_meta_info`. Older builds cap `top_logprobs` at 20. Verify a chat request through the installed router before launching; for `--rollout-top-logprobs-num 128`, confirm that 128 candidate log probabilities reach the session server. Native `/generate` requests use `top_logprobs_num` and do not share that chat validation limit. Filtered rollouts request support probabilities through `sampling_logprobs_mode` instead of `top_logprobs`, so that cap does not apply, but the router must forward `sampling_logprobs_mode` on chat and `/generate` requests.
+Session rollouts reach SGLang through the SGLang router: unfiltered requests carry `top_logprobs=K`, filtered requests carry `sampling_logprobs_mode="support"`. The router in the Miles Docker image, built from `radixark/sgl-router-for-miles`, accepts chat `top_logprobs` up to 128 and forwards `sampling_logprobs_mode`. Other builds, including upstream SGLang's before [#41373](https://github.com/sgl-project/sglang/pull/41373), may reject chat `top_logprobs` above 20 or drop `sampling_logprobs_mode`.
 
 Unused candidate slots and non-trained observation rows contain token ID `-1` and log probability `-inf`. Tool-observation masks, multi-turn merging, retries, trailing-token trimming, and truncation preserve row alignment. Session serialization retains both arrays. For score centering in support mode, training batches share the recorded support IDs when every sample has exactly the same candidate order and prefix padding. A per-row candidate count preserves observation rows and masked generated rows; any mismatch keeps the original arrays for the whole batch. The trainer reconstructs only its context-parallel rows. The source Samples and session payloads still retain both representations.
 
@@ -128,4 +128,4 @@ MILES_LIVE_SCORE_CENTERING_SERVED_MODEL=your-served-model \
 python -m pytest --confcutdir=tests/manual tests/manual/test_score_centering_live.py
 ```
 
-Set `SGLANG_RETURN_ORIGINAL_LOGPROB=0` on the server before starting it. The probe checks native and OpenAI response metadata using the production candidate collector and validator, and checks temperature scaling at 0.7, 1.0 and 1.3. It warms the shared prompt first so that cached and uncached prefills do not confound the temperature comparison. Set `MILES_LIVE_SCORE_CENTERING_ARTIFACT_DIR` to keep the raw responses.
+Set `SGLANG_RETURN_ORIGINAL_LOGPROB=0` on the server before starting it. The probe checks unfiltered native and OpenAI response metadata using the production candidate collector and validator, and checks temperature scaling at 0.7, 1.0 and 1.3. It warms the shared prompt first so that cached and uncached prefills do not confound the temperature comparison. Set `MILES_LIVE_SCORE_CENTERING_ARTIFACT_DIR` to keep the raw responses.
