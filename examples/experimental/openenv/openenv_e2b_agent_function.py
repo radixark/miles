@@ -58,7 +58,7 @@ logger = logging.getLogger(__name__)
 # backstops it per episode.
 #
 # Providers rate-limit or run out of capacity under a fanned-out rollout; the
-# shared backend caps in-flight creates process-wide and retries throttled ones
+# shared backend caps in-flight creates node-wide and retries throttled ones
 # with jittered exponential backoff (knobs: OPENENV_E2B_CREATE_*).
 def _is_throttle_error(exc: BaseException) -> bool:
     """True when a sandbox create failed only because the provider throttled it.

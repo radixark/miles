@@ -61,7 +61,7 @@ logger = logging.getLogger(__name__)
 # backstops it per episode.
 #
 # Modal caps concurrent containers per plan; the shared backend caps in-flight
-# creates process-wide and retries throttled ones with jittered exponential
+# creates node-wide and retries throttled ones with jittered exponential
 # backoff (knobs: OPENENV_MODAL_CREATE_*).
 def _is_throttle_error(exc: BaseException) -> bool:
     """True when a sandbox create failed only because Modal was out of room.

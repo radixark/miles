@@ -16,14 +16,13 @@ and lives here once:
                 is recorded thread-side and, on cancellation, handed to a
                 reaper that closes the orphan promptly once the create
                 finishes.
-  ``lazy_semaphore``       the create-throttle semaphore each backend passes in,
-                built on first use rather than at import.
   ``SandboxBackend``       the orchestration itself. ``start_task_sandbox``
-                throttles creates process-wide (the semaphore) and retries the
-                errors the backend classifies as throttling with jittered
-                exponential backoff — anything else propagates immediately, and
-                the semaphore is held only for the create attempt and released
-                during backoff so other episodes keep the pipeline full.
+                throttles creates node-wide (``node_semaphore``, shared by the
+                processes of one run) and retries the errors the backend
+                classifies as throttling with jittered exponential backoff —
+                anything else propagates immediately, and the semaphore is held
+                only for the create attempt and released during backoff so other
+                episodes keep the pipeline full.
                 ``episode_env`` is the async context manager mirroring one
                 episode's lifetime: fresh sandbox -> connected env client ->
                 close.
@@ -39,6 +38,8 @@ from collections.abc import Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Any
+
+from miles.rollout.agentic.node_limits import node_semaphore
 
 # A provider's "start one sandbox" hook: (task_id, tasks_dir) -> (close_fn, base_url).
 StartFn = Callable[[str, str], tuple[Callable[[], None], str]]
@@ -89,24 +90,6 @@ def load_backend(name: str | None) -> "SandboxBackend":
     return importlib.import_module(AGENT_MODULES[resolve_backend(name)]).BACKEND
 
 
-def lazy_semaphore(limit: int) -> Callable[[], asyncio.Semaphore]:
-    """Return a getter for a *limit*-slot semaphore created on first call.
-
-    A backend reads its concurrency knob at import, but a semaphore constructed
-    then would belong to whatever loop happens to be current — the rollout
-    loop does not exist yet. Deferring construction to the first episode ties
-    it to the loop that actually awaits on it.
-    """
-    holder: list[asyncio.Semaphore] = []
-
-    def get() -> asyncio.Semaphore:
-        if not holder:
-            holder.append(asyncio.Semaphore(limit))
-        return holder[0]
-
-    return get
-
-
 async def create_once(start_fn: StartFn, task_id: str, tasks_dir: str, *, logger: logging.Logger) -> tuple[Any, str]:
     """One sandbox-create attempt, safe against cancellation mid-create."""
     result: list[tuple[Any, str]] = []
@@ -132,7 +115,8 @@ async def create_once(start_fn: StartFn, task_id: str, tasks_dir: str, *, logger
                 except Exception as e:
                     logger.warning(f"Failed to close orphaned sandbox for {task_id}: {e}")
 
-        threading.Thread(target=_reap, name=f"tb2-sandbox-reap-{task_id}", daemon=True).start()
+        # not a daemon: a subproc agent call waits for it before its process exits
+        threading.Thread(target=_reap, name=f"tb2-sandbox-reap-{task_id}", daemon=False).start()
         raise
 
 
@@ -228,14 +212,11 @@ class SandboxBackend:
     backoff_base_s: float = BACKOFF_BASE_S
     backoff_cap_s: float = BACKOFF_CAP_S
 
-    def __post_init__(self) -> None:
-        self._get_sem = lazy_semaphore(self.create_concurrency)
-
     async def start_task_sandbox(self, task_id: str) -> tuple[Any, str]:
         """Create one sandbox for *task_id* with the env server running.
 
         Returns (close_fn, base_url); close_fn releases the sandbox. Creation
-        is throttled process-wide (the create semaphore) and retried with
+        is throttled node-wide (the create semaphore) and retried with
         jittered exponential backoff on throttle errors; anything else
         propagates immediately.
         """
@@ -243,7 +224,7 @@ class SandboxBackend:
         attempt = 0
         while True:
             try:
-                async with self._get_sem():
+                async with node_semaphore(f"openenv-{self.provider}-create", self.create_concurrency):
                     return await create_once(self.start_sandbox, task_id, tasks_dir, logger=self.logger)
             except Exception as e:
                 if not self.is_throttle(e) or attempt >= self.max_retries:
