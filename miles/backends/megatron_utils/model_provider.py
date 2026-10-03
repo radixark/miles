@@ -160,7 +160,9 @@ def get_model_provider_func(
             # Apply critic output layer if needed
             if post_process and role == "critic":
                 model.output_layer = LinearForLastLayer(
-                    input_size=model.config.hidden_size, output_size=1, config=model.config
+                    input_size=model.config.hidden_size,
+                    output_size=getattr(args, "critic_value_bins", 1),
+                    config=model.config,
                 )
             _maybe_install_witness(args, model)
             return model
@@ -193,7 +195,9 @@ def get_model_provider_func(
             model = provider.provide(pre_process=pre_process, post_process=post_process, vp_stage=vp_stage)
             if post_process and role == "critic":
                 model.output_layer = LinearForLastLayer(
-                    input_size=model.config.hidden_size, output_size=1, config=model.config
+                    input_size=model.config.hidden_size,
+                    output_size=getattr(args, "critic_value_bins", 1),
+                    config=model.config,
                 )
             assert not getattr(args, "enable_witness", False), "Witness is not supported yet in this mode"
             # Gemma-4 forward returns (logits, loss_mask); keep logits only.
@@ -340,7 +344,11 @@ def get_model_provider_func(
         _maybe_freeze_native_dsa_indexer(args, model)
 
         if post_process and role == "critic":
-            model.output_layer = LinearForLastLayer(input_size=config.hidden_size, output_size=1, config=config)
+            model.output_layer = LinearForLastLayer(
+                input_size=config.hidden_size,
+                output_size=getattr(args, "critic_value_bins", 1),
+                config=config,
+            )
 
         _maybe_install_witness(args, model)
 

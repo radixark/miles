@@ -628,26 +628,37 @@ class MegatronTrainRayActor(TrainRayActor):
         compute_advantages_and_returns(self.args, rollout_data)
 
         self.args.loss_type = "value_loss"
-        train_step_outcome: TrainStepOutcome = train(
-            rollout_id,
-            self.model,
-            self.optimizer,
-            self.opt_param_scheduler,
-            data_iterator,
-            num_microbatches,
-            get_num_rollouts(self.args, rollout_data, len(num_microbatches)),
-            witness_info=None,
-            attempt=0,
-        )
+        num_rollouts = get_num_rollouts(self.args, rollout_data, len(num_microbatches))
+        train_step_outcome = TrainStepOutcome.NORMAL
+        critic_updates = getattr(self.args, "critic_updates_per_actor", 1)
+        for critic_pass in range(critic_updates):
+            train_step_outcome = train(
+                rollout_id,
+                self.model,
+                self.optimizer,
+                self.opt_param_scheduler,
+                data_iterator,
+                num_microbatches,
+                num_rollouts,
+                witness_info=None,
+                attempt=0,
+                step_id_offset=critic_pass * len(num_microbatches),
+                log_num_steps_per_rollout=critic_updates * len(num_microbatches),
+                reset_optimizer_each_call=critic_pass == 0,
+            )
+            if train_step_outcome != TrainStepOutcome.NORMAL:
+                break
 
         self._heartbeat.bump()
         values = None
         if get_parallel_state().is_pp_last_stage and "values" in rollout_data:
             # Ship by object reference
-            values = object_store.get_instance().put(
-                value={"values": [value.detach().cpu() for value in rollout_data["values"]]},
-                value_spec=CRITIC_VALUES_VALUE_SPEC,
-            )
+            payload = {"values": [value.detach().cpu() for value in rollout_data["values"]]}
+            value_spec = dict(CRITIC_VALUES_VALUE_SPEC)
+            if getattr(self.args, "bootstrap_truncated", False):
+                payload["bootstrap_values"] = [value.detach().cpu() for value in rollout_data["bootstrap_values"]]
+                value_spec["bootstrap_values"] = ValueSpec(codec="typed_ragged")
+            values = object_store.get_instance().put(value=payload, value_spec=value_spec)
         return TrainStepOutput(outcome=train_step_outcome, values=values)
 
     def _use_rollout_replay(self, m) -> bool:
@@ -745,6 +756,10 @@ class MegatronTrainRayActor(TrainRayActor):
                             rollout_data["values"] = _materialize_critic_values(
                                 values=shipped["values"], device=torch.cuda.current_device()
                             )
+                            if getattr(self.args, "bootstrap_truncated", False):
+                                rollout_data["bootstrap_values"] = _materialize_critic_values(
+                                    values=shipped["bootstrap_values"], device=torch.cuda.current_device()
+                                )
                 if self._active_model_tag != "actor":
                     self._switch_model("actor")
 

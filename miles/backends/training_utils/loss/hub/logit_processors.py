@@ -2,6 +2,7 @@ from argparse import Namespace
 from collections.abc import Iterator, Sequence
 
 import torch
+import torch.distributed as dist
 
 from miles.backends.training_utils.data.context_parallel import (
     allgather_cp_redistribute,
@@ -10,6 +11,7 @@ from miles.backends.training_utils.data.context_parallel import (
 from miles.backends.training_utils.data.sampling_mask import build_local_sampling_mask
 from miles.backends.training_utils.loss.hub.math_utils import calculate_log_probs_and_entropy
 from miles.backends.training_utils.loss.hub.score_centering import selected_log_probs_and_entropy
+from miles.backends.training_utils.loss.hub.value_distribution import decode_values
 from miles.backends.training_utils.parallel import get_parallel_state
 from miles.utils.sampling_mask import RolloutSamplingMask
 
@@ -324,14 +326,16 @@ def get_values(
     with_entropy: bool = False,
     non_loss_data: bool = True,
     max_seq_lens: list[int] | None = None,
+    truncated: list[int] | None = None,
+    include_logits: bool = False,
 ) -> dict[str, list[torch.Tensor]]:
     """Extract per-token value predictions over response tokens.
 
-    For each sample, extracts response-aligned chunks from the value head
-    output and squeezes the final dimension from `[R, 1]` to `[R]`.
+    Extract response-aligned scalar values or categorical value expectations.
+    When requested, also read the final-token value for truncated trajectories.
 
     Args:
-        logits: Value head output with shape `[1, T, 1]`.
+        logits: Value head output with shape `[1, T, bins]`.
         args: Configuration (passed to `get_responses` which uses
             `rollout_temperature` even though values don't need temperature).
         unconcat_tokens: List of token tensors per sample.
@@ -341,10 +345,11 @@ def get_values(
         non_loss_data: Unused; kept for signature compatibility.
 
     Returns:
-        Dict with key "values" mapping to a list of `[R]` value tensors
-        per sample.
+        Dict with "values" mapped to per-sample `[R]` tensors. Optional
+        "value_logits" and "bootstrap_values" are included when requested.
     """
     value_list = []
+    value_logits = []
     for logits_chunk, _ in get_responses(
         logits,
         args=args,
@@ -353,13 +358,15 @@ def get_values(
         response_lengths=response_lengths,
         max_seq_lens=max_seq_lens,
     ):
-        assert logits_chunk.size(-1) == 1, f"{logits_chunk.shape}"
-        # upcast (no-op for fp32) so value-head outputs stay fp32 even when logits arrive bf16
-        value_list.append(logits_chunk.squeeze(-1).float())
+        value_list.append(decode_values(logits_chunk, args))
+        if include_logits:
+            value_logits.append(logits_chunk.float())
 
     res = {
         "values": value_list,
     }
+    if include_logits:
+        res["value_logits"] = value_logits
 
     if args.allgather_cp:
         allgather_cp_redistribute(
@@ -371,4 +378,50 @@ def get_values(
             max_seq_lens=max_seq_lens,
         )
 
+    if getattr(args, "bootstrap_truncated", False) and truncated is not None:
+        res["bootstrap_values"] = _get_bootstrap_values(
+            logits, args, total_lengths, response_lengths, truncated, max_seq_lens
+        )
+
     return res
+
+
+def _get_bootstrap_values(logits, args, total_lengths, response_lengths, truncated, max_seq_lens):
+    """Read V(s_T) at the last token, including its CP owner rank."""
+    parallel_state = get_parallel_state()
+    cp_size = parallel_state.cp.size
+    flat_logits = logits.reshape(-1, logits.size(-1))
+    local_values = []
+    offset = 0
+    for i, (total_length, response_length, is_truncated) in enumerate(
+        zip(total_lengths, response_lengths, truncated, strict=True)
+    ):
+        max_seq_len = max_seq_lens[i] if max_seq_lens is not None else None
+        local_index = None
+        if cp_size == 1:
+            local_index = offset + total_length - 1
+            offset += max_seq_len if args.qkv_format == "bshd" else total_length
+        elif args.allgather_cp:
+            global_index = offset + total_length - 1
+            local_len = flat_logits.size(0)
+            start = parallel_state.cp.rank * local_len
+            if start <= global_index < start + local_len:
+                local_index = global_index - start
+            offset += max_seq_len if args.qkv_format == "bshd" else total_length
+        else:
+            chunk_size, chunks, _, _ = get_logits_and_tokens_offset_with_cp(
+                total_length, response_length, args.qkv_format, max_seq_len
+            )
+            for j, (start, end) in enumerate(chunks):
+                if start <= total_length - 1 < end:
+                    local_index = offset + j * chunk_size + total_length - 1 - start
+            offset += 2 * chunk_size
+        if is_truncated and local_index is not None:
+            local_values.append(decode_values(flat_logits[local_index], args))
+        else:
+            local_values.append(flat_logits.new_zeros((), dtype=torch.float32))
+
+    values = torch.stack(local_values)
+    if cp_size > 1:
+        dist.all_reduce(values, group=parallel_state.cp.group)
+    return [value.reshape(1) for value in values]

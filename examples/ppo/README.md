@@ -52,7 +52,20 @@ advantage computation to GAE.
 | `--critic-save` | `--save` + `_critic` | Sibling directory, so the two models do not clobber each other's iteration tracker. |
 | `--critic-lr-warmup-iters` | `0` | Linear warmup for the critic only. |
 | `--num-critic-only-steps` | `0` | Value-function warmup: the actor stays frozen for this many initial rollout steps while the critic learns. A critic that starts from noise otherwise injects noisy advantages into the very first actor updates. |
+| `--critic-updates-per-actor` | `1` | Repeat critic optimization on each rollout this many times before the actor update. The critic LR schedule is extended by the same factor. Advantages and returns stay fixed during these passes. |
+| `--critic-value-bins` | `1` | Use a categorical HL-Gauss value head when greater than 1. The actor and GAE still use its expected value. |
+| `--critic-value-min`, `--critic-value-max` | unset | Required lower and upper support edges for a categorical critic. Choose bounds that cover expected returns. |
+| `--critic-value-sigma` | `0.75` bin widths | Gaussian target width for categorical value cross entropy. |
+| `--bootstrap-truncated` | off | For samples marked length-truncated, use the critic value after the final token in GAE. Completed samples still use zero bootstrap. |
 | `--critic-num-nodes`, `--critic-num-gpus-per-node` | inherited from the actor | Set automatically — see the colocation constraint below. |
+
+For a sparse reward in `[0, 1]`, one starting point is `--critic-value-bins 101
+--critic-value-min -0.1 --critic-value-max 1.1`. The categorical critic uses cross entropy
+instead of the scalar clipped MSE loss, so `--value-clip` applies only when
+`--critic-value-bins 1`. Changing the bin count changes the critic head shape and requires a
+compatible critic checkpoint or a fresh value head. Set `--bootstrap-truncated` only when a
+truncated sample represents a continuing trajectory; a true terminal state must keep zero
+bootstrap.
 
 ## Constraints worth knowing before you debug
 

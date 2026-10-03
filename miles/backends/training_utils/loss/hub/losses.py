@@ -20,6 +20,7 @@ from miles.backends.training_utils.loss.hub.math_utils import (
     compute_policy_loss,
 )
 from miles.backends.training_utils.loss.hub.score_centering_loss import score_centering_loss_function
+from miles.backends.training_utils.loss.hub.value_distribution import hl_gauss_loss
 from miles.backends.training_utils.parallel import get_parallel_state
 from miles.utils.function_registry import load_function
 from miles.utils.types import RolloutBatch
@@ -410,36 +411,50 @@ def value_loss_function(
     logits: torch.Tensor,
     sum_of_sample_mean: Callable[[torch.Tensor], torch.Tensor],
 ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
-    """Compute clipped value loss and metrics.
+    """Compute clipped scalar MSE or categorical HL-Gauss value loss.
 
-    Extracts current value predictions from `logits`, compares them against
-    stored old values with clipping, and computes the maximum of clipped and
-    unclipped squared errors (PPO-style value clipping).
+    Scalar critics compare current values against stored old values with
+    PPO-style clipping. Categorical critics use Gaussian-bin cross entropy.
 
     Args:
         args: Configuration containing `value_clip` threshold.
         batch: Mini-batch with "values" (old predictions), "returns",
             "unconcat_tokens", "total_lengths", and "response_lengths".
-        logits: Value head output with shape `[1, T, 1]`.
+        logits: Value head output with shape `[1, T, bins]`.
         sum_of_sample_mean: Reduction function that averages per-sample values.
 
     Returns:
         Tuple of `(loss, metrics)` where `loss` is a scalar tensor and
-        `metrics` contains detached scalars "value_loss" and "value_clipfrac".
+        `metrics` contains "value_loss", plus "value_clipfrac" for scalar critics
+        or "value_out_of_support" for categorical critics.
     """
     old_values = torch.cat(batch["values"], dim=0)
 
-    values = get_values(
+    value_outputs = get_values(
         logits,
         args=args,
         unconcat_tokens=batch["unconcat_tokens"],
         total_lengths=batch["total_lengths"],
         response_lengths=batch["response_lengths"],
         max_seq_lens=batch.get("max_seq_lens", None),
+        include_logits=getattr(args, "critic_value_bins", 1) > 1,
     )
-    values = torch.cat([value.flatten() for value in values["values"]], dim=0)
+    values = torch.cat([value.flatten() for value in value_outputs["values"]], dim=0)
 
     returns = torch.cat(batch["returns"], dim=0)
+
+    if getattr(args, "critic_value_bins", 1) > 1:
+        value_logits = torch.cat(value_outputs["value_logits"], dim=0)
+        loss = sum_of_sample_mean(hl_gauss_loss(value_logits, returns, args))
+        out_of_support = sum_of_sample_mean(
+            ((returns < args.critic_value_min) | (returns > args.critic_value_max)).float()
+        )
+        if value_logits.numel() == 0:
+            loss += 0 * value_logits.sum()
+        return loss, {
+            "value_loss": loss.clone().detach(),
+            "value_out_of_support": out_of_support.detach(),
+        }
 
     values_clipfrac = torch.abs(values - old_values) > args.value_clip
     values_clipped = old_values + (values - old_values).clamp(-args.value_clip, args.value_clip)
