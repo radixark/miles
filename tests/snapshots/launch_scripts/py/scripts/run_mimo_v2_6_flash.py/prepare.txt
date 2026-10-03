@@ -1,0 +1,18 @@
+### 0
+mkdir -p /root/models
+
+### 1
+hf download XiaomiMiMo/MiMo-V2.6-Flash-RL
+  --local-dir /root/models/MiMo-V2.6-Flash-RL
+
+### 2
+python <REPO_ROOT>/tools/convert_mimo_v2_to_bf16.py
+  --model-dir /root/models/MiMo-V2.6-Flash-RL
+  --save-dir /root/models/mimo26-p4-bf16
+  --device cuda
+  --layers 0,1,5,6
+
+### 3
+hf download
+  --repo-type dataset zhuzilin/dapo-math-17k
+  --local-dir /root/datasets/dapo-math-17k

@@ -22,6 +22,7 @@ Each model name links to its recipe page.
 | **Gemma** | [Gemma-4 26B-A4B](/models/gemma/gemma-4)<br/>[Gemma-4 31B](/models/gemma/gemma-4) |
 | **JoyAI** | [JoyAI-LLM-Flash](https://github.com/radixark/miles/blob/main/scripts/run_joy_ai_llm_flash.py) |
 | **GPT-OSS** | [gpt-oss-20b](/models/gpt-oss/gpt-oss) |
+| **MiMo** | [MiMo-V2.6-Flash](/models/mimo/mimo-v2-6-flash) |
 
 ## Diffusion
 
