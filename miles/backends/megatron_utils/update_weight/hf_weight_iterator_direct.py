@@ -92,13 +92,13 @@ class HfWeightIteratorDirect(MegatronHfWeightIteratorBase):
             pbar.update(1)
         for batch in self._expert_batches:
             if self._convert_experts_before_gather:
-                units = self._materialize_expert_batch(batch, weights)
+                units = self._convert_and_gather_expert_batch(batch, weights)
                 if materialize:
                     yield from units
                 del units
             else:
                 # ETP shards must form complete experts before conversion/quantization.
-                named_params = _materialize_expert_batch(
+                named_params = _gather_megatron_expert_batch(
                     self.args, batch.param_infos, weights, gather_pp=self.placement.gather_pp
                 )
                 if materialize:
@@ -108,7 +108,7 @@ class HfWeightIteratorDirect(MegatronHfWeightIteratorBase):
         pbar.close()
         yield from _iter_mm_tower_units(self.args, materialize=materialize)
 
-    def _materialize_expert_batch(self, batch: _ExpertBatch, weights):
+    def _convert_and_gather_expert_batch(self, batch: _ExpertBatch, weights):
         """Convert once per expert across EP/EDP, then gather HF weights and scales."""
         device = torch.device("cuda", torch.cuda.current_device())
         rank = dist.get_rank()
@@ -199,7 +199,7 @@ def _materialize_non_expert_batch(
     return [(info.name, param) for info, param in zip(param_infos, gathered, strict=True)]
 
 
-def _materialize_expert_batch(
+def _gather_megatron_expert_batch(
     args: Namespace,
     param_infos: Sequence[ParamInfo],
     megatron_local_weights,
