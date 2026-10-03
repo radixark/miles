@@ -215,9 +215,10 @@ not a fallback in this harness.
 
 ## Full-model receiver benchmark
 
-Each invocation starts one fresh TP8/DP8/EP8 GLM5.2 W4A16 engine with static MTP,
-CuTe DSL MoE and no MoE A2A. It applies three cumulative immutable publications,
-saving original-rank receipts, server logs and generation through DP routes0–7.
+By default, each invocation starts one fresh TP8/DP8/EP8 GLM5.2 W4A16 engine
+with static MTP, CuTe DSL MoE and no MoE A2A. It applies three cumulative immutable
+publications: one first-use update and two warm updates. It saves original-rank
+receipts, server logs and generation through DP routes0–7.
 
 ```bash
 python tests/manual/bench_gpu_delta.py run --model /models/GLM5.2-NVFP4 \
@@ -225,6 +226,50 @@ python tests/manual/bench_gpu_delta.py run --model /models/GLM5.2-NVFP4 \
 python tests/manual/bench_gpu_delta.py oracle --model /models/GLM5.2-NVFP4 \
   --fixture /data/gpu-delta/fixture --output /data/gpu-delta/target-oracle
 ```
+
+For two TP4/DP4/EP4 engines on one eight-GPU host, provide two ports. The first
+engine uses GPUs0–3; the second uses GPUs4–7. Both must see the same genuinely
+host-shared `WEIGHT_DELTA_HOST_CACHE_DIR` on tmpfs. The harness checks the common
+host-cache identity, all eight original scheduler identities, each engine's
+TP/DP ranks0–3, and captures compute-process PID→GPU UUID observations. If NVML
+uses host PIDs unavailable in the container's `NSpid` mapping, that join remains
+explicitly unqualified; requested GPU masks are not presented as native proof. Generation
+records retain engine IDs explicitly; use `(engine_id, dp_rank)` as the route key.
+
+An EP8 fixture's view-bound plan digest does not describe EP4. First inventory
+the new topology, then rebind its views into a **new** immutable fixture directory:
+
+```bash
+export WEIGHT_DELTA_HOST_CACHE_DIR=/dev/shm/gpu-delta-benchmark
+python tests/manual/bench_gpu_delta.py inventory --model /models/GLM5.2-NVFP4 \
+  --ports 31135 31235 --output /data/gpu-delta/ep4-inventory
+python tests/manual/bench_gpu_delta.py rebind --model /models/GLM5.2-NVFP4 \
+  --inventory /data/gpu-delta/ep4-inventory/inventory.json \
+  --fixture /data/gpu-delta/fixture --output /data/gpu-delta/ep4-fixture
+python tests/manual/bench_gpu_delta.py run --model /models/GLM5.2-NVFP4 \
+  --fixture /data/gpu-delta/ep4-fixture --ports 31135 31235 \
+  --output /data/gpu-delta/ep4-snappy-zstd-new
+python tests/manual/bench_gpu_delta.py oracle --model /models/GLM5.2-NVFP4 \
+  --fixture /data/gpu-delta/ep4-fixture --ports 31135 31235 \
+  --output /data/gpu-delta/ep4-target-oracle
+```
+
+Rebinding is CPU-only setup, excluded from update timing. It verifies source
+manifest/payload hashes, exact canonical names/dtypes/shapes/encodings/byte counts
+and byte order, and the fresh checkpoint-header/receiver-plan agreement. Only
+view definitions and plan/stream/publication identities change; matrix frames,
+raw targets and the final altered checkpoint stay unchanged. Payloads are
+hardlinked on the same filesystem, with no symlink/copy fallback. `rebind.json`
+records source/new hashes, unchanged non-view tensor metadata and verified payload
+inode identities. Preserve both fixtures as immutable. Inventory and run use
+separate fresh engine pairs; their startup/teardown is outside update timing.
+
+Both engines negotiate one cohort and prepare/apply concurrently. No engine
+resumes until every original participant has returned APPLIED. Untimed generation
+visits all four DP routes in both engines after each update. EP4/EP8 comparisons
+report observed differences; topology changes alone do not establish numerical
+equivalence. The same-topology altered-checkpoint oracle supplies a separate
+functional reference.
 
 The oracle loads the final altered checkpoint with the original static draft;
 its generation/logprobs are untimed functional evidence, not every-weight-byte

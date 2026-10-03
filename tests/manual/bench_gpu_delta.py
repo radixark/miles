@@ -1,4 +1,4 @@
-"""One EP8 GLM5.2 W4A16 engine: direct GPU delta fixture and timing harness.
+"""One EP8 or two EP4 GLM5.2 W4A16 engines: GPU delta fixture and timing harness.
 
 Requires paired SGLang GPU-delta sources, eight Blackwell GPUs, the Miles image,
 prebuilt nvCOMP >=5.3 and an immutable NVFP4 checkpoint with bundled MTP weights.
@@ -15,7 +15,8 @@ Example (run from the Miles checkout with paired SGLang on PYTHONPATH)::
 
 Canonical rank-zero/rank-one tensors use direct uncompressed target values when
 changed; all other tensors retain compressed XOR frames. Fixture accounting keeps
-direct-value traffic separate. Each run starts one fresh engine;
+direct-value traffic separate. Each run starts fresh engines (one port selects
+EP8; two ports select two EP4 engines on disjoint four-GPU slices);
 never reset a live delta stream with a disk reload. ``oracle`` starts from the
 altered target checkpoint while keeping the original static draft, outside update
 timing. Compare its generation/logprob records with the last delta round.
@@ -49,7 +50,9 @@ from miles.utils.gpu_delta_publication import (
     PublicationWriter,
     canonical_json,
     configured_codec,
+    seal_publication,
     sha256,
+    tensor_metadata,
 )
 
 # Same rollout topology/precision/MTP as the GLM5.2 W4A16 recipe. CuTe DSL + no
@@ -189,6 +192,174 @@ def _validate_fixture_codec(fixture):
         if publication is None or publication.get("protocol_version") != 4 or publication.get("codec") != codec or publication.get("frame_bytes") != FRAME_BYTES:
             raise ValueError("Fixture requires protocol 4 / snappy-zstd / 1 MiB frames")
     return codec
+
+
+def _engine_specs(ports):
+    if len(ports) not in (1, 2) or len(set(ports)) != len(ports) or any(not 0 < port < 65536 for port in ports):
+        raise ValueError("--ports requires one or two distinct valid TCP ports")
+    size = 8 // len(ports)
+    return [
+        {"engine_id": f"engine-{i:05d}", "port": port, "parallel_size": size,
+         "gpu_ids": ",".join(str(gpu) for gpu in range(i * size, (i + 1) * size))}
+        for i, port in enumerate(ports)
+    ]
+
+
+def _validate_cohort(cohort, engine_count):
+    size = 8 // engine_count
+    if len(cohort.identities) != 8 or len(cohort.participants) != engine_count:
+        raise ValueError("Expected eight original participants across the requested engines")
+    for engine, participants in enumerate(cohort.participants):
+        if (len(participants) != size or cohort.engine_ids[engine] != f"engine-{engine:05d}"
+                or {p["dp_rank"] for p in participants} != set(range(size))
+                or {p["tp_rank"] for p in participants} != set(range(size))
+                or any(p["pp_rank"] != 0 for p in participants)):
+            raise ValueError("Engine participant topology differs from the requested TP/DP/EP layout")
+    if len(cohort.host_tensor_names) != 1:
+        raise ValueError("All benchmark engines must share one host-cache directory/identity")
+
+
+def _capture_gpu_processes(cohort, ports):
+    """Untimed native PID/UUID observation, separate from requested GPU masks."""
+    device_text = subprocess.check_output(
+        ["nvidia-smi", "--query-gpu=index,uuid", "--format=csv,noheader,nounits"], text=True
+    )
+    process_text = subprocess.check_output(
+        ["nvidia-smi", "--query-compute-apps=pid,gpu_uuid", "--format=csv,noheader,nounits"], text=True
+    )
+    devices = {int(index.strip()): uuid.strip() for index, uuid in (line.split(",") for line in device_text.splitlines() if line.strip())}
+    processes = [(int(pid.strip()), uuid.strip()) for pid, uuid in (line.split(",") for line in process_text.splitlines() if line.strip())]
+    joined = []
+    for spec, participants in zip(_engine_specs(ports), cohort.participants, strict=True):
+        expected = {devices[int(index)] for index in spec["gpu_ids"].split(",")}
+        actual = set()
+        for participant in participants:
+            candidates = _pid_candidates(participant["pid"])
+            uuids = {uuid for pid, uuid in processes if pid in candidates}
+            matched = len(uuids) == 1 and uuids <= expected
+            if matched:
+                actual.update(uuids)
+            joined.append({"identity": participant, "namespace_pids": candidates,
+                           "gpu_uuid": next(iter(uuids)) if matched else None,
+                           "candidate_gpu_uuids": sorted(uuids)})
+        if actual != expected:
+            for row in joined:
+                if row["identity"]["engine_id"] == spec["engine_id"]:
+                    row["gpu_uuid"] = None
+    # NVML can expose host PIDs outside the container's /proc namespace. Preserve
+    # that observation instead of treating an unavailable join as a model error.
+    return {"devices_raw": device_text, "compute_apps_raw": process_text, "participants": joined,
+            "status": "MAPPED" if all(row["gpu_uuid"] for row in joined) else "UNQUALIFIED_PID_NAMESPACE"}
+
+
+def _pid_candidates(pid):
+    status = Path(f"/proc/{pid}/status").read_text()
+    nested = next((line.split()[1:] for line in status.splitlines() if line.startswith("NSpid:")), [])
+    return sorted({pid, *map(int, nested)})
+
+
+def _payload_links(manifest, source, destination):
+    def identity(stat):
+        return stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns
+
+    files = []
+    for item in manifest["files"]:
+        path = source / item["name"]
+        if path.name != item["name"] or path.is_symlink() or path.resolve(strict=True).parent != source:
+            raise ValueError("Payload must be an ordinary file inside the source publication")
+        digest = hashlib.sha256()
+        with path.open("rb") as stream:
+            before = os.fstat(stream.fileno())
+            while chunk := stream.read(8 * 1024**2):
+                digest.update(chunk)
+            after = os.fstat(stream.fileno())
+        if identity(before) != identity(after) or after.st_size != item["nbytes"] or digest.hexdigest() != item["sha256"]:
+            raise ValueError("Source payload size, bytes or identity changed")
+        target = destination / item["name"]
+        # EXDEV is an explicit setup failure; never copy/re-encode payloads or
+        # follow symlinks as a fallback. Hardlinks preserve the verified bytes.
+        os.link(path, target, follow_symlinks=False)
+        if identity(target.stat()) != identity(after):
+            raise ValueError("Rebound payload does not share the verified source inode")
+        files.append(item | {"source": str(path), "target": str(target), "device": after.st_dev, "inode": after.st_ino})
+    return files
+
+
+def _rebind_round(args, row, plan, source_digest, target_digest, stream_id):
+    publication = row["publications"][configured_codec()]
+    path = Path(publication["manifest_path"]).resolve(strict=True)
+    content = path.read_bytes()
+    if sha256(content) != publication["manifest_sha256"]:
+        raise ValueError("Source manifest SHA256 differs from the immutable descriptor")
+    manifest = json.loads(content)
+    metadata = {key: value for key, value in manifest.items() if key not in {"tensors", "files"}}
+    if any(metadata.get(key) != value for key, value in publication.items() if key not in {"manifest_path", "manifest_sha256"}):
+        raise ValueError("Source publication metadata differs from its descriptor")
+    old_plan = [{key: tensor[key] for key in ("name", "dtype", "shape", "encoding", "views")} for tensor in manifest["tensors"]]
+    if sha256(canonical_json(old_plan)) != source_digest or metadata["plan_digest"] != source_digest:
+        raise ValueError("Source fixture canonical plan digest differs")
+    if [tensor["name"] for tensor in manifest["tensors"]] != [tensor["name"] for tensor in plan]:
+        raise ValueError("Source and target canonical tensor inventories differ")
+    tensors = []
+    for old, new in zip(manifest["tensors"], plan, strict=True):
+        expected = tensor_metadata(**new)
+        if any(old[key] != expected[key] for key in ("name", "dtype", "shape", "encoding", "nbytes", "byte_order")):
+            raise ValueError(f"Canonical tensor metadata differs: {old['name']}")
+        tensors.append(old | {"views": expected["views"]})
+    invariant_digest = sha256(canonical_json([{key: value for key, value in tensor.items() if key != "views"} for tensor in tensors]))
+    if invariant_digest != sha256(canonical_json([{key: value for key, value in tensor.items() if key != "views"} for tensor in manifest["tensors"]])):
+        raise ValueError("Rebinding changed canonical payload/frame metadata")
+    directory = args.output / configured_codec() / f"v{row['version']}"
+    directory.mkdir(parents=True, exist_ok=False)
+    files = _payload_links(manifest, path.parent, directory)
+    metadata |= {"plan_digest": target_digest, "stream_id": stream_id, "publication_id": f"{stream_id}:{row['version']}"}
+    rebound = seal_publication(directory, [{"metadata": metadata, "files": manifest["files"], "tensors": tensors}])
+    sizes = _publication_accounting(rebound)
+    result = row | {"publications": {configured_codec(): rebound}, "accounting": {configured_codec(): sizes},
+                    "ratios": {configured_codec(): sizes["publication_bytes"] / row["canonical_bytes"]}}
+    proof = {"version": row["version"], "source_publication": publication, "target_publication": rebound,
+             "tensor_count": len(tensors), "non_view_tensor_metadata_sha256": invariant_digest,
+             "files": files, "payload_bytes": sizes["payload_file_bytes"]}
+    return result, proof
+
+
+def _rebind(args):
+    """Rebind only canonical views to a fresh inventory, without changing weights."""
+    source_path = (args.fixture / "fixture.json").resolve(strict=True)
+    source_bytes = source_path.read_bytes()
+    fixture = json.loads(source_bytes)
+    _validate_fixture_codec(fixture)
+    inventory_bytes = args.inventory.read_bytes()
+    inventory = json.loads(inventory_bytes)
+    cohort = negotiate_cohort(inventory["descriptions"])
+    _validate_cohort(cohort, len(inventory["descriptions"]))
+    if inventory["plan_digest"] != cohort.plan_digest:
+        raise ValueError("Saved inventory plan digest differs from its actual participants")
+    index = _tensor_index(args.model)
+    for tensor in cohort.plan:
+        actual = index[tensor["name"]]
+        if tensor["shape"] != actual["shape"] or tensor["dtype"] != actual["dtype"]:
+            raise ValueError(f"Inventory/checkpoint mismatch: {tensor['name']}")
+    stream_id = sha256(canonical_json({"source_fixture_sha256": sha256(source_bytes), "plan_digest": cohort.plan_digest,
+                                      "output": str(args.output.resolve())}))
+    report = fixture | {"plan_digest": cohort.plan_digest, "stream_id": stream_id, "rounds": [], "topology_rebind": "rebind.json"}
+    proof = {"source_fixture": str(source_path), "source_fixture_sha256": sha256(source_bytes),
+             "inventory": str(args.inventory.resolve()), "inventory_sha256": sha256(inventory_bytes),
+             "source_plan_digest": fixture["plan_digest"], "target_plan_digest": cohort.plan_digest,
+             "source_stream_id": fixture["stream_id"], "target_stream_id": stream_id,
+             "target_checkpoint": fixture["target_checkpoint"], "engine_ids": list(cohort.engine_ids),
+             "participants": list(cohort.identities), "rounds": []}
+    for version, row in enumerate(fixture["rounds"], 1):
+        publication = row["publications"][configured_codec()]
+        if row["version"] != version or publication["base_version"] != version - 1 or publication["target_version"] != version or publication["stream_id"] != fixture["stream_id"]:
+            raise ValueError("Fixture publications must be one consecutive cumulative stream")
+        result, round_proof = _rebind_round(args, row, cohort.plan, fixture["plan_digest"], cohort.plan_digest, stream_id)
+        report["rounds"].append(result)
+        proof["rounds"].append(round_proof)
+    _save(args.output / "fixture.json", report)
+    proof |= {"status": "PASS", "fixture_sha256": sha256((args.output / "fixture.json").read_bytes()),
+              "scope": "Views/plan/stream/publication identities rebound; all non-view tensor metadata and payload bytes unchanged. Original final target checkpoint retained."}
+    _save(args.output / "rebind.json", proof)
 
 
 def _alter_fixture_tensor(target, index, tensor, *, version, seed, rate):
@@ -344,10 +515,15 @@ async def _engines(args, model):
     processes, logs, clients = [], [], []
     commands = []
     try:
-        for engine, port in enumerate(args.ports):
+        specs = _engine_specs(args.ports)
+        for engine, spec in enumerate(specs):
+            port = spec["port"]
             with socket.socket() as sock:
                 sock.bind(("127.0.0.1", port))
             config = SERVER_ARGS | {
+                "tp_size": spec["parallel_size"],
+                "dp_size": spec["parallel_size"],
+                "ep_size": spec["parallel_size"],
                 "model_path": str(model),
                 "speculative_draft_model_path": str(args.model),
                 "host": "127.0.0.1",
@@ -358,7 +534,7 @@ async def _engines(args, model):
             _save(config_path, config)
             code = "import json,sys; from sglang.srt.server_args import ServerArgs; from sglang.srt.entrypoints.http_server import launch_server; launch_server(ServerArgs(**json.load(open(sys.argv[1]))))"
             command = [sys.executable, "-c", code, str(config_path)]
-            env = os.environ | SERVER_ENV | {"CUDA_VISIBLE_DEVICES": "0,1,2,3,4,5,6,7"}
+            env = os.environ | SERVER_ENV | {"CUDA_VISIBLE_DEVICES": spec["gpu_ids"]}
             log = (args.output / f"engine-{engine}.log").open("x")
             process = subprocess.Popen(
                 command,
@@ -371,7 +547,7 @@ async def _engines(args, model):
             processes.append(process)
             logs.append(log)
             clients.append(SGLangApiClient(f"http://127.0.0.1:{port}"))
-            commands.append({"command": command, "pid": process.pid, "gpu_ids": env["CUDA_VISIBLE_DEVICES"]})
+            commands.append(spec | {"command": command, "pid": process.pid})
         _save(
             args.output / "launch.json",
             {
@@ -406,7 +582,8 @@ async def _engines(args, model):
 
 async def _generation(clients):
     records = []
-    for dp_rank in range(8):
+    engine_ids = [f"engine-{i:05d}" for i in range(len(clients))]
+    for dp_rank in range(8 // len(clients)):
         payload = {
             "text": "Explain why water freezes at low temperatures in one sentence.",
             "routed_dp_rank": dp_rank,
@@ -414,7 +591,7 @@ async def _generation(clients):
             "sampling_params": {"temperature": 0, "max_new_tokens": 32},
         }
         values = await asyncio.gather(*[_request(client, "generate", payload) for client in clients])
-        records.append({"dp_rank": dp_rank, "engines": values})
+        records.append({"dp_rank": dp_rank, "engine_ids": engine_ids, "engines": values})
     return records
 
 
@@ -432,8 +609,8 @@ async def _run(args):
         descriptions = await asyncio.gather(*[c.get_weights_delta_info(engine_id=f"engine-{i:05d}") for i, c in enumerate(clients)])
         cohort = negotiate_cohort(descriptions)
         digest = cohort.plan_digest
-        if len(cohort.identities) != 8 or len({p["rank_id"] for p in cohort.identities}) != 8:
-            raise ValueError("Expected eight distinct native participants in the EP8 engine")
+        _validate_cohort(cohort, len(clients))
+        _save(args.output / "gpu-processes.json", _capture_gpu_processes(cohort, args.ports))
         _save(args.output / "inventory.json", {"descriptions": descriptions, "plan_digest": digest})
         if args.phase == "inventory":
             return
@@ -467,7 +644,7 @@ async def _run(args):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("phase", choices=("inventory", "fixture", "run", "oracle"))
+    parser.add_argument("phase", choices=("inventory", "fixture", "rebind", "run", "oracle"))
     parser.add_argument("--model", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--inventory", type=Path)
@@ -475,21 +652,25 @@ def main():
     parser.add_argument("--versions", type=int, default=3)
     parser.add_argument("--seed", type=int, default=20261001)
     parser.add_argument("--ratio", type=float, default=0.002)
-    parser.add_argument("--ports", type=int, nargs=1, default=(31000,))
+    parser.add_argument("--ports", type=int, nargs="+", default=(31000,), help="One port: one EP8 engine; two ports: two EP4 engines on GPUs 0-3 and 4-7")
     parser.add_argument("--startup-timeout", type=float, default=3600)
     args = parser.parse_args()
     args.model = args.model.resolve(strict=True)
-    if args.phase == "fixture" and args.inventory is None:
-        parser.error("fixture requires --inventory")
-    if args.phase in {"run", "oracle"} and args.fixture is None:
-        parser.error("run/oracle requires --fixture")
-    if len(set(args.ports)) != 1 or any(not 0 < port < 65536 for port in args.ports):
-        parser.error("--ports requires one valid TCP port")
+    if args.phase in {"fixture", "rebind"} and args.inventory is None:
+        parser.error("fixture/rebind requires --inventory")
+    if args.phase in {"rebind", "run", "oracle"} and args.fixture is None:
+        parser.error("rebind/run/oracle requires --fixture")
+    try:
+        _engine_specs(args.ports)
+    except ValueError as error:
+        parser.error(str(error))
     if args.versions < 1 or not 0 < args.ratio < 0.1:
         parser.error("versions must be positive and ratio in (0, 0.1)")
     args.output.mkdir(parents=True, exist_ok=False)
     if args.phase == "fixture":
         _fixture(args)
+    elif args.phase == "rebind":
+        _rebind(args)
     else:
         asyncio.run(_run(args))
 
