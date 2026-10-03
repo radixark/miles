@@ -10,7 +10,7 @@ import torch
 import triton
 import triton.language as tl
 
-from miles_plugins.models.qwen3_8_next.ops.kernel.hc_triton import _block_c, _grouped_rmsnorm_bwd_kernel, _norm_fwd
+from miles.kernels.norm.grouped_rmsnorm import block_c, grouped_rmsnorm_bwd_kernel, grouped_rmsnorm_fwd
 
 
 @triton.jit(do_not_specialize=["T"])
@@ -261,10 +261,10 @@ class _PLEGateConv(torch.autograd.Function):
                 C=C,
                 EPS=eps,
                 SQRTC=math.sqrt(C),
-                BLOCK_C=_block_c(C),
+                BLOCK_C=block_c(C),
             )
 
-        normed, rstdc = _norm_fwd(gated, wc, n, eps)
+        normed, rstdc = grouped_rmsnorm_fwd(gated, wc, n, eps)
 
         seg_lo, seg_hi = _seg_bounds(T, cu_seqlens, dev)
         convw2d = conv_w.reshape(W, Kk).contiguous()
@@ -323,9 +323,9 @@ class _PLEGateConv(torch.autograd.Function):
                 C=C,
                 EPS=eps,
                 SQRTC=math.sqrt(C),
-                BLOCK_C=_block_c(C),
+                BLOCK_C=block_c(C),
             )
-        normed, _ = _norm_fwd(gated, wc, n, eps)
+        normed, _ = grouped_rmsnorm_fwd(gated, wc, n, eps)
 
         dnormed = torch.empty(T, W, dtype=torch.float32, device=dev)
         dconvw = torch.zeros(W, Kk, dtype=torch.float32, device=dev)
@@ -353,8 +353,8 @@ class _PLEGateConv(torch.autograd.Function):
         dwc = (dnormed * x_hat).sum(dim=0).to(wc.dtype)
         dgated_norm = torch.empty(T, W, dtype=torch.float32, device=dev)
         if T > 0:
-            _grouped_rmsnorm_bwd_kernel[(T * n,)](
-                gated, wc, rstdc, dnormed, dgated_norm, T, N=n, C=C, BLOCK_C=_block_c(C)
+            grouped_rmsnorm_bwd_kernel[(T * n,)](
+                gated, wc, rstdc, dnormed, dgated_norm, T, N=n, C=C, BLOCK_C=block_c(C)
             )
         dgated += dgated_norm
 
@@ -383,7 +383,7 @@ class _PLEGateConv(torch.autograd.Function):
                 N=n,
                 C=C,
                 SQRTC=math.sqrt(C),
-                BLOCK_C=_block_c(C),
+                BLOCK_C=block_c(C),
             )
         dvalue = dvalue_pern.sum(dim=1).to(value.dtype)
         dwk = dwk_part.sum(dim=0).to(wk.dtype)

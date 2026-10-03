@@ -12,8 +12,8 @@ import torch
 import torch.nn.functional as F
 from torch import Tensor
 
-from miles_plugins.models.qwen3_8_next.ops.kernel.hc_triton import hc_combine_triton, hc_mix_inject_triton
-from miles_plugins.models.qwen3_8_next.ops.kernel.ple_triton import ple_gate_conv_triton
+from miles.kernels.embedding.ple_triton import ple_gate_conv_triton
+from miles.kernels.hyper_connection.hc_triton import hc_combine_triton, hc_mix_inject_triton
 from miles_plugins.models.qwen3_8_next.ops.kernel.qsa_sparse_attn import qsa_sparse_attention_triton
 from miles_plugins.models.qwen3_8_next.ops.ple import ngram_hash_ids, shift_right_ignore_eos
 

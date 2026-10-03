@@ -27,7 +27,7 @@ import safetensors.torch
 import torch
 from tqdm import tqdm
 
-from miles.utils.nvfp4 import NVFP4_GROUP_SIZE, nvfp4_quantize_1d, nvfp4_quantize_1d_pair
+from miles.kernels.quant.nvfp4 import NVFP4_GROUP_SIZE, nvfp4_quantize_1d, nvfp4_quantize_1d_pair
 
 DEFAULT_KV_CACHE_SCHEME = {"dynamic": False, "num_bits": 8, "type": "float"}
 DEFAULT_KV_CACHE_QUANT_ALGO = "FP8"

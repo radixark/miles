@@ -17,7 +17,7 @@ from megatron.core.transformer.module import MegatronModule
 from megatron.core.transformer.transformer_config import TransformerConfig
 from torch import Tensor
 
-from miles_plugins.models.qwen3_8_next.ops.kernel.hc_triton import hc_combine_triton, hc_mix_inject_triton
+from miles.kernels.hyper_connection.hc_triton import hc_combine_triton, hc_mix_inject_triton
 from miles_plugins.models.qwen3_8_next.ops.ple import Qwen38NextPLE, current_ple_batch
 
 

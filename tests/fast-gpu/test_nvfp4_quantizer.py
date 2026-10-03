@@ -29,20 +29,20 @@ from miles.backends.megatron_utils.megatron_to_hf.processors.quantizer_nvfp4 imp
     quantize_nvfp4 as processor_quantize_nvfp4,
 )
 from miles.backends.megatron_utils.megatron_to_hf.processors.quantizer_nvfp4 import quantize_params_nvfp4
-from miles.utils.fused_nvfp4_qdq import (
+from miles.kernels.quant.nvfp4 import (
+    NVFP4_GROUP_SIZE,
+    nvfp4_global_decode_scale_te,
+    nvfp4_global_encode_scale_te,
+    nvfp4_quantize_1d_pair,
+    nvfp4_weight_e4m3_max,
+)
+from miles.kernels.quant.nvfp4_qdq import (
     NVFP4QDQConfig,
     NVFP4QDQErrorMode,
     compute_nvfp4_amax,
     current_nvfp4_qdq_config,
     fake_nvfp4_quantization_ste,
     fused_nvfp4_qdq,
-)
-from miles.utils.nvfp4 import (
-    NVFP4_GROUP_SIZE,
-    nvfp4_global_decode_scale_te,
-    nvfp4_global_encode_scale_te,
-    nvfp4_quantize_1d_pair,
-    nvfp4_weight_e4m3_max,
 )
 
 NVFP4_SHAPES = [
@@ -802,7 +802,7 @@ class TestNVFP4FakeQATAdapter:
         qdq_config = object()
         config_calls = 0
         calls = []
-        fake_module = ModuleType("miles.utils.fused_nvfp4_qdq")
+        fake_module = ModuleType("miles.kernels.quant.nvfp4_qdq")
 
         def current_config():
             nonlocal config_calls
@@ -815,7 +815,7 @@ class TestNVFP4FakeQATAdapter:
 
         fake_module.current_nvfp4_qdq_config = current_config
         fake_module.fake_nvfp4_quantization_ste = fake_qdq
-        monkeypatch.setitem(sys.modules, "miles.utils.fused_nvfp4_qdq", fake_module)
+        monkeypatch.setitem(sys.modules, "miles.kernels.quant.nvfp4_qdq", fake_module)
         monkeypatch.setenv(nvfp4_qat.NVFP4_FAKE_QAT_FLAG, "1")
 
         actual = nvfp4_qat.maybe_fake_quantize_nvfp4_weight_tensors(weights)

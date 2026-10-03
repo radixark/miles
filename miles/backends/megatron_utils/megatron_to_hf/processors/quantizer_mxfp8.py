@@ -1,6 +1,6 @@
 import re
 
-from miles.utils.mxfp8 import mxfp8_quantize
+from miles.kernels.quant.mxfp8 import mxfp8_quantize
 
 
 def quantize_params_mxfp8(args, megatron_name, converted_named_params, quantization_config):

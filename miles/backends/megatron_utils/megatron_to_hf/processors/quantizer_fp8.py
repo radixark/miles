@@ -3,7 +3,7 @@ import re
 
 import torch
 
-from miles.utils.fp8_kernel import blockwise_cast_to_fp8_triton
+from miles.kernels.quant.fp8_blockwise import blockwise_cast_to_fp8_triton
 
 from ...sglang import (
     per_block_cast_to_fp8,

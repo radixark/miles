@@ -176,16 +176,41 @@ class TestConvertCheckpoint:
         assert "/root/models" not in commands[0]
 
     def test_skips_an_already_released_destination(self, commands, tmp_path):
-        """A tracker file reading 'release' means the conversion already finished."""
+        """A tracker reading 'release' plus the current layout stamp means the conversion already finished."""
         dst = tmp_path / "Qwen3-4B_torch_dist"
         dst.mkdir()
         (dst / "latest_checkpointed_iteration.txt").write_text("release\n")
+        (dst / base_backend.CONVERSION_VERSION_FILE).write_text(base_backend.CONVERSION_VERSION)
 
         _backend().convert_checkpoint(
             model_name="Qwen3-4B", megatron_model_type="qwen3-4B", num_gpus_per_node=8, dir_dst=str(tmp_path)
         )
 
         assert commands == []
+
+    def test_a_fresh_conversion_stamps_the_layout(self, commands, tmp_path):
+        """The stamp the skip path reads is written once the conversion has run."""
+        _backend().convert_checkpoint(
+            model_name="Qwen3-4B", megatron_model_type="qwen3-4B", num_gpus_per_node=8, dir_dst=str(tmp_path)
+        )
+
+        stamp = tmp_path / "Qwen3-4B_torch_dist" / base_backend.CONVERSION_VERSION_FILE
+        assert stamp.read_text() == base_backend.CONVERSION_VERSION
+
+    @pytest.mark.parametrize("stamp_text", [None, "0"], ids=["unstamped", "stale"])
+    def test_reconverts_a_release_written_before_the_current_layout(self, commands, tmp_path, stamp_text):
+        """A cached conversion from before a layout change would load scrambled, so it is redone."""
+        dst = tmp_path / "Qwen3-4B_torch_dist"
+        dst.mkdir()
+        (dst / "latest_checkpointed_iteration.txt").write_text("release\n")
+        if stamp_text is not None:
+            (dst / base_backend.CONVERSION_VERSION_FILE).write_text(stamp_text)
+
+        _backend().convert_checkpoint(
+            model_name="Qwen3-4B", megatron_model_type="qwen3-4B", num_gpus_per_node=8, dir_dst=str(tmp_path)
+        )
+
+        assert len(commands) == 1
 
     def test_reruns_when_the_tracker_holds_an_iteration(self, commands, tmp_path):
         """Only the literal 'release' marker counts as done; an iteration number does not."""

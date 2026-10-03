@@ -22,8 +22,8 @@ import torch
 from sglang.srt.layers.quantization.fp8_utils import block_quant_dequant
 from tqdm import tqdm
 
-from miles.utils.mxfp8 import MXFP8_GROUP_SIZE
-from miles.utils.mxfp8 import mxfp8_quantize as quantize_mxfp8
+from miles.kernels.quant.mxfp8 import MXFP8_GROUP_SIZE
+from miles.kernels.quant.mxfp8 import mxfp8_quantize as quantize_mxfp8
 
 
 SKIP_WEIGHT_SUBSTRINGS = (

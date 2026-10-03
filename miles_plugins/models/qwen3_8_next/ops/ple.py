@@ -16,8 +16,8 @@ from megatron.core.transformer.module import MegatronModule
 from megatron.core.transformer.transformer_config import TransformerConfig
 from torch import Tensor
 
-from miles_plugins.models.qwen3_8_next.ops.kernel.ple_gather import gather_ple_rows
-from miles_plugins.models.qwen3_8_next.ops.kernel.ple_triton import ple_gate_conv_triton
+from miles.kernels.embedding.ple_gather import gather_ple_rows
+from miles.kernels.embedding.ple_triton import ple_gate_conv_triton
 
 logger = logging.getLogger(__name__)
 
