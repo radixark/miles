@@ -35,3 +35,21 @@ def test_pending_inventory_checks_exact_names_and_byte_counts(monkeypatch):
         producer._verify_pending_inventory(protocol, {})
     with pytest.raises(ValueError, match="size"):
         producer._verify_pending_inventory(protocol, {"w": {"shape": [2, 3], "dtype": "BF16"}})
+
+
+def test_producer_metadata_satisfies_current_negotiation_without_claiming_a_receiver(tmp_path):
+    import asyncio
+
+    from miles.backends.training_utils.weight_update.gpu_delta_session import negotiate_cohort
+
+    spec = importlib.util.spec_from_file_location("gpu_delta_producer_metadata", _MODULE.with_name("bench_gpu_delta_producer.py"))
+    producer = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(producer)
+    plan = [{"name": "w", "dtype": "U8", "shape": [2, 2], "encoding": "xor_bytes",
+             "views": [{"id": "canonical", "slices": [[0, 2], [0, 2]]}]}]
+    protocol = producer._make_protocol(Namespace(custom_update_weight_post_write_path=None), plan, tmp_path)
+    description = asyncio.run(protocol._describe())
+    cohort = negotiate_cohort(description)
+    assert cohort.plan == plan
+    assert cohort.engine_ids == ("producer-benchmark-no-receiver",)
+    assert cohort.host_tensor_names == {"producer-benchmark-no-host-cache": ["w"]}

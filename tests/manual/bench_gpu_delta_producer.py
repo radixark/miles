@@ -241,7 +241,7 @@ def _discover_plan(args, iterator, weights):
             error = error or caught
         return []
 
-    iterator.set_local_expert_transform(prefetch=lambda _: None, transform=lambda _key, unit: consume(unit))
+    iterator.set_local_expert_transform(transform=lambda _key, unit: consume(unit))
     for bucket in iterator.iter_hf_weights(weights, materialize=dist.get_rank() == 0):
         if dist.get_rank() == 0:
             consume(bucket)
@@ -273,7 +273,11 @@ def _make_protocol(args, plan, output):
                     "success": True,
                     "participants": [
                         {
-                            "identity": {"rank_id": "producer-benchmark-plan"},
+                            "identity": {
+                                "rank_id": "producer-benchmark-plan",
+                                "engine_id": "producer-benchmark-no-receiver",
+                                "host_cache_id": "producer-benchmark-no-host-cache",
+                            },
                             "plan": {"codec": CODEC, "tensors": plan},
                         }
                     ],

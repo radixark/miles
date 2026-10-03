@@ -177,3 +177,46 @@ def test_owner_transform_rejects_expert_tp_without_changing_the_iterator(direct_
     with pytest.raises(ValueError, match="expert TP=1"):
         iterator.set_local_expert_transform(transform=lambda name, unit: unit)
     assert iterator._expert_transform is None
+
+
+def test_producer_discovery_installs_actual_owner_hook_and_preserves_plan(direct_module, monkeypatch, tmp_path):
+    import importlib.util
+    from pathlib import Path
+
+    import safetensors.torch
+
+    from miles.backends.training_utils import parallel
+
+    path = Path(__file__).parents[3] / "manual" / "bench_gpu_delta_producer.py"
+    spec = importlib.util.spec_from_file_location("gpu_delta_discovery_benchmark", path)
+    producer = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(producer)
+    expert_name = "model.layers.3.mlp.experts.0.gate_proj.weight"
+    dense_name = "model.norm.weight"
+    weights = {expert_name: torch.zeros((2, 2), dtype=torch.uint8), dense_name: torch.ones(2)}
+    safetensors.torch.save_file(weights, tmp_path / "model.safetensors")
+    iterator = direct_module.HfWeightIteratorDirect.__new__(direct_module.HfWeightIteratorDirect)
+    iterator._convert_experts_before_gather = True
+
+    def buckets(values, *, materialize):
+        assert materialize
+        assert iterator._expert_transform(expert_name, [(expert_name, values[expert_name])]) == []
+        yield [(dense_name, values[dense_name])]
+
+    iterator.iter_hf_weights = buckets
+    monkeypatch.setattr(parallel, "get_parallel_state", lambda: Namespace(
+        ep=Namespace(rank=0, size=1), edp=Namespace(rank=0)))
+    monkeypatch.setattr(producer.dist, "get_rank", lambda: 0)
+    monkeypatch.setattr(producer, "_gather", lambda value: [value])
+
+    def check(error, stage):
+        if error is not None:
+            raise error
+
+    monkeypatch.setattr(producer, "_check", check)
+    plan, ownership = producer._discover_plan(Namespace(hf_checkpoint=str(tmp_path), num_experts=2), iterator, weights)
+    assert ownership["names"] == sorted(weights)
+    assert ownership["routed_tensor_count"] == 1
+    assert {entry["name"]: entry["encoding"] for entry in plan} == {
+        expert_name: "xor_bytes", dense_name: "raw_bytes",
+    }
