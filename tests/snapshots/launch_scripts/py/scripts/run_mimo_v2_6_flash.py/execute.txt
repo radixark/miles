@@ -59,7 +59,6 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --n-samples-per-prompt 8
   --rollout-max-response-len 8192
   --rollout-temperature 1.0
-  --rollout-top-p 0.95
   --num-steps-per-rollout 1
   --advantage-estimator grpo
   --entropy-coef 0.00

@@ -4,7 +4,14 @@ import pytest
 import torch
 from safetensors.torch import load_file, save_file
 
-from tools.convert_mimo_v2_to_bf16 import FP4_TABLE, dequant_fused_qkv, dequant_mxfp4, main, split_fused_qkv
+from tools.convert_mimo_v2_to_bf16 import (
+    FP4_TABLE,
+    dequant_fp8_block,
+    dequant_fused_qkv,
+    dequant_mxfp4,
+    main,
+    split_fused_qkv,
+)
 
 E4M3_MAX = torch.finfo(torch.float8_e4m3fn).max
 
@@ -68,8 +75,8 @@ def test_split_fused_qkv_restores_head_order():
         assert torch.equal(got, want)
 
 
-def _tiny_checkpoint(path):
-    """Two layers in the official MiMo-V2 format: global+dense (0) and SWA+MoE (1)."""
+def _tiny_checkpoint(path, mtp=False):
+    """Two layers in the official MiMo-V2 format: global+dense (0) and SWA+MoE (1), optionally one MTP layer."""
     config = {
         "architectures": ["MiMoV2ForCausalLM"],
         "attention_projection_layout": "fused_qkv",
@@ -124,6 +131,13 @@ def _tiny_checkpoint(path):
             exps = torch.randint(124, 130, (rows, cols // 32), dtype=torch.uint8)
             tensors[name + "weight"], tensors[name + "weight_scale"] = _pack_mxfp4(codes), exps
             expected[name + "weight"] = dequant_mxfp4(tensors[name + "weight"], exps)
+    if mtp:
+        quant_scale = [_quant_fp8_block(part) for part in torch.randn(640, 128).chunk(2)]
+        tensors["model.mtp.layers.0.self_attn.qkv_proj.weight"] = torch.cat([q for q, _ in quant_scale])
+        tensors["model.mtp.layers.0.self_attn.qkv_proj.weight_scale_inv"] = torch.cat([s for _, s in quant_scale])
+        quant, scale = _quant_fp8_block(torch.randn(256, 128))
+        tensors["model.mtp.layers.0.mlp.gate_proj.weight"] = quant
+        tensors["model.mtp.layers.0.mlp.gate_proj.weight_scale_inv"] = scale
     save_file(tensors, str(path / "model-00001.safetensors"))
     (path / "model.safetensors.index.json").write_text(
         json.dumps({"weight_map": dict.fromkeys(tensors, "model-00001.safetensors")})
@@ -173,3 +187,47 @@ def test_keep_quant_reindexes_ignored_layers(tmp_path):
     config = json.loads((dst / "config.json").read_text())
     assert config["quantization_config"]["ignored_layers"] == ["model.layers.0.self_attn.o_proj"]
     assert config["attention_projection_layout"] == "fused_qkv"
+
+
+@pytest.mark.parametrize("layers", [None, [1]])
+def test_bf16_linears_decode_only_the_decoder_fp8_linears(tmp_path, layers):
+    src, dst = tmp_path / "src", tmp_path / "dst"
+    src.mkdir()
+    _tiny_checkpoint(src, mtp=True)
+    source = load_file(str(src / "model-00001.safetensors"))
+    main(str(src), str(dst), layers, None, keep_quant=True, device="cpu", bf16_linears=True)
+
+    config = json.loads((dst / "config.json").read_text())
+    index = json.loads((dst / "model.safetensors.index.json").read_text())["weight_map"]
+    out = {name: t for f in set(index.values()) for name, t in load_file(str(dst / f)).items()}
+    remap = {old: new for new, old in enumerate(layers)} if layers else {0: 0, 1: 1}
+    expected = {}
+    for name, tensor in source.items():
+        _, group, *rest = name.split(".")
+        if group == "layers":
+            if int(rest[0]) not in remap or name.endswith("weight_scale_inv"):
+                continue
+            if tensor.dtype == torch.float8_e4m3fn:
+                scale = source[name + "_scale_inv"]
+                # the fused qkv stays fused and kv-head interleaved
+                tensor = (
+                    dequant_fused_qkv(tensor, scale, 2) if "qkv_proj" in name else dequant_fp8_block(tensor, scale)
+                )
+            name = f"model.layers.{remap[int(rest[0])]}.{'.'.join(rest[1:])}"
+        expected[name] = tensor
+    assert out.keys() == expected.keys()
+    for name, want in expected.items():
+        assert out[name].dtype == want.dtype and torch.equal(out[name].view(torch.uint8), want.view(torch.uint8)), name
+    # MXFP4 experts and the MTP layers keep their source format.
+    assert out[f"model.layers.{remap[1]}.mlp.experts.0.gate_proj.weight"].dtype == torch.uint8
+    assert out["model.mtp.layers.0.self_attn.qkv_proj.weight"].dtype == torch.float8_e4m3fn
+
+    assert config["attention_projection_layout"] == "fused_qkv"
+    assert config["quantization_config"]["store_dtype"] == "mxfp4"
+    # SGLang skips a fused qkv_proj by its q/k/v shard names, Miles' weight sync by the fused name.
+    ignored = {f"model.layers.{remap[1]}.self_attn.o_proj"}
+    for new in remap.values():
+        ignored |= {f"model.layers.{new}.self_attn.{proj}" for proj in ("qkv_proj", "q_proj", "k_proj", "v_proj")}
+    if 0 in remap:
+        ignored |= {f"model.layers.0.mlp.{proj}" for proj in ("gate_proj", "up_proj", "down_proj")}
+    assert set(config["quantization_config"]["ignored_layers"]) == ignored
