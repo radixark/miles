@@ -25,13 +25,17 @@ _DEEPSEEK_V4_GROUPS = [
 ]
 
 
-def get_hf_atomic_update_groups(model_name: str, *, q_lora_rank: int | None = None) -> list[AtomicUpdateGroup]:
+def get_hf_atomic_update_groups(
+    model_name: str,
+    *,
+    q_lora_rank: int | None = None,
+) -> list[AtomicUpdateGroup]:
     """Atomic groups for a model. inkling registers none: its fusions happen
     inside the converter, and its engine-side loads are split-safe."""
-    model_name = model_name.lower()
-    if "deepseekv4" in model_name:
+    normalized_model_name = model_name.lower().replace("-", "").replace("_", "")
+    if "deepseekv4" in normalized_model_name:
         return list(_DEEPSEEK_V4_GROUPS)
-    if "inkling" in model_name:
+    if "inkling" in normalized_model_name:
         return []
     if q_lora_rank is not None:
         # sglang's deepseek family cache-and-concats q_a_proj + kv_a_proj_with_mqa

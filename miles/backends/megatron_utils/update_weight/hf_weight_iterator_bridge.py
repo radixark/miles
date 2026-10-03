@@ -1,17 +1,26 @@
 import dataclasses
 import inspect
 import itertools
+import logging
+from pathlib import Path
+
+import torch
+import torch.distributed as dist
 
 from miles.backends.megatron_utils.update_weight.hf_weight_iterator import (
     MegatronHfWeightIteratorBase,
     _iter_mm_tower_units,
 )
+from miles.backends.training_utils.parallel import get_parallel_state
 from miles.utils import megatron_bridge_utils
+from miles.utils.hf_parameter_names import get_checkpoint_weight_map, get_param_name_remap
 from miles.utils.lora.utils import is_lora_weight_name
 
 from ..megatron_to_hf import postprocess_hf_param
 from ..megatron_to_hf.processors import quantize_params
 from ..misc_utils import strip_param_name_prefix
+
+logger = logging.getLogger(__name__)
 
 
 class HfWeightIteratorBridge(MegatronHfWeightIteratorBase):
@@ -20,13 +29,27 @@ class HfWeightIteratorBridge(MegatronHfWeightIteratorBase):
 
         from megatron.bridge import AutoBridge
 
-        self._bridge = AutoBridge.from_hf_pretrained(self.args.hf_checkpoint, trust_remote_code=True)
+        bridge_checkpoint = _select_bridge_checkpoint(self.args)
+        self._bridge = AutoBridge.from_hf_pretrained(bridge_checkpoint, trust_remote_code=True)
+        # Bridge may export official DSV4 checkpoint names, e.g. layers.0.attn.wq_a.weight,
+        # while SGLang's model uses model.layers.0.self_attn.wq_a.weight.
+        # Resolve the mapping once so postprocessing, quantization, and bucketing
+        # all use SGLang's model namespace.
+        self._remap_hf_name = _load_checkpoint_name_remap(bridge_checkpoint)
+        self._export_dtypes = None
 
     def _iter_hf_param_units(self, weights, *, materialize):
         renamed_megatron_local_weights = {strip_param_name_prefix(k): v for k, v in weights.items()}
         with megatron_bridge_utils.patch_megatron_model(self.model):
             conversion_tasks = self._bridge.get_conversion_tasks(self.model)
-            conversion_tasks = _process_conversion_tasks(conversion_tasks, renamed_megatron_local_weights)
+            # Explicit per-parameter dtypes disable checkpoint requantization
+            # while preserving BF16 weights and FP32-only parameters on all PP ranks.
+            if "weight_dtype" in inspect.signature(self._bridge.export_hf_weights).parameters:
+                if self._export_dtypes is None:
+                    self._export_dtypes = _gather_export_dtypes(conversion_tasks)
+            conversion_tasks = _process_conversion_tasks(
+                conversion_tasks, renamed_megatron_local_weights, weight_dtypes=self._export_dtypes
+            )
             named_weights = self._bridge.export_hf_weights(
                 self.model,
                 cpu=False,
@@ -99,7 +122,7 @@ class HfWeightIteratorBridge(MegatronHfWeightIteratorBase):
             megatron_param_names = self._source_names(item)
             # Padding/quantization rules key on a Megatron name; packed grouped-expert tensors use the first source.
             megatron_param_name = megatron_param_names[0] if megatron_param_names else None
-            hf_name = hf_param_name.replace(".base_layer.", ".")
+            hf_name = self._remap_hf_name(hf_param_name).replace(".base_layer.", ".")
             weight = postprocess_hf_param(
                 args=self.args,
                 megatron_param_name=megatron_param_name,
@@ -123,11 +146,61 @@ class HfWeightIteratorBridge(MegatronHfWeightIteratorBase):
                 yield hf_name, weight, megatron_param_names
 
 
-def _process_conversion_tasks(vanilla_conversion_tasks, new_weight_dict):
+def _load_checkpoint_name_remap(checkpoint):
+    """Resolve export names from the checkpoint's architecture and tensor namespace."""
+    config_path = Path(checkpoint) / "config.json"
+    index_path = Path(checkpoint) / "model.safetensors.index.json"
+    if not config_path.is_file() or (not index_path.is_file() and not any(Path(checkpoint).glob("*.safetensors"))):
+        logger.warning(
+            "Checkpoint %s has no local config or safetensors weights/index; preserving Bridge export names.",
+            checkpoint,
+        )
+        return lambda name: name
+    weight_map = get_checkpoint_weight_map(checkpoint)
+    return get_param_name_remap(str(config_path), weight_map)
+
+
+def _select_bridge_checkpoint(args):
+    """Use an HF trainer seed for export mappings when one is available."""
+    for candidate in (getattr(args, "load", None), getattr(args, "ref_load", None)):
+        if candidate is None:
+            continue
+        path = Path(candidate)
+        if (path / "model.safetensors.index.json").is_file() or any(path.glob("*.safetensors")):
+            return candidate
+    return args.hf_checkpoint
+
+
+def _gather_export_dtypes(conversion_tasks):
+    """Share owner parameter dtypes with PP receivers that have no local tensor."""
+    local_dtypes = {
+        task.global_param_name: (
+            torch.float32 if getattr(task.param_weight, "keep_in_fp32", False) else task.param_weight.dtype
+        )
+        for task in conversion_tasks
+        if task is not None and task.param_weight is not None
+    }
+    pp = get_parallel_state().pp
+    gathered = [local_dtypes]
+    if pp.size > 1:
+        gathered = [None] * pp.size
+        dist.all_gather_object(gathered, local_dtypes, group=pp.gloo_group or pp.group)
+    dtypes = {}
+    for rank_dtypes in gathered:
+        for name, dtype in rank_dtypes.items():
+            if name in dtypes and dtypes[name] != dtype:
+                raise ValueError(f"Inconsistent export dtype for {name}: {dtypes[name]} vs {dtype}")
+            dtypes[name] = dtype
+    return dtypes
+
+
+def _process_conversion_tasks(vanilla_conversion_tasks, new_weight_dict, *, weight_dtypes=None):
     def _handle_one(task):
         if task is None:
             # no HF mapping (e.g. Gemma-4 post_shared_expert_layernorm)
             return task
+        if weight_dtypes is not None:
+            task = dataclasses.replace(task, weight_dtype=weight_dtypes[task.global_param_name])
         if task.param_weight is None:
             return task
 

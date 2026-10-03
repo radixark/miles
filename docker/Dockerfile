@@ -38,9 +38,9 @@ WORKDIR /root/
 
 # ======================================== Apt dependencies =============================================
 
-RUN apt update
+RUN apt -o APT::Sandbox::User=root update
 # ethtool for network diagnostics
-RUN apt install -y nvtop rsync dnsutils ethtool tmux
+RUN apt -o APT::Sandbox::User=root install -y nvtop rsync dnsutils ethtool tmux
 
 # nccl-tests for diagnostics
 RUN git clone https://github.com/NVIDIA/nccl-tests.git /tmp/nccl-tests && \
@@ -210,6 +210,9 @@ RUN apt-get remove -y --purge --allow-change-held-packages \
 
 RUN pip install nvidia-cudnn-cu13==9.22.0.52
 
+RUN if [ "${ENABLE_CUDA_13}" = "1" ]; then \
+      python3 -c "from flash_mla import flash_mla_sparse_fwd; import cudnn.deepseek_sparse_attention"; \
+    fi
 
 RUN rm -rf /root/.cache/pip /root/flash-attention
 
