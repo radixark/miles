@@ -79,11 +79,26 @@ class SessionCoreV2(SessionCore):
         """Samples op: assemble one raw sample per leaf, then run the
         pick/post-process hook pipeline and encode the result.
 
-        Synchronous on the server loop (no await), so the session read cannot
-        interleave with chat commits. Deterministic assembly/hook failures map
-        to 422; unknown exceptions propagate.
+        The session lock provides a stable tree snapshot while materialization
+        runs off the shared server event loop.
         """
         session = self.registry.get_session(session_id)
+        return await self._run_sample_materialization(
+            session,
+            self._collect_samples_sync,
+            session_id,
+            session,
+            max_seq_len,
+            agent_metadata,
+        )
+
+    def _collect_samples_sync(
+        self,
+        session_id: str,
+        session,
+        max_seq_len: int | None,
+        agent_metadata: dict | None,
+    ) -> Response:
         metadata = self._session_metadata(session_id, session)
         fields = COMPUTED_FIELDS_V2
         if session.sampling_support_replay:

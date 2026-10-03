@@ -1754,12 +1754,29 @@ class TestSessionServerScalingArguments:
 
         assert args.session_server_port is None
         assert args.session_server_workers == 32
+        assert args.session_samples_timeout == 120.0
 
     def test_parses_starting_port_and_instance_count(self):
-        args = self._parse(["--session-server-port", "30000", "--session-server-workers", "4"])
+        args = self._parse(
+            [
+                "--session-server-port",
+                "30000",
+                "--session-server-workers",
+                "4",
+                "--session-samples-timeout",
+                "600",
+            ]
+        )
 
         assert args.session_server_port == 30000
         assert args.session_server_workers == 4
+        assert args.session_samples_timeout == 600.0
+
+    def test_rejects_non_positive_samples_timeout(self):
+        args = self._parse(["--session-samples-timeout", "0"])
+
+        with pytest.raises(ValueError, match="--session-samples-timeout must be positive"):
+            miles_validate_args(args)
 
     def test_rejects_the_removed_end_port_form(self):
         with pytest.raises(SystemExit):

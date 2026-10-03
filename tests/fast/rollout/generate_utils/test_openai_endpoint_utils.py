@@ -66,6 +66,7 @@ async def test_create_reads_session_server_instance_id_from_args(monkeypatch, cr
 
     args = SimpleNamespace(
         session_server_instances=[SessionServerInstance(addr="127.0.0.1:12345", instance_id="server-instance-123")],
+        session_samples_timeout=345.0,
         use_sampling_support_replay=expected_payload.get("top_p", 1.0) < 1.0 or expected_payload.get("top_k", -1) > 0,
         rollout_temperature=expected_payload.get("temperature", 1.0),
         rollout_top_p=expected_payload.get("top_p", 1.0),
@@ -76,6 +77,7 @@ async def test_create_reads_session_server_instance_id_from_args(monkeypatch, cr
     assert tracer.base_url == "http://127.0.0.1:12345/sessions/session-123"
     assert tracer.session_server_id == "127.0.0.1:12345"
     assert tracer.session_server_instance_id == "server-instance-123"
+    assert tracer.samples_timeout == 345.0
     # No /health probe: the id is read locally, create() issues only the POST.
     assert calls == [("post", "http://127.0.0.1:12345/sessions")]
 
@@ -286,9 +288,11 @@ class _CollectCalls:
 
     def __init__(self, monkeypatch, *, post_outcome, delete_outcome=None):
         self.calls: list[str] = []
+        self.post_timeout: float | None = None
 
         async def fake_post_bytes(url, payload, *, timeout):
             self.calls.append(f"POST {url}")
+            self.post_timeout = timeout
             assert payload == {"max_seq_len": 7}
             if isinstance(post_outcome, Exception):
                 raise post_outcome
@@ -308,12 +312,18 @@ class _CollectCalls:
 @pytest.mark.asyncio
 async def test_collect_samples_single_post_then_delete(monkeypatch):
     calls = _CollectCalls(monkeypatch, post_outcome=_computed_reply_payload())
-    result = await _tracer().collect_samples(Sample(), max_seq_len=7)
+    tracer = OpenAIEndpointTracer(
+        router_url="http://127.0.0.1:12345",
+        session_id="sid-1",
+        samples_timeout=345.0,
+    )
+    result = await tracer.collect_samples(Sample(), max_seq_len=7)
 
     assert calls.calls == [
         "POST http://127.0.0.1:12345/sessions/sid-1/samples",
         "DELETE http://127.0.0.1:12345/sessions/sid-1",
     ]
+    assert calls.post_timeout == 345.0
     (sample,) = result.samples
     assert sample.tokens == [1, 2, 10] and sample.status == Sample.Status.COMPLETED
     assert result.session_metadata == {"max_trim_tokens": 1}

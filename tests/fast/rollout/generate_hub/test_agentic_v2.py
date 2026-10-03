@@ -159,6 +159,20 @@ async def test_transport_collection_error_has_no_metrics_owner(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_python_310_asyncio_collection_timeout_aborts_sample(monkeypatch):
+    class LegacyAsyncTimeoutError(Exception):
+        pass
+
+    monkeypatch.setattr(agentic_tool_call, "asyncio", SimpleNamespace(TimeoutError=LegacyAsyncTimeoutError))
+    tracer = _Tracer(error=LegacyAsyncTimeoutError("samples unavailable"))
+    _patch_agent(monkeypatch, tracer)
+
+    output = await agentic_tool_call.generate(_generate_input())
+
+    assert output.samples[0].status == Sample.Status.ABORTED
+
+
+@pytest.mark.asyncio
 async def test_v2_replaces_stale_metrics_with_shared_authoritative_carrier(monkeypatch):
     stale = {"session_id": "stale", "metrics": {"agent": "plant"}}
     leaves = [

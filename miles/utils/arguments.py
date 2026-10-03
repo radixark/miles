@@ -2630,6 +2630,12 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help="Number of session server instances.",
             )
             parser.add_argument(
+                "--session-samples-timeout",
+                type=float,
+                default=120.0,
+                help="Timeout in seconds for assembling and downloading a completed session's training samples.",
+            )
+            parser.add_argument(
                 "--session-server-ip",
                 type=str,
                 default=None,
@@ -3266,6 +3272,9 @@ def miles_validate_args(args):
             "version; pass it bare (or 'v1') for the append-only linear server, or 'v2' for "
             "tree serving."
         )
+
+    if args.session_samples_timeout <= 0:
+        raise ValueError("--session-samples-timeout must be positive")
 
     assert not (
         args.use_session_server and args.partial_rollout
