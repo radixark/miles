@@ -73,6 +73,7 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
     metadata = {**metadata, "session_server_id": tracer.session_server_id}
 
     agent_metadata = None
+    agent_error = None
     collect_failed = False
     t_start = time.monotonic()
     try:
@@ -85,6 +86,7 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
         )
         logger.debug(f"{log_prefix} Agent function returned in {time.monotonic()-t_start:.1f}s")
     except Exception as e:
+        agent_error = e
         logger.warning(f"{log_prefix} Agent function failed: {e}", exc_info=True)
 
     finally:
@@ -105,7 +107,7 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
                 f"total_time={time.monotonic()-t_start:.1f}s"
             )
 
-    if collect_failed:
+    if agent_error is not None or collect_failed:
         sample = deepcopy(input.sample)
         sample.status = Sample.Status.ABORTED
         if collect_spec_metrics:

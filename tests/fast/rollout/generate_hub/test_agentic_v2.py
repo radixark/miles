@@ -22,8 +22,10 @@ class _Tracer:
         self.reply = reply
         self.error = error
         self.agent_metadata = None
+        self.collect_calls = 0
 
     async def collect_samples(self, input_sample, *, max_seq_len, agent_metadata=None):
+        self.collect_calls += 1
         self.agent_metadata = agent_metadata
         if self.error is not None:
             raise self.error
@@ -74,6 +76,26 @@ def _patch_agent(monkeypatch, tracer):
 
     monkeypatch.setattr(agentic_tool_call.OpenAIEndpointTracer, "create", fake_create)
     monkeypatch.setattr(agentic_tool_call, "load_function", lambda path: _fake_agent)
+
+
+@pytest.mark.asyncio
+async def test_agent_failure_collects_for_cleanup_then_aborts(monkeypatch):
+    sample = Sample(status=Sample.Status.COMPLETED, response="partial", response_length=1, tokens=[1])
+    tracer = _Tracer(SamplesReply(samples=[sample], session_metadata={}, empty_reason=None))
+    _patch_agent(monkeypatch, tracer)
+
+    async def failed_agent(**kwargs):
+        raise RuntimeError("agent unavailable")
+
+    monkeypatch.setattr(agentic_tool_call, "load_function", lambda path: failed_agent)
+    generate_input = _generate_input()
+
+    output = await agentic_tool_call.generate(generate_input)
+
+    assert tracer.collect_calls == 1
+    assert tracer.agent_metadata is None
+    assert output.samples[0] is not sample
+    assert output.samples[0].status == Sample.Status.ABORTED
 
 
 @pytest.mark.asyncio
