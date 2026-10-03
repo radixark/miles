@@ -27,13 +27,14 @@ allocation modes. Both decode from HBM. Pinned host memory supplies H2D copies.
 | --- | --- |
 | `WEIGHT_DELTA_CODEC=zstd\|snappy` | Producer codec; each immutable frame records its actual codec, including raw fallback for incompressible frames. Default: `snappy`. |
 | `WEIGHT_DELTA_ENCODER=gpu\|cpu` | GPU XOR/compression with a pinned CPU baseline, or the explicit CPU reference encoder. Default: `gpu`. |
+| `WEIGHT_DELTA_SNAPPY_OUTER=cpu\|gpu` | Snappy outer Zstd execution. Default: `cpu`; `gpu` requires the GPU Snappy producer and protocol-4 receiver. |
 | `WEIGHT_DELTA_TIMING=1` | Record per-phase CUDA events for profiling. Default: off; event instrumentation can perturb timing. |
 
 For Ray launches, pass these settings explicitly in the job's
 `runtime_env={"env_vars": ...}` (or `execute_train(extra_env_vars=...)`). Setting
 only the submitting shell does not forward arbitrary variables to workers on an
 existing Ray cluster. The five-layer W4A16 E2E explicitly forwards the codec,
-and encoder, and checks every learned publication's protocol and
+encoder and outer compressor, and checks every learned publication's protocol and
 codec profile. An existing `--train-env-vars` override can set producer-only
 values on trainer actors; rollout profiling additionally needs
 `WEIGHT_DELTA_TIMING=1` in the rollout/job environment. Receivers select the outer
@@ -50,13 +51,44 @@ are supported by the existing GPU-delta publication path:
 | GPU Snappy (default) | `WEIGHT_DELTA_ENCODER=gpu WEIGHT_DELTA_CODEC=snappy` | nvCOMP CUDA Snappy + CPU Zstd envelope |
 
 The CPU choices compute XOR and inner compression on CPU; the GPU choices
-compute them on GPU. The Snappy outer envelope always uses CPU Zstd. CPU Snappy requires the existing `python-snappy` dependency.
+compute them on GPU. The Snappy outer envelope defaults to CPU Zstd. CPU Snappy requires the existing `python-snappy` dependency.
 Receiver decode depends on the codec, not the encoder location: either CPU- or
 GPU-produced Zstd uses CUDA decoding, and either Snappy producer requires the
-qualified Blackwell hardware decoder. Every Snappy publication uses a per-tensor CPU Zstd level-1 envelope (protocol 3,
-`snappy-independent-1mib-zstd-v1`); there is no unwrapped Snappy mode or envelope
-flag. Background preparation unwraps locally needed tensors into pinned buffers
-before the existing hardware Snappy decode. Native Zstd keeps protocol 2.
+qualified Blackwell hardware decoder. Default Snappy publications use a per-tensor CPU Zstd level-1 envelope (protocol 3,
+`snappy-independent-1mib-zstd-v1`). Background preparation unwraps locally needed
+tensors into pinned buffers before hardware Snappy decode. Native Zstd keeps protocol 2.
+
+The experimental `WEIGHT_DELTA_SNAPPY_OUTER=gpu` producer opt-in keeps compact
+Snappy tensor arenas on device across all owner batches, then compresses their
+independent <=1 MiB outer chunks together in one nvCOMP Zstd call. Only the final
+wrapped wire bytes return to pinned CPU memory for hashing/writing and owner
+gathering; there is no intermediate Snappy host payload slab. Raw scalar/vector
+CPU writes overlap the matrix GPU work as before. Protocol 4 records
+`snappy-independent-1mib-gpu-zstd-v1`, natural tensor boundaries and explicit
+outer chunk offsets/lengths. SHA-256 covers final owner files; inner Snappy bytes
+are not read back merely to hash them. The receiver verifies the final files and CPU-decompresses the authenticated
+Zstd chunks into pinned Snappy tensor buffers during background preparation,
+including when the producer used GPU Zstd. Its existing streamed H2D and hardware
+Snappy apply path is unchanged: GPU outer decoding is not implemented. The GPU
+sender avoids its intermediate Snappy host slab; the receiver still owns pinned
+Snappy buffers. There is no implicit producer codec/backend fallback.
+
+For a matched full-model receiver fixture, run the setup-only adapter below.
+It rewraps retained, authenticated Snappy arenas and verifies exact recovered
+bytes; fixture construction is excluded from update timings.
+
+```bash
+PYTHONPATH=. python tests/manual/rewrap_gpu_delta_fixture.py \
+  --fixture /data/benchmarks/cpuouter/fixture.json \
+  --fixture-sha256 <fixture-sha256> \
+  --output /data/benchmarks/gpuouter-new \
+  --source-digest <verified-source-manifest-sha256> --device 0
+```
+
+Run the usual receiver benchmark with `WEIGHT_DELTA_SNAPPY_OUTER=gpu` to select
+this fixture's `snappy-gpu-zstd` entries, still CPU-unwrapped by the receiver.
+Benchmark the default and opt-in
+independently; no performance preference is implied by the experimental mode.
 There is no silent execution fallback.
 
 Both GPU codecs use the same bulk encoder. It replaces the earlier per-tensor
@@ -123,8 +155,10 @@ benchmark cover actual GPU-origin frames. Publication accounting reports inner
 frame bytes, outer stored/decoded bytes and complete file/manifest bytes
 separately; outer compression does not change the canonical denominator.
 
-Snappy always selects the `snappy-zstd` fixture entry and validates protocol 3
-and its codec profile before launching an engine. A previously saved wrapped
+Default Snappy selects the `snappy-zstd` fixture entry and validates protocol 3
+and its codec profile before launching an engine. `WEIGHT_DELTA_SNAPPY_OUTER=gpu`
+selects the rewrapped `snappy-gpu-zstd` entry and validates protocol 4; both use
+CPU outer decoding followed by streamed hardware Snappy decoding. A previously saved wrapped
 fixture can be reused with `--fixture` without reading/re-exporting model weights;
 its target checkpoint, plan and versions remain unchanged. Historical plain
 `snappy` entries are never a fallback. New fixtures use the same deterministic

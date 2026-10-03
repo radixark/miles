@@ -414,3 +414,25 @@ def test_cpu_snappy_failure_drains_encoding_workers_before_closing_partial_publi
     np.testing.assert_array_equal(protocol._snapshot["a"], 0)
     with pytest.raises(RuntimeError, match="automatic replay"):
         protocol.begin_sync(2, None)
+
+
+def test_gpu_outer_wraps_owner_only_after_every_inner_batch(monkeypatch, single_rank):
+    protocol, events = _gpu_pending(monkeypatch, wrapped=True)
+    protocol.snappy_outer = "gpu"
+    protocol._gpu_encoder.encode_device.side_effect = protocol._gpu_encoder.encode.side_effect
+    protocol._gpu_encoder.outer_metrics = {"outer_gpu_wall_s": 0.01}
+
+    def wrap(values):
+        assert len(values) == 4
+        assert [event for event in events if isinstance(event, tuple)] == [("encode", [2, 3]), ("encode", [7]), ("encode", [1])]
+        events.append("wrap-all")
+        return [(frames, b"outer", {}, changed, metrics) for frames, payloads, changed, metrics in values]
+
+    protocol._gpu_encoder.wrap_device.side_effect = wrap
+    protocol._writer.add_gpu_outer_tensor.side_effect = lambda name, *args, **kwargs: events.append(("outer-write", name))
+    protocol.after_base_weights()
+    assert events == ["record", "ready", ("encode", [2, 3]), ("encode", [7]), ("encode", [1]), "wrap-all", ("outer-write", "a"), ("outer-write", "b"), ("outer-write", "c"), ("outer-write", "d")]
+    protocol._writer.add_encoded_tensor.assert_not_called()
+    assert protocol._gpu_batch_count == 3 and len(protocol._encoding_metrics) == 4
+    for tensor in protocol._snapshot.values():
+        assert not tensor.any()

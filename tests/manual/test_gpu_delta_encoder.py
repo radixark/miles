@@ -152,3 +152,82 @@ def test_partial_payload_failure_drains_owned_slabs(monkeypatch):
     assert pending.query() and encoder.stream.query()
     np.testing.assert_array_equal(before.numpy(), np.zeros(139, dtype=np.uint8))
     np.testing.assert_array_equal(after.numpy(), np.arange(139, dtype=np.uint8))
+
+
+def _unwrap_gpu_outer(payload, outer):
+    if outer is None:
+        return b""
+    output = bytearray(outer["decoded_bytes"])
+    for frame in outer["frames"]:
+        start, size = frame["encoded_offset"], frame["encoded_bytes"]
+        decoded = zstandard.ZstdDecompressor().decompress(payload[start : start + size], max_output_size=frame["decoded_bytes"])
+        assert len(decoded) == frame["decoded_bytes"]
+        begin = frame["decoded_offset"]
+        output[begin : begin + len(decoded)] = decoded
+    return output
+
+
+@pytest.mark.parametrize("frame_bytes", [1 << 16, FRAME_BYTES])
+def test_gpu_outer_bulk_roundtrip_preserves_targets_and_only_transfers_final_bytes(frame_bytes, monkeypatch, tmp_path):
+    from miles.utils.gpu_delta_publication import PublicationWriter
+
+    device = torch.device("cuda", torch.cuda.current_device())
+    encoder = gpu_delta_encoder.GpuBatchEncoder("snappy", device, frame_bytes, outer_backend="gpu")
+    original_copy = gpu_delta_encoder._copy_payload_slab
+    copies, outer_calls = [], []
+
+    def copy(selected, total, transfer):
+        copies.append(total)
+        return original_copy(selected, total, transfer)
+
+    original_compress = encoder.outer_compressor.compress
+
+    def compress(frames, stream, **kwargs):
+        outer_calls.append([frame.numel() for frame in frames])
+        return original_compress(frames, stream, **kwargs)
+
+    monkeypatch.setattr(gpu_delta_encoder, "_copy_payload_slab", copy)
+    monkeypatch.setattr(encoder.outer_compressor, "compress", compress)
+    before, after, snapshots = _snapshots(frame_bytes)
+    # Simulate several bounded canonical batches, retaining only their compact
+    # Snappy output. No intermediate payload is copied to pinned host memory.
+    inner = encoder.encode_device(snapshots[:2]) + encoder.encode_device(snapshots[2:])
+    assert copies == []
+    results = encoder.wrap_device(inner)
+    assert len(outer_calls) == 1 and max(outer_calls[0]) <= FRAME_BYTES
+    assert len(copies) == 1 and copies[0] == sum(result[4]["encoded_d2h_bytes"] for result in results)
+    writer = PublicationWriter(tmp_path, stream_id="s", base_version=0, target_version=1, plan_digest="b" * 64, codec="snappy", frame_bytes=frame_bytes, outer_backend="gpu")
+    saved = []
+    for index, (frames, payload, outer, changed, metrics) in enumerate(results):
+        arena = _unwrap_gpu_outer(payload, outer)
+        payloads = [arena[frame["encoded_offset"] : frame["encoded_offset"] + frame["encoded_bytes"]] for frame in frames]
+        np.testing.assert_array_equal(_decode(frames, payloads, before[index], "xor_bytes"), after[index])
+        np.testing.assert_array_equal(snapshots[index][0].numpy(), before[index])
+        np.testing.assert_array_equal(snapshots[index][1].numpy(), after[index])
+        assert len(payload) <= metrics["encoded_d2h_bytes"] < len(payload) + 16
+        assert changed == int(np.count_nonzero(before[index] != after[index]))
+        writer.add_gpu_outer_tensor(f"w{index}", frames, payload, outer, changed_bytes=changed, dtype="U8", shape=[1, len(before[index])])
+        saved.append(bytes(payload))
+    writer.finish()
+    # Reusing the private encoder must not mutate earlier returned wire slabs.
+    encoder.wrap_device(encoder.encode_device(snapshots[:1]))
+    assert saved == [bytes(result[1]) for result in results]
+
+
+def test_gpu_outer_failed_status_drains_before_releasing_compact_buffers(monkeypatch):
+    encoder = gpu_delta_encoder.GpuBatchEncoder("snappy", torch.device("cuda", torch.cuda.current_device()), outer_backend="gpu")
+    _, _, snapshots = _snapshots()
+    inner = encoder.encode_device(snapshots)
+    original, pending = encoder.outer_compressor.compress, torch.cuda.Event()
+
+    def fail(frames, stream, **kwargs):
+        batch = original(frames, stream, **kwargs)
+        batch.statuses.fill_(1)
+        torch.cuda._sleep(30_000_000)
+        pending.record()
+        return batch
+
+    monkeypatch.setattr(encoder.outer_compressor, "compress", fail)
+    with pytest.raises(RuntimeError, match="outer Zstd compression failed"):
+        encoder.wrap_device(inner)
+    assert pending.query() and encoder.stream.query()

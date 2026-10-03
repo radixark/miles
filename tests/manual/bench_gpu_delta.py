@@ -50,6 +50,7 @@ from miles.utils.gpu_delta_publication import (
     canonical_json,
     settings_from_env,
     sha256,
+    snappy_outer_from_env,
 )
 
 # Same rollout topology/precision/MTP as the GLM5.2 W4A16 recipe. CuTe DSL + no
@@ -181,13 +182,18 @@ def _calibrate(plan, seed, target_ratio):
 
 
 def _fixture_key(codec):
-    return "snappy-zstd" if codec == "snappy" else codec
+    if codec != "snappy":
+        return codec
+    outer = snappy_outer_from_env(codec=codec, encoder=os.environ.get("WEIGHT_DELTA_ENCODER", "gpu"))
+    return "snappy-gpu-zstd" if outer == "gpu" else "snappy-zstd"
 
 
 def _validate_fixture_profile(fixture, codec):
     key = _fixture_key(codec)
-    protocol = 3 if codec == "snappy" else 2
-    profile = f"{codec}-independent-1mib{'-zstd' if codec == 'snappy' else ''}-v1"
+    gpu_outer = key == "snappy-gpu-zstd"
+    protocol = 4 if gpu_outer else (3 if codec == "snappy" else 2)
+    suffix = "-gpu-zstd" if gpu_outer else ("-zstd" if codec == "snappy" else "")
+    profile = f"{codec}-independent-1mib{suffix}-v1"
     for row in fixture["rounds"]:
         publication = row["publications"].get(key)
         if publication is None or publication.get("protocol_version") != protocol or publication.get("codec_profile") != profile:
@@ -196,6 +202,8 @@ def _validate_fixture_profile(fixture, codec):
 
 
 def _fixture(args):
+    if any(_fixture_key(codec) == "snappy-gpu-zstd" for codec in args.codecs):
+        raise ValueError("Build the CPU-outer fixture first, then use rewrap_gpu_delta_fixture.py")
     inventory = json.loads(args.inventory.read_text())
     plan, _, digest = merge_plans(inventory["descriptions"])
     index = _tensor_index(args.model)
@@ -375,7 +383,7 @@ async def _engines(args, model):
             args.output / "launch.json",
             {
                 "engines": commands,
-                "feature_env": {key: os.environ.get(key) for key in ("WEIGHT_DELTA_CODEC", "WEIGHT_DELTA_ENCODER", "WEIGHT_DELTA_TIMING")},
+                "feature_env": {key: os.environ.get(key) for key in ("WEIGHT_DELTA_CODEC", "WEIGHT_DELTA_ENCODER", "WEIGHT_DELTA_TIMING", "WEIGHT_DELTA_SNAPPY_OUTER")},
             },
         )
         started = time.monotonic()
