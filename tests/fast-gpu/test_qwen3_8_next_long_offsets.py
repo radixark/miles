@@ -252,3 +252,11 @@ def test_ple_gather_long_offsets(tokens):
         sorted({i for i in (0, boundary - 1, boundary, boundary + 1, tokens - 1) if i < tokens}), device="cuda"
     )
     torch.testing.assert_close(out[sample], table.cuda()[ids[sample]], rtol=0, atol=0)
+
+
+if __name__ == "__main__":
+    import sys
+
+    import pytest
+
+    sys.exit(pytest.main([__file__, "-v"]))
