@@ -1,4 +1,4 @@
-"""Exchange converted expert tensors without gathering their unquantized weights."""
+"""Pack and gather converted expert tensors and scales across training ranks."""
 
 from dataclasses import dataclass
 
@@ -7,26 +7,27 @@ import torch.distributed as dist
 
 
 @dataclass(frozen=True)
-class _TensorMetadata:
+class _TensorLayout:
     name: str
     shape: tuple[int, ...]
     dtype: torch.dtype
-    offset: int
+    byte_offset: int
     nbytes: int
     strides: tuple[int, ...]
-    storage_offset: int
+    storage_offset: int  # Element offset within the payload's typed view.
 
 
 @dataclass(frozen=True)
-class _PayloadMetadata:
-    units: tuple[tuple[_TensorMetadata, ...], ...]
+class _PayloadLayout:
+    units: tuple[tuple[_TensorLayout, ...], ...]
     nbytes: int
     alignment: int
-    dtype_bytes: tuple[tuple[torch.dtype, int], ...]
+    # Dtype-aligned prefix lengths of the entire payload, not per-dtype totals.
+    dtype_view_nbytes: tuple[tuple[torch.dtype, int], ...]
 
 
 class ExpertGather:
-    """Gather one fixed-layout expert batch, exchanging actual metadata once.
+    """Gather one fixed-layout expert batch, exchanging payload layouts once.
 
     Names, unit boundaries, shapes, dtypes, and group membership must stay fixed
     for this object's lifetime. Recreate it when the model, quantization config,
@@ -44,7 +45,7 @@ class ExpertGather:
         self._group = group
         self._source_ranks = tuple(dist.get_process_group_ranks(group))
         self._local_index = self._source_ranks.index(dist.get_rank())
-        self._metadata: tuple[_PayloadMetadata, ...] | None = None
+        self._layouts: tuple[_PayloadLayout, ...] | None = None
         self._payload_sizes: tuple[int, ...] = ()
         self._single_source: int | None = None
         self._total_bytes = 0
@@ -55,30 +56,30 @@ class ExpertGather:
     ) -> list[list[tuple[str, torch.Tensor]]]:
         if len(self._source_ranks) == 1:
             return units
-        if self._metadata is None:
-            metadata = [None] * len(self._source_ranks)
-            dist.all_gather_object(metadata, _describe_units(units), group=self._group)
-            self._metadata = tuple(metadata)
-            alignment = max(info.alignment for info in self._metadata)
+        if self._layouts is None:
+            layouts = [None] * len(self._source_ranks)
+            dist.all_gather_object(layouts, _build_payload_layout(units), group=self._group)
+            self._layouts = tuple(layouts)
+            alignment = max(layout.alignment for layout in self._layouts)
             self._payload_sizes = tuple(
-                (info.nbytes + alignment - 1) // alignment * alignment for info in self._metadata
+                (layout.nbytes + alignment - 1) // alignment * alignment for layout in self._layouts
             )
             self._total_bytes = sum(self._payload_sizes)
             self._uniform = len(set(self._payload_sizes)) == 1
             sources = [index for index, size in enumerate(self._payload_sizes) if size]
             self._single_source = sources[0] if len(sources) == 1 else None
 
-        local_metadata = self._metadata[self._local_index]
+        local_layout = self._layouts[self._local_index]
         storage = torch.empty(self._total_bytes, dtype=torch.uint8, device=device)
         payloads = list(storage.split(self._payload_sizes))
         local_payload = payloads[self._local_index]
-        _pack_units(units, local_metadata, local_payload)
+        _pack_units(units, local_layout, local_payload)
         handle = self._gather_payloads(storage, payloads, local_payload)
         # Build views on the CPU while the asynchronous transfer is in flight.
         gathered = [
             unit
-            for metadata, payload in zip(self._metadata, payloads, strict=True)
-            for unit in _unpack_units(metadata, payload)
+            for layout, payload in zip(self._layouts, payloads, strict=True)
+            for unit in _unpack_units(layout, payload)
         ]
         if handle is not None:
             handle.wait()
@@ -97,17 +98,17 @@ class ExpertGather:
         return dist.all_gather(payloads, local_payload, group=self._group, async_op=True)
 
 
-def _describe_units(units):
-    metadata = []
+def _build_payload_layout(units):
+    unit_layouts = []
     dtype_sizes = {}
-    offset = 0
+    byte_offset = 0
     for unit in units:
-        unit_metadata = []
+        unit_layout = []
         for name, tensor in unit:
             item_size = tensor.element_size()
             dtype_sizes[tensor.dtype] = item_size
             # Typed views require their storage offset to be dtype-aligned.
-            offset = (offset + item_size - 1) // item_size * item_size
+            byte_offset = (byte_offset + item_size - 1) // item_size * item_size
             nbytes = tensor.numel() * item_size
             shape = tuple(tensor.shape)
             strides = []
@@ -115,41 +116,49 @@ def _describe_units(units):
             for dim in reversed(shape):
                 strides.append(stride)
                 stride *= max(dim, 1)
-            unit_metadata.append(
-                _TensorMetadata(
-                    name, shape, tensor.dtype, offset, nbytes, tuple(reversed(strides)), offset // item_size
+            unit_layout.append(
+                _TensorLayout(
+                    name, shape, tensor.dtype, byte_offset, nbytes, tuple(reversed(strides)), byte_offset // item_size
                 )
             )
-            offset += nbytes
-        metadata.append(tuple(unit_metadata))
-    dtype_bytes = tuple((dtype, offset // item_size * item_size) for dtype, item_size in dtype_sizes.items())
-    return _PayloadMetadata(tuple(metadata), offset, max(dtype_sizes.values(), default=1), dtype_bytes)
+            byte_offset += nbytes
+        unit_layouts.append(tuple(unit_layout))
+    dtype_view_nbytes = tuple(
+        (dtype, byte_offset // item_size * item_size) for dtype, item_size in dtype_sizes.items()
+    )
+    return _PayloadLayout(tuple(unit_layouts), byte_offset, max(dtype_sizes.values(), default=1), dtype_view_nbytes)
 
 
-def _pack_units(units, metadata, payload):
-    assert len(units) == len(metadata.units), "Expert output unit count changed; recreate the iterator"
-    for unit, unit_metadata in zip(units, metadata.units, strict=True):
-        assert len(unit) == len(unit_metadata), "Expert output tensor count changed; recreate the iterator"
-        for (name, tensor), info in zip(unit, unit_metadata, strict=True):
+def _pack_units(units, layout, payload):
+    assert len(units) == len(layout.units), "Expert output unit count changed; recreate the iterator"
+    for unit, unit_layout in zip(units, layout.units, strict=True):
+        assert len(unit) == len(unit_layout), "Expert output tensor count changed; recreate the iterator"
+        for (name, tensor), tensor_layout in zip(unit, unit_layout, strict=True):
             assert (
-                name == info.name and tensor.shape == info.shape and tensor.dtype == info.dtype
-            ), f"Expert output layout changed for {info.name}; recreate the iterator"
-            payload.narrow(0, info.offset, info.nbytes).copy_(tensor.contiguous().reshape(-1).view(torch.uint8))
+                name == tensor_layout.name
+                and tensor.shape == tensor_layout.shape
+                and tensor.dtype == tensor_layout.dtype
+            ), f"Expert output layout changed for {tensor_layout.name}; recreate the iterator"
+            payload.narrow(0, tensor_layout.byte_offset, tensor_layout.nbytes).copy_(
+                tensor.contiguous().reshape(-1).view(torch.uint8)
+            )
 
 
-def _unpack_units(metadata, payload):
+def _unpack_units(layout, payload):
     # Crop odd byte tails before reinterpreting the common storage by dtype.
-    typed_payloads = {dtype: payload[:nbytes].view(dtype) for dtype, nbytes in metadata.dtype_bytes}
+    typed_payloads = {dtype: payload[:nbytes].view(dtype) for dtype, nbytes in layout.dtype_view_nbytes}
     storage_offsets = {dtype: tensor.storage_offset() for dtype, tensor in typed_payloads.items()}
     return [
         [
             (
-                info.name,
-                typed_payloads[info.dtype].as_strided(
-                    info.shape, info.strides, storage_offsets[info.dtype] + info.storage_offset
+                tensor_layout.name,
+                typed_payloads[tensor_layout.dtype].as_strided(
+                    tensor_layout.shape,
+                    tensor_layout.strides,
+                    storage_offsets[tensor_layout.dtype] + tensor_layout.storage_offset,
                 ),
             )
-            for info in unit_metadata
+            for tensor_layout in unit_layout
         ]
-        for unit_metadata in metadata.units
+        for unit_layout in layout.units
     ]

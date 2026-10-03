@@ -11,7 +11,7 @@ from tqdm import tqdm
 from miles.backends.megatron_utils.megatron_to_hf import convert_to_hf
 from miles.backends.megatron_utils.named_weights import named_params_and_buffers
 from miles.backends.megatron_utils.sglang import monkey_patch_torch_reductions
-from miles.backends.megatron_utils.update_weight.expert_quantization import ExpertGather
+from miles.backends.megatron_utils.update_weight.expert_gather import ExpertGather
 from miles.backends.megatron_utils.update_weight.hf_weight_iterator import (
     MegatronHfWeightIteratorBase,
     _iter_mm_tower_units,
