@@ -6,10 +6,11 @@ from megatron.core.transformer.enums import AttnMaskType
 from megatron.core.transformer.module import mark_keep_in_fp32
 from megatron.core.transformer.moe.moe_utils import RouterGatingLinearFunction
 
+from miles.kernels.attention.dsa.glm5.sparse_mla import SparseMLA
+from miles.kernels.attention.dsa.kpool import build_pooled_keys, pool_boundaries
 from miles.utils.replay_base import indexer_replay_manager
 from miles_plugins.models.glm5.glm5 import DSAMLASelfAttention
-from miles_plugins.models.glm5.ops.sparse_mla import SparseMLA
-from miles_plugins.models.glm5_next.ops.kpool_indexer import build_pooled_keys, kpool_select_topk, pool_boundaries
+from miles_plugins.models.glm5_next.ops.kpool_indexer import kpool_select_topk
 
 _SPARSE_MLA_TAIL_DIM = 64
 

@@ -1,7 +1,7 @@
 import torch
 
-from .tilelang_sparse_mla_bwd import sparse_mla_bwd
-from .tilelang_sparse_mla_fwd import sparse_mla_fwd_interface
+from miles.kernels.attention.dsa.glm5.tilelang_sparse_mla_bwd import sparse_mla_bwd
+from miles.kernels.attention.dsa.glm5.tilelang_sparse_mla_fwd import sparse_mla_fwd_interface
 
 
 class SparseMLA(torch.autograd.Function):

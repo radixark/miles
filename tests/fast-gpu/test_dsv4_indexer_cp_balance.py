@@ -21,14 +21,11 @@ import torch
 import torch.distributed as dist
 from tests.ci.ci_register import register_cuda_ci
 
+from miles.kernels.attention.dsa.deepseek_v4.tilelang_indexer_fwd import _make_causal_cu_seqlens, batched_indexer_fwd
+from miles.kernels.attention.dsa.topk import get_dsa_topk_fn
 from miles_plugins.models.deepseek_v4.ops.cp_row_balance import RowExchange
-from miles_plugins.models.deepseek_v4.ops.kernel.tilelang_indexer_fwd import (
-    _make_causal_cu_seqlens,
-    batched_indexer_fwd,
-)
 from miles_plugins.models.deepseek_v4.ops.thd_utils import ThdLayout, compressed_cu_seqlens
 from miles_plugins.models.deepseek_v4.ops.v4_indexer import start_row_exchange, topk_for_local_rows
-from miles_plugins.models.dsa_topk import get_dsa_topk_fn
 
 register_cuda_ci(
     est_time=60,

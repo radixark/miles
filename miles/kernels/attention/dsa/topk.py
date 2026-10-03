@@ -26,7 +26,7 @@ def flashinfer_dsa_topk(logits: torch.Tensor, topk: int) -> torch.Tensor:
         topk,
         sorted=False,
         deterministic=envs.SGLANG_DSA_TOPK_FLASHINFER_DETERMINISTIC.get(),
-        tie_break=_flashinfer_tie_break_value(),
+        tie_break=flashinfer_tie_break_value(),
         dsa_graph_safe=True,
     )
     indices = indices.to(torch.int32)
@@ -44,7 +44,7 @@ def get_dsa_topk_fn(topk_backend: str):
     raise ValueError(f"Unsupported miles DSA topk backend: {topk_backend}")
 
 
-def _flashinfer_tie_break_value() -> int:
+def flashinfer_tie_break_value() -> int:
     from sglang.srt.environ import envs
 
     mode = envs.SGLANG_DSA_TOPK_FLASHINFER_TIE_BREAK.get()

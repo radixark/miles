@@ -275,6 +275,6 @@ class _QSASparseAttn(torch.autograd.Function):
         return dq.to(qc.dtype), dk.to(kc.dtype), dv.to(vc.dtype), None, None
 
 
-def qsa_sparse_attention_triton(q: Tensor, k: Tensor, v: Tensor, indices: Tensor, scale: float) -> Tensor:
+def qsa_sparse_attention(q: Tensor, k: Tensor, v: Tensor, indices: Tensor, scale: float) -> Tensor:
     """``q`` [T, Hq, D], ``k``/``v`` [S, Hkv, D], ``indices`` [T, K] int (-1 pad)."""
     return _QSASparseAttn.apply(q, k, v, indices, scale)

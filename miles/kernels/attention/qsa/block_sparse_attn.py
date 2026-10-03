@@ -538,7 +538,7 @@ class _QSABlockSparseAttn(torch.autograd.Function):
         return dq.to(qc.dtype), dk.to(kc.dtype), dv.to(vc.dtype), None, None, None, None, None, None, None, None, None
 
 
-def qsa_block_sparse_attention_triton(
+def qsa_block_sparse_attention(
     q: Tensor,
     k: Tensor,
     v: Tensor,
@@ -576,6 +576,4 @@ def qsa_sparse_attention_from_indices(
     zeros = torch.zeros(T, dtype=torch.int32, device=q.device)
     block_first = torch.arange(sel.shape[1], dtype=torch.int32, device=q.device) * block_size
     block_last = (block_first + block_size).clamp_max(T) - 1
-    return qsa_block_sparse_attention_triton(
-        q, k, v, sel, lo, hi, zeros, zeros, block_first, block_last, scale, block_size
-    )
+    return qsa_block_sparse_attention(q, k, v, sel, lo, hi, zeros, zeros, block_first, block_last, scale, block_size)

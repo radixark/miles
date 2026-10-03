@@ -1,5 +1,5 @@
 # ruff: noqa
-# Adapted from miles_plugins/models/glm5/ops/tilelang_sparse_mla_bwd.py for DeepSeek-V4.
+# Adapted from miles/kernels/attention/dsa/glm5/tilelang_sparse_mla_bwd.py for DeepSeek-V4.
 # Key differences from GLM-5:
 #   - attn_sink: gradient computation for learnable per-head scalar
 #   - Single-head KV: kv shape [B, S_kv, D] (no kv_group, no D/D_tail split)
