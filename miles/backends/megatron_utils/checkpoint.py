@@ -1,6 +1,7 @@
 import logging
 import os
 import re
+import shutil
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -8,6 +9,7 @@ import torch.distributed as dist
 from megatron.core.utils import unwrap_model
 
 # TODO: may need to copy those 2 functions and do refactoring.
+from megatron.training.checkpointing import get_checkpoint_name
 from megatron.training.checkpointing import load_checkpoint as _load_checkpoint_megatron
 from megatron.training.checkpointing import save_checkpoint
 from megatron.training.global_vars import get_args
@@ -183,6 +185,18 @@ def save_checkpoint_with_lora(
         )
     else:
         save_checkpoint(iteration, model, optimizer, opt_param_scheduler)
+
+
+def publish_as_release(save_dir: str) -> None:
+    """Rename this run's iteration directory to ``release``, replacing an earlier conversion.
+
+    ``shutil.move`` into an existing directory nests rather than replaces, which would leave the
+    previous conversion's weights in place behind a tracker that says the new one is there.
+    """
+    source_dir = get_checkpoint_name(save_dir, 1, False, return_base_dir=True)
+    target_dir = get_checkpoint_name(save_dir, -1, True, return_base_dir=True)
+    shutil.rmtree(target_dir, ignore_errors=True)
+    shutil.move(source_dir, target_dir)
 
 
 def _is_megatron_checkpoint(path: str | Path) -> bool:
