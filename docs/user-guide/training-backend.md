@@ -170,7 +170,9 @@ picks how: `broadcast` (the default) sends each tensor over the training-to-engi
 `broadcast_packed` sends one packed byte buffer per bucket for non-colocated Megatron,
 `p2p` uses [RDMA point-to-point](/advanced/p2p-weight-transfer), and
 [`disk-delta`](/advanced/disaggregated-rollout) publishes only the bytes that changed since
-the last sync for each engine to pull.
+the last sync for each engine to pull. An out-of-tree protocol instead loads from
+`--custom-weight-transfer-protocol-path` (Megatron backend only; setting the path implies
+`external` mode — see [Customization](/user-guide/customization#custom-weight-transfer-protocol-path)).
 
 On a node with fewer than 8 usable GPUs, set `--num-gpus-per-node` too, otherwise the
 rollout side still assumes 8. And `--fully-async` cannot be colocated: its whole point is

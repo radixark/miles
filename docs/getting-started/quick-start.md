@@ -174,7 +174,11 @@ size 256.
   `broadcast_packed` (one byte-buffer broadcast per bucket; non-colocated Megatron),
   [`p2p`](/advanced/p2p-weight-transfer) (point-to-point RDMA via Mooncake), or
   [`disk-delta`](/advanced/disaggregated-rollout) (versioned deltas through
-  shared storage). `p2p` and `disk-delta` are incompatible with `--colocate`.
+  shared storage); an out-of-tree protocol ships as its own package and loads
+  with `--custom-weight-transfer-protocol-path` (Megatron only — it implies
+  `external` mode, see
+  [Customization](/user-guide/customization#custom-weight-transfer-protocol-path)).
+  `p2p`, `disk-delta`, and `external` are incompatible with `--colocate`.
 - **The reward function.** `--rm-type deepscaler` — a rule-based verifier, no
   learned reward model.
 - **KL regularization.** The frozen reference model can add a KL term to the loss;

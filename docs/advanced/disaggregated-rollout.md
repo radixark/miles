@@ -94,8 +94,8 @@ miles still runs the selected weight-update lifecycle.
 ## Weight synchronization
 
 Once training and rollout use different GPUs, updated weights have to cross the
-boundary between them. `--update-weight-transfer-mode` selects the current
-miles-managed path:
+boundary between them. `--update-weight-transfer-mode` selects the transfer
+path:
 
 | Mode | Data path | Use when |
 |---|---|---|
@@ -103,6 +103,7 @@ miles-managed path:
 | `broadcast_packed` | Pack each weight bucket into one byte buffer and issue one NCCL broadcast | Non-colocated Megatron with SGLang mixed-dtype flattened-bucket support; trades contiguous bucket storage for fewer collectives |
 | `p2p` | Convert and re-shard weights, then write them directly to rollout-rank memory over RDMA | miles-managed, in-cluster jobs with direct rank-to-rank connectivity; see [P2P Weight Transfer](/advanced/p2p-weight-transfer) |
 | `disk-delta` | Publish changed canonical checkpoint bytes to shared storage, let rollout hosts materialize them locally, then reload | Trainer and rollout cannot share an NCCL fabric, or model-sized full-weight transfer dominates the update |
+| `external` | Drive an out-of-tree `WeightTransferProtocol` loaded from `--custom-weight-transfer-protocol-path` (which itself implies this mode) through the same updater seam | The transport ships in its own package (RDMA collectives, custom fabrics); requires `--train-backend megatron`, incompatible with `--colocate` |
 
 These are weight synchronization choices, not different rollout APIs. In the
 broadcast and P2P modes, miles transfers tensors into known engine ranks directly.

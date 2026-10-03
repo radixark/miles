@@ -2,13 +2,16 @@ import asyncio
 import concurrent.futures
 import threading
 from argparse import Namespace
+from contextlib import nullcontext
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
 
+from miles.backends.training_utils.weight_update.protocol import WeightTransferProtocol
 from miles.backends.training_utils.weight_update.updater import WeightUpdater
 from miles.utils import async_utils
+from miles.utils.function_registry import function_registry
 
 _UPDATER_MODULE = "miles.backends.training_utils.weight_update.updater"
 _SESSION_MODULE = "miles.backends.training_utils.weight_update.session"
@@ -71,30 +74,43 @@ def _make_engines(
     ]
 
 
-def _make_updater(engines: list[_RecordingApiClient], *, pause_generation_mode: str = "retract") -> WeightUpdater:
-    protocol = SimpleNamespace(
-        use_weight_update_session=True,
-        needs_base_resync_for_lora=False,
-        is_sender=True,
-        group_name="test",
-        rollout_engines=engines,
-        required_placement=MagicMock(),
-        supports_lora=False,
-        begin_sync=lambda weight_version, iter_buckets: True,
-        send_bucket=MagicMock(),
-        after_base_weights=MagicMock(),
-        finalize=MagicMock(),
-        after_engines_resumed=MagicMock(),
-    )
+def _make_updater(
+    engines: list[_RecordingApiClient],
+    *,
+    pause_generation_mode: str = "retract",
+    real_protocol_args: dict | None = None,
+    buckets: list | None = None,
+    weights_getter=None,
+) -> WeightUpdater:
+    """Build an updater on a stubbed protocol; pass real_protocol_args to construct the real one from args."""
     iterator = MagicMock()
-    iterator.iter_hf_weights.return_value = iter([])
+    iterator.iter_hf_weights.return_value = iter(buckets or [])
     iterator.weight_update_selector = "all"
     args = Namespace(pause_generation_mode=pause_generation_mode, check_lora_weight_equal=False)
-    with patch(f"{_UPDATER_MODULE}.get_weight_transfer_protocol", return_value=protocol):
+    if real_protocol_args is None:
+        protocol = SimpleNamespace(
+            use_weight_update_session=True,
+            needs_base_resync_for_lora=False,
+            is_sender=True,
+            group_name="test",
+            rollout_engines=engines,
+            required_placement=MagicMock(),
+            supports_lora=False,
+            begin_sync=lambda weight_version, iter_buckets: True,
+            send_bucket=MagicMock(),
+            after_base_weights=MagicMock(),
+            finalize=MagicMock(),
+            after_engines_resumed=MagicMock(),
+        )
+        context = patch(f"{_UPDATER_MODULE}.get_weight_transfer_protocol", return_value=protocol)
+    else:
+        vars(args).update(real_protocol_args)
+        context = nullcontext()
+    with context:
         return WeightUpdater(
             args,
             [MagicMock()],
-            weights_getter=lambda: {},
+            weights_getter=weights_getter or (lambda: {}),
             model_name="qwen",
             quantization_config=None,
             iterator_factory=lambda *a, **k: iterator,
@@ -162,6 +178,68 @@ def _run_with_gated_later_engine(
                     gate.set()
 
     assert submission_count == len(phases) * _ENGINE_COUNT
+
+
+def test_external_protocol_runs_through_the_normal_lifecycle():
+    events = []
+
+    class RecordingProtocol(WeightTransferProtocol):
+        def connect(self, rollout_engines, *args, **kwargs) -> None:
+            self.rollout_engines = rollout_engines
+            self.is_sender = True
+            events.append("connect")
+
+        def begin_sync(self, weight_version, iter_buckets) -> bool:
+            events.append(("begin_sync", weight_version))
+            return True
+
+        def send_bucket(self, bucket) -> None:
+            events.append(("send_bucket", bucket))
+
+        def after_base_weights(self) -> None:
+            events.append("after_base_weights")
+
+        def finalize(self, weight_version) -> None:
+            events.append(("finalize", weight_version))
+
+        def after_engines_resumed(self) -> None:
+            events.append("after_engines_resumed")
+
+    bucket = [("model.layers.0.weight", MagicMock())]
+
+    with function_registry.temporary("test:lifecycle_protocol", lambda parsed: RecordingProtocol(parsed)):
+        updater = _make_updater(
+            [],
+            real_protocol_args={
+                "colocate": False,
+                "update_weight_transfer_mode": "external",
+                "custom_weight_transfer_protocol_path": "test:lifecycle_protocol",
+            },
+            buckets=[bucket],
+            weights_getter=lambda: {"native.weight": MagicMock()},
+        )
+        updater.connect_rollout_engines([])
+
+        with (
+            patch(f"{_UPDATER_MODULE}.dist") as dist_mock,
+            patch(f"{_UPDATER_MODULE}.get_gloo_group", return_value=MagicMock()),
+            patch(f"{_UPDATER_MODULE}.pause_engines"),
+            patch(f"{_UPDATER_MODULE}.begin_weight_update"),
+            patch(f"{_UPDATER_MODULE}.end_weight_update"),
+            patch(f"{_UPDATER_MODULE}.set_weight_version"),
+            patch(f"{_UPDATER_MODULE}.resume_engines"),
+        ):
+            dist_mock.get_rank.return_value = 0
+            updater.update_weights()
+
+    assert events == [
+        "connect",
+        ("begin_sync", 1),
+        ("send_bucket", bucket),
+        "after_base_weights",
+        ("finalize", 1),
+        "after_engines_resumed",
+    ]
 
 
 class TestWeightUpdateSessionFrame:

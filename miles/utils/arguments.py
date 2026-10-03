@@ -1040,18 +1040,33 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             )
             parser.add_argument(
                 "--update-weight-transfer-mode",
-                choices=["broadcast", "broadcast_packed", "p2p", "disk-delta"],
-                default="broadcast",
+                choices=["broadcast", "broadcast_packed", "p2p", "disk-delta", "external"],
+                default=None,
                 help=(
                     "The method to transfer weights to remote rollout engines during update weight. "
-                    "'broadcast' (default) broadcasts each tensor separately; 'broadcast_packed' "
+                    "Defaults to 'broadcast' (broadcasts each tensor separately). 'broadcast_packed' "
                     "packs each bucket into one byte broadcast. The packed mode requires Megatron "
                     "non-colocated transfer and SGLang's mixed-dtype flattened-bucket API. It adds a "
                     "contiguous bucket allocation on sender and receivers; atomic update units may "
-                    "exceed --update-weight-buffer-size. "
+                    "exceed --update-weight-buffer-size. 'external' loads the protocol named by "
+                    "--custom-weight-transfer-protocol-path (setting the path implies this mode); "
+                    "it requires --train-backend megatron and is incompatible with --colocate. "
                     "'disk-delta' diffs each sync against a CPU snapshot of the previous one and publishes "
                     "only the changed bytes to --update-weight-disk-dir; each engine's /pull_weights applies "
                     "them into a host-local checkpoint that the engine reloads from."
+                ),
+            )
+            parser.add_argument(
+                "--custom-weight-transfer-protocol-path",
+                type=str,
+                default=None,
+                help=(
+                    "Import path of a callable(args) returning a constructed WeightTransferProtocol "
+                    "(a WeightTransferProtocol subclass is such a callable), in dotted "
+                    "'package.module.attribute' form. Setting this implies "
+                    "--update-weight-transfer-mode=external (an explicit non-external mode "
+                    "alongside it is an error); setting the mode to external explicitly "
+                    "still requires this path."
                 ),
             )
             parser.add_argument(
@@ -3217,8 +3232,10 @@ def miles_validate_args(args):
                 logger.info(f"Warning: Argument {k} is already set to {getattr(args, k)}, will override with {v}.")
             setattr(args, k, v)
 
+    # Skip when None: the unset flag is filled after configuration resolution
+    # (external when a protocol path is set, broadcast otherwise) further below.
     mode = args.update_weight_transfer_mode
-    if mode not in ("broadcast", "broadcast_packed", "p2p", "disk-delta"):
+    if mode is not None and mode not in ("broadcast", "broadcast_packed", "p2p", "disk-delta", "external"):
         raise ValueError(f"Unknown --update-weight-transfer-mode {mode!r}")
     if mode == "broadcast_packed" and (args.train_backend != "megatron" or args.colocate):
         raise ValueError("broadcast_packed requires Megatron non-colocated weight transfer")
@@ -3594,6 +3611,15 @@ def miles_validate_args(args):
     ):
         args.check_weight_update_equal = True
 
+    # The flag parses with default None so validation can tell an explicit mode
+    # from the unset default: unset resolves to external when a protocol path is
+    # set, broadcast otherwise, and an explicit broadcast conflicts with the
+    # path below like any other non-external mode.
+    if args.update_weight_transfer_mode is None:
+        args.update_weight_transfer_mode = (
+            "external" if getattr(args, "custom_weight_transfer_protocol_path", None) else "broadcast"
+        )
+
     # always true on offload for colocate at the moment.
     if args.update_weight_transfer_mode == "p2p":
         assert not args.colocate, (
@@ -3607,6 +3633,30 @@ def miles_validate_args(args):
         assert (
             args.megatron_to_hf_mode != "bridge"
         ), f"{args.update_weight_transfer_mode} mode is not supported when use megatron-bridge"
+
+    if protocol_path := getattr(args, "custom_weight_transfer_protocol_path", None):
+        if args.update_weight_transfer_mode != "external":
+            raise ValueError(
+                f"--custom-weight-transfer-protocol-path {protocol_path!r} conflicts with "
+                f"--update-weight-transfer-mode={args.update_weight_transfer_mode}: setting the path "
+                "implies external mode; drop the mode flag or set it to external."
+            )
+
+    if args.update_weight_transfer_mode == "external":
+        assert not args.colocate, (
+            "External weight transfer mode is not compatible with --colocate; "
+            "colocated rollouts use the built-in CUDA IPC protocol."
+        )
+        assert (
+            args.train_backend == "megatron"
+        ), "External weight transfer mode currently only supports --train-backend megatron."
+        # Resolve without constructing, so a bad path or target fails during
+        # argument validation instead of inside the trainer actor. Local
+        # import: non-external runs must not import the weight-transfer
+        # protocol module here.
+        from miles.backends.training_utils.weight_update.protocol import resolve_external_protocol_target
+
+        resolve_external_protocol_target(getattr(args, "custom_weight_transfer_protocol_path", None))
 
     if args.update_weight_transfer_mode == "disk-delta":
         assert not args.colocate, (
