@@ -180,43 +180,17 @@ def _assert_gpu_delta_weights_changed(args, version_dir, _rollout_engines):
     print(f"GPU-delta E2E learned publication changed bytes: {changed_bytes}", flush=True)
 
 
-def execute(
-    *,
-    num_rollout: int = 4,
-    update_weight_transfer_mode: str = "gpu-delta",
-    update_weight_disk_dir: str | None = None,
-    update_weight_local_checkpoint_dir: str | None = None,
-    update_weight_delta_gpu: bool = False,
-):
+def execute(*, num_rollout: int = 4, update_weight_disk_dir: str | None = None):
     U = command_utils.default_config().create_backend()
-    if num_rollout < 2:
-        raise ValueError("At least two rollouts are required to exercise a post-training weight update.")
-    if update_weight_transfer_mode not in ("broadcast", "disk-delta", "gpu-delta"):
-        raise ValueError(f"Unsupported weight transfer mode: {update_weight_transfer_mode}")
-    weight_transfer_args = f"--update-weight-transfer-mode {update_weight_transfer_mode} "
-    if update_weight_delta_gpu and update_weight_transfer_mode != "disk-delta":
-        raise ValueError("GPU routed-expert deltas require disk-delta weight transfer.")
-    if update_weight_transfer_mode == "disk-delta":
-        if not update_weight_disk_dir or not update_weight_local_checkpoint_dir:
-            raise ValueError("disk-delta requires both publication and local checkpoint directories.")
-        weight_transfer_args += (
-            f"--update-weight-disk-dir {shlex.quote(update_weight_disk_dir)} "
-            f"--update-weight-local-checkpoint-dir {shlex.quote(update_weight_local_checkpoint_dir)} "
-        )
-    if update_weight_transfer_mode == "gpu-delta":
-        if num_rollout < 4:
-            raise ValueError("GPU-delta validation requires three learned updates (at least four rollouts).")
-        publication_dir = update_weight_disk_dir or f"/root/shared_data/{RUN_ID}/gpu_delta"
-        weight_transfer_args += f"--update-weight-disk-dir {shlex.quote(publication_dir)} "
-        weight_transfer_args += (
-            "--custom-update-weight-post-write-path "
-            "tests.e2e.megatron.test_glm5_2_744b_a40b_5layer_nvfp4_w4a16._assert_gpu_delta_weights_changed "
-        )
-
-    if update_weight_delta_gpu:
-        weight_transfer_args += (
-            "--update-weight-delta-gpu " "--update-weight-delta-encoding xor --update-weight-delta-checksum adler32 "
-        )
+    if num_rollout < 4:
+        raise ValueError("GPU-delta validation requires three learned updates (at least four rollouts).")
+    publication_dir = update_weight_disk_dir or f"/root/shared_data/{RUN_ID}/gpu_delta"
+    weight_transfer_args = (
+        "--update-weight-transfer-mode gpu-delta "
+        f"--update-weight-disk-dir {shlex.quote(publication_dir)} "
+        "--custom-update-weight-post-write-path "
+        "tests.e2e.megatron.test_glm5_2_744b_a40b_5layer_nvfp4_w4a16._assert_gpu_delta_weights_changed "
+    )
 
     os.environ.update(NVFP4_ENV)
     os.environ.update(GLM5_ENV)
@@ -230,14 +204,13 @@ def execute(
     # A pruned model with a short response cap scores zero on math, producing
     # zero GRPO advantages. Reuse the deterministic CI reward from Kimi's
     # pruned-model test; the publication gate still fails if weights never move.
-    reward_model = "deterministic_random" if update_weight_transfer_mode == "gpu-delta" else "deepscaler"
     rollout_args = (
         f"--prompt-data {DATA_DIR}/dapo-math-17k/dapo-math-17k.jsonl "
         "--input-key prompt "
         "--label-key label "
         "--apply-chat-template "
         "--rollout-shuffle "
-        f"--rm-type {reward_model} "
+        "--rm-type deterministic_random "
         f"--num-rollout {num_rollout} "
         "--rollout-batch-size 8 "
         "--n-samples-per-prompt 8 "
@@ -336,7 +309,6 @@ def execute(
         "--attention-backend flash "
         "--cp-comm-type allgather "
         "--miles-dsa-topk-backend flashinfer "
-        "--update-weight-transfer-mode broadcast_packed "
         f"--update-weight-buffer-size {2 * 1024 ** 3} "
         "--actor-num-nodes 1 "
         f"--actor-num-gpus-per-node {ACTOR_NUM_GPUS} "
@@ -349,9 +321,6 @@ def execute(
         f"--save-debug-train-data /root/shared_data/{RUN_ID}/dump_details/train_data/{{rollout_id}}_{{rank}}.pt "
         f"--save-debug-trajectory-data /root/shared_data/{RUN_ID}/dump_details/trajectory/{{rollout_id}}.jsonl "
     )
-
-    if update_weight_transfer_mode != "gpu-delta":
-        misc_args += "--use-fault-tolerance "
 
     delta_env = _gpu_delta_env()
     train_args = (
@@ -385,29 +354,15 @@ if __name__ == "__main__":
     parser.add_argument(
         "--num-rollout", type=int, default=4, help="Four rollouts exercise three learned gpu-delta updates."
     )
-    parser.add_argument(
-        "--update-weight-transfer-mode", choices=("broadcast", "disk-delta", "gpu-delta"), default="gpu-delta"
-    )
     parser.add_argument("--update-weight-disk-dir")
-    parser.add_argument("--update-weight-local-checkpoint-dir")
-    parser.add_argument("--update-weight-delta-gpu", action="store_true")
     options = parser.parse_args()
-    if options.update_weight_transfer_mode == "disk-delta" and (
-        not options.update_weight_disk_dir or not options.update_weight_local_checkpoint_dir
-    ):
-        parser.error("disk-delta requires --update-weight-disk-dir and --update-weight-local-checkpoint-dir")
-    if options.num_rollout < 2:
-        parser.error("--num-rollout must be at least 2")
-    if options.update_weight_delta_gpu and options.update_weight_transfer_mode != "disk-delta":
-        parser.error("--update-weight-delta-gpu requires --update-weight-transfer-mode disk-delta")
+    if options.num_rollout < 4:
+        parser.error("--num-rollout must be at least 4")
     if not options.skip_prepare:
         prepare()
     for proxy_var in ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY"):
         os.environ.pop(proxy_var, None)
     execute(
         num_rollout=options.num_rollout,
-        update_weight_transfer_mode=options.update_weight_transfer_mode,
         update_weight_disk_dir=options.update_weight_disk_dir,
-        update_weight_local_checkpoint_dir=options.update_weight_local_checkpoint_dir,
-        update_weight_delta_gpu=options.update_weight_delta_gpu,
     )

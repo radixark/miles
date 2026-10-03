@@ -34,7 +34,6 @@ class HfWeightIteratorDirect(MegatronHfWeightIteratorBase):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self._expert_prefetch: Callable[[str], None] | None = None
         self._expert_transform: (
             Callable[[str, list[tuple[str, torch.Tensor]]], list[tuple[str, torch.Tensor]]] | None
         ) = None
@@ -78,14 +77,15 @@ class HfWeightIteratorDirect(MegatronHfWeightIteratorBase):
                 for batches in itertools.zip_longest(*owner_batches, fillvalue=())
             ]
 
-    def set_local_expert_transform(self, *, prefetch: Callable, transform: Callable) -> None:
+    def set_local_expert_transform(self, *, transform: Callable) -> None:
         """Process owner-local converted units before gathering their remaining tensors.
 
         Hooks run on quantization owners, including transport non-senders. They
         must retain tensors needed by asynchronous work and defer local errors
         until the protocol drains the stream, so peers still join every gather.
         """
-        self._expert_prefetch = prefetch
+        if not self._convert_experts_before_gather:
+            raise ValueError("Owner-local expert transforms require expert TP=1")
         self._expert_transform = transform
 
     def _iter_hf_param_units(self, weights, *, materialize):
@@ -132,8 +132,6 @@ class HfWeightIteratorDirect(MegatronHfWeightIteratorBase):
         for info in batch.param_infos:
             if info.src_rank != rank:
                 continue
-            if self._expert_prefetch is not None:
-                self._expert_prefetch(info.name)
             param = weights[info.name].detach().to(device=device, non_blocking=True)
             unit = next(self._convert_to_hf_param_units([(info.name, param)]))
             if self._expert_transform is not None:

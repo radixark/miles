@@ -14,6 +14,7 @@ def _setup(failure=None):
         identities = [
             {
                 "engine_id": f"engine-{engine}",
+                "host_cache_id": "shared-host",
                 "rank_id": f"rank-{engine}-{rank}",
                 "pid": 100 + rank,
                 "start_ticks": 456,
@@ -81,8 +82,9 @@ class _Engine:
         self.args = kwargs
         assert "staging" not in kwargs
         assert "expected_engines" not in kwargs
-        assert kwargs["participants"] == self.identities
+        assert list(kwargs["participants"]) == self.identities
         assert len(kwargs["cohort"]) == 4
+        assert kwargs["host_tensor_names"] == {"shared-host": ["w"]}
         await asyncio.sleep(0.01 if self.index else 0)
         if self.failure == "prepare" and self.index == 1:
             raise RuntimeError("prepare rejected")
@@ -131,11 +133,11 @@ class _Engine:
         return {"success": True}
 
 
-def test_all_prepared_before_local_apply_and_all_applied_before_resume():
+def test_all_prepared_before_local_apply_and_all_applied_before_resume(monkeypatch):
     clients, descriptions, publication, events = _setup()
-    result = asyncio.run(
-        session.activate_publication(clients, descriptions, publication, session_id="s")
-    )
+    cohort = session.negotiate_cohort(descriptions)
+    monkeypatch.setattr(session, "merge_plans", lambda *args, **kwargs: pytest.fail("Immutable plan renegotiated"))
+    result = asyncio.run(session.activate_publication(clients, cohort, publication, session_id="s"))
     assert len(result["receipts"]) == 4
     assert all(r["state"] == "APPLIED" and "result" in r for r in result["receipts"])
     assert len(result["resumed_receipts"]) == 4
@@ -148,7 +150,7 @@ def test_all_prepared_before_local_apply_and_all_applied_before_resume():
 def test_failure_never_resumes_or_blindly_replays(failure):
     clients, descriptions, publication, events = _setup(failure)
     with pytest.raises(RuntimeError):
-        asyncio.run(session.activate_publication(clients, descriptions, publication, session_id="s"))
+        asyncio.run(session.activate_publication(clients, session.negotiate_cohort(descriptions), publication, session_id="s"))
     assert not any(event == "resumed" for _, event in events)
     if failure == "prepare":
         assert sum(event == "abort" for _, event in events) == 2
@@ -160,7 +162,7 @@ def test_failure_never_resumes_or_blindly_replays(failure):
 def test_uncertain_resume_is_terminal_without_abort_or_replay():
     clients, descriptions, publication, events = _setup("resume")
     with pytest.raises(RuntimeError, match="resume reply lost"):
-        asyncio.run(session.activate_publication(clients, descriptions, publication, session_id="s"))
+        asyncio.run(session.activate_publication(clients, session.negotiate_cohort(descriptions), publication, session_id="s"))
     assert sum(event == "applied" for _, event in events) == 2
     assert not any(event == "abort" for _, event in events)
 
@@ -180,7 +182,7 @@ def test_codec_mismatch_rejected_before_any_engine_preparation():
     clients, descriptions, publication, events = _setup()
     descriptions[1]["participants"][0]["plan"]["codec"] = "zstd"
     with pytest.raises(ValueError, match="codecs differ"):
-        asyncio.run(session.activate_publication(clients, descriptions, publication))
+        asyncio.run(session.activate_publication(clients, session.negotiate_cohort(descriptions), publication))
     assert not events
     assert all(client.args is None for client in clients)
 
@@ -210,3 +212,15 @@ def test_bounded_wait_cancels_inflight_status_requests():
             )
         )
     assert len(events) == 2 and all(event == "status_cancelled" for _, event in events)
+
+
+def test_cohort_only_decodes_each_hosts_union_and_requires_explicit_host_identity():
+    _, descriptions, _, _ = _setup()
+    for participant in descriptions[1]["participants"]:
+        participant["identity"]["host_cache_id"] = "other-host"
+        participant["plan"]["tensors"][0]["name"] = "other-experts"
+    cohort = session.negotiate_cohort(descriptions)
+    assert cohort.host_tensor_names == {"other-host": ["other-experts"], "shared-host": ["w"]}
+    del descriptions[1]["participants"][0]["identity"]["host_cache_id"]
+    with pytest.raises(ValueError, match="host-cache identity"):
+        session.negotiate_cohort(descriptions)

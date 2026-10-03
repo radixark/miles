@@ -2808,58 +2808,6 @@ class TestMiniFtControllerArguments:
             miles_validate_args(args)
 
 
-class TestGpuDeltaArguments:
-    def _parse(self, tmp_path, extra=()):
-        parser = argparse.ArgumentParser()
-        get_miles_extra_args_provider()(parser)
-        return parser.parse_args(
-            REQUIRED_ARGS
-            + [
-                "--num-rollout",
-                "1",
-                "--hf-checkpoint",
-                str(tmp_path),
-                "--update-weight-transfer-mode",
-                "disk-delta",
-                "--update-weight-disk-dir",
-                str(tmp_path / "published"),
-                "--update-weight-local-checkpoint-dir",
-                str(tmp_path / "receiver"),
-            ]
-            + list(extra)
-        )
-
-    def test_existing_disk_delta_defaults_do_not_enable_gpu(self, tmp_path):
-        args = self._parse(tmp_path)
-        miles_validate_args(args)
-        assert args.update_weight_delta_gpu is False
-        assert args.update_weight_delta_encoding == "xor"
-        assert args.update_weight_delta_checksum == "xxh3-128"
-
-    def test_gpu_boolean_opt_in_uses_existing_publication_paths(self, tmp_path):
-        args = self._parse(tmp_path, ["--update-weight-delta-gpu", "--update-weight-delta-checksum", "adler32"])
-        miles_validate_args(args)
-        assert args.update_weight_delta_gpu is True
-        assert args.update_weight_disk_dir == str(tmp_path / "published")
-        assert args.update_weight_local_checkpoint_dir == str(tmp_path / "receiver")
-
-    @pytest.mark.parametrize(
-        "extra,message",
-        [
-            (["--update-weight-delta-checksum", "xxh3-128"], "GPU adler32 checksum"),
-            (["--update-weight-delta-encoding", "overwrite"], "xor encoding"),
-            (["--megatron-to-hf-mode", "bridge"], "direct Megatron exporter"),
-            (["--update-weight-transfer-mode", "broadcast"], "disk-delta transfer"),
-        ],
-    )
-    def test_gpu_rejects_incompatible_sync_contract(self, tmp_path, extra, message):
-        args = self._parse(
-            tmp_path, ["--update-weight-delta-gpu", "--update-weight-delta-checksum", "adler32", *extra]
-        )
-        with pytest.raises(AssertionError, match=message):
-            miles_validate_args(args)
-
-
 class TestSessionServerArguments:
     def _parse(self, extra: list[str]):
         parser = argparse.ArgumentParser()

@@ -59,7 +59,6 @@ def checksum(algorithm: str, buf) -> str:
     return hasher.hexdigest()
 
 
-@cache
 def _tensor_locations(ckpt_dir: str) -> dict[str, tuple[str, int, int, str, tuple[int, ...]]]:
     """Index each tensor's byte range and declared safetensors layout."""
     locations: dict[str, tuple[str, int, int, str, tuple[int, ...]]] = {}
@@ -81,9 +80,14 @@ def _tensor_locations(ckpt_dir: str) -> dict[str, tuple[str, int, int, str, tupl
     return locations
 
 
+# GPU-delta fixes its source checkpoint for the stream lifetime. Keep this cache
+# separate from the disk receiver, whose checkpoint can change in place.
+_immutable_tensor_locations = cache(_tensor_locations)
+
+
 def checkpoint_tensor_layout(ckpt_dir: str, name: str) -> tuple[str, tuple[int, ...]]:
     """Return a tensor's declared safetensors dtype and shape."""
-    _, _, _, dtype, shape = _tensor_locations(ckpt_dir)[name]
+    _, _, _, dtype, shape = _immutable_tensor_locations(ckpt_dir)[name]
     return dtype, shape
 
 

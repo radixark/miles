@@ -279,7 +279,7 @@ def test_gpu_baseline_swaps_only_after_successful_receiver_activation(monkeypatc
     protocol, _ = _gpu_pending(monkeypatch)
     protocol.after_base_weights()
     old, current = protocol._snapshot, protocol._next_snapshot
-    protocol._descriptions, protocol.rollout_engines = [], []
+    protocol._cohort, protocol.rollout_engines = object(), []
 
     def publish(version):
         protocol._published = True

@@ -42,7 +42,7 @@ import httpx
 import numpy as np
 import zstandard
 
-from miles.backends.training_utils.weight_update.gpu_delta_session import activate_publication, merge_plans
+from miles.backends.training_utils.weight_update.gpu_delta_session import activate_publication, merge_plans, negotiate_cohort
 from miles.utils.gpu_delta_publication import (
     DTYPE_BYTES,
     FRAME_BYTES,
@@ -376,7 +376,7 @@ async def _engines(args, model):
             args.output / "launch.json",
             {
                 "engines": commands,
-                "feature_env": {key: os.environ.get(key) for key in ("WEIGHT_DELTA_CODEC", "WEIGHT_DELTA_TIMING")},
+                "feature_env": {key: os.environ.get(key) for key in ("WEIGHT_DELTA_CODEC", "WEIGHT_DELTA_TIMING", "WEIGHT_DELTA_CPU_WORKERS", "WEIGHT_DELTA_HOST_CACHE_DIR")},
             },
         )
         started = time.monotonic()
@@ -430,8 +430,9 @@ async def _run(args):
             _save(args.output / "target-generation.json", await _generation(clients))
             return
         descriptions = await asyncio.gather(*[c.get_weights_delta_info(engine_id=f"engine-{i:05d}") for i, c in enumerate(clients)])
-        plan, cohort, digest = merge_plans(descriptions)
-        if len(cohort) != 8 or len({p["rank_id"] for p in cohort}) != 8:
+        cohort = negotiate_cohort(descriptions)
+        digest = cohort.plan_digest
+        if len(cohort.identities) != 8 or len({p["rank_id"] for p in cohort.identities}) != 8:
             raise ValueError("Expected eight distinct native participants in the EP8 engine")
         _save(args.output / "inventory.json", {"descriptions": descriptions, "plan_digest": digest})
         if args.phase == "inventory":
@@ -442,7 +443,7 @@ async def _run(args):
         for version in fixture["rounds"]:
             started = time.monotonic()
             try:
-                receipt = await activate_publication(clients, descriptions, version["publications"][fixture_key])
+                receipt = await activate_publication(clients, cohort, version["publications"][fixture_key])
                 result = {
                     "version": version["version"],
                     "coordinator_s": time.monotonic() - started,

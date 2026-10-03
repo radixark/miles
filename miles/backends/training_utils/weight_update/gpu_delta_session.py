@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import uuid
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 
 from miles.utils.gpu_delta_publication import CODEC, canonical_json, sha256
 
@@ -38,6 +39,38 @@ def merge_plans(descriptions: Sequence[dict], *, codec: str = CODEC) -> tuple[li
     return plan, identities, sha256(canonical_json(plan))
 
 
+@dataclass(frozen=True)
+class ReceiverCohort:
+    """Negotiated immutable engine membership and plan for one update stream."""
+
+    plan: list[dict]
+    identities: tuple[dict, ...]
+    participants: tuple[tuple[dict, ...], ...]
+    engine_ids: tuple[str, ...]
+    plan_digest: str
+    codec: str
+    host_tensor_names: dict[str, list[str]]
+
+
+def negotiate_cohort(descriptions: Sequence[dict], *, codec: str = CODEC) -> ReceiverCohort:
+    plan, identities, digest = merge_plans(descriptions, codec=codec)
+    participants = tuple(tuple(dict(p["identity"]) for p in d["participants"]) for d in descriptions)
+    if any(not group or len({p["engine_id"] for p in group}) != 1 for group in participants):
+        raise ValueError("Missing or mixed engine participants")
+    engine_ids = tuple(group[0]["engine_id"] for group in participants)
+    if len(set(engine_ids)) != len(engine_ids):
+        raise ValueError("Duplicate engine endpoints")
+    host_names: dict[str, set[str]] = {}
+    for description in descriptions:
+        for participant in description["participants"]:
+            host_id = participant["identity"].get("host_cache_id")
+            if not isinstance(host_id, str) or not host_id:
+                raise ValueError("Receiver must advertise its shared host-cache identity")
+            host_names.setdefault(host_id, set()).update(tensor["name"] for tensor in participant["plan"]["tensors"])
+    host_tensor_names = {host_id: sorted(names) for host_id, names in sorted(host_names.items())}
+    return ReceiverCohort(plan, tuple(identities), participants, engine_ids, digest, codec, host_tensor_names)
+
+
 def validate_receipts(response: Mapping, expected: list[dict], *, state: str, session_id: str, publication: dict):
     if response.get("success") is not True:
         raise RuntimeError(f"GPU-delta {state} rejected: {response.get('message')}")
@@ -54,7 +87,7 @@ def validate_receipts(response: Mapping, expected: list[dict], *, state: str, se
     return receipts
 
 
-async def activate_publication(clients, descriptions, publication, *, session_id: str | None = None):
+async def activate_publication(clients, cohort: ReceiverCohort, publication, *, session_id: str | None = None):
     """Prepare while serving, then locally pause/apply and globally certify resume.
 
     One coordinator owns the original engines throughout this operation; competing
@@ -63,13 +96,11 @@ async def activate_publication(clients, descriptions, publication, *, session_id
     without all APPLIED receipts, or blindly replay an XOR publication.
     """
     session_id = session_id or uuid.uuid4().hex
-    _, cohort, plan_digest = merge_plans(descriptions, codec=publication["codec"])
-    if publication["plan_digest"] != plan_digest:
-        raise ValueError("Publication differs from the negotiated receiver plan")
-    expected = [[p["identity"] for p in d["participants"]] for d in descriptions]
-    engine_ids = [identities[0]["engine_id"] for identities in expected]
-    if len(set(engine_ids)) != len(clients) or len(clients) != len(descriptions):
-        raise ValueError("Duplicate/missing engine endpoints")
+    if publication["codec"] != cohort.codec or publication["plan_digest"] != cohort.plan_digest:
+        raise ValueError("Publication differs from the negotiated receiver plan/codec")
+    if len(clients) != len(cohort.engine_ids):
+        raise ValueError("Missing engine endpoints")
+    expected = cohort.participants
     common = {
         key: publication[key]
         for key in ("manifest_path", "manifest_sha256", "stream_id", "base_version", "target_version", "plan_digest")
@@ -81,9 +112,10 @@ async def activate_publication(clients, descriptions, publication, *, session_id
                 session_id=session_id,
                 engine_id=engine_id,
                 participants=participants,
-                cohort=cohort,
+                cohort=cohort.identities,
+                host_tensor_names=cohort.host_tensor_names,
             )
-            for client, engine_id, participants in zip(clients, engine_ids, expected, strict=True)
+            for client, engine_id, participants in zip(clients, cohort.engine_ids, expected, strict=True)
         ],
         return_exceptions=True,
     )
@@ -120,7 +152,7 @@ async def activate_publication(clients, descriptions, publication, *, session_id
         "session_id": session_id,
         "receipts": receipts,
         "resumed_receipts": resumed_receipts,
-        "plan_digest": plan_digest,
+        "plan_digest": cohort.plan_digest,
     }
 
 

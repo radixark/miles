@@ -158,7 +158,8 @@ def test_owner_transform_precedes_gather_even_on_non_senders(direct_module, monk
         direct_module._ExpertBatch(param_infos=[_param(local_name, 4), remote], gathers=(gather,))
     ]
     iterator._convert_to_hf_param_units = convert
-    iterator.set_local_expert_transform(prefetch=lambda key: events.append("prefetch"), transform=transform)
+    iterator._convert_experts_before_gather = True
+    iterator.set_local_expert_transform(transform=transform)
     monkeypatch.setattr(direct_module.dist, "get_rank", lambda: 0)
     monkeypatch.setattr(direct_module.torch.cuda, "current_device", lambda: 0)
     monkeypatch.setattr(direct_module, "_iter_mm_tower_units", lambda *args, **kwargs: iter(()))
@@ -166,4 +167,13 @@ def test_owner_transform_precedes_gather_even_on_non_senders(direct_module, monk
     units = list(iterator._iter_hf_param_units({local_name: Weight()}, materialize=materialize))
 
     assert units == ([[excluded]] if materialize else [])
-    assert events == ["prefetch", "load", "convert", "process", "gather"]
+    assert events == ["load", "convert", "process", "gather"]
+
+
+def test_owner_transform_rejects_expert_tp_without_changing_the_iterator(direct_module):
+    iterator = direct_module.HfWeightIteratorDirect.__new__(direct_module.HfWeightIteratorDirect)
+    iterator._convert_experts_before_gather = False
+    iterator._expert_transform = None
+    with pytest.raises(ValueError, match="expert TP=1"):
+        iterator.set_local_expert_transform(transform=lambda name, unit: unit)
+    assert iterator._expert_transform is None

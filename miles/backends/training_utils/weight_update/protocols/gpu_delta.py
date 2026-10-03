@@ -19,16 +19,20 @@ import torch.distributed as dist
 
 from miles.backends.training_utils.weight_update import gpu_delta_session
 from miles.backends.training_utils.weight_update.protocol import WeightTransferProtocol
-from miles.backends.training_utils.weight_update.protocols.delta import (
-    _PLAIN_FLOAT_DTYPE_BY_SAFETENSORS_DTYPE,
-    _safetensors_dtype,
-)
+from miles.backends.training_utils.weight_update.protocols.delta import _safetensors_dtype
 from miles.backends.training_utils.weight_update.session import set_weight_version
 from miles.backends.training_utils.weight_update.utils import get_data_replica_rank_and_size
 from miles.utils import async_utils, disk_delta, gpu_delta_publication
 from miles.utils.distributed_utils import get_gloo_group
 
 logger = logging.getLogger(__name__)
+
+_PLAIN_FLOAT_DTYPE_BY_SAFETENSORS_DTYPE = {
+    "F64": torch.float64,
+    "F32": torch.float32,
+    "F16": torch.float16,
+    "BF16": torch.bfloat16,
+}
 
 
 class UpdateWeightFromGpuDelta(WeightTransferProtocol):
@@ -63,7 +67,7 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
         install = getattr(iterator, "set_local_expert_transform", None)
         if install is None:
             raise ValueError("GPU delta requires the direct Megatron exporter")
-        install(prefetch=lambda _: None, transform=self._consume_expert)
+        install(transform=self._consume_expert)
 
     def _consume_expert(self, unit_key, unit):
         # Quantization owners include non-senders. Consume before gathers, while
@@ -87,12 +91,13 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
                 error = caught
         _collective_check(error, "nvCOMP producer admission")
         descriptions = _on_root(lambda: async_utils.run(self._describe()))
-        plan, cohort, digest = gpu_delta_session.merge_plans(descriptions, codec=self.codec)
+        cohort = gpu_delta_session.negotiate_cohort(descriptions, codec=self.codec)
         if self._descriptions is not None and descriptions != self._descriptions:
             raise RuntimeError("GPU-delta receiver incarnation/plan changed; a new stream is required")
         self._descriptions = descriptions
-        self._plan = {tensor["name"]: tensor for tensor in plan}
-        self._plan_digest = digest
+        self._cohort = cohort
+        self._plan = {tensor["name"]: tensor for tensor in cohort.plan}
+        self._plan_digest = cohort.plan_digest
 
     async def _describe(self):
         results = await asyncio.gather(
@@ -468,7 +473,7 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
         publication = self.publish(weight_version)
         _on_root(
             lambda: async_utils.run(
-                gpu_delta_session.activate_publication(self.rollout_engines, self._descriptions, publication)
+                gpu_delta_session.activate_publication(self.rollout_engines, self._cohort, publication)
             ),
             broadcast_value=False,
         )

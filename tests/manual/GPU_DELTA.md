@@ -17,6 +17,9 @@ Install the prebuilt encoder/decoder without changing the image dependency closu
 python -m pip install --no-deps nvidia-libnvcomp-cu13==5.3.0.16
 ```
 
+The optional CPU correctness oracles also require `python-snappy` (0.7.3 in the
+measured image); production compression does not use that package.
+
 No custom C++/CUDA extension is built. Both sender compression stages use CUDA
 SMs. Receiver Zstd decompression runs on CPU; Snappy explicitly requests the
 Blackwell hardware decompression engine and rejects unsupported hardware or
@@ -26,6 +29,8 @@ allocation modes. Pinned host buffers supply streamed Snappy H2D copies.
 | --- | --- |
 | `WEIGHT_DELTA_CODEC=snappy-zstd` | The sole supported value and default. Frozen at launch and matched against the receiver plan and immutable publication. |
 | `WEIGHT_DELTA_TIMING=1` | Optional per-phase CUDA events. Default off; instrumentation can perturb timing. |
+| `WEIGHT_DELTA_CPU_WORKERS=4` | CPU outer-Zstd workers for the host cache creator; total per host, not per rank. |
+| `WEIGHT_DELTA_HOST_CACHE_DIR` | Shared host tmpfs root; defaults to `/dev/shm/sglang-gpu-delta-<uid>`. Its persistent identity groups colocated engines. |
 
 For Ray launches, set the job `runtime_env` environment or use the provided
 `execute_train(extra_env_vars=...)` path. The submitting shell alone does not
@@ -62,10 +67,19 @@ Protocol 4 records `codec: snappy-zstd`, explicit `frame_bytes`, natural tensor
 identity and outer chunk offsets/lengths. SHA-256 authenticates final owner files;
 old/new weights and intermediate Snappy bytes are not hashed. The receiver reads
 and verifies immutable files, then CPU-decompresses locally needed outer chunks
-directly into pinned Snappy tensor buffers during background preparation. After
+once per host into shared Snappy storage during background preparation. Each rank
+registers the shared arena for its streamed pinned transfer. After
 actual pause, it streams each tensor to HBM, performs hardware Snappy decompression,
 transforms the XOR mask into the physical weight layout, and applies in place.
 GPU Zstd decompression is not part of this path.
+
+Miles negotiates the immutable plan and original participant cohort once when
+connecting; learned updates reuse that plan rather than sort and hash it again.
+The receiver advertises an opaque shared-cache host identity. Miles supplies each
+host's union of canonical tensor names so engines sharing that cache can reuse
+host preparation without decoding experts assigned only to other hosts.
+The owner-local exporter hook requires ETP1 only for this protocol; ordinary
+upstream direct-exporter ETP support is unchanged.
 
 One Miles coordinator exclusively owns the original engine cohort during an update;
 concurrent engine administration, other weight mutations, or external pause/resume
@@ -94,7 +108,7 @@ before pause; streamed H2D, Snappy decode and in-place mutation block rollout.
 Do not sum nested phases or add sender/receiver times from different workloads.
 
 See [bench_gpu_delta_producer.md](bench_gpu_delta_producer.md) for the producer
-benchmark. Compare new evidence with the saved source017 baseline, keeping source,
+benchmark. Compare new evidence with the saved matched-workload baseline, keeping source,
 workload, raw timing rows and transfer/residency metrics separate.
 
 ## Persistent fixture
