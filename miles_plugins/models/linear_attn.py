@@ -38,6 +38,9 @@ from miles.kernels.attention.delta_rule import DeltaRule, DeltaRuleHeads, short_
 from miles_plugins.models.cp_utils import build_fla_cp_context, packed_shard_to_zigzag, zigzag_to_packed_shard
 
 
+WEIGHT_LAYOUT_VERSION = 1
+
+
 class Projections(NamedTuple):
     """This rank's projections: ``qkv`` ``[b, s, Gl * group_qkv_dim]`` group-major, ``gate``
     ``[b, s, Hl * hv]``, ``beta_logits`` ``[b, s, Hl]``, ``decay`` ``[b, s, Hl]`` (GDN) or
@@ -91,6 +94,9 @@ class DeltaRuleAttention(MegatronModule, ABC):
         dtype = config.params_dtype
 
         self._sharded_params: dict[str, int] = {}
+        self.register_buffer(
+            "weight_layout_version", torch.tensor([WEIGHT_LAYOUT_VERSION], dtype=torch.int32, device=device)
+        )
         self._build_projections()
         with get_cuda_rng_tracker().fork():
             self.conv1d = _ShardedShortConvolution(

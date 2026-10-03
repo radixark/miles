@@ -15,6 +15,7 @@ from miles.backends.megatron_utils.checkpoint import publish_as_release
 from miles.backends.megatron_utils.fp32_param_utils import enforce_marked_param_dtypes
 from miles.backends.megatron_utils.initialize import init
 from miles.backends.megatron_utils.model_provider import get_model_provider_func
+from miles.utils.arguments import LINEAR_ATTENTION_BACKENDS
 from miles.utils.logging_utils import configure_logger_raw
 from miles.utils.memory_utils import print_memory
 from miles_plugins.models.deepseek_v4.arguments import add_dsv4_arguments
@@ -26,6 +27,8 @@ def add_conversion_args(parser):
     add_dsv4_arguments(parser)
     add_dsa_arguments(parser)
     parser.add_argument("--hf-checkpoint", type=str, required=True, help="HuggingFace model path")
+    parser.add_argument("--linear-attention-backend", choices=LINEAR_ATTENTION_BACKENDS, default="fla")
+    parser.add_argument("--allgather-cp", action="store_true")
     parser.add_argument(
         "--megatron-to-hf-mode",
         choices=["raw", "bridge"],
