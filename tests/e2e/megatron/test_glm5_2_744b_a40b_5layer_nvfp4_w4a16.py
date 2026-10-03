@@ -140,11 +140,9 @@ def prepare():
 
 def _gpu_delta_env():
     # Ray jobs receive an explicit environment, not every variable in this shell.
-    return {
-        "WEIGHT_DELTA_CODEC": os.environ.get("WEIGHT_DELTA_CODEC", "snappy"),
-        "WEIGHT_DELTA_ENCODER": os.environ.get("WEIGHT_DELTA_ENCODER", "gpu"),
-        "WEIGHT_DELTA_SNAPPY_OUTER": os.environ.get("WEIGHT_DELTA_SNAPPY_OUTER", "cpu"),
-    }
+    from miles.utils.gpu_delta_publication import configured_codec
+
+    return {"WEIGHT_DELTA_CODEC": configured_codec()}
 
 
 def _assert_gpu_delta_weights_changed(args, version_dir, _rollout_engines):
@@ -158,20 +156,14 @@ def _assert_gpu_delta_weights_changed(args, version_dir, _rollout_engines):
     last_version = args.num_rollout - 1
     if current["target_version"] != last_version:
         return
-    delta_env = _gpu_delta_env()
-    wrapped = delta_env["WEIGHT_DELTA_CODEC"] == "snappy"
-    gpu_outer = delta_env["WEIGHT_DELTA_SNAPPY_OUTER"] == "gpu"
-    expected_protocol = 4 if gpu_outer else (3 if wrapped else 2)
-    expected_profile = f"{delta_env['WEIGHT_DELTA_CODEC']}-independent-1mib{'-zstd' if wrapped else ''}-v1"
-    if gpu_outer:
-        expected_profile = "snappy-independent-1mib-gpu-zstd-v1"
+    codec = _gpu_delta_env()["WEIGHT_DELTA_CODEC"]
     changed_bytes = []
     for version in range(1, last_version + 1):
         manifest = json.loads((version_dir.parent / f"weight_v{version:06d}/manifest.json").read_text())
         assert manifest["stream_id"] == current["stream_id"]
         assert manifest["base_version"] == version - 1 and manifest["target_version"] == version
-        assert manifest["protocol_version"] == expected_protocol, "E2E publication protocol differs from requested mode"
-        assert manifest["codec_profile"] == expected_profile, "E2E publication codec profile differs from requested mode"
+        assert manifest["protocol_version"] == 4, "E2E publication protocol differs from snappy-zstd"
+        assert manifest["codec"] == codec, "E2E publication codec differs from snappy-zstd"
         raw_tensors = [tensor for tensor in manifest["tensors"] if len(tensor["shape"]) <= 1]
         assert raw_tensors, "E2E must exercise direct scalar/vector targets"
         for tensor in manifest["tensors"]:

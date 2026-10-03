@@ -31,6 +31,7 @@ def _setup(failure=None):
                     {
                         "identity": identity,
                         "plan": {
+                            "codec": "snappy-zstd",
                             "tensors": [
                                 {"name": "w", "dtype": "U8", "shape": [4], "encoding": "xor_bytes", "views": [view]}
                             ]
@@ -43,6 +44,7 @@ def _setup(failure=None):
         clients.append(_Engine(engine, identities, events, failure))
     plan, cohort, digest = session.merge_plans(descriptions)
     publication = {
+        "codec": "snappy-zstd",
         "manifest_path": "/shared/version/manifest.json",
         "manifest_sha256": "f" * 64,
         "stream_id": "stream",
@@ -175,6 +177,15 @@ def test_common_plan_deduplicates_replicas_but_rejects_conflicting_views():
     broken[1]["participants"][0]["plan"]["tensors"][0]["views"][0]["slices"] = [[1, 2]]
     with pytest.raises(ValueError, match="conflict"):
         session.merge_plans(broken)
+
+
+def test_codec_mismatch_rejected_before_any_engine_preparation():
+    clients, descriptions, publication, events = _setup()
+    descriptions[1]["participants"][0]["plan"]["codec"] = "zstd"
+    with pytest.raises(ValueError, match="codecs differ"):
+        asyncio.run(session.activate_publication(clients, descriptions, publication))
+    assert not events
+    assert all(client.args is None for client in clients)
 
 
 def test_bounded_wait_cancels_inflight_status_requests():

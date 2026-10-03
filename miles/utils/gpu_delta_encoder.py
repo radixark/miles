@@ -1,7 +1,7 @@
 """Cross-tensor GPU XOR/compression from immutable pinned CPU snapshots.
 
 One owner uploads a bounded batch, compresses all of its independent frames in
-one nvCOMP call, and returns an owned pinned payload slab. Canonical bytes are
+one Snappy call. A final owner-wide Zstd call returns the pinned wire slab. Canonical bytes are
 never hashed or copied back to the CPU by this encoder.
 """
 
@@ -14,13 +14,13 @@ from dataclasses import dataclass
 
 import torch
 
-from miles.utils.gpu_delta_publication import FRAME_BYTES, snappy_outer_from_env
+from miles.utils.gpu_delta_publication import FRAME_BYTES
 
 try:
     import triton
     import triton.language as tl
 except ImportError:
-    # CPU reference encoding and metadata-only tests do not require Triton.
+    # Metadata-only tests do not require Triton.
     triton = tl = None
 
 
@@ -95,28 +95,24 @@ def _xor_frames(previous_gpu, current_gpu, frame_bytes, keepalive):
 
 
 def _select_payloads(tensors, frames, owners, batch, sizes, counts):
-    descriptions, ranges = [[] for _ in tensors], [[] for _ in tensors]
-    changed, selected, total = [0] * len(tensors), [], 0
+    descriptions, groups = [[] for _ in tensors], [[] for _ in tensors]
+    changed = [0] * len(tensors)
     for (owner, offset), frame, output, size, count in zip(owners, frames, batch.outputs, sizes, counts, strict=True):
         if not 0 < size <= output.numel() or not 0 <= count <= frame.numel():
             raise RuntimeError("nvCOMP output size or changed-byte count is outside the frame")
         changed[owner] += count
         if count == 0:
             continue
-        compressed = size < frame.numel()
-        payload = output[:size] if compressed else frame
-        selected.append(payload)
-        ranges[owner].append((total, payload.numel()))
-        total += payload.numel()
+        payload = output[:size]
+        groups[owner].append(payload)
         descriptions[owner].append(
             {
                 "decoded_offset": offset,
                 "decoded_bytes": frame.numel(),
                 "encoded_bytes": payload.numel(),
-                "codec": "compressed" if compressed else "none",
             }
         )
-    return descriptions, ranges, changed, selected, total
+    return descriptions, groups, changed
 
 
 def _copy_payload_slab(selected, total, transfer):
@@ -129,31 +125,29 @@ def _copy_payload_slab(selected, total, transfer):
     transfer["host"].copy_(transfer["device"], non_blocking=True)
 
 
-def _results(tensors, codec, descriptions, ranges, changed, transfer, batch_metrics):
-    storage = memoryview(transfer["host"].numpy()) if "host" in transfer else memoryview(b"")
-    results = []
-    for index, ((_, current, _), entries, slices, count) in enumerate(zip(tensors, descriptions, ranges, changed, strict=True)):
-        for entry in entries:
-            if entry["codec"] == "compressed":
-                entry["codec"] = codec
-        payloads = [storage[start : start + size] for start, size in slices]
-        metrics = {
-            "encode_wall_s": 0.0,
-            "baseline_h2d_bytes": current.numel(),
-            "current_h2d_bytes": current.numel(),
-            "baseline_d2h_bytes": 0,
-            "encoded_d2h_bytes": sum(size for _, size in slices),
-            "metadata_wait_s": 0.0,
-            "payload_wait_s": 0.0,
-            "cuda_phase_s": {},
-            "timing_scope": "none",
-        }
-        if index == 0:
-            # Shared batch spans are recorded once, never attributed to a tensor
-            # or multiplied by the number of returned tensor entries.
-            metrics.update(batch_metrics, timing_scope="batch", batch_tensors=len(tensors), batch_canonical_bytes=sum(value[1].numel() for value in tensors))
-        results.append((entries, payloads, count, metrics))
-    return results
+def _tensor_metrics(tensors, batch_metrics):
+    metrics = [
+        dict(
+            encode_wall_s=0.0,
+            baseline_h2d_bytes=current.numel(),
+            current_h2d_bytes=current.numel(),
+            baseline_d2h_bytes=0,
+            encoded_d2h_bytes=0,
+            metadata_wait_s=0.0,
+            cuda_phase_s={},
+            timing_scope="none",
+        )
+        for _, current, _ in tensors
+    ]
+    if metrics:
+        # Batch spans appear once, rather than being attributed to every tensor.
+        metrics[0].update(
+            batch_metrics,
+            timing_scope="batch",
+            batch_tensors=len(tensors),
+            batch_canonical_bytes=sum(current.numel() for _, current, _ in tensors),
+        )
+    return metrics
 
 
 @dataclass(frozen=True)
@@ -196,73 +190,58 @@ def _pack_device_arenas(groups, zero):
     return [arena[start : start + size] if size else None for start, size in locations], frame_offsets, arena
 
 
-def _device_results(tensors, codec, descriptions, ranges, changed, selected, padding, metrics):
-    cursor, groups = 0, []
-    for slices in ranges:
-        groups.append(selected[cursor : cursor + len(slices)])
-        cursor += len(slices)
+def _device_results(tensors, descriptions, groups, changed, padding, metrics):
     arenas, offsets, _ = _pack_device_arenas(groups, padding)
-    result = _results(tensors, codec, descriptions, [[] for _ in tensors], changed, {}, metrics)
+    result = _tensor_metrics(tensors, metrics)
     for entries, locations in zip(descriptions, offsets, strict=True):
         for entry, offset in zip(entries, locations, strict=True):
             entry["encoded_offset"] = offset
-    return [DeviceEncodedTensor(frames, arena, count, item_metrics) for (frames, _, count, item_metrics), arena in zip(result, arenas, strict=True)]
+    return [
+        DeviceEncodedTensor(frames, arena, count, item_metrics)
+        for frames, arena, count, item_metrics in zip(descriptions, arenas, changed, result, strict=True)
+    ]
 
 
 class GpuBatchEncoder:
     """One private stream; callers bound total batch bytes and finish input D2H.
 
-    ``encode`` takes ``[(old_pinned_u8, new_pinned_u8, encoding), ...]``. Neither
-    input may be modified concurrently. Returned payload memoryviews retain an
-    immutable, separately allocated host slab, including across later calls.
+    ``encode_device`` takes ``[(old_pinned_u8, new_pinned_u8, encoding), ...]``.
+    Neither input may be modified concurrently. Compact Snappy HBM survives
+    input batches until ``wrap_device`` returns the final pinned Zstd bytes.
     The 2 MiB frame variant is for producer benchmarks; the current streaming
     receiver accepts decoded frames no larger than 1 MiB.
     """
 
-    def __init__(self, codec: str, device: torch.device, frame_bytes: int = FRAME_BYTES, *, outer_backend: str | None = None):
-        # CPU-reference callers do not need nvCOMP installed or a CUDA context.
+    def __init__(self, device: torch.device, frame_bytes: int = FRAME_BYTES):
+        # Metadata-only imports need neither nvCOMP nor a CUDA context.
         from miles.utils.gpu_delta_nvcomp import NvcompCompressor
 
         if triton is None:
             raise RuntimeError("GPU batch XOR/compression requires Triton")
         if type(frame_bytes) is not int or frame_bytes not in (1 << 16, FRAME_BYTES, 1 << 21):
             raise ValueError("GPU delta frame_bytes must be 64 KiB, 1 MiB or 2 MiB")
-        self.codec, self.device, self.frame_bytes = codec, torch.device(device), frame_bytes
+        self.device, self.frame_bytes = torch.device(device), frame_bytes
         self.timing = os.environ.get("WEIGHT_DELTA_TIMING", "0") == "1"
         self.stream = torch.cuda.Stream(device=self.device)
-        self.compressor = NvcompCompressor(codec, self.device)
-        self.outer_backend = outer_backend or snappy_outer_from_env(codec=codec, encoder="gpu")
-        if self.outer_backend not in ("cpu", "gpu") or (self.outer_backend == "gpu" and codec != "snappy"):
-            raise ValueError("GPU outer Zstd requires the Snappy codec")
-        self.outer_compressor = NvcompCompressor("zstd", self.device) if self.outer_backend == "gpu" else None
+        self.compressor = NvcompCompressor("snappy", self.device)
+        self.outer_compressor = NvcompCompressor("zstd", self.device)
         self.outer_metrics = {}
-        self._alignment_padding = None
-        if self.outer_compressor is not None:
-            with torch.cuda.device(self.device), torch.cuda.stream(self.stream):
-                self._alignment_padding = torch.zeros(15, dtype=torch.uint8, device=self.device)
+        with torch.cuda.device(self.device), torch.cuda.stream(self.stream):
+            self._alignment_padding = torch.zeros(15, dtype=torch.uint8, device=self.device)
         if frame_bytes % self.compressor._alignments.input:
             raise ValueError("GPU delta frame_bytes must preserve nvCOMP input alignment")
-        if self.outer_compressor is not None and 16 % self.outer_compressor._alignments.input:
+        if 16 % self.outer_compressor._alignments.input:
             raise RuntimeError("GPU outer Zstd input alignment exceeds the wire contract")
 
-    def encode(self, tensors):
-        return self._encode(tensors, device_output=False)
-
     def encode_device(self, tensors):
-        if self.outer_compressor is None:
-            raise ValueError("Device Snappy outputs require GPU outer Zstd")
-        return self._encode(tensors, device_output=True)
-
-    def _encode(self, tensors, *, device_output):
         _validate_snapshots(tensors)
         if not tensors:
             return []
         started, phases = time.monotonic(), _PhaseTimes(self.timing)
-        transfer, xor_metadata = {}, {}
-        metadata_wait_s = payload_wait_s = 0.0
+        xor_metadata = {}
         if not any(current.numel() for _, current, _ in tensors):
-            results = _results(tensors, self.codec, [[] for _ in tensors], [[] for _ in tensors], [0] * len(tensors), transfer, {"encode_wall_s": time.monotonic() - started})
-            return [DeviceEncodedTensor(frames, None, count, metrics) for frames, _, count, metrics in results] if device_output else results
+            metrics = _tensor_metrics(tensors, {"encode_wall_s": time.monotonic() - started})
+            return [DeviceEncodedTensor([], None, 0, item) for item in metrics]
         try:
             with torch.cuda.device(self.device), torch.cuda.stream(self.stream):
                 with phases.record("baseline_h2d_s"):
@@ -285,56 +264,24 @@ class GpuBatchEncoder:
             metadata_wait_s = time.monotonic() - wait_started
             host_counts, sizes, statuses = host_metadata.tolist()
             if any(status != 0 for status in statuses):
-                raise RuntimeError(f"nvCOMP {self.codec} compression failed: statuses={statuses}")
-            descriptions, ranges, changed, selected, total = _select_payloads(tensors, frames, owners, batch, sizes, host_counts)
-            if device_output:
-                with torch.cuda.device(self.device), torch.cuda.stream(self.stream):
-                    # No payload completion wait: compaction and the eventual
-                    # owner-wide outer compression are ordered on this stream.
-                    return _device_results(
-                        tensors,
-                        self.codec,
-                        descriptions,
-                        ranges,
-                        changed,
-                        selected,
-                        self._alignment_padding,
-                        {"encode_wall_s": time.monotonic() - started, "metadata_wait_s": metadata_wait_s, "cuda_phase_s": phases.elapsed(), "nvcomp_frames": len(frames), "frame_bytes": self.frame_bytes},
-                    )
+                raise RuntimeError(f"nvCOMP Snappy compression failed: statuses={statuses}")
+            descriptions, groups, changed = _select_payloads(tensors, frames, owners, batch, sizes, host_counts)
             with torch.cuda.device(self.device), torch.cuda.stream(self.stream):
-                with phases.record("encoded_pack_d2h_s"):
-                    _copy_payload_slab(selected, total, transfer)
-                done = torch.cuda.Event()
-                done.record()
-            wait_started = time.monotonic()
-            done.synchronize()
-            payload_wait_s = time.monotonic() - wait_started
+                # Compaction and owner-wide outer compression share this stream;
+                # no payload fence or Snappy D2H is needed between input batches.
+                return _device_results(
+                    tensors, descriptions, groups, changed, self._alignment_padding,
+                    {"encode_wall_s": time.monotonic() - started, "metadata_wait_s": metadata_wait_s,
+                     "cuda_phase_s": phases.elapsed(), "nvcomp_frames": len(frames), "frame_bytes": self.frame_bytes},
+                )
         except Exception:
             # All pinned inputs, metadata, slab owners and nvCOMP pointer tables
             # remain referenced until even partially enqueued work is drained.
             self.stream.synchronize()
             raise
-        return _results(
-            tensors,
-            self.codec,
-            descriptions,
-            ranges,
-            changed,
-            transfer,
-            {
-                "encode_wall_s": time.monotonic() - started,
-                "metadata_wait_s": metadata_wait_s,
-                "payload_wait_s": payload_wait_s,
-                "cuda_phase_s": phases.elapsed(),
-                "nvcomp_frames": len(frames),
-                "frame_bytes": self.frame_bytes,
-            },
-        )
 
     def wrap_device(self, tensors: list[DeviceEncodedTensor]):
         """Wrap all retained owner Snappy tensors in one batched GPU Zstd call."""
-        if self.outer_compressor is None:
-            raise ValueError("GPU outer Zstd was not admitted")
         started, phases, transfer = time.monotonic(), _PhaseTimes(self.timing), {}
         # Natural tensor boundaries are retained; only a large tensor arena is
         # independently framed so the receiver needs no opaque nvCOMP container.
@@ -403,7 +350,7 @@ def _wrapped_results(tensors, groups, encoded_groups, arenas, offsets, transfer)
         cursor = start + size
         if arena is not None:
             outer = dict(
-                codec="zstd", encoded_bytes=size, decoded_bytes=item.payload.numel(), frames=[dict(encoded_offset=start, encoded_bytes=output.numel(), decoded_offset=index * FRAME_BYTES, decoded_bytes=original.numel()) for index, (original, output, start) in enumerate(zip(inputs, outputs, starts, strict=True))]
+                encoded_bytes=size, decoded_bytes=item.payload.numel(), frames=[dict(encoded_offset=start, encoded_bytes=output.numel(), decoded_offset=index * FRAME_BYTES, decoded_bytes=original.numel()) for index, (original, output, start) in enumerate(zip(inputs, outputs, starts, strict=True))]
             )
         metrics = dict(item.metrics, encoded_d2h_bytes=transfer_bytes)
         results.append((item.frames, payload, outer, item.changed, metrics))
