@@ -48,17 +48,19 @@ def validate_receipts(response: Mapping, expected: list[dict], *, state: str, se
     for receipt in receipts:
         if receipt.get("state") != state or receipt.get("session_id") != session_id:
             raise RuntimeError("GPU-delta receipt state/session mismatch")
-        for key in ("manifest_sha256", "stream_id", "base_version", "target_version"):
+        for key in ("manifest_sha256", "stream_id", "base_version", "target_version", "plan_digest"):
             if receipt.get(key) != publication[key]:
                 raise RuntimeError(f"GPU-delta receipt {key} mismatch")
     return receipts
 
 
 async def activate_publication(clients, descriptions, publication, *, session_id: str | None = None):
-    """Prepare everyone while serving, then apply/commit/resume with exact cohorts.
+    """Prepare while serving, then locally pause/apply and globally certify resume.
 
-    Every fanout settles before the next phase. After pause/apply starts, failures
-    remain fail-closed; reconnection must not blindly replay an XOR publication.
+    One coordinator owns the original engines throughout this operation; competing
+    updates or engine administration are unsupported. Every fanout settles before
+    the next phase. After apply starts, failures are terminal: never abort, resume
+    without all APPLIED receipts, or blindly replay an XOR publication.
     """
     session_id = session_id or uuid.uuid4().hex
     _, cohort, plan_digest = merge_plans(descriptions, codec=publication["codec"])
@@ -80,7 +82,6 @@ async def activate_publication(clients, descriptions, publication, *, session_id
                 engine_id=engine_id,
                 participants=participants,
                 cohort=cohort,
-                expected_engines=engine_ids,
             )
             for client, engine_id, participants in zip(clients, engine_ids, expected, strict=True)
         ],
@@ -100,28 +101,16 @@ async def activate_publication(clients, descriptions, publication, *, session_id
             *[c.abort_weights_from_delta(session_id=session_id) for c in clients], return_exceptions=True
         )
         raise
-    pauses = await asyncio.gather(*[c.pause_generation(mode="retract") for c in clients], return_exceptions=True)
-    _raise_rpc_errors(pauses)
-    quiesced = await _wait_state(
-        clients, expected, state="QUIESCED", pending="PREPARED", session_id=session_id, publication=publication
-    )
     applied = await asyncio.gather(
-        *[
-            c.update_weights_from_delta(session_id=session_id, participants=p, receipts=quiesced)
-            for c, p in zip(clients, expected, strict=True)
-        ],
+        *[c.update_weights_from_delta(session_id=session_id) for c in clients],
         return_exceptions=True,
     )
     receipts = _validate_phase(applied, expected, state="APPLIED", session_id=session_id, publication=publication)
-    committed = await asyncio.gather(
-        *[c.commit_weights_from_delta(session_id=session_id, receipts=receipts) for c in clients],
-        return_exceptions=True,
-    )
-    certificate = _validate_phase(
-        committed, expected, state="COMMITTED", session_id=session_id, publication=publication
-    )
+    # Keep results/timings in the returned evidence, not the all-rank certificate
+    # copied to every scheduler. SGLang constructs this from its APPLIED state.
+    certificate = [receipt["certificate"] for receipt in receipts]
     resumed = await asyncio.gather(
-        *[c.continue_generation(delta_session_id=session_id, delta_commit_receipts=certificate) for c in clients],
+        *[c.resume_weights_from_delta(session_id=session_id, receipts=certificate) for c in clients],
         return_exceptions=True,
     )
     resumed_receipts = _validate_phase(
@@ -129,7 +118,7 @@ async def activate_publication(clients, descriptions, publication, *, session_id
     )
     return {
         "session_id": session_id,
-        "receipts": certificate,
+        "receipts": receipts,
         "resumed_receipts": resumed_receipts,
         "plan_digest": plan_digest,
     }
@@ -155,8 +144,8 @@ def _validate_phase(results, expected, *, state, session_id, publication):
 
 
 async def _wait_state(clients, expected, *, state, pending, session_id, publication, timeout=1800):
-    # HTTP preparation/pause replies acknowledge enqueueing. Status comes from
-    # each original rank and observes completion of its prepare/reader fence.
+    # Preparation starts background work. Poll each original rank until its
+    # immutable inputs are ready, before asking any engine to pause and apply.
     async def poll():
         while True:
             statuses = await asyncio.gather(
@@ -180,7 +169,7 @@ def _validate_progress(results, expected, *, states, session_id, publication):
             raise RuntimeError("GPU-delta progress request failed")
         actual = [r.get("identity") for r in response.get("participants", [])]
         if sorted(map(canonical_json, actual)) != sorted(map(canonical_json, participants)):
-            raise RuntimeError("Original receiver identity changed during preparation/quiescence")
+            raise RuntimeError("Original receiver identity changed during preparation")
         for receipt in response["participants"]:
             if receipt.get("state") not in states:
                 raise RuntimeError(f"Unexpected gpu-delta progress state: {receipt.get('state')}")

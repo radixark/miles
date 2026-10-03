@@ -292,12 +292,12 @@ def test_gpu_baseline_swaps_only_after_successful_receiver_activation(monkeypatc
         assert protocol._snapshot is old
         assert protocol.pending_baseline is current
         if activation_fails:
-            raise RuntimeError("uncertain receiver commit")
+            raise RuntimeError("uncertain receiver resume")
 
     monkeypatch.setattr(protocol, "publish", publish)
     monkeypatch.setattr(gpu_delta.gpu_delta_session, "activate_publication", activate)
     if activation_fails:
-        with pytest.raises(RuntimeError, match="uncertain receiver commit"):
+        with pytest.raises(RuntimeError, match="uncertain receiver resume"):
             protocol.finalize(1)
         assert protocol._snapshot is old and protocol._next_snapshot is current
         assert protocol._uncommitted

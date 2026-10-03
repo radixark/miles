@@ -67,10 +67,24 @@ actual pause, it streams each tensor to HBM, performs hardware Snappy decompress
 transforms the XOR mask into the physical weight layout, and applies in place.
 GPU Zstd decompression is not part of this path.
 
-Only successful receiver activation commits the sender's pending baseline. Failed
-publication/activation is terminal for the stream; partial artifacts are retained
-and no automatic replay is permitted. Session/version/incarnation checks prevent
-stale application but do not prove full weight-content equality.
+One Miles coordinator exclusively owns the original engine cohort during an update;
+concurrent engine administration, other weight mutations, or external pause/resume
+calls are unsupported. Prepare runs while the old version serves, and Miles waits
+for every original rank to be PREPARED. `update_weights_from_delta(session_id)` then
+closes local admission, pauses scheduling, fences readers, retracts requests,
+flushes caches and applies the delta. A failed reader fence never reclaims KV.
+Each engine stays paused after APPLIED. Once all original ranks report APPLIED,
+`resume_weights_from_delta(session_id, receipts)` validates their compact global
+certificate, records the new weight version and resumes. There is no separate
+global quiesce or commit round trip; ordinary pause/continue APIs are unchanged.
+
+Only all-original-rank RESUMED receipts commit the sender's pending baseline. A
+prepare failure can discard prepared inputs without stopping serving. Failure or
+an uncertain reply after apply dispatch is terminal: retain partial artifacts,
+do not abort/replay the XOR or automatically resume/recover. A failed apply RPC
+may leave an unreachable engine serving the old version while reached engines
+remain paused; the operation never publishes a successful new version. Session,
+version and incarnation checks do not prove full weight-content equality.
 
 The sender's N matrix bytes still incur new export D2H plus old/new H2D (3N total),
 followed by final compressed D2H. Raw bypass avoids both matrix H2D uploads. Export,
