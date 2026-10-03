@@ -628,7 +628,10 @@ async def test_checkpoint_meta_stores_a_digest_not_the_credential(service):
     assert (info["train_attn"], info["train_mlp"], info["train_unembed"]) == (True, True, False)
 
 
-async def test_a_checkpoint_saved_under_other_settings_does_not_load(service):
+@pytest.mark.parametrize(
+    "field,value", [("lora_alpha", 99), ("lora_type", "canonical_lora"), ("experts_shared_outer_loras", True)]
+)
+async def test_a_checkpoint_saved_under_other_settings_does_not_load(service, field, value):
     import json
     import os
 
@@ -641,14 +644,14 @@ async def test_a_checkpoint_saved_under_other_settings_does_not_load(service):
         resolve_checkpoint_dir(service.config.checkpoint_root, model_id, "weights", "ck"), "META.json"
     )
     meta = json.loads(open(meta_path).read())
-    meta["lora_alpha"] = meta["lora_alpha"] + 1  # the same tensors would be scaled differently
+    meta[field] = value
     open(meta_path, "w").write(json.dumps(meta))
 
     loaded = service.submit(
         "tenant", "load_state", {"model_id": model_id, "seq_id": 2, "path": path, "optimizer": True}
     )
     future = await await_settled(service, "tenant", loaded)
-    assert (future.state, future.error_category) == (FAILED, "user") and "lora_alpha" in future.error
+    assert (future.state, future.error_category) == (FAILED, "user") and field in future.error
     assert not service.backend.named("load_slot")[1:], "nothing may touch the slot on a mismatch"
 
 

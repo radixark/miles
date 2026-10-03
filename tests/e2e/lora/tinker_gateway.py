@@ -37,14 +37,14 @@ def _wait_for_gateway(server: subprocess.Popen) -> None:
 
 
 @contextmanager
-def running_gateway():
+def running_gateway(*, lora_type="lora"):
     if not is_port_available(GATEWAY_PORT):
         raise RuntimeError(f"port {GATEWAY_PORT} already has a listener; refusing to reuse a gateway not started here")
     serve_cmd = (
         "python examples/multi_lora/serve_qwen3_30b_a3b_tinker.py serve "
         f"--hf-checkpoint /root/models/{MODEL_NAME} "
         "--model-type qwen3-4B-Instruct-2507 --tp 2 --ep 1 --lora-rank 8 --lora-alpha 16 "
-        f'--extra-args "--tinker-base-model {BASE_MODEL}"'
+        f'--extra-args "--tinker-base-model {BASE_MODEL} --lora-type {lora_type}"'
     )
     server = subprocess.Popen(["bash", "-c", f"exec {serve_cmd}"], start_new_session=True)
     try:

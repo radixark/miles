@@ -95,3 +95,12 @@ Training checkpoint saves and loads are serialized within the gateway. Overwriti
 deletes the previous checkpoint before writing the new one; a failed overwrite does
 not preserve the previous checkpoint. Checkpoints are ordinary directories;
 overwriting does not retain hidden versions.
+
+### Adapter layout
+
+`--lora-type lora` keeps one adapter for each fused QKV or gate/up linear (the default).
+`--lora-type canonical_lora` gives Q, K, V, gate and up independent factors in each slot.
+It can be combined with `--experts-shared-outer-loras`: expert gate and up then each
+have their own A matrix shared across experts; their B matrices remain per expert.
+These settings are fixed for the gateway, and training checkpoints must use the same layout.
+GDN projections keep their existing fused layout; this does not promise full Tinker-hosted model equivalence.
