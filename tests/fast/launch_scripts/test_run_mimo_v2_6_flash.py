@@ -91,6 +91,38 @@ def test_the_full_model_trains_on_one_b300_node(monkeypatch, tmp_path):
     assert "--stream-optimizer-state-to-disk " in train and "--offload-train-target disk " in train
 
 
+def test_the_full_model_bf16_engine_uses_dp_attention_within_budget_on_h200(monkeypatch, tmp_path):
+    h200 = _run(monkeypatch, tmp_path, "execute", model_name="MiMo-V2.6-Flash-RL-bf16")[-1]
+    b300 = _run(monkeypatch, tmp_path, "execute", model_name="MiMo-V2.6-Flash-RL-bf16", hardware="B300")[-1]
+    mxfp4 = _run(
+        monkeypatch, tmp_path, "execute", model_name="MiMo-V2.6-Flash-RL-bf16", sglang_precision="mxfp4_w4a16_linear"
+    )[-1]
+
+    # one engine per H200 node: attention TP4 x DP2, EP8
+    assert (
+        "--rollout-num-gpus-per-engine 8 --sglang-enable-dp-attention --sglang-dp-size 2 --sglang-ep-size 8 "
+        "--sglang-enable-dp-lm-head "
+    ) in h200
+    # the memory budget: weights + KV at 0.72 for the rollout, 16384 tokens per GPU for the train step
+    assert "--sglang-mem-fraction-static 0.72 " in h200 and "--max-tokens-per-gpu 16384 " in h200
+    assert "--sglang-enable-dp-attention" not in b300 and "--sglang-enable-dp-attention" not in mxfp4
+    assert "--sglang-mem-fraction-static 0.8 " in b300 and "--max-tokens-per-gpu 9216 " in b300
+
+
+def test_rl_batch_and_response_length_are_configurable(monkeypatch, tmp_path):
+    train = _run(
+        monkeypatch,
+        tmp_path,
+        "execute",
+        model_name="mimo26-p4-bf16",
+        rollout_batch_size=32,
+        n_samples_per_prompt=16,
+        rollout_max_response_len=2048,
+    )[-1]
+
+    assert "--rollout-batch-size 32 --n-samples-per-prompt 16 --rollout-max-response-len 2048 " in train
+
+
 def test_rollouts_sample_the_full_vocabulary(monkeypatch, tmp_path):
     """top-p 1.0 and top-k -1 (the Miles defaults): no sampling-support replay."""
     train = _run(monkeypatch, tmp_path, "execute", model_name="mimo26-p4-bf16")[-1]
