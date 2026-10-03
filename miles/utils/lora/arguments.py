@@ -13,8 +13,7 @@ from miles.utils.lora.hf_lora_targets import (
     resolve_hf_lora_targets,
 )
 from miles.utils.lora.utils import is_lora_enabled, matches_lora_target, targets_expert_leaves
-from miles_plugins.models.inkling.lora import resolve_inkling_adapter_targets
-from miles_plugins.models.kimi_k3.lora import resolve_kimi_k3_adapter_targets
+from miles_plugins.lora import resolve_adapter_targets
 
 logger = logging.getLogger(__name__)
 
@@ -205,14 +204,13 @@ def _resolve_lora_targets(args, hf_config):
 
     adapter_targets = list(hf_targets)
     if args.megatron_to_hf_mode == "raw":
-        if hf_config.model_type in ("inkling_model", "inkling_mm_model", "inkling_text"):
-            adapter_targets = resolve_inkling_adapter_targets(hf_config.to_dict(), hf_targets)
-        elif hf_config.model_type == "kimi_k3":
-            adapter_targets = resolve_kimi_k3_adapter_targets(
-                hf_targets,
-                canonical=args.lora_type == "canonical_lora",
-                experts_shared_outer_loras=args.experts_shared_outer_loras,
-            )
+        adapter_targets = resolve_adapter_targets(
+            hf_config.to_dict(),
+            hf_targets,
+            hf_modules=hf_modules,
+            lora_type=args.lora_type,
+            experts_shared_outer_loras=args.experts_shared_outer_loras,
+        )
     return hf_targets, adapter_targets
 
 

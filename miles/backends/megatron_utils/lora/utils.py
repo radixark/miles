@@ -193,6 +193,11 @@ def save_lora_checkpoint(
             training_state = {
                 "iteration": iteration,
                 "optimizer": optimizer.state_dict() if save_optimizer else None,
+                "parameter_state": (
+                    [sub.get_parameter_state_dp_reshardable() for sub in _distributed_optimizers(optimizer)]
+                    if save_optimizer
+                    else None
+                ),
                 "opt_param_scheduler": opt_param_scheduler.state_dict() if opt_param_scheduler else None,
             }
 
@@ -272,6 +277,8 @@ def load_lora_adapter(
         iteration, optimizer_restored = _load_training_state(
             adapter_dir, optimizer, opt_param_scheduler, load_optimizer
         )
+        if optimizer is not None and not optimizer_restored:
+            optimizer.reload_model_params()
         return True, iteration, optimizer_restored
 
     if any((adapter_dir / name).exists() for name in ("adapter_model.safetensors", "adapter_model.bin")):
@@ -309,9 +316,19 @@ def _load_training_state(
     if not load_optimizer:
         logger.info("--no-load-optim: keeping the freshly initialized optimizer")
     elif training_state.get("optimizer") is not None:
-        optimizer.load_state_dict(training_state["optimizer"])
-        optimizer_restored = True
-        logger.info("Restored optimizer state from LoRA checkpoint")
+        distributed = _distributed_optimizers(optimizer)
+        parameter_states = training_state.get("parameter_state") or []
+        if len(parameter_states) != len(distributed):
+            logger.warning(
+                "LoRA checkpoint has no DistributedOptimizer parameter state (fp32 masters and moments); "
+                "keeping the freshly initialized optimizer"
+            )
+        else:
+            optimizer.load_state_dict(training_state["optimizer"])
+            for sub, parameter_state in zip(distributed, parameter_states, strict=True):
+                sub.load_parameter_state_from_dp_reshardable(_mark_unpadded(parameter_state))
+            optimizer_restored = True
+            logger.info("Restored optimizer state from LoRA checkpoint")
 
     if opt_param_scheduler is not None and training_state.get("opt_param_scheduler") is not None:
         opt_param_scheduler.load_state_dict(training_state["opt_param_scheduler"])
@@ -321,3 +338,22 @@ def _load_training_state(
     if iteration is not None:
         logger.info(f"Resuming LoRA training from iteration {iteration}")
     return iteration, optimizer_restored
+
+
+def _distributed_optimizers(optimizer: Any) -> list:
+    """The DistributedOptimizers under ``optimizer``, whose ``state_dict()`` leaves out the per-parameter state."""
+    from megatron.core.optimizer import ChainedOptimizer, DistributedOptimizer
+
+    subs = optimizer.chained_optimizers if isinstance(optimizer, ChainedOptimizer) else [optimizer]
+    return [sub for sub in subs if isinstance(sub, DistributedOptimizer)]
+
+
+def _mark_unpadded(parameter_state: dict) -> dict:
+    """Tag every saved entry as a real parameter: the loader skips the padding entries only dist-ckpt inserts."""
+    for gbuf_idx, by_dtype in parameter_state.items():
+        if isinstance(gbuf_idx, int):
+            for buckets in by_dtype.values():
+                for bucket in buckets:
+                    for entry in bucket:
+                        entry["padding"] = False
+    return parameter_state

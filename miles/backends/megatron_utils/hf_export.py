@@ -16,6 +16,7 @@ from miles.backends.training_utils.weight_update.snapshot_publisher import Snaps
 from miles.utils.distributed_utils import get_gloo_group
 from miles.utils.hf_utils.config import HF_EXPORT_COMPLETE_MARKER
 from miles.utils.megatron_bridge_utils import patch_megatron_model
+from miles_plugins.lora.merge import merge_lora_into_weights
 
 logger = logging.getLogger(__name__)
 
@@ -46,11 +47,11 @@ def save_hf_model(
     path = Path(path if path is not None else args.save_hf.format(rollout_id=rollout_id))
 
     def write_weights(checkpoint_dir: Path):
-        if args.megatron_to_hf_mode == "raw" and not is_lora_model(model):
-            # LoRA needs Bridge to merge the adapter into the base weights
+        if args.megatron_to_hf_mode == "raw":
+            weights = dict(named_params_and_buffers(args, model, convert_to_global_name=True))
             publisher.write_model(
                 checkpoint_dir,
-                weights=dict(named_params_and_buffers(args, model, convert_to_global_name=True)),
+                weights=merge_lora_into_weights(model, weights) if is_lora_model(model) else weights,
                 hf_checkpoint=args.hf_checkpoint,
             )
         else:
