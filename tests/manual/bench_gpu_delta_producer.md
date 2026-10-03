@@ -53,7 +53,9 @@ forward/backward, an optimizer, or an activation RPC.
   per-tensor GPU encoder has been removed; its saved results are historical controls.
 
 The GPU path first stages the full new canonical snapshot to pinned CPU memory
-as export proceeds. After that D2H work finishes, it encodes deterministic
+as export proceeds. Canonical scalars and vectors bypass XOR and both codecs: an
+owner CPU worker compares them and writes complete target bytes only when changed.
+After that D2H work finishes, it encodes the remaining matrices in deterministic
 name-sorted batches using the existing `update_weight_buffer_size` target
 (512 MiB in this benchmark). A larger individual tensor stands alone; the
 value is a batching target, not a hard workspace-memory ceiling. Each batch
@@ -65,9 +67,11 @@ hash/write follows GPU encoding. All owner work drains before sealing the
 publication. The old CPU snapshot stays unchanged until acknowledgment.
 
 This trades per-tensor compression dispatch/fences for bulk work, but GPU
-encoding no longer overlaps later exports. For N canonical bytes, it transfers
-N new bytes D2H plus N old and N new bytes H2D (3N total), in addition to encoded
-payload D2H. The CPU control keeps its existing export-overlapped worker path.
+encoding no longer overlaps later exports. For C compressed-matrix bytes and R
+raw scalar/vector canonical bytes, it transfers (C + R) new bytes D2H plus C old
+and C new bytes H2D, in addition to encoded payload D2H. Raw values never return
+to the GPU compression path. The CPU control keeps its existing export-overlapped
+worker path, also bypassing XOR/codecs for raw values.
 No new batching knob or performance conclusion is introduced here; measure the
 new pipeline separately from earlier per-tensor GPU results.
 
@@ -94,7 +98,8 @@ publication stream; no process-global frame-size monkeypatch can leak into a
 later arm. The publication records its frame profile explicitly:
 `zstd-independent-<frame>-v1` or `snappy-independent-<frame>-zstd-v1`,
 where `<frame>` is `64kib`, `1mib`, or `2mib`; the benchmark checks this
-against the arm. Every Snappy framing variant has the CPU outer envelope.
+against the arm. Every Snappy framing variant wraps compressed matrix tensors
+in the CPU outer envelope; direct scalar/vector values have no envelope.
 
 **Receiver compatibility:** the paired SGLang receiver currently admits at most
 1 MiB decoded frames. The 2 MiB arms are producer-only experiments and their
@@ -217,3 +222,21 @@ of the pipeline. Producer-only results do not establish end-to-end RL weight
 sync speed, serving pause time, receiver correctness or numerical quality.
 Changing weights rather than replaying a fixed quantized file is intentional:
 the real exporter and quantizer costs remain inside the measured path.
+
+### Direct scalar and vector targets
+
+Canonical rank-zero and rank-one tensors (including NVFP4 FP32 second-level
+scales, norms, and biases) use `raw_bytes`: publish the complete target bytes
+when changed, without XOR, frame encoding, or the Snappy Zstd envelope. Unchanged
+values carry no payload or receiver copy. Matrices retain the
+selected compressed XOR path. This is shape-based, with no model-name list or
+size tuning. Producer accounting reports `raw_tensor_count` and
+`raw_bytes` separately; those bytes remain part of publication traffic.
+The receiver packs these values into a pinned arena and transfers it during
+prepare, then copies them into the existing destination storage while paused.
+
+Comparisons against earlier compressed scalar/vector results must retain the
+same perturbations and canonical name/dtype/shape/view inventory, while allowing
+this deliberate encoding and plan-digest change. A saved full-model receiver
+fixture must be explicitly derived into the new plan before benchmarking; a
+live receiver never silently interprets an old plan as the new contract.

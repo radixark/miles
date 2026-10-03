@@ -122,8 +122,10 @@ def tensor_metadata(name: str, *, dtype: str, shape: list[int], views=None, enco
     """Canonical tensor schema shared by CPU and GPU encoders."""
     if not name or dtype not in DTYPE_BYTES or any(type(n) is not int or n < 0 for n in shape):
         raise ValueError("Invalid canonical tensor schema")
-    if encoding not in ("xor_bytes", "replace_bytes"):
+    if encoding not in ("xor_bytes", "raw_bytes"):
         raise ValueError("Unsupported gpu-delta encoding")
+    if encoding == "raw_bytes" and len(shape) > 1:
+        raise ValueError("Raw replacements require scalar or vector tensors")
     nbytes = math.prod(shape) * DTYPE_BYTES[dtype]
     definitions = views if views is not None else [{"id": "full", "slices": [[0, n] for n in shape]}]
     if len({v["id"] for v in definitions}) != len(definitions):
@@ -163,6 +165,8 @@ def encode_tensor(
 ) -> tuple[dict, list[bytes]]:
     """Encode one known W0/W1 tensor without changing either caller's buffer."""
     previous, current = _bytes_view(old), _bytes_view(new)
+    if encoding != "xor_bytes":
+        raise ValueError("Only XOR tensors enter the compression path")
     entry = tensor_metadata(name, dtype=dtype, shape=shape, views=views, encoding=encoding)
     nbytes = entry["nbytes"]
     if previous.size != nbytes or current.size != nbytes:
@@ -183,11 +187,11 @@ def encode_tensor(
         delta = np.bitwise_xor(previous[offset:end], current[offset:end])
         nonzero = int(np.count_nonzero(delta))
         changed += nonzero
-        if encoding == "xor_bytes" and not nonzero:
+        if not nonzero:
             continue
         # Both CPU codecs consume contiguous buffers synchronously. Only raw
         # retained frames need an owned copy of the uncompressed input bytes.
-        raw = memoryview(delta if encoding == "xor_bytes" else current[offset:end])
+        raw = memoryview(delta)
         payload = compress(raw)
         frame_codec = codec
         if len(payload) >= len(raw):
@@ -281,6 +285,8 @@ class PublicationWriter:
         self._closed = False
 
     def add_tensor(self, name: str, old, new, *, dtype: str, shape: list[int], views=None, encoding="xor_bytes"):
+        if encoding == "raw_bytes":
+            return self.add_raw_tensor(name, old, new, dtype=dtype, shape=shape, views=views)
         entry, payloads = encode_tensor(
             name,
             old,
@@ -294,10 +300,23 @@ class PublicationWriter:
         )
         return self._append_tensor(entry, payloads)
 
+    def add_raw_tensor(self, name: str, old, new, *, dtype: str, shape: list[int], views=None):
+        """Write complete scalar/vector targets without XOR, frames or codecs."""
+        entry = tensor_metadata(name, dtype=dtype, shape=shape, views=views, encoding="raw_bytes")
+        previous, current = _bytes_view(old), _bytes_view(new)
+        if previous.size != entry["nbytes"] or current.size != entry["nbytes"]:
+            raise ValueError(f"Canonical tensor byte count differs for {name}")
+        # CPU-only comparison preserves update-density metrics and omits
+        # unchanged scalars. Changed tensors replace all bytes without a mask.
+        entry["changed_bytes"] = int(np.count_nonzero(previous != current))
+        return self._append_tensor(entry, [memoryview(current)] if entry["changed_bytes"] else [])
+
     def add_encoded_tensor(
         self, name, frames, payloads, *, changed_bytes, dtype, shape, views=None, encoding="xor_bytes"
     ):
         """Append GPU-produced frames; hash only encoded CPU buffers for transport."""
+        if encoding != "xor_bytes":
+            raise ValueError("Only XOR tensors enter the GPU compression path")
         entry = tensor_metadata(name, dtype=dtype, shape=shape, views=views, encoding=encoding)
         if type(changed_bytes) is not int or not 0 <= changed_bytes <= entry["nbytes"]:
             raise ValueError("Invalid changed-byte count")
@@ -313,7 +332,6 @@ class PublicationWriter:
                 or offset % self.frame_bytes != 0
                 or size != min(self.frame_bytes, entry["nbytes"] - offset)
                 or size <= 0
-                or (encoding == "replace_bytes" and offset != end)
             ):
                 raise ValueError("Invalid independently framed canonical range")
             if frame["codec"] not in (self.codec, "none") or frame["encoded_bytes"] != len(payload):
@@ -326,8 +344,6 @@ class PublicationWriter:
                 hash_s += time.monotonic() - started
             entry["frames"].append(frame)
             end = offset + size
-        if encoding == "replace_bytes" and end != entry["nbytes"]:
-            raise ValueError("Replacement frames must cover the complete canonical tensor")
         return self._append_tensor(entry, payloads, inner_hash_s=hash_s)
 
     def _append_tensor(self, entry, payloads, *, inner_hash_s=0.0):
@@ -335,7 +351,16 @@ class PublicationWriter:
         with self._lock:
             if self._closed or name in self._entries:
                 raise ValueError("Publication is sealed or tensor was already published")
-            if self.codec == "snappy":
+            if entry["encoding"] == "raw_bytes":
+                if payloads:
+                    (payload,) = payloads
+                    padding = bytes((-self._file.tell()) % 16)
+                    self._file.write(padding)
+                    self._hash.update(padding)
+                    entry["raw"] = dict(file=self._filename, encoded_offset=self._file.tell(), encoded_bytes=len(payload))
+                    self._file.write(payload)
+                    self._hash.update(payload)
+            elif self.codec == "snappy":
                 self.outer_metrics["inner_hash_s"] += inner_hash_s
                 self._append_outer(entry, payloads)
             else:

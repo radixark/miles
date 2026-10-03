@@ -21,7 +21,7 @@ def _decode(frames, payloads, old, encoding):
         assert len(raw) == frame["decoded_bytes"]
         start = frame["decoded_offset"]
         decoded[start : start + len(raw)] = np.frombuffer(raw, dtype=np.uint8)
-    return decoded ^ old if encoding == "xor_bytes" else decoded
+    return decoded ^ old
 
 
 def _pinned(value):
@@ -35,9 +35,9 @@ def _snapshots(frame_bytes=FRAME_BYTES):
     current = [value.copy() for value in old]
     current[0][:frame_bytes:4096] ^= 3
     current[0][-139:] = rng.integers(0, 256, 139, dtype=np.uint8)
-    current[2].fill(0)  # Full replacement must emit even all-zero target bytes.
+    current[2].fill(0)  # XOR also handles an all-zero target exactly.
     current[4] ^= 19
-    encodings = ["xor_bytes", "xor_bytes", "replace_bytes", "xor_bytes", "xor_bytes", "replace_bytes"]
+    encodings = ["xor_bytes", "xor_bytes", "xor_bytes", "xor_bytes", "xor_bytes", "xor_bytes"]
     return old, current, [(_pinned(before), _pinned(after), encoding) for before, after, encoding in zip(old, current, encodings, strict=True)]
 
 
@@ -101,7 +101,7 @@ def test_empty_and_all_unchanged_batches(codec):
     encoder = gpu_delta_encoder.GpuBatchEncoder(codec, torch.device("cuda", torch.cuda.current_device()))
     empty = _pinned(np.empty(0, dtype=np.uint8))
     assert encoder.encode([]) == []
-    assert encoder.encode([(empty, empty, "replace_bytes")])[0][:3] == ([], [], 0)
+    assert encoder.encode([(empty, empty, "xor_bytes")])[0][:3] == ([], [], 0)
     value = _pinned(np.arange(4096, dtype=np.uint8))
     results = encoder.encode([(value, value, "xor_bytes"), (empty, empty, "xor_bytes")])
     assert [result[:3] for result in results] == [([], [], 0), ([], [], 0)]

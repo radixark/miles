@@ -114,6 +114,7 @@ def _gpu_pending(monkeypatch, *, fail_batch=None, omit=None, wrapped=False):
     protocol._gpu_batch_count = 0
     protocol._bulk_encode_s = protocol._encoded_hash_write_s = 0.0
     protocol._outer_cpu_work_s = protocol._outer_tail_wait_s = 0.0
+    protocol._raw_cpu_write_s = 0.0
     protocol._staging_stream = object()
     protocol._started = time.monotonic()
     events = []
@@ -167,6 +168,50 @@ def test_bulk_compression_waits_for_complete_snapshot_and_defers_all_writes(monk
     assert all(torch.count_nonzero(value) == 0 for value in protocol._snapshot.values())
     with pytest.raises(RuntimeError, match="successfully published"):
         protocol.commit_pending_baseline()
+
+
+@pytest.mark.parametrize("wrapped", [False, True])
+@pytest.mark.parametrize("fail_raw", [False, True])
+def test_raw_cpu_write_bypasses_gpu_batches_and_overlaps_compression(monkeypatch, single_rank, wrapped, fail_raw):
+    protocol, events = _gpu_pending(monkeypatch, wrapped=wrapped)
+    protocol._plan["scale"] = {"dtype": "F32", "shape": [], "views": [], "encoding": "raw_bytes"}
+    protocol._snapshot["scale"] = torch.zeros(4, dtype=torch.uint8)
+    protocol._next_snapshot["scale"] = torch.ones(4, dtype=torch.uint8)
+    protocol._seen.add("scale")
+    raw_started, encoding_started = threading.Event(), threading.Event()
+    encode = protocol._gpu_encoder.encode.side_effect
+
+    def encode_after_raw_started(tensors):
+        assert raw_started.wait(2), "Raw work did not overlap GPU batches"
+        encoding_started.set()
+        return encode(tensors)
+
+    def raw(name, previous, current, **kwargs):
+        assert name == "scale" and kwargs["shape"] == []
+        np.testing.assert_array_equal(previous, 0)
+        np.testing.assert_array_equal(current, 1)
+        raw_started.set()
+        assert encoding_started.wait(2), "Raw work serialized the first GPU batch"
+        if fail_raw:
+            raise OSError("raw owner write failed")
+        events.append(("raw", name))
+
+    protocol._gpu_encoder.encode.side_effect = encode_after_raw_started
+    protocol._writer.add_raw_tensor.side_effect = raw
+    assert list(protocol._gpu_batches()) == [["a", "b"], ["c"], ["d"]]
+    if fail_raw:
+        with pytest.raises(RuntimeError, match="raw owner write failed"):
+            protocol.after_base_weights()
+        protocol._writer.close.assert_called_once()
+        assert not protocol._pending_ready and protocol._uncommitted
+    else:
+        protocol.after_base_weights()
+        assert ("raw", "scale") in events and protocol._raw_cpu_write_s > 0
+        assert protocol.pending_baseline is protocol._next_snapshot
+        protocol._writer.close.assert_not_called()
+    assert protocol._gpu_batch_count == 3
+    assert not any(call.args[0] == "scale" for call in protocol._writer.add_encoded_tensor.call_args_list)
+    assert torch.count_nonzero(protocol._snapshot["scale"]) == 0
 
 
 @pytest.mark.parametrize("fail_batch,omit", [(2, None), (None, "c")])

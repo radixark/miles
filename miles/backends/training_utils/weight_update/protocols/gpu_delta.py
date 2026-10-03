@@ -123,6 +123,7 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
         self._backpressure_wait_s = self._encoding_tail_wait_s = 0.0
         self._export_staging_wait_s = self._bulk_encode_s = self._encoded_hash_write_s = 0.0
         self._outer_cpu_work_s = self._outer_tail_wait_s = 0.0
+        self._raw_cpu_write_s = 0.0
         self._gpu_batch_count = 0
         self._pending_ready = self._published = False
         self._pool = self._writer = None
@@ -311,8 +312,16 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
         # snapshot remains immutable until receiver commit, including on error.
         started = time.monotonic()
         encoded, jobs = [], []
-        pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="gpu-delta-outer") if self.codec == "snappy" else None
+        raw_names = [name for name in sorted(self._snapshot) if self._plan[name]["encoding"] == "raw_bytes"]
+        pool = (
+            ThreadPoolExecutor(max_workers=1, thread_name_prefix="gpu-delta-write")
+            if self.codec == "snappy" or raw_names else None
+        )
         try:
+            if raw_names:
+                # Already-staged targets bypass both H2D uploads, GPU XOR and
+                # compression. Their CPU write overlaps the matrix batches.
+                jobs.append(pool.submit(self._write_raw_tensors, raw_names))
             for names in self._gpu_batches():
                 results = self._gpu_encoder.encode(
                     [(self._snapshot[name], self._next_snapshot[name], self._plan[name]["encoding"]) for name in names]
@@ -326,7 +335,7 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
                     # Batch timing appears only once, never per tensor.
                     self._encoding_metrics.append(dict(metrics, name=name))
                     batch.append((name, frames, payloads, changed))
-                if pool is None:
+                if self.codec != "snappy":
                     encoded.extend(batch)
                 else:
                     # The queued batch owns immutable pinned payload views.
@@ -336,13 +345,28 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
             self._bulk_encode_s = time.monotonic() - started
             if pool is not None:
                 self._drain_outer_jobs(pool, jobs)
-        if pool is not None:
+        if self.codec == "snappy":
             metrics = self._writer.outer_metrics
             self._encoded_hash_write_s = metrics["inner_hash_s"] + metrics["outer_hash_write_s"]
             return
         # Returned payloads own immutable pinned storage. Retain them through
         # all compression so filesystem work cannot hold the GPU encoder idle.
         self._encoded_hash_write_s = self._write_gpu_batch(encoded)
+
+    def _write_raw_tensors(self, names):
+        started = time.monotonic()
+        for name in names:
+            spec = self._plan[name]
+            self._writer.add_raw_tensor(
+                name,
+                self._snapshot[name].numpy(),
+                self._next_snapshot[name].numpy(),
+                dtype=spec["dtype"],
+                shape=spec["shape"],
+                views=spec["views"],
+            )
+        self._raw_cpu_write_s = time.monotonic() - started
+        return 0.0  # Kept separate from the compression worker's work sum.
 
     def _write_gpu_batch(self, encoded):
         started = time.monotonic()
@@ -382,6 +406,8 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
         batch, size = [], 0
         limit = self.args.update_weight_buffer_size
         for name in sorted(self._snapshot):
+            if self._plan[name]["encoding"] == "raw_bytes":
+                continue
             nbytes = self._snapshot[name].numel()
             if batch and size + nbytes > limit:
                 yield batch
@@ -467,6 +493,9 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
             "tensor_count": len(shard["tensors"]),
             "canonical_bytes": sum(t["nbytes"] for t in shard["tensors"]),
             "changed_bytes": sum(t["changed_bytes"] for t in shard["tensors"]),
+            "raw_tensor_count": sum(t["encoding"] == "raw_bytes" for t in shard["tensors"]),
+            "raw_changed_tensors": sum("raw" in t for t in shard["tensors"]),
+            "raw_bytes": sum(t["raw"]["encoded_bytes"] for t in shard["tensors"] if "raw" in t),
             "wire_bytes": sum(f["nbytes"] for f in shard["files"]),
             "producer_wall_s": time.monotonic() - self._started,
             "encode_tensor_wall_sum_s": sum(item["encode_wall_s"] for item in self._encoding_metrics),
@@ -484,6 +513,7 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
             },
         }
         if self.encoder_backend == "gpu":
+            self.publication_metrics["raw_cpu_write_s"] = self._raw_cpu_write_s
             # Retain the existing transfer key, now counting export of the
             # current snapshot; the old pinned baseline is never written back.
             self.publication_metrics["baseline_d2h_bytes"] += sum(t.nbytes for t in self._next_snapshot.values())
@@ -508,7 +538,10 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
             descriptor = gpu_delta_publication.seal_publication(self._version_dir, shards)
             descriptor["summary_counts"] = {
                 key: sum(owner["producer_metrics"][key] for owner in shards)
-                for key in ("tensor_count", "wire_bytes", "changed_bytes", "canonical_bytes")
+                for key in (
+                    "tensor_count", "wire_bytes", "changed_bytes", "canonical_bytes",
+                    "raw_tensor_count", "raw_changed_tensors", "raw_bytes",
+                )
             }
             return descriptor
 

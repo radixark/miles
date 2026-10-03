@@ -30,26 +30,20 @@ def _decode(entry, payloads, base, *, frame_bytes=gpu_delta_publication.FRAME_BY
 
 
 @pytest.mark.parametrize("codec", ["zstd", "snappy"])
-@pytest.mark.parametrize("encoding", ["xor_bytes", "replace_bytes"])
-def test_codec_independent_exact_target_with_unchanged_and_partial_frames(codec, encoding):
+def test_codec_independent_exact_target_with_unchanged_and_partial_frames(codec):
     rng = np.random.default_rng(42)
     base = rng.integers(0, 256, size=2 * gpu_delta_publication.FRAME_BYTES + 137, dtype=np.uint8)
     target = base.copy()
     target[19:999:7] ^= 3
     target[-137::3] ^= 0x80
     base_copy, target_copy = base.copy(), target.copy()
-    entry, payloads = gpu_delta_publication.encode_tensor(
-        "w", base, target, dtype="U8", shape=[base.size], codec=codec, encoding=encoding
-    )
+    entry, payloads = gpu_delta_publication.encode_tensor("w", base, target, dtype="U8", shape=[base.size], codec=codec, encoding="xor_bytes")
     np.testing.assert_array_equal(_decode(entry, payloads, base), target)
     np.testing.assert_array_equal(base, base_copy)
     np.testing.assert_array_equal(target, target_copy)
     assert entry["changed_bytes"] == np.count_nonzero(base != target)
     assert all("xxh3" not in key for key in entry)
-    if encoding == "xor_bytes":
-        assert len(entry["frames"]) == 2  # the middle all-zero XOR frame is omitted
-    else:
-        assert len(entry["frames"]) == 3
+    assert len(entry["frames"]) == 2  # the middle all-zero XOR frame is omitted
 
 
 def test_raw_fallback_and_noncontiguous_tp_view_metadata():
@@ -135,6 +129,44 @@ def test_duplicate_tensor_owners_and_different_versions_cannot_publish(tmp_path)
         gpu_delta_publication.seal_publication(tmp_path, shards)
 
 
+@pytest.mark.parametrize("codec", ["snappy", "zstd"])
+@pytest.mark.parametrize("dtype,shape,size", [("F32", [], 4), ("BF16", [6144], 12288), ("U8", [0], 0)])
+def test_direct_targets_bypass_both_codecs_and_omit_unchanged_values(tmp_path, monkeypatch, codec, dtype, shape, size):
+    writer = _writer(tmp_path, codec=codec)
+    base = bytes(size)
+    target = bytes([1]) + bytes(size - 1) if size else b""
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("Raw replacements must not enter either codec")
+
+    monkeypatch.setattr(gpu_delta_publication, "encode_tensor", forbidden)
+    monkeypatch.setattr(writer, "_append_outer", forbidden)
+    entry = writer.add_tensor("changed", base, target, dtype=dtype, shape=shape, encoding="raw_bytes")
+    unchanged = writer.add_raw_tensor("unchanged", target, target, dtype=dtype, shape=shape)
+    writer.finish()
+    blob = (tmp_path / "owner-00000.bin").read_bytes()
+    assert entry["frames"] == unchanged["frames"] == []
+    assert "outer" not in entry and "raw" not in unchanged
+    assert entry["changed_bytes"] == bool(size) and unchanged["changed_bytes"] == 0
+    if size:
+        raw = entry["raw"]
+        assert raw == {"file": "owner-00000.bin", "encoded_offset": 0, "encoded_bytes": size}
+        assert blob == target
+    else:
+        assert "raw" not in entry and blob == b""
+    manifest = json.loads((tmp_path / "manifest.json").read_bytes())
+    assert manifest["files"][0]["sha256"] == hashlib.sha256(blob).hexdigest()
+
+
+def test_direct_targets_reject_matrices_and_wrong_byte_count(tmp_path):
+    writer = _writer(tmp_path)
+    with pytest.raises(ValueError, match="scalar or vector"):
+        writer.add_raw_tensor("matrix", b"abcd", b"efgh", dtype="U8", shape=[2, 2])
+    with pytest.raises(ValueError, match="byte count"):
+        writer.add_raw_tensor("scalar", b"a", b"b", dtype="F32", shape=[])
+    assert writer.finish_shard()["tensors"] == []
+
+
 def test_rejects_invalid_view_or_canonical_byte_count():
     with pytest.raises(ValueError, match="bounds"):
         gpu_delta_publication.encode_tensor(
@@ -145,8 +177,7 @@ def test_rejects_invalid_view_or_canonical_byte_count():
 
 
 @pytest.mark.parametrize("codec", ["zstd", "snappy"])
-@pytest.mark.parametrize("encoding", ["xor_bytes", "replace_bytes"])
-def test_buffer_encoding_preserves_frame_bytes_hashes_and_payload_ownership(codec, encoding):
+def test_buffer_encoding_preserves_frame_bytes_hashes_and_payload_ownership(codec):
     import snappy
 
     frame_bytes = gpu_delta_publication.FRAME_BYTES
@@ -172,7 +203,7 @@ def test_buffer_encoding_preserves_frame_bytes_hashes_and_payload_ownership(code
         dtype="U8",
         shape=[target.size],
         codec=codec,
-        encoding=encoding,
+        encoding="xor_bytes",
     )
     base.fill(0x55)
     target.fill(0xAA)
@@ -184,16 +215,13 @@ def test_buffer_encoding_preserves_frame_bytes_hashes_and_payload_ownership(code
 
 
 @pytest.mark.parametrize("codec", ["zstd", "snappy"])
-@pytest.mark.parametrize("encoding", ["xor_bytes", "replace_bytes"])
 @pytest.mark.parametrize("frame_bytes", [1 << 16, gpu_delta_publication.FRAME_BYTES, 1 << 21])
-def test_preencoded_frames_use_the_same_immutable_wire_contract(tmp_path, codec, encoding, frame_bytes):
+def test_preencoded_frames_use_the_same_immutable_wire_contract(tmp_path, codec, frame_bytes):
     base = np.zeros(frame_bytes + 139, dtype=np.uint8)
     target = base.copy()
     target[::4096] = 17
     target[-139:] = np.random.default_rng(14).integers(0, 256, 139, dtype=np.uint8)
-    expected, payloads = gpu_delta_publication.encode_tensor(
-        "w", base, target, dtype="U8", shape=[base.size], codec=codec, encoding=encoding, frame_bytes=frame_bytes
-    )
+    expected, payloads = gpu_delta_publication.encode_tensor("w", base, target, dtype="U8", shape=[base.size], codec=codec, encoding="xor_bytes", frame_bytes=frame_bytes)
     writer = gpu_delta_publication.PublicationWriter(
         tmp_path,
         stream_id="s",
@@ -210,7 +238,7 @@ def test_preencoded_frames_use_the_same_immutable_wire_contract(tmp_path, codec,
         changed_bytes=expected["changed_bytes"],
         dtype="U8",
         shape=[base.size],
-        encoding=encoding,
+        encoding="xor_bytes",
     )
     shard = writer.finish_shard()
     profile = {1 << 16: "64kib", 1 << 20: "1mib", 1 << 21: "2mib"}[frame_bytes]
@@ -219,11 +247,7 @@ def test_preencoded_frames_use_the_same_immutable_wire_contract(tmp_path, codec,
     assert shard["metadata"]["codec_profile"] == f"{codec}-independent-{profile}{suffix}-v1"
     gpu_delta_publication.seal_publication(tmp_path, [shard])
     encoded = (tmp_path / shard["files"][0]["name"]).read_bytes()
-    retained = (
-        _unwrap(entry, encoded)
-        if codec == "snappy"
-        else [encoded[f["encoded_offset"] : f["encoded_offset"] + f["encoded_bytes"]] for f in entry["frames"]]
-    )
+    retained = _unwrap(entry, encoded) if codec == "snappy" else [encoded[f["encoded_offset"] : f["encoded_offset"] + f["encoded_bytes"]] for f in entry["frames"]]
     assert retained == payloads
     np.testing.assert_array_equal(_decode(entry, retained, base, frame_bytes=frame_bytes), target)
 
@@ -276,11 +300,11 @@ def test_invalid_frame_profile_fails_before_creating_publication(tmp_path, frame
     assert not directory.exists()
 
 
-def test_preencoded_replacement_cannot_omit_a_zero_or_tail_frame(tmp_path):
+def test_preencoded_frames_reject_raw_replacements_and_incomplete_ranges(tmp_path):
     writer = _writer(tmp_path)
     try:
-        with pytest.raises(ValueError, match="complete canonical tensor"):
-            writer.add_encoded_tensor("w", [], [], changed_bytes=0, dtype="U8", shape=[139], encoding="replace_bytes")
+        with pytest.raises(ValueError, match="Only XOR"):
+            writer.add_encoded_tensor("w", [], [], changed_bytes=0, dtype="U8", shape=[139], encoding="raw_bytes")
         with pytest.raises(ValueError, match="canonical range"):
             writer.add_encoded_tensor(
                 "w",
@@ -358,8 +382,7 @@ def _unwrap(entry, blob):
 
 
 @pytest.mark.parametrize("frame_bytes", [1 << 16, 1 << 20])
-@pytest.mark.parametrize("encoding", ["xor_bytes", "replace_bytes"])
-def test_outer_snappy_exact_mixed_frames_and_empty_tensor(tmp_path, frame_bytes, encoding):
+def test_outer_snappy_exact_mixed_frames_and_empty_tensor(tmp_path, frame_bytes):
     base = np.zeros(frame_bytes * 2 + 17, dtype=np.uint8)
     target = base.copy()
     target[12:500:3] = 7
@@ -371,7 +394,7 @@ def test_outer_snappy_exact_mixed_frames_and_empty_tensor(tmp_path, frame_bytes,
         dtype="U8",
         shape=[base.size],
         codec="snappy",
-        encoding=encoding,
+        encoding="xor_bytes",
         frame_bytes=frame_bytes,
     )
     # Match GPU output: immutable frame views into one packed, unaligned slab.
@@ -389,18 +412,10 @@ def test_outer_snappy_exact_mixed_frames_and_empty_tensor(tmp_path, frame_bytes,
         changed_bytes=source["changed_bytes"],
         dtype="U8",
         shape=[base.size],
-        encoding=encoding,
+        encoding="xor_bytes",
     )
     empty = writer.add_encoded_tensor("empty", [], [], changed_bytes=0, dtype="U8", shape=[128])
-    zero = writer.add_encoded_tensor(
-        "zero",
-        [{"decoded_offset": 0, "decoded_bytes": 8, "encoded_bytes": 8, "codec": "none"}],
-        [bytes(8)],
-        changed_bytes=0,
-        dtype="U8",
-        shape=[8],
-        encoding="replace_bytes",
-    )
+    zero = writer.add_raw_tensor("zero", bytes([1]) * 8, bytes(8), dtype="U8", shape=[8])
     descriptor = writer.finish()
     manifest = json.loads((tmp_path / "manifest.json").read_bytes())
     blob = (tmp_path / "owner-00000.bin").read_bytes()
@@ -410,11 +425,11 @@ def test_outer_snappy_exact_mixed_frames_and_empty_tensor(tmp_path, frame_bytes,
     assert hashlib.sha256(blob).hexdigest() == manifest["files"][0]["sha256"]
     assert "outer" not in empty
     np.testing.assert_array_equal(_decode(entry, _unwrap(entry, blob), base, frame_bytes=frame_bytes), target)
-    np.testing.assert_array_equal(_decode(zero, _unwrap(zero, blob), np.ones(8, dtype=np.uint8)), np.zeros(8))
+    assert "outer" not in zero and zero["frames"] == []
+    assert blob[zero["raw"]["encoded_offset"] : zero["raw"]["encoded_offset"] + 8] == bytes(8)
     np.testing.assert_array_equal(slab, before)
-    assert writer.outer_metrics["outer_input_bytes"] == entry["outer"]["decoded_bytes"] + 8
-    assert writer.outer_metrics["outer_output_bytes"] == sum(t["outer"]["encoded_bytes"] for t in (entry, zero))
-    assert writer.outer_metrics["outer_contiguous_tensors"] >= 1
+    assert writer.outer_metrics["outer_input_bytes"] == entry["outer"]["decoded_bytes"]
+    assert writer.outer_metrics["outer_output_bytes"] == entry["outer"]["encoded_bytes"]
 
 
 def test_outer_arena_uses_existing_aligned_views_without_copy():
@@ -433,21 +448,16 @@ def test_outer_arena_uses_existing_aligned_views_without_copy():
     assert gpu_delta_publication._inner_payload_layout([packed[:5], packed[5:]])[3] is None
 
 
-@pytest.mark.parametrize("encoding", ["xor_bytes", "replace_bytes"])
-def test_cpu_snappy_uses_same_mandatory_envelope_as_preencoded_frames(tmp_path, encoding):
+def test_cpu_snappy_uses_same_mandatory_envelope_as_preencoded_frames(tmp_path):
     size = 2 * (1 << 16) + 137
     base = np.zeros(size, dtype=np.uint8)
     target = base.copy()
     target[:10000:7] = 19
     target[-137:] = np.random.default_rng(27).integers(1, 256, 137, dtype=np.uint8)
-    expected, payloads = gpu_delta_publication.encode_tensor(
-        "w", base, target, dtype="U8", shape=[size], codec="snappy", encoding=encoding, frame_bytes=1 << 16
-    )
+    expected, payloads = gpu_delta_publication.encode_tensor("w", base, target, dtype="U8", shape=[size], codec="snappy", encoding="xor_bytes", frame_bytes=1 << 16)
     cpu, encoded = _outer_writer(tmp_path / "cpu"), _outer_writer(tmp_path / "encoded")
-    cpu_entry = cpu.add_tensor("w", base, target, dtype="U8", shape=[size], encoding=encoding)
-    encoded_entry = encoded.add_encoded_tensor(
-        "w", expected["frames"], payloads, changed_bytes=expected["changed_bytes"], dtype="U8", shape=[size], encoding=encoding
-    )
+    cpu_entry = cpu.add_tensor("w", base, target, dtype="U8", shape=[size], encoding="xor_bytes")
+    encoded_entry = encoded.add_encoded_tensor("w", expected["frames"], payloads, changed_bytes=expected["changed_bytes"], dtype="U8", shape=[size], encoding="xor_bytes")
     cpu.finish()
     encoded.finish()
     cpu_blob = (tmp_path / "cpu" / "owner-00000.bin").read_bytes()
