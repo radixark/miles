@@ -32,14 +32,17 @@ def sparse_attention_ref(q, kv, indices, sm_scale, d_v, attn_sink=None):
         selected = hits.scatter_add_(-1, idx.clamp(min=0), valid.int()) > 0
         scores = torch.einsum("bshd,bkd->bshk", q_g, kv_g) * sm_scale
         scores = scores.masked_fill(~selected.unsqueeze(2), float("-inf"))
-        row_max = scores.amax(dim=-1, keepdim=True).clamp(min=-1e30)
+        row_max = scores.amax(dim=-1, keepdim=True)
+        if attn_sink is not None:
+            sink_g = attn_sink.float()[g * heads_per_group : (g + 1) * heads_per_group].view(1, 1, -1, 1)
+            row_max = torch.maximum(row_max, sink_g)
+        row_max = torch.where(torch.isinf(row_max), 0.0, row_max).detach()
         weights = torch.exp(scores - row_max)
         denom = weights.sum(dim=-1)
         if attn_sink is not None:
-            sink_g = attn_sink.float()[g * heads_per_group : (g + 1) * heads_per_group]
-            denom = denom + torch.exp(sink_g.view(1, 1, -1) - row_max.squeeze(-1))
+            denom = denom + torch.exp(sink_g - row_max).squeeze(-1)
         numer = torch.einsum("bshk,bkd->bshd", weights, kv_g[..., :d_v])
-        outs.append(numer / denom.unsqueeze(-1))
+        outs.append(numer / torch.where(denom > 0, denom, 1.0).unsqueeze(-1))
     return torch.cat(outs, dim=2)
 
 

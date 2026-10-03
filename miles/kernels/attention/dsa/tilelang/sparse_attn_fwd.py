@@ -93,8 +93,8 @@ def sparse_attn_fwd(
                 K_tail_shared = T.alloc_shared([BI, D_tail], dtype)
             O_shared = T.alloc_shared([H_per_block, D], dtype)
             Lse_shared = T.alloc_shared([H_per_block], accum_dtype)
-            mask = T.alloc_fragment([BI], "bool")
-            kv_i = T.alloc_fragment([BI], indices_dtype)
+            mask = T.alloc_shared([BI], "bool")
+            kv_i = T.alloc_shared([BI], indices_dtype)
 
             acc_o = T.alloc_fragment([H_per_block, D], accum_dtype)
             acc_s = T.alloc_fragment([H_per_block, BI], accum_dtype)
