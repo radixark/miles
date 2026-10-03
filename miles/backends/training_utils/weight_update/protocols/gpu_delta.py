@@ -44,6 +44,7 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
         self._timing = os.environ.get("WEIGHT_DELTA_TIMING", "0") == "1"
         self._snapshot = {}
         self._next_snapshot = {}
+        self._raw_names = self._gpu_batch_names = ()
         self._plan = {}
         self._descriptions = None
         self._capturing = False
@@ -132,8 +133,6 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
                 self._staging_stream = torch.cuda.Stream(device=torch.cuda.current_device())
             if self.encoder_backend == "cpu":
                 self._pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="gpu-delta")
-            elif self.args.update_weight_buffer_size <= 0:
-                raise ValueError("GPU delta requires a positive update_weight_buffer_size")
             self._writer = gpu_delta_publication.PublicationWriter(
                 self._version_dir,
                 stream_id=self._stream_id,
@@ -173,6 +172,11 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
                 self.send_bucket(bucket)
         self._capturing = False
         self._read_baseline = None
+        if self.encoder_backend == "gpu" and self._error is None:
+            try:
+                self._prepare_gpu_schedule()
+            except Exception as error:
+                self._error = error
         _collective_check(self._error, "baseline capture")
         inventory = _gather_all(
             [
@@ -312,19 +316,19 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
         # snapshot remains immutable until receiver commit, including on error.
         started = time.monotonic()
         encoded, jobs = [], []
-        raw_names = [name for name in sorted(self._snapshot) if self._plan[name]["encoding"] == "raw_bytes"]
         pool = (
             ThreadPoolExecutor(max_workers=1, thread_name_prefix="gpu-delta-write")
-            if self.codec == "snappy" or raw_names else None
+            if self.codec == "snappy" or self._raw_names
+            else None
         )
         try:
-            if raw_names:
+            if self._raw_names:
                 # Already-staged targets bypass both H2D uploads, GPU XOR and
                 # compression. Their CPU write overlaps the matrix batches.
-                jobs.append(pool.submit(self._write_raw_tensors, raw_names))
-            for names in self._gpu_batches():
+                jobs.append(pool.submit(self._write_raw_tensors, self._raw_names))
+            for names in self._gpu_batch_names:
                 results = self._gpu_encoder.encode(
-                    [(self._snapshot[name], self._next_snapshot[name], self._plan[name]["encoding"]) for name in names]
+                    [(self._snapshot[name], self._next_snapshot[name], "xor_bytes") for name in names]
                 )
                 if len(results) != len(names):
                     raise RuntimeError("GPU delta encoder returned an incomplete batch")
@@ -401,21 +405,32 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
         if error is not None:
             raise error
 
-    def _gpu_batches(self):
-        """Stable canonical-byte batches; a tensor larger than the target stands alone."""
-        batch, size = [], 0
+    def _prepare_gpu_schedule(self):
+        """Partition immutable owner geometry once, before the first update.
+
+        Cache names rather than snapshot views: commit swaps old/current buffers.
+        The byte budget is fixed for this stream, like its receiver/owner plan.
+        """
         limit = self.args.update_weight_buffer_size
+        if limit <= 0:
+            raise ValueError("GPU delta requires a positive update_weight_buffer_size")
+        raw_names, batches, batch, size = [], [], [], 0
         for name in sorted(self._snapshot):
-            if self._plan[name]["encoding"] == "raw_bytes":
+            encoding = self._plan[name]["encoding"]
+            if encoding == "raw_bytes":
+                raw_names.append(name)
                 continue
+            if encoding != "xor_bytes":
+                raise ValueError(f"Unsupported GPU delta encoding for {name!r}: {encoding!r}")
             nbytes = self._snapshot[name].numel()
             if batch and size + nbytes > limit:
-                yield batch
+                batches.append(tuple(batch))
                 batch, size = [], 0
             batch.append(name)
             size += nbytes
         if batch:
-            yield batch
+            batches.append(tuple(batch))
+        self._raw_names, self._gpu_batch_names = tuple(raw_names), tuple(batches)
 
     def _collect(self, future, *, backpressure=False):
         started = time.monotonic()

@@ -41,7 +41,7 @@ def _setup(tmp_path, *, fail=False):
             custom_update_weight_post_write_path=None,
         )
     )
-    protocol._plan = {"w": {"name": "w", "dtype": "U8", "shape": [4]}}
+    protocol._plan = {"w": {"name": "w", "dtype": "U8", "shape": [4], "encoding": "raw_bytes"}}
     protocol.is_sender = True
     events = []
     protocol.rollout_engines = [_Engine(protocol, events, 0, fail), _Engine(protocol, events, 1)]
@@ -92,6 +92,23 @@ def test_inventory_failure_never_declares_base_version(tmp_path, single_rank):
     with pytest.raises(RuntimeError, match="inventory/ownership mismatch"):
         protocol.begin_sync(1, _buckets)
     assert not events and not protocol._baseline_captured
+
+
+@pytest.mark.parametrize("buffer_size", [0, 5])
+def test_gpu_startup_partitions_owner_plan_before_declaring_baseline(tmp_path, single_rank, monkeypatch, buffer_size):
+    protocol, events = _setup(tmp_path)
+    protocol.encoder_backend = "gpu"
+    protocol.args.update_weight_buffer_size = buffer_size
+    # Only allocation is replaced; startup reads and verifies the real checkpoint.
+    monkeypatch.setattr(torch.Tensor, "pin_memory", lambda self: self)
+    if buffer_size == 0:
+        with pytest.raises(RuntimeError, match="baseline capture.*positive update_weight_buffer_size"):
+            protocol.begin_sync(1, _buckets)
+        assert not events and not protocol._baseline_captured
+    else:
+        assert protocol.begin_sync(1, _buckets) is False
+        assert protocol._raw_names == ("w",) and protocol._gpu_batch_names == ()
+        assert sorted(events) == [0, 1]
 
 
 def _gpu_pending(monkeypatch, *, fail_batch=None, omit=None, wrapped=False):
@@ -145,12 +162,13 @@ def _gpu_pending(monkeypatch, *, fail_batch=None, omit=None, wrapped=False):
     protocol._writer.outer_metrics = {"inner_hash_s": 0.02, "outer_hash_write_s": 0.03}
     protocol._writer.add_encoded_tensor.side_effect = lambda name, *args, **kwargs: events.append(("write", name))
     monkeypatch.setattr(gpu_delta.torch.cuda, "Event", Ready)
+    protocol._prepare_gpu_schedule()
     return protocol, events
 
 
 def test_bulk_compression_waits_for_complete_snapshot_and_defers_all_writes(monkeypatch, single_rank):
     protocol, events = _gpu_pending(monkeypatch)
-    assert list(protocol._gpu_batches()) == [["a", "b"], ["c"], ["d"]]
+    assert protocol._gpu_batch_names == (("a", "b"), ("c",), ("d",))
     protocol.after_base_weights()
     assert events == [
         "record",
@@ -178,6 +196,7 @@ def test_raw_cpu_write_bypasses_gpu_batches_and_overlaps_compression(monkeypatch
     protocol._snapshot["scale"] = torch.zeros(4, dtype=torch.uint8)
     protocol._next_snapshot["scale"] = torch.ones(4, dtype=torch.uint8)
     protocol._seen.add("scale")
+    protocol._prepare_gpu_schedule()
     raw_started, encoding_started = threading.Event(), threading.Event()
     encode = protocol._gpu_encoder.encode.side_effect
 
@@ -198,7 +217,8 @@ def test_raw_cpu_write_bypasses_gpu_batches_and_overlaps_compression(monkeypatch
 
     protocol._gpu_encoder.encode.side_effect = encode_after_raw_started
     protocol._writer.add_raw_tensor.side_effect = raw
-    assert list(protocol._gpu_batches()) == [["a", "b"], ["c"], ["d"]]
+    assert protocol._raw_names == ("scale",)
+    assert protocol._gpu_batch_names == (("a", "b"), ("c",), ("d",))
     if fail_raw:
         with pytest.raises(RuntimeError, match="raw owner write failed"):
             protocol.after_base_weights()
@@ -212,6 +232,28 @@ def test_raw_cpu_write_bypasses_gpu_batches_and_overlaps_compression(monkeypatch
     assert protocol._gpu_batch_count == 3
     assert not any(call.args[0] == "scale" for call in protocol._writer.add_encoded_tensor.call_args_list)
     assert torch.count_nonzero(protocol._snapshot["scale"]) == 0
+
+
+def test_cached_gpu_schedule_uses_current_buffers_after_commit(monkeypatch, single_rank):
+    protocol, _ = _gpu_pending(monkeypatch)
+    schedule = protocol._gpu_batch_names
+    protocol.after_base_weights()
+    protocol._published = True
+    protocol.commit_pending_baseline()
+    for snapshot in protocol._next_snapshot.values():
+        snapshot.fill_(13)
+
+    def encode(tensors):
+        for previous, current, encoding in tensors:
+            assert encoding == "xor_bytes"
+            assert torch.all(previous == 7) and torch.all(current == 13)
+        return [([], [], current.numel(), {"encode_wall_s": 0.01}) for _, current, _ in tensors]
+
+    protocol._gpu_encoder.encode.side_effect = encode
+    protocol._prepare_gpu_schedule = Mock(side_effect=AssertionError("Update rebuilt immutable owner schedule"))
+    protocol._encode_gpu_batches()
+    assert protocol._gpu_batch_names is schedule
+    protocol._prepare_gpu_schedule.assert_not_called()
 
 
 @pytest.mark.parametrize("fail_batch,omit", [(2, None), (None, "c")])
