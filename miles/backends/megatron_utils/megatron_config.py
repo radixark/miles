@@ -357,23 +357,30 @@ def resolve_args_checkpoint_load(args: Namespace) -> None:
     # TODO: refactor
     args.requested_load = args.load
 
+    explicit_selection = args.ckpt_step is not None or args.exit_on_missing_checkpoint
+    if explicit_selection:
+        if args.load is None:
+            raise ValueError("an explicit checkpoint selection requires --load")
+        return
+
+    if _has_megatron_checkpoint(args.load):
+        return
+
     # TODO: During loading, we need to set the start_rollout_id here.
     if args.megatron_to_hf_mode == "bridge":
         # Fresh runs pass a not-yet-created `--load` dir; fall back to the reference
         # weights (loaded via the HF bridge) instead of asserting in load_checkpoint.
         # Mirrors the non-bridge branch below.
-        if not _has_megatron_checkpoint(args.load):
-            args.load = args.ref_load or args.hf_checkpoint
-            args.start_rollout_id = 0
+        args.load = args.ref_load or args.hf_checkpoint
+        args.start_rollout_id = 0
     else:
-        if not _has_megatron_checkpoint(args.load):
-            args.no_load_optim = True
-            args.no_load_rng = True
-            args.finetune = True
-            args.load = args.ref_load
-            if args.ref_ckpt_step is not None:
-                args.ckpt_step = args.ref_ckpt_step
-            args.start_rollout_id = 0
+        args.no_load_optim = True
+        args.no_load_rng = True
+        args.finetune = True
+        args.load = args.ref_load
+        if args.ref_ckpt_step is not None:
+            args.ckpt_step = args.ref_ckpt_step
+        args.start_rollout_id = 0
 
 
 def _has_megatron_checkpoint(load_dir: str | None) -> bool:

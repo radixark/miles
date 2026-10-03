@@ -59,6 +59,7 @@ def _make_args(megatron_config: str | None = None, **overrides) -> Namespace:
         finetune=False,
         ref_ckpt_step=None,
         ckpt_step=None,
+        exit_on_missing_checkpoint=False,
         start_rollout_id=None,
         optimizer="adam",
         use_distributed_optimizer=True,
@@ -449,6 +450,32 @@ class TestResolveArgsCheckpointLoad:
         assert args.load == load
         assert (args.no_load_optim, args.no_load_rng, args.finetune) == (False, False, False)
         assert (args.ckpt_step, args.start_rollout_id) == (None, None)
+
+    @pytest.mark.parametrize(
+        "selector",
+        [{"ckpt_step": 7}, {"exit_on_missing_checkpoint": True}],
+        ids=["checkpoint-step", "exit-on-missing"],
+    )
+    def test_an_explicit_checkpoint_selection_does_not_fall_back(self, tmp_path, selector):
+        load = str(tmp_path / "missing")
+        args = _make_checkpoint_args(tmp_path, load=load, **selector)
+
+        resolve_args_checkpoint_load(args)
+
+        assert args.load == load
+        assert args.requested_load == load
+        assert args.start_rollout_id is None
+
+    @pytest.mark.parametrize(
+        "selector",
+        [{"ckpt_step": 7}, {"exit_on_missing_checkpoint": True}],
+        ids=["checkpoint-step", "exit-on-missing"],
+    )
+    def test_an_explicit_checkpoint_selection_requires_a_load_path(self, tmp_path, selector):
+        args = _make_checkpoint_args(tmp_path, load=None, **selector)
+
+        with pytest.raises(ValueError, match="require --load"):
+            resolve_args_checkpoint_load(args)
 
 
 class TestHasMegatronCheckpoint:
