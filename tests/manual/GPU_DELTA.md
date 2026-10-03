@@ -132,6 +132,20 @@ producer prefixes reuse the existing owner gather.
   worker counts. `host_outer_zstd_validate_s` and `worker_decode_sum_s` are sums
   of worker intervals, while `host_outer_zstd_decode_s` is builder wall time
   including submission, validation, raw copies and joining tasks. These overlap.
+- `creator_host_{shared,encoded}_allocation_s/{min,p50,max}` samples only host
+  creators; corresponding `allocation_calls/sum` and `allocation_bytes/sum`
+  count cold/growth allocations once per host. Warm fitting updates report zero
+  allocation work while retaining their arenas.
+- `host_shared_arena_bytes`, `host_shared_capacity_bytes`, and
+  `host_encoded_capacity_bytes` report `{min,p50,max,sum}` across distinct hosts,
+  counting each host once even when several ranks or engines map its arena.
+  Used bytes and retained capacity are separate quantities.
+- `receiver_host_shared_{register_calls,registered_bytes,registration_reused,
+  mapping_reused,registration_capacity_bytes}/{min,p50,max}` are per-rank
+  distributions. `registered_bytes` counts newly registered bytes for this
+  update (zero on warm reuse); `registration_capacity_bytes` remains the active
+  per-process capacity. These rank capacities are never summed as physical host
+  memory. Receipts lacking optional capacity fields omit those metrics.
 - `coordinator_{prepare,apply_barrier,resume_barrier,activation}_s` are enclosing
   coordinator wall times. `producer_prefix_*` distributions end at the existing
   pre-publication owner gather, before receiver activation.

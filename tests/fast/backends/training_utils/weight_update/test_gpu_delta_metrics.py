@@ -96,6 +96,71 @@ def test_original_rank_pause_and_creator_only_host_metrics_remain_separate():
     assert prefix + "creator_host_outer_zstd_decode_s/p50" not in result
 
 
+@pytest.mark.parametrize("warm", [False, True])
+def test_capacity_and_allocation_count_hosts_once_but_registration_per_rank(warm):
+    activation = _activation()
+    for rank, receipt in enumerate(activation["receipts"]):
+        host = rank // 2 + 1
+        creator = rank % 2 == 0
+        timings = receipt["result"]["timings"]
+        timings.update(
+            host_shared_arena_bytes=600 * host,
+            host_shared_capacity_bytes=1024 * host,
+            host_encoded_capacity_bytes=512 * host,
+            host_shared_registration_capacity_bytes=1024 * host,
+            host_shared_register_calls=int(not warm),
+            host_shared_registered_bytes=0 if warm else 1024 * host,
+            host_shared_registration_reused=int(warm),
+            host_shared_mapping_reused=int(warm),
+            host_shared_allocation_s=0 if warm or not creator else 0.5 * host,
+            host_encoded_allocation_s=0 if warm or not creator else 0.25 * host,
+            host_shared_allocation_calls=int(creator and not warm),
+            host_shared_allocation_bytes=1024 * host if creator and not warm else 0,
+            host_encoded_allocation_calls=int(creator and not warm),
+            host_encoded_allocation_bytes=512 * host if creator and not warm else 0,
+        )
+    result = metrics.activation_metrics(activation)
+    prefix = "perf/gpu_delta/"
+    assert result[prefix + "receiver_hosts"] == 2
+    assert result[prefix + "host_cache_creators"] == 2
+    assert result[prefix + "host_shared_arena_bytes/sum"] == 1800
+    assert result[prefix + "host_shared_capacity_bytes/sum"] == 3072
+    assert result[prefix + "host_shared_capacity_bytes/p50"] == 1536
+    assert result[prefix + "host_encoded_capacity_bytes/sum"] == 1536
+    assert result[prefix + "receiver_host_shared_registration_capacity_bytes/p50"] == 1536
+    assert prefix + "receiver_host_shared_registration_capacity_bytes/sum" not in result
+    assert result[prefix + "receiver_host_shared_register_calls/min"] == int(not warm)
+    assert result[prefix + "receiver_host_shared_registered_bytes/min"] == (0 if warm else 1024)
+    assert result[prefix + "receiver_host_shared_registered_bytes/max"] == (0 if warm else 2048)
+    assert result[prefix + "receiver_host_shared_registration_reused/min"] == int(warm)
+    assert result[prefix + "receiver_host_shared_mapping_reused/max"] == int(warm)
+    assert result[prefix + "creator_host_shared_allocation_s/p50"] == (0 if warm else 0.75)
+    assert result[prefix + "creator_host_encoded_allocation_s/p50"] == (0 if warm else 0.375)
+    assert result[prefix + "creator_host_shared_allocation_calls/sum"] == (0 if warm else 2)
+    assert result[prefix + "creator_host_encoded_allocation_calls/sum"] == (0 if warm else 2)
+    assert result[prefix + "creator_host_shared_allocation_bytes/sum"] == (0 if warm else 3072)
+    assert result[prefix + "creator_host_encoded_allocation_bytes/sum"] == (0 if warm else 1536)
+
+    # Retained capacity still exists when a publication has no new creator work.
+    for receipt in activation["receipts"]:
+        receipt["result"]["timings"]["host_payload_cache_created"] = 0
+    result = metrics.activation_metrics(activation)
+    assert result[prefix + "host_shared_capacity_bytes/sum"] == 3072
+    assert prefix + "creator_host_shared_allocation_s/p50" not in result
+
+
+def test_missing_capacity_is_not_zero_and_inconsistent_shared_capacity_is_rejected():
+    activation = _activation()
+    result = metrics.activation_metrics(activation)
+    prefix = "perf/gpu_delta/"
+    assert prefix + "host_shared_capacity_bytes/sum" not in result
+    assert prefix + "receiver_host_shared_register_calls/max" not in result
+    for rank, receipt in enumerate(activation["receipts"]):
+        receipt["result"]["timings"]["host_shared_capacity_bytes"] = 1024 + rank
+    with pytest.raises(ValueError, match="capacity differs between ranks"):
+        metrics.activation_metrics(activation)
+
+
 @pytest.mark.parametrize("corruption", ["incarnation", "open", "clock", "host_duplicate"])
 def test_partial_or_mismatched_receipts_never_become_completed_pause_metrics(corruption):
     activation = _activation()
@@ -139,7 +204,9 @@ def actor_update():
     actor = next(node for node in ast.parse(source.read_text()).body if isinstance(node, ast.ClassDef))
     method = next(node for node in actor.body if isinstance(node, ast.FunctionDef) and node.name == "update_weights")
     method.decorator_list = []
-    parallel = SimpleNamespace(tp=SimpleNamespace(rank=0), is_pp_last_stage=True, effective_dp_cp=SimpleNamespace(rank=0))
+    parallel = SimpleNamespace(
+        tp=SimpleNamespace(rank=0), is_pp_last_stage=True, effective_dp_cp=SimpleNamespace(rank=0)
+    )
     namespace = {
         "UpdatableEngines": object,
         "nullcontext": nullcontext,
@@ -180,7 +247,10 @@ def actor_update():
             weight_version=1,
         )
         instance = SimpleNamespace(
-            args=args, weight_updater=updater, _last_rollout_id=rollout_id, _heartbeat=SimpleNamespace(bump=lambda: None)
+            args=args,
+            weight_updater=updater,
+            _last_rollout_id=rollout_id,
+            _heartbeat=SimpleNamespace(bump=lambda: None),
         )
         result = namespace["update_weights"](
             instance, SimpleNamespace(rollout_engines=[], snapshot_cell_id_to_hashes={})
@@ -211,7 +281,9 @@ def test_final_update_logs_once_at_its_trained_rollout_without_resetting_timers(
 
 
 @pytest.mark.parametrize("case", ["nonprimary", "no_trained_rollout", "ordinary"])
-def test_completion_logging_preserves_rank_startup_and_other_protocol_semantics(actor_update, monkeypatch, case, caplog):
+def test_completion_logging_preserves_rank_startup_and_other_protocol_semantics(
+    actor_update, monkeypatch, case, caplog
+):
     completed = metrics.activation_metrics(_activation())
     submit = Mock()
     monkeypatch.setattr(metrics.tracking, "log", submit)

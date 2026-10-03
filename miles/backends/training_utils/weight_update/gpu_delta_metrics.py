@@ -39,6 +39,29 @@ _HOST_TIMINGS = (
     "host_outer_zstd_decode_s",
     "host_outer_zstd_worker_decode_sum_s",
     "host_shared_build_s",
+    "host_shared_allocation_s",
+    "host_encoded_allocation_s",
+)
+_RANK_REGISTRATION = (
+    "host_shared_register_calls",
+    "host_shared_registered_bytes",
+    "host_shared_registration_reused",
+    "host_shared_mapping_reused",
+    "host_shared_registration_capacity_bytes",
+)
+_HOST_CAPACITIES = (
+    "host_shared_arena_bytes",
+    "host_shared_capacity_bytes",
+    "host_encoded_capacity_bytes",
+)
+_HOST_WORK_TOTALS = (
+    "host_payload_hash_bytes",
+    "host_outer_zstd_encoded_bytes",
+    "host_outer_zstd_decoded_bytes",
+    "host_shared_allocation_calls",
+    "host_shared_allocation_bytes",
+    "host_encoded_allocation_calls",
+    "host_encoded_allocation_bytes",
 )
 
 
@@ -107,7 +130,7 @@ def activation_metrics(activation):
     _distribution(metrics, "receiver_reader_fence_s", [row[1] for row in rows])
     _distribution(metrics, "receiver_scheduler_pause_s", [row[2] for row in rows])
     timings = [row[0]["result"]["timings"] for row in rows]
-    for name in _RANK_TIMINGS:
+    for name in _RANK_TIMINGS + _RANK_REGISTRATION:
         # Optional profiling spans are emitted only with complete rank coverage.
         if all(name in timing for timing in timings):
             _distribution(metrics, "receiver_" + name, [timing[name] for timing in timings])
@@ -122,10 +145,26 @@ def activation_metrics(activation):
         creators.extend(created)
     metrics.update({_PREFIX + "receiver_hosts": len(hosts), _PREFIX + "host_cache_creators": len(creators)})
     for name in _HOST_TIMINGS:
-        _distribution(metrics, "creator_" + name, [row[name] for row in creators])
+        if all(name in row for row in creators):
+            _distribution(metrics, "creator_" + name, [row[name] for row in creators])
     _distribution(metrics, "creator_cpu_workers", [row["host_outer_zstd_cpu_workers"] for row in creators])
-    for name in ("host_payload_hash_bytes", "host_outer_zstd_encoded_bytes", "host_outer_zstd_decoded_bytes"):
-        metrics[_PREFIX + "creator_" + name + "/sum"] = sum(_number(row[name]) for row in creators)
+    for name in _HOST_WORK_TOTALS:
+        if all(name in row for row in creators):
+            metrics[_PREFIX + "creator_" + name + "/sum"] = sum(_number(row[name]) for row in creators)
+    # All ranks map the same host arena. Count capacity once per host, including
+    # reattachment with no creator; per-rank CUDA registrations are not additive
+    # physical storage. Older receipts omit these optional capacity fields.
+    for name in _HOST_CAPACITIES:
+        if not all(name in row for row in timings):
+            continue
+        capacities = []
+        for host_rows in hosts.values():
+            values = {_number(row[name]) for row in host_rows}
+            if len(values) != 1:
+                raise ValueError(f"Shared host capacity differs between ranks: {name}")
+            capacities.append(values.pop())
+        _distribution(metrics, name, capacities)
+        metrics[_PREFIX + name + "/sum"] = sum(capacities)
     for name, value in activation["coordinator_timings"].items():
         metrics[_PREFIX + "coordinator_" + name] = _number(value)
     return metrics
