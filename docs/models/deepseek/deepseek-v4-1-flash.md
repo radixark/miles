@@ -167,7 +167,7 @@ An 8 x 8 H200 bring-up (TP 8, 16-GPU engines) also trains the full model; on SM9
 
 `--mode debug_minimal` (the default) drops over-sampling and the dynamic-sampling filter; `--mode normal` adds `--over-sampling-batch-size 512` with `check_reward_nonzero_std`. `--task dapo_aime` uses dapo-math-17k prompts with the thinking chat template and 4096-token responses by default; the validated runs cap responses at 2048.
 
-The indexer top-k is **not** replayed into the trainer by default (`--enable-indexer-replay` exists; it pins ~300 GB of host memory per engine rank for the replay capture and measured no parity gain, so the residual 0.02 nats gap is kernel numerics).
+The indexer is frozen (it never receives gradients) and its top-k selection is recomputed in the trainer rather than replayed from the rollout, so the residual 0.02 nats gap is kernel numerics.
 
 ### 4.3 Rollout & SGLang
 

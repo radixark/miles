@@ -32,16 +32,14 @@ class TestResolveRequestArgsByConfig:
             "return_meta_info": True,
             "no_stop_trim": False,
             "return_routed_experts": False,
-            "return_indexer_topk": False,
         }
         assert list(wire)[:4] == ["model", "temperature", "unknown", "messages"]
         assert wire is request_args
 
     def test_replay_flags_follow_the_launch_flags(self):
-        config = make_session_server_config(use_rollout_routing_replay=True, use_rollout_indexer_replay=True)
+        config = make_session_server_config(use_rollout_routing_replay=True)
         wire, _ = resolve_request_args_by_config({"return_routed_experts": False}, config)
         assert wire["return_routed_experts"] is True
-        assert wire["return_indexer_topk"] is True
 
     @pytest.mark.parametrize("field", ["input_ids", "routed_experts_start_len", "logprob_start_len", "lora_path"])
     def test_client_tito_control_fields_are_rejected(self, field):
@@ -262,11 +260,11 @@ def test_eval_keeps_sampling_resolution_and_overrides_model_replay(sampling):
             request_args.setdefault("temperature", 0.7)
             request_args.setdefault("top_p", 0.9)
             request_args.setdefault("top_k", 32)
-            request_args.update(return_sampling_mask=True, return_routed_experts=True, return_indexer_topk=True)
+            request_args.update(return_sampling_mask=True, return_routed_experts=True)
             request_args["routed_experts_start_len"] = 7
             return request_args
 
-    config = make_session_server_config(use_rollout_routing_replay=True, use_rollout_indexer_replay=True)
+    config = make_session_server_config(use_rollout_routing_replay=True)
     client_args = {**sampling, "return_sampling_mask": True, "routed_experts_start_len": 99}
     history = {"temperature": 0.3, "chat_template_kwargs": {}}
     original, original_history = deepcopy(client_args), deepcopy(history)
@@ -284,9 +282,7 @@ def test_eval_keeps_sampling_resolution_and_overrides_model_replay(sampling):
         "top_k": 32,
         **sampling,
     }
-    assert all(
-        prepared.body[key] is False for key in ("return_sampling_mask", "return_routed_experts", "return_indexer_topk")
-    )
+    assert all(prepared.body[key] is False for key in ("return_sampling_mask", "return_routed_experts"))
     assert "routed_experts_start_len" not in prepared.body
     assert client_args == original and history == original_history
 

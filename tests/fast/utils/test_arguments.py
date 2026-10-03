@@ -2567,10 +2567,8 @@ def _make_skip_actor_forward_only_args(**overrides) -> SimpleNamespace:
         train_backend="megatron",
         true_on_policy_mode=False,
         use_dynamic_global_batch_size=False,
-        use_indexer_replay=False,
         use_opd=False,
         use_rollout_entropy=False,
-        use_rollout_indexer_replay=False,
         use_rollout_logprobs=False,
         use_rollout_routing_replay=False,
         use_routing_replay=False,
@@ -2643,7 +2641,6 @@ class TestValidateSkipActorForwardOnly:
             {"dumper_source_patcher_config_train": "patcher.yaml"},
             {"save_debug_train_data": "train-{rollout_id}.pt"},
             {"use_routing_replay": True},
-            {"use_indexer_replay": True},
             {"num_steps_per_rollout": 2},
             {"global_batch_size": 32},
         ],
@@ -2652,20 +2649,11 @@ class TestValidateSkipActorForwardOnly:
         with pytest.raises(AssertionError, match="--skip-actor-forward-only"):
             validate_skip_actor_forward_only(_make_skip_actor_forward_only_args(**overrides))
 
-    @pytest.mark.parametrize(
-        ("base_flag", "rollout_flag"),
-        [
-            ("use_routing_replay", "use_rollout_routing_replay"),
-            ("use_indexer_replay", "use_rollout_indexer_replay"),
-        ],
-    )
-    def test_rollout_replay_is_compatible(self, base_flag, rollout_flag):
+    def test_rollout_replay_is_compatible(self):
         validate_skip_actor_forward_only(
             _make_skip_actor_forward_only_args(
-                **{
-                    base_flag: True,
-                    rollout_flag: True,
-                }
+                use_routing_replay=True,
+                use_rollout_routing_replay=True,
             )
         )
 

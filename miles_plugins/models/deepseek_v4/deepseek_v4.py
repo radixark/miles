@@ -191,7 +191,7 @@ class DeepSeekV4Attention(MegatronModule):
             )
             if self.compress_ratio == 4:
                 indexer_impl = os.environ.get("V4_INDEXER_IMPL", "tilelang")
-                topk_backend = config.miles_dsa_topk_backend
+                topk_backend = config.indexer_topk_backend
                 if indexer_impl == "tilelang":
                     self.core_attention.indexer = V4Indexer(
                         config=config, pg_collection=pg_collection, layer_id=layer_id
@@ -451,7 +451,6 @@ def get_dsv4_spec(args, config, vp_stage):
     if args.dsv4_impl == "megatron":
         return get_transformer_block_with_experimental_attention_variant_spec(config, vp_stage=vp_stage)
 
-    config.miles_dsa_topk_backend = args.miles_dsa_topk_backend
     _orig_get_spec = _eav_specs.get_experimental_attention_variant_module_spec
 
     def _patched_get_spec(config, backend=None):

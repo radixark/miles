@@ -76,7 +76,6 @@ def compute_request_payload(
         "sampling_params": {**sampling_params, "max_new_tokens": max_new_tokens},
         "return_logprob": True,
         "return_routed_experts": args.use_rollout_routing_replay,
-        "return_indexer_topk": args.use_rollout_indexer_replay,
     }
     if return_sampling_mask:
         payload["return_sampling_mask"] = True
@@ -134,7 +133,6 @@ async def update_sample_from_response(
 
     # TODO handle multi-turn cases (may need concat instead of assignment)
     sample.rollout_routed_experts = get_routed_experts_from_response(args, output, len(sample.tokens) - 1)
-    sample.rollout_indexer_topk = get_indexer_topk_from_response(args, output, sample)
 
     # TODO may unify (currently there are both methods inside Sample and separate functions)
     sample.update_from_meta_info(args, output["meta_info"])
@@ -159,20 +157,3 @@ def get_routed_experts_from_response(args, output, num_tokens: int):
         "(topk-bypassing --moe-runner-backend such as flashinfer_trtllm?)."
     )
     return routed_experts
-
-
-def get_indexer_topk_from_response(args, output, sample):
-    info = output["meta_info"].get("indexer_topk")
-    if info is None:
-        return None
-    num_layers = output["meta_info"].get("indexer_topk_num_layers")
-    assert num_layers is not None, (
-        "Server returned indexer_topk without indexer_topk_num_layers; "
-        "sglang-miles must include the layer count in meta_info."
-    )
-    expected_num_streams = getattr(args, "rollout_indexer_topk_num_streams", None)
-    assert expected_num_streams is None or num_layers == expected_num_streams, (
-        f"Server returned indexer_topk with {num_layers} streams but the model has "
-        f"{expected_num_streams} indexer layers; replaying it would map streams to the wrong layers."
-    )
-    return _decode_topk_buffer(info, len(sample.tokens) - 1, num_layers, -1)

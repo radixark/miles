@@ -76,7 +76,7 @@ def prepare_chat_request(
     request_args.pop("sampling_logprobs_mode", None)
     if evaluation:
         # Model rules must not re-enable training replay outputs for evaluation.
-        request_args.update(return_sampling_mask=False, return_routed_experts=False, return_indexer_topk=False)
+        request_args.update(return_sampling_mask=False, return_routed_experts=False)
         request_args.pop("routed_experts_start_len", None)
     else:
         try:
@@ -130,7 +130,6 @@ def resolve_request_args_by_config(
     request_args["no_stop_trim"] = False
     # Training replay follows the launch flags; eval never requests replay outputs.
     request_args["return_routed_experts"] = not evaluation and bool(config.use_rollout_routing_replay)
-    request_args["return_indexer_topk"] = not evaluation and bool(config.use_rollout_indexer_replay)
 
     # The served adapter is selected by training; SGLang lets a ``base:adapter``
     # model parameter beat ``lora_path``, so that spelling is refused too.

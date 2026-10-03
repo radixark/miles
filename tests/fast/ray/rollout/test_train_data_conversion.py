@@ -800,13 +800,13 @@ class TestSplitTrainDataRaw:
         assert len(result[0]["seq_witness_ids"]) == 2
         assert len(result[1]["seq_witness_ids"]) == 2
 
-    def test_indexer_topk_and_opd_reverse_kl_split_across_dp(self) -> None:
-        """Keys from the rollout-side split (rollout_indexer_topk, opd_reverse_kl) partition per sample."""
+    def test_routed_experts_and_opd_reverse_kl_split_across_dp(self) -> None:
+        """Keys from the rollout-side split (rollout_routed_experts, opd_reverse_kl) partition per sample."""
         data = {
             "tokens": [[1, 2], [3, 4], [5, 6], [7, 8]],
             "response_lengths": [1, 1, 1, 1],
             "loss_masks": [[0, 1], [0, 1], [0, 1], [0, 1]],
-            "rollout_indexer_topk": [torch.tensor([i]) for i in range(4)],
+            "rollout_routed_experts": [torch.tensor([i]) for i in range(4)],
             "opd_reverse_kl": [[float(i)] for i in range(4)],
         }
 
@@ -817,7 +817,7 @@ class TestSplitTrainDataRaw:
 
         assert len(result) == 2
         for part in result:
-            assert len(part["rollout_indexer_topk"]) == 2
+            assert len(part["rollout_routed_experts"]) == 2
             assert len(part["opd_reverse_kl"]) == 2
 
     def test_no_witness_ids_when_absent(self) -> None:

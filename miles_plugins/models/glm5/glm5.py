@@ -26,7 +26,7 @@ from megatron.core.transformer.transformer_block import get_num_layers_to_build
 from megatron.core.transformer.transformer_config import MLATransformerConfig
 
 from miles.utils.hf_utils.config import load_hf_config
-from miles.utils.replay_base import indexer_replay_manager
+from miles_plugins.models.indexer import freeze_indexer_parameters
 from miles_plugins.models.normalization import rms_norm
 
 from .ops.indexer import generate_varlen_mask_params, lighting_indexer
@@ -35,6 +35,7 @@ from .ops.sparse_mla import SparseMLA
 # Names of the indexer submodules. On a DSA model with *cross-layer index
 # sharing* these only exist on "computing" layers; "skip" layers drop them.
 _INDEXER_SUBMODULE_NAMES = ("wq_b", "wk", "k_norm", "weights_proj")
+INDEXER_PARAM_GLOBS = tuple(f"{name}.*" for name in _INDEXER_SUBMODULE_NAMES)
 
 
 def is_skip_topk_layer(layer_number: int, skip_topk_offset: int, topk_freq: int) -> bool:
@@ -163,11 +164,8 @@ class DSAMultiLatentAttention(Attention):
             tp_group=self.pg_collection.tp,
         )
 
-        self.index_topk = 2048
-        if topk_backend not in ("torch", "flashinfer"):
-            raise ValueError(f"Unsupported miles DSA topk backend: {topk_backend}")
+        self.index_topk = self.config.index_topk
         self.topk_backend = topk_backend
-        indexer_replay_manager.register_to_module(self, "indexer_replay", stream_idx=self.layer_number - 1)
 
         # Cross-layer index sharing (optional). When the HF config provides
         # ``index_topk_freq`` / ``index_skip_topk_offset`` (see ``get_glm5_spec``),
@@ -236,10 +234,6 @@ class DSAMultiLatentAttention(Attention):
 
         def fused_select_topk(index_q, index_k, w, starts, ends, block_size=8192):
             seq_len = index_q.shape[0]
-            # replay records one topk tensor per layer-forward; don't split it
-            if indexer_replay_manager.enabled:
-                block_size = seq_len
-            indexer_topk_scores = []
             topk_indices = []
 
             for start in range(0, seq_len, block_size):
@@ -250,7 +244,7 @@ class DSAMultiLatentAttention(Attention):
                 ends_block = ends[start:end]
                 starts_block = starts_block.to(torch.int32)
                 ends_block = ends_block.to(torch.int32)
-                indexer_topk_scores_block, topk_indices_block = lighting_indexer(
+                topk_indices_block = lighting_indexer(
                     index_q_block,
                     index_k,
                     w_block,
@@ -259,11 +253,8 @@ class DSAMultiLatentAttention(Attention):
                     self.index_topk,
                     topk_backend=self.topk_backend,
                 )
-
-                indexer_topk_scores_block = torch.softmax(indexer_topk_scores_block, dim=-1)
-                indexer_topk_scores.append(indexer_topk_scores_block)
                 topk_indices.append(topk_indices_block)
-            return torch.cat(indexer_topk_scores, dim=0), torch.cat(topk_indices, dim=0).unsqueeze(1)
+            return torch.cat(topk_indices, dim=0).unsqueeze(1)
 
         if self.index_share:
             # Cross-layer index sharing. The top-k holder lives on the per-microbatch
@@ -297,7 +288,7 @@ class DSAMultiLatentAttention(Attention):
                 head_weights = head_weights.unsqueeze(-1)
                 starts = scatter_to_sequence_parallel_region(starts, group=parallel_state.get_context_parallel_group())
                 ends = scatter_to_sequence_parallel_region(ends, group=parallel_state.get_context_parallel_group())
-                _, topk_indices = fused_select_topk(index_query, index_key, head_weights, starts, ends)
+                topk_indices = fused_select_topk(index_query, index_key, head_weights, starts, ends)
                 holder[self.layer_number] = topk_indices
         else:
             starts, ends = generate_varlen_mask_params(packed_seq_params.cu_seqlens_q)
@@ -305,7 +296,7 @@ class DSAMultiLatentAttention(Attention):
             head_weights = head_weights.unsqueeze(-1)
             starts = scatter_to_sequence_parallel_region(starts, group=parallel_state.get_context_parallel_group())
             ends = scatter_to_sequence_parallel_region(ends, group=parallel_state.get_context_parallel_group())
-            _, topk_indices = fused_select_topk(index_query, index_key, head_weights, starts, ends)
+            topk_indices = fused_select_topk(index_query, index_key, head_weights, starts, ends)
 
         core_attn_out, _ = SparseMLA.apply(q, kv, topk_indices, self.softmax_scale)
         core_attn_out = torch.einsum("thm,hdm->thd", core_attn_out, wv)
@@ -501,6 +492,9 @@ class DSAMLASelfAttention(DSAMultiLatentAttention):
             **indexer_linear_kwargs,
         )
         self.weights_proj.weight._skip_gather = True
+
+        # frozen everywhere: weight decay would drift the selection with no learning signal
+        freeze_indexer_parameters(self, INDEXER_PARAM_GLOBS)
 
         # Index-share skip layers carry no indexer weights -- drop the modules built
         # above so the parameter set matches the checkpoint (which only stores indexer
@@ -748,6 +742,7 @@ def get_glm5_spec(args, config, vp_stage):
     config.index_num_attention_heads = hf_config.index_n_heads
     config.index_head_dim = hf_config.index_head_dim
     config.indexer_rope_interleave = bool(getattr(hf_config, "indexer_rope_interleave", False))
+    config.index_topk = int(getattr(hf_config, "index_topk", 2048))
     # Optional cross-layer index-sharing schedule. Present on DSA checkpoints that only
     # store indexer weights on a subset of "computing" layers (e.g. GLM-5.2). When absent,
     # every layer computes its own top-k (plain DSA) and DSAMLASelfAttention runs the
@@ -793,7 +788,7 @@ def get_glm5_spec(args, config, vp_stage):
         module=DSAMLASelfAttention,
         params={
             "attn_mask_type": AttnMaskType.causal,
-            "topk_backend": args.miles_dsa_topk_backend,
+            "topk_backend": args.indexer_topk_backend,
         },
         submodules=DSASelfAttentionSubmodules(
             linear_q_down_proj=backend.linear(),

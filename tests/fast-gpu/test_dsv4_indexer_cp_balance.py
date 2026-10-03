@@ -28,7 +28,7 @@ from miles_plugins.models.deepseek_v4.ops.kernel.tilelang_indexer_fwd import (
 )
 from miles_plugins.models.deepseek_v4.ops.thd_utils import ThdLayout, compressed_cu_seqlens
 from miles_plugins.models.deepseek_v4.ops.v4_indexer import start_row_exchange, topk_for_local_rows
-from miles_plugins.models.dsa_topk import get_dsa_topk_fn
+from miles_plugins.models.indexer import get_indexer_topk_fn
 
 register_cuda_ci(
     est_time=60,
@@ -99,7 +99,7 @@ def check_picks(rank, world_size, topk_backend, thd_seq_lens=None, bsz=1):
     thd_layout = _thd_layout(thd_seq_lens, rank, rank_rows) if thd_seq_lens else None
     n_kv = int(thd_layout.cu_seqlens_compressed[-1]) if thd_layout else SEQLEN_GLOBAL // RATIO
     q, k, weights = _inputs(rank, rank_rows, n_kv, bsz)
-    topk_fn = get_dsa_topk_fn(topk_backend)
+    topk_fn = get_indexer_topk_fn(topk_backend)
     options = dict(compress_ratio=RATIO, index_topk=TOPK, topk_fn=topk_fn)
     group = dist.group.WORLD
 
@@ -120,7 +120,7 @@ def check_picks(rank, world_size, topk_backend, thd_seq_lens=None, bsz=1):
 def _topk_backends():
     backends = ["torch"]
     try:
-        get_dsa_topk_fn("flashinfer")(torch.randn(2, 1024, device="cuda"), 8)
+        get_indexer_topk_fn("flashinfer")(torch.randn(2, 1024, device="cuda"), 8)
         backends.append("flashinfer")
     except ImportError:
         pass

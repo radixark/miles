@@ -237,8 +237,6 @@ def _train(args: ScriptArgs):
 
     grpo_args = "--advantage-estimator grpo --kl-loss-coef 0.00 --kl-loss-type low_var_kl --kl-coef 0.00 --entropy-coef 0.00 --eps-clip 0.2 --eps-clip-high 0.28 "
 
-    # routing replay only: --use-rollout-indexer-replay is debug-only and its
-    # ~78-128 GB/rank host buffer OOMs the colocate pod
     r3_args = "--use-rollout-routing-replay " if args.use_r3 else ""
 
     optimizer_args = (

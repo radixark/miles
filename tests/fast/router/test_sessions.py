@@ -60,7 +60,6 @@ def router_env():
             "completion_tokens": len(output_token_logprobs),
             # Replay payloads stay in the record along with the rest of meta_info.
             "routed_experts": [[0, 1], [2, 3]],
-            "indexer_topk": [[4], [5]],
         }
         return response
 
@@ -301,7 +300,6 @@ class TestSessionProxy:
         record = requests.get(f"{router_env.url}/sessions/{session_id}", timeout=5.0).json()["records"][0]
         record_meta = record["response"]["choices"][0]["meta_info"]
         assert record_meta["routed_experts"] == [[0, 1], [2, 3]]
-        assert record_meta["indexer_topk"] == [[4], [5]]
         assert record_meta["output_token_logprobs"]
         assert record_meta["completion_tokens"] == len(record_meta["output_token_logprobs"])
         assert client_choice["message"] == record["response"]["choices"][0]["message"]
@@ -343,7 +341,6 @@ class TestChatFakeStreaming:
         # Training payloads never reach the chunk; they live on the session record.
         assert "meta_info" not in chunk_choice
         assert "routed_experts" not in resp.text
-        assert "indexer_topk" not in resp.text
 
         # Neither the backend nor the record sees the stream flags.
         backend_payload = router_env.backend.request_log[-1]

@@ -309,8 +309,6 @@ def execute(args: ScriptArgs):
         "--adam-beta2 0.98 "
     )
 
-    # routing replay only: --use-rollout-indexer-replay is debug-only and its
-    # ~78-128 GB/rank host buffer OOMs the colocate pod
     r3_args = "--use-rollout-routing-replay " if args.use_r3 else ""
 
     external_host_arg = (

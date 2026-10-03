@@ -89,7 +89,6 @@ def _wiring_args(**overrides) -> Namespace:
         "chat_template_path": None,
         "use_opd": False,
         "use_rollout_routing_replay": False,
-        "use_rollout_indexer_replay": False,
     }
     values.update(overrides)
     return Namespace(**values)
@@ -108,7 +107,6 @@ def test_supported_wiring_passes_validation():
         ({"chat_template_path": "/tmp/custom.jinja"}, "custom\n?\s*Jinja template"),
         ({"use_opd": True}, "--use-opd"),
         ({"use_rollout_routing_replay": True}, "--use-rollout-routing-replay"),
-        ({"use_rollout_indexer_replay": True}, "--use-rollout-indexer-replay"),
     ],
 )
 def test_unsupported_wiring_fails_before_any_episode_runs(overrides, message):

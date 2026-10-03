@@ -114,8 +114,8 @@ Verifiers environments. Use the checkpoint's native template and
 `--apply-chat-template-kwargs` instead.
 
 Streaming model requests, Responses and Anthropic dialects, multimodal inputs, OPD,
-routing replay, and indexer replay are not supported by the transport. The adapter
-rejects the corresponding CLI options at startup.
+and routing replay are not supported by the transport. The adapter rejects the
+corresponding CLI options at startup.
 
 Traces with multiple graph branches, including compaction, are rejected. Miles does
 not currently preserve a trace's rollout-group boundary when it flattens multiple

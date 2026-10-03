@@ -7,7 +7,6 @@ from megatron.core.tensor_parallel.mappings import gather_from_sequence_parallel
 from megatron.core.transformer.module import MegatronModule
 from megatron.core.transformer.transformer_config import TransformerConfig
 
-from miles.utils.replay_base import indexer_replay_manager
 from miles_plugins.models.deepseek_v4.ops.compressor import DeepSeekV4Compressor
 from miles_plugins.models.deepseek_v4.ops.cp_row_balance import (
     LocalRows,
@@ -22,7 +21,7 @@ from miles_plugins.models.deepseek_v4.ops.qat import fp8_simulate_qat
 from miles_plugins.models.deepseek_v4.ops.rope import apply_rotary_emb, wrapped_precompute_freqs_cis
 from miles_plugins.models.deepseek_v4.ops.thd_utils import ThdLayout, compress_bounds_at_positions, get_q_positions_thd
 from miles_plugins.models.deepseek_v4.ops.utils import rotate_activation
-from miles_plugins.models.dsa_topk import get_dsa_topk_fn
+from miles_plugins.models.indexer import get_indexer_topk_fn
 
 
 class V4Indexer(MegatronModule):
@@ -36,7 +35,7 @@ class V4Indexer(MegatronModule):
         self.index_n_heads = config.dsa_indexer_n_heads
         self.index_head_dim = config.dsa_indexer_head_dim
         self.index_topk = config.dsa_indexer_topk
-        self.topk_backend = config.miles_dsa_topk_backend
+        self.topk_backend = config.indexer_topk_backend
         self.rope_head_dim = config.qk_pos_emb_head_dim
         self.compress_ratio = 4
         self.use_fp8_qat = config.fp8 is not None
@@ -74,11 +73,6 @@ class V4Indexer(MegatronModule):
             rotate=True,
             cp_group=pg_collection.cp,
         )
-
-        # RL rollout-routing-replay (R3) seam for the sparse-attention indexer topk: lets the miles
-        # indexer_replay_manager record (on rollout) / replay (on train forward) the top-k KV picks,
-        # mirroring the MoE routing-replay seam. No-op unless the manager is enabled.
-        indexer_replay_manager.register_to_module(self, "indexer_replay", stream_idx=layer_id)
 
     def forward(
         self,
@@ -143,8 +137,7 @@ class V4Indexer(MegatronModule):
         weights = (weights * (self.index_n_heads**-0.5) * softmax_scale).float()
 
         # Balance the causal scoring work over contiguous CP (cp_row_balance).
-        # Replay data holds each rank's own rows, so replay scores them where they are.
-        balance = cp_size > 1 and cp_group is not None and not indexer_replay_manager.enabled
+        balance = cp_size > 1 and cp_group is not None
         # started before the compressor to overlap it; unpacked, its CP all-gathers wait for the exchange
         exchange = start_row_exchange(q, weights, thd_layout, cp_group, balance=balance)
         del q, weights  # scored from exchange.wait()
@@ -163,8 +156,7 @@ class V4Indexer(MegatronModule):
                 # Per-row bounds are sequence-major, so reorder the rank-major gather first.
                 k = k.index_select(0, thd_layout.seq_to_rank_row.clamp(min=0).long())
 
-        # RL replay can pin the rollout's top-k picks here; get_topk_fn is transparent when disabled.
-        topk_fn = indexer_replay_manager.get_topk_fn(get_dsa_topk_fn(self.topk_backend), return_probs=False)
+        topk_fn = get_indexer_topk_fn(self.topk_backend)
         return topk_for_local_rows(
             exchange,
             k,
@@ -214,11 +206,11 @@ def indexer_topk(q, k, weights, positions, thd_layout, *, compress_ratio, index_
         thd_layout: packed-stream layout, or None when unpacked
 
     Returns:
-        [batch, rows, min(index_topk, n_kv)] int32 compressed-key indices
+        [batch, rows, index_topk] int32 compressed-key indices, -1 in unused slots
     """
     if q.shape[0] == 0:
         # a balanced plan can leave a rank nothing to score, and TileLang cannot launch an empty grid
-        return torch.empty(q.shape[1], 0, min(index_topk, k.shape[0]), dtype=torch.int32, device=q.device)
+        return torch.empty(q.shape[1], 0, index_topk, dtype=torch.int32, device=q.device)
     if thd_layout is None:
         cu_ks = torch.zeros_like(positions, dtype=torch.int32)
         cu_ke = ((positions + 1) // compress_ratio).int()
@@ -228,10 +220,8 @@ def indexer_topk(q, k, weights, positions, thd_layout, *, compress_ratio, index_
         )
     index_scores = batched_indexer_fwd(q, k, weights, cu_ks, cu_ke)
     bsz, rows, n_kv = index_scores.shape
-    topk_count = min(index_topk, n_kv)
-    # flattened to [n_tokens, n_kv], the record/replay convention shared with the MoE seam
-    topk_indices = topk_fn(index_scores.reshape(bsz * rows, n_kv), topk_count)
-    return topk_indices.reshape(bsz, rows, topk_count)
+    topk_indices = topk_fn(index_scores.reshape(bsz * rows, n_kv), index_topk)
+    return topk_indices.reshape(bsz, rows, index_topk)
 
 
 def _row_balance_plan(seqlen_local, thd_layout, cp_group, device) -> RowBalancePlan | None:

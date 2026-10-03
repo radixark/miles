@@ -22,7 +22,6 @@ def make_args(**overrides: object) -> SimpleNamespace:
         sglang_ep_size=1,
         sglang_mem_fraction_static=0.7,
         use_rollout_routing_replay=False,
-        use_rollout_indexer_replay=False,
         fp16=False,
         lora_adapter_path=None,
         debug_rollout_only=False,
@@ -120,7 +119,7 @@ class TestSglangOverridePrecedence:
     """An override must win over every args-derived default, including the conditional ones."""
 
     def test_override_wins_over_conditional_args_defaults(self):
-        args = make_args(fp16=True, use_rollout_routing_replay=True, use_rollout_indexer_replay=True)
+        args = make_args(fp16=True, use_rollout_routing_replay=True)
 
         server_args = compute(args, sglang_overrides={"dtype": "bfloat16"})
 

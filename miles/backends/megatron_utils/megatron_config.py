@@ -92,6 +92,7 @@ MODEL_DEFINITION_ARGS: frozenset[str] = frozenset(
         "group_query_attention",
         "hidden_dropout",
         "hidden_size",
+        "indexer_topk_backend",
         "kv_channels",
         "kv_lora_rank",
         "layernorm_epsilon",

@@ -3,7 +3,7 @@ import triton
 import triton.language as tl
 from triton.language.extra import libdevice
 
-from miles.utils.replay_base import indexer_replay_manager
+from miles_plugins.models.indexer import select_indexer_topk
 
 SPARSE_MLA_BLOCK = 64
 _SELECT_BLOCK = 256
@@ -139,96 +139,19 @@ def _expand_topk_kernel(
     tl.store(out_ptr + t * out_width + cols, val.to(tl.int32), mask=in_out)
 
 
-@triton.jit
-def _append_tail_kernel(
-    tokens_ptr,
-    seq_base_ptr,
-    local_pos_ptr,
-    shortcut_ptr,
-    out_ptr,
-    width,
-    out_width,
-    KPOOL: tl.constexpr,
-    BLOCK: tl.constexpr,
-):
-    t = tl.program_id(0).to(tl.int64)
-    cols = tl.program_id(1) * BLOCK + tl.arange(0, BLOCK)
-    in_out = cols < out_width
-    copy = cols < width
-    tokens = tl.load(tokens_ptr + t * width + cols, mask=copy, other=-1).to(tl.int32)
-    base = tl.load(seq_base_ptr + t)
-    lpos = tl.load(local_pos_ptr + t)
-    shortcut = tl.load(shortcut_ptr + t)
-    tail_start = base + ((lpos + 1) // KPOOL) * KPOOL
-    tail_slot = cols - width
-    tail_ok = (tail_slot >= 0) & (tail_slot < (lpos + 1) % KPOOL) & (shortcut == 0)
-    val = tl.where(copy, tokens, tl.where(tail_ok, tail_start + tail_slot, -1))
-    tl.store(out_ptr + t * out_width + cols, val, mask=in_out)
-
-
-def _pool_topk(pool_logits: torch.Tensor, topk: int, kpool: int):
+def _pool_topk(pool_logits: torch.Tensor, topk: int, kpool: int, backend: str):
     _, num_pools = pool_logits.shape
     group_topk = min(topk // kpool, num_pools)
     assert group_topk > 0, (topk, kpool, num_pools)
     assert kpool & (kpool - 1) == 0 and _SELECT_BLOCK % kpool == 0, kpool
-    scores, pools = torch.topk(pool_logits.float(), group_topk, dim=-1)
+    # the expand kernel reads the scores back to tell a real pick from a masked one
+    scores, pools = select_indexer_topk(pool_logits.float(), group_topk, backend=backend, return_scores=True)
     return scores, pools, group_topk
 
 
-def _pool_topk_to_token_fn(seq_token_base, pool_base, local_positions, kpool):
-    def topk_fn(pool_logits: torch.Tensor, topk: int) -> torch.Tensor:
-        num_tokens = pool_logits.shape[0]
-        scores, pools, group_topk = _pool_topk(pool_logits, topk, kpool)
-        tokens = torch.empty((num_tokens, topk), dtype=torch.int32, device=pool_logits.device)
-        grid = (num_tokens, triton.cdiv(topk, _SELECT_BLOCK))
-        _expand_topk_kernel[grid](
-            pools,
-            scores,
-            seq_token_base,
-            local_positions,
-            pool_base,
-            tokens,
-            topk,
-            group_topk,
-            topk,
-            KPOOL=kpool,
-            WITH_TAIL=False,
-            BLOCK=_SELECT_BLOCK,
-        )
-        return tokens
-
-    return topk_fn
-
-
-def append_tail_and_pad(
-    tokens: torch.Tensor,
-    seq_token_base: torch.Tensor,
-    local_positions: torch.Tensor,
-    shortcut: torch.Tensor,
-    kpool: int,
-    pad_multiple: int = SPARSE_MLA_BLOCK,
-) -> torch.Tensor:
-    num_tokens, width = tokens.shape
-    out_width = (width + kpool - 1 + pad_multiple - 1) // pad_multiple * pad_multiple
-    out = torch.empty((num_tokens, out_width), dtype=torch.int32, device=tokens.device)
-    grid = (num_tokens, triton.cdiv(out_width, _SELECT_BLOCK))
-    _append_tail_kernel[grid](
-        tokens.contiguous(),
-        seq_token_base.to(torch.int32).contiguous(),
-        local_positions.to(torch.int32).contiguous(),
-        shortcut.to(torch.int32).contiguous(),
-        out,
-        width,
-        out_width,
-        KPOOL=kpool,
-        BLOCK=_SELECT_BLOCK,
-    )
-    return out
-
-
-def _select_expand_tail(pool_logits, seq_token_base, pool_base, local_positions, topk, kpool):
+def _select_expand_tail(pool_logits, seq_token_base, pool_base, local_positions, topk, kpool, backend):
     num_tokens = pool_logits.shape[0]
-    scores, pools, group_topk = _pool_topk(pool_logits, topk, kpool)
+    scores, pools, group_topk = _pool_topk(pool_logits, topk, kpool, backend)
     out_width = (topk + kpool - 1 + SPARSE_MLA_BLOCK - 1) // SPARSE_MLA_BLOCK * SPARSE_MLA_BLOCK
     out = torch.empty((num_tokens, out_width), dtype=torch.int32, device=pool_logits.device)
     grid = (num_tokens, triton.cdiv(out_width, _SELECT_BLOCK))
@@ -257,6 +180,7 @@ def kpool_select_topk(
     pool_cu_seqlens: torch.Tensor,
     index_topk: int,
     kpool: int,
+    topk_backend: str = "torch",
 ) -> torch.Tensor:
     num_tokens = index_q.shape[0]
     device = index_q.device
@@ -284,14 +208,7 @@ def kpool_select_topk(
     else:
         pool_logits = torch.full((num_tokens, 1), float("-inf"), dtype=torch.float32, device=device)
 
-    if indexer_replay_manager.enabled:
-        topk_fn = indexer_replay_manager.get_topk_fn(
-            _pool_topk_to_token_fn(seq_token_base, pool_base, local_positions, kpool),
-            return_probs=False,
-        )
-        tokens = topk_fn(pool_logits, index_topk)
-        shortcut = (local_positions + 1) <= index_topk
-        tokens = append_tail_and_pad(tokens, seq_token_base, local_positions, shortcut, kpool)
-    else:
-        tokens = _select_expand_tail(pool_logits, seq_token_base, pool_base, local_positions, index_topk, kpool)
+    tokens = _select_expand_tail(
+        pool_logits, seq_token_base, pool_base, local_positions, index_topk, kpool, topk_backend
+    )
     return tokens.unsqueeze(1)

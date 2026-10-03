@@ -27,7 +27,6 @@ ROLLOUT_DATA_TENSOR_DTYPES = {
     "teacher_log_probs": "float32",
     "opd_reverse_kl": "float32",
     "rollout_routed_experts": "int32",
-    "rollout_indexer_topk": "int32",
 }
 
 ROLLOUT_DATA_VALUE_SPEC: dict[str, ValueSpec] = {
@@ -160,14 +159,6 @@ def convert_samples_to_train_data(
         raise ValueError(
             "--use-rollout-routing-replay is set but the rollout samples carry no "
             "rollout_routed_experts: the engine response meta_info lacked 'routed_experts'."
-        )
-
-    if samples[0].rollout_indexer_topk is not None:
-        train_data["rollout_indexer_topk"] = [sample.rollout_indexer_topk for sample in samples]
-    elif getattr(args, "use_rollout_indexer_replay", False):
-        raise ValueError(
-            "--use-rollout-indexer-replay is set but the rollout samples carry no "
-            "rollout_indexer_topk: the engine response meta_info lacked 'indexer_topk'."
         )
 
     if samples[0].train_metadata is not None:
@@ -440,7 +431,6 @@ def _package_shards(args, data: dict[str, Any], partitions) -> list[dict[str, An
             "rollout_sampling_mask_ids",
             "rollout_sampling_mask_offsets",
             "rollout_routed_experts",
-            "rollout_indexer_topk",
             "prompt",
             "teacher_log_probs",
             "opd_reverse_kl",

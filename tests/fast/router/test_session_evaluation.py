@@ -20,7 +20,7 @@ from miles.utils.processing_utils import load_tokenizer
 from miles.utils.types import Sample
 
 pytestmark = pytest.mark.asyncio
-REPLAY_FIELDS = ("return_sampling_mask", "return_routed_experts", "return_indexer_topk")
+REPLAY_FIELDS = ("return_sampling_mask", "return_routed_experts")
 USER = {"role": "user", "content": "hello"}
 ASSISTANT = {"role": "assistant", "content": "answer"}
 TOOL = {"role": "tool", "content": "result", "tool_call_id": "call_1"}
@@ -75,7 +75,6 @@ async def _serve_env(tokenizer, monkeypatch, version, *, use_sampling_support_re
         apply_chat_template_kwargs={"enable_thinking": False},
         use_session_server=version,
         use_rollout_routing_replay=True,
-        use_rollout_indexer_replay=True,
         use_sampling_support_replay=use_sampling_support_replay,
         session_sample_picker_path="miles.rollout.session.v2.picker_hub.drop_same_prompt_retries",
         session_sample_postprocessor_path="miles.rollout.session.v2.postprocessor_hub.default_postprocess",
@@ -123,7 +122,6 @@ async def test_creation_selects_policy_and_defaults_to_training(env, body):
     wire = env.backend.requests[-1]
     evaluation = body == b'{"evaluation": true}'
     assert wire["return_routed_experts"] is (not evaluation)
-    assert wire["return_indexer_topk"] is (not evaluation)
     if evaluation:
         assert wire["return_sampling_mask"] is False
         assert "routed_experts_start_len" not in wire
@@ -187,9 +185,7 @@ async def test_eval_policy_survives_continuation_and_retry_and_collects_without_
     fields = COMPUTED_FIELDS_V2 if env.version == "v2" else COMPUTED_FIELDS
     reply = decode_samples_and_merge_input_sample(response.content, Sample(), fields=fields)
     assert reply.samples
-    assert all(
-        sample.rollout_routed_experts is None and sample.rollout_indexer_topk is None for sample in reply.samples
-    )
+    assert all(sample.rollout_routed_experts is None for sample in reply.samples)
     assert (await env.client.delete(f"/sessions/{sid}")).status_code == 204
 
 
@@ -197,7 +193,6 @@ async def test_concurrent_train_and_eval_do_not_share_policy(env):
     train, evaluation = await asyncio.gather(_create(env), _create(env, b'{"evaluation": true}'))
     await asyncio.gather(_chat(env, train, [USER]), _chat(env, evaluation, [USER]))
     assert sorted(request["return_routed_experts"] for request in env.backend.requests) == [False, True]
-    assert sorted(request["return_indexer_topk"] for request in env.backend.requests) == [False, True]
 
 
 SAMPLING = {"temperature": 0.6, "top_p": 0.9, "top_k": 20}

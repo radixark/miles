@@ -92,9 +92,6 @@ class Sample:
     rollout_routed_experts: numpy.ndarray | None = (
         None  # Routed experts from rollout engine. shape: (num_tokens-1, num_layers, moe_router_topk), dtype=int32
     )
-    rollout_indexer_topk: numpy.ndarray | None = (
-        None  # Indexer topk from rollout engine. shape: (num_tokens-1, num_indexer_layers, index_topk), dtype=int32
-    )
     remove_sample: bool = False
     teacher_log_probs: list[float] | None = None  # Log probabilities from teacher model for OPD
     opd_reverse_kl: list[float] | None = None  # Precomputed per-token OPD reverse-KL estimate
@@ -286,10 +283,6 @@ class Sample:
                 f"rollout_routed_experts length ({actual}) != len(tokens) - 1 ({expect})"
                 f" or media-expanded ({expect + extra})"
             )
-        if self.rollout_indexer_topk is not None:
-            actual = len(self.rollout_indexer_topk)
-            expect = len(self.tokens) - 1
-            assert actual == expect, f"rollout_indexer_topk length ({actual}) != len(tokens) - 1 ({expect})"
         previous_end = 0
         for span in self.all_weight_version_spans:
             assert span.version, f"weight version span has empty version: {self.weight_versions}"
@@ -325,8 +318,6 @@ class Sample:
         self.response = tokenizer.decode(self.tokens[-self.response_length :]) if self.response_length > 0 else ""
         if self.rollout_routed_experts is not None:
             self.rollout_routed_experts = self.rollout_routed_experts[:-n]
-        if self.rollout_indexer_topk is not None:
-            self.rollout_indexer_topk = self.rollout_indexer_topk[:-n]
         for call in self.weight_versions:
             call.spans = [
                 span if span.abs_end <= len(self.tokens) else replace(span, abs_end=len(self.tokens))
@@ -353,7 +344,6 @@ class Sample:
         self.rollout_topk_log_probs = None
         self.rollout_sampling_mask = None
         self.rollout_routed_experts = None
-        self.rollout_indexer_topk = None
         self.status = Sample.Status.ABORTED
         self.trainer_model_id = None
         self.non_generation_time = 0.0

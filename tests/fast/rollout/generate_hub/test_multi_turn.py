@@ -151,14 +151,12 @@ def expected_request(
     sampling_params: dict | None = None,
     *,
     return_routed_experts: bool = False,
-    return_indexer_topk: bool = False,
 ) -> dict:
     return {
         "input_ids": input_ids,
         "sampling_params": sampling_params or DEFAULT_SAMPLING_PARAMS,
         "return_logprob": True,
         "return_routed_experts": return_routed_experts,
-        "return_indexer_topk": return_indexer_topk,
     }
 
 
@@ -171,9 +169,8 @@ def expected_openai_request(messages: list[dict], **extra) -> dict:
         "logprobs": True,
         "return_meta_info": True,
         "no_stop_trim": False,
-        # The R3 replay flags follow the launch flags and are always present.
+        # The R3 replay flag follows the launch flags and is always present.
         "return_routed_experts": False,
-        "return_indexer_topk": False,
         # The mock agent drops request_kwargs; the session fills the temperature the
         # generator registered at creation.
         "temperature": DEFAULT_SAMPLING_PARAMS["temperature"],

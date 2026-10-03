@@ -250,7 +250,7 @@ def execute():
         "--moe-router-use-torch-mm "
         "--attention-backend flash "
         "--cp-comm-type allgather "
-        "--miles-dsa-topk-backend flashinfer "
+        "--indexer-topk-backend flashinfer "
         "--update-weight-transfer-mode broadcast_packed "
         f"--update-weight-buffer-size {2 * 1024 ** 3} "
         "--actor-num-nodes 1 "
