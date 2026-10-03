@@ -2,6 +2,16 @@ from argparse import Namespace
 from typing import Any
 
 import torch
+import torch.distributed as dist
+
+from miles.backends.training_utils.data.context_parallel import get_local_response_loss_masks
+from miles.backends.training_utils.parallel import ParallelState
+from miles.utils.ft_utils.process_group_utils import GroupInfo
+
+# Bound on log(pi_train / pi_rollout) before exponentiating.
+_LOG_RATIO_LIMIT = 30.0
+# Sampled-token probabilities are clamped to [eps, 1 - eps] so the binary KL stays finite.
+_PROB_EPS = 1e-6
 
 
 def vanilla_tis_function(
@@ -60,3 +70,83 @@ def icepop_function(
     }
     pg_loss = pg_loss * ice_weight
     return pg_loss, loss_masks, metrics
+
+
+def binary_kl_trust_region_function(
+    args: Namespace,
+    *,
+    pg_loss: torch.Tensor,
+    train_log_probs: list[torch.Tensor],
+    rollout_log_probs: list[torch.Tensor],
+    loss_masks: list[torch.Tensor],
+    total_lengths: list[int],
+    response_lengths: list[int],
+    parallel_state: ParallelState,
+    max_seq_lens: list[int] | None = None,
+    **kwargs: Any,
+) -> tuple[torch.Tensor, list[torch.Tensor], dict[str, torch.Tensor]]:
+    """FlashREINFORCE sequence trust region with unclipped token IS.
+
+    Each token is weighted by `exp(train - rollout)`. A sequence whose mean
+    sampled-token binary KL, KL(Bern(mu(y_t)) || Bern(pi(y_t))) over its loss
+    tokens, exceeds `--tis-binary-kl-threshold` is rejected with weight 0.
+    `loss_masks` pass through unchanged: a rejected sequence still counts in the
+    sample-mean denominator and keeps its entropy/KL terms. `pg_loss` is
+    reweighted only under `--use-tis`; `--get-mismatch-metrics` alone just logs.
+    """
+    with torch.no_grad():
+        train = torch.cat(train_log_probs, dim=0).float()
+        rollout = torch.cat(rollout_log_probs, dim=0).float()
+        log_ratio = torch.nan_to_num(train - rollout, nan=0.0, posinf=_LOG_RATIO_LIMIT, neginf=-_LOG_RATIO_LIMIT)
+        ratio = log_ratio.clamp(-_LOG_RATIO_LIMIT, _LOG_RATIO_LIMIT).exp()
+        binary_kl = _sampled_token_binary_kl(rollout_log_probs=rollout, train_log_probs=train)
+
+        local_masks = get_local_response_loss_masks(
+            total_lengths, response_lengths, loss_masks, args.qkv_format, max_seq_lens
+        )
+        seq_binary_kl = _sequence_mean(binary_kl, local_masks=local_masks, loss_masks=loss_masks, cp=parallel_state.cp)
+        # NaN compares False, so a non-finite sequence is rejected.
+        seq_keep = seq_binary_kl <= args.tis_binary_kl_threshold
+        keep = seq_keep.repeat_interleave(torch.tensor([m.numel() for m in local_masks], device=seq_keep.device))
+        weights = torch.where(keep, ratio, 0.0)
+
+    if args.use_tis:
+        pg_loss = pg_loss * weights
+    metrics = {
+        "tis": ratio,
+        "tis_abs": (ratio - 1).abs(),
+        "tis_binary_kl": binary_kl,
+        "tis_seq_reject_frac": (~keep).float(),
+    }
+    return pg_loss, loss_masks, metrics
+
+
+def _sampled_token_binary_kl(*, rollout_log_probs: torch.Tensor, train_log_probs: torch.Tensor) -> torch.Tensor:
+    """KL(Bern(p) || Bern(q)) with p = mu(y_t), q = pi(y_t): sampled token vs. the rest of the vocabulary."""
+    p = rollout_log_probs.exp().clamp(_PROB_EPS, 1 - _PROB_EPS)
+    q = train_log_probs.exp().clamp(_PROB_EPS, 1 - _PROB_EPS)
+    return p * (p.log() - q.log()) + (1 - p) * ((1 - p).log() - (1 - q).log())
+
+
+def _sequence_mean(
+    values: torch.Tensor,
+    *,
+    local_masks: list[torch.Tensor],
+    loss_masks: list[torch.Tensor],
+    cp: GroupInfo,
+) -> torch.Tensor:
+    """Per-sequence mean of a per-token statistic over the full sequence's loss tokens.
+
+    Under CP each rank holds a zigzag slice of every sequence, so the masked sums
+    are all-reduced; every CP rank joins, including one with no local token.
+    """
+    sums = torch.stack(
+        [
+            torch.where(mask.to(device=values.device).bool(), value, 0.0).sum()
+            for value, mask in zip(values.split([m.numel() for m in local_masks]), local_masks, strict=True)
+        ]
+    )
+    if cp.size > 1:
+        dist.all_reduce(sums, group=cp.group)
+    counts = torch.stack([mask.sum() for mask in loss_masks]).to(sums).clamp_min(1)
+    return sums / counts
