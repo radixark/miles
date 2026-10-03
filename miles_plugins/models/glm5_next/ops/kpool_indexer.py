@@ -23,18 +23,17 @@ def kpool_select_topk(
     eligible_pools = torch.div(local_positions + 1, kpool, rounding_mode="floor")
 
     if pooled_k.shape[0] > 0:
-        # tilelang is GPU-only; importing it here keeps the pure-torch helpers above
-        # importable on CPU, where tests/fast pins the per-sequence pool invariants.
-        from miles.kernels.attention.dsa.glm5.tilelang_indexer_fwd import indexer_fwd_interface
+        # tilelang is GPU-only; importing it here keeps this module importable on CPU,
+        # where tests/fast pins the per-sequence pool invariants.
+        from miles.kernels.attention.dsa import indexer_logits
 
         with torch.no_grad():
-            pool_logits = indexer_fwd_interface(
+            pool_logits = indexer_logits(
                 index_q,
                 pooled_k,
                 head_weights,
                 pool_base.to(torch.int32),
                 (pool_base + eligible_pools).to(torch.int32),
-                clean_logits=True,
             )
     else:
         pool_logits = torch.full((num_tokens, 1), float("-inf"), dtype=torch.float32, device=device)

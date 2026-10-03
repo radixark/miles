@@ -24,8 +24,7 @@ from megatron.core.transformer.moe.moe_utils import RouterGatingLinearFunction a
 from megatron.core.transformer.spec_utils import ModuleSpec, build_module
 from megatron.core.transformer.transformer_block import get_num_layers_to_build
 from megatron.core.transformer.transformer_config import MLATransformerConfig
-from miles.kernels.attention.dsa.glm5.indexer import generate_varlen_mask_params, lighting_indexer
-from miles.kernels.attention.dsa.glm5.sparse_mla import SparseMLA
+from miles.kernels.attention.dsa import causal_ranges, get_dsa_topk_fn, lighting_indexer, sparse_attention
 from miles.utils.hf_utils.config import load_hf_config
 from miles.utils.replay_base import indexer_replay_manager
 from miles_plugins.models.normalization import rms_norm
@@ -255,7 +254,7 @@ class DSAMultiLatentAttention(Attention):
                     starts_block,
                     ends_block,
                     self.index_topk,
-                    topk_backend=self.topk_backend,
+                    topk_fn=indexer_replay_manager.get_topk_fn(get_dsa_topk_fn(self.topk_backend), return_probs=False),
                 )
 
                 indexer_topk_scores_block = torch.softmax(indexer_topk_scores_block, dim=-1)
@@ -290,22 +289,26 @@ class DSAMultiLatentAttention(Attention):
                     )
                 topk_indices = holder[self._source_layer]
             else:
-                starts, ends = generate_varlen_mask_params(packed_seq_params.cu_seqlens_q)
+                starts, ends = causal_ranges(packed_seq_params.cu_seqlens_q)
                 index_key = index_key.squeeze(1)
-                head_weights = head_weights.unsqueeze(-1)
                 starts = scatter_to_sequence_parallel_region(starts, group=parallel_state.get_context_parallel_group())
                 ends = scatter_to_sequence_parallel_region(ends, group=parallel_state.get_context_parallel_group())
                 _, topk_indices = fused_select_topk(index_query, index_key, head_weights, starts, ends)
                 holder[self.layer_number] = topk_indices
         else:
-            starts, ends = generate_varlen_mask_params(packed_seq_params.cu_seqlens_q)
+            starts, ends = causal_ranges(packed_seq_params.cu_seqlens_q)
             index_key = index_key.squeeze(1)
-            head_weights = head_weights.unsqueeze(-1)
             starts = scatter_to_sequence_parallel_region(starts, group=parallel_state.get_context_parallel_group())
             ends = scatter_to_sequence_parallel_region(ends, group=parallel_state.get_context_parallel_group())
             _, topk_indices = fused_select_topk(index_query, index_key, head_weights, starts, ends)
 
-        core_attn_out, _ = SparseMLA.apply(q, kv, topk_indices, self.softmax_scale)
+        core_attn_out = sparse_attention(
+            q.unsqueeze(0),
+            kv.unsqueeze(0),
+            topk_indices.unsqueeze(0),
+            self.softmax_scale,
+            d_v=self.config.kv_lora_rank,
+        ).squeeze(0)
         core_attn_out = torch.einsum("thm,hdm->thd", core_attn_out, wv)
 
         core_attn_out = core_attn_out.reshape(core_attn_out.size(0), 1, -1)

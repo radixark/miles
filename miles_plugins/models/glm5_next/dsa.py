@@ -6,7 +6,7 @@ from megatron.core.transformer.enums import AttnMaskType
 from megatron.core.transformer.module import mark_keep_in_fp32
 from megatron.core.transformer.moe.moe_utils import RouterGatingLinearFunction
 
-from miles.kernels.attention.dsa.glm5.sparse_mla import SparseMLA
+from miles.kernels.attention.dsa import sparse_attention
 from miles.kernels.attention.dsa.kpool import build_pooled_keys, pool_boundaries
 from miles.utils.replay_base import indexer_replay_manager
 from miles_plugins.models.glm5.glm5 import DSAMLASelfAttention
@@ -196,7 +196,13 @@ class Glm5NextDSAAttention(DSAMLASelfAttention):
         query = F.pad(query, (0, _SPARSE_MLA_TAIL_DIM)).contiguous()
         key = F.pad(key, (0, _SPARSE_MLA_TAIL_DIM)).contiguous()
 
-        core_attn_out, _ = SparseMLA.apply(query, key, topk_indices, self.softmax_scale)
+        core_attn_out = sparse_attention(
+            query.unsqueeze(0),
+            key.unsqueeze(0),
+            topk_indices.unsqueeze(0),
+            self.softmax_scale,
+            d_v=self.config.kv_lora_rank,
+        ).squeeze(0)
         core_attn_out = torch.einsum("thm,hdm->thd", core_attn_out, w_vc)
         core_attn_out = core_attn_out.reshape(core_attn_out.size(0), 1, -1)
 
