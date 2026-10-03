@@ -65,7 +65,7 @@ def test_changed_bytes_from_another_stream_do_not_count(tmp_path):
 def test_e2e_forwards_the_sole_codec_to_ray(monkeypatch):
     assert _gpu_delta_env() == {"WEIGHT_DELTA_CODEC": "snappy-zstd"}
     monkeypatch.setenv("WEIGHT_DELTA_CODEC", "unsupported")
-    with pytest.raises(ValueError, match="codec"):
+    with pytest.raises(ValueError, match="WEIGHT_DELTA_CODEC"):
         _gpu_delta_env()
 
 
