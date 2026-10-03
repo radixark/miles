@@ -26,6 +26,7 @@ from tools.convert_hf_to_nvfp4 import convert_nvfp4
 from tools.convert_hf_to_nvfp4 import quantize_nvfp4 as tool_quantize_nvfp4
 from tools.convert_hf_to_nvfp4 import should_quantize as tool_should_quantize_nvfp4
 from torch.utils._python_dispatch import TorchDispatchMode
+from transformer_engine.pytorch.custom_recipes.quantization_ref_nvfp4 import NVFP4QuantizerRef
 
 import miles.utils.fused_nvfp4_qdq as qdq_kernels
 import miles.utils.nvfp4_fake_qat as nvfp4_qat
@@ -51,16 +52,6 @@ from miles.utils.nvfp4 import (
     nvfp4_quantize_1d_pair,
     nvfp4_weight_e4m3_max,
 )
-
-# Newer TE builds removed this legacy export oracle. Keep its cases isolated
-# so native QDQ/STE tests still collect and run without it.
-try:
-    from transformer_engine.pytorch.custom_recipes.quantization_ref_nvfp4 import NVFP4QuantizerRef
-except ModuleNotFoundError as exc:
-    if exc.name != "transformer_engine.pytorch.custom_recipes.quantization_ref_nvfp4":
-        raise
-    NVFP4QuantizerRef = None
-
 
 NVFP4_SHAPES = [
     (1, 64),
@@ -413,7 +404,6 @@ def test_nvfp4_quantize_pair_reuses_adjacent_storage(monkeypatch):
 @pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16], ids=str)
 @pytest.mark.parametrize("init_data", ["random", "boundary", "zeros", "maxes"])
 @pytest.mark.parametrize("use_4over6", [False, True], ids=["default", "4over6"])
-@pytest.mark.skipif(NVFP4QuantizerRef is None, reason="TE legacy NVFP4 export oracle is unavailable")
 def test_nvfp4_quantize_matches_te_reference_bitwise(quantize_fn, shape, dtype, init_data, use_4over6, monkeypatch):
     device = "cuda"
     torch.manual_seed(42)
@@ -441,7 +431,6 @@ def test_nvfp4_quantize_matches_te_reference_bitwise(quantize_fn, shape, dtype, 
 @pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16], ids=str)
 @pytest.mark.parametrize("init_data", ["random", "boundary", "zeros", "maxes"])
 @pytest.mark.parametrize("use_4over6", [False, True], ids=["default", "4over6"])
-@pytest.mark.skipif(NVFP4QuantizerRef is None, reason="TE legacy NVFP4 export oracle is unavailable")
 def test_nvfp4_quantize_pair_matches_te_reference_bitwise(shape, dtype, init_data, use_4over6, monkeypatch):
     device = "cuda"
     torch.manual_seed(42)
@@ -1034,11 +1023,6 @@ def grouped_qat_env(monkeypatch):
 
 
 def _native_grouped_layer(fuse_wgrad=False):
-    import inspect
-
-    if "use_grouped_tensor" not in inspect.signature(te.GroupedLinear).parameters:
-        pytest.skip("Native packed TE GroupedLinear is required")
-
     class QATGroupedLinear(te.GroupedLinear):
         # Same hook used by the Miles Megatron fork.
         def _get_weight_tensors(self):
