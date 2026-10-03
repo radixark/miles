@@ -8,11 +8,12 @@ from pathlib import Path
 
 import pytest
 import torch
-from tests.ci.ci_register import register_cuda_ci
+from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
 
 from miles.utils.external_utils import command_utils
 
 register_cuda_ci(est_time=300, suite="stage-c-2-gpu-h200", labels=["short"], hardware=["hopper", "blackwell"])
+register_rocm_ci(est_time=900, suite="nightly-stage-c-2-gpu-mi350", labels=["short"])
 
 MODEL_NAME = "Qwen3-0.6B"
 MODEL_TYPE = "qwen3-0.6B"

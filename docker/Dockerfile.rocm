@@ -129,6 +129,8 @@ RUN rm -rf /root/Megatron-LM && \
     cd /root/Megatron-LM && \
     pip install -e .
 
+RUN pip install "git+https://github.com/NVIDIA-NeMo/Emerging-Optimizers.git@v0.3.0"
+
 # `git reset --hard` only restores tracked files. The base image builds sglang's AOT kernels inside this
 # checkout, and torch's CUDAExtension hipifies in place, so the tree also carries generated HIP sources
 # (<name>.cu -> <name>.hip, headers -> <name>_hip.<ext>) as untracked files. The checkout below aborts as
@@ -148,6 +150,8 @@ RUN cd /sgl-workspace/sglang && \
 
 # SGLang is installed without dependencies, but its Inkling multimodal processor imports numba.
 RUN pip install "numba==0.65.1"
+
+RUN pip install uv
 
 RUN python -c "import sglang; import sgl_kernel; print('SGLang + sgl_kernel: OK')"
 
