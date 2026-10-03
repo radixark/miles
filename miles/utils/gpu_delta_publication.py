@@ -1,7 +1,7 @@
 """Immutable, independently framed canonical publications for direct GPU apply.
 
 This is a new wire format. The disk-delta checkpoint patcher must never consume
-it. Codec choice changes encoded bytes, not the canonical update or its hashes.
+it. GPU Snappy followed by GPU Zstd is the sole matrix payload contract.
 """
 
 from __future__ import annotations
@@ -17,11 +17,11 @@ from collections.abc import Iterable, Mapping
 from pathlib import Path
 
 import numpy as np
-import zstandard
 
 FRAME_BYTES = 1 << 20
 # 2 MiB is a producer benchmark profile, not a streaming-receiver capability.
-_FRAME_PROFILES = {1 << 16: "64kib", FRAME_BYTES: "1mib", 1 << 21: "2mib"}
+_FRAME_SIZES = (1 << 16, FRAME_BYTES, 1 << 21)
+CODEC = "snappy-zstd"
 DTYPE_BYTES = {
     "BOOL": 1,
     "U8": 1,
@@ -51,55 +51,11 @@ def sha256(data) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-def settings_from_env() -> tuple[str, str]:
-    codec = os.environ.get("WEIGHT_DELTA_CODEC", "snappy")
-    encoder = os.environ.get("WEIGHT_DELTA_ENCODER", "gpu")
-    if codec not in ("zstd", "snappy") or encoder not in ("gpu", "cpu"):
-        raise ValueError("Expected WEIGHT_DELTA_CODEC=zstd|snappy and WEIGHT_DELTA_ENCODER=gpu|cpu")
-    if "WEIGHT_DELTA_STAGING" in os.environ:
-        raise ValueError("WEIGHT_DELTA_STAGING was removed; GPU-delta receivers always stream tensors")
-    snappy_outer_from_env(codec=codec, encoder=encoder)
-    return codec, encoder
-
-
-def snappy_outer_from_env(*, codec: str, encoder: str) -> str:
-    outer = os.environ.get("WEIGHT_DELTA_SNAPPY_OUTER", "cpu")
-    if outer not in ("cpu", "gpu"):
-        raise ValueError("Expected WEIGHT_DELTA_SNAPPY_OUTER=cpu|gpu")
-    if outer == "gpu" and (codec, encoder) != ("snappy", "gpu"):
-        raise ValueError("GPU outer Zstd requires WEIGHT_DELTA_CODEC=snappy and WEIGHT_DELTA_ENCODER=gpu")
-    return outer
-
-
-def _inner_payload_layout(payloads):
-    """Preserve payload leases; expose an existing aligned arena when possible."""
-    views = [memoryview(payload).cast("B") for payload in payloads]
-    offsets, end = [], 0
-    for view in views:
-        offset = (end + 15) // 16 * 16
-        offsets.append(offset)
-        end = offset + len(view)
-    if len(views) == 1:
-        return views, offsets, end, views[0]
-    if views and all(view.obj is views[0].obj for view in views):
-        parent = memoryview(views[0].obj).cast("B")
-        parent_address = np.frombuffer(parent, dtype=np.uint8).ctypes.data
-        start = np.frombuffer(views[0], dtype=np.uint8).ctypes.data - parent_address
-        if (
-            0 <= start
-            and start + end <= len(parent)
-            and all(
-                np.frombuffer(view, dtype=np.uint8).ctypes.data == parent_address + start + offset
-                for view, offset in zip(views, offsets, strict=True)
-            )
-        ):
-            arena = parent[start : start + end]
-            ends = [0] + [offset + len(view) for offset, view in zip(offsets[:-1], views[:-1], strict=True)]
-            if all(not any(arena[end:offset]) for end, offset in zip(ends, offsets, strict=True)):
-                return views, offsets, end, arena
-    # Packed GPU batches normally lack inter-frame alignment padding. Stream
-    # these immutable views plus tiny zero gaps instead of copying the tensor.
-    return views, offsets, end, None
+def configured_codec() -> str:
+    codec = os.environ.get("WEIGHT_DELTA_CODEC", CODEC)
+    if codec != CODEC:
+        raise ValueError("Expected WEIGHT_DELTA_CODEC=snappy-zstd")
+    return codec
 
 
 def _bytes_view(value) -> np.ndarray:
@@ -111,7 +67,7 @@ def _bytes_view(value) -> np.ndarray:
 
 
 def _check_frame_bytes(frame_bytes):
-    if type(frame_bytes) is not int or frame_bytes not in _FRAME_PROFILES:
+    if type(frame_bytes) is not int or frame_bytes not in _FRAME_SIZES:
         raise ValueError("GPU-delta frame_bytes must be 64 KiB, 1 MiB or 2 MiB")
 
 
@@ -129,7 +85,7 @@ def selected_bytes(data, *, shape: list[int], dtype: str, slices: list[list[int]
 
 
 def tensor_metadata(name: str, *, dtype: str, shape: list[int], views=None, encoding="xor_bytes") -> dict:
-    """Canonical tensor schema shared by CPU and GPU encoders."""
+    """Canonical tensor schema for compressed matrices and raw scalar/vector targets."""
     if not name or dtype not in DTYPE_BYTES or any(type(n) is not int or n < 0 for n in shape):
         raise ValueError("Invalid canonical tensor schema")
     if encoding not in ("xor_bytes", "raw_bytes"):
@@ -159,66 +115,6 @@ def tensor_metadata(name: str, *, dtype: str, shape: list[int], views=None, enco
                 raise ValueError("Invalid canonical half-open view bounds")
         entry["views"].append({"id": view["id"], "slices": slices})
     return entry
-
-
-def encode_tensor(
-    name: str,
-    old,
-    new,
-    *,
-    dtype: str,
-    shape: list[int],
-    codec: str,
-    views: list[dict] | None = None,
-    encoding: str = "xor_bytes",
-    frame_bytes: int = FRAME_BYTES,
-) -> tuple[dict, list[bytes]]:
-    """Encode one known W0/W1 tensor without changing either caller's buffer."""
-    previous, current = _bytes_view(old), _bytes_view(new)
-    if encoding != "xor_bytes":
-        raise ValueError("Only XOR tensors enter the compression path")
-    entry = tensor_metadata(name, dtype=dtype, shape=shape, views=views, encoding=encoding)
-    nbytes = entry["nbytes"]
-    if previous.size != nbytes or current.size != nbytes:
-        raise ValueError(f"Canonical tensor byte count differs for {name}")
-    if codec not in ("zstd", "snappy"):
-        raise ValueError("Unsupported gpu-delta codec")
-    _check_frame_bytes(frame_bytes)
-    if codec == "snappy":
-        # Optional at import time; the explicitly selected profile requires it.
-        import snappy
-
-        compress = snappy.compress
-    else:
-        compress = zstandard.ZstdCompressor(level=1, write_content_size=True).compress
-    payloads, changed = [], 0
-    for offset in range(0, nbytes, frame_bytes):
-        end = min(nbytes, offset + frame_bytes)
-        delta = np.bitwise_xor(previous[offset:end], current[offset:end])
-        nonzero = int(np.count_nonzero(delta))
-        changed += nonzero
-        if not nonzero:
-            continue
-        # Both CPU codecs consume contiguous buffers synchronously. Only raw
-        # retained frames need an owned copy of the uncompressed input bytes.
-        raw = memoryview(delta)
-        payload = compress(raw)
-        frame_codec = codec
-        if len(payload) >= len(raw):
-            payload = bytes(raw)
-            frame_codec = "none"
-        entry["frames"].append(
-            {
-                "decoded_offset": offset,
-                "decoded_bytes": len(raw),
-                "encoded_bytes": len(payload),
-                "codec": frame_codec,
-                "encoded_sha256": sha256(payload),
-            }
-        )
-        payloads.append(payload)
-    entry["changed_bytes"] = changed
-    return entry, payloads
 
 
 def _write_exclusive(path: Path, content: bytes) -> None:
@@ -252,14 +148,12 @@ def _validate_gpu_outer(entry, outer, payload, frame_bytes):
             or encoded_offset != (inner_end + 15) // 16 * 16
             or type(encoded_size) is not int
             or encoded_size <= 0
-            or frame["codec"] not in ("snappy", "none")
-            or "encoded_sha256" in frame
-            or (frame["codec"] == "none" and encoded_size != size)
+            or encoded_size > 32 + size + size // 6
         ):
             raise ValueError("Invalid GPU outer inner frame")
         end, inner_end = offset + size, encoded_offset + encoded_size
-    if outer.get("codec") != "zstd" or outer.get("decoded_bytes") != inner_end or outer.get("encoded_bytes") != len(payload):
-        raise ValueError("Invalid GPU outer arena size or codec")
+    if outer.get("decoded_bytes") != inner_end or outer.get("encoded_bytes") != len(payload):
+        raise ValueError("Invalid GPU outer arena size")
     encoded_end, decoded_end = 0, 0
     for frame in outer.get("frames", []):
         offset, size = frame["decoded_offset"], frame["decoded_bytes"]
@@ -274,10 +168,9 @@ def _validate_gpu_outer(entry, outer, payload, frame_bytes):
 class PublicationWriter:
     """One owner's append-only payload; manifest is sealed after all owners finish.
 
-    add_tensor may be called by bounded CPU encoding workers. The lock protects
-    append offsets and the reused Snappy outer-Zstd context. Inner compression
-    and hashing happen outside it. Partial files are preserved on failure and
-    never overwritten by a retry.
+    A CPU worker writes raw scalar/vector targets while matrix compression runs
+    on the GPU. The lock serializes only final byte appends and their CPU hashes.
+    Partial files are preserved on failure and never overwritten by a retry.
     """
 
     def __init__(
@@ -288,11 +181,9 @@ class PublicationWriter:
         base_version: int,
         target_version: int,
         plan_digest: str,
-        codec: str | None = None,
         owner: int = 0,
         publication_id: str | None = None,
         frame_bytes: int = FRAME_BYTES,
-        outer_backend: str | None = None,
     ):
         if (
             not stream_id
@@ -306,31 +197,17 @@ class PublicationWriter:
         self.frame_bytes = frame_bytes
         self.directory = Path(directory)
         self.directory.mkdir(parents=True, exist_ok=True)
-        self.codec = codec or settings_from_env()[0]
-        if self.codec not in ("zstd", "snappy"):
-            raise ValueError("Unknown gpu-delta codec")
-        self.outer_backend = outer_backend or snappy_outer_from_env(codec=self.codec, encoder=os.environ.get("WEIGHT_DELTA_ENCODER", "gpu"))
-        if self.outer_backend not in ("cpu", "gpu") or (self.outer_backend == "gpu" and self.codec != "snappy"):
-            raise ValueError("GPU outer Zstd requires the Snappy codec")
-        self._outer_compressor = zstandard.ZstdCompressor(level=1, threads=0, write_content_size=True) if self.codec == "snappy" and self.outer_backend == "cpu" else None
-        self.outer_metrics = dict(
-            outer_compress_s=0.0,
-            outer_hash_write_s=0.0,
-            inner_hash_s=0.0,
-            outer_input_bytes=0,
-            outer_output_bytes=0,
-            outer_contiguous_tensors=0,
-            outer_streamed_tensors=0,
-        )
+        self.outer_metrics = dict(outer_hash_write_s=0.0, outer_input_bytes=0, outer_output_bytes=0)
         self.metadata = {
-            "protocol_version": 4 if self.outer_backend == "gpu" else (3 if self.codec == "snappy" else 2),
+            "protocol_version": 4,
+            "codec": CODEC,
+            "frame_bytes": frame_bytes,
             "stream_id": stream_id,
             "publication_id": publication_id or uuid.uuid4().hex,
             "base_version": base_version,
             "target_version": target_version,
             "plan_digest": plan_digest,
             "payload_checksum_format": "sha256",
-            "codec_profile": (f"snappy-independent-{_FRAME_PROFILES[frame_bytes]}-gpu-zstd-v1" if self.outer_backend == "gpu" else f"{self.codec}-independent-{_FRAME_PROFILES[frame_bytes]}{'-zstd' if self.codec == 'snappy' else ''}-v1"),
         }
         self._filename = f"owner-{owner:05d}.bin"
         self._file = (self.directory / self._filename).open("xb")
@@ -338,24 +215,6 @@ class PublicationWriter:
         self._lock = threading.Lock()
         self._entries: dict[str, dict] = {}
         self._closed = False
-
-    def add_tensor(self, name: str, old, new, *, dtype: str, shape: list[int], views=None, encoding="xor_bytes"):
-        if encoding == "raw_bytes":
-            return self.add_raw_tensor(name, old, new, dtype=dtype, shape=shape, views=views)
-        if self.outer_backend == "gpu":
-            raise ValueError("GPU outer publications require GPU-produced wrapped payloads")
-        entry, payloads = encode_tensor(
-            name,
-            old,
-            new,
-            dtype=dtype,
-            shape=shape,
-            codec=self.codec,
-            views=views,
-            encoding=encoding,
-            frame_bytes=self.frame_bytes,
-        )
-        return self._append_tensor(entry, payloads)
 
     def add_raw_tensor(self, name: str, old, new, *, dtype: str, shape: list[int], views=None):
         """Write complete scalar/vector targets without XOR, frames or codecs."""
@@ -368,52 +227,13 @@ class PublicationWriter:
         entry["changed_bytes"] = int(np.count_nonzero(previous != current))
         return self._append_tensor(entry, [memoryview(current)] if entry["changed_bytes"] else [])
 
-    def add_encoded_tensor(
-        self, name, frames, payloads, *, changed_bytes, dtype, shape, views=None, encoding="xor_bytes"
-    ):
-        """Append GPU-produced frames; hash only encoded CPU buffers for transport."""
-        if self.outer_backend == "gpu":
-            raise ValueError("GPU outer publications require add_gpu_outer_tensor")
-        if encoding != "xor_bytes":
-            raise ValueError("Only XOR tensors enter the GPU compression path")
-        entry = tensor_metadata(name, dtype=dtype, shape=shape, views=views, encoding=encoding)
-        if type(changed_bytes) is not int or not 0 <= changed_bytes <= entry["nbytes"]:
-            raise ValueError("Invalid changed-byte count")
-        entry["changed_bytes"] = changed_bytes
-        end, hash_s = 0, 0.0
-        for frame, payload in zip(frames, payloads, strict=True):
-            frame = dict(frame)
-            offset, size = frame["decoded_offset"], frame["decoded_bytes"]
-            if (
-                type(offset) is not int
-                or type(size) is not int
-                or offset < end
-                or offset % self.frame_bytes != 0
-                or size != min(self.frame_bytes, entry["nbytes"] - offset)
-                or size <= 0
-            ):
-                raise ValueError("Invalid independently framed canonical range")
-            if frame["codec"] not in (self.codec, "none") or frame["encoded_bytes"] != len(payload):
-                raise ValueError("Encoded frame profile or size mismatch")
-            if not payload or (frame["codec"] == "none" and len(payload) != size):
-                raise ValueError("Invalid raw frame byte count")
-            started = time.monotonic() if self.codec == "snappy" else 0.0
-            frame["encoded_sha256"] = sha256(payload)
-            if self.codec == "snappy":
-                hash_s += time.monotonic() - started
-            entry["frames"].append(frame)
-            end = offset + size
-        return self._append_tensor(entry, payloads, inner_hash_s=hash_s)
-
     def add_gpu_outer_tensor(self, name, frames, payload, outer, *, changed_bytes, dtype, shape, views=None):
         """Publish already wrapped GPU bytes; only the final wire bytes are CPU hashed."""
-        if self.outer_backend != "gpu":
-            raise ValueError("GPU outer payload supplied to a CPU outer publication")
         entry = tensor_metadata(name, dtype=dtype, shape=shape, views=views)
         if type(changed_bytes) is not int or not 0 <= changed_bytes <= entry["nbytes"]:
             raise ValueError("Invalid changed-byte count")
         entry["changed_bytes"] = changed_bytes
-        entry["frames"] = [dict(frame, file=self._filename) for frame in frames]
+        entry["frames"] = [dict(frame) for frame in frames]
         _validate_gpu_outer(entry, outer, payload, self.frame_bytes)
         with self._lock:
             if self._closed or name in self._entries:
@@ -427,31 +247,20 @@ class PublicationWriter:
             self._entries[name] = entry
         return entry
 
-    def _append_tensor(self, entry, payloads, *, inner_hash_s=0.0):
+    def _append_tensor(self, entry, payloads):
+        """Append only preclassified raw scalar/vector targets."""
         name = entry["name"]
         with self._lock:
             if self._closed or name in self._entries:
                 raise ValueError("Publication is sealed or tensor was already published")
-            if entry["encoding"] == "raw_bytes":
-                if payloads:
-                    (payload,) = payloads
-                    padding = bytes((-self._file.tell()) % 16)
-                    self._file.write(padding)
-                    self._hash.update(padding)
-                    entry["raw"] = dict(file=self._filename, encoded_offset=self._file.tell(), encoded_bytes=len(payload))
-                    self._file.write(payload)
-                    self._hash.update(payload)
-            elif self.codec == "snappy":
-                self.outer_metrics["inner_hash_s"] += inner_hash_s
-                self._append_outer(entry, payloads)
-            else:
-                for frame, payload in zip(entry["frames"], payloads, strict=True):
-                    padding = bytes((-self._file.tell()) % 16)
-                    self._file.write(padding)
-                    self._hash.update(padding)
-                    frame.update(file=self._filename, encoded_offset=self._file.tell())
-                    self._file.write(payload)
-                    self._hash.update(payload)
+            if payloads:
+                (payload,) = payloads
+                padding = bytes((-self._file.tell()) % 16)
+                self._file.write(padding)
+                self._hash.update(padding)
+                entry["raw"] = dict(file=self._filename, encoded_offset=self._file.tell(), encoded_bytes=len(payload))
+                self._file.write(payload)
+                self._hash.update(payload)
             self._entries[name] = entry
         return entry
 
@@ -462,43 +271,6 @@ class PublicationWriter:
         self._file.write(data)
         self._hash.update(data)
         self.outer_metrics["outer_hash_write_s"] += time.monotonic() - started
-
-    def _append_outer(self, entry, payloads):
-        if not entry["frames"]:
-            return
-        views, offsets, size, arena = _inner_payload_layout(payloads)
-        for frame, offset in zip(entry["frames"], offsets, strict=True):
-            frame.update(file=self._filename, encoded_offset=offset)
-        self._write_outer_bytes(bytes((-self._file.tell()) % 16))
-        start = self._file.tell()
-        if arena is not None:
-            started = time.monotonic()
-            encoded = self._outer_compressor.compress(arena)
-            self.outer_metrics["outer_compress_s"] += time.monotonic() - started
-            self._write_outer_bytes(encoded)
-            self.outer_metrics["outer_contiguous_tensors"] += 1
-        else:
-            compressor = self._outer_compressor.compressobj(size=size)
-            end = 0
-            for view, offset in zip(views, offsets, strict=True):
-                parts = (bytes(offset - end), view) if offset > end else (view,)
-                for part in parts:
-                    started = time.monotonic()
-                    encoded = compressor.compress(part)
-                    self.outer_metrics["outer_compress_s"] += time.monotonic() - started
-                    self._write_outer_bytes(encoded)
-                end = offset + len(view)
-            started = time.monotonic()
-            encoded = compressor.flush()
-            self.outer_metrics["outer_compress_s"] += time.monotonic() - started
-            self._write_outer_bytes(encoded)
-            self.outer_metrics["outer_streamed_tensors"] += 1
-        encoded_size = self._file.tell() - start
-        entry["outer"] = dict(
-            codec="zstd", file=self._filename, encoded_offset=start, encoded_bytes=encoded_size, decoded_bytes=size
-        )
-        self.outer_metrics["outer_input_bytes"] += size
-        self.outer_metrics["outer_output_bytes"] += encoded_size
 
     def finish_shard(self) -> dict:
         with self._lock:

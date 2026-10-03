@@ -19,23 +19,10 @@ import sys
 import time
 from pathlib import Path
 
-import numpy as np
 import torch
 import torch.distributed as dist
 
-ARMS = (
-    ("cpu-zstd", "cpu", "zstd", 1 << 20),
-    ("cpu-snappy", "cpu", "snappy", 1 << 20),
-    ("gpu-zstd", "gpu", "zstd", 1 << 20),
-    ("gpu-snappy", "gpu", "snappy", 1 << 20),
-    ("gpu-zstd-64k", "gpu", "zstd", 1 << 16),
-    ("gpu-snappy-64k", "gpu", "snappy", 1 << 16),
-    ("gpu-zstd-2m", "gpu", "zstd", 1 << 21),
-    ("gpu-snappy-2m", "gpu", "snappy", 1 << 21),
-    ("gpu-snappy-cpuouter", "gpu", "snappy", 1 << 20),
-    ("gpu-snappy-gpuouter", "gpu", "snappy", 1 << 20),
-)
-DEFAULT_ARMS = [arm[0] for arm in ARMS[:8]]
+CODEC = "snappy-zstd"
 NVFP4_ENV = {
     "SGLANG_NVFP4_CKPT_FP8_GEMM_IN_ATTN": "0",
     "OPEN_TRAINING_NVFP4_FAKE_QAT_FLAG": "1",
@@ -59,18 +46,12 @@ def parse_args():
     parser.add_argument("--load", type=Path, required=True, help="Matching native-DSA Megatron torch_dist checkpoint")
     parser.add_argument("--output", type=Path, required=True, help="New directory; existing output is rejected")
     parser.add_argument("--versions", type=int, default=3)
-    parser.add_argument(
-        "--arms", nargs="+", choices=[arm[0] for arm in ARMS], default=DEFAULT_ARMS,
-        help="Select one or more arms; default compares all eight",
-    )
     parser.add_argument("--perturb-fraction", type=float, default=0.001, help="Approximate fraction of matrix elements selected")
     parser.add_argument("--perturb-relative-scale", type=float, default=0.03125, help="Selected weights multiply by 1 + this value")
     parser.add_argument("--timing", action="store_true", help="Record optional CUDA phase events; changes instrumentation overhead")
     args = parser.parse_args()
     if args.versions < 1 or not 0 < args.perturb_fraction <= 1 or not 0 < args.perturb_relative_scale < 1:
         parser.error("versions must be positive, fraction in (0, 1], and relative scale in (0, 1)")
-    if len(set(args.arms)) != len(args.arms):
-        parser.error("--arms must contain distinct arms")
     if int(os.environ.get("WORLD_SIZE", "0")) != 8:
         parser.error("Launch with torchrun --standalone --nproc-per-node=8")
     return args
@@ -109,6 +90,9 @@ def _environment(args):
         if key in os.environ and os.environ[key] != value:
             raise ValueError(f"Benchmark requires {key}={value}, received {os.environ[key]!r}")
         os.environ[key] = value
+    from miles.utils.gpu_delta_publication import configured_codec
+
+    configured_codec()
     os.environ["WEIGHT_DELTA_TIMING"] = str(int(args.timing))
     config = json.loads((args.hf_checkpoint / "config.json").read_text())
     if config.get("model_type") != "glm_moe_dsa" or config.get("num_hidden_layers") != 5:
@@ -277,7 +261,7 @@ def _discover_plan(args, iterator, weights):
     }
 
 
-def _make_protocol(args, plan, arm, output):
+def _make_protocol(args, plan, output):
     from miles.backends.training_utils.weight_update.protocols.gpu_delta import UpdateWeightFromGpuDelta
 
     class ProducerOnlyProtocol(UpdateWeightFromGpuDelta):
@@ -290,7 +274,7 @@ def _make_protocol(args, plan, arm, output):
                     "participants": [
                         {
                             "identity": {"rank_id": "producer-benchmark-plan"},
-                            "plan": {"tensors": plan},
+                            "plan": {"codec": CODEC, "tensors": plan},
                         }
                     ],
                 }
@@ -299,45 +283,23 @@ def _make_protocol(args, plan, arm, output):
         def _declare_baseline(self):
             pass  # Publication-only benchmark never sends receiver metadata RPCs.
 
-    name, encoder, codec, _frame_bytes = arm
-    os.environ["WEIGHT_DELTA_ENCODER"] = encoder
-    os.environ["WEIGHT_DELTA_CODEC"] = codec
-    os.environ["WEIGHT_DELTA_SNAPPY_OUTER"] = "gpu" if name == "gpu-snappy-gpuouter" else "cpu"
-    arm_args = copy.copy(args)
-    arm_args.update_weight_disk_dir = str(output / name / "publications")
-    return ProducerOnlyProtocol(arm_args)
+    protocol_args = copy.copy(args)
+    protocol_args.update_weight_disk_dir = str(output / "publications")
+    return ProducerOnlyProtocol(protocol_args)
 
 
-def _setup_protocols(args, plan, iterator, weights, output, arms):
+def _setup_protocol(args, plan, iterator, weights, output):
     from miles.backends.training_utils.parallel import get_parallel_state
 
-    protocols, setup = {}, []
-    for arm in arms:
-        started = time.monotonic()
-        protocol = _make_protocol(args, plan, arm, output)
-        protocol.connect([], [], [], get_parallel_state(), iterator.placement, "target")
-        error = None
-        if arm[3] != 1 << 20:
-            try:
-                from miles.utils.gpu_delta_encoder import GpuBatchEncoder
-
-                # Benchmark-only per-instance variant; production keeps 1 MiB.
-                protocol._gpu_encoder = GpuBatchEncoder(
-                    arm[2], torch.device("cuda", torch.cuda.current_device()), frame_bytes=arm[3],
-                    outer_backend=protocol.snappy_outer,
-                )
-            except Exception as caught:
-                error = caught
-        _check(error, "benchmark frame-size admission")
-        if protocol.is_sender != (dist.get_rank() == 0):
-            raise ValueError("EP8/TP1/PP1/CP1 requires rank 0 as the ordinary tensor sender")
-        protocol.bind_iterator(iterator)
-        initialized = protocol.begin_sync(0, lambda **kw: iterator.iter_hf_weights(weights, **kw))
-        if initialized:
-            raise RuntimeError("Expected baseline capture, not an update")
-        protocols[arm[0]] = protocol
-        setup.append({"arm": arm[0], "baseline_capture_s": time.monotonic() - started})
-    return protocols, setup
+    started = time.monotonic()
+    protocol = _make_protocol(args, plan, output)
+    protocol.connect([], [], [], get_parallel_state(), iterator.placement, "target")
+    if protocol.is_sender != (dist.get_rank() == 0):
+        raise ValueError("EP8/TP1/PP1/CP1 requires rank 0 as the ordinary tensor sender")
+    protocol.bind_iterator(iterator)
+    if protocol.begin_sync(0, lambda **kw: iterator.iter_hf_weights(weights, **kw)):
+        raise RuntimeError("Expected baseline capture, not an update")
+    return protocol, {"baseline_capture_s": time.monotonic() - started}
 
 
 def _perturb(weights, *, fraction, relative_scale, version):
@@ -358,26 +320,20 @@ def _perturb(weights, *, fraction, relative_scale, version):
     return {"selected_elements": selected, "eligible_elements": eligible, "stride": stride}
 
 
-def _verify_publication(publication, plan, *, codec, frame_bytes, outer_backend="cpu"):
+def _verify_publication(publication, plan):
     path = Path(publication["manifest_path"])
     raw = path.read_bytes()
     if hashlib.sha256(raw).hexdigest() != publication["manifest_sha256"]:
         raise ValueError("Publication manifest checksum mismatch")
     manifest = json.loads(raw)
-    frame_profile = {1 << 16: "64kib", 1 << 20: "1mib", 1 << 21: "2mib"}[frame_bytes]
-    profile = f"{codec}-independent-{frame_profile}{'-zstd' if codec == 'snappy' else ''}-v1"
-    if outer_backend == "gpu":
-        profile = f"snappy-independent-{frame_profile}-gpu-zstd-v1"
-    if manifest["codec_profile"] != profile:
-        raise ValueError("Sealed publication frame profile differs from the benchmark arm")
-    if manifest["protocol_version"] != (4 if outer_backend == "gpu" else (3 if codec == "snappy" else 2)):
-        raise ValueError("Sealed publication protocol differs from the benchmark arm")
+    if manifest.get("codec") != CODEC or manifest.get("protocol_version") != 4 or manifest.get("frame_bytes") != 1 << 20:
+        raise ValueError("Sealed publication must use protocol 4 / snappy-zstd")
     if {tensor["name"] for tensor in manifest["tensors"]} != {tensor["name"] for tensor in plan}:
         raise ValueError("Sealed publication does not cover the exact mutable exporter inventory")
     for tensor in manifest["tensors"]:
         is_raw = len(tensor["shape"]) <= 1
         if tensor["encoding"] != ("raw_bytes" if is_raw else "xor_bytes"):
-            raise ValueError("Sealed publication differs from the shape-based direct-value contract")
+            raise ValueError("Sealed publication differs from the shape-based direct-value codec")
         if is_raw and (tensor["frames"] or "outer" in tensor or tensor.get("raw", {}).get("encoded_bytes", 0) != (tensor["nbytes"] if tensor["changed_bytes"] else 0)):
             raise ValueError("Scalar/vector must transfer its complete target without compression")
     for item in manifest["files"]:
@@ -389,8 +345,8 @@ def _verify_publication(publication, plan, *, codec, frame_bytes, outer_backend=
         "canonical_bytes": sum(tensor["nbytes"] for tensor in manifest["tensors"]),
         "changed_bytes": sum(tensor["changed_bytes"] for tensor in manifest["tensors"]),
         "tensor_count": len(manifest["tensors"]),
-        "codec_profile": manifest["codec_profile"],
-        "frame_bytes": frame_bytes,
+        "codec": manifest["codec"],
+        "frame_bytes": 1 << 20,
         "raw_tensor_count": sum(tensor["encoding"] == "raw_bytes" for tensor in manifest["tensors"]),
         "raw_changed_tensors": sum("raw" in tensor for tensor in manifest["tensors"]),
         "raw_bytes": sum(tensor.get("raw", {}).get("encoded_bytes", 0) for tensor in manifest["tensors"]),
@@ -400,7 +356,7 @@ def _verify_publication(publication, plan, *, codec, frame_bytes, outer_backend=
     }
 
 
-def _run_arm(protocol, iterator, weights, version, plan):
+def _run_update(protocol, iterator, weights, version, plan):
     protocol.bind_iterator(iterator)
     iterator.reset_timing()
     dist.barrier()
@@ -421,7 +377,7 @@ def _run_arm(protocol, iterator, weights, version, plan):
     tail_end = time.monotonic()
     publication = protocol.publish(version)
     sealed = time.monotonic()
-    # Completion only, once per arm; no per-conversion timing synchronizations.
+    # Completion only, once per update; no per-conversion timing synchronizations.
     torch.cuda.synchronize()
     completed = time.monotonic()
     conversion_cuda_ms = sum(start.elapsed_time(end) for start, end in iterator.conversion_events) if iterator.conversion_events else None
@@ -438,56 +394,50 @@ def _run_arm(protocol, iterator, weights, version, plan):
         "converted_units": iterator.converted_units,
         "conversion_event_count": 2 * len(iterator.conversion_events),
         "gpu_memory_bytes": {
-            "before_allocated": memory_before["allocated"], "before_reserved": memory_before["reserved"],
-            "after_allocated": torch.cuda.memory_allocated(), "after_reserved": torch.cuda.memory_reserved(),
-            "peak_allocated": torch.cuda.max_memory_allocated(), "peak_reserved": torch.cuda.max_memory_reserved(),
+            "before_allocated": memory_before["allocated"],
+            "before_reserved": memory_before["reserved"],
+            "after_allocated": torch.cuda.memory_allocated(),
+            "after_reserved": torch.cuda.memory_reserved(),
+            "peak_allocated": torch.cuda.max_memory_allocated(),
+            "peak_reserved": torch.cuda.max_memory_reserved(),
         },
     }
     error, sizes = None, None
     if dist.get_rank() == 0:
         try:
-            frame_bytes = protocol._gpu_encoder.frame_bytes if protocol.encoder_backend == "gpu" else 1 << 20
-            sizes = _verify_publication(
-                publication,
-                plan,
-                codec=protocol.codec,
-                frame_bytes=frame_bytes,
-                outer_backend=protocol.snappy_outer,
-            )
+            sizes = _verify_publication(publication, plan)
         except Exception as caught:
             error = caught
     _check(error, "sealed publication validation")
     return {
         "version": version,
         "measurement_phase": "first-use-allocation" if version == 1 else "warm-update",
-        "ranks": _gather(measurement), "publication": publication, "sizes": sizes,
+        "ranks": _gather(measurement),
+        "publication": publication,
+        "sizes": sizes,
     }
 
 
-def _verify_equal_targets(protocols):
-    # GPU committed snapshots remain the previous version until acknowledgment.
-    # Compare the new pending targets; CPU control retains its existing semantics.
-    snapshots = [protocol.pending_baseline for protocol in protocols.values()]
-    if any(snapshot.keys() != snapshots[0].keys() for snapshot in snapshots[1:]):
-        raise ValueError("Canonical ownership differs between benchmark arms")
+def _verify_pending_inventory(protocol, owned_plan):
+    # The sole codec has no paired control. Check the complete owned pending
+    # target inventory before simulating a successful receiver acknowledgment.
+    from math import prod
+
+    from miles.utils.gpu_delta_publication import DTYPE_BYTES
+
+    pending = protocol.pending_baseline
+    if pending.keys() != owned_plan.keys():
+        raise ValueError("Pending canonical ownership differs from the committed baseline")
     byte_count = 0
-    for name, baseline in snapshots[0].items():
-        baseline = baseline.numpy() if isinstance(baseline, torch.Tensor) else baseline
-        for snapshot in snapshots[1:]:
-            target = snapshot[name]
-            target = target.numpy() if isinstance(target, torch.Tensor) else target
-            if not np.array_equal(baseline, target):
-                raise ValueError(f"Quantized targets differ between arms for {name}")
-        byte_count += baseline.nbytes
-    return {"rank": dist.get_rank(), "equal": True if len(snapshots) > 1 else None, "compared_arms": len(snapshots), "canonical_bytes": byte_count, "tensor_count": len(snapshots[0])}
+    for name, target in pending.items():
+        spec = owned_plan[name]
+        if target.numel() * target.element_size() != prod(spec["shape"]) * DTYPE_BYTES[spec["dtype"]]:
+            raise ValueError(f"Pending canonical size differs for {name}")
+        byte_count += target.numel() * target.element_size()
+    return {"rank": dist.get_rank(), "canonical_bytes": byte_count, "tensor_count": len(pending)}
 
 
-def _arm_order(version, names):
-    offset = (version - 1) % len(names)
-    return list(names[offset:]) + list(names[:offset])
-
-
-def _versions(options, protocols, iterator, weights, plan):
+def _versions(options, protocol, iterator, weights, plan, owned_plan):
     results = []
     for version in range(1, options.versions + 1):
         perturbation = _gather(
@@ -498,39 +448,35 @@ def _versions(options, protocols, iterator, weights, plan):
                 version=version,
             )
         )
-        # Cumulative versions rotate selected arms, but do not fully balance
-        # execution positions or provide repeated measurements of one target.
-        order = _arm_order(version, list(protocols))
-        arms = {}
-        for name in order:
-            arms[name] = _run_arm(protocols[name], iterator, weights, version, plan)
-            _write_root(options.output / f"version-{version:03d}-{name}.json", arms[name])
-        error, equality = None, None
+        measurement = _run_update(protocol, iterator, weights, version, plan)
+        error, inventory = None, None
         try:
-            equality = _verify_equal_targets(protocols)
+            inventory = _verify_pending_inventory(protocol, owned_plan)
         except Exception as caught:
             error = caught
-        _check(error, "same quantized target comparison outside measured intervals")
-        # Explicit producer-only acknowledgment after every publication and target
-        # check. Production commits only after successful receiver activation.
+        _check(error, "pending quantized target inventory outside measured interval")
+        # Production commits only after successful receiver activation. This
+        # isolated producer benchmark explicitly simulates that acknowledgment.
         error = None
         try:
-            for protocol in protocols.values():
-                protocol.commit_pending_baseline()
+            protocol.commit_pending_baseline()
         except Exception as caught:
             error = caught
         _check(error, "producer-only baseline commit")
         result = {
-            "version": version, "order": order, "perturbation": perturbation,
+            "version": version,
+            "codec": CODEC,
+            "perturbation": perturbation,
             "measurement_phase": "first-use-allocation" if version == 1 else "warm-update",
-            "arms": arms, "equality": _gather(equality),
+            "measurement": measurement,
+            "inventory": _gather(inventory),
             "baseline_commit": "producer-only-after-sealing-and-inventory-check",
-            "target_comparison": "equal-across-arms" if len(protocols) > 1 else "not-applicable-single-arm",
+            "target_comparison": "not-performed-single-codec",
         }
         results.append(result)
         _write_root(options.output / f"version-{version:03d}.json", result)
         if dist.get_rank() == 0:
-            print(json.dumps({"version": version, "same_targets": True if len(protocols) > 1 else None, "arms": {name: {"sizes": value["sizes"], "blocked_s": [rank["producer_blocked_s"] for rank in value["ranks"]]} for name, value in arms.items()}}), flush=True)
+            print(json.dumps({"version": version, "codec": CODEC, "sizes": measurement["sizes"], "blocked_s": [rank["producer_blocked_s"] for rank in measurement["ranks"]]}), flush=True)
     return results
 
 
@@ -575,9 +521,7 @@ def run(options):
     discover_started = time.monotonic()
     plan, ownership = _discover_plan(args, iterator, weights)
     discovery_s = time.monotonic() - discover_started
-    arm_by_name = {arm[0]: arm for arm in ARMS}
-    arms = [arm_by_name[name] for name in options.arms]
-    protocols, baseline_setup = _setup_protocols(args, plan, iterator, weights, options.output, arms)
+    protocol, baseline_setup = _setup_protocol(args, plan, iterator, weights, options.output)
     runtime, error = None, None
     try:
         runtime = _runtime_metadata()
@@ -592,37 +536,19 @@ def run(options):
             "model_args": model_argv,
             "env": NVFP4_ENV,
             "timing": options.timing,
-            "arms": [arm[0] for arm in arms],
-            "arm_configs": {
-                name: {"encoder": encoder, "codec": codec, "frame_bytes": frame_bytes, "snappy_outer": protocols[name].snappy_outer}
-                for name, encoder, codec, frame_bytes in arms
-            },
-            "receiver_compatibility": {
-                "max_admitted_frame_bytes": 1 << 20,
-                "producer_only_arms": [name for name, _encoder, _codec, size in arms if size > 1 << 20],
-            },
-            "producer_pipelines": {
-                "cpu": "export-overlapped-cpu-workers-v1",
-                "gpu": "pinned-snapshot-bulk-gpu-v1",
-                "gpu_outer": "retain-compact-snappy-hbm-then-owner-wide-zstd-v1",
-            },
+            "codec": CODEC,
+            "frame_bytes": 1 << 20,
+            "producer_pipeline": "pinned-snapshot-bulk-gpu-snappy-then-owner-wide-gpu-zstd",
             "gpu_batch_target_bytes": args.update_weight_buffer_size,
-            "gpu_batch_target_bytes_by_arm": {
-                name: args.update_weight_buffer_size
-                for name, encoder, _codec, _frame_bytes in arms if encoder == "gpu"
-            },
             "baseline_commit_scope": "producer-only-simulated-activation-after-inventory-check",
-            "arm_order_by_version": {
-                str(version): _arm_order(version, [arm[0] for arm in arms])
-                for version in range(1, options.versions + 1)
-            },
             "ranks": setup,
             "options": {k: str(v) if isinstance(v, Path) else v for k, v in vars(options).items()},
             "source_digest": os.environ.get("GPU_DELTA_SOURCE_DIGEST"),
-            "timing_interpretation": "Version 1 includes first-use allocation/compilation; compare warm versions 2/3 separately. Selected arms use identical per-version canonical targets, not repeated fixed-target samples.",
+            "timing_interpretation": "Version 1 includes first-use allocation/compilation; compare warm versions 2/3 separately. Cumulative versions are not independent fixed-target repetitions; this single-codec run does not prove target equality with a previous run.",
         },
     )
-    results = _versions(options, protocols, iterator, weights, plan)
+    owned_plan = {tensor["name"]: tensor for tensor in plan if tensor["name"] in set(ownership["names"])}
+    results = _versions(options, protocol, iterator, weights, plan, owned_plan)
     _write_root(options.output / "result.json", {"success": True, "scope": "producer-only; no receiver or optimizer update", "versions": results})
 
 

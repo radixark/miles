@@ -1,550 +1,198 @@
-"""Wire correctness against the same W0/W1 bytes for every codec."""
+"""Wire admission and immutable publication tests; CPU bytes are fixture oracles.
 
+Native tests qualify the GPU producer. CPU Snappy/Zstd here only constructs
+independent format examples without CUDA, never a production encoding backend.
+"""
+
+import copy
 import hashlib
 import json
 from concurrent.futures import ThreadPoolExecutor
-from pathlib import Path
 
 import numpy as np
 import pytest
+import snappy
 import zstandard
 
-from miles.utils import gpu_delta_publication
+from miles.utils import gpu_delta_publication as publication
 
 
-def _decode(entry, payloads, base, *, frame_bytes=gpu_delta_publication.FRAME_BYTES):
-    result = np.zeros_like(base)
-    for frame, payload in zip(entry["frames"], payloads, strict=True):
-        assert hashlib.sha256(payload).hexdigest() == frame["encoded_sha256"]
-        if frame["codec"] == "zstd":
-            raw = zstandard.ZstdDecompressor().decompress(payload)
-        elif frame["codec"] == "snappy":
-            import snappy
-
-            raw = snappy.decompress(payload)
-        else:
-            raw = payload
-        assert len(raw) == frame["decoded_bytes"] <= frame_bytes
-        start = frame["decoded_offset"]
-        result[start : start + len(raw)] = np.frombuffer(raw, dtype=np.uint8)
-    return result ^ base if entry["encoding"] == "xor_bytes" else result
+def _writer(path, owner=0, *, frame_bytes=publication.FRAME_BYTES):
+    return publication.PublicationWriter(path, stream_id="test", base_version=0, target_version=1,
+                                         plan_digest="b" * 64, owner=owner, publication_id="test:1", frame_bytes=frame_bytes)
 
 
-@pytest.mark.parametrize("codec", ["zstd", "snappy"])
-def test_codec_independent_exact_target_with_unchanged_and_partial_frames(codec):
-    rng = np.random.default_rng(42)
-    base = rng.integers(0, 256, size=2 * gpu_delta_publication.FRAME_BYTES + 137, dtype=np.uint8)
+def _wrapped(base, target, frame_bytes=publication.FRAME_BYTES):
+    delta = np.bitwise_xor(base, target).reshape(-1)
+    inner, frames = bytearray(), []
+    for offset in range(0, delta.size, frame_bytes):
+        raw = delta[offset : offset + frame_bytes]
+        if not np.any(raw):
+            continue
+        payload = snappy.compress(raw)
+        inner.extend(bytes(-len(inner) % 16))
+        frames.append(dict(decoded_offset=offset, decoded_bytes=raw.size, encoded_offset=len(inner), encoded_bytes=len(payload)))
+        inner.extend(payload)
+    if not inner:
+        return frames, b"", None, 0
+    payload, outer_frames = bytearray(), []
+    for offset in range(0, len(inner), publication.FRAME_BYTES):
+        raw = inner[offset : offset + publication.FRAME_BYTES]
+        encoded = zstandard.ZstdCompressor(level=1).compress(raw)
+        payload.extend(bytes(-len(payload) % 16))
+        outer_frames.append(dict(decoded_offset=offset, decoded_bytes=len(raw), encoded_offset=len(payload), encoded_bytes=len(encoded)))
+        payload.extend(encoded)
+    return frames, payload, dict(decoded_bytes=len(inner), encoded_bytes=len(payload), frames=outer_frames), int(np.count_nonzero(delta))
+
+
+def _add(writer, name, base, target):
+    frames, payload, outer, changed = _wrapped(base, target, writer.frame_bytes)
+    return writer.add_gpu_outer_tensor(name, frames, payload, outer, changed_bytes=changed, dtype="U8", shape=list(base.shape))
+
+
+def _read_target(entry, blob, base):
+    if "outer" not in entry:
+        return base
+    outer = entry["outer"]
+    payload = blob[outer["encoded_offset"] : outer["encoded_offset"] + outer["encoded_bytes"]]
+    inner = bytearray(outer["decoded_bytes"])
+    for frame in outer["frames"]:
+        offset, size = frame["encoded_offset"], frame["encoded_bytes"]
+        raw = zstandard.ZstdDecompressor().decompress(payload[offset : offset + size])
+        assert len(raw) == frame["decoded_bytes"]
+        inner[frame["decoded_offset"] : frame["decoded_offset"] + len(raw)] = raw
+    target = base.reshape(-1).copy()
+    for frame in entry["frames"]:
+        offset, size = frame["encoded_offset"], frame["encoded_bytes"]
+        raw = snappy.decompress(inner[offset : offset + size])
+        assert len(raw) == frame["decoded_bytes"]
+        target[frame["decoded_offset"] : frame["decoded_offset"] + len(raw)] ^= np.frombuffer(raw, dtype=np.uint8)
+    return target.reshape(base.shape)
+
+
+@pytest.mark.parametrize("frame_bytes", [1 << 16, 1 << 20, 1 << 21])
+def test_framed_publication_exact_targets_expanded_tails_and_final_file_hash(tmp_path, frame_bytes):
+    rng = np.random.default_rng(11)
+    base = rng.integers(0, 256, (1, frame_bytes * 2 + 139), dtype=np.uint8)
     target = base.copy()
-    target[19:999:7] ^= 3
-    target[-137::3] ^= 0x80
-    base_copy, target_copy = base.copy(), target.copy()
-    entry, payloads = gpu_delta_publication.encode_tensor("w", base, target, dtype="U8", shape=[base.size], codec=codec, encoding="xor_bytes")
-    np.testing.assert_array_equal(_decode(entry, payloads, base), target)
-    np.testing.assert_array_equal(base, base_copy)
-    np.testing.assert_array_equal(target, target_copy)
-    assert entry["changed_bytes"] == np.count_nonzero(base != target)
-    assert all("xxh3" not in key for key in entry)
-    assert len(entry["frames"]) == 2  # the middle all-zero XOR frame is omitted
-
-
-def test_raw_fallback_and_noncontiguous_tp_view_metadata():
-    rng = np.random.default_rng(7)
-    target = rng.integers(0, 256, size=(113, 127), dtype=np.uint8)
-    base = np.zeros_like(target)
-    view = {"id": "tp-middle", "slices": [[0, 113], [31, 95]]}
-    entry, payloads = gpu_delta_publication.encode_tensor(
-        "w", base, target, dtype="U8", shape=list(target.shape), codec="zstd", views=[view]
-    )
-    assert entry["views"] == [view]
-    assert entry["frames"][0]["codec"] == "none"
-    np.testing.assert_array_equal(
-        gpu_delta_publication.selected_bytes(target, shape=list(target.shape), dtype="U8", slices=view["slices"]),
-        target[:, 31:95].reshape(-1),
-    )
-    np.testing.assert_array_equal(_decode(entry, payloads, base.reshape(-1)), target.reshape(-1))
-
-
-def _writer(path, owner=0, *, frame_bytes=gpu_delta_publication.FRAME_BYTES, codec="zstd"):
-    return gpu_delta_publication.PublicationWriter(
-        path,
-        stream_id="stream",
-        publication_id="publication",
-        base_version=0,
-        target_version=1,
-        plan_digest="b" * 64,
-        codec=codec,
-        owner=owner,
-        frame_bytes=frame_bytes,
-    )
-
-
-@pytest.mark.parametrize("codec", ["zstd", "snappy"])
-def test_concurrent_owners_seal_exclusively_and_hash_exact_files(tmp_path, codec):
-    first, second = _writer(tmp_path, codec=codec), _writer(tmp_path, owner=1, codec=codec)
-    base = np.zeros(10000, dtype=np.uint8)
-    with ThreadPoolExecutor(max_workers=4) as pool:
-        futures = [
-            pool.submit(first.add_tensor, f"w{i}", base, base + i, dtype="U8", shape=[10000]) for i in range(1, 5)
-        ]
-        for future in futures:
-            future.result()
-    second.add_tensor("other", base, base + 7, dtype="U8", shape=[10000])
-    shards = [first.finish_shard(), second.finish_shard()]
-    descriptor = gpu_delta_publication.seal_publication(tmp_path, shards)
-    content = (tmp_path / "manifest.json").read_bytes()
-    assert gpu_delta_publication.sha256(content) == descriptor["manifest_sha256"]
-    manifest = json.loads(content)
-    assert len(manifest["tensors"]) == 5
-    for item in manifest["files"]:
-        data = (tmp_path / item["name"]).read_bytes()
-        assert len(data) == item["nbytes"] and gpu_delta_publication.sha256(data) == item["sha256"]
+    target[:, :frame_bytes:4096] ^= 3
+    target[:, -139:] ^= rng.integers(1, 256, 139, dtype=np.uint8)
+    writer = _writer(tmp_path, frame_bytes=frame_bytes)
+    entry = _add(writer, "w", base, target)
+    _add(writer, "unchanged", base, base)
+    _add(writer, "empty", np.zeros((1, 0), np.uint8), np.zeros((1, 0), np.uint8))
+    descriptor = writer.finish()
+    manifest_bytes = (tmp_path / "manifest.json").read_bytes()
+    manifest = json.loads(manifest_bytes)
+    blob = (tmp_path / "owner-00000.bin").read_bytes()
+    assert descriptor["manifest_sha256"] == hashlib.sha256(manifest_bytes).hexdigest()
+    assert manifest["files"] == [{"name": "owner-00000.bin", "nbytes": len(blob), "sha256": hashlib.sha256(blob).hexdigest()}]
+    assert descriptor["protocol_version"] == 4 and descriptor["codec"] == "snappy-zstd"
+    assert descriptor["frame_bytes"] == frame_bytes and "codec_profile" not in descriptor
+    assert [frame["decoded_offset"] for frame in entry["frames"]] == [0, 2 * frame_bytes]
+    assert entry["frames"][-1]["encoded_bytes"] > 139
+    assert all(set(frame) == {"decoded_offset", "decoded_bytes", "encoded_offset", "encoded_bytes"} for frame in entry["frames"])
+    assert "codec" not in entry["outer"]
+    np.testing.assert_array_equal(_read_target(entry, blob, base), target)
     for tensor in manifest["tensors"]:
-        owner = tensor.get("outer", tensor["frames"][0])["file"]
-        blob = (tmp_path / owner).read_bytes()
-        payloads = (
-            _unwrap(tensor, blob)
-            if codec == "snappy"
-            else [blob[f["encoded_offset"] : f["encoded_offset"] + f["encoded_bytes"]] for f in tensor["frames"]]
-        )
-        expected = 7 if tensor["name"] == "other" else int(tensor["name"][1:])
-        np.testing.assert_array_equal(_decode(tensor, payloads, base), base + expected)
-        for frame in tensor["frames"]:
-            assert frame["encoded_offset"] % 16 == 0
-    with pytest.raises(FileExistsError):
-        gpu_delta_publication.seal_publication(tmp_path, shards)
-    assert (tmp_path / "manifest.json").read_bytes() == content
+        if tensor["name"] != "w":
+            assert not tensor["frames"] and "outer" not in tensor and tensor["changed_bytes"] == 0
+    with pytest.raises(RuntimeError, match="already sealed"):
+        writer.finish_shard()
     with pytest.raises(FileExistsError):
         _writer(tmp_path)
 
 
-def test_duplicate_tensor_owners_and_different_versions_cannot_publish(tmp_path):
-    writers = [_writer(tmp_path, owner=i) for i in range(2)]
-    for writer in writers:
-        writer.add_tensor("same", b"0", b"1", dtype="U8", shape=[1])
+def test_concurrent_shards_and_raw_targets_have_exclusive_ownership(tmp_path):
+    writers = [_writer(tmp_path, i) for i in range(2)]
+    base, target = np.zeros((2, 500), np.uint8), np.ones((2, 500), np.uint8)
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        futures = [pool.submit(_add, writers[i % 2], str(i), base, target) for i in range(8)]
+        for future in futures:
+            future.result()
     shards = [writer.finish_shard() for writer in writers]
-    with pytest.raises(ValueError, match="ownership"):
-        gpu_delta_publication.seal_publication(tmp_path, shards)
+    descriptor = publication.seal_publication(tmp_path, shards)
+    assert len(json.loads((tmp_path / "manifest.json").read_bytes())["tensors"]) == 8
+    assert descriptor["target_version"] == 1
+    with pytest.raises(FileExistsError):
+        publication.seal_publication(tmp_path, shards)
+
+
+@pytest.mark.parametrize("conflict", ["tensor", "metadata", "file"])
+def test_conflicting_owner_shards_cannot_publish(tmp_path, conflict):
+    writer = _writer(tmp_path)
+    writer.add_raw_tensor("scale", b"\0\0\0\0", b"1234", dtype="F32", shape=[])
+    shard = writer.finish_shard()
+    duplicate = copy.deepcopy(shard)
+    if conflict == "metadata":
+        duplicate["metadata"]["target_version"] += 1
+    elif conflict == "file":
+        duplicate["tensors"] = []
+    with pytest.raises(ValueError):
+        publication.seal_publication(tmp_path, [shard, duplicate])
     assert not (tmp_path / "manifest.json").exists()
-    shards[1]["metadata"] = shards[1]["metadata"] | {"target_version": 2}
-    with pytest.raises(ValueError, match="identities"):
-        gpu_delta_publication.seal_publication(tmp_path, shards)
 
 
-@pytest.mark.parametrize("codec", ["snappy", "zstd"])
 @pytest.mark.parametrize("dtype,shape,size", [("F32", [], 4), ("BF16", [6144], 12288), ("U8", [0], 0)])
-def test_direct_targets_bypass_both_codecs_and_omit_unchanged_values(tmp_path, monkeypatch, codec, dtype, shape, size):
-    writer = _writer(tmp_path, codec=codec)
-    base = bytes(size)
-    target = bytes([1]) + bytes(size - 1) if size else b""
-
-    def forbidden(*args, **kwargs):
-        raise AssertionError("Raw replacements must not enter either codec")
-
-    monkeypatch.setattr(gpu_delta_publication, "encode_tensor", forbidden)
-    monkeypatch.setattr(writer, "_append_outer", forbidden)
-    entry = writer.add_tensor("changed", base, target, dtype=dtype, shape=shape, encoding="raw_bytes")
-    unchanged = writer.add_raw_tensor("unchanged", target, target, dtype=dtype, shape=shape)
+def test_raw_targets_bypass_compression_and_omit_unchanged(tmp_path, dtype, shape, size):
+    writer = _writer(tmp_path)
+    previous = np.zeros(size, np.uint8)
+    current = np.full(size, 7, np.uint8)
+    changed = writer.add_raw_tensor("changed", previous, current, dtype=dtype, shape=shape)
+    same = writer.add_raw_tensor("same", current, current, dtype=dtype, shape=shape)
     writer.finish()
-    blob = (tmp_path / "owner-00000.bin").read_bytes()
-    assert entry["frames"] == unchanged["frames"] == []
-    assert "outer" not in entry and "raw" not in unchanged
-    assert entry["changed_bytes"] == bool(size) and unchanged["changed_bytes"] == 0
+    assert changed["frames"] == same["frames"] == []
+    assert "outer" not in changed and "raw" not in same
     if size:
-        raw = entry["raw"]
-        assert raw == {"file": "owner-00000.bin", "encoded_offset": 0, "encoded_bytes": size}
-        assert blob == target
-    else:
-        assert "raw" not in entry and blob == b""
-    manifest = json.loads((tmp_path / "manifest.json").read_bytes())
-    assert manifest["files"][0]["sha256"] == hashlib.sha256(blob).hexdigest()
+        raw = changed["raw"]
+        blob = (tmp_path / raw["file"]).read_bytes()
+        assert blob[raw["encoded_offset"] : raw["encoded_offset"] + raw["encoded_bytes"]] == current.tobytes()
+    assert writer.outer_metrics["outer_input_bytes"] == writer.outer_metrics["outer_output_bytes"] == 0
 
 
-def test_direct_targets_reject_matrices_and_wrong_byte_count(tmp_path):
+def test_rejects_raw_matrix_wrong_byte_count_and_bad_views(tmp_path):
     writer = _writer(tmp_path)
     with pytest.raises(ValueError, match="scalar or vector"):
-        writer.add_raw_tensor("matrix", b"abcd", b"efgh", dtype="U8", shape=[2, 2])
+        writer.add_raw_tensor("w", b"1234", b"5678", dtype="U8", shape=[2, 2])
     with pytest.raises(ValueError, match="byte count"):
-        writer.add_raw_tensor("scalar", b"a", b"b", dtype="F32", shape=[])
-    assert writer.finish_shard()["tensors"] == []
-
-
-def test_rejects_invalid_view_or_canonical_byte_count():
+        writer.add_raw_tensor("w", b"1", b"2", dtype="F32", shape=[])
     with pytest.raises(ValueError, match="bounds"):
-        gpu_delta_publication.encode_tensor(
-            "w", b"ab", b"cd", dtype="U8", shape=[2], codec="zstd", views=[{"id": "bad", "slices": [[0, 3]]}]
-        )
-    with pytest.raises(ValueError, match="byte count"):
-        gpu_delta_publication.encode_tensor("w", b"ab", b"cd", dtype="BF16", shape=[2], codec="zstd")
-
-
-@pytest.mark.parametrize("codec", ["zstd", "snappy"])
-def test_buffer_encoding_preserves_frame_bytes_hashes_and_payload_ownership(codec):
-    import snappy
-
-    frame_bytes = gpu_delta_publication.FRAME_BYTES
-    base = np.zeros(frame_bytes + 137, dtype=np.uint8)
-    target = base.copy()
-    target[::4096] = 7
-    target[-137:] = np.random.default_rng(91).integers(0, 256, 137, dtype=np.uint8)
-    compress = {
-        "zstd": zstandard.ZstdCompressor(level=1, write_content_size=True).compress,
-        "snappy": snappy.compress,
-    }[codec]
-    # Compare against the original bytes-input codec contract, including the
-    # compressible full frame and incompressible raw-fallback tail.
-    expected = []
-    for start in range(0, target.size, frame_bytes):
-        raw = target[start : start + frame_bytes].tobytes()
-        compressed = compress(raw)
-        expected.append(compressed if len(compressed) < len(raw) else raw)
-    entry, payloads = gpu_delta_publication.encode_tensor(
-        "w",
-        base,
-        target,
-        dtype="U8",
-        shape=[target.size],
-        codec=codec,
-        encoding="xor_bytes",
-    )
-    base.fill(0x55)
-    target.fill(0xAA)
-    assert payloads == expected
-    assert all(type(payload) is bytes for payload in payloads)
-    assert [frame["encoded_sha256"] for frame in entry["frames"]] == [
-        hashlib.sha256(payload).hexdigest() for payload in expected
-    ]
-
-
-@pytest.mark.parametrize("codec", ["zstd", "snappy"])
-@pytest.mark.parametrize("frame_bytes", [1 << 16, gpu_delta_publication.FRAME_BYTES, 1 << 21])
-def test_preencoded_frames_use_the_same_immutable_wire_contract(tmp_path, codec, frame_bytes):
-    base = np.zeros(frame_bytes + 139, dtype=np.uint8)
-    target = base.copy()
-    target[::4096] = 17
-    target[-139:] = np.random.default_rng(14).integers(0, 256, 139, dtype=np.uint8)
-    expected, payloads = gpu_delta_publication.encode_tensor("w", base, target, dtype="U8", shape=[base.size], codec=codec, encoding="xor_bytes", frame_bytes=frame_bytes)
-    writer = gpu_delta_publication.PublicationWriter(
-        tmp_path,
-        stream_id="s",
-        base_version=0,
-        target_version=1,
-        plan_digest="b" * 64,
-        codec=codec,
-        frame_bytes=frame_bytes,
-    )
-    entry = writer.add_encoded_tensor(
-        "w",
-        [{k: v for k, v in f.items() if k != "encoded_sha256"} for f in expected["frames"]],
-        [memoryview(p) for p in payloads],
-        changed_bytes=expected["changed_bytes"],
-        dtype="U8",
-        shape=[base.size],
-        encoding="xor_bytes",
-    )
-    shard = writer.finish_shard()
-    profile = {1 << 16: "64kib", 1 << 20: "1mib", 1 << 21: "2mib"}[frame_bytes]
-    suffix = "-zstd" if codec == "snappy" else ""
-    assert shard["metadata"]["protocol_version"] == (3 if codec == "snappy" else 2)
-    assert shard["metadata"]["codec_profile"] == f"{codec}-independent-{profile}{suffix}-v1"
-    gpu_delta_publication.seal_publication(tmp_path, [shard])
-    encoded = (tmp_path / shard["files"][0]["name"]).read_bytes()
-    retained = _unwrap(entry, encoded) if codec == "snappy" else [encoded[f["encoded_offset"] : f["encoded_offset"] + f["encoded_bytes"]] for f in entry["frames"]]
-    assert retained == payloads
-    np.testing.assert_array_equal(_decode(entry, retained, base, frame_bytes=frame_bytes), target)
-
-
-@pytest.mark.parametrize("size", [1 << 16, 1 << 21])
-def test_explicit_profile_preserves_zero_frame_gaps_and_exact_tail_without_changing_default(tmp_path, size):
-    base = np.zeros(2 * size + 137, dtype=np.uint8)
-    target = base.copy()
-    target[0] = 9
-    target[-1] = 7
-    writer = _writer(tmp_path / "small", frame_bytes=size)
-    entry = writer.add_tensor("w", base, target, dtype="U8", shape=[base.size])
-    assert [(frame["decoded_offset"], frame["decoded_bytes"]) for frame in entry["frames"]] == [
-        (0, size),
-        (2 * size, 137),
-    ]
-    small = writer.finish_shard()
-    wire = (tmp_path / "small" / small["files"][0]["name"]).read_bytes()
-    payloads = [wire[f["encoded_offset"] : f["encoded_offset"] + f["encoded_bytes"]] for f in entry["frames"]]
-    np.testing.assert_array_equal(_decode(entry, payloads, base, frame_bytes=size), target)
-    default = _writer(tmp_path / "default")
-    assert default.frame_bytes == gpu_delta_publication.FRAME_BYTES == 1 << 20
-    assert default.metadata["codec_profile"] == "zstd-independent-1mib-v1"
-    default.close()
-
-
-@pytest.mark.parametrize("offset,size", [(1, 65536), (0, 65535), (0, 131072)])
-def test_64kib_preencoded_ranges_reject_unaligned_short_and_oversized_frames(tmp_path, offset, size):
-    writer = _writer(tmp_path, frame_bytes=1 << 16)
-    try:
-        with pytest.raises(ValueError, match="canonical range"):
-            writer.add_encoded_tensor(
-                "w",
-                [{"decoded_offset": offset, "decoded_bytes": size, "encoded_bytes": size, "codec": "none"}],
-                [bytes(size)],
-                changed_bytes=0,
-                dtype="U8",
-                shape=[2 * (1 << 16) + 137],
-            )
-        assert writer.finish_shard()["tensors"] == []
-    finally:
-        writer.close()
-
-
-@pytest.mark.parametrize("frame_bytes", [0, 1 << 15, 1 << 22, 65536.0, True])
-def test_invalid_frame_profile_fails_before_creating_publication(tmp_path, frame_bytes):
-    directory = tmp_path / "invalid"
-    with pytest.raises(ValueError, match="frame_bytes"):
-        _writer(directory, frame_bytes=frame_bytes)
-    assert not directory.exists()
-
-
-def test_preencoded_frames_reject_raw_replacements_and_incomplete_ranges(tmp_path):
-    writer = _writer(tmp_path)
-    try:
-        with pytest.raises(ValueError, match="Only XOR"):
-            writer.add_encoded_tensor("w", [], [], changed_bytes=0, dtype="U8", shape=[139], encoding="raw_bytes")
-        with pytest.raises(ValueError, match="canonical range"):
-            writer.add_encoded_tensor(
-                "w",
-                [{"decoded_offset": 0, "decoded_bytes": 138, "encoded_bytes": 138, "codec": "none"}],
-                [bytes(138)],
-                changed_bytes=0,
-                dtype="U8",
-                shape=[139],
-            )
-        assert writer.finish_shard()["tensors"] == []
-    finally:
-        writer.close()
-
-
-def test_gpu_producer_defaults_and_explicit_cpu_reference(monkeypatch):
-    for key in ("WEIGHT_DELTA_CODEC", "WEIGHT_DELTA_ENCODER", "WEIGHT_DELTA_STAGING"):
-        monkeypatch.delenv(key, raising=False)
-    assert gpu_delta_publication.settings_from_env() == ("snappy", "gpu")
-    monkeypatch.setenv("WEIGHT_DELTA_CODEC", "zstd")
-    monkeypatch.setenv("WEIGHT_DELTA_ENCODER", "cpu")
-    assert gpu_delta_publication.settings_from_env() == ("zstd", "cpu")
-    monkeypatch.setenv("WEIGHT_DELTA_STAGING", "tensor")
-    with pytest.raises(ValueError, match="removed"):
-        gpu_delta_publication.settings_from_env()
-
-
-def test_raw_is_a_frame_fallback_not_a_publication_profile(tmp_path):
-    with pytest.raises(ValueError, match="Unknown gpu-delta codec"):
-        gpu_delta_publication.PublicationWriter(
-            tmp_path, stream_id="s", base_version=0, target_version=1, plan_digest="b" * 64, codec="none"
-        )
-    with pytest.raises(ValueError, match="Unsupported gpu-delta codec"):
-        gpu_delta_publication.encode_tensor("w", b"a", b"b", dtype="U8", shape=[1], codec="none")
-
-
-@pytest.mark.parametrize("codec", ["zstd", "snappy"])
-@pytest.mark.parametrize("encoder", ["cpu", "gpu"])
-def test_codec_encoder_support_matrix_has_no_separate_envelope_setting(monkeypatch, codec, encoder):
-    monkeypatch.setenv("WEIGHT_DELTA_CODEC", codec)
-    monkeypatch.setenv("WEIGHT_DELTA_ENCODER", encoder)
-    assert gpu_delta_publication.settings_from_env() == (codec, encoder)
-
-
-def _outer_writer(path, *, frame_bytes=1 << 16):
-    return gpu_delta_publication.PublicationWriter(
-        path,
-        stream_id="s",
-        publication_id="p",
-        base_version=0,
-        target_version=1,
-        plan_digest="b" * 64,
-        codec="snappy",
-        frame_bytes=frame_bytes,
-    )
-
-
-def _unwrap(entry, blob):
-    outer = entry["outer"]
-    assert set(outer) == {"codec", "file", "encoded_offset", "encoded_bytes", "decoded_bytes"}
-    assert outer["codec"] == "zstd" and outer["encoded_offset"] % 16 == 0
-    encoded = blob[outer["encoded_offset"] : outer["encoded_offset"] + outer["encoded_bytes"]]
-    assert zstandard.frame_content_size(encoded) == outer["decoded_bytes"]
-    decoder = zstandard.ZstdDecompressor().decompressobj()
-    arena = decoder.decompress(encoded)
-    assert decoder.eof and not decoder.unused_data and len(arena) == outer["decoded_bytes"]
-    end, payloads = 0, []
-    for frame in entry["frames"]:
-        offset = frame["encoded_offset"]
-        assert frame["file"] == outer["file"]
-        assert offset == (end + 15) // 16 * 16 and not any(arena[end:offset])
-        payloads.append(arena[offset : offset + frame["encoded_bytes"]])
-        end = offset + frame["encoded_bytes"]
-    assert end == len(arena)
-    return payloads
-
-
-@pytest.mark.parametrize("frame_bytes", [1 << 16, 1 << 20])
-def test_outer_snappy_exact_mixed_frames_and_empty_tensor(tmp_path, frame_bytes):
-    base = np.zeros(frame_bytes * 2 + 17, dtype=np.uint8)
-    target = base.copy()
-    target[12:500:3] = 7
-    target[-17:] = np.random.default_rng(3).integers(1, 256, 17, dtype=np.uint8)
-    source, payloads = gpu_delta_publication.encode_tensor(
-        "w",
-        base,
-        target,
-        dtype="U8",
-        shape=[base.size],
-        codec="snappy",
-        encoding="xor_bytes",
-        frame_bytes=frame_bytes,
-    )
-    # Match GPU output: immutable frame views into one packed, unaligned slab.
-    slab = np.concatenate([np.frombuffer(payload, dtype=np.uint8) for payload in payloads])
-    before = slab.copy()
-    spans, start = [], 0
-    for payload in payloads:
-        spans.append(memoryview(slab)[start : start + len(payload)])
-        start += len(payload)
-    writer = _outer_writer(tmp_path, frame_bytes=frame_bytes)
-    entry = writer.add_encoded_tensor(
-        "w",
-        source["frames"],
-        spans,
-        changed_bytes=source["changed_bytes"],
-        dtype="U8",
-        shape=[base.size],
-        encoding="xor_bytes",
-    )
-    empty = writer.add_encoded_tensor("empty", [], [], changed_bytes=0, dtype="U8", shape=[128])
-    zero = writer.add_raw_tensor("zero", bytes([1]) * 8, bytes(8), dtype="U8", shape=[8])
-    descriptor = writer.finish()
-    manifest = json.loads((tmp_path / "manifest.json").read_bytes())
-    blob = (tmp_path / "owner-00000.bin").read_bytes()
-    assert descriptor["protocol_version"] == 3
-    profile = "64kib" if frame_bytes == 1 << 16 else "1mib"
-    assert descriptor["codec_profile"] == f"snappy-independent-{profile}-zstd-v1"
-    assert hashlib.sha256(blob).hexdigest() == manifest["files"][0]["sha256"]
-    assert "outer" not in empty
-    np.testing.assert_array_equal(_decode(entry, _unwrap(entry, blob), base, frame_bytes=frame_bytes), target)
-    assert "outer" not in zero and zero["frames"] == []
-    assert blob[zero["raw"]["encoded_offset"] : zero["raw"]["encoded_offset"] + 8] == bytes(8)
-    np.testing.assert_array_equal(slab, before)
-    assert writer.outer_metrics["outer_input_bytes"] == entry["outer"]["decoded_bytes"]
-    assert writer.outer_metrics["outer_output_bytes"] == entry["outer"]["encoded_bytes"]
-
-
-def test_outer_arena_uses_existing_aligned_views_without_copy():
-    arena = np.zeros(41, dtype=np.uint8)
-    arena[:5], arena[16:41] = 13, 29
-    views = [memoryview(arena)[:5], memoryview(arena)[16:41]]
-    _, offsets, size, combined = gpu_delta_publication._inner_payload_layout(views)
-    assert offsets == [0, 16] and size == 41
-    assert np.shares_memory(np.frombuffer(combined, dtype=np.uint8), arena)
-    # Nonzero hidden padding must not be forwarded as canonical padding.
-    arena[8] = 99
-    assert gpu_delta_publication._inner_payload_layout(views)[3] is None
-    # Discontiguous or packed unaligned frames stream; no padded tensor copy.
-    assert gpu_delta_publication._inner_payload_layout([b"12345", b"abc"])[3] is None
-    packed = memoryview(b"12345abc")
-    assert gpu_delta_publication._inner_payload_layout([packed[:5], packed[5:]])[3] is None
-
-
-def test_cpu_snappy_uses_same_mandatory_envelope_as_preencoded_frames(tmp_path):
-    size = 2 * (1 << 16) + 137
-    base = np.zeros(size, dtype=np.uint8)
-    target = base.copy()
-    target[:10000:7] = 19
-    target[-137:] = np.random.default_rng(27).integers(1, 256, 137, dtype=np.uint8)
-    expected, payloads = gpu_delta_publication.encode_tensor("w", base, target, dtype="U8", shape=[size], codec="snappy", encoding="xor_bytes", frame_bytes=1 << 16)
-    cpu, encoded = _outer_writer(tmp_path / "cpu"), _outer_writer(tmp_path / "encoded")
-    cpu_entry = cpu.add_tensor("w", base, target, dtype="U8", shape=[size], encoding="xor_bytes")
-    encoded_entry = encoded.add_encoded_tensor("w", expected["frames"], payloads, changed_bytes=expected["changed_bytes"], dtype="U8", shape=[size], encoding="xor_bytes")
-    cpu.finish()
-    encoded.finish()
-    cpu_blob = (tmp_path / "cpu" / "owner-00000.bin").read_bytes()
-    assert cpu_blob == (tmp_path / "encoded" / "owner-00000.bin").read_bytes()
-    assert cpu_entry == encoded_entry
-    np.testing.assert_array_equal(_decode(cpu_entry, _unwrap(cpu_entry, cpu_blob), base, frame_bytes=1 << 16), target)
-    np.testing.assert_array_equal(base, np.zeros_like(base))
-    assert cpu.outer_metrics["outer_streamed_tensors"] == 1
-    assert cpu.outer_metrics["outer_compress_s"] > 0
-
-
-def test_gpu_outer_writer_keeps_natural_tensor_frames_and_hashes_only_wire(tmp_path):
-    writer = gpu_delta_publication.PublicationWriter(
-        tmp_path,
-        stream_id="s",
-        base_version=0,
-        target_version=1,
-        plan_digest="b" * 64,
-        codec="snappy",
-        outer_backend="gpu",
-    )
-    base = np.zeros((1024, 1024), dtype=np.uint8)
-    target = base.copy()
-    target[::19, ::31] = 7
-    entry, payloads = gpu_delta_publication.encode_tensor("w", base, target, dtype="U8", shape=list(base.shape), codec="snappy")
-    inner = bytearray()
-    frames = []
-    for frame, payload in zip(entry["frames"], payloads, strict=True):
-        inner.extend(bytes((-len(inner)) % 16))
-        frame = dict(frame, encoded_offset=len(inner))
-        del frame["encoded_sha256"]
-        frames.append(frame)
-        inner.extend(payload)
-    # CPU Zstd is only a wire-contract fixture. Native tests exercise GPU output.
-    encoded = zstandard.ZstdCompressor(level=1).compress(inner)
-    outer = dict(codec="zstd", encoded_bytes=len(encoded), decoded_bytes=len(inner), frames=[dict(encoded_offset=0, encoded_bytes=len(encoded), decoded_offset=0, decoded_bytes=len(inner))])
-    published = writer.add_gpu_outer_tensor("w", frames, encoded, outer, changed_bytes=entry["changed_bytes"], dtype="U8", shape=list(base.shape))
-    writer.add_gpu_outer_tensor("unchanged", [], b"", None, changed_bytes=0, dtype="U8", shape=[5, 6])
-    writer.add_raw_tensor("scale", b"a", b"b", dtype="U8", shape=[])
-    descriptor = writer.finish()
-    manifest = json.loads(Path(descriptor["manifest_path"]).read_bytes())
-    assert manifest["protocol_version"] == 4
-    assert manifest["codec_profile"] == "snappy-independent-1mib-gpu-zstd-v1"
-    assert "encoded_sha256" not in published["frames"][0]
-    assert writer.outer_metrics["inner_hash_s"] == writer.outer_metrics["outer_compress_s"] == 0
-    assert writer.outer_metrics["outer_output_bytes"] == len(encoded)
-    file = manifest["files"][0]
-    data = (tmp_path / file["name"]).read_bytes()
-    assert hashlib.sha256(data).hexdigest() == file["sha256"]
-    assert zstandard.ZstdDecompressor().decompress(data[: len(encoded)]) == bytes(inner)
-
-
-@pytest.mark.parametrize("mutation", ["chunk-gap", "inner-hash", "wrong-outer-size", "empty-with-changes", "wrong-inner-size"])
-def test_gpu_outer_writer_rejects_malformed_metadata_before_file_write(tmp_path, mutation):
-    writer = gpu_delta_publication.PublicationWriter(
-        tmp_path,
-        stream_id="s",
-        base_version=0,
-        target_version=1,
-        plan_digest="b" * 64,
-        codec="snappy",
-        outer_backend="gpu",
-    )
-    frames = [dict(decoded_offset=0, decoded_bytes=8, encoded_offset=0, encoded_bytes=8, codec="none")]
-    payload = zstandard.ZstdCompressor().compress(b"abcdefgh")
-    outer = dict(codec="zstd", encoded_bytes=len(payload), decoded_bytes=8, frames=[dict(encoded_offset=0, encoded_bytes=len(payload), decoded_offset=0, decoded_bytes=8)])
-    if mutation == "chunk-gap":
-        outer["frames"][0]["decoded_offset"] = 1
-    elif mutation == "inner-hash":
-        frames[0]["encoded_sha256"] = "a" * 64
-    elif mutation == "wrong-outer-size":
-        outer["encoded_bytes"] += 1
-    elif mutation == "empty-with-changes":
-        frames, payload, outer = [], b"", None
-    else:
-        frames[0]["encoded_bytes"] -= 1
-    with pytest.raises(ValueError):
-        writer.add_gpu_outer_tensor("w", frames, payload, outer, changed_bytes=8, dtype="U8", shape=[2, 4])
-    assert writer._file.tell() == 0
+        publication.tensor_metadata("w", dtype="U8", shape=[4], views=[dict(id="bad", slices=[[2, 5]])])
     writer.close()
 
 
-@pytest.mark.parametrize("outer,codec,encoder", [("bad", "snappy", "gpu"), ("gpu", "zstd", "gpu"), ("gpu", "snappy", "cpu")])
-def test_gpu_outer_env_rejects_incompatible_launch_profiles(monkeypatch, outer, codec, encoder):
-    monkeypatch.setenv("WEIGHT_DELTA_SNAPPY_OUTER", outer)
-    monkeypatch.setenv("WEIGHT_DELTA_CODEC", codec)
-    monkeypatch.setenv("WEIGHT_DELTA_ENCODER", encoder)
+@pytest.mark.parametrize("mutation", ["chunk-gap", "wrong-outer-size", "empty-with-changes", "wrong-inner-size", "expanded-over-bound"])
+def test_malformed_ranges_rejected_before_file_write(tmp_path, mutation):
+    writer = _writer(tmp_path)
+    base, target = np.zeros((1, 1000), np.uint8), np.ones((1, 1000), np.uint8)
+    frames, payload, outer, changed = _wrapped(base, target)
+    if mutation == "chunk-gap":
+        outer["frames"][0]["decoded_offset"] = 1
+    elif mutation == "wrong-outer-size":
+        outer["decoded_bytes"] += 1
+    elif mutation == "empty-with-changes":
+        frames, payload, outer = [], b"", None
+    elif mutation == "wrong-inner-size":
+        frames[0]["decoded_bytes"] -= 1
+    else:
+        frames[0]["encoded_bytes"] = 32 + 1000 + 1000 // 6 + 1
     with pytest.raises(ValueError):
-        gpu_delta_publication.settings_from_env()
+        writer.add_gpu_outer_tensor("w", frames, payload, outer, changed_bytes=changed, dtype="U8", shape=[1, 1000])
+    assert writer._file.tell() == 0 and not writer._entries
+    writer.close()
+
+
+def test_invalid_frame_size_rejected_before_publication(tmp_path):
+    with pytest.raises(ValueError, match="frame_bytes"):
+        _writer(tmp_path / "new", frame_bytes=0)
+    assert not (tmp_path / "new").exists()
+
+
+def test_only_snappy_zstd_launch_contract(monkeypatch):
+    monkeypatch.delenv("WEIGHT_DELTA_CODEC", raising=False)
+    assert publication.configured_codec() == "snappy-zstd"
+    monkeypatch.setenv("WEIGHT_DELTA_CODEC", "snappy-zstd")
+    assert publication.configured_codec() == "snappy-zstd"
+    monkeypatch.setenv("WEIGHT_DELTA_CODEC", "zstd")
+    with pytest.raises(ValueError, match="WEIGHT_DELTA_CODEC=snappy-zstd"):
+        publication.configured_codec()

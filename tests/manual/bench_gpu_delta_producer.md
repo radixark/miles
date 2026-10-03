@@ -1,263 +1,113 @@
-# GLM-5.2 producer comparison on one node
+# GLM-5.2 Snappy-Zstd producer benchmark on one node
 
-This manual benchmark compares **CPU XOR + Zstd**, **CPU XOR + Snappy**,
-**GPU XOR + Zstd**, and **GPU XOR + Snappy** using the actual Megatron direct
-exporter and GPU-delta publication protocol. Eight controlled arms retain all four
-encoder/codec combinations at 1 MiB framing and add GPU Zstd/Snappy at 64 KiB and 2 MiB.
-The default eight-arm matrix uses a per-tensor CPU Zstd envelope for Snappy.
-Two explicit additional arms compare CPU versus GPU outer Zstd with the same
-GPU Snappy inner frames: `--arms gpu-snappy-cpuouter gpu-snappy-gpuouter`.
-Use `--arms gpu-snappy` for a focused three-version run of the canonical path;
-a single arm validates its inventory but cannot establish cross-arm equality.
-It runs on eight GPUs with TP1/PP1/CP1/EP8/ETP1 and the
-native GLM-5.2 five-layer model (three dense layers and two routed MoE layers).
-It constructs and loads the real model, exports W4A16 NVFP4 using TE 4over6,
-and writes immutable owner publications. It does not launch a receiver or run
-forward/backward, an optimizer, or an activation RPC.
+This benchmark uses the actual Megatron direct exporter and GPU-delta publication
+protocol on eight GPUs: TP1/PP1/CP1/EP8/ETP1, native GLM-5.2 five-layer model
+(three dense layers and two routed MoE layers), NVFP4 TE 4over6 quantization.
+It loads the real model and writes three cumulative immutable publications.
+It does not launch a receiver or run forward/backward, an optimizer, or activation.
 
-- **Ownership:** the existing exporter quantizes each routed expert on its
-  EP × EDP owner before the expert gather. This topology has EDP1. Nonrouted
-  tensors are emitted by global rank 0 on the same node. Every rank participates
-  in the normal exporter collectives.
+- **Codec:** `WEIGHT_DELTA_CODEC=snappy-zstd` is the sole supported value and
+  default. Matrices use GPU XOR, GPU Snappy, then owner-wide GPU Zstd. Both
+  compression algorithms execute on GPU SMs. Hardware Snappy acceleration is a
+  receiver decompression property, not GPU compression acceleration.
+- **Ownership:** routed experts remain on their EP × EDP exporter owners before
+  expert gathering; this benchmark has EDP1. Global rank 0 owns nonrouted
+  tensors. All ranks participate in ordinary exporter collectives.
 - **Inputs:** supply matching prepared NVFP4 HF and native-DSA Megatron
-  `torch_dist` checkpoints. The script reads them and keeps them unchanged.
-  Its plan is built from names emitted by a real discovery export and original
-  checkpoint headers. Static/unemitted calibration scales and draft weights
-  are not added to the mutable plan. The canonical full-view plan is benchmark
-  metadata, not a live SGLang admission/capability result.
-- **Changes:** once per version, select approximately `--perturb-fraction`
-  of each floating matrix's elements and multiply them by
-  `1 + --perturb-relative-scale`. The deterministic selection depends on the
-  global parameter name and version, so replicated dense weights agree.
-  The model is then unchanged while all selected arms export it. Defaults select
-  about 0.1% of elements and multiply those by 1.03125. These are controlled
-  model perturbations, not learned optimizer steps, and do not target a fixed
-  post-quantization density or compression ratio.
-- **Comparison:** each arm has an independent canonical CPU baseline and
-  publication stream. After all arms finish each version, compare their
-  complete pending canonical CPU targets byte for byte, outside the measured
-  intervals. GPU committed baselines still contain the previous version at this
-  point. Differences fail the run. Only after all ranks pass does the harness
-  explicitly acknowledge each sealed publication and commit its pending baseline
-  for the next version. This is a producer-only simulated acknowledgment, not a
-  receiver activation or acceptance proof. Arm order rotates between versions,
-  starting from
-  CPU Zstd, CPU Snappy, GPU Zstd, GPU Snappy, GPU Zstd 64 KiB, GPU Snappy
-  64 KiB, GPU Zstd 2 MiB, GPU Snappy 2 MiB. The default three cumulative versions do not fully balance all eight
-  execution positions and are not repeated measurements of one fixed target. The initial discovery and each selected arm's
-  baseline export warm the exporter before measurement;
-  their durations are reported separately.
-- **Compression:** nvCOMP GPU compression runs GPU SM kernels for both codecs.
-  Blackwell's decompression engine does not accelerate compression. The CPU
-  arms use the existing owner worker pool, CPU XOR with Zstd or Snappy, and publication writer.
-  All GPU arms use the sole production bulk GPU encoder described below;
-  the four 64 KiB/2 MiB arms change only the per-instance frame size. The earlier
-  per-tensor GPU encoder has been removed; its saved results are historical controls.
+  `torch_dist` checkpoints. They remain immutable. A discovery export and original
+  checkpoint headers define the exact mutable inventory. Unemitted calibration
+  scales and the static draft are excluded. This plan is benchmark metadata,
+  not a live SGLang capability or identity proof.
+- **Perturbations:** once per version, select approximately `--perturb-fraction`
+  of each floating matrix and multiply by `1 + --perturb-relative-scale`.
+  Selection depends on parameter name/version, so replicated weights agree.
+  Defaults select 0.1% of elements and multiply by 1.03125. These are controlled
+  changes, not learned optimizer steps or a fixed post-quantization delta ratio.
+- **Correctness boundary:** after sealing, check every rank's complete pending
+  target names/byte sizes against discovered ownership, outside timing. Only then
+  simulate receiver acknowledgment and commit the pending baseline for the next
+  version. Native tests independently decode and compare payload bytes. This
+  single-codec benchmark does not prove target equality with a historical run.
 
-The GPU path first stages the full new canonical snapshot to pinned CPU memory
-as export proceeds. Canonical scalars and vectors bypass XOR and both codecs: an
-owner CPU worker compares them and writes complete target bytes only when changed.
-After that D2H work finishes, it encodes the remaining matrices in deterministic
-name-sorted batches using the existing `update_weight_buffer_size` target
-(512 MiB in this benchmark). A larger individual tensor stands alone; the
-value is a batching target, not a hard workspace-memory ceiling. Each batch
-uploads old and new bytes, computes XOR/counts, compresses all independent 1 MiB
-frames together (64 KiB or 2 MiB in the explicit framing controls), and returns encoded
-payloads to pinned CPU memory. For Snappy, one owner CPU worker wraps/hashes/
-writes completed batches while later GPU batches encode. For Zstd, file
-hash/write follows GPU encoding. All owner work drains before sealing the
-publication. The old CPU snapshot stays unchanged until acknowledgment.
+## Pipeline and memory
 
-This trades per-tensor compression dispatch/fences for bulk work, but GPU
-encoding no longer overlaps later exports. For C compressed-matrix bytes and R
-raw scalar/vector canonical bytes, it transfers (C + R) new bytes D2H plus C old
-and C new bytes H2D, in addition to encoded payload D2H. Raw values never return
-to the GPU compression path. The CPU control keeps its existing export-overlapped
-worker path, also bypassing XOR/codecs for raw values.
-No new batching knob or performance conclusion is introduced here; measure the
-new pipeline separately from earlier per-tensor GPU results.
+Export stages the complete new owner-local snapshot into pinned CPU memory.
+Canonical scalars/vectors bypass XOR and both compressors; an owner CPU worker
+compares them and writes complete target values only when changed. Classification
+is fixed during baseline setup, outside the update hot loop.
 
-## Supported producer configurations
+After export D2H completes, name-sorted matrix batches use the existing
+`update_weight_buffer_size` target (512 MiB here). Larger individual tensors remain
+whole. Upload old/new pinned snapshots, compute XOR/counts and compress all
+independent 1 MiB Snappy frames in one nvCOMP submission per batch. Only compact
+aligned Snappy arenas remain in HBM as batches finish. Compress all owner-local
+outer Zstd chunks together, read sizes/status once, pack final bytes and perform
+one pinned D2H. CPU workers hash/write the final outer payload; no intermediate
+Snappy D2H or large Snappy host slab is needed. Every owner drains before sealing.
+The old canonical snapshot stays unchanged until acknowledgment.
 
-All four combinations use the existing `gpu-delta` publication protocol. CPU
-Snappy is selected through the existing CPU encoder; no separate implementation
-or fallback is added by this benchmark.
-
-| Arm | `WEIGHT_DELTA_ENCODER` | `WEIGHT_DELTA_CODEC` | Frame bytes | XOR/compression execution |
-| --- | --- | --- | --- | --- |
-| `cpu-zstd` | `cpu` | `zstd` | 1,048,576 | CPU worker pool, Zstd |
-| `cpu-snappy` | `cpu` | `snappy` | 1,048,576 | CPU Snappy + CPU outer Zstd |
-| `gpu-zstd` | `gpu` | `zstd` | 1,048,576 | GPU XOR, nvCOMP CUDA compression |
-| `gpu-snappy` | `gpu` | `snappy` | 1,048,576 | GPU XOR/Snappy + CPU outer Zstd |
-| `gpu-zstd-64k` | `gpu` | `zstd` | 65,536 | Same GPU encoder, per-instance framing control |
-| `gpu-snappy-64k` | `gpu` | `snappy` | 65,536 | Same GPU encoder, per-instance framing control |
-| `gpu-zstd-2m` | `gpu` | `zstd` | 2,097,152 | Experimental producer-only framing control |
-| `gpu-snappy-2m` | `gpu` | `snappy` | 2,097,152 | Experimental producer-only framing control |
-| `gpu-snappy-cpuouter` | `gpu` | `snappy` | 1,048,576 | Explicit default CPU outer control |
-| `gpu-snappy-gpuouter` | `gpu` | `snappy` | 1,048,576 | Retain compact Snappy HBM, then one owner-wide GPU Zstd call |
-
-The 64 KiB/2 MiB rows are benchmark variants, not a new production environment or
-CLI knob. Production retains 1 MiB. Each variant owns a separate encoder and
-publication stream; no process-global frame-size monkeypatch can leak into a
-later arm. The publication records its frame profile explicitly:
-`zstd-independent-<frame>-v1` or `snappy-independent-<frame>-zstd-v1`,
-where `<frame>` is `64kib`, `1mib`, or `2mib`; the benchmark checks this
-against the arm. The explicit GPU outer arm freezes
-`WEIGHT_DELTA_SNAPPY_OUTER=gpu` on its protocol and uses protocol 4,
-`snappy-independent-1mib-gpu-zstd-v1`. All other arms freeze the default `cpu`
-outer mode independently, so setup order cannot leak environment values between
-arms. Direct scalar/vector values have no envelope in either mode.
-
-GPU outer Zstd waits until every bounded inner Snappy batch completes, retaining
-only compact aligned Snappy arenas in HBM. It compresses all tensor-boundary
-outer chunks together, reads back sizes/statuses once, packs final bytes once,
-and performs one pinned D2H. The CPU hashes/writes only these final wire bytes.
-This removes intermediate Snappy D2H and the large Snappy host slab, while adding
-GPU Zstd work and retained Snappy HBM. `outer_gpu_wall_s`, metadata/payload waits,
-optional CUDA phases, `encoded_d2h_bytes`, and final wire bytes expose that tradeoff.
-The isolated benchmark resets allocator peak counters after its existing pre-arm
-fence and records per-rank before/after/peak allocated and reserved bytes, with
-no extra synchronization or OOM fallback. These counters include export and
-compression, while `resident_snappy_hbm_bytes` describes retained inner storage.
-These are nested spans, not quantities to sum into a total. The benchmark keeps
-its existing exact cross-arm canonical-target comparison outside timed spans.
-
-**Receiver compatibility:** the paired SGLang receiver currently admits at most
-1 MiB decoded frames. The 2 MiB arms are producer-only experiments and their
-publications must not be sent to that receiver. Native producer round trips
-can qualify compression bytes independently; they do not establish receiver
-admission. Production retains 1 MiB and the receiver interoperability suite
-remains scoped to 64 KiB/1 MiB.
-
-Receiver decode is determined by codec, independently of the producer's CPU/GPU
-choice: Zstd uses CUDA decoding; Snappy requires Blackwell hardware decompression.
-The benchmark itself has no receiver. Production defaults remain GPU Snappy.
+For C matrix bytes and R scalar/vector bytes, this transfers C+R new bytes D2H,
+C old plus C new bytes H2D, and final outer payload D2H. Raw values never enter
+GPU compression. The full owner-local compact Snappy payload stays in HBM until
+outer encoding completes, alongside bounded canonical scratch and codec workspaces.
+There is no OOM fallback. No receiver GPU Zstd path is introduced: the receiver
+CPU-decodes into final pinned Snappy buffers, then streams per-tensor H2D and
+hardware Snappy decode/apply during the normal safe pause.
 
 ## Run
 
-Use the same explicitly versioned CUDA 13 Miles development image and source
-as the production path under test, with matching Megatron and Transformer
-Engine (including its NVFP4 4over6 support). Install the nvCOMP runtime used by
-`miles.utils.gpu_delta_nvcomp`; it uses the prebuilt library, not a runtime
-compiled extension. Record the image tag/digest with the result. The script
-records package versions, GPU model, topology arguments, and the required
-quantization environment. It rejects conflicting environment values. If sources
-are overlaid onto an image checkout, set `GPU_DELTA_SOURCE_DIGEST` to the externally
-verified source manifest digest. The benchmark does not require a Git checkout;
-the recorded source digest identifies the externally verified source tree.
-
-From the Miles checkout, with its dependencies and native-DSA checkpoint
-conversion already prepared:
+Use a matching explicit Miles CUDA13 image, paired feature checkout, prebuilt
+nvCOMP >=5.3, compatible FlashInfer and TransformerEngine, and the prepared
+five-layer checkpoints. Install nvCOMP without changing the image dependency
+closure as documented in [GPU_DELTA.md](GPU_DELTA.md).
 
 ```bash
-export PYTHONPATH="$PWD:/root/Megatron-LM:/root/TransformerEngine${PYTHONPATH:+:$PYTHONPATH}"
-torchrun --standalone --nproc-per-node=8 \
+export PYTHONPATH=/workspace/sglang/python:/workspace/miles:/root/Megatron-LM
+export WEIGHT_DELTA_CODEC=snappy-zstd
+python -m torch.distributed.run --standalone --nproc-per-node=8 \
   tests/manual/bench_gpu_delta_producer.py \
-  --hf-checkpoint /data/models/GLM-5.2_5layer-NVFP4 \
-  --load /data/models/GLM-5.2_5layer-megatron-dsa_torch_dist \
-  --output /data/benchmarks/gpu-delta-producer-001 \
-  --versions 3 \
-  --perturb-fraction 0.001 \
-  --perturb-relative-scale 0.03125 \
-  --timing
+  --hf-checkpoint /models/GLM5.2-5layer-NVFP4 \
+  --load /models/GLM5.2-5layer-megatron-torch_dist \
+  --output /data/gpu-delta/producer-new --versions 3 \
+  --perturb-fraction 0.001 --perturb-relative-scale 0.03125
 ```
 
-The output directory must be new. Raw per-arm/version receipts and publications
-are kept even if a later arm fails. `result.json` is written only after all selected
-arms in every version seal successfully and pass inventory checks; multiple
-selected arms also require identical targets before baseline commit. `setup.json` records initialization,
-discovery, baseline capture, rank ownership, the ordered `arms` list and exact
-`arm_order_by_version`. `arm_configs` records each arm's encoder, codec and
-frame bytes. `receiver_compatibility` identifies the two producer-only 2 MiB
-arms and current receiver frame limit. It also binds the `producer_pipelines` labels and existing
-`gpu_batch_target_bytes` (also per GPU arm) to the captured source. `plan.json`
-contains the exact mutable canonical inventory;
-every completed version repeats its actual `order`. Three versions produce 24
-arm/version observations, not repeated samples of a fixed target.
-A focused single arm produces three observations, with `equal: null` and
-`target_comparison: not-applicable-single-arm`; no cross-arm byte comparison is
-claimed. Every completed version also gets its own JSON
-and a concise JSON line on stdout. Nonzero `torchrun` exits remain failures;
-do not use an earlier successful partial receipt as complete-run acceptance.
+Output must be a new directory. The harness records runtime package versions,
+model flags, source digest (from `GPU_DELTA_SOURCE_DIGEST` when provided),
+GPU memory counters, original rank ownership and all per-version measurements.
+`--timing` enables CUDA phase events; default timing is off to avoid event overhead.
+There are no codec/encoder/outer arm selectors. Earlier comparison artifacts remain
+historical controls, not executable alternate production paths.
 
-The flags select only this benchmark. Codec and encoder choices are fixed
-explicitly for all eight arms; no production defaults or live serving settings
-are changed. To measure event overhead, rerun into a separate output directory
-without `--timing`, using the same inputs and perturbation arguments. Never
-merge timing-enabled and timing-disabled samples into one distribution.
+## Timing interpretation
 
-For a focused canonical Snappy rerun, add `--arms gpu-snappy` to the same command
-and use a new output directory. `gpu-snappy` always writes protocol 3 and
-`snappy-independent-1mib-zstd-v1`; CPU Snappy uses the same envelope contract.
-The owner CPU worker overlaps wrapping/hash/write with later GPU batches without
-extra GPU transfers. Report worker CPU time and final wait separately; neither
-is an additional term to add to caller blocked time.
-`inner_encoded_frame_bytes` is the pre-envelope Snappy/raw payload total;
-`outer_stored_bytes` and `outer_decoded_arena_bytes` describe the envelope.
-Complete publication ratios include files and manifest over canonical bytes.
+| Field | Scope |
+|---|---|
+| `producer_blocked_s` | Update setup through export, encoding tail, immutable publication and final completion fence; excludes pre-update barrier, perturbation and inventory check. |
+| `export_loop_s` | Actual conversion/quantization/collectives and new snapshot D2H staging. |
+| `encoding_tail_s` | Remaining export D2H, bulk GPU encoding, owner hash/write tails and collective agreement. |
+| `seal_and_visibility_s` | Owner shard sealing, metadata gather and final manifest publication. |
+| `conversion_host_s` | Host time advancing the real conversion iterator, nested in export. |
+| `conversion_cuda_ms` | Optional same-stream conversion events, read after final fence; includes dispatch gaps and intervening work. |
+| `publication.producer_metrics` | Per-owner nested encoding/wait/raw/write phases and source-accounted copy bytes. |
+| `gpu_memory_bytes` | Before/after/peak PyTorch allocated/reserved bytes over the isolated update. |
+| `sizes` | Changed canonical bytes, raw bytes, inner Snappy/outer Zstd/payload/manifest sizes. |
 
-Version 1 is labelled `first-use-allocation`; keep allocations/compilation
-separate from warm versions 2/3. Each version has a different cumulative target.
-Multiple selected arms rotate order but are not fully balanced repeated samples;
-a single selected arm reports cross-arm equality as not applicable. Repeat
-without `--timing` in a new output directory to isolate instrumentation effects.
+Report all rank ranges/medians plus rank0 separately. V1 includes first-use
+allocation/compilation; V2/V3 are warm cumulative versions, not independent
+fixed-target trials. Discovery and baseline export warm the exporter before
+measurement and are reported separately. No concurrent trainer workload exists,
+so this cannot establish training throughput or realized overlap.
 
-## Timings and ratios
+Nonoverlapping caller phases compose blocked time. Do not add nested conversion,
+compression, transfer or worker spans, or subtract monotonic timestamps across
+ranks. CUDA events can perturb timing and do not measure GPU idle time. Logical
+copy-byte counters are not bus measurements. `resident_snappy_hbm_bytes` records
+unique retained inner storage at outer entry, not allocator peak/workspace totals.
+The existing pre-update fence brackets peak-stat reset; reset does not empty the
+CUDA cache, and reserved memory can include earlier work. No host RSS/pinned-peak
+or untracked native allocation measurement is claimed.
 
-Per-rank wall spans use that process's monotonic clock. Report median and range
-over all eight ranks, retaining rank 0 separately because it owns ordinary
-tensors as well as experts.
-
-| Field | Meaning |
-| --- | --- |
-| `producer_blocked_s` | Caller time from update setup through export, background-work tail, immutable publication and final completion fence; excludes pre-arm barrier, target perturbation and correctness comparisons. |
-| `export_loop_s` | Real exporter loop including conversion/quantization and collectives. GPU: stages the new snapshot D2H. CPU: overlaps encoding workers and includes their queue backpressure. |
-| `encoding_tail_s` | GPU: final export D2H wait, bulk encoding, encoded-payload hash/write, and collective agreement. CPU: remaining owner futures and collective agreement. |
-| `seal_and_visibility_s` | Payload/shard sealing, metadata gather and final manifest publication. |
-| `conversion_host_s` | Sum of host intervals advancing the actual conversion/quantization iterator. Nested inside the exporter loop. |
-| `conversion_cuda_ms` | Optional same-stream event spans around those conversions, read only after the final fence. Includes dispatch gaps or intervening work; not a pure quantization-kernel measurement. |
-| `publication.producer_metrics` | Production per-owner diagnostics, byte movement and optional GPU phase timings. GPU includes `export_staging_wait_s`, `bulk_encode_s`, `encoded_hash_write_s`, and `encoder_batches`; these are nested in caller phases. CPU worker spans can overlap each other and the exporter. |
-| `sizes.changed_bytes / sizes.canonical_bytes` | Actual post-export canonical byte-change fraction. Separate from selected training elements. |
-| `(sizes.payload_bytes + sizes.manifest_bytes) / sizes.canonical_bytes` | Actual complete compressed-publication fraction, including manifest metadata. Raw-fallback frames count as wire bytes. |
-
-The nonoverlapping caller wall phases plus setup/final fence compose the
-blocked interval. **Do not add conversion, compression, H2D/D2H or worker sums
-to it:** those are nested or overlapping diagnostics. Likewise do not subtract
-monotonic timestamps from different ranks. GPU events can perturb timing and
-do not establish GPU-idle time. There is no concurrent trainer workload in this
-benchmark, so it does not establish the training throughput benefit of overlap.
-
-With `--timing`, owner `tensor_phases` retains GPU `baseline_h2d_s`,
-`current_h2d_s`, `xor_count_s`, `compression_s`, and `encoded_pack_d2h_s` spans
-plus host `metadata_wait_s` and `payload_wait_s`. Shared batch timings appear
-only on the batch's first entry with `timing_scope="batch"`; do not multiply
-these timings by its tensor count. `encoded_pack_d2h_s` includes GPU payload
-packing and its D2H copy, not just PCIe transfer. The final encoded file
-hash/write span is reported once per owner. Snappy additionally reports
-outer CPU compression/work and its exposed tail, which overlap later GPU batches. Keep host waits separate from GPU
-work; waits include GPU completion and possibly host scheduling. No nested
-span sum is an additional producer latency.
-
-The receiver benchmark in [GPU_DELTA.md](GPU_DELTA.md) measures another part
-of the pipeline. Producer-only results do not establish end-to-end RL weight
-sync speed, serving pause time, receiver correctness or numerical quality.
-Changing weights rather than replaying a fixed quantized file is intentional:
-the real exporter and quantizer costs remain inside the measured path.
-
-### Direct scalar and vector targets
-
-Canonical rank-zero and rank-one tensors (including NVFP4 FP32 second-level
-scales, norms, and biases) use `raw_bytes`: publish the complete target bytes
-when changed, without XOR, frame encoding, or the Snappy Zstd envelope. Unchanged
-values carry no payload or receiver copy. Matrices retain the
-selected compressed XOR path. This is shape-based, with no model-name list or
-size tuning. Producer accounting reports `raw_tensor_count` and
-`raw_bytes` separately; those bytes remain part of publication traffic.
-The receiver packs these values into a pinned arena and transfers it during
-prepare, then copies them into the existing destination storage while paused.
-
-Comparisons against earlier compressed scalar/vector results must retain the
-same perturbations and canonical name/dtype/shape/view inventory, while allowing
-this deliberate encoding and plan-digest change. A saved full-model receiver
-fixture must be explicitly derived into the new plan before benchmarking; a
-live receiver never silently interprets an old plan as the new contract.
+Compare the [full-model receiver benchmark](GPU_DELTA.md) separately. Its input
+fixture and timings differ from this five-layer producer workload; do not subtract
+one from the other to claim end-to-end RL savings.

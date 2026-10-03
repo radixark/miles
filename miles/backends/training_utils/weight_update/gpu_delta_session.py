@@ -6,16 +6,20 @@ import asyncio
 import uuid
 from collections.abc import Mapping, Sequence
 
-from miles.utils.gpu_delta_publication import canonical_json, sha256
+from miles.utils.gpu_delta_publication import CODEC, canonical_json, sha256
 
 
-def merge_plans(descriptions: Sequence[dict]) -> tuple[list[dict], list[dict], str]:
+def merge_plans(descriptions: Sequence[dict], *, codec: str = CODEC) -> tuple[list[dict], list[dict], str]:
     """Merge canonical views, never receiver-specific physical layout maps."""
+    if codec != CODEC:
+        raise ValueError(f"Unsupported GPU-delta codec: {codec}")
     entries, identities = {}, []
     for description in descriptions:
         if description.get("success") is not True:
             raise RuntimeError(f"GPU-delta describe failed: {description.get('message')}")
         for participant in description["participants"]:
+            if participant["plan"].get("codec") != codec:
+                raise ValueError("Sender and receiver GPU-delta codecs differ")
             identities.append(participant["identity"])
             for tensor in participant["plan"]["tensors"]:
                 name = tensor["name"]
@@ -57,7 +61,7 @@ async def activate_publication(clients, descriptions, publication, *, session_id
     remain fail-closed; reconnection must not blindly replay an XOR publication.
     """
     session_id = session_id or uuid.uuid4().hex
-    plan, cohort, plan_digest = merge_plans(descriptions)
+    _, cohort, plan_digest = merge_plans(descriptions, codec=publication["codec"])
     if publication["plan_digest"] != plan_digest:
         raise ValueError("Publication differs from the negotiated receiver plan")
     expected = [[p["identity"] for p in d["participants"]] for d in descriptions]

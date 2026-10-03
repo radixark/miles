@@ -1036,7 +1036,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                     "only the changed bytes to --update-weight-disk-dir; each engine's /pull_weights applies "
                     "them into a host-local checkpoint that the engine reloads from. "
                     "'gpu-delta' publishes canonical GPU-encoded frames for streaming SGLang GPU apply. "
-                    "WEIGHT_DELTA_CODEC=snappy|zstd selects compression; WEIGHT_DELTA_ENCODER=cpu selects the reference encoder."
+                    "WEIGHT_DELTA_CODEC selects the publication codec (currently snappy-zstd only)."
                 ),
             )
             parser.add_argument(
@@ -3613,9 +3613,9 @@ def miles_validate_args(args):
         assert args.update_weight_disk_dir and os.path.isdir(
             args.hf_checkpoint
         ), "GPU delta requires a shared publication directory and a local canonical HF checkpoint"
-        from miles.utils.gpu_delta_publication import settings_from_env
+        from miles.utils.gpu_delta_publication import configured_codec
 
-        settings_from_env()
+        configured_codec()
 
     if args.update_weight_transfer_mode == "disk-delta":
         assert not args.colocate, (
