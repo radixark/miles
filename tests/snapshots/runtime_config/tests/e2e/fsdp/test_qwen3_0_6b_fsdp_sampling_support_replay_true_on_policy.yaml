@@ -1,0 +1,218 @@
+processes:
+  tests/e2e/fsdp/test_qwen3_0_6b_fsdp_sampling_support_replay_true_on_policy/run-0000/all/default/actor_cell00000:
+    diffs:
+      checkpoint_load-0000: {set: {/format: hf, /load: /root/models/Qwen3-0.6B}}
+      train_first_step-0000: {set: {/args/backend/lr_decay_iters: 5, /args/backend/train_iters: 5, /role: actor}}
+    ranks: [0, 1]
+    template: trainer-fsdp-01
+  tests/e2e/fsdp/test_qwen3_0_6b_fsdp_sampling_support_replay_true_on_policy/run-0000/all/default/inference_controller:
+    diffs: &id002
+      router_endpoints-0000:
+        set:
+          <<: &id001
+            /args/sglang_model_routers: {default: {$tuple: [$HOST, $PORT]}}
+            /args/sglang_router_ip: $HOST
+            /args/sglang_router_port: $PORT
+    template: inference_controller-01
+  tests/e2e/fsdp/test_qwen3_0_6b_fsdp_sampling_support_replay_true_on_policy/run-0000/all/default/main:
+    diffs:
+      router_endpoints-0000:
+        set:
+          <<: *id001
+          /args/wandb_run_id: $WANDB_RUN_ID_0000
+      tracking_config-0000: {set: {/args/wandb_run_id: $WANDB_RUN_ID_0000}}
+    overrides:
+      set:
+        <<: &id003
+          /args/raw_fsdp:
+            adam_beta1: 0.9
+            adam_beta2: 0.98
+            adam_eps: 1.0e-08
+            attn_implementation: flash_attention_3
+            backend_name: fsdp
+            bf16: true
+            calculate_per_token_loss: false
+            ckpt_step: null
+            clip_grad: 1.0
+            config: null
+            context_parallel_size: 1
+            deterministic_mode: true
+            disable_grad_buffers_cpu_backup: true
+            disable_param_buffers_cpu_backup: true
+            dp_replicate_size: 1
+            finetune: true
+            fp16: false
+            fsdp_cpu_backend: gloo
+            fsdp_cpu_offload: false
+            fsdp_state_dict_cpu_offload: true
+            gradient_checkpointing: false
+            keep_fp32_master: true
+            load: null
+            lr: 1.0e-06
+            lr_decay_iters: null
+            lr_decay_style: constant
+            lr_warmup_fraction: null
+            lr_warmup_init: 0.0
+            lr_warmup_iters: 0
+            lr_wsd_decay_iters: null
+            lr_wsd_decay_style: null
+            memory_snapshot_path: snapshot.pickle
+            min_lr: 0.0
+            mtp_loss_scaling_factor: 0.2
+            mtp_num_layers: null
+            no_load_optim: true
+            no_load_rng: true
+            no_save_optim: false
+            optimizer: adam
+            override_lr_scheduler: false
+            profile_step_end: 12
+            profile_step_start: 10
+            rank: 0
+            record_memory_history: false
+            tensorboard_dir: null
+            use_checkpoint_lr_scheduler: true
+            use_pytorch_profiler: false
+            wandb_project: miles-test_qwen3_0_6b_fsdp_sampling_support_replay_true_on_policy
+            wandb_run_name: null
+            warmup_ratio: 0.03
+            weight_decay: 0.1
+            world_size: 2
+          /args/raw_megatron:
+            base_args: {}
+            trainers:
+            - {actor_index: 0, model_id: null, overrides: {}, role: actor, trainer_id: actor}
+        /args/wandb_run_id: null
+    template: inference_controller-01
+  tests/e2e/fsdp/test_qwen3_0_6b_fsdp_sampling_support_replay_true_on_policy/run-0000/all/default/rollout_executor:
+    diffs: *id002
+    overrides:
+      set:
+        <<:
+        - *id003
+        - &id004
+          /args/async_data_buffer_capacity_factor: 2.0
+          /args/async_max_concurrent_samples: null
+          /args/buffer_filter_path: null
+          /args/ci_assert_prefill_lag_max: null
+          /args/ci_inject_missing_prefetched_batch_bug: false
+          /args/ci_inject_rollout_data_min_match_ratio: 0.9
+          /args/ci_inject_rollout_data_start_rollout_id: null
+          /args/custom_async_data_buffer_path: null
+          /args/custom_convert_samples_to_train_data_path: null
+          /args/custom_eval_rollout_log_function_path: null
+          /args/custom_reward_post_process_path: null
+          /args/custom_rollout_log_function_path: null
+          /args/dynamic_sampling_filter_path: null
+          /args/eval_datasets: []
+          /args/eval_function_path:
+            config: null
+            path: miles.rollout.inference_rollout.inference_rollout_common.InferenceRolloutFn
+          /args/eval_max_prompt_len: null
+          /args/eval_reward_key: null
+          /args/group_rm: false
+          /args/grpo_std_normalization: true
+          /args/inference_runtime_mut_state: {engine_count: 0, eval_engine_count: 0, gpu_count: 0}
+          /args/load_debug_rollout_data_subsample: null
+          /args/log_passrate: false
+          /args/loss_mask_type: qwen
+          /args/mask_offpolicy_in_partial_rollout: false
+          /args/max_weight_staleness: null
+          /args/namespaced_radix_cache: false
+          /args/opd_log_prob_top_k: 0
+          /args/opd_reward_weight_mode: student_p
+          /args/opd_teacher_key: opd_teacher
+          /args/opd_teacher_urls: null
+          /args/opd_top_k_strategy: only-student
+          /args/opd_topk_per_position: false
+          /args/over_sampling_batch_size: 4
+          /args/partial_rollout: false
+          /args/recompute_logprobs_via_prefill: false
+          /args/rewards_normalization: true
+          /args/rm_url: null
+          /args/rollout_all_samples_process_path: null
+          /args/rollout_max_context_len: null
+          /args/rollout_max_prompt_len: null
+          /args/rollout_sample_filter_path: null
+          /args/rollout_seed: 42
+          /args/rollout_shuffle: false
+          /args/rollout_skip_special_tokens: false
+          /args/rollout_stop: null
+          /args/rollout_stop_token_ids: null
+          /args/rollout_submission_granularity: null
+          /args/save_debug_rollout_data: null
+    template: inference_controller-01
+  tests/e2e/fsdp/test_qwen3_0_6b_fsdp_sampling_support_replay_true_on_policy/run-0000/all/default/trainer_controller_actor: {
+    overrides: {set: {/args/backend/rank: 0}}, template: trainer-fsdp-01}
+  tests/e2e/fsdp/test_qwen3_0_6b_fsdp_sampling_support_replay_true_on_policy/run-0000/all/default/worker_manager:
+    overrides:
+      set:
+        <<:
+        - *id003
+        - *id004
+        /args/actor_num_gpus_per_node: 2
+        /args/actor_num_nodes: 1
+        /args/critic_num_gpus_per_node: null
+        /args/critic_num_nodes: null
+        /args/eval_num_gpus: 0
+        /args/eval_num_gpus_per_engine: 1
+        /args/rollout_num_gpus: 2
+        /args/sglang_scaling: {groups: {default: [{engine_offset: 0, gpu_offset: 0, num_gpus: 2}]}}
+        /args/tinker_base_model: null
+        /args/tinker_checkpoint_root: null
+        /args/tinker_lora_groups: null
+        /args/tinker_server_host: 0.0.0.0
+        /args/tinker_server_port: 10613
+    template: inference_controller-01
+shared_overrides:
+  inference_controller-01:
+    set:
+      <<: &id005
+        /args/config_snapshot_name: tests/e2e/fsdp/test_qwen3_0_6b_fsdp_sampling_support_replay_true_on_policy/run-0000
+        /args/eps_clip_high: 0.2
+        /args/hf_checkpoint: /root/models/Qwen3-0.6B
+        /args/n_samples_per_prompt: 4
+        /args/num_rollout: 5
+        /args/prompt_data: /root/datasets/gsm8k/train.parquet
+        /args/rollout_batch_size: 4
+        /args/rollout_top_k: 32
+        /args/rollout_top_p: 0.8
+        /args/sglang/base_args/enable_deterministic_inference: true
+        /args/sglang/base_args/mem_fraction_static: 0.4
+        /args/sglang/base_args/true_on_policy_contract: qwen3_dense_true_on_policy_v1
+        /args/sglang/models:
+        - model_path: null
+          name: default
+          server_groups:
+          - needs_offload: true
+            num_gpus_per_engine: 1
+            overrides: {model_path: /root/models/Qwen3-0.6B}
+            worker_type: {$enum: miles.backends.sglang_utils.sglang_api_client.WorkerType, name: REGULAR}
+          update_weights: true
+        /args/true_on_policy_mode: true
+        /args/use_dynamic_batch_size: false
+        /args/use_sampling_support_replay: true
+        /args/wandb_group: $RUN_ID_0001_$CI_COMMIT_NAME_github
+      /args/enable_sample_ownership_checker: false
+      /args/global_batch_size: 16
+      /args/kl_loss_type: k1
+      /args/num_layers: 28
+      /args/rm_type: math
+      /args/rollout_max_response_len: 1024
+      /args/sglang/base_args/attention_backend: fa3
+      /args/sglang/base_args/decode_log_interval: 1000
+      /args/train_backend: fsdp
+      /args/wandb_project: miles-test_qwen3_0_6b_fsdp_sampling_support_replay_true_on_policy
+  trainer-fsdp-01:
+    remove: [/args/train_env_vars/PYTORCH_CUDA_ALLOC_CONF]
+    set:
+      <<: *id005
+      /args/backend/deterministic_mode: true
+      /args/backend/global_batch_size: 16
+      /args/backend/gradient_checkpointing: false
+      /args/backend/num_layers: 28
+      /args/backend/wandb_project: miles-test_qwen3_0_6b_fsdp_sampling_support_replay_true_on_policy
+      /args/init_expected_num_cells/default: 2
+      /args/input_key: messages
+      /args/log_probs_max_tokens_per_gpu: null
+      /args/max_tokens_per_gpu: null
+      /args/sglang/base_args/chunked_prefill_size: null

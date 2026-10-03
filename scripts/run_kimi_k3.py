@@ -102,7 +102,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
         if self.bf16_checkpoint is None:
             self.bf16_checkpoint = f"{self.model_dir}/{self.bf16_name}"
         if self.ref_load is None:
-            self.ref_load = f"{self.model_dir}/{self.bf16_name}_torch_dist"
+            self.ref_load = f"{self.model_dir}/{self._torch_dist_name}_torch_dist"
         if self.lr is None:
             self.lr = 1e-5 if self.train_mode == "lora" else 1e-6
         if self.rollout_tp_size is None:
@@ -176,6 +176,10 @@ class ScriptArgs(U.ExecuteTrainConfig):
     @property
     def bf16_name(self) -> str:
         return f"{self.model_name}-bf16"
+
+    @property
+    def _torch_dist_name(self) -> str:
+        return f"{self.bf16_name}-kda-direct-v1"
 
     @property
     def megatron_model_type(self) -> str:
@@ -267,7 +271,7 @@ def _prepare_torch_dist(args: ScriptArgs) -> None:
     # experts that dominate the 4-layer prune, and the torch_dist output re-shards at load
     backend = args.create_backend()
     backend.convert_checkpoint(
-        model_name=args.bf16_name,
+        model_name=args._torch_dist_name,
         megatron_model_type=args.megatron_model_type,
         num_gpus_per_node=args.num_gpus_per_node,
         extra_args=(

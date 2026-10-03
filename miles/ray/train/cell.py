@@ -2,6 +2,7 @@ import asyncio
 import logging
 import time
 
+from miles.backends.megatron_utils.checkpoint_request import MegatronCheckpointLoad
 from miles.ray.train.cell_monitor import compute_cell_status
 from miles.ray.train.cell_state import (
     CellState,
@@ -31,6 +32,7 @@ class TrainerCell:
         self,
         *,
         args,
+        checkpoint_load: MegatronCheckpointLoad | None = None,
         role: str,
         with_ref: bool,
         with_opd_teacher: bool = False,
@@ -41,6 +43,7 @@ class TrainerCell:
         provider: BaseWorkerProvider,
     ) -> None:
         self.args = args
+        self._checkpoint_load = checkpoint_load
         self.cell_id = cell_id
         self.cell_index = cell_index
         self.workers_hash = workers_hash
@@ -48,6 +51,8 @@ class TrainerCell:
         self.with_ref = with_ref
         self.with_opd_teacher = with_opd_teacher
         self.health_checker = health_checker
+        self._detached = False
+        self._pending_calls: set[asyncio.Future] = set()
 
         (worker_infos,) = provider.get_worker_infos(cell_ids=[cell_id])
         self._master_addr: HostAndPort = worker_infos[0].self_addrs[MASTER_PORT_NAME]
@@ -58,6 +63,12 @@ class TrainerCell:
         self._state: CellState = StateAllocatedUninitialized(worker_handles=list(worker_handles.values()))
 
     # ------------------------ API ------------------------
+
+    def detach(self) -> None:
+        self._detached = True
+        self.health_checker.stop()
+        for call in self._pending_calls:
+            call.cancel()
 
     async def init(
         self,
@@ -74,6 +85,7 @@ class TrainerCell:
         results = await self.execute(
             "init",
             args=self.args,
+            checkpoint_load=self._checkpoint_load,
             role=self.role,
             with_ref=self.with_ref,
             with_opd_teacher=self.with_opd_teacher,
@@ -86,8 +98,9 @@ class TrainerCell:
         await asyncio.sleep(0)
         return results
 
-    async def load_state(self) -> list:
-        return await self.execute("load_state")
+    async def load_state(self, checkpoint_load: MegatronCheckpointLoad | None) -> list:
+        self._checkpoint_load = checkpoint_load
+        return await self.execute("load_state", checkpoint_load=checkpoint_load)
 
     async def train(
         self,
@@ -235,16 +248,22 @@ class TrainerCell:
         kill_on_failure: bool = True,
         timeout: float | None = None,
     ) -> list:
+        if self._detached:
+            raise WorkerUnreachableError(f"Cell {self.cell_id} was removed")
         handles = self._get_worker_handles()
         log_structured(
             logger.info, tag="ft", op="execute", phase="start", cell=self.cell_id, fn=fn_name, n_actors=len(handles)
         )
         start = time.monotonic()
+        calls = []
         try:
-            result = await asyncio.wait_for(
-                asyncio.gather(*[getattr(handle, fn_name)(**compute_kwargs(i)) for i, handle in enumerate(handles)]),
-                timeout=timeout,
-            )
+            for i, handle in enumerate(handles):
+                call = asyncio.ensure_future(
+                    getattr(handle, fn_name)(**compute_kwargs(i))
+                )  # config-access-exempt: attribute selected at runtime from fn_name
+                calls.append(call)
+                self._pending_calls.add(call)
+            result = await asyncio.wait_for(asyncio.gather(*calls), timeout=timeout)
             log_structured(
                 logger.info,
                 tag="ft",
@@ -256,6 +275,10 @@ class TrainerCell:
                 elapsed_s=round(time.monotonic() - start, 1),
             )
             return result
+        except asyncio.CancelledError:
+            if self._detached:
+                raise WorkerUnreachableError(f"Cell {self.cell_id} was removed") from None
+            raise
         except Exception:
             log_structured(
                 logger.error,
@@ -267,9 +290,14 @@ class TrainerCell:
                 elapsed_s=round(time.monotonic() - start, 1),
                 exc_info=True,
             )
-            if kill_on_failure:
+            if kill_on_failure and not self._detached:
                 await self.mark_errored_and_kill()
             raise
+        finally:
+            for call in calls:
+                call.cancel()
+            await asyncio.gather(*calls, return_exceptions=True)
+            self._pending_calls.difference_update(calls)
 
     # ------------------------ state and misc queries ------------------------
 

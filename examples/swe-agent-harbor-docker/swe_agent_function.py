@@ -40,9 +40,21 @@ def _get_agent_server_client() -> httpx.AsyncClient:
     if _agent_server_client is None:
         socket_options = [
             (socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1),
-            (socket.IPPROTO_TCP, getattr(socket, "TCP_KEEPIDLE", 4), 60),
-            (socket.IPPROTO_TCP, getattr(socket, "TCP_KEEPINTVL", 5), 30),
-            (socket.IPPROTO_TCP, getattr(socket, "TCP_KEEPCNT", 6), 5),
+            (
+                socket.IPPROTO_TCP,
+                getattr(socket, "TCP_KEEPIDLE", 4),
+                60,
+            ),  # config-access-exempt: TCP keepalive constant names vary across supported host platforms
+            (
+                socket.IPPROTO_TCP,
+                getattr(socket, "TCP_KEEPINTVL", 5),
+                30,
+            ),  # config-access-exempt: TCP keepalive constant names vary across supported host platforms
+            (
+                socket.IPPROTO_TCP,
+                getattr(socket, "TCP_KEEPCNT", 6),
+                5,
+            ),  # config-access-exempt: TCP keepalive constant names vary across supported host platforms
         ]
         transport = httpx.AsyncHTTPTransport(socket_options=socket_options)
         _agent_server_client = httpx.AsyncClient(
@@ -136,9 +148,13 @@ async def abort(args) -> None:
     """
     agent_server_url = os.getenv("AGENT_SERVER_URL", os.getenv("SWE_AGENT_URL"))
 
-    instances = getattr(args, "session_server_instances", None) or []
+    instances = (
+        getattr(args, "session_server_instances", None) or []
+    )  # config-access-exempt: abort accepts parent configs with instance lists and legacy child configs with only a singular id
     instance_ids = {instance.instance_id for instance in instances if instance.instance_id}
-    singular = getattr(args, "session_server_instance_id", None)  # back-compat / child path
+    singular = getattr(
+        args, "session_server_instance_id", None
+    )  # back-compat / child path  # config-access-exempt: legacy child configs carry a singular id absent from the parent SessionConfig
     if singular:
         instance_ids.add(singular)
 

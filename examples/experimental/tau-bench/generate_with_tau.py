@@ -79,7 +79,7 @@ def res_to_sample(res: InteractionResult, task_index: int) -> Sample:
     # Debug logging for response tracking
     logger.debug(
         f"res_to_sample: response_length="
-        f"{res.response_length if hasattr(res, 'response_length') else 'None'}, "
+        f"{res.response_length if hasattr(res, 'response_length') else 'None'}, "  # config-access-exempt: Tau agents attach response_length only when final token accounting is available
         f"loss_mask_len={len(res.loss_mask) if res.loss_mask else 'None'}, "
         f"tokens_len={len(res.tokens) if res.tokens else 'None'}"
     )
@@ -97,7 +97,9 @@ def res_to_sample(res: InteractionResult, task_index: int) -> Sample:
     )
 
     # Ensure response_length is set correctly
-    if hasattr(res, "response_length"):
+    if hasattr(
+        res, "response_length"
+    ):  # config-access-exempt: Tau agents attach response_length only when final token accounting is available
         sample.response_length = res.response_length
     else:
         # Fallback: calculate from loss_mask if available

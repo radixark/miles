@@ -1,0 +1,11 @@
+--- fsdp
++++ fsdp_hybrid_shard
+@@ -2 +2 @@
+-  actor_num_gpus_per_node: 1
++  actor_num_gpus_per_node: 4
+@@ -293 +293 @@
+-    dp_replicate_size: 1
++    dp_replicate_size: 2
+@@ -330 +330 @@
+-    world_size: 1
++    world_size: 4

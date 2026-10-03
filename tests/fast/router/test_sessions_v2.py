@@ -18,8 +18,10 @@ import pytest
 import requests
 import safetensors.numpy
 from fastapi.responses import JSONResponse
+from tests.fast.fixtures.sglang_config_fixtures import make_sglang_config
 from tests.fast.router.test_sessions import _create_session, _post_chat
 
+from miles.backends.megatron_utils.megatron_config import MegatronConfig
 from miles.rollout.session.config import compute_session_server_config
 from miles.rollout.session.samples.codec import decode_samples_and_merge_input_sample
 from miles.rollout.session.server import SessionServer
@@ -50,13 +52,15 @@ def _serve_router(extra_args: dict | None = None):
             "use_rollout_routing_replay": False,
             "use_rollout_indexer_replay": False,
             "use_sampling_support_replay": False,
-            "sglang_speculative_algorithm": None,
+            "sglang": make_sglang_config(speculative_algorithm=None),
             "num_layers": None,
-            "moe_router_topk": None,
+            "raw_megatron": MegatronConfig(trainers=[], base_args={}),
             "save_debug_trajectory_data": None,
             "lora_rank": 0,
             "lora_adapter_path": None,
+            "lora_train_only": False,
             "use_session_server": "v2",
+            "session_message_matcher": "strict",
             "session_server_instance_id": uuid.uuid4().hex,
             "pause_generation_mode": "retract",
             "session_sample_picker_path": "miles.rollout.session.v2.picker_hub.drop_same_prompt_retries",

@@ -67,6 +67,7 @@ async def test_create_reads_session_server_instance_id_from_args(monkeypatch, cr
     args = SimpleNamespace(
         session_server_instances=[SessionServerInstance(addr="127.0.0.1:12345", instance_id="server-instance-123")],
         use_sampling_support_replay=expected_payload.get("top_p", 1.0) < 1.0 or expected_payload.get("top_k", -1) > 0,
+        use_session_server=False,
         rollout_temperature=expected_payload.get("temperature", 1.0),
         rollout_top_p=expected_payload.get("top_p", 1.0),
         rollout_top_k=expected_payload.get("top_k", -1),
@@ -90,6 +91,8 @@ async def test_create_without_instance_id_on_args(monkeypatch):
     args = SimpleNamespace(
         session_server_instances=[SessionServerInstance(addr="127.0.0.1:12345")],
         use_sampling_support_replay=False,
+        use_session_server=False,
+        rollout_temperature=1.0,
     )
     tracer = await OpenAIEndpointTracer.create(args)
 
@@ -120,6 +123,8 @@ async def test_create_distributes_sessions_across_port_range(monkeypatch):
     args = SimpleNamespace(
         session_server_instances=[SessionServerInstance(addr=f"127.0.0.1:{port}") for port in ports],
         use_sampling_support_replay=False,
+        use_session_server=False,
+        rollout_temperature=1.0,
     )
 
     chosen_ports = set()
@@ -164,6 +169,8 @@ class TestOpenAIEndpointTracerCreate:
                 SessionServerInstance(addr="10.0.0.2:5005", instance_id="instance-b"),
             ],
             use_sampling_support_replay=False,
+            use_session_server=False,
+            rollout_temperature=1.0,
         )
         tracer = await OpenAIEndpointTracer.create(args)
 
@@ -199,6 +206,8 @@ class TestOpenAIEndpointTracerCreate:
             SimpleNamespace(
                 session_server_instances=[SessionServerInstance(addr="127.0.0.1:12345")],
                 use_sampling_support_replay=False,
+                use_session_server=False,
+                rollout_temperature=1.0,
             ),
             extra_key=extra_key,
         )
@@ -226,6 +235,8 @@ class TestOpenAIEndpointTracerCreate:
                 SessionServerInstance(addr="10.0.0.2:5005", external_addr="100.64.0.2:5005"),
             ],
             use_sampling_support_replay=False,
+            use_session_server=False,
+            rollout_temperature=1.0,
         )
         tracer = await OpenAIEndpointTracer.create(args)
 
@@ -246,6 +257,8 @@ class TestOpenAIEndpointTracerCreate:
         args = SimpleNamespace(
             session_server_instances=[SessionServerInstance(addr="10.0.0.1:5005")],
             use_sampling_support_replay=False,
+            use_session_server=False,
+            rollout_temperature=1.0,
         )
         tracer = await OpenAIEndpointTracer.create(args)
 
@@ -253,10 +266,10 @@ class TestOpenAIEndpointTracerCreate:
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
-        "instances_kwargs", [{}, {"session_server_instances": None}, {"session_server_instances": []}]
+        "instances_kwargs", [{"session_server_instances": None}, {"session_server_instances": []}]
     )
     async def test_create_without_session_server_instances_raises_before_post(self, monkeypatch, instances_kwargs):
-        """create() raises a RuntimeError pointing at --use-session-server and issues no HTTP request when session_server_instances is absent, null or empty."""
+        """create() raises a RuntimeError pointing at --use-session-server and issues no HTTP request when session_server_instances is null or empty."""
         posted: list[str] = []
 
         async def fake_post(url: str, payload: dict, action: str = "post"):
@@ -282,6 +295,7 @@ class TestOpenAIEndpointTracerCreate:
         args = SimpleNamespace(
             session_server_instances=[SessionServerInstance(addr="127.0.0.1:12345")],
             use_sampling_support_replay=True,
+            use_session_server=False,
             rollout_temperature=1.0,
             rollout_top_p=0.95,
             rollout_top_k=32,

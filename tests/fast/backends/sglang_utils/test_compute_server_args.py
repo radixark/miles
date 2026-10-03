@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 import msgspec
 import pytest
+from tests.fast.fixtures.sglang_config_fixtures import with_parser_defaults_and_sglang_config
 
 from miles.backends.sglang_utils import sglang_engine
 from miles.backends.sglang_utils.sglang_api_client import WorkerType
@@ -28,11 +29,12 @@ def make_args(**overrides: object) -> SimpleNamespace:
         lora_adapter_path=None,
         debug_rollout_only=False,
         debug_skip_weight_update=False,
+        multi_lora=False,
         multi_lora_n_adapters=1,
         lora_adapter_targets=[f"model.layers.*.self_attn.{projection}_proj" for projection in ("q", "k", "v")],
     )
     defaults.update(overrides)
-    return SimpleNamespace(**defaults)
+    return SimpleNamespace(**with_parser_defaults_and_sglang_config(defaults))
 
 
 def compute(args: SimpleNamespace, **overrides: object) -> dict:

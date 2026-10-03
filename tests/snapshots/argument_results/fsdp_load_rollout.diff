@@ -1,0 +1,14 @@
+--- fsdp
++++ fsdp_load_rollout
+@@ -96 +96 @@
+-  debug_train_only: false
++  debug_train_only: true
+@@ -185 +185 @@
+-  load_debug_rollout_data: null
++  load_debug_rollout_data: $FIXTURES/rollout.pt
+@@ -370 +370 @@
+-  rollout_num_gpus: null
++  rollout_num_gpus: 0
+@@ -1001 +1001 @@
+-  starts_inference_engines: true
++  starts_inference_engines: false

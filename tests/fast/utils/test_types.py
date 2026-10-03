@@ -5,6 +5,7 @@ from unittest.mock import MagicMock
 
 import numpy
 import pytest
+from tests.fast.fixtures.sglang_config_fixtures import make_sglang_config
 
 from miles.utils.types import LEGACY_WEIGHT_VERSIONS_KEY, Sample, WeightVersionSpan, WeightVersionsPerCall
 
@@ -227,7 +228,7 @@ class TestStripLastOutputTokens:
 
 
 def _make_args() -> SimpleNamespace:
-    return SimpleNamespace(sglang_speculative_algorithm=None)
+    return SimpleNamespace(sglang=make_sglang_config(speculative_algorithm=None))
 
 
 def _make_meta_info(output_ids: list[int], **extra) -> dict:

@@ -1,4 +1,5 @@
 import os
+import sys
 from pathlib import Path
 
 import pytest
@@ -14,11 +15,14 @@ _PROXY_ENV_VARS: tuple[str, ...] = ("http_proxy", "https_proxy", "HTTP_PROXY", "
 
 
 @pytest.fixture
-def scenario_harness(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> ScenarioHarness:
+def scenario_harness(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, request: pytest.FixtureRequest
+) -> ScenarioHarness:
     for name in [name for name in os.environ if name.startswith(SCRIPT_ENV_VAR_PREFIX)]:
         monkeypatch.delenv(name)
     for name in _PROXY_ENV_VARS:
         monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr(sys, "argv", [str(request.path)])
     monkeypatch.setenv(f"{SCRIPT_ENV_VAR_PREFIX}RUN_ID", SCENARIO_RUN_ID)
     monkeypatch.setenv("MILES_TEST_DUMPS_ROOT", str(tmp_path / "dumps"))
 

@@ -1,0 +1,15 @@
+--- fsdp
++++ fsdp_kubernetes
+@@ -50 +50 @@
+-  cluster_backend: ray
++  cluster_backend: kubernetes
+@@ -232 +232,2 @@
+-  mooncake_store_init_kwargs: null
++  mooncake_store_init_kwargs:
++    master_server_address: localhost:50051
+@@ -246 +247 @@
+-  object_store_backend: ray
++  object_store_backend: mooncake
+@@ -1073 +1074 @@
+-  worker_comm_backend: ray
++  worker_comm_backend: rpc

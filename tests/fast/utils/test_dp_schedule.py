@@ -16,6 +16,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from tests.fast.fixtures.args_fixtures import ConfigNamespace
+
 from miles.utils.dp_schedule import TrainParallelConfig, build_dp_schedule
 
 
@@ -27,26 +29,32 @@ def make_args(
     balance_data=False,
     balance_by_flops=False,
 ):
-    return SimpleNamespace(
+    return ConfigNamespace(
         micro_batch_size=micro_batch_size,
         use_dynamic_batch_size=use_dynamic_batch_size,
         max_tokens_per_gpu=max_tokens_per_gpu,
         balance_data=balance_data,
         balance_by_flops=balance_by_flops,
+        allow_partial_train_step=False,
+        train_backend="megatron",
         # Minimal model config for calculate_fwd_flops (balance_by_flops path).
-        hidden_size=16,
-        num_attention_heads=2,
-        num_query_groups=2,
-        vocab_size=32,
-        ffn_hidden_size=64,
-        num_experts=None,
-        num_layers=2,
-        kv_channels=8,
-        q_lora_rank=None,  # no MLA in the stub config
-        kv_lora_rank=None,
-        qk_pos_emb_head_dim=0,
-        qk_head_dim=8,
-        v_head_dim=8,
+        raw_megatron=SimpleNamespace(
+            base_args=dict(
+                hidden_size=16,
+                num_attention_heads=2,
+                num_query_groups=2,
+                vocab_size=32,
+                ffn_hidden_size=64,
+                num_experts=None,
+                num_layers=2,
+                kv_channels=8,
+                q_lora_rank=None,  # no MLA in the stub config
+                kv_lora_rank=None,
+                qk_pos_emb_head_dim=0,
+                qk_head_dim=8,
+                v_head_dim=8,
+            )
+        ),
     )
 
 

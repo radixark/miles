@@ -1,0 +1,5 @@
+--- megatron
++++ megatron_oversampling
+@@ -268 +268 @@
+-  over_sampling_batch_size: 2
++  over_sampling_batch_size: 4

@@ -17,6 +17,7 @@ from miles.utils.workers.rpc.client.misc import (
     RETRY_MAX_DELAY_SECONDS,
     RETRYABLE_ERRORS,
     RetryableResponseError,
+    RpcProtocolError,
     RpcTransport,
     RpcWorkerCallError,
 )
@@ -51,6 +52,7 @@ class RpcCall:
         worker_cls_name: str,
         transport: RpcTransport,
         call_timeout_seconds: float,
+        retry_ambiguous_submit: bool = False,
     ) -> None:
         assert (
             math.isfinite(call_timeout_seconds) and call_timeout_seconds > 0
@@ -62,6 +64,8 @@ class RpcCall:
         self._transport = transport
         self._call_timeout_seconds = call_timeout_seconds
         self._call_id = uuid.uuid4().hex
+        self._retry_ambiguous_submit = retry_ambiguous_submit
+        self._submit_may_have_reached_server = False
 
     async def run(self) -> Any:
         log_structured(logger.debug, op="call", phase="start", **self._log_fields, args=sorted(self._kwargs))
@@ -84,7 +88,7 @@ class RpcCall:
             await retry_until_deadline(
                 lambda remaining: self._submit_attempt(request=request, remaining=remaining),
                 total_seconds=SUBMIT_RETRY_WINDOW_SECONDS,
-                retry_on=NEVER_REACHED_SERVER_ERRORS,
+                retry_on=RETRYABLE_ERRORS if self._retry_ambiguous_submit else NEVER_REACHED_SERVER_ERRORS,
                 initial_delay=RETRY_INITIAL_DELAY_SECONDS,
                 max_delay=RETRY_MAX_DELAY_SECONDS,
                 log_fields={**self._log_fields, "op": "submit"},
@@ -94,13 +98,29 @@ class RpcCall:
             raise WorkerUnreachableError(f"{self._method_label} submit failed: {e!r}") from e
 
     async def _submit_attempt(self, *, request: SubmitRequest, remaining: float) -> None:
-        await self._transport.request(
-            "POST",
-            SUBMIT_PATH.format(method_name=self._spec.name),
-            seconds=min(SUBMIT_ATTEMPT_TIMEOUT_SECONDS, remaining),
-            response_model=SubmitResponse,
-            json=request.model_dump(exclude_none=True),
-        )
+        started_at = time.monotonic()
+        try:
+            await self._transport.request(
+                "POST",
+                SUBMIT_PATH.format(method_name=self._spec.name),
+                seconds=min(SUBMIT_ATTEMPT_TIMEOUT_SECONDS, remaining),
+                response_model=SubmitResponse,
+                json=request.model_dump(exclude_none=True),
+            )
+        except RpcProtocolError as error:
+            if error.status_code != 409 or not self._submit_may_have_reached_server:
+                raise
+            await self._transport.request(
+                "GET",
+                CALL_STATUS_PATH.format(call_id=self._call_id),
+                seconds=max(0.0, min(SUBMIT_ATTEMPT_TIMEOUT_SECONDS, remaining - (time.monotonic() - started_at))),
+                response_model=CallStatusResponse,
+                params={"timeout": 0.0},
+            )
+        except RETRYABLE_ERRORS as error:
+            if not isinstance(error, NEVER_REACHED_SERVER_ERRORS):
+                self._submit_may_have_reached_server = True
+            raise
         log_structured(logger.debug, op="submit", phase="accepted", **self._log_fields)
 
     async def _poll_until_done(self) -> CallStatusResponse:

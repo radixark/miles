@@ -1,0 +1,194 @@
+processes:
+  tests/e2e/megatron/model_scripts/test_glm5_2_744b_a40b_5layer_ci/run-0000/all/default/actor_cell00000:
+    diffs:
+      checkpoint_load-0000:
+        set:
+          <<: &id001
+            /args/backend/lr_decay_iters: 2
+            /args/backend/model_type: {$enum: megatron.core.enums.ModelType, name: encoder_or_decoder}
+            /args/backend/train_iters: 2
+          /args/backend/ckpt_step: null
+          /args/backend/finetune: true
+          /args/backend/load: /root/models/GLM-5.2_5layer_torch_dist
+          /args/backend/no_load_optim: true
+          /args/backend/no_load_rng: true
+          /load: /root/models/GLM-5.2_5layer_torch_dist
+          /local_checkpoint_manager: false
+      train_first_step-0000:
+        set:
+          <<: *id001
+          /role: actor
+    ranks: [0, 1, 2, 3]
+    template: trainer-megatron-01
+  tests/e2e/megatron/model_scripts/test_glm5_2_744b_a40b_5layer_ci/run-0000/all/default/inference_controller:
+    diffs: &id005
+      router_endpoints-0000:
+        set:
+          <<: &id002
+            /args/sglang_model_routers: {default: {$tuple: [$HOST, $PORT]}}
+            /args/sglang_router_ip: $HOST
+            /args/sglang_router_port: $PORT
+    overrides:
+      set:
+        <<:
+        - &id003
+          /args/allgather_cp: true
+          /args/ci_disable_logprobs_checker: true
+          /args/global_batch_size: 64
+          /args/input_key: prompt
+          /args/load: /root/shared_data/$RUN_ID_0000/checkpoints
+          /args/log_inference_engine_weight_checksums: true
+          /args/log_probs_max_tokens_per_gpu: 2048
+          /args/max_tokens_per_gpu: 2048
+          /args/num_layers: 5
+          /args/num_rollout: 2
+          /args/ref_load: /root/models/GLM-5.2_5layer_torch_dist
+          /args/requested_load: /root/shared_data/$RUN_ID_0000/checkpoints
+          /args/rollout_indexer_topk_num_streams: 5
+          /args/rollout_max_response_len: 100
+          /args/save: /root/shared_data/$RUN_ID_0000/checkpoints
+          /args/save_debug_event_data: /root/shared_data/$RUN_ID_0000/checkpoints/events
+          /args/save_interval: 20
+          /args/sglang/base_args/attention_backend: nsa
+          /args/sglang/base_args/dsa_prefill_backend: flashmla_sparse
+          /args/sglang/base_args/max_running_requests: 512
+          /args/sglang/base_args/page_size: 64
+          /args/sglang/base_args/watchdog_timeout: 3600.0
+          /args/update_weight_buffer_size: 2147483648
+          /args/wandb_group: $RUN_ID_0000_$CI_COMMIT_NAME_github
+          /args/wandb_project: miles-run_glm5_2_744b_a40b
+        - &id004
+          /args/check_rematerialize_param_from_master_weight: true
+          /args/config_snapshot_name: tests/e2e/megatron/model_scripts/test_glm5_2_744b_a40b_5layer_ci/run-0000
+          /args/critic_load: /root/shared_data/$RUN_ID_0000/checkpoints
+          /args/critic_save: /root/shared_data/$RUN_ID_0000/checkpoints_critic
+          /args/data_pad_size_multiplier: 1024
+          /args/hf_checkpoint: /root/models/GLM-5.2_5layer
+          /args/init_expected_num_cells/default: 1
+          /args/log_probs_chunk_size: 16384
+          /args/num_gpus_per_node: 4
+          /args/rematerialize_param_from_master_weight: true
+          /args/rollout_num_gpus_per_engine: 4
+          /args/sglang/base_args/chunked_prefill_size: 8192
+          /args/sglang/base_args/cuda_graph_max_bs_decode: 32
+          /args/sglang/base_args/dsa_decode_backend: flashmla_kv
+          /args/sglang/base_args/ep_size: 4
+          /args/sglang/base_args/kv_cache_dtype: fp8_e4m3
+          /args/sglang/base_args/tp_size: 4
+          /args/sglang/models:
+          - model_path: null
+            name: default
+            server_groups:
+            - needs_offload: true
+              num_gpus_per_engine: 4
+              overrides: {model_path: /root/models/GLM-5.2_5layer}
+              worker_type: {$enum: miles.backends.sglang_utils.sglang_api_client.WorkerType, name: REGULAR}
+            update_weights: true
+          /args/sglang_router_policy: consistent_hashing
+          /args/start_rollout_id: null
+          /args/tis_clip_low: 0.5
+          /args/use_tis: true
+    template: inference_controller-01
+  tests/e2e/megatron/model_scripts/test_glm5_2_744b_a40b_5layer_ci/run-0000/all/default/main:
+    diffs:
+      router_endpoints-0000:
+        set:
+          <<: *id002
+          /args/wandb_run_id: $WANDB_RUN_ID_0000
+      tracking_config-0000: {set: {/args/wandb_run_id: $WANDB_RUN_ID_0000}}
+    overrides: &id006
+      set:
+        <<:
+        - *id003
+        - *id004
+        /args/raw_megatron/base_args/add_position_embedding: false
+        /args/raw_megatron/base_args/enable_experimental: true
+        /args/raw_megatron/base_args/encoder_num_layers: 5
+        /args/raw_megatron/base_args/eval_global_batch_size: 64
+        /args/raw_megatron/base_args/expert_model_parallel_size: 4
+        /args/raw_megatron/base_args/ffn_hidden_size: 12288
+        /args/raw_megatron/base_args/finetune: false
+        /args/raw_megatron/base_args/global_batch_size: 64
+        /args/raw_megatron/base_args/group_query_attention: false
+        /args/raw_megatron/base_args/hidden_size: 6144
+        /args/raw_megatron/base_args/indexer_rope_interleave: true
+        /args/raw_megatron/base_args/kv_channels: 192
+        /args/raw_megatron/base_args/kv_lora_rank: 512
+        /args/raw_megatron/base_args/layernorm_epsilon: 1.0e-05
+        /args/raw_megatron/base_args/load: /root/shared_data/$RUN_ID_0000/checkpoints
+        /args/raw_megatron/base_args/make_vocab_size_divisible_by: 16
+        /args/raw_megatron/base_args/moe_enable_deepep: true
+        /args/raw_megatron/base_args/moe_ffn_hidden_size: 2048
+        /args/raw_megatron/base_args/moe_grouped_gemm: true
+        /args/raw_megatron/base_args/moe_layer_freq: [0, 0, 0, 1, 1]
+        /args/raw_megatron/base_args/moe_permute_fusion: true
+        /args/raw_megatron/base_args/moe_router_bias_update_rate: 0.0
+        /args/raw_megatron/base_args/moe_router_dtype: fp32
+        /args/raw_megatron/base_args/moe_router_enable_expert_bias: true
+        /args/raw_megatron/base_args/moe_router_load_balancing_type: seq_aux_loss
+        /args/raw_megatron/base_args/moe_router_pre_softmax: true
+        /args/raw_megatron/base_args/moe_router_score_function: sigmoid
+        /args/raw_megatron/base_args/moe_router_topk: 8
+        /args/raw_megatron/base_args/moe_router_topk_scaling_factor: 2.5
+        /args/raw_megatron/base_args/moe_shared_expert_intermediate_size: 2048
+        /args/raw_megatron/base_args/moe_token_dispatcher_type: flex
+        /args/raw_megatron/base_args/multi_latent_attention: true
+        /args/raw_megatron/base_args/no_load_optim: null
+        /args/raw_megatron/base_args/no_load_rng: null
+        /args/raw_megatron/base_args/num_attention_heads: 64
+        /args/raw_megatron/base_args/num_experts: 256
+        /args/raw_megatron/base_args/num_layers: 5
+        /args/raw_megatron/base_args/num_query_groups: 1
+        /args/raw_megatron/base_args/optimizer_cpu_offload: true
+        /args/raw_megatron/base_args/overlap_cpu_optimizer_d2h_h2d: true
+        /args/raw_megatron/base_args/padded_vocab_size: 154880
+        /args/raw_megatron/base_args/q_lora_rank: 2048
+        /args/raw_megatron/base_args/qk_head_dim: 192
+        /args/raw_megatron/base_args/rollout_indexer_topk_num_streams: 5
+        /args/raw_megatron/base_args/rope_type: yarn
+        /args/raw_megatron/base_args/rotary_base: 8000000
+        /args/raw_megatron/base_args/save: /root/shared_data/$RUN_ID_0000/checkpoints
+        /args/raw_megatron/base_args/save_interval: 20
+        /args/raw_megatron/base_args/spec: [miles_plugins.models.glm5.glm5, get_glm5_spec]
+        /args/raw_megatron/base_args/tensor_model_parallel_size: 4
+        /args/raw_megatron/base_args/tokenizer_model: /root/models/GLM-5.2_5layer
+        /args/raw_megatron/base_args/use_precision_aware_optimizer: true
+        /args/raw_megatron/base_args/use_rotary_position_embeddings: false
+        /args/raw_megatron/base_args/v_head_dim: 256
+        /args/raw_megatron/base_args/vocab_size: 154880
+        /args/raw_megatron/base_args/wandb_project: miles-run_glm5_2_744b_a40b
+        /args/raw_megatron/base_args/world_size: 4
+    template: main-01
+  tests/e2e/megatron/model_scripts/test_glm5_2_744b_a40b_5layer_ci/run-0000/all/default/rollout_executor:
+    diffs: *id005
+    overrides: *id006
+    template: rollout_executor-01
+  tests/e2e/megatron/model_scripts/test_glm5_2_744b_a40b_5layer_ci/run-0000/all/default/trainer_controller_actor: {overrides: {
+      set: {/args/backend/rank: 0}}, template: trainer-megatron-01}
+  tests/e2e/megatron/model_scripts/test_glm5_2_744b_a40b_5layer_ci/run-0000/all/default/worker_manager:
+    overrides: *id006
+    template: worker_manager-01
+shared_overrides:
+  trainer-megatron-01:
+    remove: [/args/backend/ckpt_step, /args/backend/finetune, /args/backend/load, /args/backend/no_load_optim, /args/backend/no_load_rng]
+    set:
+      <<: *id004
+      /args/backend/disable_grad_buffers_cpu_backup: true
+      /args/backend/disable_param_buffers_cpu_backup: true
+      /args/backend/save: /root/shared_data/$RUN_ID_0000/checkpoints
+      /args/backend/save_interval: 20
+      /args/backend/tokenizer_model: /root/models/GLM-5.2_5layer
+      /args/backend/wandb_project: miles-run_glm5_2_744b_a40b
+      /args/colocate: true
+      /args/offload_rollout: true
+      /args/offload_train: true
+      /args/router_args/dp_aware: false
+      /args/sglang/base_args/cuda_graph_backend_prefill: disabled
+      /args/sglang/base_args/disable_shared_experts_fusion: false
+      /args/sglang/base_args/dp_size: 1
+      /args/sglang/base_args/enable_dp_attention: false
+      /args/sglang/base_args/enable_dp_lm_head: false
+      /args/sglang/base_args/moe_dense_tp_size: null
+      /args/use_kl_loss: false
+      /args/use_rollout_routing_replay: false
+      /args/use_routing_replay: false

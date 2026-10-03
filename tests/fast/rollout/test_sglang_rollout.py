@@ -4,6 +4,7 @@ from argparse import Namespace
 from types import SimpleNamespace
 
 import pytest
+from tests.fast.fixtures.args_fixtures import parser_defaults, resolve_parse_boundary_configs
 
 from miles.rollout import sglang_rollout
 from miles.utils.lora.utils import LORA_ADAPTER_NAME
@@ -11,20 +12,12 @@ from miles.utils.types import Sample
 
 
 def _make_generate_args() -> Namespace:
-    return Namespace(
+    values = parser_defaults() | dict(
         ci_test=False,
         sglang_router_ip="router",
         sglang_router_port=30000,
-        sglang_router_policy="round_robin",
-        sglang_speculative_algorithm=None,
-        use_rollout_routing_replay=False,
-        use_rollout_indexer_replay=False,
-        use_sampling_support_replay=False,
-        partial_rollout=False,
-        mask_offpolicy_in_partial_rollout=False,
-        lora_rank=0,
-        lora_adapter_path=None,
     )
+    return resolve_parse_boundary_configs(Namespace(**values))
 
 
 class TestGenerateExtraKey:

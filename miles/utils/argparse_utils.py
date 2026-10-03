@@ -113,14 +113,18 @@ class DataclassArgparseBridge(Generic[T]):
     def from_namespace(self, namespace: argparse.Namespace) -> T:
         kwargs: dict[str, object] = {}
         for field in dataclasses.fields(self._cls):
-            kwargs[field.name] = getattr(namespace, self._dest(field.name))
+            kwargs[field.name] = getattr(
+                namespace, self._dest(field.name)
+            )  # config-access-exempt: attribute selected at runtime from self._dest(field.name)
         return self._cls(**kwargs)  # type: ignore[call-arg]
 
     def to_cli_args(self, instance: T) -> str:
         parts: list[str] = []
 
         for field in dataclasses.fields(self._cls):  # type: ignore[arg-type]
-            value: object = getattr(instance, field.name)
+            value: object = getattr(
+                instance, field.name
+            )  # config-access-exempt: attribute selected at runtime from field.name
             flag: str = self._flag(field.name)
             tp: type = self._hints[field.name]
 
@@ -136,14 +140,16 @@ class DataclassArgparseBridge(Generic[T]):
 @contextmanager
 def inplace_modify_args(args: argparse.Namespace, overrides: dict[str, object]) -> Iterator[None]:
     """Temporarily set attributes on ``args``, restoring the originals on exit."""
-    old_values = {key: getattr(args, key) for key in overrides}
+    old_values = {
+        key: getattr(args, key) for key in overrides
+    }  # config-access-exempt: attribute selected at runtime from key
     for key, value in overrides.items():
         setattr(args, key, value)
     try:
         yield
     finally:
         for key, old_value in old_values.items():
-            current = getattr(args, key)
+            current = getattr(args, key)  # config-access-exempt: attribute selected at runtime from key
             assert current == overrides[key], (
                 f"args.{key} was modified inside the inplace_modify_args block "
                 f"(expected {overrides[key]!r}, found {current!r}); restoring would clobber it"

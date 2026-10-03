@@ -120,7 +120,9 @@ def _disk_backed_like(tensor: torch.Tensor, directory: str) -> torch.Tensor:
 
 
 def _is_disk_backed(tensor: torch.Tensor) -> bool:
-    return getattr(tensor, "_miles_disk_backed", False)
+    return getattr(
+        tensor, "_miles_disk_backed", False
+    )  # config-access-exempt: the disk-backed marker is attached only to mapped tensors
 
 
 _MS_SYNC = 4
@@ -534,7 +536,7 @@ def setup_optimizer_state_streaming(args, optimizer) -> None:
             dir_root,
             args.offload_train_disk_chunk_mb,
             args.stream_optimizer_state_moment_dtype,
-            allow_fresh_state=args.no_load_optim,
+            allow_fresh_state=args.backend.no_load_optim,
         )
         written = store.initialize_main_from_model_params()
         logger.info(

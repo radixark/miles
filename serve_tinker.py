@@ -4,13 +4,12 @@ from contextlib import suppress
 
 import uvicorn
 
-from miles.backends.megatron_utils.megatron_config import compute_trainer_args
 from miles.ray.placement_group import create_trainer_handles
 from miles.ray.rollout.router_manager import resolve_router_addrs
 from miles.ray.specs.inference import compute_router_providers, create_inference_controller_handle
 from miles.ray.specs.train import ACTOR_ROLE, compute_trainer_configs
-from miles.ray.wiring import get_backend_capability
-from miles.tinker.arguments import add_tinker_arguments, configure_tinker_args
+from miles.ray.train.init_request import TrainerControllerInitRequest
+from miles.tinker.arguments import configure_tinker_args
 from miles.tinker.core.service import TinkerService
 from miles.tinker.core.types import GatewayConfig
 from miles.tinker.runtime import MilesBackend
@@ -19,37 +18,43 @@ from miles.utils.arguments import parse_args
 from miles.utils.async_utils import Disposer, with_disposer
 from miles.utils.hf_utils.config import load_hf_config
 from miles.utils.http_utils import init_http_client
-from miles.utils.orchestration_utils import init_orchestration_script
+from miles.utils.orchestration_utils import ArgvOrchestratorStartupInfo, init_orchestration_script
 
 logger = logging.getLogger(__name__)
 
 
 async def serve(args, *, disposer: Disposer):
     assert args.multi_lora, "serve_tinker requires --multi-lora-n-adapters > 0"
-    assert args.load == args.hf_checkpoint, "Tinker trainers and engines must load the same frozen HF base"
+    trainer_configs = compute_trainer_configs(args)
+    [actor_config] = [config for config in trainer_configs if config.role == ACTOR_ROLE]
+    trainer_request = TrainerControllerInitRequest.from_args(args, trainer=actor_config)
+    assert trainer_request.checkpoint_load is not None
+    assert (
+        trainer_request.checkpoint_load.load == args.hf_checkpoint
+    ), "Tinker trainers and engines must load the same frozen HF base"
     checkpoint_root = args.tinker_checkpoint_root or (args.save and f"{args.save}/tinker")
     assert checkpoint_root, "set --tinker-checkpoint-root (or --save to derive <save>/tinker)"
     hf_config = load_hf_config(args.hf_checkpoint).get_text_config()
     max_tokens_per_datum = hf_config.max_position_embeddings
     if args.max_tokens_per_gpu is not None:
         # The trainer pads each packed microbatch to this multiple.
-        pad_size = args.tensor_model_parallel_size * args.data_pad_size_multiplier
+        pad_size = args.raw_megatron.base_args["tensor_model_parallel_size"] * args.data_pad_size_multiplier
         trainer_token_limit = args.max_tokens_per_gpu // pad_size * pad_size
         max_tokens_per_datum = min(max_tokens_per_datum, trainer_token_limit)
     assert max_tokens_per_datum > 0, "trainer token budget must fit at least one padding block"
-    _worker_manager = init_orchestration_script(args, disposer=disposer)
-    init_http_client(args)
+    capability = init_orchestration_script(ArgvOrchestratorStartupInfo.create(args), disposer=disposer)
 
-    capability = get_backend_capability(args)
     await resolve_router_addrs(args, router_providers=compute_router_providers(args, capability=capability))
     inference_controller = create_inference_controller_handle(capability=capability)
     await inference_controller.init()
     disposer.add(inference_controller)
+    args.inference_runtime_mut_state.set_(await inference_controller.get_inference_runtime_immut_state())
+    init_http_client(args)
 
-    trainer_configs = compute_trainer_configs(args)
-    [actor_config] = [config for config in trainer_configs if config.role == ACTOR_ROLE]
-    trainer = create_trainer_handles(args, trainer_configs=trainer_configs)[actor_config.trainer_id]
-    await trainer.init(compute_trainer_args(args, actor_config))
+    trainer = create_trainer_handles(args, trainer_configs=trainer_configs, capability=capability)[
+        actor_config.trainer_id
+    ]
+    await trainer.init(trainer_request)
     disposer.add(trainer)
 
     config = GatewayConfig(
@@ -67,7 +72,9 @@ async def serve(args, *, disposer: Disposer):
     router_url = f"http://{args.sglang_router_ip}:{args.sglang_router_port}"
     actor_world_size = args.actor_num_nodes * args.actor_num_gpus_per_node
     dp_size = actor_world_size // (
-        args.tensor_model_parallel_size * args.pipeline_model_parallel_size * args.context_parallel_size
+        args.raw_megatron.base_args["tensor_model_parallel_size"]
+        * args.raw_megatron.base_args["pipeline_model_parallel_size"]
+        * args.raw_megatron.base_args["context_parallel_size"]
     )
     service = TinkerService(MilesBackend(trainer, router_url, dp_size=dp_size), config)
 
@@ -93,8 +100,5 @@ async def serve(args, *, disposer: Disposer):
 
 
 if __name__ == "__main__":
-    args = parse_args(add_tinker_arguments, entry="serve", preprocess_args=configure_tinker_args)
-    # commands ship one work unit at a time; its size is the batch size
-    args.use_dynamic_global_batch_size = True
-    args.delay_split_train_data_by_dp = True
+    args = parse_args(entry="serve", preprocess_args=configure_tinker_args)
     asyncio.run(with_disposer(serve, args))

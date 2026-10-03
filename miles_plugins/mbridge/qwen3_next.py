@@ -48,7 +48,9 @@ class Qwen3NextBridge(Qwen2MoEBridge):
             hidden_dim = self.hf_config.hidden_size
             num_attention_heads = self.hf_config.num_attention_heads
             num_querys_per_group = num_attention_heads // self.hf_config.num_key_value_heads
-            head_dim = getattr(self.hf_config, "head_dim", hidden_dim // num_attention_heads)
+            head_dim = getattr(
+                self.hf_config, "head_dim", hidden_dim // num_attention_heads
+            )  # config-access-exempt: HF checkpoints may omit explicit head dimension
             group_dim = head_dim * num_attention_heads // num_key_value_heads
             q, k, v = hf_weights
             # q k v might be tp split
@@ -77,7 +79,9 @@ class Qwen3NextBridge(Qwen2MoEBridge):
 
     def _build_config(self):
         mtp_args = {}
-        if hasattr(self.hf_config, "num_nextn_predict_layers"):
+        if hasattr(
+            self.hf_config, "num_nextn_predict_layers"
+        ):  # config-access-exempt: HF checkpoints may omit MTP depth
             mtp_args["mtp_num_layers"] = self.hf_config.num_nextn_predict_layers
 
         return self._build_base_config(

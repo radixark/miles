@@ -1,0 +1,318 @@
+from typing import Self
+
+from pydantic import model_validator
+
+from miles.backends.megatron_utils.checkpoint_request import CHECKPOINT_LOAD_FIELDS
+
+from miles.utils.args.component_multi_lora import MultiLoraOnlyConfig
+from miles.utils.args.component_orchestrator import OrchestratorOnlyConfig
+from miles.utils.args.component_rollout import InferenceControllerOnlyConfig, RolloutOnlyConfig
+from miles.utils.args.component_shared import SglangFieldsConfig
+from miles.utils.args.component_trainer import TrainerOnlyConfig
+from miles.utils.args.configs.algo import AlgoConfig, AlgoRolloutOnlyConfig
+from miles.utils.args.configs.backend_fields import RawTrainerBackendConfig, TrainerBackendTraitConfig
+from miles.utils.args.configs.ci import CiConfig, CiRolloutOnlyConfig
+from miles.utils.args.configs.cluster import ClusterConfig
+from miles.utils.args.configs.custom_megatron_plugins import CustomMegatronPluginsConfig, Dsv4MegatronPluginsConfig
+from miles.utils.args.configs.dashboard import DashboardConfig
+from miles.utils.args.configs.data import DataConfig
+from miles.utils.args.configs.debug import DebugConfig, DebugRolloutOnlyConfig
+from miles.utils.args.configs.eval import EvalConfig, EvalRolloutOnlyConfig
+from miles.utils.args.configs.fault_tolerance import FaultToleranceConfig
+from miles.utils.args.configs.lora import LoraConfig
+from miles.utils.args.configs.mlflow import MlflowConfig
+from miles.utils.args.configs.mtp_training import MtpTrainingConfig
+from miles.utils.args.configs.network import NetworkConfig
+from miles.utils.args.configs.on_policy_distillation import (
+    OnPolicyDistillationConfig,
+    OnPolicyDistillationRolloutOnlyConfig,
+)
+from miles.utils.args.configs.prefill_decode_disaggregation import PrefillDecodeDisaggregationConfig
+from miles.utils.args.configs.prometheus import PrometheusConfig
+from miles.utils.args.configs.reward_model import RewardModelConfig, RewardModelRolloutOnlyConfig
+from miles.utils.args.configs.rollout import RolloutRelatedConfig, RolloutRelatedRolloutOnlyConfig
+from miles.utils.args.configs.rollout_buffer import RolloutBufferConfig, RolloutBufferRolloutOnlyConfig
+from miles.utils.args.configs.router import RouterConfig
+from miles.utils.args.configs.run_uuid import RunUuidConfig
+from miles.utils.args.configs.scaling import ScalingConfig
+from miles.utils.args.configs.session import SessionConfig
+from miles.utils.args.configs.tensorboard import TensorboardConfig
+from miles.utils.args.configs.tinker import TinkerConfig
+from miles.utils.args.configs.train import TrainConfig, TrainRolloutOnlyConfig
+from miles.utils.args.configs.wandb import WandbConfig, WandbRolloutOnlyConfig
+from miles.utils.args.runtime_base import BaseLeafConfig
+
+
+class OrchestratorConfig(
+    BaseLeafConfig,
+    RawTrainerBackendConfig,
+    TrainerBackendTraitConfig,
+    OrchestratorOnlyConfig,
+    RunUuidConfig,
+    ClusterConfig,
+    TrainConfig,
+    RolloutRelatedConfig,
+    FaultToleranceConfig,
+    DataConfig,
+    EvalConfig,
+    AlgoConfig,
+    OnPolicyDistillationConfig,
+    LoraConfig,
+    RouterConfig,
+    DebugConfig,
+    NetworkConfig,
+    RewardModelConfig,
+    RolloutBufferConfig,
+    CustomMegatronPluginsConfig,
+    Dsv4MegatronPluginsConfig,
+    MtpTrainingConfig,
+    PrefillDecodeDisaggregationConfig,
+    CiConfig,
+    SessionConfig,
+    MlflowConfig,
+    PrometheusConfig,
+    TensorboardConfig,
+    WandbConfig,
+    DashboardConfig,
+    SglangFieldsConfig,
+):
+    pass
+
+
+class TrainerConfig(
+    BaseLeafConfig,
+    TrainerOnlyConfig,
+    RunUuidConfig,
+    ClusterConfig,
+    TrainConfig,
+    RolloutRelatedConfig,
+    FaultToleranceConfig,
+    DataConfig,
+    EvalConfig,
+    AlgoConfig,
+    OnPolicyDistillationConfig,
+    LoraConfig,
+    RouterConfig,
+    DebugConfig,
+    NetworkConfig,
+    RewardModelConfig,
+    RolloutBufferConfig,
+    CustomMegatronPluginsConfig,
+    Dsv4MegatronPluginsConfig,
+    MtpTrainingConfig,
+    PrefillDecodeDisaggregationConfig,
+    CiConfig,
+    SessionConfig,
+    MlflowConfig,
+    PrometheusConfig,
+    TensorboardConfig,
+    WandbConfig,
+    DashboardConfig,
+    SglangFieldsConfig,
+):
+    # ========================== same-name delegates ===========================
+
+    @property
+    def global_batch_size(self) -> int | None:
+        return self.backend.global_batch_size
+
+    @property
+    def wandb_project(self) -> str | None:
+        return self.backend.wandb_project
+
+    @property
+    def tensor_model_parallel_size(self) -> int:
+        return self.backend.tensor_model_parallel_size
+
+    @property
+    def pipeline_model_parallel_size(self) -> int:
+        return self.backend.pipeline_model_parallel_size
+
+    @property
+    def context_parallel_size(self) -> int:
+        return self.backend.context_parallel_size
+
+    # ======================== end same-name delegates =========================
+
+    @model_validator(mode="after")
+    def _validate_backend_name(self) -> Self:
+        assert self.train_backend == self.backend.backend_name, "train_backend must match backend.backend_name"
+        return self
+
+    @model_validator(mode="after")
+    def _validate_no_duplicated_backend_fields(self) -> Self:
+        if self.train_backend == "megatron":
+            runtime_fields = CHECKPOINT_LOAD_FIELDS & vars(self.backend).keys()
+            assert (
+                not runtime_fields
+            ), f"Checkpoint load inputs do not belong in trainer config: {sorted(runtime_fields)}"
+        duplicated_fields = type(self).model_fields.keys() & vars(self.backend).keys()
+        assert not duplicated_fields, f"Duplicated trainer backend fields: {sorted(duplicated_fields)}"
+        return self
+
+
+class InferenceControllerConfig(
+    BaseLeafConfig,
+    TrainerBackendTraitConfig,
+    InferenceControllerOnlyConfig,
+    RunUuidConfig,
+    ClusterConfig,
+    TrainConfig,
+    RolloutRelatedConfig,
+    FaultToleranceConfig,
+    DataConfig,
+    EvalConfig,
+    AlgoConfig,
+    OnPolicyDistillationConfig,
+    LoraConfig,
+    RouterConfig,
+    DebugConfig,
+    NetworkConfig,
+    RewardModelConfig,
+    RolloutBufferConfig,
+    CustomMegatronPluginsConfig,
+    Dsv4MegatronPluginsConfig,
+    MtpTrainingConfig,
+    PrefillDecodeDisaggregationConfig,
+    CiConfig,
+    SessionConfig,
+    MlflowConfig,
+    PrometheusConfig,
+    TensorboardConfig,
+    WandbConfig,
+    DashboardConfig,
+    SglangFieldsConfig,
+):
+    pass
+
+
+class RolloutConfig(
+    BaseLeafConfig,
+    RawTrainerBackendConfig,
+    TrainerBackendTraitConfig,
+    RolloutOnlyConfig,
+    AlgoRolloutOnlyConfig,
+    CiRolloutOnlyConfig,
+    DebugRolloutOnlyConfig,
+    EvalRolloutOnlyConfig,
+    OnPolicyDistillationRolloutOnlyConfig,
+    RewardModelRolloutOnlyConfig,
+    RolloutRelatedRolloutOnlyConfig,
+    RolloutBufferRolloutOnlyConfig,
+    TrainRolloutOnlyConfig,
+    WandbRolloutOnlyConfig,
+    RunUuidConfig,
+    ClusterConfig,
+    TrainConfig,
+    RolloutRelatedConfig,
+    FaultToleranceConfig,
+    DataConfig,
+    EvalConfig,
+    AlgoConfig,
+    OnPolicyDistillationConfig,
+    LoraConfig,
+    RouterConfig,
+    DebugConfig,
+    NetworkConfig,
+    RewardModelConfig,
+    RolloutBufferConfig,
+    CustomMegatronPluginsConfig,
+    Dsv4MegatronPluginsConfig,
+    MtpTrainingConfig,
+    PrefillDecodeDisaggregationConfig,
+    CiConfig,
+    SessionConfig,
+    MlflowConfig,
+    PrometheusConfig,
+    TensorboardConfig,
+    WandbConfig,
+    DashboardConfig,
+    SglangFieldsConfig,
+):
+    pass
+
+
+class MultiLoraConfig(
+    BaseLeafConfig,
+    TrainerBackendTraitConfig,
+    MultiLoraOnlyConfig,
+    RunUuidConfig,
+    ClusterConfig,
+    TrainConfig,
+    RolloutRelatedConfig,
+    FaultToleranceConfig,
+    DataConfig,
+    EvalConfig,
+    AlgoConfig,
+    OnPolicyDistillationConfig,
+    LoraConfig,
+    RouterConfig,
+    DebugConfig,
+    NetworkConfig,
+    RewardModelConfig,
+    RolloutBufferConfig,
+    CustomMegatronPluginsConfig,
+    Dsv4MegatronPluginsConfig,
+    MtpTrainingConfig,
+    PrefillDecodeDisaggregationConfig,
+    CiConfig,
+    SessionConfig,
+    MlflowConfig,
+    PrometheusConfig,
+    TensorboardConfig,
+    WandbConfig,
+    DashboardConfig,
+    SglangFieldsConfig,
+):
+    pass
+
+
+class AllConfig(
+    BaseLeafConfig,
+    RunUuidConfig,
+    ClusterConfig,
+    ScalingConfig,
+    TrainConfig,
+    TrainRolloutOnlyConfig,
+    RolloutRelatedConfig,
+    RolloutRelatedRolloutOnlyConfig,
+    FaultToleranceConfig,
+    DataConfig,
+    EvalConfig,
+    EvalRolloutOnlyConfig,
+    AlgoConfig,
+    AlgoRolloutOnlyConfig,
+    TrainerBackendTraitConfig,
+    OnPolicyDistillationConfig,
+    OnPolicyDistillationRolloutOnlyConfig,
+    LoraConfig,
+    WandbConfig,
+    WandbRolloutOnlyConfig,
+    MlflowConfig,
+    TensorboardConfig,
+    PrometheusConfig,
+    DashboardConfig,
+    RouterConfig,
+    DebugConfig,
+    DebugRolloutOnlyConfig,
+    SglangFieldsConfig,
+    SessionConfig,
+    NetworkConfig,
+    RewardModelConfig,
+    RewardModelRolloutOnlyConfig,
+    RolloutBufferConfig,
+    RolloutBufferRolloutOnlyConfig,
+    MtpTrainingConfig,
+    PrefillDecodeDisaggregationConfig,
+    CiConfig,
+    CiRolloutOnlyConfig,
+    CustomMegatronPluginsConfig,
+    Dsv4MegatronPluginsConfig,
+    RawTrainerBackendConfig,
+    OrchestratorOnlyConfig,
+    RolloutOnlyConfig,
+    InferenceControllerOnlyConfig,
+    MultiLoraOnlyConfig,
+    TinkerConfig,
+):
+    pass

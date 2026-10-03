@@ -87,7 +87,9 @@ def _hydra_overrides_from_benchmark(
 ) -> list[str]:
     overrides: list[str] = []
     for key, hydra_key in HYDRA_OVERRIDE_MAP.items():
-        value = getattr(benchmark_cfg, key, None)
+        value = getattr(
+            benchmark_cfg, key, None
+        )  # config-access-exempt: Hydra override keys select optional benchmark fields by name
         if value is None:
             value = defaults.get(key)
         if value is not None:

@@ -1,0 +1,20 @@
+--- fsdp
++++ fsdp_ci
+@@ -21 +21 @@
+-  check_weight_transfer_checksum: false
++  check_weight_transfer_checksum: true
+@@ -23 +23 @@
+-  check_weight_update_equal: false
++  check_weight_update_equal: true
+@@ -46 +46 @@
+-  ci_test: false
++  ci_test: true
+@@ -188 +188 @@
+-  log_inference_engine_weight_checksums: false
++  log_inference_engine_weight_checksums: true
+@@ -481 +481 @@
+-  sample_ownership_grace_steps: 10
++  sample_ownership_grace_steps: 2
+@@ -483 +483 @@
+-  save_debug_event_data: null
++  save_debug_event_data: $FIXTURES/events

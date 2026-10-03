@@ -13,9 +13,9 @@ from tests.fast.charts.utils import (
     with_object_names,
 )
 from tests.fast.utils.external_utils.command_utils.helm_backend.launcher.values import utils as values_utils
+from tests.fast.utils.external_utils.command_utils.helm_backend.launcher.values.utils import build_values_as_launched
 
 from miles.utils.external_utils.colocate_pairing.pods import _GATE_NAME, release_patch
-from miles.utils.external_utils.command_utils.helm_backend.launcher.values.builder import build_values
 from miles.utils.external_utils.command_utils.helm_backend.launcher.values.helm_values_types import (
     _PLATFORM_OWNED_ENV_VARS,
 )
@@ -317,7 +317,9 @@ class TestTheNamesTheChartWritesAreTheNamesTheSchemaReserves:
 def _sub_node_engine_argv() -> list[str]:
     specs = [values_utils.engine(num_cells=2, gpus_per_engine=4), values_utils.trainer(num_cells=1, gpus_per_cell=8)]
     plan = values_utils.LAYOUT.model_copy(update={"colocate": True})
-    return build_values(specs, plan).as_values()["run"]["inferenceEngines"][0]["command"]
+    return build_values_as_launched(specs, plan, scaling=values_utils.SCALING).as_values()["run"]["inferenceEngines"][
+        0
+    ]["command"]
 
 
 @requires_helm

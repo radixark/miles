@@ -1,0 +1,35 @@
+--- megatron
++++ megatron_ppo
+@@ -4 +4 @@
+-  advantage_estimator: grpo
++  advantage_estimator: ppo
+@@ -58,2 +58,2 @@
+-  critic_num_gpus_per_node: null
+-  critic_num_nodes: null
++  critic_num_gpus_per_node: 1
++  critic_num_nodes: 1
+@@ -253 +253 @@
+-  offload_train: false
++  offload_train: true
+@@ -424 +424 @@
+-      disable_grad_buffers_cpu_backup: false
++      disable_grad_buffers_cpu_backup: true
+@@ -427 +427 @@
+-      disable_param_buffers_cpu_backup: false
++      disable_param_buffers_cpu_backup: true
+@@ -1168,0 +1169,12 @@
++    - actor_index: null
++      model_id: null
++      overrides:
++        disable_param_buffers_cpu_backup: false
++        kl_coef: 0
++        load: null
++        lr: 1.0e-06
++        lr_warmup_iters: 0
++        save: null
++        use_opd: false
++      role: critic
++      trainer_id: critic
+@@ -1867 +1879 @@
+-  use_critic: false
++  use_critic: true

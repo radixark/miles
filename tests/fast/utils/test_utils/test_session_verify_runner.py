@@ -44,6 +44,7 @@ def _build_args(**overrides) -> str:
         "sglang_mamba_full_memory_ratio": None,
         "sglang_cuda_graph_backend_prefill": None,
         "anthropic_intermediate_system_expectation": None,
+        "ci_tito_special_token_count_threshold": 0.0,
     }
     values.update(overrides)
     return namespace_to_train_args(argparse.Namespace(**values))
@@ -505,6 +506,7 @@ def test_run_session_verify_preserves_sidecar_on_failure(monkeypatch, tmp_path, 
         hf_checkpoint="/models/test",
         actor_num_gpus_per_node=8,
         assistant_text_threshold=0.2,
+        ci_tito_special_token_count_threshold=0.0,
     )
 
     expected_error = subprocess.CalledProcessError if failure_phase == "execute_train" else AssertionError

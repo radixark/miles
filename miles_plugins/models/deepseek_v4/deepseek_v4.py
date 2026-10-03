@@ -74,10 +74,14 @@ class DeepSeekV4Attention(MegatronModule):
         if pg_collection is None:
             pg_collection = ProcessGroupCollection.use_mpu_process_groups(required_pgs=["tp"])
         else:
-            assert hasattr(pg_collection, "tp")
+            assert hasattr(
+                pg_collection, "tp"
+            )  # config-access-exempt: process-group collections vary across Megatron versions
         self.pg_collection = pg_collection
         self.tp_group = self.pg_collection.tp
-        self.cp_group = pg_collection.cp if hasattr(pg_collection, "cp") else None
+        self.cp_group = (
+            pg_collection.cp if hasattr(pg_collection, "cp") else None
+        )  # config-access-exempt: context-parallel groups are optional in upstream collections
         self.cp_size = self.cp_group.size() if self.cp_group else 1
         self.cp_rank = self.cp_group.rank() if self.cp_group else 0
 

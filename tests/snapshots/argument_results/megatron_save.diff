@@ -1,0 +1,22 @@
+--- megatron
++++ megatron_save
+@@ -60 +60 @@
+-  critic_save: null
++  critic_save: $FIXTURES/save_critic
+@@ -188 +188 @@
+-  log_inference_engine_weight_checksums: false
++  log_inference_engine_weight_checksums: true
+@@ -1024 +1024 @@
+-      save: null
++      save: $FIXTURES/save
+@@ -1027 +1027 @@
+-      save_interval: null
++      save_interval: 2
+@@ -1312,2 +1312,2 @@
+-  save: null
+-  save_debug_event_data: null
++  save: $FIXTURES/save
++  save_debug_event_data: $FIXTURES/save/events
+@@ -1318 +1318 @@
+-  save_interval: null
++  save_interval: 2

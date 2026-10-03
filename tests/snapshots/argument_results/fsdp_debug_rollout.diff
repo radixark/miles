@@ -1,0 +1,36 @@
+--- fsdp
++++ fsdp_debug_rollout
+@@ -94 +94 @@
+-  debug_rollout_only: false
++  debug_rollout_only: true
+@@ -175 +175,2 @@
+-  init_expected_num_cells: {}
++  init_expected_num_cells:
++    default: 1
+@@ -370 +371 @@
+-  rollout_num_gpus: null
++  rollout_num_gpus: 1
+@@ -988 +989,12 @@
+-    models: []
++    models:
++    - model_path: null
++      name: default
++      server_groups:
++      - needs_offload: false
++        num_gpus_per_engine: 1
++        overrides:
++          model_path: null
++        worker_type:
++          $enum: miles.backends.sglang_utils.sglang_api_client.WorkerType
++          name: REGULAR
++      update_weights: true
+@@ -996 +1008,5 @@
+-    groups: {}
++    groups:
++      default:
++      - engine_offset: 0
++        gpu_offset: 0
++        num_gpus: 1
+@@ -1018 +1034 @@
+-  train_memory_margin_bytes: 1073741824
++  train_memory_margin_bytes: 0

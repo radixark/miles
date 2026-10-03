@@ -37,11 +37,11 @@ class MegatronHfWeightIteratorBase(HfWeightIteratorBase):
             else None
         )
         trainer_has_mtp = bool(unwrap_model(self.model)[0].config.mtp_num_layers)
-        if self.args.sglang_speculative_algorithm and not trainer_has_mtp:
+        if self.args.sglang.common_value("speculative_algorithm") and not trainer_has_mtp:
             self.weight_update_selector = "target"
 
     def _hf_atomic_update_groups(self):
-        return get_hf_atomic_update_groups(self.model_name, q_lora_rank=self.args.q_lora_rank)
+        return get_hf_atomic_update_groups(self.model_name, q_lora_rank=self.args.backend.q_lora_rank)
 
     def _iter_hf_adapter_units(self, adapter, *, materialize):
         """Both megatron exporters are PP-local after gathering TP/EP; the PP
@@ -150,7 +150,7 @@ def _iter_mm_tower_units(args, *, materialize):
     Goes away when the towers become real megatron params (Kimi-style) or the
     engine keeps them across offload."""
     global _MM_TOWER_CACHE
-    if "inkling_mm_model_provider" not in (args.custom_model_provider_path or ""):
+    if (provider := args.custom_model_provider_path) is None or "inkling_mm_model_provider" not in provider.path:
         return
     if not materialize:
         return

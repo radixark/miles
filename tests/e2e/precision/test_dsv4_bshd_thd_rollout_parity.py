@@ -16,6 +16,7 @@ from scripts.run_deepseek_v4 import (
 )
 from tests.ci.ci_register import register_cuda_ci
 
+from miles.utils.audit_utils.config_snapshot.generated_values import register_generated_value
 from miles.utils.test_utils.comparisons.metrics import compare_metrics
 from miles.utils.types import Sample
 
@@ -279,6 +280,7 @@ def main() -> None:
         os.environ.pop(env_var, None)
 
     debug_root = Path(tempfile.mkdtemp(prefix="miles-dsv4-bshd-thd-", dir="/tmp"))
+    register_generated_value(kind="temporary_directory", name="dsv4_parity", value=str(debug_root))
     te_precision_config_path = debug_root / "te_precision.yaml"
     te_precision_config_path.write_text(f"{_DSV4_TE_PRECISION_CONFIG}\n", encoding="utf-8")
     _run_rollout(

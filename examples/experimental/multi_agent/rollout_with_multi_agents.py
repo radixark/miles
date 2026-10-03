@@ -1,4 +1,5 @@
 import random
+from argparse import Namespace
 
 from miles.utils.function_registry import load_function
 from miles.utils.processing_utils import load_tokenizer
@@ -17,15 +18,18 @@ async def generate_with_multi_agents(args, sample: Sample, sampling_params, eval
     tokenizer = load_tokenizer(args.hf_checkpoint, chat_template_path=args.chat_template_path, trust_remote_code=True)
     max_context_length = args.rollout_max_context_len if not evaluation else args.eval_max_context_len
 
-    args.sampling_params = sampling_params
-    args.rollout_max_context_len = max_context_length
-    args.tokenizer = tokenizer
+    agent_args = Namespace(
+        **dict(args)
+        | {
+            "sampling_params": sampling_params,
+            "rollout_max_context_len": max_context_length,
+            "tokenizer": tokenizer,
+            **MULTI_AGENT_CONFIGS,
+        }
+    )
 
-    for key, value in MULTI_AGENT_CONFIGS.items():
-        setattr(args, key, value)
-
-    custom_multi_agent_func = load_function(args.custom_multi_agent_function_path)
-    samples = await custom_multi_agent_func(args, sample)
+    custom_multi_agent_func = load_function(agent_args.custom_multi_agent_function_path)
+    samples = await custom_multi_agent_func(agent_args, sample)
 
     random.shuffle(samples)
 

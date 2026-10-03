@@ -1,0 +1,11 @@
+--- fsdp
++++ fsdp_debug_train
+@@ -96 +96 @@
+-  debug_train_only: false
++  debug_train_only: true
+@@ -370 +370 @@
+-  rollout_num_gpus: null
++  rollout_num_gpus: 0
+@@ -1001 +1001 @@
+-  starts_inference_engines: true
++  starts_inference_engines: false

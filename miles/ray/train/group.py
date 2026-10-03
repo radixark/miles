@@ -8,13 +8,17 @@ from pathlib import Path
 from typing import Any, TypeVar
 from uuid import uuid4
 
+from miles.backends.megatron_utils.checkpoint_request import MegatronCheckpointLoad
 from miles.backends.megatron_utils.ft.types import TrainStepOutcome, TrainStepOutput
+from miles.backends.megatron_utils.megatron_config import CRITIC_ROLE
 from miles.ray.rollout.inference_controller import UpdatableEngines
-from miles.ray.specs.train import compute_trainer_num_cells, compute_trainer_pool_id
+from miles.ray.specs.train import compute_trainer_pool_id
 from miles.ray.train.cell import TrainerCell
 from miles.ray.train.cell_monitor import create_trainer_cell_health_checker
+from miles.ray.train.init_request import TrainerControllerInitRequest
 from miles.ray.train_actor import WeightUpdateOutput
 from miles.utils import object_store
+from miles.utils.args.runtime import TrainerConfig
 from miles.utils.arguments import supports_partial_target_weight_update
 from miles.utils.async_utils import AsyncioGatherUtils, gather_and_raise_first
 from miles.utils.audit_utils.event_analyzer import analyzer as event_analyzer
@@ -41,7 +45,6 @@ from miles.utils.test_utils.fault_injector.controller import fault_hook_controll
 from miles.utils.test_utils.fault_injector.models import FaultHookName, FaultHookOwner
 from miles.utils.tracking_utils.structured_log import log_structured
 from miles.utils.workers.cell_operations.base import BaseCellOperations
-from miles.utils.workers.rpc.common.wire_types import Pickled
 from miles.utils.workers.types import DeploymentIdentity
 from miles.utils.workers.worker_provider.base import BaseWorkerProvider, CellInfo, StopWatchFn
 from miles.utils.workers.worker_provider.utils import apply_cell_observation
@@ -65,24 +68,23 @@ class TrainerController:
     def __init__(
         self,
         *,
+        args: TrainerConfig,
         deployment_identity: DeploymentIdentity,
         cell_provider: BaseWorkerProvider,
         cell_operations: BaseCellOperations,
-        trainer_id: str,
-        role: str,
-        with_ref: bool,
-        with_opd_teacher: bool = False,
     ) -> None:
         self._init_once = InitOnce(type(self).__name__)
+        self.args = args
         self._deployment_identity = deployment_identity
-        self._trainer_id = trainer_id
-        self._role = role
-        self._with_ref = with_ref
-        self._with_opd_teacher = with_opd_teacher
-        self._pool_id = compute_trainer_pool_id(trainer_id)
+        self._trainer_id = args.trainer_id
+        self._role = args.trainer_role
+        self._with_ref = (args.trainer_role != CRITIC_ROLE) and (args.kl_coef != 0 or args.use_kl_loss)
+        self._with_opd_teacher = (args.trainer_role != CRITIC_ROLE) and args.use_opd and args.opd_type == "megatron"
+        self._pool_id = compute_trainer_pool_id(args.trainer_id)
         self._provider = cell_provider
         self._cell_operations = cell_operations
         self._watcher_disposer: StopWatchFn | None = None
+        self._checkpoint_load: MegatronCheckpointLoad | None = None
 
         self._indep_dp_quorum_id = 0
         self._indep_dp_store: Any | None = None
@@ -103,7 +105,7 @@ class TrainerController:
 
     @property
     def _expected_num_cells(self) -> int:
-        return compute_trainer_num_cells(self.args, role=self._role)
+        return self.args.trainer_init_expected_num_cells
 
     @property
     def _cells(self) -> list[TrainerCell]:
@@ -148,11 +150,12 @@ class TrainerController:
 
     async def _remove_cell(self, cell_id: str) -> None:
         cell = self._cells_by_id.pop(cell_id)
-        cell.health_checker.stop()
+        cell.detach()
 
     def _create_cell(self, cell_id: str, *, cell_index: int, workers_hash: str) -> TrainerCell:
         cell = TrainerCell(
             args=self.args,
+            checkpoint_load=self._checkpoint_load,
             role=self._role,
             with_ref=self._with_ref,
             with_opd_teacher=self._with_opd_teacher,
@@ -333,12 +336,16 @@ class TrainerController:
     # ------------------------ API :: others ------------------------
 
     @init_once
-    async def init(self, args: Pickled) -> list[Any]:
+    async def init(self, request: TrainerControllerInitRequest) -> list[Any]:
         """
         Observe the controller's cells, then allocate GPU resources and initialize
         model, optimzier, local ckpt, etc.
         """
-        self.args = args
+        args = self.args
+        self._checkpoint_load = request.checkpoint_load
+        args.num_rollout = request.num_rollout
+        args.wandb_run_id = request.wandb_run_id
+        args.mlflow_run_id = request.mlflow_run_id
         configure_logger(
             args, source=TrainerControllerProcessIdentity(trainer_id=self._trainer_id, model_id=args.trainer_model_id)
         )
@@ -383,17 +390,25 @@ class TrainerController:
     async def is_initialized(self) -> bool:
         return self._init_once.is_initialized()
 
-    async def load_state(self) -> list[Any]:
+    async def finalize_pending_checkpoint(self) -> None:
+        await self._wait_for_reload_cells()
+        await gather_and_raise_first([cell.execute("finalize_pending_checkpoint") for cell in self._cells])
+
+    async def load_state(self, request: TrainerControllerInitRequest) -> list[Any]:
+        await self._wait_for_reload_cells()
+
+        self._checkpoint_load = request.checkpoint_load
+        cell_results = await gather_and_raise_first([cell.load_state(request.checkpoint_load) for cell in self._cells])
+        self._debug_trainer_load_state_timestamp = time.time()
+        return [item for sublist in cell_results for item in sublist]
+
+    async def _wait_for_reload_cells(self) -> None:
         assert self._init_once.is_initialized()
 
         await self._wait_expected_num_cells(timeout=_CELLS_READY_TIMEOUT_SECONDS)
 
         not_alive = [cell.cell_id for cell in self._cells if not cell.is_alive]
         assert not not_alive, f"a reload does not support cells that are not alive: {not_alive}"
-
-        cell_results = await gather_and_raise_first([cell.load_state() for cell in self._cells])
-        self._debug_trainer_load_state_timestamp = time.time()
-        return [item for sublist in cell_results for item in sublist]
 
     async def save_model(self, rollout_id: int, force_sync: bool = False) -> None:
         """Save actor model. Only cell 0 saves to avoid file write conflicts."""

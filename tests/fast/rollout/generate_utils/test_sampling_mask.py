@@ -37,6 +37,8 @@ def test_generate_payload_automatically_requests_sampling_mask(
         rollout_max_context_len=None,
         use_rollout_routing_replay=False,
         use_rollout_indexer_replay=False,
+        lora_rank=0,
+        lora_adapter_path=None,
     )
 
     payload, halt_status = compute_request_payload(
@@ -83,6 +85,8 @@ def test_evaluation_does_not_request_or_validate_training_sampling_support():
         rollout_max_context_len=None,
         use_rollout_routing_replay=False,
         use_rollout_indexer_replay=False,
+        lora_rank=0,
+        lora_adapter_path=None,
     )
 
     payload, halt_status = compute_request_payload(

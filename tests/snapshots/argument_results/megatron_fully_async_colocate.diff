@@ -1,0 +1,63 @@
+--- megatron
++++ megatron_fully_async_colocate
+@@ -51 +51 @@
+-  colocate: false
++  colocate: true
+@@ -129,2 +129,3 @@
+-    config: null
+-    path: miles.rollout.inference_rollout.inference_rollout_common.InferenceRolloutFn
++    config:
++      custom_async_data_buffer_path_per_model: null
++    path: miles.rollout.fully_async_rollout.FullyAsyncRolloutFn
+@@ -160 +161 @@
+-  fully_async: false
++  fully_async: true
+@@ -175 +176,2 @@
+-  init_expected_num_cells: {}
++  init_expected_num_cells:
++    default: 1
+@@ -249 +251 @@
+-  offload_rollout: false
++  offload_rollout: true
+@@ -253 +255 @@
+-  offload_train: false
++  offload_train: true
+@@ -424 +426 @@
+-      disable_grad_buffers_cpu_backup: false
++      disable_grad_buffers_cpu_backup: true
+@@ -427 +429 @@
+-      disable_param_buffers_cpu_backup: false
++      disable_param_buffers_cpu_backup: true
+@@ -1189,2 +1191,3 @@
+-    config: null
+-    path: miles.rollout.inference_rollout.inference_rollout_common.InferenceRolloutFn
++    config:
++      custom_async_data_buffer_path_per_model: null
++    path: miles.rollout.fully_async_rollout.FullyAsyncRolloutFn
+@@ -1200 +1203 @@
+-  rollout_num_gpus: null
++  rollout_num_gpus: 1
+@@ -1358 +1361 @@
+-      cuda_graph_backend_prefill: null
++      cuda_graph_backend_prefill: disabled
+@@ -1818 +1821,12 @@
+-    models: []
++    models:
++    - model_path: null
++      name: default
++      server_groups:
++      - needs_offload: true
++        num_gpus_per_engine: 1
++        overrides:
++          model_path: null
++        worker_type:
++          $enum: miles.backends.sglang_utils.sglang_api_client.WorkerType
++          name: REGULAR
++      update_weights: true
+@@ -1826 +1840,5 @@
+-    groups: {}
++    groups:
++      default:
++      - engine_offset: 0
++        gpu_offset: 0
++        num_gpus: 1

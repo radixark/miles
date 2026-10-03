@@ -1,0 +1,16 @@
+--- megatron
++++ megatron_offload_disk
+@@ -253 +253 @@
+-  offload_train: false
++  offload_train: true
+@@ -255,2 +255,2 @@
+-  offload_train_disk_dir: null
+-  offload_train_target: cpu
++  offload_train_disk_dir: $FIXTURES/offload
++  offload_train_target: disk
+@@ -424 +424 @@
+-      disable_grad_buffers_cpu_backup: false
++      disable_grad_buffers_cpu_backup: true
+@@ -427 +427 @@
+-      disable_param_buffers_cpu_backup: false
++      disable_param_buffers_cpu_backup: true

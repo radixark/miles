@@ -12,6 +12,8 @@ import torch.distributed.checkpoint as dcp
 from torch.distributed.checkpoint.state_dict import get_state_dict, set_state_dict
 from torch.distributed.checkpoint.stateful import Stateful
 
+from miles.utils.audit_utils.config_snapshot.dumper import ConfigSnapshotDumper
+
 logger = logging.getLogger(__name__)
 
 
@@ -81,7 +83,7 @@ def load(actor: Any) -> dict[str, Any] | None:
     Loads model weights and optionally optimizer state from separate directories.
     This allows loading weights without optimizer or deleting optimizer before loading.
     """
-    load_root = getattr(actor.args, "load", None)
+    load_root = actor.args.backend.load
     if load_root is None:
         return None
 
@@ -90,7 +92,7 @@ def load(actor: Any) -> dict[str, Any] | None:
         logger.info(f"[FSDP] Checkpoint directory {root_path} not found; skipping load.")
         return None
 
-    target_step = getattr(actor.args, "ckpt_step", None)
+    target_step = actor.args.backend.ckpt_step
     if target_step is None:
         tracker_file = root_path / "latest_checkpointed_iteration.txt"
         if not tracker_file.exists():
@@ -109,6 +111,9 @@ def load(actor: Any) -> dict[str, Any] | None:
         return None
 
     # Load model weights (always)
+    ConfigSnapshotDumper.dump(
+        stage="checkpoint_load", config={"args": actor.args, "load": str(checkpoint_dir), "format": "fsdp"}
+    )
     model_state = ModelState(actor.model)
     state_dict = {"model_state": model_state}
 
@@ -120,7 +125,9 @@ def load(actor: Any) -> dict[str, Any] | None:
         return None
 
     # Load optimizer state (optional)
-    load_optimizer = not getattr(actor.args, "no_load_optim", False) and hasattr(actor, "optimizer")
+    load_optimizer = not actor.args.backend.no_load_optim and hasattr(
+        actor, "optimizer"
+    )  # config-access-exempt: optimizer is absent when the actor has no training state
     if load_optimizer and optimizer_dir.exists():
         optimizer_state = OptimizerState(actor.model, actor.optimizer)
         optim_state_dict = {"optim_state": optimizer_state}
@@ -133,7 +140,9 @@ def load(actor: Any) -> dict[str, Any] | None:
         logger.info(f"[FSDP] Optimizer checkpoint not found at {optimizer_dir}, skipping optimizer load.")
 
     # Load LR scheduler state (optional)
-    load_lr_scheduler = hasattr(actor, "lr_scheduler") and lr_scheduler_dir.exists()
+    load_lr_scheduler = (
+        hasattr(actor, "lr_scheduler") and lr_scheduler_dir.exists()
+    )  # config-access-exempt: lr_scheduler is absent when the actor has no training state
     if load_lr_scheduler:
         lr_scheduler_state = LRSchedulerState(actor.lr_scheduler)
         lr_scheduler_state_dict = {"lr_scheduler_state": lr_scheduler_state}
@@ -142,7 +151,9 @@ def load(actor: Any) -> dict[str, Any] | None:
             logger.info(f"[FSDP] Loaded LR scheduler from {lr_scheduler_dir}")
         except Exception as e:
             logger.warning(f"[FSDP] Failed to load LR scheduler from {lr_scheduler_dir}: {e}")
-    elif hasattr(actor, "lr_scheduler"):
+    elif hasattr(
+        actor, "lr_scheduler"
+    ):  # config-access-exempt: lr_scheduler is absent when the actor has no training state
         logger.info(f"[FSDP] LR scheduler checkpoint not found at {lr_scheduler_dir}, skipping LR scheduler load.")
 
     rng_state = None
@@ -164,7 +175,7 @@ def finalize_load(actor: Any, checkpoint_payload: dict[str, Any] | None) -> None
         dist.barrier()
         return
 
-    if checkpoint_payload.get("rng") is not None and not getattr(actor.args, "no_load_rng", False):
+    if checkpoint_payload.get("rng") is not None and not actor.args.backend.no_load_rng:
         rng_state = checkpoint_payload["rng"]
         if "torch" in rng_state:
             torch.set_rng_state(rng_state["torch"])
@@ -180,7 +191,7 @@ def finalize_load(actor: Any, checkpoint_payload: dict[str, Any] | None) -> None
         if next_rollout is not None:
             actor.args.start_rollout_id = next_rollout
     elif iteration is not None:
-        if getattr(actor.args, "start_rollout_id", None) is None:
+        if actor.args.start_rollout_id is None:
             actor.args.start_rollout_id = iteration
 
     torch.cuda.synchronize()
@@ -195,7 +206,7 @@ def save(actor: Any, iteration: int) -> None:
     """
     torch.cuda.synchronize()
 
-    base_dir = Path(actor.args.save).expanduser()
+    base_dir = Path(actor.args.backend.save).expanduser()
     step_id = iteration + 1
     checkpoint_dir = base_dir / f"iter_{step_id:07d}"
     model_dir = checkpoint_dir / "model"
@@ -215,14 +226,18 @@ def save(actor: Any, iteration: int) -> None:
     dcp.save(state_dict, checkpoint_id=str(model_dir))
 
     # Save optimizer state (skip if --no-save-optim is set)
-    save_optimizer_state = not getattr(actor.args, "no_save_optim", False)
-    if save_optimizer_state and hasattr(actor, "optimizer") and actor.optimizer is not None:
+    save_optimizer_state = not actor.args.backend.no_save_optim
+    if (
+        save_optimizer_state and hasattr(actor, "optimizer") and actor.optimizer is not None
+    ):  # config-access-exempt: optimizer is absent when the actor has no training state
         optimizer_state = OptimizerState(actor.model, actor.optimizer)
         optim_state_dict = {"optim_state": optimizer_state}
         dcp.save(optim_state_dict, checkpoint_id=str(optimizer_dir))
 
     # Save LR scheduler state (skip if --no-save-optim is set)
-    if save_optimizer_state and hasattr(actor, "lr_scheduler") and actor.lr_scheduler is not None:
+    if (
+        save_optimizer_state and hasattr(actor, "lr_scheduler") and actor.lr_scheduler is not None
+    ):  # config-access-exempt: lr_scheduler is absent when the actor has no training state
         lr_scheduler_state = LRSchedulerState(actor.lr_scheduler)
         lr_scheduler_state_dict = {"lr_scheduler_state": lr_scheduler_state}
         dcp.save(lr_scheduler_state_dict, checkpoint_id=str(lr_scheduler_dir))

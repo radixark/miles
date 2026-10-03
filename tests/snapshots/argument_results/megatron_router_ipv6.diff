@@ -1,0 +1,5 @@
+--- megatron
++++ megatron_router_ipv6
+@@ -1821 +1821 @@
+-  sglang_router_ip: null
++  sglang_router_ip: '[::1]'

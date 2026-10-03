@@ -1,0 +1,20 @@
+--- megatron
++++ megatron_bridge_load_fallback
+@@ -55 +55 @@
+-  critic_load: null
++  critic_load: $FIXTURES/missing
+@@ -184 +184 @@
+-  load: null
++  load: $FIXTURES/missing
+@@ -211 +211 @@
+-  megatron_to_hf_mode: raw
++  megatron_to_hf_mode: bridge
+@@ -673 +673 @@
+-      load: null
++      load: $FIXTURES/missing
+@@ -1172 +1172 @@
+-  ref_load: null
++  ref_load: $FIXTURES/ref
+@@ -1175 +1175 @@
+-  requested_load: null
++  requested_load: $FIXTURES/missing

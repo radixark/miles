@@ -13,6 +13,7 @@ import subprocess
 from pathlib import Path
 from typing import TYPE_CHECKING, NamedTuple
 
+from miles.utils.audit_utils.config_snapshot.generated_values import generated_values_env, register_generated_value
 from miles.utils.external_utils.model_args_utils import load_model_args
 from miles.utils.file_arg_utils import PSEUDO_FILE_PREFIX
 from miles.utils.object_store_config import (
@@ -20,6 +21,7 @@ from miles.utils.object_store_config import (
     MOONCAKE_MASTER_PORT,
     compute_mooncake_init_kwargs_vanilla,
 )
+from miles.utils.test_utils.snapshot import SNAPSHOT_RECORD_DIR_ENV_VAR, SNAPSHOT_UPDATE_ENV_VAR
 from miles.utils.workers.argv_utils import parse_declared_args
 from miles.utils.workers.worker_provider.kubernetes.helm.naming import CHART_NAME
 
@@ -53,6 +55,9 @@ def train_env_vars(
     return {
         # exported for the submitting client too, but only the runtime env reaches the ray workers
         "PYTHONUNBUFFERED": "1",
+        SNAPSHOT_UPDATE_ENV_VAR: os.environ.get(SNAPSHOT_UPDATE_ENV_VAR, ""),
+        SNAPSHOT_RECORD_DIR_ENV_VAR: os.environ.get(SNAPSHOT_RECORD_DIR_ENV_VAR, ""),
+        **generated_values_env(),
         # If setting this in FSDP, the computation communication overlapping may have issues
         **(
             {}
@@ -99,6 +104,7 @@ def get_default_wandb_args(test_file: str, run_name_prefix: str | None = None, r
 
     wandb_run_name = run_id or create_run_id()
     if (x := os.environ.get("GITHUB_COMMIT_NAME")) is not None:
+        register_generated_value(kind="ci_commit_name", value=x, name="github")
         wandb_run_name += f"_{x}"
     if (x := run_name_prefix) is not None:
         wandb_run_name = f"{x}_{wandb_run_name}"
@@ -115,7 +121,9 @@ def get_default_wandb_args(test_file: str, run_name_prefix: str | None = None, r
 
 
 def create_run_id() -> str:
-    return datetime.datetime.utcnow().strftime("%y%m%d-%H%M%S") + f"-{random.Random().randint(0, 999):03d}"
+    value = datetime.datetime.utcnow().strftime("%y%m%d-%H%M%S") + f"-{random.Random().randint(0, 999):03d}"
+    register_generated_value(kind="run_id", value=value)
+    return value
 
 
 _warned_bool_env_var_keys = set()

@@ -29,6 +29,8 @@ from pathlib import Path
 import torch
 import torch.distributed as dist
 
+from tests.fast.fixtures.args_fixtures import ConfigNamespace
+
 from miles.backends.training_utils.parallel import GroupInfo, ParallelState, set_parallel_state
 
 ARTIFACTS_REPO = "https://github.com/yueming-yuan/miles-artifacts.git"
@@ -104,27 +106,41 @@ _ARGS_DEFAULTS = dict(
     custom_pg_loss_reducer_function_path=None,
     use_opsm=False,
     opsm_delta=0.1,
-    calculate_per_token_loss=False,
+    eps_clip_c=None,
+    dump_details=None,
+    multi_lora=False,
+    custom_loss_function_path=None,
     # value_loss_function
     value_clip=0.2,
     # loss_function dispatcher
-    global_batch_size=1,  # overridden by make_inputs
     use_dynamic_global_batch_size=False,
     recompute_loss_function=False,
 )
 
 
+# fields a trainer reads from its backend namespace, kept flat in the stored snapshot args
+_BACKEND_ARGS_DEFAULTS = dict(
+    bf16=False,
+    fp16=False,
+    calculate_per_token_loss=False,
+    vocab_size=None,
+    global_batch_size=1,  # overridden by make_inputs
+)
+
+
 def make_args(**overrides) -> Namespace:
-    d = {**_ARGS_DEFAULTS, **overrides}
-    return Namespace(**d)
+    return args_from_dict(overrides)
 
 
 def args_to_dict(args: Namespace) -> dict:
-    return vars(args)
+    flat = {name: value for name, value in vars(args).items() if name not in {"backend", "train_backend"}}
+    return flat | vars(args.backend)
 
 
 def args_from_dict(d: dict) -> Namespace:
-    return Namespace(**{**_ARGS_DEFAULTS, **d})
+    values = {**_ARGS_DEFAULTS, **_BACKEND_ARGS_DEFAULTS, **d}
+    backend = {name: values.pop(name) for name in _BACKEND_ARGS_DEFAULTS}
+    return ConfigNamespace(**values, train_backend="megatron", backend=Namespace(**backend))
 
 
 # ---------------------------------------------------------------------------

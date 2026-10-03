@@ -1,8 +1,10 @@
-from collections.abc import Callable
-from typing import Any, Literal
+from abc import ABC, abstractmethod
+from typing import Any, ClassVar, Literal, Self
 
 from pydantic import ConfigDict, model_validator
 
+from miles.utils.args.configs.scaling import ScalingConfig
+from miles.utils.args.runtime_base import BaseLeafConfig
 from miles.utils.math_utils import exact_div
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
 from miles.utils.workers.backend_capability.base import BackendCapability
@@ -11,10 +13,6 @@ from miles.utils.workers.types import DeployComponent, PlatformAccess
 RPC_PORT_NAME = "rpc"
 MASTER_PORT_NAME = "master"
 DEFAULT_RPC_PORT = 8000
-
-
-def _port_info_name(port_info: "PortInfo | dict") -> str:
-    return port_info["name"] if isinstance(port_info, dict) else port_info.name
 
 
 class PortInfo(FrozenStrictBaseModel):
@@ -38,6 +36,14 @@ class PortInfo(FrozenStrictBaseModel):
         return self
 
 
+DEFAULT_RPC_PORT_INFO = PortInfo(
+    name=RPC_PORT_NAME,
+    static_port=DEFAULT_RPC_PORT,
+    mode="per_worker",
+    allow_dynamic=True,
+)
+
+
 class SchedulingSpec(FrozenStrictBaseModel):
     num_cells: int
     num_workers_per_cell: int
@@ -51,6 +57,9 @@ class SchedulingSpec(FrozenStrictBaseModel):
 
     def gpus_per_cell(self) -> int:
         return self.num_workers_per_cell * self.num_gpu_slots_per_worker
+
+    def declares_dynamic_pool(self) -> bool:
+        return self.gpus_per_cell() > 0
 
     def pods_per_cell(self) -> int:
         gpus_per_cell = self.gpus_per_cell()
@@ -74,14 +83,26 @@ class SchedulingSpec(FrozenStrictBaseModel):
         )
 
 
-# TODO: improve meta computation logic later
-class WorkerMetaContext(FrozenStrictBaseModel):
-    cell_index: int
+class StaticMeta(FrozenStrictBaseModel):
+    values: dict[str, Any] = {}
+    include_cell_index: bool = False
+    gpu_offset_base: int | None = None
+    gpu_offset_stride_per_cell: int = 0
+
+    def resolve(self, *, cell_index: int) -> dict[str, Any]:
+        meta = dict(self.values)
+        if self.include_cell_index:
+            meta["cell_index"] = cell_index
+        if self.gpu_offset_base is not None:
+            meta["gpu_offset"] = self.gpu_offset_base + cell_index * self.gpu_offset_stride_per_cell
+        return meta
 
 
 class WorkerLaunchContext(FrozenStrictBaseModel):
+    args: Any
     cell_index: int
     worker_in_cell_index: int
+    num_workers_per_cell: int
     gpu_ids: list[int]
 
 
@@ -91,25 +112,37 @@ class WorkerCtorContext(WorkerLaunchContext):
     capability: BackendCapability
 
 
-SpecMetaFn = Callable[[WorkerMetaContext], dict[str, Any]]
+class BaseSpec(FrozenStrictBaseModel, ABC):
+    model_config = ConfigDict(extra="forbid", frozen=True, arbitrary_types_allowed=True)
 
-
-class BaseWorkerSpec(FrozenStrictBaseModel):
+    args: Any
     name: str
     category: str | None = None
     port_infos: list[PortInfo]
-    env_var: Callable[[WorkerLaunchContext], dict[str, str]]
-    scheduling: SchedulingSpec
-    meta: SpecMetaFn | None = None
+    static_meta: StaticMeta = StaticMeta()
     deploy_component: DeployComponent = DeployComponent.PRIMARY
     platform_access: PlatformAccess = PlatformAccess.NONE
 
     @model_validator(mode="after")
-    def _reject_selector_component(self) -> "BaseWorkerSpec":
+    def _reject_selector_component(self) -> "BaseSpec":
         assert (
             self.deploy_component is not DeployComponent.ALL
         ), f"pool {self.name} must name the one component it is deployed with, not the selector for all of them"
         return self
+
+    @classmethod
+    @abstractmethod
+    def slice_configs(cls, args: Any) -> list[Any]: ...
+
+    @classmethod
+    @abstractmethod
+    def create(cls, config: Any) -> Self | list[Self]: ...
+
+    @abstractmethod
+    def scheduling(self, scaling: ScalingConfig) -> SchedulingSpec: ...
+
+    def env_var(self, ctx: WorkerLaunchContext) -> dict[str, str]:
+        return {}
 
 
 class HostAndPort(FrozenStrictBaseModel):
@@ -142,24 +175,29 @@ class LaunchCommandContext(WorkerLaunchContext):
     local_gpu_ids: list[int]
 
 
-class CommandWorkerSpec(BaseWorkerSpec):
-    launch_command: Callable[[LaunchCommandContext], str]
+class BaseCommandSpec(BaseSpec):
+    @classmethod
+    def slice_configs(cls, args: Any) -> list[Any]:
+        return [args]
+
+    @abstractmethod
+    def launch_command(self, ctx: LaunchCommandContext) -> str: ...
 
 
-class ServeWorkerSpec(BaseWorkerSpec):
+class BaseServeSpec(BaseSpec):
+    worker_type: ClassVar[str]
+    config_class: ClassVar[type[BaseLeafConfig]]
     worker_class: str
-    ctor_kwargs: Callable[[WorkerCtorContext], dict[str, Any]]
+    port_infos: list[PortInfo] = [DEFAULT_RPC_PORT_INFO]
     concurrency_groups: dict[str, int] | None = None
 
-    @model_validator(mode="before")
     @classmethod
-    def _inject_rpc_port(cls, values: dict) -> dict:
-        if "port_infos" not in values:
-            return values
+    def slice_configs(cls, args: Any) -> list[BaseLeafConfig]:
+        return [cls.config_class.slice_from(args)]
 
-        port_infos = list(values["port_infos"])
-        if all(_port_info_name(port_info) != RPC_PORT_NAME for port_info in port_infos):
-            port_infos.append(
-                PortInfo(name=RPC_PORT_NAME, static_port=DEFAULT_RPC_PORT, mode="per_worker", allow_dynamic=True)
-            )
-        return {**values, "port_infos": port_infos}
+    @classmethod
+    @abstractmethod
+    def create(cls, config: Any) -> Self: ...
+
+    @abstractmethod
+    def ctor_kwargs(self, ctx: WorkerCtorContext) -> dict[str, Any]: ...

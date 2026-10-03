@@ -17,23 +17,31 @@ from miles_plugins.models.hf_attention import HuggingfaceAttention
 
 
 def _get_text_config(hf_config):
-    return getattr(hf_config, "text_config", None) or hf_config
+    return (
+        getattr(hf_config, "text_config", None) or hf_config
+    )  # config-access-exempt: HF configs may wrap text_config for multimodal checkpoints
 
 
 def _linear_attn_fields(text_config) -> dict:
-    linear_attn_config = getattr(text_config, "linear_attn_config", None)
+    linear_attn_config = getattr(
+        text_config, "linear_attn_config", None
+    )  # config-access-exempt: model-family schemas differ in optional linear_attn_config metadata
     if not isinstance(linear_attn_config, dict):
         linear_attn_config = {}
 
     def field(key, attr, default):
         value = linear_attn_config.get(key)
         if value is None:
-            value = getattr(text_config, attr, default)
+            value = getattr(
+                text_config, attr, default
+            )  # config-access-exempt: attribute selected at runtime from attr
         return value
 
     gate_lower_bound = field("gate_lower_bound", "gate_lower_bound", None)
     if gate_lower_bound is None:
-        gate_lower_bound = getattr(text_config, "linear_lower_bound", None)
+        gate_lower_bound = getattr(
+            text_config, "linear_lower_bound", None
+        )  # config-access-exempt: model-family schemas differ in optional linear_lower_bound metadata
     if gate_lower_bound is None:
         raise ValueError("GLM-5.3 KDA requires gate_lower_bound (safe gate) in the HF config.")
     return dict(

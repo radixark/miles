@@ -1,0 +1,148 @@
+processes:
+  tests/e2e/megatron/test_mimo_7B_mtp_only_grad/run-0000/all/default/actor_cell00000:
+    diffs:
+      checkpoint_load-0000:
+        set:
+          <<: &id001
+            /args/backend/lr_decay_iters: 1
+            /args/backend/model_type: {$enum: megatron.core.enums.ModelType, name: encoder_or_decoder}
+            /args/backend/train_iters: 1
+          /args/backend/ckpt_step: null
+          /args/backend/finetune: true
+          /args/backend/load: /root/models/MiMo-7B-RL_torch_dist
+          /args/backend/no_load_optim: true
+          /args/backend/no_load_rng: true
+          /load: /root/models/MiMo-7B-RL_torch_dist
+          /local_checkpoint_manager: false
+      train_first_step-0000:
+        set:
+          <<: *id001
+          /role: actor
+    ranks: [0, 1, 2, 3]
+    template: trainer-megatron-02
+  tests/e2e/megatron/test_mimo_7B_mtp_only_grad/run-0000/all/default/inference_controller:
+    diffs: &id005
+      router_endpoints-0000:
+        set:
+          <<: &id002
+            /args/sglang_model_routers: {default: {$tuple: [$HOST, $PORT]}}
+            /args/sglang_router_ip: $HOST
+            /args/sglang_router_port: $PORT
+    overrides:
+      set:
+        <<:
+        - &id003
+          /args/check_rematerialize_param_from_master_weight: true
+          /args/ci_disable_kl_checker: true
+          /args/config_snapshot_name: tests/e2e/megatron/test_mimo_7B_mtp_only_grad/run-0000
+          /args/enable_mtp_training: true
+          /args/hf_checkpoint: /root/models/MiMo-7B-RL/
+          /args/init_expected_num_cells/default: 4
+          /args/log_probs_max_tokens_per_gpu: 4096
+          /args/max_tokens_per_gpu: 4096
+          /args/n_samples_per_prompt: 2
+          /args/ref_load: /root/models/MiMo-7B-RL_torch_dist
+          /args/rematerialize_param_from_master_weight: true
+          /args/rollout_batch_size: 4
+          /args/rollout_max_response_len: 128
+          /args/sglang/base_args/enable_metrics: true
+          /args/sglang/base_args/speculative_algorithm: EAGLE
+          /args/sglang/base_args/speculative_eagle_topk: 1
+          /args/sglang/base_args/speculative_num_draft_tokens: 3
+          /args/sglang/base_args/speculative_num_steps: 2
+          /args/sglang/models:
+          - model_path: null
+            name: default
+            server_groups:
+            - needs_offload: true
+              num_gpus_per_engine: 1
+              overrides: {model_path: /root/models/MiMo-7B-RL/}
+              worker_type: {$enum: miles.backends.sglang_utils.sglang_api_client.WorkerType, name: REGULAR}
+            update_weights: true
+          /args/start_rollout_id: null
+        - &id004
+          /args/global_batch_size: 8
+          /args/input_key: prompt
+          /args/rollout_temperature: 0.8
+          /args/wandb_project: miles-test_mimo_7B_mtp_only_grad
+    template: inference_controller-01
+  tests/e2e/megatron/test_mimo_7B_mtp_only_grad/run-0000/all/default/main:
+    diffs:
+      router_endpoints-0000:
+        set:
+          <<: *id002
+          /args/wandb_run_id: $WANDB_RUN_ID_0000
+      tracking_config-0000: {set: {/args/wandb_run_id: $WANDB_RUN_ID_0000}}
+    overrides:
+      set:
+        <<:
+        - *id003
+        - *id004
+        - &id006
+          /args/raw_megatron/base_args/add_qkv_bias: true
+          /args/raw_megatron/base_args/data_parallel_size: 2
+          /args/raw_megatron/base_args/encoder_num_layers: 36
+          /args/raw_megatron/base_args/eval_global_batch_size: 8
+          /args/raw_megatron/base_args/expert_tensor_parallel_size: 2
+          /args/raw_megatron/base_args/ffn_hidden_size: 11008
+          /args/raw_megatron/base_args/finetune: false
+          /args/raw_megatron/base_args/global_batch_size: 8
+          /args/raw_megatron/base_args/hidden_size: 4096
+          /args/raw_megatron/base_args/layernorm_epsilon: 1.0e-05
+          /args/raw_megatron/base_args/load: null
+          /args/raw_megatron/base_args/mtp_num_layers: 1
+          /args/raw_megatron/base_args/no_load_optim: null
+          /args/raw_megatron/base_args/no_load_rng: null
+          /args/raw_megatron/base_args/num_attention_heads: 32
+          /args/raw_megatron/base_args/num_layers: 36
+          /args/raw_megatron/base_args/num_query_groups: 8
+          /args/raw_megatron/base_args/padded_vocab_size: 151808
+          /args/raw_megatron/base_args/qk_layernorm: false
+          /args/raw_megatron/base_args/rotary_base: 640000
+          /args/raw_megatron/base_args/tensor_model_parallel_size: 2
+          /args/raw_megatron/base_args/tokenizer_model: /root/models/MiMo-7B-RL/
+          /args/raw_megatron/base_args/vocab_size: 151680
+          /args/raw_megatron/base_args/wandb_project: miles-test_mimo_7B_mtp_only_grad
+          /args/raw_megatron/base_args/world_size: 4
+    template: main-01
+  tests/e2e/megatron/test_mimo_7B_mtp_only_grad/run-0000/all/default/rollout_executor:
+    diffs: *id005
+    overrides: &id007
+      set:
+        <<:
+        - *id003
+        - *id004
+        - *id006
+        /args/over_sampling_batch_size: 4
+    template: rollout_executor-01
+  tests/e2e/megatron/test_mimo_7B_mtp_only_grad/run-0000/all/default/trainer_controller_actor: {overrides: {set: {/args/backend/rank: 0}},
+    template: trainer-megatron-02}
+  tests/e2e/megatron/test_mimo_7B_mtp_only_grad/run-0000/all/default/worker_manager:
+    overrides: *id007
+    template: worker_manager-01
+shared_overrides:
+  trainer-megatron-02:
+    remove: [/args/backend/ckpt_step, /args/backend/finetune, /args/backend/load, /args/backend/no_load_optim, /args/backend/no_load_rng]
+    set:
+      <<: *id003
+      /args/backend/add_qkv_bias: true
+      /args/backend/data_parallel_size: 2
+      /args/backend/eval_global_batch_size: 8
+      /args/backend/expert_tensor_parallel_size: 2
+      /args/backend/ffn_hidden_size: 11008
+      /args/backend/global_batch_size: 8
+      /args/backend/hidden_size: 4096
+      /args/backend/layernorm_epsilon: 1.0e-05
+      /args/backend/mtp_num_layers: 1
+      /args/backend/padded_vocab_size: 151808
+      /args/backend/qk_layernorm: false
+      /args/backend/rotary_base: 640000
+      /args/backend/tensor_model_parallel_size: 2
+      /args/backend/tokenizer_model: /root/models/MiMo-7B-RL/
+      /args/backend/untie_embeddings_and_output_weights: true
+      /args/backend/vocab_size: 151680
+      /args/backend/wandb_project: miles-test_mimo_7B_mtp_only_grad
+      /args/balance_data: false
+      /args/critic_load: null
+      /args/num_rollout: 1
+      /args/use_kl_loss: false

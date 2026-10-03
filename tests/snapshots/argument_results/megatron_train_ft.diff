@@ -1,0 +1,50 @@
+--- megatron
++++ megatron_train_ft
+@@ -8 +8 @@
+-  api_server_port: 0
++  api_server_port: 18080
+@@ -98 +98 @@
+-  delay_split_train_data_by_dp: false
++  delay_split_train_data_by_dp: true
+@@ -115 +115 @@
+-  enable_event_analyzer: false
++  enable_event_analyzer: true
+@@ -118 +118 @@
+-  enable_witness: false
++  enable_witness: true
+@@ -159 +159,2 @@
+-  ft_components: []
++  ft_components:
++  - train
+@@ -169 +170 @@
+-  indep_dp: false
++  indep_dp: true
+@@ -188 +189 @@
+-  log_inference_engine_weight_checksums: false
++  log_inference_engine_weight_checksums: true
+@@ -192 +193 @@
+-  log_probs_max_tokens_per_gpu: null
++  log_probs_max_tokens_per_gpu: 4096
+@@ -209 +210 @@
+-  max_tokens_per_gpu: null
++  max_tokens_per_gpu: 4096
+@@ -223 +224 @@
+-  mini_ft_controller_enable: false
++  mini_ft_controller_enable: true
+@@ -875 +876 @@
+-      non_persistent_ckpt_type: null
++      non_persistent_ckpt_type: local
+@@ -877,2 +878,2 @@
+-      non_persistent_local_ckpt_algo: fully_parallel
+-      non_persistent_local_ckpt_dir: null
++      non_persistent_local_ckpt_algo: atomic
++      non_persistent_local_ckpt_dir: /tmp/miles_local_ckpt
+@@ -1319 +1320 @@
+-  save_local_weight_checksum: false
++  save_local_weight_checksum: true
+@@ -1869 +1870 @@
+-  use_dynamic_batch_size: false
++  use_dynamic_batch_size: true
+@@ -1871 +1872 @@
+-  use_fault_tolerance: false
++  use_fault_tolerance: true

@@ -1,22 +1,17 @@
 from __future__ import annotations
 
 import functools
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from miles.utils.http_utils import wrap_ipv6
 from miles.utils.misc import merge_asserting_consistency
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
+from miles.utils.workers.connection_config import WorkerPodMetadata
 from miles.utils.workers.naming import compute_worker_name
 from miles.utils.workers.worker_info import WorkerInfo
 from miles.utils.workers.worker_provider.base import CellInfo
 from miles.utils.workers.worker_provider.kubernetes.core import pod_view
-from miles.utils.workers.worker_spec import (
-    RPC_PORT_NAME,
-    HostAndPort,
-    NamedHostAndPorts,
-    ServeWorkerSpec,
-    WorkerMetaContext,
-)
+from miles.utils.workers.worker_spec import HostAndPort, NamedHostAndPorts
 
 if TYPE_CHECKING:
     from miles.utils.workers.worker_provider.kubernetes.core.provider import KubernetesRunInfo
@@ -45,7 +40,7 @@ def compute_cell_info(cell_id: str, *, pods: list[pod_view.ParsedPod], run: Kube
         return None
 
     pool_id = pods[0].pool_id
-    meta = _spec_meta_of_pod(pods[0], run=run) | _pod_meta_of_cell(pods)
+    meta = _metadata_of_cell(pods).static_meta.resolve(cell_index=pods[0].cell_index) | _pod_meta_of_cell(pods)
 
     return CellInfo(
         cell_id=cell_id,
@@ -79,34 +74,37 @@ def compute_worker_infos(cell_id: str, *, pods: list[pod_view.ParsedPod], run: K
 
 
 def workers_of_pods(pods: list[pod_view.ParsedPod], *, run: KubernetesRunInfo) -> list[KubernetesWorkerInfo]:
-    return [worker for pod in pods for worker in _workers_of_pod(pod, run=run)]
+    if not pods:
+        return []
+    metadata = _metadata_of_cell(pods)
+    return [worker for pod in pods for worker in _workers_of_pod(pod, metadata=metadata)]
 
 
 def addrs_of_worker(worker: KubernetesWorkerInfo, *, run: KubernetesRunInfo) -> NamedHostAndPorts:
     host = _host_of_pod(worker.pod, namespace=run.namespace)
-    ports = _ports_of_pool(worker.pod.pool_id, run=run)
+    ports = worker.pod.worker_metadata.port_infos
     assert ports, f"spec {worker.pod.pool_id} declares no ports, so {worker.name} has no address"
     return {
-        name: HostAndPort(host=host, port=port + (worker.worker_in_pod_index if name == RPC_PORT_NAME else 0))
-        for name, port in ports.items()
+        port.name: HostAndPort(
+            host=host,
+            port=port.effective_static_port(worker_in_pod_index=worker.worker_in_pod_index),
+        )
+        for port in ports
     }
 
 
 def _compute_worker_info(worker: KubernetesWorkerInfo, *, run: KubernetesRunInfo) -> WorkerInfo:
-    pool_id = worker.pod.pool_id
-    spec = run.specs[pool_id]
-
     return WorkerInfo(
         name=worker.name,
         generation=worker.pod.restart_count,
         self_addrs=addrs_of_worker(worker, run=run),
         gpu_ids=list(worker.gpu_ids),
-        worker_class=spec.worker_class if isinstance(spec, ServeWorkerSpec) else None,
+        worker_class=worker.pod.worker_metadata.worker_class,
     )
 
 
-def _workers_of_pod(pod: pod_view.ParsedPod, *, run: KubernetesRunInfo) -> list[KubernetesWorkerInfo]:
-    workers_per_pod = run.specs[pod.pool_id].scheduling.workers_per_pod()
+def _workers_of_pod(pod: pod_view.ParsedPod, *, metadata: WorkerPodMetadata) -> list[KubernetesWorkerInfo]:
+    workers_per_pod = metadata.workers_per_pod
     assert len(pod.gpu_ids) % workers_per_pod == 0, (
         f"pod {pod.name} was annotated with {len(pod.gpu_ids)} gpus for the {workers_per_pod} workers it serves, "
         f"so no worker owns an equal share of them"
@@ -129,10 +127,6 @@ def _workers_of_pod(pod: pod_view.ParsedPod, *, run: KubernetesRunInfo) -> list[
     ]
 
 
-def _ports_of_pool(pool_id: str, *, run: KubernetesRunInfo) -> dict[str, int]:
-    return {port.name: port.static_port for port in run.specs[pool_id].port_infos}
-
-
 def _host_of_pod(pod: pod_view.ParsedPod, *, namespace: str) -> str:
     if pod.pod_ip:
         return wrap_ipv6(pod.pod_ip)
@@ -147,11 +141,12 @@ def _has_all_pods(pods: list[pod_view.ParsedPod]) -> bool:
     return sorted(pod.pod_in_cell_index for pod in pods) == list(range(expected))
 
 
-def _spec_meta_of_pod(pod: pod_view.ParsedPod, *, run: KubernetesRunInfo) -> dict[str, Any]:
-    compute_meta = run.specs[pod.pool_id].meta
-    if compute_meta is None:
-        return {}
-    return dict(compute_meta(WorkerMetaContext(cell_index=pod.cell_index)))
+def _metadata_of_cell(pods: list[pod_view.ParsedPod]) -> WorkerPodMetadata:
+    metadata = pods[0].worker_metadata
+    assert all(
+        pod.worker_metadata == metadata for pod in pods
+    ), f"cell {pods[0].cell_id} has inconsistent worker metadata across its pods"
+    return metadata
 
 
 def _pod_meta_of_cell(pods: list[pod_view.ParsedPod]) -> dict[str, str]:

@@ -32,10 +32,8 @@ def _args(qkv_format: str) -> Namespace:
         enable_witness=False,
         qkv_format=qkv_format,
         data_pad_size_multiplier=16,
-        compress_ratios=[],
         true_on_policy_mode=False,
-        bf16=False,
-        fp16=False,
+        backend=Namespace(compress_ratios=[], bf16=False, fp16=False),
     )
 
 

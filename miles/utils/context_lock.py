@@ -110,6 +110,11 @@ class ContextLock:
         self._detached = False
         _held_lock.set(_LockGrant(lock=self, generation=self._issue_generation()))
 
+    def release_if_detached(self) -> None:
+        if self._detached:
+            self.reattach()
+            self.release()
+
     def _issue_generation(self) -> int:
         self._generation_counter += 1
         self._active_generation = self._generation_counter
@@ -136,7 +141,9 @@ def enforce_lock_discipline(cls: type) -> type:
         if member_name in _ANNOTATION_MEMBER_NAMES:
             continue
         for fn in _extract_checkable_functions(member):
-            assert getattr(fn, _DISCIPLINE_MARKER_ATTRIBUTE_NAME, None) is not None, (
+            assert (
+                getattr(fn, _DISCIPLINE_MARKER_ATTRIBUTE_NAME, None) is not None
+            ), (  # config-access-exempt: attribute selected at runtime from _DISCIPLINE_MARKER_ATTRIBUTE_NAME
                 f"{cls.__name__}.{member_name} must be decorated with one of the context-lock decorators "
                 f"(e.g. with_lock or lock_exempt)"
             )
@@ -235,16 +242,22 @@ def _propagate_discipline_owner(fn: Callable[..., Any], owner: type) -> None:
         seen.add(id(target))
         function = target.__func__ if inspect.ismethod(target) else target
         if inspect.isfunction(function):
-            owners = getattr(function, _DISCIPLINE_OWNER_ATTRIBUTE_NAME, None)
+            owners = getattr(
+                function, _DISCIPLINE_OWNER_ATTRIBUTE_NAME, None
+            )  # config-access-exempt: attribute selected at runtime from _DISCIPLINE_OWNER_ATTRIBUTE_NAME
             if owners is None:
                 setattr(function, _DISCIPLINE_OWNER_ATTRIBUTE_NAME, {owner})
             else:
                 owners.add(owner)
-        target = getattr(target, "__wrapped__", None)
+        target = getattr(
+            target, "__wrapped__", None
+        )  # config-access-exempt: inspect optional decorator metadata and wrapper links
 
 
 def _get_lock(obj: Any) -> ContextLock:
-    lock = getattr(obj, LOCK_ATTRIBUTE_NAME)
+    lock = getattr(
+        obj, LOCK_ATTRIBUTE_NAME
+    )  # config-access-exempt: attribute selected at runtime from LOCK_ATTRIBUTE_NAME
     assert isinstance(lock, ContextLock), f"{type(obj).__name__}.{LOCK_ATTRIBUTE_NAME} must be a ContextLock"
     return lock
 
@@ -262,7 +275,9 @@ def _assert_own_lock_held(fn: Callable[..., Any], obj: Any) -> None:
 
 
 def _assert_owner_enforces_discipline(wrapper: Callable[..., Any], obj: Any) -> None:
-    owners = getattr(wrapper, _DISCIPLINE_OWNER_ATTRIBUTE_NAME, None)
+    owners = getattr(
+        wrapper, _DISCIPLINE_OWNER_ATTRIBUTE_NAME, None
+    )  # config-access-exempt: attribute selected at runtime from _DISCIPLINE_OWNER_ATTRIBUTE_NAME
     assert owners is not None, (
         f"{wrapper.__qualname__} uses a context-lock decorator, but its class is not decorated "
         f"with @enforce_lock_discipline"

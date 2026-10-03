@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 import torch
+from tests.fast.fixtures.args_fixtures import make_trainer_args
 
 import miles.backends.megatron_utils.lora.utils as lora_utils
 from miles.backends.megatron_utils.lora.utils import (
@@ -35,10 +36,6 @@ class TestIsLoraEnabled:
 
     def test_disabled(self):
         args = Namespace(lora_rank=0, lora_adapter_path=None)
-        assert is_lora_enabled(args) is False
-
-    def test_disabled_missing_attrs(self):
-        args = Namespace()
         assert is_lora_enabled(args) is False
 
 
@@ -146,7 +143,7 @@ class TestSaveLoraCheckpointTrainingState:
 
         adapter = torch.nn.Parameter(torch.ones(2))
         model = [SimpleNamespace(named_parameters=lambda: [("layers.0.self_attention.lora_A.weight", adapter)])]
-        args = Namespace(megatron_to_hf_mode="bridge", no_save_optim=no_save_optim)
+        args = make_trainer_args(megatron_to_hf_mode="bridge", no_save_optim=no_save_optim)
         optimizer = SimpleNamespace(state_dict=lambda: {"step": 7})
         save_lora_checkpoint(
             model,

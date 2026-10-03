@@ -7,6 +7,7 @@ from unittest.mock import Mock
 
 import pytest
 import torch
+from tests.fast.fixtures.args_fixtures import make_trainer_args, with_backend_values
 from tests.fast.utils.test_utils.fault_injector.fakes import _arm_marker_hook
 
 from miles.backends.training_utils.data import DataIterator
@@ -110,7 +111,7 @@ def make_train_one_step_args(**overrides: Any) -> Namespace:
         enable_witness=False,
         save_local_weight_checksum=False,
     )
-    return Namespace(**{**defaults, **overrides})
+    return make_trainer_args(**{**defaults, **overrides})
 
 
 @pytest.fixture
@@ -134,7 +135,6 @@ def train_one_step_env(monkeypatch) -> TrainOneStepEnv:
         forward_backward_engine=FakeForwardBackwardEngine(),
     )
 
-    monkeypatch.setattr(model_module, "get_args", lambda: env.args)
     monkeypatch.setattr(model_module, "get_parallel_state", lambda: env.parallel_state)
     monkeypatch.setattr("miles.backends.training_utils.parallel.get_parallel_state", lambda: env.parallel_state)
     monkeypatch.setattr(model_module, "get_forward_backward_func", lambda: env.forward_backward_engine)
@@ -264,7 +264,7 @@ def test_forward_only_omits_sampling_mask_for_callbacks_that_do_not_replay_sampl
         callback_kwargs.update(kwargs)
         return {}
 
-    args = Namespace(
+    args = make_trainer_args(
         data_pad_size_multiplier=1,
         qkv_format="thd",
         allgather_cp=False,
@@ -352,7 +352,7 @@ class TestTrainOneStepModelCompanion:
         identity_fields["lineage_source_sample_indices"] = [7]
         identity_fields["lineage_output_indices"] = [0]
         identity_fields["lineage_output_counts"] = [1]
-        train_one_step_env.args.check_for_nan_in_loss_and_grad = False
+        train_one_step_env.args = with_backend_values(train_one_step_env.args, check_for_nan_in_loss_and_grad=False)
 
         def forward_backward_engine(**kwargs: Any) -> list[dict[str, Any]]:
             kwargs["data_iterator"][0].offset = 1
@@ -391,7 +391,7 @@ class TestTrainOneStepModelCompanion:
         identity_fields["lineage_source_sample_indices"] = [7]
         identity_fields["lineage_output_indices"] = [1]
         identity_fields["lineage_output_counts"] = [2]
-        train_one_step_env.args.check_for_nan_in_loss_and_grad = False
+        train_one_step_env.args = with_backend_values(train_one_step_env.args, check_for_nan_in_loss_and_grad=False)
         train_one_step_env.forward_backward_engine = FakeForwardBackwardEngine()
 
         def forward_backward_engine(**kwargs: Any) -> list[dict[str, Any]]:
@@ -432,7 +432,7 @@ class TestTrainOneStepModelCompanion:
         identity_fields["lineage_output_indices"] = [0]
         identity_fields["lineage_output_counts"] = [1]
         train_one_step_env.parallel_state.indep_dp.size = 2
-        train_one_step_env.args.check_for_nan_in_loss_and_grad = False
+        train_one_step_env.args = with_backend_values(train_one_step_env.args, check_for_nan_in_loss_and_grad=False)
 
         def forward_backward_engine(**kwargs: Any) -> list[dict[str, Any]]:
             kwargs["data_iterator"][0].offset = 1
@@ -475,8 +475,8 @@ def test_ft_discard_stays_invalid_with_finite_gradient_norm(
 
     env = train_one_step_env
     env.args.enable_sample_ownership_checker = False
-    env.args.check_for_nan_in_loss_and_grad = False
-    env.args.calculate_per_token_loss = False
+    env.args = with_backend_values(env.args, check_for_nan_in_loss_and_grad=False)
+    env.args = with_backend_values(env.args, calculate_per_token_loss=False)
     env.parallel_state.indep_dp.size = 2
 
     def reject_optimizer_step() -> None:

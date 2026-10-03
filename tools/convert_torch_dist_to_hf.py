@@ -103,16 +103,13 @@ def get_named_params(args, state_dict):
 
 
 def save_tensors(args, model_name, state_dict, output_dir, chunk_size, vocab_size=None):
-    # for miles update_weight compatible
-    args.sglang_enable_ep_moe = False
-
     print(f"start saving to {output_dir}")
     os.makedirs(output_dir, exist_ok=True)
     # 2GB
     current_size = 0
     total_size = 0
     modeltensors = [{}]
-    for name, param in get_named_params(args, state_dict):
+    for name, param in get_named_params(args.backend, state_dict):
         if vocab_size:
             param = remove_padding(name, param, vocab_size)
         converted_named_tensors = convert_to_hf(args, model_name, name, param)
@@ -209,7 +206,8 @@ if __name__ == "__main__":
     )
     print(f"model loaded in {time.time()-t:.2f} sec.")
 
-    save_tensors(megatron_args, args.model_name, state_dict, args.output_dir, args.chunk_size, args.vocab_size)
+    conversion_args = argparse.Namespace(backend=megatron_args, hf_checkpoint=args.origin_hf_dir)
+    save_tensors(conversion_args, args.model_name, state_dict, args.output_dir, args.chunk_size, args.vocab_size)
 
     if args.origin_hf_dir:
         copy_assets(args.origin_hf_dir, args.output_dir)

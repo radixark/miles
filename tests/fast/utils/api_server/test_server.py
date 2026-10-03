@@ -11,6 +11,7 @@ from fastapi import FastAPI
 from tests.fast.ray.rollout.conftest import make_args as make_rollout_args
 
 from miles.ray.rollout.server_cell import compute_pending_rollout_cell_status
+from miles.ray.specs.inference import POOL_CATEGORY_INFERENCE_ENGINE
 from miles.utils.ft_utils.api_server import server
 from miles.utils.ft_utils.api_server.handles import _CellHandler
 from miles.utils.ft_utils.api_server.registry import _CellRegistry
@@ -303,10 +304,12 @@ class TestStartApiServerRegistration:
         cell_ids: list[str],
         actor_cells: list[MockTrainerCell] | None = None,
     ) -> _CellRegistry:
-        manager = MockWorkerManager(make_cell_summaries(*cell_ids))
+        manager = MockWorkerManager(
+            make_cell_summaries(*cell_ids),
+            categories={"inference-engine-0-0": POOL_CATEGORY_INFERENCE_ENGINE},
+        )
         registries: list[_CellRegistry] = []
 
-        monkeypatch.setattr(server, "compute_engine_pool_ids", lambda args: ["inference-engine-0-0"])
         monkeypatch.setattr(
             server, "_start_api_server_raw", lambda *, registry, port, host: registries.append(registry)
         )
@@ -683,7 +686,6 @@ class TestSeveralTrainers:
         """A run of several trainer models heals none of them if the api server only knows the legacy actor pool."""
         registries: list[_CellRegistry] = []
         monkeypatch.setattr(server, "compute_trainer_pool_id", lambda trainer_id: f"trainer-engine-{trainer_id}")
-        monkeypatch.setattr(server, "compute_engine_pool_ids", lambda args: ["engine"])
         monkeypatch.setattr(
             server, "_start_api_server_raw", lambda *, registry, port, host: registries.append(registry)
         )
@@ -710,7 +712,7 @@ class TestSeveralTrainers:
         second = make_mock_controller([MockTrainerCell()], pool_id="trainer-engine-b-actor")
 
         statuses = await _CellHandler(
-            cell_type="actor", operations=object(), controllers=[first, second], pool_ids=[]
+            cell_type="actor", operations=object(), controllers=[first, second], pool_ids=[], category=None
         )._get_cell_statuses()
 
         assert sorted(statuses) == ["trainer-engine-a-actor-0", "trainer-engine-b-actor-0"]
@@ -722,7 +724,6 @@ class TestOperationsSelection:
         operations = object()
         registries: list[_CellRegistry] = []
         monkeypatch.setattr(server, "compute_trainer_pool_id", lambda role: f"trainer-{role}")
-        monkeypatch.setattr(server, "compute_engine_pool_ids", lambda args: ["engine"])
         monkeypatch.setattr(
             server, "_start_api_server_raw", lambda *, registry, port, host: registries.append(registry)
         )

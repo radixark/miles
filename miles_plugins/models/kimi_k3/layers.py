@@ -82,7 +82,9 @@ class KimiK3Attention(MegatronModule):
         if pg_collection is None:
             pg_collection = ProcessGroupCollection.use_mpu_process_groups(required_pgs=["tp", "cp"])
         else:
-            assert hasattr(pg_collection, "tp") and hasattr(pg_collection, "cp")
+            assert hasattr(pg_collection, "tp") and hasattr(
+                pg_collection, "cp"
+            )  # config-access-exempt: process group collections differ across Megatron versions
         self.pg_collection = pg_collection
         self.tp_group = pg_collection.tp
         self.tp_size = self.tp_group.size()

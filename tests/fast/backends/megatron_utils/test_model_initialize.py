@@ -1,12 +1,12 @@
 import sys
 import types
-from argparse import Namespace
 from contextlib import ExitStack
 from pathlib import Path
 from typing import TYPE_CHECKING
 from unittest.mock import MagicMock, patch
 
 import pytest
+from tests.fast.fixtures.args_fixtures import make_trainer_args, make_trainer_config
 
 if TYPE_CHECKING:
     from miles.backends.megatron_utils.model import LoadCheckpointOutput
@@ -168,7 +168,7 @@ def _patch_initialize_side_effects(stack: ExitStack) -> None:
 def test_initialize_does_not_step_scheduler_restored_from_checkpoint():
     from miles.backends.megatron_utils.model import LoadCheckpointOutput, initialize_model_and_optimizer
 
-    args = Namespace(use_checkpoint_opt_param_scheduler=True, global_batch_size=8, finetune=False)
+    args = make_trainer_config(use_checkpoint_opt_param_scheduler=True, global_batch_size=8, finetune=False)
     model = [_FakeModelChunk()]
     optimizer = object()
     opt_param_scheduler = MagicMock()
@@ -198,7 +198,7 @@ def test_initialize_does_not_step_scheduler_restored_from_checkpoint():
 def test_initialize_steps_scheduler_when_checkpoint_did_not_restore_it():
     from miles.backends.megatron_utils.model import LoadCheckpointOutput, initialize_model_and_optimizer
 
-    args = Namespace(use_checkpoint_opt_param_scheduler=False, global_batch_size=8, finetune=False)
+    args = make_trainer_config(use_checkpoint_opt_param_scheduler=False, global_batch_size=8, finetune=False)
     model = [_FakeModelChunk()]
     optimizer = object()
     opt_param_scheduler = MagicMock()
@@ -250,7 +250,7 @@ def _load_model_state_with(
         )
         _patch_initialize_side_effects(stack)
         return load_model_state(
-            Namespace(
+            make_trainer_args(
                 use_checkpoint_opt_param_scheduler=True,
                 global_batch_size=8,
                 finetune=finetune,

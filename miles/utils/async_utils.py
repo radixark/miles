@@ -7,7 +7,7 @@ import traceback
 from collections.abc import Awaitable, Callable, Coroutine, Sequence
 from contextlib import AsyncExitStack
 from types import TracebackType
-from typing import Any, TypeVar
+from typing import Any, Self, TypeVar
 
 logger = logging.getLogger(__name__)
 
@@ -119,7 +119,7 @@ async def wait_cancelling_pending_on_first_completion(
 
 
 def _exception_add_note_or_log(e: BaseException, msg: str) -> None:
-    if hasattr(e, "add_note"):
+    if hasattr(e, "add_note"):  # config-access-exempt: exception notes are unavailable on older Python versions
         e.add_note(msg)
     else:
         logger.error(msg)
@@ -204,9 +204,35 @@ class Disposer:
         for item in items:
             if item is None:
                 continue
-            teardown = item.dispose if hasattr(item, "dispose") else item
+            teardown = (
+                item.dispose if hasattr(item, "dispose") else item
+            )  # config-access-exempt: cleanup accepts either disposable objects or callbacks
             assert callable(teardown), teardown
             if inspect.iscoroutinefunction(teardown):
                 self._stack.push_async_callback(teardown)
             else:
                 self._stack.callback(teardown)
+
+
+class DynamicLimitSemaphore:
+    def __init__(self, limit: Callable[[], int]) -> None:
+        self._limit = limit
+        self._condition = asyncio.Condition()
+        self._active = 0
+
+    async def __aenter__(self) -> Self:
+        async with self._condition:
+            await self._condition.wait_for(lambda: self._active < self._limit())
+            self._active += 1
+        return self
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        async with self._condition:
+            self._active -= 1
+            assert self._active >= 0, f"{self._active=}"
+            self._condition.notify_all()

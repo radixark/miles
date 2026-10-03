@@ -1,0 +1,5 @@
+--- megatron
++++ megatron_rollout_logprobs
+@@ -1882 +1882 @@
+-  use_rollout_logprobs: false
++  use_rollout_logprobs: true

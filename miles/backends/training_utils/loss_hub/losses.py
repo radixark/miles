@@ -20,6 +20,7 @@ from miles.backends.training_utils.loss_hub.math_utils import (
 )
 from miles.backends.training_utils.parallel import get_parallel_state
 from miles.backends.training_utils.sampling_mask import get_rollout_sampling_masks
+from miles.utils.args.custom_view import compute_custom_function_config
 from miles.utils.function_registry import load_function
 from miles.utils.types import RolloutBatch
 
@@ -207,11 +208,9 @@ def policy_loss_function(
         advantages.new_zeros(()),
     )
 
-    pg_loss, pg_clipfrac = compute_policy_loss(
-        ppo_kl, advantages, args.eps_clip, args.eps_clip_high, getattr(args, "eps_clip_c", None)
-    )
+    pg_loss, pg_clipfrac = compute_policy_loss(ppo_kl, advantages, args.eps_clip, args.eps_clip_high, args.eps_clip_c)
 
-    if getattr(args, "dump_details", None) is not None:
+    if args.dump_details is not None:
         from miles.backends.training_utils.debug_dump import maybe_dump_policy_loss_debug
 
         maybe_dump_policy_loss_debug(
@@ -241,16 +240,18 @@ def policy_loss_function(
         # Keep a copy of the original reducer (based on `batch["loss_masks"]`) for metric aggregation.
         sum_of_sample_mean_for_mismatch_metrics = sum_of_sample_mean
 
-        if args.custom_tis_function_path is not None:
-            tis_func = load_function(args.custom_tis_function_path)
+        if (x := args.custom_tis_function_path) is not None:
+            tis_func = load_function(x)
+            fn_args = compute_custom_function_config(args, x)
         else:
             assert trainer_scored_log_probs is not None, "log_probs must be provided for built-in TIS"
             assert rollout_old_log_probs is not None, "rollout_log_probs must be provided for built-in TIS"
             tis_func = vanilla_tis_function
+            fn_args = args
 
         ois = (-ppo_kl).exp()
         tis_kwargs = {
-            "args": args,
+            "args": fn_args,
             "pg_loss": pg_loss,
             "train_log_probs": trainer_scored_log_probs,
             "rollout_log_probs": rollout_old_log_probs,
@@ -269,7 +270,7 @@ def policy_loss_function(
             total_lengths,
             response_lengths,
             modified_response_masks,
-            args.calculate_per_token_loss,
+            args.backend.calculate_per_token_loss,
             args.qkv_format,
             max_seq_lens,
             denominators=batch.get("rollout_mask_sums", None),
@@ -281,7 +282,7 @@ def policy_loss_function(
         # Determine which loss_masks to use for pg_loss reducer
         pg_loss_masks = modified_response_masks if (args.get_mismatch_metrics or args.use_tis) else batch["loss_masks"]
         pg_loss_reducer = custom_pg_loss_reducer_func(
-            total_lengths, response_lengths, pg_loss_masks, args.calculate_per_token_loss
+            total_lengths, response_lengths, pg_loss_masks, args.backend.calculate_per_token_loss
         )
     else:
         pg_loss_reducer = sum_of_sample_mean
@@ -296,7 +297,7 @@ def policy_loss_function(
         response_lengths=response_lengths,
         qkv_format=args.qkv_format,
         max_seq_lens=max_seq_lens,
-        calculate_per_token_loss=args.calculate_per_token_loss,
+        calculate_per_token_loss=args.backend.calculate_per_token_loss,
     )
 
     pg_loss = pg_loss_reducer(pg_loss)

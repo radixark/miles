@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import argparse
+import sys
+from unittest.mock import patch
 
 
 import pytest
@@ -10,6 +12,7 @@ pytest.importorskip("sglang")
 from sglang.srt.server_args import ServerArgs
 
 from miles.backends.sglang_utils.arguments import add_sglang_arguments, collect_eval_sglang_overrides
+from miles.utils.arguments import parse_args
 from miles.utils.workers.argv_utils import _record_field_names
 
 
@@ -25,7 +28,9 @@ def _parse_sglang_args(argv: list[str]) -> argparse.Namespace:
 class TestSglangModelRoutersDefault:
     def test_parsing_without_model_routers_sets_none(self):
         """Parsing without multi-policy routers exposes a safe None default."""
-        args = _parse_sglang_args([])
+        argv = ["pytest", "--train-backend", "fsdp", "--rollout-batch-size", "1", "--num-rollout", "1"]
+        with patch.object(sys, "argv", argv):
+            args = parse_args()
 
         assert args.sglang_model_routers is None
 

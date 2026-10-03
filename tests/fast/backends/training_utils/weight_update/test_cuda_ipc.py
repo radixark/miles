@@ -90,6 +90,7 @@ class TestConnect:
             patch(f"{_TENSOR_MODULE}.disconnect_rollout_engines_from_distributed") as disconnect,
         ):
             dist_mock.get_rank.return_value = rank
+            dist_mock.get_world_size.return_value = 8
             protocol.connect(
                 engines,
                 engine_gpu_counts=_ENGINE_GPU_COUNTS,
@@ -120,7 +121,7 @@ class TestConnect:
         assert protocol.use_distribute is True
         assert protocol.rollout_engines == engines[:3]
         assert protocol.distributed_rollout_engines == engines[3:]
-        connect.assert_called_once_with(protocol.args, "miles", engines[3:], engine_gpu_counts=[2])
+        connect.assert_called_once_with("miles", engines[3:], engine_gpu_counts=[2])
         disconnect.assert_not_called()
         assert protocol._model_update_groups is connect.return_value
         assert protocol._ipc_engine is engines[expected_engine_index]

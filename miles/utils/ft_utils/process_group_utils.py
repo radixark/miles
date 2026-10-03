@@ -74,7 +74,9 @@ class GeneralPGUtil:
 
     @staticmethod
     def create(group: dist.ProcessGroup) -> "GeneralPGUtil":
-        if not hasattr(group, "_replica_id"):
+        if not hasattr(
+            group, "_replica_id"
+        ):  # config-access-exempt: replica metadata exists only on independent-DP groups
             return _NativePGUtil()
         return _RawPGUtil()
 

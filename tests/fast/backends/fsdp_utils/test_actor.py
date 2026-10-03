@@ -4,6 +4,7 @@ from contextlib import nullcontext
 from types import ModuleType
 
 import pytest
+from tests.fast.fixtures.args_fixtures import make_trainer_args
 
 from miles.backends.fsdp_utils import actor as actor_module
 from miles.backends.megatron_utils.ft.types import TrainStepOutcome, TrainStepOutput
@@ -55,7 +56,8 @@ class TestFSDPInit:
         actor._rank = 0
         actor._heartbeat = SimpleHeartbeat()
         actor._init_once = InitOnce(type(actor).__name__)
-        args = Namespace(
+        args = make_trainer_args(
+            train_backend="fsdp",
             debug_deterministic_collective=False,
             distributed_backend="nccl",
             distributed_timeout_minutes=1,
@@ -91,7 +93,9 @@ class TestFSDPTrainParallelConfigWiring:
         fsdp_debug_actor: actor_module.FSDPTrainRayActor,
     ) -> None:
         """FSDP init records its live DP layout without precomputed scheduling and train hands it to the loader."""
-        args = Namespace(dumper_enable=False, seed=0, offload_train=False, debug_rollout_only=True)
+        args = make_trainer_args(
+            train_backend="fsdp", dumper_enable=False, seed=0, offload_train=False, debug_rollout_only=True
+        )
         received: list[TrainParallelConfig] = []
 
         def load_rollout_data(

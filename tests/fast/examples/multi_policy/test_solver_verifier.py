@@ -6,8 +6,10 @@ from types import SimpleNamespace
 import pytest
 from examples.multi_policy import solver_verifier
 from examples.multi_policy.solver_verifier import _Verdict
+from tests.fast.fixtures.args_fixtures import parser_defaults, resolve_parse_boundary_configs
 from tests.fast.fixtures.megatron_config_fixtures import encode_megatron_config
 
+from miles.backends.megatron_utils.megatron_config import resolve_megatron_config
 from miles.rollout.base_types import GenerateFnInput, GenerateFnOutput
 from miles.rollout.generate_hub import single_turn
 from miles.utils.types import Sample
@@ -39,19 +41,16 @@ class _FakeTokenizer:
 
 def _make_input(*, prompt: str | list[dict[str, str]], label: str) -> GenerateFnInput:
     args = Namespace(
-        megatron_config=encode_megatron_config("solver", "verifier"),
-        use_critic=False,
-        sglang_model_routers={"solver": ("solver-host", 1111), "verifier": ("verifier-host", 2222)},
-        sglang_router_policy="round_robin",
-        sglang_speculative_algorithm=None,
-        rollout_max_response_len=16,
-        rollout_max_context_len=None,
-        use_rollout_routing_replay=False,
-        use_rollout_indexer_replay=False,
-        use_sampling_support_replay=False,
-        lora_rank=0,
-        lora_adapter_path=None,
+        **{
+            **parser_defaults(),
+            "megatron_config": encode_megatron_config("solver", "verifier"),
+            "sglang_model_routers": {"solver": ("solver-host", 1111), "verifier": ("verifier-host", 2222)},
+            "sglang_router_policy": "round_robin",
+            "rollout_max_response_len": 16,
+            "rollout_num_gpus": 2,
+        }
     )
+    resolve_parse_boundary_configs(args)
     state = SimpleNamespace(args=args, tokenizer=_FakeTokenizer(), processor=None)
     sample = Sample(group_index=3, index=7, prompt=prompt, label=label)
     return GenerateFnInput(state=state, sample=sample, sampling_params={}, evaluation=False)
@@ -334,6 +333,7 @@ class TestGenerate:
         monkeypatch.setattr(solver_verifier, "single_turn_generate", fake)
         input = _make_input(prompt=[dict(role="user", content="What is 9 + 9?")], label="#### 18")
         input.args.megatron_config = encode_megatron_config("solver")
+        input.args.raw_megatron = resolve_megatron_config(input.args, base_args={})
 
         with pytest.raises(AssertionError, match="pairs one solver policy with one verifier policy"):
             await solver_verifier.generate(input)

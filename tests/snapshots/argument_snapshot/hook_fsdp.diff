@@ -1,0 +1,19 @@
+--- fsdp
++++ hook_fsdp
+@@ -11,0 +12,2 @@
++- --custom-inference-engine-provider-path
++- tests.fast.argument_snapshot.argparser.scenarios._Hook
+@@ -98 +100 @@
+-    custom_inference_engine_provider_path: null
++    custom_inference_engine_provider_path: tests.fast.argument_snapshot.argparser.scenarios._Hook
+@@ -969,0 +972 @@
++    snapshot_hook: 23
+@@ -17386,0 +17390,8 @@
++      - default: 23
++        dest: snapshot_hook
++        group: options
++        help: null
++        option_strings:
++        - --snapshot-hook
++        type:
++          $callable: builtins.int

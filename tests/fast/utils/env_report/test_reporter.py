@@ -53,7 +53,7 @@ class TestLogEnvReport:
 
     def test_writes_one_event_the_analyzer_can_read_back(self, mocked_pip_inspect, event_log_dir: Path) -> None:
         """The report is stored as a normal event, so replaying a run's jsonl recovers its environment."""
-        self._log(lr=1.0)
+        self._log(lr=1.0, backend={"swiglu": True, "unsupported": object()})
 
         events = read_events(event_log_dir)
         assert len(events) == 1
@@ -61,6 +61,11 @@ class TestLogEnvReport:
         assert isinstance(event, EnvReportEvent)
         assert event.source == SimpleProcessIdentity(component="main")
         assert event.report.process.args.values["lr"] == 1.0
+        assert event.report.process.args.values["backend"] == {
+            "swiglu": True,
+            "unsupported": {"$serialization_error": "TypeError: Cannot serialize builtins.object"},
+        }
+        assert event.report.process.args.skipped_names == []
         assert event.report.process.hostname
 
     def test_summarises_the_report_on_stdout_instead_of_dumping_it(

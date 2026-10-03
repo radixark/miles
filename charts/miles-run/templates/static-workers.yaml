@@ -38,9 +38,14 @@ spec:
       labels:
         {{- include "miles-run.labels" $labels | nindent 8 }}
         miles.radixark.io/pool: {{ default $worker.name $worker.poolId | quote }}
-      {{- with $worker.restartAt }}
+      {{- if or $worker.restartAt $worker.annotations }}
       annotations:
+        {{- with $worker.restartAt }}
         miles.radixark.io/restart-at: {{ . | quote }}
+        {{- end }}
+        {{- range $key, $value := $worker.annotations }}
+        {{ $key }}: {{ $value | quote }}
+        {{- end }}
       {{- end }}
     spec:
       {{- include "miles-run.podDefaults" $context | nindent 6 }}
@@ -56,6 +61,7 @@ spec:
             - {{ . | quote }}
             {{- end }}
           env:
+            {{- include "miles-run.annotationEnv" (dict "name" "MILES_WORKER_METADATA" "annotation" "miles.radixark.io/worker-metadata") | trim | nindent 12 }}
             {{- include "miles-run.labelEnv" (dict "name" "MILES_CELL_INDEX" "label" "apps.kubernetes.io/pod-index") | trim | nindent 12 }}
             {{- with include "miles-run.envItems" (dict "context" $context "entry" $worker) | trim }}
             {{- . | nindent 12 }}

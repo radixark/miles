@@ -11,11 +11,18 @@ from examples.geo3k_vlm.multi_turn.base_env import BaseInteractionEnv
 
 # When executed as a module: python -m examples.geo3k_vlm.multi_turn.rollout
 from miles.rollout.sglang_rollout import GenerateState
+from miles.utils.args.schema import A, Arg, BaseConfig
 from miles.utils.http_utils import post
 from miles.utils.processing_utils import encode_image_for_rollout_engine
 from miles.utils.types import Sample
 
 DEFAULT_ENV_MODULE = "examples.geo3k_vlm.multi_turn.env_geo3k"
+
+
+class Geo3kConfig(BaseConfig):
+    max_turns: A[int, Arg()]
+    rollout_interaction_env_path: A[str, Arg()] = DEFAULT_ENV_MODULE
+
 
 # Dummy messages used for calculating trim length in chat template encoding
 DUMMY_MESSAGES = [
@@ -142,7 +149,7 @@ def _initialize_resources(args: Any, sample: Sample):
     env_module = _load_env_module(args.rollout_interaction_env_path)
     max_turns = args.max_turns
     if max_turns is None:
-        raise ValueError("max_turns must be set via --custom-config-path in the custom config file.")
+        raise ValueError("max_turns must be set with --max-turns.")
     state = GenerateState(args)
     url = f"http://{args.sglang_router_ip}:{args.sglang_router_port}/generate"
     sample.metadata = sample.metadata or {}
@@ -371,3 +378,6 @@ async def generate(args: Any, sample: Sample, sampling_params) -> Sample:
             env.close()
         except Exception:
             pass
+
+
+generate.config_class = Geo3kConfig

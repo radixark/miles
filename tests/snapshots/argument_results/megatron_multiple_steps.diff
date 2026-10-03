@@ -1,0 +1,26 @@
+--- megatron
++++ megatron_multiple_steps
+@@ -163 +163 @@
+-  global_batch_size: 1
++  global_batch_size: 4
+@@ -165 +165 @@
+-  grpo_std_normalization: false
++  grpo_std_normalization: true
+@@ -237 +237 @@
+-  n_samples_per_prompt: 1
++  n_samples_per_prompt: 2
+@@ -245 +245 @@
+-  num_steps_per_rollout: null
++  num_steps_per_rollout: 2
+@@ -268 +268 @@
+-  over_sampling_batch_size: 2
++  over_sampling_batch_size: 4
+@@ -473 +473 @@
+-      eval_global_batch_size: 1
++      eval_global_batch_size: 4
+@@ -556 +556 @@
+-      global_batch_size: 1
++      global_batch_size: 4
+@@ -1182 +1182 @@
+-  rollout_batch_size: 2
++  rollout_batch_size: 4

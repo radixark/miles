@@ -1,0 +1,23 @@
+--- fsdp
++++ fsdp_fully_async_in_place
+@@ -129,2 +129,3 @@
+-    config: null
+-    path: miles.rollout.inference_rollout.inference_rollout_common.InferenceRolloutFn
++    config:
++      custom_async_data_buffer_path_per_model: null
++    path: miles.rollout.fully_async_rollout.FullyAsyncRolloutFn
+@@ -160 +161 @@
+-  fully_async: false
++  fully_async: true
+@@ -238 +239 @@
+-  namespaced_radix_cache: false
++  namespaced_radix_cache: true
+@@ -271 +272 @@
+-  pause_generation_mode: retract
++  pause_generation_mode: in_place
+@@ -359,2 +360,3 @@
+-    config: null
+-    path: miles.rollout.inference_rollout.inference_rollout_common.InferenceRolloutFn
++    config:
++      custom_async_data_buffer_path_per_model: null
++    path: miles.rollout.fully_async_rollout.FullyAsyncRolloutFn

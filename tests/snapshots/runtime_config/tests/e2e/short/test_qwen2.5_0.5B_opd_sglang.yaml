@@ -1,0 +1,172 @@
+processes:
+  tests/e2e/short/test_qwen2.5_0.5B_opd_sglang/run-0000/all/default/actor_cell00000:
+    diffs:
+      checkpoint_load-0000:
+        set:
+          <<:
+          - &id001
+            /args/backend/ckpt_step: null
+            /args/backend/load: /root/models/Qwen2.5-0.5B-Instruct/
+            /load: /root/models/Qwen2.5-0.5B-Instruct/
+            /local_checkpoint_manager: false
+          - &id002
+            /args/backend/lr_decay_iters: 2
+            /args/backend/model_type: {$enum: megatron.core.enums.ModelType, name: encoder_or_decoder}
+            /args/backend/train_iters: 2
+          /args/backend/finetune: false
+          /args/backend/no_load_optim: null
+          /args/backend/no_load_rng: null
+      checkpoint_load-0001:
+        set:
+          <<:
+          - *id001
+          - *id002
+          /args/backend/finetune: true
+          /args/backend/no_load_optim: true
+          /args/backend/no_load_rng: true
+      train_first_step-0000:
+        set:
+          <<: *id002
+          /role: actor
+    ranks: [0, 1, 2, 3]
+    template: trainer-megatron-02
+  tests/e2e/short/test_qwen2.5_0.5B_opd_sglang/run-0000/all/default/inference_controller:
+    diffs: &id006
+      router_endpoints-0000:
+        set:
+          <<: &id003
+            /args/sglang_model_routers: {default: {$tuple: [$HOST, $PORT]}}
+            /args/sglang_router_ip: $HOST
+            /args/sglang_router_port: $PORT
+    overrides:
+      set:
+        <<:
+        - &id004
+          /args/config_snapshot_name: tests/e2e/short/test_qwen2.5_0.5B_opd_sglang/run-0000
+          /args/custom_rm_path: {config: null, path: miles.rollout.on_policy_distillation.reward_func}
+          /args/eval_max_response_len: 1024
+          /args/eval_prompt_data: [gsm8k, /root/datasets/gsm8k/test.parquet]
+          /args/eval_top_k: 1
+          /args/hf_checkpoint: /root/models/Qwen2.5-0.5B-Instruct/
+          /args/init_expected_num_cells/default: 4
+          /args/megatron_to_hf_mode: bridge
+          /args/n_samples_per_prompt: 4
+          /args/opd_type: sglang
+          /args/prompt_data: /root/datasets/gsm8k/train.parquet
+          /args/ref_load: /root/models/Qwen2.5-0.5B-Instruct/
+          /args/rm_type: math
+          /args/rollout_function_path/path: miles.rollout.sglang_rollout.generate_rollout
+          /args/sglang/base_args/enable_metrics: true
+          /args/sglang/base_args/mem_fraction_static: 0.6
+          /args/start_rollout_id: null
+          /args/use_opd: true
+        - &id005
+          /args/log_probs_max_tokens_per_gpu: 9216
+          /args/max_tokens_per_gpu: 9216
+          /args/num_layers: 24
+          /args/num_rollout: 2
+          /args/rollout_max_response_len: 1024
+          /args/rollout_temperature: 0.8
+          /args/use_kl_loss: true
+          /args/wandb_project: miles-test_qwen2.5_0.5B_opd_sglang
+    template: inference_controller-01
+  tests/e2e/short/test_qwen2.5_0.5B_opd_sglang/run-0000/all/default/main:
+    diffs:
+      router_endpoints-0000:
+        set:
+          <<: *id003
+          /args/wandb_run_id: $WANDB_RUN_ID_0000
+      tracking_config-0000: {set: {/args/wandb_run_id: $WANDB_RUN_ID_0000}}
+    overrides:
+      set:
+        <<:
+        - *id004
+        - *id005
+        - &id007
+          /args/raw_megatron/base_args/add_qkv_bias: true
+          /args/raw_megatron/base_args/data_parallel_size: 4
+          /args/raw_megatron/base_args/encoder_num_layers: 24
+          /args/raw_megatron/base_args/eval_global_batch_size: 32
+          /args/raw_megatron/base_args/ffn_hidden_size: 4864
+          /args/raw_megatron/base_args/finetune: false
+          /args/raw_megatron/base_args/global_batch_size: 32
+          /args/raw_megatron/base_args/hidden_size: 896
+          /args/raw_megatron/base_args/kv_channels: 64
+          /args/raw_megatron/base_args/load: null
+          /args/raw_megatron/base_args/no_load_optim: null
+          /args/raw_megatron/base_args/no_load_rng: null
+          /args/raw_megatron/base_args/num_attention_heads: 14
+          /args/raw_megatron/base_args/num_layers: 24
+          /args/raw_megatron/base_args/num_query_groups: 2
+          /args/raw_megatron/base_args/padded_vocab_size: 151936
+          /args/raw_megatron/base_args/qk_layernorm: false
+          /args/raw_megatron/base_args/recompute_granularity: null
+          /args/raw_megatron/base_args/recompute_method: null
+          /args/raw_megatron/base_args/recompute_num_layers: null
+          /args/raw_megatron/base_args/sequence_parallel: false
+          /args/raw_megatron/base_args/tensor_model_parallel_size: 1
+          /args/raw_megatron/base_args/tokenizer_model: /root/models/Qwen2.5-0.5B-Instruct/
+          /args/raw_megatron/base_args/untie_embeddings_and_output_weights: false
+          /args/raw_megatron/base_args/wandb_project: miles-test_qwen2.5_0.5B_opd_sglang
+          /args/raw_megatron/base_args/world_size: 4
+    template: main-01
+  tests/e2e/short/test_qwen2.5_0.5B_opd_sglang/run-0000/all/default/rollout_executor:
+    diffs: *id006
+    overrides: &id008
+      set:
+        <<:
+        - *id004
+        - *id005
+        - *id007
+        /args/custom_reward_post_process_path: {config: null, path: miles.rollout.on_policy_distillation.post_process_rewards}
+        /args/eval_datasets:
+        - custom_generate_function_path: null
+          input_key: messages
+          label_key: label
+          max_response_len: 1024
+          metadata_key: metadata
+          metadata_overrides: {}
+          min_new_tokens: null
+          n_samples_per_eval_prompt: 1
+          name: gsm8k
+          path: /root/datasets/gsm8k/test.parquet
+          rm_type: null
+          stop: null
+          stop_token_ids: null
+          temperature: 0.8
+          tool_key: tools
+          top_k: 1
+          top_p: 1.0
+        /args/eval_function_path/path: miles.rollout.sglang_rollout.generate_rollout
+        /args/opd_log_prob_top_k: 2
+        /args/rm_url: http://127.0.0.1:13141/generate
+    template: rollout_executor-01
+  tests/e2e/short/test_qwen2.5_0.5B_opd_sglang/run-0000/all/default/trainer_controller_actor: {overrides: {set: {/args/backend/rank: 0}},
+    template: trainer-megatron-02}
+  tests/e2e/short/test_qwen2.5_0.5B_opd_sglang/run-0000/all/default/worker_manager:
+    overrides: *id008
+    template: worker_manager-01
+shared_overrides:
+  trainer-megatron-02:
+    remove: [/args/backend/ckpt_step, /args/backend/finetune, /args/backend/load, /args/backend/no_load_optim, /args/backend/no_load_rng]
+    set:
+      <<: *id004
+      /args/backend/add_qkv_bias: true
+      /args/backend/data_parallel_size: 4
+      /args/backend/encoder_num_layers: 24
+      /args/backend/ffn_hidden_size: 4864
+      /args/backend/hidden_size: 896
+      /args/backend/kv_channels: 64
+      /args/backend/num_attention_heads: 14
+      /args/backend/num_layers: 24
+      /args/backend/num_query_groups: 2
+      /args/backend/qk_layernorm: false
+      /args/backend/recompute_granularity: null
+      /args/backend/recompute_method: null
+      /args/backend/recompute_num_layers: null
+      /args/backend/sequence_parallel: false
+      /args/backend/tokenizer_model: /root/models/Qwen2.5-0.5B-Instruct/
+      /args/backend/wandb_project: miles-test_qwen2.5_0.5B_opd_sglang
+      /args/balance_data: false
+      /args/critic_load: null
+      /args/input_key: messages

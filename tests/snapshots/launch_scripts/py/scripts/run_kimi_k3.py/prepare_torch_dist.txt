@@ -46,7 +46,7 @@ PYTHONPATH=<REPO_ROOT>:/root/Megatron-LM:/frozen/pythonpath torchrun
   --moe-grouped-gemm
   --moe-permute-fusion
   --hf-checkpoint <SANDBOX>/models/Kimi-K3-4layer-64experts-bf16
-  --save <SANDBOX>/models/Kimi-K3-4layer-64experts-bf16_torch_dist
+  --save <SANDBOX>/models/Kimi-K3-4layer-64experts-bf16-kda-direct-v1_torch_dist
   --bf16
   --tensor-model-parallel-size 1
   --pipeline-model-parallel-size 1

@@ -1,0 +1,14 @@
+--- megatron
++++ megatron_offload_alias
+@@ -249 +249 @@
+-  offload_rollout: false
++  offload_rollout: true
+@@ -253 +253 @@
+-  offload_train: false
++  offload_train: true
+@@ -424 +424 @@
+-      disable_grad_buffers_cpu_backup: false
++      disable_grad_buffers_cpu_backup: true
+@@ -427 +427 @@
+-      disable_param_buffers_cpu_backup: false
++      disable_param_buffers_cpu_backup: true

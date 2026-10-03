@@ -410,14 +410,13 @@ class TestCleanupDumpDir:
 
 
 class TestConfigureSglang:
-    resolved_config = SimpleNamespace(models=[SimpleNamespace(num_server_cells=2)])
-
     @staticmethod
     def _make_args(tmp_path: Path) -> SimpleNamespace:
         return SimpleNamespace(
             dumper_enable=True,
             dumper_inference=[],
             dumper_dir=str(tmp_path),
+            init_expected_num_cells=2,
         )
 
     @pytest.mark.asyncio
@@ -433,7 +432,6 @@ class TestConfigureSglang:
                 "miles.rollout.inference_rollout.inference_rollout_train.get_worker_urls",
                 new=AsyncMock(return_value=["http://a:1", "http://b:2"]),
             ),
-            patch("miles.utils.dumper_utils.resolve_sglang_config", return_value=self.resolved_config),
             patch("miles.utils.http_utils.post", new=_post),
             patch("miles.utils.dumper_utils._cleanup_dump_dir"),
         ):
@@ -456,7 +454,6 @@ class TestConfigureSglang:
                 "miles.rollout.inference_rollout.inference_rollout_train.get_worker_urls",
                 new=get_worker_urls,
             ),
-            patch("miles.utils.dumper_utils.resolve_sglang_config", return_value=self.resolved_config),
             patch("miles.utils.http_utils.post", new=_post),
             patch("miles.utils.dumper_utils._cleanup_dump_dir"),
         ):
@@ -482,7 +479,6 @@ class TestConfigureSglang:
                 "miles.rollout.inference_rollout.inference_rollout_train.get_worker_urls",
                 new=AsyncMock(return_value=["http://a:1", "http://b:2"]),
             ),
-            patch("miles.utils.dumper_utils.resolve_sglang_config", return_value=self.resolved_config),
             patch("miles.utils.http_utils.post", new=_post),
             patch("miles.utils.dumper_utils._cleanup_dump_dir"),
             patch("miles.utils.dumper_utils.dist") as mock_dist,
@@ -508,7 +504,6 @@ class TestConfigureSglang:
                 "miles.rollout.inference_rollout.inference_rollout_train.get_worker_urls",
                 new=get_worker_urls,
             ),
-            patch("miles.utils.dumper_utils.resolve_sglang_config", return_value=self.resolved_config),
             patch("miles.utils.http_utils.post", new=_post),
             patch("miles.utils.dumper_utils._cleanup_dump_dir"),
         ):
@@ -525,7 +520,6 @@ class TestConfigureSglang:
                 "miles.rollout.inference_rollout.inference_rollout_train.get_worker_urls",
                 new=AsyncMock(return_value=["http://a:1"]),
             ),
-            patch("miles.utils.dumper_utils.resolve_sglang_config", return_value=self.resolved_config),
             patch("miles.utils.dumper_utils._cleanup_dump_dir"),
             patch("miles.utils.dumper_utils._WORKER_REGISTRATION_TIMEOUT_SECONDS", 0.05),
             pytest.raises(AssertionError, match="1/2 inference engines"),

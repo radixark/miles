@@ -13,6 +13,7 @@ from tests.e2e.deploy.conftest_deploy.hot_restart.scenario_hot_restart_determini
 from tests.utils.deploy.hot_restart.evidence import HotRestartRecord
 
 from miles.backends.megatron_utils.checkpoint_tracker import read_checkpoint_tracker_iteration
+from miles.backends.megatron_utils.megatron_config import resolve_megatron_config
 from miles.ray.rollout.rollout_executor import compute_rollout_checkpoint_dir
 from miles.utils.audit_utils.event_logger import checkpoint as event_logger_checkpoint
 from miles.utils.audit_utils.event_logger.logger import EVENTS_DIRNAME, EventLogger
@@ -42,13 +43,16 @@ class _Run:
 
     @property
     def megatron_args(self) -> Namespace:
-        return Namespace(
+        args = Namespace(
             save=str(self.checkpoint_dir),
             load=str(self.checkpoint_dir),
             requested_load=str(self.checkpoint_dir),
             megatron_config=None,
             save_debug_event_data=str(self.events_dir),
+            use_critic=False,
         )
+        args.raw_megatron = resolve_megatron_config(args, base_args={})
+        return args
 
     def train(self, *rollout_ids: int) -> None:
         for rollout_id in rollout_ids:
@@ -107,6 +111,25 @@ class TestAssertARunThatHadSavedNothingWasRedoneFromScratch:
         redone = run.assert_redone_from_scratch()
 
         assert redone.frozen_rollout_id == 1
+        assert redone.attempts_of_rollout_id == {0: 2, 1: 2, 2: 1, 3: 1, 4: 1, 5: 1}
+
+    def test_startup_events_discarded_before_takeover_do_not_count_as_training(self, tmp_path: Path) -> None:
+        """Startup-only archives do not represent another discarded training attempt."""
+        run = _Run(dump_dir=tmp_path)
+        run.train(0, 1)
+        event_logger_checkpoint.restore(run.megatron_args)
+        logger = EventLogger(
+            log_dir=run.events_dir, file_name="main.jsonl", source=SimpleProcessIdentity(component="main")
+        )
+        logger.log(MetricEvent, {"metrics": {"startup/duration": 1.0}}, print_log=False)
+        event_logger_checkpoint.discard(run.megatron_args)
+        run.train(0, 1, 2, 3)
+        run.save(3)
+        run.train(4, 5)
+
+        redone = run.assert_redone_from_scratch()
+
+        assert len(list(tmp_path.glob(".trash_*"))) == 2
         assert redone.attempts_of_rollout_id == {0: 2, 1: 2, 2: 1, 3: 1, 4: 1, 5: 1}
 
     def test_a_carried_over_step_fails(self, tmp_path):

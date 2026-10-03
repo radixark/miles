@@ -1,0 +1,5 @@
+--- megatron
++++ megatron_ray_rpc
+@@ -1903 +1903 @@
+-  worker_comm_backend: ray
++  worker_comm_backend: rpc

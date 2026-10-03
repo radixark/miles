@@ -116,7 +116,9 @@ def bwd(
     attn_sink_shape = [H]
 
     padded_H = max(tilelang.math.next_power_of_2(H), 16)
-    is_hip = getattr(torch.version, "hip", None)
+    is_hip = getattr(
+        torch.version, "hip", None
+    )  # config-access-exempt: CPU and CUDA torch builds may omit HIP version metadata
     if is_hip:
         # Split large HIP head tiles to reduce LDS use.
         max_block_H = 32 if padded_H >= 64 else 64

@@ -1,0 +1,349 @@
+processes:
+  tests/e2e/short/test_multi_policy_solver_verifier_gsm8k/run-0000/all/default/inference_controller:
+    diffs: &id007
+      router_endpoints-0000:
+        set:
+          <<: &id002
+            /args/sglang_model_routers: {solver: {$tuple: [$HOST, $PORT]}, verifier: {$tuple: [$HOST, $PORT]}}
+            /args/sglang_router_ip: $HOST
+            /args/sglang_router_port: $PORT
+    overrides:
+      remove: &id003 [/args/init_expected_num_cells/default]
+      set:
+        <<:
+        - &id004
+          /args/apply_chat_template: false
+          /args/colocate: false
+          /args/config_snapshot_name: tests/e2e/short/test_multi_policy_solver_verifier_gsm8k/run-0000
+          /args/critic_save: /root/shared_data/multi_policy_solver_verifier/$RUN_ID_0001/ckpt_critic
+          /args/custom_generate_function_path: {config: null, path: examples.multi_policy.solver_verifier.generate}
+          /args/enable_sample_ownership_checker: false
+          /args/eval_max_response_len: 1024
+          /args/eval_prompt_data: [gsm8k, /root/datasets/gsm8k/test.parquet]
+          /args/eval_top_k: 1
+          /args/fully_async: true
+          /args/init_expected_num_cells/solver: 1
+          /args/init_expected_num_cells/verifier: 1
+          /args/log_inference_engine_weight_checksums: true
+          /args/log_reward_category: outcome
+          /args/megatron_to_hf_mode: bridge
+          /args/num_rollout: 15
+          /args/offload_rollout: false
+          /args/offload_train: false
+          /args/pause_generation_mode: in_place
+          /args/prompt_data: /root/datasets/gsm8k/train.parquet
+          /args/reward_key: reward_value
+          /args/rm_type: null
+          /args/rollout_batch_size: 32
+          /args/rollout_function_path/config: &id009 {custom_async_data_buffer_path_per_model: null}
+          /args/rollout_function_path/path: miles.rollout.fully_async_rollout.FullyAsyncRolloutFn
+          /args/save_debug_event_data: /root/shared_data/multi_policy_solver_verifier/$RUN_ID_0001/events
+          /args/sglang/base_args/cuda_graph_backend_prefill: null
+          /args/sglang/base_args/enable_metrics: true
+          /args/sglang/base_args/enable_prefill_weight_versions: true
+          /args/sglang/base_args/mem_fraction_static: 0.65
+          /args/sglang/models:
+          - model_path: /root/models/Qwen2.5-0.5B-Instruct
+            name: solver
+            server_groups:
+            - <<: &id001
+                needs_offload: false
+                num_gpus_per_engine: 1
+                worker_type: {$enum: miles.backends.sglang_utils.sglang_api_client.WorkerType, name: REGULAR}
+              overrides: {model_path: /root/models/Qwen2.5-0.5B-Instruct}
+            update_weights: true
+          - model_path: /root/models/Qwen3-0.6B
+            name: verifier
+            server_groups:
+            - <<: *id001
+              overrides: {model_path: /root/models/Qwen3-0.6B}
+            update_weights: true
+          /args/start_rollout_id: null
+        - &id005
+          /args/eps_clip_high: 0.2
+          /args/eval_interval: 20
+          /args/global_batch_size: 256
+          /args/hf_checkpoint: /root/models/Qwen2.5-0.5B-Instruct/
+          /args/kl_loss_type: k1
+          /args/log_probs_max_tokens_per_gpu: 9216
+          /args/max_tokens_per_gpu: 9216
+          /args/num_layers: 24
+          /args/ref_load: /root/models/Qwen2.5-0.5B-Instruct/
+          /args/rollout_max_response_len: 1024
+          /args/save: /root/shared_data/multi_policy_solver_verifier/$RUN_ID_0001/ckpt
+          /args/save_interval: 2
+          /args/use_kl_loss: true
+          /args/wandb_project: miles-test_multi_policy_solver_verifier_gsm8k
+    template: inference_controller-01
+  tests/e2e/short/test_multi_policy_solver_verifier_gsm8k/run-0000/all/default/main:
+    diffs:
+      router_endpoints-0000:
+        set:
+          <<: *id002
+          /args/wandb_run_id: $WANDB_RUN_ID_0000
+      tracking_config-0000: {set: {/args/wandb_run_id: $WANDB_RUN_ID_0000}}
+    overrides:
+      remove: *id003
+      set:
+        <<:
+        - *id004
+        - *id005
+        - &id008
+          /args/raw_megatron/base_args/adam_beta2: 0.999
+          /args/raw_megatron/base_args/add_qkv_bias: true
+          /args/raw_megatron/base_args/disable_grad_buffers_cpu_backup: false
+          /args/raw_megatron/base_args/disable_param_buffers_cpu_backup: false
+          /args/raw_megatron/base_args/encoder_num_layers: 24
+          /args/raw_megatron/base_args/end_weight_decay: 0.01
+          /args/raw_megatron/base_args/eval_global_batch_size: 256
+          /args/raw_megatron/base_args/eval_interval: 20
+          /args/raw_megatron/base_args/ffn_hidden_size: 4864
+          /args/raw_megatron/base_args/finetune: false
+          /args/raw_megatron/base_args/global_batch_size: 256
+          /args/raw_megatron/base_args/hidden_size: 896
+          /args/raw_megatron/base_args/kv_channels: 64
+          /args/raw_megatron/base_args/load: null
+          /args/raw_megatron/base_args/lr_decay_style: linear
+          /args/raw_megatron/base_args/no_load_optim: null
+          /args/raw_megatron/base_args/no_load_rng: null
+          /args/raw_megatron/base_args/num_attention_heads: 14
+          /args/raw_megatron/base_args/num_layers: 24
+          /args/raw_megatron/base_args/num_query_groups: 2
+          /args/raw_megatron/base_args/padded_vocab_size: 151936
+          /args/raw_megatron/base_args/qk_layernorm: false
+          /args/raw_megatron/base_args/recompute_granularity: null
+          /args/raw_megatron/base_args/recompute_method: null
+          /args/raw_megatron/base_args/recompute_num_layers: null
+          /args/raw_megatron/base_args/save: /root/shared_data/multi_policy_solver_verifier/$RUN_ID_0001/ckpt
+          /args/raw_megatron/base_args/save_interval: 2
+          /args/raw_megatron/base_args/sequence_parallel: false
+          /args/raw_megatron/base_args/start_weight_decay: 0.01
+          /args/raw_megatron/base_args/tensor_model_parallel_size: 1
+          /args/raw_megatron/base_args/tokenizer_model: /root/models/Qwen2.5-0.5B-Instruct/
+          /args/raw_megatron/base_args/untie_embeddings_and_output_weights: false
+          /args/raw_megatron/base_args/wandb_project: miles-test_multi_policy_solver_verifier_gsm8k
+          /args/raw_megatron/base_args/weight_decay: 0.01
+          /args/raw_megatron/base_args/world_size: 1
+          /args/raw_megatron/trainers:
+          - actor_index: 0
+            model_id: solver
+            overrides:
+              <<: &id006
+                adam_beta1: 0.9
+                adam_beta2: 0.98
+                add_bias_linear: false
+                entropy_coef: 0.0
+                eps_clip: 0.2
+                eps_clip_high: 0.28
+                group_query_attention: true
+                kl_loss_coef: 0.0
+                kl_loss_type: low_var_kl
+                layernorm_epsilon: 1.0e-06
+                lr_decay_style: constant
+                normalization: RMSNorm
+                rotary_base: 1000000
+                swiglu: true
+                use_rotary_position_embeddings: true
+                vocab_size: 151936
+                weight_decay: 0.1
+              add_qkv_bias: true
+              ffn_hidden_size: 4864
+              hf_checkpoint: /root/models/Qwen2.5-0.5B-Instruct
+              hidden_size: 896
+              num_attention_heads: 14
+              num_layers: 24
+              num_query_groups: 2
+              ref_load: /root/models/Qwen2.5-0.5B-Instruct
+            role: actor
+            trainer_id: solver-actor
+          - actor_index: 1
+            model_id: verifier
+            overrides:
+              <<: *id006
+              ffn_hidden_size: 3072
+              hf_checkpoint: /root/models/Qwen3-0.6B
+              hidden_size: 1024
+              kv_channels: 128
+              num_attention_heads: 16
+              num_layers: 28
+              num_query_groups: 8
+              qk_layernorm: true
+              ref_load: /root/models/Qwen3-0.6B
+            role: actor
+            trainer_id: verifier-actor
+    template: main-01
+  tests/e2e/short/test_multi_policy_solver_verifier_gsm8k/run-0000/all/default/rollout_executor:
+    diffs: *id007
+    overrides:
+      remove: *id003
+      set:
+        <<:
+        - *id004
+        - *id005
+        - *id008
+        - &id019
+          /args/ci_assert_prefill_lag_max: 5
+          /args/custom_eval_rollout_log_function_path: {config: null, path: examples.multi_policy.solver_verifier.split_eval_data_by_policy}
+          /args/dynamic_sampling_filter_path: miles.rollout.filter_hub.dynamic_sampling_filters.check_reward_nonzero_std
+          /args/eval_datasets:
+          - custom_generate_function_path: null
+            input_key: messages
+            label_key: label
+            max_response_len: 1024
+            metadata_key: metadata
+            metadata_overrides: {}
+            min_new_tokens: null
+            n_samples_per_eval_prompt: 1
+            name: gsm8k
+            path: /root/datasets/gsm8k/test.parquet
+            rm_type: null
+            stop: null
+            stop_token_ids: null
+            temperature: 1.0
+            tool_key: tools
+            top_k: 1
+            top_p: 1.0
+          /args/eval_function_path/config: *id009
+          /args/eval_function_path/path: miles.rollout.fully_async_rollout.FullyAsyncRolloutFn
+          /args/eval_reward_key: reward_value
+          /args/max_weight_staleness: 3
+          /args/namespaced_radix_cache: true
+          /args/over_sampling_batch_size: 32
+          /args/save_debug_rollout_data: /root/shared_data/multi_policy_solver_verifier/$RUN_ID_0001/rollout_data/{rollout_id}.pt
+    template: rollout_executor-01
+  tests/e2e/short/test_multi_policy_solver_verifier_gsm8k/run-0000/all/default/solver_actor_cell00000:
+    diffs:
+      checkpoint_load-0000:
+        set:
+          <<:
+          - &id010 {/args/backend/ckpt_step: null, /local_checkpoint_manager: false}
+          - &id014
+            /args/backend/finetune: false
+            /args/backend/no_load_optim: null
+            /args/backend/no_load_rng: null
+          - &id011
+            /args/backend/load: /root/models/Qwen2.5-0.5B-Instruct
+            /load: /root/models/Qwen2.5-0.5B-Instruct
+          - &id012
+            /args/backend/lr_decay_iters: 15
+            /args/backend/model_type: {$enum: megatron.core.enums.ModelType, name: encoder_or_decoder}
+            /args/backend/train_iters: 15
+      checkpoint_load-0001:
+        set:
+          <<:
+          - *id010
+          - *id011
+          - *id012
+          - &id015
+            /args/backend/finetune: true
+            /args/backend/no_load_optim: true
+            /args/backend/no_load_rng: true
+      train_first_step-0000: &id017
+        set:
+          <<: *id012
+          /role: actor
+    overrides:
+      set:
+        <<: &id013
+          /args/backend/ffn_hidden_size: 4864
+          /args/backend/hidden_size: 896
+          /args/backend/kv_channels: 64
+          /args/backend/num_attention_heads: 14
+          /args/backend/num_layers: 24
+          /args/backend/num_query_groups: 2
+          /args/backend/qk_layernorm: false
+          /args/backend/save: /root/shared_data/multi_policy_solver_verifier/$RUN_ID_0001/ckpt/trainers/solver-actor
+          /args/backend/tokenizer_model: /root/models/Qwen2.5-0.5B-Instruct
+          /args/hf_checkpoint: /root/models/Qwen2.5-0.5B-Instruct
+          /args/ref_load: /root/models/Qwen2.5-0.5B-Instruct
+          /args/trainer_id: solver-actor
+          /args/trainer_model_id: solver
+    ranks: [0]
+    template: trainer-megatron-02
+  tests/e2e/short/test_multi_policy_solver_verifier_gsm8k/run-0000/all/default/trainer_controller_solver-actor:
+    overrides:
+      set:
+        <<: *id013
+        /args/backend/rank: 0
+    template: trainer-megatron-02
+  tests/e2e/short/test_multi_policy_solver_verifier_gsm8k/run-0000/all/default/trainer_controller_verifier-actor:
+    overrides:
+      set:
+        <<: &id018
+          /args/backend/ffn_hidden_size: 3072
+          /args/backend/hidden_size: 1024
+          /args/backend/num_attention_heads: 16
+          /args/backend/num_layers: 28
+          /args/backend/save: /root/shared_data/multi_policy_solver_verifier/$RUN_ID_0001/ckpt/trainers/verifier-actor
+          /args/backend/tokenizer_model: /root/models/Qwen3-0.6B
+          /args/hf_checkpoint: /root/models/Qwen3-0.6B
+          /args/ref_load: /root/models/Qwen3-0.6B
+          /args/trainer_actor_index: 1
+          /args/trainer_id: verifier-actor
+          /args/trainer_model_id: verifier
+        /args/backend/rank: 0
+    template: trainer-megatron-02
+  tests/e2e/short/test_multi_policy_solver_verifier_gsm8k/run-0000/all/default/verifier_actor_cell00000:
+    diffs:
+      checkpoint_load-0000:
+        set:
+          <<:
+          - *id010
+          - *id014
+          - *id012
+          - &id016 {/args/backend/load: /root/models/Qwen3-0.6B, /load: /root/models/Qwen3-0.6B}
+      checkpoint_load-0001:
+        set:
+          <<:
+          - *id010
+          - *id012
+          - *id015
+          - *id016
+      train_first_step-0000: *id017
+    overrides:
+      set:
+        <<: *id018
+    ranks: [0]
+    template: trainer-megatron-02
+  tests/e2e/short/test_multi_policy_solver_verifier_gsm8k/run-0000/all/default/worker_manager:
+    overrides:
+      remove: [/args/init_expected_num_cells/default, /args/sglang_scaling/groups/default]
+      set:
+        <<:
+        - *id004
+        - *id005
+        - *id008
+        - *id019
+        /args/actor_num_gpus_per_node: 1
+        /args/rollout_num_gpus: 2
+        /args/sglang_scaling/groups/solver:
+        - {engine_offset: 0, gpu_offset: 0, num_gpus: 1}
+        /args/sglang_scaling/groups/verifier:
+        - {engine_offset: 1, gpu_offset: 1, num_gpus: 1}
+    template: worker_manager-01
+shared_overrides:
+  trainer-megatron-02:
+    remove: [/args/backend/ckpt_step, /args/backend/finetune, /args/backend/load, /args/backend/no_load_optim, /args/backend/no_load_rng,
+      /args/init_expected_num_cells/default]
+    set:
+      <<: *id004
+      /args/backend/add_qkv_bias: true
+      /args/backend/disable_grad_buffers_cpu_backup: false
+      /args/backend/disable_param_buffers_cpu_backup: false
+      /args/backend/encoder_num_layers: 24
+      /args/backend/end_weight_decay: 0.01
+      /args/backend/eval_global_batch_size: 256
+      /args/backend/eval_interval: 20
+      /args/backend/global_batch_size: 256
+      /args/backend/recompute_granularity: null
+      /args/backend/recompute_method: null
+      /args/backend/recompute_num_layers: null
+      /args/backend/save_interval: 2
+      /args/backend/sequence_parallel: false
+      /args/backend/start_weight_decay: 0.01
+      /args/backend/wandb_project: miles-test_multi_policy_solver_verifier_gsm8k
+      /args/backend/world_size: 1
+      /args/balance_data: false
+      /args/critic_load: null
+      /args/input_key: messages
+      /args/rollout_temperature: 1.0

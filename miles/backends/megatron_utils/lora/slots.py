@@ -18,9 +18,9 @@ def create_multi_lora_instance(args: Namespace, *, target_modules):
         n_adapters=args.multi_lora_n_adapters,
         dim=args.lora_rank,
         alpha=args.lora_alpha,
-        dropout=getattr(args, "lora_dropout", 0.0),
-        lora_A_init_method=getattr(args, "lora_A_init_method", "xavier"),
-        lora_B_init_method=getattr(args, "lora_B_init_method", "zero"),
+        dropout=args.lora_dropout,
+        lora_A_init_method=args.lora_A_init_method,
+        lora_B_init_method=args.lora_B_init_method,
     )
 
 

@@ -1,0 +1,70 @@
+--- megatron
++++ megatron_eval_fleet
+@@ -127 +127,18 @@
+-  eval_datasets: []
++  eval_datasets:
++  - custom_generate_function_path: null
++    input_key: input
++    label_key: null
++    max_response_len: null
++    metadata_key: metadata
++    metadata_overrides: {}
++    min_new_tokens: null
++    n_samples_per_eval_prompt: 1
++    name: aime
++    path: $FIXTURES/data.jsonl
++    rm_type: null
++    stop: null
++    stop_token_ids: null
++    temperature: 1.0
++    tool_key: tools
++    top_k: -1
++    top_p: 1.0
+@@ -131 +148 @@
+-  eval_hf_dir: null
++  eval_hf_dir: $FIXTURES/eval-hf
+@@ -133 +150 @@
+-  eval_interval: null
++  eval_interval: 2
+@@ -141 +158 @@
+-  eval_num_gpus: 0
++  eval_num_gpus: 1
+@@ -144 +161,3 @@
+-  eval_prompt_data: null
++  eval_prompt_data:
++  - aime
++  - $FIXTURES/data.jsonl
+@@ -150 +169 @@
+-  eval_uses_snapshots: false
++  eval_uses_snapshots: true
+@@ -175 +194,2 @@
+-  init_expected_num_cells: {}
++  init_expected_num_cells:
++    eval: 1
+@@ -474 +494 @@
+-      eval_interval: null
++      eval_interval: 2
+@@ -1818 +1838,15 @@
+-    models: []
++    models:
++    - model_path: null
++      name: eval
++      server_groups:
++      - needs_offload: false
++        num_gpus_per_engine: 1
++        overrides:
++          enable_metrics: true
++          enable_return_indexer_topk: false
++          enable_return_routed_experts: false
++          model_path: null
++        worker_type:
++          $enum: miles.backends.sglang_utils.sglang_api_client.WorkerType
++          name: REGULAR
++      update_weights: false
+@@ -1826 +1860,5 @@
+-    groups: {}
++    groups:
++      eval:
++      - engine_offset: 0
++        gpu_offset: 0
++        num_gpus: 1

@@ -17,12 +17,12 @@ def test_loss_passes_return_independent_detached_outputs(monkeypatch, recompute)
     monkeypatch.setattr(loss_module, "get_sum_of_sample_mean", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(tinker_losses, "_target_logprobs", lambda _args, _batch, logits: [logits])
     args = Namespace(
-        calculate_per_token_loss=False,
         qkv_format="thd",
+        loss_type="policy_loss",
         recompute_loss_function=recompute,
         use_dynamic_global_batch_size=True,
-        global_batch_size=1,
         multi_lora=True,
+        backend=Namespace(calculate_per_token_loss=False, global_batch_size=1),
     )
     completed = []
     for sample_index in (7, 11):
@@ -102,12 +102,12 @@ def test_nonzero_objectives_and_gradients(monkeypatch, recompute, loss_fn, confi
     monkeypatch.setattr(loss_module, "get_sum_of_sample_mean", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(tinker_losses, "_target_logprobs", lambda _args, _batch, logits: [logits[:3], logits[3:]])
     args = Namespace(
-        calculate_per_token_loss=False,
         qkv_format="thd",
+        loss_type="policy_loss",
         recompute_loss_function=recompute,
         use_dynamic_global_batch_size=True,
-        global_batch_size=4,
         multi_lora=True,
+        backend=Namespace(calculate_per_token_loss=False, global_batch_size=4),
     )
     # Both advantage signs cross each clipping boundary; the last two tokens are masked.
     ratios = torch.tensor([0.5, 0.5, 1, 1, 5, 5, 0.5, 5], dtype=torch.float64)

@@ -11,6 +11,7 @@ from pathlib import Path
 import httpx
 import pytest
 
+from tests.fast.utils.workers.worker_provider.kubernetes.core.test_pod_view import worker_metadata_annotations
 from tests.utils.soak.core.config import SoakRunnerConfig
 from tests.utils.soak.core.event_log import EventLog
 from tests.utils.soak.core.events import (
@@ -517,7 +518,14 @@ def _pod_json(name: str, *, pool_id: str, cell_index: int | None) -> dict:
     labels = {DEFAULT_LABEL_KEYS.pool_id: pool_id}
     if cell_index is not None:
         labels[DEFAULT_LABEL_KEYS.cell_index] = str(cell_index)
-    return {"metadata": {"name": name, "uid": f"uid-{name}", "labels": labels}}
+    return {
+        "metadata": {
+            "name": name,
+            "uid": f"uid-{name}",
+            "labels": labels,
+            "annotations": worker_metadata_annotations(),
+        }
+    }
 
 
 def _process_target(*, pod_uid: str, pattern: str) -> ProcessTarget:

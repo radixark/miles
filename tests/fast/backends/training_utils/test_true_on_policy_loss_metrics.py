@@ -3,12 +3,14 @@ from types import SimpleNamespace
 
 import pytest
 import torch
+from tests.fast.fixtures.args_fixtures import ConfigNamespace
 
 from miles.backends.training_utils.loss_hub import losses as loss_utils
+from miles.utils.args.custom_function import CustomFunctionConfig
 
 
 def _make_args(*, use_rollout_logprobs: bool) -> Namespace:
-    return Namespace(
+    return ConfigNamespace(
         use_rollout_logprobs=use_rollout_logprobs,
         use_sampling_support_replay=False,
         skip_actor_forward_only=False,
@@ -18,9 +20,11 @@ def _make_args(*, use_rollout_logprobs: bool) -> Namespace:
         use_tis=False,
         eps_clip=0.2,
         eps_clip_high=0.2,
+        eps_clip_c=None,
+        dump_details=None,
         custom_tis_function_path=None,
         custom_pg_loss_reducer_function_path=None,
-        calculate_per_token_loss=False,
+        backend=Namespace(calculate_per_token_loss=False),
         qkv_format="thd",
         entropy_coef=0.0,
         use_kl_loss=False,
@@ -210,7 +214,7 @@ def test_kl_loss_does_not_backpropagate_through_reference_scores(monkeypatch):
 def test_custom_tis_can_ignore_missing_trainer_scored_log_probs(monkeypatch):
     args = _make_args(use_rollout_logprobs=True)
     args.use_tis = True
-    args.custom_tis_function_path = "tests.custom_tis"
+    args.custom_tis_function_path = CustomFunctionConfig(path="tests.custom_tis")
     batch = _make_batch(
         old_log_probs=torch.tensor([0.10, 0.20]),
         rollout_log_probs=torch.tensor([0.12, 0.22]),

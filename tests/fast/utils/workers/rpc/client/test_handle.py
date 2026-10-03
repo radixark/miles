@@ -421,6 +421,70 @@ class TestReadyHandshake:
 
 
 class TestSubmitRetry:
+    @pytest.mark.parametrize("accepted", [False, True])
+    @pytest.mark.parametrize("without_result", [False, True])
+    async def test_lost_submit_reply_runs_a_pinned_call_once(
+        self, accepted: bool, without_result: bool, fast_retries: None
+    ) -> None:
+        """Recover a lost reply without executing a side effect twice."""
+        worker = _Worker()
+
+        class _LostReplyTransport(_HookTransport):
+            async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+                if request.method == "POST" and not any(r.method == "POST" for r in self.seen):
+                    if accepted:
+                        await super().handle_async_request(request)
+                    else:
+                        self.seen.append(request)
+                    raise httpx.ReadError("injected lost submit reply")
+                return await super().handle_async_request(request)
+
+        async with _running_app(worker) as app:
+            transport = _LostReplyTransport(app)
+            async with _handle_over(transport, require_stable_boot_uuid=True) as handle:
+                if without_result:
+                    await handle.submit_without_result("demo_default_arg", a=1, b=2)
+                    await handle.wait_idle(timeout=2.0)
+                else:
+                    assert await handle.demo_default_arg(a=1, b=2) == 3
+
+        submits = [r for r in transport.seen if r.method == "POST"]
+        assert len(submits) == 2
+        assert len({json.loads(r.content)["call_id"] for r in submits}) == 1
+        assert worker.calls == 1
+
+    async def test_lost_submit_reply_cannot_replay_on_a_replacement(self, fast_retries: None) -> None:
+        """A replacement process must reject recovery of an old process's call."""
+        original = _Worker()
+        replacement = _Worker()
+        async with _running_app(original) as app, _running_app(replacement) as replacement_app:
+
+            class _RestartAfterAcceptTransport(_HookTransport):
+                async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+                    response = await super().handle_async_request(request)
+                    if request.method == "POST" and response.status_code == 200:
+                        self.switch_to(replacement_app)
+                        raise httpx.ReadError("reply lost during restart")
+                    return response
+
+            transport = _RestartAfterAcceptTransport(app)
+            async with _handle_over(transport, require_stable_boot_uuid=True) as handle:
+                with pytest.raises(ServerRestartedError):
+                    await handle.demo_default_arg(a=1, b=2)
+
+        assert original.calls == 1
+        assert replacement.calls == 0
+
+    async def test_initial_conflict_is_not_treated_as_our_accepted_call(self, fast_retries: None) -> None:
+        """Only a conflict after an ambiguous submission may recover a call."""
+        async with _running_app(_Worker()) as app:
+            transport = _HookTransport(app, hook=_status_hook(status_code=409, times=1, method="POST"))
+            async with _handle_over(transport, require_stable_boot_uuid=True) as handle:
+                with pytest.raises(RpcProtocolError) as caught:
+                    await handle.demo_default_arg(a=1, b=2)
+        assert caught.value.status_code == 409
+        assert len([r for r in transport.seen if r.method == "POST"]) == 1
+
     async def test_never_reached_errors_retried_until_success(self, fast_retries: None) -> None:
         """Never-reached submit failures are retried until one succeeds."""
         async with _running_app(_Worker()) as app:
@@ -834,8 +898,8 @@ class TestBootUuid:
                     await handle.demo_default_arg(a=1, b=2)
                 assert second_worker.calls == 0
 
-    async def test_post_wire_loss_is_not_retried_on_restarted_server(self, fast_retries: None) -> None:
-        """A post-wire submit loss is not retried onto a restarted server."""
+    async def test_post_wire_loss_detects_restart_without_executing_on_replacement(self, fast_retries: None) -> None:
+        """A lost reply still rejects a replacement before it executes the call."""
         dropped: list[bool] = []
         second_worker = _Worker()
 
@@ -851,7 +915,7 @@ class TestBootUuid:
                 await handle.wait_ready(timeout=5.0)
 
                 transport.switch_to(second_app)
-                with pytest.raises(WorkerUnreachableError):
+                with pytest.raises(ServerRestartedError):
                     await handle.demo_default_arg(a=1, b=2)
                 assert second_worker.calls == 0
 

@@ -175,6 +175,7 @@ def get_ft_args(
 
 DETERMINISTIC_ROLLOUT_ARGS: str = (
     "--sglang-enable-deterministic-inference --sglang-attention-backend flashinfer --deterministic-mode "
+    "--sglang-disable-overlap-schedule "
 )
 DETERMINISTIC_INFERENCE_ENV_VARS: dict[str, str] = {
     "SGLANG_BATCH_INVARIANT_OPS_ENABLE_MM_FALLBACK_VARIANT": "false",

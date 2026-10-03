@@ -26,6 +26,7 @@ class TestGetLogProbsAndEntropy:
             log_probs_chunk_size=-1,
             allgather_cp=False,
             debug_unified_grad_fused_logprob=True,
+            train_backend="fsdp",
         )
 
         with torch.no_grad():

@@ -28,7 +28,7 @@ trainer requires it). Text-only HUD tasks are therefore out of scope here.
 Wire with:
   --custom-generate-function-path examples.experimental.hud.rollout.generate
   --custom-rm-path examples.experimental.hud.rollout.reward_func
-  --custom-config-path examples/experimental/hud/hud2048_config.yaml
+  --hud-env-dir /root/v6browser
 """
 
 from __future__ import annotations
@@ -44,6 +44,7 @@ from typing import Any
 
 from PIL import Image as PILImage
 
+from miles.utils.args.schema import A, Arg, BaseConfig
 from miles.utils.types import Sample
 
 logger = logging.getLogger(__name__)
@@ -51,6 +52,18 @@ logger = logging.getLogger(__name__)
 _runtime = None
 _runtime_lock = threading.Lock()
 _gate: asyncio.Semaphore | None = None
+
+
+class HudConfig(BaseConfig):
+    hud_env_dir: A[str, Arg()]
+    hud_snapshot_name: A[str, Arg()]
+    hud_max_steps: A[int, Arg()] = 24
+    hud_shot_width: A[int, Arg()] = 512
+    hud_max_tokens_per_turn: A[int, Arg()] = 512
+    hud_max_sandboxes: A[int, Arg()] = 32
+    hud_episode_timeout_s: A[int, Arg()] = 1800
+    hud_daytona_key_file: A[str | None, Arg()] = None
+    hud_system_prompt: A[str | None, Arg()] = None
 
 
 def _load_daytona_key(args: Any) -> None:
@@ -61,9 +74,7 @@ def _load_daytona_key(args: Any) -> None:
     """
     if os.environ.get("DAYTONA_API_KEY"):
         return
-    path = getattr(args, "hud_daytona_key_file", None) or os.environ.get(
-        "DAYTONA_API_KEY_FILE", "~/.config/daytona/api_key"
-    )
+    path = args.hud_daytona_key_file or os.environ.get("DAYTONA_API_KEY_FILE", "~/.config/daytona/api_key")
     path = Path(path).expanduser()
     if not path.exists():
         raise ValueError(f"no Daytona credentials: set DAYTONA_API_KEY or put a key at {path}")
@@ -95,7 +106,7 @@ def _sandbox_gate(args: Any) -> asyncio.Semaphore:
     """Cap concurrent sandboxes process-wide, independent of batch geometry."""
     global _gate
     if _gate is None:
-        _gate = asyncio.Semaphore(int(getattr(args, "hud_max_sandboxes", 32)))
+        _gate = asyncio.Semaphore(int(args.hud_max_sandboxes))
     return _gate
 
 
@@ -104,17 +115,17 @@ def _build_agent(args: Any, sampling_params: dict):
     from examples.experimental.hud.sglang_compat import sglang_client  # noqa: PLC0415
     from hud.agents.types import OpenAIChatConfig  # noqa: PLC0415
 
-    max_steps = int(getattr(args, "hud_max_steps", 24))
-    system_prompt = getattr(args, "hud_system_prompt", None) or SYSTEM_PROMPT
+    max_steps = int(args.hud_max_steps)
+    system_prompt = args.hud_system_prompt or SYSTEM_PROMPT
     base_url = f"http://{args.sglang_router_ip}:{args.sglang_router_port}/v1"
-    return ComputerChatAgent.for_shot_width(int(getattr(args, "hud_shot_width", 640)))(
+    return ComputerChatAgent.for_shot_width(int(args.hud_shot_width))(
         OpenAIChatConfig(
             model_client=sglang_client(base_url),
             model=args.hf_checkpoint,
             system_prompt=system_prompt.format(max_steps=max_steps),
             max_steps=max_steps,
             completion_kwargs={
-                "max_tokens": int(getattr(args, "hud_max_tokens_per_turn", 512)),
+                "max_tokens": int(args.hud_max_tokens_per_turn),
                 "temperature": sampling_params.get("temperature", 1.0),
                 "top_p": sampling_params.get("top_p", 1.0),
                 "extra_body": {"return_token_ids": True},
@@ -317,7 +328,9 @@ def _vision_inputs(state: Any, images: list[PILImage.Image], tokens: list[int]) 
 
     processed = state.processor.image_processor(images=images, return_tensors="pt")
     grid = processed["image_grid_thw"]
-    merge = getattr(state.processor.image_processor, "merge_size", 2)
+    merge = getattr(
+        state.processor.image_processor, "merge_size", 2
+    )  # config-access-exempt: HF image processor variants may omit the Qwen spatial merge size
     per_image = (torch.prod(grid, dim=-1) // (merge * merge)).tolist()
 
     total, keep = 0, 0
@@ -358,7 +371,9 @@ def _failed(sample: Sample, reason: str, state: Any) -> Sample:
 
     tok = state.processor.tokenizer
     processed = state.processor.image_processor(images=[PILImage.new("RGB", (64, 64))], return_tensors="pt")
-    merge = getattr(state.processor.image_processor, "merge_size", 2)
+    merge = getattr(
+        state.processor.image_processor, "merge_size", 2
+    )  # config-access-exempt: HF image processor variants may omit the Qwen spatial merge size
     n_image_tokens = int(torch.prod(processed["image_grid_thw"], dim=-1).sum().item()) // (merge * merge)
 
     sample.status = Sample.Status.FAILED
@@ -396,7 +411,7 @@ async def generate(args: Any, sample: Sample, sampling_params) -> Sample:
     task = _mint_task(meta)
     agent = _build_agent(args, dict(sampling_params))
     runtime = _shared_runtime(args)
-    timeout = float(getattr(args, "hud_episode_timeout_s", 1800))
+    timeout = float(args.hud_episode_timeout_s)
 
     async with _sandbox_gate(args):
         try:
@@ -410,7 +425,9 @@ async def generate(args: Any, sample: Sample, sampling_params) -> Sample:
             logger.warning("hud episode failed to run: %s", e, exc_info=True)
             return _failed(sample, f"hud episode errored: {type(e).__name__}", state)
 
-    run = (getattr(job, "runs", None) or [None])[0]
+    run = (getattr(job, "runs", None) or [None])[
+        0
+    ]  # config-access-exempt: HUD jobs interrupted before an episode completes may have no runs
     if run is None:
         return _failed(sample, "hud episode produced no run", state)
 
@@ -459,3 +476,7 @@ async def reward_func(args, samples: Sample | list[Sample], **kwargs) -> float |
     if isinstance(samples, list):
         return [s.metadata.get("reward", 0.0) for s in samples]
     return samples.metadata.get("reward", 0.0)
+
+
+generate.config_class = HudConfig
+reward_func.config_class = HudConfig

@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 import train_multi_policy as multi_policy_driver
-from tests.fast.fixtures.args_fixtures import parser_defaults
+from tests.fast.fixtures.args_fixtures import parser_defaults, resolve_parse_boundary_configs
 from tests.fast.fixtures.driver_fakes import FakeWorkerManager
 from tests.fast.fixtures.megatron_config_fixtures import encode_megatron_config
 from train_multi_policy import train_multi_policy
@@ -22,6 +22,7 @@ from miles.utils.async_utils import with_disposer
 from miles.utils.multi_policy.checkpoint_state import MultiPolicyCheckpointState
 from miles.utils.multi_policy.parker import Parker
 from miles.utils.multi_policy.utils import TrainerInfo
+from miles.utils.orchestration_utils import ArgvOrchestratorStartupInfo
 
 
 def _make_args(**overrides: Any) -> Namespace:
@@ -39,7 +40,7 @@ def _make_args(**overrides: Any) -> Namespace:
         check_weight_update_skip_list=None,
     )
     defaults.update(overrides)
-    return Namespace(**{**parser_defaults(), **defaults})
+    return resolve_parse_boundary_configs(Namespace(**{**parser_defaults(), **defaults}))
 
 
 def _make_trainers(model_ids, handles=None, start_rollout_ids=None) -> dict[str, TrainerInfo]:
@@ -78,7 +79,9 @@ async def _run(
         context["rollout_executor"],
         None,
     )
-    await asyncio.wait_for(with_disposer(train_multi_policy, args), timeout=30)
+    await asyncio.wait_for(
+        with_disposer(train_multi_policy, ArgvOrchestratorStartupInfo(args=args, all_args=args)), timeout=30
+    )
     return context
 
 
@@ -128,10 +131,11 @@ class TestInitialWeightPublication:
         """Each configured trainer id must expose its model's live handle through the shared API server."""
         start_api_server = Mock()
         monkeypatch.setattr(placement_group, "start_api_server", start_api_server)
+        cell_operations = object()
         monkeypatch.setattr(
-            placement_group,
-            "get_backend_capability",
-            lambda _args: SimpleNamespace(cell_operations=lambda: object()),
+            multi_policy_driver,
+            "init_orchestration_script",
+            lambda _startup_info, *, disposer: SimpleNamespace(cell_operations=lambda: cell_operations),
         )
 
         context = await _run(_make_args(num_rollout=0, api_server_port=18080))
@@ -142,6 +146,7 @@ class TestInitialWeightPublication:
             "b-actor": context["trainers"]["b"],
         }
         assert start_api_server.call_args.kwargs["inference_controller"] is context["inference_controller"]
+        assert start_api_server.call_args.kwargs["cell_operations"] is cell_operations
 
     async def test_every_policy_compares_its_engines_against_its_own_trainer(self):
         """--ci-test asks for this comparison, and running it for one policy would leave the others unchecked."""
@@ -179,9 +184,8 @@ class TestTerminalLifecycle:
         for model_id, trainer in trainers.items():
             trainer.dispose.side_effect = lambda model_id=model_id: events.append(f"{model_id}_dispose")
 
-        def init_orchestration_script(_args: Namespace, *, disposer: Any) -> FakeWorkerManager:
+        def init_orchestration_script(_startup_info: ArgvOrchestratorStartupInfo, *, disposer: Any) -> None:
             disposer.add(partial(wiring.shutdown_worker_manager, manager))
-            return manager
 
         monkeypatch.setattr(multi_policy_driver, "init_orchestration_script", init_orchestration_script)
         monkeypatch.setattr(wiring.ray, "kill", manager.kill)

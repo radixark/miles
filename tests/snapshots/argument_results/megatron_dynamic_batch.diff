@@ -1,0 +1,11 @@
+--- megatron
++++ megatron_dynamic_batch
+@@ -192 +192 @@
+-  log_probs_max_tokens_per_gpu: null
++  log_probs_max_tokens_per_gpu: 4096
+@@ -209 +209 @@
+-  max_tokens_per_gpu: null
++  max_tokens_per_gpu: 4096
+@@ -1869 +1869 @@
+-  use_dynamic_batch_size: false
++  use_dynamic_batch_size: true

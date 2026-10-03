@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import base64
+import json
+import logging
 import os
+import time
 from abc import ABC, abstractmethod
 from argparse import Namespace
 from collections.abc import Callable
@@ -17,6 +20,8 @@ from pydantic import AfterValidator, ConfigDict, Field, PlainSerializer
 from miles.utils.object_store_config import compute_mooncake_store_config
 from miles.utils.pydantic_utils import StrictBaseModel
 from miles.utils.workers.types import WorkerCommBackend
+
+logger = logging.getLogger(__name__)
 
 _MOONCAKE_IMPORT_ERROR: ImportError | None = None
 
@@ -185,22 +190,39 @@ class MooncakeObjectStore(BaseObjectStore):
         self._transfer = MooncakeBundleTransfer(store, key_prefix="miles-object-store")
 
     def put(self, value: Any, value_spec: dict[str, ValueSpec] | None = None) -> StoreObjectRef:
-        ref = self._transfer.put(
-            value,
-            type="dict",
-            namespace="miles",
-            chunk_bytes=self._init_kwargs.get("chunk_bytes"),
-            config=self._replicate_config(),
-            field_schemas=_field_schemas_for_value(value, value_spec),
+        ref = self._retry_transfer(
+            lambda: self._transfer.put(
+                value,
+                type="dict",
+                namespace="miles",
+                chunk_bytes=self._init_kwargs.get("chunk_bytes"),
+                config=self._replicate_config(),
+                field_schemas=_field_schemas_for_value(value, value_spec),
+            )
         )
         return _MooncakeStoreObjectRef(payload=export_ref(ref))
 
     def get(self, ref: StoreObjectRef) -> ObjectStoreGetResult:
-        value = self._transfer.get(import_ref(ref.payload), type="dict")
+        remote_ref = import_ref(ref.payload)
+        value = self._retry_transfer(lambda: self._transfer.get(remote_ref, type="dict"))
         return ObjectStoreGetResult(value=value, release_fn=MooncakeBundleTransfer.release_result)
 
     def remove(self, ref: StoreObjectRef) -> None:
         self._transfer.cleanup_dataproto(import_ref(ref.payload))
+
+    def _retry_transfer(self, operation: Callable[[], Any]) -> Any:
+        deadline = time.monotonic() + 30.0
+        while True:
+            try:
+                return operation()
+            except (json.JSONDecodeError, RuntimeError) as error:
+                if self._replica_num == 1 or not _is_mooncake_transfer_error(error):
+                    raise
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise
+                logger.warning("Mooncake replica transfer failed; retrying during failover", exc_info=True)
+                time.sleep(min(1.0, remaining))
 
     def _replicate_config(self) -> Any:
         if self._replica_num == 1:
@@ -208,6 +230,16 @@ class MooncakeObjectStore(BaseObjectStore):
         config = ReplicateConfig()
         config.replica_num = self._replica_num
         return config
+
+
+def _is_mooncake_transfer_error(error: Exception) -> bool:
+    if isinstance(error, json.JSONDecodeError):
+        return error.doc == ""
+    message = str(error)
+    return (
+        message.startswith(("get_into_ranges failed for ", "batch_get_into failed for "))
+        and message.endswith(("got -800", "got -703"))
+    ) or (message.startswith(("put failed for ", "batch_put_from failed for ")) and message.endswith(": -800"))
 
 
 def _check_mooncake_available() -> None:

@@ -1,0 +1,14 @@
+--- fsdp
++++ fsdp_yaml_cli_override
+@@ -56 +56 @@
+-  critic_lr: 1.0e-06
++  critic_lr: 7.0e-06
+@@ -290 +290 @@
+-    config: null
++    config: $FIXTURES/fsdp.yaml
+@@ -302 +302 @@
+-    lr: 1.0e-06
++    lr: 7.0e-06
+@@ -329 +329 @@
+-    weight_decay: 0.0
++    weight_decay: 0.2

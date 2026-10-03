@@ -1,0 +1,25 @@
+--- fsdp
++++ fsdp_load_fallback
+@@ -48 +48 @@
+-  ckpt_step: null
++  ckpt_step: 7
+@@ -55 +55 @@
+-  critic_load: null
++  critic_load: $FIXTURES/ref
+@@ -184 +184 @@
+-  load: null
++  load: $FIXTURES/ref
+@@ -288 +288 @@
+-    ckpt_step: null
++    ckpt_step: 7
+@@ -301 +301 @@
+-    load: null
++    load: $FIXTURES/ref
+@@ -341,2 +341,2 @@
+-  ref_ckpt_step: null
+-  ref_load: null
++  ref_ckpt_step: 7
++  ref_load: $FIXTURES/ref
+@@ -345 +345 @@
+-  requested_load: null
++  requested_load: $FIXTURES/missing

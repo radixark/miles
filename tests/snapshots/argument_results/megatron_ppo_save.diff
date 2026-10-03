@@ -1,0 +1,54 @@
+--- megatron
++++ megatron_ppo_save
+@@ -4 +4 @@
+-  advantage_estimator: grpo
++  advantage_estimator: ppo
+@@ -58,3 +58,3 @@
+-  critic_num_gpus_per_node: null
+-  critic_num_nodes: null
+-  critic_save: null
++  critic_num_gpus_per_node: 1
++  critic_num_nodes: 1
++  critic_save: $FIXTURES/save_critic
+@@ -188 +188 @@
+-  log_inference_engine_weight_checksums: false
++  log_inference_engine_weight_checksums: true
+@@ -253 +253 @@
+-  offload_train: false
++  offload_train: true
+@@ -424 +424 @@
+-      disable_grad_buffers_cpu_backup: false
++      disable_grad_buffers_cpu_backup: true
+@@ -427 +427 @@
+-      disable_param_buffers_cpu_backup: false
++      disable_param_buffers_cpu_backup: true
+@@ -1024 +1024 @@
+-      save: null
++      save: $FIXTURES/save
+@@ -1027 +1027 @@
+-      save_interval: null
++      save_interval: 2
+@@ -1168,0 +1169,12 @@
++    - actor_index: null
++      model_id: null
++      overrides:
++        disable_param_buffers_cpu_backup: false
++        kl_coef: 0
++        load: null
++        lr: 1.0e-06
++        lr_warmup_iters: 0
++        save: $FIXTURES/save_critic
++        use_opd: false
++      role: critic
++      trainer_id: critic
+@@ -1312,2 +1324,2 @@
+-  save: null
+-  save_debug_event_data: null
++  save: $FIXTURES/save
++  save_debug_event_data: $FIXTURES/save/events
+@@ -1318 +1330 @@
+-  save_interval: null
++  save_interval: 2
+@@ -1867 +1879 @@
+-  use_critic: false
++  use_critic: true

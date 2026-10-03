@@ -1,0 +1,15 @@
+--- fsdp
++++ fsdp_ft_explicit_api
+@@ -8 +8 @@
+-  api_server_port: 0
++  api_server_port: 23456
+@@ -159 +159,2 @@
+-  ft_components: []
++  ft_components:
++  - rollout
+@@ -1034 +1035 @@
+-  update_weight_transfer_mode: broadcast
++  update_weight_transfer_mode: p2p
+@@ -1041 +1042 @@
+-  use_fault_tolerance: false
++  use_fault_tolerance: true

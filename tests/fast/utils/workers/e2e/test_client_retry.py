@@ -1,4 +1,5 @@
 import asyncio
+import json
 import time
 from typing import Any
 
@@ -167,20 +168,45 @@ class TestWaitReadyRetries:
 
 
 class TestPinnedSubmitFailure:
-    async def test_headerless_gateway_error_does_not_repin(
+    async def test_repeated_headerless_gateway_errors_exhaust_retries_without_repinning(
         self,
         proxy_to: Any,
         make_handle: Any,
         short_retry_window: None,
         tag: str,
     ) -> None:
-        """A pinned handle keeps its pin and gives up on a submit 503."""
+        """Repeated gateway errors exhaust retries without changing the pinned worker or call identity."""
         proxy = await proxy_to()
         handle = make_handle(proxy, require_stable_boot_uuid=True)
         await handle.wait_ready(timeout=1.0)
-        proxy.reject_next(count=1, status=503)
+        pinned = handle._boot_uuid_pin.expected
+        proxy.reject_next(count=1000, status=503)
 
         with pytest.raises(WorkerUnreachableError):
             await handle.demo_count_sync(tag=tag)
 
-        assert len(proxy.submits("demo_count_sync")) == 1
+        submits = proxy.submits("demo_count_sync")
+        assert len(submits) > 1
+        assert len({json.loads(request.body.split(b"\r\n\r\n", 1)[1])["call_id"] for request in submits}) == 1
+        assert handle._boot_uuid_pin.expected == pinned
+
+    async def test_a_transient_headerless_gateway_error_recovers_without_repinning(
+        self,
+        proxy_to: Any,
+        make_handle: Any,
+        short_retry_window: None,
+        tag: str,
+    ) -> None:
+        """A transient gateway error retries the same pinned call and executes it once."""
+        proxy = await proxy_to()
+        handle = make_handle(proxy, require_stable_boot_uuid=True)
+        await handle.wait_ready(timeout=1.0)
+        pinned = handle._boot_uuid_pin.expected
+        proxy.reject_next(count=1, status=503)
+
+        assert await handle.demo_count_sync(tag=tag) == 1
+
+        submits = proxy.submits("demo_count_sync")
+        assert len(submits) == 2
+        assert len({json.loads(request.body.split(b"\r\n\r\n", 1)[1])["call_id"] for request in submits}) == 1
+        assert handle._boot_uuid_pin.expected == pinned

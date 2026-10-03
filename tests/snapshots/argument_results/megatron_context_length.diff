@@ -1,0 +1,10 @@
+--- megatron
++++ megatron_context_length
+@@ -136 +136 @@
+-  eval_max_context_len: null
++  eval_max_context_len: 1024
+@@ -1197,2 +1197,2 @@
+-  rollout_max_context_len: null
+-  rollout_max_prompt_len: null
++  rollout_max_context_len: 1024
++  rollout_max_prompt_len: 1023

@@ -69,10 +69,10 @@ class HfWeightIteratorDirect(MegatronHfWeightIteratorBase):
             from miles_plugins.models.kimi_k3.lora import export_kimi_k3_lora_hf_chunks
 
             return [named_tensor for chunk in export_kimi_k3_lora_hf_chunks(self.model) for named_tensor in chunk]
-        if "inkling" in (self.args.custom_model_provider_path or ""):
+        if (provider := self.args.custom_model_provider_path) is not None and "inkling" in provider.path:
             from miles_plugins.models.inkling.lora import export_inkling_lora_hf_named
 
-            return export_inkling_lora_hf_named(self.model)
+            return export_inkling_lora_hf_named(self.model, hf_checkpoint=self.args.hf_checkpoint)
         raise NotImplementedError(f"Raw LoRA export is not implemented for model {self.model_name!r}")
 
     def _convert_to_hf_param_units(self, named_params: Sequence[tuple[str, torch.Tensor]]):
@@ -227,10 +227,18 @@ def _get_megatron_local_param_infos(
             dtype=param.dtype,
             shape=param.shape,
             attrs={
-                "tensor_model_parallel": getattr(param, "tensor_model_parallel", False),
-                "partition_dim": getattr(param, "partition_dim", -1),
-                "partition_stride": getattr(param, "partition_stride", 1),
-                "parallel_mode": getattr(param, "parallel_mode", None),
+                "tensor_model_parallel": getattr(
+                    param, "tensor_model_parallel", False
+                ),  # config-access-exempt: tensor_model_parallel is optional backend-attached tensor metadata
+                "partition_dim": getattr(
+                    param, "partition_dim", -1
+                ),  # config-access-exempt: partition_dim is optional backend-attached tensor metadata
+                "partition_stride": getattr(
+                    param, "partition_stride", 1
+                ),  # config-access-exempt: partition_stride is optional backend-attached tensor metadata
+                "parallel_mode": getattr(
+                    param, "parallel_mode", None
+                ),  # config-access-exempt: parallel_mode is optional backend-attached tensor metadata
             },
             size=param.numel() * param.element_size(),
             src_rank=rank,
@@ -247,7 +255,7 @@ def _get_megatron_local_param_infos(
             for name, info in infos.items():
                 if name in param_infos:
                     # Duplicates across PP only exist for MTP virtual-PP layers.
-                    assert args.mtp_num_layers is not None
+                    assert args.backend.mtp_num_layers is not None
                     if param_infos[name].src_rank > src_rank:
                         param_infos[name] = info
                 else:
@@ -320,7 +328,7 @@ def _check_and_fix_partition(args: Namespace, name: str, partition_stride: int, 
     (GLU/SwiGLU interleaved [gate, up]), so assert partition_stride==2 is removed.
     But TEGroupedLinear still does not set partition_stride/partition_dim correctly for grouped moe gemm
     """
-    if "linear_fc1.weight" in name and args.swiglu:
+    if "linear_fc1.weight" in name and args.backend.swiglu:
         partition_stride = 2
         if partition_dim < 0:
             partition_dim = 0
@@ -351,7 +359,9 @@ def all_gather_params_async(
         if "expert_bias" in info.name:
             gather_tasks.append((info, param, None, None, None, None))
             handles.append(None)
-        elif getattr(param, "parallel_mode", None) == "duplicated" or (
+        elif getattr(
+            param, "parallel_mode", None
+        ) == "duplicated" or (  # config-access-exempt: parallel_mode is optional backend-attached tensor metadata
             not param.tensor_model_parallel and not _is_unmarked_grouped_expert_weight(info.name, param)
         ):
             gather_tasks.append((info, param.data, None, None, None, None))

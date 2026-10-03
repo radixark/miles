@@ -7,9 +7,11 @@ import sys
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from typing import Any, NamedTuple, TypeVar
 
+from miles.utils.args.schema import validate_complete_config
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
 
 CONFIG_JSON_FLAG = "--config-json"
+ORCHESTRATOR_CONFIG_FLAG = "--orchestrator-config"
 
 _INTERPRETER_SHORT_FLAGS_TAKING_A_VALUE = frozenset({"X", "W", "Q"})
 
@@ -48,6 +50,17 @@ def python_argv_prefix() -> list[str]:
 # ==================== config argv ====================
 
 
+def orchestrator_config_values(argv: list[str]) -> list[str]:
+    values: list[str] = []
+    for index, token in enumerate(argv):
+        if token == ORCHESTRATOR_CONFIG_FLAG:
+            assert index + 1 < len(argv), f"{ORCHESTRATOR_CONFIG_FLAG} is the last argument, so it names no value"
+            values.append(argv[index + 1])
+        elif token.startswith(f"{ORCHESTRATOR_CONFIG_FLAG}="):
+            values.append(token.split("=", maxsplit=1)[1])
+    return values
+
+
 def config_to_argv(config: FrozenStrictBaseModel) -> list[str]:
     argv = [CONFIG_JSON_FLAG, config.model_dump_json()]
 
@@ -60,11 +73,13 @@ def parse_config_argv(config_cls: type[_ConfigT], argv: list[str] | None) -> _Co
     parser = argparse.ArgumentParser()
     parser.add_argument(CONFIG_JSON_FLAG, required=True)
     args = parser.parse_args(argv)
-    return config_cls.model_validate_json(args.config_json)
+    return validate_complete_config(config_cls, json.loads(args.config_json))
 
 
 def dataclass_to_values(args_obj: object) -> dict[str, object]:
-    return {name: getattr(args_obj, name) for name in _record_field_names(args_obj)}
+    return {
+        name: getattr(args_obj, name) for name in _record_field_names(args_obj)
+    }  # config-access-exempt: attribute selected at runtime from name
 
 
 def render_cli_argv(
@@ -94,7 +109,7 @@ def render_cli_argv(
             (
                 input_values[name]
                 if name in input_values and input_values[name] is not None
-                else getattr(expected_obj, name)
+                else getattr(expected_obj, name)  # config-access-exempt: attribute selected at runtime from name
             ),
         )
     ]
@@ -141,7 +156,7 @@ def _describe_mismatch(parsed: _ArgsT, wanted: _ArgsT, *, uncompared_fields: fro
         f"{name}: parsed {getattr(parsed, name)!r} != wanted {getattr(wanted, name)!r}"
         for name in _record_field_names(wanted)
         if name not in uncompared_fields and getattr(parsed, name) != getattr(wanted, name)
-    )
+    )  # config-access-exempt: attribute selected at runtime from name
 
 
 def _actions_by_dest(parser: argparse.ArgumentParser) -> dict[str, argparse.Action]:
@@ -246,7 +261,9 @@ def parse_declared_args(text: str, *, parser: argparse.ArgumentParser) -> dict[s
             continue
         assert token in action_by_option_string, f"the argument parser does not declare {token!r}"
         dests.append(action_by_option_string[token].dest)
-    return {dest: getattr(namespace, dest) for dest in dests}
+    return {
+        dest: getattr(namespace, dest) for dest in dests
+    }  # config-access-exempt: attribute selected at runtime from dest
 
 
 def declared_arg_dests(parser: argparse.ArgumentParser) -> frozenset[str]:

@@ -1,0 +1,8 @@
+--- fsdp
++++ fsdp_learning_rate
+@@ -56 +56 @@
+-  critic_lr: 1.0e-06
++  critic_lr: 3.0e-06
+@@ -302 +302 @@
+-    lr: 1.0e-06
++    lr: 3.0e-06

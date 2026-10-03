@@ -5,6 +5,8 @@ from copy import deepcopy
 import wandb
 from wandb.sdk.lib.runid import generate_id
 
+from miles.utils.args.utils import config_values
+from miles.utils.audit_utils.config_snapshot.dumper import ConfigSnapshotDumper
 from miles.utils.env_report.launcher_report import read_launcher_report
 
 logger = logging.getLogger(__name__)
@@ -51,7 +53,7 @@ def init_wandb_primary(args):
     # add random 6 length string with characters
     if args.wandb_random_suffix:
         group = args.wandb_group + "_" + generate_id()
-        run_name = f"{group}-RANK_{args.rank}"
+        run_name = f"{group}-RANK_0"
     else:
         group = args.wandb_group
         run_name = args.wandb_group
@@ -86,10 +88,11 @@ def init_wandb_primary(args):
 
     # Set wandb_run_id in args for easy access throughout the training process
     args.wandb_run_id = wandb.run.id
+    ConfigSnapshotDumper.dump(stage="tracking_config", config={"args": args})
 
 
 def _compute_config_for_logging(args):
-    output = deepcopy(args.__dict__)
+    output = deepcopy(config_values(args))
 
     whitelist_env_vars = [
         "SLURM_JOB_ID",
@@ -106,7 +109,7 @@ def _compute_config_for_logging(args):
 
 # https://docs.wandb.ai/guides/track/log/distributed-training/#track-all-processes-to-a-single-run
 def init_wandb_secondary(args, router_addr=None):
-    wandb_run_id = getattr(args, "wandb_run_id", None)
+    wandb_run_id = args.wandb_run_id
     if wandb_run_id is None:
         return
 
@@ -129,7 +132,7 @@ def init_wandb_secondary(args, router_addr=None):
             x_update_finish_state=False,
         )
 
-    if args.sglang_enable_metrics and router_addr is not None:
+    if args.sglang.common_value("enable_metrics") and router_addr is not None:
         logger.info(f"Forward SGLang metrics at {router_addr} to WandB.")
         settings_kwargs |= dict(
             x_stats_open_metrics_endpoints={
@@ -144,7 +147,7 @@ def init_wandb_secondary(args, router_addr=None):
         "id": wandb_run_id,
         "entity": args.wandb_team,
         "project": args.wandb_project,
-        "config": args.__dict__,
+        "config": config_values(args),
         "resume": "allow",
         "reinit": True,
         "settings": _wandb_settings(**settings_kwargs),

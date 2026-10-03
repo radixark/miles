@@ -13,6 +13,7 @@ from tests.e2e.deploy.conftest_deploy.hot_restart.driver import ScheduledFreeze
 from tests.e2e.deploy.conftest_deploy.hot_restart.scenario_hot_restart_deterministic import compute_checkpoint_dir
 from tests.utils.deploy.hot_restart.evidence import HotRestartRecord
 
+from miles.backends.megatron_utils.megatron_config import resolve_megatron_config
 from miles.ray.rollout.rollout_executor import compute_rollout_checkpoint_dir
 from miles.utils.audit_utils.event_logger import checkpoint as event_logger_checkpoint
 from miles.utils.audit_utils.event_logger.logger import EVENTS_DIRNAME, EventLogger
@@ -45,13 +46,16 @@ class _Run:
 
     @property
     def megatron_args(self) -> Namespace:
-        return Namespace(
+        args = Namespace(
             save=str(self.checkpoint_dir),
             load=str(self.checkpoint_dir),
             requested_load=str(self.checkpoint_dir),
             megatron_config=None,
             save_debug_event_data=str(self.events_dir),
+            use_critic=False,
         )
+        args.raw_megatron = resolve_megatron_config(args, base_args={})
+        return args
 
     def train(self, *rollout_ids: int) -> None:
         for rollout_id in rollout_ids:

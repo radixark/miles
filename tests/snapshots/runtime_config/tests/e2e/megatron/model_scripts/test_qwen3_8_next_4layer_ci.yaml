@@ -1,0 +1,213 @@
+processes:
+  tests/e2e/megatron/model_scripts/test_qwen3_8_next_4layer_ci/run-0000/all/default/actor_cell00000:
+    diffs:
+      checkpoint_load-0000:
+        set:
+          <<: &id001
+            /args/backend/lr_decay_iters: 5
+            /args/backend/model_type: {$enum: megatron.core.enums.ModelType, name: encoder_or_decoder}
+            /args/backend/train_iters: 5
+          /args/backend/ckpt_step: null
+          /args/backend/finetune: true
+          /args/backend/load: /root/ckpt/qwen3.8-flash-next-4layer_torch_dist
+          /args/backend/no_load_optim: true
+          /args/backend/no_load_rng: true
+          /load: /root/ckpt/qwen3.8-flash-next-4layer_torch_dist
+          /local_checkpoint_manager: false
+      train_first_step-0000:
+        set:
+          <<: *id001
+          /role: actor
+    ranks: [0, 1, 2, 3, 4, 5, 6, 7]
+    template: trainer-megatron-02
+  tests/e2e/megatron/model_scripts/test_qwen3_8_next_4layer_ci/run-0000/all/default/inference_controller:
+    diffs: &id005
+      router_endpoints-0000:
+        set:
+          <<: &id002
+            /args/sglang_model_routers: {default: {$tuple: [$HOST, $PORT]}}
+            /args/sglang_router_ip: $HOST
+            /args/sglang_router_port: $PORT
+    overrides:
+      set:
+        <<:
+        - &id003
+          /args/apply_chat_template_kwargs/thinking_mode: thinking
+          /args/check_weight_update_skip_list: [visual., ple_embedding.]
+          /args/ci_disable_kl_checker: true
+          /args/ci_disable_logprobs_checker: true
+          /args/config_snapshot_name: tests/e2e/megatron/model_scripts/test_qwen3_8_next_4layer_ci/run-0000
+          /args/custom_model_provider_path:
+            config: null
+            path: miles_plugins.models.qwen3_8_next.model_provider.get_qwen3_8_next_model_provider
+          /args/hf_checkpoint: /root/models/Qwen3.8-Flash-Next-4layer
+          /args/linear_attention_backend: flashqla
+          /args/max_tokens_per_gpu: 8192
+          /args/model_name: qwen4_exp
+          /args/num_rollout: 5
+          /args/num_steps_per_rollout: 1
+          /args/offload_train_disk_dir: /root/train_offload
+          /args/ref_load: /root/ckpt/qwen3.8-flash-next-4layer_torch_dist
+          /args/rm_type: math
+          /args/rollout_batch_size: 4
+          /args/rollout_health_check_interval: 300.0
+          /args/rollout_health_check_timeout: 300.0
+          /args/rollout_max_response_len: 512
+          /args/rollout_num_gpus_per_engine: 4
+          /args/router_args/health_check_interval_secs: 15
+          /args/router_args/health_failure_threshold: 40
+          /args/router_args/health_success_threshold: 1
+          /args/sglang/base_args/chunked_prefill_size: 8192
+          /args/sglang/base_args/disable_radix_cache: true
+          /args/sglang/base_args/ep_size: 4
+          /args/sglang/base_args/linear_attn_prefill_backend: flashinfer
+          /args/sglang/base_args/moe_runner_backend: triton
+          /args/sglang/base_args/tp_size: 4
+          /args/sglang/models:
+          - model_path: null
+            name: default
+            server_groups:
+            - needs_offload: true
+              num_gpus_per_engine: 4
+              overrides: {model_path: /root/models/Qwen3.8-Flash-Next-4layer}
+              worker_type: {$enum: miles.backends.sglang_utils.sglang_api_client.WorkerType, name: REGULAR}
+            update_weights: true
+          /args/start_rollout_id: null
+          /args/train_memory_margin_bytes: 3221225472
+          /args/update_weight_buffer_size: 1073741824
+          /args/use_dynamic_batch_size: false
+          /args/use_rollout_routing_replay: true
+          /args/use_routing_replay: true
+          /args/wandb_group: $RUN_ID_0000_$CI_COMMIT_NAME_github
+        - &id004
+          /args/balance_data: true
+          /args/distributed_timeout_minutes: 60
+          /args/input_key: prompt
+          /args/num_layers: 4
+          /args/rollout_temperature: 0.8
+          /args/wandb_project: miles-run_qwen3_8_next
+    template: inference_controller-01
+  tests/e2e/megatron/model_scripts/test_qwen3_8_next_4layer_ci/run-0000/all/default/main:
+    diffs:
+      router_endpoints-0000:
+        set:
+          <<: *id002
+          /args/wandb_run_id: $WANDB_RUN_ID_0000
+      tracking_config-0000: {set: {/args/wandb_run_id: $WANDB_RUN_ID_0000}}
+    overrides:
+      set:
+        <<:
+        - *id003
+        - *id004
+        - &id006
+          /args/raw_megatron/base_args/_is_global_batch_size_explicitly_specified: false
+          /args/raw_megatron/base_args/attention_backend/name: auto
+          /args/raw_megatron/base_args/attention_output_gate: true
+          /args/raw_megatron/base_args/data_parallel_size: 2
+          /args/raw_megatron/base_args/distributed_timeout_minutes: 60
+          /args/raw_megatron/base_args/encoder_num_layers: 4
+          /args/raw_megatron/base_args/eval_global_batch_size: 32
+          /args/raw_megatron/base_args/expert_model_parallel_size: 4
+          /args/raw_megatron/base_args/ffn_hidden_size: 640
+          /args/raw_megatron/base_args/finetune: false
+          /args/raw_megatron/base_args/global_batch_size: 32
+          /args/raw_megatron/base_args/hidden_size: 2560
+          /args/raw_megatron/base_args/kv_channels: 256
+          /args/raw_megatron/base_args/layernorm_zero_centered_gamma: true
+          /args/raw_megatron/base_args/load: null
+          /args/raw_megatron/base_args/moe_ffn_hidden_size: 640
+          /args/raw_megatron/base_args/moe_grouped_gemm: true
+          /args/raw_megatron/base_args/moe_layer_freq: [1, 1, 1, 1]
+          /args/raw_megatron/base_args/moe_permute_fusion: true
+          /args/raw_megatron/base_args/moe_router_dtype: fp32
+          /args/raw_megatron/base_args/moe_router_topk: 10
+          /args/raw_megatron/base_args/moe_shared_expert_gate: true
+          /args/raw_megatron/base_args/moe_shared_expert_intermediate_size: 640
+          /args/raw_megatron/base_args/no_load_optim: null
+          /args/raw_megatron/base_args/no_load_rng: null
+          /args/raw_megatron/base_args/num_attention_heads: 24
+          /args/raw_megatron/base_args/num_experts: 512
+          /args/raw_megatron/base_args/num_layers: 4
+          /args/raw_megatron/base_args/num_query_groups: 2
+          /args/raw_megatron/base_args/padded_vocab_size: 248320
+          /args/raw_megatron/base_args/pipeline_model_parallel_size: 2
+          /args/raw_megatron/base_args/rotary_base: 10000000
+          /args/raw_megatron/base_args/rotary_percent: 0.25
+          /args/raw_megatron/base_args/spec: &id007 [miles_plugins.models.qwen3_8_next.qwen3_8_next, get_qwen3_8_next_spec]
+          /args/raw_megatron/base_args/tensor_model_parallel_size: 2
+          /args/raw_megatron/base_args/tokenizer_model: /root/models/Qwen3.8-Flash-Next-4layer
+          /args/raw_megatron/base_args/transformer_pipeline_model_parallel_size: 2
+          /args/raw_megatron/base_args/use_rotary_position_embeddings: false
+          /args/raw_megatron/base_args/vocab_size: 248320
+          /args/raw_megatron/base_args/wandb_project: miles-run_qwen3_8_next
+          /args/raw_megatron/base_args/world_size: 8
+    template: main-01
+  tests/e2e/megatron/model_scripts/test_qwen3_8_next_4layer_ci/run-0000/all/default/rollout_executor:
+    diffs: *id005
+    overrides:
+      set:
+        <<:
+        - *id003
+        - *id004
+        - *id006
+        /args/over_sampling_batch_size: 4
+    template: rollout_executor-01
+  tests/e2e/megatron/model_scripts/test_qwen3_8_next_4layer_ci/run-0000/all/default/trainer_controller_actor: {overrides: {
+      set: {/args/backend/rank: 0}}, template: trainer-megatron-02}
+  tests/e2e/megatron/model_scripts/test_qwen3_8_next_4layer_ci/run-0000/all/default/worker_manager:
+    overrides:
+      set:
+        <<:
+        - *id003
+        - *id004
+        - *id006
+        /args/actor_num_gpus_per_node: 8
+        /args/over_sampling_batch_size: 4
+        /args/rollout_num_gpus: 8
+        /args/sglang_scaling/groups/default:
+        - {engine_offset: 0, gpu_offset: 0, num_gpus: 8}
+    template: worker_manager-01
+shared_overrides:
+  trainer-megatron-02:
+    remove: [/args/backend/ckpt_step, /args/backend/finetune, /args/backend/load, /args/backend/no_load_optim, /args/backend/no_load_rng]
+    set:
+      <<: *id003
+      /args/backend/_is_global_batch_size_explicitly_specified: false
+      /args/backend/attention_backend/name: auto
+      /args/backend/attention_output_gate: true
+      /args/backend/data_parallel_size: 2
+      /args/backend/distributed_timeout_minutes: 60
+      /args/backend/encoder_num_layers: 4
+      /args/backend/expert_model_parallel_size: 4
+      /args/backend/ffn_hidden_size: 640
+      /args/backend/kv_channels: 256
+      /args/backend/layernorm_zero_centered_gamma: true
+      /args/backend/moe_ffn_hidden_size: 640
+      /args/backend/moe_grouped_gemm: true
+      /args/backend/moe_layer_freq: [1, 1, 1, 1]
+      /args/backend/moe_permute_fusion: true
+      /args/backend/moe_router_dtype: fp32
+      /args/backend/moe_router_topk: 10
+      /args/backend/moe_shared_expert_gate: true
+      /args/backend/moe_shared_expert_intermediate_size: 640
+      /args/backend/num_attention_heads: 24
+      /args/backend/num_experts: 512
+      /args/backend/num_layers: 4
+      /args/backend/num_query_groups: 2
+      /args/backend/padded_vocab_size: 248320
+      /args/backend/pipeline_model_parallel_size: 2
+      /args/backend/rotary_base: 10000000
+      /args/backend/rotary_percent: 0.25
+      /args/backend/spec: *id007
+      /args/backend/tensor_model_parallel_size: 2
+      /args/backend/tokenizer_model: /root/models/Qwen3.8-Flash-Next-4layer
+      /args/backend/transformer_pipeline_model_parallel_size: 2
+      /args/backend/untie_embeddings_and_output_weights: true
+      /args/backend/use_rotary_position_embeddings: false
+      /args/backend/vocab_size: 248320
+      /args/backend/wandb_project: miles-run_qwen3_8_next
+      /args/backend/world_size: 8
+      /args/critic_load: null
+      /args/init_expected_num_cells/default: 2
+      /args/log_probs_max_tokens_per_gpu: null
+      /args/use_kl_loss: false

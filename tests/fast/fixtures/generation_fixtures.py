@@ -10,12 +10,15 @@ from unittest.mock import patch
 
 import pytest
 
+from miles.ray.rollout.rollout_executor import _compute_rollout_function_config
 from miles.rollout.base_types import GenerateFnInput
 from miles.rollout.inference_rollout.compatibility import load_generate_function
 from miles.rollout.inference_rollout.inference_rollout_common import GenerateState
 from miles.rollout.session.config import compute_session_server_config
 from miles.rollout.session.server import SessionServer
 from miles.rollout.session.types import SessionServerInstance
+from miles.utils.args.component_rollout import InferenceRuntimeMutState
+from miles.utils.args.custom_view import ImmutableNamespace
 from miles.utils.async_utils import run
 from miles.utils.http_utils import find_available_port, init_http_client
 from miles.utils.misc import SingletonMeta
@@ -94,7 +97,7 @@ def make_sample(
 
 @dataclass
 class GenerateEnv:
-    args: Namespace
+    args: ImmutableNamespace
     mock_server: Any
 
 
@@ -153,7 +156,6 @@ def make_args(
     rollout_max_context_len: int | None = None,
     chat_template_path: str | None = None,
     num_layers: int | None = None,
-    moe_router_topk: int | None = None,
 ) -> Namespace:
     argv = [
         "pytest",
@@ -207,19 +209,23 @@ def make_args(
 
     from miles.utils.arguments import parse_args
 
-    with patch("sys.argv", argv):
-        args = parse_args()
-
     # R3 decode shape overrides — not CLI flags (derived from the model config
     # in production). Applied here, before with_session_server copies args into
     # the worker namespace, because sample assembly runs inside the worker.
-    if num_layers is not None:
-        args.num_layers = num_layers
-    if moe_router_topk is not None:
-        args.moe_router_topk = moe_router_topk
+    def override_num_layers(parsed: Namespace) -> None:
+        if num_layers is not None:
+            parsed.num_layers = num_layers
 
+    with patch("sys.argv", argv):
+        args = parse_args(preprocess_args=override_num_layers)
+
+    args.inference_runtime_mut_state.set_(InferenceRuntimeMutState(engine_count=1, gpu_count=1))
     init_http_client(args)
     return args
+
+
+def compute_generate_args(args: Namespace) -> ImmutableNamespace:
+    return _compute_rollout_function_config(args, args.rollout_function_path)
 
 
 @contextmanager
@@ -309,7 +315,7 @@ def generation_env(request, variant):
             if is_agentic:
                 mock_tools.AGENTIC_MAX_TURNS = args_kwargs.get("generate_max_turns")
                 mock_tools.AGENTIC_RETURN_METADATA = args_kwargs.get("agentic_return_metadata")
-            yield GenerateEnv(args=args, mock_server=mock_server)
+            yield GenerateEnv(args=compute_generate_args(args), mock_server=mock_server)
 
     mock_tools.AGENTIC_MAX_TURNS = None
     mock_tools.AGENTIC_RETURN_METADATA = None

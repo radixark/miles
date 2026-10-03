@@ -1,0 +1,8 @@
+--- fsdp
++++ fsdp_opd_external
+@@ -266 +266 @@
+-  opd_type: null
++  opd_type: sglang
+@@ -1047 +1047 @@
+-  use_opd: false
++  use_opd: true

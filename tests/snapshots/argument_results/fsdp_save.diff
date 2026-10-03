@@ -1,0 +1,16 @@
+--- fsdp
++++ fsdp_save
+@@ -60 +60 @@
+-  critic_save: null
++  critic_save: $FIXTURES/save_critic
+@@ -188 +188 @@
+-  log_inference_engine_weight_checksums: false
++  log_inference_engine_weight_checksums: true
+@@ -482,2 +482,2 @@
+-  save: null
+-  save_debug_event_data: null
++  save: $FIXTURES/save
++  save_debug_event_data: $FIXTURES/save/events
+@@ -488 +488 @@
+-  save_interval: null
++  save_interval: 2

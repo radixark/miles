@@ -10,13 +10,22 @@ from miles.backends.training_utils import log_utils
 
 def test_true_on_policy_rollout_logprob_dtype_follows_training_precision():
     assert (
-        data_utils._rollout_logprob_dtype(Namespace(true_on_policy_mode=True, bf16=True, fp16=False)) is torch.bfloat16
+        data_utils._rollout_logprob_dtype(
+            Namespace(true_on_policy_mode=True, backend=Namespace(bf16=True, fp16=False))
+        )
+        is torch.bfloat16
     )
     assert (
-        data_utils._rollout_logprob_dtype(Namespace(true_on_policy_mode=True, bf16=False, fp16=True)) is torch.float16
+        data_utils._rollout_logprob_dtype(
+            Namespace(true_on_policy_mode=True, backend=Namespace(bf16=False, fp16=True))
+        )
+        is torch.float16
     )
     assert (
-        data_utils._rollout_logprob_dtype(Namespace(true_on_policy_mode=False, bf16=True, fp16=False)) is torch.float32
+        data_utils._rollout_logprob_dtype(
+            Namespace(true_on_policy_mode=False, backend=Namespace(bf16=True, fp16=False))
+        )
+        is torch.float32
     )
 
 

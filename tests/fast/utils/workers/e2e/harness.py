@@ -12,13 +12,14 @@ import time
 from pathlib import Path
 
 import httpx
+from tests.fast.utils.workers.e2e.e2e_worker import RPC_PORT_FLAG, E2eServeSpec, E2eWorkerConfig
+from tests.fast.utils.workers.serving.registered_serve import REGISTERED_SERVE_MODULE, pod_env, serve_config_argv
 
-from miles.utils.workers.env_vars import CELL_INDEX_ENV_VAR
+from miles.utils.args.runtime_base import BaseLeafConfig
+from miles.utils.workers.worker_spec import BaseServeSpec
 
 REPO_ROOT = Path(__file__).resolve().parents[5]
-SPECS_PATH = "tests.fast.utils.workers.e2e.e2e_worker.compute_specs"
 POOL_ID = "e2e-pool"
-RPC_PORT_FLAG = "--rpc-port"
 
 READY_TIMEOUT_SECONDS = 60.0
 STOP_TIMEOUT_SECONDS = 15.0
@@ -80,20 +81,47 @@ def spawn_server(
     port: int | None = None,
     worker_argv: list[str] | None = None,
     extra_env: dict[str, str] | None = None,
-    specs_path: str = SPECS_PATH,
+    spec_class: type[BaseServeSpec] = E2eServeSpec,
 ) -> ServerProcess:
     port = reserve_port() if port is None else port
+    config = E2eWorkerConfig(
+        worker_argv=["--state-dir", str(state_dir), RPC_PORT_FLAG, str(port), *(worker_argv or [])]
+    )
+    return spawn_serve_process(
+        own_argv=serve_config_argv(spec_class=spec_class, config=config),
+        pod_env_vars=pod_env(spec_class.create(config)),
+        port=port,
+        log_path=log_path,
+        extra_env=extra_env,
+    )
 
+
+def spawn_config_server(
+    *, spec_class: type[BaseServeSpec], config: BaseLeafConfig, port: int, log_path: Path
+) -> ServerProcess:
+    return spawn_serve_process(
+        own_argv=serve_config_argv(spec_class=spec_class, config=config),
+        pod_env_vars=pod_env(spec_class.create(config)),
+        port=port,
+        log_path=log_path,
+    )
+
+
+def spawn_serve_process(
+    *,
+    own_argv: list[str],
+    pod_env_vars: dict[str, str],
+    port: int,
+    log_path: Path,
+    extra_env: dict[str, str] | None = None,
+) -> ServerProcess:
     env = dict(os.environ)
     env["PYTHONPATH"] = f"{REPO_ROOT}{os.pathsep}{env.get('PYTHONPATH', '')}"
     env["PYTHONUNBUFFERED"] = "1"
-    env[CELL_INDEX_ENV_VAR] = "0"
+    env.update(pod_env_vars)
     env.update(extra_env or {})
 
-    argv = [sys.executable, "-m", "miles.utils.workers.serving.serve"]
-    argv += ["--specs", specs_path, "--pool-id", POOL_ID]
-    argv += ["--", "--state-dir", str(state_dir), RPC_PORT_FLAG, str(port)]
-    argv += worker_argv or []
+    argv = [sys.executable, "-m", REGISTERED_SERVE_MODULE, *own_argv]
 
     with log_path.open("w") as log_file:
         process = subprocess.Popen(

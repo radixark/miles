@@ -180,8 +180,10 @@ jobs:
       container_image: ${{ needs.resolve-file-run.outputs.container_image }}
       execute_command: >-
         timeout --signal=TERM --kill-after=30s
-        '${{ needs.resolve-file-run.outputs.timeout_seconds }}s'
-        python3 '${{ inputs.test_file }}'
+        "$(( ${{ needs.resolve-file-run.outputs.timeout_seconds }} + 120 ))s"
+        python3 -m tests.ci.run_file
+        --test-file '${{ inputs.test_file }}'
+        --timeout-seconds '${{ needs.resolve-file-run.outputs.timeout_seconds }}'
     secrets:
       WANDB_API_KEY: ${{ needs.resolve-file-run.outputs.head_is_fork != 'true' && secrets.WANDB_API_KEY || '' }}
 

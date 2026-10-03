@@ -218,9 +218,13 @@ async def _post(client, url, payload, max_retries=60, action="post", headers=Non
         try:
             if action in ("delete", "get"):
                 assert not payload
-                response = await getattr(client, action)(url, headers=headers)
+                response = await getattr(client, action)(
+                    url, headers=headers
+                )  # config-access-exempt: attribute selected at runtime from action
             else:
-                response = await getattr(client, action)(url, json=payload or {}, headers=headers)
+                response = await getattr(client, action)(
+                    url, json=payload or {}, headers=headers
+                )  # config-access-exempt: attribute selected at runtime from action
             response.raise_for_status()
             try:
                 output = response.json()
@@ -285,13 +289,13 @@ async def post_bytes_no_retry(url: str, payload: dict, *, timeout: float) -> byt
 def init_http_client(args):
     """Initialize HTTP client and optionally enable distributed POST via Ray."""
     global _http_client, _client_concurrency, _distributed_post_enabled
-    rollout_num_gpus = args.rollout_num_gpus or 0
-    if rollout_num_gpus == 0 and not args.eval_uses_snapshots:
+    if args.inference_runtime_mut_state.engine_count == 0 and not args.eval_uses_snapshots:
         return
 
-    _client_concurrency = args.sglang_server_concurrency * rollout_num_gpus // args.rollout_num_gpus_per_engine
-    if args.eval_num_gpus > 0:
-        _client_concurrency += args.sglang_server_concurrency * args.eval_num_gpus // args.eval_num_gpus_per_engine
+    initial_engine_count = (
+        args.inference_runtime_mut_state.engine_count + args.inference_runtime_mut_state.eval_engine_count
+    )
+    _client_concurrency = args.sglang_server_concurrency * initial_engine_count
     _client_concurrency = max(_client_concurrency, args.sglang_server_concurrency)
     if _http_client is None:
         _http_client = httpx.AsyncClient(

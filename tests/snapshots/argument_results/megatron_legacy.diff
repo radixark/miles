@@ -1,0 +1,8 @@
+--- megatron
++++ megatron_legacy
+@@ -130 +130 @@
+-    path: miles.rollout.inference_rollout.inference_rollout_common.InferenceRolloutFn
++    path: miles.rollout.sglang_rollout.generate_rollout
+@@ -1190 +1190 @@
+-    path: miles.rollout.inference_rollout.inference_rollout_common.InferenceRolloutFn
++    path: miles.rollout.sglang_rollout.generate_rollout

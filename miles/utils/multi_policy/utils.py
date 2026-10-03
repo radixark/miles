@@ -2,14 +2,16 @@ import logging
 from dataclasses import dataclass
 from pathlib import Path
 
-from miles.backends.megatron_utils.megatron_config import MegatronConfig, compute_trainer_args, resolve_megatron_config
-from miles.backends.sglang_utils.sglang_config import resolve_sglang_config
+from miles.backends.megatron_utils.megatron_config import MegatronConfig
 from miles.ray.placement_group import create_trainer_handles, create_training_model, take_over_trainers
 from miles.ray.rollout.rollout_executor import compute_rollout_checkpoint_dir
 from miles.ray.specs.train import compute_trainer_configs
+from miles.ray.train.init_request import TrainerControllerInitRequest
+from miles.utils.args.runtime import OrchestratorConfig
 from miles.utils.arguments import validate_async_off_policy_correction
 from miles.utils.multi_policy.checkpoint_state import MultiPolicyCheckpointState
 from miles.utils.tracking_utils.tracking import define_step_key_metric_group
+from miles.utils.workers.backend_capability.base import BackendCapability
 from miles.utils.workers.worker_handle import BaseWorkerHandle
 
 logger = logging.getLogger(__name__)
@@ -22,9 +24,11 @@ class TrainerInfo:
     handle: BaseWorkerHandle
 
 
-async def create_trainers(args, *, rollout_executor: BaseWorkerHandle) -> dict[str, TrainerInfo]:
+async def create_trainers(
+    args: OrchestratorConfig, *, rollout_executor: BaseWorkerHandle, capability: BackendCapability
+) -> dict[str, TrainerInfo]:
     trainer_configs = compute_trainer_configs(args)
-    handles = create_trainer_handles(args, trainer_configs=trainer_configs)
+    handles = create_trainer_handles(args, trainer_configs=trainer_configs, capability=capability)
     resumed = await take_over_trainers(args, handles=handles)
 
     trainers: dict[str, TrainerInfo] = {}
@@ -32,9 +36,10 @@ async def create_trainers(args, *, rollout_executor: BaseWorkerHandle) -> dict[s
         model_id = trainer_config.model_id
         assert model_id is not None, f"{trainer_config} carries no policy model id"
         created = await create_training_model(
-            compute_trainer_args(args, trainer_config),
             handle=handles[trainer_config.trainer_id],
             trainer_id=trainer_config.trainer_id,
+            request=TrainerControllerInitRequest.from_args(args, trainer=trainer_config),
+            requested_start_rollout_id=args.start_rollout_id,
             resumed=resumed,
         )
         assert model_id not in trainers, f"{trainer_config} shares its model id with an already created trainer"
@@ -46,11 +51,11 @@ async def create_trainers(args, *, rollout_executor: BaseWorkerHandle) -> dict[s
         await rollout_executor.set_train_parallel_config(
             await trainer.handle.get_train_parallel_config(), trainer_model_id=model_id
         )
-    leader_model_id = resolve_megatron_config(args).leader_model_id
+    leader_model_id = args.raw_megatron.leader_model_id
     leader_rollout_id = trainers[leader_model_id].start_rollout_id - 1
     if leader_rollout_id >= 0:
         _assert_global_rollout_state_exists(args, leader_rollout_id=leader_rollout_id)
-        await rollout_executor.load(leader_rollout_id)
+        await rollout_executor.load(leader_rollout_id, load=args.load)
 
     return trainers
 
@@ -131,11 +136,7 @@ def validate_multi_policy_args(args, *, megatron_config: MegatronConfig) -> None
         "(--eval-num-gpus or a CheckpointEvalFn --eval-function-path) exports the checkpoint of one trainer, "
         "which cannot represent a run of several policies"
     )
-    assert args.sglang_config is not None, (
-        "multi policy training needs --sglang-config to deploy one inference model per policy, so that a "
-        "weight update reaches exactly the engines of its own policy"
-    )
-    trainable = [model.name for model in resolve_sglang_config(args).models if model.update_weights]
+    trainable = [model.name for model in args.sglang.models if model.update_weights]
     missing = [model_id for model_id in megatron_config.model_ids if model_id not in trainable]
     assert not missing, (
         f"--megatron-config models {missing} have no matching --sglang-config model with "

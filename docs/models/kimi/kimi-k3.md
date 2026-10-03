@@ -52,7 +52,7 @@ Use the `radixark/miles:dev` image with the Megatron and SGLang changes from
 The only external asset is the native MXFP4 checkpoint; the BF16 dequantization and the
 `torch_dist` conversion derive from it. `scripts/run_kimi_k3.py` names the three by model:
 `{model_dir}/{model_name}`, `{model_dir}/{model_name}-bf16` and
-`{model_dir}/{model_name}-bf16_torch_dist`, each overridable with `--hf-checkpoint`,
+`{model_dir}/{model_name}-bf16-kda-direct-v1_torch_dist`, each overridable with `--hf-checkpoint`,
 `--bf16-checkpoint` and `--ref-load`.
 
 ### 3.1 Four-layer prune (one node)

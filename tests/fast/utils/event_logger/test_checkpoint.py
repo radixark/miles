@@ -7,6 +7,7 @@ import pytest
 
 from tests.fast.fixtures.megatron_config_fixtures import encode_megatron_config
 
+from miles.backends.megatron_utils.megatron_config import resolve_megatron_config
 from miles.ray.rollout.rollout_executor import compute_rollout_checkpoint_dir
 from miles.utils.audit_utils.event_logger import checkpoint as event_logger_checkpoint
 
@@ -19,13 +20,16 @@ def _args(
     requested_load: Path | None = None,
     megatron_config: str | None = None,
 ) -> Namespace:
-    return Namespace(
+    args = Namespace(
         save_debug_event_data=str(event_dir) if event_dir else None,
         save=str(save) if save else None,
         load=str(load) if load else None,
         requested_load=str(one) if (one := requested_load or load) else None,
         megatron_config=megatron_config,
+        use_critic=False,
     )
+    args.raw_megatron = resolve_megatron_config(args, base_args={})
+    return args
 
 
 def _snapshot(args: Namespace, *, ckpt: Path, iteration: int) -> None:

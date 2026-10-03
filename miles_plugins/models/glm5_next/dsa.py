@@ -43,8 +43,12 @@ class Glm5NextDSAAttention(DSAMLASelfAttention):
             name=name,
         )
         self.softmax_scale = self.q_head_dim**-0.5
-        self.index_topk = int(getattr(config, "index_topk", 2048))
-        self.index_kpool = int(getattr(config, "index_kpool", 4))
+        self.index_topk = int(
+            getattr(config, "index_topk", 2048)
+        )  # config-access-exempt: model-family schemas differ in optional index_topk metadata
+        self.index_kpool = int(
+            getattr(config, "index_kpool", 4)
+        )  # config-access-exempt: model-family schemas differ in optional index_kpool metadata
 
         self.index_kpool_compress_gate = torch.nn.Parameter(torch.zeros(config.index_head_dim, config.hidden_size))
         self.index_kpool_compress_ape = mark_keep_in_fp32(

@@ -91,7 +91,6 @@ class TestConnectRolloutEnginesFromDistributed:
         ):
             ray_mock._private.services.get_node_ip_address.return_value = "10.0.0.1"
             result = connect_rollout_engines_from_distributed(
-                Namespace(),
                 "miles-pp_0",
                 engines,
                 engine_gpu_counts=[2, 4, 1],
@@ -112,38 +111,17 @@ class TestConnectRolloutEnginesFromDistributed:
             "group_name": "miles-pp_0",
         }
 
-    def test_missing_gpu_counts_fall_back_to_the_uniform_engine_size(self) -> None:
-        """Callers without discovered counts retain the uniform engine layout."""
-        started = threading.Semaphore(0)
-        release = threading.Event()
-        engines = [_GatedEngine(started, release) for _ in range(3)]
-        group = MagicMock(name="nccl_group")
-
-        def join(**kwargs):
-            for _ in engines:
-                assert started.acquire(timeout=30), "an engine had not been asked before the local join"
-            release.set()
-            return group
+    def test_missing_gpu_counts_are_rejected_before_any_engine_is_asked(self) -> None:
+        """The inference controller always reports per-engine GPU counts, so a caller without them is a bug."""
+        engines = [_AcceptingEngine(), _AcceptingEngine()]
 
         with (
-            patch(f"{_BROADCAST_MODULE}.ray") as ray_mock,
-            patch(f"{_BROADCAST_MODULE}.init_process_group", side_effect=join) as init_process_group,
+            patch(f"{_BROADCAST_MODULE}.init_process_group") as init_process_group,
+            pytest.raises(AssertionError),
         ):
-            ray_mock._private.services.get_node_ip_address.return_value = "10.0.0.1"
-            result = connect_rollout_engines_from_distributed(
-                Namespace(rollout_num_gpus_per_engine=2),
-                "miles-pp_0",
-                engines,
-            )
+            connect_rollout_engines_from_distributed("miles-pp_0", engines)
 
-        assert result is group
-        master_port = engines[0].calls[0][1][1]
-        assert [engine.calls for engine in engines] == [
-            [("init_weights_update_group", ("10.0.0.1", master_port, 1, 7, "miles-pp_0"), {"backend": "nccl"})],
-            [("init_weights_update_group", ("10.0.0.1", master_port, 3, 7, "miles-pp_0"), {"backend": "nccl"})],
-            [("init_weights_update_group", ("10.0.0.1", master_port, 5, 7, "miles-pp_0"), {"backend": "nccl"})],
-        ]
-        assert init_process_group.call_args.kwargs["world_size"] == 7
+        init_process_group.assert_not_called()
 
     def test_an_engine_that_refuses_the_group_fails_the_connect(self) -> None:
         """The submitted joins are awaited, so a refusing engine surfaces instead of being dropped."""
@@ -154,9 +132,9 @@ class TestConnectRolloutEnginesFromDistributed:
             ray_mock._private.services.get_node_ip_address.return_value = "10.0.0.1"
             with pytest.raises(RuntimeError, match="engine refused the group"):
                 connect_rollout_engines_from_distributed(
-                    Namespace(rollout_num_gpus_per_engine=2),
                     "miles-pp_0",
                     [_AcceptingEngine(), _AcceptingEngine(), _RefusingEngine()],
+                    engine_gpu_counts=[2, 2, 2],
                 )
 
 
@@ -189,7 +167,6 @@ class TestUpdateWeightFromDistributedConnect:
             )
 
         connect.assert_called_once_with(
-            protocol.args,
             "miles-pp_0",
             engines,
             engine_gpu_counts=[2, 4],
@@ -205,7 +182,6 @@ class TestDisconnectRolloutEnginesFromDistributed:
             dist_mock.destroy_process_group.side_effect = RuntimeError("nccl teardown failed")
             with pytest.raises(RuntimeError, match="nccl teardown failed"):
                 disconnect_rollout_engines_from_distributed(
-                    Namespace(),
                     "miles-pp_0",
                     MagicMock(name="nccl_group"),
                     engines,

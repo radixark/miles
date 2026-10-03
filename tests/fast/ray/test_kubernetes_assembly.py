@@ -1,43 +1,47 @@
 from __future__ import annotations
 
 import asyncio
-from argparse import Namespace
 from types import SimpleNamespace
 from typing import Any
 
 import httpx
 import pytest
+from tests.fast.fixtures.args_fixtures import parse_megatron_test_config
 from tests.fast.train_parallel_config_utils import make_train_parallel_config
+from tests.fast.utils.workers.fake_specs import FakeServeSpec
 from tests.fast.utils.workers.worker_provider.kubernetes import fake_pod_api
 from tests.fast.utils.workers.worker_provider.kubernetes.core.test_pod_view import make_pod
 
-from miles.ray import placement_group
 from miles.ray.placement_group import create_rollout_components
 from miles.ray.rollout.eval_fleet import EvalFleetInfo
 from miles.ray.specs import inference as specs_inference
 from miles.ray.specs import rollout as specs_rollout
 from miles.ray.specs import train as specs_train
-from miles.ray.specs.train import POOL_CATEGORY_TRAINER_ENGINE
+from miles.ray.specs.inference import InferenceControllerSpec
+from miles.ray.specs.rollout import RolloutExecutorSpec
+from miles.ray.specs.train import POOL_CATEGORY_TRAINER_ENGINE, TrainerControllerSpec
 from miles.ray.train.cell import TrainerCell
+from miles.ray.train.init_request import TrainerControllerInitRequest
 from miles.utils import http_utils
+from miles.utils.args.runtime import AllConfig
 from miles.utils.data import RolloutDataPack
 from miles.utils.dp_schedule import TrainParallelConfig
 from miles.utils.ft_utils.api_server.models import CellStatus
 from miles.utils.init_once import InitState
 from miles.utils.object_store import _MooncakeStoreObjectRef
 from miles.utils.workers.cell_operations import kubernetes as cell_operations_kubernetes
+from miles.utils.workers.connection_config import build_static_conn_config, build_worker_annotations
 from miles.utils.workers.k8s_types import Pod
 from miles.utils.workers.naming import compute_cell_id, compute_worker_name
 from miles.utils.workers.reconcile.k8s_api import PodListPage
 from miles.utils.workers.rpc.client.handle import RpcWorkerHandle
-from miles.utils.workers.rpc.common.wire_types import Pickled
 from miles.utils.workers.rpc.server.app import create_rpc_app
 from miles.utils.workers.worker_provider.kubernetes.core import provider as core_provider
 from miles.utils.workers.worker_provider.kubernetes.core.provider import KubernetesWorkerProvider
 from miles.utils.workers.worker_provider.kubernetes.helm import env, naming
 from miles.utils.workers.worker_provider.kubernetes.helm.builder import compute_helm_backend_capability
 from miles.utils.workers.worker_provider.kubernetes.helm.env import NAMESPACE_ENV_VAR, RELEASE_ENV_VAR
-from miles.utils.workers.worker_spec import HostAndPort, PortInfo, SchedulingSpec, ServeWorkerSpec
+from miles.utils.workers.worker_spec import DEFAULT_RPC_PORT_INFO, BaseServeSpec, HostAndPort, PortInfo, SchedulingSpec
 
 NAMESPACE = "rl"
 _RELEASE = "miles-run-260805"
@@ -143,8 +147,8 @@ class FakeTrainerController:
         self.initialized = False
         self.trained: list[tuple[int, RolloutDataPack]] = []
 
-    async def init(self, args: Pickled) -> list[Any]:
-        self.initialized = args
+    async def init(self, request: TrainerControllerInitRequest) -> list[Any]:
+        self.initialized = request
         return [5]
 
     async def train(
@@ -206,13 +210,12 @@ class _PerHostTransport(httpx.AsyncBaseTransport):
         return await transport.handle_async_request(request)
 
 
-def trainer_spec(*, num_workers_per_cell: int, num_gpus_per_node: int) -> ServeWorkerSpec:
-    return ServeWorkerSpec(
+def trainer_spec(*, num_workers_per_cell: int, num_gpus_per_node: int) -> BaseServeSpec:
+    return FakeServeSpec(
         name=POOL,
         category=POOL_CATEGORY_TRAINER_ENGINE,
-        port_infos=[PortInfo(name="master", static_port=9000, mode="master")],
-        env_var=lambda context: {},
-        scheduling=SchedulingSpec(
+        port_infos=[PortInfo(name="master", static_port=9000, mode="master"), DEFAULT_RPC_PORT_INFO],
+        fixed_scheduling=SchedulingSpec(
             num_cells=1,
             num_workers_per_cell=num_workers_per_cell,
             num_gpus_per_worker=1,
@@ -220,11 +223,11 @@ def trainer_spec(*, num_workers_per_cell: int, num_gpus_per_node: int) -> ServeW
             num_gpus_per_node=num_gpus_per_node,
         ),
         worker_class=f"{__name__}.FakeTrainWorker",
-        ctor_kwargs=lambda context: {},
     )
 
 
-def cell_pods(count: int) -> list[Pod]:
+def cell_pods(count: int, *, workers_per_pod: int = 1) -> list[Pod]:
+    spec = trainer_spec(num_workers_per_cell=count * workers_per_pod, num_gpus_per_node=workers_per_pod)
     return [
         make_pod(
             name=f"{POOL}-0-{index}",
@@ -232,23 +235,28 @@ def cell_pods(count: int) -> list[Pod]:
             cell_id_suffix="0",
             pod_in_cell_index=str(index),
             pod_ip=f"10.0.0.{index + 1}",
+            worker_metadata=None,
+            annotations=build_worker_annotations(spec=spec, scaling=run_args()),
         )
         for index in range(count)
     ]
 
 
-def rollout_executor_args() -> SimpleNamespace:
-    return SimpleNamespace(
-        cluster_backend="kubernetes",
-        pin_rollout_manager_to_head=False,
-        debug_train_only=True,
-        use_critic=False,
-        kl_coef=0,
-        use_kl_loss=False,
-        use_opd=False,
-        opd_type="megatron",
-        megatron_config=None,
-    )
+def run_args() -> AllConfig:
+    return parse_megatron_test_config("--debug-train-only", "--cluster-backend", "kubernetes")
+
+
+def static_worker_specs(args: AllConfig) -> list[BaseServeSpec]:
+    fake_worker_classes = {
+        RolloutExecutorSpec: f"{__name__}.FakeRolloutExecutor",
+        InferenceControllerSpec: f"{__name__}.FakeInferenceController",
+        TrainerControllerSpec: f"{__name__}.FakeTrainerController",
+    }
+    return [
+        spec_class.create(config).model_copy(update={"worker_class": worker_class})
+        for spec_class, worker_class in fake_worker_classes.items()
+        for config in spec_class.slice_configs(args)
+    ]
 
 
 @pytest.fixture
@@ -268,17 +276,12 @@ def install(monkeypatch: pytest.MonkeyPatch, *, pods: list[Pod], workers_per_pod
     fake_pod_api.reset()
     fake_pod_api.install(FakePodApi(pods))
     monkeypatch.setattr(core_provider, "_kubernetes_pod_api", fake_pod_api.installed)
-    monkeypatch.setattr(specs_rollout, "ROLLOUT_EXECUTOR_WORKER_CLASS", f"{__name__}.FakeRolloutExecutor")
-    monkeypatch.setattr(specs_inference, "INFERENCE_CONTROLLER_WORKER_CLASS", f"{__name__}.FakeInferenceController")
-    monkeypatch.setattr(specs_train, "TRAINER_CONTROLLER_WORKER_CLASS", f"{__name__}.FakeTrainerController")
-
+    args = run_args()
     specs = [
         trainer_spec(num_workers_per_cell=len(pods) * workers_per_pod, num_gpus_per_node=workers_per_pod),
-        specs_rollout.spec_rollout_executor(rollout_executor_args()),
-        specs_inference.spec_inference_controller(rollout_executor_args()),
-        *specs_train.specs_trainer_controller(rollout_executor_args()),
+        *static_worker_specs(args),
     ]
-    return compute_helm_backend_capability(specs=specs)
+    return compute_helm_backend_capability(config=build_static_conn_config(specs=specs, scaling=args))
 
 
 async def _ignore_cell(cell_id, info) -> None:
@@ -314,13 +317,6 @@ class TestKubernetesDriverAssembly:
         assert namespace == NAMESPACE
         assert selector == f"{env.INSTANCE_LABEL}={_RELEASE},{env.DEFAULT_LABEL_KEYS.pool_id} in ({POOL})"
 
-    def test_refuses_to_hand_out_a_provider_for_a_pool_it_does_not_watch(self, monkeypatch):
-        """A provider that silently watches nothing would leave those cells unhealed forever."""
-        capability = install(monkeypatch, pods=cell_pods(2))
-
-        with pytest.raises(AssertionError, match="are not pool_ids"):
-            capability.dynamic_worker_provider(pool_ids=["some-other-pool_id"])
-
     def test_observing_a_cell_yields_rank_ordered_workers_with_handles(self, monkeypatch):
         """This is what a trainer cell is built from, so the order and the handles are the whole product."""
         provider = installed_cells_provider(install(monkeypatch, pods=cell_pods(3)))
@@ -343,7 +339,9 @@ class TestKubernetesDriverAssembly:
 
     def test_one_pod_serving_several_ranks_yields_one_worker_per_rank(self, monkeypatch):
         """A trainer pod supervises one process per gpu, and a cell that saw one of them would hang the collective."""
-        provider = installed_cells_provider(install(monkeypatch, pods=cell_pods(1), workers_per_pod=2))
+        provider = installed_cells_provider(
+            install(monkeypatch, pods=cell_pods(1, workers_per_pod=2), workers_per_pod=2)
+        )
 
         async def scenario():
             stop = await provider.watch_cells(_ignore_cell)
@@ -445,9 +443,7 @@ class TestKubernetesDriverAssembly:
         """create_rollout_components is the driver's door into rollout, so it too must open over rpc."""
         capability = install(monkeypatch, pods=cell_pods(2))
 
-        eval_fleet_info = EvalFleetInfo(
-            router=HostAndPort(host="10.0.0.9", port=31000), num_gpus=2, num_gpus_per_engine=1
-        )
+        eval_fleet_info = EvalFleetInfo(router=HostAndPort(host="10.0.0.9", port=31000), engine_gpu_counts=[1, 1])
         controller = FakeInferenceController(eval_fleet_info)
         executor = FakeRolloutExecutor()
         executor_host = STATIC_HOSTS[specs_rollout.ROLLOUT_EXECUTOR_POOL_ID]
@@ -463,16 +459,16 @@ class TestKubernetesDriverAssembly:
             num_rollout=None,
             num_epoch=3,
             debug_train_only=True,
-            eval_num_gpus=0,
+            starts_inference_engines=False,
+            raw_megatron=SimpleNamespace(trainers=[]),
         )
-        monkeypatch.setattr(placement_group, "get_backend_capability", lambda _args: capability)
 
         async def scenario():
             async with httpx.AsyncClient(transport=transport) as client:
                 monkeypatch.setattr(http_utils.GeneralHttpClientProvider, "client", classmethod(lambda cls: client))
                 for app in apps.values():
                     await app.router.lifespan_context(app).__aenter__()
-                return await create_rollout_components(args)
+                return await create_rollout_components(args, capability=capability)
 
         result = asyncio.run(scenario())
 
@@ -499,11 +495,11 @@ class TestKubernetesDriverAssembly:
                 monkeypatch.setattr(http_utils.GeneralHttpClientProvider, "client", classmethod(lambda cls: client))
                 await app.router.lifespan_context(app).__aenter__()
                 handle = specs_train.create_trainer_controller_handle(
-                    Namespace(trainer_controller_addrs=None, megatron_config=None),
-                    capability=capability,
-                    trainer_id="actor",
+                    run_args(), capability=capability, trainer_id="actor"
                 )
-                assert await handle.init(Namespace(num_rollout=7)) == [5]
+                assert await handle.init(
+                    TrainerControllerInitRequest(num_rollout=7, wandb_run_id=None, mlflow_run_id=None)
+                ) == [5]
                 await handle.train(rollout_id=3, rollout_data_pack=_data_pack(3))
                 return handle, await handle.get_train_parallel_config()
 

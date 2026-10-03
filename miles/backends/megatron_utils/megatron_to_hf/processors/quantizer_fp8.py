@@ -89,7 +89,9 @@ def quantize_params_fp8(args, megatron_name, converted_named_params, quantizatio
         "self_attention.linear_kv_proj.weight",
         "self_attention.core_attention.indexer.linear_wq_b.weight",
     ]
-    if not getattr(args, "indexer_rope_interleave", False):
+    if not getattr(
+        args.backend, "indexer_rope_interleave", False
+    ):  # config-access-exempt: only DSA model normalization introduces the indexer flag
         # Non-interleaved indexers keep wk as a standalone FP8 parameter in SGLang.
         fp8_param_names.extend(
             [
@@ -148,7 +150,8 @@ def _get_scale_format(args, name, weight_block_size):
         return "ue8m0"
 
     # MoE expert weights: only ue8m0 when runner is deep_gemm
-    is_deepgemm_moe_backend = args.sglang_moe_runner_backend == "deep_gemm" or (
-        args.sglang_moe_runner_backend == "auto" and args.sglang_moe_a2a_backend in ["deepep", "mooncake"]
+    is_deepgemm_moe_backend = args.sglang.common_value("moe_runner_backend") == "deep_gemm" or (
+        args.sglang.common_value("moe_runner_backend") == "auto"
+        and args.sglang.common_value("moe_a2a_backend") in ["deepep", "mooncake"]
     )
     return "ue8m0" if is_deepgemm_moe_backend else None

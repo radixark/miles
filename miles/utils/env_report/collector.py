@@ -1,3 +1,4 @@
+import argparse
 import json
 import logging
 import os
@@ -5,8 +6,13 @@ import platform
 import socket
 import subprocess
 import sys
-from dataclasses import dataclass, field
+from collections.abc import Mapping
+from dataclasses import dataclass, field, fields, is_dataclass
 from typing import Any
+
+from pydantic import BaseModel
+
+from miles.utils.args.utils import config_values
 from miles.utils.audit_utils.event_logger.models import (
     EnvReport,
     EnvReportArgsDump,
@@ -15,7 +21,8 @@ from miles.utils.audit_utils.event_logger.models import (
 )
 from miles.utils.env_report.git_state import collect_git_info
 from miles.utils.env_report.launcher_report import LAUNCHER_REPORT_ENV_VAR, read_launcher_report
-from miles.utils.env_report.redaction import redact_arg, redact_argv, redact_env_vars
+from miles.utils.env_report.redaction import redact_argv, redact_config_values, redact_env_vars
+from miles.utils.test_utils.snapshot import snapshot_values
 
 logger = logging.getLogger(__name__)
 
@@ -107,23 +114,36 @@ def _collect_key_versions(full_pip_list: list[dict[str, str]]) -> dict[str, str]
 
 
 def _dump_args(args: Any) -> EnvReportArgsDump:
-    declared = dict(vars(args))
-    if (serializable := _json_snapshot(declared)) is None:
-        serializable = {
-            name: snapshot[name]
-            for name, value in declared.items()
-            if (snapshot := _json_snapshot({name: value})) is not None
-        }
-
-    values = {name: redact_arg(name, value) for name, value in sorted(serializable.items())}
-    return EnvReportArgsDump(values=values, skipped_names=sorted(declared.keys() - serializable.keys()))
+    values = _json_snapshot(config_values(args), ancestors=frozenset())
+    return EnvReportArgsDump(values=redact_config_values(values), skipped_names=[])
 
 
-def _json_snapshot(values: dict[str, Any]) -> dict[str, Any] | None:
+def _json_snapshot(value: Any, *, ancestors: frozenset[int]) -> Any:
     try:
-        return json.loads(json.dumps(values))
-    except (TypeError, ValueError):
-        return None
+        if id(value) in ancestors:
+            raise ValueError("Circular reference detected")
+        ancestors = ancestors | {id(value)}
+        if isinstance(value, (argparse.Namespace, BaseModel)):
+            value = config_values(value)
+        elif is_dataclass(value) and not isinstance(value, type):
+            value = {item.name: value.__getattribute__(item.name) for item in fields(value)}
+
+        if isinstance(value, Mapping):
+            return {
+                (name if isinstance(name, str) else json.loads(json.dumps({name: None})).popitem()[0]): _json_snapshot(
+                    item, ancestors=ancestors
+                )
+                for name, item in value.items()
+            }
+        if isinstance(value, (list, tuple)):
+            return [_json_snapshot(item, ancestors=ancestors) for item in value]
+        if value is None or isinstance(value, (str, int, float, bool)):
+            return json.loads(json.dumps(value, allow_nan=False))
+        return json.loads(json.dumps(snapshot_values(value), allow_nan=False))
+    except (TypeError, ValueError, RecursionError) as error:
+        return {
+            "$serialization_error": f"{type(error).__name__}: Cannot serialize {type(value).__module__}.{type(value).__qualname__}"
+        }
 
 
 def _collect_pip_info(env: dict[str, str]) -> _PipInfo:

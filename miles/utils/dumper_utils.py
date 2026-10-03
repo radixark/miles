@@ -14,7 +14,6 @@ import torch
 import torch.distributed as dist
 from sglang.srt.debug_utils.dumper import DumperConfig, _get_rank, dumper
 
-from miles.backends.sglang_utils.sglang_config import resolve_sglang_config
 from miles.backends.training_utils.model_companion import ModelCompanionInstallationUtils
 from miles.backends.training_utils.parallel import get_parallel_state
 from miles.utils.ft_utils.process_group_utils import GeneralPGUtil
@@ -85,7 +84,9 @@ async def configure_sglang(args: Namespace) -> None:
 async def _wait_registered_worker_urls(args: Namespace) -> list[str]:
     from miles.rollout.inference_rollout.inference_rollout_train import get_worker_urls
 
-    expected_worker_count = resolve_sglang_config(args).models[0].num_server_cells
+    expected = args.init_expected_num_cells
+    expected_worker_count = expected[args.sglang.models[0].name] if isinstance(expected, dict) else expected
+    assert expected_worker_count is not None, "the dumper needs the run's own engines, but none are expected"
 
     async def _attempt(_remaining_seconds: float) -> list[str]:
         worker_urls = await get_worker_urls(args)
@@ -210,8 +211,12 @@ def _build_full_grad_getter(
     grad_map: dict[torch.nn.Parameter, torch.Tensor] = {}
     # Bucket iteration copied from indep_dp.allreduce_grads_and_losses_across_replicas,
     # which cross-cell all-reduces these same bucket.grad_data buffers.
-    bucket_groups = list(getattr(model_chunk, "bucket_groups", [])) + list(
-        getattr(model_chunk, "expert_parallel_bucket_groups", [])
+    bucket_groups = list(
+        getattr(model_chunk, "bucket_groups", [])
+    ) + list(  # config-access-exempt: only distributed wrappers expose gradient bucket collections
+        getattr(
+            model_chunk, "expert_parallel_bucket_groups", []
+        )  # config-access-exempt: only distributed wrappers expose gradient bucket collections
     )
     for bucket_group in bucket_groups:
         if not bucket_group.ddp_config.use_distributed_optimizer:
@@ -245,7 +250,9 @@ def _build_full_grad_getter(
         if reduced is not None:
             return reduced
         # fallback copied from sglang dumper's original grad read (.grad else main_grad).
-        return param.grad if param.grad is not None else getattr(param, "main_grad", None)
+        return (
+            param.grad if param.grad is not None else getattr(param, "main_grad", None)
+        )  # config-access-exempt: main_grad is optional backend-attached tensor metadata
 
     return get_grad
 
@@ -260,7 +267,9 @@ def _log_model_grad_coverage(model: torch.nn.Module) -> None:
             continue
 
         total += 1
-        grad = param.grad if param.grad is not None else getattr(param, "main_grad", None)
+        grad = (
+            param.grad if param.grad is not None else getattr(param, "main_grad", None)
+        )  # config-access-exempt: main_grad is optional backend-attached tensor metadata
         if grad is None:
             missing.append(name)
         else:
@@ -355,7 +364,9 @@ def _barrier_after_dump_dir_cleanup() -> None:
 
 
 def _get_phase_override_configs(args: Namespace, phase: DumperPhase) -> dict[str, Any]:
-    raw = getattr(args, f"dumper_{phase.value}")
+    raw = getattr(
+        args, f"dumper_{phase.value}"
+    )  # config-access-exempt: attribute selected at runtime from f'dumper_{phase.value}'
     return {"enable": args.dumper_enable, **DumperConfig._kv_pairs_to_dict(raw)}
 
 

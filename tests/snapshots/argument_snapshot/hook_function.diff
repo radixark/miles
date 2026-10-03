@@ -1,0 +1,19 @@
+--- megatron
++++ hook_function
+@@ -17,0 +18,2 @@
++- --custom-generate-function-path
++- tests.fast.argument_snapshot.argparser.scenarios._hook_function
+@@ -191 +193 @@
+-    custom_generate_function_path: null
++    custom_generate_function_path: tests.fast.argument_snapshot.argparser.scenarios._hook_function
+@@ -1675,0 +1678 @@
++    snapshot_hook: 23
+@@ -26809,0 +26813,8 @@
++      - default: 23
++        dest: snapshot_hook
++        group: options
++        help: null
++        option_strings:
++        - --snapshot-hook
++        type:
++          $callable: builtins.int

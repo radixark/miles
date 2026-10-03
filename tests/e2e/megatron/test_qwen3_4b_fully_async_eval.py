@@ -22,6 +22,7 @@ from tempfile import TemporaryDirectory
 from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
 from tests.ci.metric_history import register_ci_gate
 
+from miles.utils.audit_utils.config_snapshot.generated_values import register_generated_value
 from miles.utils.external_utils import command_utils
 
 register_cuda_ci(
@@ -183,4 +184,5 @@ if __name__ == "__main__":
         print(f"===== fully-async eval mode: {mode} =====", flush=True)
         # CI containers share host IPC, so each case must own its snapshot directory.
         with TemporaryDirectory(prefix=f"miles_eval_{mode}_", dir="/dev/shm") as eval_hf_dir:
+            register_generated_value(kind="temporary_directory", name=f"fully_async_eval_{mode}", value=eval_hf_dir)
             execute(mode, eval_hf_dir)

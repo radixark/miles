@@ -241,7 +241,9 @@ def _apply_expert_lora(moe, args, hf_prefix: str, *, scale: float, dropout: floa
     from megatron.core import parallel_state
 
     config = moe.config
-    assert (getattr(config, "expert_tensor_parallel_size", 1) or 1) == 1, "Inkling LoRA assumes ETP=1"
+    assert (
+        getattr(config, "expert_tensor_parallel_size", 1) or 1
+    ) == 1, "Inkling LoRA assumes ETP=1"  # config-access-exempt: upstream TransformerConfig versions may omit expert tensor parallelism
     rank = int(args.lora_rank)
     hidden_size = config.hidden_size
     moe_intermediate = config.moe_ffn_hidden_size
@@ -351,7 +353,9 @@ def _apply_shared_experts_lora(shared, args, hf_prefix: str, *, scale: float, dr
 def _apply_lm_head_lora(model, args, *, scale: float, dropout: float, a_init: str) -> None:
     from megatron.core import parallel_state
 
-    if not getattr(model, "post_process", False) or getattr(model, "output_layer", None) is None:
+    if (
+        not getattr(model, "post_process", False) or getattr(model, "output_layer", None) is None
+    ):  # config-access-exempt: only final pipeline stages expose an output projection
         return
 
     config = model.config
@@ -360,7 +364,9 @@ def _apply_lm_head_lora(model, args, *, scale: float, dropout: float, a_init: st
     sequence_parallel = bool(config.sequence_parallel)
     output_layer = model.output_layer
     vocab_local = output_layer.weight.shape[0]
-    mup = getattr(config.inkling, "logits_mup_width_multiplier", None)
+    mup = getattr(
+        config.inkling, "logits_mup_width_multiplier", None
+    )  # config-access-exempt: Inkling checkpoint configs may omit the MuP multiplier
     mup = float(mup) if mup else None
 
     adapter = InklingLoRAAdapter("lm_head", "language_model.lm_head.")
@@ -394,8 +400,8 @@ def apply_inkling_lora(model, args):
     rank = int(args.lora_rank)
     assert rank > 0, "apply_inkling_lora requires --lora-rank > 0"
     scale = float(args.lora_alpha) / float(rank)
-    dropout = float(getattr(args, "lora_dropout", 0.0) or 0.0)
-    a_init = getattr(args, "lora_A_init_method", "xavier") or "xavier"
+    dropout = float(args.lora_dropout or 0.0)
+    a_init = args.lora_A_init_method or "xavier"
     lora_kwargs = dict(scale=scale, dropout=dropout, a_init=a_init)
 
     for param in model.parameters():
@@ -449,7 +455,9 @@ def wrap_model_provider_with_inkling_lora(provider_func, args):
 def _iter_adapters(model_chunks):
     for chunk in model_chunks:
         module = chunk
-        while hasattr(module, "module"):
+        while hasattr(
+            module, "module"
+        ):  # config-access-exempt: distributed wrappers nest their wrapped module dynamically
             module = module.module
         yield from (m for m in module.modules() if isinstance(m, InklingLoRAAdapter))
 
@@ -464,9 +472,13 @@ def _load_attention_adapter(adapter, get_tensor, copy_param) -> None:
         ("wv_dv", "wv_A", "wv_B", meta["nkv_l"] * meta["hd"]),
         ("wr_du", "wr_A", "wr_B", meta["nh_l"] * meta["d_rel"]),
     ):
-        copy_param(getattr(adapter, a_name), get_tensor(f"{prefix}{hf_proj}.lora_A.weight"))
+        copy_param(
+            getattr(adapter, a_name), get_tensor(f"{prefix}{hf_proj}.lora_A.weight")
+        )  # config-access-exempt: adapter projection names come from the LoRA mapping
         full_b = get_tensor(f"{prefix}{hf_proj}.lora_B.weight")
-        copy_param(getattr(adapter, b_name), full_b[tp_rank * rows : (tp_rank + 1) * rows])
+        copy_param(
+            getattr(adapter, b_name), full_b[tp_rank * rows : (tp_rank + 1) * rows]
+        )  # config-access-exempt: adapter projection names come from the LoRA mapping
     full_a = get_tensor(f"{prefix}wo_ud.lora_A.weight")
     cols = meta["nh_l"] * meta["hd"]
     copy_param(adapter.wo_A, full_a[:, tp_rank * cols : (tp_rank + 1) * cols])
@@ -642,14 +654,12 @@ class _GatherBatch:
 _UNPADDED_VOCAB_CACHE: list = []
 
 
-def _hf_unpadded_vocab_size():
+def _hf_unpadded_vocab_size(hf_checkpoint: str):
     """True (unpadded) vocab size from the HF config, or None if absent."""
     if not _UNPADDED_VOCAB_CACHE:
         value = None
         try:
-            from megatron.training import get_args
-
-            with open(os.path.join(get_args().hf_checkpoint, "config.json"), encoding="utf-8") as f:
+            with open(os.path.join(hf_checkpoint, "config.json"), encoding="utf-8") as f:
                 config = json.load(f)
             value = (config.get("text_config") or config).get("unpadded_vocab_size")
         except Exception:
@@ -661,7 +671,7 @@ def _hf_unpadded_vocab_size():
 _ExportPlan = list[tuple[str, torch.Tensor | Callable[[], torch.Tensor]]]
 
 
-def _export_attention(adapter: InklingLoRAAdapter, batch: _GatherBatch) -> _ExportPlan:
+def _export_attention(adapter: InklingLoRAAdapter, batch: _GatherBatch, *, hf_checkpoint: str) -> _ExportPlan:
     prefix = adapter.hf_prefix
     plans: _ExportPlan = []
     for hf_proj, param_a, param_b in (
@@ -677,7 +687,7 @@ def _export_attention(adapter: InklingLoRAAdapter, batch: _GatherBatch) -> _Expo
     return plans
 
 
-def _export_dense_mlp(adapter: InklingLoRAAdapter, batch: _GatherBatch) -> _ExportPlan:
+def _export_dense_mlp(adapter: InklingLoRAAdapter, batch: _GatherBatch, *, hf_checkpoint: str) -> _ExportPlan:
     prefix = adapter.hf_prefix
     i_loc = adapter.load_meta["i_loc"]
     gate_token = batch.add("tp", adapter.fc1_B[:i_loc], 0)
@@ -690,7 +700,7 @@ def _export_dense_mlp(adapter: InklingLoRAAdapter, batch: _GatherBatch) -> _Expo
     ]
 
 
-def _export_experts(adapter: InklingLoRAAdapter, batch: _GatherBatch) -> _ExportPlan:
+def _export_experts(adapter: InklingLoRAAdapter, batch: _GatherBatch, *, hf_checkpoint: str) -> _ExportPlan:
     prefix = adapter.hf_prefix
     return [
         (f"{prefix}w1.lora_A.weight", adapter.w1_A.unsqueeze(0)),
@@ -702,7 +712,7 @@ def _export_experts(adapter: InklingLoRAAdapter, batch: _GatherBatch) -> _Export
     ]
 
 
-def _export_shared_experts(adapter: InklingLoRAAdapter, batch: _GatherBatch) -> _ExportPlan:
+def _export_shared_experts(adapter: InklingLoRAAdapter, batch: _GatherBatch, *, hf_checkpoint: str) -> _ExportPlan:
     prefix = adapter.hf_prefix
     num_shared = adapter.load_meta["ns"]
     b1_tokens = [batch.add("tp", adapter.w1_B[idx], 0) for idx in range(num_shared)]
@@ -718,13 +728,13 @@ def _export_shared_experts(adapter: InklingLoRAAdapter, batch: _GatherBatch) -> 
     ]
 
 
-def _export_lm_head(adapter: InklingLoRAAdapter, batch: _GatherBatch) -> _ExportPlan:
+def _export_lm_head(adapter: InklingLoRAAdapter, batch: _GatherBatch, *, hf_checkpoint: str) -> _ExportPlan:
     prefix = adapter.hf_prefix
     head_b_token = batch.add("tp", adapter.head_B, 0)
 
     def head_b() -> torch.Tensor:
         full = head_b_token.get()
-        unpadded = _hf_unpadded_vocab_size()
+        unpadded = _hf_unpadded_vocab_size(hf_checkpoint)
         if unpadded and unpadded < full.shape[0]:
             full = full[:unpadded]
         return full
@@ -744,13 +754,13 @@ _ADAPTER_EXPORTERS = {
 }
 
 
-def export_inkling_lora_hf_named(model_chunks):
+def export_inkling_lora_hf_named(model_chunks, *, hf_checkpoint: str):
     """Return (hf_name, full_tensor) for every applied lora param, gathered to full HF layout."""
     start = time.perf_counter()
     batch = _GatherBatch()
     plans: _ExportPlan = []
     for adapter in _iter_adapters(model_chunks):
-        plans.extend(_ADAPTER_EXPORTERS[adapter.kind](adapter, batch))
+        plans.extend(_ADAPTER_EXPORTERS[adapter.kind](adapter, batch, hf_checkpoint=hf_checkpoint))
 
     n_requests = batch.num_requests()
     n_calls = batch.flush()

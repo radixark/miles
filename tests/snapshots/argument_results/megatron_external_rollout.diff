@@ -1,0 +1,14 @@
+--- megatron
++++ megatron_external_rollout
+@@ -68 +68 @@
+-    path: miles.ray.specs.inference.backend_inference_engine_provider
++    path: miles.ray.rollout.external_engine_provider.static_inference_engine_provider
+@@ -175 +175 @@
+-  init_expected_num_cells: {}
++  init_expected_num_cells: null
+@@ -1185,2 +1185,3 @@
+-  rollout_external: false
+-  rollout_external_engine_addrs: null
++  rollout_external: true
++  rollout_external_engine_addrs:
++  - 127.0.0.1:30000

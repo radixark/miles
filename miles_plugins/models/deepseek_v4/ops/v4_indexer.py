@@ -112,7 +112,9 @@ class V4Indexer(MegatronModule):
 
         rd = self.rope_head_dim
         cp_size = parallel_state.get_context_parallel_world_size()
-        cp_group = self.pg_collection.cp if hasattr(self.pg_collection, "cp") else None
+        cp_group = (
+            self.pg_collection.cp if hasattr(self.pg_collection, "cp") else None
+        )  # config-access-exempt: context-parallel groups are optional in upstream collections
         rope_base = self.config.csa_compress_rotary_base if self.compress_ratio else self.config.rotary_base
         freqs_cis = wrapped_precompute_freqs_cis(
             self.config, self.rope_head_dim, rope_base, False, seqlen * cp_size, x.device

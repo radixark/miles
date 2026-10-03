@@ -147,7 +147,9 @@ class Qwen38NextBridge(Qwen3_5Bridge):
     def _ple_layer_ids(self) -> list[int]:
         """0-based decoder layer indices carrying PLE; ``ple_layer_ids`` in the HF config is 1-based."""
         text_config = self._get_text_config()
-        return sorted({int(i) - 1 for i in getattr(text_config, "ple_layer_ids", None) or []})
+        return sorted(
+            {int(i) - 1 for i in getattr(text_config, "ple_layer_ids", None) or []}
+        )  # config-access-exempt: model-family schemas differ in optional ple_layer_ids metadata
 
     def _ngram_rows_per_shard(self) -> int | None:
         """Height of one n-gram shard, read from the checkpoint; None when the index is unavailable."""
@@ -197,7 +199,9 @@ class Qwen38NextBridge(Qwen3_5Bridge):
         if not torch.cuda.is_available():
             return super()._weight_to_mcore_format(mcore_weights_name, hf_weights)
 
-        cache = getattr(self, "_gpu_weight_cache", None)
+        cache = getattr(
+            self, "_gpu_weight_cache", None
+        )  # config-access-exempt: the GPU weight cache is created lazily
         if cache is None:
             cache = self._gpu_weight_cache = {}
 
@@ -244,26 +248,54 @@ class Qwen38NextBridge(Qwen3_5Bridge):
         config = super()._build_config()
 
         config.enable_hyper_connections = True
-        config.num_residual_streams = getattr(text_config, "hc_count", 4)
-        config.qwen3_8_next_hc_lowrank = getattr(text_config, "hc_lowrank", 320)
+        config.num_residual_streams = getattr(
+            text_config, "hc_count", 4
+        )  # config-access-exempt: model-family schemas differ in optional hc_count metadata
+        config.qwen3_8_next_hc_lowrank = getattr(
+            text_config, "hc_lowrank", 320
+        )  # config-access-exempt: model-family schemas differ in optional hc_lowrank metadata
 
         config.qwen3_8_next_ple_layer_ids = self._ple_layer_ids()
-        config.qwen3_8_next_ple_embed_dim = getattr(text_config, "ple_embed_dim", 2560)
-        config.qwen3_8_next_ngram_size = getattr(text_config, "ngram_size", 3)
-        config.qwen3_8_next_heads_per_ngram = getattr(text_config, "heads_per_ngram", 8)
-        config.qwen3_8_next_ngram_vocab_size_base = getattr(text_config, "ngram_vocab_size_base", 20000000)
-        config.qwen3_8_next_split_ngram_parts = getattr(text_config, "split_ngram_parts", 128)
-        config.qwen3_8_next_ple_conv_kernel_size = getattr(text_config, "ple_conv_kernel_size", 4)
+        config.qwen3_8_next_ple_embed_dim = getattr(
+            text_config, "ple_embed_dim", 2560
+        )  # config-access-exempt: model-family schemas differ in optional ple_embed_dim metadata
+        config.qwen3_8_next_ngram_size = getattr(
+            text_config, "ngram_size", 3
+        )  # config-access-exempt: model-family schemas differ in optional ngram_size metadata
+        config.qwen3_8_next_heads_per_ngram = getattr(
+            text_config, "heads_per_ngram", 8
+        )  # config-access-exempt: model-family schemas differ in optional heads_per_ngram metadata
+        config.qwen3_8_next_ngram_vocab_size_base = getattr(
+            text_config, "ngram_vocab_size_base", 20000000
+        )  # config-access-exempt: model-family schemas differ in optional ngram_vocab_size_base metadata
+        config.qwen3_8_next_split_ngram_parts = getattr(
+            text_config, "split_ngram_parts", 128
+        )  # config-access-exempt: model-family schemas differ in optional split_ngram_parts metadata
+        config.qwen3_8_next_ple_conv_kernel_size = getattr(
+            text_config, "ple_conv_kernel_size", 4
+        )  # config-access-exempt: model-family schemas differ in optional ple_conv_kernel_size metadata
         # the n-gram hash resets at EOS so n-grams never straddle a document
-        config.qwen3_8_next_eos_token_id = getattr(text_config, "eos_token_id", 0)
+        config.qwen3_8_next_eos_token_id = getattr(
+            text_config, "eos_token_id", 0
+        )  # config-access-exempt: model-family schemas differ in optional eos_token_id metadata
         # the checkpoint pads the last shard, so the height is not a ceil over the config
         config.qwen3_8_next_ngram_rows_per_shard = self._ngram_rows_per_shard()
 
-        config.qwen3_8_next_indexer_budget = getattr(text_config, "indexer_budget", 2048)
-        config.qwen3_8_next_indexer_compress_ratio = getattr(text_config, "indexer_compress_ratio", 4)
-        config.qwen3_8_next_indexer_n_heads = getattr(text_config, "indexer_n_heads", 4)
-        config.qwen3_8_next_indexer_head_dim = getattr(text_config, "indexer_head_dim", 128)
-        config.qwen3_8_next_indexer_kv_heads = getattr(text_config, "indexer_kv_heads", 1)
+        config.qwen3_8_next_indexer_budget = getattr(
+            text_config, "indexer_budget", 2048
+        )  # config-access-exempt: model-family schemas differ in optional indexer_budget metadata
+        config.qwen3_8_next_indexer_compress_ratio = getattr(
+            text_config, "indexer_compress_ratio", 4
+        )  # config-access-exempt: model-family schemas differ in optional indexer_compress_ratio metadata
+        config.qwen3_8_next_indexer_n_heads = getattr(
+            text_config, "indexer_n_heads", 4
+        )  # config-access-exempt: model-family schemas differ in optional indexer_n_heads metadata
+        config.qwen3_8_next_indexer_head_dim = getattr(
+            text_config, "indexer_head_dim", 128
+        )  # config-access-exempt: model-family schemas differ in optional indexer_head_dim metadata
+        config.qwen3_8_next_indexer_kv_heads = getattr(
+            text_config, "indexer_kv_heads", 1
+        )  # config-access-exempt: model-family schemas differ in optional indexer_kv_heads metadata
 
         config.qwen3_8_next_no_block_layernorms = True
 

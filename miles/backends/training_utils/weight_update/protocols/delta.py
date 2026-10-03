@@ -24,6 +24,7 @@ from miles.backends.training_utils.weight_update.rollout_cell_updater import cre
 from miles.backends.training_utils.weight_update.session import check_weight_sync_results
 from miles.backends.training_utils.weight_update.utils import get_data_replica_rank_and_size
 from miles.utils import async_utils
+from miles.utils.args.custom_view import compute_custom_function_config
 from miles.utils.disk_delta import NUM_WORKERS, checksum, make_tensor_reader, overwrite_encode
 from miles.utils.distributed_utils import get_gloo_group
 
@@ -45,7 +46,9 @@ _SAFETENSORS_DTYPE_BY_TORCH_DTYPE = {
     torch.bool: "BOOL",
     torch.complex64: "C64",
     **{
-        getattr(torch, torch_dtype_name): safetensors_dtype
+        getattr(
+            torch, torch_dtype_name
+        ): safetensors_dtype  # config-access-exempt: attribute selected at runtime from torch_dtype_name
         for torch_dtype_name, safetensors_dtype in (
             ("float8_e4m3fn", "F8_E4M3"),
             ("float8_e4m3fnuz", "F8_E4M3FNUZ"),
@@ -55,7 +58,9 @@ _SAFETENSORS_DTYPE_BY_TORCH_DTYPE = {
             ("uint32", "U32"),
             ("uint16", "U16"),
         )
-        if hasattr(torch, torch_dtype_name)
+        if hasattr(
+            torch, torch_dtype_name
+        )  # config-access-exempt: attribute selected at runtime from torch_dtype_name
     },
 }
 
@@ -173,7 +178,8 @@ class UpdateWeightFromDiskDelta(WeightTransferProtocol):
             shutil.rmtree(self.delta_dir, ignore_errors=True)
             os.makedirs(self.delta_dir, exist_ok=True)
             if self._post_write_hook is not None:
-                self._post_write_hook(self.args, self.delta_dir, list(self.rollout_engines))
+                fn_args = compute_custom_function_config(self.args, self.args.custom_update_weight_post_write_path)
+                self._post_write_hook(fn_args, self.delta_dir, list(self.rollout_engines))
             pulls = [
                 async_utils.submit(
                     client.pull_weights(
@@ -384,7 +390,8 @@ class UpdateWeightFromDiskDelta(WeightTransferProtocol):
         (checksum-verified), then reload the engines. The pull is disk-only, so it runs before
         pause and overlaps generation."""
         if self._post_write_hook is not None:
-            self._post_write_hook(self.args, self._version_dir, list(self.rollout_engines))
+            fn_args = compute_custom_function_config(self.args, self.args.custom_update_weight_post_write_path)
+            self._post_write_hook(fn_args, self._version_dir, list(self.rollout_engines))
         dist.barrier(group=get_gloo_group())
         if dist.get_rank() == 0:
             pulls = async_utils.wait_futures(

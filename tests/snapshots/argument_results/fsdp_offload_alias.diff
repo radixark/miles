@@ -1,0 +1,11 @@
+--- fsdp
++++ fsdp_offload_alias
+@@ -249 +249 @@
+-  offload_rollout: false
++  offload_rollout: true
+@@ -253 +253 @@
+-  offload_train: false
++  offload_train: true
+@@ -292,0 +293,2 @@
++    disable_grad_buffers_cpu_backup: true
++    disable_param_buffers_cpu_backup: true

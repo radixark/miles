@@ -161,8 +161,8 @@ class TestParseConfigArgv:
             parse_config_argv(_DemoConfig, [*argv, "--unknown", "1"])
 
     def test_invalid_json_is_rejected(self):
-        """A payload that is not valid JSON fails validation loudly."""
-        with pytest.raises(ValidationError):
+        """A payload that is not valid JSON fails loudly before any field is read."""
+        with pytest.raises(json.JSONDecodeError):
             parse_config_argv(_DemoConfig, [CONFIG_JSON_FLAG, "not json"])
 
     def test_extra_json_fields_are_rejected(self):

@@ -14,6 +14,7 @@ from miles.ray.rollout.rollout_server import RolloutServer, create_rollout_serve
 from miles.ray.rollout.router_manager import resolve_router_addrs
 from miles.ray.rollout.server_cell import ServerCell, ServerCellMetadata
 from miles.utils import async_utils
+from miles.utils.args.component_rollout import InferenceRuntimeImmutState
 from miles.utils.audit_utils.process_identity import SimpleProcessIdentity
 from miles.utils.context_lock import (
     ContextLock,
@@ -77,7 +78,7 @@ class InferenceController:
             engine_provider=self._engine_provider,
             router_addrs=router_addrs,
         )
-        if self.args.eval_num_gpus > 0:
+        if "eval" in self.servers:
             self._eval_fleet = InferenceControllerEvalFleet(self.args, srv=self.servers["eval"])
 
         self._watcher_disposers.append(await self._engine_provider.watch_cells(self._reconcile))
@@ -233,9 +234,9 @@ class InferenceController:
             },
         )
 
-    @releases_lock
+    @lock_exempt
     async def abort_update_weights(self) -> None:
-        pass
+        self.context_lock.release_if_detached()
 
     @releases_lock
     async def end_update_weights(
@@ -303,7 +304,7 @@ class InferenceController:
 
     @lock_exempt
     async def get_eval_fleet_info(self) -> EvalFleetInfo | None:
-        return self._eval_fleet.info if self._eval_fleet is not None else None
+        return await self._eval_fleet.info() if self._eval_fleet is not None else None
 
     @lock_exempt
     async def pin_eval_fleet(self, checkpoint_dir: str, weight_version: str) -> EvalFleetPin:
@@ -313,6 +314,18 @@ class InferenceController:
         return await self._eval_fleet.pin(checkpoint_dir=checkpoint_dir, weight_version=weight_version)
 
     # -------------------------- misc APIs -----------------------------
+
+    @with_lock
+    async def get_inference_runtime_immut_state(self) -> InferenceRuntimeImmutState:
+        engine_gpu_counts = [
+            count for name, srv in self.servers.items() if name != "eval" for count in srv.engine_gpu_counts
+        ]
+        eval_srv = self.servers.get("eval")
+        return InferenceRuntimeImmutState(
+            engine_count=len(engine_gpu_counts),
+            gpu_count=sum(engine_gpu_counts),
+            eval_engine_count=len(eval_srv.engine_gpu_counts) if eval_srv is not None else 0,
+        )
 
     @lock_exempt
     async def get_cell_statuses(self) -> dict[str, CellStatus]:

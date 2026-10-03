@@ -260,7 +260,7 @@ class TestRunAnalysisFromArgs:
         run_analysis_from_args(args)
 
     def test_skips_when_no_event_dir(self) -> None:
-        args = Namespace(enable_event_analyzer=True)
+        args = Namespace(enable_event_analyzer=True, save_debug_event_data=None)
         run_analysis_from_args(args)
 
     def test_logs_analysis_duration(self, tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:

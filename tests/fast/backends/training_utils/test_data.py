@@ -26,10 +26,9 @@ def _parallel_state(*, dp_size: int) -> ParallelState:
 def _static_args() -> Namespace:
     return Namespace(
         qkv_format="thd",
-        global_batch_size=256,
         use_dynamic_global_batch_size=False,
         use_dynamic_batch_size=False,
-        micro_batch_size=8,
+        backend=Namespace(global_batch_size=256, micro_batch_size=8),
     )
 
 
@@ -37,6 +36,7 @@ def _scheduled_args() -> Namespace:
     return Namespace(
         qkv_format="thd",
         global_batch_size=256,
+        backend=Namespace(global_batch_size=256),
         use_dynamic_global_batch_size=False,
         use_dynamic_batch_size=True,
         max_tokens_per_gpu=64,

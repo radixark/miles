@@ -1,0 +1,23 @@
+--- megatron
++++ fully_async
+@@ -17,0 +18 @@
++- --fully-async
+@@ -187,0 +189 @@
++    custom_async_data_buffer_path_per_model: null
+@@ -444 +446 @@
+-    fully_async: false
++    fully_async: true
+@@ -26810,0 +26813,13 @@
++        dest: custom_async_data_buffer_path_per_model
++        group: options
++        help: Per policy form of --custom-async-data-buffer-path, e.g. --custom-async-data-buffer-path-per-model solver=pkg.SolverBuffer.
++          A run training several policies composes one buffer per policy (see DefaultMultiDataBuffer); each model id named
++          here gets that class instead of the built-in one, and every model id left out keeps it. The model ids are the --megatron-config
++          ones.
++        metavar: MODEL_ID=PATH
++        nargs: +
++        option_strings:
++        - --custom-async-data-buffer-path-per-model
++        type:
++          $callable: builtins.str
++      - default: null

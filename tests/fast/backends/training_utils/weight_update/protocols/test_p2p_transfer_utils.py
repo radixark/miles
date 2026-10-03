@@ -4,6 +4,7 @@ from typing import Any
 
 import pytest
 import torch
+from tests.fast.fixtures.sglang_config_fixtures import make_sglang_config
 
 
 def _plan(
@@ -71,7 +72,7 @@ class TestRemoteTransferPlanParallelism:
             p2p_transfer_utils, monkeypatch, pp_rank=1, pp_size=2, gathered_dp_rank=3, gathered_dp_size=4
         )
 
-        plan = p2p_transfer_utils.RemoteTransferPlan(SimpleNamespace(sglang_pp_size=1))
+        plan = p2p_transfer_utils.RemoteTransferPlan(SimpleNamespace(sglang=make_sglang_config(pp_size=1)))
 
         assert (plan._pp_rank, plan._pp_size) == (1, 2)
         assert (plan._gathered_dp_rank, plan._gathered_dp_size) == (3, 4)
@@ -85,7 +86,7 @@ class TestRemoteTransferPlanParallelism:
         )
 
         with pytest.raises(NotImplementedError):
-            p2p_transfer_utils.RemoteTransferPlan(SimpleNamespace(sglang_pp_size=2))
+            p2p_transfer_utils.RemoteTransferPlan(SimpleNamespace(sglang=make_sglang_config(pp_size=2)))
 
 
 class TestPlanP2P:

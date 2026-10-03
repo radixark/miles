@@ -4,14 +4,12 @@ import logging
 from typing import Any
 
 from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
-from miles.backends.sglang_utils.sglang_config import resolve_sglang_config
 from miles.backends.sglang_utils.sglang_router_api_client import SGLangRouterApiClient
 from miles.ray.rollout.server_cell import ServerCell, ServerCellMetadata
 from miles.utils import async_utils
 from miles.utils.context_lock import ContextLock, enforce_lock_discipline, lock_exempt, requires_lock
 from miles.utils.ft_utils.health_checker import ActivenessTracker
 from miles.utils.retry_utils import retry_until_deadline
-from miles.utils.workers.types import DeployComponent
 from miles.utils.workers.worker_provider.base import BaseWorkerProvider
 from miles.utils.workers.worker_spec import HostAndPort
 
@@ -33,7 +31,7 @@ async def create_rollout_servers(
     router_addrs: dict[str, HostAndPort],
 ) -> dict[str, "RolloutServer"]:
     """Create rollout servers: one per model, each with its own router."""
-    config = resolve_sglang_config(args)
+    config = args.sglang
 
     servers: dict[str, RolloutServer] = {}
 
@@ -56,12 +54,13 @@ async def create_rollout_servers(
 
 
 def _compute_init_expected_num_cells(args, engine_provider: BaseWorkerProvider, *, model_cfg) -> int:
-    if (declared := args.init_expected_num_cells) is not None:
+    declared = args.init_expected_num_cells
+    if isinstance(declared, dict):
+        declared = declared.get(model_cfg.name)
+    if declared is not None:
         return declared
     if (answered := engine_provider.expected_num_cells(group_id=model_cfg.name)) is not None:
         return answered
-    if DeployComponent(args.deploy_component).deploys_own_inference_engines():
-        return model_cfg.num_server_cells
     return _DEFAULT_INIT_EXPECTED_NUM_CELLS
 
 

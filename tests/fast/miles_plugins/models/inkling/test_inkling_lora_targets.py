@@ -2,7 +2,9 @@ from types import SimpleNamespace
 
 import pytest
 import torch
+from pydantic import TypeAdapter
 
+from miles.utils.args.configs.lora import LoraConfig
 from miles.utils.lora.hf_lora_targets import resolve_hf_lora_targets
 from miles.utils.lora.utils import get_adapter_target_modules
 from miles_plugins.models.inkling.lora import _export_dense_mlp, _export_experts, resolve_inkling_adapter_targets
@@ -36,7 +38,9 @@ def test_hf_mlp_selection_matches_existing_native_export(multimodal):
         hf_prefix="language_model.layers.1.mlp.experts.",
         **{f"w{projection}_{factor}": tensor for projection in (1, 2, 3) for factor in ("A", "B")},
     )
-    plan = _export_dense_mlp(dense, _LocalGather()) + _export_experts(experts, _LocalGather())
+    plan = _export_dense_mlp(dense, _LocalGather(), hf_checkpoint="/unused") + _export_experts(
+        experts, _LocalGather(), hf_checkpoint="/unused"
+    )
     weights = {name: value() if callable(value) else value for name, value in plan}
     assert "language_model.layers.0.mlp.gate_up_proj" in get_adapter_target_modules(weights)
     assert weights["language_model.layers.0.mlp.gate_up_proj.lora_A.weight"] is tensor
@@ -50,3 +54,11 @@ def test_legacy_config_selects_the_same_native_adapters():
     native = dict(model_type="inkling_text", mlp_layer_types=["dense", "sparse"], n_shared_experts=1)
     assert resolve_hf_lora_targets(legacy) == resolve_hf_lora_targets(native)
     resolve_inkling_adapter_targets(legacy, resolve_hf_lora_targets(legacy))
+
+
+def test_native_adapter_selector_is_a_valid_configured_adapter_target():
+    """The resolved native selector must validate as the configuration's adapter targets."""
+    config = dict(model_type="inkling_text", mlp_layer_types=["dense", "sparse"], n_shared_experts=0)
+    targets = resolve_inkling_adapter_targets(config, resolve_hf_lora_targets(config))
+    annotation = LoraConfig.model_fields["lora_adapter_targets"].annotation
+    assert TypeAdapter(annotation).validate_python(targets) == targets

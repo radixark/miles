@@ -175,7 +175,8 @@ def test_main_fails_closed_on_an_unregistered_file(monkeypatch, tmp_path, capsys
     assert "::error::" in capsys.readouterr().err
 
 
-def test_target_workflow_keeps_orchestration_trusted_and_checks_out_exact_head():
+def test_target_workflow_keeps_orchestration_trusted_and_checks_out_exact_head() -> None:
+    """Resolved file jobs preserve trust boundaries and use the snapshot-aware CUDA entrypoint."""
     root = Path(__file__).parents[3]
     workflow = (root / ".github/workflows/run-ci-file.yml").read_text()
     gpu_workflow = (root / ".github/workflows/_run-ci.yml").read_text()
@@ -223,9 +224,13 @@ def test_target_workflow_keeps_orchestration_trusted_and_checks_out_exact_head()
     assert "if: always()" in report_job
     assert "tests.ci.run_suite" not in workflow
     assert "pytest '${{ inputs.test_file }}' -v -x" in workflow
-    assert "python3 '${{ inputs.test_file }}'" in workflow
+    assert "python3 -m tests.ci.run_file" in workflow
+    assert "--test-file '${{ inputs.test_file }}'" in workflow
+    assert "--timeout-seconds '${{ needs.resolve-file-run.outputs.timeout_seconds }}'" in workflow
+    assert '"$(( ${{ needs.resolve-file-run.outputs.timeout_seconds }} + 120 ))s"' in workflow
+    assert "python3 '${{ inputs.test_file }}'" not in workflow
     assert workflow.count("timeout --signal=TERM --kill-after=30s") == 2
-    assert workflow.count("'${{ needs.resolve-file-run.outputs.timeout_seconds }}s'") == 2
+    assert workflow.count("'${{ needs.resolve-file-run.outputs.timeout_seconds }}s'") == 1
     for reusable in (gpu_workflow, cpu_workflow):
         assert "plan_already_resolved:" in reusable
         assert "if: ${{ !inputs.plan_already_resolved }}" in reusable

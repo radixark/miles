@@ -1,0 +1,323 @@
+processes:
+  tests/e2e/megatron/test_qwen3_4b_fully_async_eval/run-0000/all/default/actor_cell00000:
+    <<: &id010
+      diffs:
+        checkpoint_load-0000: &id001
+          set:
+            <<: &id002
+              /args/backend/lr_decay_iters: 2
+              /args/backend/model_type: {$enum: megatron.core.enums.ModelType, name: encoder_or_decoder}
+              /args/backend/train_iters: 2
+            /args/backend/ckpt_step: null
+            /args/backend/finetune: true
+            /args/backend/load: /root/models/Qwen3-4B_torch_dist
+            /args/backend/no_load_optim: true
+            /args/backend/no_load_rng: true
+            /load: /root/models/Qwen3-4B_torch_dist
+            /local_checkpoint_manager: false
+        checkpoint_load-0001: *id001
+        train_first_step-0000:
+          set:
+            <<: *id002
+            /role: actor
+      ranks: [0, 1]
+    overrides: &id003
+      set:
+        <<: &id007
+          /args/config_snapshot_name: tests/e2e/megatron/test_qwen3_4b_fully_async_eval/run-0000
+          /args/init_expected_num_cells/default: 6
+        /args/sglang/models: &id008
+        - &id011
+          model_path: null
+          name: default
+          server_groups:
+          - <<: &id012
+              needs_offload: false
+              num_gpus_per_engine: 1
+              worker_type: {$enum: miles.backends.sglang_utils.sglang_api_client.WorkerType, name: REGULAR}
+            overrides: {model_path: /root/models/Qwen3-4B}
+          update_weights: true
+    template: trainer-megatron-02
+  tests/e2e/megatron/test_qwen3_4b_fully_async_eval/run-0000/all/default/inference_controller:
+    diffs: &id006
+      router_endpoints-0000:
+        set:
+          <<: &id004 {/args/sglang_router_ip: $HOST, /args/sglang_router_port: $PORT}
+          /args/sglang_model_routers: &id005 {default: {$tuple: [$HOST, $PORT]}}
+    overrides: *id003
+    template: inference_controller-01
+  tests/e2e/megatron/test_qwen3_4b_fully_async_eval/run-0000/all/default/main:
+    diffs: &id020
+      router_endpoints-0000:
+        set:
+          <<: *id004
+          /args/sglang_model_routers: *id005
+          /args/wandb_run_id: $WANDB_RUN_ID_0000
+      tracking_config-0000: &id015 {set: {/args/wandb_run_id: $WANDB_RUN_ID_0000}}
+    overrides: *id003
+    template: main-01
+  tests/e2e/megatron/test_qwen3_4b_fully_async_eval/run-0000/all/default/rollout_executor:
+    diffs: *id006
+    overrides:
+      set:
+        <<:
+        - *id007
+        - &id009
+          /args/eval_function_path/config: &id023 {custom_async_data_buffer_path_per_model: null}
+          /args/eval_function_path/path: miles.rollout.fully_async_rollout.FullyAsyncRolloutFn
+        /args/sglang/models: *id008
+    template: rollout_executor-01
+  tests/e2e/megatron/test_qwen3_4b_fully_async_eval/run-0000/all/default/trainer_controller_actor:
+    overrides:
+      set:
+        <<: *id007
+        /args/backend/rank: 0
+        /args/sglang/models: *id008
+    template: trainer-megatron-02
+  tests/e2e/megatron/test_qwen3_4b_fully_async_eval/run-0000/all/default/worker_manager:
+    overrides:
+      set:
+        <<:
+        - *id007
+        - *id009
+        /args/rollout_num_gpus: 6
+        /args/sglang/models: *id008
+        /args/sglang_scaling/groups/default:
+        - {engine_offset: 0, gpu_offset: 0, num_gpus: 6}
+    template: worker_manager-01
+  tests/e2e/megatron/test_qwen3_4b_fully_async_eval/run-0001/all/default/actor_cell00000:
+    <<: *id010
+    overrides: &id013
+      set:
+        <<:
+        - &id017
+          /args/config_snapshot_name: tests/e2e/megatron/test_qwen3_4b_fully_async_eval/run-0001
+          /args/eval_hf_dir: /dev/shm/$TEMPORARY_DIRECTORY_fully_async_eval_fleet
+          /args/init_expected_num_cells/eval: 1
+          /args/sglang/models:
+          - *id011
+          - model_path: null
+            name: eval
+            server_groups:
+            - <<: *id012
+              overrides:
+                enable_return_indexer_topk: false
+                enable_return_routed_experts: false
+                model_path: /root/models/Qwen3-4B
+            update_weights: false
+          /args/wandb_group: $RUN_ID_0004_$CI_COMMIT_NAME_github
+        - &id018 {/args/eval_uses_snapshots: true, /args/init_expected_num_cells/default: 5}
+    template: trainer-megatron-02
+  tests/e2e/megatron/test_qwen3_4b_fully_async_eval/run-0001/all/default/inference_controller:
+    diffs: &id016
+      router_endpoints-0000:
+        set:
+          <<: *id004
+          /args/sglang_model_routers: &id014 {default: {$tuple: [$HOST, $PORT]}, eval: {$tuple: [$HOST, $PORT]}}
+    overrides: *id013
+    template: inference_controller-01
+  tests/e2e/megatron/test_qwen3_4b_fully_async_eval/run-0001/all/default/main:
+    diffs:
+      router_endpoints-0000:
+        set:
+          <<: *id004
+          /args/sglang_model_routers: *id014
+          /args/wandb_run_id: $WANDB_RUN_ID_0000
+      tracking_config-0000: *id015
+    overrides: *id013
+    template: main-01
+  tests/e2e/megatron/test_qwen3_4b_fully_async_eval/run-0001/all/default/rollout_executor:
+    diffs: *id016
+    overrides:
+      set:
+        <<:
+        - *id009
+        - *id017
+        - *id018
+    template: rollout_executor-01
+  tests/e2e/megatron/test_qwen3_4b_fully_async_eval/run-0001/all/default/trainer_controller_actor:
+    overrides:
+      set:
+        <<:
+        - *id017
+        - *id018
+        /args/backend/rank: 0
+    template: trainer-megatron-02
+  tests/e2e/megatron/test_qwen3_4b_fully_async_eval/run-0001/all/default/worker_manager:
+    overrides:
+      set:
+        <<:
+        - *id009
+        - *id017
+        - *id018
+        - &id022
+          /args/rollout_num_gpus: 5
+          /args/sglang_scaling/groups/default:
+          - {engine_offset: 0, gpu_offset: 0, num_gpus: 5}
+        /args/eval_num_gpus: 1
+        /args/sglang_scaling/groups/eval:
+        - {engine_offset: 5, gpu_offset: 5, num_gpus: 1}
+    template: worker_manager-01
+  tests/e2e/megatron/test_qwen3_4b_fully_async_eval/run-0002/all/default/actor_cell00000:
+    <<: *id010
+    overrides: &id019
+      set:
+        <<:
+        - *id018
+        - &id021
+          /args/config_snapshot_name: tests/e2e/megatron/test_qwen3_4b_fully_async_eval/run-0002
+          /args/eval_hf_dir: /dev/shm/$TEMPORARY_DIRECTORY_fully_async_eval_external
+          /args/wandb_group: $RUN_ID_0006_$CI_COMMIT_NAME_github
+        /args/sglang/models: *id008
+    template: trainer-megatron-02
+  tests/e2e/megatron/test_qwen3_4b_fully_async_eval/run-0002/all/default/inference_controller:
+    diffs: *id006
+    overrides: *id019
+    template: inference_controller-01
+  tests/e2e/megatron/test_qwen3_4b_fully_async_eval/run-0002/all/default/main:
+    diffs: *id020
+    overrides: *id019
+    template: main-01
+  tests/e2e/megatron/test_qwen3_4b_fully_async_eval/run-0002/all/default/rollout_executor:
+    diffs: *id006
+    overrides:
+      set:
+        <<:
+        - *id018
+        - *id021
+        /args/eval_function_path/path: examples.infra_features.fully_async.external_eval_fn.ExternalSglangEvalFn
+        /args/sglang/models: *id008
+    template: rollout_executor-01
+  tests/e2e/megatron/test_qwen3_4b_fully_async_eval/run-0002/all/default/trainer_controller_actor:
+    overrides:
+      set:
+        <<:
+        - *id018
+        - *id021
+        /args/backend/rank: 0
+        /args/sglang/models: *id008
+    template: trainer-megatron-02
+  tests/e2e/megatron/test_qwen3_4b_fully_async_eval/run-0002/all/default/worker_manager:
+    overrides:
+      set:
+        <<:
+        - *id018
+        - *id022
+        - *id021
+        /args/eval_function_path/path: examples.infra_features.fully_async.external_eval_fn.ExternalSglangEvalFn
+        /args/sglang/models: *id008
+    template: worker_manager-01
+shared_overrides:
+  inference_controller-01:
+    set:
+      <<:
+      - &id024
+        /args/balance_data: true
+        /args/eval_interval: 1
+        /args/log_probs_max_tokens_per_gpu: 9216
+        /args/max_tokens_per_gpu: 9216
+        /args/num_rollout: 2
+        /args/ref_load: /root/models/Qwen3-4B_torch_dist
+        /args/rollout_max_response_len: 1024
+        /args/rollout_temperature: 0.8
+        /args/use_kl_loss: true
+        /args/wandb_project: miles-test_qwen3_4b_fully_async_eval
+      - &id025
+        /args/ci_metric_checker_expect_num: 3
+        /args/ci_metric_checker_key: eval/gsm8k
+        /args/ci_metric_checker_threshold: 0.4
+        /args/colocate: false
+        /args/eval_max_response_len: 1024
+        /args/eval_prompt_data: [gsm8k, /root/datasets/gsm8k/test.parquet]
+        /args/eval_top_k: 1
+        /args/fully_async: true
+        /args/hf_checkpoint: /root/models/Qwen3-4B
+        /args/n_samples_per_prompt: 4
+        /args/offload_rollout: false
+        /args/offload_train: false
+        /args/pause_generation_mode: in_place
+        /args/prompt_data: /root/datasets/gsm8k/train.parquet
+        /args/rm_type: math
+        /args/rollout_function_path/config: *id023
+        /args/rollout_function_path/path: miles.rollout.fully_async_rollout.FullyAsyncRolloutFn
+        /args/sglang/base_args/cuda_graph_backend_prefill: null
+        /args/sglang/base_args/enable_prefill_weight_versions: true
+        /args/skip_actor_forward_only: true
+        /args/start_rollout_id: null
+        /args/use_tis: true
+  main-01:
+    set:
+      <<:
+      - *id024
+      - *id025
+      - &id026
+        /args/raw_megatron/base_args/disable_grad_buffers_cpu_backup: false
+        /args/raw_megatron/base_args/disable_param_buffers_cpu_backup: false
+        /args/raw_megatron/base_args/encoder_num_layers: 36
+        /args/raw_megatron/base_args/eval_global_batch_size: 32
+        /args/raw_megatron/base_args/eval_interval: 1
+        /args/raw_megatron/base_args/ffn_hidden_size: 9728
+        /args/raw_megatron/base_args/finetune: false
+        /args/raw_megatron/base_args/global_batch_size: 32
+        /args/raw_megatron/base_args/hidden_size: 2560
+        /args/raw_megatron/base_args/load: null
+        /args/raw_megatron/base_args/no_load_optim: null
+        /args/raw_megatron/base_args/no_load_rng: null
+        /args/raw_megatron/base_args/num_attention_heads: 32
+        /args/raw_megatron/base_args/num_layers: 36
+        /args/raw_megatron/base_args/num_query_groups: 8
+        /args/raw_megatron/base_args/padded_vocab_size: 152064
+        /args/raw_megatron/base_args/tensor_model_parallel_size: 2
+        /args/raw_megatron/base_args/tokenizer_model: /root/models/Qwen3-4B
+        /args/raw_megatron/base_args/untie_embeddings_and_output_weights: false
+        /args/raw_megatron/base_args/wandb_project: miles-test_qwen3_4b_fully_async_eval
+        /args/raw_megatron/base_args/world_size: 2
+  rollout_executor-01:
+    set:
+      <<:
+      - *id024
+      - *id025
+      - *id026
+      - &id027
+        /args/ci_assert_prefill_lag_max: 3
+        /args/eval_datasets:
+        - custom_generate_function_path: null
+          input_key: messages
+          label_key: label
+          max_response_len: 1024
+          metadata_key: metadata
+          metadata_overrides: {}
+          min_new_tokens: null
+          n_samples_per_eval_prompt: 1
+          name: gsm8k
+          path: /root/datasets/gsm8k/test.parquet
+          rm_type: null
+          stop: null
+          stop_token_ids: null
+          temperature: 0.8
+          tool_key: tools
+          top_k: 1
+          top_p: 1.0
+        /args/namespaced_radix_cache: true
+  trainer-megatron-02:
+    remove: [/args/backend/ckpt_step, /args/backend/finetune, /args/backend/load, /args/backend/no_load_optim, /args/backend/no_load_rng]
+    set:
+      <<: *id025
+      /args/backend/disable_grad_buffers_cpu_backup: false
+      /args/backend/disable_param_buffers_cpu_backup: false
+      /args/backend/eval_interval: 1
+      /args/backend/padded_vocab_size: 152064
+      /args/backend/tensor_model_parallel_size: 2
+      /args/backend/tokenizer_model: /root/models/Qwen3-4B
+      /args/backend/wandb_project: miles-test_qwen3_4b_fully_async_eval
+      /args/backend/world_size: 2
+      /args/critic_load: null
+      /args/input_key: messages
+  worker_manager-01:
+    set:
+      <<:
+      - *id024
+      - *id025
+      - *id026
+      - *id027
+      /args/actor_num_gpus_per_node: 2

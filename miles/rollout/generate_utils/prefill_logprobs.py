@@ -117,7 +117,7 @@ async def recompute_rollout_logprobs_via_prefill(
     sampling_params: Mapping[str, Any],
     headers: Mapping[str, str] | None = None,
 ) -> None:
-    if not getattr(args, "recompute_logprobs_via_prefill", False):
+    if not args.recompute_logprobs_via_prefill:
         return
     if sample.response_length == 0:
         sample.rollout_log_probs = []
@@ -138,7 +138,7 @@ async def recompute_samples_rollout_logprobs_via_prefill(
     url: str,
     sampling_params: Mapping[str, Any],
 ) -> None:
-    if not getattr(args, "recompute_logprobs_via_prefill", False):
+    if not args.recompute_logprobs_via_prefill:
         return
 
     samples_to_score = [

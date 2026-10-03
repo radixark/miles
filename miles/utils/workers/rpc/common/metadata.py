@@ -90,10 +90,14 @@ class _RpcConfig:
 def _find_rpc_config(attr: Callable[..., Any]) -> _RpcConfig:
     layer: Any = attr
     while layer is not None:
-        config = getattr(layer, _RPC_CONFIG_ATTR, None)
+        config = getattr(
+            layer, _RPC_CONFIG_ATTR, None
+        )  # config-access-exempt: attribute selected at runtime from _RPC_CONFIG_ATTR
         if config is not None:
             return config
-        layer = getattr(layer, "__wrapped__", None)
+        layer = getattr(
+            layer, "__wrapped__", None
+        )  # config-access-exempt: inspect RPC metadata while unwrapping decorated callables
     return _RpcConfig(concurrency_group=DEFAULT_CONCURRENCY_GROUP)
 
 

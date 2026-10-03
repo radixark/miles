@@ -6,11 +6,17 @@ from typing import Any
 import pytest
 import yaml
 from tests.fast.utils.external_utils.command_utils.fake_launch_guard import RecordingLaunchGuard
+from tests.fast.utils.external_utils.command_utils.helm_backend.launcher.utils import (
+    LauncherArgs,
+    launcher_args_orchestrator_command,
+)
 
 from miles.utils.external_utils.command_utils.base_backend import ExecuteTrainConfig, ExecuteTrainRequest
 from miles.utils.external_utils.command_utils.helm_backend.launcher import command_wrapper, entrypoint
 from miles.utils.external_utils.command_utils.helm_backend.launcher.command_wrapper import Helm
-from miles.utils.external_utils.command_utils.helm_backend.launcher.values.misc import MooncakeInfo
+from miles.utils.external_utils.command_utils.helm_backend.launcher.values.misc import MooncakeInfo, MooncakePlan
+from miles.utils.workers.connection_config import StaticConnConfig
+from miles.utils.workers.serving.utils import parse_orchestrator_argv
 
 
 def _infra_file(tmp_path: Path, name: str, values: dict[str, Any]) -> str:
@@ -24,17 +30,10 @@ def _stub_launch_inputs(monkeypatch, *, specs, colocate: bool = False) -> None:
     monkeypatch.setattr(
         entrypoint,
         "parse_args",
-        lambda: SimpleNamespace(
-            colocate=colocate,
-            deploy_component="all",
-            deploy_instance_id=None,
-            argv=[],
-            train_env_vars={},
-            use_wandb=False,
-            wandb_run_id=None,
-        ),
+        lambda: LauncherArgs(colocate=colocate),
     )
     monkeypatch.setattr(MooncakeInfo, "plan_of_args", staticmethod(lambda args: None))
+    monkeypatch.setattr(entrypoint, "_compute_orchestrator_command", launcher_args_orchestrator_command)
     monkeypatch.setattr(entrypoint, "_follow_until_finished", lambda **kwargs: None)
 
 
@@ -94,32 +93,66 @@ class TestWandbRunIdReachesEveryPod:
         """A pod that parses no run id joins no run, and the first metric it reports kills it mid-run."""
         monkeypatch.setattr(entrypoint, "_generate_wandb_run_id", lambda: "preallocated0")
 
-        pod_argv, args = _compute_train_argv(monkeypatch, "--use-wandb")
+        argv, args = _compute_train_argv(monkeypatch, "--use-wandb")
 
         assert args.wandb_run_id == "preallocated0"
-        assert pod_argv[pod_argv.index("--wandb-run-id") + 1] == "preallocated0"
+        assert _orchestrator_payload_args(args)["wandb_run_id"] == "preallocated0"
+        assert "--wandb-run-id" not in argv
 
     def test_a_run_that_names_its_own_id_keeps_it(self, monkeypatch):
         """Resuming a run means joining the id the operator named, not the one this launch would mint."""
         monkeypatch.setattr(entrypoint, "_generate_wandb_run_id", lambda: "preallocated0")
 
-        pod_argv, args = _compute_train_argv(monkeypatch, "--use-wandb --wandb-run-id chosen0")
+        argv, args = _compute_train_argv(monkeypatch, "--use-wandb --wandb-run-id chosen0")
 
         assert args.wandb_run_id == "chosen0"
-        assert pod_argv.count("--wandb-run-id") == 1
+        assert _orchestrator_payload_args(args)["wandb_run_id"] == "chosen0"
+        assert argv.count("--wandb-run-id") == 1
+
+    def test_a_relaunch_joins_the_id_the_installed_run_carries(self, monkeypatch):
+        """A new id on an unchanged relaunch changes every payload, and the manifest diff refuses the upgrade."""
+        monkeypatch.setattr(entrypoint, "_generate_wandb_run_id", lambda: "preallocated0")
+
+        _, args = _compute_train_argv(
+            monkeypatch, "--use-wandb", installed_payload={"args": {"wandb_run_id": "installed0"}}
+        )
+
+        assert args.wandb_run_id == "installed0"
 
     def test_a_run_without_wandb_is_told_no_run_id(self, monkeypatch):
         """Minting an id for a run that tracks nothing would make every pod resume a run nobody created."""
         monkeypatch.setattr(entrypoint, "_generate_wandb_run_id", lambda: "preallocated0")
 
-        pod_argv, args = _compute_train_argv(monkeypatch, "")
+        argv, args = _compute_train_argv(monkeypatch, "")
 
         assert args.wandb_run_id is None
-        assert "--wandb-run-id" not in pod_argv
+        assert _orchestrator_payload_args(args)["wandb_run_id"] is None
+        assert "--wandb-run-id" not in argv
 
 
-def _compute_train_argv(monkeypatch: pytest.MonkeyPatch, train_args: str) -> tuple[list[str], Any]:
-    monkeypatch.setattr(entrypoint, "_compute_mooncake_plan", lambda args: None)
+class TestTheMooncakeMasterReachesEveryPayload:
+    def test_the_parsed_args_carry_the_in_cluster_master(self, monkeypatch):
+        """Every pod payload is sliced from these args, so a launcher-side address left here is what pods dial."""
+        plan = MooncakePlan(
+            init_kwargs={"master_server_address": "127.0.0.1:50051", "local_hostname": "x"}, port=50051
+        )
+
+        argv, args = _compute_train_argv(monkeypatch, "", mooncake_plan=plan)
+
+        expected = MooncakeInfo.cluster_init_kwargs(plan, host=MooncakeInfo.master_service_host("r", "rl"))
+        assert args.mooncake_store_init_kwargs == expected
+        assert _orchestrator_payload_args(args)["mooncake_store_init_kwargs"] == expected
+        assert "--mooncake-store-init-kwargs" not in argv
+
+
+def _compute_train_argv(
+    monkeypatch: pytest.MonkeyPatch,
+    train_args: str,
+    *,
+    installed_payload: dict[str, Any] | None = None,
+    mooncake_plan: MooncakePlan | None = None,
+) -> tuple[list[str], Any]:
+    monkeypatch.setattr(entrypoint, "_compute_mooncake_plan", lambda args: mooncake_plan)
     request = ExecuteTrainRequest(
         train_args=f"--train-backend fsdp --rollout-batch-size 8 --num-rollout 1 --rollout-num-gpus 8 {train_args}",
         num_gpus_per_node=8,
@@ -132,7 +165,21 @@ def _compute_train_argv(monkeypatch: pytest.MonkeyPatch, train_args: str) -> tup
         prepare_cmd={},
         extra_manifests=[],
     )
-    return entrypoint._compute_train_argv(request, run_uuid="0123456789abcdef", release="r", namespace="rl", env={})
+    return entrypoint._compute_train_argv(
+        request,
+        run_uuid="0123456789abcdef",
+        installed_payload=installed_payload,
+        release="r",
+        namespace="rl",
+        env={},
+    )
+
+
+def _orchestrator_payload_args(args: Any) -> dict[str, Any]:
+    command = entrypoint._compute_orchestrator_command(
+        "/repo/train.py", args=args, static_connections=StaticConnConfig()
+    )
+    return parse_orchestrator_argv(command).args
 
 
 def _record_launch(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, *, ci_run: bool) -> list[list[str]]:

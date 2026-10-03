@@ -1,0 +1,14 @@
+--- megatron
++++ megatron_load_existing
+@@ -55 +55 @@
+-  critic_load: null
++  critic_load: $FIXTURES/checkpoint
+@@ -184 +184 @@
+-  load: null
++  load: $FIXTURES/checkpoint
+@@ -673 +673 @@
+-      load: null
++      load: $FIXTURES/checkpoint
+@@ -1175 +1175 @@
+-  requested_load: null
++  requested_load: $FIXTURES/checkpoint

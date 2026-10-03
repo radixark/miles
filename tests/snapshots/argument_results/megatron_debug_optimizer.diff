@@ -1,0 +1,14 @@
+--- megatron
++++ megatron_debug_optimizer
+@@ -92 +92 @@
+-  debug_disable_optimizer: false
++  debug_disable_optimizer: true
+@@ -868 +868 @@
+-      no_load_optim: null
++      no_load_optim: true
+@@ -872 +872 @@
+-      no_save_optim: false
++      no_save_optim: true
+@@ -1104 +1104 @@
+-      use_distributed_optimizer: true
++      use_distributed_optimizer: false

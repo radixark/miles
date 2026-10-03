@@ -111,7 +111,7 @@ def encode_samples(
         nulls: list[str] = []
         for field in fields:
             spec = SAMPLES_VALUE_SPEC_V2[field]
-            value = getattr(sample, field)
+            value = getattr(sample, field)  # config-access-exempt: attribute selected at runtime from field
             if spec.codec == "json":
                 if field == "status":
                     value = value.value

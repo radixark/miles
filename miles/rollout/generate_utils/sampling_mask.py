@@ -19,7 +19,7 @@ def should_return_sampling_mask(
     return validate_sampling_support_request(
         params,
         replay_enabled=args.use_sampling_support_replay,
-        expected_temperature=float(getattr(args, "rollout_temperature", 1.0)),
+        expected_temperature=float(args.rollout_temperature),
     )
 
 

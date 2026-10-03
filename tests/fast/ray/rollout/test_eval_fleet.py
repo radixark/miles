@@ -9,6 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 from tests.fast.ray.rollout.conftest import make_args as _make_args
+from tests.fast.ray.rollout.conftest import make_rollout_config
 
 import miles.ray.rollout.eval_fleet as eval_fleet_mod
 from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
@@ -20,20 +21,28 @@ from miles.ray.rollout.eval_fleet import (
 )
 from miles.ray.rollout.rollout_server import RolloutServer
 from miles.rollout.checkpoint_eval import EvalSkip
+from miles.utils.args.component_rollout import InferenceRuntimeMutState
 from miles.utils.context_lock import ContextLock
 from miles.utils.workers.rpc.client.misc import RpcWorkerCallError, ServerRestartedError
 from miles.utils.workers.worker_handle import WorkerUnreachableError
 from miles.utils.workers.worker_spec import HostAndPort
 
 
+_FLEET_ARGS = dict(
+    eval_num_gpus=1,
+    eval_num_gpus_per_engine=1,
+    sglang_model_routers={"default": ("10.0.0.1", 30000), "eval": ("10.0.0.2", 31000)},
+)
+
+_FLEET_INFO = EvalFleetInfo(router=HostAndPort(host="10.0.0.2", port=31000), engine_gpu_counts=[1, 1])
+
+
 def make_args(**overrides):
-    defaults = dict(
-        eval_num_gpus=1,
-        eval_num_gpus_per_engine=1,
-        sglang_model_routers={"default": ("10.0.0.1", 30000), "eval": ("10.0.0.2", 31000)},
-    )
-    defaults.update(overrides)
-    return _make_args(**defaults)
+    return _make_args(**{**_FLEET_ARGS, **overrides})
+
+
+def make_config(**overrides):
+    return make_rollout_config(**{**_FLEET_ARGS, **overrides})
 
 
 class FakeEngine:
@@ -53,8 +62,9 @@ class FakeEngine:
 
 
 class FakeEvalServer:
-    def __init__(self, engines):
+    def __init__(self, engines, *, engine_gpu_counts=()):
         self._engines = engines
+        self._engine_gpu_counts = list(engine_gpu_counts)
         self.context_lock = ContextLock("FakeEvalServer")
         self.router_ip = "10.0.0.2"
         self.router_port = 31000
@@ -63,6 +73,11 @@ class FakeEvalServer:
     def api_clients(self):
         assert self.context_lock.held_in_current_context, "api_clients is read under the server's lock"
         return list(self._engines)
+
+    @property
+    def engine_gpu_counts(self):
+        assert self.context_lock.held_in_current_context, "engine_gpu_counts is read under the server's lock"
+        return list(self._engine_gpu_counts)
 
 
 class FlakyEngine(FakeEngine):
@@ -102,17 +117,18 @@ def router_ready(monkeypatch):
     monkeypatch.setattr(eval_fleet_mod.InferenceControllerEvalFleet, "_wait_router_ready", noop_router_ready)
 
 
-def make_fleet(args, engines):
-    return InferenceControllerEvalFleet(args, srv=FakeEvalServer(engines))
+def make_fleet(args, engines, *, engine_gpu_counts=()):
+    return InferenceControllerEvalFleet(args, srv=FakeEvalServer(engines, engine_gpu_counts=engine_gpu_counts))
 
 
 class TestEvalFleetInfo:
-    def test_describes_the_fleet_its_router_serves(self):
+    @pytest.mark.asyncio
+    async def test_describes_the_fleet_its_router_serves(self):
         """The description the executor retargets its eval args to comes from the server, not its own args."""
-        fleet = make_fleet(make_args(eval_num_gpus=4, eval_num_gpus_per_engine=2), [])
+        fleet = make_fleet(make_args(eval_num_gpus=4, eval_num_gpus_per_engine=2), [], engine_gpu_counts=[2, 2])
 
-        assert fleet.info == EvalFleetInfo(
-            router=HostAndPort(host="10.0.0.2", port=31000), num_gpus=4, num_gpus_per_engine=2
+        assert await fleet.info() == EvalFleetInfo(
+            router=HostAndPort(host="10.0.0.2", port=31000), engine_gpu_counts=[2, 2]
         )
 
 
@@ -284,9 +300,13 @@ class TestRouterProbe:
 
 
 class FakeInferenceController:
-    def __init__(self, pins: list[EvalFleetPin]):
+    def __init__(self, pins: list[EvalFleetPin], *, info: EvalFleetInfo | None = _FLEET_INFO):
         self.calls: list[dict] = []
         self._pins = pins
+        self._info = info
+
+    async def get_eval_fleet_info(self) -> EvalFleetInfo | None:
+        return self._info
 
     async def pin_eval_fleet(self, *, checkpoint_dir: str, weight_version: str) -> EvalFleetPin:
         self.calls.append(dict(checkpoint_dir=checkpoint_dir, weight_version=weight_version))
@@ -311,7 +331,7 @@ class FakeControllerProvider:
 @pytest.fixture
 def fleet_states(monkeypatch):
     built = []
-    monkeypatch.setattr(eval_fleet_mod, "GenerateState", lambda args: built.append(args) or f"fake-state-{len(built)}")
+    monkeypatch.setattr(eval_fleet_mod, "GenerateState", lambda args: built.append(args) or SimpleNamespace(args=args))
     return built
 
 
@@ -321,8 +341,8 @@ def make_session(controller, *, info=None):
 
 def make_session_over(provider, *, info=None):
     return RolloutExecutorEvalFleet(
-        make_args(),
-        info=info or EvalFleetInfo(router=HostAndPort(host="10.0.0.2", port=31000), num_gpus=2, num_gpus_per_engine=1),
+        make_config(),
+        info=info or _FLEET_INFO,
         inference_controller_provider=provider,
     )
 
@@ -334,7 +354,7 @@ class TestRolloutExecutorEvalFleet:
 
         (state_args,) = fleet_states
         assert (state_args.sglang_router_ip, state_args.sglang_router_port) == ("10.0.0.2", 31000)
-        assert (state_args.rollout_num_gpus, state_args.rollout_num_gpus_per_engine) == (2, 1)
+        assert state_args.inference_runtime_mut_state == InferenceRuntimeMutState(engine_count=2, gpu_count=2)
 
     async def test_pins_over_rpc_and_returns_the_cached_state(self, fleet_states):
         """Pinning is the controller's call; the state is built once and handed back per point."""
@@ -348,8 +368,27 @@ class TestRolloutExecutorEvalFleet:
             dict(checkpoint_dir="/snap/step_5", weight_version="5"),
             dict(checkpoint_dir="/snap/step_6", weight_version="6"),
         ]
-        assert first == second == "fake-state-1"
-        assert len(fleet_states) == 1
+        assert first is second
+        assert [state.args for state in (first,)] == fleet_states
+        assert first.args.inference_runtime_mut_state == InferenceRuntimeMutState(engine_count=2, gpu_count=2)
+
+    async def test_a_pin_records_the_engine_topology_the_controller_now_reports(self, fleet_states):
+        """The eval fleet may have resized since the state was built, and the state sizes its semaphore off it."""
+        info = EvalFleetInfo(router=HostAndPort(host="10.0.0.2", port=31000), engine_gpu_counts=[4, 4, 4])
+        session = make_session(FakeInferenceController([EvalFleetPin(skip_reason=None)], info=info))
+
+        state = await session.pin("/snap/step_5", "5")
+
+        assert state.args.inference_runtime_mut_state == InferenceRuntimeMutState(engine_count=3, gpu_count=12)
+
+    async def test_a_controller_without_an_eval_fleet_skips_the_point(self, fleet_states):
+        """A pinned point whose fleet vanished has no engines to generate against, so it is skipped."""
+        session = make_session(FakeInferenceController([EvalFleetPin(skip_reason=None)], info=None))
+
+        with pytest.raises(EvalSkip) as exc:
+            await session.pin("/snap/step_5", "5")
+
+        assert exc.value.reason == "controller_unreachable"
 
     async def test_a_remote_skip_stays_an_attributable_skip(self, fleet_states):
         """The reason the controller skipped for must survive the wire as EvalSkip."""

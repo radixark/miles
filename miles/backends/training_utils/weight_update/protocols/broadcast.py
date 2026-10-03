@@ -65,10 +65,10 @@ class UpdateWeightFromDistributed(WeightTransferProtocol):
         if self.is_sender:
             self.group_name = f"miles-pp_{shard}"
             disconnect_rollout_engines_from_distributed(
-                self.args, self.group_name, self._model_update_groups, self.rollout_engines
+                self.group_name, self._model_update_groups, self.rollout_engines
             )
             self._model_update_groups = connect_rollout_engines_from_distributed(
-                self.args, self.group_name, rollout_engines, engine_gpu_counts=engine_gpu_counts
+                self.group_name, rollout_engines, engine_gpu_counts=engine_gpu_counts
             )
 
     def send_bucket(self, bucket: list[tuple[str, torch.Tensor]]) -> None:
@@ -86,7 +86,6 @@ class UpdateWeightFromDistributed(WeightTransferProtocol):
 
 
 def connect_rollout_engines_from_distributed(
-    args: Namespace,
     group_name: str,
     rollout_engines: Sequence[SGLangApiClient],
     engine_gpu_counts: Sequence[int] | None = None,
@@ -98,8 +97,7 @@ def connect_rollout_engines_from_distributed(
     have heterogeneous TP sizes (e.g. prefill TP=2, decode TP=4), each engine
     occupies a different number of ranks in the NCCL group.
     """
-    if engine_gpu_counts is None:
-        engine_gpu_counts = [args.rollout_num_gpus_per_engine] * len(rollout_engines)
+    assert engine_gpu_counts is not None and len(engine_gpu_counts) == len(rollout_engines)
     master_address = ray._private.services.get_node_ip_address()
     with socket.socket() as sock:
         sock.bind(("", 0))
@@ -133,7 +131,7 @@ def connect_rollout_engines_from_distributed(
     return model_update_groups
 
 
-def disconnect_rollout_engines_from_distributed(args, group_name, model_update_groups, rollout_engines):
+def disconnect_rollout_engines_from_distributed(group_name, model_update_groups, rollout_engines):
     """
     Destroy NCCL on training and engines.
     """

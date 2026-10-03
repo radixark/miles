@@ -1,0 +1,11 @@
+--- megatron
++++ megatron_session_v1
+@@ -1215 +1215 @@
+-    assignment_mode: random
++    assignment_mode: min_load
+@@ -1822 +1822 @@
+-  sglang_router_policy: null
++  sglang_router_policy: manual
+@@ -1886 +1886 @@
+-  use_session_server: false
++  use_session_server: true

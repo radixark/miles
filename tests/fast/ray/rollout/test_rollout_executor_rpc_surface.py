@@ -72,7 +72,7 @@ class TestRolloutExecutorLifecycleRpc:
 
         executor.start(
             spec=specs["load"],
-            kwargs={"rollout_id": 7},
+            kwargs={"rollout_id": 7, "load": str(tmp_path)},
             call_id="load",
             finish=recorder.finish,
         )

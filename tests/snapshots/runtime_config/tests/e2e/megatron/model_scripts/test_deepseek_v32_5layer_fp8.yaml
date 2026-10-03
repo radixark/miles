@@ -1,0 +1,233 @@
+processes:
+  tests/e2e/megatron/model_scripts/test_deepseek_v32_5layer_fp8/run-0000/all/default/actor_cell00000:
+    diffs:
+      checkpoint_load-0000: &id001
+        set:
+          <<: &id002
+            /args/backend/lr_decay_iters: 2
+            /args/backend/model_type: {$enum: megatron.core.enums.ModelType, name: encoder_or_decoder}
+            /args/backend/train_iters: 2
+          /args/backend/ckpt_step: null
+          /args/backend/finetune: true
+          /args/backend/load: /root/models/DeepSeek-V3.2-5layer_torch_dist
+          /args/backend/no_load_optim: true
+          /args/backend/no_load_rng: true
+          /load: /root/models/DeepSeek-V3.2-5layer_torch_dist
+          /local_checkpoint_manager: false
+      checkpoint_load-0001: *id001
+      train_first_step-0000:
+        set:
+          <<: *id002
+          /role: actor
+    overrides:
+      remove: &id008 [/args/backend/ckpt_step, /args/backend/finetune, /args/backend/load, /args/backend/no_load_optim, /args/backend/no_load_rng]
+      set:
+        <<: &id009
+          /args/backend/add_position_embedding: true
+          /args/backend/apply_rope_fusion: false
+          /args/backend/enable_experimental: false
+          /args/backend/eval_global_batch_size: 256
+          /args/backend/ffn_hidden_size: 18432
+          /args/backend/global_batch_size: 256
+          /args/backend/hidden_size: 7168
+          /args/backend/indexer_rope_interleave: false
+          /args/backend/kv_channels: 128
+          /args/backend/layernorm_epsilon: 1.0e-06
+          /args/backend/make_vocab_size_divisible_by: 128
+          /args/backend/moe_enable_deepep: false
+          /args/backend/moe_router_group_topk: 4
+          /args/backend/moe_router_num_groups: 8
+          /args/backend/moe_token_dispatcher_type: alltoall
+          /args/backend/mscale_all_dim: 1.0
+          /args/backend/num_attention_heads: 128
+          /args/backend/padded_vocab_size: 129536
+          /args/backend/q_lora_rank: 1536
+          /args/backend/qk_head_dim: 128
+          /args/backend/rotary_base: 10000
+          /args/backend/rotary_scaling_factor: 40.0
+          /args/backend/tokenizer_model: /root/models/DeepSeek-V3.2-5layer/
+          /args/backend/v_head_dim: 128
+          /args/backend/vocab_size: 129280
+          /args/backend/wandb_project: miles-run_deepseek_v32
+    ranks: [0, 1, 2, 3]
+    template: trainer-megatron-01
+  tests/e2e/megatron/model_scripts/test_deepseek_v32_5layer_fp8/run-0000/all/default/inference_controller:
+    diffs: &id005
+      router_endpoints-0000:
+        set:
+          <<: &id003
+            /args/sglang_model_routers: {default: {$tuple: [$HOST, $PORT]}}
+            /args/sglang_router_ip: $HOST
+            /args/sglang_router_port: $PORT
+    overrides:
+      remove: [/args/backend, /args/trainer_actor_index, /args/trainer_role]
+      set:
+        <<: &id004
+          /args/global_batch_size: 256
+          /args/load: /root/shared_data/$RUN_ID_0000/checkpoints
+          /args/num_layers: 5
+          /args/rollout_indexer_topk_num_streams: 5
+          /args/wandb_project: miles-run_deepseek_v32
+        /args/async_save: false
+        /args/ckpt_step: null
+        /args/distributed_backend: nccl
+        /args/distributed_timeout_minutes: 10
+        /args/eval_interval: null
+        /args/low_memory_resume: false
+        /args/micro_batch_size: 1
+        /args/save: null
+        /args/save_interval: null
+        /args/seed: 1234
+        /args/trainer_init_expected_num_cells: null
+    template: trainer-megatron-01
+  tests/e2e/megatron/model_scripts/test_deepseek_v32_5layer_fp8/run-0000/all/default/main:
+    diffs:
+      router_endpoints-0000:
+        set:
+          <<: *id003
+          /args/wandb_run_id: $WANDB_RUN_ID_0000
+      tracking_config-0000: {set: {/args/wandb_run_id: $WANDB_RUN_ID_0000}}
+    overrides:
+      set:
+        <<:
+        - *id004
+        - &id006
+          /args/allgather_cp: true
+          /args/colocate: false
+          /args/config_snapshot_name: tests/e2e/megatron/model_scripts/test_deepseek_v32_5layer_fp8/run-0000
+          /args/data_pad_size_multiplier: 4096
+          /args/input_key: prompt
+          /args/log_probs_chunk_size: 1024
+          /args/num_rollout: 2
+          /args/offload_rollout: false
+          /args/offload_train: false
+          /args/raw_megatron/base_args/apply_rope_fusion: false
+          /args/raw_megatron/base_args/disable_grad_buffers_cpu_backup: false
+          /args/raw_megatron/base_args/disable_param_buffers_cpu_backup: false
+          /args/raw_megatron/base_args/encoder_num_layers: 5
+          /args/raw_megatron/base_args/eval_global_batch_size: 256
+          /args/raw_megatron/base_args/expert_model_parallel_size: 4
+          /args/raw_megatron/base_args/ffn_hidden_size: 18432
+          /args/raw_megatron/base_args/finetune: false
+          /args/raw_megatron/base_args/global_batch_size: 256
+          /args/raw_megatron/base_args/group_query_attention: false
+          /args/raw_megatron/base_args/hidden_size: 7168
+          /args/raw_megatron/base_args/indexer_rope_interleave: false
+          /args/raw_megatron/base_args/kv_lora_rank: 512
+          /args/raw_megatron/base_args/load: /root/shared_data/$RUN_ID_0000/checkpoints
+          /args/raw_megatron/base_args/moe_ffn_hidden_size: 2048
+          /args/raw_megatron/base_args/moe_grouped_gemm: true
+          /args/raw_megatron/base_args/moe_layer_freq: [0, 0, 0, 1, 1]
+          /args/raw_megatron/base_args/moe_permute_fusion: true
+          /args/raw_megatron/base_args/moe_router_bias_update_rate: 0.0
+          /args/raw_megatron/base_args/moe_router_dtype: fp32
+          /args/raw_megatron/base_args/moe_router_enable_expert_bias: true
+          /args/raw_megatron/base_args/moe_router_group_topk: 4
+          /args/raw_megatron/base_args/moe_router_load_balancing_type: seq_aux_loss
+          /args/raw_megatron/base_args/moe_router_num_groups: 8
+          /args/raw_megatron/base_args/moe_router_pre_softmax: true
+          /args/raw_megatron/base_args/moe_router_score_function: sigmoid
+          /args/raw_megatron/base_args/moe_router_topk: 8
+          /args/raw_megatron/base_args/moe_router_topk_scaling_factor: 2.5
+          /args/raw_megatron/base_args/moe_shared_expert_intermediate_size: 2048
+          /args/raw_megatron/base_args/mscale_all_dim: 1.0
+          /args/raw_megatron/base_args/multi_latent_attention: true
+          /args/raw_megatron/base_args/no_load_optim: null
+          /args/raw_megatron/base_args/no_load_rng: null
+          /args/raw_megatron/base_args/num_attention_heads: 128
+          /args/raw_megatron/base_args/num_experts: 256
+          /args/raw_megatron/base_args/num_layers: 5
+          /args/raw_megatron/base_args/num_query_groups: 1
+          /args/raw_megatron/base_args/optimizer_cpu_offload: true
+          /args/raw_megatron/base_args/overlap_cpu_optimizer_d2h_h2d: true
+          /args/raw_megatron/base_args/padded_vocab_size: 129536
+          /args/raw_megatron/base_args/q_lora_rank: 1536
+          /args/raw_megatron/base_args/rollout_indexer_topk_num_streams: 5
+          /args/raw_megatron/base_args/rope_type: yarn
+          /args/raw_megatron/base_args/rotary_base: 10000
+          /args/raw_megatron/base_args/rotary_scaling_factor: 40.0
+          /args/raw_megatron/base_args/spec: [miles_plugins.models.glm5.glm5, get_glm5_spec]
+          /args/raw_megatron/base_args/tensor_model_parallel_size: 4
+          /args/raw_megatron/base_args/tokenizer_model: /root/models/DeepSeek-V3.2-5layer/
+          /args/raw_megatron/base_args/use_precision_aware_optimizer: true
+          /args/raw_megatron/base_args/use_rotary_position_embeddings: false
+          /args/raw_megatron/base_args/vocab_size: 129280
+          /args/raw_megatron/base_args/wandb_project: miles-run_deepseek_v32
+          /args/raw_megatron/base_args/world_size: 4
+          /args/requested_load: /root/shared_data/$RUN_ID_0000/checkpoints
+          /args/rollout_num_gpus_per_engine: 2
+          /args/router_args/dp_aware: true
+          /args/sglang/base_args/attention_backend: nsa
+          /args/sglang/base_args/cuda_graph_backend_prefill: null
+          /args/sglang/base_args/cuda_graph_max_bs_decode: 256
+          /args/sglang/base_args/disable_shared_experts_fusion: true
+          /args/sglang/base_args/dp_size: 2
+          /args/sglang/base_args/dsa_decode_backend: flashmla_sparse
+          /args/sglang/base_args/dsa_prefill_backend: flashmla_sparse
+          /args/sglang/base_args/enable_dp_attention: true
+          /args/sglang/base_args/enable_dp_lm_head: true
+          /args/sglang/base_args/kv_cache_dtype: bf16
+          /args/sglang/base_args/page_size: 64
+          /args/sglang/base_args/tp_size: 2
+          /args/update_weight_buffer_size: 2147483648
+          /args/use_kl_loss: true
+          /args/use_rollout_routing_replay: true
+          /args/use_routing_replay: true
+          /args/wandb_group: $RUN_ID_0000_$CI_COMMIT_NAME_github
+        - &id007
+          /args/balance_data: true
+          /args/check_weight_update_allow_quant_error: true
+          /args/critic_load: /root/shared_data/$RUN_ID_0000/checkpoints
+          /args/freeze_indexer: true
+          /args/hf_checkpoint: /root/models/DeepSeek-V3.2-5layer/
+          /args/log_probs_max_tokens_per_gpu: 32768
+          /args/max_tokens_per_gpu: 32768
+          /args/ref_load: /root/models/DeepSeek-V3.2-5layer_torch_dist
+          /args/rollout_batch_size: 32
+          /args/sglang/base_args/mem_fraction_static: 0.8
+          /args/sglang/base_args/moe_runner_backend: triton
+          /args/sglang/models:
+          - model_path: null
+            name: default
+            server_groups:
+            - needs_offload: false
+              num_gpus_per_engine: 2
+              overrides: {model_path: /root/models/DeepSeek-V3.2-5layer/}
+              worker_type: {$enum: miles.backends.sglang_utils.sglang_api_client.WorkerType, name: REGULAR}
+            update_weights: true
+          /args/skip_actor_forward_only: true
+          /args/start_rollout_id: null
+    template: main-01
+  tests/e2e/megatron/model_scripts/test_deepseek_v32_5layer_fp8/run-0000/all/default/rollout_executor:
+    diffs: *id005
+    overrides: &id010
+      set:
+        <<:
+        - *id004
+        - *id006
+        - *id007
+        /args/over_sampling_batch_size: 32
+    template: rollout_executor-01
+  tests/e2e/megatron/model_scripts/test_deepseek_v32_5layer_fp8/run-0000/all/default/trainer_controller_actor:
+    overrides:
+      remove: *id008
+      set:
+        <<: *id009
+        /args/backend/rank: 0
+    template: trainer-megatron-01
+  tests/e2e/megatron/model_scripts/test_deepseek_v32_5layer_fp8/run-0000/all/default/worker_manager:
+    overrides: *id010
+    template: worker_manager-01
+shared_overrides:
+  trainer-megatron-01:
+    set:
+      <<: *id007
+      /args/ci_disable_logprobs_checker: false
+      /args/log_inference_engine_weight_checksums: false
+      /args/rollout_max_response_len: 8192
+      /args/save_debug_event_data: /tmp/miles-ci/$RUN_UUID/events
+      /args/sglang/base_args/chunked_prefill_size: null
+      /args/sglang/base_args/ep_size: 1
+      /args/sglang/base_args/max_running_requests: null
+      /args/sglang/base_args/moe_dense_tp_size: null
+      /args/sglang/base_args/watchdog_timeout: 300

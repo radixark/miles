@@ -249,10 +249,9 @@ def _memory_args(chunk_size: int, vocab_size: int) -> Namespace:
         qkv_format="thd",
         rollout_temperature=1.0,
         true_on_policy_mode=True,
-        bf16=True,
-        fp16=False,
+        train_backend="megatron",
+        backend=Namespace(bf16=True, fp16=False, vocab_size=vocab_size),
         log_probs_chunk_size=chunk_size,
-        vocab_size=vocab_size,
         allgather_cp=False,
         debug_unified_grad_fused_logprob=False,
     )

@@ -1,0 +1,14 @@
+--- megatron
++++ megatron_custom_yaml
+@@ -56 +56 @@
+-  critic_lr: 1.0e-06
++  critic_lr: 9.0e-06
+@@ -123 +123 @@
+-  eps_clip: 0.2
++  eps_clip: 0.31
+@@ -125 +125 @@
+-  eps_clip_high: 0.2
++  eps_clip_high: 0.31
+@@ -707 +707 @@
+-      lr: 1.0e-06
++      lr: 9.0e-06

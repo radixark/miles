@@ -11,11 +11,8 @@ def test_post_layernorm_flags_propagate_to_megatron(monkeypatch):
     import torch
     from megatron.training.arguments import core_transformer_config_from_args
 
-    import miles.backends.megatron_utils.arguments as megatron_arguments
-    import miles.utils.arguments as miles_arguments
-
-    monkeypatch.setattr(miles_arguments, "miles_validate_args", lambda args: None)
-    monkeypatch.setattr(megatron_arguments, "validate_args", lambda args: None)
+    from miles.backends.megatron_utils.arguments import parse_args as megatron_parse_args
+    from miles.utils.arguments import get_miles_extra_args_provider
 
     argv = [
         "pytest",
@@ -34,7 +31,7 @@ def test_post_layernorm_flags_propagate_to_megatron(monkeypatch):
     ]
     monkeypatch.setattr(sys, "argv", argv)
 
-    args = miles_arguments.parse_args()
+    args = megatron_parse_args(extra_args_provider=get_miles_extra_args_provider())
 
     assert args.post_self_attn_layernorm is True
     assert args.post_mlp_layernorm is True
@@ -69,18 +66,16 @@ def test_kimi_yarn_flags_propagate_to_megatron(monkeypatch, model_type, beta_fas
     from megatron.core.transformer.transformer_config import MLATransformerConfig
     from megatron.training.arguments import core_transformer_config_from_args
 
-    import miles.backends.megatron_utils.arguments as megatron_arguments
-    import miles.utils.arguments as miles_arguments
+    from miles.backends.megatron_utils.arguments import parse_args as megatron_parse_args
+    from miles.utils.arguments import get_miles_extra_args_provider
 
-    monkeypatch.setattr(miles_arguments, "miles_validate_args", lambda args: None)
-    monkeypatch.setattr(megatron_arguments, "validate_args", lambda args: None)
     monkeypatch.setattr(
         sys,
         "argv",
         ["pytest", "--train-backend", "megatron", "--rollout-batch-size", "1", *expand_model_args(model_type)],
     )
 
-    args = miles_arguments.parse_args()
+    args = megatron_parse_args(extra_args_provider=get_miles_extra_args_provider())
     if args.bf16:
         args.params_dtype = torch.bfloat16
     elif args.fp16:

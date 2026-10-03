@@ -1,0 +1,17 @@
+--- fsdp
++++ fsdp_dump_details
+@@ -106 +106 @@
+-  dump_details: null
++  dump_details: $FIXTURES/dump
+@@ -188 +188 @@
+-  log_inference_engine_weight_checksums: false
++  log_inference_engine_weight_checksums: true
+@@ -483,4 +483,4 @@
+-  save_debug_event_data: null
+-  save_debug_rollout_data: null
+-  save_debug_train_data: null
+-  save_debug_trajectory_data: null
++  save_debug_event_data: $FIXTURES/dump/events
++  save_debug_rollout_data: $FIXTURES/dump/rollout_data/{rollout_id}.pt
++  save_debug_train_data: $FIXTURES/dump/train_data/{rollout_id}_{rank}.pt
++  save_debug_trajectory_data: $FIXTURES/dump/trajectory/{rollout_id}.jsonl

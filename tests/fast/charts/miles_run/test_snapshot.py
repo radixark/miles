@@ -19,14 +19,16 @@ from tests.fast.charts.utils import (
     objects_of_kind,
     requires_helm,
 )
-from tests.fast.launch_scripts.sh_harness import REPO_ROOT, SANDBOX_PLACEHOLDER, assert_matches_snapshot
+from tests.fast.launch_scripts.sh_harness import REPO_ROOT, SANDBOX_PLACEHOLDER
+from tests.fast.utils.external_utils.command_utils.helm_backend.launcher.values.utils import build_values_as_launched
 
 from miles.ray.specs.entrypoint import compute_specs
+from miles.utils.args.configs.scaling import ScalingConfig
 from miles.utils.arguments import parse_args
 from miles.utils.external_utils.command_utils.common import rsync_cmd
-from miles.utils.external_utils.command_utils.helm_backend.launcher.values.builder import build_values
 from miles.utils.external_utils.command_utils.helm_backend.launcher.values.misc import LaunchPlan
 from miles.utils.external_utils.model_args_utils import load_model_args
+from miles.utils.test_utils.snapshot import assert_matches_snapshot
 from miles.utils.workers.serving.utils import override_argv
 
 SNAPSHOT_DIR = REPO_ROOT / "tests" / "snapshots" / "charts" / "miles-run"
@@ -194,14 +196,11 @@ def _dump_values(values: dict[str, Any]) -> str:
 _NO_WRAP = 1 << 30
 
 
-def synthetic_specs() -> list[Any]:
-    with override_argv(SCENARIO_ARGV):
-        return compute_specs(parse_args())
-
-
 def synthetic_run_values() -> dict[str, Any]:
-    return build_values(
-        synthetic_specs(),
+    with override_argv(SCENARIO_ARGV):
+        args = parse_args()
+    return build_values_as_launched(
+        compute_specs(args),
         LaunchPlan(
             run_id=RUN_ID,
             release=RUN_RELEASE_NAME,
@@ -213,6 +212,7 @@ def synthetic_run_values() -> dict[str, Any]:
             colocate=True,
             prepare_cmd=PREPARE_CMD,
         ),
+        scaling=ScalingConfig.slice_from(args),
     ).as_values()
 
 

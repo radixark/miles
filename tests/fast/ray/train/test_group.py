@@ -16,6 +16,7 @@ import miles.utils.test_utils.fault_injector.controller as fault_hook_module
 from miles.backends.megatron_utils.ft.types import TrainStepOutcome, TrainStepOutput
 from miles.ray.rollout.inference_controller import UpdatableEngines
 from miles.ray.train.group import TrainerController, compute_trainer_health_checker_config
+from miles.ray.train.init_request import TrainerControllerInitRequest
 from miles.ray.train_actor import WeightUpdateOutput
 from miles.utils import object_store
 from miles.utils.audit_utils.event_logger.logger import EventLogger, read_events, set_event_logger
@@ -52,6 +53,9 @@ def _make_mock_args(
     ci_fault_hooks_path: str | None = None,
     colocate: bool = True,
     update_weight_transfer_mode: str = "broadcast",
+    trainer_id: str = "actor",
+    use_kl_loss: bool = False,
+    use_opd: bool = False,
 ) -> SimpleNamespace:
     # Use SimpleNamespace (not MagicMock) so the args object is picklable. TrainerCell.init
     # passes self.args through Ray to the remote actor; pickling a MagicMock blows the
@@ -78,12 +82,23 @@ def _make_mock_args(
         context_parallel_size=gpus_per_cell,
         actor_num_nodes=1,
         actor_num_gpus_per_node=num_cells * gpus_per_cell,
+        trainer_init_expected_num_cells=num_cells,
+        ci_test=False,
+        ci_disable_config_snapshot=False,
+        save_debug_event_data=None,
+        enable_event_analyzer=False,
         object_store_backend="ray",
         worker_comm_backend="ray",
         trainer_model_id=None,
         colocate=colocate,
         update_weight_transfer_mode=update_weight_transfer_mode,
         update_weights_timeout=None,
+        trainer_id=trainer_id,
+        trainer_role="actor",
+        kl_coef=0,
+        use_kl_loss=use_kl_loss,
+        use_opd=use_opd,
+        opd_type="megatron",
     )
 
 
@@ -99,20 +114,18 @@ def _make_controller(
     train_conftest.fake_worker_manager.num_cells = num_cells
     train_conftest.fake_worker_manager.actor_count_per_cell = actor_count_per_cell
     group = TrainerController(
+        args=_make_mock_args(
+            indep_dp=True,
+            gpus_per_cell=actor_count_per_cell,
+            num_cells=num_cells,
+            ci_fault_hooks=ci_fault_hooks,
+            ci_fault_hooks_path=None,
+            use_kl_loss=with_ref,
+            use_opd=with_opd_teacher,
+        ),
         deployment_identity=make_deployment_identity(),
-        trainer_id="actor",
-        role="actor",
-        with_ref=with_ref,
-        with_opd_teacher=with_opd_teacher,
         cell_provider=make_provider(),
         cell_operations=AsyncMock(),
-    )
-    group.args = _make_mock_args(
-        indep_dp=True,
-        gpus_per_cell=actor_count_per_cell,
-        num_cells=num_cells,
-        ci_fault_hooks=ci_fault_hooks,
-        ci_fault_hooks_path=None,
     )
     group._health_checker_config = compute_trainer_health_checker_config(
         group.args, expected_num_cells=group._expected_num_cells
@@ -164,7 +177,7 @@ def _was_killed(group: TrainerController, cell_index: int) -> bool:
 
 async def _init_controller(group: TrainerController) -> None:
     """Call init and wait for all cells to become alive."""
-    await group.init(group.args)
+    await group.init(TrainerControllerInitRequest(num_rollout=None, wandb_run_id=None, mlflow_run_id=None))
 
 
 async def _make_alive_controller(*, num_cells: int = 3, **kwargs) -> TrainerController:
@@ -211,11 +224,8 @@ class TestInit:
     def test_the_controller_watches_the_pool_of_its_trainer_id(self):
         """A policy's controller owns the pool named after its trainer id, which the role no longer determines."""
         group = TrainerController(
+            args=_make_mock_args(trainer_id="alpha-actor"),
             deployment_identity=make_deployment_identity(),
-            trainer_id="alpha-actor",
-            role="actor",
-            with_ref=False,
-            with_opd_teacher=False,
             cell_provider=make_provider(),
             cell_operations=AsyncMock(),
         )
@@ -1502,7 +1512,7 @@ class TestUpdateWeightsReachesTheWorker:
             ray.get(handle.set_update_weights_return_value.remote(_output(1)))
         assert _outcome_of(await group.update_weights(info=info)) == _outcome_of(_output(1))
 
-        await group.load_state()
+        await group.load_state(TrainerControllerInitRequest(num_rollout=None, wandb_run_id=None, mlflow_run_id=None))
         for handle in handles:
             ray.get(handle.set_update_weights_return_value.remote(_output(2)))
 
@@ -2047,7 +2057,7 @@ class TestWeightUpdateResultEvent:
             ray.get(handle.set_update_weights_return_value.remote(_output(1)))
         before = await group.update_weights(info=info)
 
-        await group.load_state()
+        await group.load_state(TrainerControllerInitRequest(num_rollout=None, wandb_run_id=None, mlflow_run_id=None))
         after = await group.update_weights(info=info)
 
         first, second = self._results(_event_log_dir)

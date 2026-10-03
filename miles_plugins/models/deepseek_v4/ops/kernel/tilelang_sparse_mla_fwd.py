@@ -61,7 +61,9 @@ def sparse_mqa_fwd(
 
     H_per_block = padded_H if REPLICATE_H == 1 else 64
 
-    is_hip = getattr(torch.version, "hip", None)
+    is_hip = getattr(
+        torch.version, "hip", None
+    )  # config-access-exempt: CPU and CUDA torch builds may omit HIP version metadata
     if is_hip:
         # Limit pipeline buffering for 64-head HIP tiles to reduce LDS use.
         kernel_num_stages = min(num_stages, 1) if H_per_block == 64 else num_stages

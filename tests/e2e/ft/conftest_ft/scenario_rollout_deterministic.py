@@ -86,7 +86,7 @@ def _run_side(request: RunSideRequest) -> None:
             ),
             event_log=event_log,
             evidence_dir=evidence_dir,
-            cell_fault_forms=create_cell_fault_forms(config, triggers=frozenset({FaultTrigger.TIMER})),
+            forms=create_cell_fault_forms(config, triggers=frozenset({FaultTrigger.TIMER})),
         )
     )
     if target:

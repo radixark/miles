@@ -1,0 +1,11 @@
+--- fsdp
++++ fsdp_session_v1
+@@ -385 +385 @@
+-    assignment_mode: random
++    assignment_mode: min_load
+@@ -992 +992 @@
+-  sglang_router_policy: null
++  sglang_router_policy: manual
+@@ -1056 +1056 @@
+-  use_session_server: false
++  use_session_server: true

@@ -8,7 +8,9 @@ from ..post_load_fixups import PostLoadFixup, register_post_load_fixup
 
 
 def _is_nemotron_h(hf_config) -> bool:
-    return str(getattr(hf_config, "model_type", "") or "") == "nemotron_h"
+    return (
+        str(getattr(hf_config, "model_type", "") or "") == "nemotron_h"
+    )  # config-access-exempt: model-family schemas differ in optional model_type metadata
 
 
 def _repair_pattern_to_list(hf_config, args) -> None:
@@ -34,7 +36,9 @@ def _repair_pattern_to_list(hf_config, args) -> None:
 
 
 def _packing_applies(hf_config) -> bool:
-    return "nemotron_h" in str(getattr(hf_config, "model_type", "") or "").lower()
+    return (
+        "nemotron_h" in str(getattr(hf_config, "model_type", "") or "").lower()
+    )  # config-access-exempt: model-family schemas differ in optional model_type metadata
 
 
 def _packing_apply(model):

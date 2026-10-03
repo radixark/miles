@@ -156,6 +156,9 @@ class TestRewardFuncExtraKey:
             rm_url=self.TEACHER_URL,
             sglang_router_ip="student",
             sglang_router_port=30000,
+            sglang_router_request_timeout_secs=14400,
+            opd_reward_weight_mode="student_p",
+            opd_topk_per_position=False,
         )
 
     @staticmethod

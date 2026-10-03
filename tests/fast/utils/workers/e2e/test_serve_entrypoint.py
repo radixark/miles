@@ -1,3 +1,4 @@
+import json
 import os
 import subprocess
 import sys
@@ -5,49 +6,43 @@ from collections.abc import Callable, Iterator
 from pathlib import Path
 
 import pytest
-from tests.fast.utils.workers.e2e.env_var_hooks import ENV_VAR_FN_FAILURE_MESSAGE, IMPORTED_MODULES_ENV_VAR
+from tests.fast.utils.workers.e2e.e2e_worker import (
+    ENV_VAR_FAILURE_MESSAGE,
+    RPC_PORT_FLAG,
+    E2eServeSpec,
+    E2eWorkerConfig,
+    FailingEnvE2eServeSpec,
+)
 from tests.fast.utils.workers.e2e.harness import (
-    POOL_ID,
     READY_TIMEOUT_SECONDS,
     REPO_ROOT,
-    RPC_PORT_FLAG,
     ServerProcess,
     port_is_refused,
     reserve_port,
-    wait_until_serving,
+    spawn_serve_process,
 )
-from tests.fast.utils.workers.import_probe import unexpected_light_entrypoint_imports
+from tests.fast.utils.workers.serving.registered_serve import pod_env, serve_config_argv
 
-from miles.utils.workers.env_vars import CELL_INDEX_ENV_VAR
-
-SMOKE_MODULE = "tests.fast.utils.workers.e2e.env_var_hooks"
-SMOKE_SPECS_PATH = f"{SMOKE_MODULE}.compute_specs"
-SMOKE_RAISING_SPECS_PATH = f"{SMOKE_MODULE}.compute_failing_specs"
+from miles.utils.workers.rpc.client.handle import RpcWorkerHandle
 
 
 @pytest.fixture
-def spawn_with_specs(state_dir: Path, tmp_path: Path) -> Iterator[Callable[..., ServerProcess]]:
+def spawn_with_config(state_dir: Path, tmp_path: Path) -> Iterator[Callable[..., ServerProcess]]:
     started: list[ServerProcess] = []
 
-    def start(specs_path: str) -> ServerProcess:
+    def start(*, edit_payload: Callable[[dict], None]) -> ServerProcess:
         port = reserve_port()
-        log_path = tmp_path / f"specs-server-{len(started)}.log"
+        config = E2eWorkerConfig(worker_argv=["--state-dir", str(state_dir), RPC_PORT_FLAG, str(port)])
+        (flag, payload) = serve_config_argv(spec_class=E2eServeSpec, config=config)
+        edited = json.loads(payload)
+        edit_payload(edited)
 
-        env = dict(os.environ)
-        env["PYTHONPATH"] = f"{REPO_ROOT}{os.pathsep}{env.get('PYTHONPATH', '')}"
-        env["PYTHONUNBUFFERED"] = "1"
-        env[CELL_INDEX_ENV_VAR] = "0"
-
-        argv = [sys.executable, "-m", "miles.utils.workers.serving.serve"]
-        argv += ["--specs", specs_path, "--pool-id", POOL_ID]
-        argv += ["--", "--state-dir", str(state_dir), RPC_PORT_FLAG, str(port)]
-
-        with log_path.open("w") as log_file:
-            process = subprocess.Popen(
-                argv, cwd=REPO_ROOT, env=env, stdout=log_file, stderr=subprocess.STDOUT, start_new_session=True
-            )
-
-        server = ServerProcess(port=port, process=process, log_path=log_path)
+        server = spawn_serve_process(
+            own_argv=[flag, json.dumps(edited)],
+            pod_env_vars=pod_env(E2eServeSpec.create(config)),
+            port=port,
+            log_path=tmp_path / f"config-server-{len(started)}.log",
+        )
         started.append(server)
         return server
 
@@ -63,13 +58,13 @@ class TestExecChain:
         """execve keeps the pid, so terminating the spawned process really stops the server."""
         assert await handle.report_pid() == server.process.pid
 
-    async def test_worker_argv_reaches_the_factory(self, handle):
-        """Everything after -- is handed to the worker factory."""
+    async def test_the_pool_config_reaches_the_worker(self, handle):
+        """The worker is built from the config the launcher serialized for its pool."""
         argv = await handle.report_argv()
         assert "--state-dir" in argv
 
-    async def test_worker_argv_keeps_its_own_separator(self, spawn, make_handle):
-        """Only the first -- splits, so worker argv may contain further separators."""
+    async def test_the_pool_config_arrives_verbatim(self, spawn, make_handle):
+        """Values that look like separators or flags must reach the worker unchanged."""
         server = spawn(worker_argv=["--flag", "--", "--inner"])
         handle = make_handle(server)
         await handle.wait_ready(timeout=READY_TIMEOUT_SECONDS)
@@ -77,20 +72,20 @@ class TestExecChain:
         argv = await handle.report_argv()
         assert argv[-3:] == ["--flag", "--", "--inner"]
 
-    async def test_the_spec_computes_its_env_from_the_worker_argv(self, handle):
-        """The spec is rebuilt from the run's own argv, not from the entrypoint's."""
+    async def test_the_spec_computes_its_env_from_the_pool_config(self, handle):
+        """The spec is rebuilt from the pool's own config, not from the entrypoint's."""
         recorded = await handle.report_env(name="MILES_E2E_ARGV")
         assert "--state-dir" in recorded
 
-    async def test_no_heavy_runtime_is_imported_before_the_exec(self, spawn_with_specs, make_handle):
-        """LD_PRELOAD applies to the exec'd image, so a runtime loaded before it would miss the spec's env."""
-        server = spawn_with_specs(SMOKE_SPECS_PATH)
-        wait_until_serving(server)
+    async def test_the_spec_env_is_applied_before_the_inner_worker_is_imported(
+        self, spawn: Callable[..., ServerProcess], make_handle: Callable[..., RpcWorkerHandle]
+    ) -> None:
+        """The worker's module must observe the spec's environment when the exec'd interpreter imports it."""
+        server = spawn(extra_env={"MILES_E2E_ARGV": "inherited-before-spec-env"})
         handle = make_handle(server)
         await handle.wait_ready(timeout=READY_TIMEOUT_SECONDS)
 
-        reported = await handle.report_env(name=IMPORTED_MODULES_ENV_VAR)
-        assert unexpected_light_entrypoint_imports(reported) == []
+        assert await handle.report_argv_env_at_import() == ",".join(await handle.report_argv())
 
     async def test_parent_environment_is_inherited(self, spawn, make_handle):
         """Environment from the launcher reaches the worker."""
@@ -102,18 +97,22 @@ class TestExecChain:
 
 
 class TestStartupFailures:
-    async def test_unknown_specs_path_fails_fast(self, spawn):
-        """A spec table that cannot be imported exits instead of serving."""
-        server = spawn(specs_path="no.such.module.compute_specs", wait=False)
+    async def test_an_unknown_worker_type_fails_fast(self, spawn_with_config):
+        """A pool whose worker type the image does not know exits instead of serving."""
+        server = spawn_with_config(edit_payload=lambda payload: payload.update(worker_type="no-such-worker"))
         assert server.wait(timeout=30.0) not in (None, 0)
         assert port_is_refused(server.port)
 
-    async def test_missing_specs_argument_is_a_usage_error(self, spawn):
-        """argparse rejects a missing --specs with its usage exit code."""
+        logs = server.logs()
+        assert "KeyError" in logs
+        assert "no-such-worker" in logs
+
+    async def test_missing_config_argument_is_a_usage_error(self):
+        """argparse rejects a missing --config with its usage exit code."""
         env = dict(os.environ)
         env["PYTHONPATH"] = f"{REPO_ROOT}{os.pathsep}{env.get('PYTHONPATH', '')}"
         result = subprocess.run(
-            [sys.executable, "-m", "miles.utils.workers.serving.serve", "--pool-id", POOL_ID],
+            [sys.executable, "-m", "miles.utils.workers.serving.serve"],
             cwd=REPO_ROOT,
             env=env,
             capture_output=True,
@@ -129,35 +128,29 @@ class TestStartupFailures:
         assert conflicting.wait(timeout=30.0) not in (None, 0)
         assert server.is_running()
 
-    @pytest.mark.parametrize("bad_path", ["no_colon_module", "miles.utils.workers.serving.serve.no_such_attr"])
-    async def test_bad_specs_paths_fail_fast(self, spawn, bad_path):
-        """Malformed or missing spec-table paths exit rather than serving a broken worker."""
-        server = spawn(specs_path=bad_path, wait=False)
-        assert server.wait(timeout=30.0) not in (None, 0)
-
-    async def test_unknown_specs_module_fails_fast(self, spawn_with_specs):
-        """A spec table whose module cannot be imported exits instead of serving."""
-        server = spawn_with_specs("no.such.module.compute_specs")
+    async def test_a_config_missing_a_field_fails_fast(self, spawn_with_config):
+        """A pool config the worker type cannot validate exits rather than serving a broken worker."""
+        server = spawn_with_config(edit_payload=lambda payload: payload["args"].clear())
         assert server.wait(timeout=30.0) not in (None, 0)
         assert port_is_refused(server.port)
-        assert "ModuleNotFoundError" in server.logs()
+        assert "worker_argv" in server.logs()
 
-    async def test_missing_specs_attribute_fails_fast(self, spawn_with_specs):
-        """A spec table naming an attribute the module lacks exits instead of serving."""
-        server = spawn_with_specs(f"{SMOKE_MODULE}.no_such_attr")
+    async def test_a_config_with_an_unknown_field_fails_fast(self, spawn_with_config):
+        """A field the worker type does not declare would be dropped, so the pod exits instead."""
+        server = spawn_with_config(edit_payload=lambda payload: payload["args"].update(no_such_field=1))
         assert server.wait(timeout=30.0) not in (None, 0)
         assert port_is_refused(server.port)
 
         logs = server.logs()
-        assert "AttributeError" in logs
-        assert "no_such_attr" in logs
+        assert "ValidationError" in logs
+        assert "no_such_field" in logs
 
-    async def test_a_spec_whose_env_raises_fails_fast(self, spawn_with_specs):
+    async def test_a_spec_whose_env_raises_fails_fast(self, spawn):
         """A spec that cannot compute its env exits instead of serving a worker without it."""
-        server = spawn_with_specs(SMOKE_RAISING_SPECS_PATH)
+        server = spawn(spec_class=FailingEnvE2eServeSpec, wait=False)
         assert server.wait(timeout=30.0) not in (None, 0)
         assert port_is_refused(server.port)
 
         logs = server.logs()
         assert "RuntimeError" in logs
-        assert ENV_VAR_FN_FAILURE_MESSAGE in logs
+        assert ENV_VAR_FAILURE_MESSAGE in logs

@@ -1,0 +1,10 @@
+--- fsdp
++++ fsdp_context_length_overrides
+@@ -136 +136 @@
+-  eval_max_context_len: null
++  eval_max_context_len: 2048
+@@ -367,2 +367,2 @@
+-  rollout_max_context_len: null
+-  rollout_max_prompt_len: null
++  rollout_max_context_len: 1024
++  rollout_max_prompt_len: 512

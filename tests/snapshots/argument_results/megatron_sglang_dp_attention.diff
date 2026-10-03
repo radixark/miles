@@ -1,0 +1,17 @@
+--- megatron
++++ megatron_sglang_dp_attention
+@@ -1201 +1201 @@
+-  rollout_num_gpus_per_engine: 1
++  rollout_num_gpus_per_engine: 2
+@@ -1238 +1238 @@
+-    dp_aware: false
++    dp_aware: true
+@@ -1423 +1423 @@
+-      dp_size: 1
++      dp_size: 2
+@@ -1449 +1449 @@
+-      enable_dp_attention: false
++      enable_dp_attention: true
+@@ -1797 +1797 @@
+-      tp_size: 1
++      tp_size: 2

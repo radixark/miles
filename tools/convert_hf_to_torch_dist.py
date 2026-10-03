@@ -1,6 +1,8 @@
 import gc
 import os
 import shutil
+from argparse import ArgumentParser, Namespace
+from typing import Annotated, Literal
 
 import torch
 import torch.distributed as dist
@@ -9,49 +11,55 @@ from megatron.training.arguments import parse_args, validate_args
 from megatron.training.checkpointing import get_checkpoint_name, get_checkpoint_tracker_filename, save_checkpoint
 from megatron.training.training import get_model
 
-import miles_plugins.mbridge  # noqa: F401
-from mbridge import AutoBridge
 from miles.backends.megatron_utils.arguments import set_default_megatron_args
 from miles.backends.megatron_utils.fp32_param_utils import enforce_marked_param_dtypes
 from miles.backends.megatron_utils.initialize import init
+from miles.backends.megatron_utils.megatron_config import MegatronArgsNamespace
 from miles.backends.megatron_utils.model_provider import get_model_provider_func
 from miles.backends.training_utils.model_companion import ModelCompanionInstallationUtils
+from miles.utils.args.component_trainer import TrainerOnlyConfig
+from miles.utils.args.configs.custom_megatron_plugins import CustomMegatronPluginsConfig, Dsv4MegatronPluginsConfig
+from miles.utils.args.configs.debug import DebugConfig
+from miles.utils.args.configs.mtp_training import MtpTrainingConfig
+from miles.utils.args.configs.train import TrainConfig
+from miles.utils.args.custom_function import add_user_provided_function_arguments, resolve_custom_function_configs
+from miles.utils.args.runtime_base import BaseLeafConfig
+from miles.utils.args.schema import Arg, BaseConfig, reset_arg
 from miles.utils.logging_utils import configure_logger_raw
 from miles.utils.memory_utils import print_memory
-from miles_plugins.models.deepseek_v4.arguments import add_dsv4_arguments
 
 
-def add_conversion_args(parser):
-    """Add conversion arguments, plus the plugin arguments the model scripts pass through."""
-    add_dsv4_arguments(parser)
-    parser.add_argument("--hf-checkpoint", type=str, required=True, help="HuggingFace model path")
-    parser.add_argument(
-        "--megatron-to-hf-mode",
-        choices=["raw", "bridge"],
-        default="raw",
-        help="The method to convert megatron weights to hugging face weights for SGLang.",
-    )
-    parser.add_argument(
-        "--custom-model-provider-path",
-        type=str,
-        default=None,
-        help=(
-            "Path to a custom model provider function (e.g. for models like Inkling whose mcore "
-            "module structure differs from a plain GPTModel -- model-level embed_norm, custom "
-            "router/shared-experts). When set, the offline mcore model is built by this provider "
-            "(via miles' get_model_provider_func), then the mbridge bridge populates its weights. "
-            "Signature: def provider(pre_process, post_process, vp_stage=None) -> GPTModel."
-        ),
-    )
-    try:
-        parser.add_argument("--padded-vocab-size", type=int, default=None)
-    except Exception:
-        pass
-    return parser
+class _ConversionCliConfig(BaseConfig):
+    hf_checkpoint: Annotated[str, Arg(required=True, help="HuggingFace model path")]
 
 
-def get_args():
-    args = parse_args(add_conversion_args)
+class _ConversionConfig(
+    BaseLeafConfig,
+    _ConversionCliConfig,
+    TrainerOnlyConfig,
+    TrainConfig,
+    DebugConfig,
+    CustomMegatronPluginsConfig,
+    Dsv4MegatronPluginsConfig,
+    MtpTrainingConfig,
+):
+    trainer_id: Literal["actor"] = "actor"
+    trainer_model_id: Literal[None] = None
+    trainer_role: Literal["actor"] = "actor"
+    trainer_actor_index: Literal[None] = None
+    multi_lora_n_adapters: Literal[0] = 0
+    use_rollout_routing_replay: Literal[False] = False
+
+    @classmethod
+    def add_arguments(cls, parser: ArgumentParser) -> ArgumentParser:
+        super().add_arguments(parser=parser)
+        reset_arg(parser=parser, name="--padded-vocab-size", type=int, default=None)
+        return add_user_provided_function_arguments(parser, config_class=cls)
+
+
+def get_args() -> _ConversionConfig:
+    args = parse_args(extra_args_provider=_ConversionConfig.add_arguments)
+    args.multi_lora_n_adapters = 0
     args = set_default_megatron_args(args)
 
     args.debug_deterministic_collective = False
@@ -61,8 +69,27 @@ def get_args():
     args.save_interval = 1
     args.micro_batch_size = 1
     world_size = int(os.environ.get("WORLD_SIZE", "1"))
-    args.global_batch_size = int(os.environ.get("WORLD_SIZE", "1"))
+    args.global_batch_size = world_size
 
+    _configure_pipeline_parallel(args, world_size=world_size)
+    validate_args(args)
+    return _compute_conversion_config(args)
+
+
+def _compute_conversion_config(args: Namespace) -> _ConversionConfig:
+    resolve_custom_function_configs(args, config_class=_ConversionConfig)
+    values = vars(args)
+    return _ConversionConfig.model_validate(
+        {name: value for name, value in values.items() if name in _ConversionConfig.model_fields}
+        | {
+            "backend": MegatronArgsNamespace(
+                **{name: value for name, value in values.items() if name not in _ConversionConfig.model_fields}
+            )
+        }
+    )
+
+
+def _configure_pipeline_parallel(args: Namespace, *, world_size: int) -> None:
     assert args.pipeline_model_parallel_size <= args.num_layers, (
         f"Pipeline model parallel size {args.pipeline_model_parallel_size} must be less than or equal to "
         f"number of layers {args.num_layers}."
@@ -103,11 +130,11 @@ def get_args():
         f"Using pipeline model parallel size: {args.pipeline_model_parallel_size}, decoder last pipeline num layers: {args.decoder_last_pipeline_num_layers}"
     )
 
-    validate_args(args)
-    return args
-
 
 def main():
+    import miles_plugins.mbridge  # noqa: F401
+    from mbridge import AutoBridge
+
     configure_logger_raw()
 
     # Initialize distributed environment
@@ -128,8 +155,11 @@ def main():
         device_id=torch.device(f"cuda:{local_rank}"),
     )
     args = get_args()
+    with args.backend.mutable():
+        args.backend.rank = dist.get_rank()
     init(args)
-    model = get_model(get_model_provider_func(args), ModelType.encoder_or_decoder, wrap_with_ddp=False)
+    with args.backend.mutable():
+        model = get_model(get_model_provider_func(args), ModelType.encoder_or_decoder, wrap_with_ddp=False)
     enforce_marked_param_dtypes(model)
 
     # Load model
@@ -148,8 +178,8 @@ def main():
     save_checkpoint(1, model, None, None, 0)
 
     if dist.get_rank() == 0:
-        source_dir = get_checkpoint_name(args.save, 1, False, return_base_dir=True)
-        target_dir = get_checkpoint_name(args.save, -1, True, return_base_dir=True)
+        source_dir = get_checkpoint_name(args.backend.save, 1, False, return_base_dir=True)
+        target_dir = get_checkpoint_name(args.backend.save, -1, True, return_base_dir=True)
         shutil.move(source_dir, target_dir)
 
     dist.barrier()
@@ -157,7 +187,7 @@ def main():
     # This modification must be the *last* step and after a `dist.barrier`
     # because the higher-level scripts consider this as a signal that the script has been executed successfully
     if dist.get_rank() == 0:
-        tracker_filename = get_checkpoint_tracker_filename(args.save)
+        tracker_filename = get_checkpoint_tracker_filename(args.backend.save)
         with open(tracker_filename, "w") as f:
             f.write("release")
 

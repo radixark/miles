@@ -1,0 +1,8 @@
+--- megatron
++++ megatron_reinforce
+@@ -4 +4 @@
+-  advantage_estimator: grpo
++  advantage_estimator: reinforce_plus_plus
+@@ -239 +239 @@
+-  normalize_advantages: false
++  normalize_advantages: true

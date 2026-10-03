@@ -1,7 +1,8 @@
-from types import SimpleNamespace
-
 import pytest
 from tests.fast.utils.workers.fake_ray import FakeRayCluster, FakeRayModule
+
+from miles.backends.sglang_utils.sglang_config import SglangScalingConfig
+from miles.utils.args.configs.scaling import ScalingConfig
 
 
 @pytest.fixture
@@ -15,6 +16,14 @@ def fake_ray_cluster(monkeypatch) -> FakeRayCluster:
     return cluster
 
 
-def worker_manager_args(**overrides) -> SimpleNamespace:
-    """The slice of a training run's args the worker manager reads when it configures its logger."""
-    return SimpleNamespace(**{"save_debug_event_data": None, "env_report": "", **overrides})
+class WorkerManagerArgs(ScalingConfig):
+    save_debug_event_data: str | None = None
+    env_report: str = ""
+    env_report_interval_seconds: float | None = None
+    ci_test: bool = False
+    ci_disable_config_snapshot: bool = False
+
+
+def worker_manager_args(**overrides) -> WorkerManagerArgs:
+    """The slice of a training run's args the worker manager reads: its logger settings and the run's scaling."""
+    return WorkerManagerArgs(**{"sglang_scaling": SglangScalingConfig(groups={}), **overrides})

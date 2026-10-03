@@ -12,6 +12,7 @@ from miles.backends.training_utils.loss import compute_advantages_and_returns
 from miles.backends.training_utils.loss_hub import losses as losses_module
 from miles.backends.training_utils.loss_hub.logit_processors import get_log_probs_and_entropy
 from miles.backends.training_utils.loss_hub.losses import policy_loss_function
+from miles.utils.args.custom_function import CustomFunctionConfig
 from miles.utils.ft_utils.process_group_utils import GroupInfo
 
 from .loss_test_utils import deep_clone, make_args, make_batch, make_inputs, make_parallel_state, make_rollout_data
@@ -39,7 +40,7 @@ def _run_policy_loss(args, batch, inputs, *, skip_actor_forward_only):
         batch["total_lengths"],
         batch["response_lengths"],
         batch["loss_masks"],
-        args.calculate_per_token_loss,
+        args.backend.calculate_per_token_loss,
         args.qkv_format,
         batch.get("max_seq_lens"),
     )
@@ -233,7 +234,7 @@ def test_policy_loss_rejects_missing_old_policy_log_probs(
         batch["total_lengths"],
         batch["response_lengths"],
         batch["loss_masks"],
-        args.calculate_per_token_loss,
+        args.backend.calculate_per_token_loss,
         args.qkv_format,
     )
 
@@ -339,7 +340,7 @@ def test_mismatch_metrics_keep_actor_log_probs_as_training_source(process_group,
     parallel_state = make_parallel_state()
     parallel_state.tp = GroupInfo(rank=0, size=1, group=dist.group.WORLD)
     args = make_args(
-        custom_tis_function_path="tests.fake_tis",
+        custom_tis_function_path=CustomFunctionConfig(path="tests.fake_tis"),
         entropy_coef=0.0,
         get_mismatch_metrics=True,
         observe_training_entropy=False,

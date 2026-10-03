@@ -14,10 +14,10 @@ logger = logging.getLogger(__name__)
 def check_kl(args: Namespace, log_dict: dict[str, float], step_id: int, accumulated_step_id: int) -> None:
     log_dict = strip_metrics_namespace(log_dict, trainer_model_id=args.trainer_model_id)
     if step_id == 0 and "train/ppo_kl" in log_dict and "train/pg_clipfrac" in log_dict:
-        if args.multi_latent_attention:
+        if args.backend.multi_latent_attention:
             # TODO: mla currently have non-zero kl, need further investigation
             assert log_dict["train/ppo_kl"] < 1e-8, f"{log_dict=}"
-        elif getattr(args, "lora_rank", 0) > 0:
+        elif args.lora_rank > 0:
             # LoRA weight conversion (Megatron → HF for SGLang) introduces
             # small floating-point differences, so use a relaxed threshold.
             assert abs(log_dict["train/ppo_kl"]) < 1e-8 and abs(log_dict["train/pg_clipfrac"]) < 1e-10, f"{log_dict=}"

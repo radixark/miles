@@ -62,17 +62,19 @@ class TestSetRandomSeedFromArgs:
         _patch_state(monkeypatch, _parallel_state())
         monkeypatch.setattr(initialize.tensor_parallel, "model_parallel_cuda_manual_seed", lambda *args: None)
         args = SimpleNamespace(
-            rank=0,
-            seed=1729,
-            data_parallel_random_init=True,
-            te_rng_tracker=False,
-            inference_rng_tracker=True,
+            backend=SimpleNamespace(
+                rank=0,
+                seed=1729,
+                data_parallel_random_init=True,
+                te_rng_tracker=False,
+                inference_rng_tracker=True,
+            )
         )
 
         with caplog.at_level(logging.INFO, logger=initialize.__name__):
             initialize.set_random_seed_from_args(args)
             first_values = (random.random(), np.random.random(), torch.rand(1).item())
-            args.rank = 1
+            args.backend.rank = 1
             initialize.set_random_seed_from_args(args)
             second_values = (random.random(), np.random.random(), torch.rand(1).item())
 

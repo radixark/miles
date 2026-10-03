@@ -4,10 +4,10 @@ Validates that setup_model_and_optimizer, save, and save_hf_model correctly
 route to LoRA-specific code paths depending on configuration — without GPU.
 """
 
-from argparse import Namespace
 from unittest.mock import MagicMock, patch
 
 import pytest
+from tests.fast.fixtures.args_fixtures import make_trainer_args, make_trainer_config
 
 # ---------------------------------------------------------------------------
 # _ensure_model_list
@@ -39,19 +39,19 @@ class TestShouldDisableForwardPreHook:
     def test_both_true(self):
         from miles.backends.megatron_utils.model import should_disable_forward_pre_hook
 
-        args = Namespace(use_distributed_optimizer=True, overlap_param_gather=True)
+        args = make_trainer_args(use_distributed_optimizer=True, overlap_param_gather=True)
         assert should_disable_forward_pre_hook(args) is True
 
     def test_optimizer_false(self):
         from miles.backends.megatron_utils.model import should_disable_forward_pre_hook
 
-        args = Namespace(use_distributed_optimizer=False, overlap_param_gather=True)
+        args = make_trainer_args(use_distributed_optimizer=False, overlap_param_gather=True)
         assert should_disable_forward_pre_hook(args) is False
 
     def test_overlap_false(self):
         from miles.backends.megatron_utils.model import should_disable_forward_pre_hook
 
-        args = Namespace(use_distributed_optimizer=True, overlap_param_gather=False)
+        args = make_trainer_args(use_distributed_optimizer=True, overlap_param_gather=False)
         assert should_disable_forward_pre_hook(args) is False
 
 
@@ -66,7 +66,7 @@ class TestSetupModelAndOptimizerLoraBranch:
     """Verify that LoRA-enabled actor + bridge mode routes to _setup_lora_model_via_bridge."""
 
     def _make_args(self, lora_rank=32, role="actor", mode="bridge"):
-        return Namespace(
+        return make_trainer_config(
             lora_rank=lora_rank,
             lora_adapter_path=None,
             custom_model_provider_path=None,
@@ -179,16 +179,15 @@ class TestSaveLoRaBranch:
     @patch(f"{_MODEL_MODULE}.enable_forward_pre_hook")
     @patch(f"{_MODEL_MODULE}.disable_forward_pre_hook")
     @patch(f"{_MODEL_MODULE}.should_disable_forward_pre_hook", return_value=False)
-    @patch(f"{_MODEL_MODULE}.get_args")
     @patch(f"{_MODEL_MODULE}.save_checkpoint_with_lora")
     @patch(f"{_MODEL_MODULE}.is_lora_model", return_value=True)
     def test_lora_model_calls_lora_save(
-        self, mock_is_lora, mock_save_lora, mock_get_args, mock_should, mock_disable, mock_enable, mock_save_hashes
+        self, mock_is_lora, mock_save_lora, mock_should, mock_disable, mock_enable, mock_save_hashes
     ):
         from miles.backends.megatron_utils.model import save
 
         model = [MagicMock()]
-        save(42, model, MagicMock(), MagicMock())
+        save(make_trainer_args(), 42, model, MagicMock(), MagicMock())
 
         mock_save_lora.assert_called_once()
 
@@ -196,15 +195,14 @@ class TestSaveLoRaBranch:
     @patch(f"{_MODEL_MODULE}.enable_forward_pre_hook")
     @patch(f"{_MODEL_MODULE}.disable_forward_pre_hook")
     @patch(f"{_MODEL_MODULE}.should_disable_forward_pre_hook", return_value=False)
-    @patch(f"{_MODEL_MODULE}.get_args")
     @patch(f"{_MODEL_MODULE}.save_checkpoint")
     @patch(f"{_MODEL_MODULE}.is_lora_model", return_value=False)
     def test_non_lora_model_calls_regular_save(
-        self, mock_is_lora, mock_save_ckpt, mock_get_args, mock_should, mock_disable, mock_enable, mock_save_hashes
+        self, mock_is_lora, mock_save_ckpt, mock_should, mock_disable, mock_enable, mock_save_hashes
     ):
         from miles.backends.megatron_utils.model import save
 
         model = [MagicMock()]
-        save(42, model, MagicMock(), MagicMock())
+        save(make_trainer_args(), 42, model, MagicMock(), MagicMock())
 
         mock_save_ckpt.assert_called_once()

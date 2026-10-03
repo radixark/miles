@@ -1,9 +1,11 @@
 import logging
 from argparse import Namespace
-from types import SimpleNamespace
 
 import pytest
 
+from tests.fast.fixtures.megatron_config_fixtures import encode_megatron_config
+
+from miles.backends.megatron_utils.megatron_config import resolve_megatron_config
 from miles.rollout import fully_async_data_buffer
 from miles.rollout.fully_async_data_buffer import (
     DataBuffer,
@@ -32,14 +34,22 @@ class _RecordingBuffer(DataBuffer):
 
 
 def _multi_buffer(monkeypatch: pytest.MonkeyPatch, *, model_ids: list[str]) -> DefaultMultiDataBuffer:
-    monkeypatch.setattr(
-        fully_async_data_buffer, "resolve_megatron_config", lambda args: SimpleNamespace(model_ids=model_ids)
-    )
     monkeypatch.setattr(fully_async_data_buffer, "load_function", lambda path: _RecordingBuffer)
-    args = Namespace(custom_async_data_buffer_path_per_model=[f"{one}=recording.Buffer" for one in model_ids])
+    args = _with_megatron_config(
+        Namespace(
+            custom_async_data_buffer_path_per_model=[f"{one}=recording.Buffer" for one in model_ids],
+            megatron_config=encode_megatron_config(*model_ids),
+        )
+    )
     return DefaultMultiDataBuffer(
         DataBufferConstructorInput(args=args, unused_handler_fn=lambda samples, reason: None)
     )
+
+
+def _with_megatron_config(args: Namespace) -> Namespace:
+    args.use_critic = False
+    args.raw_megatron = resolve_megatron_config(args, base_args={})
+    return args
 
 
 def _composed(multi: DefaultMultiDataBuffer, model_id: str) -> _RecordingBuffer:
@@ -80,20 +90,20 @@ class TestTheMetricsOfOnePolicy:
             multi.get_metrics("stranger")
 
 
-from tests.fast.fixtures.megatron_config_fixtures import encode_megatron_config
-
 from miles.utils.types import Sample
 
 
 def _make_args() -> Namespace:
-    return Namespace(
-        async_data_buffer_capacity_factor=1.0,
-        custom_async_data_buffer_path_per_model=None,
-        dynamic_sampling_filter_path=None,
-        max_weight_staleness=None,
-        megatron_config=encode_megatron_config("solver", "verifier"),
-        reward_key=None,
-        rollout_batch_size=1,
+    return _with_megatron_config(
+        Namespace(
+            async_data_buffer_capacity_factor=1.0,
+            custom_async_data_buffer_path_per_model=None,
+            dynamic_sampling_filter_path=None,
+            max_weight_staleness=None,
+            megatron_config=encode_megatron_config("solver", "verifier"),
+            reward_key=None,
+            rollout_batch_size=1,
+        )
     )
 
 
@@ -545,10 +555,12 @@ class TestPutTimeFilters:
 
 
 def _make_multi_buffer(**overrides) -> DefaultMultiDataBuffer:
-    args = _make_single_policy_args(
-        custom_async_data_buffer_path_per_model=None,
-        megatron_config=encode_megatron_config("solver", "verifier"),
-        **overrides,
+    args = _with_megatron_config(
+        _make_single_policy_args(
+            custom_async_data_buffer_path_per_model=None,
+            megatron_config=encode_megatron_config("solver", "verifier"),
+            **overrides,
+        )
     )
     return DefaultMultiDataBuffer(DataBufferConstructorInput(args=args, unused_handler_fn=_ignore_group))
 

@@ -40,6 +40,7 @@ from miles.rollout.base_types import (
 from miles.rollout.filter_hub.base_types import MetricGatherer
 from miles.rollout.filter_hub.common_filters import apply_preput_filters
 from miles.rollout.generate_utils.prefill_logprobs import recompute_samples_rollout_logprobs_via_prefill
+from miles.utils.args.custom_view import ImmutableNamespace
 from miles.utils.lora.utils import LORA_ADAPTER_NAME, is_lora_enabled
 from miles.utils.types import Sample
 
@@ -166,7 +167,7 @@ def _train_client(
     *,
     router_args: Namespace | None = None,
 ):
-    tokenizer_source = getattr(args, "sglang_tokenizer_path", None) or model
+    tokenizer_source = args.sglang.common_value("tokenizer_path") or model
     identity = _renderer_identity(model) or _renderer_identity(tokenizer_source)
 
     # TrainClient uses one path for both tokenizer loading and renderer lookup.
@@ -236,7 +237,7 @@ def _train_client(
 
 
 def _generate_url(args: Namespace, endpoint: str = "/generate") -> str:
-    routers = getattr(args, "sglang_model_routers", None)
+    routers = args.sglang_model_routers
     if routers and "default" in routers:
         ip, port = routers["default"]
     else:
@@ -248,7 +249,7 @@ async def _sglang_worker_urls(args: Namespace) -> list[str]:
     from miles.utils.http_utils import get
 
     router_url = _generate_url(args).removesuffix("/generate")
-    if not getattr(args, "use_miles_router", False):
+    if not args.use_miles_router:
         try:
             response = await get(f"{router_url}/workers")
             return [worker["url"] for worker in response["workers"]]
@@ -333,7 +334,7 @@ class MilesSGLangTransport:
             if session_id in self._seen_sessions:
                 self._seen_sessions.move_to_end(session_id)
             else:
-                max_prompt_len = getattr(self.args, "rollout_max_prompt_len", None)
+                max_prompt_len = self.args.rollout_max_prompt_len
                 if max_prompt_len is not None and len(prompt_ids) > max_prompt_len:
                     runtime = _import_verifiers()
                     raise runtime.OverlongPromptError(
@@ -356,7 +357,7 @@ class MilesSGLangTransport:
             payload["extra_key"] = body["cache_salt"]
 
         request_headers = None
-        if getattr(self.args, "sglang_router_policy", None) in ("consistent_hashing", "manual") and session_id:
+        if self.args.sglang_router_policy in ("consistent_hashing", "manual") and session_id:
             request_headers = {"X-SMG-Routing-Key": session_id}
 
         from miles.utils.http_utils import post
@@ -406,7 +407,9 @@ def _sample_status(trace) -> Sample.Status:
 def _serialize_prompt(prompt):
     if isinstance(prompt, list):
         return [
-            message.model_dump(mode="json", exclude_none=True) if hasattr(message, "model_dump") else message
+            (
+                message.model_dump(mode="json", exclude_none=True) if hasattr(message, "model_dump") else message
+            )  # config-access-exempt: Verifiers prompts accept both structured SDK messages and plain dictionaries
             for message in prompt
         ]
     return prompt or ""
@@ -415,9 +418,9 @@ def _serialize_prompt(prompt):
 def _validate_group_reward_sample_counts(args: Namespace, tasks, discover_decorated) -> None:
     if not any(discover_decorated(task, "group_reward") for task in tasks):
         return
-    if getattr(args, "num_rollout", None) != 0 and args.n_samples_per_prompt < 2:
+    if args.num_rollout != 0 and args.n_samples_per_prompt < 2:
         raise ValueError("Verifiers tasks with @group_reward require --n-samples-per-prompt >= 2.")
-    if getattr(args, "eval_interval", None) is not None and args.n_samples_per_eval_prompt < 2:
+    if args.eval_interval is not None and args.n_samples_per_eval_prompt < 2:
         raise ValueError("Verifiers tasks with @group_reward require --n-samples-per-eval-prompt >= 2.")
 
 
@@ -440,14 +443,20 @@ def _branch_to_sample(args: Namespace, trace, branch, *, group_index: int, index
     response_length = len(tokens) - first_sampled
     reward = trace.reward if args.reward_key is None else {**trace.rewards, "reward": trace.reward}
     task_data = trace.task.data
-    label = getattr(task_data, "label", None)
+    label = getattr(
+        task_data, "label", None
+    )  # config-access-exempt: Verifiers task schemas may use label, answer, or no reference answer
     if label is None:
-        label = getattr(task_data, "answer", None)
+        label = getattr(
+            task_data, "answer", None
+        )  # config-access-exempt: Verifiers task schemas may use label, answer, or no reference answer
 
     metadata = {
         "verifiers": {
             "branch_index": branch.index,
-            "task_index": getattr(task_data, "idx", None),
+            "task_index": getattr(
+                task_data, "idx", None
+            ),  # config-access-exempt: Verifiers task schemas may omit an external dataset index
             "rewards": dict(trace.rewards),
             "metrics": dict(trace.metrics),
             "stop_condition": trace.stop_condition,
@@ -459,7 +468,9 @@ def _branch_to_sample(args: Namespace, trace, branch, *, group_index: int, index
     sample = Sample(
         group_index=group_index,
         index=index,
-        prompt=_serialize_prompt(getattr(task_data, "prompt", "")),
+        prompt=_serialize_prompt(
+            getattr(task_data, "prompt", "")
+        ),  # config-access-exempt: interactive Verifiers tasks may construct prompts during the episode
         tokens=tokens,
         response=trace.last_reply,
         response_length=response_length,
@@ -537,8 +548,8 @@ def _flatten_samples(values: Iterable[Any]) -> list[Sample]:
     return flattened
 
 
-def _make_eval_args(args: Namespace) -> Namespace:
-    eval_args = Namespace(**vars(args))
+def _make_eval_args(args: ImmutableNamespace) -> Namespace:
+    eval_args = Namespace(**dict(args))
     for eval_name, rollout_name in (
         ("eval_temperature", "rollout_temperature"),
         ("eval_top_p", "rollout_top_p"),
@@ -546,10 +557,11 @@ def _make_eval_args(args: Namespace) -> Namespace:
         ("eval_max_response_len", "rollout_max_response_len"),
         ("eval_max_context_len", "rollout_max_context_len"),
     ):
-        if (value := getattr(args, eval_name, None)) is not None:
+        if (
+            value := getattr(args, eval_name)
+        ) is not None:  # config-access-exempt: the fixed eval-to-rollout mapping selects declared configuration fields by name
             setattr(eval_args, rollout_name, value)
     eval_args.rollout_max_prompt_len = args.eval_max_prompt_len
-    eval_args.rollout_min_new_tokens = args.eval_min_new_tokens
     eval_args.reward_key = args.eval_reward_key or args.reward_key
     return eval_args
 
@@ -571,7 +583,7 @@ def _validate_args(args: Namespace) -> None:
     run.py never builds these combinations; this catches a hand-rolled command
     before an episode runs and produces silently wrong training data.
     """
-    if getattr(args, "rollout_global_dataset", False):
+    if args.rollout_global_dataset:
         raise ValueError(
             "Verifiers rollouts replace Miles prompt data with the configured taskset; "
             "pass --disable-rollout-global-dataset."
@@ -596,7 +608,7 @@ def _validate_args(args: Namespace) -> None:
         for enabled, flag in (
             (args.use_opd, "--use-opd"),
             (args.use_rollout_routing_replay, "--use-rollout-routing-replay"),
-            (getattr(args, "use_rollout_indexer_replay", False), "--use-rollout-indexer-replay"),
+            (args.use_rollout_indexer_replay, "--use-rollout-indexer-replay"),
         )
         if enabled
     ]
@@ -626,9 +638,11 @@ class VerifiersRolloutFn(BaseRolloutFn):
         self.model = self.args.hf_checkpoint
         self.sampling = self._sampling_config(runtime.SamplingConfig, self.args)
         self.eval_args = _make_eval_args(self.args)
-        self.eval_sampling = self._sampling_config(runtime.SamplingConfig, self.eval_args)
+        self.eval_sampling = self._sampling_config(
+            runtime.SamplingConfig, self.eval_args, min_tokens=self.args.eval_min_new_tokens
+        )
 
-        engine_count = self.args.rollout_num_gpus // self.args.rollout_num_gpus_per_engine
+        engine_count = max(self.args.inference_runtime_mut_state.engine_count, 1)
         self.max_concurrent = self.args.sglang_server_concurrency * engine_count
         pool_size = max(1, min(self.max_concurrent, 16))
         self.client = _train_client(runtime, self.args, self.model, pool_size)
@@ -656,7 +670,9 @@ class VerifiersRolloutFn(BaseRolloutFn):
         self._next_sample_index = 0
 
     @staticmethod
-    def _sampling_config(SamplingConfig, args: Namespace):
+    def _sampling_config(
+        SamplingConfig: Any, args: Namespace | ImmutableNamespace, *, min_tokens: int | None = None
+    ) -> Any:
         data: dict[str, Any] = {
             "temperature": args.rollout_temperature,
             "top_p": args.rollout_top_p,
@@ -664,7 +680,7 @@ class VerifiersRolloutFn(BaseRolloutFn):
         }
         if args.rollout_top_k is not None:
             data["top_k"] = args.rollout_top_k
-        if (min_tokens := getattr(args, "rollout_min_new_tokens", None)) is not None:
+        if min_tokens is not None:
             data["min_tokens"] = min_tokens
         if args.apply_chat_template_kwargs:
             data["extra_body"] = {"chat_template_kwargs": args.apply_chat_template_kwargs}
@@ -680,7 +696,7 @@ class VerifiersRolloutFn(BaseRolloutFn):
         runtime = _import_verifiers()
         ctx = ctx or self.ctx
         episode = self.env.episode(task, ctx, n=n)
-        if getattr(self.args, "sglang_enable_deterministic_inference", False):
+        if self.args.sglang.common_value("enable_deterministic_inference"):
             for offset, rollout in enumerate(episode.rollouts):
                 sampling = ctx.sampling.model_copy(update={"sampling_seed": seed_base + offset})
                 rollout.ctx = runtime.ModelContext(client=ctx.client, model=self.model, sampling=sampling)

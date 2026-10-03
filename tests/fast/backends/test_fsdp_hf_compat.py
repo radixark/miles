@@ -286,7 +286,7 @@ def test_model_type_verified_accepts_recorded_models(model_type, caplog):
 
     from miles.backends.fsdp_utils.adaptations.class_patches import check_model_type_verified
 
-    check_model_type_verified(SimpleNamespace(model_type=model_type), SimpleNamespace(rank=0))
+    check_model_type_verified(SimpleNamespace(model_type=model_type), SimpleNamespace(backend=SimpleNamespace(rank=0)))
 
     assert not caplog.records
 
@@ -303,7 +303,7 @@ def test_model_type_verified_warns_once_on_rank_zero(caplog):
     from miles.backends.fsdp_utils.adaptations.class_patches import _MODEL_PATCH_HOOKS
 
     hook = next(h for h in _MODEL_PATCH_HOOKS if h.name == "model_type_verified")
-    hook.apply(SimpleNamespace(model_type="qwen3_5_moe"), SimpleNamespace(rank=0))
+    hook.apply(SimpleNamespace(model_type="qwen3_5_moe"), SimpleNamespace(backend=SimpleNamespace(rank=0)))
 
     assert len(caplog.records) == 1
     assert "model_type='qwen3_5_moe' has no recorded FSDP validation" in caplog.text
@@ -315,7 +315,7 @@ def test_model_type_verified_is_silent_on_nonzero_rank(caplog):
     from miles.backends.fsdp_utils.adaptations.class_patches import _MODEL_PATCH_HOOKS
 
     hook = next(h for h in _MODEL_PATCH_HOOKS if h.name == "model_type_verified")
-    hook.apply(SimpleNamespace(model_type="qwen3_5_moe"), SimpleNamespace(rank=1))
+    hook.apply(SimpleNamespace(model_type="qwen3_5_moe"), SimpleNamespace(backend=SimpleNamespace(rank=1)))
 
     assert not caplog.records
 

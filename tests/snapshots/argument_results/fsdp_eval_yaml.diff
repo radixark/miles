@@ -1,0 +1,32 @@
+--- fsdp
++++ fsdp_eval_yaml
+@@ -126,2 +126,19 @@
+-  eval_config: null
+-  eval_datasets: []
++  eval_config: $FIXTURES/eval.yaml
++  eval_datasets:
++  - custom_generate_function_path: null
++    input_key: input
++    label_key: null
++    max_response_len: null
++    metadata_key: metadata
++    metadata_overrides: {}
++    min_new_tokens: null
++    n_samples_per_eval_prompt: 3
++    name: tiny
++    path: $FIXTURES/data.jsonl
++    rm_type: null
++    stop: null
++    stop_token_ids: null
++    temperature: 1.0
++    tool_key: tools
++    top_k: -1
++    top_p: 1.0
+@@ -133 +150 @@
+-  eval_interval: null
++  eval_interval: 2
+@@ -144 +161,3 @@
+-  eval_prompt_data: null
++  eval_prompt_data:
++  - tiny
++  - $FIXTURES/data.jsonl

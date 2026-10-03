@@ -100,7 +100,9 @@ async def generate(args, sample: Sample, sampling_params) -> Sample:
 async def reward_func(args, sample: Sample, **kwargs):
     """Reward function using math_dapo scoring."""
     ground_truth = sample.label or ""
-    tool_iterations = getattr(sample, "tool_iterations", 0)
+    tool_iterations = getattr(
+        sample, "tool_iterations", 0
+    )  # config-access-exempt: Strands adds this metric to generated samples; other Sample producers omit it
 
     result = math_dapo_compute_score(sample.response, ground_truth, strict_box_verify=False)
     if result["pred"] == "[INVALID]":
@@ -112,6 +114,6 @@ async def reward_func(args, sample: Sample, **kwargs):
 
     result["pred"] = result["pred"] or ""
     logger.info(
-        f"reward={result['score']:.2f} | status={sample.status.name} | tool_iters={tool_iterations} | tool_calls={getattr(sample, 'tool_call_count', 0)} | tokens={len(sample.tokens)} | resp_len={sample.response_length} | "
+        f"reward={result['score']:.2f} | status={sample.status.name} | tool_iters={tool_iterations} | tool_calls={getattr(sample, 'tool_call_count', 0)} | tokens={len(sample.tokens)} | resp_len={sample.response_length} | "  # config-access-exempt: Strands adds this metric to generated samples; other Sample producers omit it
     )
     return result["score"]

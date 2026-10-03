@@ -1,0 +1,28 @@
+--- megatron
++++ megatron_lora_targets
+@@ -151 +151 @@
+-  exclude_modules: null
++  exclude_modules: v_proj
+@@ -166,2 +166,5 @@
+-  hf_checkpoint: null
+-  hf_lora_targets: null
++  hf_checkpoint: $FIXTURES/hf
++  hf_lora_targets:
++  - model.layers.0.self_attn.k_proj
++  - model.layers.0.self_attn.o_proj
++  - model.layers.0.self_attn.q_proj
+@@ -197 +200,4 @@
+-  lora_adapter_targets: null
++  lora_adapter_targets:
++  - model.layers.0.self_attn.k_proj
++  - model.layers.0.self_attn.o_proj
++  - model.layers.0.self_attn.q_proj
+@@ -201 +207 @@
+-  lora_rank: 0
++  lora_rank: 8
+@@ -1076 +1082 @@
+-      tokenizer_model: null
++      tokenizer_model: $FIXTURES/hf
+@@ -1834 +1840 @@
+-  target_modules: null
++  target_modules: attn

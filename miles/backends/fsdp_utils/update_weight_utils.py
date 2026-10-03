@@ -3,6 +3,7 @@ import logging
 import socket
 from argparse import Namespace
 from collections.abc import Sequence
+from itertools import accumulate
 from typing import TYPE_CHECKING
 
 import ray
@@ -91,8 +92,12 @@ class UpdateWeight(abc.ABC):
 
         bucket = []
         bucket_size = 0
-        model_type = getattr(getattr(self.model, "config", None), "model_type", "")
-        sync_dtypes = getattr(self.model, "_fsdp_sync_dtypes", None)
+        model_type = getattr(
+            getattr(self.model, "config", None), "model_type", ""
+        )  # config-access-exempt: model wrappers and transports expose optional weight-update capabilities
+        sync_dtypes = getattr(
+            self.model, "_fsdp_sync_dtypes", None
+        )  # config-access-exempt: model wrappers and transports expose optional weight-update capabilities
         for raw_name, raw_param in self.model.state_dict().items():
             for name, param in _iter_sync_named_params(raw_name, raw_param, model_type, self.model, sync_dtypes):
                 param_size = param.numel() * param.element_size()
@@ -127,7 +132,9 @@ class UpdateWeight(abc.ABC):
     def wait_and_update_bucket_weights(self, bucket):
         resolved = []
         for name, param, target_dtype in bucket:
-            if hasattr(param, "wait"):
+            if hasattr(
+                param, "wait"
+            ):  # config-access-exempt: model wrappers and transports expose optional weight-update capabilities
                 param = param.wait()
             if target_dtype is not None and param.dtype != target_dtype:
                 param = param.to(target_dtype)
@@ -152,11 +159,12 @@ class UpdateWeightFromTensor(UpdateWeight):
     ) -> None:
         """Attach rollout engines and create per-engine IPC (Gloo) groups (sets gather src rank, engine, tp_rank)."""
         self.rollout_engines = rollout_engines
+        assert engine_gpu_counts is not None and len(engine_gpu_counts) == len(rollout_engines)
+        assert engine_gpu_offsets is not None and len(engine_gpu_offsets) == len(rollout_engines)
 
         # Here we assume the gpu id of rollout engines and train actors are the same.
-        for i, engine in enumerate(self.rollout_engines):
-            start_rank = i * self.args.rollout_num_gpus_per_engine
-            end_rank = (i + 1) * self.args.rollout_num_gpus_per_engine
+        for engine, start_rank, count in zip(self.rollout_engines, engine_gpu_offsets, engine_gpu_counts, strict=True):
+            end_rank = start_rank + count
             group_ranks = list(range(start_rank, end_rank))
             new_group = dist.new_group(
                 ranks=group_ranks,
@@ -218,8 +226,12 @@ class UpdateWeightFromTensor(UpdateWeight):
                     success = result.get("success", True)
                     error_msg = result.get("error_message") or result.get("message", "unknown error")
                 else:
-                    success = getattr(result, "success", True)
-                    error_msg = getattr(result, "error_message", "unknown error")
+                    success = getattr(
+                        result, "success", True
+                    )  # config-access-exempt: model wrappers and transports expose optional weight-update capabilities
+                    error_msg = getattr(
+                        result, "error_message", "unknown error"
+                    )  # config-access-exempt: model wrappers and transports expose optional weight-update capabilities
                 if not success:
                     raise RuntimeError(
                         f"Weight sync failed on rollout engine: {error_msg}. " f"Check SGLang version compatibility."
@@ -241,6 +253,7 @@ class UpdateWeightFromDistributed(UpdateWeight):
     ) -> None:
         """On rank 0, initialize a temporary NCCL group for parameter broadcast."""
         self.rollout_engines = rollout_engines
+        assert engine_gpu_counts is not None and len(engine_gpu_counts) == len(rollout_engines)
 
         # TP weight sync: AllGather params to rank 0, then broadcast from rank 0 to all sglang engines
         self._is_src_rank = dist.get_rank() == 0
@@ -251,20 +264,21 @@ class UpdateWeightFromDistributed(UpdateWeight):
                 sock.bind(("", 0))
                 master_port = sock.getsockname()[1]
             # +1 for the trainer's source rank (rank 0); rollout engine ranks start at 1
-            world_size = self.args.rollout_num_gpus + 1
+            world_size = sum(engine_gpu_counts) + 1
+            rank_offsets = list(accumulate(engine_gpu_counts, initial=1))[:-1]
 
             futures = [
                 async_utils.submit(
                     api_client.init_weights_update_group(
                         master_address,
                         master_port,
-                        i * self.args.rollout_num_gpus_per_engine + 1,
+                        rank_offset,
                         world_size,
                         self._group_name,
                         backend="nccl",
                     )
                 )
-                for i, api_client in enumerate(self.rollout_engines)
+                for api_client, rank_offset in zip(self.rollout_engines, rank_offsets, strict=True)
             ]
             self._model_update_groups = init_process_group(
                 backend="nccl",

@@ -90,13 +90,13 @@ async def eval_rollout_single_dataset(
             sample = copy.deepcopy(prompt_sample)
             sample.index = sample_index
             sample_index += 1
-            sample.metadata = dataset_cfg.inject_metadata(getattr(sample, "metadata", None))
-            sample.generate_function_path = dataset_cfg.custom_generate_function_path
+            sample.metadata = dataset_cfg.inject_metadata(sample.metadata)
+            sample.generate_function_path = x.path if (x := dataset_cfg.custom_generate_function_path) else None
             stamp_kv_cache_namespace(sample, namespace=kv_cache_namespace)
             if policy_uses_routing_key(args):
                 sample.routing_key = str(uuid.uuid4())
             sampling_params = base_sampling_params
-            if getattr(args, "sglang_enable_deterministic_inference", False):
+            if args.sglang.common_value("enable_deterministic_inference"):
                 sampling_params = base_sampling_params.copy()
                 sampling_params["sampling_seed"] = args.rollout_seed + j
             tasks.append(

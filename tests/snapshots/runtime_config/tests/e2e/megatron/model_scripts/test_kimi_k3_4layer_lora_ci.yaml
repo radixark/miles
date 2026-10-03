@@ -1,0 +1,264 @@
+processes:
+  tests/e2e/megatron/model_scripts/test_kimi_k3_4layer_lora_ci/run-0000/all/default/actor_cell00000:
+    diffs:
+      checkpoint_load-0000:
+        set:
+          <<: &id001
+            /args/backend/lr_decay_iters: 2
+            /args/backend/model_type: {$enum: megatron.core.enums.ModelType, name: encoder_or_decoder}
+            /args/backend/train_iters: 2
+          /args/backend/ckpt_step: null
+          /args/backend/finetune: true
+          /args/backend/load: /root/models/Kimi-K3-4layer-64experts-bf16-kda-direct-v1_torch_dist
+          /args/backend/no_load_optim: true
+          /args/backend/no_load_rng: true
+          /load: /root/models/Kimi-K3-4layer-64experts-bf16-kda-direct-v1_torch_dist
+          /local_checkpoint_manager: false
+      train_first_step-0000:
+        set:
+          <<: *id001
+          /role: actor
+    ranks: [0, 1, 2, 3, 4, 5, 6, 7]
+    template: trainer-megatron-02
+  tests/e2e/megatron/model_scripts/test_kimi_k3_4layer_lora_ci/run-0000/all/default/inference_controller:
+    diffs: &id005
+      router_endpoints-0000:
+        set:
+          <<: &id002
+            /args/sglang_model_routers: {default: {$tuple: [$HOST, $PORT]}}
+            /args/sglang_router_ip: $HOST
+            /args/sglang_router_port: $PORT
+    overrides:
+      set:
+        <<:
+        - &id003
+          /args/balance_data: true
+          /args/global_batch_size: 64
+          /args/init_expected_num_cells/default: 1
+          /args/num_layers: 4
+          /args/num_rollout: 2
+          /args/wandb_project: miles-run_kimi_k3
+        - &id004
+          /args/check_lora_weight_equal: true
+          /args/check_weight_update_allow_quant_error: true
+          /args/check_weight_update_skip_list: [vision_tower., mm_projector.]
+          /args/ci_disable_logprobs_checker: true
+          /args/config_snapshot_name: tests/e2e/megatron/model_scripts/test_kimi_k3_4layer_lora_ci/run-0000
+          /args/critic_lr: 1.0e-05
+          /args/enable_sample_ownership_checker: false
+          /args/experts_shared_outer_loras: true
+          /args/hf_checkpoint: /root/models/Kimi-K3-4layer-64experts
+          /args/hf_lora_targets:
+          - language_model.model.layers.*.self_attn.o_proj
+          - language_model.model.layers.*.self_attn.q_a_proj
+          - language_model.model.layers.*.self_attn.kv_a_proj_with_mqa
+          - language_model.model.layers.*.mlp.gate_proj
+          - language_model.model.layers.*.mlp.up_proj
+          - language_model.model.layers.*.mlp.down_proj
+          - language_model.model.layers.*.block_sparse_moe.experts.*.w1
+          - language_model.model.layers.*.block_sparse_moe.experts.*.w2
+          - language_model.model.layers.*.block_sparse_moe.experts.*.w3
+          - language_model.model.layers.*.block_sparse_moe.shared_experts.gate_proj
+          - language_model.model.layers.*.block_sparse_moe.shared_experts.up_proj
+          - language_model.model.layers.*.block_sparse_moe.shared_experts.down_proj
+          /args/log_probs_chunk_size: 512
+          /args/log_probs_max_tokens_per_gpu: 512
+          /args/lora_adapter_targets:
+          - language_model.model.layers.*.self_attn.o_proj
+          - language_model.model.layers.*.self_attn.q_a_proj
+          - language_model.model.layers.*.self_attn.kv_a_proj_with_mqa
+          - language_model.model.layers.*.mlp.gate_proj
+          - language_model.model.layers.*.mlp.up_proj
+          - language_model.model.layers.*.mlp.down_proj
+          - language_model.model.layers.*.block_sparse_moe.experts.w1
+          - language_model.model.layers.*.block_sparse_moe.experts.w2
+          - language_model.model.layers.*.block_sparse_moe.experts.w3
+          - language_model.model.layers.*.block_sparse_moe.shared_experts.gate_proj
+          - language_model.model.layers.*.block_sparse_moe.shared_experts.up_proj
+          - language_model.model.layers.*.block_sparse_moe.shared_experts.down_proj
+          /args/lora_alpha: 64
+          /args/lora_base_cpu_backup: true
+          /args/lora_rank: 32
+          /args/max_tokens_per_gpu: 512
+          /args/model_name: kimi_k3
+          /args/prompt_data: /root/datasets/gsm8k/train.parquet
+          /args/ref_load: /root/models/Kimi-K3-4layer-64experts-bf16-kda-direct-v1_torch_dist
+          /args/rm_type: deterministic_random
+          /args/rollout_max_response_len: 256
+          /args/rollout_num_gpus_per_engine: 8
+          /args/sglang/base_args/cuda_graph_bs_decode: [1, 2, 4, 8, 16]
+          /args/sglang/base_args/disable_shared_experts_fusion: true
+          /args/sglang/base_args/experts_shared_outer_loras: true
+          /args/sglang/base_args/lora_backend: triton
+          /args/sglang/base_args/lora_strict_loading: true
+          /args/sglang/base_args/max_lora_rank: 32
+          /args/sglang/base_args/max_mamba_cache_size: 16
+          /args/sglang/base_args/max_running_requests: 16
+          /args/sglang/base_args/moe_runner_backend: marlin
+          /args/sglang/base_args/tp_size: 8
+          /args/sglang/models:
+          - model_path: null
+            name: default
+            server_groups:
+            - needs_offload: true
+              num_gpus_per_engine: 8
+              overrides: {model_path: /root/models/Kimi-K3-4layer-64experts}
+              worker_type: {$enum: miles.backends.sglang_utils.sglang_api_client.WorkerType, name: REGULAR}
+            update_weights: true
+          /args/sglang_server_concurrency: 16
+          /args/start_rollout_id: null
+          /args/target_modules: all-linear
+          /args/train_memory_margin_bytes: 4294967296
+          /args/update_weight_buffer_size: 2147483648
+          /args/use_dynamic_global_batch_size: true
+          /args/use_miles_router: true
+          /args/wandb_group: $RUN_ID_0000_$CI_COMMIT_NAME_github
+    template: inference_controller-01
+  tests/e2e/megatron/model_scripts/test_kimi_k3_4layer_lora_ci/run-0000/all/default/main:
+    diffs:
+      router_endpoints-0000:
+        set:
+          <<: *id002
+          /args/wandb_run_id: $WANDB_RUN_ID_0000
+      tracking_config-0000: {set: {/args/wandb_run_id: $WANDB_RUN_ID_0000}}
+    overrides: &id006
+      set:
+        <<:
+        - *id003
+        - *id004
+        - &id007
+          /args/raw_megatron/base_args/apply_rope_fusion: false
+          /args/raw_megatron/base_args/attention_backend/name: auto
+          /args/raw_megatron/base_args/check_for_nan_in_loss_and_grad: false
+          /args/raw_megatron/base_args/disable_bf16_reduced_precision_matmul: true
+          /args/raw_megatron/base_args/encoder_num_layers: 4
+          /args/raw_megatron/base_args/eval_global_batch_size: 64
+          /args/raw_megatron/base_args/expert_model_parallel_size: 8
+          /args/raw_megatron/base_args/ffn_hidden_size: 33792
+          /args/raw_megatron/base_args/finetune: false
+          /args/raw_megatron/base_args/global_batch_size: 64
+          /args/raw_megatron/base_args/gradient_accumulation_fusion: false
+          /args/raw_megatron/base_args/group_query_attention: false
+          /args/raw_megatron/base_args/hidden_size: 7168
+          /args/raw_megatron/base_args/kv_channels: 256
+          /args/raw_megatron/base_args/kv_lora_rank: 512
+          /args/raw_megatron/base_args/layernorm_epsilon: 1.0e-05
+          /args/raw_megatron/base_args/load: null
+          /args/raw_megatron/base_args/lr: 1.0e-05
+          /args/raw_megatron/base_args/moe_ffn_hidden_size: 3072
+          /args/raw_megatron/base_args/moe_grouped_gemm: true
+          /args/raw_megatron/base_args/moe_latent_size: 3584
+          /args/raw_megatron/base_args/moe_layer_freq: [0, 1, 1, 1]
+          /args/raw_megatron/base_args/moe_permute_fusion: true
+          /args/raw_megatron/base_args/moe_router_bias_update_rate: 0.0
+          /args/raw_megatron/base_args/moe_router_dtype: fp32
+          /args/raw_megatron/base_args/moe_router_enable_expert_bias: true
+          /args/raw_megatron/base_args/moe_router_load_balancing_type: none
+          /args/raw_megatron/base_args/moe_router_pre_softmax: true
+          /args/raw_megatron/base_args/moe_router_score_function: sigmoid
+          /args/raw_megatron/base_args/moe_router_topk: 16
+          /args/raw_megatron/base_args/moe_router_topk_scaling_factor: 1.0
+          /args/raw_megatron/base_args/moe_shared_expert_intermediate_size: 6144
+          /args/raw_megatron/base_args/multi_latent_attention: true
+          /args/raw_megatron/base_args/no_load_optim: null
+          /args/raw_megatron/base_args/no_load_rng: null
+          /args/raw_megatron/base_args/num_attention_heads: 96
+          /args/raw_megatron/base_args/num_experts: 64
+          /args/raw_megatron/base_args/num_layers: 4
+          /args/raw_megatron/base_args/num_query_groups: 96
+          /args/raw_megatron/base_args/optimizer_cpu_offload: true
+          /args/raw_megatron/base_args/optimizer_offload_fraction: 0.8
+          /args/raw_megatron/base_args/overlap_cpu_optimizer_d2h_h2d: true
+          /args/raw_megatron/base_args/padded_vocab_size: 163840
+          /args/raw_megatron/base_args/position_embedding_type: none
+          /args/raw_megatron/base_args/q_lora_rank: 1536
+          /args/raw_megatron/base_args/rope_type: yarn
+          /args/raw_megatron/base_args/rotary_base: 10000
+          /args/raw_megatron/base_args/spec: &id008 [miles_plugins.models.kimi_k3, get_kimi_k3_spec]
+          /args/raw_megatron/base_args/tensor_model_parallel_size: 8
+          /args/raw_megatron/base_args/tokenizer_model: /root/models/Kimi-K3-4layer-64experts
+          /args/raw_megatron/base_args/use_precision_aware_optimizer: true
+          /args/raw_megatron/base_args/use_rotary_position_embeddings: false
+          /args/raw_megatron/base_args/vocab_size: 163840
+          /args/raw_megatron/base_args/wandb_project: miles-run_kimi_k3
+          /args/raw_megatron/base_args/world_size: 8
+    template: main-01
+  tests/e2e/megatron/model_scripts/test_kimi_k3_4layer_lora_ci/run-0000/all/default/rollout_executor:
+    diffs: *id005
+    overrides: *id006
+    template: rollout_executor-01
+  tests/e2e/megatron/model_scripts/test_kimi_k3_4layer_lora_ci/run-0000/all/default/trainer_controller_actor: {overrides: {
+      set: {/args/backend/rank: 0}}, template: trainer-megatron-02}
+  tests/e2e/megatron/model_scripts/test_kimi_k3_4layer_lora_ci/run-0000/all/default/worker_manager:
+    overrides:
+      set:
+        <<:
+        - *id003
+        - *id004
+        - *id007
+        /args/actor_num_gpus_per_node: 8
+        /args/rollout_num_gpus: 8
+        /args/sglang_scaling/groups/default:
+        - {engine_offset: 0, gpu_offset: 0, num_gpus: 8}
+    template: worker_manager-01
+shared_overrides:
+  trainer-megatron-02:
+    remove: [/args/backend/ckpt_step, /args/backend/finetune, /args/backend/load, /args/backend/no_load_optim, /args/backend/no_load_rng]
+    set:
+      <<: *id004
+      /args/backend/apply_rope_fusion: false
+      /args/backend/attention_backend/name: auto
+      /args/backend/check_for_nan_in_loss_and_grad: false
+      /args/backend/disable_bf16_reduced_precision_matmul: true
+      /args/backend/encoder_num_layers: 4
+      /args/backend/eval_global_batch_size: 64
+      /args/backend/expert_model_parallel_size: 8
+      /args/backend/ffn_hidden_size: 33792
+      /args/backend/global_batch_size: 64
+      /args/backend/gradient_accumulation_fusion: false
+      /args/backend/group_query_attention: false
+      /args/backend/hidden_size: 7168
+      /args/backend/kv_channels: 256
+      /args/backend/kv_lora_rank: 512
+      /args/backend/layernorm_epsilon: 1.0e-05
+      /args/backend/lr: 1.0e-05
+      /args/backend/moe_ffn_hidden_size: 3072
+      /args/backend/moe_grouped_gemm: true
+      /args/backend/moe_latent_size: 3584
+      /args/backend/moe_layer_freq: [0, 1, 1, 1]
+      /args/backend/moe_permute_fusion: true
+      /args/backend/moe_router_bias_update_rate: 0.0
+      /args/backend/moe_router_dtype: fp32
+      /args/backend/moe_router_enable_expert_bias: true
+      /args/backend/moe_router_load_balancing_type: none
+      /args/backend/moe_router_pre_softmax: true
+      /args/backend/moe_router_score_function: sigmoid
+      /args/backend/moe_router_topk: 16
+      /args/backend/moe_router_topk_scaling_factor: 1.0
+      /args/backend/moe_shared_expert_intermediate_size: 6144
+      /args/backend/multi_latent_attention: true
+      /args/backend/num_attention_heads: 96
+      /args/backend/num_experts: 64
+      /args/backend/num_layers: 4
+      /args/backend/num_query_groups: 96
+      /args/backend/optimizer_cpu_offload: true
+      /args/backend/optimizer_offload_fraction: 0.8
+      /args/backend/overlap_cpu_optimizer_d2h_h2d: true
+      /args/backend/padded_vocab_size: 163840
+      /args/backend/position_embedding_type: none
+      /args/backend/q_lora_rank: 1536
+      /args/backend/rope_type: yarn
+      /args/backend/rotary_base: 10000
+      /args/backend/spec: *id008
+      /args/backend/tensor_model_parallel_size: 8
+      /args/backend/tokenizer_model: /root/models/Kimi-K3-4layer-64experts
+      /args/backend/untie_embeddings_and_output_weights: true
+      /args/backend/use_precision_aware_optimizer: true
+      /args/backend/use_rotary_position_embeddings: false
+      /args/backend/vocab_size: 163840
+      /args/backend/wandb_project: miles-run_kimi_k3
+      /args/backend/world_size: 8
+      /args/critic_load: null
+      /args/input_key: messages
+      /args/rollout_temperature: 1.0
+      /args/use_kl_loss: false

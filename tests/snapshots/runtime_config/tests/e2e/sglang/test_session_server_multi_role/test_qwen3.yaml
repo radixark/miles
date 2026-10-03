@@ -1,0 +1,376 @@
+processes:
+  tests/e2e/sglang/test_session_server_multi_role/test_qwen3/run-0000/all/default/actor_cell00000:
+    <<: &id011 {diffs: {train_first_step-0000: {set: {/role: actor}}}, ranks: [0, 1]}
+    overrides:
+      set:
+        <<:
+        - &id009 {/args/backend/num_layers: 48, /args/backend/world_size: 2}
+        - &id001
+          /args/config_snapshot_name: tests/e2e/sglang/test_session_server_multi_role/test_qwen3/run-0000
+          /args/use_session_server: v1
+    template: trainer-fsdp-02
+  tests/e2e/sglang/test_session_server_multi_role/test_qwen3/run-0000/all/default/inference_controller:
+    diffs: &id012
+      router_endpoints-0000: &id002
+        set:
+          <<: &id003
+            /args/sglang_model_routers: {default: {$tuple: [$HOST, $PORT]}}
+            /args/sglang_router_ip: $HOST
+            /args/sglang_router_port: $PORT
+    overrides:
+      remove: &id005 [/args/backend, /args/trainer_actor_index, /args/trainer_role]
+      set:
+        <<:
+        - *id001
+        - &id006
+          /args/async_save: false
+          /args/ckpt_step: null
+          /args/distributed_backend: nccl
+          /args/distributed_timeout_minutes: 10
+          /args/eval_interval: null
+          /args/global_batch_size: 32
+          /args/load: null
+          /args/low_memory_resume: false
+          /args/micro_batch_size: 1
+          /args/num_layers: 48
+          /args/rollout_indexer_topk_num_streams: null
+          /args/save: null
+          /args/save_interval: null
+          /args/seed: 1234
+          /args/trainer_init_expected_num_cells: null
+          /args/wandb_project: null
+    template: trainer-fsdp-02
+  tests/e2e/sglang/test_session_server_multi_role/test_qwen3/run-0000/all/default/main:
+    diffs: &id007
+      router_endpoints-0000: *id002
+      session_endpoints-0000:
+        set:
+          <<: *id003
+          /args/session_server_instances:
+          - {<<: &id004 {addr: '$HOST:$PORT', external_addr: '$HOST:$PORT'}, instance_id: $RUN_UUID-0}
+          - {<<: *id004, instance_id: $RUN_UUID-1}
+          - {<<: *id004, instance_id: $RUN_UUID-2}
+          - {<<: *id004, instance_id: $RUN_UUID-3}
+          - {<<: *id004, instance_id: $RUN_UUID-4}
+          - {<<: *id004, instance_id: $RUN_UUID-5}
+          - {<<: *id004, instance_id: $RUN_UUID-6}
+          - {<<: *id004, instance_id: $RUN_UUID-7}
+          - {<<: *id004, instance_id: $RUN_UUID-8}
+          - {<<: *id004, instance_id: $RUN_UUID-9}
+          - {<<: *id004, instance_id: $RUN_UUID-10}
+          - {<<: *id004, instance_id: $RUN_UUID-11}
+          - {<<: *id004, instance_id: $RUN_UUID-12}
+          - {<<: *id004, instance_id: $RUN_UUID-13}
+          - {<<: *id004, instance_id: $RUN_UUID-14}
+          - {<<: *id004, instance_id: $RUN_UUID-15}
+          - {<<: *id004, instance_id: $RUN_UUID-16}
+          - {<<: *id004, instance_id: $RUN_UUID-17}
+          - {<<: *id004, instance_id: $RUN_UUID-18}
+          - {<<: *id004, instance_id: $RUN_UUID-19}
+          - {<<: *id004, instance_id: $RUN_UUID-20}
+          - {<<: *id004, instance_id: $RUN_UUID-21}
+          - {<<: *id004, instance_id: $RUN_UUID-22}
+          - {<<: *id004, instance_id: $RUN_UUID-23}
+          - {<<: *id004, instance_id: $RUN_UUID-24}
+          - {<<: *id004, instance_id: $RUN_UUID-25}
+          - {<<: *id004, instance_id: $RUN_UUID-26}
+          - {<<: *id004, instance_id: $RUN_UUID-27}
+          - {<<: *id004, instance_id: $RUN_UUID-28}
+          - {<<: *id004, instance_id: $RUN_UUID-29}
+          - {<<: *id004, instance_id: $RUN_UUID-30}
+          - {<<: *id004, instance_id: $RUN_UUID-31}
+    overrides:
+      remove: *id005
+      set:
+        <<:
+        - *id001
+        - *id006
+        - &id008
+          /args/raw_fsdp:
+            adam_beta1: 0.9
+            adam_beta2: 0.95
+            adam_eps: 1.0e-08
+            attn_implementation: flash_attention_2
+            backend_name: fsdp
+            bf16: true
+            calculate_per_token_loss: false
+            ckpt_step: null
+            clip_grad: 1.0
+            config: null
+            context_parallel_size: 1
+            deterministic_mode: false
+            dp_replicate_size: 1
+            finetune: true
+            fp16: false
+            fsdp_cpu_backend: gloo
+            fsdp_cpu_offload: false
+            fsdp_state_dict_cpu_offload: true
+            gradient_checkpointing: false
+            keep_fp32_master: true
+            load: null
+            lr: 1.0e-06
+            lr_decay_iters: null
+            lr_decay_style: constant
+            lr_warmup_fraction: null
+            lr_warmup_init: 0.0
+            lr_warmup_iters: 0
+            lr_wsd_decay_iters: null
+            lr_wsd_decay_style: null
+            memory_snapshot_path: snapshot.pickle
+            min_lr: 0.0
+            mtp_loss_scaling_factor: 0.2
+            mtp_num_layers: null
+            no_load_optim: true
+            no_load_rng: true
+            no_save_optim: false
+            optimizer: adam
+            override_lr_scheduler: false
+            profile_step_end: 12
+            profile_step_start: 10
+            rank: 0
+            record_memory_history: false
+            tensorboard_dir: null
+            use_checkpoint_lr_scheduler: true
+            use_pytorch_profiler: false
+            wandb_project: null
+            wandb_run_name: null
+            warmup_ratio: 0.03
+            weight_decay: 0.0
+            world_size: 2
+          /args/raw_megatron:
+            base_args: {}
+            trainers:
+            - {actor_index: 0, model_id: null, overrides: {}, role: actor, trainer_id: actor}
+    template: trainer-fsdp-02
+  tests/e2e/sglang/test_session_server_multi_role/test_qwen3/run-0000/all/default/rollout_executor:
+    diffs: *id007
+    overrides:
+      remove: *id005
+      set:
+        <<:
+        - *id001
+        - *id006
+        - *id008
+        - &id010
+          /args/async_data_buffer_capacity_factor: 2.0
+          /args/async_max_concurrent_samples: null
+          /args/buffer_filter_path: null
+          /args/ci_assert_prefill_lag_max: null
+          /args/ci_inject_missing_prefetched_batch_bug: false
+          /args/ci_inject_rollout_data_min_match_ratio: 0.9
+          /args/ci_inject_rollout_data_start_rollout_id: null
+          /args/custom_async_data_buffer_path: null
+          /args/custom_convert_samples_to_train_data_path: null
+          /args/custom_eval_rollout_log_function_path: null
+          /args/custom_reward_post_process_path: null
+          /args/custom_rollout_log_function_path: null
+          /args/dynamic_sampling_filter_path: null
+          /args/eval_datasets: []
+          /args/eval_function_path:
+            config: null
+            path: miles.rollout.inference_rollout.inference_rollout_common.InferenceRolloutFn
+          /args/eval_max_prompt_len: null
+          /args/eval_reward_key: null
+          /args/group_rm: false
+          /args/grpo_std_normalization: true
+          /args/inference_runtime_mut_state: {engine_count: 0, eval_engine_count: 0, gpu_count: 0}
+          /args/load_debug_rollout_data_subsample: null
+          /args/log_passrate: false
+          /args/loss_mask_type: qwen
+          /args/mask_offpolicy_in_partial_rollout: false
+          /args/max_weight_staleness: null
+          /args/namespaced_radix_cache: false
+          /args/opd_log_prob_top_k: 0
+          /args/opd_reward_weight_mode: student_p
+          /args/opd_teacher_key: opd_teacher
+          /args/opd_teacher_urls: null
+          /args/opd_top_k_strategy: only-student
+          /args/opd_topk_per_position: false
+          /args/over_sampling_batch_size: 8
+          /args/partial_rollout: false
+          /args/recompute_logprobs_via_prefill: false
+          /args/rewards_normalization: true
+          /args/rm_url: null
+          /args/rollout_all_samples_process_path: null
+          /args/rollout_max_context_len: null
+          /args/rollout_max_prompt_len: null
+          /args/rollout_sample_filter_path: null
+          /args/rollout_seed: 42
+          /args/rollout_shuffle: false
+          /args/rollout_skip_special_tokens: false
+          /args/rollout_stop: null
+          /args/rollout_stop_token_ids: null
+          /args/rollout_submission_granularity: null
+          /args/save_debug_rollout_data: null
+    template: trainer-fsdp-02
+  tests/e2e/sglang/test_session_server_multi_role/test_qwen3/run-0000/all/default/trainer_controller_actor:
+    overrides:
+      set:
+        <<:
+        - *id009
+        - *id001
+        /args/backend/rank: 0
+    template: trainer-fsdp-02
+  tests/e2e/sglang/test_session_server_multi_role/test_qwen3/run-0000/all/default/worker_manager:
+    overrides:
+      remove: *id005
+      set:
+        <<:
+        - *id001
+        - *id006
+        - *id008
+        - *id010
+        - &id013
+          /args/actor_num_gpus_per_node: 2
+          /args/actor_num_nodes: 1
+          /args/critic_num_gpus_per_node: null
+          /args/critic_num_nodes: null
+          /args/eval_num_gpus: 0
+          /args/eval_num_gpus_per_engine: 1
+          /args/rollout_num_gpus: 2
+          /args/sglang_scaling: {groups: {default: [{engine_offset: 0, gpu_offset: 0, num_gpus: 2}]}}
+          /args/tinker_base_model: null
+          /args/tinker_checkpoint_root: null
+          /args/tinker_lora_groups: null
+          /args/tinker_server_host: 0.0.0.0
+          /args/tinker_server_port: 10613
+    template: trainer-fsdp-02
+  tests/e2e/sglang/test_session_server_multi_role/test_qwen3/run-0001/all/default/actor_cell00000:
+    <<: *id011
+    overrides:
+      set:
+        <<: *id009
+        /args/config_snapshot_name: tests/e2e/sglang/test_session_server_multi_role/test_qwen3/run-0001
+    template: trainer-fsdp-02
+  tests/e2e/sglang/test_session_server_multi_role/test_qwen3/run-0001/all/default/inference_controller:
+    diffs: *id012
+    overrides:
+      remove: *id005
+      set:
+        <<: *id006
+        /args/config_snapshot_name: tests/e2e/sglang/test_session_server_multi_role/test_qwen3/run-0001
+    template: trainer-fsdp-02
+  tests/e2e/sglang/test_session_server_multi_role/test_qwen3/run-0001/all/default/main:
+    diffs: *id007
+    overrides:
+      remove: *id005
+      set:
+        <<:
+        - *id006
+        - *id008
+        /args/config_snapshot_name: tests/e2e/sglang/test_session_server_multi_role/test_qwen3/run-0001
+    template: trainer-fsdp-02
+  tests/e2e/sglang/test_session_server_multi_role/test_qwen3/run-0001/all/default/rollout_executor:
+    diffs: *id007
+    overrides:
+      remove: *id005
+      set:
+        <<:
+        - *id006
+        - *id008
+        - *id010
+        /args/config_snapshot_name: tests/e2e/sglang/test_session_server_multi_role/test_qwen3/run-0001
+    template: trainer-fsdp-02
+  tests/e2e/sglang/test_session_server_multi_role/test_qwen3/run-0001/all/default/trainer_controller_actor:
+    overrides:
+      set:
+        <<: *id009
+        /args/backend/rank: 0
+        /args/config_snapshot_name: tests/e2e/sglang/test_session_server_multi_role/test_qwen3/run-0001
+    template: trainer-fsdp-02
+  tests/e2e/sglang/test_session_server_multi_role/test_qwen3/run-0001/all/default/worker_manager:
+    overrides:
+      remove: *id005
+      set:
+        <<:
+        - *id006
+        - *id008
+        - *id010
+        - *id013
+        /args/config_snapshot_name: tests/e2e/sglang/test_session_server_multi_role/test_qwen3/run-0001
+    template: trainer-fsdp-02
+  tests/e2e/sglang/test_session_server_multi_role/test_qwen3/run-0002/all/default/actor_cell00000:
+    <<: *id011
+    overrides:
+      set:
+        <<:
+        - *id009
+        - &id014
+          /args/ci_enable_metrics_capture: false
+          /args/config_snapshot_name: tests/e2e/sglang/test_session_server_multi_role/test_qwen3/run-0002
+          /args/custom_agent_function_path/path: miles.utils.test_utils.anthropic_session_verify_agent.run_agent
+          /args/custom_generate_function_path/config/anthropic_intermediate_system_expectation: required
+          /args/custom_generate_function_path/path: miles.utils.test_utils.anthropic_session_verify_agent.generate
+          /args/session_message_matcher: loose_tool_call
+    template: trainer-fsdp-02
+  tests/e2e/sglang/test_session_server_multi_role/test_qwen3/run-0002/all/default/inference_controller:
+    diffs: *id012
+    overrides:
+      remove: *id005
+      set:
+        <<:
+        - *id006
+        - *id014
+    template: trainer-fsdp-02
+  tests/e2e/sglang/test_session_server_multi_role/test_qwen3/run-0002/all/default/main:
+    diffs: *id007
+    overrides:
+      remove: *id005
+      set:
+        <<:
+        - *id006
+        - *id008
+        - *id014
+    template: trainer-fsdp-02
+  tests/e2e/sglang/test_session_server_multi_role/test_qwen3/run-0002/all/default/rollout_executor:
+    diffs: *id007
+    overrides:
+      remove: *id005
+      set:
+        <<:
+        - *id006
+        - *id008
+        - *id010
+        - *id014
+    template: trainer-fsdp-02
+  tests/e2e/sglang/test_session_server_multi_role/test_qwen3/run-0002/all/default/trainer_controller_actor:
+    overrides:
+      set:
+        <<:
+        - *id009
+        - *id014
+        /args/backend/rank: 0
+    template: trainer-fsdp-02
+  tests/e2e/sglang/test_session_server_multi_role/test_qwen3/run-0002/all/default/worker_manager:
+    overrides:
+      remove: *id005
+      set:
+        <<:
+        - *id006
+        - *id008
+        - *id010
+        - *id013
+        - *id014
+    template: trainer-fsdp-02
+shared_overrides:
+  trainer-fsdp-02:
+    set:
+      /args/apply_chat_template_kwargs/clear_thinking: false
+      /args/chat_template_path: /__w/miles/miles/miles/utils/chat_template_utils/templates/qwen3_fixed.jinja
+      /args/hf_checkpoint: /root/models/Qwen3-30B-A3B-FP8
+      /args/sglang/base_args/chat_template: /__w/miles/miles/miles/utils/chat_template_utils/templates/qwen3_fixed.jinja
+      /args/sglang/base_args/speculative_algorithm: null
+      /args/sglang/base_args/speculative_eagle_topk: null
+      /args/sglang/base_args/speculative_num_draft_tokens: null
+      /args/sglang/base_args/speculative_num_steps: null
+      /args/sglang/base_args/tool_call_parser: qwen25
+      /args/sglang/models:
+      - model_path: null
+        name: default
+        server_groups:
+        - needs_offload: false
+          num_gpus_per_engine: 1
+          overrides: {model_path: /root/models/Qwen3-30B-A3B-FP8}
+          worker_type: {$enum: miles.backends.sglang_utils.sglang_api_client.WorkerType, name: REGULAR}
+        update_weights: true
+      /args/tito_model: qwen3

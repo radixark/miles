@@ -1,0 +1,11 @@
+--- fsdp
++++ fsdp_reward_and_clip_overrides
+@@ -125 +125 @@
+-  eps_clip_high: 0.2
++  eps_clip_high: 0.4
+@@ -145 +145 @@
+-  eval_reward_key: null
++  eval_reward_key: eval_score
+@@ -347 +347 @@
+-  reward_key: null
++  reward_key: score

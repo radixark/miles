@@ -53,7 +53,9 @@ class RpcWorkerHandle(BaseWorkerHandle):
         http_client: httpx.AsyncClient | None = None,
     ) -> None:
         self._specs = collect_rpc_method_specs(worker_cls)
-        shadowed = sorted(name for name in self._specs if hasattr(type(self), name))
+        shadowed = sorted(
+            name for name in self._specs if hasattr(type(self), name)
+        )  # config-access-exempt: attribute selected at runtime from name
         if shadowed:
             raise TypeError(f"{worker_cls.__name__} rpc methods shadow handle attributes: {shadowed}")
 
@@ -173,18 +175,17 @@ class RpcWorkerHandle(BaseWorkerHandle):
         return await call.run()
 
     async def _prepare_call(self, *, spec: RpcMethodSpec, kwargs: dict[str, Any]) -> RpcCall:
-        call = RpcCall(
+        if self._boot_uuid_pin.needs_handshake():
+            await self.wait_ready(timeout=self._ready_timeout_seconds)
+
+        return RpcCall(
             spec=spec,
             kwargs=kwargs,
             worker_cls_name=self._worker_cls_name,
             transport=self._transport,
             call_timeout_seconds=self._call_timeout_seconds,
+            retry_ambiguous_submit=self._boot_uuid_pin.expected is not None,
         )
-
-        if self._boot_uuid_pin.needs_handshake():
-            await self.wait_ready(timeout=self._ready_timeout_seconds)
-
-        return call
 
 
 def _traverse_error_chain(error: BaseException) -> Iterator[BaseException]:

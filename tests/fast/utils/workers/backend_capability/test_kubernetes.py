@@ -97,7 +97,7 @@ class TestKubernetesAssembly:
         capability = install_workers(pods=[make_pod(name="engine-0-0", pool_id="engine", cell_id_suffix="0")])
         operations = capability.cell_operations()
 
-        infos = asyncio.run(operations.cell_infos(pool_ids=["engine"]))
+        infos = asyncio.run(operations.cell_infos(pool_ids=["engine"], category=None))
 
         assert list(infos) == ["engine-00000"]
 

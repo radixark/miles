@@ -24,7 +24,9 @@ class Timer(metaclass=SingletonMeta):
         assert name not in self.start_time, f"Timer {name} already started."
         self.start_time[name] = time()
         for sink in self.event_sinks:
-            begin = getattr(sink, "begin", None)
+            begin = getattr(
+                sink, "begin", None
+            )  # config-access-exempt: timing sinks may omit the optional begin callback
             if callable(begin):
                 begin(name, self.start_time[name])
         if torch.distributed.is_initialized() and torch.distributed.get_rank() == 0:

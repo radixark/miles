@@ -1,0 +1,171 @@
+processes:
+  tests/e2e/lora/test_lora_qwen2.5_0.5B/run-0000/all/default/actor_cell00000:
+    diffs:
+      checkpoint_load-0000:
+        set:
+          <<: &id001 {/args/backend/lr_decay_iters: 6, /args/backend/train_iters: 6}
+          /args/backend/ckpt_step: null
+          /args/backend/finetune: false
+          /args/backend/load: /root/models/Qwen2.5-0.5B-Instruct/
+          /args/backend/no_load_optim: null
+          /args/backend/no_load_rng: null
+          /load: /root/models/Qwen2.5-0.5B-Instruct/
+          /local_checkpoint_manager: false
+      train_first_step-0000: {set: {<<: *id001, /role: actor}}
+    ranks: [0, 1, 2, 3]
+    template: trainer-megatron-02
+  tests/e2e/lora/test_lora_qwen2.5_0.5B/run-0000/all/default/inference_controller:
+    diffs: &id006
+      router_endpoints-0000:
+        set:
+          <<: &id003
+            /args/sglang_model_routers: {default: {$tuple: [$HOST, $PORT]}}
+            /args/sglang_router_ip: $HOST
+            /args/sglang_router_port: $PORT
+    overrides:
+      set:
+        <<:
+        - &id004
+          /args/config_snapshot_name: tests/e2e/lora/test_lora_qwen2.5_0.5B/run-0000
+          /args/critic_lr: 1.0e-05
+          /args/critic_save: /root/checkpoints/lora-qwen2.5-0.5B-ci_critic
+          /args/enable_sample_ownership_checker: false
+          /args/eval_max_response_len: 1024
+          /args/eval_prompt_data: [gsm8k, /root/datasets/gsm8k/test.parquet]
+          /args/eval_top_k: 1
+          /args/hf_checkpoint: /root/models/Qwen2.5-0.5B-Instruct/
+          /args/hf_lora_targets: &id002 [model.layers.*.self_attn.q_proj, model.layers.*.self_attn.k_proj, model.layers.*.self_attn.v_proj,
+            model.layers.*.self_attn.o_proj, model.layers.*.mlp.gate_proj, model.layers.*.mlp.up_proj, model.layers.*.mlp.down_proj]
+          /args/init_expected_num_cells/default: 4
+          /args/log_inference_engine_weight_checksums: true
+          /args/log_probs_max_tokens_per_gpu: 4096
+          /args/lora_adapter_targets: *id002
+          /args/lora_alpha: 32
+          /args/lora_rank: 32
+          /args/max_tokens_per_gpu: 4096
+          /args/megatron_to_hf_mode: bridge
+          /args/num_rollout: 3
+          /args/prompt_data: /root/datasets/gsm8k/train.parquet
+          /args/rm_type: math
+          /args/save_debug_event_data: /root/checkpoints/lora-qwen2.5-0.5B-ci/events
+          /args/sglang/base_args/mem_fraction_static: 0.4
+          /args/start_rollout_id: null
+          /args/target_modules: all-linear
+          /args/use_miles_router: true
+        - &id005
+          /args/eval_interval: 2
+          /args/num_layers: 24
+          /args/rollout_max_response_len: 1024
+          /args/save: /root/checkpoints/lora-qwen2.5-0.5B-ci
+          /args/save_interval: 2
+          /args/wandb_project: miles-test_lora_qwen2.5_0.5B
+    template: inference_controller-01
+  tests/e2e/lora/test_lora_qwen2.5_0.5B/run-0000/all/default/main:
+    diffs:
+      router_endpoints-0000:
+        set:
+          <<: *id003
+          /args/wandb_run_id: $WANDB_RUN_ID_0000
+      tracking_config-0000: {set: {/args/wandb_run_id: $WANDB_RUN_ID_0000}}
+    overrides:
+      set:
+        <<:
+        - *id004
+        - *id005
+        - &id007
+          /args/raw_megatron/base_args/add_qkv_bias: true
+          /args/raw_megatron/base_args/calculate_per_token_loss: true
+          /args/raw_megatron/base_args/data_parallel_size: 4
+          /args/raw_megatron/base_args/encoder_num_layers: 24
+          /args/raw_megatron/base_args/eval_global_batch_size: 32
+          /args/raw_megatron/base_args/eval_interval: 2
+          /args/raw_megatron/base_args/ffn_hidden_size: 4864
+          /args/raw_megatron/base_args/finetune: false
+          /args/raw_megatron/base_args/global_batch_size: 32
+          /args/raw_megatron/base_args/hidden_size: 896
+          /args/raw_megatron/base_args/kv_channels: 64
+          /args/raw_megatron/base_args/load: null
+          /args/raw_megatron/base_args/lr: 1.0e-05
+          /args/raw_megatron/base_args/no_load_optim: null
+          /args/raw_megatron/base_args/no_load_rng: null
+          /args/raw_megatron/base_args/num_attention_heads: 14
+          /args/raw_megatron/base_args/num_layers: 24
+          /args/raw_megatron/base_args/num_query_groups: 2
+          /args/raw_megatron/base_args/padded_vocab_size: 151936
+          /args/raw_megatron/base_args/qk_layernorm: false
+          /args/raw_megatron/base_args/recompute_granularity: null
+          /args/raw_megatron/base_args/recompute_method: null
+          /args/raw_megatron/base_args/recompute_num_layers: null
+          /args/raw_megatron/base_args/save: /root/checkpoints/lora-qwen2.5-0.5B-ci
+          /args/raw_megatron/base_args/save_interval: 2
+          /args/raw_megatron/base_args/sequence_parallel: false
+          /args/raw_megatron/base_args/tensor_model_parallel_size: 1
+          /args/raw_megatron/base_args/tokenizer_model: /root/models/Qwen2.5-0.5B-Instruct/
+          /args/raw_megatron/base_args/untie_embeddings_and_output_weights: false
+          /args/raw_megatron/base_args/wandb_project: miles-test_lora_qwen2.5_0.5B
+          /args/raw_megatron/base_args/world_size: 4
+    template: main-01
+  tests/e2e/lora/test_lora_qwen2.5_0.5B/run-0000/all/default/rollout_executor:
+    diffs: *id006
+    overrides: &id008
+      set:
+        <<:
+        - *id004
+        - *id005
+        - *id007
+        /args/eval_datasets:
+        - custom_generate_function_path: null
+          input_key: messages
+          label_key: label
+          max_response_len: 1024
+          metadata_key: metadata
+          metadata_overrides: {}
+          min_new_tokens: null
+          n_samples_per_eval_prompt: 1
+          name: gsm8k
+          path: /root/datasets/gsm8k/test.parquet
+          rm_type: null
+          stop: null
+          stop_token_ids: null
+          temperature: 1.0
+          tool_key: tools
+          top_k: 1
+          top_p: 1.0
+    template: rollout_executor-01
+  tests/e2e/lora/test_lora_qwen2.5_0.5B/run-0000/all/default/trainer_controller_actor: {overrides: {set: {/args/backend/rank: 0}},
+    template: trainer-megatron-02}
+  tests/e2e/lora/test_lora_qwen2.5_0.5B/run-0000/all/default/worker_manager:
+    overrides: *id008
+    template: worker_manager-01
+shared_overrides:
+  trainer-megatron-02:
+    remove: [/args/backend/ckpt_step, /args/backend/finetune, /args/backend/load, /args/backend/no_load_optim, /args/backend/no_load_rng]
+    set:
+      <<: *id004
+      /args/backend/add_qkv_bias: true
+      /args/backend/calculate_per_token_loss: true
+      /args/backend/data_parallel_size: 4
+      /args/backend/encoder_num_layers: 24
+      /args/backend/eval_interval: 2
+      /args/backend/ffn_hidden_size: 4864
+      /args/backend/hidden_size: 896
+      /args/backend/kv_channels: 64
+      /args/backend/lr: 1.0e-05
+      /args/backend/num_attention_heads: 14
+      /args/backend/num_layers: 24
+      /args/backend/num_query_groups: 2
+      /args/backend/qk_layernorm: false
+      /args/backend/recompute_granularity: null
+      /args/backend/recompute_method: null
+      /args/backend/recompute_num_layers: null
+      /args/backend/save: /root/checkpoints/lora-qwen2.5-0.5B-ci
+      /args/backend/save_interval: 2
+      /args/backend/sequence_parallel: false
+      /args/backend/tokenizer_model: /root/models/Qwen2.5-0.5B-Instruct/
+      /args/backend/wandb_project: miles-test_lora_qwen2.5_0.5B
+      /args/balance_data: false
+      /args/critic_load: null
+      /args/input_key: messages
+      /args/ref_load: null
+      /args/rollout_temperature: 1.0
+      /args/use_kl_loss: false

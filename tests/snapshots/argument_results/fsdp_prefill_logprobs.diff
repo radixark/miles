@@ -1,0 +1,14 @@
+--- fsdp
++++ fsdp_prefill_logprobs
+@@ -339 +339 @@
+-  recompute_logprobs_via_prefill: false
++  recompute_logprobs_via_prefill: true
+@@ -618 +618 @@
+-      enable_deterministic_inference: false
++      enable_deterministic_inference: true
+@@ -664 +664 @@
+-      enable_prefill_only_deterministic_inference: false
++      enable_prefill_only_deterministic_inference: true
+@@ -1027 +1027 @@
+-  true_on_policy_mode: false
++  true_on_policy_mode: true

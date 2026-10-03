@@ -6,6 +6,7 @@ from __future__ import annotations
 import logging
 import os
 from functools import partial
+from typing import TYPE_CHECKING
 
 import torch
 import transformer_engine.pytorch as te
@@ -22,6 +23,9 @@ from miles_plugins.models.inkling.layers import (
     InklingSelfAttention,
     InklingSharedExperts,
 )
+
+if TYPE_CHECKING:
+    from miles.utils.args.runtime import TrainerConfig
 
 logger = logging.getLogger(__name__)
 
@@ -163,7 +167,9 @@ def get_inkling_block_spec(config, vp_stage=None):
     from megatron.core.transformer.transformer_layer import get_transformer_layer_offset
 
     base = _get_block_submodules(config, get_inkling_layer_spec(config), vp_stage)
-    dense_idx = getattr(config.inkling, "dense_mlp_idx", 0)
+    dense_idx = getattr(
+        config.inkling, "dense_mlp_idx", 0
+    )  # config-access-exempt: Inkling checkpoint configs may omit dense-layer count
     if dense_idx <= 0:
         return base
     offset = get_transformer_layer_offset(config, vp_stage=vp_stage)
@@ -174,7 +180,7 @@ def get_inkling_block_spec(config, vp_stage=None):
     return TransformerBlockSubmodules(layer_specs=local, layer_norm=base.layer_norm)
 
 
-def get_inkling_spec(args, config, vp_stage=None):
+def get_inkling_spec(args: TrainerConfig, config: TransformerConfig, vp_stage: int | None = None) -> ModuleSpec:
     """--spec entry for the miles standard provider path."""
     import json
 
@@ -191,26 +197,36 @@ def get_inkling_spec(args, config, vp_stage=None):
 class InklingGPTModel(GPTModel):
     def __init__(self, *args, **kw):
         super().__init__(*args, **kw)
-        if getattr(self, "pre_process", False) and getattr(self.config.inkling, "use_embed_norm", False):
+        if getattr(self, "pre_process", False) and getattr(
+            self.config.inkling, "use_embed_norm", False
+        ):  # config-access-exempt: pipeline stages and checkpoint variants expose different embedding features
             emb = self.embedding
             emb.embed_norm = te.RMSNorm(
                 self.config.hidden_size, eps=self.config.inkling.rms_norm_eps, params_dtype=self.config.params_dtype
             )
             _orig_emb_forward = emb.forward
 
-            _fp32res = bool(getattr(self.config, "fp32_residual_connection", False))
+            _fp32res = bool(
+                getattr(self.config, "fp32_residual_connection", False)
+            )  # config-access-exempt: upstream TransformerConfig variants may omit FP32 residual mode
 
             def _emb_forward(*a, _orig=_orig_emb_forward, _norm=emb.embed_norm, _fp32=_fp32res, **k):
                 out = _orig(*a, **k)
                 if _fp32:
                     h = out.float()
-                    h = h * torch.rsqrt(h.pow(2).mean(-1, keepdim=True) + getattr(_norm, "eps", 1e-6))
+                    h = h * torch.rsqrt(
+                        h.pow(2).mean(-1, keepdim=True) + getattr(_norm, "eps", 1e-6)
+                    )  # config-access-exempt: normalization implementations expose different epsilon attributes
                     return (h * _norm.weight.float()).bfloat16().float()
                 return _norm(out)
 
             emb.forward = _emb_forward
-        if getattr(self, "post_process", False) and bool(getattr(self.config, "fp32_residual_connection", False)):
-            fln = getattr(self.decoder, "final_layernorm", None)
+        if getattr(self, "post_process", False) and bool(
+            getattr(self.config, "fp32_residual_connection", False)
+        ):  # config-access-exempt: pipeline stages and upstream configs expose different residual features
+            fln = getattr(
+                self.decoder, "final_layernorm", None
+            )  # config-access-exempt: non-final pipeline stages may omit final normalization
             if fln is not None:
                 _orig_fln = fln.forward
                 _pdt = self.config.params_dtype
@@ -219,8 +235,12 @@ class InklingGPTModel(GPTModel):
                     return _orig(x.to(_dt) if x.dtype != _dt else x, *a, **k)
 
                 fln.forward = _fln_forward
-        mup = getattr(self.config.inkling, "logits_mup_width_multiplier", None)
-        if getattr(self, "post_process", False) and mup:
+        mup = getattr(
+            self.config.inkling, "logits_mup_width_multiplier", None
+        )  # config-access-exempt: Inkling checkpoint configs may omit the MuP multiplier
+        if (
+            getattr(self, "post_process", False) and mup
+        ):  # config-access-exempt: only final pipeline stages apply logits scaling
             _ol = self.output_layer
             _orig_ol_forward = _ol.forward
             _mup = float(mup)
@@ -234,7 +254,9 @@ class InklingGPTModel(GPTModel):
     def _freeze_global_scale(self):
         """Freeze per-layer global_scale params per config.inkling.freeze_global_scale
         (all | router | none; router = the MoE gate scale only)."""
-        mode = getattr(self.config.inkling, "freeze_global_scale", "all")
+        mode = getattr(
+            self.config.inkling, "freeze_global_scale", "all"
+        )  # config-access-exempt: Inkling checkpoint configs may omit global-scale freezing mode
         if mode == "none":
             return
         n = 0
@@ -252,35 +274,34 @@ class InklingGPTModel(GPTModel):
             )
 
 
-def inkling_model_provider(pre_process=True, post_process=True, vp_stage=None, *, mm_towers=False):
+def inkling_model_provider(
+    pre_process=True, post_process=True, vp_stage=None, *, args: TrainerConfig, mm_towers=False
+):
     import json
 
-    from megatron.training import get_args
-
-    args = get_args()
-    if getattr(args, "context_parallel_size", 1) > 1:
-        assert getattr(args, "allgather_cp", False), "Inkling CP requires --allgather-cp (zigzag CP not supported)"
+    if args.backend.context_parallel_size > 1:
+        assert args.allgather_cp, "Inkling CP requires --allgather-cp (zigzag CP not supported)"
     text_cfg = json.load(open(f"{args.hf_checkpoint}/config.json"))["text_config"]
     config = build_inkling_config(
         text_cfg,
-        tp=args.tensor_model_parallel_size,
-        ep=args.expert_model_parallel_size,
-        pp=args.pipeline_model_parallel_size,
-        bf16=args.bf16,
-        sp=args.sequence_parallel,
-        etp=getattr(args, "expert_tensor_parallel_size", 1) or 1,
-        cp=getattr(args, "context_parallel_size", 1) or 1,
-        varlen=getattr(args, "variable_seq_lengths", True),
-        permute_fusion=getattr(args, "moe_permute_fusion", False),
-        fp32_residual=getattr(args, "fp32_residual_connection", False),
-        pp_first_stage_layers=getattr(args, "decoder_first_pipeline_num_layers", None),
-        pp_last_stage_layers=getattr(args, "decoder_last_pipeline_num_layers", None),
+        tp=args.backend.tensor_model_parallel_size,
+        ep=args.backend.expert_model_parallel_size,
+        pp=args.backend.pipeline_model_parallel_size,
+        bf16=args.backend.bf16,
+        sp=args.backend.sequence_parallel,
+        etp=args.backend.expert_tensor_parallel_size or 1,
+        cp=args.backend.context_parallel_size or 1,
+        varlen=args.backend.variable_seq_lengths,
+        permute_fusion=args.backend.moe_permute_fusion,
+        fp32_residual=args.backend.fp32_residual_connection,
+        pp_first_stage_layers=args.backend.decoder_first_pipeline_num_layers,
+        pp_last_stage_layers=args.backend.decoder_last_pipeline_num_layers,
     )
     model = InklingGPTModel(
         config=config,
         transformer_layer_spec=get_inkling_block_spec(config, vp_stage=vp_stage),
         vocab_size=text_cfg["vocab_size"],
-        max_sequence_length=args.max_position_embeddings,
+        max_sequence_length=args.backend.max_position_embeddings,
         pre_process=pre_process,
         post_process=post_process,
         position_embedding_type="none",
@@ -294,10 +315,10 @@ def inkling_model_provider(pre_process=True, post_process=True, vp_stage=None, *
     return model
 
 
-def inkling_mm_model_provider(pre_process=True, post_process=True, vp_stage=None):
+def inkling_mm_model_provider(pre_process=True, post_process=True, vp_stage=None, *, args: TrainerConfig):
     """Multimodal provider: the text model plus the frozen HF vision/audio towers.
 
     A separate entry point instead of a CLI switch -- multimodal launch scripts pass
     this as --custom-model-provider-path.
     """
-    return inkling_model_provider(pre_process, post_process, vp_stage, mm_towers=True)
+    return inkling_model_provider(pre_process, post_process, vp_stage, args=args, mm_towers=True)

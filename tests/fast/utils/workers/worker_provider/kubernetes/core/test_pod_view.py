@@ -1,7 +1,23 @@
+from miles.utils.workers.connection_config import WORKER_METADATA_ANNOTATION, WorkerPodMetadata
 from miles.utils.workers.k8s_types import ContainerStatus, Pod, PodCondition, PodMetadata, PodSpec, PodStatus
 from miles.utils.workers.worker_provider.kubernetes.core import pod_view
 from miles.utils.workers.worker_provider.kubernetes.helm import env as helm_env
 from miles.utils.workers.worker_provider.kubernetes.helm.env import DEFAULT_LABEL_KEYS
+from miles.utils.workers.worker_spec import StaticMeta
+
+DEFAULT_WORKER_METADATA = WorkerPodMetadata(
+    workers_per_pod=1,
+    pods_per_cell=1,
+    gpu_slots_per_worker=1,
+    dynamic_pool=True,
+    worker_class=None,
+    port_infos=[],
+    static_meta=StaticMeta(),
+)
+
+
+def worker_metadata_annotations(metadata: WorkerPodMetadata = DEFAULT_WORKER_METADATA) -> dict[str, str]:
+    return {WORKER_METADATA_ANNOTATION: metadata.model_dump_json()}
 
 
 def make_pod(
@@ -10,6 +26,7 @@ def make_pod(
     pod_in_cell_index: str = "0",
     pool_id: str = "engine",
     ready: bool = True,
+    worker_metadata: WorkerPodMetadata | None = DEFAULT_WORKER_METADATA,
     **kwargs,
 ) -> Pod:
     pod_labels = {
@@ -24,7 +41,10 @@ def make_pod(
             name=name,
             uid=kwargs.pop("uid", f"uid-{name}"),
             labels=pod_labels,
-            annotations=kwargs.pop("annotations", {}),
+            annotations={
+                **(worker_metadata_annotations(worker_metadata) if worker_metadata is not None else {}),
+                **kwargs.pop("annotations", {}),
+            },
             deletion_timestamp=kwargs.pop("deletion_timestamp", None),
         ),
         spec=PodSpec(node_name=kwargs.pop("node_name", "gpu-1"), subdomain=kwargs.pop("subdomain", None)),
@@ -38,9 +58,11 @@ def make_pod(
     return pod
 
 
-def make_unlabelled_pod(name: str, labels: dict[str, str] | None = None) -> Pod:
+def make_unlabelled_pod(
+    name: str, labels: dict[str, str] | None = None, annotations: dict[str, str] | None = None
+) -> Pod:
     return Pod(
-        metadata=PodMetadata(name=name, uid=f"uid-{name}", labels=labels or {}),
+        metadata=PodMetadata(name=name, uid=f"uid-{name}", labels=labels or {}, annotations=annotations or {}),
         spec=PodSpec(),
         status=PodStatus(),
     )
@@ -95,9 +117,23 @@ class TestParsePod:
     def test_reads_the_keys_a_platform_configured(self):
         """A platform that already labels its pods should not have to relabel them for miles."""
         keys = DEFAULT_LABEL_KEYS.model_copy(update={"pool_id": "acme.io/group", "cell_index": "acme.io/index"})
-        pod = make_unlabelled_pod("p", labels={"acme.io/group": "engine", "acme.io/index": "3"})
+        pod = make_unlabelled_pod(
+            "p", labels={"acme.io/group": "engine", "acme.io/index": "3"}, annotations=worker_metadata_annotations()
+        )
 
         assert parse(pod, keys).cell_id == "engine-00003"
+
+    def test_ignores_a_pod_that_carries_no_worker_metadata(self):
+        """Ports, workers per pod and worker class come only from this annotation, so a pod without it is no worker."""
+        assert parse(make_pod(worker_metadata=None)) is None
+
+    def test_reads_the_worker_metadata_the_launcher_attached(self):
+        """The cell view reads the pod shape from here instead of from specs the observer may not have."""
+        metadata = DEFAULT_WORKER_METADATA.model_copy(
+            update={"workers_per_pod": 4, "worker_class": "miles.demo.Worker"}
+        )
+
+        assert parse(make_pod(worker_metadata=metadata)).worker_metadata == metadata
 
     def test_reads_how_many_pods_the_cell_should_have(self):
         """A group still being created has ready pods but not all of them, and must not be given work."""

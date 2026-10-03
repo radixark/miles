@@ -1,40 +1,9 @@
 import argparse
 
 from sglang.srt.server_args import ServerArgs
+
+from miles.utils.args.utils import config_values
 from miles.utils.http_utils import wrap_ipv6
-
-
-# TODO: use all sglang router arguments with `--sglang-router` prefix
-def add_sglang_router_arguments(parser):
-    """
-    Add arguments to the parser for the SGLang router.
-    """
-    parser.add_argument(
-        "--sglang-router-ip",
-        type=str,
-        default=None,
-        help="IP address of the SGLang router",
-    )
-    parser.add_argument(
-        "--sglang-router-port",
-        type=int,
-        default=None,
-        help="Port of the SGLang router",
-    )
-    parser.set_defaults(sglang_model_routers=None)
-    parser.add_argument(
-        "--sglang-router-policy",
-        type=str,
-        default=None,
-        help="Routing policy for the SGLang router (e.g., 'consistent_hashing', 'round_robin')",
-    )
-    parser.add_argument(
-        "--sglang-router-request-timeout-secs",
-        type=int,
-        default=14400,
-        help="Timeout for requests to the SGLang router in seconds",
-    )
-    return parser
 
 
 _SKIPPED_SERVER_ARGS = [
@@ -135,50 +104,22 @@ def _add_prefixed_server_args(parser, *, flag_prefix: str, dest_prefix: str, ski
 
     parser.add_argument = new_add_argument_wrapper
     ServerArgs.add_cli_args(parser)
-    parser.add_argument = old_add_argument
+    del parser.add_argument
 
 
 def collect_eval_sglang_overrides(args) -> dict:
     """``ServerArgs`` fields set via ``--eval-sglang-*``; absent means inherit ``--sglang-*``."""
     return {
-        key.removeprefix("eval_sglang_"): value for key, value in vars(args).items() if key.startswith("eval_sglang_")
+        key.removeprefix("eval_sglang_"): value
+        for key, value in config_values(args).items()
+        if key.startswith("eval_sglang_")
     }
 
 
-def add_sglang_arguments(parser):
-    """
-    Add arguments to the parser for the SGLang server.
-    """
-    parser = add_sglang_router_arguments(parser)
-    parser.add_argument("--sglang-server-concurrency", type=int, default=512)
+def add_sglang_arguments(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
+    from miles.backends.sglang_utils.sglang_config import SglangConfig
 
-    _add_prefixed_server_args(
-        parser, flag_prefix="sglang", dest_prefix="sglang_", skipped_args=_SKIPPED_SERVER_ARGS, inherit=False
-    )
-    _add_prefixed_server_args(
-        parser,
-        flag_prefix="eval-sglang",
-        dest_prefix="eval_sglang_",
-        skipped_args=_EVAL_SKIPPED_SERVER_ARGS,
-        inherit=True,
-    )
-
-    parser.add_argument(
-        "--sglang-config",
-        type=str,
-        default=None,
-        help=(
-            "Path to a YAML config for SGLang engine deployment. "
-            "Defines server_groups with worker_type (regular/prefill/decode/placeholder), "
-            "num_gpus per group, and optional per-group 'overrides' dict of "
-            "ServerArgs field names that override the base --sglang-* CLI args. "
-            "Placeholder groups reserve GPU slots without creating engines. "
-            "A 'name: eval' model is filled in from the --eval-* args (model_path, "
-            "num_gpus_per_engine, --eval-sglang-* overrides) wherever the YAML leaves them unset. "
-            "Mutually exclusive with --prefill-num-servers."
-        ),
-    )
-
+    SglangConfig.add_arguments(parser)
     return parser
 
 
@@ -188,7 +129,7 @@ def validate_args(args):
     if args.true_on_policy_mode:
         args.sglang_enable_deterministic_inference = True
 
-    if getattr(args, "recompute_logprobs_via_prefill", False):
+    if args.recompute_logprobs_via_prefill:
         args.sglang_enable_prefill_only_deterministic_inference = True
         args.sglang_enable_deterministic_inference = True
 
@@ -203,5 +144,5 @@ def validate_args(args):
         if args.router_assignment_mode == "random":
             args.router_assignment_mode = "min_load"
 
-    if getattr(args, "sglang_router_ip", None):
+    if args.sglang_router_ip:
         args.sglang_router_ip = wrap_ipv6(args.sglang_router_ip)

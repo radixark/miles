@@ -2,13 +2,14 @@ import asyncio
 import logging
 from collections.abc import Sequence
 
-from miles.backends.sglang_utils.sglang_config import resolve_sglang_config
 from miles.ray.specs.inference import (
     compute_router_worker_name,
     compute_session_server_instance_id,
     session_server_worker_name,
 )
 from miles.rollout.session.types import SessionServerInstance
+from miles.utils.audit_utils.config_snapshot.dumper import ConfigSnapshotDumper
+from miles.utils.audit_utils.config_snapshot.generated_values import register_generated_value
 from miles.utils.http_utils import wait_tcp_ready_async
 from miles.utils.workers.worker_provider.base import BaseWorkerProvider
 from miles.utils.workers.worker_spec import HostAndPort
@@ -35,7 +36,7 @@ async def resolve_router_addrs(args, *, router_providers: Sequence[BaseWorkerPro
         )
         return {name: HostAndPort(host=host, port=port) for name, (host, port) in args.sglang_model_routers.items()}
 
-    config = resolve_sglang_config(args)  # TODO avoid resolve repeatedly
+    config = args.sglang  # TODO avoid resolve repeatedly
     assert len(router_providers) == len(config.models), (
         f"every model is served by its own router, so it needs its own provider "
         f"(got {len(router_providers)} for {len(config.models)} models)"
@@ -48,10 +49,17 @@ async def resolve_router_addrs(args, *, router_providers: Sequence[BaseWorkerPro
     )
     router_addrs = {model_cfg.name: addr for model_cfg, addr in zip(config.models, ready, strict=True)}
 
+    dynamic_port = args.sglang_router_port is None
     primary = router_addrs[config.models[0].name]
     args.sglang_router_ip = primary.host
     args.sglang_router_port = primary.port
     args.sglang_model_routers = {name: (addr.host, addr.port) for name, addr in router_addrs.items()}
+
+    for addr in router_addrs.values():
+        register_generated_value(kind="host", name=addr.host, value=addr.host)
+        if dynamic_port:
+            register_generated_value(kind="port", name=str(addr.port), value=str(addr.port))
+    ConfigSnapshotDumper.dump(stage="router_endpoints", config={"args": args})
 
     return router_addrs
 
@@ -73,10 +81,10 @@ async def wait_session_server_ready(args, *, provider: BaseWorkerProvider | None
     Always runs standalone regardless of whether ``--use-miles-router`` is
     active.
     """
-    if not getattr(args, "use_session_server", False):
+    if not args.use_session_server:
         return
 
-    hf_checkpoint = getattr(args, "hf_checkpoint", None)
+    hf_checkpoint = args.hf_checkpoint
     if not hf_checkpoint:
         raise ValueError("--use-session-server requires --hf-checkpoint to be set.")
 
@@ -104,6 +112,14 @@ async def wait_session_server_ready(args, *, provider: BaseWorkerProvider | None
     ]
     _assert_hosts_keep_their_own_external_host(args.session_server_instances)
 
+    for addr in addrs:
+        register_generated_value(kind="host", name=addr.host, value=addr.host)
+        if args.session_server_port is None:
+            register_generated_value(kind="port", name=str(addr.port), value=str(addr.port))
+        if args.session_server_external_host is None and addr.external_host is None:
+            register_generated_value(kind="external_host", name=addr.host, value=addr.host)
+    ConfigSnapshotDumper.dump(stage="session_endpoints", config={"args": args})
+
     await asyncio.gather(
         *[wait_tcp_ready_async(addr.host, addr.port, timeout=_SESSION_SERVER_READY_TIMEOUT_SECONDS) for addr in addrs]
     )
@@ -115,7 +131,7 @@ async def wait_session_server_ready(args, *, provider: BaseWorkerProvider | None
 
 
 def _compute_external_addr(args, addr: HostAndPort) -> str:
-    # spec_session_server keeps every instance on the head whenever this host is set
+    # SessionServerSpec keeps every instance on the head whenever this host is set
     if args.session_server_external_host:
         return f"{args.session_server_external_host}:{addr.port}"
     return addr.external_netloc

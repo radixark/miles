@@ -3,21 +3,31 @@ import os
 import subprocess
 import sys
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any
 
 import pytest
 import yaml
-from tests.fast.launch_scripts.sh_harness import REPO_ROOT, assert_matches_snapshot, sanitize
+from tests.fast.launch_scripts.sh_harness import REPO_ROOT, sanitize
+from tests.fast.utils.external_utils.command_utils.helm_backend.launcher.utils import (
+    LauncherArgs,
+    launcher_args_orchestrator_command,
+)
+from tests.fast.utils.workers.fake_specs import FakeCommandSpec, FakeServeSpec
 
 from miles.ray.specs.inference import POOL_CATEGORY_INFERENCE_ENGINE
 from miles.ray.specs.train import POOL_CATEGORY_TRAINER_ENGINE
+from miles.utils.args.runtime_base import BaseLeafConfig
 from miles.utils.external_utils.command_utils.base_backend import ExecuteTrainConfig, ExecuteTrainRequest
 from miles.utils.external_utils.command_utils.helm_backend import naming
 from miles.utils.external_utils.command_utils.helm_backend.launcher import command_wrapper, entrypoint
 from miles.utils.external_utils.command_utils.helm_backend.launcher.command_wrapper import Helm
 from miles.utils.external_utils.command_utils.helm_backend.launcher.values.misc import MooncakeInfo
-from miles.utils.workers.worker_spec import CommandWorkerSpec, PortInfo, SchedulingSpec, ServeWorkerSpec
+from miles.utils.test_utils.snapshot import (
+    SNAPSHOT_RECORD_DIR_ENV_VAR,
+    SNAPSHOT_UPDATE_ENV_VAR,
+    assert_matches_snapshot,
+)
+from miles.utils.workers.worker_spec import DEFAULT_RPC_PORT_INFO, PortInfo, SchedulingSpec
 
 SNAPSHOT_DIR = REPO_ROOT / "tests" / "snapshots" / "helm_backend"
 
@@ -28,56 +38,56 @@ NAMESPACE = "rl"
 PYTHON_PLACEHOLDER = "<PYTHON>"
 
 
-def _router() -> CommandWorkerSpec:
-    return CommandWorkerSpec(
+def _router() -> FakeCommandSpec:
+    return FakeCommandSpec(
         name="inference-router-0",
         port_infos=[PortInfo(name="primary", static_port=30000)],
-        env_var=lambda ctx: {},
-        scheduling=SchedulingSpec.single(num_gpus_per_worker=0),
-        launch_command=lambda ctx: (
+        env_vars=lambda ctx: {},
+        fixed_scheduling=SchedulingSpec.single(num_gpus_per_worker=0),
+        command=lambda ctx: (
             f"python -m sglang_router.launch_router --host {ctx.self_addrs['primary'].host} --port 30000"
         ),
     )
 
 
-def _engine() -> CommandWorkerSpec:
-    return CommandWorkerSpec(
+def _engine() -> FakeCommandSpec:
+    return FakeCommandSpec(
         name="inference-engine-0-0",
         category=POOL_CATEGORY_INFERENCE_ENGINE,
         port_infos=[
             PortInfo(name="primary", static_port=8000),
             PortInfo(name="dist_init", static_port=9000, mode="master"),
         ],
-        env_var=lambda ctx: {"NVSHMEM_DISABLE_NCCL": "1"},
-        scheduling=SchedulingSpec(
+        env_vars=lambda ctx: {"NVSHMEM_DISABLE_NCCL": "1"},
+        fixed_scheduling=SchedulingSpec(
             num_cells=2,
             num_workers_per_cell=2,
             num_gpus_per_worker=0.2,
             num_gpu_slots_per_worker=8,
             num_gpus_per_node=8,
         ),
-        launch_command=lambda ctx: (
+        command=lambda ctx: (
             f"python -m sglang.launch_server --node-rank {ctx.worker_in_cell_index} "
             f"--dist-init-addr {ctx.self_addrs['dist_init'].host}:{ctx.self_addrs['dist_init'].port}"
         ),
     )
 
 
-def _trainer() -> ServeWorkerSpec:
-    return ServeWorkerSpec(
+def _trainer() -> FakeServeSpec:
+    return FakeServeSpec(
         name="trainer-engine-actor",
         category=POOL_CATEGORY_TRAINER_ENGINE,
-        port_infos=[PortInfo(name="master", static_port=9000, mode="master")],
-        env_var=lambda ctx: {"NCCL_CUMEM_ENABLE": "0"},
-        scheduling=SchedulingSpec(
+        port_infos=[PortInfo(name="master", static_port=9000, mode="master"), DEFAULT_RPC_PORT_INFO],
+        env_vars=lambda ctx: {"NCCL_CUMEM_ENABLE": "0"},
+        fixed_scheduling=SchedulingSpec(
             num_cells=2,
             num_workers_per_cell=8,
             num_gpus_per_worker=0.4,
             num_gpu_slots_per_worker=1,
             num_gpus_per_node=8,
         ),
+        args=BaseLeafConfig(),
         worker_class="miles.backends.megatron_utils.actor.MegatronTrainRayActor",
-        ctor_kwargs=lambda ctx: {},
     )
 
 
@@ -148,12 +158,15 @@ def record_launch(monkeypatch, sandbox: Path, on_compute_specs=None, **request_o
 
     _stub_launch_inputs(monkeypatch, specs=[_router(), _engine(), _trainer()], on_compute_specs=on_compute_specs)
 
-    entrypoint.execute_train(
-        request=_request(**request_overrides),
-        config=ExecuteTrainConfig(
-            namespace=NAMESPACE, run_id=FROZEN_RUN_ID, helm_values=(str(helm_values_file(sandbox)),)
-        ),
-    )
+    with monkeypatch.context() as launch_env:
+        launch_env.setenv(SNAPSHOT_UPDATE_ENV_VAR, "")
+        launch_env.setenv(SNAPSHOT_RECORD_DIR_ENV_VAR, "")
+        entrypoint.execute_train(
+            request=_request(**request_overrides),
+            config=ExecuteTrainConfig(
+                namespace=NAMESPACE, run_id=FROZEN_RUN_ID, helm_values=(str(helm_values_file(sandbox)),)
+            ),
+        )
     return recorded
 
 
@@ -183,17 +196,10 @@ def _stub_launch_inputs(monkeypatch, *, specs, colocate: bool = False, on_comput
     monkeypatch.setattr(
         entrypoint,
         "parse_args",
-        lambda: SimpleNamespace(
-            colocate=colocate,
-            deploy_component="all",
-            deploy_instance_id=None,
-            argv=[],
-            train_env_vars={},
-            use_wandb=False,
-            wandb_run_id=None,
-        ),
+        lambda: LauncherArgs(colocate=colocate),
     )
     monkeypatch.setattr(MooncakeInfo, "plan_of_args", staticmethod(lambda args: None))
+    monkeypatch.setattr(entrypoint, "_compute_orchestrator_command", launcher_args_orchestrator_command)
     monkeypatch.setattr(entrypoint, "_follow_until_finished", lambda **kwargs: None)
 
 

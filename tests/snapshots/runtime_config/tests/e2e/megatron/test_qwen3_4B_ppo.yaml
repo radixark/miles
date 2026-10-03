@@ -1,0 +1,201 @@
+processes:
+  tests/e2e/megatron/test_qwen3_4B_ppo/run-0000/all/default/actor_cell00000:
+    diffs:
+      checkpoint_load-0000: &id001
+        set:
+          <<: &id002
+            /args/backend/lr_decay_iters: 6
+            /args/backend/model_type: {$enum: megatron.core.enums.ModelType, name: encoder_or_decoder}
+            /args/backend/train_iters: 6
+          /args/backend/ckpt_step: null
+          /args/backend/finetune: true
+          /args/backend/load: /root/Qwen3-4B_torch_dist
+          /args/backend/no_load_optim: true
+          /args/backend/no_load_rng: true
+          /load: /root/Qwen3-4B_torch_dist
+          /local_checkpoint_manager: false
+      checkpoint_load-0001: *id001
+      train_first_step-0000:
+        set:
+          <<: *id002
+          /role: actor
+    ranks: [0, 1, 2, 3]
+    template: trainer-megatron-02
+  tests/e2e/megatron/test_qwen3_4B_ppo/run-0000/all/default/critic_cell00000:
+    diffs:
+      checkpoint_load-0000: *id001
+      train_first_step-0000:
+        set:
+          <<: *id002
+          /role: critic
+    overrides:
+      set:
+        <<: &id008
+          /args/backend/disable_param_buffers_cpu_backup: false
+          /args/backend/lr: 1.0e-05
+          /args/loss_type: value_loss
+          /args/trainer_actor_index: null
+          /args/trainer_id: critic
+          /args/trainer_role: critic
+    ranks: [0, 1, 2, 3]
+    template: trainer-megatron-02
+  tests/e2e/megatron/test_qwen3_4B_ppo/run-0000/all/default/inference_controller:
+    diffs: &id006
+      router_endpoints-0000:
+        set:
+          <<: &id003
+            /args/sglang_model_routers: {default: {$tuple: [$HOST, $PORT]}}
+            /args/sglang_router_ip: $HOST
+            /args/sglang_router_port: $PORT
+    overrides:
+      set:
+        <<:
+        - &id004
+          /args/advantage_estimator: ppo
+          /args/critic_lr: 1.0e-05
+          /args/enable_sample_ownership_checker: false
+          /args/eps_clip: 0.0004
+          /args/eps_clip_high: 0.0004
+          /args/eval_max_response_len: 16384
+          /args/eval_prompt_data: [aime24, /root/datasets/aime-2024/aime-2024.jsonl]
+          /args/eval_top_k: 1
+          /args/kl_loss_type: k1
+          /args/log_probs_max_tokens_per_gpu: 16384
+          /args/max_tokens_per_gpu: 16384
+          /args/normalize_advantages: true
+          /args/num_critic_only_steps: 1
+          /args/num_rollout: 3
+          /args/ref_load: /root/Qwen3-4B_torch_dist
+          /args/rollout_num_gpus_per_engine: 2
+          /args/sglang/base_args/enable_metrics: true
+          /args/sglang/base_args/max_running_requests: 512
+          /args/sglang/base_args/mem_fraction_static: 0.8
+          /args/sglang/base_args/tp_size: 2
+          /args/sglang/models:
+          - model_path: null
+            name: default
+            server_groups:
+            - needs_offload: true
+              num_gpus_per_engine: 2
+              overrides: {model_path: /root/models/Qwen3-4B/}
+              worker_type: {$enum: miles.backends.sglang_utils.sglang_api_client.WorkerType, name: REGULAR}
+            update_weights: true
+          /args/start_rollout_id: null
+          /args/use_critic: true
+        - &id005
+          /args/balance_data: true
+          /args/config_snapshot_name: tests/e2e/megatron/test_qwen3_4B_ppo/run-0000
+          /args/input_key: prompt
+          /args/rollout_temperature: 0.8
+          /args/use_kl_loss: true
+          /args/wandb_project: miles-test_qwen3_4B_ppo
+    template: inference_controller-01
+  tests/e2e/megatron/test_qwen3_4B_ppo/run-0000/all/default/main:
+    diffs:
+      router_endpoints-0000:
+        set:
+          <<: *id003
+          /args/wandb_run_id: $WANDB_RUN_ID_0000
+      tracking_config-0000: {set: {/args/wandb_run_id: $WANDB_RUN_ID_0000}}
+    overrides:
+      set:
+        <<:
+        - *id004
+        - *id005
+        - &id007
+          /args/raw_megatron/base_args/context_parallel_size: 2
+          /args/raw_megatron/base_args/encoder_num_layers: 36
+          /args/raw_megatron/base_args/eval_global_batch_size: 32
+          /args/raw_megatron/base_args/ffn_hidden_size: 9728
+          /args/raw_megatron/base_args/finetune: false
+          /args/raw_megatron/base_args/global_batch_size: 32
+          /args/raw_megatron/base_args/hidden_size: 2560
+          /args/raw_megatron/base_args/load: null
+          /args/raw_megatron/base_args/no_load_optim: null
+          /args/raw_megatron/base_args/no_load_rng: null
+          /args/raw_megatron/base_args/num_attention_heads: 32
+          /args/raw_megatron/base_args/num_layers: 36
+          /args/raw_megatron/base_args/num_query_groups: 8
+          /args/raw_megatron/base_args/padded_vocab_size: 151936
+          /args/raw_megatron/base_args/pipeline_model_parallel_size: 2
+          /args/raw_megatron/base_args/sequence_parallel: false
+          /args/raw_megatron/base_args/tensor_model_parallel_size: 1
+          /args/raw_megatron/base_args/tokenizer_model: /root/models/Qwen3-4B/
+          /args/raw_megatron/base_args/transformer_pipeline_model_parallel_size: 2
+          /args/raw_megatron/base_args/untie_embeddings_and_output_weights: false
+          /args/raw_megatron/base_args/wandb_project: miles-test_qwen3_4B_ppo
+          /args/raw_megatron/base_args/world_size: 4
+          /args/raw_megatron/trainers:
+          - {actor_index: 0, model_id: null, overrides: {}, role: actor, trainer_id: actor}
+          - actor_index: null
+            model_id: null
+            overrides:
+              disable_param_buffers_cpu_backup: false
+              kl_coef: 0
+              load: null
+              lr: 1.0e-05
+              lr_warmup_iters: 0
+              save: null
+              use_opd: false
+            role: critic
+            trainer_id: critic
+    template: main-01
+  tests/e2e/megatron/test_qwen3_4B_ppo/run-0000/all/default/rollout_executor:
+    diffs: *id006
+    overrides:
+      set:
+        <<:
+        - *id004
+        - *id005
+        - *id007
+        /args/eval_datasets: &id009
+        - custom_generate_function_path: null
+          input_key: prompt
+          label_key: label
+          max_response_len: 16384
+          metadata_key: metadata
+          metadata_overrides: {}
+          min_new_tokens: null
+          n_samples_per_eval_prompt: 1
+          name: aime24
+          path: /root/datasets/aime-2024/aime-2024.jsonl
+          rm_type: null
+          stop: null
+          stop_token_ids: null
+          temperature: 0.8
+          tool_key: tools
+          top_k: 1
+          top_p: 1.0
+    template: rollout_executor-01
+  tests/e2e/megatron/test_qwen3_4B_ppo/run-0000/all/default/trainer_controller_actor: {overrides: {set: {/args/backend/rank: 0}},
+    template: trainer-megatron-02}
+  tests/e2e/megatron/test_qwen3_4B_ppo/run-0000/all/default/trainer_controller_critic:
+    overrides:
+      set:
+        <<: *id008
+        /args/backend/rank: 0
+    template: trainer-megatron-02
+  tests/e2e/megatron/test_qwen3_4B_ppo/run-0000/all/default/worker_manager:
+    overrides:
+      set:
+        <<:
+        - *id004
+        - *id005
+        - *id007
+        /args/critic_num_gpus_per_node: 4
+        /args/critic_num_nodes: 1
+        /args/eval_datasets: *id009
+    template: worker_manager-01
+shared_overrides:
+  trainer-megatron-02:
+    remove: [/args/backend/ckpt_step, /args/backend/finetune, /args/backend/load, /args/backend/no_load_optim, /args/backend/no_load_rng]
+    set:
+      <<: *id004
+      /args/backend/context_parallel_size: 2
+      /args/backend/pipeline_model_parallel_size: 2
+      /args/backend/sequence_parallel: false
+      /args/backend/transformer_pipeline_model_parallel_size: 2
+      /args/backend/wandb_project: miles-test_qwen3_4B_ppo
+      /args/critic_load: null
+      /args/init_expected_num_cells/default: 2
+      /args/rollout_max_response_len: 8192

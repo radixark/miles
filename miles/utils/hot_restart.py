@@ -3,8 +3,9 @@ from __future__ import annotations
 import asyncio
 import logging
 from argparse import Namespace
-from typing import Any
+from collections.abc import Sequence
 
+from miles.ray.train.init_request import TrainerControllerInitRequest
 from miles.utils.init_once import InitState
 from miles.utils.misc import call_agent_abort_hook
 from miles.utils.retry_utils import retry_until_deadline
@@ -66,16 +67,21 @@ async def wait_trainers_idle(handles: dict[str, BaseWorkerHandle]) -> bool:
             logger.info(f"Waiting until trainer {trainer_id!r} finished the call the previous script left running")
             await handle.wait_idle(timeout=TAKE_OVER_GATE_TIMEOUT_SECONDS)
 
+        await asyncio.wait_for(
+            asyncio.gather(*[handle.finalize_pending_checkpoint() for handle in handles.values()]),
+            timeout=_TRAINER_RELOAD_TIMEOUT_SECONDS,
+        )
+
     return resumed
 
 
 async def trainer_init_or_load_state(
-    trainer: BaseWorkerHandle, model_args: Namespace, *, trainer_id: str, resumed: bool
-) -> list[Any]:
+    trainer: BaseWorkerHandle, request: TrainerControllerInitRequest, *, trainer_id: str, resumed: bool
+) -> list[int]:
     if not resumed:
-        return await trainer.init(model_args)
+        return await trainer.init(request)
 
-    start_rollout_ids = await asyncio.wait_for(trainer.load_state(), timeout=_TRAINER_RELOAD_TIMEOUT_SECONDS)
+    start_rollout_ids = await asyncio.wait_for(trainer.load_state(request), timeout=_TRAINER_RELOAD_TIMEOUT_SECONDS)
     logger.info(f"Resumed the already-initialized trainer {trainer_id!r} at rollout ids {start_rollout_ids}")
     return start_rollout_ids
 
@@ -83,7 +89,9 @@ async def trainer_init_or_load_state(
 # ============================ inference take-over =============================
 
 
-async def init_or_reset_inference_controller(inference_controller: BaseWorkerHandle, *, args: Namespace) -> None:
+async def init_or_reset_inference_controller(
+    inference_controller: BaseWorkerHandle, *, args: Namespace, trainers: Sequence[BaseWorkerHandle]
+) -> None:
     if not await inference_controller.is_initialized():
         await inference_controller.init()
         return
@@ -95,6 +103,9 @@ async def init_or_reset_inference_controller(inference_controller: BaseWorkerHan
     logger.info("The inference controller outlived a previous orchestration script; taking it over as it is")
 
     await inference_controller.wait_idle(timeout=_INFERENCE_IDLE_TIMEOUT_SECONDS)
+
+    await asyncio.gather(*[trainer.wait_idle(timeout=TAKE_OVER_GATE_TIMEOUT_SECONDS) for trainer in trainers])
+    await asyncio.wait_for(inference_controller.abort_update_weights(), timeout=TAKE_OVER_GATE_TIMEOUT_SECONDS)
 
     await inference_controller.wait_expected_num_cells(timeout=TAKE_OVER_GATE_TIMEOUT_SECONDS)
 

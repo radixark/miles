@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 import torch
+from tests.fast.fixtures.sglang_config_fixtures import make_sglang_config
 
 from miles.backends.fsdp_utils.adaptations.precision import (
     apply_fp32_master,
@@ -17,9 +18,19 @@ from miles.backends.training_utils.data import _rollout_logprob_dtype
 from miles.true_on_policy.contracts import QWEN3_DENSE_TRUE_ON_POLICY_V1
 
 
+def _args(
+    *, fp16: bool, keep_fp32_master: bool, true_on_policy_mode: bool = False, contract: str | None = None
+) -> SimpleNamespace:
+    return SimpleNamespace(
+        backend=SimpleNamespace(fp16=fp16, keep_fp32_master=keep_fp32_master),
+        true_on_policy_mode=true_on_policy_mode,
+        sglang=make_sglang_config(true_on_policy_contract=contract),
+    )
+
+
 def test_resolve_precision_policy_uses_independent_fp32_master_switch_and_dtypes():
     dense = SimpleNamespace(model_type="qwen3")
-    bf16_args = SimpleNamespace(fp16=False, keep_fp32_master=True)
+    bf16_args = _args(fp16=False, keep_fp32_master=True)
 
     p = resolve_precision_policy(dense, bf16_args)
     assert p.keep_fp32_master
@@ -27,13 +38,13 @@ def test_resolve_precision_policy_uses_independent_fp32_master_switch_and_dtypes
 
     disabled = resolve_precision_policy(
         SimpleNamespace(model_type="glm4_moe_lite"),
-        SimpleNamespace(fp16=True, keep_fp32_master=False),
+        _args(fp16=True, keep_fp32_master=False),
     )
     assert not disabled.keep_fp32_master
     assert disabled.param_dtype == torch.float16 and disabled.reduce_dtype == torch.float32
     assert disabled == resolve_precision_policy(
         dense,
-        SimpleNamespace(fp16=True, keep_fp32_master=False),
+        _args(fp16=True, keep_fp32_master=False),
     )
 
 
@@ -48,20 +59,17 @@ def test_fp32_master_cli_defaults_enabled_and_can_be_disabled(monkeypatch):
 def test_fsdp_args_expose_effective_compute_precision(monkeypatch):
     for cli_args, expected_dtype in (([], torch.bfloat16), (["--fp16"], torch.float16)):
         monkeypatch.setattr(sys, "argv", ["miles", *cli_args])
-        args = load_fsdp_args()
-        args.true_on_policy_mode = True
+        backend = load_fsdp_args()
+        args = SimpleNamespace(backend=backend, true_on_policy_mode=True)
 
-        assert args.bf16 == (not args.fp16)
+        assert backend.bf16 == (not backend.fp16)
         assert resolve_precision_policy(None, args).param_dtype is expected_dtype
         assert _rollout_logprob_dtype(args) is expected_dtype
 
 
 def test_qwen3_formal_true_on_policy_resolves_fp32_params_with_bf16_autocast():
-    args = SimpleNamespace(
-        fp16=False,
-        keep_fp32_master=True,
-        true_on_policy_mode=True,
-        sglang_true_on_policy_contract=QWEN3_DENSE_TRUE_ON_POLICY_V1.name,
+    args = _args(
+        fp16=False, keep_fp32_master=True, true_on_policy_mode=True, contract=QWEN3_DENSE_TRUE_ON_POLICY_V1.name
     )
 
     policy = resolve_precision_policy(SimpleNamespace(model_type="qwen3"), args)
@@ -84,12 +92,7 @@ def test_qwen3_formal_true_on_policy_resolves_fp32_params_with_bf16_autocast():
 def test_qwen3_formal_precision_does_not_leak_to_other_modes(model_type, true_on_policy_mode, contract):
     policy = resolve_precision_policy(
         SimpleNamespace(model_type=model_type),
-        SimpleNamespace(
-            fp16=False,
-            keep_fp32_master=True,
-            true_on_policy_mode=true_on_policy_mode,
-            sglang_true_on_policy_contract=contract,
-        ),
+        _args(fp16=False, keep_fp32_master=True, true_on_policy_mode=true_on_policy_mode, contract=contract),
     )
 
     assert policy.param_dtype is torch.bfloat16
@@ -101,11 +104,8 @@ def test_qwen3_formal_true_on_policy_rejects_fp16():
     with pytest.raises(ValueError, match="requires bf16 training"):
         resolve_precision_policy(
             SimpleNamespace(model_type="qwen3"),
-            SimpleNamespace(
-                fp16=True,
-                keep_fp32_master=True,
-                true_on_policy_mode=True,
-                sglang_true_on_policy_contract=QWEN3_DENSE_TRUE_ON_POLICY_V1.name,
+            _args(
+                fp16=True, keep_fp32_master=True, true_on_policy_mode=True, contract=QWEN3_DENSE_TRUE_ON_POLICY_V1.name
             ),
         )
 
@@ -114,11 +114,11 @@ def test_qwen3_formal_true_on_policy_rejects_disabled_fp32_master():
     with pytest.raises(ValueError, match="requires fp32 master weights"):
         resolve_precision_policy(
             SimpleNamespace(model_type="qwen3"),
-            SimpleNamespace(
+            _args(
                 fp16=False,
                 keep_fp32_master=False,
                 true_on_policy_mode=True,
-                sglang_true_on_policy_contract=QWEN3_DENSE_TRUE_ON_POLICY_V1.name,
+                contract=QWEN3_DENSE_TRUE_ON_POLICY_V1.name,
             ),
         )
 
@@ -134,11 +134,8 @@ def test_precision_forward_context_uses_policy_autocast(monkeypatch):
     monkeypatch.setattr(torch, "autocast", fake_autocast)
     policy = resolve_precision_policy(
         SimpleNamespace(model_type="qwen3"),
-        SimpleNamespace(
-            fp16=False,
-            keep_fp32_master=True,
-            true_on_policy_mode=True,
-            sglang_true_on_policy_contract=QWEN3_DENSE_TRUE_ON_POLICY_V1.name,
+        _args(
+            fp16=False, keep_fp32_master=True, true_on_policy_mode=True, contract=QWEN3_DENSE_TRUE_ON_POLICY_V1.name
         ),
     )
 

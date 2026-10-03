@@ -1,15 +1,15 @@
 import argparse
-import json
 import logging
 import os
 import re
 import tempfile
+from collections.abc import Callable
 from string import Formatter
 from typing import Any
 
 import yaml
-from sglang_router.launch_router import RouterArgs
 
+from miles.backends.fsdp_utils.config import FsdpArgsNamespace
 from miles.backends.megatron_utils.megatron_config import (
     ACTOR_ROLE,
     CRITIC_ROLE,
@@ -17,22 +17,26 @@ from miles.backends.megatron_utils.megatron_config import (
     resolve_args_checkpoint_load,
     resolve_megatron_config,
 )
-from miles.backends.sglang_utils.arguments import add_sglang_arguments, collect_eval_sglang_overrides
+from miles.backends.sglang_utils.arguments import collect_eval_sglang_overrides
 from miles.backends.sglang_utils.arguments import validate_args as sglang_validate_args
-from miles.dashboard.args import add_dashboard_arguments, validate_dashboard_args
-from miles.ray.specs.train import compute_trainer_ids, external_trainer_controller_addrs
+from miles.backends.sglang_utils.sglang_config import SglangConfig
+from miles.backends.sglang_utils.sglang_scaling_config import SglangScalingConfig
+from miles.dashboard.args import validate_dashboard_args
+from miles.ray.specs.train import external_trainer_controller_addrs
 from miles.rollout.checkpoint_eval import is_checkpoint_eval_fn
+from miles.utils.args.configs.fault_tolerance import _DEFAULT_FT_API_SERVER_PORT
+from miles.utils.args.configs.router import RouterConfig
+from miles.utils.args.custom_function import add_user_provided_function_arguments, resolve_custom_function_configs
+from miles.utils.args.runtime import AllConfig
+from miles.utils.args.schema import reset_arg
 from miles.utils.audit_utils.event_logger.logger import EVENTS_DIRNAME
 from miles.utils.chat_template_utils.tito_tokenizer import TITOTokenizerType
-from miles.utils.env_report.launcher_report import LAUNCHER_REPORT_ENV_VAR
 from miles.utils.environ import use_legacy_rollout_v1
 from miles.utils.eval_config import EvalDatasetConfig, build_eval_dataset_configs, ensure_dataset_list
 from miles.utils.file_arg_utils import resolve_file_arg
-from miles.utils.ft_utils.health_checker import SimpleHealthCheckerConfig
-from miles.utils.function_registry import load_function
 from miles.utils.hf_utils.config import is_dsa, load_hf_config
 from miles.utils.logging_utils import configure_logger_raw
-from miles.utils.lora.arguments import add_lora_arguments, validate_lora_args
+from miles.utils.lora.arguments import validate_lora_args
 from miles.utils.lora.utils import is_lora_enabled
 from miles.utils.megatron_args_utils import compute_megatron_world_size_except_dp
 from miles.utils.object_store import ObjectStoreBackend
@@ -41,9 +45,8 @@ from miles.utils.object_store_config import (
     compute_mooncake_init_kwargs_from_env,
     compute_mooncake_init_kwargs_vanilla,
 )
-from miles.utils.run_uuid import RUN_UUID_LENGTH, generate_run_uuid, validate_run_uuid
+from miles.utils.run_uuid import generate_run_uuid, validate_run_uuid
 from miles.utils.tracking_utils.ci_history import RECORD_DIR_ENV
-from miles.utils.workers.argv_utils import with_relax_parser_required_args, with_suppressed_parser_help
 from miles.utils.workers.naming import DEPLOY_INSTANCE_ID_MAX_LENGTH, DNS_LABEL_PATTERN
 from miles.utils.workers.types import ClusterBackend, DeployComponent, WorkerCommBackend, resolve_worker_comm_backend
 from miles.utils.workers.worker_provider.static import parse_host_and_port
@@ -53,7 +56,7 @@ logger = logging.getLogger(__name__)
 FULLY_ASYNC_ROLLOUT_PATH = "miles.rollout.fully_async_rollout.FullyAsyncRolloutFn"
 
 
-def resolve_rollout_function_paths(args) -> tuple[str, str]:
+def resolve_rollout_function_paths(args: argparse.Namespace) -> None:
     """The (rollout, eval) function paths the arguments select."""
     if use_legacy_rollout_v1():
         standard_path = "miles.rollout.sglang_rollout.generate_rollout"
@@ -64,7 +67,8 @@ def resolve_rollout_function_paths(args) -> tuple[str, str]:
         rollout_path = FULLY_ASYNC_ROLLOUT_PATH
     # Resolved after the override: shared-engine eval must reach the producer it pauses.
     eval_path = args.eval_function_path or rollout_path
-    return rollout_path, eval_path
+    args.rollout_function_path = rollout_path
+    args.eval_function_path = eval_path
 
 
 def driver_owns_generation_pause(args) -> bool:
@@ -123,7 +127,7 @@ def _resolve_rollout_functions(args) -> None:
         ), "--fully-async does not support --rollout-all-samples-process-path"
 
     user_eval_path = args.eval_function_path
-    args.rollout_function_path, args.eval_function_path = resolve_rollout_function_paths(args)
+    resolve_rollout_function_paths(args)
     # An inherited eval path is the rollout fn serving eval itself, never a checkpoint
     # backend: skip the resolve so custom rollout modules are not imported on the driver.
     checkpoint_backend = user_eval_path is not None and is_checkpoint_eval_fn(args.eval_function_path)
@@ -137,2694 +141,18 @@ def _resolve_rollout_functions(args) -> None:
     args.eval_uses_snapshots = args.eval_num_gpus > 0 or checkpoint_backend
 
 
-def reset_arg(parser, name, **kwargs):
-    """
-    Reset the default value of a Megatron argument.
-    :param parser: The argument parser.
-    :param name: The name of the argument to reset.
-    :param default: The new default value.
-    """
-    for action in parser._actions:
-        if name in action.option_strings:
-            if "default" in kwargs:
-                action.default = kwargs["default"]
-            break
-    else:
-        parser.add_argument(name, **kwargs)
-
-
-_FT_CHOICES = ["rollout", "train"]
-_DEFAULT_FT_API_SERVER_PORT = 18080
-
-
-def get_miles_extra_args_provider(add_custom_arguments=None):
-    def add_miles_arguments(parser):
+def get_miles_extra_args_provider(
+    add_custom_arguments: Callable[[argparse.ArgumentParser], argparse.ArgumentParser] | None = None,
+) -> Callable[[argparse.ArgumentParser], argparse.ArgumentParser]:
+    def add_miles_arguments(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
         parser.set_defaults(entry="train")
-
-        def add_run_uuid_arguments(parser):
-            parser.add_argument(
-                "--run-uuid",
-                type=str,
-                default=None,
-                help=(
-                    f"Machine-readable identifier for this launch: exactly {RUN_UUID_LENGTH} lowercase "
-                    "hex characters, auto-generated when unset. Unlike the human-readable run "
-                    "names, two runs never share one, so anything stamped with it can be "
-                    "traced back to the launch that produced it."
-                ),
-            )
-            return parser
-
-        # Ray
-        def add_cluster_arguments(parser):
-            parser.add_argument(
-                "--cluster-backend",
-                type=str,
-                default=ClusterBackend.RAY.value,
-                choices=tuple(backend.value for backend in ClusterBackend),
-                help=(
-                    "Which backend provides the worker processes: "
-                    "`ray` launches them from the driver, `kubernetes` expects the platform to have "
-                    "created them already and observes them by their pod labels."
-                ),
-            )
-            parser.add_argument(
-                "--worker-comm-backend",
-                type=str,
-                default=None,
-                choices=tuple(backend.value for backend in WorkerCommBackend),
-                help=(
-                    "How the driver calls its workers: `ray` sends actor calls, `rpc` calls the http server "
-                    "every worker serves. Unset picks the default of the cluster backend, today `ray` under "
-                    "`--cluster-backend ray` and `rpc` under `--cluster-backend kubernetes`."
-                ),
-            )
-            parser.add_argument(
-                "--deploy-component",
-                type=str,
-                default=DeployComponent.ALL.value,
-                choices=tuple(component.value for component in DeployComponent),
-                help=(
-                    "Which part of the run this launch deploys: `all` deploys every worker, `trainer` the trainer "
-                    "controllers and their megatron ranks, `inference` a group of inference engines that registers "
-                    "itself into the run, and `primary` everything else (orchestration script, rollout executor, "
-                    "session servers, inference controller and routers). Deploying a subset takes one launch per "
-                    "subset, and the launch that carries the orchestration script reaches the trainer through the "
-                    "addresses it is given."
-                ),
-            )
-            parser.add_argument(
-                "--deploy-instance-id",
-                type=str,
-                default=None,
-                help=(
-                    "Id of this deployment, telling it apart from the other deployments of the same component "
-                    "in the same run: a trainer id such as `trainer-a` under `--deploy-component trainer`, or an "
-                    "engine group id such as `inf-east` under `--deploy-component inference`. A deployment's "
-                    "arguments describe only what it carries, so this id selects nothing; it is required under "
-                    "`--deploy-component inference`, which names its engine pools by it, optional under "
-                    "`--deploy-component trainer`, whose config already declares the one trainer id it carries, and "
-                    "refused for `all` and `primary`, which a run has exactly one of."
-                ),
-            )
-            parser.add_argument(
-                "--init-expected-num-cells",
-                type=int,
-                default=None,
-                help=(
-                    "How many engine cells per model this run waits for before it starts, when the engines are "
-                    "deployed elsewhere and register themselves into it. The run cannot derive the number, because "
-                    "the engine deployments are launched separately and may arrive late; declare here how many "
-                    "cells the first rollout needs. It gates startup only, and the run keeps serving whatever "
-                    "registers or leaves afterwards."
-                ),
-            )
-            parser.add_argument(
-                "--trainer-controller-addrs",
-                type=str,
-                default=None,
-                nargs="+",
-                help=(
-                    "Address of every independently deployed trainer controller, one "
-                    "<trainer_id>=<host:port> entry per trainer the run drives. Required when this launch "
-                    "carries the orchestration script but not the trainer."
-                ),
-            )
-            parser.add_argument(
-                "--inference-controller-addr",
-                type=str,
-                default=None,
-                help=(
-                    "Address of the one inference controller of the run, as host:port. Given "
-                    "to a `--deploy-component inference` launch, whose reporter registers the engines it deploys "
-                    "into that controller."
-                ),
-            )
-            parser.add_argument("--actor-num-nodes", type=int, default=1, help="Number of nodes for training actor")
-            parser.add_argument(
-                "--actor-num-gpus-per-node", type=int, default=8, help="Number of gpus per node for training actor"
-            )
-            parser.add_argument(
-                "--critic-num-nodes", type=int, default=None, help="Number of nodes for training actor"
-            )
-            parser.add_argument(
-                "--critic-num-gpus-per-node", type=int, default=None, help="Number of gpus per node for training actor"
-            )
-
-            parser.add_argument(
-                "--rollout-num-gpus",
-                type=int,
-                default=None,
-                help=(
-                    "Number of GPUs for inference. Note that when using --colocate, "
-                    "i.e. the training and the inference engines are on the same gpus, this param will be ignored and will be set as "
-                    "actor_num_gpus_per_node * actor_num_nodes."
-                ),
-            )
-            parser.add_argument(
-                "--rollout-num-gpus-per-engine",
-                type=int,
-                default=1,
-                help="Number of GPUs per inference engine, just like the tp_size in sglang.",
-            )
-            parser.add_argument(
-                "--num-gpus-per-node",
-                type=int,
-                default=8,
-                help=(
-                    "Number of gpus per node for rollout."
-                    "Notice: If you are going to use less than 8 gpus per node under colocate mode, you should set this number."
-                ),
-            )
-            parser.add_argument(
-                "--colocate",
-                action="store_true",
-                default=False,
-                help=(
-                    "Whether to colocate the inference engines and the actor. "
-                    "Turning this on will also set --offload to true."
-                ),
-            )
-            parser.add_argument(
-                "--offload",
-                action="store_true",
-                default=False,
-                help=("Equivalent to --offload-train + --offload-rollout. "),
-            )
-            parser.add_argument(
-                "--offload-train",
-                action=argparse.BooleanOptionalAction,
-                help=(
-                    "Whether to offload the training actor to CPU while the rollout engines generate. "
-                    "Defaults to true when --colocate is set; an explicit --no-offload-train is respected."
-                ),
-            )
-            parser.add_argument(
-                "--clear-quantized-weight-workspaces-on-offload",
-                action=argparse.BooleanOptionalAction,
-                default=True,
-                help=(
-                    "Drop TransformerEngine's cached quantized weights before offloading the "
-                    "training actor. They are rebuilt on the next forward, so backing them up "
-                    "to pinned host memory is pure overhead. Ignored when TransformerEngine "
-                    "is not in use or CUDA graphs are enabled."
-                ),
-            )
-            parser.add_argument(
-                "--offload-rollout",
-                action=argparse.BooleanOptionalAction,
-                help=(
-                    "Whether to offload the rollout generator to CPU during training. "
-                    "Defaults to true when --colocate is set; an explicit --no-offload-rollout is respected."
-                ),
-            )
-
-            parser.add_argument(
-                "--offload-rollout-level",
-                type=str,
-                nargs="+",
-                default=["kv_cache", "weight"],
-                help=(
-                    "Specifies what to offload during rollout when offload-rollout is set. "
-                    "Possible values: 'kv_cache', 'weight'. Default: both 'kv_cache' and 'weight'. "
-                    "Example: --offload-rollout-level kv_cache weight"
-                ),
-            )
-            parser.add_argument(
-                "--offload-train-target",
-                type=str,
-                choices=["cpu", "disk"],
-                default="cpu",
-                help=(
-                    "Where the training actor is backed up while offloaded during rollout "
-                    "(only used with --offload-train on the megatron backend). "
-                    "'cpu' (default) keeps a pinned host copy; 'disk' streams it to node-local "
-                    "NVMe (--offload-train-disk-dir) for the case where even CPU RAM cannot hold it."
-                ),
-            )
-            parser.add_argument(
-                "--stream-optimizer-state-to-disk",
-                action="store_true",
-                help=(
-                    "Hold optimizer state in files on node-local NVMe, for when it does not fit the "
-                    "GPU *while the step runs*; --offload-train-target=disk cannot help there.\n"
-                    "adam: streams fp32 main params and moments through per-bucket files, one bucket "
-                    "resident at a time. Requires the distributed optimizer, excludes "
-                    "--offload-optimizer-states and --optimizer-cpu-offload.\n"
-                    "dist_muon: the disk backend for --chunked-optimizer-state-offload, so pass that "
-                    "plus a non-zero --optimizer-state-offload-fraction. --optimizer-cpu-offload is "
-                    "Adam-only. This bounds host residency, not the GPU restore window -- for that "
-                    "set --optimizer-state-offload-chunk-size-mb, which Megatron warns about at 0."
-                ),
-            )
-            parser.add_argument(
-                "--stream-optimizer-state-moment-dtype",
-                type=str,
-                default="fp32",
-                choices=["fp32", "bf16", "fp16", "fp8e4m3", "fp8e5m2"],
-                help=(
-                    "On-disk dtype for the streamed Adam moments; the fp32 master copy is always "
-                    "fp32. This is a serialization format, not a compute precision: the step still "
-                    "hands fp32 tensors to FusedAdam, and the cast happens on the way to and from "
-                    "disk. That makes it distinct from --exp-avg-dtype / --exp-avg-sq-dtype, which "
-                    "change what the optimizer holds and require --use-precision-aware-optimizer, "
-                    "so they cannot be combined with streaming at all. "
-                    "The step is I/O bound and the moments tolerate less precision than the master "
-                    "copy, so bf16 cuts streaming volume by a third (12 bytes per param to 8). "
-                    "fp32 is bit-identical to keeping the moments on GPU. The fp8 options need "
-                    "per-block scaling for exp_avg_sq to be sound, which this does not implement, "
-                    "and are not recommended."
-                ),
-            )
-            parser.add_argument(
-                "--offload-train-disk-dir",
-                type=str,
-                default=None,
-                help=(
-                    "Node-local directory for the disk-offload files, used by both "
-                    "--offload-train-target=disk and --stream-optimizer-state-to-disk (each under "
-                    "its own subdirectory). Should be fast local NVMe (e.g. /scratch); a tmpfs "
-                    "mount, which /tmp is on many systems, keeps the data in RAM and defeats both. "
-                    "Files are per-process and overwritten in place every step (bounded size); "
-                    "defaults to $SCRATCH/miles_train_offload_<uid>. Muon's optimizer-state buffers "
-                    "are unlinked once mapped, so their footprint shows in df but not du."
-                ),
-            )
-            parser.add_argument(
-                "--offload-train-disk-chunk-mb",
-                type=int,
-                default=256,
-                help=(
-                    "Chunk size (MiB) for the GPU<->disk transfers, i.e. the pinned host staging "
-                    "buffer, which bounds host memory regardless of how much is moved. Used by both "
-                    "--offload-train-target=disk and --stream-optimizer-state-to-disk, and each "
-                    "allocates its own, so enabling both costs 2x this per rank."
-                ),
-            )
-
-            parser.add_argument(
-                "--colocate-memory-peak-device",
-                type=str,
-                choices=["cpu", "gpu"],
-                default="cpu",
-                help=(
-                    "Which device absorbs the trainer<->rollout handoff overlap. 'cpu' "
-                    "(default): each side offloads before the other onloads, so the "
-                    "engine's weight mirror and the trainer's backup briefly coexist in "
-                    "host memory. 'gpu': onload the other side first, so both sides "
-                    "briefly coexist in GPU memory instead and the two host copies never "
-                    "overlap. Use 'gpu' when host RAM is the tighter budget than the "
-                    "handoff headroom on the GPU."
-                ),
-            )
-
-            reset_arg(parser, "--distributed-backend", type=str, default="nccl")
-            reset_arg(parser, "--distributed-timeout-minutes", type=int, default=10)
-
-            return parser
-
-        def add_train_arguments(parser):
-            parser.add_argument(
-                "--train-backend",
-                type=str,
-                choices=["megatron", "fsdp"],
-                default="megatron",
-                help="The backend for training.",
-            )
-            parser.add_argument(
-                "--qkv-format",
-                type=str,
-                choices=["thd", "bshd"],
-                default="thd",
-                help="The qkv layout.",
-            )
-            parser.add_argument(
-                "--linear-attention-backend",
-                type=str,
-                choices=["fla", "flashqla"],
-                default="fla",
-                help=(
-                    "Backend for Qwen GDN linear-attention layers. "
-                    "'fla' (flash-linear-attention) is portable and runs on any supported GPU. "
-                    "'flashqla' (FlashQLA) requires NVIDIA SM90 (Hopper) or newer, CUDA 12.8+, and PyTorch 2.8+."
-                ),
-            )
-            parser.add_argument(
-                "--miles-dsa-topk-backend",
-                type=str,
-                choices=["torch", "flashinfer"],
-                default="torch",
-                help="Top-k backend for Miles DSA indexer.",
-            )
-            parser.add_argument(
-                "--true-on-policy-mode",
-                action="store_true",
-                default=False,
-                help="Whether to enable true-on-policy mode.",
-            )
-            parser.add_argument(
-                "--recompute-logprobs-via-prefill",
-                action="store_true",
-                default=False,
-                help=(
-                    "Recompute rollout logprobs via SGLang prefill instead of decode kernels. "
-                    "Only needed for models whose prefill and decode paths are not numerically identical."
-                ),
-            )
-            parser.add_argument(
-                "--train-env-vars",
-                type=json.loads,
-                default="{}",
-                help="Extra environment variables for training process, e.g. PyTorch memory management ones.",
-            )
-            parser.add_argument(
-                "--train-memory-margin-bytes",
-                type=int,
-                default=1024**3,
-                help="Add margin for train memory allocation. By default we will reserve 1GB as margin.",
-            )
-            parser.add_argument(
-                "--debug-skip-weight-update",
-                action="store_true",
-                default=False,
-                help=(
-                    "Debug-only: preserve the train/rollout offload-onload schedule, "
-                    "but skip the actual actor-to-rollout weight update."
-                ),
-            )
-            parser.add_argument(
-                "--debug-disable-optimizer",
-                action="store_true",
-                default=False,
-                help=(
-                    "Debug-only: do not initialize the Megatron optimizer or LR scheduler. "
-                    "Training still runs rollout, log-prob forward, and actor forward/backward, "
-                    "but skips optimizer state allocation and optimizer updates."
-                ),
-            )
-            parser.add_argument(
-                "--rematerialize-param-from-master-weight",
-                action="store_true",
-                help=(
-                    "Colocate CPU memory optimization. Drop the actor's parameter weight backup "
-                    "during inference, and rebuild it from the optimizer's master weights on the "
-                    "next train step. Reduces peak CPU memory by 2*param per rank (bf16 training). "
-                    "Works with both the GPU optimizer and the CPU optimizer, but is not compatible "
-                    "with --use-precision-aware-optimizer on GPU. ref/teacher tags keep their "
-                    "backups. Recommended for Grace GPU colocate training."
-                ),
-            )
-            parser.add_argument(
-                "--check-rematerialize-param-from-master-weight",
-                action="store_true",
-                help="Debug: SHA256-verify the first two rematerialize cycles are bit-identical.",
-            )
-            parser.add_argument(
-                "--megatron-to-hf-mode",
-                choices=["raw", "bridge"],
-                default="raw",
-                help="The method to convert megatron weights to hugging face weights for SGLang.",
-            )
-            parser.add_argument(
-                "--dsa-attention-backend",
-                choices=["megatron", "tilelang"],
-                default="tilelang",
-                help=(
-                    "DSA sparse-MLA kernel backend for GLM (glm_moe_dsa) under --megatron-to-hf-mode bridge. "
-                    "'tilelang' (default) uses the fused TileLang kernels (SparseMLA + lighting_indexer, vendored from slime) for "
-                    "rollout<->train numerical parity; 'megatron' uses the portable unfused megatron-core "
-                    "kernels. 'tilelang' requires --qkv-format thd and the optional tilelang dep, and is "
-                    "training/forward-only (no KV cache, cannot serve inference). Both support GLM-5.1 and "
-                    "GLM-5.2, full or LoRA. No effect on non-DSA models or the 'raw' path."
-                ),
-            )
-            parser.add_argument(
-                "--extra-high-precision-layers-hf",
-                type=str,
-                nargs="*",
-                default=(),
-                help=("Extra substrings for HF weight names to skip quantization " "(e.g. .kv_b_proj.)."),
-            )
-            parser.add_argument(
-                "--extra-high-precision-layers-megatron",
-                type=str,
-                nargs="*",
-                default=(),
-                help=(
-                    "Extra substrings for Megatron weight names to skip quantization in Megatron-to-HF paths "
-                    "(e.g. .linear_kv_up_proj.)."
-                ),
-            )
-            parser.add_argument(
-                "--custom-model-provider-path",
-                type=str,
-                default=None,
-                help=(
-                    "Path to a custom model provider function. "
-                    "If set, we will use this function instead of the default model provider. "
-                    "The function should have the signature "
-                    "`def custom_model_provider(pre_process: bool, post_process: bool, vp_stage: int | None = None) -> GPTModel`. "
-                    "Example: 'my_module.my_model_provider'."
-                ),
-            )
-            parser.add_argument(
-                "--recompute-loss-function",
-                action="store_true",
-                help="Whether to enable recompute loss function to save memory during training.",
-            )
-            parser.add_argument(
-                "--log-probs-chunk-size", type=int, default=-1, help="Chunk size to compute log probs to save memory"
-            )
-            parser.add_argument(
-                "--indep-dp",
-                action="store_true",
-                default=False,
-                help="Launch each DP replica as an independent Megatron instance instead of using Megatron-internal data parallelism.",
-            )
-            parser.add_argument(
-                "--delay-split-train-data-by-dp",
-                action="store_true",
-                default=False,
-                help="Split the rollout batch across DP ranks on the training side instead of the rollout side, "
-                "using the training side's own DP size.",
-            )
-            parser.add_argument(
-                "--allgather-cp",
-                action="store_true",
-                default=False,
-            )
-            reset_arg(
-                parser,
-                "--low-memory-resume",
-                action="store_true",
-                default=False,
-                help=(
-                    "Allocate optimizer states on CPU during checkpoint loading to prevent GPU OOM on memory spike. "
-                ),
-            )
-            parser.add_argument(
-                "--mfu-peak-tflops",
-                type=float,
-                default=None,
-                help=(
-                    "Peak dense BF16 TFLOP/s of one training GPU — the denominator of perf/actor_train_mfu. "
-                    "Defaults to a built-in table keyed on the device name; set this for a device the table "
-                    "does not know, or to report MFU against another precision's peak. With neither available "
-                    "the MFU metric is not logged."
-                ),
-            )
-
-            return parser
-
-        # rollout
-        def add_rollout_arguments(parser):
-            parser.add_argument(
-                "--hf-checkpoint",
-                type=str,
-                default=None,
-                help=(
-                    "The huggingface checkpoint of the trained model. "
-                    "This is used to initialize sglang and also provide the tokenizer. "
-                    "Note that, we will always update the parameters in sglang with that of megatron before training, "
-                    "so you only need to provide a huggingface checkpoint that has the same architecture as the model you want to train. "
-                    "It doesn't necessary need to contain the most up-to-date parameters."
-                ),
-            )
-            parser.add_argument(
-                "--model-name",
-                type=str,
-                default=None,
-                help=(
-                    "The name of the model, this is used to convert the megatron weights into huggingface format. "
-                    "If not set, we will use `type(load_hf_config(args.hf_checkpoint)).__name__.lower()` as model_name. "
-                    "Also, sometimes this will help alleviate the bug that transformers cannot find certain model."
-                ),
-            )
-            parser.add_argument(
-                "--rollout-function-path",
-                type=str,
-                default=None,
-                help=(
-                    "Path to the rollout generation function. "
-                    "Use this to create your own custom rollout function and set this to its path. "
-                    "The function is called as `fn(args, rollout_id, data_source, evaluation=evaluation)`, "
-                    "so its signature should be "
-                    "`def generate_rollout(args, rollout_id, data_source, evaluation=False) "
-                    "-> RolloutFnTrainOutput | RolloutFnEvalOutput` "
-                    "(see `miles.rollout.inference_rollout.inference_rollout_common.InferenceRolloutFn` "
-                    "for the default class-based implementation). "
-                    "Within each output sample, set at least `tokens`, `response_length`, `reward`, "
-                    "and `truncated`."
-                ),
-            )
-            parser.add_argument(
-                "--fully-async",
-                action="store_true",
-                default=False,
-                help=(
-                    "Run fully async rollout: a persistent worker keeps generating while the trainer "
-                    "drains completed groups. Selects `FullyAsyncRolloutFn` as the rollout function; "
-                    "evaluation keeps the standard rollout function, which fully async does not serve. "
-                    "Requires train_async.py."
-                ),
-            )
-            # Sampling values reach the engine per request only: the built-in generate path sends them
-            # itself and the session server fills fields an agent omits from its session's defaults.
-            # They are never engine launch arguments: an engine shared by rollout and eval has no single default.
-            parser.add_argument(
-                "--namespaced-radix-cache",
-                action=argparse.BooleanOptionalAction,
-                help=(
-                    "Whether every generation request carries a radix cache key naming the rollout call "
-                    "the sample started under, so prefix KV computed under old weights cannot serve "
-                    "samples of a later call. Defaults to true when --fully-async is combined with "
-                    "--pause-generation-mode in_place, where the engine never flushes the cache and the "
-                    "staleness of a shared prompt is otherwise unbounded; an explicit "
-                    "--no-namespaced-radix-cache is respected."
-                ),
-            )
-            parser.add_argument(
-                "--rollout-temperature",
-                type=float,
-                default=1.0,
-                help="the temperature for the inference engine during rollout.",
-            )
-            parser.add_argument(
-                "--rollout-top-p",
-                type=float,
-                default=1.0,
-                help=(
-                    "the top-p for the inference engine during rollout. Values below 1 enable "
-                    "sampling-support replay and require a positive --rollout-top-k."
-                ),
-            )
-            parser.add_argument(
-                "--rollout-top-k",
-                type=int,
-                default=-1,
-                help=(
-                    "the top-k for the inference engine during rollout. Positive values enable "
-                    "sampling-support replay. SGLang's --sampling-mask-max-tokens is the physical "
-                    "returned-support limit because cutoff ties can retain more than top-k tokens."
-                ),
-            )
-            parser.add_argument(
-                "--rollout-max-context-len",
-                type=int,
-                default=None,
-                help=(
-                    "The maximum context size for the inference engine during rollout."
-                    "It should no exceed the `max_position_embeddinds` in Huggingface model's `config.json`"
-                ),
-            )
-            parser.add_argument(
-                "--rollout-max-prompt-len",
-                type=int,
-                default=None,
-                help=(
-                    "The maximum length of the prompt for the inference engine during rollout. "
-                    "If set, we will filter out the long prompts during initialization of the global dataset. "
-                    "This is not recommended if the dataset is large."
-                ),
-            )
-            parser.add_argument(
-                "--rollout-max-response-len",
-                type=int,
-                default=None,
-                help=(
-                    "The maximum length of the response for the inference engine during rollout. "
-                    "It is basically `max_tokens` in sglang."
-                ),
-            )
-            parser.add_argument(
-                "--rollout-skip-special-tokens",
-                action="store_true",
-                default=False,
-                help=(
-                    "Whether to skip special tokens in the response during rollout. "
-                    "This is useful when you want to use the response as a prompt for the next rollout."
-                ),
-            )
-            parser.add_argument(
-                "--rollout-stop",
-                type=str,
-                nargs="+",
-                default=None,
-                help=(
-                    "The stop words for the inference engine during rollout. "
-                    "It can be a list of strings or a single string. "
-                    "It may be hard to pass special tokens in command line, in that case rollout_stop_token_ids can be used."
-                ),
-            )
-            parser.add_argument(
-                "--rollout-stop-token-ids",
-                type=int,
-                nargs="+",
-                default=None,
-                help=(
-                    "The stop token ids for the inference engine during rollout. "
-                    "It can be a list of integers or a single integer."
-                ),
-            )
-            parser.add_argument(
-                "--rollout-shuffle",
-                action="store_true",
-                default=False,
-                help=("Whether to shuffle the prompts during rollout."),
-            )
-            parser.add_argument(
-                "--rollout-seed",
-                type=int,
-                default=42,
-                help=(
-                    "The seed for the random number generator during rollout. "
-                    "This is used to shuffle the prompts and also for the random sampling of the prompts."
-                ),
-            )
-            parser.add_argument(
-                "--object-store-backend",
-                type=str,
-                choices=tuple(backend.value for backend in ObjectStoreBackend),
-                default="ray",
-                help="Backend of the object store used to pass data (e.g. rollout data) between processes.",
-            )
-            parser.add_argument(
-                "--mooncake-store-init-kwargs",
-                type=json.loads,
-                default=None,
-                help="JSON kwargs used to initialize MooncakeDistributedStore for rollout transfer.",
-            )
-            parser.add_argument(
-                "--mooncake-replica-num",
-                type=int,
-                default=1,
-                help="Number of Mooncake memory replicas for each stored object.",
-            )
-
-            # sampling
-            parser.add_argument(
-                "--over-sampling-batch-size",
-                type=int,
-                default=None,
-                help=(
-                    "This defines the granularity of the sampling batch in the rollout function. "
-                    "When the number of available samples falls below the target, a sampling "
-                    "operation of size over_sampling_batch_size will be triggered."
-                    "Regardless of whether partial rollout is used or filters are applied, "
-                    "the sampling granularity is always determined by this value. "
-                    "If this value is None, rollout_batch_size will be used as the default over_sampling_batch_size."
-                ),
-            )
-            parser.add_argument(
-                "--dynamic-sampling-filter-path",
-                type=str,
-                default=None,
-                help=(
-                    "This is the filter function for dynamic sampling. "
-                    "It should be able to judge whether the result of a prompt should be selected or not."
-                    "We will do dynamic filter for sampling as in DAPO. e.g. not all correct or all wrong samples."
-                    "You could use `miles.rollout.filter_hub.dynamic_sampling_filters.check_reward_nonzero_std` as an example."
-                ),
-            )
-            parser.add_argument(
-                "--rollout-submission-granularity",
-                type=str,
-                choices=["group", "sample"],
-                default=None,
-                help=(
-                    "Granularity at which a completed unit frees rollout submission capacity. "
-                    "`group` holds a slot until the whole prompt group returns; `sample` frees each "
-                    "slot as its own sample finishes, so a replacement group goes out once "
-                    "n_samples_per_prompt samples complete, whichever groups they came from. "
-                    "Prompt groups are submitted whole either way. Unset picks the driver default: "
-                    "`sample` under --fully-async, where groups completed beyond the batch are queued "
-                    "for later steps; `group` otherwise, where they are aborted at the end of the step "
-                    "and, without --partial-rollout, discarded."
-                ),
-            )
-
-            # partial rollout
-            parser.add_argument(
-                "--partial-rollout",
-                action="store_true",
-                default=False,
-                help=(
-                    "Whether to use partial rollout. "
-                    "If set, the unfinished samples during dynamic sampling will be recycled back to data buffer. "
-                    "This is useful for long responses."
-                ),
-            )
-            parser.add_argument(
-                "--mask-offpolicy-in-partial-rollout",
-                action="store_true",
-                default=False,
-                help=(
-                    "Whether to mask previous generation in partial rollout. "
-                    "If set, only on-policy generated tokens will be used in training"
-                ),
-            )
-            parser.add_argument(
-                "--max-weight-staleness",
-                type=int,
-                default=None,
-                help=(
-                    "Maximum allowed gap between a group's oldest generated-token weight version and the current "
-                    "engine weight version. Prompt KV weight staleness is not considered. "
-                    "Groups exceeding this threshold are recycled back to "
-                    "the data buffer instead of being sent to training. Only effective in fully "
-                    "async mode. None (default) disables staleness filtering."
-                ),
-            )
-            parser.add_argument(
-                "--async-max-concurrent-samples",
-                type=int,
-                default=None,
-                help=(
-                    "Maximum number of concurrently generating trajectories in fully async mode, "
-                    "decoupling generation concurrency from the training batch size. None (default) "
-                    "keeps the legacy bound of one training batch worth of trajectories "
-                    "(rollout_batch_size groups, i.e. rollout_batch_size * n_samples_per_prompt)."
-                ),
-            )
-            parser.add_argument(
-                "--async-data-buffer-capacity-factor",
-                type=float,
-                default=2.0,
-                help=(
-                    "Capacity of the finished-group data buffer between rollout production and "
-                    "training consumption in fully async mode, as a multiple of rollout_batch_size "
-                    "(floor(factor * rollout_batch_size) groups). When the buffer is full the "
-                    "producer blocks until training consumes, so generation cannot run "
-                    "unboundedly ahead of training."
-                ),
-            )
-            parser.add_argument(
-                "--async-unused-samples-handler",
-                type=str,
-                choices=["retry", "drop"],
-                default="drop",
-                help=(
-                    "What to do with a finished group fully async mode does not train on "
-                    "(aborted, or beyond --max-weight-staleness): drop "
-                    "(default) discards the group; retry recycles its prompts into the data "
-                    "source for regeneration. Groups rejected by "
-                    "--dynamic-sampling-filter-path are always dropped."
-                ),
-            )
-            parser.add_argument(
-                "--custom-async-data-buffer-path",
-                type=str,
-                default=None,
-                help=(
-                    "Path to a custom DataBuffer subclass replacing the fully async finished-group "
-                    "data buffer (see miles/rollout/fully_async_data_buffer.py). Constructed with "
-                    "DataBufferConstructorInput; it takes over dataflow/staleness control, so the "
-                    "--async-data-buffer-* args apply only if the custom class reads them."
-                ),
-            )
-            parser.add_argument(
-                "--custom-generate-function-path",
-                type=str,
-                default=None,
-                help=(
-                    "Only substitue the `def generate(args, sample, sampling_params)` function within the example rollout function. "
-                    "This should be useful if you need to implement some special rollout logic, e.g. multi-turn, function calling."
-                ),
-            )
-            parser.add_argument(
-                "--custom-rollout-log-function-path",
-                type=str,
-                default=None,
-                help=(
-                    "The custom function for logging rollout data. The signature of the functions is: "
-                    "def log_rollout_data(rollout_id, args, samples, rollout_extra_metrics, rollout_time) -> bool. "
-                    "The return value indicates whether to skip the default logging. "
-                ),
-            )
-            parser.add_argument(
-                "--custom-eval-rollout-log-function-path",
-                type=str,
-                default=None,
-                help=(
-                    "The custom function for logging eval rollout data. "
-                    "def log_eval_rollout_data(rollout_id, args, data, extra_metrics) -> bool. "
-                    "The return value indicates whether to skip the default logging. "
-                ),
-            )
-
-            parser.add_argument(
-                "--buffer-filter-path",
-                type=str,
-                default=None,
-                help=(
-                    "Path to the buffer filter function. "
-                    "It should be able to select the samples in the buffer. "
-                    "The function should take list[list[Sample]] and return list[list[Sample]]."
-                ),
-            )
-            # update weight
-            parser.add_argument(
-                "--update-weight-buffer-size",
-                type=int,
-                default=512 * 1024**2,
-                help=(
-                    "buffer size for update weight, in bytes. "
-                    "This is used for updating weights by batch and should be useful for MoE models."
-                ),
-            )
-            parser.add_argument(
-                "--update-weights-interval",
-                type=int,
-                default=1,
-                help="Interval for updating the weights",
-            )
-            parser.add_argument(
-                "--pause-generation-mode",
-                type=str,
-                choices=["abort", "retract", "in_place"],
-                default="retract",
-                help=(
-                    "How SGLang pauses in-flight requests during weight updates. "
-                    "'abort' immediately terminates all requests (previous default). "
-                    "'retract' moves running requests back to the waiting queue and "
-                    "recomputes KV cache after update. "
-                    "'in_place' freezes requests and resumes with existing KV cache."
-                ),
-            )
-            parser.add_argument(
-                "--keep-old-actor",
-                action="store_true",
-                help="Whether to keep the rollout model on training process",
-            )
-
-            parser.add_argument(
-                "--rollout-data-postprocess-path",
-                type=str,
-                default=None,
-                help=(
-                    "The called after we have all the rollout data including log_probs. "
-                    "It may be helpful for updating loss mask."
-                ),
-            )
-            parser.add_argument(
-                "--pin-rollout-manager-to-head",
-                action="store_true",
-                default=False,
-                help=(
-                    "Pin the RolloutExecutor, the co-located router process, and the session servers to the "
-                    "Ray head node. "
-                    "Useful in K8s where the head pod has a stable Service address so that "
-                    "external agent environments can reliably reach the router."
-                ),
-            )
-            parser.add_argument(
-                "--rollout-external-engine-addrs",
-                type=str,
-                default=None,
-                nargs="+",
-                help=(
-                    "Static addresses of externally launched SGLang engines, one per engine cell "
-                    "(the node-0 engine url for multi-node engines). Each entry is host:port or "
-                    "http://host:port. Setting this implies external rollout: Miles launches no "
-                    "engines and discovers the topology from each engine's /server_info."
-                ),
-            )
-            parser.add_argument(
-                "--rollout-external-router-pd",
-                action="store_true",
-                default=False,
-                help=(
-                    "Launch the router in PD-disaggregation mode for external rollout engines. "
-                    "Internally launched engines infer this from the sglang config, but the router "
-                    "starts before external engines are discovered, so a PD external fleet must "
-                    "declare it here."
-                ),
-            )
-            parser.add_argument(
-                "--custom-inference-engine-provider-path",
-                type=str,
-                default=None,
-                help=(
-                    "Import path of a callable(args, *, capability) returning the BaseWorkerProvider "
-                    "that reports the inference engine cells. Setting this implies external rollout. "
-                    "When unset it is filled in automatically: the static discovery provider with "
-                    "--rollout-external-engine-addrs, the backend's own provider otherwise."
-                ),
-            )
-            parser.add_argument(
-                "--update-weight-transfer-mode",
-                choices=["broadcast", "p2p", "disk-delta"],
-                default="broadcast",
-                help=(
-                    "The method to transfer weights to remote rollout engines during update weight. "
-                    "'disk-delta' diffs each sync against a CPU snapshot of the previous one and publishes "
-                    "only the changed bytes to --update-weight-disk-dir; each engine's /pull_weights applies "
-                    "them into a host-local checkpoint that the engine reloads from."
-                ),
-            )
-            parser.add_argument(
-                "--update-weight-disk-dir",
-                type=str,
-                default=None,
-                help=(
-                    "Filesystem directory disk-delta weight sync publishes to: one delta directory "
-                    "(changed tensors only) per sync, written by the trainer and read by every "
-                    "rollout host. Required for --update-weight-transfer-mode=disk-delta."
-                ),
-            )
-            parser.add_argument(
-                "--update-weight-local-checkpoint-dir",
-                type=str,
-                default=None,
-                help=(
-                    "Rollout-host-local directory (e.g. NVMe) holding a full HF checkpoint kept in "
-                    "sync by each engine's /pull_weights: every host seeds it from the engine's model "
-                    "path and patches published deltas in place, and the engines reload from it. "
-                    "Required for --update-weight-transfer-mode=disk-delta. The read-side counterpart "
-                    "of --custom-update-weight-post-write-path is the engine's "
-                    "--sglang-custom-pull-weights-pre-read-hook."
-                ),
-            )
-            parser.add_argument(
-                "--update-weight-delta-encoding",
-                choices=["xor", "overwrite"],
-                default="xor",
-                help=(
-                    "On-disk delta encoding for disk-delta weight sync. 'xor' (default): new ^ old — "
-                    "smallest wire and fastest, but an involution that must be applied exactly once "
-                    "against the correct base (applying it twice reverts). 'overwrite': changed positions "
-                    "+ new absolute values — larger, but idempotent. Both are byte-level and dtype-blind; "
-                    "the engine reads the choice from each version's index metadata."
-                ),
-            )
-            parser.add_argument(
-                "--update-weight-delta-checksum",
-                choices=["xxh3-128", "blake3", "adler32"],
-                default="xxh3-128",
-                help=(
-                    "Per-tensor integrity checksum for disk-delta apply. 'xxh3-128' (default): widest fast "
-                    "non-cryptographic digest. 'blake3': cryptographic, for untrusted storage. 'adler32': "
-                    "for interop. The engine reads the choice from each version's index metadata."
-                ),
-            )
-            parser.add_argument(
-                "--custom-update-weight-post-write-path",
-                type=str,
-                default=None,
-                help=(
-                    "Path to a custom function called on each trainer rank after a disk-delta sync's "
-                    "files are written, before the engines read them — to publish the writes on a "
-                    "non-POSIX filesystem (no cross-host visibility without an explicit sync). "
-                    "Signature: ``def hook(args, version_dir: str, rollout_engines) -> None``; the hook gates itself."
-                ),
-            )
-            parser.add_argument(
-                "--p2p-transfer-timeout",
-                type=float,
-                default=30.0,
-                help="Timeout in seconds for each P2P transfer operation.",
-            )
-            parser.add_argument(
-                "--update-weight-engine-request-timeout",
-                type=float,
-                default=300.0,
-                help="Seconds allowed for one weight-update request to a rollout engine before its cell is given up.",
-            )
-            parser.add_argument(
-                "--update-weights-timeout",
-                type=float,
-                default=600.0,
-                help="Seconds the trainer controller waits for one trainer cell's update_weights before giving it up.",
-            )
-            return parser
-
-        def add_fault_tolerance_arguments(parser):
-            parser.add_argument(
-                "--use-fault-tolerance",
-                action="store_true",
-                default=False,
-                help="Enable fault tolerance. Use --ft-components to select which components.",
-            )
-            parser.add_argument(
-                "--ft-components",
-                nargs="+",
-                default=None,
-                choices=_FT_CHOICES,
-                help="FT components to enable (requires --use-fault-tolerance). "
-                "Choices: rollout, train. Default when omitted: rollout.",
-            )
-            SimpleHealthCheckerConfig.add_arguments(
-                parser,
-                prefix="rollout-health-check",
-                interval_default=30.0,
-                timeout_default=30.0,
-                first_wait_default=0.0,
-                failure_threshold_default=1,
-            )
-            parser.add_argument(
-                "--api-server-host",
-                type=str,
-                default="127.0.0.1",
-                help="Host the HTTP api server binds to. The default only serves the local mini "
-                "fault-tolerance controller; set 0.0.0.0 to accept remote controllers.",
-            )
-            parser.add_argument(
-                "--api-server-port",
-                type=int,
-                default=None,
-                help=f"Port for HTTP api server. 0 = disabled. Left unset it is "
-                f"{_DEFAULT_FT_API_SERVER_PORT} under --use-fault-tolerance and 0 otherwise, "
-                f"because the mini fault-tolerance controller drives cells over this port.",
-            )
-            parser.add_argument(
-                "--mini-ft-controller-enable",
-                action=argparse.BooleanOptionalAction,
-                default=None,
-                help="Enable the mini fault-tolerance controller that auto-heals Fatal cells. "
-                "Left unset it follows --ft-components and --api-server-port, which is what makes "
-                "--use-fault-tolerance heal on its own.",
-            )
-            parser.add_argument(
-                "--mini-ft-controller-poll-interval",
-                type=float,
-                default=10.0,
-                help="Interval in seconds between cell health polls.",
-            )
-            parser.add_argument(
-                "--mini-ft-controller-resume-delay",
-                type=float,
-                default=10.0,
-                help="Delay in seconds between suspending and resuming a cell during heal.",
-            )
-            SimpleHealthCheckerConfig.add_arguments(parser, prefix="trainer-heartbeat-checker")
-            return parser
-
-        # data
-        def add_data_arguments(parser):
-            # dataset
-            # TODO: maybe add an num_epoch and calculate the num_rollout from buffer
-            parser.add_argument(
-                "--num-rollout",
-                type=int,
-                default=None,
-                help="Number of rollout steps. If not set, we will calculate the number of rollout steps from the dataset size.",
-            )
-            parser.add_argument(
-                "--debug-exit-after-rollout",
-                type=int,
-                default=None,
-                help="Exit training after this many rollouts (for testing checkpoint resume with consistent scheduler params).",
-            )
-            parser.add_argument(
-                "--num-epoch",
-                type=int,
-                default=None,
-                help=(
-                    "Number of epochs for the training. "
-                    "This is used to calculate the number of rollout steps from the dataset size. "
-                    "If set, we will calculate the number of rollout steps as `num_rollout = num_epoch * dataset_size // rollout_batch_size`."
-                    "If both `--num-epoch` and `--num-rollout` are set, `--num-epoch` will be ignored."
-                ),
-            )
-
-            parser.add_argument(
-                "--disable-rollout-global-dataset",
-                action="store_false",
-                dest="rollout_global_dataset",
-                help=(
-                    "Disable the global dataset for rollout. By default, Miles loads `--prompt-data` into a global dataset and samples from it for rollout. "
-                    "Setting this flag turns off this behavior, Use this flag only when providing a custom `--rollout-function-path` (and usually a custom `--data-source-path`) that handles data loading independently."
-                ),
-            )
-
-            parser.add_argument(
-                "--data-source-path",
-                type=str,
-                default="miles.rollout.data_source.RolloutDataSource",
-                help="The data source class for rollout data.",
-            )
-            parser.add_argument(
-                "--prompt-data",
-                type=str,
-                default=None,
-                help=(
-                    "The path to the prompt data. "
-                    "Currently we only support jsonl format, and each line should contains --input-key and --label-key, "
-                    "which will be used as the prompt and the label respectively."
-                    "If you want to use a custom template, you can set --apply-chat-template to true, in that case, "
-                    "the input should be the same structure as an openai message, e.g. [{'role': 'user', 'content': 'blabla'}]. "
-                ),
-            )
-            parser.add_argument("--apply-chat-template", action="store_true", default=False)
-            # Temporarily be JSON-serialized str, will be a real dict after using Omegaconf
-            parser.add_argument("--apply-chat-template-kwargs", type=json.loads, default="{}")
-            parser.add_argument(
-                "--chat-template-path",
-                type=str,
-                default=None,
-                help="Path to an explicit custom Jinja chat template file (.jinja). "
-                "Sets tokenizer.chat_template when loading via load_tokenizer, "
-                "and also sets --sglang-chat-template so the sglang server uses the same template. "
-                "For Miles-maintained fixed templates, leave this unset and pass "
-                "--tito-model so Miles can auto-resolve the registered template. "
-                "The literal value 'autofix' is kept only as a "
-                "deprecated compatibility alias for that auto-resolve path. "
-                "The path must be accessible on all Ray worker nodes "
-                "(e.g. a path inside the miles repo, or a shared filesystem like NFS).",
-            )
-            parser.add_argument("--input-key", type=str, default="input", help="JSON dataset key")
-            parser.add_argument("--label-key", type=str, default=None, help="JSON dataset key")
-            parser.add_argument(
-                "--multimodal-keys",
-                type=json.loads,
-                default=None,
-                help=(
-                    'JSON string for multimodal data mapping media types to data keys. Example: \'{"image": "image_file"}\''
-                ),
-            )
-            parser.add_argument("--metadata-key", type=str, default="metadata", help="JSON dataset key")
-            parser.add_argument(
-                "--tool-key",
-                type=str,
-                default="tools",
-                help=(
-                    "When need to add tools during apply_chat_template, you should provide the key for the tools in the prompt dataset."
-                ),
-            )
-
-            parser.add_argument(
-                "--start-rollout-id",
-                type=int,
-                default=None,
-                help=(
-                    "The starting rollout step, if not set, will try to load the step from --load when doing continue training, "
-                    "otherwise will be set to 0, meaning training from start."
-                ),
-            )
-
-            # batch sizes
-            parser.add_argument(
-                "--rollout-batch-size",
-                type=int,
-                default=None,
-                help=(
-                    "The number of prompts in each rollout step. "
-                    "The total data returned should be rollout_batch_size * n_samples_per_prompt. "
-                    "Required for the train entry. "
-                ),
-            )
-            parser.add_argument(
-                "--n-samples-per-prompt", type=int, default=1, help="Number of responses for each prompt in generation"
-            )
-
-            # gbs of the training, note that the gbs is of sample, not of prompts,
-            # so if you hope to train 1 step for each rollout, the global_bach_size should be set as
-            # `rollout_batch_size * n_samples_per_prompt`.
-            reset_arg(parser, "--global-batch-size", type=int, default=None)
-            parser.add_argument(
-                "--num-steps-per-rollout",
-                type=int,
-                default=None,
-                help=(
-                    "Number of steps per rollout, e.g. It is equivalent to setting gbs as "
-                    "`rollout_batch_size * n_samples_per_prompt // num_steps_per_rollout`."
-                ),
-            )
-            # mbs for the training, will be ignored if `use_dynamic_batch_size` is set.
-            reset_arg(parser, "--micro-batch-size", type=int, default=1)
-            parser.add_argument(
-                "--balance-data",
-                action="store_true",
-                default=False,
-                help=(
-                    "Repartition each rollout batch so each data-parallel rank gets a similar total token count via Karmarkar-Karp method. "
-                    "It may be beneficial for training speed but changes per-rank sample grouping and adds a small CPU scheduling overhead."
-                ),
-            )
-
-            parser.add_argument(
-                "--balance-by-flops",
-                action="store_true",
-                default=False,
-                help=(
-                    "Use FLOPs-based workload estimation for micro-batch partitioning via "
-                    "Karmarkar-Karp instead of first-fit token packing, and distribute mbs "
-                    "across DP ranks by FLOPs. Captures the quadratic attention cost when "
-                    "sequence lengths vary widely. Requires --use-dynamic-batch-size. NOTE: "
-                    "FLOPs balancing does not enforce the per-mbs token cap."
-                ),
-            )
-            parser.add_argument(
-                "--allow-partial-train-step",
-                action="store_true",
-                default=False,
-                help=(
-                    "Train the trailing rollouts that don't fill a whole global_batch_size step as one "
-                    "smaller final step instead of dropping them (rollout-side schedule + dynamic batch "
-                    "size only). Loss normalization and the LR scheduler use the true per-step count."
-                ),
-            )
-            parser.add_argument(
-                "--use-dynamic-batch-size",
-                action="store_true",
-                default=False,
-                help=(
-                    "Because the sample length varies, to maximize the GPU utilization, "
-                    "we will use the dynamic batch size to adjust the micro batch size according to the maximum number of tokens each gpu can run. "
-                    "For example, if we have 3 samples, with the length of 100, 200, and 300, and the max_tokens_per_gpu is 300, when enabling "
-                    "dynamic batch size, miles will make 2 micro batches, i.e. [100, 200], [300]."
-                ),
-            )
-            parser.add_argument(
-                "--max-tokens-per-gpu",
-                type=int,
-                default=None,
-                help=(
-                    "The maximum number of tokens per GPU for dynamic batch size. "
-                    "Note that when enabling context parallel (CP), the max tokens per gpu should be around "
-                    "`max_response_len // cp_size` instead of `max_response_len`."
-                ),
-            )
-            parser.add_argument(
-                "--log-probs-max-tokens-per-gpu",
-                type=int,
-                default=None,
-                help=(
-                    "The maximum number of tokens per GPU for calculating log probs. "
-                    "This is used to calculate the log probs of the responses during rollout, "
-                    "and should be set to a larger value than `max_tokens_per_gpu` if you want better performance. "
-                ),
-            )
-            return parser
-
-        def add_eval_arguments(parser):
-            parser.add_argument(
-                "--eval-function-path",
-                type=str,
-                default=None,
-                help=(
-                    "Path to the eval fn. Two kinds fit here. A rollout fn generates against the "
-                    "engines the framework hands it: the training engines, or the dedicated fleet "
-                    "when --eval-num-gpus is set. A CheckpointEvalFn subclass gets the snapshot "
-                    "path instead and owns the rest itself — weight delivery, endpoint, generation. "
-                    "If not set, defaults to --rollout-function-path."
-                ),
-            )
-
-            # change the default value of eval_interval from Megatron to None
-            reset_arg(parser, "--eval-interval", type=int, default=None)
-
-            parser.add_argument(
-                "--eval-prompt-data",
-                type=str,
-                default=None,
-                nargs="+",
-                help=(
-                    "Path to the evaluation prompt data, "
-                    "should first input the name of the eval dataset and then the path, e.g. "
-                    "aime /path/to/aime.jsonl"
-                ),
-            )
-            parser.add_argument(
-                "--eval-config",
-                type=str,
-                default=None,
-                help=(
-                    "Path to an OmegaConf YAML/JSON file describing evaluation datasets, or an "
-                    "inline `base64:<payload>` carrying the same document. "
-                    "When provided, this overrides --eval-prompt-data."
-                ),
-            )
-            parser.add_argument(
-                "--skip-eval-before-train",
-                action="store_true",
-                default=False,
-                help="Whether to skip evaluation before training.",
-            )
-
-            # The following keys are used to override the rollout version during eval.
-            parser.add_argument("--eval-input-key", type=str, default=None, help="JSON dataset key")
-            parser.add_argument("--eval-label-key", type=str, default=None, help="JSON dataset key")
-            parser.add_argument("--eval-tool-key", type=str, default=None, help="JSON dataset key")
-            parser.add_argument(
-                "--n-samples-per-eval-prompt",
-                type=int,
-                default=1,
-                help="number of responses for each prompt in generation",
-            )
-            parser.add_argument("--eval-temperature", type=float, default=None)
-            parser.add_argument("--eval-top-p", type=float, default=None)
-            parser.add_argument("--eval-top-k", type=int, default=None)
-            parser.add_argument("--eval-max-response-len", type=int, default=None)
-            parser.add_argument("--eval-max-prompt-len", type=int, default=None)
-            parser.add_argument("--eval-min-new-tokens", type=int, default=None)
-            parser.add_argument("--eval-max-context-len", type=int, default=None)
-
-            parser.add_argument(
-                "--eval-num-gpus",
-                type=int,
-                default=0,
-                help=(
-                    "Number of GPUs for a dedicated eval engine fleet. When > 0, eval runs on "
-                    "its own engines behind its own router, synced by loading HF checkpoint "
-                    "snapshots (never by joining training weight updates). 0 disables the "
-                    "fleet and keeps today's shared-engine eval behavior. The fleet's engine "
-                    "settings inherit every --sglang-* value; override individually with "
-                    "--eval-sglang-* (e.g. --eval-sglang-mem-fraction-static 0.9)."
-                ),
-            )
-            parser.add_argument(
-                "--eval-num-gpus-per-engine",
-                type=int,
-                default=1,
-                help="GPUs per eval engine (TP size), independent of --rollout-num-gpus-per-engine.",
-            )
-            parser.add_argument(
-                "--eval-hf-dir",
-                type=str,
-                default=None,
-                help=(
-                    "Staging directory for per-eval HF snapshots (written to "
-                    "`{eval_hf_dir}/step_{rollout_id}`). Point at tmpfs (e.g. /dev/shm/...) to "
-                    "avoid disk. When unset and --save-hf is set, eval reuses the --save-hf "
-                    "checkpoints instead of exporting its own snapshots."
-                ),
-            )
-            parser.add_argument(
-                "--eval-max-in-flight",
-                type=int,
-                default=2,
-                help="Maximum number of concurrently pending async evals.",
-            )
-            parser.add_argument(
-                "--eval-overflow-policy",
-                type=str,
-                choices=["backpressure", "skip"],
-                default="backpressure",
-                help=(
-                    "What to do when an eval is due but --eval-max-in-flight evals are pending: "
-                    "'backpressure' awaits the oldest pending eval (deterministic curve, bounded "
-                    "stall); 'skip' drops the new eval point and logs eval/skipped_busy at that "
-                    "step (training cadence is never stalled)."
-                ),
-            )
-            parser.add_argument(
-                "--eval-keep-snapshots",
-                type=int,
-                default=2,
-                help=(
-                    "How many snapshot dirs to keep under --eval-hf-dir (consumed snapshots "
-                    "beyond this are deleted). --save-hf checkpoints are never deleted."
-                ),
-            )
-
-            return parser
-
-        def add_algo_arguments(parser):
-            parser.add_argument(
-                "--ref-load",
-                type=str,
-                default=None,
-                help=(
-                    "The checkpoint for reference model. "
-                    "When --load is not set, this will be used as the initial checkpoint for training. "
-                ),
-            )
-            parser.add_argument(
-                "--ref-ckpt-step", type=int, default=None, help="The checkpoint step for reference model. "
-            )
-            reset_arg(parser, "--load", type=str, default=None)
-            reset_arg(parser, "--save", type=str, default=None)
-            reset_arg(parser, "--save-interval", type=int, default=None)
-            reset_arg(parser, "--async-save", action="store_true")
-            reset_arg(
-                parser,
-                "--no-save-optim",
-                action="store_true",
-                default=False,
-                help=(
-                    "If set, do not save the optimizer state when saving checkpoints. "
-                    "This reduces checkpoint size but disables training resumption from the saved checkpoint."
-                ),
-            )
-            parser.add_argument(
-                "--save-hf",
-                type=str,
-                default=None,
-                help=(
-                    "Path to save the model in HuggingFace format when using Megatron backend. "
-                    "The model will be saved to `save_hf.format(rollout_id)`. "
-                ),
-            )
-            parser.add_argument(
-                "--save-trigger-sentinel",
-                type=str,
-                default=None,
-                help=(
-                    "Path to a sentinel file for externally-triggered checkpoint saving. If the file "
-                    "exists at an iteration's save point, a checkpoint is saved and the file is removed."
-                ),
-            )
-            parser.add_argument(
-                "--custom-megatron-post-save-hook-path",
-                type=str,
-                default=None,
-                help=(
-                    "Path to a custom function invoked on rank 0 after every checkpoint save. "
-                    "Signature: def hook(args, rollout_id: int, checkpoint_dir: str, "
-                    "hf_checkpoint_dir: str | None) -> None."
-                ),
-            )
-            reset_arg(parser, "--seed", type=int, default=1234)
-            reset_arg(parser, "--clip-grad", type=float, default=1.0)
-            reset_arg(parser, "--calculate-per-token-loss", action="store_true")
-            reset_arg(parser, "--lr", type=float, default=1e-6)
-
-            parser.add_argument(
-                "--num-critic-only-steps",
-                type=int,
-                default=0,
-                help="Number of initial rollout steps where only the critic trains (value-function warmup) "
-                "while the actor stays frozen. Only takes effect when --advantage-estimator is ppo.",
-            )
-            parser.add_argument("--critic-load", type=str, default=None, help="The checkpoint for critic model.")
-            parser.add_argument(
-                "--critic-save",
-                type=str,
-                default=None,
-                help="Where to save critic checkpoints. If not set, it defaults to the --save path with a "
-                "'_critic' suffix appended, e.g. --save /ckpts/run1 saves the critic to /ckpts/run1_critic.",
-            )
-            parser.add_argument("--critic-lr", type=float, default=None, help="The lr for critic model")
-            parser.add_argument(
-                "--critic-lr-warmup-iters",
-                type=int,
-                default=0,
-                help="number of iterations to linearly warmup for critic model.",
-            )
-
-            parser.add_argument("--eps-clip", type=float, default=0.2, help="PPO clip range")
-            parser.add_argument("--eps-clip-high", type=float, default=None, help="PPO clip upper range")
-            parser.add_argument(
-                "--eps-clip-c",
-                type=float,
-                default=None,
-                help="lower bound of the value for Dual-clip PPO from https://arxiv.org/pdf/1912.09729",
-            )
-            parser.add_argument("--value-clip", type=float, default=0.2, help="the clip for value loss")
-            parser.add_argument(
-                "--kl-coef",
-                type=float,
-                default=0.00,
-                help="KL penalty coefficient for reward shaping. This is applied to the reward signal before advantage calculation.",
-            )
-            parser.add_argument(
-                "--loss-type",
-                type=str,
-                choices=["policy_loss", "sft_loss", "custom_loss"],
-                default="policy_loss",
-                help=(
-                    "Choose loss type, currently support ppo policy_loss or sft_loss, "
-                    "if custom_loss is set, we will use the function path from `--custom-loss-function-path`."
-                ),
-            )
-            parser.add_argument(
-                "--custom-loss-function-path",
-                type=str,
-                default=None,
-                help=(
-                    "Path to the custom loss function, if the loss_type is `custom_loss`, "
-                    "we will use this function to calculate the loss. "
-                ),
-            )
-            parser.add_argument(
-                "--kl-loss-type",
-                type=str,
-                choices=["k1", "k2", "k3", "low_var_kl"],
-                default="k1",
-                help="Choose KL loss type: kl, k2, k3, low_var_kl",
-            )
-            parser.add_argument(
-                "--advantage-estimator",
-                type=str,
-                choices=[
-                    "grpo",
-                    "gspo",
-                    "reinforce_plus_plus",
-                    "reinforce_plus_plus_baseline",
-                    "ppo",
-                ],
-                default="grpo",
-                help=(
-                    "Advantage estimator to use. Note: on-policy distillation (OPD) is now orthogonal "
-                    "to the advantage estimator. Use --opd-kl-coef > 0 to enable OPD on top of any estimator."
-                ),
-            )
-            parser.add_argument(
-                "--disable-compute-advantages-and-returns",
-                action="store_false",
-                dest="compute_advantages_and_returns",
-                help=(
-                    "Whether to disable computing advantages and returns. "
-                    "If set, we will not compute the advantages and returns, "
-                    "This is useful for sft or custom loss function."
-                ),
-            )
-            parser.add_argument(
-                "--use-kl-loss", action="store_true", default=False, help="whether to use KL loss from GRPO"
-            )
-            parser.add_argument(
-                "--kl-loss-coef",
-                type=float,
-                default=0.0,
-                help="KL penalty coefficient for the loss function. This is added to the final PPO loss.",
-            )
-            parser.add_argument(
-                "--use-unbiased-kl",
-                action="store_true",
-                default=False,
-                help="Whether to enable unbiased KL estimation.",
-            )
-            parser.add_argument(
-                "--ref-update-interval",
-                type=int,
-                default=None,
-                help="Interval (in rollout steps) to update ref model from actor. If None, ref model is not updated.",
-            )
-            parser.add_argument("--entropy-coef", type=float, default=0.0, help="Entropy loss coef")
-            parser.add_argument("--gamma", type=float, default=1.0, help="PPO GAE gamma")
-            parser.add_argument("--lambd", type=float, default=1.0, help="PPO GAE lambd")
-            parser.add_argument("--normalize-advantages", action="store_true", default=False)
-            parser.add_argument(
-                "--disable-grpo-std-normalization",
-                action="store_false",
-                dest="grpo_std_normalization",
-                help="from Dr.GRPO https://arxiv.org/pdf/2503.20783",
-            )
-            parser.add_argument(
-                "--disable-rewards-normalization",
-                action="store_false",
-                dest="rewards_normalization",
-                help="Disable rewards normalization",
-            )
-            parser.add_argument(
-                "--use-rollout-entropy",
-                action="store_true",
-                default=False,
-                help=(
-                    "Whether to calculate the entropy when calculating the logprobs from actor and reference model. "
-                    "This is useful for doing special loss mask."
-                ),
-            )
-            parser.add_argument(
-                "--observe-training-entropy",
-                action="store_true",
-                default=False,
-                help=(
-                    "Compute training entropy as a logged metric even when --entropy-coef is 0. "
-                    "When the coefficient is 0, the observed entropy is detached and does not affect backward."
-                ),
-            )
-            parser.add_argument(
-                "--get-mismatch-metrics",
-                action="store_true",
-                default=False,
-                help="Whether to calculate the mismatch metrics.",
-            )
-            parser.add_argument(
-                "--reset-optimizer-states",
-                action="store_true",
-                default=False,
-                help=(
-                    "Whether to reset optimizer states after each rollout. "
-                    "If enabled, the optimizer's history will be cleared at the end of each rollout, which can sometimes help with training stability or fulfill specific experiment requirements."
-                ),
-            )
-            parser.add_argument(
-                "--use-rollout-logprobs",
-                action="store_true",
-                default=False,
-                help=(
-                    "Whether to use the rollout logprobs when calculating the importance sampling ratios. "
-                    "If not set, we will use the logprobs from the actor model."
-                ),
-            )
-            parser.add_argument(
-                "--skip-actor-forward-only",
-                action="store_true",
-                default=False,
-                help=(
-                    "Skip the standalone Megatron actor forward-only pass. With --use-rollout-logprobs, "
-                    "those log-probs remain the old-policy baseline; otherwise detached training log-probs "
-                    "are reused and the actor importance log-ratio is exactly 0. This requires a single "
-                    "optimizer step. The skipped pass's rollout/log_probs metric is not emitted."
-                ),
-            )
-            # Off-Policy Correction using Importance Sampling: https://fengyao.notion.site/off-policy-rl
-            parser.add_argument(
-                "--use-tis",
-                action="store_true",
-                default=False,
-                help="Enable TIS from https://fengyao.notion.site/off-policy-rl#279721e3f6c48092bbe2fcfe0e9c6b33.",
-            )
-            parser.add_argument(
-                "--tis-clip",
-                type=float,
-                default=2.0,
-                help="Clipping threshold C for importance sampling ratios to control variance.",
-            )
-            parser.add_argument(
-                "--tis-clip-low",
-                type=float,
-                default=0,
-                help="Lower bound clipping threshold C for importance sampling ratios to control variance.",
-            )
-            parser.add_argument(
-                "--custom-tis-function-path",
-                type=str,
-                default=None,
-                help="Path to the custom TIS/RS function (e.g., examples/infra_features/train_infer_mismatch_helper/mis.py:compute_mis_weights_with_cp).",
-            )
-            parser.add_argument(
-                "--custom-pg-loss-reducer-function-path",
-                type=str,
-                default=None,
-                help="Path to a custom reducer function for pg_loss only. When set, pg_loss will use this custom reducer while other metrics (pg_clipfrac, ppo_kl, entropy_loss, etc.) still use the default sum_of_sample_mean. (e.g., examples/experimental/DrGRPO/custom_reducer.py:get_pg_loss_reducer).",
-            )
-
-            parser.add_argument(
-                "--use-routing-replay",
-                action="store_true",
-                default=False,
-                help="The routing replay technique from https://arxiv.org/abs/2507.18071",
-            )
-            parser.add_argument(
-                "--use-rollout-routing-replay",
-                action="store_true",
-                default=False,
-                help="The rollout routing replay technique from https://arxiv.org/abs/2510.11370 (R3): "
-                "replay the rollout's MoE routing in training. MoE-only; the GLM-5 launchers pass it "
-                "explicitly.",
-            )
-            parser.add_argument(
-                "--use-indexer-replay",
-                action="store_true",
-                default=False,
-                help="Replay indexer topk decisions for layers with indexers.",
-            )
-            parser.add_argument(
-                "--use-rollout-indexer-replay",
-                action="store_true",
-                default=False,
-                help="Replay indexer topk from rollout during training.",
-            )
-            parser.add_argument(
-                "--use-opsm",
-                action="store_true",
-                default=False,
-                help="Whether to enable Off-Policy Sequence Masking (OPSM).",
-            )
-            parser.add_argument(
-                "--opsm-delta",
-                type=float,
-                default=1e-4,
-                help="The threshold for Off-Policy Sequence Masking (OPSM).",
-            )
-            return parser
-
-        def add_on_policy_distillation_arguments(parser):
-            """Add on-policy distillation (OPD) related arguments.
-
-            OPD is orthogonal to advantage estimators and can be applied on top of
-            any estimator (GRPO, PPO, etc.) by adding a KL penalty to advantages.
-            """
-            parser.add_argument(
-                "--use-opd",
-                action="store_true",
-                default=False,
-                help="Enable on-policy distillation (OPD). Must specify --opd-type when enabled.",
-            )
-            parser.add_argument(
-                "--opd-type",
-                type=str,
-                choices=["sglang", "megatron"],
-                default=None,
-                help=(
-                    "Type of on-policy distillation. "
-                    "'sglang': Teacher log-probs are obtained from external SGLang server during rollout. "
-                    "'megatron': Teacher model is loaded via --opd-teacher-load and forwarded during training."
-                ),
-            )
-            parser.add_argument(
-                "--opd-kl-coef",
-                type=float,
-                default=1.0,
-                help="On-policy distillation KL penalty coefficient. Default is 1.0.",
-            )
-            parser.add_argument(
-                "--opd-log-prob-top-k",
-                type=int,
-                default=0,
-                help=(
-                    "Number of top-k tokens to use for the re-think OPD token-level reward. "
-                    "Set to 0 to use sampled-token OPD."
-                ),
-            )
-            parser.add_argument(
-                "--opd-top-k-strategy",
-                type=str,
-                choices=["only-student", "only-teacher", "intersection", "union", "xor"],
-                default="only-student",
-                help="Token set strategy for top-k OPD.",
-            )
-            parser.add_argument(
-                "--opd-reward-weight-mode",
-                type=str,
-                choices=["student_p", "teacher_p", "none"],
-                default="student_p",
-                help="Weighting scheme for top-k OPD token rewards.",
-            )
-            parser.add_argument(
-                "--opd-topk-per-position",
-                action="store_true",
-                default=False,
-                help=(
-                    "Send per-position token ids to the teacher/student scoring server "
-                    "(token_ids_logprob_positions) instead of the global top-k union, so the "
-                    "response is O(response_len * k) instead of O(response_len * |union|). "
-                    "Requires a patched sglang server that supports token_ids_logprob_positions; "
-                    "leave off for an unpatched server."
-                ),
-            )
-            parser.add_argument(
-                "--opd-teacher-urls",
-                type=str,
-                nargs="+",
-                default=None,
-                metavar="NAME=URL",
-                help=(
-                    "Multi-teacher routing map for --opd-type=sglang, e.g. "
-                    "--opd-teacher-urls math=http://h1:30001/generate code=http://h2:30002/generate. "
-                    "Each sample is routed to the teacher named by "
-                    "sample.metadata[--opd-teacher-key]; the reserved name 'default' is the "
-                    "fallback for samples with a missing or unknown name. When unset, all "
-                    "samples are scored by the single teacher at --rm-url (original behavior)."
-                ),
-            )
-            parser.add_argument(
-                "--opd-teacher-key",
-                type=str,
-                default="opd_teacher",
-                help=(
-                    "Sample metadata key holding the teacher name used for --opd-teacher-urls "
-                    "routing. Populated from the dataset's metadata column (see --metadata-key)."
-                ),
-            )
-            parser.add_argument(
-                "--opd-teacher-load",
-                type=str,
-                default=None,
-                help=(
-                    "The checkpoint for OPD teacher model. Required when --opd-type=megatron. "
-                    "The teacher model should have the same architecture as policy/ref model."
-                ),
-            )
-            parser.add_argument(
-                "--opd-teacher-ckpt-step", type=int, default=None, help="The checkpoint step for OPD teacher model."
-            )
-            return parser
-
-        def add_router_arguments(parser):
-            parser.add_argument(
-                "--use-miles-router",
-                action="store_true",
-                default=False,
-                help="Whether to use MilesRouter for text-based routing instead of SGLang token-based routing",
-            )
-            parser.add_argument(
-                "--miles-router-timeout",
-                type=float,
-                default=None,
-                help="Timeout for MilesRouter HTTP requests in seconds.",
-            )
-            parser.add_argument(
-                "--miles-router-max-connections",
-                type=int,
-                default=None,
-                help="Max connections for MilesRouter HTTP client.",
-            )
-            parser.add_argument(
-                "--miles-router-health-check-failure-threshold",
-                type=int,
-                default=3,
-                help="Number of consecutive failures before marking a worker as unhealthy.",
-            )
-            RouterArgs.add_cli_args(parser, use_router_prefix=True, exclude_host_port=True)
-            return parser
-
-        # wandb
-        def add_wandb_arguments(parser):
-            # wandb parameters
-            parser.add_argument("--use-wandb", action="store_true", default=False)
-            parser.add_argument(
-                "--wandb-mode",
-                type=str,
-                default=None,
-                choices=["online", "offline", "disabled"],
-                help="W&B mode: online (default), offline (local only), or disabled. Overrides WANDB_MODE env var.",
-            )
-            parser.add_argument(
-                "--wandb-dir",
-                type=str,
-                default=None,
-                help="Directory to store wandb logs. Default is ./wandb in current directory.",
-            )
-            parser.add_argument("--wandb-key", type=str, default=None)
-            parser.add_argument("--wandb-host", type=str, default=None)
-            parser.add_argument("--wandb-team", type=str, default=None)
-            parser.add_argument("--wandb-group", type=str, default=None)
-            reset_arg(parser, "--wandb-project", type=str, default=None)
-            parser.add_argument(
-                "--disable-wandb-random-suffix",
-                action="store_false",
-                dest="wandb_random_suffix",
-                default=True,
-                help=(
-                    "Whether to add a random suffix to the wandb run name. "
-                    "By default, we will add a random 6 length string with characters to the run name."
-                ),
-            )
-            parser.add_argument(
-                "--wandb-always-use-train-step",
-                action="store_true",
-                default=False,
-                help=(
-                    "Whether to always use train step as the step metric in wandb. "
-                    "If set, we will always use the train steps for wandb logging, "
-                    "otherwise, will use rollout step for most info other than train/*. "
-                ),
-            )
-            parser.add_argument(
-                "--log-multi-turn",
-                action="store_true",
-                default=False,
-                help="Whether to log information for multi-turn rollout.",
-            )
-            parser.add_argument(
-                "--log-passrate",
-                action="store_true",
-                default=False,
-                help="Whether to turn on passrate logging, which will log the pass@n of the responses in the rollout.",
-            )
-            parser.add_argument(
-                "--log-reward-category",
-                type=str,
-                default=None,
-                help=(
-                    "Log statistics of the category of reward, such as why the reward function considers it as failed. "
-                    "Specify the key in the reward dict using this argument."
-                ),
-            )
-            parser.add_argument(
-                "--log-correct-samples",
-                action="store_true",
-                default=False,
-                help="Explicitly log metrics for correct samples.",
-            )
-            parser.add_argument("--wandb-run-id", type=str, default=None)
-            return parser
-
-        # mlflow
-        def add_mlflow_arguments(parser):
-            parser.add_argument("--use-mlflow", action="store_true", default=False)
-            parser.add_argument(
-                "--mlflow-tracking-uri",
-                type=str,
-                default=None,
-                help="MLflow tracking server URI. Defaults to MLFLOW_TRACKING_URI env var, or local mlruns/ directory.",
-            )
-            parser.add_argument(
-                "--mlflow-experiment-name",
-                type=str,
-                default="miles",
-                help="MLflow experiment name.",
-            )
-            parser.add_argument(
-                "--mlflow-run-name",
-                type=str,
-                default=None,
-                help="MLflow run name. Defaults to --wandb-group if not set.",
-            )
-            parser.add_argument("--mlflow-run-id", type=str, default=None)
-            return parser
-
-        # tensorboard
-        def add_tensorboard_arguments(parser):
-            # tb_project_name, tb_experiment_name
-            parser.add_argument("--use-tensorboard", action="store_true", default=False)
-            parser.add_argument(
-                "--tb-project-name",
-                type=str,
-                default=None,
-                help="Directory to store tensorboard logs. Default is  os.environ.get('TENSORBOARD_DIR') directory.",
-            )
-            parser.add_argument("--tb-experiment-name", type=str, default=None)
-
-            return parser
-
-        # prometheus
-        def add_prometheus_arguments(parser):
-            parser.add_argument("--use-prometheus", action="store_true", default=False)
-            parser.add_argument(
-                "--prometheus-port",
-                type=int,
-                default=int(os.environ.get("PROMETHEUS_PORT", "9090")),
-                help="Port for the Prometheus metrics HTTP server. "
-                "Prometheus scrapes /metrics on this port. "
-                "Defaults to PROMETHEUS_PORT env var or 9090.",
-            )
-            parser.add_argument(
-                "--prometheus-run-name",
-                type=str,
-                default=None,
-                help="Human-readable run name attached as a 'run_name' label to all "
-                "Prometheus metrics. Used to distinguish runs in Grafana. "
-                "Defaults to --wandb-group if set.",
-            )
-            return parser
-
-        # debug
-        def add_debug_arguments(parser):
-            parser.add_argument(
-                "--save-debug-rollout-data",
-                type=str,
-                default=None,
-                help=(
-                    "Save the rollout data to this path for debugging. "
-                    "The file will be saved to `save_debug_rollout_data.format(rollout_id)`, "
-                    "so the template must contain the `{rollout_id}` placeholder."
-                ),
-            )
-            parser.add_argument(
-                "--save-debug-trajectory-data",
-                type=str,
-                default=None,
-                help=(
-                    "Save per-sample role-tagged trajectory text (JSONL) next to the rollout "
-                    "dump. The file will be saved to `save_debug_trajectory_data.format(rollout_id)`, "
-                    "so the template must contain the `{rollout_id}` placeholder."
-                ),
-            )
-            parser.add_argument(
-                "--load-debug-rollout-data",
-                type=str,
-                default=None,
-                help=(
-                    "Load the rollout data from this path for debugging. "
-                    "The file will be loaded from `load_debug_rollout_data.format(rollout_id)`. "
-                    "When this is enabled, miles will not instantiate sglang servers."
-                ),
-            )
-            parser.add_argument(
-                "--load-debug-rollout-data-subsample",
-                type=float,
-                default=None,
-                help="Subsample a portion of the debug rollout data for faster debugging.",
-            )
-            parser.add_argument(
-                "--debug-rollout-only",
-                action="store_true",
-                default=False,
-                help=(
-                    "Whether to only run the rollout generation without training. "
-                    "This is useful for debugging the rollout generation function."
-                ),
-            )
-            parser.add_argument(
-                "--debug-train-only",
-                action="store_true",
-                default=False,
-                help=(
-                    "Whether to run training without rollout generation. Rollout engines are "
-                    "skipped; a snapshot-eval fleet (--eval-num-gpus) still starts when configured."
-                ),
-            )
-            parser.add_argument(
-                "--save-debug-train-data",
-                type=str,
-                default=None,
-                help=(
-                    "Save the train data to this path for debugging. "
-                    "The file will be saved to `save_debug_train_data.format(rollout_id)`."
-                ),
-            )
-            parser.add_argument(
-                "--save-debug-event-data",
-                type=str,
-                default=None,
-                help="Where the audit events of this run go, including the env report. Defaults to <save>/events "
-                "(or <dump-details>/events); --ci-test falls back to a run-specific temporary directory.",
-            )
-            parser.add_argument(
-                "--dump-details",
-                type=str,
-                default=None,
-                help=("Dump all details of training for post-hoc analysis and visualization."),
-            )
-            parser.add_argument(
-                "--dumper-enable",
-                action="store_true",
-                default=False,
-                help="Enable sglang dumper for all three phases (sglang inference, "
-                "megatron forward-only, megatron forward-backward). "
-                "Per-phase --dumper-inference/--dumper-fwd-only/--dumper-fwd-bwd can override.",
-            )
-            parser.add_argument(
-                "--dumper-dir",
-                type=str,
-                default="/tmp/dumper",
-                help="Base output directory for sglang dumper. Three subdirs are created: "
-                "inference/, fwd_only/, fwd_bwd/.",
-            )
-            parser.add_argument(
-                "--dumper-inference",
-                nargs="*",
-                default=None,
-                help="SGLang inference phase dumper config as key=value pairs. "
-                "Keys map to DumperConfig fields (e.g. enable=true filter=whatever).",
-            )
-            parser.add_argument(
-                "--dumper-fwd-only",
-                nargs="*",
-                default=None,
-                help="Megatron forward-only phase dumper config as key=value pairs.",
-            )
-            parser.add_argument(
-                "--dumper-fwd-bwd",
-                nargs="*",
-                default=None,
-                help="Megatron forward-backward phase dumper config as key=value pairs.",
-            )
-            parser.add_argument(
-                "--dumper-source-patcher-config-inference",
-                type=str,
-                default=None,
-                help="Path to YAML config file for source patcher applied in SGLang inference engines.",
-            )
-            parser.add_argument(
-                "--dumper-source-patcher-config-train",
-                type=str,
-                default=None,
-                help="Path to YAML config file for source patcher applied in Megatron training actors.",
-            )
-            # use together with --record-memory-history and --memory-snapshot-path (defined in Megatron)
-            parser.add_argument(
-                "--memory-snapshot-dir",
-                type=str,
-                default=".",
-            )
-            parser.add_argument(
-                "--memory-snapshot-num-steps",
-                type=int,
-                default=None,
-            )
-            parser.add_argument(
-                "--profile-target",
-                type=str,
-                choices=["train_overall", "train_actor", "train_log_probs"],
-                default=["train_overall"],
-                nargs="+",
-            )
-            parser.add_argument(
-                "--memory-recorder",
-                type=str,
-                choices=["torch", "memray"],
-                default="torch",
-            )
-            parser.add_argument("--check-weight-update-equal", action="store_true")
-            parser.add_argument(
-                "--check-weight-update-selector",
-                type=str,
-                default="all",
-                choices=["all", "target", "draft"],
-                help="Which model the post-update equality check covers: 'all' (target + "
-                "draft/MTP), 'target' (target model only; skips the draft, e.g. when MTP "
-                "training is off), or 'draft' (draft/MTP worker only).",
-            )
-            parser.add_argument(
-                "--check-weight-update-skip-list",
-                type=str,
-                nargs="*",
-                default=None,
-                help="Weight-name substrings to exclude from the post-update equality check; "
-                "their mismatches are downgraded to non-fatal info (e.g. MTP/draft layer names "
-                "that are absent on the training side).",
-            )
-            parser.add_argument(
-                "--check-weight-update-allow-quant-error",
-                action="store_true",
-                help="When comparing weights after update, allow quantized tensors to differ "
-                "by up to 1 ULP of the quantized dtype per side (compared in dequantized space).",
-            )
-            parser.add_argument(
-                "--save-local-weight-checksum",
-                action="store_true",
-                help="Save per-rank local weight checksum per-step.",
-            )
-            parser.add_argument(
-                "--check-weight-transfer-checksum",
-                action=argparse.BooleanOptionalAction,
-                default=None,
-                help="Hash every P2P weight write on the sending trainer rank and on the receiving engine rank and "
-                "fail the write when they differ. Defaults on under --ci-test.",
-            )
-            parser.add_argument(
-                "--enable-event-analyzer",
-                action="store_true",
-                help="Enable event analyzer to run sanity checks (e.g. cross-replica checksum consistency) before each training step.",
-            )
-            parser.add_argument(
-                "--log-inference-engine-weight-checksums",
-                action=argparse.BooleanOptionalAction,
-                default=None,
-                help="Ask every inference engine for a full weight checksum after each weight update and record it "
-                "in the event log. The engines materialize all weights to answer, which costs a large transient "
-                "allocation, so this defaults on only when an event directory was explicitly requested.",
-            )
-            parser.add_argument(
-                "--enable-sample-ownership-checker",
-                action=argparse.BooleanOptionalAction,
-                default=None,
-                help="Verify exactly one outcome for every consumed sample and every mature issued sample; "
-                "CI enables this unless it is explicitly disabled. Every actor step appends one full "
-                "consumption snapshot per replica to the event log, whose size therefore grows with steps "
-                "times consumed samples, so this is meant for CI and debugging.",
-            )
-            parser.add_argument(
-                "--sample-ownership-grace-steps",
-                type=int,
-                default=None,
-                help="Completed rollout training steps before checking an issued sample (default: 10, or 2 in CI). "
-                "The same grace applies at shutdown: recent unconsumed samples may remain unchecked. "
-                "Repeated consumption and repeated drops are still checked within the grace window.",
-            )
-            parser.add_argument(
-                "--enable-witness",
-                action="store_true",
-                help="Enable forward/backward pass witness.",
-            )
-            parser.add_argument(
-                "--witness-buffer-size",
-                type=int,
-                default=1048576,
-                help="Maximum number of unique witness IDs before recycling.",
-            )
-            parser.add_argument(
-                "--ci-fault-hooks",
-                type=str,
-                default=None,
-                help="JSON array of fault hook requests set when each process starts. Each request names the hook "
-                "it waits at, the action to run there, the cell_id / rank it applies to, and the rollout_id / "
-                "attempt / weight_version it fires on.",
-            )
-            parser.add_argument(
-                "--ci-fault-hooks-path",
-                type=str,
-                default=None,
-                help="Path of a file holding the same JSON array as --ci-fault-hooks, read when a process starts. "
-                "A run relaunched in place keeps the arguments its pods were rendered from, so a plan that has to "
-                "change from one launch to the next is delivered through this file. Mutually exclusive with "
-                "--ci-fault-hooks.",
-            )
-            parser.add_argument(
-                "--ci-inject-rollout-data-path",
-                type=str,
-                default=None,
-                help="CI comparison tests only: path template (with {rollout_id}) of rollout "
-                "data recorded via --save-debug-rollout-data. For rollouts at or after "
-                "--ci-inject-rollout-data-start-rollout-id, generation still runs normally "
-                "but its result is discarded and the recorded data is used for training "
-                "instead. Unlike --load-debug-rollout-data, sglang engines stay alive "
-                "(debug_train_only is not forced).",
-            )
-            parser.add_argument(
-                "--ci-inject-rollout-data-start-rollout-id",
-                type=int,
-                default=None,
-                help="First rollout_id whose training data is replaced by the "
-                "--ci-inject-rollout-data-path recordings.",
-            )
-            parser.add_argument(
-                "--ci-inject-rollout-data-min-match-ratio",
-                type=float,
-                default=0.9,
-                help="Minimum mean response-token match ratio between the discarded generated "
-                "data and the injected recording. Below this the engine weights are considered "
-                "wrong (legitimate ulp-level drift only flips occasional sampled tokens).",
-            )
-            parser.add_argument(
-                "--env-report",
-                type=str,
-                default=os.environ.get(LAUNCHER_REPORT_ENV_VAR, ""),
-                help="Path to the json record the external launcher wrote about the launch that started "
-                "this process.",
-            )
-            parser.add_argument(
-                "--env-report-interval-seconds",
-                type=float,
-                default=3600.0,
-                help="How often every process re-records its environment, so that code loaded later "
-                "(lazy imports, a swapped shared disk) is still captured. Non-positive records only at startup.",
-            )
-            parser.add_argument(
-                "--debug-unified-grad-fused-logprob",
-                action="store_true",
-                default=False,
-                help="Debug/test only: compute the stored log probabilities through the same grad-enabled fused "
-                "cross entropy the training step uses, then detach the result, so the two invocations of the "
-                "fused kernel take one execution path instead of two.",
-            )
-            parser.add_argument(
-                "--debug-deterministic-collective",
-                action="store_true",
-                default=False,
-                help="Debug/test only: run the training world on the det_nccl backend "
-                "(miles.utils.test_utils.det_process_group), which folds order-sensitive SUM/AVG "
-                "reductions in a fixed tree order so different reduction topologies become "
-                "bitwise-comparable. Slow; never enable in production.",
-            )
-            return parser
-
-        def add_network_arguments(parser):
-            parser.add_argument("--http-proxy", type=str, default=None)
-            parser.add_argument("--use-distributed-post", action="store_true", default=False)
-            return parser
-
-        def add_reward_model_arguments(parser):
-            parser.add_argument(
-                "--rm-type",
-                type=str,
-                default=None,
-                help="Type of the reward model",
-            )
-            parser.add_argument(
-                "--reward-key",
-                type=str,
-                default=None,
-                help=(
-                    "Some reward model may return a dict instead of a value, "
-                    "this is the key to extract the reward value from the dict. "
-                ),
-            )
-            parser.add_argument(
-                "--eval-reward-key",
-                type=str,
-                default=None,
-                help="The eval variant for --reward-key",
-            )
-            parser.add_argument(
-                "--group-rm", action="store_true", default=False, help="Whether to do rm on a whole group."
-            )
-            parser.add_argument(
-                "--rm-url",
-                type=str,
-                default=None,
-                help="URL for the reward model service for --rm-type remote_rm, e.g. http://localhost:8000",
-            )
-            parser.add_argument(
-                "--custom-rm-path",
-                type=str,
-                default=None,
-                help=(
-                    "Path to the custom reward model function. "
-                    "If set, we will use this function to calculate the reward instead of the default one. "
-                    "The function should have the signature `def custom_rm(args, sample) -> float`."
-                ),
-            )
-            parser.add_argument(
-                "--custom-reward-post-process-path",
-                type=str,
-                default=None,
-                help=(
-                    "Path to the custom function that will post process reward, by default it will be the normalization for grpo. "
-                ),
-            )
-            parser.add_argument(
-                "--custom-convert-samples-to-train-data-path",
-                type=str,
-                default=None,
-                help=(
-                    "Path to a custom function that converts samples to training data. "
-                    "If set, this function will replace the default _convert_samples_to_train_data. "
-                    "The function should have the signature `def convert_samples_to_train_data(args, samples) -> dict`."
-                ),
-            )
-            return parser
-
-        def add_rollout_buffer_arguments(parser):
-            parser.add_argument(
-                "--rollout-buffer-url",
-                type=str,
-                default=None,
-                help="URL for the rollout buffer",
-            )
-
-            parser.add_argument(
-                "--fetch-trajectory-retry-times",
-                type=int,
-                default=-1,
-                help="Number of times to retry fetching trajectory, -1 means unlimited retry",
-            )
-            parser.add_argument(
-                "--min-batch-collection-ratio",
-                type=float,
-                default=1,
-                help="Minimum batch collection ratio",
-            )
-            parser.add_argument(
-                "--rollout-task-type",
-                type=str,
-                default="math",
-            )
-            parser.add_argument(
-                "--loss-mask-type",
-                type=str,
-                default="qwen",
-                choices=["qwen", "qwen3", "distill_qwen"],
-                help="Loss mask type",
-            )
-            parser.add_argument(
-                "--data-pad-size-multiplier",
-                type=int,
-                default=128,
-                help="Multiplier for data padding size in data processing.",
-            )
-            parser.add_argument(
-                "--rollout-sample-filter-path",
-                type=str,
-                default=None,
-                help=(
-                    "Path to the rollout sample filter function. "
-                    "This function determines whether a sample will participate in loss calculation. "
-                    "The function is called as `fn(args, data)` where `data` is `list[list[Sample]]` "
-                    "(grouped by n_samples_per_prompt), and should return None. "
-                    "To exclude a sample from the loss, set `sample.remove_sample = True`. "
-                    "Note: This attribute does not determine whether the sample participates in advantage normalization."
-                ),
-            )
-            parser.add_argument(
-                "--rollout-all-samples-process-path",
-                type=str,
-                default=None,
-                help=(
-                    "Path to the rollout all samples process function that "
-                    "can process all samples including filtered ones."
-                ),
-            )
-            parser.add_argument(
-                "--disable-rollout-trim-samples",
-                action="store_true",
-                default=False,
-                help="disable trim samples in rollout buffer when converting samples to train data",
-            )
-            parser.add_argument(
-                "--use-dynamic-global-batch-size",
-                action="store_true",
-                default=False,
-                help="enable dynamic global batch size, disable trim samples in rollout buffer when converting samples to train data",
-            )
-            return parser
-
-        def add_custom_megatron_plugins_arguments(parser):
-            """
-            Add custom Megatron plugins arguments.
-            This is a placeholder for any additional arguments that might be needed.
-            """
-            from miles_plugins.models.deepseek_v4.arguments import add_dsv4_arguments
-
-            add_dsv4_arguments(parser)
-            parser.add_argument(
-                "--freeze-indexer",
-                action="store_true",
-                default=False,
-            )
-            parser.add_argument(
-                "--custom-megatron-init-path",
-                type=str,
-                default=None,
-            )
-            parser.add_argument(
-                "--custom-megatron-before-log-prob-hook-path",
-                type=str,
-                default=None,
-            )
-            parser.add_argument(
-                "--custom-megatron-before-train-step-hook-path",
-                type=str,
-                default=None,
-            )
-            return parser
-
-        def add_mtp_training_arguments(parser):
-            """Add MTP training specific arguments."""
-            reset_arg(parser, "--mtp-num-layers", type=int, default=None)
-            reset_arg(parser, "--mtp-loss-scaling-factor", type=float, default=0.2)
-            parser.add_argument(
-                "--enable-mtp-training",
-                action="store_true",
-                default=False,
-                help="Enable MTP layer parameter updates during training",
-            )
-
-            return parser
-
-        def add_prefill_decode_disaggregation_arguments(parser):
-            parser.add_argument(
-                "--prefill-num-servers",
-                type=int,
-                default=None,
-                help="Number of prefill servers for disaggregation.",
-            )
-            return parser
-
-        def add_ci_arguments(parser):
-            parser.add_argument(
-                "--ci-inject-missing-prefetched-batch-bug",
-                action="store_true",
-                help="Discard the restored prefetched batch to test sample ownership failure detection.",
-            )
-            parser.add_argument(
-                "--ci-test",
-                action="store_true",
-            )
-            parser.add_argument(
-                "--ci-tito-special-token-count-threshold",
-                type=float,
-                default=0.0,
-                help="Max TITO special_token_count mismatch rate tolerated under --ci-test; other hard types stay at 0.",
-            )
-            parser.add_argument(
-                "--ci-disable-kl-checker",
-                action="store_true",
-            )
-            parser.add_argument(
-                "--ci-disable-logprobs-checker",
-                action="store_true",
-            )
-            parser.add_argument(
-                "--ci-logprobs-checker-abs-tol",
-                type=float,
-                default=0.03,
-                help="Absolute tolerance between the batch-mean train and rollout log probs in the CI check.",
-            )
-            parser.add_argument(
-                "--ci-disable-weight-update-checker",
-                action="store_true",
-            )
-            parser.add_argument(
-                "--ci-metric-checker-key",
-                type=str,
-                default=None,
-            )
-            parser.add_argument(
-                "--ci-metric-checker-threshold",
-                type=float,
-                default=None,
-            )
-            parser.add_argument(
-                "--ci-metric-checker-expect-num",
-                type=int,
-                default=None,
-                help="Require exactly this many eval checks, all meeting the CI threshold.",
-            )
-            parser.add_argument(
-                "--ci-assert-prefill-lag-max",
-                type=int,
-                default=None,
-                help="Require every rollout's prompt KV to lag its decode weight version by at most this much.",
-            )
-            parser.add_argument(
-                "--ci-save-grad-norm",
-                type=str,
-                default=None,
-            )
-            parser.add_argument(
-                "--ci-load-grad-norm",
-                type=str,
-                default=None,
-            )
-            parser.add_argument(
-                "--ci-save-model-hash",
-                action="store_true",
-            )
-            parser.add_argument(
-                "--ci-check-model-hash",
-                action="store_true",
-            )
-            return parser
-
-        def add_session_arguments(parser):
-            parser.add_argument(
-                "--use-session-server",
-                nargs="?",
-                const=True,
-                default=False,
-                help="Start a standalone session server for TITO/session support. "
-                "Requires --hf-checkpoint. A named --tito-model resolves its registered template; "
-                "--tito-model=default uses the checkpoint-native or explicit --chat-template-path template. "
-                "Bare flag (or 'v1') selects the append-only linear v1 server; "
-                "'--use-session-server v2' selects the tree-serving v2 "
-                "(multi-lineage trajectories, always-branch).",
-            )
-            parser.add_argument(
-                "--session-server-workers",
-                type=int,
-                default=32,
-                help="Number of session server instances.",
-            )
-            parser.add_argument(
-                "--session-server-ip",
-                type=str,
-                default=None,
-                help="Address the session servers bind to, e.g. 0.0.0.0 to accept traffic from outside "
-                "the cluster. Peers still reach them on the address their worker was placed on. "
-                "Defaults to that placed address.",
-            )
-            parser.add_argument(
-                "--session-server-external-host",
-                type=str,
-                default=None,
-                help="Host that peers outside the cluster, such as agents in a sandbox, reach every session "
-                "server on. Setting it keeps all session servers on the head node, so it must reach the head. "
-                "Leave it unset when each node sets MILES_NODE_EXTERNAL_IP to its own reachable address, or "
-                "when the placed addresses already route from outside.",
-            )
-            parser.add_argument(
-                "--session-server-port",
-                type=int,
-                default=None,
-                help="Base port for the session servers, so a network policy can whitelist a known range. "
-                "Instance i listens on this port plus i. Defaults to a dynamically allocated port.",
-            )
-            parser.add_argument(
-                "--tito-model",
-                type=str,
-                default="default",
-                choices=[t.value for t in TITOTokenizerType],
-                help="TITO tokenizer type for pretokenized prefix reuse. "
-                "Controls how token IDs are computed for messages appended after "
-                "the pretokenized prefix in multi-turn agentic sessions.",
-            )
-            parser.add_argument(
-                "--session-message-matcher",
-                type=str,
-                default="strict",
-                help=(
-                    "Process-wide session history matcher: strict (default), "
-                    "loose_tool_call, role_content_only, or a trusted dotted import "
-                    "path. role_content_only is a high-risk opt-in that can collapse "
-                    "different tool-call lineages and does not reconcile call IDs."
-                ),
-            )
-            parser.add_argument(
-                "--session-sample-picker-path",
-                type=str,
-                default="miles.rollout.session.v2.picker_hub.drop_same_prompt_retries",
-                help="v2 only. Import path of the sample-pick hook for the "
-                "session samples op: fn(leaf_samples, session_metadata) -> "
-                "list[Sample], a pure selection over the per-leaf raw samples. "
-                "Runs synchronously inside the session server process; long CPU "
-                "work stalls every session on the instance. Default: drop_same_prompt_retries, "
-                "which trims identical re-sends, including a re-sent first turn; "
-                "drop_rolled_back_leaves also trims a leaf whose later sibling sent a "
-                "different request.",
-            )
-            parser.add_argument(
-                "--session-sample-postprocessor-path",
-                type=str,
-                default="miles.rollout.session.v2.postprocessor_hub.default_postprocess",
-                help="v2 only. Import path of the post-process hook for the "
-                "session samples op: fn(leaf_samples, session_metadata) -> "
-                "list[Sample], finalizing loss masks / rewards over the picked "
-                "samples. Runs synchronously inside the session server process. "
-                "Default: exactly-once completion masking + rewards keyed by "
-                "response id.",
-            )
-            return parser
-
-        def add_user_provided_function_arguments(parser):
-            try:
-                with with_relax_parser_required_args(parser), with_suppressed_parser_help(parser):
-                    args_partial, _ = parser.parse_known_args()
-            except SystemExit:
-                return parser
-            paths = [args_partial.custom_inference_engine_provider_path]
-            if not use_legacy_rollout_v1():
-                paths = [
-                    resolve_rollout_function_paths(args_partial)[0],
-                    args_partial.custom_generate_function_path,
-                    *paths,
-                ]
-            for path in paths:
-                try:
-                    fn = load_function(path)
-                except (ModuleNotFoundError, ValueError):
-                    continue
-                if fn is not None and callable(getattr(fn, "add_arguments", None)):
-                    fn.add_arguments(parser)
-            return parser
 
         # Add custom arguments in front to prevent overwritten some miles arguments.
         if add_custom_arguments is not None:
             parser = add_custom_arguments(parser)
 
-        parser = add_run_uuid_arguments(parser)
-        parser = add_cluster_arguments(parser)
-        parser = add_train_arguments(parser)
-        parser = add_rollout_arguments(parser)
-        parser = add_fault_tolerance_arguments(parser)
-        parser = add_data_arguments(parser)
-        parser = add_eval_arguments(parser)
-        parser = add_algo_arguments(parser)
-        parser = add_on_policy_distillation_arguments(parser)
-        parser = add_wandb_arguments(parser)
-        parser = add_mlflow_arguments(parser)
-        parser = add_tensorboard_arguments(parser)
-        parser = add_prometheus_arguments(parser)
-        add_dashboard_arguments(parser)
-        parser = add_router_arguments(parser)
-        parser = add_debug_arguments(parser)
-        parser = add_sglang_arguments(parser)
-        parser = add_lora_arguments(parser)
-        parser = add_session_arguments(parser)
-        parser = add_network_arguments(parser)
-        parser = add_reward_model_arguments(parser)
-        parser = add_rollout_buffer_arguments(parser)
-        parser = add_mtp_training_arguments(parser)
-        parser = add_prefill_decode_disaggregation_arguments(parser)
-        parser = add_ci_arguments(parser)
-        parser = add_custom_megatron_plugins_arguments(parser)
-        parser = add_user_provided_function_arguments(parser)
+        AllConfig.add_arguments(parser=parser)
+        parser = add_user_provided_function_arguments(parser, modify_args=resolve_rollout_function_paths)
 
         reset_arg(
             parser,
@@ -2851,19 +179,42 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             ),
         )
         parser.set_defaults(trainer_id=ACTOR_ROLE, trainer_model_id=None)
-        reset_arg(parser, "--padded-vocab-size", type=int, default=None)
 
         return parser
 
     return add_miles_arguments
 
 
-def parse_args(add_custom_arguments=None, entry="train", preprocess_args=None):
+def parse_args(
+    add_custom_arguments: Callable[[argparse.ArgumentParser], argparse.ArgumentParser] | None = None,
+    entry: str = "train",
+    preprocess_args: Callable[[argparse.Namespace], None] | None = None,
+) -> AllConfig:
+    args, _ = parse_args_and_get_parser(
+        add_custom_arguments=add_custom_arguments, entry=entry, preprocess_args=preprocess_args
+    )
+    return args
+
+
+def parse_args_and_get_parser(
+    add_custom_arguments: Callable[[argparse.ArgumentParser], argparse.ArgumentParser] | None = None,
+    entry: str = "train",
+    preprocess_args: Callable[[argparse.Namespace], None] | None = None,
+) -> tuple[AllConfig, argparse.ArgumentParser]:
     assert entry in ("train", "serve"), f"unknown entry {entry!r}"
     # Users may call `parse_args` very early, thus we ensure logger is configured here
     configure_logger_raw("main")
 
     add_miles_arguments = get_miles_extra_args_provider(add_custom_arguments)
+    parser: argparse.ArgumentParser | None = None
+    # TODO: Revisit this after Zhichen's training backend refactor.
+    training_backend_arg_names: set[str] = set()
+
+    def add_miles_arguments_and_capture_parser(value: argparse.ArgumentParser) -> argparse.ArgumentParser:
+        nonlocal parser
+        training_backend_arg_names.update(action.dest for action in value._actions)
+        parser = add_miles_arguments(value)
+        return parser
 
     backend = parse_args_train_backend()
     if backend == "megatron":
@@ -2871,20 +222,34 @@ def parse_args(add_custom_arguments=None, entry="train", preprocess_args=None):
         from miles.backends.megatron_utils.arguments import set_default_megatron_args
         from miles.backends.megatron_utils.arguments import validate_args as megatron_validate_args
 
-        args = megatron_parse_args(extra_args_provider=add_miles_arguments)
+        args = megatron_parse_args(extra_args_provider=add_miles_arguments_and_capture_parser)
+        training_backend_arg_names.update(
+            vars(args).keys() - {action.dest for action in parser._actions} - parser._defaults.keys()
+        )
+        previous_arg_names = set(vars(args))
         args.compress_ratios = None
         args.rollout_indexer_topk_num_streams = None
         if args.hf_checkpoint:
             hf_config = load_hf_config(args.hf_checkpoint)
-            args.compress_ratios = getattr(hf_config, "compress_ratios", None)
+            args.compress_ratios = getattr(
+                hf_config, "compress_ratios", None
+            )  # config-access-exempt: model-family schemas differ in optional compress_ratios metadata
             hf_validate_args(args, hf_config)
 
             if is_dsa(hf_config):
-                getter = getattr(hf_config, "get_text_config", None)
-                text_config = (getter() if callable(getter) else getattr(hf_config, "text_config", None)) or hf_config
-                args.indexer_rope_interleave = bool(getattr(text_config, "indexer_rope_interleave", False))
+                getter = getattr(
+                    hf_config, "get_text_config", None
+                )  # config-access-exempt: model-family schemas differ in optional get_text_config metadata
+                text_config = (
+                    getter() if callable(getter) else getattr(hf_config, "text_config", None)
+                ) or hf_config  # config-access-exempt: HF configs may wrap text_config for multimodal checkpoints
+                args.indexer_rope_interleave = bool(
+                    getattr(text_config, "indexer_rope_interleave", False)
+                )  # config-access-exempt: model-family schemas differ in optional indexer_rope_interleave metadata
                 logger.info(f"Setting indexer_rope_interleave: {args.indexer_rope_interleave} into args")
-                linear_attn_config = getattr(text_config, "linear_attn_config", None)
+                linear_attn_config = getattr(
+                    text_config, "linear_attn_config", None
+                )  # config-access-exempt: model-family schemas differ in optional linear_attn_config metadata
                 kda_layers = set((linear_attn_config or {}).get("kda_layers") or [])
                 args.rollout_indexer_topk_num_streams = text_config.num_hidden_layers - len(kda_layers)
 
@@ -2892,16 +257,19 @@ def parse_args(add_custom_arguments=None, entry="train", preprocess_args=None):
         args.rank = 0
         args.world_size = args.actor_num_nodes * args.actor_num_gpus_per_node
         args = set_default_megatron_args(args)
+        training_backend_arg_names.update(vars(args).keys() - previous_arg_names)
     else:
         from miles.backends.fsdp_utils.arguments import load_fsdp_args
 
-        args = load_fsdp_args(extra_args_provider=add_miles_arguments)
+        args = load_fsdp_args(extra_args_provider=add_miles_arguments_and_capture_parser)
         # TODO: unify this .rank and .world_size w/ indep_dp logics
         args.rank = 0  # Primary process rank for wandb initialization
         args.world_size = args.actor_num_nodes * args.actor_num_gpus_per_node
 
         if args.hf_checkpoint:
             args.num_layers = resolve_fsdp_num_layers(load_hf_config(args.hf_checkpoint))
+        else:
+            args.num_layers = None
 
         assert args.context_parallel_size == 1, "Context parallelism is not supported for FSDP backend."
 
@@ -2915,11 +283,12 @@ def parse_args(add_custom_arguments=None, entry="train", preprocess_args=None):
     miles_validate_args(args)
 
     if backend == "megatron":
+        previous_arg_names = set(vars(args))
         megatron_validate_args(args)
 
         # always use varlen
         args.variable_seq_lengths = True
-        if getattr(args, "moe_token_dispatcher_type", None) == "allgather":
+        if args.moe_token_dispatcher_type == "allgather":
             logger.info(
                 "--moe-token-dispatcher-type allgather does not support variable sequence length, "
                 "please use alltoall dispatcher instead."
@@ -2931,14 +300,74 @@ def parse_args(add_custom_arguments=None, entry="train", preprocess_args=None):
                 "decoder_first_pipeline_num_layers and decoder_last_pipeline_num_layers should be None when "
                 "pipeline_model_parallel_size is 1."
             )
+        training_backend_arg_names.update(vars(args).keys() - previous_arg_names)
     else:
         from miles.backends.fsdp_utils.arguments import validate_hybrid_shard_args
 
         validate_hybrid_shard_args(args)
+        training_backend_arg_names.update(
+            {
+                "bf16",
+                "calculate_per_token_loss",
+                "ckpt_step",
+                "clip_grad",
+                "disable_grad_buffers_cpu_backup",
+                "disable_param_buffers_cpu_backup",
+                "finetune",
+                "load",
+                "mtp_loss_scaling_factor",
+                "mtp_num_layers",
+                "no_load_optim",
+                "no_load_rng",
+                "no_save_optim",
+                "rank",
+                "world_size",
+            }
+        )
 
     sglang_validate_args(args)
 
-    return args
+    if backend == "fsdp" and args.fsdp_cpu_offload:
+        args.offload_train = False
+
+    vars(args).setdefault("ckpt_step", None)
+    vars(args).setdefault("lora_A_init_method", "xavier")
+    vars(args).setdefault("lora_B_init_method", "zero")
+
+    assert parser is not None
+    resolve_custom_function_configs(args)
+    backend_values = {name: value for name, value in vars(args).items() if name in training_backend_arg_names}
+    _validate_argument_ownership(args, parser=parser, training_backend_arg_names=training_backend_arg_names)
+    sglang, sglang_scaling = SglangConfig.parse_args(args)
+    values = {name: value for name, value in vars(args).items() if name in AllConfig.model_fields} | {
+        "raw_megatron": resolve_megatron_config(args, base_args=backend_values if backend == "megatron" else {}),
+        "raw_fsdp": FsdpArgsNamespace(**backend_values) if backend == "fsdp" else None,
+        "sglang": sglang,
+        "sglang_scaling": sglang_scaling,
+        "sglang_model_routers": None,
+        "init_expected_num_cells": _compute_init_expected_num_cells(
+            args, sglang=sglang, sglang_scaling=sglang_scaling
+        ),
+    }
+    values.update(RouterConfig.from_args(args))
+    return AllConfig.model_validate(values), parser
+
+
+def _validate_argument_ownership(
+    args: argparse.Namespace, *, parser: argparse.ArgumentParser, training_backend_arg_names: set[str]
+) -> None:
+    sglang_arg_names = {
+        action.dest for action in parser._actions if action.dest.startswith(("sglang_", "eval_sglang_"))
+    }
+    owned_arg_names = (
+        AllConfig.model_fields.keys()
+        | training_backend_arg_names
+        | sglang_arg_names
+        | RouterConfig.arg_names()
+        | {"custom_config_path", "megatron_config"}
+    )
+    if unknown_arg_names := vars(args).keys() - owned_arg_names:
+        raise ValueError(f"Parsed arguments have no configuration owner: {sorted(unknown_arg_names)}")
 
 
 def parse_args_train_backend():
@@ -2992,6 +421,16 @@ def _resolve_eval_datasets(args) -> list[EvalDatasetConfig]:
         args.eval_prompt_data = None
 
     return eval_datasets
+
+
+def _compute_init_expected_num_cells(
+    args: argparse.Namespace, *, sglang: SglangConfig, sglang_scaling: SglangScalingConfig
+) -> int | dict[str, int] | None:
+    if (declared := args.init_expected_num_cells) is not None:
+        return declared
+    if args.rollout_external or not DeployComponent(args.deploy_component).deploys_own_inference_engines():
+        return None
+    return {model.name: model.num_server_cells(sglang_scaling) for model in sglang.models}
 
 
 def _compute_rollout_external(args: argparse.Namespace) -> bool:
@@ -3080,7 +519,7 @@ def _validate_deploy_instance_id(args: argparse.Namespace, *, component: DeployC
 
 
 def _validate_single_deployed_trainer(args: argparse.Namespace) -> None:
-    trainers = resolve_megatron_config(args).trainers
+    trainers = resolve_megatron_config(args, base_args={}).trainers
     assert len(trainers) == 1, (
         f"--deploy-component trainer deploys one trainer and its arguments describe {len(trainers)} "
         f"({[t.trainer_id for t in trainers]}); give this deployment the config of the one trainer it carries, "
@@ -3115,9 +554,9 @@ def _validate_static_addrs_external_launch(args: argparse.Namespace, *, componen
 
 def _validate_registration(args: argparse.Namespace, *, component: DeployComponent) -> None:
     if (init_expected := args.init_expected_num_cells) is not None:
-        assert component is DeployComponent.PRIMARY, (
-            f"--init-expected-num-cells needs --deploy-component {DeployComponent.PRIMARY.value}, not "
-            f"{component.value}"
+        assert component in (DeployComponent.ALL, DeployComponent.PRIMARY), (
+            f"--init-expected-num-cells gates the run that drives the engines, so it needs --deploy-component "
+            f"{DeployComponent.ALL.value} or {DeployComponent.PRIMARY.value}, not {component.value}"
         )
         assert (
             init_expected >= 1
@@ -3170,7 +609,8 @@ def _validate_watched_cells_deployed_locally(args: argparse.Namespace, *, compon
 
 
 def _validate_trainer_controller_addrs(args: argparse.Namespace) -> None:
-    external_trainer_controller_addrs(args, trainer_ids=compute_trainer_ids(args))
+    trainer_ids = [trainer.trainer_id for trainer in resolve_megatron_config(args, base_args={}).trainers]
+    external_trainer_controller_addrs(args, trainer_ids=trainer_ids)
 
 
 def _validate_shared_object_store(args: argparse.Namespace, *, component: DeployComponent) -> None:
@@ -3296,7 +736,10 @@ def _resolve_sample_ownership_check(args: argparse.Namespace) -> None:
     multi_policy = (
         args.train_backend == "megatron"
         and args.megatron_config is not None
-        and len([config for config in resolve_megatron_config(args).trainers if config.role == ACTOR_ROLE]) > 1
+        and len(
+            [config for config in resolve_megatron_config(args, base_args={}).trainers if config.role == ACTOR_ROLE]
+        )
+        > 1
     )
     unsupported = [
         reason
@@ -3327,10 +770,13 @@ def _resolve_sample_ownership_check(args: argparse.Namespace) -> None:
 
 def miles_validate_args(args):
     if args.custom_config_path:
+        logger.warning("--custom-config-path is deprecated; use the custom function's declared CLI arguments instead.")
         data = yaml.safe_load(resolve_file_arg(args.custom_config_path)) or {}
         for k, v in data.items():
-            if hasattr(args, k):
-                logger.info(f"Warning: Argument {k} is already set to {getattr(args, k)}, will override with {v}.")
+            if hasattr(args, k):  # config-access-exempt: attribute selected at runtime from k
+                logger.info(
+                    f"Warning: Argument {k} is already set to {getattr(args, k)}, will override with {v}."
+                )  # config-access-exempt: attribute selected at runtime from k
             setattr(args, k, v)
 
     validate_dashboard_args(args)
@@ -3354,7 +800,7 @@ def miles_validate_args(args):
         args.enable_event_analyzer = True
         args.enable_witness = True
         args.non_persistent_ckpt_type = "local"
-        if getattr(args, "non_persistent_local_ckpt_dir", None) is None:
+        if args.non_persistent_local_ckpt_dir is None:
             args.non_persistent_local_ckpt_dir = "/tmp/miles_local_ckpt"
         # atomic: each rank saves independently, no collective communication.
         # fully_parallel needs all_gather_object which hangs after ncclCommAbort in healing.
@@ -3559,7 +1005,7 @@ def miles_validate_args(args):
 
     # TODO: refactor
     args.requested_load = args.load
-    if args.megatron_config is None:
+    if args.train_backend != "megatron" and args.megatron_config is None:
         resolve_args_checkpoint_load(args)
 
     if args.eval_interval is not None:
@@ -3629,7 +1075,7 @@ def miles_validate_args(args):
             "is data-dependent; this configuration is not supported."
         )
 
-    if getattr(args, "balance_by_flops", False):
+    if args.balance_by_flops:
         assert args.use_dynamic_batch_size, "--balance-by-flops requires --use-dynamic-batch-size"
 
     if args.eps_clip_high is None:
@@ -3730,9 +1176,7 @@ def miles_validate_args(args):
             "P2P weight transfer mode is not compatible with --colocate. "
             "Please use broadcast mode or disable colocate."
         )
-        assert (
-            getattr(args, "prefill_num_servers", None) is None
-        ), "P2P weight transfer mode has not been tested when PD is enabled."
+        assert args.prefill_num_servers is None, "P2P weight transfer mode has not been tested when PD is enabled."
         assert args.lora_rank <= 0, "LoRA weight sync is not supported for p2p (RDMA) weight transfer."
         assert (
             args.megatron_to_hf_mode != "bridge"
@@ -3745,7 +1189,7 @@ def miles_validate_args(args):
             "(snapshot + diff + encode) is pure overhead."
         )
         assert (
-            getattr(args, "prefill_num_servers", None) is None
+            args.prefill_num_servers is None
         ), "Disk-delta weight transfer mode has not been tested when PD is enabled."
         assert args.lora_rank <= 0, "LoRA weight sync is not supported for disk-delta weight transfer."
         assert args.update_weight_disk_dir, (
@@ -3817,7 +1261,7 @@ def miles_validate_args(args):
     if (args.offload_train_target == "disk" or args.stream_optimizer_state_to_disk) and (
         args.offload_train_disk_dir is None
     ):
-        uid = os.getuid() if hasattr(os, "getuid") else 0
+        uid = os.getuid() if hasattr(os, "getuid") else 0  # config-access-exempt: os.getuid is platform-dependent
         args.offload_train_disk_dir = os.path.join(os.environ.get("SCRATCH", "/scratch"), f"miles_train_offload_{uid}")
 
     if args.offload_train_target == "disk":
@@ -4063,7 +1507,7 @@ def miles_validate_args(args):
     ), "--rollout-external-router-pd only applies to external rollout engines; internally launched engines infer PD from the sglang config."
 
     assert not (
-        getattr(args, "sglang_config", None) is not None and getattr(args, "prefill_num_servers", None) is not None
+        args.sglang_config is not None and args.prefill_num_servers is not None
     ), "sglang_config and prefill_num_servers are mutually exclusive. Use server_groups in the YAML config instead."
 
     if args.qkv_format == "bshd":
@@ -4207,12 +1651,20 @@ def resolve_fsdp_num_layers(hf_config) -> int | None:
     text config wins when present, since a top-level ``num_hidden_layers`` may describe a vision
     tower instead.
     """
-    getter = getattr(hf_config, "get_text_config", None)
-    text_config = (getter() if callable(getter) else getattr(hf_config, "text_config", None)) or hf_config
+    getter = getattr(
+        hf_config, "get_text_config", None
+    )  # config-access-exempt: model-family schemas differ in optional get_text_config metadata
+    text_config = (
+        getter() if callable(getter) else getattr(hf_config, "text_config", None)
+    ) or hf_config  # config-access-exempt: model-family schemas differ in optional text_config metadata
 
-    num_layers = getattr(text_config, "num_hidden_layers", None)
+    num_layers = getattr(
+        text_config, "num_hidden_layers", None
+    )  # config-access-exempt: model-family schemas differ in optional num_hidden_layers metadata
     if num_layers is None:
-        num_layers = getattr(hf_config, "num_hidden_layers", None)
+        num_layers = getattr(
+            hf_config, "num_hidden_layers", None
+        )  # config-access-exempt: model-family schemas differ in optional num_hidden_layers metadata
     return num_layers
 
 
@@ -4223,10 +1675,14 @@ def hf_validate_args(args, hf_config):
     errors = []
 
     # multimodal models have different config structure
-    if hasattr(hf_config, "text_config"):
+    if hasattr(
+        hf_config, "text_config"
+    ):  # config-access-exempt: model-family schemas differ in optional text_config metadata
         hf_config = hf_config.text_config
 
-    if hasattr(hf_config, "rope_parameters") and isinstance(hf_config.rope_parameters, dict):
+    if hasattr(hf_config, "rope_parameters") and isinstance(
+        hf_config.rope_parameters, dict
+    ):  # config-access-exempt: model-family schemas differ in optional rope_parameters metadata
         if "rope_theta" in hf_config.rope_parameters:
             hf_config.rope_theta = hf_config.rope_parameters["rope_theta"]
         else:
@@ -4255,15 +1711,23 @@ def hf_validate_args(args, hf_config):
         ("rope_theta", "rotary_base", equal),
     ]:
         # FIXME: Qwen3.5 transfomers has bug.
-        if getattr(hf_config, "model_type", "") == "qwen3_5_moe_text" and hf_config_name == "intermediate_size":
+        if (
+            getattr(hf_config, "model_type", "") == "qwen3_5_moe_text" and hf_config_name == "intermediate_size"
+        ):  # config-access-exempt: model-family schemas differ in optional model_type metadata
             continue
-        if getattr(hf_config, "model_type", "") == "deepseek_v4" and hf_config_name == "intermediate_size":
+        if (
+            getattr(hf_config, "model_type", "") == "deepseek_v4" and hf_config_name == "intermediate_size"
+        ):  # config-access-exempt: model-family schemas differ in optional model_type metadata
             continue
-        if hasattr(hf_config, hf_config_name):
-            if not compare_fn(getattr(hf_config, hf_config_name), getattr(args, megatron_config_name)):
+        if hasattr(
+            hf_config, hf_config_name
+        ):  # config-access-exempt: attribute selected at runtime from hf_config_name
+            if not compare_fn(
+                getattr(hf_config, hf_config_name), getattr(args, megatron_config_name)
+            ):  # config-access-exempt: attribute selected at runtime from hf_config_name; attribute selected at runtime from megatron_config_name
                 errors.append(
-                    f"{hf_config_name} in hf config {getattr(hf_config, hf_config_name)} is not equal to "
-                    f"{megatron_config_name} {getattr(args, megatron_config_name)}, please check the config."
+                    f"{hf_config_name} in hf config {getattr(hf_config, hf_config_name)} is not equal to "  # config-access-exempt: attribute selected at runtime from hf_config_name
+                    f"{megatron_config_name} {getattr(args, megatron_config_name)}, please check the config."  # config-access-exempt: attribute selected at runtime from megatron_config_name
                 )
 
     if len(errors) > 0:

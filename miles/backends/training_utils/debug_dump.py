@@ -22,7 +22,7 @@ def maybe_dump_policy_loss_debug(
     ppo_kl: torch.Tensor,
     pg_loss: torch.Tensor,
 ) -> None:
-    dump_dir = getattr(args, "dump_details", None)
+    dump_dir = args.dump_details
     if dump_dir is None:
         return
     # TP peers compute the loss on identical data; CP ranks hold distinct token slices

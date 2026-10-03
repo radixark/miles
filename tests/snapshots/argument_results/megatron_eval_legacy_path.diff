@@ -1,0 +1,33 @@
+--- megatron
++++ megatron_eval_legacy_path
+@@ -127 +127,18 @@
+-  eval_datasets: []
++  eval_datasets:
++  - custom_generate_function_path: null
++    input_key: input
++    label_key: null
++    max_response_len: null
++    metadata_key: metadata
++    metadata_overrides: {}
++    min_new_tokens: null
++    n_samples_per_eval_prompt: 1
++    name: aime
++    path: $FIXTURES/data.jsonl
++    rm_type: null
++    stop: null
++    stop_token_ids: null
++    temperature: 1.0
++    tool_key: tools
++    top_k: -1
++    top_p: 1.0
+@@ -133 +150 @@
+-  eval_interval: null
++  eval_interval: 2
+@@ -144 +161,3 @@
+-  eval_prompt_data: null
++  eval_prompt_data:
++  - aime
++  - $FIXTURES/data.jsonl
+@@ -474 +493 @@
+-      eval_interval: null
++      eval_interval: 2

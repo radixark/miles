@@ -1,0 +1,24 @@
+--- fsdp
++++ fsdp_load_existing
+@@ -55 +55 @@
+-  critic_load: null
++  critic_load: $FIXTURES/checkpoint
+@@ -184 +184 @@
+-  load: null
++  load: $FIXTURES/checkpoint
+@@ -294 +293,0 @@
+-    finetune: true
+@@ -301 +300 @@
+-    load: null
++    load: $FIXTURES/checkpoint
+@@ -314,2 +313,2 @@
+-    no_load_optim: true
+-    no_load_rng: true
++    no_load_optim: false
++    no_load_rng: false
+@@ -345 +344 @@
+-  requested_load: null
++  requested_load: $FIXTURES/checkpoint
+@@ -1000 +999 @@
+-  start_rollout_id: 0
++  start_rollout_id: null

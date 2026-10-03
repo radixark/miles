@@ -3,16 +3,20 @@ from __future__ import annotations
 import textwrap
 from argparse import ArgumentParser, Namespace
 from collections.abc import AsyncIterator
-from typing import Any
+from typing import Any, TypeVar
 from unittest.mock import MagicMock
 
 import pytest
 import ray
 from sglang_router.launch_router import RouterArgs
+from tests.fast.fixtures.args_fixtures import parser_defaults, resolve_parse_boundary_configs
 
-from tests.fast.fixtures.args_fixtures import parser_defaults
-
+from miles.ray.specs.inference import inference_controller_worker_name
 from miles.utils import object_store
+from miles.utils.args.component_rollout import InferenceRuntimeImmutState, InferenceRuntimeMutState
+from miles.utils.args.configs.router import RouterConfig
+from miles.utils.args.custom_function import CustomFunctionConfig
+from miles.utils.args.runtime import AllConfig, InferenceControllerConfig, RolloutConfig
 from miles.utils.types import Sample
 
 
@@ -88,7 +92,6 @@ def make_args(**overrides: Any) -> Namespace:
         critic_num_gpus_per_node=0,
         use_critic=False,
         megatron_config=None,
-        critic_train_only=False,
         # sglang router
         sglang_router_ip=None,
         sglang_router_port=None,
@@ -142,7 +145,6 @@ def make_args(**overrides: Any) -> Namespace:
         seed=42,
         fp16=False,
         use_rollout_indexer_replay=False,
-        env_report=None,
         env_report_interval_seconds=3600.0,
         # checkpoint / data source
         hf_checkpoint="/fake/model",
@@ -175,14 +177,65 @@ def make_args(**overrides: Any) -> Namespace:
         ci_assert_prefill_lag_max=None,
         # dumper (sglang debug dumper integration)
         dumper_enable=False,
-        dumper_inference=False,
     )
     defaults.update(router_defaults)
+    defaults["inference_runtime_mut_state"] = InferenceRuntimeMutState()
     defaults.update(overrides)
     defaults.setdefault("starts_inference_engines", not defaults["debug_train_only"] or defaults["eval_num_gpus"] > 0)
     if defaults["debug_train_only"]:
         defaults["rollout_num_gpus"] = 0
-    return Namespace(**{**parser_defaults(), **defaults})
+    return resolve_parse_boundary_configs(Namespace(**{**parser_defaults(), **defaults}))
+
+
+def make_rollout_config(**overrides: Any) -> RolloutConfig:
+    """The typed config the rollout executor receives, sliced from ``make_args``."""
+    return _slice_config(RolloutConfig, make_args(**overrides))
+
+
+def make_inference_controller_config(args: Namespace) -> InferenceControllerConfig:
+    """The typed config the inference controller receives, sliced from a ``make_args`` namespace."""
+    return _slice_config(InferenceControllerConfig, args)
+
+
+def _slice_config(config_class: type[_LeafConfigT], args: Namespace) -> _LeafConfigT:
+    values = vars(args) | _RESOLVED_ROLLOUT_FIELDS | RouterConfig.from_args(args)
+    for name in _CUSTOM_FUNCTION_FIELDS:
+        if isinstance(path := values[name], str):
+            values[name] = CustomFunctionConfig(path=path)
+    return config_class.model_validate({name: values[name] for name in config_class.model_fields if name in values})
+
+
+_LeafConfigT = TypeVar("_LeafConfigT", RolloutConfig, InferenceControllerConfig)
+
+_RESOLVED_ROLLOUT_FIELDS: dict[str, Any] = dict(
+    ci_enable_metrics_capture=False,
+    eval_datasets=[],
+    ckpt_step=None,
+    num_layers=None,
+    raw_fsdp=None,
+    lora_A_init_method="xavier",
+    lora_B_init_method="zero",
+)
+
+_CUSTOM_FUNCTION_FIELDS = [
+    name
+    for name, field in AllConfig.model_fields.items()
+    if field.annotation in {CustomFunctionConfig, CustomFunctionConfig | None}
+]
+
+
+class FakeInferenceTopologyProvider:
+    """Serves the inference controller the rollout executor asks for the observed engine topology."""
+
+    def __init__(self, state: InferenceRuntimeImmutState) -> None:
+        self._state = state
+
+    def get_handle(self, worker_name: str) -> FakeInferenceTopologyProvider:
+        assert worker_name == inference_controller_worker_name()
+        return self
+
+    async def get_inference_runtime_immut_state(self) -> InferenceRuntimeImmutState:
+        return self._state
 
 
 def make_sample(

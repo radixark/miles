@@ -155,7 +155,9 @@ def aggregate_forward_results(
             values += batch_result[key]
 
         # Handle dynamic batch size: restore original order
-        if args.use_dynamic_batch_size and hasattr(data_iterator, "micro_batch_indices"):
+        if args.use_dynamic_batch_size and hasattr(
+            data_iterator, "micro_batch_indices"
+        ):  # config-access-exempt: only dynamic-batch iterators expose micro-batch indices
             origin_values = [None] * len(values)
             origin_indices = sum(data_iterator.micro_batch_indices, [])
             for value, origin_index in zip(values, origin_indices, strict=False):
@@ -280,8 +282,6 @@ def log_rollout_data(rollout_id: int, args: Namespace, rollout_data: RolloutBatc
                 if args.use_rollout_routing_replay:
                     # lop diff w/ w/o r3 is very big
                     abs_tol = 5e-3
-                elif getattr(args, "sglang_config", None) is not None:
-                    abs_tol = 1e-8
                 else:
                     abs_tol = 1e-8
                 assert isclose(
@@ -422,7 +422,7 @@ def log_perf_data(rollout_id: int, args: Namespace, extra_metrics: dict | None =
             and parallel_state.is_pp_last_stage
             and parallel_state.effective_dp_cp.rank == 0
         ),
-        compute_total_fwd_flops=lambda seq_lens: fwd_tflops_per_gpu(seq_lens, args, dist.get_world_size()),
+        compute_total_fwd_flops=lambda seq_lens: fwd_tflops_per_gpu(seq_lens, args.backend, dist.get_world_size()),
         extra_metrics=extra_metrics,
     )
 

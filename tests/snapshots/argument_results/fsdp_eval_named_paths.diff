@@ -1,0 +1,46 @@
+--- fsdp
++++ fsdp_eval_named_paths
+@@ -127 +127,35 @@
+-  eval_datasets: []
++  eval_datasets:
++  - custom_generate_function_path: null
++    input_key: input
++    label_key: null
++    max_response_len: null
++    metadata_key: metadata
++    metadata_overrides: {}
++    min_new_tokens: null
++    n_samples_per_eval_prompt: 1
++    name: first
++    path: $FIXTURES/data.jsonl
++    rm_type: null
++    stop: null
++    stop_token_ids: null
++    temperature: 1.0
++    tool_key: tools
++    top_k: -1
++    top_p: 1.0
++  - custom_generate_function_path: null
++    input_key: input
++    label_key: null
++    max_response_len: null
++    metadata_key: metadata
++    metadata_overrides: {}
++    min_new_tokens: null
++    n_samples_per_eval_prompt: 1
++    name: second
++    path: $FIXTURES/data2.jsonl
++    rm_type: null
++    stop: null
++    stop_token_ids: null
++    temperature: 1.0
++    tool_key: tools
++    top_k: -1
++    top_p: 1.0
+@@ -144 +178,5 @@
+-  eval_prompt_data: null
++  eval_prompt_data:
++  - first
++  - $FIXTURES/data.jsonl
++  - second
++  - $FIXTURES/data2.jsonl

@@ -1,0 +1,8 @@
+--- fsdp
++++ fsdp_session_router_override
+@@ -992 +992 @@
+-  sglang_router_policy: null
++  sglang_router_policy: round_robin
+@@ -1056 +1056 @@
+-  use_session_server: false
++  use_session_server: true

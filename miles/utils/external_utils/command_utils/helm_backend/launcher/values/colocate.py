@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from miles.utils.args.configs.scaling import ScalingConfig
 from miles.utils.external_utils.colocate_pairing.config import InferencePool, PairingConfig, PairingLayout
 from miles.utils.external_utils.command_utils.helm_backend.launcher.values.misc import (
     INFERENCE_ENGINES_SECTION,
@@ -7,10 +8,10 @@ from miles.utils.external_utils.command_utils.helm_backend.launcher.values.misc 
     TRAINER_ENGINES_SECTION,
     LaunchPlan,
 )
-from miles.utils.workers.worker_spec import BaseWorkerSpec
+from miles.utils.workers.worker_spec import BaseSpec
 
 
-def pairing_config(specs: list[BaseWorkerSpec], plan: LaunchPlan) -> PairingConfig:
+def pairing_config(specs: list[BaseSpec], plan: LaunchPlan, *, scaling: ScalingConfig) -> PairingConfig:
     inference_specs = [spec for spec in specs if SECTION_OF_CATEGORY[spec.category] == INFERENCE_ENGINES_SECTION]
     trainer_specs = [spec for spec in specs if SECTION_OF_CATEGORY[spec.category] == TRAINER_ENGINES_SECTION]
     assert len(trainer_specs) == 1, (
@@ -19,9 +20,10 @@ def pairing_config(specs: list[BaseWorkerSpec], plan: LaunchPlan) -> PairingConf
     )
 
     trainer = trainer_specs[0]
-    trainer_total_gpus = trainer.scheduling.num_cells * trainer.scheduling.gpus_per_cell()
+    trainer_scheduling = trainer.scheduling(scaling)
+    trainer_total_gpus = trainer_scheduling.num_cells * trainer_scheduling.gpus_per_cell()
     colocated_inference_specs = [
-        spec for spec in inference_specs if spec.scheduling.pg_slot_offset < trainer_total_gpus
+        spec for spec in inference_specs if spec.scheduling(scaling).pg_slot_offset < trainer_total_gpus
     ]
     assert colocated_inference_specs, (
         f"colocate puts inference pools on the trainer's gpus, but every pool of "
@@ -31,7 +33,7 @@ def pairing_config(specs: list[BaseWorkerSpec], plan: LaunchPlan) -> PairingConf
     )
 
     pairing_layouts = [
-        (inference.name, _compute_pairing_layout(inference=inference, trainer=trainer))
+        (inference.name, _compute_pairing_layout(inference=inference, trainer=trainer, scaling=scaling))
         for inference in colocated_inference_specs
     ]
 
@@ -45,20 +47,22 @@ def pairing_config(specs: list[BaseWorkerSpec], plan: LaunchPlan) -> PairingConf
     )
 
 
-def _compute_pairing_layout(*, inference: BaseWorkerSpec, trainer: BaseWorkerSpec) -> PairingLayout:
+def _compute_pairing_layout(*, inference: BaseSpec, trainer: BaseSpec, scaling: ScalingConfig) -> PairingLayout:
+    inference_scheduling = inference.scheduling(scaling)
+    trainer_scheduling = trainer.scheduling(scaling)
     _assert_colocate_supported(
-        num_gpus_per_node=trainer.scheduling.num_gpus_per_node,
-        gpus_per_inference_pod=inference.scheduling.gpus_per_pod(),
-        gpus_per_trainer_pod=trainer.scheduling.gpus_per_pod(),
+        num_gpus_per_node=trainer_scheduling.num_gpus_per_node,
+        gpus_per_inference_pod=inference_scheduling.gpus_per_pod(),
+        gpus_per_trainer_pod=trainer_scheduling.gpus_per_pod(),
     )
     return PairingLayout(
-        num_inference_cells=inference.scheduling.num_cells,
-        num_trainer_cells=trainer.scheduling.num_cells,
-        num_pods_per_inference_cell=inference.scheduling.pods_per_cell(),
-        num_pods_per_trainer_cell=trainer.scheduling.pods_per_cell(),
-        num_gpus_per_node=trainer.scheduling.num_gpus_per_node,
-        num_gpus_per_inference_pod=inference.scheduling.gpus_per_pod(),
-        gpu_offset=inference.scheduling.pg_slot_offset,
+        num_inference_cells=inference_scheduling.num_cells,
+        num_trainer_cells=trainer_scheduling.num_cells,
+        num_pods_per_inference_cell=inference_scheduling.pods_per_cell(),
+        num_pods_per_trainer_cell=trainer_scheduling.pods_per_cell(),
+        num_gpus_per_node=trainer_scheduling.num_gpus_per_node,
+        num_gpus_per_inference_pod=inference_scheduling.gpus_per_pod(),
+        gpu_offset=inference_scheduling.pg_slot_offset,
     )
 
 

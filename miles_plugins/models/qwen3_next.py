@@ -28,9 +28,9 @@ class Qwen3NextGatedDeltaNet(nn.Module):
     Qwen3NextGatedDeltaNet with varlen support
     """
 
-    def __init__(self, config, layer_idx: int, args=None):
+    def __init__(self, config, layer_idx: int, args):
         super().__init__()
-        self.gdn_backend = getattr(args, "linear_attention_backend", "fla")
+        self.gdn_backend = args.linear_attention_backend
         self.chunk_gated_delta_rule = get_chunk_gated_delta_rule(self.gdn_backend)
         self.hidden_size = config.hidden_size
         self.num_v_heads = config.linear_num_value_heads
@@ -228,7 +228,7 @@ class Attention(HuggingfaceAttention):
 
 def get_qwen3_next_spec(args, config, vp_stage):
     # always use the moe path
-    if not args.num_experts:
+    if not args.backend.num_experts:
         config.moe_layer_freq = [0] * config.num_layers
 
     # Define the decoder block spec
@@ -249,8 +249,10 @@ def get_qwen3_next_spec(args, config, vp_stage):
     hf_config = AutoConfig.from_pretrained(args.hf_checkpoint, trust_remote_code=True)
 
     # Compute layer_types if the config class doesn't expose it
-    if not hasattr(hf_config, "layer_types"):
-        interval = getattr(hf_config, "full_attention_interval", 4)
+    if not hasattr(hf_config, "layer_types"):  # config-access-exempt: older HF checkpoints omit explicit layer_types
+        interval = getattr(
+            hf_config, "full_attention_interval", 4
+        )  # config-access-exempt: older HF checkpoints encode full-attention cadence with this optional field
         n = hf_config.num_hidden_layers
         hf_config.layer_types = ["full_attention" if (i + 1) % interval == 0 else "linear_attention" for i in range(n)]
 

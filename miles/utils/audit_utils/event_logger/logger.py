@@ -147,9 +147,12 @@ def read_events(log_dir: Path, *, strict: bool = False) -> list[Event]:
 class EventReader:
     """Read the events of one directory repeatedly, parsing only the lines appended since the previous read."""
 
-    def __init__(self, log_dir: Path, *, strict: bool = False) -> None:
+    def __init__(
+        self, log_dir: Path, *, strict: bool = False, event_types: tuple[type[EventBase], ...] | None = None
+    ) -> None:
         self._log_dir = log_dir
         self._strict = strict
+        self._event_types = event_types
         self._parsed_files: dict[Path, _ParsedFile] = {}
 
     def read(self) -> list[Event]:
@@ -188,7 +191,8 @@ class EventReader:
         if not raw_line:
             return []
         try:
-            return [_event_adapter.validate_json(raw_line)]
+            event = _event_adapter.validate_json(raw_line)
+            return [event] if self._event_types is None or isinstance(event, self._event_types) else []
         except Exception:
             if self._strict:
                 raise

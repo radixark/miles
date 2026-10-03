@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import pytest
-from tests.fast.utils.workers.worker_provider.kubernetes.run_specs import make_pool_spec
 
+from miles.utils.workers.connection_config import WorkerPodMetadata
 from miles.utils.workers.naming import compute_worker_name
 from miles.utils.workers.worker_provider.kubernetes.core.cell_view import (
     PodIdentity,
@@ -12,6 +12,7 @@ from miles.utils.workers.worker_provider.kubernetes.core.cell_view import (
 )
 from miles.utils.workers.worker_provider.kubernetes.core.pod_view import CellLabelKeys, ParsedPod
 from miles.utils.workers.worker_provider.kubernetes.core.provider import KubernetesRunInfo
+from miles.utils.workers.worker_spec import PortInfo, StaticMeta
 
 CELL_ID = "engine-00000"
 ENGINE_CLASS = f"{__name__}.FakeEngine"
@@ -20,6 +21,26 @@ ENGINE_CLASS = f"{__name__}.FakeEngine"
 class FakeEngine:
     def generate(self, prompt: str) -> str:
         return prompt
+
+
+def make_worker_metadata(
+    *,
+    workers_per_pod: int = 1,
+    worker_class: str | None = ENGINE_CLASS,
+    ports: dict[str, int] | None = None,
+    static_meta: StaticMeta | None = None,
+) -> WorkerPodMetadata:
+    return WorkerPodMetadata(
+        workers_per_pod=workers_per_pod,
+        pods_per_cell=1,
+        gpu_slots_per_worker=1,
+        dynamic_pool=True,
+        worker_class=worker_class,
+        port_infos=[
+            PortInfo(name=name, static_port=port) for name, port in ({"rpc": 8000} if ports is None else ports).items()
+        ],
+        static_meta=static_meta or StaticMeta(),
+    )
 
 
 def make_parsed_pod(
@@ -41,26 +62,14 @@ def make_parsed_pod(
         subdomain=kwargs.pop("subdomain", None),
         gpu_ids=kwargs.pop("gpu_ids", ()),
         meta=kwargs.pop("meta", {}),
+        worker_metadata=kwargs.pop("worker_metadata", make_worker_metadata()),
     )
 
 
-def make_run(
-    *,
-    workers_per_pod: int = 1,
-    worker_class: str | None = ENGINE_CLASS,
-    ports: dict[str, int] | None = None,
-) -> KubernetesRunInfo:
+def make_run() -> KubernetesRunInfo:
     return KubernetesRunInfo(
         namespace="rl",
         label_selector="app.kubernetes.io/instance=r",
-        specs={
-            "engine": make_pool_spec(
-                "engine",
-                ports={"rpc": 8000} if ports is None else ports,
-                worker_class=worker_class,
-                workers_per_pod=workers_per_pod,
-            )
-        },
         label_keys=CellLabelKeys(
             pool_id="pool-id",
             cell_index="cell-index",
@@ -77,8 +86,8 @@ def build_cell_info(pods: list[ParsedPod]):
     return compute_cell_info(CELL_ID, pods=pods, run=make_run())
 
 
-def build_worker_infos(pods: list[ParsedPod], *, workers_per_pod: int = 1):
-    return compute_worker_infos(CELL_ID, pods=pods, run=make_run(workers_per_pod=workers_per_pod))
+def build_worker_infos(pods: list[ParsedPod]):
+    return compute_worker_infos(CELL_ID, pods=pods, run=make_run())
 
 
 class TestCellLiveness:
@@ -141,15 +150,38 @@ class TestCellMeta:
         with pytest.raises(AssertionError, match="model_id"):
             build_cell_info(pods)
 
+    def test_resolves_the_static_meta_the_launcher_declared_for_this_cell(self):
+        """A trainer cell's gpu offset depends on its own index, so the declaration is resolved per cell."""
+        metadata = make_worker_metadata(
+            static_meta=StaticMeta(values={"role": "actor"}, gpu_offset_base=4, gpu_offset_stride_per_cell=2)
+        )
+        pods = [
+            make_parsed_pod(pod_in_cell_index=index, meta={"model_id": "glm"}, worker_metadata=metadata)
+            for index in range(2)
+        ]
+
+        assert build_cell_info(pods).meta == {"role": "actor", "gpu_offset": 4, "model_id": "glm"}
+
+    def test_refuses_a_cell_whose_pods_disagree_about_their_worker_metadata(self):
+        """Ports and workers per pod are read once for the cell, so a disagreeing pod would be misaddressed."""
+        pods = [
+            make_parsed_pod(pod_in_cell_index=0),
+            make_parsed_pod(pod_in_cell_index=1, worker_metadata=make_worker_metadata(workers_per_pod=2)),
+        ]
+
+        with pytest.raises(AssertionError, match="inconsistent worker metadata"):
+            build_cell_info(pods)
+
 
 class TestWorkerInfos:
     def test_refuses_a_worker_whose_spec_declares_no_ports(self):
         """A worker without a declared port cannot publish a callable address."""
-        run = make_run(ports={}, worker_class=None)
-        pod = make_parsed_pod(pod_in_cell_index=0, cell_size=1)
+        pod = make_parsed_pod(
+            pod_in_cell_index=0, cell_size=1, worker_metadata=make_worker_metadata(ports={}, worker_class=None)
+        )
 
         with pytest.raises(AssertionError, match="declares no ports"):
-            compute_worker_infos(CELL_ID, pods=[pod], run=run)
+            compute_worker_infos(CELL_ID, pods=[pod], run=make_run())
 
     def test_refuses_a_pod_with_neither_ip_nor_headless_service(self):
         """A pod without an IP or service cannot be projected to a valid host."""
@@ -160,9 +192,14 @@ class TestWorkerInfos:
 
     def test_fans_a_pod_out_into_one_worker_per_worker_it_serves(self):
         """A pod runs several workers, and each of them is a Miles worker of its own."""
-        pods = [make_parsed_pod(pod_in_cell_index=index, gpu_ids=(0, 1)) for index in range(2)]
+        pods = [
+            make_parsed_pod(
+                pod_in_cell_index=index, gpu_ids=(0, 1), worker_metadata=make_worker_metadata(workers_per_pod=2)
+            )
+            for index in range(2)
+        ]
 
-        infos = build_worker_infos(pods, workers_per_pod=2)
+        infos = build_worker_infos(pods)
 
         assert [info.name for info in infos] == [
             compute_worker_name(pool_id="engine", worker_in_cell_index=index) for index in range(4)
@@ -172,16 +209,25 @@ class TestWorkerInfos:
     def test_offsets_the_rpc_port_of_each_worker_the_way_its_process_binds_it(self):
         """The workers of a pod share its ip, so only the port tells them apart."""
         infos = build_worker_infos(
-            [make_parsed_pod(pod_in_cell_index=0, cell_size=1, gpu_ids=(0, 1))], workers_per_pod=2
+            [
+                make_parsed_pod(
+                    pod_in_cell_index=0,
+                    cell_size=1,
+                    gpu_ids=(0, 1),
+                    worker_metadata=make_worker_metadata(workers_per_pod=2),
+                )
+            ]
         )
 
         assert [info.self_addrs["rpc"].port for info in infos] == [8000, 8001]
 
     def test_a_command_worker_is_reported_without_a_class_to_call_it_by(self):
         """An engine pod runs no rpc server, so the dashboard reads its addresses but cannot call it."""
-        run = make_run(worker_class=None)
+        pod = make_parsed_pod(
+            pod_in_cell_index=0, cell_size=1, worker_metadata=make_worker_metadata(worker_class=None)
+        )
 
-        (info,) = compute_worker_infos(CELL_ID, pods=[make_parsed_pod(pod_in_cell_index=0, cell_size=1)], run=run)
+        (info,) = compute_worker_infos(CELL_ID, pods=[pod], run=make_run())
 
         assert info.worker_class is None
         assert info.self_addrs["rpc"].host == "10.0.0.1"

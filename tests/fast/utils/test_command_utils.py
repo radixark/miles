@@ -12,12 +12,14 @@ from tests.fast.utils.command_recorder import patch_helper, record_commands
 
 
 import miles.utils.external_utils.command_utils as command_utils
+from miles.utils.audit_utils.config_snapshot.generated_values import GENERATED_VALUES_ENV_VAR, read_generated_values
 from miles.utils.external_utils.command_utils import base_backend, common
 from miles.utils.external_utils.command_utils.base_backend import ExecuteTrainRequest
 from miles.utils.external_utils.command_utils.ray_backend import command as ray_command
 from miles.utils.external_utils.command_utils.ray_backend.backend import RayCommandBackend
 from miles.utils.external_utils.model_args_utils import load_model_args
 from miles.utils.file_arg_utils import resolve_file_arg
+from miles.utils.test_utils.snapshot import SNAPSHOT_RECORD_DIR_ENV_VAR
 from miles.utils.typer_utils import SCRIPT_ENV_VAR_PREFIX
 
 
@@ -781,10 +783,34 @@ class TestBuildTrainEnvVars:
         env = common.train_env_vars(
             self._request(),
             {"NCCL_NVLS_ENABLE": "0", "MASTER_ADDR": "10.0.0.1"},
-            config=command_utils.ExecuteTrainConfig(),
+            config=command_utils.ExecuteTrainConfig(run_id="explicit-id"),
         )
 
-        assert list(env) == ["PYTHONUNBUFFERED", "CUDA_DEVICE_MAX_CONNECTIONS", "NCCL_NVLS_ENABLE", "MASTER_ADDR"]
+        assert list(env) == [
+            "PYTHONUNBUFFERED",
+            "MILES_UPDATE_SNAPSHOTS",
+            "MILES_SNAPSHOT_RECORD_DIR",
+            "CUDA_DEVICE_MAX_CONNECTIONS",
+            "NCCL_NVLS_ENABLE",
+            "MASTER_ADDR",
+        ]
+
+    def test_generated_run_provenance_reaches_the_worker_environment(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A real generated run ID is passed to workers without changing metadata or backend key order."""
+        monkeypatch.setenv(SNAPSHOT_RECORD_DIR_ENV_VAR, "/snapshot/records")
+        config = command_utils.ExecuteTrainConfig()
+        env = common.train_env_vars(self._request(), {"MASTER_ADDR": "10.0.0.1"}, config=config)
+
+        assert [(value.kind, value.value) for value in read_generated_values()] == [("run_id", config.run_id)]
+        assert json.loads(env[GENERATED_VALUES_ENV_VAR]) == [value.model_dump() for value in read_generated_values()]
+        assert list(env) == [
+            "PYTHONUNBUFFERED",
+            "MILES_UPDATE_SNAPSHOTS",
+            "MILES_SNAPSHOT_RECORD_DIR",
+            GENERATED_VALUES_ENV_VAR,
+            "CUDA_DEVICE_MAX_CONNECTIONS",
+            "MASTER_ADDR",
+        ]
 
     def test_omits_the_connection_limit_for_fsdp(self):
         """Capping the connections breaks FSDP's computation and communication overlap."""

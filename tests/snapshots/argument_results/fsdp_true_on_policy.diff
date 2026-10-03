@@ -1,0 +1,8 @@
+--- fsdp
++++ fsdp_true_on_policy
+@@ -618 +618 @@
+-      enable_deterministic_inference: false
++      enable_deterministic_inference: true
+@@ -1027 +1027 @@
+-  true_on_policy_mode: false
++  true_on_policy_mode: true

@@ -9,6 +9,8 @@ register_cuda_ci(
 )
 
 
+from types import SimpleNamespace
+
 import pytest
 import torch
 from tools.convert_hf_to_mxfp8 import quantize_mxfp8 as tool_quantize_mxfp8
@@ -84,12 +86,21 @@ def _te_mxfp8_reference(weight: torch.Tensor) -> tuple[torch.Tensor, torch.Tenso
     )
 
 
+def _quantizer_args(
+    *, extra_high_precision_layers_megatron: tuple[str, ...] | None = None, **backend_fields: object
+) -> SimpleNamespace:
+    return SimpleNamespace(
+        backend=SimpleNamespace(**backend_fields),
+        extra_high_precision_layers_megatron=extra_high_precision_layers_megatron,
+    )
+
+
 def test_mxfp8_quantize_params_respects_extra_high_precision_layers_megatron():
     weight = torch.randn((4, MXFP8_GROUP_SIZE), dtype=torch.bfloat16)
     converted_named_params = [
         ("model.layers.0.mlp.experts.0.down_proj.weight", weight),
     ]
-    args = type("Args", (), {"extra_high_precision_layers_megatron": ("linear_fc2",)})()
+    args = _quantizer_args(extra_high_precision_layers_megatron=("linear_fc2",))
 
     out = quantize_params_mxfp8(
         args=args,
@@ -107,16 +118,12 @@ def test_mxfp8_quantize_params_respects_first_last_layers_bf16(layer_idx):
     converted_named_params = [
         ("model.layers.0.mlp.experts.0.down_proj.weight", weight),
     ]
-    args = type(
-        "Args",
-        (),
-        {
-            "first_last_layers_bf16": True,
-            "num_layers": 4,
-            "num_layers_at_start_in_bf16": 1,
-            "num_layers_at_end_in_bf16": 1,
-        },
-    )()
+    args = _quantizer_args(
+        first_last_layers_bf16=True,
+        num_layers=4,
+        num_layers_at_start_in_bf16=1,
+        num_layers_at_end_in_bf16=1,
+    )
 
     out = quantize_params_mxfp8(
         args=args,
