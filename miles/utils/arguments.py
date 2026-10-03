@@ -29,6 +29,7 @@ from miles.utils.file_arg_utils import resolve_file_arg
 from miles.utils.ft_utils.health_checker import SimpleHealthCheckerConfig
 from miles.utils.function_registry import load_function
 from miles.utils.hf_utils.config import is_dsa, load_hf_config
+from miles.utils.hub import add_hub_arguments, validate_hub_args
 from miles.utils.logging_utils import configure_logger_raw
 from miles.utils.lora.arguments import add_lora_arguments, validate_lora_args
 from miles.utils.lora.utils import is_lora_enabled
@@ -1511,6 +1512,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             reset_arg(parser, "--save", type=str, default=None)
             reset_arg(parser, "--save-interval", type=int, default=None)
             reset_arg(parser, "--async-save", action="store_true")
+            add_hub_arguments(parser)
             reset_arg(
                 parser,
                 "--no-save-optim",
@@ -3432,6 +3434,8 @@ def miles_validate_args(args):
             f"--eval-sglang-* configures the dedicated eval fleet, which needs --eval-num-gpus > 0. "
             f"Got {sorted(overrides)} with --eval-num-gpus 0."
         )
+
+    validate_hub_args(args)
 
     if args.save_interval is not None:
         assert args.save is not None, "'--save' is required when save_interval is set."

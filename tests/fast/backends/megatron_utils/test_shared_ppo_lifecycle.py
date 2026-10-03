@@ -201,6 +201,7 @@ def test_force_sync_save_overlaps_hf_export_with_async_checkpoint(actor_module, 
         custom_megatron_post_save_hook_path=None,
         debug_rollout_only=False,
         save_hf="/checkpoints/hf/{rollout_id}",
+        push_to_hub=False,
     )
     worker.role = "actor"
     worker._heartbeat = Mock()
@@ -992,3 +993,47 @@ def test_switch_model_rebuilds_the_active_actor_for_main_cast(
     worker._switch_model("actor")
 
     cast_main_to_params.assert_called_once_with()
+
+
+@pytest.mark.parametrize(
+    "role,rank,rollout_id", [("actor", 0, 6), ("actor", 0, 19), ("actor", 1, 19), ("critic", 0, 19)]
+)
+def test_save_model_publishes_only_actor_rank_zero(actor_module, monkeypatch, role, rank, rollout_id):
+    worker = object.__new__(actor_module.MegatronTrainRayActor)
+    worker.args = Namespace(
+        async_save=False,
+        custom_megatron_post_save_hook_path=None,
+        debug_rollout_only=False,
+        save_hf="/checkpoints/hf/{rollout_id}",
+        push_to_hub=True,
+        hub_model_id="user/model",
+        hub_private_repo=True,
+        hub_strategy="end",
+        num_rollout=20,
+    )
+    worker.role = role
+    worker._heartbeat = Mock()
+    worker.model = object()
+    worker.optimizer = object()
+    worker.opt_param_scheduler = object()
+    worker.snapshot_publisher = object()
+    calls = Mock()
+    monkeypatch.setattr(actor_module, "save", calls.save)
+    monkeypatch.setattr(actor_module, "save_hf_model", calls.export)
+    monkeypatch.setattr(actor_module, "push_model_to_hub", calls.publish)
+    monkeypatch.setattr(actor_module.dist, "get_rank", lambda: rank)
+
+    worker.save_model(rollout_id)
+
+    if role == "actor" and rank == 0:
+        calls.publish.assert_called_once_with(
+            checkpoint_dir=f"/checkpoints/hf/{rollout_id}",
+            repo_id="user/model",
+            private=True,
+            strategy="end",
+            rollout_id=rollout_id,
+            is_final=rollout_id == 19,
+        )
+        assert [entry[0] for entry in calls.mock_calls] == ["save", "export", "publish"]
+    else:
+        calls.publish.assert_not_called()
