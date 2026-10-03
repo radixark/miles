@@ -1,8 +1,10 @@
-"""GLM-4.7-Flash with distributed Muon, R3 and DeepEP on both sides, without speculative decoding.
+"""GLM-4.7-Flash in the BSHD layout with distributed Muon, R3 and DeepEP on both sides, without spec.
 
-Colocated on 4 GPUs: Megatron trains at TP2 x CP2 with EP4 over DeepEP, and one BF16 SGLang engine
-runs DP attention (attention TP2 x DP2) with EP4 and DeepEP auto (normal dispatch for prefill,
-low-latency for decode) on the DeepGEMM runner. Dispatch is BF16, not the FP8 that "auto" picks.
+Colocated on 4 GPUs: Megatron trains fixed micro-batches of 2 samples, each padded to the longest
+sample on its data-parallel rank, at TP2 x CP2 with EP4 over DeepEP, so R3 replays several samples
+per micro-batch in Megatron's sequence-first token order. One BF16 SGLang engine runs DP attention
+(attention TP2 x DP2) with EP4 and DeepEP auto (normal dispatch for prefill, low-latency for decode)
+on the DeepGEMM runner. Dispatch is BF16, not the FP8 that "auto" picks.
 """
 
 import os
@@ -28,6 +30,9 @@ CASE = CaseConfig(
     pp_size=1,
     tp_size=2,
     ep_size=4,
+    qkv_format="bshd",
+    # The single data-parallel rank gets 32 samples per step: 16 micro-batches of 2.
+    micro_batch_size=2,
     rollout_num_gpus_per_engine=4,
     # Attention TP2 x DP2; GLM-4.7-Flash's 20 attention heads split over the attention TP.
     sglang_dp_size=2,
