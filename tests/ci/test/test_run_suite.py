@@ -367,7 +367,7 @@ class TestWorkflowScopeSeam:
         gpu_jobs = re.findall(job_id_pattern, gpu_workflow.split("\njobs:\n", 1)[1], re.MULTILINE)
         cpu_jobs = re.findall(job_id_pattern, cpu_workflow.split("\njobs:\n", 1)[1], re.MULTILINE)
         docker_jobs = re.findall(job_id_pattern, docker_workflow.split("\njobs:\n", 1)[1], re.MULTILINE)
-        assert gpu_jobs == ["run"]
+        assert gpu_jobs == ["plan", "run"]
         assert cpu_jobs == ["run-cpu"]
         assert docker_jobs == ["docker-decide", "docker-build"]
         assert "cpu_runner" not in gpu_workflow
@@ -672,6 +672,7 @@ def _run_args(*, hw: str, suite: str, cadence: str, labels: list[str] | None = N
         auto_partition_id=None,
         auto_partition_size=None,
         list_only=False,
+        github_output=None,
         timeout_per_file=1800,
         enable_retry=False,
         retry_timeout_increase=600,
