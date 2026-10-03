@@ -211,9 +211,10 @@ derived refresh. Pause measures the original scheduler flag-to-resume interval;
 it excludes earlier prepare/status handler service and does not quantify serving
 interference. Do not sum nested events or concurrent rank durations.
 
-Each scheduler reads/hashes the immutable owner files, CPU-unwraps only its local
-tensors into pinned buffers retained through commit, and reuses tensor-level HBM
-scratch. The benchmark generates before/after updates, not during preparation;
+Each host reads/hashes the immutable owner files once and CPU-unwraps the union
+of tensors needed by its original ranks into a shared arena. Each scheduler
+registers that arena for pinned transfer and reuses tensor-level HBM scratch;
+the shared storage stays alive while its consumers use it. The benchmark generates before/after updates, not during preparation;
 realized overlap, request latency and production throughput need separate study.
 The harness terminates only its own engine processes, retains partial evidence
 on failure and never releases a devbox allocation.
