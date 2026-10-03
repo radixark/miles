@@ -78,6 +78,7 @@ async def serve(args, *, disposer: Disposer):
         max_tokens_per_datum=max_tokens_per_datum,
         max_tokens_per_sample=max_tokens_per_sample,
         lora_alpha=args.lora_alpha,
+        lora_type=args.lora_type,
         experts_shared_outer_loras=args.experts_shared_outer_loras,
         max_lora_rank=args.lora_rank,
         trains_attn="attn" in args.tinker_lora_groups,

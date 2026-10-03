@@ -38,11 +38,13 @@ class TestLoraConstructorConfig:
             assert adapter.share_expert_adapters is False
             assert adapter.experts_shared_outer_loras is False
 
+    @pytest.mark.parametrize("kind", ["lora", "canonical_lora"])
     def test_multi_adapter_config_preserves_slot_count_and_dropout(
-        self, bridge_constructors: _BridgeConstructors
+        self, kind: str, bridge_constructors: _BridgeConstructors
     ) -> None:
         """Miles forwards slot count and initialization settings to the Multi-LoRA SDK boundary."""
         args = make_trainer_args(
+            lora_type=kind,
             multi_lora_n_adapters=3,
             lora_rank=4,
             lora_alpha=12,
@@ -53,7 +55,11 @@ class TestLoraConstructorConfig:
 
         adapter = create_multi_lora_instance(args, target_modules=["linear_qkv"])
 
-        assert type(adapter) is bridge_constructors.multi_lora
+        expected_type = {
+            "lora": bridge_constructors.multi_lora,
+            "canonical_lora": bridge_constructors.canonical_multi_lora,
+        }[kind]
+        assert type(adapter) is expected_type
         assert adapter.n_adapters == 3
         assert adapter.experts_shared_outer_loras is False
         assert adapter.dim == 4
