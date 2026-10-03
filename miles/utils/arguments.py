@@ -1907,12 +1907,30 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 ),
             )
             parser.add_argument(
+                "--opd-teacher-adapters",
+                type=str,
+                nargs="+",
+                default=None,
+                metavar="NAME=ADAPTER",
+                help=(
+                    "Multi-teacher routing map over LoRA adapters for --opd-type=sglang, e.g. "
+                    "--opd-teacher-adapters math=math_lora code=code_lora. Each ADAPTER is a "
+                    "lora_name the teacher server was launched with (--lora-paths NAME=PATH), so "
+                    "specialist teachers share one server and one frozen base and are selected "
+                    "per request by lora_path. Routes by the same sample.metadata[--opd-teacher-key] "
+                    "name as --opd-teacher-urls, including the reserved 'default' fallback; names "
+                    "present here but not in --opd-teacher-urls are scored at --rm-url. When unset, "
+                    "teachers are scored on their server's base weights (original behavior)."
+                ),
+            )
+            parser.add_argument(
                 "--opd-teacher-key",
                 type=str,
                 default="opd_teacher",
                 help=(
-                    "Sample metadata key holding the teacher name used for --opd-teacher-urls "
-                    "routing. Populated from the dataset's metadata column (see --metadata-key)."
+                    "Sample metadata key holding the teacher name used for --opd-teacher-urls and "
+                    "--opd-teacher-adapters routing. Populated from the dataset's metadata column "
+                    "(see --metadata-key)."
                 ),
             )
             parser.add_argument(
@@ -3400,13 +3418,16 @@ def miles_validate_args(args):
                 "--opd-log-prob-top-k with a student-side strategy needs opd_student_top_logprobs, "
                 "which only the v1 rollout produces; set MILES_USE_LEGACY_ROLLOUT_V1=1"
             )
-        if args.opd_teacher_urls:
+        if args.opd_teacher_urls or args.opd_teacher_adapters:
             if args.opd_type != "sglang":
-                raise ValueError("--opd-teacher-urls is only supported with --opd-type=sglang.")
+                flag = "--opd-teacher-urls" if args.opd_teacher_urls else "--opd-teacher-adapters"
+                raise ValueError(f"{flag} is only supported with --opd-type=sglang.")
             # Local import to keep miles.utils free of rollout imports at module load.
-            from miles.rollout.on_policy_distillation import parse_teacher_urls
+            from miles.rollout.on_policy_distillation import parse_teacher_adapters, parse_teacher_urls
 
-            parse_teacher_urls(args.opd_teacher_urls)  # fail fast on malformed/duplicate entries
+            # Fail fast on malformed/duplicate entries.
+            parse_teacher_urls(args.opd_teacher_urls)
+            parse_teacher_adapters(args.opd_teacher_adapters)
 
         if args.opd_type == "megatron":
             if args.opd_teacher_load is None:
@@ -3435,6 +3456,8 @@ def miles_validate_args(args):
             raise ValueError("--opd-teacher-load is set but --use-opd is not enabled. Please add --use-opd flag.")
         if args.opd_teacher_urls:
             raise ValueError("--opd-teacher-urls is set but --use-opd is not enabled. Please add --use-opd flag.")
+        if args.opd_teacher_adapters:
+            raise ValueError("--opd-teacher-adapters is set but --use-opd is not enabled. Please add --use-opd flag.")
 
     # TODO: refactor
     args.requested_load = args.load
