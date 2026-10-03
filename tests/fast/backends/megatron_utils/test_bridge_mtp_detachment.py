@@ -52,6 +52,8 @@ def runtime_args() -> argparse.Namespace:
         fp8_recipe=None,
         attention_backend="auto",
         moe_token_dispatcher_type="alltoall",
+        moe_router_use_torch_mm=True,
+        moe_router_dtype=None,
     )
 
 
@@ -82,3 +84,21 @@ def test_bridge_mtp_detachment(
 
     assert provider.mtp_detach_heads is expected_detach
     assert provider.mtp_num_layers == 1
+
+
+def test_bridge_router_gemm_precision(
+    apply_bridge_runtime_config: Callable,
+    runtime_args: argparse.Namespace,
+) -> None:
+    # The provider's own fp32 survives an unset arg; an explicit arg overrides it.
+    provider = SimpleNamespace(moe_router_use_torch_mm=False, moe_router_dtype="fp32")
+
+    apply_bridge_runtime_config(provider, runtime_args)
+
+    assert provider.moe_router_use_torch_mm is True
+    assert provider.moe_router_dtype == "fp32"
+
+    runtime_args.moe_router_dtype = "fp64"
+    apply_bridge_runtime_config(provider, runtime_args)
+
+    assert provider.moe_router_dtype == "fp64"
