@@ -52,6 +52,9 @@ setup(
         "mlflow": [
             "mlflow>=2.0",
         ],
+        "trackio": [
+            "trackio>=0.27.0",
+        ],
         # standalone offline serving; the training image already has these via
         # sglang, and polars is a base requirement (used by the collector)
         "dashboard": [
