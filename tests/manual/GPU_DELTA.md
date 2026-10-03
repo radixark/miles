@@ -142,8 +142,12 @@ producer prefixes reuse the existing owner gather.
 
 All seconds use local monotonic clocks. Nested phases are not additive, and no
 metric implies GPU-idle time or an RL throughput improvement. Step attachment
-follows the existing next `log_perf_data` drain, rather than an independent W&B
-logging call.
+follows the existing next actor `log_perf_data` drain, rather than an independent
+W&B logging call. `base_version` and `target_version` identify the completed
+publication: use them to join weight updates rather than assume the logging
+rollout step is the update version, especially with asynchronous training or
+update intervals. The protocol retains the latest completed update until that
+existing drain; it does not create an additional logging event.
 
 ## Persistent fixture
 

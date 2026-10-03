@@ -73,6 +73,7 @@ def test_original_rank_pause_and_creator_only_host_metrics_remain_separate():
     original = copy.deepcopy(activation)
     result = metrics.activation_metrics(activation)
     prefix = "perf/gpu_delta/"
+    assert (result[prefix + "base_version"], result[prefix + "target_version"]) == (0, 1)
     assert result[prefix + "receiver_scheduler_pause_s/p50"] == 2.5
     assert result[prefix + "receiver_reader_fence_s/max"] == 0.1
     assert result[prefix + "creator_host_outer_zstd_decode_s/p50"] == 11

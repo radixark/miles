@@ -95,7 +95,11 @@ def _joined_receipts(activation):
 def activation_metrics(activation):
     """Reduce already-validated RPC evidence; never poll or synchronize devices."""
     rows = list(_joined_receipts(activation))
-    metrics = {_PREFIX + "receiver_ranks": len(rows)}
+    metrics = {
+        _PREFIX + "receiver_ranks": len(rows),
+        _PREFIX + "base_version": rows[0][0]["base_version"],
+        _PREFIX + "target_version": rows[0][0]["target_version"],
+    }
     _distribution(metrics, "receiver_reader_fence_s", [row[1] for row in rows])
     _distribution(metrics, "receiver_scheduler_pause_s", [row[2] for row in rows])
     timings = [row[0]["result"]["timings"] for row in rows]
