@@ -44,16 +44,22 @@ def _build_train_data(slot_datums: list) -> dict:
 
 
 class MilesBackend:
-    def __init__(self, trainer, router_url: str, dp_size: int = 1) -> None:
+    def __init__(self, trainer, router_url: str, dp_size: int = 1, *, full_training: bool = False) -> None:
         self.trainer = trainer
         self.router_url = router_url
         self.dp_size = dp_size
+        self.full_training = full_training
 
     async def trainer_dead(self) -> bool:
         return await self.trainer.has_errored_cell()
 
     async def load_slot(
-        self, slot: int, rank: int, alpha: float, ckpt_path: str | None = None, load_optimizer: bool = True
+        self,
+        slot: int,
+        rank: int | None,
+        alpha: float | None,
+        ckpt_path: str | None = None,
+        load_optimizer: bool = True,
     ) -> dict | None:
         return _slot_failure(
             await self.trainer.load_slot(slot, rank, alpha, ckpt_path=ckpt_path, load_optimizer=load_optimizer)
@@ -76,6 +82,10 @@ class MilesBackend:
         self, method: str, batch_id: int, slot_datums: list, loss_fn: str, loss_fn_config: dict
     ) -> list[dict] | dict:
         train_data = _build_train_data(_pad_to_dp_multiple(slot_datums, self.dp_size))
+        if self.full_training:
+            if any(slot != 0 for slot, _ in slot_datums):
+                raise UserInputError("full training has one model in slot zero")
+            del train_data["adapter_slots"]
         train_data["loss_fn"] = loss_fn
         train_data["loss_fn_config"] = loss_fn_config
         worker_results = await self._call_trainer(method, batch_id, train_data)
@@ -108,7 +118,7 @@ class MilesBackend:
         return _slot_failure(await self.trainer.save_slot(slot=slot, path=path, metadata=metadata))
 
     async def export_slot(
-        self, slot: int, rank: int, alpha: float, path: str, metadata: dict | None = None
+        self, slot: int, rank: int | None, alpha: float | None, path: str, metadata: dict | None = None
     ) -> dict | None:
         return _slot_failure(
             await self.trainer.export_slot(slot=slot, rank=rank, alpha=alpha, path=path, metadata=metadata)
@@ -123,8 +133,12 @@ class MilesBackend:
                 *[
                     post(f"{self.router_url}/generate", _with_sample_seed(request, index))
                     for index in range(payload["num_samples"])
-                ]
+                ],
+                return_exceptions=True,
             )
+            for response in responses:
+                if isinstance(response, BaseException):
+                    raise response
         except httpx.HTTPError as error:
             return {"error": str(error)}
         sequences = [_to_sequence(response) for response in responses]

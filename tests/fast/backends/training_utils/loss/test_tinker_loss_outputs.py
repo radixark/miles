@@ -96,7 +96,10 @@ def test_a_zero_loss_mask_removes_the_datum_from_every_objective(monkeypatch, lo
     ],
     ids=["is", "ppo-default", "ppo-override", "cispo-default", "cispo-override", "dro-default", "dro-override"],
 )
-def test_nonzero_objectives_and_gradients(monkeypatch, recompute, loss_fn, config, token_losses, gradients):
+@pytest.mark.parametrize("multi_lora", [False, True], ids=["full", "lora"])
+def test_nonzero_objectives_and_gradients(
+    monkeypatch, recompute, loss_fn, config, token_losses, gradients, multi_lora
+):
     parallel = SimpleNamespace(cp=SimpleNamespace(size=1), intra_dp=SimpleNamespace(size=1))
     monkeypatch.setattr(loss_module, "get_parallel_state", lambda: parallel)
     monkeypatch.setattr(loss_module, "get_sum_of_sample_mean", lambda *_args, **_kwargs: None)
@@ -107,7 +110,7 @@ def test_nonzero_objectives_and_gradients(monkeypatch, recompute, loss_fn, confi
         recompute_loss_function=recompute,
         use_dynamic_global_batch_size=True,
         global_batch_size=4,
-        multi_lora=True,
+        multi_lora=multi_lora,
     )
     # Both advantage signs cross each clipping boundary; the last two tokens are masked.
     ratios = torch.tensor([0.5, 0.5, 1, 1, 5, 5, 0.5, 5], dtype=torch.float64)

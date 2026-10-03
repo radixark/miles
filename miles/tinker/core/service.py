@@ -133,11 +133,22 @@ class TinkerService:
         base_model = payload["base_model"]
         if base_model != self.config.base_model:
             raise UserInputError(f"this gateway serves {self.config.base_model!r}, not {base_model!r}")
-        lora_config = payload.get("lora_config") or {}
-        validate_model_config(lora_config, self.config)
-        rank = lora_config.get("rank", 32)
-        alpha = self.config.lora_alpha if self.config.lora_alpha is not None else float(2 * rank)
+        parameterization = payload.get("parameterization")
+        expected = "full" if self.config.full_training else "lora"
+        if parameterization is not None and parameterization != {"type": expected}:
+            raise UserInputError(f"this gateway supports {expected!r} parameterization")
+        if self.config.full_training:
+            if payload.get("lora_config") is not None:
+                raise UserInputError("lora_config must be absent for full training")
+            rank, alpha = None, None
+        else:
+            lora_config = payload.get("lora_config") or {}
+            validate_model_config(lora_config, self.config)
+            rank = lora_config.get("rank", 32)
+            alpha = self.config.lora_alpha if self.config.lora_alpha is not None else float(2 * rank)
         if not self.free_slots:
+            if self.config.full_training:
+                raise UserInputError("full training supports one active model per trainer")
             raise UserInputError(f"no free adapter slots (capacity {self.config.n_slots})")
         slot = min(self.free_slots)
         self.free_slots.remove(slot)
@@ -404,7 +415,7 @@ class TinkerService:
         )
         return {
             "base_model": meta["base_model"],
-            "is_lora": True,
+            "is_lora": meta.get("is_lora", True),
             "lora_rank": meta["lora_rank"],
             "train_attn": meta["train_attn"],
             "train_mlp": meta["train_mlp"],
@@ -425,7 +436,13 @@ class TinkerService:
 
     def _new_sampling_session(self, tenant: str, session_id: str, model_path: str | None) -> str:
         if model_path is not None:
-            resolve_sampler_checkpoint(self.config.checkpoint_root, tenant, model_path, self.config.base_model)
+            resolve_sampler_checkpoint(
+                self.config.checkpoint_root,
+                tenant,
+                model_path,
+                self.config.base_model,
+                is_lora=not self.config.full_training,
+            )
         sampling_session_id = f"sampling-{uuid.uuid4().hex}"
         self.sampling_sessions[sampling_session_id] = SamplingSessionRecord(
             tenant=tenant, model_path=model_path, session_id=session_id
@@ -468,7 +485,13 @@ class TinkerService:
                 return request_id, sequence_ids
         validate_sample_payload(payload, self.config)
         lora_name, lora_path = (
-            resolve_sampler_checkpoint(self.config.checkpoint_root, tenant, model_path, self.config.base_model)
+            resolve_sampler_checkpoint(
+                self.config.checkpoint_root,
+                tenant,
+                model_path,
+                self.config.base_model,
+                is_lora=not self.config.full_training,
+            )
             if model_path
             else (None, None)
         )

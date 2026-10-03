@@ -36,7 +36,11 @@ def validate_against_sdk(request_type, payload: dict) -> None:
 
 
 def validate_create_model(payload: dict) -> None:
-    validate_against_sdk(tinker_types.CreateModelRequest, payload)
+    # The SDK has no full-training creation helper. The service validates this
+    # extension against the trainer mode; validate the remaining SDK fields here.
+    validate_against_sdk(
+        tinker_types.CreateModelRequest, {k: v for k, v in payload.items() if k != "parameterization"}
+    )
 
 
 def validate_create_sampling_session(payload: dict) -> None:

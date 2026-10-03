@@ -31,6 +31,7 @@ def build_checkpoint_metadata(record: ModelRecord, config: GatewayConfig) -> dic
         # the digest proves ownership without persisting the bearer credential itself
         "tenant_digest": _tenant_digest(record.tenant),
         "base_model": record.base_model,
+        "is_lora": not config.full_training,
         "lora_rank": record.lora_rank,
         "lora_alpha": record.lora_alpha,
         "train_attn": config.trains_attn,
@@ -53,7 +54,9 @@ def read_checkpoint_metadata(checkpoint_dir: str, tenant: str, shown_path: str) 
     return meta
 
 
-def resolve_sampler_checkpoint(checkpoint_root: str, tenant: str, model_path: str, base_model: str) -> tuple[str, str]:
+def resolve_sampler_checkpoint(
+    checkpoint_root: str, tenant: str, model_path: str, base_model: str, *, is_lora: bool = True
+) -> tuple[str, str]:
     """Return the adapter name and directory so engines can reload evicted snapshots."""
     model_id, kind, name = parse_tinker_path(model_path)
     if kind != "sampler_weights":
@@ -66,6 +69,8 @@ def resolve_sampler_checkpoint(checkpoint_root: str, tenant: str, model_path: st
         raise UserInputError(
             f"checkpoint {model_path!r} uses base_model={meta['base_model']!r}; this server serves {base_model!r}"
         )
+    if meta.get("is_lora", True) != is_lora:
+        raise UserInputError("checkpoint parameterization does not match this gateway")
     return f"{model_id}@{name}", checkpoint_dir
 
 
