@@ -61,7 +61,7 @@ class NvcompCompressor:
         self._compress = self._bind("Async", [pointer, pointer, size, size, pointer, size, pointer, pointer, options, pointer, pointer])
         self._alignments = _Alignments()
         self._check(align(self._options, ctypes.byref(self._alignments)))
-        self._size_cache = {}
+        self._size_cache, self._bound_cache = {}, {}
 
     def _bind(self, suffix, arguments):
         function = getattr(self._library, "nvcompBatched" + self.codec.capitalize() + "Compress" + suffix)
@@ -85,16 +85,30 @@ class NvcompCompressor:
         self._size_cache[key] = result
         return result
 
-    def compress(self, frames: list[torch.Tensor], stream: torch.cuda.Stream) -> CompressionBatch:
+    def compress(self, frames: list[torch.Tensor], stream: torch.cuda.Stream, *, compact_outputs=False) -> CompressionBatch:
         if stream.device != self.device:
             raise ValueError("Compression stream/device mismatch")
         for frame in frames:
             if frame.device != self.device or frame.dtype != torch.uint8 or not frame.is_contiguous() or not 0 < frame.numel() <= 1 << 24 or frame.data_ptr() % self._alignments.input:
                 raise ValueError("nvCOMP frames must be aligned contiguous CUDA uint8, with 1..16 MiB bytes")
         with torch.cuda.device(self.device), torch.cuda.stream(stream):
-            return self._enqueue(frames, stream)
+            return self._enqueue(frames, stream, compact_outputs=compact_outputs)
 
-    def _enqueue(self, frames, stream):
+    def _compact_outputs(self, lengths):
+        offsets, total = [], 0
+        for length in lengths:
+            if length not in self._bound_cache:
+                bound = ctypes.c_size_t()
+                self._check(self._bound(length, self._options, ctypes.byref(bound)))
+                self._bound_cache[length] = bound.value
+            size = self._bound_cache[length]
+            total = (total + self._alignments.output - 1) // self._alignments.output * self._alignments.output
+            offsets.append((total, size))
+            total += size
+        arena = torch.empty(total, dtype=torch.uint8, device=self.device)
+        return arena, [arena[offset : offset + size] for offset, size in offsets]
+
+    def _enqueue(self, frames, stream, *, compact_outputs=False):
         count = len(frames)
         sizes = torch.empty(count, dtype=torch.int64, device=self.device)
         statuses = torch.empty(count, dtype=torch.int32, device=self.device)
@@ -104,8 +118,13 @@ class NvcompCompressor:
         stride, temporary_bytes = self._allocation_sizes(count, max(lengths), sum(lengths))
         # One output allocation avoids per-frame allocator traffic. Rounded
         # strides preserve the independently queried nvCOMP output alignment.
-        output = torch.empty((count, stride), dtype=torch.uint8, device=self.device)
-        outputs = list(output.unbind())
+        if compact_outputs:
+            # Outer chunks vary with tensor compression ratio. Reserving the
+            # maximum bound for every tiny tensor can waste model-sized HBM.
+            output, outputs = self._compact_outputs(lengths)
+        else:
+            output = torch.empty((count, stride), dtype=torch.uint8, device=self.device)
+            outputs = list(output.unbind())
         temporary = torch.empty(temporary_bytes, dtype=torch.uint8, device=self.device)
         if output.data_ptr() % self._alignments.output or temporary.data_ptr() % self._alignments.temp:
             raise RuntimeError("CUDA allocator does not satisfy nvCOMP compression alignment")

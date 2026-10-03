@@ -143,6 +143,7 @@ def _gpu_delta_env():
     return {
         "WEIGHT_DELTA_CODEC": os.environ.get("WEIGHT_DELTA_CODEC", "snappy"),
         "WEIGHT_DELTA_ENCODER": os.environ.get("WEIGHT_DELTA_ENCODER", "gpu"),
+        "WEIGHT_DELTA_SNAPPY_OUTER": os.environ.get("WEIGHT_DELTA_SNAPPY_OUTER", "cpu"),
     }
 
 
@@ -159,8 +160,11 @@ def _assert_gpu_delta_weights_changed(args, version_dir, _rollout_engines):
         return
     delta_env = _gpu_delta_env()
     wrapped = delta_env["WEIGHT_DELTA_CODEC"] == "snappy"
-    expected_protocol = 3 if wrapped else 2
+    gpu_outer = delta_env["WEIGHT_DELTA_SNAPPY_OUTER"] == "gpu"
+    expected_protocol = 4 if gpu_outer else (3 if wrapped else 2)
     expected_profile = f"{delta_env['WEIGHT_DELTA_CODEC']}-independent-1mib{'-zstd' if wrapped else ''}-v1"
+    if gpu_outer:
+        expected_profile = "snappy-independent-1mib-gpu-zstd-v1"
     changed_bytes = []
     for version in range(1, last_version + 1):
         manifest = json.loads((version_dir.parent / f"weight_v{version:06d}/manifest.json").read_text())

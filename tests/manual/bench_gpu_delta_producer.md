@@ -4,7 +4,9 @@ This manual benchmark compares **CPU XOR + Zstd**, **CPU XOR + Snappy**,
 **GPU XOR + Zstd**, and **GPU XOR + Snappy** using the actual Megatron direct
 exporter and GPU-delta publication protocol. Eight controlled arms retain all four
 encoder/codec combinations at 1 MiB framing and add GPU Zstd/Snappy at 64 KiB and 2 MiB.
-All Snappy arms include the mandatory per-tensor CPU Zstd envelope.
+The default eight-arm matrix uses a per-tensor CPU Zstd envelope for Snappy.
+Two explicit additional arms compare CPU versus GPU outer Zstd with the same
+GPU Snappy inner frames: `--arms gpu-snappy-cpuouter gpu-snappy-gpuouter`.
 Use `--arms gpu-snappy` for a focused three-version run of the canonical path;
 a single arm validates its inventory but cannot establish cross-arm equality.
 It runs on eight GPUs with TP1/PP1/CP1/EP8/ETP1 and the
@@ -91,15 +93,34 @@ or fallback is added by this benchmark.
 | `gpu-snappy-64k` | `gpu` | `snappy` | 65,536 | Same GPU encoder, per-instance framing control |
 | `gpu-zstd-2m` | `gpu` | `zstd` | 2,097,152 | Experimental producer-only framing control |
 | `gpu-snappy-2m` | `gpu` | `snappy` | 2,097,152 | Experimental producer-only framing control |
+| `gpu-snappy-cpuouter` | `gpu` | `snappy` | 1,048,576 | Explicit default CPU outer control |
+| `gpu-snappy-gpuouter` | `gpu` | `snappy` | 1,048,576 | Retain compact Snappy HBM, then one owner-wide GPU Zstd call |
 
-The last four rows are benchmark variants, not a new production environment or
+The 64 KiB/2 MiB rows are benchmark variants, not a new production environment or
 CLI knob. Production retains 1 MiB. Each variant owns a separate encoder and
 publication stream; no process-global frame-size monkeypatch can leak into a
 later arm. The publication records its frame profile explicitly:
 `zstd-independent-<frame>-v1` or `snappy-independent-<frame>-zstd-v1`,
 where `<frame>` is `64kib`, `1mib`, or `2mib`; the benchmark checks this
-against the arm. Every Snappy framing variant wraps compressed matrix tensors
-in the CPU outer envelope; direct scalar/vector values have no envelope.
+against the arm. The explicit GPU outer arm freezes
+`WEIGHT_DELTA_SNAPPY_OUTER=gpu` on its protocol and uses protocol 4,
+`snappy-independent-1mib-gpu-zstd-v1`. All other arms freeze the default `cpu`
+outer mode independently, so setup order cannot leak environment values between
+arms. Direct scalar/vector values have no envelope in either mode.
+
+GPU outer Zstd waits until every bounded inner Snappy batch completes, retaining
+only compact aligned Snappy arenas in HBM. It compresses all tensor-boundary
+outer chunks together, reads back sizes/statuses once, packs final bytes once,
+and performs one pinned D2H. The CPU hashes/writes only these final wire bytes.
+This removes intermediate Snappy D2H and the large Snappy host slab, while adding
+GPU Zstd work and retained Snappy HBM. `outer_gpu_wall_s`, metadata/payload waits,
+optional CUDA phases, `encoded_d2h_bytes`, and final wire bytes expose that tradeoff.
+The isolated benchmark resets allocator peak counters after its existing pre-arm
+fence and records per-rank before/after/peak allocated and reserved bytes, with
+no extra synchronization or OOM fallback. These counters include export and
+compression, while `resident_snappy_hbm_bytes` describes retained inner storage.
+These are nested spans, not quantities to sum into a total. The benchmark keeps
+its existing exact cross-arm canonical-target comparison outside timed spans.
 
 **Receiver compatibility:** the paired SGLang receiver currently admits at most
 1 MiB decoded frames. The 2 MiB arms are producer-only experiments and their

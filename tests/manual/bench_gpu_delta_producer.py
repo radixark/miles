@@ -32,8 +32,10 @@ ARMS = (
     ("gpu-snappy-64k", "gpu", "snappy", 1 << 16),
     ("gpu-zstd-2m", "gpu", "zstd", 1 << 21),
     ("gpu-snappy-2m", "gpu", "snappy", 1 << 21),
+    ("gpu-snappy-cpuouter", "gpu", "snappy", 1 << 20),
+    ("gpu-snappy-gpuouter", "gpu", "snappy", 1 << 20),
 )
-DEFAULT_ARMS = [arm[0] for arm in ARMS]
+DEFAULT_ARMS = [arm[0] for arm in ARMS[:8]]
 NVFP4_ENV = {
     "SGLANG_NVFP4_CKPT_FP8_GEMM_IN_ATTN": "0",
     "OPEN_TRAINING_NVFP4_FAKE_QAT_FLAG": "1",
@@ -300,6 +302,7 @@ def _make_protocol(args, plan, arm, output):
     name, encoder, codec, _frame_bytes = arm
     os.environ["WEIGHT_DELTA_ENCODER"] = encoder
     os.environ["WEIGHT_DELTA_CODEC"] = codec
+    os.environ["WEIGHT_DELTA_SNAPPY_OUTER"] = "gpu" if name == "gpu-snappy-gpuouter" else "cpu"
     arm_args = copy.copy(args)
     arm_args.update_weight_disk_dir = str(output / name / "publications")
     return ProducerOnlyProtocol(arm_args)
@@ -320,7 +323,8 @@ def _setup_protocols(args, plan, iterator, weights, output, arms):
 
                 # Benchmark-only per-instance variant; production keeps 1 MiB.
                 protocol._gpu_encoder = GpuBatchEncoder(
-                    arm[2], torch.device("cuda", torch.cuda.current_device()), frame_bytes=arm[3]
+                    arm[2], torch.device("cuda", torch.cuda.current_device()), frame_bytes=arm[3],
+                    outer_backend=protocol.snappy_outer,
                 )
             except Exception as caught:
                 error = caught
@@ -354,7 +358,7 @@ def _perturb(weights, *, fraction, relative_scale, version):
     return {"selected_elements": selected, "eligible_elements": eligible, "stride": stride}
 
 
-def _verify_publication(publication, plan, *, codec, frame_bytes):
+def _verify_publication(publication, plan, *, codec, frame_bytes, outer_backend="cpu"):
     path = Path(publication["manifest_path"])
     raw = path.read_bytes()
     if hashlib.sha256(raw).hexdigest() != publication["manifest_sha256"]:
@@ -362,9 +366,11 @@ def _verify_publication(publication, plan, *, codec, frame_bytes):
     manifest = json.loads(raw)
     frame_profile = {1 << 16: "64kib", 1 << 20: "1mib", 1 << 21: "2mib"}[frame_bytes]
     profile = f"{codec}-independent-{frame_profile}{'-zstd' if codec == 'snappy' else ''}-v1"
+    if outer_backend == "gpu":
+        profile = f"snappy-independent-{frame_profile}-gpu-zstd-v1"
     if manifest["codec_profile"] != profile:
         raise ValueError("Sealed publication frame profile differs from the benchmark arm")
-    if manifest["protocol_version"] != (3 if codec == "snappy" else 2):
+    if manifest["protocol_version"] != (4 if outer_backend == "gpu" else (3 if codec == "snappy" else 2)):
         raise ValueError("Sealed publication protocol differs from the benchmark arm")
     if {tensor["name"] for tensor in manifest["tensors"]} != {tensor["name"] for tensor in plan}:
         raise ValueError("Sealed publication does not cover the exact mutable exporter inventory")
@@ -399,6 +405,10 @@ def _run_arm(protocol, iterator, weights, version, plan):
     iterator.reset_timing()
     dist.barrier()
     torch.cuda.synchronize()
+    # The existing isolated benchmark fence brackets allocator accounting; no
+    # additional CUDA fence or production allocator policy is introduced.
+    memory_before = dict(allocated=torch.cuda.memory_allocated(), reserved=torch.cuda.memory_reserved())
+    torch.cuda.reset_peak_memory_stats()
     started = time.monotonic()
     if not protocol.begin_sync(version, lambda **kw: iterator.iter_hf_weights(weights, **kw)):
         raise RuntimeError("Measured update unexpectedly performed baseline capture")
@@ -427,13 +437,22 @@ def _run_arm(protocol, iterator, weights, version, plan):
         "conversion_cuda_ms": conversion_cuda_ms,
         "converted_units": iterator.converted_units,
         "conversion_event_count": 2 * len(iterator.conversion_events),
+        "gpu_memory_bytes": {
+            "before_allocated": memory_before["allocated"], "before_reserved": memory_before["reserved"],
+            "after_allocated": torch.cuda.memory_allocated(), "after_reserved": torch.cuda.memory_reserved(),
+            "peak_allocated": torch.cuda.max_memory_allocated(), "peak_reserved": torch.cuda.max_memory_reserved(),
+        },
     }
     error, sizes = None, None
     if dist.get_rank() == 0:
         try:
             frame_bytes = protocol._gpu_encoder.frame_bytes if protocol.encoder_backend == "gpu" else 1 << 20
             sizes = _verify_publication(
-                publication, plan, codec=protocol.codec, frame_bytes=frame_bytes,
+                publication,
+                plan,
+                codec=protocol.codec,
+                frame_bytes=frame_bytes,
+                outer_backend=protocol.snappy_outer,
             )
         except Exception as caught:
             error = caught
@@ -575,7 +594,7 @@ def run(options):
             "timing": options.timing,
             "arms": [arm[0] for arm in arms],
             "arm_configs": {
-                name: {"encoder": encoder, "codec": codec, "frame_bytes": frame_bytes}
+                name: {"encoder": encoder, "codec": codec, "frame_bytes": frame_bytes, "snappy_outer": protocols[name].snappy_outer}
                 for name, encoder, codec, frame_bytes in arms
             },
             "receiver_compatibility": {
@@ -585,6 +604,7 @@ def run(options):
             "producer_pipelines": {
                 "cpu": "export-overlapped-cpu-workers-v1",
                 "gpu": "pinned-snapshot-bulk-gpu-v1",
+                "gpu_outer": "retain-compact-snappy-hbm-then-owner-wide-zstd-v1",
             },
             "gpu_batch_target_bytes": args.update_weight_buffer_size,
             "gpu_batch_target_bytes_by_arm": {

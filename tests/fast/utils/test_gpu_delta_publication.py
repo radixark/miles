@@ -3,6 +3,7 @@
 import hashlib
 import json
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -467,3 +468,83 @@ def test_cpu_snappy_uses_same_mandatory_envelope_as_preencoded_frames(tmp_path):
     np.testing.assert_array_equal(base, np.zeros_like(base))
     assert cpu.outer_metrics["outer_streamed_tensors"] == 1
     assert cpu.outer_metrics["outer_compress_s"] > 0
+
+
+def test_gpu_outer_writer_keeps_natural_tensor_frames_and_hashes_only_wire(tmp_path):
+    writer = gpu_delta_publication.PublicationWriter(
+        tmp_path,
+        stream_id="s",
+        base_version=0,
+        target_version=1,
+        plan_digest="b" * 64,
+        codec="snappy",
+        outer_backend="gpu",
+    )
+    base = np.zeros((1024, 1024), dtype=np.uint8)
+    target = base.copy()
+    target[::19, ::31] = 7
+    entry, payloads = gpu_delta_publication.encode_tensor("w", base, target, dtype="U8", shape=list(base.shape), codec="snappy")
+    inner = bytearray()
+    frames = []
+    for frame, payload in zip(entry["frames"], payloads, strict=True):
+        inner.extend(bytes((-len(inner)) % 16))
+        frame = dict(frame, encoded_offset=len(inner))
+        del frame["encoded_sha256"]
+        frames.append(frame)
+        inner.extend(payload)
+    # CPU Zstd is only a wire-contract fixture. Native tests exercise GPU output.
+    encoded = zstandard.ZstdCompressor(level=1).compress(inner)
+    outer = dict(codec="zstd", encoded_bytes=len(encoded), decoded_bytes=len(inner), frames=[dict(encoded_offset=0, encoded_bytes=len(encoded), decoded_offset=0, decoded_bytes=len(inner))])
+    published = writer.add_gpu_outer_tensor("w", frames, encoded, outer, changed_bytes=entry["changed_bytes"], dtype="U8", shape=list(base.shape))
+    writer.add_gpu_outer_tensor("unchanged", [], b"", None, changed_bytes=0, dtype="U8", shape=[5, 6])
+    writer.add_raw_tensor("scale", b"a", b"b", dtype="U8", shape=[])
+    descriptor = writer.finish()
+    manifest = json.loads(Path(descriptor["manifest_path"]).read_bytes())
+    assert manifest["protocol_version"] == 4
+    assert manifest["codec_profile"] == "snappy-independent-1mib-gpu-zstd-v1"
+    assert "encoded_sha256" not in published["frames"][0]
+    assert writer.outer_metrics["inner_hash_s"] == writer.outer_metrics["outer_compress_s"] == 0
+    assert writer.outer_metrics["outer_output_bytes"] == len(encoded)
+    file = manifest["files"][0]
+    data = (tmp_path / file["name"]).read_bytes()
+    assert hashlib.sha256(data).hexdigest() == file["sha256"]
+    assert zstandard.ZstdDecompressor().decompress(data[: len(encoded)]) == bytes(inner)
+
+
+@pytest.mark.parametrize("mutation", ["chunk-gap", "inner-hash", "wrong-outer-size", "empty-with-changes", "wrong-inner-size"])
+def test_gpu_outer_writer_rejects_malformed_metadata_before_file_write(tmp_path, mutation):
+    writer = gpu_delta_publication.PublicationWriter(
+        tmp_path,
+        stream_id="s",
+        base_version=0,
+        target_version=1,
+        plan_digest="b" * 64,
+        codec="snappy",
+        outer_backend="gpu",
+    )
+    frames = [dict(decoded_offset=0, decoded_bytes=8, encoded_offset=0, encoded_bytes=8, codec="none")]
+    payload = zstandard.ZstdCompressor().compress(b"abcdefgh")
+    outer = dict(codec="zstd", encoded_bytes=len(payload), decoded_bytes=8, frames=[dict(encoded_offset=0, encoded_bytes=len(payload), decoded_offset=0, decoded_bytes=8)])
+    if mutation == "chunk-gap":
+        outer["frames"][0]["decoded_offset"] = 1
+    elif mutation == "inner-hash":
+        frames[0]["encoded_sha256"] = "a" * 64
+    elif mutation == "wrong-outer-size":
+        outer["encoded_bytes"] += 1
+    elif mutation == "empty-with-changes":
+        frames, payload, outer = [], b"", None
+    else:
+        frames[0]["encoded_bytes"] -= 1
+    with pytest.raises(ValueError):
+        writer.add_gpu_outer_tensor("w", frames, payload, outer, changed_bytes=8, dtype="U8", shape=[2, 4])
+    assert writer._file.tell() == 0
+    writer.close()
+
+
+@pytest.mark.parametrize("outer,codec,encoder", [("bad", "snappy", "gpu"), ("gpu", "zstd", "gpu"), ("gpu", "snappy", "cpu")])
+def test_gpu_outer_env_rejects_incompatible_launch_profiles(monkeypatch, outer, codec, encoder):
+    monkeypatch.setenv("WEIGHT_DELTA_SNAPPY_OUTER", outer)
+    monkeypatch.setenv("WEIGHT_DELTA_CODEC", codec)
+    monkeypatch.setenv("WEIGHT_DELTA_ENCODER", encoder)
+    with pytest.raises(ValueError):
+        gpu_delta_publication.settings_from_env()
