@@ -21,7 +21,7 @@ DSA_ARGS = "--megatron-to-hf-mode raw --dsa-impl megatron --dsa-kernel-backend c
 NUM_GPUS = 8
 ACTOR_NUM_GPUS = 4
 ROLLOUT_NUM_GPUS = 4
-ROLLOUT_GPUS_PER_ENGINE = 2
+ROLLOUT_GPUS_PER_ENGINE = 4
 RUN_ID = command_utils.create_run_id()
 
 MODEL_DIR = "/root/models"
@@ -37,7 +37,12 @@ EXTRA_HIGH_PRECISION_LAYERS_MEGATRON = (
 NVFP4_ENV = {
     "OPEN_TRAINING_NVFP4_FAKE_QAT_FLAG": "1",
     "SGLANG_FLASHINFER_CUTEDSL_NVFP4_W4A16": "1",
+    "SGLANG_FLASHINFER_NVFP4_PER_TOKEN_ACTIVATION": "0",
+    "SGLANG_MOE_NVFP4_DISPATCH": "0",
     "SGLANG_FLASHINFER_MOE_FUSED_FINALIZE": "0",
+    # Keep BF16 combine and external FP32 FC2 reduction for RL numerics.
+    "SGLANG_FLASHINFER_MEGAMOE_IN_KERNEL_FC2_REDUCE": "0",
+    "SGLANG_FLASHINFER_MEGAMOE_COMBINE_DTYPE": "bf16",
     "NVTE_NVFP4_DISABLE_2D_QUANTIZATION": "1",
     "NVTE_NVFP4_DISABLE_RHT": "1",
     "NVTE_NVFP4_DISABLE_STOCHASTIC_ROUNDING": "1",
@@ -206,16 +211,17 @@ def execute():
 
     sglang_args = (
         "--sglang-mem-fraction-static 0.7 "
+        "--sglang-dtype bfloat16 "
         "--sglang-enable-dp-attention "
-        "--sglang-attention-backend nsa "
+        "--sglang-attention-backend dsa "
         "--sglang-dsa-decode-backend flashmla_kv "
         "--sglang-dsa-prefill-backend flashmla_sparse "
         "--sglang-dsa-topk-backend flashinfer "
         "--sglang-kv-cache-dtype fp8_e4m3 "
         "--sglang-page-size 64 "
         f"--rollout-num-gpus-per-engine {ROLLOUT_GPUS_PER_ENGINE} "
-        "--sglang-moe-runner-backend flashinfer_cutedsl "
-        "--sglang-moe-a2a-backend none "
+        "--sglang-moe-runner-backend flashinfer_megamoe "
+        "--sglang-moe-a2a-backend flashinfer_megamoe "
         f"--sglang-ep-size {ROLLOUT_GPUS_PER_ENGINE} "
         f"--sglang-dp-size {ROLLOUT_GPUS_PER_ENGINE} "
         "--sglang-moe-dense-tp-size 1 "
