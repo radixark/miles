@@ -1,9 +1,9 @@
 ---
 title: "Score Centering"
-description: "Center off-policy policy gradients using the sampler's top-k probabilities, with optional TIS or MIS weights."
+description: "Center off-policy policy gradients using rollout candidate probabilities, with optional TIS or MIS weights."
 # Generated from examples/infra_features/score_centering/README.md by scripts/tools/sync_example_docs.py. Edit that README, not this file.
 ---
-Correct off-policy score drift using the sampler's top-k probabilities, with optional truncated or masked importance weights.
+Correct off-policy score drift using probabilities recorded during rollout, with optional truncated or masked importance weights.
 
 This implements [Score Centering Stabilizes Off-policy Reinforcement Learning](https://arxiv.org/abs/2609.20807), including the efficient top-k approximation in Appendix A.
 
@@ -24,7 +24,7 @@ Add these arguments to an existing text-only GRPO training recipe:
 --calculate-per-token-loss
 ```
 
-Unfiltered session-server rollouts with more than 20 candidates, and filtered rollouts, need a compatible SGLang router build; see [Rollout and data contract](#rollout-and-data-contract).
+Use the SGLang router from `sgl-router-for-miles` with [#21](https://github.com/radixark/sgl-router-for-miles/pull/21) included. It supports the 128-candidate recipe above without `--use-miles-router`; see [Rollout and data contract](#rollout-and-data-contract) for the request limits and installed-build check.
 
 Keep reward mean subtraction enabled. Disabling standard-deviation normalization gives the paper's group-centered rewards. This is a separate REINFORCE-style loss: PPO clipping parameters do not apply. Existing batch size and update scheduling still control how many updates consume a rollout batch; choose them explicitly when reproducing an experiment.
 
@@ -52,20 +52,30 @@ loss  = -A * (stop_gradient(f(p[token] / q[token])) * log(p[token])
 
 Outside `H`, the approximation models `q` as `rho * p`. The sampled token always uses its recorded `q[token]`, including when it is outside `H`. All weights and correction coefficients are detached. Full-distribution centering cancels the expected constant-reward gradient; the top-k version approximates the true tail and does not guarantee exact cancellation for an arbitrary tail.
 
-`--rollout-top-logprobs-num K` plays a different role in the two sampling modes:
+The sampling filter and candidate recording width are separate settings:
 
-- **Unfiltered sampling** (`--rollout-top-p 1.0 --rollout-top-k -1`): Miles automatically uses `selected` mode. The sampler draws from the full vocabulary, so Miles records only its top `K` tokens as `H` and the tail model covers the rest. `K` is a real truncation and must be set; a larger `K` leaves less to the tail model.
-- **Filtered sampling** (top-p/top-k): Miles automatically uses `support` mode when candidate recording is enabled. The sampler draws only from the realized support, and Miles records that whole support with its post-filter probabilities. `H` is then the full sampling distribution and nothing is approximated. `K` only sizes the arrays: it must be at least `--rollout-top-k` and hold the realized support, which cutoff ties can make larger; a larger support fails validation. The trainer renormalizes its log probabilities over the same support.
+| Setting | Effect |
+| --- | --- |
+| `--rollout-top-k` | Filters the distribution used to generate tokens; `-1` disables top-k filtering. `--rollout-top-p` controls top-p filtering separately. |
+| `--rollout-top-logprobs-num K` | Sets the width of the recorded candidate arrays without changing sampling. The default `0` disables candidate recording; score centering requires a positive value. |
 
-SGLang reports three kinds of log probability:
+`K` plays a different role in the two sampling modes:
 
-| SGLang field | Distribution | Filtered | Sums to 1 on the support |
-| --- | --- | --- | --- |
-| `output_token_sampling_logprobs` (selected or support mode) | `q'`: renormalized after top-k/top-p filtering | yes | yes |
-| `output_token_logprobs`, `output_top_logprobs` | `p_T = softmax(logits / T)` over the full vocabulary | no | no, less than 1 under filtering |
-| `output_token_logprobs`, `output_top_logprobs` with `SGLANG_RETURN_ORIGINAL_LOGPROB=1` | `log_softmax(logits)`, without the temperature | no | — |
+- **Unfiltered sampling** (`--rollout-top-p 1.0 --rollout-top-k -1`): Miles derives `selected` mode and records up to the top `K` rollout tokens as `H`. Sampling still uses the full vocabulary; `K` truncates only the stored candidates. The tail model covers the remaining probability mass, and the sampled token may lie outside `H`.
+- **Filtered sampling** (top-p/top-k): Miles derives `support` mode when candidate recording is enabled and records every token in the realized support `H`, with its post-filter probability. The trainer normalizes over that same fixed support, so `p` in the loss is the support-conditioned policy `p(. | H)`. Centering covers this conditional distribution without a missing-support tail; it does not recover the full-vocabulary trainer objective.
 
-The first row is the sampler under filtering and the second the sampler without filtering. Miles-managed rollout workers set `SGLANG_RETURN_ORIGINAL_LOGPROB=0`, so the third row does not occur. Each configuration reads:
+For filtered runs, `K` is storage capacity: it must be at least the configured and per-request `top_k` and fit every realized support. Cutoff ties can retain more than `top_k` tokens. The support must fit both `K` and SGLang's `--sglang-sampling-mask-max-tokens`; exceeding either fails instead of silently truncating the support. Increasing `K` alone neither expands the sampling support nor improves an already complete support sum.
+
+SGLang's logprob fields differ in both distribution and returned shape:
+
+| SGLang field | Returned values per generated token | Distribution |
+| --- | --- | --- |
+| `output_token_sampling_logprobs`, `selected` mode | One sampled-token scalar | Post-filter, support-normalized sampler |
+| `output_token_sampling_logprobs`, `support` mode | A list aligned with `output_token_sampling_mask` | The complete post-filter distribution; exponentiated entries sum to one |
+| `output_token_logprobs`, `output_top_logprobs` with `SGLANG_RETURN_ORIGINAL_LOGPROB=0` | Sampled-token logprob and requested top-candidate entries | `log_softmax(rollout_logits / T)` over the full vocabulary, before top-k/top-p filtering |
+| `output_token_logprobs`, `output_top_logprobs` with `SGLANG_RETURN_ORIGINAL_LOGPROB=1` | Same shapes as above | `log_softmax(rollout_logits)`, before temperature and filtering |
+
+Miles-managed rollout workers set `SGLANG_RETURN_ORIGINAL_LOGPROB=0`. A sampled-token scalar or a top-`K` subset does not describe the entire distribution; only the complete support row provides every post-filter probability. Each configuration reads:
 
 | Configuration | Sampling-support replay (`append_sampling_metadata`) | Candidates (`append_rollout_topk_logprobs`) | SGLang source |
 | --- | --- | --- | --- |
@@ -85,7 +95,13 @@ Native SGLang generation, the legacy rollout path, and both session-server versi
 
 Evaluation requests skip this collection and may use independent sampling settings, including greedy decoding. The built-in agentic producer marks evaluation sessions when creating them; custom session clients should create them with `POST /sessions` with JSON body `{"evaluation": true}`.
 
-Unfiltered session rollouts with more than 20 candidates need an SGLang router build that accepts the requested OpenAI `top_logprobs` value and preserves `input_ids` and `return_meta_info`. Older builds cap `top_logprobs` at 20. Verify a chat request through the installed router before launching; for `--rollout-top-logprobs-num 128`, confirm that 128 candidate log probabilities reach the session server. Native `/generate` requests use `top_logprobs_num` and do not share that chat validation limit. Filtered rollouts request support probabilities through `sampling_logprobs_mode` instead of `top_logprobs`, so that cap does not apply, but the router must forward `sampling_logprobs_mode` on chat and `/generate` requests.
+The Miles SGLang router fork includes the required protocol fields at [commit `df2c790`](https://github.com/radixark/sgl-router-for-miles/commit/df2c790d70179995adc37af4f10bc4e118c30a1e) (#21), or a descendant containing it. Its typed chat requests preserve `input_ids`, `return_meta_info`, `return_sampling_mask`, and `sampling_logprobs_mode`.
+
+- **Unfiltered sessions:** Miles sends `logprobs=true` and `top_logprobs=K`. This fork accepts `top_logprobs` from 0 through 128, so score-centering sessions can use `1 <= K <= 128`; values above 128 are still rejected.
+- **Unfiltered native `/generate`:** Miles sends `top_logprobs_num=K`. This field is forwarded independently of the chat validator; SGLang backend limits still apply.
+- **Filtered chat and `/generate`:** Miles sends `return_sampling_mask=true` and `sampling_logprobs_mode="support"`, omitting `top_logprobs` and `top_logprobs_num`. The fork forwards these fields on both endpoints. The chat `top_logprobs` cap does not limit support-mode arrays; the support capacities above apply.
+
+Older router builds can reject chat requests above 20 candidates or drop `sampling_logprobs_mode`. For prebuilt images or independently installed routers, run the unfiltered protocol probe below through the router URL to verify the requested candidate count. Check filtered requests separately for complete, aligned support probabilities on both endpoints. A source revision alone does not identify the installed wheel's behavior.
 
 Unused candidate slots and non-trained observation rows contain token ID `-1` and log probability `-inf`. Tool-observation masks, multi-turn merging, retries, trailing-token trimming, and truncation preserve row alignment. Session serialization retains both arrays. For score centering in support mode, training batches share the recorded support IDs when every sample has exactly the same candidate order and prefix padding. A per-row candidate count preserves observation rows and masked generated rows; any mismatch keeps the original arrays for the whole batch. The trainer reconstructs only its context-parallel rows. The source Samples and session payloads still retain both representations.
 
@@ -125,7 +141,10 @@ For a real SGLang server, also run the opt-in protocol probe:
 MILES_LIVE_SCORE_CENTERING_ENDPOINT=http://127.0.0.1:30000 \
 MILES_LIVE_SCORE_CENTERING_MODEL=/path/to/model \
 MILES_LIVE_SCORE_CENTERING_SERVED_MODEL=your-served-model \
+MILES_LIVE_SCORE_CENTERING_TOP_K=128 \
 python -m pytest --confcutdir=tests/manual tests/manual/test_score_centering_live.py
 ```
 
-Set `SGLANG_RETURN_ORIGINAL_LOGPROB=0` on the server before starting it. The probe checks native and OpenAI response metadata using the production candidate collector and validator, and checks temperature scaling at 0.7, 1.0 and 1.3. It warms the shared prompt first so that cached and uncached prefills do not confound the temperature comparison. Set `MILES_LIVE_SCORE_CENTERING_ARTIFACT_DIR` to keep the raw responses.
+Set `SGLANG_RETURN_ORIGINAL_LOGPROB=0` on the server before starting it. The probe checks unfiltered native and OpenAI response metadata using the production candidate collector and validator, and checks temperature scaling at 0.7, 1.0 and 1.3. `MILES_LIVE_SCORE_CENTERING_TOP_K` sets the recorded candidate count (default 128), not a sampling filter. The probe does not exercise filtered support-mode requests.
+
+It warms the shared prompt first so that cached and uncached prefills do not confound the temperature comparison. Set `MILES_LIVE_SCORE_CENTERING_ARTIFACT_DIR` to keep the raw responses.
