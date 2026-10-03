@@ -224,8 +224,9 @@ def load_lora_adapter(
     optimizer: Any | None = None,
     opt_param_scheduler: Any | None = None,
     load_optimizer: bool = True,
+    resume: bool = False,
 ) -> tuple[bool, int | None, bool]:
-    """Restore native adapter shards and optional optimizer/scheduler state.
+    """Restore native adapter shards, plus the saved iteration and optimizer/scheduler state when ``resume`` is set.
 
     HF adapters cannot be loaded into Bridge models through this path.
     """
@@ -269,6 +270,8 @@ def load_lora_adapter(
             param.data.copy_(state_dict[name].to(device=param.device))
         logger.info(f"Loaded {len(adapter_params)} adapter tensors from Megatron-native checkpoint: {native_path}")
 
+        if not resume:
+            return True, None, False
         iteration, optimizer_restored = _load_training_state(
             adapter_dir, optimizer, opt_param_scheduler, load_optimizer
         )
@@ -299,7 +302,7 @@ def _load_training_state(
     rank = dist.get_rank() if dist.is_initialized() else 0
     state_path = adapter_dir / f"training_state_rank{rank}.pt"
     if not state_path.exists():
-        return None, False
+        raise FileNotFoundError(f"A LoRA resume needs the training state saved with the adapter: {state_path}")
 
     # Optimizer state dicts may contain non-tensor objects (e.g. step counts,
     # param group metadata), so full unpickling is required here.
