@@ -52,6 +52,7 @@ def runtime_args() -> argparse.Namespace:
         fp8_recipe=None,
         attention_backend="auto",
         moe_token_dispatcher_type="alltoall",
+        mtp_loss_scaling_factor=0.2,
     )
 
 
@@ -76,9 +77,14 @@ def test_bridge_mtp_detachment(
     # A missing flag covers callers that only register Megatron's arguments.
     if enabled is not None:
         runtime_args.enable_mtp_training = enabled
-    provider = SimpleNamespace(mtp_num_layers=1, mtp_detach_heads=initial_detach)
+    provider = SimpleNamespace(mtp_num_layers=1, mtp_detach_heads=initial_detach, mtp_loss_scaling_factor=0.1)
 
     apply_bridge_runtime_config(provider, runtime_args)
 
     assert provider.mtp_detach_heads is expected_detach
-    assert provider.mtp_num_layers == 1
+    # Megatron backprops the MTP loss whenever the block exists, so it must only be built
+    # when MTP training is requested.
+    assert provider.mtp_num_layers == (1 if enabled else None)
+    if enabled:
+        # --mtp-loss-scaling-factor must win over the bridge's per-model default.
+        assert provider.mtp_loss_scaling_factor == runtime_args.mtp_loss_scaling_factor
