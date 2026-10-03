@@ -75,7 +75,7 @@ class WeightTransferProtocol(ABC):
 
 def get_weight_transfer_protocol(args: Namespace) -> WeightTransferProtocol:
     mode = getattr(args, "update_weight_transfer_mode", "broadcast")
-    if mode not in ("broadcast", "broadcast_packed", "p2p", "disk-delta"):
+    if mode not in ("broadcast", "broadcast_packed", "p2p", "disk-delta", "gpu-delta"):
         raise ValueError(f"Unknown --update-weight-transfer-mode {mode!r}")
     if mode == "broadcast_packed" and (getattr(args, "train_backend", None) != "megatron" or args.colocate):
         raise ValueError("broadcast_packed requires Megatron non-colocated weight transfer")

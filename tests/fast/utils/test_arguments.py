@@ -2928,6 +2928,17 @@ class TestWeightTransferModeSelection:
         args = self._parse(["--update-weight-transfer-mode", "broadcast_packed"])
         assert args.update_weight_transfer_mode == "broadcast_packed"
 
+    def test_gpu_delta_reaches_its_launch_validation(self):
+        args = self._parse(["--update-weight-transfer-mode", "gpu-delta"])
+        # Stop at the next independent validator: the complete model launch
+        # environment is not needed to catch a rejected transfer-mode admission.
+        class Admitted(Exception):
+            pass
+
+        with patch("miles.utils.arguments.validate_dashboard_args", side_effect=Admitted):
+            with pytest.raises(Admitted):
+                miles_validate_args(args)
+
     def test_unknown_mode_is_rejected(self):
         with pytest.raises(SystemExit):
             self._parse(["--update-weight-transfer-mode", "typo"])

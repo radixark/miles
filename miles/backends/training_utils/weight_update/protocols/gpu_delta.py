@@ -17,7 +17,7 @@ from pathlib import Path
 import torch
 import torch.distributed as dist
 
-from miles.backends.training_utils.weight_update import gpu_delta_session
+from miles.backends.training_utils.weight_update import gpu_delta_metrics, gpu_delta_session
 from miles.backends.training_utils.weight_update.protocol import WeightTransferProtocol
 from miles.backends.training_utils.weight_update.protocols.delta import _safetensors_dtype
 from miles.backends.training_utils.weight_update.session import set_weight_version
@@ -453,6 +453,9 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
                     "raw_tensor_count", "raw_changed_tensors", "raw_bytes",
                 )
             }
+            descriptor["producer_summary_metrics"] = gpu_delta_metrics.producer_metrics(
+                [owner["producer_metrics"] for owner in shards]
+            )
             return descriptor
 
         publication = _on_root(seal)
@@ -471,11 +474,10 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
 
     def finalize(self, weight_version):
         publication = self.publish(weight_version)
-        _on_root(
-            lambda: async_utils.run(
-                gpu_delta_session.activate_publication(self.rollout_engines, self._cohort, publication)
-            ),
-            broadcast_value=False,
+        activation = _on_root(
+            lambda: gpu_delta_metrics.activation_metrics(
+                async_utils.run(gpu_delta_session.activate_publication(self.rollout_engines, self._cohort, publication))
+            )
         )
         self.commit_pending_baseline()
         counts = publication["summary_counts"]
@@ -484,8 +486,10 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
         )
         elapsed = time.monotonic() - self._started
         # The metrics logger can live on the last PP stage instead of global
-        # rank 0. Broadcast only these four scalars, not full owner diagnostics.
+        # rank 0. Reuse the existing broadcasts for compact summaries, not receipts.
         self.update_weight_metrics = {
+            **publication["producer_summary_metrics"],
+            **activation,
             "perf/update_weights_density": changed / max(total, 1),
             "perf/update_weights_wire_bytes": wire,
             "perf/update_weights_gpu_delta_s": elapsed,
@@ -501,6 +505,14 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
                 elapsed,
                 publication["manifest_sha256"],
             )
+
+    def after_engines_resumed(self):
+        # The updater has completed its existing final trainer barrier. This is
+        # one logging trainer's interval, not an all-rank min/max or GPU-idle time.
+        self.update_weight_metrics.update({
+            "perf/gpu_delta/trainer_logging_rank": dist.get_rank(),
+            "perf/gpu_delta/trainer_logging_rank_blocked_s": time.monotonic() - self._started,
+        })
 
 
 def _gather_all(value):

@@ -111,6 +111,40 @@ See [bench_gpu_delta_producer.md](bench_gpu_delta_producer.md) for the producer
 benchmark. Compare new evidence with the saved matched-workload baseline, keeping source,
 workload, raw timing rows and transfer/residency metrics separate.
 
+## Training metrics
+
+The normal training `log_perf_data`/tracking path publishes `perf/gpu_delta/*`
+to the configured backend, including W&B. No extra RPC, device synchronization,
+or collective is added: receiver summaries reuse the activation broadcast and
+producer prefixes reuse the existing owner gather.
+
+- `receiver_scheduler_pause_s/{min,p50,max}` joins each original process's
+  APPLIED and RESUMED receipts. It includes its reader fence, retraction/cache
+  flush, application, global APPLIED wait and resume. Failed/open intervals are
+  never reported as completed pauses.
+- `receiver_reader_fence_s` and `receiver_paused_apply_host_wall_s` have separate
+  rank distributions. `receiver_host_prepare_s` covers background preparation
+  before pause. Other `receiver_host_*` summaries retain their source span names;
+  registration and cache wait are per-rank work.
+- `creator_host_*` distributions sample the single cache creator on each host,
+  excluding attaching ranks' zero counters. `host_cache_creators` records coverage;
+  byte sums count each creator once. `creator_cpu_workers` records active creator
+  worker counts. `host_outer_zstd_validate_s` and `worker_decode_sum_s` are sums
+  of worker intervals, while `host_outer_zstd_decode_s` is builder wall time
+  including submission, validation, raw copies and joining tasks. These overlap.
+- `coordinator_{prepare,apply_barrier,resume_barrier,activation}_s` are enclosing
+  coordinator wall times. `producer_prefix_*` distributions end at the existing
+  pre-publication owner gather, before receiver activation.
+- `trainer_logging_rank_blocked_s` measures this update's `begin_sync` through
+  the existing final trainer barrier on the rank selected by the training logger;
+  `trainer_logging_rank` identifies it. It is not an all-trainer maximum. The older
+  `perf/update_weights_gpu_delta_s` remains the local pre-final-barrier interval.
+
+All seconds use local monotonic clocks. Nested phases are not additive, and no
+metric implies GPU-idle time or an RL throughput improvement. Step attachment
+follows the existing next `log_perf_data` drain, rather than an independent W&B
+logging call.
+
 ## Persistent fixture
 
 Run from the Miles checkout with matching SGLang on `PYTHONPATH`. Use a new

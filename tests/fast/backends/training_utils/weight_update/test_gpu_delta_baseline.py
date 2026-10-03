@@ -286,6 +286,7 @@ def test_gpu_baseline_swaps_only_after_successful_receiver_activation(monkeypatc
         return {
             "summary_counts": dict(tensor_count=4, wire_bytes=1, changed_bytes=13, canonical_bytes=13),
             "manifest_sha256": "test",
+            "producer_summary_metrics": {},
         }
 
     async def activate(*args):
@@ -294,6 +295,7 @@ def test_gpu_baseline_swaps_only_after_successful_receiver_activation(monkeypatc
         if activation_fails:
             raise RuntimeError("uncertain receiver resume")
 
+    monkeypatch.setattr(gpu_delta.gpu_delta_metrics, "activation_metrics", lambda value: {})
     monkeypatch.setattr(protocol, "publish", publish)
     monkeypatch.setattr(gpu_delta.gpu_delta_session, "activate_publication", activate)
     if activation_fails:

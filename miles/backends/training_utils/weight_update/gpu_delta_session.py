@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 import uuid
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -95,6 +96,7 @@ async def activate_publication(clients, cohort: ReceiverCohort, publication, *, 
     the next phase. After apply starts, failures are terminal: never abort, resume
     without all APPLIED receipts, or blindly replay an XOR publication.
     """
+    started = time.monotonic()
     session_id = session_id or uuid.uuid4().hex
     if publication["codec"] != cohort.codec or publication["plan_digest"] != cohort.plan_digest:
         raise ValueError("Publication differs from the negotiated receiver plan/codec")
@@ -133,6 +135,7 @@ async def activate_publication(clients, cohort: ReceiverCohort, publication, *, 
             *[c.abort_weights_from_delta(session_id=session_id) for c in clients], return_exceptions=True
         )
         raise
+    prepared_at = time.monotonic()
     applied = await asyncio.gather(
         *[c.update_weights_from_delta(session_id=session_id) for c in clients],
         return_exceptions=True,
@@ -141,6 +144,7 @@ async def activate_publication(clients, cohort: ReceiverCohort, publication, *, 
     # Keep results/timings in the returned evidence, not the all-rank certificate
     # copied to every scheduler. SGLang constructs this from its APPLIED state.
     certificate = [receipt["certificate"] for receipt in receipts]
+    applied_at = time.monotonic()
     resumed = await asyncio.gather(
         *[c.resume_weights_from_delta(session_id=session_id, receipts=certificate) for c in clients],
         return_exceptions=True,
@@ -148,7 +152,14 @@ async def activate_publication(clients, cohort: ReceiverCohort, publication, *, 
     resumed_receipts = _validate_phase(
         resumed, expected, state="RESUMED", session_id=session_id, publication=publication
     )
+    resumed_at = time.monotonic()
     return {
+        "coordinator_timings": {
+            "prepare_s": prepared_at - started,
+            "apply_barrier_s": applied_at - prepared_at,
+            "resume_barrier_s": resumed_at - applied_at,
+            "activation_s": resumed_at - started,
+        },
         "session_id": session_id,
         "receipts": receipts,
         "resumed_receipts": resumed_receipts,
