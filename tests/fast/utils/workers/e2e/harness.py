@@ -137,6 +137,7 @@ class FlakyProxy:
     def __init__(self, upstream_port: int | None) -> None:
         self._upstream_port = upstream_port
         self._server: asyncio.Server | None = None
+        self._connections: dict[asyncio.StreamWriter, asyncio.Task] = {}
         self.requests: list[ProxyRequest] = []
         self.reject_status: int | None = None
         self.reject_remaining = 0
@@ -165,12 +166,27 @@ class FlakyProxy:
         self.drop_remaining = count
 
     async def start(self) -> None:
-        self._server = await asyncio.start_server(self._handle, "127.0.0.1", 0)
+        self._server = await asyncio.start_server(self._accept, "127.0.0.1", 0)
 
     async def stop(self) -> None:
         if self._server is not None:
             self._server.close()
+            # Python 3.12 waits for accepted connections, including abandoned requests.
+            tasks = list(self._connections.values())
+            for writer, task in self._connections.items():
+                writer.close()
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
             await self._server.wait_closed()
+
+    def _accept(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        # An accept callback may already be queued when stop() closes the listener.
+        if not self._server.is_serving():
+            writer.close()
+            return
+        task = asyncio.create_task(self._handle(reader, writer))
+        self._connections[writer] = task
+        task.add_done_callback(lambda _: self._connections.pop(writer))
 
     async def _handle(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         try:
