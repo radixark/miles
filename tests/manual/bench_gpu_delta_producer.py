@@ -248,7 +248,7 @@ def _discover_plan(args, iterator, weights):
                     "name": name,
                     "dtype": dtype,
                     "shape": list(shape),
-                    "encoding": "replace_bytes" if ".self_attn.indexer.k_norm." in name else "xor_bytes",
+                    "encoding": "raw_bytes" if len(shape) <= 1 else "xor_bytes",
                     "views": [{"id": "canonical", "slices": [[0, size] for size in shape]}],
                 }
         except Exception as caught:
@@ -368,6 +368,12 @@ def _verify_publication(publication, plan, *, codec, frame_bytes):
         raise ValueError("Sealed publication protocol differs from the benchmark arm")
     if {tensor["name"] for tensor in manifest["tensors"]} != {tensor["name"] for tensor in plan}:
         raise ValueError("Sealed publication does not cover the exact mutable exporter inventory")
+    for tensor in manifest["tensors"]:
+        is_raw = len(tensor["shape"]) <= 1
+        if tensor["encoding"] != ("raw_bytes" if is_raw else "xor_bytes"):
+            raise ValueError("Sealed publication differs from the shape-based direct-value contract")
+        if is_raw and (tensor["frames"] or "outer" in tensor or tensor.get("raw", {}).get("encoded_bytes", 0) != (tensor["nbytes"] if tensor["changed_bytes"] else 0)):
+            raise ValueError("Scalar/vector must transfer its complete target without compression")
     for item in manifest["files"]:
         if (path.parent / item["name"]).stat().st_size != item["nbytes"]:
             raise ValueError("Sealed publication payload size mismatch")
@@ -379,6 +385,9 @@ def _verify_publication(publication, plan, *, codec, frame_bytes):
         "tensor_count": len(manifest["tensors"]),
         "codec_profile": manifest["codec_profile"],
         "frame_bytes": frame_bytes,
+        "raw_tensor_count": sum(tensor["encoding"] == "raw_bytes" for tensor in manifest["tensors"]),
+        "raw_changed_tensors": sum("raw" in tensor for tensor in manifest["tensors"]),
+        "raw_bytes": sum(tensor.get("raw", {}).get("encoded_bytes", 0) for tensor in manifest["tensors"]),
         "inner_encoded_frame_bytes": sum(frame["encoded_bytes"] for tensor in manifest["tensors"] for frame in tensor["frames"]),
         "outer_stored_bytes": sum(tensor.get("outer", {}).get("encoded_bytes", 0) for tensor in manifest["tensors"]),
         "outer_decoded_arena_bytes": sum(tensor.get("outer", {}).get("decoded_bytes", 0) for tensor in manifest["tensors"]),

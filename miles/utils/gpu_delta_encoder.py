@@ -69,18 +69,18 @@ def _validate_snapshots(tensors):
         for value in (previous, current):
             if value.device.type != "cpu" or value.dtype != torch.uint8 or value.ndim != 1 or not value.is_contiguous() or (value.numel() and not value.is_pinned()):
                 raise ValueError("GPU batch encoding requires contiguous pinned CPU uint8 snapshots")
-        if previous.numel() != current.numel() or encoding not in ("xor_bytes", "replace_bytes"):
-            raise ValueError("GPU batch snapshots must have equal byte counts and a supported encoding")
+        if previous.numel() != current.numel() or encoding != "xor_bytes":
+            raise ValueError("GPU batch snapshots must have equal byte counts and XOR encoding")
 
 
-def _xor_frames(tensors, previous_gpu, current_gpu, frame_bytes, keepalive):
+def _xor_frames(previous_gpu, current_gpu, frame_bytes, keepalive):
     frames, owners, old_frames, new_frames = [], [], [], []
-    for index, ((_, _, encoding), previous, current) in enumerate(zip(tensors, previous_gpu, current_gpu, strict=True)):
+    for index, (previous, current) in enumerate(zip(previous_gpu, current_gpu, strict=True)):
         old_parts = list(previous.split(frame_bytes)) if previous.numel() else []
         new_parts = list(current.split(frame_bytes)) if current.numel() else []
         old_frames.extend(old_parts)
         new_frames.extend(new_parts)
-        frames.extend(old_parts if encoding == "xor_bytes" else new_parts)
+        frames.extend(old_parts)
         owners.extend((index, offset * frame_bytes) for offset in range(len(old_parts)))
     parameters = torch.empty((3, len(frames)), dtype=torch.int64, device="cpu", pin_memory=True)
     parameters.numpy()[:] = [[frame.data_ptr() for frame in old_frames], [frame.data_ptr() for frame in new_frames], [frame.numel() for frame in frames]]
@@ -100,7 +100,7 @@ def _select_payloads(tensors, frames, owners, batch, sizes, counts):
         if not 0 < size <= output.numel() or not 0 <= count <= frame.numel():
             raise RuntimeError("nvCOMP output size or changed-byte count is outside the frame")
         changed[owner] += count
-        if tensors[owner][2] == "xor_bytes" and count == 0:
+        if count == 0:
             continue
         compressed = size < frame.numel()
         payload = output[:size] if compressed else frame
@@ -196,7 +196,7 @@ class GpuBatchEncoder:
                 with phases.record("current_h2d_s"):
                     current_gpu = [current.to(self.device, non_blocking=True) for _, current, _ in tensors]
                 with phases.record("xor_count_s"):
-                    frames, owners, counts = _xor_frames(tensors, previous_gpu, current_gpu, self.frame_bytes, xor_metadata)
+                    frames, owners, counts = _xor_frames(previous_gpu, current_gpu, self.frame_bytes, xor_metadata)
                 # The one batch may contain frames from many allocations and
                 # tensors. No per-tensor metadata readback serializes submission.
                 with phases.record("compression_s"):

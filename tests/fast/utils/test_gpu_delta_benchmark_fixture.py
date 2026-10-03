@@ -37,6 +37,15 @@ def _replay(publication, state):
     for item in manifest["files"]:
         assert sha256(payloads[item["name"]]) == item["sha256"]
     for tensor in manifest["tensors"]:
+        if tensor["encoding"] == "raw_bytes":
+            if not tensor["changed_bytes"]:
+                assert "raw" not in tensor
+                continue
+            raw = tensor["raw"]
+            target = payloads[raw["file"]][raw["encoded_offset"] : raw["encoded_offset"] + raw["encoded_bytes"]]
+            assert not tensor["frames"] and "outer" not in tensor
+            state[tensor["name"]] = np.frombuffer(target, dtype=np.uint8).copy()
+            continue
         mask = np.zeros_like(state[tensor["name"]])
         outer = tensor.get("outer")
         if outer is not None:
@@ -67,6 +76,7 @@ def test_three_versions_share_targets_across_codecs_and_preserve_source_and_draf
     weights |= {
         "model.layers.0.self_attn.q_proj.weight": torch.ones(64, 128, dtype=torch.bfloat16),
         "model.layers.0.mlp.experts.0.gate_proj.weight_scale_2": torch.tensor(0.5),
+        "model.layers.0.input_layernorm.weight": torch.ones(128, dtype=torch.bfloat16),
         "model.layers.5.mlp.experts.0.gate_proj.weight": torch.ones(64, 128, dtype=torch.uint8),
     }
     safetensors.torch.save_file(weights, str(model / "model.safetensors"))
@@ -78,7 +88,7 @@ def test_three_versions_share_targets_across_codecs_and_preserve_source_and_draf
             "name": name,
             "dtype": spec["dtype"],
             "shape": spec["shape"],
-            "encoding": "xor_bytes",
+            "encoding": "raw_bytes" if len(spec["shape"]) <= 1 else "xor_bytes",
             "views": [{"id": "full:" + name, "slices": [[0, size] for size in spec["shape"]]}],
         }
         for name, spec in index.items()
@@ -119,6 +129,8 @@ def test_three_versions_share_targets_across_codecs_and_preserve_source_and_draf
             _replay(publication, states[codec])
         assert row["accounting"]["snappy-zstd"]["outer_encoded_bytes"] > 0
         assert row["accounting"]["snappy-zstd"]["alignment_bytes"] >= 0
+        assert row["accounting"]["snappy-zstd"]["raw_tensor_count"] == 2
+        assert row["accounting"]["snappy-zstd"]["raw_target_bytes"] == 256
         for name in original:
             np.testing.assert_array_equal(states["zstd"][name], states["snappy-zstd"][name])
         for name in experts:

@@ -29,7 +29,11 @@ def _write_series(tmp_path, changed_bytes, *, protocol=3, profile="snappy-indepe
                     "stream_id": "current-stream",
                     "base_version": version - 1,
                     "target_version": version,
-                    "tensors": [{"changed_bytes": count}],
+                    "tensors": [
+                        {"name": "w", "shape": [2, 8], "encoding": "xor_bytes", "changed_bytes": count},
+                        {"name": "scale", "shape": [], "encoding": "raw_bytes", "changed_bytes": 0,
+                         "frames": [], "nbytes": 4},
+                    ],
                 }
             )
         )
@@ -89,4 +93,14 @@ def test_zstd_keeps_its_native_frame_profile(tmp_path, monkeypatch):
 def test_snappy_rejects_an_unwrapped_publication(tmp_path, protocol, profile, error):
     final = _write_series(tmp_path, [0, 7, 0], protocol=protocol, profile=profile)
     with patch("torch.distributed.get_rank", return_value=0), pytest.raises(AssertionError, match=error):
+        _assert_gpu_delta_weights_changed(Namespace(num_rollout=4), final, [])
+
+
+def test_e2e_rejects_a_compressed_scalar_even_when_weights_changed(tmp_path):
+    final = _write_series(tmp_path, [5, 8, 9])
+    path = tmp_path / "weight_v000002/manifest.json"
+    manifest = json.loads(path.read_text())
+    manifest["tensors"][1]["encoding"] = "xor_bytes"
+    path.write_text(json.dumps(manifest))
+    with patch("torch.distributed.get_rank", return_value=0), pytest.raises(AssertionError, match="encoding differs"):
         _assert_gpu_delta_weights_changed(Namespace(num_rollout=4), final, [])

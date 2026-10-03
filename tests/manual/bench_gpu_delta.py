@@ -13,7 +13,9 @@ Example (run from the Miles checkout with paired SGLang on PYTHONPATH)::
         python tests/manual/bench_gpu_delta.py run --model /models/base \
         --fixture /data/fixture --output /data/zstd
 
-Repeat run with Snappy. Each run starts one fresh engine;
+Canonical rank-zero/rank-one tensors use direct uncompressed target values when
+changed; all other tensors retain compressed XOR frames. Fixture accounting keeps
+direct-value traffic separate. Repeat run with Snappy. Each run starts one fresh engine;
 never reset a live delta stream with a disk reload. ``oracle`` starts from the
 altered target checkpoint while keeping the original static draft, outside update
 timing. Compare its generation/logprob records with the last delta round.
@@ -271,12 +273,15 @@ def _fixture(args):
             payload = sum(item["nbytes"] for item in manifest["files"])
             encoded = sum(frame["encoded_bytes"] for tensor in manifest["tensors"] for frame in tensor["frames"])
             outer = sum(tensor.get("outer", {}).get("encoded_bytes", 0) for tensor in manifest["tensors"])
+            raw = sum(tensor.get("raw", {}).get("encoded_bytes", 0) for tensor in manifest["tensors"])
             accounting[codec] = {
+                "raw_tensor_count": sum(tensor["encoding"] == "raw_bytes" for tensor in manifest["tensors"]),
+                "raw_target_bytes": raw,
                 "outer_encoded_bytes": outer,
                 "outer_decoded_arena_bytes": sum(tensor.get("outer", {}).get("decoded_bytes", 0) for tensor in manifest["tensors"]),
                 "encoded_frame_bytes": encoded,
                 "payload_file_bytes": payload,
-                "alignment_bytes": payload - (outer if codec == "snappy-zstd" else encoded),
+                "alignment_bytes": payload - raw - (outer if codec == "snappy-zstd" else encoded),
                 "manifest_bytes": path.stat().st_size,
                 "publication_bytes": payload + path.stat().st_size,
             }
