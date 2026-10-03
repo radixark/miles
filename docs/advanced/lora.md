@@ -384,6 +384,11 @@ per tenant. The key identifies ownership of models, futures, and checkpoints.
 Each adapter accumulates gradients until its client submits an optimizer step;
 saving weights for sampling publishes an immutable adapter version.
 
+`--experts-shared-outer-loras` also works with multi-LoRA: routed experts share
+the hidden-side factor within each adapter, while tenants remain independent.
+The flag applies to the whole server and preserves the single-LoRA export format.
+SGLang currently rejects combining this layout with fused shared experts.
+
 `save_state` saves adapter parameters and optimizer state, including FP32 masters.
 It waits for preceding commands but neither steps nor saves pending gradients;
 call it after `optim_step` to save the effect of the accumulated training work.

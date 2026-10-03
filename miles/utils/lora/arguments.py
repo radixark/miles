@@ -239,10 +239,6 @@ def validate_multi_lora_args(args: Any) -> None:
         "Multi-LoRA requires --qkv-format thd: per-adapter token spans assume the "
         f"micro-batch packs samples contiguously, which bshd does not (got {args.qkv_format!r})."
     )
-    assert not getattr(args, "experts_shared_outer_loras", False), (
-        "Multi-LoRA does not support --experts-shared-outer-loras; MoE expert adapters "
-        "use the per-expert layout. Drop the flag (and --sglang-experts-shared-outer-loras)."
-    )
     assert "muon" not in str(getattr(args, "optimizer", "")).lower(), (
         "Multi-LoRA does not support Muon: per-adapter decoupled stepping is only "
         "implemented for Adam-family per-slot optimizers"

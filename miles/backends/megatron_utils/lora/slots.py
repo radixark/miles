@@ -16,6 +16,7 @@ def create_multi_lora_instance(args: Namespace, *, target_modules):
     return MultiLoRA(
         target_modules=target_modules,
         n_adapters=args.multi_lora_n_adapters,
+        experts_shared_outer_loras=args.experts_shared_outer_loras,
         dim=args.lora_rank,
         alpha=args.lora_alpha,
         dropout=getattr(args, "lora_dropout", 0.0),
