@@ -393,15 +393,12 @@ class SGLangApiClient:
         response.raise_for_status()
         return response
 
-    async def continue_generation(self, *, delta_session_id=None, delta_commit_receipts=None):
-        payload = {}
-        if delta_session_id is not None:
-            payload = {"delta_session_id": delta_session_id, "delta_commit_receipts": delta_commit_receipts}
+    async def continue_generation(self):
         response = await GeneralHttpClientProvider.client().post(
-            f"{self.server_url}/continue_generation", json=payload, headers=self._headers
+            f"{self.server_url}/continue_generation", json={}, headers=self._headers
         )
         response.raise_for_status()
-        return response.json() if delta_session_id is not None else response
+        return response
 
     async def get_weights_delta_info(self, *, engine_id):
         return await self._make_request("get_weights_delta_info", {"engine_id": engine_id})
@@ -412,13 +409,11 @@ class SGLangApiClient:
     async def get_weights_delta_status(self, *, session_id):
         return await self._make_request("get_weights_delta_status", {"session_id": session_id})
 
-    async def update_weights_from_delta(self, *, session_id, participants, receipts):
-        return await self._make_request(
-            "update_weights_from_delta", {"session_id": session_id, "participants": participants, "receipts": receipts}
-        )
+    async def update_weights_from_delta(self, *, session_id):
+        return await self._make_request("update_weights_from_delta", {"session_id": session_id})
 
-    async def commit_weights_from_delta(self, *, session_id, receipts):
-        return await self._make_request("commit_weights_from_delta", {"session_id": session_id, "receipts": receipts})
+    async def resume_weights_from_delta(self, *, session_id, receipts):
+        return await self._make_request("resume_weights_from_delta", {"session_id": session_id, "receipts": receipts})
 
     async def abort_weights_from_delta(self, *, session_id):
         return await self._make_request("abort_weights_from_delta", {"session_id": session_id})

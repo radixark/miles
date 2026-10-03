@@ -60,7 +60,6 @@ class _Engine:
         self.index, self.identities, self.events, self.failure = index, identities, events, failure
         self.args = None
         self.polls = 0
-        self.paused = False
         self.prepared = False
 
     def _response(self, state):
@@ -70,8 +69,9 @@ class _Engine:
                 "state": state,
                 **{
                     key: self.args[key]
-                    for key in ("session_id", "manifest_sha256", "stream_id", "base_version", "target_version")
+                    for key in ("session_id", "manifest_sha256", "stream_id", "base_version", "target_version", "plan_digest")
                 },
+                "cohort_digest": "original-cohort",
             }
             for identity in self.identities
         ]
@@ -80,6 +80,7 @@ class _Engine:
     async def prepare_weights_from_delta(self, **kwargs):
         self.args = kwargs
         assert "staging" not in kwargs
+        assert "expected_engines" not in kwargs
         assert kwargs["participants"] == self.identities
         assert len(kwargs["cohort"]) == 4
         await asyncio.sleep(0.01 if self.index else 0)
@@ -87,51 +88,38 @@ class _Engine:
             raise RuntimeError("prepare rejected")
         return self._response("PREPARING")
 
-    async def pause_generation(self, **kwargs):
-        assert sum(event == "prepared" for _, event in self.events) == 2
-        self.paused = True
-        self.polls = 0
-        self.events.append((self.index, "pause_ack"))
-        return {"success": True}
-
     async def get_weights_delta_status(self, **kwargs):
         self.polls += 1
-        if not self.paused:
-            if self.index == 1 and self.polls == 1:
-                return self._response("PREPARING")
-            if not self.prepared:
-                self.events.append((self.index, "prepared"))
-                self.prepared = True
-            return self._response("PREPARED")
         if self.index == 1 and self.polls == 1:
-            return self._response("PREPARED")
-        self.events.append((self.index, "quiesced"))
-        return self._response("QUIESCED")
+            return self._response("PREPARING")
+        if not self.prepared:
+            self.events.append((self.index, "prepared"))
+            self.prepared = True
+        return self._response("PREPARED")
 
     async def update_weights_from_delta(self, **kwargs):
-        assert len({index for index, event in self.events if event == "quiesced"}) == 2
-        assert len(kwargs["receipts"]) == 4
-        assert all(r["state"] == "QUIESCED" for r in kwargs["receipts"])
+        assert sum(event == "prepared" for _, event in self.events) == 2
+        assert kwargs == {"session_id": self.args["session_id"]}
+        await asyncio.sleep(0.01 if self.index else 0)
         self.events.append((self.index, "applied"))
         if self.failure == "apply" and self.index == 1:
             raise RuntimeError("apply failed")
         reply = self._response("APPLIED")
         if self.failure == "identity" and self.index == 1:
             reply["participants"][0]["identity"] = self.identities[0] | {"rank_id": "replacement"}
+        if self.failure == "plan" and self.index == 1:
+            reply["participants"][0]["plan_digest"] = "different-plan"
+        for receipt in reply["participants"]:
+            receipt["certificate"] = dict(receipt)
+            receipt["result"] = {"large_nested_diagnostics": [1, 2, 3]}
         return reply
 
-    async def commit_weights_from_delta(self, **kwargs):
+    async def resume_weights_from_delta(self, **kwargs):
         assert sum(event == "applied" for _, event in self.events) == 2
         assert len(kwargs["receipts"]) == 4 and all(r["state"] == "APPLIED" for r in kwargs["receipts"])
-        self.events.append((self.index, "committed"))
-        if self.failure == "commit" and self.index == 1:
-            raise RuntimeError("commit failed")
-        return self._response("COMMITTED")
-
-    async def continue_generation(self, **kwargs):
-        assert sum(event == "committed" for _, event in self.events) == 2
-        assert len(kwargs["delta_commit_receipts"]) == 4
-        assert all(r["state"] == "COMMITTED" for r in kwargs["delta_commit_receipts"])
+        assert all("result" not in r and "certificate" not in r for r in kwargs["receipts"])
+        if self.failure == "resume" and self.index == 1:
+            raise RuntimeError("resume reply lost")
         self.events.append((self.index, "resumed"))
         reply = self._response("RESUMED")
         for receipt in reply["participants"]:
@@ -143,19 +131,20 @@ class _Engine:
         return {"success": True}
 
 
-def test_every_engine_prepared_then_quiesced_then_applied_then_committed_before_resume():
+def test_all_prepared_before_local_apply_and_all_applied_before_resume():
     clients, descriptions, publication, events = _setup()
     result = asyncio.run(
         session.activate_publication(clients, descriptions, publication, session_id="s")
     )
     assert len(result["receipts"]) == 4
+    assert all(r["state"] == "APPLIED" and "result" in r for r in result["receipts"])
     assert len(result["resumed_receipts"]) == 4
     assert [r["scheduler_timing"]["blocked_s"] for r in result["resumed_receipts"]] == [1.0, 1.0, 2.0, 2.0]
     assert sum(event == "resumed" for _, event in events) == 2
-    assert clients[1].polls >= 2  # a pause ACK did not bypass its pending reader fence
+    assert clients[1].polls >= 2  # PREPARING did not cause any engine to stop serving.
 
 
-@pytest.mark.parametrize("failure", ["prepare", "apply", "identity", "commit"])
+@pytest.mark.parametrize("failure", ["prepare", "apply", "identity", "plan"])
 def test_failure_never_resumes_or_blindly_replays(failure):
     clients, descriptions, publication, events = _setup(failure)
     with pytest.raises(RuntimeError):
@@ -163,9 +152,17 @@ def test_failure_never_resumes_or_blindly_replays(failure):
     assert not any(event == "resumed" for _, event in events)
     if failure == "prepare":
         assert sum(event == "abort" for _, event in events) == 2
-        assert not any(event == "pause_ack" for _, event in events)
+        assert not any(event == "applied" for _, event in events)
     else:
         assert not any(event == "abort" for _, event in events)
+
+
+def test_uncertain_resume_is_terminal_without_abort_or_replay():
+    clients, descriptions, publication, events = _setup("resume")
+    with pytest.raises(RuntimeError, match="resume reply lost"):
+        asyncio.run(session.activate_publication(clients, descriptions, publication, session_id="s"))
+    assert sum(event == "applied" for _, event in events) == 2
+    assert not any(event == "abort" for _, event in events)
 
 
 def test_common_plan_deduplicates_replicas_but_rejects_conflicting_views():
