@@ -135,9 +135,10 @@ def sharded_projections(ref, grad: bool = False) -> dict[str, torch.Tensor]:
         return module.weight.grad if grad else module.weight
 
     if isinstance(ref, ReplicatedKDA):
-        qkv = torch.cat([w(ref.q_proj), w(ref.k_proj), w(ref.v_proj)])
         return {
-            "in_proj_qkv": qkv_flat_to_group_major(qkv, ref.heads),
+            "q_proj": w(ref.q_proj),
+            "k_proj": w(ref.k_proj),
+            "v_proj": w(ref.v_proj),
             "g_proj": w(ref.g_proj),
             "b_proj": w(ref.b_proj),
             "f_b_proj": w(ref.f_b_proj),
@@ -152,12 +153,15 @@ def sharded_projections(ref, grad: bool = False) -> dict[str, torch.Tensor]:
     return {"in_proj_qkvz": w(ref.in_proj_qkvz), "in_proj_ba": w(ref.in_proj_ba)}
 
 
-def conv_of(ref, grad: bool = False) -> torch.Tensor:
+def conv_of(ref, grad: bool = False) -> dict[str, torch.Tensor]:
+    """Full Megatron conv weight(s) by core attribute: one group-major conv for GDN, one per tensor for KDA."""
+
+    def w(module):
+        return module.weight.grad if grad else module.weight
+
     if isinstance(ref, ReplicatedKDA):
-        w = torch.cat([c.weight.grad if grad else c.weight for c in (ref.q_conv1d, ref.k_conv1d, ref.v_conv1d)])
-    else:
-        w = ref.conv1d.weight.grad if grad else ref.conv1d.weight
-    return qkv_flat_to_group_major(w, ref.heads)
+        return {name: w(getattr(ref, name)) for name in ("q_conv1d", "k_conv1d", "v_conv1d")}
+    return {"conv1d": qkv_flat_to_group_major(w(ref.conv1d), ref.heads)}
 
 
 def shard(full: torch.Tensor, dim: int, group) -> torch.Tensor:
@@ -182,7 +186,8 @@ def build_layer(ref, config, allgather_cp: bool = True) -> LinearAttentionLayer:
     with torch.no_grad():
         for name, full in sharded_projections(ref).items():
             getattr(core, name).weight.copy_(shard(full, 0, tp))
-        core.conv1d.weight.copy_(shard(conv_of(ref), 0, tp))
+        for name, full in conv_of(ref).items():
+            getattr(core, name).weight.copy_(shard(full, 0, tp))
         core.A_log.copy_(shard(ref.A_log, 0, tp))
         core.dt_bias.copy_(shard(ref.dt_bias, 0, tp))
         norm = ref.o_norm if isinstance(ref, ReplicatedKDA) else ref.norm

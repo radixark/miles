@@ -1,4 +1,4 @@
-"""Boundary and aliasing contracts of the Kimi K3 KDA delta-rule core.
+"""Boundary and aliasing contracts of the KDA delta-rule core (the shared ``KimiDeltaRule`` Kimi K3 runs).
 
 Both cases guard failure modes that are silent in training: the run keeps
 learning, only worse, so nothing short of a numerical check catches them.
@@ -7,14 +7,16 @@ learning, only worse, so nothing short of a numerical check catches them.
 import pytest
 import torch
 
-from miles_plugins.models.kimi_k3.ops import kda
+pytest.importorskip("fla")
+from miles.kernels.attention.delta_rule import KimiDeltaRule  # noqa: E402
 
 
 # KDA kernel construction, validated on H200: q/k/v/g scaled bf16, beta uniform on
-# [0, 1] because it is the delta rule's step size and falls outside the operator's
-# domain when negative or above 1. (The "KDA goes non-finite with random weights"
-# result is model-level -- random *projections* produce out-of-distribution q/k/v/g
-# that compound across layers -- and does not apply to the kernel in isolation.)
+# [0, 1] (passed as its logit, which the rule squashes back) because it is the delta
+# rule's step size and falls outside the operator's domain when negative or above 1.
+# (The "KDA goes non-finite with random weights" result is model-level -- random
+# *projections* produce out-of-distribution q/k/v/g that compound across layers --
+# and does not apply to the kernel in isolation.)
 _KDA_HEADS = 4
 _KDA_HEAD_DIM = 128
 _KDA_LOWER_BOUND = -5.0
@@ -31,23 +33,23 @@ def _kda_inputs(seq_len: int, seed: int) -> dict[str, torch.Tensor]:
         "k": activation(),
         "v": activation(),
         "g": activation(),
-        "beta": torch.rand(1, seq_len, _KDA_HEADS, device="cuda", dtype=torch.float32),
+        "beta_logits": torch.logit(torch.rand(1, seq_len, _KDA_HEADS, device="cuda", dtype=torch.float32), eps=1e-4),
         "A_log": torch.randn(_KDA_HEADS, device="cuda", dtype=torch.float32),
         "dt_bias": torch.randn(_KDA_HEADS * _KDA_HEAD_DIM, device="cuda", dtype=torch.float32),
     }
 
 
 def _run_kda(inputs: dict[str, torch.Tensor], cu_seqlens: torch.Tensor | None) -> torch.Tensor:
-    return kda(
+    return KimiDeltaRule(_KDA_LOWER_BOUND)(
         inputs["q"],
         inputs["k"],
         inputs["v"],
+        inputs["beta_logits"],
         inputs["g"],
-        inputs["beta"],
         inputs["A_log"],
         inputs["dt_bias"],
-        _KDA_LOWER_BOUND,
         cu_seqlens=cu_seqlens,
+        cp_context=None,
     )
 
 
@@ -64,7 +66,7 @@ def _relative_l2(actual: torch.Tensor, expected: torch.Tensor) -> float:
 def test_kda_applies_packed_sequence_boundaries() -> None:
     """A packed batch must reproduce, per sequence, what that sequence produces alone.
 
-    ``kda`` routes boundaries through one of two mutually exclusive channels
+    The rule routes boundaries through one of two mutually exclusive channels
     (``cu_seqlens`` off CP, ``cp_context`` under CP). A caller that selects the CP
     channel and drops ``cu_seqlens`` -- the shape the CP-only helper had before the
     two kernel paths were merged -- leaves the recurrence with no boundaries at all,
@@ -101,7 +103,7 @@ def test_kda_applies_packed_sequence_boundaries() -> None:
 
 
 def test_kda_does_not_mutate_its_inputs() -> None:
-    """The forward must leave q/k/v/g/beta untouched.
+    """The forward must leave q/k/v/g/beta_logits untouched.
 
     SGLang's vendored ``chunk_kda`` overwrote its ``v`` buffer with a WY-representation
     intermediate. Any caller that reads an input back afterwards -- a manual

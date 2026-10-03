@@ -3,9 +3,9 @@
 Tensor parallelism shards heads. :class:`LinearAttentionLayer` is the ``self_attention`` drop-in: HF
 input norm, one TP collective in (identity/all-reduce, or all-gather/reduce-scatter under sequence
 parallelism), context-parallel zigzag relayout, and the row-parallel ``out_proj`` collective out.
-:class:`DeltaRuleAttention` runs this rank's heads: the model's input projections, the short conv
-over the group-major q/k/v (see ``megatron_to_hf.gdn_layout``), the fla kernel chosen by the
-:class:`DeltaRule`, and a gated RMSNorm whose replicated weight has its gradient summed across TP.
+:class:`DeltaRuleAttention` runs this rank's heads: the model's input projections, the short conv(s)
+over q/k/v (one over group-major rows for GDN, see ``megatron_to_hf.gdn_layout``; one per tensor
+for KDA), the fla kernel chosen by the :class:`DeltaRule`, and a gated RMSNorm whose replicated weight has its gradient summed across TP.
 Projections are plain bf16 linears on sharded parameters, so ``--fp8`` training leaves this layer in
 bf16 as before; subclasses declare them under the HF names, one linear per contiguous output.
 """
@@ -37,16 +37,18 @@ from miles.backends.megatron_utils.fp32_param_utils import mark_param_dtype
 from miles.kernels.attention.delta_rule import DeltaRule, DeltaRuleHeads, short_conv
 from miles_plugins.models.cp_utils import build_fla_cp_context, packed_shard_to_zigzag, zigzag_to_packed_shard
 
+WEIGHT_LAYOUT_VERSION = 1
 
 WEIGHT_LAYOUT_VERSION = 1
 
 
 class Projections(NamedTuple):
-    """This rank's projections: ``qkv`` ``[b, s, Gl * group_qkv_dim]`` group-major, ``gate``
+    """This rank's projections: ``qkv`` as the core's :meth:`DeltaRuleAttention.convolve` takes it (one
+    group-major ``[b, s, Gl * group_qkv_dim]`` tensor for GDN, a ``(q, k, v)`` tuple for KDA), ``gate``
     ``[b, s, Hl * hv]``, ``beta_logits`` ``[b, s, Hl]``, ``decay`` ``[b, s, Hl]`` (GDN) or
     ``[b, s, Hl * hv]`` (KDA)."""
 
-    qkv: torch.Tensor
+    qkv: torch.Tensor | tuple[torch.Tensor, torch.Tensor, torch.Tensor]
     gate: torch.Tensor
     beta_logits: torch.Tensor
     decay: torch.Tensor
@@ -99,15 +101,7 @@ class DeltaRuleAttention(MegatronModule, ABC):
         )
         self._build_projections()
         with get_cuda_rng_tracker().fork():
-            self.conv1d = _ShardedShortConvolution(
-                hidden_size=self.local.num_k_heads * self.local.group_qkv_dim,
-                kernel_size=conv_kernel_size,
-                bias=False,
-                activation="silu",
-                device=device,
-                dtype=dtype,
-                tp_group=tp_group,
-            )
+            self._build_convolutions()
             self.A_log = nn.Parameter(
                 torch.empty(self.local.num_v_heads, dtype=torch.float32, device=device).uniform_(1, 16).log_()
             )
@@ -126,6 +120,32 @@ class DeltaRuleAttention(MegatronModule, ABC):
         with get_cuda_rng_tracker().fork():
             config.output_layer_init_method(self.out_proj.weight)
         self._mark_sharded("out_proj.weight", self.out_proj.weight, dim=1)
+
+    def sharded_conv(self, channels: int) -> _ShardedShortConvolution:
+        """Depthwise causal conv over ``channels`` of this rank's heads (SiLU, no bias)."""
+        return _ShardedShortConvolution(
+            hidden_size=channels,
+            kernel_size=self.conv_kernel_size,
+            bias=False,
+            activation="silu",
+            device=torch.cuda.current_device(),
+            dtype=self.config.params_dtype,
+            tp_group=self.tp_group,
+        )
+
+    def _build_convolutions(self) -> None:
+        self.conv1d = self.sharded_conv(self.local.num_k_heads * self.local.group_qkv_dim)
+
+    def convolve(self, qkv, cu_seqlens, cp_context):
+        """-> q, k ``[b, s, Gl, hk]``, v ``[b, s, Hl, hv]``. One conv over the group-major q/k/v, split per
+        group; value heads of a group are contiguous, so ``v`` is a view."""
+        batch, seq_len, _ = qkv.shape
+        local = self.local
+        mixed = self.conv1d(qkv, cu_seqlens=cu_seqlens, cp_context=cp_context)
+        q, k, v = mixed.view(batch, seq_len, local.num_k_heads, -1).split(
+            [local.head_k_dim, local.head_k_dim, local.group_value_dim], dim=-1
+        )
+        return q, k, v.reshape(batch, seq_len, local.num_v_heads, local.head_v_dim)
 
     def _mark_sharded(self, name: str, param: nn.Parameter, dim: int) -> None:
         set_tensor_model_parallel_attributes(param, True, dim, 1)
@@ -171,13 +191,8 @@ class DeltaRuleAttention(MegatronModule, ABC):
     def forward(self, x: torch.Tensor, cu_seqlens: torch.Tensor | None, cp_context=None) -> torch.Tensor:
         """x ``[b, s, hidden]``, TP collective already applied -> ``[b, s, local value_dim]``."""
         batch, seq_len, _ = x.shape
-        local = self.local
         qkv, gate, beta_logits, decay = self.project(x)
-        mixed = self.conv1d(qkv, cu_seqlens=cu_seqlens, cp_context=cp_context)
-        q, k, v = mixed.view(batch, seq_len, local.num_k_heads, -1).split(
-            [local.head_k_dim, local.head_k_dim, local.group_value_dim], dim=-1
-        )
-        v = v.reshape(batch, seq_len, local.num_v_heads, local.head_v_dim)
+        q, k, v = self.convolve(qkv, cu_seqlens, cp_context)
         core = self.rule(
             q, k, v, beta_logits, decay, self.A_log, self.dt_bias, cu_seqlens=cu_seqlens, cp_context=cp_context
         )
@@ -194,14 +209,18 @@ class DeltaRuleAttention(MegatronModule, ABC):
 
 
 class KimiDeltaAttention(DeltaRuleAttention):
-    """KDA in the Kimi-K3 / GLM-5.3-flash layout: ``q_proj`` / ``k_proj`` / ``v_proj`` fused into one
-    group-major ``in_proj_qkv``, ``g_proj`` (output gate), ``b_proj`` (beta), and the low-rank forget gate
-    ``f_b_proj(f_a_proj(x))``. ``f_a_proj`` is replicated and feeds head-sharded ``f_b_proj``, so its weight
-    passes the TP copy op like the norm."""
+    """KDA in the Kimi-K3 / GLM-5.3-Flash HF layout: ``q_proj`` / ``k_proj`` / ``v_proj`` with one short
+    conv each, ``g_proj`` (output gate), ``b_proj`` (beta), and the low-rank forget gate
+    ``f_b_proj(f_a_proj(x))``. KDA has one key head per value head, so the three convs see contiguous
+    per-head q / k / v and need no group-major permutation. ``f_a_proj`` is replicated and feeds
+    head-sharded ``f_b_proj``, so its weight passes the TP copy op like the norm. The conv weights train
+    in fp32, as Kimi's checkpoints store them."""
 
     def _build_projections(self):
         hidden, local = self.config.hidden_size, self.local
-        self.in_proj_qkv = self.sharded_linear("in_proj_qkv", hidden, local.num_k_heads * local.group_qkv_dim)
+        self.q_proj = self.sharded_linear("q_proj", hidden, local.key_dim)
+        self.k_proj = self.sharded_linear("k_proj", hidden, local.key_dim)
+        self.v_proj = self.sharded_linear("v_proj", hidden, local.value_dim)
         self.g_proj = self.sharded_linear("g_proj", hidden, local.value_dim)
         self.b_proj = self.sharded_linear("b_proj", hidden, local.num_v_heads)
         self.f_a_proj = nn.Linear(
@@ -214,9 +233,35 @@ class KimiDeltaAttention(DeltaRuleAttention):
         self.config.init_method(self.f_a_proj.weight)
         self.f_b_proj = self.sharded_linear("f_b_proj", self.heads.head_v_dim, local.value_dim)
 
+    def _build_convolutions(self):
+        local = self.local
+        self.q_conv1d = self.sharded_conv(local.key_dim)
+        self.k_conv1d = self.sharded_conv(local.key_dim)
+        self.v_conv1d = self.sharded_conv(local.value_dim)
+        for conv in (self.q_conv1d, self.k_conv1d, self.v_conv1d):
+            mark_param_dtype(conv.weight, torch.float32)
+
+    def convolve(self, qkv, cu_seqlens, cp_context):
+        batch, seq_len = qkv[0].shape[:2]
+        local = self.local
+        q, k, v = (
+            conv(t, cu_seqlens=cu_seqlens, cp_context=cp_context)
+            for conv, t in zip((self.q_conv1d, self.k_conv1d, self.v_conv1d), qkv, strict=True)
+        )
+        return (
+            q.view(batch, seq_len, local.num_k_heads, local.head_k_dim),
+            k.view(batch, seq_len, local.num_k_heads, local.head_k_dim),
+            v.view(batch, seq_len, local.num_v_heads, local.head_v_dim),
+        )
+
     def project(self, x):
         f_a_weight = copy_to_tensor_model_parallel_region(self.f_a_proj.weight, group=self.tp_group)
-        return Projections(self.in_proj_qkv(x), self.g_proj(x), self.b_proj(x), self.f_b_proj(F.linear(x, f_a_weight)))
+        return Projections(
+            (self.q_proj(x), self.k_proj(x), self.v_proj(x)),
+            self.g_proj(x),
+            self.b_proj(x),
+            self.f_b_proj(F.linear(x, f_a_weight)),
+        )
 
 
 class LinearAttentionLayer(MegatronModule):
