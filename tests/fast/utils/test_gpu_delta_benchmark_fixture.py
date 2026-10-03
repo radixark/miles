@@ -70,7 +70,7 @@ def _descriptions(engine_count, tensors):
                 views.append(tensor | {'views': [{'id': f'view-{size}-{rank}', 'slices': slices}]})
             identity = {'engine_id': f'engine-{engine:05d}', 'rank_id': f'{engine}-{rank}',
                         'pid': 100 + engine * size + rank, 'start_ticks': 42,
-                        'dp_rank': rank, 'tp_rank': rank, 'pp_rank': 0, 'host_cache_id': 'shared-host'}
+                        'dp_rank': rank, 'tp_rank': rank, 'pp_rank': 0, 'host_cache_id': f'engine-host-{engine}'}
             participants.append({'identity': identity, 'plan': {'codec': 'snappy-zstd', 'tensors': views}})
         descriptions.append({'success': True, 'participants': participants})
     return descriptions

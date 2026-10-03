@@ -27,6 +27,7 @@ def _activation():
         timings.update({name: float(rank + 10) if creator else 0.0 for name in metrics._HOST_TIMINGS})
         timings.update(
             host_payload_cache_created=int(creator),
+            host_frames_validations=int(creator),
             host_outer_zstd_cpu_workers=4,
             host_payload_hash_bytes=100 if creator else 0,
             host_outer_zstd_encoded_bytes=40 if creator else 0,
@@ -35,6 +36,7 @@ def _activation():
         receipt = {
             "identity": {
                 "rank_id": str(rank),
+                "engine_id": f"engine-{rank // 2}",
                 "pid": 100 + rank,
                 "start_ticks": 12,
                 "host_cache_id": f"host-{rank // 2}",
@@ -71,7 +73,11 @@ def _activation():
     return {
         "receipts": applied,
         "resumed_receipts": list(reversed(resumed)),
-        "coordinator_timings": {"prepare_s": 6, "apply_barrier_s": 4, "resume_barrier_s": 0.1, "activation_s": 10.1},
+        "coordinator_timings": {"activation_s": 10.1},
+        "engine_timings": [
+            {"engine_id": "engine-0", "prepare_s": 3, "apply_s": 2, "resume_s": 0.1, "activation_s": 5.1},
+            {"engine_id": "engine-1", "prepare_s": 6, "apply_s": 4, "resume_s": 0.1, "activation_s": 10.1},
+        ],
     }
 
 
@@ -87,6 +93,13 @@ def test_original_rank_pause_and_creator_only_host_metrics_remain_separate():
     assert result[prefix + "creator_host_payload_hash_bytes/sum"] == 200
     assert result[prefix + "receiver_host_shared_register_s/p50"] == 2.5
     assert result[prefix + "coordinator_activation_s"] == 10.1
+    assert result[prefix + "engine_coordinator_prepare_s/p50"] == 4.5
+    assert result[prefix + "engine_coordinator_activation_s/max"] == 10.1
+    assert result[prefix + "receiver_engines"] == 2
+    assert prefix + "coordinator_apply_barrier_s" not in result
+    assert result[prefix + "creator_host_frames_validate_s/p50"] == 11
+    assert result[prefix + "creator_host_frames_validations/sum"] == 2
+    assert prefix + "receiver_host_frames_validate_s/p50" not in result
     assert activation == original
     # A reused publication has no new creator work, not a zero-duration decode.
     for receipt in activation["receipts"]:
@@ -121,7 +134,7 @@ def test_capacity_and_allocation_count_hosts_once_but_registration_per_rank(warm
         )
     result = metrics.activation_metrics(activation)
     prefix = "perf/gpu_delta/"
-    assert result[prefix + "receiver_hosts"] == 2
+    assert result[prefix + "receiver_host_arenas"] == 2
     assert result[prefix + "host_cache_creators"] == 2
     assert result[prefix + "host_shared_arena_bytes/sum"] == 1800
     assert result[prefix + "host_shared_capacity_bytes/sum"] == 3072
@@ -342,3 +355,10 @@ def test_failed_update_is_not_reported_and_tracking_failure_cannot_retry_a_compl
     assert result == 1
     assert updater.pop_metrics() == {}
     assert "Tracking failed for completed GPU-delta target version 1" in caplog.text
+
+
+def test_engine_timing_coverage_cannot_include_a_replacement_or_duplicate():
+    activation = _activation()
+    activation["engine_timings"][1]["engine_id"] = "engine-0"
+    with pytest.raises(ValueError, match="original engines exactly once"):
+        metrics.activation_metrics(activation)

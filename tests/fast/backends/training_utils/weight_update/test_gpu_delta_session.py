@@ -1,4 +1,4 @@
-"""Multi-engine phase ordering and failure boundaries without GPUs or HTTP."""
+"""Independent engine phase ordering and failure boundaries without GPUs or HTTP."""
 
 import asyncio
 import copy
@@ -8,13 +8,13 @@ import pytest
 from miles.backends.training_utils.weight_update import gpu_delta_session as session
 
 
-def _setup(failure=None):
+def _setup(failure=None, *, failed_engine=1):
     events, clients, descriptions = [], [], []
     for engine in range(2):
         identities = [
             {
                 "engine_id": f"engine-{engine}",
-                "host_cache_id": "shared-host",
+                "host_cache_id": f"engine-host-{engine}",
                 "rank_id": f"rank-{engine}-{rank}",
                 "pid": 100 + rank,
                 "start_ticks": 456,
@@ -42,7 +42,7 @@ def _setup(failure=None):
                 ],
             }
         )
-        clients.append(_Engine(engine, identities, events, failure))
+        clients.append(_Engine(engine, identities, events, failure, failed_engine))
     plan, cohort, digest = session.merge_plans(descriptions)
     publication = {
         "codec": "snappy-zstd",
@@ -57,8 +57,9 @@ def _setup(failure=None):
 
 
 class _Engine:
-    def __init__(self, index, identities, events, failure):
+    def __init__(self, index, identities, events, failure, failed_engine):
         self.index, self.identities, self.events, self.failure = index, identities, events, failure
+        self.failed_engine = failed_engine
         self.args = None
         self.polls = 0
         self.prepared = False
@@ -83,10 +84,10 @@ class _Engine:
         assert "staging" not in kwargs
         assert "expected_engines" not in kwargs
         assert list(kwargs["participants"]) == self.identities
-        assert len(kwargs["cohort"]) == 4
-        assert kwargs["host_tensor_names"] == {"shared-host": ["w"]}
+        assert "cohort" not in kwargs
+        assert kwargs["host_tensor_names"] == {f"engine-host-{self.index}": ["w"]}
         await asyncio.sleep(0.01 if self.index else 0)
-        if self.failure == "prepare" and self.index == 1:
+        if self.failure == "prepare" and self.index == self.failed_engine:
             raise RuntimeError("prepare rejected")
         return self._response("PREPARING")
 
@@ -100,16 +101,16 @@ class _Engine:
         return self._response("PREPARED")
 
     async def update_weights_from_delta(self, **kwargs):
-        assert sum(event == "prepared" for _, event in self.events) == 2
+        assert (self.index, "prepared") in self.events
         assert kwargs == {"session_id": self.args["session_id"]}
         await asyncio.sleep(0.01 if self.index else 0)
         self.events.append((self.index, "applied"))
-        if self.failure == "apply" and self.index == 1:
+        if self.failure == "apply" and self.index == self.failed_engine:
             raise RuntimeError("apply failed")
         reply = self._response("APPLIED")
-        if self.failure == "identity" and self.index == 1:
+        if self.failure == "identity" and self.index == self.failed_engine:
             reply["participants"][0]["identity"] = self.identities[0] | {"rank_id": "replacement"}
-        if self.failure == "plan" and self.index == 1:
+        if self.failure == "plan" and self.index == self.failed_engine:
             reply["participants"][0]["plan_digest"] = "different-plan"
         for receipt in reply["participants"]:
             receipt["certificate"] = dict(receipt)
@@ -117,10 +118,11 @@ class _Engine:
         return reply
 
     async def resume_weights_from_delta(self, **kwargs):
-        assert sum(event == "applied" for _, event in self.events) == 2
-        assert len(kwargs["receipts"]) == 4 and all(r["state"] == "APPLIED" for r in kwargs["receipts"])
+        assert (self.index, "applied") in self.events
+        assert len(kwargs["receipts"]) == 2 and all(r["state"] == "APPLIED" for r in kwargs["receipts"])
+        assert [r["identity"] for r in kwargs["receipts"]] == self.identities
         assert all("result" not in r and "certificate" not in r for r in kwargs["receipts"])
-        if self.failure == "resume" and self.index == 1:
+        if self.failure == "resume" and self.index == self.failed_engine:
             raise RuntimeError("resume reply lost")
         self.events.append((self.index, "resumed"))
         reply = self._response("RESUMED")
@@ -133,7 +135,7 @@ class _Engine:
         return {"success": True}
 
 
-def test_all_prepared_before_local_apply_and_all_applied_before_resume(monkeypatch):
+def test_fast_engine_resumes_while_other_engine_still_prepares(monkeypatch):
     clients, descriptions, publication, events = _setup()
     cohort = session.negotiate_cohort(descriptions)
     monkeypatch.setattr(session, "merge_plans", lambda *args, **kwargs: pytest.fail("Immutable plan renegotiated"))
@@ -143,18 +145,21 @@ def test_all_prepared_before_local_apply_and_all_applied_before_resume(monkeypat
     assert len(result["resumed_receipts"]) == 4
     assert [r["scheduler_timing"]["blocked_s"] for r in result["resumed_receipts"]] == [1.0, 1.0, 2.0, 2.0]
     assert sum(event == "resumed" for _, event in events) == 2
-    assert clients[1].polls >= 2  # PREPARING did not cause any engine to stop serving.
+    assert clients[1].polls >= 2
+    assert events.index((0, "resumed")) < events.index((1, "prepared"))
+    assert {r["engine_id"] for r in result["engine_timings"]} == {"engine-0", "engine-1"}
+    assert set(result["coordinator_timings"]) == {"activation_s"}
 
 
 @pytest.mark.parametrize("failure", ["prepare", "apply", "identity", "plan"])
-def test_failure_never_resumes_or_blindly_replays(failure):
+def test_failure_is_scoped_to_its_engine_without_blind_replay(failure):
     clients, descriptions, publication, events = _setup(failure)
     with pytest.raises(RuntimeError):
         asyncio.run(session.activate_publication(clients, session.negotiate_cohort(descriptions), publication, session_id="s"))
-    assert not any(event == "resumed" for _, event in events)
+    assert (0, "resumed") in events and (1, "resumed") not in events
     if failure == "prepare":
-        assert sum(event == "abort" for _, event in events) == 2
-        assert not any(event == "applied" for _, event in events)
+        assert (1, "abort") in events and (0, "abort") not in events
+        assert (1, "applied") not in events
     else:
         assert not any(event == "abort" for _, event in events)
 
@@ -164,6 +169,16 @@ def test_uncertain_resume_is_terminal_without_abort_or_replay():
     with pytest.raises(RuntimeError, match="resume reply lost"):
         asyncio.run(session.activate_publication(clients, session.negotiate_cohort(descriptions), publication, session_id="s"))
     assert sum(event == "applied" for _, event in events) == 2
+    assert not any(event == "abort" for _, event in events)
+    assert (0, "resumed") in events
+
+
+def test_early_failure_settles_other_engine_before_returning():
+    clients, descriptions, publication, events = _setup("apply", failed_engine=0)
+    with pytest.raises(RuntimeError, match="apply failed"):
+        asyncio.run(session.activate_publication(clients, session.negotiate_cohort(descriptions), publication))
+    assert events.index((0, "applied")) < events.index((1, "resumed"))
+    assert (0, "resumed") not in events
     assert not any(event == "abort" for _, event in events)
 
 
@@ -196,22 +211,11 @@ def test_bounded_wait_cancels_inflight_status_requests():
         finally:
             events.append((0, "status_cancelled"))
 
-    for client in clients:
-        client.get_weights_delta_status = hanging_status
-    expected = [[p["identity"] for p in d["participants"]] for d in descriptions]
+    clients[0].get_weights_delta_status = hanging_status
+    participants = [p["identity"] for p in descriptions[0]["participants"]]
     with pytest.raises(asyncio.TimeoutError):
-        asyncio.run(
-            session._wait_state(
-                clients,
-                expected,
-                state="PREPARED",
-                pending="PREPARING",
-                session_id="s",
-                publication=publication,
-                timeout=0.01,
-            )
-        )
-    assert len(events) == 2 and all(event == "status_cancelled" for _, event in events)
+        asyncio.run(session._wait_state(clients[0], participants, session_id="s", publication=publication, timeout=0.01))
+    assert events == [(0, "status_cancelled")]
 
 
 def test_cohort_only_decodes_each_hosts_union_and_requires_explicit_host_identity():
@@ -220,7 +224,16 @@ def test_cohort_only_decodes_each_hosts_union_and_requires_explicit_host_identit
         participant["identity"]["host_cache_id"] = "other-host"
         participant["plan"]["tensors"][0]["name"] = "other-experts"
     cohort = session.negotiate_cohort(descriptions)
-    assert cohort.host_tensor_names == {"other-host": ["other-experts"], "shared-host": ["w"]}
+    assert cohort.host_tensor_names == {"other-host": ["other-experts"], "engine-host-0": ["w"]}
     del descriptions[1]["participants"][0]["identity"]["host_cache_id"]
-    with pytest.raises(ValueError, match="host-cache identity"):
+    with pytest.raises(ValueError, match="engine-host cache identity"):
         session.negotiate_cohort(descriptions)
+
+
+def test_shared_cache_across_engines_is_rejected_before_preparation():
+    clients, descriptions, _, _ = _setup()
+    for participant in descriptions[1]["participants"]:
+        participant["identity"]["host_cache_id"] = "engine-host-0"
+    with pytest.raises(ValueError, match="must not share a host arena"):
+        session.negotiate_cohort(descriptions)
+    assert all(client.args is None for client in clients)

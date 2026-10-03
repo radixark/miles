@@ -1,7 +1,7 @@
 """Completed GPU-delta timing summaries, without additional distributed work.
 
 Receiver clocks are compared only within the same original process. Nested
-spans remain separate. Shared-host work is sampled once from each cache creator,
+spans remain separate. Engine-host work is sampled once from each arena creator,
 not from the zero counters on ranks that attach to its arena.
 """
 
@@ -22,7 +22,6 @@ _RANK_TIMINGS = (
     "host_payload_cache_wait_s",
     "host_manifest_read_parse_s",
     "host_plan_validate_s",
-    "host_frames_validate_s",
     "host_tensor_prepare_s",
     "host_raw_pack_s",
     "host_decoder_prepare_s",
@@ -33,6 +32,7 @@ _RANK_TIMINGS = (
     "host_apply_completion_wait_s",
 )
 _HOST_TIMINGS = (
+    "host_frames_validate_s",
     "host_payload_read_s",
     "host_payload_sha256_s",
     "host_payload_decode_hash_s",
@@ -58,6 +58,7 @@ _HOST_CAPACITIES = (
     "host_encoded_capacity_bytes",
 )
 _HOST_WORK_TOTALS = (
+    "host_frames_validations",
     "host_payload_hash_bytes",
     "host_outer_zstd_encoded_bytes",
     "host_outer_zstd_decoded_bytes",
@@ -137,16 +138,17 @@ def activation_metrics(activation):
         # Optional profiling spans are emitted only with complete rank coverage.
         if all(name in timing for timing in timings):
             _distribution(metrics, "receiver_" + name, [timing[name] for timing in timings])
-    hosts = {}
+    arenas = {}
     for (receipt, _, _), timing in zip(rows, timings, strict=True):
-        hosts.setdefault(receipt["identity"]["host_cache_id"], []).append(timing)
+        arena = (receipt["identity"]["engine_id"], receipt["identity"]["host_cache_id"])
+        arenas.setdefault(arena, []).append(timing)
     creators = []
-    for host_rows in hosts.values():
+    for host_rows in arenas.values():
         created = [row for row in host_rows if row["host_payload_cache_created"] == 1]
         if len(created) > 1:
-            raise ValueError("Multiple shared payload creators on one host")
+            raise ValueError("Multiple payload creators in one engine-host arena")
         creators.extend(created)
-    metrics.update({_PREFIX + "receiver_hosts": len(hosts), _PREFIX + "host_cache_creators": len(creators)})
+    metrics.update({_PREFIX + "receiver_host_arenas": len(arenas), _PREFIX + "host_cache_creators": len(creators)})
     for name in _HOST_TIMINGS:
         if all(name in row for row in creators):
             _distribution(metrics, "creator_" + name, [row[name] for row in creators])
@@ -154,22 +156,28 @@ def activation_metrics(activation):
     for name in _HOST_WORK_TOTALS:
         if all(name in row for row in creators):
             metrics[_PREFIX + "creator_" + name + "/sum"] = sum(_number(row[name]) for row in creators)
-    # All ranks map the same host arena. Count capacity once per host, including
+    # Engine-local ranks map one host arena. Count capacity once per arena, including
     # reattachment with no creator; per-rank CUDA registrations are not additive
-    # physical storage. Older receipts omit these optional capacity fields.
+    # physical storage. Two independent engines may hold duplicate physical bytes.
     for name in _HOST_CAPACITIES:
         if not all(name in row for row in timings):
             continue
         capacities = []
-        for host_rows in hosts.values():
+        for host_rows in arenas.values():
             values = {_number(row[name]) for row in host_rows}
             if len(values) != 1:
                 raise ValueError(f"Shared host capacity differs between ranks: {name}")
             capacities.append(values.pop())
         _distribution(metrics, name, capacities)
         metrics[_PREFIX + name + "/sum"] = sum(capacities)
-    for name, value in activation["coordinator_timings"].items():
-        metrics[_PREFIX + "coordinator_" + name] = _number(value)
+    engines = {row[0]["identity"]["engine_id"] for row in rows}
+    engine_timings = activation["engine_timings"]
+    if {row["engine_id"] for row in engine_timings} != engines or len(engine_timings) != len(engines):
+        raise ValueError("Coordinator timings do not cover the original engines exactly once")
+    metrics[_PREFIX + "receiver_engines"] = len(engines)
+    for name in ("prepare_s", "apply_s", "resume_s", "activation_s"):
+        _distribution(metrics, "engine_coordinator_" + name, [row[name] for row in engine_timings])
+    metrics[_PREFIX + "coordinator_activation_s"] = _number(activation["coordinator_timings"]["activation_s"])
     return metrics
 
 

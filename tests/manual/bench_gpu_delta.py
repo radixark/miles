@@ -215,8 +215,9 @@ def _validate_cohort(cohort, engine_count):
                 or {p["tp_rank"] for p in participants} != set(range(size))
                 or any(p["pp_rank"] != 0 for p in participants)):
             raise ValueError("Engine participant topology differs from the requested TP/DP/EP layout")
-    if len(cohort.host_tensor_names) != 1:
-        raise ValueError("All benchmark engines must share one host-cache directory/identity")
+    arena_ids = [{p["host_cache_id"] for p in participants} for participants in cohort.participants]
+    if any(len(ids) != 1 for ids in arena_ids) or len(set().union(*arena_ids)) != engine_count:
+        raise ValueError("Each benchmark engine must own one distinct host arena")
 
 
 def _capture_gpu_processes(cohort, ports):

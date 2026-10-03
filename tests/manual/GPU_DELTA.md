@@ -29,8 +29,8 @@ allocation modes. Pinned host buffers supply streamed Snappy H2D copies.
 | --- | --- |
 | `WEIGHT_DELTA_CODEC=snappy-zstd` | The sole supported value and default. Frozen at launch and matched against the receiver plan and immutable publication. |
 | `WEIGHT_DELTA_TIMING=1` | Optional per-phase CUDA events. Default off; instrumentation can perturb timing. |
-| `WEIGHT_DELTA_CPU_WORKERS=32` | CPU outer-Zstd workers for the host cache creator; total per host, not per rank, plus one independent SHA worker. |
-| `WEIGHT_DELTA_HOST_CACHE_DIR` | Shared host tmpfs root; defaults to `/dev/shm/sglang-gpu-delta-<uid>`. Its persistent identity groups colocated engines. |
+| `WEIGHT_DELTA_CPU_WORKERS=32` | CPU outer-Zstd workers per engine-host arena creator, not per rank, plus one independent SHA worker. Two colocated engines have separate pools (64 decoder workers at the default). |
+| `WEIGHT_DELTA_HOST_CACHE_DIR` | Tmpfs base for engine-local host arenas; defaults to `/dev/shm/sglang-gpu-delta-<uid>`. Engines use separate subdirectories, identities and locks; only ranks of the same engine share an arena. |
 
 For Ray launches, set the job `runtime_env` environment or use the provided
 `execute_train(extra_env_vars=...)` path. The submitting shell alone does not
@@ -67,7 +67,7 @@ Protocol 4 records `codec: snappy-zstd`, explicit `frame_bytes`, natural tensor
 identity and outer chunk offsets/lengths. SHA-256 authenticates final owner files;
 old/new weights and intermediate Snappy bytes are not hashed. The receiver reads
 and verifies immutable files, then CPU-decompresses locally needed outer chunks
-once per host into shared Snappy storage during background preparation. Each rank
+once per engine-host arena into shared Snappy storage during background preparation. Each rank
 registers the shared arena for its streamed pinned transfer. After
 actual pause, it streams each tensor to HBM, performs hardware Snappy decompression,
 transforms the XOR mask into the physical weight layout, and applies in place.
@@ -75,30 +75,37 @@ GPU Zstd decompression is not part of this path.
 
 Miles negotiates the immutable plan and original participant cohort once when
 connecting; learned updates reuse that plan rather than sort and hash it again.
-The receiver advertises an opaque shared-cache host identity. Miles supplies each
-host's union of canonical tensor names so engines sharing that cache can reuse
-host preparation without decoding experts assigned only to other hosts.
+The receiver advertises an opaque engine-host arena identity. Miles supplies only
+that engine's local union of canonical tensor names. Ranks within an engine share
+CPU preparation; independent engines have separate arenas and may duplicate host
+bytes. No host-wide cache lock or release barrier couples separate engines.
+Each creator bounds queued decode futures to `4 * WEIGHT_DELTA_CPU_WORKERS`;
+it does not enqueue one unbounded future for every tensor/frame.
 The owner-local exporter hook requires ETP1 only for this protocol; ordinary
 upstream direct-exporter ETP support is unchanged.
 
-One Miles coordinator exclusively owns the original engine cohort during an update;
-concurrent engine administration, other weight mutations, or external pause/resume
-calls are unsupported. Prepare runs while the old version serves, and Miles waits
-for every original rank to be PREPARED. `update_weights_from_delta(session_id)` then
-closes local admission, pauses scheduling, fences readers, retracts requests,
-flushes caches and applies the delta. A failed reader fence never reclaims KV.
-Each engine stays paused after APPLIED. Once all original ranks report APPLIED,
-`resume_weights_from_delta(session_id, receipts)` validates their compact global
-certificate, records the new weight version and resumes. There is no separate
-global quiesce or commit round trip; ordinary pause/continue APIs are unchanged.
+One Miles coordinator exclusively owns the original engine endpoints during an
+update; concurrent administration, other mutations and external pause/resume are
+unsupported. Each engine independently prepares while its old version serves,
+waits for its own original ranks to be PREPARED, then calls
+`update_weights_from_delta(session_id)`. That engine closes admission, pauses,
+fences readers, retracts requests, flushes caches and applies. A failed reader
+fence never reclaims KV. Its own all-rank APPLIED certificate authorizes
+`resume_weights_from_delta(session_id, receipts)`; the engine records the new
+version and resumes without waiting for other engines. Ordinary pause/continue
+APIs remain unchanged. Each engine's local TP/EP participants still synchronize
+for safe activation; independent replicas may temporarily serve different versions.
 
-Only all-original-rank RESUMED receipts commit the sender's pending baseline. A
-prepare failure can discard prepared inputs without stopping serving. Failure or
-an uncertain reply after apply dispatch is terminal: retain partial artifacts,
-do not abort/replay the XOR or automatically resume/recover. A failed apply RPC
-may leave an unreachable engine serving the old version while reached engines
-remain paused; the operation never publishes a successful new version. Session,
-version and incarnation checks do not prove full weight-content equality.
+The trainer awaits every engine coroutine and advances its pinned baseline only
+after all original RESUMED receipts. On failure it still settles the other engine
+tasks before raising. A preparation failure aborts only that engine's preparation;
+an uncertain reply after apply dispatch is terminal for that engine: do not abort,
+replay XOR, automatically resume or recover. Other engines may already have resumed
+successfully; failure does not roll them back or report overall success. A failed
+update never advances the common sender baseline. Session/version/incarnation
+checks do not prove full weight-content equality.
+External cancellation can leave outstanding remote work; it is incomplete and
+does not authorize automatic retry, cleanup or recovery.
 
 The sender's N matrix bytes still incur new export D2H plus old/new H2D (3N total),
 followed by final compressed D2H. Raw bypass avoids both matrix H2D uploads. Export,
@@ -120,13 +127,13 @@ producer prefixes reuse the existing owner gather.
 
 - `receiver_scheduler_pause_s/{min,p50,max}` joins each original process's
   APPLIED and RESUMED receipts. It includes its reader fence, retraction/cache
-  flush, application, global APPLIED wait and resume. Failed/open intervals are
+  flush, application, its own engine's APPLIED wait and resume. Failed/open intervals are
   never reported as completed pauses.
 - `receiver_reader_fence_s` and `receiver_paused_apply_host_wall_s` have separate
   rank distributions. `receiver_host_prepare_s` covers background preparation
   before pause. Other `receiver_host_*` summaries retain their source span names;
   registration and cache wait are per-rank work.
-- `creator_host_*` distributions sample the single cache creator on each host,
+- `creator_host_*` distributions sample the single creator in each engine-host arena,
   excluding attaching ranks' zero counters. `host_cache_creators` records coverage;
   byte sums count each creator once. `creator_cpu_workers` records active creator
   worker counts. `host_outer_zstd_validate_s` and `worker_decode_sum_s` are sums
@@ -134,29 +141,35 @@ producer prefixes reuse the existing owner gather.
   including submission, validation, raw copies and joining tasks. These overlap.
 - `creator_host_{shared,encoded}_allocation_s/{min,p50,max}` samples only host
   creators; corresponding `allocation_calls/sum` and `allocation_bytes/sum`
-  count cold/growth allocations once per host. Warm fitting updates report zero
+  count cold/growth allocations once per engine-host arena. Warm fitting updates report zero
   allocation work while retaining their arenas.
 - `host_shared_arena_bytes`, `host_shared_capacity_bytes`, and
-  `host_encoded_capacity_bytes` report `{min,p50,max,sum}` across distinct hosts,
-  counting each host once even when several ranks or engines map its arena.
+  `host_encoded_capacity_bytes` report `{min,p50,max,sum}` across distinct engine-host arenas,
+  counting each arena once across its ranks. Independent engines may duplicate
+  physical bytes; `receiver_host_arenas` is not a physical-node count.
   Used bytes and retained capacity are separate quantities.
 - `creator_host_payload_decode_hash_s` measures the combined CPU decode/hash
   wall span; `creator_host_payload_hash_wait_s` measures only the hash tail
   waited after decode. SHA duration and decode wall overlap and must not be
   added. The worker decode sum remains summed worker elapsed time, not CPU
-  utilization. Each span has `{min,p50,max}` across host creators.
+  utilization. Each span has `{min,p50,max}` across engine-host creators.
 - `receiver_host_plan_cache_reused/{min,p50,max}` reports per-rank static-plan
   cache reuse; each publication still validates its dynamic frame metadata.
-  Older receipts omit these optional overlap/cache metrics.
+  `creator_host_frames_validate_s` is creator-only and nested inside arena build;
+  `creator_host_frames_validations/sum` counts one dynamic geometry validation
+  per created arena, not zero-weighted follower rank medians.
 - `receiver_host_shared_{register_calls,registered_bytes,registration_reused,
   mapping_reused,registration_capacity_bytes}/{min,p50,max}` are per-rank
   distributions. `registered_bytes` counts newly registered bytes for this
   update (zero on warm reuse); `registration_capacity_bytes` remains the active
   per-process capacity. These rank capacities are never summed as physical host
   memory. Receipts lacking optional capacity fields omit those metrics.
-- `coordinator_{prepare,apply_barrier,resume_barrier,activation}_s` are enclosing
-  coordinator wall times. `producer_prefix_*` distributions end at the existing
-  pre-publication owner gather, before receiver activation.
+- `engine_coordinator_{prepare,apply,resume,activation}_s/{min,p50,max}` reports
+  independent per-engine RPC lifetimes. `coordinator_activation_s` is the enclosing
+  trainer-side await of all engines; no global preparation/apply/resume phases are
+  inferred from overlapping engine lifetimes. `receiver_engines` counts coverage.
+  `producer_prefix_*` distributions end at the existing pre-publication owner
+  gather, before receiver activation.
 - `trainer_logging_rank_blocked_s` measures this update's `begin_sync` through
   the existing final trainer barrier on the rank selected by the training logger;
   `trainer_logging_rank` identifies it. It excludes actor reconnect/cleanup and
@@ -228,9 +241,9 @@ python tests/manual/bench_gpu_delta.py oracle --model /models/GLM5.2-NVFP4 \
 ```
 
 For two TP4/DP4/EP4 engines on one eight-GPU host, provide two ports. The first
-engine uses GPUs0–3; the second uses GPUs4–7. Both must see the same genuinely
-host-shared `WEIGHT_DELTA_HOST_CACHE_DIR` on tmpfs. The harness checks the common
-host-cache identity, all eight original scheduler identities, each engine's
+engine uses GPUs0–3; the second uses GPUs4–7. Both use the same tmpfs base
+`WEIGHT_DELTA_HOST_CACHE_DIR`, but each engine owns a distinct subdirectory/arena.
+The harness checks one arena per engine, all eight original scheduler identities, each engine's
 TP/DP ranks0–3, and captures compute-process PID→GPU UUID observations. If NVML
 uses host PIDs unavailable in the container's `NSpid` mapping, that join remains
 explicitly unqualified; requested GPU masks are not presented as native proof. Generation
@@ -264,8 +277,9 @@ records source/new hashes, unchanged non-view tensor metadata and verified paylo
 inode identities. Preserve both fixtures as immutable. Inventory and run use
 separate fresh engine pairs; their startup/teardown is outside update timing.
 
-Both engines negotiate one cohort and prepare/apply concurrently. No engine
-resumes until every original participant has returned APPLIED. Untimed generation
+Both engines negotiate one canonical publication and update independently. Each engine
+resumes after its own original participants have returned APPLIED; the trainer joins
+both completions before advancing its baseline. Untimed generation
 visits all four DP routes in both engines after each update. EP4/EP8 comparisons
 report observed differences; topology changes alone do not establish numerical
 equivalence. The same-topology altered-checkpoint oracle supplies a separate

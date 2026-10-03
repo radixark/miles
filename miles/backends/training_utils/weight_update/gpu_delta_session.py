@@ -1,4 +1,4 @@
-"""Coordinator barriers for direct GPU deltas, independent of payload encoding."""
+"""Independent engine activation of one canonical GPU-delta publication."""
 
 from __future__ import annotations
 
@@ -51,6 +51,7 @@ class ReceiverCohort:
     plan_digest: str
     codec: str
     host_tensor_names: dict[str, list[str]]
+    engine_host_tensor_names: tuple[dict[str, list[str]], ...]
 
 
 def negotiate_cohort(descriptions: Sequence[dict], *, codec: str = CODEC) -> ReceiverCohort:
@@ -62,14 +63,22 @@ def negotiate_cohort(descriptions: Sequence[dict], *, codec: str = CODEC) -> Rec
     if len(set(engine_ids)) != len(engine_ids):
         raise ValueError("Duplicate engine endpoints")
     host_names: dict[str, set[str]] = {}
+    host_owners = {}
     for description in descriptions:
         for participant in description["participants"]:
             host_id = participant["identity"].get("host_cache_id")
             if not isinstance(host_id, str) or not host_id:
-                raise ValueError("Receiver must advertise its shared host-cache identity")
+                raise ValueError("Receiver must advertise its engine-host cache identity")
+            engine_id = participant["identity"]["engine_id"]
+            if host_owners.setdefault(host_id, engine_id) != engine_id:
+                raise ValueError("Independent engines must not share a host arena")
             host_names.setdefault(host_id, set()).update(tensor["name"] for tensor in participant["plan"]["tensors"])
     host_tensor_names = {host_id: sorted(names) for host_id, names in sorted(host_names.items())}
-    return ReceiverCohort(plan, tuple(identities), participants, engine_ids, digest, codec, host_tensor_names)
+    engine_host_names = tuple(
+        {host_id: host_tensor_names[host_id] for host_id in sorted({p["host_cache_id"] for p in group})}
+        for group in participants
+    )
+    return ReceiverCohort(plan, tuple(identities), participants, engine_ids, digest, codec, host_tensor_names, engine_host_names)
 
 
 def validate_receipts(response: Mapping, expected: list[dict], *, state: str, session_id: str, publication: dict):
@@ -89,12 +98,13 @@ def validate_receipts(response: Mapping, expected: list[dict], *, state: str, se
 
 
 async def activate_publication(clients, cohort: ReceiverCohort, publication, *, session_id: str | None = None):
-    """Prepare while serving, then locally pause/apply and globally certify resume.
+    """Activate engines independently; settle all before advancing the trainer.
 
-    One coordinator owns the original engines throughout this operation; competing
-    updates or engine administration are unsupported. Every fanout settles before
-    the next phase. After apply starts, failures are terminal: never abort, resume
-    without all APPLIED receipts, or blindly replay an XOR publication.
+    An engine may resume while another prepares or remains failed/paused. Only
+    that engine's original ranks certify its resume. After apply dispatch there
+    is no automatic abort, resume or XOR retry. An RPC failure drains every
+    other engine coroutine before returning an error to the trainer. External
+    cancellation leaves an incomplete operation and does not authorize recovery.
     """
     started = time.monotonic()
     session_id = session_id or uuid.uuid4().hex
@@ -102,68 +112,69 @@ async def activate_publication(clients, cohort: ReceiverCohort, publication, *, 
         raise ValueError("Publication differs from the negotiated receiver plan/codec")
     if len(clients) != len(cohort.engine_ids):
         raise ValueError("Missing engine endpoints")
-    expected = cohort.participants
+    results = await asyncio.gather(
+        *[
+            _activate_engine(client, engine_id, participants, host_names, publication, session_id)
+            for client, engine_id, participants, host_names in zip(
+                clients, cohort.engine_ids, cohort.participants, cohort.engine_host_tensor_names, strict=True
+            )
+        ],
+        return_exceptions=True,
+    )
+    _raise_rpc_errors(results)
+    return {
+        "coordinator_timings": {"activation_s": time.monotonic() - started},
+        "engine_timings": [result["timings"] for result in results],
+        "session_id": session_id,
+        "receipts": [receipt for result in results for receipt in result["receipts"]],
+        "resumed_receipts": [receipt for result in results for receipt in result["resumed_receipts"]],
+        "plan_digest": cohort.plan_digest,
+    }
+
+
+async def _activate_engine(client, engine_id, participants, host_names, publication, session_id):
+    started = time.monotonic()
     common = {
         key: publication[key]
         for key in ("manifest_path", "manifest_sha256", "stream_id", "base_version", "target_version", "plan_digest")
     }
-    preparations = await asyncio.gather(
-        *[
-            client.prepare_weights_from_delta(
-                **common,
-                session_id=session_id,
-                engine_id=engine_id,
-                participants=participants,
-                cohort=cohort.identities,
-                host_tensor_names=cohort.host_tensor_names,
-            )
-            for client, engine_id, participants in zip(clients, cohort.engine_ids, expected, strict=True)
-        ],
-        return_exceptions=True,
-    )
     try:
+        preparation = await client.prepare_weights_from_delta(
+            **common,
+            session_id=session_id,
+            engine_id=engine_id,
+            participants=participants,
+            host_tensor_names=host_names,
+        )
         _validate_progress(
-            preparations, expected, states={"PREPARING", "PREPARED"}, session_id=session_id, publication=publication
+            preparation, participants, states={"PREPARING", "PREPARED"}, session_id=session_id, publication=publication
         )
-        await _wait_state(
-            clients, expected, state="PREPARED", pending="PREPARING", session_id=session_id, publication=publication
-        )
+        await _wait_state(client, participants, session_id=session_id, publication=publication)
     except Exception:
-        # No pause or mutation was requested. Abort every endpoint, including an
-        # uncertain prepare reply; the session ID names the only possible lease.
-        await asyncio.gather(
-            *[c.abort_weights_from_delta(session_id=session_id) for c in clients], return_exceptions=True
-        )
+        # No pause or mutation was requested on this engine. Its uncertain
+        # prepare reply does not authorize aborting another engine's lease.
+        await asyncio.gather(client.abort_weights_from_delta(session_id=session_id), return_exceptions=True)
         raise
     prepared_at = time.monotonic()
-    applied = await asyncio.gather(
-        *[c.update_weights_from_delta(session_id=session_id) for c in clients],
-        return_exceptions=True,
-    )
-    receipts = _validate_phase(applied, expected, state="APPLIED", session_id=session_id, publication=publication)
-    # Keep results/timings in the returned evidence, not the all-rank certificate
-    # copied to every scheduler. SGLang constructs this from its APPLIED state.
+    applied = await client.update_weights_from_delta(session_id=session_id)
+    receipts = validate_receipts(applied, participants, state="APPLIED", session_id=session_id, publication=publication)
     certificate = [receipt["certificate"] for receipt in receipts]
     applied_at = time.monotonic()
-    resumed = await asyncio.gather(
-        *[c.resume_weights_from_delta(session_id=session_id, receipts=certificate) for c in clients],
-        return_exceptions=True,
-    )
-    resumed_receipts = _validate_phase(
-        resumed, expected, state="RESUMED", session_id=session_id, publication=publication
+    resumed = await client.resume_weights_from_delta(session_id=session_id, receipts=certificate)
+    resumed_receipts = validate_receipts(
+        resumed, participants, state="RESUMED", session_id=session_id, publication=publication
     )
     resumed_at = time.monotonic()
     return {
-        "coordinator_timings": {
+        "timings": {
+            "engine_id": engine_id,
             "prepare_s": prepared_at - started,
-            "apply_barrier_s": applied_at - prepared_at,
-            "resume_barrier_s": resumed_at - applied_at,
+            "apply_s": applied_at - prepared_at,
+            "resume_s": resumed_at - applied_at,
             "activation_s": resumed_at - started,
         },
-        "session_id": session_id,
         "receipts": receipts,
         "resumed_receipts": resumed_receipts,
-        "plan_digest": cohort.plan_digest,
     }
 
 
@@ -175,53 +186,32 @@ def _raise_rpc_errors(results):
             raise RuntimeError(f"GPU-delta RPC rejected: {result.get('message')}")
 
 
-def _validate_phase(results, expected, *, state, session_id, publication):
-    _raise_rpc_errors(results)
-    return [
-        receipt
-        for result, participants in zip(results, expected, strict=True)
-        for receipt in validate_receipts(
-            result, participants, state=state, session_id=session_id, publication=publication
-        )
-    ]
-
-
-async def _wait_state(clients, expected, *, state, pending, session_id, publication, timeout=1800):
-    # Preparation starts background work. Poll each original rank until its
-    # immutable inputs are ready, before asking any engine to pause and apply.
+async def _wait_state(client, participants, *, session_id, publication, timeout=1800):
     async def poll():
         while True:
-            statuses = await asyncio.gather(
-                *[c.get_weights_delta_status(session_id=session_id) for c in clients], return_exceptions=True
-            )
+            response = await client.get_weights_delta_status(session_id=session_id)
             receipts = _validate_progress(
-                statuses, expected, states={pending, state}, session_id=session_id, publication=publication
+                response, participants, states={"PREPARING", "PREPARED"}, session_id=session_id, publication=publication
             )
-            if all(receipt["state"] == state for receipt in receipts):
+            if all(receipt["state"] == "PREPARED" for receipt in receipts):
                 return receipts
             await asyncio.sleep(0.05)
 
     return await asyncio.wait_for(poll(), timeout=timeout)
 
 
-def _validate_progress(results, expected, *, states, session_id, publication):
-    _raise_rpc_errors(results)
-    receipts = []
-    for response, participants in zip(results, expected, strict=True):
-        if response.get("success") is not True:
-            raise RuntimeError("GPU-delta progress request failed")
-        actual = [r.get("identity") for r in response.get("participants", [])]
-        if sorted(map(canonical_json, actual)) != sorted(map(canonical_json, participants)):
-            raise RuntimeError("Original receiver identity changed during preparation")
-        for receipt in response["participants"]:
-            if receipt.get("state") not in states:
-                raise RuntimeError(f"Unexpected gpu-delta progress state: {receipt.get('state')}")
-            validate_receipts(
-                {"success": True, "participants": [receipt]},
-                [receipt["identity"]],
-                state=receipt["state"],
-                session_id=session_id,
-                publication=publication,
-            )
-            receipts.append(receipt)
+def _validate_progress(response, participants, *, states, session_id, publication):
+    if response.get("success") is not True:
+        raise RuntimeError(f"GPU-delta progress request failed: {response.get('message')}")
+    actual = [r.get("identity") for r in response.get("participants", [])]
+    if sorted(map(canonical_json, actual)) != sorted(map(canonical_json, participants)):
+        raise RuntimeError("Original receiver identity changed during preparation")
+    receipts = response["participants"]
+    for receipt in receipts:
+        if receipt.get("state") not in states:
+            raise RuntimeError(f"Unexpected gpu-delta progress state: {receipt.get('state')}")
+        validate_receipts(
+            {"success": True, "participants": [receipt]}, [receipt["identity"]],
+            state=receipt["state"], session_id=session_id, publication=publication,
+        )
     return receipts
