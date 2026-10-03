@@ -41,7 +41,6 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
     def __init__(self, args):
         super().__init__(args)
         self.codec, self.encoder_backend = gpu_delta_publication.settings_from_env()
-        self.snappy_zstd = gpu_delta_publication.snappy_zstd_from_env(self.codec, self.encoder_backend)
         self._timing = os.environ.get("WEIGHT_DELTA_TIMING", "0") == "1"
         self._snapshot = {}
         self._next_snapshot = {}
@@ -142,7 +141,6 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
                 target_version=weight_version,
                 plan_digest=self._plan_digest,
                 codec=self.codec,
-                snappy_zstd=self.snappy_zstd,
                 owner=dist.get_rank(),
                 frame_bytes=(
                     self._gpu_encoder.frame_bytes
@@ -313,7 +311,7 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
         # snapshot remains immutable until receiver commit, including on error.
         started = time.monotonic()
         encoded, jobs = [], []
-        pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="gpu-delta-outer") if self.snappy_zstd else None
+        pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="gpu-delta-outer") if self.codec == "snappy" else None
         try:
             for names in self._gpu_batches():
                 results = self._gpu_encoder.encode(
@@ -489,13 +487,17 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
             # Retain the existing transfer key, now counting export of the
             # current snapshot; the old pinned baseline is never written back.
             self.publication_metrics["baseline_d2h_bytes"] += sum(t.nbytes for t in self._next_snapshot.values())
-        if self.snappy_zstd:
-            self.publication_metrics.update(
-                snappy_zstd=True,
-                outer_cpu_work_s=self._outer_cpu_work_s,
-                outer_tail_wait_s=self._outer_tail_wait_s,
-                **self._writer.outer_metrics,
-            )
+        if self.codec == "snappy":
+            self.publication_metrics.update(self._writer.outer_metrics)
+            if self.encoder_backend == "gpu":
+                self.publication_metrics.update(
+                    outer_cpu_work_s=self._outer_cpu_work_s,
+                    outer_tail_wait_s=self._outer_tail_wait_s,
+                )
+            else:
+                # CPU inner hashing is part of cpu_encode_write_s; it is not
+                # separately timed. CPU workers already wrap before returning.
+                self.publication_metrics.pop("inner_hash_s")
         if self._timing:
             self.publication_metrics["tensor_phases"] = self._encoding_metrics
         shard["producer_metrics"] = self.publication_metrics

@@ -58,17 +58,7 @@ def settings_from_env() -> tuple[str, str]:
         raise ValueError("Expected WEIGHT_DELTA_CODEC=zstd|snappy and WEIGHT_DELTA_ENCODER=gpu|cpu")
     if "WEIGHT_DELTA_STAGING" in os.environ:
         raise ValueError("WEIGHT_DELTA_STAGING was removed; GPU-delta receivers always stream tensors")
-    snappy_zstd_from_env(codec, encoder)
     return codec, encoder
-
-
-def snappy_zstd_from_env(codec: str, encoder: str) -> bool:
-    value = os.environ.get("WEIGHT_DELTA_SNAPPY_ZSTD", "0")
-    if value not in ("0", "1"):
-        raise ValueError("Expected WEIGHT_DELTA_SNAPPY_ZSTD=0|1")
-    if value == "1" and (codec != "snappy" or encoder != "gpu"):
-        raise ValueError("WEIGHT_DELTA_SNAPPY_ZSTD=1 requires GPU Snappy encoding")
-    return value == "1"
 
 
 def _inner_payload_layout(payloads):
@@ -228,8 +218,9 @@ class PublicationWriter:
     """One owner's append-only payload; manifest is sealed after all owners finish.
 
     add_tensor may be called by bounded CPU encoding workers. The lock protects
-    append offsets only; compression/hash work happens outside it. Partial files
-    are preserved on failure and never overwritten by a retry.
+    append offsets and the reused Snappy outer-Zstd context. Inner compression
+    and hashing happen outside it. Partial files are preserved on failure and
+    never overwritten by a retry.
     """
 
     def __init__(
@@ -244,7 +235,6 @@ class PublicationWriter:
         owner: int = 0,
         publication_id: str | None = None,
         frame_bytes: int = FRAME_BYTES,
-        snappy_zstd: bool = False,
     ):
         if (
             not stream_id
@@ -261,11 +251,8 @@ class PublicationWriter:
         self.codec = codec or settings_from_env()[0]
         if self.codec not in ("zstd", "snappy"):
             raise ValueError("Unknown gpu-delta codec")
-        if type(snappy_zstd) is not bool or (snappy_zstd and self.codec != "snappy"):
-            raise ValueError("Outer Zstd wrapping requires Snappy frames")
-        self.snappy_zstd = snappy_zstd
         self._outer_compressor = (
-            zstandard.ZstdCompressor(level=1, threads=0, write_content_size=True) if snappy_zstd else None
+            zstandard.ZstdCompressor(level=1, threads=0, write_content_size=True) if self.codec == "snappy" else None
         )
         self.outer_metrics = dict(
             outer_compress_s=0.0,
@@ -277,14 +264,14 @@ class PublicationWriter:
             outer_streamed_tensors=0,
         )
         self.metadata = {
-            "protocol_version": 3 if snappy_zstd else 2,
+            "protocol_version": 3 if self.codec == "snappy" else 2,
             "stream_id": stream_id,
             "publication_id": publication_id or uuid.uuid4().hex,
             "base_version": base_version,
             "target_version": target_version,
             "plan_digest": plan_digest,
             "payload_checksum_format": "sha256",
-            "codec_profile": f"{self.codec}-independent-{_FRAME_PROFILES[frame_bytes]}{'-zstd' if snappy_zstd else ''}-v1",
+            "codec_profile": f"{self.codec}-independent-{_FRAME_PROFILES[frame_bytes]}{'-zstd' if self.codec == 'snappy' else ''}-v1",
         }
         self._filename = f"owner-{owner:05d}.bin"
         self._file = (self.directory / self._filename).open("xb")
@@ -294,8 +281,6 @@ class PublicationWriter:
         self._closed = False
 
     def add_tensor(self, name: str, old, new, *, dtype: str, shape: list[int], views=None, encoding="xor_bytes"):
-        if self.snappy_zstd:
-            raise ValueError("Outer Zstd wrapping requires GPU-produced encoded frames")
         entry, payloads = encode_tensor(
             name,
             old,
@@ -335,9 +320,9 @@ class PublicationWriter:
                 raise ValueError("Encoded frame profile or size mismatch")
             if not payload or (frame["codec"] == "none" and len(payload) != size):
                 raise ValueError("Invalid raw frame byte count")
-            started = time.monotonic() if self.snappy_zstd else 0.0
+            started = time.monotonic() if self.codec == "snappy" else 0.0
             frame["encoded_sha256"] = sha256(payload)
-            if self.snappy_zstd:
+            if self.codec == "snappy":
                 hash_s += time.monotonic() - started
             entry["frames"].append(frame)
             end = offset + size
@@ -350,7 +335,7 @@ class PublicationWriter:
         with self._lock:
             if self._closed or name in self._entries:
                 raise ValueError("Publication is sealed or tensor was already published")
-            if self.snappy_zstd:
+            if self.codec == "snappy":
                 self.outer_metrics["inner_hash_s"] += inner_hash_s
                 self._append_outer(entry, payloads)
             else:

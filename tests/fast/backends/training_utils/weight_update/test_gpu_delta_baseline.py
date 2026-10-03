@@ -4,6 +4,8 @@ import asyncio
 import threading
 import time
 from argparse import Namespace
+from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import Mock, patch
 
 import numpy as np
@@ -49,7 +51,6 @@ def _setup(tmp_path, *, fail=False):
 @pytest.fixture
 def single_rank(monkeypatch):
     monkeypatch.setenv("WEIGHT_DELTA_ENCODER", "cpu")
-    monkeypatch.delenv("WEIGHT_DELTA_SNAPPY_ZSTD", raising=False)
     with (
         patch.object(gpu_delta, "_gather_all", side_effect=lambda value: [value]),
         patch.object(gpu_delta, "get_gloo_group", return_value=None),
@@ -99,7 +100,7 @@ def _gpu_pending(monkeypatch, *, fail_batch=None, omit=None, wrapped=False):
         Namespace(update_weight_buffer_size=5, custom_update_weight_post_write_path=None)
     )
     protocol.encoder_backend = "gpu"
-    protocol.snappy_zstd = wrapped
+    protocol.codec = "snappy" if wrapped else "zstd"
     # Deliberately insert names out of order; c exceeds the batch target.
     sizes = {"d": 1, "b": 3, "c": 7, "a": 2}
     protocol._snapshot = {name: torch.zeros(size, dtype=torch.uint8) for name, size in sizes.items()}
@@ -275,3 +276,54 @@ def test_outer_worker_overlaps_later_gpu_batch_and_drains_before_error_close(
         assert protocol._encoded_hash_write_s == 0.05
         assert protocol.pending_baseline is protocol._next_snapshot
         protocol._writer.close.assert_not_called()
+
+
+def test_cpu_snappy_failure_drains_encoding_workers_before_closing_partial_publication(
+    tmp_path, monkeypatch, single_rank
+):
+    monkeypatch.setenv("WEIGHT_DELTA_CODEC", "snappy")
+    protocol = gpu_delta.UpdateWeightFromGpuDelta(Namespace(custom_update_weight_post_write_path=None))
+    protocol._snapshot = {name: np.zeros(1000, dtype=np.uint8) for name in ("a", "b")}
+    protocol._plan = {
+        name: {"dtype": "U8", "shape": [1000], "views": None, "encoding": "xor_bytes"} for name in ("a", "b")
+    }
+    protocol._seen, protocol._uncommitted = {"a", "b"}, True
+    protocol._encoding_metrics = []
+    protocol._encoding_tail_wait_s = 0.0
+    protocol._writer = gpu_delta.gpu_delta_publication.PublicationWriter(
+        tmp_path, stream_id="s", base_version=0, target_version=1, plan_digest="b" * 64, codec=protocol.codec
+    )
+    writer = protocol._writer
+    append = writer._append_outer
+    first_failed = threading.Event()
+
+    def append_or_fail(entry, payloads):
+        if entry["name"] == "a":
+            first_failed.set()
+            raise OSError("outer publication write failed")
+        append(entry, payloads)
+
+    monkeypatch.setattr(writer, "_append_outer", append_or_fail)
+    protocol._pool = ThreadPoolExecutor(max_workers=2)
+    ready = Mock(synchronize=Mock())  # Native tests cover the completed export D2H event.
+    current = torch.full((1000,), 7, dtype=torch.uint8)
+    failed = protocol._pool.submit(protocol._encode_cpu, "a", current, ready, current)
+    assert first_failed.wait(2)
+    following = protocol._pool.submit(protocol._encode_cpu, "b", current, ready, current)
+    protocol._inflight = deque([failed, following])
+    close = writer.close
+
+    def close_after_workers():
+        assert failed.done() and following.done()
+        assert writer._entries.keys() == {"b"}  # Later accepted work finished before close.
+        close()
+
+    monkeypatch.setattr(writer, "close", close_after_workers)
+    with pytest.raises(RuntimeError, match="GPU-delta encoding failed.*outer publication write failed"):
+        protocol.after_base_weights()
+    assert writer._closed and (tmp_path / "owner-00000.bin").stat().st_size > 0
+    assert not (tmp_path / "manifest.json").exists()
+    assert not protocol._pending_ready and protocol._uncommitted
+    np.testing.assert_array_equal(protocol._snapshot["a"], 0)
+    with pytest.raises(RuntimeError, match="automatic replay"):
+        protocol.begin_sync(2, None)
