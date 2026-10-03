@@ -11,12 +11,13 @@ before tilelang can be loaded.
 from argparse import ArgumentParser, Namespace
 
 DSV4_SPEC_MODULE = "miles_plugins.models.deepseek_v4.deepseek_v4"
+DSV41_SPEC_MODULE = "miles_plugins.models.deepseek_v41.deepseek_v41"
 
 
 def is_dsv4_model(args: Namespace) -> bool:
     """Whether this run builds its layers from the DeepSeek-V4 plugin spec."""
     spec = getattr(args, "spec", None)
-    return bool(spec) and spec[0] == DSV4_SPEC_MODULE
+    return bool(spec) and spec[0] in (DSV4_SPEC_MODULE, DSV41_SPEC_MODULE)
 
 
 def add_dsv4_arguments(parser: ArgumentParser) -> ArgumentParser:

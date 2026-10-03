@@ -107,6 +107,15 @@ RUN pip install --no-deps tile_kernels==1.0.0 && \
 # FlashQLA backend for Qwen GDN linear-attention layers (requires SM90+, CUDA 12.8+, PyTorch 2.8+; built on tilelang above)
 # Its dependency pins would downgrade TileLang and TVM-FFI; use the versions above.
 RUN pip install -v --no-deps --no-build-isolation "git+https://github.com/QwenLM/FlashQLA.git@7c7dfe16416ad21b1d03258189fc8d3b8460ae06"
+# DeepSelect: the top-k the DeepSeek-V4.1 indexer selects with. It ships sm100a/sm103a only, and
+# the V4.1 plugin falls back to torch.topk on anything older. Its setup.py probes for a GPU with
+# lspci, which a build host does not have, hence pciutils and the explicit target.
+RUN apt-get update && apt-get install -y --no-install-recommends pciutils && rm -rf /var/lib/apt/lists/* && \
+    git clone --recursive --depth 1 https://github.com/deepseek-ai/DeepSelect.git /tmp/DeepSelect && \
+    cd /tmp/DeepSelect && git checkout 0f03b68748b304863fdf0181a11458d04ae533a9 && \
+    git submodule update --init --depth 1 csrc/3rdparty/cutlass && \
+    DEEP_SELECT_BUILD_TARGET_PLATFORM=CUDA MAX_JOBS=${MAX_JOBS:-32} pip install --no-build-isolation . && \
+    rm -rf /tmp/DeepSelect
 # Prefer the prebuilt wheel; fall back to a source build while the current
 # arch's wheels release doesn't carry it yet (QEMU-emulated arm64 source
 # builds are the expensive path this avoids).
