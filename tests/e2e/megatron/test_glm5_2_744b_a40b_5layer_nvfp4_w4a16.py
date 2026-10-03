@@ -143,7 +143,6 @@ def _gpu_delta_env():
     return {
         "WEIGHT_DELTA_CODEC": os.environ.get("WEIGHT_DELTA_CODEC", "snappy"),
         "WEIGHT_DELTA_ENCODER": os.environ.get("WEIGHT_DELTA_ENCODER", "gpu"),
-        "WEIGHT_DELTA_SNAPPY_ZSTD": os.environ.get("WEIGHT_DELTA_SNAPPY_ZSTD", "0"),
     }
 
 
@@ -159,7 +158,7 @@ def _assert_gpu_delta_weights_changed(args, version_dir, _rollout_engines):
     if current["target_version"] != last_version:
         return
     delta_env = _gpu_delta_env()
-    wrapped = delta_env["WEIGHT_DELTA_SNAPPY_ZSTD"] == "1"
+    wrapped = delta_env["WEIGHT_DELTA_CODEC"] == "snappy"
     expected_protocol = 3 if wrapped else 2
     expected_profile = f"{delta_env['WEIGHT_DELTA_CODEC']}-independent-1mib{'-zstd' if wrapped else ''}-v1"
     changed_bytes = []

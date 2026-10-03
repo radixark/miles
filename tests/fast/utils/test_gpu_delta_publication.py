@@ -69,7 +69,7 @@ def test_raw_fallback_and_noncontiguous_tp_view_metadata():
     np.testing.assert_array_equal(_decode(entry, payloads, base.reshape(-1)), target.reshape(-1))
 
 
-def _writer(path, owner=0, *, frame_bytes=gpu_delta_publication.FRAME_BYTES):
+def _writer(path, owner=0, *, frame_bytes=gpu_delta_publication.FRAME_BYTES, codec="zstd"):
     return gpu_delta_publication.PublicationWriter(
         path,
         stream_id="stream",
@@ -77,14 +77,15 @@ def _writer(path, owner=0, *, frame_bytes=gpu_delta_publication.FRAME_BYTES):
         base_version=0,
         target_version=1,
         plan_digest="b" * 64,
-        codec="zstd",
+        codec=codec,
         owner=owner,
         frame_bytes=frame_bytes,
     )
 
 
-def test_concurrent_owners_seal_exclusively_and_hash_exact_files(tmp_path):
-    first, second = _writer(tmp_path), _writer(tmp_path, owner=1)
+@pytest.mark.parametrize("codec", ["zstd", "snappy"])
+def test_concurrent_owners_seal_exclusively_and_hash_exact_files(tmp_path, codec):
+    first, second = _writer(tmp_path, codec=codec), _writer(tmp_path, owner=1, codec=codec)
     base = np.zeros(10000, dtype=np.uint8)
     with ThreadPoolExecutor(max_workers=4) as pool:
         futures = [
@@ -103,6 +104,15 @@ def test_concurrent_owners_seal_exclusively_and_hash_exact_files(tmp_path):
         data = (tmp_path / item["name"]).read_bytes()
         assert len(data) == item["nbytes"] and gpu_delta_publication.sha256(data) == item["sha256"]
     for tensor in manifest["tensors"]:
+        owner = tensor.get("outer", tensor["frames"][0])["file"]
+        blob = (tmp_path / owner).read_bytes()
+        payloads = (
+            _unwrap(tensor, blob)
+            if codec == "snappy"
+            else [blob[f["encoded_offset"] : f["encoded_offset"] + f["encoded_bytes"]] for f in tensor["frames"]]
+        )
+        expected = 7 if tensor["name"] == "other" else int(tensor["name"][1:])
+        np.testing.assert_array_equal(_decode(tensor, payloads, base), base + expected)
         for frame in tensor["frames"]:
             assert frame["encoded_offset"] % 16 == 0
     with pytest.raises(FileExistsError):
@@ -204,10 +214,16 @@ def test_preencoded_frames_use_the_same_immutable_wire_contract(tmp_path, codec,
     )
     shard = writer.finish_shard()
     profile = {1 << 16: "64kib", 1 << 20: "1mib", 1 << 21: "2mib"}[frame_bytes]
-    assert shard["metadata"]["codec_profile"] == f"{codec}-independent-{profile}-v1"
+    suffix = "-zstd" if codec == "snappy" else ""
+    assert shard["metadata"]["protocol_version"] == (3 if codec == "snappy" else 2)
+    assert shard["metadata"]["codec_profile"] == f"{codec}-independent-{profile}{suffix}-v1"
     gpu_delta_publication.seal_publication(tmp_path, [shard])
     encoded = (tmp_path / shard["files"][0]["name"]).read_bytes()
-    retained = [encoded[f["encoded_offset"] : f["encoded_offset"] + f["encoded_bytes"]] for f in entry["frames"]]
+    retained = (
+        _unwrap(entry, encoded)
+        if codec == "snappy"
+        else [encoded[f["encoded_offset"] : f["encoded_offset"] + f["encoded_bytes"]] for f in entry["frames"]]
+    )
     assert retained == payloads
     np.testing.assert_array_equal(_decode(entry, retained, base, frame_bytes=frame_bytes), target)
 
@@ -300,29 +316,12 @@ def test_raw_is_a_frame_fallback_not_a_publication_profile(tmp_path):
         gpu_delta_publication.encode_tensor("w", b"a", b"b", dtype="U8", shape=[1], codec="none")
 
 
-@pytest.mark.parametrize("value", ["", "true", "2", "01"])
-def test_outer_zstd_flag_rejects_non_boolean_environment(monkeypatch, value):
-    monkeypatch.setenv("WEIGHT_DELTA_SNAPPY_ZSTD", value)
-    with pytest.raises(ValueError, match="WEIGHT_DELTA_SNAPPY_ZSTD=0\\|1"):
-        gpu_delta_publication.settings_from_env()
-
-
-@pytest.mark.parametrize("codec,encoder", [("snappy", "cpu"), ("zstd", "gpu"), ("zstd", "cpu")])
-def test_outer_zstd_requires_gpu_snappy_at_startup(monkeypatch, codec, encoder):
-    monkeypatch.setenv("WEIGHT_DELTA_SNAPPY_ZSTD", "1")
+@pytest.mark.parametrize("codec", ["zstd", "snappy"])
+@pytest.mark.parametrize("encoder", ["cpu", "gpu"])
+def test_codec_encoder_support_matrix_has_no_separate_envelope_setting(monkeypatch, codec, encoder):
     monkeypatch.setenv("WEIGHT_DELTA_CODEC", codec)
     monkeypatch.setenv("WEIGHT_DELTA_ENCODER", encoder)
-    with pytest.raises(ValueError, match="requires GPU Snappy"):
-        gpu_delta_publication.settings_from_env()
-
-
-def test_outer_zstd_flag_defaults_off_and_accepts_explicit_gpu_snappy(monkeypatch):
-    monkeypatch.delenv("WEIGHT_DELTA_SNAPPY_ZSTD", raising=False)
-    monkeypatch.setenv("WEIGHT_DELTA_CODEC", "snappy")
-    monkeypatch.setenv("WEIGHT_DELTA_ENCODER", "gpu")
-    assert not gpu_delta_publication.snappy_zstd_from_env(*gpu_delta_publication.settings_from_env())
-    monkeypatch.setenv("WEIGHT_DELTA_SNAPPY_ZSTD", "1")
-    assert gpu_delta_publication.snappy_zstd_from_env(*gpu_delta_publication.settings_from_env())
+    assert gpu_delta_publication.settings_from_env() == (codec, encoder)
 
 
 def _outer_writer(path, *, frame_bytes=1 << 16):
@@ -335,7 +334,6 @@ def _outer_writer(path, *, frame_bytes=1 << 16):
         plan_digest="b" * 64,
         codec="snappy",
         frame_bytes=frame_bytes,
-        snappy_zstd=True,
     )
 
 
@@ -435,18 +433,27 @@ def test_outer_arena_uses_existing_aligned_views_without_copy():
     assert gpu_delta_publication._inner_payload_layout([packed[:5], packed[5:]])[3] is None
 
 
-def test_outer_writer_rejects_cpu_encoding_and_wrong_codec(tmp_path):
-    writer = _outer_writer(tmp_path / "valid")
-    with pytest.raises(ValueError, match="GPU-produced"):
-        writer.add_tensor("w", b"0", b"1", dtype="U8", shape=[1])
-    writer.close()
-    with pytest.raises(ValueError, match="requires Snappy"):
-        gpu_delta_publication.PublicationWriter(
-            tmp_path / "invalid",
-            stream_id="s",
-            base_version=0,
-            target_version=1,
-            plan_digest="b" * 64,
-            codec="zstd",
-            snappy_zstd=True,
-        )
+@pytest.mark.parametrize("encoding", ["xor_bytes", "replace_bytes"])
+def test_cpu_snappy_uses_same_mandatory_envelope_as_preencoded_frames(tmp_path, encoding):
+    size = 2 * (1 << 16) + 137
+    base = np.zeros(size, dtype=np.uint8)
+    target = base.copy()
+    target[:10000:7] = 19
+    target[-137:] = np.random.default_rng(27).integers(1, 256, 137, dtype=np.uint8)
+    expected, payloads = gpu_delta_publication.encode_tensor(
+        "w", base, target, dtype="U8", shape=[size], codec="snappy", encoding=encoding, frame_bytes=1 << 16
+    )
+    cpu, encoded = _outer_writer(tmp_path / "cpu"), _outer_writer(tmp_path / "encoded")
+    cpu_entry = cpu.add_tensor("w", base, target, dtype="U8", shape=[size], encoding=encoding)
+    encoded_entry = encoded.add_encoded_tensor(
+        "w", expected["frames"], payloads, changed_bytes=expected["changed_bytes"], dtype="U8", shape=[size], encoding=encoding
+    )
+    cpu.finish()
+    encoded.finish()
+    cpu_blob = (tmp_path / "cpu" / "owner-00000.bin").read_bytes()
+    assert cpu_blob == (tmp_path / "encoded" / "owner-00000.bin").read_bytes()
+    assert cpu_entry == encoded_entry
+    np.testing.assert_array_equal(_decode(cpu_entry, _unwrap(cpu_entry, cpu_blob), base, frame_bytes=1 << 16), target)
+    np.testing.assert_array_equal(base, np.zeros_like(base))
+    assert cpu.outer_metrics["outer_streamed_tensors"] == 1
+    assert cpu.outer_metrics["outer_compress_s"] > 0

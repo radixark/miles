@@ -4,9 +4,9 @@ This manual benchmark compares **CPU XOR + Zstd**, **CPU XOR + Snappy**,
 **GPU XOR + Zstd**, and **GPU XOR + Snappy** using the actual Megatron direct
 exporter and GPU-delta publication protocol. Eight controlled arms retain all four
 encoder/codec combinations at 1 MiB framing and add GPU Zstd/Snappy at 64 KiB and 2 MiB.
-Use `--arms gpu-snappy gpu-snappy-zstd` for the separate matched comparison of
-GPU Snappy with and without a per-tensor CPU Zstd envelope. The existing eight
-arms remain the default; this focused opt-in uses the same canonical targets.
+All Snappy arms include the mandatory per-tensor CPU Zstd envelope.
+Use `--arms gpu-snappy` for a focused three-version run of the canonical path;
+a single arm validates its inventory but cannot establish cross-arm equality.
 It runs on eight GPUs with TP1/PP1/CP1/EP8/ETP1 and the
 native GLM-5.2 five-layer model (three dense layers and two routed MoE layers).
 It constructs and loads the real model, exports W4A16 NVFP4 using TE 4over6,
@@ -27,7 +27,7 @@ forward/backward, an optimizer, or an activation RPC.
   of each floating matrix's elements and multiply them by
   `1 + --perturb-relative-scale`. The deterministic selection depends on the
   global parameter name and version, so replicated dense weights agree.
-  The model is then unchanged while all eight arms export it. Defaults select
+  The model is then unchanged while all selected arms export it. Defaults select
   about 0.1% of elements and multiply those by 1.03125. These are controlled
   model perturbations, not learned optimizer steps, and do not target a fixed
   post-quantization density or compression ratio.
@@ -42,8 +42,8 @@ forward/backward, an optimizer, or an activation RPC.
   starting from
   CPU Zstd, CPU Snappy, GPU Zstd, GPU Snappy, GPU Zstd 64 KiB, GPU Snappy
   64 KiB, GPU Zstd 2 MiB, GPU Snappy 2 MiB. The default three cumulative versions do not fully balance all eight
-  execution positions and are not repeated measurements of one fixed target. The initial discovery and eight
-  baseline exports warm the exporter before measurement;
+  execution positions and are not repeated measurements of one fixed target. The initial discovery and each selected arm's
+  baseline export warm the exporter before measurement;
   their durations are reported separately.
 - **Compression:** nvCOMP GPU compression runs GPU SM kernels for both codecs.
   Blackwell's decompression engine does not accelerate compression. The CPU
@@ -59,8 +59,9 @@ name-sorted batches using the existing `update_weight_buffer_size` target
 value is a batching target, not a hard workspace-memory ceiling. Each batch
 uploads old and new bytes, computes XOR/counts, compresses all independent 1 MiB
 frames together (64 KiB or 2 MiB in the explicit framing controls), and returns encoded
-payloads to pinned CPU memory. After all
-GPU batches complete, the owner hashes/writes the payloads and seals the
+payloads to pinned CPU memory. For Snappy, one owner CPU worker wraps/hashes/
+writes completed batches while later GPU batches encode. For Zstd, file
+hash/write follows GPU encoding. All owner work drains before sealing the
 publication. The old CPU snapshot stays unchanged until acknowledgment.
 
 This trades per-tensor compression dispatch/fences for bulk work, but GPU
@@ -79,21 +80,21 @@ or fallback is added by this benchmark.
 | Arm | `WEIGHT_DELTA_ENCODER` | `WEIGHT_DELTA_CODEC` | Frame bytes | XOR/compression execution |
 | --- | --- | --- | --- | --- |
 | `cpu-zstd` | `cpu` | `zstd` | 1,048,576 | CPU worker pool, Zstd |
-| `cpu-snappy` | `cpu` | `snappy` | 1,048,576 | CPU worker pool, Snappy |
+| `cpu-snappy` | `cpu` | `snappy` | 1,048,576 | CPU Snappy + CPU outer Zstd |
 | `gpu-zstd` | `gpu` | `zstd` | 1,048,576 | GPU XOR, nvCOMP CUDA compression |
-| `gpu-snappy` | `gpu` | `snappy` | 1,048,576 | GPU XOR, nvCOMP CUDA compression |
+| `gpu-snappy` | `gpu` | `snappy` | 1,048,576 | GPU XOR/Snappy + CPU outer Zstd |
 | `gpu-zstd-64k` | `gpu` | `zstd` | 65,536 | Same GPU encoder, per-instance framing control |
 | `gpu-snappy-64k` | `gpu` | `snappy` | 65,536 | Same GPU encoder, per-instance framing control |
 | `gpu-zstd-2m` | `gpu` | `zstd` | 2,097,152 | Experimental producer-only framing control |
 | `gpu-snappy-2m` | `gpu` | `snappy` | 2,097,152 | Experimental producer-only framing control |
-| `gpu-snappy-zstd` (opt-in) | `gpu` | `snappy` | 1,048,576 | GPU Snappy, then CPU outer Zstd level 1 |
 
-The last four arms are benchmark variants, not a new production environment or
+The last four rows are benchmark variants, not a new production environment or
 CLI knob. Production retains 1 MiB. Each variant owns a separate encoder and
 publication stream; no process-global frame-size monkeypatch can leak into a
 later arm. The publication records its frame profile explicitly:
-`<codec>-independent-64kib-v1`, `<codec>-independent-1mib-v1`, or
-`<codec>-independent-2mib-v1`; the benchmark checks this against the arm.
+`zstd-independent-<frame>-v1` or `snappy-independent-<frame>-zstd-v1`,
+where `<frame>` is `64kib`, `1mib`, or `2mib`; the benchmark checks this
+against the arm. Every Snappy framing variant has the CPU outer envelope.
 
 **Receiver compatibility:** the paired SGLang receiver currently admits at most
 1 MiB decoded frames. The 2 MiB arms are producer-only experiments and their
@@ -137,7 +138,8 @@ torchrun --standalone --nproc-per-node=8 \
 
 The output directory must be new. Raw per-arm/version receipts and publications
 are kept even if a later arm fails. `result.json` is written only after all selected
-arms in every version pass the identical-target check. `setup.json` records initialization,
+arms in every version seal successfully and pass inventory checks; multiple
+selected arms also require identical targets before baseline commit. `setup.json` records initialization,
 discovery, baseline capture, rank ownership, the ordered `arms` list and exact
 `arm_order_by_version`. `arm_configs` records each arm's encoder, codec and
 frame bytes. `receiver_compatibility` identifies the two producer-only 2 MiB
@@ -146,7 +148,9 @@ arms and current receiver frame limit. It also binds the `producer_pipelines` la
 contains the exact mutable canonical inventory;
 every completed version repeats its actual `order`. Three versions produce 24
 arm/version observations, not repeated samples of a fixed target.
-Every completed version also gets its own JSON
+A focused single arm produces three observations, with `equal: null` and
+`target_comparison: not-applicable-single-arm`; no cross-arm byte comparison is
+claimed. Every completed version also gets its own JSON
 and a concise JSON line on stdout. Nonzero `torchrun` exits remain failures;
 do not use an earlier successful partial receipt as complete-run acceptance.
 
@@ -156,36 +160,21 @@ are changed. To measure event overhead, rerun into a separate output directory
 without `--timing`, using the same inputs and perturbation arguments. Never
 merge timing-enabled and timing-disabled samples into one distribution.
 
-For the focused outer-Zstd comparison, use a new output directory and the same
-model arguments above:
-
-```bash
-torchrun --standalone --nproc-per-node=8 \
-  tests/manual/bench_gpu_delta_producer.py \
-  --hf-checkpoint /data/models/GLM-5.2_5layer-NVFP4 \
-  --load /data/models/GLM-5.2_5layer-megatron-dsa_torch_dist \
-  --output /data/benchmarks/gpu-delta-producer-snappy-outer-001 \
-  --arms gpu-snappy gpu-snappy-zstd --versions 3 --timing
-```
-
-The harness sets `WEIGHT_DELTA_SNAPPY_ZSTD=0` or `1` before constructing each
-production protocol. The wrapped arm records protocol 3 and
-`snappy-independent-1mib-zstd-v1`; the ordinary arm retains protocol 2. The
-outer CPU worker can overlap subsequent GPU batches, while both arms retain
-the same GPU transfers. Report the production worker CPU time and final wait
-separately; neither is an additional term to add to caller blocked time.
+For a focused canonical Snappy rerun, add `--arms gpu-snappy` to the same command
+and use a new output directory. `gpu-snappy` always writes protocol 3 and
+`snappy-independent-1mib-zstd-v1`; CPU Snappy uses the same envelope contract.
+The owner CPU worker overlaps wrapping/hash/write with later GPU batches without
+extra GPU transfers. Report worker CPU time and final wait separately; neither
+is an additional term to add to caller blocked time.
 `inner_encoded_frame_bytes` is the pre-envelope Snappy/raw payload total;
-`outer_stored_bytes` and `outer_decoded_arena_bytes` describe only the envelope.
-The final publication ratio still uses payload files plus manifest bytes over
-the identical canonical denominator. No CPU Snappy result is substituted for
-the real GPU Snappy producer in this comparison.
+`outer_stored_bytes` and `outer_decoded_arena_bytes` describe the envelope.
+Complete publication ratios include files and manifest over canonical bytes.
 
-Version 1 is labelled `first-use-allocation`; report its allocations and any
-first-use compilation separately. Versions 2 and 3 are labelled `warm-update`.
-Compare their individual matched values rather than mixing all three versions
-into one average. The two-arm order alternates, so three versions are still
-unbalanced and contain different cumulative targets. Repeat without `--timing`
-in another new output directory to distinguish instrumentation effects.
+Version 1 is labelled `first-use-allocation`; keep allocations/compilation
+separate from warm versions 2/3. Each version has a different cumulative target.
+Multiple selected arms rotate order but are not fully balanced repeated samples;
+a single selected arm reports cross-arm equality as not applicable. Repeat
+without `--timing` in a new output directory to isolate instrumentation effects.
 
 ## Timings and ratios
 
@@ -218,7 +207,8 @@ plus host `metadata_wait_s` and `payload_wait_s`. Shared batch timings appear
 only on the batch's first entry with `timing_scope="batch"`; do not multiply
 these timings by its tensor count. `encoded_pack_d2h_s` includes GPU payload
 packing and its D2H copy, not just PCIe transfer. The final encoded file
-hash/write span is reported once per owner. Keep host waits separate from GPU
+hash/write span is reported once per owner. Snappy additionally reports
+outer CPU compression/work and its exposed tail, which overlap later GPU batches. Keep host waits separate from GPU
 work; waits include GPU completion and possibly host scheduling. No nested
 span sum is an additional producer latency.
 
