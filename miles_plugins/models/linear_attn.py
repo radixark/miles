@@ -34,10 +34,8 @@ from megatron.core.transformer.module import MegatronModule
 from megatron.core.transformer.utils import ensure_metadata_has_dp_cp_group, make_sharded_tensors_for_checkpoint
 
 from miles.backends.megatron_utils.fp32_param_utils import mark_param_dtype
-from miles.kernels.attention.delta_rule import DeltaRule, DeltaRuleHeads, short_conv
+from miles.kernels.attention.delta_rule import DeltaRule, DeltaRuleHeads, get_short_conv_backend, short_conv
 from miles_plugins.models.cp_utils import build_fla_cp_context, packed_shard_to_zigzag, zigzag_to_packed_shard
-
-WEIGHT_LAYOUT_VERSION = 1
 
 WEIGHT_LAYOUT_VERSION = 1
 
@@ -59,6 +57,7 @@ class _ShardedShortConvolution(ShortConvolution):
 
     def __init__(self, *args, tp_group, **kwargs):
         super().__init__(*args, **kwargs)
+        self.backend = get_short_conv_backend()
         self.tp_group = tp_group
         set_tensor_model_parallel_attributes(self.weight, True, 0, 1)
 
