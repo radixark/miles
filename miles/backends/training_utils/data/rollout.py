@@ -338,6 +338,11 @@ def get_batch(
             position_ids_list.append(pos_ids)
 
         batch["position_ids"] = _compute_transform_like_token_ids(position_ids_list)
+        if qkv_format == "thd" and cp_size == 1 and pad:
+            # cu_seqlens treats the trailing padding as one document. Position-based
+            # consumers must see one reset, not a separate document for every pad token.
+            positions = batch["position_ids"]
+            positions[:, -pad:] = torch.arange(pad, device=positions.device, dtype=positions.dtype)
 
     if (witness_ids := batch.get("witness_ids")) is not None:
         batch["witness_ids"] = _compute_transform_like_token_ids(witness_ids)
