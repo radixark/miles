@@ -8,10 +8,8 @@ Transformer Engine's 1D, 1x16, per-tensor NVFP4 implementation. The vectorized
 load, FP4 conversion, and Four Over Six structure are adapted from FlashInfer's
 CuTe DSL NVFP4 quantizer.
 
-The grouped expert grid and persistent scheduling come from Ziang Li's packed
-QDQ experiments in radixark/Megatron-LM#87
-(46a4fee12f665a1bc1323576d64e33a14211d1fa). Both paths share the numerical helpers
-below. TE GroupedTensor adaptation lives in nvfp4_fake_qat.
+Grouped scheduling is adapted from Ziang Li's radixark/Megatron-LM#87
+(46a4fee12f665a1bc1323576d64e33a14211d1fa).
 
 Supported contract:
 
@@ -1269,8 +1267,6 @@ def fake_nvfp4_quantization_ste(x: torch.Tensor, config: NVFP4QDQConfig | None =
 
 
 class _GroupedNVFP4QDQKernel:
-    """Process a homogeneous runtime-sized group of contiguous weights."""
-
     def __init__(self, is_bfloat16: bool, config: NVFP4QDQConfig) -> None:
         self.is_bfloat16 = is_bfloat16
         self.config = config
@@ -1370,8 +1366,6 @@ _GROUPED_KERNEL_CACHE: dict[tuple[Any, ...], _NVFP4QDQSpecialization] = {}
 
 @dataclass(frozen=True)
 class _GroupedNVFP4QDQInputMetadata:
-    """Validated runtime dimensions and device launch metadata."""
-
     device_index: int
     capability: tuple[int, int]
     multiprocessors: int
@@ -1430,7 +1424,6 @@ def _validate_grouped_input(x: torch.Tensor, amaxes: torch.Tensor) -> _GroupedNV
 
 
 def _compile_grouped_specialization(dtype: torch.dtype, config: NVFP4QDQConfig) -> _NVFP4QDQSpecialization:
-    """Compile one dtype/config specialization outside the steady-state path."""
     if torch.cuda.is_current_stream_capturing():
         raise RuntimeError("Warm up fused NVFP4 QDQ before CUDA graph capture.")
     kernel = _GroupedNVFP4QDQKernel(dtype == torch.bfloat16, config)
@@ -1476,7 +1469,6 @@ def _launch_fused_grouped_nvfp4_qdq(
     config: NVFP4QDQConfig,
     metadata: _GroupedNVFP4QDQInputMetadata,
 ) -> torch.Tensor:
-    """Launch on the current CUDA device with cached static dispatch."""
     key = (metadata.capability, storage.dtype, config)
     specialization = _GROUPED_KERNEL_CACHE.get(key)
     if specialization is None:
@@ -1534,8 +1526,6 @@ def fused_grouped_nvfp4_qdq(
 
 
 class _FusedGroupedNVFP4QDQSTE(torch.autograd.Function):
-    """Identity backward around grouped QDQ, including its PyTorch amax."""
-
     @staticmethod
     def forward(
         ctx: Any,

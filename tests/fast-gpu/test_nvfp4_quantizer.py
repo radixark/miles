@@ -893,7 +893,6 @@ def test_grouped_nvfp4_qdq_is_bit_exact_with_te(
     init_data: str,
     config: NVFP4QDQConfig,
 ) -> None:
-    """Cover BF16/FP16 x shapes x data patterns x the full supported feature matrix."""
     monkeypatch.setenv("NVTE_USE_FAST_MATH", "0")
     monkeypatch.setenv("NVTE_NVFP4_4OVER6_ERR_USE_FAST_MATH", "1" if config.error_use_fast_math else "0")
     x = _make_grouped_qdq_input(group_count, shape, dtype, init_data)
@@ -902,14 +901,12 @@ def test_grouped_nvfp4_qdq_is_bit_exact_with_te(
     actual = fused_grouped_nvfp4_qdq(x, amaxes, config)
 
     assert torch.equal(amaxes.view(torch.int32), te_amax.view(torch.int32))
-    # Integer views distinguish signed zero; tolerance-zero floating comparison does not.
     actual_bits = actual.view(torch.uint16)
     expected_bits = expected.view(torch.uint16)
     assert torch.equal(
         actual_bits, expected_bits
     ), f"bit mismatch count: {torch.count_nonzero(actual_bits != expected_bits).item()}"
     torch.testing.assert_close(actual, expected, rtol=0.0, atol=0.0)
-    # Also protect the existing rank-2 path when sharing the store helper.
     loop = torch.stack([fused_nvfp4_qdq(w, compute_nvfp4_amax(w), config) for w in x.unbind(0)])
     assert torch.equal(actual_bits, loop.view(torch.uint16))
 
@@ -1024,7 +1021,6 @@ def grouped_qat_env(monkeypatch):
 
 def _native_grouped_layer(fuse_wgrad=False):
     class QATGroupedLinear(te.GroupedLinear):
-        # Same hook used by the Miles Megatron fork.
         def _get_weight_tensors(self):
             return nvfp4_qat.maybe_fake_quantize_nvfp4_weight_tensors(super()._get_weight_tensors())
 
@@ -1064,7 +1060,6 @@ def test_grouped_native_te_forward_backward_and_update(monkeypatch, use_4over6, 
     assert torch.equal(qweight.rowwise_data.view(3, 64, 128).view(torch.uint16), expected.view(torch.uint16))
     assert torch.equal(original, weight.rowwise_data.view_as(original))
 
-    # Include a zero-token expert and different splits to catch expert reordering.
     splits = [2, 0, 3]
     inputs = torch.cat(
         [torch.full((tokens, 128), i + 1, device="cuda", dtype=torch.bfloat16) for i, tokens in enumerate(splits)]
@@ -1083,7 +1078,6 @@ def test_grouped_native_te_forward_backward_and_update(monkeypatch, use_4over6, 
     )
     torch.testing.assert_close(inputs.grad, expected_dgrad, rtol=0.02, atol=0.01)
 
-    # Fused accumulation writes main_grad; the optimizer consumes that buffer.
     if fuse_wgrad:
         weight.grad = weight.main_grad.to(weight.dtype)
     optimizer = torch.optim.SGD([weight], lr=0.125)
@@ -1165,8 +1159,6 @@ def test_grouped_native_fused_wgrad_reaches_megatron_leaf_hook(overwrite):
     hook_calls = []
 
     def ddp_hook(param):
-        # Megatron uses this marker to skip a second add into main_grad, and
-        # the hook itself marks the parameter ready for gradient reduction.
         assert param.grad_added_to_main_grad
         assert torch.count_nonzero(param.grad).item() == 0
         hook_calls.append(True)
@@ -1193,11 +1185,7 @@ def _ep_scalar_loop(x, config):
 
 @contextlib.contextmanager
 def _ep_prequantized_te_reference(model):
-    """Independent STE oracle: quantize TE leaf storage, run TE, restore full precision.
-
-    No Miles adapter or custom autograd is involved in this reference. TE writes
-    directly into its original parameter's main_grad and signals MCore DDP.
-    """
+    """Run TE on scalar-QDQ leaf values without the Miles adapter."""
     originals = []
     with torch.no_grad():
         for name in ("linear_fc1", "linear_fc2"):
@@ -1327,8 +1315,7 @@ def test_grouped_megatron_ep_forward_backward_and_update(monkeypatch, grouped_ep
     monkeypatch.setenv("NVTE_NVFP4_4OVER6", "weights" if use_4over6 else "none")
     monkeypatch.setenv("NVTE_NVFP4_4OVER6_ERR_MODE", "MSE")
     monkeypatch.setenv("NVTE_NVFP4_4OVER6_E4M3_USE_256", "all")
-    # Legacy discrete QDQ is the non-fused baseline. The fused baseline bypasses
-    # Miles STE and runs TE directly on scalar-QDQ values in the original leaves.
+    # Fused wgrad uses the TE leaf-storage oracle; unfused wgrad uses discrete weights.
     qdq_calls = 0
 
     def checked_grouped(x, amax, config):
@@ -1397,14 +1384,12 @@ def test_grouped_megatron_ep_forward_backward_and_update(monkeypatch, grouped_ep
         for name, value in _ep_named_values(actual.module).items():
             _assert_ep_close(value, _ep_named_values(reference.module)[name], exact=fused)
         assert [id(p) for p in actual.module.parameters()] == initial_ids
-        # Router replicas update even when a rank has no expert tokens.
         assert changed > 0
         assert qdq_calls == 4 * (step + 1)
 
 
 @pytest.fixture(scope="module", params=[2, 4], ids=["ep2-edp2", "ep4"])
 def grouped_ep(request):
-    # Requires the Miles hook and Megatron-LM#6000's native GroupedTensor path.
     # Run: torchrun --standalone --nproc_per_node=4 -m pytest <this file> -k grouped_megatron_ep
     if int(os.getenv("WORLD_SIZE", "1")) != 4:
         pytest.skip("requires torchrun --nproc_per_node=4")

@@ -11,8 +11,7 @@ NVFP4_FAKE_QAT_FLAG = "OPEN_TRAINING_NVFP4_FAKE_QAT_FLAG"
 
 
 def _grouped_weight_storage(weight: torch.Tensor) -> torch.Tensor:
-    """Read uniform, unquantized TE storage without dispatching tensor operations."""
-    # TE is optional for the ordinary rank-2/3 tensor APIs.
+    # Import TE only for native grouped weights.
     from transformer_engine.pytorch.tensor.grouped_tensor import GroupedTensor
 
     if not isinstance(weight, GroupedTensor):
@@ -42,11 +41,8 @@ def _grouped_weight_storage(weight: torch.Tensor) -> torch.Tensor:
 
 
 class _GroupedWeightQDQSTE(torch.autograd.Function):
-    """Keep the original TE parameter in autograd while replacing its forward value."""
-
     @staticmethod
     def forward(ctx, weight, config):
-        # These dependencies are needed only when fake QAT sees a native packed weight.
         from transformer_engine.pytorch.tensor.grouped_tensor import GroupedTensor
 
         from miles.utils.fused_nvfp4_qdq import compute_grouped_nvfp4_amax, fused_grouped_nvfp4_qdq
@@ -59,8 +55,7 @@ class _GroupedWeightQDQSTE(torch.autograd.Function):
             rowwise_data=output,
             dtype=output.dtype,
         )
-        # TE writes fused wgrad into main_grad and returns a dummy gradient to
-        # trigger Megatron DDP's leaf hook. Preserve that protocol across STE.
+        # Megatron's leaf hook must see TE's fused-wgrad completion marker.
         for name in ("grad_added_to_main_grad", "zero_out_wgrad", "overwrite_main_grad", "get_main_grad"):
             if hasattr(weight, name):
                 setattr(grouped_output, name, getattr(weight, name))
@@ -84,7 +79,6 @@ def _fake_quantize_grouped_weight(weight, config):
             output.main_grad = weight.main_grad
         return output
 
-    # Keep CuTe DSL optional until the packed path is actually selected.
     from miles.utils.fused_nvfp4_qdq import fake_grouped_nvfp4_quantization_ste
 
     return fake_grouped_nvfp4_quantization_ste(weight, config)
@@ -93,12 +87,7 @@ def _fake_quantize_grouped_weight(weight, config):
 def maybe_fake_quantize_nvfp4_weight_tensors(
     weight_tensors: list[torch.Tensor],
 ) -> list[torch.Tensor]:
-    """Apply fake QAT to discrete weights or native packed TE grouped-linear weights.
-
-    Native packed parameters require TE's ``use_grouped_tensor=True`` path and
-    a Megatron version that exposes it without opfuser. Discrete lists retain
-    the existing per-weight launch; this adapter never packs parameters.
-    """
+    """Apply fake QAT to discrete or native packed TE weights."""
     if os.getenv(NVFP4_FAKE_QAT_FLAG, "0") != "1":
         return weight_tensors
 
