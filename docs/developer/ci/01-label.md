@@ -100,7 +100,7 @@ The dispatched workflow and its reusable workflows come from the reviewed defaul
 
 The trust boundary ends after the resolver produces that fixed plan. The execution job intentionally installs and runs PR-controlled dependencies, configuration, imports, and test code; it is not a sandbox for hostile PR code. Same-repository and fork heads are accepted from any commenter the policy admits; a fork head's run receives no repository secrets, and the resolver derives fork-ness from the live pull request rather than a dispatch input. The command requires the fixed `run-ci-file.yml` workflow on the default branch. A later push does not change the already dispatched snapshot.
 
-A file run honors the PR body's `ci-megatron-pr` and `ci-sglang-pr` pins; CUDA file runs also honor `ci-image-tag`, while CPU file runs use the hosted bare environment. The gateway validates and forwards these inputs, and a pin whose value fails validation rejects the command. Without a `ci-image-tag` pin a CUDA run uses the PR's own `pr-<N>` image when that tag is published, and the released `dev` image otherwise, so a pin is only needed to run against some other image. The run writes no perf baseline (regular cadence), and its result is informational: it does not appear among the PR's required checks.
+A file run honors the PR body's `ci-megatron-pr`, `ci-sglang-pr`, and `ci-megatron-bridge-pr` pins; CUDA file runs also honor `ci-image-tag`, while CPU file runs use the hosted bare environment. The gateway validates and forwards these inputs, and a pin whose value fails validation rejects the command. Without a `ci-image-tag` pin a CUDA run uses the PR's own `pr-<N>` image when that tag is published, and the released `dev` image otherwise, so a pin is only needed to run against some other image. The run writes no perf baseline (regular cadence), and its result is informational: it does not appear among the PR's required checks.
 
 `/rerun-test` and `/rerun-failed-ci` work as soon as the gateway workflow is on the default branch, with no App and no repository variables. Their jobs use the workflow's own `GITHUB_TOKEN`: the command job has `actions: write` plus `pull-requests: read`; the reaction job has `issues: write` plus `pull-requests: write`; and the file run's status jobs have `issues: write` plus `pull-requests: write`, with `actions: read` added to the final status job so it can calculate elapsed time from the workflow run.
 
@@ -131,6 +131,28 @@ If the additive label `POST`, a label `DELETE`, a failed-job rerun `POST`, a wor
 `/clear-labels` and `/rerun-failed-ci` can issue multiple requests and are not atomic: if a later request fails, earlier changes remain applied. The handler does not retry or roll back automatically; inspect the PR's current labels, comments, or Actions runs before deciding whether to retry. Manually rerunning `announce-file-run` after an ambiguous comment-creation response can create a duplicate status comment.
 
 GitHub reruns failed jobs and their dependent jobs with the original run's `GITHUB_SHA`, `GITHUB_REF`, event payload, and triggering actor privileges. A rerun therefore does not inherit the commenter's or App token's privileges; consumers of the original event payload do not see labels changed afterward. GitHub permits reruns for up to 30 days after the original run and limits a workflow run to 50 attempts.
+
+## Megatron Bridge override
+
+Add a standalone line to the PR description:
+
+```text
+ci-megatron-bridge-pr: #41
+```
+
+The value may also be a branch, tag, or full commit SHA in `radixark/Megatron-Bridge`.
+CPU, CUDA, and ROCm jobs install the selected Bridge with `--no-deps --no-build-isolation`,
+leaving Torch, Megatron, and other runtime dependencies unchanged. CPU jobs use Python 3.12,
+matching the Miles Docker runtime. Without the directive, jobs keep their existing Bridge
+installation (the hosted CPU environment does not install Bridge by default).
+
+Manual dispatch accepts `ci_megatron_bridge_pr`, which takes precedence over the PR body.
+`/rerun-test` forwards the directive too. Jobs log the resolved SHA, installed version,
+and import path. Use a full SHA for reproducible runs; changes requiring new binary
+runtime dependencies still need a compatible image.
+
+Editing a PR description alone does not trigger CI; start a new run after updating the pin.
+The comment command support becomes available after this workflow change reaches `main`.
 
 ## Cadence eligibility
 

@@ -16,6 +16,10 @@ from tqdm import tqdm
 from miles.rollout.base_types import GenerateFnInput, RolloutFnEvalOutput, RolloutFnTrainOutput
 from miles.rollout.filter_hub.base_types import MetricGatherer
 from miles.rollout.filter_hub.common_filters import apply_preput_filters
+from miles.rollout.generate_utils.rollout_topk_logprobs import (
+    append_rollout_topk_logprobs,
+    configure_rollout_topk_logprobs_request,
+)
 from miles.rollout.inference_rollout.compatibility import load_generate_function
 from miles.utils import dumper_utils
 from miles.utils.async_utils import run
@@ -192,6 +196,8 @@ async def generate(
     opd_top_k_strategy = getattr(args, "opd_top_k_strategy", "only-student")
     if getattr(args, "use_opd", False) and opd_top_k > 0 and opd_top_k_strategy != "only-teacher":
         payload["top_logprobs_num"] = opd_top_k
+    if not evaluation:
+        configure_rollout_topk_logprobs_request(args, payload)
 
     if lora_rollout_enabled(args):
         payload["lora_path"] = LORA_ADAPTER_NAME
@@ -236,12 +242,24 @@ async def generate(
         new_response_tokens, new_response_log_probs = [], []
 
     if payload.get("return_sampling_mask", False):
-        new_response_log_probs = append_sampling_metadata(sample, new_response_tokens, output["meta_info"])
+        new_response_log_probs = append_sampling_metadata(
+            sample,
+            new_response_tokens,
+            output["meta_info"],
+            sampling_logprobs_mode=payload.get("sampling_logprobs_mode", "selected"),
+        )
 
     # Update sample with tokens directly - avoiding re-tokenization
     sample.tokens = sample.tokens + new_response_tokens
     sample.response_length += len(new_response_tokens)
     sample.response += output["text"]
+    if not evaluation:
+        append_rollout_topk_logprobs(
+            sample,
+            output["meta_info"],
+            args.rollout_top_logprobs_num,
+            sampling_logprobs_mode=payload.get("sampling_logprobs_mode", "selected"),
+        )
 
     # When partial rollout and masking off policy is enabled, update the loss mask
     if sample.loss_mask is not None:

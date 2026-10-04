@@ -169,6 +169,13 @@ jobs:
           cd /sgl-workspace/sglang && git reset --hard HEAD && git clean -fd && git fetch origin "$SGLANG_PR" && git checkout -f FETCH_HEAD && git log --oneline -1
           cd /root/Megatron-LM && git reset --hard HEAD && git clean -fd && git fetch origin "$MEGATRON_PR" && git checkout -f FETCH_HEAD && git log --oneline -1
 
+      - name: Install Megatron Bridge override
+        if: ${{ !inputs.skip_dependency_install && (github.event.inputs.ci_megatron_bridge_pr != '' || contains(github.event.pull_request.body, 'ci-megatron-bridge-pr:')) }}
+        uses: ./.github/actions/install-megatron-bridge
+        with:
+          ref: ${{ github.event.inputs.ci_megatron_bridge_pr || '' }}
+          pr_body: ${{ github.event.pull_request.body || '' }}
+
       - name: Verify source resolution
         shell: bash
         run: python tests/ci/verify_source_resolution.py

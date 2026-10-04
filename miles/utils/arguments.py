@@ -39,7 +39,9 @@ from miles.utils.object_store_config import (
     compute_mooncake_init_kwargs_from_env,
     compute_mooncake_init_kwargs_vanilla,
 )
+from miles.utils.rollout_topk_logprobs import validate_rollout_topk_logprobs_args
 from miles.utils.run_uuid import RUN_UUID_LENGTH, generate_run_uuid, validate_run_uuid
+from miles.utils.score_centering import validate_score_centering_args
 from miles.utils.tracking_utils.ci_history import RECORD_DIR_ENV
 from miles.utils.workers.argv_utils import with_relax_parser_required_args, with_suppressed_parser_help
 from miles.utils.workers.naming import DEPLOY_INSTANCE_ID_MAX_LENGTH, DNS_LABEL_PATTERN
@@ -685,6 +687,16 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 ),
             )
             parser.add_argument(
+                "--rollout-top-logprobs-num",
+                type=int,
+                default=0,
+                help=(
+                    "Number of sampler candidate log-probs recorded per generated token in "
+                    "Sample.rollout_topk_token_ids / rollout_topk_log_probs; 0 disables recording. "
+                    "Training requests ask SGLang for them and override any client-supplied value."
+                ),
+            )
+            parser.add_argument(
                 "--rollout-max-context-len",
                 type=int,
                 default=None,
@@ -1028,10 +1040,15 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             )
             parser.add_argument(
                 "--update-weight-transfer-mode",
-                choices=["broadcast", "p2p", "disk-delta"],
+                choices=["broadcast", "broadcast_packed", "p2p", "disk-delta"],
                 default="broadcast",
                 help=(
                     "The method to transfer weights to remote rollout engines during update weight. "
+                    "'broadcast' (default) broadcasts each tensor separately; 'broadcast_packed' "
+                    "packs each bucket into one byte broadcast. The packed mode requires Megatron "
+                    "non-colocated transfer and SGLang's mixed-dtype flattened-bucket API. It adds a "
+                    "contiguous bucket allocation on sender and receivers; atomic update units may "
+                    "exceed --update-weight-buffer-size. "
                     "'disk-delta' diffs each sync against a CPU snapshot of the previous one and publishes "
                     "only the changed bytes to --update-weight-disk-dir; each engine's /pull_weights applies "
                     "them into a host-local checkpoint that the engine reloads from."
@@ -1590,10 +1607,10 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             parser.add_argument(
                 "--loss-type",
                 type=str,
-                choices=["policy_loss", "sft_loss", "custom_loss"],
+                choices=["policy_loss", "sft_loss", "custom_loss", "score_centering"],
                 default="policy_loss",
                 help=(
-                    "Choose loss type, currently support ppo policy_loss or sft_loss, "
+                    "Choose PPO policy_loss, REINFORCE score_centering, or sft_loss; "
                     "if custom_loss is set, we will use the function path from `--custom-loss-function-path`."
                 ),
             )
@@ -1606,6 +1623,15 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                     "we will use this function to calculate the loss. "
                 ),
             )
+            parser.add_argument(
+                "--score-centering-is",
+                choices=["none", "tis", "mis"],
+                default="none",
+                help="Importance weights to center together with the policy score.",
+            )
+            parser.add_argument("--score-centering-tis-clip", type=float, default=2.0)
+            parser.add_argument("--score-centering-mis-low", type=float, default=0.5)
+            parser.add_argument("--score-centering-mis-high", type=float, default=5.0)
             parser.add_argument(
                 "--kl-loss-type",
                 type=str,
@@ -3191,6 +3217,11 @@ def miles_validate_args(args):
                 logger.info(f"Warning: Argument {k} is already set to {getattr(args, k)}, will override with {v}.")
             setattr(args, k, v)
 
+    mode = args.update_weight_transfer_mode
+    if mode not in ("broadcast", "broadcast_packed", "p2p", "disk-delta"):
+        raise ValueError(f"Unknown --update-weight-transfer-mode {mode!r}")
+    if mode == "broadcast_packed" and (args.train_backend != "megatron" or args.colocate):
+        raise ValueError("broadcast_packed requires Megatron non-colocated weight transfer")
     validate_dashboard_args(args)
 
     args.ft_components = _resolve_ft_components(args)
@@ -3267,6 +3298,7 @@ def miles_validate_args(args):
     if args.rollout_top_k != -1 and args.rollout_top_k < 1:
         raise ValueError(f"--rollout-top-k must be -1 or at least 1, got {args.rollout_top_k}")
     args.use_sampling_support_replay = args.rollout_top_p < 1.0 or args.rollout_top_k > 0
+    args.rollout_sampling_logprobs_mode = "support" if args.use_sampling_support_replay else "selected"
     if args.use_sampling_support_replay:
         if args.rollout_top_k == -1:
             raise ValueError(
@@ -3286,6 +3318,7 @@ def miles_validate_args(args):
                 "sampling-support replay cannot currently be combined with reference KL or teacher distillation; "
                 "those objectives require a separate full-policy actor score"
             )
+    validate_rollout_topk_logprobs_args(args)
 
     if not args.use_session_server and args.tito_model != TITOTokenizerType.DEFAULT.value:
         raise ValueError(
@@ -3886,6 +3919,8 @@ def miles_validate_args(args):
 
     if args.skip_actor_forward_only:
         validate_skip_actor_forward_only(args)
+
+    validate_score_centering_args(args)
 
     _maybe_apply_dumper_overrides(args)
 

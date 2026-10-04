@@ -342,7 +342,8 @@ def allgather_cp_redistribute(
     Args:
         res: Dict mapping metric names to lists of per-sample tensors.
         logits: Model output used only to determine the local sequence length
-            (``logits.size(1)``).
+            (``logits.size(1)``). For ``bshd``, each batch row has its own
+            sequence window.
         args: Configuration (needs ``qkv_format``).
         total_lengths: Total sequence lengths (prompt + response) per sample.
         response_lengths: Response segment lengths per sample.
@@ -362,24 +363,28 @@ def allgather_cp_redistribute(
         seq_start = 0
         for value, total_length, response_length in zip(values, total_lengths, response_lengths, strict=False):
             prompt_length = total_length - response_length
-            logit_global_start = seq_start + prompt_length - 1
-            logit_global_end = seq_start + total_length - 1
+            sample_start = 0 if args.qkv_format == "bshd" else seq_start
+            logit_global_start = sample_start + prompt_length - 1
+            logit_global_end = sample_start + total_length - 1
 
             s = max(logit_global_start, chunk_start)
             e = min(logit_global_end, chunk_end)
 
             if e <= s:
                 # This rank has no response logprobs for this sample
-                full_resp = torch.zeros(
-                    response_length,
-                    dtype=value.dtype,
-                    device=value.device,
-                    requires_grad=True,
+                full_resp = (
+                    torch.zeros(
+                        (response_length, *value.shape[1:]),
+                        dtype=value.dtype,
+                        device=value.device,
+                        requires_grad=True,
+                    )
+                    + value.sum() * 0
                 )
             else:
                 resp_start = s - logit_global_start
                 resp_end = e - logit_global_start
-                full_resp = F.pad(value, (resp_start, response_length - resp_end))
+                full_resp = F.pad(value, (0, 0) * (value.ndim - 1) + (resp_start, response_length - resp_end))
 
             assert full_resp.size(0) == response_length, f"Expected {response_length}, got {full_resp.size(0)}"
             full_resps.append(full_resp)

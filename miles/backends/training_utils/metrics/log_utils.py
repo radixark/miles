@@ -201,6 +201,7 @@ def log_rollout_data(rollout_id: int, args: Namespace, rollout_data: RolloutBatc
                 "rollout_indexer_topk",
                 "rollout_sampling_mask_ids",
                 "rollout_sampling_mask_offsets",
+                "rollout_topk_lengths",
                 "max_seq_lens",
                 "dynamic_global_batch_size",
                 "witness_ids",

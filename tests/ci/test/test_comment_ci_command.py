@@ -1697,9 +1697,13 @@ def test_file_run_main_reports_the_dispatched_run_without_writing_an_output(monk
     assert not output_path.exists()
 
 
-def test_file_run_forwards_validated_pr_body_pins():
+@pytest.mark.parametrize("bridge_ref", ["#41", "bridge", "v0.7.0", "8cd3466d14d2337c8492827b3712482c2b3e4866"])
+def test_file_run_forwards_validated_pr_body_pins(bridge_ref):
     target = pull()
-    target["body"] = "Summary line\nci-image-tag: pr-42\nci-megatron-pr: #77\nci-sglang-pr: feature/pin-x\n"
+    target["body"] = (
+        "Summary line\nci-image-tag: pr-42\nci-megatron-pr: #77\nci-sglang-pr: feature/pin-x\n"
+        f"ci-megatron-bridge-pr: {bridge_ref}\n"
+    )
     api = FakeAPI(target)
 
     HANDLER.process_event(event(body=RUN_FILE_BODY), policy(), api)
@@ -1712,12 +1716,13 @@ def test_file_run_forwards_validated_pr_body_pins():
         "ci_image_tag": "pr-42",
         "ci_megatron_pr": "#77",
         "ci_sglang_pr": "feature/pin-x",
+        "ci_megatron_bridge_pr": bridge_ref,
     }
 
 
 @pytest.mark.parametrize(
     "line",
-    ["ci-image-tag: -bad", "ci-megatron-pr: $(reboot)", "ci-sglang-pr: bad;ref"],
+    ["ci-image-tag: -bad", "ci-megatron-pr: $(reboot)", "ci-sglang-pr: bad;ref", "ci-megatron-bridge-pr: $(reboot)"],
 )
 def test_file_run_rejects_an_invalid_pr_body_pin(line):
     target = pull()

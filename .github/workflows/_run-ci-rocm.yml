@@ -176,6 +176,13 @@ jobs:
           cd $GITHUB_WORKSPACE && pip install -e . --no-deps --break-system-packages
           pip install polars zstandard xxhash blake3 "numba==0.65.1" --break-system-packages
 
+      - name: Install Megatron Bridge override
+        if: ${{ github.event.inputs.ci_megatron_bridge_pr != '' || contains(github.event.pull_request.body, 'ci-megatron-bridge-pr:') }}
+        uses: ./.github/actions/install-megatron-bridge
+        with:
+          ref: ${{ github.event.inputs.ci_megatron_bridge_pr || '' }}
+          pr_body: ${{ github.event.pull_request.body || '' }}
+
       - name: Resolve suite plan
         shell: bash
         run: ${{ inputs.execute_command }} --list-only
