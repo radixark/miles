@@ -34,9 +34,7 @@ class HfWeightIteratorDirect(MegatronHfWeightIteratorBase):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self._expert_transform: (
-            Callable[[str, list[tuple[str, torch.Tensor]]], list[tuple[str, torch.Tensor]]] | None
-        ) = None
+        self._expert_consumer: Callable[[list[tuple[str, torch.Tensor]]], None] | None = None
         parallel = get_parallel_state()
         self._convert_experts_before_gather = parallel.etp.size == 1
         non_expert_infos, expert_infos = _get_megatron_local_param_infos(
@@ -77,16 +75,17 @@ class HfWeightIteratorDirect(MegatronHfWeightIteratorBase):
                 for batches in itertools.zip_longest(*owner_batches, fillvalue=())
             ]
 
-    def set_local_expert_transform(self, *, transform: Callable) -> None:
-        """Process owner-local converted units before gathering their remaining tensors.
+    def set_local_expert_consumer(self, *, consumer: Callable[[list[tuple[str, torch.Tensor]]], None]) -> None:
+        """Consume every owner-local expert unit instead of gathering expert weights.
 
-        Hooks run on quantization owners, including transport non-senders. They
-        must retain tensors needed by asynchronous work and defer local errors
-        until the protocol drains the stream, so peers still join every gather.
+        All ranks must install the consumer, including transport non-senders and
+        ranks with no local units. It owns the complete converted unit and must
+        retain asynchronous inputs and defer errors until the protocol drains
+        the stream and joins its collective status check.
         """
         if not self._convert_experts_before_gather:
-            raise ValueError("Owner-local expert transforms require expert TP=1")
-        self._expert_transform = transform
+            raise ValueError("Owner-local expert consumers require expert TP=1")
+        self._expert_consumer = consumer
 
     def _iter_hf_param_units(self, weights, *, materialize):
         rank = dist.get_rank()
@@ -123,7 +122,7 @@ class HfWeightIteratorDirect(MegatronHfWeightIteratorBase):
         yield from _iter_mm_tower_units(self.args, materialize=materialize)
 
     def _convert_and_gather_expert_batch(self, batch: _ExpertBatch, weights):
-        """Convert once per expert across EP/EDP, then gather HF weights and scales."""
+        """Convert once per expert across EP/EDP, then consume locally or gather."""
         device = torch.device("cuda", torch.cuda.current_device())
         rank = dist.get_rank()
         # Sender placement is independent of ownership: non-senders also
@@ -134,10 +133,12 @@ class HfWeightIteratorDirect(MegatronHfWeightIteratorBase):
                 continue
             param = weights[info.name].detach().to(device=device, non_blocking=True)
             unit = next(self._convert_to_hf_param_units([(info.name, param)]))
-            if self._expert_transform is not None:
-                unit = self._expert_transform(info.name, unit)
-            if unit:
+            if self._expert_consumer is not None:
+                self._expert_consumer(unit)
+            elif unit:
                 units.append(unit)
+        if self._expert_consumer is not None:
+            return []
         for gather in batch.gathers:
             units = gather(units, device=device)
         return units

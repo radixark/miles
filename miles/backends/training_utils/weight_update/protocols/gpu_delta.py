@@ -64,16 +64,10 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
             self._post_write_hook = load_function(args.custom_update_weight_post_write_path)
 
     def bind_iterator(self, iterator):
-        install = getattr(iterator, "set_local_expert_transform", None)
+        install = getattr(iterator, "set_local_expert_consumer", None)
         if install is None:
             raise ValueError("GPU delta requires the direct Megatron exporter")
-        install(transform=self._consume_expert)
-
-    def _consume_expert(self, unit_key, unit):
-        # Quantization owners include non-senders. Consume before gathers, while
-        # still returning normally after a local error so peers drain collectives.
-        self.send_bucket(unit)
-        return []
+        install(consumer=self.send_bucket)
 
     def connect(self, rollout_engines, engine_gpu_counts, engine_gpu_offsets, parallel_state, placement, selector):
         self.rollout_engines = rollout_engines

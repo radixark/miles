@@ -120,11 +120,13 @@ def test_gather_batches_pack_by_size_only(direct_module, monkeypatch):
 
 
 @pytest.mark.parametrize("materialize", [True, False])
-def test_owner_transform_precedes_gather_even_on_non_senders(direct_module, monkeypatch, materialize):
-    """GPU consumes only handled families; excluded weights still join the existing gather."""
+@pytest.mark.parametrize("consume_locally", [True, False])
+def test_owner_consumer_skips_gathers_and_normal_export_still_gathers(
+    direct_module, monkeypatch, materialize, consume_locally
+):
     events = []
     packed = ("expert.gate_proj.weight", torch.zeros(4, dtype=torch.uint8))
-    excluded = ("expert.down_proj.weight", torch.zeros(4, dtype=torch.bfloat16))
+    scale = ("expert.gate_proj.weight_scale", torch.ones(1))
     local_name = "layer.experts.linear_fc1.weight0"
     remote = _param("layer.experts.linear_fc1.weight1", 4, src_rank=1)
 
@@ -139,44 +141,91 @@ def test_owner_transform_precedes_gather_even_on_non_senders(direct_module, monk
     def convert(named_params):
         assert named_params[0][0] == local_name
         events.append("convert")
-        yield [packed, excluded]
+        yield [packed, scale]
 
-    def transform(key, unit):
-        assert key == local_name and unit == [packed, excluded]
-        events.append("process")
-        return [excluded]
+    def consume(unit):
+        assert unit == [packed, scale]
+        events.append("consume")
 
     def gather(units, **kwargs):
+        assert not consume_locally, "Owner-local consumption must skip every expert gather"
         events.append("gather")
-        assert units == [[excluded]]
+        assert units == [[packed, scale]]
         return units
 
     iterator = direct_module.HfWeightIteratorDirect.__new__(direct_module.HfWeightIteratorDirect)
     iterator.args = Namespace()
     iterator._non_expert_batches = []
     iterator._expert_batches = [
-        direct_module._ExpertBatch(param_infos=[_param(local_name, 4), remote], gathers=(gather,))
+        direct_module._ExpertBatch(param_infos=[_param(local_name, 4), remote], gathers=(gather, gather)),
+        # An empty EDP-owner round must skip PP/EP gathers too; this is a
+        # uniform consumer contract, not a decision based on local payload size.
+        direct_module._ExpertBatch(param_infos=[remote], gathers=(gather, gather)) if consume_locally
+        else direct_module._ExpertBatch(param_infos=[_param(local_name, 4)], gathers=(gather,)),
     ]
     iterator._convert_to_hf_param_units = convert
     iterator._convert_experts_before_gather = True
-    iterator.set_local_expert_transform(transform=transform)
+    iterator._expert_consumer = None
+    if consume_locally:
+        iterator.set_local_expert_consumer(consumer=consume)
     monkeypatch.setattr(direct_module.dist, "get_rank", lambda: 0)
     monkeypatch.setattr(direct_module.torch.cuda, "current_device", lambda: 0)
     monkeypatch.setattr(direct_module, "_iter_mm_tower_units", lambda *args, **kwargs: iter(()))
 
     units = list(iterator._iter_hf_param_units({local_name: Weight()}, materialize=materialize))
 
-    assert units == ([[excluded]] if materialize else [])
-    assert events == ["load", "convert", "process", "gather"]
+    if consume_locally:
+        assert units == []
+        assert events == ["load", "convert", "consume"]
+    else:
+        assert units == ([[packed, scale], [packed, scale]] if materialize else [])
+        assert events == ["load", "convert", "gather", "gather", "load", "convert", "gather"]
 
 
-def test_owner_transform_rejects_expert_tp_without_changing_the_iterator(direct_module):
+def test_gpu_delta_consumer_defers_failure_until_all_local_units_are_visited(direct_module, monkeypatch):
+    from miles.backends.training_utils.weight_update.protocols.gpu_delta import UpdateWeightFromGpuDelta
+
+    protocol = UpdateWeightFromGpuDelta(Namespace(custom_update_weight_post_write_path=None))
+    failure, converted = ValueError("invalid canonical layout"), []
+
+    def reject(name, tensor):
+        raise failure
+
+    protocol._match_layout = reject
+    iterator = direct_module.HfWeightIteratorDirect.__new__(direct_module.HfWeightIteratorDirect)
+    iterator._convert_experts_before_gather = True
+    protocol.bind_iterator(iterator)
+
+    class Weight:
+        def detach(self):
+            return self
+
+        def to(self, **kwargs):
+            return torch.zeros(1)
+
+    def convert(named_params):
+        converted.append(named_params[0][0])
+        yield named_params
+
+    iterator._convert_to_hf_param_units = convert
+    monkeypatch.setattr(direct_module.dist, "get_rank", lambda: 0)
+    monkeypatch.setattr(direct_module.torch.cuda, "current_device", lambda: 0)
+    batch = direct_module._ExpertBatch(
+        param_infos=[_param("first", 1), _param("second", 1), _param("foreign", 1, src_rank=1)],
+        gathers=(lambda *args, **kwargs: pytest.fail("Failed consumers must not enter expert gathers"),),
+    )
+    assert iterator._convert_and_gather_expert_batch(batch, {name: Weight() for name in ("first", "second")}) == []
+    assert converted == ["first", "second"]
+    assert protocol._error is failure  # after_base_weights performs the existing collective error check.
+
+
+def test_owner_consumer_rejects_expert_tp_without_changing_the_iterator(direct_module):
     iterator = direct_module.HfWeightIteratorDirect.__new__(direct_module.HfWeightIteratorDirect)
     iterator._convert_experts_before_gather = False
-    iterator._expert_transform = None
+    iterator._expert_consumer = None
     with pytest.raises(ValueError, match="expert TP=1"):
-        iterator.set_local_expert_transform(transform=lambda name, unit: unit)
-    assert iterator._expert_transform is None
+        iterator.set_local_expert_consumer(consumer=lambda unit: None)
+    assert iterator._expert_consumer is None
 
 
 def test_producer_discovery_installs_actual_owner_hook_and_preserves_plan(direct_module, monkeypatch, tmp_path):
@@ -200,7 +249,7 @@ def test_producer_discovery_installs_actual_owner_hook_and_preserves_plan(direct
 
     def buckets(values, *, materialize):
         assert materialize
-        assert iterator._expert_transform(expert_name, [(expert_name, values[expert_name])]) == []
+        assert iterator._expert_consumer([(expert_name, values[expert_name])]) is None
         yield [(dense_name, values[dense_name])]
 
     iterator.iter_hf_weights = buckets
