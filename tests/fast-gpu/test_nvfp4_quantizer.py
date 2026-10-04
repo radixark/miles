@@ -12,6 +12,7 @@ import contextlib
 import json
 import os
 import sys
+from argparse import Namespace
 from datetime import timedelta
 from types import ModuleType
 
@@ -1388,11 +1389,110 @@ def test_grouped_megatron_ep_forward_backward_and_update(monkeypatch, grouped_ep
         assert qdq_calls == 4 * (step + 1)
 
 
-@pytest.fixture(scope="module", params=[2, 4], ids=["ep2-edp2", "ep4"])
+@pytest.mark.usefixtures("grouped_qat_env")
+@pytest.mark.parametrize("quantization_config", [None, {"quant_method": "nvfp4"}], ids=["bf16", "nvfp4"])
+def test_grouped_megatron_ep_weight_export(monkeypatch, grouped_ep, quantization_config):
+    from miles.backends.megatron_utils.named_weights import named_params_and_buffers
+    from miles.backends.megatron_utils.update_weight.hf_weight_iterator_direct import HfWeightIteratorDirect
+    from miles.backends.training_utils import parallel
+    from miles.backends.training_utils.weight_update.hf_weight_iterator import WeightUpdatePlacement
+    from miles.utils.ft_utils.process_group_utils import GroupInfo
+    from miles.utils.tensor_backper import TensorBackuper
+
+    ep, pg = grouped_ep
+
+    def group_info(group):
+        return GroupInfo(rank=dist.get_rank(group), size=dist.get_world_size(group), group=group)
+
+    monkeypatch.setattr(
+        parallel,
+        "_parallel_state",
+        parallel.ParallelState(
+            intra_dp=group_info(pg.dp),
+            intra_dp_cp=group_info(pg.dp_cp),
+            cp=group_info(pg.cp),
+            tp=group_info(pg.tp),
+            pp=group_info(pg.pp),
+            ep=group_info(pg.ep),
+            etp=group_info(pg.expt_tp),
+            edp=group_info(pg.expt_dp),
+            tp_dp_cp=group_info(pg.tp_dp_cp),
+            indep_dp=GroupInfo(0, 1, None),
+        ),
+    )
+    args = Namespace(
+        num_experts=_EP_EXPERTS,
+        hidden_size=_EP_HIDDEN,
+        num_attention_heads=4,
+        num_query_groups=4,
+        kv_channels=_EP_HIDDEN // 4,
+        vocab_size=_EP_HIDDEN,
+        swiglu=True,
+        update_weight_buffer_size=32768,
+        sglang_speculative_algorithm=None,
+        q_lora_rank=None,
+        custom_model_provider_path=None,
+    )
+    exported = []
+    for packed in (False, True):
+        layer = _make_ep_layer(packed, False, ep, pg).module
+        model = torch.nn.Module()
+        model.config = layer.config
+        model.module = torch.nn.ModuleDict(
+            {"decoder": torch.nn.ModuleDict({"layers": torch.nn.ModuleList([torch.nn.ModuleDict({"mlp": layer})])})}
+        )
+
+        def source(model=model):
+            return named_params_and_buffers(args, [model])
+
+        original_params = dict(source())
+        backuper = TensorBackuper.create(source_getter=source)
+        backuper.backup("actor")
+        iterator = HfWeightIteratorDirect.build(
+            args,
+            [model],
+            required_placement=WeightUpdatePlacement(gather_pp=False),
+            model_name="GlmMoeDsaForCausalLM",
+            quantization_config=quantization_config,
+        )
+
+        def export(weights, iterator=iterator):
+            return {name: value.clone() for bucket in iterator.iter_hf_weights(weights) for name, value in bucket}
+
+        live = export(dict(source()))
+        backed_up = export(backuper.get("actor"))
+        assert live.keys() == backed_up.keys()
+        for name in live:
+            assert torch.equal(
+                live[name].reshape(-1).view(torch.uint8), backed_up[name].reshape(-1).view(torch.uint8)
+            ), name
+        with torch.no_grad():
+            for param in model.parameters():
+                storage = getattr(param, "rowwise_data", param)
+                storage.zero_()
+        backuper.restore("actor")
+        restored = export(dict(source()))
+        for name in live:
+            assert torch.equal(
+                live[name].reshape(-1).view(torch.uint8), restored[name].reshape(-1).view(torch.uint8)
+            ), name
+        assert all(param is original_params[name] for name, param in source())
+        exported.append(live)
+
+    assert exported[0].keys() == exported[1].keys()
+    for name in exported[0]:
+        assert torch.equal(
+            exported[0][name].reshape(-1).view(torch.uint8), exported[1][name].reshape(-1).view(torch.uint8)
+        ), name
+    assert len([name for name in exported[1] if name.endswith(".weight")]) == 3 * _EP_EXPERTS + 1
+
+
+@pytest.fixture(scope="module", params=[2, 4], ids=["ep2", "ep4"])
 def grouped_ep(request):
     # Run: torchrun --standalone --nproc_per_node=4 -m pytest <this file> -k grouped_megatron_ep
-    if int(os.getenv("WORLD_SIZE", "1")) != 4:
-        pytest.skip("requires torchrun --nproc_per_node=4")
+    world_size = int(os.getenv("WORLD_SIZE", "1"))
+    if world_size not in (2, 4) or request.param > world_size:
+        pytest.skip("requires two or four ranks and enough ranks for the requested EP size")
 
     from megatron.core import parallel_state
     from megatron.core.process_groups_config import ProcessGroupCollection

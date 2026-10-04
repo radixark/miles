@@ -114,3 +114,94 @@ def test_gather_batches_pack_by_size_only(direct_module, monkeypatch):
         Namespace(update_weight_buffer_size=6), params, size_multiplier=2
     )
     assert [[param.name for param in batch] for batch in batches] == [["layer.a"], ["layer.b"], ["layer.c"]]
+
+
+@pytest.fixture
+def named_weights_module(monkeypatch):
+    _install_import_stubs(monkeypatch)
+    from miles.backends.megatron_utils import named_weights
+
+    return named_weights
+
+
+@pytest.mark.parametrize("ep_rank", [0, 1, 3])
+@pytest.mark.parametrize(
+    "prefix", ["decoder.layers.7", "mtp.layers.0.transformer_layer", "mtp.layers.1.mtp_model_layer"]
+)
+@pytest.mark.parametrize("fc,partition_dim", [("linear_fc1", 0), ("linear_fc2", 1)])
+@pytest.mark.parametrize("native_storage", [False, True])
+def test_unpack_grouped_expert_names_values_and_partition_attrs(
+    named_weights_module, monkeypatch, ep_rank, prefix, fc, partition_dim, native_storage
+):
+    monkeypatch.setattr(
+        named_weights_module, "get_parallel_state", lambda: Namespace(ep=Namespace(rank=ep_rank, size=4))
+    )
+    param = torch.nn.Parameter(torch.arange(48, dtype=torch.float32).view(2, 6, 4))
+    if native_storage:
+        param.rowwise_data = param.detach().flatten()
+        param.quantizer = None
+    param.tensor_model_parallel = True
+    param.partition_dim = partition_dim
+    param.partition_stride = 1
+    param.parallel_mode = None
+    name = f"module.module.{prefix}.mlp.experts.{fc}.weight"
+
+    actual = list(named_weights_module.unpack_grouped_expert_weights(Namespace(num_experts=8), [(name, param)]))
+
+    assert [n for n, _ in actual] == [f"{name}{2 * ep_rank}", f"{name}{2 * ep_rank + 1}"]
+    for i, (_, weight) in enumerate(actual):
+        torch.testing.assert_close(weight, param[i], rtol=0, atol=0)
+        assert weight.data_ptr() == param[i].data_ptr()
+        assert weight.tensor_model_parallel
+        assert weight.partition_dim == partition_dim
+        assert weight.partition_stride == 1
+        assert weight.parallel_mode is None
+    with torch.no_grad():
+        param.add_(100)
+    torch.testing.assert_close(actual[1][1], param[1], rtol=0, atol=0)
+
+
+def test_unpack_grouped_experts_preserves_discrete_and_shared_weights(named_weights_module, monkeypatch):
+    monkeypatch.setattr(named_weights_module, "get_parallel_state", lambda: Namespace(ep=Namespace(rank=1, size=2)))
+    weight = torch.nn.Parameter(torch.ones(4, 8))
+    names = [
+        "module.module.decoder.layers.0.mlp.experts.linear_fc1.weight4",
+        "module.module.decoder.layers.0.mlp.shared_experts.linear_fc1.weight",
+        "module.module.decoder.layers.0.mlp.router.weight",
+    ]
+    actual = list(
+        named_weights_module.unpack_grouped_expert_weights(Namespace(num_experts=8), [(n, weight) for n in names])
+    )
+    assert [n for n, _ in actual] == names
+    assert all(p is weight for _, p in actual)
+
+
+def test_unpack_grouped_experts_rejects_wrong_expert_count(named_weights_module, monkeypatch):
+    monkeypatch.setattr(named_weights_module, "get_parallel_state", lambda: Namespace(ep=Namespace(rank=0, size=2)))
+    name = "module.module.decoder.layers.0.mlp.experts.linear_fc1.weight"
+    with pytest.raises(ValueError, match="Expected 4 packed expert weights"):
+        list(
+            named_weights_module.unpack_grouped_expert_weights(Namespace(num_experts=8), [(name, torch.ones(2, 4, 8))])
+        )
+
+
+def test_grouped_cpu_backup_reads_storage_before_expert_views(named_weights_module, monkeypatch):
+    param = torch.nn.Parameter(torch.zeros(2, 4, 8))
+    param.rowwise_data = param.detach().flatten()
+    backup = torch.arange(64, dtype=torch.float32)
+    calls = []
+
+    def get_cpu_backup(tensor, *, zero_copy):
+        assert zero_copy
+        calls.append(tensor)
+        return backup
+
+    monkeypatch.setitem(
+        sys.modules, "torch_memory_saver", Namespace(torch_memory_saver=Namespace(get_cpu_backup=get_cpu_backup))
+    )
+    result = named_weights_module._maybe_get_cpu_backup(param)
+
+    assert calls[0] is param.rowwise_data
+    assert result.shape == param.shape
+    assert result.data_ptr() == backup.data_ptr()
+    torch.testing.assert_close(result, backup.view_as(param), rtol=0, atol=0)

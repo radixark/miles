@@ -9,7 +9,7 @@ import torch.distributed as dist
 from tqdm import tqdm
 
 from miles.backends.megatron_utils.megatron_to_hf import convert_to_hf
-from miles.backends.megatron_utils.named_weights import named_params_and_buffers
+from miles.backends.megatron_utils.named_weights import named_params_and_buffers, unpack_grouped_expert_weights
 from miles.backends.megatron_utils.sglang import monkey_patch_torch_reductions
 from miles.backends.megatron_utils.update_weight.expert_gather import ExpertGather
 from miles.backends.megatron_utils.update_weight.hf_weight_iterator import (
@@ -76,6 +76,8 @@ class HfWeightIteratorDirect(MegatronHfWeightIteratorBase):
 
     def _iter_hf_param_units(self, weights, *, materialize):
         rank = dist.get_rank()
+        named_weights = named_params_and_buffers(self.args, self.model) if weights is None else weights.items()
+        weights = dict(unpack_grouped_expert_weights(self.args, named_weights))
 
         pbar = tqdm(
             total=len(self._non_expert_batches) + len(self._expert_batches),
@@ -297,7 +299,7 @@ def _get_megatron_local_param_infos(
 
     param_infos: dict[str, ParamInfo] = {}
     rank = dist.get_rank()
-    for name, param in named_params_and_buffers(args, model):
+    for name, param in unpack_grouped_expert_weights(args, named_params_and_buffers(args, model)):
         if _is_adapter_param_name(name):
             continue
         param_infos[name] = ParamInfo(
