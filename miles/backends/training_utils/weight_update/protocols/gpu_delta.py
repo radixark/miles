@@ -45,7 +45,7 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
     def __init__(self, args):
         super().__init__(args)
         self.codec = gpu_delta_publication.configured_codec()
-        self._timing = os.environ.get("WEIGHT_DELTA_TIMING", "0") == "1"
+        self._timing = os.environ.get("GPU_DELTA_TIMING", "0") == "1"
         self._snapshot = {}
         self._next_snapshot = {}
         self._raw_names = self._gpu_batch_names = ()

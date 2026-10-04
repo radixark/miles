@@ -139,7 +139,7 @@ def _gpu_delta_env():
     # Ray jobs receive an explicit environment, not every variable in this shell.
     from miles.utils.gpu_delta_publication import configured_codec
 
-    return {"WEIGHT_DELTA_CODEC": configured_codec(), "SGLANG_NVFP4_CKPT_FP8_GEMM_IN_ATTN": "0"}
+    return {"GPU_DELTA_CODEC": configured_codec(), "SGLANG_NVFP4_CKPT_FP8_GEMM_IN_ATTN": "0"}
 
 
 def _assert_gpu_delta_weights_changed(args, version_dir, _rollout_engines):
@@ -153,7 +153,7 @@ def _assert_gpu_delta_weights_changed(args, version_dir, _rollout_engines):
     last_version = args.num_rollout - 1
     if current["target_version"] != last_version:
         return
-    codec = _gpu_delta_env()["WEIGHT_DELTA_CODEC"]
+    codec = _gpu_delta_env()["GPU_DELTA_CODEC"]
     changed_bytes = []
     for version in range(1, last_version + 1):
         manifest = json.loads((version_dir.parent / f"weight_v{version:06d}/manifest.json").read_text())

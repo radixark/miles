@@ -25,12 +25,16 @@ SMs. Receiver Zstd decompression runs on CPU; Snappy explicitly requests the
 Blackwell hardware decompression engine and rejects unsupported hardware or
 allocation modes. Pinned host buffers supply streamed Snappy H2D copies.
 
-| Environment variable | Meaning |
+These `GPU_DELTA_*` variables are development/debug controls, not a stable
+user-facing configuration API. Runtime defaults are sufficient for normal use.
+
+| Development variable | Meaning |
 | --- | --- |
-| `WEIGHT_DELTA_CODEC=snappy-zstd` | The sole supported value and default. Frozen at launch and matched against the receiver plan and immutable publication. |
-| `WEIGHT_DELTA_TIMING=1` | Optional per-phase CUDA events. Default off; instrumentation can perturb timing. |
-| `WEIGHT_DELTA_CPU_WORKERS=32` | CPU outer-Zstd workers per engine-host arena creator, not per rank, plus one independent SHA worker. Two colocated engines have separate pools (64 decoder workers at the default). |
-| `WEIGHT_DELTA_HOST_CACHE_DIR` | Tmpfs base for engine-local host arenas; defaults to `/dev/shm/sglang-gpu-delta-<uid>`. Engines use separate subdirectories, identities and locks; only ranks of the same engine share an arena. |
+| `GPU_DELTA_CODEC=snappy-zstd` | The sole supported value and default. Frozen at launch and matched against the receiver plan and immutable publication. |
+| `GPU_DELTA_TIMING=1` | Optional per-phase CUDA events. Default off; instrumentation can perturb timing. |
+| `GPU_DELTA_CPU_WORKERS=32` | CPU outer-Zstd workers per engine-host arena creator, not per rank, plus one independent SHA worker. Two colocated engines have separate pools (64 decoder workers at the default). |
+| `GPU_DELTA_HOST_CACHE_DIR` | Tmpfs base for engine-local host arenas; defaults to `/dev/shm/sglang-gpu-delta-<uid>`. Engines use separate subdirectories, identities and locks; only ranks of the same engine share an arena. |
+| `GPU_DELTA_SOURCE_DIGEST` | Optional producer-benchmark provenance annotation; unset by default. Does not configure the transport. |
 
 For Ray launches, set the job `runtime_env` environment or use the provided
 `execute_train(extra_env_vars=...)` path. The submitting shell alone does not
@@ -92,7 +96,7 @@ The receiver advertises an opaque engine-host arena identity. Miles supplies onl
 that engine's local union of canonical tensor names. Ranks within an engine share
 CPU preparation; independent engines have separate arenas and may duplicate host
 bytes. No host-wide cache lock or release barrier couples separate engines.
-Each creator bounds queued decode futures to `4 * WEIGHT_DELTA_CPU_WORKERS`;
+Each creator bounds queued decode futures to `4 * GPU_DELTA_CPU_WORKERS`;
 it does not enqueue one unbounded future for every tensor/frame.
 The global canonical inventory must have complete, unique owner coverage. Duplicate
 exports, including overlapping PP/MTP names, are rejected rather than deduplicated.
@@ -219,7 +223,7 @@ checkpoint and three cumulative publications. Fixture creation uses one GPU.
 
 ```bash
 export PYTHONPATH=/workspace/sglang/python:/workspace/miles
-export WEIGHT_DELTA_CODEC=snappy-zstd
+export GPU_DELTA_CODEC=snappy-zstd
 python tests/manual/gpu_delta/bench_gpu_delta.py inventory \
   --model /models/GLM5.2-NVFP4 --output /data/gpu-delta/inventory
 python tests/manual/gpu_delta/bench_gpu_delta.py fixture \
@@ -264,7 +268,7 @@ python tests/manual/gpu_delta/bench_gpu_delta.py oracle --model /models/GLM5.2-N
 
 For two TP4/DP4/EP4 engines on one eight-GPU host, provide two ports. The first
 engine uses GPUs0–3; the second uses GPUs4–7. Both use the same tmpfs base
-`WEIGHT_DELTA_HOST_CACHE_DIR`, but each engine owns a distinct subdirectory/arena.
+`GPU_DELTA_HOST_CACHE_DIR`, but each engine owns a distinct subdirectory/arena.
 The harness checks one arena per engine, all eight original scheduler identities, each engine's
 TP/DP ranks0–3, and captures compute-process PID→GPU UUID observations. If NVML
 uses host PIDs unavailable in the container's `NSpid` mapping, that join remains
@@ -275,7 +279,7 @@ An EP8 fixture's view-bound plan digest does not describe EP4. First inventory
 the new topology, then rebind its views into a **new** immutable fixture directory:
 
 ```bash
-export WEIGHT_DELTA_HOST_CACHE_DIR=/dev/shm/gpu-delta-benchmark
+export GPU_DELTA_HOST_CACHE_DIR=/dev/shm/gpu-delta-benchmark
 python tests/manual/gpu_delta/bench_gpu_delta.py inventory --model /models/GLM5.2-NVFP4 \
   --ports 31135 31235 --output /data/gpu-delta/ep4-inventory
 python tests/manual/gpu_delta/bench_gpu_delta.py rebind --model /models/GLM5.2-NVFP4 \

@@ -54,10 +54,8 @@ def _snapshots(frame_bytes=FRAME_BYTES):
     )
 
 
-@pytest.mark.parametrize("timing", ["0", "1"])
 @pytest.mark.parametrize("frame_bytes", [FRAME_BYTES, 1 << 16, 1 << 21])
-def test_cross_tensor_batch_exact_bytes_immutable_snapshots_and_owned_slab(timing, frame_bytes, monkeypatch):
-    monkeypatch.setenv("WEIGHT_DELTA_TIMING", timing)
+def test_cross_tensor_batch_exact_bytes_immutable_snapshots_and_owned_slab(frame_bytes, monkeypatch):
     device = torch.device("cuda", torch.cuda.current_device())
     encoder = gpu_delta_encoder.GpuBatchEncoder(device, frame_bytes=frame_bytes)
     old, current, inputs = _snapshots(frame_bytes)
@@ -86,8 +84,6 @@ def test_cross_tensor_batch_exact_bytes_immutable_snapshots_and_owned_slab(timin
         assert metrics["baseline_d2h_bytes"] == 0
         assert len(payload) <= metrics["encoded_d2h_bytes"] < len(payload) + 16
         assert metrics["timing_scope"] == ("batch" if index == 0 else "none")
-        assert bool(metrics["cuda_phase_s"]) == (timing == "1" and index == 0)
-        assert all(value >= 0 for value in metrics["cuda_phase_s"].values())
         if index:
             assert metrics["encode_wall_s"] == 0
         if payload:

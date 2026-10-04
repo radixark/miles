@@ -238,7 +238,7 @@ class GpuBatchEncoder:
         if type(frame_bytes) is not int or frame_bytes not in (1 << 16, FRAME_BYTES, 1 << 21):
             raise ValueError("GPU delta frame_bytes must be 64 KiB, 1 MiB or 2 MiB")
         self.device, self.frame_bytes = torch.device(device), frame_bytes
-        self.timing = os.environ.get("WEIGHT_DELTA_TIMING", "0") == "1"
+        self.timing = os.environ.get("GPU_DELTA_TIMING", "0") == "1"
         self.stream = torch.cuda.Stream(device=self.device)
         self.compressor = NvcompCompressor("snappy", self.device)
         self.outer_compressor = NvcompCompressor("zstd", self.device)

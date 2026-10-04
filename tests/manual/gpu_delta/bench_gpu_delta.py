@@ -9,7 +9,7 @@ Example (run from the Miles checkout with paired SGLang on PYTHONPATH)::
     python tests/manual/gpu_delta/bench_gpu_delta.py inventory --model /models/base --output /data/inventory
     python tests/manual/gpu_delta/bench_gpu_delta.py fixture --model /models/base \
         --inventory /data/inventory/inventory.json --output /data/fixture
-    WEIGHT_DELTA_CODEC=snappy-zstd WEIGHT_DELTA_TIMING=1 \
+    GPU_DELTA_CODEC=snappy-zstd GPU_DELTA_TIMING=1 \
         python tests/manual/gpu_delta/bench_gpu_delta.py run --model /models/base \
         --fixture /data/fixture --output /data/snappy-zstd
 
@@ -680,10 +680,10 @@ async def _engines(args, model):
                 "feature_env": {
                     key: os.environ.get(key)
                     for key in (
-                        "WEIGHT_DELTA_CODEC",
-                        "WEIGHT_DELTA_TIMING",
-                        "WEIGHT_DELTA_CPU_WORKERS",
-                        "WEIGHT_DELTA_HOST_CACHE_DIR",
+                        "GPU_DELTA_CODEC",
+                        "GPU_DELTA_TIMING",
+                        "GPU_DELTA_CPU_WORKERS",
+                        "GPU_DELTA_HOST_CACHE_DIR",
                     )
                 },
             },

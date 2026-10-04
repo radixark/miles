@@ -99,7 +99,7 @@ def _environment(args):
     from miles.utils.gpu_delta_publication import configured_codec
 
     configured_codec()
-    os.environ["WEIGHT_DELTA_TIMING"] = str(int(args.timing))
+    os.environ["GPU_DELTA_TIMING"] = str(int(args.timing))
     config = json.loads((args.hf_checkpoint / "config.json").read_text())
     if config.get("model_type") != "glm_moe_dsa" or config.get("num_hidden_layers") != 5:
         raise ValueError("Expected the native GLM-5.2 five-layer checkpoint")

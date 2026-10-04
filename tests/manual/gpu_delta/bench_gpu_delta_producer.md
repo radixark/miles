@@ -6,8 +6,8 @@ protocol on eight GPUs: TP1/PP1/CP1/EP8/ETP1, native GLM-5.2 five-layer model
 It loads the real model and writes three cumulative immutable publications.
 It does not launch a receiver or run forward/backward, an optimizer, or activation.
 
-- **Codec:** `WEIGHT_DELTA_CODEC=snappy-zstd` is the sole supported value and
-  default. Matrices use GPU XOR, GPU Snappy, then owner-wide GPU Zstd. Both
+- **Codec:** Snappy-Zstd is the sole supported codec. Matrices use GPU XOR,
+  GPU Snappy, then owner-wide GPU Zstd. Both
   compression algorithms execute on GPU SMs. Hardware Snappy acceleration is a
   receiver decompression property, not GPU compression acceleration.
 - **Ownership:** routed experts remain on their EP × EDP exporter owners before
@@ -68,7 +68,7 @@ closure as documented in [README.md](README.md).
 
 ```bash
 export PYTHONPATH=/workspace/sglang/python:/workspace/miles:/root/Megatron-LM
-export WEIGHT_DELTA_CODEC=snappy-zstd
+export GPU_DELTA_CODEC=snappy-zstd
 python -m torch.distributed.run --standalone --nproc-per-node=8 \
   tests/manual/gpu_delta/bench_gpu_delta_producer.py \
   --hf-checkpoint /models/GLM5.2-5layer-NVFP4 \
@@ -77,7 +77,9 @@ python -m torch.distributed.run --standalone --nproc-per-node=8 \
   --perturb-fraction 0.001 --perturb-relative-scale 0.03125
 ```
 
-Output must be a new directory. The harness records runtime package versions,
+The `GPU_DELTA_*` environment variables are development/debug controls, not a
+stable user-facing configuration API. Output must be a new directory.
+The harness records runtime package versions,
 model flags, source digest (from `GPU_DELTA_SOURCE_DIGEST` when provided),
 GPU memory counters, original rank ownership and all per-version measurements.
 `--timing` enables CUDA phase events; default timing is off to avoid event overhead.

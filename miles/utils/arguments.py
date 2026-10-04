@@ -1052,8 +1052,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                     "'disk-delta' diffs each sync against a CPU snapshot of the previous one and publishes "
                     "only the changed bytes to --update-weight-disk-dir; each engine's /pull_weights applies "
                     "them into a host-local checkpoint that the engine reloads from. "
-                    "'gpu-delta' publishes canonical GPU-encoded frames for streaming SGLang GPU apply. "
-                    "WEIGHT_DELTA_CODEC selects the publication codec (currently snappy-zstd only)."
+                    "'gpu-delta' publishes canonical Snappy-Zstd GPU-encoded frames for streaming SGLang GPU apply."
                 ),
             )
             parser.add_argument(

@@ -67,9 +67,9 @@ def sha256(data) -> str:
 
 
 def configured_codec() -> str:
-    codec = os.environ.get("WEIGHT_DELTA_CODEC", CODEC)
+    codec = os.environ.get("GPU_DELTA_CODEC", CODEC)
     if codec != CODEC:
-        raise ValueError("Expected WEIGHT_DELTA_CODEC=snappy-zstd")
+        raise ValueError("Expected GPU_DELTA_CODEC=snappy-zstd")
     return codec
 
 
