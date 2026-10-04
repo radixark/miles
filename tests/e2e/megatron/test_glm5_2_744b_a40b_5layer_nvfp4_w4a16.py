@@ -1,7 +1,5 @@
-import argparse
 import json
 import os
-import shlex
 from pathlib import Path
 
 from tests.ci.ci_register import register_cuda_ci
@@ -179,25 +177,15 @@ def _assert_gpu_delta_weights_changed(args, version_dir, _rollout_engines):
     print(f"GPU-delta E2E learned publication changed bytes: {changed_bytes}", flush=True)
 
 
-def execute(gpu_delta: bool = False, num_rollout: int | None = None, update_weight_disk_dir: str | None = None):
+def execute():
     U = command_utils.default_config().create_backend()
-    if num_rollout is None:
-        num_rollout = 4 if gpu_delta else 2
-    if gpu_delta and num_rollout < 4:
-        raise ValueError("GPU-delta validation requires three learned updates (at least four rollouts).")
-    if update_weight_disk_dir is not None and not gpu_delta:
-        raise ValueError("--update-weight-disk-dir requires --gpu-delta")
-    weight_transfer_args = "--update-weight-transfer-mode broadcast_packed --use-fault-tolerance "
-    delta_env = {}
-    if gpu_delta:
-        publication_dir = update_weight_disk_dir or f"/root/shared_data/{RUN_ID}/gpu_delta"
-        weight_transfer_args = (
-            "--update-weight-transfer-mode gpu-delta "
-            f"--update-weight-disk-dir {shlex.quote(publication_dir)} "
-            "--custom-update-weight-post-write-path "
-            "tests.e2e.megatron.test_glm5_2_744b_a40b_5layer_nvfp4_w4a16._assert_gpu_delta_weights_changed "
-        )
-        delta_env = _gpu_delta_env()
+    weight_transfer_args = (
+        "--update-weight-transfer-mode gpu-delta "
+        f"--update-weight-disk-dir /root/shared_data/{RUN_ID}/gpu_delta "
+        "--custom-update-weight-post-write-path "
+        "tests.e2e.megatron.test_glm5_2_744b_a40b_5layer_nvfp4_w4a16._assert_gpu_delta_weights_changed "
+    )
+    delta_env = _gpu_delta_env()
 
     os.environ.update(NVFP4_ENV)
     os.environ.update(GLM5_ENV)
@@ -209,16 +197,15 @@ def execute(gpu_delta: bool = False, num_rollout: int | None = None, update_weig
         f"--hf-checkpoint {MODEL_DIR}/{MODEL_NAME}-NVFP4/ " f"--ref-load {MODEL_DIR}/{MEGATRON_MODEL_NAME}_torch_dist "
     )
 
-    # GPU-delta needs learned changes despite this pruned model's zero math
-    # score; the ordinary CI arm retains its original deepscaler reward.
+    # Exercise learned deltas despite this pruned model's zero math score.
     rollout_args = (
         f"--prompt-data {DATA_DIR}/dapo-math-17k/dapo-math-17k.jsonl "
         "--input-key prompt "
         "--label-key label "
         "--apply-chat-template "
         "--rollout-shuffle "
-        f"--rm-type {'deterministic_random' if gpu_delta else 'deepscaler'} "
-        f"--num-rollout {num_rollout} "
+        "--rm-type deterministic_random "
+        "--num-rollout 4 "
         "--rollout-batch-size 8 "
         "--n-samples-per-prompt 8 "
         "--rollout-max-response-len 100 "
@@ -353,28 +340,7 @@ def execute(gpu_delta: bool = False, num_rollout: int | None = None, update_weig
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="GLM-5.2 NVFP4 W4A16 with four training and four rollout GPUs.")
-    parser.add_argument(
-        "--gpu-delta", action="store_true", help="Exercise three learned GPU-delta updates instead of ordinary broadcast."
-    )
-    parser.add_argument(
-        "--skip-prepare", action="store_true", help="Reuse previously prepared checkpoints and dataset."
-    )
-    parser.add_argument(
-        "--num-rollout", type=int, help="Defaults to two rollouts, or four with --gpu-delta."
-    )
-    parser.add_argument("--update-weight-disk-dir")
-    options = parser.parse_args()
-    if options.gpu_delta and options.num_rollout is not None and options.num_rollout < 4:
-        parser.error("--gpu-delta requires --num-rollout of at least 4")
-    if options.update_weight_disk_dir is not None and not options.gpu_delta:
-        parser.error("--update-weight-disk-dir requires --gpu-delta")
-    if not options.skip_prepare:
-        prepare()
+    prepare()
     for proxy_var in ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY"):
         os.environ.pop(proxy_var, None)
-    execute(
-        gpu_delta=options.gpu_delta,
-        num_rollout=options.num_rollout,
-        update_weight_disk_dir=options.update_weight_disk_dir,
-    )
+    execute()

@@ -36,21 +36,19 @@ For Ray launches, set the job `runtime_env` environment or use the provided
 `execute_train(extra_env_vars=...)` path. The submitting shell alone does not
 forward arbitrary variables into existing workers. Trainer-only settings can
 use `--train-env-vars`; receiver profiling needs the timing setting on rollout
-actors too. The explicit five-layer GPU-delta E2E arm forwards the codec and checks
+actors too. The five-layer GPU-delta E2E forwards the codec and checks
 every learned publication's protocol and codec. No old codec/encoder setting is migrated.
 
-The existing five-layer test keeps its ordinary two-rollout `broadcast_packed`
-default. Select the GPU-delta arm explicitly to exercise at least three learned
-updates with a deterministic nonzero reward and the publication-change gate:
+The five-layer test is dedicated to GPU delta: it prepares checkpoints and data,
+then runs four rollouts to exercise three learned publications with deterministic
+rewards and the publication-change gate. It takes no CLI options:
 
 ```bash
-python tests/e2e/megatron/test_glm5_2_744b_a40b_5layer_nvfp4_w4a16.py \
-  --gpu-delta --skip-prepare --num-rollout 4 \
-  --update-weight-disk-dir /data/gpu-delta/e2e-new
+python tests/e2e/megatron/test_glm5_2_744b_a40b_5layer_nvfp4_w4a16.py
 ```
 
-`--skip-prepare` requires the existing checkpoints and dataset. GPU-delta disables
-engine replacement and attention FP8 conversion only in its selected test arm.
+Publications use `/root/shared_data/<run_id>/gpu_delta`. Engine replacement and
+attention FP8 conversion are disabled for this test.
 
 ## Fixed producer and receiver pipeline
 
