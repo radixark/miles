@@ -111,9 +111,14 @@ once per engine-host arena into shared Snappy storage during background preparat
 registers the shared arena for its streamed pinned transfer. Both decoded and
 encoded host arenas initially allocate the required bytes rounded to 64 MiB.
 Sufficient capacity is reused; a later growth allocates twice the new requirement,
-also rounded to 64 MiB. After actual pause, it streams each tensor to HBM, performs hardware Snappy decompression,
-transforms the XOR mask into the physical weight layout, and applies in place.
-GPU Zstd decompression is not part of this path.
+also rounded to 64 MiB. Compressed tensors occupy contiguous shared-arena storage
+in natural name order. After actual pause, adjacent needed spans transfer together
+by layer, without host repacking. Hardware Snappy decodes one layer batch, then
+grouped kernels apply the XOR masks to the physical weight layouts in place.
+Two encoded HBM slots let a copy stream prefetch the next layer while the apply
+stream decodes and applies the current layer. Events guard slot reuse; decoded
+and decoder scratch remain shared across batches. GPU Zstd decompression is not
+part of this path.
 
 Miles negotiates the immutable plan and original participant cohort once when
 connecting; learned updates reuse that plan rather than sort and hash it again.
@@ -349,10 +354,12 @@ derived refresh. Pause measures the original scheduler flag-to-resume interval;
 it excludes earlier prepare/status handler service and does not quantify serving
 interference. Do not sum nested events or concurrent rank durations.
 
-Each host reads/hashes the immutable owner files once and CPU-unwraps the union
-of tensors needed by its original ranks into a shared arena. Each scheduler
-registers that arena for pinned transfer and reuses tensor-level HBM scratch;
-the shared storage stays alive while its consumers use it. The benchmark generates before/after updates, not during preparation;
-realized overlap, request latency and production throughput need separate study.
+Each engine-host reads/hashes the immutable owner files once and CPU-unwraps the
+union needed by its original ranks into its shared arena. Independent engines
+have separate arenas. Each scheduler registers its arena for pinned transfer
+and reuses two encoded layer slots plus one decoded layer buffer and decoder
+workspace. Shared storage stays alive while its consumers use it. The benchmark
+generates before/after updates, not during preparation; realized serving overlap,
+request latency and production throughput need separate study.
 The harness terminates only its own engine processes, retains partial evidence
 on failure and never releases a devbox allocation.
