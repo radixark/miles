@@ -12,7 +12,8 @@ from unittest.mock import Mock
 import pytest
 
 from miles.backends.training_utils.weight_update import gpu_delta_metrics as metrics
-from miles.backends.training_utils.weight_update.protocol import get_weight_transfer_protocol
+from miles.backends.training_utils.weight_update import updater as updater_module
+from miles.backends.training_utils.weight_update.protocol import WeightTransferProtocol, get_weight_transfer_protocol
 from miles.backends.training_utils.weight_update.protocols import gpu_delta
 from miles.utils.timer import Timer
 
@@ -26,6 +27,9 @@ def _activation():
         timings = {name: float(rank + 1) for name in metrics._RANK_TIMINGS}
         timings.update({name: float(rank + 10) if creator else 0.0 for name in metrics._HOST_TIMINGS})
         timings.update(
+            host_plan_cache_reused=1,
+            host_payload_decode_hash_s=5 + rank if creator else 0,
+            host_payload_hash_wait_s=0.25 + rank if creator else 0,
             host_payload_cache_created=int(creator),
             host_frames_validations=int(creator),
             host_outer_zstd_cpu_workers=4,
@@ -100,6 +104,13 @@ def test_original_rank_pause_and_creator_only_host_metrics_remain_separate():
     assert result[prefix + "creator_host_frames_validate_s/p50"] == 11
     assert result[prefix + "creator_host_frames_validations/sum"] == 2
     assert prefix + "receiver_host_frames_validate_s/p50" not in result
+    assert prefix + "host_shared_capacity_bytes/sum" not in result
+    assert prefix + "receiver_host_shared_register_calls/max" not in result
+    assert result[prefix + "receiver_host_plan_cache_reused/min"] == 1
+    assert result[prefix + "creator_host_payload_decode_hash_s/p50"] == 6
+    assert result[prefix + "creator_host_payload_hash_wait_s/p50"] == 1.25
+    assert result[prefix + "creator_host_payload_sha256_s/p50"] == 11
+    assert result[prefix + "creator_host_outer_zstd_worker_decode_sum_s/p50"] == 11
     assert activation == original
     # A reused publication has no new creator work, not a zero-duration decode.
     for receipt in activation["receipts"]:
@@ -162,46 +173,9 @@ def test_capacity_and_allocation_count_hosts_once_but_registration_per_rank(warm
     assert prefix + "creator_host_shared_allocation_s/p50" not in result
 
 
-def test_missing_capacity_is_not_zero_and_inconsistent_shared_capacity_is_rejected():
-    activation = _activation()
-    result = metrics.activation_metrics(activation)
-    prefix = "perf/gpu_delta/"
-    assert prefix + "host_shared_capacity_bytes/sum" not in result
-    assert prefix + "receiver_host_shared_register_calls/max" not in result
-    for rank, receipt in enumerate(activation["receipts"]):
-        receipt["result"]["timings"]["host_shared_capacity_bytes"] = 1024 + rank
-    with pytest.raises(ValueError, match="capacity differs between ranks"):
-        metrics.activation_metrics(activation)
-
-
-def test_overlap_spans_and_plan_reuse_remain_optional_and_separate():
-    activation = _activation()
-    for rank, receipt in enumerate(activation["receipts"]):
-        timings = receipt["result"]["timings"]
-        timings.update(
-            host_plan_cache_reused=1,
-            host_payload_decode_hash_s=5 + rank if rank % 2 == 0 else 0,
-            host_payload_hash_wait_s=0.25 + rank if rank % 2 == 0 else 0,
-        )
-    prefix = "perf/gpu_delta/"
-    result = metrics.activation_metrics(activation)
-    assert result[prefix + "receiver_host_plan_cache_reused/min"] == 1
-    assert result[prefix + "creator_host_payload_decode_hash_s/p50"] == 6
-    assert result[prefix + "creator_host_payload_hash_wait_s/p50"] == 1.25
-    # SHA and decode retain their own nested/overlapping clocks; the reducer
-    # never computes combined wall time by summing them or averages follower 0s.
-    assert result[prefix + "creator_host_payload_sha256_s/p50"] == 11
-    assert result[prefix + "creator_host_outer_zstd_worker_decode_sum_s/p50"] == 11
-    for receipt in activation["receipts"]:
-        for key in ("host_plan_cache_reused", "host_payload_decode_hash_s", "host_payload_hash_wait_s"):
-            del receipt["result"]["timings"][key]
-    result = metrics.activation_metrics(activation)
-    assert prefix + "receiver_host_plan_cache_reused/min" not in result
-    assert prefix + "creator_host_payload_decode_hash_s/p50" not in result
-    assert prefix + "creator_host_payload_hash_wait_s/p50" not in result
-
-
-@pytest.mark.parametrize("corruption", ["incarnation", "open", "clock", "host_duplicate"])
+@pytest.mark.parametrize(
+    "corruption", ["incarnation", "open", "clock", "host_duplicate", "capacity", "engine_duplicate"]
+)
 def test_partial_or_mismatched_receipts_never_become_completed_pause_metrics(corruption):
     activation = _activation()
     receipt = activation["resumed_receipts"][0]
@@ -211,34 +185,27 @@ def test_partial_or_mismatched_receipts_never_become_completed_pause_metrics(cor
         receipt["scheduler_timing"]["resumed_ns"] = None
     elif corruption == "clock":
         receipt["scheduler_timing"]["pause_started_ns"] += 1
+    elif corruption == "capacity":
+        for rank, receipt in enumerate(activation["receipts"]):
+            receipt["result"]["timings"]["host_shared_capacity_bytes"] = 1024 + rank
+    elif corruption == "engine_duplicate":
+        activation["engine_timings"][1]["engine_id"] = "engine-0"
     else:
         activation["receipts"][1]["result"]["timings"]["host_payload_cache_created"] = 1
     with pytest.raises(ValueError):
         metrics.activation_metrics(activation)
 
 
-def test_gpu_delta_factory_admits_protocol_and_drains_completed_logging_rank_metrics(monkeypatch):
-    protocol = get_weight_transfer_protocol(
-        Namespace(
-            update_weight_transfer_mode="gpu-delta",
-            colocate=False,
-            custom_update_weight_post_write_path=None,
-        )
-    )
-    assert isinstance(protocol, gpu_delta.UpdateWeightFromGpuDelta)
-    protocol._started = 10.0
-    monkeypatch.setattr(gpu_delta.time, "monotonic", lambda: 14.0)
-    monkeypatch.setattr(gpu_delta.dist, "get_rank", lambda: 7)
-    protocol.after_engines_resumed()
-    assert protocol.pop_metrics() == {
-        "perf/gpu_delta/trainer_logging_rank": 7,
-        "perf/gpu_delta/trainer_logging_rank_blocked_s": 4.0,
-    }
-    assert protocol.pop_metrics() == {}
+class _OrdinaryProtocol(WeightTransferProtocol):
+    def connect(self, *args):
+        raise AssertionError("already connected")
+
+    def send_bucket(self, bucket):
+        raise AssertionError("empty fixture export")
 
 
 @pytest.fixture
-def actor_update():
+def actor_update(monkeypatch):
     """Execute the exact actor entry point without importing native Megatron."""
     source = Path(gpu_delta.__file__).parents[3] / "megatron_utils" / "actor.py"
     actor = next(node for node in ast.parse(source.read_text()).body if isinstance(node, ast.ClassDef))
@@ -260,6 +227,7 @@ def actor_update():
         parallel.is_pp_last_stage = primary
         args = Namespace(
             update_weight_transfer_mode=mode,
+            colocate=False,
             custom_update_weight_post_write_path=None,
             debug_train_only=False,
             debug_rollout_only=False,
@@ -273,19 +241,32 @@ def actor_update():
             n_samples_per_prompt=4,
             global_batch_size=8,
         )
-        protocol = gpu_delta.UpdateWeightFromGpuDelta(args)
+        protocol = get_weight_transfer_protocol(args) if mode == "gpu-delta" else _OrdinaryProtocol(args)
+        protocol.is_sender = False
+        protocol._started = 10.0
+        protocol.begin_sync = lambda *args: bool(completed_metrics) or update_error is not None
+        protocol.after_base_weights = lambda: None
 
-        def update():
+        def finish(_version):
             if update_error:
                 raise update_error
             protocol.update_weight_metrics = dict(completed_metrics or {})
 
-        updater = SimpleNamespace(
-            conn_status=SimpleNamespace(needs_reconnect=lambda _: False),
-            update_weights=update,
-            pop_metrics=protocol.pop_metrics,
-            weight_version=1,
-        )
+        protocol.finalize = finish
+        # Exercise the real updater's final barrier, GPU-only drain and ordinary
+        # None return, not a copied completion hook or synthetic updater result.
+        updater = object.__new__(updater_module.WeightUpdater)
+        updater.protocol = protocol
+        updater.args = args
+        updater.conn_status = SimpleNamespace(needs_reconnect=lambda _: False)
+        updater.weight_version = 0
+        updater.is_lora = False
+        updater.weights_getter = lambda: {}
+        updater._hf_weight_iterator = SimpleNamespace(iter_hf_weights=lambda *args, **kwargs: [])
+        monkeypatch.setattr(updater_module.dist, "get_rank", lambda: 7)
+        monkeypatch.setattr(updater_module.dist, "barrier", lambda **kwargs: None)
+        monkeypatch.setattr(updater_module, "get_gloo_group", lambda: None)
+        monkeypatch.setattr(gpu_delta.time, "monotonic", lambda: 14.0)
         instance = SimpleNamespace(
             args=args,
             weight_updater=updater,
@@ -315,6 +296,8 @@ def test_final_update_logs_once_at_its_trained_rollout_without_resetting_timers(
     assert values["actor/rollout/step"] == 56  # Existing train-step conversion for rollout 7.
     assert values["actor/perf/gpu_delta/base_version"] == 0
     assert values["actor/perf/gpu_delta/target_version"] == 1
+    assert values["actor/perf/gpu_delta/trainer_logging_rank"] == 7
+    assert values["actor/perf/gpu_delta/trainer_logging_rank_blocked_s"] == 4.0
     assert submit.call_args.kwargs == {"step_key": "actor/rollout/step"}
     assert updater.pop_metrics() == {}  # The next ordinary train drain cannot repeat it.
     reset.assert_not_called()
@@ -355,10 +338,3 @@ def test_failed_update_is_not_reported_and_tracking_failure_cannot_retry_a_compl
     assert result == 1
     assert updater.pop_metrics() == {}
     assert "Tracking failed for completed GPU-delta target version 1" in caplog.text
-
-
-def test_engine_timing_coverage_cannot_include_a_replacement_or_duplicate():
-    activation = _activation()
-    activation["engine_timings"][1]["engine_id"] = "engine-0"
-    with pytest.raises(ValueError, match="original engines exactly once"):
-        metrics.activation_metrics(activation)

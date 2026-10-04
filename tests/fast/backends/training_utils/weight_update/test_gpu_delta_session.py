@@ -35,7 +35,7 @@ def _setup(failure=None, failed_engine=1):
                             "codec": "snappy-zstd",
                             "tensors": [
                                 {"name": "w", "dtype": "U8", "shape": [4], "encoding": "xor_bytes", "views": [view]}
-                            ]
+                            ],
                         },
                     }
                     for identity, view in zip(identities, views, strict=True)
@@ -71,7 +71,14 @@ class _Engine:
                 "state": state,
                 **{
                     key: self.args[key]
-                    for key in ("session_id", "manifest_sha256", "stream_id", "base_version", "target_version", "plan_digest")
+                    for key in (
+                        "session_id",
+                        "manifest_sha256",
+                        "stream_id",
+                        "base_version",
+                        "target_version",
+                        "plan_digest",
+                    )
                 },
                 "cohort_digest": "original-cohort",
             }
@@ -161,7 +168,9 @@ def test_fast_engine_resumes_while_other_engine_still_prepares(monkeypatch):
 def test_failure_is_scoped_to_its_engine_without_blind_replay(failure):
     clients, descriptions, publication, events = _setup(failure)
     with pytest.raises(RuntimeError):
-        asyncio.run(session.activate_publication(clients, session.negotiate_cohort(descriptions), publication, session_id="s"))
+        asyncio.run(
+            session.activate_publication(clients, session.negotiate_cohort(descriptions), publication, session_id="s")
+        )
     assert (0, "resumed") in events and (1, "resumed") not in events
     if failure.startswith("prepare"):
         assert (1, "abort") in events and (0, "abort") not in events
@@ -173,7 +182,9 @@ def test_failure_is_scoped_to_its_engine_without_blind_replay(failure):
 def test_uncertain_resume_is_terminal_without_abort_or_replay():
     clients, descriptions, publication, events = _setup("resume")
     with pytest.raises(RuntimeError, match="resume reply lost"):
-        asyncio.run(session.activate_publication(clients, session.negotiate_cohort(descriptions), publication, session_id="s"))
+        asyncio.run(
+            session.activate_publication(clients, session.negotiate_cohort(descriptions), publication, session_id="s")
+        )
     assert sum(event == "applied" for _, event in events) == 2
     assert not any(event == "abort" for _, event in events)
     assert (0, "resumed") in events
@@ -220,7 +231,9 @@ def test_bounded_wait_cancels_inflight_status_requests():
     clients[0].get_weights_delta_status = hanging_status
     participants = [p["identity"] for p in descriptions[0]["participants"]]
     with pytest.raises(asyncio.TimeoutError):
-        asyncio.run(session._wait_state(clients[0], participants, session_id="s", publication=publication, timeout=0.01))
+        asyncio.run(
+            session._wait_state(clients[0], participants, session_id="s", publication=publication, timeout=0.01)
+        )
     assert events == [(0, "status_cancelled")]
 
 

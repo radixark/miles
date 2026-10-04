@@ -2930,6 +2930,7 @@ class TestWeightTransferModeSelection:
 
     def test_gpu_delta_reaches_its_launch_validation(self):
         args = self._parse(["--update-weight-transfer-mode", "gpu-delta"])
+
         # Stop at the next independent validator: the complete model launch
         # environment is not needed to catch a rejected transfer-mode admission.
         class Admitted(Exception):

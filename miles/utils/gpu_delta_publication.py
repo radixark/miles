@@ -173,7 +173,17 @@ def _validate_gpu_outer(entry, outer, payload, frame_bytes):
     for frame in outer.get("frames", []):
         offset, size = frame["decoded_offset"], frame["decoded_bytes"]
         encoded_offset, encoded_size = frame["encoded_offset"], frame["encoded_bytes"]
-        if type(offset) is not int or offset != decoded_end or type(size) is not int or size != min(FRAME_BYTES, inner_end - offset) or size <= 0 or type(encoded_offset) is not int or encoded_offset != (encoded_end + 15) // 16 * 16 or type(encoded_size) is not int or encoded_size <= 0:
+        if (
+            type(offset) is not int
+            or offset != decoded_end
+            or type(size) is not int
+            or size != min(FRAME_BYTES, inner_end - offset)
+            or size <= 0
+            or type(encoded_offset) is not int
+            or encoded_offset != (encoded_end + 15) // 16 * 16
+            or type(encoded_size) is not int
+            or encoded_size <= 0
+        ):
             raise ValueError("Invalid independently framed GPU outer range")
         encoded_end, decoded_end = encoded_offset + encoded_size, offset + size
     if decoded_end != inner_end or encoded_end != len(payload):
@@ -239,7 +249,19 @@ class PublicationWriter:
         # CPU-only comparison preserves update-density metrics and omits
         # unchanged scalars. Changed tensors replace all bytes without a mask.
         entry["changed_bytes"] = int(np.count_nonzero(previous != current))
-        return self._append_tensor(entry, [memoryview(current)] if entry["changed_bytes"] else [])
+        with self._lock:
+            if self._closed or name in self._entries:
+                raise ValueError("Publication is sealed or tensor was already published")
+            if entry["changed_bytes"]:
+                payload = memoryview(current)
+                padding = bytes((-self._file.tell()) % 16)
+                self._file.write(padding)
+                self._hash.update(padding)
+                entry["raw"] = dict(file=self._filename, encoded_offset=self._file.tell(), encoded_bytes=len(payload))
+                self._file.write(payload)
+                self._hash.update(payload)
+            self._entries[name] = entry
+        return entry
 
     def add_gpu_outer_tensor(self, name, frames, payload, outer, changed_bytes, dtype, shape, views=None):
         """Publish already wrapped GPU bytes; only the final wire bytes are CPU hashed."""
@@ -258,23 +280,6 @@ class PublicationWriter:
                 self._write_outer_bytes(payload)
                 self.outer_metrics["outer_input_bytes"] += outer["decoded_bytes"]
                 self.outer_metrics["outer_output_bytes"] += len(payload)
-            self._entries[name] = entry
-        return entry
-
-    def _append_tensor(self, entry, payloads):
-        """Append only preclassified raw scalar/vector targets."""
-        name = entry["name"]
-        with self._lock:
-            if self._closed or name in self._entries:
-                raise ValueError("Publication is sealed or tensor was already published")
-            if payloads:
-                (payload,) = payloads
-                padding = bytes((-self._file.tell()) % 16)
-                self._file.write(padding)
-                self._hash.update(padding)
-                entry["raw"] = dict(file=self._filename, encoded_offset=self._file.tell(), encoded_bytes=len(payload))
-                self._file.write(payload)
-                self._hash.update(payload)
             self._entries[name] = entry
         return entry
 

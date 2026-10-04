@@ -80,7 +80,9 @@ def negotiate_cohort(descriptions: Sequence[dict], codec: str = CODEC) -> Receiv
     return ReceiverCohort(plan, tuple(identities), participants, engine_ids, digest, codec, engine_host_names)
 
 
-def validate_receipts(response: Mapping, expected: Sequence[dict], states: set[str], session_id: str, publication: dict):
+def validate_receipts(
+    response: Mapping, expected: Sequence[dict], states: set[str], session_id: str, publication: dict
+):
     if response.get("success") is not True:
         raise RuntimeError(f"GPU-delta RPC rejected: {response.get('message')}")
     receipts = response.get("participants", [])
@@ -158,7 +160,9 @@ async def _activate_engine(client, engine_id, participants, host_names, publicat
         raise
     prepared_at = time.monotonic()
     applied = await client.update_weights_from_delta(session_id=session_id)
-    receipts = validate_receipts(applied, participants, states={"APPLIED"}, session_id=session_id, publication=publication)
+    receipts = validate_receipts(
+        applied, participants, states={"APPLIED"}, session_id=session_id, publication=publication
+    )
     certificate = [receipt["certificate"] for receipt in receipts]
     applied_at = time.monotonic()
     resumed = await client.resume_weights_from_delta(session_id=session_id, receipts=certificate)
@@ -184,7 +188,11 @@ async def _wait_state(client, participants, session_id, publication, timeout=180
         while True:
             response = await client.get_weights_delta_status(session_id=session_id)
             receipts = validate_receipts(
-                response, participants, states={"PREPARING", "PREPARED"}, session_id=session_id, publication=publication
+                response,
+                participants,
+                states={"PREPARING", "PREPARED"},
+                session_id=session_id,
+                publication=publication,
             )
             if all(receipt["state"] == "PREPARED" for receipt in receipts):
                 return receipts

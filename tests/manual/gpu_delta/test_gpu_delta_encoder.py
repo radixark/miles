@@ -18,7 +18,9 @@ def _decode(frames, payload, outer, old):
     arena = bytearray(outer["decoded_bytes"]) if outer is not None else bytearray()
     for frame in outer["frames"] if outer is not None else []:
         start, size = frame["encoded_offset"], frame["encoded_bytes"]
-        decoded = zstandard.ZstdDecompressor().decompress(payload[start : start + size], max_output_size=frame["decoded_bytes"])
+        decoded = zstandard.ZstdDecompressor().decompress(
+            payload[start : start + size], max_output_size=frame["decoded_bytes"]
+        )
         assert len(decoded) == frame["decoded_bytes"]
         begin = frame["decoded_offset"]
         arena[begin : begin + len(decoded)] = decoded
@@ -45,7 +47,11 @@ def _snapshots(frame_bytes=FRAME_BYTES):
     current[0][-139:] = rng.integers(0, 256, 139, dtype=np.uint8)
     current[2].fill(0)
     current[4] ^= 19
-    return old, current, [(_pinned(before), _pinned(after), "xor_bytes") for before, after in zip(old, current, strict=True)]
+    return (
+        old,
+        current,
+        [(_pinned(before), _pinned(after), "xor_bytes") for before, after in zip(old, current, strict=True)],
+    )
 
 
 @pytest.mark.parametrize("timing", ["0", "1"])
@@ -95,7 +101,11 @@ def test_cross_tensor_batch_exact_bytes_immutable_snapshots_and_owned_slab(timin
     assert results[3][:4] == results[5][:4] == ([], memoryview(b""), None, 0)
     assert payloads and all(payload.obj is payloads[0].obj for payload in payloads)
     saved = [bytes(payload) for payload in payloads]
-    another = encoder.wrap_device(encoder.encode_device([(_pinned(np.zeros(4096, dtype=np.uint8)), _pinned(np.full(4096, 31, dtype=np.uint8)), "xor_bytes")]))
+    another = encoder.wrap_device(
+        encoder.encode_device(
+            [(_pinned(np.zeros(4096, dtype=np.uint8)), _pinned(np.full(4096, 31, dtype=np.uint8)), "xor_bytes")]
+        )
+    )
     assert another[0][1].obj is not payloads[0].obj
     assert [bytes(payload) for payload in payloads] == saved
 
@@ -104,7 +114,12 @@ def test_empty_and_all_unchanged_batches():
     encoder = gpu_delta_encoder.GpuBatchEncoder(torch.device("cuda", torch.cuda.current_device()))
     empty = _pinned(np.empty(0, dtype=np.uint8))
     assert encoder.wrap_device(encoder.encode_device([])) == []
-    assert encoder.wrap_device(encoder.encode_device([(empty, empty, "xor_bytes")]))[0][:4] == ([], memoryview(b""), None, 0)
+    assert encoder.wrap_device(encoder.encode_device([(empty, empty, "xor_bytes")]))[0][:4] == (
+        [],
+        memoryview(b""),
+        None,
+        0,
+    )
     value = _pinned(np.arange(4096, dtype=np.uint8))
     results = encoder.wrap_device(encoder.encode_device([(value, value, "xor_bytes"), (empty, empty, "xor_bytes")]))
     assert [result[:4] for result in results] == [([], memoryview(b""), None, 0)] * 2
@@ -119,18 +134,27 @@ def test_tiled_xor_counts_each_wire_frame_and_partial_tile_exactly():
     masks = [np.zeros(size, dtype=np.uint8) for size in sizes]
     # Include full changed tiles, an unchanged full frame, both sides of a tile
     # boundary, and short final tiles. Wire-frame geometry remains unchanged.
-    masks[0][:1 << 16] = 255
-    masks[0][(1 << 16) - 1:(1 << 16) + 1] = 7
-    masks[0][2 * FRAME_BYTES:] = 3
+    masks[0][: 1 << 16] = 255
+    masks[0][(1 << 16) - 1 : (1 << 16) + 1] = 7
+    masks[0][2 * FRAME_BYTES :] = 3
     masks[1][:] = 19
     masks[2][-1] = 23
     previous = [torch.zeros(size, dtype=torch.uint8, device=device) for size in sizes]
     current = [torch.from_numpy(mask).to(device) for mask in masks]
     keepalive = {}
     frames, owners, counts = gpu_delta_encoder._xor_frames(previous, current, FRAME_BYTES, keepalive)
-    expected = [int(np.count_nonzero(masks[owner][offset:offset + frame.numel()])) for (owner, offset), frame in zip(owners, frames, strict=True)]
+    expected = [
+        int(np.count_nonzero(masks[owner][offset : offset + frame.numel()]))
+        for (owner, offset), frame in zip(owners, frames, strict=True)
+    ]
     assert counts.dtype == torch.int64 and counts.cpu().tolist() == expected
-    assert [frame.numel() for frame in frames] == [FRAME_BYTES, FRAME_BYTES, (1 << 16) + 1, (1 << 16) - 1, (1 << 16) + 1]
+    assert [frame.numel() for frame in frames] == [
+        FRAME_BYTES,
+        FRAME_BYTES,
+        (1 << 16) + 1,
+        (1 << 16) - 1,
+        (1 << 16) + 1,
+    ]
     for old_scratch, target, mask in zip(previous, current, masks, strict=True):
         np.testing.assert_array_equal(old_scratch.cpu().numpy(), mask)
         np.testing.assert_array_equal(target.cpu().numpy(), mask)
@@ -200,9 +224,13 @@ def test_owner_wide_outer_roundtrip_only_transfers_final_bytes(frame_bytes, monk
     results = encoder.wrap_device(inner)
     assert len(outer_calls) == 1 and max(outer_calls[0]) <= FRAME_BYTES
     assert len(copies) == 1 and copies[0] == sum(result[4]["encoded_d2h_bytes"] for result in results)
-    writer = PublicationWriter(tmp_path, stream_id="s", base_version=0, target_version=1, plan_digest="b" * 64, frame_bytes=frame_bytes)
+    writer = PublicationWriter(
+        tmp_path, stream_id="s", base_version=0, target_version=1, plan_digest="b" * 64, frame_bytes=frame_bytes
+    )
     for index, (frames, payload, outer, changed, _) in enumerate(results):
         np.testing.assert_array_equal(_decode(frames, payload, outer, before[index]), after[index])
-        writer.add_gpu_outer_tensor(f"w{index}", frames, payload, outer, changed_bytes=changed, dtype="U8", shape=[1, len(before[index])])
+        writer.add_gpu_outer_tensor(
+            f"w{index}", frames, payload, outer, changed_bytes=changed, dtype="U8", shape=[1, len(before[index])]
+        )
     descriptor = writer.finish()
     assert descriptor["codec"] == "snappy-zstd" and descriptor["protocol_version"] == 4

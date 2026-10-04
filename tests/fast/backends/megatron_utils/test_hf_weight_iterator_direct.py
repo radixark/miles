@@ -194,8 +194,11 @@ def test_owner_consumer_skips_gathers_and_normal_export_still_gathers(
         direct_module._ExpertBatch(param_infos=[_param(local_name, 4), remote], gathers=(gather, gather)),
         # An empty EDP-owner round must skip PP/EP gathers too; this is a
         # uniform consumer contract, not a decision based on local payload size.
-        direct_module._ExpertBatch(param_infos=[remote], gathers=(gather, gather)) if consume_locally
-        else direct_module._ExpertBatch(param_infos=[_param(local_name, 4)], gathers=(gather,)),
+        (
+            direct_module._ExpertBatch(param_infos=[remote], gathers=(gather, gather))
+            if consume_locally
+            else direct_module._ExpertBatch(param_infos=[_param(local_name, 4)], gathers=(gather,))
+        ),
     ]
     iterator._convert_to_hf_param_units = convert
     iterator._convert_experts_before_gather = True
@@ -229,9 +232,14 @@ def test_gpu_delta_consumer_defers_failure_until_all_local_units_are_visited(dir
     protocol.is_sender = False
     monkeypatch.setattr(updater, "get_weight_transfer_protocol", lambda args: protocol)
     updater.WeightUpdater(
-        Namespace(), [],
-        weights_getter=lambda: {}, model_name="test", quantization_config=None,
-        iterator_factory=lambda *args, **kwargs: iterator, parallel_state=None, is_lora=False,
+        Namespace(),
+        [],
+        weights_getter=lambda: {},
+        model_name="test",
+        quantization_config=None,
+        iterator_factory=lambda *args, **kwargs: iterator,
+        parallel_state=None,
+        is_lora=False,
     )
 
     class Weight:
@@ -265,7 +273,11 @@ def test_gpu_delta_etp2_gathers_complete_experts_before_sender_conversion(direct
     shards = [torch.tensor([[1.0, 2.0], [5.0, 6.0]]), torch.tensor([[3.0, 4.0], [7.0, 8.0]])]
     complete = torch.arange(1.0, 9.0).reshape(4, 2)
     info = ParamInfo(
-        name=name, dtype=torch.float32, shape=shards[0].shape, size=shards[0].nbytes, src_rank=0,
+        name=name,
+        dtype=torch.float32,
+        shape=shards[0].shape,
+        size=shards[0].nbytes,
+        src_rank=0,
         attrs={"tensor_model_parallel": False, "partition_dim": -1, "partition_stride": 1},
     )
     waited, converted = [], []
@@ -300,8 +312,11 @@ def test_gpu_delta_etp2_gathers_complete_experts_before_sender_conversion(direct
     iterator.local_expert_consumer = protocol.send_bucket
     monkeypatch.setattr(direct_module.dist, "get_rank", lambda: 0)
     monkeypatch.setattr(direct_module.dist, "all_gather", all_gather)
-    monkeypatch.setattr(direct_module, "get_parallel_state", lambda: Namespace(
-        etp=Namespace(size=2, group=etp_group), ep=Namespace(size=1)))
+    monkeypatch.setattr(
+        direct_module,
+        "get_parallel_state",
+        lambda: Namespace(etp=Namespace(size=2, group=etp_group), ep=Namespace(size=1)),
+    )
     monkeypatch.setattr(
         direct_module, "_load_or_allocate_params", lambda infos, weights, **kwargs: [weights[info.name].clone()]
     )
@@ -342,8 +357,9 @@ def test_producer_discovery_installs_actual_owner_hook_and_preserves_plan(direct
         yield [(dense_name, values[dense_name])]
 
     iterator.iter_hf_weights = buckets
-    monkeypatch.setattr(parallel, "get_parallel_state", lambda: Namespace(
-        ep=Namespace(rank=0, size=1), edp=Namespace(rank=0)))
+    monkeypatch.setattr(
+        parallel, "get_parallel_state", lambda: Namespace(ep=Namespace(rank=0, size=1), edp=Namespace(rank=0))
+    )
     monkeypatch.setattr(producer.dist, "get_rank", lambda: 0)
     monkeypatch.setattr(producer, "_gather", lambda value: [value])
 
@@ -356,5 +372,6 @@ def test_producer_discovery_installs_actual_owner_hook_and_preserves_plan(direct
     assert ownership["names"] == sorted(weights)
     assert ownership["routed_tensor_count"] == 1
     assert {entry["name"]: entry["encoding"] for entry in plan} == {
-        expert_name: "xor_bytes", dense_name: "raw_bytes",
+        expert_name: "xor_bytes",
+        dense_name: "raw_bytes",
     }

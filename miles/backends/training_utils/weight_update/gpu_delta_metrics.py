@@ -189,10 +189,9 @@ def producer_metrics(owners):
     return metrics
 
 
-def log_completed_update(args, updater, rollout_id, is_primary_rank):
-    """Drain on completion, including a final update with no subsequent train call."""
-    metrics = updater.pop_metrics()
-    if not metrics or not is_primary_rank:
+def log_completed_update(args, metrics, rollout_id, is_primary_rank):
+    """Log completed metrics, including a final update with no subsequent train call."""
+    if not is_primary_rank:
         return
     if rollout_id is None:
         # Initial baseline capture has no completed update metrics. Never assign

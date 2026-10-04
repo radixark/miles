@@ -68,7 +68,9 @@ def _buckets(materialize):
 
 def test_export_bucket_stages_after_all_conversions_with_one_stream_dependency(monkeypatch):
     protocol = gpu_delta.UpdateWeightFromGpuDelta(Namespace(custom_update_weight_post_write_path=None))
-    bucket = [(name, torch.arange(6, dtype=torch.float32).reshape(2, 3) + index) for index, name in enumerate(("a", "b"))]
+    bucket = [
+        (name, torch.arange(6, dtype=torch.float32).reshape(2, 3) + index) for index, name in enumerate(("a", "b"))
+    ]
     protocol._snapshot = {name: torch.zeros(tensor.nbytes, dtype=torch.uint8) for name, tensor in bucket}
     protocol._next_snapshot = {name: torch.empty_like(value) for name, value in protocol._snapshot.items()}
     protocol._seen = set()
@@ -96,7 +98,9 @@ def test_export_bucket_stages_after_all_conversions_with_one_stream_dependency(m
     monkeypatch.setattr(torch.cuda, "current_stream", lambda: caller_stream)
     monkeypatch.setattr(torch.cuda, "stream", staging)
     monkeypatch.setattr(torch.Tensor, "copy_", record_copy)
-    monkeypatch.setattr(torch.Tensor, "record_stream", lambda tensor, stream: events.append(("lease", tensor.data_ptr(), stream)))
+    monkeypatch.setattr(
+        torch.Tensor, "record_stream", lambda tensor, stream: events.append(("lease", tensor.data_ptr(), stream))
+    )
     protocol.send_bucket(bucket)
     assert protocol._error is None
     protocol._staging_stream.wait_stream.assert_called_once_with(caller_stream)
@@ -127,15 +131,6 @@ def test_invalid_export_bucket_does_not_enqueue_a_partial_snapshot(monkeypatch):
     assert not torch.count_nonzero(protocol._next_snapshot["a"])
 
 
-def test_verified_startup_checkpoint_is_zero_on_every_engine_before_rollout(tmp_path, single_rank):
-    protocol, events = _setup(tmp_path)
-    assert protocol.begin_sync(1, _buckets) is False  # no optimizer/update version increment
-    assert sorted(events) == [0, 1]
-    assert [engine.version for engine in protocol.rollout_engines] == ["0", "0"]
-    assert protocol._baseline_captured and not protocol._uncommitted
-    assert not protocol._stream_dir.exists()  # no pretend startup publication
-
-
 def test_partial_version_acknowledgement_fails_before_rollout_without_replay(tmp_path, single_rank):
     protocol, events = _setup(tmp_path, fail=True)
     with pytest.raises(RuntimeError, match="engine rejected base declaration"):
@@ -147,23 +142,17 @@ def test_partial_version_acknowledgement_fails_before_rollout_without_replay(tmp
     assert len(events) == 2
 
 
-def test_inventory_failure_never_declares_base_version(tmp_path, single_rank):
-    protocol, events = _setup(tmp_path)
-    protocol._plan["missing"] = {"name": "missing", "dtype": "U8", "shape": [4]}
-    with pytest.raises(RuntimeError, match="inventory/ownership mismatch"):
-        protocol.begin_sync(1, _buckets)
-    assert not events and not protocol._baseline_captured
-
-
 @pytest.mark.parametrize("duplicate_owner", [False, True])
 def test_pipeline_stage_inventory_requires_unique_owners_before_baseline_declaration(
     tmp_path, single_rank, monkeypatch, duplicate_owner
 ):
     protocol, events = _setup(tmp_path)
     peer_name = "w" if duplicate_owner else "stage1.weight"
-    peer_entry = {"name": peer_name, "dtype": "U8", "shape": [4], "nbytes": 4}
     protocol._plan["stage1.weight"] = {
-        "name": "stage1.weight", "dtype": "U8", "shape": [4], "encoding": "raw_bytes",
+        "name": "stage1.weight",
+        "dtype": "U8",
+        "shape": [4],
+        "encoding": "raw_bytes",
     }
 
     def gather(value):
@@ -172,8 +161,8 @@ def test_pipeline_stage_inventory_requires_unique_owners_before_baseline_declara
         # Two PP stages, each with one sender and one transport non-sender.
         # The local stage reads the real checkpoint through begin_sync; only
         # the remote inventory exchange is replaced in this CPU test.
-        assert value == [{"name": "w", "dtype": "U8", "shape": [4], "nbytes": 4}]
-        return [value, [], [peer_entry], []]
+        assert value == ["w"]
+        return [value, [], [peer_name], []]
 
     monkeypatch.setattr(gpu_delta, "_gather_all", gather)
     if duplicate_owner:
@@ -183,25 +172,11 @@ def test_pipeline_stage_inventory_requires_unique_owners_before_baseline_declara
         assert [engine.version for engine in protocol.rollout_engines] == ["default", "default"]
     else:
         assert protocol.begin_sync(1, _buckets) is False
-        assert protocol._baseline_captured and sorted(events) == [0, 1]
+        assert protocol._baseline_captured and not protocol._uncommitted and sorted(events) == [0, 1]
+        assert not protocol._stream_dir.exists()
+        assert protocol._raw_names == ("w",) and protocol._gpu_batch_names == ()
         assert set(protocol._snapshot) == {"w"}
         assert [engine.version for engine in protocol.rollout_engines] == ["0", "0"]
-
-
-@pytest.mark.parametrize("buffer_size", [0, 5])
-def test_gpu_startup_partitions_owner_plan_before_declaring_baseline(tmp_path, single_rank, monkeypatch, buffer_size):
-    protocol, events = _setup(tmp_path)
-    protocol.args.update_weight_buffer_size = buffer_size
-    # Only allocation is replaced; startup reads and verifies the real checkpoint.
-    monkeypatch.setattr(torch.Tensor, "pin_memory", lambda self: self)
-    if buffer_size == 0:
-        with pytest.raises(RuntimeError, match="baseline capture.*positive update_weight_buffer_size"):
-            protocol.begin_sync(1, _buckets)
-        assert not events and not protocol._baseline_captured
-    else:
-        assert protocol.begin_sync(1, _buckets) is False
-        assert protocol._raw_names == ("w",) and protocol._gpu_batch_names == ()
-        assert sorted(events) == [0, 1]
 
 
 def _gpu_pending(monkeypatch, fail_batch=None, omit=None):

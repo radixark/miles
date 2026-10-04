@@ -124,8 +124,8 @@ class WeightUpdater:
         return self.protocol.pop_metrics()
 
     @torch.no_grad()
-    def update_weights(self) -> None:
-        """Run one weight sync: session frame + base-bucket stream + adapter pushes for LoRA."""
+    def update_weights(self) -> dict[str, float] | None:
+        """Run one sync and return completed GPU-delta metrics for immediate logging."""
         protocol = self.protocol
         if not protocol.begin_sync(self.weight_version + 1, self._iter_base_buckets):
             return
@@ -172,6 +172,8 @@ class WeightUpdater:
                 resume_engines(protocol.rollout_engines)
             dist.barrier(group=get_gloo_group())
         protocol.after_engines_resumed()
+        if isinstance(protocol, UpdateWeightFromGpuDelta):
+            return protocol.pop_metrics()
 
     def _iter_base_buckets(self, *, materialize: bool):
         return self._hf_weight_iterator.iter_hf_weights(self.weights_getter(), materialize=materialize)

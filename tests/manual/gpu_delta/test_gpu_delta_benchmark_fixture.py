@@ -101,7 +101,12 @@ def test_three_versions_preserve_source_and_draft_and_replay_exact_targets(tmp_p
                 "descriptions": [
                     {
                         "success": True,
-                        "participants": [{"identity": {"engine_id": "e", "rank_id": "r"}, "plan": {"codec": "snappy-zstd", "tensors": plan}}],
+                        "participants": [
+                            {
+                                "identity": {"engine_id": "e", "rank_id": "r"},
+                                "plan": {"codec": "snappy-zstd", "tensors": plan},
+                            }
+                        ],
                     }
                 ]
             }

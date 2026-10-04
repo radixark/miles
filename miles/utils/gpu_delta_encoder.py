@@ -69,7 +69,13 @@ class _PhaseTimes:
 def _validate_snapshots(tensors):
     for previous, current, encoding in tensors:
         for value in (previous, current):
-            if value.device.type != "cpu" or value.dtype != torch.uint8 or value.ndim != 1 or not value.is_contiguous() or (value.numel() and not value.is_pinned()):
+            if (
+                value.device.type != "cpu"
+                or value.dtype != torch.uint8
+                or value.ndim != 1
+                or not value.is_contiguous()
+                or (value.numel() and not value.is_pinned())
+            ):
                 raise ValueError("GPU batch encoding requires contiguous pinned CPU uint8 snapshots")
         if previous.numel() != current.numel() or encoding != "xor_bytes":
             raise ValueError("GPU batch snapshots must have equal byte counts and XOR encoding")
@@ -85,7 +91,11 @@ def _xor_frames(previous_gpu, current_gpu, frame_bytes, keepalive):
         frames.extend(old_parts)
         owners.extend((index, offset * frame_bytes) for offset in range(len(old_parts)))
     parameters = torch.empty((3, len(frames)), dtype=torch.int64, device="cpu", pin_memory=True)
-    parameters.numpy()[:] = [[frame.data_ptr() for frame in old_frames], [frame.data_ptr() for frame in new_frames], [frame.numel() for frame in frames]]
+    parameters.numpy()[:] = [
+        [frame.data_ptr() for frame in old_frames],
+        [frame.data_ptr() for frame in new_frames],
+        [frame.numel() for frame in frames],
+    ]
     keepalive["host"] = parameters
     keepalive["device"] = parameters.to(previous_gpu[0].device, non_blocking=True)
     tile_bytes = 1 << 16
@@ -95,7 +105,9 @@ def _xor_frames(previous_gpu, current_gpu, frame_bytes, keepalive):
     # 64 KiB tiles expose parallelism within each frame instead of assigning
     # a serial 1 MiB loop to one CTA. Only the tiny per-tile counts are reduced;
     # there is no model-sized bool/int64 intermediate or additional host fence.
-    _xor_count_kernel[(len(frames), tiles)](keepalive["device"], counts, len(frames), TILE=tile_bytes, BLOCK=4096, num_warps=4)
+    _xor_count_kernel[(len(frames), tiles)](
+        keepalive["device"], counts, len(frames), TILE=tile_bytes, BLOCK=4096, num_warps=4
+    )
     return frames, owners, counts.sum(dim=1, dtype=torch.int64)
 
 
@@ -275,9 +287,18 @@ class GpuBatchEncoder:
                 # Compaction and owner-wide outer compression share this stream;
                 # no payload fence or Snappy D2H is needed between input batches.
                 return _device_results(
-                    tensors, descriptions, groups, changed, self._alignment_padding,
-                    {"encode_wall_s": time.monotonic() - started, "metadata_wait_s": metadata_wait_s,
-                     "cuda_phase_s": phases.elapsed(), "nvcomp_frames": len(frames), "frame_bytes": self.frame_bytes},
+                    tensors,
+                    descriptions,
+                    groups,
+                    changed,
+                    self._alignment_padding,
+                    {
+                        "encode_wall_s": time.monotonic() - started,
+                        "metadata_wait_s": metadata_wait_s,
+                        "cuda_phase_s": phases.elapsed(),
+                        "nvcomp_frames": len(frames),
+                        "frame_bytes": self.frame_bytes,
+                    },
                 )
         except Exception:
             # All pinned inputs, metadata, slab owners and nvCOMP pointer tables
@@ -292,11 +313,18 @@ class GpuBatchEncoder:
         # independently framed so the receiver needs no opaque nvCOMP container.
         groups = [list(item.payload.split(FRAME_BYTES)) if item.payload is not None else [] for item in tensors]
         frames = [frame for group in groups for frame in group]
-        resident = {item.payload.untyped_storage().data_ptr(): item.payload.untyped_storage().nbytes()
-                    for item in tensors if item.payload is not None}
+        resident = {
+            item.payload.untyped_storage().data_ptr(): item.payload.untyped_storage().nbytes()
+            for item in tensors
+            if item.payload is not None
+        }
         if not frames:
-            self.outer_metrics = {"outer_gpu_wall_s": time.monotonic() - started, "outer_gpu_frames": 0,
-                                  "resident_snappy_hbm_bytes": 0, "outer_gpu_final_d2h_bytes": 0}
+            self.outer_metrics = {
+                "outer_gpu_wall_s": time.monotonic() - started,
+                "outer_gpu_frames": 0,
+                "resident_snappy_hbm_bytes": 0,
+                "outer_gpu_final_d2h_bytes": 0,
+            }
             return [(item.frames, memoryview(b""), None, item.changed, item.metrics) for item in tensors]
         try:
             with torch.cuda.device(self.device), torch.cuda.stream(self.stream):
@@ -317,7 +345,16 @@ class GpuBatchEncoder:
                 raise RuntimeError("nvCOMP outer Zstd output size is outside the allocation")
             cursor, encoded_groups = 0, []
             for group in groups:
-                encoded_groups.append([output[:size] for output, size in zip(batch.outputs[cursor : cursor + len(group)], sizes[cursor : cursor + len(group)], strict=True)])
+                encoded_groups.append(
+                    [
+                        output[:size]
+                        for output, size in zip(
+                            batch.outputs[cursor : cursor + len(group)],
+                            sizes[cursor : cursor + len(group)],
+                            strict=True,
+                        )
+                    ]
+                )
                 cursor += len(group)
             with torch.cuda.device(self.device), torch.cuda.stream(self.stream):
                 with phases.record("outer_pack_d2h_s"):
@@ -355,7 +392,17 @@ def _wrapped_results(tensors, groups, encoded_groups, arenas, offsets, transfer)
         cursor = start + size
         if arena is not None:
             outer = dict(
-                encoded_bytes=size, decoded_bytes=item.payload.numel(), frames=[dict(encoded_offset=start, encoded_bytes=output.numel(), decoded_offset=index * FRAME_BYTES, decoded_bytes=original.numel()) for index, (original, output, start) in enumerate(zip(inputs, outputs, starts, strict=True))]
+                encoded_bytes=size,
+                decoded_bytes=item.payload.numel(),
+                frames=[
+                    dict(
+                        encoded_offset=start,
+                        encoded_bytes=output.numel(),
+                        decoded_offset=index * FRAME_BYTES,
+                        decoded_bytes=original.numel(),
+                    )
+                    for index, (original, output, start) in enumerate(zip(inputs, outputs, starts, strict=True))
+                ],
             )
         metrics = dict(item.metrics, encoded_d2h_bytes=transfer_bytes)
         results.append((item.frames, payload, outer, item.changed, metrics))

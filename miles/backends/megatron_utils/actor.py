@@ -914,12 +914,12 @@ class MegatronTrainRayActor(TrainRayActor):
 
         with torch_memory_saver.disable() if self.args.offload_train else nullcontext():
             print_memory("before update_weights")
-            self.weight_updater.update_weights()
-            if self.args.update_weight_transfer_mode == "gpu-delta":
+            completed_metrics = self.weight_updater.update_weights()
+            if completed_metrics:
                 parallel_state = get_parallel_state()
                 log_completed_update(
                     self.args,
-                    self.weight_updater,
+                    completed_metrics,
                     rollout_id=self._last_rollout_id,
                     is_primary_rank=(
                         parallel_state.tp.rank == 0

@@ -199,8 +199,9 @@ producer prefixes reuse the existing owner gather.
 
 All seconds use local monotonic clocks. Nested phases are not additive, and no
 metric implies GPU-idle time or an RL throughput improvement. After the update
-completes, every trainer drains its summary and the usual TP0/last-PP/effective
-DP-CP0 logging rank submits it at the last trained rollout's existing step axis.
+completes, the updater returns and drains its GPU-delta summary. The actor logs it
+on the usual TP0/last-PP/effective-DP-CP0 rank at the last trained rollout's
+existing step axis.
 This includes the final evaluation update even when no subsequent train call
 occurs. `base_version` and `target_version` identify the publication independently
 of that rollout step, including asynchronous training and update intervals.

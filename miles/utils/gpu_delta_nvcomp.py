@@ -58,7 +58,9 @@ class NvcompCompressor:
         self._bound = self._bind("GetMaxOutputChunkSize", [size, options, ctypes.POINTER(size)])
         self._temporary = self._bind("GetTempSizeAsync", [size, size, options, ctypes.POINTER(size), size])
         align = self._bind("GetRequiredAlignments", [options, ctypes.POINTER(_Alignments)])
-        self._compress = self._bind("Async", [pointer, pointer, size, size, pointer, size, pointer, pointer, options, pointer, pointer])
+        self._compress = self._bind(
+            "Async", [pointer, pointer, size, size, pointer, size, pointer, pointer, options, pointer, pointer]
+        )
         self._alignments = _Alignments()
         self._check(align(self._options, ctypes.byref(self._alignments)))
         self._size_cache, self._bound_cache = {}, {}
@@ -85,11 +87,19 @@ class NvcompCompressor:
         self._size_cache[key] = result
         return result
 
-    def compress(self, frames: list[torch.Tensor], stream: torch.cuda.Stream, compact_outputs=False) -> CompressionBatch:
+    def compress(
+        self, frames: list[torch.Tensor], stream: torch.cuda.Stream, compact_outputs=False
+    ) -> CompressionBatch:
         if stream.device != self.device:
             raise ValueError("Compression stream/device mismatch")
         for frame in frames:
-            if frame.device != self.device or frame.dtype != torch.uint8 or not frame.is_contiguous() or not 0 < frame.numel() <= 1 << 24 or frame.data_ptr() % self._alignments.input:
+            if (
+                frame.device != self.device
+                or frame.dtype != torch.uint8
+                or not frame.is_contiguous()
+                or not 0 < frame.numel() <= 1 << 24
+                or frame.data_ptr() % self._alignments.input
+            ):
                 raise ValueError("nvCOMP frames must be aligned contiguous CUDA uint8, with 1..16 MiB bytes")
         with torch.cuda.device(self.device), torch.cuda.stream(stream):
             return self._enqueue(frames, stream, compact_outputs=compact_outputs)

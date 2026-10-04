@@ -43,7 +43,11 @@ import httpx
 import numpy as np
 import zstandard
 
-from miles.backends.training_utils.weight_update.gpu_delta_session import activate_publication, merge_plans, negotiate_cohort
+from miles.backends.training_utils.weight_update.gpu_delta_session import (
+    activate_publication,
+    merge_plans,
+    negotiate_cohort,
+)
 from miles.utils.gpu_delta_publication import (
     DTYPE_BYTES,
     FRAME_BYTES,
@@ -189,7 +193,12 @@ def _validate_fixture_codec(fixture):
         raise ValueError("Fixture requires the snappy-zstd codec")
     for row in fixture["rounds"]:
         publication = row["publications"].get(codec)
-        if publication is None or publication.get("protocol_version") != 4 or publication.get("codec") != codec or publication.get("frame_bytes") != FRAME_BYTES:
+        if (
+            publication is None
+            or publication.get("protocol_version") != 4
+            or publication.get("codec") != codec
+            or publication.get("frame_bytes") != FRAME_BYTES
+        ):
             raise ValueError("Fixture requires protocol 4 / snappy-zstd / 1 MiB frames")
     return codec
 
@@ -199,8 +208,12 @@ def _engine_specs(ports):
         raise ValueError("--ports requires one or two distinct valid TCP ports")
     size = 8 // len(ports)
     return [
-        {"engine_id": f"engine-{i:05d}", "port": port, "parallel_size": size,
-         "gpu_ids": ",".join(str(gpu) for gpu in range(i * size, (i + 1) * size))}
+        {
+            "engine_id": f"engine-{i:05d}",
+            "port": port,
+            "parallel_size": size,
+            "gpu_ids": ",".join(str(gpu) for gpu in range(i * size, (i + 1) * size)),
+        }
         for i, port in enumerate(ports)
     ]
 
@@ -210,10 +223,13 @@ def _validate_cohort(cohort, engine_count):
     if len(cohort.identities) != 8 or len(cohort.participants) != engine_count:
         raise ValueError("Expected eight original participants across the requested engines")
     for engine, participants in enumerate(cohort.participants):
-        if (len(participants) != size or cohort.engine_ids[engine] != f"engine-{engine:05d}"
-                or {p["dp_rank"] for p in participants} != set(range(size))
-                or {p["tp_rank"] for p in participants} != set(range(size))
-                or any(p["pp_rank"] != 0 for p in participants)):
+        if (
+            len(participants) != size
+            or cohort.engine_ids[engine] != f"engine-{engine:05d}"
+            or {p["dp_rank"] for p in participants} != set(range(size))
+            or {p["tp_rank"] for p in participants} != set(range(size))
+            or any(p["pp_rank"] != 0 for p in participants)
+        ):
             raise ValueError("Engine participant topology differs from the requested TP/DP/EP layout")
     arena_ids = [{p["host_cache_id"] for p in participants} for participants in cohort.participants]
     if any(len(ids) != 1 for ids in arena_ids) or len(set().union(*arena_ids)) != engine_count:
@@ -228,8 +244,14 @@ def _capture_gpu_processes(cohort, ports):
     process_text = subprocess.check_output(
         ["nvidia-smi", "--query-compute-apps=pid,gpu_uuid", "--format=csv,noheader,nounits"], text=True
     )
-    devices = {int(index.strip()): uuid.strip() for index, uuid in (line.split(",") for line in device_text.splitlines() if line.strip())}
-    processes = [(int(pid.strip()), uuid.strip()) for pid, uuid in (line.split(",") for line in process_text.splitlines() if line.strip())]
+    devices = {
+        int(index.strip()): uuid.strip()
+        for index, uuid in (line.split(",") for line in device_text.splitlines() if line.strip())
+    }
+    processes = [
+        (int(pid.strip()), uuid.strip())
+        for pid, uuid in (line.split(",") for line in process_text.splitlines() if line.strip())
+    ]
     joined = []
     for spec, participants in zip(_engine_specs(ports), cohort.participants, strict=True):
         expected = {devices[int(index)] for index in spec["gpu_ids"].split(",")}
@@ -240,17 +262,26 @@ def _capture_gpu_processes(cohort, ports):
             matched = len(uuids) == 1 and uuids <= expected
             if matched:
                 actual.update(uuids)
-            joined.append({"identity": participant, "namespace_pids": candidates,
-                           "gpu_uuid": next(iter(uuids)) if matched else None,
-                           "candidate_gpu_uuids": sorted(uuids)})
+            joined.append(
+                {
+                    "identity": participant,
+                    "namespace_pids": candidates,
+                    "gpu_uuid": next(iter(uuids)) if matched else None,
+                    "candidate_gpu_uuids": sorted(uuids),
+                }
+            )
         if actual != expected:
             for row in joined:
                 if row["identity"]["engine_id"] == spec["engine_id"]:
                     row["gpu_uuid"] = None
     # NVML can expose host PIDs outside the container's /proc namespace. Preserve
     # that observation instead of treating an unavailable join as a model error.
-    return {"devices_raw": device_text, "compute_apps_raw": process_text, "participants": joined,
-            "status": "MAPPED" if all(row["gpu_uuid"] for row in joined) else "UNQUALIFIED_PID_NAMESPACE"}
+    return {
+        "devices_raw": device_text,
+        "compute_apps_raw": process_text,
+        "participants": joined,
+        "status": "MAPPED" if all(row["gpu_uuid"] for row in joined) else "UNQUALIFIED_PID_NAMESPACE",
+    }
 
 
 def _pid_candidates(pid):
@@ -274,7 +305,11 @@ def _payload_links(manifest, source, destination):
             while chunk := stream.read(8 * 1024**2):
                 digest.update(chunk)
             after = os.fstat(stream.fileno())
-        if identity(before) != identity(after) or after.st_size != item["nbytes"] or digest.hexdigest() != item["sha256"]:
+        if (
+            identity(before) != identity(after)
+            or after.st_size != item["nbytes"]
+            or digest.hexdigest() != item["sha256"]
+        ):
             raise ValueError("Source payload size, bytes or identity changed")
         target = destination / item["name"]
         # EXDEV is an explicit setup failure; never copy/re-encode payloads or
@@ -282,7 +317,9 @@ def _payload_links(manifest, source, destination):
         os.link(path, target, follow_symlinks=False)
         if identity(target.stat()) != identity(after):
             raise ValueError("Rebound payload does not share the verified source inode")
-        files.append(item | {"source": str(path), "target": str(target), "device": after.st_dev, "inode": after.st_ino})
+        files.append(
+            item | {"source": str(path), "target": str(target), "device": after.st_dev, "inode": after.st_ino}
+        )
     return files
 
 
@@ -294,9 +331,15 @@ def _rebind_round(args, row, plan, source_digest, target_digest, stream_id):
         raise ValueError("Source manifest SHA256 differs from the immutable descriptor")
     manifest = json.loads(content)
     metadata = {key: value for key, value in manifest.items() if key not in {"tensors", "files"}}
-    if any(metadata.get(key) != value for key, value in publication.items() if key not in {"manifest_path", "manifest_sha256"}):
+    if any(
+        metadata.get(key) != value
+        for key, value in publication.items()
+        if key not in {"manifest_path", "manifest_sha256"}
+    ):
         raise ValueError("Source publication metadata differs from its descriptor")
-    old_plan = [{key: tensor[key] for key in ("name", "dtype", "shape", "encoding", "views")} for tensor in manifest["tensors"]]
+    old_plan = [
+        {key: tensor[key] for key in ("name", "dtype", "shape", "encoding", "views")} for tensor in manifest["tensors"]
+    ]
     if sha256(canonical_json(old_plan)) != source_digest or metadata["plan_digest"] != source_digest:
         raise ValueError("Source fixture canonical plan digest differs")
     if [tensor["name"] for tensor in manifest["tensors"]] != [tensor["name"] for tensor in plan]:
@@ -307,20 +350,39 @@ def _rebind_round(args, row, plan, source_digest, target_digest, stream_id):
         if any(old[key] != expected[key] for key in ("name", "dtype", "shape", "encoding", "nbytes", "byte_order")):
             raise ValueError(f"Canonical tensor metadata differs: {old['name']}")
         tensors.append(old | {"views": expected["views"]})
-    invariant_digest = sha256(canonical_json([{key: value for key, value in tensor.items() if key != "views"} for tensor in tensors]))
-    if invariant_digest != sha256(canonical_json([{key: value for key, value in tensor.items() if key != "views"} for tensor in manifest["tensors"]])):
+    invariant_digest = sha256(
+        canonical_json([{key: value for key, value in tensor.items() if key != "views"} for tensor in tensors])
+    )
+    if invariant_digest != sha256(
+        canonical_json(
+            [{key: value for key, value in tensor.items() if key != "views"} for tensor in manifest["tensors"]]
+        )
+    ):
         raise ValueError("Rebinding changed canonical payload/frame metadata")
     directory = args.output / configured_codec() / f"v{row['version']}"
     directory.mkdir(parents=True, exist_ok=False)
     files = _payload_links(manifest, path.parent, directory)
-    metadata |= {"plan_digest": target_digest, "stream_id": stream_id, "publication_id": f"{stream_id}:{row['version']}"}
+    metadata |= {
+        "plan_digest": target_digest,
+        "stream_id": stream_id,
+        "publication_id": f"{stream_id}:{row['version']}",
+    }
     rebound = seal_publication(directory, [{"metadata": metadata, "files": manifest["files"], "tensors": tensors}])
     sizes = _publication_accounting(rebound)
-    result = row | {"publications": {configured_codec(): rebound}, "accounting": {configured_codec(): sizes},
-                    "ratios": {configured_codec(): sizes["publication_bytes"] / row["canonical_bytes"]}}
-    proof = {"version": row["version"], "source_publication": publication, "target_publication": rebound,
-             "tensor_count": len(tensors), "non_view_tensor_metadata_sha256": invariant_digest,
-             "files": files, "payload_bytes": sizes["payload_file_bytes"]}
+    result = row | {
+        "publications": {configured_codec(): rebound},
+        "accounting": {configured_codec(): sizes},
+        "ratios": {configured_codec(): sizes["publication_bytes"] / row["canonical_bytes"]},
+    }
+    proof = {
+        "version": row["version"],
+        "source_publication": publication,
+        "target_publication": rebound,
+        "tensor_count": len(tensors),
+        "non_view_tensor_metadata_sha256": invariant_digest,
+        "files": files,
+        "payload_bytes": sizes["payload_file_bytes"],
+    }
     return result, proof
 
 
@@ -341,25 +403,55 @@ def _rebind(args):
         actual = index[tensor["name"]]
         if tensor["shape"] != actual["shape"] or tensor["dtype"] != actual["dtype"]:
             raise ValueError(f"Inventory/checkpoint mismatch: {tensor['name']}")
-    stream_id = sha256(canonical_json({"source_fixture_sha256": sha256(source_bytes), "plan_digest": cohort.plan_digest,
-                                      "output": str(args.output.resolve())}))
-    report = fixture | {"plan_digest": cohort.plan_digest, "stream_id": stream_id, "rounds": [], "topology_rebind": "rebind.json"}
-    proof = {"source_fixture": str(source_path), "source_fixture_sha256": sha256(source_bytes),
-             "inventory": str(args.inventory.resolve()), "inventory_sha256": sha256(inventory_bytes),
-             "source_plan_digest": fixture["plan_digest"], "target_plan_digest": cohort.plan_digest,
-             "source_stream_id": fixture["stream_id"], "target_stream_id": stream_id,
-             "target_checkpoint": fixture["target_checkpoint"], "engine_ids": list(cohort.engine_ids),
-             "participants": list(cohort.identities), "rounds": []}
+    stream_id = sha256(
+        canonical_json(
+            {
+                "source_fixture_sha256": sha256(source_bytes),
+                "plan_digest": cohort.plan_digest,
+                "output": str(args.output.resolve()),
+            }
+        )
+    )
+    report = fixture | {
+        "plan_digest": cohort.plan_digest,
+        "stream_id": stream_id,
+        "rounds": [],
+        "topology_rebind": "rebind.json",
+    }
+    proof = {
+        "source_fixture": str(source_path),
+        "source_fixture_sha256": sha256(source_bytes),
+        "inventory": str(args.inventory.resolve()),
+        "inventory_sha256": sha256(inventory_bytes),
+        "source_plan_digest": fixture["plan_digest"],
+        "target_plan_digest": cohort.plan_digest,
+        "source_stream_id": fixture["stream_id"],
+        "target_stream_id": stream_id,
+        "target_checkpoint": fixture["target_checkpoint"],
+        "engine_ids": list(cohort.engine_ids),
+        "participants": list(cohort.identities),
+        "rounds": [],
+    }
     for version, row in enumerate(fixture["rounds"], 1):
         publication = row["publications"][configured_codec()]
-        if row["version"] != version or publication["base_version"] != version - 1 or publication["target_version"] != version or publication["stream_id"] != fixture["stream_id"]:
+        if (
+            row["version"] != version
+            or publication["base_version"] != version - 1
+            or publication["target_version"] != version
+            or publication["stream_id"] != fixture["stream_id"]
+        ):
             raise ValueError("Fixture publications must be one consecutive cumulative stream")
-        result, round_proof = _rebind_round(args, row, cohort.plan, fixture["plan_digest"], cohort.plan_digest, stream_id)
+        result, round_proof = _rebind_round(
+            args, row, cohort.plan, fixture["plan_digest"], cohort.plan_digest, stream_id
+        )
         report["rounds"].append(result)
         proof["rounds"].append(round_proof)
     _save(args.output / "fixture.json", report)
-    proof |= {"status": "PASS", "fixture_sha256": sha256((args.output / "fixture.json").read_bytes()),
-              "scope": "Views/plan/stream/publication identities rebound; all non-view tensor metadata and payload bytes unchanged. Original final target checkpoint retained."}
+    proof |= {
+        "status": "PASS",
+        "fixture_sha256": sha256((args.output / "fixture.json").read_bytes()),
+        "scope": "Views/plan/stream/publication identities rebound; all non-view tensor metadata and payload bytes unchanged. Original final target checkpoint retained.",
+    }
     _save(args.output / "rebind.json", proof)
 
 
@@ -387,7 +479,9 @@ def _publication_accounting(publication):
         "raw_tensor_count": sum(tensor["encoding"] == "raw_bytes" for tensor in manifest["tensors"]),
         "raw_target_bytes": raw_bytes,
         "outer_encoded_bytes": outer_bytes,
-        "outer_decoded_arena_bytes": sum(tensor.get("outer", {}).get("decoded_bytes", 0) for tensor in manifest["tensors"]),
+        "outer_decoded_arena_bytes": sum(
+            tensor.get("outer", {}).get("decoded_bytes", 0) for tensor in manifest["tensors"]
+        ),
         "outer_frames": sum(len(tensor.get("outer", {}).get("frames", [])) for tensor in manifest["tensors"]),
         "encoded_frame_bytes": inner_bytes,
         "payload_file_bytes": payload_bytes,
@@ -440,20 +534,35 @@ def _fixture(args):
         raise ValueError("Unsupported fixture tensor encoding")
 
     for version in range(1, args.versions + 1):
-        writer = PublicationWriter(args.output / codec / f"v{version}", stream_id=stream_id, base_version=version - 1, target_version=version, plan_digest=digest, publication_id=f"{stream_id}:{version}")
+        writer = PublicationWriter(
+            args.output / codec / f"v{version}",
+            stream_id=stream_id,
+            base_version=version - 1,
+            target_version=version,
+            plan_digest=digest,
+            publication_id=f"{stream_id}:{version}",
+        )
         started, changed = time.monotonic(), 0
         pending, batch, batch_bytes = [], [], 0
         try:
             for tensor in raw_plan:
-                before, after = _alter_fixture_tensor(target, index, tensor, version=version, seed=args.seed, rate=rate)
-                entry = writer.add_raw_tensor(tensor["name"], before, after, dtype=tensor["dtype"], shape=tensor["shape"], views=tensor["views"])
+                before, after = _alter_fixture_tensor(
+                    target, index, tensor, version=version, seed=args.seed, rate=rate
+                )
+                entry = writer.add_raw_tensor(
+                    tensor["name"], before, after, dtype=tensor["dtype"], shape=tensor["shape"], views=tensor["views"]
+                )
                 changed += entry["changed_bytes"]
             for tensor in matrix_plan:
-                before, after = _alter_fixture_tensor(target, index, tensor, version=version, seed=args.seed, rate=rate)
+                before, after = _alter_fixture_tensor(
+                    target, index, tensor, version=version, seed=args.seed, rate=rate
+                )
                 # Pinned snapshots are bounded by a batching target, except that
                 # one larger tensor remains whole. Only compact Snappy survives
                 # each GPU batch; the canonical snapshots are then released.
-                batch.append((torch.from_numpy(before.copy()).pin_memory(), torch.from_numpy(after).pin_memory(), "xor_bytes"))
+                batch.append(
+                    (torch.from_numpy(before.copy()).pin_memory(), torch.from_numpy(after).pin_memory(), "xor_bytes")
+                )
                 batch_bytes += after.nbytes
                 if batch_bytes >= 512 * 1024**2:
                     pending.extend(encoder.encode_device(batch))
@@ -461,8 +570,19 @@ def _fixture(args):
             if batch:
                 pending.extend(encoder.encode_device(batch))
             batch = []
-            for tensor, (frames, payload, outer, count, _) in zip(matrix_plan, encoder.wrap_device(pending), strict=True):
-                writer.add_gpu_outer_tensor(tensor["name"], frames, payload, outer, changed_bytes=count, dtype=tensor["dtype"], shape=tensor["shape"], views=tensor["views"])
+            for tensor, (frames, payload, outer, count, _) in zip(
+                matrix_plan, encoder.wrap_device(pending), strict=True
+            ):
+                writer.add_gpu_outer_tensor(
+                    tensor["name"],
+                    frames,
+                    payload,
+                    outer,
+                    changed_bytes=count,
+                    dtype=tensor["dtype"],
+                    shape=tensor["shape"],
+                    views=tensor["views"],
+                )
                 changed += count
             publication = writer.finish()
         finally:
@@ -486,7 +606,11 @@ def _fixture(args):
 
 async def _request(client, endpoint, payload=None, timeout=1200):
     async with httpx.AsyncClient(trust_env=False, timeout=timeout) as http:
-        response = await (http.get(client.server_url + "/" + endpoint) if payload is None else http.post(client.server_url + "/" + endpoint, json=payload))
+        response = await (
+            http.get(client.server_url + "/" + endpoint)
+            if payload is None
+            else http.post(client.server_url + "/" + endpoint, json=payload)
+        )
         response.raise_for_status()
         return response.json() if response.content else None
 
@@ -553,7 +677,15 @@ async def _engines(args, model):
             args.output / "launch.json",
             {
                 "engines": commands,
-                "feature_env": {key: os.environ.get(key) for key in ("WEIGHT_DELTA_CODEC", "WEIGHT_DELTA_TIMING", "WEIGHT_DELTA_CPU_WORKERS", "WEIGHT_DELTA_HOST_CACHE_DIR")},
+                "feature_env": {
+                    key: os.environ.get(key)
+                    for key in (
+                        "WEIGHT_DELTA_CODEC",
+                        "WEIGHT_DELTA_TIMING",
+                        "WEIGHT_DELTA_CPU_WORKERS",
+                        "WEIGHT_DELTA_HOST_CACHE_DIR",
+                    )
+                },
             },
         )
         started = time.monotonic()
@@ -607,7 +739,9 @@ async def _run(args):
         if args.phase == "oracle":
             _save(args.output / "target-generation.json", await _generation(clients))
             return
-        descriptions = await asyncio.gather(*[c.get_weights_delta_info(engine_id=f"engine-{i:05d}") for i, c in enumerate(clients)])
+        descriptions = await asyncio.gather(
+            *[c.get_weights_delta_info(engine_id=f"engine-{i:05d}") for i, c in enumerate(clients)]
+        )
         cohort = negotiate_cohort(descriptions)
         digest = cohort.plan_digest
         _validate_cohort(cohort, len(clients))
@@ -627,7 +761,9 @@ async def _run(args):
                     "coordinator_s": time.monotonic() - started,
                     "codec": codec,
                     "fixture_publication": fixture_key,
-                    "inner_snappy_origin": fixture.get("inner_snappy_origin", fixture.get("outer_zstd_derivation", {}).get("inner_snappy_origin")),
+                    "inner_snappy_origin": fixture.get(
+                        "inner_snappy_origin", fixture.get("outer_zstd_derivation", {}).get("inner_snappy_origin")
+                    ),
                     "measurement_phase": "first-use-allocation" if version["version"] == 1 else "warm-update",
                     "receipt": receipt,
                 }
@@ -653,7 +789,13 @@ def main():
     parser.add_argument("--versions", type=int, default=3)
     parser.add_argument("--seed", type=int, default=20261001)
     parser.add_argument("--ratio", type=float, default=0.002)
-    parser.add_argument("--ports", type=int, nargs="+", default=(31000,), help="One port: one EP8 engine; two ports: two EP4 engines on GPUs 0-3 and 4-7")
+    parser.add_argument(
+        "--ports",
+        type=int,
+        nargs="+",
+        default=(31000,),
+        help="One port: one EP8 engine; two ports: two EP4 engines on GPUs 0-3 and 4-7",
+    )
     parser.add_argument("--startup-timeout", type=float, default=3600)
     args = parser.parse_args()
     args.model = args.model.resolve(strict=True)

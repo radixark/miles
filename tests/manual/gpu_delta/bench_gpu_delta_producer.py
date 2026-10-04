@@ -46,9 +46,15 @@ def parse_args():
     parser.add_argument("--load", type=Path, required=True, help="Matching native-DSA Megatron torch_dist checkpoint")
     parser.add_argument("--output", type=Path, required=True, help="New directory; existing output is rejected")
     parser.add_argument("--versions", type=int, default=3)
-    parser.add_argument("--perturb-fraction", type=float, default=0.001, help="Approximate fraction of matrix elements selected")
-    parser.add_argument("--perturb-relative-scale", type=float, default=0.03125, help="Selected weights multiply by 1 + this value")
-    parser.add_argument("--timing", action="store_true", help="Record optional CUDA phase events; changes instrumentation overhead")
+    parser.add_argument(
+        "--perturb-fraction", type=float, default=0.001, help="Approximate fraction of matrix elements selected"
+    )
+    parser.add_argument(
+        "--perturb-relative-scale", type=float, default=0.03125, help="Selected weights multiply by 1 + this value"
+    )
+    parser.add_argument(
+        "--timing", action="store_true", help="Record optional CUDA phase events; changes instrumentation overhead"
+    )
     args = parser.parse_args()
     if args.versions < 1 or not 0 < args.perturb_fraction <= 1 or not 0 < args.perturb_relative_scale < 1:
         parser.error("versions must be positive, fraction in (0, 1], and relative scale in (0, 1)")
@@ -106,8 +112,9 @@ def _environment(args):
 def _model_args(options):
     # Reuse the maintained offline conversion parser/model declaration. Imports
     # are deferred so --help works without Megatron, TE, or a GPU installation.
-    from miles.utils.external_utils.model_args_utils import load_model_args
     from tools.convert_hf_to_torch_dist import get_args
+
+    from miles.utils.external_utils.model_args_utils import load_model_args
 
     argv = [
         "bench_gpu_delta_producer",
@@ -330,7 +337,11 @@ def _verify_publication(publication, plan):
     if hashlib.sha256(raw).hexdigest() != publication["manifest_sha256"]:
         raise ValueError("Publication manifest checksum mismatch")
     manifest = json.loads(raw)
-    if manifest.get("codec") != CODEC or manifest.get("protocol_version") != 4 or manifest.get("frame_bytes") != 1 << 20:
+    if (
+        manifest.get("codec") != CODEC
+        or manifest.get("protocol_version") != 4
+        or manifest.get("frame_bytes") != 1 << 20
+    ):
         raise ValueError("Sealed publication must use protocol 4 / snappy-zstd")
     if {tensor["name"] for tensor in manifest["tensors"]} != {tensor["name"] for tensor in plan}:
         raise ValueError("Sealed publication does not cover the exact mutable exporter inventory")
@@ -338,7 +349,11 @@ def _verify_publication(publication, plan):
         is_raw = len(tensor["shape"]) <= 1
         if tensor["encoding"] != ("raw_bytes" if is_raw else "xor_bytes"):
             raise ValueError("Sealed publication differs from the shape-based direct-value codec")
-        if is_raw and (tensor["frames"] or "outer" in tensor or tensor.get("raw", {}).get("encoded_bytes", 0) != (tensor["nbytes"] if tensor["changed_bytes"] else 0)):
+        if is_raw and (
+            tensor["frames"]
+            or "outer" in tensor
+            or tensor.get("raw", {}).get("encoded_bytes", 0) != (tensor["nbytes"] if tensor["changed_bytes"] else 0)
+        ):
             raise ValueError("Scalar/vector must transfer its complete target without compression")
     for item in manifest["files"]:
         if (path.parent / item["name"]).stat().st_size != item["nbytes"]:
@@ -354,9 +369,13 @@ def _verify_publication(publication, plan):
         "raw_tensor_count": sum(tensor["encoding"] == "raw_bytes" for tensor in manifest["tensors"]),
         "raw_changed_tensors": sum("raw" in tensor for tensor in manifest["tensors"]),
         "raw_bytes": sum(tensor.get("raw", {}).get("encoded_bytes", 0) for tensor in manifest["tensors"]),
-        "inner_encoded_frame_bytes": sum(frame["encoded_bytes"] for tensor in manifest["tensors"] for frame in tensor["frames"]),
+        "inner_encoded_frame_bytes": sum(
+            frame["encoded_bytes"] for tensor in manifest["tensors"] for frame in tensor["frames"]
+        ),
         "outer_stored_bytes": sum(tensor.get("outer", {}).get("encoded_bytes", 0) for tensor in manifest["tensors"]),
-        "outer_decoded_arena_bytes": sum(tensor.get("outer", {}).get("decoded_bytes", 0) for tensor in manifest["tensors"]),
+        "outer_decoded_arena_bytes": sum(
+            tensor.get("outer", {}).get("decoded_bytes", 0) for tensor in manifest["tensors"]
+        ),
     }
 
 
@@ -383,7 +402,11 @@ def _run_update(protocol, iterator, weights, version, plan):
     # Completion only, once per update; no per-conversion timing synchronizations.
     torch.cuda.synchronize()
     completed = time.monotonic()
-    conversion_cuda_ms = sum(start.elapsed_time(end) for start, end in iterator.conversion_events) if iterator.conversion_events else None
+    conversion_cuda_ms = (
+        sum(start.elapsed_time(end) for start, end in iterator.conversion_events)
+        if iterator.conversion_events
+        else None
+    )
     measurement = {
         "rank": dist.get_rank(),
         "setup_s": setup_end - started,
@@ -479,7 +502,17 @@ def _versions(options, protocol, iterator, weights, plan, owned_plan):
         results.append(result)
         _write_root(options.output / f"version-{version:03d}.json", result)
         if dist.get_rank() == 0:
-            print(json.dumps({"version": version, "codec": CODEC, "sizes": measurement["sizes"], "blocked_s": [rank["producer_blocked_s"] for rank in measurement["ranks"]]}), flush=True)
+            print(
+                json.dumps(
+                    {
+                        "version": version,
+                        "codec": CODEC,
+                        "sizes": measurement["sizes"],
+                        "blocked_s": [rank["producer_blocked_s"] for rank in measurement["ranks"]],
+                    }
+                ),
+                flush=True,
+            )
     return results
 
 
@@ -498,7 +531,13 @@ def _runtime_metadata():
             versions[package] = importlib.metadata.version(package)
         except importlib.metadata.PackageNotFoundError:
             versions[package] = None
-    return {"hostname": socket.gethostname(), "pid": os.getpid(), "rank": dist.get_rank(), "device": torch.cuda.get_device_name(), "versions": versions}
+    return {
+        "hostname": socket.gethostname(),
+        "pid": os.getpid(),
+        "rank": dist.get_rank(),
+        "device": torch.cuda.get_device_name(),
+        "versions": versions,
+    }
 
 
 def run(options):
@@ -531,7 +570,15 @@ def run(options):
     except Exception as caught:
         error = caught
     _check(error, "runtime metadata")
-    setup = _gather({"load_s": load_s, "discovery_s": discovery_s, "baseline": baseline_setup, "ownership": ownership, "runtime": runtime})
+    setup = _gather(
+        {
+            "load_s": load_s,
+            "discovery_s": discovery_s,
+            "baseline": baseline_setup,
+            "ownership": ownership,
+            "runtime": runtime,
+        }
+    )
     _write_root(options.output / "plan.json", {"scope": "producer-only canonical full views", "tensors": plan})
     _write_root(
         options.output / "setup.json",
@@ -552,7 +599,10 @@ def run(options):
     )
     owned_plan = {tensor["name"]: tensor for tensor in plan if tensor["name"] in set(ownership["names"])}
     results = _versions(options, protocol, iterator, weights, plan, owned_plan)
-    _write_root(options.output / "result.json", {"success": True, "scope": "producer-only; no receiver or optimizer update", "versions": results})
+    _write_root(
+        options.output / "result.json",
+        {"success": True, "scope": "producer-only; no receiver or optimizer update", "versions": results},
+    )
 
 
 def main():
@@ -561,7 +611,10 @@ def main():
         run(options)
     except BaseException as error:
         if options.output.is_dir():
-            _write_json(options.output / f"failure-rank-{os.environ.get('RANK', 'unknown')}.json", {"success": False, "error": f"{type(error).__name__}: {error}"})
+            _write_json(
+                options.output / f"failure-rank-{os.environ.get('RANK', 'unknown')}.json",
+                {"success": False, "error": f"{type(error).__name__}: {error}"},
+            )
         raise
     finally:
         if dist.is_initialized():

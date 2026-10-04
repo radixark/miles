@@ -161,19 +161,8 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
             except Exception as error:
                 self._error = error
         _collective_check(self._error, "baseline capture")
-        inventory = _gather_all(
-            [
-                {
-                    "name": name,
-                    "dtype": self._plan[name]["dtype"],
-                    "shape": self._plan[name]["shape"],
-                    "nbytes": value.nbytes,
-                }
-                for name, value in self._snapshot.items()
-            ]
-        )
-        entries = [entry for shard in inventory for entry in shard]
-        names = [entry["name"] for entry in entries]
+        inventory = _gather_all(list(self._snapshot))
+        names = [name for shard in inventory for name in shard]
         if len(set(names)) != len(names) or set(names) != set(self._plan):
             missing = sorted(set(self._plan) - set(names))
             extra = sorted(set(names) - set(self._plan))
@@ -193,7 +182,7 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
         if dist.get_rank() == 0:
             logger.info(
                 "[gpu delta] captured canonical baseline tensors=%d stream=%s",
-                len(entries),
+                len(names),
                 self._stream_id,
             )
 
@@ -204,7 +193,9 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
         spec = self._plan.get(name)
         if spec is None:
             raise ValueError(f"Exporter tensor {name!r} is absent from the receiver mutable plan")
-        checkpoint_dtype, checkpoint_shape = gpu_delta_publication.checkpoint_tensor_layout(self.args.hf_checkpoint, name)
+        checkpoint_dtype, checkpoint_shape = gpu_delta_publication.checkpoint_tensor_layout(
+            self.args.hf_checkpoint, name
+        )
         if list(checkpoint_shape) != spec["shape"] or checkpoint_dtype != spec["dtype"]:
             raise ValueError(f"Receiver/checkpoint canonical layout differs for {name!r}")
         if tuple(tensor.shape) != checkpoint_shape:
@@ -269,7 +260,9 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
             if pool is not None:
                 raw_job = pool.submit(self._write_raw_tensors, self._raw_names)
             for batch_names in self._gpu_batch_names:
-                result = self._gpu_encoder.encode_device([(self._snapshot[name], self._next_snapshot[name], "xor_bytes") for name in batch_names])
+                result = self._gpu_encoder.encode_device(
+                    [(self._snapshot[name], self._next_snapshot[name], "xor_bytes") for name in batch_names]
+                )
                 if len(result) != len(batch_names):
                     raise RuntimeError("GPU delta encoder returned an incomplete batch")
                 names.extend(batch_names)
@@ -426,7 +419,9 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
         }
         self.publication_metrics["raw_cpu_write_s"] = self._raw_cpu_write_s
         self.publication_metrics["raw_tail_wait_s"] = self._raw_tail_wait_s
-        self.publication_metrics["raw_export_d2h_bytes"] = sum(self._next_snapshot[name].nbytes for name in self._raw_names)
+        self.publication_metrics["raw_export_d2h_bytes"] = sum(
+            self._next_snapshot[name].nbytes for name in self._raw_names
+        )
         # This existing key counts export of the current snapshot; the old
         # pinned baseline is never written back.
         self.publication_metrics["baseline_d2h_bytes"] += sum(t.nbytes for t in self._next_snapshot.values())
@@ -449,8 +444,13 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
             descriptor["summary_counts"] = {
                 key: sum(owner["producer_metrics"][key] for owner in shards)
                 for key in (
-                    "tensor_count", "wire_bytes", "changed_bytes", "canonical_bytes",
-                    "raw_tensor_count", "raw_changed_tensors", "raw_bytes",
+                    "tensor_count",
+                    "wire_bytes",
+                    "changed_bytes",
+                    "canonical_bytes",
+                    "raw_tensor_count",
+                    "raw_changed_tensors",
+                    "raw_bytes",
                 )
             }
             descriptor["producer_summary_metrics"] = gpu_delta_metrics.producer_metrics(
@@ -476,7 +476,9 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
         publication = self.publish(weight_version)
         activation = _on_root(
             lambda: gpu_delta_metrics.activation_metrics(
-                async_utils.run(gpu_delta_session.activate_publication(self.rollout_engines, self._cohort, publication))
+                async_utils.run(
+                    gpu_delta_session.activate_publication(self.rollout_engines, self._cohort, publication)
+                )
             )
         )
         self.commit_pending_baseline()
@@ -509,10 +511,12 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
     def after_engines_resumed(self):
         # The updater has completed its existing final trainer barrier. This is
         # one logging trainer's interval, not an all-rank min/max or GPU-idle time.
-        self.update_weight_metrics.update({
-            "perf/gpu_delta/trainer_logging_rank": dist.get_rank(),
-            "perf/gpu_delta/trainer_logging_rank_blocked_s": time.monotonic() - self._started,
-        })
+        self.update_weight_metrics.update(
+            {
+                "perf/gpu_delta/trainer_logging_rank": dist.get_rank(),
+                "perf/gpu_delta/trainer_logging_rank_blocked_s": time.monotonic() - self._started,
+            }
+        )
 
 
 def _gather_all(value):
