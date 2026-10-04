@@ -139,7 +139,6 @@ def test_rebind_preserves_payload_and_exact_canonical_target(tmp_path):
 
     import numpy as np
     import zstandard
-    from miles.utils.gpu_delta_publication import selected_bytes
 
     args, before, after, changed = _tiny_fixture(tmp_path)
     source_fixture = (args.fixture / "fixture.json").read_bytes()
@@ -167,11 +166,6 @@ def test_rebind_preserves_payload_and_exact_canonical_target(tmp_path):
         else:
             actual, expected = np.frombuffer(encoded, dtype=np.uint8), changed.view(np.uint8)
         assert np.array_equal(actual, expected)
-        for view in tensor["views"]:
-            assert np.array_equal(
-                selected_bytes(actual, shape=tensor["shape"], dtype=tensor["dtype"], slices=view["slices"]),
-                selected_bytes(expected, shape=tensor["shape"], dtype=tensor["dtype"], slices=view["slices"]),
-            )
 
 
 @pytest.mark.parametrize("corruption", ["canonical", "payload", "manifest", "host"])

@@ -99,7 +99,7 @@ def activation_metrics(activation):
     arenas = {}
     for receipt, timing in zip(rows, timings, strict=True):
         arena = (receipt["identity"]["engine_id"], receipt["identity"]["host_cache_id"])
-        arenas.setdefault(arena, []).append(timing)
+        arenas.setdefault(arena, timing)
     creators = [row for row in timings if row["host_payload_cache_created"] == 1]
     metrics.update({_PREFIX + "receiver_host_arenas": len(arenas), _PREFIX + "host_cache_creators": len(creators)})
     for name in _HOST_TIMINGS:
@@ -115,7 +115,7 @@ def activation_metrics(activation):
     for name in _HOST_CAPACITIES:
         if not all(name in row for row in timings):
             continue
-        capacities = [host_rows[0][name] for host_rows in arenas.values()]
+        capacities = [timing[name] for timing in arenas.values()]
         _distribution(metrics, name, capacities)
         metrics[_PREFIX + name + "/sum"] = sum(capacities)
     engine_timings = activation["engine_timings"]

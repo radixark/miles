@@ -184,22 +184,19 @@ def test_early_failure_settles_other_engine_before_returning():
     assert not any(event == "abort" for _, event in events)
 
 
-def test_common_plan_deduplicates_replicas_but_rejects_conflicting_views():
-    clients, descriptions, publication, _ = _setup()
+@pytest.mark.parametrize("conflict", ["view", "codec"])
+def test_common_plan_deduplicates_replicas_and_rejects_conflicts_before_preparation(conflict):
+    clients, descriptions, publication, events = _setup()
     plan, identities, digest = session.merge_plans(descriptions)
     assert len(plan) == 1 and len(plan[0]["views"]) == 2 and len(identities) == 4
     assert digest == publication["plan_digest"]
     broken = copy.deepcopy(descriptions)
-    broken[1]["participants"][0]["plan"]["tensors"][0]["views"][0]["slices"] = [[1, 2]]
-    with pytest.raises(ValueError, match="conflict"):
-        session.merge_plans(broken)
-
-
-def test_codec_mismatch_rejected_before_any_engine_preparation():
-    clients, descriptions, publication, events = _setup()
-    descriptions[1]["participants"][0]["plan"]["codec"] = "zstd"
-    with pytest.raises(ValueError, match="codecs differ"):
-        asyncio.run(session.activate_publication(clients, session.negotiate_cohort(descriptions), publication))
+    if conflict == "view":
+        broken[1]["participants"][0]["plan"]["tensors"][0]["views"][0]["slices"] = [[1, 2]]
+    else:
+        broken[1]["participants"][0]["plan"]["codec"] = "zstd"
+    with pytest.raises(ValueError, match="conflict|codecs differ"):
+        asyncio.run(session.activate_publication(clients, session.negotiate_cohort(broken), publication))
     assert not events
     assert all(client.args is None for client in clients)
 

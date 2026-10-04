@@ -204,9 +204,9 @@ def test_owner_wide_outer_roundtrip_only_transfers_final_bytes(frame_bytes, monk
     original_copy, original_compress = gpu_delta_encoder._copy_payload_slab, encoder.outer_compressor.compress
     copies, outer_calls = [], []
 
-    def copy(selected, total, transfer):
-        copies.append(total)
-        return original_copy(selected, total, transfer)
+    def copy(packed, transfer):
+        copies.append(packed.numel())
+        return original_copy(packed, transfer)
 
     def compress(frames, stream, **kwargs):
         outer_calls.append([frame.numel() for frame in frames])

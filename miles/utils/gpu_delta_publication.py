@@ -86,19 +86,6 @@ def _check_frame_bytes(frame_bytes):
         raise ValueError("GPU-delta frame_bytes must be 64 KiB, 1 MiB or 2 MiB")
 
 
-def selected_bytes(data, shape: list[int], dtype: str, slices: list[list[int]]) -> np.ndarray:
-    """C-order canonical selected-view bytes; the final axis holds storage bytes."""
-    raw = _bytes_view(data)
-    itemsize = DTYPE_BYTES[dtype]
-    if len(slices) != len(shape) or raw.size != math.prod(shape) * itemsize:
-        raise ValueError("Canonical view shape/byte count mismatch")
-    for size, bounds in zip(shape, slices, strict=True):
-        if len(bounds) != 2 or any(type(x) is not int for x in bounds) or not 0 <= bounds[0] <= bounds[1] <= size:
-            raise ValueError("Invalid canonical half-open view bounds")
-    selection = tuple(slice(start, end) for start, end in slices) + (slice(None),)
-    return np.ascontiguousarray(raw.reshape(*shape, itemsize)[selection]).reshape(-1)
-
-
 def tensor_metadata(name: str, dtype: str, shape: list[int], views=None, encoding="xor_bytes") -> dict:
     """Canonical tensor schema for compressed matrices and raw scalar/vector targets."""
     if not name or dtype not in DTYPE_BYTES or any(type(n) is not int or n < 0 for n in shape):

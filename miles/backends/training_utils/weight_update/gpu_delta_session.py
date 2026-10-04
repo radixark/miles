@@ -113,7 +113,6 @@ async def _activate_engine(client, engine_id, participants, host_names, publicat
         preparation = await client.prepare_weights_from_delta(
             **common,
             session_id=session_id,
-            engine_id=engine_id,
             participants=participants,
             host_tensor_names=host_names,
         )

@@ -82,17 +82,16 @@ def _validate_snapshots(tensors):
 
 
 def _xor_frames(previous_gpu, current_gpu, frame_bytes, keepalive):
-    frames, owners, old_frames, new_frames = [], [], [], []
+    frames, owners, new_frames = [], [], []
     for index, (previous, current) in enumerate(zip(previous_gpu, current_gpu, strict=True)):
         old_parts = list(previous.split(frame_bytes)) if previous.numel() else []
         new_parts = list(current.split(frame_bytes)) if current.numel() else []
-        old_frames.extend(old_parts)
         new_frames.extend(new_parts)
         frames.extend(old_parts)
         owners.extend((index, offset * frame_bytes) for offset in range(len(old_parts)))
     parameters = torch.empty((3, len(frames)), dtype=torch.int64, device="cpu", pin_memory=True)
     parameters.numpy()[:] = [
-        [frame.data_ptr() for frame in old_frames],
+        [frame.data_ptr() for frame in frames],
         [frame.data_ptr() for frame in new_frames],
         [frame.numel() for frame in frames],
     ]
@@ -132,14 +131,11 @@ def _select_payloads(tensors, frames, owners, batch, sizes, counts):
     return descriptions, groups, changed
 
 
-def _copy_payload_slab(selected, total, transfer):
-    if not selected:
-        return
-    # Keep both slabs in the caller's container even if a later enqueue fails.
-    # Frame views remain separate until this GPU gather; no raw host repacking.
-    transfer["device"] = selected[0] if len(selected) == 1 else torch.cat(selected)
-    transfer["host"] = torch.empty(total, dtype=torch.uint8, device="cpu", pin_memory=True)
-    transfer["host"].copy_(transfer["device"], non_blocking=True)
+def _copy_payload_slab(packed, transfer):
+    # Retain both slabs through the completion fence, including partial failure.
+    transfer["device"] = packed
+    transfer["host"] = torch.empty(packed.numel(), dtype=torch.uint8, device="cpu", pin_memory=True)
+    transfer["host"].copy_(packed, non_blocking=True)
 
 
 def _tensor_metrics(tensors, batch_metrics):
@@ -361,7 +357,7 @@ class GpuBatchEncoder:
                     arenas, offsets, packed = _pack_device_arenas(encoded_groups, self._alignment_padding)
                     # Preserve the tiny inter-tensor alignment gaps: copy this
                     # one arena directly rather than concatenating its views.
-                    _copy_payload_slab([packed], packed.numel(), transfer)
+                    _copy_payload_slab(packed, transfer)
                 done = torch.cuda.Event()
                 done.record()
             waiting = time.monotonic()

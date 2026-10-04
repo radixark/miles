@@ -194,7 +194,7 @@ def test_initial_delta_publishes_loaded_trainer_after_common_baseline(
 ):
     protocol, events = _setup(tmp_path)
     protocol.args.update_weight_delta_initial_sync = initial_sync
-    protocol._plan_digest = "plan"
+    protocol._cohort = Namespace(plan_digest="plan")
     protocol._staging_stream = Mock()
     protocol._next_snapshot = {"w": torch.empty(4, dtype=torch.uint8)}
     protocol._gpu_encoder = Mock(frame_bytes=1 << 20, outer_metrics={})

@@ -86,7 +86,6 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
         self._descriptions = descriptions
         self._cohort = cohort
         self._plan = {tensor["name"]: tensor for tensor in cohort.plan}
-        self._plan_digest = cohort.plan_digest
 
     async def _describe(self):
         results = await asyncio.gather(
@@ -129,7 +128,7 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
                 publication_id=f"{self._stream_id}:{weight_version}",
                 base_version=weight_version - 1,
                 target_version=weight_version,
-                plan_digest=self._plan_digest,
+                plan_digest=self._cohort.plan_digest,
                 owner=dist.get_rank(),
                 frame_bytes=self._gpu_encoder.frame_bytes,
             )
