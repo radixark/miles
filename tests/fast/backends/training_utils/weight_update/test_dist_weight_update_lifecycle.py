@@ -80,7 +80,6 @@ def _make_updater(engines: list[_RecordingApiClient], *, pause_generation_mode: 
         rollout_engines=engines,
         required_placement=MagicMock(),
         supports_lora=False,
-        bind_iterator=MagicMock(),
         begin_sync=lambda weight_version, iter_buckets: True,
         send_bucket=MagicMock(),
         after_base_weights=MagicMock(),
@@ -90,7 +89,11 @@ def _make_updater(engines: list[_RecordingApiClient], *, pause_generation_mode: 
     iterator = MagicMock()
     iterator.iter_hf_weights.return_value = iter([])
     iterator.weight_update_selector = "all"
-    args = Namespace(pause_generation_mode=pause_generation_mode, check_lora_weight_equal=False)
+    args = Namespace(
+        update_weight_transfer_mode="broadcast",
+        pause_generation_mode=pause_generation_mode,
+        check_lora_weight_equal=False,
+    )
     with patch(f"{_UPDATER_MODULE}.get_weight_transfer_protocol", return_value=protocol):
         return WeightUpdater(
             args,

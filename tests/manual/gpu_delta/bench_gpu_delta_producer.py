@@ -241,7 +241,7 @@ def _discover_plan(args, iterator, weights):
         except Exception as caught:
             error = error or caught
 
-    iterator.set_local_expert_consumer(consumer=consume)
+    iterator.local_expert_consumer = consume
     for bucket in iterator.iter_hf_weights(weights, materialize=dist.get_rank() == 0):
         if dist.get_rank() == 0:
             consume(bucket)
@@ -300,7 +300,7 @@ def _setup_protocol(args, plan, iterator, weights, output):
     protocol.connect([], [], [], get_parallel_state(), iterator.placement, "target")
     if protocol.is_sender != (dist.get_rank() == 0):
         raise ValueError("EP8/TP1/PP1/CP1 requires rank 0 as the ordinary tensor sender")
-    protocol.bind_iterator(iterator)
+    iterator.local_expert_consumer = protocol.send_bucket
     if protocol.begin_sync(0, lambda **kw: iterator.iter_hf_weights(weights, **kw)):
         raise RuntimeError("Expected baseline capture, not an update")
     return protocol, {"baseline_capture_s": time.monotonic() - started}
@@ -361,7 +361,6 @@ def _verify_publication(publication, plan):
 
 
 def _run_update(protocol, iterator, weights, version, plan):
-    protocol.bind_iterator(iterator)
     iterator.reset_timing()
     dist.barrier()
     torch.cuda.synchronize()

@@ -10,7 +10,7 @@ _UPDATER_MODULE = "miles.backends.training_utils.weight_update.updater"
 def _build_updater() -> WeightUpdater:
     with patch(f"{_UPDATER_MODULE}.get_weight_transfer_protocol", return_value=MagicMock(supports_lora=False)):
         return WeightUpdater(
-            Namespace(),
+            Namespace(update_weight_transfer_mode="broadcast"),
             [],
             weights_getter=lambda: {},
             model_name="test-model",

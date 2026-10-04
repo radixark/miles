@@ -34,7 +34,10 @@ class HfWeightIteratorDirect(MegatronHfWeightIteratorBase):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self._expert_consumer: Callable[[list[tuple[str, torch.Tensor]]], None] | None = None
+        # Installed on every rank for owner-local ETP1 export, including empty
+        # owners. The callback retains async inputs and defers errors until the
+        # protocol drains the stream. ETP>1 keeps gather-before-convert.
+        self.local_expert_consumer: Callable[[list[tuple[str, torch.Tensor]]], None] | None = None
         parallel = get_parallel_state()
         self._convert_experts_before_gather = parallel.etp.size == 1
         non_expert_infos, expert_infos = _get_megatron_local_param_infos(
@@ -74,17 +77,6 @@ class HfWeightIteratorDirect(MegatronHfWeightIteratorBase):
                 )
                 for batches in itertools.zip_longest(*owner_batches, fillvalue=())
             ]
-
-    def set_local_expert_consumer(self, consumer: Callable[[list[tuple[str, torch.Tensor]]], None]) -> None:
-        """Consume ETP1 owner-local experts instead of gathering expert weights.
-
-        All ranks must install the consumer, including transport non-senders and
-        ranks with no local units. It owns the complete converted unit and must
-        retain asynchronous inputs and defer errors until the protocol drains
-        the stream and joins its collective status check.
-        ETP>1 keeps the ordinary gather-before-convert sender path.
-        """
-        self._expert_consumer = consumer
 
     def _iter_hf_param_units(self, weights, *, materialize):
         rank = dist.get_rank()
@@ -132,11 +124,11 @@ class HfWeightIteratorDirect(MegatronHfWeightIteratorBase):
                 continue
             param = weights[info.name].detach().to(device=device, non_blocking=True)
             unit = next(self._convert_to_hf_param_units([(info.name, param)]))
-            if self._expert_consumer is not None:
-                self._expert_consumer(unit)
+            if self.local_expert_consumer is not None:
+                self.local_expert_consumer(unit)
             elif unit:
                 units.append(unit)
-        if self._expert_consumer is not None:
+        if self.local_expert_consumer is not None:
             return []
         for gather in batch.gathers:
             units = gather(units, device=device)

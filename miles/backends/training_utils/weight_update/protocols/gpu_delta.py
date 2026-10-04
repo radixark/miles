@@ -65,9 +65,6 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
 
             self._post_write_hook = load_function(args.custom_update_weight_post_write_path)
 
-    def bind_iterator(self, iterator):
-        iterator.set_local_expert_consumer(consumer=self.send_bucket)
-
     def connect(self, rollout_engines, engine_gpu_counts, engine_gpu_offsets, parallel_state, placement, selector):
         self.rollout_engines = rollout_engines
         self.group_name = "miles-gpu-delta"

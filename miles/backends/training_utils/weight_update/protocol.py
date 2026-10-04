@@ -9,7 +9,7 @@ import torch
 
 from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
 from miles.backends.training_utils.parallel import ParallelState
-from miles.backends.training_utils.weight_update.hf_weight_iterator import HfWeightIteratorBase, WeightUpdatePlacement
+from miles.backends.training_utils.weight_update.hf_weight_iterator import WeightUpdatePlacement
 
 
 class WeightTransferProtocol(ABC):
@@ -52,9 +52,6 @@ class WeightTransferProtocol(ABC):
         """Hook before the session frame; return False to skip this round.
         The return value must be identical on every rank."""
         return True
-
-    def bind_iterator(self, iterator: HfWeightIteratorBase) -> None:  # noqa: B027 — optional hook
-        """Attach protocol-specific owner-local processing before the iterator's gathers."""
 
     @abstractmethod
     def send_bucket(self, bucket: list[tuple[str, torch.Tensor]]) -> None: ...

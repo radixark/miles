@@ -197,9 +197,9 @@ def test_owner_consumer_skips_gathers_and_normal_export_still_gathers(
     ]
     iterator._convert_to_hf_param_units = convert
     iterator._convert_experts_before_gather = True
-    iterator._expert_consumer = None
+    iterator.local_expert_consumer = None
     if consume_locally:
-        iterator.set_local_expert_consumer(consumer=consume)
+        iterator.local_expert_consumer = consume
     monkeypatch.setattr(direct_module.dist, "get_rank", lambda: 0)
     monkeypatch.setattr(direct_module.torch.cuda, "current_device", lambda: 0)
     monkeypatch.setattr(direct_module, "_iter_mm_tower_units", lambda *args, **kwargs: iter(()))
@@ -226,7 +226,15 @@ def test_gpu_delta_consumer_defers_failure_until_all_local_units_are_visited(dir
     protocol._match_layout = reject
     iterator = direct_module.HfWeightIteratorDirect.__new__(direct_module.HfWeightIteratorDirect)
     iterator._convert_experts_before_gather = True
-    protocol.bind_iterator(iterator)
+    protocol.is_sender = False
+    from miles.backends.training_utils.weight_update import updater
+
+    monkeypatch.setattr(updater, "get_weight_transfer_protocol", lambda args: protocol)
+    updater.WeightUpdater(
+        Namespace(update_weight_transfer_mode="gpu-delta"), [],
+        weights_getter=lambda: {}, model_name="test", quantization_config=None,
+        iterator_factory=lambda *args, **kwargs: iterator, parallel_state=None, is_lora=False,
+    )
 
     class Weight:
         def detach(self):
@@ -293,7 +301,7 @@ def test_gpu_delta_etp2_gathers_complete_experts_before_sender_conversion(direct
     iterator._convert_to_hf_param_units = convert
     protocol = UpdateWeightFromGpuDelta(Namespace(custom_update_weight_post_write_path=None))
     protocol.send_bucket = lambda unit: pytest.fail("ETP-sharded experts must not use the owner-local consumer")
-    protocol.bind_iterator(iterator)
+    iterator.local_expert_consumer = protocol.send_bucket
     monkeypatch.setattr(direct_module.dist, "get_rank", lambda: 0)
     monkeypatch.setattr(direct_module.dist, "all_gather", all_gather)
     monkeypatch.setattr(direct_module, "get_parallel_state", lambda: Namespace(
@@ -334,7 +342,7 @@ def test_producer_discovery_installs_actual_owner_hook_and_preserves_plan(direct
 
     def buckets(values, materialize):
         assert materialize
-        assert iterator._expert_consumer([(expert_name, values[expert_name])]) is None
+        assert iterator.local_expert_consumer([(expert_name, values[expert_name])]) is None
         yield [(dense_name, values[dense_name])]
 
     iterator.iter_hf_weights = buckets

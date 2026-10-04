@@ -69,7 +69,7 @@ class TestWeightUpdaterLoraConfig:
         protocol.supports_lora = True
         with patch(f"{_UPDATER_MODULE}.get_weight_transfer_protocol", return_value=protocol):
             return WeightUpdater(
-                Namespace(),
+                Namespace(update_weight_transfer_mode="broadcast"),
                 [MagicMock()],
                 weights_getter=lambda: {},
                 model_name="qwen",
