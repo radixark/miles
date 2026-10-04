@@ -94,7 +94,7 @@ def direct_module(monkeypatch):
             sys.modules[name] = module
 
 
-def _param(name: str, size: int, *, src_rank: int = 0) -> ParamInfo:
+def _param(name: str, size: int, src_rank: int = 0) -> ParamInfo:
     return ParamInfo(
         name=name,
         dtype=torch.float32,
@@ -119,17 +119,16 @@ def test_gather_batches_pack_by_size_only(direct_module, monkeypatch):
     assert [[param.name for param in batch] for batch in batches] == [["layer.a"], ["layer.b"], ["layer.c"]]
 
 
-@pytest.mark.parametrize("mode", [None, "broadcast_packed", "disk-delta", "gpu-delta"])
+@pytest.mark.parametrize("mode", ["broadcast", "broadcast_packed", "disk-delta", "gpu-delta"])
 @pytest.mark.parametrize("expert", [False, True])
 def test_batch_load_preserves_sync_before_gather_outside_gpu_delta(direct_module, monkeypatch, mode, expert):
     events = []
     value = torch.arange(4, dtype=torch.float32)
     info = _param("weight", 4)
-    # Offline conversion namespaces do not carry a weight-transfer mode.
-    args = Namespace(**({"update_weight_transfer_mode": mode} if mode is not None else {}))
+    args = Namespace(update_weight_transfer_mode=mode)
 
     class Weight:
-        def to(self, *, device, non_blocking):
+        def to(self, device, non_blocking):
             assert device == "cpu" and non_blocking
             events.append("load")
             return value
@@ -272,7 +271,7 @@ def test_gpu_delta_etp2_gathers_complete_experts_before_sender_conversion(direct
         def wait(self):
             waited.append(True)
 
-    def all_gather(buffers, tensor, *, group, async_op):
+    def all_gather(buffers, tensor, group, async_op):
         assert group is etp_group and async_op
         assert torch.equal(tensor, shards[0])
         for buffer, shard in zip(buffers, shards, strict=True):
@@ -333,7 +332,7 @@ def test_producer_discovery_installs_actual_owner_hook_and_preserves_plan(direct
     iterator = direct_module.HfWeightIteratorDirect.__new__(direct_module.HfWeightIteratorDirect)
     iterator._convert_experts_before_gather = True
 
-    def buckets(values, *, materialize):
+    def buckets(values, materialize):
         assert materialize
         assert iterator._expert_consumer([(expert_name, values[expert_name])]) is None
         yield [(dense_name, values[dense_name])]

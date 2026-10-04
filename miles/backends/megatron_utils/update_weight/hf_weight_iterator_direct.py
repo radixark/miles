@@ -75,7 +75,7 @@ class HfWeightIteratorDirect(MegatronHfWeightIteratorBase):
                 for batches in itertools.zip_longest(*owner_batches, fillvalue=())
             ]
 
-    def set_local_expert_consumer(self, *, consumer: Callable[[list[tuple[str, torch.Tensor]]], None]) -> None:
+    def set_local_expert_consumer(self, consumer: Callable[[list[tuple[str, torch.Tensor]]], None]) -> None:
         """Consume ETP1 owner-local experts instead of gathering expert weights.
 
         All ranks must install the consumer, including transport non-senders and
@@ -165,7 +165,7 @@ class HfWeightIteratorDirect(MegatronHfWeightIteratorBase):
 
 
 def _load_or_allocate_params(
-    param_infos: Sequence[ParamInfo], megatron_local_weights, *, synchronize: bool = True
+    param_infos: Sequence[ParamInfo], megatron_local_weights, synchronize: bool = True
 ) -> list[torch.Tensor]:
     """Owners load from the weight source; other ranks allocate receive buffers."""
     params = []
@@ -215,7 +215,7 @@ def _materialize_non_expert_batch(
     """Load -> PP broadcast (when gather_pp) -> TP all_gather."""
     monkey_patch_torch_reductions()
     params = _load_or_allocate_params(
-        param_infos, megatron_local_weights, synchronize=getattr(args, "update_weight_transfer_mode", None) != "gpu-delta"
+        param_infos, megatron_local_weights, synchronize=args.update_weight_transfer_mode != "gpu-delta"
     )
     if gather_pp:
         _broadcast_across_pp(param_infos, params)
@@ -238,7 +238,7 @@ def _gather_megatron_expert_batch(
     """
     monkey_patch_torch_reductions()
     params = _load_or_allocate_params(
-        param_infos, megatron_local_weights, synchronize=getattr(args, "update_weight_transfer_mode", None) != "gpu-delta"
+        param_infos, megatron_local_weights, synchronize=args.update_weight_transfer_mode != "gpu-delta"
     )
     if gather_pp:
         _broadcast_across_pp(param_infos, params)

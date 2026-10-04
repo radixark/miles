@@ -306,7 +306,7 @@ def _setup_protocol(args, plan, iterator, weights, output):
     return protocol, {"baseline_capture_s": time.monotonic() - started}
 
 
-def _perturb(weights, *, fraction, relative_scale, version):
+def _perturb(weights, fraction, relative_scale, version):
     stride = max(1, round(1 / fraction))
     selected, eligible = 0, 0
     with torch.no_grad():

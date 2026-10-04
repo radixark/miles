@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from miles.utils.gpu_delta_publication import CODEC, canonical_json, sha256
 
 
-def merge_plans(descriptions: Sequence[dict], *, codec: str = CODEC) -> tuple[list[dict], list[dict], str]:
+def merge_plans(descriptions: Sequence[dict], codec: str = CODEC) -> tuple[list[dict], list[dict], str]:
     """Merge canonical views, never receiver-specific physical layout maps."""
     if codec != CODEC:
         raise ValueError(f"Unsupported GPU-delta codec: {codec}")
@@ -50,11 +50,10 @@ class ReceiverCohort:
     engine_ids: tuple[str, ...]
     plan_digest: str
     codec: str
-    host_tensor_names: dict[str, list[str]]
     engine_host_tensor_names: tuple[dict[str, list[str]], ...]
 
 
-def negotiate_cohort(descriptions: Sequence[dict], *, codec: str = CODEC) -> ReceiverCohort:
+def negotiate_cohort(descriptions: Sequence[dict], codec: str = CODEC) -> ReceiverCohort:
     plan, identities, digest = merge_plans(descriptions, codec=codec)
     participants = tuple(tuple(dict(p["identity"]) for p in d["participants"]) for d in descriptions)
     if any(not group or len({p["engine_id"] for p in group}) != 1 for group in participants):
@@ -78,18 +77,18 @@ def negotiate_cohort(descriptions: Sequence[dict], *, codec: str = CODEC) -> Rec
         {host_id: host_tensor_names[host_id] for host_id in sorted({p["host_cache_id"] for p in group})}
         for group in participants
     )
-    return ReceiverCohort(plan, tuple(identities), participants, engine_ids, digest, codec, host_tensor_names, engine_host_names)
+    return ReceiverCohort(plan, tuple(identities), participants, engine_ids, digest, codec, engine_host_names)
 
 
-def validate_receipts(response: Mapping, expected: list[dict], *, state: str, session_id: str, publication: dict):
+def validate_receipts(response: Mapping, expected: Sequence[dict], states: set[str], session_id: str, publication: dict):
     if response.get("success") is not True:
-        raise RuntimeError(f"GPU-delta {state} rejected: {response.get('message')}")
+        raise RuntimeError(f"GPU-delta RPC rejected: {response.get('message')}")
     receipts = response.get("participants", [])
     identities = [r.get("identity") for r in receipts]
     if sorted(canonical_json(x) for x in identities) != sorted(canonical_json(x) for x in expected):
         raise RuntimeError("GPU-delta receipt participant set differs from the original cohort")
     for receipt in receipts:
-        if receipt.get("state") != state or receipt.get("session_id") != session_id:
+        if receipt.get("state") not in states or receipt.get("session_id") != session_id:
             raise RuntimeError("GPU-delta receipt state/session mismatch")
         for key in ("manifest_sha256", "stream_id", "base_version", "target_version", "plan_digest"):
             if receipt.get(key) != publication[key]:
@@ -97,7 +96,7 @@ def validate_receipts(response: Mapping, expected: list[dict], *, state: str, se
     return receipts
 
 
-async def activate_publication(clients, cohort: ReceiverCohort, publication, *, session_id: str | None = None):
+async def activate_publication(clients, cohort: ReceiverCohort, publication, session_id: str | None = None):
     """Activate engines independently; settle all before advancing the trainer.
 
     An engine may resume while another prepares or remains failed/paused. Only
@@ -121,7 +120,9 @@ async def activate_publication(clients, cohort: ReceiverCohort, publication, *, 
         ],
         return_exceptions=True,
     )
-    _raise_rpc_errors(results)
+    for result in results:
+        if isinstance(result, BaseException):
+            raise result
     return {
         "coordinator_timings": {"activation_s": time.monotonic() - started},
         "engine_timings": [result["timings"] for result in results],
@@ -146,7 +147,7 @@ async def _activate_engine(client, engine_id, participants, host_names, publicat
             participants=participants,
             host_tensor_names=host_names,
         )
-        _validate_progress(
+        validate_receipts(
             preparation, participants, states={"PREPARING", "PREPARED"}, session_id=session_id, publication=publication
         )
         await _wait_state(client, participants, session_id=session_id, publication=publication)
@@ -157,12 +158,12 @@ async def _activate_engine(client, engine_id, participants, host_names, publicat
         raise
     prepared_at = time.monotonic()
     applied = await client.update_weights_from_delta(session_id=session_id)
-    receipts = validate_receipts(applied, participants, state="APPLIED", session_id=session_id, publication=publication)
+    receipts = validate_receipts(applied, participants, states={"APPLIED"}, session_id=session_id, publication=publication)
     certificate = [receipt["certificate"] for receipt in receipts]
     applied_at = time.monotonic()
     resumed = await client.resume_weights_from_delta(session_id=session_id, receipts=certificate)
     resumed_receipts = validate_receipts(
-        resumed, participants, state="RESUMED", session_id=session_id, publication=publication
+        resumed, participants, states={"RESUMED"}, session_id=session_id, publication=publication
     )
     resumed_at = time.monotonic()
     return {
@@ -178,19 +179,11 @@ async def _activate_engine(client, engine_id, participants, host_names, publicat
     }
 
 
-def _raise_rpc_errors(results):
-    for result in results:
-        if isinstance(result, BaseException):
-            raise result
-        if isinstance(result, Mapping) and result.get("success") is False:
-            raise RuntimeError(f"GPU-delta RPC rejected: {result.get('message')}")
-
-
-async def _wait_state(client, participants, *, session_id, publication, timeout=1800):
+async def _wait_state(client, participants, session_id, publication, timeout=1800):
     async def poll():
         while True:
             response = await client.get_weights_delta_status(session_id=session_id)
-            receipts = _validate_progress(
+            receipts = validate_receipts(
                 response, participants, states={"PREPARING", "PREPARED"}, session_id=session_id, publication=publication
             )
             if all(receipt["state"] == "PREPARED" for receipt in receipts):
@@ -198,20 +191,3 @@ async def _wait_state(client, participants, *, session_id, publication, timeout=
             await asyncio.sleep(0.05)
 
     return await asyncio.wait_for(poll(), timeout=timeout)
-
-
-def _validate_progress(response, participants, *, states, session_id, publication):
-    if response.get("success") is not True:
-        raise RuntimeError(f"GPU-delta progress request failed: {response.get('message')}")
-    actual = [r.get("identity") for r in response.get("participants", [])]
-    if sorted(map(canonical_json, actual)) != sorted(map(canonical_json, participants)):
-        raise RuntimeError("Original receiver identity changed during preparation")
-    receipts = response["participants"]
-    for receipt in receipts:
-        if receipt.get("state") not in states:
-            raise RuntimeError(f"Unexpected gpu-delta progress state: {receipt.get('state')}")
-        validate_receipts(
-            {"success": True, "participants": [receipt]}, [receipt["identity"]],
-            state=receipt["state"], session_id=session_id, publication=publication,
-        )
-    return receipts

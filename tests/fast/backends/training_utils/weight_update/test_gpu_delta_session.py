@@ -8,7 +8,7 @@ import pytest
 from miles.backends.training_utils.weight_update import gpu_delta_session as session
 
 
-def _setup(failure=None, *, failed_engine=1):
+def _setup(failure=None, failed_engine=1):
     events, clients, descriptions = [], [], []
     for engine in range(2):
         identities = [
@@ -89,7 +89,13 @@ class _Engine:
         await asyncio.sleep(0.01 if self.index else 0)
         if self.failure == "prepare" and self.index == self.failed_engine:
             raise RuntimeError("prepare rejected")
-        return self._response("PREPARING")
+        response = self._response("PREPARING")
+        if self.index == self.failed_engine:
+            if self.failure == "prepare_identity":
+                response["participants"][0]["identity"] = self.identities[0] | {"rank_id": "replacement"}
+            elif self.failure == "prepare_state":
+                response["participants"][0]["state"] = "APPLIED"
+        return response
 
     async def get_weights_delta_status(self, **kwargs):
         self.polls += 1
@@ -151,13 +157,13 @@ def test_fast_engine_resumes_while_other_engine_still_prepares(monkeypatch):
     assert set(result["coordinator_timings"]) == {"activation_s"}
 
 
-@pytest.mark.parametrize("failure", ["prepare", "apply", "identity", "plan"])
+@pytest.mark.parametrize("failure", ["prepare", "prepare_identity", "prepare_state", "apply", "identity", "plan"])
 def test_failure_is_scoped_to_its_engine_without_blind_replay(failure):
     clients, descriptions, publication, events = _setup(failure)
     with pytest.raises(RuntimeError):
         asyncio.run(session.activate_publication(clients, session.negotiate_cohort(descriptions), publication, session_id="s"))
     assert (0, "resumed") in events and (1, "resumed") not in events
-    if failure == "prepare":
+    if failure.startswith("prepare"):
         assert (1, "abort") in events and (0, "abort") not in events
         assert (1, "applied") not in events
     else:
@@ -224,7 +230,7 @@ def test_cohort_only_decodes_each_hosts_union_and_requires_explicit_host_identit
         participant["identity"]["host_cache_id"] = "other-host"
         participant["plan"]["tensors"][0]["name"] = "other-experts"
     cohort = session.negotiate_cohort(descriptions)
-    assert cohort.host_tensor_names == {"other-host": ["other-experts"], "engine-host-0": ["w"]}
+    assert cohort.engine_host_tensor_names == ({"engine-host-0": ["w"]}, {"other-host": ["other-experts"]})
     del descriptions[1]["participants"][0]["identity"]["host_cache_id"]
     with pytest.raises(ValueError, match="engine-host cache identity"):
         session.negotiate_cohort(descriptions)

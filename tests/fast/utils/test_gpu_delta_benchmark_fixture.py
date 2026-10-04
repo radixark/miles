@@ -52,7 +52,7 @@ def test_producer_metadata_satisfies_current_negotiation_without_claiming_a_rece
     cohort = negotiate_cohort(description)
     assert cohort.plan == plan
     assert cohort.engine_ids == ("producer-benchmark-no-receiver",)
-    assert cohort.host_tensor_names == {"producer-benchmark-no-host-cache": ["w"]}
+    assert cohort.engine_host_tensor_names == ({"producer-benchmark-no-host-cache": ["w"]},)
 
 
 def _descriptions(engine_count, tensors):

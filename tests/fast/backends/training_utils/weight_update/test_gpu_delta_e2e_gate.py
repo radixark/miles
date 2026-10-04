@@ -19,7 +19,7 @@ def _default_delta_env(monkeypatch):
     monkeypatch.delenv("WEIGHT_DELTA_CODEC", raising=False)
 
 
-def _write_series(tmp_path, changed_bytes, *, protocol=4, codec="snappy-zstd"):
+def _write_series(tmp_path, changed_bytes, protocol=4, codec="snappy-zstd"):
     for version, count in enumerate(changed_bytes, 1):
         directory = tmp_path / f"weight_v{version:06d}"
         directory.mkdir()

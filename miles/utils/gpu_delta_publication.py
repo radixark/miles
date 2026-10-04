@@ -86,7 +86,7 @@ def _check_frame_bytes(frame_bytes):
         raise ValueError("GPU-delta frame_bytes must be 64 KiB, 1 MiB or 2 MiB")
 
 
-def selected_bytes(data, *, shape: list[int], dtype: str, slices: list[list[int]]) -> np.ndarray:
+def selected_bytes(data, shape: list[int], dtype: str, slices: list[list[int]]) -> np.ndarray:
     """C-order canonical selected-view bytes; the final axis holds storage bytes."""
     raw = _bytes_view(data)
     itemsize = DTYPE_BYTES[dtype]
@@ -99,7 +99,7 @@ def selected_bytes(data, *, shape: list[int], dtype: str, slices: list[list[int]
     return np.ascontiguousarray(raw.reshape(*shape, itemsize)[selection]).reshape(-1)
 
 
-def tensor_metadata(name: str, *, dtype: str, shape: list[int], views=None, encoding="xor_bytes") -> dict:
+def tensor_metadata(name: str, dtype: str, shape: list[int], views=None, encoding="xor_bytes") -> dict:
     """Canonical tensor schema for compressed matrices and raw scalar/vector targets."""
     if not name or dtype not in DTYPE_BYTES or any(type(n) is not int or n < 0 for n in shape):
         raise ValueError("Invalid canonical tensor schema")
@@ -191,7 +191,6 @@ class PublicationWriter:
     def __init__(
         self,
         directory,
-        *,
         stream_id: str,
         base_version: int,
         target_version: int,
@@ -231,7 +230,7 @@ class PublicationWriter:
         self._entries: dict[str, dict] = {}
         self._closed = False
 
-    def add_raw_tensor(self, name: str, old, new, *, dtype: str, shape: list[int], views=None):
+    def add_raw_tensor(self, name: str, old, new, dtype: str, shape: list[int], views=None):
         """Write complete scalar/vector targets without XOR, frames or codecs."""
         entry = tensor_metadata(name, dtype=dtype, shape=shape, views=views, encoding="raw_bytes")
         previous, current = _bytes_view(old), _bytes_view(new)
@@ -242,7 +241,7 @@ class PublicationWriter:
         entry["changed_bytes"] = int(np.count_nonzero(previous != current))
         return self._append_tensor(entry, [memoryview(current)] if entry["changed_bytes"] else [])
 
-    def add_gpu_outer_tensor(self, name, frames, payload, outer, *, changed_bytes, dtype, shape, views=None):
+    def add_gpu_outer_tensor(self, name, frames, payload, outer, changed_bytes, dtype, shape, views=None):
         """Publish already wrapped GPU bytes; only the final wire bytes are CPU hashed."""
         entry = tensor_metadata(name, dtype=dtype, shape=shape, views=views)
         if type(changed_bytes) is not int or not 0 <= changed_bytes <= entry["nbytes"]:

@@ -136,7 +136,7 @@ def _tensor_index(model):
     return index
 
 
-def _mutate(raw, *, name, dtype, seed, version, rate):
+def _mutate(raw, name, dtype, seed, version, rate):
     """Finite LSB perturbations; leave scale/routing metadata and static draft alone.
 
     Packed FP4 toggles a low-nibble value bit; BF16/FP32 toggles only the least
@@ -363,7 +363,7 @@ def _rebind(args):
     _save(args.output / "rebind.json", proof)
 
 
-def _alter_fixture_tensor(target, index, tensor, *, version, seed, rate):
+def _alter_fixture_tensor(target, index, tensor, version, seed, rate):
     spec = index[tensor["name"]]
     with (target / spec["shard"]).open("r+b") as file:
         file.seek(spec["offset"])
@@ -484,7 +484,7 @@ def _fixture(args):
         print(json.dumps({k: v for k, v in row.items() if k != "publications"}), flush=True)
 
 
-async def _request(client, endpoint, payload=None, *, timeout=1200):
+async def _request(client, endpoint, payload=None, timeout=1200):
     async with httpx.AsyncClient(trust_env=False, timeout=timeout) as http:
         response = await (http.get(client.server_url + "/" + endpoint) if payload is None else http.post(client.server_url + "/" + endpoint, json=payload))
         response.raise_for_status()

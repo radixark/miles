@@ -66,10 +66,7 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
             self._post_write_hook = load_function(args.custom_update_weight_post_write_path)
 
     def bind_iterator(self, iterator):
-        install = getattr(iterator, "set_local_expert_consumer", None)
-        if install is None:
-            raise ValueError("GPU delta requires the direct Megatron exporter")
-        install(consumer=self.send_bucket)
+        iterator.set_local_expert_consumer(consumer=self.send_bucket)
 
     def connect(self, rollout_engines, engine_gpu_counts, engine_gpu_offsets, parallel_state, placement, selector):
         self.rollout_engines = rollout_engines
@@ -267,12 +264,13 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
 
     def _encode_gpu_batches(self):
         """Finish all Snappy masks before one owner-wide GPU Zstd compression."""
-        started, names, encoded, jobs = time.monotonic(), [], [], []
+        started, names, encoded = time.monotonic(), [], []
+        raw_job = None
         result = None
         pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="gpu-delta-raw") if self._raw_names else None
         try:
             if pool is not None:
-                jobs.append(pool.submit(self._write_raw_tensors, self._raw_names))
+                raw_job = pool.submit(self._write_raw_tensors, self._raw_names)
             for batch_names in self._gpu_batch_names:
                 result = self._gpu_encoder.encode_device([(self._snapshot[name], self._next_snapshot[name], "xor_bytes") for name in batch_names])
                 if len(result) != len(batch_names):
@@ -304,7 +302,15 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
             raise
         finally:
             if pool is not None:
-                self._drain_raw_jobs(pool, jobs)
+                # Always drain the one raw writer before closing payloads or
+                # releasing buffer leases, including after GPU encoding fails.
+                started = time.monotonic()
+                try:
+                    if raw_job is not None:
+                        raw_job.result()
+                finally:
+                    pool.shutdown(wait=True)
+                    self._raw_tail_wait_s += time.monotonic() - started
 
     def _write_raw_tensors(self, names):
         started = time.monotonic()
@@ -319,23 +325,6 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
                 views=spec["views"],
             )
         self._raw_cpu_write_s = time.monotonic() - started
-
-    def _drain_raw_jobs(self, pool, jobs):
-        started = time.monotonic()
-        error = None
-        try:
-            for job in jobs:
-                try:
-                    job.result()
-                except Exception as caught:
-                    error = error or caught
-        finally:
-            # Never close a payload file or release queued buffer leases while
-            # a worker is still using them, even when GPU encoding failed.
-            pool.shutdown(wait=True)
-            self._raw_tail_wait_s += time.monotonic() - started
-        if error is not None:
-            raise error
 
     def _prepare_gpu_schedule(self):
         """Partition immutable owner geometry once, before the first update.
@@ -542,7 +531,7 @@ def _collective_check(error, phase):
             raise RuntimeError(f"GPU-delta {phase} failed on rank {rank}: {message}") from error
 
 
-def _on_root(action, *, broadcast_value=True):
+def _on_root(action, broadcast_value=True):
     result = [None]
     if dist.get_rank() == 0:
         try:

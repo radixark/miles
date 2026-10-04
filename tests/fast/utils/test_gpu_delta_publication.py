@@ -17,7 +17,7 @@ import zstandard
 from miles.utils import gpu_delta_publication as publication
 
 
-def _writer(path, owner=0, *, frame_bytes=publication.FRAME_BYTES):
+def _writer(path, owner=0, frame_bytes=publication.FRAME_BYTES):
     return publication.PublicationWriter(path, stream_id="test", base_version=0, target_version=1,
                                          plan_digest="b" * 64, owner=owner, publication_id="test:1", frame_bytes=frame_bytes)
 

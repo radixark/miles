@@ -3617,7 +3617,7 @@ def miles_validate_args(args):
             args.train_backend == "megatron" and args.megatron_to_hf_mode != "bridge"
         ), "GPU delta requires the direct Megatron exporter"
         assert args.lora_rank <= 0, "GPU delta does not support LoRA"
-        assert getattr(args, "prefill_num_servers", None) is None, "GPU delta does not support PD"
+        assert args.prefill_num_servers is None, "GPU delta does not support PD"
         assert args.pause_generation_mode == "retract", "GPU delta requires retract pause"
         assert (
             not args.check_weight_update_equal

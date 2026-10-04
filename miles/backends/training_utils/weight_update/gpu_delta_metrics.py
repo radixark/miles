@@ -189,7 +189,7 @@ def producer_metrics(owners):
     return metrics
 
 
-def log_completed_update(args, updater, *, rollout_id, is_primary_rank):
+def log_completed_update(args, updater, rollout_id, is_primary_rank):
     """Drain on completion, including a final update with no subsequent train call."""
     metrics = updater.pop_metrics()
     if not metrics or not is_primary_rank:

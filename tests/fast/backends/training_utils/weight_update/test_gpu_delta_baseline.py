@@ -20,7 +20,7 @@ class _Engine:
         self.protocol, self.events, self.index, self.fail = protocol, events, index, fail
         self.version = "default"
 
-    async def update_weight_version(self, *, weight_version):
+    async def update_weight_version(self, weight_version):
         assert not self.protocol._baseline_captured
         np.testing.assert_array_equal(self.protocol._snapshot["w"], [1, 2, 3, 4])
         await asyncio.sleep(0.01 if self.index else 0)
@@ -31,7 +31,7 @@ class _Engine:
         return {"success": True, "new_version": weight_version}
 
 
-def _setup(tmp_path, *, fail=False):
+def _setup(tmp_path, fail=False):
     safetensors.numpy.save_file({"w": np.array([1, 2, 3, 4], dtype=np.uint8)}, tmp_path / "model.safetensors")
     protocol = gpu_delta.UpdateWeightFromGpuDelta(
         Namespace(
@@ -60,7 +60,7 @@ def single_rank(monkeypatch):
         yield
 
 
-def _buckets(*, materialize):
+def _buckets(materialize):
     assert materialize
     # The baseline must use the startup checkpoint, not this exported value.
     yield [("w", torch.tensor([5, 6, 7, 8], dtype=torch.uint8))]
@@ -88,7 +88,7 @@ def test_export_bucket_stages_after_all_conversions_with_one_stream_dependency(m
 
     copy = torch.Tensor.copy_
 
-    def record_copy(destination, source, *, non_blocking):
+    def record_copy(destination, source, non_blocking):
         assert non_blocking and staging_active and ("wait", caller_stream) in events
         events.append(("copy", source.data_ptr()))
         return copy(destination, source)
@@ -204,7 +204,7 @@ def test_gpu_startup_partitions_owner_plan_before_declaring_baseline(tmp_path, s
         assert sorted(events) == [0, 1]
 
 
-def _gpu_pending(monkeypatch, *, fail_batch=None, omit=None):
+def _gpu_pending(monkeypatch, fail_batch=None, omit=None):
     """Exercise protocol ordering on CPU; native tests cover CUDA encode/copy."""
     protocol = gpu_delta.UpdateWeightFromGpuDelta(
         Namespace(update_weight_buffer_size=5, custom_update_weight_post_write_path=None)

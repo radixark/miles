@@ -256,7 +256,7 @@ def actor_update():
     }
     exec(compile(ast.Module(body=[method], type_ignores=[]), str(source), "exec"), namespace)
 
-    def run(*, mode="gpu-delta", rollout_id=7, primary=True, update_error=None, completed_metrics=None):
+    def run(mode="gpu-delta", rollout_id=7, primary=True, update_error=None, completed_metrics=None):
         parallel.is_pp_last_stage = primary
         args = Namespace(
             update_weight_transfer_mode=mode,

@@ -179,7 +179,7 @@ def _assert_gpu_delta_weights_changed(args, version_dir, _rollout_engines):
     print(f"GPU-delta E2E learned publication changed bytes: {changed_bytes}", flush=True)
 
 
-def execute(*, gpu_delta: bool = False, num_rollout: int | None = None, update_weight_disk_dir: str | None = None):
+def execute(gpu_delta: bool = False, num_rollout: int | None = None, update_weight_disk_dir: str | None = None):
     U = command_utils.default_config().create_backend()
     if num_rollout is None:
         num_rollout = 4 if gpu_delta else 2

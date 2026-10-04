@@ -403,22 +403,22 @@ class SGLangApiClient:
         response.raise_for_status()
         return response
 
-    async def get_weights_delta_info(self, *, engine_id):
+    async def get_weights_delta_info(self, engine_id):
         return await self._make_request("get_weights_delta_info", {"engine_id": engine_id})
 
     async def prepare_weights_from_delta(self, **payload):
         return await self._make_request("prepare_weights_from_delta", payload)
 
-    async def get_weights_delta_status(self, *, session_id):
+    async def get_weights_delta_status(self, session_id):
         return await self._make_request("get_weights_delta_status", {"session_id": session_id})
 
-    async def update_weights_from_delta(self, *, session_id):
+    async def update_weights_from_delta(self, session_id):
         return await self._make_request("update_weights_from_delta", {"session_id": session_id})
 
-    async def resume_weights_from_delta(self, *, session_id, receipts):
+    async def resume_weights_from_delta(self, session_id, receipts):
         return await self._make_request("resume_weights_from_delta", {"session_id": session_id, "receipts": receipts})
 
-    async def abort_weights_from_delta(self, *, session_id):
+    async def abort_weights_from_delta(self, session_id):
         return await self._make_request("abort_weights_from_delta", {"session_id": session_id})
 
     async def abort_all_requests(self, timeout: float | None = None):

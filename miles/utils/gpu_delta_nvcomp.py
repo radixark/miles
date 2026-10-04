@@ -85,7 +85,7 @@ class NvcompCompressor:
         self._size_cache[key] = result
         return result
 
-    def compress(self, frames: list[torch.Tensor], stream: torch.cuda.Stream, *, compact_outputs=False) -> CompressionBatch:
+    def compress(self, frames: list[torch.Tensor], stream: torch.cuda.Stream, compact_outputs=False) -> CompressionBatch:
         if stream.device != self.device:
             raise ValueError("Compression stream/device mismatch")
         for frame in frames:
@@ -108,7 +108,7 @@ class NvcompCompressor:
         arena = torch.empty(total, dtype=torch.uint8, device=self.device)
         return arena, [arena[offset : offset + size] for offset, size in offsets]
 
-    def _enqueue(self, frames, stream, *, compact_outputs=False):
+    def _enqueue(self, frames, stream, compact_outputs=False):
         count = len(frames)
         sizes = torch.empty(count, dtype=torch.int64, device=self.device)
         statuses = torch.empty(count, dtype=torch.int32, device=self.device)
