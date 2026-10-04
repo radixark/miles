@@ -119,6 +119,39 @@ def test_gather_batches_pack_by_size_only(direct_module, monkeypatch):
     assert [[param.name for param in batch] for batch in batches] == [["layer.a"], ["layer.b"], ["layer.c"]]
 
 
+@pytest.mark.parametrize("mode", [None, "broadcast_packed", "disk-delta", "gpu-delta"])
+@pytest.mark.parametrize("expert", [False, True])
+def test_batch_load_preserves_sync_before_gather_outside_gpu_delta(direct_module, monkeypatch, mode, expert):
+    events = []
+    value = torch.arange(4, dtype=torch.float32)
+    info = _param("weight", 4)
+    # Offline conversion namespaces do not carry a weight-transfer mode.
+    args = Namespace(**({"update_weight_transfer_mode": mode} if mode is not None else {}))
+
+    class Weight:
+        def to(self, *, device, non_blocking):
+            assert device == "cpu" and non_blocking
+            events.append("load")
+            return value
+
+    def gather(args, params):
+        events.append("gather")
+        return [param for _, param in params]
+
+    monkeypatch.setattr(direct_module.dist, "get_rank", lambda: 0)
+    monkeypatch.setattr(direct_module.torch.cuda, "current_device", lambda: "cpu")
+    monkeypatch.setattr(direct_module.torch.cuda, "synchronize", lambda: events.append("sync"))
+    monkeypatch.setattr(direct_module, "get_parallel_state", lambda: Namespace(ep=Namespace(size=1)))
+    monkeypatch.setattr(direct_module, "all_gather_params_async", gather)
+    load = direct_module._gather_megatron_expert_batch if expert else direct_module._materialize_non_expert_batch
+
+    result = load(args, [info], {"weight": Weight()}, gather_pp=False)
+
+    assert events == (["load", "gather"] if mode == "gpu-delta" else ["load", "sync", "gather"])
+    assert len(result) == 1 and result[0][0] == "weight"
+    assert torch.equal(result[0][1], value)
+
+
 @pytest.mark.parametrize("materialize", [True, False])
 @pytest.mark.parametrize("consume_locally", [True, False])
 def test_owner_consumer_skips_gathers_and_normal_export_still_gathers(
@@ -253,7 +286,7 @@ def test_gpu_delta_etp2_gathers_complete_experts_before_sender_conversion(direct
         yield [("expert.weight", named_params[0][1].to(torch.uint8)), ("expert.scale", torch.ones(1))]
 
     iterator = direct_module.HfWeightIteratorDirect.__new__(direct_module.HfWeightIteratorDirect)
-    iterator.args = Namespace(swiglu=True)
+    iterator.args = Namespace(swiglu=True, update_weight_transfer_mode="gpu-delta")
     iterator.placement = Namespace(gather_pp=False)
     iterator._non_expert_batches = []
     iterator._expert_batches = [direct_module._ExpertBatch(param_infos=[info], gathers=())]
@@ -266,7 +299,9 @@ def test_gpu_delta_etp2_gathers_complete_experts_before_sender_conversion(direct
     monkeypatch.setattr(direct_module.dist, "all_gather", all_gather)
     monkeypatch.setattr(direct_module, "get_parallel_state", lambda: Namespace(
         etp=Namespace(size=2, group=etp_group), ep=Namespace(size=1)))
-    monkeypatch.setattr(direct_module, "_load_or_allocate_params", lambda infos, weights: [weights[info.name].clone()])
+    monkeypatch.setattr(
+        direct_module, "_load_or_allocate_params", lambda infos, weights, **kwargs: [weights[info.name].clone()]
+    )
     monkeypatch.setattr(direct_module, "_iter_mm_tower_units", lambda *args, **kwargs: iter(()))
 
     units = list(iterator._iter_hf_param_units({name: shards[0]}, materialize=materialize))

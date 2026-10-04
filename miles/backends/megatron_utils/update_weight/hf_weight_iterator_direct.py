@@ -164,7 +164,9 @@ class HfWeightIteratorDirect(MegatronHfWeightIteratorBase):
             )
 
 
-def _load_or_allocate_params(param_infos: Sequence[ParamInfo], megatron_local_weights) -> list[torch.Tensor]:
+def _load_or_allocate_params(
+    param_infos: Sequence[ParamInfo], megatron_local_weights, *, synchronize: bool = True
+) -> list[torch.Tensor]:
     """Owners load from the weight source; other ranks allocate receive buffers."""
     params = []
     for info in param_infos:
@@ -177,9 +179,10 @@ def _load_or_allocate_params(param_infos: Sequence[ParamInfo], megatron_local_we
             )
         else:
             params.append(torch.empty(info.shape, dtype=info.dtype, device=torch.cuda.current_device()))
-    # Copies and subsequent PP/TP collectives use the current CUDA stream;
-    # ProcessGroupNCCL carries that dependency into its communication stream.
-    # A device-wide fence here would also drain unrelated delta encoders.
+    # Preserve the existing barrier outside GPU delta, which uses stream
+    # dependencies to overlap export with its D2H staging transfers.
+    if synchronize:
+        torch.cuda.synchronize()
     return params
 
 
@@ -211,7 +214,9 @@ def _materialize_non_expert_batch(
 ) -> list[tuple[str, torch.Tensor]]:
     """Load -> PP broadcast (when gather_pp) -> TP all_gather."""
     monkey_patch_torch_reductions()
-    params = _load_or_allocate_params(param_infos, megatron_local_weights)
+    params = _load_or_allocate_params(
+        param_infos, megatron_local_weights, synchronize=getattr(args, "update_weight_transfer_mode", None) != "gpu-delta"
+    )
     if gather_pp:
         _broadcast_across_pp(param_infos, params)
     _set_tp_attrs(param_infos, params)
@@ -232,7 +237,9 @@ def _gather_megatron_expert_batch(
     symmetric EP all_gather with a name exchange.
     """
     monkey_patch_torch_reductions()
-    params = _load_or_allocate_params(param_infos, megatron_local_weights)
+    params = _load_or_allocate_params(
+        param_infos, megatron_local_weights, synchronize=getattr(args, "update_weight_transfer_mode", None) != "gpu-delta"
+    )
     if gather_pp:
         _broadcast_across_pp(param_infos, params)
     _set_tp_attrs(param_infos, params)
