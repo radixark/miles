@@ -9,6 +9,7 @@ import inspect
 import re
 from argparse import Namespace
 from collections.abc import Iterable, Iterator, Sequence
+from contextlib import ExitStack, contextmanager
 
 import torch
 from megatron.core.transformer.transformer_layer import get_transformer_layer_offset
@@ -45,15 +46,19 @@ def _maybe_get_cpu_backup(x: torch.Tensor):
 
 
 def unpack_grouped_expert_weights(
-    args: Namespace, named_weights: Iterable[tuple[str, torch.Tensor]]
+    args: Namespace,
+    named_weights: Iterable[tuple[str, torch.Tensor]],
+    *,
+    convert_to_global_name: bool = True,
 ) -> Iterator[tuple[str, torch.Tensor]]:
-    """Expose packed weights as expert views only at the raw HF export boundary."""
+    """Expose packed weights as expert views at the HF conversion boundary."""
     ep = get_parallel_state().ep
     for name, param in named_weights:
         if re.search(r"\.mlp\.experts\.linear_fc[12]\.weight$", name) is None:
             yield name, param
             continue
         num_local_experts = args.num_experts // ep.size
+        expert_offset = ep.rank * num_local_experts if convert_to_global_name else 0
         if param.ndim != 3 or param.shape[0] != num_local_experts:
             raise ValueError(f"Expected {num_local_experts} packed expert weights for {name}, got {param.shape}")
         if getattr(param, "quantizer", None) is not None:
@@ -63,7 +68,23 @@ def unpack_grouped_expert_weights(
             for attr in ("tensor_model_parallel", "partition_dim", "partition_stride", "parallel_mode"):
                 if hasattr(param, attr):
                     setattr(weight, attr, getattr(param, attr))
-            yield f"{name}{ep.rank * num_local_experts + local_expert}", weight
+            yield f"{name}{expert_offset + local_expert}", weight
+
+
+@contextmanager
+def unpacked_expert_state_dict(args: Namespace, model: Sequence[torch.nn.Module]):
+    """Let mbridge load per-expert HF weights into the original packed storage."""
+
+    def unpack(module, state_dict, prefix, local_metadata):
+        weights = dict(unpack_grouped_expert_weights(args, state_dict.items(), convert_to_global_name=False))
+        state_dict.clear()
+        state_dict.update(weights)
+
+    with ExitStack() as stack:
+        if getattr(args, "moe_single_grouped_weight", False):
+            for module in model:
+                stack.callback(module.register_state_dict_post_hook(unpack).remove)
+        yield
 
 
 def _named_params_and_buffers_vanilla(model: Sequence[torch.nn.Module]) -> Iterator[tuple[str, torch.Tensor]]:

@@ -130,8 +130,9 @@ def named_weights_module(monkeypatch):
 )
 @pytest.mark.parametrize("fc,partition_dim", [("linear_fc1", 0), ("linear_fc2", 1)])
 @pytest.mark.parametrize("native_storage", [False, True])
+@pytest.mark.parametrize("convert_to_global_name", [False, True])
 def test_unpack_grouped_expert_names_values_and_partition_attrs(
-    named_weights_module, monkeypatch, ep_rank, prefix, fc, partition_dim, native_storage
+    named_weights_module, monkeypatch, ep_rank, prefix, fc, partition_dim, native_storage, convert_to_global_name
 ):
     monkeypatch.setattr(
         named_weights_module, "get_parallel_state", lambda: Namespace(ep=Namespace(rank=ep_rank, size=4))
@@ -146,9 +147,14 @@ def test_unpack_grouped_expert_names_values_and_partition_attrs(
     param.parallel_mode = None
     name = f"module.module.{prefix}.mlp.experts.{fc}.weight"
 
-    actual = list(named_weights_module.unpack_grouped_expert_weights(Namespace(num_experts=8), [(name, param)]))
+    actual = list(
+        named_weights_module.unpack_grouped_expert_weights(
+            Namespace(num_experts=8), [(name, param)], convert_to_global_name=convert_to_global_name
+        )
+    )
 
-    assert [n for n, _ in actual] == [f"{name}{2 * ep_rank}", f"{name}{2 * ep_rank + 1}"]
+    expert_offset = 2 * ep_rank if convert_to_global_name else 0
+    assert [n for n, _ in actual] == [f"{name}{expert_offset}", f"{name}{expert_offset + 1}"]
     for i, (_, weight) in enumerate(actual):
         torch.testing.assert_close(weight, param[i], rtol=0, atol=0)
         assert weight.data_ptr() == param[i].data_ptr()
@@ -205,3 +211,42 @@ def test_grouped_cpu_backup_reads_storage_before_expert_views(named_weights_modu
     assert result.shape == param.shape
     assert result.data_ptr() == backup.data_ptr()
     torch.testing.assert_close(result, backup.view_as(param), rtol=0, atol=0)
+
+
+@pytest.mark.parametrize("fail", [False, True])
+def test_unpacked_expert_state_dict_loads_original_storage_and_removes_hook(named_weights_module, monkeypatch, fail):
+    monkeypatch.setattr(named_weights_module, "get_parallel_state", lambda: Namespace(ep=Namespace(rank=1, size=2)))
+    fc = torch.nn.Module()
+    fc.weight = torch.nn.Parameter(torch.zeros(2, 4, 8))
+    model = torch.nn.ModuleDict({"mlp": torch.nn.ModuleDict({"experts": torch.nn.ModuleDict({"linear_fc1": fc})})})
+    wrapper = torch.nn.ModuleDict({"decoder": torch.nn.ModuleDict({"layers": torch.nn.ModuleList([model])})})
+    name = "decoder.layers.0.mlp.experts.linear_fc1.weight"
+    original = fc.weight
+    args = Namespace(num_experts=4, moe_single_grouped_weight=True)
+
+    try:
+        with named_weights_module.unpacked_expert_state_dict(args, [wrapper]):
+            state = wrapper.state_dict()
+            assert list(state) == [name + "0", name + "1"]
+            assert state[name + "0"].data_ptr() == original[0].data_ptr()
+            state[name + "0"].fill_(3)
+            state[name + "1"].fill_(7)
+            if fail:
+                raise RuntimeError("load failed")
+    except RuntimeError as error:
+        assert fail and str(error) == "load failed"
+
+    assert list(wrapper.state_dict()) == [name]
+    assert not wrapper._state_dict_hooks
+    assert fc.weight is original
+    torch.testing.assert_close(original[0], torch.full_like(original[0], 3), rtol=0, atol=0)
+    torch.testing.assert_close(original[1], torch.full_like(original[1], 7), rtol=0, atol=0)
+
+
+@pytest.mark.parametrize("args", [Namespace(), Namespace(moe_single_grouped_weight=False)])
+def test_discrete_checkpoint_import_keeps_state_dict_unchanged(named_weights_module, args):
+    model = torch.nn.Linear(4, 8, bias=False)
+    with named_weights_module.unpacked_expert_state_dict(args, [model]):
+        assert not model._state_dict_hooks
+        assert list(model.state_dict()) == ["weight"]
+        assert model.state_dict()["weight"].data_ptr() == model.weight.data_ptr()

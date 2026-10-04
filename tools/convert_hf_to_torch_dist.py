@@ -5,6 +5,7 @@ import shutil
 import torch
 import torch.distributed as dist
 from megatron.core.enums import ModelType
+from megatron.core.utils import unwrap_model
 from megatron.training.arguments import parse_args, validate_args
 from megatron.training.checkpointing import get_checkpoint_name, get_checkpoint_tracker_filename, save_checkpoint
 from megatron.training.training import get_model
@@ -15,6 +16,7 @@ from miles.backends.megatron_utils.arguments import set_default_megatron_args
 from miles.backends.megatron_utils.fp32_param_utils import enforce_marked_param_dtypes
 from miles.backends.megatron_utils.initialize import init
 from miles.backends.megatron_utils.model_provider import get_model_provider_func
+from miles.backends.megatron_utils.named_weights import unpacked_expert_state_dict
 from miles.utils.logging_utils import configure_logger_raw
 from miles.utils.memory_utils import print_memory
 from miles_plugins.models.deepseek_v4.arguments import add_dsv4_arguments
@@ -137,7 +139,8 @@ def main():
     hf_model_path = args.hf_checkpoint
     bridge = AutoBridge.from_pretrained(hf_model_path, trust_remote_code=True)
 
-    bridge.load_weights(model, hf_model_path, memory_efficient=True)
+    with unpacked_expert_state_dict(args, unwrap_model(model)):
+        bridge.load_weights(model, hf_model_path, memory_efficient=True)
     print(f"Model loaded: {hf_model_path}")
 
     print_memory("after loading model")
