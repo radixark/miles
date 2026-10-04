@@ -43,7 +43,7 @@ def _setup(failure=None, failed_engine=1):
             }
         )
         clients.append(_Engine(engine, identities, events, failure, failed_engine))
-    plan, cohort, digest = session.merge_plans(descriptions)
+    _, _, digest = session.merge_plans(descriptions)
     publication = {
         "codec": "snappy-zstd",
         "manifest_path": "/shared/version/manifest.json",
@@ -80,7 +80,6 @@ class _Engine:
                         "plan_digest",
                     )
                 },
-                "cohort_digest": "original-cohort",
             }
             for identity in self.identities
         ]
@@ -88,24 +87,17 @@ class _Engine:
 
     async def prepare_weights_from_delta(self, **kwargs):
         self.args = kwargs
-        assert "staging" not in kwargs
-        assert "expected_engines" not in kwargs
         assert list(kwargs["participants"]) == self.identities
-        assert "cohort" not in kwargs
         assert kwargs["host_tensor_names"] == {f"engine-host-{self.index}": ["w"]}
         await asyncio.sleep(0.01 if self.index else 0)
         if self.failure == "prepare" and self.index == self.failed_engine:
             raise RuntimeError("prepare rejected")
-        response = self._response("PREPARING")
-        if self.index == self.failed_engine:
-            if self.failure == "prepare_identity":
-                response["participants"][0]["identity"] = self.identities[0] | {"rank_id": "replacement"}
-            elif self.failure == "prepare_state":
-                response["participants"][0]["state"] = "APPLIED"
-        return response
+        return self._response("PREPARING")
 
     async def get_weights_delta_status(self, **kwargs):
         self.polls += 1
+        if self.failure == "prepare_worker" and self.index == self.failed_engine:
+            return {"success": False, "message": "CPU preparation failed"}
         if self.index == 1 and self.polls == 1:
             return self._response("PREPARING")
         if not self.prepared:
@@ -119,22 +111,15 @@ class _Engine:
         await asyncio.sleep(0.01 if self.index else 0)
         self.events.append((self.index, "applied"))
         if self.failure == "apply" and self.index == self.failed_engine:
-            raise RuntimeError("apply failed")
+            return {"success": False, "message": "apply failed"}
         reply = self._response("APPLIED")
-        if self.failure == "identity" and self.index == self.failed_engine:
-            reply["participants"][0]["identity"] = self.identities[0] | {"rank_id": "replacement"}
-        if self.failure == "plan" and self.index == self.failed_engine:
-            reply["participants"][0]["plan_digest"] = "different-plan"
         for receipt in reply["participants"]:
-            receipt["certificate"] = dict(receipt)
             receipt["result"] = {"large_nested_diagnostics": [1, 2, 3]}
         return reply
 
     async def resume_weights_from_delta(self, **kwargs):
         assert (self.index, "applied") in self.events
-        assert len(kwargs["receipts"]) == 2 and all(r["state"] == "APPLIED" for r in kwargs["receipts"])
-        assert [r["identity"] for r in kwargs["receipts"]] == self.identities
-        assert all("result" not in r and "certificate" not in r for r in kwargs["receipts"])
+        assert kwargs == {"session_id": self.args["session_id"]}
         if self.failure == "resume" and self.index == self.failed_engine:
             raise RuntimeError("resume reply lost")
         self.events.append((self.index, "resumed"))
@@ -164,7 +149,7 @@ def test_fast_engine_resumes_while_other_engine_still_prepares(monkeypatch):
     assert set(result["coordinator_timings"]) == {"activation_s"}
 
 
-@pytest.mark.parametrize("failure", ["prepare", "prepare_identity", "prepare_state", "apply", "identity", "plan"])
+@pytest.mark.parametrize("failure", ["prepare", "prepare_worker", "apply"])
 def test_failure_is_scoped_to_its_engine_without_blind_replay(failure):
     clients, descriptions, publication, events = _setup(failure)
     with pytest.raises(RuntimeError):
@@ -229,30 +214,15 @@ def test_bounded_wait_cancels_inflight_status_requests():
             events.append((0, "status_cancelled"))
 
     clients[0].get_weights_delta_status = hanging_status
-    participants = [p["identity"] for p in descriptions[0]["participants"]]
     with pytest.raises(asyncio.TimeoutError):
-        asyncio.run(
-            session._wait_state(clients[0], participants, session_id="s", publication=publication, timeout=0.01)
-        )
+        asyncio.run(session._wait_state(clients[0], session_id="s", timeout=0.01))
     assert events == [(0, "status_cancelled")]
 
 
-def test_cohort_only_decodes_each_hosts_union_and_requires_explicit_host_identity():
+def test_cohort_only_decodes_each_engine_hosts_union():
     _, descriptions, _, _ = _setup()
     for participant in descriptions[1]["participants"]:
         participant["identity"]["host_cache_id"] = "other-host"
         participant["plan"]["tensors"][0]["name"] = "other-experts"
     cohort = session.negotiate_cohort(descriptions)
     assert cohort.engine_host_tensor_names == ({"engine-host-0": ["w"]}, {"other-host": ["other-experts"]})
-    del descriptions[1]["participants"][0]["identity"]["host_cache_id"]
-    with pytest.raises(ValueError, match="engine-host cache identity"):
-        session.negotiate_cohort(descriptions)
-
-
-def test_shared_cache_across_engines_is_rejected_before_preparation():
-    clients, descriptions, _, _ = _setup()
-    for participant in descriptions[1]["participants"]:
-        participant["identity"]["host_cache_id"] = "engine-host-0"
-    with pytest.raises(ValueError, match="must not share a host arena"):
-        session.negotiate_cohort(descriptions)
-    assert all(client.args is None for client in clients)

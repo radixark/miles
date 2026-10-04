@@ -107,8 +107,8 @@ unsupported. Each engine independently prepares while its old version serves,
 waits for its own original ranks to be PREPARED, then calls
 `update_weights_from_delta(session_id)`. That engine closes admission, pauses,
 fences readers, retracts requests, flushes caches and applies. A failed reader
-fence never reclaims KV. Its own all-rank APPLIED certificate authorizes
-`resume_weights_from_delta(session_id, receipts)`; the engine records the new
+fence never reclaims KV. Miles awaits the successful all-rank apply reply before
+calling `resume_weights_from_delta(session_id)`; the engine records the new
 version and resumes without waiting for other engines. Ordinary pause/continue
 APIs remain unchanged. Each engine's local TP/EP participants still synchronize
 for safe activation; independent replicas may temporarily serve different versions.
@@ -119,8 +119,9 @@ tasks before raising. A preparation failure aborts only that engine's preparatio
 an uncertain reply after apply dispatch is terminal for that engine: do not abort,
 replay XOR, automatically resume or recover. Other engines may already have resumed
 successfully; failure does not roll them back or report overall success. A failed
-update never advances the common sender baseline. Session/version/incarnation
-checks do not prove full weight-content equality.
+update never advances the common sender baseline. Miles is the sole ordered caller;
+these APIs do not support replay, reordered calls or concurrent administration.
+Successful activation does not prove full weight-content equality.
 External cancellation can leave outstanding remote work; it is incomplete and
 does not authorize automatic retry, cleanup or recovery.
 

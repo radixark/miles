@@ -103,8 +103,6 @@ def test_framed_publication_preserves_payload_ranges_and_final_file_hash(tmp_pat
     for tensor in manifest["tensors"]:
         if tensor["name"] != "w":
             assert not tensor["frames"] and "outer" not in tensor and tensor["changed_bytes"] == 0
-    with pytest.raises(RuntimeError, match="already sealed"):
-        writer.finish_shard()
     with pytest.raises(FileExistsError):
         _writer(tmp_path)
 

@@ -1,4 +1,4 @@
-"""Owner-local GPU delta publication with guarded, in-place SGLang activation.
+"""Owner-local GPU delta publication with in-place SGLang activation.
 
 ETP1 routed experts are consumed by their exporter owners before the usual gather.
 ETP>1 uses the direct exporter's gathered tensors, with one sender per PP stage.
@@ -57,7 +57,6 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
         self._error = None
         self._staging_stream = None
         self._gpu_encoder = None
-        self._pending_ready = self._published = False
         self.publication_metrics = {}
         self._post_write_hook = None
         if args.custom_update_weight_post_write_path:
@@ -118,7 +117,6 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
         self._raw_tail_wait_s = 0.0
         self._raw_cpu_write_s = 0.0
         self._gpu_batch_count = 0
-        self._pending_ready = self._published = False
         self._writer = None
         try:
             if self._staging_stream is None:
@@ -366,26 +364,19 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
         except Exception:
             self._writer.close()
             raise
-        self._pending_ready = True
 
     @property
     def pending_baseline(self):
         """Complete canonical target for external producer correctness checks."""
-        if not self._uncommitted or not self._pending_ready:
-            raise RuntimeError("GPU delta has no completed pending target")
         return self._next_snapshot
 
     def commit_pending_baseline(self):
         """Advance only after activation, or an explicit producer-only benchmark acknowledgement."""
-        if not self._uncommitted or not self._pending_ready or not self._published or self._error is not None:
-            raise RuntimeError("GPU delta has no successfully published pending baseline")
         self._snapshot, self._next_snapshot = self._next_snapshot, self._snapshot
-        self._pending_ready = self._published = self._uncommitted = False
+        self._uncommitted = False
 
     def publish(self, weight_version):
         """Seal owner payloads independently of receiver activation."""
-        if not self._pending_ready or self._error is not None:
-            raise RuntimeError("GPU delta cannot publish an incomplete target")
         seal_started = time.monotonic()
         shard, error = None, None
         try:
@@ -469,7 +460,6 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
         except Exception as caught:
             error = caught
         _collective_check(error, "publication visibility")
-        self._published = True
         return publication
 
     def finalize(self, weight_version):

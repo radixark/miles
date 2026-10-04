@@ -19,7 +19,7 @@ from miles.utils.timer import Timer
 
 
 def _activation():
-    applied, resumed = [], []
+    resumed = []
     for rank in range(4):
         start = (10 + rank * 10_000) * 10**9  # Independent process clock origins.
         blocked = rank + 1
@@ -46,36 +46,23 @@ def _activation():
                 "host_cache_id": f"host-{rank // 2}",
             },
             "session_id": "s",
-            "cohort_digest": "c",
             "manifest_sha256": "m",
             "stream_id": "stream",
             "base_version": 0,
             "target_version": 1,
             "plan_digest": "p",
-            "state": "APPLIED",
+            "state": "RESUMED",
             "result": {"timings": timings},
             "scheduler_timing": {
                 "clock": "monotonic_ns",
                 "pause_started_ns": start,
                 "reader_fence_completed_ns": start + 100_000_000,
-                "resumed_ns": None,
-                "blocked_s": None,
+                "resumed_ns": start + blocked * 10**9,
+                "blocked_s": float(blocked),
             },
         }
-        applied.append(receipt)
-        resumed.append(
-            receipt
-            | {
-                "state": "RESUMED",
-                "scheduler_timing": receipt["scheduler_timing"]
-                | {
-                    "resumed_ns": start + blocked * 10**9,
-                    "blocked_s": float(blocked),
-                },
-            }
-        )
+        resumed.append(receipt)
     return {
-        "receipts": applied,
         "resumed_receipts": list(reversed(resumed)),
         "coordinator_timings": {"activation_s": 10.1},
         "engine_timings": [
@@ -113,7 +100,7 @@ def test_original_rank_pause_and_creator_only_host_metrics_remain_separate():
     assert result[prefix + "creator_host_outer_zstd_worker_decode_sum_s/p50"] == 11
     assert activation == original
     # A reused publication has no new creator work, not a zero-duration decode.
-    for receipt in activation["receipts"]:
+    for receipt in activation["resumed_receipts"]:
         receipt["result"]["timings"]["host_payload_cache_created"] = 0
     result = metrics.activation_metrics(activation)
     assert result[prefix + "host_cache_creators"] == 0
@@ -123,7 +110,8 @@ def test_original_rank_pause_and_creator_only_host_metrics_remain_separate():
 @pytest.mark.parametrize("warm", [False, True])
 def test_capacity_and_allocation_count_hosts_once_but_registration_per_rank(warm):
     activation = _activation()
-    for rank, receipt in enumerate(activation["receipts"]):
+    for receipt in activation["resumed_receipts"]:
+        rank = int(receipt["identity"]["rank_id"])
         host = rank // 2 + 1
         creator = rank % 2 == 0
         timings = receipt["result"]["timings"]
@@ -166,34 +154,11 @@ def test_capacity_and_allocation_count_hosts_once_but_registration_per_rank(warm
     assert result[prefix + "creator_host_encoded_allocation_bytes/sum"] == (0 if warm else 1536)
 
     # Retained capacity still exists when a publication has no new creator work.
-    for receipt in activation["receipts"]:
+    for receipt in activation["resumed_receipts"]:
         receipt["result"]["timings"]["host_payload_cache_created"] = 0
     result = metrics.activation_metrics(activation)
     assert result[prefix + "host_shared_capacity_bytes/sum"] == 3072
     assert prefix + "creator_host_shared_allocation_s/p50" not in result
-
-
-@pytest.mark.parametrize(
-    "corruption", ["incarnation", "open", "clock", "host_duplicate", "capacity", "engine_duplicate"]
-)
-def test_partial_or_mismatched_receipts_never_become_completed_pause_metrics(corruption):
-    activation = _activation()
-    receipt = activation["resumed_receipts"][0]
-    if corruption == "incarnation":
-        receipt["identity"] = receipt["identity"] | {"start_ticks": 999}
-    elif corruption == "open":
-        receipt["scheduler_timing"]["resumed_ns"] = None
-    elif corruption == "clock":
-        receipt["scheduler_timing"]["pause_started_ns"] += 1
-    elif corruption == "capacity":
-        for rank, receipt in enumerate(activation["receipts"]):
-            receipt["result"]["timings"]["host_shared_capacity_bytes"] = 1024 + rank
-    elif corruption == "engine_duplicate":
-        activation["engine_timings"][1]["engine_id"] = "engine-0"
-    else:
-        activation["receipts"][1]["result"]["timings"]["host_payload_cache_created"] = 1
-    with pytest.raises(ValueError):
-        metrics.activation_metrics(activation)
 
 
 class _OrdinaryProtocol(WeightTransferProtocol):

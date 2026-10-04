@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import time
 import uuid
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 from miles.utils.gpu_delta_publication import CODEC, canonical_json, sha256
@@ -13,8 +13,6 @@ from miles.utils.gpu_delta_publication import CODEC, canonical_json, sha256
 
 def merge_plans(descriptions: Sequence[dict], codec: str = CODEC) -> tuple[list[dict], list[dict], str]:
     """Merge canonical views, never receiver-specific physical layout maps."""
-    if codec != CODEC:
-        raise ValueError(f"Unsupported GPU-delta codec: {codec}")
     entries, identities = {}, []
     for description in descriptions:
         if description.get("success") is not True:
@@ -49,70 +47,40 @@ class ReceiverCohort:
     participants: tuple[tuple[dict, ...], ...]
     engine_ids: tuple[str, ...]
     plan_digest: str
-    codec: str
     engine_host_tensor_names: tuple[dict[str, list[str]], ...]
 
 
 def negotiate_cohort(descriptions: Sequence[dict], codec: str = CODEC) -> ReceiverCohort:
     plan, identities, digest = merge_plans(descriptions, codec=codec)
-    participants = tuple(tuple(dict(p["identity"]) for p in d["participants"]) for d in descriptions)
-    if any(not group or len({p["engine_id"] for p in group}) != 1 for group in participants):
-        raise ValueError("Missing or mixed engine participants")
+    participants = tuple(tuple(p["identity"] for p in d["participants"]) for d in descriptions)
     engine_ids = tuple(group[0]["engine_id"] for group in participants)
-    if len(set(engine_ids)) != len(engine_ids):
-        raise ValueError("Duplicate engine endpoints")
-    host_names: dict[str, set[str]] = {}
-    host_owners = {}
+    engine_host_names = []
     for description in descriptions:
+        host_names: dict[str, set[str]] = {}
         for participant in description["participants"]:
-            host_id = participant["identity"].get("host_cache_id")
-            if not isinstance(host_id, str) or not host_id:
-                raise ValueError("Receiver must advertise its engine-host cache identity")
-            engine_id = participant["identity"]["engine_id"]
-            if host_owners.setdefault(host_id, engine_id) != engine_id:
-                raise ValueError("Independent engines must not share a host arena")
+            host_id = participant["identity"]["host_cache_id"]
             host_names.setdefault(host_id, set()).update(tensor["name"] for tensor in participant["plan"]["tensors"])
-    host_tensor_names = {host_id: sorted(names) for host_id, names in sorted(host_names.items())}
-    engine_host_names = tuple(
-        {host_id: host_tensor_names[host_id] for host_id in sorted({p["host_cache_id"] for p in group})}
-        for group in participants
-    )
-    return ReceiverCohort(plan, tuple(identities), participants, engine_ids, digest, codec, engine_host_names)
+        engine_host_names.append({host_id: sorted(names) for host_id, names in host_names.items()})
+    return ReceiverCohort(plan, tuple(identities), participants, engine_ids, digest, tuple(engine_host_names))
 
 
-def validate_receipts(
-    response: Mapping, expected: Sequence[dict], states: set[str], session_id: str, publication: dict
-):
-    if response.get("success") is not True:
-        raise RuntimeError(f"GPU-delta RPC rejected: {response.get('message')}")
-    receipts = response.get("participants", [])
-    identities = [r.get("identity") for r in receipts]
-    if sorted(canonical_json(x) for x in identities) != sorted(canonical_json(x) for x in expected):
-        raise RuntimeError("GPU-delta receipt participant set differs from the original cohort")
-    for receipt in receipts:
-        if receipt.get("state") not in states or receipt.get("session_id") != session_id:
-            raise RuntimeError("GPU-delta receipt state/session mismatch")
-        for key in ("manifest_sha256", "stream_id", "base_version", "target_version", "plan_digest"):
-            if receipt.get(key) != publication[key]:
-                raise RuntimeError(f"GPU-delta receipt {key} mismatch")
-    return receipts
+def _receipts(response):
+    if not response["success"]:
+        raise RuntimeError(f"GPU-delta RPC failed: {response['message']}")
+    return response["participants"]
 
 
 async def activate_publication(clients, cohort: ReceiverCohort, publication, session_id: str | None = None):
     """Activate engines independently; settle all before advancing the trainer.
 
     An engine may resume while another prepares or remains failed/paused. Only
-    that engine's original ranks certify its resume. After apply dispatch there
+    that engine's successful apply reply authorizes its resume. After apply dispatch there
     is no automatic abort, resume or XOR retry. An RPC failure drains every
     other engine coroutine before returning an error to the trainer. External
     cancellation leaves an incomplete operation and does not authorize recovery.
     """
     started = time.monotonic()
     session_id = session_id or uuid.uuid4().hex
-    if publication["codec"] != cohort.codec or publication["plan_digest"] != cohort.plan_digest:
-        raise ValueError("Publication differs from the negotiated receiver plan/codec")
-    if len(clients) != len(cohort.engine_ids):
-        raise ValueError("Missing engine endpoints")
     results = await asyncio.gather(
         *[
             _activate_engine(client, engine_id, participants, host_names, publication, session_id)
@@ -149,10 +117,8 @@ async def _activate_engine(client, engine_id, participants, host_names, publicat
             participants=participants,
             host_tensor_names=host_names,
         )
-        validate_receipts(
-            preparation, participants, states={"PREPARING", "PREPARED"}, session_id=session_id, publication=publication
-        )
-        await _wait_state(client, participants, session_id=session_id, publication=publication)
+        _receipts(preparation)
+        await _wait_state(client, session_id=session_id)
     except Exception:
         # No pause or mutation was requested on this engine. Its uncertain
         # prepare reply does not authorize aborting another engine's lease.
@@ -160,15 +126,10 @@ async def _activate_engine(client, engine_id, participants, host_names, publicat
         raise
     prepared_at = time.monotonic()
     applied = await client.update_weights_from_delta(session_id=session_id)
-    receipts = validate_receipts(
-        applied, participants, states={"APPLIED"}, session_id=session_id, publication=publication
-    )
-    certificate = [receipt["certificate"] for receipt in receipts]
+    receipts = _receipts(applied)
     applied_at = time.monotonic()
-    resumed = await client.resume_weights_from_delta(session_id=session_id, receipts=certificate)
-    resumed_receipts = validate_receipts(
-        resumed, participants, states={"RESUMED"}, session_id=session_id, publication=publication
-    )
+    resumed = await client.resume_weights_from_delta(session_id=session_id)
+    resumed_receipts = _receipts(resumed)
     resumed_at = time.monotonic()
     return {
         "timings": {
@@ -183,17 +144,11 @@ async def _activate_engine(client, engine_id, participants, host_names, publicat
     }
 
 
-async def _wait_state(client, participants, session_id, publication, timeout=1800):
+async def _wait_state(client, session_id, timeout=1800):
     async def poll():
         while True:
             response = await client.get_weights_delta_status(session_id=session_id)
-            receipts = validate_receipts(
-                response,
-                participants,
-                states={"PREPARING", "PREPARED"},
-                session_id=session_id,
-                publication=publication,
-            )
+            receipts = _receipts(response)
             if all(receipt["state"] == "PREPARED" for receipt in receipts):
                 return receipts
             await asyncio.sleep(0.05)

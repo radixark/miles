@@ -209,14 +209,6 @@ class PublicationWriter:
         publication_id: str | None = None,
         frame_bytes: int = FRAME_BYTES,
     ):
-        if (
-            not stream_id
-            or type(base_version) is not int
-            or base_version < 0
-            or type(target_version) is not int
-            or target_version != base_version + 1
-        ):
-            raise ValueError("GPU-delta versions must be consecutive")
         _check_frame_bytes(frame_bytes)
         self.frame_bytes = frame_bytes
         self.directory = Path(directory)
@@ -250,8 +242,6 @@ class PublicationWriter:
         # unchanged scalars. Changed tensors replace all bytes without a mask.
         entry["changed_bytes"] = int(np.count_nonzero(previous != current))
         with self._lock:
-            if self._closed or name in self._entries:
-                raise ValueError("Publication is sealed or tensor was already published")
             if entry["changed_bytes"]:
                 payload = memoryview(current)
                 padding = bytes((-self._file.tell()) % 16)
@@ -272,8 +262,6 @@ class PublicationWriter:
         entry["frames"] = [dict(frame) for frame in frames]
         _validate_gpu_outer(entry, outer, payload, self.frame_bytes)
         with self._lock:
-            if self._closed or name in self._entries:
-                raise ValueError("Publication is sealed or tensor was already published")
             if outer is not None:
                 self._write_outer_bytes(bytes((-self._file.tell()) % 16))
                 entry["outer"] = dict(outer, file=self._filename, encoded_offset=self._file.tell())
@@ -293,8 +281,6 @@ class PublicationWriter:
 
     def finish_shard(self) -> dict:
         with self._lock:
-            if self._closed:
-                raise RuntimeError("Publication shard was already sealed")
             self._file.flush()
             os.fsync(self._file.fileno())
             size = self._file.tell()

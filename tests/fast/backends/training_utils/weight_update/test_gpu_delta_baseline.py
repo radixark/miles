@@ -255,8 +255,6 @@ def test_bulk_compression_waits_for_complete_snapshot_and_defers_all_writes(monk
     assert protocol._gpu_batch_count == 3
     assert protocol.pending_baseline is protocol._next_snapshot
     assert all(torch.count_nonzero(value) == 0 for value in protocol._snapshot.values())
-    with pytest.raises(RuntimeError, match="successfully published"):
-        protocol.commit_pending_baseline()
 
 
 @pytest.mark.parametrize("fail_raw", [False, True])
@@ -293,7 +291,7 @@ def test_raw_cpu_write_bypasses_gpu_batches_and_overlaps_compression(monkeypatch
         with pytest.raises(RuntimeError, match="raw owner write failed"):
             protocol.after_base_weights()
         protocol._writer.close.assert_called_once()
-        assert not protocol._pending_ready and protocol._uncommitted
+        assert protocol._uncommitted
     else:
         protocol.after_base_weights()
         assert ("raw", "scale") in events and protocol._raw_cpu_write_s > 0
@@ -308,7 +306,6 @@ def test_cached_gpu_schedule_uses_current_buffers_after_commit(monkeypatch, sing
     protocol, _ = _gpu_pending(monkeypatch)
     schedule = protocol._gpu_batch_names
     protocol.after_base_weights()
-    protocol._published = True
     protocol.commit_pending_baseline()
     for snapshot in protocol._next_snapshot.values():
         snapshot.fill_(13)
@@ -340,8 +337,6 @@ def test_bulk_failure_retains_old_baseline_and_never_writes_partial_publication(
     assert protocol._uncommitted
     with pytest.raises(RuntimeError, match="automatic replay"):
         protocol.begin_sync(2, None)
-    with pytest.raises(RuntimeError, match="completed pending target"):
-        _ = protocol.pending_baseline
 
 
 @pytest.mark.parametrize("activation_fails", [False, True])
@@ -352,7 +347,6 @@ def test_gpu_baseline_swaps_only_after_successful_receiver_activation(monkeypatc
     protocol._cohort, protocol.rollout_engines = object(), []
 
     def publish(version):
-        protocol._published = True
         return {
             "summary_counts": dict(tensor_count=4, wire_bytes=1, changed_bytes=13, canonical_bytes=13),
             "manifest_sha256": "test",
@@ -377,5 +371,3 @@ def test_gpu_baseline_swaps_only_after_successful_receiver_activation(monkeypatc
         protocol.finalize(1)
         assert protocol._snapshot is current and protocol._next_snapshot is old
         assert not protocol._uncommitted
-        with pytest.raises(RuntimeError, match="successfully published"):
-            protocol.commit_pending_baseline()

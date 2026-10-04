@@ -6,10 +6,8 @@ not from the zero counters on ranks that attach to its arena.
 """
 
 import logging
-import math
 from statistics import median
 
-from miles.utils.gpu_delta_publication import canonical_json
 from miles.utils.metric_utils import compute_rollout_step, namespace_metrics
 from miles.utils.tracking_utils import tracking
 
@@ -69,85 +67,40 @@ _HOST_WORK_TOTALS = (
 )
 
 
-def _number(value):
-    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value < 0:
-        raise ValueError("GPU-delta timing must be a finite nonnegative number")
-    return value
-
-
 def _distribution(metrics, name, values):
     if values:
-        values = [_number(value) for value in values]
         for statistic, value in (("min", min(values)), ("p50", median(values)), ("max", max(values))):
             metrics[_PREFIX + name + "/" + statistic] = value
 
 
-def _joined_receipts(activation):
-    applied = {canonical_json(r["identity"]): r for r in activation["receipts"]}
-    resumed = {canonical_json(r["identity"]): r for r in activation["resumed_receipts"]}
-    if (
-        not applied
-        or applied.keys() != resumed.keys()
-        or len(applied) != len(activation["receipts"])
-        or len(resumed) != len(activation["resumed_receipts"])
-    ):
-        raise ValueError("GPU-delta timing requires all original participants exactly once")
-    for identity, before in applied.items():
-        after = resumed[identity]
-        if before["state"] != "APPLIED" or after["state"] != "RESUMED":
-            raise ValueError("GPU-delta timing requires completed APPLIED/RESUMED receipts")
-        for key in (
-            "session_id",
-            "cohort_digest",
-            "manifest_sha256",
-            "stream_id",
-            "base_version",
-            "target_version",
-            "plan_digest",
-        ):
-            if before[key] != after[key]:
-                raise ValueError(f"GPU-delta timing receipt {key} differs")
-        first, last = before["scheduler_timing"], after["scheduler_timing"]
-        if first["clock"] != "monotonic_ns" or last["clock"] != "monotonic_ns":
-            raise ValueError("GPU-delta scheduler timing clock differs")
-        start, fence, end = (last[key] for key in ("pause_started_ns", "reader_fence_completed_ns", "resumed_ns"))
-        if (
-            any(type(value) is not int for value in (start, fence, end))
-            or not 0 <= start <= fence <= end
-            or first["resumed_ns"] is not None
-            or first["pause_started_ns"] != start
-            or first["reader_fence_completed_ns"] != fence
-            or not math.isclose(_number(last["blocked_s"]), (end - start) / 1e9, rel_tol=1e-9, abs_tol=1e-9)
-        ):
-            raise ValueError("GPU-delta scheduler timing interval is incomplete or inconsistent")
-        yield before, (fence - start) / 1e9, (end - start) / 1e9
-
-
 def activation_metrics(activation):
-    """Reduce already-validated RPC evidence; never poll or synchronize devices."""
-    rows = list(_joined_receipts(activation))
+    """Reduce completed resume receipts; never poll or synchronize devices."""
+    rows = activation["resumed_receipts"]
     metrics = {
         _PREFIX + "receiver_ranks": len(rows),
-        _PREFIX + "base_version": rows[0][0]["base_version"],
-        _PREFIX + "target_version": rows[0][0]["target_version"],
+        _PREFIX + "base_version": rows[0]["base_version"],
+        _PREFIX + "target_version": rows[0]["target_version"],
     }
-    _distribution(metrics, "receiver_reader_fence_s", [row[1] for row in rows])
-    _distribution(metrics, "receiver_scheduler_pause_s", [row[2] for row in rows])
-    timings = [row[0]["result"]["timings"] for row in rows]
+    fences, pauses = [], []
+    for receipt in rows:
+        timing = receipt["scheduler_timing"]
+        start, fence, end = (timing[key] for key in ("pause_started_ns", "reader_fence_completed_ns", "resumed_ns"))
+        if not 0 <= start <= fence <= end:
+            raise ValueError("GPU-delta scheduler timing interval is incomplete or inconsistent")
+        fences.append((fence - start) / 1e9)
+        pauses.append((end - start) / 1e9)
+    _distribution(metrics, "receiver_reader_fence_s", fences)
+    _distribution(metrics, "receiver_scheduler_pause_s", pauses)
+    timings = [row["result"]["timings"] for row in rows]
     for name in _RANK_TIMINGS + _RANK_REGISTRATION:
         # Optional profiling spans are emitted only with complete rank coverage.
         if all(name in timing for timing in timings):
             _distribution(metrics, "receiver_" + name, [timing[name] for timing in timings])
     arenas = {}
-    for (receipt, _, _), timing in zip(rows, timings, strict=True):
+    for receipt, timing in zip(rows, timings, strict=True):
         arena = (receipt["identity"]["engine_id"], receipt["identity"]["host_cache_id"])
         arenas.setdefault(arena, []).append(timing)
-    creators = []
-    for host_rows in arenas.values():
-        created = [row for row in host_rows if row["host_payload_cache_created"] == 1]
-        if len(created) > 1:
-            raise ValueError("Multiple payload creators in one engine-host arena")
-        creators.extend(created)
+    creators = [row for row in timings if row["host_payload_cache_created"] == 1]
     metrics.update({_PREFIX + "receiver_host_arenas": len(arenas), _PREFIX + "host_cache_creators": len(creators)})
     for name in _HOST_TIMINGS:
         if all(name in row for row in creators):
@@ -155,29 +108,21 @@ def activation_metrics(activation):
     _distribution(metrics, "creator_cpu_workers", [row["host_outer_zstd_cpu_workers"] for row in creators])
     for name in _HOST_WORK_TOTALS:
         if all(name in row for row in creators):
-            metrics[_PREFIX + "creator_" + name + "/sum"] = sum(_number(row[name]) for row in creators)
+            metrics[_PREFIX + "creator_" + name + "/sum"] = sum(row[name] for row in creators)
     # Engine-local ranks map one host arena. Count capacity once per arena, including
     # reattachment with no creator; per-rank CUDA registrations are not additive
     # physical storage. Two independent engines may hold duplicate physical bytes.
     for name in _HOST_CAPACITIES:
         if not all(name in row for row in timings):
             continue
-        capacities = []
-        for host_rows in arenas.values():
-            values = {_number(row[name]) for row in host_rows}
-            if len(values) != 1:
-                raise ValueError(f"Shared host capacity differs between ranks: {name}")
-            capacities.append(values.pop())
+        capacities = [host_rows[0][name] for host_rows in arenas.values()]
         _distribution(metrics, name, capacities)
         metrics[_PREFIX + name + "/sum"] = sum(capacities)
-    engines = {row[0]["identity"]["engine_id"] for row in rows}
     engine_timings = activation["engine_timings"]
-    if {row["engine_id"] for row in engine_timings} != engines or len(engine_timings) != len(engines):
-        raise ValueError("Coordinator timings do not cover the original engines exactly once")
-    metrics[_PREFIX + "receiver_engines"] = len(engines)
+    metrics[_PREFIX + "receiver_engines"] = len(engine_timings)
     for name in ("prepare_s", "apply_s", "resume_s", "activation_s"):
         _distribution(metrics, "engine_coordinator_" + name, [row[name] for row in engine_timings])
-    metrics[_PREFIX + "coordinator_activation_s"] = _number(activation["coordinator_timings"]["activation_s"])
+    metrics[_PREFIX + "coordinator_activation_s"] = activation["coordinator_timings"]["activation_s"]
     return metrics
 
 

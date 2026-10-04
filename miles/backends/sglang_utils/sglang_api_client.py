@@ -415,8 +415,8 @@ class SGLangApiClient:
     async def update_weights_from_delta(self, session_id):
         return await self._make_request("update_weights_from_delta", {"session_id": session_id})
 
-    async def resume_weights_from_delta(self, session_id, receipts):
-        return await self._make_request("resume_weights_from_delta", {"session_id": session_id, "receipts": receipts})
+    async def resume_weights_from_delta(self, session_id):
+        return await self._make_request("resume_weights_from_delta", {"session_id": session_id})
 
     async def abort_weights_from_delta(self, session_id):
         return await self._make_request("abort_weights_from_delta", {"session_id": session_id})
