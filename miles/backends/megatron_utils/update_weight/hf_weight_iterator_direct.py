@@ -76,15 +76,14 @@ class HfWeightIteratorDirect(MegatronHfWeightIteratorBase):
             ]
 
     def set_local_expert_consumer(self, *, consumer: Callable[[list[tuple[str, torch.Tensor]]], None]) -> None:
-        """Consume every owner-local expert unit instead of gathering expert weights.
+        """Consume ETP1 owner-local experts instead of gathering expert weights.
 
         All ranks must install the consumer, including transport non-senders and
         ranks with no local units. It owns the complete converted unit and must
         retain asynchronous inputs and defer errors until the protocol drains
         the stream and joins its collective status check.
+        ETP>1 keeps the ordinary gather-before-convert sender path.
         """
-        if not self._convert_experts_before_gather:
-            raise ValueError("Owner-local expert consumers require expert TP=1")
         self._expert_consumer = consumer
 
     def _iter_hf_param_units(self, weights, *, materialize):

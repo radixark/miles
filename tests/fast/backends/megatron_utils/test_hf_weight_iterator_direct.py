@@ -219,13 +219,64 @@ def test_gpu_delta_consumer_defers_failure_until_all_local_units_are_visited(dir
     assert protocol._error is failure  # after_base_weights performs the existing collective error check.
 
 
-def test_owner_consumer_rejects_expert_tp_without_changing_the_iterator(direct_module):
+@pytest.mark.parametrize("materialize", [True, False])
+def test_gpu_delta_etp2_gathers_complete_experts_before_sender_conversion(direct_module, monkeypatch, materialize):
+    from miles.backends.training_utils.weight_update.protocols.gpu_delta import UpdateWeightFromGpuDelta
+
+    name = "layer.experts.linear_fc1.weight0"
+    # Unmarked TE grouped weights still need ETP gathering. Each shard contains
+    # one gate row followed by one up row; conversion must see gate/gate/up/up.
+    shards = [torch.tensor([[1.0, 2.0], [5.0, 6.0]]), torch.tensor([[3.0, 4.0], [7.0, 8.0]])]
+    complete = torch.arange(1.0, 9.0).reshape(4, 2)
+    info = ParamInfo(
+        name=name, dtype=torch.float32, shape=shards[0].shape, size=shards[0].nbytes, src_rank=0,
+        attrs={"tensor_model_parallel": False, "partition_dim": -1, "partition_stride": 1},
+    )
+    waited, converted = [], []
+    etp_group = object()
+
+    class Work:
+        def wait(self):
+            waited.append(True)
+
+    def all_gather(buffers, tensor, *, group, async_op):
+        assert group is etp_group and async_op
+        assert torch.equal(tensor, shards[0])
+        for buffer, shard in zip(buffers, shards, strict=True):
+            buffer.copy_(shard)
+        return Work()
+
+    def convert(named_params):
+        assert waited and len(named_params) == 1
+        assert named_params[0][0] == name and torch.equal(named_params[0][1], complete)
+        converted.append(name)
+        yield [("expert.weight", named_params[0][1].to(torch.uint8)), ("expert.scale", torch.ones(1))]
+
     iterator = direct_module.HfWeightIteratorDirect.__new__(direct_module.HfWeightIteratorDirect)
+    iterator.args = Namespace(swiglu=True)
+    iterator.placement = Namespace(gather_pp=False)
+    iterator._non_expert_batches = []
+    iterator._expert_batches = [direct_module._ExpertBatch(param_infos=[info], gathers=())]
     iterator._convert_experts_before_gather = False
-    iterator._expert_consumer = None
-    with pytest.raises(ValueError, match="expert TP=1"):
-        iterator.set_local_expert_consumer(consumer=lambda unit: None)
-    assert iterator._expert_consumer is None
+    iterator._convert_to_hf_param_units = convert
+    protocol = UpdateWeightFromGpuDelta(Namespace(custom_update_weight_post_write_path=None))
+    protocol.send_bucket = lambda unit: pytest.fail("ETP-sharded experts must not use the owner-local consumer")
+    protocol.bind_iterator(iterator)
+    monkeypatch.setattr(direct_module.dist, "get_rank", lambda: 0)
+    monkeypatch.setattr(direct_module.dist, "all_gather", all_gather)
+    monkeypatch.setattr(direct_module, "get_parallel_state", lambda: Namespace(
+        etp=Namespace(size=2, group=etp_group), ep=Namespace(size=1)))
+    monkeypatch.setattr(direct_module, "_load_or_allocate_params", lambda infos, weights: [weights[info.name].clone()])
+    monkeypatch.setattr(direct_module, "_iter_mm_tower_units", lambda *args, **kwargs: iter(()))
+
+    units = list(iterator._iter_hf_param_units({name: shards[0]}, materialize=materialize))
+    assert waited == [True]  # Non-senders must also complete the ordinary collective.
+    assert converted == ([name] if materialize else [])
+    if materialize:
+        assert len(units) == 1 and [key for key, _ in units[0]] == ["expert.weight", "expert.scale"]
+        assert torch.equal(units[0][0][1], complete.to(torch.uint8))
+    else:
+        assert units == []
 
 
 def test_producer_discovery_installs_actual_owner_hook_and_preserves_plan(direct_module, monkeypatch, tmp_path):

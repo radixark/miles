@@ -1,6 +1,7 @@
 """Owner-local GPU delta publication with guarded, in-place SGLang activation.
 
-Routed experts are consumed by their exporter owners before the usual gather.
+ETP1 routed experts are consumed by their exporter owners before the usual gather.
+ETP>1 uses the direct exporter's gathered tensors, with one sender per PP stage.
 Complete pinned CPU snapshots feed GPU Snappy, then one owner-wide GPU Zstd batch.
 """
 
@@ -11,6 +12,7 @@ import logging
 import os
 import time
 import uuid
+from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -181,7 +183,10 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
         if len(set(names)) != len(names) or set(names) != set(self._plan):
             missing = sorted(set(self._plan) - set(names))
             extra = sorted(set(names) - set(self._plan))
-            raise RuntimeError(f"GPU-delta mutable inventory/ownership mismatch: missing={missing}, extra={extra}")
+            duplicates = sorted(name for name, count in Counter(names).items() if count > 1)
+            raise RuntimeError(
+                f"GPU-delta mutable inventory/ownership mismatch: missing={missing}, extra={extra}, duplicates={duplicates}"
+            )
         self._stream_id = _on_root(lambda: uuid.uuid4().hex)
         self._stream_dir = Path(self.args.update_weight_disk_dir) / self._stream_id
         # The startup checkpoint is base version 0, not a learned update. Wait

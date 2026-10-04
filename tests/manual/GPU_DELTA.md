@@ -55,9 +55,11 @@ engine replacement and attention FP8 conversion only in its selected test arm.
 ## Fixed producer and receiver pipeline
 
 The sender retains old canonical weights in pinned CPU RAM and stages each new
-export there asynchronously. Routed experts stay on their exporter EP/EDP owner;
-non-routed tensors use the existing data-replica sender. Immutable owner geometry
-partitions scalar/vector bypass and matrix batches once before learned updates.
+export there asynchronously. At expert TP=1, routed experts stay on their exporter
+EP/EDP owner; expert TP>1 keeps the existing gather-before-convert sender path.
+Non-routed tensors use the existing data-replica sender within each PP stage.
+Immutable owner geometry partitions scalar/vector bypass and matrix batches once
+before learned updates.
 Raw target writes run on one CPU worker concurrently with matrix GPU compression;
 there is no scalar/vector branch inside the matrix compression loop.
 
@@ -94,8 +96,8 @@ CPU preparation; independent engines have separate arenas and may duplicate host
 bytes. No host-wide cache lock or release barrier couples separate engines.
 Each creator bounds queued decode futures to `4 * WEIGHT_DELTA_CPU_WORKERS`;
 it does not enqueue one unbounded future for every tensor/frame.
-The owner-local exporter hook requires ETP1 only for this protocol; ordinary
-upstream direct-exporter ETP support is unchanged.
+The global canonical inventory must have complete, unique owner coverage. Duplicate
+exports, including overlapping PP/MTP names, are rejected rather than deduplicated.
 
 One Miles coordinator exclusively owns the original engine endpoints during an
 update; concurrent administration, other mutations and external pause/resume are

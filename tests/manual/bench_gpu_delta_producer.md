@@ -126,47 +126,16 @@ one from the other to claim end-to-end RL savings.
 
 ## Full-model and multi-node scope
 
-The five-layer model is a correctness and profiling proxy, not the tuning target.
-Its layer count, owner imbalance and compression ratio do not establish full-model
-capacity, multi-node performance or training throughput.
+The five-layer TP1/PP1/CP1/EP8/ETP1 run is a correctness and profiling proxy;
+it does not validate full-model capacity, multi-node performance or training
+throughput. GPU delta reuses Megatron export ownership: ETP1 experts are consumed
+on their EP × EDP owners, ETP>1 uses the existing gather-before-convert sender path,
+and non-routed senders are PP-stage-local. The global canonical inventory still
+requires complete, unique ownership; duplicate exports, including overlapping
+PP/MTP names, are rejected rather than deduplicated.
 
-- **Expert ownership:** each routed expert is converted and consumed on its
-  assigned EP × EDP owner, including transport non-senders. Every rank installs
-  the same consumer mode, so even empty owner rounds skip expert gathers.
-  Ownership still follows the original source rank; this does not replicate
-  complete expert weights across owners.
-- **Ordinary tensors:** the general direct exporter selects a nonexpert sender
-  within each PP stage when PP gathering is disabled. GPU delta currently
-  requires **PP1 and ETP1**; this benchmark therefore uses global rank 0 for
-  nonexpert tensors. The consumer API does not establish PP>1 support.
-- **Host memory:** the previous and pending canonical snapshots remain pinned
-  on each owner until activation succeeds. Budget roughly two complete
-  owner-local canonical snapshots, plus final compressed staging and metadata.
-  The update buffer setting is a matrix input-batch target, not a limit on
-  pinned memory or total GPU memory; an oversized individual tensor stays whole.
-- **GPU memory:** input batches need old/new scratch, XOR/count metadata and
-  Snappy compression outputs/workspace. Compact Snappy payloads accumulate for
-  the complete owner until outer Zstd finishes; outer outputs/workspace and
-  packing can overlap that storage. Include resident training state and native
-  allocations when establishing capacity. Low changed-byte counts do not bound
-  worst-case workspace or retained compressed bytes.
-- **Publication and transport:** each owner writes its own immutable payload to
-  the shared publication directory. The root gather carries tensor/file metadata
-  and producer metrics, not compressed payload bytes. Multi-node qualification
-  must separately measure metadata serialization/wait, root manifest sealing,
-  owner storage writes and receiver reads over the actual storage/network path.
-- **Critical path:** report every rank's blocked interval and the slowest rank,
-  with root timings separately. Root gather time can include waiting for other
-  owners; it is not a payload-transfer clock. Keep export, encoding tail and
-  publication as disjoint caller spans; nested GPU/worker timings do not add to
-  total time. Producer completion, receiver scheduler pause and the trainer's
-  complete update block are distinct measurements.
-
-A full-model multi-node gate must preserve the exact canonical inventory and
-single-owner coverage across EP/EDP, including empty partitions, then verify
-complete reconstructed targets and receiver activation/version agreement. Record
-all original ranks/hosts, actual memory peaks and storage behavior, first-use and
-warm timings, and failure agreement before advancing the baseline. PP>1 requires
-separate cohort/ownership validation before changing its current admission guard.
-Report end-to-end trainer blocking and rollout impact on that topology; this
-producer-only proxy supplies neither claim.
+`update_weight_buffer_size` is a matrix input-batch target, not a total memory
+cap. Budget the pinned old/pending snapshots, the full owner-local compact Snappy
+payload and codec scratch/workspaces on the intended topology. Keep the exact
+inventory and reconstructed-target checks when extending this benchmark; the
+measured proxy's owner imbalance or compression ratio is not a sizing rule.

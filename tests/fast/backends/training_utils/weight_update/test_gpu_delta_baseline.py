@@ -155,6 +155,39 @@ def test_inventory_failure_never_declares_base_version(tmp_path, single_rank):
     assert not events and not protocol._baseline_captured
 
 
+@pytest.mark.parametrize("duplicate_owner", [False, True])
+def test_pipeline_stage_inventory_requires_unique_owners_before_baseline_declaration(
+    tmp_path, single_rank, monkeypatch, duplicate_owner
+):
+    protocol, events = _setup(tmp_path)
+    peer_name = "w" if duplicate_owner else "stage1.weight"
+    peer_entry = {"name": peer_name, "dtype": "U8", "shape": [4], "nbytes": 4}
+    protocol._plan["stage1.weight"] = {
+        "name": "stage1.weight", "dtype": "U8", "shape": [4], "encoding": "raw_bytes",
+    }
+
+    def gather(value):
+        if value is None:  # Existing collective error check.
+            return [None] * 4
+        # Two PP stages, each with one sender and one transport non-sender.
+        # The local stage reads the real checkpoint through begin_sync; only
+        # the remote inventory exchange is replaced in this CPU test.
+        assert value == [{"name": "w", "dtype": "U8", "shape": [4], "nbytes": 4}]
+        return [value, [], [peer_entry], []]
+
+    monkeypatch.setattr(gpu_delta, "_gather_all", gather)
+    if duplicate_owner:
+        with pytest.raises(RuntimeError, match=r"ownership mismatch:.*duplicates=\['w'\]"):
+            protocol.begin_sync(1, _buckets)
+        assert not events and not protocol._baseline_captured
+        assert [engine.version for engine in protocol.rollout_engines] == ["default", "default"]
+    else:
+        assert protocol.begin_sync(1, _buckets) is False
+        assert protocol._baseline_captured and sorted(events) == [0, 1]
+        assert set(protocol._snapshot) == {"w"}
+        assert [engine.version for engine in protocol.rollout_engines] == ["0", "0"]
+
+
 @pytest.mark.parametrize("buffer_size", [0, 5])
 def test_gpu_startup_partitions_owner_plan_before_declaring_baseline(tmp_path, single_rank, monkeypatch, buffer_size):
     protocol, events = _setup(tmp_path)
