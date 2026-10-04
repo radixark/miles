@@ -20,6 +20,7 @@ from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
 from miles.backends.training_utils.parallel import ParallelState
 from miles.backends.training_utils.weight_update.conn_status import ConnStatusManager
 from miles.backends.training_utils.weight_update.protocol import get_weight_transfer_protocol
+from miles.backends.training_utils.weight_update.protocols.gpu_delta import UpdateWeightFromGpuDelta
 from miles.backends.training_utils.weight_update.session import (
     begin_weight_update,
     end_weight_update,
@@ -68,7 +69,7 @@ class WeightUpdater:
             model_name=model_name,
             quantization_config=quantization_config,
         )
-        if getattr(args, "update_weight_transfer_mode", "broadcast") == "gpu-delta":
+        if isinstance(self.protocol, UpdateWeightFromGpuDelta):
             self._hf_weight_iterator.local_expert_consumer = self.protocol.send_bucket
         self.weights_getter = weights_getter
         self.weight_version = 0

@@ -9,6 +9,8 @@ register_cpu_ci(est_time=60, suite="stage-a-cpu", labels=[])
 import pytest
 import torch
 
+from miles.backends.training_utils.weight_update import updater
+from miles.backends.training_utils.weight_update.protocols.gpu_delta import UpdateWeightFromGpuDelta
 from miles.utils.types import ParamInfo
 
 
@@ -215,8 +217,6 @@ def test_owner_consumer_skips_gathers_and_normal_export_still_gathers(
 
 
 def test_gpu_delta_consumer_defers_failure_until_all_local_units_are_visited(direct_module, monkeypatch):
-    from miles.backends.training_utils.weight_update.protocols.gpu_delta import UpdateWeightFromGpuDelta
-
     protocol = UpdateWeightFromGpuDelta(Namespace(custom_update_weight_post_write_path=None))
     failure, converted = ValueError("invalid canonical layout"), []
 
@@ -227,11 +227,9 @@ def test_gpu_delta_consumer_defers_failure_until_all_local_units_are_visited(dir
     iterator = direct_module.HfWeightIteratorDirect.__new__(direct_module.HfWeightIteratorDirect)
     iterator._convert_experts_before_gather = True
     protocol.is_sender = False
-    from miles.backends.training_utils.weight_update import updater
-
     monkeypatch.setattr(updater, "get_weight_transfer_protocol", lambda args: protocol)
     updater.WeightUpdater(
-        Namespace(update_weight_transfer_mode="gpu-delta"), [],
+        Namespace(), [],
         weights_getter=lambda: {}, model_name="test", quantization_config=None,
         iterator_factory=lambda *args, **kwargs: iterator, parallel_state=None, is_lora=False,
     )
@@ -261,8 +259,6 @@ def test_gpu_delta_consumer_defers_failure_until_all_local_units_are_visited(dir
 
 @pytest.mark.parametrize("materialize", [True, False])
 def test_gpu_delta_etp2_gathers_complete_experts_before_sender_conversion(direct_module, monkeypatch, materialize):
-    from miles.backends.training_utils.weight_update.protocols.gpu_delta import UpdateWeightFromGpuDelta
-
     name = "layer.experts.linear_fc1.weight0"
     # Unmarked TE grouped weights still need ETP gathering. Each shard contains
     # one gate row followed by one up row; conversion must see gate/gate/up/up.
