@@ -3,6 +3,7 @@
 import ast
 import copy
 import logging
+import sys
 from argparse import Namespace
 from contextlib import nullcontext
 from pathlib import Path
@@ -248,7 +249,11 @@ def actor_update(monkeypatch):
 
 def test_final_update_logs_once_at_its_trained_rollout_without_resetting_timers(actor_update, monkeypatch):
     completed = metrics.activation_metrics(_activation())
-    submit = Mock()
+    completed["perf/update_weights_wire_bytes"] = 123456
+    wandb_submit = Mock()
+    monkeypatch.setitem(sys.modules, "wandb", SimpleNamespace(log=wandb_submit))
+    monkeypatch.setattr(metrics.tracking._manager, "_backends", [metrics.tracking.WandbBackend()])
+    submit = Mock(wraps=metrics.tracking.log)
     monkeypatch.setattr(metrics.tracking, "log", submit)
     reset = Mock(side_effect=AssertionError("completion logging must not reset training timers"))
     monkeypatch.setattr(Timer(), "reset", reset)
@@ -261,9 +266,11 @@ def test_final_update_logs_once_at_its_trained_rollout_without_resetting_timers(
     assert values["actor/rollout/step"] == 56  # Existing train-step conversion for rollout 7.
     assert values["actor/perf/gpu_delta/base_version"] == 0
     assert values["actor/perf/gpu_delta/target_version"] == 1
+    assert values["actor/perf/update_weights_wire_bytes"] == 123456
     assert values["actor/perf/gpu_delta/trainer_logging_rank"] == 7
     assert values["actor/perf/gpu_delta/trainer_logging_rank_blocked_s"] == 4.0
     assert submit.call_args.kwargs == {"step_key": "actor/rollout/step"}
+    wandb_submit.assert_called_once_with(values)
     assert updater.pop_metrics() == {}  # The next ordinary train drain cannot repeat it.
     reset.assert_not_called()
 
@@ -280,12 +287,12 @@ def test_completion_logging_preserves_rank_startup_and_other_protocol_semantics(
         "no_trained_rollout": {"rollout_id": None},
         "ordinary": {"mode": "disk-delta"},
     }
-    with caplog.at_level(logging.WARNING):
+    with caplog.at_level(logging.INFO):
         _, updater = actor_update(completed_metrics=completed, **overrides[case])
     submit.assert_not_called()
     assert updater.pop_metrics() == (completed if case == "ordinary" else {})
     if case == "no_trained_rollout":
-        assert "no trained rollout" in caplog.text
+        assert "initial sync completed before the first rollout" in caplog.text
 
 
 def test_failed_update_is_not_reported_and_tracking_failure_cannot_retry_a_completed_update(

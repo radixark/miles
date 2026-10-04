@@ -615,9 +615,9 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help=(
                     "The huggingface checkpoint of the trained model. "
                     "This is used to initialize sglang and also provide the tokenizer. "
-                    "Note that, we will always update the parameters in sglang with that of megatron before training, "
-                    "so you only need to provide a huggingface checkpoint that has the same architecture as the model you want to train. "
-                    "It doesn't necessary need to contain the most up-to-date parameters."
+                    "Full-weight transfer replaces startup weights with the loaded trainer weights before the first rollout. "
+                    "For disk-delta and gpu-delta, enable --update-weight-delta-initial-sync when "
+                    "the trainer starts from different weights; otherwise the initial sync only captures the baseline."
                 ),
             )
             parser.add_argument(
@@ -1056,6 +1056,17 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 ),
             )
             parser.add_argument(
+                "--update-weight-delta-initial-sync",
+                action="store_true",
+                default=False,
+                help=(
+                    "For disk-delta and gpu-delta, publish and apply an initial delta from --hf-checkpoint "
+                    "to the loaded trainer weights before the first rollout. Without this flag, only capture "
+                    "the HF baseline. Both modes still require rollout engines to load the common HF base; "
+                    "this does not support dummy-weight initialization."
+                ),
+            )
+            parser.add_argument(
                 "--update-weight-disk-dir",
                 type=str,
                 default=None,
@@ -1084,7 +1095,8 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 choices=["xor", "overwrite"],
                 default="xor",
                 help=(
-                    "On-disk delta encoding for disk-delta weight sync. 'xor' (default): new ^ old — "
+                    "Delta encoding: gpu-delta supports only xor; disk-delta supports xor and overwrite. "
+                    "'xor' (default): new ^ old — "
                     "smallest wire and fastest, but an involution that must be applied exactly once "
                     "against the correct base (applying it twice reverts). 'overwrite': changed positions "
                     "+ new absolute values — larger, but idempotent. Both are byte-level and dtype-blind; "
@@ -1106,7 +1118,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 type=str,
                 default=None,
                 help=(
-                    "Path to a custom function called on each trainer rank after a disk-delta sync's "
+                    "Path to a custom function called on each trainer rank after a disk-delta or gpu-delta sync's "
                     "files are written, before the engines read them — to publish the writes on a "
                     "non-POSIX filesystem (no cross-host visibility without an explicit sync). "
                     "Signature: ``def hook(args, version_dir: str, rollout_engines) -> None``; the hook gates itself."
@@ -3611,6 +3623,7 @@ def miles_validate_args(args):
         ), f"{args.update_weight_transfer_mode} mode is not supported when use megatron-bridge"
 
     if args.update_weight_transfer_mode == "gpu-delta":
+        assert args.update_weight_delta_encoding == "xor", "GPU delta supports only --update-weight-delta-encoding xor"
         assert not args.colocate, "GPU delta requires separate training and rollout GPUs"
         assert (
             args.train_backend == "megatron" and args.megatron_to_hf_mode != "bridge"

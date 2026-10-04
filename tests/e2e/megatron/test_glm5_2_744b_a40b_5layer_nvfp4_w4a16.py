@@ -150,7 +150,9 @@ def _assert_gpu_delta_weights_changed(args, version_dir, _rollout_engines):
         return
     version_dir = Path(version_dir)
     current = json.loads((version_dir / "manifest.json").read_text())
-    last_version = args.num_rollout - 1
+    # This E2E publishes once at startup and between rollouts, independently of optimizer steps.
+    startup_publications = int(args.update_weight_delta_initial_sync)
+    last_version = startup_publications + args.num_rollout - 1
     if current["target_version"] != last_version:
         return
     codec = _gpu_delta_env()["GPU_DELTA_CODEC"]
@@ -173,7 +175,8 @@ def _assert_gpu_delta_weights_changed(args, version_dir, _rollout_engines):
                 assert tensor.get("raw", {}).get("encoded_bytes", 0) == (
                     tensor["nbytes"] if tensor["changed_bytes"] else 0
                 ), "E2E direct target is incomplete"
-        changed_bytes.append(sum(tensor["changed_bytes"] for tensor in manifest["tensors"]))
+        if version > startup_publications:
+            changed_bytes.append(sum(tensor["changed_bytes"] for tensor in manifest["tensors"]))
     assert any(count > 0 for count in changed_bytes), (
         f"GPU-delta E2E produced only no-op learned publications: {changed_bytes}. "
         "Version changes alone do not exercise a learned weight delta."
@@ -185,6 +188,7 @@ def execute():
     U = command_utils.default_config().create_backend()
     weight_transfer_args = (
         "--update-weight-transfer-mode gpu-delta "
+        "--update-weight-delta-initial-sync "
         f"--update-weight-disk-dir /root/shared_data/{RUN_ID}/gpu_delta "
         "--custom-update-weight-post-write-path "
         "tests.e2e.megatron.test_glm5_2_744b_a40b_5layer_nvfp4_w4a16._assert_gpu_delta_weights_changed "

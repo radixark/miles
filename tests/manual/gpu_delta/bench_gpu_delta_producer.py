@@ -152,6 +152,7 @@ def _model_args(options):
         sys.argv = original_argv
     args.sglang_speculative_algorithm = "EAGLE"  # Static draft is excluded from target export.
     args.update_weight_transfer_mode = "gpu-delta"
+    args.update_weight_delta_initial_sync = False
     args.update_weight_buffer_size = 512 * 1024**2
     args.extra_high_precision_layers_megatron = (".shared_experts.linear_fc1", ".shared_experts.linear_fc2")
     args.custom_update_weight_post_write_path = None

@@ -2,7 +2,8 @@
 
 The experimental `--update-weight-transfer-mode gpu-delta` uses the paired
 SGLang `update_weights_from_delta` API. `disk-delta` remains a separate checkpoint
-handoff path. GPU-delta has one codec: `snappy-zstd`.
+handoff path. GPU-delta has one codec: `snappy-zstd` and supports only
+`--update-weight-delta-encoding xor`; `overwrite` is supported by disk-delta only.
 
 ## Environment
 
@@ -44,8 +45,9 @@ actors too. The five-layer GPU-delta E2E forwards the codec and checks
 every learned publication's protocol and codec. No old codec/encoder setting is migrated.
 
 The five-layer test is dedicated to GPU delta: it prepares checkpoints and data,
-then runs four rollouts to exercise three learned publications with deterministic
-rewards and the publication-change gate. It takes no CLI options:
+enables the initial sync, then runs four rollouts to exercise three learned
+publications with deterministic rewards. The change gate excludes the startup
+publication, so startup-only changes cannot satisfy it. It takes no CLI options:
 
 ```bash
 python tests/e2e/megatron/test_glm5_2_744b_a40b_5layer_nvfp4_w4a16.py
@@ -53,6 +55,27 @@ python tests/e2e/megatron/test_glm5_2_744b_a40b_5layer_nvfp4_w4a16.py
 
 Publications use `/root/shared_data/<run_id>/gpu_delta`. Engine replacement and
 attention FP8 conversion are disabled for this test.
+
+## Startup delta
+
+`--update-weight-delta-initial-sync` is an opt-in flag for both `disk-delta` and
+`gpu-delta`. By default, the initial call captures HF baseline version 0 without
+replacing rollout weights. Enable the flag when the loaded trainer
+weights differ from that HF checkpoint: the initial call then publishes and
+applies version 1 before the first rollout. Subsequent updates start at version 2;
+these transfer versions are independent of restored optimizer/rollout steps.
+This requires real common HF weights in SGLang, not dummy loading. The startup
+delta may be large. It reuses the ordinary transport, publication directory and
+(disk-delta only) host-local checkpoint; it is not a full-checkpoint bootstrap.
+For a new disk-delta stream, use fresh host-local checkpoint state: an already
+advanced checkpoint is not reset by the version-0 pull.
+
+Completed training updates report the final delta payload size through the existing
+`perf/update_weights_wire_bytes` metric to W&B when enabled, with the normal trainer
+namespace. This sums payload files across every owner, including compressed matrix
+data, raw scalar/vector replacements and alignment padding, excluding the JSON
+manifest. It reuses the existing owner gather; no codec-specific metric, additional
+payload scan, collective or CUDA synchronization is required.
 
 ## Fixed producer and receiver pipeline
 
@@ -85,8 +108,10 @@ identity and outer chunk offsets/lengths. SHA-256 authenticates final owner file
 old/new weights and intermediate Snappy bytes are not hashed. The receiver reads
 and verifies immutable files, then CPU-decompresses locally needed outer chunks
 once per engine-host arena into shared Snappy storage during background preparation. Each rank
-registers the shared arena for its streamed pinned transfer. After
-actual pause, it streams each tensor to HBM, performs hardware Snappy decompression,
+registers the shared arena for its streamed pinned transfer. Both decoded and
+encoded host arenas initially allocate the required bytes rounded to 64 MiB.
+Sufficient capacity is reused; a later growth allocates twice the new requirement,
+also rounded to 64 MiB. After actual pause, it streams each tensor to HBM, performs hardware Snappy decompression,
 transforms the XOR mask into the physical weight layout, and applies in place.
 GPU Zstd decompression is not part of this path.
 

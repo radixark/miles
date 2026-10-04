@@ -139,9 +139,9 @@ def log_completed_update(args, metrics, rollout_id, is_primary_rank):
     if not is_primary_rank:
         return
     if rollout_id is None:
-        # Initial baseline capture has no completed update metrics. Never assign
-        # an unexpected pre-training publication to an invented rollout step.
-        logger.warning("GPU-delta metrics have no trained rollout; not submitting to tracking: %s", metrics)
+        # An opt-in initial delta precedes any trained rollout. Report it without
+        # assigning an invented rollout step to the tracking series.
+        logger.info("GPU-delta initial sync completed before the first rollout: %s", metrics)
         return
     log_dict, step_key = namespace_metrics(
         metrics,

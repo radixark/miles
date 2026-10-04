@@ -4,7 +4,7 @@ import asyncio
 import threading
 import time
 from argparse import Namespace
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from unittest.mock import Mock, patch
 
 import numpy as np
@@ -39,9 +39,18 @@ def _setup(tmp_path, fail=False):
             update_weight_disk_dir=str(tmp_path / "delta"),
             custom_update_weight_post_write_path=None,
             update_weight_buffer_size=5,
+            update_weight_delta_initial_sync=False,
         )
     )
-    protocol._plan = {"w": {"name": "w", "dtype": "U8", "shape": [4], "encoding": "raw_bytes"}}
+    protocol._plan = {
+        "w": {
+            "name": "w",
+            "dtype": "U8",
+            "shape": [4],
+            "encoding": "raw_bytes",
+            "views": [{"id": "full", "slices": [[0, 4]]}],
+        }
+    }
     protocol.is_sender = True
     events = []
     protocol.rollout_engines = [_Engine(protocol, events, 0, fail), _Engine(protocol, events, 1)]
@@ -177,6 +186,43 @@ def test_pipeline_stage_inventory_requires_unique_owners_before_baseline_declara
         assert protocol._raw_names == ("w",) and protocol._gpu_batch_names == ()
         assert set(protocol._snapshot) == {"w"}
         assert [engine.version for engine in protocol.rollout_engines] == ["0", "0"]
+
+
+@pytest.mark.parametrize("initial_sync", [False, True])
+def test_initial_delta_publishes_loaded_trainer_after_common_baseline(
+    tmp_path, single_rank, monkeypatch, initial_sync
+):
+    protocol, events = _setup(tmp_path)
+    protocol.args.update_weight_delta_initial_sync = initial_sync
+    protocol._plan_digest = "plan"
+    protocol._staging_stream = Mock()
+    protocol._next_snapshot = {"w": torch.empty(4, dtype=torch.uint8)}
+    protocol._gpu_encoder = Mock(frame_bytes=1 << 20, outer_metrics={})
+    protocol._gpu_encoder.wrap_device.return_value = []  # This fixture contains only a raw vector.
+    monkeypatch.setattr(torch.cuda, "current_stream", lambda: Mock())
+    monkeypatch.setattr(torch.cuda, "stream", lambda _: nullcontext())
+    monkeypatch.setattr(torch.cuda, "Event", Mock)
+    monkeypatch.setattr(torch.Tensor, "record_stream", lambda *args: None)
+    monkeypatch.setattr(gpu_delta.dist, "get_world_size", lambda: 1)
+    monkeypatch.setattr(gpu_delta.dist, "gather_object", lambda shard, shards, **kwargs: shards.__setitem__(0, shard))
+
+    assert protocol.begin_sync(1, _buckets) is initial_sync
+    assert sorted(events) == [0, 1]
+    if not initial_sync:
+        assert not protocol._stream_dir.exists()
+        assert protocol.begin_sync(1, _buckets) is True
+    assert not protocol._seen  # The baseline export must not consume the current update's inventory.
+    for bucket in _buckets(materialize=True):
+        protocol.send_bucket(bucket)
+    protocol.after_base_weights()
+    publication = protocol.publish(1)
+    assert publication["base_version"] == 0 and publication["target_version"] == 1
+    assert publication["summary_counts"]["raw_bytes"] == 4
+    assert publication["summary_counts"]["wire_bytes"] == 4
+    assert (protocol._version_dir / "owner-00000.bin").read_bytes() == bytes([5, 6, 7, 8])
+    np.testing.assert_array_equal(protocol._snapshot["w"], [1, 2, 3, 4])
+    protocol.commit_pending_baseline()
+    np.testing.assert_array_equal(protocol._snapshot["w"], [5, 6, 7, 8])
 
 
 def _gpu_pending(monkeypatch, fail_batch=None, omit=None):
@@ -370,4 +416,5 @@ def test_gpu_baseline_swaps_only_after_successful_receiver_activation(monkeypatc
     else:
         protocol.finalize(1)
         assert protocol._snapshot is current and protocol._next_snapshot is old
+        assert protocol.update_weight_metrics["perf/update_weights_wire_bytes"] == 1
         assert not protocol._uncommitted

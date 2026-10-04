@@ -107,7 +107,9 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
         self._error, self._seen = None, set()
         if not self._baseline_captured:
             self._capture_baseline(iter_buckets)
-            return False
+            if not self.args.update_weight_delta_initial_sync:
+                return False
+            self._seen.clear()
         self._uncommitted = True
         self._started = time.monotonic()
         self._version_dir = self._stream_dir / f"weight_v{weight_version:06d}"

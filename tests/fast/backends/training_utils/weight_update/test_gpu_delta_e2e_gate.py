@@ -37,24 +37,24 @@ def _write_series(tmp_path, changed_bytes):
     return directory
 
 
-@pytest.mark.parametrize("changed_bytes", [[0, 7, 0], [5, 8, 9]])
+@pytest.mark.parametrize("changed_bytes", [[0, 0, 7, 0], [12, 5, 8, 9]])
 def test_complete_series_with_actual_changed_bytes_is_accepted(tmp_path, changed_bytes):
     final = _write_series(tmp_path, changed_bytes)
     with patch("torch.distributed.get_rank", return_value=0):
-        _assert_gpu_delta_weights_changed(Namespace(num_rollout=4), final, [])
+        _assert_gpu_delta_weights_changed(Namespace(num_rollout=4, update_weight_delta_initial_sync=True), final, [])
 
 
-def test_three_noop_updates_cannot_pass_the_e2e(tmp_path):
-    final = _write_series(tmp_path, [0, 0, 0])
+def test_startup_change_cannot_satisfy_the_learned_update_gate(tmp_path):
+    final = _write_series(tmp_path, [9, 0, 0, 0])
     with patch("torch.distributed.get_rank", return_value=0), pytest.raises(AssertionError, match="only no-op"):
-        _assert_gpu_delta_weights_changed(Namespace(num_rollout=4), final, [])
+        _assert_gpu_delta_weights_changed(Namespace(num_rollout=4, update_weight_delta_initial_sync=True), final, [])
 
 
 def test_changed_bytes_from_another_stream_do_not_count(tmp_path):
-    final = _write_series(tmp_path, [0, 7, 0])
-    path = tmp_path / "weight_v000002/manifest.json"
+    final = _write_series(tmp_path, [0, 0, 7, 0])
+    path = tmp_path / "weight_v000003/manifest.json"
     manifest = json.loads(path.read_text())
     manifest["stream_id"] = "other-stream"
     path.write_text(json.dumps(manifest))
     with patch("torch.distributed.get_rank", return_value=0), pytest.raises(AssertionError):
-        _assert_gpu_delta_weights_changed(Namespace(num_rollout=4), final, [])
+        _assert_gpu_delta_weights_changed(Namespace(num_rollout=4, update_weight_delta_initial_sync=True), final, [])
