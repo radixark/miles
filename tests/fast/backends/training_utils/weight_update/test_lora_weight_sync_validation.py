@@ -46,7 +46,6 @@ class _FakeEngineResult:
 
 def _make_args(**overrides):
     defaults = dict(
-        update_weight_transfer_mode="broadcast",
         lora_rank=32,
         lora_alpha=32,
         lora_dropout=0.0,

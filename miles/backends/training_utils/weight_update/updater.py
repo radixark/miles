@@ -68,7 +68,7 @@ class WeightUpdater:
             model_name=model_name,
             quantization_config=quantization_config,
         )
-        if args.update_weight_transfer_mode == "gpu-delta":
+        if getattr(args, "update_weight_transfer_mode", "broadcast") == "gpu-delta":
             self._hf_weight_iterator.local_expert_consumer = self.protocol.send_bucket
         self.weights_getter = weights_getter
         self.weight_version = 0
