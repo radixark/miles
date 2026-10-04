@@ -1,6 +1,6 @@
 """Native Snappy/Zstd producer oracle; CPU decoding is test-only.
 
-python -m pytest tests/manual/test_gpu_delta_encoder.py -q
+python -m pytest tests/manual/gpu_delta/test_gpu_delta_encoder.py -q
 Requires CUDA, nvCOMP >=5.3,<6, zstandard and python-snappy. No model is loaded.
 """
 

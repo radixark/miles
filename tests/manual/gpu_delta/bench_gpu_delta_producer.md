@@ -64,13 +64,13 @@ hardware Snappy decode/apply during the normal safe pause.
 Use a matching explicit Miles CUDA13 image, paired feature checkout, prebuilt
 nvCOMP >=5.3, compatible FlashInfer and TransformerEngine, and the prepared
 five-layer checkpoints. Install nvCOMP without changing the image dependency
-closure as documented in [GPU_DELTA.md](GPU_DELTA.md).
+closure as documented in [README.md](README.md).
 
 ```bash
 export PYTHONPATH=/workspace/sglang/python:/workspace/miles:/root/Megatron-LM
 export WEIGHT_DELTA_CODEC=snappy-zstd
 python -m torch.distributed.run --standalone --nproc-per-node=8 \
-  tests/manual/bench_gpu_delta_producer.py \
+  tests/manual/gpu_delta/bench_gpu_delta_producer.py \
   --hf-checkpoint /models/GLM5.2-5layer-NVFP4 \
   --load /models/GLM5.2-5layer-megatron-torch_dist \
   --output /data/gpu-delta/producer-new --versions 3 \
@@ -120,7 +120,7 @@ The existing pre-update fence brackets peak-stat reset; reset does not empty the
 CUDA cache, and reserved memory can include earlier work. No host RSS/pinned-peak
 or untracked native allocation measurement is claimed.
 
-Compare the [full-model receiver benchmark](GPU_DELTA.md) separately. Its input
+Compare the [full-model receiver benchmark](README.md) separately. Its input
 fixture and timings differ from this five-layer producer workload; do not subtract
 one from the other to claim end-to-end RL savings.
 

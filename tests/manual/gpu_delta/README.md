@@ -219,9 +219,9 @@ checkpoint and three cumulative publications. Fixture creation uses one GPU.
 ```bash
 export PYTHONPATH=/workspace/sglang/python:/workspace/miles
 export WEIGHT_DELTA_CODEC=snappy-zstd
-python tests/manual/bench_gpu_delta.py inventory \
+python tests/manual/gpu_delta/bench_gpu_delta.py inventory \
   --model /models/GLM5.2-NVFP4 --output /data/gpu-delta/inventory
-python tests/manual/bench_gpu_delta.py fixture \
+python tests/manual/gpu_delta/bench_gpu_delta.py fixture \
   --model /models/GLM5.2-NVFP4 \
   --inventory /data/gpu-delta/inventory/inventory.json \
   --output /data/gpu-delta/fixture --ratio 0.002 --versions 3
@@ -255,9 +255,9 @@ publications: one first-use update and two warm updates. It saves original-rank
 receipts, server logs and generation through DP routes0–7.
 
 ```bash
-python tests/manual/bench_gpu_delta.py run --model /models/GLM5.2-NVFP4 \
+python tests/manual/gpu_delta/bench_gpu_delta.py run --model /models/GLM5.2-NVFP4 \
   --fixture /data/gpu-delta/fixture --output /data/gpu-delta/snappy-zstd-new
-python tests/manual/bench_gpu_delta.py oracle --model /models/GLM5.2-NVFP4 \
+python tests/manual/gpu_delta/bench_gpu_delta.py oracle --model /models/GLM5.2-NVFP4 \
   --fixture /data/gpu-delta/fixture --output /data/gpu-delta/target-oracle
 ```
 
@@ -275,15 +275,15 @@ the new topology, then rebind its views into a **new** immutable fixture directo
 
 ```bash
 export WEIGHT_DELTA_HOST_CACHE_DIR=/dev/shm/gpu-delta-benchmark
-python tests/manual/bench_gpu_delta.py inventory --model /models/GLM5.2-NVFP4 \
+python tests/manual/gpu_delta/bench_gpu_delta.py inventory --model /models/GLM5.2-NVFP4 \
   --ports 31135 31235 --output /data/gpu-delta/ep4-inventory
-python tests/manual/bench_gpu_delta.py rebind --model /models/GLM5.2-NVFP4 \
+python tests/manual/gpu_delta/bench_gpu_delta.py rebind --model /models/GLM5.2-NVFP4 \
   --inventory /data/gpu-delta/ep4-inventory/inventory.json \
   --fixture /data/gpu-delta/fixture --output /data/gpu-delta/ep4-fixture
-python tests/manual/bench_gpu_delta.py run --model /models/GLM5.2-NVFP4 \
+python tests/manual/gpu_delta/bench_gpu_delta.py run --model /models/GLM5.2-NVFP4 \
   --fixture /data/gpu-delta/ep4-fixture --ports 31135 31235 \
   --output /data/gpu-delta/ep4-snappy-zstd-new
-python tests/manual/bench_gpu_delta.py oracle --model /models/GLM5.2-NVFP4 \
+python tests/manual/gpu_delta/bench_gpu_delta.py oracle --model /models/GLM5.2-NVFP4 \
   --fixture /data/gpu-delta/ep4-fixture --ports 31135 31235 \
   --output /data/gpu-delta/ep4-target-oracle
 ```

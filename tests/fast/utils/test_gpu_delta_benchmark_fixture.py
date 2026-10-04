@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 import torch
 
-_MODULE = Path(__file__).parents[2] / "manual" / "bench_gpu_delta.py"
+_MODULE = Path(__file__).parents[2] / "manual" / "gpu_delta" / "bench_gpu_delta.py"
 _spec = importlib.util.spec_from_file_location("bench_gpu_delta", _MODULE)
 bench = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(bench)

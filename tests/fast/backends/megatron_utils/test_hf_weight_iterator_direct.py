@@ -321,7 +321,7 @@ def test_producer_discovery_installs_actual_owner_hook_and_preserves_plan(direct
 
     from miles.backends.training_utils import parallel
 
-    path = Path(__file__).parents[3] / "manual" / "bench_gpu_delta_producer.py"
+    path = Path(__file__).parents[3] / "manual" / "gpu_delta" / "bench_gpu_delta_producer.py"
     spec = importlib.util.spec_from_file_location("gpu_delta_discovery_benchmark", path)
     producer = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(producer)

@@ -6,11 +6,11 @@ No private model names/paths or cluster launch commands are embedded here.
 
 Example (run from the Miles checkout with paired SGLang on PYTHONPATH)::
 
-    python tests/manual/bench_gpu_delta.py inventory --model /models/base --output /data/inventory
-    python tests/manual/bench_gpu_delta.py fixture --model /models/base \
+    python tests/manual/gpu_delta/bench_gpu_delta.py inventory --model /models/base --output /data/inventory
+    python tests/manual/gpu_delta/bench_gpu_delta.py fixture --model /models/base \
         --inventory /data/inventory/inventory.json --output /data/fixture
     WEIGHT_DELTA_CODEC=snappy-zstd WEIGHT_DELTA_TIMING=1 \
-        python tests/manual/bench_gpu_delta.py run --model /models/base \
+        python tests/manual/gpu_delta/bench_gpu_delta.py run --model /models/base \
         --fixture /data/fixture --output /data/snappy-zstd
 
 Canonical rank-zero/rank-one tensors use direct uncompressed target values when
