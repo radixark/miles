@@ -1,5 +1,3 @@
-# Copyright (c) 2026, NVIDIA CORPORATION. All rights reserved.
-
 """Fused CuTe DSL NVFP4 quantize-dequantize for fake QAT.
 
 The kernel keeps the E4M3 block scale and packed E2M1 values in registers and
@@ -7,9 +5,6 @@ writes only the dequantized BF16/FP16 result. Its arithmetic order mirrors
 Transformer Engine's 1D, 1x16, per-tensor NVFP4 implementation. The vectorized
 load, FP4 conversion, and Four Over Six structure are adapted from FlashInfer's
 CuTe DSL NVFP4 quantizer.
-
-Grouped scheduling is adapted from Ziang Li's radixark/Megatron-LM#87
-(46a4fee12f665a1bc1323576d64e33a14211d1fa).
 
 Supported contract:
 
