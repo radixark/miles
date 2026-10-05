@@ -81,6 +81,13 @@ def _strip_best_prefix(keys: list[str], target_keys: set[str]) -> tuple[str, int
     return best_prefix, best_match
 
 
+def _unloaded_parameters(hf_model: torch.nn.Module, loaded_keys: set[str]) -> list[str]:
+    """Parameters no checkpoint key wrote to. A tied alias such as lm_head.weight is covered by
+    whichever of its names the checkpoint carries."""
+    loaded = {id(tensor) for name, tensor in hf_model.state_dict(keep_vars=True).items() if name in loaded_keys}
+    return [name for name, parameter in hf_model.named_parameters() if id(parameter) not in loaded]
+
+
 def _convert_fsdp_to_hf(
     origin_hf_dir: str,
     input_dir: str,
@@ -111,6 +118,14 @@ def _convert_fsdp_to_hf(
         )
 
     missing, unexpected = hf_model.load_state_dict(model_state, strict=False)
+    # from_config initialized every parameter randomly; one the checkpoint did not overwrite would be
+    # exported as if it were trained.
+    if unloaded := _unloaded_parameters(hf_model, model_state.keys() - set(unexpected)):
+        raise ValueError(
+            f"{len(unloaded)} parameters have no weight in the checkpoint under prefix {best_prefix!r} "
+            f"and would be exported randomly initialized: {unloaded[:10]}. "
+            f"Unexpected checkpoint keys: {unexpected[:10]}"
+        )
     print(f"Missing keys: {missing}\nUnexpected keys: {unexpected}")
 
     os.makedirs(output_dir, exist_ok=True)
