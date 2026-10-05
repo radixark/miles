@@ -91,6 +91,7 @@ run:
       SGLANG_JIT_DEEPGEMM_PRECOMPILE: 'false'
       SGLANG_MEMORY_SAVER_CUDA_GRAPH: 'true'
       SGLANG_OPT_USE_CUSTOM_ALL_REDUCE_V2: '1'
+      SGLANG_RETURN_ORIGINAL_LOGPROB: '0'
     meta:
       gpu_ids: 0,1,2,3,4,5,6,7
     name: inference-engine-all-0-0
@@ -172,6 +173,7 @@ run:
       SGLANG_JIT_DEEPGEMM_PRECOMPILE: 'false'
       SGLANG_MEMORY_SAVER_CUDA_GRAPH: 'true'
       SGLANG_OPT_USE_CUSTOM_ALL_REDUCE_V2: '1'
+      SGLANG_RETURN_ORIGINAL_LOGPROB: '0'
     meta:
       gpu_ids: 0,1,2,3,4,5,6,7
     name: inference-engine-all-0-1
@@ -281,7 +283,7 @@ run:
     - -m
     - miles.rollout.session.server
     - --config-json
-    - '{"host":"0.0.0.0","port":8000,"instance_id":"0123456789abcdef-0","backend_url":"http://myrun-miles-run-inference-router-0-0.myrun-miles-run-inference-router-0:8000","timeout":null,"hf_checkpoint":"<FIXTURE_DIR>/typical-model","chat_template_path":null,"tito_model":"default","apply_chat_template_kwargs":{},"use_rollout_routing_replay":false,"use_rollout_indexer_replay":false,"use_sampling_support_replay":false,"sglang_speculative_algorithm":null,"num_layers":36,"moe_router_topk":2,"save_debug_trajectory_data":null,"lora_rank":0,"lora_adapter_path":null,"lora_train_only":false,"use_session_server":true,"session_message_matcher":"strict","pause_generation_mode":"retract","session_sample_picker_path":"miles.rollout.session.v2.picker_hub.drop_same_prompt_retries","session_sample_postprocessor_path":"miles.rollout.session.v2.postprocessor_hub.default_postprocess"}'
+    - '{"host":"0.0.0.0","port":8000,"instance_id":"0123456789abcdef-0","backend_url":"http://myrun-miles-run-inference-router-0-0.myrun-miles-run-inference-router-0:8000","timeout":null,"hf_checkpoint":"<FIXTURE_DIR>/typical-model","chat_template_path":null,"tito_model":"default","apply_chat_template_kwargs":{},"use_rollout_routing_replay":false,"use_rollout_indexer_replay":false,"use_sampling_support_replay":false,"sglang_speculative_algorithm":null,"num_layers":36,"moe_router_topk":2,"save_debug_trajectory_data":null,"lora_rank":0,"lora_adapter_path":null,"lora_train_only":false,"use_session_server":true,"session_message_matcher":"strict","pause_generation_mode":"retract","session_sample_picker_path":"miles.rollout.session.v2.picker_hub.drop_same_prompt_retries","session_sample_postprocessor_path":"miles.rollout.session.v2.postprocessor_hub.default_postprocess","rollout_top_logprobs_num":0,"rollout_sampling_logprobs_mode":"selected","rollout_temperature":1.0}'
     name: session-server
     objectName: myrun-miles-run-session-server
     poolId: session-server

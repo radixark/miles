@@ -12,7 +12,7 @@ cannot catch a regression on their own -- as in the Adam test this mirrors.
 import glob
 import os
 
-from tests.ci.ci_register import register_cuda_ci
+from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
 from tests.ci.metric_history import register_ci_gate
 
 from miles.utils.external_utils import command_utils
@@ -28,6 +28,11 @@ register_cuda_ci(
     suite="stage-c-4-gpu-h200",
     labels=["miles-plugin", "megatron"],
     hardware=["hopper", "blackwell"],
+)
+register_rocm_ci(
+    est_time=600,
+    suite="nightly-stage-c-4-gpu-mi350",
+    labels=["miles-plugin", "megatron"],
 )
 
 register_ci_gate(metric_key="train/grad_norm")

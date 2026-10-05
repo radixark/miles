@@ -23,6 +23,8 @@ class CaseConfig:
     hf_repo: str
     num_gpus: int
     rollout_num_gpus_per_engine: int
+    sglang_attention_backend: str = "fa3"
+    attn_implementation: str = "flash_attention_3"
 
 
 def prepare(case: CaseConfig) -> None:
@@ -87,8 +89,8 @@ def execute(case: CaseConfig, wandb_file: str) -> None:
         "--sglang-mem-fraction-static 0.8 "
         "--sglang-decode-log-interval 1000 "
         "--sglang-chunked-prefill-size 4096 "
-        "--sglang-attention-backend fa3 "
-        "--attn-implementation flash_attention_3 "
+        f"--sglang-attention-backend {case.sglang_attention_backend} "
+        f"--attn-implementation {case.attn_implementation} "
     )
 
     ci_args = "--ci-test "

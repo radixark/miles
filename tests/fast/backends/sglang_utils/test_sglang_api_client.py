@@ -753,7 +753,10 @@ class TestWeightControlPayloads:
             "weight_version": "run-7",
         }
 
-    async def test_distributed_update_forwards_a_weight_version_and_a_non_default_selector(self, client, recorder):
+    @pytest.mark.parametrize("load_format", [None, "flattened_bucket"])
+    async def test_distributed_update_forwards_a_weight_version_and_a_non_default_selector(
+        self, client, recorder, load_format
+    ):
         """The distributed path carries the same optional fields as the tensor path."""
         await client.update_weights_from_distributed(
             names=["w"],
@@ -762,6 +765,7 @@ class TestWeightControlPayloads:
             group_name="g",
             weight_version="run-7",
             selector="draft",
+            load_format=load_format,
         )
 
         assert recorder.calls[0][2]["json"] == {
@@ -772,6 +776,7 @@ class TestWeightControlPayloads:
             "flush_cache": False,
             "selector": "draft",
             "weight_version": "run-7",
+            **({"load_format": load_format} if load_format is not None else {}),
         }
 
     async def test_disk_update_omits_the_optional_fields_when_not_given(self, client, recorder):

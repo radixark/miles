@@ -1,10 +1,17 @@
+import itertools
+import re
 from argparse import Namespace
 from collections.abc import Sequence
+from dataclasses import dataclass
 
 import torch
 import torch.distributed as dist
 from tqdm import tqdm
 
+from miles.backends.megatron_utils.megatron_to_hf import convert_to_hf
+from miles.backends.megatron_utils.named_weights import named_params_and_buffers
+from miles.backends.megatron_utils.sglang import monkey_patch_torch_reductions
+from miles.backends.megatron_utils.update_weight.expert_gather import ExpertGather
 from miles.backends.megatron_utils.update_weight.hf_weight_iterator import (
     MegatronHfWeightIteratorBase,
     _iter_mm_tower_units,
@@ -14,9 +21,11 @@ from miles.backends.training_utils.weight_update.hf_weight_iterator import Weigh
 from miles.utils.distributed_utils import get_gloo_group
 from miles.utils.types import ParamInfo
 
-from ..megatron_to_hf import convert_to_hf
-from ..named_weights import named_params_and_buffers
-from ..sglang import monkey_patch_torch_reductions
+
+@dataclass(frozen=True)
+class _ExpertBatch:
+    param_infos: Sequence[ParamInfo]
+    gathers: tuple[ExpertGather, ...]
 
 
 class HfWeightIteratorDirect(MegatronHfWeightIteratorBase):
@@ -25,13 +34,45 @@ class HfWeightIteratorDirect(MegatronHfWeightIteratorBase):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        parallel = get_parallel_state()
+        self._convert_experts_before_gather = parallel.etp.size == 1
         non_expert_infos, expert_infos = _get_megatron_local_param_infos(
             self.args, self.model, gather_pp=self.placement.gather_pp
         )
-        ep_size = get_parallel_state().ep.size
+        ep_size = parallel.ep.size
         self._non_expert_batches = _pack_param_infos_by_size(self.args, non_expert_infos)
-        # An expert batch materializes ep_size x its metadata size after the EP all_gather.
-        self._expert_batches = _pack_param_infos_by_size(self.args, expert_infos, size_multiplier=ep_size)
+        self._expert_batches = []
+        if not self._convert_experts_before_gather:
+            self._expert_batches = [
+                _ExpertBatch(param_infos=infos, gathers=())
+                for infos in _pack_param_infos_by_size(self.args, expert_infos, size_multiplier=ep_size)
+            ]
+        elif expert_infos:
+            edp = parallel.edp
+            assert edp is not None, "Expert data parallel state is required for MoE weight updates"
+            owner_infos = _partition_expert_infos(
+                expert_infos, num_local_experts=self.args.num_experts // ep_size, edp_size=edp.size
+            )
+            # At ETP1, TP x DP x CP is exactly EP x EDP. Borrow Megatron's
+            # combined group to avoid repacking between EP and EDP gathers.
+            combined = parallel.tp_dp_cp
+            assert (
+                combined is not None and combined.size == ep_size * edp.size
+            ), "The combined TP/DP/CP group must cover all EP/EDP ranks"
+            groups = ([parallel.pp] if self.placement.gather_pp else []) + [combined]
+            # Pack each owner's share first so a round can quantize on every EDP
+            # replica, even when the complete local expert set spans many batches.
+            owner_batches = [
+                _pack_param_infos_by_size(self.args, infos, size_multiplier=ep_size * edp.size)
+                for infos in owner_infos
+            ]
+            self._expert_batches = [
+                _ExpertBatch(
+                    param_infos=batches[edp.rank],
+                    gathers=tuple(ExpertGather(group=group.group) for group in groups if group.size > 1),
+                )
+                for batches in itertools.zip_longest(*owner_batches, fillvalue=())
+            ]
 
     def _iter_hf_param_units(self, weights, *, materialize):
         rank = dist.get_rank()
@@ -49,16 +90,39 @@ class HfWeightIteratorDirect(MegatronHfWeightIteratorBase):
                 yield from self._convert_to_hf_param_units(named_params)
             del named_params
             pbar.update(1)
-        for param_infos in self._expert_batches:
-            named_params = _materialize_expert_batch(
-                self.args, param_infos, weights, gather_pp=self.placement.gather_pp
-            )
-            if materialize:
-                yield from self._convert_to_hf_param_units(named_params)
-            del named_params
+        for batch in self._expert_batches:
+            if self._convert_experts_before_gather:
+                units = self._convert_and_gather_expert_batch(batch, weights)
+                if materialize:
+                    yield from units
+                del units
+            else:
+                # ETP shards must form complete experts before conversion/quantization.
+                named_params = _gather_megatron_expert_batch(
+                    self.args, batch.param_infos, weights, gather_pp=self.placement.gather_pp
+                )
+                if materialize:
+                    yield from self._convert_to_hf_param_units(named_params)
+                del named_params
             pbar.update(1)
         pbar.close()
         yield from _iter_mm_tower_units(self.args, materialize=materialize)
+
+    def _convert_and_gather_expert_batch(self, batch: _ExpertBatch, weights):
+        """Convert once per expert across EP/EDP, then gather HF weights and scales."""
+        device = torch.device("cuda", torch.cuda.current_device())
+        rank = dist.get_rank()
+        # Sender placement is independent of ownership: non-senders also
+        # quantize their assigned experts, once across all expert-DP replicas.
+        local_params = (
+            (info.name, weights[info.name].detach().to(device=device, non_blocking=True))
+            for info in batch.param_infos
+            if info.src_rank == rank
+        )
+        units = list(self._convert_to_hf_param_units(local_params))
+        for gather in batch.gathers:
+            units = gather(units, device=device)
+        return units
 
     def _export_pp_local_lora(self, adapter):
         assert adapter is None, "multi-LoRA export requires --megatron-to-hf-mode bridge"
@@ -135,7 +199,7 @@ def _materialize_non_expert_batch(
     return [(info.name, param) for info, param in zip(param_infos, gathered, strict=True)]
 
 
-def _materialize_expert_batch(
+def _gather_megatron_expert_batch(
     args: Namespace,
     param_infos: Sequence[ParamInfo],
     megatron_local_weights,
@@ -193,6 +257,23 @@ def _pack_param_infos_by_size(
         batches[-1].append(info)
         buffer_size += size
     return [batch for batch in batches if batch]
+
+
+def _partition_expert_infos(
+    param_infos: Sequence[ParamInfo], *, num_local_experts: int, edp_size: int
+) -> list[list[ParamInfo]]:
+    """Assign contiguous local-expert ranges to EDP replicas, keeping FC1/FC2 together."""
+    count, remainder = divmod(num_local_experts, edp_size)
+    owners = [owner for owner in range(edp_size) for _ in range(count + (owner < remainder))]
+    partitions: list[list[ParamInfo]] = [[] for _ in range(edp_size)]
+    for info in param_infos:
+        # The direct converter uses TE grouped weights with global expert IDs.
+        match = re.search(r"\.weight(\d+)$", info.name)
+        if match is None:
+            raise ValueError(f"Cannot identify the routed expert in {info.name!r}")
+        local_expert = int(match.group(1)) % num_local_experts
+        partitions[owners[local_expert]].append(info)
+    return partitions
 
 
 def _get_param_full_size(info: ParamInfo) -> int:

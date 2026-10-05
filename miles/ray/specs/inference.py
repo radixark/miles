@@ -414,4 +414,7 @@ def compute_inference_engine_env_vars(args) -> dict[str, str]:
         from miles.utils import dumper_utils
 
         env_vars.update(dumper_utils.get_sglang_env(args))
+    # Match the trainer's temperature-scaled logprobs on every worker,
+    # overriding inherited environment and dumper settings.
+    env_vars["SGLANG_RETURN_ORIGINAL_LOGPROB"] = "0"
     return env_vars

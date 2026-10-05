@@ -20,7 +20,8 @@ pylatexenc
 pytest-asyncio
 pyyaml
 qwen_vl_utils # for VLM
-ray[default]>=2.56.0
+# Ray 2.59 removed internal_api.free, which RayObjectStore needs for RPC references.
+ray[default]>=2.56.0,<2.59.0
 ring_flash_attn; platform_system == "Linux"
 safetensors>=0.8.0  # samples-reply wire codec; malformed-payload exception contract validated on 0.8.0
 sglang-router>=0.2.3

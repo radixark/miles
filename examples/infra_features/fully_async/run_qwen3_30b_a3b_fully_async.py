@@ -26,7 +26,7 @@ class ScriptArgs(command_utils.ExecuteTrainConfig):
     model_dir: str = "/root/models"
     megatron_path: str = "/root/Megatron-LM"
     pause_generation_mode: Literal["in_place", "retract"] = "in_place"
-    update_weight_transfer_mode: Literal["broadcast", "p2p"] = "broadcast"
+    update_weight_transfer_mode: Literal["broadcast", "broadcast_packed", "p2p"] = "broadcast"
     extra_args: str = ""
 
 

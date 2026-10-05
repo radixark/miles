@@ -439,7 +439,7 @@ def run_forward_backward_pass(
 
     sampling_mask_keys = (
         ("rollout_sampling_mask_ids", "rollout_sampling_mask_offsets")
-        if args.use_sampling_support_replay and args.loss_type == "policy_loss"
+        if args.use_sampling_support_replay and args.loss_type in ("policy_loss", "score_centering")
         else ()
     )
 
@@ -476,6 +476,9 @@ def run_forward_backward_pass(
                 "advantages",
                 "returns",
                 "rollout_log_probs",
+                "rollout_topk_token_ids",
+                "rollout_topk_lengths",
+                "rollout_topk_log_probs",
                 "max_seq_lens",
                 "witness_ids",
                 "opd_reverse_kl",
@@ -528,7 +531,9 @@ def run_forward_backward_pass(
             if (x := batch["multimodal_train_inputs"]) is not None:
                 forward_kwargs.update(x)
 
-            output_tensor = model(**forward_kwargs, fp32_output=args.loss_type not in ("policy_loss", "sft_loss"))
+            output_tensor = model(
+                **forward_kwargs, fp32_output=args.loss_type not in ("policy_loss", "sft_loss", "score_centering")
+            )
 
         for m, old_stage in zip(all_replay_managers, old_stages, strict=True):
             m.stage = old_stage

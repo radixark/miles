@@ -77,6 +77,7 @@ class UpdateWeightFromDistributed(WeightTransferProtocol):
                 self.rollout_engines,
                 bucket,
                 selector=self._selector,
+                transfer_mode=getattr(self.args, "update_weight_transfer_mode", "broadcast"),
             )
             async_utils.wait_futures(futures)
             bucket.clear()
@@ -148,10 +149,22 @@ def update_weights_from_distributed(
     rollout_engines: Sequence[SGLangApiClient],
     converted_named_tensors: Sequence[tuple[str, torch.Tensor]],
     selector: str = "all",
+    transfer_mode: str = "broadcast",
 ) -> list[Future]:
     """
     Send metadata (HTTP), broadcast tensors (NCCL rank 0 → engines).
     """
+    if transfer_mode not in ("broadcast", "broadcast_packed"):
+        raise ValueError(f"Expected a broadcast transfer mode, got {transfer_mode!r}")
+    # Pack before asking receivers to enter their collective, so allocation or
+    # format validation failures cannot leave them waiting for a broadcast.
+    if transfer_mode == "broadcast_packed":
+        tensors = [_flatten_weight_bucket(converted_named_tensors)]
+        format_kwargs = {"load_format": "flattened_bucket"}
+    else:
+        tensors = [param.data.contiguous() for _, param in converted_named_tensors]
+        format_kwargs = {}
+
     futures = [
         async_utils.submit(
             client.update_weights_from_distributed(
@@ -160,18 +173,36 @@ def update_weights_from_distributed(
                 shapes=[param.shape for _, param in converted_named_tensors],
                 selector=selector,
                 group_name=group_name,
+                **format_kwargs,
             )
         )
         for client in rollout_engines
     ]
 
-    contiguous_tensors = [
-        param.data if param.data.is_contiguous() else param.data.contiguous() for _, param in converted_named_tensors
-    ]
     handles = []
-    for tensor in contiguous_tensors:
+    for tensor in tensors:
         handles.append(dist.broadcast(tensor, 0, group=group, async_op=True))
     for handle in handles:
         handle.wait()
 
     return futures
+
+
+def _flatten_weight_bucket(named_tensors: Sequence[tuple[str, torch.Tensor]]) -> torch.Tensor:
+    # Keep SGLang optional for callers using the existing per-tensor protocol.
+    from sglang.srt.weight_sync.tensor_bucket import FlattenedTensorBucket
+
+    if not getattr(FlattenedTensorBucket, "supports_multi_dtypes", False):
+        raise RuntimeError("Flattened broadcasts require SGLang's mixed-dtype FlattenedTensorBucket")
+
+    # SGLang concatenates raw bytes without padding. Each reconstructed dtype
+    # view requires an aligned offset; preserve names/order and reject unsafe
+    # layouts before allocating or sending metadata instead of casting values.
+    offset = 0
+    for name, tensor in named_tensors:
+        if offset % tensor.element_size():
+            raise ValueError(f"Unaligned flattened weight {name}: byte offset {offset}, dtype {tensor.dtype}")
+        offset += tensor.numel() * tensor.element_size()
+    return FlattenedTensorBucket(
+        named_tensors=[(name, tensor.contiguous()) for name, tensor in named_tensors]
+    ).get_flattened_tensor()
