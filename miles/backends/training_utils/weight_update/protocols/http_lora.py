@@ -1,5 +1,12 @@
 """LoRA weight transfer over each engine's LoRA load route, for engines the trainer shares no collective or host with.
 
+The other transports assume the trainer reaches the engines through a collective
+or a shared host. Neither holds when the rollout pool is on different hardware
+from the trainer: NCCL and RCCL cannot share a communicator, and cuda_ipc handles
+do not leave the host. The cross-host transports, p2p and disk-delta, carry full
+weights only. A LoRA run needs neither: the base weights never change, and the
+adapter is small enough to hand to each engine over HTTP.
+
 ``--http-lora-ship path`` stages a versioned PEFT directory and posts its path to
 /load_lora_adapter; ``tensors`` posts the adapter itself to
 /load_lora_adapter_from_tensors, so the engines need nothing but an HTTP port.
