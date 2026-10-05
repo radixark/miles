@@ -8,13 +8,15 @@ import json
 from argparse import Namespace
 from pathlib import Path
 
+import lz4.block
 import numpy as np
+import pytest
 import safetensors.torch
 import snappy
 import torch
 import zstandard
 
-from miles.utils.gpu_delta_publication import sha256
+from miles.utils.gpu_delta_publication import CODECS, sha256
 
 _MODULE = Path(__file__).with_name("bench_gpu_delta.py")
 _spec = importlib.util.spec_from_file_location("bench_gpu_delta", _MODULE)
@@ -31,11 +33,11 @@ def _read_tensors(directory):
     return result
 
 
-def _replay(publication, state):
+def _replay(publication, state, codec):
     path = Path(publication["manifest_path"])
     assert sha256(path.read_bytes()) == publication["manifest_sha256"]
     manifest = json.loads(path.read_text())
-    assert manifest["codec"] == "snappy-zstd" and manifest["protocol_version"] == 4
+    assert manifest["codec"] == codec and manifest["protocol_version"] == 4
     payloads = {item["name"]: (path.parent / item["name"]).read_bytes() for item in manifest["files"]}
     for item in manifest["files"]:
         assert sha256(payloads[item["name"]]) == item["sha256"]
@@ -61,13 +63,20 @@ def _replay(publication, state):
                 arena[chunk["decoded_offset"] : chunk["decoded_offset"] + len(decoded)] = decoded
         for frame in tensor["frames"]:
             encoded = arena[frame["encoded_offset"] : frame["encoded_offset"] + frame["encoded_bytes"]]
-            raw = snappy.decompress(bytes(encoded))
+            raw = (
+                lz4.block.decompress(bytes(encoded), uncompressed_size=frame["decoded_bytes"])
+                if codec == "lz4-zstd"
+                else snappy.decompress(bytes(encoded))
+            )
+            assert len(raw) == frame["decoded_bytes"]
             start = frame["decoded_offset"]
             mask[start : start + frame["decoded_bytes"]] = np.frombuffer(raw, dtype=np.uint8)
         state[tensor["name"]] = state[tensor["name"]] ^ mask if tensor["encoding"] == "xor_bytes" else mask
 
 
-def test_three_versions_preserve_source_and_draft_and_replay_exact_targets(tmp_path):
+@pytest.mark.parametrize("codec", CODECS)
+def test_three_versions_preserve_source_and_draft_and_replay_exact_targets(tmp_path, codec, monkeypatch):
+    monkeypatch.setenv("GPU_DELTA_CODEC", codec)
     model, output = tmp_path / "base", tmp_path / "fixture"
     model.mkdir()
     output.mkdir()
@@ -104,7 +113,7 @@ def test_three_versions_preserve_source_and_draft_and_replay_exact_targets(tmp_p
                         "participants": [
                             {
                                 "identity": {"engine_id": "e", "rank_id": "r"},
-                                "plan": {"codec": "snappy-zstd", "tensors": plan},
+                                "plan": {"codec": codec, "tensors": plan},
                             }
                         ],
                     }
@@ -128,12 +137,12 @@ def test_three_versions_preserve_source_and_draft_and_replay_exact_targets(tmp_p
     for version, row in enumerate(report["rounds"], start=1):
         assert row["version"] == version and row["changed_bytes"] > 0
         previous = {name: data.copy() for name, data in state.items()}
-        assert bench._validate_fixture_codec(report) == "snappy-zstd"
-        _replay(row["publications"]["snappy-zstd"], state)
-        assert row["accounting"]["snappy-zstd"]["outer_encoded_bytes"] > 0
-        assert row["accounting"]["snappy-zstd"]["alignment_bytes"] >= 0
-        assert row["accounting"]["snappy-zstd"]["raw_tensor_count"] == 2
-        assert row["accounting"]["snappy-zstd"]["raw_target_bytes"] == 256
+        assert bench._validate_fixture_codec(report, codec) == codec
+        _replay(row["publications"][codec], state, codec)
+        assert row["accounting"][codec]["outer_encoded_bytes"] > 0
+        assert row["accounting"][codec]["alignment_bytes"] >= 0
+        assert row["accounting"][codec]["raw_tensor_count"] == 2
+        assert row["accounting"][codec]["raw_target_bytes"] == 256
         for name in experts:
             assert np.any(state[name] != previous[name])
     final = _read_tensors(Path(report["target_checkpoint"]))

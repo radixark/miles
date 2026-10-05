@@ -187,10 +187,9 @@ def _calibrate(plan, seed, target_ratio):
     return (low + high) / 2
 
 
-def _validate_fixture_codec(fixture):
-    codec = configured_codec()
+def _validate_fixture_codec(fixture, codec):
     if fixture.get("codec") != codec:
-        raise ValueError("Fixture requires the snappy-zstd codec")
+        raise ValueError(f"Fixture codec differs from configured {codec}")
     for row in fixture["rounds"]:
         publication = row["publications"].get(codec)
         if (
@@ -199,7 +198,7 @@ def _validate_fixture_codec(fixture):
             or publication.get("codec") != codec
             or publication.get("frame_bytes") != FRAME_BYTES
         ):
-            raise ValueError("Fixture requires protocol 4 / snappy-zstd / 1 MiB frames")
+            raise ValueError(f"Fixture requires protocol 4 / {codec} / 1 MiB frames")
     return codec
 
 
@@ -323,8 +322,8 @@ def _payload_links(manifest, source, destination):
     return files
 
 
-def _rebind_round(args, row, plan, source_digest, target_digest, stream_id):
-    publication = row["publications"][configured_codec()]
+def _rebind_round(args, row, plan, source_digest, target_digest, stream_id, codec):
+    publication = row["publications"][codec]
     path = Path(publication["manifest_path"]).resolve(strict=True)
     content = path.read_bytes()
     if sha256(content) != publication["manifest_sha256"]:
@@ -359,7 +358,7 @@ def _rebind_round(args, row, plan, source_digest, target_digest, stream_id):
         )
     ):
         raise ValueError("Rebinding changed canonical payload/frame metadata")
-    directory = args.output / configured_codec() / f"v{row['version']}"
+    directory = args.output / codec / f"v{row['version']}"
     directory.mkdir(parents=True, exist_ok=False)
     files = _payload_links(manifest, path.parent, directory)
     metadata |= {
@@ -370,9 +369,9 @@ def _rebind_round(args, row, plan, source_digest, target_digest, stream_id):
     rebound = seal_publication(directory, [{"metadata": metadata, "files": manifest["files"], "tensors": tensors}])
     sizes = _publication_accounting(rebound)
     result = row | {
-        "publications": {configured_codec(): rebound},
-        "accounting": {configured_codec(): sizes},
-        "ratios": {configured_codec(): sizes["publication_bytes"] / row["canonical_bytes"]},
+        "publications": {codec: rebound},
+        "accounting": {codec: sizes},
+        "ratios": {codec: sizes["publication_bytes"] / row["canonical_bytes"]},
     }
     proof = {
         "version": row["version"],
@@ -391,10 +390,11 @@ def _rebind(args):
     source_path = (args.fixture / "fixture.json").resolve(strict=True)
     source_bytes = source_path.read_bytes()
     fixture = json.loads(source_bytes)
-    _validate_fixture_codec(fixture)
+    codec = configured_codec()
+    _validate_fixture_codec(fixture, codec)
     inventory_bytes = args.inventory.read_bytes()
     inventory = json.loads(inventory_bytes)
-    cohort = negotiate_cohort(inventory["descriptions"])
+    cohort = negotiate_cohort(inventory["descriptions"], codec=codec)
     _validate_cohort(cohort, len(inventory["descriptions"]))
     if inventory["plan_digest"] != cohort.plan_digest:
         raise ValueError("Saved inventory plan digest differs from its actual participants")
@@ -433,7 +433,7 @@ def _rebind(args):
         "rounds": [],
     }
     for version, row in enumerate(fixture["rounds"], 1):
-        publication = row["publications"][configured_codec()]
+        publication = row["publications"][codec]
         if (
             row["version"] != version
             or publication["base_version"] != version - 1
@@ -442,7 +442,7 @@ def _rebind(args):
         ):
             raise ValueError("Fixture publications must be one consecutive cumulative stream")
         result, round_proof = _rebind_round(
-            args, row, cohort.plan, fixture["plan_digest"], cohort.plan_digest, stream_id
+            args, row, cohort.plan, fixture["plan_digest"], cohort.plan_digest, stream_id, codec
         )
         report["rounds"].append(result)
         proof["rounds"].append(round_proof)
@@ -499,7 +499,7 @@ def _fixture(args):
 
     codec = configured_codec()
     inventory = json.loads(args.inventory.read_text())
-    plan, _, digest = merge_plans(inventory["descriptions"])
+    plan, _, digest = merge_plans(inventory["descriptions"], codec=codec)
     index = _tensor_index(args.model)
     for spec in plan:
         actual = index[spec["name"]]
@@ -520,13 +520,13 @@ def _fixture(args):
         "stream_id": stream_id,
         "target_checkpoint": str(target.resolve()),
         "rounds": [],
-        "calibration": "Plain CPU Zstd level-1 sample-frame estimate; final Snappy-Zstd size is measured separately, not forced to the requested ratio.",
+        "calibration": "Plain CPU Zstd level-1 sample-frame estimate; final inner-plus-Zstd size is measured separately, not forced to the requested ratio.",
         "canonical_denominator": "Mutable canonical tensors in the receiver plan; excludes frozen draft and non-updated checkpoint entries.",
         "changed_bytes_definition": "Unequal storage bytes, not changed bits or compressed size.",
         "codec": codec,
-        "inner_snappy_origin": "Production GpuBatchEncoder: pinned snapshots, GPU XOR/Snappy, then one GPU Zstd submission per version. Fixture setup is excluded from receiver timing.",
+        "inner_codec_origin": f"Production GpuBatchEncoder: pinned snapshots, GPU XOR/{codec.removesuffix('-zstd')}, then one GPU Zstd submission per version. Fixture setup is excluded from receiver timing.",
     }
-    encoder = GpuBatchEncoder(torch.device("cuda", torch.cuda.current_device()))
+    encoder = GpuBatchEncoder(torch.device("cuda", torch.cuda.current_device()), codec=codec)
     denominator = sum(index[t["name"]]["nbytes"] for t in plan)
     raw_plan = [t for t in plan if t["encoding"] == "raw_bytes"]
     matrix_plan = [t for t in plan if t["encoding"] == "xor_bytes"]
@@ -541,6 +541,7 @@ def _fixture(args):
             target_version=version,
             plan_digest=digest,
             publication_id=f"{stream_id}:{version}",
+            codec=codec,
         )
         started, changed = time.monotonic(), 0
         pending, batch, batch_bytes = [], [], 0
@@ -558,7 +559,7 @@ def _fixture(args):
                     target, index, tensor, version=version, seed=args.seed, rate=rate
                 )
                 # Pinned snapshots are bounded by a batching target, except that
-                # one larger tensor remains whole. Only compact Snappy survives
+                # one larger tensor remains whole. Only compact inner payloads survive
                 # each GPU batch; the canonical snapshots are then released.
                 batch.append(
                     (torch.from_numpy(before.copy()).pin_memory(), torch.from_numpy(after).pin_memory(), "xor_bytes")
@@ -633,7 +634,7 @@ async def _ready(client, process, timeout):
 
 
 @asynccontextmanager
-async def _engines(args, model):
+async def _engines(args, model, codec):
     # Keep fixture creation independent of serving client imports.
     from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
 
@@ -659,7 +660,7 @@ async def _engines(args, model):
             _save(config_path, config)
             code = "import json,sys; from sglang.srt.server_args import ServerArgs; from sglang.srt.entrypoints.http_server import launch_server; launch_server(ServerArgs(**json.load(open(sys.argv[1]))))"
             command = [sys.executable, "-c", code, str(config_path)]
-            env = os.environ | SERVER_ENV | {"CUDA_VISIBLE_DEVICES": spec["gpu_ids"]}
+            env = os.environ | SERVER_ENV | {"CUDA_VISIBLE_DEVICES": spec["gpu_ids"], "GPU_DELTA_CODEC": codec}
             log = (args.output / f"engine-{engine}.log").open("x")
             process = subprocess.Popen(
                 command,
@@ -678,10 +679,12 @@ async def _engines(args, model):
             {
                 "engines": commands,
                 "feature_env": {
-                    key: os.environ.get(key)
+                    key: codec if key == "GPU_DELTA_CODEC" else os.environ.get(key)
                     for key in (
                         "GPU_DELTA_CODEC",
                         "GPU_DELTA_TIMING",
+                        "GPU_DELTA_SORT_BEFORE_HW_DECOMPRESS",
+                        "GPU_DELTA_LAYERS_PER_BATCH",
                         "GPU_DELTA_CPU_WORKERS",
                         "GPU_DELTA_HOST_CACHE_DIR",
                     )
@@ -733,16 +736,16 @@ async def _run(args):
     fixture_key = codec
     fixture = json.loads((args.fixture / "fixture.json").read_text()) if args.fixture else None
     if args.phase == "run":
-        fixture_key = _validate_fixture_codec(fixture)
+        fixture_key = _validate_fixture_codec(fixture, codec)
     model = Path(fixture["target_checkpoint"]) if args.phase == "oracle" else args.model
-    async with _engines(args, model) as clients:
+    async with _engines(args, model, codec) as clients:
         if args.phase == "oracle":
             _save(args.output / "target-generation.json", await _generation(clients))
             return
         descriptions = await asyncio.gather(
             *[c.get_weights_delta_info(engine_id=f"engine-{i:05d}") for i, c in enumerate(clients)]
         )
-        cohort = negotiate_cohort(descriptions)
+        cohort = negotiate_cohort(descriptions, codec=codec)
         digest = cohort.plan_digest
         _validate_cohort(cohort, len(clients))
         _save(args.output / "gpu-processes.json", _capture_gpu_processes(cohort, args.ports))
@@ -761,9 +764,7 @@ async def _run(args):
                     "coordinator_s": time.monotonic() - started,
                     "codec": codec,
                     "fixture_publication": fixture_key,
-                    "inner_snappy_origin": fixture.get(
-                        "inner_snappy_origin", fixture.get("outer_zstd_derivation", {}).get("inner_snappy_origin")
-                    ),
+                    "inner_codec_origin": fixture.get("inner_codec_origin"),
                     "measurement_phase": "first-use-allocation" if version["version"] == 1 else "warm-update",
                     "receipt": receipt,
                 }

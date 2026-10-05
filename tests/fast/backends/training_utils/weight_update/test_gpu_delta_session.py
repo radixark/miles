@@ -6,9 +6,10 @@ import copy
 import pytest
 
 from miles.backends.training_utils.weight_update import gpu_delta_session as session
+from miles.utils.gpu_delta_publication import CODEC, CODECS
 
 
-def _setup(failure=None, failed_engine=1):
+def _setup(failure=None, failed_engine=1, codec=CODEC):
     events, clients, descriptions = [], [], []
     for engine in range(2):
         identities = [
@@ -32,7 +33,7 @@ def _setup(failure=None, failed_engine=1):
                     {
                         "identity": identity,
                         "plan": {
-                            "codec": "snappy-zstd",
+                            "codec": codec,
                             "tensors": [
                                 {"name": "w", "dtype": "U8", "shape": [4], "encoding": "xor_bytes", "views": [view]}
                             ],
@@ -43,9 +44,9 @@ def _setup(failure=None, failed_engine=1):
             }
         )
         clients.append(_Engine(engine, identities, events, failure, failed_engine))
-    _, _, digest = session.merge_plans(descriptions)
+    _, _, digest = session.merge_plans(descriptions, codec=codec)
     publication = {
-        "codec": "snappy-zstd",
+        "codec": codec,
         "manifest_path": "/shared/version/manifest.json",
         "manifest_sha256": "f" * 64,
         "stream_id": "stream",
@@ -133,9 +134,10 @@ class _Engine:
         return {"success": True}
 
 
-def test_fast_engine_resumes_while_other_engine_still_prepares(monkeypatch):
-    clients, descriptions, publication, events = _setup()
-    cohort = session.negotiate_cohort(descriptions)
+@pytest.mark.parametrize("codec", CODECS)
+def test_fast_engine_resumes_while_other_engine_still_prepares(monkeypatch, codec):
+    clients, descriptions, publication, events = _setup(codec=codec)
+    cohort = session.negotiate_cohort(descriptions, codec=codec)
     monkeypatch.setattr(session, "merge_plans", lambda *args, **kwargs: pytest.fail("Immutable plan renegotiated"))
     result = asyncio.run(session.activate_publication(clients, cohort, publication, session_id="s"))
     assert len(result["receipts"]) == 4
@@ -194,7 +196,7 @@ def test_common_plan_deduplicates_replicas_and_rejects_conflicts_before_preparat
     if conflict == "view":
         broken[1]["participants"][0]["plan"]["tensors"][0]["views"][0]["slices"] = [[1, 2]]
     else:
-        broken[1]["participants"][0]["plan"]["codec"] = "zstd"
+        broken[1]["participants"][0]["plan"]["codec"] = "lz4-zstd"
     with pytest.raises(ValueError, match="conflict|codecs differ"):
         asyncio.run(session.activate_publication(clients, session.negotiate_cohort(broken), publication))
     assert not events

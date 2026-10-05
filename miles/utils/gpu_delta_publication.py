@@ -1,7 +1,7 @@
 """Immutable, independently framed canonical publications for direct GPU apply.
 
 This is a new wire format. The disk-delta checkpoint patcher must never consume
-it. GPU Snappy followed by GPU Zstd is the sole matrix payload contract.
+it. GPU Snappy or LZ4 frames followed by GPU Zstd form the matrix payload.
 """
 
 from __future__ import annotations
@@ -26,6 +26,7 @@ FRAME_BYTES = 1 << 20
 # 2 MiB is a producer benchmark profile, not a streaming-receiver capability.
 _FRAME_SIZES = (1 << 16, FRAME_BYTES, 1 << 21)
 CODEC = "snappy-zstd"
+CODECS = (CODEC, "lz4-zstd")
 DTYPE_BYTES = {
     "BOOL": 1,
     "U8": 1,
@@ -68,8 +69,8 @@ def sha256(data) -> str:
 
 def configured_codec() -> str:
     codec = os.environ.get("GPU_DELTA_CODEC", CODEC)
-    if codec != CODEC:
-        raise ValueError("Expected GPU_DELTA_CODEC=snappy-zstd")
+    if codec not in CODECS:
+        raise ValueError("Expected GPU_DELTA_CODEC=snappy-zstd or lz4-zstd")
     return codec
 
 
@@ -127,7 +128,7 @@ def _write_exclusive(path: Path, content: bytes) -> None:
 
 
 def _validate_gpu_outer(entry, outer, payload, frame_bytes):
-    """Validate metadata without reading unwrapped Snappy buffers back to the CPU."""
+    """Validate metadata without reading inner compressed buffers back to the CPU."""
     frames = entry["frames"]
     if not frames:
         if outer is not None or len(payload) or entry["changed_bytes"]:
@@ -195,6 +196,7 @@ class PublicationWriter:
         owner: int = 0,
         publication_id: str | None = None,
         frame_bytes: int = FRAME_BYTES,
+        codec: str = CODEC,
     ):
         _check_frame_bytes(frame_bytes)
         self.frame_bytes = frame_bytes
@@ -203,7 +205,7 @@ class PublicationWriter:
         self.outer_metrics = dict(outer_hash_write_s=0.0, outer_input_bytes=0, outer_output_bytes=0)
         self.metadata = {
             "protocol_version": 4,
-            "codec": CODEC,
+            "codec": codec,
             "frame_bytes": frame_bytes,
             "stream_id": stream_id,
             "publication_id": publication_id or uuid.uuid4().hex,

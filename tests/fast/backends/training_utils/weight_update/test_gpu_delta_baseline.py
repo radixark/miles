@@ -14,12 +14,24 @@ import safetensors.numpy
 import torch
 
 from miles.backends.training_utils.weight_update.protocols import gpu_delta
+from miles.utils import gpu_delta_encoder, gpu_delta_publication
 
 
 class _Engine:
     def __init__(self, protocol, events, index, fail=False):
         self.protocol, self.events, self.index, self.fail = protocol, events, index, fail
         self.version = "default"
+
+    async def get_weights_delta_info(self, engine_id):
+        return {
+            "success": True,
+            "participants": [
+                {
+                    "identity": {"engine_id": engine_id, "rank_id": str(self.index), "host_cache_id": engine_id},
+                    "plan": {"codec": self.protocol.codec, "tensors": list(self.protocol._plan.values())},
+                }
+            ],
+        }
 
     async def update_weight_version(self, weight_version):
         assert not self.protocol._baseline_captured
@@ -190,16 +202,22 @@ def test_pipeline_stage_inventory_requires_unique_owners_before_baseline_declara
 
 
 @pytest.mark.parametrize("initial_sync", [False, True])
+@pytest.mark.parametrize("codec", gpu_delta_publication.CODECS)
 def test_initial_delta_publishes_loaded_trainer_after_common_baseline(
-    tmp_path, single_rank, monkeypatch, initial_sync
+    tmp_path, single_rank, monkeypatch, initial_sync, codec
 ):
+    monkeypatch.setenv("GPU_DELTA_CODEC", codec)
     protocol, events = _setup(tmp_path)
+    monkeypatch.setenv("GPU_DELTA_CODEC", "lz4-zstd" if codec == "snappy-zstd" else "snappy-zstd")
     protocol.args.update_weight_delta_initial_sync = initial_sync
-    protocol._cohort = Namespace(plan_digest="plan")
     protocol._staging_stream = Mock()
     protocol._next_snapshot = {"w": torch.empty(4, dtype=torch.uint8)}
-    protocol._gpu_encoder = Mock(frame_bytes=1 << 20, outer_metrics={})
-    protocol._gpu_encoder.wrap_device.return_value = []  # This fixture contains only a raw vector.
+    encoder = Mock(frame_bytes=1 << 20, outer_metrics={})
+    encoder.wrap_device.return_value = []  # This fixture contains only a raw vector.
+    encoder_type = Mock(return_value=encoder)
+    monkeypatch.setattr(gpu_delta_encoder, "GpuBatchEncoder", encoder_type)
+    monkeypatch.setattr(gpu_delta, "get_data_replica_rank_and_size", lambda *args: (0, 1))
+    monkeypatch.setattr(torch.cuda, "current_device", lambda: 0)
     monkeypatch.setattr(torch.cuda, "current_stream", lambda: Mock())
     monkeypatch.setattr(torch.cuda, "stream", lambda _: nullcontext())
     monkeypatch.setattr(torch.cuda, "Event", Mock)
@@ -207,6 +225,8 @@ def test_initial_delta_publishes_loaded_trainer_after_common_baseline(
     monkeypatch.setattr(gpu_delta.dist, "get_world_size", lambda: 1)
     monkeypatch.setattr(gpu_delta.dist, "gather_object", lambda shard, shards, **kwargs: shards.__setitem__(0, shard))
 
+    protocol.connect(protocol.rollout_engines, None, None, None, None, None)
+    encoder_type.assert_called_once_with(torch.device("cuda", 0), codec=codec)
     assert protocol.begin_sync(1, _buckets) is initial_sync
     assert sorted(events) == [0, 1]
     if not initial_sync:
@@ -217,6 +237,7 @@ def test_initial_delta_publishes_loaded_trainer_after_common_baseline(
         protocol.send_bucket(bucket)
     protocol.after_base_weights()
     publication = protocol.publish(1)
+    assert protocol.codec == publication["codec"] == codec
     assert publication["base_version"] == 0 and publication["target_version"] == 1
     assert publication["summary_counts"]["raw_bytes"] == 4
     assert publication["summary_counts"]["wire_bytes"] == 4

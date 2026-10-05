@@ -1,7 +1,7 @@
 """Wire metadata, immutable payload and ownership checks without codec dependencies.
 
 Opaque encoded bytes isolate publication from codecs. The manual encoder and
-fixture replay suites independently reconstruct real Snappy/Zstd target bytes.
+fixture replay suites independently reconstruct real inner-codec/Zstd target bytes.
 """
 
 import copy
@@ -15,7 +15,7 @@ import pytest
 from miles.utils import gpu_delta_publication as publication
 
 
-def _writer(path, owner=0, frame_bytes=publication.FRAME_BYTES):
+def _writer(path, owner=0, frame_bytes=publication.FRAME_BYTES, codec=publication.CODEC):
     return publication.PublicationWriter(
         path,
         stream_id="test",
@@ -25,6 +25,7 @@ def _writer(path, owner=0, frame_bytes=publication.FRAME_BYTES):
         owner=owner,
         publication_id="test:1",
         frame_bytes=frame_bytes,
+        codec=codec,
     )
 
 
@@ -70,13 +71,14 @@ def _add(writer, name, base, target):
 
 
 @pytest.mark.parametrize("frame_bytes", [1 << 16, 1 << 20, 1 << 21])
-def test_framed_publication_preserves_payload_ranges_and_final_file_hash(tmp_path, frame_bytes):
+@pytest.mark.parametrize("codec", publication.CODECS)
+def test_framed_publication_preserves_payload_ranges_and_final_file_hash(tmp_path, frame_bytes, codec):
     rng = np.random.default_rng(11)
     base = rng.integers(0, 256, (1, frame_bytes * 2 + 139), dtype=np.uint8)
     target = base.copy()
     target[:, :frame_bytes:4096] ^= 3
     target[:, -139:] ^= rng.integers(1, 256, 139, dtype=np.uint8)
-    writer = _writer(tmp_path, frame_bytes=frame_bytes)
+    writer = _writer(tmp_path, frame_bytes=frame_bytes, codec=codec)
     entry = _add(writer, "w", base, target)
     _add(writer, "unchanged", base, base)
     _add(writer, "empty", np.zeros((1, 0), np.uint8), np.zeros((1, 0), np.uint8))
@@ -88,7 +90,7 @@ def test_framed_publication_preserves_payload_ranges_and_final_file_hash(tmp_pat
     assert manifest["files"] == [
         {"name": "owner-00000.bin", "nbytes": len(blob), "sha256": hashlib.sha256(blob).hexdigest()}
     ]
-    assert descriptor["protocol_version"] == 4 and descriptor["codec"] == "snappy-zstd"
+    assert descriptor["protocol_version"] == 4 and descriptor["codec"] == manifest["codec"] == codec
     assert descriptor["frame_bytes"] == frame_bytes and "codec_profile" not in descriptor
     assert [frame["decoded_offset"] for frame in entry["frames"]] == [0, 2 * frame_bytes]
     assert entry["frames"][-1]["encoded_bytes"] > 139

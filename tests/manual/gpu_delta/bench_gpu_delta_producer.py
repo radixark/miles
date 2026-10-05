@@ -22,7 +22,6 @@ from pathlib import Path
 import torch
 import torch.distributed as dist
 
-CODEC = "snappy-zstd"
 NVFP4_ENV = {
     "SGLANG_NVFP4_CKPT_FP8_GEMM_IN_ATTN": "0",
     "OPEN_TRAINING_NVFP4_FAKE_QAT_FLAG": "1",
@@ -104,9 +103,6 @@ def _environment(args):
         if key in os.environ and os.environ[key] != value:
             raise ValueError(f"Benchmark requires {key}={value}, received {os.environ[key]!r}")
         os.environ[key] = value
-    from miles.utils.gpu_delta_publication import configured_codec
-
-    configured_codec()
     os.environ["GPU_DELTA_TIMING"] = str(int(args.timing))
     config = json.loads((args.hf_checkpoint / "config.json").read_text())
     if config.get("model_type") != "glm_moe_dsa" or config.get("num_hidden_layers") != 5:
@@ -318,7 +314,7 @@ def _make_protocol(args, plan, output):
                                 "engine_id": "producer-benchmark-no-receiver",
                                 "host_cache_id": "producer-benchmark-no-host-cache",
                             },
-                            "plan": {"codec": CODEC, "tensors": plan},
+                            "plan": {"codec": self.codec, "tensors": plan},
                         }
                     ],
                 }
@@ -363,18 +359,18 @@ def _perturb(weights, fraction, relative_scale, version):
     return {"selected_elements": selected, "eligible_elements": eligible, "stride": stride}
 
 
-def _verify_publication(publication, plan):
+def _verify_publication(publication, plan, codec):
     path = Path(publication["manifest_path"])
     raw = path.read_bytes()
     if hashlib.sha256(raw).hexdigest() != publication["manifest_sha256"]:
         raise ValueError("Publication manifest checksum mismatch")
     manifest = json.loads(raw)
     if (
-        manifest.get("codec") != CODEC
+        manifest.get("codec") != codec
         or manifest.get("protocol_version") != 4
         or manifest.get("frame_bytes") != 1 << 20
     ):
-        raise ValueError("Sealed publication must use protocol 4 / snappy-zstd")
+        raise ValueError(f"Sealed publication must use protocol 4 / {codec}")
     if {tensor["name"] for tensor in manifest["tensors"]} != {tensor["name"] for tensor in plan}:
         raise ValueError("Sealed publication does not cover the exact mutable exporter inventory")
     for tensor in manifest["tensors"]:
@@ -463,7 +459,7 @@ def _run_update(protocol, iterator, weights, version, plan):
     error, sizes = None, None
     if dist.get_rank() == 0:
         try:
-            sizes = _verify_publication(publication, plan)
+            sizes = _verify_publication(publication, plan, protocol.codec)
         except Exception as caught:
             error = caught
     _check(error, "sealed publication validation")
@@ -479,7 +475,7 @@ def _run_update(protocol, iterator, weights, version, plan):
 
 
 def _verify_pending_inventory(protocol, owned_plan):
-    # The sole codec has no paired control. Check the complete owned pending
+    # This selected-codec run has no paired control. Check the complete owned pending
     # target inventory before simulating a successful receiver acknowledgment.
     from math import prod
 
@@ -525,7 +521,7 @@ def _versions(options, protocol, iterator, weights, plan, owned_plan):
         _check(error, "producer-only baseline commit")
         result = {
             "version": version,
-            "codec": CODEC,
+            "codec": protocol.codec,
             "perturbation": perturbation,
             "measurement_phase": "first-use-allocation" if version == 1 else "warm-update",
             "measurement": measurement,
@@ -540,7 +536,7 @@ def _versions(options, protocol, iterator, weights, plan, owned_plan):
                 json.dumps(
                     {
                         "version": version,
-                        "codec": CODEC,
+                        "codec": protocol.codec,
                         "sizes": measurement["sizes"],
                         "blocked_s": [rank["producer_blocked_s"] for rank in measurement["ranks"]],
                     }
@@ -559,6 +555,7 @@ def _runtime_metadata():
         "nvidia-libnvcomp-cu13",
         "zstandard",
         "python-snappy",
+        "lz4",
         "cramjam",
     ):
         try:
@@ -620,9 +617,9 @@ def run(options):
             "model_args": model_argv,
             "env": NVFP4_ENV,
             "timing": options.timing,
-            "codec": CODEC,
+            "codec": protocol.codec,
             "frame_bytes": 1 << 20,
-            "producer_pipeline": "pinned-snapshot-bulk-gpu-snappy-then-owner-wide-gpu-zstd",
+            "producer_pipeline": f"pinned-snapshot-bulk-gpu-{protocol.codec.removesuffix('-zstd')}-then-owner-wide-gpu-zstd",
             "gpu_batch_target_bytes": args.update_weight_buffer_size,
             "baseline_commit_scope": "producer-only-simulated-activation-after-inventory-check",
             "ranks": setup,

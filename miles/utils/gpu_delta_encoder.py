@@ -1,7 +1,7 @@
 """Cross-tensor GPU XOR/compression from immutable pinned CPU snapshots.
 
 One owner uploads a bounded batch, compresses all of its independent frames in
-one Snappy call. A final owner-wide Zstd call returns the pinned wire slab. Canonical bytes are
+one inner-codec call. A final owner-wide Zstd call returns the pinned wire slab. Canonical bytes are
 never hashed or copied back to the CPU by this encoder.
 """
 
@@ -14,7 +14,7 @@ from dataclasses import dataclass
 
 import torch
 
-from miles.utils.gpu_delta_publication import FRAME_BYTES
+from miles.utils.gpu_delta_publication import CODEC, FRAME_BYTES
 
 try:
     import triton
@@ -219,13 +219,13 @@ class GpuBatchEncoder:
     """One private stream; callers bound batch bytes and order input D2H on it.
 
     ``encode_device`` takes ``[(old_pinned_u8, new_pinned_u8, encoding), ...]``.
-    Neither input may be modified concurrently. Compact Snappy HBM survives
+    Neither input may be modified concurrently. Compact inner-codec HBM survives
     input batches until ``wrap_device`` returns the final pinned Zstd bytes.
     The 2 MiB frame variant is for producer benchmarks; the current streaming
     receiver accepts decoded frames no larger than 1 MiB.
     """
 
-    def __init__(self, device: torch.device, frame_bytes: int = FRAME_BYTES):
+    def __init__(self, device: torch.device, frame_bytes: int = FRAME_BYTES, codec: str = CODEC):
         # Metadata-only imports need neither nvCOMP nor a CUDA context.
         from miles.utils.gpu_delta_nvcomp import NvcompCompressor
 
@@ -236,7 +236,7 @@ class GpuBatchEncoder:
         self.device, self.frame_bytes = torch.device(device), frame_bytes
         self.timing = os.environ.get("GPU_DELTA_TIMING", "0") == "1"
         self.stream = torch.cuda.Stream(device=self.device)
-        self.compressor = NvcompCompressor("snappy", self.device)
+        self.compressor = NvcompCompressor({"snappy-zstd": "snappy", "lz4-zstd": "lz4"}[codec], self.device)
         self.outer_compressor = NvcompCompressor("zstd", self.device)
         self.outer_metrics = {}
         with torch.cuda.device(self.device), torch.cuda.stream(self.stream):
@@ -277,11 +277,11 @@ class GpuBatchEncoder:
             metadata_wait_s = time.monotonic() - wait_started
             host_counts, sizes, statuses = host_metadata.tolist()
             if any(status != 0 for status in statuses):
-                raise RuntimeError(f"nvCOMP Snappy compression failed: statuses={statuses}")
+                raise RuntimeError(f"nvCOMP {self.compressor.codec} compression failed: statuses={statuses}")
             descriptions, groups, changed = _select_payloads(tensors, frames, owners, batch, sizes, host_counts)
             with torch.cuda.device(self.device), torch.cuda.stream(self.stream):
                 # Compaction and owner-wide outer compression share this stream;
-                # no payload fence or Snappy D2H is needed between input batches.
+                # no payload fence or inner-payload D2H is needed between input batches.
                 return _device_results(
                     tensors,
                     descriptions,
@@ -303,7 +303,7 @@ class GpuBatchEncoder:
             raise
 
     def wrap_device(self, tensors: list[DeviceEncodedTensor]):
-        """Wrap all retained owner Snappy tensors in one batched GPU Zstd call."""
+        """Wrap all retained owner tensors in one batched GPU Zstd call."""
         started, phases, transfer = time.monotonic(), _PhaseTimes(self.timing), {}
         # Natural tensor boundaries are retained; only a large tensor arena is
         # independently framed so the receiver needs no opaque nvCOMP container.
@@ -318,7 +318,7 @@ class GpuBatchEncoder:
             self.outer_metrics = {
                 "outer_gpu_wall_s": time.monotonic() - started,
                 "outer_gpu_frames": 0,
-                "resident_snappy_hbm_bytes": 0,
+                "resident_inner_hbm_bytes": 0,
                 "outer_gpu_final_d2h_bytes": 0,
             }
             return [(item.frames, memoryview(b""), None, item.changed, item.metrics) for item in tensors]
@@ -369,7 +369,7 @@ class GpuBatchEncoder:
         self.outer_metrics = {
             "outer_gpu_wall_s": time.monotonic() - started,
             "outer_gpu_frames": len(frames),
-            "resident_snappy_hbm_bytes": sum(resident.values()),
+            "resident_inner_hbm_bytes": sum(resident.values()),
             "outer_gpu_final_d2h_bytes": transfer["host"].numel(),
             "outer_gpu_metadata_wait_s": metadata_wait,
             "outer_gpu_payload_wait_s": payload_wait,

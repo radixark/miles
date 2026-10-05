@@ -3,7 +3,7 @@
 Ordinary layers are consumed by their PP-local owners after TP reconstruction.
 ETP1 routed experts are consumed by their exporter owners before the usual gather.
 ETP>1 uses the direct exporter's gathered tensors, with one sender per PP stage.
-Ready owner batches feed GPU Snappy during export, then one owner-wide GPU Zstd batch.
+Ready owner batches feed the selected GPU codec during export, then one owner-wide GPU Zstd batch.
 """
 
 from __future__ import annotations
@@ -77,7 +77,7 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
                 from miles.utils.gpu_delta_encoder import GpuBatchEncoder
 
                 device = torch.device("cuda", torch.cuda.current_device())
-                self._gpu_encoder = GpuBatchEncoder(device)
+                self._gpu_encoder = GpuBatchEncoder(device, codec=self.codec)
             except Exception as caught:
                 error = caught
         _collective_check(error, "nvCOMP producer admission")
@@ -137,6 +137,7 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
                 plan_digest=self._cohort.plan_digest,
                 owner=dist.get_rank(),
                 frame_bytes=self._gpu_encoder.frame_bytes,
+                codec=self.codec,
             )
             if self._gpu_batch_names:
                 self._encoder_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="gpu-delta-encode")
@@ -290,7 +291,7 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
         )
 
     def _encode_gpu_batches(self):
-        """Finish all Snappy masks before one owner-wide GPU Zstd compression."""
+        """Finish all inner masks before one owner-wide GPU Zstd compression."""
         # This enclosing span overlaps export; the caller's tail wait is separate.
         started = time.monotonic() if self._encoding_started is None else self._encoding_started
         names, encoded = [], []
@@ -308,7 +309,7 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
                 encoded.extend(result)
                 self._gpu_batch_count += 1
             wrapped = self._gpu_encoder.wrap_device(encoded)
-            encoded.clear()  # Compact Snappy HBM is no longer needed after final D2H.
+            encoded.clear()  # Compact inner-codec HBM is no longer needed after final D2H.
             result = None
             self._bulk_encode_s = time.monotonic() - started
             for name, (frames, payload, outer, changed, metrics) in zip(names, wrapped, strict=True):
@@ -407,7 +408,7 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
                 self._gpu_encoder.stream.synchronize()
             except Exception as error:
                 self.record_export_error(error)
-        self._encoding_jobs.clear()  # Futures own compact Snappy arenas until the final GPU drain.
+        self._encoding_jobs.clear()  # Futures own compact inner-codec arenas until the final GPU drain.
         try:
             _collective_check(self._error, "encoding")
         except Exception:

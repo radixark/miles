@@ -1,4 +1,4 @@
-# GLM-5.2 Snappy-Zstd producer benchmark on one node
+# GLM-5.2 GPU-delta producer benchmark on one node
 
 This benchmark uses the actual Megatron GPU-delta iterator and publication
 protocol on eight GPUs: configurable TP/CP with PP1/EP8/ETP1, native GLM-5.2 five-layer model
@@ -6,9 +6,9 @@ protocol on eight GPUs: configurable TP/CP with PP1/EP8/ETP1, native GLM-5.2 fiv
 It loads the real model and writes three cumulative immutable publications.
 It does not launch a receiver or run forward/backward, an optimizer, or activation.
 
-- **Codec:** Snappy-Zstd is the sole supported codec. Matrices use GPU XOR,
-  GPU Snappy, then owner-wide GPU Zstd. Both
-  compression algorithms execute on GPU SMs. Hardware Snappy acceleration is a
+- **Codec:** `GPU_DELTA_CODEC` selects `snappy-zstd` (default) or `lz4-zstd`.
+  Matrices use GPU XOR, GPU Snappy or LZ4, then owner-wide GPU Zstd. Both
+  compression algorithms execute on GPU SMs. Hardware inner-codec acceleration is a
   receiver decompression property, not GPU compression acceleration.
 - **Ownership:** routed experts remain on their EP × EDP exporter owners before
   expert gathering; this benchmark has EDP1. Nonrouted tensors use the GPU-delta
@@ -43,22 +43,23 @@ is fixed during baseline setup, outside the update hot loop.
 After export D2H completes, name-sorted matrix batches use the existing
 `update_weight_buffer_size` target (512 MiB here). Larger individual tensors remain
 whole. Upload old/new pinned snapshots, compute XOR/counts and compress all
-independent 1 MiB Snappy frames in one nvCOMP submission per batch. XOR/counting
+independent 1 MiB inner-codec frames in one nvCOMP submission per batch. XOR/counting
 uses disjoint 64 KiB tiles per frame and reduces only their small count array.
 Only compact
-aligned Snappy arenas remain in HBM as batches finish. Compress all owner-local
+aligned inner-codec arenas remain in HBM as batches finish. Compress all owner-local
 outer Zstd chunks together, read sizes/status once, pack final bytes and perform
 one pinned D2H. CPU workers hash/write the final outer payload; no intermediate
-Snappy D2H or large Snappy host slab is needed. Every owner drains before sealing.
+inner-codec D2H or large inner-codec host slab is needed. Every owner drains before sealing.
 The old canonical snapshot stays unchanged until acknowledgment.
 
 For C matrix bytes and R scalar/vector bytes, this transfers C+R new bytes D2H,
 C old plus C new bytes H2D, and final outer payload D2H. Raw values never enter
-GPU compression. The full owner-local compact Snappy payload stays in HBM until
+GPU compression. The full owner-local compact inner-codec payload stays in HBM until
 outer encoding completes, alongside bounded canonical scratch and codec workspaces.
 There is no OOM fallback. No receiver GPU Zstd path is introduced: the receiver
-CPU-decodes into final pinned Snappy buffers, then streams bounded layer-batch H2D and
-hardware Snappy decode/apply during the normal safe pause.
+CPU-decodes into a shared DE-capable host arena. During the safe pause, hardware
+DE reads that arena directly, overlapping layer-batch decoding with mask apply
+through two decoded HBM slots. No explicit compressed H2D copy is needed.
 
 ## Run
 
@@ -91,8 +92,10 @@ The harness records runtime package versions,
 model flags, source digest (from `GPU_DELTA_SOURCE_DIGEST` when provided),
 GPU memory counters, original rank ownership and all per-version measurements.
 `--timing` enables CUDA phase events; default timing is off to avoid event overhead.
-There are no codec/encoder/outer arm selectors. Earlier comparison artifacts remain
-historical controls, not executable alternate production paths.
+Select the alternative with `GPU_DELTA_CODEC=lz4-zstd` and a new output directory;
+keep all workload flags and original checkpoints identical. There are no CPU
+encoder or receiver GPU-Zstd alternatives. Earlier comparison artifacts remain
+historical controls. LZ4 native correctness/performance validation is pending.
 
 ## Timing interpretation
 
@@ -108,7 +111,7 @@ historical controls, not executable alternate production paths.
 | `conversion_cuda_ms` | Optional same-stream conversion events, read after final fence; includes dispatch gaps and intervening work. |
 | `publication.producer_metrics` | Per-owner nested encoding/wait/raw/write phases and source-accounted copy bytes. |
 | `gpu_memory_bytes` | Before/after/peak PyTorch allocated/reserved bytes over the isolated update. |
-| `sizes` | Changed canonical bytes, raw bytes, inner Snappy/outer Zstd/payload/manifest sizes. |
+| `sizes` | Changed canonical bytes, raw bytes, inner codec/outer Zstd/payload/manifest sizes. |
 
 The protocol also retains rank-local `publication_metrics["metadata_gather_s"]`
 after the existing gather completes. It measures metadata serialization/transport
@@ -125,7 +128,7 @@ so this cannot establish training throughput or realized overlap.
 Nonoverlapping caller phases compose blocked time. Do not add nested conversion,
 compression, transfer or worker spans, or subtract monotonic timestamps across
 ranks. CUDA events can perturb timing and do not measure GPU idle time. Logical
-copy-byte counters are not bus measurements. `resident_snappy_hbm_bytes` records
+copy-byte counters are not bus measurements. `resident_inner_hbm_bytes` records
 unique retained inner storage at outer entry, not allocator peak/workspace totals.
 The existing pre-update fence brackets peak-stat reset; reset does not empty the
 CUDA cache, and reserved memory can include earlier work. No host RSS/pinned-peak
@@ -146,7 +149,7 @@ requires complete, unique ownership; duplicate exports, including overlapping
 PP/MTP names, are rejected rather than deduplicated.
 
 `update_weight_buffer_size` is a matrix input-batch target, not a total memory
-cap. Budget the pinned old/pending snapshots, the full owner-local compact Snappy
+cap. Budget the pinned old/pending snapshots, the full owner-local compact inner-codec
 payload and codec scratch/workspaces on the intended topology. Keep the exact
 inventory and reconstructed-target checks when extending this benchmark; the
 measured proxy's owner imbalance or compression ratio is not a sizing rule.

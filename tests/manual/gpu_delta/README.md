@@ -2,7 +2,7 @@
 
 The experimental `--update-weight-transfer-mode gpu-delta` uses the paired
 SGLang `update_weights_from_delta` API. `disk-delta` remains a separate checkpoint
-handoff path. GPU-delta has one codec: `snappy-zstd` and supports only
+handoff path. GPU-delta supports `snappy-zstd` (default) and `lz4-zstd`, with only
 `--update-weight-delta-encoding xor`; `overwrite` is supported by disk-delta only.
 
 ## Environment
@@ -18,20 +18,23 @@ Install the prebuilt encoder/decoder without changing the image dependency closu
 python -m pip install --no-deps nvidia-libnvcomp-cu13==5.3.0.16
 ```
 
-The optional CPU correctness oracles also require `python-snappy` (0.7.3 in the
-measured image); production compression does not use that package.
+The optional CPU correctness oracles require `python-snappy`, `lz4` and
+`zstandard`; production inner compression/decompression uses nvCOMP. LZ4
+oracles use raw blocks without a prepended uncompressed-size header.
 
 No custom C++/CUDA extension is built. Both sender compression stages use CUDA
-SMs. Receiver Zstd decompression runs on CPU; Snappy explicitly requests the
-Blackwell hardware decompression engine and rejects unsupported hardware or
-allocation modes. Pinned host buffers supply streamed Snappy H2D copies.
+SMs. Receiver Zstd decompression runs on CPU; either inner codec explicitly
+requests the Blackwell hardware decompression engine and rejects unsupported
+hardware or allocation modes. DE reads directly from the shared host arena.
+LZ4 uses byte input with bitshuffle disabled; there is no extra layout transform.
 
 These `GPU_DELTA_*` variables are development/debug controls, not a stable
 user-facing configuration API. Runtime defaults are sufficient for normal use.
 
 | Development variable | Meaning |
 | --- | --- |
-| `GPU_DELTA_CODEC=snappy-zstd` | The sole supported value and default. Frozen at launch and matched against the receiver plan and immutable publication. |
+| `GPU_DELTA_CODEC=snappy-zstd` | Default; `lz4-zstd` selects LZ4 instead. Frozen at launch on both sides and matched against the receiver plan and immutable publication. |
+| `GPU_DELTA_SORT_BEFORE_HW_DECOMPRESS=0` | Receiver only. Set `1` to let nvCOMP sort chunks during paused DE submission; default off for both codecs. It does not change publication bytes or move sorting into preparation. |
 | `GPU_DELTA_TIMING=1` | Optional per-phase CUDA events. Default off; instrumentation can perturb timing. |
 | `GPU_DELTA_CPU_WORKERS=32` | CPU outer-Zstd workers per engine-host arena creator, not per rank, plus one independent SHA worker. Two colocated engines have separate pools (64 decoder workers at the default). |
 | `GPU_DELTA_HOST_CACHE_DIR` | Tmpfs base for engine-local host arenas; defaults to `/dev/shm/sglang-gpu-delta-<uid>`. Engines use separate subdirectories, identities and locks; only ranks of the same engine share an arena. |
@@ -41,7 +44,8 @@ For Ray launches, set the job `runtime_env` environment or use the provided
 `execute_train(extra_env_vars=...)` path. The submitting shell alone does not
 forward arbitrary variables into existing workers. Trainer-only settings can
 use `--train-env-vars`; receiver profiling needs the timing setting on rollout
-actors too. The five-layer GPU-delta E2E forwards the codec and checks
+actors too. Set the DE sorting control on rollout actors. The five-layer GPU-delta
+E2E forwards both codec and sorting controls and checks
 every learned publication's protocol and codec. No old codec/encoder setting is migrated.
 
 The five-layer test is dedicated to GPU delta: it prepares checkpoints and data,
@@ -82,32 +86,35 @@ payload scan, collective or CUDA synchronization is required.
 The sender retains old canonical weights in pinned CPU RAM and stages each new
 export there asynchronously. At expert TP=1, routed experts stay on their exporter
 EP/EDP owner; expert TP>1 keeps the existing gather-before-convert sender path.
-Non-routed tensors use the existing data-replica sender within each PP stage.
+Non-routed tensors use cached PP-local layer ownership over TP × CP × DP ranks
+and gather only the required TP shards to each owner.
 Immutable owner geometry partitions scalar/vector bypass and matrix batches once
 before learned updates.
 Raw target writes run on one CPU worker concurrently with matrix GPU compression;
 there is no scalar/vector branch inside the matrix compression loop.
 
 After export D2H completes, each bounded name-sorted matrix batch uploads old/new
-bytes, computes XOR/change counts, and compresses all independent Snappy frames
-in one call. Unchanged frames are omitted; incompressible changed frames remain
-Snappy. Compact, 16-byte-aligned Snappy tensor arenas remain in HBM across batches.
-The sender then compresses **all** owner Snappy arenas together with GPU Zstd,
+bytes, computes XOR/change counts, and compresses all independent Snappy or LZ4 frames
+in one call. Unchanged frames are omitted; incompressible changed frames retain
+the selected inner codec. Compact, 16-byte-aligned inner-codec tensor arenas remain
+in HBM across batches.
+The sender then compresses **all** owner inner-codec arenas together with GPU Zstd,
 using independent outer chunks of at most 1 MiB while preserving tensor boundaries.
 Only the final encoded slab returns to pinned CPU RAM for file hashing/writing.
-There is no intermediate Snappy host slab, CPU compression, or raw matrix fallback.
+There is no intermediate inner-codec host slab, CPU compression, or raw matrix fallback.
 
 The existing `update_weight_buffer_size` bounds each canonical input batch; a
-larger single tensor stands alone. The full compact owner Snappy payload must fit
+larger single tensor stands alone. The full compact owner inner-codec payload must fit
 HBM for the outer call. Host snapshots are assumed to fit RAM; no OOM fallback is
 implemented. Production uses 1 MiB inner frames. The low-level encoder's 64 KiB
 and 2 MiB controls are for isolated tests; the receiver accepts at most 1 MiB.
 
-Protocol 4 records `codec: snappy-zstd`, explicit `frame_bytes`, natural tensor
+Protocol 4 records the selected `codec` (`snappy-zstd` or `lz4-zstd`),
+explicit `frame_bytes`, natural tensor
 identity and outer chunk offsets/lengths. SHA-256 authenticates final owner files;
-old/new weights and intermediate Snappy bytes are not hashed. The receiver reads
+old/new weights and intermediate inner-codec bytes are not hashed. The receiver reads
 and verifies immutable files, then CPU-decompresses locally needed outer chunks
-once per engine-host arena into shared Snappy storage during background preparation.
+once per engine-host arena into shared inner-codec storage during background preparation.
 CUDA HOST_NUMA allocations carry the hardware-decompression flag; ranks share
 physical pages through exported/imported handles and map them for CPU and local
 GPU access. The initial host capacity fits the required extent rounded to allocation
@@ -117,7 +124,7 @@ Wrapped-file staging remains a separate retained tmpfs mapping.
 Preparation builds CPU plans and small GPU metadata/workspace, and uploads raw
 scalar/vector targets without writing model weights. After the serving pause and
 reader fence, the receiver allocates two decoded HBM slots sized for the largest
-batch. Hardware Snappy reads compressed bytes directly from the shared host arena;
+batch. Hardware Snappy or LZ4 reads compressed bytes directly from the shared host arena;
 there is no encoded HBM ring or explicit compressed H2D copy. A DE stream decodes
 the next batch while the apply stream checks status and applies the current masks.
 Events protect decoded-slot and status-row reuse. Slots are released after GPU
@@ -163,9 +170,10 @@ does not authorize automatic retry, cleanup or recovery.
 
 The sender's N matrix bytes still incur new export D2H plus old/new H2D (3N total),
 followed by final compressed D2H. Raw bypass avoids both matrix H2D uploads. Export,
-bulk compression, publication and activation block training; compression starts
-after all exports and does not overlap later exports. Receiver preparation runs
-before pause; streamed H2D, Snappy decode and in-place mutation block rollout.
+bulk compression, publication and activation enclose trainer blocking. Ready
+owner batches compress on a private worker/stream during later exports; outer
+Zstd runs after all inner batches finish. Receiver preparation runs before pause;
+direct-host DE and in-place mutation run within the serving pause.
 Do not sum nested phases or add sender/receiver times from different workloads.
 
 Publication diagnostics retain `metadata_gather_s` on each sender rank and
@@ -281,24 +289,34 @@ python tests/manual/gpu_delta/bench_gpu_delta.py fixture \
 ```
 
 The fixture calibrates sparse finite mantissa/packed-FP4 perturbations against
-plain CPU Zstd level-1 sample frames. It measures the actual Snappy-Zstd publication
+plain CPU Zstd level-1 sample frames. It measures the actual selected-codec publication
 ratio separately; it does not force that ratio to 0.2%. Static draft and calibration
 scales stay unchanged in the proxy; native tests cover scalar/scale updates.
 The altered checkpoint contains the final cumulative version and does not alias
 original checkpoint files.
 
 The builder uses the production GPU encoder: pinned old/new CPU snapshots,
-bounded GPU XOR/Snappy batches, then one owner-wide GPU Zstd pass per version.
-Only compact Snappy survives between batches. Raw scalars/vectors bypass both
+bounded GPU XOR/inner-codec batches, then one owner-wide GPU Zstd pass per version.
+Only compact inner-codec output survives between batches. Raw scalars/vectors bypass both
 codecs. It records inner/outer bytes, alignment and final manifest/file sizes.
 Fixture creation is setup, excluded from receiver timing and not a distributed
-producer measurement. Native fixture tests independently replay CPU Zstd/Snappy
+producer measurement. Native fixture tests independently replay CPU Zstd plus Snappy or LZ4
 and verify exact altered targets and source/draft immutability.
 
-Only protocol4 `codec=snappy-zstd` publications are admitted. Saved fixtures with
-that schema can be reused without recomputing weights. Obsolete codec profiles
+Only protocol 4 publications matching the configured codec are admitted. Saved
+Snappy fixtures remain usable with `GPU_DELTA_CODEC=snappy-zstd`. Generate a new
+LZ4 fixture from the same model, seed and mutation settings for codec comparisons;
+never relabel a Snappy payload. Confirm the altered targets match across codecs.
+Obsolete codec profiles
 are not accepted by production; historical artifact migration is external setup,
 not a fallback in this harness.
+
+To compare codecs, repeat inventory/fixture creation with
+`GPU_DELTA_CODEC=lz4-zstd` and separate output directories. Keep the same seed,
+ratio, original checkpoint and three versions. For each codec, reuse its same
+fixture across receiver sorting 0/1 runs. Keep 1 MiB frames and report inner bytes,
+final wire bytes, preparation and full scheduler pause separately. LZ4 and sorting
+are implemented but have no native correctness or performance evidence yet.
 
 ## Full-model receiver benchmark
 
@@ -366,7 +384,7 @@ The five-layer W4A16 E2E exercises actual training-driven publications and
 requires a changed learned update; it is not full-model RL validation.
 
 Separate coordinator wall time, background read/hash/CPU-Zstd and small GPU input
-preparation, explicit scheduler pause, hardware Snappy decode, layout/application and
+preparation, explicit scheduler pause, hardware inner-codec decode, layout/application and
 derived refresh. Pause measures the original scheduler flag-to-resume interval;
 it excludes earlier prepare/status handler service and does not quantify serving
 interference. Do not sum nested events or concurrent rank durations.

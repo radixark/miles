@@ -1,12 +1,13 @@
 """Native nvCOMP compression/CPU interoperability on CUDA; no model required.
 
 python tests/manual/gpu_delta/test_gpu_delta_nvcomp.py
-Requires nvCOMP >=5.3,<6, zstandard and python-snappy. CPU decoding here is a
+Requires nvCOMP >=5.3,<6, zstandard, python-snappy and lz4. CPU decoding here is a
 byte-exact test oracle, never a production fallback.
 """
 
 import json
 
+import lz4.block
 import numpy as np
 import snappy
 import torch
@@ -22,7 +23,6 @@ def qualify(codec, device):
     raw = []
     for size in (1, 15, 65536, (1 << 20) - 1, 1 << 20):
         raw.extend([np.zeros(size, dtype=np.uint8), random.integers(0, 256, size, dtype=np.uint8)])
-    decode = snappy.decompress if codec == "snappy" else zstandard.ZstdDecompressor().decompress
     with torch.cuda.stream(stream):
         inputs = [torch.from_numpy(item).to(device) for item in raw]
         first = compressor.compress(inputs, stream)
@@ -36,7 +36,14 @@ def qualify(codec, device):
         assert statuses == [0] * len(reference), statuses
         for output, size, expected in zip(batch.outputs, sizes, reference, strict=True):
             assert 0 < size <= output.numel()
-            assert decode(output[:size].cpu().numpy().tobytes()) == expected.tobytes()
+            encoded = output[:size].cpu().numpy().tobytes()
+            if codec == "lz4":
+                decoded = lz4.block.decompress(encoded, uncompressed_size=expected.nbytes)
+            elif codec == "snappy":
+                decoded = snappy.decompress(encoded)
+            else:
+                decoded = zstandard.ZstdDecompressor().decompress(encoded)
+            assert decoded == expected.tobytes()
     assert compressor.compress([], stream).outputs == []
     # Warm allocations, then prove submission does not synchronize queued GPU
     # work. No timing claim is made from this deliberately delayed test stream.
@@ -58,4 +65,4 @@ def qualify(codec, device):
 if __name__ == "__main__":
     device = torch.device("cuda", 0)
     torch.cuda.set_device(device)
-    print(json.dumps({"status": "PASS", "results": [qualify(c, device) for c in ("zstd", "snappy")]}))
+    print(json.dumps({"status": "PASS", "results": [qualify(c, device) for c in ("zstd", "snappy", "lz4")]}))

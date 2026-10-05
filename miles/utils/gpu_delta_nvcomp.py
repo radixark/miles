@@ -1,7 +1,7 @@
 """Asynchronous GPU compression using nvCOMP's prebuilt batched C API.
 
-Both codecs compress on CUDA SMs. Blackwell's fixed-function engine is a
-decompression engine; Snappy output can use that engine at the receiver.
+Compression runs on CUDA SMs. Blackwell's fixed-function engine can decompress
+the inner Snappy or LZ4 frames at the receiver.
 """
 
 from __future__ import annotations
@@ -16,6 +16,11 @@ import torch
 class _Options(ctypes.Structure):
     # nvCOMP 5.3 Snappy and Zstd compression options have the same public ABI.
     _fields_ = [("reserved", ctypes.c_char * 64)]
+
+
+class _LZ4Options(ctypes.Structure):
+    # Zero initialization selects NVCOMP_TYPE_CHAR and NVCOMP_BITSHUFFLE_NONE.
+    _fields_ = [("data_type", ctypes.c_int), ("bitshuffle_mode", ctypes.c_int), ("reserved", ctypes.c_char * 56)]
 
 
 class _Alignments(ctypes.Structure):
@@ -41,8 +46,8 @@ class NvcompCompressor:
     """
 
     def __init__(self, codec: str, device: torch.device):
-        if codec not in ("zstd", "snappy"):
-            raise ValueError("GPU delta compression requires zstd or snappy")
+        if codec not in ("zstd", "snappy", "lz4"):
+            raise ValueError("GPU delta compression requires zstd, snappy or lz4")
         self.codec, self.device = codec, torch.device(device)
         if self.device.type != "cuda" or self.device.index is None:
             raise ValueError("GPU delta compressor requires an explicit CUDA device")
@@ -53,7 +58,12 @@ class NvcompCompressor:
             raise RuntimeError("GPU deltas require the 64-bit nvCOMP 5.3+ ABI")
         self.version = distribution.version
         self._library = ctypes.CDLL(str(distribution.locate_file("nvidia/libnvcomp/lib64/libnvcomp.so.5")))
-        pointer, size, options = ctypes.c_void_p, ctypes.c_size_t, _Options
+        self._symbol, options = {
+            "snappy": ("Snappy", _Options),
+            "lz4": ("LZ4", _LZ4Options),
+            "zstd": ("Zstd", _Options),
+        }[codec]
+        pointer, size = ctypes.c_void_p, ctypes.c_size_t
         self._options = options()
         self._bound = self._bind("GetMaxOutputChunkSize", [size, options, ctypes.POINTER(size)])
         self._temporary = self._bind("GetTempSizeAsync", [size, size, options, ctypes.POINTER(size), size])
@@ -66,7 +76,7 @@ class NvcompCompressor:
         self._size_cache, self._bound_cache = {}, {}
 
     def _bind(self, suffix, arguments):
-        function = getattr(self._library, "nvcompBatched" + self.codec.capitalize() + "Compress" + suffix)
+        function = getattr(self._library, "nvcompBatched" + self._symbol + "Compress" + suffix)
         function.argtypes, function.restype = arguments, ctypes.c_int
         return function
 
