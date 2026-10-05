@@ -8,15 +8,20 @@ register_cuda_ci(
 )
 
 
+import contextlib
 import json
 import os
 import sys
+from argparse import Namespace
+from datetime import timedelta
 from types import ModuleType
 
 import pytest
 import safetensors
 import safetensors.torch
 import torch
+import torch.distributed as dist
+import torch.nn.functional as F
 import transformer_engine.pytorch as te
 from tools.convert_hf_to_nvfp4 import convert_nvfp4
 from tools.convert_hf_to_nvfp4 import quantize_nvfp4 as tool_quantize_nvfp4
@@ -24,6 +29,7 @@ from tools.convert_hf_to_nvfp4 import should_quantize as tool_should_quantize_nv
 from torch.utils._python_dispatch import TorchDispatchMode
 from transformer_engine.pytorch.custom_recipes.quantization_ref_nvfp4 import NVFP4QuantizerRef
 
+import miles.utils.fused_nvfp4_qdq as qdq_kernels
 import miles.utils.nvfp4_fake_qat as nvfp4_qat
 from miles.backends.megatron_utils.megatron_to_hf.processors.quantizer_nvfp4 import (
     quantize_nvfp4 as processor_quantize_nvfp4,
@@ -32,9 +38,12 @@ from miles.backends.megatron_utils.megatron_to_hf.processors.quantizer_nvfp4 imp
 from miles.utils.fused_nvfp4_qdq import (
     NVFP4QDQConfig,
     NVFP4QDQErrorMode,
+    compute_grouped_nvfp4_amax,
     compute_nvfp4_amax,
     current_nvfp4_qdq_config,
+    fake_grouped_nvfp4_quantization_ste,
     fake_nvfp4_quantization_ste,
+    fused_grouped_nvfp4_qdq,
     fused_nvfp4_qdq,
 )
 from miles.utils.nvfp4 import (
@@ -825,6 +834,679 @@ class TestNVFP4FakeQATAdapter:
         assert all(value is expected_value for value, expected_value in zip(actual, expected, strict=False))
         assert all(weight is call[0] for weight, call in zip(weights, calls, strict=False))
         assert all(call[1] is qdq_config for call in calls)
+
+
+def _make_grouped_qdq_input(
+    group_count: int,
+    shape: tuple[int, int],
+    dtype: torch.dtype,
+    init_data: str,
+) -> torch.Tensor:
+    torch.manual_seed(42)
+    torch.cuda.manual_seed_all(42)
+    m, n = shape
+    if init_data == "random":
+        x = torch.randn((group_count, m, n), dtype=torch.float32, device="cuda")
+        if m > 1:
+            x[:, 0].zero_()
+        scales = torch.pow(
+            2.0,
+            (torch.arange(group_count, device="cuda") % 5) - 2,
+        ).view(-1, 1, 1)
+        return (x * scales).to(dtype)
+    if init_data == "boundary":
+        weight = _make_qdq_input(shape, torch.float32, init_data)
+        groups = []
+        for group_idx in range(group_count):
+            scale = 2.0 ** ((group_idx % 5) - 2)
+            groups.append(torch.roll(weight, shifts=2 * group_idx, dims=1) * scale)
+        return torch.stack(groups).to(dtype=dtype)
+    if init_data == "zeros":
+        weight = _make_qdq_input(shape, dtype, init_data)
+        return torch.stack([torch.roll(weight, shifts=group_idx % 2, dims=1) for group_idx in range(group_count)])
+    if init_data == "maxes":
+        x = torch.full((group_count, m, n), torch.finfo(dtype).max, dtype=dtype, device="cuda")
+        signs = torch.where(
+            torch.arange(group_count, device="cuda") % 2 == 0,
+            1.0,
+            -1.0,
+        ).to(dtype)
+        return x * signs.view(-1, 1, 1)
+    raise ValueError(f"Unknown init_data: {init_data}")
+
+
+def _te_grouped_qdq_reference(x: torch.Tensor, config: NVFP4QDQConfig) -> tuple[torch.Tensor, torch.Tensor]:
+    references, amaxes = zip(*[_te_qdq_reference(weight, config) for weight in x.unbind(0)], strict=True)
+    return torch.stack(references), torch.cat(amaxes)
+
+
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16], ids=["bf16", "fp16"])
+@pytest.mark.parametrize("group_count", [1, 3, 8], ids=lambda value: f"g{value}")
+@pytest.mark.parametrize("shape", NVFP4_QDQ_SHAPES, ids=lambda shape: f"{shape[0]}x{shape[1]}")
+@pytest.mark.parametrize("init_data", ["random", "boundary", "zeros", "maxes"])
+@pytest.mark.parametrize("config", NVFP4_QDQ_CONFIGS)
+@torch.inference_mode()
+def test_grouped_nvfp4_qdq_is_bit_exact_with_te(
+    monkeypatch: pytest.MonkeyPatch,
+    dtype: torch.dtype,
+    group_count: int,
+    shape: tuple[int, int],
+    init_data: str,
+    config: NVFP4QDQConfig,
+) -> None:
+    monkeypatch.setenv("NVTE_USE_FAST_MATH", "0")
+    monkeypatch.setenv("NVTE_NVFP4_4OVER6_ERR_USE_FAST_MATH", "1" if config.error_use_fast_math else "0")
+    x = _make_grouped_qdq_input(group_count, shape, dtype, init_data)
+    amaxes = compute_grouped_nvfp4_amax(x)
+    expected, te_amax = _te_grouped_qdq_reference(x, config)
+    actual = fused_grouped_nvfp4_qdq(x, amaxes, config)
+
+    assert torch.equal(amaxes.view(torch.int32), te_amax.view(torch.int32))
+    actual_bits = actual.view(torch.uint16)
+    expected_bits = expected.view(torch.uint16)
+    assert torch.equal(
+        actual_bits, expected_bits
+    ), f"bit mismatch count: {torch.count_nonzero(actual_bits != expected_bits).item()}"
+    torch.testing.assert_close(actual, expected, rtol=0.0, atol=0.0)
+    loop = torch.stack([fused_nvfp4_qdq(w, compute_nvfp4_amax(w), config) for w in x.unbind(0)])
+    assert torch.equal(actual_bits, loop.view(torch.uint16))
+
+
+@pytest.mark.parametrize("group_count", [1, 8], ids=lambda value: f"g{value}")
+def test_grouped_nvfp4_qdq_uses_straight_through_gradient_and_preserves_main_grad(
+    group_count: int,
+) -> None:
+    x = torch.nn.Parameter(torch.randn((group_count, 3, 32), dtype=torch.bfloat16, device="cuda"))
+    main_grad = torch.empty_like(x)
+    x.main_grad = main_grad
+    output = fake_grouped_nvfp4_quantization_ste(x, NVFP4QDQConfig())
+    grad = (
+        torch.arange(1, group_count + 1, dtype=torch.float32, device="cuda")
+        .view(-1, 1, 1)
+        .expand_as(output)
+        .to(output.dtype)
+    )
+    output.backward(grad)
+
+    assert tuple(output.shape) == tuple(x.shape)
+    assert output.is_contiguous()
+    torch.testing.assert_close(x.grad, grad, rtol=0.0, atol=0.0)
+    assert output.main_grad is main_grad
+
+
+@pytest.mark.parametrize("dtype", [torch.float32, torch.float64])
+def test_grouped_nvfp4_qdq_rejects_unsupported_input_dtype(dtype: torch.dtype) -> None:
+    x = torch.randn((1, 2, 16), dtype=dtype, device="cuda")
+    with pytest.raises(TypeError, match="supports BF16 and FP16"):
+        fused_grouped_nvfp4_qdq(x, torch.ones(1, dtype=torch.float32, device="cuda"))
+
+
+def test_grouped_nvfp4_qdq_rejects_rank_2_input() -> None:
+    x = torch.randn((2, 16), dtype=torch.bfloat16, device="cuda")
+    with pytest.raises(ValueError, match="rank-3"):
+        fused_grouped_nvfp4_qdq(x, torch.ones(1, dtype=torch.float32, device="cuda"))
+
+
+@pytest.mark.parametrize("group_count", [0, 2049])
+def test_grouped_nvfp4_qdq_rejects_group_count_outside_bound(
+    group_count: int,
+) -> None:
+    x = torch.empty((group_count, 1, 16), dtype=torch.bfloat16, device="cuda")
+    amaxes = torch.empty(group_count, dtype=torch.float32, device="cuda")
+    with pytest.raises(ValueError, match="1 <= G <= 2048"):
+        fused_grouped_nvfp4_qdq(x, amaxes, NVFP4QDQConfig())
+
+
+def test_grouped_nvfp4_qdq_rejects_non_block_aligned_k() -> None:
+    x = torch.randn((3, 2, 17), dtype=torch.bfloat16, device="cuda")
+    with pytest.raises(ValueError, match="N divisible by 16"):
+        fused_grouped_nvfp4_qdq(x, compute_grouped_nvfp4_amax(x), NVFP4QDQConfig())
+
+
+def test_grouped_nvfp4_qdq_rejects_misaligned_contiguous_storage() -> None:
+    storage = torch.randn(33, dtype=torch.bfloat16, device="cuda")
+    x = storage[1:].view(1, 2, 16)
+    assert x.is_contiguous()
+    assert x.data_ptr() % 16 != 0
+    with pytest.raises(ValueError, match="16-byte-aligned"):
+        fused_grouped_nvfp4_qdq(x, compute_grouped_nvfp4_amax(x), NVFP4QDQConfig())
+
+
+def test_grouped_nvfp4_qdq_rejects_wrong_amax_shape() -> None:
+    x = torch.randn((3, 2, 16), dtype=torch.bfloat16, device="cuda")
+    with pytest.raises(ValueError, match=r"shape \(3,\)"):
+        fused_grouped_nvfp4_qdq(x, torch.ones(1, dtype=torch.float32, device="cuda"), NVFP4QDQConfig())
+
+
+@torch.inference_mode()
+def test_grouped_nvfp4_qdq_supports_maximum_group_count() -> None:
+    config = NVFP4QDQConfig()
+    x = _make_grouped_qdq_input(2048, (1, 16), torch.bfloat16, "random")
+    amaxes = compute_grouped_nvfp4_amax(x)
+    expected, te_amaxes = _te_grouped_qdq_reference(x, config)
+    actual = fused_grouped_nvfp4_qdq(x, amaxes, config)
+
+    assert torch.equal(amaxes.view(torch.int32), te_amaxes.view(torch.int32))
+    assert torch.equal(actual.view(torch.uint16), expected.view(torch.uint16))
+    torch.testing.assert_close(actual, expected, rtol=0.0, atol=0.0)
+
+
+@pytest.mark.skipif(torch.cuda.device_count() < 2, reason="requires two CUDA devices")
+def test_grouped_nvfp4_qdq_uses_and_restores_non_current_device() -> None:
+    if int(os.getenv("WORLD_SIZE", "1")) > 1:
+        pytest.skip("Run the cross-device state test in a dedicated single process")
+    primary_device = torch.cuda.current_device()
+    secondary_device = (primary_device + 1) % torch.cuda.device_count()
+    with torch.cuda.device(primary_device):
+        with torch.cuda.device(secondary_device):
+            x = _make_grouped_qdq_input(3, (3, 32), torch.bfloat16, "boundary")
+            amaxes = compute_grouped_nvfp4_amax(x)
+            expected, _ = _te_grouped_qdq_reference(x, NVFP4QDQConfig())
+
+        assert torch.cuda.current_device() == primary_device
+        actual = fused_grouped_nvfp4_qdq(x, amaxes, NVFP4QDQConfig())
+        assert torch.cuda.current_device() == primary_device
+
+    assert torch.equal(actual.view(torch.uint16), expected.view(torch.uint16))
+
+
+@pytest.fixture
+def grouped_qat_env(monkeypatch):
+    monkeypatch.setenv("NVTE_GROUPED_LINEAR_SINGLE_PARAM", "1")
+    monkeypatch.setenv("OPEN_TRAINING_NVFP4_FAKE_QAT_FLAG", "1")
+    monkeypatch.setenv("OPEN_TRAINING_INT4_FAKE_QAT_FLAG", "0")
+    monkeypatch.setenv("NVTE_USE_FAST_MATH", "0")
+    monkeypatch.setenv("NVTE_NVFP4_4OVER6", "none")
+    monkeypatch.setenv("NVTE_NVFP4_4OVER6_ERR_USE_FAST_MATH", "0")
+
+
+def _native_grouped_layer(fuse_wgrad=False):
+    class QATGroupedLinear(te.GroupedLinear):
+        def _get_weight_tensors(self):
+            return nvfp4_qat.maybe_fake_quantize_nvfp4_weight_tensors(super()._get_weight_tensors())
+
+    return QATGroupedLinear(
+        3,
+        128,
+        64,
+        bias=False,
+        params_dtype=torch.bfloat16,
+        single_grouped_weight=True,
+        use_grouped_tensor=True,
+        fuse_wgrad_accumulation=fuse_wgrad,
+    )
+
+
+@pytest.mark.usefixtures("grouped_qat_env")
+@pytest.mark.parametrize("use_4over6", [False, True])
+@pytest.mark.parametrize("fuse_wgrad", [False, True])
+def test_grouped_native_te_forward_backward_and_update(monkeypatch, use_4over6, fuse_wgrad):
+    if use_4over6:
+        monkeypatch.setenv("NVTE_NVFP4_4OVER6", "all")
+        monkeypatch.setenv("NVTE_NVFP4_4OVER6_E4M3_USE_256", "all")
+        monkeypatch.setenv("NVTE_NVFP4_4OVER6_ERR_MODE", "MSE")
+    layer = _native_grouped_layer(fuse_wgrad)
+    weight = layer.weight
+    assert list(dict(layer.named_parameters())) == ["weight"]
+    original = weight.rowwise_data.view(3, 64, 128).clone()
+    original_ptr = weight.rowwise_data.data_ptr()
+    if fuse_wgrad:
+        weight.main_grad = torch.zeros_like(original, dtype=torch.float32)
+    qweight = layer._get_weight_tensors()[0]
+    assert qweight.requires_grad and qweight.grad_fn is not None
+    assert qweight.rowwise_data.data_ptr() != original_ptr
+    if fuse_wgrad:
+        assert qweight.main_grad is weight.main_grad
+    expected, _ = _te_grouped_qdq_reference(original, current_nvfp4_qdq_config())
+    assert torch.equal(qweight.rowwise_data.view(3, 64, 128).view(torch.uint16), expected.view(torch.uint16))
+    assert torch.equal(original, weight.rowwise_data.view_as(original))
+
+    splits = [2, 0, 3]
+    inputs = torch.cat(
+        [torch.full((tokens, 128), i + 1, device="cuda", dtype=torch.bfloat16) for i, tokens in enumerate(splits)]
+    ).requires_grad_()
+    output = layer(inputs, torch.tensor(splits, device="cuda", dtype=torch.int64))
+    reference = torch.cat(
+        [torch.nn.functional.linear(inp, w) for inp, w in zip(inputs.split(splits), expected, strict=True)]
+    )
+    torch.testing.assert_close(output, reference, rtol=0.02, atol=0.01)
+    output.backward(torch.ones_like(output))
+    expected_grad = torch.stack([torch.full_like(original[0], n * (i + 1)) for i, n in enumerate(splits)])
+    grad = weight.main_grad if fuse_wgrad else weight.grad
+    torch.testing.assert_close(grad, expected_grad.to(grad.dtype), rtol=0, atol=0)
+    expected_dgrad = torch.cat(
+        [w.float().sum(0).to(inputs.dtype).expand(n, -1) for w, n in zip(expected, splits, strict=True)]
+    )
+    torch.testing.assert_close(inputs.grad, expected_dgrad, rtol=0.02, atol=0.01)
+
+    if fuse_wgrad:
+        weight.grad = weight.main_grad.to(weight.dtype)
+    optimizer = torch.optim.SGD([weight], lr=0.125)
+    optimizer.step()
+    assert layer.weight is weight and weight.rowwise_data.data_ptr() == original_ptr
+    torch.testing.assert_close(weight.rowwise_data.view_as(original), original - expected_grad * 0.125, rtol=0, atol=0)
+
+
+@pytest.mark.usefixtures("grouped_qat_env")
+@pytest.mark.parametrize("native", [False, True])
+def test_grouped_graph_replay_recomputes_each_expert_amax(native):
+    if native:
+        weight = _native_grouped_layer().weight
+        storage = weight.rowwise_data.view(3, 64, 128)
+    else:
+        weight = torch.nn.Parameter(torch.randn((3, 64, 128), device="cuda", dtype=torch.bfloat16))
+        storage = weight.detach()
+    stream = torch.cuda.Stream()
+    stream.wait_stream(torch.cuda.current_stream())
+    with torch.cuda.stream(stream):
+        for _ in range(3):
+            nvfp4_qat.maybe_fake_quantize_nvfp4_weight_tensors([weight])
+    torch.cuda.current_stream().wait_stream(stream)
+    graph = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(graph):
+        output = nvfp4_qat.maybe_fake_quantize_nvfp4_weight_tensors([weight])[0]
+    result = output.rowwise_data.view_as(storage) if native else output
+    for scale in (0.01, 100.0):
+        with torch.no_grad():
+            storage[1].normal_().mul_(scale)
+            storage[2].zero_()
+        graph.replay()
+        expected, _ = _te_grouped_qdq_reference(storage, NVFP4QDQConfig())
+        assert torch.equal(result.view(torch.uint16), expected.view(torch.uint16))
+
+
+@pytest.mark.usefixtures("grouped_qat_env")
+def test_grouped_native_adapter_rejects_irregular_layout():
+    weight = _native_grouped_layer().weight
+    weight.offsets = [0, 0, 0]
+    with pytest.raises(ValueError, match="uniform, unquantized, densely ordered"):
+        nvfp4_qat.maybe_fake_quantize_nvfp4_weight_tensors([weight])
+
+
+@pytest.mark.usefixtures("grouped_qat_env")
+def test_grouped_native_checkpoint_keeps_original_high_precision_weights(tmp_path):
+    layer = _native_grouped_layer()
+    original = layer.weight.rowwise_data.clone()
+    layer._get_weight_tensors()
+    checkpoint = tmp_path / "grouped.pt"
+    torch.save(layer.state_dict(), checkpoint)
+    restored = _native_grouped_layer()
+    with torch.serialization.safe_globals([type(layer.weight)]):
+        restored.load_state_dict(torch.load(checkpoint, weights_only=True))
+    assert torch.equal(restored.weight.rowwise_data, original)
+    actual = restored._get_weight_tensors()[0].rowwise_data
+    expected = layer._get_weight_tensors()[0].rowwise_data
+    assert torch.equal(actual.view(torch.uint16), expected.view(torch.uint16))
+
+
+def test_grouped_rejects_noncontiguous_input_and_amax():
+    x = torch.randn((3, 32, 32), device="cuda", dtype=torch.bfloat16)
+    with pytest.raises(ValueError, match="contiguous"):
+        fused_grouped_nvfp4_qdq(x.transpose(1, 2), compute_grouped_nvfp4_amax(x), NVFP4QDQConfig())
+    with pytest.raises(ValueError, match="contiguous"):
+        fused_grouped_nvfp4_qdq(x, torch.ones(6, device="cuda")[::2], NVFP4QDQConfig())
+
+
+@pytest.mark.usefixtures("grouped_qat_env")
+@pytest.mark.parametrize("overwrite", [False, True])
+def test_grouped_native_fused_wgrad_reaches_megatron_leaf_hook(overwrite):
+    layer = _native_grouped_layer(fuse_wgrad=True)
+    weight = layer.weight
+    weight.main_grad = torch.ones((3, 64, 128), device="cuda", dtype=torch.float32)
+    weight.grad_added_to_main_grad = False
+    weight.zero_out_wgrad = True
+    weight.overwrite_main_grad = overwrite
+    weight.get_main_grad = lambda: weight.main_grad
+    hook_calls = []
+
+    def ddp_hook(param):
+        assert param.grad_added_to_main_grad
+        assert torch.count_nonzero(param.grad).item() == 0
+        hook_calls.append(True)
+        param.grad = None
+
+    weight.register_post_accumulate_grad_hook(ddp_hook)
+    splits = torch.tensor([2, 0, 3], device="cuda", dtype=torch.int64)
+    inputs = torch.ones((5, 128), device="cuda", dtype=torch.bfloat16)
+    grad = torch.stack([torch.full((64, 128), n, device="cuda", dtype=torch.float32) for n in (2, 0, 3)])
+    for step in range(2):
+        weight.grad_added_to_main_grad = False
+        layer(inputs, splits).sum().backward()
+        assert len(hook_calls) == step + 1
+        expected = grad if overwrite else 1 + (step + 1) * grad
+        torch.testing.assert_close(weight.main_grad, expected, rtol=0, atol=0)
+
+
+_EP_EXPERTS, _EP_HIDDEN, _EP_FFN = 8, 128, 128
+
+
+def _ep_scalar_loop(x, config):
+    return torch.stack([fused_nvfp4_qdq(t, compute_nvfp4_amax(t), config) for t in x])
+
+
+@contextlib.contextmanager
+def _ep_prequantized_te_reference(model):
+    """Run TE on scalar-QDQ leaf values without the Miles adapter."""
+    originals = []
+    with torch.no_grad():
+        for name in ("linear_fc1", "linear_fc2"):
+            weight = getattr(model.module.experts, name).weight
+            storage = weight.rowwise_data
+            originals.append((storage, storage.clone()))
+            quantized = _ep_scalar_loop(storage.view(weight.shape), current_nvfp4_qdq_config())
+            storage.copy_(quantized.reshape_as(storage))
+    try:
+        with pytest.MonkeyPatch.context() as monkeypatch:
+            monkeypatch.setenv("OPEN_TRAINING_NVFP4_FAKE_QAT_FLAG", "0")
+            yield
+    finally:
+        with torch.no_grad():
+            for storage, original in originals:
+                storage.copy_(original)
+
+
+def _make_ep_layer(packed, fused, ep, pg):
+    # Megatron is needed only for explicitly requested distributed validation.
+    from megatron.core.distributed import DistributedDataParallel as DDP
+    from megatron.core.distributed import DistributedDataParallelConfig
+    from megatron.core.models.gpt.gpt_layer_specs import get_gpt_layer_with_transformer_engine_submodules
+    from megatron.core.transformer.module import Float16Module
+    from megatron.core.transformer.moe.moe_layer import MoELayer
+    from megatron.core.transformer.spec_utils import get_submodules
+    from megatron.core.transformer.transformer_config import TransformerConfig
+
+    config = TransformerConfig(
+        num_layers=1,
+        hidden_size=_EP_HIDDEN,
+        num_attention_heads=4,
+        num_moe_experts=_EP_EXPERTS,
+        moe_ffn_hidden_size=_EP_FFN,
+        use_cpu_initialization=False,
+        add_bias_linear=False,
+        gated_linear_unit=True,
+        activation_func=F.silu,
+        bias_activation_fusion=False,
+        bias_dropout_fusion=False,
+        bf16=True,
+        params_dtype=torch.bfloat16,
+        moe_router_load_balancing_type="none",
+        moe_router_topk=2,
+        moe_aux_loss_coeff=0.0,
+        moe_router_dtype="fp32",
+        moe_grouped_gemm=True,
+        moe_use_grouped_tensor=packed,
+        moe_single_grouped_weight=packed,
+        use_transformer_engine_op_fuser=False,
+        expert_model_parallel_size=ep,
+        moe_token_dispatcher_type="alltoall",
+        moe_permute_fusion=False,
+        gradient_accumulation_fusion=fused,
+    )
+    spec = get_gpt_layer_with_transformer_engine_submodules(num_experts=_EP_EXPERTS, moe_grouped_gemm=True).mlp
+    layer = MoELayer(config, submodules=get_submodules(spec), pg_collection=pg)
+    layer = Float16Module(config, layer).module.cuda()
+    layer.set_layer_number(0)
+    expected_first = dist.get_rank(pg.ep) * (_EP_EXPERTS // ep)
+    assert layer.local_expert_indices == list(range(expected_first, expected_first + _EP_EXPERTS // ep))
+    with torch.no_grad():
+        layer.router.weight.zero_()
+        for expert in range(_EP_EXPERTS):
+            layer.router.weight[expert, expert] = 1
+        for fc_name, shape in [("linear_fc1", (2 * _EP_FFN, _EP_HIDDEN)), ("linear_fc2", (_EP_HIDDEN, _EP_FFN))]:
+            fc = getattr(layer.experts, fc_name)
+            values = []
+            for expert in layer.local_expert_indices:
+                generator = torch.Generator().manual_seed(90210 + expert * 17 + shape[0])
+                values.append((torch.randn(shape, generator=generator) * (0.025 + expert * 0.002)).cuda().bfloat16())
+            if packed:
+                fc.weight.rowwise_data.view(len(values), *shape).copy_(torch.stack(values))
+                assert not fc.weight.allreduce
+            else:
+                for i, value in enumerate(values):
+                    getattr(fc, f"weight{i}").copy_(value)
+    return DDP(
+        config,
+        DistributedDataParallelConfig(overlap_grad_reduce=True, grad_reduce_in_fp32=True),
+        layer,
+        pg_collection=pg,
+    )
+
+
+def _ep_named_values(layer, grad=False):
+    values = {"router": layer.router.weight.main_grad if grad else layer.router.weight}
+    for name in ("linear_fc1", "linear_fc2"):
+        fc = getattr(layer.experts, name)
+        if hasattr(fc, "weight"):
+            p = fc.weight
+            values[name] = (p.main_grad if grad else p.rowwise_data).reshape(p.shape)
+        else:
+            ps = [getattr(fc, f"weight{i}") for i in range(layer.num_local_experts)]
+            values[name] = torch.stack([p.main_grad if grad else p for p in ps])
+    return values
+
+
+def _assert_ep_close(actual, expected, exact):
+    a, b = actual.float(), expected.float()
+    if exact:
+        torch.testing.assert_close(a, b, rtol=0, atol=0)
+    else:
+        error = (a - b).abs()
+        rms = ((a - b).norm() / b.norm().clamp_min(1e-12)).item()
+        peak = (error.max() / b.abs().max().clamp_min(1e-12)).item()
+        assert rms < 0.015 and peak < 0.02, (rms, peak, error.max().item())
+
+
+def _ep_update(ddp):
+    changed = 0
+    with torch.no_grad():
+        for p in ddp.module.parameters():
+            storage = p.rowwise_data if hasattr(p, "rowwise_data") else p
+            before = storage.clone()
+            storage.add_(p.main_grad.reshape(storage.shape).to(storage.dtype), alpha=-0.05)
+            changed += int(torch.count_nonzero(storage != before))
+    return changed
+
+
+@pytest.mark.usefixtures("grouped_qat_env")
+@pytest.mark.parametrize("use_4over6", [False, True], ids=["default", "4over6"])
+@pytest.mark.parametrize("fused", [False, True], ids=["unfused-wgrad", "fused-wgrad"])
+def test_grouped_megatron_ep_forward_backward_and_update(monkeypatch, grouped_ep, use_4over6, fused):
+    ep, pg = grouped_ep
+    rank = dist.get_rank()
+    monkeypatch.setenv("NVTE_NVFP4_4OVER6", "weights" if use_4over6 else "none")
+    monkeypatch.setenv("NVTE_NVFP4_4OVER6_ERR_MODE", "MSE")
+    monkeypatch.setenv("NVTE_NVFP4_4OVER6_E4M3_USE_256", "all")
+    # Fused wgrad uses the TE leaf-storage oracle; unfused wgrad uses discrete weights.
+    qdq_calls = 0
+
+    def checked_grouped(x, amax, config):
+        nonlocal qdq_calls
+        output = fused_grouped_nvfp4_qdq(x, amax, config)
+        torch.testing.assert_close(output, _ep_scalar_loop(x, config), rtol=0, atol=0)
+        qdq_calls += 1
+        return output
+
+    monkeypatch.setattr(qdq_kernels, "fused_grouped_nvfp4_qdq", checked_grouped)
+    actual = _make_ep_layer(True, fused, ep, pg)
+    reference = _make_ep_layer(fused, fused, ep, pg)
+    initial_ids = [id(p) for p in actual.module.parameters()]
+    for step in range(3 if fused else 1):
+        route = "skew_empty" if step == 1 else "balanced"
+        actual.zero_grad_buffer()
+        reference.zero_grad_buffer()
+        for microbatch in range(2):
+            generator = torch.Generator(device="cuda").manual_seed(4000 + rank * 101 + step * 11 + microbatch)
+            data = torch.randn(32 + rank * 3, 1, _EP_HIDDEN, device="cuda", generator=generator).bfloat16() * 0.1
+            data[..., :_EP_EXPERTS] = -1
+            primary = (
+                ((torch.arange(data.shape[0], device="cuda") + rank) % _EP_EXPERTS)
+                if route == "balanced"
+                else torch.zeros(data.shape[0], device="cuda", dtype=torch.long)
+            )
+            data[torch.arange(data.shape[0]), 0, primary] = 4
+            data[torch.arange(data.shape[0]), 0, (primary + 1) % _EP_EXPERTS] = 2
+            x, y = data.clone().requires_grad_(), data.clone().requires_grad_()
+            outputs = []
+            for model, input_ in ((actual, x), (reference, y)):
+                sync = model.no_sync() if microbatch == 0 else contextlib.nullcontext()
+                oracle = (
+                    _ep_prequantized_te_reference(model) if model is reference and fused else contextlib.nullcontext()
+                )
+                with sync, oracle:
+                    out, bias = model(input_)
+                    assert bias is None
+                    (out.float().square().sum() / 10).backward()
+                    outputs.append(out)
+            _assert_ep_close(*outputs, exact=fused)
+            _assert_ep_close(x.grad, y.grad, exact=fused)
+        actual.finish_grad_sync()
+        reference.finish_grad_sync()
+        for name, grad in _ep_named_values(actual.module, grad=True).items():
+            assert torch.isfinite(grad).all()
+            _assert_ep_close(grad, _ep_named_values(reference.module, grad=True)[name], exact=fused)
+            group = pg.dp if name == "router" else pg.expt_dp
+            replicas = [torch.empty_like(grad) for _ in range(dist.get_world_size(group))]
+            dist.all_gather(replicas, grad.contiguous(), group=group)
+            for replica in replicas:
+                torch.testing.assert_close(grad, replica, rtol=0, atol=0)
+            if name == "router":
+                assert torch.count_nonzero(grad) > 0
+            else:
+                for local, expert in enumerate(actual.module.local_expert_indices):
+                    if route == "skew_empty" and expert >= 2:
+                        assert torch.count_nonzero(grad[local]) == 0
+                    else:
+                        assert torch.count_nonzero(grad[local]) > 0
+        if fused:
+            for fc in (actual.module.experts.linear_fc1, actual.module.experts.linear_fc2):
+                assert fc.weight.grad_added_to_main_grad
+        changed = _ep_update(actual)
+        _ep_update(reference)
+        for name, value in _ep_named_values(actual.module).items():
+            _assert_ep_close(value, _ep_named_values(reference.module)[name], exact=fused)
+        assert [id(p) for p in actual.module.parameters()] == initial_ids
+        assert changed > 0
+        assert qdq_calls == 4 * (step + 1)
+
+
+@pytest.mark.usefixtures("grouped_qat_env")
+@pytest.mark.parametrize("quantization_config", [None, {"quant_method": "nvfp4"}], ids=["bf16", "nvfp4"])
+def test_grouped_megatron_ep_weight_export(monkeypatch, grouped_ep, quantization_config):
+    from miles.backends.megatron_utils.named_weights import named_params_and_buffers
+    from miles.backends.megatron_utils.update_weight.hf_weight_iterator_direct import HfWeightIteratorDirect
+    from miles.backends.training_utils import parallel
+    from miles.backends.training_utils.weight_update.hf_weight_iterator import WeightUpdatePlacement
+    from miles.utils.ft_utils.process_group_utils import GroupInfo
+    from miles.utils.tensor_backper import TensorBackuper
+
+    ep, pg = grouped_ep
+
+    def group_info(group):
+        return GroupInfo(rank=dist.get_rank(group), size=dist.get_world_size(group), group=group)
+
+    monkeypatch.setattr(
+        parallel,
+        "_parallel_state",
+        parallel.ParallelState(
+            intra_dp=group_info(pg.dp),
+            intra_dp_cp=group_info(pg.dp_cp),
+            cp=group_info(pg.cp),
+            tp=group_info(pg.tp),
+            pp=group_info(pg.pp),
+            ep=group_info(pg.ep),
+            etp=group_info(pg.expt_tp),
+            edp=group_info(pg.expt_dp),
+            tp_dp_cp=group_info(pg.tp_dp_cp),
+            indep_dp=GroupInfo(0, 1, None),
+        ),
+    )
+    args = Namespace(
+        num_experts=_EP_EXPERTS,
+        hidden_size=_EP_HIDDEN,
+        num_attention_heads=4,
+        num_query_groups=4,
+        kv_channels=_EP_HIDDEN // 4,
+        vocab_size=_EP_HIDDEN,
+        swiglu=True,
+        update_weight_buffer_size=32768,
+        sglang_speculative_algorithm=None,
+        q_lora_rank=None,
+        custom_model_provider_path=None,
+    )
+    exported = []
+    for packed in (False, True):
+        layer = _make_ep_layer(packed, False, ep, pg).module
+        model = torch.nn.Module()
+        model.config = layer.config
+        model.module = torch.nn.ModuleDict(
+            {"decoder": torch.nn.ModuleDict({"layers": torch.nn.ModuleList([torch.nn.ModuleDict({"mlp": layer})])})}
+        )
+
+        def source(model=model):
+            return named_params_and_buffers(args, [model])
+
+        original_params = dict(source())
+        backuper = TensorBackuper.create(source_getter=source)
+        backuper.backup("actor")
+        iterator = HfWeightIteratorDirect.build(
+            args,
+            [model],
+            required_placement=WeightUpdatePlacement(gather_pp=False),
+            model_name="GlmMoeDsaForCausalLM",
+            quantization_config=quantization_config,
+        )
+
+        def export(weights, iterator=iterator):
+            return {name: value.clone() for bucket in iterator.iter_hf_weights(weights) for name, value in bucket}
+
+        live = export(dict(source()))
+        backed_up = export(backuper.get("actor"))
+        assert live.keys() == backed_up.keys()
+        for name in live:
+            assert torch.equal(
+                live[name].reshape(-1).view(torch.uint8), backed_up[name].reshape(-1).view(torch.uint8)
+            ), name
+        with torch.no_grad():
+            for param in model.parameters():
+                storage = getattr(param, "rowwise_data", param)
+                storage.zero_()
+        backuper.restore("actor")
+        restored = export(dict(source()))
+        for name in live:
+            assert torch.equal(
+                live[name].reshape(-1).view(torch.uint8), restored[name].reshape(-1).view(torch.uint8)
+            ), name
+        assert all(param is original_params[name] for name, param in source())
+        exported.append(live)
+
+    assert exported[0].keys() == exported[1].keys()
+    for name in exported[0]:
+        assert torch.equal(
+            exported[0][name].reshape(-1).view(torch.uint8), exported[1][name].reshape(-1).view(torch.uint8)
+        ), name
+    assert len([name for name in exported[1] if name.endswith(".weight")]) == 3 * _EP_EXPERTS + 1
+
+
+@pytest.fixture(scope="module", params=[2, 4], ids=["ep2", "ep4"])
+def grouped_ep(request):
+    # Run: torchrun --standalone --nproc_per_node=4 -m pytest <this file> -k grouped_megatron_ep
+    world_size = int(os.getenv("WORLD_SIZE", "1"))
+    if world_size not in (2, 4) or request.param > world_size:
+        pytest.skip("requires two or four ranks and enough ranks for the requested EP size")
+
+    from megatron.core import parallel_state
+    from megatron.core.process_groups_config import ProcessGroupCollection
+    from megatron.core.tensor_parallel.random import model_parallel_cuda_manual_seed
+
+    torch.cuda.set_device(int(os.environ["LOCAL_RANK"]))
+    dist.init_process_group("nccl", timeout=timedelta(seconds=180))
+    try:
+        parallel_state.initialize_model_parallel(expert_model_parallel_size=request.param)
+        model_parallel_cuda_manual_seed(123)
+        yield request.param, ProcessGroupCollection.use_mpu_process_groups()
+    finally:
+        parallel_state.destroy_model_parallel()
+        dist.destroy_process_group()
 
 
 if __name__ == "__main__":
