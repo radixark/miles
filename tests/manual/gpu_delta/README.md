@@ -107,18 +107,24 @@ Protocol 4 records `codec: snappy-zstd`, explicit `frame_bytes`, natural tensor
 identity and outer chunk offsets/lengths. SHA-256 authenticates final owner files;
 old/new weights and intermediate Snappy bytes are not hashed. The receiver reads
 and verifies immutable files, then CPU-decompresses locally needed outer chunks
-once per engine-host arena into shared Snappy storage during background preparation. Each rank
-registers the shared arena for its streamed pinned transfer. Both decoded and
-encoded host arenas initially allocate the required bytes rounded to 64 MiB.
-Sufficient capacity is reused; a later growth allocates twice the new requirement,
-also rounded to 64 MiB. Compressed tensors occupy contiguous shared-arena storage
-in natural name order. After actual pause, adjacent needed spans transfer together
-by layer, without host repacking. Hardware Snappy decodes one layer batch, then
-grouped kernels apply the XOR masks to the physical weight layouts in place.
-Two encoded HBM slots let a copy stream prefetch the next layer while the apply
-stream decodes and applies the current layer. Events guard slot reuse; decoded
-and decoder scratch remain shared across batches. GPU Zstd decompression is not
-part of this path.
+once per engine-host arena into shared Snappy storage during background preparation.
+CUDA HOST_NUMA allocations carry the hardware-decompression flag; ranks share
+physical pages through exported/imported handles and map them for CPU and local
+GPU access. The initial host capacity fits the required extent rounded to allocation
+granularity; fitting updates reuse it, and growth reserves twice the new requirement.
+Wrapped-file staging remains a separate retained tmpfs mapping.
+
+Preparation builds CPU plans and small GPU metadata/workspace, and uploads raw
+scalar/vector targets without writing model weights. After the serving pause and
+reader fence, the receiver allocates two decoded HBM slots sized for the largest
+batch. Hardware Snappy reads compressed bytes directly from the shared host arena;
+there is no encoded HBM ring or explicit compressed H2D copy. A DE stream decodes
+the next batch while the apply stream checks status and applies the current masks.
+Events protect decoded-slot and status-row reuse. Slots are released after GPU
+completion before resume; static plans and host arena capacity remain cached.
+`GPU_DELTA_LAYERS_PER_BATCH` defaults to 1 and groups adjacent active model layers;
+embeddings, the language-model head and other standalone tensors form three
+separate groups, omitting empty groups. GPU Zstd decompression is not part of this path.
 
 Miles negotiates the immutable plan and original participant cohort once when
 connecting; learned updates reuse that plan rather than sort and hash it again.
@@ -182,13 +188,16 @@ or collective is added: receiver summaries reuse the activation broadcast and
 producer prefixes reuse the existing owner gather.
 
 - `receiver_scheduler_pause_s/{min,p50,max}` joins each original process's
-  APPLIED and RESUMED receipts. It includes its reader fence, retraction/cache
+  completed RESUMED receipt's scheduler timestamps. It includes its reader fence, retraction/cache
   flush, application, its own engine's APPLIED wait and resume. Failed/open intervals are
   never reported as completed pauses.
 - `receiver_reader_fence_s` and `receiver_paused_apply_host_wall_s` have separate
   rank distributions. `receiver_host_prepare_s` covers background preparation
-  before pause. Other `receiver_host_*` summaries retain their source span names;
-  registration and cache wait are per-rank work.
+  before pause, including small metadata preparation and its own stream waits.
+  `receiver_host_metadata_prepare_s`/`receiver_host_metadata_wait_s` expose those
+  nested spans. `receiver_paused_setup_host_s` includes decoded allocation,
+  pointer uploads and cold kernel work; `receiver_paused_apply_tune_s` isolates
+  tuning. Other `receiver_host_*` summaries retain their source span names.
 - `creator_host_*` distributions sample the single creator in each engine-host arena,
   excluding attaching ranks' zero counters. `host_cache_creators` records coverage;
   byte sums count each creator once. `creator_cpu_workers` records active creator
@@ -214,12 +223,20 @@ producer prefixes reuse the existing owner gather.
   `creator_host_frames_validate_s` is creator-only and nested inside arena build;
   `creator_host_frames_validations/sum` counts one dynamic geometry validation
   per created arena, not zero-weighted follower rank medians.
-- `receiver_host_shared_{register_calls,registered_bytes,registration_reused,
-  mapping_reused,registration_capacity_bytes}/{min,p50,max}` are per-rank
-  distributions. `registered_bytes` counts newly registered bytes for this
-  update (zero on warm reuse); `registration_capacity_bytes` remains the active
-  per-process capacity. These rank capacities are never summed as physical host
-  memory. Receipts lacking optional capacity fields omit those metrics.
+- `receiver_host_shared_mapping_reused/{min,p50,max}` reports per-rank attachment
+  reuse. Physical host capacity remains counted once per engine-host arena.
+- `receiver_de_host_input_bytes` counts compressed bytes read directly by DE;
+  `receiver_h2d_bytes` counts explicit raw-target and metadata uploads. They are
+  different traffic categories, not a throughput estimate. `receiver_raw_h2d_bytes`,
+  `receiver_decoder_metadata_h2d_bytes` and `receiver_apply_metadata_h2d_bytes`
+  expose those upload components; decoder descriptors use one prepare upload and
+  one paused output-pointer upload.
+- `receiver_decoded_buffers`, `receiver_decoded_scratch_bytes` and
+  `receiver_decoder_workspace_bytes` report per-rank prepared capacities, not peak
+  HBM. Decoded scratch is the total of both paused slots. Batch, layer-count,
+  gap-zeroing and tuning counters retain their source names. These optional rank
+  summaries use `{min,p50,max}` only when all ranks provide the field; GPU capacities
+  are not summed as shared host storage.
 - `engine_coordinator_{prepare,apply,resume,activation}_s/{min,p50,max}` reports
   independent per-engine RPC lifetimes. `coordinator_activation_s` is the enclosing
   trainer-side await of all engines; no global preparation/apply/resume phases are
@@ -348,17 +365,18 @@ proof. Native tests establish exact payload/application behavior separately.
 The five-layer W4A16 E2E exercises actual training-driven publications and
 requires a changed learned update; it is not full-model RL validation.
 
-Separate coordinator wall time, background read/hash/pin/CPU-Zstd preparation,
-explicit scheduler pause, H2D, hardware Snappy decode, layout/application and
+Separate coordinator wall time, background read/hash/CPU-Zstd and small GPU input
+preparation, explicit scheduler pause, hardware Snappy decode, layout/application and
 derived refresh. Pause measures the original scheduler flag-to-resume interval;
 it excludes earlier prepare/status handler service and does not quantify serving
 interference. Do not sum nested events or concurrent rank durations.
 
 Each engine-host reads/hashes the immutable owner files once and CPU-unwraps the
 union needed by its original ranks into its shared arena. Independent engines
-have separate arenas. Each scheduler registers its arena for pinned transfer
-and reuses two encoded layer slots plus one decoded layer buffer and decoder
-workspace. Shared storage stays alive while its consumers use it. The benchmark
+have separate arenas. Each scheduler maps the shared DE-capable host arena and
+allocates two decoded HBM slots only during paused application. Small decoder
+metadata/workspace is prepared earlier. Shared storage stays alive until its
+consumers finish. The benchmark
 generates before/after updates, not during preparation; realized serving overlap,
 request latency and production throughput need separate study.
 The harness terminates only its own engine processes, retains partial evidence

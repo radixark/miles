@@ -16,17 +16,16 @@ _PREFIX = "perf/gpu_delta/"
 _RANK_TIMINGS = (
     "host_prepare_s",
     "paused_apply_host_wall_s",
-    "host_shared_register_s",
     "host_payload_cache_wait_s",
     "host_manifest_read_parse_s",
     "host_plan_validate_s",
     "host_tensor_prepare_s",
     "host_raw_pack_s",
-    "host_decoder_prepare_s",
-    "host_ready_wait_s",
-    "host_raw_enqueue_s",
+    "host_metadata_prepare_s",
+    "host_metadata_wait_s",
+    "paused_setup_host_s",
+    "paused_apply_tune_s",
     "host_matrix_enqueue_s",
-    "host_derived_enqueue_s",
     "host_apply_completion_wait_s",
 )
 _HOST_TIMINGS = (
@@ -42,13 +41,27 @@ _HOST_TIMINGS = (
     "host_shared_allocation_s",
     "host_encoded_allocation_s",
 )
-_RANK_REGISTRATION = (
+_RANK_COUNTERS = (
     "host_plan_cache_reused",
-    "host_shared_register_calls",
-    "host_shared_registered_bytes",
-    "host_shared_registration_reused",
+    "host_batch_plan_reused",
     "host_shared_mapping_reused",
-    "host_shared_registration_capacity_bytes",
+    "compressed_batches",
+    "compressed_tensors",
+    "layers_per_batch",
+    "de_host_input_bytes",
+    "raw_h2d_bytes",
+    "decoded_buffers",
+    "decoded_scratch_bytes",
+    "decoder_workspace_bytes",
+    "decoder_metadata_uploads",
+    "decoder_metadata_h2d_bytes",
+    "apply_metadata_h2d_bytes",
+    "decoded_zero_ranges",
+    "decoded_zero_bytes",
+    "apply_tuned_batches",
+    "apply_tune_cache_hits",
+    "apply_tune_skipped_batches",
+    "apply_tune_bytes",
 )
 _HOST_CAPACITIES = (
     "host_shared_arena_bytes",
@@ -92,10 +105,12 @@ def activation_metrics(activation):
     _distribution(metrics, "receiver_reader_fence_s", fences)
     _distribution(metrics, "receiver_scheduler_pause_s", pauses)
     timings = [row["result"]["timings"] for row in rows]
-    for name in _RANK_TIMINGS + _RANK_REGISTRATION:
+    for name in _RANK_TIMINGS + _RANK_COUNTERS:
         # Optional profiling spans are emitted only with complete rank coverage.
         if all(name in timing for timing in timings):
             _distribution(metrics, "receiver_" + name, [timing[name] for timing in timings])
+    if all("h2d_bytes" in row["result"] for row in rows):
+        _distribution(metrics, "receiver_h2d_bytes", [row["result"]["h2d_bytes"] for row in rows])
     arenas = {}
     for receipt, timing in zip(rows, timings, strict=True):
         arena = (receipt["identity"]["engine_id"], receipt["identity"]["host_cache_id"])
@@ -110,8 +125,8 @@ def activation_metrics(activation):
         if all(name in row for row in creators):
             metrics[_PREFIX + "creator_" + name + "/sum"] = sum(row[name] for row in creators)
     # Engine-local ranks map one host arena. Count capacity once per arena, including
-    # reattachment with no creator; per-rank CUDA registrations are not additive
-    # physical storage. Two independent engines may hold duplicate physical bytes.
+    # reattachment with no creator; per-rank mappings are not additive physical
+    # storage. Two independent engines may hold duplicate physical bytes.
     for name in _HOST_CAPACITIES:
         if not all(name in row for row in timings):
             continue

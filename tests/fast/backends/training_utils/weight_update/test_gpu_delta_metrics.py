@@ -83,7 +83,7 @@ def test_original_rank_pause_and_creator_only_host_metrics_remain_separate():
     assert result[prefix + "receiver_reader_fence_s/max"] == 0.1
     assert result[prefix + "creator_host_outer_zstd_decode_s/p50"] == 11
     assert result[prefix + "creator_host_payload_hash_bytes/sum"] == 200
-    assert result[prefix + "receiver_host_shared_register_s/p50"] == 2.5
+    assert result[prefix + "receiver_host_metadata_prepare_s/p50"] == 2.5
     assert result[prefix + "coordinator_activation_s"] == 10.1
     assert result[prefix + "engine_coordinator_prepare_s/p50"] == 4.5
     assert result[prefix + "engine_coordinator_activation_s/max"] == 10.1
@@ -93,7 +93,7 @@ def test_original_rank_pause_and_creator_only_host_metrics_remain_separate():
     assert result[prefix + "creator_host_frames_validations/sum"] == 2
     assert prefix + "receiver_host_frames_validate_s/p50" not in result
     assert prefix + "host_shared_capacity_bytes/sum" not in result
-    assert prefix + "receiver_host_shared_register_calls/max" not in result
+    assert prefix + "receiver_decoded_scratch_bytes/max" not in result
     assert result[prefix + "receiver_host_plan_cache_reused/min"] == 1
     assert result[prefix + "creator_host_payload_decode_hash_s/p50"] == 6
     assert result[prefix + "creator_host_payload_hash_wait_s/p50"] == 1.25
@@ -109,7 +109,7 @@ def test_original_rank_pause_and_creator_only_host_metrics_remain_separate():
 
 
 @pytest.mark.parametrize("warm", [False, True])
-def test_capacity_and_allocation_count_hosts_once_but_registration_per_rank(warm):
+def test_host_capacity_counts_once_while_gpu_inputs_and_scratch_remain_per_rank(warm):
     activation = _activation()
     for receipt in activation["resumed_receipts"]:
         rank = int(receipt["identity"]["rank_id"])
@@ -120,10 +120,14 @@ def test_capacity_and_allocation_count_hosts_once_but_registration_per_rank(warm
             host_shared_arena_bytes=600 * host,
             host_shared_capacity_bytes=1024 * host,
             host_encoded_capacity_bytes=512 * host,
-            host_shared_registration_capacity_bytes=1024 * host,
-            host_shared_register_calls=int(not warm),
-            host_shared_registered_bytes=0 if warm else 1024 * host,
-            host_shared_registration_reused=int(warm),
+            de_host_input_bytes=1200 * (rank + 1),
+            decoded_buffers=2,
+            decoded_scratch_bytes=4096 * (rank + 1),
+            decoder_workspace_bytes=128 * (rank + 1),
+            decoder_metadata_uploads=2,
+            decoder_metadata_h2d_bytes=64,
+            apply_metadata_h2d_bytes=32,
+            raw_h2d_bytes=16,
             host_shared_mapping_reused=int(warm),
             host_shared_allocation_s=0 if warm or not creator else 0.5 * host,
             host_encoded_allocation_s=0 if warm or not creator else 0.25 * host,
@@ -132,6 +136,7 @@ def test_capacity_and_allocation_count_hosts_once_but_registration_per_rank(warm
             host_encoded_allocation_calls=int(creator and not warm),
             host_encoded_allocation_bytes=512 * host if creator and not warm else 0,
         )
+        receipt["result"]["h2d_bytes"] = 112
     result = metrics.activation_metrics(activation)
     prefix = "perf/gpu_delta/"
     assert result[prefix + "receiver_host_arenas"] == 2
@@ -140,12 +145,14 @@ def test_capacity_and_allocation_count_hosts_once_but_registration_per_rank(warm
     assert result[prefix + "host_shared_capacity_bytes/sum"] == 3072
     assert result[prefix + "host_shared_capacity_bytes/p50"] == 1536
     assert result[prefix + "host_encoded_capacity_bytes/sum"] == 1536
-    assert result[prefix + "receiver_host_shared_registration_capacity_bytes/p50"] == 1536
-    assert prefix + "receiver_host_shared_registration_capacity_bytes/sum" not in result
-    assert result[prefix + "receiver_host_shared_register_calls/min"] == int(not warm)
-    assert result[prefix + "receiver_host_shared_registered_bytes/min"] == (0 if warm else 1024)
-    assert result[prefix + "receiver_host_shared_registered_bytes/max"] == (0 if warm else 2048)
-    assert result[prefix + "receiver_host_shared_registration_reused/min"] == int(warm)
+    assert result[prefix + "receiver_de_host_input_bytes/p50"] == 3000
+    assert result[prefix + "receiver_decoded_scratch_bytes/p50"] == 10240
+    assert prefix + "receiver_decoded_scratch_bytes/sum" not in result
+    assert result[prefix + "receiver_decoded_buffers/min"] == 2
+    assert result[prefix + "receiver_decoder_workspace_bytes/max"] == 512
+    assert result[prefix + "receiver_decoder_metadata_h2d_bytes/min"] == 64
+    assert result[prefix + "receiver_apply_metadata_h2d_bytes/max"] == 32
+    assert result[prefix + "receiver_h2d_bytes/p50"] == 112
     assert result[prefix + "receiver_host_shared_mapping_reused/max"] == int(warm)
     assert result[prefix + "creator_host_shared_allocation_s/p50"] == (0 if warm else 0.75)
     assert result[prefix + "creator_host_encoded_allocation_s/p50"] == (0 if warm else 0.375)
