@@ -18,6 +18,7 @@ from miles.backends.megatron_utils.megatron_config import (
     resolve_megatron_config,
     resolve_mtp_num_layers,
 )
+from miles.backends.primus_utils.config_bridge import PrimusConfigBridge, add_primus_arguments
 from miles.backends.sglang_utils.arguments import collect_eval_sglang_overrides
 from miles.backends.sglang_utils.arguments import validate_args as sglang_validate_args
 from miles.backends.sglang_utils.sglang_config import SglangConfig
@@ -241,12 +242,25 @@ def parse_args_and_get_parser(
         return parser
 
     backend = parse_args_train_backend()
+    primus_bridge = PrimusConfigBridge.from_argv()
+    assert (
+        primus_bridge is None or backend == "megatron"
+    ), f"--primus-config requires --train-backend megatron, got '{backend}'"
     if backend == "megatron":
         from miles.backends.megatron_utils.arguments import parse_args as megatron_parse_args
         from miles.backends.megatron_utils.arguments import set_default_megatron_args
         from miles.backends.megatron_utils.arguments import validate_args as megatron_validate_args
 
-        args = megatron_parse_args(extra_args_provider=add_miles_arguments_and_capture_parser)
+        # The --primus-* flags configure the trainer, so they travel with the Megatron arguments.
+        def add_primus_and_miles_arguments(value: argparse.ArgumentParser) -> argparse.ArgumentParser:
+            add_primus_arguments(value)
+            return add_miles_arguments_and_capture_parser(value)
+
+        extra_args_provider = add_primus_and_miles_arguments
+        if primus_bridge is not None:
+            extra_args_provider = primus_bridge.wrap_extra_args_provider(extra_args_provider)
+
+        args = megatron_parse_args(extra_args_provider=extra_args_provider)
         training_backend_arg_names.update(
             vars(args).keys() - {action.dest for action in parser._actions} - parser._defaults.keys()
         )
@@ -286,6 +300,8 @@ def parse_args_and_get_parser(
         args.rank = 0
         args.world_size = args.actor_num_nodes * args.actor_num_gpus_per_node
         args = set_default_megatron_args(args)
+        if primus_bridge is not None:
+            args = primus_bridge.attach(args)
         training_backend_arg_names.update(vars(args).keys() - previous_arg_names)
     else:
         if backend == "torchtitan":

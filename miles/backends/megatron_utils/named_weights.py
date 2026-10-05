@@ -53,17 +53,34 @@ def _maybe_get_cpu_backup(x: torch.Tensor) -> torch.Tensor:
     return x
 
 
+def _named_weight_params(model_module: torch.nn.Module) -> Iterator[tuple[str, torch.nn.Parameter]]:
+    """named_parameters() minus witness params and packed grouped-expert storage.
+
+    Primus-Turbo grouped GEMM keeps every expert in one packed `weights` Parameter and
+    exposes TE-style `weight{i}` views of it, registered lazily on first forward. Only
+    the views carry names the HF converters understand; the packed tensor would be a
+    second copy of the same data.
+    """
+    for module in model_module.modules():
+        ensure_weight_views = getattr(module, "_ensure_weight_views", None)  # config-access-exempt: only Primus-Turbo grouped linears define it
+        if callable(ensure_weight_views):
+            ensure_weight_views()
+
+    for name, param in model_module.named_parameters():
+        if getattr(param, "_is_witness_param", False):  # config-access-exempt: _is_witness_param is optional backend-attached tensor metadata
+            continue
+        if name.endswith(".weights") and ".experts." in name:
+            continue
+        yield name, param
+
+
 def _named_params_and_buffers_vanilla(model: Sequence[torch.nn.Module]) -> Iterator[tuple[str, torch.Tensor]]:
     for vp_stage, model_module in enumerate(model):
 
         def _compute_fqn(name, vp_stage=vp_stage):
             return f"vp_stages.{vp_stage}.{strip_param_name_prefix(name)}"
 
-        for name, param in model_module.named_parameters():
-            if getattr(
-                param, "_is_witness_param", False
-            ):  # config-access-exempt: _is_witness_param is optional backend-attached tensor metadata
-                continue
+        for name, param in _named_weight_params(model_module):
             yield _compute_fqn(name), param
 
         for name, buffer in model_module.named_buffers():
@@ -93,11 +110,7 @@ def _named_params_and_buffers_global(
             layer_offset = get_transformer_layer_offset(model_module.config, vp_stage)
         else:
             layer_offset = get_transformer_layer_offset(model_module.config)
-        for name, param in model_module.named_parameters():
-            if getattr(
-                param, "_is_witness_param", False
-            ):  # config-access-exempt: _is_witness_param is optional backend-attached tensor metadata
-                continue
+        for name, param in _named_weight_params(model_module):
             # for model without ddp wrap
             if not name.startswith("module.module."):
                 name = "module." + name
