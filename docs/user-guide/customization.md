@@ -27,6 +27,7 @@ and the default it replaces.
 | | `--custom-tis-function-path` | Importance sampling correction |
 | | `--custom-pg-loss-reducer-function-path` | Loss reduction (Dr.GRPO) |
 | | `--custom-convert-samples-to-train-data-path` | Sample to tensor batch |
+| **Weight sync** | `--custom-weight-transfer-protocol-path` | The trainer-to-engine weight transport |
 | **Megatron hooks** | `--custom-megatron-init-path` | After Megatron init |
 | | `--custom-megatron-before-log-prob-hook-path` | Before logprob compute |
 | | `--custom-megatron-before-train-step-hook-path` | Before each train step |
@@ -261,6 +262,36 @@ def convert_samples_to_train_data(args, samples) -> dict:
         "teacher_log_probs":       [...],
     }
 ```
+
+---
+
+## Weight sync
+
+### `--custom-weight-transfer-protocol-path`
+
+Move the trainer-to-engine weight transfer into your own package instead of a
+built-in `--update-weight-transfer-mode`:
+
+```bash
+miles ... --custom-weight-transfer-protocol-path \
+    modelexpress_rl.collective.integrations.miles_protocol.build_protocol
+```
+
+Setting the path implies `--update-weight-transfer-mode=external`; an explicit
+non-external mode alongside it, `broadcast` included, is a conflict, and the
+mode's constraints still apply (Megatron training backend, no `--colocate`).
+
+```python
+def build_protocol(args) -> WeightTransferProtocol: ...
+```
+
+A `WeightTransferProtocol` subclass works as the target too — a class already
+is a callable factory. The target must be synchronous: startup validation
+resolves the path without constructing it, and a coroutine factory, an
+awaitable result, or a non-`WeightTransferProtocol` return fails fast. Import
+the base class from `miles.backends.training_utils.weight_update.protocol`;
+the updater seam and per-sync lifecycle are described under
+[Weight synchronization](/advanced/disaggregated-rollout#weight-synchronization).
 
 ---
 

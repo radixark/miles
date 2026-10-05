@@ -800,6 +800,178 @@ def test_recompute_logprobs_via_prefill_flag_is_parsed():
 
 
 @pytest.mark.parametrize(
+    ("extra_args", "match"),
+    [
+        (["--update-weight-transfer-mode", "external"], "requires --custom-weight-transfer-protocol-path"),
+        (
+            [
+                "--update-weight-transfer-mode",
+                "external",
+                "--custom-weight-transfer-protocol-path",
+                "package.module.build_protocol",
+                "--colocate",
+            ],
+            "not compatible with --colocate",
+        ),
+    ],
+)
+def test_external_weight_transfer_configuration_fails_validation_early(extra_args, match):
+    parser = argparse.ArgumentParser()
+    get_miles_extra_args_provider()(parser)
+    args = parser.parse_args(extra_args + ["--num-rollout", "1"] + REQUIRED_ARGS)
+    _set_megatron_parallel_sizes(args)
+
+    with pytest.raises((AssertionError, ValueError), match=match):
+        miles_validate_args(args)
+
+
+def test_a_namespace_without_the_protocol_attribute_still_gets_the_named_error():
+    args = _parse_external_protocol_args("package.module.build_protocol")
+    del args.custom_weight_transfer_protocol_path
+
+    with pytest.raises(ValueError, match="requires --custom-weight-transfer-protocol-path"):
+        miles_validate_args(args)
+
+
+def test_external_weight_transfer_rejects_fsdp_before_protocol_loading():
+    parser = argparse.ArgumentParser()
+    get_miles_extra_args_provider()(parser)
+    args = parser.parse_args(
+        [
+            "--update-weight-transfer-mode",
+            "external",
+            "--custom-weight-transfer-protocol-path",
+            "package.module.build_protocol",
+            "--num-rollout",
+            "1",
+        ]
+        + REQUIRED_ARGS
+    )
+    args.train_backend = "fsdp"
+
+    with pytest.raises(AssertionError, match="only supports --train-backend megatron"):
+        miles_validate_args(args)
+
+
+def _parse_external_protocol_args(protocol_path: str) -> argparse.Namespace:
+    parser = argparse.ArgumentParser()
+    get_miles_extra_args_provider()(parser)
+    args = parser.parse_args(
+        [
+            "--update-weight-transfer-mode",
+            "external",
+            "--custom-weight-transfer-protocol-path",
+            protocol_path,
+            "--num-rollout",
+            "1",
+        ]
+        + REQUIRED_ARGS
+    )
+    _set_megatron_parallel_sizes(args)
+    return args
+
+
+def test_setting_the_protocol_path_implies_external_mode():
+    parser = argparse.ArgumentParser()
+    get_miles_extra_args_provider()(parser)
+    args = parser.parse_args(
+        [
+            "--custom-weight-transfer-protocol-path",
+            "implied_mode_test.build_protocol",
+            "--num-rollout",
+            "1",
+        ]
+        + REQUIRED_ARGS
+    )
+    _set_megatron_parallel_sizes(args)
+
+    with function_registry.temporary("implied_mode_test.build_protocol", lambda parsed: object()):
+        miles_validate_args(args)
+
+    assert args.update_weight_transfer_mode == "external"
+
+
+def test_a_conflicting_explicit_mode_raises():
+    parser = argparse.ArgumentParser()
+    get_miles_extra_args_provider()(parser)
+    args = parser.parse_args(
+        [
+            "--update-weight-transfer-mode",
+            "p2p",
+            "--custom-weight-transfer-protocol-path",
+            "conflict_test.build_protocol",
+            "--num-rollout",
+            "1",
+        ]
+        + REQUIRED_ARGS
+    )
+    _set_megatron_parallel_sizes(args)
+
+    with pytest.raises(ValueError, match="conflicts with --update-weight-transfer-mode=p2p"):
+        miles_validate_args(args)
+
+
+def test_an_explicit_broadcast_mode_conflicts_with_the_protocol_path():
+    parser = argparse.ArgumentParser()
+    get_miles_extra_args_provider()(parser)
+    args = parser.parse_args(
+        [
+            "--update-weight-transfer-mode",
+            "broadcast",
+            "--custom-weight-transfer-protocol-path",
+            "conflict_broadcast_test.build_protocol",
+            "--num-rollout",
+            "1",
+        ]
+        + REQUIRED_ARGS
+    )
+    _set_megatron_parallel_sizes(args)
+
+    with pytest.raises(ValueError, match="conflicts with --update-weight-transfer-mode=broadcast"):
+        miles_validate_args(args)
+
+
+def test_an_explicit_broadcast_packed_mode_conflicts_with_the_protocol_path():
+    parser = argparse.ArgumentParser()
+    get_miles_extra_args_provider()(parser)
+    args = parser.parse_args(
+        [
+            "--update-weight-transfer-mode",
+            "broadcast_packed",
+            "--custom-weight-transfer-protocol-path",
+            "conflict_broadcast_packed_test.build_protocol",
+            "--num-rollout",
+            "1",
+        ]
+        + REQUIRED_ARGS
+    )
+    _set_megatron_parallel_sizes(args)
+
+    with pytest.raises(ValueError, match="conflicts with --update-weight-transfer-mode=broadcast_packed"):
+        miles_validate_args(args)
+
+
+def test_the_unset_transfer_mode_resolves_to_broadcast():
+    parser = argparse.ArgumentParser()
+    get_miles_extra_args_provider()(parser)
+    args = parser.parse_args(["--num-rollout", "1"] + REQUIRED_ARGS)
+    _set_megatron_parallel_sizes(args)
+
+    miles_validate_args(args)
+
+    assert args.update_weight_transfer_mode == "broadcast"
+
+
+def test_external_protocol_is_resolved_but_not_constructed_at_argument_validation():
+    args = _parse_external_protocol_args("test:validate_no_construct")
+
+    with function_registry.temporary(
+        "test:validate_no_construct", lambda parsed: pytest.fail("validation must not construct the protocol")
+    ):
+        miles_validate_args(args)
+
+
+@pytest.mark.parametrize(
     ("extra", "message"),
     [
         (["--rollout-top-p", "0"], "--rollout-top-p must be in"),
@@ -2923,10 +3095,17 @@ class TestWeightTransferModeSelection:
         get_miles_extra_args_provider()(parser)
         return parser.parse_args(["--num-rollout", "1", *extra, *REQUIRED_ARGS])
 
-    def test_broadcast_is_the_default_and_packed_is_an_explicit_choice(self):
-        assert self._parse().update_weight_transfer_mode == "broadcast"
-        args = self._parse(["--update-weight-transfer-mode", "broadcast_packed"])
-        assert args.update_weight_transfer_mode == "broadcast_packed"
+    def test_the_flag_parses_to_none_and_validation_resolves_broadcast_and_packed(self):
+        # The argparse default is None so validation can tell unset from an
+        # explicit broadcast; miles_validate_args fills it (broadcast here).
+        args = self._parse()
+        assert args.update_weight_transfer_mode is None
+        _set_megatron_parallel_sizes(args)
+        miles_validate_args(args)
+        assert args.update_weight_transfer_mode == "broadcast"
+
+        parsed = self._parse(["--update-weight-transfer-mode", "broadcast_packed"])
+        assert parsed.update_weight_transfer_mode == "broadcast_packed"
 
     def test_unknown_mode_is_rejected(self):
         with pytest.raises(SystemExit):
