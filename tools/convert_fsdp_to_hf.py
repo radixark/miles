@@ -1,6 +1,5 @@
 import argparse
 import os
-import pickle
 import shutil
 import time
 
@@ -9,33 +8,8 @@ import torch.distributed.checkpoint as dist_cp
 from transformers import AutoModelForCausalLM
 from typing_extensions import override
 
+from miles.backends.megatron_utils.torch_dist_checkpoint import WrappedStorageReader
 from miles.utils.hf_utils.config import load_hf_config
-
-
-class UnpicklerWrapper(pickle.Unpickler):
-    @override
-    def find_class(self, mod_name, name):
-        class DummyClass:
-            def __init__(self, *args, **kwargs):
-                pass
-
-        if mod_name.startswith("megatron") or mod_name.startswith("glm"):
-            return DummyClass
-        return super().find_class(mod_name, name)
-
-
-class WrappedStorageReader(dist_cp.FileSystemReader):
-    @override
-    def read_metadata(self):
-        path = self.fs.concat_path(self.path, ".metadata")
-        with self.fs.create_stream(path, "rb") as metadata_file:
-            metadata = UnpicklerWrapper(metadata_file).load()
-        if getattr(metadata, "storage_meta", None) is None:
-            metadata.storage_meta = dist_cp.StorageMeta()
-        metadata.storage_meta.load_id = self.load_id
-        if metadata.planner_data is None:
-            metadata.planner_data = {}
-        return metadata
 
 
 class EmptyStateDictLoadPlanner(dist_cp.default_planner.DefaultLoadPlanner):

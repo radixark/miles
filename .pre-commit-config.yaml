@@ -78,7 +78,7 @@ repos:
         language: pygrep
         entry: 'mpu\.get_'
         types: [python]
-        exclude: '(backends/megatron_utils/parallel\.py|tools/convert_to_hf\.py|miles_plugins/|examples/)'
+        exclude: '(backends/megatron_utils/parallel\.py|miles_plugins/|examples/)'
 
       - id: ban-bare-auto-loaders
         name: Ban bare Auto{Config,Tokenizer}.from_pretrained (use load_hf_config / load_tokenizer)

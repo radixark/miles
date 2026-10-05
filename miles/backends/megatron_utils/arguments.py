@@ -1,5 +1,4 @@
 import logging
-import os
 
 from megatron.core.tokenizers.utils.build_tokenizer import vocab_size_with_padding as _vocab_size_with_padding
 from megatron.training.arguments import parse_args, validate_args
@@ -33,9 +32,6 @@ def set_default_megatron_args(args):
     if args.seq_length is None:
         args.seq_length = 4096
     args.max_position_embeddings = args.seq_length
-    # Notice(Jiajun): new megatron has removed this argument and use dp_reshardable instead of fully_shard
-    if os.getenv("DEPRECATED_MEGATRON_COMPATIBLE", "0") == "1":
-        args.dist_ckpt_save_pre_mcore_014 = True
     # Before 20260819, radixark/Megatron-LM pick torch gemm for router, which is fp32 x fp32 ->
     # fp32, and 20260819 convert the default to TE gemm which is bf16 x bf16 -> fp32. Result show
     # the TE one increase log prob diff so manually set back
