@@ -2,45 +2,55 @@ import abc
 import logging
 import os
 import random
+from argparse import Namespace
 from datetime import timedelta
-from typing import TYPE_CHECKING, Literal
+from typing import Any, Literal
 
 import ray
 import torch
 import torch.distributed as dist
 
 import miles.utils.eval_config
+from miles.backends.training_utils.types import TrainStepOutput
+from miles.ray.rollout.inference_controller import UpdatableEngines
 from miles.utils import object_store
 from miles.utils.audit_utils.process_identity import TrainProcessIdentity
-from miles.utils.distributed_utils import init_gloo_group
-from miles.utils.env_report import collect_and_print_node_env_report
+from miles.utils.audit_utils.witness.allocator import WitnessInfo
+from miles.utils.distributed_utils import init_gloo_group, one_rank_at_a_time
 from miles.utils.ft_utils.heartbeat_utils import HeartbeatStatus, SimpleHeartbeat
-from miles.utils.logging_utils import configure_logger
+from miles.utils.ft_utils.indep_dp import IndepDPInfo
+from miles.utils.hf_utils.config import load_hf_config
+from miles.utils.init_once import InitOnce, init_once
+from miles.utils.logging_utils import configure_logger, rebind_env_reporting
 from miles.utils.memory_utils import clear_memory, print_memory
 from miles.utils.misc import NodeProbeMixin, get_current_node_ip, get_free_port
+from miles.utils.object_store import StoreObjectRef
+from miles.utils.processing_utils import load_processor, load_tokenizer
 from miles.utils.test_utils.det_process_group import DET_NCCL_BACKEND_NAME, register_det_nccl_backend
 from miles.utils.test_utils.fault_injector import inject_fault as _inject_fault
-
-if TYPE_CHECKING:
-    from miles.ray.rollout.inference_controller import UpdatableEngines
-
+from miles.utils.workers.env_vars import CELL_INDEX_ENV_VAR
+from miles.utils.workers.rpc.common.metadata import rpc
+from miles.utils.workers.rpc.common.wire_types import Pickled
+from miles.utils.workers.serving.worker_identity import read_worker_in_pod_index
 
 logger = logging.getLogger(__name__)
 
-TRAINER_CONCURRENCY_GROUPS = {"heartbeat_status": 1, "default": 1, "fault_injector": 1, "kill_self": 1}
-TRAINER_METHOD_CONCURRENCY_GROUPS = {
-    "get_heartbeat_status": "heartbeat_status",
-    "inject_fault": "fault_injector",
-    "kill_self": "kill_self",
-}
-
 
 def get_local_gpu_id():
+    if CELL_INDEX_ENV_VAR in os.environ:
+        return read_worker_in_pod_index(os.environ)
+
     cvd = os.environ.get("CUDA_VISIBLE_DEVICES") or os.environ.get("HIP_VISIBLE_DEVICES")
     if not cvd:
         return ray.get_gpu_ids()[0]
     else:
         return cvd.split(",").index(str(ray.get_gpu_ids()[0]))
+
+
+def _get_nvml_pci_bus_id(device: int) -> str:
+    props = torch.cuda.get_device_properties(device)
+    # NVML's canonical nvmlPciInfo_t.busId form: 8-hex-digit domain, uppercase, function 0
+    return f"{props.pci_domain_id:08X}:{props.pci_bus_id:02X}:{props.pci_device_id:02X}.0"
 
 
 class TrainRayActor(NodeProbeMixin):
@@ -50,19 +60,15 @@ class TrainRayActor(NodeProbeMixin):
         args,
         world_size: int,
         rank: int,
-        indep_dp_store_addr: str,
         role: Literal["actor", "critic"],
         cell_index: int,
     ):
-        configure_logger(
-            args, source=TrainProcessIdentity(component=role, cell_index=cell_index, rank_within_cell=rank)
-        )
-        self.args = args
+        self._init_once = InitOnce(type(self).__name__)
 
+        self.args = args
         self._heartbeat = SimpleHeartbeat()
         self._world_size = world_size
         self._rank = rank
-        self._indep_dp_store_addr = indep_dp_store_addr
 
         os.environ["WORLD_SIZE"] = str(self._world_size)
         os.environ["RANK"] = str(self._rank)
@@ -71,7 +77,26 @@ class TrainRayActor(NodeProbeMixin):
         # os.environ["LOCAL_RANK"] = str(ray.get_gpu_ids()[0])
         os.environ["LOCAL_RANK"] = str(get_local_gpu_id())
 
+        configure_logger(
+            args,
+            source=TrainProcessIdentity(
+                component=role,
+                model_id=args.trainer_model_id,
+                cell_index=cell_index,
+                rank_within_cell=rank,
+            ),
+        )
+
         object_store.init_instance(args)
+
+    def load_hf_assets(self, *, with_processor: bool = False) -> None:
+        with one_rank_at_a_time():
+            self.hf_config = load_hf_config(self.args.hf_checkpoint)
+            self.tokenizer = load_tokenizer(
+                self.args.hf_checkpoint, chat_template_path=self.args.chat_template_path, trust_remote_code=True
+            )
+            if with_processor and hasattr(self.hf_config, "vision_config"):
+                self.processor = load_processor(self.args.hf_checkpoint, trust_remote_code=True)
 
     def propose_master_addr_and_port(self) -> tuple[str, int]:
         return get_current_node_ip(), get_free_port(start_port=random.randint(20000, 21000))
@@ -81,18 +106,26 @@ class TrainRayActor(NodeProbeMixin):
         os.environ["MASTER_PORT"] = str(master_port)
 
     # TODO mv the args into ctor
-    def init(self, args, role, with_ref=False, with_opd_teacher=False):
+    @abc.abstractmethod
+    def init(
+        self,
+        args: Pickled,
+        role: str,
+        *,
+        with_ref: bool = False,
+        with_opd_teacher: bool = False,
+        recv_ckpt_src_rank: int | None = None,
+        indep_dp_info: IndepDPInfo,
+        indep_dp_store_addr: str | None,
+    ) -> int | None:
+        raise NotImplementedError
+
+    @init_once
+    def _init_common(self, args: Namespace, role: str, with_ref: bool = False, with_opd_teacher: bool = False) -> None:
         self.args = args
         self.role = role
         self.with_ref = with_ref
         self.with_opd_teacher = with_opd_teacher
-
-        if env_report := args.env_report:
-            collect_and_print_node_env_report(
-                role=role,
-                rank=self._rank,
-                partial_env_report=env_report,
-            )
 
         torch.serialization.add_safe_globals([miles.utils.eval_config.EvalDatasetConfig])
 
@@ -119,6 +152,7 @@ class TrainRayActor(NodeProbeMixin):
 
         args.rank = dist.get_rank()
         args.world_size = dist.get_world_size()
+        rebind_env_reporting(args)
 
         try:
             if torch.version.hip is not None:
@@ -129,12 +163,15 @@ class TrainRayActor(NodeProbeMixin):
 
                 pynvml.nvmlInit()
 
-                local_rank = int(os.environ["RANK"]) % args.num_gpus_per_node
-
-                handle = pynvml.nvmlDeviceGetHandleByIndex(local_rank)
+                # NVML indexes GPUs physically and ignores CUDA_VISIBLE_DEVICES, so resolve the device this
+                # process bound above by its PCI bus id rather than by a rank-derived index.
+                device = torch.cuda.current_device()
+                bus_id = _get_nvml_pci_bus_id(device)
+                handle = pynvml.nvmlDeviceGetHandleByPciBusId(bus_id)
+                nvml_index = pynvml.nvmlDeviceGetIndex(handle)
                 pynvml.nvmlDeviceSetCpuAffinity(handle)
 
-                logger.info(f"Set NUMA affinity for GPU {local_rank}")
+                logger.info(f"Set NUMA affinity for cuda:{device} (NVML index {nvml_index}, PCI bus id {bus_id})")
                 pynvml.nvmlShutdown()
 
         except ImportError:
@@ -144,34 +181,50 @@ class TrainRayActor(NodeProbeMixin):
 
         self._heartbeat.bump()
 
+    def is_initialized(self) -> bool:
+        return self._init_once.is_initialized()
+
+    def load_state(self) -> int:
+        raise NotImplementedError(f"{type(self).__name__} cannot reload its state without restarting")
+
+    @rpc(concurrency_group="heartbeat_status")
     def get_heartbeat_status(self) -> HeartbeatStatus:
         return self._heartbeat.status()
 
+    @rpc(concurrency_group="fault_injector")
     def inject_fault(self, mode: str) -> None:
         _inject_fault(mode=mode)
 
+    @rpc(concurrency_group="kill_self")
     def kill_self(self) -> None:
         os._exit(1)
 
-    def clear_memory(self):
+    def clear_memory(self) -> None:
         print_memory("before TrainRayActor.clear_memory")
         clear_memory()
         print_memory("after TrainRayActor.clear_memory")
 
     @abc.abstractmethod
-    def sleep(self, tags):
+    def sleep(self) -> None:
         raise NotImplementedError
 
     @abc.abstractmethod
-    def wake_up(self, tags):
+    def wake_up(self) -> None:
         raise NotImplementedError
 
     @abc.abstractmethod
-    def train(self, rollout_id, rollout_data_ref, external_data=None):
+    def train(
+        self,
+        rollout_id: int,
+        rollout_data_ref: StoreObjectRef | list[StoreObjectRef],
+        witness_info: WitnessInfo | None = None,
+        attempt: int = 0,
+        external_data: TrainStepOutput | None = None,
+    ) -> TrainStepOutput:
         raise NotImplementedError
 
     @abc.abstractmethod
-    def save_model(self, rollout_id, force_sync=False):
+    def save_model(self, rollout_id: int, force_sync: bool = False) -> None:
         raise NotImplementedError
 
     def export_hf(self, rollout_id: int, path: str) -> None:
@@ -179,14 +232,12 @@ class TrainRayActor(NodeProbeMixin):
         raise NotImplementedError(f"{type(self).__name__} does not support HF export")
 
     @abc.abstractmethod
-    def update_weights(self, info: "UpdatableEngines") -> int | None:
+    def update_weights(self, info: UpdatableEngines) -> int | None:
         raise NotImplementedError
 
     @abc.abstractmethod
     def _get_parallel_config(self):
         raise NotImplementedError
 
-    def set_rollout_executor(self, rollout_executor):
-        self.rollout_executor = rollout_executor
-        if self.args.rank == 0:
-            ray.get(self.rollout_executor.set_train_parallel_config.remote(self.train_parallel_config))
+    def get_train_parallel_config(self) -> dict[str, Any]:
+        return self.train_parallel_config

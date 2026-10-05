@@ -156,27 +156,8 @@ jobs:
       - name: Reconcile Miles dependencies
         shell: bash
         run: |
-          # The image pins cuDNN deliberately: transformer_engine's fused attention needs a
-          # newer build than torch's own exact pin, so the Dockerfile installs it last. This
-          # resolve drags it back down to whatever torch asks for, which makes fused attention
-          # backward fail with CUDNN_STATUS_BAD_PARAM. Record what the image shipped and put it
-          # back afterwards; --no-deps so nothing else in the resolved set moves.
-          pinned=""
-          for pkg in nvidia-cudnn-cu13 nvidia-cudnn-cu12; do
-            v=$(python -m pip show "$pkg" 2>/dev/null | awk '/^Version:/{print $2}' || true)
-            if [ -n "$v" ]; then pinned="$pinned $pkg==$v"; fi
-          done
-          python -m pip install -r "$GITHUB_WORKSPACE/examples/multi_lora/requirements.txt" --break-system-packages
-          python -m pip install -r "$GITHUB_WORKSPACE/requirements.txt" --break-system-packages
-          for spec in $pinned; do
-            pkg=${spec%%==*}
-            want=${spec##*==}
-            got=$(python -m pip show "$pkg" 2>/dev/null | awk '/^Version:/{print $2}' || true)
-            if [ -n "$got" ] && [ "$got" != "$want" ]; then
-              echo "Restoring image pin: $pkg $got -> $want"
-              python -m pip install --no-deps --break-system-packages "$spec"
-            fi
-          done
+          python tests/ci/reconcile_dependencies.py \
+            examples/multi_lora/requirements.txt requirements.txt
 
       - name: Sync dependency sources
         if: ${{ !inputs.skip_dependency_install }}
@@ -187,6 +168,13 @@ jobs:
         run: |
           cd /sgl-workspace/sglang && git reset --hard HEAD && git clean -fd && git fetch origin "$SGLANG_PR" && git checkout -f FETCH_HEAD && git log --oneline -1
           cd /root/Megatron-LM && git reset --hard HEAD && git clean -fd && git fetch origin "$MEGATRON_PR" && git checkout -f FETCH_HEAD && git log --oneline -1
+
+      - name: Install Megatron Bridge override
+        if: ${{ !inputs.skip_dependency_install && (github.event.inputs.ci_megatron_bridge_pr != '' || contains(github.event.pull_request.body, 'ci-megatron-bridge-pr:')) }}
+        uses: ./.github/actions/install-megatron-bridge
+        with:
+          ref: ${{ github.event.inputs.ci_megatron_bridge_pr || '' }}
+          pr_body: ${{ github.event.pull_request.body || '' }}
 
       - name: Verify source resolution
         shell: bash

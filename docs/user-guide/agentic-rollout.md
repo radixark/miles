@@ -125,6 +125,8 @@ sequence, trims model-specific boundary tokens, and builds the training sample.
 
 </Warning>
 
+Chat responses from both session-server versions omit `choices[*].meta_info`; ordinary JSON replies retain the message, standard `logprobs`, and `usage`. The server keeps the full metadata in session records for training sample collection and inspection through `GET /sessions/{id}`. Streaming chunks also omit `meta_info`.
+
 ### Choose template options per session
 
 - Ordinary `chat_template_kwargs` use request > continued turn > launch defaults. Fields required to preserve the reused prompt retain their recorded values; fixed model settings override conflicts. Qwen3.8 selects `reasoning_effort` on a new root and preserves its value or absence on continuation. When the field is absent, the template defaults to `xhigh`.

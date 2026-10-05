@@ -1,9 +1,10 @@
 import os
 
 from scripts.run_qwen3_5_35b_a3b_lora import ScriptArgs, _prepare_download, _train
-from tests.ci.ci_register import register_cuda_ci
+from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
 
-import miles.utils.external_utils.command_utils as U
+from miles.utils.external_utils import command_utils
+
 
 # Smoke test for scripts/run_qwen3_5_35b_a3b_lora.py on the full Qwen3.5-35B-A3B
 # checkpoint, like the other Qwen3.5 e2e tests (full rollout -> train -> save loop;
@@ -13,11 +14,12 @@ import miles.utils.external_utils.command_utils as U
 
 
 register_cuda_ci(
-    est_time=1300,
-    suite="stage-c-8-gpu-h100",
+    est_time=1200,
+    suite="stage-c-8-gpu-h200",
     labels=["megatron", "model-scripts", "lora"],
     hardware=["hopper", "blackwell"],
 )
+register_rocm_ci(est_time=900, suite="nightly-stage-c-8-gpu-mi350", labels=["megatron", "model-scripts", "lora"])
 
 # (name, experts_shared_outer_loras, virtual_experts_serving)
 _CONFIGS = [
@@ -27,17 +29,21 @@ _CONFIGS = [
 
 
 def _args(shared_outer: bool, virtual_experts: bool) -> ScriptArgs:
-    return ScriptArgs(
+    extra_args = "--ci-test --ci-disable-logprobs-checker "
+    if not virtual_experts:
+        extra_args += "--no-sglang-lora-use-virtual-experts "
+    # ROCm shared-expert fusion requires per-expert LoRA factors.
+    if os.getenv("MILES_HARDWARE_PLATFORM") == "rocm" and shared_outer:
+        extra_args += "--sglang-disable-shared-experts-fusion "
+
+    return ScriptArgs.from_env(
         model_name="Qwen3.5-35B-A3B",
         num_nodes=1,
         num_gpus_per_node=8,
         num_rollout=1,
         experts_shared_outer_loras=shared_outer,
         enable_wandb=False,
-        extra_args=(
-            "--ci-test --ci-disable-logprobs-checker "
-            + ("" if virtual_experts else "--no-sglang-lora-use-virtual-experts ")
-        ),
+        extra_args=extra_args,
     )
 
 
@@ -56,6 +62,8 @@ if __name__ == "__main__":
     for name, shared_outer, virtual_experts in _CONFIGS:
         print(f"[qwen3.5-lora-ci] ===== combo: {name} =====", flush=True)
         # fresh ray/sglang between combos
-        U.exec_command_cpu("ray stop --force || true; pkill -9 sglang || true; sleep 10")
+        command_utils.default_config().create_backend().exec_command_cpu(
+            "ray stop --force || true; pkill -9 sglang || true; sleep 10"
+        )
         execute(_args(shared_outer, virtual_experts))
         print(f"[qwen3.5-lora-ci] ===== combo PASSED: {name} =====", flush=True)

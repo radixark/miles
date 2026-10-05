@@ -22,7 +22,6 @@ else:
 from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
 from tests.ci.metric_history import register_ci_gate
 
-import miles.utils.external_utils.command_utils as U
 
 # Smoke test for the GLM-5.2 (glm_moe_dsa) training script. Exercises the DSA
 # cross-layer index-sharing path (5 layers = 3 dense + 2 MoE, computing layers
@@ -36,8 +35,8 @@ register_rocm_ci(
     est_time=900,
     suite="stage-c-4-gpu-mi350",
     labels=["megatron", "model-scripts", "amd"],
-    disabled="FIXME: re-enable once this case passes on the MI350 runners.",
 )
+register_rocm_ci(est_time=900, suite="nightly-stage-c-4-gpu-mi350", labels=["megatron", "model-scripts", "amd"])
 
 register_ci_gate(metric_key="train/grad_norm")
 register_ci_gate(metric_key="train/ppo_kl")
@@ -47,8 +46,7 @@ register_ci_gate(metric_key="rollout/raw_reward")
 
 
 def _args() -> ScriptArgs:
-    return ScriptArgs(
-        hardware="H200",
+    return ScriptArgs.from_env(
         model_name="GLM-5.2_5layer",
         num_nodes=1,
         num_gpus_per_node=4,
@@ -59,6 +57,7 @@ def _args() -> ScriptArgs:
 
 
 def prepare(args: ScriptArgs):
+    U = args.create_backend()
     U.exec_command_cpu(f"mkdir -p {args.output_dir}")
     _prepare_download(args)
     _validate_glm_checkpoint(args)

@@ -21,14 +21,13 @@ Usage patterns:
            --model-name DeepSeek-V4-Flash-FP8-4layer \
            --num-nodes 1 --num-gpus-per-node 8
 
-  2. Individual steps (download [-> MXFP4->FP8] -> FP8->BF16 -> BF16->torch_dist -> rsync -> train):
+  2. Individual steps (download [-> MXFP4->FP8] -> FP8->BF16 -> BF16->torch_dist -> train):
        python scripts/run_deepseek_v4.py prepare-download --model-name DeepSeek-V4-Flash-FP8
        python scripts/run_deepseek_v4.py prepare-fp8      --model-name DeepSeek-V4-Flash-0731
        python scripts/run_deepseek_v4.py prepare-single   --model-name DeepSeek-V4-Flash-FP8 \
            --hf-checkpoint /root/models/DeepSeek-V4-Flash-FP8
        python scripts/run_deepseek_v4.py prepare-spmd     --model-name DeepSeek-V4-Flash-FP8 \
            --num-nodes 8 --num-gpus-per-node 8
-       python scripts/run_deepseek_v4.py prepare-cp       --model-name DeepSeek-V4-Flash-FP8
        python scripts/run_deepseek_v4.py train            --model-name DeepSeek-V4-Flash-FP8 \
            --num-nodes 8 --num-gpus-per-node 8 \
            --hf-checkpoint /root/models/DeepSeek-V4-Flash-FP8
@@ -40,7 +39,7 @@ from typing import Literal
 
 import typer
 
-import miles.utils.external_utils.command_utils as U
+from miles.utils.external_utils import command_utils
 
 app = typer.Typer()
 
@@ -79,9 +78,9 @@ matchers:
 
 
 @dataclass
-class ScriptArgs(U.ExecuteTrainConfig):
+class ScriptArgs(command_utils.ExecuteTrainConfig):
     mode: Literal["normal", "debug_minimal"] = "debug_minimal"
-    run_id: str = U.create_run_id()
+    run_id: str = command_utils.create_run_id()
     model_org: str = ""
     model_name: Literal[
         "DeepSeek-V4-Flash-FP8",
@@ -116,7 +115,9 @@ class ScriptArgs(U.ExecuteTrainConfig):
     dsa_kernel_backend: Literal["none", "tilelang", "cudnn"] | None = None
     optimizer_offload: bool = True
     use_fault_tolerance: bool = True
-    cp_size: int = 1
+    # None runs each recipe's own CP. Only the single-node miles impl lets it vary (TP takes the GPUs
+    # CP leaves, CP split with --allgather-cp); every other recipe accepts only its own CP size.
+    cp_size: int | None = None
 
     # debug configs
     dump_details: bool = False
@@ -140,8 +141,8 @@ class ScriptArgs(U.ExecuteTrainConfig):
     extra_args: str = ""
 
     def __post_init__(self):
-        self.hardware = U.resolve_hardware(self)
-        self.num_gpus_per_node = self.num_gpus_per_node or U.NUM_GPUS_OF_HARDWARE[self.hardware]
+        self.hardware = command_utils.resolve_hardware(self)
+        self.num_gpus_per_node = self.num_gpus_per_node or command_utils.NUM_GPUS_OF_HARDWARE[self.hardware]
         if not self.model_org:
             self.model_org = _DEFAULT_MODEL_ORG[self.model_name]
         if self.model_local_dir is None:
@@ -154,6 +155,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
             assert not (self.train_mxfp8 or self.rollout_mxfp8), "train_mxfp8/rollout_mxfp8 require Blackwell"
         assert self.rollout_num_nodes >= 0
         assert self.rollout_num_nodes < self.num_nodes
+        assert self.cp_size is None or self.cp_size >= 1, f"cp_size must be at least 1, got {self.cp_size}"
         self.colocate = self.rollout_num_nodes == 0
         self.actor_num_nodes = self.num_nodes - self.rollout_num_nodes
         self.actor_num_gpus_per_node = self.num_gpus_per_node
@@ -197,6 +199,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
 
 def _download_dataset(args: ScriptArgs):
     """Download the task-specific dataset(s)."""
+    U = args.create_backend()
     match args.task:
         case "dapo_aime":
             U.hf_download_dataset("zhuzilin/dapo-math-17k", data_dir=args.data_dir)
@@ -225,6 +228,7 @@ def _ensure_4layer_model_type(args: ScriptArgs):
 
 def _prepare_download(args: ScriptArgs):
     """Download HF checkpoint + task dataset. Idempotent: hf skips existing blobs."""
+    U = args.create_backend()
     U.exec_command_cpu(f"mkdir -p {args.model_dir} {args.data_dir}")
     # Only download if the user has NOT supplied a pre-existing checkpoint dir.
     # (prepare_single / train with --hf-checkpoint bypass this.)
@@ -236,7 +240,7 @@ def _prepare_download(args: ScriptArgs):
 
 
 @app.command()
-@U.dataclass_cli
+@command_utils.dataclass_cli
 def prepare_download(args: ScriptArgs):
     """Download HF checkpoint + dataset from HuggingFace. Run on one node (shared NFS)."""
     _prepare_download(args)
@@ -244,6 +248,7 @@ def prepare_download(args: ScriptArgs):
 
 def _prepare_fp8(args: ScriptArgs):
     """MXFP4 experts -> blockwise FP8 (lossless cast). Only for official MXFP4 releases."""
+    U = args.create_backend()
     if args.model_name not in _MXFP4_MODEL_NAMES:
         print(f"[prepare_fp8] {args.model_name} has no MXFP4 source; nothing to do.")
         return
@@ -255,13 +260,14 @@ def _prepare_fp8(args: ScriptArgs):
 
 
 @app.command()
-@U.dataclass_cli
+@command_utils.dataclass_cli
 def prepare_fp8(args: ScriptArgs):
     """MXFP4 -> FP8 cast (needs prepare-download done first). One node."""
     _prepare_fp8(args)
 
 
 def _prepare_single(args: ScriptArgs):
+    U = args.create_backend()
     _download_dataset(args)
 
     if args.model_name in _MXFP4_MODEL_NAMES:
@@ -275,7 +281,7 @@ def _prepare_single(args: ScriptArgs):
 
 
 @app.command()
-@U.dataclass_cli
+@command_utils.dataclass_cli
 def prepare_single(args: ScriptArgs):
     """FP8 -> BF16 cast for Megatron. Needs --hf-checkpoint (or pre-downloaded). One node."""
     _prepare_single(args)
@@ -287,9 +293,10 @@ def _prepare_mxfp8(args: ScriptArgs):
     head/wo_a/ffn.gate/compressor/norms/embed and the DSA indexer weights_proj
     are all kept BF16 by SKIP_WEIGHT_SUBSTRINGS in tools/convert_hf_to_mxfp8.py.
     """
+    U = args.create_backend()
     if not args.rollout_mxfp8:
         return
-    assert U.GENERATION_HARDWARE[args.hardware] == "Blackwell", "rollout_mxfp8 requires Blackwell"
+    assert command_utils.GENERATION_HARDWARE[args.hardware] == "Blackwell", "rollout_mxfp8 requires Blackwell"
     U.exec_command_gpu(
         f"python tools/convert_hf_to_mxfp8.py "
         f"--model-dir {args.model_dir}/{args.bf16_name} "
@@ -298,13 +305,14 @@ def _prepare_mxfp8(args: ScriptArgs):
 
 
 @app.command()
-@U.dataclass_cli
+@command_utils.dataclass_cli
 def prepare_mxfp8(args: ScriptArgs):
     """BF16 -> MXFP8 conversion (needs prepare-single done first). One node."""
     _prepare_mxfp8(args)
 
 
 def _prepare_spmd(args: ScriptArgs):
+    U = args.create_backend()
     is_4layer = args.model_name == "DeepSeek-V4-Flash-FP8-4layer"
     actor_num_nodes = args.actor_num_nodes
     actor_num_gpus_per_node = args.actor_num_gpus_per_node
@@ -361,28 +369,24 @@ def _prepare_spmd(args: ScriptArgs):
 
 
 @app.command()
-@U.dataclass_cli
+@command_utils.dataclass_cli
 def prepare_spmd(args: ScriptArgs):
     _prepare_spmd(args)
 
 
-@app.command()
-@U.dataclass_cli
-def prepare_cp(args: ScriptArgs):
-    _prepare_cp(args)
+def _prepare_cmd(args: ScriptArgs) -> dict[str, str]:
+    if args.model_local_dir == args.model_dir:
+        return {}
 
-
-def _prepare_cp(args: ScriptArgs):
-    U.rsync_simple(
-        path_src=f"{args.model_dir}/{args.torch_dist_name}",
-        path_dst=f"{args.model_local_dir}/{args.torch_dist_name}",
-        num_nodes=args.num_nodes,
-    )
-    U.rsync_simple(
-        path_src=f"{args.model_dir}/{args.rollout_name}",
-        path_dst=f"{args.model_local_dir}/{args.rollout_name}",
-        num_nodes=args.num_nodes,
-    )
+    copies = [
+        command_utils.rsync_cmd(
+            f"{args.model_dir}/{args.torch_dist_name}", f"{args.model_local_dir}/{args.torch_dist_name}"
+        ),
+        command_utils.rsync_cmd(
+            f"{args.model_dir}/{args.rollout_name}", f"{args.model_local_dir}/{args.rollout_name}"
+        ),
+    ]
+    return {"trainer": " && ".join(copies)}
 
 
 def _get_parallel_config(args: ScriptArgs) -> str:
@@ -398,22 +402,13 @@ def _get_parallel_config(args: ScriptArgs) -> str:
     # Single-node smoke-test configs
     if actor_num_nodes == 1:
         if args.dsv4_impl == "megatron":
+            # dsv4_hybrid needs cp_partition_mode='contiguous' for CP>1, which miles does not set
             # The plugin rejects TP>1; the TP ranks go to DP instead.
-            return (
-                "--tensor-model-parallel-size 1 "
-                "--pipeline-model-parallel-size 1 "
-                "--context-parallel-size 1 "
-                f"--expert-model-parallel-size {actor_num_gpus_per_node} "
-                "--expert-tensor-parallel-size 1 "
-            )
-        return (
-            f"--tensor-model-parallel-size {actor_num_gpus_per_node} "
-            "--sequence-parallel "
-            "--pipeline-model-parallel-size 1 "
-            "--context-parallel-size 1 "
-            f"--expert-model-parallel-size {actor_num_gpus_per_node} "
-            "--expert-tensor-parallel-size 1 "
-        )
+            return _parallel_flags(args, tp=1, cp=1, ep=actor_num_gpus_per_node)
+        cp_size = args.cp_size or 1
+        if actor_num_gpus_per_node % cp_size:
+            raise NotImplementedError(f"cp_size={cp_size} does not divide {actor_num_gpus_per_node} GPUs")
+        return _parallel_flags(args, tp=actor_num_gpus_per_node // cp_size, cp=cp_size, ep=actor_num_gpus_per_node)
 
     if actor_num_gpus_per_node == 4:
         if total_gpus == 32:  # 8 nodes x 4 GPUs
@@ -422,50 +417,14 @@ def _get_parallel_config(args: ScriptArgs) -> str:
                 # CP>1, which no launcher exercises yet -- so the TP and CP ranks both go
                 # to DP. max-tokens-per-gpu below doubles to keep the per-micro-batch
                 # budget (max_tokens_per_gpu * cp_size) equal to the miles recipe's.
-                return (
-                    "--tensor-model-parallel-size 1 "
-                    "--pipeline-model-parallel-size 8 "
-                    "--decoder-first-pipeline-num-layers 4 "
-                    "--decoder-last-pipeline-num-layers 3 "
-                    "--context-parallel-size 1 "
-                    "--expert-model-parallel-size 4 "
-                    "--expert-tensor-parallel-size 1 "
-                )
-            return (
-                "--tensor-model-parallel-size 2 "
-                "--sequence-parallel "
-                "--pipeline-model-parallel-size 8 "
-                "--decoder-first-pipeline-num-layers 4 "
-                "--decoder-last-pipeline-num-layers 3 "
-                "--context-parallel-size 2 "
-                "--allgather-cp "
-                "--expert-model-parallel-size 4 "
-                "--expert-tensor-parallel-size 1 "
-            )
+                return _parallel_flags(args, tp=1, pp=8, pp_edge_layers=(4, 3), cp=1, ep=4)
+            return _parallel_flags(args, tp=2, pp=8, pp_edge_layers=(4, 3), cp=2, ep=4)
 
     if actor_num_gpus_per_node == 8:
         if total_gpus == 64:  # 8 nodes x 8 GPUs
-            return (
-                "--tensor-model-parallel-size 8 "
-                "--sequence-parallel "
-                "--pipeline-model-parallel-size 8 "
-                "--decoder-first-pipeline-num-layers 4 "
-                "--decoder-last-pipeline-num-layers 3 "
-                "--context-parallel-size 1 "
-                "--expert-model-parallel-size 8 "
-                "--expert-tensor-parallel-size 1 "
-            )
+            return _parallel_flags(args, tp=8, pp=8, pp_edge_layers=(4, 3), cp=1, ep=8)
         elif total_gpus == 256:  # 32 nodes x 8 GPUs (Pro)
-            return (
-                "--tensor-model-parallel-size 8 "
-                "--sequence-parallel "
-                "--pipeline-model-parallel-size 8 "
-                "--decoder-first-pipeline-num-layers 7 "
-                "--decoder-last-pipeline-num-layers 6 "
-                "--context-parallel-size 1 "
-                "--expert-model-parallel-size 32 "
-                "--expert-tensor-parallel-size 1 "
-            )
+            return _parallel_flags(args, tp=8, pp=8, pp_edge_layers=(7, 6), cp=1, ep=32)
 
     raise NotImplementedError(
         f"No pre-set parallel config for {total_gpus} GPUs. "
@@ -473,9 +432,33 @@ def _get_parallel_config(args: ScriptArgs) -> str:
     )
 
 
+def _parallel_flags(
+    args: ScriptArgs, *, tp: int, cp: int, ep: int, pp: int = 1, pp_edge_layers: tuple[int, int] | None = None
+) -> str:
+    """One recipe's parallel flags; a recipe runs its own CP size, so ``cp_size`` must be unset or equal."""
+    if args.cp_size not in (None, cp):
+        raise NotImplementedError(
+            f"cp_size={args.cp_size} is untested here: this recipe (--dsv4-impl {args.dsv4_impl}, "
+            f"{args.actor_num_nodes}x{args.actor_num_gpus_per_node} GPUs) runs CP{cp}"
+        )
+    flags = [f"--tensor-model-parallel-size {tp}"]
+    if tp > 1:
+        flags.append("--sequence-parallel")
+    flags.append(f"--pipeline-model-parallel-size {pp}")
+    if pp_edge_layers is not None:
+        first, last = pp_edge_layers
+        flags += [f"--decoder-first-pipeline-num-layers {first}", f"--decoder-last-pipeline-num-layers {last}"]
+    flags.append(f"--context-parallel-size {cp}")
+    if cp > 1:
+        flags.append("--allgather-cp")  # DeepSeek V4 rejects the zigzag CP split
+    flags += [f"--expert-model-parallel-size {ep}", "--expert-tensor-parallel-size 1"]
+    return "".join(f"{flag} " for flag in flags)
+
+
 def _train(args: ScriptArgs):
+    U = args.create_backend()
     if args.train_mxfp8 or args.rollout_mxfp8:
-        assert U.GENERATION_HARDWARE[args.hardware] == "Blackwell", "MXFP8 requires Blackwell"
+        assert command_utils.GENERATION_HARDWARE[args.hardware] == "Blackwell", "MXFP8 requires Blackwell"
     if not args.rollout_fp8 or args.hf_checkpoint is None or args.model_name in _MXFP4_MODEL_NAMES:
         rollout_checkpoint = f"{args.model_local_dir}/{args.rollout_name}"
         if args.hf_checkpoint != rollout_checkpoint:
@@ -713,14 +696,14 @@ def _train(args: ScriptArgs):
         misc_args += "--transformer-impl transformer_engine " "--bf16 " "--fp8-format e4m3 " "--fp8-recipe blockwise "
 
     if (args.train_fp8 or args.train_mxfp8) and "--te-precision-config-file" not in args.extra_args:
-        misc_args += f"--te-precision-config-file " f"{U.encode_pseudo_file(_DSV4_TE_PRECISION_CONFIG)} "
+        misc_args += f"--te-precision-config-file " f"{command_utils.encode_pseudo_file(_DSV4_TE_PRECISION_CONFIG)} "
 
     train_args = (
         f"{ckpt_args} "
         f"{rollout_args} "
         f"{optimizer_args} "
         f"{grpo_args} "
-        f"{U.get_default_wandb_args(__file__, run_id=args.run_id)} "
+        f"{command_utils.get_default_wandb_args(__file__, run_id=args.run_id)} "
         f"{perf_args} "
         f"{eval_args} "
         f"{sglang_args} "
@@ -730,23 +713,23 @@ def _train(args: ScriptArgs):
 
     U.execute_train(
         train_args=train_args,
-        config=args,
         num_gpus_per_node=args.num_gpus_per_node,
         megatron_model_type=args.megatron_model_type,
         extra_env_vars={**extra_env_vars},
         megatron_path=args.megatron_path,
+        prepare_cmd=_prepare_cmd(args),
     )
 
 
 @app.command()
-@U.dataclass_cli
+@command_utils.dataclass_cli
 def train(args: ScriptArgs):
     """Run training. Assumes data/model/torch_dist are already prepared on {model_local_dir}."""
     _train(args)
 
 
 @app.command()
-@U.dataclass_cli
+@command_utils.dataclass_cli
 def full_train(args: ScriptArgs):
     _prepare_download(args)
 
@@ -777,11 +760,6 @@ def full_train(args: ScriptArgs):
         _prepare_spmd(args)
     else:
         print(f"[full_train] Skipping BF16->torch_dist conversion: {torch_dist_sentinel} already exists.")
-
-    if args.model_local_dir != args.model_dir:
-        _prepare_cp(args)
-    else:
-        print(f"[full_train] Skipping rsync: model_local_dir == model_dir ({args.model_dir})")
 
     if args.hf_checkpoint is None:
         args.hf_checkpoint = f"{args.model_local_dir}/{args.rollout_name}"

@@ -8,16 +8,19 @@ from megatron.core.transformer.module import MegatronModule
 from megatron.core.transformer.transformer_config import TransformerConfig
 
 from miles.utils.replay_base import indexer_replay_manager
-
 from miles_plugins.models.deepseek_v4.ops.compressor import DeepSeekV4Compressor
-from miles_plugins.models.deepseek_v4.ops.cp_utils import all_gather_cp, get_freqs_cis_for_cp
-from miles_plugins.models.deepseek_v4.ops.kernel.tilelang_indexer_fwd import (
-    _make_causal_cu_seqlens,
-    batched_indexer_fwd,
+from miles_plugins.models.deepseek_v4.ops.cp_row_balance import (
+    LocalRows,
+    RowBalancePlan,
+    RowExchange,
+    plan_causal_row_balance,
+    send_rows_to_scorers,
 )
+from miles_plugins.models.deepseek_v4.ops.cp_utils import all_gather_cp, get_freqs_cis_for_cp, get_q_positions_for_cp
+from miles_plugins.models.deepseek_v4.ops.kernel.tilelang_indexer_fwd import batched_indexer_fwd
 from miles_plugins.models.deepseek_v4.ops.qat import fp8_simulate_qat
 from miles_plugins.models.deepseek_v4.ops.rope import apply_rotary_emb, wrapped_precompute_freqs_cis
-from miles_plugins.models.deepseek_v4.ops.thd_utils import ThdLayout, get_compress_cu_seqlens_thd, get_q_positions_thd
+from miles_plugins.models.deepseek_v4.ops.thd_utils import ThdLayout, compress_bounds_at_positions, get_q_positions_thd
 from miles_plugins.models.deepseek_v4.ops.utils import rotate_activation
 from miles_plugins.models.dsa_topk import get_dsa_topk_fn
 
@@ -95,7 +98,8 @@ class V4Indexer(MegatronModule):
             thd_layout: packed-stream layout, or None when unpacked
 
         Returns:
-            topk_indices: [batch, seqlen, index_topk] int64
+            topk_indices: [batch, seqlen, min(index_topk, n_kv)] int32, or index_topk columns of -1
+            when no segment has a compressed key
         """
 
         # =========================================
@@ -134,16 +138,24 @@ class V4Indexer(MegatronModule):
         if self.use_fp8_qat:
             q = fp8_simulate_qat(q, 128)
 
+        weights, _ = self.linear_weights_proj(x)
+        softmax_scale = self.index_head_dim**-0.5
+        weights = (weights * (self.index_n_heads**-0.5) * softmax_scale).float()
+
+        # Balance the causal scoring work over contiguous CP (cp_row_balance).
+        # Replay data holds each rank's own rows, so replay scores them where they are.
+        balance = cp_size > 1 and cp_group is not None and not indexer_replay_manager.enabled
+        # started before the compressor to overlap it; unpacked, its CP all-gathers wait for the exchange
+        exchange = start_row_exchange(q, weights, thd_layout, cp_group, balance=balance)
+        del q, weights  # scored from exchange.wait()
+
         pre_grouped = thd_layout is not None and thd_layout.compressed_group_ids is not None
         k = self.compressor(thd_layout.hidden_compact if pre_grouped else x, thd_layout)
         if k is None:
-            # Nothing to score when no segment reaches compress_ratio; -1 leaves each query
-            # on its sliding window.
+            # Nothing to score when no segment reaches compress_ratio; -1 leaves each query on its
+            # sliding window. The compressor returns None only without CP, so no rows are in flight.
+            assert isinstance(exchange, LocalRows), "the compressor returned no keys while rows were in flight"
             return torch.full((bsz, seqlen, self.index_topk), -1, dtype=torch.int32, device=x.device)
-
-        weights, _ = self.linear_weights_proj(x)
-        softmax_scale = self.index_head_dim**-0.5
-        weights = weights * (self.index_n_heads**-0.5) * softmax_scale
 
         if cp_size > 1 and cp_group is not None:
             k = all_gather_cp(k, dim=0, cp_group=cp_group)
@@ -151,33 +163,82 @@ class V4Indexer(MegatronModule):
                 # Per-row bounds are sequence-major, so reorder the rank-major gather first.
                 k = k.index_select(0, thd_layout.seq_to_rank_row.clamp(min=0).long())
 
-        seqlen_global = seqlen * cp_size
-        seqlen_kv = k.shape[0]
-        if thd_layout is None:
-            cu_ks, cu_ke = _make_causal_cu_seqlens(seqlen_global, seqlen_kv, self.compress_ratio, q.device)
-            # cu_seqlens are for global positions; slice to local query positions
-            if cp_size > 1 and cp_group is not None:
-                cp_rank = cp_group.rank()
-                cu_ks = cu_ks[cp_rank * seqlen : (cp_rank + 1) * seqlen]
-                cu_ke = cu_ke[cp_rank * seqlen : (cp_rank + 1) * seqlen]
-        else:
-            cu_ks, cu_ke = get_compress_cu_seqlens_thd(
-                thd_layout.cu_seqlens,
-                thd_layout.cu_seqlens_compressed,
-                ratio=self.compress_ratio,
-                total_tokens=seqlen,
-                global_start=thd_layout.global_start,
-            )
-        index_scores = batched_indexer_fwd(q, k, weights.float(), cu_ks, cu_ke)
-
-        # index_scores: [batch, seqlen, n_kv]; topk over the KV dim. Route through the indexer
-        # replay manager (flattened to [n_tokens, n_kv], matching the record/replay convention) so
-        # RL replay can pin the rollout's top-k picks. get_topk_fn is transparent when disabled.
-        topk_count = min(self.index_topk, index_scores.size(-1))
-        # The manager records and replays flattened [tokens, n_kv] scores, matching the MoE seam.
-        bsz, seqlen, n_kv = index_scores.shape
+        # RL replay can pin the rollout's top-k picks here; get_topk_fn is transparent when disabled.
         topk_fn = indexer_replay_manager.get_topk_fn(get_dsa_topk_fn(self.topk_backend), return_probs=False)
-        topk_indices = topk_fn(index_scores.reshape(bsz * seqlen, n_kv), topk_count)
-        topk_indices = topk_indices.reshape(bsz, seqlen, topk_count)
+        return topk_for_local_rows(
+            exchange,
+            k,
+            thd_layout,
+            compress_ratio=self.compress_ratio,
+            index_topk=self.index_topk,
+            topk_fn=topk_fn,
+        )
 
-        return topk_indices
+
+def start_row_exchange(q, weights, thd_layout, cp_group, *, balance: bool) -> RowExchange | LocalRows:
+    """Start sending this rank's indexer rows to their scoring ranks, or keep them if balancing does not pay."""
+    tensors = [q.detach(), weights.detach()]
+    plan = _row_balance_plan(q.shape[0], thd_layout, cp_group, q.device) if balance else None
+    if plan is None:
+        cp_size = cp_group.size() if cp_group is not None else 1
+        positions = get_q_positions_for_cp(q.shape[0], cp_size=cp_size, cp_group=cp_group, device=q.device)
+        return LocalRows(tensors, positions)
+    return send_rows_to_scorers(tensors, plan, cp_group)
+
+
+def topk_for_local_rows(exchange, k, thd_layout, *, compress_ratio, index_topk, topk_fn):
+    """The top-k picks for this rank's rows, in local order, scored on the rank ``exchange`` sent them to."""
+    q, weights = exchange.wait()
+    topk_indices = indexer_topk(
+        q,
+        k,
+        weights,
+        exchange.scored_positions,
+        thd_layout,
+        compress_ratio=compress_ratio,
+        index_topk=index_topk,
+        topk_fn=topk_fn,
+    )
+    # [batch, rows, topk]: the picks go back along the row dim
+    return exchange.return_to_owners(topk_indices, dim=1)
+
+
+def indexer_topk(q, k, weights, positions, thd_layout, *, compress_ratio, index_topk, topk_fn):
+    """Score the query rows at global stream ``positions`` against their visible compressed keys.
+
+    Args:
+        q: [rows, batch, heads, head_dim] index queries of those rows
+        k: [n_kv, batch, head_dim] every compressed key of the stream, sequence-major under THD
+        weights: [rows, batch, heads] fp32 head weights
+        positions: [rows] global stream positions of the rows
+        thd_layout: packed-stream layout, or None when unpacked
+
+    Returns:
+        [batch, rows, min(index_topk, n_kv)] int32 compressed-key indices
+    """
+    if q.shape[0] == 0:
+        # a balanced plan can leave a rank nothing to score, and TileLang cannot launch an empty grid
+        return torch.empty(q.shape[1], 0, min(index_topk, k.shape[0]), dtype=torch.int32, device=q.device)
+    if thd_layout is None:
+        cu_ks = torch.zeros_like(positions, dtype=torch.int32)
+        cu_ke = ((positions + 1) // compress_ratio).int()
+    else:
+        cu_ks, cu_ke = compress_bounds_at_positions(
+            thd_layout.cu_seqlens, thd_layout.cu_seqlens_compressed, positions, ratio=compress_ratio
+        )
+    index_scores = batched_indexer_fwd(q, k, weights, cu_ks, cu_ke)
+    bsz, rows, n_kv = index_scores.shape
+    topk_count = min(index_topk, n_kv)
+    # flattened to [n_tokens, n_kv], the record/replay convention shared with the MoE seam
+    topk_indices = topk_fn(index_scores.reshape(bsz * rows, n_kv), topk_count)
+    return topk_indices.reshape(bsz, rows, topk_count)
+
+
+def _row_balance_plan(seqlen_local, thd_layout, cp_group, device) -> RowBalancePlan | None:
+    """This micro-batch's balanced exchange; every CP rank derives the same one."""
+    cp_size = cp_group.size()
+    total_rows = seqlen_local * cp_size
+    # each batch row of an unpacked sample is one sequence
+    seq_lens = (total_rows,) if thd_layout is None else thd_layout.seq_lens
+    assert sum(seq_lens) == total_rows, f"segment lengths cover {sum(seq_lens)} rows of a {total_rows}-row stream"
+    return plan_causal_row_balance(seq_lens, cp_rank=cp_group.rank(), cp_size=cp_size, device=device)

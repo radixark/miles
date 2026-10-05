@@ -99,12 +99,13 @@ miles-managed path:
 
 | Mode | Data path | Use when |
 |---|---|---|
-| `broadcast` | Gather and convert trainer weights, then broadcast them to the SGLang ranks over NCCL | Trainer and rollout ranks have NCCL connectivity; this is the default |
+| `broadcast` | Gather and convert trainer weights, then broadcast each tensor separately to the SGLang ranks over NCCL | Trainer and rollout ranks have NCCL connectivity; this remains the default |
+| `broadcast_packed` | Pack each weight bucket into one byte buffer and issue one NCCL broadcast | Non-colocated Megatron with SGLang mixed-dtype flattened-bucket support; trades contiguous bucket storage for fewer collectives |
 | `p2p` | Convert and re-shard weights, then write them directly to rollout-rank memory over RDMA | miles-managed, in-cluster jobs with direct rank-to-rank connectivity; see [P2P Weight Transfer](/advanced/p2p-weight-transfer) |
 | `disk-delta` | Publish changed canonical checkpoint bytes to shared storage, let rollout hosts materialize them locally, then reload | Trainer and rollout cannot share an NCCL fabric, or model-sized full-weight transfer dominates the update |
 
 These are weight synchronization choices, not different rollout APIs. In the
-first two modes, miles transfers tensors into known engine ranks directly.
+broadcast and P2P modes, miles transfers tensors into known engine ranks directly.
 P2P RDMA is an in-cluster transfer optimization; it is not the external rollout
 service mechanism described later in this page. Disk-delta instead establishes
 a versioned publication boundary that can also be consumed by an external
@@ -162,8 +163,8 @@ visible before a rollout host reads them.
 
 The maintained end-to-end coverage is
 [`tests/e2e/megatron/test_qwen3_4B_disk_delta.py`](https://github.com/radixark/miles/blob/main/tests/e2e/megatron/test_qwen3_4B_disk_delta.py).
-It exercises a Qwen3-4B Megatron trainer and two SGLang rollout engines on a
-single 8-GPU node. The same storage contract supports separate hosts, but the
+It exercises a Qwen3-4B Megatron trainer (TP2 on two GPUs) and two TP1 SGLang
+rollout engines on the other two GPUs of a single 4-GPU node. The same storage contract supports separate hosts, but the
 registered test does not reproduce a cross-cluster deployment.
 
 Current `main` rejects disk-delta with `--colocate`, LoRA, or PD

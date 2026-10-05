@@ -13,7 +13,7 @@ from megatron.core.distributed import DistributedDataParallel as DDP
 from megatron.core.utils import unwrap_model
 
 from miles.backends.megatron_utils.lora.optimizer import SlotOptimizer
-from miles.backends.training_utils.checkpoint_io import write_checkpoint_dir
+from miles.backends.training_utils.checkpoint.io import write_checkpoint_dir
 
 _WEIGHTS_KEY = "adapter_weights"
 _OPTIM_KEY = "adapter_optimizer"

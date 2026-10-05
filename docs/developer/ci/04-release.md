@@ -107,7 +107,7 @@ Verify that the manifest contains both architectures after the workflow succeeds
 docker buildx imagetools inspect "radixark/miles:v${EXACT_VERSION}"
 ```
 
-The versioned release does not move `dev`, `dev-cu12`, `latest`, or `latest-cu12`.
+The versioned release does not move `dev` or `latest`.
 
 If the automatic Docker dispatch must be retried, keep its two manual inputs paired to the same immutable tag:
 

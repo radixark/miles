@@ -43,6 +43,9 @@ class ParallelState:
     ep: GroupInfo
     etp: GroupInfo
     indep_dp: GroupInfo
+    # Megatron expert replicas, including context-parallel replication.
+    edp: GroupInfo | None = None
+    tp_dp_cp: GroupInfo | None = None
     meshes: dict[str, DeviceMesh] = field(default_factory=dict)
     cp_comm_type: str | list[str] | tuple[str, ...] | None = None
     is_pp_last_stage: bool = True
@@ -67,6 +70,10 @@ class ParallelState:
             _DPMode.INTRA: GroupsInfo.from_single(self.intra_dp_cp),
             _DPMode.INDEP: GroupsInfo.from_pair(inner=self.intra_dp_cp, outer=self.indep_dp),
         }[self._dp_mode]
+
+    @property
+    def is_metrics_rank(self) -> bool:
+        return self.effective_dp_cp.rank == 0 and self.tp.rank == 0 and self.is_pp_last_stage
 
     @property
     def is_ulysses_cp(self) -> bool:

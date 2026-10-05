@@ -1,6 +1,7 @@
-from tests.ci.ci_register import register_cuda_ci
+from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
 
 register_cuda_ci(est_time=180, suite="stage-b-2-gpu-h200", labels=["megatron"], hardware=["hopper"])
+register_rocm_ci(est_time=60, suite="nightly-stage-c-2-gpu-mi350", labels=["megatron"])
 
 import gc
 import os
@@ -14,8 +15,8 @@ import torch
 import torch.distributed as dist
 import torch.multiprocessing as mp
 
-from miles.backends.training_utils.loss_hub.logit_processors import get_log_probs_and_entropy
-from miles.backends.training_utils.loss_hub.math_utils import calculate_log_probs_and_entropy
+from miles.backends.training_utils.loss.hub.logit_processors import get_log_probs_and_entropy
+from miles.backends.training_utils.loss.hub.math_utils import calculate_log_probs_and_entropy
 from miles.backends.training_utils.parallel import set_parallel_state
 from miles.utils.ft_utils.process_group_utils import GroupInfo
 
@@ -254,6 +255,7 @@ def _memory_args(chunk_size: int, vocab_size: int) -> Namespace:
         log_probs_chunk_size=chunk_size,
         vocab_size=vocab_size,
         allgather_cp=False,
+        debug_unified_grad_fused_logprob=False,
     )
 
 

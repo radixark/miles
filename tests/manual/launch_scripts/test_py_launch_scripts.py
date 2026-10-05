@@ -70,6 +70,7 @@ _SCRIPTS_WHOSE_DEFAULTS_ARE_UNSUPPORTED: dict[str, Callable[[Path], dict[str, ob
 # The machine each recording represents. Launchers default --hardware to whatever node they run on, so the
 # suite pins one; FROZEN_HARDWARE covers the rest.
 _HARDWARE_A_RECORDING_REPRESENTS = {
+    "scripts/amd/run_gpt_oss_20b_lora.py": "MI355X",
     "scripts/amd/run_qwen3_30b_a3b.py": "MI355X",
     "scripts/amd/run_qwen3_4b.py": "MI355X",
     "scripts/amd/run_qwen3_4b_lora.py": "MI355X",
@@ -135,7 +136,7 @@ class TestHostFilesystemIsFrozen:
             assert not Path("/root/models/some-checkpoint/model.safetensors.index.json").exists()
 
     def test_the_checkout_stays_visible(self, tmp_path):
-        """A launcher resolves its own model args script out of the checkout, so hiding it breaks every launcher."""
+        """A launcher resolves its own model args script out of the checkout, so hiding it breaks every entrypoint."""
         with host_filesystem_frozen(tmp_path):
             assert (REPO_ROOT / "pyproject.toml").exists()
             assert (REPO_ROOT / "scripts" / "models").exists()
@@ -182,6 +183,20 @@ class TestDiscovery:
         redundant = {rel for rel, hardware in _HARDWARE_A_RECORDING_REPRESENTS.items() if hardware == FROZEN_HARDWARE}
 
         assert not redundant
+
+    def test_every_discovered_entrypoint_has_a_golden_and_vice_versa(self):
+        """A removed entrypoint leaves its golden behind, and a new one would otherwise go unrecorded."""
+        expected = {f"{rel}/{entrypoint}.txt" for rel, entrypoint in _CASES}
+        recorded = {path.relative_to(_SNAPSHOT_DIR).as_posix() for path in _SNAPSHOT_DIR.rglob("*.txt")}
+
+        assert expected == recorded
+
+    def test_the_snapshot_tree_holds_nothing_outside_the_three_recorded_families(self):
+        """A whole orphan directory would sit under tests/snapshots/launch_scripts with nobody checking it."""
+        root = _SNAPSHOT_DIR.parent
+        families = {root / name for name in ("py", "sh", "self_executing")}
+
+        assert set(root.iterdir()) == families
 
     def test_every_environment_knob_a_model_script_reads_is_frozen(self):
         """The snapshots now pin expanded model args, so a developer's exported override would fail them."""

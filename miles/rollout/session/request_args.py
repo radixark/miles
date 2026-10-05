@@ -15,6 +15,7 @@ from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any
 
+from miles.rollout.generate_utils.rollout_topk_logprobs import configure_rollout_topk_logprobs_request
 from miles.rollout.generate_utils.sampling_mask import validate_sampling_support_request
 from miles.rollout.session.config import SessionServerConfig
 from miles.rollout.session.errors import MessageValidationError
@@ -71,12 +72,15 @@ def prepare_chat_request(
         request_args = tito_tokenizer.resolve_request_args(request_args, turn_args=turn_args)
     except ValueError as e:
         raise MessageValidationError(str(e)) from e
+    # The rollout args own the sampling log-prob mode; training requests get it from them below.
+    request_args.pop("sampling_logprobs_mode", None)
     if evaluation:
         # Model rules must not re-enable training replay outputs for evaluation.
         request_args.update(return_sampling_mask=False, return_routed_experts=False, return_indexer_topk=False)
         request_args.pop("routed_experts_start_len", None)
     else:
         try:
+            configure_rollout_topk_logprobs_request(config, request_args, openai=True)
             return_sampling_mask = validate_sampling_support_request(
                 request_args,
                 replay_enabled=sampling_support_replay,

@@ -216,6 +216,37 @@ def test_metric_keys_and_step_keys(tmp_path):
     assert reader.step_keys() == ["eval/step", "rollout/step"]
 
 
+def test_step_key_of_metric_key_answers_the_axis_each_namespaced_metric_was_logged_against(tmp_path):
+    """A multi policy run logs alpha/train/loss against alpha/train/step, which no key prefix rule can guess."""
+    writer = MetricStore(tmp_path)
+    writer.append(MetricsRecord(ts=1.0, step_key="alpha/train/step", step=0, metrics={"alpha/train/loss": 1.0}))
+    writer.append(MetricsRecord(ts=2.0, step_key="beta/rollout/step", step=0, metrics={"beta/perf/step_time": 2.0}))
+    writer.flush()
+    reader = MetricStore.load(tmp_path)
+
+    assert reader.step_key_of_metric_key() == {
+        "alpha/train/loss": "alpha/train/step",
+        "beta/perf/step_time": "beta/rollout/step",
+    }
+
+
+def test_bubbles_reads_the_perf_points_of_a_namespaced_policy(tmp_path):
+    """The bubble strip keys off rollout/step, so a namespaced run must not silently fall out of it."""
+    writer = MetricStore(tmp_path)
+    writer.append(
+        MetricsRecord(
+            ts=1.0,
+            step_key="alpha/rollout/step",
+            step=4,
+            metrics={"alpha/perf/step_time": 12.0, "alpha/perf/wait_time_ratio": 0.25},
+        )
+    )
+    writer.flush()
+    reader = MetricStore.load(tmp_path)
+
+    assert reader.bubbles() == [dict(step=4, ts=1.0, step_time=12.0, wait_ratio=0.25)]
+
+
 def test_time_range_spans_all_streams(tmp_path):
     writer = MetricStore(tmp_path)
     writer.append(PhaseEvent(name="rollout", t0=0.5, t1=7.0, node="n", gpus=[], rank=-1, role="rollout_manager"))

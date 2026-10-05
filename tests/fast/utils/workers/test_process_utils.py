@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import shlex
 import signal
 import subprocess
 import sys
@@ -10,7 +11,12 @@ from pathlib import Path
 import pytest
 
 import miles.utils.workers.process_utils as process_utils
-from miles.utils.workers.process_utils import kill_process_tree, launch_bound_subprocess, terminate_process_tree
+from miles.utils.workers.process_utils import (
+    kill_process,
+    kill_process_tree,
+    launch_bound_subprocess,
+    terminate_process_tree,
+)
 
 _SLEEP_FOREVER = "import time; time.sleep(300)"
 
@@ -184,6 +190,34 @@ class TestKillProcessTree:
         assert process.returncode == -signal.SIGKILL
 
 
+class TestKillProcess:
+    def test_kills_only_the_requested_process_with_sigkill(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Killing one process sends SIGKILL to its exact pid through the OS boundary."""
+        process = subprocess.Popen.__new__(subprocess.Popen)
+        process.pid = 12345
+        sent_signals: list[tuple[int, int]] = []
+
+        monkeypatch.setattr(
+            process_utils.os, "kill", lambda pid, signal_number: sent_signals.append((pid, signal_number))
+        )
+
+        kill_process(process)
+
+        assert sent_signals == [(process.pid, signal.SIGKILL)]
+
+    def test_an_already_exited_process_is_ignored(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Killing a process that has already exited returns normally."""
+        process = subprocess.Popen.__new__(subprocess.Popen)
+        process.pid = 12345
+
+        def raise_process_lookup_error(pid: int, signal_number: int) -> None:
+            raise ProcessLookupError
+
+        monkeypatch.setattr(process_utils.os, "kill", raise_process_lookup_error)
+
+        kill_process(process)
+
+
 class TestLaunchBoundSubprocess:
     def test_envs_are_merged_over_the_parent_environment(self, tmp_path):
         """Passed envs reach the child on top of the inherited environment."""
@@ -193,12 +227,15 @@ class TestLaunchBoundSubprocess:
         process.wait(timeout=15)
         assert out_file.read_text() == "yes"
 
-    def _launch_intermediate_parent(self, tmp_path, *, stay_alive: bool) -> tuple[subprocess.Popen, int]:
+    def _launch_intermediate_parent(
+        self, tmp_path, *, stay_alive: bool, argv: list[str] | None = None
+    ) -> tuple[subprocess.Popen, int]:
         pid_file = tmp_path / "bound_child.pid"
+        argv = argv or [sys.executable, "-c", _SLEEP_FOREVER]
         parent_code = (
             "import sys, time\n"
             "from miles.utils.workers.process_utils import launch_bound_subprocess\n"
-            f"process = launch_bound_subprocess([sys.executable, '-c', {_SLEEP_FOREVER!r}], envs={{}})\n"
+            f"process = launch_bound_subprocess({argv!r}, envs={{}})\n"
             f"open({str(pid_file)!r}, 'w').write(str(process.pid))\n" + ("time.sleep(300)\n" if stay_alive else "")
         )
         parent = subprocess.Popen([sys.executable, "-c", parent_code])
@@ -318,3 +355,24 @@ class TestLaunchBoundSubprocess:
         os.kill(parent.pid, signal.SIGKILL)
         parent.wait(timeout=15)
         assert _wait_until(lambda: not _is_alive(bound_child_pid))
+
+    @pytest.mark.skipif(sys.platform != "linux", reason="PDEATHSIG is linux-only")
+    def test_a_command_its_shell_execs_dies_when_parent_is_sigkilled(self, tmp_path):
+        """exec makes the command itself replace `/bin/sh`, so it inherits the binding instead of being orphaned."""
+        command_pid_file = tmp_path / "command.pid"
+        command_code = (
+            f"import os, time; open({str(command_pid_file)!r}, 'w').write(str(os.getpid())); time.sleep(300)"
+        )
+        shell_command = f"exec {shlex.join([sys.executable, '-c', command_code])}"
+        parent, _ = self._launch_intermediate_parent(tmp_path, stay_alive=True, argv=["/bin/sh", "-c", shell_command])
+        command_pid = int(_read_when_present(command_pid_file))
+
+        try:
+            os.kill(parent.pid, signal.SIGKILL)
+            parent.wait(timeout=15)
+            assert _wait_until(lambda: not _is_alive(command_pid))
+        finally:
+            try:
+                os.kill(command_pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass

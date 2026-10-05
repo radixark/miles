@@ -1,8 +1,8 @@
 import os
 
-from tests.ci.ci_register import register_cuda_ci
+from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
 
-import miles.utils.external_utils.command_utils as U
+from miles.utils.external_utils import command_utils
 
 register_cuda_ci(
     est_time=600,
@@ -10,6 +10,7 @@ register_cuda_ci(
     labels=["fsdp"],
     hardware=["hopper", "blackwell"],
 )
+register_rocm_ci(est_time=400, suite="nightly-stage-c-8-gpu-mi350", labels=["fsdp"])
 
 NUM_GPUS = 8
 DP_REPLICATE_SIZE = 2
@@ -18,12 +19,14 @@ MODEL_NAME = "Qwen3-4B"
 
 
 def prepare():
+    U = command_utils.default_config().create_backend()
     U.exec_command_cpu("mkdir -p /root/models /root/datasets")
     U.exec_command_cpu(f"hf download Qwen/{MODEL_NAME} --local-dir /root/models/{MODEL_NAME}")
     U.hf_download_dataset("zhuzilin/dapo-math-17k")
 
 
 def execute():
+    U = command_utils.default_config().create_backend()
     ckpt_args = f"--hf-checkpoint /root/models/{MODEL_NAME} "
 
     rollout_args = (
@@ -33,7 +36,7 @@ def execute():
         "--apply-chat-template "
         "--rollout-shuffle "
         "--rm-type math "
-        "--num-rollout 3 "
+        "--num-rollout 2 "
         "--rollout-batch-size 8 "
         "--n-samples-per-prompt 8 "
         "--rollout-max-response-len 4096 "
@@ -75,7 +78,7 @@ def execute():
         f"{rollout_args} "
         f"{optimizer_args} "
         f"{grpo_args} "
-        f"{U.get_default_wandb_args(__file__)} "
+        f"{command_utils.get_default_wandb_args(__file__)} "
         f"{fsdp_args} "
         f"{sglang_args} "
         f"{ci_args} "

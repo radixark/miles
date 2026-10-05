@@ -92,7 +92,6 @@ def get_glm5_next_spec(args, config, vp_stage=None):
     text_config = _get_text_config(hf_config)
 
     _apply_glm5_next_config(config, text_config)
-    config.freeze_indexer = getattr(args, "freeze_indexer", False)
     _patch_reference_proj_rms()
 
     kwargs = {"use_transformer_engine": True}
