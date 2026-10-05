@@ -1120,10 +1120,9 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                     "'disk-delta' diffs each sync against a CPU snapshot of the previous one and publishes "
                     "only the changed bytes to --update-weight-disk-dir; each engine's /pull_weights applies "
                     "them into a host-local checkpoint that the engine reloads from. "
-                    "'http-lora' is LoRA-only and the only mode that crosses a vendor boundary: it stages the "
-                    "adapter to --update-weight-disk-dir and POSTs the path to each engine's load_lora_adapter "
-                    "route, so a trainer on NVIDIA GPUs can drive rollout engines on AMD GPUs (NCCL and RCCL "
-                    "cannot share a communicator, and cuda_ipc handles do not leave the host)."
+                    "'http-lora' is LoRA-only: rank 0 hands the adapter to each engine's LoRA load route over "
+                    "HTTP (see --http-lora-ship), so the trainer and the engines need not share a vendor, an "
+                    "interconnect, or a host."
                 ),
             )
             parser.add_argument(
@@ -3853,23 +3852,15 @@ def miles_validate_args(args):
             )
 
     if args.update_weight_transfer_mode == "http-lora":
-        # The inverse of the p2p/disk-delta asserts: this mode carries ONLY an
-        # adapter. Without LoRA it would have nothing legitimate to send, and
-        # silently falling back to a full-weight push over HTTP would move the
-        # entire model every step.
-        assert args.lora_rank > 0, (
-            "--update-weight-transfer-mode=http-lora is LoRA-only; it publishes an adapter, not base weights. "
-            "Use broadcast (same-vendor) for a full-weight sync."
+        assert is_lora_enabled(args) and not args.multi_lora, (
+            "--update-weight-transfer-mode=http-lora publishes a single LoRA adapter: it needs --lora-rank > 0 "
+            "and does not support multi-LoRA."
         )
-        assert (
-            not args.colocate
-        ), "http-lora is for a trainer and engines that do NOT share GPUs; colocate transfers via CUDA IPC."
-        if args.http_lora_ship == "path":
-            assert args.update_weight_disk_dir, (
-                "--update-weight-transfer-mode=http-lora with --http-lora-ship path requires "
-                "--update-weight-disk-dir as the staging directory (shared with the engines, or the "
-                "source the adapter is copied from). --http-lora-ship tensors needs no directory."
-            )
+        assert not args.colocate, "--update-weight-transfer-mode=http-lora is for non-colocated engines"
+        assert args.http_lora_ship == "tensors" or args.update_weight_disk_dir, (
+            "--http-lora-ship path requires --update-weight-disk-dir as the staging directory (shared with "
+            "the engines, or replicated by --custom-update-weight-post-write-path)."
+        )
 
     if args.colocate:
         if args.offload_train is None:
