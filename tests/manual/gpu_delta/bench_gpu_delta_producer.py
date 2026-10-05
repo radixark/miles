@@ -46,6 +46,8 @@ def parse_args():
     parser.add_argument("--load", type=Path, required=True, help="Matching native-DSA Megatron torch_dist checkpoint")
     parser.add_argument("--output", type=Path, required=True, help="New directory; existing output is rejected")
     parser.add_argument("--versions", type=int, default=3)
+    parser.add_argument("--tensor-model-parallel-size", type=int, default=1)
+    parser.add_argument("--context-parallel-size", type=int, default=1)
     parser.add_argument(
         "--perturb-fraction", type=float, default=0.001, help="Approximate fraction of matrix elements selected"
     )
@@ -60,6 +62,12 @@ def parse_args():
         parser.error("versions must be positive, fraction in (0, 1], and relative scale in (0, 1)")
     if int(os.environ.get("WORLD_SIZE", "0")) != 8:
         parser.error("Launch with torchrun --standalone --nproc-per-node=8")
+    if (
+        args.tensor_model_parallel_size < 1
+        or args.context_parallel_size < 1
+        or 8 % (args.tensor_model_parallel_size * args.context_parallel_size)
+    ):
+        parser.error("TP and CP must be positive and TP × CP must divide eight ranks")
     return args
 
 
@@ -132,11 +140,11 @@ def _model_args(options):
         "--cp-comm-type",
         "allgather",
         "--tensor-model-parallel-size",
-        "1",
+        str(options.tensor_model_parallel_size),
         "--pipeline-model-parallel-size",
         "1",
         "--context-parallel-size",
-        "1",
+        str(options.context_parallel_size),
         "--expert-model-parallel-size",
         "8",
         "--expert-tensor-parallel-size",
@@ -179,10 +187,10 @@ def _load_model(args):
 
 
 def _make_iterator(args, model, config, timing):
-    from miles.backends.megatron_utils.update_weight.hf_weight_iterator_direct import HfWeightIteratorDirect
+    from miles.backends.megatron_utils.update_weight.gpu_delta_export import HfWeightIteratorGpuDelta
     from miles.backends.training_utils.weight_update.hf_weight_iterator import WeightUpdatePlacement
 
-    class TimedIterator(HfWeightIteratorDirect):
+    class TimedIterator(HfWeightIteratorGpuDelta):
         def reset_timing(self):
             self.conversion_wall_s = 0.0
             self.conversion_events = []
@@ -190,21 +198,22 @@ def _make_iterator(args, model, config, timing):
 
         def _convert_to_hf_param_units(self, named_params):
             iterator = super()._convert_to_hf_param_units(named_params)
-            while True:
+            for native_name, _ in named_params:
                 started = time.monotonic()
                 start = torch.cuda.Event(enable_timing=True) if timing else None
                 if start is not None:
                     start.record()
-                try:
-                    unit = next(iterator)
-                except StopIteration:
-                    return
+                unit = next(iterator)
                 if start is not None:
                     end = torch.cuda.Event(enable_timing=True)
                     end.record()
                     self.conversion_events.append((start, end))
                 self.conversion_wall_s += time.monotonic() - started
                 self.converted_units += 1
+                if self.discovery_units is not None:
+                    if native_name in self.discovery_units:
+                        raise ValueError(f"Repeated native conversion for {native_name}")
+                    self.discovery_units[native_name] = [name for name, _ in unit]
                 yield unit
 
     iterator = TimedIterator.build(
@@ -215,6 +224,7 @@ def _make_iterator(args, model, config, timing):
         quantization_config=config["quantization_config"],
     )
     iterator.reset_timing()
+    iterator.discovery_units = None
     return iterator
 
 
@@ -225,8 +235,11 @@ def _discover_plan(args, iterator, weights):
     local, error = {}, None
     parallel = get_parallel_state()
 
-    def consume(unit):
+    def record_error(caught):
         nonlocal error
+        error = error or caught
+
+    def consume(unit):
         try:
             for name, tensor in unit:
                 if name in local:
@@ -237,8 +250,6 @@ def _discover_plan(args, iterator, weights):
                 expert = re.search(r"\.mlp\.experts\.(\d+)\.", name)
                 if expert and int(expert[1]) // (args.num_experts // parallel.ep.size) != parallel.ep.rank:
                     raise ValueError(f"Nonlocal expert ownership for {name}")
-                if not expert and dist.get_rank() != 0:
-                    raise ValueError(f"Nonrouted tensor owner must be global rank 0: {name}")
                 local[name] = {
                     "name": name,
                     "dtype": dtype,
@@ -247,22 +258,43 @@ def _discover_plan(args, iterator, weights):
                     "views": [{"id": "canonical", "slices": [[0, size] for size in shape]}],
                 }
         except Exception as caught:
-            error = error or caught
+            record_error(caught)
 
-    iterator.local_expert_consumer = consume
+    iterator.local_consumer = consume
+    iterator.local_error_consumer = record_error
+    iterator.discovery_units = {}
     for bucket in iterator.iter_hf_weights(weights, materialize=dist.get_rank() == 0):
         if dist.get_rank() == 0:
             consume(bucket)
     _check(error, "mutable inventory discovery")
+    converted = _gather(iterator.discovery_units)
+    iterator.discovery_units = None
+    ordinary = {}
+    for rank, units in enumerate(converted):
+        for name in units:
+            if name in iterator.ordinary_owners:
+                if name in ordinary or iterator.ordinary_owners[name] != rank:
+                    raise ValueError(f"Conversion differs from the fixed ordinary owner plan: {name}")
+                ordinary[name] = rank
+    if ordinary != iterator.ordinary_owners:
+        raise ValueError("Discovery omitted a native tensor from the ordinary owner plan")
     shards = _gather(list(local.values()))
     names = [tensor["name"] for shard in shards for tensor in shard]
     if len(set(names)) != len(names):
         raise ValueError("The real exporter did not assign exactly one owner per mutable tensor")
+    converted_names = [name for units in converted for outputs in units.values() for name in outputs]
+    if sorted(converted_names) != sorted(names):
+        raise ValueError("Consumed canonical inventory differs from the complete converted units")
     plan = sorted([tensor for shard in shards for tensor in shard], key=lambda tensor: tensor["name"])
     return plan, {
         "rank": dist.get_rank(),
         "ep_rank": parallel.ep.rank,
         "edp_rank": parallel.edp.rank,
+        "tp_rank": parallel.tp.rank,
+        "cp_rank": parallel.cp.rank,
+        "dp_rank": parallel.intra_dp.rank,
+        "native_units": converted[dist.get_rank()],
+        "ordinary_owners": dict(iterator.ordinary_owners),
         "tensor_count": len(local),
         "routed_tensor_count": sum(".mlp.experts." in name for name in local),
         "names": sorted(local),
@@ -306,9 +338,8 @@ def _setup_protocol(args, plan, iterator, weights, output):
     started = time.monotonic()
     protocol = _make_protocol(args, plan, output)
     protocol.connect([], [], [], get_parallel_state(), iterator.placement, "target")
-    if protocol.is_sender != (dist.get_rank() == 0):
-        raise ValueError("EP8/TP1/PP1/CP1 requires rank 0 as the ordinary tensor sender")
-    iterator.local_expert_consumer = protocol.send_bucket
+    iterator.local_consumer = protocol.send_bucket
+    iterator.local_error_consumer = protocol.record_export_error
     if protocol.begin_sync(0, lambda **kw: iterator.iter_hf_weights(weights, **kw)):
         raise RuntimeError("Expected baseline capture, not an update")
     return protocol, {"baseline_capture_s": time.monotonic() - started}
@@ -436,10 +467,12 @@ def _run_update(protocol, iterator, weights, version, plan):
         except Exception as caught:
             error = caught
     _check(error, "sealed publication validation")
+    ranks = _gather(measurement)
     return {
         "version": version,
         "measurement_phase": "first-use-allocation" if version == 1 else "warm-update",
-        "ranks": _gather(measurement),
+        "ranks": ranks,
+        "rank_max_s": {key: max(rank[key] for rank in ranks) for key in measurement if key.endswith("_s")},
         "publication": publication,
         "sizes": sizes,
     }

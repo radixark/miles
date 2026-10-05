@@ -222,11 +222,11 @@ def execute():
     )
 
     perf_args = (
-        "--tensor-model-parallel-size 1 "
+        "--tensor-model-parallel-size 2 "
         # Let the STE propagate gradients to the original expert parameters.
         "--no-gradient-accumulation-fusion "
         "--pipeline-model-parallel-size 1 "
-        f"--context-parallel-size {ACTOR_NUM_GPUS} "
+        "--context-parallel-size 2 "
         f"--expert-model-parallel-size {ACTOR_NUM_GPUS} "
         "--expert-tensor-parallel-size 1 "
         "--recompute-granularity full "

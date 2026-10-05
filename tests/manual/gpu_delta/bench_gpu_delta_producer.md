@@ -1,7 +1,7 @@
 # GLM-5.2 Snappy-Zstd producer benchmark on one node
 
-This benchmark uses the actual Megatron direct exporter and GPU-delta publication
-protocol on eight GPUs: TP1/PP1/CP1/EP8/ETP1, native GLM-5.2 five-layer model
+This benchmark uses the actual Megatron GPU-delta iterator and publication
+protocol on eight GPUs: configurable TP/CP with PP1/EP8/ETP1, native GLM-5.2 five-layer model
 (three dense layers and two routed MoE layers), NVFP4 TE 4over6 quantization.
 It loads the real model and writes three cumulative immutable publications.
 It does not launch a receiver or run forward/backward, an optimizer, or activation.
@@ -11,9 +11,10 @@ It does not launch a receiver or run forward/backward, an optimizer, or activati
   compression algorithms execute on GPU SMs. Hardware Snappy acceleration is a
   receiver decompression property, not GPU compression acceleration.
 - **Ownership:** routed experts remain on their EP × EDP exporter owners before
-  expert gathering; this benchmark has EDP1. Global rank 0 owns nonrouted
-  tensors in this PP1 proxy. Owner-local GPU-delta consumers skip expert
-  gathers uniformly; ordinary export keeps its existing gather path.
+  expert gathering; this benchmark has EDP1. Nonrouted tensors use the GPU-delta
+  iterator's fixed native owner plan after TP reconstruction. Discovery records
+  every native conversion, checks its assigned owner, and verifies exactly-once
+  canonical output coverage across all ranks. No global-rank0 ownership is assumed.
 - **Inputs:** supply matching prepared NVFP4 HF and native-DSA Megatron
   `torch_dist` checkpoints. They remain immutable. A discovery export and original
   checkpoint headers define the exact mutable inventory. Unemitted calibration
@@ -56,7 +57,7 @@ C old plus C new bytes H2D, and final outer payload D2H. Raw values never enter
 GPU compression. The full owner-local compact Snappy payload stays in HBM until
 outer encoding completes, alongside bounded canonical scratch and codec workspaces.
 There is no OOM fallback. No receiver GPU Zstd path is introduced: the receiver
-CPU-decodes into final pinned Snappy buffers, then streams per-tensor H2D and
+CPU-decodes into final pinned Snappy buffers, then streams bounded layer-batch H2D and
 hardware Snappy decode/apply during the normal safe pause.
 
 ## Run
@@ -74,8 +75,15 @@ python -m torch.distributed.run --standalone --nproc-per-node=8 \
   --hf-checkpoint /models/GLM5.2-5layer-NVFP4 \
   --load /models/GLM5.2-5layer-megatron-torch_dist \
   --output /data/gpu-delta/producer-new --versions 3 \
+  --tensor-model-parallel-size 2 --context-parallel-size 2 \
   --perturb-fraction 0.001 --perturb-relative-scale 0.03125
 ```
+
+This TP2/CP2/PP1/EP8/ETP1 command has DP2 and EDP1. The benchmark defaults to
+TP1/CP1 for historical invocations; match both topology flags, checkpoints,
+perturbations and timing mode when comparing separate saved source versions.
+Rank ownership may change between sources, so compare canonical target bytes by
+name across the global inventory rather than requiring identical per-rank shards.
 
 The `GPU_DELTA_*` environment variables are development/debug controls, not a
 stable user-facing configuration API. Output must be a new directory.
@@ -91,6 +99,7 @@ historical controls, not executable alternate production paths.
 | Field | Scope |
 |---|---|
 | `producer_blocked_s` | Update setup through export, encoding tail, immutable publication and final completion fence; excludes pre-update barrier, perturbation and inventory check. |
+| `measurement.rank_max_s` | Maximum of each caller host interval over all eight ranks; raw per-rank values remain in `measurement.ranks`. |
 | `export_loop_s` | Actual conversion/quantization/collectives and new snapshot D2H staging. |
 | `encoding_tail_s` | Remaining export D2H, bulk GPU encoding, owner hash/write tails and collective agreement. |
 | `seal_and_visibility_s` | Owner shard sealing, metadata gather and final manifest publication. |
@@ -128,11 +137,11 @@ one from the other to claim end-to-end RL savings.
 
 ## Full-model and multi-node scope
 
-The five-layer TP1/PP1/CP1/EP8/ETP1 run is a correctness and profiling proxy;
+The five-layer TP/CP-configurable PP1/EP8/ETP1 run is a correctness and profiling proxy;
 it does not validate full-model capacity, multi-node performance or training
 throughput. GPU delta reuses Megatron export ownership: ETP1 experts are consumed
 on their EP × EDP owners, ETP>1 uses the existing gather-before-convert sender path,
-and non-routed senders are PP-stage-local. The global canonical inventory still
+and the nonrouted owner plan is PP-stage-local. The global canonical inventory still
 requires complete, unique ownership; duplicate exports, including overlapping
 PP/MTP names, are rejected rather than deduplicated.
 

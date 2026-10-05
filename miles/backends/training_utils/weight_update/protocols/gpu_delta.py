@@ -1,8 +1,9 @@
 """Owner-local GPU delta publication with in-place SGLang activation.
 
+Ordinary layers are consumed by their PP-local owners after TP reconstruction.
 ETP1 routed experts are consumed by their exporter owners before the usual gather.
 ETP>1 uses the direct exporter's gathered tensors, with one sender per PP stage.
-Complete pinned CPU snapshots feed GPU Snappy, then one owner-wide GPU Zstd batch.
+Ready owner batches feed GPU Snappy during export, then one owner-wide GPU Zstd batch.
 """
 
 from __future__ import annotations
@@ -49,6 +50,7 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
         self._snapshot = {}
         self._next_snapshot = {}
         self._raw_names = self._gpu_batch_names = ()
+        self._batch_by_name = {}
         self._plan = {}
         self._descriptions = None
         self._capturing = False
@@ -119,6 +121,10 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
         self._raw_cpu_write_s = 0.0
         self._gpu_batch_count = 0
         self._writer = None
+        self._encoder_pool = None
+        self._encoding_jobs = []
+        self._encoding_started = None
+        self._batch_remaining = [len(names) for names in self._gpu_batch_names]
         try:
             if self._staging_stream is None:
                 self._staging_stream = torch.cuda.Stream(device=torch.cuda.current_device())
@@ -132,11 +138,15 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
                 owner=dist.get_rank(),
                 frame_bytes=self._gpu_encoder.frame_bytes,
             )
+            if self._gpu_batch_names:
+                self._encoder_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="gpu-delta-encode")
         except Exception as error:
             self._error = error
         try:
             _collective_check(self._error, "publication setup")
         except Exception:
+            if self._encoder_pool is not None:
+                self._encoder_pool.shutdown(wait=True)
             if self._writer is not None:
                 self._writer.close()
             raise
@@ -209,6 +219,9 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
             return tensor.to(_PLAIN_FLOAT_DTYPE_BY_SAFETENSORS_DTYPE[checkpoint_dtype])
         raise ValueError(f"Exporter/checkpoint packed dtype differs for {name!r}")
 
+    def record_export_error(self, error):
+        self._error = self._error or error
+
     def send_bucket(self, bucket):
         staged = []
         for name, tensor in bucket:
@@ -232,7 +245,7 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
                 if host is None:
                     host = torch.empty(flat.numel(), dtype=torch.uint8, device="cpu", pin_memory=True)
                     self._next_snapshot[name] = host
-                staged.append((host, flat))
+                staged.append((name, host, flat))
             except Exception as error:
                 self._error = error
                 return
@@ -242,26 +255,53 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
                 # One dependency covers the whole bucket; no per-tensor event.
                 self._staging_stream.wait_stream(torch.cuda.current_stream())
                 with torch.cuda.stream(self._staging_stream):
-                    for host, flat in staged:
+                    for _, host, flat in staged:
                         host.copy_(flat, non_blocking=True)
                         # Keep each source allocation alive through its D2H read.
                         flat.record_stream(self._staging_stream)
+                self._enqueue_ready_batches([name for name, _, _ in staged])
             except Exception as error:
                 self._error = error
 
+    def _enqueue_ready_batches(self, names):
+        complete = []
+        for name in names:
+            if name in self._batch_by_name:
+                index = self._batch_by_name[name]
+                self._batch_remaining[index] -= 1
+                if self._batch_remaining[index] == 0:
+                    complete.append(index)
+        if complete:
+            if not self._encoding_jobs:
+                self._encoding_started = time.monotonic()
+            ready = torch.cuda.Event()
+            ready.record(self._staging_stream)
+            for index in complete:
+                batch_names = self._gpu_batch_names[index]
+                job = self._encoder_pool.submit(self._encode_ready_batch, batch_names, ready)
+                self._encoding_jobs.append((batch_names, job))
+
+    def _encode_ready_batch(self, names, ready):
+        # The worker never enters distributed collectives. The stream dependency
+        # orders H2D reads after export D2H without blocking the export thread.
+        self._gpu_encoder.stream.wait_event(ready)
+        return self._gpu_encoder.encode_device(
+            [(self._snapshot[name], self._next_snapshot[name], "xor_bytes") for name in names]
+        )
+
     def _encode_gpu_batches(self):
         """Finish all Snappy masks before one owner-wide GPU Zstd compression."""
-        started, names, encoded = time.monotonic(), [], []
+        # This enclosing span overlaps export; the caller's tail wait is separate.
+        started = time.monotonic() if self._encoding_started is None else self._encoding_started
+        names, encoded = [], []
         raw_job = None
         result = None
         pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="gpu-delta-raw") if self._raw_names else None
         try:
             if pool is not None:
                 raw_job = pool.submit(self._write_raw_tensors, self._raw_names)
-            for batch_names in self._gpu_batch_names:
-                result = self._gpu_encoder.encode_device(
-                    [(self._snapshot[name], self._next_snapshot[name], "xor_bytes") for name in batch_names]
-                )
+            for batch_names, job in self._encoding_jobs:
+                result = job.result()
                 if len(result) != len(batch_names):
                     raise RuntimeError("GPU delta encoder returned an incomplete batch")
                 names.extend(batch_names)
@@ -285,10 +325,6 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
                     views=spec["views"],
                 )
             self._encoded_hash_write_s = self._writer.outer_metrics["outer_hash_write_s"]
-        except Exception:
-            # A failed later batch can leave an earlier compaction in flight.
-            self._gpu_encoder.stream.synchronize()
-            raise
         finally:
             if pool is not None:
                 # Always drain the one raw writer before closing payloads or
@@ -318,14 +354,15 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
     def _prepare_gpu_schedule(self):
         """Partition immutable owner geometry once, before the first update.
 
-        Cache names rather than snapshot views: commit swaps old/current buffers.
-        The byte budget is fixed for this stream, like its receiver/owner plan.
+        Cache names in baseline callback order rather than lexical order or
+        snapshot views: expert callbacks follow ordinary export, and commit
+        swaps old/current buffers. Batches become eligible independently.
         """
         limit = self.args.update_weight_buffer_size
         if limit <= 0:
             raise ValueError("GPU delta requires a positive update_weight_buffer_size")
         raw_names, batches, batch, size = [], [], [], 0
-        for name in sorted(self._snapshot):
+        for name in self._snapshot:
             encoding = self._plan[name]["encoding"]
             if encoding == "raw_bytes":
                 raw_names.append(name)
@@ -341,10 +378,13 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
         if batch:
             batches.append(tuple(batch))
         self._raw_names, self._gpu_batch_names = tuple(raw_names), tuple(batches)
+        self._batch_by_name = {name: index for index, names in enumerate(batches) for name in names}
 
     def after_base_weights(self):
         started = time.monotonic()
         try:
+            # Matrix encoding already runs on ready buckets. This final D2H
+            # fence admits raw CPU readers and drains even an incomplete export.
             ready = torch.cuda.Event()
             ready.record(self._staging_stream)
             ready.synchronize()
@@ -360,6 +400,14 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
             except Exception as error:
                 self._error = error
             self._encoding_tail_wait_s = time.monotonic() - started
+        if self._encoder_pool is not None:
+            self._encoder_pool.shutdown(wait=True)
+        if self._error is not None:
+            try:
+                self._gpu_encoder.stream.synchronize()
+            except Exception as error:
+                self.record_export_error(error)
+        self._encoding_jobs.clear()  # Futures own compact Snappy arenas until the final GPU drain.
         try:
             _collective_check(self._error, "encoding")
         except Exception:

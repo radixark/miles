@@ -37,7 +37,7 @@ class HfWeightIteratorDirect(MegatronHfWeightIteratorBase):
         # Installed on every rank for owner-local ETP1 export, including empty
         # owners. The callback retains async inputs and defers errors until the
         # protocol drains the stream. ETP>1 keeps gather-before-convert.
-        self.local_expert_consumer: Callable[[list[tuple[str, torch.Tensor]]], None] | None = None
+        self.local_consumer: Callable[[list[tuple[str, torch.Tensor]]], None] | None = None
         parallel = get_parallel_state()
         self._convert_experts_before_gather = parallel.etp.size == 1
         non_expert_infos, expert_infos = _get_megatron_local_param_infos(
@@ -86,13 +86,8 @@ class HfWeightIteratorDirect(MegatronHfWeightIteratorBase):
             disable=rank != 0,
             desc="Update weights",
         )
-        for param_infos in self._non_expert_batches:
-            named_params = _materialize_non_expert_batch(
-                self.args, param_infos, weights, gather_pp=self.placement.gather_pp
-            )
-            if materialize:
-                yield from self._convert_to_hf_param_units(named_params)
-            del named_params
+        for batch in self._non_expert_batches:
+            yield from self._iter_non_expert_batch(batch, weights, materialize=materialize)
             pbar.update(1)
         for batch in self._expert_batches:
             if self._convert_experts_before_gather:
@@ -112,6 +107,13 @@ class HfWeightIteratorDirect(MegatronHfWeightIteratorBase):
         pbar.close()
         yield from _iter_mm_tower_units(self.args, materialize=materialize)
 
+    def _iter_non_expert_batch(self, param_infos, weights, materialize):
+        named_params = _materialize_non_expert_batch(
+            self.args, param_infos, weights, gather_pp=self.placement.gather_pp
+        )
+        if materialize:
+            yield from self._convert_to_hf_param_units(named_params)
+
     def _convert_and_gather_expert_batch(self, batch: _ExpertBatch, weights):
         """Convert once per expert across EP/EDP, then consume locally or gather."""
         device = torch.device("cuda", torch.cuda.current_device())
@@ -124,11 +126,11 @@ class HfWeightIteratorDirect(MegatronHfWeightIteratorBase):
                 continue
             param = weights[info.name].detach().to(device=device, non_blocking=True)
             unit = next(self._convert_to_hf_param_units([(info.name, param)]))
-            if self.local_expert_consumer is not None:
-                self.local_expert_consumer(unit)
+            if self.local_consumer is not None:
+                self.local_consumer(unit)
             elif unit:
                 units.append(unit)
-        if self.local_expert_consumer is not None:
+        if self.local_consumer is not None:
             return []
         for gather in batch.gathers:
             units = gather(units, device=device)

@@ -216,7 +216,7 @@ def _device_results(tensors, descriptions, groups, changed, padding, metrics):
 
 
 class GpuBatchEncoder:
-    """One private stream; callers bound total batch bytes and finish input D2H.
+    """One private stream; callers bound batch bytes and order input D2H on it.
 
     ``encode_device`` takes ``[(old_pinned_u8, new_pinned_u8, encoding), ...]``.
     Neither input may be modified concurrently. Compact Snappy HBM survives

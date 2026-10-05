@@ -70,7 +70,8 @@ class WeightUpdater:
             quantization_config=quantization_config,
         )
         if isinstance(self.protocol, UpdateWeightFromGpuDelta):
-            self._hf_weight_iterator.local_expert_consumer = self.protocol.send_bucket
+            self._hf_weight_iterator.local_consumer = self.protocol.send_bucket
+            self._hf_weight_iterator.local_error_consumer = self.protocol.record_export_error
         self.weights_getter = weights_getter
         self.weight_version = 0
         self.is_lora = is_lora
