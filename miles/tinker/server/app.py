@@ -106,7 +106,7 @@ def build_app(service: TinkerService) -> FastAPI:
             "type": "get_info",
             "model_id": record.model_id,
             "model_name": record.base_model,
-            "is_lora": True,
+            "is_lora": not service.config.full_training,
             "lora_rank": record.lora_rank,
             "model_data": {"model_name": record.base_model},
         }

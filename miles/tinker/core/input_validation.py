@@ -113,6 +113,8 @@ def validate_checkpoint_segment(segment: str) -> None:
 
 def validate_checkpoint_compatibility(meta: dict, record: ModelRecord, config: GatewayConfig, shown_path: str) -> None:
     """Reject settings that would change the saved tensors' meaning."""
+    if meta.get("is_lora", True) == config.full_training:
+        raise UserInputError("checkpoint parameterization does not match this model")
     expected = {
         "base_model": record.base_model,
         "lora_rank": record.lora_rank,
@@ -150,7 +152,12 @@ def validate_checkpoint_metadata(meta, shown_path: str) -> None:
         "train_mlp": (bool,),
         "train_unembed": (bool,),
     }
+    if isinstance(meta, dict) and meta.get("is_lora") is False:
+        fields["lora_rank"] = (type(None),)
+        fields["lora_alpha"] = (type(None),)
     if not isinstance(meta, dict) or any(type(meta.get(key)) not in types for key, types in fields.items()):
         raise UserInputError(f"checkpoint {shown_path!r} has invalid or unsupported metadata")
-    if meta["lora_rank"] <= 0 or not math.isfinite(meta["lora_alpha"]):
+    if type(meta.get("is_lora", True)) is not bool:
+        raise UserInputError(f"checkpoint {shown_path!r} has invalid parameterization")
+    if meta.get("is_lora", True) and (meta["lora_rank"] <= 0 or not math.isfinite(meta["lora_alpha"])):
         raise UserInputError(f"checkpoint {shown_path!r} has invalid LoRA metadata")

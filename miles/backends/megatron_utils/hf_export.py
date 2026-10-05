@@ -36,6 +36,7 @@ def save_hf_model(
     publisher: SnapshotPublisher,
     path: str | Path | None = None,
     raise_on_error: bool = False,
+    metadata: dict | None = None,
 ) -> None:
     """Collectively write an HF model, with an additional HF adapter for LoRA.
 
@@ -75,7 +76,7 @@ def save_hf_model(
     if should_log:
         logger.info(f"Saving model in HuggingFace format to {path}")
     try:
-        write_checkpoint_dir(path, write_weights, completion_marker=HF_EXPORT_COMPLETE_MARKER)
+        write_checkpoint_dir(path, write_weights, metadata=metadata, completion_marker=HF_EXPORT_COMPLETE_MARKER)
     except Exception as e:
         if raise_on_error:
             raise
