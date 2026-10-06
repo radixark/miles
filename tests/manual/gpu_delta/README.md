@@ -45,6 +45,7 @@ user-facing configuration API. Runtime defaults are sufficient for normal use.
 | `GPU_DELTA_SORT_BEFORE_HW_DECOMPRESS=0` | Receiver only. Set `1` to let nvCOMP sort chunks during paused DE submission; default off for both codecs. It does not change publication bytes or move sorting into preparation. |
 | `GPU_DELTA_TIMING=1` | Optional per-phase CUDA events. Default off; instrumentation can perturb timing. |
 | `GPU_DELTA_CPU_WORKERS=32` | CPU workers per rank. Each engine-host cache creator also uses its pool for parallel owner-file read/hash before local outer Zstd. Two EP4 engines have eight pools (up to 256 workers at the default). |
+| `GPU_DELTA_SKIP_PAYLOAD_HASH=1` | Shared sender/receiver opt-in: omit owner-file SHA256 generation and verification. Defaults off. The manifest declares `payload_checksum_format="none"` and null file hashes; receivers accept this only when their same flag is enabled. Manifest SHA256 and frame/decoder checks remain mandatory. |
 | `GPU_DELTA_HOST_CACHE_DIR` | Tmpfs base for engine-local host arenas; defaults to `/dev/shm/sglang-gpu-delta-<uid>`. Engines use separate subdirectories, identities and locks; only ranks of the same engine share an arena. |
 | `GPU_DELTA_SOURCE_DIGEST` | Optional producer-benchmark provenance annotation; unset by default. Does not configure the transport. |
 
@@ -53,8 +54,11 @@ For Ray launches, set the job `runtime_env` environment or use the provided
 forward arbitrary variables into existing workers. Trainer-only settings can
 use `--train-env-vars`; receiver profiling needs the timing setting on rollout
 actors too. Set the DE sorting control on rollout actors. The five-layer GPU-delta
-E2E forwards both trainer codec controls and receiver sorting, and checks
+E2E forwards both trainer codec controls, receiver sorting and the shared hash
+flag, and checks
 every publication's protocol and phase-specific codec. No old codec/encoder setting is migrated.
+Set the hash flag at job level so both trainer and rollout inherit it; a
+trainer-only override cannot enable checksum omission for a default receiver.
 
 The five-layer test is dedicated to GPU delta: it prepares checkpoints and data,
 enables the initial sync, then runs four rollouts to exercise three learned

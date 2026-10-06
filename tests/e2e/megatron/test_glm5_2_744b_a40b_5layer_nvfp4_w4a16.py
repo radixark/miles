@@ -143,6 +143,7 @@ def _gpu_delta_env():
         "GPU_DELTA_CODEC": configured_codec(),
         "GPU_DELTA_INITIAL_SYNC_CODEC": configured_codec(initial_sync=True),
         "GPU_DELTA_SORT_BEFORE_HW_DECOMPRESS": os.environ.get("GPU_DELTA_SORT_BEFORE_HW_DECOMPRESS", "0"),
+        "GPU_DELTA_SKIP_PAYLOAD_HASH": os.environ.get("GPU_DELTA_SKIP_PAYLOAD_HASH", "0"),
         "SGLANG_NVFP4_CKPT_FP8_GEMM_IN_ATTN": "0",
     }
 

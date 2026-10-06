@@ -72,42 +72,73 @@ def _add(writer, name, base, target):
 
 @pytest.mark.parametrize("frame_bytes", [1 << 16, 1 << 19, 1 << 20, 1 << 21, 1 << 22])
 @pytest.mark.parametrize("codec", publication.CODECS)
-def test_framed_publication_preserves_payload_ranges_and_final_file_hash(tmp_path, frame_bytes, codec):
+def test_framed_publication_preserves_payload_ranges_and_final_file_hash(tmp_path, monkeypatch, frame_bytes, codec):
     rng = np.random.default_rng(11)
     base = rng.integers(0, 256, (1, frame_bytes * 2 + 139), dtype=np.uint8)
     target = base.copy()
     target[:, :frame_bytes:4096] ^= 3
     target[:, -139:] ^= rng.integers(1, 256, 139, dtype=np.uint8)
-    writer = _writer(tmp_path, frame_bytes=frame_bytes, codec=codec)
-    entry = _add(writer, "w", base, target)
-    _add(writer, "unchanged", base, base)
-    _add(writer, "empty", np.zeros((1, 0), np.uint8), np.zeros((1, 0), np.uint8))
-    descriptor = writer.finish()
-    manifest_bytes = (tmp_path / "manifest.json").read_bytes()
-    manifest = json.loads(manifest_bytes)
-    blob = (tmp_path / "owner-00000.bin").read_bytes()
-    assert descriptor["manifest_sha256"] == hashlib.sha256(manifest_bytes).hexdigest()
-    assert manifest["files"] == [
-        {"name": "owner-00000.bin", "nbytes": len(blob), "sha256": hashlib.sha256(blob).hexdigest()}
-    ]
-    assert descriptor["protocol_version"] == 4 and descriptor["codec"] == manifest["codec"] == codec
-    assert descriptor["frame_bytes"] == frame_bytes and "codec_profile" not in descriptor
-    assert [frame["decoded_offset"] for frame in entry["frames"]] == [0, 2 * frame_bytes]
-    assert entry["frames"][-1]["encoded_bytes"] > 139
-    assert all(
-        set(frame) == {"decoded_offset", "decoded_bytes", "encoded_offset", "encoded_bytes"}
-        for frame in entry["frames"]
-    )
-    assert "codec" not in entry["outer"]
-    assert all(frame["decoded_bytes"] <= publication.FRAME_BYTES for frame in entry["outer"]["frames"])
-    _, payload, _, _ = _wrapped(base, target, frame_bytes)
-    offset = entry["outer"]["encoded_offset"]
-    assert blob[offset : offset + len(payload)] == payload
-    for tensor in manifest["tensors"]:
-        if tensor["name"] != "w":
-            assert not tensor["frames"] and "outer" not in tensor and tensor["changed_bytes"] == 0
-    with pytest.raises(FileExistsError):
-        _writer(tmp_path)
+    outputs = []
+    for skip_hash in (False, True):
+        if skip_hash:
+            monkeypatch.setenv("GPU_DELTA_SKIP_PAYLOAD_HASH", "1")
+        else:
+            monkeypatch.delenv("GPU_DELTA_SKIP_PAYLOAD_HASH", raising=False)
+        directory = tmp_path / str(skip_hash)
+        writer = _writer(directory, frame_bytes=frame_bytes, codec=codec)
+        # Changing the environment after construction must not change this file's policy.
+        monkeypatch.setenv("GPU_DELTA_SKIP_PAYLOAD_HASH", "0" if skip_hash else "1")
+        writer.add_raw_tensor("raw_prefix", b"\0\0\0", b"abc", "U8", [3])
+        entry = _add(writer, "w", base, target)
+        _add(writer, "unchanged", base, base)
+        _add(writer, "empty", np.zeros((1, 0), np.uint8), np.zeros((1, 0), np.uint8))
+        writer.add_raw_tensor("raw_tail", b"\0\0\0\0", b"1234", "F32", [])
+        descriptor = writer.finish()
+        manifest_bytes = (directory / "manifest.json").read_bytes()
+        manifest = json.loads(manifest_bytes)
+        blob = (directory / "owner-00000.bin").read_bytes()
+        assert descriptor["manifest_sha256"] == hashlib.sha256(manifest_bytes).hexdigest()
+        assert (
+            manifest["payload_checksum_format"]
+            == descriptor["payload_checksum_format"]
+            == ("none" if skip_hash else "sha256")
+        )
+        assert manifest["files"] == [
+            {
+                "name": "owner-00000.bin",
+                "nbytes": len(blob),
+                "sha256": None if skip_hash else hashlib.sha256(blob).hexdigest(),
+            }
+        ]
+        assert descriptor["protocol_version"] == 4 and descriptor["codec"] == manifest["codec"] == codec
+        assert descriptor["frame_bytes"] == frame_bytes and "codec_profile" not in descriptor
+        assert [frame["decoded_offset"] for frame in entry["frames"]] == [0, 2 * frame_bytes]
+        assert entry["frames"][-1]["encoded_bytes"] > 139
+        assert all(
+            set(frame) == {"decoded_offset", "decoded_bytes", "encoded_offset", "encoded_bytes"}
+            for frame in entry["frames"]
+        )
+        assert "codec" not in entry["outer"]
+        assert all(frame["decoded_bytes"] <= publication.FRAME_BYTES for frame in entry["outer"]["frames"])
+        _, payload, _, _ = _wrapped(base, target, frame_bytes)
+        offset = entry["outer"]["encoded_offset"]
+        assert offset == 16 and blob[:offset] == b"abc" + bytes(13)
+        assert blob[offset : offset + len(payload)] == payload
+        raw_offset = (offset + len(payload) + 15) // 16 * 16
+        assert blob[offset + len(payload) : raw_offset] == bytes(raw_offset - offset - len(payload))
+        assert blob[raw_offset:] == b"1234"
+        for tensor in manifest["tensors"]:
+            if tensor["name"] in ("empty", "unchanged"):
+                assert not tensor["frames"] and "outer" not in tensor and tensor["changed_bytes"] == 0
+        with pytest.raises(FileExistsError):
+            _writer(directory)
+        outputs.append((blob, manifest))
+    hashed_blob, hashed = outputs[0]
+    unhashed_blob, unhashed = outputs[1]
+    assert unhashed_blob == hashed_blob
+    hashed["payload_checksum_format"] = "none"
+    hashed["files"][0]["sha256"] = None
+    assert unhashed == hashed
 
 
 def test_concurrent_shards_and_raw_targets_have_exclusive_ownership(tmp_path):
@@ -142,7 +173,7 @@ def test_unicode_manifest_authenticates_written_bytes_without_changing_plan_json
     assert publication.canonical_json(plan) == expected_plan_bytes
 
 
-@pytest.mark.parametrize("conflict", ["tensor", "metadata", "file"])
+@pytest.mark.parametrize("conflict", ["tensor", "metadata", "file", "checksum-policy"])
 def test_conflicting_owner_shards_cannot_publish(tmp_path, conflict):
     writer = _writer(tmp_path)
     writer.add_raw_tensor("scale", b"\0\0\0\0", b"1234", dtype="F32", shape=[])
@@ -152,6 +183,9 @@ def test_conflicting_owner_shards_cannot_publish(tmp_path, conflict):
         duplicate["metadata"]["target_version"] += 1
     elif conflict == "file":
         duplicate["tensors"] = []
+    elif conflict == "checksum-policy":
+        duplicate["metadata"]["payload_checksum_format"] = "none"
+        duplicate["files"][0]["sha256"] = None
     with pytest.raises(ValueError):
         publication.seal_publication(tmp_path, [shard, duplicate])
     assert not (tmp_path / "manifest.json").exists()

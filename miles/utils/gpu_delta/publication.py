@@ -178,7 +178,7 @@ class PublicationWriter:
     """One owner's append-only payload; manifest is sealed after all owners finish.
 
     A CPU worker writes raw scalar/vector targets while matrix compression runs
-    on the GPU. The lock serializes only final byte appends and their CPU hashes.
+    on the GPU. The lock serializes final byte appends and optional CPU hashes.
     Partial files are preserved on failure and never overwritten by a retry.
     """
 
@@ -200,6 +200,7 @@ class PublicationWriter:
         self.directory = Path(directory)
         self.directory.mkdir(parents=True, exist_ok=True)
         self.outer_metrics = dict(outer_hash_write_s=0.0, outer_input_bytes=0, outer_output_bytes=0)
+        self._hash = None if os.environ.get("GPU_DELTA_SKIP_PAYLOAD_HASH") == "1" else hashlib.sha256()
         self.metadata = {
             "protocol_version": 4,
             "codec": codec,
@@ -209,11 +210,10 @@ class PublicationWriter:
             "base_version": base_version,
             "target_version": target_version,
             "plan_digest": plan_digest,
-            "payload_checksum_format": "sha256",
+            "payload_checksum_format": "none" if self._hash is None else "sha256",
         }
         self._filename = f"owner-{owner:05d}.bin"
         self._file = (self.directory / self._filename).open("xb")
-        self._hash = hashlib.sha256()
         self._lock = threading.Lock()
         self._entries: dict[str, dict] = {}
 
@@ -231,15 +231,17 @@ class PublicationWriter:
                 payload = memoryview(current)
                 padding = bytes((-self._file.tell()) % 16)
                 self._file.write(padding)
-                self._hash.update(padding)
+                if self._hash is not None:
+                    self._hash.update(padding)
                 entry["raw"] = dict(file=self._filename, encoded_offset=self._file.tell(), encoded_bytes=len(payload))
                 self._file.write(payload)
-                self._hash.update(payload)
+                if self._hash is not None:
+                    self._hash.update(payload)
             self._entries[name] = entry
         return entry
 
     def add_gpu_outer_tensor(self, name, frames, payload, outer, changed_bytes, dtype, shape, views=None):
-        """Publish already wrapped GPU bytes; only the final wire bytes are CPU hashed."""
+        """Publish GPU-wrapped bytes; optional CPU hashing covers only final wire bytes."""
         entry = tensor_metadata(name, dtype=dtype, shape=shape, views=views)
         if type(changed_bytes) is not int or not 0 <= changed_bytes <= entry["nbytes"]:
             raise ValueError("Invalid changed-byte count")
@@ -261,7 +263,8 @@ class PublicationWriter:
             return
         started = time.monotonic()
         self._file.write(data)
-        self._hash.update(data)
+        if self._hash is not None:
+            self._hash.update(data)
         self.outer_metrics["outer_hash_write_s"] += time.monotonic() - started
 
     def finish_shard(self) -> dict:
@@ -272,7 +275,13 @@ class PublicationWriter:
             self._file.close()
             return {
                 "metadata": self.metadata,
-                "files": [{"name": self._filename, "nbytes": size, "sha256": self._hash.hexdigest()}],
+                "files": [
+                    {
+                        "name": self._filename,
+                        "nbytes": size,
+                        "sha256": self._hash.hexdigest() if self._hash is not None else None,
+                    }
+                ],
                 "tensors": list(self._entries.values()),
             }
 
