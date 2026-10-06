@@ -29,6 +29,20 @@ _BUCKET_VALUES = {
 @dataclasses.dataclass
 class _FakeServerArgs:
     rl_quant_profile: str | None = None
+    quantization: str | None = None
+
+
+@dataclasses.dataclass
+class _FakeRankParallelismConfig:
+    tp_rank: int
+    global_rank: int
+
+    @classmethod
+    def from_dict(cls, parallelism_info: dict) -> "_FakeRankParallelismConfig":
+        return cls(**parallelism_info)
+
+    def to_dict(self) -> dict:
+        return dataclasses.asdict(self)
 
 
 @dataclasses.dataclass
@@ -126,12 +140,14 @@ class _FakeRolloutApi:
         generation: int = 1,
         unreachable: bool = False,
         published_weight_numel: int = _WEIGHT_NUMEL,
+        quantization: str | None = None,
     ) -> None:
         self.cell_id = cell_id
         self.gpu_count = gpu_count
         self.generation = generation
         self.unreachable = unreachable
         self.published_weight_numel = published_weight_numel
+        self.quantization = quantization
         self.calls: list[str] = []
 
     def session_id(self, rank: int) -> str:
@@ -153,7 +169,7 @@ class _FakeRolloutApi:
 
     async def get_server_info(self) -> dict:
         self.calls.append("get_server_info")
-        return {"rl_quant_profile": None}
+        return {"rl_quant_profile": None, "quantization": self.quantization}
 
 
 class _ObservedExecutor(ThreadPoolExecutor):
@@ -264,10 +280,11 @@ class _P2PSenderHarness:
         monkeypatch.setattr(
             p2p_protocol, "ParameterMapper", SimpleNamespace(from_model=lambda model: _FakeParameterMapper())
         )
-        monkeypatch.setattr(p2p_protocol, "RankParallelismConfig", SimpleNamespace(from_dict=lambda info: info))
         monkeypatch.setattr(p2p_protocol, "get_gloo_group", lambda: None)
         monkeypatch.setattr(p2p_protocol, "dist", SimpleNamespace(get_rank=lambda group=None: 0))
-        monkeypatch.setitem(p2p_protocol.query_remote_weight_infos.__globals__, "ServerArgs", _FakeServerArgs)
+        model_replica = sys.modules[p2p_protocol.query_rollout_engine_rank_configs.__module__]
+        monkeypatch.setattr(model_replica, "RankParallelismConfig", _FakeRankParallelismConfig)
+        monkeypatch.setattr(model_replica, "ServerArgs", _FakeServerArgs)
 
     def loaded_event(self, tp_rank: int) -> threading.Event:
         return self._loaded_events.setdefault(tp_rank, threading.Event())
@@ -311,13 +328,13 @@ class _P2PSenderHarness:
 
     def _create_cpu_replica(
         self,
-        parallelism_config: dict,
+        parallelism_config: _FakeRankParallelismConfig,
         model_path: str,
         server_args: Any,
         shared_params_dict: dict[str, torch.Tensor],
         first_rollout_engine_rank: bool = False,
     ) -> _SharedBufferReplica:
-        replica = _SharedBufferReplica(tp_rank=parallelism_config["tp_rank"], harness=self)
+        replica = _SharedBufferReplica(tp_rank=parallelism_config.tp_rank, harness=self)
         if not first_rollout_engine_rank:
             for name, param in replica.named_parameters():
                 param.data = shared_params_dict[name]
@@ -388,6 +405,11 @@ def p2p_protocol() -> ModuleType:
         }
     ):
         return importlib.import_module(_P2P_PROTOCOL_MODULE)
+
+
+@pytest.fixture(scope="module")
+def model_replica_module(p2p_protocol: ModuleType) -> ModuleType:
+    return sys.modules[p2p_protocol.query_rollout_engine_rank_configs.__module__]
 
 
 @pytest.fixture

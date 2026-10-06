@@ -22,18 +22,13 @@ from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
 from miles.backends.training_utils.parallel import ParallelState
 from miles.backends.training_utils.weight_update.hf_weight_iterator import WeightUpdatePlacement
 from miles.backends.training_utils.weight_update.protocol import WeightTransferProtocol
-from miles.backends.training_utils.weight_update.protocols.transports.mooncake import (
-    MooncakeTransport,
-    RemoteShard,
-    RemoteWeightLocation,
-)
+from miles.backends.training_utils.weight_update.protocols.transports.mooncake import MooncakeTransport, RemoteShard
 from miles.backends.training_utils.weight_update.protocols.utils.model_param_stager import ModelParamStager
+from miles.backends.training_utils.weight_update.protocols.utils.model_replica import query_rollout_engine_rank_configs
 from miles.backends.training_utils.weight_update.protocols.utils.rollout_engine_rank_assignment import (
     assign_rollout_engine_ranks,
 )
 from miles.utils.distributed_utils import get_gloo_group
-
-from .p2p_transfer_utils import query_remote_weight_infos
 
 
 class _ReplicaTarget(NamedTuple):
@@ -134,30 +129,19 @@ class UpdateWeightP2P(WeightTransferProtocol):
         self.is_sender = bool(assignments)
 
         if self.is_sender:
-            (
-                self.remote_weight_infos_by_session_id,
-                targets_to_session_id,
-                self.session_id_to_server_args,
-            ) = query_remote_weight_infos(rollout_engines, assignments)
-
+            configs_by_rollout_engine_rank = query_rollout_engine_rank_configs(rollout_engines, assignments)
             self._transport = MooncakeTransport()
+            remote_shards_by_rollout_engine_rank = self._transport.connect(rollout_engines, assignments)
             self._shared_params_dict: dict[str, torch.Tensor] = {}
             self._shared_param_mapper: ParameterMapper | None = None
             self._replica_targets: list[_ReplicaTarget] = []
             first_rollout_engine_rank = True
-            for assignment in assignments:
-                session_id = targets_to_session_id[
-                    (assignment.rollout_engine_indices[0], assignment.rollout_engine_rank)
-                ]
-                parallelism_config = RankParallelismConfig.from_dict(
-                    self.remote_weight_infos_by_session_id[session_id][1]
-                )
-                server_args = self.session_id_to_server_args[session_id]
-
+            for rollout_engine_rank, remote_shards in remote_shards_by_rollout_engine_rank.items():
+                config = configs_by_rollout_engine_rank[rollout_engine_rank]
                 model_replica = self._create_cpu_replica(
-                    parallelism_config,
+                    config.parallelism,
                     self.args.hf_checkpoint,
-                    server_args,
+                    config.server_args,
                     first_rollout_engine_rank=first_rollout_engine_rank,
                 )
                 if first_rollout_engine_rank:
@@ -165,22 +149,7 @@ class UpdateWeightP2P(WeightTransferProtocol):
                     self._shared_param_mapper = ParameterMapper.from_model(model_replica)
                     first_rollout_engine_rank = False
 
-                remote_shards = []
-                for rollout_engine_ind in assignment.rollout_engine_indices:
-                    shard_session_id = targets_to_session_id[(rollout_engine_ind, assignment.rollout_engine_rank)]
-                    weights_info = self.remote_weight_infos_by_session_id[shard_session_id][0]
-                    remote_shards.append(
-                        RemoteShard(
-                            rollout_engine_ind=rollout_engine_ind,
-                            rollout_engine_rank=assignment.rollout_engine_rank,
-                            session_id=shard_session_id,
-                            weight_locations_by_name={
-                                name: RemoteWeightLocation(*location) for name, location in weights_info.items()
-                            },
-                        )
-                    )
-
-                self._replica_targets.append(_ReplicaTarget(model_replica, remote_shards, parallelism_config))
+                self._replica_targets.append(_ReplicaTarget(model_replica, remote_shards, config.parallelism))
 
     def _create_cpu_replica(
         self,

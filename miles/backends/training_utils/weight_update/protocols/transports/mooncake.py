@@ -6,6 +6,12 @@ from typing import Any, NamedTuple
 import ray
 import torch
 
+from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
+from miles.backends.training_utils.weight_update.protocols.utils.rollout_engine_rank_assignment import (
+    RolloutEngineRankAssignment,
+)
+from miles.utils import async_utils
+
 
 class RemoteWeightLocation(NamedTuple):
     address: int
@@ -33,6 +39,20 @@ class MooncakeTransport:
     def __init__(self) -> None:
         self._transfer_engine = _create_transfer_engine()
         self._write_executors_by_rollout_engine_ind: dict[int, ThreadPoolExecutor] = {}
+
+    def connect(
+        self, rollout_engines: Sequence[SGLangApiClient], assignments: Sequence[RolloutEngineRankAssignment]
+    ) -> dict[int, list[RemoteShard]]:
+        """Returns the shards of the rollout engine ranks in `assignments`, by rollout engine rank."""
+        return {
+            assignment.rollout_engine_rank: [
+                _query_remote_shard(
+                    rollout_engines[rollout_engine_ind], rollout_engine_ind, assignment.rollout_engine_rank
+                )
+                for rollout_engine_ind in assignment.rollout_engine_indices
+            ]
+            for assignment in assignments
+        }
 
     def register_memory(self, tensor: torch.Tensor) -> None:
         ret = self._transfer_engine.register_memory(tensor.data_ptr(), _nbytes(tensor))
@@ -73,6 +93,23 @@ class MooncakeTransport:
         )
         if ret < 0:
             raise RuntimeError(f"Mooncake batch_transfer_sync_write returned {ret}")
+
+
+def _query_remote_shard(
+    rollout_engine: SGLangApiClient, rollout_engine_ind: int, rollout_engine_rank: int
+) -> RemoteShard:
+    session_id, weights_info = async_utils.run(
+        rollout_engine.get_remote_instance_transfer_engine_info(rank=rollout_engine_rank)
+    )
+    assert (
+        session_id is not None
+    ), f"rollout engine {rollout_engine_ind} rank {rollout_engine_rank} has no Mooncake session"
+    return RemoteShard(
+        rollout_engine_ind=rollout_engine_ind,
+        rollout_engine_rank=rollout_engine_rank,
+        session_id=session_id,
+        weight_locations_by_name={name: RemoteWeightLocation(*location) for name, location in weights_info.items()},
+    )
 
 
 def _create_transfer_engine() -> Any:
