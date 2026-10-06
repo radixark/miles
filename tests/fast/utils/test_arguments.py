@@ -1665,6 +1665,7 @@ def test_stream_optimizer_state_to_disk_rejects_fault_tolerant_training():
         ({"fp16": True}, "does not support loss scaling"),
         ({"loss_scale": 1024.0}, "does not support loss scaling"),
         ({"log_num_zeros_in_grad": True}, "does not support --log-num-zeros-in-grad"),
+        ({"enable_mtp_training": True}, "does not support --enable-mtp-training"),
     ],
 )
 def test_stream_optimizer_state_to_disk_rejects_reading_grads_outside_the_step(megatron_args, match):

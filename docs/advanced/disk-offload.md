@@ -98,7 +98,8 @@ Adam from zero — pass `--no-load-optim` to accept a fresh optimizer state. And
 optimizer state is copied to the checkpoint directory synchronously, outside
 `--async-save`, so expect checkpoint saves to take noticeably longer. Finally, the streamed
 params have fp32 gradients only inside the step, so streaming refuses what reads them outside
-it: fp16 loss scaling, `--log-num-zeros-in-grad`, and separate grad-norm groups.
+it: fp16 loss scaling, `--log-num-zeros-in-grad`, and `--enable-mtp-training`, whose detached MTP
+heads are clipped by their own grad norm.
 
 The two also help each other. With the optimizer state already on disk there is that much
 less to move when the actor is paused: on Qwen3-30B-A3B, sleep/wake went from 24s/8.9s to
