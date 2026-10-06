@@ -127,7 +127,7 @@ class UpdateWeightP2P(WeightTransferProtocol):
 
         if self.is_sender:
             configs_by_rollout_engine_rank = query_rollout_engine_rank_configs(rollout_engines, assignments)
-            self._transport = MooncakeTransport(num_write_workers=self.args.p2p_transfer_num_workers)
+            self._transport = MooncakeTransport()
             remote_shards_by_rollout_engine_rank = self._transport.connect(rollout_engines, assignments)
             self._model_replicas = ModelReplicas(model_path=self.args.hf_checkpoint)
             self._replica_targets: list[_ReplicaTarget] = []

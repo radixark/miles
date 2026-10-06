@@ -274,7 +274,6 @@ class _P2PSenderHarness:
         args = Namespace(
             hf_checkpoint="/model",
             p2p_transfer_timeout=_FAILURE_BOUND,
-            p2p_transfer_num_workers=4,
             update_weight_engine_request_timeout=_FAILURE_BOUND,
             sglang_pp_size=1,
         )
