@@ -1,7 +1,7 @@
 ---
 title: MiMo-V2.6-Flash
 sidebarTitle: MiMo-V2.6
-description: Launch recipe for Xiaomi's MiMo-V2.6-Flash-RL (309B MoE, hybrid sliding-window attention) — Megatron bridge mode on a BF16 conversion, a 4-layer partial on one 8-GPU node, the full model on two.
+description: Launch recipe for Xiaomi's MiMo-V2.6-Flash-RL (309B MoE, hybrid sliding-window attention) — Megatron bridge mode on a BF16 conversion, on two 8-GPU nodes.
 ---
 ## 1. Model Introduction
 
@@ -18,8 +18,7 @@ description: Launch recipe for Xiaomi's MiMo-V2.6-Flash-RL (309B MoE, hybrid sli
 
 | `--model-name` | What it is | HF source |
 |---|---|---|
-| `MiMo-V2.6-Flash-RL-bf16` | full text decoder, 48 layers | [XiaomiMiMo/MiMo-V2.6-Flash-RL](https://huggingface.co/XiaomiMiMo/MiMo-V2.6-Flash-RL) |
-| `mimo26-p4-bf16` | 4-layer partial (source layers 0, 1, 5, 6: one of each decoder variant), all 256 experts | same, converted with `--layers 0,1,5,6` |
+| `MiMo-V2.6-Flash-RL-bf16` | text decoder, 48 layers | [XiaomiMiMo/MiMo-V2.6-Flash-RL](https://huggingface.co/XiaomiMiMo/MiMo-V2.6-Flash-RL) |
 
 The vision, audio and MTP modules stay in the checkpoint but are not trained (text-only RL).
 
@@ -32,10 +31,10 @@ The vision, audio and MTP modules stay in the checkpoint but are not trained (te
 ```bash
 hf download XiaomiMiMo/MiMo-V2.6-Flash-RL --local-dir /root/models/MiMo-V2.6-Flash-RL
 python tools/convert_mimo_v2_to_bf16.py --model-dir /root/models/MiMo-V2.6-Flash-RL \
-    --save-dir /root/models/mimo26-p4-bf16 --layers 0,1,5,6 --device cuda
+    --save-dir /root/models/MiMo-V2.6-Flash-RL-bf16 --device cuda
 ```
 
-The converter dequantizes each kv-head shard of the fused `qkv_proj` with its own FP8 block scales, splits it into q/k/v in head order, and decodes the MXFP4 experts (`--num-experts N` keeps the first N experts for smaller tests). The full BF16 model is 622 GB, the 4-layer partial 46 GB.
+The converter dequantizes each kv-head shard of the fused `qkv_proj` with its own FP8 block scales, splits it into q/k/v in head order, and decodes the MXFP4 experts. The BF16 model is 622 GB.
 
 ### 3.2 SGLang
 
@@ -48,17 +47,7 @@ The BF16 engine needs the MiMo-V2 fixes that are not in the image yet:
 
 ## 4. Launch
 
-### 4.1 Quick start (one node, 4-layer partial)
-
-```bash
-cd /root/miles
-python scripts/run_mimo_v2_6_flash.py --mode rl --model-name mimo26-p4-bf16
-python scripts/run_mimo_v2_6_flash.py --mode sft --model-name mimo26-p4-bf16 --prompt-data <chat jsonl>
-```
-
-`--mode sft` reads a `messages` column; put a reasoning trace in `reasoning_content`, since the MiMo chat template renders `<think>{reasoning_content}</think>`.
-
-### 4.2 Full model (two nodes)
+### 4.1 Two nodes
 
 Join the second node to a ray head on the first, then launch from the head:
 
@@ -69,13 +58,14 @@ MILES_SCRIPT_EXTERNAL_RAY=1 MASTER_ADDR=<head ip> python scripts/run_mimo_v2_6_f
 
 On two 8×H200 nodes with node-local NVMe (4-drive RAID0), a step with 16 samples of up to 2048 response tokens took about 4 minutes of training, of which about 3 minutes is streaming the optimizer state (72 GB read and 144 GB written per GPU), plus 30 s of weight update. Peak GPU memory was 125 GB and peak host memory 1.05 TB per node.
 
+`--mode sft --prompt-data <chat jsonl>` trains SFT instead. It reads a `messages` column; put a reasoning trace in `reasoning_content`, since the MiMo chat template renders `<think>{reasoning_content}</think>`.
+
 ## 5. Recipe Configuration
 
 ### 5.1 Parallelism
 
 | `--model-name` | TP | PP | CP | EP | expert-TP | GPUs | rollout engine |
 |---|---|---|---|---|---|---|---|
-| `mimo26-p4-bf16` | 2 | 2 | 1 | 2 | 1 | 8 (1 × 8) | TP4, `--sglang-mem-fraction-static 0.6` |
 | `MiMo-V2.6-Flash-RL-bf16` | 2 | 2 | 1 | 8 | 1 | 16 (2 × 8) | TP8, `--sglang-mem-fraction-static 0.8` |
 
 TP is capped at 4 by the four global-attention KV heads. Context parallelism is not supported. `--sequence-parallel` is on whenever TP > 1. THD packing with `--use-dynamic-batch-size` is the default; `--qkv-format bshd` runs one sample per micro-batch.
@@ -86,7 +76,7 @@ GRPO with `--eps-clip 0.2 --eps-clip-high 0.28 --entropy-coef 0.00` and `--rm-ty
 
 ### 5.3 Optimizer
 
-Adam at `--lr 1e-6`. The full model's Adam state (3.7 TB) fits neither the GPUs nor two hosts' memory, so it streams through node-local NVMe:
+Adam at `--lr 1e-6`. The model's Adam state (3.7 TB) fits neither the GPUs nor two hosts' memory, so it streams through node-local NVMe:
 
 ```bash
 --stream-optimizer-state-to-disk
