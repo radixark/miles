@@ -216,11 +216,11 @@ def test_replica_loads_inside_its_parallelism_context():
     protocol = object.__new__(UpdateWeightP2P)
     protocol.is_sender = True
     protocol._replica_targets = [_ReplicaTarget(replica, [SimpleNamespace(session_id="s0")], "cfg-0")]
-    protocol.transfer_manager = MagicMock()
-    protocol._do_p2p_write_one_session = MagicMock()
+    protocol._transport = MagicMock()
+    protocol._last_rank_writes = []
     ready = [("model.embed_tokens.weight", torch.zeros(1))]
     protocol._shared_param_mapper = None
-    protocol._shared_params_dict = {}
+    protocol._shared_params_dict = dict(ready)
     protocol._model_param_stager = SimpleNamespace(
         get_transfer_ready_params=lambda tensors, param_mapper, params_dict: (["model.embed_tokens.weight"], ready)
     )

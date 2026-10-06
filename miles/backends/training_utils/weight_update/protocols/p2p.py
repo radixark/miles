@@ -1,6 +1,7 @@
 import logging
 from argparse import Namespace
 from collections.abc import Callable, Iterator, Sequence
+from concurrent.futures import Future
 from typing import NamedTuple
 
 import torch
@@ -21,26 +22,25 @@ from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
 from miles.backends.training_utils.parallel import ParallelState
 from miles.backends.training_utils.weight_update.hf_weight_iterator import WeightUpdatePlacement
 from miles.backends.training_utils.weight_update.protocol import WeightTransferProtocol
+from miles.backends.training_utils.weight_update.protocols.transports.mooncake import (
+    MooncakeTransport,
+    RemoteShard,
+    RemoteWeightLocation,
+)
 from miles.backends.training_utils.weight_update.protocols.utils.model_param_stager import ModelParamStager
 from miles.backends.training_utils.weight_update.protocols.utils.rollout_engine_rank_assignment import (
     assign_rollout_engine_ranks,
 )
 from miles.utils.distributed_utils import get_gloo_group
 
-from .p2p_transfer_utils import (
-    P2PTransferManager,
-    RemoteWeightInfo,
-    create_transfer_engine,
-    query_remote_weight_infos,
-    register_cpu_memory,
-)
+from .p2p_transfer_utils import query_remote_weight_infos
 
 logger = logging.getLogger(__name__)
 
 
 class _ReplicaTarget(NamedTuple):
     model_replica: torch.nn.Module
-    remote_weight_infos: list[RemoteWeightInfo]
+    remote_shards: list[RemoteShard]
     parallelism_config: RankParallelismConfig
 
 
@@ -51,8 +51,8 @@ class UpdateWeightP2P(WeightTransferProtocol):
     Compute transfer_ready_params once (same for all engine ranks)
     For each engine rank:
         load_weights(shared buffer) → P2P write
-        where the last rank's write is submitted to a background thread
-    wait_transfers() at finish to collect all background writes
+        where the last rank's write runs in the background
+    after_base_weights waits for the background writes
     """
 
     def __init__(self, args: Namespace) -> None:
@@ -62,16 +62,18 @@ class UpdateWeightP2P(WeightTransferProtocol):
         self.global_rank = dist.get_rank(group=get_gloo_group())
         self._model_registered = False
         self._model_param_stager = ModelParamStager()
-        self.transfer_manager = P2PTransferManager(
-            num_workers=getattr(args, "p2p_transfer_num_workers", 4),
-            transfer_timeout=getattr(args, "p2p_transfer_timeout", 30.0),
-        )
+        self._last_rank_writes: list[Future] = []
 
     def after_base_weights(self) -> None:
         """Wait for all background P2P writes to complete."""
         if not self.is_sender:
             return
-        self.transfer_manager.wait_transfers()
+        for write in self._last_rank_writes:
+            try:
+                write.result(timeout=self.args.p2p_transfer_timeout)
+            except Exception as e:
+                logger.error(f"[P2P] Transfer future failed: {e}")
+        self._last_rank_writes = []
         self._model_param_stager.assert_all_done()
 
     def begin_sync(
@@ -79,7 +81,8 @@ class UpdateWeightP2P(WeightTransferProtocol):
     ) -> bool:
         """Register shared CPU pinned memory with P2P on the first sync."""
         if self.is_sender and not self._model_registered:
-            self._weight_memory_registry = register_cpu_memory(self._shared_params_dict, self._transfer_engine)
+            for tensor in self._shared_params_dict.values():
+                self._transport.register_memory(tensor)
             self._model_registered = True
         return True
 
@@ -101,33 +104,20 @@ class UpdateWeightP2P(WeightTransferProtocol):
         )
 
         if transfer_ready_params and ready_hf_tensors:
+            tensors_by_name = {name: self._shared_params_dict[name] for name in transfer_ready_params}
             last_idx = len(self._replica_targets) - 1
             for i, target in enumerate(self._replica_targets):
                 with ParallelismContext(target.parallelism_config):
                     target.model_replica.load_weights(ready_hf_tensors)
 
-                is_last = i == last_idx
-                if is_last:
-                    # Last engine rank: fire-and-forget all sessions to background,
-                    # as the weight will no longer be overwritten
-                    for remote_session in target.remote_weight_infos:
-                        self.transfer_manager.submit(
-                            self._do_p2p_write_one_session,
-                            remote_session,
-                            transfer_ready_params,
-                        )
+                writes = self._transport.write(target.remote_shards, tensors_by_name)
+                if i == last_idx:
+                    # Last engine rank: its writes run in the background, as the weight will no longer be overwritten
+                    self._last_rank_writes += writes
                 else:
                     # Non-last engine rank needs to be fully written to target before next update can happen.
-                    futures = [
-                        self.transfer_manager.submit_returning_future(
-                            self._do_p2p_write_one_session,
-                            remote_session,
-                            transfer_ready_params,
-                        )
-                        for remote_session in target.remote_weight_infos
-                    ]
-                    for f in futures:
-                        f.result()
+                    for write in writes:
+                        write.result()
 
         converted_named_tensors.clear()
 
@@ -161,8 +151,7 @@ class UpdateWeightP2P(WeightTransferProtocol):
                 self.session_id_to_server_args,
             ) = query_remote_weight_infos(rollout_engines, assignments)
 
-            # Create ONE transfer engine for all engine ranks
-            self._transfer_engine = create_transfer_engine()
+            self._transport = MooncakeTransport()
             self._shared_params_dict: dict[str, torch.Tensor] = {}
             self._shared_param_mapper: ParameterMapper | None = None
             self._replica_targets: list[_ReplicaTarget] = []
@@ -187,17 +176,22 @@ class UpdateWeightP2P(WeightTransferProtocol):
                     self._shared_param_mapper = ParameterMapper.from_model(model_replica)
                     first_rollout_engine_rank = False
 
-                remote_infos = [
-                    RemoteWeightInfo(
-                        targets_to_session_id[(rollout_engine_ind, assignment.rollout_engine_rank)],
-                        self.remote_weight_infos_by_session_id[
-                            targets_to_session_id[(rollout_engine_ind, assignment.rollout_engine_rank)]
-                        ][0],
+                remote_shards = []
+                for rollout_engine_ind in assignment.rollout_engine_indices:
+                    shard_session_id = targets_to_session_id[(rollout_engine_ind, assignment.rollout_engine_rank)]
+                    weights_info = self.remote_weight_infos_by_session_id[shard_session_id][0]
+                    remote_shards.append(
+                        RemoteShard(
+                            rollout_engine_ind=rollout_engine_ind,
+                            rollout_engine_rank=assignment.rollout_engine_rank,
+                            session_id=shard_session_id,
+                            weight_locations_by_name={
+                                name: RemoteWeightLocation(*location) for name, location in weights_info.items()
+                            },
+                        )
                     )
-                    for rollout_engine_ind in assignment.rollout_engine_indices
-                ]
 
-                self._replica_targets.append(_ReplicaTarget(model_replica, remote_infos, parallelism_config))
+                self._replica_targets.append(_ReplicaTarget(model_replica, remote_shards, parallelism_config))
 
     def _create_cpu_replica(
         self,
@@ -250,39 +244,3 @@ class UpdateWeightP2P(WeightTransferProtocol):
                 param.data = self._shared_params_dict[name]
 
         return model
-
-    def _do_p2p_write_one_session(self, remote_session: RemoteWeightInfo, names: list[str]) -> None:
-        """P2P write from shared CPU pinned buffers to a single remote session.
-
-        Used by the parallelized submission path where each session within an
-        engine rank is submitted as a separate task to P2PTransferManager.
-        """
-        source_ptrs, source_lens = [], []
-        valid_names = []
-
-        for name in names:
-            cpu_reg = self._weight_memory_registry.get(name)
-            assert cpu_reg, f"the _weight_memory_registry of {name} failed"
-
-            data_ptr, numel, ele_size = cpu_reg
-            source_ptrs.append(data_ptr)
-            source_lens.append(numel * ele_size)
-            valid_names.append(name)
-
-        if not source_ptrs:
-            return
-
-        session_id = remote_session.session_id
-        target_ptrs = []
-        for name in valid_names:
-            if name in remote_session.weights_info:
-                target_ptrs.append(remote_session.weights_info[name][0])
-
-        assert len(target_ptrs) == len(source_ptrs), (
-            f"[P2P-Shared] Pointer count mismatch for session {session_id}, "
-            f"source: {len(source_ptrs)}, target: {len(target_ptrs)}"
-        )
-
-        ret = self._transfer_engine.batch_transfer_sync_write(session_id, source_ptrs, target_ptrs, source_lens)
-        if ret < 0:
-            raise RuntimeError(f"[P2P-Shared] Transfer failed for session {session_id}, error: {ret}")

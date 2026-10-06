@@ -223,7 +223,13 @@ class _P2PSenderHarness:
         self.data_replica_rank = 0
         self.data_replica_size = 1
 
-        monkeypatch.setattr(p2p_protocol, "create_transfer_engine", self._create_transfer_engine)
+        mooncake_transport = sys.modules[p2p_protocol.MooncakeTransport.__module__]
+        monkeypatch.setattr(mooncake_transport, "_create_transfer_engine", self._create_transfer_engine)
+        monkeypatch.setattr(
+            mooncake_transport,
+            "ThreadPoolExecutor",
+            lambda **kwargs: _ObservedExecutor(self.waiting_threads, **kwargs),
+        )
         monkeypatch.setattr(
             p2p_protocol.UpdateWeightP2P,
             "_create_cpu_replica",
@@ -254,11 +260,6 @@ class _P2PSenderHarness:
         monkeypatch.setattr(p2p_protocol, "get_gloo_group", lambda: None)
         monkeypatch.setattr(p2p_protocol, "dist", SimpleNamespace(get_rank=lambda group=None: 0))
         monkeypatch.setitem(p2p_protocol.query_remote_weight_infos.__globals__, "ServerArgs", _FakeServerArgs)
-        monkeypatch.setitem(
-            p2p_protocol.P2PTransferManager.ensure_started.__globals__,
-            "ThreadPoolExecutor",
-            lambda **kwargs: _ObservedExecutor(self.waiting_threads, **kwargs),
-        )
 
     def loaded_event(self, tp_rank: int) -> threading.Event:
         return self._loaded_events.setdefault(tp_rank, threading.Event())
