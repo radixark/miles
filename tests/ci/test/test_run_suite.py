@@ -532,9 +532,28 @@ class TestRocmWorkflowScopeSeam:
     def _workflow() -> str:
         return (Path(__file__).resolve().parents[3] / ".github" / "workflows" / "pr-test-rocm.yml").read_text()
 
+    def test_closed_pr_cancels_without_starting_resolvers_or_gpu_jobs(self):
+        workflow = self._workflow()
+        assert (
+            "group: pr-test-rocm-${{ github.event.number || github.event.schedule || inputs.ref || github.run_id }}"
+            in workflow
+        )
+        assert "cancel-in-progress: true" in workflow
+        for job in ("resolve-ci-policy", "resolve-ci-deps"):
+            header = workflow.split(f"  {job}:\n", 1)[1].split("    runs-on:", 1)[0]
+            assert "if: github.event.action != 'closed'" in header
+        image = workflow.split("  resolve-ci-image:\n", 1)[1].split("    runs-on:", 1)[0]
+        assert "needs: [resolve-ci-policy]" in image
+        assert "always()" not in image
+        stage = workflow.split("  stage-c-4-gpu-mi350:\n", 1)[1]
+        assert "needs.resolve-ci-policy.result == 'success'" in stage
+        assert "needs.resolve-ci-deps.result == 'success'" in stage
+
     def test_pr_schedules_and_dispatch_share_policy(self):
         workflow = self._workflow()
-        assert "pull_request:\n    types: [opened, synchronize, reopened, ready_for_review, labeled]" in workflow
+        assert (
+            "pull_request:\n    types: [opened, synchronize, reopened, ready_for_review, labeled, closed]" in workflow
+        )
         assert "pull_request_target:" not in workflow
         configured = set(re.findall(r"^\s+- cron: ['\"]([^'\"]+)['\"]\s*$", workflow, flags=re.MULTILINE))
         assert configured == set(SCHEDULE_POLICIES)

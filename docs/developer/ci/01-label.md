@@ -84,6 +84,8 @@ GitHub can omit `pull_requests` from fork workflow-run payloads. For a fork, the
 
 Post `/rerun-test <test-file>` as the entire comment to run one registered test file on the PR's current head, e.g. `/rerun-test tests/e2e/precision/test_hf_attention_cp_relayout.py`. Despite the name, this dispatches a fresh workflow and does not require the test to have run previously. The handler accepts only a repo-relative path under the registry scan roots (`tests/e2e`, `tests/fast`, `tests/fast-gpu`, `tests/ci`), then dispatches the fixed default-branch `.github/workflows/run-ci-file.yml` with the PR number, exact head SHA, and file path as inputs.
 
+Merging the PR cancels its unfinished `Rerun Test` runs, including runs waiting for a runner or queued behind another run of the same file. The trusted `cancel-merged-file-ci.yml` workflow matches the PR number in the file run's name; it leaves completed runs and other PRs alone. Closing without merging does not cancel file runs. While the PR is open, repeated requests for the same file retain their existing queue order.
+
 After GitHub confirms the workflow dispatch, the gateway reacts to the original command with 👍. When the dispatched `Rerun Test` workflow starts, that run posts a separate PR comment containing its running state, start time, and exact Actions run link:
 
 ```text
