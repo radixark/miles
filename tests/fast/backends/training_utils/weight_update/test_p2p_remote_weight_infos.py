@@ -105,12 +105,14 @@ def p2p_transfer_utils():
 
 
 def _make_assignments(module, pairs: list[tuple[int, int]]) -> list:
-    engine_indices_by_rank: dict[int, list[int]] = {}
-    for engine_index, engine_rank in pairs:
-        engine_indices_by_rank.setdefault(engine_rank, []).append(engine_index)
+    rollout_engine_indices_by_rank: dict[int, list[int]] = {}
+    for rollout_engine_ind, rollout_engine_rank in pairs:
+        rollout_engine_indices_by_rank.setdefault(rollout_engine_rank, []).append(rollout_engine_ind)
     return [
-        module.EngineRankAssignment(engine_rank=engine_rank, engine_indices=tuple(engine_indices))
-        for engine_rank, engine_indices in engine_indices_by_rank.items()
+        module.RolloutEngineRankAssignment(
+            rollout_engine_rank=rollout_engine_rank, rollout_engine_indices=tuple(rollout_engine_indices)
+        )
+        for rollout_engine_rank, rollout_engine_indices in rollout_engine_indices_by_rank.items()
     ]
 
 

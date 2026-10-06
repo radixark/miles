@@ -7,8 +7,8 @@ import ray
 import torch
 from sglang.srt.server_args import ServerArgs
 from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
-from miles.backends.training_utils.weight_update.protocols.shared_utils.engine_rank_assignment import (
-    EngineRankAssignment,
+from miles.backends.training_utils.weight_update.protocols.shared_utils.rollout_engine_rank_assignment import (
+    RolloutEngineRankAssignment,
 )
 from miles.utils import async_utils
 from miles.utils.workers.argv_utils import _record_field_names
@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 @dataclasses.dataclass
 class RemoteWeightInfo:
     """
-    The remote weight info related to one specific engine_rank.
+    The remote weight info related to one specific rollout engine rank.
     """
 
     session_id: str
@@ -102,29 +102,33 @@ def create_transfer_engine():
 
 def query_remote_weight_infos(
     rollout_engines: Sequence[SGLangApiClient],
-    assignments: Sequence[EngineRankAssignment],
+    assignments: Sequence[RolloutEngineRankAssignment],
 ) -> tuple[dict, dict, dict]:
     """Query remote rollout engines for weight info, session IDs, and server args."""
     remote_weight_infos_by_session_id = {}
     targets_to_session_id = {}
     session_id_to_server_args = {}
     targets_to_query = {
-        (engine_index, assignment.engine_rank)
+        (rollout_engine_ind, assignment.rollout_engine_rank)
         for assignment in assignments
-        for engine_index in assignment.engine_indices
+        for rollout_engine_ind in assignment.rollout_engine_indices
     }
 
-    for engine_ind, engine_rank in targets_to_query:
+    for rollout_engine_ind, rollout_engine_rank in targets_to_query:
         session_id, weights_info = async_utils.run(
-            rollout_engines[engine_ind].get_remote_instance_transfer_engine_info(rank=engine_rank)
+            rollout_engines[rollout_engine_ind].get_remote_instance_transfer_engine_info(rank=rollout_engine_rank)
         )
-        parallelism_info = async_utils.run(rollout_engines[engine_ind].get_parallelism_info(rank=engine_rank))
+        parallelism_info = async_utils.run(
+            rollout_engines[rollout_engine_ind].get_parallelism_info(rank=rollout_engine_rank)
+        )
 
         session_id_to_server_args[session_id] = create_server_args_from_dict(
-            async_utils.run(rollout_engines[engine_ind].get_server_info())
+            async_utils.run(rollout_engines[rollout_engine_ind].get_server_info())
         )
-        assert session_id is not None, f"Failed to get session id from rollout engine {engine_ind} rank {engine_rank}"
+        assert (
+            session_id is not None
+        ), f"Failed to get session id from rollout engine {rollout_engine_ind} rank {rollout_engine_rank}"
         remote_weight_infos_by_session_id[session_id] = (weights_info, parallelism_info)
-        targets_to_session_id[(engine_ind, engine_rank)] = session_id
+        targets_to_session_id[(rollout_engine_ind, rollout_engine_rank)] = session_id
 
     return remote_weight_infos_by_session_id, targets_to_session_id, session_id_to_server_args

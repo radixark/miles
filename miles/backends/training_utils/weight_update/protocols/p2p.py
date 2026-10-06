@@ -21,8 +21,8 @@ from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
 from miles.backends.training_utils.parallel import ParallelState
 from miles.backends.training_utils.weight_update.hf_weight_iterator import WeightUpdatePlacement
 from miles.backends.training_utils.weight_update.protocol import WeightTransferProtocol
-from miles.backends.training_utils.weight_update.protocols.shared_utils.engine_rank_assignment import (
-    assign_engine_ranks,
+from miles.backends.training_utils.weight_update.protocols.shared_utils.rollout_engine_rank_assignment import (
+    assign_rollout_engine_ranks,
 )
 from miles.utils.distributed_utils import get_gloo_group
 
@@ -151,7 +151,7 @@ class UpdateWeightP2P(WeightTransferProtocol):
           weight format conversion before transfer.
         """
         self.rollout_engines = rollout_engines
-        assignments = assign_engine_ranks(parallel_state, placement, engine_gpu_counts)
+        assignments = assign_rollout_engine_ranks(parallel_state, placement, engine_gpu_counts)
         self.is_sender = bool(assignments)
 
         if self.is_sender:
@@ -166,9 +166,11 @@ class UpdateWeightP2P(WeightTransferProtocol):
             self._shared_params_dict: dict[str, torch.Tensor] = {}
             self._shared_param_mapper: ParameterMapper | None = None
             self._replica_targets: list[_ReplicaTarget] = []
-            first_engine_rank = True
+            first_rollout_engine_rank = True
             for assignment in assignments:
-                session_id = targets_to_session_id[(assignment.engine_indices[0], assignment.engine_rank)]
+                session_id = targets_to_session_id[
+                    (assignment.rollout_engine_indices[0], assignment.rollout_engine_rank)
+                ]
                 parallelism_config = RankParallelismConfig.from_dict(
                     self.remote_weight_infos_by_session_id[session_id][1]
                 )
@@ -178,21 +180,21 @@ class UpdateWeightP2P(WeightTransferProtocol):
                     parallelism_config,
                     self.args.hf_checkpoint,
                     server_args,
-                    first_engine_rank=first_engine_rank,
+                    first_rollout_engine_rank=first_rollout_engine_rank,
                 )
-                if first_engine_rank:
+                if first_rollout_engine_rank:
                     self._shared_params_dict = dict(model_replica.named_parameters())
                     self._shared_param_mapper = ParameterMapper.from_model(model_replica)
-                    first_engine_rank = False
+                    first_rollout_engine_rank = False
 
                 remote_infos = [
                     RemoteWeightInfo(
-                        targets_to_session_id[(engine_index, assignment.engine_rank)],
+                        targets_to_session_id[(rollout_engine_ind, assignment.rollout_engine_rank)],
                         self.remote_weight_infos_by_session_id[
-                            targets_to_session_id[(engine_index, assignment.engine_rank)]
+                            targets_to_session_id[(rollout_engine_ind, assignment.rollout_engine_rank)]
                         ][0],
                     )
-                    for engine_index in assignment.engine_indices
+                    for rollout_engine_ind in assignment.rollout_engine_indices
                 ]
 
                 self._replica_targets.append(_ReplicaTarget(model_replica, remote_infos, parallelism_config))
@@ -202,7 +204,7 @@ class UpdateWeightP2P(WeightTransferProtocol):
         parallelism_config: RankParallelismConfig,
         model_path: str,
         server_args: ServerArgs,
-        first_engine_rank: bool = False,
+        first_rollout_engine_rank: bool = False,
     ) -> torch.nn.Module:
         """Create a CPU model replica that loads the right shard and skips post_load_weights."""
         load_config = LoadConfig(
@@ -239,7 +241,7 @@ class UpdateWeightP2P(WeightTransferProtocol):
         if hasattr(model, "post_load_weights"):
             model.post_load_weights = lambda *args, **kwargs: None
 
-        if first_engine_rank:
+        if first_rollout_engine_rank:
             for param in model.parameters():
                 param.data = param.data.pin_memory()
         else:
