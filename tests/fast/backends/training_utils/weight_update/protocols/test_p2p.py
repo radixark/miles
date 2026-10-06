@@ -125,6 +125,53 @@ class TestWriteThreads:
         )
 
 
+class TestWriteCompletion:
+    def test_a_failed_write_to_the_last_rollout_engine_rank_fails_the_update(
+        self, p2p_sender: Any, make_rollout_api: Any, make_bucket: Any
+    ) -> None:
+        """A failed write leaves its rollout engine rank on the old weights, so the update must not succeed."""
+        protocol = p2p_sender.make_protocol()
+        api = make_rollout_api("cell-a", gpu_count=2)
+        p2p_sender.connect(protocol, [api])
+        protocol.begin_sync(weight_version=1, iter_buckets=None)
+        p2p_sender.transfer_engine.failing_sessions = {api.session_id(1)}
+
+        protocol.send_bucket(make_bucket("hf.w"))
+
+        with pytest.raises(RuntimeError, match=api.session_id(1)):
+            protocol.after_base_weights()
+
+    def test_every_failed_write_is_named(self, p2p_sender: Any, make_rollout_api: Any, make_bucket: Any) -> None:
+        """The error names each failed rollout engine rank, not only the first one to fail."""
+        protocol = p2p_sender.make_protocol()
+        api = make_rollout_api("cell-a", gpu_count=2)
+        p2p_sender.connect(protocol, [api])
+        protocol.begin_sync(weight_version=1, iter_buckets=None)
+        p2p_sender.transfer_engine.failing_sessions = {api.session_id(0), api.session_id(1)}
+
+        protocol.send_bucket(make_bucket("hf.w"))
+
+        with pytest.raises(RuntimeError, match="2 of 2 p2p writes failed") as failure:
+            protocol.after_base_weights()
+        assert api.session_id(0) in str(failure.value)
+        assert api.session_id(1) in str(failure.value)
+
+    def test_a_write_still_running_at_the_timeout_fails_the_update(
+        self, p2p_sender: Any, make_rollout_api: Any, make_bucket: Any
+    ) -> None:
+        """A write that has not finished within --p2p-transfer-timeout fails the update instead of being forgotten."""
+        protocol = p2p_sender.make_protocol(p2p_transfer_timeout=0.1)
+        api = make_rollout_api("cell-a", gpu_count=1)
+        p2p_sender.connect(protocol, [api])
+        protocol.begin_sync(weight_version=1, iter_buckets=None)
+        p2p_sender.transfer_engine.hold(api.session_id(0))
+
+        protocol.send_bucket(make_bucket("hf.w"))
+
+        with pytest.raises(RuntimeError, match="still running after 0.1s"):
+            protocol.after_base_weights()
+
+
 class TestConnect:
     def test_ranks_are_assigned_over_the_rollout_engines_and_placement_handed_over(
         self, p2p_sender: Any, make_rollout_api: Any, make_bucket: Any

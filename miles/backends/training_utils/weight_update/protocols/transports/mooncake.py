@@ -99,7 +99,7 @@ class MooncakeTransport:
             [_nbytes(tensors_by_name[name]) for name in names],
         )
         if ret < 0:
-            raise RuntimeError(f"[P2P-Shared] Transfer failed for session {remote_shard.session_id}, error: {ret}")
+            raise RuntimeError(f"Mooncake batch_transfer_sync_write returned {ret}")
 
 
 def _query_remote_shard(
