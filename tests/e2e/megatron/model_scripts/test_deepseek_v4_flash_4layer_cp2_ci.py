@@ -10,13 +10,14 @@ compressed keys than the top-k keeps. tests/fast-gpu/test_dsv4_indexer_cp_balanc
 import dataclasses
 import os
 
-from tests.ci.ci_register import register_cuda_ci
+from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
 from tests.ci.metric_history import register_ci_gate
 from tests.e2e.megatron.model_scripts import test_deepseek_v4_flash_4layer_ci as base
 
 register_cuda_ci(
     est_time=1900, suite="stage-c-4-gpu-h200", labels=["megatron", "model-scripts"], hardware=["hopper", "blackwell"]
 )
+register_rocm_ci(est_time=700, suite="nightly-stage-c-4-gpu-mi350", labels=["megatron", "model-scripts"])
 
 register_ci_gate(metric_key="train/grad_norm")
 register_ci_gate(metric_key="train/ppo_kl")

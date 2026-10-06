@@ -37,13 +37,12 @@ The default build-args are the version surface:
 
 | Build-arg | Default | What it selects |
 |---|---|---|
-| `SGLANG_IMAGE_TAG` | `v0.5.20` | The `lmsysorg/sglang` base image, which brings torch, CUDA, Transformer Engine and Mooncake |
+| `SGLANG_IMAGE_TAG` | `v0.5.21` | The `lmsysorg/sglang` base image, which brings torch, CUDA, Transformer Engine and Mooncake |
 | `SGLANG_BRANCH` | `sglang-miles` | The branch fetched into the base image's SGLang checkout |
 | `SGLANG_COMMIT` | empty | Empty means the branch HEAD at build time; set it to freeze one commit |
 | `MEGATRON_REPO` / `MEGATRON_BRANCH` / `MEGATRON_COMMIT` | `radixark/Megatron-LM` / `miles-main` / empty | The Megatron-LM checkout; an empty commit follows branch HEAD, while a release build supplies the locked commit |
 | `MILES_COMMIT` | `main` | The Miles checkout baked into the image |
-| `ENABLE_CUDA_13` | `1` | CUDA 13; `0` selects the CUDA 12.9 path |
-| `WHEELS_REPO` | `yueming-yuan/miles-wheels` | The prebuilt-wheels repository |
+| `WHEELS_REPO` | `radixark/miles-wheels` | The prebuilt-wheels repository |
 | `WHEELS_TAG_X86` / `WHEELS_TAG_ARM64` | `cu130-torch213-x86_64` / `cu130-torch213-aarch64` | Two complete wheels releases, selected by `TARGETARCH` and installed verbatim |
 
 Two design choices are worth naming. The Dockerfile holds the defaults and `build.py` owns
@@ -93,8 +92,8 @@ fleet's image is.
 |---|---|---|
 | `cu13` | `radixark/miles:dev` | `linux/amd64` + `linux/arm64`, one manifest. This is the daily image |
 | `cu13-x86` / `cu13-aarch64` | `radixark/miles:dev` | Single-arch rebuilds of the same image |
-| `cu12-x86` | `radixark/miles:dev-cu12` | `linux/amd64`, CUDA 12.9 legacy |
 | `rocm724-mi35x` / `rocm10-mi35x` | `rocm/sgl-dev:miles-rocm*-mi35x` | Native |
+| `rocm10-mi30x` | `rocm/sgl-dev:miles-rocm10-mi30x` | Native, MI300X / MI325X |
 
 `--image-tag dev` also publishes a timestamped sibling. Scheduled retention and manual tag behavior are documented in [Docker build](/developer/ci/02-docker-build).
 
@@ -107,17 +106,14 @@ python docker/build.py --variant cu13-x86 --image-tag custom --custom-tag my-exp
 [Docker build](/developer/ci/02-docker-build) is the full reference for the build script, the
 workflow and the tag rules.
 
-Official versioned releases add `radixark/miles:v<exact-version>` for the CUDA 13 multi-arch image. Starting with v0.1.1, CUDA 12 release images are not published; previously published CUDA 12 tags remain available. Publishing a release does not move the rolling `dev` or `latest` families.
+Official versioned releases add `radixark/miles:v<exact-version>` for the CUDA 13 multi-arch image. CUDA 12 image builds are retired, including rolling builds; previously published CUDA 12 tags remain available. Publishing a release does not move the rolling `dev` or `latest` families.
 
 ## What CI moves, and what it does not
 
 This is the part that decides whether your change needs a new image. A CUDA CI job starts
 from `radixark/miles:<tag>` and then:
 
-1. Runs `pip install -r requirements.txt`, then restores the image's own cuDNN pin. The
-   restore is not cosmetic: TE's fused attention needs a newer cuDNN than torch pins, a
-   plain resolve drags it back down, and the symptom is a fused-attention backward failing
-   with `CUDNN_STATUS_BAD_PARAM`.
+1. Installs `examples/multi_lora/requirements.txt` before `requirements.txt` through `tests/ci/reconcile_dependencies.py`. It preserves installed CUDA 12/13 cuDNN versions with uv overrides because TE needs a newer cuDNN than torch's exact pin; images without cuDNN use pip. Before each install, a dry-run gate rejects replacement of installed GPU runtimes or packages with at least 100 MiB of recorded installed files, including same-version reinstalls. Update these packages in the image.
 2. Resets both dependency checkouts and fetches the selected refs. Explicit dispatch or PR-body overrides win first, `release-lock.json` commits win when no override exists, and the moving `sglang-miles` / `miles-main` heads are the final defaults.
 3. Sets `PYTHONPATH` to the Miles workspace plus both source roots.
 
@@ -125,7 +121,7 @@ It never reinstalls the three source trees, because they are editable installs. 
 
 | Your change | Needs a new image? |
 |---|---|
-| `requirements.txt` | No. The next CI run installs it. |
+| `requirements.txt` | Only when replacing an installed GPU runtime or a package with at least 100 MiB of recorded installed files; other changes install in the next CI run. |
 | A Dockerfile layer: a pinned wheel, an inline commit, a TE patch, the base image | Yes |
 | SGLang or Megatron-LM code | No. Point CI at a ref instead |
 | Miles code | No |
@@ -134,10 +130,7 @@ The ROCm stage is the exception: it takes SGLang and Megatron-LM from `rocm/sgl-
 
 ## Bumping principle
 
-**Bump where the pin lives, exactly once.** A Python dependency moves in
-`requirements.txt`; an image layer moves in `docker/Dockerfile`; a variant-only difference
-moves in `docker/build.py`. If a bump needs edits in two of the three, one of them is in the
-wrong place.
+**Bump where the pin lives.** Python dependency requirements live in `requirements.txt`; image layers live in `docker/Dockerfile`; variant-only differences live in `docker/build.py`. A requirement change that replaces an installed GPU runtime or a package with at least 100 MiB of recorded installed files also needs an image rebuild so the dependency gate can retain the new image version.
 
 **Prefer moving the branch to pinning a commit during rolling development.** `SGLANG_COMMIT` and `MEGATRON_COMMIT` are empty by default, so ordinary images follow `sglang-miles` and `miles-main` together. A versioned release is the deliberate exception: its lockfile supplies both exact commits to CI and the final image build.
 
@@ -170,7 +163,7 @@ half a day. When you need that to stop moving underneath you, pin `ci-image-tag:
 timestamped tag; the scheduled prune keeps every timestamped tag for at least 14 days.
 
 **The ROCm images move daily too.** The sgl-project/sglang nightlies rebuild the undated
-`rocm/sgl-dev:miles-rocm*-mi35x` tags from Miles `main` every day and publish a dated
+`rocm/sgl-dev:miles-rocm*-mi35x` and `miles-rocm10-mi30x` tags from Miles `main` every day and publish a dated
 `-YYYYMMDD` sibling; an out-of-band rebuild is a `workflow_dispatch` on the variant you want.
 
 ## After a bump, the usual suspects

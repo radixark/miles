@@ -6,7 +6,7 @@ from argparse import Namespace
 import pytest
 from pydantic import ValidationError
 
-from miles.backends.megatron_utils.ft.types import TrainStepOutcome, TrainStepOutput
+from miles.backends.training_utils.types import TrainStepOutcome, TrainStepOutput
 from miles.ray.specs.train import TRAINER_CONCURRENCY_GROUPS
 from miles.ray.train_actor import TrainRayActor
 from miles.utils.ft_utils.indep_dp import IndepDPInfo

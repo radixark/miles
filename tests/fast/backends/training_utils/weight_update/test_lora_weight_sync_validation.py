@@ -191,7 +191,7 @@ class TestFlattenedTensorBucketRoundTrip:
           - miles side: stop trusting ``supports_multi_dtypes`` in
             ``_send_to_colocated_engine`` and always group by dtype (matches
             the FSDP path's existing implementation in
-            ``fsdp_utils/update_weight_utils.py``).
+            ``fsdp_utils/hf_weight_iterator.py``).
           - sglang side: actually align ``storage_offset`` in reconstruction.
 
         Until one side is fixed, this test asserts the current observed

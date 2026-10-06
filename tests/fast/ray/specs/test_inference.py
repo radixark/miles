@@ -259,6 +259,8 @@ class TestComputeSpecSessionServer:
         args = make_args(
             use_session_server="v1",
             hf_checkpoint="/fake/model",
+            rollout_top_logprobs_num=0,
+            rollout_sampling_logprobs_mode="selected",
             session_server_workers=2,
             sglang_router_ip=None,
             sglang_router_port=None,
@@ -467,7 +469,11 @@ class TestInferenceEngineEnvVars:
 
         def get_sglang_env(call_args: Namespace) -> dict[str, str]:
             get_sglang_env_calls.append(call_args)
-            return {"DUMPER_SERVER_PORT": "reuse", "DUMPER_NON_INTRUSIVE_MODE": "all"}
+            return {
+                "DUMPER_SERVER_PORT": "reuse",
+                "DUMPER_NON_INTRUSIVE_MODE": "all",
+                "SGLANG_RETURN_ORIGINAL_LOGPROB": "1",
+            }
 
         fake_dumper_utils = SimpleNamespace(get_sglang_env=get_sglang_env)
         import miles.utils as miles_utils
@@ -484,6 +490,13 @@ class TestInferenceEngineEnvVars:
         assert get_sglang_env_calls == [args]
         assert envs["DUMPER_SERVER_PORT"] == "reuse"
         assert envs["DUMPER_NON_INTRUSIVE_MODE"] == "all"
+        assert envs["SGLANG_RETURN_ORIGINAL_LOGPROB"] == "0"
+
+    @pytest.mark.parametrize("loss_type", ["policy_loss", "score_centering"])
+    def test_training_enforces_sampler_logprobs_on_workers(self, monkeypatch, loss_type):
+        monkeypatch.setenv("SGLANG_RETURN_ORIGINAL_LOGPROB", "1")
+        envs = compute_inference_engine_env_vars(make_args(loss_type=loss_type))
+        assert envs["SGLANG_RETURN_ORIGINAL_LOGPROB"] == "0"
 
     def test_a_process_level_override_wins_over_the_built_in_default(self, monkeypatch):
         """The launcher's environment is how operators retune sglang per cluster, so defaults must not overwrite it."""

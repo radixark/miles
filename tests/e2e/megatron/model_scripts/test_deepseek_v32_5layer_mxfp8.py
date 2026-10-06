@@ -125,7 +125,7 @@ def execute():
         "--apply-chat-template "
         "--rollout-shuffle "
         "--rm-type deepscaler "
-        "--num-rollout 3 "
+        "--num-rollout 2 "
         "--rollout-batch-size 32 "
         "--n-samples-per-prompt 8 "
         "--rollout-max-response-len 8192 "
@@ -220,7 +220,6 @@ def execute():
 
     misc_args = (
         "--use-rollout-routing-replay "
-        "--freeze-indexer "
         "--sglang-disable-shared-experts-fusion "
         "--attention-dropout 0.0 "
         "--hidden-dropout 0.0 "

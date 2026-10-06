@@ -26,10 +26,18 @@ from megatron.training.global_vars import get_args
 from megatron.training.training import get_model
 
 from miles.backends.megatron_utils.ft.indep_dp import allreduce_grads_and_losses_across_replicas
-from miles.backends.megatron_utils.ft.types import TrainStepOutcome
 from miles.backends.megatron_utils.local_weight_checksum import dump_local_weight_checksums
 from miles.backends.megatron_utils.optimizer_state_reset import reset_optimizer_states
-from miles.backends.training_utils.sampling_mask import get_rollout_sampling_masks
+from miles.backends.training_utils.data.rollout import DataIterator, get_batch
+from miles.backends.training_utils.data.sampling_mask import get_rollout_sampling_masks
+from miles.backends.training_utils.loss.objective import loss_function
+from miles.backends.training_utils.metrics.checks import check_grad_norm, check_kl
+from miles.backends.training_utils.metrics.log_utils import (
+    aggregate_forward_results,
+    aggregate_train_losses,
+    log_train_step,
+)
+from miles.backends.training_utils.types import TrainStepOutcome
 from miles.backends.training_utils.weight_update.snapshot_publisher import SnapshotPublisher
 from miles.utils.audit_utils.witness.allocator import WitnessInfo
 from miles.utils.audit_utils.witness.module import witness_dump_and_clear_stale
@@ -41,10 +49,6 @@ from miles.utils.tracking_utils.structured_log import log_structured
 from miles_plugins.lora import load_lora_adapter_hf, wrap_model_provider_with_lora
 
 from ...utils.misc import filter_keys
-from ..training_utils.ci_utils import check_grad_norm, check_kl
-from ..training_utils.data import DataIterator, get_batch
-from ..training_utils.log_utils import aggregate_forward_results, aggregate_train_losses, log_train_step
-from ..training_utils.loss import loss_function
 from ..training_utils.parallel import get_parallel_state
 from .checkpoint import load_checkpoint, save_checkpoint, save_checkpoint_with_lora
 from .ci_utils import (
@@ -420,7 +424,7 @@ def run_forward_backward_pass(
 
     sampling_mask_keys = (
         ("rollout_sampling_mask_ids", "rollout_sampling_mask_offsets")
-        if args.use_sampling_support_replay and args.loss_type == "policy_loss"
+        if args.use_sampling_support_replay and args.loss_type in ("policy_loss", "score_centering")
         else ()
     )
 
@@ -457,6 +461,9 @@ def run_forward_backward_pass(
                 "advantages",
                 "returns",
                 "rollout_log_probs",
+                "rollout_topk_token_ids",
+                "rollout_topk_lengths",
+                "rollout_topk_log_probs",
                 "max_seq_lens",
                 "witness_ids",
                 "opd_reverse_kl",
@@ -509,7 +516,9 @@ def run_forward_backward_pass(
             if (x := batch["multimodal_train_inputs"]) is not None:
                 forward_kwargs.update(x)
 
-            output_tensor = model(**forward_kwargs, fp32_output=args.loss_type not in ("policy_loss", "sft_loss"))
+            output_tensor = model(
+                **forward_kwargs, fp32_output=args.loss_type not in ("policy_loss", "sft_loss", "score_centering")
+            )
 
         for m, old_stage in zip(all_replay_managers, old_stages, strict=True):
             m.stage = old_stage

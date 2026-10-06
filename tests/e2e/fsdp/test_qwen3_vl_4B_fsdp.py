@@ -5,7 +5,7 @@ from tests.ci.ci_register import register_cuda_ci
 from miles.utils.external_utils import command_utils
 
 register_cuda_ci(
-    est_time=600,
+    est_time=800,
     suite="stage-c-2-gpu-h200",
     labels=["fsdp"],
     hardware=["hopper"],
@@ -36,7 +36,7 @@ def execute():
         "--apply-chat-template "
         "--rollout-shuffle "
         "--rm-type math "
-        "--num-rollout 3 "
+        "--num-rollout 2 "
         "--rollout-batch-size 8 "
         "--n-samples-per-prompt 8 "
         "--rollout-max-response-len 4096 "

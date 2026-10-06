@@ -7,7 +7,9 @@ from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
 
 from miles.utils.external_utils import command_utils
 
-register_cuda_ci(est_time=300, suite="stage-c-4-gpu-h200", labels=["short"], hardware=["hopper", "blackwell"])
+register_cuda_ci(
+    est_time=300, suite="stage-c-4-gpu-h200", labels=["short"], hardware=["hopper", "blackwell"], nightly=True
+)
 register_rocm_ci(est_time=300, suite="nightly-stage-c-4-gpu-mi350", labels=["short"])
 
 TIGHT_DEVICE_MEMORY = command_utils.get_bool_env_var("MILES_TEST_TIGHT_DEVICE_MEMORY", "1")

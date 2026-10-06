@@ -1,7 +1,7 @@
 import os
 
 from scripts.run_inkling import _MODEL_REGISTRY, ScriptArgs, _train
-from tests.ci.ci_register import register_cuda_ci
+from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
 from tests.ci.metric_history import register_ci_gate
 
 
@@ -15,6 +15,11 @@ register_cuda_ci(
     suite="stage-c-4-gpu-h200",
     labels=["megatron", "model-scripts", "lora"],
     hardware=["hopper", "blackwell"],
+)
+register_rocm_ci(
+    est_time=500,
+    suite="nightly-stage-c-4-gpu-mi350",
+    labels=["megatron", "model-scripts", "lora"],
 )
 
 register_ci_gate(metric_key="train/grad_norm")
@@ -44,7 +49,8 @@ def _args() -> ScriptArgs:
             "--check-weight-update-skip-list visual. audio. ._w1_delta ._a_cat "
             "--ci-disable-logprobs-checker "
             "--check-lora-weight-equal "
-        ),
+        )
+        + ("--sglang-attention-backend triton " if os.getenv("MILES_HARDWARE_PLATFORM") == "rocm" else ""),
     )
 
 

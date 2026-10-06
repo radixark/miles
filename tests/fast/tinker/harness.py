@@ -2,7 +2,7 @@
 
 import asyncio
 
-from miles.backends.training_utils.checkpoint_io import write_checkpoint_dir
+from miles.backends.training_utils.checkpoint.io import write_checkpoint_dir
 from miles.tinker.core.future import DONE, PENDING, RequestFuture
 from miles.tinker.core.service import TinkerService
 from miles.tinker.core.types import Command, CommandOp, GatewayConfig

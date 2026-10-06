@@ -86,7 +86,7 @@ class ScriptArgs(command_utils.ExecuteTrainConfig):
     # Disaggregated fully-async settings
     train_num_nodes: int = 1
     pause_generation_mode: Literal["in_place", "retract"] = "in_place"
-    update_weight_transfer_mode: Literal["broadcast", "p2p"] = "broadcast"
+    update_weight_transfer_mode: Literal["broadcast", "broadcast_packed", "p2p"] = "broadcast"
     accumulate_allreduce_grads_in_fp32: bool = False
     max_tokens_per_gpu: int = 8192
     optimizer_cpu_offload: bool = True

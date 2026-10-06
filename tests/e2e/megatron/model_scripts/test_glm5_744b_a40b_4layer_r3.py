@@ -17,7 +17,7 @@ from tests.ci.metric_history import register_ci_gate
 # side consumes the per-layer topk emitted by SGLang.
 
 register_cuda_ci(
-    est_time=1400,
+    est_time=1700,
     suite="stage-c-2-gpu-h200",
     labels=["megatron", "model-scripts", "replay"],
     hardware=["hopper", "blackwell"],

@@ -58,8 +58,7 @@ def router_env():
         choice["meta_info"] = {
             "output_token_logprobs": output_token_logprobs,
             "completion_tokens": len(output_token_logprobs),
-            # R3 replay payloads: must reach the session record but never the
-            # client-facing chat response (see _strip_replay_payloads).
+            # Replay payloads stay in the record along with the rest of meta_info.
             "routed_experts": [[0, 1], [2, 3]],
             "indexer_topk": [[4], [5]],
         }
@@ -282,7 +281,7 @@ class TestSessionProxy:
         assert resp.status_code == 502
         assert "assistant message content is None" in resp.json()["error"]
 
-    def test_chat_response_strips_replay_payloads_but_record_keeps_them(self, router_env):
+    def test_chat_response_omits_meta_info_but_record_keeps_it(self, router_env):
         session_id = requests.post(f"{router_env.url}/sessions", timeout=5.0).json()["session_id"]
 
         payload = {
@@ -295,16 +294,19 @@ class TestSessionProxy:
             timeout=10.0,
         )
         assert resp.status_code == 200
-        client_meta = resp.json()["choices"][0]["meta_info"]
-        assert "routed_experts" not in client_meta
-        assert "indexer_topk" not in client_meta
-        # Stripping must not swallow the rest of meta_info.
-        assert "output_token_logprobs" in client_meta
+        client_response = resp.json()
+        client_choice = client_response["choices"][0]
+        assert "meta_info" not in client_choice
 
         record = requests.get(f"{router_env.url}/sessions/{session_id}", timeout=5.0).json()["records"][0]
         record_meta = record["response"]["choices"][0]["meta_info"]
         assert record_meta["routed_experts"] == [[0, 1], [2, 3]]
         assert record_meta["indexer_topk"] == [[4], [5]]
+        assert record_meta["output_token_logprobs"]
+        assert record_meta["completion_tokens"] == len(record_meta["output_token_logprobs"])
+        assert client_choice["message"] == record["response"]["choices"][0]["message"]
+        assert client_choice["logprobs"] == record["response"]["choices"][0]["logprobs"]
+        assert client_response["usage"] == record["response"]["usage"]
 
 
 class TestChatFakeStreaming:

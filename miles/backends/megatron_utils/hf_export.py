@@ -10,7 +10,7 @@ from megatron.core.distributed import DistributedDataParallel as DDP
 
 from miles.backends.megatron_utils.lora.utils import is_lora_model
 from miles.backends.megatron_utils.named_weights import named_params_and_buffers
-from miles.backends.training_utils.checkpoint_io import write_checkpoint_dir
+from miles.backends.training_utils.checkpoint.io import write_checkpoint_dir
 from miles.backends.training_utils.parallel import get_parallel_state
 from miles.backends.training_utils.weight_update.snapshot_publisher import SnapshotPublisher
 from miles.utils.distributed_utils import get_gloo_group

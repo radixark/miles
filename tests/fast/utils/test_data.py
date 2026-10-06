@@ -5,7 +5,7 @@ from typing import Any
 
 import pytest
 
-from miles.backends.megatron_utils.ft.types import TrainStepOutcome, TrainStepOutput
+from miles.backends.training_utils.types import TrainStepOutcome, TrainStepOutput
 from miles.utils import object_store
 from miles.utils.data import Dataset, RolloutDataPack, remove_rollout_data_refs, remove_train_output_refs
 from miles.utils.object_store import (

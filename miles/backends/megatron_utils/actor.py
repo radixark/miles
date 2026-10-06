@@ -1,7 +1,6 @@
 import atexit
 import logging
 import os
-import random
 import shutil
 from contextlib import ExitStack, nullcontext
 
@@ -10,11 +9,27 @@ import torch.distributed as dist
 from megatron.training.async_utils import maybe_finalize_async_save
 from torch_memory_saver import torch_memory_saver
 
-from miles.backends.megatron_utils.ft.types import TrainStepOutput
 from miles.backends.megatron_utils.hf_export import save_hf_model
 from miles.backends.megatron_utils.lora.utils import is_lora_enabled, lora_rollout_enabled
 from miles.backends.megatron_utils.rematerialize_utils import build_main_cast_context
 from miles.backends.megatron_utils.update_weight.hf_weight_iterator import get_hf_weight_iterator
+from miles.backends.training_utils.checkpoint.tracker import read_checkpoint_tracker_iteration
+from miles.backends.training_utils.data.rollout import (
+    DataIterator,
+    get_data_iterator,
+    get_num_rollouts,
+    get_rollout_data,
+)
+from miles.backends.training_utils.loss.objective import (
+    compute_advantages_and_returns,
+    get_log_probs_and_entropy,
+    get_values,
+    log_train_advantage_computation_event,
+)
+from miles.backends.training_utils.metrics import train_dump
+from miles.backends.training_utils.metrics.log_utils import log_cpu_memory, log_perf_data, log_rollout_data
+from miles.backends.training_utils.replay.data import fill_replay_data, register_replay_list_sequential
+from miles.backends.training_utils.types import TrainStepOutput
 from miles.backends.training_utils.weight_update.hf_weight_iterator import WeightUpdatePlacement
 from miles.backends.training_utils.weight_update.snapshot_publisher import SnapshotPublisher
 from miles.backends.training_utils.weight_update.updater import WeightUpdater
@@ -22,18 +37,16 @@ from miles.dashboard import hooks as dashboard_hooks
 from miles.ray.rollout.inference_controller import UpdatableEngines
 from miles.ray.specs.train import compute_trainer_pool_id
 from miles.ray.train_actor import TrainRayActor
-from miles.utils import async_utils, object_store, train_dump_utils
+from miles.utils import object_store
 from miles.utils.argparse_utils import inplace_modify_args
 from miles.utils.audit_utils.event_logger.logger import event_logger_context
 from miles.utils.audit_utils.witness.allocator import WitnessInfo
 from miles.utils.context_utils import with_defer
 from miles.utils.distributed_utils import get_gloo_group
 from miles.utils.ft_utils.indep_dp import IndepDPInfo
-from miles.utils.hf_utils.config import load_hf_config
 from miles.utils.lora.utils import build_lora_config, is_multi_lora_enabled
 from miles.utils.memory_utils import clear_memory, print_memory
 from miles.utils.object_store import StoreObjectRef, ValueSpec
-from miles.utils.processing_utils import load_tokenizer
 from miles.utils.reloadable_process_group import destroy_process_groups, monkey_patch_torch_dist, reload_process_groups
 from miles.utils.replay_base import all_replay_managers, routing_replay_manager
 from miles.utils.test_utils.ft_test_actions import FTTestActionActorExecutor
@@ -46,18 +59,8 @@ from miles.utils.workers.rpc.common.wire_types import Pickled
 
 from ...utils.profile_utils import TrainProfiler
 from ...utils.tensor_backper import TensorBackuper
-from ..training_utils.data import DataIterator, get_data_iterator, get_num_rollouts, get_rollout_data
-from ..training_utils.log_utils import log_cpu_memory, log_perf_data, log_rollout_data
-from ..training_utils.loss import (
-    compute_advantages_and_returns,
-    get_log_probs_and_entropy,
-    get_values,
-    log_train_advantage_computation_event,
-)
 from ..training_utils.parallel import get_parallel_state
-from ..training_utils.replay_data import fill_replay_data, register_replay_list_sequential
 from .checkpoint import load_checkpoint
-from .checkpoint_tracker import read_checkpoint_tracker_iteration
 from .ft.checkpoint_transfer import recv_ckpt
 from .ft.checkpoint_transfer import send_ckpt as _send_ckpt
 from .ft.in_memory_checkpoint import InMemoryCheckpointManager
@@ -156,14 +159,7 @@ class MegatronTrainRayActor(TrainRayActor):
             )
         self.prof = TrainProfiler(args)
 
-        # read config and tokenizer serialized to prevent concurrent writing bug.
-        for i in range(dist.get_world_size()):
-            if i == dist.get_rank():
-                self.hf_config = load_hf_config(args.hf_checkpoint)
-                self.tokenizer = load_tokenizer(
-                    self.args.hf_checkpoint, chat_template_path=self.args.chat_template_path, trust_remote_code=True
-                )
-            dist.barrier(group=get_gloo_group())
+        self.load_hf_assets()
 
         self.train_parallel_config = (
             {}
@@ -781,7 +777,7 @@ class MegatronTrainRayActor(TrainRayActor):
 
             self.prof.step(rollout_id=rollout_id)
 
-        train_dump_utils.save_debug_train_data(self.args, rollout_id=rollout_id, rollout_data=rollout_data)
+        train_dump.save_debug_train_data(self.args, rollout_id=rollout_id, rollout_data=rollout_data)
 
         for m in all_replay_managers:
             if m.enabled:
@@ -894,27 +890,17 @@ class MegatronTrainRayActor(TrainRayActor):
 
         assert self.weight_updater is not None, "weight update requires a weight updater"
         rollout_engines = info.rollout_engines
-        snapshot_cell_id_to_hashes = info.snapshot_cell_id_to_hashes
-        engine_gpu_counts = info.engine_gpu_counts
-        engine_gpu_offsets = info.engine_gpu_offsets
-        del info
 
         process_groups_are_temporary = self.args.offload_train and self._asleep
         if process_groups_are_temporary:
             reload_process_groups()
 
-        needs_reconnect = self.weight_updater.conn_status.needs_reconnect(snapshot_cell_id_to_hashes)
+        needs_reconnect = self.weight_updater.conn_status.needs_reconnect(info.snapshot_cell_id_to_hashes)
         if needs_reconnect:
             # Connection setup also allocates CUDA tensors (e.g. NCCL object
             # collectives). Do not reuse unmapped, offloaded allocator blocks.
             with torch_memory_saver.disable() if self.args.offload_train else nullcontext():
-                self.weight_updater.connect_rollout_engines(
-                    rollout_engines,
-                    engine_gpu_counts=engine_gpu_counts,
-                    engine_gpu_offsets=engine_gpu_offsets,
-                )
-                self.weight_updater.conn_status.mark_reconnected(snapshot_cell_id_to_hashes)
-                dist.barrier(group=get_gloo_group())
+                self.weight_updater.reconnect(info)
 
         if self.args.debug_skip_weight_update:
             if dist.get_rank() == 0:
@@ -930,13 +916,8 @@ class MegatronTrainRayActor(TrainRayActor):
             self.weight_updater.update_weights()
             print_memory("after update_weights")
 
-            if self.args.ci_test and len(rollout_engines) > 0 and not is_lora_enabled(self.args):
-                engine = random.choice(rollout_engines)
-                engine_version = async_utils.run(engine.get_weight_version())
-                if str(engine_version) != str(self.weight_updater.weight_version):
-                    raise RuntimeError(
-                        f"Weight version mismatch! Engine: {engine_version}, Updater: {self.weight_updater.weight_version}"
-                    )
+            if self.args.ci_test and not is_lora_enabled(self.args):
+                self.weight_updater.verify_engine_version(rollout_engines)
 
             if getattr(self.args, "keep_old_actor", False):
                 if self.args.update_weights_interval == 1:

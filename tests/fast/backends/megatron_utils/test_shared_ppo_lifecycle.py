@@ -11,8 +11,8 @@ import pytest
 import ray
 import torch
 
-from miles.backends.megatron_utils.ft.types import TrainStepOutcome, TrainStepOutput
-from miles.backends.training_utils.conn_status import ConnStatusManager
+from miles.backends.training_utils.types import TrainStepOutcome, TrainStepOutput
+from miles.backends.training_utils.weight_update.conn_status import ConnStatusManager
 from miles.utils import object_store
 from miles.utils.ray_utils import Box
 from miles.utils.replay_base import IndexerReplayManager, RoutingReplayManager
@@ -386,7 +386,7 @@ def _patch_actor_reuse_dependencies(actor_module, monkeypatch, *, num_microbatch
     monkeypatch.setattr(actor_module, "log_train_advantage_computation_event", Mock())
     monkeypatch.setattr(actor_module, "log_rollout_data", Mock())
     monkeypatch.setattr(actor_module, "log_perf_data", Mock())
-    monkeypatch.setattr(actor_module.train_dump_utils, "save_debug_train_data", Mock())
+    monkeypatch.setattr(actor_module.train_dump, "save_debug_train_data", Mock())
     monkeypatch.setattr(actor_module, "inverse_timer", passthrough_timer)
     monkeypatch.setattr(actor_module, "timer", passthrough_timer)
     monkeypatch.setattr(
@@ -627,7 +627,7 @@ def test_critic_output_roundtrips_into_actor_external_data(actor_module: Any, mo
     monkeypatch.setattr(actor_module, "log_rollout_data", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(actor_module, "log_train_advantage_computation_event", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(actor_module, "log_perf_data", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(actor_module.train_dump_utils, "save_debug_train_data", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(actor_module.train_dump, "save_debug_train_data", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(actor_module.torch.cuda, "current_device", lambda: torch.device("cpu"))
     critic_values = [torch.tensor([1.0, 2.0]), torch.tensor([3.0])]
 
@@ -715,6 +715,23 @@ class _RecordingWeightUpdater:
                 engine_gpu_offsets=engine_gpu_offsets,
             )
         )
+
+    def reconnect_if_needed(self, info: Any) -> bool:
+        if not self.conn_status.needs_reconnect(info.snapshot_cell_id_to_hashes):
+            return False
+        self.reconnect(info)
+        return True
+
+    def reconnect(self, info: Any) -> None:
+        self.connect_rollout_engines(
+            info.rollout_engines,
+            engine_gpu_counts=info.engine_gpu_counts,
+            engine_gpu_offsets=info.engine_gpu_offsets,
+        )
+        self.conn_status.mark_reconnected(info.snapshot_cell_id_to_hashes)
+
+    def verify_engine_version(self, rollout_engines: list[Any]) -> None:
+        pass
 
     def update_weights(self) -> None:
         self.update_weights_calls += 1

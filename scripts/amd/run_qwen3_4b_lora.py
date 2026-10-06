@@ -1,4 +1,4 @@
-"""Qwen3-4B GRPO LoRA training script for AMD (MI350X / MI355X).
+"""Qwen3-4B GRPO LoRA training script for AMD (MI300X / MI325X / MI350X / MI355X).
 
 This is the AMD counterpart of
 ``examples/lora/run-qwen3-4b-megatron-lora-result.sh``. It keeps the validated
@@ -10,7 +10,7 @@ Megatron checkpoint is required. ``full-train`` downloads the checkpoint and dat
 before submitting the training job.
 
 Args:
-  --hardware: MI350X or MI355X, which fixes the default GPU count per node.
+  --hardware: MI300X, MI325X, MI350X or MI355X, which fixes the default GPU count per node.
   --num-gpus-per-node: Override the GPU count when only some devices are visible.
   --wandb-team: W&B entity (personal account or team); needed if the API key has no
     default entity.
@@ -42,7 +42,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     run_id: str = U.create_run_id()
     model_name: str = "Qwen3-4B"
     megatron_model_type: str = "qwen3-4B"
-    hardware: Literal["auto", "MI350X", "MI355X"] = "auto"
+    hardware: Literal["auto", "MI300X", "MI325X", "MI350X", "MI355X"] = "auto"
     num_gpus_per_node: int | None = None
 
     model_dir: str = "/root/models"

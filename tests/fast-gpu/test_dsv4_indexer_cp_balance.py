@@ -19,7 +19,7 @@ import sys
 
 import torch
 import torch.distributed as dist
-from tests.ci.ci_register import register_cuda_ci
+from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
 
 from miles_plugins.models.deepseek_v4.ops.cp_row_balance import RowExchange
 from miles_plugins.models.deepseek_v4.ops.kernel.tilelang_indexer_fwd import (
@@ -36,6 +36,7 @@ register_cuda_ci(
     labels=["precision", "megatron"],
     hardware=["hopper", "blackwell"],
 )
+register_rocm_ci(est_time=60, suite="nightly-stage-c-4-gpu-mi350", labels=["precision", "megatron"])
 
 SEQLEN_GLOBAL = 16384
 RATIO = 4

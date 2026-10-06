@@ -42,6 +42,7 @@ TRAINER_CONTROLLER_WORKER_CLASS = "miles.ray.train.group.TrainerController"
 _TRAINER_ACTOR_CLASSES = {
     "megatron": "miles.backends.megatron_utils.actor.MegatronTrainRayActor",
     "fsdp": "miles.backends.fsdp_utils.actor.FSDPTrainRayActor",
+    "torchtitan": "miles.backends.torchtitan_utils.actor.TorchtitanTrainRayActor",
 }
 
 _NUM_GPUS_PER_TRAINER_WORKER = 0.4

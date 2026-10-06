@@ -4,7 +4,7 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from miles.backends.training_utils.loss_hub import logit_processors
+from miles.backends.training_utils.loss.hub import logit_processors
 
 
 class TestGetLogProbsAndEntropy:

@@ -166,8 +166,11 @@ class BaseCommandBackend(ABC):
             train_script = f"{repo_base_dir}/{train_script}"
 
         train_argv = shlex.split(train_args)
-        train_backend_fsdp = ArgvManipulator.get_effective(train_argv, "--train-backend") == "fsdp"
-        assert train_backend_fsdp == (megatron_model_type is None)
+        train_backend_megatron = ArgvManipulator.get_effective(train_argv, "--train-backend") in (None, "megatron")
+        assert train_backend_megatron == (megatron_model_type is not None), (
+            f"megatron_model_type must be set for a Megatron run and omitted otherwise "
+            f"(megatron={train_backend_megatron}, megatron_model_type={megatron_model_type!r})"
+        )
         _assert_train_args_name_no_other_backend(train_argv, cluster_backend=config.cluster_backend.value)
         _assert_train_args_name_no_other_deploy_component(train_argv, deploy_component=config.deploy_component.value)
         train_args = f"{train_args} {_DEPLOY_COMPONENT_FLAG} {config.deploy_component.value}"
@@ -183,7 +186,7 @@ class BaseCommandBackend(ABC):
                 num_gpus_per_node=num_gpus_per_node,
                 megatron_model_type=megatron_model_type,
                 train_script=train_script,
-                train_backend_fsdp=train_backend_fsdp,
+                train_backend_fsdp=not train_backend_megatron,
                 extra_env_vars=extra_env_vars if extra_env_vars is not None else {},
                 megatron_path=megatron_path,
                 before_ray_job_submit=before_ray_job_submit,

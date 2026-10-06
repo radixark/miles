@@ -13,7 +13,7 @@ from tests.fast.fixtures.driver_fakes import (
     FakeWorkerManager,
 )
 
-from miles.backends.megatron_utils.ft.types import TrainStepOutcome, TrainStepOutput
+from miles.backends.training_utils.types import TrainStepOutcome, TrainStepOutput
 from miles.ray import placement_group as placement_group_mod
 from miles.ray import wiring
 from miles.utils import object_store

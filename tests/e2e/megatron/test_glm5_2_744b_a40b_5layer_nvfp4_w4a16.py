@@ -7,7 +7,7 @@ from tests.ci.ci_register import register_cuda_ci
 from miles.utils.external_utils import command_utils
 
 register_cuda_ci(
-    est_time=3600,
+    est_time=800,
     suite="stage-c-8-gpu-b200",
     labels=["megatron", "model-scripts"],
     hardware=["blackwell"],
@@ -16,6 +16,8 @@ register_cuda_ci(
 MODEL_ORG = "Pinaster"
 MODEL_NAME = "GLM-5.2_5layer"
 MODEL_TYPE = "glm5.2-744B-A40B_5layer"
+MEGATRON_MODEL_NAME = f"{MODEL_NAME}-megatron-dsa"
+DSA_ARGS = "--megatron-to-hf-mode raw --dsa-impl megatron --dsa-kernel-backend cudnn "
 NUM_GPUS = 8
 ACTOR_NUM_GPUS = 4
 ROLLOUT_NUM_GPUS = 4
@@ -107,7 +109,7 @@ def prepare():
     U.hf_download_dataset("zhuzilin/dapo-math-17k", data_dir=DATA_DIR)
 
     _validate_glm_checkpoint()
-    U.exec_command_cpu(f"rm -rf {MODEL_DIR}/{MODEL_NAME}-NVFP4 {MODEL_DIR}/{MODEL_NAME}_torch_dist")
+    U.exec_command_cpu(f"rm -rf {MODEL_DIR}/{MODEL_NAME}-NVFP4 {MODEL_DIR}/{MEGATRON_MODEL_NAME}_torch_dist")
 
     U.exec_command_gpu(
         f"python tools/convert_hf_to_nvfp4.py "
@@ -117,10 +119,11 @@ def prepare():
     )
 
     U.convert_checkpoint(
-        model_name=MODEL_NAME,
+        model_name=MEGATRON_MODEL_NAME,
         megatron_model_type=MODEL_TYPE,
         num_gpus_per_node=1,
         extra_args=(
+            f"{DSA_ARGS}"
             "--tensor-model-parallel-size 1 "
             "--expert-tensor-parallel-size 1 "
             "--pipeline-model-parallel-size 1 "
@@ -139,7 +142,9 @@ def execute():
     os.environ.setdefault("RAY_TMPDIR", "/tmp/ray")
     te_precision_config_path = command_utils.encode_pseudo_file(TE_PRECISION_CONFIG)
 
-    ckpt_args = f"--hf-checkpoint {MODEL_DIR}/{MODEL_NAME}-NVFP4/ " f"--ref-load {MODEL_DIR}/{MODEL_NAME}_torch_dist "
+    ckpt_args = (
+        f"--hf-checkpoint {MODEL_DIR}/{MODEL_NAME}-NVFP4/ " f"--ref-load {MODEL_DIR}/{MEGATRON_MODEL_NAME}_torch_dist "
+    )
 
     rollout_args = (
         f"--prompt-data {DATA_DIR}/dapo-math-17k/dapo-math-17k.jsonl "
@@ -157,12 +162,11 @@ def execute():
     )
 
     perf_args = (
-        f"--tensor-model-parallel-size {ACTOR_NUM_GPUS} "
-        "--sequence-parallel "
+        "--tensor-model-parallel-size 1 "
         # Let the STE propagate gradients to the original expert parameters.
         "--no-gradient-accumulation-fusion "
         "--pipeline-model-parallel-size 1 "
-        "--context-parallel-size 1 "
+        f"--context-parallel-size {ACTOR_NUM_GPUS} "
         f"--expert-model-parallel-size {ACTOR_NUM_GPUS} "
         "--expert-tensor-parallel-size 1 "
         "--recompute-granularity full "
@@ -234,6 +238,8 @@ def execute():
     )
 
     misc_args = (
+        f"{DSA_ARGS}"
+        "--qkv-format thd "
         "--use-rollout-routing-replay "
         "--use-miles-router "
         "--sglang-disable-shared-experts-fusion "
@@ -243,8 +249,9 @@ def execute():
         "--attention-softmax-in-fp32 "
         "--moe-router-use-torch-mm "
         "--attention-backend flash "
-        "--allgather-cp "
+        "--cp-comm-type allgather "
         "--miles-dsa-topk-backend flashinfer "
+        "--update-weight-transfer-mode broadcast_packed "
         f"--update-weight-buffer-size {2 * 1024 ** 3} "
         "--actor-num-nodes 1 "
         f"--actor-num-gpus-per-node {ACTOR_NUM_GPUS} "

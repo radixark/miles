@@ -4,7 +4,7 @@ import pytest
 import torch
 from megatron.core.fusions import fused_cross_entropy
 
-from miles.backends.training_utils.loss_hub.math_utils import compute_log_probs
+from miles.backends.training_utils.loss.hub.math_utils import compute_log_probs
 
 
 def _record_fused_calls(monkeypatch: pytest.MonkeyPatch) -> list[tuple[bool, bool]]:

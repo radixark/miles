@@ -15,6 +15,8 @@ description: Launch recipe for DeepSeek-V3.2 (671 B total / 37 B active) — BF1
 
 In miles, V3.2 shares its DSA attention implementation with the GLM-5 family — both select it through `--spec miles_plugins.models.glm5.glm5 get_glm5_spec`. Weight import and export run through `DeepseekV32Bridge` (`miles_plugins/mbridge/deepseek_v32.py`), which adds the indexer tensors on top of the V3 bridge. Training is BF16, so the FP8 checkpoint is cast up before conversion.
 
+The raw path also supports Megatron's native DSA through `--dsa-impl megatron --dsa-kernel-backend cudnn`; `--dsa-impl miles` remains the default. See the shared [DSA training implementation selector](/models/glm/glm5#33-dsa-training-implementation) for conversion flags and checkpoint compatibility.
+
 ## 2. Supported Variants
 
 | Model | Active / Total | HF ID |

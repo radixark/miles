@@ -3,6 +3,7 @@ from typing import Any
 
 import torch
 
+from miles.rollout.generate_utils.rollout_topk_logprobs import validate_rollout_topk_logprobs_sample
 from miles.utils import object_store
 from miles.utils.dp_schedule import build_dp_schedule, has_full_schedule_config
 from miles.utils.lora.utils import is_multi_lora_enabled
@@ -18,6 +19,9 @@ ROLLOUT_DATA_TENSOR_DTYPES = {
     "target_tokens": "int32",
     "loss_masks": "int32",
     "rollout_log_probs": "float32",
+    "rollout_topk_token_ids": "int32",
+    "rollout_topk_lengths": "int32",
+    "rollout_topk_log_probs": "float32",
     "rollout_sampling_mask_ids": "int32",
     "rollout_sampling_mask_offsets": "int64",
     "teacher_log_probs": "float32",
@@ -115,6 +119,20 @@ def convert_samples_to_train_data(
     if samples[0].rollout_log_probs is not None:
         train_data["rollout_log_probs"] = [sample.rollout_log_probs for sample in samples]
 
+    if k := args.rollout_top_logprobs_num:
+        for sample in samples:
+            for field in ("rollout_topk_token_ids", "rollout_topk_log_probs", "rollout_log_probs"):
+                if getattr(sample, field) is None:
+                    raise ValueError(
+                        f"Rollout top-k logprobs collection requires {field}; "
+                        f"sample_index={sample.index}. Custom rollout producers must record probabilities during generation."
+                    )
+        if args.ci_test:
+            for sample in samples:
+                validate_rollout_topk_logprobs_sample(sample, k)
+        train_data["rollout_topk_token_ids"] = [sample.rollout_topk_token_ids for sample in samples]
+        train_data["rollout_topk_log_probs"] = [sample.rollout_topk_log_probs for sample in samples]
+
     has_sampling_mask = any(sample.rollout_sampling_mask is not None for sample in samples)
     if has_sampling_mask:
         sampling_mask_ids = []
@@ -133,6 +151,8 @@ def convert_samples_to_train_data(
 
         train_data["rollout_sampling_mask_ids"] = sampling_mask_ids
         train_data["rollout_sampling_mask_offsets"] = sampling_mask_offsets
+        if k and args.loss_type == "score_centering" and args.rollout_sampling_logprobs_mode == "support":
+            _compact_candidate_ids(train_data)
 
     if samples[0].rollout_routed_experts is not None:
         train_data["rollout_routed_experts"] = [sample.rollout_routed_experts for sample in samples]
@@ -174,6 +194,37 @@ def convert_samples_to_train_data(
         train_data["dynamic_global_batch_size"] = x
 
     return train_data
+
+
+def _compact_candidate_ids(data: dict) -> None:
+    """Share ordered support IDs in training batches; preserve other producer layouts."""
+    lengths = []
+    for dense, logps, support, offsets in zip(
+        data["rollout_topk_token_ids"],
+        data["rollout_topk_log_probs"],
+        data["rollout_sampling_mask_ids"],
+        data["rollout_sampling_mask_offsets"],
+        strict=True,
+    ):
+        dense, logps = torch.as_tensor(dense), torch.as_tensor(logps)
+        if dense.ndim != 2 or dense.shape != logps.shape or dense.size(0) != offsets.numel() - 1:
+            return
+        valid = dense >= 0
+        count = valid.sum(-1, dtype=torch.int32)
+        columns = torch.arange(dense.size(1))
+        prefix = columns < count[:, None]
+        if not torch.equal(valid, prefix) or not (dense[~prefix] == -1).all():
+            return
+        if not (count[count > 0] == offsets.diff()[count > 0]).all():
+            return
+        positions = offsets[:-1, None] + columns
+        if not torch.equal(dense[prefix], support[positions[prefix]]):
+            return
+        if not torch.isneginf(logps[count == 0]).all():
+            return
+        lengths.append(count)
+    data["rollout_topk_lengths"] = lengths
+    del data["rollout_topk_token_ids"]
 
 
 def _compute_rollout_mask_sums(rollout_ids: list[int], loss_masks: list[list[int]]) -> list[int]:
@@ -383,6 +434,9 @@ def _package_shards(args, data: dict[str, Any], partitions) -> list[dict[str, An
             "rollout_ids",
             "rollout_mask_sums",
             "rollout_log_probs",
+            "rollout_topk_token_ids",
+            "rollout_topk_lengths",
+            "rollout_topk_log_probs",
             "rollout_sampling_mask_ids",
             "rollout_sampling_mask_offsets",
             "rollout_routed_experts",
