@@ -10,7 +10,7 @@ from tests.ci.metric_history import register_ci_gate
 # entropy checkers of --ci-test do not apply; the metric-history gates below track the train/rollout gap.
 
 register_cuda_ci(
-    est_time=2400,
+    est_time=500,
     suite="stage-c-8-gpu-h200",
     labels=["megatron", "model-scripts"],
     hardware=["hopper"],
