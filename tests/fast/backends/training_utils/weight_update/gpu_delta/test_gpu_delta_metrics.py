@@ -226,6 +226,7 @@ def actor_update(monkeypatch):
             update_weight_transfer_mode=mode,
             colocate=False,
             custom_update_weight_post_write_path=None,
+            update_weight_delta_initial_sync=False,
             debug_train_only=False,
             debug_rollout_only=False,
             offload_train=False,

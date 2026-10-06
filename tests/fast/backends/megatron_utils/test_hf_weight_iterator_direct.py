@@ -224,7 +224,9 @@ def test_owner_consumer_skips_gathers_and_normal_export_still_gathers(
 
 
 def test_gpu_delta_consumer_defers_failure_until_all_local_units_are_visited(direct_module, monkeypatch):
-    protocol = UpdateWeightFromGpuDelta(Namespace(custom_update_weight_post_write_path=None))
+    protocol = UpdateWeightFromGpuDelta(
+        Namespace(custom_update_weight_post_write_path=None, update_weight_delta_initial_sync=False)
+    )
     failure, converted = ValueError("invalid canonical layout"), []
 
     def reject(name, tensor):
@@ -311,7 +313,9 @@ def test_gpu_delta_etp2_gathers_complete_experts_before_sender_conversion(direct
     iterator._expert_batches = [direct_module._ExpertBatch(param_infos=[info], gathers=())]
     iterator._convert_experts_before_gather = False
     iterator._convert_to_hf_param_units = convert
-    protocol = UpdateWeightFromGpuDelta(Namespace(custom_update_weight_post_write_path=None))
+    protocol = UpdateWeightFromGpuDelta(
+        Namespace(custom_update_weight_post_write_path=None, update_weight_delta_initial_sync=False)
+    )
     protocol.send_bucket = lambda unit: pytest.fail("ETP-sharded experts must not use the owner-local consumer")
     iterator.local_consumer = protocol.send_bucket
     monkeypatch.setattr(direct_module.dist, "get_rank", lambda: 0)

@@ -326,7 +326,7 @@ def _make_protocol(args, plan, output, frame_bytes):
                                 "engine_id": "producer-benchmark-no-receiver",
                                 "host_cache_id": "producer-benchmark-no-host-cache",
                             },
-                            "plan": {"codec": self.codec, "tensors": plan},
+                            "plan": {"tensors": plan},
                         }
                     ],
                 }

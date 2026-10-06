@@ -40,7 +40,8 @@ user-facing configuration API. Runtime defaults are sufficient for normal use.
 
 | Development variable | Meaning |
 | --- | --- |
-| `GPU_DELTA_CODEC=snappy-zstd` | Default; `lz4-zstd` selects LZ4 instead. Frozen at launch on both sides and matched against the receiver plan and immutable publication. |
+| `GPU_DELTA_CODEC=snappy-zstd` | Trainer codec for ordinary learned updates; `lz4-zstd` selects LZ4 instead. Read once at launch. The receiver selects the codec from each authenticated publication. |
+| `GPU_DELTA_INITIAL_SYNC_CODEC=lz4-zstd` | Trainer codec only for the explicit initial-sync publication; `snappy-zstd` overrides it. Ignored when initial sync is disabled. |
 | `GPU_DELTA_SORT_BEFORE_HW_DECOMPRESS=0` | Receiver only. Set `1` to let nvCOMP sort chunks during paused DE submission; default off for both codecs. It does not change publication bytes or move sorting into preparation. |
 | `GPU_DELTA_TIMING=1` | Optional per-phase CUDA events. Default off; instrumentation can perturb timing. |
 | `GPU_DELTA_CPU_WORKERS=32` | CPU workers per rank. Each engine-host cache creator also uses its pool for parallel owner-file read/hash before local outer Zstd. Two EP4 engines have eight pools (up to 256 workers at the default). |
@@ -52,8 +53,8 @@ For Ray launches, set the job `runtime_env` environment or use the provided
 forward arbitrary variables into existing workers. Trainer-only settings can
 use `--train-env-vars`; receiver profiling needs the timing setting on rollout
 actors too. Set the DE sorting control on rollout actors. The five-layer GPU-delta
-E2E forwards both codec and sorting controls and checks
-every learned publication's protocol and codec. No old codec/encoder setting is migrated.
+E2E forwards both trainer codec controls and receiver sorting, and checks
+every publication's protocol and phase-specific codec. No old codec/encoder setting is migrated.
 
 The five-layer test is dedicated to GPU delta: it prepares checkpoints and data,
 enables the initial sync, then runs four rollouts to exercise three learned
@@ -75,6 +76,11 @@ replacing rollout weights. Enable the flag when the loaded trainer
 weights differ from that HF checkpoint: the initial call then publishes and
 applies version 1 before the first rollout. Subsequent updates start at version 2;
 these transfer versions are independent of restored optimizer/rollout steps.
+GPU delta defaults to LZ4-Zstd for this initial publication, then Snappy-Zstd for
+learned updates. Selection follows the initial-sync call, not transfer-version
+arithmetic. Encoder setup is lazy and cached before publication/export; receivers
+cache decoders during preparation from the manifest codec. Canonical plan and
+version-stream identity do not depend on the codec.
 This requires real common HF weights in SGLang, not dummy loading. The startup
 delta may be large. It reuses the ordinary transport, publication directory and
 (disk-delta only) host-local checkpoint; it is not a full-checkpoint bootstrap.

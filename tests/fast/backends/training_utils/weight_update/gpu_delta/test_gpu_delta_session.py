@@ -33,7 +33,6 @@ def _setup(failure=None, failed_engine=1, codec=CODEC):
                     {
                         "identity": identity,
                         "plan": {
-                            "codec": codec,
                             "tensors": [
                                 {"name": "w", "dtype": "U8", "shape": [4], "encoding": "xor_bytes", "views": [view]}
                             ],
@@ -44,7 +43,7 @@ def _setup(failure=None, failed_engine=1, codec=CODEC):
             }
         )
         clients.append(_Engine(engine, identities, events, failure, failed_engine))
-    _, _, digest = session.merge_plans(descriptions, codec=codec)
+    _, _, digest = session.merge_plans(descriptions)
     publication = {
         "codec": codec,
         "manifest_path": "/shared/version/manifest.json",
@@ -137,7 +136,7 @@ class _Engine:
 @pytest.mark.parametrize("codec", CODECS)
 def test_fast_engine_resumes_while_other_engine_still_prepares(monkeypatch, codec):
     clients, descriptions, publication, events = _setup(codec=codec)
-    cohort = session.negotiate_cohort(descriptions, codec=codec)
+    cohort = session.negotiate_cohort(descriptions)
     monkeypatch.setattr(session, "merge_plans", lambda *args, **kwargs: pytest.fail("Immutable plan renegotiated"))
     result = asyncio.run(session.activate_publication(clients, cohort, publication, session_id="s"))
     assert len(result["receipts"]) == 4
@@ -186,18 +185,14 @@ def test_early_failure_settles_other_engine_before_returning():
     assert not any(event == "abort" for _, event in events)
 
 
-@pytest.mark.parametrize("conflict", ["view", "codec"])
-def test_common_plan_deduplicates_replicas_and_rejects_conflicts_before_preparation(conflict):
+def test_common_plan_deduplicates_replicas_and_rejects_view_conflicts_before_preparation():
     clients, descriptions, publication, events = _setup()
     plan, identities, digest = session.merge_plans(descriptions)
     assert len(plan) == 1 and len(plan[0]["views"]) == 2 and len(identities) == 4
     assert digest == publication["plan_digest"]
     broken = copy.deepcopy(descriptions)
-    if conflict == "view":
-        broken[1]["participants"][0]["plan"]["tensors"][0]["views"][0]["slices"] = [[1, 2]]
-    else:
-        broken[1]["participants"][0]["plan"]["codec"] = "lz4-zstd"
-    with pytest.raises(ValueError, match="conflict|codecs differ"):
+    broken[1]["participants"][0]["plan"]["tensors"][0]["views"][0]["slices"] = [[1, 2]]
+    with pytest.raises(ValueError, match="conflict"):
         asyncio.run(session.activate_publication(clients, session.negotiate_cohort(broken), publication))
     assert not events
     assert all(client.args is None for client in clients)

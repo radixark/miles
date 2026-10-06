@@ -395,7 +395,7 @@ def _rebind(args):
     _validate_fixture_codec(fixture, codec)
     inventory_bytes = args.inventory.read_bytes()
     inventory = json.loads(inventory_bytes)
-    cohort = negotiate_cohort(inventory["descriptions"], codec=codec)
+    cohort = negotiate_cohort(inventory["descriptions"])
     _validate_cohort(cohort, len(inventory["descriptions"]))
     if inventory["plan_digest"] != cohort.plan_digest:
         raise ValueError("Saved inventory plan digest differs from its actual participants")
@@ -500,7 +500,7 @@ def _fixture(args):
 
     codec = configured_codec()
     inventory = json.loads(args.inventory.read_text())
-    plan, _, digest = merge_plans(inventory["descriptions"], codec=codec)
+    plan, _, digest = merge_plans(inventory["descriptions"])
     index = _tensor_index(args.model)
     for spec in plan:
         actual = index[spec["name"]]
@@ -744,7 +744,7 @@ async def _run(args):
         descriptions = await asyncio.gather(
             *[c.get_weights_delta_info(engine_id=f"engine-{i:05d}") for i, c in enumerate(clients)]
         )
-        cohort = negotiate_cohort(descriptions, codec=codec)
+        cohort = negotiate_cohort(descriptions)
         digest = cohort.plan_digest
         _validate_cohort(cohort, len(clients))
         _save(args.output / "gpu-processes.json", _capture_gpu_processes(cohort, args.ports))

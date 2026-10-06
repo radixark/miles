@@ -47,7 +47,13 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
 
     def __init__(self, args, frame_bytes=gpu_delta_publication.FRAME_BYTES):
         super().__init__(args)
-        self.codec = gpu_delta_publication.configured_codec()
+        self._update_codec = gpu_delta_publication.configured_codec()
+        self._initial_sync_codec = (
+            gpu_delta_publication.configured_codec(initial_sync=True)
+            if args.update_weight_delta_initial_sync
+            else self._update_codec
+        )
+        self.codec = self._initial_sync_codec
         self._frame_bytes = frame_bytes
         self._timing = os.environ.get("GPU_DELTA_TIMING", "0") == "1"
         self._snapshot = {}
@@ -62,6 +68,7 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
         self._error = None
         self._staging_stream = None
         self._gpu_encoder = None
+        self._gpu_encoders = {}
         self.publication_metrics = {}
         self._post_write_hook = None
         if args.custom_update_weight_post_write_path:
@@ -74,23 +81,30 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
         self.group_name = "miles-gpu-delta"
         replica_rank, _ = get_data_replica_rank_and_size(parallel_state, placement)
         self.is_sender = replica_rank == 0
-        error = None
-        if self._gpu_encoder is None:
-            try:
-                from miles.utils.gpu_delta.encoder import GpuBatchEncoder
-
-                device = torch.device("cuda", torch.cuda.current_device())
-                self._gpu_encoder = GpuBatchEncoder(device, frame_bytes=self._frame_bytes, codec=self.codec)
-            except Exception as caught:
-                error = caught
-        _collective_check(error, "nvCOMP producer admission")
+        self._select_codec(self.codec)
         descriptions = _on_root(lambda: async_utils.run(self._describe()))
-        cohort = gpu_delta_session.negotiate_cohort(descriptions, codec=self.codec)
+        cohort = gpu_delta_session.negotiate_cohort(descriptions)
         if self._descriptions is not None and descriptions != self._descriptions:
             raise RuntimeError("GPU-delta receiver incarnation/plan changed; a new stream is required")
         self._descriptions = descriptions
         self._cohort = cohort
         self._plan = {tensor["name"]: tensor for tensor in cohort.plan}
+
+    def _select_codec(self, codec):
+        if self._gpu_encoder is not None and self.codec == codec:
+            return
+        error = None
+        try:
+            if codec not in self._gpu_encoders:
+                from miles.utils.gpu_delta.encoder import GpuBatchEncoder
+
+                device = torch.device("cuda", torch.cuda.current_device())
+                self._gpu_encoders[codec] = GpuBatchEncoder(device, frame_bytes=self._frame_bytes, codec=codec)
+        except Exception as caught:
+            error = caught
+        _collective_check(error, "nvCOMP producer admission")
+        self.codec = codec
+        self._gpu_encoder = self._gpu_encoders[codec]
 
     async def _describe(self):
         results = await asyncio.gather(
@@ -109,11 +123,16 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
         if self._uncommitted:
             raise RuntimeError("Previous GPU delta did not commit; automatic replay is forbidden")
         self._error, self._seen = None, set()
-        if not self._baseline_captured:
+        initial_sync = not self._baseline_captured
+        if initial_sync:
             self._capture_baseline(iter_buckets)
             if not self.args.update_weight_delta_initial_sync:
                 return False
             self._seen.clear()
+        # The baseline-capture call owns initial-sync policy; transfer version
+        # numbers can also start at 1 for an ordinary learned update.
+        # Cache setup precedes timed publication/export and is never per bucket.
+        self._select_codec(self._initial_sync_codec if initial_sync else self._update_codec)
         self._uncommitted = True
         self._started = time.monotonic()
         self._version_dir = self._stream_dir / f"weight_v{weight_version:06d}"

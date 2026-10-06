@@ -67,10 +67,11 @@ def sha256(data) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-def configured_codec() -> str:
-    codec = os.environ.get("GPU_DELTA_CODEC", CODEC)
+def configured_codec(initial_sync: bool = False) -> str:
+    variable = "GPU_DELTA_INITIAL_SYNC_CODEC" if initial_sync else "GPU_DELTA_CODEC"
+    codec = os.environ.get(variable, "lz4-zstd" if initial_sync else CODEC)
     if codec not in CODECS:
-        raise ValueError("Expected GPU_DELTA_CODEC=snappy-zstd or lz4-zstd")
+        raise ValueError(f"Expected {variable}=snappy-zstd or lz4-zstd")
     return codec
 
 

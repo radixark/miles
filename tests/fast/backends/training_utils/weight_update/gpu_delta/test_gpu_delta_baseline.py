@@ -29,7 +29,7 @@ class _Engine:
             "participants": [
                 {
                     "identity": {"engine_id": engine_id, "rank_id": str(self.index), "host_cache_id": engine_id},
-                    "plan": {"codec": self.protocol.codec, "tensors": list(self.protocol._plan.values())},
+                    "plan": {"tensors": list(self.protocol._plan.values())},
                 }
             ],
         }
@@ -45,7 +45,7 @@ class _Engine:
         return {"success": True, "new_version": weight_version}
 
 
-def _setup(tmp_path, fail=False, frame_bytes=gpu_delta_publication.FRAME_BYTES):
+def _setup(tmp_path, fail=False, frame_bytes=gpu_delta_publication.FRAME_BYTES, initial_sync=False):
     safetensors.numpy.save_file({"w": np.array([1, 2, 3, 4], dtype=np.uint8)}, tmp_path / "model.safetensors")
     protocol = gpu_delta.UpdateWeightFromGpuDelta(
         Namespace(
@@ -53,7 +53,7 @@ def _setup(tmp_path, fail=False, frame_bytes=gpu_delta_publication.FRAME_BYTES):
             update_weight_disk_dir=str(tmp_path / "delta"),
             custom_update_weight_post_write_path=None,
             update_weight_buffer_size=5,
-            update_weight_delta_initial_sync=False,
+            update_weight_delta_initial_sync=initial_sync,
         ),
         frame_bytes=frame_bytes,
     )
@@ -91,7 +91,9 @@ def _buckets(materialize):
 
 
 def test_export_bucket_stages_after_all_conversions_with_one_stream_dependency(monkeypatch):
-    protocol = gpu_delta.UpdateWeightFromGpuDelta(Namespace(custom_update_weight_post_write_path=None))
+    protocol = gpu_delta.UpdateWeightFromGpuDelta(
+        Namespace(custom_update_weight_post_write_path=None, update_weight_delta_initial_sync=False)
+    )
     bucket = [
         (name, torch.arange(6, dtype=torch.float32).reshape(2, 3) + index) for index, name in enumerate(("a", "b"))
     ]
@@ -140,7 +142,9 @@ def test_export_bucket_stages_after_all_conversions_with_one_stream_dependency(m
 
 
 def test_invalid_export_bucket_does_not_enqueue_a_partial_snapshot(monkeypatch):
-    protocol = gpu_delta.UpdateWeightFromGpuDelta(Namespace(custom_update_weight_post_write_path=None))
+    protocol = gpu_delta.UpdateWeightFromGpuDelta(
+        Namespace(custom_update_weight_post_write_path=None, update_weight_delta_initial_sync=False)
+    )
     protocol._snapshot = {"a": torch.zeros(4, dtype=torch.uint8)}
     protocol._next_snapshot = {"a": torch.zeros(4, dtype=torch.uint8)}
     protocol._seen = set()
@@ -205,19 +209,35 @@ def test_pipeline_stage_inventory_requires_unique_owners_before_baseline_declara
 
 @pytest.mark.parametrize("initial_sync", [False, True])
 @pytest.mark.parametrize("codec", gpu_delta_publication.CODECS)
-def test_initial_delta_publishes_loaded_trainer_after_common_baseline(
+def test_initial_delta_publishes_loaded_trainer_then_switches_to_cached_update_codec(
     tmp_path, single_rank, monkeypatch, initial_sync, codec
 ):
-    monkeypatch.setenv("GPU_DELTA_CODEC", codec)
+    if codec == "snappy-zstd":
+        monkeypatch.delenv("GPU_DELTA_CODEC", raising=False)
+        monkeypatch.delenv("GPU_DELTA_INITIAL_SYNC_CODEC", raising=False)
+        initial_codec = "lz4-zstd"
+    else:
+        monkeypatch.setenv("GPU_DELTA_CODEC", codec)
+        monkeypatch.setenv("GPU_DELTA_INITIAL_SYNC_CODEC", "snappy-zstd")
+        initial_codec = "snappy-zstd"
+    if not initial_sync:
+        # An unused initial-sync override does not alter ordinary updates.
+        monkeypatch.setenv("GPU_DELTA_INITIAL_SYNC_CODEC", "unused")
     frame_bytes = 1 << 22 if initial_sync else gpu_delta_publication.FRAME_BYTES
-    protocol, events = _setup(tmp_path, frame_bytes=frame_bytes)
-    monkeypatch.setenv("GPU_DELTA_CODEC", "lz4-zstd" if codec == "snappy-zstd" else "snappy-zstd")
-    protocol.args.update_weight_delta_initial_sync = initial_sync
+    protocol, events = _setup(tmp_path, frame_bytes=frame_bytes, initial_sync=initial_sync)
+    monkeypatch.setenv("GPU_DELTA_CODEC", "invalid-after-construction")
+    monkeypatch.setenv("GPU_DELTA_INITIAL_SYNC_CODEC", "invalid-after-construction")
     protocol._staging_stream = Mock()
     protocol._next_snapshot = {"w": torch.empty(4, dtype=torch.uint8)}
-    encoder = Mock(frame_bytes=frame_bytes, outer_metrics={})
-    encoder.wrap_device.return_value = []  # This fixture contains only a raw vector.
-    encoder_type = Mock(return_value=encoder)
+    encoders = {}
+
+    def make_encoder(device, frame_bytes, codec):
+        encoder = Mock(frame_bytes=frame_bytes, outer_metrics={})
+        encoder.wrap_device.return_value = []  # This fixture contains only a raw vector.
+        encoders[codec] = encoder
+        return encoder
+
+    encoder_type = Mock(side_effect=make_encoder)
     monkeypatch.setattr(gpu_delta_encoder, "GpuBatchEncoder", encoder_type)
     monkeypatch.setattr(gpu_delta, "get_data_replica_rank_and_size", lambda *args: (0, 1))
     monkeypatch.setattr(torch.cuda, "current_device", lambda: 0)
@@ -228,34 +248,50 @@ def test_initial_delta_publishes_loaded_trainer_after_common_baseline(
     monkeypatch.setattr(gpu_delta.dist, "get_world_size", lambda: 1)
     monkeypatch.setattr(gpu_delta.dist, "gather_object", lambda shard, shards, **kwargs: shards.__setitem__(0, shard))
 
+    first_codec = initial_codec if initial_sync else codec
     protocol.connect(protocol.rollout_engines, None, None, None, None, None)
-    encoder_type.assert_called_once_with(torch.device("cuda", 0), frame_bytes=frame_bytes, codec=codec)
+    encoder_type.assert_called_once_with(torch.device("cuda", 0), frame_bytes=frame_bytes, codec=first_codec)
     assert protocol.begin_sync(1, _buckets) is initial_sync
     assert sorted(events) == [0, 1]
     if not initial_sync:
         assert not protocol._stream_dir.exists()
         assert protocol.begin_sync(1, _buckets) is True
-    assert not protocol._seen  # The baseline export must not consume the current update's inventory.
-    for bucket in _buckets(materialize=True):
-        protocol.send_bucket(bucket)
-    protocol.after_base_weights()
-    publication = protocol.publish()
-    assert protocol.codec == publication["codec"] == codec
-    assert publication["frame_bytes"] == frame_bytes
-    assert protocol.publication_metrics["encoded_hash_write_s"] == protocol._writer.outer_metrics["outer_hash_write_s"]
-    assert publication["base_version"] == 0 and publication["target_version"] == 1
-    assert publication["summary_counts"]["raw_bytes"] == 4
-    assert publication["summary_counts"]["wire_bytes"] == 4
-    assert (protocol._version_dir / "owner-00000.bin").read_bytes() == bytes([5, 6, 7, 8])
-    np.testing.assert_array_equal(protocol._snapshot["w"], [1, 2, 3, 4])
-    protocol.commit_pending_baseline()
-    np.testing.assert_array_equal(protocol._snapshot["w"], [5, 6, 7, 8])
+    assert not protocol._seen  # Baseline export does not consume this update's inventory.
+    previous = [1, 2, 3, 4]
+    for version, expected_codec in enumerate((first_codec, codec, codec), 1):
+        if version > 1:
+            assert protocol.begin_sync(version, _buckets) is True
+        assert protocol._gpu_encoder is encoders[expected_codec]
+        current = [4 * version + n for n in range(1, 5)]
+        protocol.send_bucket([("w", torch.tensor(current, dtype=torch.uint8))])
+        protocol.after_base_weights()
+        publication = protocol.publish()
+        assert protocol.codec == publication["codec"] == expected_codec
+        assert publication["frame_bytes"] == frame_bytes
+        assert publication["plan_digest"] == protocol._cohort.plan_digest
+        assert publication["base_version"] == version - 1 and publication["target_version"] == version
+        assert (
+            protocol.publication_metrics["encoded_hash_write_s"]
+            == protocol._writer.outer_metrics["outer_hash_write_s"]
+        )
+        assert publication["summary_counts"]["raw_bytes"] == publication["summary_counts"]["wire_bytes"] == 4
+        assert (protocol._version_dir / "owner-00000.bin").read_bytes() == bytes(current)
+        np.testing.assert_array_equal(protocol._snapshot["w"], previous)
+        protocol.commit_pending_baseline()
+        np.testing.assert_array_equal(protocol._snapshot["w"], current)
+        previous = current
+    assert encoder_type.call_count == len({first_codec, codec})
+    assert set(encoders) == {first_codec, codec}
 
 
 def _gpu_pending(monkeypatch, fail_batch=None):
     """Real worker threads with CPU copies; native tests cover CUDA ordering."""
     protocol = gpu_delta.UpdateWeightFromGpuDelta(
-        Namespace(update_weight_buffer_size=5, custom_update_weight_post_write_path=None)
+        Namespace(
+            update_weight_buffer_size=5,
+            custom_update_weight_post_write_path=None,
+            update_weight_delta_initial_sync=False,
+        )
     )
     # Baseline callback order intentionally differs from lexical order.
     sizes = {"d": 1, "b": 3, "c": 7, "a": 2}

@@ -141,6 +141,7 @@ def _gpu_delta_env():
 
     return {
         "GPU_DELTA_CODEC": configured_codec(),
+        "GPU_DELTA_INITIAL_SYNC_CODEC": configured_codec(initial_sync=True),
         "GPU_DELTA_SORT_BEFORE_HW_DECOMPRESS": os.environ.get("GPU_DELTA_SORT_BEFORE_HW_DECOMPRESS", "0"),
         "SGLANG_NVFP4_CKPT_FP8_GEMM_IN_ATTN": "0",
     }
@@ -159,14 +160,15 @@ def _assert_gpu_delta_weights_changed(args, version_dir, _rollout_engines):
     last_version = startup_publications + args.num_rollout - 1
     if current["target_version"] != last_version:
         return
-    codec = _gpu_delta_env()["GPU_DELTA_CODEC"]
+    codecs = _gpu_delta_env()
     changed_bytes = []
     for version in range(1, last_version + 1):
         manifest = json.loads((version_dir.parent / f"weight_v{version:06d}/manifest.json").read_text())
         assert manifest["stream_id"] == current["stream_id"]
         assert manifest["base_version"] == version - 1 and manifest["target_version"] == version
         assert manifest["protocol_version"] == 4, "E2E publication protocol differs from GPU delta"
-        assert manifest["codec"] == codec, "E2E publication codec differs from configured codec"
+        codec_key = "GPU_DELTA_INITIAL_SYNC_CODEC" if version <= startup_publications else "GPU_DELTA_CODEC"
+        assert manifest["codec"] == codecs[codec_key], "E2E publication codec differs from configured phase codec"
         raw_tensors = [tensor for tensor in manifest["tensors"] if len(tensor["shape"]) <= 1]
         assert raw_tensors, "E2E must exercise direct scalar/vector targets"
         for tensor in manifest["tensors"]:

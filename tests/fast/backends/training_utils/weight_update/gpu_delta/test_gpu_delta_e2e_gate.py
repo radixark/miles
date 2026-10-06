@@ -8,6 +8,12 @@ import pytest
 from tests.e2e.megatron.test_glm5_2_744b_a40b_5layer_nvfp4_w4a16 import _assert_gpu_delta_weights_changed
 
 
+@pytest.fixture(autouse=True)
+def default_codecs(monkeypatch):
+    monkeypatch.delenv("GPU_DELTA_CODEC", raising=False)
+    monkeypatch.delenv("GPU_DELTA_INITIAL_SYNC_CODEC", raising=False)
+
+
 def _write_series(tmp_path, changed_bytes):
     for version, count in enumerate(changed_bytes, 1):
         directory = tmp_path / f"weight_v{version:06d}"
@@ -16,7 +22,7 @@ def _write_series(tmp_path, changed_bytes):
             json.dumps(
                 {
                     "protocol_version": 4,
-                    "codec": "snappy-zstd",
+                    "codec": "lz4-zstd" if version == 1 else "snappy-zstd",
                     "stream_id": "current-stream",
                     "base_version": version - 1,
                     "target_version": version,

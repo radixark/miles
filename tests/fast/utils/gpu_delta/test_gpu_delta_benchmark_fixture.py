@@ -35,7 +35,7 @@ def _descriptions(engine_count, tensors):
                 "pp_rank": 0,
                 "host_cache_id": f"engine-host-{engine}",
             }
-            participants.append({"identity": identity, "plan": {"codec": "snappy-zstd", "tensors": views}})
+            participants.append({"identity": identity, "plan": {"tensors": views}})
         descriptions.append({"success": True, "participants": participants})
     return descriptions
 
