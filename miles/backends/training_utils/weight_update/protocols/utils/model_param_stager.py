@@ -21,7 +21,7 @@ class ModelParamStager:
         converted_named_tensors: list[tuple[str, torch.Tensor]],
         param_mapper: ParameterMapper,
         params_dict: dict[str, torch.Tensor],
-    ) -> tuple[list[str], list[tuple[str, torch.Tensor]]]:
+    ) -> dict[str, list[tuple[str, torch.Tensor]]]:
         """Determine which sglang params have all shards present, returning their accumulated tensors.
 
         Some parameters are trained separately on the training side but fused into a
@@ -32,8 +32,7 @@ class ModelParamStager:
         preventing partial load_weights() calls that would corrupt the shared buffer.
 
         Return:
-            transfer_ready_params: tensors' names for the ones ready to be transferred.
-            ready_hf_tensor: corresponding complete tensors ready to be transferred.
+            the HF tensors of each sglang param that became ready, by sglang param name.
         """
         transfer_ready_params = []
 
@@ -66,13 +65,13 @@ class ModelParamStager:
                 if self._tensor_update_pending[mapped] == 0:
                     transfer_ready_params.append(mapped)
 
-        ready_hf_tensors: list[tuple[str, torch.Tensor]] = []
-        for param_name in transfer_ready_params:
-            staged = self._staged_tensors.pop(param_name, [])
-            ready_hf_tensors.extend(staged)
+        ready_hf_tensors_by_param_name: dict[str, list[tuple[str, torch.Tensor]]] = {}
+        # a param mapped from one HF name is ready again each time that name repeats
+        for param_name in dict.fromkeys(transfer_ready_params):
+            ready_hf_tensors_by_param_name[param_name] = self._staged_tensors.pop(param_name, [])
             self._tensor_update_pending.pop(param_name, None)
 
-        return transfer_ready_params, ready_hf_tensors
+        return ready_hf_tensors_by_param_name
 
     def assert_all_done(self) -> None:
         assert len(self._tensor_update_pending) == 0 and len(self._staged_tensors) == 0, (

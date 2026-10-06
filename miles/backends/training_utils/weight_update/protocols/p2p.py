@@ -81,15 +81,19 @@ class UpdateWeightP2P(WeightTransferProtocol):
         """
         if not self.is_sender or not converted_named_tensors:
             return
-        # `ready_hf_tensors`` here are the complete tensors ready to be transferred.
-        transfer_ready_params, ready_hf_tensors = self._model_param_stager.get_transfer_ready_params(
+        ready_hf_tensors_by_param_name = self._model_param_stager.get_transfer_ready_params(
             converted_named_tensors,
             param_mapper=self._model_replicas.param_mapper,
             params_dict=self._model_replicas.shared_params_dict,
         )
 
-        if transfer_ready_params and ready_hf_tensors:
-            tensors_by_name = {name: self._model_replicas.shared_params_dict[name] for name in transfer_ready_params}
+        if ready_hf_tensors_by_param_name:
+            ready_hf_tensors = [
+                hf_tensor for hf_tensors in ready_hf_tensors_by_param_name.values() for hf_tensor in hf_tensors
+            ]
+            tensors_by_name = {
+                name: self._model_replicas.shared_params_dict[name] for name in ready_hf_tensors_by_param_name
+            }
             previous_rank_writes: list[Future] = []
             for target in self._replica_targets:
                 # loading overwrites the shared buffer the previous rank's writes read from
