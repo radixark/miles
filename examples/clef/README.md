@@ -131,3 +131,5 @@ The distributed timeout defaults to one hour to accommodate checkpoint upload
 barriers; use --distributed-timeout-seconds to change it.
 
 Gradient accumulation reduces every microbatch into sharded gradients to avoid retaining full-model FP32 gradient buffers. Loss scaling still preserves the configured global batch. Worker failures print their original traceback and exit without collective cleanup, allowing torchrun to stop peers.
+
+To extend a completed run, resume its native checkpoint with --max-steps set to the desired cumulative update count (for example, 2000). The deterministic epoch ordering continues from the saved update. Resume checks allow extending the horizon while retaining dataset and optimizer settings.

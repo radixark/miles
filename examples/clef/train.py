@@ -48,6 +48,7 @@ class Args(Tap):
     head_lr: float = 1e-5
     head_warmup_steps: int = 128
     epochs: int = 2
+    max_steps: int = 0
     max_length: int = 65536
     multi_field_fraction: float = 0.25
     save_interval: int = 128
@@ -68,6 +69,8 @@ class Args(Tap):
             raise ValueError("batch, length, epoch, and interval values must be positive")
         if self.head_warmup_steps < 0 or min(self.backbone_lr, self.head_lr, self.max_grad_norm) <= 0 or self.weight_decay < 0:
             raise ValueError("invalid optimizer or warmup configuration")
+        if self.max_steps < 0:
+            raise ValueError("max_steps must be nonnegative")
         if self.distributed_timeout_seconds <= 0:
             raise ValueError("distributed timeout must be positive")
 
@@ -211,7 +214,7 @@ def _prepare(args: Args) -> tuple[list[DecisionExample], list[DecisionExample], 
     config = args.as_dict()
     config.update({"world_size": world, "train_questions": len(train), "validation_questions": len(validation),
                    "train_sha256": file_sha256(root / "train.jsonl"), "validation_sha256": file_sha256(root / "validation.jsonl"),
-                   "total_steps": args.head_warmup_steps + args.epochs * len(train) // args.global_batch_size,
+                   "total_steps": args.max_steps or (args.head_warmup_steps + args.epochs * len(train) // args.global_batch_size),
                    "loss": "direct_brier", "reasoning": False, "lora": False, "precision": "fp32_master_bf16_compute"})
     output = Path(args.output_dir)
     if int(os.environ["LOCAL_RANK"]) == 0:
