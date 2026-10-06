@@ -225,6 +225,22 @@ def main():
         if fname.startswith("tokenizer") or any(fname.endswith(ext) for ext in extensions_to_copy):
             shutil.copy2(src_path, dst_path)
 
+    # The output holds plain BF16 weights: a surviving quantization_config makes
+    # SGLang engage its CompressedTensors path, which serves this checkpoint with
+    # a degenerate (context-free) forward. Strip it everywhere it can nest.
+    config_path = os.path.join(output_dir, "config.json")
+    if os.path.exists(config_path):
+        with open(config_path) as f:
+            config = json.load(f)
+        removed = config.pop("quantization_config", None) is not None
+        text_config = config.get("text_config")
+        if isinstance(text_config, dict):
+            removed = text_config.pop("quantization_config", None) is not None or removed
+        if removed:
+            with open(config_path, "w") as f:
+                json.dump(config, f, indent=2)
+            print("Stripped quantization_config from output config.json")
+
     # Generate new index
     new_index_path = os.path.join(output_dir, "model.safetensors.index.json")
     weight_map = {}
