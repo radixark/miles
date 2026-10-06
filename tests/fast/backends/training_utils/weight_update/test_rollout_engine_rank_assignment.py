@@ -13,7 +13,7 @@ from miles.backends.training_utils.weight_update.hf_weight_iterator import Weigh
 from miles.backends.training_utils.weight_update.protocols.shared_utils.rollout_engine_rank_assignment import (
     RolloutEngineRankAssignment,
     assign_rollout_engine_ranks,
-    assign_rollout_engine_ranks_for_replica,
+    assign_rollout_engine_ranks_for_data_replica,
 )
 
 
@@ -25,16 +25,16 @@ def _targets_of(assignments: list[RolloutEngineRankAssignment]) -> list[tuple[in
     ]
 
 
-@pytest.mark.parametrize("replica_size", [1, 2, 3, 4, 6, 8, 16])
+@pytest.mark.parametrize("data_replica_size", [1, 2, 3, 4, 6, 8, 16])
 @pytest.mark.parametrize("engine_gpu_counts", [[2], [8], [4, 4], [2, 2, 2], [1, 3, 4], [8, 8, 8, 8], []])
-def test_assignments_follow_engine_gpu_counts(replica_size: int, engine_gpu_counts: list[int]):
+def test_assignments_follow_engine_gpu_counts(data_replica_size: int, engine_gpu_counts: list[int]):
     """Writers cover exactly the rollout engine ranks in the counts: none invented, none skipped, none written
     twice."""
     writers = Counter(
         target
-        for replica_rank in range(replica_size)
+        for data_replica_rank in range(data_replica_size)
         for target in _targets_of(
-            assign_rollout_engine_ranks_for_replica(replica_rank, replica_size, engine_gpu_counts)
+            assign_rollout_engine_ranks_for_data_replica(data_replica_rank, data_replica_size, engine_gpu_counts)
         )
     )
 
@@ -47,14 +47,19 @@ def test_assignments_follow_engine_gpu_counts(replica_size: int, engine_gpu_coun
     assert set(writers.values()) <= {1}
 
 
-def test_replicas_beyond_the_rollout_engine_ranks_are_not_senders():
-    """A replica with no rollout engine rank must report itself as no sender rather than query an engine."""
-    assert assign_rollout_engine_ranks_for_replica(replica_rank=2, replica_size=8, engine_gpu_counts=[2]) == []
+def test_data_replicas_beyond_the_rollout_engine_ranks_are_not_senders():
+    """A data replica with no rollout engine rank must report itself as no sender rather than query an engine."""
+    assert (
+        assign_rollout_engine_ranks_for_data_replica(data_replica_rank=2, data_replica_size=8, engine_gpu_counts=[2])
+        == []
+    )
 
 
-def test_extra_engines_reuse_a_replica_already_on_their_rollout_engine_rank():
-    """A replica that already loads a rollout engine rank's shard serves the same rank of the next engine."""
-    assignments = [assign_rollout_engine_ranks_for_replica(replica_rank, 4, [3, 3]) for replica_rank in range(4)]
+def test_extra_engines_reuse_a_data_replica_already_on_their_rollout_engine_rank():
+    """A data replica that already sends a rollout engine rank's weights serves the same rank of the next engine."""
+    assignments = [
+        assign_rollout_engine_ranks_for_data_replica(data_replica_rank, 4, [3, 3]) for data_replica_rank in range(4)
+    ]
 
     assert assignments == [
         [RolloutEngineRankAssignment(rollout_engine_rank=0, rollout_engine_indices=(0,))],
