@@ -1,7 +1,7 @@
 import os
 
 from scripts.run_kimi_k3 import ScriptArgs, _prepare_bf16, _prepare_download, _prepare_torch_dist, _train
-from tests.ci.ci_register import register_cuda_ci
+from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
 from tests.ci.metric_history import register_ci_gate
 
 register_cuda_ci(
@@ -9,6 +9,11 @@ register_cuda_ci(
     suite="stage-c-8-gpu-h200",
     labels=["megatron", "model-scripts"],
     hardware=["hopper", "blackwell"],
+)
+register_rocm_ci(
+    est_time=1100,
+    suite="nightly-stage-c-8-gpu-mi350",
+    labels=["megatron", "model-scripts"],
 )
 
 register_ci_gate(metric_key="train/grad_norm")
@@ -38,6 +43,7 @@ def _args() -> ScriptArgs:
         rollout_max_concurrency=16,
         check_weight_update_equal=True,
         skip_saving=True,
+        rollout_bf16=os.getenv("MILES_HARDWARE_PLATFORM") == "rocm",
         extra_args="--ci-test --ci-disable-logprobs-checker ",
     )
 

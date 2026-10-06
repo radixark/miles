@@ -44,3 +44,11 @@ def test_bucketwise_main_initialization_preserves_bytes_and_releases_cuda_storag
     restored = torch.frombuffer(bytearray(os.pread(bucket.fd, nbytes, 0)), dtype=torch.float32)
     torch.testing.assert_close(restored, model_param.float().cpu(), atol=0, rtol=0)
     os.close(bucket.fd)
+
+
+if __name__ == "__main__":
+    import sys
+
+    import pytest
+
+    sys.exit(pytest.main([__file__, "-v"]))

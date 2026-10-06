@@ -5,13 +5,14 @@ The rollout runs DP attention (attention TP2 x DP2) with EP4 MoE and no DeepEP o
 
 import os
 
-from tests.ci.ci_register import register_cuda_ci
+from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
 from tests.ci.metric_history import register_ci_gate
 from tests.e2e.megatron.test_qwen3_5_35B_A3B._common import CaseConfig, execute, prepare
 
 register_cuda_ci(
     est_time=1500, suite="stage-c-4-gpu-h200", labels=["megatron", "qwen35"], hardware=["hopper", "blackwell"]
 )
+register_rocm_ci(est_time=1300, suite="nightly-stage-c-4-gpu-mi350", labels=["megatron", "qwen35"])
 
 register_ci_gate(metric_key="train/grad_norm")
 register_ci_gate(metric_key="train/ppo_kl")

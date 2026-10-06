@@ -340,3 +340,11 @@ def test_qsa_sparse_attention(T, S, Hq, Hkv, D, K, dtype):
     for name, t, r in zip(["dq", "dk", "dv"], grads_t, (q2.grad, k2.grad, v2.grad), strict=False):
         err = rel_err(t, r)
         assert err < tol, f"{name}: {err:.2e} > {tol}"
+
+
+if __name__ == "__main__":
+    import sys
+
+    import pytest
+
+    sys.exit(pytest.main([__file__, "-v"]))

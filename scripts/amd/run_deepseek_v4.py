@@ -63,6 +63,7 @@ class ScriptArgs(command_utils.ExecuteTrainConfig):
     enable_eval: bool = True
     enable_mtp: bool = False
     dsv4_impl: Literal["miles"] = "miles"
+    cp_size: int | None = None
 
     hf_checkpoint: str | None = None
     data_dir: str = "/root/datasets"
@@ -219,7 +220,7 @@ def _prepare_spmd(args: ScriptArgs):
 
     num_gpus_for_convert = actor_num_gpus_per_node
     if is_4layer:
-        num_gpus_for_convert = min(num_gpus_for_convert, 4)
+        num_gpus_for_convert = 1
 
     U.convert_checkpoint(
         model_name=args.model_name,
@@ -265,11 +266,13 @@ def _get_parallel_config(args: ScriptArgs) -> str:
 
     # Single-node smoke-test configs
     if actor_num_nodes == 1:
+        cp_size = args.cp_size or 1
         return (
-            f"--tensor-model-parallel-size {actor_num_gpus_per_node} "
+            f"--tensor-model-parallel-size {actor_num_gpus_per_node // cp_size} "
             "--sequence-parallel "
             "--pipeline-model-parallel-size 1 "
-            "--context-parallel-size 1 "
+            f"--context-parallel-size {cp_size} "
+            f"{'--allgather-cp ' if cp_size > 1 else ''}"
             f"--expert-model-parallel-size {actor_num_gpus_per_node} "
             "--expert-tensor-parallel-size 1 "
         )

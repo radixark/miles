@@ -1,5 +1,5 @@
 # doc-dev: docs/developer/ci/02-docker-build.md
-# ROCm / gfx950 image for Miles (built on a prebuilt sglang base):
+# ROCm image for Miles (built on a prebuilt sglang base):
 #
 # 1. rocm724-mi35x  (gfx950, ROCm 7.2.4 / MI350 / MI355X, Python 3.12 base)
 #    build-arg:SGLANG_IMAGE_REPO=lmsysorg/sglang  SGLANG_IMAGE_TAG=v0.5.21-rocm724-mi35x
@@ -8,6 +8,11 @@
 # 2. rocm10-mi35x   (gfx950, ROCm 10 / MI350 / MI355X, Python 3.12 base)
 #    build-arg:SGLANG_IMAGE_REPO=lmsysorg/sglang  SGLANG_IMAGE_TAG=v0.5.21-rocm10-mi35x
 #                WHEELS_TAG_ROCM=rocm10-gfx950-v0.5.18  TE_USE_WHEEL=1  APEX_USE_PREBUILT=1   (cp312 shelf)
+#
+# 3. rocm10-mi30x   (gfx942, ROCm 10 / MI300X / MI325X, Python 3.12 base)
+#    build-arg:GPU_ARCH=gfx942  SGLANG_IMAGE_REPO=lmsysorg/sglang  SGLANG_IMAGE_TAG=v0.5.21-rocm10-mi30x
+#                WHEELS_TAG_ROCM=rocm10-gfx942-v0.5.20  TE_USE_WHEEL=1  APEX_USE_PREBUILT=1   (cp312 shelf)
+#                AITER_PREBUILD_JIT=1
 
 ARG SGLANG_IMAGE_REPO=lmsysorg/sglang
 ARG SGLANG_IMAGE_TAG=v0.5.21-rocm724-mi35x
@@ -101,10 +106,17 @@ RUN pip uninstall -y transformer-engine transformer_engine transformer_engine_to
 RUN pip install /tmp/wheels/flash_attn-*.whl
 
 # Prebuilt ROCm/apex@40608ba wheel from the shelf; Megatron needs its fused ops.
+# The check reads apex's files by path: `import apex` pulls in aiter, which needs a GPU the build host lacks.
 RUN if [ "${APEX_USE_PREBUILT}" = "1" ]; then \
       pip install cxxfilt==0.3.0 py-cpuinfo==9.0.0 && \
       pip install --no-deps /tmp/wheels/apex-*.whl && \
-      python3 -c "import fused_weight_gradient_mlp_cuda"; \
+      python3 -c "import glob, importlib.util as iu, os, torch; \
+        d = iu.find_spec('apex').submodule_search_locations[0]; \
+        info = {}; exec(open(os.path.join(d, 'git_version_info_installed.py')).read(), info); \
+        assert info['installed_ops'].get('fused_weight_gradient_mlp_cuda'), 'apex wheel lacks the prebuilt fused_weight_gradient_mlp_cuda'; \
+        so, = glob.glob(os.path.join(d, 'fused_weight_gradient_mlp_cuda.*.so')); \
+        s = iu.spec_from_file_location('fused_weight_gradient_mlp_cuda', so); m = iu.module_from_spec(s); s.loader.exec_module(m); \
+        m.wgrad_gemm_accum_fp32"; \
     else \
       echo "[apex] prebuilt wheel skipped (APEX_USE_PREBUILT=${APEX_USE_PREBUILT})"; \
     fi
@@ -154,6 +166,16 @@ RUN pip install "numba==0.65.1"
 RUN pip install uv
 
 RUN python -c "import sglang; import sgl_kernel; print('SGLang + sgl_kernel: OK')"
+
+# aiter compiles the attention kernels the base image leaves out (sglang's extend and decode ones) on
+# first use, which costs every fresh container minutes in hipcc. 1 builds sglang's bf16 ones for GPU_ARCH.
+ARG AITER_PREBUILD_JIT=0
+RUN --mount=type=bind,source=docker/amd/prebuild_aiter_jit.py,target=/tmp/prebuild_aiter_jit.py \
+    if [ "${AITER_PREBUILD_JIT}" = "1" ]; then \
+      GPU_ARCHS=${GPU_ARCH} python3 /tmp/prebuild_aiter_jit.py; \
+    else \
+      echo "[aiter] JIT prebuild skipped (AITER_PREBUILD_JIT=${AITER_PREBUILD_JIT})"; \
+    fi
 
 RUN pip install git+https://github.com/fzyzcjy/torch_memory_saver.git@06caa534822c5b980b61733a5d79ac731f9a5f9c --no-cache-dir --force-reinstall --no-build-isolation
 
