@@ -1,5 +1,6 @@
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
+from typing import NamedTuple
 
 import torch
 from sglang.srt import server_args as server_args_module
@@ -8,9 +9,11 @@ from sglang.srt.configs.load_config import LoadConfig
 from sglang.srt.configs.model_config import ModelConfig
 from sglang.srt.distributed.parallel_state import ParallelismContext, RankParallelismConfig
 from sglang.srt.layers.moe import initialize_moe_config
+from sglang.srt.layers.quantization.base_config import QuantizeMethodBase
 from sglang.srt.layers.quantization.fp4_utils import initialize_fp4_gemm_config
 from sglang.srt.layers.quantization.fp8_utils import initialize_fp8_gemm_config
 from sglang.srt.model_loader import get_model
+from sglang.srt.model_loader.loader import DefaultModelLoader
 from sglang.srt.model_loader.parameter_mapper import ParameterMapper
 from sglang.srt.server_args import ServerArgs
 
@@ -23,6 +26,9 @@ from miles.utils.workers.argv_utils import _record_field_names
 
 # where a rank sits in the launch, not how it holds its weights
 _PLACEMENT_PARALLELISM_FIELDS = frozenset({"global_rank", "local_rank"})
+
+# a multiple of every element size, so a span views as any param's dtype
+_SPAN_ALIGNMENT_BYTES = 256
 
 
 @dataclass(frozen=True)
@@ -43,6 +49,82 @@ class RolloutEngineRankConfig:
             if name not in _PLACEMENT_PARALLELISM_FIELDS
         }
         return tuple(sorted(sharding.items())), self.server_args.quantization
+
+
+class ParamSpec(NamedTuple):
+    """One param as a rollout engine rank's loader writes into it, after `restore_weights_before_loading`."""
+
+    shape: torch.Size
+    stride: tuple[int, ...]
+    dtype: torch.dtype
+    nbytes: int
+
+    @classmethod
+    def of(cls, tensor: torch.Tensor) -> "ParamSpec":
+        span_numel = 0 if tensor.numel() == 0 else 1 + sum(
+            (size - 1) * stride for size, stride in zip(tensor.shape, tensor.stride(), strict=True)
+        )
+        return cls(tensor.shape, tensor.stride(), tensor.dtype, span_numel * tensor.element_size())
+
+
+class ModelReplica:
+    """An sglang model in one rollout engine rank's layout, without parameter storage, that turns HF weights into
+    the bytes that rank's loader would write.
+
+    Its params are 0-size, and their shapes and attributes are those the engine's params have while it loads an
+    update. The p2p protocol loads each group of ready params into a staging buffer with `load_into` and writes the
+    returned bytes into the rollout engine ranks of this layout.
+    """
+
+    def __init__(
+        self,
+        model: torch.nn.Module,
+        built_shapes_by_name: Mapping[str, torch.Size],
+        parallelism: RankParallelismConfig,
+        *,
+        postprocess_device: torch.device,
+    ) -> None:
+        # some models call it from their own load_weights; the engine runs it after the writes
+        if hasattr(model, "post_load_weights"):
+            model.post_load_weights = lambda *args, **kwargs: None
+        self._model = model
+        self._parallelism = parallelism
+        self.param_specs = _bring_to_reload_state(model, built_shapes_by_name, parallelism, postprocess_device)
+        self._params_by_name = dict(model.named_parameters())
+        self.param_mapper = ParameterMapper.from_model(model)
+
+    def load_into(
+        self, buffer: torch.Tensor, param_names: Sequence[str], hf_tensors: list[tuple[str, torch.Tensor]]
+    ) -> dict[str, torch.Tensor]:
+        """Loads `hf_tensors`, the HF tensors of exactly `param_names`, into the uint8 `buffer`; returns the bytes
+        of each param in `buffer`, by name.
+
+        `pack_into_buffers` gives groups of params that fit one buffer. Raises if loading changed a param in any way
+        but its bytes, since a write carries only bytes to the rollout engine.
+        """
+        spans_by_name = _spans_in_buffer(buffer, param_names, self.param_specs)
+        params_by_name = {name: self._params_by_name[name] for name in param_names}
+        try:
+            for name, param in params_by_name.items():
+                spec = self.param_specs[name]
+                param.data = torch.as_strided(spans_by_name[name].view(spec.dtype), spec.shape, spec.stride)
+            metadata_before_by_name = {name: _param_metadata(param) for name, param in params_by_name.items()}
+            with ParallelismContext(self._parallelism):
+                self._model.load_weights(hf_tensors)
+            params_after_by_name = dict(self._model.named_parameters())
+            changed = [
+                name
+                for name, param in params_by_name.items()
+                if params_after_by_name[name] is not param or _param_metadata(param) != metadata_before_by_name[name]
+            ]
+            assert not changed, (
+                f"loading changed more than the bytes of {', '.join(changed[:5])} ({len(changed)} in all); the "
+                "rollout engine receives only bytes, so its param would keep the old shape, storage or attributes"
+            )
+        finally:
+            for param in params_by_name.values():
+                param.data = torch.empty(0, dtype=param.dtype)
+        return spans_by_name
 
 
 class ModelReplicas:
@@ -125,6 +207,42 @@ def assert_replica_matches_shard(
     )
 
 
+def build_model_replica(config: RolloutEngineRankConfig, model_path: str) -> ModelReplica:
+    """Builds the model replica of `config`'s layout. `ModelReplicas` calls it once per layout; it uses this
+    process's GPU for about one module's params, freed before it returns."""
+    _set_global_server_args(config.server_args)
+    with ParallelismContext(config.parallelism):
+        model, built_shapes_by_name = DefaultModelLoader(LoadConfig()).initialize_model_without_storage(
+            model_config=ModelConfig.from_server_args(config.server_args, model_path=model_path),
+            device=torch.device("cpu"),
+        )
+    return ModelReplica(
+        model,
+        built_shapes_by_name,
+        config.parallelism,
+        postprocess_device=torch.device("cuda", torch.cuda.current_device()),
+    )
+
+
+def pack_into_buffers(
+    param_names: Iterable[str], param_specs: Mapping[str, ParamSpec], buffer_bytes: int
+) -> Iterator[list[str]]:
+    """Splits `param_names`, in order, into groups that `ModelReplica.load_into` can each load into one staging
+    buffer of `buffer_bytes`."""
+    group, group_end = [], 0
+    for name in param_names:
+        nbytes = param_specs[name].nbytes
+        assert nbytes <= buffer_bytes, f"{name} takes {nbytes} bytes, more than a {buffer_bytes}-byte staging buffer"
+        start = _align_span_start(group_end)
+        if group and start + nbytes > buffer_bytes:
+            yield group
+            group, start = [], 0
+        group.append(name)
+        group_end = start + nbytes
+    if group:
+        yield group
+
+
 def create_server_args_from_dict(data_dict: dict) -> ServerArgs:
     valid_fields = set(_record_field_names(ServerArgs))
     filtered_data = {k: v for k, v in data_dict.items() if k in valid_fields}
@@ -147,10 +265,7 @@ def _build_cpu_replica(config: RolloutEngineRankConfig, model_path: str) -> torc
         model_loader_extra_config=None,
         rl_quant_profile=config.server_args.rl_quant_profile,
     )
-    server_args_module.set_global_server_args_for_scheduler(config.server_args)
-    initialize_moe_config()
-    initialize_fp8_gemm_config()
-    initialize_fp4_gemm_config()
+    _set_global_server_args(config.server_args)
 
     # Monkey-patch the loader-level post_load_weights to no-op BEFORE get_model,
     # because get_model() calls post_load_weights() internally (loader.py:1310)
@@ -177,3 +292,78 @@ def _build_cpu_replica(config: RolloutEngineRankConfig, model_path: str) -> torc
         model.post_load_weights = lambda *args, **kwargs: None
 
     return model
+
+
+def _set_global_server_args(server_args: ServerArgs) -> None:
+    # model construction and quant methods read these process-wide settings
+    server_args_module.set_global_server_args_for_scheduler(server_args)
+    initialize_moe_config()
+    initialize_fp8_gemm_config()
+    initialize_fp4_gemm_config()
+
+
+def _bring_to_reload_state(
+    model: torch.nn.Module,
+    built_shapes_by_name: Mapping[str, torch.Size],
+    parallelism: RankParallelismConfig,
+    postprocess_device: torch.device,
+) -> dict[str, ParamSpec]:
+    """Runs the engine's startup postprocess and session restore on `model`, one module at a time on zero tensors,
+    and returns the spec of each param afterwards, by name. Every param ends 0-size on the CPU."""
+    built_shapes_by_param_id = {id(param): built_shapes_by_name[name] for name, param in model.named_parameters()}
+    reload_specs_by_param_id = {}
+    for module_name, module in model.named_modules():
+        # modules without one keep their params as built
+        quant_method = getattr(module, "quant_method", None)
+        if quant_method is None:
+            continue
+        for param in module.parameters(recurse=False):
+            param.data = torch.zeros(built_shapes_by_param_id[id(param)], dtype=param.dtype, device=postprocess_device)
+        with ParallelismContext(parallelism):
+            quant_method.process_weights_after_loading(module)
+            # as the engine does: duck-typed quant methods have no restore
+            if isinstance(quant_method, QuantizeMethodBase):
+                quant_method.restore_weights_before_loading(module)
+        # one entry per Parameter, though postprocess may register one under two names
+        for param_name, param in module.named_parameters(recurse=False):
+            assert param.device.type != "meta", (
+                f"the postprocess of {module_name} left {param_name} on meta; it must have read a tensor that "
+                "construction without storage does not allocate"
+            )
+            reload_specs_by_param_id[id(param)] = ParamSpec.of(param)
+            param.data = torch.empty(0, dtype=param.dtype)
+
+    param_specs = {}
+    for name, param in model.named_parameters():
+        if id(param) in reload_specs_by_param_id:
+            param_specs[name] = reload_specs_by_param_id[id(param)]
+        else:
+            param_specs[name] = ParamSpec.of(torch.empty(built_shapes_by_name[name], dtype=param.dtype, device="meta"))
+    return param_specs
+
+
+def _align_span_start(offset: int) -> int:
+    return -(-offset // _SPAN_ALIGNMENT_BYTES) * _SPAN_ALIGNMENT_BYTES
+
+
+def _spans_in_buffer(
+    buffer: torch.Tensor, param_names: Sequence[str], param_specs: Mapping[str, ParamSpec]
+) -> dict[str, torch.Tensor]:
+    spans_by_name, end = {}, 0
+    for name in param_names:
+        start = _align_span_start(end)
+        end = start + param_specs[name].nbytes
+        assert end <= buffer.numel(), (
+            f"{', '.join(param_names)} do not fit a {buffer.numel()}-byte staging buffer; group them with "
+            "pack_into_buffers"
+        )
+        spans_by_name[name] = buffer[start:end]
+    return spans_by_name
+
+
+def _param_metadata(param: torch.nn.Parameter) -> tuple:
+    attributes = {
+        key: value if isinstance(value, bool | int | float | str | None) else id(value)
+        for key, value in vars(param).items()
+    }
+    return param.shape, param.stride(), param.dtype, param.data_ptr(), attributes
