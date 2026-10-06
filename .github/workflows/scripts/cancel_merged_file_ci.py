@@ -60,17 +60,24 @@ def cancel_merged_file_runs(event, request=github_request):
     # Finish pagination before cancelling: removals from active-status lists
     # would otherwise shift later pages and leave queued runs behind.
     cancelled = []
+    failed = []
     for run_id in runs:
         path = f"repos/{repo}/actions/runs/{run_id}"
         try:
-            request(f"{path}/cancel", method="POST")
-        except urllib.error.HTTPError as error:
-            if error.code != 409 or request(path)["status"] != "completed":
-                raise
-            print(f"File run {run_id} already completed")
-        else:
-            print(f"Requested cancellation of file run {run_id} for PR #{pull_number}")
-            cancelled.append(run_id)
+            try:
+                request(f"{path}/cancel", method="POST")
+            except urllib.error.HTTPError as error:
+                if error.code != 409 or request(path)["status"] != "completed":
+                    raise
+                print(f"File run {run_id} already completed")
+            else:
+                print(f"Requested cancellation of file run {run_id} for PR #{pull_number}")
+                cancelled.append(run_id)
+        except Exception as error:
+            print(f"Failed to cancel file run {run_id}: {error}")
+            failed.append(run_id)
+    if failed:
+        raise RuntimeError(f"Failed to cancel file runs for PR #{pull_number}: {failed}")
     return cancelled
 
 

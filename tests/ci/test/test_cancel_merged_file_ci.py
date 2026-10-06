@@ -36,19 +36,19 @@ def file_run(run_id, *, pull=42, status="queued", **overrides):
 
 
 class FakeAPI:
-    def __init__(self, runs_by_status=None, *, conflict_status=None, error_code=None):
+    def __init__(self, runs_by_status=None, *, conflict_status=None, errors=None):
         self.runs_by_status = runs_by_status or {}
         self.conflict_status = conflict_status
-        self.error_code = error_code
+        self.errors = errors or {}
         self.calls = []
         self.cancelled = []
 
     def __call__(self, path, *, method="GET"):
         self.calls.append((method, path))
+        if (method, path) in self.errors:
+            raise self.errors[method, path]
         if method == "POST":
             assert path.startswith(f"{PREFIX}/runs/") and path.endswith("/cancel")
-            if self.error_code:
-                raise urllib.error.HTTPError(path, self.error_code, "cancel failed", {}, None)
             self.cancelled.append(int(path.split("/")[-2]))
             return None
         if "/runs?" not in path:
@@ -100,17 +100,50 @@ def test_non_merge_events_do_not_call_github(action, merged):
 
 
 def test_a_run_finishing_during_cancellation_is_not_an_error():
-    api = FakeAPI({"in_progress": [file_run(1)]}, error_code=409, conflict_status="completed")
-    assert HANDLER.cancel_merged_file_runs(EVENT, api) == []
-    assert api.calls[-1] == ("GET", f"{PREFIX}/runs/1")
+    path = f"{PREFIX}/runs/1"
+    api = FakeAPI(
+        {"in_progress": [file_run(1), file_run(2)]},
+        conflict_status="completed",
+        errors={("POST", f"{path}/cancel"): urllib.error.HTTPError(path, 409, "conflict", {}, None)},
+    )
+    assert HANDLER.cancel_merged_file_runs(EVENT, api) == [2]
+    assert api.cancelled == [2]
+    assert ("GET", path) in api.calls
 
 
-@pytest.mark.parametrize("code,status", [(409, "in_progress"), (403, "completed"), (500, "completed")])
-def test_cancellation_errors_are_not_silently_ignored(code, status):
-    api = FakeAPI({"queued": [file_run(1)]}, error_code=code, conflict_status=status)
-    with pytest.raises(urllib.error.HTTPError) as error:
+@pytest.mark.parametrize("code", [403, 409, 500, 502])
+def test_cancellation_errors_do_not_prevent_other_runs(code, capsys):
+    api = FakeAPI(
+        {"queued": [file_run(i) for i in range(1, 5)]},
+        conflict_status="in_progress",
+        errors={
+            ("POST", f"{PREFIX}/runs/{i}/cancel"): urllib.error.HTTPError("", code, "cancel failed", {}, None)
+            for i in (1, 3)
+        },
+    )
+    with pytest.raises(RuntimeError, match=r"Failed to cancel file runs for PR #42: \[1, 3\]"):
         HANDLER.cancel_merged_file_runs(EVENT, api)
-    assert error.value.code == code
+    assert api.cancelled == [2, 4]
+    assert [path for method, path in api.calls if method == "POST"] == [
+        f"{PREFIX}/runs/{i}/cancel" for i in range(1, 5)
+    ]
+    output = capsys.readouterr().out
+    for run_id in (1, 3):
+        assert f"Failed to cancel file run {run_id}: HTTP Error {code}" in output
+
+
+@pytest.mark.parametrize("method", ["POST", "GET"])
+@pytest.mark.parametrize("error_type", [urllib.error.URLError, TimeoutError])
+def test_request_failures_do_not_prevent_other_runs(method, error_type, capsys):
+    error = error_type("request failed")
+    path = f"{PREFIX}/runs/1"
+    errors = {("POST", f"{path}/cancel"): urllib.error.HTTPError(path, 409, "conflict", {}, None)}
+    errors[method, f"{path}/cancel" if method == "POST" else path] = error
+    api = FakeAPI({"queued": [file_run(1), file_run(2)]}, errors=errors)
+    with pytest.raises(RuntimeError, match=r"Failed to cancel file runs for PR #42: \[1\]"):
+        HANDLER.cancel_merged_file_runs(EVENT, api)
+    assert api.cancelled == [2]
+    assert f"Failed to cancel file run 1: {error}" in capsys.readouterr().out
 
 
 def test_api_truncation_fails_before_any_cancellation():
