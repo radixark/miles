@@ -35,9 +35,9 @@ _RANK_TIMINGS = (
 )
 _CACHE_TIMINGS = (
     "host_encoded_cache_frames_validate_s",
-    "host_encoded_cache_read_s",
-    "host_encoded_cache_sha256_s",
-    "host_encoded_cache_read_sha256_s",
+    "host_encoded_cache_read_worker_sum_s",
+    "host_encoded_cache_sha256_worker_sum_s",
+    "host_encoded_cache_read_hash_s",
     "host_encoded_cache_build_s",
     "host_encoded_cache_allocation_s",
 )

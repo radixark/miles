@@ -34,6 +34,9 @@ def _activation():
             host_encoded_cache_frames_validations=int(creator),
             host_encoded_cache_hash_bytes=100 if creator else 0,
             host_encoded_cache_hash_files=int(creator),
+            host_encoded_cache_read_hash_s=1 + rank if creator else 0,
+            host_encoded_cache_read_worker_sum_s=3 + rank if creator else 0,
+            host_encoded_cache_sha256_worker_sum_s=5 + rank if creator else 0,
             host_rank_cpu_workers=2 * (rank + 1),
             host_rank_outer_zstd_encoded_bytes=40 * (rank + 1),
             host_rank_outer_zstd_decoded_bytes=200 * (rank + 1),
@@ -103,8 +106,9 @@ def test_original_rank_pause_and_creator_only_cache_metrics_remain_separate():
     assert prefix + "coordinator_apply_barrier_s" not in result
     assert result[prefix + "creator_host_encoded_cache_frames_validate_s/p50"] == 11
     assert result[prefix + "creator_host_encoded_cache_frames_validations/sum"] == 2
-    assert result[prefix + "creator_host_encoded_cache_sha256_s/p50"] == 11
-    assert result[prefix + "creator_host_encoded_cache_read_sha256_s/p50"] == 11
+    assert result[prefix + "creator_host_encoded_cache_read_worker_sum_s/p50"] == 4
+    assert result[prefix + "creator_host_encoded_cache_sha256_worker_sum_s/p50"] == 6
+    assert result[prefix + "creator_host_encoded_cache_read_hash_s/p50"] == 2
     assert result[prefix + "creator_host_encoded_cache_build_s/p50"] == 11
     assert prefix + "receiver_host_encoded_cache_frames_validate_s/p50" not in result
     assert prefix + "host_encoded_cache_capacity_bytes/sum" not in result

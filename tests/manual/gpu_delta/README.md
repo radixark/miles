@@ -25,7 +25,7 @@ oracles use raw blocks without a prepended uncompressed-size header.
 No custom C++/CUDA extension is built. Both sender compression stages use CUDA
 SMs. Receiver Zstd decompression runs on CPU; either inner codec explicitly
 requests the Blackwell hardware decompression engine and rejects unsupported
-hardware or allocation modes. DE reads directly from the shared host arena.
+hardware or allocation modes. DE reads directly from each rank's original host arena.
 LZ4 uses byte input with bitshuffle disabled; there is no extra layout transform.
 
 These `GPU_DELTA_*` variables are development/debug controls, not a stable
@@ -36,7 +36,7 @@ user-facing configuration API. Runtime defaults are sufficient for normal use.
 | `GPU_DELTA_CODEC=snappy-zstd` | Default; `lz4-zstd` selects LZ4 instead. Frozen at launch on both sides and matched against the receiver plan and immutable publication. |
 | `GPU_DELTA_SORT_BEFORE_HW_DECOMPRESS=0` | Receiver only. Set `1` to let nvCOMP sort chunks during paused DE submission; default off for both codecs. It does not change publication bytes or move sorting into preparation. |
 | `GPU_DELTA_TIMING=1` | Optional per-phase CUDA events. Default off; instrumentation can perturb timing. |
-| `GPU_DELTA_CPU_WORKERS=32` | CPU outer-Zstd workers per engine-host arena creator, not per rank, plus one independent SHA worker. Two colocated engines have separate pools (64 decoder workers at the default). |
+| `GPU_DELTA_CPU_WORKERS=32` | CPU workers per rank. Each engine-host cache creator also uses its pool for parallel owner-file read/hash before local outer Zstd. Two EP4 engines have eight pools (up to 256 workers at the default). |
 | `GPU_DELTA_HOST_CACHE_DIR` | Tmpfs base for engine-local host arenas; defaults to `/dev/shm/sglang-gpu-delta-<uid>`. Engines use separate subdirectories, identities and locks; only ranks of the same engine share an arena. |
 | `GPU_DELTA_SOURCE_DIGEST` | Optional producer-benchmark provenance annotation; unset by default. Does not configure the transport. |
 
@@ -113,18 +113,18 @@ Protocol 4 records the selected `codec` (`snappy-zstd` or `lz4-zstd`),
 explicit `frame_bytes`, natural tensor
 identity and outer chunk offsets/lengths. SHA-256 authenticates final owner files;
 old/new weights and intermediate inner-codec bytes are not hashed. The receiver reads
-and verifies immutable files, then CPU-decompresses locally needed outer chunks
-once per engine-host arena into shared inner-codec storage during background preparation.
-CUDA HOST_NUMA allocations carry the hardware-decompression flag; ranks share
-physical pages through exported/imported handles and map them for CPU and local
-GPU access. The initial host capacity fits the required extent rounded to allocation
+and verifies immutable encoded files once per engine-host, then every rank
+CPU-decompresses its local tensors directly into its own original HOST_NUMA
+allocation during background preparation. Each allocation requests the hardware-
+decompression flag and checks actual pointer capability; no CUDA handles are
+exported or imported. The initial host capacity fits the required extent rounded to allocation
 granularity; fitting updates reuse it, and growth reserves twice the new requirement.
 Wrapped-file staging remains a separate retained tmpfs mapping.
 
 Preparation builds CPU plans and small GPU metadata/workspace, and uploads raw
 scalar/vector targets without writing model weights. After the serving pause and
 reader fence, the receiver allocates two decoded HBM slots sized for the largest
-batch. Hardware Snappy or LZ4 reads compressed bytes directly from the shared host arena;
+batch. Hardware Snappy or LZ4 reads compressed bytes directly from the rank-owned host arena;
 there is no encoded HBM ring or explicit compressed H2D copy. A DE stream decodes
 the next batch while the apply stream checks status and applies the current masks.
 Events protect decoded-slot and status-row reuse. Slots are released after GPU
@@ -135,12 +135,12 @@ separate groups, omitting empty groups. GPU Zstd decompression is not part of th
 
 Miles negotiates the immutable plan and original participant cohort once when
 connecting; learned updates reuse that plan rather than sort and hash it again.
-The receiver advertises an opaque engine-host arena identity. Miles supplies only
-that engine's local union of canonical tensor names. Ranks within an engine share
-CPU preparation; independent engines have separate arenas and may duplicate host
-bytes. No host-wide cache lock or release barrier couples separate engines.
-Each creator bounds queued decode futures to `4 * GPU_DELTA_CPU_WORKERS`;
-it does not enqueue one unbounded future for every tensor/frame.
+The receiver advertises an opaque engine-host encoded-cache identity. Miles supplies
+that engine's union of canonical tensor names; each rank decodes only its local
+bindings. Ranks share encoded-file verification, while independent engines have
+separate caches. No host-wide cache lock or release barrier couples those engines.
+Each rank bounds queued decode futures to `4 * GPU_DELTA_CPU_WORKERS`; it does
+not enqueue one unbounded future for every tensor/frame.
 The global canonical inventory must have complete, unique owner coverage. Duplicate
 exports, including overlapping PP/MTP names, are rejected rather than deduplicated.
 
@@ -208,9 +208,12 @@ producer prefixes reuse the existing owner gather.
   tuning. Other `receiver_host_*` summaries retain their source span names.
 - `creator_host_encoded_cache_*` samples the one encoded-cache creator per
   engine-host, excluding reusers' zero counters. `host_encoded_cache_creators`
-  records coverage. Read/hash/metadata-validation and cache-build durations have
-  `{min,p50,max}`; hash bytes/files, frame validations and allocation calls/bytes
-  have `/sum`. Verified encoded bytes are ready before rank-local decode begins.
+  records coverage. `read_hash_s` is elapsed submission/join wall time for parallel
+  owner-file verification; `read_worker_sum_s` and `sha256_worker_sum_s` sum
+  overlapping worker intervals and must not be added to that wall span. These
+  timings, metadata-validation and cache-build spans have `{min,p50,max}`; hash
+  bytes/files, frame validations and allocation calls/bytes have `/sum`. All
+  file tasks drain before READY or failure; rank-local decode uses verified bytes.
 - `host_encoded_cache_capacity_bytes/{min,p50,max,sum}` counts retained tmpfs
   capacity once per engine-host cache, including when there is no new creator.
   `receiver_host_encoded_caches` counts those caches, not physical nodes.
@@ -387,12 +390,12 @@ derived refresh. Pause measures the original scheduler flag-to-resume interval;
 it excludes earlier prepare/status handler service and does not quantify serving
 interference. Do not sum nested events or concurrent rank durations.
 
-Each engine-host reads/hashes the immutable owner files once and CPU-unwraps the
-union needed by its original ranks into its shared arena. Independent engines
-have separate arenas. Each scheduler maps the shared DE-capable host arena and
-allocates two decoded HBM slots only during paused application. Small decoder
-metadata/workspace is prepared earlier. Shared storage stays alive until its
-consumers finish. The benchmark
+Each engine-host reads/hashes immutable owner files once into its encoded cache.
+Every scheduler independently CPU-unwraps its local tensors into its original
+DE-capable host arena and allocates two decoded HBM slots only during paused
+application. Small decoder metadata/workspace is prepared earlier. Rank arenas
+stay alive until their GPU readers finish; the encoded cache is released only
+after the original engine cohort completes. The benchmark
 generates before/after updates, not during preparation; realized serving overlap,
 request latency and production throughput need separate study.
 The harness terminates only its own engine processes, retains partial evidence
