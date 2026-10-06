@@ -396,6 +396,11 @@ def p2p_protocol() -> ModuleType:
 
 
 @pytest.fixture(scope="module")
+def mooncake_module(p2p_protocol: ModuleType) -> ModuleType:
+    return sys.modules[p2p_protocol.MooncakeTransport.__module__]
+
+
+@pytest.fixture(scope="module")
 def model_replica_module(p2p_protocol: ModuleType) -> ModuleType:
     return sys.modules[p2p_protocol.query_rollout_engine_rank_configs.__module__]
 

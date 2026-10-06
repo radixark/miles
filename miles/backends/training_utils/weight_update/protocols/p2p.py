@@ -16,6 +16,7 @@ from miles.backends.training_utils.weight_update.protocols.transports.mooncake i
 from miles.backends.training_utils.weight_update.protocols.utils.model_param_stager import ModelParamStager
 from miles.backends.training_utils.weight_update.protocols.utils.model_replica import (
     ModelReplicas,
+    assert_replica_matches_shard,
     query_rollout_engine_rank_configs,
 )
 from miles.backends.training_utils.weight_update.protocols.utils.rollout_engine_rank_assignment import (
@@ -110,15 +111,11 @@ class UpdateWeightP2P(WeightTransferProtocol):
         placement: WeightUpdatePlacement,
         selector: str,
     ) -> None:
-        """``connect`` here will:
+        """Connects this trainer rank to the rollout engines handed over.
 
-        - Assign this rank its target engine ranks from the engines handed over
-          (``engine_gpu_counts``) and the iterator's resolved placement.
-        - Query remote rollout engines for their weight memory registration
-          info (addresses and sizes for RDMA writes).
-        - Query remote parallelism config and construct a local CPU model
-          replica that mirrors the target's sharding layout, enabling correct
-          weight format conversion before transfer.
+        Assigns it rollout engine ranks, queries their configs and Mooncake shards, and checks each model replica
+        against the weights its ranks publish. Replicas, the transport and the registered buffer carry over from
+        earlier connects.
         """
         self.rollout_engines = rollout_engines
         assignments = assign_rollout_engine_ranks(parallel_state, placement, engine_gpu_counts)
@@ -130,16 +127,17 @@ class UpdateWeightP2P(WeightTransferProtocol):
                 self._transport = MooncakeTransport()
             remote_shards_by_rollout_engine_rank = self._transport.connect(rollout_engines, assignments)
             self._model_param_stager = ModelParamStager()
-            self._replica_targets = [
-                _ReplicaTarget(
-                    model_replica=self._model_replicas.get_or_build(
-                        configs_by_rollout_engine_rank[rollout_engine_rank]
-                    ),
-                    remote_shards=remote_shards,
-                    parallelism_config=configs_by_rollout_engine_rank[rollout_engine_rank].parallelism,
-                )
-                for rollout_engine_rank, remote_shards in remote_shards_by_rollout_engine_rank.items()
-            ]
+            self._replica_targets = []
+            for rollout_engine_rank, remote_shards in remote_shards_by_rollout_engine_rank.items():
+                config = configs_by_rollout_engine_rank[rollout_engine_rank]
+                model_replica = self._model_replicas.get_or_build(config)
+                for remote_shard in remote_shards:
+                    assert_replica_matches_shard(
+                        model_replica,
+                        remote_shard.published_nbytes_by_name,
+                        published_by=f"rollout engine {remote_shard.rollout_engine_ind} rank {rollout_engine_rank}",
+                    )
+                self._replica_targets.append(_ReplicaTarget(model_replica, remote_shards, config.parallelism))
 
 
 def _raise_if_any_write_failed(pending_writes: list[tuple[RemoteShard, Future]], timeout: float) -> None:

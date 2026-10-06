@@ -1,4 +1,4 @@
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
 import torch
@@ -104,6 +104,25 @@ def query_rollout_engine_rank_configs(
         )
         configs_by_rollout_engine_rank[assignment.rollout_engine_rank] = configs[0]
     return configs_by_rollout_engine_rank
+
+
+def assert_replica_matches_shard(
+    model_replica: torch.nn.Module, published_nbytes_by_name: Mapping[str, int], published_by: str
+) -> None:
+    """The replica must hold exactly the weights a rollout engine rank publishes, each in the published number of
+    bytes; otherwise what it loads cannot be written into that rank's memory."""
+    replica_nbytes_by_name = {
+        name: param.numel() * param.element_size() for name, param in model_replica.named_parameters()
+    }
+    mismatches = [
+        f"{name} is {replica_nbytes_by_name.get(name)} bytes here, {published_nbytes_by_name.get(name)} there"
+        for name in sorted(replica_nbytes_by_name.keys() | published_nbytes_by_name.keys())
+        if replica_nbytes_by_name.get(name) != published_nbytes_by_name.get(name)
+    ]
+    assert not mismatches, (
+        f"the model replica does not match the weights {published_by} publishes: "
+        f"{', '.join(mismatches[:5])} ({len(mismatches)} in all)"
+    )
 
 
 def create_server_args_from_dict(data_dict: dict) -> ServerArgs:

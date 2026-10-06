@@ -28,6 +28,12 @@ class RemoteShard:
     session_id: str
     weight_locations_by_name: dict[str, RemoteWeightLocation]
 
+    @property
+    def published_nbytes_by_name(self) -> dict[str, int]:
+        return {
+            name: location.numel * location.element_size for name, location in self.weight_locations_by_name.items()
+        }
+
 
 class MooncakeTransport:
     """Writes tensors from this trainer process's registered memory into rollout engines over Mooncake.
