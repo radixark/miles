@@ -212,7 +212,7 @@ def _next_actor():
     return actor
 
 
-async def _post(client, url, payload, max_retries=60, action="post", headers=None):
+async def _request_with_retry(client, url, payload, max_retries=60, action="post", headers=None):
     retry_count = 0
     while retry_count < max_retries:
         try:
@@ -334,7 +334,7 @@ def _init_ray_distributed_post(args):
             )
 
         async def do_post(self, url, payload, max_retries=60, action="post", headers=None):
-            return await _post(self._client, url, payload, max_retries, action=action, headers=headers)
+            return await _request_with_retry(self._client, url, payload, max_retries, action=action, headers=headers)
 
     # Create actors per node
     created = []
@@ -370,12 +370,9 @@ async def post(url, payload, max_retries=60, action="post", headers=None):
             logger.info(f"[http_utils] Distributed POST failed, falling back to local: {e} (url={url})")
             # fall through to local
 
-    return await _post(_http_client, url, payload, max_retries, action=action, headers=headers)
+    return await _request_with_retry(_http_client, url, payload, max_retries, action=action, headers=headers)
 
 
-# TODO unify w/ `post` to add retries and remote-execution
 async def get(url):
-    response = await _http_client.get(url)
-    response.raise_for_status()
-    output = response.json()
-    return output
+    """Fetch JSON or text with at most three attempts."""
+    return await _request_with_retry(_http_client, url, payload=None, max_retries=3, action="get")
