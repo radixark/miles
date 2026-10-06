@@ -29,14 +29,15 @@ def _targets_of(assignments: list[RolloutEngineRankAssignment]) -> list[tuple[in
 @pytest.mark.parametrize("engine_gpu_counts", [[2], [8], [4, 4], [2, 2, 2], [1, 3, 4], [8, 8, 8, 8], []])
 def test_assignments_follow_engine_gpu_counts(data_replica_size: int, engine_gpu_counts: list[int]):
     """Writers cover exactly the rollout engine ranks in the counts: none invented, none skipped, none written
-    twice."""
-    writers = Counter(
-        target
+    twice, and no assignment without a rollout engine."""
+    assignments = [
+        assignment
         for data_replica_rank in range(data_replica_size)
-        for target in _targets_of(
-            assign_rollout_engine_ranks_for_data_replica(data_replica_rank, data_replica_size, engine_gpu_counts)
+        for assignment in assign_rollout_engine_ranks_for_data_replica(
+            data_replica_rank, data_replica_size, engine_gpu_counts
         )
-    )
+    ]
+    writers = Counter(_targets_of(assignments))
 
     expected = {
         (rollout_engine_ind, rollout_engine_rank)
@@ -45,6 +46,7 @@ def test_assignments_follow_engine_gpu_counts(data_replica_size: int, engine_gpu
     }
     assert set(writers) == expected
     assert set(writers.values()) <= {1}
+    assert all(assignment.rollout_engine_indices for assignment in assignments)
 
 
 @pytest.mark.parametrize("gpu_count", [0, -1])
