@@ -86,6 +86,11 @@ Only checkpoints containing `COMPLETE.json` are eligible for evaluation or
 resumption. `latest.json` is published atomically after all ranks finish saving.
 Resume with `--resume <complete-checkpoint-directory>` and the original
 configuration; incompatible data/optimizer/training settings are rejected.
+Filesystem paths and logging destinations may change when moving a checkpoint
+to a different machine. Training and validation file hashes must still match;
+all model and optimizer tensors are restored from the native checkpoint.
+Use the original head configuration and compatible processor when relocating
+their files. The resumed run writes its effective configuration to `config.json`.
 
 Validation saves every probability vector and logs overall/per-source Brier,
 single-answer accuracy, ECE, confidently wrong answers, exact probability-1

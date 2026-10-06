@@ -29,6 +29,7 @@ from examples.clef.data import DecisionExample, LabeledRecord, augment_example, 
 from examples.clef.joint_schema_model import collate_records
 from examples.clef.model import TrainableClefModel, build_model, read_head_config, shard_model
 from examples.clef.objective import decision_loss, prediction_rows, summarize
+from examples.clef.resume import validate_resume_config
 from examples.clef.telemetry import Telemetry
 
 
@@ -212,8 +213,7 @@ def _prepare(args: Args) -> tuple[list[DecisionExample], list[DecisionExample], 
     output = Path(args.output_dir)
     if int(os.environ["LOCAL_RANK"]) == 0:
         output.mkdir(parents=True, exist_ok=bool(args.resume))
-        if not args.resume:
-            (output / "config.json").write_text(json.dumps(config, indent=2))
+        (output / "config.json").write_text(json.dumps(config, indent=2))
         (output / "traces").mkdir(exist_ok=True)
     dist.barrier()
     return train, validation, config
@@ -233,9 +233,7 @@ def main() -> None:
     start = 0
     if args.resume:
         saved = load_checkpoint(model, optimizer, args.resume)
-        for key, value in saved["config"].items():
-            if key not in {"resume", "output_dir", "run_name", "wandb_project", "wandb_entity", "prometheus_port"} and config[key] != value:
-                raise ValueError(f"resume configuration mismatch: {key}")
+        validate_resume_config(saved["config"], config)
         start = saved["step"]
     labels = [encode_example(processor.tokenizer, example, args.max_length) for example in validation]
     telemetry = Telemetry(Path(args.output_dir), args.run_name, config, args.wandb_project, args.wandb_entity, args.prometheus_port) if dist.get_rank() == 0 else None
