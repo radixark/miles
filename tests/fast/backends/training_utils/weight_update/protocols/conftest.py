@@ -13,7 +13,7 @@ from typing import Any
 import pytest
 import torch
 
-from miles.backends.training_utils.weight_update.protocols.shared_utils.rollout_engine_rank_assignment import (
+from miles.backends.training_utils.weight_update.protocols.utils.rollout_engine_rank_assignment import (
     assign_rollout_engine_ranks_for_data_replica,
 )
 
