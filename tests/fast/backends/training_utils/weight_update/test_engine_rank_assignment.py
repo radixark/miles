@@ -28,7 +28,7 @@ def _targets_of(assignments: list[EngineRankAssignment]) -> list[tuple[int, int]
 @pytest.mark.parametrize("replica_size", [1, 2, 3, 4, 6, 8, 16])
 @pytest.mark.parametrize("engine_gpu_counts", [[2], [8], [4, 4], [2, 2, 2], [1, 3, 4], [8, 8, 8, 8], []])
 def test_assignments_follow_engine_gpu_counts(replica_size: int, engine_gpu_counts: list[int]):
-    """Engines come from the counts handed over, not from args: none invented, none skipped, none written twice."""
+    """Writers cover exactly the engine ranks in the counts: none invented, none skipped, none written twice."""
     writers = Counter(
         target
         for replica_rank in range(replica_size)

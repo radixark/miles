@@ -9,8 +9,12 @@ from miles.backends.training_utils.weight_update.utils import get_data_replica_r
 
 @dataclass(frozen=True)
 class EngineRankAssignment:
+    """The weights of one engine rank that a trainer rank sends, and the engines it sends them to.
+
+    These engines have the same layout, so the trainer rank prepares the weights once for all of them.
+    """
+
     engine_rank: int
-    # one load of this engine rank's shard serves all of them
     engine_indices: tuple[int, ...]
 
 
@@ -19,8 +23,10 @@ def assign_engine_ranks(
     placement: WeightUpdatePlacement,
     engine_gpu_counts: Sequence[int],
 ) -> list[EngineRankAssignment]:
-    """Engine ranks this trainer rank writes, over the engines handed over; empty when it is not a
-    sender. Collective."""
+    """Returns the engine ranks this trainer rank sends weights to in p2p weight updates.
+
+    The p2p protocol calls it in `connect`. An empty list means this trainer rank sends nothing.
+    """
     replica_rank, replica_size = get_data_replica_rank_and_size(parallel_state, placement)
     return assign_engine_ranks_for_replica(
         replica_rank=replica_rank, replica_size=replica_size, engine_gpu_counts=engine_gpu_counts
@@ -30,11 +36,11 @@ def assign_engine_ranks(
 def assign_engine_ranks_for_replica(
     replica_rank: int, replica_size: int, engine_gpu_counts: Sequence[int]
 ) -> list[EngineRankAssignment]:
-    """Every (engine, engine rank) goes to exactly one of the `replica_size` data replicas.
+    """Same as `assign_engine_ranks`, but for a given replica index and count.
 
-    The first `replica_size` targets go round robin, one per replica; each remaining target goes to the
-    least-loaded replica already writing that engine rank, so a replica loads one engine rank's shard for
-    several engines, or round robin when no replica writes that engine rank yet.
+    Replicas are the trainer ranks that hold the same weights. Every (engine, engine rank) gets exactly
+    one sender. First each replica gets one, so all of them send in parallel; the rest go to a replica
+    already sending the same engine rank, which prepares those weights once for several engines.
     """
     targets = [
         (engine_index, engine_rank)
