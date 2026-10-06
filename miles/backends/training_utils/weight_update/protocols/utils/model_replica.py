@@ -48,8 +48,9 @@ class RolloutEngineRankConfig:
 class ModelReplicas:
     """Model replicas that load HF weights in rollout engine ranks' layouts, one per shard layout.
 
-    The p2p protocol builds one at each connect. The first replica's params, pinned, are the buffer every later
-    replica loads into and every write reads from.
+    The p2p protocol keeps one for the whole trainer process. The first replica's params, pinned, are the buffer
+    every later replica loads into and every write reads from, so the buffer is registered once and stays valid
+    across reconnects.
     """
 
     def __init__(self, model_path: str) -> None:

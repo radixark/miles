@@ -116,6 +116,10 @@ class _FakeTransferEngine:
             hold.entered.set()
             if not hold.release.wait(timeout=_FAILURE_BOUND):
                 raise TimeoutError(f"the test never released the write to {session_id}")
+        # the NIC fails a read outside registered memory
+        if not all(map(self._is_registered, source_ptrs, source_lens)):
+            self._log.append(("unregistered read", session_id))
+            return -1
         payload = {
             target_ptr: torch.frombuffer(bytearray(ctypes.string_at(source_ptr, length)), dtype=torch.float32).tolist()
             for source_ptr, target_ptr, length in zip(source_ptrs, target_ptrs, source_lens, strict=True)
@@ -123,6 +127,9 @@ class _FakeTransferEngine:
         self._log.append(("write", session_id))
         self.writes.append((session_id, payload))
         return -1 if session_id in self.failing_sessions else 0
+
+    def _is_registered(self, address: int, length: int) -> bool:
+        return any(start <= address and address + length <= start + size for start, size in self.registered)
 
     def written_sessions(self) -> list[str]:
         return [session_id for session_id, _payload in self.writes]
@@ -240,6 +247,7 @@ class _P2PSenderHarness:
         self.log: list[tuple] = []
         self.transfer_engine = _FakeTransferEngine(self.log)
         self.transfer_engines_created = 0
+        # kept alive so a freed replica's memory is never handed to a new one
         self.replicas_created: list[_SharedBufferReplica] = []
         self._loaded_events: dict[int, threading.Event] = {}
         self._calls: list[_ProtocolCall] = []
