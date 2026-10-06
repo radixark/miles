@@ -79,6 +79,16 @@ class TestModelReplicas:
             == model_replicas.shared_params_dict["weight"].data_ptr()
         )
 
+    def test_a_replica_whose_params_do_not_fit_the_shared_buffer_is_rejected(
+        self, model_replica_module: ModuleType, model_replicas_of_width
+    ) -> None:
+        """A param of another shape cannot alias the shared buffer without loading wrong bytes."""
+        model_replicas = model_replicas_of_width({0: 4, 1: 3})
+        model_replicas.get_or_build(_config(model_replica_module, tp_rank=0, global_rank=0))
+
+        with pytest.raises(AssertionError, match="in the shared buffer"):
+            model_replicas.get_or_build(_config(model_replica_module, tp_rank=1, global_rank=1))
+
 
 @pytest.mark.parametrize(
     "record_factory", [dataclasses.make_dataclass, msgspec.defstruct], ids=["dataclass", "msgspec"]

@@ -139,11 +139,15 @@ class _FakeRolloutApi:
         gpu_count: int,
         generation: int = 1,
         unreachable: bool = False,
+        published_weight_numel: int = _WEIGHT_NUMEL,
+        quantization: str | None = None,
     ) -> None:
         self.cell_id = cell_id
         self.gpu_count = gpu_count
         self.generation = generation
         self.unreachable = unreachable
+        self.published_weight_numel = published_weight_numel
+        self.quantization = quantization
         self.calls: list[str] = []
 
     def session_id(self, rank: int) -> str:
@@ -156,7 +160,7 @@ class _FakeRolloutApi:
         self.calls.append("get_remote_instance_transfer_engine_info")
         if self.unreachable:
             raise RuntimeError(f"{self.cell_id} is gone")
-        weights = {name: (self.target_address(rank, name), _WEIGHT_NUMEL, 4) for name in ("w", "qk")}
+        weights = {name: (self.target_address(rank, name), self.published_weight_numel, 4) for name in ("w", "qk")}
         return self.session_id(rank), weights
 
     async def get_parallelism_info(self, rank: int) -> dict:
@@ -165,7 +169,7 @@ class _FakeRolloutApi:
 
     async def get_server_info(self) -> dict:
         self.calls.append("get_server_info")
-        return {"rl_quant_profile": None}
+        return {"rl_quant_profile": None, "quantization": self.quantization}
 
 
 class _ObservedExecutor(ThreadPoolExecutor):
@@ -384,6 +388,11 @@ def p2p_protocol() -> ModuleType:
         }
     ):
         return importlib.import_module(_P2P_PROTOCOL_MODULE)
+
+
+@pytest.fixture(scope="module")
+def mooncake_module(p2p_protocol: ModuleType) -> ModuleType:
+    return sys.modules[p2p_protocol.MooncakeTransport.__module__]
 
 
 @pytest.fixture(scope="module")

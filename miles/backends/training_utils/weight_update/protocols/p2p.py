@@ -16,6 +16,7 @@ from miles.backends.training_utils.weight_update.protocols.transports.mooncake i
 from miles.backends.training_utils.weight_update.protocols.utils.model_param_stager import ModelParamStager
 from miles.backends.training_utils.weight_update.protocols.utils.model_replica import (
     ModelReplicas,
+    assert_replica_matches_shard,
     query_rollout_engine_rank_configs,
 )
 from miles.backends.training_utils.weight_update.protocols.utils.rollout_engine_rank_assignment import (
@@ -108,8 +109,8 @@ class UpdateWeightP2P(WeightTransferProtocol):
         selector: str,
     ) -> None:
         """Connects this trainer rank to the rollout engines handed over: assigns it rollout engine ranks over them
-        and the iterator's placement, queries their configs and Mooncake shards, and builds a model replica per
-        shard layout."""
+        and the iterator's placement, queries their configs and Mooncake shards, and checks each model replica
+        against the weights its ranks publish."""
         self.rollout_engines = rollout_engines
         assignments = assign_rollout_engine_ranks(parallel_state, placement, engine_gpu_counts)
         self.is_sender = bool(assignments)
@@ -123,6 +124,12 @@ class UpdateWeightP2P(WeightTransferProtocol):
             for rollout_engine_rank, remote_shards in remote_shards_by_rollout_engine_rank.items():
                 config = configs_by_rollout_engine_rank[rollout_engine_rank]
                 model_replica = self._model_replicas.get_or_build(config)
+                for remote_shard in remote_shards:
+                    assert_replica_matches_shard(
+                        model_replica,
+                        remote_shard.published_nbytes_by_name,
+                        published_by=f"rollout engine {remote_shard.rollout_engine_ind} rank {rollout_engine_rank}",
+                    )
                 self._replica_targets.append(_ReplicaTarget(model_replica, remote_shards, config.parallelism))
 
 
