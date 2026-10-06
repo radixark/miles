@@ -106,8 +106,9 @@ There is no intermediate inner-codec host slab, CPU compression, or raw matrix f
 The existing `update_weight_buffer_size` bounds each canonical input batch; a
 larger single tensor stands alone. The full compact owner inner-codec payload must fit
 HBM for the outer call. Host snapshots are assumed to fit RAM; no OOM fallback is
-implemented. Production uses 1 MiB inner frames. The low-level encoder's 64 KiB
-and 2 MiB controls are for isolated tests; the receiver accepts at most 1 MiB.
+implemented. Production and fixture creation use 1 MiB inner frames. The receiver
+benchmark also accepts prepared fixtures declaring 64 KiB inner frames; outer Zstd
+chunks remain fixed at 1 MiB. The low-level encoder's 2 MiB control is producer-only.
 
 Protocol 4 records the selected `codec` (`snappy-zstd` or `lz4-zstd`),
 explicit `frame_bytes`, natural tensor

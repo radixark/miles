@@ -76,7 +76,7 @@ def test_topology_and_generation_cover_each_original_engine_rank(monkeypatch, en
     assert bench._capture_gpu_processes(cohort, ports)["status"] == "UNQUALIFIED_PID_NAMESPACE"
 
 
-def _tiny_fixture(tmp_path):
+def _tiny_fixture(tmp_path, frame_bytes=bench.FRAME_BYTES):
 
     import numpy as np
     import zstandard
@@ -103,7 +103,12 @@ def _tiny_fixture(tmp_path):
     save_file({"matrix.weight": before, "norm.weight": raw}, model / "model.safetensors")
     save_file({"matrix.weight": after, "norm.weight": changed}, target / "model.safetensors")
     writer = bench.PublicationWriter(
-        source / "v1", stream_id="original", base_version=0, target_version=1, plan_digest=old_digest
+        source / "v1",
+        stream_id="original",
+        base_version=0,
+        target_version=1,
+        plan_digest=old_digest,
+        frame_bytes=frame_bytes,
     )
     # Fixed raw Snappy fixture: length 16 followed by one 16-byte literal.
     inner = b"\x10\x3c" + mask.tobytes()
@@ -134,13 +139,14 @@ def _tiny_fixture(tmp_path):
     return Namespace(model=model, fixture=source, inventory=inventory, output=output), before, after, changed
 
 
-def test_rebind_preserves_payload_and_exact_canonical_target(tmp_path):
+@pytest.mark.parametrize("frame_bytes", [1 << 16, bench.FRAME_BYTES])
+def test_rebind_preserves_payload_and_exact_canonical_target(tmp_path, frame_bytes):
     import json
 
     import numpy as np
     import zstandard
 
-    args, before, after, changed = _tiny_fixture(tmp_path)
+    args, before, after, changed = _tiny_fixture(tmp_path, frame_bytes)
     source_fixture = (args.fixture / "fixture.json").read_bytes()
     bench._rebind(args)
     fixture = json.loads((args.output / "fixture.json").read_text())
@@ -154,6 +160,7 @@ def test_rebind_preserves_payload_and_exact_canonical_target(tmp_path):
         assert bench.sha256(Path(file["target"]).read_bytes()) == file["sha256"]
     publication = fixture["rounds"][0]["publications"]["snappy-zstd"]
     manifest = json.loads(Path(publication["manifest_path"]).read_text())
+    assert publication["frame_bytes"] == manifest["frame_bytes"] == frame_bytes
     for tensor in manifest["tensors"]:
         location = tensor.get("outer", tensor.get("raw"))
         payload = (Path(publication["manifest_path"]).parent / location["file"]).read_bytes()
@@ -168,7 +175,7 @@ def test_rebind_preserves_payload_and_exact_canonical_target(tmp_path):
         assert np.array_equal(actual, expected)
 
 
-@pytest.mark.parametrize("corruption", ["canonical", "payload", "manifest", "host"])
+@pytest.mark.parametrize("corruption", ["canonical", "payload", "manifest", "host", "frame_bytes"])
 def test_rebind_rejects_incompatible_or_changed_inputs(tmp_path, corruption):
     import json
 
@@ -180,6 +187,11 @@ def test_rebind_rejects_incompatible_or_changed_inputs(tmp_path, corruption):
                 participant["plan"]["tensors"][0]["encoding"] = "raw_bytes"
         inventory["plan_digest"] = bench.merge_plans(inventory["descriptions"])[2]
         bench._save(args.inventory, inventory)
+    elif corruption == "frame_bytes":
+        path = args.fixture / "fixture.json"
+        fixture = json.loads(path.read_text())
+        fixture["rounds"][0]["publications"]["snappy-zstd"]["frame_bytes"] = 1 << 21
+        bench._save(path, fixture)
     elif corruption == "host":
         inventory = json.loads(args.inventory.read_text())
         inventory["descriptions"][1]["participants"][0]["identity"]["host_cache_id"] = "other-container"
