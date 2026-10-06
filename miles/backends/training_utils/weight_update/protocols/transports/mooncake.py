@@ -32,8 +32,9 @@ class RemoteShard:
 class MooncakeTransport:
     """Writes tensors from this trainer process's registered memory into rollout engines over Mooncake.
 
-    The p2p protocol registers its source tensors once, then calls `write` for each rollout engine rank. Each
-    rollout engine has its own write thread, so a stuck engine holds up only its own writes.
+    The p2p protocol keeps one for the whole trainer process: it registers its source tensors once, calls
+    `connect` with each new set of rollout engines, then `write` for each rollout engine rank. Each rollout engine
+    has its own write thread, so a stuck engine holds up only its own writes.
     """
 
     def __init__(self) -> None:
@@ -43,7 +44,14 @@ class MooncakeTransport:
     def connect(
         self, rollout_engines: Sequence[SGLangApiClient], assignments: Sequence[RolloutEngineRankAssignment]
     ) -> dict[int, list[RemoteShard]]:
-        """Returns the shards of the rollout engine ranks in `assignments`, by rollout engine rank."""
+        """Returns the shards of the rollout engine ranks in `assignments`, by rollout engine rank.
+
+        Starts new write threads: a rollout engine index now names a new engine, which must not queue behind the
+        writes of the one it replaced.
+        """
+        for write_executor in self._write_executors_by_rollout_engine_ind.values():
+            write_executor.shutdown(wait=False)
+        self._write_executors_by_rollout_engine_ind = {}
         return {
             assignment.rollout_engine_rank: [
                 _query_remote_shard(

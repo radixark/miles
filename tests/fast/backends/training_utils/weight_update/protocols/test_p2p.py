@@ -196,3 +196,23 @@ class TestConnect:
 
         with pytest.raises(AssertionError, match="different layouts"):
             p2p_sender.connect(protocol, [bf16_api, fp8_api])
+
+    def test_a_reconnect_keeps_the_replica_and_the_registered_buffer(
+        self, p2p_sender: Any, make_rollout_api: Any, make_bucket: Any
+    ) -> None:
+        """Rebuilding the replica at a reconnect left the writes reading memory Mooncake never registered."""
+        protocol = p2p_sender.make_protocol()
+        p2p_sender.connect(protocol, [make_rollout_api("cell-a", gpu_count=1)])
+        protocol.begin_sync(weight_version=1, iter_buckets=None)
+        protocol.send_bucket(make_bucket("hf.w"))
+        protocol.after_base_weights()
+
+        replaced_api = make_rollout_api("cell-a", gpu_count=1, generation=2)
+        p2p_sender.connect(protocol, [replaced_api])
+        protocol.begin_sync(weight_version=2, iter_buckets=None)
+        protocol.send_bucket(make_bucket("hf.w"))
+        protocol.after_base_weights()
+
+        assert p2p_sender.transfer_engine.written_sessions()[-1] == replaced_api.session_id(0)
+        assert len(p2p_sender.replicas_created) == 1
+        assert p2p_sender.transfer_engines_created == 1

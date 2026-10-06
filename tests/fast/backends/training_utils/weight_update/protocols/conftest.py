@@ -116,6 +116,10 @@ class _FakeTransferEngine:
             hold.entered.set()
             if not hold.release.wait(timeout=_FAILURE_BOUND):
                 raise TimeoutError(f"the test never released the write to {session_id}")
+        # the NIC fails a read outside registered memory
+        if not all(map(self._is_registered, source_ptrs, source_lens)):
+            self._log.append(("unregistered read", session_id))
+            return -1
         payload = {
             target_ptr: torch.frombuffer(bytearray(ctypes.string_at(source_ptr, length)), dtype=torch.float32).tolist()
             for source_ptr, target_ptr, length in zip(source_ptrs, target_ptrs, source_lens, strict=True)
@@ -123,6 +127,9 @@ class _FakeTransferEngine:
         self._log.append(("write", session_id))
         self.writes.append((session_id, payload))
         return -1 if session_id in self.failing_sessions else 0
+
+    def _is_registered(self, address: int, length: int) -> bool:
+        return any(start <= address and address + length <= start + size for start, size in self.registered)
 
     def written_sessions(self) -> list[str]:
         return [session_id for session_id, _payload in self.writes]
@@ -240,7 +247,8 @@ class _P2PSenderHarness:
         self.log: list[tuple] = []
         self.transfer_engine = _FakeTransferEngine(self.log)
         self.transfer_engines_created = 0
-        self.replicas_created: list[tuple[int, bool]] = []
+        # kept alive so a freed replica's memory is never handed to a new one
+        self.replicas_created: list[_SharedBufferReplica] = []
         self._loaded_events: dict[int, threading.Event] = {}
         self._calls: list[_ProtocolCall] = []
         self.waiting_threads: set[int] = set()
@@ -255,19 +263,6 @@ class _P2PSenderHarness:
             lambda **kwargs: _ObservedExecutor(self.waiting_threads, **kwargs),
         )
         monkeypatch.setattr(
-            p2p_protocol.UpdateWeightP2P,
-            "_create_cpu_replica",
-            lambda protocol, parallelism_config, model_path, server_args, first_rollout_engine_rank=False: (
-                self._create_cpu_replica(
-                    parallelism_config,
-                    model_path,
-                    server_args,
-                    shared_params_dict=protocol._shared_params_dict,
-                    first_rollout_engine_rank=first_rollout_engine_rank,
-                )
-            ),
-        )
-        monkeypatch.setattr(
             p2p_protocol,
             "assign_rollout_engine_ranks",
             lambda parallel_state, placement, engine_gpu_counts: assign_rollout_engine_ranks_for_data_replica(
@@ -277,14 +272,17 @@ class _P2PSenderHarness:
             ),
         )
         monkeypatch.setattr(p2p_protocol, "ParallelismContext", lambda parallelism_config: nullcontext())
-        monkeypatch.setattr(
-            p2p_protocol, "ParameterMapper", SimpleNamespace(from_model=lambda model: _FakeParameterMapper())
-        )
         monkeypatch.setattr(p2p_protocol, "get_gloo_group", lambda: None)
         monkeypatch.setattr(p2p_protocol, "dist", SimpleNamespace(get_rank=lambda group=None: 0))
         model_replica = sys.modules[p2p_protocol.query_rollout_engine_rank_configs.__module__]
         monkeypatch.setattr(model_replica, "RankParallelismConfig", _FakeRankParallelismConfig)
         monkeypatch.setattr(model_replica, "ServerArgs", _FakeServerArgs)
+        monkeypatch.setattr(model_replica, "_build_cpu_replica", self._build_cpu_replica)
+        monkeypatch.setattr(
+            model_replica, "ParameterMapper", SimpleNamespace(from_model=lambda model: _FakeParameterMapper())
+        )
+        # CPU CI has no pinned memory
+        monkeypatch.setattr(torch.Tensor, "pin_memory", lambda tensor: tensor)
 
     def loaded_event(self, tp_rank: int) -> threading.Event:
         return self._loaded_events.setdefault(tp_rank, threading.Event())
@@ -326,19 +324,9 @@ class _P2PSenderHarness:
         self.transfer_engines_created += 1
         return self.transfer_engine
 
-    def _create_cpu_replica(
-        self,
-        parallelism_config: _FakeRankParallelismConfig,
-        model_path: str,
-        server_args: Any,
-        shared_params_dict: dict[str, torch.Tensor],
-        first_rollout_engine_rank: bool = False,
-    ) -> _SharedBufferReplica:
-        replica = _SharedBufferReplica(tp_rank=parallelism_config.tp_rank, harness=self)
-        if not first_rollout_engine_rank:
-            for name, param in replica.named_parameters():
-                param.data = shared_params_dict[name]
-        self.replicas_created.append((replica.tp_rank, first_rollout_engine_rank))
+    def _build_cpu_replica(self, config: Any, model_path: str) -> _SharedBufferReplica:
+        replica = _SharedBufferReplica(tp_rank=config.parallelism.tp_rank, harness=self)
+        self.replicas_created.append(replica)
         return replica
 
 

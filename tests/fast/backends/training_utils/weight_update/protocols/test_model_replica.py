@@ -3,6 +3,7 @@ from types import ModuleType, SimpleNamespace
 
 import msgspec
 import pytest
+import torch
 
 
 @dataclasses.dataclass
@@ -40,6 +41,53 @@ class TestShardLayoutKey:
             config.shard_layout_key
             != _config(model_replica_module, tp_rank=0, global_rank=0, quantization="fp8").shard_layout_key
         )
+
+
+class TestModelReplicas:
+    @pytest.fixture
+    def model_replicas_of_width(self, model_replica_module: ModuleType, monkeypatch: pytest.MonkeyPatch):
+        """`ModelReplicas` whose replica for tp rank r is a linear layer of `widths[r]` inputs."""
+
+        def make(widths: dict[int, int]):
+            monkeypatch.setattr(
+                model_replica_module,
+                "_build_cpu_replica",
+                lambda config, model_path: torch.nn.Linear(widths[config.parallelism.tp_rank], 1, bias=False),
+            )
+            monkeypatch.setattr(
+                model_replica_module, "ParameterMapper", SimpleNamespace(from_model=lambda model: None)
+            )
+            # CPU CI has no pinned memory
+            monkeypatch.setattr(torch.Tensor, "pin_memory", lambda tensor: tensor)
+            return model_replica_module.ModelReplicas(model_path="/model")
+
+        return make
+
+    def test_a_replica_for_another_layout_loads_into_the_shared_buffer(
+        self, model_replica_module: ModuleType, model_replicas_of_width
+    ) -> None:
+        """Writes read the shared buffer, so a later replica's loads must land in it."""
+        model_replicas = model_replicas_of_width({0: 4, 1: 4})
+
+        first = model_replicas.get_or_build(_config(model_replica_module, tp_rank=0, global_rank=0))
+        second = model_replicas.get_or_build(_config(model_replica_module, tp_rank=1, global_rank=1))
+
+        assert second is not first
+        assert (
+            second.weight.data_ptr()
+            == first.weight.data_ptr()
+            == model_replicas.shared_params_dict["weight"].data_ptr()
+        )
+
+    def test_a_replica_whose_params_do_not_fit_the_shared_buffer_is_rejected(
+        self, model_replica_module: ModuleType, model_replicas_of_width
+    ) -> None:
+        """A param of another shape cannot alias the shared buffer without loading wrong bytes."""
+        model_replicas = model_replicas_of_width({0: 4, 1: 3})
+        model_replicas.get_or_build(_config(model_replica_module, tp_rank=0, global_rank=0))
+
+        with pytest.raises(AssertionError, match="in the shared buffer"):
+            model_replicas.get_or_build(_config(model_replica_module, tp_rank=1, global_rank=1))
 
 
 @pytest.mark.parametrize(
