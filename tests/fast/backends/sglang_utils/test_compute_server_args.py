@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import dataclasses
+import json
 from types import SimpleNamespace
 
 import msgspec
@@ -166,3 +167,65 @@ class TestAdapterOwnership:
         server_args = compute(make_args(lora_rank=8, lora_adapter_path="/fake/adapter", **{flag: True}))
 
         assert server_args["lora_paths"] == ["miles_lora=/fake/adapter"]
+
+
+class TestOutputStoreExtraConfig:
+    """Engines join the rollout executor's Mooncake cluster; the user may add only the free keys."""
+
+    @pytest.fixture(autouse=True)
+    def _server_args_with_output_store(self, monkeypatch):
+        server_args_type = dataclasses.make_dataclass(
+            "ServerArgs",
+            [("gated_launch_port", int), ("output_store_backend", str), ("output_store_backend_extra_config", str)],
+        )
+        monkeypatch.setattr(sglang_engine, "ServerArgs", server_args_type)
+        for name in ("MOONCAKE_MASTER", "MOONCAKE_PROTOCOL", "MOONCAKE_TE_META_DATA_SERVER", "MOONCAKE_DEVICE"):
+            monkeypatch.delenv(name, raising=False)
+
+    @staticmethod
+    def _args(extra_config: str | None = None) -> SimpleNamespace:
+        return make_args(
+            sglang_output_store_backend="mooncake",
+            sglang_output_store_backend_extra_config=extra_config,
+            mooncake_store_init_kwargs={"master_server_address": "10.0.0.1:50051", "protocol": "tcp"},
+            mooncake_replica_num=2,
+        )
+
+    def test_each_engine_gets_the_shared_cluster_and_its_own_address(self):
+        server_args = compute(self._args(), host="10.0.0.7")
+
+        assert json.loads(server_args["output_store_backend_extra_config"]) == {
+            "local_buffer_size": "1gb",
+            "master_server_address": "10.0.0.1:50051",
+            "protocol": "tcp",
+            "metadata_server": "P2PHANDSHAKE",
+            "device_name": "",
+            "key_prefix": "miles-object-store",
+            "replica_num": 2,
+            "local_hostname": "10.0.0.7",
+        }
+
+    def test_the_user_keeps_the_free_keys(self):
+        server_args = compute(self._args('{"local_buffer_size": "4gb", "partition": "run-1"}'))
+
+        config = json.loads(server_args["output_store_backend_extra_config"])
+        assert (config["local_buffer_size"], config["partition"]) == ("4gb", "run-1")
+
+    @pytest.mark.parametrize(
+        ("extra_config", "match"),
+        [('{"key_prefix": "other"}', "contradicts"), ('{"local_hostname": "10.0.0.9"}', "local_hostname")],
+    )
+    def test_a_key_miles_derives_cannot_be_overridden(self, extra_config, match):
+        with pytest.raises(ValueError, match=match):
+            compute(self._args(extra_config))
+
+    @pytest.mark.parametrize("worker_type", ["prefill", "decode"])
+    def test_pd_engines_cannot_enable_it(self, worker_type):
+        with pytest.raises(ValueError, match="PD disaggregation"):
+            compute(self._args(), worker_type=worker_type, disaggregation_bootstrap_port=1)
+
+    def test_an_engine_without_the_backend_is_left_alone(self):
+        args = self._args('{"partition": "run-1"}')
+        args.sglang_output_store_backend = "none"
+
+        assert compute(args)["output_store_backend_extra_config"] == '{"partition": "run-1"}'

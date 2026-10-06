@@ -23,6 +23,7 @@ class ProcessResultMetaInfo:
     weight_version: str | None = None
     weight_versions: list[dict[str, str | int]] | None = None
     routed_experts: str | None = None
+    output_store_ref: dict | None = None
     spec_num_correct_drafts: int | None = None
     spec_num_proposed_drafts: int | None = None
     spec_verify_ct: int | None = None

@@ -8,6 +8,7 @@ from typing import Any
 import numpy as np
 import pybase64
 
+from miles.rollout.generate_utils.output_store import ReplayOutputs, output_store_enabled, resolve_replay_outputs
 from miles.rollout.generate_utils.rollout_topk_logprobs import (
     append_rollout_topk_logprobs,
     configure_rollout_topk_logprobs_request,
@@ -87,12 +88,27 @@ def compute_request_payload(
 
     if not evaluation:
         configure_rollout_topk_logprobs_request(args, payload)
+        maybe_request_outputs_via_store(args, payload)
     return payload, None
+
+
+def maybe_request_outputs_via_store(args, payload: dict[str, Any]) -> None:
+    """Ask SGLang to return a training request's replay outputs through the output store.
+
+    Call it for training requests only: eval engines may run without the backend.
+    """
+    if output_store_enabled(args) and any(
+        payload.get(key) for key in ("return_routed_experts", "return_indexer_topk", "return_sampling_mask")
+    ):
+        payload["return_outputs_via_store"] = True
 
 
 async def update_sample_from_response(
     args, sample: Sample, payload: dict, output: dict, update_loss_mask: bool = False
 ):
+    # Read the output-store bundle first, so a bad one leaves the Sample untouched.
+    replay = await resolve_replay_outputs(output["meta_info"])
+
     # Initialize sample.tokens for the first turn
     if (len(sample.response) == 0) and not sample.tokens:
         sample.tokens = payload["input_ids"]
@@ -109,6 +125,7 @@ async def update_sample_from_response(
             new_response_tokens,
             output["meta_info"],
             sampling_logprobs_mode=payload.get("sampling_logprobs_mode", "selected"),
+            replay=replay,
         )
 
     # Update sample with tokens directly - avoiding re-tokenization
@@ -133,8 +150,10 @@ async def update_sample_from_response(
         sample.loss_mask += [1] * len(new_response_tokens)
 
     # TODO handle multi-turn cases (may need concat instead of assignment)
-    sample.rollout_routed_experts = get_routed_experts_from_response(args, output, len(sample.tokens) - 1)
-    sample.rollout_indexer_topk = get_indexer_topk_from_response(args, output, sample)
+    sample.rollout_routed_experts = get_routed_experts_from_response(
+        args, output, len(sample.tokens) - 1, replay=replay
+    )
+    sample.rollout_indexer_topk = get_indexer_topk_from_response(args, output, sample, replay=replay)
 
     # TODO may unify (currently there are both methods inside Sample and separate functions)
     sample.update_from_meta_info(args, output["meta_info"])
@@ -149,11 +168,25 @@ def _decode_topk_buffer(info: str, num_tokens: int, num_layers: int, topk: int) 
     return x.reshape(num_tokens, num_layers, topk)
 
 
-def get_routed_experts_from_response(args, output, num_tokens: int):
-    info = output["meta_info"].get("routed_experts")
-    if info is None:
-        return None
-    routed_experts = _decode_topk_buffer(info, num_tokens, args.num_layers, -1)
+def _check_topk_rows(array: np.ndarray, name: str, *, num_tokens: int, num_layers: int) -> np.ndarray:
+    """An output-store (tokens, layers, topk) array must match what the inline decode would reshape to."""
+    if array.shape[:2] != (max(num_tokens, 0), num_layers):
+        raise ValueError(
+            f"{name} from the output store has shape {array.shape}, expected ({num_tokens}, {num_layers}, topk)"
+        )
+    return array
+
+
+def get_routed_experts_from_response(args, output, num_tokens: int, replay: ReplayOutputs | None = None):
+    if replay is not None and replay.routed_experts is not None:
+        routed_experts = _check_topk_rows(
+            replay.routed_experts, "routed_experts", num_tokens=num_tokens, num_layers=args.num_layers
+        )
+    else:
+        info = output["meta_info"].get("routed_experts")
+        if info is None:
+            return None
+        routed_experts = _decode_topk_buffer(info, num_tokens, args.num_layers, -1)
     assert routed_experts.size == 0 or routed_experts.any(), (
         "routed_experts payload is all zeros: the sglang engine did not capture routed experts "
         "(topk-bypassing --moe-runner-backend such as flashinfer_trtllm?)."
@@ -161,7 +194,14 @@ def get_routed_experts_from_response(args, output, num_tokens: int):
     return routed_experts
 
 
-def get_indexer_topk_from_response(args, output, sample):
+def get_indexer_topk_from_response(args, output, sample, replay: ReplayOutputs | None = None):
+    num_tokens = len(sample.tokens) - 1
+    if replay is not None and replay.indexer_topk is not None:
+        # An output-store response carries no indexer_topk_num_layers; the array shape holds it.
+        num_layers = replay.indexer_topk.shape[1]
+        _assert_indexer_streams(args, num_layers)
+        return _check_topk_rows(replay.indexer_topk, "indexer_topk", num_tokens=num_tokens, num_layers=num_layers)
+
     info = output["meta_info"].get("indexer_topk")
     if info is None:
         return None
@@ -170,9 +210,13 @@ def get_indexer_topk_from_response(args, output, sample):
         "Server returned indexer_topk without indexer_topk_num_layers; "
         "sglang-miles must include the layer count in meta_info."
     )
+    _assert_indexer_streams(args, num_layers)
+    return _decode_topk_buffer(info, num_tokens, num_layers, -1)
+
+
+def _assert_indexer_streams(args, num_layers: int) -> None:
     expected_num_streams = getattr(args, "rollout_indexer_topk_num_streams", None)
     assert expected_num_streams is None or num_layers == expected_num_streams, (
         f"Server returned indexer_topk with {num_layers} streams but the model has "
         f"{expected_num_streams} indexer layers; replaying it would map streams to the wrong layers."
     )
-    return _decode_topk_buffer(info, len(sample.tokens) - 1, num_layers, -1)
