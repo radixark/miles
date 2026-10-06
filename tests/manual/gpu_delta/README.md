@@ -5,6 +5,13 @@ SGLang `update_weights_from_delta` API. `disk-delta` remains a separate checkpoi
 handoff path. GPU-delta supports `snappy-zstd` (default) and `lz4-zstd`, with only
 `--update-weight-delta-encoding xor`; `overwrite` is supported by disk-delta only.
 
+The backend-neutral codec and publication modules live in `miles.utils.gpu_delta`.
+Training protocol, session, and metrics live in
+`miles.backends.training_utils.weight_update.protocols.gpu_delta`; Megatron export
+ownership stays in `miles.backends.megatron_utils.update_weight.gpu_delta`.
+Feature-only fast tests use matching `gpu_delta/` subdirectories, while the manual
+benchmarks remain in this directory.
+
 ## Environment
 
 Use a CUDA 13 Miles development image, the paired SGLang branch on `PYTHONPATH`,

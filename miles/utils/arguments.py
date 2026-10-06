@@ -3638,7 +3638,7 @@ def miles_validate_args(args):
         assert args.update_weight_disk_dir and os.path.isdir(
             args.hf_checkpoint
         ), "GPU delta requires a shared publication directory and a local canonical HF checkpoint"
-        from miles.utils.gpu_delta_publication import configured_codec
+        from miles.utils.gpu_delta.publication import configured_codec
 
         configured_codec()
 

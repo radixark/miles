@@ -11,8 +11,8 @@ import snappy
 import torch
 import zstandard
 
-from miles.utils import gpu_delta_encoder
-from miles.utils.gpu_delta_publication import CODECS, FRAME_BYTES, PublicationWriter
+from miles.utils.gpu_delta import encoder as gpu_delta_encoder
+from miles.utils.gpu_delta.publication import CODECS, FRAME_BYTES, PublicationWriter
 
 
 def _decode(frames, payload, outer, old, codec):

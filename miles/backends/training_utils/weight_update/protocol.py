@@ -85,7 +85,7 @@ def get_weight_transfer_protocol(args: Namespace) -> WeightTransferProtocol:
 
         return UpdateWeightFromDistributed(args)
     if mode == "gpu-delta":
-        from miles.backends.training_utils.weight_update.protocols.gpu_delta import UpdateWeightFromGpuDelta
+        from miles.backends.training_utils.weight_update.protocols.gpu_delta.protocol import UpdateWeightFromGpuDelta
 
         return UpdateWeightFromGpuDelta(args)
     if mode == "disk-delta":

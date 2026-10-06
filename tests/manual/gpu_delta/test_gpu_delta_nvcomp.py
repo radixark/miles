@@ -13,7 +13,7 @@ import snappy
 import torch
 import zstandard
 
-from miles.utils.gpu_delta_nvcomp import NvcompCompressor
+from miles.utils.gpu_delta.nvcomp import NvcompCompressor
 
 
 def qualify(codec, device):

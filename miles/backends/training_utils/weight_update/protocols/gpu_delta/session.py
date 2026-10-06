@@ -8,7 +8,7 @@ import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass
 
-from miles.utils.gpu_delta_publication import CODEC, canonical_json, sha256
+from miles.utils.gpu_delta.publication import CODEC, canonical_json, sha256
 
 
 def merge_plans(descriptions: Sequence[dict], codec: str = CODEC) -> tuple[list[dict], list[dict], str]:

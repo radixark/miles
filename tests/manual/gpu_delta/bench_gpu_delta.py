@@ -43,12 +43,12 @@ import httpx
 import numpy as np
 import zstandard
 
-from miles.backends.training_utils.weight_update.gpu_delta_session import (
+from miles.backends.training_utils.weight_update.protocols.gpu_delta.session import (
     activate_publication,
     merge_plans,
     negotiate_cohort,
 )
-from miles.utils.gpu_delta_publication import (
+from miles.utils.gpu_delta.publication import (
     DTYPE_BYTES,
     FRAME_BYTES,
     PublicationWriter,
@@ -496,7 +496,7 @@ def _publication_accounting(publication):
 def _fixture(args):
     import torch
 
-    from miles.utils.gpu_delta_encoder import GpuBatchEncoder
+    from miles.utils.gpu_delta.encoder import GpuBatchEncoder
 
     codec = configured_codec()
     inventory = json.loads(args.inventory.read_text())

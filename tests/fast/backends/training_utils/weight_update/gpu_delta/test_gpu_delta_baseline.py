@@ -13,8 +13,9 @@ import pytest
 import safetensors.numpy
 import torch
 
-from miles.backends.training_utils.weight_update.protocols import gpu_delta
-from miles.utils import gpu_delta_encoder, gpu_delta_publication
+from miles.backends.training_utils.weight_update.protocols.gpu_delta import protocol as gpu_delta
+from miles.utils.gpu_delta import encoder as gpu_delta_encoder
+from miles.utils.gpu_delta import publication as gpu_delta_publication
 
 
 class _Engine:

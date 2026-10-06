@@ -5,8 +5,8 @@ import copy
 
 import pytest
 
-from miles.backends.training_utils.weight_update import gpu_delta_session as session
-from miles.utils.gpu_delta_publication import CODEC, CODECS
+from miles.backends.training_utils.weight_update.protocols.gpu_delta import session
+from miles.utils.gpu_delta.publication import CODEC, CODECS
 
 
 def _setup(failure=None, failed_engine=1, codec=CODEC):

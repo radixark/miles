@@ -137,7 +137,7 @@ def prepare():
 
 def _gpu_delta_env():
     # Ray jobs receive an explicit environment, not every variable in this shell.
-    from miles.utils.gpu_delta_publication import configured_codec
+    from miles.utils.gpu_delta.publication import configured_codec
 
     return {
         "GPU_DELTA_CODEC": configured_codec(),

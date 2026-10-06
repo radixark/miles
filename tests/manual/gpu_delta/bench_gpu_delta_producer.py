@@ -22,7 +22,7 @@ from pathlib import Path
 import torch
 import torch.distributed as dist
 
-from miles.utils.gpu_delta_publication import FRAME_BYTES
+from miles.utils.gpu_delta.publication import FRAME_BYTES
 
 NVFP4_ENV = {
     "SGLANG_NVFP4_CKPT_FP8_GEMM_IN_ATTN": "0",
@@ -195,7 +195,7 @@ def _load_model(args):
 
 
 def _make_iterator(args, model, config, timing):
-    from miles.backends.megatron_utils.update_weight.gpu_delta_export import HfWeightIteratorGpuDelta
+    from miles.backends.megatron_utils.update_weight.gpu_delta.export import HfWeightIteratorGpuDelta
     from miles.backends.training_utils.weight_update.hf_weight_iterator import WeightUpdatePlacement
 
     class TimedIterator(HfWeightIteratorGpuDelta):
@@ -238,7 +238,7 @@ def _make_iterator(args, model, config, timing):
 
 def _discover_plan(args, iterator, weights):
     from miles.backends.training_utils.parallel import get_parallel_state
-    from miles.utils.gpu_delta_publication import checkpoint_tensor_layout
+    from miles.utils.gpu_delta.publication import checkpoint_tensor_layout
 
     local, error = {}, None
     parallel = get_parallel_state()
@@ -310,7 +310,7 @@ def _discover_plan(args, iterator, weights):
 
 
 def _make_protocol(args, plan, output, frame_bytes):
-    from miles.backends.training_utils.weight_update.protocols.gpu_delta import UpdateWeightFromGpuDelta
+    from miles.backends.training_utils.weight_update.protocols.gpu_delta.protocol import UpdateWeightFromGpuDelta
 
     class ProducerOnlyProtocol(UpdateWeightFromGpuDelta):
         async def _describe(self):
@@ -492,7 +492,7 @@ def _verify_pending_inventory(protocol, owned_plan):
     # target inventory before simulating a successful receiver acknowledgment.
     from math import prod
 
-    from miles.utils.gpu_delta_publication import DTYPE_BYTES
+    from miles.utils.gpu_delta.publication import DTYPE_BYTES
 
     pending = protocol.pending_baseline
     if pending.keys() != owned_plan.keys():

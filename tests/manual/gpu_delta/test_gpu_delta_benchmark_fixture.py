@@ -16,7 +16,7 @@ import snappy
 import torch
 import zstandard
 
-from miles.utils.gpu_delta_publication import CODECS, sha256
+from miles.utils.gpu_delta.publication import CODECS, sha256
 
 _MODULE = Path(__file__).with_name("bench_gpu_delta.py")
 _spec = importlib.util.spec_from_file_location("bench_gpu_delta", _MODULE)

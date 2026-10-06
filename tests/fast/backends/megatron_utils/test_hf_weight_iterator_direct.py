@@ -10,7 +10,7 @@ import pytest
 import torch
 
 from miles.backends.training_utils.weight_update import updater
-from miles.backends.training_utils.weight_update.protocols.gpu_delta import UpdateWeightFromGpuDelta
+from miles.backends.training_utils.weight_update.protocols.gpu_delta.protocol import UpdateWeightFromGpuDelta
 from miles.utils.types import ParamInfo
 
 
@@ -78,7 +78,7 @@ def direct_module(monkeypatch):
         "miles.backends.megatron_utils.named_weights",
         "miles.backends.megatron_utils.update_weight.hf_weight_iterator",
         "miles.backends.megatron_utils.update_weight.hf_weight_iterator_direct",
-        "miles.backends.megatron_utils.update_weight.gpu_delta_export",
+        "miles.backends.megatron_utils.update_weight.gpu_delta.export",
     ]
     saved_modules = {name: sys.modules.get(name) for name in module_names}
     for name in module_names:
@@ -395,7 +395,7 @@ def test_producer_discovery_installs_actual_owner_hook_and_preserves_plan(direct
 def gpu_delta_module(direct_module):
     import importlib
 
-    return importlib.import_module("miles.backends.megatron_utils.update_weight.gpu_delta_export")
+    return importlib.import_module("miles.backends.megatron_utils.update_weight.gpu_delta.export")
 
 
 def _ordinary_info(name, sharded=True):

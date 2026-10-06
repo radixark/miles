@@ -12,7 +12,7 @@ from concurrent.futures import ThreadPoolExecutor
 import numpy as np
 import pytest
 
-from miles.utils import gpu_delta_publication as publication
+from miles.utils.gpu_delta import publication
 
 
 def _writer(path, owner=0, frame_bytes=publication.FRAME_BYTES, codec=publication.CODEC):

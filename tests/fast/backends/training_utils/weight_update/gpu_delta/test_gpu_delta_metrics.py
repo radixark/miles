@@ -12,10 +12,10 @@ from unittest.mock import Mock
 
 import pytest
 
-from miles.backends.training_utils.weight_update import gpu_delta_metrics as metrics
 from miles.backends.training_utils.weight_update import updater as updater_module
 from miles.backends.training_utils.weight_update.protocol import WeightTransferProtocol, get_weight_transfer_protocol
-from miles.backends.training_utils.weight_update.protocols import gpu_delta
+from miles.backends.training_utils.weight_update.protocols.gpu_delta import metrics
+from miles.backends.training_utils.weight_update.protocols.gpu_delta import protocol as gpu_delta
 from miles.utils.timer import Timer
 
 
@@ -204,7 +204,7 @@ class _OrdinaryProtocol(WeightTransferProtocol):
 @pytest.fixture
 def actor_update(monkeypatch):
     """Execute the exact actor entry point without importing native Megatron."""
-    source = Path(gpu_delta.__file__).parents[3] / "megatron_utils" / "actor.py"
+    source = Path(gpu_delta.__file__).parents[4] / "megatron_utils" / "actor.py"
     actor = next(node for node in ast.parse(source.read_text()).body if isinstance(node, ast.ClassDef))
     method = next(node for node in actor.body if isinstance(node, ast.FunctionDef) and node.name == "update_weights")
     method.decorator_list = []

@@ -14,7 +14,7 @@ from dataclasses import dataclass
 
 import torch
 
-from miles.utils.gpu_delta_publication import CODEC, FRAME_BYTES
+from miles.utils.gpu_delta.publication import CODEC, FRAME_BYTES
 
 try:
     import triton
@@ -227,7 +227,7 @@ class GpuBatchEncoder:
 
     def __init__(self, device: torch.device, frame_bytes: int = FRAME_BYTES, codec: str = CODEC):
         # Metadata-only imports need neither nvCOMP nor a CUDA context.
-        from miles.utils.gpu_delta_nvcomp import NvcompCompressor
+        from miles.utils.gpu_delta.nvcomp import NvcompCompressor
 
         if triton is None:
             raise RuntimeError("GPU batch XOR/compression requires Triton")

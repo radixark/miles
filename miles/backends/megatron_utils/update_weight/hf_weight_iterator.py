@@ -85,7 +85,7 @@ def get_hf_weight_iterator(
         and args.update_weight_transfer_mode == "gpu-delta"
         and not required_placement.gather_pp
     ):
-        from miles.backends.megatron_utils.update_weight.gpu_delta_export import HfWeightIteratorGpuDelta
+        from miles.backends.megatron_utils.update_weight.gpu_delta.export import HfWeightIteratorGpuDelta
 
         cls = HfWeightIteratorGpuDelta
 

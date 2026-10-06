@@ -20,13 +20,15 @@ from pathlib import Path
 import torch
 import torch.distributed as dist
 
-from miles.backends.training_utils.weight_update import gpu_delta_metrics, gpu_delta_session
 from miles.backends.training_utils.weight_update.protocol import WeightTransferProtocol
 from miles.backends.training_utils.weight_update.protocols.delta import _safetensors_dtype
+from miles.backends.training_utils.weight_update.protocols.gpu_delta import metrics as gpu_delta_metrics
+from miles.backends.training_utils.weight_update.protocols.gpu_delta import session as gpu_delta_session
 from miles.backends.training_utils.weight_update.session import set_weight_version
 from miles.backends.training_utils.weight_update.utils import get_data_replica_rank_and_size
-from miles.utils import async_utils, disk_delta, gpu_delta_publication
+from miles.utils import async_utils, disk_delta
 from miles.utils.distributed_utils import get_gloo_group
+from miles.utils.gpu_delta import publication as gpu_delta_publication
 
 logger = logging.getLogger(__name__)
 
@@ -75,7 +77,7 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
         error = None
         if self._gpu_encoder is None:
             try:
-                from miles.utils.gpu_delta_encoder import GpuBatchEncoder
+                from miles.utils.gpu_delta.encoder import GpuBatchEncoder
 
                 device = torch.device("cuda", torch.cuda.current_device())
                 self._gpu_encoder = GpuBatchEncoder(device, frame_bytes=self._frame_bytes, codec=self.codec)
