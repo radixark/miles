@@ -5,7 +5,7 @@ from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
 from tests.ci.metric_history import register_ci_gate
 
 
-# Smoke test for scripts/run_inkling.py --train-mode lora on the 4-layer slice:
+# Smoke test for scripts/run_inkling.py --train-mode lora on the 6-layer slice:
 # shared-outer grouped-expert LoRA served through SGLang's virtual-experts path, one
 # 4-GPU engine, adapter sync verified by checksum. Functionality, not accuracy.
 
@@ -28,12 +28,12 @@ register_ci_gate(metric_key="train/train_rollout_logprob_abs_diff")
 register_ci_gate(metric_key="train/train_rollout_kl")
 register_ci_gate(metric_key="rollout/raw_reward")
 
-_MODEL_ORG = "CharyZeng"
+_MODEL_ORG = "pb09204048"
 
 
 def _args() -> ScriptArgs:
     return ScriptArgs.from_env(
-        model_name="Inkling-Small-4layer",
+        model_name="Inkling-Small-6layer",
         train_mode="lora",
         task="dapo_math",
         num_nodes=1,
