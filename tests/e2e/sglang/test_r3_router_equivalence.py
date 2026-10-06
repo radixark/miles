@@ -58,6 +58,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from miles.utils.external_utils import command_utils
+from miles.utils.external_utils.command_utils import checkpoint_cache
 
 DUMP_ROOT = Path(os.environ.get("ROUTER_EQ_DUMP_ROOT", "/tmp/router-eq"))
 PROMPT_DATA_PATH = "/root/datasets/dapo-math-17k/dapo-math-17k.jsonl"
@@ -123,7 +124,7 @@ def prepare(model_family: str) -> None:
     U = command_utils.default_config().create_backend()
     cfg = _get_config(model_family)
     U.exec_command_cpu("mkdir -p /root/models /root/datasets")
-    if not Path(cfg.local_dir).exists():
+    if checkpoint_cache.enabled() or not Path(cfg.local_dir).exists():
         U.exec_command_cpu(f"hf download {cfg.hf_repo} --local-dir {cfg.local_dir}")
     if not Path(PROMPT_DATA_PATH).exists():
         U.hf_download_dataset("zhuzilin/dapo-math-17k")

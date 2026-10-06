@@ -7,12 +7,13 @@ import shlex
 import sys
 from abc import ABC, abstractmethod
 from collections.abc import Callable
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass, field
 from functools import partial
 from pathlib import Path
 from typing import Any, Literal, get_args
 
+from miles.utils.external_utils.command_utils import checkpoint_cache
 from miles.utils.external_utils.command_utils.common import (
     ArgvManipulator,
     _parse_extra_env_vars,
@@ -211,11 +212,10 @@ class BaseCommandBackend(ABC):
     ):
         hf_checkpoint = hf_checkpoint or f"/root/models/{model_name}"
 
-        # TODO shall we make it in host-mapped folder and thus can cache it to speedup CI
         path_dst = f"{dir_dst}/{model_name}_torch_dist"
-        with _exclusive_path_lock(path_dst):
+        with nullcontext() if checkpoint_cache.enabled() else _exclusive_path_lock(path_dst):
             tracker = Path(path_dst) / "latest_checkpointed_iteration.txt"
-            if tracker.exists() and tracker.read_text().strip() == "release":
+            if not checkpoint_cache.enabled() and tracker.exists() and tracker.read_text().strip() == "release":
                 logger.info(f"convert_checkpoint skip {path_dst} since tracker is 'release'")
                 return
 
@@ -275,9 +275,9 @@ class BaseCommandBackend(ABC):
         self.exec_command_cpu(f"hf download --repo-type dataset {full_name} --local-dir {data_dir}/{partial_name}")
 
     def fp8_cast_bf16(self, path_src, path_dst):
-        with _exclusive_path_lock(path_dst):
+        with nullcontext() if checkpoint_cache.enabled() else _exclusive_path_lock(path_dst):
             sentinel = Path(path_dst) / "model.safetensors.index.json"
-            if sentinel.exists():
+            if not checkpoint_cache.enabled() and sentinel.exists():
                 logger.info(f"fp8_cast_bf16 skip {path_dst} since {sentinel} exists")
                 return
 
@@ -294,12 +294,17 @@ class BaseCommandBackend(ABC):
     def _execute_train_inner(self, *, request: ExecuteTrainRequest, config: ExecuteTrainConfig) -> None: ...
 
     def exec_command_cpu(self, cmd: str, capture_output: bool = False) -> str | None:
-        return self._exec_command_cpu_inner(cmd, capture_output=capture_output)
+        return checkpoint_cache.run_conversion(
+            cmd, partial(self._exec_command_cpu_inner, capture_output=capture_output)
+        )
 
     def exec_command_gpu(
         self, cmd: str, capture_output: bool = False, num_gpus_per_node: int | None = None
     ) -> str | None:
-        return self._exec_command_gpu_inner(cmd, capture_output=capture_output, num_gpus_per_node=num_gpus_per_node)
+        return checkpoint_cache.run_conversion(
+            cmd,
+            partial(self._exec_command_gpu_inner, capture_output=capture_output, num_gpus_per_node=num_gpus_per_node),
+        )
 
     def exec_command_multi_node(
         self,
@@ -308,8 +313,14 @@ class BaseCommandBackend(ABC):
         num_nodes: int | None = None,
         num_gpus_per_node: int | None = None,
     ) -> list[str | None]:
-        return self._exec_command_multi_node_inner(
-            cmd, capture_output=capture_output, num_nodes=num_nodes, num_gpus_per_node=num_gpus_per_node
+        return checkpoint_cache.run_conversion(
+            cmd,
+            partial(
+                self._exec_command_multi_node_inner,
+                capture_output=capture_output,
+                num_nodes=num_nodes,
+                num_gpus_per_node=num_gpus_per_node,
+            ),
         )
 
     def _exec_command_cpu_inner(self, cmd: str, capture_output: bool = False) -> str | None:

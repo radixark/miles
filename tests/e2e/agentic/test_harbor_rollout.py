@@ -52,6 +52,7 @@ from tests.ci.ci_register import register_cuda_ci
 
 from miles.rollout.agentic.credentials import PROVIDER_CREDENTIALS
 from miles.utils.external_utils import command_utils
+from miles.utils.external_utils.command_utils import checkpoint_cache
 
 register_cuda_ci(
     est_time=1200,
@@ -125,7 +126,7 @@ def prepare():
     # a stale trial dir from a prior manual run must not vouch for this one
     shutil.rmtree(TRIALS_DIR, ignore_errors=True)
     U.exec_command_cpu("mkdir -p /root/models /root/datasets")
-    if not (Path(MODEL_DIR) / "config.json").is_file():
+    if checkpoint_cache.enabled() or not (Path(MODEL_DIR) / "config.json").is_file():
         U.exec_command_cpu(f"hf download {MODEL_REPO} --local-dir {MODEL_DIR}")
     if not (Path(TASKS_DIR) / SMOKE_TASK).is_dir():
         # clear any partial clone (an interrupted one leaves a non-empty dir git refuses)

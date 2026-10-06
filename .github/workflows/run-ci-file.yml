@@ -93,6 +93,7 @@ jobs:
       container_image: ${{ steps.resolve.outputs.container_image }}
       timeout_seconds: ${{ steps.resolve.outputs.timeout_seconds }}
       head_is_fork: ${{ steps.head-repo.outputs.head_is_fork }}
+      overwrite_checkpoint: ${{ steps.head-repo.outputs.overwrite_checkpoint }}
     steps:
       - name: Validate dispatch inputs
         shell: bash
@@ -117,9 +118,10 @@ jobs:
         run: |
           # The live PR, not a dispatch input, decides fork-ness: fork heads
           # run without repository secrets, matching the pr-test fork policy.
-          head_is_fork=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PULL_NUMBER}" \
-            --jq 'if .head.repo.id == .base.repo.id then "false" else "true" end')
-          echo "head_is_fork=${head_is_fork}" >> "$GITHUB_OUTPUT"
+          gh api "repos/${GITHUB_REPOSITORY}/pulls/${PULL_NUMBER}" --jq '
+            "head_is_fork=\(.head.repo.id != .base.repo.id)",
+            "overwrite_checkpoint=\([.labels[].name] | index("overwrite-checkpoint") != null)"
+          ' >> "$GITHUB_OUTPUT"
 
       - name: Check out the trusted resolver
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
@@ -181,6 +183,7 @@ jobs:
     with:
       ref: ${{ inputs.head_sha }}
       plan_already_resolved: true
+      overwrite_checkpoint: ${{ needs.resolve-file-run.outputs.overwrite_checkpoint == 'true' }}
       runs_on: ${{ needs.resolve-file-run.outputs.runs_on }}
       container_image: ${{ needs.resolve-file-run.outputs.container_image }}
       execute_command: >-

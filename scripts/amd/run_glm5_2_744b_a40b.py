@@ -25,6 +25,7 @@ from typing import Literal
 import typer
 
 import miles.utils.external_utils.command_utils as U
+from miles.utils.external_utils.command_utils import checkpoint_cache
 
 app = typer.Typer()
 
@@ -90,7 +91,7 @@ def _convert_to_fp8(args: ScriptArgs):
     src = f"{args.model_dir}/{args.model_name}"
     dst = f"{args.model_dir}/{args.model_name}_fp8"
     sentinel = Path(dst) / "model.safetensors.index.json"
-    if sentinel.exists():
+    if not checkpoint_cache.enabled() and sentinel.exists():
         print(f"_convert_to_fp8 skip {dst} since {sentinel} exists")
         return
     args.create_backend().exec_command_gpu(

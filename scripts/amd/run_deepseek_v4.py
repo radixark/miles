@@ -34,6 +34,7 @@ from typing import Literal
 import typer
 
 from miles.utils.external_utils import command_utils
+from miles.utils.external_utils.command_utils import checkpoint_cache
 
 app = typer.Typer()
 
@@ -155,6 +156,8 @@ def _ensure_4layer_model_type(args: ScriptArgs):
         return
     text = cfg.read_text()
     if '"model_type": "deepseek_ref"' in text:
+        if checkpoint_cache.enabled():
+            raise ValueError(f"{cfg} has obsolete model_type deepseek_ref; fix the source checkpoint to deepseek_v4")
         cfg.write_text(text.replace('"model_type": "deepseek_ref"', '"model_type": "deepseek_v4"'))
         print(f"[patch] {cfg}: model_type deepseek_ref -> deepseek_v4")
 
@@ -541,14 +544,14 @@ def full_train(args: ScriptArgs):
 
     bf16_dir = Path(f"{args.model_dir}/{args.bf16_name}")
     bf16_sentinel = bf16_dir / "model.safetensors.index.json"
-    if not bf16_sentinel.exists():
+    if checkpoint_cache.enabled() or not bf16_sentinel.exists():
         _prepare_single(args)
     else:
         print(f"[full_train] Skipping FP8->BF16 cast: {bf16_sentinel} already exists.")
 
     torch_dist_dir = Path(f"{args.model_dir}/{args.torch_dist_name}")
     torch_dist_sentinel = torch_dist_dir / "latest_checkpointed_iteration.txt"
-    if not torch_dist_sentinel.exists():
+    if checkpoint_cache.enabled() or not torch_dist_sentinel.exists():
         _prepare_spmd(args)
     else:
         print(f"[full_train] Skipping BF16->torch_dist conversion: {torch_dist_sentinel} already exists.")

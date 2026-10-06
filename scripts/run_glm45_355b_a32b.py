@@ -9,6 +9,7 @@ from typing import Literal
 import typer
 
 from miles.utils.external_utils import command_utils
+from miles.utils.external_utils.command_utils import checkpoint_cache
 
 app = typer.Typer()
 
@@ -64,7 +65,7 @@ def _prepare_download(args: ScriptArgs):
 def _convert_hf_to_fp8(args: ScriptArgs):
     U = args.create_backend()
     path_output = f"{args.model_dir}/{args.model_name}-FP8/"
-    if Path(path_output).exists():
+    if not checkpoint_cache.enabled() and Path(path_output).exists():
         return
 
     U.exec_command_gpu(

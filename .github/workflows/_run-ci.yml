@@ -18,6 +18,11 @@ on:
         type: boolean
         required: false
         default: false
+      overwrite_checkpoint:
+        description: 'Allow replacing an incompatible checkpoint cache (trusted PR-label resolver only).'
+        type: boolean
+        required: false
+        default: false
       ref:
         description: 'Git ref to check out (empty = the triggering commit). Set by release CI to test a release branch.'
         type: string
@@ -91,6 +96,8 @@ jobs:
       run:
         working-directory: ${{ github.workspace }}
     env:
+      MILES_CI_CHECKPOINT_CACHE: '1'
+      MILES_CI_OVERWRITE_CHECKPOINT: ${{ (inputs.overwrite_checkpoint || contains(github.event.pull_request.labels.*.name, 'overwrite-checkpoint') || (!github.event.pull_request && !github.event.inputs.pull_number && github.ref == 'refs/heads/main' && (inputs.ref == '' || inputs.ref == 'main' || inputs.ref == 'refs/heads/main'))) && '1' || '0' }}
       SGLANG_SOURCE_ROOT: /sgl-workspace/sglang/python
       MEGATRON_SOURCE_ROOT: /root/Megatron-LM
       GITHUB_COMMIT_NAME: ${{ inputs.ref || github.sha }}_${{ github.event.pull_request.number || github.event.inputs.pull_number || 'non-pr' }}
