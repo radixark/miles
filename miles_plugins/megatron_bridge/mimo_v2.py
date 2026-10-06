@@ -1,16 +1,19 @@
 """Megatron-Bridge support for XiaomiMiMo MiMo-V2 (``MiMoV2ForCausalLM``, e.g. MiMo-V2.6-Flash-RL).
 
-Adapted from NVIDIA Megatron-Bridge ``megatron/bridge/models/mimo_v2_flash`` (Apache-2.0), which
-covers the earlier MiMo-V2-Flash checkpoint. MiMo-V2 attention differs from the stock GPT layer
-in four ways that the TransformerConfig cannot express on its own:
+Builds on NVIDIA Megatron-Bridge ``megatron/bridge/models/mimo_v2_flash``, which covers the earlier
+MiMo-V2-Flash checkpoint, and reuses its q/k/v weight mapping. MiMo-V2 attention differs from the
+stock GPT layer in four ways:
 
 * per-layer KV heads: SWA layers use ``swa_num_key_value_heads``, global layers ``num_key_value_heads``;
-* asymmetric head dims: Q/K use ``head_dim`` (192) and V uses ``v_head_dim`` (128);
 * a learnable attention sink on SWA layers only, while ``softmax_type`` is one global setting;
+* asymmetric head dims: Q/K use ``head_dim`` (192) and V uses ``v_head_dim`` (128);
 * V is multiplied by ``attention_value_scale`` before attention.
 
-The per-layer RoPE base and the SWA window reuse existing config fields (``rotary_base_per_layer``,
-``window_size`` with a per-layer ``window_attn_skip_freq``).
+The first two are per-layer config values: the provider sets ``heterogeneous_block_specs``, so
+``TransformerBlock`` builds each layer from ``MiMoV2ModelProvider.get_config_for_layer``. The other
+two need ``MiMoV2SelfAttention`` and ``MiMoV2TEDotProductAttention``. The per-layer RoPE base and the
+SWA window reuse existing config fields (``rotary_base_per_layer``, ``window_size`` with a per-layer
+``window_attn_skip_freq``) instead of Megatron-Bridge's dual-base RoPE and window rule.
 
 The bridge reads the BF16 split-q/k/v layout written by ``tools/convert_mimo_v2_to_bf16.py``; the
 official checkpoint (FP8/MXFP4, fused kv-head-interleaved ``qkv_proj``) must be converted first.
@@ -20,6 +23,7 @@ Only the text decoder is built: vision/audio towers and the MTP layers are not.
 from __future__ import annotations
 
 import copy
+import dataclasses
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -27,9 +31,9 @@ from dataclasses import dataclass, field
 import torch
 from megatron.bridge.models.conversion.mapping_registry import MegatronMappingRegistry
 from megatron.bridge.models.conversion.model_bridge import MegatronModelBridge
-from megatron.bridge.models.conversion.param_mapping import AutoMapping, GatedMLPMapping, QKVMapping
-from megatron.bridge.models.conversion.utils import remove_non_pickleables
+from megatron.bridge.models.conversion.param_mapping import AutoMapping, GatedMLPMapping
 from megatron.bridge.models.gpt_provider import GPTModelProvider
+from megatron.bridge.models.mimo_v2_flash.mimo_v2_flash_bridge import MiMoV2FlashQKVMapping
 from megatron.core.extensions.transformer_engine import TEDotProductAttention
 from megatron.core.models.gpt.gpt_layer_specs import get_gpt_decoder_block_spec
 from megatron.core.models.gpt.gpt_model import GPTModel
@@ -39,58 +43,42 @@ from megatron.core.transformer.attention import SelfAttention
 logger = logging.getLogger(__name__)
 
 
-def _layer_config(config, layer_number: int):
-    """Shallow config copy carrying the attention shape and softmax of this 1-indexed layer."""
-    assert layer_number <= len(config.hybrid_attention_pattern), f"no attention pattern for layer {layer_number}"
-    config = copy.copy(config)
-    if config.hybrid_attention_pattern[layer_number - 1]:
-        config.num_query_groups = config.swa_num_query_groups
-        config.softmax_type = "learnable" if config.swa_attention_sink else "vanilla"
-    else:
-        config.num_query_groups = config.full_attn_num_query_groups
-        config.softmax_type = "learnable" if config.full_attention_sink else "vanilla"
-    return config
+def _sized_linear(build, *, input_size: int | None = None, output_size: int | None = None):
+    """``build`` with the given input/output size in place of the one SelfAttention passes."""
+
+    def build_sized(base_input_size, base_output_size, **kwargs):
+        return build(
+            base_input_size if input_size is None else input_size,
+            base_output_size if output_size is None else output_size,
+            **kwargs,
+        )
+
+    return build_sized
 
 
 class MiMoV2SelfAttention(SelfAttention):
-    """SelfAttention with per-layer KV heads and a V head narrower than Q/K."""
+    """SelfAttention whose V heads (``v_head_dim``) are narrower than its Q/K heads (``kv_channels``).
+
+    The stock layer sizes ``linear_qkv``, ``linear_proj`` and the q/k/v split with ``kv_channels`` for V;
+    this builds the two projections once at the MiMo sizes and splits accordingly. The layer config
+    already carries this layer's KV heads (``MiMoV2ModelProvider.get_config_for_layer``).
+    """
 
     def __init__(self, config, submodules, layer_number, *args, **kwargs):
-        config = _layer_config(config, layer_number)
-        super().__init__(config, submodules, layer_number, *args, **kwargs)
         assert not (config.attention_output_gate or config.head_wise_attn_gate), "MiMo-V2 has no attention gate"
-        assert config.num_query_groups >= self.world_size, "TP must not exceed the layer's KV heads"
-        name = kwargs.get("name")
+        # qk_clip reads linear_qkv as q + 2 * kv rows of kv_channels each, which does not hold for a narrower V.
+        assert not config.qk_clip, "qk_clip does not support a V head narrower than Q/K"
+        heads, groups = config.num_attention_heads, config.num_query_groups
+        qkv_out_dim = heads * config.kv_channels + groups * (config.kv_channels + config.v_head_dim)
+        submodules = dataclasses.replace(
+            submodules,
+            linear_qkv=_sized_linear(submodules.linear_qkv, output_size=qkv_out_dim),
+            linear_proj=_sized_linear(submodules.linear_proj, input_size=heads * config.v_head_dim),
+        )
+        super().__init__(config, submodules, layer_number, *args, **kwargs)
+        assert groups >= self.world_size, "TP must not exceed the layer's KV heads"
+        self.linear_qkv_out_dim = qkv_out_dim
         self.val_hidden_size = config.v_head_dim
-        self.linear_qkv_out_dim = self.query_projection_size + config.num_query_groups * (
-            config.kv_channels + config.v_head_dim
-        )
-        self.linear_qkv = submodules.linear_qkv(
-            config.hidden_size,
-            self.linear_qkv_out_dim,
-            config=config,
-            init_method=config.init_method,
-            gather_output=False,
-            bias=config.add_bias_linear or config.add_qkv_bias,
-            skip_bias_add=False,
-            is_expert=False,
-            tp_comm_buffer_name="qkv",
-            tp_group=self.pg_collection.tp,
-            name=(name + ".linear_qkv") if name is not None else None,
-        )
-        self.linear_proj = submodules.linear_proj(
-            config.v_head_dim * config.num_attention_heads,
-            config.hidden_size,
-            config=config,
-            init_method=config.output_layer_init_method,
-            bias=config.add_bias_linear,
-            input_is_parallel=True,
-            skip_bias_add=True,
-            is_expert=False,
-            tp_comm_buffer_name="proj",
-            tp_group=self.pg_collection.tp,
-            name=(name + ".linear_proj") if name is not None else None,
-        )
 
     def get_query_key_value_tensors(
         self, hidden_states, key_value_states=None, output_gate=False, head_wise_gate=False, split_qkv=True
@@ -108,18 +96,20 @@ class MiMoV2SelfAttention(SelfAttention):
 
 
 class MiMoV2TEDotProductAttention(TEDotProductAttention):
-    """TE core attention with this layer's sink setting, Q/K vs V channels and V scaling."""
+    """TE core attention with separate Q/K and V channels and V scaled by ``attention_value_scale``.
+
+    The learnable sink comes from the layer config's ``softmax_type``.
+    """
 
     def __init__(self, config, layer_number, attn_mask_type, attention_type, attention_dropout=None, **kwargs):
-        config = _layer_config(config, layer_number)
-        kwargs["k_channels"] = config.kv_channels
-        kwargs["v_channels"] = config.v_head_dim
         super().__init__(
             config=config,
             layer_number=layer_number,
             attn_mask_type=attn_mask_type,
             attention_type=attention_type,
             attention_dropout=attention_dropout,
+            k_channels=config.kv_channels,
+            v_channels=config.v_head_dim,
             **kwargs,
         )
         self.attention_value_scale = config.attention_value_scale
@@ -143,9 +133,11 @@ def mimo_v2_layer_spec(config, vp_stage: int | None = None) -> ModuleSpec:
 
 @dataclass
 class MiMoV2ModelProvider(GPTModelProvider):
-    """GPT provider plus the per-layer attention fields read by the MiMo-V2 modules."""
+    """GPT provider plus the MiMo-V2 attention fields; each layer is built from ``get_config_for_layer``."""
 
     transformer_layer_spec: ModuleSpec | Callable = field(default_factory=lambda: mimo_v2_layer_spec)
+    # Makes TransformerBlock build each layer from get_config_for_layer.
+    heterogeneous_block_specs: bool = True
     hybrid_attention_pattern: list[int] | None = None
     full_attn_num_query_groups: int = 4
     swa_num_query_groups: int = 8
@@ -154,48 +146,22 @@ class MiMoV2ModelProvider(GPTModelProvider):
     full_attention_sink: bool = False
     swa_attention_sink: bool = True
 
+    def get_config_for_layer(self, layer_number: int) -> MiMoV2ModelProvider:
+        """Shallow copy with the KV heads and attention sink of global layer ``layer_number`` (1-indexed)."""
+        assert layer_number <= len(self.hybrid_attention_pattern), f"no attention pattern for layer {layer_number}"
+        swa = self.hybrid_attention_pattern[layer_number - 1]
+        config = copy.copy(self)
+        config.num_query_groups = self.swa_num_query_groups if swa else self.full_attn_num_query_groups
+        sink = self.swa_attention_sink if swa else self.full_attention_sink
+        config.softmax_type = "learnable" if sink else "vanilla"
+        return config
+
     def provide(self, pre_process=None, post_process=None, vp_stage=None) -> GPTModel:
         assert self.tensor_model_parallel_size <= min(
             self.full_attn_num_query_groups, self.swa_num_query_groups
         ), "MiMo-V2 needs TP <= the smallest per-layer KV head count"
         assert self.context_parallel_size == 1, "MiMo-V2 attention does not support context parallelism yet"
         return super().provide(pre_process=pre_process, post_process=post_process, vp_stage=vp_stage)
-
-
-class MiMoV2QKVMapping(QKVMapping):
-    """QKV mapping for per-group [q heads, k head, v head] with a V head of ``v_head_dim``."""
-
-    def hf_to_megatron(self, hf_weights, megatron_module):
-        merged = None
-        if self.tp_rank == 0:
-            config = self._get_config(megatron_module)
-            q, k, v = hf_weights["q"], hf_weights["k"], hf_weights["v"]
-            assert q.ndim == 2, "MiMo-V2 has no qkv bias"
-            groups, qk_dim, v_dim = config.num_query_groups, config.kv_channels, config.v_head_dim
-            q = q.view(groups, -1, q.shape[-1])
-            merged = torch.cat([q, k.view(groups, qk_dim, -1), v.view(groups, v_dim, -1)], dim=1).flatten(0, 1)
-        return self._tp_mapping.hf_to_megatron(merged, megatron_module)
-
-    def megatron_to_hf(self, megatron_weights, megatron_module):
-        if megatron_weights is not None:
-            megatron_weights = self.maybe_dequantize(megatron_weights)
-        if megatron_module is None:
-            config = self.broadcast_obj_from_pp_rank(None, "qkv_config")
-        else:
-            config = remove_non_pickleables(self._get_config(megatron_module), max_depth=3)
-            config = self.broadcast_obj_from_pp_rank(config, "qkv_config")
-        packed_dict = self._tp_mapping.megatron_to_hf(megatron_weights, megatron_module)
-        if not packed_dict:
-            return {}
-        packed = next(iter(packed_dict.values()))
-        groups, qk_dim, v_dim = config.num_query_groups, config.kv_channels, config.v_head_dim
-        q_dim = config.num_attention_heads // groups * qk_dim
-        q, k, v = packed.view(groups, q_dim + qk_dim + v_dim, -1).split([q_dim, qk_dim, v_dim], dim=1)
-        return {
-            self.hf_param["q"]: q.reshape(-1, packed.shape[-1]),
-            self.hf_param["k"]: k.reshape(-1, packed.shape[-1]),
-            self.hf_param["v"]: v.reshape(-1, packed.shape[-1]),
-        }
 
 
 @MegatronModelBridge.register_bridge(
@@ -288,7 +254,7 @@ class MiMoV2Bridge(MegatronModelBridge):
             for m, h in gated.items()
         ]
         mappings.append(
-            MiMoV2QKVMapping(
+            MiMoV2FlashQKVMapping(
                 megatron_param="decoder.layers.*.self_attention.linear_qkv.weight",
                 q="model.layers.*.self_attn.q_proj.weight",
                 k="model.layers.*.self_attn.k_proj.weight",
