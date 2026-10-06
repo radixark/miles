@@ -227,6 +227,8 @@ def execute():
 
     perf_args = (
         "--tensor-model-parallel-size 2 "
+        # Native AbsorbedMLA requires sequence parallelism with tensor parallelism.
+        "--sequence-parallel "
         # Let the STE propagate gradients to the original expert parameters.
         "--no-gradient-accumulation-fusion "
         "--pipeline-model-parallel-size 1 "

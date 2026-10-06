@@ -149,6 +149,9 @@ def _model_args(options):
         "--no-load-rng",
         "--finetune",
     ]
+    if options.tensor_model_parallel_size > 1:
+        # Native AbsorbedMLA requires sequence parallelism with tensor parallelism.
+        argv.append("--sequence-parallel")
     original_argv, sys.argv = sys.argv, argv
     try:
         args = get_args()
