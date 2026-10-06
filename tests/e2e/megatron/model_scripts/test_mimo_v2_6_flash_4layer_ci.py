@@ -9,7 +9,13 @@ from tests.ci.metric_history import register_ci_gate
 # the post-update weight check. The partial is not a language model (its NLL is ~16), so the log-prob and
 # entropy checkers of --ci-test do not apply; the metric-history gates below track the train/rollout gap.
 
-register_cuda_ci(est_time=2400, suite="stage-c-8-gpu-h200", labels=["megatron", "model-scripts"], hardware=["hopper"])
+register_cuda_ci(
+    est_time=2400,
+    suite="stage-c-8-gpu-h200",
+    labels=["megatron", "model-scripts"],
+    hardware=["hopper"],
+    nightly=True,
+)
 
 register_ci_gate(metric_key="train/grad_norm")
 register_ci_gate(metric_key="train/train_rollout_logprob_abs_diff")
