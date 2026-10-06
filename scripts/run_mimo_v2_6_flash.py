@@ -116,23 +116,25 @@ class ScriptArgs(U.ExecuteTrainConfig):
 
 
 def prepare(args: ScriptArgs):
+    backend = args.create_backend()
     target = Path(args.model_dir) / args.model_name
     # The converter writes the index last, so it marks a finished conversion.
     if not (target / "model.safetensors.index.json").exists():
         source = f"{args.model_dir}/{_HF_REPO.split('/')[1]}"
         layers = _RECIPES[args.model_name].layers
         layer_args = f"--layers {layers}" if layers else ""
-        U.exec_command_cpu(f"mkdir -p {args.model_dir}")
-        U.exec_command_cpu(f"hf download {_HF_REPO} --local-dir {source}")
-        U.exec_command_gpu(
+        backend.exec_command_cpu(f"mkdir -p {args.model_dir}")
+        backend.exec_command_cpu(f"hf download {_HF_REPO} --local-dir {source}")
+        backend.exec_command_gpu(
             f"python {U.repo_base_dir}/tools/convert_mimo_v2_to_bf16.py "
             f"--model-dir {source} --save-dir {target} --device cuda {layer_args}"
         )
     if args.mode == "rl" and not args.prompt_data:
-        U.hf_download_dataset("zhuzilin/dapo-math-17k", data_dir=args.data_dir)
+        backend.hf_download_dataset("zhuzilin/dapo-math-17k", data_dir=args.data_dir)
 
 
 def execute(args: ScriptArgs):
+    backend = args.create_backend()
     ckpt_args = f"--hf-checkpoint {args.model_dir}/{args.model_name} " "--megatron-to-hf-mode bridge "
     if args.save:
         ckpt_args += f"--save {args.output_dir}/checkpoints " f"--save-interval {args.save_interval} "
@@ -241,7 +243,7 @@ def execute(args: ScriptArgs):
         f"{args.extra_args} "
     )
 
-    U.execute_train(
+    backend.execute_train(
         train_args=train_args,
         config=args,
         num_gpus_per_node=args.num_gpus_per_node,
