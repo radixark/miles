@@ -242,6 +242,7 @@ class _P2PSenderHarness:
         self.waiting_threads: set[int] = set()
         self.data_replica_rank = 0
         self.data_replica_size = 1
+        self.assignment_inputs: list[tuple[Any, list[int]]] = []
 
         mooncake_transport = sys.modules[p2p_protocol.MooncakeTransport.__module__]
         monkeypatch.setattr(mooncake_transport, "_create_transfer_engine", self._create_transfer_engine)
@@ -250,15 +251,7 @@ class _P2PSenderHarness:
             "ThreadPoolExecutor",
             lambda **kwargs: _ObservedExecutor(self.waiting_threads, **kwargs),
         )
-        monkeypatch.setattr(
-            p2p_protocol,
-            "assign_rollout_engine_ranks",
-            lambda parallel_state, placement, engine_gpu_counts: assign_rollout_engine_ranks_for_data_replica(
-                data_replica_rank=self.data_replica_rank,
-                data_replica_size=self.data_replica_size,
-                engine_gpu_counts=engine_gpu_counts,
-            ),
-        )
+        monkeypatch.setattr(p2p_protocol, "assign_rollout_engine_ranks", self._assign_rollout_engine_ranks)
         monkeypatch.setattr(p2p_protocol, "ParallelismContext", lambda parallelism_config: nullcontext())
         monkeypatch.setattr(p2p_protocol, "get_gloo_group", lambda: None)
         monkeypatch.setattr(p2p_protocol, "dist", SimpleNamespace(get_rank=lambda group=None: 0))
@@ -287,16 +280,13 @@ class _P2PSenderHarness:
         )
         return self._p2p_protocol.UpdateWeightP2P(args)
 
-    def connect(self, protocol: Any, apis: list[_FakeRolloutApi]) -> None:
-        (gpu_count,) = {api.gpu_count for api in apis} or {1}
-        protocol.args.rollout_num_gpus_per_engine = gpu_count
-        protocol.args.rollout_num_gpus = gpu_count * len(apis)
+    def connect(self, protocol: Any, apis: list[_FakeRolloutApi], placement: Any = None) -> None:
         protocol.connect(
             rollout_engines=apis,
             engine_gpu_counts=[api.gpu_count for api in apis],
             engine_gpu_offsets=None,
             parallel_state=None,
-            placement=None,
+            placement=placement,
             selector="",
         )
 
@@ -309,6 +299,16 @@ class _P2PSenderHarness:
         self.transfer_engine.release_all()
         for call in self._calls:
             call.join()
+
+    def _assign_rollout_engine_ranks(
+        self, parallel_state: Any, placement: Any, engine_gpu_counts: list[int]
+    ) -> list[Any]:
+        self.assignment_inputs.append((placement, list(engine_gpu_counts)))
+        return assign_rollout_engine_ranks_for_data_replica(
+            data_replica_rank=self.data_replica_rank,
+            data_replica_size=self.data_replica_size,
+            engine_gpu_counts=engine_gpu_counts,
+        )
 
     def _create_transfer_engine(self) -> _FakeTransferEngine:
         self.transfer_engines_created += 1
