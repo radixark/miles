@@ -60,7 +60,7 @@ def assign_rollout_engine_ranks_for_data_replica(
     next_round_robin_data_replica = 0
     for rollout_engine_ind, rollout_engine_rank in targets[data_replica_size:]:
         rollout_engine_counts_by_data_replica = [
-            len(rollout_engine_indices[rollout_engine_rank])
+            len(rollout_engine_indices.get(rollout_engine_rank, ()))
             for rollout_engine_indices in rollout_engine_indices_by_data_replica
         ]
         if max(rollout_engine_counts_by_data_replica) > 0:
