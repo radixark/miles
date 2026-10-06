@@ -131,3 +131,16 @@ class TestWriteCompletion:
 
         with pytest.raises(RuntimeError, match="still running after 0.1s"):
             protocol.after_base_weights()
+
+    def test_a_weight_of_another_size_on_the_rollout_engine_is_never_written(
+        self, p2p_sender: Any, make_rollout_api: Any, make_bucket: Any
+    ) -> None:
+        """Writing a weight whose published size differs would run past the target's memory."""
+        protocol = p2p_sender.make_protocol()
+        api = make_rollout_api("cell-a", gpu_count=1, published_weight_numel=2)
+        p2p_sender.connect(protocol, [api])
+        protocol.begin_sync(weight_version=1, iter_buckets=None)
+
+        with pytest.raises(AssertionError, match="w is 16 bytes here but 8 bytes on rollout engine 0 rank 0"):
+            protocol.send_bucket(make_bucket("hf.w"))
+        assert p2p_sender.transfer_engine.writes == []

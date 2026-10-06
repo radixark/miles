@@ -44,8 +44,11 @@ class MooncakeTransport:
     def write(self, remote_shards: Sequence[RemoteShard], tensors_by_name: dict[str, torch.Tensor]) -> list[Future]:
         """Writes each tensor into the weight of the same name on every shard; returns one future per shard.
 
-        The tensors must lie in registered memory and stay unchanged until their futures are done.
+        The tensors must lie in registered memory and stay unchanged until their futures are done. Raises before
+        writing anything if a shard lacks one of the weights or holds it in a different number of bytes.
         """
+        for remote_shard in remote_shards:
+            _assert_tensors_fit(remote_shard, tensors_by_name)
         return [
             self._write_executor(remote_shard.rollout_engine_ind).submit(
                 self._write_shard, remote_shard, tensors_by_name
@@ -79,6 +82,18 @@ def _create_transfer_engine() -> Any:
     transfer_engine = TransferEngine()
     transfer_engine.initialize(ray._private.services.get_node_ip_address(), "P2PHANDSHAKE", "rdma", "")
     return transfer_engine
+
+
+def _assert_tensors_fit(remote_shard: RemoteShard, tensors_by_name: dict[str, torch.Tensor]) -> None:
+    target = f"rollout engine {remote_shard.rollout_engine_ind} rank {remote_shard.rollout_engine_rank}"
+    for name, tensor in tensors_by_name.items():
+        assert name in remote_shard.weight_locations_by_name, f"{target} publishes no {name}"
+        location = remote_shard.weight_locations_by_name[name]
+        target_nbytes = location.numel * location.element_size
+        assert target_nbytes == _nbytes(tensor), (
+            f"{name} is {_nbytes(tensor)} bytes here but {target_nbytes} bytes on {target}; "
+            "writing it would run past the target"
+        )
 
 
 def _nbytes(tensor: torch.Tensor) -> int:
