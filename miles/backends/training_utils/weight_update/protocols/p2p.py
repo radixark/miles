@@ -21,11 +21,13 @@ from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
 from miles.backends.training_utils.parallel import ParallelState
 from miles.backends.training_utils.weight_update.hf_weight_iterator import WeightUpdatePlacement
 from miles.backends.training_utils.weight_update.protocol import WeightTransferProtocol
+from miles.backends.training_utils.weight_update.protocols.shared_utils.engine_rank_assignment import (
+    assign_engine_ranks,
+)
 from miles.utils.distributed_utils import get_gloo_group
 
 from .p2p_transfer_utils import (
     P2PTransferManager,
-    RemoteTransferPlan,
     RemoteWeightInfo,
     create_transfer_engine,
     query_remote_weight_infos,
@@ -54,7 +56,8 @@ class UpdateWeightP2P(WeightTransferProtocol):
 
     def __init__(self, args: Namespace) -> None:
         super().__init__(args)
-        self.transfer_plan = RemoteTransferPlan(args)
+        if args.sglang_pp_size != 1:
+            raise NotImplementedError("Rollout pipeline parallelism is not tested yet.")
         self.global_rank = dist.get_rank(group=get_gloo_group())
         self._model_registered = False
         self._tensor_update_pending: dict[str, int] = {}
@@ -139,8 +142,8 @@ class UpdateWeightP2P(WeightTransferProtocol):
     ) -> None:
         """``connect`` here will:
 
-        - Create a transfer plan that maps each training rank to its target
-          rollout rank(s) based on GPU counts and parallelism configuration.
+        - Assign this rank its target engine ranks from the engines handed over
+          (``engine_gpu_counts``) and the iterator's resolved placement.
         - Query remote rollout engines for their weight memory registration
           info (addresses and sizes for RDMA writes).
         - Query remote parallelism config and construct a local CPU model
@@ -148,21 +151,15 @@ class UpdateWeightP2P(WeightTransferProtocol):
           weight format conversion before transfer.
         """
         self.rollout_engines = rollout_engines
-
-        self.is_sender = self.transfer_plan._gathered_dp_rank < self.transfer_plan._rollout_num_gpus
+        assignments = assign_engine_ranks(parallel_state, placement, engine_gpu_counts)
+        self.is_sender = bool(assignments)
 
         if self.is_sender:
-            self.group_name = f"miles-p2p_{self.transfer_plan._gathered_dp_rank}"
-            targets = self.transfer_plan.plan_p2p()
             (
                 self.remote_weight_infos_by_session_id,
                 targets_to_session_id,
                 self.session_id_to_server_args,
-            ) = query_remote_weight_infos(rollout_engines, targets)
-
-            targets_grouped_by_engine_rank: dict[int, list] = {}
-            for target in targets:
-                targets_grouped_by_engine_rank.setdefault(target.engine_rank, []).append(target)
+            ) = query_remote_weight_infos(rollout_engines, assignments)
 
             # Create ONE transfer engine for all engine ranks
             self._transfer_engine = create_transfer_engine()
@@ -170,9 +167,8 @@ class UpdateWeightP2P(WeightTransferProtocol):
             self._shared_param_mapper: ParameterMapper | None = None
             self._replica_targets: list[_ReplicaTarget] = []
             first_engine_rank = True
-            for rank_targets in targets_grouped_by_engine_rank.values():
-                first_target = rank_targets[0]
-                session_id = targets_to_session_id[(first_target.engine_ind, first_target.engine_rank)]
+            for assignment in assignments:
+                session_id = targets_to_session_id[(assignment.engine_indices[0], assignment.engine_rank)]
                 parallelism_config = RankParallelismConfig.from_dict(
                     self.remote_weight_infos_by_session_id[session_id][1]
                 )
@@ -191,12 +187,12 @@ class UpdateWeightP2P(WeightTransferProtocol):
 
                 remote_infos = [
                     RemoteWeightInfo(
-                        targets_to_session_id[(t.engine_ind, t.engine_rank)],
-                        self.remote_weight_infos_by_session_id[targets_to_session_id[(t.engine_ind, t.engine_rank)]][
-                            0
-                        ],
+                        targets_to_session_id[(engine_index, assignment.engine_rank)],
+                        self.remote_weight_infos_by_session_id[
+                            targets_to_session_id[(engine_index, assignment.engine_rank)]
+                        ][0],
                     )
-                    for t in rank_targets
+                    for engine_index in assignment.engine_indices
                 ]
 
                 self._replica_targets.append(_ReplicaTarget(model_replica, remote_infos, parallelism_config))

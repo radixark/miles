@@ -104,15 +104,18 @@ def p2p_transfer_utils():
                 setattr(package, attribute, saved_attribute)
 
 
-def _make_targets(module, pairs: list[tuple[int, int]]) -> list:
+def _make_assignments(module, pairs: list[tuple[int, int]]) -> list:
+    engine_indices_by_rank: dict[int, list[int]] = {}
+    for engine_index, engine_rank in pairs:
+        engine_indices_by_rank.setdefault(engine_rank, []).append(engine_index)
     return [
-        module.TransferTaskP2PMeta(engine_ind=engine_ind, engine_rank=engine_rank, source_shard=source_shard)
-        for source_shard, (engine_ind, engine_rank) in enumerate(pairs)
+        module.EngineRankAssignment(engine_rank=engine_rank, engine_indices=tuple(engine_indices))
+        for engine_rank, engine_indices in engine_indices_by_rank.items()
     ]
 
 
 def _query(module, engines: list[_FakeRolloutEngine], pairs: list[tuple[int, int]]):
-    return module.query_remote_weight_infos(engines, _make_targets(module, pairs))
+    return module.query_remote_weight_infos(engines, _make_assignments(module, pairs))
 
 
 @pytest.mark.parametrize(
@@ -132,7 +135,7 @@ class TestQueryRemoteWeightInfos:
     """Remote-info discovery over the rollout engines' HTTP API."""
 
     def test_repeated_targets_are_queried_once_each(self, p2p_transfer_utils):
-        """The same engine rank appears once per source shard, and re-querying it wastes round trips."""
+        """An engine rank listed twice is queried once; re-querying it wastes round trips."""
         engines = [_FakeRolloutEngine(0), _FakeRolloutEngine(1)]
 
         _query(p2p_transfer_utils, engines, [(0, 0), (0, 1), (0, 0), (1, 0)])
