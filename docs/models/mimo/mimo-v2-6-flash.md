@@ -95,7 +95,7 @@ MILES_SCRIPT_EXTERNAL_RAY=1 MASTER_ADDR=<head ip> python scripts/run_mimo_v2_6_f
 |---|---|---|---|---|---|---|---|
 | `MiMo-V2.6-Flash-RL-bf16` | 2 | 2 | 1 | 8 | 1 | 16 (2 × 8) | one engine per node: attention TP4 × DP2 (`--sglang-enable-dp-attention --sglang-dp-size 2 --sglang-enable-dp-lm-head`), EP8, `--sglang-mem-fraction-static 0.72` |
 
-TP is capped at 4 by the four global-attention KV heads. Context parallelism is not supported. `--sequence-parallel` is on whenever TP > 1. THD packing with `--use-dynamic-batch-size` is the default; `--qkv-format bshd` runs one sample per micro-batch. `--max-tokens-per-gpu` defaults to 16384 for the full model on H200 and to 9216 otherwise; at 16384 a 50-step full-model run peaked at 98.5% of GPU memory (PP stage 1).
+TP is capped at 4 by the four global-attention KV heads. Context parallelism is not supported. `--sequence-parallel` is on whenever TP > 1. THD packing with `--use-dynamic-batch-size` is the default; `--qkv-format bshd` runs one sample per micro-batch. `--max-tokens-per-gpu` defaults to 16384 on H200 and to 9216 on B300; at 16384 a 50-step run peaked at 98.5% of GPU memory (PP stage 1).
 
 ### 5.2 Algorithm
 
