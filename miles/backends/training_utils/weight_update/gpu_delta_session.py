@@ -117,7 +117,7 @@ async def _activate_engine(client, engine_id, participants, host_names, publicat
             host_tensor_names=host_names,
         )
         _receipts(preparation)
-        await _wait_state(client, session_id=session_id)
+        await _wait_prepared(client, session_id=session_id)
     except Exception:
         # No pause or mutation was requested on this engine. Its uncertain
         # prepare reply does not authorize aborting another engine's lease.
@@ -143,7 +143,7 @@ async def _activate_engine(client, engine_id, participants, host_names, publicat
     }
 
 
-async def _wait_state(client, session_id, timeout=1800):
+async def _wait_prepared(client, session_id, timeout=1800):
     async def poll():
         while True:
             response = await client.get_weights_delta_status(session_id=session_id)

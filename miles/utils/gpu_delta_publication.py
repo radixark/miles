@@ -82,11 +82,6 @@ def _bytes_view(value) -> np.ndarray:
     return np.frombuffer(value, dtype=np.uint8)
 
 
-def _check_frame_bytes(frame_bytes):
-    if type(frame_bytes) is not int or frame_bytes not in _FRAME_SIZES:
-        raise ValueError("GPU-delta frame_bytes must be 64 KiB, 1 MiB or 2 MiB")
-
-
 def tensor_metadata(name: str, dtype: str, shape: list[int], views=None, encoding="xor_bytes") -> dict:
     """Canonical tensor schema for compressed matrices and raw scalar/vector targets."""
     if not name or dtype not in DTYPE_BYTES or any(type(n) is not int or n < 0 for n in shape):
@@ -198,7 +193,8 @@ class PublicationWriter:
         frame_bytes: int = FRAME_BYTES,
         codec: str = CODEC,
     ):
-        _check_frame_bytes(frame_bytes)
+        if type(frame_bytes) is not int or frame_bytes not in _FRAME_SIZES:
+            raise ValueError("GPU-delta frame_bytes must be 64 KiB, 1 MiB or 2 MiB")
         self.frame_bytes = frame_bytes
         self.directory = Path(directory)
         self.directory.mkdir(parents=True, exist_ok=True)
@@ -219,7 +215,6 @@ class PublicationWriter:
         self._hash = hashlib.sha256()
         self._lock = threading.Lock()
         self._entries: dict[str, dict] = {}
-        self._closed = False
 
     def add_raw_tensor(self, name: str, old, new, dtype: str, shape: list[int], views=None):
         """Write complete scalar/vector targets without XOR, frames or codecs."""
@@ -274,7 +269,6 @@ class PublicationWriter:
             os.fsync(self._file.fileno())
             size = self._file.tell()
             self._file.close()
-            self._closed = True
             return {
                 "metadata": self.metadata,
                 "files": [{"name": self._filename, "nbytes": size, "sha256": self._hash.hexdigest()}],
@@ -286,9 +280,7 @@ class PublicationWriter:
 
     def close(self) -> None:
         with self._lock:
-            if not self._closed:
-                self._file.close()
-                self._closed = True
+            self._file.close()
 
 
 def seal_publication(directory, shards: Iterable[Mapping]) -> dict:

@@ -428,7 +428,7 @@ def _run_update(protocol, iterator, weights, version, plan):
     export_end = time.monotonic()
     protocol.after_base_weights()
     tail_end = time.monotonic()
-    publication = protocol.publish(version)
+    publication = protocol.publish()
     sealed = time.monotonic()
     # Completion only, once per update; no per-conversion timing synchronizations.
     torch.cuda.synchronize()

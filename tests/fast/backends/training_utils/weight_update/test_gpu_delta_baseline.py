@@ -236,8 +236,9 @@ def test_initial_delta_publishes_loaded_trainer_after_common_baseline(
     for bucket in _buckets(materialize=True):
         protocol.send_bucket(bucket)
     protocol.after_base_weights()
-    publication = protocol.publish(1)
+    publication = protocol.publish()
     assert protocol.codec == publication["codec"] == codec
+    assert protocol.publication_metrics["encoded_hash_write_s"] == protocol._writer.outer_metrics["outer_hash_write_s"]
     assert publication["base_version"] == 0 and publication["target_version"] == 1
     assert publication["summary_counts"]["raw_bytes"] == 4
     assert publication["summary_counts"]["wire_bytes"] == 4
@@ -284,14 +285,13 @@ def _gpu_pending(monkeypatch, fail_batch=None):
     def encode(tensors):
         assert worker_ready.value
         assert not any(isinstance(event, tuple) and event[0] == "write" for event in events)
-        events.append(("encode", [current.numel() for old, current, encoding in tensors]))
+        events.append(("encode", [current.numel() for old, current in tensors]))
         if sum(isinstance(event, tuple) and event[0] == "encode" for event in events) == fail_batch:
             raise RuntimeError("decoder-independent producer failure")
-        for old, current, encoding in tensors:
-            assert encoding == "xor_bytes"
+        for old, current in tensors:
             assert torch.equal(old, torch.zeros_like(old))
             assert torch.equal(current, torch.full_like(current, 7))
-        return [([], [], current.numel(), {"encode_wall_s": 0.01}) for old, current, encoding in tensors]
+        return [([], [], current.numel(), {"encode_wall_s": 0.01}) for old, current in tensors]
 
     def wrap(values):
         assert len(values) == 4
@@ -321,7 +321,7 @@ def _start_update(protocol):
     protocol._batch_remaining = [len(names) for names in protocol._gpu_batch_names]
     protocol._encoder_pool = ThreadPoolExecutor(max_workers=1)
     protocol._gpu_batch_count = 0
-    protocol._bulk_encode_s = protocol._encoded_hash_write_s = 0.0
+    protocol._bulk_encode_s = 0.0
     protocol._raw_tail_wait_s = protocol._raw_cpu_write_s = 0.0
 
 
@@ -417,10 +417,9 @@ def test_cached_gpu_schedule_uses_current_buffers_after_commit(monkeypatch, sing
     _start_update(protocol)
 
     def encode(tensors):
-        for previous, current, encoding in tensors:
-            assert encoding == "xor_bytes"
+        for previous, current in tensors:
             assert torch.all(previous == 7) and torch.all(current == 13)
-        return [([], [], current.numel(), {"encode_wall_s": 0.01}) for _, current, _ in tensors]
+        return [([], [], current.numel(), {"encode_wall_s": 0.01}) for _, current in tensors]
 
     protocol._gpu_encoder.encode_device.side_effect = encode
     protocol._prepare_gpu_schedule = Mock(side_effect=AssertionError("Update rebuilt immutable owner schedule"))
@@ -458,7 +457,7 @@ def test_gpu_baseline_swaps_only_after_successful_receiver_activation(monkeypatc
     old, current = protocol._snapshot, protocol._next_snapshot
     protocol._cohort, protocol.rollout_engines = object(), []
 
-    def publish(version):
+    def publish():
         return {
             "summary_counts": dict(tensor_count=4, wire_bytes=1, changed_bytes=13, canonical_bytes=13),
             "manifest_sha256": "test",

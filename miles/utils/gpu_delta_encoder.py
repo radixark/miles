@@ -67,7 +67,7 @@ class _PhaseTimes:
 
 
 def _validate_snapshots(tensors):
-    for previous, current, encoding in tensors:
+    for previous, current in tensors:
         for value in (previous, current):
             if (
                 value.device.type != "cpu"
@@ -77,8 +77,8 @@ def _validate_snapshots(tensors):
                 or (value.numel() and not value.is_pinned())
             ):
                 raise ValueError("GPU batch encoding requires contiguous pinned CPU uint8 snapshots")
-        if previous.numel() != current.numel() or encoding != "xor_bytes":
-            raise ValueError("GPU batch snapshots must have equal byte counts and XOR encoding")
+        if previous.numel() != current.numel():
+            raise ValueError("GPU batch snapshots must have equal byte counts")
 
 
 def _xor_frames(previous_gpu, current_gpu, frame_bytes, keepalive):
@@ -150,7 +150,7 @@ def _tensor_metrics(tensors, batch_metrics):
             cuda_phase_s={},
             timing_scope="none",
         )
-        for _, current, _ in tensors
+        for _, current in tensors
     ]
     if metrics:
         # Batch spans appear once, rather than being attributed to every tensor.
@@ -158,7 +158,7 @@ def _tensor_metrics(tensors, batch_metrics):
             batch_metrics,
             timing_scope="batch",
             batch_tensors=len(tensors),
-            batch_canonical_bytes=sum(current.numel() for _, current, _ in tensors),
+            batch_canonical_bytes=sum(current.numel() for _, current in tensors),
         )
     return metrics
 
@@ -218,7 +218,7 @@ def _device_results(tensors, descriptions, groups, changed, padding, metrics):
 class GpuBatchEncoder:
     """One private stream; callers bound batch bytes and order input D2H on it.
 
-    ``encode_device`` takes ``[(old_pinned_u8, new_pinned_u8, encoding), ...]``.
+    ``encode_device`` takes ``[(old_pinned_u8, new_pinned_u8), ...]``.
     Neither input may be modified concurrently. Compact inner-codec HBM survives
     input batches until ``wrap_device`` returns the final pinned Zstd bytes.
     The 2 MiB frame variant is for producer benchmarks; the current streaming
@@ -252,15 +252,15 @@ class GpuBatchEncoder:
             return []
         started, phases = time.monotonic(), _PhaseTimes(self.timing)
         xor_metadata = {}
-        if not any(current.numel() for _, current, _ in tensors):
+        if not any(current.numel() for _, current in tensors):
             metrics = _tensor_metrics(tensors, {"encode_wall_s": time.monotonic() - started})
             return [DeviceEncodedTensor([], None, 0, item) for item in metrics]
         try:
             with torch.cuda.device(self.device), torch.cuda.stream(self.stream):
                 with phases.record("baseline_h2d_s"):
-                    previous_gpu = [previous.to(self.device, non_blocking=True) for previous, _, _ in tensors]
+                    previous_gpu = [previous.to(self.device, non_blocking=True) for previous, _ in tensors]
                 with phases.record("current_h2d_s"):
-                    current_gpu = [current.to(self.device, non_blocking=True) for _, current, _ in tensors]
+                    current_gpu = [current.to(self.device, non_blocking=True) for _, current in tensors]
                 with phases.record("xor_count_s"):
                     frames, owners, counts = _xor_frames(previous_gpu, current_gpu, self.frame_bytes, xor_metadata)
                 # The one batch may contain frames from many allocations and

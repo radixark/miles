@@ -116,7 +116,7 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
         self._version_dir = self._stream_dir / f"weight_v{weight_version:06d}"
         self._encoding_metrics = []
         self._encoding_tail_wait_s = 0.0
-        self._export_staging_wait_s = self._bulk_encode_s = self._encoded_hash_write_s = 0.0
+        self._export_staging_wait_s = self._bulk_encode_s = 0.0
         self._raw_tail_wait_s = 0.0
         self._raw_cpu_write_s = 0.0
         self._gpu_batch_count = 0
@@ -286,21 +286,18 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
         # The worker never enters distributed collectives. The stream dependency
         # orders H2D reads after export D2H without blocking the export thread.
         self._gpu_encoder.stream.wait_event(ready)
-        return self._gpu_encoder.encode_device(
-            [(self._snapshot[name], self._next_snapshot[name], "xor_bytes") for name in names]
-        )
+        return self._gpu_encoder.encode_device([(self._snapshot[name], self._next_snapshot[name]) for name in names])
 
-    def _encode_gpu_batches(self):
+    def _finish_encoding(self):
         """Finish all inner masks before one owner-wide GPU Zstd compression."""
         # This enclosing span overlaps export; the caller's tail wait is separate.
         started = time.monotonic() if self._encoding_started is None else self._encoding_started
         names, encoded = [], []
         raw_job = None
-        result = None
         pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="gpu-delta-raw") if self._raw_names else None
         try:
             if pool is not None:
-                raw_job = pool.submit(self._write_raw_tensors, self._raw_names)
+                raw_job = pool.submit(self._write_raw_tensors)
             for batch_names, job in self._encoding_jobs:
                 result = job.result()
                 if len(result) != len(batch_names):
@@ -309,8 +306,6 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
                 encoded.extend(result)
                 self._gpu_batch_count += 1
             wrapped = self._gpu_encoder.wrap_device(encoded)
-            encoded.clear()  # Compact inner-codec HBM is no longer needed after final D2H.
-            result = None
             self._bulk_encode_s = time.monotonic() - started
             for name, (frames, payload, outer, changed, metrics) in zip(names, wrapped, strict=True):
                 self._encoding_metrics.append(dict(metrics, name=name))
@@ -325,7 +320,6 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
                     shape=spec["shape"],
                     views=spec["views"],
                 )
-            self._encoded_hash_write_s = self._writer.outer_metrics["outer_hash_write_s"]
         finally:
             if pool is not None:
                 # Always drain the one raw writer before closing payloads or
@@ -338,9 +332,9 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
                     pool.shutdown(wait=True)
                     self._raw_tail_wait_s += time.monotonic() - started
 
-    def _write_raw_tensors(self, names):
+    def _write_raw_tensors(self):
         started = time.monotonic()
-        for name in names:
+        for name in self._raw_names:
             spec = self._plan[name]
             self._writer.add_raw_tensor(
                 name,
@@ -397,7 +391,7 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
         if self._error is None:
             started = time.monotonic()
             try:
-                self._encode_gpu_batches()
+                self._finish_encoding()
             except Exception as error:
                 self._error = error
             self._encoding_tail_wait_s = time.monotonic() - started
@@ -425,7 +419,7 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
         self._snapshot, self._next_snapshot = self._next_snapshot, self._snapshot
         self._uncommitted = False
 
-    def publish(self, weight_version):
+    def publish(self):
         """Seal owner payloads independently of receiver activation."""
         seal_started = time.monotonic()
         shard, error = None, None
@@ -449,7 +443,7 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
             "encoding_tail_wait_s": self._encoding_tail_wait_s,
             "export_staging_wait_s": self._export_staging_wait_s,
             "bulk_encode_s": self._bulk_encode_s,
-            "encoded_hash_write_s": self._encoded_hash_write_s,
+            "encoded_hash_write_s": self._writer.outer_metrics["outer_hash_write_s"],
             "encoder_batches": self._gpu_batch_count,
             "encoding_granularity": "batch",
             "owner_seal_s": time.monotonic() - seal_started,
@@ -513,7 +507,7 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
         return publication
 
     def finalize(self, weight_version):
-        publication = self.publish(weight_version)
+        publication = self.publish()
         activation = _on_root(
             lambda: gpu_delta_metrics.activation_metrics(
                 async_utils.run(

@@ -214,7 +214,7 @@ def test_bounded_wait_cancels_inflight_status_requests():
 
     clients[0].get_weights_delta_status = hanging_status
     with pytest.raises(asyncio.TimeoutError):
-        asyncio.run(session._wait_state(clients[0], session_id="s", timeout=0.01))
+        asyncio.run(session._wait_prepared(clients[0], session_id="s", timeout=0.01))
     assert events == [(0, "status_cancelled")]
 
 

@@ -56,7 +56,7 @@ def _snapshots(frame_bytes=FRAME_BYTES):
     return (
         old,
         current,
-        [(_pinned(before), _pinned(after), "xor_bytes") for before, after in zip(old, current, strict=True)],
+        [(_pinned(before), _pinned(after)) for before, after in zip(old, current, strict=True)],
     )
 
 
@@ -66,7 +66,7 @@ def test_cross_tensor_batch_exact_bytes_immutable_snapshots_and_owned_slab(frame
     device = torch.device("cuda", torch.cuda.current_device())
     encoder = gpu_delta_encoder.GpuBatchEncoder(device, frame_bytes=frame_bytes, codec=codec)
     old, current, inputs = _snapshots(frame_bytes)
-    pointers = [(before.data_ptr(), after.data_ptr()) for before, after, _ in inputs]
+    pointers = [(before.data_ptr(), after.data_ptr()) for before, after in inputs]
     compress, calls = encoder.compressor.compress, []
 
     def capture_batch(frames, stream):
@@ -80,7 +80,7 @@ def test_cross_tensor_batch_exact_bytes_immutable_snapshots_and_owned_slab(frame
     assert calls == [[frame_bytes, frame_bytes, 139, frame_bytes, 1, frame_bytes, 37, 4]]
     assert encoder.stream != caller_stream and encoder.stream.query()
     payloads = []
-    for index, (result, (before, after, _)) in enumerate(zip(results, inputs, strict=True)):
+    for index, (result, (before, after)) in enumerate(zip(results, inputs, strict=True)):
         frames, payload, outer, changed, metrics = result
         np.testing.assert_array_equal(_decode(frames, payload, outer, old[index], codec), current[index])
         np.testing.assert_array_equal(before.numpy(), old[index])
@@ -105,9 +105,7 @@ def test_cross_tensor_batch_exact_bytes_immutable_snapshots_and_owned_slab(frame
     assert payloads and all(payload.obj is payloads[0].obj for payload in payloads)
     saved = [bytes(payload) for payload in payloads]
     another = encoder.wrap_device(
-        encoder.encode_device(
-            [(_pinned(np.zeros(4096, dtype=np.uint8)), _pinned(np.full(4096, 31, dtype=np.uint8)), "xor_bytes")]
-        )
+        encoder.encode_device([(_pinned(np.zeros(4096, dtype=np.uint8)), _pinned(np.full(4096, 31, dtype=np.uint8)))])
     )
     assert another[0][1].obj is not payloads[0].obj
     assert [bytes(payload) for payload in payloads] == saved
@@ -118,14 +116,14 @@ def test_empty_and_all_unchanged_batches(codec):
     encoder = gpu_delta_encoder.GpuBatchEncoder(torch.device("cuda", torch.cuda.current_device()), codec=codec)
     empty = _pinned(np.empty(0, dtype=np.uint8))
     assert encoder.wrap_device(encoder.encode_device([])) == []
-    assert encoder.wrap_device(encoder.encode_device([(empty, empty, "xor_bytes")]))[0][:4] == (
+    assert encoder.wrap_device(encoder.encode_device([(empty, empty)]))[0][:4] == (
         [],
         memoryview(b""),
         None,
         0,
     )
     value = _pinned(np.arange(4096, dtype=np.uint8))
-    results = encoder.wrap_device(encoder.encode_device([(value, value, "xor_bytes"), (empty, empty, "xor_bytes")]))
+    results = encoder.wrap_device(encoder.encode_device([(value, value), (empty, empty)]))
     assert [result[:4] for result in results] == [([], memoryview(b""), None, 0)] * 2
     assert all(result[4]["encoded_d2h_bytes"] == 0 for result in results)
     np.testing.assert_array_equal(value.numpy(), np.arange(4096, dtype=np.uint8))
@@ -183,7 +181,7 @@ def test_failed_batch_status_drains_stream_and_keeps_snapshots(stage, codec, mon
     with pytest.raises(RuntimeError, match="compression failed"):
         encoder.wrap_device(encoder.encode_device(inputs))
     assert pending.query() and encoder.stream.query()
-    for index, (before, after, _) in enumerate(inputs):
+    for index, (before, after) in enumerate(inputs):
         np.testing.assert_array_equal(before.numpy(), old[index])
         np.testing.assert_array_equal(after.numpy(), current[index])
 
@@ -202,7 +200,7 @@ def test_partial_payload_failure_drains_owned_slabs(codec, monkeypatch):
     monkeypatch.setattr(gpu_delta_encoder, "_copy_payload_slab", fail_after_copy)
     before, after = _pinned(np.zeros(139, dtype=np.uint8)), _pinned(np.arange(139, dtype=np.uint8))
     with pytest.raises(RuntimeError, match="partial payload"):
-        encoder.wrap_device(encoder.encode_device([(before, after, "xor_bytes")]))
+        encoder.wrap_device(encoder.encode_device([(before, after)]))
     assert pending.query() and encoder.stream.query()
     np.testing.assert_array_equal(before.numpy(), np.zeros(139, dtype=np.uint8))
     np.testing.assert_array_equal(after.numpy(), np.arange(139, dtype=np.uint8))

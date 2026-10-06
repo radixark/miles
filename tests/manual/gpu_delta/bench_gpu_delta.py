@@ -562,9 +562,7 @@ def _fixture(args):
                 # Pinned snapshots are bounded by a batching target, except that
                 # one larger tensor remains whole. Only compact inner payloads survive
                 # each GPU batch; the canonical snapshots are then released.
-                batch.append(
-                    (torch.from_numpy(before.copy()).pin_memory(), torch.from_numpy(after).pin_memory(), "xor_bytes")
-                )
+                batch.append((torch.from_numpy(before.copy()).pin_memory(), torch.from_numpy(after).pin_memory()))
                 batch_bytes += after.nbytes
                 if batch_bytes >= 512 * 1024**2:
                     pending.extend(encoder.encode_device(batch))
