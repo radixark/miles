@@ -44,6 +44,8 @@ def assign_rollout_engine_ranks_for_data_replica(
     rest go to a data replica already sending the same rollout engine rank, which prepares those weights
     once for several rollout engines.
     """
+    for rollout_engine_ind, gpu_count in enumerate(engine_gpu_counts):
+        assert gpu_count > 0, f"rollout engine {rollout_engine_ind} has {gpu_count} GPUs; it needs at least one"
     targets = [
         (rollout_engine_ind, rollout_engine_rank)
         for rollout_engine_ind, gpu_count in enumerate(engine_gpu_counts)

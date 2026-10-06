@@ -47,6 +47,15 @@ def test_assignments_follow_engine_gpu_counts(data_replica_size: int, engine_gpu
     assert set(writers.values()) <= {1}
 
 
+@pytest.mark.parametrize("gpu_count", [0, -1])
+def test_a_rollout_engine_without_gpus_is_rejected(gpu_count: int):
+    """A rollout engine with no GPUs fails loudly instead of being silently left out."""
+    with pytest.raises(AssertionError, match="rollout engine 1 has"):
+        assign_rollout_engine_ranks_for_data_replica(
+            data_replica_rank=0, data_replica_size=2, engine_gpu_counts=[2, gpu_count]
+        )
+
+
 def test_data_replicas_beyond_the_rollout_engine_ranks_are_not_senders():
     """A data replica with no rollout engine rank must report itself as no sender rather than query an engine."""
     assert (
