@@ -14,6 +14,7 @@ import json
 import os
 import random
 import time
+import traceback
 from collections import defaultdict
 from datetime import timedelta
 from pathlib import Path
@@ -172,7 +173,9 @@ def _train_step(
             augment_example(examples[index], random.Random(args.seed + step * len(examples) + index), args.multi_field_fraction),
             args.max_length,
         ) for index in selected]
-        model.set_requires_gradient_sync(micro_step == accumulation - 1)
+        # Reduce each microbatch into sharded gradients instead of retaining
+        # full-model FP32 gradients during accumulation.
+        model.set_requires_gradient_sync(True)
         logits = model(_batch(labels, processor.tokenizer.pad_token_id, device))
         loss = decision_loss(logits, labels)
         if not torch.isfinite(loss):
@@ -239,7 +242,12 @@ def main() -> None:
     telemetry = Telemetry(Path(args.output_dir), args.run_name, config, args.wandb_project, args.wandb_entity, args.prometheus_port) if dist.get_rank() == 0 else None
     try:
         _run(model, optimizer, train, labels, processor, head_config, config, start, args, device, telemetry)
-    finally:
+    except BaseException:
+        # Collective shutdown can deadlock after one rank fails. Print the
+        # original error and exit so torchrun can terminate the other ranks.
+        traceback.print_exc()
+        os._exit(1)
+    else:
         if telemetry is not None:
             telemetry.close()
         dist.destroy_process_group()

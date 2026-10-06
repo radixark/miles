@@ -129,3 +129,5 @@ renames. Native metadata is copied into place and COMPLETE.json remains the
 publication boundary; exports are staged locally, verified, then removed.
 The distributed timeout defaults to one hour to accommodate checkpoint upload
 barriers; use --distributed-timeout-seconds to change it.
+
+Gradient accumulation reduces every microbatch into sharded gradients to avoid retaining full-model FP32 gradient buffers. Loss scaling still preserves the configured global batch. Worker failures print their original traceback and exit without collective cleanup, allowing torchrun to stop peers.
