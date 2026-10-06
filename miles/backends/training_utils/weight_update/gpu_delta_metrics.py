@@ -1,8 +1,8 @@
 """Completed GPU-delta timing summaries, without additional distributed work.
 
 Receiver clocks are compared only within the same original process. Nested
-spans remain separate. Engine-host work is sampled once from each arena creator,
-not from the zero counters on ranks that attach to its arena.
+spans remain separate. Encoded-cache work is sampled once per engine-host;
+outer decode and original host arenas are counted for every receiver rank.
 """
 
 import logging
@@ -16,7 +16,12 @@ _PREFIX = "perf/gpu_delta/"
 _RANK_TIMINGS = (
     "host_prepare_s",
     "paused_apply_host_wall_s",
-    "host_payload_cache_wait_s",
+    "host_encoded_cache_wait_s",
+    "host_rank_prepare_s",
+    "host_rank_outer_zstd_validate_s",
+    "host_rank_outer_zstd_decode_s",
+    "host_rank_outer_zstd_worker_decode_sum_s",
+    "host_rank_allocation_s",
     "host_manifest_read_parse_s",
     "host_plan_validate_s",
     "host_tensor_prepare_s",
@@ -28,23 +33,22 @@ _RANK_TIMINGS = (
     "host_matrix_enqueue_s",
     "host_apply_completion_wait_s",
 )
-_HOST_TIMINGS = (
-    "host_frames_validate_s",
-    "host_payload_read_s",
-    "host_payload_sha256_s",
-    "host_payload_decode_hash_s",
-    "host_payload_hash_wait_s",
-    "host_outer_zstd_validate_s",
-    "host_outer_zstd_decode_s",
-    "host_outer_zstd_worker_decode_sum_s",
-    "host_shared_build_s",
-    "host_shared_allocation_s",
-    "host_encoded_allocation_s",
+_CACHE_TIMINGS = (
+    "host_encoded_cache_frames_validate_s",
+    "host_encoded_cache_read_s",
+    "host_encoded_cache_sha256_s",
+    "host_encoded_cache_read_sha256_s",
+    "host_encoded_cache_build_s",
+    "host_encoded_cache_allocation_s",
 )
 _RANK_COUNTERS = (
     "host_plan_cache_reused",
     "host_batch_plan_reused",
-    "host_shared_mapping_reused",
+    "host_rank_mapping_reused",
+    "host_rank_capacity_generation",
+    "host_rank_cpu_workers",
+    "host_encoded_cache_created",
+    "host_encoded_cache_reused",
     "compressed_batches",
     "compressed_tensors",
     "layers_per_batch",
@@ -63,20 +67,22 @@ _RANK_COUNTERS = (
     "apply_tune_skipped_batches",
     "apply_tune_bytes",
 )
-_HOST_CAPACITIES = (
-    "host_shared_arena_bytes",
-    "host_shared_capacity_bytes",
-    "host_encoded_capacity_bytes",
+_RANK_WORK_TOTALS = (
+    "host_rank_outer_zstd_encoded_bytes",
+    "host_rank_outer_zstd_decoded_bytes",
+    "host_rank_outer_zstd_tensors",
+    "host_rank_outer_zstd_frames",
+    "host_rank_allocation_calls",
+    "host_rank_allocation_bytes",
+    "host_rank_arena_bytes",
+    "host_rank_capacity_bytes",
 )
-_HOST_WORK_TOTALS = (
-    "host_frames_validations",
-    "host_payload_hash_bytes",
-    "host_outer_zstd_encoded_bytes",
-    "host_outer_zstd_decoded_bytes",
-    "host_shared_allocation_calls",
-    "host_shared_allocation_bytes",
-    "host_encoded_allocation_calls",
-    "host_encoded_allocation_bytes",
+_CACHE_WORK_TOTALS = (
+    "host_encoded_cache_frames_validations",
+    "host_encoded_cache_hash_bytes",
+    "host_encoded_cache_hash_files",
+    "host_encoded_cache_allocation_calls",
+    "host_encoded_cache_allocation_bytes",
 )
 
 
@@ -105,34 +111,38 @@ def activation_metrics(activation):
     _distribution(metrics, "receiver_reader_fence_s", fences)
     _distribution(metrics, "receiver_scheduler_pause_s", pauses)
     timings = [row["result"]["timings"] for row in rows]
-    for name in _RANK_TIMINGS + _RANK_COUNTERS:
+    for name in _RANK_TIMINGS + _RANK_COUNTERS + _RANK_WORK_TOTALS:
         # Optional profiling spans are emitted only with complete rank coverage.
         if all(name in timing for timing in timings):
-            _distribution(metrics, "receiver_" + name, [timing[name] for timing in timings])
+            values = [timing[name] for timing in timings]
+            _distribution(metrics, "receiver_" + name, values)
+            if name in _RANK_WORK_TOTALS:
+                metrics[_PREFIX + "receiver_" + name + "/sum"] = sum(values)
     if all("h2d_bytes" in row["result"] for row in rows):
         _distribution(metrics, "receiver_h2d_bytes", [row["result"]["h2d_bytes"] for row in rows])
-    arenas = {}
+    caches = {}
     for receipt, timing in zip(rows, timings, strict=True):
-        arena = (receipt["identity"]["engine_id"], receipt["identity"]["host_cache_id"])
-        arenas.setdefault(arena, timing)
-    creators = [row for row in timings if row["host_payload_cache_created"] == 1]
-    metrics.update({_PREFIX + "receiver_host_arenas": len(arenas), _PREFIX + "host_cache_creators": len(creators)})
-    for name in _HOST_TIMINGS:
+        cache = (receipt["identity"]["engine_id"], receipt["identity"]["host_cache_id"])
+        caches.setdefault(cache, timing)
+    creators = [row for row in timings if row["host_encoded_cache_created"] == 1]
+    metrics.update(
+        {_PREFIX + "receiver_host_encoded_caches": len(caches), _PREFIX + "host_encoded_cache_creators": len(creators)}
+    )
+    for name in _CACHE_TIMINGS:
         if all(name in row for row in creators):
             _distribution(metrics, "creator_" + name, [row[name] for row in creators])
-    _distribution(metrics, "creator_cpu_workers", [row["host_outer_zstd_cpu_workers"] for row in creators])
-    for name in _HOST_WORK_TOTALS:
+    for name in _CACHE_WORK_TOTALS:
         if all(name in row for row in creators):
             metrics[_PREFIX + "creator_" + name + "/sum"] = sum(row[name] for row in creators)
-    # Engine-local ranks map one host arena. Count capacity once per arena, including
-    # reattachment with no creator; per-rank mappings are not additive physical
-    # storage. Two independent engines may hold duplicate physical bytes.
-    for name in _HOST_CAPACITIES:
-        if not all(name in row for row in timings):
-            continue
-        capacities = [timing[name] for timing in arenas.values()]
-        _distribution(metrics, name, capacities)
-        metrics[_PREFIX + name + "/sum"] = sum(capacities)
+    # Encoded files are physically shared within each engine-host cache; their
+    # retained capacity still counts when this publication has no new creator.
+    # Original DE arenas above are separate physical storage on every rank.
+    for name in ("host_encoded_cache_capacity_bytes", "host_encoded_cache_capacity_generation"):
+        if all(name in row for row in timings):
+            values = [timing[name] for timing in caches.values()]
+            _distribution(metrics, name, values)
+            if name == "host_encoded_cache_capacity_bytes":
+                metrics[_PREFIX + name + "/sum"] = sum(values)
     engine_timings = activation["engine_timings"]
     metrics[_PREFIX + "receiver_engines"] = len(engine_timings)
     for name in ("prepare_s", "apply_s", "resume_s", "activation_s"):

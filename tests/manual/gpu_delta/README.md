@@ -206,33 +206,31 @@ producer prefixes reuse the existing owner gather.
   nested spans. `receiver_paused_setup_host_s` includes decoded allocation,
   pointer uploads and cold kernel work; `receiver_paused_apply_tune_s` isolates
   tuning. Other `receiver_host_*` summaries retain their source span names.
-- `creator_host_*` distributions sample the single creator in each engine-host arena,
-  excluding attaching ranks' zero counters. `host_cache_creators` records coverage;
-  byte sums count each creator once. `creator_cpu_workers` records active creator
-  worker counts. `host_outer_zstd_validate_s` and `worker_decode_sum_s` are sums
-  of worker intervals, while `host_outer_zstd_decode_s` is builder wall time
-  including submission, validation, raw copies and joining tasks. These overlap.
-- `creator_host_{shared,encoded}_allocation_s/{min,p50,max}` samples only host
-  creators; corresponding `allocation_calls/sum` and `allocation_bytes/sum`
-  count cold/growth allocations once per engine-host arena. Warm fitting updates report zero
-  allocation work while retaining their arenas.
-- `host_shared_arena_bytes`, `host_shared_capacity_bytes`, and
-  `host_encoded_capacity_bytes` report `{min,p50,max,sum}` across distinct engine-host arenas,
-  counting each arena once across its ranks. Independent engines may duplicate
-  physical bytes; `receiver_host_arenas` is not a physical-node count.
-  Used bytes and retained capacity are separate quantities.
-- `creator_host_payload_decode_hash_s` measures the combined CPU decode/hash
-  wall span; `creator_host_payload_hash_wait_s` measures only the hash tail
-  waited after decode. SHA duration and decode wall overlap and must not be
-  added. The worker decode sum remains summed worker elapsed time, not CPU
-  utilization. Each span has `{min,p50,max}` across engine-host creators.
+- `creator_host_encoded_cache_*` samples the one encoded-cache creator per
+  engine-host, excluding reusers' zero counters. `host_encoded_cache_creators`
+  records coverage. Read/hash/metadata-validation and cache-build durations have
+  `{min,p50,max}`; hash bytes/files, frame validations and allocation calls/bytes
+  have `/sum`. Verified encoded bytes are ready before rank-local decode begins.
+- `host_encoded_cache_capacity_bytes/{min,p50,max,sum}` counts retained tmpfs
+  capacity once per engine-host cache, including when there is no new creator.
+  `receiver_host_encoded_caches` counts those caches, not physical nodes.
+  Independent engines may retain duplicate encoded bytes.
+- `receiver_host_rank_outer_zstd_*` includes every rank's own canonical tensors.
+  Validation and worker-decode sums are summed worker elapsed intervals;
+  `decode_s` is that rank's wall time including submission, raw copies and joins.
+  These nested spans must not be added. Encoded/decoded bytes, tensors and frames
+  have rank distributions and `/sum`; `receiver_host_rank_cpu_workers` records
+  each rank's worker count. `receiver_host_rank_prepare_s` encloses cache access,
+  rank allocation and local outer decode.
+- `receiver_host_rank_{arena,capacity}_bytes/{min,p50,max,sum}` counts distinct
+  original DE host storage on every rank. Used bytes and retained capacity stay
+  separate. Rank allocation duration has `{min,p50,max}`; calls/bytes also have
+  `/sum`. `receiver_host_rank_mapping_reused` reports local arena reuse. Fitting
+  warm updates allocate no new arena while retaining physical capacity.
 - `receiver_host_plan_cache_reused/{min,p50,max}` reports per-rank static-plan
-  cache reuse; each publication still validates its dynamic frame metadata.
-  `creator_host_frames_validate_s` is creator-only and nested inside arena build;
-  `creator_host_frames_validations/sum` counts one dynamic geometry validation
-  per created arena, not zero-weighted follower rank medians.
-- `receiver_host_shared_mapping_reused/{min,p50,max}` reports per-rank attachment
-  reuse. Physical host capacity remains counted once per engine-host arena.
+  reuse. `creator_host_encoded_cache_frames_validate_s` is nested inside cache
+  build; `creator_host_encoded_cache_frames_validations/sum` counts dynamic
+  metadata validation once per newly cached publication.
 - `receiver_de_host_input_bytes` counts compressed bytes read directly by DE;
   `receiver_h2d_bytes` counts explicit raw-target and metadata uploads. They are
   different traffic categories, not a throughput estimate. `receiver_raw_h2d_bytes`,
