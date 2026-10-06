@@ -7,7 +7,7 @@ import ray
 import torch
 from sglang.srt.server_args import ServerArgs
 from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
-from miles.backends.training_utils.weight_update.protocols.shared_utils.rollout_engine_rank_assignment import (
+from miles.backends.training_utils.weight_update.protocols.utils.rollout_engine_rank_assignment import (
     RolloutEngineRankAssignment,
 )
 from miles.utils import async_utils

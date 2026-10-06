@@ -10,7 +10,7 @@ from tests.fast.dist_utils import init_gloo, run_multiprocess
 
 from miles.backends.training_utils.parallel import GroupInfo
 from miles.backends.training_utils.weight_update.hf_weight_iterator import WeightUpdatePlacement
-from miles.backends.training_utils.weight_update.protocols.shared_utils.rollout_engine_rank_assignment import (
+from miles.backends.training_utils.weight_update.protocols.utils.rollout_engine_rank_assignment import (
     RolloutEngineRankAssignment,
     assign_rollout_engine_ranks,
     assign_rollout_engine_ranks_for_data_replica,
