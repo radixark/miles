@@ -50,7 +50,7 @@ def parse_args():
     parser.add_argument(
         "--frame-bytes",
         type=int,
-        choices=(FRAME_BYTES, 1 << 22),
+        choices=(1 << 19, FRAME_BYTES, 1 << 22),
         default=FRAME_BYTES,
         help="Inner codec frame bytes; outer Zstd chunks remain 1 MiB",
     )

@@ -70,7 +70,7 @@ def _add(writer, name, base, target):
     )
 
 
-@pytest.mark.parametrize("frame_bytes", [1 << 16, 1 << 20, 1 << 21, 1 << 22])
+@pytest.mark.parametrize("frame_bytes", [1 << 16, 1 << 19, 1 << 20, 1 << 21, 1 << 22])
 @pytest.mark.parametrize("codec", publication.CODECS)
 def test_framed_publication_preserves_payload_ranges_and_final_file_hash(tmp_path, frame_bytes, codec):
     rng = np.random.default_rng(11)

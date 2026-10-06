@@ -231,8 +231,8 @@ class GpuBatchEncoder:
 
         if triton is None:
             raise RuntimeError("GPU batch XOR/compression requires Triton")
-        if type(frame_bytes) is not int or frame_bytes not in (1 << 16, FRAME_BYTES, 1 << 21, 1 << 22):
-            raise ValueError("GPU delta frame_bytes must be 64 KiB, 1 MiB, 2 MiB or 4 MiB")
+        if type(frame_bytes) is not int or frame_bytes not in (1 << 16, 1 << 19, FRAME_BYTES, 1 << 21, 1 << 22):
+            raise ValueError("GPU delta frame_bytes must be 64 KiB, 512 KiB, 1 MiB, 2 MiB or 4 MiB")
         self.device, self.frame_bytes = torch.device(device), frame_bytes
         self.timing = os.environ.get("GPU_DELTA_TIMING", "0") == "1"
         self.stream = torch.cuda.Stream(device=self.device)

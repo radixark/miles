@@ -61,7 +61,7 @@ def _snapshots(frame_bytes=FRAME_BYTES):
 
 
 @pytest.mark.parametrize("codec", CODECS)
-@pytest.mark.parametrize("frame_bytes", [FRAME_BYTES, 1 << 16, 1 << 21])
+@pytest.mark.parametrize("frame_bytes", [FRAME_BYTES, 1 << 16, 1 << 19, 1 << 21])
 def test_cross_tensor_batch_exact_bytes_immutable_snapshots_and_owned_slab(frame_bytes, codec, monkeypatch):
     device = torch.device("cuda", torch.cuda.current_device())
     encoder = gpu_delta_encoder.GpuBatchEncoder(device, frame_bytes=frame_bytes, codec=codec)
@@ -207,7 +207,7 @@ def test_partial_payload_failure_drains_owned_slabs(codec, monkeypatch):
 
 
 @pytest.mark.parametrize("codec", CODECS)
-@pytest.mark.parametrize("frame_bytes", [1 << 16, FRAME_BYTES, 1 << 22])
+@pytest.mark.parametrize("frame_bytes", [1 << 16, 1 << 19, FRAME_BYTES, 1 << 22])
 def test_owner_wide_outer_roundtrip_only_transfers_final_bytes(frame_bytes, codec, monkeypatch, tmp_path):
     encoder = gpu_delta_encoder.GpuBatchEncoder(
         torch.device("cuda", torch.cuda.current_device()), frame_bytes, codec=codec
