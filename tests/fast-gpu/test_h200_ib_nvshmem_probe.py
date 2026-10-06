@@ -42,7 +42,9 @@ def dump_environment() -> None:
     _sh("nvidia-smi -L; nvidia-smi --query-gpu=index,pci.bus_id,serial,memory.used --format=csv")
     _sh("nvidia-smi topo -m")
     _sh("ulimit -l; df -h /dev/shm | tail -1; uname -r; cat /proc/driver/nvidia/version | head -1")
-    _sh("lsmod 2>/dev/null | grep -E 'nvidia_peermem|ib_core|mlx5|gdrdrv' || echo 'lsmod unavailable or no matching modules'")
+    _sh(
+        "lsmod 2>/dev/null | grep -E 'nvidia_peermem|ib_core|mlx5|gdrdrv' || echo 'lsmod unavailable or no matching modules'"
+    )
 
     print("=" * 30 + " infiniband " + "=" * 30, flush=True)
     _sh("ls -la /dev/infiniband 2>&1")
@@ -68,7 +70,11 @@ def _worker(rank: int, port: int) -> None:
 
     torch.cuda.set_device(rank)
     dist.init_process_group(
-        "nccl", init_method=f"tcp://127.0.0.1:{port}", rank=rank, world_size=_WORLD_SIZE, device_id=torch.device("cuda", rank)
+        "nccl",
+        init_method=f"tcp://127.0.0.1:{port}",
+        rank=rank,
+        world_size=_WORLD_SIZE,
+        device_id=torch.device("cuda", rank),
     )
     group = dist.new_group(list(range(_WORLD_SIZE)))
     num_rdma_bytes = deep_ep.Buffer.get_low_latency_rdma_size_hint(
