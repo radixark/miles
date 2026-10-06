@@ -13,6 +13,10 @@ from typing import Any
 import pytest
 import torch
 
+from miles.backends.training_utils.weight_update.protocols.utils.rollout_engine_rank_assignment import (
+    assign_rollout_engine_ranks_for_data_replica,
+)
+
 _FAILURE_BOUND = 10.0
 _WEIGHT_NUMEL = 4
 _BUCKET_VALUES = {
@@ -25,6 +29,20 @@ _BUCKET_VALUES = {
 @dataclasses.dataclass
 class _FakeServerArgs:
     rl_quant_profile: str | None = None
+    quantization: str | None = None
+
+
+@dataclasses.dataclass
+class _FakeRankParallelismConfig:
+    tp_rank: int
+    global_rank: int
+
+    @classmethod
+    def from_dict(cls, parallelism_info: dict) -> "_FakeRankParallelismConfig":
+        return cls(**parallelism_info)
+
+    def to_dict(self) -> dict:
+        return dataclasses.asdict(self)
 
 
 @dataclasses.dataclass
@@ -115,7 +133,13 @@ class _FakeTransferEngine:
 
 
 class _FakeRolloutApi:
-    def __init__(self, cell_id: str, gpu_count: int, generation: int = 1, unreachable: bool = False) -> None:
+    def __init__(
+        self,
+        cell_id: str,
+        gpu_count: int,
+        generation: int = 1,
+        unreachable: bool = False,
+    ) -> None:
         self.cell_id = cell_id
         self.gpu_count = gpu_count
         self.generation = generation
@@ -212,68 +236,61 @@ class _P2PSenderHarness:
         self.log: list[tuple] = []
         self.transfer_engine = _FakeTransferEngine(self.log)
         self.transfer_engines_created = 0
-        self.replicas_created: list[tuple[int, bool]] = []
+        self.replicas_created: list[_SharedBufferReplica] = []
         self._loaded_events: dict[int, threading.Event] = {}
         self._calls: list[_ProtocolCall] = []
         self.waiting_threads: set[int] = set()
+        self.data_replica_rank = 0
+        self.data_replica_size = 1
 
-        monkeypatch.setattr(p2p_protocol, "create_transfer_engine", self._create_transfer_engine)
-        monkeypatch.setattr(p2p_protocol, "ParallelismContext", lambda parallelism_config: nullcontext())
+        mooncake_transport = sys.modules[p2p_protocol.MooncakeTransport.__module__]
+        monkeypatch.setattr(mooncake_transport, "_create_transfer_engine", self._create_transfer_engine)
         monkeypatch.setattr(
-            p2p_protocol.UpdateWeightP2P,
-            "_create_cpu_replica",
-            lambda protocol, parallelism_config, model_path, server_args, first_engine_rank=False: (
-                self._create_cpu_replica(
-                    parallelism_config,
-                    model_path,
-                    server_args,
-                    shared_params_dict=protocol._shared_params_dict,
-                    first_engine_rank=first_engine_rank,
-                )
-            ),
-        )
-        monkeypatch.setattr(
-            p2p_protocol, "ParameterMapper", SimpleNamespace(from_model=lambda model: _FakeParameterMapper())
-        )
-        monkeypatch.setattr(p2p_protocol, "RankParallelismConfig", SimpleNamespace(from_dict=lambda info: info))
-        monkeypatch.setattr(p2p_protocol, "get_gloo_group", lambda: None)
-        monkeypatch.setattr(p2p_protocol, "dist", SimpleNamespace(get_rank=lambda group=None: 0))
-        monkeypatch.setitem(p2p_protocol.query_remote_weight_infos.__globals__, "ServerArgs", _FakeServerArgs)
-        monkeypatch.setitem(
-            p2p_protocol.P2PTransferManager.ensure_started.__globals__,
+            mooncake_transport,
             "ThreadPoolExecutor",
             lambda **kwargs: _ObservedExecutor(self.waiting_threads, **kwargs),
         )
+        monkeypatch.setattr(
+            p2p_protocol,
+            "assign_rollout_engine_ranks",
+            lambda parallel_state, placement, engine_gpu_counts: assign_rollout_engine_ranks_for_data_replica(
+                data_replica_rank=self.data_replica_rank,
+                data_replica_size=self.data_replica_size,
+                engine_gpu_counts=engine_gpu_counts,
+            ),
+        )
+        monkeypatch.setattr(p2p_protocol, "ParallelismContext", lambda parallelism_config: nullcontext())
+        monkeypatch.setattr(p2p_protocol, "get_gloo_group", lambda: None)
+        monkeypatch.setattr(p2p_protocol, "dist", SimpleNamespace(get_rank=lambda group=None: 0))
+        model_replica = sys.modules[p2p_protocol.query_rollout_engine_rank_configs.__module__]
+        monkeypatch.setattr(model_replica, "RankParallelismConfig", _FakeRankParallelismConfig)
+        monkeypatch.setattr(model_replica, "ServerArgs", _FakeServerArgs)
+        monkeypatch.setattr(model_replica, "_build_cpu_replica", self._build_cpu_replica)
+        monkeypatch.setattr(
+            model_replica, "ParameterMapper", SimpleNamespace(from_model=lambda model: _FakeParameterMapper())
+        )
+        # CPU CI has no pinned memory
+        monkeypatch.setattr(torch.Tensor, "pin_memory", lambda tensor: tensor)
 
     def loaded_event(self, tp_rank: int) -> threading.Event:
         return self._loaded_events.setdefault(tp_rank, threading.Event())
 
-    def make_protocol(self, *, gathered_dp_rank: int = 0, gathered_dp_size: int = 1) -> Any:
-        plan = object.__new__(self._p2p_protocol.RemoteTransferPlan)
-        plan._pp_rank = 0
-        plan._pp_size = 1
-        plan._gathered_dp_rank = gathered_dp_rank
-        plan._gathered_dp_size = gathered_dp_size
-        plan._rollout_pp_size = 1
-
+    def make_protocol(self, *, data_replica_rank: int = 0, data_replica_size: int = 1) -> Any:
+        self.data_replica_rank = data_replica_rank
+        self.data_replica_size = data_replica_size
         args = Namespace(
             hf_checkpoint="/model",
             p2p_transfer_timeout=_FAILURE_BOUND,
+            p2p_transfer_num_workers=4,
             update_weight_engine_request_timeout=_FAILURE_BOUND,
             sglang_pp_size=1,
         )
-        original_plan = self._p2p_protocol.RemoteTransferPlan
-        self._p2p_protocol.RemoteTransferPlan = lambda _args: plan
-        try:
-            return self._p2p_protocol.UpdateWeightP2P(args)
-        finally:
-            self._p2p_protocol.RemoteTransferPlan = original_plan
+        return self._p2p_protocol.UpdateWeightP2P(args)
 
     def connect(self, protocol: Any, apis: list[_FakeRolloutApi]) -> None:
         (gpu_count,) = {api.gpu_count for api in apis} or {1}
-        protocol.transfer_plan._rollout_num_gpu_per_engine = gpu_count
-        protocol.transfer_plan._rollout_engine_count = len(apis)
-        protocol.transfer_plan._rollout_num_gpus = gpu_count * len(apis)
+        protocol.args.rollout_num_gpus_per_engine = gpu_count
+        protocol.args.rollout_num_gpus = gpu_count * len(apis)
         protocol.connect(
             rollout_engines=apis,
             engine_gpu_counts=[api.gpu_count for api in apis],
@@ -297,19 +314,9 @@ class _P2PSenderHarness:
         self.transfer_engines_created += 1
         return self.transfer_engine
 
-    def _create_cpu_replica(
-        self,
-        parallelism_config: dict,
-        model_path: str,
-        server_args: Any,
-        shared_params_dict: dict[str, torch.Tensor],
-        first_engine_rank: bool = False,
-    ) -> _SharedBufferReplica:
-        replica = _SharedBufferReplica(tp_rank=parallelism_config["tp_rank"], harness=self)
-        if not first_engine_rank:
-            for name, param in replica.named_parameters():
-                param.data = shared_params_dict[name]
-        self.replicas_created.append((replica.tp_rank, first_engine_rank))
+    def _build_cpu_replica(self, config: Any, model_path: str) -> _SharedBufferReplica:
+        replica = _SharedBufferReplica(tp_rank=config.parallelism.tp_rank, harness=self)
+        self.replicas_created.append(replica)
         return replica
 
 
@@ -376,6 +383,11 @@ def p2p_protocol() -> ModuleType:
         }
     ):
         return importlib.import_module(_P2P_PROTOCOL_MODULE)
+
+
+@pytest.fixture(scope="module")
+def model_replica_module(p2p_protocol: ModuleType) -> ModuleType:
+    return sys.modules[p2p_protocol.query_rollout_engine_rank_configs.__module__]
 
 
 @pytest.fixture

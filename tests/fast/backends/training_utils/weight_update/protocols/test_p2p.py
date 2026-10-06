@@ -1,3 +1,6 @@
+from collections.abc import Iterator
+from contextlib import contextmanager
+from types import ModuleType
 from typing import Any
 
 import pytest
@@ -45,6 +48,42 @@ class TestSendBucket:
         assert p2p_sender.transfer_engine.payload_of(api.session_id(0)) == {
             api.target_address(0, "qk"): [5.0, 6.0, 7.0, 8.0]
         }
+
+    def test_each_replica_loads_inside_its_parallelism_context(
+        self,
+        p2p_sender: Any,
+        p2p_protocol: ModuleType,
+        make_rollout_api: Any,
+        make_bucket: Any,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """sglang's sharded weight loaders read the rank at call time, which exists only inside its context."""
+
+        @contextmanager
+        def logged_parallelism_context(parallelism_config: Any) -> Iterator[None]:
+            p2p_sender.log.append(("enter", parallelism_config.tp_rank))
+            yield
+            p2p_sender.log.append(("exit", parallelism_config.tp_rank))
+
+        monkeypatch.setattr(p2p_protocol, "ParallelismContext", logged_parallelism_context)
+        protocol = p2p_sender.make_protocol()
+        api = make_rollout_api("cell-a", gpu_count=2)
+        p2p_sender.connect(protocol, [api])
+        protocol.begin_sync(weight_version=1, iter_buckets=None)
+
+        protocol.send_bucket(make_bucket("hf.w"))
+        protocol.after_base_weights()
+
+        assert p2p_sender.log == [
+            ("enter", 0),
+            ("load", 0, ("hf.w",)),
+            ("exit", 0),
+            ("write", api.session_id(0)),
+            ("enter", 1),
+            ("load", 1, ("hf.w",)),
+            ("exit", 1),
+            ("write", api.session_id(1)),
+        ]
 
     def test_a_parameter_still_missing_a_shard_fails_the_end_of_the_base_weights(
         self, p2p_sender: Any, make_rollout_api: Any, make_bucket: Any

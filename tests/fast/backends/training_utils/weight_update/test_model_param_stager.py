@@ -3,7 +3,7 @@ from dataclasses import dataclass
 import pytest
 import torch
 
-from miles.backends.training_utils.weight_update.utils import ModelParamStager
+from miles.backends.training_utils.weight_update.protocols.utils.model_param_stager import ModelParamStager
 
 
 @dataclass
