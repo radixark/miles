@@ -217,7 +217,7 @@ def test_replica_loads_inside_its_parallelism_context():
     protocol.is_sender = True
     protocol._replica_targets = [_ReplicaTarget(replica, [SimpleNamespace(session_id="s0")], "cfg-0")]
     protocol._transport = MagicMock()
-    protocol._last_rank_writes = []
+    protocol._pending_writes = []
     ready = [("model.embed_tokens.weight", torch.zeros(1))]
     protocol._shared_param_mapper = None
     protocol._shared_params_dict = dict(ready)

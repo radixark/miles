@@ -1,4 +1,4 @@
-import logging
+import concurrent.futures
 from argparse import Namespace
 from collections.abc import Callable, Iterator, Sequence
 from concurrent.futures import Future
@@ -35,8 +35,6 @@ from miles.utils.distributed_utils import get_gloo_group
 
 from .p2p_transfer_utils import query_remote_weight_infos
 
-logger = logging.getLogger(__name__)
-
 
 class _ReplicaTarget(NamedTuple):
     model_replica: torch.nn.Module
@@ -50,9 +48,8 @@ class UpdateWeightP2P(WeightTransferProtocol):
 
     Compute transfer_ready_params once (same for all engine ranks)
     For each engine rank:
-        load_weights(shared buffer) → P2P write
-        where the last rank's write runs in the background
-    after_base_weights waits for the background writes
+        wait for the previous rank's writes, load_weights(shared buffer) → P2P write
+    after_base_weights waits for every write and fails the update if any failed
     """
 
     def __init__(self, args: Namespace) -> None:
@@ -62,18 +59,14 @@ class UpdateWeightP2P(WeightTransferProtocol):
         self.global_rank = dist.get_rank(group=get_gloo_group())
         self._model_registered = False
         self._model_param_stager = ModelParamStager()
-        self._last_rank_writes: list[Future] = []
+        self._pending_writes: list[tuple[RemoteShard, Future]] = []
 
     def after_base_weights(self) -> None:
-        """Wait for all background P2P writes to complete."""
+        """Wait for every write of this update; fail the update if any write failed or is still running."""
         if not self.is_sender:
             return
-        for write in self._last_rank_writes:
-            try:
-                write.result(timeout=self.args.p2p_transfer_timeout)
-            except Exception as e:
-                logger.error(f"[P2P] Transfer future failed: {e}")
-        self._last_rank_writes = []
+        pending_writes, self._pending_writes = self._pending_writes, []
+        _raise_if_any_write_failed(pending_writes, timeout=self.args.p2p_transfer_timeout)
         self._model_param_stager.assert_all_done()
 
     def begin_sync(
@@ -105,19 +98,15 @@ class UpdateWeightP2P(WeightTransferProtocol):
 
         if transfer_ready_params and ready_hf_tensors:
             tensors_by_name = {name: self._shared_params_dict[name] for name in transfer_ready_params}
-            last_idx = len(self._replica_targets) - 1
-            for i, target in enumerate(self._replica_targets):
+            previous_rank_writes: list[Future] = []
+            for target in self._replica_targets:
+                # loading overwrites the shared buffer the previous rank's writes read from
+                concurrent.futures.wait(previous_rank_writes)
                 with ParallelismContext(target.parallelism_config):
                     target.model_replica.load_weights(ready_hf_tensors)
 
-                writes = self._transport.write(target.remote_shards, tensors_by_name)
-                if i == last_idx:
-                    # Last engine rank: its writes run in the background, as the weight will no longer be overwritten
-                    self._last_rank_writes += writes
-                else:
-                    # Non-last engine rank needs to be fully written to target before next update can happen.
-                    for write in writes:
-                        write.result()
+                previous_rank_writes = self._transport.write(target.remote_shards, tensors_by_name)
+                self._pending_writes += zip(target.remote_shards, previous_rank_writes, strict=True)
 
         converted_named_tensors.clear()
 
@@ -244,3 +233,21 @@ class UpdateWeightP2P(WeightTransferProtocol):
                 param.data = self._shared_params_dict[name]
 
         return model
+
+
+def _raise_if_any_write_failed(pending_writes: list[tuple[RemoteShard, Future]], timeout: float) -> None:
+    _, unfinished_writes = concurrent.futures.wait([write for _, write in pending_writes], timeout=timeout)
+    failures = []
+    for remote_shard, write in pending_writes:
+        if write in unfinished_writes:
+            reason = f"still running after {timeout}s"
+        elif write.exception() is not None:
+            reason = repr(write.exception())
+        else:
+            continue
+        failures.append(
+            f"rollout engine {remote_shard.rollout_engine_ind} rank {remote_shard.rollout_engine_rank} "
+            f"(session {remote_shard.session_id}): {reason}"
+        )
+    if failures:
+        raise RuntimeError(f"{len(failures)} of {len(pending_writes)} p2p writes failed:\n" + "\n".join(failures))

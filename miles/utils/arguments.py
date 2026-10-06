@@ -1114,7 +1114,10 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "--p2p-transfer-timeout",
                 type=float,
                 default=30.0,
-                help="Timeout in seconds for each P2P transfer operation.",
+                help=(
+                    "Seconds the end of a P2P weight update waits for writes still in flight; a write not done by "
+                    "then fails the update."
+                ),
             )
             return parser
 

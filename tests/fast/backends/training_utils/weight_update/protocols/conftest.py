@@ -264,12 +264,14 @@ class _P2PSenderHarness:
     def loaded_event(self, tp_rank: int) -> threading.Event:
         return self._loaded_events.setdefault(tp_rank, threading.Event())
 
-    def make_protocol(self, *, data_replica_rank: int = 0, data_replica_size: int = 1) -> Any:
+    def make_protocol(
+        self, *, data_replica_rank: int = 0, data_replica_size: int = 1, p2p_transfer_timeout: float = _FAILURE_BOUND
+    ) -> Any:
         self.data_replica_rank = data_replica_rank
         self.data_replica_size = data_replica_size
         args = Namespace(
             hf_checkpoint="/model",
-            p2p_transfer_timeout=_FAILURE_BOUND,
+            p2p_transfer_timeout=p2p_transfer_timeout,
             update_weight_engine_request_timeout=_FAILURE_BOUND,
             sglang_pp_size=1,
         )
