@@ -5,7 +5,7 @@ HTTP-agnostic: the FastAPI adapter (``sessions.py`` + ``server.py``) turns each 
 - `chat_completions` omits choice `meta_info` from client replies without modifying the stored response; `SessionRecord` retains it for sample collection and `GET /sessions/{id}`.
 - ``chat_completions`` holds the per-session lock for prep and state update but not across the proxy call; ``closing`` re-checks and the ``num_assistant`` check gate concurrent DELETE/chat.
 - ``stream: true`` is served as fake streaming: the backend call stays non-streaming (TITO needs the complete message + meta_info) and the full response is re-rendered as a single SSE chunk plus ``data: [DONE]``. Errors all happen before the SSE body is built, so they keep their real status codes as JSON.
-- ``collect_samples`` assembles training Samples from the session's records on the server (compute -> truncate -> merge, synchronously on the loop like the lock-free ``get_session``); deterministic assembly failures return 422 with the assertion text.
+- ``collect_samples`` waits for the records' output-store reads (``replay_reads``), then assembles training Samples from the session's records on the server (compute -> truncate -> merge, synchronously on the loop like the lock-free ``get_session``); deterministic assembly failures return 422 with the assertion text.
 """
 
 import json
@@ -24,6 +24,7 @@ from miles.rollout.session.errors import (
     UpstreamResponseError,
 )
 from miles.rollout.session.linear_trajectory import SessionRegistry
+from miles.rollout.session.replay_reads import ReplayReader, wait_for_replay_reads
 from miles.rollout.session.request_args import filter_turn_args, parse_chat_request
 from miles.rollout.session.samples.codec import COMPUTED_FIELDS, ROLLOUT_SAMPLING_MASK_FIELDS, encode_samples
 from miles.rollout.session.samples.merge import (
@@ -149,13 +150,12 @@ def proxy_result_to_response(result: dict) -> Response:
     return Response(content=_render_json(data), status_code=status_code, headers=headers, media_type=JSON_MEDIA_TYPE)
 
 
-def extract_completion(result: dict) -> tuple:
-    """Decode and validate the backend chat response — shared verbatim by the
-    v1 and v2 cores. Returns ``(response, choice, assistant_message,
+def extract_completion(response: dict) -> tuple:
+    """Validate the decoded backend chat response — shared verbatim by the
+    v1 and v2 cores. Returns ``(choice, assistant_message,
     completion_token_ids)``; malformed upstream payloads raise
     ``UpstreamResponseError``.
     """
-    response = json.loads(result["response_body"])
     choice = response.get("choices", [{}])[0]
     if choice.get("finish_reason") == "abort":
         raise UpstreamGenerationAbortedError("upstream generation aborted before completion")
@@ -183,7 +183,7 @@ def extract_completion(result: dict) -> tuple:
         )
 
     completion_token_ids = [t[1] for t in output_token_logprobs]
-    return response, choice, assistant_message, completion_token_ids
+    return choice, assistant_message, completion_token_ids
 
 
 class SessionCore:
@@ -197,6 +197,7 @@ class SessionCore:
         session_server_instance_id=None,
         *,
         use_addition_r3=False,
+        replay_reader: ReplayReader | None = None,
     ):
         self.backend = backend
         self.registry = registry
@@ -205,6 +206,12 @@ class SessionCore:
         # Derived from pause_generation_mode at server bootstrap; session code
         # must depend on this capability, never on the weight-update mode.
         self.use_addition_r3 = use_addition_r3
+        # None unless the engines return replay outputs through the output store.
+        self.replay_reader = replay_reader
+
+    def _start_replay_read(self, response: dict):
+        """Start reading the response's output-store bundle before anything can discard the response."""
+        return None if self.replay_reader is None else self.replay_reader.start(response)
 
     def _maybe_request_addition_r3(
         self, request_body: dict, checkpoint_token_ids: list[int], prompt_token_ids: list[int]
@@ -267,8 +274,12 @@ class SessionCore:
     async def collect_samples(self, session_id: str, *, max_seq_len: int | None) -> Response:
         """Assemble training Samples from this session's records.
 
-        Validation failures return 422; unexpected errors propagate.
+        Validation failures return 422; unexpected errors, including a failed
+        output-store read, propagate.
         """
+        session = self.registry.get_session(session_id)
+        await wait_for_replay_reads(lambda: session.records)
+        # Re-fetched because the session may have been deleted while waiting.
         session = self.registry.get_session(session_id)
         metadata = self._session_metadata(session_id, session)
         tokenizer = self.registry.tokenizer
@@ -364,7 +375,9 @@ class SessionCore:
         if result["status_code"] != 200:
             return proxy_result_to_response(result)
 
-        response, choice, assistant_message, completion_token_ids = extract_completion(result)
+        response = json.loads(result["response_body"])
+        replay_read = self._start_replay_read(response)
+        choice, assistant_message, completion_token_ids = extract_completion(response)
         assistant_message = tito_tokenizer.postprocess_completion(
             choice=choice,
             assistant_message=assistant_message,
@@ -407,6 +420,7 @@ class SessionCore:
                 request=request_body,
                 response=response,
             )
+            record.attach_replay_read(replay_read)
             session.append_record(record)
         # --- lock released ---
 

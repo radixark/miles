@@ -31,6 +31,9 @@ _ARGS_TO_CONFIG_FIELD = {
     "rollout_top_logprobs_num": "rollout_top_logprobs_num",
     "rollout_sampling_logprobs_mode": "rollout_sampling_logprobs_mode",
     "rollout_temperature": "rollout_temperature",
+    "sglang_output_store_backend": "sglang_output_store_backend",
+    "mooncake_store_init_kwargs": "mooncake_store_init_kwargs",
+    "mooncake_replica_num": "mooncake_replica_num",
 }
 
 _CALL_SITE_FIELDS = ("host", "port", "instance_id", "backend_url")
@@ -67,6 +70,9 @@ _DISTINCT_ARGS_VALUES = dict(
     rollout_top_logprobs_num=32,
     rollout_sampling_logprobs_mode="support",
     rollout_temperature=0.7,
+    sglang_output_store_backend="mooncake",
+    mooncake_store_init_kwargs={"master_server_address": "10.0.0.3:50051"},
+    mooncake_replica_num=2,
 )
 
 
@@ -129,6 +135,23 @@ class TestComputeSessionServerConfig:
         )
         assert config.rollout_temperature == 1.0
 
+    def test_args_without_the_output_store_leave_it_off(self):
+        """An SGLang without --output-store-backend registers no flag, and test args omit the Mooncake ones."""
+        omitted = ("sglang_output_store_backend", "mooncake_store_init_kwargs", "mooncake_replica_num")
+        args = Namespace(**{key: value for key, value in _DISTINCT_ARGS_VALUES.items() if key not in omitted})
+        config = compute_session_server_config(
+            args, host="127.0.0.1", port=5001, instance_id=None, backend_url="http://127.0.0.1:3000"
+        )
+        assert (
+            config.sglang_output_store_backend,
+            config.mooncake_store_init_kwargs,
+            config.mooncake_replica_num,
+        ) == (
+            "none",
+            None,
+            1,
+        )
+
 
 _COMPLETE_CONFIG_KWARGS = dict(
     host="127.0.0.1",
@@ -158,6 +181,9 @@ _COMPLETE_CONFIG_KWARGS = dict(
     rollout_top_logprobs_num=0,
     rollout_sampling_logprobs_mode="selected",
     rollout_temperature=1.0,
+    sglang_output_store_backend="none",
+    mooncake_store_init_kwargs=None,
+    mooncake_replica_num=1,
 )
 
 

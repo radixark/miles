@@ -43,7 +43,10 @@ class TestResolveRequestArgsByConfig:
         assert wire["return_routed_experts"] is True
         assert wire["return_indexer_topk"] is True
 
-    @pytest.mark.parametrize("field", ["input_ids", "routed_experts_start_len", "logprob_start_len", "lora_path"])
+    @pytest.mark.parametrize(
+        "field",
+        ["input_ids", "routed_experts_start_len", "return_outputs_via_store", "logprob_start_len", "lora_path"],
+    )
     def test_client_tito_control_fields_are_rejected(self, field):
         with pytest.raises(MessageValidationError, match=f"{field}="):
             resolve_request_args_by_config({field: 1}, make_session_server_config())
@@ -77,7 +80,10 @@ class TestResolveRequestArgsByConfig:
                 {"input_ids": [1], "chat_template_kwargs": "oops"}, make_session_server_config()
             )
 
-    @pytest.mark.parametrize("field", ["input_ids", "routed_experts_start_len", "logprob_start_len", "lora_path"])
+    @pytest.mark.parametrize(
+        "field",
+        ["input_ids", "routed_experts_start_len", "return_outputs_via_store", "logprob_start_len", "lora_path"],
+    )
     def test_null_control_fields_are_removed(self, field):
         wire, _ = resolve_request_args_by_config({field: None}, make_session_server_config())
         assert field not in wire
@@ -111,6 +117,22 @@ class TestPrepareChatRequest:
         assert prepared.body["tools"] == self.TOOLS
         assert prepared.body["chat_template_kwargs"] == {"enable_thinking": True}
         assert prepared.body["logprobs"] is True  # resolve_request_args_by_config ran on the same body
+
+    @pytest.mark.parametrize(
+        ("evaluation", "backend", "expected"),
+        [(False, "mooncake", True), (True, "mooncake", None), (False, "none", None)],
+        ids=["training", "evaluation", "backend-off"],
+    )
+    def test_only_training_replay_requests_opt_into_the_output_store(self, evaluation, backend, expected):
+        prepared = prepare_chat_request(
+            {},
+            self._tito(),
+            config=make_session_server_config(use_rollout_routing_replay=True, sglang_output_store_backend=backend),
+            turn_args=None,
+            evaluation=evaluation,
+        )
+
+        assert prepared.body.get("return_outputs_via_store") is expected
 
     def test_sampling_replay_uses_session_defaults_and_keeps_request_filters(self):
         prepared = prepare_chat_request(

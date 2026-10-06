@@ -16,6 +16,7 @@ from fastapi import FastAPI
 
 from miles.rollout.session.config import SessionServerConfig
 from miles.rollout.session.core import ProxyRequest
+from miles.rollout.session.replay_reads import create_replay_reader
 from miles.rollout.session.sessions import setup_session_routes
 from miles.utils.logging_utils import configure_logger_raw
 from miles.utils.workers.argv_utils import parse_config_argv
@@ -42,10 +43,14 @@ class SessionServer:
         # Close the httpx connection pool when uvicorn shuts down to avoid FD leaks.
         self.app.router.on_shutdown.append(self.client.aclose)
 
+        replay_reader = create_replay_reader(config)
+        if replay_reader is not None:
+            self.app.router.on_shutdown.append(replay_reader.close)
+
         # `retract` may recompute earlier rows and must return full R3; all other
         # pause modes preserve prior rows and can request only the appended R3.
         self.use_addition_r3 = config.pause_generation_mode != "retract"
-        setup_session_routes(self.app, self, config, use_addition_r3=self.use_addition_r3)
+        setup_session_routes(self.app, self, config, use_addition_r3=self.use_addition_r3, replay_reader=replay_reader)
 
     async def do_proxy(self, request: ProxyRequest, path: str, *, body: bytes, headers: dict) -> dict:
         url = f"{self.backend_url}/{path}"

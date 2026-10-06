@@ -112,6 +112,7 @@ def _compute_sample_from_openai_record(
 ) -> Sample:
     choice = record.response["choices"][0]
     finish_reason = choice.get("finish_reason")
+    replay = record.replay_outputs()
 
     prompt_token_ids = record.request.get("input_ids")
     if prompt_token_ids is None:
@@ -128,6 +129,7 @@ def _compute_sample_from_openai_record(
             choice["meta_info"],
             aborted=finish_reason == "abort",
             sampling_logprobs_mode=record.request.get("sampling_logprobs_mode", "selected"),
+            replay=replay,
         )
     sample.tokens = prompt_token_ids + output_token_ids
     sample.rollout_log_probs = output_log_probs
@@ -144,9 +146,11 @@ def _compute_sample_from_openai_record(
             sampling_logprobs_mode=record.request.get("sampling_logprobs_mode", "selected"),
         )
     sample.rollout_routed_experts = (
-        None if use_addition_r3 else get_routed_experts_from_response(args, choice, len(sample.tokens) - 1)
+        None
+        if use_addition_r3
+        else get_routed_experts_from_response(args, choice, len(sample.tokens) - 1, replay=replay)
     )
-    sample.rollout_indexer_topk = get_indexer_topk_from_response(args, choice, sample)
+    sample.rollout_indexer_topk = get_indexer_topk_from_response(args, choice, sample, replay=replay)
     sample.weight_versions = [WeightVersionsPerCall.from_meta_info(choice["meta_info"], output_end=len(sample.tokens))]
 
     if trim_count > 0:
@@ -176,7 +180,7 @@ def merge_samples_with_addition_r3(
 ) -> Sample:
     """Merge ordinary fields, then materialize the required append-only R3 prefix."""
     merged = merge_samples(samples, tokenizer)
-    if all(record.response["choices"][0]["meta_info"].get("routed_experts") is None for record in records):
+    if not any(_routed_experts_payload(record)[0] for record in records):
         return merged
 
     required_rows = len(merged.tokens) - 1
@@ -187,8 +191,8 @@ def merge_samples_with_addition_r3(
             break
 
         choice = record.response["choices"][0]
-        info = choice["meta_info"].get("routed_experts")
-        if info is None:
+        has_payload, has_rows = _routed_experts_payload(record)
+        if not has_payload:
             raise ValueError(f"additional R3: record {i} has no routed_experts payload")
 
         start = record.request.get("routed_experts_start_len")
@@ -201,10 +205,10 @@ def merge_samples_with_addition_r3(
         if end < start:
             raise ValueError(f"additional R3: record {i} has invalid offsets (start={start}, end={end})")
         delta_rows = end - start
-        if bool(info) != bool(delta_rows):
+        if has_rows != bool(delta_rows):
             raise ValueError(f"additional R3: record {i} payload presence does not match {delta_rows} rows")
 
-        patch = get_routed_experts_from_response(args, choice, delta_rows)
+        patch = get_routed_experts_from_response(args, choice, delta_rows, replay=record.replay_outputs())
         if len(patch) or required_rows == 0:
             chunks.append(patch)
         covered_rows = end
@@ -216,6 +220,15 @@ def merge_samples_with_addition_r3(
         )
     merged.rollout_routed_experts = np.concatenate(chunks)[:required_rows]
     return merged
+
+
+def _routed_experts_payload(record: SessionRecord) -> tuple[bool, bool]:
+    """Whether the record returned R3, inline or through the output store, and whether it holds any rows."""
+    replay = record.replay_outputs()
+    if replay is not None and replay.routed_experts is not None:
+        return True, len(replay.routed_experts) > 0
+    info = record.response["choices"][0]["meta_info"].get("routed_experts")
+    return info is not None, bool(info)
 
 
 def truncate_samples_by_total_tokens(

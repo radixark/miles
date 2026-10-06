@@ -31,6 +31,10 @@ class SessionServerConfig(FrozenStrictBaseModel):
     rollout_top_logprobs_num: int
     rollout_sampling_logprobs_mode: str
     rollout_temperature: float
+    # The engines' output store, and the Mooncake cluster the session server reads it from.
+    sglang_output_store_backend: str
+    mooncake_store_init_kwargs: dict[str, Any] | None
+    mooncake_replica_num: int
 
 
 def compute_session_server_config(
@@ -64,4 +68,8 @@ def compute_session_server_config(
         rollout_top_logprobs_num=args.rollout_top_logprobs_num,
         rollout_sampling_logprobs_mode=args.rollout_sampling_logprobs_mode,
         rollout_temperature=getattr(args, "rollout_temperature", 1.0),
+        # Registered from SGLang's ServerArgs, so absent with an SGLang that lacks it.
+        sglang_output_store_backend=getattr(args, "sglang_output_store_backend", "none"),
+        mooncake_store_init_kwargs=getattr(args, "mooncake_store_init_kwargs", None),
+        mooncake_replica_num=getattr(args, "mooncake_replica_num", 1),
     )

@@ -93,7 +93,11 @@ def _create_instance(args: Namespace, *, contribute_segment: bool | None) -> Bas
     if backend == ObjectStoreBackend.MOONCAKE:
         if contribute_segment is None:
             contribute_segment = _default_contribute_segment()
-        return MooncakeObjectStore(args, contribute_segment=contribute_segment)
+        return MooncakeObjectStore(
+            init_kwargs=args.mooncake_store_init_kwargs or {},
+            replica_num=args.mooncake_replica_num,
+            contribute_segment=contribute_segment,
+        )
     return RayObjectStore(frees_objects=WorkerCommBackend(args.worker_comm_backend) == WorkerCommBackend.RPC)
 
 
@@ -177,11 +181,11 @@ def mooncake_ref_from_handle(handle: dict[str, Any]) -> StoreObjectRef:
 
 
 class MooncakeObjectStore(BaseObjectStore):
-    def __init__(self, args: Namespace, *, contribute_segment: bool) -> None:
+    def __init__(self, *, init_kwargs: dict[str, Any], replica_num: int, contribute_segment: bool) -> None:
         _check_mooncake_available()
 
-        self._init_kwargs: dict[str, Any] = args.mooncake_store_init_kwargs or {}
-        self._replica_num: int = args.mooncake_replica_num
+        self._init_kwargs = init_kwargs
+        self._replica_num = replica_num
         if self._replica_num < 1:
             raise ValueError("--mooncake-replica-num must be >= 1")
 

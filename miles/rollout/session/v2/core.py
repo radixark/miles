@@ -15,6 +15,7 @@ from miles.rollout.session.core import (
     proxy_result_to_response,
 )
 from miles.rollout.session.errors import SessionNotFoundError, TokenizationError
+from miles.rollout.session.replay_reads import ReplayReader, wait_for_replay_reads
 from miles.rollout.session.request_args import filter_turn_args, parse_chat_request
 from miles.rollout.session.samples.codec import COMPUTED_FIELDS_V2, ROLLOUT_SAMPLING_MASK_FIELDS, encode_samples
 from miles.rollout.session.types import GetSessionResponse, SessionRecord
@@ -36,9 +37,23 @@ class SessionCoreV2(SessionCore):
     transport shell (health, create/delete, raw proxy)."""
 
     def __init__(
-        self, backend, registry: SessionRegistryV2, config, session_server_instance_id=None, *, use_addition_r3=False
+        self,
+        backend,
+        registry: SessionRegistryV2,
+        config,
+        session_server_instance_id=None,
+        *,
+        use_addition_r3=False,
+        replay_reader: ReplayReader | None = None,
     ):
-        super().__init__(backend, registry, config, session_server_instance_id, use_addition_r3=use_addition_r3)
+        super().__init__(
+            backend,
+            registry,
+            config,
+            session_server_instance_id,
+            use_addition_r3=use_addition_r3,
+            replay_reader=replay_reader,
+        )
         # Import-path only in production: function_registry is process-local.
         self.sample_picker = load_function(config.session_sample_picker_path, sync_required=True)
         self.sample_postprocessor = load_function(config.session_sample_postprocessor_path, sync_required=True)
@@ -79,10 +94,14 @@ class SessionCoreV2(SessionCore):
         """Samples op: assemble one raw sample per leaf, then run the
         pick/post-process hook pipeline and encode the result.
 
-        Synchronous on the server loop (no await), so the session read cannot
+        Waits for the records' output-store reads first; from then on it is
+        synchronous on the server loop (no await), so the session read cannot
         interleave with chat commits. Deterministic assembly/hook failures map
-        to 422; unknown exceptions propagate.
+        to 422; unknown exceptions, including a failed read, propagate.
         """
+        session = self.registry.get_session(session_id)
+        await wait_for_replay_reads(lambda: [node.record for node in session.tree.nodes])
+        # Re-fetched because the session may have been deleted while waiting.
         session = self.registry.get_session(session_id)
         metadata = self._session_metadata(session_id, session)
         fields = COMPUTED_FIELDS_V2
@@ -183,7 +202,9 @@ class SessionCoreV2(SessionCore):
         if result["status_code"] != 200:
             return proxy_result_to_response(result)
 
-        response, choice, assistant_message, completion_token_ids = extract_completion(result)
+        response = json.loads(result["response_body"])
+        replay_read = self._start_replay_read(response)
+        choice, assistant_message, completion_token_ids = extract_completion(response)
         assistant_message = tito_tokenizer.postprocess_completion(
             choice=choice,
             assistant_message=assistant_message,
@@ -205,6 +226,7 @@ class SessionCoreV2(SessionCore):
                 request=request_body,
                 response=response,
             )
+            record.attach_replay_read(replay_read)
             commit_generation(
                 session,
                 parent=attach_parent,
