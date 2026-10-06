@@ -38,7 +38,7 @@ The converter dequantizes each kv-head shard of the fused `qkv_proj` with its ow
 
 ### 3.2 SGLang
 
-The BF16 engine needs the MiMo-V2 fixes that are not in the image yet:
+The BF16 engine needs the following MiMo-V2 fixes. The `sglang-miles` branch has them since [`8035002`](https://github.com/sgl-project/sglang/commit/8035002c4ed0360579004791378e5b7d1740503b), and the `radixark/miles:dev` image, built from that branch, includes them:
 
 - upstream [sgl-project/sglang#40448](https://github.com/sgl-project/sglang/pull/40448) (MXFP4 MoE and BF16 router);
 - accepting the `split` attention layout of the BF16 conversion;

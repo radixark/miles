@@ -47,7 +47,6 @@ from typing import Literal
 import typer
 
 import miles.utils.external_utils.command_utils as U
-from miles.utils.external_utils.command_utils.base_backend import _exclusive_path_lock
 
 _HF_REPO = "XiaomiMiMo/MiMo-V2.6-Flash-RL"
 
@@ -59,7 +58,7 @@ class _Recipe:
     layers: str | None = None
     # Default TP / PP / EP.
     parallel: tuple[int, int, int] = (2, 2, 2)
-    # The BF16 engine holds the whole model: 620 GB needs TP8 on 141 GB GPUs.
+    # GPUs per colocated BF16 engine.
     rollout_num_gpus_per_engine: int = 4
     sglang_mem_fraction_static: float = 0.6
     # Full-parameter Adam state of the full model (3.7 TB) fits neither 16 GPUs nor two hosts'
@@ -71,6 +70,7 @@ _RECIPES = {
     "MiMo-V2.6-Flash-RL-bf16": _Recipe(
         megatron_model_type="mimo-v2.6-flash",
         parallel=(2, 2, 8),
+        # The BF16 engine holds the whole model: 620 GB needs TP8 on 141 GB GPUs.
         rollout_num_gpus_per_engine=8,
         sglang_mem_fraction_static=0.8,
         stream_optimizer_state=True,
@@ -120,7 +120,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
 def prepare(args: ScriptArgs):
     backend = args.create_backend()
     target = Path(args.model_dir) / args.model_name
-    with _exclusive_path_lock(str(target)):
+    with U.exclusive_path_lock(str(target)):
         # The converter writes the index last, so it marks a finished conversion.
         if not (target / "model.safetensors.index.json").exists():
             source = f"{args.model_dir}/{_HF_REPO.split('/')[1]}"
