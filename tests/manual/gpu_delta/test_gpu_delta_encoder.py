@@ -207,7 +207,7 @@ def test_partial_payload_failure_drains_owned_slabs(codec, monkeypatch):
 
 
 @pytest.mark.parametrize("codec", CODECS)
-@pytest.mark.parametrize("frame_bytes", [1 << 16, FRAME_BYTES])
+@pytest.mark.parametrize("frame_bytes", [1 << 16, FRAME_BYTES, 1 << 22])
 def test_owner_wide_outer_roundtrip_only_transfers_final_bytes(frame_bytes, codec, monkeypatch, tmp_path):
     encoder = gpu_delta_encoder.GpuBatchEncoder(
         torch.device("cuda", torch.cuda.current_device()), frame_bytes, codec=codec

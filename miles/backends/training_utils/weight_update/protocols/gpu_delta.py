@@ -43,9 +43,10 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
 
     use_weight_update_session = False
 
-    def __init__(self, args):
+    def __init__(self, args, frame_bytes=gpu_delta_publication.FRAME_BYTES):
         super().__init__(args)
         self.codec = gpu_delta_publication.configured_codec()
+        self._frame_bytes = frame_bytes
         self._timing = os.environ.get("GPU_DELTA_TIMING", "0") == "1"
         self._snapshot = {}
         self._next_snapshot = {}
@@ -77,7 +78,7 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
                 from miles.utils.gpu_delta_encoder import GpuBatchEncoder
 
                 device = torch.device("cuda", torch.cuda.current_device())
-                self._gpu_encoder = GpuBatchEncoder(device, codec=self.codec)
+                self._gpu_encoder = GpuBatchEncoder(device, frame_bytes=self._frame_bytes, codec=self.codec)
             except Exception as caught:
                 error = caught
         _collective_check(error, "nvCOMP producer admission")

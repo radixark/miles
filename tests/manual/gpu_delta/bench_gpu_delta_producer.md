@@ -43,7 +43,9 @@ is fixed during baseline setup, outside the update hot loop.
 After export D2H completes, name-sorted matrix batches use the existing
 `update_weight_buffer_size` target (512 MiB here). Larger individual tensors remain
 whole. Upload old/new pinned snapshots, compute XOR/counts and compress all
-independent 1 MiB inner-codec frames in one nvCOMP submission per batch. XOR/counting
+independent inner-codec frames in one nvCOMP submission per batch. `--frame-bytes`
+selects 1048576 (the default) or 4194304; outer Zstd chunks remain at most 1 MiB.
+The production default remains 1 MiB. XOR/counting
 uses disjoint 64 KiB tiles per frame and reduces only their small count array.
 Only compact
 aligned inner-codec arenas remain in HBM as batches finish. Compress all owner-local

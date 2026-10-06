@@ -22,6 +22,8 @@ from pathlib import Path
 import torch
 import torch.distributed as dist
 
+from miles.utils.gpu_delta_publication import FRAME_BYTES
+
 NVFP4_ENV = {
     "SGLANG_NVFP4_CKPT_FP8_GEMM_IN_ATTN": "0",
     "OPEN_TRAINING_NVFP4_FAKE_QAT_FLAG": "1",
@@ -45,6 +47,13 @@ def parse_args():
     parser.add_argument("--load", type=Path, required=True, help="Matching native-DSA Megatron torch_dist checkpoint")
     parser.add_argument("--output", type=Path, required=True, help="New directory; existing output is rejected")
     parser.add_argument("--versions", type=int, default=3)
+    parser.add_argument(
+        "--frame-bytes",
+        type=int,
+        choices=(FRAME_BYTES, 1 << 22),
+        default=FRAME_BYTES,
+        help="Inner codec frame bytes; outer Zstd chunks remain 1 MiB",
+    )
     parser.add_argument("--tensor-model-parallel-size", type=int, default=1)
     parser.add_argument("--context-parallel-size", type=int, default=1)
     parser.add_argument(
@@ -300,7 +309,7 @@ def _discover_plan(args, iterator, weights):
     }
 
 
-def _make_protocol(args, plan, output):
+def _make_protocol(args, plan, output, frame_bytes):
     from miles.backends.training_utils.weight_update.protocols.gpu_delta import UpdateWeightFromGpuDelta
 
     class ProducerOnlyProtocol(UpdateWeightFromGpuDelta):
@@ -328,14 +337,14 @@ def _make_protocol(args, plan, output):
 
     protocol_args = copy.copy(args)
     protocol_args.update_weight_disk_dir = str(output / "publications")
-    return ProducerOnlyProtocol(protocol_args)
+    return ProducerOnlyProtocol(protocol_args, frame_bytes=frame_bytes)
 
 
-def _setup_protocol(args, plan, iterator, weights, output):
+def _setup_protocol(args, plan, iterator, weights, output, frame_bytes=FRAME_BYTES):
     from miles.backends.training_utils.parallel import get_parallel_state
 
     started = time.monotonic()
-    protocol = _make_protocol(args, plan, output)
+    protocol = _make_protocol(args, plan, output, frame_bytes)
     protocol.connect([], [], [], get_parallel_state(), iterator.placement, "target")
     iterator.local_consumer = protocol.send_bucket
     iterator.local_error_consumer = protocol.record_export_error
@@ -362,7 +371,7 @@ def _perturb(weights, fraction, relative_scale, version):
     return {"selected_elements": selected, "eligible_elements": eligible, "stride": stride}
 
 
-def _verify_publication(publication, plan, codec):
+def _verify_publication(publication, plan, codec, frame_bytes):
     path = Path(publication["manifest_path"])
     raw = path.read_bytes()
     if hashlib.sha256(raw).hexdigest() != publication["manifest_sha256"]:
@@ -371,7 +380,7 @@ def _verify_publication(publication, plan, codec):
     if (
         manifest.get("codec") != codec
         or manifest.get("protocol_version") != 4
-        or manifest.get("frame_bytes") != 1 << 20
+        or manifest.get("frame_bytes") != frame_bytes
     ):
         raise ValueError(f"Sealed publication must use protocol 4 / {codec}")
     if {tensor["name"] for tensor in manifest["tensors"]} != {tensor["name"] for tensor in plan}:
@@ -396,7 +405,8 @@ def _verify_publication(publication, plan, codec):
         "changed_bytes": sum(tensor["changed_bytes"] for tensor in manifest["tensors"]),
         "tensor_count": len(manifest["tensors"]),
         "codec": manifest["codec"],
-        "frame_bytes": 1 << 20,
+        "frame_bytes": frame_bytes,
+        "outer_frame_bytes": FRAME_BYTES,
         "raw_tensor_count": sum(tensor["encoding"] == "raw_bytes" for tensor in manifest["tensors"]),
         "raw_changed_tensors": sum("raw" in tensor for tensor in manifest["tensors"]),
         "raw_bytes": sum(tensor.get("raw", {}).get("encoded_bytes", 0) for tensor in manifest["tensors"]),
@@ -462,7 +472,7 @@ def _run_update(protocol, iterator, weights, version, plan):
     error, sizes = None, None
     if dist.get_rank() == 0:
         try:
-            sizes = _verify_publication(publication, plan, protocol.codec)
+            sizes = _verify_publication(publication, plan, protocol.codec, protocol._gpu_encoder.frame_bytes)
         except Exception as caught:
             error = caught
     _check(error, "sealed publication validation")
@@ -597,7 +607,7 @@ def run(options):
     discover_started = time.monotonic()
     plan, ownership = _discover_plan(args, iterator, weights)
     discovery_s = time.monotonic() - discover_started
-    protocol, baseline_setup = _setup_protocol(args, plan, iterator, weights, options.output)
+    protocol, baseline_setup = _setup_protocol(args, plan, iterator, weights, options.output, options.frame_bytes)
     runtime, error = None, None
     try:
         runtime = _runtime_metadata()
@@ -621,7 +631,8 @@ def run(options):
             "env": NVFP4_ENV,
             "timing": options.timing,
             "codec": protocol.codec,
-            "frame_bytes": 1 << 20,
+            "frame_bytes": protocol._gpu_encoder.frame_bytes,
+            "outer_frame_bytes": FRAME_BYTES,
             "producer_pipeline": f"pinned-snapshot-bulk-gpu-{protocol.codec.removesuffix('-zstd')}-then-owner-wide-gpu-zstd",
             "gpu_batch_target_bytes": args.update_weight_buffer_size,
             "baseline_commit_scope": "producer-only-simulated-activation-after-inventory-check",

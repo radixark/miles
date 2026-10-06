@@ -139,7 +139,7 @@ def _tiny_fixture(tmp_path, frame_bytes=bench.FRAME_BYTES):
     return Namespace(model=model, fixture=source, inventory=inventory, output=output), before, after, changed
 
 
-@pytest.mark.parametrize("frame_bytes", [1 << 16, bench.FRAME_BYTES])
+@pytest.mark.parametrize("frame_bytes", [1 << 16, bench.FRAME_BYTES, 1 << 22])
 def test_rebind_preserves_payload_and_exact_canonical_target(tmp_path, frame_bytes):
     import json
 

@@ -24,7 +24,7 @@ from miles.utils.disk_delta import _tensor_locations
 
 FRAME_BYTES = 1 << 20
 # 2 MiB is a producer benchmark profile, not a streaming-receiver capability.
-_FRAME_SIZES = (1 << 16, FRAME_BYTES, 1 << 21)
+_FRAME_SIZES = (1 << 16, FRAME_BYTES, 1 << 21, 1 << 22)
 CODEC = "snappy-zstd"
 CODECS = (CODEC, "lz4-zstd")
 DTYPE_BYTES = {
@@ -194,7 +194,7 @@ class PublicationWriter:
         codec: str = CODEC,
     ):
         if type(frame_bytes) is not int or frame_bytes not in _FRAME_SIZES:
-            raise ValueError("GPU-delta frame_bytes must be 64 KiB, 1 MiB or 2 MiB")
+            raise ValueError("GPU-delta frame_bytes must be 64 KiB, 1 MiB, 2 MiB or 4 MiB")
         self.frame_bytes = frame_bytes
         self.directory = Path(directory)
         self.directory.mkdir(parents=True, exist_ok=True)

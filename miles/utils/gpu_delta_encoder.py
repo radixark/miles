@@ -221,8 +221,8 @@ class GpuBatchEncoder:
     ``encode_device`` takes ``[(old_pinned_u8, new_pinned_u8), ...]``.
     Neither input may be modified concurrently. Compact inner-codec HBM survives
     input batches until ``wrap_device`` returns the final pinned Zstd bytes.
-    The 2 MiB frame variant is for producer benchmarks; the current streaming
-    receiver accepts decoded frames no larger than 1 MiB.
+    Inner frames are configurable; outer Zstd chunks stay at 1 MiB. The receiver
+    independently admits actual encoded and decoded sizes against its DE limit.
     """
 
     def __init__(self, device: torch.device, frame_bytes: int = FRAME_BYTES, codec: str = CODEC):
@@ -231,8 +231,8 @@ class GpuBatchEncoder:
 
         if triton is None:
             raise RuntimeError("GPU batch XOR/compression requires Triton")
-        if type(frame_bytes) is not int or frame_bytes not in (1 << 16, FRAME_BYTES, 1 << 21):
-            raise ValueError("GPU delta frame_bytes must be 64 KiB, 1 MiB or 2 MiB")
+        if type(frame_bytes) is not int or frame_bytes not in (1 << 16, FRAME_BYTES, 1 << 21, 1 << 22):
+            raise ValueError("GPU delta frame_bytes must be 64 KiB, 1 MiB, 2 MiB or 4 MiB")
         self.device, self.frame_bytes = torch.device(device), frame_bytes
         self.timing = os.environ.get("GPU_DELTA_TIMING", "0") == "1"
         self.stream = torch.cuda.Stream(device=self.device)

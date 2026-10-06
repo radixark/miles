@@ -70,7 +70,7 @@ def _add(writer, name, base, target):
     )
 
 
-@pytest.mark.parametrize("frame_bytes", [1 << 16, 1 << 20, 1 << 21])
+@pytest.mark.parametrize("frame_bytes", [1 << 16, 1 << 20, 1 << 21, 1 << 22])
 @pytest.mark.parametrize("codec", publication.CODECS)
 def test_framed_publication_preserves_payload_ranges_and_final_file_hash(tmp_path, frame_bytes, codec):
     rng = np.random.default_rng(11)
@@ -99,6 +99,7 @@ def test_framed_publication_preserves_payload_ranges_and_final_file_hash(tmp_pat
         for frame in entry["frames"]
     )
     assert "codec" not in entry["outer"]
+    assert all(frame["decoded_bytes"] <= publication.FRAME_BYTES for frame in entry["outer"]["frames"])
     _, payload, _, _ = _wrapped(base, target, frame_bytes)
     offset = entry["outer"]["encoded_offset"]
     assert blob[offset : offset + len(payload)] == payload
