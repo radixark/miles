@@ -4,7 +4,7 @@ from dataclasses import dataclass
 
 from miles.backends.training_utils.parallel import ParallelState
 from miles.backends.training_utils.weight_update.hf_weight_iterator import WeightUpdatePlacement
-from miles.backends.training_utils.weight_update.utils import get_data_replica_rank_and_size
+from miles.backends.training_utils.weight_update.protocols.utils.data_replica import get_data_replica_rank_and_size
 
 
 @dataclass(frozen=True)
