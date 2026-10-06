@@ -1,14 +1,14 @@
 ### 0
-mkdir -p /root/models
+mkdir -p <SANDBOX>/models
 
 ### 1
 hf download XiaomiMiMo/MiMo-V2.6-Flash-RL
-  --local-dir /root/models/MiMo-V2.6-Flash-RL
+  --local-dir <SANDBOX>/models/MiMo-V2.6-Flash-RL
 
 ### 2
 python <REPO_ROOT>/tools/convert_mimo_v2_to_bf16.py
-  --model-dir /root/models/MiMo-V2.6-Flash-RL
-  --save-dir /root/models/mimo26-p4-bf16
+  --model-dir <SANDBOX>/models/MiMo-V2.6-Flash-RL
+  --save-dir <SANDBOX>/models/mimo26-p4-bf16
   --device cuda
   --layers 0,1,5,6
 

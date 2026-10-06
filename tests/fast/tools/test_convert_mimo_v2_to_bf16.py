@@ -1,9 +1,9 @@
 import json
 
 import pytest
+import tools.convert_mimo_v2_to_bf16 as converter
 import torch
 from safetensors.torch import load_file, save_file
-
 from tools.convert_mimo_v2_to_bf16 import FP4_TABLE, dequant_fused_qkv, dequant_mxfp4, main, split_fused_qkv
 
 E4M3_MAX = torch.finfo(torch.float8_e4m3fn).max
@@ -173,3 +173,23 @@ def test_keep_quant_reindexes_ignored_layers(tmp_path):
     config = json.loads((dst / "config.json").read_text())
     assert config["quantization_config"]["ignored_layers"] == ["model.layers.0.self_attn.o_proj"]
     assert config["attention_projection_layout"] == "fused_qkv"
+
+
+def test_conversion_is_not_complete_until_auxiliary_files_are_copied(tmp_path, monkeypatch):
+    src, dst = tmp_path / "src", tmp_path / "dst"
+    src.mkdir()
+    _tiny_checkpoint(src)
+    copy2 = converter.shutil.copy2
+
+    def interrupted_copy(source, destination):
+        raise OSError("interrupted auxiliary copy")
+
+    monkeypatch.setattr(converter.shutil, "copy2", interrupted_copy)
+    with pytest.raises(OSError, match="interrupted auxiliary copy"):
+        main(str(src), str(dst), [1], None, keep_quant=True, device="cpu")
+    assert not (dst / "model.safetensors.index.json").exists()
+
+    monkeypatch.setattr(converter.shutil, "copy2", copy2)
+    main(str(src), str(dst), [1], None, keep_quant=True, device="cpu")
+    assert json.loads((dst / "model.safetensors.index.json").read_text())["weight_map"]
+    assert (dst / "tokenizer_config.json").read_text() == (src / "tokenizer_config.json").read_text()

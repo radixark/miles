@@ -13,9 +13,10 @@ XiaomiMiMo/MiMo-V2.6-Flash-RL (173 GB) to `<model-dir>/MiMo-V2.6-Flash-RL` and c
                            decoder variant: global+dense, SWA+MoE, global+MoE, SWA+MoE
 
 Args:
-  --mode: `rl` runs GRPO with a colocated BF16 SGLang engine on the same checkpoint (dapo-math-17k
-      from `--data-dir` unless `--prompt-data` is given); `sft` runs `--debug-train-only` SFT on
-      chat data with a `messages` column (no SGLang), following run_qwen3_sft.py.
+  --mode: `rl` runs GRPO with full-policy sampling (top-p 1) and a colocated BF16 SGLang engine
+      on the same checkpoint (dapo-math-17k from `--data-dir` unless `--prompt-data` is given);
+      `sft` runs `--debug-train-only` SFT on chat data with a `messages` column (no SGLang),
+      following run_qwen3_sft.py.
   --model-name: checkpoint directory under `--model-dir`; selects the matching model args.
   --tensor/pipeline/expert-model-parallel-size: TP (with sequence parallel when > 1), PP and EP;
       default 2/2/2 for the partial and 2/2/8 for the full model (16 GPUs). TP must not exceed 4,
@@ -46,6 +47,7 @@ from typing import Literal
 import typer
 
 import miles.utils.external_utils.command_utils as U
+from miles.utils.external_utils.command_utils.base_backend import _exclusive_path_lock
 
 _HF_REPO = "XiaomiMiMo/MiMo-V2.6-Flash-RL"
 
@@ -118,17 +120,18 @@ class ScriptArgs(U.ExecuteTrainConfig):
 def prepare(args: ScriptArgs):
     backend = args.create_backend()
     target = Path(args.model_dir) / args.model_name
-    # The converter writes the index last, so it marks a finished conversion.
-    if not (target / "model.safetensors.index.json").exists():
-        source = f"{args.model_dir}/{_HF_REPO.split('/')[1]}"
-        layers = _RECIPES[args.model_name].layers
-        layer_args = f"--layers {layers}" if layers else ""
-        backend.exec_command_cpu(f"mkdir -p {args.model_dir}")
-        backend.exec_command_cpu(f"hf download {_HF_REPO} --local-dir {source}")
-        backend.exec_command_gpu(
-            f"python {U.repo_base_dir}/tools/convert_mimo_v2_to_bf16.py "
-            f"--model-dir {source} --save-dir {target} --device cuda {layer_args}"
-        )
+    with _exclusive_path_lock(str(target)):
+        # The converter writes the index last, so it marks a finished conversion.
+        if not (target / "model.safetensors.index.json").exists():
+            source = f"{args.model_dir}/{_HF_REPO.split('/')[1]}"
+            layers = _RECIPES[args.model_name].layers
+            layer_args = f"--layers {layers}" if layers else ""
+            backend.exec_command_cpu(f"mkdir -p {args.model_dir}")
+            backend.exec_command_cpu(f"hf download {_HF_REPO} --local-dir {source}")
+            backend.exec_command_gpu(
+                f"python {U.repo_base_dir}/tools/convert_mimo_v2_to_bf16.py "
+                f"--model-dir {source} --save-dir {target} --device cuda {layer_args}"
+            )
     if args.mode == "rl" and not args.prompt_data:
         backend.hf_download_dataset("zhuzilin/dapo-math-17k", data_dir=args.data_dir)
 
@@ -168,7 +171,7 @@ def execute(args: ScriptArgs):
             "--n-samples-per-prompt 8 "
             "--rollout-max-response-len 8192 "
             "--rollout-temperature 1.0 "
-            "--rollout-top-p 0.95 "
+            "--rollout-top-p 1.0 "
             "--num-steps-per-rollout 1 "
             "--advantage-estimator grpo "
             "--entropy-coef 0.00 "

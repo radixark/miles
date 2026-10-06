@@ -231,7 +231,6 @@ def main(
         check_output(writer.weight_map, new_config)
     (dst / "config.json").write_text(json.dumps(new_config, indent=2) + "\n")
     index = {"metadata": {"total_size": writer.total_bytes}, "weight_map": writer.weight_map}
-    (dst / "model.safetensors.index.json").write_text(json.dumps(index, indent=2) + "\n")
     for path in src.iterdir():
         if path.name.startswith("."):  # e.g. the `hf download` cache
             continue
@@ -242,6 +241,10 @@ def main(
                 shutil.copytree(path, dst / path.name, dirs_exist_ok=True)
         elif path.suffix != ".safetensors" and path.name not in ("config.json", "model.safetensors.index.json"):
             shutil.copy2(path, dst / path.name)
+    index_path = dst / "model.safetensors.index.json"
+    pending_index = index_path.with_suffix(".json.tmp")
+    pending_index.write_text(json.dumps(index, indent=2) + "\n")
+    pending_index.replace(index_path)
     print(
         f"{counts}; {len(writer.weight_map)} tensors, {writer.total_bytes / 1e9:.2f} GB in {writer.num_shards} shards -> {dst}"
     )

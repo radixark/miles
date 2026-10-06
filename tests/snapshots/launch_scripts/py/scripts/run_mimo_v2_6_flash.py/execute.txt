@@ -46,7 +46,7 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --moe-aux-loss-coeff 0
   --moe-router-dtype fp32
   --moe-grouped-gemm
-  --hf-checkpoint /root/models/mimo26-p4-bf16
+  --hf-checkpoint <SANDBOX>/models/mimo26-p4-bf16
   --megatron-to-hf-mode bridge 
   --prompt-data /root/datasets/dapo-math-17k/dapo-math-17k.jsonl
   --input-key prompt
@@ -59,7 +59,7 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --n-samples-per-prompt 8
   --rollout-max-response-len 8192
   --rollout-temperature 1.0
-  --rollout-top-p 0.95
+  --rollout-top-p 1.0
   --num-steps-per-rollout 1
   --advantage-estimator grpo
   --entropy-coef 0.00
