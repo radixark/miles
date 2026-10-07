@@ -18,9 +18,10 @@
 
 ## News
 
-- [2026/09] 🔥 Miles v0.1 technical report is out: [Miles v0.1: Production-Level Post-Training](https://arxiv.org/abs/2609.08368).
 - [2026/09] 🔥 SGLang and Miles add day-0 support for DeepSeek-V4.1 ([blog](https://www.lmsys.org/blog/2026-09-10-deepseek-v41)).
-- [2026/08] 🔥 Miles v0.1 is released! Read the blog post here: [Miles v0.1: Production-level Post-training](https://www.lmsys.org/blog/2026-08-18-miles-v0-1).
+- [2026/09] 🔥 Miles v0.1 technical report is out: [Miles v0.1: Production-Level Post-Training](https://arxiv.org/abs/2609.08368).
+- [2026/09] Post-training with Miles to understand and generate the multimodal world ([blog](https://miles.radixark.com/blogs/post-training-with-miles-to-understand-and-generate-the-multimodal-world)).
+- [2026/08] 🔥 Miles v0.1 is released! Read the blog posts: [Announcing Miles v0.1](https://www.radixark.com/blog/announcing-miles-v0-1) and [Miles v0.1: Production-level Post-training](https://www.lmsys.org/blog/2026-08-18-miles-v0-1).
 - [2026/08] SGLang and Miles add day-0 support for Qwen3.8 ([blog](https://www.lmsys.org/blog/2026-08-12-qwen3-8-day0-support)).
 - [2026/07] Towards Blackwell-Native 8-bit and 4-bit RL: End-to-End MXFP8 and NVFP4 RL in Miles ([blog](https://www.lmsys.org/blog/2026-07-29-mxfp8-nvfp4-rl)).
 - [2026/07] 🔥 SGLang and Miles add day-0 support for Kimi K3 ([blog](https://www.lmsys.org/blog/2026-07-27-kimi-k3-day0-support)).
