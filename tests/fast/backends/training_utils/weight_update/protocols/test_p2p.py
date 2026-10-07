@@ -203,6 +203,22 @@ class TestConnect:
         with pytest.raises(AssertionError, match="different layouts"):
             p2p_sender.connect(protocol, [trtllm_api, triton_api])
 
+    @pytest.mark.parametrize(
+        "expert_placement",
+        [{"ep_num_redundant_experts": 32}, {"init_expert_location": "/placement.json"}, {"enable_eplb": True}],
+        ids=["redundant_experts", "init_expert_location", "eplb"],
+    )
+    def test_a_rollout_engine_placing_experts_a_replica_cannot_reproduce_is_rejected(
+        self, p2p_sender: Any, make_rollout_api: Any, expert_placement: dict
+    ) -> None:
+        """The engine places these experts by metadata the replica does not have, so p2p would write them into the
+        wrong slots."""
+        protocol = p2p_sender.make_protocol()
+        api = make_rollout_api("cell-a", gpu_count=1, expert_placement=expert_placement)
+
+        with pytest.raises(AssertionError, match=f"rollout engine 0 places experts by {next(iter(expert_placement))}"):
+            p2p_sender.connect(protocol, [api])
+
     def test_a_replica_that_does_not_match_the_published_weights_is_rejected(
         self, p2p_sender: Any, make_rollout_api: Any
     ) -> None:

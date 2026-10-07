@@ -30,6 +30,14 @@ _BUCKET_VALUES = {
 class _FakeServerArgs:
     rl_quant_profile: str | None = None
     moe_runner_backend: str = "auto"
+    # expert placement, at sglang's defaults
+    ep_num_redundant_experts: int = 0
+    init_expert_location: str = "trivial"
+    enable_eplb: bool = False
+    ep_join_mode: str | None = None
+    elastic_ep_initial_size: int | None = None
+    dwdp_size: int = 1
+    kt_weight_path: str | None = None
 
     def __getattr__(self, name: str) -> None:
         # the other server args a replica key reads, all unset
@@ -147,6 +155,7 @@ class _FakeRolloutApi:
         unreachable: bool = False,
         published_weight_numel: int = _WEIGHT_NUMEL,
         moe_runner_backend: str = "auto",
+        expert_placement: dict | None = None,
     ) -> None:
         self.cell_id = cell_id
         self.gpu_count = gpu_count
@@ -154,6 +163,7 @@ class _FakeRolloutApi:
         self.unreachable = unreachable
         self.published_weight_numel = published_weight_numel
         self.moe_runner_backend = moe_runner_backend
+        self.expert_placement = expert_placement or {}
         self.calls: list[str] = []
 
     def session_id(self, rank: int) -> str:
@@ -175,7 +185,7 @@ class _FakeRolloutApi:
 
     async def get_server_info(self) -> dict:
         self.calls.append("get_server_info")
-        return {"rl_quant_profile": None, "moe_runner_backend": self.moe_runner_backend}
+        return {"rl_quant_profile": None, "moe_runner_backend": self.moe_runner_backend, **self.expert_placement}
 
 
 class _ObservedExecutor(ThreadPoolExecutor):

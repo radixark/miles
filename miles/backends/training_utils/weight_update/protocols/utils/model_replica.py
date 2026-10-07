@@ -130,6 +130,8 @@ def query_rollout_engine_rank_configs(
             _query_config(rollout_engines[rollout_engine_ind], assignment.rollout_engine_rank)
             for rollout_engine_ind in assignment.rollout_engine_indices
         ]
+        for rollout_engine_ind, config in zip(assignment.rollout_engine_indices, configs, strict=True):
+            _assert_expert_placement_reproducible(config.server_args, rollout_engine_ind)
         differing_fields = {
             name
             for config in configs[1:]
@@ -166,6 +168,29 @@ def create_server_args_from_dict(data_dict: dict) -> ServerArgs:
     valid_fields = set(_record_field_names(ServerArgs))
     filtered_data = {k: v for k, v in data_dict.items() if k in valid_fields}
     return ServerArgs(**filtered_data)
+
+
+def _assert_expert_placement_reproducible(server_args: ServerArgs, rollout_engine_ind: int) -> None:
+    # the engine places these experts by its expert-location metadata, runtime rebalancing or CPU offload; a model
+    # replica loads every expert into its default slot
+    unreproducible_fields = [
+        name
+        for name, is_in_use in (
+            ("ep_num_redundant_experts", server_args.ep_num_redundant_experts != 0),
+            ("init_expert_location", server_args.init_expert_location != "trivial"),
+            ("enable_eplb", server_args.enable_eplb),
+            ("ep_join_mode", server_args.ep_join_mode is not None),
+            ("elastic_ep_initial_size", server_args.elastic_ep_initial_size is not None),
+            ("dwdp_size", server_args.dwdp_size != 1),
+            ("kt_weight_path", server_args.kt_weight_path is not None),
+        )
+        if is_in_use
+    ]
+    assert not unreproducible_fields, (
+        f"rollout engine {rollout_engine_ind} places experts by {', '.join(unreproducible_fields)}, which a model "
+        "replica does not reproduce, so p2p would write experts into the wrong slots. Update its weights with "
+        "another --update-weight-transfer-mode."
+    )
 
 
 def _query_config(rollout_engine: SGLangApiClient, rollout_engine_rank: int) -> RolloutEngineRankConfig:
