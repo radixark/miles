@@ -1,0 +1,47 @@
+name: Lockfile Check
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - requirements.txt
+      - requirements.lock
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths:
+      - requirements.txt
+      - requirements.lock
+
+permissions:
+  contents: read
+
+jobs:
+  check-lockfile:
+    name: Verify requirements.lock is up to date
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Recompile lockfile
+        run: |
+          uv pip compile requirements.txt \
+            --python-version 3.10 \
+            --python-platform linux \
+            --no-header \
+            --output-file /tmp/requirements.lock
+
+      - name: Diff against committed lockfile
+        run: |
+          if ! diff -u requirements.lock /tmp/requirements.lock; then
+            echo ""
+            echo "requirements.lock is out of date."
+            echo "Run the following command and commit the result:"
+            echo ""
+            echo "  uv pip compile requirements.txt --python-version 3.10 --python-platform linux --no-header -o requirements.lock"
+            echo ""
+            exit 1
+          fi
