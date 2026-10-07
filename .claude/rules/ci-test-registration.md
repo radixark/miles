@@ -32,11 +32,13 @@ run the test; copying a neighbouring test's `suite=` is not a reason.
 
 | Order | Where | Runs on | Use for |
 |---|---|---|---|
-| 1 | `tests/fast/` (no declaration; suite `stage-a-cpu`) | GitHub-hosted CPU | CPU tests that finish in seconds |
-| 2 | `register_cpu_ci(..., suite="stage-b-cpu")` | GitHub-hosted CPU | CPU tests that take minutes; `stage-a-cpu` gates every CUDA stage, so it stays fast |
-| 3 | `tests/fast-gpu/`, suite `stage-b-2-gpu-h200` | 2× H200 | GPU checks that finish in a few minutes |
-| 4 | `stage-c-2-gpu-h200`, `stage-c-4-gpu-h200`, `stage-c-8-gpu-h200` or `stage-c-8-gpu-h100` | 2×, 4×, 8× H200; 8× H100 | other GPU tests, on the stage matching their GPU count |
-| — | `stage-c-8-gpu-b200` | 8× B200 | only tests that cannot run on Hopper (`hardware=["blackwell"]`), at any GPU count |
+| 1 | `tests/fast/` (no declaration; suite `stage-a-cpu`) | GitHub-hosted CPU | CPU tests that finish in seconds; it gates every CUDA stage |
+| 2 | `register_cpu_ci(..., suite="stage-b-cpu")` | GitHub-hosted CPU | CPU tests that take minutes |
+| 3 | `tests/fast-gpu/`, suite `stage-b-2-gpu-h200` | 2× H200 | GPU tests that finish in a few minutes |
+| 4 | `stage-c-2-gpu-h200` | 2× H200 | 2-GPU tests |
+| 5 | `stage-c-4-gpu-h200` | 4× H200 | 4-GPU tests |
+| 6 | `stage-c-8-gpu-h200` or `stage-c-8-gpu-h100` | 8× H200 / 8× H100 | 8-GPU tests |
+| — | `stage-c-8-gpu-b200` | 8× B200 | tests that cannot run on Hopper (`hardware=["blackwell"]`), any GPU count |
 
 The stage's GPU count equals the count the test requests (`ray start
 --num-gpus`, `--actor-num-gpus-per-node`, `torchrun --nproc-per-node`): a 4-GPU
