@@ -29,7 +29,13 @@ _BUCKET_VALUES = {
 @dataclasses.dataclass
 class _FakeServerArgs:
     rl_quant_profile: str | None = None
-    quantization: str | None = None
+    moe_runner_backend: str = "auto"
+
+    def __getattr__(self, name: str) -> None:
+        # the other server args a replica key reads, all unset
+        if name.startswith("_"):
+            raise AttributeError(name)
+        return None
 
 
 @dataclasses.dataclass
@@ -140,14 +146,14 @@ class _FakeRolloutApi:
         generation: int = 1,
         unreachable: bool = False,
         published_weight_numel: int = _WEIGHT_NUMEL,
-        quantization: str | None = None,
+        moe_runner_backend: str = "auto",
     ) -> None:
         self.cell_id = cell_id
         self.gpu_count = gpu_count
         self.generation = generation
         self.unreachable = unreachable
         self.published_weight_numel = published_weight_numel
-        self.quantization = quantization
+        self.moe_runner_backend = moe_runner_backend
         self.calls: list[str] = []
 
     def session_id(self, rank: int) -> str:
@@ -169,7 +175,7 @@ class _FakeRolloutApi:
 
     async def get_server_info(self) -> dict:
         self.calls.append("get_server_info")
-        return {"rl_quant_profile": None, "quantization": self.quantization}
+        return {"rl_quant_profile": None, "moe_runner_backend": self.moe_runner_backend}
 
 
 class _ObservedExecutor(ThreadPoolExecutor):
