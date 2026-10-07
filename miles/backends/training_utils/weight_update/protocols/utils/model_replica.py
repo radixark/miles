@@ -188,6 +188,8 @@ def query_rollout_engine_rank_configs(
             _query_config(rollout_engines[rollout_engine_ind], assignment.rollout_engine_rank)
             for rollout_engine_ind in assignment.rollout_engine_indices
         ]
+        for rollout_engine_ind, config in zip(assignment.rollout_engine_indices, configs, strict=True):
+            _assert_expert_placement_reproducible(config.server_args, f"rollout engine {rollout_engine_ind}")
         differing_fields = {
             name
             for config in configs[1:]
@@ -279,6 +281,29 @@ def _replica_layout_server_args(server_args: ServerArgs) -> dict[str, object]:
         "flashinfer_a2a_dispatch_type",
     )
     return {name: getattr(server_args, name) for name in names}
+
+
+def _assert_expert_placement_reproducible(server_args: ServerArgs, rollout_engine: str) -> None:
+    # the engine places these experts by its expert-location metadata, runtime rebalancing or CPU offload; a model
+    # replica loads every expert into its default slot
+    placement_fields = [
+        name
+        for name, is_set in (
+            ("ep_num_redundant_experts", server_args.ep_num_redundant_experts != 0),
+            ("init_expert_location", server_args.init_expert_location != "trivial"),
+            ("enable_eplb", server_args.enable_eplb),
+            ("ep_join_mode", server_args.ep_join_mode is not None),
+            ("elastic_ep_initial_size", server_args.elastic_ep_initial_size is not None),
+            ("dwdp_size", server_args.dwdp_size != 1),
+            ("kt_weight_path", server_args.kt_weight_path is not None),
+        )
+        if is_set
+    ]
+    assert not placement_fields, (
+        f"{rollout_engine} places experts by {', '.join(placement_fields)}, which a model replica does not "
+        "reproduce, so p2p would write experts into the wrong slots. Update its weights with another "
+        "--update-weight-transfer-mode."
+    )
 
 
 def create_server_args_from_dict(data_dict: dict) -> ServerArgs:
