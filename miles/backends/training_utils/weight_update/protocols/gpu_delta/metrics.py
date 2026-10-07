@@ -33,7 +33,6 @@ _RANK_TIMINGS = (
     "host_apply_completion_wait_s",
 )
 _CACHE_TIMINGS = (
-    "host_encoded_cache_frames_validate_s",
     "host_encoded_cache_read_worker_sum_s",
     "host_encoded_cache_sha256_worker_sum_s",
     "host_encoded_cache_read_hash_s",
@@ -77,7 +76,6 @@ _RANK_WORK_TOTALS = (
     "host_rank_capacity_bytes",
 )
 _CACHE_WORK_TOTALS = (
-    "host_encoded_cache_frames_validations",
     "host_encoded_cache_hash_bytes",
     "host_encoded_cache_hash_files",
     "host_encoded_cache_allocation_calls",

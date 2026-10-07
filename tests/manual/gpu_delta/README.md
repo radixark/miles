@@ -236,15 +236,15 @@ producer prefixes reuse the existing owner gather.
   records coverage. `read_hash_s` is elapsed submission/join wall time for parallel
   owner-file verification; `read_worker_sum_s` and `sha256_worker_sum_s` sum
   overlapping worker intervals and must not be added to that wall span. These
-  timings, metadata-validation and cache-build spans have `{min,p50,max}`; hash
-  bytes/files, frame validations and allocation calls/bytes have `/sum`. All
+  timings and cache-build spans have `{min,p50,max}`; hash
+  bytes/files and allocation calls/bytes have `/sum`. All
   file tasks drain before READY or failure; rank-local decode uses verified bytes.
 - `host_encoded_cache_capacity_bytes/{min,p50,max,sum}` counts retained tmpfs
   capacity once per engine-host cache, including when there is no new creator.
   `receiver_host_encoded_caches` counts those caches, not physical nodes.
   Independent engines may retain duplicate encoded bytes.
 - `receiver_host_rank_outer_zstd_*` includes every rank's own canonical tensors.
-  Validation and worker-decode sums are summed worker elapsed intervals;
+  Worker-decode sums are summed worker elapsed intervals;
   `decode_s` is that rank's wall time including submission, raw copies and joins.
   These nested spans must not be added. Encoded/decoded bytes, tensors and frames
   have rank distributions and `/sum`; `receiver_host_rank_cpu_workers` records
@@ -256,9 +256,7 @@ producer prefixes reuse the existing owner gather.
   `/sum`. `receiver_host_rank_mapping_reused` reports local arena reuse. Fitting
   warm updates allocate no new arena while retaining physical capacity.
 - `receiver_host_plan_cache_reused/{min,p50,max}` reports per-rank static-plan
-  reuse. `creator_host_encoded_cache_frames_validate_s` is nested inside cache
-  build; `creator_host_encoded_cache_frames_validations/sum` counts dynamic
-  metadata validation once per newly cached publication.
+  reuse.
 - `receiver_de_host_input_bytes` counts compressed bytes read directly by DE;
   `receiver_h2d_bytes` counts explicit raw-target and metadata uploads. They are
   different traffic categories, not a throughput estimate. `receiver_raw_h2d_bytes`,
