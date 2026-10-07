@@ -21,6 +21,9 @@ excluded from SuperGPQA. JevBench and ForecastBench are not training sources.
 
 Synthetic workflows cover invoices, returns, security triage and agent audits
 with explicit policies, time-ordered evidence, and unrelated document distractors.
+Some records bundle 4–20 independent cases with explicit per-field case references,
+providing long contexts and dozens to hundreds of decision fields. These are
+batched audits, not a substitute for organically long, coherent business scenarios.
 Their labels are programmatically verifiable but realism is not established.
 Validation holds out policy combinations and presentation, not every generator
 family. Public-source validation holds out whole source examples/conversations.

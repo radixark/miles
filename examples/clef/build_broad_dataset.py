@@ -262,6 +262,39 @@ def probability(index: int, split: str, rng: random.Random) -> dict[str, Any]:
     return row
 
 
+def workflow_bundle(kind: str, index: int, split: str, rng: random.Random) -> dict[str, Any]:
+    """Mix ordinary cases with long, explicitly scoped multi-case document audits."""
+    size = rng.choice([1] * 20 + [4, 6, 8, 12, 16, 20])
+    if size == 1:
+        row = workflow(kind, index, split, rng)
+        row["provenance"]["subcases"] = 1
+        return row
+    row = make_row("", f"workflow_{kind}", "workflow", f"{split}:bundle:{kind}:{index}")
+    states, families = [], []
+    for part in range(size):
+        # The namespace is disjoint from standalone cases and other bundles.
+        case = workflow(kind, 40_000_000 + index * 100 + part, split, rng)
+        scope = f"case_{part}"
+        states.append(f"<case id='{scope}'>\n{case['record']['state']}\n</case>")
+        families.append(case["provenance"]["policy_family"])
+        for field, question in case["record"]["questions"].items():
+            scoped = f"{scope}_{field}"
+            row["record"]["questions"][scoped] = {
+                **question,
+                "instructions": f"For {scope} only, apply that case's policy and evidence: " + question["instructions"],
+            }
+            row["targets"][scoped] = case["targets"][field]
+    rng.shuffle(states)
+    row["record"]["state"] = (
+        "Audit the following independent cases in one batch. Each case has its own "
+        "policy and evidence. Do not transfer approvals, receipts, grants or facts "
+        "between cases. Answer every field for the case named in its instructions.\n\n"
+        + "\n\n".join(states)
+    )
+    row["provenance"].update({"label_method": "deterministic_policy", "subcases": size, "policy_families": families})
+    return row
+
+
 def download(cache: Path) -> dict[str, Path]:
     cache.mkdir(parents=True, exist_ok=True)
     paths = {}
@@ -553,7 +586,7 @@ def main() -> None:
         # One third of workflows are invoices, the rest balanced across three tasks.
         for i in range(n):
             kind = "invoice" if i < n // 3 else kinds[1 + (i - n // 3) % 3]
-            rows[split].append(workflow(kind, i, split, rng))
+            rows[split].append(workflow_bundle(kind, i, split, rng))
         generated, attempt = 0, 0
         while generated < COUNTS[split]["probability"]:
             candidate = probability(attempt, split, rng)
@@ -570,7 +603,7 @@ def main() -> None:
                 "public_sources": {name: {"repository": repo, "revision": revision, "file": filename, "sha256": file_sha256(paths[name])} for name, (repo, revision, filename) in SOURCES.items()},
                 "supergpqa_sha256": file_sha256(Path(args.supergpqa_path)),
                 "exclusions": {"jevbench_normalized_texts": jevbench_count, "total_excluded_texts": len(excluded), "gpqa_mmlu_mmlu_pro": "not directly used; exclude exact normalized GPQA and MMLU-Pro questions from SuperGPQA", "forecastbench": "never training data", "scope": "Exact normalized text comparison; public sources use training splits. No claim of semantic deduplication against every Decision Index dataset."},
-                "limitations": ["Workflow data is rule-generated, not real business documents or human reviewed.", "Synthetic workflow validation holds out policy combinations/presentation; the underlying generator families are shared.", "Preference targets are recorded binary reviewer choices, not measured consensus probabilities.", "ToolACE conversion trains tool selection, not parameter generation; reference responses stored only in provenance.", "Cases contribute unequal field counts; trainer loss averages fields within each case."],
+                "limitations": ["Workflow data is rule-generated, not real business documents or human reviewed.", "Long workflow inputs are batches of explicitly scoped independent cases, not a single organically long business scenario.", "Synthetic workflow validation holds out policy combinations/presentation; the underlying generator families are shared.", "Preference targets are recorded binary reviewer choices, not measured consensus probabilities.", "ToolACE conversion trains tool selection, not parameter generation; reference responses stored only in provenance.", "Cases contribute unequal field counts; trainer loss averages fields within each case."],
                 "licenses": {"toolace": "Apache-2.0", "snli": "CC-BY-SA-4.0", "clinc": "CC-BY-3.0", "hh": "MIT", "supergpqa": "ODC-BY; upstream requires attribution and compliance with underlying source licenses"}}
     output.mkdir(parents=True)
     for split, examples in rows.items():

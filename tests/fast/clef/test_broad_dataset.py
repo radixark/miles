@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from examples.clef.build_broad_dataset import COUNTS, call_names, probability, workflow
+from examples.clef.build_broad_dataset import COUNTS, call_names, probability, workflow, workflow_bundle
 from examples.clef.data import DecisionExample, augment_example, read_examples
 from examples.clef.joint_schema_model import question_options
 
@@ -88,6 +88,17 @@ def test_invoice_labels_follow_rendered_evidence() -> None:
         expected = next((action for blocked, action in blockers if blocked), "pay")
         assert row["targets"]["primary_action"][expected] == 1
         assert row["targets"]["pay_now"]["true"] == float(expected == "pay")
+
+
+def test_long_bundle_scopes_every_field_and_preserves_targets() -> None:
+    row = next(workflow_bundle("invoice", i, "train", random.Random(i)) for i in range(100)
+               if workflow_bundle("invoice", i, "train", random.Random(i))["provenance"]["subcases"] == 20)
+    assert len(row["record"]["questions"]) == 180
+    for field, question in row["record"]["questions"].items():
+        scope = "_".join(field.split("_")[:2])
+        assert f"<case id='{scope}'>" in row["record"]["state"]
+        assert question["instructions"].startswith(f"For {scope} only,")
+        assert sum(row["targets"][field].values()) == 1
 
 
 def test_probabilistic_targets_and_variable_options() -> None:
