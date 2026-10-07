@@ -17,9 +17,9 @@ except ImportError:
 
 from miles.backends.megatron_utils.fp32_param_utils import mark_param_dtype
 from miles_plugins.models.cp_utils import build_gdn_cp_context
+from miles_plugins.models.linear_attn import gdn_kernel
 
 from .hf_attention import HuggingfaceAttention
-from .qwen_gdn_backend import get_chunk_gated_delta_rule
 
 
 def _get_text_config(hf_config):
@@ -40,7 +40,7 @@ class Qwen3_5GatedDeltaNet(nn.Module):
     def __init__(self, config, layer_idx: int, args=None):
         super().__init__()
         self.gdn_backend = getattr(args, "linear_attention_backend", "fla")
-        self.chunk_gated_delta_rule = get_chunk_gated_delta_rule(self.gdn_backend)
+        self.chunk_gated_delta_rule = gdn_kernel(self.gdn_backend)
         self.hidden_size = config.hidden_size
         self.num_v_heads = config.linear_num_value_heads
         self.num_k_heads = config.linear_num_key_heads
