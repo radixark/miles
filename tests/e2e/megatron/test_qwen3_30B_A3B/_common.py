@@ -69,10 +69,11 @@ def prepare(case: CaseConfig, *, need_fp8: bool, need_int4: bool, all_bridge: bo
     if need_fp8:
         U.exec_command_cpu("hf download Qwen/Qwen3-30B-A3B-FP8 --local-dir /root/models/Qwen3-30B-A3B-FP8")
     if need_int4:
-        U.exec_command_gpu(
+        U.exec_command_gpu_once(
             f"python tools/convert_hf_to_int4_direct.py "
             f"--model-dir /root/models/{MODEL_NAME} "
-            f"--save-dir /root/models/{MODEL_NAME}-INT4"
+            f"--save-dir /root/models/{MODEL_NAME}-INT4",
+            f"/root/models/{MODEL_NAME}-INT4",
         )
     U.hf_download_dataset("zhuzilin/dapo-math-17k")
     U.hf_download_dataset("zhuzilin/aime-2024")

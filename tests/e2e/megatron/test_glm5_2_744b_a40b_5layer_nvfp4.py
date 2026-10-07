@@ -114,14 +114,13 @@ def prepare():
     U.hf_download_dataset("zhuzilin/dapo-math-17k", data_dir=DATA_DIR)
 
     _validate_glm_checkpoint()
-    U.exec_command_cpu(f"rm -rf {MODEL_DIR}/{MODEL_NAME}-NVFP4 {MODEL_DIR}/{MODEL_NAME}_torch_dist")
-
-    U.exec_command_gpu(
+    U.exec_command_gpu_once(
         f"python tools/convert_hf_to_nvfp4.py "
         f"--model-dir {MODEL_DIR}/{MODEL_NAME} "
         f"--save-dir {MODEL_DIR}/{MODEL_NAME}-NVFP4 "
         f"--num-layers-at-start-in-bf16 {NUM_LAYERS_AT_START_IN_BF16} "
-        f"--num-layers-at-end-in-bf16 {NUM_LAYERS_AT_END_IN_BF16} "
+        f"--num-layers-at-end-in-bf16 {NUM_LAYERS_AT_END_IN_BF16} ",
+        f"{MODEL_DIR}/{MODEL_NAME}-NVFP4",
     )
 
     U.convert_checkpoint(
