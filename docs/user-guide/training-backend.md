@@ -231,9 +231,9 @@ again by the time Adam launches. That case is what streaming addresses:
 
 The fp32 masters and Adam moments live in per-bucket files on NVMe, and the step brings in
 one bucket at a time, so peak residency is one bucket instead of the whole state. At the
-default `fp32` moment dtype it is bit-identical to keeping the state on the GPU and costs
-disk traffic every step; `--stream-optimizer-state-moment-dtype bf16` cuts the volume by a
-third. It requires the `disk` target and excludes `--optimizer-cpu-offload`.
+default `fp32` moment dtype it matches keeping the state on the GPU up to the grad norm's
+rounding and costs disk traffic every step; `--stream-optimizer-state-moment-dtype bf16` cuts
+the volume by a third. It requires the `disk` target and excludes `--optimizer-cpu-offload`.
 
 [Disk Offload](/advanced/disk-offload) has the full picture for both, including the
 same-topology resume limit, what checkpointing costs, and measured sleep / wake numbers.

@@ -3731,6 +3731,19 @@ def miles_validate_args(args):
             assert (
                 args.optimizer == "adam"
             ), f"--stream-optimizer-state-to-disk requires --optimizer adam, got {args.optimizer}"
+            # The streamed params have fp32 gradients only inside the optimizer step.
+            assert not (args.fp16 or args.loss_scale), (
+                "--stream-optimizer-state-to-disk does not support loss scaling (--fp16 or --loss-scale): "
+                "unscaling reads the fp32 gradients before the step, where the streamed params have none"
+            )
+            assert not args.log_num_zeros_in_grad, (
+                "--stream-optimizer-state-to-disk does not support --log-num-zeros-in-grad: the zero count reads "
+                "the fp32 gradients outside the step, where the streamed params have none"
+            )
+            assert not args.enable_mtp_training, (
+                "--stream-optimizer-state-to-disk does not support --enable-mtp-training: the detached MTP heads "
+                "are clipped by their own grad norm, which reads the fp32 gradients outside the step"
+            )
         assert not (args.multi_lora or is_lora_enabled(args)), (
             "--stream-optimizer-state-to-disk does not support LoRA: the LoRA checkpoint path "
             "persists optimizer.state_dict(), which the store leaves empty, and restores the "
