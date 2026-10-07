@@ -42,11 +42,6 @@ class TransferBuffers:
         (buffer_index,) = [index for index, candidate in enumerate(self._buffers) if candidate is buffer]
         self._pending_writes_by_buffer_index[buffer_index] += writes
 
-    def wait_for_writes(self) -> None:
-        """Returns once every write reading any buffer has returned."""
-        concurrent.futures.wait([write for writes in self._pending_writes_by_buffer_index for write in writes])
-        self._pending_writes_by_buffer_index = [[] for _ in self._buffers]
-
 
 def _allocate_transfer_buffer(buffer_nbytes: int, device: torch.device) -> torch.Tensor:
     # host buffers are pinned in place: a pageable copy first would stay resident on aarch64 hosts

@@ -85,18 +85,3 @@ def test_each_buffer_is_registered_once_over_its_whole_allocation(make_transfer_
         transfer_buffers.release_after(buffer, [])
 
     assert sorted(registered) == sorted({(buffer.data_ptr(), 64) for buffer in buffers})
-
-
-def test_wait_for_writes_returns_after_the_writes_of_every_buffer(make_transfer_buffers) -> None:
-    """The end of an update must not return while any write still reads transfer memory."""
-    transfer_buffers, _ = make_transfer_buffers(num_buffers=2)
-    writes = [Future(), Future()]
-    for write in writes:
-        transfer_buffers.release_after(transfer_buffers.acquire(), [write])
-
-    returned = _start_in_thread(transfer_buffers.wait_for_writes)
-
-    writes[0].set_result(None)
-    assert not returned.wait(timeout=_STILL_BLOCKED_SECONDS)
-    writes[1].set_result(None)
-    assert returned.wait(timeout=_RETURN_TIMEOUT_SECONDS)
