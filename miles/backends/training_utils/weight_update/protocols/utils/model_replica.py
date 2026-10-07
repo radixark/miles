@@ -1,4 +1,5 @@
 from collections.abc import Iterable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import NamedTuple
 
@@ -212,35 +213,47 @@ class ModelReplica:
         `pack_into_buffers` gives groups of params that fit one buffer. Raises if loading changed a param in any way
         but its bytes, since a write carries only bytes to the rollout engine.
         """
-        # sglang holds one live config per process, and this replica was built under its own
+        # sglang keeps one live config per process; load under the one this replica was built with
         if get_server_args() is not self._config.server_args:
             _publish_server_args(self._config.server_args)
         param_bytes_by_name = _slice_buffer_by_param(buffer, param_names, self.transfer_buffer_param_layouts)
-        params_by_name = {name: self._params_by_name[name] for name in param_names}
-        try:
-            for name, param in params_by_name.items():
-                param.data = _view_bytes_as_param(param_bytes_by_name[name], self.transfer_buffer_param_layouts[name])
+        with self._bind_params_to_bytes(param_bytes_by_name) as bound_params_by_name:
             state_before_load_by_name = {
-                name: _get_param_state_besides_bytes(param) for name, param in params_by_name.items()
+                name: _get_param_state_besides_bytes(param) for name, param in bound_params_by_name.items()
             }
             with ParallelismContext(self._config.parallelism):
                 self._model.load_weights(hf_tensors)
-            params_after_load_by_name = dict(self._model.named_parameters())
-            changed_param_names = [
-                name
-                for name, param in params_by_name.items()
-                if params_after_load_by_name[name] is not param
-                or _get_param_state_besides_bytes(param) != state_before_load_by_name[name]
-            ]
-            assert not changed_param_names, (
-                f"loading changed more than the bytes of {', '.join(changed_param_names[:5])} "
-                f"({len(changed_param_names)} in all); the rollout engine receives only bytes, so its param would keep "
-                "the old shape, storage or attributes"
-            )
-        finally:
-            for param in params_by_name.values():
-                param.data = torch.empty(0, dtype=param.dtype)
+            self._assert_params_changed_only_bytes(bound_params_by_name, state_before_load_by_name)
         return param_bytes_by_name
+
+    @contextmanager
+    def _bind_params_to_bytes(
+        self, param_bytes_by_name: Mapping[str, torch.Tensor]
+    ) -> Iterator[dict[str, torch.nn.Parameter]]:
+        bound_params_by_name = {name: self._params_by_name[name] for name in param_bytes_by_name}
+        try:
+            for name, param in bound_params_by_name.items():
+                param.data = _view_bytes_as_param(param_bytes_by_name[name], self.transfer_buffer_param_layouts[name])
+            yield bound_params_by_name
+        finally:
+            for param in bound_params_by_name.values():
+                param.data = torch.empty(0, dtype=param.dtype)
+
+    def _assert_params_changed_only_bytes(
+        self, bound_params_by_name: Mapping[str, torch.nn.Parameter], state_before_load_by_name: Mapping[str, tuple]
+    ) -> None:
+        params_after_load_by_name = dict(self._model.named_parameters())
+        changed_param_names = [
+            name
+            for name, param in bound_params_by_name.items()
+            if params_after_load_by_name[name] is not param
+            or _get_param_state_besides_bytes(param) != state_before_load_by_name[name]
+        ]
+        assert not changed_param_names, (
+            f"loading changed more than the bytes of {', '.join(changed_param_names[:5])} "
+            f"({len(changed_param_names)} in all); the rollout engine receives only bytes, so its param would keep "
+            "the old shape, storage or attributes"
+        )
 
 
 def _bring_to_reload_state(
