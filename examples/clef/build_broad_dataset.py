@@ -276,6 +276,40 @@ def download(cache: Path) -> dict[str, Path]:
     return paths
 
 
+def call_names(text: str) -> list[str]:
+    """Read top-level call names without treating quoted argument text as calls."""
+    if not text.startswith("[") or not text.endswith("]"):
+        raise ValueError("expected a bracketed call list")
+    content = text[1:-1]
+    names, depth, start, quote, escaped = [], 0, 0, "", False
+    for index, char in enumerate(content):
+        if quote:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == quote:
+                quote = ""
+            continue
+        if char in {"'", '"'}:
+            quote = char
+        elif char in "([{":
+            if depth == 0:
+                if char != "(":
+                    raise ValueError("top-level action is not a function call")
+                names.append(content[start:index].strip())
+            depth += 1
+        elif char in ")]}":
+            depth -= 1
+            if depth < 0:
+                raise ValueError("unbalanced call")
+        elif char == "," and depth == 0:
+            start = index + 1
+    if depth or quote or any(not name for name in names):
+        raise ValueError("malformed call list")
+    return names
+
+
 def tool_rows(path: Path, rng: random.Random) -> list[dict[str, Any]]:
     rows = []
     for original in json.loads(path.read_text()):
@@ -292,8 +326,11 @@ def tool_rows(path: Path, rng: random.Random) -> list[dict[str, Any]]:
             continue
         position = rng.choice(positions)
         gold = conversation[position]["value"].strip()
-        called = [t["name"] for t in tools if re.search(r"(?:\[|,)\s*" + re.escape(t["name"]) + r"\s*\(", gold)] if gold.startswith("[") else []
-        if gold.startswith("[") and not called:
+        try:
+            called = call_names(gold) if gold.startswith("[") else []
+        except ValueError:
+            continue
+        if set(called) - {tool["name"] for tool in tools}:
             continue
         selected = [t for t in tools if t["name"] in called]
         others = [t for t in tools if t["name"] not in called]

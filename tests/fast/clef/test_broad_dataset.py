@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from examples.clef.build_broad_dataset import COUNTS, probability, workflow
+from examples.clef.build_broad_dataset import COUNTS, call_names, probability, workflow
 from examples.clef.data import DecisionExample, augment_example, read_examples
 from examples.clef.joint_schema_model import question_options
 
@@ -13,6 +13,13 @@ from examples.clef.joint_schema_model import question_options
 def test_curriculum_counts() -> None:
     assert sum(COUNTS["train"].values()) == 65536
     assert sum(COUNTS["validation"].values()) == 4096
+
+
+def test_tool_labels_ignore_calls_in_argument_strings() -> None:
+    assert call_names('[Web Search(query="text, Search(fake=1)"), other(items=[1, 2])]') == ["Web Search", "other"]
+    assert call_names("[]") == []
+    with pytest.raises(ValueError):
+        call_names("[Search(x=1]")
 
 
 def test_native_multifield_loader_and_augmentation(tmp_path: Path) -> None:
