@@ -119,6 +119,9 @@ The experimental `examples.clef.sglang_models` adapter replaces embedding
 pooling with the trained schema head. Set `SGLANG_EXTERNAL_MODEL_PACKAGE` to
 that package, `CLEF_MODEL_PATH` to the local serving export, and
 `CLEF_METADATA_DIR` to a local directory shared with the SystemOne gateway.
+Set `SGLANG_ENABLE_HEALTH_ENDPOINT_GENERATION=0` for the backend: its ordinary
+health endpoint must not submit a schema-free embedding probe. The gateway's
+health endpoint instead executes a real schema request through the trained head.
 Launch SGLang with `--is-embedding --tp-size 1 --disable-radix-cache
 --chunked-prefill-size -1 --disable-cuda-graph --max-running-requests 1`.
 Disable the automatic server warmup, which does not supply schema metadata.

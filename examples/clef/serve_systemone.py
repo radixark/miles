@@ -35,9 +35,10 @@ def create_app(args: Args) -> FastAPI:
 
     @app.get("/health")
     async def health() -> dict:
-        async with httpx.AsyncClient(timeout=10) as client:
-            response = await client.get(args.engine_url + "/health")
-            response.raise_for_status()
+        # SGLang's embedding health probe carries no schema spans. Send an
+        # actual schema request so readiness also checks the trained head.
+        await systemone({"model": "clef", "state": "Readiness check.",
+                         "questions": {"ready": {"type": "noul", "instructions": "Is this a readiness check?"}}})
         return {"status": "ok", "model_path": str(args.model_path)}
 
     @app.post("/v1/systemone")
