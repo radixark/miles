@@ -84,6 +84,10 @@ def normalize_tool_arguments(messages: list[dict], format: Literal["dict", "json
     return normalized
 
 
+# Building the adapter generates its schema; every turn canonicalizes tools, so build it once.
+_TOOLS_ADAPTER = TypeAdapter(list[Tool])
+
+
 def extract_tool_dicts(tools: list[dict] | None) -> list[dict] | None:
     """Canonicalize tools via Pydantic, returning full Tool model dumps.
 
@@ -95,7 +99,7 @@ def extract_tool_dicts(tools: list[dict] | None) -> list[dict] | None:
         return None
 
     wrapped = [t if isinstance(t, dict) and "function" in t else {"type": "function", "function": t} for t in tools]
-    validated = TypeAdapter(list[Tool]).validate_python(wrapped)
+    validated = _TOOLS_ADAPTER.validate_python(wrapped)
     return [tool.model_dump() for tool in validated]
 
 
