@@ -42,15 +42,14 @@ def row_stride_or_none(x: torch.Tensor):
     return row_stride
 
 
-def apply_rotary_emb(x: torch.Tensor, freqs_cis: torch.Tensor, inverse: bool = False) -> torch.Tensor:
-    """In-place RoPE on the last dim of x ([b, s, d] or [b, s, h, d]); `freqs_cis` is complex [s, d/2]."""
+def _rotate_(x: torch.Tensor, freqs_cis: torch.Tensor, inverse: bool) -> torch.Tensor:
     dim = x.shape[-1]
     half = dim // 2
     assert freqs_cis.shape[-1] == half
     row_stride = row_stride_or_none(x)
     if row_stride is None:
         # rows of a permuted view have no single stride: rotate a contiguous copy, then write it back in place
-        x.copy_(apply_rotary_emb(x.contiguous(), freqs_cis, inverse))
+        x.copy_(_rotate_(x.contiguous(), freqs_cis, inverse))
         return x
     seqlen = x.shape[1]
     inner = x.shape[2] if x.ndim == 4 else 1
@@ -60,3 +59,22 @@ def apply_rotary_emb(x: torch.Tensor, freqs_cis: torch.Tensor, inverse: bool = F
     grid = (triton.cdiv(n_rows, rows_per_prog),)
     _rope_kernel[grid](x, f, n_rows, seqlen, inner, row_stride, HALF=half, INVERSE=inverse, ROWS=rows_per_prog)
     return x
+
+
+class _RotaryEmb(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, x, freqs_cis, inverse):
+        ctx.save_for_backward(freqs_cis)
+        ctx.inverse = inverse
+        ctx.mark_dirty(x)
+        return _rotate_(x, freqs_cis, inverse)
+
+    @staticmethod
+    def backward(ctx, grad):
+        (freqs_cis,) = ctx.saved_tensors
+        return _rotate_(grad.clone(), freqs_cis, not ctx.inverse), None, None
+
+
+def apply_rotary_emb(x: torch.Tensor, freqs_cis: torch.Tensor, inverse: bool = False) -> torch.Tensor:
+    """In-place RoPE on the last dim of x ([b, s, d] or [b, s, h, d]); `freqs_cis` is complex [s, d/2]."""
+    return _RotaryEmb.apply(x, freqs_cis, inverse)
