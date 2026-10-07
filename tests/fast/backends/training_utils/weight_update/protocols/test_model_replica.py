@@ -16,10 +16,16 @@ class _Parallelism:
         return dataclasses.asdict(self)
 
 
-def _config(model_replica_module: ModuleType, *, tp_rank: int, global_rank: int, quantization: str | None = None):
+@dataclasses.dataclass
+class _ServerArgs:
+    quantization: str | None = None
+    moe_runner_backend: str = "auto"
+    port: int = 30000
+
+
+def _config(model_replica_module: ModuleType, *, tp_rank: int, global_rank: int, **server_args):
     return model_replica_module.RolloutEngineRankConfig(
-        parallelism=_Parallelism(tp_rank=tp_rank, global_rank=global_rank),
-        server_args=SimpleNamespace(quantization=quantization),
+        parallelism=_Parallelism(tp_rank=tp_rank, global_rank=global_rank), server_args=_ServerArgs(**server_args)
     )
 
 
@@ -27,21 +33,23 @@ class TestShardLayoutKey:
     def test_ranks_that_differ_only_in_their_place_in_the_launch_share_a_layout(
         self, model_replica_module: ModuleType
     ) -> None:
-        """Engines launched on different GPUs hold the same rank the same way, so one replica serves them all."""
-        first_engine = _config(model_replica_module, tp_rank=0, global_rank=0)
-        second_engine = _config(model_replica_module, tp_rank=0, global_rank=8)
+        """Engines launched on different GPUs and ports hold the same rank the same way, so one replica serves them
+        all."""
+        first_engine = _config(model_replica_module, tp_rank=0, global_rank=0, port=30000)
+        second_engine = _config(model_replica_module, tp_rank=0, global_rank=8, port=30001)
 
         assert first_engine.shard_layout_key == second_engine.shard_layout_key
 
-    def test_ranks_with_another_shard_or_quantization_do_not(self, model_replica_module: ModuleType) -> None:
-        """A replica built for one shard or quantization would write wrong bytes into another."""
+    def test_ranks_with_another_shard_or_sglang_arguments_do_not(self, model_replica_module: ModuleType) -> None:
+        """A replica built for one shard, quantization or MoE backend would write wrong bytes into another."""
         config = _config(model_replica_module, tp_rank=0, global_rank=0)
 
         assert config.shard_layout_key != _config(model_replica_module, tp_rank=1, global_rank=1).shard_layout_key
-        assert (
-            config.shard_layout_key
-            != _config(model_replica_module, tp_rank=0, global_rank=0, quantization="fp8").shard_layout_key
-        )
+        for server_args in ({"quantization": "fp8"}, {"moe_runner_backend": "triton"}):
+            assert (
+                config.shard_layout_key
+                != _config(model_replica_module, tp_rank=0, global_rank=0, **server_args).shard_layout_key
+            )
 
 
 class TestModelReplicas:
@@ -145,28 +153,40 @@ def _toy_model(model_replica_module: ModuleType, *, restores_expert_layout: bool
     model.experts, model.linear, model.norm = experts, linear, norm
 
     def load_weights(hf_tensors: list[tuple[str, torch.Tensor]]) -> None:
+        model.server_args_seen_by_loads.append(model_replica_module.get_server_args())
         params_by_name = dict(model.named_parameters())
         for name, tensor in hf_tensors:
             params_by_name[name].weight_loader(params_by_name[name], tensor)
 
     model.load_weights = load_weights
+    model.server_args_seen_by_loads = []
     return model
 
 
 @pytest.fixture
-def make_model_replica(model_replica_module: ModuleType, monkeypatch: pytest.MonkeyPatch):
+def published_server_args(model_replica_module: ModuleType, monkeypatch: pytest.MonkeyPatch) -> list:
+    """sglang's one live config per process: the server args published last."""
+    published = [_ServerArgs()]
+    monkeypatch.setattr(model_replica_module, "get_server_args", lambda: published[-1])
+    monkeypatch.setattr(model_replica_module, "_publish_server_args", published.append)
+    return published
+
+
+@pytest.fixture
+def make_model_replica(model_replica_module: ModuleType, monkeypatch: pytest.MonkeyPatch, published_server_args):
     """Builds a `ModelReplica` from `_toy_model` the way `build_model_replica` does: parameters swapped for 0-size
     ones, their built shapes passed along, postprocess on the CPU."""
     monkeypatch.setattr(model_replica_module, "ParallelismContext", lambda parallelism: nullcontext())
     monkeypatch.setattr(model_replica_module, "ParameterMapper", SimpleNamespace(from_model=lambda model: None))
 
-    def make(**toy_model_kwargs):
+    def make(server_args: _ServerArgs | None = None, **toy_model_kwargs):
         model = _toy_model(model_replica_module, **toy_model_kwargs)
         built_shapes_by_name = {name: param.shape for name, param in model.named_parameters()}
         for param in model.parameters():
             param.data = torch.empty(0, dtype=param.dtype)
+        config = model_replica_module.RolloutEngineRankConfig(parallelism=None, server_args=server_args or _ServerArgs())
         return model_replica_module.ModelReplica(
-            model, built_shapes_by_name, parallelism=None, postprocess_device=torch.device("cpu")
+            model, built_shapes_by_name, config, postprocess_device=torch.device("cpu")
         )
 
     return make
@@ -219,6 +239,26 @@ class TestModelReplica:
                 torch.zeros(1024, dtype=torch.uint8), ["experts.w13"], [("experts.w13", _float_tensor(1.0, 4, 6))]
             )
         assert all(param.numel() == 0 for param in model_replica._model.parameters())
+
+    def test_each_replica_loads_under_the_server_args_it_was_built_with(
+        self, make_model_replica, published_server_args: list
+    ) -> None:
+        """Rollout engines launched with different sglang arguments get their own replicas in one process, while
+        sglang holds one live config per process; a load must not run under another replica's."""
+        trtllm_server_args, triton_server_args = _ServerArgs(moe_runner_backend="flashinfer_trtllm"), _ServerArgs(
+            moe_runner_backend="triton"
+        )
+        trtllm_replica = make_model_replica(server_args=trtllm_server_args)
+        triton_replica = make_model_replica(server_args=triton_server_args)
+
+        for model_replica in (trtllm_replica, trtllm_replica, triton_replica, trtllm_replica):
+            model_replica.load_into(
+                torch.zeros(1024, dtype=torch.uint8), ["norm.weight"], [("norm.weight", _float_tensor(1.0, 2))]
+            )
+
+        assert trtllm_replica._model.server_args_seen_by_loads == [trtllm_server_args] * 3
+        assert triton_replica._model.server_args_seen_by_loads == [triton_server_args]
+        assert published_server_args[1:] == [trtllm_server_args, triton_server_args, trtllm_server_args]
 
     def test_hf_tensors_of_a_param_outside_the_group_fail_the_load(self, make_model_replica) -> None:
         """Only the group's params have storage, so an HF tensor of another param cannot be silently dropped."""

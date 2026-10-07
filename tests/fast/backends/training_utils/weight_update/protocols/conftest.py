@@ -399,6 +399,7 @@ def p2p_protocol() -> ModuleType:
             "sglang.srt.model_loader": {"get_model": lambda *args, **kwargs: None},
             "sglang.srt.model_loader.loader": {"DefaultModelLoader": object},
             "sglang.srt.model_loader.parameter_mapper": {"ParameterMapper": object},
+            "sglang.srt.runtime_context": {"get_server_args": lambda: None},
         }
     ):
         return importlib.import_module(_P2P_PROTOCOL_MODULE)

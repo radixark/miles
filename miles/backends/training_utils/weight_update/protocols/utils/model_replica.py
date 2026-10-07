@@ -15,6 +15,7 @@ from sglang.srt.layers.quantization.fp8_utils import initialize_fp8_gemm_config
 from sglang.srt.model_loader import get_model
 from sglang.srt.model_loader.loader import DefaultModelLoader
 from sglang.srt.model_loader.parameter_mapper import ParameterMapper
+from sglang.srt.runtime_context import get_server_args
 from sglang.srt.server_args import ServerArgs
 
 from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
@@ -26,6 +27,26 @@ from miles.utils.workers.argv_utils import _record_field_names
 
 # where a rank sits in the launch, not how it holds its weights
 _PLACEMENT_PARALLELISM_FIELDS = frozenset({"global_rank", "local_rank"})
+
+# set per rollout engine at launch or by its PD role; nothing a replica build reads
+_PER_ROLLOUT_ENGINE_SERVER_ARGS_FIELDS = frozenset(
+    {
+        "host",
+        "port",
+        "grpc_port",
+        "nccl_port",
+        "dist_init_addr",
+        "node_rank",
+        "base_gpu_id",
+        "gated_launch_port",
+        "random_seed",
+        "engine_info_bootstrap_port",
+        "disaggregation_mode",
+        "disaggregation_bootstrap_port",
+        "load_balance_method",
+        "enable_hierarchical_cache",
+    }
+)
 
 # a multiple of every element size, so a span views as any param's dtype
 _SPAN_ALIGNMENT_BYTES = 256
@@ -42,13 +63,19 @@ class RolloutEngineRankConfig:
     server_args: ServerArgs
 
     @property
-    def shard_layout_key(self) -> tuple:
+    def shard_layout_key(self) -> tuple[tuple[str, str], ...]:
         sharding = {
-            name: value
+            f"parallelism.{name}": value
             for name, value in self.parallelism.to_dict().items()
             if name not in _PLACEMENT_PARALLELISM_FIELDS
         }
-        return tuple(sorted(sharding.items())), self.server_args.quantization
+        server_args = {
+            f"server_args.{name}": getattr(self.server_args, name)
+            for name in _record_field_names(type(self.server_args))
+            if name not in _PER_ROLLOUT_ENGINE_SERVER_ARGS_FIELDS
+        }
+        # repr: some server args are lists or dicts
+        return tuple(sorted((name, repr(value)) for name, value in (sharding | server_args).items()))
 
 
 class ParamSpec(NamedTuple):
@@ -80,7 +107,7 @@ class ModelReplica:
         self,
         model: torch.nn.Module,
         built_shapes_by_name: Mapping[str, torch.Size],
-        parallelism: RankParallelismConfig,
+        config: RolloutEngineRankConfig,
         *,
         postprocess_device: torch.device,
     ) -> None:
@@ -88,8 +115,8 @@ class ModelReplica:
         if hasattr(model, "post_load_weights"):
             model.post_load_weights = lambda *args, **kwargs: None
         self._model = model
-        self._parallelism = parallelism
-        self.param_specs = _bring_to_reload_state(model, built_shapes_by_name, parallelism, postprocess_device)
+        self._config = config
+        self.param_specs = _bring_to_reload_state(model, built_shapes_by_name, config.parallelism, postprocess_device)
         self._params_by_name = dict(model.named_parameters())
         self.param_mapper = ParameterMapper.from_model(model)
 
@@ -102,6 +129,9 @@ class ModelReplica:
         `pack_into_buffers` gives groups of params that fit one buffer. Raises if loading changed a param in any way
         but its bytes, since a write carries only bytes to the rollout engine.
         """
+        # sglang holds one live config per process, and this replica was built under its own
+        if get_server_args() is not self._config.server_args:
+            _publish_server_args(self._config.server_args)
         spans_by_name = _spans_in_buffer(buffer, param_names, self.param_specs)
         params_by_name = {name: self._params_by_name[name] for name in param_names}
         try:
@@ -109,7 +139,7 @@ class ModelReplica:
                 spec = self.param_specs[name]
                 param.data = torch.as_strided(spans_by_name[name].view(spec.dtype), spec.shape, spec.stride)
             metadata_before_by_name = {name: _param_metadata(param) for name, param in params_by_name.items()}
-            with ParallelismContext(self._parallelism):
+            with ParallelismContext(self._config.parallelism):
                 self._model.load_weights(hf_tensors)
             params_after_by_name = dict(self._model.named_parameters())
             changed = [
@@ -160,7 +190,7 @@ class ModelReplicas:
             shared = self.shared_params_dict[name]
             assert param.shape == shared.shape and param.dtype == shared.dtype, (
                 f"[P2P-Shared] {name} is {tuple(param.shape)} {param.dtype} in the replica for "
-                f"{config.shard_layout_key} but {tuple(shared.shape)} {shared.dtype} in the shared buffer"
+                f"{config.parallelism} but {tuple(shared.shape)} {shared.dtype} in the shared buffer"
             )
             param.data = shared
         return model_replica
@@ -179,10 +209,14 @@ def query_rollout_engine_rank_configs(
             _query_config(rollout_engines[rollout_engine_ind], assignment.rollout_engine_rank)
             for rollout_engine_ind in assignment.rollout_engine_indices
         ]
-        shard_layout_keys = {config.shard_layout_key for config in configs}
-        assert len(shard_layout_keys) == 1, (
+        differing_fields = {
+            name
+            for config in configs[1:]
+            for name, _ in set(config.shard_layout_key) ^ set(configs[0].shard_layout_key)
+        }
+        assert not differing_fields, (
             f"rollout engines {assignment.rollout_engine_indices} hold rank {assignment.rollout_engine_rank} in "
-            f"different layouts, so one model replica cannot serve them: {shard_layout_keys}"
+            f"different layouts, so one model replica cannot serve them: they differ in {sorted(differing_fields)}"
         )
         configs_by_rollout_engine_rank[assignment.rollout_engine_rank] = configs[0]
     return configs_by_rollout_engine_rank
@@ -210,17 +244,14 @@ def assert_replica_matches_shard(
 def build_model_replica(config: RolloutEngineRankConfig, model_path: str) -> ModelReplica:
     """Builds the model replica of `config`'s layout. `ModelReplicas` calls it once per layout; it uses this
     process's GPU for about one module's params, freed before it returns."""
-    _set_global_server_args(config.server_args)
+    _publish_server_args(config.server_args)
     with ParallelismContext(config.parallelism):
         model, built_shapes_by_name = DefaultModelLoader(LoadConfig()).initialize_model_without_storage(
             model_config=ModelConfig.from_server_args(config.server_args, model_path=model_path),
             device=torch.device("cpu"),
         )
     return ModelReplica(
-        model,
-        built_shapes_by_name,
-        config.parallelism,
-        postprocess_device=torch.device("cuda", torch.cuda.current_device()),
+        model, built_shapes_by_name, config, postprocess_device=torch.device("cuda", torch.cuda.current_device())
     )
 
 
@@ -265,7 +296,7 @@ def _build_cpu_replica(config: RolloutEngineRankConfig, model_path: str) -> torc
         model_loader_extra_config=None,
         rl_quant_profile=config.server_args.rl_quant_profile,
     )
-    _set_global_server_args(config.server_args)
+    _publish_server_args(config.server_args)
 
     # Monkey-patch the loader-level post_load_weights to no-op BEFORE get_model,
     # because get_model() calls post_load_weights() internally (loader.py:1310)
@@ -294,7 +325,7 @@ def _build_cpu_replica(config: RolloutEngineRankConfig, model_path: str) -> torc
     return model
 
 
-def _set_global_server_args(server_args: ServerArgs) -> None:
+def _publish_server_args(server_args: ServerArgs) -> None:
     # model construction and quant methods read these process-wide settings
     server_args_module.set_global_server_args_for_scheduler(server_args)
     initialize_moe_config()
