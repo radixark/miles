@@ -41,7 +41,12 @@ POISON_FILLS = (0xA5, 0x5A)
 
 QUANT_CONFIGS = {
     "bf16": None,
-    "fp8_block": {"quant_method": "fp8", "activation_scheme": "dynamic", "fmt": "e4m3", "weight_block_size": [128, 128]},
+    "fp8_block": {
+        "quant_method": "fp8",
+        "activation_scheme": "dynamic",
+        "fmt": "e4m3",
+        "weight_block_size": [128, 128],
+    },
     # miles' mxfp8 recipes keep kv_b_proj in bf16
     "mxfp8": {
         "quant_method": "mxfp8",
@@ -166,7 +171,9 @@ def _build_engine(model_config: ModelConfig, parallelism: RankParallelismConfig)
 
 
 def _published(engine: torch.nn.Module) -> dict[str, tuple[int, int]]:
-    return {name: (param.data_ptr(), param.numel() * param.element_size()) for name, param in engine.named_parameters()}
+    return {
+        name: (param.data_ptr(), param.numel() * param.element_size()) for name, param in engine.named_parameters()
+    }
 
 
 def _assert_identical(engine_a: torch.nn.Module, engine_b: torch.nn.Module, when: str) -> None:
@@ -177,7 +184,9 @@ def _assert_identical(engine_a: torch.nn.Module, engine_b: torch.nn.Module, when
     for key, tensor_a in tensors_a.items():
         tensor_b = tensors_b[key]
         if (tensor_a.shape, tensor_a.dtype) != (tensor_b.shape, tensor_b.dtype):
-            differing.append(f"{key} {tuple(tensor_a.shape)} {tensor_a.dtype} vs {tuple(tensor_b.shape)} {tensor_b.dtype}")
+            differing.append(
+                f"{key} {tuple(tensor_a.shape)} {tensor_a.dtype} vs {tuple(tensor_b.shape)} {tensor_b.dtype}"
+            )
         elif not torch.equal(_as_bytes(tensor_a), _as_bytes(tensor_b.to(tensor_a.device))):
             differing.append(key)
     differing += [
@@ -245,9 +254,7 @@ def _write_checkpoint(config_dir: Path, model_dir: Path, fmt: str) -> dict:
 
 
 def _random_hf_tensors(config: dict, version: int) -> list[tuple[str, torch.Tensor]]:
-    return [
-        (name, _random_tensor(name, shape, dtype, version)) for name, (shape, dtype) in _hf_shapes(config).items()
-    ]
+    return [(name, _random_tensor(name, shape, dtype, version)) for name, (shape, dtype) in _hf_shapes(config).items()]
 
 
 def _random_tensor(name: str, shape: tuple[int, ...], dtype: torch.dtype, version: int) -> torch.Tensor:
@@ -300,7 +307,11 @@ def _hf_shapes(config: dict) -> dict[str, tuple[tuple[int, ...], torch.dtype]]:
 def _is_quantized(fmt: str, name: str, shape: tuple[int, ...]) -> bool:
     if fmt == "bf16" or not name.endswith(".weight") or len(shape) != 2:
         return False
-    if name in ("model.embed_tokens.weight", "lm_head.weight") or "layernorm" in name or name.endswith("mlp.gate.weight"):
+    if (
+        name in ("model.embed_tokens.weight", "lm_head.weight")
+        or "layernorm" in name
+        or name.endswith("mlp.gate.weight")
+    ):
         return False
     if fmt == "nvfp4":
         return ".mlp.experts." in name
@@ -339,7 +350,9 @@ def _quantize(
             if purpose == "checkpoint":
                 for pair_name, _ in pair:
                     # gate and up read the same input, so calibration gives them one input_scale
-                    calibration_key = expert if pair_name.endswith(("gate_proj.weight", "up_proj.weight")) else pair_name
+                    calibration_key = (
+                        expert if pair_name.endswith(("gate_proj.weight", "up_proj.weight")) else pair_name
+                    )
                     input_scale = 0.25 + (zlib.crc32(calibration_key.encode()) % 1000) / 4000
                     quantized.append(
                         (

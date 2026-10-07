@@ -88,8 +88,10 @@ class ParamSpec(NamedTuple):
 
     @classmethod
     def of(cls, tensor: torch.Tensor) -> "ParamSpec":
-        span_numel = 0 if tensor.numel() == 0 else 1 + sum(
-            (size - 1) * stride for size, stride in zip(tensor.shape, tensor.stride(), strict=True)
+        span_numel = (
+            0
+            if tensor.numel() == 0
+            else 1 + sum((size - 1) * stride for size, stride in zip(tensor.shape, tensor.stride(), strict=True))
         )
         return cls(tensor.shape, tensor.stride(), tensor.dtype, span_numel * tensor.element_size())
 

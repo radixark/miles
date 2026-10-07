@@ -184,7 +184,9 @@ def make_model_replica(model_replica_module: ModuleType, monkeypatch: pytest.Mon
         built_shapes_by_name = {name: param.shape for name, param in model.named_parameters()}
         for param in model.parameters():
             param.data = torch.empty(0, dtype=param.dtype)
-        config = model_replica_module.RolloutEngineRankConfig(parallelism=None, server_args=server_args or _ServerArgs())
+        config = model_replica_module.RolloutEngineRankConfig(
+            parallelism=None, server_args=server_args or _ServerArgs()
+        )
         return model_replica_module.ModelReplica(
             model, built_shapes_by_name, config, postprocess_device=torch.device("cpu")
         )
@@ -245,9 +247,8 @@ class TestModelReplica:
     ) -> None:
         """Rollout engines launched with different sglang arguments get their own replicas in one process, while
         sglang holds one live config per process; a load must not run under another replica's."""
-        trtllm_server_args, triton_server_args = _ServerArgs(moe_runner_backend="flashinfer_trtllm"), _ServerArgs(
-            moe_runner_backend="triton"
-        )
+        trtllm_server_args = _ServerArgs(moe_runner_backend="flashinfer_trtllm")
+        triton_server_args = _ServerArgs(moe_runner_backend="triton")
         trtllm_replica = make_model_replica(server_args=trtllm_server_args)
         triton_replica = make_model_replica(server_args=triton_server_args)
 
