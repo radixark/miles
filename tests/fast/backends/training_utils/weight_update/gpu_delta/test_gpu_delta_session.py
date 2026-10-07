@@ -85,7 +85,7 @@ class _Engine:
         ]
         return {"success": True, "participants": receipts}
 
-    async def prepare_weights_from_delta(self, **kwargs):
+    async def prepare_weights_delta(self, **kwargs):
         self.args = kwargs
         assert list(kwargs["participants"]) == self.identities
         await asyncio.sleep(0.01 if self.index else 0)
@@ -104,7 +104,7 @@ class _Engine:
             self.prepared = True
         return self._response("PREPARED")
 
-    async def update_weights_from_delta(self, **kwargs):
+    async def apply_weights_delta(self, **kwargs):
         assert (self.index, "prepared") in self.events
         assert kwargs == {"session_id": self.args["session_id"]}
         await asyncio.sleep(0.01 if self.index else 0)
@@ -116,7 +116,7 @@ class _Engine:
             receipt["result"] = {"large_nested_diagnostics": [1, 2, 3]}
         return reply
 
-    async def resume_weights_from_delta(self, **kwargs):
+    async def resume_weights_delta(self, **kwargs):
         assert (self.index, "applied") in self.events
         assert kwargs == {"session_id": self.args["session_id"]}
         if self.failure == "resume" and self.index == self.failed_engine:
@@ -127,7 +127,7 @@ class _Engine:
             receipt["scheduler_timing"] = {"blocked_s": 1.0 + self.index}
         return reply
 
-    async def abort_weights_from_delta(self, **kwargs):
+    async def abort_weights_delta(self, **kwargs):
         self.events.append((self.index, "abort"))
         return {"success": True}
 

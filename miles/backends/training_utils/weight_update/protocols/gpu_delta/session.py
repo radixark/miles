@@ -98,7 +98,7 @@ async def _activate_engine(client, engine_id, participants, publication, session
         for key in ("manifest_path", "manifest_sha256", "stream_id", "base_version", "target_version", "plan_digest")
     }
     try:
-        preparation = await client.prepare_weights_from_delta(
+        preparation = await client.prepare_weights_delta(
             **common,
             session_id=session_id,
             participants=participants,
@@ -108,13 +108,13 @@ async def _activate_engine(client, engine_id, participants, publication, session
     except Exception:
         # No pause or mutation was requested on this engine. Its uncertain
         # prepare reply does not authorize aborting another engine's lease.
-        await asyncio.gather(client.abort_weights_from_delta(session_id=session_id), return_exceptions=True)
+        await asyncio.gather(client.abort_weights_delta(session_id=session_id), return_exceptions=True)
         raise
     prepared_at = time.monotonic()
-    applied = await client.update_weights_from_delta(session_id=session_id)
+    applied = await client.apply_weights_delta(session_id=session_id)
     receipts = _receipts(applied)
     applied_at = time.monotonic()
-    resumed = await client.resume_weights_from_delta(session_id=session_id)
+    resumed = await client.resume_weights_delta(session_id=session_id)
     resumed_receipts = _receipts(resumed)
     resumed_at = time.monotonic()
     return {

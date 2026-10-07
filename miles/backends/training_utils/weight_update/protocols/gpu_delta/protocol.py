@@ -592,11 +592,11 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
         )
         return gpu_delta_session.activate_publication([self.rollout_engines[i] for i in indices], cohort, publication)
 
-    async def _load_recovery(self, publication, engine_ids):
+    async def _update_restarted_engines(self, publication, engine_ids):
         started = time.monotonic()
         results = await asyncio.gather(
             *[
-                client.load_weights_from_delta(publication["manifest_path"], release_state=False)
+                client.update_weights_from_delta(publication["manifest_path"], release_state=False)
                 for engine_id, client in zip(self._cohort.engine_ids, self.rollout_engines, strict=True)
                 if engine_id in engine_ids
             ],
@@ -752,7 +752,7 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
         fresh = tuple(engine_id for engine_id in incarnations if engine_id not in ordinary)
         if fresh:
             descriptor = self._recovery_descriptor()
-            activation.update(_on_root(lambda: async_utils.run(self._load_recovery(descriptor, fresh))))
+            activation.update(_on_root(lambda: async_utils.run(self._update_restarted_engines(descriptor, fresh))))
         self._commit_activation(publication, activation, weight_version)
 
     def _commit_activation(self, publication, activation, weight_version):
