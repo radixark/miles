@@ -48,9 +48,10 @@ class ScriptArgs(command_utils.ExecuteTrainConfig):
         self.hardware = command_utils.resolve_hardware(self)
         self.num_gpus_per_node = self.num_gpus_per_node or command_utils.NUM_GPUS_OF_HARDWARE[self.hardware]
         if self.use_single_node:
+            # Half of the node trains and the other half serves rollout.
             self.actor_num_nodes = 1
-            self.actor_num_gpus_per_node = 4
-            self.rollout_num_gpus = 4
+            self.actor_num_gpus_per_node = self.num_gpus_per_node // 2
+            self.rollout_num_gpus = self.num_gpus_per_node // 2
         assert not (self.rollout_fp8 and self.rollout_mxfp8), "rollout_fp8 and rollout_mxfp8 are mutually exclusive"
         if self.hardware in ("H100", "H200"):
             assert not self.rollout_mxfp8, "MXFP8 rollout is not supported on H100/H200 (no native MXFP8)"

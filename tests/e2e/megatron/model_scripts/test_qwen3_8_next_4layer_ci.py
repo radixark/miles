@@ -8,9 +8,9 @@ from tests.ci.metric_history import register_ci_gate
 
 register_cuda_ci(
     est_time=1800,
-    suite="stage-c-8-gpu-h200",
+    suite="stage-c-8-gpu-b200",
     labels=["megatron", "model-scripts"],
-    hardware=["hopper", "blackwell"],
+    hardware=["blackwell"],
 )
 register_rocm_ci(
     est_time=600,

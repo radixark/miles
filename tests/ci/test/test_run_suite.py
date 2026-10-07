@@ -463,7 +463,7 @@ class TestWorkflowScopeSeam:
         workflow = self._workflow()
         normal_parallelism = {
             "stage-c-8-gpu-h200": 2,
-            "stage-c-4-gpu-h200": 3,
+            "stage-c-4-gpu-h200": 5,
             "stage-c-2-gpu-h200": 2,
         }
         for job, default in normal_parallelism.items():

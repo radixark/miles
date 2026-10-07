@@ -5,7 +5,7 @@ from tests.ci.ci_register import register_cuda_ci
 from tests.ci.metric_history import register_ci_gate
 
 # Smoke test for the Nemotron-3-Ultra (nemotron_h: hybrid Mamba2 + Attention + latent-MoE)
-# training script. It runs a 4-layer slice on a single 8-GPU H200 node and only verifies that
+# training script. It runs a 4-layer slice on a single 8-GPU B200 node and only verifies that
 # the training script is functional, not model accuracy.
 #
 # The slice keeps source layers 0,1,7,8 renumbered to 0..3, so its block pattern is
@@ -17,9 +17,9 @@ from tests.ci.metric_history import register_ci_gate
 
 register_cuda_ci(
     est_time=900,
-    suite="stage-c-8-gpu-h200",
+    suite="stage-c-8-gpu-b200",
     labels=["megatron", "model-scripts"],
-    hardware=["hopper", "blackwell"],
+    hardware=["blackwell"],
 )
 
 register_ci_gate(metric_key="train/grad_norm")
@@ -31,7 +31,7 @@ register_ci_gate(metric_key="rollout/raw_reward")
 
 def _args() -> ScriptArgs:
     return ScriptArgs.from_env(
-        hardware="H200",
+        hardware="B200",
         model_org="CharyZeng",
         model_name="NVIDIA-Nemotron-3-Ultra-550B-A55B-BF16-4layer",
         mode="debug_minimal",
