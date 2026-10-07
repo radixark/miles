@@ -487,7 +487,7 @@ def main() -> None:
     with zipfile.ZipFile(args.gpqa_zip) as archive:
         for name in archive.namelist():
             if name.endswith(".csv"):
-                frame = pl.read_csv(archive.read(name))
+                frame = pl.read_csv(archive.read(name, pwd=b"deserted-untie-orchid"))
                 if "Question" in frame.columns:
                     excluded.update(normalized(q) for q in frame["Question"].to_list())
     rows: dict[str, list[dict[str, Any]]] = {split: [] for split in COUNTS}
