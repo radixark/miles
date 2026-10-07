@@ -134,10 +134,13 @@ from hardware and cloud to model labs, agent infrastructure, and academia:
 If Miles is useful in your research or your product, please cite it:
 
 ```bibtex
-@misc{miles2026,
-  title        = {Miles: Enterprise-Grade Reinforcement Learning for Large-Scale Model Post-Training},
-  author       = {Miles Team},
-  year         = {2026},
-  howpublished = {\url{https://github.com/radixark/miles}}
+@misc{radixark2026milesv01productionlevelposttraining,
+  title         = {Miles v0.1: Production-Level Post-Training},
+  author        = {RadixArk and Tom Chen and Mao Cheng and Shi Dong and Kangrui Du and Yanbin Jiang and Jiajun Li and Yiming Li and Tao Lin and Yusheng Su and Andy Ye and Yueming Yuan and Zhichen Zeng},
+  year          = {2026},
+  eprint        = {2609.08368},
+  archivePrefix = {arXiv},
+  primaryClass  = {cs.LG},
+  url           = {https://arxiv.org/abs/2609.08368}
 }
 ```
