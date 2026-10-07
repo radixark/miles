@@ -217,3 +217,7 @@ Keep source hashes and cohort provenance: historical evaluation does not certify
 that the backbone has never seen outcomes, or that a private published cohort is
 identical. The native multi-field loader evaluates every field and reports both
 case-weighted and field-weighted Brier.
+
+To explicitly replace only the ForecastBench validation cohort when resuming, use
+`--allow-forecastbench-change`. Training and primary validation hashes remain protected.
+Keep a seeded sample fixed across evaluations and archive its question IDs and hash.

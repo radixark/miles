@@ -62,6 +62,7 @@ class Args(Tap):
     prometheus_port: int = 9090
     distributed_timeout_seconds: int = 3600
     forecastbench_path: str = ""
+    allow_forecastbench_change: bool = False
 
     def process_args(self) -> None:
         if not 0 <= self.multi_field_fraction <= 1:
@@ -255,7 +256,7 @@ def main() -> None:
     start = 0
     if args.resume:
         saved = load_checkpoint(model, optimizer, args.resume)
-        validate_resume_config(saved["config"], config)
+        validate_resume_config(saved["config"], config, allow_forecastbench_change=args.allow_forecastbench_change)
         start = saved["step"]
     labels = [encode_example(processor.tokenizer, example, args.max_length) for example in validation]
     forecast_labels = [encode_example(processor.tokenizer, example, args.max_length)
