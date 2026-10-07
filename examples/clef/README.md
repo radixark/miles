@@ -115,6 +115,21 @@ For text serving, `load_release_model` and `systemone` in the exported
 `joint_schema_model.py` produce probabilities directly in one prefill pass.
 Standard SGLang chat serving does not execute this custom schema head.
 
+The experimental `examples.clef.sglang_models` adapter replaces embedding
+pooling with the trained schema head. Set `SGLANG_EXTERNAL_MODEL_PACKAGE` to
+that package, `CLEF_MODEL_PATH` to the local serving export, and
+`CLEF_METADATA_DIR` to a local directory shared with the SystemOne gateway.
+Launch SGLang with `--is-embedding --tp-size 1 --disable-radix-cache
+--chunked-prefill-size -1 --disable-cuda-graph --max-running-requests 1`.
+Disable the automatic server warmup, which does not supply schema metadata.
+Then run `python -m examples.clef.serve_systemone --model-path <export>
+--metadata-dir <same-directory> --engine-url http://127.0.0.1:31000`.
+The gateway accepts text-only `/v1/systemone` requests, preserves exact token
+spans, and exposes full precision distributions separately from the rounded
+SystemOne answer fields. This is deterministic prefill inference; generation
+temperature and sampling repetitions do not apply. Validate probability parity
+against the native release loader before benchmarking a new SGLang version.
+
 S3 checkpoint storage is selected with --checkpoint-dir s3://bucket/prefix.
 Native distributed shards are streamed to S3; the serving export is staged on
 rank zero locally, uploaded with a SHA-256 manifest and size checks, and removed

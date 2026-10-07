@@ -10,5 +10,6 @@ polars
 numpy
 fastapi
 uvicorn
+httpx
 
 s3fs
