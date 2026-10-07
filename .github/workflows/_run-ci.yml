@@ -1,3 +1,4 @@
+# doc-dev: docs/developer/ci/00-stage.md
 name: CI Job
 
 on:
@@ -97,11 +98,6 @@ jobs:
       WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
       NEON_DATABASE_URL: ${{ secrets.NEON_DATABASE_URL }}
       MILES_TEST_ENABLE_INFINITE_RUN: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.infinite_run) || 'false' }}
-      # CI is single-node, so DeepEP ranks only need NVLink. On RoCE runners the job
-      # container's bridge network has no RoCE GIDs, so NVSHMEM's IBGDA/IBRC connection
-      # setup fails and DeepEP low-latency hangs. An HCA name that matches no NIC makes
-      # NVSHMEM skip those transports and fall back to NVLink P2P on every runner.
-      NVSHMEM_HCA_LIST: none_single_node_nvlink_only
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -111,6 +107,13 @@ jobs:
       - name: Configure source paths
         shell: bash
         run: echo "PYTHONPATH=$GITHUB_WORKSPACE:$SGLANG_SOURCE_ROOT:$MEGATRON_SOURCE_ROOT" >> "$GITHUB_ENV"
+
+      - name: Keep NVSHMEM on NVLink (4-GPU H200)
+        # Single-node stage on a pool with RoCE runners: a NIC name that matches
+        # nothing keeps NVSHMEM off RDMA. See docs/developer/ci/00-stage.md.
+        if: contains(fromJSON(inputs.runs_on), 'h200') && contains(fromJSON(inputs.runs_on), '4gpu')
+        shell: bash
+        run: echo "NVSHMEM_HCA_LIST=none_single_node_nvlink_only" >> "$GITHUB_ENV"
 
       - name: Cleanup Ray processes
         shell: bash
