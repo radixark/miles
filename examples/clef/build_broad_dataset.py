@@ -238,9 +238,10 @@ def probability(index: int, split: str, rng: random.Random) -> dict[str, Any]:
         state = f"An urn contains {red} red and {blue} blue balls. Two balls will be drawn uniformly without replacement. Take a guess at the number of red balls; no draw has occurred."
     elif kind == 3:
         sides = rng.randint(3, 7)
+        first, second = [[rng.randint(1, 100) for _ in range(sides)] for _ in range(2)]
         descriptions = [f"Sum equals {i}" for i in range(2, 2 * sides + 1)]
-        target = [sum(a + b == i for a in range(1, sides + 1) for b in range(1, sides + 1)) / sides**2 for i in range(2, 2 * sides + 1)]
-        state = f"Two independent fair {sides}-sided dice numbered 1 through {sides} will be rolled. Take a guess at their sum; no roll has occurred."
+        target = [sum(first[a-1] * second[b-1] for a in range(1, sides + 1) for b in range(1, sides + 1) if a + b == i) / (sum(first) * sum(second)) for i in range(2, 2 * sides + 1)]
+        state = f"Two independent {sides}-sided dice numbered 1 through {sides} will be rolled. Their respective face weights are {first} and {second}. Take a guess at their sum; no roll has occurred."
     elif kind == 4:
         prior, sensitivity, false_positive = [rng.randint(1, 99) / 100 for _ in range(3)]
         posterior = prior * sensitivity / (prior * sensitivity + (1 - prior) * false_positive)
@@ -503,6 +504,7 @@ def main() -> None:
         selected = select(pool, category, rng, excluded)
         for split in COUNTS:
             rows[split].extend(selected[split])
+    probability_states: set[str] = set()
     for split in COUNTS:
         n = COUNTS[split]["workflow"]
         kinds = ["invoice", "service", "security", "agent"]
@@ -510,7 +512,16 @@ def main() -> None:
         for i in range(n):
             kind = "invoice" if i < n // 3 else kinds[1 + (i - n // 3) % 3]
             rows[split].append(workflow(kind, i, split, rng))
-        rows[split].extend(probability(i, split, rng) for i in range(COUNTS[split]["probability"]))
+        generated, attempt = 0, 0
+        while generated < COUNTS[split]["probability"]:
+            candidate = probability(attempt, split, rng)
+            attempt += 1
+            state = normalized(candidate["record"]["state"])
+            if state in probability_states:
+                continue
+            probability_states.add(state)
+            rows[split].append(candidate)
+            generated += 1
         rng.shuffle(rows[split])
     tokenizer = AutoTokenizer.from_pretrained(args.tokenizer_dir, local_files_only=True)
     manifest = {"seed": args.seed, "schema": "clef_multifield_v2", "splits": audit(rows, tokenizer, args.max_length),
