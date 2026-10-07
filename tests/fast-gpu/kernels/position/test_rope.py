@@ -10,7 +10,7 @@ import pytest
 import torch
 
 from miles.kernels.position.rope import apply_rotary_emb
-from miles_plugins.models.deepseek_v4_1.ops.rope_tables import apply_rotary_emb as apply_rotary_emb_reference
+from miles_plugins.models.deepseek_v4.ops.rope import apply_rotary_emb as apply_rotary_emb_reference
 
 ROPE_DIM = 64
 HEAD_DIM = 512

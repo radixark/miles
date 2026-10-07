@@ -26,22 +26,22 @@ from megatron.core.transformer.transformer_config import TransformerConfig
 from megatron.core.transformer.transformer_layer import HyperConnectionTransformerLayer, get_transformer_layer_offset
 from megatron.core.transformer.utils import make_sharded_tensors_for_checkpoint
 
-from miles.kernels.attention.dsa.deepseek_v4_1.tilelang_sparse_mla import sparse_attn_tilelang
+from miles.kernels.attention.dsa import sparse_attention
 from miles.kernels.hyper_connection.mhc import mhc_aggregate, mhc_mix
 from miles.kernels.position.rope import apply_rotary_emb
 from miles.kernels.quant.fake_quant import fake_quant_compressed_kv
 from miles.utils.hf_utils.config import load_hf_config
-from miles_plugins.models.deepseek_v4_1.engram import DeepSeekV41Engram
-from miles_plugins.models.deepseek_v4_1.ops.compressor import DeepSeekV41Compressor
-from miles_plugins.models.deepseek_v4_1.ops.cp_utils import (
+from miles_plugins.models.deepseek_v4.ops.cp_utils import (
     all_gather_cp,
     get_freqs_cis_for_cp,
     get_q_positions_for_cp,
     get_window_topk_idxs_cp,
 )
+from miles_plugins.models.deepseek_v4.ops.rope import wrapped_precompute_freqs_cis
+from miles_plugins.models.deepseek_v4_1.engram import DeepSeekV41Engram
+from miles_plugins.models.deepseek_v4_1.ops.compressor import DeepSeekV41Compressor
 from miles_plugins.models.deepseek_v4_1.ops.indexer import DeepSeekV41Indexer
 from miles_plugins.models.deepseek_v4_1.ops.kvnorm import compressed_kv_stored, kv_norm_rope_fp8
-from miles_plugins.models.deepseek_v4_1.ops.rope_tables import wrapped_precompute_freqs_cis
 
 HC_FUSED = os.environ.get("MILES_DSV41_HC_FUSED", "0") == "1"
 
@@ -545,8 +545,14 @@ class DeepSeekV41Attention(MegatronModule):
 
         topk_idxs = topk_idxs.int()
         kv = copy_to_tensor_model_parallel_region(kv, group=self.tp_group, all_reduce_grad_fp32=True)
-        o = sparse_attn_tilelang(q, kv, self.core_attention.attn_sink, topk_idxs, self.softmax_scale)
-        apply_rotary_emb(o[..., -rd:], freqs_cis, inverse=True)
+        o = sparse_attention(
+            q,
+            kv.unsqueeze(2),
+            topk_idxs.unsqueeze(2),
+            self.softmax_scale,
+            attn_sink=self.core_attention.attn_sink,
+        )
+        o = torch.cat((o[..., :-rd], apply_rotary_emb(o[..., -rd:].clone(), freqs_cis, inverse=True)), dim=-1)
 
         o = o.view(bsz, seqlen, self.n_local_groups, -1)
         wo_a = self.linear_o_group_proj.view(self.n_local_groups, self.o_lora_rank, -1)

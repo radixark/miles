@@ -8,12 +8,12 @@ from megatron.core.extensions.transformer_engine import TELinear
 from megatron.core.transformer.module import MegatronModule, mark_keep_in_fp32
 from megatron.core.transformer.transformer_config import TransformerConfig
 
-from miles.kernels.attention.dsa.deepseek_v4_1.tilelang_indexer_fwd import batched_indexer_fwd
+from miles.kernels.attention.dsa import indexer_logits_sbhd
 from miles.kernels.attention.dsa.topk import get_dsa_topk_fn
 from miles.kernels.position.rope import apply_rotary_emb
 from miles.kernels.quant.fake_quant import fake_quant_fp4
 from miles.utils.replay_base import indexer_replay_manager
-from miles_plugins.models.deepseek_v4_1.ops.norm import RMSNorm
+from miles_plugins.models.deepseek_v4.ops.norm import RMSNorm
 
 
 def select_candidate_blocks(
@@ -78,14 +78,14 @@ def indexer_select(
     for s in range(0, seqlen, chunk):
         e = min(s + chunk, seqlen)
         lens = compress_lens[s:e]
-        scores = batched_indexer_fwd(
+        scores = indexer_logits_sbhd(
             q[:, s:e].transpose(0, 1).contiguous(),
             k_t,
             weights[:, s:e].transpose(0, 1).float().contiguous(),
             torch.zeros(e - s, dtype=torch.int32, device=q.device),
             lens.to(torch.int32),
         )
-        # batched_indexer_fwd already wrote -inf outside [0, lens) for every query
+        # indexer_logits_sbhd already wrote -inf outside [0, lens) for every query
         if is_candidate_source:
             cand = select_candidate_blocks(
                 scores[..., :n_kv], lens.unsqueeze(-1), candidate_topk_blocks, candidate_block_size

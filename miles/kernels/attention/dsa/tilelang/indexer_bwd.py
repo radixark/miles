@@ -43,7 +43,7 @@ def _indexer_bwd_kernel(
         pad_heads = 16
 
     @T.prim_func
-    def tl_indexer_bwd_kernel(
+    def indexer_bwd_kernel(
         IndexQ: T.Tensor(index_q_shape, dtype),
         IndexK: T.Tensor(index_k_shape, dtype),
         Weights: T.Tensor(weights_shape, FP32),
@@ -133,7 +133,7 @@ def _indexer_bwd_kernel(
             T.copy(d_index_q_frag[:heads, :], dIndexQ[bx, :, :])
             T.copy(d_weights_frag[:heads], dWeights[bx, :])
 
-    return tl_indexer_bwd_kernel
+    return indexer_bwd_kernel
 
 
 def indexer_bwd(

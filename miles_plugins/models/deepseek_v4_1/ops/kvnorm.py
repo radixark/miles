@@ -1,7 +1,7 @@
 import torch
 
 from miles.kernels.position.rope import apply_rotary_emb
-from miles_plugins.models.deepseek_v4_1.ops.qat import fp8_simulate_qat
+from miles_plugins.models.deepseek_v4.ops.qat import fp8_simulate_qat
 
 _PAGE_SIZE = 64
 _BYTES_PER_TOKEN = 584
