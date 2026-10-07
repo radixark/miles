@@ -5,14 +5,16 @@ paths:
 
 # Partial Model CI
 
-A CI test that runs an N-layer slice of a released model instead of the full
-model is a partial model test, whatever directory holds it and whichever
-backend trains it. The checkpoint name usually carries the layer count
-(`GLM-5.2_5layer`, `Qwen3-30B-A3B-5layer`). Most live in
-`tests/e2e/megatron/model_scripts/`; others sit in `tests/e2e/ft/`,
-`tests/e2e/precision/`, and `tests/e2e/megatron/`. A slice is a sanity check,
-not a convergence or throughput run, so a larger batch only adds runtime on
-the wide GPU stages.
+A partial model test runs an N-layer slice of a model above 200B total
+parameters, because the full model does not fit a CI runner; the checkpoint
+name usually carries the layer count (`GLM-5.2_5layer`,
+`DeepSeek-V4-Flash-FP8-4layer`). What decides it is the model, not the
+directory or the backend: most live in `tests/e2e/megatron/model_scripts/`,
+others in `tests/e2e/megatron/` and `tests/e2e/precision/`. A slice of a
+smaller model used as a cheap stand-in, such as the `Qwen3-30B-A3B-5layer`
+fault-tolerance runs, is not one. A slice is a sanity check, not a
+convergence or throughput run, so a larger batch only adds runtime on the
+wide GPU stages.
 
 - Default to 16 samples per rollout and a global batch of 16, e.g.
   `--rollout-batch-size 4 --n-samples-per-prompt 4 --global-batch-size 16`.
