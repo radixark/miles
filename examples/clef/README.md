@@ -37,6 +37,11 @@ rather than argument generation; recorded preferences supply pairwise helpfulnes
 rather than aesthetic judgment or consensus probabilities. Monitor these missing
 subskills separately. Cases differ in field counts; the trainer averages field
 loss within each case before batch averaging.
+Validation now includes every decision field, rather than only the first field
+of a case. `brier` retains equal case weighting to match training, while
+`brier_per_field` reports the pooled field average. Accuracy, ECE and collapse
+measure all field distributions; `records` and `questions` distinguish input
+cases from decision fields.
 
 ## Model training
 

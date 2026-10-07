@@ -26,35 +26,41 @@ def decision_loss(logits: list[list[torch.Tensor]], labels: Sequence[LabeledReco
 def prediction_rows(logits: list[list[torch.Tensor]], labels: Sequence[LabeledRecord]) -> list[dict]:
     rows = []
     for record_logits, label in zip(logits, labels, strict=True):
-        question = label.encoded.questions[0]
-        probabilities = record_logits[0].detach().float().softmax(-1).cpu().tolist()
-        target = label.targets[0]
-        prediction = max(range(len(probabilities)), key=probabilities.__getitem__)
-        hard = max(target) == 1.0
-        rows.append({
-            "id": label.encoded.record_id,
-            "source": label.source,
-            "option_ids": question.option_ids,
-            "probabilities": probabilities,
-            "target": target,
-            "brier": sum((p - t) ** 2 for p, t in zip(probabilities, target, strict=True)),
-            "confidence": max(probabilities),
-            "collapsed": max(probabilities) == 1.0,
-            "near_collapsed": max(probabilities) >= 0.999,
-            "hard_target": hard,
-            "correct": target[prediction] == 1.0 if hard else None,
-        })
+        for question, field_logits, target in zip(label.encoded.questions, record_logits, label.targets, strict=True):
+            probabilities = field_logits.detach().float().softmax(-1).cpu().tolist()
+            prediction = max(range(len(probabilities)), key=probabilities.__getitem__)
+            hard = max(target) == 1.0
+            rows.append({
+                "id": label.encoded.record_id,
+                "field_id": question.question_id,
+                "source": label.source,
+                "option_ids": question.option_ids,
+                "probabilities": probabilities,
+                "target": target,
+                "brier": sum((p - t) ** 2 for p, t in zip(probabilities, target, strict=True)),
+                "confidence": max(probabilities),
+                "collapsed": max(probabilities) == 1.0,
+                "near_collapsed": max(probabilities) >= 0.999,
+                "hard_target": hard,
+                "correct": target[prediction] == 1.0 if hard else None,
+            })
     return rows
 
 
 def summarize(rows: Sequence[dict], bins: int = 15) -> dict[str, float]:
     if not rows:
         raise ValueError("cannot evaluate an empty dataset")
+    records = defaultdict(list)
+    for index, row in enumerate(rows):
+        records[row.get("id", f"anonymous_{index}")].append(row["brier"])
     metrics = {
-        "brier": sum(row["brier"] for row in rows) / len(rows),
+        # Match the loss's equal case weighting; also expose field-weighted Brier.
+        "brier": sum(sum(values) / len(values) for values in records.values()) / len(records),
+        "brier_per_field": sum(row["brier"] for row in rows) / len(rows),
         "collapse_percentage": 100 * sum(row["collapsed"] for row in rows) / len(rows),
         "near_collapse_percentage": 100 * sum(row["near_collapsed"] for row in rows) / len(rows),
         "questions": float(len(rows)),
+        "records": float(len(records)),
     }
     hard = [row for row in rows if row["hard_target"]]
     if hard:

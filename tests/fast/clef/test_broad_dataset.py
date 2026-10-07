@@ -2,13 +2,16 @@ import copy
 import json
 import random
 import re
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
+import torch
 
 from examples.clef.build_broad_dataset import COUNTS, call_names, probability, workflow, workflow_bundle
-from examples.clef.data import DecisionExample, augment_example, read_examples
-from examples.clef.joint_schema_model import question_options
+from examples.clef.data import DecisionExample, LabeledRecord, augment_example, read_examples
+from examples.clef.joint_schema_model import EncodedQuestion, EncodedRecord, question_options
+from examples.clef.objective import decision_loss, prediction_rows, summarize
 
 
 def test_curriculum_counts() -> None:
@@ -21,6 +24,22 @@ def test_tool_labels_ignore_calls_in_argument_strings() -> None:
     assert call_names("[]") == []
     with pytest.raises(ValueError):
         call_names("[Search(x=1]")
+
+
+def test_metrics_include_every_field_and_match_case_weighted_loss() -> None:
+    first = EncodedQuestion("first", 1, (0, 2), ((2, 4), (4, 6)), ("A", "B"))
+    second = replace(first, question_id="second")
+    labels = [LabeledRecord(EncodedRecord(tuple(range(8)), (first, second), "case1"), ((1., 0.), (1., 0.)), "workflow"),
+              LabeledRecord(EncodedRecord(tuple(range(8)), (first,), "case2"), ((1., 0.),), "knowledge")]
+    logits = [[torch.tensor([100., -100.]), torch.tensor([-100., 100.])], [torch.tensor([100., -100.])]]
+    rows = prediction_rows(logits, labels)
+    assert len(rows) == 3
+    assert rows[1]["field_id"] == "second" and not rows[1]["correct"]
+    metrics = summarize(rows)
+    assert metrics["records"] == 2
+    assert metrics["single_answer_accuracy"] == pytest.approx(2 / 3)
+    assert metrics["brier_per_field"] == pytest.approx(2 / 3)
+    assert metrics["brier"] == decision_loss(logits, labels).item() == .5
 
 
 def test_native_multifield_loader_and_augmentation(tmp_path: Path) -> None:
