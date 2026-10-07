@@ -125,6 +125,7 @@ class RayCommandBackend(BaseCommandBackend):
                 for k in ("NCCL_SOCKET_IFNAME", "GLOO_SOCKET_IFNAME", "NCCL_DEBUG", "NCCL_DEBUG_FILE")
                 if k in os.environ
             },
+            "NVSHMEM_REMOTE_TRANSPORT": os.environ.get("NVSHMEM_REMOTE_TRANSPORT", "none"),
             "no_proxy": f"127.0.0.1,{master_addr}",
             # This is needed by megatron / torch distributed in multi-node setup
             "MASTER_ADDR": master_addr,
