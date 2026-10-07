@@ -85,7 +85,7 @@ class _Engine:
         ]
         return {"success": True, "participants": receipts}
 
-    async def prepare_weights_delta(self, **kwargs):
+    async def prepare_gpu_delta(self, **kwargs):
         self.args = kwargs
         assert list(kwargs["participants"]) == self.identities
         await asyncio.sleep(0.01 if self.index else 0)
@@ -93,7 +93,7 @@ class _Engine:
             raise RuntimeError("prepare rejected")
         return self._response("PREPARING")
 
-    async def get_weights_delta_status(self, **kwargs):
+    async def get_gpu_delta_status(self, **kwargs):
         self.polls += 1
         if self.failure == "prepare_worker" and self.index == self.failed_engine:
             return {"success": False, "message": "CPU preparation failed"}
@@ -104,7 +104,7 @@ class _Engine:
             self.prepared = True
         return self._response("PREPARED")
 
-    async def apply_weights_delta(self, **kwargs):
+    async def apply_gpu_delta(self, **kwargs):
         assert (self.index, "prepared") in self.events
         assert kwargs == {"session_id": self.args["session_id"]}
         await asyncio.sleep(0.01 if self.index else 0)
@@ -116,7 +116,7 @@ class _Engine:
             receipt["result"] = {"large_nested_diagnostics": [1, 2, 3]}
         return reply
 
-    async def resume_weights_delta(self, **kwargs):
+    async def resume_gpu_delta(self, **kwargs):
         assert (self.index, "applied") in self.events
         assert kwargs == {"session_id": self.args["session_id"]}
         if self.failure == "resume" and self.index == self.failed_engine:
@@ -127,7 +127,7 @@ class _Engine:
             receipt["scheduler_timing"] = {"blocked_s": 1.0 + self.index}
         return reply
 
-    async def abort_weights_delta(self, **kwargs):
+    async def abort_gpu_delta(self, **kwargs):
         self.events.append((self.index, "abort"))
         return {"success": True}
 
@@ -206,7 +206,7 @@ def test_bounded_wait_cancels_inflight_status_requests():
         finally:
             events.append((0, "status_cancelled"))
 
-    clients[0].get_weights_delta_status = hanging_status
+    clients[0].get_gpu_delta_status = hanging_status
     with pytest.raises(asyncio.TimeoutError):
         asyncio.run(session._wait_prepared(clients[0], session_id="s", timeout=0.01))
     assert events == [(0, "status_cancelled")]

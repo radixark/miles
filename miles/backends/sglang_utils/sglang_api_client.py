@@ -403,28 +403,28 @@ class SGLangApiClient:
         response.raise_for_status()
         return response
 
-    async def get_weights_delta_info(self, engine_id):
-        return await self._make_request("get_weights_delta_info", {"engine_id": engine_id})
+    async def get_gpu_delta_info(self, engine_id):
+        return await self._make_request("get_gpu_delta_info", {"engine_id": engine_id})
 
-    async def update_weights_from_delta(self, manifest_path, release_state=True):
+    async def update_weights_from_gpu_delta(self, manifest_path, release_state=True):
         return await self._make_request(
-            "update_weights_from_delta", {"manifest_path": manifest_path, "release_state": release_state}
+            "update_weights_from_gpu_delta", {"manifest_path": manifest_path, "release_state": release_state}
         )
 
-    async def prepare_weights_delta(self, **payload):
-        return await self._make_request("prepare_weights_delta", payload)
+    async def prepare_gpu_delta(self, **payload):
+        return await self._make_request("prepare_gpu_delta", payload)
 
-    async def get_weights_delta_status(self, session_id):
-        return await self._make_request("get_weights_delta_status", {"session_id": session_id})
+    async def get_gpu_delta_status(self, session_id):
+        return await self._make_request("get_gpu_delta_status", {"session_id": session_id})
 
-    async def apply_weights_delta(self, session_id):
-        return await self._make_request("apply_weights_delta", {"session_id": session_id})
+    async def apply_gpu_delta(self, session_id):
+        return await self._make_request("apply_gpu_delta", {"session_id": session_id})
 
-    async def resume_weights_delta(self, session_id):
-        return await self._make_request("resume_weights_delta", {"session_id": session_id})
+    async def resume_gpu_delta(self, session_id):
+        return await self._make_request("resume_gpu_delta", {"session_id": session_id})
 
-    async def abort_weights_delta(self, session_id):
-        return await self._make_request("abort_weights_delta", {"session_id": session_id})
+    async def abort_gpu_delta(self, session_id):
+        return await self._make_request("abort_gpu_delta", {"session_id": session_id})
 
     async def abort_all_requests(self, timeout: float | None = None):
         return await self._make_request("abort_request", {"abort_all": True}, timeout=timeout)

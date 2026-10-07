@@ -127,7 +127,7 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
     async def _describe(self):
         results = await asyncio.gather(
             *[
-                client.get_weights_delta_info(engine_id=engine_id)
+                client.get_gpu_delta_info(engine_id=engine_id)
                 for engine_id, client in zip(self._engine_ids, self.rollout_engines, strict=True)
             ],
             return_exceptions=True,
@@ -596,7 +596,7 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
         started = time.monotonic()
         results = await asyncio.gather(
             *[
-                client.update_weights_from_delta(publication["manifest_path"], release_state=False)
+                client.update_weights_from_gpu_delta(publication["manifest_path"], release_state=False)
                 for engine_id, client in zip(self._cohort.engine_ids, self.rollout_engines, strict=True)
                 if engine_id in engine_ids
             ],

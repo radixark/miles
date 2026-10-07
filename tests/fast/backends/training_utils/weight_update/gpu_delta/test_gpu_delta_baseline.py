@@ -25,7 +25,7 @@ class _Engine:
         self.protocol, self.events, self.index, self.fail = protocol, events, index, fail
         self.version = "default"
 
-    async def get_weights_delta_info(self, engine_id):
+    async def get_gpu_delta_info(self, engine_id):
         return {
             "success": True,
             "participants": [
@@ -663,7 +663,7 @@ def test_restarted_engine_uses_one_shot_and_retains_cache(tmp_path, single_rank,
             raise RuntimeError("recovery apply failed")
         return {"success": True, "participants": [{"state": "RESUMED", "target_version": 2}]}
 
-    protocol.rollout_engines[1].update_weights_from_delta = load
+    protocol.rollout_engines[1].update_weights_from_gpu_delta = load
     if recovery_fails:
         with pytest.raises(RuntimeError, match="recovery apply failed"):
             protocol.finalize(2)

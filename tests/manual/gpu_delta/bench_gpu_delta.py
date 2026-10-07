@@ -741,7 +741,7 @@ async def _run(args):
             _save(args.output / "target-generation.json", await _generation(clients))
             return
         descriptions = await asyncio.gather(
-            *[c.get_weights_delta_info(engine_id=f"engine-{i:05d}") for i, c in enumerate(clients)]
+            *[c.get_gpu_delta_info(engine_id=f"engine-{i:05d}") for i, c in enumerate(clients)]
         )
         cohort = negotiate_cohort(descriptions)
         digest = cohort.plan_digest
