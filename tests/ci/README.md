@@ -15,6 +15,11 @@ The miles CI workflow bind-mounts `/data/miles_ci` (and its `models`,
 `models` also holds the `<model>_torch_dist` checkpoints that
 `convert_checkpoint` writes by default, so a host converts each model once and
 every later job on it reuses the result.
+`jit` holds the compiled-kernel caches (Triton, Inductor, TileLang, DeepGEMM,
+FlashInfer, CuTe, CUDA) that `_run-ci.yml` points there. Each keys its entries
+by kernel source and library or compiler version and writes them atomically,
+so a new image never reads a stale kernel and the runners on a host share it
+safely. Deleting `jit` only costs the next jobs a recompile.
 Every CI host must provide `/data/miles_ci` either as a real directory on its
 biggest disk or as a symlink to wherever the big disk is.
 [`tests/ci/skills/setup-ci-host`](skills/setup-ci-host/) automates this:
