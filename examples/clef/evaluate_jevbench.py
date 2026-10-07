@@ -21,7 +21,7 @@ class Args(Tap):
 
 def request_body(task: dict, model: str) -> dict:
     return {"model": model, "id": task["id"], "state": task["state"],
-            "questions": {"q": task["question"]}}
+            "questions": {"decision": task["question"]}}
 
 
 def load_tasks(benchmark: Path) -> list[dict]:
@@ -75,7 +75,7 @@ async def evaluate(args: Args) -> None:
                 response.raise_for_status()
                 elapsed = time.perf_counter() - started
                 output = response.json()
-                probabilities = output["probabilities"]["q"]
+                probabilities = output["probabilities"]["decision"]
                 if task["question"]["type"] == "noul":
                     probabilities = {"yes": probabilities["true"], "no": probabilities["false"]}
                 # Explicit canonical labels preserve the benchmark's label and tie conventions.

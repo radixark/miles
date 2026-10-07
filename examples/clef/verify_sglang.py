@@ -37,7 +37,7 @@ def verify(args: Args) -> None:
             reference = dict(zip(encoded.questions[0].option_ids, logits.float().softmax(-1).tolist(), strict=True))
             response = client.post(args.endpoint + "/v1/systemone", json=body)
             response.raise_for_status()
-            actual = response.json()["probabilities"]["q"]
+            actual = response.json()["probabilities"]["decision"]
             difference = max(abs(reference[key] - actual[key]) for key in reference)
             check = {"id": task["id"], "type": task["question"]["type"], "input_tokens": len(encoded.input_ids),
                      "reference": reference, "sglang": actual, "maximum_absolute_difference": difference}
