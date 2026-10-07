@@ -1,7 +1,7 @@
 # GPU-delta development benchmark
 
-The experimental `--update-weight-transfer-mode gpu-delta` uses the paired
-SGLang `apply_gpu_delta` API. `disk-delta` remains a separate checkpoint
+The experimental `--update-weight-transfer-mode gpu-delta` uses SGLang's paired
+prepare/apply/resume APIs and blocking `update_weights_from_gpu_delta` endpoint. `disk-delta` remains a separate checkpoint
 handoff path. GPU-delta supports `snappy-zstd` (default), `lz4-zstd` and plain
 `lz4`, with `--update-weight-delta-encoding xor`. Changed scalar/vector tensors
 carry complete target bytes; the `overwrite` transport option belongs to disk-delta.
@@ -52,15 +52,12 @@ user-facing configuration API. Runtime defaults are sufficient for normal use.
 | `GPU_DELTA_HOST_CACHE_DIR` | Tmpfs base for engine-host encoded caches; defaults to `/dev/shm/sglang-gpu-delta-<uid>`. Each engine has separate identities and locks. Its ranks share encoded files, while DE input arenas remain private to each rank. |
 | `GPU_DELTA_SOURCE_DIGEST` | Optional producer-benchmark provenance annotation; unset by default. Does not configure the transport. |
 
-For Ray launches, set the job `runtime_env` environment or use the provided
-`execute_train(extra_env_vars=...)` path. The submitting shell alone does not
-forward arbitrary variables into existing workers. Trainer-only settings can
-use `--train-env-vars`; receiver profiling needs the timing setting on rollout
-actors too. Set the DE sorting control on rollout actors. The five-layer GPU-delta
-E2E forwards both trainer codec controls, receiver sorting and the shared hash
-flag, and checks every publication's manifest and phase-specific codec.
-Set the hash flag at job level so both trainer and rollout inherit it; a
-trainer-only override cannot enable checksum omission for a default receiver.
+For Ray launches, set job-level variables through `runtime_env` or
+`execute_train(extra_env_vars=...)`; the submitting shell does not configure
+existing workers. Both trainer and rollout must inherit the shared hash flag.
+Trainer-only settings can use `--train-env-vars`; sorting and receiver timing
+belong on rollout actors. The five-layer E2E forwards these controls and checks
+each publication's manifest and phase-specific codec.
 
 The five-layer test is dedicated to GPU delta: it prepares checkpoints and data,
 enables the initial sync, then runs four rollouts to exercise three learned
@@ -182,9 +179,9 @@ explicit `frame_bytes`, natural tensor identity and outer chunk offsets/lengths.
 For plain `lz4`, the outer descriptor
 has `frames=[]` and equal encoded/decoded byte lengths: its payload is the
 aligned inner arena directly, without trailing padding. Raw tensors and omitted
-zero-XOR frames keep the same representation. SHA-256 authenticates final owner files by default;
-Ordinary updates do not hash old/new weights or intermediate inner-codec bytes.
-Checkpoint/recovery artifacts additionally fingerprint the immutable HF base. The receiver reads
+zero-XOR frames keep the same representation. SHA-256 authenticates final owner files by default.
+Ordinary updates do not hash old/new weights or intermediate inner-codec bytes;
+checkpoint/recovery artifacts additionally fingerprint the immutable HF base. The receiver reads
 and verifies immutable encoded files once per engine-host, then every rank
 CPU-decompresses (or copies plain LZ4) its local tensors into its own original HOST_NUMA
 allocation during background preparation. Each allocation requests the hardware-
@@ -458,14 +455,8 @@ derived refresh. Pause measures the original scheduler flag-to-resume interval;
 it excludes earlier prepare/status handler service and does not quantify serving
 interference. Do not sum nested events or concurrent rank durations.
 
-Each engine-host reads/hashes immutable owner files once into its encoded cache.
-Every scheduler prepares its local tensors in its private DE-capable host arena,
-using CPU Zstd for wrapped codecs or a direct copy for plain LZ4. Two decoded HBM
-slots are allocated during paused application; small decoder metadata/workspace
-is prepared earlier. Rank arenas stay alive until their GPU readers finish.
-The encoded cache becomes reusable after the original engine cohort releases
-its publication; allocated capacity is retained. The benchmark
-generates before/after updates, not during preparation; realized serving overlap,
-request latency and production throughput need separate study.
+The benchmark exercises the [production pipeline](#producer-and-receiver-pipeline)
+with generation before and after each update, not during preparation. Realized
+serving overlap, request latency and production throughput need separate study.
 The harness terminates only its own engine processes, retains partial evidence
 on failure and never releases a devbox allocation.

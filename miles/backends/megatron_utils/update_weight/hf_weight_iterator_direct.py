@@ -1,7 +1,7 @@
 import itertools
 import re
 from argparse import Namespace
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 
 import torch
@@ -138,7 +138,7 @@ class HfWeightIteratorDirect(MegatronHfWeightIteratorBase):
             return export_inkling_lora_hf_named(self.model)
         raise NotImplementedError(f"Raw LoRA export is not implemented for model {self.model_name!r}")
 
-    def _convert_to_hf_param_units(self, named_params: Sequence[tuple[str, torch.Tensor]]):
+    def _convert_to_hf_param_units(self, named_params: Iterable[tuple[str, torch.Tensor]]):
         for name, param in named_params:
             yield list(
                 convert_to_hf(

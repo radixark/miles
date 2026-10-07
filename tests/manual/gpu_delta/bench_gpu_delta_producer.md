@@ -32,20 +32,13 @@ It does not launch a receiver or run forward/backward, an optimizer, or activati
 
 ## Pipeline and memory
 
-The [production pipeline](README.md#producer-and-receiver-pipeline) stages each
-new owner-local export into pinned CPU memory. Per-bucket stream dependencies
-and source leases protect asynchronous D2H copies. Cached matrix batches follow
-baseline callback order and become eligible when their export event completes,
-so compression can overlap later exports. `update_weight_buffer_size` is a
-512 MiB input-batch target here; larger individual tensors remain whole.
-
-Each batch uploads old/new snapshots, computes XOR/counts with parallel 64 KiB
-tiles, and submits its inner frames together. `--frame-bytes` defaults to
-1 MiB; optional outer Zstd chunks stay at most 1 MiB. Compact inner arenas remain
-in HBM until owner-wide finalization: optional GPU Zstd, one final pack/D2H,
-then CPU writes and optional hashing. Raw scalar/vector targets use a separate
-CPU writer. All jobs drain before sealing, and the old snapshot stays unchanged
-until the benchmark's explicit acknowledgment.
+The benchmark uses the [production export/encoding pipeline](README.md#producer-and-receiver-pipeline),
+including owner-local pinned snapshots, coarse matrix batches overlapping later
+exports, and owner-wide finalization. `update_weight_buffer_size` is a 512 MiB
+input-batch target; larger tensors remain whole. `--frame-bytes` defaults to
+1 MiB, and optional outer Zstd chunks stay at most 1 MiB. All jobs drain before
+sealing; the old snapshot changes only after the explicit simulated acknowledgment.
+The harness bypasses live receiver activation and base-relative recovery work.
 
 For C matrix bytes and R scalar/vector bytes, transfers are C+R new bytes D2H,
 C old plus C new bytes H2D, and final encoded payload D2H. Raw targets never enter
