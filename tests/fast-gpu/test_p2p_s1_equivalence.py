@@ -17,9 +17,9 @@ _REPO_ROOT = Path(__file__).parents[2]
 
 
 @pytest.fixture(scope="module")
-def deepseek_v3_config_dir(tmp_path_factory: pytest.TempPathFactory) -> Path:
-    config_dir = tmp_path_factory.mktemp("deepseek_v3_config")
-    snapshot_download("deepseek-ai/DeepSeek-V3", allow_patterns=["config.json", "*.py"], local_dir=config_dir)
+def glm52_config_dir(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    config_dir = tmp_path_factory.mktemp("glm52_config")
+    snapshot_download("zai-org/GLM-5.2", allow_patterns=["config.json"], local_dir=config_dir)
     return config_dir
 
 
@@ -38,7 +38,7 @@ def deepseek_v3_config_dir(tmp_path_factory: pytest.TempPathFactory) -> Path:
     ids=["bf16", "fp8_block_ue8m0_scales", "fp8_block_fp32_scales", "mxfp8", "nvfp4"],
 )
 def test_a_p2p_update_leaves_the_engine_identical_to_sglangs_own(
-    fmt: str, extra_env: dict[str, str], deepseek_v3_config_dir: Path, tmp_path: Path
+    fmt: str, extra_env: dict[str, str], glm52_config_dir: Path, tmp_path: Path
 ) -> None:
     env = os.environ.copy()
     env["PYTHONUNBUFFERED"] = "1"
@@ -51,7 +51,7 @@ def test_a_p2p_update_leaves_the_engine_identical_to_sglangs_own(
             sys.executable,
             str(_WORKER),
             "--config-dir",
-            str(deepseek_v3_config_dir),
+            str(glm52_config_dir),
             "--model-dir",
             str(tmp_path / "model"),
             "--fmt",

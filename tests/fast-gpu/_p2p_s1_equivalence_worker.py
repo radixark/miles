@@ -4,7 +4,6 @@ tensors, twice in a row. Prints PASS when every tensor and scalar of the two eng
 
 import argparse
 import json
-import shutil
 import zlib
 from pathlib import Path
 from types import SimpleNamespace
@@ -70,7 +69,7 @@ QUANT_CONFIGS = {
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--config-dir", type=Path, required=True, help="DeepSeek-V3's config.json and remote code")
+    parser.add_argument("--config-dir", type=Path, required=True, help="GLM-5.2's config.json")
     parser.add_argument("--model-dir", type=Path, required=True)
     parser.add_argument("--fmt", choices=list(QUANT_CONFIGS), required=True)
     parser.add_argument("--rank", type=int, required=True)
@@ -109,7 +108,7 @@ def main() -> None:
     for version, fill in enumerate(POISON_FILLS, start=1):
         hf_tensors = _quantize(args.fmt, "reload", _random_hf_tensors(model_config_json, version), quantizer_args)
 
-        # sglang's own update, as WeightUpdater runs it; DeepSeek's load_weights runs post_load_weights itself
+        # sglang's own update, as WeightUpdater runs it; the DeepSeek loader runs post_load_weights itself
         with ParallelismContext(parallelism):
             DefaultModelLoader.restore_weights_before_loading(reference_engine, CUDA)
             reference_engine.load_weights(iter(hf_tensors))
@@ -230,23 +229,25 @@ def _as_bytes(tensor: torch.Tensor) -> torch.Tensor:
 
 
 def _write_checkpoint(config_dir: Path, model_dir: Path, fmt: str) -> dict:
-    """DeepSeek-V3 cut to a dense and an MoE layer with 32 experts, random weights in `fmt`'s checkpoint form."""
+    """GLM-5.2 cut to a dense and an MoE layer with 32 experts, random weights in `fmt`'s checkpoint form."""
     model_config_json = json.loads((config_dir / "config.json").read_text())
     model_config_json.update(
         num_hidden_layers=NUM_LAYERS,
         first_k_dense_replace=1,
+        mlp_layer_types=["dense", "sparse"],
+        # layer 1 reuses layer 0's top-k indices, so only layer 0 has an indexer
+        indexer_types=["full", "shared"],
         n_routed_experts=32,
         num_nextn_predict_layers=0,
         vocab_size=32768,
-        torch_dtype="bfloat16",
     )
-    model_config_json.pop("quantization_config", None)
+    # token ids of the full vocabulary
+    for key in ("pad_token_id", "eos_token_id", "quantization_config"):
+        model_config_json.pop(key, None)
     if QUANT_CONFIGS[fmt] is not None:
         model_config_json["quantization_config"] = QUANT_CONFIGS[fmt]
     model_dir.mkdir(parents=True)
     (model_dir / "config.json").write_text(json.dumps(model_config_json, indent=2))
-    for remote_code in config_dir.glob("*.py"):
-        shutil.copy(remote_code, model_dir)
     # the checkpoint form needs no quantizer args
     checkpoint = _quantize(fmt, "checkpoint", _random_hf_tensors(model_config_json, version=0), quantizer_args=None)
     save_file({name: tensor.contiguous().cpu() for name, tensor in checkpoint}, model_dir / "model.safetensors")
@@ -290,6 +291,15 @@ def _hf_shapes(config: dict) -> dict[str, tuple[tuple[int, ...], torch.dtype]]:
             attention + "kv_b_proj.weight": ((heads * (qk_nope + v_head), kv_lora), bf16),
             attention + "o_proj.weight": ((hidden, heads * v_head), bf16),
         }
+        if config["indexer_types"][layer] == "full":
+            index_heads, index_head_dim = config["index_n_heads"], config["index_head_dim"]
+            shapes |= {
+                attention + "indexer.wq_b.weight": ((index_heads * index_head_dim, q_lora), bf16),
+                attention + "indexer.wk.weight": ((index_head_dim, hidden), bf16),
+                attention + "indexer.k_norm.weight": ((index_head_dim,), bf16),
+                attention + "indexer.k_norm.bias": ((index_head_dim,), bf16),
+                attention + "indexer.weights_proj.weight": ((index_heads, hidden), bf16),
+            }
         if layer < config["first_k_dense_replace"]:
             shapes |= mlp(prefix + "mlp.", config["intermediate_size"])
             continue
@@ -311,6 +321,9 @@ def _is_quantized(fmt: str, name: str, shape: tuple[int, ...]) -> bool:
         name in ("model.embed_tokens.weight", "lm_head.weight")
         or "layernorm" in name
         or name.endswith("mlp.gate.weight")
+        # GLM-5.2's indexer is interleaved, so miles' quantizers keep these two in bf16
+        or ".indexer.wk." in name
+        or ".indexer.weights_proj." in name
     ):
         return False
     if fmt == "nvfp4":
