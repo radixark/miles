@@ -9,8 +9,8 @@ import torch
 import miles.backends.training_utils.weight_update.protocols.utils.transfer_buffers as transfer_buffers_module
 from miles.backends.training_utils.weight_update.protocols.utils.transfer_buffers import TransferBuffers
 
-_WAIT_BOUND = 10.0
-_STILL_BLOCKED = 0.2
+_RETURN_TIMEOUT_SECONDS = 10.0
+_STILL_BLOCKED_SECONDS = 0.2
 
 
 @pytest.fixture
@@ -35,7 +35,7 @@ def make_transfer_buffers(monkeypatch: pytest.MonkeyPatch):
     return make
 
 
-def _in_thread(target) -> threading.Event:
+def _start_in_thread(target) -> threading.Event:
     returned = threading.Event()
 
     def run() -> None:
@@ -55,11 +55,11 @@ def test_a_buffer_is_not_handed_out_while_a_write_still_reads_it(make_transfer_b
     transfer_buffers.release_after(transfer_buffers.acquire(), [])
 
     acquired: list[torch.Tensor] = []
-    returned = _in_thread(lambda: acquired.append(transfer_buffers.acquire()))
+    returned = _start_in_thread(lambda: acquired.append(transfer_buffers.acquire()))
 
-    assert not returned.wait(timeout=_STILL_BLOCKED)
+    assert not returned.wait(timeout=_STILL_BLOCKED_SECONDS)
     pending_write.set_result(None)
-    assert returned.wait(timeout=_WAIT_BOUND)
+    assert returned.wait(timeout=_RETURN_TIMEOUT_SECONDS)
     assert acquired == [first_buffer]
 
 
@@ -94,9 +94,9 @@ def test_wait_for_writes_returns_after_the_writes_of_every_buffer(make_transfer_
     for write in writes:
         transfer_buffers.release_after(transfer_buffers.acquire(), [write])
 
-    returned = _in_thread(transfer_buffers.wait_for_writes)
+    returned = _start_in_thread(transfer_buffers.wait_for_writes)
 
     writes[0].set_result(None)
-    assert not returned.wait(timeout=_STILL_BLOCKED)
+    assert not returned.wait(timeout=_STILL_BLOCKED_SECONDS)
     writes[1].set_result(None)
-    assert returned.wait(timeout=_WAIT_BOUND)
+    assert returned.wait(timeout=_RETURN_TIMEOUT_SECONDS)
