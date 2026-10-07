@@ -3635,7 +3635,6 @@ def miles_validate_args(args):
         assert (
             not args.check_weight_update_equal
         ), "GPU delta requires an independent, non-destructive correctness check"
-        assert not args.use_fault_tolerance, "GPU delta cannot resume a stream with replacement engine identities"
         assert args.update_weight_disk_dir and os.path.isdir(
             args.hf_checkpoint
         ), "GPU delta requires a shared publication directory and a local canonical HF checkpoint"

@@ -406,6 +406,11 @@ class SGLangApiClient:
     async def get_weights_delta_info(self, engine_id):
         return await self._make_request("get_weights_delta_info", {"engine_id": engine_id})
 
+    async def load_weights_from_delta(self, manifest_path, release_state=True):
+        return await self._make_request(
+            "load_weights_from_delta", {"manifest_path": manifest_path, "release_state": release_state}
+        )
+
     async def prepare_weights_from_delta(self, **payload):
         return await self._make_request("prepare_weights_from_delta", payload)
 

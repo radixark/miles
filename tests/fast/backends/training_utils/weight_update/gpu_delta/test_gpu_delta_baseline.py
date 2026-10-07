@@ -1,11 +1,13 @@
 """Startup checkpoint version declaration must precede the first rollout."""
 
 import asyncio
+import json
 import threading
 import time
 from argparse import Namespace
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager, nullcontext
+from pathlib import Path
 from unittest.mock import Mock, patch
 
 import numpy as np
@@ -67,6 +69,7 @@ def _setup(tmp_path, fail=False, frame_bytes=gpu_delta_publication.FRAME_BYTES, 
         }
     }
     protocol.is_sender = True
+    protocol._cohort = gpu_delta.gpu_delta_session.ReceiverCohort([], (), (), (), "plan")
     events = []
     protocol.rollout_engines = [_Engine(protocol, events, 0, fail), _Engine(protocol, events, 1)]
     return protocol, events
@@ -220,9 +223,7 @@ def test_initial_delta_publishes_loaded_trainer_then_switches_to_cached_update_c
         monkeypatch.setenv("GPU_DELTA_CODEC", codec)
         initial_codec = "lz4" if codec == "lz4-zstd" else "snappy-zstd"
         monkeypatch.setenv("GPU_DELTA_INITIAL_SYNC_CODEC", initial_codec)
-    if not initial_sync:
-        # An unused initial-sync override does not alter ordinary updates.
-        monkeypatch.setenv("GPU_DELTA_INITIAL_SYNC_CODEC", "unused")
+    # Recovery uses the initial-sync codec even when startup sync is disabled.
     frame_bytes = 1 << 22 if initial_sync else gpu_delta_publication.FRAME_BYTES
     protocol, events = _setup(tmp_path, frame_bytes=frame_bytes, initial_sync=initial_sync)
     monkeypatch.setenv("GPU_DELTA_CODEC", "invalid-after-construction")
@@ -249,8 +250,9 @@ def test_initial_delta_publishes_loaded_trainer_then_switches_to_cached_update_c
     monkeypatch.setattr(gpu_delta.dist, "gather_object", lambda shard, shards, **kwargs: shards.__setitem__(0, shard))
 
     first_codec = initial_codec if initial_sync else codec
-    protocol.connect(protocol.rollout_engines, None, None, None, None, None)
-    encoder_type.assert_called_once_with(torch.device("cuda", 0), frame_bytes=frame_bytes, codec=first_codec)
+    protocol.connect(protocol.rollout_engines, None, [0, 1], None, None, None)
+    assert set(encoders) == {initial_codec, first_codec}
+    assert all(encoder.frame_bytes == frame_bytes for encoder in encoders.values())
     assert protocol.begin_sync(1, _buckets) is initial_sync
     assert sorted(events) == [0, 1]
     if not initial_sync:
@@ -280,8 +282,8 @@ def test_initial_delta_publishes_loaded_trainer_then_switches_to_cached_update_c
         protocol.commit_pending_baseline()
         np.testing.assert_array_equal(protocol._snapshot["w"], current)
         previous = current
-    assert encoder_type.call_count == len({first_codec, codec})
-    assert set(encoders) == {first_codec, codec}
+    assert encoder_type.call_count == len({initial_codec, codec})
+    assert set(encoders) == {initial_codec, codec}
 
 
 def _gpu_pending(monkeypatch, fail_batch=None):
@@ -301,6 +303,7 @@ def _gpu_pending(monkeypatch, fail_batch=None):
         name: {"dtype": "U8", "shape": [size], "views": [], "encoding": "xor_bytes"} for name, size in sizes.items()
     }
     protocol._uncommitted = True
+    protocol._cohort = gpu_delta.gpu_delta_session.ReceiverCohort([], (), (), (), "plan")
     protocol._staging_stream = Mock()
     protocol._started = time.monotonic()
     protocol._match_layout = lambda name, tensor: tensor
@@ -495,12 +498,21 @@ def test_gpu_baseline_swaps_only_after_successful_receiver_activation(monkeypatc
     _export(protocol)
     protocol.after_base_weights()
     old, current = protocol._snapshot, protocol._next_snapshot
-    protocol._cohort, protocol.rollout_engines = object(), []
+    identity = {"rank_id": "rank0", "engine_id": "engine-00000"}
+    protocol._cohort = gpu_delta.gpu_delta_session.ReceiverCohort(
+        [], (identity,), ((identity,),), ("engine-00000",), "plan"
+    )
+    protocol.rollout_engines = [object()]
+    protocol._committed_incarnations = protocol._incarnations()
+    protocol._target_version = 1
+    protocol._recovery_encode_s = 0
+    monkeypatch.setattr(protocol, "_cache_recovery_payload", lambda: None)
 
     def publish():
         return {
             "summary_counts": dict(tensor_count=4, wire_bytes=1, changed_bytes=13, canonical_bytes=13),
             "manifest_sha256": "test",
+            "base_version": 0,
             "producer_summary_metrics": {},
         }
 
@@ -509,6 +521,7 @@ def test_gpu_baseline_swaps_only_after_successful_receiver_activation(monkeypatc
         assert protocol.pending_baseline is current
         if activation_fails:
             raise RuntimeError("uncertain receiver resume")
+        return {"resumed_receipts": [identity]}
 
     monkeypatch.setattr(gpu_delta.gpu_delta_metrics, "activation_metrics", lambda value: {})
     monkeypatch.setattr(protocol, "publish", publish)
@@ -523,3 +536,159 @@ def test_gpu_baseline_swaps_only_after_successful_receiver_activation(monkeypatc
         assert protocol._snapshot is current and protocol._next_snapshot is old
         assert protocol.update_weight_metrics["perf/update_weights_wire_bytes"] == 1
         assert not protocol._uncommitted
+
+
+def _ready_protocol(tmp_path, monkeypatch):
+    protocol, _ = _setup(tmp_path)
+    empty = torch.empty
+    monkeypatch.setattr(torch, "empty", lambda *a, **kw: empty(*a, **(kw | {"pin_memory": False})))
+    monkeypatch.setattr(torch.cuda, "current_device", lambda: 0)
+    monkeypatch.setattr(torch.cuda, "current_stream", Mock)
+    monkeypatch.setattr(torch.cuda, "Stream", Mock)
+    monkeypatch.setattr(torch.cuda, "Event", Mock)
+    monkeypatch.setattr(torch.cuda, "stream", lambda _: nullcontext())
+    monkeypatch.setattr(torch.Tensor, "record_stream", lambda *a: None)
+    monkeypatch.setattr(gpu_delta, "get_data_replica_rank_and_size", lambda *a: (0, 1))
+    monkeypatch.setattr(gpu_delta.dist, "get_world_size", lambda: 1)
+    monkeypatch.setattr(gpu_delta.dist, "gather_object", lambda shard, shards, **kw: shards.__setitem__(0, shard))
+    monkeypatch.setattr(gpu_delta.gpu_delta_metrics, "activation_metrics", lambda result: {})
+
+    def encoder(device, codec, frame_bytes):
+        instance = Mock(frame_bytes=frame_bytes, finalization_metrics={})
+        instance.finish_device.return_value = []
+        return instance
+
+    monkeypatch.setattr(gpu_delta_encoder, "GpuBatchEncoder", encoder)
+    protocol.connect(protocol.rollout_engines, [1, 1], [0, 1], None, None, None)
+    assert protocol.begin_sync(1, _buckets) is False
+    return protocol
+
+
+def _activation_result(cohort):
+    return {"resumed_receipts": [{}] if cohort.engine_ids else []}
+
+
+def test_checkpoint_target_reuse_anchor_retention_and_background_overlap(tmp_path, single_rank, monkeypatch):
+    protocol = _ready_protocol(tmp_path, monkeypatch)
+    exports = []
+
+    def export(materialize):
+        exports.append(True)
+        yield from _buckets(materialize)
+
+    checkpoint = tmp_path / "iter_0000001"
+    protocol.prepare_checkpoint(checkpoint, 0, 1, export)
+    cached = protocol._recovery_payload
+    assert exports == [True]
+    assert not (checkpoint / "gpu_delta/READY.json").exists()
+    protocol.finalize_checkpoint()
+    assert (checkpoint / "gpu_delta/READY.json").is_file()
+    protocol.finalize_checkpoint()  # No pending Megatron save, no second publication.
+    assert protocol.begin_sync(1, export, rollout_id=0)
+    assert not protocol.requires_export and exports == [True]
+    protocol.after_base_weights()
+
+    async def activate(clients, cohort, publication):
+        return _activation_result(cohort)
+
+    monkeypatch.setattr(gpu_delta.gpu_delta_session, "activate_publication", activate)
+    protocol.finalize(1)
+    assert protocol._recovery_payload is cached
+    assert protocol._snapshot is not protocol._hf_snapshot
+    assert protocol._next_snapshot == {}
+    assert protocol._hf_snapshot["w"].tolist() == [1, 2, 3, 4]
+    assert protocol._snapshot["w"].tolist() == [5, 6, 7, 8]
+
+    assert protocol.begin_sync(2, export, rollout_id=1) and protocol.requires_export
+    protocol.send_bucket([("w", torch.tensor([9, 10, 11, 12], dtype=torch.uint8))])
+    protocol.after_base_weights()
+    activation_started = threading.Event()
+    recovery_finished = threading.Event()
+    encode = protocol._cache_recovery_payload
+
+    async def overlapping_activate(clients, cohort, publication):
+        activation_started.set()
+        while not recovery_finished.is_set():
+            await asyncio.sleep(0.001)
+        return _activation_result(cohort)
+
+    def overlapping_encode():
+        assert activation_started.wait(2), "HTTP activation must start before recovery encoding finishes"
+        encode()
+        recovery_finished.set()
+
+    monkeypatch.setattr(gpu_delta.gpu_delta_session, "activate_publication", overlapping_activate)
+    monkeypatch.setattr(protocol, "_cache_recovery_payload", overlapping_encode)
+    protocol.finalize(2)
+    assert protocol._hf_snapshot["w"].tolist() == [1, 2, 3, 4]
+    assert protocol._snapshot["w"].tolist() == [9, 10, 11, 12]
+    assert cached.raw["w"] == bytes([5, 6, 7, 8])
+    assert protocol._recovery_payload.raw["w"] == bytes([9, 10, 11, 12])
+    # Ordinary updates retain recovery bytes locally without writing an artifact.
+    assert not (protocol._stream_dir / "recovery_v000002").exists()
+
+
+@pytest.mark.parametrize("recovery_fails", [False, True])
+def test_restarted_engine_uses_one_shot_and_retains_cache(tmp_path, single_rank, monkeypatch, recovery_fails):
+    protocol = _ready_protocol(tmp_path, monkeypatch)
+    calls = []
+
+    async def activate(clients, cohort, publication):
+        calls.append((cohort.engine_ids, publication["base_version"], publication["target_version"]))
+        return _activation_result(cohort)
+
+    monkeypatch.setattr(gpu_delta.gpu_delta_session, "activate_publication", activate)
+    assert protocol.begin_sync(1, _buckets, rollout_id=0)
+    protocol.send_bucket(next(_buckets(True)))
+    protocol.after_base_weights()
+    protocol.finalize(1)
+    assert calls == [(("engine-00000", "engine-00001"), 0, 1)]
+    calls.clear()
+
+    # Existing Miles FT replaced one engine between ordinary weight updates.
+    protocol.rollout_engines[1].index = 2
+    protocol.connect(protocol.rollout_engines, [1, 1], [0, 1], None, None, None)
+    assert protocol.begin_sync(2, _buckets, rollout_id=1)
+    protocol.send_bucket([("w", torch.tensor([9, 10, 11, 12], dtype=torch.uint8))])
+    protocol.after_base_weights()
+    old, target = protocol._snapshot, protocol._next_snapshot
+    loads = []
+
+    async def load(manifest_path, release_state):
+        assert not release_state
+        assert protocol._snapshot is old and protocol._next_snapshot is target
+        manifest = json.loads(Path(manifest_path).read_text())
+        loads.append((manifest["base_version"], manifest["target_version"], manifest["codec"]))
+        if recovery_fails:
+            raise RuntimeError("recovery apply failed")
+        return {"success": True, "participants": [{"state": "RESUMED", "target_version": 2}]}
+
+    protocol.rollout_engines[1].load_weights_from_delta = load
+    if recovery_fails:
+        with pytest.raises(RuntimeError, match="recovery apply failed"):
+            protocol.finalize(2)
+        assert protocol._snapshot is old and protocol._next_snapshot is target and protocol._uncommitted
+    else:
+        protocol.finalize(2)
+        assert protocol._snapshot is target and not protocol._uncommitted
+        assert protocol._committed_incarnations == protocol._incarnations()
+        # The retained recovery cache leaves this incarnation on the ordinary
+        # rolling path at the next update; the initial-sync RPC is not repeated.
+        assert protocol.begin_sync(3, _buckets, rollout_id=2)
+        protocol.send_bucket([("w", torch.tensor([13, 14, 15, 16], dtype=torch.uint8))])
+        protocol.after_base_weights()
+        protocol.finalize(3)
+        assert calls[-1] == (("engine-00000", "engine-00001"), 2, 3)
+    assert calls[0] == (("engine-00000",), 1, 2)
+    assert loads == [(0, 2, "lz4-zstd")]
+    assert protocol._hf_snapshot["w"].tolist() == [1, 2, 3, 4]
+
+
+def test_participant_reply_order_does_not_change_engine_incarnation(tmp_path):
+    protocol, _ = _setup(tmp_path)
+    cohort_type = gpu_delta.gpu_delta_session.ReceiverCohort
+    participants = ({"rank_id": "a", "process": "one"}, {"rank_id": "b", "process": "two"})
+    protocol._cohort = cohort_type([], participants, (participants,), ("engine",), "plan")
+    initial = protocol._incarnations()
+    protocol._cohort = cohort_type([], participants, (participants[::-1],), ("engine",), "plan")
+    assert initial == protocol._incarnations()

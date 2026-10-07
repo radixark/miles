@@ -125,10 +125,25 @@ class WeightUpdater:
         return self.protocol.pop_metrics()
 
     @torch.no_grad()
-    def update_weights(self) -> dict[str, float] | None:
+    def save_checkpoint_delta(self, checkpoint_dir: str, rollout_id: int) -> None:
+        if isinstance(self.protocol, UpdateWeightFromGpuDelta):
+            self.protocol.prepare_checkpoint(
+                checkpoint_dir, rollout_id, self.weight_version + 1, self._iter_base_buckets
+            )
+
+    def finish_checkpoint_delta(self) -> None:
+        if isinstance(self.protocol, UpdateWeightFromGpuDelta):
+            self.protocol.finalize_checkpoint()
+
+    @torch.no_grad()
+    def update_weights(self, rollout_id: int | None = None) -> dict[str, float] | None:
         """Run one sync and return completed GPU-delta metrics for immediate logging."""
         protocol = self.protocol
-        if not protocol.begin_sync(self.weight_version + 1, self._iter_base_buckets):
+        if isinstance(protocol, UpdateWeightFromGpuDelta):
+            started = protocol.begin_sync(self.weight_version + 1, self._iter_base_buckets, rollout_id)
+        else:
+            started = protocol.begin_sync(self.weight_version + 1, self._iter_base_buckets)
+        if not started:
             return
         self.weight_version += 1
 
@@ -151,12 +166,17 @@ class WeightUpdater:
             ), "the LoRA checksum manifest is recorded on one rank, which must hold the full adapter"
         with timer("update_weights_implementation"):
             pbar = tqdm(desc=f"[{protocol.group_name}] Update weights", total=0) if protocol.is_sender else None
-            for bucket in self._hf_weight_iterator.iter_hf_weights(
-                self.weights_getter(),
-                include_base=sync_base,
-                adapters=adapters,
-                materialize=protocol.is_sender,
-            ):
+            buckets = (
+                ()
+                if isinstance(protocol, UpdateWeightFromGpuDelta) and not protocol.requires_export
+                else self._hf_weight_iterator.iter_hf_weights(
+                    self.weights_getter(),
+                    include_base=sync_base,
+                    adapters=adapters,
+                    materialize=protocol.is_sender,
+                )
+            )
+            for bucket in buckets:
                 if protocol.is_sender:
                     if driver and checksums is not None:
                         record_lora_checksums(bucket, checksums)

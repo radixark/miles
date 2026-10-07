@@ -88,6 +88,18 @@ async def test_post_methods_hit_the_server_url_with_expected_payload(client, rec
     assert recorder.calls[1][2]["json"] == {"new_version": "run-0001", "abort_all_requests": False}
 
 
+@pytest.mark.parametrize("release_state", [True, False])
+async def test_load_weights_from_delta_forwards_state_lifetime(client, recorder, release_state):
+    options = {} if release_state else {"release_state": False}
+    await client.load_weights_from_delta("/checkpoint/gpu-delta/manifest.json", **options)
+    verb, url, kwargs = recorder.calls[0]
+    assert (verb, url) == ("post", f"{SERVER_URL}/load_weights_from_delta")
+    assert kwargs["json"] == {
+        "manifest_path": "/checkpoint/gpu-delta/manifest.json",
+        "release_state": release_state,
+    }
+
+
 async def test_update_weights_from_tensor_omits_weight_version_when_not_given(client, recorder):
     """``weight_version`` stays out of the payload unless the caller passes one."""
     await client.update_weights_from_tensor(serialized_named_tensors=["a"])

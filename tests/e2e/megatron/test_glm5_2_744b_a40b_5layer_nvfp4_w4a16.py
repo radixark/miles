@@ -5,6 +5,8 @@ from pathlib import Path
 from tests.ci.ci_register import register_cuda_ci
 
 from miles.utils.external_utils import command_utils
+from miles.utils.test_utils.ft_test_actions import compute_ft_test_actions_arg
+from miles.utils.workers.naming import compute_cell_id
 
 register_cuda_ci(
     est_time=800,
@@ -208,7 +210,9 @@ def execute():
     te_precision_config_path = command_utils.encode_pseudo_file(TE_PRECISION_CONFIG)
 
     ckpt_args = (
-        f"--hf-checkpoint {MODEL_DIR}/{MODEL_NAME}-NVFP4/ " f"--ref-load {MODEL_DIR}/{MEGATRON_MODEL_NAME}_torch_dist "
+        f"--hf-checkpoint {MODEL_DIR}/{MODEL_NAME}-NVFP4/ "
+        f"--ref-load {MODEL_DIR}/{MEGATRON_MODEL_NAME}_torch_dist "
+        f"--save /root/shared_data/{RUN_ID}/checkpoints --save-interval 2 "
     )
 
     # Exercise learned deltas despite this pruned model's zero math score.
@@ -295,7 +299,19 @@ def execute():
         "--sglang-watchdog-timeout 3600 "
     )
 
-    ci_args = "--ci-test --ci-disable-logprobs-checker --ci-disable-weight-update-checker --ci-disable-kl-checker "
+    ci_args = (
+        "--ci-test --ci-disable-logprobs-checker --ci-disable-weight-update-checker --ci-disable-kl-checker "
+        "--use-fault-tolerance --ft-components rollout "
+        + compute_ft_test_actions_arg(
+            [
+                dict(
+                    at_rollout=1,
+                    action="restart_rollout_cell_at_end",
+                    cell_id=compute_cell_id(pool_id="inference-engine-all-0-0", cell_index=1),
+                ),
+            ]
+        )
+    )
 
     mixed_precision_args = (
         "--transformer-impl transformer_engine "

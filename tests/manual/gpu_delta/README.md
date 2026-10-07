@@ -44,7 +44,7 @@ user-facing configuration API. Runtime defaults are sufficient for normal use.
 | Development variable | Meaning |
 | --- | --- |
 | `GPU_DELTA_CODEC=snappy-zstd` | Trainer codec for ordinary learned updates; `lz4-zstd` selects LZ4 with outer Zstd; `lz4` skips outer Zstd. Read once at launch. The receiver selects the codec from each authenticated publication. |
-| `GPU_DELTA_INITIAL_SYNC_CODEC=lz4-zstd` | Trainer codec only for the explicit initial-sync publication; `snappy-zstd` or plain `lz4` overrides it. Ignored when initial sync is disabled. |
+| `GPU_DELTA_INITIAL_SYNC_CODEC=lz4-zstd` | Trainer codec for initial sync, engine recovery and checkpoint companions; `snappy-zstd` or plain `lz4` overrides it. Recovery uses this setting even when startup sync is disabled. |
 | `GPU_DELTA_SORT_BEFORE_HW_DECOMPRESS=0` | Receiver only. Set `1` to let nvCOMP sort chunks during paused DE submission; default off for all codecs. It does not change publication bytes or move sorting into preparation. |
 | `GPU_DELTA_TIMING=1` | Optional per-phase CUDA events. Default off; instrumentation can perturb timing. |
 | `GPU_DELTA_CPU_WORKERS=32` | CPU workers per rank. Each engine-host cache creator also uses its pool for parallel owner-file read/hash before local payload preparation. Two EP4 engines have eight pools (up to 256 workers at the default). |
@@ -71,8 +71,9 @@ publication, so startup-only changes cannot satisfy it. It takes no CLI options:
 python tests/e2e/megatron/test_glm5_2_744b_a40b_5layer_nvfp4_w4a16.py
 ```
 
-Publications use `/root/shared_data/<run_id>/gpu_delta`. Engine replacement and
-attention FP8 conversion are disabled for this test.
+Publications use `/root/shared_data/<run_id>/gpu_delta`. The test enables rollout
+fault tolerance, restarts one engine before publication 3, and saves Megatron
+checkpoints with delta companions. Attention FP8 conversion remains disabled.
 
 ## Startup delta
 
@@ -99,6 +100,42 @@ namespace. This sums payload files across every owner, including compressed matr
 data, raw scalar/vector replacements and alignment padding, excluding the JSON
 manifest. It reuses the existing owner gather; no codec-specific metric, additional
 payload scan, collective or CUDA synchronization is required.
+
+## Recovery and checkpoint companions
+
+Each trainer owner keeps an immutable copy of its canonical HF-base bytes in
+addition to the rolling committed snapshot and pending target. After publishing
+an ordinary delta, receiver activation starts asynchronously while each owner
+compresses HF-base → current bytes with the initial-sync codec. This reuses the
+captured target and compression batches; it performs no second model export or
+payload gather. Compressed recovery bytes stay on their owners until needed.
+Training resumes after activation and this background work have both drained.
+
+Existing Miles rollout fault tolerance recreates failed engines from the HF
+checkpoint between weight updates. On the next update, healthy engines receive
+the rolling delta while fresh engines use the blocking one-shot API with the
+base-relative payload. Recovery keeps the receiver cache for later updates. The
+normal update RPC returns only after all engines resume, then commits the rolling
+baseline. This requires live trainer snapshots and the same canonical plan.
+An in-flight activation error follows the existing Miles failure path; GPU delta
+does not retry an uncertain XOR or add a separate trainer recovery mechanism.
+
+On an ordinary Megatron save, the stable target is captured and compressed ahead
+of the next weight sync, which reuses that capture. A final save also produces a
+companion when no later sync runs. Owner files and `manifest.json` live under the
+checkpoint iteration's `gpu_delta/` directory; `READY.json` appears only after
+the Megatron writer finishes. The manifest records the HF-base path, owner byte
+fingerprints, training step and separate transfer version. Ship the completed
+directory together with that unchanged HF base.
+
+For inference deployment, start SGLang from the base HF checkpoint and call
+`POST /load_weights_from_delta` with `{"manifest_path": "/bundle/manifest.json"}`.
+It prepares, applies, resumes and releases delta resources by default. Set
+`"release_state": false` to retain the cache for subsequent weight updates, as
+Miles recovery does. The committed version and model weights remain resident. `POST /clear_weights_delta_state` with `{}`
+also releases idle delta resources after the ordinary multi-step API. Keep a
+new deployment out of routing until its one-shot load succeeds; an uncertain
+apply requires restarting from the base, not replaying XOR on that process.
 
 ## Producer and receiver pipeline
 
@@ -139,7 +176,8 @@ For plain `lz4`, the outer descriptor
 has `frames=[]` and equal encoded/decoded byte lengths: its payload is the
 aligned inner arena directly, without trailing padding. Raw tensors and omitted
 zero-XOR frames keep the same representation. SHA-256 authenticates final owner files by default;
-old/new weights and intermediate inner-codec bytes are not hashed. The receiver reads
+Ordinary updates do not hash old/new weights or intermediate inner-codec bytes.
+Checkpoint/recovery artifacts additionally fingerprint the immutable HF base. The receiver reads
 and verifies immutable encoded files once per engine-host, then every rank
 CPU-decompresses (or copies plain LZ4) its local tensors into its own original HOST_NUMA
 allocation during background preparation. Each allocation requests the hardware-
@@ -182,21 +220,21 @@ version and resumes without waiting for other engines. Ordinary pause/continue
 APIs remain unchanged. Each engine's local TP/EP participants still synchronize
 for safe activation; independent replicas may temporarily serve different versions.
 
-The trainer awaits every engine coroutine and advances its pinned baseline only
-after all original RESUMED receipts. On failure it still settles the other engine
-tasks before raising. A preparation failure aborts only that engine's preparation;
-an uncertain reply after apply dispatch is terminal for that engine: do not abort,
-replay XOR, automatically resume or recover. Other engines may already have resumed
-successfully; failure does not roll them back or report overall success. A failed
-update never advances the common sender baseline. Miles is the sole ordered caller;
-these APIs do not support replay, reordered calls or concurrent administration.
+The trainer settles every engine coroutine before handling failures. Preparation
+failure aborts only that engine's preparation; an uncertain reply after apply
+requires a fresh engine before any base-relative recovery. Successful peers keep
+their target version. The common sender baseline advances only after the whole
+intended cohort resumes. Miles is the sole ordered caller; these APIs do not
+support replay, reordered calls or concurrent administration.
 Successful activation does not prove full weight-content equality.
 External cancellation can leave outstanding remote work; it is incomplete and
 does not authorize automatic retry, cleanup or recovery.
 
-For N matrix bytes, the sender transfers N new export bytes D2H plus old/new
+For the ordinary delta of N matrix bytes, the sender transfers N new export bytes D2H plus old/new
 snapshots H2D (3N total), followed by final encoded D2H. Raw targets avoid both
-matrix H2D uploads. Export, bulk compression, publication and activation enclose
+matrix H2D uploads. Background recovery compression additionally uploads the
+retained HF/current pair and returns its compressed bytes, without a second
+export D2H. Export, bulk compression, publication and activation enclose
 trainer blocking. Receiver preparation runs before pause;
 direct-host DE and in-place mutation run within the serving pause.
 Do not sum nested phases or add sender/receiver times from different workloads.

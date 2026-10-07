@@ -270,3 +270,9 @@ def seal_publication(directory, shards: Iterable[Mapping]) -> dict:
         "manifest_sha256": sha256(content),
     }
     return descriptor
+
+
+def write_checkpoint_ready(directory, descriptor):
+    """Publish paired completion only after the Megatron checkpoint writer drains."""
+    path = Path(directory) / "READY.json"
+    _write_exclusive(path, canonical_json(descriptor))
