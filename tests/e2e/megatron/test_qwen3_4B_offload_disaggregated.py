@@ -18,7 +18,7 @@ TRAIN_GPUS = 4
 ROLLOUT_GPUS = 4
 
 register_cuda_ci(
-    est_time=600,
+    est_time=400,
     suite="stage-c-8-gpu-h100",
     labels=["megatron", "weight-update"],
     hardware=["hopper", "blackwell"],

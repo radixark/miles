@@ -16,7 +16,7 @@ from tests.ci.metric_history import register_ci_gate
 
 
 register_cuda_ci(
-    est_time=900,
+    est_time=1400,
     suite="stage-c-8-gpu-b200",
     labels=["megatron", "model-scripts"],
     hardware=["blackwell"],
