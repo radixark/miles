@@ -97,6 +97,10 @@ timeout, `max(1800 s, 1.25 × est_time)`, in stage runs and in `/rerun-test`
 alike. It is measured, never copied from a neighbouring test. CPU and ROCm
 registrations need no timing run.
 
+An enabled `register_cuda_ci` test with neither `nightly=True` nor a `long` or
+`ft-long` label keeps `est_time` at or below 1800 s; cut its workload until it
+fits.
+
 1. Before the first run, use an upper bound that safely exceeds the expected
    runtime, so the timeout does not kill it. Up to 1440 s the 1800 s floor
    applies anyway.
