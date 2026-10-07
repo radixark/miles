@@ -27,18 +27,19 @@ class _OrdinaryBatch:
 
 
 def _unit_key(name: str) -> tuple[int, int, int]:
-    if ".embedding." in name:
-        return (0, 0, 0)
     if match := re.search(r"\.(decoder|mtp)\.layers\.(\d+)\.", name):
         # Names already contain global PP/VPP layer indices. Keep MTP's own
         # namespace separate; never infer missing layers or a tied LM head.
-        return (1, match[1] == "mtp", int(match[2]))
+        return (0, match[1] == "mtp", int(match[2]))
+    if ".embedding." in name:
+        return (1, 0, 0)
     if ".output_layer." in name:
         return (2, 0, 0)
     return (3, 0, 0)
 
 
 def _ordinary_owners(param_infos: Sequence[ParamInfo], ranks: Sequence[int]) -> dict[str, int]:
+    # The tail pairs fewer model layers with higher-precision embedding/head tensors.
     units = {}
     for info in param_infos:
         units.setdefault(_unit_key(info.name), []).append(info.name)

@@ -329,8 +329,8 @@ def test_gpu_delta_cached_owners_select_one_tp_replica_and_reconstruct_current_v
         info = _ordinary_info(f"module.module.decoder.layers.1.{suffix}")
         info.attrs.update(attrs)
         infos.append(info)
-    expected_owners = dict(zip(names, [40, 40, 10, 10, 30, 30, 20, 20], strict=True))
-    expected_owners.update({info.name: 10 for info in infos[-3:]})
+    expected_owners = dict(zip(names, [30, 40, 40, 10, 10, 30, 20, 20], strict=True))
+    expected_owners.update({info.name: 40 for info in infos[-3:]})
     by_name = {info.name: info for info in infos}
     group, combined = object(), object()
     parallel = Namespace(
