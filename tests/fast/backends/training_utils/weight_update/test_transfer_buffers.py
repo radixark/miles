@@ -19,14 +19,14 @@ def make_transfer_buffers(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(
         transfer_buffers_module,
         "_allocate_transfer_buffer",
-        lambda buffer_bytes, device: torch.empty(buffer_bytes, dtype=torch.uint8, device=device),
+        lambda buffer_nbytes, device: torch.empty(buffer_nbytes, dtype=torch.uint8, device=device),
     )
     registered: list[tuple[int, int]] = []
 
-    def make(num_buffers: int, buffer_bytes: int = 16) -> tuple[TransferBuffers, list[tuple[int, int]]]:
+    def make(num_buffers: int, buffer_nbytes: int = 16) -> tuple[TransferBuffers, list[tuple[int, int]]]:
         transfer_buffers = TransferBuffers(
             num_buffers,
-            buffer_bytes,
+            buffer_nbytes,
             device=torch.device("cpu"),
             register_memory=lambda buffer: registered.append((buffer.data_ptr(), buffer.numel())),
         )
@@ -76,7 +76,7 @@ def test_a_failed_write_frees_its_buffer_without_raising(make_transfer_buffers) 
 
 def test_each_buffer_is_registered_once_over_its_whole_allocation(make_transfer_buffers) -> None:
     """A write reads anywhere in a buffer, so its whole range must be registered, and reuse must not register again."""
-    transfer_buffers, registered = make_transfer_buffers(num_buffers=2, buffer_bytes=64)
+    transfer_buffers, registered = make_transfer_buffers(num_buffers=2, buffer_nbytes=64)
 
     buffers = []
     for _ in range(4):
