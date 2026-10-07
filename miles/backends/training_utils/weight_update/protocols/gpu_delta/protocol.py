@@ -3,7 +3,8 @@
 Ordinary layers are consumed by their PP-local owners after TP reconstruction.
 ETP1 routed experts are consumed by their exporter owners before the usual gather.
 ETP>1 uses the direct exporter's gathered tensors, with one sender per PP stage.
-Ready owner batches feed the selected GPU codec during export, then one owner-wide GPU Zstd batch.
+Ready owner batches compress during export. Owner-wide finalization optionally
+adds GPU Zstd, then packs the final payload for one D2H transfer.
 """
 
 from __future__ import annotations
@@ -311,7 +312,7 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
         return self._gpu_encoder.encode_device([(self._snapshot[name], self._next_snapshot[name]) for name in names])
 
     def _finish_encoding(self):
-        """Finish all inner masks before one owner-wide GPU Zstd compression."""
+        """Drain inner batches, optionally wrap with Zstd, then publish final bytes."""
         # This enclosing span overlaps export; the caller's tail wait is separate.
         started = time.monotonic() if self._encoding_started is None else self._encoding_started
         names, encoded = [], []
@@ -477,8 +478,8 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
         self.publication_metrics["raw_export_d2h_bytes"] = sum(
             self._next_snapshot[name].nbytes for name in self._raw_names
         )
-        # This existing key counts export of the current snapshot; the old
-        # pinned baseline is never written back.
+        # baseline_d2h_bytes counts the current export; the old pinned baseline
+        # is retained, not transferred back from the GPU.
         self.publication_metrics["baseline_d2h_bytes"] += sum(t.nbytes for t in self._next_snapshot.values())
         self.publication_metrics.update(self._writer.payload_metrics)
         self.publication_metrics.update(self._gpu_encoder.finalization_metrics)

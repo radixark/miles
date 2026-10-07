@@ -1,8 +1,8 @@
 """Cross-tensor GPU XOR/compression from immutable pinned CPU snapshots.
 
-One owner uploads a bounded batch, compresses all of its independent frames in
-one inner-codec call. Optional owner-wide Zstd precedes one final pinned wire slab. Canonical bytes are
-never hashed or copied back to the CPU by this encoder.
+One owner uploads a bounded batch and compresses its frames in one inner-codec
+call. Owner-wide finalization optionally adds Zstd and returns one pinned wire
+slab. The encoder does not hash or copy canonical weights back to the CPU.
 """
 
 from __future__ import annotations
@@ -100,10 +100,8 @@ def _xor_frames(previous_gpu, current_gpu, frame_bytes, keepalive):
     tile_bytes = 1 << 16
     tiles = (frame_bytes + tile_bytes - 1) // tile_bytes
     counts = torch.empty((len(frames), tiles), dtype=torch.int32, device=previous_gpu[0].device)
-    # Only uploaded old scratch is mutated. The reduction stays in registers;
-    # 64 KiB tiles expose parallelism within each frame instead of assigning
-    # a serial 1 MiB loop to one CTA. Only the tiny per-tile counts are reduced;
-    # there is no model-sized bool/int64 intermediate or additional host fence.
+    # Mutate only uploaded old scratch. Parallel 64 KiB tiles reduce counts in
+    # registers, avoiding a model-sized count buffer or another host fence.
     _xor_count_kernel[(len(frames), tiles)](
         keepalive["device"], counts, len(frames), TILE=tile_bytes, BLOCK=4096, num_warps=4
     )
@@ -216,13 +214,14 @@ def _device_results(tensors, descriptions, groups, changed, padding, metrics):
 
 
 class GpuBatchEncoder:
-    """One private stream; callers bound batch bytes and order input D2H on it.
+    """One private stream for bounded batches of immutable pinned snapshots.
 
     ``encode_device`` takes ``[(old_pinned_u8, new_pinned_u8), ...]``.
-    Neither input may be modified concurrently. Compact inner-codec HBM survives
-    input batches until ``finish_device`` returns the final pinned wire bytes.
-    Inner frames are configurable; optional outer Zstd chunks stay at 1 MiB. The receiver
-    independently admits actual encoded and decoded sizes against its DE limit.
+    Callers establish the export-D2H dependency before H2D reads and must not
+    modify either input concurrently. Compact inner-codec HBM survives batches
+    until ``finish_device`` returns the final pinned wire bytes. Inner frames
+    are configurable; outer Zstd chunks stay at 1 MiB. The receiver checks
+    actual encoded and decoded sizes against its DE limit.
     """
 
     def __init__(self, device: torch.device, codec: str, frame_bytes: int = FRAME_BYTES):

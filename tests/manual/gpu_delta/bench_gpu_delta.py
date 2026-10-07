@@ -13,7 +13,7 @@ Example (run from the Miles checkout with paired SGLang on PYTHONPATH)::
         python tests/manual/gpu_delta/bench_gpu_delta.py run --model /models/base \
         --fixture /data/fixture --output /data/snappy-zstd
 
-Canonical rank-zero/rank-one tensors use direct uncompressed target values when
+Canonical scalar/vector tensors use direct uncompressed target values when
 changed; all other tensors retain compressed XOR frames. Fixture accounting keeps
 direct-value traffic separate. Each run starts fresh engines (one port selects
 EP8; two ports select two EP4 engines on disjoint four-GPU slices);

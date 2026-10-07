@@ -110,7 +110,7 @@ def test_original_rank_pause_and_creator_only_cache_metrics_remain_separate():
     assert prefix + "receiver_decoded_scratch_bytes/max" not in result
     assert result[prefix + "receiver_host_plan_cache_reused/min"] == 1
     assert activation == original
-    # Reusing encoded bytes removes creator work, but every rank still decodes.
+    # Reusing encoded bytes removes creator work, but ranks still prepare local payloads.
     for receipt in activation["resumed_receipts"]:
         receipt["result"]["timings"]["host_encoded_cache_created"] = 0
         receipt["result"]["timings"]["host_encoded_cache_reused"] = 1

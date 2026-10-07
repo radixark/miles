@@ -1,15 +1,14 @@
 # GLM-5.2 GPU-delta producer benchmark on one node
 
 This benchmark uses the actual Megatron GPU-delta iterator and publication
-protocol on eight GPUs: configurable TP/CP with PP1/EP8/ETP1, native GLM-5.2 five-layer model
-(three dense layers and two routed MoE layers), NVFP4 TE 4over6 quantization.
+protocol on eight GPUs: configurable TP/CP with PP1/EP8/ETP1, a native GLM-5.2
+five-layer model (three dense and two routed MoE layers), and NVFP4 TE 4over6 quantization.
 It loads the real model and writes three cumulative immutable publications.
 It does not launch a receiver or run forward/backward, an optimizer, or activation.
 
 - **Codec:** `GPU_DELTA_CODEC` selects `snappy-zstd` (default), `lz4-zstd` or plain `lz4`.
-  Matrices use GPU XOR and GPU Snappy or LZ4. Wrapped codecs then use owner-wide GPU Zstd. All
-  compression algorithms execute on GPU SMs. Hardware inner-codec acceleration is a
-  receiver decompression property, not GPU compression acceleration.
+  Matrices use GPU XOR and GPU Snappy or LZ4. Wrapped codecs then use owner-wide
+  GPU Zstd. All compression runs on GPU SMs; hardware DE is a receiver feature.
 - **Ownership:** routed experts remain on their EP × EDP exporter owners before
   expert gathering; this benchmark has EDP1. Nonrouted tensors use the GPU-delta
   iterator's fixed native owner plan after TP reconstruction. Discovery records
@@ -29,45 +28,35 @@ It does not launch a receiver or run forward/backward, an optimizer, or activati
   target names/byte sizes against discovered ownership, outside timing. Only then
   simulate receiver acknowledgment and commit the pending baseline for the next
   version. Native tests independently decode and compare payload bytes. This
-  single-codec benchmark does not prove target equality with a historical run.
+  single-codec benchmark does not prove target equality with another run.
 
 ## Pipeline and memory
 
-Export stages the complete new owner-local snapshot into pinned CPU memory.
-One caller-to-staging stream dependency covers each exporter bucket; every
-source allocation retains its stream lease through its asynchronous D2H copy.
-Canonical scalars/vectors bypass XOR and both compressors; an owner CPU worker
-compares them and writes complete target values only when changed. Classification
-is fixed during baseline setup, outside the update hot loop.
+The [production pipeline](README.md#producer-and-receiver-pipeline) stages each
+new owner-local export into pinned CPU memory. Per-bucket stream dependencies
+and source leases protect asynchronous D2H copies. Cached matrix batches follow
+baseline callback order and become eligible when their export event completes,
+so compression can overlap later exports. `update_weight_buffer_size` is a
+512 MiB input-batch target here; larger individual tensors remain whole.
 
-After export D2H completes, name-sorted matrix batches use the existing
-`update_weight_buffer_size` target (512 MiB here). Larger individual tensors remain
-whole. Upload old/new pinned snapshots, compute XOR/counts and compress all
-independent inner-codec frames in one nvCOMP submission per batch. `--frame-bytes`
-selects the inner size (1048576 by default); optional outer Zstd chunks remain at most 1 MiB.
-The production default remains 1 MiB. XOR/counting
-uses disjoint 64 KiB tiles per frame and reduces only their small count array.
-Only compact
-aligned inner-codec arenas remain in HBM as batches finish. Compress all owner-local
-outer Zstd chunks together, read sizes/status once, pack final bytes and perform
-one pinned D2H. Plain LZ4 skips outer compression and its metadata fence, using
-the same single final pack/D2H. CPU workers write and optionally hash the final payload; no intermediate
-inner-codec D2H or large inner-codec host slab is needed. Every owner drains before sealing.
-The old canonical snapshot stays unchanged until acknowledgment.
+Each batch uploads old/new snapshots, computes XOR/counts with parallel 64 KiB
+tiles, and submits its inner frames together. `--frame-bytes` defaults to
+1 MiB; optional outer Zstd chunks stay at most 1 MiB. Compact inner arenas remain
+in HBM until owner-wide finalization: optional GPU Zstd, one final pack/D2H,
+then CPU writes and optional hashing. Raw scalar/vector targets use a separate
+CPU writer. All jobs drain before sealing, and the old snapshot stays unchanged
+until the benchmark's explicit acknowledgment.
 
-For C matrix bytes and R scalar/vector bytes, this transfers C+R new bytes D2H,
-C old plus C new bytes H2D, and final outer payload D2H. Raw values never enter
-GPU compression. The full owner-local compact inner-codec payload stays in HBM until
-outer encoding completes, alongside bounded canonical scratch and codec workspaces.
-There is no OOM fallback. No receiver GPU Zstd path is introduced: the receiver
-CPU-decodes or copies plain LZ4 into each rank's private DE-capable host arena. During the safe pause, hardware
-DE reads that arena directly, overlapping layer-batch decoding with mask apply
-through two decoded HBM slots. No explicit compressed H2D copy is needed.
+For C matrix bytes and R scalar/vector bytes, transfers are C+R new bytes D2H,
+C old plus C new bytes H2D, and final encoded payload D2H. Raw targets never enter
+GPU compression. Budget the pinned snapshots, full compact owner payload,
+bounded canonical scratch and codec workspaces; there is no OOM fallback.
+This benchmark does not execute the receiver pipeline described in the README.
 
 ## Run
 
-Use a matching explicit Miles CUDA13 image, paired feature checkout, prebuilt
-nvCOMP >=5.3, compatible FlashInfer and TransformerEngine, and the prepared
+Use a matching explicit Miles CUDA 13 image, paired feature checkout, prebuilt
+nvCOMP 5.x (at least 5.3), compatible FlashInfer and TransformerEngine, and the prepared
 five-layer checkpoints. Install nvCOMP without changing the image dependency
 closure as documented in [README.md](README.md).
 
@@ -84,8 +73,8 @@ python -m torch.distributed.run --standalone --nproc-per-node=8 \
 ```
 
 This TP2/CP2/PP1/EP8/ETP1 command has DP2 and EDP1. The benchmark defaults to
-TP1/CP1 for historical invocations; match both topology flags, checkpoints,
-perturbations and timing mode when comparing separate saved source versions.
+TP1/CP1. Match both topology flags, checkpoints, perturbations and timing mode
+when comparing sources.
 Rank ownership may change between sources, so compare canonical target bytes by
 name across the global inventory rather than requiring identical per-rank shards.
 
@@ -95,10 +84,9 @@ The harness records runtime package versions,
 model flags, source digest (from `GPU_DELTA_SOURCE_DIGEST` when provided),
 GPU memory counters, original rank ownership and all per-version measurements.
 `--timing` enables CUDA phase events; default timing is off to avoid event overhead.
-Select alternatives with `GPU_DELTA_CODEC=lz4-zstd` or `GPU_DELTA_CODEC=lz4` and a new output directory;
-keep all workload flags and original checkpoints identical. There are no CPU
-encoder or receiver GPU-Zstd alternatives. Earlier comparison artifacts remain
-historical controls. Qualify new codec/source performance independently.
+Select `GPU_DELTA_CODEC=lz4-zstd` or `GPU_DELTA_CODEC=lz4` with a new output
+directory and identical workload flags/checkpoints for a codec comparison.
+The harness always uses the production GPU encoder.
 
 ## Timing interpretation
 
@@ -130,7 +118,7 @@ and rank wait, not payload transfer, and is too late for that same gather's owne
 prefix. External diagnostic observers can collect it outside the measured span;
 the production path adds no collective just for this clock.
 
-Report all rank ranges/medians plus rank0 separately. V1 includes first-use
+Report all rank ranges/medians plus rank 0 separately. V1 includes first-use
 allocation/compilation; V2/V3 are warm cumulative versions, not independent
 fixed-target trials. Discovery and baseline export warm the exporter before
 measurement and are reported separately. No concurrent trainer workload exists,
@@ -140,7 +128,7 @@ Nonoverlapping caller phases compose blocked time. Do not add nested conversion,
 compression, transfer or worker spans, or subtract monotonic timestamps across
 ranks. CUDA events can perturb timing and do not measure GPU idle time. Logical
 copy-byte counters are not bus measurements. `resident_inner_hbm_bytes` records
-unique retained inner storage at outer entry, not allocator peak/workspace totals.
+unique retained inner storage at finalization entry, not allocator peak/workspace totals.
 The existing pre-update fence brackets peak-stat reset; reset does not empty the
 CUDA cache, and reserved memory can include earlier work. No host RSS/pinned-peak
 or untracked native allocation measurement is claimed.
@@ -151,13 +139,11 @@ one from the other to claim end-to-end RL savings.
 
 ## Full-model and multi-node scope
 
-The five-layer TP/CP-configurable PP1/EP8/ETP1 run is a correctness and profiling proxy;
-it does not validate full-model capacity, multi-node performance or training
-throughput. GPU delta reuses Megatron export ownership: ETP1 experts are consumed
-on their EP × EDP owners, ETP>1 uses the existing gather-before-convert sender path,
-and the nonrouted owner plan is PP-stage-local. The global canonical inventory still
-requires complete, unique ownership; duplicate exports, including overlapping
-PP/MTP names, are rejected rather than deduplicated.
+The five-layer TP/CP-configurable PP1/EP8/ETP1 run is a correctness and profiling
+proxy, not full-model capacity, multi-node performance or training-throughput
+validation. Production ownership remains PP-stage-local: ETP1 experts use their
+EP × EDP owners; ETP>1 uses the gather-before-convert path. Canonical inventory
+must retain complete, unique coverage, including across PP/MTP boundaries.
 
 `update_weight_buffer_size` is a matrix input-batch target, not a total memory
 cap. Budget the pinned old/pending snapshots, the full owner-local compact inner-codec

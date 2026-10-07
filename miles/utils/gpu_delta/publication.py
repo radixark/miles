@@ -1,7 +1,7 @@
 """Immutable, independently framed canonical publications for direct GPU apply.
 
-This is a new wire format. The disk-delta checkpoint patcher must never consume
-it. GPU Snappy/LZ4 frames with optional GPU Zstd wrapping form the matrix payload.
+Matrix payloads contain GPU Snappy/LZ4 frames with optional GPU Zstd wrapping.
+These publications are not checkpoint patches for the disk-delta loader.
 """
 
 from __future__ import annotations
