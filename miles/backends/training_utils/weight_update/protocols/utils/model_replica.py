@@ -51,12 +51,12 @@ class RolloutEngineRankConfig:
             if name not in _PLACEMENT_PARALLELISM_FIELDS
         }
         server_args_fields = {
-            f"server_args.{name}": value for name, value in _get_replica_layout_server_args(self.server_args).items()
+            f"server_args.{name}": value for name, value in _get_shard_layout_server_args(self.server_args).items()
         }
         return tuple(sorted((sharding_fields | server_args_fields).items()))
 
 
-def _get_replica_layout_server_args(server_args: ServerArgs) -> dict[str, object]:
+def _get_shard_layout_server_args(server_args: ServerArgs) -> dict[str, object]:
     """The server args that change the bytes a model replica writes and may differ between the rollout engines of
     one model, by PD role or a server group's sglang overrides. The other args that shape a replica, such as the
     model path and its config overrides, are the same for every rollout engine of a model."""
@@ -101,7 +101,7 @@ def query_rollout_engine_rank_configs(
             for rollout_engine_ind in assignment.rollout_engine_indices
         ]
         for rollout_engine_ind, config in zip(assignment.rollout_engine_indices, configs, strict=True):
-            _assert_expert_placement_reproducible(config.server_args, f"rollout engine {rollout_engine_ind}")
+            _assert_expert_placement_reproducible(config.server_args, rollout_engine_ind)
         differing_fields = {
             name
             for config in configs[1:]
@@ -130,7 +130,7 @@ def create_server_args_from_dict(data_dict: dict) -> ServerArgs:
     return ServerArgs(**filtered_data)
 
 
-def _assert_expert_placement_reproducible(server_args: ServerArgs, rollout_engine: str) -> None:
+def _assert_expert_placement_reproducible(server_args: ServerArgs, rollout_engine_ind: int) -> None:
     # the engine places these experts by its expert-location metadata, runtime rebalancing or CPU offload; a model
     # replica loads every expert into its default slot
     unreproducible_fields = [
@@ -147,9 +147,9 @@ def _assert_expert_placement_reproducible(server_args: ServerArgs, rollout_engin
         if is_in_use
     ]
     assert not unreproducible_fields, (
-        f"{rollout_engine} places experts by {', '.join(unreproducible_fields)}, which a model replica does not "
-        "reproduce, so p2p would write experts into the wrong slots. Update its weights with another "
-        "--update-weight-transfer-mode."
+        f"rollout engine {rollout_engine_ind} places experts by {', '.join(unreproducible_fields)}, which a model "
+        "replica does not reproduce, so p2p would write experts into the wrong slots. Update its weights with "
+        "another --update-weight-transfer-mode."
     )
 
 
