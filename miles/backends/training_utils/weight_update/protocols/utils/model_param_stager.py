@@ -66,7 +66,6 @@ class ModelParamStager:
                     transfer_ready_params.append(mapped)
 
         ready_hf_tensors_by_param_name: dict[str, list[tuple[str, torch.Tensor]]] = {}
-        # a param mapped from one HF name is ready again each time that name repeats
         for param_name in dict.fromkeys(transfer_ready_params):
             ready_hf_tensors_by_param_name[param_name] = self._staged_tensors.pop(param_name, [])
             self._tensor_update_pending.pop(param_name, None)
