@@ -77,11 +77,12 @@ def prepare_chat_request(
 
     ``turn_args`` is the continued turn's full request; ``None`` starts a root.
     ``sampling_defaults`` are the session's values for sampling fields the client omits.
-    Client input and recorded history remain unchanged.
+    Client input and recorded history remain unchanged: every field is copied, so rules may
+    edit nested values in place, except ``messages``. They are most of the request, no rule
+    resolves them, and they become the turn's recorded history, so they are shared read-only.
     """
-    request_args, response_intent = resolve_request_args_by_config(
-        deepcopy(client_args), config, evaluation=evaluation
-    )
+    owned_args = {key: value if key == "messages" else deepcopy(value) for key, value in client_args.items()}
+    request_args, response_intent = resolve_request_args_by_config(owned_args, config, evaluation=evaluation)
     apply_session_sampling_defaults(request_args, sampling_defaults or {}, evaluation=evaluation)
     try:
         request_args = tito_tokenizer.resolve_request_args(request_args, turn_args=turn_args)

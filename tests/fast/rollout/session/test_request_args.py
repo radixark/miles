@@ -237,6 +237,21 @@ class TestPrepareChatRequest:
         assert prepared.template_args == {"model_option": True}
         assert prepared.response_intent.stream is True
 
+    def test_messages_are_shared_read_only_while_other_fields_are_owned(self):
+        messages = [{"role": "user", "content": "hi"}, {"role": "assistant", "content": "", "tool_calls": []}]
+        client_args = {"messages": messages, "tools": self.TOOLS, "unknown": {"values": [1]}}
+        original = deepcopy(client_args)
+        prepared = prepare_chat_request(
+            client_args,
+            self._tito(chat_template_kwargs=self.LAUNCH),
+            config=make_session_server_config(),
+            turn_args={"chat_template_kwargs": self.LAUNCH, "tools": self.TOOLS},
+        )
+        prepared.body["unknown"]["values"].append(2)
+        assert client_args == original
+        assert prepared.body["messages"] is messages
+        assert prepared.body["tools"] == self.TOOLS and prepared.body["tools"] is not client_args["tools"]
+
 
 def test_template_projection_only_selects_render_fields():
     request_args = {
