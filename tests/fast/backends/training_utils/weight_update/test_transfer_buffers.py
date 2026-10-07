@@ -9,8 +9,8 @@ import torch
 import miles.backends.training_utils.weight_update.protocols.utils.transfer_buffers as transfer_buffers_module
 from miles.backends.training_utils.weight_update.protocols.utils.transfer_buffers import TransferBuffers
 
-_WAIT_BOUND = 10.0
-_STILL_BLOCKED = 0.2
+_RETURN_TIMEOUT_SECONDS = 10.0
+_STILL_BLOCKED_SECONDS = 0.2
 
 
 @pytest.fixture
@@ -19,14 +19,14 @@ def make_transfer_buffers(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(
         transfer_buffers_module,
         "_allocate_transfer_buffer",
-        lambda buffer_bytes, device: torch.empty(buffer_bytes, dtype=torch.uint8, device=device),
+        lambda buffer_nbytes, device: torch.empty(buffer_nbytes, dtype=torch.uint8, device=device),
     )
     registered: list[tuple[int, int]] = []
 
-    def make(num_buffers: int, buffer_bytes: int = 16) -> tuple[TransferBuffers, list[tuple[int, int]]]:
+    def make(num_buffers: int, buffer_nbytes: int = 16) -> tuple[TransferBuffers, list[tuple[int, int]]]:
         transfer_buffers = TransferBuffers(
             num_buffers,
-            buffer_bytes,
+            buffer_nbytes,
             device=torch.device("cpu"),
             register_memory=lambda buffer: registered.append((buffer.data_ptr(), buffer.numel())),
         )
@@ -35,7 +35,7 @@ def make_transfer_buffers(monkeypatch: pytest.MonkeyPatch):
     return make
 
 
-def _in_thread(target) -> threading.Event:
+def _start_in_thread(target) -> threading.Event:
     returned = threading.Event()
 
     def run() -> None:
@@ -55,11 +55,11 @@ def test_a_buffer_is_not_handed_out_while_a_write_still_reads_it(make_transfer_b
     transfer_buffers.release_after(transfer_buffers.acquire(), [])
 
     acquired: list[torch.Tensor] = []
-    returned = _in_thread(lambda: acquired.append(transfer_buffers.acquire()))
+    returned = _start_in_thread(lambda: acquired.append(transfer_buffers.acquire()))
 
-    assert not returned.wait(timeout=_STILL_BLOCKED)
+    assert not returned.wait(timeout=_STILL_BLOCKED_SECONDS)
     pending_write.set_result(None)
-    assert returned.wait(timeout=_WAIT_BOUND)
+    assert returned.wait(timeout=_RETURN_TIMEOUT_SECONDS)
     assert acquired == [first_buffer]
 
 
@@ -76,7 +76,7 @@ def test_a_failed_write_frees_its_buffer_without_raising(make_transfer_buffers) 
 
 def test_each_buffer_is_registered_once_over_its_whole_allocation(make_transfer_buffers) -> None:
     """A write reads anywhere in a buffer, so its whole range must be registered, and reuse must not register again."""
-    transfer_buffers, registered = make_transfer_buffers(num_buffers=2, buffer_bytes=64)
+    transfer_buffers, registered = make_transfer_buffers(num_buffers=2, buffer_nbytes=64)
 
     buffers = []
     for _ in range(4):
@@ -94,9 +94,9 @@ def test_wait_for_writes_returns_after_the_writes_of_every_buffer(make_transfer_
     for write in writes:
         transfer_buffers.release_after(transfer_buffers.acquire(), [write])
 
-    returned = _in_thread(transfer_buffers.wait_for_writes)
+    returned = _start_in_thread(transfer_buffers.wait_for_writes)
 
     writes[0].set_result(None)
-    assert not returned.wait(timeout=_STILL_BLOCKED)
+    assert not returned.wait(timeout=_STILL_BLOCKED_SECONDS)
     writes[1].set_result(None)
-    assert returned.wait(timeout=_WAIT_BOUND)
+    assert returned.wait(timeout=_RETURN_TIMEOUT_SECONDS)

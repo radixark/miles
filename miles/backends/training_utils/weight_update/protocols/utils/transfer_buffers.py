@@ -16,13 +16,13 @@ class TransferBuffers:
     def __init__(
         self,
         num_buffers: int,
-        buffer_bytes: int,
+        buffer_nbytes: int,
         *,
         device: torch.device,
         register_memory: Callable[[torch.Tensor], None],
     ) -> None:
-        self.buffer_bytes = buffer_bytes
-        self._buffers = [_allocate_transfer_buffer(buffer_bytes, device) for _ in range(num_buffers)]
+        self.buffer_nbytes = buffer_nbytes
+        self._buffers = [_allocate_transfer_buffer(buffer_nbytes, device) for _ in range(num_buffers)]
         for buffer in self._buffers:
             register_memory(buffer)
         self._pending_writes_by_buffer_index: list[list[Future]] = [[] for _ in self._buffers]
@@ -48,6 +48,6 @@ class TransferBuffers:
         self._pending_writes_by_buffer_index = [[] for _ in self._buffers]
 
 
-def _allocate_transfer_buffer(buffer_bytes: int, device: torch.device) -> torch.Tensor:
+def _allocate_transfer_buffer(buffer_nbytes: int, device: torch.device) -> torch.Tensor:
     # host buffers are pinned in place: a pageable copy first would stay resident on aarch64 hosts
-    return torch.empty(buffer_bytes, dtype=torch.uint8, device=device, pin_memory=device.type == "cpu")
+    return torch.empty(buffer_nbytes, dtype=torch.uint8, device=device, pin_memory=device.type == "cpu")
