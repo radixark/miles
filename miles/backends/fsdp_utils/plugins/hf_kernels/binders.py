@@ -40,9 +40,9 @@ _GDN_KERNEL_SLOTS = (
 def bind_gated_deltanet(model, hub: HubKernels) -> int:
     """Point each GatedDeltaNet's kernel handles at the Hub builds; returns modules patched.
 
-    `_patch_gdn_forward` in `models/qwen3_5.py` injects the packed-document boundaries into
-    whatever callables the instance carries, so this only has to replace them. Slots resolve
-    independently: one missing Hub build leaves the other bound.
+    HF's GatedDeltaNet forward hands the packed-document boundaries it receives as kwargs
+    (`seq_idx`, `cu_seq_lens_q`) to whatever callables the instance carries, so this only has to
+    replace them. Slots resolve independently: one missing Hub build leaves the other bound.
     """
     modules = [m for m in model.modules() if type(m).__name__.endswith("GatedDeltaNet")]
     if not modules:

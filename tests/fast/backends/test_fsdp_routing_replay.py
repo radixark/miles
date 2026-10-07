@@ -9,6 +9,7 @@ import pytest
 import torch.nn as nn
 
 from miles.backends.fsdp_utils.adaptations import routing_replay
+from miles.backends.fsdp_utils.adaptations.specs import resolve_arch_adapter
 from miles.utils.arguments import resolve_fsdp_num_layers
 from miles.utils.replay_base import routing_replay_manager
 
@@ -41,12 +42,10 @@ def _model_with_layers(kinds):
 
 @pytest.fixture(autouse=True)
 def _reset_manager():
-    saved_adapters = list(routing_replay._ADAPTERS)
     routing_replay_manager.enabled = False
     routing_replay_manager.replays = []
     routing_replay_manager.current = None
     yield
-    routing_replay._ADAPTERS[:] = saved_adapters
     routing_replay_manager.enabled = False
     routing_replay_manager.replays = []
     routing_replay_manager.current = None
@@ -74,14 +73,10 @@ def test_discover_finds_layers_behind_an_extra_wrapper():
 
 def test_install_assigns_stream_idx_equal_to_global_layer_index():
     routing_replay_manager.enabled = True
-    routing_replay.register_routing_replay_adapter(
-        routing_replay.RoutingReplayAdapter(
-            name="fake", applies_to=lambda cfg: True, module_cls_name="_FakeRouter", install=lambda m: None
-        )
-    )
+    adapter = routing_replay.RoutingReplayAdapter(name="fake", module_cls_name="_FakeRouter", install=lambda m: None)
     model = _model_with_layers(["dense", "moe", "moe"])
 
-    count = routing_replay.install(model, SimpleNamespace(model_type="fake"))
+    count = routing_replay.install(model, adapter)
 
     assert count == 2
     assert [r.stream_idx for r in routing_replay_manager.replays] == [1, 2]
@@ -90,17 +85,12 @@ def test_install_assigns_stream_idx_equal_to_global_layer_index():
 def test_install_calls_the_adapter_once_per_moe_layer():
     routing_replay_manager.enabled = True
     installed = []
-    routing_replay.register_routing_replay_adapter(
-        routing_replay.RoutingReplayAdapter(
-            name="fake_counted",
-            applies_to=lambda cfg: getattr(cfg, "model_type", None) == "fake_counted",
-            module_cls_name="_FakeRouter",
-            install=installed.append,
-        )
+    adapter = routing_replay.RoutingReplayAdapter(
+        name="fake_counted", module_cls_name="_FakeRouter", install=installed.append
     )
     model = _model_with_layers(["dense", "moe", "moe", "moe"])
 
-    routing_replay.install(model, SimpleNamespace(model_type="fake_counted"))
+    routing_replay.install(model, adapter)
 
     assert len(installed) == 3
     assert all(isinstance(m, _FakeRouter) for m in installed)
@@ -108,64 +98,43 @@ def test_install_calls_the_adapter_once_per_moe_layer():
 
 def test_install_is_a_noop_when_manager_disabled():
     routing_replay_manager.enabled = False
-    routing_replay.register_routing_replay_adapter(
-        routing_replay.RoutingReplayAdapter(
-            name="fake_off", applies_to=lambda cfg: True, module_cls_name="_FakeRouter", install=lambda m: None
-        )
+    adapter = routing_replay.RoutingReplayAdapter(
+        name="fake_off", module_cls_name="_FakeRouter", install=lambda m: None
     )
     model = _model_with_layers(["moe", "moe"])
 
-    assert routing_replay.install(model, SimpleNamespace(model_type="fake_off")) == 0
+    assert routing_replay.install(model, adapter) == 0
     assert routing_replay_manager.replays == []
 
 
-def test_install_raises_when_no_adapter_matches():
+def test_install_raises_when_the_arch_has_no_adapter():
     routing_replay_manager.enabled = True
-    routing_replay.register_routing_replay_adapter(
-        routing_replay.RoutingReplayAdapter(
-            name="picky",
-            applies_to=lambda cfg: getattr(cfg, "model_type", None) == "something_else",
-            module_cls_name="_FakeRouter",
-            install=lambda m: None,
-        )
-    )
     with pytest.raises(ValueError, match="no routing-replay adapter"):
-        routing_replay.install(_model_with_layers(["moe"]), SimpleNamespace(model_type="unknown_arch"))
+        routing_replay.install(_model_with_layers(["moe"]), None)
 
 
 def test_install_raises_when_adapter_matches_but_finds_no_layers():
     routing_replay_manager.enabled = True
-    routing_replay.register_routing_replay_adapter(
-        routing_replay.RoutingReplayAdapter(
-            name="empty",
-            applies_to=lambda cfg: getattr(cfg, "model_type", None) == "empty",
-            module_cls_name="_NotPresent",
-            install=lambda m: None,
-        )
-    )
+    adapter = routing_replay.RoutingReplayAdapter(name="empty", module_cls_name="_NotPresent", install=lambda m: None)
     with pytest.raises(ValueError, match="found no MoE layers"):
-        routing_replay.install(_model_with_layers(["moe"]), SimpleNamespace(model_type="empty"))
+        routing_replay.install(_model_with_layers(["moe"]), adapter)
 
 
-def test_specs_register_adapters_for_every_supported_model_type():
-    import miles.backends.fsdp_utils.adaptations.specs  # noqa: F401
-
+def test_specs_declare_adapters_for_every_supported_model_type():
     expected = {
         "qwen3_moe": "Qwen3MoeTopKRouter",
         "qwen3_5_moe_text": "Qwen3_5MoeTopKRouter",
         "glm4_moe_lite": "Glm4MoeLiteMoE",
     }
     for model_type, module_cls_name in expected.items():
-        adapter = routing_replay.resolve_routing_replay_adapter(SimpleNamespace(model_type=model_type))
+        adapter = resolve_arch_adapter(SimpleNamespace(model_type=model_type)).routing_replay
         assert adapter is not None, model_type
         assert adapter.module_cls_name == module_cls_name
 
 
 def test_dense_archs_do_not_resolve_to_a_moe_adapter():
-    import miles.backends.fsdp_utils.adaptations.specs  # noqa: F401
-
     for model_type in ("qwen3_5_text", "qwen3"):
-        assert routing_replay.resolve_routing_replay_adapter(SimpleNamespace(model_type=model_type)) is None
+        assert resolve_arch_adapter(SimpleNamespace(model_type=model_type)).routing_replay is None
 
 
 def test_enable_follows_use_routing_replay():
@@ -232,8 +201,9 @@ def test_ref_model_creation_does_not_install_routing_replay():
 
     from miles.backends.fsdp_utils.actor import FSDPTrainRayActor
 
-    source = inspect.getsource(FSDPTrainRayActor._create_ref_model)
-    assert "routing_replay.install" not in source
+    # The ref model is built through the shared loader; only the actor's init installs R3.
+    for builder in (FSDPTrainRayActor._create_ref_model, FSDPTrainRayActor._load_hf_model):
+        assert "routing_replay.install" not in inspect.getsource(builder)
 
 
 def test_resolve_num_layers_from_flat_config():

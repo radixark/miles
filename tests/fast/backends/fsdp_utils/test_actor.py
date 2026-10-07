@@ -1,10 +1,12 @@
 import sys
 from argparse import Namespace
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 
 import pytest
+import torch
 
 from miles.backends.fsdp_utils import actor as actor_module
+from miles.backends.fsdp_utils.adaptations.specs import resolve_arch_adapter
 from miles.backends.training_utils.types import TrainStepOutcome, TrainStepOutput
 from miles.utils import distributed_utils
 from miles.utils.ft_utils.heartbeat_utils import SimpleHeartbeat
@@ -78,3 +80,24 @@ class TestFSDPTrainExternalData:
 
         with pytest.raises(AssertionError, match="fsdp backend trains no critic"):
             actor.train(rollout_id=1, rollout_data_ref=object(), external_data=external_data)
+
+
+class TestFSDPModelInputs:
+    def test_packing_kwargs_follow_the_batch_boundaries_so_padding_stays_one_segment(self) -> None:
+        """Pad tokens carry position 0; boundaries derived from `position_ids` would make each one a document."""
+        actor = object.__new__(actor_module.FSDPTrainRayActor)
+        actor.arch_adapter = resolve_arch_adapter(SimpleNamespace(model_type="qwen3_5_text"))
+        cu_seqlens_host = (0, 3, 5, 8)  # two documents, then the 3-token pad segment get_batch appends
+        batch = {
+            "tokens": torch.zeros(1, 8, dtype=torch.long),
+            "position_ids": torch.tensor([[0, 1, 2, 0, 1, 0, 0, 0]]),
+            "cu_seqlens": torch.tensor(cu_seqlens_host, dtype=torch.int32),
+            "cu_seqlens_host": cu_seqlens_host,
+            "max_seqlen": 3,
+        }
+
+        model_args = actor._get_model_inputs_args(batch)
+
+        assert model_args["cu_seq_lens_q"] is batch["cu_seqlens"]
+        assert model_args["max_length_q"] == 3
+        assert model_args["seq_idx"].tolist() == [[0, 0, 0, 1, 1, 2, 2, 2]]
