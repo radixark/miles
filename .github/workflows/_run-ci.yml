@@ -97,6 +97,11 @@ jobs:
       WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
       NEON_DATABASE_URL: ${{ secrets.NEON_DATABASE_URL }}
       MILES_TEST_ENABLE_INFINITE_RUN: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.infinite_run) || 'false' }}
+      # CI is single-node, so DeepEP ranks only need NVLink. On RoCE runners the job
+      # container's bridge network has no RoCE GIDs, so NVSHMEM's IBGDA/IBRC connection
+      # setup fails and DeepEP low-latency hangs. An HCA name that matches no NIC makes
+      # NVSHMEM skip those transports and fall back to NVLink P2P on every runner.
+      NVSHMEM_HCA_LIST: none_single_node_nvlink_only
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
