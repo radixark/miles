@@ -1,6 +1,7 @@
 import copy
 import json
 import random
+import re
 from pathlib import Path
 
 import pytest
@@ -65,6 +66,28 @@ def test_policy_family_holdout_and_label_validity() -> None:
                     assert sum(values.values()) == 1
                     assert set(values.values()) <= {0, 1}
                     assert {k for k, _ in question_options(row["record"]["questions"][field])} == set(values)
+
+
+def test_invoice_labels_follow_rendered_evidence() -> None:
+    # Reconstruct the verdict from the actual shuffled documents, not generator locals.
+    for index in range(200):
+        row = workflow("invoice", index, "train", random.Random(index))
+        state = row["record"]["state"]
+        ordered = int(re.search(r"Purchase order PO-\S+: (\d+) units", state)[1])
+        billed = int(re.search(r"Invoice INV-\S+: PO-\S+; (\d+) filters", state)[1])
+        price = int(re.search(r"unit price (\d+)", state)[1])
+        received = int(re.search(r"warehouse counted (\d+) accepted", state)[1])
+        threshold = int(re.search(r"Amounts greater than (\d+) require", state)[1])
+        paid = "settled last week, bank transaction reconciled" in state
+        bank_ok = "bank change not requested" in state or "callback verification completed" in state
+        approved = "I authorize payment of INV-" in state and "Cancel my payment approval" not in state
+        blockers = [
+            (paid, "duplicate"), (not bank_ok, "verify"), (billed > ordered, "correct"),
+            (received < billed, "delivery"), (billed * price > threshold and not approved, "approve"),
+        ]
+        expected = next((action for blocked, action in blockers if blocked), "pay")
+        assert row["targets"]["primary_action"][expected] == 1
+        assert row["targets"]["pay_now"]["true"] == float(expected == "pay")
 
 
 def test_probabilistic_targets_and_variable_options() -> None:
