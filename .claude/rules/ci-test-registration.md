@@ -45,6 +45,14 @@ The stage's GPU count equals the count the test requests (`ray start
 test on an 8-GPU stage idles four GPUs for its whole run. `stage-c-8-gpu-b200`
 is the exception, because the Blackwell fleet is a single unpartitioned host.
 
+A new test needs no ROCm registration. A file that already has
+`register_rocm_ci(..., suite="nightly-stage-c-<N>-gpu-*")` keeps `<N>` equal to
+its CUDA stage's GPU count: a change that moves the CUDA registration to a
+stage with a different GPU count updates `<N>` in the same commit. The external
+nightly has only `stage-c` suites, so `stage-b-2-gpu-h200` pairs with
+`nightly-stage-c-2-gpu-*`. `tests/ci/test/test_ci_rocm_nightly_gpu_count.py`
+rejects a mismatch.
+
 ## Declaration
 
 ```python
