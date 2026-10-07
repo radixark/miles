@@ -93,10 +93,10 @@ down exactly once.
 
 **`.claude/rules/`** holds conventions. A file with a `paths:` front matter list applies
 to any file matching it; a file without one applies everywhere. `general-code-style.md`
-is the one described above; `ci-test-registration.md` holds the rules for adding a CI
-test (see [Registering a test](#registering-a-test)), and `ci-failure-triage.md` what to
-do when a CI check goes red. `AGENTS.md` at the repo root points Codex at the same files,
-so both agents and humans review against one document.
+is the one described above, and `AGENTS.md` at the repo root points Codex at it too, so
+both agents and humans review against one document. `ci-test-registration.md` holds the
+rules for adding a CI test (see [Registering a test](#registering-a-test)), and
+`ci-failure-triage.md` what to do when a CI check goes red.
 
 **`.claude/skills/`** holds procedures, one directory per skill with a `SKILL.md`. They
 are workflows rather than style rules:
@@ -160,19 +160,6 @@ confirm CI picks it up, how `est_time` is measured with `/rerun-test`, and when
 Telling your failure from an infra one, and reporting either, is in
 [`.claude/rules/ci-failure-triage.md`](https://github.com/radixark/miles/blob/main/.claude/rules/ci-failure-triage.md).
 
-### Verify it actually runs
-
-```bash
-# list the plan for a suite, no GPU needed
-python3 tests/ci/run_suite.py --hw cuda --suite stage-c-4-gpu-h200 --match-all-labels --list-only
-python3 tests/ci/run_suite.py --hw cpu  --suite stage-a-cpu        --match-all-labels --list-only
-```
-
-Your file must appear under `Enabled N test(s)`. The command also validates registration
-across every discovered test, so it fails here if any file is missing its declaration. Add
-`--nightly` when checking a `nightly=True` registration. On the PR, the matching stage job
-prints the same plan in its **Resolve suite plan** step.
-
 ### Labels
 
 Labels are how a PR opts into the expensive matrix. A test's `labels=["megatron"]` is
@@ -234,7 +221,7 @@ Before marking a PR ready for review:
 - [ ] `pytest tests/fast` passes, plus `tests/fast-gpu` if you have a GPU.
 - [ ] New behavior has a test, registered where CI will find it (verified with
   `--list-only`).
-- [ ] Each new or moved CI test has its `CI timing:` line in the PR description, from a
+- [ ] Each new or moved CUDA test has its `CI timing:` line in the PR description, from a
   `/rerun-test` run (see `.claude/rules/ci-test-registration.md`).
 - [ ] A new flag appears in [CLI Reference](/user-guide/cli-reference), and
   `python3 train.py --help` still parses.
@@ -254,8 +241,6 @@ branch, which is the quick way out of a red `pre-commit` job.
 | `enhancement` | Feature request |
 | `discussion` | Design conversation, not yet a task |
 | `needs-repro` | Not reproducible yet, please add a minimal example |
-| `ci-infra` | A CI machine or runner problem, not a code failure |
-| `flaky` | A test that fails non-deterministically |
 
 Comment to claim an issue before you start. For an infra failure or a flake, file the
 issue with the fields `.claude/rules/ci-failure-triage.md` lists (job URL, runner name,

@@ -33,7 +33,7 @@ run the test; copying a neighbouring test's `suite=` is not a reason.
 | Order | Where | Runs on | Use for |
 |---|---|---|---|
 | 1 | `tests/fast/` (no declaration; suite `stage-a-cpu`) | GitHub-hosted CPU | pure-Python / CPU-only tests that finish in seconds |
-| 2 | `register_cpu_ci(..., suite="stage-b-cpu")` | GitHub-hosted CPU | CPU tests that take minutes; `stage-a-cpu` gates every GPU stage, so it stays fast |
+| 2 | `register_cpu_ci(..., suite="stage-b-cpu")` | GitHub-hosted CPU | CPU tests that take minutes; `stage-a-cpu` gates every CUDA stage, so it stays fast |
 | 3 | `tests/fast-gpu/`, suite `stage-b-2-gpu-h200` | 2× H200 | short GPU checks (kernels, quantizers, worker entry points) that finish in a few minutes |
 | 4 | `stage-c-2-gpu-h200` | 2× H200 | end-to-end runs that fit on two GPUs |
 | 5 | `stage-c-4-gpu-h200` | 4× H200 | layouts that need four ranks; the busiest stage, so confirm two GPUs cannot express the case |
@@ -66,8 +66,8 @@ register_cuda_ci(
 )
 ```
 
-- A GPU file has one top-level `register_cuda_ci(...)`, plus a
-  `register_rocm_ci(...)` when it also covers the MI350 lane. The calls are
+- A GPU file has one top-level `register_cuda_ci(...)`, one
+  `register_rocm_ci(...)` per ROCm suite it runs in, or both. The calls are
   parsed from the AST: top-level, literal arguments, no alias. `tests/fast/`
   files need none.
 - `labels`: reuse a domain label from `tests/ci/labels.py`. A new label also
@@ -94,9 +94,9 @@ stays green. Confirm pickup before relying on it:
 
 If the file is missing, check in order: it is a `test_*.py` under a CI root;
 its `register_*_ci(...)` call is top-level, not inside a function or behind an
-aliased import; its `suite=` is a real stage (`CUDA_STAGES` in
-`tests/ci/hardware.py`, or `stage-a-cpu` / `stage-b-cpu`), since a misspelled
-suite has no job and never runs.
+aliased import; a `register_cpu_ci` suite is `stage-a-cpu` or `stage-b-cpu`,
+since a misspelled CPU suite has no job and never runs (a misspelled CUDA
+suite fails collection against `CUDA_STAGES` in `tests/ci/hardware.py`).
 
 ## Which PRs run it
 
@@ -112,9 +112,10 @@ suite has no job and never runs.
 
 ## `est_time`
 
-`est_time` balances shards and sets the per-file timeout,
-`max(1800 s, 1.25 × est_time)`, in stage runs and in `/rerun-test` alike. It is
-measured, never copied from a neighbouring test:
+For a `register_cuda_ci` test, `est_time` balances shards and sets the per-file
+timeout, `max(1800 s, 1.25 × est_time)`, in stage runs and in `/rerun-test`
+alike. It is measured, never copied from a neighbouring test. CPU and ROCm
+registrations need no timing run.
 
 1. Before the first run, use an upper bound that safely exceeds the expected
    runtime, so the timeout does not kill it. Up to 1440 s the 1800 s floor
@@ -137,7 +138,7 @@ measured, never copied from a neighbouring test:
 4. Set `est_time` to `ceil(1.25 × measured seconds)`, rounded up to the next
    10 s at or below 200 s and to the next 100 s above it (362 s → 453 → 500),
    the rule the `ci-e2e-time-tune` skill applies to nightly runs.
-5. Add one line per new or moved test to the PR description:
+5. Add one line per new or moved CUDA test to the PR description:
    ```text
    CI timing: tests/e2e/short/test_yours.py on stage-c-2-gpu-h200, Run tests 362 s, est_time=500, https://github.com/radixark/miles/actions/runs/<run-id>
    ```
@@ -157,8 +158,8 @@ its history; `/rerun-test` never writes it.
 ## For coding agents
 
 - Never present a guessed `est_time` as measured. Until a `/rerun-test` run
-  exists, use the upper bound and say in the PR description that it is
-  unmeasured.
+  exists for a CUDA test, use the upper bound and say in the PR description
+  that it is unmeasured.
 - `/rerun-test`, `/rerun-failed-ci`, and `run-ci-*` labels spend shared GPU
   runners and show up on the PR: propose the exact comment or label and wait
   for the user.

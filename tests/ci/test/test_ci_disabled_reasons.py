@@ -23,70 +23,90 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 
 _TRACKING_REF = re.compile(r"#\d+|https://github\.com/[\w.-]+/[\w.-]+/(?:issues|pull)/\d+")
 
-# (file, backend) registrations whose reason predates the rule. Delete an entry
-# when the test is re-enabled or its reason gains a link; never add one.
+# (file, suite) registrations whose reason predates the rule. Delete an entry when
+# the test is re-enabled, moves suite, or its reason gains a link; never add one.
 _UNLINKED_BEFORE_THE_RULE: frozenset[tuple[str, str]] = frozenset(
     {
-        ("tests/e2e/agentic/test_harbor_rollout.py", "CUDA"),
-        ("tests/e2e/ckpt/test_glm47_flash_ckpt.py", "CUDA"),
-        ("tests/e2e/deploy/test_hot_restart_checkpointed.py", "CUDA"),
-        ("tests/e2e/deploy/test_hot_restart_no_checkpoint.py", "CUDA"),
-        ("tests/e2e/deploy/test_hot_restart_realistic_gsm8k.py", "CUDA"),
-        ("tests/e2e/deploy/test_split_deterministic.py", "CUDA"),
-        ("tests/e2e/deploy/test_split_multi_policy.py", "CUDA"),
-        ("tests/e2e/ft/test_random_crash__kill_rollout__dp4__colocate.py", "CUDA"),
-        ("tests/e2e/ft/test_random_crash__kill_train__dp2_cp2__moe_5layer.py", "CUDA"),
-        ("tests/e2e/ft/test_random_crash__kill_train__dp2_cp2_tp2_ep2__fake_rollout__moe_5layer.py", "CUDA"),
-        ("tests/e2e/ft/test_random_crash__kill_train_rollout__dp2_cp2.py", "CUDA"),
-        ("tests/e2e/ft/test_random_crash_fully_async__kill_train_rollout__dp2_cp2.py", "CUDA"),
-        ("tests/e2e/ft/test_realistic_gsm8k__kill_train_rollout.py", "CUDA"),
-        ("tests/e2e/ft/test_realistic_gsm8k_fully_async__kill_train_rollout.py", "CUDA"),
-        ("tests/e2e/ft/test_rollout_deterministic__kill_rollout__dp4__colocate.py", "CUDA"),
-        ("tests/e2e/ft/test_trainer_deterministic__kill_train__dp2_cp2__moe_5layer.py", "CUDA"),
-        ("tests/e2e/ft/test_trainer_deterministic__kill_train__dp2_cp2_pp2__fake_rollout__moe_5layer.py", "CUDA"),
-        ("tests/e2e/ft/test_trainer_deterministic__kill_train__dp2_cp2_tp2_ep2__fake_rollout__moe_5layer.py", "CUDA"),
-        ("tests/e2e/ft/test_trainer_deterministic__kill_train__dp4_cp2__fake_rollout__moe_5layer.py", "CUDA"),
-        ("tests/e2e/ft/test_trainer_with_failure__kill_train__dp2_cp2.py", "CUDA"),
-        ("tests/e2e/ft/test_trainer_with_failure__kill_train__dp2_cp2_pp2__fake_rollout__moe_5layer.py", "CUDA"),
-        ("tests/e2e/ft/test_trainer_with_failure__kill_train__dp2_cp2_tp2_ep2__fake_rollout__moe_5layer.py", "CUDA"),
-        ("tests/e2e/megatron/model_scripts/test_deepseek_v32_5layer_mxfp8.py", "CUDA"),
-        ("tests/e2e/megatron/model_scripts/test_glm5_1_744b_a40b_6layer_lora_ci.py", "CUDA"),
-        ("tests/e2e/megatron/model_scripts/test_glm5_2_744b_a40b_5layer_lora_ci.py", "CUDA"),
-        ("tests/e2e/megatron/model_scripts/test_glm5_3_flash_4layer_ci.py", "CUDA"),
-        ("tests/e2e/megatron/test_glm47_flash/test_amd_spec_mtptrain_r3_bf16_sgl_tp4_meg_tp2pp2.py", "ROCM"),
-        ("tests/e2e/megatron/test_qwen3_30B_A3B/test_amd_moriep_fp8_bridge.py", "ROCM"),
-        ("tests/e2e/megatron/test_qwen3_30B_A3B/test_baseline.py", "CUDA"),
-        ("tests/e2e/megatron/test_qwen3_30B_A3B/test_baseline.py", "ROCM"),
-        ("tests/e2e/megatron/test_qwen3_30B_A3B/test_fully_async.py", "CUDA"),
-        ("tests/e2e/megatron/test_qwen3_30B_A3B/test_fully_async.py", "ROCM"),
-        ("tests/e2e/megatron/test_qwen3_30B_A3B/test_r3_baseline.py", "CUDA"),
-        ("tests/e2e/megatron/test_qwen3_30B_A3B/test_r3_baseline.py", "ROCM"),
-        ("tests/e2e/megatron/test_qwen3_30B_A3B/test_r3_deepep_fp8.py", "CUDA"),
-        ("tests/e2e/megatron/test_qwen3_5_35B_A3B_cp.py", "CUDA"),
-        ("tests/e2e/precision/test_qwen3_0.6B_parallel_check.py", "CUDA"),
-        ("tests/e2e/sglang/test_r3_router_equivalence.py", "CUDA"),
-        ("tests/e2e/sglang/test_session_server_multi_role/test_minimax_m27.py", "CUDA"),
-        ("tests/fast-gpu/test_mxfp8_quantizer.py", "CUDA"),
-        ("tests/fast-gpu/test_semaphore.py", "CUDA"),
+        ("tests/e2e/agentic/test_harbor_rollout.py", "stage-c-2-gpu-h200"),
+        ("tests/e2e/ckpt/test_glm47_flash_ckpt.py", "stage-c-8-gpu-h100"),
+        ("tests/e2e/deploy/test_hot_restart_checkpointed.py", "stage-c-8-gpu-h200"),
+        ("tests/e2e/deploy/test_hot_restart_no_checkpoint.py", "stage-c-8-gpu-h200"),
+        ("tests/e2e/deploy/test_hot_restart_realistic_gsm8k.py", "stage-c-8-gpu-h200"),
+        ("tests/e2e/deploy/test_split_deterministic.py", "stage-c-8-gpu-h200"),
+        ("tests/e2e/deploy/test_split_multi_policy.py", "stage-c-4-gpu-h200"),
+        ("tests/e2e/ft/test_random_crash__kill_rollout__dp4__colocate.py", "stage-c-8-gpu-h200"),
+        ("tests/e2e/ft/test_random_crash__kill_train__dp2_cp2__moe_5layer.py", "stage-c-8-gpu-h200"),
+        (
+            "tests/e2e/ft/test_random_crash__kill_train__dp2_cp2_tp2_ep2__fake_rollout__moe_5layer.py",
+            "stage-c-8-gpu-h200",
+        ),
+        ("tests/e2e/ft/test_random_crash__kill_train_rollout__dp2_cp2.py", "stage-c-8-gpu-h200"),
+        ("tests/e2e/ft/test_random_crash_fully_async__kill_train_rollout__dp2_cp2.py", "stage-c-8-gpu-h200"),
+        ("tests/e2e/ft/test_realistic_gsm8k__kill_train_rollout.py", "stage-c-8-gpu-h200"),
+        ("tests/e2e/ft/test_realistic_gsm8k_fully_async__kill_train_rollout.py", "stage-c-8-gpu-h200"),
+        ("tests/e2e/ft/test_rollout_deterministic__kill_rollout__dp4__colocate.py", "stage-c-8-gpu-h200"),
+        ("tests/e2e/ft/test_trainer_deterministic__kill_train__dp2_cp2__moe_5layer.py", "stage-c-8-gpu-h200"),
+        (
+            "tests/e2e/ft/test_trainer_deterministic__kill_train__dp2_cp2_pp2__fake_rollout__moe_5layer.py",
+            "stage-c-8-gpu-h200",
+        ),
+        (
+            "tests/e2e/ft/test_trainer_deterministic__kill_train__dp2_cp2_tp2_ep2__fake_rollout__moe_5layer.py",
+            "stage-c-8-gpu-h200",
+        ),
+        (
+            "tests/e2e/ft/test_trainer_deterministic__kill_train__dp4_cp2__fake_rollout__moe_5layer.py",
+            "stage-c-8-gpu-h200",
+        ),
+        ("tests/e2e/ft/test_trainer_with_failure__kill_train__dp2_cp2.py", "stage-c-8-gpu-h200"),
+        (
+            "tests/e2e/ft/test_trainer_with_failure__kill_train__dp2_cp2_pp2__fake_rollout__moe_5layer.py",
+            "stage-c-8-gpu-h200",
+        ),
+        (
+            "tests/e2e/ft/test_trainer_with_failure__kill_train__dp2_cp2_tp2_ep2__fake_rollout__moe_5layer.py",
+            "stage-c-8-gpu-h200",
+        ),
+        ("tests/e2e/megatron/model_scripts/test_deepseek_v32_5layer_mxfp8.py", "stage-c-8-gpu-b200"),
+        ("tests/e2e/megatron/model_scripts/test_glm5_1_744b_a40b_6layer_lora_ci.py", "stage-c-8-gpu-h200"),
+        ("tests/e2e/megatron/model_scripts/test_glm5_2_744b_a40b_5layer_lora_ci.py", "stage-c-4-gpu-h200"),
+        ("tests/e2e/megatron/model_scripts/test_glm5_3_flash_4layer_ci.py", "stage-c-8-gpu-h200"),
+        (
+            "tests/e2e/megatron/test_glm47_flash/test_amd_spec_mtptrain_r3_bf16_sgl_tp4_meg_tp2pp2.py",
+            "stage-c-4-gpu-mi350",
+        ),
+        ("tests/e2e/megatron/test_qwen3_30B_A3B/test_amd_moriep_fp8_bridge.py", "stage-c-4-gpu-mi350"),
+        ("tests/e2e/megatron/test_qwen3_30B_A3B/test_baseline.py", "nightly-stage-c-4-gpu-mi350"),
+        ("tests/e2e/megatron/test_qwen3_30B_A3B/test_baseline.py", "stage-c-4-gpu-h200"),
+        ("tests/e2e/megatron/test_qwen3_30B_A3B/test_fully_async.py", "nightly-stage-c-4-gpu-mi350"),
+        ("tests/e2e/megatron/test_qwen3_30B_A3B/test_fully_async.py", "stage-c-4-gpu-h200"),
+        ("tests/e2e/megatron/test_qwen3_30B_A3B/test_r3_baseline.py", "nightly-stage-c-4-gpu-mi350"),
+        ("tests/e2e/megatron/test_qwen3_30B_A3B/test_r3_baseline.py", "stage-c-4-gpu-h200"),
+        ("tests/e2e/megatron/test_qwen3_30B_A3B/test_r3_deepep_fp8.py", "stage-c-4-gpu-h200"),
+        ("tests/e2e/megatron/test_qwen3_5_35B_A3B_cp.py", "stage-c-8-gpu-h100"),
+        ("tests/e2e/precision/test_qwen3_0.6B_parallel_check.py", "stage-c-8-gpu-h100"),
+        ("tests/e2e/sglang/test_r3_router_equivalence.py", "stage-c-4-gpu-h200"),
+        ("tests/e2e/sglang/test_session_server_multi_role/test_minimax_m27.py", "stage-c-4-gpu-h200"),
+        ("tests/fast-gpu/test_mxfp8_quantizer.py", "stage-b-2-gpu-h200"),
+        ("tests/fast-gpu/test_semaphore.py", "stage-b-2-gpu-h200"),
     }
 )
 
 
-def _disabled_reasons(monkeypatch) -> dict[tuple[str, str], str]:
+def _unlinked_disabled(monkeypatch) -> list[tuple[str, str]]:
+    """(file, suite) of each disabled registration whose reason cites no issue."""
     # discover_ci_files() globs repo-relative paths, so it reads whatever cwd the
     # runner was started from; pin it to the checkout.
     monkeypatch.chdir(REPO_ROOT)
-    return {
-        (r.filename, r.backend.name): r.disabled for r in collect_tests(discover_ci_files()) if r.disabled is not None
-    }
+    return [
+        (r.filename, r.suite)
+        for r in collect_tests(discover_ci_files())
+        if r.disabled is not None and not _TRACKING_REF.search(r.disabled)
+    ]
 
 
 def test_every_disabled_registration_cites_its_tracking_issue(monkeypatch):
-    unlinked = sorted(
-        key
-        for key, reason in _disabled_reasons(monkeypatch).items()
-        if not _TRACKING_REF.search(reason) and key not in _UNLINKED_BEFORE_THE_RULE
-    )
+    unlinked = sorted(key for key in _unlinked_disabled(monkeypatch) if key not in _UNLINKED_BEFORE_THE_RULE)
     assert unlinked == [], (
         "disabled= must cite the issue or PR that tracks re-enabling the test, "
         f'e.g. disabled="flaky step-3 KL on H200 (#1234)"; missing on: {unlinked}'
@@ -94,8 +114,5 @@ def test_every_disabled_registration_cites_its_tracking_issue(monkeypatch):
 
 
 def test_no_spared_entry_outlives_its_reason(monkeypatch):
-    reasons = _disabled_reasons(monkeypatch)
-    stale = sorted(
-        key for key in _UNLINKED_BEFORE_THE_RULE if key not in reasons or _TRACKING_REF.search(reasons[key])
-    )
+    stale = sorted(_UNLINKED_BEFORE_THE_RULE - set(_unlinked_disabled(monkeypatch)))
     assert stale == [], f"these exceptions are re-enabled or now cite an issue; delete them: {stale}"

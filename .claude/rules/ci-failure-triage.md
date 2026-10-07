@@ -32,8 +32,7 @@ differently, it is infra or a flake, not the PR.
 
 ## Report an infra failure
 
-When a re-run still shows an infra signal, open a GitHub issue labeled
-`ci-infra` with:
+When a re-run still shows an infra signal, open a GitHub issue with:
 
 - the failing job URL;
 - the runner name (`runner_name`, at the top of the job log);
@@ -48,9 +47,9 @@ the issue is the tracked record.
 ## Report a flaky test
 
 A flaky test fails non-deterministically, usually on a numeric, accuracy, or
-timing assertion, and passes on a re-run with no code change. PR CI runs each
-test once, so a flake fails the check. Report a test that flakes repeatedly in
-a GitHub issue labeled `flaky` with:
+timing assertion, and passes on a re-run with no code change. CUDA PR CI runs
+each test once, so a flake fails the check. Report a test that flakes
+repeatedly in a GitHub issue with:
 
 - the test file path (e.g. `tests/e2e/megatron/test_x.py`);
 - the failing `AssertionError` line;
