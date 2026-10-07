@@ -99,14 +99,20 @@ class BaseReplayManager:
             if self.enable_check_replay_result:
                 self.check_replay_result(old_topk_fn, scores, topk, top_indices, *args, **kwargs)
 
-            # fill padding tokens with arange to avoid invalid reading
+            # Fill all-(-1) pad rows with in-range indices, striding across pad
+            # rows so repeated per-sample padding does not pile onto the same columns.
+            # Pads are loss-masked, so any in-range index is valid.
             all_invalid = (top_indices == -1).all(dim=-1)
-            if all_invalid.any():
-                ar = (
-                    torch.arange(top_indices.shape[1], device=top_indices.device, dtype=top_indices.dtype)
-                    % scores.shape[1]
-                )
-                top_indices = torch.where(all_invalid.unsqueeze(-1), ar, top_indices)
+            num_invalid = all_invalid.sum().item()
+            if num_invalid:
+                fill = torch.arange(
+                    num_invalid * topk,
+                    device=top_indices.device,
+                    dtype=top_indices.dtype,
+                ).view(num_invalid, topk)
+                fill.remainder_(scores.shape[1])
+                top_indices = top_indices.clone()
+                top_indices[all_invalid] = fill
 
             if return_probs:
                 return scores.gather(1, top_indices), top_indices
