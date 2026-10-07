@@ -93,8 +93,9 @@ down exactly once.
 
 **`.claude/rules/`** holds path-scoped conventions. Each file carries a `paths:` front
 matter list, and the rule applies to any file matching it. `general-code-style.md` is the
-one described above. `AGENTS.md` at the repo root points Codex at the same file, so both
-agents and humans review against one document.
+one described above; `ci-test-registration.md` holds the rules for adding a CI test (see
+[Registering a test](#registering-a-test)). `AGENTS.md` at the repo root points Codex at
+the same files, so both agents and humans review against one document.
 
 **`.claude/skills/`** holds procedures, one directory per skill with a `SKILL.md`. They
 are workflows rather than style rules:
@@ -146,30 +147,16 @@ formatting or import error does not burn GPU time. A PR that touches `docker/Doc
 
 ### Registering a test
 
-Selection is declared in the test file, never in the workflow YAML.
+Selection is declared in the test file, never in the workflow YAML. Every `test_*.py`
+under `tests/fast/` is auto-registered as a CPU test in `stage-a-cpu`; a file under
+`tests/fast-gpu`, `tests/e2e` or `tests/ci` declares a top-level `register_*_ci(...)` call,
+or collection fails with `No CI registry found`.
 
-- **CPU tests go in `tests/fast/`.** Every `test_*.py` there is auto-registered as a CPU
-  test in `stage-a-cpu` with no labels, and runs in every `PR Test` run. A
-  `register_cuda_ci` under `tests/fast/` is a hard error; move the file to `tests/fast-gpu/`.
-- **Everywhere else, register explicitly.** One top-level call per file:
-
-```python
-from tests.ci.ci_register import register_cuda_ci
-
-register_cuda_ci(
-    est_time=600,                 # rough seconds; balances shards and sets the per-file timeout
-    suite="stage-c-4-gpu-h200",   # the home stage that runs it by default
-    labels=["megatron"],          # required for CUDA and ROCm tests
-    hardware=["hopper", "blackwell"],  # required CUDA generations
-)
-```
-
-`register_cpu_ci` allows empty labels for always-on CPU coverage; `register_cuda_ci` and `register_rocm_ci` require a non-empty domain-label list. `register_cuda_ci` also requires a non-empty `hardware` list, with the generation matching its home `suite` first. All three accept `nightly=True` (nightly, weekly, and release cadence only) and `disabled="<reason + issue link>"` (reported as skipped rather than deleted). The calls are parsed from the AST, so they must be top-level, literal, and unaliased.
-
-The runner scans `tests/fast`, `tests/fast-gpu`, `tests/e2e` and `tests/ci` for
-`test_*.py`, and a file outside `tests/fast/` with no registration fails collection with
-`No CI registry found`. Suites are `stage-<tier>-<gpus>-<hw>`; pick the one an existing
-test like yours uses, because a typo'd suite has no job and silently never runs.
+Where the file goes, which stage runs it, how it is declared, how `est_time` is measured
+with `/rerun-test`, and when `disabled=` is allowed are rules, written once in
+[`.claude/rules/ci-test-registration.md`](https://github.com/radixark/miles/blob/main/.claude/rules/ci-test-registration.md).
+The [CI Contributor Guide](/developer/ci/contributor-guide) covers the mechanics around
+them.
 
 ### Verify it actually runs
 
@@ -245,6 +232,8 @@ Before marking a PR ready for review:
 - [ ] `pytest tests/fast` passes, plus `tests/fast-gpu` if you have a GPU.
 - [ ] New behavior has a test, registered where CI will find it (verified with
   `--list-only`).
+- [ ] Each new or moved CI test has its `CI timing:` line in the PR description, from a
+  `/rerun-test` run (see `.claude/rules/ci-test-registration.md`).
 - [ ] A new flag appears in [CLI Reference](/user-guide/cli-reference), and
   `python3 train.py --help` still parses.
 - [ ] A change to a `doc-dev:` governed file updates its document in the same PR.

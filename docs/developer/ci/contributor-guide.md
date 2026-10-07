@@ -8,31 +8,9 @@ This guide is for contributors landing small features and fixes. It answers thre
 
 CI selection is driven by a one-line declaration at the top of each test file, not by the workflow. To add a test you drop a `test_*.py` file in the right place and declare it; the runner discovers it automatically.
 
-**CPU / pure-Python tests** go under `tests/fast/`. No declaration needed — every `test_*.py` there is auto-registered as a CPU test and runs in every `PR Test` run.
+**CPU / pure-Python tests** in `tests/fast/` need no declaration — every `test_*.py` there is auto-registered as a CPU test and runs in every `PR Test` run. **GPU tests** go under `tests/e2e/` (or `tests/fast-gpu/` for short GPU checks) and declare a top-level `register_cuda_ci(...)`.
 
-**GPU tests** go under `tests/e2e/` (or `tests/fast-gpu/` for small single-file GPU tests) and need exactly one top-level declaration:
-
-```python
-from tests.ci.ci_register import register_cuda_ci
-
-register_cuda_ci(
-    est_time=600,                  # rough seconds the test takes; used to balance + time-out
-    suite="stage-c-4-gpu-h200",    # home stage (table below)
-    labels=["megatron"],           # required; see "Will it run on my PR?"
-    hardware=["hopper", "blackwell"],  # required; supported CUDA generations
-)
-```
-
-Pick the `suite` by the hardware your test needs. The simplest reliable choice is to copy the `suite=` of an existing test most like yours. List every supported CUDA generation in `hardware`, with the generation matching the home `suite` first.
-
-| Suite | Runs on | Use for |
-|---|---|---|
-| (none — put file in `tests/fast/`) | CPU | pure-Python / CPU-only tests |
-| `stage-b-2-gpu-h200` | 2× H200 | small 2-GPU tests |
-| `stage-c-2-gpu-h200` | 2× H200 | 2-GPU tests |
-| `stage-c-4-gpu-h200` | 4× H200 | 4-GPU tests |
-| `stage-c-8-gpu-h100` | 8× H100 | 8-GPU tests |
-| `stage-c-8-gpu-b200` | 8× B200 | tests that need Blackwell (nvfp4, mxfp8) — any GPU count |
+The rules for adding a test — where the file goes, which stage runs it, how it is declared, how `est_time` is measured, and when `disabled=` is allowed — are written once, in [`.claude/rules/ci-test-registration.md`](https://github.com/radixark/miles/blob/main/.claude/rules/ci-test-registration.md), which coding agents load as well. In short: pick the cheapest stage that can run the test, run it once with `/rerun-test` before the PR merges, and set `est_time` from the measured **Run tests** time. The rest of this section covers the mechanics around those rules.
 
 ### Verify it definitely runs
 
@@ -48,8 +26,10 @@ A test that isn't picked up fails silently — it just never appears, and CI sta
 
 If your file does **not** show up, check, in order:
 - It's named `test_*.py` and lives under `tests/fast`, `tests/fast-gpu`, `tests/e2e`, or `tests/ci` (the only discovered roots).
-- It has exactly one top-level `register_*_ci(...)` call (GPU tests only; not inside a function, not import-aliased).
-- The `suite=` string is one of the suites in the table (a typo'd suite has no job and never runs).
+- It has a top-level `register_*_ci(...)` call (GPU tests only; not inside a function, not import-aliased).
+- The `suite=` string is a real stage: a CUDA suite in `tests/ci/hardware.py`'s `CUDA_STAGES`, or `stage-a-cpu` / `stage-b-cpu` for CPU (a typo'd suite has no job and never runs).
+
+`/rerun-test <test-file>`, which the rules use to measure a new test, is described in [Manage CI from PR comments](/developer/ci/01-label#manage-ci-from-pr-comments).
 
 ### Will it run on my PR?
 
@@ -110,4 +90,4 @@ Open a **GitHub Issue** labeled **`flaky`** with:
 - The **assertion that failed** (the `AssertionError` line).
 - Run URLs for both a passing and a failing run, if you have them.
 
-To unblock other PRs, a maintainer may temporarily set `disabled="<reason + issue link>"` on the test's `register_*_ci(...)` — that reports it as skipped (not deleted) until the flake is fixed. Don't disable a test in your own feature PR unless a maintainer asks.
+To unblock other PRs, a maintainer may temporarily set `disabled="<reason> (#<issue>)"` on the test's `register_*_ci(...)` — that reports it as skipped (not deleted) until the flake is fixed. The `disabled=` rules, including the required issue link, are in [`.claude/rules/ci-test-registration.md`](https://github.com/radixark/miles/blob/main/.claude/rules/ci-test-registration.md#disabled).
