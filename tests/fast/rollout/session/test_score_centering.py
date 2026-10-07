@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import numpy as np
 import pytest
-from tests.fast.fixtures.score_centering_fixtures import _args, _meta, _Tokenizer
+from tests.fast.fixtures.score_centering_fixtures import _args, _flat_meta, _meta, _Tokenizer
 from tests.fast.fixtures.session_fixtures import make_session_server_config
 
 from miles.rollout.generate_utils.rollout_topk_logprobs import validate_rollout_topk_logprobs_sample
@@ -43,18 +43,21 @@ def test_score_centering_training_and_evaluation_sessions(registry_type: type, c
                 {"temperature": 0}, tokenizer, config=config, turn_args=None, evaluation=session.evaluation
             ).body
             assert request["temperature"] == 0 and "top_logprobs" not in request
+            assert "return_flat_raw_output_top_logprobs" not in request
         else:
             request = prepare_chat_request(
                 {}, tokenizer, config=config, turn_args=None, evaluation=session.evaluation
             ).body
             assert request["top_logprobs"] == 128 and request["temperature"] == 0.7
+            assert request["return_flat_raw_output_top_logprobs"] and request["return_flat_raw_top_logprobs_b64"]
             with pytest.raises(MessageValidationError, match="temperature"):
                 prepare_chat_request(
                     {"temperature": 0}, tokenizer, config=config, turn_args=None, evaluation=session.evaluation
                 )
 
 
-def test_session_producer_trims_candidates_with_tito_tokens() -> None:
+@pytest.mark.parametrize("meta", [_meta, _flat_meta], ids=["nested", "flat"])
+def test_session_producer_trims_candidates_with_tito_tokens(meta) -> None:
     records = []
     for prompt, output, probabilities in (([0, 1], [2, 3], [0.5, 0.25]), ([0, 1, 2, 6], [4, 5], [0.55, 0.2])):
         records.append(
@@ -65,7 +68,7 @@ def test_session_producer_trims_candidates_with_tito_tokens() -> None:
                 path="v1/chat/completions",
                 status_code=200,
                 request={"input_ids": prompt, "top_logprobs": 3},
-                response={"choices": [{"meta_info": _meta(output, probabilities), "finish_reason": "stop"}]},
+                response={"choices": [{"meta_info": meta(output, probabilities), "finish_reason": "stop"}]},
             )
         )
     samples = compute_samples_from_openai_records(
