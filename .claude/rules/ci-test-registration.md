@@ -38,7 +38,7 @@ run the test; copying a neighbouring test's `suite=` is not a reason.
 | 4 | `stage-c-2-gpu-h200` | 2× H200 | 2-GPU tests |
 | 5 | `stage-c-4-gpu-h200` | 4× H200 | 4-GPU tests |
 | 6 | `stage-c-8-gpu-h200` or `stage-c-8-gpu-h100` | 8× H200 / 8× H100 | 8-GPU tests |
-| — | `stage-c-8-gpu-b200` | 8× B200 | tests that cannot run on Hopper (`hardware=["blackwell"]`), any GPU count |
+| — | `stage-c-8-gpu-b200` | 8× B200 | preferably tests that cannot run on Hopper (`hardware=["blackwell"]`), any GPU count |
 
 The stage's GPU count equals the count the test requests (`ray start
 --num-gpus`, `--actor-num-gpus-per-node`, `torchrun --nproc-per-node`): a 4-GPU
@@ -77,26 +77,6 @@ register_cuda_ci(
 - `hardware`: list a GPU generation only when the code paths the test runs
   support it (`--sglang-attention-backend fa3` is Hopper-only; nvfp4 / mxfp8
   kernels are Blackwell-only). The generation of the home `suite` comes first.
-
-## Confirm CI picks it up
-
-A test that is never collected fails silently: it just never appears, and CI
-stays green. Confirm pickup before relying on it:
-
-1. From the repo root, list the plan for its suite; no GPU is needed. The file
-   must appear under `Enabled N test(s)`; add `--nightly` for a `nightly=True`
-   registration. The command also validates every discovered registration.
-   ```bash
-   python3 tests/ci/run_suite.py --hw <cpu|cuda> --suite <suite> --match-all-labels --list-only
-   ```
-2. On the PR, the matching stage job prints the same plan in its **Resolve
-   suite plan** step.
-
-If the file is missing, check in order: it is a `test_*.py` under a CI root;
-its `register_*_ci(...)` call is top-level, not inside a function or behind an
-aliased import; a `register_cpu_ci` suite is `stage-a-cpu` or `stage-b-cpu`,
-since a misspelled CPU suite has no job and never runs (a misspelled CUDA
-suite fails collection against `CUDA_STAGES` in `tests/ci/hardware.py`).
 
 ## Which PRs run it
 

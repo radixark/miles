@@ -27,6 +27,7 @@ from pathlib import Path, PurePosixPath
 
 import pytest
 from tests.ci.ci_register import _DISCOVERY_ROOTS, HWBackend, collect_tests, discover_ci_files, register_cpu_ci
+from tests.ci.run_suite import CI_SUITES
 
 register_cpu_ci(est_time=1, suite="stage-a-cpu", labels=[])
 
@@ -89,6 +90,18 @@ def test_no_known_orphan_outlives_its_reason():
     """A spared file that has since moved leaves an entry that spares nothing."""
     stale = sorted(f for f in _KNOWN_ORPHANS if not (REPO_ROOT / f).is_file())
     assert stale == [], f"these exceptions no longer name an existing file; delete them: {stale}"
+
+
+def test_every_registration_names_a_suite_a_job_runs(monkeypatch):
+    """A CPU or ROCm suite no job runs parses cleanly, so its test silently never runs.
+
+    A misspelled CUDA suite already fails collection against CUDA_STAGES.
+    """
+    monkeypatch.chdir(REPO_ROOT)
+    unknown = sorted(
+        (r.filename, r.suite) for r in collect_tests(discover_ci_files()) if r.suite not in CI_SUITES[r.backend]
+    )
+    assert unknown == [], f"no CI job runs these suites; pick one from run_suite.CI_SUITES: {unknown}"
 
 
 def test_the_example_suites_reach_the_cpu_plan(monkeypatch):

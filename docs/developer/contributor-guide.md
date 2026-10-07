@@ -153,9 +153,9 @@ under `tests/fast/` is auto-registered as a CPU test in `stage-a-cpu`; a file un
 `tests/fast-gpu`, `tests/e2e` or `tests/ci` declares a top-level `register_*_ci(...)` call,
 or collection fails with `No CI registry found`.
 
-Where the file goes, which stage runs it, how it is declared, which PRs run it, how to
-confirm CI picks it up, how `est_time` is measured with `/rerun-test`, and when
-`disabled=` is allowed are rules, written once in
+Where the file goes, which stage runs it, how it is declared, which PRs run it, how
+`est_time` is measured with `/rerun-test`, and when `disabled=` is allowed are rules,
+written once in
 [`.claude/rules/ci-test-registration.md`](https://github.com/radixark/miles/blob/main/.claude/rules/ci-test-registration.md).
 Telling your failure from an infra one, and reporting either, is in
 [`.claude/rules/ci-failure-triage.md`](https://github.com/radixark/miles/blob/main/.claude/rules/ci-failure-triage.md).
@@ -219,8 +219,7 @@ Before marking a PR ready for review:
 
 - [ ] `pre-commit run --all-files` is clean.
 - [ ] `pytest tests/fast` passes, plus `tests/fast-gpu` if you have a GPU.
-- [ ] New behavior has a test, registered where CI will find it (verified with
-  `--list-only`).
+- [ ] New behavior has a test.
 - [ ] Each new or moved CUDA test has its `CI timing:` line in the PR description, from a
   `/rerun-test` run (see `.claude/rules/ci-test-registration.md`).
 - [ ] A new flag appears in [CLI Reference](/user-guide/cli-reference), and
