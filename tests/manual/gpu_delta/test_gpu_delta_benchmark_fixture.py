@@ -61,11 +61,15 @@ def _replay(publication, state, codec):
                 decoded = zstandard.ZstdDecompressor().decompress(data, max_output_size=chunk["decoded_bytes"])
                 assert len(decoded) == chunk["decoded_bytes"]
                 arena[chunk["decoded_offset"] : chunk["decoded_offset"] + len(decoded)] = decoded
+        if outer and codec == "lz4":
+            assert outer["frames"] == [] and outer["encoded_bytes"] == outer["decoded_bytes"]
+            start = outer["encoded_offset"]
+            arena[:] = payloads[outer["file"]][start : start + outer["encoded_bytes"]]
         for frame in tensor["frames"]:
             encoded = arena[frame["encoded_offset"] : frame["encoded_offset"] + frame["encoded_bytes"]]
             raw = (
                 lz4.block.decompress(bytes(encoded), uncompressed_size=frame["decoded_bytes"])
-                if codec == "lz4-zstd"
+                if codec in ("lz4-zstd", "lz4")
                 else snappy.decompress(bytes(encoded))
             )
             assert len(raw) == frame["decoded_bytes"]
@@ -139,7 +143,10 @@ def test_three_versions_preserve_source_and_draft_and_replay_exact_targets(tmp_p
         previous = {name: data.copy() for name, data in state.items()}
         assert bench._validate_fixture_codec(report, codec) == codec
         _replay(row["publications"][codec], state, codec)
-        assert row["accounting"][codec]["outer_encoded_bytes"] > 0
+        assert row["accounting"][codec]["matrix_payload_bytes"] > 0
+        if codec == "lz4":
+            assert row["accounting"][codec]["outer_zstd_frames"] == 0
+            assert row["accounting"][codec]["matrix_payload_bytes"] == row["accounting"][codec]["inner_arena_bytes"]
         assert row["accounting"][codec]["alignment_bytes"] >= 0
         assert row["accounting"][codec]["raw_tensor_count"] == 2
         assert row["accounting"][codec]["raw_target_bytes"] == 256

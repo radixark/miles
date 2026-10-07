@@ -29,7 +29,7 @@ def _writer(path, owner=0, frame_bytes=publication.FRAME_BYTES, codec=publicatio
     )
 
 
-def _wrapped(base, target, frame_bytes=publication.FRAME_BYTES):
+def _encoded(base, target, frame_bytes=publication.FRAME_BYTES, codec=publication.CODEC):
     delta = np.bitwise_xor(base, target).reshape(-1)
     inner, frames = bytearray(), []
     for offset in range(0, delta.size, frame_bytes):
@@ -44,6 +44,13 @@ def _wrapped(base, target, frame_bytes=publication.FRAME_BYTES):
         inner.extend(payload)
     if not inner:
         return frames, b"", None, 0
+    if codec == "lz4":
+        return (
+            frames,
+            inner,
+            dict(decoded_bytes=len(inner), encoded_bytes=len(inner), frames=[]),
+            int(np.count_nonzero(delta)),
+        )
     payload, outer_frames = bytearray(), []
     for offset in range(0, len(inner), publication.FRAME_BYTES):
         raw = inner[offset : offset + publication.FRAME_BYTES]
@@ -64,8 +71,8 @@ def _wrapped(base, target, frame_bytes=publication.FRAME_BYTES):
 
 
 def _add(writer, name, base, target):
-    frames, payload, outer, changed = _wrapped(base, target, writer.frame_bytes)
-    return writer.add_gpu_outer_tensor(
+    frames, payload, outer, changed = _encoded(base, target, writer.frame_bytes, writer.metadata["codec"])
+    return writer.add_encoded_tensor(
         name, frames, payload, outer, changed_bytes=changed, dtype="U8", shape=list(base.shape)
     )
 
@@ -118,9 +125,12 @@ def test_framed_publication_preserves_payload_ranges_and_final_file_hash(tmp_pat
             set(frame) == {"decoded_offset", "decoded_bytes", "encoded_offset", "encoded_bytes"}
             for frame in entry["frames"]
         )
+        if codec == "lz4":
+            assert entry["outer"]["frames"] == []
+            assert entry["outer"]["encoded_bytes"] == entry["outer"]["decoded_bytes"]
         assert "codec" not in entry["outer"]
         assert all(frame["decoded_bytes"] <= publication.FRAME_BYTES for frame in entry["outer"]["frames"])
-        _, payload, _, _ = _wrapped(base, target, frame_bytes)
+        _, payload, _, _ = _encoded(base, target, frame_bytes, codec)
         offset = entry["outer"]["encoded_offset"]
         assert offset == 16 and blob[:offset] == b"abc" + bytes(13)
         assert blob[offset : offset + len(payload)] == payload
@@ -205,18 +215,22 @@ def test_raw_targets_bypass_compression_and_omit_unchanged(tmp_path, dtype, shap
         raw = changed["raw"]
         blob = (tmp_path / raw["file"]).read_bytes()
         assert blob[raw["encoded_offset"] : raw["encoded_offset"] + raw["encoded_bytes"]] == current.tobytes()
-    assert writer.outer_metrics["outer_input_bytes"] == writer.outer_metrics["outer_output_bytes"] == 0
+    assert writer.payload_metrics["matrix_inner_arena_bytes"] == writer.payload_metrics["matrix_payload_bytes"] == 0
 
 
 @pytest.mark.parametrize(
     "mutation", ["chunk-gap", "wrong-outer-size", "empty-with-changes", "wrong-inner-size", "expanded-over-bound"]
 )
-def test_malformed_ranges_rejected_before_file_write(tmp_path, mutation):
-    writer = _writer(tmp_path)
+@pytest.mark.parametrize("codec", publication.CODECS)
+def test_malformed_ranges_rejected_before_file_write(tmp_path, mutation, codec):
+    writer = _writer(tmp_path, codec=codec)
     base, target = np.zeros((1, 1000), np.uint8), np.ones((1, 1000), np.uint8)
-    frames, payload, outer, changed = _wrapped(base, target)
+    frames, payload, outer, changed = _encoded(base, target, codec=codec)
     if mutation == "chunk-gap":
-        outer["frames"][0]["decoded_offset"] = 1
+        if codec == "lz4":
+            outer["frames"] = [{"decoded_offset": 0}]
+        else:
+            outer["frames"][0]["decoded_offset"] = 1
     elif mutation == "wrong-outer-size":
         outer["decoded_bytes"] += 1
     elif mutation == "empty-with-changes":
@@ -226,6 +240,6 @@ def test_malformed_ranges_rejected_before_file_write(tmp_path, mutation):
     else:
         frames[0]["encoded_bytes"] = 32 + 1000 + 1000 // 6 + 1
     with pytest.raises(ValueError):
-        writer.add_gpu_outer_tensor("w", frames, payload, outer, changed_bytes=changed, dtype="U8", shape=[1, 1000])
+        writer.add_encoded_tensor("w", frames, payload, outer, changed_bytes=changed, dtype="U8", shape=[1, 1000])
     assert writer._file.tell() == 0 and not writer._entries
     writer.close()

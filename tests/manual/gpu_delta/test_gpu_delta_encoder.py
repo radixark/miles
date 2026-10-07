@@ -1,4 +1,4 @@
-"""Native Snappy-Zstd/LZ4-Zstd producer oracle; CPU decoding is test-only.
+"""Native Snappy-Zstd/LZ4-Zstd/plain-LZ4 producer oracle; CPU decoding is test-only.
 
 python -m pytest tests/manual/gpu_delta/test_gpu_delta_encoder.py -q
 Requires CUDA, nvCOMP >=5.3,<6, zstandard, python-snappy and lz4. No model is loaded.
@@ -25,13 +25,16 @@ def _decode(frames, payload, outer, old, codec):
         assert len(decoded) == frame["decoded_bytes"]
         begin = frame["decoded_offset"]
         arena[begin : begin + len(decoded)] = decoded
+    if outer is not None and codec == "lz4":
+        assert outer["frames"] == [] and outer["encoded_bytes"] == outer["decoded_bytes"] == len(payload)
+        arena[:] = payload
     target = old.copy()
     for frame in frames:
         start, size = frame["encoded_offset"], frame["encoded_bytes"]
         encoded = bytes(arena[start : start + size])
         raw = (
             lz4.block.decompress(encoded, uncompressed_size=frame["decoded_bytes"])
-            if codec == "lz4-zstd"
+            if codec in ("lz4-zstd", "lz4")
             else snappy.decompress(encoded)
         )
         assert len(raw) == frame["decoded_bytes"]
@@ -76,7 +79,7 @@ def test_cross_tensor_batch_exact_bytes_immutable_snapshots_and_owned_slab(frame
     monkeypatch.setattr(encoder.compressor, "compress", capture_batch)
     caller_stream = torch.cuda.Stream(device=device)
     with torch.device(device), torch.cuda.stream(caller_stream):
-        results = encoder.wrap_device(encoder.encode_device(inputs))
+        results = encoder.finish_device(encoder.encode_device(inputs))
     assert calls == [[frame_bytes, frame_bytes, 139, frame_bytes, 1, frame_bytes, 37, 4]]
     assert encoder.stream != caller_stream and encoder.stream.query()
     payloads = []
@@ -104,7 +107,7 @@ def test_cross_tensor_batch_exact_bytes_immutable_snapshots_and_owned_slab(frame
     assert results[3][:4] == results[5][:4] == ([], memoryview(b""), None, 0)
     assert payloads and all(payload.obj is payloads[0].obj for payload in payloads)
     saved = [bytes(payload) for payload in payloads]
-    another = encoder.wrap_device(
+    another = encoder.finish_device(
         encoder.encode_device([(_pinned(np.zeros(4096, dtype=np.uint8)), _pinned(np.full(4096, 31, dtype=np.uint8)))])
     )
     assert another[0][1].obj is not payloads[0].obj
@@ -115,15 +118,15 @@ def test_cross_tensor_batch_exact_bytes_immutable_snapshots_and_owned_slab(frame
 def test_empty_and_all_unchanged_batches(codec):
     encoder = gpu_delta_encoder.GpuBatchEncoder(torch.device("cuda", torch.cuda.current_device()), codec=codec)
     empty = _pinned(np.empty(0, dtype=np.uint8))
-    assert encoder.wrap_device(encoder.encode_device([])) == []
-    assert encoder.wrap_device(encoder.encode_device([(empty, empty)]))[0][:4] == (
+    assert encoder.finish_device(encoder.encode_device([])) == []
+    assert encoder.finish_device(encoder.encode_device([(empty, empty)]))[0][:4] == (
         [],
         memoryview(b""),
         None,
         0,
     )
     value = _pinned(np.arange(4096, dtype=np.uint8))
-    results = encoder.wrap_device(encoder.encode_device([(value, value), (empty, empty)]))
+    results = encoder.finish_device(encoder.encode_device([(value, value), (empty, empty)]))
     assert [result[:4] for result in results] == [([], memoryview(b""), None, 0)] * 2
     assert all(result[4]["encoded_d2h_bytes"] == 0 for result in results)
     np.testing.assert_array_equal(value.numpy(), np.arange(4096, dtype=np.uint8))
@@ -162,8 +165,10 @@ def test_tiled_xor_counts_each_wire_frame_and_partial_tile_exactly():
         np.testing.assert_array_equal(target.cpu().numpy(), mask)
 
 
-@pytest.mark.parametrize("codec", CODECS)
-@pytest.mark.parametrize("stage", ["inner", "outer"])
+@pytest.mark.parametrize(
+    "codec,stage",
+    [(codec, stage) for codec in CODECS for stage in ("inner", "outer") if stage == "inner" or codec != "lz4"],
+)
 def test_failed_batch_status_drains_stream_and_keeps_snapshots(stage, codec, monkeypatch):
     encoder = gpu_delta_encoder.GpuBatchEncoder(torch.device("cuda", torch.cuda.current_device()), codec=codec)
     compressor = encoder.compressor if stage == "inner" else encoder.outer_compressor
@@ -179,7 +184,7 @@ def test_failed_batch_status_drains_stream_and_keeps_snapshots(stage, codec, mon
     monkeypatch.setattr(compressor, "compress", failed_status)
     old, current, inputs = _snapshots()
     with pytest.raises(RuntimeError, match="compression failed"):
-        encoder.wrap_device(encoder.encode_device(inputs))
+        encoder.finish_device(encoder.encode_device(inputs))
     assert pending.query() and encoder.stream.query()
     for index, (before, after) in enumerate(inputs):
         np.testing.assert_array_equal(before.numpy(), old[index])
@@ -200,7 +205,7 @@ def test_partial_payload_failure_drains_owned_slabs(codec, monkeypatch):
     monkeypatch.setattr(gpu_delta_encoder, "_copy_payload_slab", fail_after_copy)
     before, after = _pinned(np.zeros(139, dtype=np.uint8)), _pinned(np.arange(139, dtype=np.uint8))
     with pytest.raises(RuntimeError, match="partial payload"):
-        encoder.wrap_device(encoder.encode_device([(before, after)]))
+        encoder.finish_device(encoder.encode_device([(before, after)]))
     assert pending.query() and encoder.stream.query()
     np.testing.assert_array_equal(before.numpy(), np.zeros(139, dtype=np.uint8))
     np.testing.assert_array_equal(after.numpy(), np.arange(139, dtype=np.uint8))
@@ -208,11 +213,12 @@ def test_partial_payload_failure_drains_owned_slabs(codec, monkeypatch):
 
 @pytest.mark.parametrize("codec", CODECS)
 @pytest.mark.parametrize("frame_bytes", [1 << 16, 1 << 19, FRAME_BYTES, 1 << 22])
-def test_owner_wide_outer_roundtrip_only_transfers_final_bytes(frame_bytes, codec, monkeypatch, tmp_path):
+def test_owner_wide_finalization_roundtrip_only_transfers_final_bytes(frame_bytes, codec, monkeypatch, tmp_path):
     encoder = gpu_delta_encoder.GpuBatchEncoder(
         torch.device("cuda", torch.cuda.current_device()), frame_bytes, codec=codec
     )
-    original_copy, original_compress = gpu_delta_encoder._copy_payload_slab, encoder.outer_compressor.compress
+    original_copy = gpu_delta_encoder._copy_payload_slab
+    original_compress = encoder.outer_compressor.compress if encoder.outer_compressor is not None else None
     copies, outer_calls = [], []
 
     def copy(packed, transfer):
@@ -224,12 +230,23 @@ def test_owner_wide_outer_roundtrip_only_transfers_final_bytes(frame_bytes, code
         return original_compress(frames, stream, **kwargs)
 
     monkeypatch.setattr(gpu_delta_encoder, "_copy_payload_slab", copy)
-    monkeypatch.setattr(encoder.outer_compressor, "compress", compress)
+    if encoder.outer_compressor is not None:
+        monkeypatch.setattr(encoder.outer_compressor, "compress", compress)
     before, after, snapshots = _snapshots(frame_bytes)
     inner = encoder.encode_device(snapshots[:2]) + encoder.encode_device(snapshots[2:])
     assert copies == []
-    results = encoder.wrap_device(inner)
-    assert len(outer_calls) == 1 and max(outer_calls[0]) <= FRAME_BYTES
+    results = encoder.finish_device(inner)
+    if codec == "lz4":
+        assert encoder.outer_compressor is None and not outer_calls
+        assert (
+            encoder.finalization_metrics["outer_zstd_frames"]
+            == encoder.finalization_metrics["outer_zstd_metadata_wait_s"]
+            == 0
+        )
+        assert encoder.finalization_metrics["outer_zstd_wall_s"] == 0
+        assert encoder.finalization_metrics["pack_d2h_wall_s"] > 0
+    else:
+        assert len(outer_calls) == 1 and max(outer_calls[0]) <= FRAME_BYTES
     assert len(copies) == 1 and copies[0] == sum(result[4]["encoded_d2h_bytes"] for result in results)
     writer = PublicationWriter(
         tmp_path,
@@ -242,7 +259,7 @@ def test_owner_wide_outer_roundtrip_only_transfers_final_bytes(frame_bytes, code
     )
     for index, (frames, payload, outer, changed, _) in enumerate(results):
         np.testing.assert_array_equal(_decode(frames, payload, outer, before[index], codec), after[index])
-        writer.add_gpu_outer_tensor(
+        writer.add_encoded_tensor(
             f"w{index}", frames, payload, outer, changed_bytes=changed, dtype="U8", shape=[1, len(before[index])]
         )
     descriptor = writer.finish()

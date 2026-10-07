@@ -1,7 +1,7 @@
 """Immutable, independently framed canonical publications for direct GPU apply.
 
 This is a new wire format. The disk-delta checkpoint patcher must never consume
-it. GPU Snappy or LZ4 frames followed by GPU Zstd form the matrix payload.
+it. GPU Snappy/LZ4 frames with optional GPU Zstd wrapping form the matrix payload.
 """
 
 from __future__ import annotations
@@ -26,7 +26,7 @@ FRAME_BYTES = 1 << 20
 # 2 MiB is a producer benchmark profile, not a streaming-receiver capability.
 _FRAME_SIZES = (1 << 16, 1 << 19, FRAME_BYTES, 1 << 21, 1 << 22)
 CODEC = "snappy-zstd"
-CODECS = (CODEC, "lz4-zstd")
+CODECS = {CODEC: ("snappy", "zstd"), "lz4-zstd": ("lz4", "zstd"), "lz4": ("lz4", None)}
 DTYPE_BYTES = {
     "BOOL": 1,
     "U8": 1,
@@ -71,7 +71,7 @@ def configured_codec(initial_sync: bool = False) -> str:
     variable = "GPU_DELTA_INITIAL_SYNC_CODEC" if initial_sync else "GPU_DELTA_CODEC"
     codec = os.environ.get(variable, "lz4-zstd" if initial_sync else CODEC)
     if codec not in CODECS:
-        raise ValueError(f"Expected {variable}=snappy-zstd or lz4-zstd")
+        raise ValueError(f"Expected {variable}=snappy-zstd, lz4-zstd or lz4")
     return codec
 
 
@@ -123,15 +123,15 @@ def _write_exclusive(path: Path, content: bytes) -> None:
         os.fsync(output.fileno())
 
 
-def _validate_gpu_outer(entry, outer, payload, frame_bytes):
+def _validate_encoded_tensor(entry, outer, payload, frame_bytes, outer_codec):
     """Validate metadata without reading inner compressed buffers back to the CPU."""
     frames = entry["frames"]
     if not frames:
         if outer is not None or len(payload) or entry["changed_bytes"]:
-            raise ValueError("Unchanged GPU outer tensor must have no payload")
+            raise ValueError("Unchanged encoded tensor must have no payload")
         return
     if not isinstance(outer, dict) or not entry["changed_bytes"]:
-        raise ValueError("Changed GPU outer tensor requires an outer description")
+        raise ValueError("Changed encoded tensor requires an outer description")
     end, inner_end = 0, 0
     for frame in frames:
         offset, size = frame["decoded_offset"], frame["decoded_bytes"]
@@ -149,10 +149,14 @@ def _validate_gpu_outer(entry, outer, payload, frame_bytes):
             or encoded_size <= 0
             or encoded_size > 32 + size + size // 6
         ):
-            raise ValueError("Invalid GPU outer inner frame")
+            raise ValueError("Invalid inner frame")
         end, inner_end = offset + size, encoded_offset + encoded_size
     if outer.get("decoded_bytes") != inner_end or outer.get("encoded_bytes") != len(payload):
-        raise ValueError("Invalid GPU outer arena size")
+        raise ValueError("Invalid encoded tensor arena size")
+    if outer_codec is None:
+        if outer.get("frames") != [] or len(payload) != inner_end:
+            raise ValueError("Plain LZ4 requires an unwrapped inner arena")
+        return
     encoded_end, decoded_end = 0, 0
     for frame in outer.get("frames", []):
         offset, size = frame["decoded_offset"], frame["decoded_bytes"]
@@ -197,9 +201,10 @@ class PublicationWriter:
         if type(frame_bytes) is not int or frame_bytes not in _FRAME_SIZES:
             raise ValueError("GPU-delta frame_bytes must be 64 KiB, 512 KiB, 1 MiB, 2 MiB or 4 MiB")
         self.frame_bytes = frame_bytes
+        _, self._outer_codec = CODECS[codec]
         self.directory = Path(directory)
         self.directory.mkdir(parents=True, exist_ok=True)
-        self.outer_metrics = dict(outer_hash_write_s=0.0, outer_input_bytes=0, outer_output_bytes=0)
+        self.payload_metrics = dict(matrix_hash_write_s=0.0, matrix_inner_arena_bytes=0, matrix_payload_bytes=0)
         self._hash = None if os.environ.get("GPU_DELTA_SKIP_PAYLOAD_HASH") == "1" else hashlib.sha256()
         self.metadata = {
             "protocol_version": 4,
@@ -240,32 +245,32 @@ class PublicationWriter:
             self._entries[name] = entry
         return entry
 
-    def add_gpu_outer_tensor(self, name, frames, payload, outer, changed_bytes, dtype, shape, views=None):
-        """Publish GPU-wrapped bytes; optional CPU hashing covers only final wire bytes."""
+    def add_encoded_tensor(self, name, frames, payload, outer, changed_bytes, dtype, shape, views=None):
+        """Publish finalized matrix bytes; optional CPU hashing covers only final wire bytes."""
         entry = tensor_metadata(name, dtype=dtype, shape=shape, views=views)
         if type(changed_bytes) is not int or not 0 <= changed_bytes <= entry["nbytes"]:
             raise ValueError("Invalid changed-byte count")
         entry["changed_bytes"] = changed_bytes
         entry["frames"] = [dict(frame) for frame in frames]
-        _validate_gpu_outer(entry, outer, payload, self.frame_bytes)
+        _validate_encoded_tensor(entry, outer, payload, self.frame_bytes, self._outer_codec)
         with self._lock:
             if outer is not None:
-                self._write_outer_bytes(bytes((-self._file.tell()) % 16))
+                self._write_encoded_bytes(bytes((-self._file.tell()) % 16))
                 entry["outer"] = dict(outer, file=self._filename, encoded_offset=self._file.tell())
-                self._write_outer_bytes(payload)
-                self.outer_metrics["outer_input_bytes"] += outer["decoded_bytes"]
-                self.outer_metrics["outer_output_bytes"] += len(payload)
+                self._write_encoded_bytes(payload)
+                self.payload_metrics["matrix_inner_arena_bytes"] += outer["decoded_bytes"]
+                self.payload_metrics["matrix_payload_bytes"] += len(payload)
             self._entries[name] = entry
         return entry
 
-    def _write_outer_bytes(self, data):
+    def _write_encoded_bytes(self, data):
         if not data:
             return
         started = time.monotonic()
         self._file.write(data)
         if self._hash is not None:
             self._hash.update(data)
-        self.outer_metrics["outer_hash_write_s"] += time.monotonic() - started
+        self.payload_metrics["matrix_hash_write_s"] += time.monotonic() - started
 
     def finish_shard(self) -> dict:
         with self._lock:

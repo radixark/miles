@@ -1,7 +1,7 @@
 """Cross-tensor GPU XOR/compression from immutable pinned CPU snapshots.
 
 One owner uploads a bounded batch, compresses all of its independent frames in
-one inner-codec call. A final owner-wide Zstd call returns the pinned wire slab. Canonical bytes are
+one inner-codec call. Optional owner-wide Zstd precedes one final pinned wire slab. Canonical bytes are
 never hashed or copied back to the CPU by this encoder.
 """
 
@@ -14,7 +14,7 @@ from dataclasses import dataclass
 
 import torch
 
-from miles.utils.gpu_delta.publication import CODEC, FRAME_BYTES
+from miles.utils.gpu_delta.publication import CODEC, CODECS, FRAME_BYTES
 
 try:
     import triton
@@ -220,8 +220,8 @@ class GpuBatchEncoder:
 
     ``encode_device`` takes ``[(old_pinned_u8, new_pinned_u8), ...]``.
     Neither input may be modified concurrently. Compact inner-codec HBM survives
-    input batches until ``wrap_device`` returns the final pinned Zstd bytes.
-    Inner frames are configurable; outer Zstd chunks stay at 1 MiB. The receiver
+    input batches until ``finish_device`` returns the final pinned wire bytes.
+    Inner frames are configurable; optional outer Zstd chunks stay at 1 MiB. The receiver
     independently admits actual encoded and decoded sizes against its DE limit.
     """
 
@@ -236,14 +236,15 @@ class GpuBatchEncoder:
         self.device, self.frame_bytes = torch.device(device), frame_bytes
         self.timing = os.environ.get("GPU_DELTA_TIMING", "0") == "1"
         self.stream = torch.cuda.Stream(device=self.device)
-        self.compressor = NvcompCompressor({"snappy-zstd": "snappy", "lz4-zstd": "lz4"}[codec], self.device)
-        self.outer_compressor = NvcompCompressor("zstd", self.device)
-        self.outer_metrics = {}
+        inner_codec, outer_codec = CODECS[codec]
+        self.compressor = NvcompCompressor(inner_codec, self.device)
+        self.outer_compressor = NvcompCompressor(outer_codec, self.device) if outer_codec else None
+        self.finalization_metrics = {}
         with torch.cuda.device(self.device), torch.cuda.stream(self.stream):
             self._alignment_padding = torch.zeros(15, dtype=torch.uint8, device=self.device)
         if frame_bytes % self.compressor._alignments.input:
             raise ValueError("GPU delta frame_bytes must preserve nvCOMP input alignment")
-        if 16 % self.outer_compressor._alignments.input:
+        if self.outer_compressor is not None and 16 % self.outer_compressor._alignments.input:
             raise RuntimeError("GPU outer Zstd input alignment exceeds the wire contract")
 
     def encode_device(self, tensors):
@@ -302,29 +303,10 @@ class GpuBatchEncoder:
             self.stream.synchronize()
             raise
 
-    def wrap_device(self, tensors: list[DeviceEncodedTensor]):
-        """Wrap all retained owner tensors in one batched GPU Zstd call."""
-        started, phases, transfer = time.monotonic(), _PhaseTimes(self.timing), {}
-        # Natural tensor boundaries are retained; only a large tensor arena is
-        # independently framed so the receiver needs no opaque nvCOMP container.
-        groups = [list(item.payload.split(FRAME_BYTES)) if item.payload is not None else [] for item in tensors]
-        frames = [frame for group in groups for frame in group]
-        resident = {
-            item.payload.untyped_storage().data_ptr(): item.payload.untyped_storage().nbytes()
-            for item in tensors
-            if item.payload is not None
-        }
-        if not frames:
-            self.outer_metrics = {
-                "outer_gpu_wall_s": time.monotonic() - started,
-                "outer_gpu_frames": 0,
-                "resident_inner_hbm_bytes": 0,
-                "outer_gpu_final_d2h_bytes": 0,
-            }
-            return [(item.frames, memoryview(b""), None, item.changed, item.metrics) for item in tensors]
+    def _compress_outer(self, groups, frames, phases):
         try:
             with torch.cuda.device(self.device), torch.cuda.stream(self.stream):
-                with phases.record("outer_compression_s"):
+                with phases.record("outer_zstd_s"):
                     batch = self.outer_compressor.compress(frames, self.stream, compact_outputs=True)
                 metadata = torch.stack((batch.sizes, batch.statuses.to(torch.int64)))
                 host = torch.empty(metadata.shape, dtype=torch.int64, device="cpu", pin_memory=True)
@@ -352,33 +334,72 @@ class GpuBatchEncoder:
                     ]
                 )
                 cursor += len(group)
+            return encoded_groups, metadata_wait
+        except Exception:
+            # Keep metadata, outputs and temporary work alive until drained.
+            self.stream.synchronize()
+            raise
+
+    def finish_device(self, tensors: list[DeviceEncodedTensor]):
+        """Optionally Zstd-wrap, then pack all owner tensors into one pinned slab."""
+        started, phases, transfer = time.monotonic(), _PhaseTimes(self.timing), {}
+        wrapped = self.outer_compressor is not None
+        # Plain LZ4 already has aligned inner arenas; preserve them intact.
+        # Wrapped codecs split only within natural tensor boundaries.
+        groups = [
+            (list(item.payload.split(FRAME_BYTES)) if wrapped else [item.payload]) if item.payload is not None else []
+            for item in tensors
+        ]
+        frames = [frame for group in groups for frame in group]
+        resident = {
+            item.payload.untyped_storage().data_ptr(): item.payload.untyped_storage().nbytes()
+            for item in tensors
+            if item.payload is not None
+        }
+        if not frames:
+            self.finalization_metrics = {
+                "finalize_wall_s": time.monotonic() - started,
+                "outer_zstd_frames": 0,
+                "resident_inner_hbm_bytes": 0,
+                "final_payload_d2h_bytes": 0,
+                "outer_zstd_wall_s": 0.0,
+                "pack_d2h_wall_s": 0.0,
+            }
+            return [(item.frames, memoryview(b""), None, item.changed, item.metrics) for item in tensors]
+        try:
+            compression_started = time.monotonic()
+            encoded_groups, metadata_wait = self._compress_outer(groups, frames, phases) if wrapped else (groups, 0.0)
+            compression_wall = time.monotonic() - compression_started if wrapped else 0.0
+            pack_started = time.monotonic()
             with torch.cuda.device(self.device), torch.cuda.stream(self.stream):
-                with phases.record("outer_pack_d2h_s"):
+                with phases.record("pack_d2h_s"):
                     arenas, offsets, packed = _pack_device_arenas(encoded_groups, self._alignment_padding)
-                    # Preserve the tiny inter-tensor alignment gaps: copy this
-                    # one arena directly rather than concatenating its views.
+                    # Retain alignment and perform only one owner-wide D2H.
                     _copy_payload_slab(packed, transfer)
                 done = torch.cuda.Event()
                 done.record()
             waiting = time.monotonic()
             done.synchronize()
             payload_wait = time.monotonic() - waiting
+            pack_wall = time.monotonic() - pack_started
         except Exception:
             self.stream.synchronize()
             raise
-        self.outer_metrics = {
-            "outer_gpu_wall_s": time.monotonic() - started,
-            "outer_gpu_frames": len(frames),
+        self.finalization_metrics = {
+            "finalize_wall_s": time.monotonic() - started,
+            "outer_zstd_frames": len(frames) if wrapped else 0,
+            "outer_zstd_wall_s": compression_wall,
+            "pack_d2h_wall_s": pack_wall,
             "resident_inner_hbm_bytes": sum(resident.values()),
-            "outer_gpu_final_d2h_bytes": transfer["host"].numel(),
-            "outer_gpu_metadata_wait_s": metadata_wait,
-            "outer_gpu_payload_wait_s": payload_wait,
-            "outer_gpu_cuda_phase_s": phases.elapsed(),
+            "final_payload_d2h_bytes": transfer["host"].numel(),
+            "outer_zstd_metadata_wait_s": metadata_wait,
+            "payload_d2h_wait_s": payload_wait,
+            "finalize_cuda_phase_s": phases.elapsed(),
         }
-        return _wrapped_results(tensors, groups, encoded_groups, arenas, offsets, transfer)
+        return _finished_results(tensors, groups, encoded_groups, arenas, offsets, transfer, wrapped)
 
 
-def _wrapped_results(tensors, groups, encoded_groups, arenas, offsets, transfer):
+def _finished_results(tensors, groups, encoded_groups, arenas, offsets, transfer, wrapped):
     storage, cursor, results = memoryview(transfer["host"].numpy()), 0, []
     for item, inputs, outputs, arena, starts in zip(tensors, groups, encoded_groups, arenas, offsets, strict=True):
         size = arena.numel() if arena is not None else 0
@@ -390,15 +411,19 @@ def _wrapped_results(tensors, groups, encoded_groups, arenas, offsets, transfer)
             outer = dict(
                 encoded_bytes=size,
                 decoded_bytes=item.payload.numel(),
-                frames=[
-                    dict(
-                        encoded_offset=start,
-                        encoded_bytes=output.numel(),
-                        decoded_offset=index * FRAME_BYTES,
-                        decoded_bytes=original.numel(),
-                    )
-                    for index, (original, output, start) in enumerate(zip(inputs, outputs, starts, strict=True))
-                ],
+                frames=(
+                    [
+                        dict(
+                            encoded_offset=start,
+                            encoded_bytes=output.numel(),
+                            decoded_offset=index * FRAME_BYTES,
+                            decoded_bytes=original.numel(),
+                        )
+                        for index, (original, output, start) in enumerate(zip(inputs, outputs, starts, strict=True))
+                    ]
+                    if wrapped
+                    else []
+                ),
             )
         metrics = dict(item.metrics, encoded_d2h_bytes=transfer_bytes)
         results.append((item.frames, payload, outer, item.changed, metrics))

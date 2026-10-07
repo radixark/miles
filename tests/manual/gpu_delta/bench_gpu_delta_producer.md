@@ -6,8 +6,8 @@ protocol on eight GPUs: configurable TP/CP with PP1/EP8/ETP1, native GLM-5.2 fiv
 It loads the real model and writes three cumulative immutable publications.
 It does not launch a receiver or run forward/backward, an optimizer, or activation.
 
-- **Codec:** `GPU_DELTA_CODEC` selects `snappy-zstd` (default) or `lz4-zstd`.
-  Matrices use GPU XOR, GPU Snappy or LZ4, then owner-wide GPU Zstd. Both
+- **Codec:** `GPU_DELTA_CODEC` selects `snappy-zstd` (default), `lz4-zstd` or plain `lz4`.
+  Matrices use GPU XOR and GPU Snappy or LZ4. Wrapped codecs then use owner-wide GPU Zstd. All
   compression algorithms execute on GPU SMs. Hardware inner-codec acceleration is a
   receiver decompression property, not GPU compression acceleration.
 - **Ownership:** routed experts remain on their EP × EDP exporter owners before
@@ -44,13 +44,14 @@ After export D2H completes, name-sorted matrix batches use the existing
 `update_weight_buffer_size` target (512 MiB here). Larger individual tensors remain
 whole. Upload old/new pinned snapshots, compute XOR/counts and compress all
 independent inner-codec frames in one nvCOMP submission per batch. `--frame-bytes`
-selects 1048576 (the default) or 4194304; outer Zstd chunks remain at most 1 MiB.
+selects the inner size (1048576 by default); optional outer Zstd chunks remain at most 1 MiB.
 The production default remains 1 MiB. XOR/counting
 uses disjoint 64 KiB tiles per frame and reduces only their small count array.
 Only compact
 aligned inner-codec arenas remain in HBM as batches finish. Compress all owner-local
 outer Zstd chunks together, read sizes/status once, pack final bytes and perform
-one pinned D2H. CPU workers hash/write the final outer payload; no intermediate
+one pinned D2H. Plain LZ4 skips outer compression and its metadata fence, using
+the same single final pack/D2H. CPU workers write and optionally hash the final payload; no intermediate
 inner-codec D2H or large inner-codec host slab is needed. Every owner drains before sealing.
 The old canonical snapshot stays unchanged until acknowledgment.
 
@@ -59,7 +60,7 @@ C old plus C new bytes H2D, and final outer payload D2H. Raw values never enter
 GPU compression. The full owner-local compact inner-codec payload stays in HBM until
 outer encoding completes, alongside bounded canonical scratch and codec workspaces.
 There is no OOM fallback. No receiver GPU Zstd path is introduced: the receiver
-CPU-decodes into a shared DE-capable host arena. During the safe pause, hardware
+CPU-decodes or copies plain LZ4 into each rank's private DE-capable host arena. During the safe pause, hardware
 DE reads that arena directly, overlapping layer-batch decoding with mask apply
 through two decoded HBM slots. No explicit compressed H2D copy is needed.
 
@@ -94,10 +95,10 @@ The harness records runtime package versions,
 model flags, source digest (from `GPU_DELTA_SOURCE_DIGEST` when provided),
 GPU memory counters, original rank ownership and all per-version measurements.
 `--timing` enables CUDA phase events; default timing is off to avoid event overhead.
-Select the alternative with `GPU_DELTA_CODEC=lz4-zstd` and a new output directory;
+Select alternatives with `GPU_DELTA_CODEC=lz4-zstd` or `GPU_DELTA_CODEC=lz4` and a new output directory;
 keep all workload flags and original checkpoints identical. There are no CPU
 encoder or receiver GPU-Zstd alternatives. Earlier comparison artifacts remain
-historical controls. LZ4 native correctness/performance validation is pending.
+historical controls. Qualify new codec/source performance independently.
 
 ## Timing interpretation
 
@@ -113,7 +114,15 @@ historical controls. LZ4 native correctness/performance validation is pending.
 | `conversion_cuda_ms` | Optional same-stream conversion events, read after final fence; includes dispatch gaps and intervening work. |
 | `publication.producer_metrics` | Per-owner nested encoding/wait/raw/write phases and source-accounted copy bytes. |
 | `gpu_memory_bytes` | Before/after/peak PyTorch allocated/reserved bytes over the isolated update. |
-| `sizes` | Changed canonical bytes, raw bytes, inner codec/outer Zstd/payload/manifest sizes. |
+| `sizes` | Changed canonical bytes, raw bytes, inner codec/wire-envelope/payload/manifest sizes. Plain LZ4 has `outer_frame_bytes=0`; its stored and decoded arena lengths are equal. |
+
+The `finalize_wall_s` counter encloses finalization for every codec.
+`outer_zstd_wall_s` measures Zstd submission, metadata wait and output
+selection; it is zero for plain LZ4. `pack_d2h_wall_s` measures packing
+and the final pinned D2H wait separately. These are host intervals, not pure
+GPU kernel timings. Plain LZ4 reports zero `outer_zstd_frames` and no Zstd CUDA
+phase. `matrix_payload_bytes` counts the stored matrix envelope, while
+`inner_arena_bytes` counts its decoded or directly stored inner arena.
 
 The protocol also retains rank-local `publication_metrics["metadata_gather_s"]`
 after the existing gather completes. It measures metadata serialization/transport

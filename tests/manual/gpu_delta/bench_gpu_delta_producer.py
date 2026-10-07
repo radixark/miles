@@ -52,7 +52,7 @@ def parse_args():
         type=int,
         choices=(1 << 19, FRAME_BYTES, 1 << 22),
         default=FRAME_BYTES,
-        help="Inner codec frame bytes; outer Zstd chunks remain 1 MiB",
+        help="Inner codec frame bytes; optional outer Zstd chunks remain 1 MiB",
     )
     parser.add_argument("--tensor-model-parallel-size", type=int, default=1)
     parser.add_argument("--context-parallel-size", type=int, default=1)
@@ -406,17 +406,15 @@ def _verify_publication(publication, plan, codec, frame_bytes):
         "tensor_count": len(manifest["tensors"]),
         "codec": manifest["codec"],
         "frame_bytes": frame_bytes,
-        "outer_frame_bytes": FRAME_BYTES,
+        "outer_frame_bytes": 0 if codec == "lz4" else FRAME_BYTES,
         "raw_tensor_count": sum(tensor["encoding"] == "raw_bytes" for tensor in manifest["tensors"]),
         "raw_changed_tensors": sum("raw" in tensor for tensor in manifest["tensors"]),
         "raw_bytes": sum(tensor.get("raw", {}).get("encoded_bytes", 0) for tensor in manifest["tensors"]),
         "inner_encoded_frame_bytes": sum(
             frame["encoded_bytes"] for tensor in manifest["tensors"] for frame in tensor["frames"]
         ),
-        "outer_stored_bytes": sum(tensor.get("outer", {}).get("encoded_bytes", 0) for tensor in manifest["tensors"]),
-        "outer_decoded_arena_bytes": sum(
-            tensor.get("outer", {}).get("decoded_bytes", 0) for tensor in manifest["tensors"]
-        ),
+        "matrix_payload_bytes": sum(tensor.get("outer", {}).get("encoded_bytes", 0) for tensor in manifest["tensors"]),
+        "inner_arena_bytes": sum(tensor.get("outer", {}).get("decoded_bytes", 0) for tensor in manifest["tensors"]),
     }
 
 
@@ -632,8 +630,9 @@ def run(options):
             "timing": options.timing,
             "codec": protocol.codec,
             "frame_bytes": protocol._gpu_encoder.frame_bytes,
-            "outer_frame_bytes": FRAME_BYTES,
-            "producer_pipeline": f"pinned-snapshot-bulk-gpu-{protocol.codec.removesuffix('-zstd')}-then-owner-wide-gpu-zstd",
+            "outer_frame_bytes": 0 if protocol.codec == "lz4" else FRAME_BYTES,
+            "producer_pipeline": f"pinned-snapshot-bulk-gpu-{protocol.codec.removesuffix('-zstd')}"
+            + ("-then-owner-wide-pack" if protocol.codec == "lz4" else "-then-owner-wide-gpu-zstd"),
             "gpu_batch_target_bytes": args.update_weight_buffer_size,
             "baseline_commit_scope": "producer-only-simulated-activation-after-inventory-check",
             "ranks": setup,

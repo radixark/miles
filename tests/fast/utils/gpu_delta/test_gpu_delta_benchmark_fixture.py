@@ -121,7 +121,7 @@ def _tiny_fixture(tmp_path, frame_bytes=bench.FRAME_BYTES):
             {"decoded_offset": 0, "decoded_bytes": len(inner), "encoded_offset": 0, "encoded_bytes": len(payload)}
         ],
     }
-    writer.add_gpu_outer_tensor(
+    writer.add_encoded_tensor(
         "matrix.weight", frames, payload, outer, changed_bytes=3, dtype="U8", shape=[8, 2], views=old_plan[0]["views"]
     )
     writer.add_raw_tensor("norm.weight", raw, changed, dtype="F32", shape=[2], views=old_plan[1]["views"])

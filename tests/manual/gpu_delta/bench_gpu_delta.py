@@ -479,11 +479,9 @@ def _publication_accounting(publication):
     sizes = {
         "raw_tensor_count": sum(tensor["encoding"] == "raw_bytes" for tensor in manifest["tensors"]),
         "raw_target_bytes": raw_bytes,
-        "outer_encoded_bytes": outer_bytes,
-        "outer_decoded_arena_bytes": sum(
-            tensor.get("outer", {}).get("decoded_bytes", 0) for tensor in manifest["tensors"]
-        ),
-        "outer_frames": sum(len(tensor.get("outer", {}).get("frames", [])) for tensor in manifest["tensors"]),
+        "matrix_payload_bytes": outer_bytes,
+        "inner_arena_bytes": sum(tensor.get("outer", {}).get("decoded_bytes", 0) for tensor in manifest["tensors"]),
+        "outer_zstd_frames": sum(len(tensor.get("outer", {}).get("frames", [])) for tensor in manifest["tensors"]),
         "encoded_frame_bytes": inner_bytes,
         "payload_file_bytes": payload_bytes,
         "alignment_bytes": payload_bytes - raw_bytes - outer_bytes,
@@ -521,11 +519,13 @@ def _fixture(args):
         "stream_id": stream_id,
         "target_checkpoint": str(target.resolve()),
         "rounds": [],
-        "calibration": "Plain CPU Zstd level-1 sample-frame estimate; final inner-plus-Zstd size is measured separately, not forced to the requested ratio.",
+        "calibration": "Plain CPU Zstd level-1 sample-frame estimate; final selected-codec size is measured separately, not forced to the requested ratio.",
         "canonical_denominator": "Mutable canonical tensors in the receiver plan; excludes frozen draft and non-updated checkpoint entries.",
         "changed_bytes_definition": "Unequal storage bytes, not changed bits or compressed size.",
         "codec": codec,
-        "inner_codec_origin": f"Production GpuBatchEncoder: pinned snapshots, GPU XOR/{codec.removesuffix('-zstd')}, then one GPU Zstd submission per version. Fixture setup is excluded from receiver timing.",
+        "inner_codec_origin": f"Production GpuBatchEncoder: pinned snapshots, GPU XOR/{codec.removesuffix('-zstd')}, "
+        + ("no outer compression" if codec == "lz4" else "then one GPU Zstd submission per version")
+        + ". Fixture setup is excluded from receiver timing.",
     }
     encoder = GpuBatchEncoder(torch.device("cuda", torch.cuda.current_device()), codec=codec)
     denominator = sum(index[t["name"]]["nbytes"] for t in plan)
@@ -571,9 +571,9 @@ def _fixture(args):
                 pending.extend(encoder.encode_device(batch))
             batch = []
             for tensor, (frames, payload, outer, count, _) in zip(
-                matrix_plan, encoder.wrap_device(pending), strict=True
+                matrix_plan, encoder.finish_device(pending), strict=True
             ):
-                writer.add_gpu_outer_tensor(
+                writer.add_encoded_tensor(
                     tensor["name"],
                     frames,
                     payload,

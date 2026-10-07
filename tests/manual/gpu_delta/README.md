@@ -2,7 +2,7 @@
 
 The experimental `--update-weight-transfer-mode gpu-delta` uses the paired
 SGLang `update_weights_from_delta` API. `disk-delta` remains a separate checkpoint
-handoff path. GPU-delta supports `snappy-zstd` (default) and `lz4-zstd`, with only
+handoff path. GPU-delta supports `snappy-zstd` (default), `lz4-zstd` and plain `lz4`, with only
 `--update-weight-delta-encoding xor`; `overwrite` is supported by disk-delta only.
 
 The backend-neutral codec and publication modules live in `miles.utils.gpu_delta`.
@@ -29,8 +29,9 @@ The optional CPU correctness oracles require `python-snappy`, `lz4` and
 `zstandard`; production inner compression/decompression uses nvCOMP. LZ4
 oracles use raw blocks without a prepended uncompressed-size header.
 
-No custom C++/CUDA extension is built. Both sender compression stages use CUDA
-SMs. Receiver Zstd decompression runs on CPU; either inner codec explicitly
+No custom C++/CUDA extension is built. Sender compression uses CUDA SMs.
+Wrapped codecs use receiver CPU Zstd; plain LZ4 skips both outer stages and
+copies its packed inner arenas into the same private DE input buffers; either inner codec explicitly
 requests the Blackwell hardware decompression engine and rejects unsupported
 hardware or allocation modes. DE reads directly from each rank's original host arena.
 LZ4 uses byte input with bitshuffle disabled; there is no extra layout transform.
@@ -40,9 +41,9 @@ user-facing configuration API. Runtime defaults are sufficient for normal use.
 
 | Development variable | Meaning |
 | --- | --- |
-| `GPU_DELTA_CODEC=snappy-zstd` | Trainer codec for ordinary learned updates; `lz4-zstd` selects LZ4 instead. Read once at launch. The receiver selects the codec from each authenticated publication. |
-| `GPU_DELTA_INITIAL_SYNC_CODEC=lz4-zstd` | Trainer codec only for the explicit initial-sync publication; `snappy-zstd` overrides it. Ignored when initial sync is disabled. |
-| `GPU_DELTA_SORT_BEFORE_HW_DECOMPRESS=0` | Receiver only. Set `1` to let nvCOMP sort chunks during paused DE submission; default off for both codecs. It does not change publication bytes or move sorting into preparation. |
+| `GPU_DELTA_CODEC=snappy-zstd` | Trainer codec for ordinary learned updates; `lz4-zstd` selects LZ4 with outer Zstd; `lz4` skips outer Zstd. Read once at launch. The receiver selects the codec from each authenticated publication. |
+| `GPU_DELTA_INITIAL_SYNC_CODEC=lz4-zstd` | Trainer codec only for the explicit initial-sync publication; `snappy-zstd` or plain `lz4` overrides it. Ignored when initial sync is disabled. |
+| `GPU_DELTA_SORT_BEFORE_HW_DECOMPRESS=0` | Receiver only. Set `1` to let nvCOMP sort chunks during paused DE submission; default off for all codecs. It does not change publication bytes or move sorting into preparation. |
 | `GPU_DELTA_TIMING=1` | Optional per-phase CUDA events. Default off; instrumentation can perturb timing. |
 | `GPU_DELTA_CPU_WORKERS=32` | CPU workers per rank. Each engine-host cache creator also uses its pool for parallel owner-file read/hash before local outer Zstd. Two EP4 engines have eight pools (up to 256 workers at the default). |
 | `GPU_DELTA_SKIP_PAYLOAD_HASH=1` | Shared sender/receiver opt-in: omit owner-file SHA256 generation and verification. Defaults off. The manifest declares `payload_checksum_format="none"` and null file hashes; receivers accept this only when their same flag is enabled. Manifest SHA256 and frame/decoder checks remain mandatory. |
@@ -115,9 +116,11 @@ bytes, computes XOR/change counts, and compresses all independent Snappy or LZ4 
 in one call. Unchanged frames are omitted; incompressible changed frames retain
 the selected inner codec. Compact, 16-byte-aligned inner-codec tensor arenas remain
 in HBM across batches.
-The sender then compresses **all** owner inner-codec arenas together with GPU Zstd,
-using independent outer chunks of at most 1 MiB while preserving tensor boundaries.
-Only the final encoded slab returns to pinned CPU RAM for file hashing/writing.
+For wrapped codecs, the sender then compresses **all** owner inner-codec arenas
+together with GPU Zstd, using independent outer chunks of at most 1 MiB while
+preserving tensor boundaries. Plain `lz4` bypasses Zstd and its metadata fence.
+Both paths pack once and return one final aligned slab to pinned CPU RAM for
+file hashing/writing.
 There is no intermediate inner-codec host slab, CPU compression, or raw matrix fallback.
 
 The existing `update_weight_buffer_size` bounds each canonical input batch; a
@@ -125,17 +128,20 @@ larger single tensor stands alone. The full compact owner inner-codec payload mu
 HBM for the outer call. Host snapshots are assumed to fit RAM; no OOM fallback is
 implemented. Production and fixture creation default to 1 MiB inner frames. The
 producer benchmark can select 4 MiB with `--frame-bytes 4194304`; the receiver
-benchmark accepts prepared fixtures declaring 64 KiB, 1 MiB or 4 MiB inner frames.
+benchmark accepts prepared fixtures declaring 64 KiB, 512 KiB, 1 MiB or 4 MiB inner frames.
 The receiver checks actual encoded and decoded frame sizes against its hardware
 limit. Outer Zstd chunks remain fixed at 1 MiB. The low-level encoder's 2 MiB
 control is producer-only.
 
-Protocol 4 records the selected `codec` (`snappy-zstd` or `lz4-zstd`),
+Protocol 4 records the selected `codec` (`snappy-zstd`, `lz4-zstd` or `lz4`),
 explicit `frame_bytes`, natural tensor
-identity and outer chunk offsets/lengths. SHA-256 authenticates final owner files;
+identity and outer chunk offsets/lengths. For plain `lz4`, the outer descriptor
+has `frames=[]` and equal encoded/decoded byte lengths: its payload is the
+aligned inner arena directly, without trailing padding. Raw tensors and omitted
+zero-XOR frames keep the same representation. SHA-256 authenticates final owner files by default;
 old/new weights and intermediate inner-codec bytes are not hashed. The receiver reads
 and verifies immutable encoded files once per engine-host, then every rank
-CPU-decompresses its local tensors directly into its own original HOST_NUMA
+CPU-decompresses (or copies plain LZ4) its local tensors into its own original HOST_NUMA
 allocation during background preparation. Each allocation requests the hardware-
 decompression flag and checks actual pointer capability; no CUDA handles are
 exported or imported. The initial host capacity fits the required extent rounded to allocation

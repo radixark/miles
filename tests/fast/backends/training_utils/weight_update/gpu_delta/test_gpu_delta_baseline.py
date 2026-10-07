@@ -218,8 +218,8 @@ def test_initial_delta_publishes_loaded_trainer_then_switches_to_cached_update_c
         initial_codec = "lz4-zstd"
     else:
         monkeypatch.setenv("GPU_DELTA_CODEC", codec)
-        monkeypatch.setenv("GPU_DELTA_INITIAL_SYNC_CODEC", "snappy-zstd")
-        initial_codec = "snappy-zstd"
+        initial_codec = "lz4" if codec == "lz4-zstd" else "snappy-zstd"
+        monkeypatch.setenv("GPU_DELTA_INITIAL_SYNC_CODEC", initial_codec)
     if not initial_sync:
         # An unused initial-sync override does not alter ordinary updates.
         monkeypatch.setenv("GPU_DELTA_INITIAL_SYNC_CODEC", "unused")
@@ -232,8 +232,8 @@ def test_initial_delta_publishes_loaded_trainer_then_switches_to_cached_update_c
     encoders = {}
 
     def make_encoder(device, frame_bytes, codec):
-        encoder = Mock(frame_bytes=frame_bytes, outer_metrics={})
-        encoder.wrap_device.return_value = []  # This fixture contains only a raw vector.
+        encoder = Mock(frame_bytes=frame_bytes, finalization_metrics={})
+        encoder.finish_device.return_value = []  # This fixture contains only a raw vector.
         encoders[codec] = encoder
         return encoder
 
@@ -272,7 +272,7 @@ def test_initial_delta_publishes_loaded_trainer_then_switches_to_cached_update_c
         assert publication["base_version"] == version - 1 and publication["target_version"] == version
         assert (
             protocol.publication_metrics["encoded_hash_write_s"]
-            == protocol._writer.outer_metrics["outer_hash_write_s"]
+            == protocol._writer.payload_metrics["matrix_hash_write_s"]
         )
         assert publication["summary_counts"]["raw_bytes"] == publication["summary_counts"]["wire_bytes"] == 4
         assert (protocol._version_dir / "owner-00000.bin").read_bytes() == bytes(current)
@@ -333,16 +333,16 @@ def _gpu_pending(monkeypatch, fail_batch=None):
             assert torch.equal(current, torch.full_like(current, 7))
         return [([], [], current.numel(), {"encode_wall_s": 0.01}) for old, current in tensors]
 
-    def wrap(values):
+    def finish(values):
         assert len(values) == 4
-        events.append("wrap-all")
+        events.append("finish-all")
         return [(frames, b"outer", {}, changed, metrics) for frames, _, changed, metrics in values]
 
-    protocol._gpu_encoder = Mock(encode_device=Mock(side_effect=encode), wrap_device=Mock(side_effect=wrap))
+    protocol._gpu_encoder = Mock(encode_device=Mock(side_effect=encode), finish_device=Mock(side_effect=finish))
     protocol._gpu_encoder.stream.wait_event.side_effect = wait_event
     protocol._writer = Mock()
-    protocol._writer.outer_metrics = {"outer_hash_write_s": 0.03}
-    protocol._writer.add_gpu_outer_tensor.side_effect = lambda name, *args, **kwargs: events.append(("write", name))
+    protocol._writer.payload_metrics = {"matrix_hash_write_s": 0.03}
+    protocol._writer.add_encoded_tensor.side_effect = lambda name, *args, **kwargs: events.append(("write", name))
     monkeypatch.setattr(torch.cuda, "Event", Ready)
     monkeypatch.setattr(torch.cuda, "current_stream", lambda: Mock())
     monkeypatch.setattr(torch.cuda, "stream", lambda _: nullcontext())
@@ -395,7 +395,7 @@ def test_ready_batches_overlap_export_without_waiting_for_earlier_incomplete_bat
         ("encode", [1, 3]),
         ("encode", [2]),
     ]
-    assert events.index("wrap-all") < next(
+    assert events.index("finish-all") < next(
         i for i, event in enumerate(events) if isinstance(event, tuple) and event[0] == "write"
     )
     assert protocol._gpu_batch_count == 3 and not protocol._encoding_jobs
@@ -444,7 +444,7 @@ def test_raw_cpu_write_bypasses_gpu_batches_and_overlaps_compression(monkeypatch
         assert ("raw", "scale") in events and protocol._raw_cpu_write_s > 0
         protocol._writer.close.assert_not_called()
     assert protocol._gpu_batch_count == 3
-    assert not any(call.args[0] == "scale" for call in protocol._writer.add_gpu_outer_tensor.call_args_list)
+    assert not any(call.args[0] == "scale" for call in protocol._writer.add_encoded_tensor.call_args_list)
     assert torch.count_nonzero(protocol._snapshot["scale"]) == 0
 
 
@@ -481,7 +481,7 @@ def test_bulk_failure_retains_old_baseline_and_drains_before_closing(monkeypatch
     assert "drain" in events
     protocol._gpu_encoder.stream.synchronize.assert_called_once()
     assert not protocol._encoding_jobs and all(job.done() for job in jobs)
-    protocol._writer.add_gpu_outer_tensor.assert_not_called()
+    protocol._writer.add_encoded_tensor.assert_not_called()
     protocol._writer.close.assert_called_once()
     assert all(torch.count_nonzero(value) == 0 for value in protocol._snapshot.values())
     assert protocol._uncommitted

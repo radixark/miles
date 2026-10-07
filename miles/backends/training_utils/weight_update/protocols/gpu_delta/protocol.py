@@ -327,12 +327,12 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
                 names.extend(batch_names)
                 encoded.extend(result)
                 self._gpu_batch_count += 1
-            wrapped = self._gpu_encoder.wrap_device(encoded)
+            finalized = self._gpu_encoder.finish_device(encoded)
             self._bulk_encode_s = time.monotonic() - started
-            for name, (frames, payload, outer, changed, metrics) in zip(names, wrapped, strict=True):
+            for name, (frames, payload, outer, changed, metrics) in zip(names, finalized, strict=True):
                 self._encoding_metrics.append(dict(metrics, name=name))
                 spec = self._plan[name]
-                self._writer.add_gpu_outer_tensor(
+                self._writer.add_encoded_tensor(
                     name,
                     frames,
                     payload,
@@ -465,7 +465,7 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
             "encoding_tail_wait_s": self._encoding_tail_wait_s,
             "export_staging_wait_s": self._export_staging_wait_s,
             "bulk_encode_s": self._bulk_encode_s,
-            "encoded_hash_write_s": self._writer.outer_metrics["outer_hash_write_s"],
+            "encoded_hash_write_s": self._writer.payload_metrics["matrix_hash_write_s"],
             "encoder_batches": self._gpu_batch_count,
             "encoding_granularity": "batch",
             "owner_seal_s": time.monotonic() - seal_started,
@@ -482,8 +482,8 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
         # This existing key counts export of the current snapshot; the old
         # pinned baseline is never written back.
         self.publication_metrics["baseline_d2h_bytes"] += sum(t.nbytes for t in self._next_snapshot.values())
-        self.publication_metrics.update(self._writer.outer_metrics)
-        self.publication_metrics.update(self._gpu_encoder.outer_metrics)
+        self.publication_metrics.update(self._writer.payload_metrics)
+        self.publication_metrics.update(self._gpu_encoder.finalization_metrics)
         if self._timing:
             self.publication_metrics["tensor_phases"] = self._encoding_metrics
         shard["producer_metrics"] = self.publication_metrics
