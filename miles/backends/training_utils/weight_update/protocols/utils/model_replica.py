@@ -36,13 +36,47 @@ class RolloutEngineRankConfig:
     server_args: ServerArgs
 
     @property
-    def shard_layout_key(self) -> tuple:
-        sharding = {
-            name: value
+    def shard_layout_key(self) -> tuple[tuple[str, object], ...]:
+        sharding_fields = {
+            f"parallelism.{name}": value
             for name, value in self.parallelism.to_dict().items()
             if name not in _PLACEMENT_PARALLELISM_FIELDS
         }
-        return tuple(sorted(sharding.items())), self.server_args.quantization
+        server_args_fields = {
+            f"server_args.{name}": value for name, value in _get_shard_layout_server_args(self.server_args).items()
+        }
+        return tuple(sorted((sharding_fields | server_args_fields).items()))
+
+
+def _get_shard_layout_server_args(server_args: ServerArgs) -> dict[str, object]:
+    """The server args that change the bytes a model replica writes and may differ between the rollout engines of
+    one model, by PD role or a server group's sglang overrides. The other args that shape a replica, such as the
+    model path and its config overrides, are the same for every rollout engine of a model."""
+    field_names = (
+        # precision: a server group may quantize the same weights its own way
+        "quantization",
+        "dtype",
+        # sharding that RankParallelismConfig does not carry
+        "enable_dp_lm_head",
+        "moe_dense_tp_size",
+        "dcp_size",
+        # MoE structure: expert count, shared-expert fusion and its sharding
+        "moe_a2a_backend",
+        "moe_runner_backend",
+        "disable_shared_experts_fusion",
+        "enforce_shared_experts_fusion",
+        "enable_two_batch_overlap",
+        "enable_single_batch_overlap",
+        "enable_waterfill",
+        "disable_flashinfer_cutlass_moe_fp4_allgather",
+        # layouts postprocess leaves in the reload state
+        "fp8_gemm_runner_backend",
+        "fp4_gemm_runner_backend",
+        "flashinfer_mxfp4_moe_precision",
+        "enable_w4a4_mxfp4_megamoe",
+        "flashinfer_a2a_dispatch_type",
+    )
+    return {name: getattr(server_args, name) for name in field_names}
 
 
 class ModelReplicas:
@@ -78,7 +112,7 @@ class ModelReplicas:
             shared = self.shared_params_dict[name]
             assert param.shape == shared.shape and param.dtype == shared.dtype, (
                 f"[P2P-Shared] {name} is {tuple(param.shape)} {param.dtype} in the replica for "
-                f"{config.shard_layout_key} but {tuple(shared.shape)} {shared.dtype} in the shared buffer"
+                f"{config.parallelism} but {tuple(shared.shape)} {shared.dtype} in the shared buffer"
             )
             param.data = shared
         return model_replica
@@ -97,10 +131,16 @@ def query_rollout_engine_rank_configs(
             _query_config(rollout_engines[rollout_engine_ind], assignment.rollout_engine_rank)
             for rollout_engine_ind in assignment.rollout_engine_indices
         ]
-        shard_layout_keys = {config.shard_layout_key for config in configs}
-        assert len(shard_layout_keys) == 1, (
+        for rollout_engine_ind, config in zip(assignment.rollout_engine_indices, configs, strict=True):
+            _assert_expert_placement_reproducible(config.server_args, rollout_engine_ind)
+        differing_fields = {
+            name
+            for config in configs[1:]
+            for name, _ in set(config.shard_layout_key) ^ set(configs[0].shard_layout_key)
+        }
+        assert not differing_fields, (
             f"rollout engines {assignment.rollout_engine_indices} hold rank {assignment.rollout_engine_rank} in "
-            f"different layouts, so one model replica cannot serve them: {shard_layout_keys}"
+            f"different layouts, so one model replica cannot serve them: they differ in {sorted(differing_fields)}"
         )
         configs_by_rollout_engine_rank[assignment.rollout_engine_rank] = configs[0]
     return configs_by_rollout_engine_rank
@@ -129,6 +169,29 @@ def create_server_args_from_dict(data_dict: dict) -> ServerArgs:
     valid_fields = set(_record_field_names(ServerArgs))
     filtered_data = {k: v for k, v in data_dict.items() if k in valid_fields}
     return ServerArgs(**filtered_data)
+
+
+def _assert_expert_placement_reproducible(server_args: ServerArgs, rollout_engine_ind: int) -> None:
+    # the engine places these experts by its expert-location metadata, runtime rebalancing or CPU offload; a model
+    # replica loads every expert into its default slot
+    unreproducible_fields = [
+        name
+        for name, is_in_use in (
+            ("ep_num_redundant_experts", server_args.ep_num_redundant_experts != 0),
+            ("init_expert_location", server_args.init_expert_location != "trivial"),
+            ("enable_eplb", server_args.enable_eplb),
+            ("ep_join_mode", server_args.ep_join_mode is not None),
+            ("elastic_ep_initial_size", server_args.elastic_ep_initial_size is not None),
+            ("dwdp_size", server_args.dwdp_size != 1),
+            ("kt_weight_path", server_args.kt_weight_path is not None),
+        )
+        if is_in_use
+    ]
+    assert not unreproducible_fields, (
+        f"rollout engine {rollout_engine_ind} places experts by {', '.join(unreproducible_fields)}, which a model "
+        "replica does not reproduce, so p2p would write experts into the wrong slots. Update its weights with "
+        "another --update-weight-transfer-mode."
+    )
 
 
 def _query_config(rollout_engine: SGLangApiClient, rollout_engine_rank: int) -> RolloutEngineRankConfig:
