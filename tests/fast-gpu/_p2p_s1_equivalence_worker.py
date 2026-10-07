@@ -102,7 +102,7 @@ def main() -> None:
     _assert_identical(reference_engine, p2p_engine, "at startup")
     published = _published(p2p_engine)
     model_replica = build_model_replica(RolloutEngineRankConfig(parallelism, server_args), str(args.model_dir))
-    buffer_bytes = max(BUFFER_BYTES, max(spec.nbytes for spec in model_replica.param_specs.values()))
+    buffer_bytes = max(BUFFER_BYTES, max(spec.occupied_nbytes for spec in model_replica.param_specs.values()))
     buffer = torch.empty(buffer_bytes, dtype=torch.uint8, pin_memory=True)
 
     for version, fill in enumerate(POISON_FILLS, start=1):
@@ -145,21 +145,21 @@ def _write_p2p_update(
             ready_hf_tensors_by_param_name, model_replica.param_specs, buffer.numel()
         ):
             buffer.fill_(fill)
-            spans_by_name = model_replica.load_into(
+            param_bytes_by_name = model_replica.load_into(
                 buffer, param_names, [t for name in param_names for t in ready_hf_tensors_by_param_name[name]]
             )
-            for name, span in spans_by_name.items():
-                _write_raw(params_by_name[name], published[name], span)
+            for name, param_bytes in param_bytes_by_name.items():
+                _write_raw(params_by_name[name], published[name], param_bytes)
     stager.assert_all_done()
 
 
-def _write_raw(param: torch.nn.Parameter, published_location: tuple[int, int], span: torch.Tensor) -> None:
-    """Writes `span` at the published address, as Mooncake does."""
+def _write_raw(param: torch.nn.Parameter, published_location: tuple[int, int], param_bytes: torch.Tensor) -> None:
+    """Writes `param_bytes` at the published address, as Mooncake does."""
     address, nbytes = published_location
-    assert span.numel() == nbytes, f"{span.numel()} bytes for a {nbytes}-byte published param"
+    assert param_bytes.numel() == nbytes, f"{param_bytes.numel()} bytes for a {nbytes}-byte published param"
     storage = param.untyped_storage()
     target = torch.empty(0, dtype=torch.uint8, device=CUDA).set_(storage, address - storage.data_ptr(), (nbytes,))
-    target.copy_(span)
+    target.copy_(param_bytes)
 
 
 def _build_engine(model_config: ModelConfig, parallelism: RankParallelismConfig) -> torch.nn.Module:

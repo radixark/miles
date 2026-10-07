@@ -28,8 +28,8 @@ from miles.utils.workers.argv_utils import _record_field_names
 # where a rank sits in the launch, not how it holds its weights
 _PLACEMENT_PARALLELISM_FIELDS = frozenset({"global_rank", "local_rank"})
 
-# a multiple of every element size, so a span views as any param's dtype
-_SPAN_ALIGNMENT_BYTES = 256
+# a multiple of every element size, so the bytes of any param view as its dtype
+_PARAM_ALIGNMENT_BYTES = 256
 
 
 @dataclass(frozen=True)
@@ -44,15 +44,15 @@ class RolloutEngineRankConfig:
 
     @property
     def shard_layout_key(self) -> tuple[tuple[str, object], ...]:
-        sharding = {
+        sharding_fields = {
             f"parallelism.{name}": value
             for name, value in self.parallelism.to_dict().items()
             if name not in _PLACEMENT_PARALLELISM_FIELDS
         }
-        server_args = {
+        server_args_fields = {
             f"server_args.{name}": value for name, value in _replica_layout_server_args(self.server_args).items()
         }
-        return tuple(sorted((sharding | server_args).items()))
+        return tuple(sorted((sharding_fields | server_args_fields).items()))
 
 
 class ParamSpec(NamedTuple):
@@ -61,16 +61,11 @@ class ParamSpec(NamedTuple):
     shape: torch.Size
     stride: tuple[int, ...]
     dtype: torch.dtype
-    nbytes: int
+    occupied_nbytes: int
 
     @classmethod
-    def of(cls, tensor: torch.Tensor) -> "ParamSpec":
-        span_numel = (
-            0
-            if tensor.numel() == 0
-            else 1 + sum((size - 1) * stride for size, stride in zip(tensor.shape, tensor.stride(), strict=True))
-        )
-        return cls(tensor.shape, tensor.stride(), tensor.dtype, span_numel * tensor.element_size())
+    def from_tensor(cls, tensor: torch.Tensor) -> "ParamSpec":
+        return cls(tensor.shape, tensor.stride(), tensor.dtype, _nbytes_from_first_to_last_element(tensor))
 
 
 class ModelReplica:
@@ -111,29 +106,32 @@ class ModelReplica:
         # sglang holds one live config per process, and this replica was built under its own
         if get_server_args() is not self._config.server_args:
             _publish_server_args(self._config.server_args)
-        spans_by_name = _spans_in_buffer(buffer, param_names, self.param_specs)
+        param_bytes_by_name = _param_bytes_in_buffer(buffer, param_names, self.param_specs)
         params_by_name = {name: self._params_by_name[name] for name in param_names}
         try:
             for name, param in params_by_name.items():
-                spec = self.param_specs[name]
-                param.data = torch.as_strided(spans_by_name[name].view(spec.dtype), spec.shape, spec.stride)
-            metadata_before_by_name = {name: _param_metadata(param) for name, param in params_by_name.items()}
+                param.data = _view_bytes_as_param(param_bytes_by_name[name], self.param_specs[name])
+            state_before_load_by_name = {
+                name: _param_state_besides_bytes(param) for name, param in params_by_name.items()
+            }
             with ParallelismContext(self._config.parallelism):
                 self._model.load_weights(hf_tensors)
-            params_after_by_name = dict(self._model.named_parameters())
-            changed = [
+            params_after_load_by_name = dict(self._model.named_parameters())
+            changed_param_names = [
                 name
                 for name, param in params_by_name.items()
-                if params_after_by_name[name] is not param or _param_metadata(param) != metadata_before_by_name[name]
+                if params_after_load_by_name[name] is not param
+                or _param_state_besides_bytes(param) != state_before_load_by_name[name]
             ]
-            assert not changed, (
-                f"loading changed more than the bytes of {', '.join(changed[:5])} ({len(changed)} in all); the "
-                "rollout engine receives only bytes, so its param would keep the old shape, storage or attributes"
+            assert not changed_param_names, (
+                f"loading changed more than the bytes of {', '.join(changed_param_names[:5])} "
+                f"({len(changed_param_names)} in all); the rollout engine receives only bytes, so its param would keep "
+                "the old shape, storage or attributes"
             )
         finally:
             for param in params_by_name.values():
                 param.data = torch.empty(0, dtype=param.dtype)
-        return spans_by_name
+        return param_bytes_by_name
 
 
 class ModelReplicas:
@@ -241,25 +239,25 @@ def pack_into_buffers(
 ) -> Iterator[list[str]]:
     """Splits `param_names`, in order, into groups that `ModelReplica.load_into` can each load into one staging
     buffer of `buffer_bytes`."""
-    group, group_end = [], 0
+    group_param_names, group_end_offset = [], 0
     for name in param_names:
-        nbytes = param_specs[name].nbytes
-        assert nbytes <= buffer_bytes, f"{name} takes {nbytes} bytes, more than a {buffer_bytes}-byte staging buffer"
-        start = _align_span_start(group_end)
-        if group and start + nbytes > buffer_bytes:
-            yield group
-            group, start = [], 0
-        group.append(name)
-        group_end = start + nbytes
-    if group:
-        yield group
+        param_nbytes = param_specs[name].occupied_nbytes
+        assert param_nbytes <= buffer_bytes, f"{name} takes {param_nbytes} bytes, over the {buffer_bytes}-byte buffer"
+        param_start_offset = _align_param_start(group_end_offset)
+        if group_param_names and param_start_offset + param_nbytes > buffer_bytes:
+            yield group_param_names
+            group_param_names, param_start_offset = [], 0
+        group_param_names.append(name)
+        group_end_offset = param_start_offset + param_nbytes
+    if group_param_names:
+        yield group_param_names
 
 
 def _replica_layout_server_args(server_args: ServerArgs) -> dict[str, object]:
     """The server args that change the bytes a model replica writes and may differ between the rollout engines of
     one model, by PD role or a server group's sglang overrides. The other args that shape a replica, such as the
     model path and its config overrides, are the same for every rollout engine of a model."""
-    names = (
+    field_names = (
         # precision: a server group may quantize the same weights its own way
         "quantization",
         "dtype",
@@ -283,15 +281,15 @@ def _replica_layout_server_args(server_args: ServerArgs) -> dict[str, object]:
         "enable_w4a4_mxfp4_megamoe",
         "flashinfer_a2a_dispatch_type",
     )
-    return {name: getattr(server_args, name) for name in names}
+    return {name: getattr(server_args, name) for name in field_names}
 
 
 def _assert_expert_placement_reproducible(server_args: ServerArgs, rollout_engine: str) -> None:
     # the engine places these experts by its expert-location metadata, runtime rebalancing or CPU offload; a model
     # replica loads every expert into its default slot
-    placement_fields = [
+    unreproducible_fields = [
         name
-        for name, is_set in (
+        for name, is_in_use in (
             ("ep_num_redundant_experts", server_args.ep_num_redundant_experts != 0),
             ("init_expert_location", server_args.init_expert_location != "trivial"),
             ("enable_eplb", server_args.enable_eplb),
@@ -300,10 +298,10 @@ def _assert_expert_placement_reproducible(server_args: ServerArgs, rollout_engin
             ("dwdp_size", server_args.dwdp_size != 1),
             ("kt_weight_path", server_args.kt_weight_path is not None),
         )
-        if is_set
+        if is_in_use
     ]
-    assert not placement_fields, (
-        f"{rollout_engine} places experts by {', '.join(placement_fields)}, which a model replica does not "
+    assert not unreproducible_fields, (
+        f"{rollout_engine} places experts by {', '.join(unreproducible_fields)}, which a model replica does not "
         "reproduce, so p2p would write experts into the wrong slots. Update its weights with another "
         "--update-weight-transfer-mode."
     )
@@ -396,7 +394,7 @@ def _bring_to_reload_state(
                 f"the postprocess of {module_name} left {param_name} on meta; it must have read a tensor that "
                 "construction without storage does not allocate"
             )
-            reload_specs_by_param_id[id(param)] = ParamSpec.of(param)
+            reload_specs_by_param_id[id(param)] = ParamSpec.from_tensor(param)
             param.data = torch.empty(0, dtype=param.dtype)
 
     param_specs = {}
@@ -404,30 +402,46 @@ def _bring_to_reload_state(
         if id(param) in reload_specs_by_param_id:
             param_specs[name] = reload_specs_by_param_id[id(param)]
         else:
-            param_specs[name] = ParamSpec.of(torch.empty(built_shapes_by_name[name], dtype=param.dtype, device="meta"))
+            built_param = torch.empty(built_shapes_by_name[name], dtype=param.dtype, device="meta")
+            param_specs[name] = ParamSpec.from_tensor(built_param)
     return param_specs
 
 
-def _align_span_start(offset: int) -> int:
-    return -(-offset // _SPAN_ALIGNMENT_BYTES) * _SPAN_ALIGNMENT_BYTES
+def _nbytes_from_first_to_last_element(tensor: torch.Tensor) -> int:
+    """The bytes a tensor's elements cover in memory, from its first element to its last; `numel × element_size`
+    when it is contiguous, more when its strides leave gaps."""
+    if tensor.numel() == 0:
+        return 0
+    last_element_offset = sum((size - 1) * stride for size, stride in zip(tensor.shape, tensor.stride(), strict=True))
+    return (last_element_offset + 1) * tensor.element_size()
 
 
-def _spans_in_buffer(
+def _align_param_start(offset: int) -> int:
+    return -(-offset // _PARAM_ALIGNMENT_BYTES) * _PARAM_ALIGNMENT_BYTES
+
+
+def _param_bytes_in_buffer(
     buffer: torch.Tensor, param_names: Sequence[str], param_specs: Mapping[str, ParamSpec]
 ) -> dict[str, torch.Tensor]:
-    spans_by_name, end = {}, 0
+    """Lays `param_names` out one after another in the uint8 `buffer`, each start aligned; returns the bytes each
+    param occupies, by name."""
+    param_bytes_by_name, param_end_offset = {}, 0
     for name in param_names:
-        start = _align_span_start(end)
-        end = start + param_specs[name].nbytes
-        assert end <= buffer.numel(), (
+        param_start_offset = _align_param_start(param_end_offset)
+        param_end_offset = param_start_offset + param_specs[name].occupied_nbytes
+        assert param_end_offset <= buffer.numel(), (
             f"{', '.join(param_names)} do not fit a {buffer.numel()}-byte staging buffer; group them with "
             "pack_into_buffers"
         )
-        spans_by_name[name] = buffer[start:end]
-    return spans_by_name
+        param_bytes_by_name[name] = buffer[param_start_offset:param_end_offset]
+    return param_bytes_by_name
 
 
-def _param_metadata(param: torch.nn.Parameter) -> tuple:
+def _view_bytes_as_param(param_bytes: torch.Tensor, param_spec: ParamSpec) -> torch.Tensor:
+    return torch.as_strided(param_bytes.view(param_spec.dtype), param_spec.shape, param_spec.stride)
+
+
+def _param_state_besides_bytes(param: torch.nn.Parameter) -> tuple:
     attributes = {
         key: value if isinstance(value, bool | int | float | str | None) else id(value)
         for key, value in vars(param).items()

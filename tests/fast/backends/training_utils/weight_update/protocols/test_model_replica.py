@@ -214,7 +214,10 @@ class TestModelReplica:
         an aliased param must keep its real size, and a param only postprocess creates is still published."""
         model_replica = make_model_replica()
 
-        assert {name: (tuple(spec.shape), spec.nbytes) for name, spec in model_replica.param_specs.items()} == {
+        assert {
+            name: (tuple(param_spec.shape), param_spec.occupied_nbytes)
+            for name, param_spec in model_replica.param_specs.items()
+        } == {
             "experts.w13": ((4, 6), 96),
             "linear.weight": ((3, 2), 24),
             "linear.weight_scale": ((3,), 12),
@@ -230,14 +233,14 @@ class TestModelReplica:
         buffer = torch.zeros(1024, dtype=torch.uint8)
         w13, norm = _float_tensor(1.0, 4, 6), _float_tensor(100.0, 2)
 
-        spans_by_name = model_replica.load_into(
+        param_bytes_by_name = model_replica.load_into(
             buffer, ["experts.w13", "norm.weight"], [("experts.w13", w13), ("norm.weight", norm)]
         )
 
-        assert torch.equal(spans_by_name["experts.w13"].view(torch.float32), w13.flatten())
-        assert torch.equal(spans_by_name["norm.weight"].view(torch.float32), norm)
-        for span in spans_by_name.values():
-            assert buffer.data_ptr() <= span.data_ptr() < buffer.data_ptr() + buffer.numel()
+        assert torch.equal(param_bytes_by_name["experts.w13"].view(torch.float32), w13.flatten())
+        assert torch.equal(param_bytes_by_name["norm.weight"].view(torch.float32), norm)
+        for param_bytes in param_bytes_by_name.values():
+            assert buffer.data_ptr() <= param_bytes.data_ptr() < buffer.data_ptr() + buffer.numel()
         assert all(param.numel() == 0 for param in model_replica._model.parameters())
 
     def test_a_loader_that_reshapes_its_param_is_rejected(self, make_model_replica) -> None:
@@ -282,31 +285,31 @@ class TestModelReplica:
             )
 
 
-def test_param_spec_spans_every_byte_of_a_strided_layout(model_replica_module: ModuleType) -> None:
-    """A strided param's span reaches its last element, so a buffer span of `nbytes` holds all of it."""
-    columns = torch.empty(4, 6)[:, :3]
+def test_a_strided_param_occupies_the_bytes_up_to_its_last_element(model_replica_module: ModuleType) -> None:
+    """A param whose strides leave gaps needs the bytes up to its last element, so its view fits in the buffer."""
+    first_three_columns = torch.empty(4, 6)[:, :3]
 
-    assert model_replica_module.ParamSpec.of(columns).nbytes == (3 * 6 + 2 + 1) * 4
-    assert model_replica_module.ParamSpec.of(torch.empty(4, 6).t()).nbytes == 24 * 4
+    assert model_replica_module.ParamSpec.from_tensor(first_three_columns).occupied_nbytes == (3 * 6 + 2 + 1) * 4
+    assert model_replica_module.ParamSpec.from_tensor(torch.empty(4, 6).t()).occupied_nbytes == 24 * 4
 
 
 class TestPackIntoBuffers:
     @staticmethod
     def _specs(model_replica_module: ModuleType, nbytes_by_name: dict[str, int]) -> dict:
         return {
-            name: model_replica_module.ParamSpec.of(torch.empty(nbytes, dtype=torch.uint8))
+            name: model_replica_module.ParamSpec.from_tensor(torch.empty(nbytes, dtype=torch.uint8))
             for name, nbytes in nbytes_by_name.items()
         }
 
     def test_every_group_fits_the_layout_load_into_gives_it(self, model_replica_module: ModuleType) -> None:
-        """`load_into` aligns each param's span, so groups must be packed with the same alignment."""
+        """`load_into` aligns where each param starts, so groups must be packed with the same alignment."""
         param_specs = self._specs(model_replica_module, {"a": 100, "b": 100, "c": 300, "d": 50})
 
         groups = list(model_replica_module.pack_into_buffers(["a", "b", "c", "d"], param_specs, buffer_bytes=512))
 
         assert [name for group in groups for name in group] == ["a", "b", "c", "d"]
         for group in groups:
-            model_replica_module._spans_in_buffer(torch.empty(512, dtype=torch.uint8), group, param_specs)
+            model_replica_module._param_bytes_in_buffer(torch.empty(512, dtype=torch.uint8), group, param_specs)
 
     def test_a_param_larger_than_a_buffer_is_rejected(self, model_replica_module: ModuleType) -> None:
         param_specs = self._specs(model_replica_module, {"small": 100, "large": 600})
