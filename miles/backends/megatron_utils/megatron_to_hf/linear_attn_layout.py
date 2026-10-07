@@ -8,8 +8,11 @@ that rank owns, for any TP size, and the projection output feeds the conv withou
 """
 
 from dataclasses import dataclass
+from functools import cache
 
 import torch
+
+from miles.utils.hf_utils.config import load_hf_config
 
 
 @dataclass(frozen=True)
@@ -89,3 +92,8 @@ def qkv_flat_to_group_major(weight: torch.Tensor, heads: LinearAttnHeads) -> tor
 def qkv_group_major_to_flat(weight: torch.Tensor, heads: LinearAttnHeads) -> torch.Tensor:
     assert weight.shape[0] == heads.qkv_dim, (weight.shape, heads)
     return torch.cat(split_group_major(weight, _qkv_rows(heads), heads))
+
+
+@cache
+def gdn_heads_of(hf_checkpoint: str) -> LinearAttnHeads:
+    return gdn_heads(load_hf_config(hf_checkpoint))

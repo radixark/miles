@@ -1,4 +1,4 @@
-"""Head-sharded linear attention (KDA, GDN) as Megatron modules.
+"""Head-sharded linear attention (GDN, KDA) as Megatron modules.
 
 :class:`LinearAttentionLayer` is the ``self_attention`` drop-in: input norm, one TP collective in
 (identity / all-reduce, or all-gather / reduce-scatter under sequence parallelism), the context-parallel
@@ -41,6 +41,7 @@ try:
 except ImportError:
     pass
 
+WEIGHT_LAYOUT_VERSION = 1
 INT32_ELEMENTS = 2**31 - 1
 _CHUNK_ELEMENTS = 2**30
 _CHANNEL_ALIGN = 128
@@ -72,6 +73,30 @@ def kda_kernel():
     except ImportError as exc:
         raise ImportError("KDA requires flash-linear-attention >= 0.5 (fla.ops.kda).") from exc
     return chunk_kda
+
+
+def gdn_recurrence(q, k, v, beta_logits, decay, A_log, dt_bias, *, backend, cu_seqlens, cp_context):
+    """q/k ``[b, s, G, hk]``, v ``[b, s, H, hv]`` (fla groups value heads per key head), decay ``[b, s, H]``
+    -> ``[b, s, H, hv]``."""
+    if cp_context is not None and backend != "fla":
+        raise NotImplementedError(f"GDN context parallelism requires the 'fla' backend, got {backend!r}.")
+    beta = beta_logits.sigmoid()
+    g = -A_log.float().exp() * F.softplus(decay.float() + dt_bias)
+    if backend == "flashqla":
+        q, k, v, g, beta = (t.contiguous() for t in (q, k, v, g, beta))
+    out, _ = gdn_kernel(backend)(
+        q,
+        k,
+        v,
+        g=g,
+        beta=beta,
+        initial_state=None,
+        output_final_state=False,
+        use_qk_l2norm_in_kernel=True,
+        cu_seqlens=cu_seqlens,
+        **({"cp_context": cp_context} if cp_context is not None else {}),
+    )
+    return out
 
 
 def kda_recurrence(q, k, v, beta_logits, decay, A_log, dt_bias, *, gate_lower_bound, cu_seqlens, cp_context):
@@ -210,6 +235,9 @@ class LinearAttention(MegatronModule, ABC):
         dtype = config.params_dtype
 
         self._sharded_params: dict[str, int] = {}
+        self.register_buffer(
+            "weight_layout_version", torch.tensor([WEIGHT_LAYOUT_VERSION], dtype=torch.int32, device=device)
+        )
         self._build_projections()
         with get_cuda_rng_tracker().fork():
             self.conv1d = ShardedShortConv(
@@ -299,6 +327,30 @@ class LinearAttention(MegatronModule, ABC):
             eps=self.norm_eps,
         )
         return core.reshape(batch, seq_len, -1)
+
+
+class GatedDeltaNet(LinearAttention):
+    """Gated DeltaNet: one softplus-gated decay per value head, through fla's or FlashQLA's chunked
+    kernel. Models subclass it with their projections."""
+
+    def __init__(self, config, heads, conv_kernel_size, norm_eps, tp_group, backend="fla", norm_activation="silu"):
+        gdn_kernel(backend)
+        super().__init__(config, heads, conv_kernel_size, norm_eps, tp_group, norm_activation)
+        self.backend = backend
+
+    def recurrence(self, q, k, v, beta_logits, decay, cu_seqlens, cp_context):
+        return gdn_recurrence(
+            q,
+            k,
+            v,
+            beta_logits,
+            decay,
+            self.A_log,
+            self.dt_bias,
+            backend=self.backend,
+            cu_seqlens=cu_seqlens,
+            cp_context=cp_context,
+        )
 
 
 class KimiDeltaAttention(LinearAttention):

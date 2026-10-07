@@ -32,10 +32,11 @@ logger = logging.getLogger(__name__)
 
 CONVERSION_VERSION_FILE = "miles_conversion_version.txt"
 # Bump when a conversion this checkout writes would not load on a checkout holding another value:
-# the skip path trusts a cache only when the stamp equals this checkout's own value, so any weight
-# layout change bumps it. Values 1 and 2 were written briefly by an earlier numbering and are never
-# trusted. 3: the layouts as of this commit.
-CONVERSION_VERSION = "3"
+# the skip path trusts a cache only when the stamp equals the running checkout's value, so every
+# weight layout change bumps it. Values 1 and 2 were written briefly by an earlier numbering and
+# are never trusted. 3: the layouts before the head-sharded linear-attention layer.
+# 4: Qwen3.5 / Qwen3-Next GDN weights in group-major rows.
+CONVERSION_VERSION = "4"
 
 
 @dataclass
