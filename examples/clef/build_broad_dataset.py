@@ -19,7 +19,6 @@ from pathlib import Path
 from typing import Any
 
 import polars as pl
-import pyarrow.parquet as pq
 from tap import Tap
 from transformers import AutoTokenizer
 
@@ -372,7 +371,7 @@ def nli_rows(path: Path) -> list[dict[str, Any]]:
 
 
 def intent_rows(path: Path, rng: random.Random) -> list[dict[str, Any]]:
-    metadata = json.loads(pq.read_metadata(path).metadata[b"huggingface"])
+    metadata = json.loads(pl.read_parquet_metadata(path)["huggingface"])
     names = metadata["info"]["features"]["intent"]["names"]
     rows = []
     for original in pl.read_parquet(path).iter_rows(named=True):

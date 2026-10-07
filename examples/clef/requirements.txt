@@ -6,8 +6,7 @@ huggingface-hub
 typed-argument-parser
 wandb
 prometheus-client
-polars
-pyarrow
+polars>=1.42
 numpy
 fastapi
 uvicorn
