@@ -6,7 +6,6 @@ from .deepseek_v4 import DeepseekV4Bridge
 
 
 @register_model("deepseek_v41")
-@register_model("deepseek_v4.1")
 class DeepseekV41Bridge(DeepseekV4Bridge):
     _DIRECT_MAPPING = {
         "embedding.word_embeddings.weight": "embed.weight",
@@ -92,7 +91,7 @@ class DeepseekV41Bridge(DeepseekV4Bridge):
         config.attention_backend = AttnBackend.auto
         config.moe_n_hash_layers = 0
         config.activation_func_clamp_shared_expert = True
-        from miles_plugins.models.deepseek_v41.deepseek_v41 import apply_v41_config
+        from miles_plugins.models.deepseek_v4_1.deepseek_v4_1 import apply_v41_config
 
         apply_v41_config(config, hf)
         return config

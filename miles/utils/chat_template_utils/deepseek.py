@@ -176,7 +176,6 @@ _FAMILIES = {
     "deepseek_v32": V32,
     "deepseek_v4": V4,
     "deepseek_v41": V41,
-    "deepseek_v4.1": V41,
 }
 
 

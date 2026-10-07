@@ -2,7 +2,7 @@ import fcntl
 import os
 from pathlib import Path
 
-from scripts.run_deepseek_v41 import ScriptArgs, _prepare_download, _train
+from scripts.run_deepseek_v4_1 import ScriptArgs, _prepare_download, _train
 from tests.ci.ci_register import register_cuda_ci
 from tests.ci.metric_history import register_ci_gate
 

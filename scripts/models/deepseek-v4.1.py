@@ -62,6 +62,6 @@ def model_args(nlayers: int | None = None, compress_ratios: str = COMPRESS_RATIO
         "--dsa-indexer-n-heads 32 "
         "--dsa-indexer-head-dim 128 "
         "--dsa-indexer-topk 512 "
-        "--spec miles_plugins.models.deepseek_v41.deepseek_v41 get_dsv41_spec "
+        "--spec miles_plugins.models.deepseek_v4_1.deepseek_v4_1 get_dsv41_spec "
         f"{SWIGLU_LIMIT_ARGS} "
     )

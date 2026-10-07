@@ -4,7 +4,7 @@ import re
 from .deepseekv4 import _packed_alphas
 
 
-def convert_deepseekv41_to_hf(args, name, param):
+def convert_deepseekv4_1_to_hf(args, name, param):
     if name == "module.module.embedding.word_embeddings.weight":
         return [("embed.weight", param)]
     if name == "module.module.output_layer.weight":

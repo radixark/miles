@@ -26,21 +26,21 @@ from megatron.core.transformer.transformer_layer import HyperConnectionTransform
 from megatron.core.transformer.utils import make_sharded_tensors_for_checkpoint
 
 from miles.utils.hf_utils.config import load_hf_config
-from miles_plugins.models.deepseek_v41.engram import DeepSeekV41Engram
-from miles_plugins.models.deepseek_v41.ops import hc_mix
-from miles_plugins.models.deepseek_v41.ops.compressor import DeepSeekV41Compressor
-from miles_plugins.models.deepseek_v41.ops.cp_utils import (
+from miles_plugins.models.deepseek_v4_1.engram import DeepSeekV41Engram
+from miles_plugins.models.deepseek_v4_1.ops import hc_mix
+from miles_plugins.models.deepseek_v4_1.ops.compressor import DeepSeekV41Compressor
+from miles_plugins.models.deepseek_v4_1.ops.cp_utils import (
     all_gather_cp,
     get_freqs_cis_for_cp,
     get_q_positions_for_cp,
     get_window_topk_idxs_cp,
 )
-from miles_plugins.models.deepseek_v41.ops.indexer import DeepSeekV41Indexer
-from miles_plugins.models.deepseek_v41.ops.kernel.tilelang_sparse_mla import sparse_attn_tilelang
-from miles_plugins.models.deepseek_v41.ops.kvnorm import compressed_kv_stored, kv_norm_rope_fp8
-from miles_plugins.models.deepseek_v41.ops.quant import fake_quant_compressed_kv
-from miles_plugins.models.deepseek_v41.ops.rope import apply_rotary_emb
-from miles_plugins.models.deepseek_v41.ops.rope_tables import wrapped_precompute_freqs_cis
+from miles_plugins.models.deepseek_v4_1.ops.indexer import DeepSeekV41Indexer
+from miles_plugins.models.deepseek_v4_1.ops.kernel.tilelang_sparse_mla import sparse_attn_tilelang
+from miles_plugins.models.deepseek_v4_1.ops.kvnorm import compressed_kv_stored, kv_norm_rope_fp8
+from miles_plugins.models.deepseek_v4_1.ops.quant import fake_quant_compressed_kv
+from miles_plugins.models.deepseek_v4_1.ops.rope import apply_rotary_emb
+from miles_plugins.models.deepseek_v4_1.ops.rope_tables import wrapped_precompute_freqs_cis
 
 V41_CONFIG_FIELDS = (
     "kv_source_layer_ids",
@@ -57,13 +57,6 @@ V41_CONFIG_FIELDS = (
     "engram_pad_token_id",
     "engram_compressed_vocab_size",
 )
-
-V41_LEGACY_CONFIG_FIELDS = {
-    "kv_source_layer_ids": "kv_source_layers",
-    "index_source_layer_ids": "index_source_layers",
-    "candidate_source_layer_id": "candidate_source_layer",
-    "engram_pad_token_id": "engram_pad_id",
-}
 
 
 class V41Runtime:
@@ -85,11 +78,7 @@ def get_runtime(config) -> V41Runtime:
 
 def apply_v41_config(config, hf_config):
     for field in V41_CONFIG_FIELDS:
-        legacy = V41_LEGACY_CONFIG_FIELDS.get(field)
-        if legacy is not None and not hasattr(hf_config, field):
-            value = getattr(hf_config, legacy)
-        else:
-            value = getattr(hf_config, field)
+        value = getattr(hf_config, field)
         setattr(config, f"v41_{field}", tuple(value) if isinstance(value, list) else value)
 
 

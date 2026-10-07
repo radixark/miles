@@ -77,10 +77,9 @@ def _server_default_effort(monkeypatch=None):
     return chat_encoding.default_dsv41_reasoning_effort_from_env("high")
 
 
-@pytest.mark.parametrize("model_type", ["deepseek_v41", "deepseek_v4.1"])
-def test_detect_by_config(tmp_path, model_type):
-    assert deepseek.model_type(_tok_with_model_type(tmp_path, model_type)) == model_type
-    assert deepseek._FAMILIES[model_type] is deepseek.V41
+def test_detect_by_config(tmp_path):
+    assert deepseek.model_type(_tok_with_model_type(tmp_path, "deepseek_v41")) == "deepseek_v41"
+    assert deepseek._FAMILIES["deepseek_v41"] is deepseek.V41
 
 
 def test_v4_is_not_v41(tmp_path):

@@ -32,17 +32,8 @@ class _HFConfigAlias:
     normalize_kwargs: str | None = None
 
 
-_DEEPSEEK_V41_LEGACY_FIELDS = {
-    "kv_source_layers": "kv_source_layer_ids",
-    "index_source_layers": "index_source_layer_ids",
-    "candidate_source_layer": "candidate_source_layer_id",
-    "engram_pad_id": "engram_pad_token_id",
-    "dspark_n_activated_experts": "dspark_num_experts_per_tok",
-}
-
-
 def _normalize_deepseek_v41_kwargs(kwargs: dict) -> dict:
-    """Flatten the composite HF config (text_config holds the decoder) and accept the legacy key names."""
+    """Flatten the composite HF config (text_config holds the decoder)."""
     kwargs = dict(kwargs)
     text = kwargs.pop("text_config", None)
     kwargs.pop("vision_config", None)
@@ -50,9 +41,6 @@ def _normalize_deepseek_v41_kwargs(kwargs: dict) -> dict:
         text = dict(text)
         text.pop("model_type", None)
         kwargs = {**text, **kwargs}
-    for old, new in _DEEPSEEK_V41_LEGACY_FIELDS.items():
-        if old in kwargs:
-            kwargs.setdefault(new, kwargs.pop(old))
     return kwargs
 
 
@@ -77,15 +65,6 @@ _CONFIG_ALIASES: tuple[_HFConfigAlias, ...] = (
         base_module="transformers.models.deepseek_v3.configuration_deepseek_v3",
         base_class="DeepseekV3Config",
         compat_class_name="DeepseekV41Config",
-        auto_model_classes=(),
-        override_hf_native=True,
-        normalize_kwargs="_normalize_deepseek_v41_kwargs",
-    ),
-    _HFConfigAlias(
-        model_type="deepseek_v4.1",
-        base_module="transformers.models.deepseek_v3.configuration_deepseek_v3",
-        base_class="DeepseekV3Config",
-        compat_class_name="LegacyDeepseekV41Config",
         auto_model_classes=(),
         override_hf_native=True,
         normalize_kwargs="_normalize_deepseek_v41_kwargs",

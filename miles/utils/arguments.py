@@ -4105,7 +4105,7 @@ def hf_validate_args(args, hf_config):
         if getattr(hf_config, "model_type", "") == "qwen3_5_moe_text" and hf_config_name == "intermediate_size":
             continue
         if (
-            getattr(hf_config, "model_type", "") in ("deepseek_v4", "deepseek_v41", "deepseek_v4.1")
+            getattr(hf_config, "model_type", "") in ("deepseek_v4", "deepseek_v41")
             and hf_config_name == "intermediate_size"
         ):
             continue
