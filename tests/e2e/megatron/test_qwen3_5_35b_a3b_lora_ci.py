@@ -15,9 +15,9 @@ from miles.utils.external_utils import command_utils
 
 register_cuda_ci(
     est_time=1200,
-    suite="stage-c-8-gpu-b200",
+    suite="stage-c-8-gpu-h200",
     labels=["megatron", "model-scripts", "lora"],
-    hardware=["blackwell"],
+    hardware=["hopper", "blackwell"],
 )
 register_rocm_ci(est_time=900, suite="nightly-stage-c-8-gpu-mi350", labels=["megatron", "model-scripts", "lora"])
 
