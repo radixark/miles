@@ -76,6 +76,8 @@ def read_examples(path: Path) -> list[DecisionExample]:
             for field, target in example.targets.items():
                 validate_distribution(list(target.values()))
                 question = example.record["questions"][field]
+                if question["type"] not in {"choice", "noul", "score"}:
+                    raise ValueError("unsupported prepared question type")
                 if {key for key, _ in question_options(question)} != set(target):
                     raise ValueError("prepared schema/target mismatch")
         else:

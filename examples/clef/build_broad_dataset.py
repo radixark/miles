@@ -292,7 +292,7 @@ def tool_rows(path: Path, rng: random.Random) -> list[dict[str, Any]]:
             continue
         position = rng.choice(positions)
         gold = conversation[position]["value"].strip()
-        called = [t["name"] for t in tools if re.search(re.escape(t["name"]) + r"\s*\(", gold)] if gold.startswith("[") else []
+        called = [t["name"] for t in tools if re.search(r"(?:\[|,)\s*" + re.escape(t["name"]) + r"\s*\(", gold)] if gold.startswith("[") else []
         if gold.startswith("[") and not called:
             continue
         selected = [t for t in tools if t["name"] in called]
@@ -321,7 +321,8 @@ def nli_rows(path: Path) -> list[dict[str, Any]]:
             continue
         premise, hypothesis = original["premise"], original["hypothesis"]
         state = f"Evidence:\n{premise}\n\nClaim:\n{hypothesis}"
-        row = make_row(state, "snli_train", "inference", digest(normalized(premise) + "|" + normalized(hypothesis)))
+        # Keep only one claim per premise so its alternate annotations cannot cross splits.
+        row = make_row(state, "snli_train", "inference", digest(normalized(premise)))
         categorical(row, "relation", "Using only the evidence, classify the claim. Missing evidence is not a contradiction.", {"supported": "The evidence entails the claim", "unknown": "Neither entailed nor contradicted", "contradicted": "The evidence contradicts the claim"}, ["supported", "unknown", "contradicted"][label])
         row["provenance"]["source_row"] = index
         rows.append(row)
