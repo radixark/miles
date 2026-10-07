@@ -55,6 +55,103 @@ class RolloutEngineRankConfig:
         return tuple(sorted((sharding_fields | server_args_fields).items()))
 
 
+def _get_replica_layout_server_args(server_args: ServerArgs) -> dict[str, object]:
+    """The server args that change the bytes a model replica writes and may differ between the rollout engines of
+    one model, by PD role or a server group's sglang overrides. The other args that shape a replica, such as the
+    model path and its config overrides, are the same for every rollout engine of a model."""
+    field_names = (
+        # precision: a server group may quantize the same weights its own way
+        "quantization",
+        "dtype",
+        # sharding that RankParallelismConfig does not carry
+        "enable_dp_lm_head",
+        "moe_dense_tp_size",
+        "dcp_size",
+        # MoE structure: expert count, shared-expert fusion and its sharding
+        "moe_a2a_backend",
+        "moe_runner_backend",
+        "disable_shared_experts_fusion",
+        "enforce_shared_experts_fusion",
+        "enable_two_batch_overlap",
+        "enable_single_batch_overlap",
+        "enable_waterfill",
+        "disable_flashinfer_cutlass_moe_fp4_allgather",
+        # layouts postprocess leaves in the reload state
+        "fp8_gemm_runner_backend",
+        "fp4_gemm_runner_backend",
+        "flashinfer_mxfp4_moe_precision",
+        "enable_w4a4_mxfp4_megamoe",
+        "flashinfer_a2a_dispatch_type",
+    )
+    return {name: getattr(server_args, name) for name in field_names}
+
+
+def query_rollout_engine_rank_configs(
+    rollout_engines: Sequence[SGLangApiClient], assignments: Sequence[RolloutEngineRankAssignment]
+) -> dict[int, RolloutEngineRankConfig]:
+    """Returns the config of each rollout engine rank in `assignments`, by rollout engine rank.
+
+    All rollout engines of one rank must hold it the same way, since one model replica serves them.
+    """
+    configs_by_rollout_engine_rank = {}
+    for assignment in assignments:
+        configs = [
+            _query_config(rollout_engines[rollout_engine_ind], assignment.rollout_engine_rank)
+            for rollout_engine_ind in assignment.rollout_engine_indices
+        ]
+        for rollout_engine_ind, config in zip(assignment.rollout_engine_indices, configs, strict=True):
+            _assert_expert_placement_reproducible(config.server_args, f"rollout engine {rollout_engine_ind}")
+        differing_fields = {
+            name
+            for config in configs[1:]
+            for name, _ in set(config.shard_layout_key) ^ set(configs[0].shard_layout_key)
+        }
+        assert not differing_fields, (
+            f"rollout engines {assignment.rollout_engine_indices} hold rank {assignment.rollout_engine_rank} in "
+            f"different layouts, so one model replica cannot serve them: they differ in {sorted(differing_fields)}"
+        )
+        configs_by_rollout_engine_rank[assignment.rollout_engine_rank] = configs[0]
+    return configs_by_rollout_engine_rank
+
+
+def _query_config(rollout_engine: SGLangApiClient, rollout_engine_rank: int) -> RolloutEngineRankConfig:
+    parallelism_info = async_utils.run(rollout_engine.get_parallelism_info(rank=rollout_engine_rank))
+    server_info = async_utils.run(rollout_engine.get_server_info())
+    return RolloutEngineRankConfig(
+        parallelism=RankParallelismConfig.from_dict(parallelism_info),
+        server_args=create_server_args_from_dict(server_info),
+    )
+
+
+def create_server_args_from_dict(data_dict: dict) -> ServerArgs:
+    valid_fields = set(_record_field_names(ServerArgs))
+    filtered_data = {k: v for k, v in data_dict.items() if k in valid_fields}
+    return ServerArgs(**filtered_data)
+
+
+def _assert_expert_placement_reproducible(server_args: ServerArgs, rollout_engine: str) -> None:
+    # the engine places these experts by its expert-location metadata, runtime rebalancing or CPU offload; a model
+    # replica loads every expert into its default slot
+    unreproducible_fields = [
+        name
+        for name, is_in_use in (
+            ("ep_num_redundant_experts", server_args.ep_num_redundant_experts != 0),
+            ("init_expert_location", server_args.init_expert_location != "trivial"),
+            ("enable_eplb", server_args.enable_eplb),
+            ("ep_join_mode", server_args.ep_join_mode is not None),
+            ("elastic_ep_initial_size", server_args.elastic_ep_initial_size is not None),
+            ("dwdp_size", server_args.dwdp_size != 1),
+            ("kt_weight_path", server_args.kt_weight_path is not None),
+        )
+        if is_in_use
+    ]
+    assert not unreproducible_fields, (
+        f"{rollout_engine} places experts by {', '.join(unreproducible_fields)}, which a model replica does not "
+        "reproduce, so p2p would write experts into the wrong slots. Update its weights with another "
+        "--update-weight-transfer-mode."
+    )
+
+
 class TransferBufferParamLayout(NamedTuple):
     """How one param's bytes are laid out in a transfer buffer: as the engine's param is after
     `restore_weights_before_loading`, which is what its loader writes into."""
@@ -67,6 +164,15 @@ class TransferBufferParamLayout(NamedTuple):
     @classmethod
     def from_tensor(cls, tensor: torch.Tensor) -> "TransferBufferParamLayout":
         return cls(tensor.shape, tensor.stride(), tensor.dtype, _compute_occupied_nbytes(tensor))
+
+
+def _compute_occupied_nbytes(tensor: torch.Tensor) -> int:
+    """The bytes a tensor's elements cover in memory, from its first element to its last; `numel × element_size`
+    when it is contiguous, more when its strides leave gaps."""
+    if tensor.numel() == 0:
+        return 0
+    last_element_offset = sum((size - 1) * stride for size, stride in zip(tensor.shape, tensor.stride(), strict=True))
+    return (last_element_offset + 1) * tensor.element_size()
 
 
 class ModelReplica:
@@ -137,238 +243,6 @@ class ModelReplica:
         return param_bytes_by_name
 
 
-class ModelReplicas:
-    """Model replicas that load HF weights in rollout engine ranks' layouts, one per shard layout.
-
-    The p2p protocol keeps one for the whole trainer process. The first replica's params, pinned, are the buffer
-    every later replica loads into and every write reads from, so the buffer is registered once and stays valid
-    across reconnects.
-    """
-
-    def __init__(self, model_path: str) -> None:
-        self._model_path = model_path
-        self._model_replicas_by_shard_layout_key: dict[tuple, torch.nn.Module] = {}
-        self.shared_params_dict: dict[str, torch.Tensor] = {}
-        self.param_mapper: ParameterMapper | None = None
-
-    def get_or_build(self, config: RolloutEngineRankConfig) -> torch.nn.Module:
-        if config.shard_layout_key not in self._model_replicas_by_shard_layout_key:
-            self._model_replicas_by_shard_layout_key[config.shard_layout_key] = self._build(config)
-        return self._model_replicas_by_shard_layout_key[config.shard_layout_key]
-
-    def _build(self, config: RolloutEngineRankConfig) -> torch.nn.Module:
-        model_replica = _build_cpu_replica(config, self._model_path)
-        if not self.shared_params_dict:
-            for param in model_replica.parameters():
-                param.data = param.data.pin_memory()
-            self.shared_params_dict = dict(model_replica.named_parameters())
-            self.param_mapper = ParameterMapper.from_model(model_replica)
-            return model_replica
-
-        for name, param in model_replica.named_parameters():
-            assert name in self.shared_params_dict, f"[P2P-Shared] Parameter {name} not found in shared buffers"
-            shared = self.shared_params_dict[name]
-            assert param.shape == shared.shape and param.dtype == shared.dtype, (
-                f"[P2P-Shared] {name} is {tuple(param.shape)} {param.dtype} in the replica for "
-                f"{config.parallelism} but {tuple(shared.shape)} {shared.dtype} in the shared buffer"
-            )
-            param.data = shared
-        return model_replica
-
-
-def query_rollout_engine_rank_configs(
-    rollout_engines: Sequence[SGLangApiClient], assignments: Sequence[RolloutEngineRankAssignment]
-) -> dict[int, RolloutEngineRankConfig]:
-    """Returns the config of each rollout engine rank in `assignments`, by rollout engine rank.
-
-    All rollout engines of one rank must hold it the same way, since one model replica serves them.
-    """
-    configs_by_rollout_engine_rank = {}
-    for assignment in assignments:
-        configs = [
-            _query_config(rollout_engines[rollout_engine_ind], assignment.rollout_engine_rank)
-            for rollout_engine_ind in assignment.rollout_engine_indices
-        ]
-        for rollout_engine_ind, config in zip(assignment.rollout_engine_indices, configs, strict=True):
-            _assert_expert_placement_reproducible(config.server_args, f"rollout engine {rollout_engine_ind}")
-        differing_fields = {
-            name
-            for config in configs[1:]
-            for name, _ in set(config.shard_layout_key) ^ set(configs[0].shard_layout_key)
-        }
-        assert not differing_fields, (
-            f"rollout engines {assignment.rollout_engine_indices} hold rank {assignment.rollout_engine_rank} in "
-            f"different layouts, so one model replica cannot serve them: they differ in {sorted(differing_fields)}"
-        )
-        configs_by_rollout_engine_rank[assignment.rollout_engine_rank] = configs[0]
-    return configs_by_rollout_engine_rank
-
-
-def assert_replica_matches_shard(
-    model_replica: torch.nn.Module, published_nbytes_by_name: Mapping[str, int], published_by: str
-) -> None:
-    """The replica must hold exactly the weights a rollout engine rank publishes, each in the published number of
-    bytes; otherwise what it loads cannot be written into that rank's memory."""
-    replica_nbytes_by_name = {
-        name: param.numel() * param.element_size() for name, param in model_replica.named_parameters()
-    }
-    mismatches = [
-        f"{name} is {replica_nbytes_by_name.get(name)} bytes here, {published_nbytes_by_name.get(name)} there"
-        for name in sorted(replica_nbytes_by_name.keys() | published_nbytes_by_name.keys())
-        if replica_nbytes_by_name.get(name) != published_nbytes_by_name.get(name)
-    ]
-    assert not mismatches, (
-        f"the model replica does not match the weights {published_by} publishes: "
-        f"{', '.join(mismatches[:5])} ({len(mismatches)} in all)"
-    )
-
-
-def build_model_replica(config: RolloutEngineRankConfig, model_path: str) -> ModelReplica:
-    """Builds the model replica of `config`'s layout. `ModelReplicas` calls it once per layout; it uses this
-    process's GPU for about one module's params, freed before it returns."""
-    _publish_server_args(config.server_args)
-    with ParallelismContext(config.parallelism):
-        model, built_shapes_by_name = DefaultModelLoader(LoadConfig()).initialize_model_without_storage(
-            model_config=ModelConfig.from_server_args(config.server_args, model_path=model_path),
-            device=torch.device("cpu"),
-        )
-    return ModelReplica(
-        model, built_shapes_by_name, config, postprocess_device=torch.device("cuda", torch.cuda.current_device())
-    )
-
-
-def pack_into_buffers(
-    param_names: Iterable[str], param_layouts: Mapping[str, TransferBufferParamLayout], buffer_bytes: int
-) -> Iterator[list[str]]:
-    """Splits `param_names`, in order, into groups that `ModelReplica.load_into` can each load into one transfer
-    buffer of `buffer_bytes`."""
-    group_param_names, group_end_offset = [], 0
-    for name in param_names:
-        param_nbytes = param_layouts[name].occupied_nbytes
-        assert param_nbytes <= buffer_bytes, f"{name} takes {param_nbytes} bytes, over the {buffer_bytes}-byte buffer"
-        param_start_offset = _align_param_start(group_end_offset)
-        if group_param_names and param_start_offset + param_nbytes > buffer_bytes:
-            yield group_param_names
-            group_param_names, param_start_offset = [], 0
-        group_param_names.append(name)
-        group_end_offset = param_start_offset + param_nbytes
-    if group_param_names:
-        yield group_param_names
-
-
-def _get_replica_layout_server_args(server_args: ServerArgs) -> dict[str, object]:
-    """The server args that change the bytes a model replica writes and may differ between the rollout engines of
-    one model, by PD role or a server group's sglang overrides. The other args that shape a replica, such as the
-    model path and its config overrides, are the same for every rollout engine of a model."""
-    field_names = (
-        # precision: a server group may quantize the same weights its own way
-        "quantization",
-        "dtype",
-        # sharding that RankParallelismConfig does not carry
-        "enable_dp_lm_head",
-        "moe_dense_tp_size",
-        "dcp_size",
-        # MoE structure: expert count, shared-expert fusion and its sharding
-        "moe_a2a_backend",
-        "moe_runner_backend",
-        "disable_shared_experts_fusion",
-        "enforce_shared_experts_fusion",
-        "enable_two_batch_overlap",
-        "enable_single_batch_overlap",
-        "enable_waterfill",
-        "disable_flashinfer_cutlass_moe_fp4_allgather",
-        # layouts postprocess leaves in the reload state
-        "fp8_gemm_runner_backend",
-        "fp4_gemm_runner_backend",
-        "flashinfer_mxfp4_moe_precision",
-        "enable_w4a4_mxfp4_megamoe",
-        "flashinfer_a2a_dispatch_type",
-    )
-    return {name: getattr(server_args, name) for name in field_names}
-
-
-def _assert_expert_placement_reproducible(server_args: ServerArgs, rollout_engine: str) -> None:
-    # the engine places these experts by its expert-location metadata, runtime rebalancing or CPU offload; a model
-    # replica loads every expert into its default slot
-    unreproducible_fields = [
-        name
-        for name, is_in_use in (
-            ("ep_num_redundant_experts", server_args.ep_num_redundant_experts != 0),
-            ("init_expert_location", server_args.init_expert_location != "trivial"),
-            ("enable_eplb", server_args.enable_eplb),
-            ("ep_join_mode", server_args.ep_join_mode is not None),
-            ("elastic_ep_initial_size", server_args.elastic_ep_initial_size is not None),
-            ("dwdp_size", server_args.dwdp_size != 1),
-            ("kt_weight_path", server_args.kt_weight_path is not None),
-        )
-        if is_in_use
-    ]
-    assert not unreproducible_fields, (
-        f"{rollout_engine} places experts by {', '.join(unreproducible_fields)}, which a model replica does not "
-        "reproduce, so p2p would write experts into the wrong slots. Update its weights with another "
-        "--update-weight-transfer-mode."
-    )
-
-
-def create_server_args_from_dict(data_dict: dict) -> ServerArgs:
-    valid_fields = set(_record_field_names(ServerArgs))
-    filtered_data = {k: v for k, v in data_dict.items() if k in valid_fields}
-    return ServerArgs(**filtered_data)
-
-
-def _query_config(rollout_engine: SGLangApiClient, rollout_engine_rank: int) -> RolloutEngineRankConfig:
-    parallelism_info = async_utils.run(rollout_engine.get_parallelism_info(rank=rollout_engine_rank))
-    server_info = async_utils.run(rollout_engine.get_server_info())
-    return RolloutEngineRankConfig(
-        parallelism=RankParallelismConfig.from_dict(parallelism_info),
-        server_args=create_server_args_from_dict(server_info),
-    )
-
-
-def _build_cpu_replica(config: RolloutEngineRankConfig, model_path: str) -> torch.nn.Module:
-    """Create a CPU model replica that loads the right shard and skips post_load_weights."""
-    load_config = LoadConfig(
-        load_format="dummy",
-        model_loader_extra_config=None,
-        rl_quant_profile=config.server_args.rl_quant_profile,
-    )
-    _publish_server_args(config.server_args)
-
-    # Monkey-patch the loader-level post_load_weights to no-op BEFORE get_model,
-    # because get_model() calls post_load_weights() internally (loader.py:1310)
-    # which may invoke CUDA-only kernels (e.g., per_tensor_quant_fp8 for FP8 models).
-    # This is safe because the rollout engine runs post_load_weights on its own GPU
-    # after RDMA transfer, at end_weight_update.
-    from sglang.srt.model_loader import loader as model_loader_module
-
-    original_post_load_weights = model_loader_module.post_load_weights
-    model_loader_module.post_load_weights = lambda *args, **kwargs: None
-    try:
-        with ParallelismContext(config.parallelism):
-            model = get_model(
-                model_config=ModelConfig(model_path),
-                load_config=load_config,
-                device_config=DeviceConfig(device="cpu"),
-            )
-    finally:
-        model_loader_module.post_load_weights = original_post_load_weights
-
-    # Also patch the instance method for subsequent load_weights() calls
-    # (deepseek_weight_loader.py:342 calls self.post_load_weights() at the end).
-    if hasattr(model, "post_load_weights"):
-        model.post_load_weights = lambda *args, **kwargs: None
-
-    return model
-
-
-def _publish_server_args(server_args: ServerArgs) -> None:
-    # model construction and quant methods read these process-wide settings
-    server_args_module.set_global_server_args_for_scheduler(server_args)
-    initialize_moe_config()
-    initialize_fp8_gemm_config()
-    initialize_fp4_gemm_config()
-
-
 def _bring_to_reload_state(
     model: torch.nn.Module,
     built_shapes_by_name: Mapping[str, torch.Size],
@@ -410,19 +284,6 @@ def _bring_to_reload_state(
     return param_layouts
 
 
-def _compute_occupied_nbytes(tensor: torch.Tensor) -> int:
-    """The bytes a tensor's elements cover in memory, from its first element to its last; `numel × element_size`
-    when it is contiguous, more when its strides leave gaps."""
-    if tensor.numel() == 0:
-        return 0
-    last_element_offset = sum((size - 1) * stride for size, stride in zip(tensor.shape, tensor.stride(), strict=True))
-    return (last_element_offset + 1) * tensor.element_size()
-
-
-def _align_param_start(offset: int) -> int:
-    return -(-offset // _PARAM_ALIGNMENT_BYTES) * _PARAM_ALIGNMENT_BYTES
-
-
 def _slice_buffer_by_param(
     buffer: torch.Tensor, param_names: Sequence[str], param_layouts: Mapping[str, TransferBufferParamLayout]
 ) -> dict[str, torch.Tensor]:
@@ -440,6 +301,10 @@ def _slice_buffer_by_param(
     return param_bytes_by_name
 
 
+def _align_param_start(offset: int) -> int:
+    return -(-offset // _PARAM_ALIGNMENT_BYTES) * _PARAM_ALIGNMENT_BYTES
+
+
 def _view_bytes_as_param(param_bytes: torch.Tensor, param_layout: TransferBufferParamLayout) -> torch.Tensor:
     return torch.as_strided(param_bytes.view(param_layout.dtype), param_layout.shape, param_layout.stride)
 
@@ -450,3 +315,138 @@ def _get_param_state_besides_bytes(param: torch.nn.Parameter) -> tuple:
         for key, value in vars(param).items()
     }
     return param.shape, param.stride(), param.dtype, param.data_ptr(), attributes
+
+
+def build_model_replica(config: RolloutEngineRankConfig, model_path: str) -> ModelReplica:
+    """Builds the model replica of `config`'s layout. `ModelReplicas` calls it once per layout; it uses this
+    process's GPU for about one module's params, freed before it returns."""
+    _publish_server_args(config.server_args)
+    with ParallelismContext(config.parallelism):
+        model, built_shapes_by_name = DefaultModelLoader(LoadConfig()).initialize_model_without_storage(
+            model_config=ModelConfig.from_server_args(config.server_args, model_path=model_path),
+            device=torch.device("cpu"),
+        )
+    return ModelReplica(
+        model, built_shapes_by_name, config, postprocess_device=torch.device("cuda", torch.cuda.current_device())
+    )
+
+
+def _publish_server_args(server_args: ServerArgs) -> None:
+    # model construction and quant methods read these process-wide settings
+    server_args_module.set_global_server_args_for_scheduler(server_args)
+    initialize_moe_config()
+    initialize_fp8_gemm_config()
+    initialize_fp4_gemm_config()
+
+
+def pack_into_buffers(
+    param_names: Iterable[str], param_layouts: Mapping[str, TransferBufferParamLayout], buffer_bytes: int
+) -> Iterator[list[str]]:
+    """Splits `param_names`, in order, into groups that `ModelReplica.load_into` can each load into one transfer
+    buffer of `buffer_bytes`."""
+    group_param_names, group_end_offset = [], 0
+    for name in param_names:
+        param_nbytes = param_layouts[name].occupied_nbytes
+        assert param_nbytes <= buffer_bytes, f"{name} takes {param_nbytes} bytes, over the {buffer_bytes}-byte buffer"
+        param_start_offset = _align_param_start(group_end_offset)
+        if group_param_names and param_start_offset + param_nbytes > buffer_bytes:
+            yield group_param_names
+            group_param_names, param_start_offset = [], 0
+        group_param_names.append(name)
+        group_end_offset = param_start_offset + param_nbytes
+    if group_param_names:
+        yield group_param_names
+
+
+class ModelReplicas:
+    """Model replicas that load HF weights in rollout engine ranks' layouts, one per shard layout.
+
+    The p2p protocol keeps one for the whole trainer process. The first replica's params, pinned, are the buffer
+    every later replica loads into and every write reads from, so the buffer is registered once and stays valid
+    across reconnects.
+    """
+
+    def __init__(self, model_path: str) -> None:
+        self._model_path = model_path
+        self._model_replicas_by_shard_layout_key: dict[tuple, torch.nn.Module] = {}
+        self.shared_params_dict: dict[str, torch.Tensor] = {}
+        self.param_mapper: ParameterMapper | None = None
+
+    def get_or_build(self, config: RolloutEngineRankConfig) -> torch.nn.Module:
+        if config.shard_layout_key not in self._model_replicas_by_shard_layout_key:
+            self._model_replicas_by_shard_layout_key[config.shard_layout_key] = self._build(config)
+        return self._model_replicas_by_shard_layout_key[config.shard_layout_key]
+
+    def _build(self, config: RolloutEngineRankConfig) -> torch.nn.Module:
+        model_replica = _build_cpu_replica(config, self._model_path)
+        if not self.shared_params_dict:
+            for param in model_replica.parameters():
+                param.data = param.data.pin_memory()
+            self.shared_params_dict = dict(model_replica.named_parameters())
+            self.param_mapper = ParameterMapper.from_model(model_replica)
+            return model_replica
+
+        for name, param in model_replica.named_parameters():
+            assert name in self.shared_params_dict, f"[P2P-Shared] Parameter {name} not found in shared buffers"
+            shared = self.shared_params_dict[name]
+            assert param.shape == shared.shape and param.dtype == shared.dtype, (
+                f"[P2P-Shared] {name} is {tuple(param.shape)} {param.dtype} in the replica for "
+                f"{config.parallelism} but {tuple(shared.shape)} {shared.dtype} in the shared buffer"
+            )
+            param.data = shared
+        return model_replica
+
+
+def _build_cpu_replica(config: RolloutEngineRankConfig, model_path: str) -> torch.nn.Module:
+    """Create a CPU model replica that loads the right shard and skips post_load_weights."""
+    load_config = LoadConfig(
+        load_format="dummy",
+        model_loader_extra_config=None,
+        rl_quant_profile=config.server_args.rl_quant_profile,
+    )
+    _publish_server_args(config.server_args)
+
+    # Monkey-patch the loader-level post_load_weights to no-op BEFORE get_model,
+    # because get_model() calls post_load_weights() internally (loader.py:1310)
+    # which may invoke CUDA-only kernels (e.g., per_tensor_quant_fp8 for FP8 models).
+    # This is safe because the rollout engine runs post_load_weights on its own GPU
+    # after RDMA transfer, at end_weight_update.
+    from sglang.srt.model_loader import loader as model_loader_module
+
+    original_post_load_weights = model_loader_module.post_load_weights
+    model_loader_module.post_load_weights = lambda *args, **kwargs: None
+    try:
+        with ParallelismContext(config.parallelism):
+            model = get_model(
+                model_config=ModelConfig(model_path),
+                load_config=load_config,
+                device_config=DeviceConfig(device="cpu"),
+            )
+    finally:
+        model_loader_module.post_load_weights = original_post_load_weights
+
+    # Also patch the instance method for subsequent load_weights() calls
+    # (deepseek_weight_loader.py:342 calls self.post_load_weights() at the end).
+    if hasattr(model, "post_load_weights"):
+        model.post_load_weights = lambda *args, **kwargs: None
+
+    return model
+
+
+def assert_replica_matches_shard(
+    model_replica: torch.nn.Module, published_nbytes_by_name: Mapping[str, int], published_by: str
+) -> None:
+    """The replica must hold exactly the weights a rollout engine rank publishes, each in the published number of
+    bytes; otherwise what it loads cannot be written into that rank's memory."""
+    replica_nbytes_by_name = {
+        name: param.numel() * param.element_size() for name, param in model_replica.named_parameters()
+    }
+    mismatches = [
+        f"{name} is {replica_nbytes_by_name.get(name)} bytes here, {published_nbytes_by_name.get(name)} there"
+        for name in sorted(replica_nbytes_by_name.keys() | published_nbytes_by_name.keys())
+        if replica_nbytes_by_name.get(name) != published_nbytes_by_name.get(name)
+    ]
+    assert not mismatches, (
+        f"the model replica does not match the weights {published_by} publishes: "
+        f"{', '.join(mismatches[:5])} ({len(mismatches)} in all)"
+    )
