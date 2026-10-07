@@ -3,8 +3,9 @@
 :class:`LinearAttentionLayer` is the ``self_attention`` drop-in: input norm, one TP collective in
 (identity / all-reduce, or all-gather / reduce-scatter under sequence parallelism), the context-parallel
 zigzag relayout, and the row-parallel ``out_proj`` collective out. :class:`LinearAttention` runs this
-rank's heads: the model's input projections, the short conv over the group-major q/k/v (see
-``megatron_to_hf.linear_attn_layout``), the family's recurrence through fla, and a gated RMSNorm whose
+rank's heads: the model's input projections, the short conv(s) over q/k/v (one over group-major rows
+for GDN, see ``megatron_to_hf.linear_attn_layout``; one per tensor for KDA), the family's recurrence
+through fla, and a gated RMSNorm whose
 replicated weight has its gradient summed across TP. A family subclass supplies the recurrence; a model
 subclass declares the projections under the HF names, plain bf16 linears on sharded parameters, so
 ``--fp8`` training leaves this layer in bf16.
@@ -197,11 +198,12 @@ class ShardedShortConv(nn.Conv1d):
 
 
 class Projections(NamedTuple):
-    """This rank's projections: ``qkv`` ``[b, s, Gl * group_qkv_dim]`` group-major, ``gate``
+    """This rank's projections: ``qkv`` as :meth:`LinearAttention.convolve` takes it (one group-major
+    ``[b, s, Gl * group_qkv_dim]`` tensor for GDN, a ``(q, k, v)`` tuple for KDA), ``gate``
     ``[b, s, Hl * hv]``, ``beta_logits`` ``[b, s, Hl]``, ``decay`` ``[b, s, Hl]`` (GDN) or
     ``[b, s, Hl * hv]`` (KDA)."""
 
-    qkv: torch.Tensor
+    qkv: torch.Tensor | tuple[torch.Tensor, torch.Tensor, torch.Tensor]
     gate: torch.Tensor
     beta_logits: torch.Tensor
     decay: torch.Tensor
@@ -240,9 +242,7 @@ class LinearAttention(MegatronModule, ABC):
         )
         self._build_projections()
         with get_cuda_rng_tracker().fork():
-            self.conv1d = ShardedShortConv(
-                self.local.num_k_heads * self.local.group_qkv_dim, conv_kernel_size, tp_group, device, dtype
-            )
+            self._build_convolutions()
             self.A_log = nn.Parameter(
                 torch.empty(self.local.num_v_heads, dtype=torch.float32, device=device).uniform_(1, 16).log_()
             )
@@ -260,6 +260,25 @@ class LinearAttention(MegatronModule, ABC):
         with get_cuda_rng_tracker().fork():
             config.output_layer_init_method(self.out_proj.weight)
         self._mark_sharded("out_proj.weight", self.out_proj.weight, dim=1)
+
+    def sharded_conv(self, channels: int) -> ShardedShortConv:
+        return ShardedShortConv(
+            channels, self.conv_kernel_size, self.tp_group, torch.cuda.current_device(), self.config.params_dtype
+        )
+
+    def _build_convolutions(self) -> None:
+        self.conv1d = self.sharded_conv(self.local.num_k_heads * self.local.group_qkv_dim)
+
+    def convolve(self, qkv, cu_seqlens, cp_context):
+        """-> q, k ``[b, s, Gl, hk]``, v ``[b, s, Hl, hv]``. One conv over the group-major q/k/v, split per
+        group; value heads of a group are contiguous, so ``v`` is a view."""
+        batch, seq_len, _ = qkv.shape
+        local = self.local
+        mixed = self.conv1d(qkv, cu_seqlens=cu_seqlens, cp_context=cp_context)
+        q, k, v = mixed.view(batch, seq_len, local.num_k_heads, -1).split(
+            [local.head_k_dim, local.head_k_dim, local.group_value_dim], dim=-1
+        )
+        return q, k, v.reshape(batch, seq_len, local.num_v_heads, local.head_v_dim)
 
     def _mark_sharded(self, name: str, param: nn.Parameter, dim: int) -> None:
         set_tensor_model_parallel_attributes(param, True, dim, 1)
@@ -309,13 +328,8 @@ class LinearAttention(MegatronModule, ABC):
     def forward(self, x: torch.Tensor, cu_seqlens: torch.Tensor | None, cp_context=None) -> torch.Tensor:
         """x ``[b, s, hidden]``, TP collective already applied -> ``[b, s, local value_dim]``."""
         batch, seq_len, _ = x.shape
-        local = self.local
         qkv, gate, beta_logits, decay = self.project(x)
-        mixed = self.conv1d(qkv, cu_seqlens=cu_seqlens, cp_context=cp_context)
-        q, k, v = mixed.view(batch, seq_len, local.num_k_heads, -1).split(
-            [local.head_k_dim, local.head_k_dim, local.group_value_dim], dim=-1
-        )
-        v = v.reshape(batch, seq_len, local.num_v_heads, local.head_v_dim)
+        q, k, v = self.convolve(qkv, cu_seqlens, cp_context)
         core = self.recurrence(q, k, v, beta_logits, decay, cu_seqlens, cp_context)
         weight = copy_to_tensor_model_parallel_region(self.norm.weight, group=self.tp_group)
         core = rms_norm_gated(
@@ -354,10 +368,12 @@ class GatedDeltaNet(LinearAttention):
 
 
 class KimiDeltaAttention(LinearAttention):
-    """KDA with ``q_proj`` / ``k_proj`` / ``v_proj`` fused into one group-major ``in_proj_qkv``,
+    """KDA in the Kimi-K3 HF layout: ``q_proj`` / ``k_proj`` / ``v_proj`` with one short conv each,
     ``g_proj`` (output gate), ``b_proj`` (beta), and the low-rank forget gate ``f_b_proj(f_a_proj(x))``,
-    gated inside fla's kernel. ``f_a_proj`` is replicated and feeds head-sharded ``f_b_proj``, so its
-    weight passes the TP copy op like the norm."""
+    gated inside fla's kernel. One key head per value head, so the convs see contiguous per-head q / k / v
+    and need no group-major permutation. ``f_a_proj`` is replicated and feeds head-sharded ``f_b_proj``,
+    so its weight passes the TP copy op like the norm. The conv weights train in fp32, as Kimi's
+    checkpoints store them."""
 
     dt_bias_per_channel = True
     dt_bias_dtype = torch.float32
@@ -368,7 +384,9 @@ class KimiDeltaAttention(LinearAttention):
 
     def _build_projections(self):
         hidden, local = self.config.hidden_size, self.local
-        self.in_proj_qkv = self.sharded_linear("in_proj_qkv", hidden, local.num_k_heads * local.group_qkv_dim)
+        self.q_proj = self.sharded_linear("q_proj", hidden, local.key_dim)
+        self.k_proj = self.sharded_linear("k_proj", hidden, local.key_dim)
+        self.v_proj = self.sharded_linear("v_proj", hidden, local.value_dim)
         self.g_proj = self.sharded_linear("g_proj", hidden, local.value_dim)
         self.b_proj = self.sharded_linear("b_proj", hidden, local.num_v_heads)
         self.f_a_proj = nn.Linear(
@@ -381,9 +399,35 @@ class KimiDeltaAttention(LinearAttention):
         self.config.init_method(self.f_a_proj.weight)
         self.f_b_proj = self.sharded_linear("f_b_proj", self.heads.head_v_dim, local.value_dim)
 
+    def _build_convolutions(self):
+        local = self.local
+        self.q_conv1d = self.sharded_conv(local.key_dim)
+        self.k_conv1d = self.sharded_conv(local.key_dim)
+        self.v_conv1d = self.sharded_conv(local.value_dim)
+        for conv in (self.q_conv1d, self.k_conv1d, self.v_conv1d):
+            mark_param_dtype(conv.weight, torch.float32)
+
+    def convolve(self, qkv, cu_seqlens, cp_context):
+        batch, seq_len = qkv[0].shape[:2]
+        local = self.local
+        q, k, v = (
+            conv(t, cu_seqlens=cu_seqlens, cp_context=cp_context)
+            for conv, t in zip((self.q_conv1d, self.k_conv1d, self.v_conv1d), qkv, strict=True)
+        )
+        return (
+            q.view(batch, seq_len, local.num_k_heads, local.head_k_dim),
+            k.view(batch, seq_len, local.num_k_heads, local.head_k_dim),
+            v.view(batch, seq_len, local.num_v_heads, local.head_v_dim),
+        )
+
     def project(self, x):
         f_a_weight = copy_to_tensor_model_parallel_region(self.f_a_proj.weight, group=self.tp_group)
-        return Projections(self.in_proj_qkv(x), self.g_proj(x), self.b_proj(x), self.f_b_proj(F.linear(x, f_a_weight)))
+        return Projections(
+            (self.q_proj(x), self.k_proj(x), self.v_proj(x)),
+            self.g_proj(x),
+            self.b_proj(x),
+            self.f_b_proj(F.linear(x, f_a_weight)),
+        )
 
     def recurrence(self, q, k, v, beta_logits, decay, cu_seqlens, cp_context):
         return kda_recurrence(
