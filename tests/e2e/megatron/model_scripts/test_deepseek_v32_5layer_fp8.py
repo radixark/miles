@@ -41,6 +41,8 @@ def _args() -> ScriptArgs:
             "--use-rollout-routing-replay "
             "--skip-actor-forward-only "
             "--sglang-disable-shared-experts-fusion "
+            # A sanity check, not a convergence run: 4 prompts x 4 samples per step.
+            "--rollout-batch-size 4 --n-samples-per-prompt 4 --global-batch-size 16 "
             # TP2 doubles the per-rank activations of the script's TP4 token budget
             "--max-tokens-per-gpu 16384 "
         ),
