@@ -28,26 +28,6 @@ from miles.utils.workers.argv_utils import _record_field_names
 # where a rank sits in the launch, not how it holds its weights
 _PLACEMENT_PARALLELISM_FIELDS = frozenset({"global_rank", "local_rank"})
 
-# set per rollout engine at launch or by its PD role; nothing a replica build reads
-_PER_ROLLOUT_ENGINE_SERVER_ARGS_FIELDS = frozenset(
-    {
-        "host",
-        "port",
-        "grpc_port",
-        "nccl_port",
-        "dist_init_addr",
-        "node_rank",
-        "base_gpu_id",
-        "gated_launch_port",
-        "random_seed",
-        "engine_info_bootstrap_port",
-        "disaggregation_mode",
-        "disaggregation_bootstrap_port",
-        "load_balance_method",
-        "enable_hierarchical_cache",
-    }
-)
-
 # a multiple of every element size, so a span views as any param's dtype
 _SPAN_ALIGNMENT_BYTES = 256
 
@@ -63,19 +43,16 @@ class RolloutEngineRankConfig:
     server_args: ServerArgs
 
     @property
-    def shard_layout_key(self) -> tuple[tuple[str, str], ...]:
+    def shard_layout_key(self) -> tuple[tuple[str, object], ...]:
         sharding = {
             f"parallelism.{name}": value
             for name, value in self.parallelism.to_dict().items()
             if name not in _PLACEMENT_PARALLELISM_FIELDS
         }
         server_args = {
-            f"server_args.{name}": getattr(self.server_args, name)
-            for name in _record_field_names(type(self.server_args))
-            if name not in _PER_ROLLOUT_ENGINE_SERVER_ARGS_FIELDS
+            f"server_args.{name}": value for name, value in _replica_layout_server_args(self.server_args).items()
         }
-        # repr: some server args are lists or dicts
-        return tuple(sorted((name, repr(value)) for name, value in (sharding | server_args).items()))
+        return tuple(sorted((sharding | server_args).items()))
 
 
 class ParamSpec(NamedTuple):
@@ -274,6 +251,34 @@ def pack_into_buffers(
         group_end = start + nbytes
     if group:
         yield group
+
+
+def _replica_layout_server_args(server_args: ServerArgs) -> dict[str, object]:
+    """The server args that change the bytes a model replica writes and may differ between the rollout engines of
+    one model, by PD role or a server group's sglang overrides. The other args that shape a replica, such as the
+    model, dtype and quantization, are the same for every rollout engine of a model."""
+    names = (
+        # sharding that RankParallelismConfig does not carry
+        "enable_dp_lm_head",
+        "moe_dense_tp_size",
+        "dcp_size",
+        # MoE structure: expert count, shared-expert fusion and its sharding
+        "moe_a2a_backend",
+        "moe_runner_backend",
+        "disable_shared_experts_fusion",
+        "enforce_shared_experts_fusion",
+        "enable_two_batch_overlap",
+        "enable_single_batch_overlap",
+        "enable_waterfill",
+        "disable_flashinfer_cutlass_moe_fp4_allgather",
+        # layouts postprocess leaves in the reload state
+        "fp8_gemm_runner_backend",
+        "fp4_gemm_runner_backend",
+        "flashinfer_mxfp4_moe_precision",
+        "enable_w4a4_mxfp4_megamoe",
+        "flashinfer_a2a_dispatch_type",
+    )
+    return {name: getattr(server_args, name) for name in names}
 
 
 def create_server_args_from_dict(data_dict: dict) -> ServerArgs:

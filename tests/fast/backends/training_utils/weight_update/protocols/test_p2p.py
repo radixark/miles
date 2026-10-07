@@ -197,11 +197,11 @@ class TestConnect:
     ) -> None:
         """One model replica serves all engines of a rank, so their layouts must match."""
         protocol = p2p_sender.make_protocol()
-        bf16_api = make_rollout_api("cell-a", gpu_count=1)
-        fp8_api = make_rollout_api("cell-b", gpu_count=1, quantization="fp8")
+        trtllm_api = make_rollout_api("cell-a", gpu_count=1, moe_runner_backend="flashinfer_trtllm")
+        triton_api = make_rollout_api("cell-b", gpu_count=1, moe_runner_backend="triton")
 
         with pytest.raises(AssertionError, match="different layouts"):
-            p2p_sender.connect(protocol, [bf16_api, fp8_api])
+            p2p_sender.connect(protocol, [trtllm_api, triton_api])
 
     def test_a_replica_that_does_not_match_the_published_weights_is_rejected(
         self, p2p_sender: Any, make_rollout_api: Any
