@@ -149,6 +149,28 @@ def test_run_session_server_suppresses_routine_request_logs(monkeypatch):
     }
 
 
+def test_run_session_server_makes_full_collections_rare(monkeypatch):
+    """Only the full-collection threshold is raised; the young generations keep their defaults."""
+    thresholds = []
+    monkeypatch.setattr(session_server_module.gc, "set_threshold", lambda *values: thresholds.append(values))
+    monkeypatch.setattr(logging.getLogger("httpx"), "level", logging.NOTSET)
+    monkeypatch.setattr(logging.getLogger("httpcore"), "level", logging.NOTSET)
+    monkeypatch.setattr(session_server_module, "configure_logger_raw", lambda *_: None)
+    monkeypatch.setattr(session_server_module.setproctitle, "setproctitle", lambda *_: None)
+
+    class FakeSessionServer:
+        def __init__(self, config):
+            self.app = object()
+
+    monkeypatch.setattr(session_server_module, "SessionServer", FakeSessionServer)
+    monkeypatch.setattr(session_server_module.uvicorn, "run", lambda *args, **kwargs: None)
+
+    session_server_module.run_session_server(make_session_server_config())
+
+    gen0, gen1, _ = session_server_module.gc.get_threshold()
+    assert thresholds == [(gen0, gen1, 100)]
+
+
 class TestMain:
     def test_feeds_the_parsed_config_to_the_server(self, monkeypatch):
         """The CLI parses the config payload losslessly."""
