@@ -268,24 +268,10 @@ def _bring_to_reload_state(
     reload_layouts_by_param_id = {}
     for module_name, module in model.named_modules():
         # modules without one keep their params as built
-        quant_method = getattr(module, "quant_method", None)
-        if quant_method is None:
-            continue
-        for param in module.parameters(recurse=False):
-            param.data = torch.zeros(built_shapes_by_param_id[id(param)], dtype=param.dtype, device=postprocess_device)
-        with ParallelismContext(parallelism):
-            quant_method.process_weights_after_loading(module)
-            # as the engine does: duck-typed quant methods have no restore
-            if isinstance(quant_method, QuantizeMethodBase):
-                quant_method.restore_weights_before_loading(module)
-        # one entry per Parameter, though postprocess may register one under two names
-        for param_name, param in module.named_parameters(recurse=False):
-            assert param.device.type != "meta", (
-                f"the postprocess of {module_name} left {param_name} on meta; it must have read a tensor that "
-                "construction without storage does not allocate"
+        if getattr(module, "quant_method", None) is not None:
+            reload_layouts_by_param_id |= _bring_module_to_reload_state(
+                module_name, module, built_shapes_by_param_id, parallelism, postprocess_device
             )
-            reload_layouts_by_param_id[id(param)] = TransferBufferParamLayout.from_tensor(param)
-            param.data = torch.empty(0, dtype=param.dtype)
 
     param_layouts = {}
     for name, param in model.named_parameters():
@@ -295,6 +281,33 @@ def _bring_to_reload_state(
             built_param = torch.empty(built_shapes_by_name[name], dtype=param.dtype, device="meta")
             param_layouts[name] = TransferBufferParamLayout.from_tensor(built_param)
     return param_layouts
+
+
+def _bring_module_to_reload_state(
+    module_name: str,
+    module: torch.nn.Module,
+    built_shapes_by_param_id: Mapping[int, torch.Size],
+    parallelism: RankParallelismConfig,
+    postprocess_device: torch.device,
+) -> dict[int, TransferBufferParamLayout]:
+    for param in module.parameters(recurse=False):
+        param.data = torch.zeros(built_shapes_by_param_id[id(param)], dtype=param.dtype, device=postprocess_device)
+    with ParallelismContext(parallelism):
+        module.quant_method.process_weights_after_loading(module)
+        # as the engine does: duck-typed quant methods have no restore
+        if isinstance(module.quant_method, QuantizeMethodBase):
+            module.quant_method.restore_weights_before_loading(module)
+
+    reload_layouts_by_param_id = {}
+    # one entry per Parameter, though postprocess may register one under two names
+    for param_name, param in module.named_parameters(recurse=False):
+        assert param.device.type != "meta", (
+            f"the postprocess of {module_name} left {param_name} on meta; it must have read a tensor that "
+            "construction without storage does not allocate"
+        )
+        reload_layouts_by_param_id[id(param)] = TransferBufferParamLayout.from_tensor(param)
+        param.data = torch.empty(0, dtype=param.dtype)
+    return reload_layouts_by_param_id
 
 
 def _slice_buffer_by_param(
