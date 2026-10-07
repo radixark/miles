@@ -373,9 +373,7 @@ def pack_into_buffers(
     group_param_names, group_end_offset = [], 0
     for name in param_names:
         param_nbytes = param_layouts[name].occupied_nbytes
-        assert (
-            param_nbytes <= buffer_nbytes
-        ), f"{name} takes {param_nbytes} bytes, over the {buffer_nbytes}-byte buffer"
+        assert param_nbytes <= buffer_nbytes, f"{name} needs {param_nbytes} bytes, a buffer has {buffer_nbytes}"
         param_start_offset = _align_param_start(group_end_offset)
         if group_param_names and param_start_offset + param_nbytes > buffer_nbytes:
             yield group_param_names

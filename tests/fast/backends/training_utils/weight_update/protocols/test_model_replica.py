@@ -318,7 +318,7 @@ class TestPackIntoBuffers:
         """No buffer can hold such a param, so packing must fail rather than hand out a group that overflows."""
         param_layouts = self._layouts(model_replica_module, {"small": 100, "large": 600})
 
-        with pytest.raises(AssertionError, match="large takes 600 bytes"):
+        with pytest.raises(AssertionError, match="large needs 600 bytes"):
             list(model_replica_module.pack_into_buffers(["small", "large"], param_layouts, buffer_nbytes=512))
 
 
