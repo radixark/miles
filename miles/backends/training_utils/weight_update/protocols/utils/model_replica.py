@@ -258,8 +258,11 @@ def pack_into_buffers(
 def _replica_layout_server_args(server_args: ServerArgs) -> dict[str, object]:
     """The server args that change the bytes a model replica writes and may differ between the rollout engines of
     one model, by PD role or a server group's sglang overrides. The other args that shape a replica, such as the
-    model, dtype and quantization, are the same for every rollout engine of a model."""
+    model path and its config overrides, are the same for every rollout engine of a model."""
     names = (
+        # precision: a server group may quantize the same weights its own way
+        "quantization",
+        "dtype",
         # sharding that RankParallelismConfig does not carry
         "enable_dp_lm_head",
         "moe_dense_tp_size",

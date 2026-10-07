@@ -18,6 +18,7 @@ class _Parallelism:
 
 @dataclasses.dataclass
 class _ServerArgs:
+    quantization: str | None = None
     moe_runner_backend: str = "auto"
     enable_dp_lm_head: bool = False
     port: int = 30000
@@ -48,11 +49,12 @@ class TestShardLayoutKey:
         assert first_engine.shard_layout_key == second_engine.shard_layout_key
 
     def test_ranks_with_another_shard_or_sglang_arguments_do_not(self, model_replica_module: ModuleType) -> None:
-        """A replica built for one shard, MoE backend or lm_head sharding would write wrong bytes into another."""
+        """A replica built for one shard, quantization, MoE backend or lm_head sharding would write wrong bytes into
+        another."""
         config = _config(model_replica_module, tp_rank=0, global_rank=0)
 
         assert config.shard_layout_key != _config(model_replica_module, tp_rank=1, global_rank=1).shard_layout_key
-        for server_args in ({"moe_runner_backend": "triton"}, {"enable_dp_lm_head": True}):
+        for server_args in ({"quantization": "fp8"}, {"moe_runner_backend": "triton"}, {"enable_dp_lm_head": True}):
             assert (
                 config.shard_layout_key
                 != _config(model_replica_module, tp_rank=0, global_rank=0, **server_args).shard_layout_key
