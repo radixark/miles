@@ -7,7 +7,7 @@ from tests.ci.ci_register import register_cpu_ci
 
 register_cpu_ci(est_time=60, suite="stage-a-cpu", labels=[])
 
-from miles.utils.tensor_backper import MainCastContext, TensorBackuper, _TensorBackuperMainCast
+from miles.utils.tensor_backper import MainCastContext, TensorBackuper, _TensorBackuperMainCast, _TensorBackuperNormal
 
 
 @pytest.fixture(autouse=True)
@@ -207,3 +207,64 @@ def test_actor_restore_wins_after_ref_switch():
     setup.backuper.restore("actor")
     for name, tensor in {**setup.params, **setup.extras}.items():
         assert torch.equal(tensor, actor_values[name]), name
+
+
+def _disk_backuper(monkeypatch, tmp_path, params):
+    monkeypatch.setenv("MILES_WEIGHT_BACKUP_DIR", str(tmp_path))
+    return _TensorBackuperNormal(source_getter=lambda: iter(params.items()))
+
+
+def _disk_params():
+    generator = torch.Generator().manual_seed(0)
+    return {
+        "w_bf16": torch.randn(5, 7, generator=generator).to(torch.bfloat16),
+        "w_fp32": torch.randn(13, generator=generator),
+        "empty": torch.empty(0, 4),
+    }
+
+
+def test_disk_backup_round_trip_restores_bit_identical_weights(monkeypatch, tmp_path):
+    params = _disk_params()
+    original = {name: t.clone() for name, t in params.items()}
+    backuper = _disk_backuper(monkeypatch, tmp_path, params)
+    backuper.backup("actor")
+    for param in params.values():
+        param.fill_(3.0)
+    backuper.restore("actor")
+    for name, tensor in params.items():
+        assert torch.equal(tensor, original[name]), name
+    files = sorted((tmp_path / "rank00000" / "actor").iterdir())
+    assert len(files) == len(params)
+    assert sorted(f.stat().st_size for f in files) == sorted(
+        max(t.numel(), 1) * t.element_size() for t in params.values()
+    )
+
+
+def test_disk_backup_overwrites_its_files_on_the_next_backup(monkeypatch, tmp_path):
+    params = _disk_params()
+    backuper = _disk_backuper(monkeypatch, tmp_path, params)
+    backuper.backup("actor")
+    for param in params.values():
+        param.fill_(5.0)
+    second = {name: t.clone() for name, t in params.items()}
+    backuper.backup("actor")
+    for param in params.values():
+        param.fill_(-1.0)
+    backuper.restore("actor")
+    for name, tensor in params.items():
+        assert torch.equal(tensor, second[name]), name
+    assert len(list((tmp_path / "rank00000" / "actor").iterdir())) == len(params)
+
+
+def test_disk_backup_copy_between_tags(monkeypatch, tmp_path):
+    params = _disk_params()
+    rollout_values = {name: t.clone() for name, t in params.items()}
+    backuper = _disk_backuper(monkeypatch, tmp_path, params)
+    backuper.backup("rollout_actor")
+    for param in params.values():
+        param.fill_(9.0)
+    backuper.backup("old_actor")
+    backuper.copy(src_tag="rollout_actor", dst_tag="old_actor")
+    backuper.restore("old_actor")
+    for name, tensor in params.items():
+        assert torch.equal(tensor, rollout_values[name]), name
