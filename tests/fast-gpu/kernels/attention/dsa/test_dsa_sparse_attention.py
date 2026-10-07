@@ -1,4 +1,5 @@
 import importlib.util
+import itertools
 import pathlib
 
 import sys
@@ -12,7 +13,17 @@ register_cuda_ci(est_time=300, suite="stage-b-2-gpu-h200", labels=["precision"],
 tilelang = pytest.importorskip("tilelang")
 pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
 
-from miles.kernels.attention.dsa import sparse_attention  # noqa: E402
+from miles.kernels.attention.dsa import causal_ranges, indexer_logits, sparse_attention  # noqa: E402
+from miles.kernels.attention.dsa.sparse_attention import SparseAttentionConfig, flash_mla_sparse_fwd  # noqa: E402
+from miles.kernels.attention.dsa.topk import torch_dsa_topk  # noqa: E402
+
+BACKENDS = ["tilelang"] + (["flash_mla"] if flash_mla_sparse_fwd is not None else [])
+CONFIGS = ["default", *BACKENDS]
+
+
+def _config(backend):
+    return None if backend == "default" else SparseAttentionConfig(forward_backend=backend)
+
 
 _spec = importlib.util.spec_from_file_location("dsa_reference", pathlib.Path(__file__).with_name("dsa_reference.py"))
 reference = importlib.util.module_from_spec(_spec)
@@ -43,11 +54,14 @@ MQA_CASES = [  # DeepSeek-V4: single latent, attention sink
     (1, 256, 64, 1, 512, 0, 320, 128, True),
     (1, 256, 8, 1, 512, 0, 320, 100, True),  # topk not a multiple of the kernel block
     (1, 128, 8, 1, 512, 0, 160, 64, False),
+    (1, 131, 32, 1, 512, 0, 263, 64, True),  # odd lengths
 ]
 MLA_CASES = [  # GLM-5 / DeepSeek-V3.2: RoPE tail, no sink
+    (1, 128, 8, 1, 512, 64, 160, 64, False),  # TP-local head count below FlashMLA's minimum
     (1, 128, 16, 1, 512, 64, 160, 64, False),
     (1, 256, 64, 1, 512, 64, 320, 128, False),
     (1, 256, 128, 1, 512, 64, 320, 2048, False),  # topk > seq_len_kv exercises -1 padding
+    (1, 257, 32, 1, 512, 64, 301, 128, False),  # odd lengths
 ]
 
 
@@ -58,39 +72,79 @@ def IDS(cases):
     ]
 
 
+@pytest.mark.parametrize("backend", CONFIGS)
 @pytest.mark.parametrize("case", MQA_CASES + MLA_CASES, ids=IDS(MQA_CASES + MLA_CASES))
-def test_forward_matches_reference(case):
+def test_forward_matches_reference(case, backend):
     torch.manual_seed(0)
     batch, seq_len, heads, groups, d_v, d_tail, seq_len_kv, topk, sink = case
     q, kv, indices, attn_sink = _inputs(batch, seq_len, heads, groups, d_v, d_tail, seq_len_kv, topk, sink)
     sm_scale = (d_v + d_tail) ** -0.5
     ref = reference.sparse_attention_ref(q, kv, indices, sm_scale, d_v, attn_sink)
-    out = sparse_attention(q, kv, indices, sm_scale, d_v=d_v, attn_sink=attn_sink)
+    out = sparse_attention(q, kv, indices, sm_scale, d_v=d_v, attn_sink=attn_sink, config=_config(backend))
     assert out.shape == (batch, seq_len, heads, d_v)
     assert reference.rel_diff(ref, out) < 1e-3
     assert (ref - out.float()).abs().max() < 0.1
 
 
-@pytest.mark.parametrize("case", MQA_CASES[:3] + MLA_CASES[:2], ids=IDS(MQA_CASES[:3] + MLA_CASES[:2]))
-def test_backward_matches_autograd(case):
+BACKWARD_CASES = MQA_CASES[:4] + MQA_CASES[-1:] + MLA_CASES[:3] + MLA_CASES[-1:]
+
+
+@pytest.mark.parametrize("backend", CONFIGS)
+@pytest.mark.parametrize("case", BACKWARD_CASES, ids=IDS(BACKWARD_CASES))
+def test_backward_matches_autograd(case, backend):
     torch.manual_seed(0)
     batch, seq_len, heads, groups, d_v, d_tail, seq_len_kv, topk, sink = case
     q, kv, indices, attn_sink = _inputs(batch, seq_len, heads, groups, d_v, d_tail, seq_len_kv, topk, sink)
     sm_scale = (d_v + d_tail) ** -0.5
 
+    grad_out = torch.randn(batch, seq_len, heads, d_v, device="cuda", dtype=torch.float32)
+
     q_ref, kv_ref = q.float().requires_grad_(), kv.float().requires_grad_()
     sink_ref = attn_sink.clone().requires_grad_() if sink else None
-    reference.sparse_attention_ref(q_ref, kv_ref, indices, sm_scale, d_v, sink_ref).sum().backward()
+    (reference.sparse_attention_ref(q_ref, kv_ref, indices, sm_scale, d_v, sink_ref) * grad_out).sum().backward()
 
     q_tl, kv_tl = q.clone().requires_grad_(), kv.clone().requires_grad_()
     sink_tl = attn_sink.clone().requires_grad_() if sink else None
-    sparse_attention(q_tl, kv_tl, indices, sm_scale, d_v=d_v, attn_sink=sink_tl).float().sum().backward()
+    out = sparse_attention(
+        q_tl,
+        kv_tl,
+        indices,
+        sm_scale,
+        d_v=d_v,
+        attn_sink=sink_tl,
+        config=_config(backend),
+    )
+    (out.float() * grad_out).sum().backward()
 
     # bf16 GEMMs and atomic dKV accumulation, so the tolerance is looser than the forward.
     assert reference.rel_diff(q_ref.grad, q_tl.grad) < 0.05
     assert reference.rel_diff(kv_ref.grad, kv_tl.grad) < 0.05
     if sink:
         assert reference.rel_diff(sink_ref.grad, sink_tl.grad) < 0.05
+
+
+@pytest.mark.skipif(len(BACKENDS) < 2, reason="FlashMLA not installed")
+@pytest.mark.parametrize("case", MQA_CASES + MLA_CASES, ids=IDS(MQA_CASES + MLA_CASES))
+def test_forward_backends_agree(case):
+    """Both forwards feed the same TileLang backward, so the log-sum-exp conversion must be exact enough
+    that gradients agree to bf16 noise."""
+    torch.manual_seed(0)
+    batch, seq_len, heads, groups, d_v, d_tail, seq_len_kv, topk, sink = case
+    q, kv, indices, attn_sink = _inputs(batch, seq_len, heads, groups, d_v, d_tail, seq_len_kv, topk, sink)
+    sm_scale = (d_v + d_tail) ** -0.5
+    grad_out = torch.randn(batch, seq_len, heads, d_v, device="cuda", dtype=torch.float32)
+    grads = {}
+    for backend in BACKENDS:
+        q_, kv_ = q.clone().requires_grad_(), kv.clone().requires_grad_()
+        sink_ = attn_sink.clone().requires_grad_() if sink else None
+        out = sparse_attention(
+            q_, kv_, indices, sm_scale, d_v=d_v, attn_sink=sink_, config=SparseAttentionConfig(forward_backend=backend)
+        )
+        (out.float() * grad_out).sum().backward()
+        grads[backend] = (out, q_.grad, kv_.grad, sink_.grad if sink else None)
+    for a, b in zip(grads["tilelang"], grads["flash_mla"], strict=True):
+        if a is not None:
+            assert reference.rel_diff(a, b) < 1e-5
 
 
 def test_sink_changes_output():
@@ -109,6 +163,91 @@ def test_query_with_no_valid_key_returns_zero():
     out = sparse_attention(q, kv, indices, 512**-0.5, attn_sink=attn_sink)
     assert torch.all(torch.isfinite(out))
     assert torch.all(out[0, 0] == 0)
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+@pytest.mark.parametrize("sink", [False, True], ids=["nosink", "sink"])
+def test_rows_with_no_selected_keys(backend, sink):
+    """Rows whose indices are all -1 attend to nothing (or only the sink): zero output, finite gradients."""
+    torch.manual_seed(0)
+    batch, seq_len, heads, d_v, seq_len_kv, topk = 1, 128, 64, 512, 160, 64
+    q, kv, indices, attn_sink = _inputs(batch, seq_len, heads, 1, d_v, 0, seq_len_kv, topk, sink)
+    indices[:, :5] = -1
+    sm_scale = d_v**-0.5
+    grad_out = torch.randn(batch, seq_len, heads, d_v, device="cuda", dtype=torch.float32)
+
+    q_ref, kv_ref = q.float().requires_grad_(), kv.float().requires_grad_()
+    sink_ref = attn_sink.clone().requires_grad_() if sink else None
+    ref = reference.sparse_attention_ref(q_ref, kv_ref, indices, sm_scale, d_v, sink_ref)
+    (ref * grad_out).sum().backward()
+
+    q_tl, kv_tl = q.clone().requires_grad_(), kv.clone().requires_grad_()
+    sink_tl = attn_sink.clone().requires_grad_() if sink else None
+    out = sparse_attention(
+        q_tl,
+        kv_tl,
+        indices,
+        sm_scale,
+        d_v=d_v,
+        attn_sink=sink_tl,
+        config=SparseAttentionConfig(forward_backend=backend),
+    )
+    (out.float() * grad_out).sum().backward()
+
+    assert torch.all(out[:, :5] == 0)
+    for actual in (out, q_tl.grad, kv_tl.grad) + ((sink_tl.grad,) if sink else ()):
+        assert torch.isfinite(actual).all()
+    assert reference.rel_diff(ref, out) < 1e-3
+    assert reference.rel_diff(q_ref.grad, q_tl.grad) < 0.05
+    assert reference.rel_diff(kv_ref.grad, kv_tl.grad) < 0.05
+    if sink:
+        assert reference.rel_diff(sink_ref.grad, sink_tl.grad) < 0.05
+
+
+@pytest.mark.parametrize("backend", CONFIGS)
+@pytest.mark.parametrize("segments", [[1, 7, 93, 3, 160], [1, 1, 1, 255]], ids=["mixed", "one_token_segments"])
+@pytest.mark.parametrize(
+    "heads, d_tail, topk, sink", [(16, 64, 128, False), (32, 0, 64, True)], ids=["glm5", "deepseek_v4"]
+)
+def test_packed_sequences_end_to_end(segments, heads, d_tail, topk, sink, backend):
+    """The packed path: causal_ranges -> indexer -> top-k (-1 past a short segment) -> sparse attention."""
+    torch.manual_seed(0)
+    cu_seqlens = torch.tensor([0, *itertools.accumulate(segments)], device="cuda", dtype=torch.int32)
+    total = int(cu_seqlens[-1])
+    starts, ends = (bound.int() for bound in causal_ranges(cu_seqlens))
+    index_q = torch.randn(total, 8, 128, device="cuda", dtype=torch.bfloat16)
+    index_k = torch.randn(total, 128, device="cuda", dtype=torch.bfloat16)
+    index_weights = torch.randn(total, 8, device="cuda")
+    logits = indexer_logits(index_q, index_k, index_weights, starts, ends)
+    ref_logits = reference.indexer_logits_ref(index_q, index_k, index_weights, starts, ends)
+    assert torch.equal(torch.isinf(logits), torch.isinf(ref_logits))
+    indices = torch_dsa_topk(logits, topk).int()
+    is_picked = indices >= 0
+    assert torch.all(~is_picked | ((indices >= starts.unsqueeze(1)) & (indices < ends.unsqueeze(1))))
+
+    d_v = 512
+    q, kv, _, attn_sink = _inputs(1, total, heads, 1, d_v, d_tail, total, topk, sink)
+    indices = indices.view(1, total, 1, topk)
+    sm_scale = (d_v + d_tail) ** -0.5
+    grad_out = torch.randn(1, total, heads, d_v, device="cuda", dtype=torch.float32)
+
+    q_ref, kv_ref = q.float().requires_grad_(), kv.float().requires_grad_()
+    sink_ref = attn_sink.clone().requires_grad_() if sink else None
+    ref = reference.sparse_attention_ref(q_ref, kv_ref, indices, sm_scale, d_v, sink_ref)
+    (ref * grad_out).sum().backward()
+
+    q_tl, kv_tl = q.clone().requires_grad_(), kv.clone().requires_grad_()
+    sink_tl = attn_sink.clone().requires_grad_() if sink else None
+    out = sparse_attention(q_tl, kv_tl, indices, sm_scale, d_v=d_v, attn_sink=sink_tl, config=_config(backend))
+    (out.float() * grad_out).sum().backward()
+
+    for actual in (out, q_tl.grad, kv_tl.grad) + ((sink_tl.grad,) if sink else ()):
+        assert torch.isfinite(actual).all()
+    assert reference.rel_diff(ref, out) < 1e-3
+    assert reference.rel_diff(q_ref.grad, q_tl.grad) < 0.05
+    assert reference.rel_diff(kv_ref.grad, kv_tl.grad) < 0.05
+    if sink:
+        assert reference.rel_diff(sink_ref.grad, sink_tl.grad) < 0.05
 
 
 if __name__ == "__main__":

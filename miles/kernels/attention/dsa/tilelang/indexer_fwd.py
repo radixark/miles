@@ -13,13 +13,13 @@ from tilelang import language as T
 def _indexer_fwd_kernel(
     heads,
     index_dim,
-    block_N=256,
-    num_stages=3,
+    block_N=128,
+    num_stages=2,
     threads=512,
     block_Q=None,
 ):
     if block_Q is None:
-        block_Q = 128 // heads
+        block_Q = max(1, 256 // heads)
     dtype = T.bfloat16
     accum_dtype = T.float32
     index_dtype = T.int32
