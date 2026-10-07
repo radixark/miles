@@ -102,7 +102,9 @@ def main() -> None:
     _assert_identical(reference_engine, p2p_engine, "at startup")
     published = _published(p2p_engine)
     model_replica = build_model_replica(RolloutEngineRankConfig(parallelism, server_args), str(args.model_dir))
-    buffer_bytes = max(BUFFER_BYTES, max(spec.occupied_nbytes for spec in model_replica.param_specs.values()))
+    buffer_bytes = max(
+        BUFFER_BYTES, max(layout.occupied_nbytes for layout in model_replica.transfer_buffer_param_layouts.values())
+    )
     buffer = torch.empty(buffer_bytes, dtype=torch.uint8, pin_memory=True)
 
     for version, fill in enumerate(POISON_FILLS, start=1):
@@ -139,10 +141,12 @@ def _write_p2p_update(
     params_by_name = dict(engine.named_parameters())
     for hf_tensor in hf_tensors:
         ready_hf_tensors_by_param_name = stager.get_transfer_ready_params(
-            [hf_tensor], param_mapper=model_replica.param_mapper, params_dict=model_replica.param_specs
+            [hf_tensor],
+            param_mapper=model_replica.param_mapper,
+            params_dict=model_replica.transfer_buffer_param_layouts,
         )
         for param_names in pack_into_buffers(
-            ready_hf_tensors_by_param_name, model_replica.param_specs, buffer.numel()
+            ready_hf_tensors_by_param_name, model_replica.transfer_buffer_param_layouts, buffer.numel()
         ):
             buffer.fill_(fill)
             param_bytes_by_name = model_replica.load_into(

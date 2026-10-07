@@ -55,8 +55,9 @@ class RolloutEngineRankConfig:
         return tuple(sorted((sharding_fields | server_args_fields).items()))
 
 
-class ParamSpec(NamedTuple):
-    """One param as a rollout engine rank's loader writes into it, after `restore_weights_before_loading`."""
+class TransferBufferParamLayout(NamedTuple):
+    """How one param's bytes are laid out in a transfer buffer: as the engine's param is after
+    `restore_weights_before_loading`, which is what its loader writes into."""
 
     shape: torch.Size
     stride: tuple[int, ...]
@@ -64,7 +65,7 @@ class ParamSpec(NamedTuple):
     occupied_nbytes: int
 
     @classmethod
-    def from_tensor(cls, tensor: torch.Tensor) -> "ParamSpec":
+    def from_tensor(cls, tensor: torch.Tensor) -> "TransferBufferParamLayout":
         return cls(tensor.shape, tensor.stride(), tensor.dtype, _compute_occupied_nbytes(tensor))
 
 
@@ -90,7 +91,9 @@ class ModelReplica:
             model.post_load_weights = lambda *args, **kwargs: None
         self._model = model
         self._config = config
-        self.param_specs = _bring_to_reload_state(model, built_shapes_by_name, config.parallelism, postprocess_device)
+        self.transfer_buffer_param_layouts = _bring_to_reload_state(
+            model, built_shapes_by_name, config.parallelism, postprocess_device
+        )
         self._params_by_name = dict(model.named_parameters())
         self.param_mapper = ParameterMapper.from_model(model)
 
@@ -106,11 +109,11 @@ class ModelReplica:
         # sglang holds one live config per process, and this replica was built under its own
         if get_server_args() is not self._config.server_args:
             _publish_server_args(self._config.server_args)
-        param_bytes_by_name = _slice_buffer_by_param(buffer, param_names, self.param_specs)
+        param_bytes_by_name = _slice_buffer_by_param(buffer, param_names, self.transfer_buffer_param_layouts)
         params_by_name = {name: self._params_by_name[name] for name in param_names}
         try:
             for name, param in params_by_name.items():
-                param.data = _view_bytes_as_param(param_bytes_by_name[name], self.param_specs[name])
+                param.data = _view_bytes_as_param(param_bytes_by_name[name], self.transfer_buffer_param_layouts[name])
             state_before_load_by_name = {
                 name: _get_param_state_besides_bytes(param) for name, param in params_by_name.items()
             }
@@ -235,13 +238,13 @@ def build_model_replica(config: RolloutEngineRankConfig, model_path: str) -> Mod
 
 
 def pack_into_buffers(
-    param_names: Iterable[str], param_specs: Mapping[str, ParamSpec], buffer_bytes: int
+    param_names: Iterable[str], param_layouts: Mapping[str, TransferBufferParamLayout], buffer_bytes: int
 ) -> Iterator[list[str]]:
     """Splits `param_names`, in order, into groups that `ModelReplica.load_into` can each load into one transfer
     buffer of `buffer_bytes`."""
     group_param_names, group_end_offset = [], 0
     for name in param_names:
-        param_nbytes = param_specs[name].occupied_nbytes
+        param_nbytes = param_layouts[name].occupied_nbytes
         assert param_nbytes <= buffer_bytes, f"{name} takes {param_nbytes} bytes, over the {buffer_bytes}-byte buffer"
         param_start_offset = _align_param_start(group_end_offset)
         if group_param_names and param_start_offset + param_nbytes > buffer_bytes:
@@ -371,11 +374,11 @@ def _bring_to_reload_state(
     built_shapes_by_name: Mapping[str, torch.Size],
     parallelism: RankParallelismConfig,
     postprocess_device: torch.device,
-) -> dict[str, ParamSpec]:
+) -> dict[str, TransferBufferParamLayout]:
     """Runs the engine's startup postprocess and session restore on `model`, one module at a time on zero tensors,
-    and returns the spec of each param afterwards, by name. Every param ends 0-size on the CPU."""
+    and returns the transfer buffer layout of each param afterwards, by name. Every param ends 0-size on the CPU."""
     built_shapes_by_param_id = {id(param): built_shapes_by_name[name] for name, param in model.named_parameters()}
-    reload_specs_by_param_id = {}
+    reload_layouts_by_param_id = {}
     for module_name, module in model.named_modules():
         # modules without one keep their params as built
         quant_method = getattr(module, "quant_method", None)
@@ -394,17 +397,17 @@ def _bring_to_reload_state(
                 f"the postprocess of {module_name} left {param_name} on meta; it must have read a tensor that "
                 "construction without storage does not allocate"
             )
-            reload_specs_by_param_id[id(param)] = ParamSpec.from_tensor(param)
+            reload_layouts_by_param_id[id(param)] = TransferBufferParamLayout.from_tensor(param)
             param.data = torch.empty(0, dtype=param.dtype)
 
-    param_specs = {}
+    param_layouts = {}
     for name, param in model.named_parameters():
-        if id(param) in reload_specs_by_param_id:
-            param_specs[name] = reload_specs_by_param_id[id(param)]
+        if id(param) in reload_layouts_by_param_id:
+            param_layouts[name] = reload_layouts_by_param_id[id(param)]
         else:
             built_param = torch.empty(built_shapes_by_name[name], dtype=param.dtype, device="meta")
-            param_specs[name] = ParamSpec.from_tensor(built_param)
-    return param_specs
+            param_layouts[name] = TransferBufferParamLayout.from_tensor(built_param)
+    return param_layouts
 
 
 def _compute_occupied_nbytes(tensor: torch.Tensor) -> int:
@@ -421,14 +424,14 @@ def _align_param_start(offset: int) -> int:
 
 
 def _slice_buffer_by_param(
-    buffer: torch.Tensor, param_names: Sequence[str], param_specs: Mapping[str, ParamSpec]
+    buffer: torch.Tensor, param_names: Sequence[str], param_layouts: Mapping[str, TransferBufferParamLayout]
 ) -> dict[str, torch.Tensor]:
     """Lays `param_names` out one after another in the uint8 `buffer`, each start aligned; returns the bytes each
     param occupies, by name."""
     param_bytes_by_name, param_end_offset = {}, 0
     for name in param_names:
         param_start_offset = _align_param_start(param_end_offset)
-        param_end_offset = param_start_offset + param_specs[name].occupied_nbytes
+        param_end_offset = param_start_offset + param_layouts[name].occupied_nbytes
         assert param_end_offset <= buffer.numel(), (
             f"{', '.join(param_names)} do not fit a {buffer.numel()}-byte transfer buffer; group them with "
             "pack_into_buffers"
@@ -437,8 +440,8 @@ def _slice_buffer_by_param(
     return param_bytes_by_name
 
 
-def _view_bytes_as_param(param_bytes: torch.Tensor, param_spec: ParamSpec) -> torch.Tensor:
-    return torch.as_strided(param_bytes.view(param_spec.dtype), param_spec.shape, param_spec.stride)
+def _view_bytes_as_param(param_bytes: torch.Tensor, param_layout: TransferBufferParamLayout) -> torch.Tensor:
+    return torch.as_strided(param_bytes.view(param_layout.dtype), param_layout.shape, param_layout.stride)
 
 
 def _get_param_state_besides_bytes(param: torch.nn.Parameter) -> tuple:

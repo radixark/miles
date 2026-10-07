@@ -209,14 +209,14 @@ def _float_tensor(start: float, *shape: int) -> torch.Tensor:
 
 
 class TestModelReplica:
-    def test_param_specs_are_the_state_the_engine_loads_into(self, make_model_replica) -> None:
+    def test_param_layouts_are_the_state_the_engine_loads_into(self, make_model_replica) -> None:
         """The engine's loader writes into its params after postprocess and restore, so loads must see that state;
         an aliased param must keep its real size, and a param only postprocess creates is still published."""
         model_replica = make_model_replica()
 
         assert {
-            name: (tuple(param_spec.shape), param_spec.occupied_nbytes)
-            for name, param_spec in model_replica.param_specs.items()
+            name: (tuple(param_layout.shape), param_layout.occupied_nbytes)
+            for name, param_layout in model_replica.transfer_buffer_param_layouts.items()
         } == {
             "experts.w13": ((4, 6), 96),
             "linear.weight": ((3, 2), 24),
@@ -289,33 +289,36 @@ def test_a_strided_param_occupies_the_bytes_up_to_its_last_element(model_replica
     """A param whose strides leave gaps needs the bytes up to its last element, so its view fits in the buffer."""
     first_three_columns = torch.empty(4, 6)[:, :3]
 
-    assert model_replica_module.ParamSpec.from_tensor(first_three_columns).occupied_nbytes == (3 * 6 + 2 + 1) * 4
-    assert model_replica_module.ParamSpec.from_tensor(torch.empty(4, 6).t()).occupied_nbytes == 24 * 4
+    assert (
+        model_replica_module.TransferBufferParamLayout.from_tensor(first_three_columns).occupied_nbytes
+        == (3 * 6 + 2 + 1) * 4
+    )
+    assert model_replica_module.TransferBufferParamLayout.from_tensor(torch.empty(4, 6).t()).occupied_nbytes == 24 * 4
 
 
 class TestPackIntoBuffers:
     @staticmethod
-    def _specs(model_replica_module: ModuleType, nbytes_by_name: dict[str, int]) -> dict:
+    def _layouts(model_replica_module: ModuleType, nbytes_by_name: dict[str, int]) -> dict:
         return {
-            name: model_replica_module.ParamSpec.from_tensor(torch.empty(nbytes, dtype=torch.uint8))
+            name: model_replica_module.TransferBufferParamLayout.from_tensor(torch.empty(nbytes, dtype=torch.uint8))
             for name, nbytes in nbytes_by_name.items()
         }
 
     def test_every_group_fits_the_layout_load_into_gives_it(self, model_replica_module: ModuleType) -> None:
         """`load_into` aligns where each param starts, so groups must be packed with the same alignment."""
-        param_specs = self._specs(model_replica_module, {"a": 100, "b": 100, "c": 300, "d": 50})
+        param_layouts = self._layouts(model_replica_module, {"a": 100, "b": 100, "c": 300, "d": 50})
 
-        groups = list(model_replica_module.pack_into_buffers(["a", "b", "c", "d"], param_specs, buffer_bytes=512))
+        groups = list(model_replica_module.pack_into_buffers(["a", "b", "c", "d"], param_layouts, buffer_bytes=512))
 
         assert [name for group in groups for name in group] == ["a", "b", "c", "d"]
         for group in groups:
-            model_replica_module._slice_buffer_by_param(torch.empty(512, dtype=torch.uint8), group, param_specs)
+            model_replica_module._slice_buffer_by_param(torch.empty(512, dtype=torch.uint8), group, param_layouts)
 
     def test_a_param_larger_than_a_buffer_is_rejected(self, model_replica_module: ModuleType) -> None:
-        param_specs = self._specs(model_replica_module, {"small": 100, "large": 600})
+        param_layouts = self._layouts(model_replica_module, {"small": 100, "large": 600})
 
         with pytest.raises(AssertionError, match="large takes 600 bytes"):
-            list(model_replica_module.pack_into_buffers(["small", "large"], param_specs, buffer_bytes=512))
+            list(model_replica_module.pack_into_buffers(["small", "large"], param_layouts, buffer_bytes=512))
 
 
 @pytest.mark.parametrize(
