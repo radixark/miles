@@ -8,7 +8,7 @@ from tests.e2e.conftest_multi_policy import execute
 from miles.utils.external_utils import command_utils
 
 register_cuda_ci(
-    est_time=2100,
+    est_time=1900,
     suite="stage-c-4-gpu-h200",
     labels=["short", "multi-policy", "fully-async"],
     hardware=["hopper", "blackwell"],
