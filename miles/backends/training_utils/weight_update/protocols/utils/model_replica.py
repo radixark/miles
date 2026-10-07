@@ -50,7 +50,7 @@ class RolloutEngineRankConfig:
             if name not in _PLACEMENT_PARALLELISM_FIELDS
         }
         server_args_fields = {
-            f"server_args.{name}": value for name, value in _replica_layout_server_args(self.server_args).items()
+            f"server_args.{name}": value for name, value in _get_replica_layout_server_args(self.server_args).items()
         }
         return tuple(sorted((sharding_fields | server_args_fields).items()))
 
@@ -65,7 +65,7 @@ class ParamSpec(NamedTuple):
 
     @classmethod
     def from_tensor(cls, tensor: torch.Tensor) -> "ParamSpec":
-        return cls(tensor.shape, tensor.stride(), tensor.dtype, _nbytes_from_first_to_last_element(tensor))
+        return cls(tensor.shape, tensor.stride(), tensor.dtype, _compute_occupied_nbytes(tensor))
 
 
 class ModelReplica:
@@ -106,13 +106,13 @@ class ModelReplica:
         # sglang holds one live config per process, and this replica was built under its own
         if get_server_args() is not self._config.server_args:
             _publish_server_args(self._config.server_args)
-        param_bytes_by_name = _param_bytes_in_buffer(buffer, param_names, self.param_specs)
+        param_bytes_by_name = _slice_buffer_by_param(buffer, param_names, self.param_specs)
         params_by_name = {name: self._params_by_name[name] for name in param_names}
         try:
             for name, param in params_by_name.items():
                 param.data = _view_bytes_as_param(param_bytes_by_name[name], self.param_specs[name])
             state_before_load_by_name = {
-                name: _param_state_besides_bytes(param) for name, param in params_by_name.items()
+                name: _get_param_state_besides_bytes(param) for name, param in params_by_name.items()
             }
             with ParallelismContext(self._config.parallelism):
                 self._model.load_weights(hf_tensors)
@@ -121,7 +121,7 @@ class ModelReplica:
                 name
                 for name, param in params_by_name.items()
                 if params_after_load_by_name[name] is not param
-                or _param_state_besides_bytes(param) != state_before_load_by_name[name]
+                or _get_param_state_besides_bytes(param) != state_before_load_by_name[name]
             ]
             assert not changed_param_names, (
                 f"loading changed more than the bytes of {', '.join(changed_param_names[:5])} "
@@ -253,7 +253,7 @@ def pack_into_buffers(
         yield group_param_names
 
 
-def _replica_layout_server_args(server_args: ServerArgs) -> dict[str, object]:
+def _get_replica_layout_server_args(server_args: ServerArgs) -> dict[str, object]:
     """The server args that change the bytes a model replica writes and may differ between the rollout engines of
     one model, by PD role or a server group's sglang overrides. The other args that shape a replica, such as the
     model path and its config overrides, are the same for every rollout engine of a model."""
@@ -407,7 +407,7 @@ def _bring_to_reload_state(
     return param_specs
 
 
-def _nbytes_from_first_to_last_element(tensor: torch.Tensor) -> int:
+def _compute_occupied_nbytes(tensor: torch.Tensor) -> int:
     """The bytes a tensor's elements cover in memory, from its first element to its last; `numel × element_size`
     when it is contiguous, more when its strides leave gaps."""
     if tensor.numel() == 0:
@@ -420,7 +420,7 @@ def _align_param_start(offset: int) -> int:
     return -(-offset // _PARAM_ALIGNMENT_BYTES) * _PARAM_ALIGNMENT_BYTES
 
 
-def _param_bytes_in_buffer(
+def _slice_buffer_by_param(
     buffer: torch.Tensor, param_names: Sequence[str], param_specs: Mapping[str, ParamSpec]
 ) -> dict[str, torch.Tensor]:
     """Lays `param_names` out one after another in the uint8 `buffer`, each start aligned; returns the bytes each
@@ -441,7 +441,7 @@ def _view_bytes_as_param(param_bytes: torch.Tensor, param_spec: ParamSpec) -> to
     return torch.as_strided(param_bytes.view(param_spec.dtype), param_spec.shape, param_spec.stride)
 
 
-def _param_state_besides_bytes(param: torch.nn.Parameter) -> tuple:
+def _get_param_state_besides_bytes(param: torch.nn.Parameter) -> tuple:
     attributes = {
         key: value if isinstance(value, bool | int | float | str | None) else id(value)
         for key, value in vars(param).items()

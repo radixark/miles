@@ -309,7 +309,7 @@ class TestPackIntoBuffers:
 
         assert [name for group in groups for name in group] == ["a", "b", "c", "d"]
         for group in groups:
-            model_replica_module._param_bytes_in_buffer(torch.empty(512, dtype=torch.uint8), group, param_specs)
+            model_replica_module._slice_buffer_by_param(torch.empty(512, dtype=torch.uint8), group, param_specs)
 
     def test_a_param_larger_than_a_buffer_is_rejected(self, model_replica_module: ModuleType) -> None:
         param_specs = self._specs(model_replica_module, {"small": 100, "large": 600})
