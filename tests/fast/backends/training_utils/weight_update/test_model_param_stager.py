@@ -155,7 +155,7 @@ class TestGetTransferReadyParams:
         stager.assert_all_done()
 
     def test_parameters_completed_in_one_bucket_keep_their_own_hf_tensors(self) -> None:
-        """Each parameter is loaded into a staging buffer with only its own HF tensors, so completing several at once
+        """Each parameter is loaded into a transfer buffer with only its own HF tensors, so completing several at once
         must not mix them."""
         mappings = {
             "hf.q": _FakeMapping("qkv_proj", num_shards=2),

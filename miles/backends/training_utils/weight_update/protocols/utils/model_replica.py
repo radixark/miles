@@ -73,7 +73,7 @@ class ModelReplica:
     the bytes that rank's loader would write.
 
     Its params are 0-size, and their shapes and attributes are those the engine's params have while it loads an
-    update. The p2p protocol loads each group of ready params into a staging buffer with `load_into` and writes the
+    update. The p2p protocol loads each group of ready params into a transfer buffer with `load_into` and writes the
     returned bytes into the rollout engine ranks of this layout.
     """
 
@@ -237,7 +237,7 @@ def build_model_replica(config: RolloutEngineRankConfig, model_path: str) -> Mod
 def pack_into_buffers(
     param_names: Iterable[str], param_specs: Mapping[str, ParamSpec], buffer_bytes: int
 ) -> Iterator[list[str]]:
-    """Splits `param_names`, in order, into groups that `ModelReplica.load_into` can each load into one staging
+    """Splits `param_names`, in order, into groups that `ModelReplica.load_into` can each load into one transfer
     buffer of `buffer_bytes`."""
     group_param_names, group_end_offset = [], 0
     for name in param_names:
@@ -430,7 +430,7 @@ def _param_bytes_in_buffer(
         param_start_offset = _align_param_start(param_end_offset)
         param_end_offset = param_start_offset + param_specs[name].occupied_nbytes
         assert param_end_offset <= buffer.numel(), (
-            f"{', '.join(param_names)} do not fit a {buffer.numel()}-byte staging buffer; group them with "
+            f"{', '.join(param_names)} do not fit a {buffer.numel()}-byte transfer buffer; group them with "
             "pack_into_buffers"
         )
         param_bytes_by_name[name] = buffer[param_start_offset:param_end_offset]
