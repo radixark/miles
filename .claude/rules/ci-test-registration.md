@@ -98,7 +98,7 @@ alike. It is measured, never copied from a neighbouring test. CPU and ROCm
 registrations need no timing run.
 
 An enabled `register_cuda_ci` test with neither `nightly=True` nor a `long` or
-`ft-long` label keeps `est_time` at or below 1800 s; cut its workload until it
+`ft-long` label keeps `est_time` at or below 2400 s; cut its workload until it
 fits.
 
 1. Before the first run, use an upper bound that safely exceeds the expected
