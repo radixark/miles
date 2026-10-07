@@ -300,7 +300,6 @@
      {
       "group": "CI",
       "pages": [
-       "ci/contributor-guide",
        "ci/00-stage",
        "ci/01-label",
        "ci/02-docker-build",
@@ -430,6 +429,11 @@
   {
    "source": "/user-guide/dashboard",
    "destination": "/user-guide/monitoring",
+   "permanent": true
+  },
+  {
+   "source": "/developer/ci/contributor-guide",
+   "destination": "/developer/contributor-guide#registering-a-test",
    "permanent": true
   }
  ],

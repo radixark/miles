@@ -10,9 +10,9 @@ paths:
 # CI Test Registration
 
 Rules for adding a test file, moving one, or changing a `register_*_ci(...)`
-call. They are written only here; `docs/developer/ci/contributor-guide.md`
-explains the mechanics around them (discovery, labels, cadences, reading a red
-check).
+call. CI selection is driven by that declaration, never by the workflow YAML:
+the runner discovers a test from where it lives and what it declares. What to
+do when a check goes red is in `ci-failure-triage.md`.
 
 ## Placement
 
@@ -70,6 +70,38 @@ register_cuda_ci(
   support it (`--sglang-attention-backend fa3` is Hopper-only; nvfp4 / mxfp8
   kernels are Blackwell-only). The generation of the home `suite` comes first.
 
+## Confirm CI picks it up
+
+A test that is never collected fails silently: it just never appears, and CI
+stays green. Confirm pickup before relying on it:
+
+1. From the repo root, list the plan for its suite; no GPU is needed. The file
+   must appear under `Enabled N test(s)`; add `--nightly` for a `nightly=True`
+   registration. The command also validates every discovered registration.
+   ```bash
+   python3 tests/ci/run_suite.py --hw <cpu|cuda> --suite <suite> --match-all-labels --list-only
+   ```
+2. On the PR, the matching stage job prints the same plan in its **Resolve
+   suite plan** step.
+
+If the file is missing, check in order: it is a `test_*.py` under a CI root;
+its `register_*_ci(...)` call is top-level, not inside a function or behind an
+aliased import; its `suite=` is a real stage (`CUDA_STAGES` in
+`tests/ci/hardware.py`, or `stage-a-cpu` / `stage-b-cpu`), since a misspelled
+suite has no job and never runs.
+
+## Which PRs run it
+
+- `labels` decide which PRs run the test within its cadence:
+  `labels=["megatron"]` runs only when the PR carries `run-ci-megatron`. If a
+  gated test does not run, add the matching `run-ci-<label>`; a maintainer can
+  add `run-ci-all` to select every label.
+- Cadence is separate: `nightly=True` keeps a registration out of regular runs,
+  while nightly, weekly, and release runs include both kinds.
+- Until a contributor's first PR merges, GitHub holds every CI run of a fork PR
+  for a maintainer's "Approve and run", after every push. Any `run-ci-*` label
+  a maintainer adds also approves the held runs, for that push and later ones.
+
 ## `est_time`
 
 `est_time` balances shards and sets the per-file timeout,
@@ -84,7 +116,8 @@ measured, never copied from a neighbouring test:
    needs no domain label and writes no performance baseline. Posting it takes a
    merged commit in `radixark/miles` (a first-time contributor asks a
    maintainer); a fork head gets no `WANDB_API_KEY` or `HF_TOKEN`; a `disabled`
-   registration cannot run this way.
+   registration cannot run this way. The command is specified under "Manage CI
+   from PR comments" in `docs/developer/ci/01-label.md`.
 3. Read the runtime from the job's **Run tests** step, never from the status
    comment, which counts from the start of the workflow and so includes
    queueing, image pull, and dependency setup (one run: 2352 s in the comment,
@@ -112,12 +145,6 @@ its history; `/rerun-test` never writes it.
 - The reason says what must change before the test is re-enabled and cites the
   tracking issue or PR, as `#123` or its GitHub URL;
   `tests/ci/test/test_ci_disabled_reasons.py` rejects a new one that does not.
-
-## Before finishing
-
-From the repo root, run
-`python3 tests/ci/run_suite.py --hw <cpu|cuda> --suite <suite> --match-all-labels --list-only`
-and confirm the file is listed under `Enabled N test(s)`.
 
 ## For coding agents
 
