@@ -30,6 +30,8 @@ def _args() -> ScriptArgs:
         num_nodes=1,
         num_gpus_per_node=8,
         num_rollout=5,
+        rollout_batch_size=4,
+        n_samples_per_prompt=4,
         rollout_max_response_len=512,
         enable_r3=True,
         skip_saving=True,

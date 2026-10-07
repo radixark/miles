@@ -40,6 +40,9 @@ def _args() -> ScriptArgs:
         num_gpus_per_node=4,
         rollout_num_gpus_per_engine=4,
         num_rollout=2,
+        rollout_batch_size=4,
+        n_samples_per_prompt=4,
+        global_batch_size=16,
         rollout_max_response_len=512,
         sglang_context_length=1024,
         extra_args=(

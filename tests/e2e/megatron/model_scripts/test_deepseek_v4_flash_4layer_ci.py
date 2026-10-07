@@ -37,6 +37,8 @@ def _args() -> ScriptArgs:
         num_gpus_per_node=4,
         skip_saving=True,
         use_fault_tolerance=False,
+        rollout_batch_size=4,
+        n_samples_per_prompt=4,
         extra_args=(
             "--ci-test " "--check-weight-update-allow-quant-error " "--ci-disable-logprobs-checker " "--num-rollout 2 "
         ),

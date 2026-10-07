@@ -34,6 +34,8 @@ class ScriptArgs(U.ExecuteTrainConfig):
     megatron_path: str = "/root/Megatron-LM"
     train_offload_dir: str = "/root/train_offload"
     num_rollout: int = 5
+    rollout_batch_size: int = 4
+    n_samples_per_prompt: int = 8
     rollout_max_response_len: int = 4096
     check_weight_update_equal: bool = True
     enable_r3: bool = False
@@ -64,8 +66,8 @@ def _train(args: ScriptArgs):
         "--rollout-shuffle "
         "--rm-type math "
         f"--num-rollout {args.num_rollout} "
-        "--rollout-batch-size 4 "
-        "--n-samples-per-prompt 8 "
+        f"--rollout-batch-size {args.rollout_batch_size} "
+        f"--n-samples-per-prompt {args.n_samples_per_prompt} "
         "--rollout-temperature 0.8 "
         "--num-steps-per-rollout 1 "
         "--balance-data "

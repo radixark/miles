@@ -33,6 +33,8 @@ def _args() -> ScriptArgs:
         hardware="H200",
         skip_saving=True,
         use_fault_tolerance=False,
+        rollout_batch_size=4,
+        n_samples_per_prompt=4,
         dsv4_impl="megatron",
         dsa_kernel_backend="cudnn",
         extra_args=(
