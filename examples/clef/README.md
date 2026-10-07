@@ -3,12 +3,21 @@
 ## Broad decision curriculum
 
 `python -m examples.clef.build_broad_dataset` prepares 65,536 training cases
-and 4,096 separate validation cases: 30% rule-based business workflows, 15%
+and a 4,096-case validation candidate pool: 30% rule-based business workflows, 15%
 ToolACE tool selection, 15% SNLI evidence inference, 15% CLINC intent routing,
 15% medium/hard SuperGPQA, 5% recorded human preferences, and 5% exact probability
 problems. Every case has one or more named choice, yes/no, or ordered-score fields.
 Targets and reference actions are outside the encoded input. The loader accepts
 all three field types and preserves semantic field names during augmentation.
+
+Finalize the training release with `python -m examples.clef.finalize_broad_dataset
+--input-dir <candidate-directory> --output-dir <new-release-directory>
+--tokenizer-dir <local-tokenizer>`. This keeps all 65,536 training cases byte for
+byte and selects only 1,024 validation cases, stratified by source. It rechecks
+every input using the native encoder and loader. The resulting `train.jsonl` and
+`validation.jsonl` are directly consumable by the supervised decision trainer.
+Upload these native records to the data dashboard as tables; they are decision
+schemas with separate probability targets, not generated-answer chat traces.
 
 The builder requires the pinned source cache, SuperGPQA source, previous validation
 file (to preserve its SuperGPQA holdout), public JevBench directory, MMLU-Pro

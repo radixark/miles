@@ -12,6 +12,20 @@ from examples.clef.build_broad_dataset import COUNTS, call_names, probability, w
 from examples.clef.data import DecisionExample, LabeledRecord, augment_example, read_examples
 from examples.clef.joint_schema_model import EncodedQuestion, EncodedRecord, question_options
 from examples.clef.objective import decision_loss, prediction_rows, summarize
+from examples.clef.finalize_broad_dataset import select_validation
+
+
+def test_compact_validation_preserves_strata_and_identity() -> None:
+    rows = [{"source": source, "record": {"id": f"{source}{index}"}}
+            for source, count in [("large", 9), ("small", 3)] for index in range(count)]
+    selected = select_validation(rows, 4, 17)
+    assert selected == select_validation(rows, 4, 17)
+    assert len(selected) == 4
+    assert sum(row["source"] == "small" for row in selected) == 1
+    assert len({row["record"]["id"] for row in selected}) == 4
+    assert all(row in rows for row in selected)
+    with pytest.raises(ValueError):
+        select_validation(rows, 13, 17)
 
 
 def test_curriculum_counts() -> None:
