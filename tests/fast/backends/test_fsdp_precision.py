@@ -9,12 +9,18 @@ import torch
 
 from miles.backends.fsdp_utils.adaptations.precision import (
     apply_fp32_master,
+    default_precision_policy,
     precision_forward_context,
-    resolve_precision_policy,
 )
+from miles.backends.fsdp_utils.adaptations.specs import resolve_arch_adapter
 from miles.backends.fsdp_utils.arguments import load_fsdp_args, parse_fsdp_cli
 from miles.backends.training_utils.data.rollout import _rollout_logprob_dtype
 from miles.true_on_policy.contracts import QWEN3_DENSE_TRUE_ON_POLICY_V1
+
+
+def resolve_precision_policy(hf_config, args):
+    """What the actor resolves: the backend default, adjusted by the architecture's adapter."""
+    return resolve_arch_adapter(hf_config).resolve_precision(default_precision_policy(args), args)
 
 
 def test_resolve_precision_policy_uses_independent_fp32_master_switch_and_dtypes():
@@ -52,7 +58,7 @@ def test_fsdp_args_expose_effective_compute_precision(monkeypatch):
         args.true_on_policy_mode = True
 
         assert args.bf16 == (not args.fp16)
-        assert resolve_precision_policy(None, args).param_dtype is expected_dtype
+        assert default_precision_policy(args).param_dtype is expected_dtype
         assert _rollout_logprob_dtype(args) is expected_dtype
 
 
