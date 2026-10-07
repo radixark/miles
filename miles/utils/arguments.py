@@ -956,7 +956,8 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 default=512 * 1024**2,
                 help=(
                     "buffer size for update weight, in bytes. "
-                    "This is used for updating weights by batch and should be useful for MoE models."
+                    "This is used for updating weights by batch and should be useful for MoE models. "
+                    "P2P mode also sizes each of its two transfer buffers with it (or the largest parameter, if larger)."
                 ),
             )
             parser.add_argument(
