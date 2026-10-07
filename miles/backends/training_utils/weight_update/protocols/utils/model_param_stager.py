@@ -22,17 +22,12 @@ class ModelParamStager:
         param_mapper: ParameterMapper,
         params_dict: dict[str, torch.Tensor],
     ) -> dict[str, list[tuple[str, torch.Tensor]]]:
-        """Determine which sglang params have all shards present, returning their accumulated tensors.
+        """Stages `converted_named_tensors` and returns the HF tensors of each sglang param that became complete, by
+        sglang param name.
 
-        Some parameters are trained separately on the training side but fused into a
-        single tensor on the rollout side (e.g., Q/K/V projections are separate in
-        Megatron but merged into one qkv_proj in sglang). This function stages
-        incoming HF tensors in self._staged_tensors until all shards for a
-        sglang param are collected. Only returns tensors for fully-ready params,
-        preventing partial load_weights() calls that would corrupt the shared buffer.
-
-        Return:
-            the HF tensors of each sglang param that became ready, by sglang param name.
+        sglang fuses several HF tensors into one param (q/k/v into `qkv_proj`, every expert's gate and up into
+        `w13_weight`), and they can arrive in different buckets; a load of a param missing some of them would leave
+        part of its bytes unwritten.
         """
         transfer_ready_params = []
 

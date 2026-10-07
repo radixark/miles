@@ -315,6 +315,7 @@ class TestPackIntoBuffers:
             model_replica_module._slice_buffer_by_param(torch.empty(512, dtype=torch.uint8), group, param_layouts)
 
     def test_a_param_larger_than_a_buffer_is_rejected(self, model_replica_module: ModuleType) -> None:
+        """No buffer can hold such a param, so packing must fail rather than hand out a group that overflows."""
         param_layouts = self._layouts(model_replica_module, {"small": 100, "large": 600})
 
         with pytest.raises(AssertionError, match="large takes 600 bytes"):

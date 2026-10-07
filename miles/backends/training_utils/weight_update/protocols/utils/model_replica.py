@@ -331,8 +331,8 @@ def _get_param_state_besides_bytes(param: torch.nn.Parameter) -> tuple:
 
 
 def build_model_replica(config: RolloutEngineRankConfig, model_path: str) -> ModelReplica:
-    """Builds the model replica of `config`'s layout. `ModelReplicas` calls it once per layout; it uses this
-    process's GPU for about one module's params, freed before it returns."""
+    """Builds the model replica of `config`'s layout. The build holds about one module's params at a time on this
+    process's GPU and frees them before it returns."""
     _publish_server_args(config.server_args)
     with ParallelismContext(config.parallelism):
         model, built_shapes_by_name = DefaultModelLoader(LoadConfig()).initialize_model_without_storage(
