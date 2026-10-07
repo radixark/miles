@@ -366,16 +366,18 @@ def _publish_server_args(server_args: ServerArgs) -> None:
 
 
 def pack_into_buffers(
-    param_names: Iterable[str], param_layouts: Mapping[str, TransferBufferParamLayout], buffer_bytes: int
+    param_names: Iterable[str], param_layouts: Mapping[str, TransferBufferParamLayout], buffer_nbytes: int
 ) -> Iterator[list[str]]:
     """Splits `param_names`, in order, into groups that `ModelReplica.load_into` can each load into one transfer
-    buffer of `buffer_bytes`."""
+    buffer of `buffer_nbytes`."""
     group_param_names, group_end_offset = [], 0
     for name in param_names:
         param_nbytes = param_layouts[name].occupied_nbytes
-        assert param_nbytes <= buffer_bytes, f"{name} takes {param_nbytes} bytes, over the {buffer_bytes}-byte buffer"
+        assert (
+            param_nbytes <= buffer_nbytes
+        ), f"{name} takes {param_nbytes} bytes, over the {buffer_nbytes}-byte buffer"
         param_start_offset = _align_param_start(group_end_offset)
-        if group_param_names and param_start_offset + param_nbytes > buffer_bytes:
+        if group_param_names and param_start_offset + param_nbytes > buffer_nbytes:
             yield group_param_names
             group_param_names, param_start_offset = [], 0
         group_param_names.append(name)

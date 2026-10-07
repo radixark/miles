@@ -34,7 +34,7 @@ from miles.utils.fp8_kernel import blockwise_cast_to_fp8_triton
 CUDA = torch.device("cuda")
 TP_SIZE = 2
 NUM_LAYERS = 2
-BUFFER_BYTES = 512 * 1024**2
+BUFFER_NBYTES = 512 * 1024**2
 # a byte the loader leaves unwritten reaches the engine as the fill, and differs from the reference
 POISON_FILLS = (0xA5, 0x5A)
 
@@ -102,10 +102,10 @@ def main() -> None:
     _assert_identical(reference_engine, p2p_engine, "at startup")
     published_locations_by_name = _get_published_locations(p2p_engine)
     model_replica = build_model_replica(RolloutEngineRankConfig(parallelism, server_args), str(args.model_dir))
-    buffer_bytes = max(
-        BUFFER_BYTES, max(layout.occupied_nbytes for layout in model_replica.transfer_buffer_param_layouts.values())
+    buffer_nbytes = max(
+        BUFFER_NBYTES, max(layout.occupied_nbytes for layout in model_replica.transfer_buffer_param_layouts.values())
     )
-    buffer = torch.empty(buffer_bytes, dtype=torch.uint8, pin_memory=True)
+    buffer = torch.empty(buffer_nbytes, dtype=torch.uint8, pin_memory=True)
 
     for version, fill in enumerate(POISON_FILLS, start=1):
         hf_tensors = _quantize(args.fmt, "reload", _make_random_hf_tensors(model_config_json, version), quantizer_args)

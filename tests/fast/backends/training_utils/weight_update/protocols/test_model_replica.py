@@ -308,7 +308,7 @@ class TestPackIntoBuffers:
         """`load_into` aligns where each param starts, so groups must be packed with the same alignment."""
         param_layouts = self._layouts(model_replica_module, {"a": 100, "b": 100, "c": 300, "d": 50})
 
-        groups = list(model_replica_module.pack_into_buffers(["a", "b", "c", "d"], param_layouts, buffer_bytes=512))
+        groups = list(model_replica_module.pack_into_buffers(["a", "b", "c", "d"], param_layouts, buffer_nbytes=512))
 
         assert [name for group in groups for name in group] == ["a", "b", "c", "d"]
         for group in groups:
@@ -319,7 +319,7 @@ class TestPackIntoBuffers:
         param_layouts = self._layouts(model_replica_module, {"small": 100, "large": 600})
 
         with pytest.raises(AssertionError, match="large takes 600 bytes"):
-            list(model_replica_module.pack_into_buffers(["small", "large"], param_layouts, buffer_bytes=512))
+            list(model_replica_module.pack_into_buffers(["small", "large"], param_layouts, buffer_nbytes=512))
 
 
 @pytest.mark.parametrize(
