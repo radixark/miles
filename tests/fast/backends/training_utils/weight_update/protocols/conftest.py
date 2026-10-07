@@ -7,7 +7,7 @@ import time
 from argparse import Namespace
 from collections.abc import Callable, Iterator
 from concurrent.futures import Future, ThreadPoolExecutor
-from contextlib import contextmanager, nullcontext
+from contextlib import contextmanager
 from types import ModuleType, SimpleNamespace
 from typing import Any
 import pytest
@@ -28,7 +28,6 @@ _BUCKET_VALUES = {
 
 @dataclasses.dataclass
 class _FakeServerArgs:
-    rl_quant_profile: str | None = None
     moe_runner_backend: str = "auto"
     # expert placement, at sglang's defaults
     ep_num_redundant_experts: int = 0
@@ -78,23 +77,36 @@ class _FakeParameterMapper:
         return _HF_TO_SGLANG[name]
 
 
-class _SharedBufferReplica(torch.nn.Module):
-    def __init__(self, tp_rank: int, harness: "_P2PSenderHarness") -> None:
-        super().__init__()
+class _FakeModelReplica:
+    """Loads like the model replica of tp rank `tp_rank`: every HF value plus 100 times the rank."""
+
+    def __init__(self, tp_rank: int, harness: "_P2PSenderHarness", model_replica_module: ModuleType) -> None:
         self.tp_rank = tp_rank
         self._harness = harness
-        self.w = torch.nn.Parameter(torch.zeros(_WEIGHT_NUMEL), requires_grad=False)
-        self.qk = torch.nn.Parameter(torch.zeros(_WEIGHT_NUMEL), requires_grad=False)
+        self._model_replica_module = model_replica_module
+        self.param_mapper = _FakeParameterMapper()
+        param_layout = model_replica_module.TransferBufferParamLayout.from_tensor(torch.empty(_WEIGHT_NUMEL))
+        self.transfer_buffer_param_layouts = {"w": param_layout, "qk": param_layout}
 
-    def load_weights(self, tensors: list[tuple[str, torch.Tensor]]) -> None:
-        by_name = dict(tensors)
+    def load_into(
+        self, buffer: torch.Tensor, param_names: list[str], hf_tensors: list[tuple[str, torch.Tensor]]
+    ) -> dict[str, torch.Tensor]:
+        hf_tensors_by_name = dict(hf_tensors)
         offset = 100.0 * self.tp_rank
-        if "hf.w" in by_name:
-            self.w.data.copy_(by_name["hf.w"] + offset)
-        if "hf.q" in by_name or "hf.k" in by_name:
-            self.qk.data.copy_(torch.cat([by_name["hf.q"], by_name["hf.k"]]) + offset)
-        self._harness.log.append(("load", self.tp_rank, tuple(by_name)))
+        values_by_param_name = {}
+        if "hf.w" in hf_tensors_by_name:
+            values_by_param_name["w"] = hf_tensors_by_name["hf.w"] + offset
+        if "hf.q" in hf_tensors_by_name or "hf.k" in hf_tensors_by_name:
+            values_by_param_name["qk"] = torch.cat([hf_tensors_by_name["hf.q"], hf_tensors_by_name["hf.k"]]) + offset
+        assert sorted(values_by_param_name) == sorted(param_names)
+        param_bytes_by_name = self._model_replica_module._slice_buffer_by_param(
+            buffer, param_names, self.transfer_buffer_param_layouts
+        )
+        for name, param_bytes in param_bytes_by_name.items():
+            param_bytes.view(torch.float32).copy_(values_by_param_name[name])
+        self._harness.log.append(("load", self.tp_rank, tuple(hf_tensors_by_name)))
         self._harness.loaded_event(self.tp_rank).set()
+        return param_bytes_by_name
 
 
 class _WriteHold:
@@ -192,7 +204,7 @@ class _FakeRolloutApi:
 
     async def get_server_info(self) -> dict:
         self.calls.append("get_server_info")
-        return {"rl_quant_profile": None, "moe_runner_backend": self.moe_runner_backend, **self.expert_placement}
+        return {"moe_runner_backend": self.moe_runner_backend, **self.expert_placement}
 
 
 class _ObservedExecutor(ThreadPoolExecutor):
@@ -263,8 +275,7 @@ class _P2PSenderHarness:
         self.log: list[tuple] = []
         self.transfer_engine = _FakeTransferEngine(self.log)
         self.transfer_engines_created = 0
-        # kept alive so a freed replica's memory is never handed to a new one
-        self.replicas_created: list[_SharedBufferReplica] = []
+        self.replicas_created: list[_FakeModelReplica] = []
         self._loaded_events: dict[int, threading.Event] = {}
         self._calls: list[_ProtocolCall] = []
         self.waiting_threads: set[int] = set()
@@ -280,18 +291,18 @@ class _P2PSenderHarness:
             lambda **kwargs: _ObservedExecutor(self.waiting_threads, **kwargs),
         )
         monkeypatch.setattr(p2p_protocol, "assign_rollout_engine_ranks", self._assign_rollout_engine_ranks)
-        monkeypatch.setattr(p2p_protocol, "ParallelismContext", lambda parallelism_config: nullcontext())
         monkeypatch.setattr(p2p_protocol, "get_gloo_group", lambda: None)
         monkeypatch.setattr(p2p_protocol, "dist", SimpleNamespace(get_rank=lambda group=None: 0))
-        model_replica = sys.modules[p2p_protocol.query_rollout_engine_rank_configs.__module__]
-        monkeypatch.setattr(model_replica, "RankParallelismConfig", _FakeRankParallelismConfig)
-        monkeypatch.setattr(model_replica, "ServerArgs", _FakeServerArgs)
-        monkeypatch.setattr(model_replica, "_build_cpu_replica", self._build_cpu_replica)
-        monkeypatch.setattr(
-            model_replica, "ParameterMapper", SimpleNamespace(from_model=lambda model: _FakeParameterMapper())
-        )
+        self._model_replica_module = sys.modules[p2p_protocol.query_rollout_engine_rank_configs.__module__]
+        monkeypatch.setattr(self._model_replica_module, "RankParallelismConfig", _FakeRankParallelismConfig)
+        monkeypatch.setattr(self._model_replica_module, "ServerArgs", _FakeServerArgs)
+        monkeypatch.setattr(self._model_replica_module, "build_model_replica", self._build_model_replica)
         # CPU CI has no pinned memory
-        monkeypatch.setattr(torch.Tensor, "pin_memory", lambda tensor: tensor)
+        monkeypatch.setattr(
+            sys.modules[p2p_protocol.TransferBuffers.__module__],
+            "_allocate_transfer_buffer",
+            lambda buffer_nbytes, device: torch.empty(buffer_nbytes, dtype=torch.uint8, device=device),
+        )
 
     def loaded_event(self, tp_rank: int) -> threading.Event:
         return self._loaded_events.setdefault(tp_rank, threading.Event())
@@ -305,6 +316,7 @@ class _P2PSenderHarness:
             hf_checkpoint="/model",
             p2p_transfer_timeout=p2p_transfer_timeout,
             update_weight_engine_request_timeout=_FAILURE_BOUND,
+            update_weight_buffer_size=1024,
             sglang_pp_size=1,
         )
         return self._p2p_protocol.UpdateWeightP2P(args)
@@ -343,10 +355,10 @@ class _P2PSenderHarness:
         self.transfer_engines_created += 1
         return self.transfer_engine
 
-    def _build_cpu_replica(self, config: Any, model_path: str) -> _SharedBufferReplica:
-        replica = _SharedBufferReplica(tp_rank=config.parallelism.tp_rank, harness=self)
-        self.replicas_created.append(replica)
-        return replica
+    def _build_model_replica(self, config: Any, model_path: str) -> _FakeModelReplica:
+        model_replica = _FakeModelReplica(config.parallelism.tp_rank, self, self._model_replica_module)
+        self.replicas_created.append(model_replica)
+        return model_replica
 
 
 _P2P_PROTOCOL_MODULE = "miles.backends.training_utils.weight_update.protocols.p2p"

@@ -1,18 +1,16 @@
-from collections.abc import Iterator
-from contextlib import contextmanager
-from types import ModuleType
 from typing import Any
 
 import pytest
 
 _WAIT_BOUND = 10.0
+_STILL_BLOCKED_SECONDS = 0.2
 
 
 class TestSendBucket:
     def test_an_empty_bucket_loads_and_sends_nothing_and_the_next_bucket_still_goes_out(
         self, p2p_sender: Any, make_rollout_api: Any, make_bucket: Any
     ) -> None:
-        """An empty bucket must not reload the shared buffer or issue empty writes, nor wedge the stream."""
+        """An empty bucket must not load a transfer buffer or issue empty writes, nor wedge the stream."""
         protocol = p2p_sender.make_protocol()
         api = make_rollout_api("cell-a", gpu_count=2)
         p2p_sender.connect(protocol, [api])
@@ -24,17 +22,16 @@ class TestSendBucket:
         protocol.after_base_weights()
 
         assert log_after_empty_bucket == []
-        assert p2p_sender.log == [
+        assert [entry for entry in p2p_sender.log if entry[0] == "load"] == [
             ("load", 0, ("hf.w",)),
-            ("write", api.session_id(0)),
             ("load", 1, ("hf.w",)),
-            ("write", api.session_id(1)),
         ]
+        assert p2p_sender.transfer_engine.written_sessions() == [api.session_id(0), api.session_id(1)]
 
     def test_a_fused_parameter_is_loaded_and_written_only_once_every_shard_arrived(
         self, p2p_sender: Any, make_rollout_api: Any, make_bucket: Any
     ) -> None:
-        """Loading one shard of a fused parameter would ship a half-overwritten buffer to the engine."""
+        """Loading one shard of a fused parameter would write a half-filled parameter to the engine."""
         protocol = p2p_sender.make_protocol()
         api = make_rollout_api("cell-a", gpu_count=1)
         p2p_sender.connect(protocol, [api])
@@ -51,42 +48,6 @@ class TestSendBucket:
             api.target_address(0, "qk"): [5.0, 6.0, 7.0, 8.0]
         }
 
-    def test_each_replica_loads_inside_its_parallelism_context(
-        self,
-        p2p_sender: Any,
-        p2p_protocol: ModuleType,
-        make_rollout_api: Any,
-        make_bucket: Any,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """sglang's sharded weight loaders read the rank at call time, which exists only inside its context."""
-
-        @contextmanager
-        def logged_parallelism_context(parallelism_config: Any) -> Iterator[None]:
-            p2p_sender.log.append(("enter", parallelism_config.tp_rank))
-            yield
-            p2p_sender.log.append(("exit", parallelism_config.tp_rank))
-
-        monkeypatch.setattr(p2p_protocol, "ParallelismContext", logged_parallelism_context)
-        protocol = p2p_sender.make_protocol()
-        api = make_rollout_api("cell-a", gpu_count=2)
-        p2p_sender.connect(protocol, [api])
-        protocol.begin_sync(weight_version=1, iter_buckets=None)
-
-        protocol.send_bucket(make_bucket("hf.w"))
-        protocol.after_base_weights()
-
-        assert p2p_sender.log == [
-            ("enter", 0),
-            ("load", 0, ("hf.w",)),
-            ("exit", 0),
-            ("write", api.session_id(0)),
-            ("enter", 1),
-            ("load", 1, ("hf.w",)),
-            ("exit", 1),
-            ("write", api.session_id(1)),
-        ]
-
     def test_a_parameter_still_missing_a_shard_fails_the_end_of_the_base_weights(
         self, p2p_sender: Any, make_rollout_api: Any, make_bucket: Any
     ) -> None:
@@ -99,6 +60,30 @@ class TestSendBucket:
 
         with pytest.raises(AssertionError, match="not transferred"):
             protocol.after_base_weights()
+
+
+class TestTransferBuffers:
+    def test_a_transfer_buffer_is_not_loaded_again_while_a_write_still_reads_it(
+        self, p2p_sender: Any, make_rollout_api: Any, make_bucket: Any
+    ) -> None:
+        """With two buffers the third rank loads into the first rank's buffer; doing it while the first rank's write
+        still reads that buffer would send the third rank's bytes to the first."""
+        protocol = p2p_sender.make_protocol()
+        api = make_rollout_api("cell-a", gpu_count=3)
+        p2p_sender.connect(protocol, [api])
+        first_write = p2p_sender.transfer_engine.hold(api.session_id(0))
+
+        call = p2p_sender.call_in_thread(lambda: protocol.send_bucket(make_bucket("hf.w")))
+
+        assert first_write.entered.wait(timeout=_WAIT_BOUND)
+        assert p2p_sender.loaded_event(1).wait(timeout=_WAIT_BOUND)
+        assert not p2p_sender.loaded_event(2).wait(timeout=_STILL_BLOCKED_SECONDS)
+        first_write.release.set()
+        call.join()
+        protocol.after_base_weights()
+        assert p2p_sender.transfer_engine.payload_of(api.session_id(0)) == {
+            api.target_address(0, "w"): [1.0, 2.0, 3.0, 4.0]
+        }
 
 
 class TestWriteThreads:
@@ -229,10 +214,11 @@ class TestConnect:
         with pytest.raises(AssertionError, match="does not match the weights rollout engine 0 rank 0 publishes"):
             p2p_sender.connect(protocol, [api])
 
-    def test_a_reconnect_keeps_the_replica_and_the_registered_buffer(
+    def test_a_reconnect_keeps_the_replica_and_the_registered_transfer_buffers(
         self, p2p_sender: Any, make_rollout_api: Any, make_bucket: Any
     ) -> None:
-        """Rebuilding the replica at a reconnect left the writes reading memory Mooncake never registered."""
+        """Rebuilding the replica or its memory at a reconnect left the writes reading memory Mooncake never
+        registered."""
         protocol = p2p_sender.make_protocol()
         p2p_sender.connect(protocol, [make_rollout_api("cell-a", gpu_count=1)])
         protocol.begin_sync(weight_version=1, iter_buckets=None)
@@ -248,3 +234,4 @@ class TestConnect:
         assert p2p_sender.transfer_engine.written_sessions()[-1] == replaced_api.session_id(0)
         assert len(p2p_sender.replicas_created) == 1
         assert p2p_sender.transfer_engines_created == 1
+        assert len(p2p_sender.transfer_engine.registered) == 2

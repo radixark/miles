@@ -1,5 +1,5 @@
 import dataclasses
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
 from types import ModuleType, SimpleNamespace
 
 import msgspec
@@ -64,47 +64,42 @@ class TestShardLayoutKey:
 class TestModelReplicas:
     @pytest.fixture
     def model_replicas_of_width(self, model_replica_module: ModuleType, monkeypatch: pytest.MonkeyPatch):
-        """`ModelReplicas` whose replica for tp rank r is a linear layer of `widths[r]` inputs."""
+        """`ModelReplicas` whose replica for tp rank r lays out one `weight` of `widths[r]` floats."""
 
         def make(widths: dict[int, int]):
-            monkeypatch.setattr(
-                model_replica_module,
-                "_build_cpu_replica",
-                lambda config, model_path: torch.nn.Linear(widths[config.parallelism.tp_rank], 1, bias=False),
-            )
-            monkeypatch.setattr(
-                model_replica_module, "ParameterMapper", SimpleNamespace(from_model=lambda model: None)
-            )
-            # CPU CI has no pinned memory
-            monkeypatch.setattr(torch.Tensor, "pin_memory", lambda tensor: tensor)
+            def build_model_replica(config, model_path):
+                param_layout = model_replica_module.TransferBufferParamLayout.from_tensor(
+                    torch.empty(widths[config.parallelism.tp_rank])
+                )
+                return SimpleNamespace(transfer_buffer_param_layouts={"weight": param_layout}, param_mapper=None)
+
+            monkeypatch.setattr(model_replica_module, "build_model_replica", build_model_replica)
             return model_replica_module.ModelReplicas(model_path="/model")
 
         return make
 
-    def test_a_replica_for_another_layout_loads_into_the_shared_buffer(
+    def test_each_shard_layout_gets_one_replica_for_the_process(
         self, model_replica_module: ModuleType, model_replicas_of_width
     ) -> None:
-        """Writes read the shared buffer, so a later replica's loads must land in it."""
+        """Rollout engines holding a rank the same way share its replica, so a reconnect or another engine builds
+        nothing new."""
         model_replicas = model_replicas_of_width({0: 4, 1: 4})
 
-        first = model_replicas.get_or_build(_config(model_replica_module, tp_rank=0, global_rank=0))
-        second = model_replicas.get_or_build(_config(model_replica_module, tp_rank=1, global_rank=1))
+        first_engine_rank_0 = model_replicas.get_or_build(_config(model_replica_module, tp_rank=0, global_rank=0))
+        second_engine_rank_0 = model_replicas.get_or_build(_config(model_replica_module, tp_rank=0, global_rank=8))
+        rank_1 = model_replicas.get_or_build(_config(model_replica_module, tp_rank=1, global_rank=1))
 
-        assert second is not first
-        assert (
-            second.weight.data_ptr()
-            == first.weight.data_ptr()
-            == model_replicas.shared_params_dict["weight"].data_ptr()
-        )
+        assert second_engine_rank_0 is first_engine_rank_0
+        assert rank_1 is not first_engine_rank_0
 
-    def test_a_replica_whose_params_do_not_fit_the_shared_buffer_is_rejected(
+    def test_a_replica_laid_out_differently_from_the_others_is_rejected(
         self, model_replica_module: ModuleType, model_replicas_of_width
     ) -> None:
-        """A param of another shape cannot alias the shared buffer without loading wrong bytes."""
+        """One packing of ready params serves every rank a sender writes, so their layouts must match."""
         model_replicas = model_replicas_of_width({0: 4, 1: 3})
         model_replicas.get_or_build(_config(model_replica_module, tp_rank=0, global_rank=0))
 
-        with pytest.raises(AssertionError, match="in the shared buffer"):
+        with pytest.raises(AssertionError, match="lays out weight"):
             model_replicas.get_or_build(_config(model_replica_module, tp_rank=1, global_rank=1))
 
 
@@ -242,6 +237,29 @@ class TestModelReplica:
         for param_bytes in param_bytes_by_name.values():
             assert buffer.data_ptr() <= param_bytes.data_ptr() < buffer.data_ptr() + buffer.numel()
         assert all(param.numel() == 0 for param in model_replica._model.parameters())
+
+    def test_load_into_runs_inside_the_rank_parallelism_context(
+        self, model_replica_module: ModuleType, make_model_replica, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """sglang's sharded weight loaders read the rank at call time, which exists only inside its context."""
+        model_replica = make_model_replica()
+        events = []
+
+        @contextmanager
+        def logged_parallelism_context(parallelism):
+            events.append("enter")
+            yield
+            events.append("exit")
+
+        monkeypatch.setattr(model_replica_module, "ParallelismContext", logged_parallelism_context)
+        load_weights = model_replica._model.load_weights
+        model_replica._model.load_weights = lambda hf_tensors: (events.append("load"), load_weights(hf_tensors))
+
+        model_replica.load_into(
+            torch.zeros(1024, dtype=torch.uint8), ["norm.weight"], [("norm.weight", _float_tensor(1.0, 2))]
+        )
+
+        assert events == ["enter", "load", "exit"]
 
     def test_a_loader_that_reshapes_its_param_is_rejected(self, make_model_replica) -> None:
         """Without a restore the expert loader reshapes the block-layout param; a raw write would land canonical
