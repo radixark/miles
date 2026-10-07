@@ -35,10 +35,8 @@ Miles is a high-performance, enterprise-ready reinforcement learning framework f
 **large-scale model post-training**. It pairs [SGLang](https://github.com/sgl-project/sglang)
 for high-throughput rollout with [Megatron-LM](https://github.com/NVIDIA/Megatron-LM) for
 scalable training, and ships the precision, stability, and observability features an RL run
-needs at trillion-parameter scale. PyTorch FSDP2 and [torchtitan](https://github.com/pytorch/torchtitan)
-backends are available for runs that would rather train the HuggingFace implementation as-is
-or drive torchtitan's own trainer, though the recipes, the parallelism, and the largest models
-all live on Megatron-LM. See
+needs at trillion-parameter scale. FSDP2 and [torchtitan](https://github.com/pytorch/torchtitan)
+backends are also supported. See
 [Training Backends](https://miles.radixark.com/docs/user-guide/training-backend).
 
 > *"A journey of a thousand miles begins with a single rollout."*
