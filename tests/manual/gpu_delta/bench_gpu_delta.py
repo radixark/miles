@@ -15,27 +15,43 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
 import json
+import math
 import multiprocessing
 import os
+import re
+import shutil
 import signal
 import socket
+import struct
 import subprocess
 import sys
 import time
+from concurrent.futures import ProcessPoolExecutor
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
 import httpx
-from tests.manual.gpu_delta.fixture_gpu_delta import _fixture
-from tests.manual.gpu_delta.report_gpu_delta import write_report
+import numpy as np
+import zstandard
 
 from miles.backends.training_utils.weight_update.protocols.gpu_delta.session import (
     activate_publication,
+    merge_plans,
     negotiate_cohort,
 )
-from miles.utils.gpu_delta.publication import CODECS, FRAME_BYTES, configured_codec
+from miles.utils.gpu_delta.publication import (
+    CODECS,
+    DTYPE_BYTES,
+    FRAME_BYTES,
+    PublicationWriter,
+    canonical_json,
+    configured_codec,
+    seal_publication,
+    sha256,
+)
 
 # Same rollout topology/precision/MTP as the GLM5.2 W4A16 recipe. CuTe DSL + no
 # MoE A2A is deliberate: this public branch does not require MegaMoE integration.
@@ -188,6 +204,324 @@ def _pid_candidates(pid):
     status = Path(f"/proc/{pid}/status").read_text()
     nested = next((line.split()[1:] for line in status.splitlines() if line.startswith("NSpid:")), [])
     return sorted({pid, *map(int, nested)})
+
+
+def _tensor_index(model):
+    index = {}
+    for shard in sorted(model.glob("*.safetensors")):
+        with shard.open("rb") as stream:
+            header_bytes = struct.unpack("<Q", stream.read(8))[0]
+            header = json.loads(stream.read(header_bytes))
+        for name, spec in header.items():
+            if name == "__metadata__":
+                continue
+            if name in index:
+                raise ValueError(f"Duplicate checkpoint tensor: {name}")
+            start, end = spec["data_offsets"]
+            if start < 0 or end < start or end + 8 + header_bytes > shard.stat().st_size:
+                raise ValueError(f"Invalid checkpoint tensor range: {name}")
+            index[name] = spec | {"shard": shard.name, "offset": 8 + header_bytes + start, "nbytes": end - start}
+    return index
+
+
+def _mutate(raw, name, dtype, seed, version, rate):
+    """Finite LSB perturbations; leave scale/routing metadata and static draft alone.
+
+    Packed FP4 toggles a low-nibble value bit; BF16/FP32 toggles only the least
+    significant mantissa byte. The explicit per-frame RNG avoids model-size RNG
+    arrays. This synthetic distribution is not a claim about real RL deltas.
+    """
+    result = raw.copy()
+    if not name.endswith(".weight") or dtype not in {"U8", "I8", "BF16", "F16", "F32"}:
+        return result
+    itemsize = DTYPE_BYTES[dtype]
+    key = hashlib.sha256(f"{seed}:{version}:{name}".encode()).digest()
+    rng = np.random.default_rng(int.from_bytes(key[:8], "little"))
+    for start in range(0, result.size, FRAME_BYTES):
+        count = min(FRAME_BYTES, result.size - start) // itemsize
+        if count:
+            n = max(1, round(rate * count))
+            positions = np.unique(rng.integers(0, count, size=n)) * itemsize + start
+            result[positions] ^= np.uint8(1)
+    return result
+
+
+def _calibrate(plan, seed, target_ratio):
+    # Calibrate on representative frame geometries, including BF16 lane spacing.
+    # Full publication overhead is measured after encoding, never silently forced
+    # to the requested ratio by changing the Snappy target independently.
+    compressor = zstandard.ZstdCompressor(level=1)
+    samples = [t for t in plan if t["name"].endswith(".weight") and t["dtype"] in {"U8", "BF16", "F32"}]
+    samples = samples[:: max(1, len(samples) // 24)][:24]
+    if not samples:
+        raise ValueError("No supported mutable weights in receiver plan")
+    low, high = 0.000001, 0.02
+    for _ in range(16):
+        rate = (low + high) / 2
+        total = encoded = 0
+        for tensor in samples:
+            raw = np.zeros(FRAME_BYTES, dtype=np.uint8)
+            delta = _mutate(raw, name=tensor["name"], dtype=tensor["dtype"], seed=seed, version=1, rate=rate)
+            encoded += len(compressor.compress(delta))
+            total += raw.size
+        if encoded / total < target_ratio:
+            low = rate
+        else:
+            high = rate
+    return (low + high) / 2
+
+
+def _alter_fixture_tensor(target, index, tensor, version, seed, rate):
+    spec = index[tensor["name"]]
+    with (target / spec["shard"]).open("r+b") as file:
+        file.seek(spec["offset"])
+        before = np.frombuffer(file.read(spec["nbytes"]), dtype=np.uint8)
+        if before.size != spec["nbytes"]:
+            raise ValueError("Incomplete checkpoint tensor")
+        after = _mutate(before, name=tensor["name"], dtype=spec["dtype"], seed=seed, version=version, rate=rate)
+        file.seek(spec["offset"])
+        file.write(after)
+    return before, after
+
+
+def _publication_accounting(publication):
+    path = Path(publication["manifest_path"])
+    manifest = json.loads(path.read_text())
+    payload_bytes = sum(item["nbytes"] for item in manifest["files"])
+    inner_bytes = sum(frame["encoded_bytes"] for tensor in manifest["tensors"] for frame in tensor["frames"])
+    outer_bytes = sum(tensor.get("outer", {}).get("encoded_bytes", 0) for tensor in manifest["tensors"])
+    raw_bytes = sum(tensor.get("raw", {}).get("encoded_bytes", 0) for tensor in manifest["tensors"])
+    sizes = {
+        "raw_tensor_count": sum(tensor["encoding"] == "raw_bytes" for tensor in manifest["tensors"]),
+        "raw_target_bytes": raw_bytes,
+        "matrix_payload_bytes": outer_bytes,
+        "inner_arena_bytes": sum(tensor.get("outer", {}).get("decoded_bytes", 0) for tensor in manifest["tensors"]),
+        "outer_zstd_frames": sum(len(tensor.get("outer", {}).get("frames", [])) for tensor in manifest["tensors"]),
+        "encoded_frame_bytes": inner_bytes,
+        "payload_file_bytes": payload_bytes,
+        "alignment_bytes": payload_bytes - raw_bytes - outer_bytes,
+        "manifest_bytes": path.stat().st_size,
+        "publication_bytes": payload_bytes + path.stat().st_size,
+    }
+    return sizes
+
+
+def _group_key(name):
+    if match := re.search(r"(?:^|\.)layers\.(\d+)\.", name):
+        return 0, int(match[1])
+    if "embed_tokens." in name:
+        return 1, 0
+    if "lm_head." in name:
+        return 2, 0
+    return 3, 0
+
+
+def _partition_plan(plan, owner_count):
+    groups = {}
+    for tensor in plan:
+        groups.setdefault(_group_key(tensor["name"]), []).append(tensor)
+    ordered = sorted(groups)
+    count, remainder = divmod(len(ordered), owner_count)
+    owners, start = [], 0
+    for owner in range(owner_count):
+        stop = start + count + (owner < remainder)
+        keys = ordered[start:stop]
+        tensors = [tensor for key in keys for tensor in sorted(groups[key], key=lambda item: item["name"])]
+        owners.append(
+            {
+                "owner": owner,
+                "gpu": owner,
+                "groups": [
+                    f"layer:{key[1]}" if key[0] == 0 else ("embedding", "lm_head", "other")[key[0] - 1] for key in keys
+                ],
+                "tensors": tensors,
+                "canonical_bytes": sum(math.prod(t["shape"]) * DTYPE_BYTES[t["dtype"]] for t in tensors),
+            }
+        )
+        start = stop
+    return owners
+
+
+def _encode_version(args, owner, index, target, rate, encoder, metadata, version):
+    import torch
+
+    tensors = owner["tensors"]
+    raw_plan = [tensor for tensor in tensors if tensor["encoding"] == "raw_bytes"]
+    matrix_plan = [tensor for tensor in tensors if tensor["encoding"] == "xor_bytes"]
+    writer = PublicationWriter(
+        args.output / metadata["codec"] / f"v{version}",
+        **metadata,
+        owner=owner["owner"],
+        base_version=version - 1,
+        target_version=version,
+        publication_id=f"{metadata['stream_id']}:{version}",
+    )
+    started, changed = time.monotonic(), 0
+    pending, batch, batch_bytes = [], [], 0
+    batch_cuda_s, batch_wall_s = {}, 0.0
+    try:
+        for tensor in raw_plan:
+            before, after = _alter_fixture_tensor(target, index, tensor, version, args.seed, rate)
+            entry = writer.add_raw_tensor(
+                tensor["name"], before, after, dtype=tensor["dtype"], shape=tensor["shape"], views=tensor["views"]
+            )
+            changed += entry["changed_bytes"]
+        for tensor in matrix_plan:
+            before, after = _alter_fixture_tensor(target, index, tensor, version, args.seed, rate)
+            batch.append((torch.from_numpy(before.copy()).pin_memory(), torch.from_numpy(after).pin_memory()))
+            batch_bytes += after.nbytes
+            # A batching target, not an overall memory cap: a larger tensor
+            # stays whole; compact inner payloads remain until owner finalization.
+            if batch_bytes >= 512 * 1024**2:
+                pending.extend(encoder.encode_device(batch))
+                batch, batch_bytes = [], 0
+        if batch:
+            pending.extend(encoder.encode_device(batch))
+        batch = []
+        for tensor, (frames, payload, outer, count, metrics) in zip(
+            matrix_plan, encoder.finish_device(pending), strict=True
+        ):
+            batch_wall_s += metrics["encode_wall_s"]
+            for name, seconds in metrics["cuda_phase_s"].items():
+                batch_cuda_s[name] = batch_cuda_s.get(name, 0.0) + seconds
+            writer.add_encoded_tensor(
+                tensor["name"],
+                frames,
+                payload,
+                outer,
+                changed_bytes=count,
+                dtype=tensor["dtype"],
+                shape=tensor["shape"],
+                views=tensor["views"],
+            )
+            changed += count
+        shard = writer.finish_shard()
+    finally:
+        writer.close()
+    finalization = encoder.finalization_metrics
+    if encoder.timing:
+        batch_cuda_s.setdefault("compression_s", 0.0)
+        if not finalization["final_payload_d2h_bytes"]:
+            finalization = finalization | {"finalize_cuda_phase_s": {"outer_zstd_s": 0.0, "pack_d2h_s": 0.0}}
+    metrics = {key: owner[key] for key in ("owner", "gpu", "groups", "canonical_bytes")}
+    metrics.update(
+        pid=os.getpid(),
+        timing_enabled=encoder.timing,
+        batch_cuda_s=batch_cuda_s,
+        batch_wall_s=batch_wall_s,
+        finalization=finalization,
+        encode_and_target_write_s=time.monotonic() - started,
+    )
+    return {"version": version, "changed_bytes": changed, "shard": shard, "metrics": metrics}
+
+
+def _encode_owner(args, owner, index, target, rate, metadata):
+    # Spawned workers own CUDA contexts; the parent only copies and seals files.
+    import torch
+
+    from miles.utils.gpu_delta.encoder import GpuBatchEncoder
+
+    results = []
+    try:
+        torch.cuda.set_device(owner["gpu"])
+        encoder = GpuBatchEncoder(
+            torch.device("cuda", owner["gpu"]), codec=metadata["codec"], frame_bytes=args.frame_bytes
+        )
+        for version in range(1, args.versions + 1):
+            result = _encode_version(args, owner, index, target, rate, encoder, metadata, version)
+            _save(args.output / f"owner-{owner['owner']:05d}-v{version}.json", result)
+            results.append(result)
+        return results
+    except BaseException as error:
+        _save(args.output / f"owner-{owner['owner']:05d}-failed.json", {"error": repr(error)})
+        raise
+
+
+def _fixture(args):
+    import torch
+
+    codec = configured_codec()
+    inventory = json.loads(args.inventory.read_text())
+    plan, _, digest = merge_plans(inventory["descriptions"])
+    index = _tensor_index(args.model)
+    for tensor in plan:
+        actual = index[tensor["name"]]
+        if tensor["shape"] != actual["shape"] or tensor["dtype"] != actual["dtype"]:
+            raise ValueError(f"Inventory/checkpoint mismatch: {tensor['name']}")
+    visible = torch.cuda.device_count()
+    owner_count = visible if args.sender_gpus is None else args.sender_gpus
+    if not 0 < owner_count <= visible:
+        raise ValueError("sender GPUs must be positive and available in CUDA_VISIBLE_DEVICES")
+    owners = [owner for owner in _partition_plan(plan, owner_count) if owner["groups"]]
+    assignments = [owner | {"tensors": [t["name"] for t in owner["tensors"]]} for owner in owners]
+    _save(args.output / "owner-plan.json", assignments)
+    target = args.output / "altered-checkpoint"
+    target.mkdir()
+    # Each owner changes disjoint tensor byte ranges in this independent copy.
+    for path in args.model.iterdir():
+        if path.is_file() and path.suffix in {".json", ".py", ".model", ".tiktoken", ".safetensors"}:
+            shutil.copy2(path, target / path.name)
+    rate = _calibrate(plan, args.seed, args.ratio)
+    metadata = {
+        "stream_id": sha256(canonical_json({"seed": args.seed, "plan": digest, "rate": rate})),
+        "plan_digest": digest,
+        "codec": codec,
+        "frame_bytes": args.frame_bytes,
+    }
+    if len(owners) == 1:
+        results = [_encode_owner(args, owners[0], index, target, rate, metadata)]
+    else:
+        with ProcessPoolExecutor(
+            max_workers=len(owners), mp_context=multiprocessing.get_context("spawn"), max_tasks_per_child=1
+        ) as pool:
+            futures = [pool.submit(_encode_owner, args, owner, index, target, rate, metadata) for owner in owners]
+            results = [future.result() for future in futures]
+    _seal_fixture(args, plan, metadata, target, rate, assignments, results)
+
+
+def _seal_fixture(args, plan, metadata, target, rate, assignments, results):
+    codec = metadata["codec"]
+    denominator = sum(math.prod(t["shape"]) * DTYPE_BYTES[t["dtype"]] for t in plan)
+    report = {
+        "plan_digest": metadata["plan_digest"],
+        "rate": rate,
+        "requested_zstd_ratio": args.ratio,
+        "stream_id": metadata["stream_id"],
+        "target_checkpoint": str(target.resolve()),
+        "rounds": [],
+        "calibration": "CPU Zstd level-1 sample-frame estimate; selected-codec size is measured, not forced to this ratio.",
+        "canonical_denominator": "Canonical tensors in the receiver plan; excludes frozen draft and other checkpoint entries.",
+        "changed_bytes_definition": "Unequal storage bytes, not changed bits or compressed size.",
+        "codec": codec,
+        "sender_gpus": len(results),
+        "sender_owners": assignments,
+        "owner_plan": "owner-plan.json",
+        "inner_codec_origin": "Production GpuBatchEncoder on each owner's GPU: pinned snapshots, GPU XOR/inner compression, optional owner-wide GPU Zstd. Contiguous whole-layer HF ownership, no Megatron export.",
+        "fixture_wall_scope": "Per-version maximum of owner-local encode/target-write spans; owners are not synchronized between versions. Parent sealing is separate.",
+    }
+    for version in range(1, args.versions + 1):
+        records = [owner[version - 1] for owner in results]
+        started = time.monotonic()
+        publication = seal_publication(args.output / codec / f"v{version}", [record["shard"] for record in records])
+        seal_s = time.monotonic() - started
+        sizes = _publication_accounting(publication)
+        changed = sum(record["changed_bytes"] for record in records)
+        row = {
+            "version": version,
+            "publications": {codec: publication},
+            "canonical_bytes": denominator,
+            "changed_bytes": changed,
+            "changed_byte_fraction": changed / denominator,
+            "accounting": {codec: sizes},
+            "ratios": {codec: sizes["publication_bytes"] / denominator},
+            "encoded_frame_ratios": {codec: sizes["encoded_frame_bytes"] / denominator},
+            "encode_and_target_write_s": max(record["metrics"]["encode_and_target_write_s"] for record in records),
+            "seal_s": seal_s,
+            "compression": {"owners": [record["metrics"] for record in records]},
+        }
+        report["rounds"].append(row)
+        _save(args.output / "fixture.json", report)
+        print(json.dumps({key: value for key, value in row.items() if key != "publications"}), flush=True)
 
 
 async def _request(client, endpoint, payload=None, timeout=1200):
@@ -398,6 +732,357 @@ async def _run(args, phase):
             raise RuntimeError("Receiver state release failed")
 
 
+def _read(path):
+    return json.loads(path.read_text())
+
+
+def _seconds(value):
+    if not math.isfinite(value) or value < 0:
+        raise ValueError(f"Invalid timing: {value}")
+    return value
+
+
+def _generations(records, routes, version=None):
+    selected = {}
+    for record in records:
+        rank = record["dp_rank"]
+        for engine, response in zip(record["engine_ids"], record["engines"], strict=True):
+            route = (engine, rank)
+            meta, tokens = response["meta_info"], response["output_ids"]
+            if route in selected or meta["dp_rank"] != rank:
+                raise ValueError("Duplicate or incorrectly routed generation")
+            output = meta["output_token_logprobs"]
+            if not tokens or len(tokens) != meta["completion_tokens"] or len(output) != len(tokens):
+                raise ValueError("Incomplete generation output/logprobs")
+            if any(row[1] != token or not math.isfinite(row[0]) for row, token in zip(output, tokens, strict=True)):
+                raise ValueError("Unaligned or nonfinite output logprobs")
+            inputs = meta["input_token_logprobs"]
+            if len(inputs) != meta["prompt_tokens"]:
+                raise ValueError("Incomplete prompt logprobs; request logprob_start_len=0")
+            if any(not (i == 0 and row[0] is None) and not math.isfinite(row[0]) for i, row in enumerate(inputs)):
+                raise ValueError("Nonfinite input logprobs")
+            actual_version = str(meta["weight_version"])
+            if version is not None and actual_version != str(version):
+                raise ValueError("Generation used the wrong weight version")
+            end = 0
+            for span in meta["weight_versions"]:
+                if (
+                    span["start"] != end
+                    or not end < span["end"] <= len(tokens)
+                    or str(span["version"]) != actual_version
+                ):
+                    raise ValueError("Mixed or incomplete generation version spans")
+                end = span["end"]
+            if end != len(tokens) or meta["prompt_tokens"] <= 0:
+                raise ValueError("Incomplete generation version/prompt coverage")
+            selected[route] = {
+                "text": response["text"],
+                "output_ids": tokens,
+                "prompt_tokens": meta["prompt_tokens"],
+                "input_token_logprobs": inputs,
+                "output_token_logprobs": output,
+            }
+    if set(selected) != routes:
+        raise ValueError("Missing or unexpected generation routes")
+    return selected
+
+
+def _compare(left, right):
+    rows = []
+    for engine, rank in sorted(left):
+        a, b = left[engine, rank], right[engine, rank]
+        equal = {key: a[key] == b[key] for key in a}
+        rows.append({"engine_id": engine, "dp_rank": rank, "equal": equal, "exact": all(equal.values())})
+    return {"status": "PASS" if all(row["exact"] for row in rows) else "FAILED", "routes": rows}
+
+
+def _rank_rows(update, publication, identities):
+    receipt = update["receipt"]
+    stages = []
+    for key, state in (("receipts", "APPLIED"), ("resumed_receipts", "RESUMED")):
+        by_rank = {row["identity"]["rank_id"]: row for row in receipt[key]}
+        if len(by_rank) != len(receipt[key]) or set(by_rank) != set(identities):
+            raise ValueError("Missing or duplicate rank receipts")
+        for rank, row in by_rank.items():
+            if row["identity"] != identities[rank] or row["state"] != state or not row["result"]["applied"]:
+                raise ValueError("Rank identity or apply/resume state differs")
+            if row["session_id"] != receipt["session_id"]:
+                raise ValueError("Rank session differs")
+            for field in ("manifest_sha256", "stream_id", "base_version", "target_version", "plan_digest"):
+                if row[field] != publication[field]:
+                    raise ValueError(f"Rank publication differs: {field}")
+            if row["result"]["target_version"] != publication["target_version"]:
+                raise ValueError("Applied target differs")
+        stages.append(by_rank)
+    rows = []
+    for rank, resumed in stages[1].items():
+        timing = resumed["scheduler_timing"]
+        start, fence, end = (timing[key] for key in ("pause_started_ns", "reader_fence_completed_ns", "resumed_ns"))
+        if resumed["generation_paused"] or end is None or not start <= fence <= end:
+            raise ValueError("Scheduler pause did not complete")
+        pause = _seconds(timing["blocked_s"])
+        if not math.isclose(pause, (end - start) / 1e9, rel_tol=1e-9, abs_tol=1e-9):
+            raise ValueError("Scheduler pause endpoints differ from reported duration")
+        if start != stages[0][rank]["scheduler_timing"]["pause_started_ns"]:
+            raise ValueError("Apply and resume pause endpoints differ")
+        result, metrics = resumed["result"], resumed["result"]["timings"]
+        cuda = metrics["cuda_event_ms"] if result["timing_enabled"] else None
+        rows.append(
+            {
+                "identity": identities[rank],
+                "outer_cpu_s": _seconds(metrics["host_rank_outer_zstd_decode_s"]),
+                "plain_copy_s": _seconds(metrics["host_rank_encoded_copy_s"]),
+                "de_stream_cuda_s": _seconds(cuda["decode"]) / 1000 if cuda is not None else None,
+                "matrix_apply_cuda_s": _seconds(cuda["layout_apply"]) / 1000 if cuda is not None else None,
+                "prepare_s": _seconds(metrics["host_prepare_s"]),
+                "pause_s": pause,
+                "skip_payload_hash": metrics["host_encoded_cache_skip_payload_hash"],
+                "receipt": resumed,
+            }
+        )
+    return sorted(rows, key=lambda row: (row["identity"]["engine_id"], row["identity"]["dp_rank"]))
+
+
+def _owner_compression(metrics, codec):
+    enabled, final = metrics["timing_enabled"], metrics["finalization"]
+    inner = _seconds(metrics["batch_cuda_s"]["compression_s"]) if enabled else None
+    outer = None
+    if codec == "lz4":
+        outer = 0.0
+    elif enabled:
+        outer = _seconds(final["finalize_cuda_phase_s"]["outer_zstd_s"])
+    return {
+        "inner_cuda_s": inner,
+        "outer_cuda_s": outer,
+        "batch_wall_s": _seconds(metrics["batch_wall_s"]),
+        "outer_wall_s": _seconds(final["outer_zstd_wall_s"]),
+        "pack_d2h_wall_s": _seconds(final["pack_d2h_wall_s"]),
+        "encode_and_target_write_s": _seconds(metrics["encode_and_target_write_s"]),
+        "raw_metrics": metrics,
+    }
+
+
+def _compression(row, codec, assignments):
+    metrics = row["compression"]["owners"]
+    by_owner = {owner["owner"]: owner for owner in metrics}
+    if len(by_owner) != len(metrics) or set(by_owner) != set(assignments):
+        raise ValueError("Missing or duplicate compression owners")
+    for owner, value in by_owner.items():
+        if any(value[key] != assignments[owner][key] for key in ("gpu", "groups", "canonical_bytes")):
+            raise ValueError("Compression owner assignment differs")
+    owners = [_owner_compression(value, codec) for value in metrics]
+    if not owners or sum(owner["raw_metrics"]["canonical_bytes"] for owner in owners) != row["canonical_bytes"]:
+        raise ValueError("Compression owners do not cover the canonical bytes")
+    return {
+        "owner_max": {
+            key: _maximum(owners, key)
+            for key in (
+                "inner_cuda_s",
+                "outer_cuda_s",
+                "batch_wall_s",
+                "outer_wall_s",
+                "pack_d2h_wall_s",
+                "encode_and_target_write_s",
+            )
+        },
+        "seal_s": _seconds(row["seal_s"]),
+        "owners": owners,
+    }
+
+
+def _maximum(rows, key):
+    values = [row[key] for row in rows]
+    return None if any(value is None for value in values) else max(values)
+
+
+def _format(value):
+    return "unmeasured" if value is None else f"{value:.9f}"
+
+
+def _markdown(summary):
+    lines = [
+        "# GPU delta end-to-end benchmark",
+        "",
+        f"Codec: `{summary['codec']}`. Final selected outputs match the independently loaded target checkpoint on "
+        f"all {len(summary['comparison']['routes'])} routes, including text, token IDs and input/output logprobs.",
+        "",
+        f"Sender owners: {summary['sender_count']}. Layer-ordered assignments and all per-owner metrics are retained in `summary.json`.",
+        "",
+        "Versions are cumulative synthetic targets, not learned updates or statistical repeats. "
+        "Selected outputs do not prove every weight byte. Startup and oracle generation are outside update timing.",
+        "",
+        "Compression columns are independent owner maxima. Inner CUDA is the maximum of each owner's summed batch events; "
+        "these maxima can come from different owners and are not a synchronized end-to-end latency. "
+        "CUDA events cover their named stream regions, including wrapper/launch gaps, not pure kernel busy time. "
+        "Batch wall time includes pinned-input transfers, "
+        "XOR and metadata waits; packing/D2H is separate. Owner total also includes checkpoint reads/writes, "
+        "payload hashing and shard publication writing. Parent sealing is measured separately after all owners finish. "
+        "These overlapping scopes must not be added.",
+        "",
+        "|Version|Inner CUDA max s|Outer CUDA max s|Batch wall max s|Outer wall max s|Pack/D2H wall max s|Owner total max s|Parent seal s|",
+        "|---|---:|---:|---:|---:|---:|---:|---:|",
+    ]
+    compression_keys = (
+        "inner_cuda_s",
+        "outer_cuda_s",
+        "batch_wall_s",
+        "outer_wall_s",
+        "pack_d2h_wall_s",
+        "encode_and_target_write_s",
+    )
+    for row in summary["versions"]:
+        lines.append(
+            f"|{row['version']}|"
+            + "|".join(_format(row["compression"]["owner_max"][key]) for key in compression_keys)
+            + f"|{_format(row['compression']['seal_s'])}|"
+        )
+    lines += [
+        "",
+        "Receiver columns are independent maxima over ranks, not rank sums or additive phases. "
+        "Outer CPU/plain-copy wall includes raw copies and job submission/drain; worker sums remain in the raw receipts. "
+        "DE stream events include zero-fill and nvCOMP enqueue/host gaps; they are not pure hardware busy time. "
+        "Matrix apply includes status checks but excludes raw copies and derived refresh. "
+        "Pause comes from completed scheduler pause/resume timestamps. "
+        "Disabled CUDA timing is unmeasured; plain LZ4 has no outer stage.",
+        "",
+        "|Version|Outer CPU max s|Plain copy max s|DE stream CUDA max s|Matrix apply CUDA max s|Prepare max s|Pause max s|Coordinator s|",
+        "|---|---:|---:|---:|---:|---:|---:|---:|",
+    ]
+    rank_keys = ("outer_cpu_s", "plain_copy_s", "de_stream_cuda_s", "matrix_apply_cuda_s", "prepare_s", "pause_s")
+    for row in summary["versions"]:
+        values = [_format(row["receiver_max"][key]) for key in rank_keys] + [_format(row["coordinator_s"])]
+        lines.append(f"|{row['version']}|" + "|".join(values) + "|")
+    lines += [
+        "",
+        "|Version|Sender payload checksum|Receiver skips payload SHA|Inner frame bytes|Canonical bytes|Changed bytes|Inner compressed bytes|Matrix payload bytes|Payload file bytes|Manifest bytes|",
+        "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|",
+    ]
+    for row in summary["versions"]:
+        values = [
+            row["sender_payload_checksum_format"],
+            row["receiver_skip_payload_hash"],
+            row["frame_bytes"],
+            row["canonical_bytes"],
+            row["changed_bytes"],
+        ]
+        values += [
+            row["accounting"][key]
+            for key in ("encoded_frame_bytes", "matrix_payload_bytes", "payload_file_bytes", "manifest_bytes")
+        ]
+        lines.append(f"|{row['version']}|" + "|".join(map(str, values)) + "|")
+    lines += [
+        "",
+        "## Raw owner timings",
+        "",
+        "|Version|Owner|GPU|Canonical bytes|Inner CUDA s|Outer CUDA s|Batch wall s|Outer wall s|Pack/D2H wall s|Owner total s|",
+        "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
+    ]
+    for version in summary["versions"]:
+        for owner in version["compression"]["owners"]:
+            metrics = owner["raw_metrics"]
+            lines.append(
+                f"|{version['version']}|{metrics['owner']}|{metrics['gpu']}|{metrics['canonical_bytes']}|"
+                + "|".join(_format(owner[key]) for key in compression_keys)
+                + "|"
+            )
+    lines += [
+        "",
+        "## Raw rank timings",
+        "",
+        "Full receipts and encoder metrics are retained in `summary.json`.",
+        "",
+        "|Version|Engine|DP rank|Rank ID|Outer CPU s|Plain copy s|DE stream CUDA s|Matrix apply CUDA s|Prepare s|Pause s|",
+        "|---|---|---:|---|---:|---:|---:|---:|---:|---:|",
+    ]
+    for version in summary["versions"]:
+        for row in version["ranks"]:
+            identity = row["identity"]
+            lines.append(
+                f"|{version['version']}|{identity['engine_id']}|{identity['dp_rank']}|{identity['rank_id']}|"
+                + "|".join(_format(row[key]) for key in rank_keys)
+                + "|"
+            )
+    return "\n".join(lines) + "\n"
+
+
+def _write_report(output: Path):
+    fixture = _read(output / "fixture" / "fixture.json")
+    codec = fixture["codec"]
+    sender_owners = fixture["sender_owners"]
+    assignments = {owner["owner"]: owner for owner in sender_owners}
+    if len(assignments) != len(sender_owners) or len(assignments) != fixture["sender_gpus"]:
+        raise ValueError("Sender owner plan differs from the fixture")
+    inventory = _read(output / "receiver" / "inventory.json")
+    original = [rank["identity"] for engine in inventory["descriptions"] for rank in engine["participants"]]
+    identities = {identity["rank_id"]: identity for identity in original}
+    routes = {(identity["engine_id"], identity["dp_rank"]) for identity in original}
+    if not identities or len(identities) != len(original) or len(routes) != len(original):
+        raise ValueError("Missing or duplicate receiver identities/routes")
+    versions = []
+    for expected, row in enumerate(fixture["rounds"], 1):
+        version = row["version"]
+        publication = row["publications"][codec]
+        if (
+            version != expected
+            or publication["base_version"] != version - 1
+            or publication["target_version"] != version
+        ):
+            raise ValueError("Fixture versions are not consecutive")
+        update = _read(output / "receiver" / f"update-{version}.json")
+        if update["version"] != version or update["codec"] != codec:
+            raise ValueError("Update version/codec differs")
+        ranks = _rank_rows(update, publication, identities)
+        hash_policies = {rank["skip_payload_hash"] for rank in ranks}
+        if len(hash_policies) != 1:
+            raise ValueError("Receiver ranks have different payload hash policies")
+        selected = _generations(_read(output / "receiver" / f"generation-{version}.json"), routes, version)
+        versions.append(
+            {
+                "version": version,
+                "frame_bytes": publication["frame_bytes"],
+                "sender_payload_checksum_format": publication["payload_checksum_format"],
+                "receiver_skip_payload_hash": hash_policies.pop(),
+                "canonical_bytes": row["canonical_bytes"],
+                "changed_bytes": row["changed_bytes"],
+                "accounting": row["accounting"][codec],
+                "compression": _compression(row, codec, assignments),
+                "coordinator_s": _seconds(update["coordinator_s"]),
+                "receiver_max": {
+                    key: _maximum(ranks, key)
+                    for key in (
+                        "outer_cpu_s",
+                        "plain_copy_s",
+                        "de_stream_cuda_s",
+                        "matrix_apply_cuda_s",
+                        "prepare_s",
+                        "pause_s",
+                    )
+                },
+                "ranks": ranks,
+            }
+        )
+    if not versions:
+        raise ValueError("No fixture updates")
+    oracle = _generations(_read(output / "oracle" / "target-generation.json"), routes)
+    comparison = _compare(selected, oracle)
+    _save(output / "comparison.json", comparison)
+    if comparison["status"] != "PASS":
+        raise ValueError("Final selected generation differs from target checkpoint; see comparison.json")
+    summary = {
+        "status": "PASS",
+        "codec": codec,
+        "target_checkpoint": fixture["target_checkpoint"],
+        "sender_count": fixture["sender_gpus"],
+        "sender_owners": sender_owners,
+        "comparison": comparison,
+        "versions": versions,
+    }
+    report = _markdown(summary)
+    _save(output / "summary.json", summary)
+    (output / "REPORT.md").write_text(report)
+    return summary
+
+
 def _phase(phase, args, directory, settings):
     os.setsid()  # The parent forwards Ctrl-C once while this process drains its workers.
     # Process exit releases each phase's CUDA context before the next phase starts.
@@ -463,7 +1148,7 @@ def _end_to_end(args):
         _save(args.output / "workflow.json", {"phases": records})
         if process.exitcode != 0:
             raise RuntimeError(f"{phase} failed; see {args.output / (directory + '.log')}")
-    write_report(args.output)
+    _write_report(args.output)
     print((args.output / "REPORT.md").read_text(), flush=True)
 
 
