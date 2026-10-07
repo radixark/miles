@@ -35,9 +35,10 @@ Miles is a high-performance, enterprise-ready reinforcement learning framework f
 **large-scale model post-training**. It pairs [SGLang](https://github.com/sgl-project/sglang)
 for high-throughput rollout with [Megatron-LM](https://github.com/NVIDIA/Megatron-LM) for
 scalable training, and ships the precision, stability, and observability features an RL run
-needs at trillion-parameter scale. A PyTorch FSDP2 backend is available for runs that would
-rather train the HuggingFace implementation as-is, though the recipes, the parallelism, and
-the largest models all live on Megatron-LM. See
+needs at trillion-parameter scale. PyTorch FSDP2 and [torchtitan](https://github.com/pytorch/torchtitan)
+backends are available for runs that would rather train the HuggingFace implementation as-is
+or drive torchtitan's own trainer, though the recipes, the parallelism, and the largest models
+all live on Megatron-LM. See
 [Training Backends](https://miles.radixark.com/docs/user-guide/training-backend).
 
 > *"A journey of a thousand miles begins with a single rollout."*
@@ -78,15 +79,20 @@ the largest models all live on Megatron-LM. See
 ### What Miles runs
 
 - **Day-0 model support.** DeepSeek-V4, Kimi-K3, GLM-5.2, Inkling, and Nemotron landed on
-  release day. Beyond day 0, nearly every frontier model runs on Miles, including Kimi-K2.6
-  and Qwen3.5. See [Models](https://miles.radixark.com/docs/models).
+  release day. Beyond day 0, nearly every frontier model runs on Miles, including GLM-5.3,
+  DeepSeek-V4.1, Qwen3.8, MiMo-V2.6-Flash, and Kimi-K2.6. See
+  [Models](https://miles.radixark.com/docs/models).
 - **Extensive hardware support.** NVIDIA GB300, GB200, B300, B200, H200, H100, and A100, and
   AMD MI355X, MI350X, MI325X, and MI300X. See
   [Installation](https://miles.radixark.com/docs/getting-started/installation#hardware-requirements)
   for per-GPU status and [AMD ROCm](https://miles.radixark.com/docs/hardware-platforms/amd-gpus) for
   the ROCm images.
-- **Wide recipe support.** GRPO, GSPO, PPO, and REINFORCE++ for RL, plus SFT and
+- **Wide recipe support.** GRPO, GSPO, PPO, and REINFORCE++ for RL, plus
+  [score centering](https://miles.radixark.com/docs/examples/infra-features/score-centering), SFT, and
   [on-policy distillation](https://miles.radixark.com/docs/advanced/on-policy-distillation).
+- **Ray or Kubernetes.** The same launch script runs on Ray, or installs as a Helm release so
+  Kubernetes schedules every worker of the run. See
+  [Ray and Kubernetes Backend](https://miles.radixark.com/docs/advanced/cluster-backend).
 - **Agentic environments.** Train coding and computer-use agents through connectors for
   Harbor, HUD, NeMo Gym, OpenEnv, Verifiers, and more, each plugging into the rollout
   layer that fits it, with task sandboxes on AgentENV, Daytona, E2B, or Modal. See
