@@ -18,7 +18,6 @@ _RANK_TIMINGS = (
     "paused_apply_host_wall_s",
     "host_encoded_cache_wait_s",
     "host_rank_prepare_s",
-    "host_rank_outer_zstd_validate_s",
     "host_rank_outer_zstd_decode_s",
     "host_rank_outer_zstd_worker_decode_sum_s",
     "host_rank_allocation_s",

@@ -88,7 +88,6 @@ class _Engine:
     async def prepare_weights_from_delta(self, **kwargs):
         self.args = kwargs
         assert list(kwargs["participants"]) == self.identities
-        assert kwargs["host_tensor_names"] == {f"engine-host-{self.index}": ["w"]}
         await asyncio.sleep(0.01 if self.index else 0)
         if self.failure == "prepare" and self.index == self.failed_engine:
             raise RuntimeError("prepare rejected")
@@ -211,12 +210,3 @@ def test_bounded_wait_cancels_inflight_status_requests():
     with pytest.raises(asyncio.TimeoutError):
         asyncio.run(session._wait_prepared(clients[0], session_id="s", timeout=0.01))
     assert events == [(0, "status_cancelled")]
-
-
-def test_cohort_only_decodes_each_engine_hosts_union():
-    _, descriptions, _, _ = _setup()
-    for participant in descriptions[1]["participants"]:
-        participant["identity"]["host_cache_id"] = "other-host"
-        participant["plan"]["tensors"][0]["name"] = "other-experts"
-    cohort = session.negotiate_cohort(descriptions)
-    assert cohort.engine_host_tensor_names == ({"engine-host-0": ["w"]}, {"other-host": ["other-experts"]})

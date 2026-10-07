@@ -88,7 +88,6 @@ def test_original_rank_pause_and_creator_only_cache_metrics_remain_separate():
     assert result[prefix + "receiver_reader_fence_s/max"] == 0.1
     assert result[prefix + "receiver_host_rank_outer_zstd_decode_s/p50"] == 2.5
     assert result[prefix + "receiver_host_rank_outer_zstd_worker_decode_sum_s/p50"] == 2.5
-    assert result[prefix + "receiver_host_rank_outer_zstd_validate_s/p50"] == 2.5
     assert result[prefix + "receiver_host_rank_cpu_workers/p50"] == 5
     assert result[prefix + "receiver_host_rank_outer_zstd_encoded_bytes/sum"] == 400
     assert result[prefix + "receiver_host_rank_outer_zstd_decoded_bytes/sum"] == 2000

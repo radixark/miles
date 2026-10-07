@@ -45,21 +45,13 @@ class ReceiverCohort:
     participants: tuple[tuple[dict, ...], ...]
     engine_ids: tuple[str, ...]
     plan_digest: str
-    engine_host_tensor_names: tuple[dict[str, list[str]], ...]
 
 
 def negotiate_cohort(descriptions: Sequence[dict]) -> ReceiverCohort:
     plan, identities, digest = merge_plans(descriptions)
     participants = tuple(tuple(p["identity"] for p in d["participants"]) for d in descriptions)
     engine_ids = tuple(group[0]["engine_id"] for group in participants)
-    engine_host_names = []
-    for description in descriptions:
-        host_names: dict[str, set[str]] = {}
-        for participant in description["participants"]:
-            host_id = participant["identity"]["host_cache_id"]
-            host_names.setdefault(host_id, set()).update(tensor["name"] for tensor in participant["plan"]["tensors"])
-        engine_host_names.append({host_id: sorted(names) for host_id, names in host_names.items()})
-    return ReceiverCohort(plan, tuple(identities), participants, engine_ids, digest, tuple(engine_host_names))
+    return ReceiverCohort(plan, tuple(identities), participants, engine_ids, digest)
 
 
 def _receipts(response):
@@ -81,10 +73,8 @@ async def activate_publication(clients, cohort: ReceiverCohort, publication, ses
     session_id = session_id or uuid.uuid4().hex
     results = await asyncio.gather(
         *[
-            _activate_engine(client, engine_id, participants, host_names, publication, session_id)
-            for client, engine_id, participants, host_names in zip(
-                clients, cohort.engine_ids, cohort.participants, cohort.engine_host_tensor_names, strict=True
-            )
+            _activate_engine(client, engine_id, participants, publication, session_id)
+            for client, engine_id, participants in zip(clients, cohort.engine_ids, cohort.participants, strict=True)
         ],
         return_exceptions=True,
     )
@@ -101,7 +91,7 @@ async def activate_publication(clients, cohort: ReceiverCohort, publication, ses
     }
 
 
-async def _activate_engine(client, engine_id, participants, host_names, publication, session_id):
+async def _activate_engine(client, engine_id, participants, publication, session_id):
     started = time.monotonic()
     common = {
         key: publication[key]
@@ -112,7 +102,6 @@ async def _activate_engine(client, engine_id, participants, host_names, publicat
             **common,
             session_id=session_id,
             participants=participants,
-            host_tensor_names=host_names,
         )
         _receipts(preparation)
         await _wait_prepared(client, session_id=session_id)
