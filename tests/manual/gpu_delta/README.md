@@ -17,8 +17,10 @@ benchmarks remain in this directory.
 
 Use a CUDA 13 Miles development image, the paired SGLang branch on `PYTHONPATH`,
 and eight Blackwell GPUs. This manual workload uses GLM5.2 NVFP4 W4A16, CuTe DSL
-MoE, no MoE A2A and static bundled MTP. The receiver harness defaults to one
-TP8/DP8/EP8 engine; two ports select two TP4/DP4/EP4 engines.
+MoE, no MoE A2A and static bundled MTP. The benchmark defaults to two
+TP4/DP4/EP4 engines; one `--ports` value selects one TP8/DP8/EP8 engine.
+FlashInfer autotuning and prefill CUDA graphs are disabled; BS1 decode graphs
+are enabled to initialize the CuTe decode path.
 The original checkpoint must already be available and is never modified.
 
 Install the prebuilt encoder/decoder without changing the image dependency closure:
@@ -50,7 +52,6 @@ user-facing configuration API. Runtime defaults are sufficient for normal use.
 | `GPU_DELTA_CPU_WORKERS=32` | CPU workers per rank. Each engine-host cache creator also uses its pool for parallel owner-file read/hash before local payload preparation. Two EP4 engines have eight pools (up to 256 workers at the default). |
 | `GPU_DELTA_SKIP_PAYLOAD_HASH=1` | Shared sender/receiver opt-in: omit owner-file SHA256 generation and verification. Defaults off. The manifest declares `payload_checksum_format="none"` and null file hashes; receivers accept this only when their same flag is enabled. Manifest SHA256 and native decoder checks remain mandatory. |
 | `GPU_DELTA_HOST_CACHE_DIR` | Tmpfs base for engine-host encoded caches; defaults to `/dev/shm/sglang-gpu-delta-<uid>`. Each engine has separate identities and locks. Its ranks share encoded files, while DE input arenas remain private to each rank. |
-| `GPU_DELTA_SOURCE_DIGEST` | Optional producer-benchmark provenance annotation; unset by default. Does not configure the transport. |
 
 For Ray launches, set job-level variables through `runtime_env` or
 `execute_train(extra_env_vars=...)`; the submitting shell does not configure
@@ -147,7 +148,9 @@ The sender retains old canonical weights in pinned CPU RAM and stages each new
 export there asynchronously. At expert TP=1, routed experts stay on their exporter
 EP/EDP owner; expert TP>1 keeps the existing gather-before-convert sender path.
 Non-routed tensors use cached PP-local layer ownership over TP × CP × DP ranks
-and gather only the required TP shards to each owner.
+and gather only the required TP shards to each owner. Contiguous owner slices
+order decoder/MTP layers before embedding, LM head and remaining tensors, so
+the tail can pair fewer layers with those higher-precision tensors.
 Immutable owner geometry partitions scalar/vector bypass and matrix batches once
 before learned updates.
 Raw target writes run on one CPU worker concurrently with matrix GPU compression;
@@ -169,7 +172,7 @@ There is no intermediate inner-codec host slab, CPU compression, or raw matrix f
 `update_weight_buffer_size` bounds each canonical input batch; a
 larger single tensor stands alone. The full compact owner inner-codec payload must fit
 HBM through finalization. Host snapshots must fit RAM; there is no OOM fallback.
-Inner frames default to 1 MiB. `--frame-bytes` in the producer benchmark accepts
+Inner frames default to 1 MiB. The benchmark `--frame-bytes` option accepts
 positive integer sizes at most 4 MiB, subject to nvCOMP alignment requirements.
 The receiver also checks actual encoded and decoded lengths against its device
 limit. Outer Zstd chunks remain at most 1 MiB.
@@ -250,10 +253,6 @@ is root's manifest validation, serialization, hashing and exclusive write/link
 span. Diagnostic benchmarks may collect the local values after their timed span;
 these fields add no collective or training-metric reduction. The manifest uses
 sorted orjson serialization, while canonical plan-digest JSON remains unchanged.
-
-See [bench_gpu_delta_producer.md](bench_gpu_delta_producer.md) for the producer
-benchmark. Compare new evidence with the saved matched-workload baseline, keeping source,
-workload, raw timing rows and transfer/residency metrics separate.
 
 ## Training metrics
 
@@ -337,126 +336,90 @@ is logged with version context and does not retry an already-applied publication
 The normal training timer and other protocols' next-train metric drains are
 unchanged; the next train call cannot emit the same GPU-delta summary again.
 
-## Persistent fixture
+## End-to-end benchmark from an HF base
 
-Run from the Miles checkout with matching SGLang on `PYTHONPATH`. Use a new
-output directory and persistent storage with space for an independent altered
-checkpoint and three cumulative publications. Fixture creation uses one GPU.
+The only input artifact is an existing NVFP4 serving checkpoint with bundled MTP.
+Run from the Miles checkout with paired SGLang on `PYTHONPATH`:
 
 ```bash
 export PYTHONPATH=/workspace/sglang/python:/workspace/miles
-export GPU_DELTA_CODEC=snappy-zstd
-python tests/manual/gpu_delta/bench_gpu_delta.py inventory \
-  --model /models/GLM5.2-NVFP4 --output /data/gpu-delta/inventory
-python tests/manual/gpu_delta/bench_gpu_delta.py fixture \
-  --model /models/GLM5.2-NVFP4 \
-  --inventory /data/gpu-delta/inventory/inventory.json \
-  --output /data/gpu-delta/fixture --ratio 0.002 --versions 3
+python tests/manual/gpu_delta/bench_gpu_delta.py \
+  --model /models/GLM5.2-NVFP4 --output /data/gpu-delta/new-run
 ```
 
-The fixture calibrates sparse finite mantissa/packed-FP4 perturbations against
-plain CPU Zstd level-1 sample frames. It measures the actual selected-codec publication
-ratio separately; it does not force that ratio to 0.2%. Static draft and calibration
-scales stay unchanged in the proxy; native tests cover scalar/scale updates.
-The altered checkpoint contains the final cumulative version and does not alias
-original checkpoint files.
+`--output` must be new; omit it to create a timestamped directory. Allow disk
+space for an independent copy of the base checkpoint and three publications.
+The source checkpoint is immutable. No Megatron checkpoint, trainer initialization
+or distributed export setup is required.
 
-The builder uses the production GPU encoder: pinned old/new CPU snapshots,
-bounded GPU XOR/inner-codec batches, then one owner-wide GPU Zstd pass per version
-for wrapped codecs. Plain LZ4 publishes the packed inner frames directly.
-Only compact inner-codec output survives between batches. Raw scalars/vectors bypass both
-codecs. It records inner/outer bytes, alignment and final manifest/file sizes.
-Fixture creation is setup, excluded from receiver timing and not a distributed
-producer measurement. Native fixture tests independently decode the selected
-inner codec, unwrap CPU Zstd when present, and verify exact altered targets and
-source/draft immutability.
+One invocation performs four serial stages, releasing each stage's CUDA contexts
+before the next starts:
 
-Publications must match the configured codec and use positive integer inner
-frame bytes at most 4 MiB. Sender and receiver share one manifest contract.
-Generate codec fixtures from the same model, seed and mutation settings; never
-relabel payload bytes. Confirm the altered targets match across codecs.
+1. Start the receiver pair, record its canonical tensor plan, then stop it.
+2. Copy the checkpoint, construct three cumulative perturbations and encode
+   their actual payloads with Miles' production `GpuBatchEncoder` and
+   `PublicationWriter`.
+3. Start fresh receivers from the original base, prepare/apply/resume each
+   publication, and record all rank receipts and selected generation routes.
+4. Load the final altered checkpoint into separate receivers with the original
+   static draft, then compare final text, tokens and prompt/output logprobs.
 
-To compare codecs, repeat inventory/fixture creation with each of
-`GPU_DELTA_CODEC=snappy-zstd`, `lz4-zstd` and `lz4` in separate output directories.
-Keep the same seed, ratio, original checkpoint and three versions. Sorting is off
-by default; any sorting comparison should reuse the same codec fixture. Keep the
-frame size fixed and report inner bytes, final wire bytes, preparation and full
-scheduler pause separately. Record the source and workload for each result.
+Sender compression uses all visible GPUs by default; `--sender-gpus N` limits
+it to the first N visible devices. Model layers, embedding, LM head and remaining tensors form ordered whole
+groups, split into balanced contiguous slices using the Miles ordinary-owner
+rule. Putting embedding/head at the tail leaves that slice fewer model layers
+to offset their higher-precision storage. Ownership and canonical bytes per GPU are recorded
+in `fixture/owner-plan.json`. Every worker reads and mutates only its assigned
+ranges in the copied checkpoint and writes its own publication shard. The parent
+seals the shards after all workers finish. This uses the production codec and
+publication path with simple HF ownership; it does not measure Megatron export,
+TP reconstruction, expert ownership or distributed gather.
 
-## Full-model receiver benchmark
+Pinned old/new input batches target 512 MiB; a larger tensor stays whole. Each
+GPU retains only its owner's compact inner-codec payload through finalization.
+Group-count balancing reduces per-GPU residency but does not guarantee equal
+byte counts or make an oversized individual tensor fit. Wrapped codecs perform
+one owner-wide GPU Zstd finalization per version. Scalar/vector target bytes
+bypass compression.
 
-By default, each invocation starts one fresh TP8/DP8/EP8 GLM5.2 W4A16 engine
-with static MTP, CuTe DSL MoE and no MoE A2A. It applies three cumulative immutable
-publications: one first-use update and two warm updates. It saves original-rank
-receipts, server logs and generation through DP routes 0–7.
+Defaults are Snappy-Zstd, 1 MiB inner/outer frames, three cumulative versions,
+two EP4 receivers and receiver payload hashing skipped. `--codec`,
+`--frame-bytes`, `--versions`, `--ports` and `--verify-payload-hash` select a run's
+configuration. Fixtures always retain payload SHA256; the flag controls receiver
+verification. CUDA event instrumentation is enabled for both sides so the report
+contains actual phase measurements. Instrumented timings are distinct from
+historical `GPU_DELTA_TIMING=0` results.
 
-```bash
-python tests/manual/gpu_delta/bench_gpu_delta.py run --model /models/GLM5.2-NVFP4 \
-  --fixture /data/gpu-delta/fixture --output /data/gpu-delta/snappy-zstd-new
-python tests/manual/gpu_delta/bench_gpu_delta.py oracle --model /models/GLM5.2-NVFP4 \
-  --fixture /data/gpu-delta/fixture --output /data/gpu-delta/target-oracle
-```
+Mutations are deterministic finite mantissa/packed-FP4 bit changes seeded by
+name and version. `--ratio` defaults to 0.002 and calibrates mutation density
+against CPU Zstd sample frames; the actual selected-codec ratio is measured,
+not forced to that value. Static draft and calibration scales stay unchanged.
+The versions are constructed cumulative targets, not learned gradients or three
+statistical repeats of one delta.
 
-For two TP4/DP4/EP4 engines on one eight-GPU host, provide two ports. The first
-engine uses GPUs 0–3; the second uses GPUs 4–7. Both use the same tmpfs base
-`GPU_DELTA_HOST_CACHE_DIR`, but each engine owns a distinct encoded cache.
-The harness checks distinct engine-host cache identities, all eight original
-scheduler identities and each engine's TP/DP ranks 0–3. It also captures
-compute-process PID→GPU UUID observations. If NVML
-uses host PIDs unavailable in the container's `NSpid` mapping, that join remains
-explicitly unqualified; requested GPU masks are not presented as native proof. Generation
-records retain engine IDs explicitly; use `(engine_id, dp_rank)` as the route key.
+`REPORT.md` summarizes each version; `summary.json` retains every sender owner
+and receiver rank metric, and `comparison.json` records the final selected-output
+oracle. Phase logs, launch configuration, owner assignments, publications,
+original-rank receipts and generation responses remain in the output directory.
+A failure stops advancement and preserves partial output; it is never retried.
 
-An EP8 fixture's view-bound plan digest does not describe EP4. First inventory
-the new topology, then rebind its views into a **new** immutable fixture directory:
+Report timing scopes separately:
 
-```bash
-export GPU_DELTA_HOST_CACHE_DIR=/dev/shm/gpu-delta-benchmark
-python tests/manual/gpu_delta/bench_gpu_delta.py inventory --model /models/GLM5.2-NVFP4 \
-  --ports 31135 31235 --output /data/gpu-delta/ep4-inventory
-python tests/manual/gpu_delta/bench_gpu_delta.py rebind --model /models/GLM5.2-NVFP4 \
-  --inventory /data/gpu-delta/ep4-inventory/inventory.json \
-  --fixture /data/gpu-delta/fixture --output /data/gpu-delta/ep4-fixture
-python tests/manual/gpu_delta/bench_gpu_delta.py run --model /models/GLM5.2-NVFP4 \
-  --fixture /data/gpu-delta/ep4-fixture --ports 31135 31235 \
-  --output /data/gpu-delta/ep4-snappy-zstd-new
-python tests/manual/gpu_delta/bench_gpu_delta.py oracle --model /models/GLM5.2-NVFP4 \
-  --fixture /data/gpu-delta/ep4-fixture --ports 31135 31235 \
-  --output /data/gpu-delta/ep4-target-oracle
-```
+- **Sender:** summed inner-compression CUDA events per owner, outer-compression
+  CUDA events, packing/final D2H and CPU publication work. Summary columns take
+  independent owner maxima, not a sum or synchronized global critical path.
+  Checkpoint copy, perturbation, H2D, XOR and hashing are excluded from codec-only
+  event columns. Manifest sealing is a separate parent span.
+- **Receiver:** background preparation, CPU outer-decode wall time, DE-stream
+  CUDA interval, matrix application and actual scheduler pause. CPU decode wall
+  time includes submission/raw copies/drain; DE intervals include zero-fill,
+  enqueue gaps and decode. They are not pure hardware busy-time measurements.
+- **Coordinator:** complete prepare/apply/resume RPC lifetime. It overlaps rank
+  work and cannot be added to preparation, decode or pause columns.
 
-Rebinding is CPU-only setup, excluded from update timing. It verifies source
-manifest/payload hashes, exact canonical names/dtypes/shapes/encodings/byte counts
-and byte order, and the fresh checkpoint-header/receiver-plan agreement. Only
-view definitions and plan/stream/publication identities change; matrix frames,
-raw targets and the final altered checkpoint stay unchanged. Payloads are
-hardlinked on the same filesystem, with no symlink/copy fallback. `rebind.json`
-records source/new hashes, unchanged non-view tensor metadata and verified payload
-inode identities. Preserve both fixtures as immutable. Inventory and run use
-separate fresh engine pairs; their startup/teardown is outside update timing.
-
-Both engines negotiate one canonical publication and update independently. Each engine
-resumes after its own original participants have returned APPLIED; the trainer joins
-both completions before advancing its baseline. Untimed generation
-visits all four DP routes in both engines after each update. EP4/EP8 comparisons
-report observed differences; topology changes alone do not establish numerical
-equivalence. The same-topology altered-checkpoint oracle supplies a separate
-functional reference.
-
-The oracle loads the final altered checkpoint with the original static draft;
-its generation/logprobs are untimed functional evidence, not every-weight-byte
-proof. Native tests establish exact payload/application behavior separately.
-The five-layer W4A16 E2E exercises actual training-driven publications and
-requires a changed learned update; it is not full-model RL validation.
-
-Separate coordinator wall time, background read/hash/CPU-Zstd and small GPU input
-preparation, explicit scheduler pause, hardware inner-codec decode, layout/application and
-derived refresh. Pause measures the original scheduler flag-to-resume interval;
-it excludes earlier prepare/status handler service and does not quantify serving
-interference. Do not sum nested events or concurrent rank durations.
-
-The benchmark exercises the [production pipeline](#producer-and-receiver-pipeline)
-with generation before and after each update, not during preparation. Realized
-serving overlap, request latency and production throughput need separate study.
-The harness terminates only its own engine processes, retains partial evidence
-on failure and never releases a devbox allocation.
+Receiver state is released after successful updates; only benchmark-owned engine
+process groups are stopped. The devbox is retained. Generation is outside update
+timing and checks selected outputs rather than every weight byte. This workload
+has no concurrent serving traffic or real training, so it does not measure
+serving interference or RL throughput. Production codec/recovery tests and the
+five-layer learned-update E2E remain separate from this benchmark.
