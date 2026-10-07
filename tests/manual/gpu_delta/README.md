@@ -56,8 +56,7 @@ forward arbitrary variables into existing workers. Trainer-only settings can
 use `--train-env-vars`; receiver profiling needs the timing setting on rollout
 actors too. Set the DE sorting control on rollout actors. The five-layer GPU-delta
 E2E forwards both trainer codec controls, receiver sorting and the shared hash
-flag, and checks
-every publication's protocol and phase-specific codec. No old codec/encoder setting is migrated.
+flag, and checks every publication's manifest and phase-specific codec.
 Set the hash flag at job level so both trainer and rollout inherit it; a
 trainer-only override cannot enable checksum omission for a default receiver.
 
@@ -127,13 +126,12 @@ The existing `update_weight_buffer_size` bounds each canonical input batch; a
 larger single tensor stands alone. The full compact owner inner-codec payload must fit
 HBM for the outer call. Host snapshots are assumed to fit RAM; no OOM fallback is
 implemented. Production and fixture creation default to 1 MiB inner frames. The
-producer benchmark can select 4 MiB with `--frame-bytes 4194304`; the receiver
-benchmark accepts prepared fixtures declaring 64 KiB, 512 KiB, 1 MiB or 4 MiB inner frames.
-The receiver checks actual encoded and decoded frame sizes against its hardware
-limit. Outer Zstd chunks remain fixed at 1 MiB. The low-level encoder's 2 MiB
-control is producer-only.
+producer benchmark can select 4 MiB with `--frame-bytes 4194304`. The receiver
+benchmark accepts prepared fixtures with positive integer inner frame bytes at
+most 4 MiB and checks actual encoded and decoded sizes against its hardware
+limit. Outer Zstd chunks remain fixed at 1 MiB.
 
-Protocol 4 records the selected `codec` (`snappy-zstd`, `lz4-zstd` or `lz4`),
+The manifest records the selected `codec` (`snappy-zstd`, `lz4-zstd` or `lz4`),
 explicit `frame_bytes`, natural tensor
 identity and outer chunk offsets/lengths. For plain `lz4`, the outer descriptor
 has `frames=[]` and equal encoded/decoded byte lengths: its payload is the
@@ -324,27 +322,26 @@ The altered checkpoint contains the final cumulative version and does not alias
 original checkpoint files.
 
 The builder uses the production GPU encoder: pinned old/new CPU snapshots,
-bounded GPU XOR/inner-codec batches, then one owner-wide GPU Zstd pass per version.
+bounded GPU XOR/inner-codec batches, then one owner-wide GPU Zstd pass per version
+for wrapped codecs. Plain LZ4 publishes the packed inner frames directly.
 Only compact inner-codec output survives between batches. Raw scalars/vectors bypass both
 codecs. It records inner/outer bytes, alignment and final manifest/file sizes.
 Fixture creation is setup, excluded from receiver timing and not a distributed
-producer measurement. Native fixture tests independently replay CPU Zstd plus Snappy or LZ4
-and verify exact altered targets and source/draft immutability.
+producer measurement. Native fixture tests independently decode the selected
+inner codec, unwrap CPU Zstd when present, and verify exact altered targets and
+source/draft immutability.
 
-Only protocol 4 publications matching the configured codec are admitted. Saved
-Snappy fixtures remain usable with `GPU_DELTA_CODEC=snappy-zstd`. Generate a new
-LZ4 fixture from the same model, seed and mutation settings for codec comparisons;
-never relabel a Snappy payload. Confirm the altered targets match across codecs.
-Obsolete codec profiles
-are not accepted by production; historical artifact migration is external setup,
-not a fallback in this harness.
+Publications must match the configured codec and use positive integer inner
+frame bytes at most 4 MiB. Sender and receiver share one manifest contract.
+Generate codec fixtures from the same model, seed and mutation settings; never
+relabel payload bytes. Confirm the altered targets match across codecs.
 
-To compare codecs, repeat inventory/fixture creation with
-`GPU_DELTA_CODEC=lz4-zstd` and separate output directories. Keep the same seed,
-ratio, original checkpoint and three versions. For each codec, reuse its same
-fixture across receiver sorting 0/1 runs. Keep 1 MiB frames and report inner bytes,
-final wire bytes, preparation and full scheduler pause separately. LZ4 and sorting
-are implemented but have no native correctness or performance evidence yet.
+To compare codecs, repeat inventory/fixture creation with each of
+`GPU_DELTA_CODEC=snappy-zstd`, `lz4-zstd` and `lz4` in separate output directories.
+Keep the same seed, ratio, original checkpoint and three versions. Sorting is off
+by default; any sorting comparison should reuse the same codec fixture. Keep the
+frame size fixed and report inner bytes, final wire bytes, preparation and full
+scheduler pause separately. Record the source and workload for each result.
 
 ## Full-model receiver benchmark
 

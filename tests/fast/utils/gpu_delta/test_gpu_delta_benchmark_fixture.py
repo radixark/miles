@@ -1,4 +1,4 @@
-"""Admission and ownership checks for the sole-codec GPU delta benchmarks."""
+"""Admission and ownership checks for GPU delta benchmark fixtures."""
 
 import importlib.util
 from argparse import Namespace
@@ -140,7 +140,7 @@ def _tiny_fixture(tmp_path, frame_bytes=bench.FRAME_BYTES):
     return Namespace(model=model, fixture=source, inventory=inventory, output=output), before, after, changed
 
 
-@pytest.mark.parametrize("frame_bytes", [1 << 16, 1 << 19, bench.FRAME_BYTES, 1 << 22])
+@pytest.mark.parametrize("frame_bytes", [1 << 16, 192 << 10, 1 << 19, bench.FRAME_BYTES, 1 << 22])
 def test_rebind_preserves_payload_and_exact_canonical_target(tmp_path, frame_bytes):
     import json
 
@@ -191,7 +191,7 @@ def test_rebind_rejects_incompatible_or_changed_inputs(tmp_path, corruption):
     elif corruption == "frame_bytes":
         path = args.fixture / "fixture.json"
         fixture = json.loads(path.read_text())
-        fixture["rounds"][0]["publications"]["snappy-zstd"]["frame_bytes"] = 1 << 21
+        fixture["rounds"][0]["publications"]["snappy-zstd"]["frame_bytes"] = 5 << 20
         bench._save(path, fixture)
     elif corruption == "host":
         inventory = json.loads(args.inventory.read_text())

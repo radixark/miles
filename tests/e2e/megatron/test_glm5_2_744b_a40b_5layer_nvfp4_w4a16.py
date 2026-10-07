@@ -167,7 +167,6 @@ def _assert_gpu_delta_weights_changed(args, version_dir, _rollout_engines):
         manifest = json.loads((version_dir.parent / f"weight_v{version:06d}/manifest.json").read_text())
         assert manifest["stream_id"] == current["stream_id"]
         assert manifest["base_version"] == version - 1 and manifest["target_version"] == version
-        assert manifest["protocol_version"] == 4, "E2E publication protocol differs from GPU delta"
         codec_key = "GPU_DELTA_INITIAL_SYNC_CODEC" if version <= startup_publications else "GPU_DELTA_CODEC"
         assert manifest["codec"] == codecs[codec_key], "E2E publication codec differs from configured phase codec"
         raw_tensors = [tensor for tensor in manifest["tensors"] if len(tensor["shape"]) <= 1]

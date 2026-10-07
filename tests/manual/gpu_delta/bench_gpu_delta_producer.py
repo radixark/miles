@@ -377,12 +377,8 @@ def _verify_publication(publication, plan, codec, frame_bytes):
     if hashlib.sha256(raw).hexdigest() != publication["manifest_sha256"]:
         raise ValueError("Publication manifest checksum mismatch")
     manifest = json.loads(raw)
-    if (
-        manifest.get("codec") != codec
-        or manifest.get("protocol_version") != 4
-        or manifest.get("frame_bytes") != frame_bytes
-    ):
-        raise ValueError(f"Sealed publication must use protocol 4 / {codec}")
+    if manifest["codec"] != codec or manifest["frame_bytes"] != frame_bytes:
+        raise ValueError(f"Sealed publication must use {codec} / {frame_bytes} inner frame bytes")
     if {tensor["name"] for tensor in manifest["tensors"]} != {tensor["name"] for tensor in plan}:
         raise ValueError("Sealed publication does not cover the exact mutable exporter inventory")
     for tensor in manifest["tensors"]:

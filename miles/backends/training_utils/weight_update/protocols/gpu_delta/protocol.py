@@ -41,7 +41,7 @@ _PLAIN_FLOAT_DTYPE_BY_SAFETENSORS_DTYPE = {
 
 
 class UpdateWeightFromGpuDelta(WeightTransferProtocol):
-    """A new protocol; legacy disk-delta checkpoints and receiver APIs are unchanged."""
+    """Publish owner-local GPU deltas and commit baselines after activation."""
 
     use_weight_update_session = False
 

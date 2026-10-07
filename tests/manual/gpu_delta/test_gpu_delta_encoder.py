@@ -263,4 +263,4 @@ def test_owner_wide_finalization_roundtrip_only_transfers_final_bytes(frame_byte
             f"w{index}", frames, payload, outer, changed_bytes=changed, dtype="U8", shape=[1, len(before[index])]
         )
     descriptor = writer.finish()
-    assert descriptor["codec"] == codec and descriptor["protocol_version"] == 4
+    assert descriptor["codec"] == codec

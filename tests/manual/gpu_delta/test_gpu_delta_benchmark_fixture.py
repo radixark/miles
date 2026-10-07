@@ -37,7 +37,7 @@ def _replay(publication, state, codec):
     path = Path(publication["manifest_path"])
     assert sha256(path.read_bytes()) == publication["manifest_sha256"]
     manifest = json.loads(path.read_text())
-    assert manifest["codec"] == codec and manifest["protocol_version"] == 4
+    assert manifest["codec"] == codec
     payloads = {item["name"]: (path.parent / item["name"]).read_bytes() for item in manifest["files"]}
     for item in manifest["files"]:
         assert sha256(payloads[item["name"]]) == item["sha256"]

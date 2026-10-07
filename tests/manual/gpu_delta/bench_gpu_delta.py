@@ -194,12 +194,11 @@ def _validate_fixture_codec(fixture, codec):
         publication = row["publications"].get(codec)
         if (
             publication is None
-            or publication.get("protocol_version") != 4
             or publication.get("codec") != codec
             or type(publication.get("frame_bytes")) is not int
-            or publication["frame_bytes"] not in (1 << 16, 1 << 19, FRAME_BYTES, 1 << 22)
+            or not 0 < publication["frame_bytes"] <= 4 << 20
         ):
-            raise ValueError(f"Fixture requires protocol 4 / {codec} / 64 KiB, 512 KiB, 1 MiB or 4 MiB inner frames")
+            raise ValueError(f"Fixture requires {codec} with positive integer inner frame bytes at most 4 MiB")
     return codec
 
 

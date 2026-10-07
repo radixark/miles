@@ -21,7 +21,6 @@ def _write_series(tmp_path, changed_bytes):
         (directory / "manifest.json").write_text(
             json.dumps(
                 {
-                    "protocol_version": 4,
                     "codec": "lz4-zstd" if version == 1 else "snappy-zstd",
                     "stream_id": "current-stream",
                     "base_version": version - 1,

@@ -117,8 +117,8 @@ def test_framed_publication_preserves_payload_ranges_and_final_file_hash(tmp_pat
                 "sha256": None if skip_hash else hashlib.sha256(blob).hexdigest(),
             }
         ]
-        assert descriptor["protocol_version"] == 4 and descriptor["codec"] == manifest["codec"] == codec
-        assert descriptor["frame_bytes"] == frame_bytes and "codec_profile" not in descriptor
+        assert descriptor["codec"] == manifest["codec"] == codec
+        assert descriptor["frame_bytes"] == frame_bytes
         assert [frame["decoded_offset"] for frame in entry["frames"]] == [0, 2 * frame_bytes]
         assert entry["frames"][-1]["encoded_bytes"] > 139
         assert all(

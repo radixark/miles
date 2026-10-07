@@ -119,7 +119,7 @@ class HfWeightIteratorGpuDelta(HfWeightIteratorDirect):
         self.local_error_consumer: Callable[[Exception], None] | None = None
 
     def _hf_atomic_update_groups(self):
-        # The complete publication is applied together. Legacy load-call groups
+        # The complete publication is applied together. Incremental load-call groups
         # must not require tensors already consumed by owner callbacks.
         return []
 

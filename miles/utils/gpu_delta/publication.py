@@ -150,7 +150,6 @@ class PublicationWriter:
         self.payload_metrics = dict(matrix_hash_write_s=0.0, matrix_inner_arena_bytes=0, matrix_payload_bytes=0)
         self._hash = None if os.environ.get("GPU_DELTA_SKIP_PAYLOAD_HASH") == "1" else hashlib.sha256()
         self.metadata = {
-            "protocol_version": 4,
             "codec": codec,
             "frame_bytes": frame_bytes,
             "stream_id": stream_id,
