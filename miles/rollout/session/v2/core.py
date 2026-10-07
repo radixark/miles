@@ -101,6 +101,8 @@ class SessionCoreV2(SessionCore):
                 session_id=session_id,
                 max_seq_len=max_seq_len,
                 use_addition_r3=self.use_addition_r3,
+                # The latest generation is always a leaf; its mismatch is already in the session metadata.
+                computed_mismatch={session.latest().seq: metadata.get("tito_session_mismatch")},
             )
         except (AssertionError, ValueError) as exc:
             return Response(content=str(exc).encode(), status_code=422, media_type="text/plain")

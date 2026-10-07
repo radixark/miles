@@ -751,6 +751,16 @@ class TestAdditionR3Assembly:
         assert np.array_equal(merged_addition.rollout_routed_experts, merged_full.rollout_routed_experts)
         assert np.array_equal(merged_addition.rollout_routed_experts, full)
 
+    def test_patch_that_is_not_plain_base64_raises(self):
+        """SGLang sends plain base64; any other character fails the decode instead of being dropped from it."""
+        patch = _r3_patch(_r3_rows(4, seed=0))
+        records = [
+            _make_record([1, 2, 3], [10, 11], routed_experts=patch[:8] + "\n" + patch[8:], routed_experts_start_len=0)
+        ]
+
+        with pytest.raises(ValueError):
+            _merge_addition(records, [1, 2, 3, 10, 11])
+
     def test_overlapping_start_raises(self):
         """Every patch must start exactly after the preceding raw patch."""
         turn1_rows = _r3_rows(5, seed=0)
