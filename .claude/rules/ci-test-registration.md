@@ -27,23 +27,21 @@ do when a check goes red is in `ci-failure-triage.md`.
 ## Stage
 
 A test holds every GPU of its stage for its whole run, and the wider stages have
-fewer runners. Walk the table from the top and stop at the first stage that can
-run the test; copying a neighbouring test's `suite=` is not a reason.
+fewer runners, so a test goes on the cheapest stage that can run it; copying a
+neighbouring test's `suite=` is not a reason.
 
-| Order | Where | Runs on | Use for |
-|---|---|---|---|
-| 1 | `tests/fast/` (no declaration; suite `stage-a-cpu`) | GitHub-hosted CPU | pure-Python / CPU-only tests that finish in seconds |
-| 2 | `register_cpu_ci(..., suite="stage-b-cpu")` | GitHub-hosted CPU | CPU tests that take minutes; `stage-a-cpu` gates every CUDA stage, so it stays fast |
-| 3 | `tests/fast-gpu/`, suite `stage-b-2-gpu-h200` | 2× H200 | short GPU checks (kernels, quantizers, worker entry points) that finish in a few minutes |
-| 4 | `stage-c-2-gpu-h200` | 2× H200 | end-to-end runs that fit on two GPUs |
-| 5 | `stage-c-4-gpu-h200` | 4× H200 | layouts that need four ranks; the busiest stage, so confirm two GPUs cannot express the case |
-| 6 | `stage-c-8-gpu-h200` or `stage-c-8-gpu-h100` | 8× H200 / 8× H100 | layouts that need eight ranks |
-| — | `stage-c-8-gpu-b200` | 8× B200 | only tests that cannot run on Hopper (`hardware=["blackwell"]`), at any GPU count |
-
-The stage's GPU count equals the count the test requests (`ray start
---num-gpus`, `--actor-num-gpus-per-node`, `torchrun --nproc-per-node`): a 4-GPU
-test on an 8-GPU stage idles four GPUs for its whole run. `stage-c-8-gpu-b200`
-is the exception, because the Blackwell fleet is a single unpartitioned host.
+- **CPU:** a test that finishes in seconds goes in `tests/fast/` (suite
+  `stage-a-cpu`, no declaration). `stage-a-cpu` gates every CUDA stage, so a
+  slower one uses `register_cpu_ci(..., suite="stage-b-cpu")`.
+- **GPU:** the stage's GPU count equals the count the test requests (`ray start
+  --num-gpus`, `--actor-num-gpus-per-node`, `torchrun --nproc-per-node`): a
+  4-GPU test on an 8-GPU stage idles four GPUs for its whole run. A 2-GPU check
+  that finishes in a few minutes goes in `tests/fast-gpu/`
+  (`stage-b-2-gpu-h200`). `CUDA_STAGES` in `tests/ci/hardware.py` lists the
+  stages.
+- **Blackwell:** `stage-c-8-gpu-b200` takes only tests that cannot run on Hopper
+  (`hardware=["blackwell"]`). The Blackwell fleet is a single unpartitioned
+  host, so they run there at any GPU count.
 
 A new test needs no ROCm registration. A file that already has
 `register_rocm_ci(..., suite="nightly-stage-c-<N>-gpu-*")` keeps `<N>` equal to
@@ -60,7 +58,7 @@ from tests.ci.ci_register import register_cuda_ci
 
 register_cuda_ci(
     est_time=500,                      # measured; see est_time below
-    suite="stage-c-2-gpu-h200",        # home stage, from the table above
+    suite="stage-c-2-gpu-h200",        # home stage; see Stage above
     labels=["megatron"],               # domain labels that select it on a PR
     hardware=["hopper", "blackwell"],  # supported CUDA generations
 )
