@@ -136,7 +136,7 @@ If Miles is useful in your research or your product, please cite it:
 ```bibtex
 @misc{radixark2026milesv01productionlevelposttraining,
   title         = {Miles v0.1: Production-Level Post-Training},
-  author        = {RadixArk and Tom Chen and Mao Cheng and Shi Dong and Kangrui Du and Yanbin Jiang and Jiajun Li and Yiming Li and Tao Lin and Yusheng Su and Andy Ye and Yueming Yuan and Zhichen Zeng},
+  author        = {RadixArk},
   year          = {2026},
   eprint        = {2609.08368},
   archivePrefix = {arXiv},
