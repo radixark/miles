@@ -78,9 +78,9 @@ all live on Megatron-LM. See
 
 ### What Miles runs
 
-- **Day-0 model support.** DeepSeek-V4, Kimi-K3, GLM-5.2, Inkling, and Nemotron landed on
-  release day. Beyond day 0, nearly every frontier model runs on Miles, including GLM-5.3,
-  DeepSeek-V4.1, Qwen3.8, MiMo-V2.6-Flash, and Kimi-K2.6. See
+- **Day-0 model support.** DeepSeek-V4.1, DeepSeek-V4, Kimi-K3, Qwen3.8, GLM-5.3, GLM-5.2,
+  MiMo-V2.6-Flash, Inkling, and Nemotron landed on release day. Beyond day 0, nearly every
+  frontier model runs on Miles, including Kimi-K2.6 and Qwen3.5. See
   [Models](https://miles.radixark.com/docs/models).
 - **Extensive hardware support.** NVIDIA GB300, GB200, B300, B200, H200, H100, and A100, and
   AMD MI355X, MI350X, MI325X, and MI300X. See
