@@ -15,8 +15,8 @@ def merge_plans(descriptions: Sequence[dict]) -> tuple[list[dict], list[dict], s
     """Merge canonical views, never receiver-specific physical layout maps."""
     entries, identities = {}, []
     for description in descriptions:
-        if description.get("success") is not True:
-            raise RuntimeError(f"GPU-delta describe failed: {description.get('message')}")
+        if not description["success"]:
+            raise RuntimeError(f"GPU-delta describe failed: {description['message']}")
         for participant in description["participants"]:
             identities.append(participant["identity"])
             for tensor in participant["plan"]["tensors"]:

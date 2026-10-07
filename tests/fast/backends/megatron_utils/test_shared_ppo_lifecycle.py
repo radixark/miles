@@ -856,7 +856,7 @@ class _RecordingWeightUpdater:
     def verify_engine_version(self, rollout_engines: list[Any]) -> None:
         pass
 
-    def update_weights(self) -> None:
+    def update_weights(self, rollout_id: int | None = None) -> None:
         self.update_weights_calls += 1
         self.weight_version += 1
 
@@ -873,6 +873,7 @@ def _weight_update_worker(actor_module: Any, monkeypatch: pytest.MonkeyPatch) ->
         rematerialize_param_from_master_weight=False,
     )
     worker._asleep = False
+    worker._last_rollout_id = None
     worker._heartbeat = Mock()
     worker.weight_updater = _RecordingWeightUpdater()
     monkeypatch.setattr(actor_module, "print_memory", Mock())

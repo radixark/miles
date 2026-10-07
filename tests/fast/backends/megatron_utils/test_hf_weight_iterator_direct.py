@@ -127,7 +127,7 @@ def test_gather_batches_pack_by_size_only(direct_module, monkeypatch):
 
 @pytest.mark.parametrize("mode", ["broadcast", "broadcast_packed", "disk-delta", "gpu-delta"])
 @pytest.mark.parametrize("expert", [False, True])
-def test_batch_load_preserves_sync_before_gather_outside_gpu_delta(direct_module, monkeypatch, mode, expert):
+def test_generic_batch_load_preserves_sync_before_gather(direct_module, monkeypatch, mode, expert):
     events = []
     value = torch.arange(4, dtype=torch.float32)
     info = _param("weight", 4)
@@ -152,7 +152,7 @@ def test_batch_load_preserves_sync_before_gather_outside_gpu_delta(direct_module
 
     result = load(args, [info], {"weight": Weight()}, gather_pp=False)
 
-    assert events == (["load", "gather"] if mode == "gpu-delta" else ["load", "sync", "gather"])
+    assert events == ["load", "sync", "gather"]
     assert len(result) == 1 and result[0][0] == "weight"
     assert torch.equal(result[0][1], value)
 
@@ -160,7 +160,7 @@ def test_batch_load_preserves_sync_before_gather_outside_gpu_delta(direct_module
 @pytest.mark.parametrize("materialize", [True, False])
 @pytest.mark.parametrize("consume_locally", [True, False])
 def test_owner_consumer_skips_gathers_and_normal_export_still_gathers(
-    direct_module, monkeypatch, materialize, consume_locally
+    direct_module, gpu_delta_module, monkeypatch, materialize, consume_locally
 ):
     events = []
     packed = ("expert.gate_proj.weight", torch.zeros(4, dtype=torch.uint8))
@@ -177,7 +177,7 @@ def test_owner_consumer_skips_gathers_and_normal_export_still_gathers(
             return packed[1]
 
     def convert(named_params):
-        assert named_params[0][0] == local_name
+        assert list(named_params)[0][0] == local_name
         events.append("convert")
         yield [packed, scale]
 
@@ -191,7 +191,9 @@ def test_owner_consumer_skips_gathers_and_normal_export_still_gathers(
         assert units == [[packed, scale]]
         return units
 
-    iterator = direct_module.HfWeightIteratorDirect.__new__(direct_module.HfWeightIteratorDirect)
+    cls = gpu_delta_module.HfWeightIteratorGpuDelta if consume_locally else direct_module.HfWeightIteratorDirect
+    iterator = cls.__new__(cls)
+    iterator._rank, iterator._device = 0, "cpu"
     iterator.args = Namespace()
     iterator._non_expert_batches = []
     iterator._expert_batches = [
@@ -223,7 +225,9 @@ def test_owner_consumer_skips_gathers_and_normal_export_still_gathers(
         assert events == ["load", "convert", "gather", "gather", "load", "convert", "gather"]
 
 
-def test_gpu_delta_consumer_defers_failure_until_all_local_units_are_visited(direct_module, monkeypatch):
+def test_gpu_delta_consumer_defers_failure_until_all_local_units_are_visited(
+    direct_module, gpu_delta_module, monkeypatch
+):
     protocol = UpdateWeightFromGpuDelta(
         Namespace(custom_update_weight_post_write_path=None, update_weight_delta_initial_sync=False)
     )
@@ -233,7 +237,8 @@ def test_gpu_delta_consumer_defers_failure_until_all_local_units_are_visited(dir
         raise failure
 
     protocol._match_layout = reject
-    iterator = direct_module.HfWeightIteratorDirect.__new__(direct_module.HfWeightIteratorDirect)
+    iterator = gpu_delta_module.HfWeightIteratorGpuDelta.__new__(gpu_delta_module.HfWeightIteratorGpuDelta)
+    iterator._rank, iterator._device = 0, "cpu"
     iterator._convert_experts_before_gather = True
     protocol.is_sender = False
     monkeypatch.setattr(updater, "get_weight_transfer_protocol", lambda args: protocol)
@@ -266,13 +271,15 @@ def test_gpu_delta_consumer_defers_failure_until_all_local_units_are_visited(dir
         param_infos=[_param("first", 1), _param("second", 1), _param("foreign", 1, src_rank=1)],
         gathers=(lambda *args, **kwargs: pytest.fail("Failed consumers must not enter expert gathers"),),
     )
-    assert iterator._convert_and_gather_expert_batch(batch, {name: Weight() for name in ("first", "second")}) == []
+    assert list(iterator._iter_expert_batch(batch, {name: Weight() for name in ("first", "second")}, False)) == []
     assert converted == ["first", "second"]
     assert protocol._error is failure  # after_base_weights performs the existing collective error check.
 
 
 @pytest.mark.parametrize("materialize", [True, False])
-def test_gpu_delta_etp2_gathers_complete_experts_before_sender_conversion(direct_module, monkeypatch, materialize):
+def test_gpu_delta_etp2_gathers_complete_experts_before_sender_conversion(
+    direct_module, gpu_delta_module, monkeypatch, materialize
+):
     name = "layer.experts.linear_fc1.weight0"
     # Unmarked TE grouped weights still need ETP gathering. Each shard contains
     # one gate row followed by one up row; conversion must see gate/gate/up/up.
@@ -306,7 +313,7 @@ def test_gpu_delta_etp2_gathers_complete_experts_before_sender_conversion(direct
         converted.append(name)
         yield [("expert.weight", named_params[0][1].to(torch.uint8)), ("expert.scale", torch.ones(1))]
 
-    iterator = direct_module.HfWeightIteratorDirect.__new__(direct_module.HfWeightIteratorDirect)
+    iterator = gpu_delta_module.HfWeightIteratorGpuDelta.__new__(gpu_delta_module.HfWeightIteratorGpuDelta)
     iterator.args = Namespace(swiglu=True, update_weight_transfer_mode="gpu-delta")
     iterator.placement = Namespace(gather_pp=False)
     iterator._non_expert_batches = []
@@ -325,9 +332,12 @@ def test_gpu_delta_etp2_gathers_complete_experts_before_sender_conversion(direct
         "get_parallel_state",
         lambda: Namespace(etp=Namespace(size=2, group=etp_group), ep=Namespace(size=1)),
     )
-    monkeypatch.setattr(
-        direct_module, "_load_or_allocate_params", lambda infos, weights, **kwargs: [weights[info.name].clone()]
-    )
+
+    def load(infos, weights, synchronize):
+        assert not synchronize
+        return [weights[item.name].clone() for item in infos]
+
+    monkeypatch.setattr(direct_module, "_load_or_allocate_params", load)
     monkeypatch.setattr(direct_module, "_iter_mm_tower_units", lambda *args, **kwargs: iter(()))
 
     units = list(iterator._iter_hf_param_units({name: shards[0]}, materialize=materialize))
@@ -596,7 +606,6 @@ def test_gpu_delta_owner_failure_drains_later_gathers_and_reports_once(direct_mo
         "gather",
         "wait",
         ("convert", names[0]),
-        ("consume", []),
         "gather",
         "wait",
         ("convert", names[1]),

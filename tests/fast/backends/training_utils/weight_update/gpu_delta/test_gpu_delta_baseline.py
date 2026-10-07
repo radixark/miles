@@ -78,6 +78,8 @@ def _setup(tmp_path, fail=False, frame_bytes=gpu_delta_publication.FRAME_BYTES, 
 @pytest.fixture
 def single_rank(monkeypatch):
     monkeypatch.setattr(torch.Tensor, "pin_memory", lambda self: self)
+    empty = torch.empty
+    monkeypatch.setattr(torch, "empty", lambda *args, **kwargs: empty(*args, **(kwargs | {"pin_memory": False})))
     with (
         patch.object(gpu_delta, "_gather_all", side_effect=lambda value: [value]),
         patch.object(gpu_delta, "get_gloo_group", return_value=None),
@@ -173,6 +175,16 @@ def test_partial_version_acknowledgement_fails_before_rollout_without_replay(tmp
     assert len(events) == 2
 
 
+@pytest.mark.parametrize("dtype, shape", [("F32", [4]), ("U8", [2, 2])])
+def test_checkpoint_reader_rejects_different_canonical_layout_before_rollout(tmp_path, single_rank, dtype, shape):
+    protocol, events = _setup(tmp_path)
+    protocol._plan["w"].update(dtype=dtype, shape=shape)
+    tensor = torch.zeros(shape, dtype=torch.float32 if dtype == "F32" else torch.uint8)
+    with pytest.raises(RuntimeError, match="Checkpoint tensor 'w' has dtype=U8, shape="):
+        protocol.begin_sync(1, lambda materialize: [[("w", tensor)]])
+    assert not protocol._baseline_captured and not events
+
+
 @pytest.mark.parametrize("duplicate_owner", [False, True])
 def test_pipeline_stage_inventory_requires_unique_owners_before_baseline_declaration(
     tmp_path, single_rank, monkeypatch, duplicate_owner
@@ -248,6 +260,8 @@ def test_initial_delta_publishes_loaded_trainer_then_switches_to_cached_update_c
     monkeypatch.setattr(torch.Tensor, "record_stream", lambda *args: None)
     monkeypatch.setattr(gpu_delta.dist, "get_world_size", lambda: 1)
     monkeypatch.setattr(gpu_delta.dist, "gather_object", lambda shard, shards, **kwargs: shards.__setitem__(0, shard))
+    read_baseline = Mock(wraps=gpu_delta.disk_delta.make_tensor_reader(str(tmp_path)))
+    monkeypatch.setattr(gpu_delta.disk_delta, "make_tensor_reader", lambda _: read_baseline)
 
     first_codec = initial_codec if initial_sync else codec
     protocol.connect(protocol.rollout_engines, None, [0, 1], None, None, None)
@@ -284,6 +298,7 @@ def test_initial_delta_publishes_loaded_trainer_then_switches_to_cached_update_c
         previous = current
     assert encoder_type.call_count == len({initial_codec, codec})
     assert set(encoders) == {initial_codec, codec}
+    read_baseline.assert_called_once_with("w", expected_dtype="U8", expected_shape=(4,))
 
 
 def _gpu_pending(monkeypatch, fail_batch=None):
@@ -540,8 +555,6 @@ def test_gpu_baseline_swaps_only_after_successful_receiver_activation(monkeypatc
 
 def _ready_protocol(tmp_path, monkeypatch):
     protocol, _ = _setup(tmp_path)
-    empty = torch.empty
-    monkeypatch.setattr(torch, "empty", lambda *a, **kw: empty(*a, **(kw | {"pin_memory": False})))
     monkeypatch.setattr(torch.cuda, "current_device", lambda: 0)
     monkeypatch.setattr(torch.cuda, "current_stream", Mock)
     monkeypatch.setattr(torch.cuda, "Stream", Mock)

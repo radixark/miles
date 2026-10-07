@@ -11,6 +11,7 @@ import torch.distributed as dist
 from miles.backends.megatron_utils.update_weight.hf_weight_iterator_direct import (
     HfWeightIteratorDirect,
     _check_and_fix_partition,
+    _gather_megatron_expert_batch,
     _gather_with_stride,
     _pack_param_infos_by_size,
 )
@@ -116,6 +117,7 @@ class HfWeightIteratorGpuDelta(HfWeightIteratorDirect):
         self._rank = dist.get_rank()
         self._tp_group, self._tp_size = parallel.tp.group, parallel.tp.size
         self._device = torch.cuda.current_device()
+        self.local_consumer: Callable[[list[tuple[str, torch.Tensor]]], None] | None = None
         self.local_error_consumer: Callable[[Exception], None] | None = None
 
     def _hf_atomic_update_groups(self):
@@ -129,8 +131,6 @@ class HfWeightIteratorGpuDelta(HfWeightIteratorDirect):
                 yield from super()._convert_to_hf_param_units([named_param])
             except Exception as error:
                 self.local_error_consumer(error)
-                # ETP1's shared expert traversal consumes one unit with next().
-                yield []
 
     def _iter_non_expert_batch(self, batch, weights, materialize):
         pending = _gather_batch(
@@ -149,3 +149,19 @@ class HfWeightIteratorGpuDelta(HfWeightIteratorDirect):
                 # or conversion can fail. Peers must still visit later batches.
                 self.local_error_consumer(error)
         return ()
+
+    def _iter_expert_batch(self, batch, weights, materialize):
+        if not self._convert_experts_before_gather:
+            # ETP>1 retains gather-before-convert; stream ordering replaces the
+            # generic export's device barrier so compression can keep running.
+            named_params = _gather_megatron_expert_batch(
+                self.args, batch.param_infos, weights, gather_pp=False, synchronize=False
+            )
+            if materialize:
+                yield from self._convert_to_hf_param_units(named_params)
+            return
+        for info in batch.param_infos:
+            if info.src_rank == self._rank:
+                param = weights[info.name].detach().to(device=self._device, non_blocking=True)
+                for unit in self._convert_to_hf_param_units([(info.name, param)]):
+                    self.local_consumer(unit)

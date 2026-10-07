@@ -70,7 +70,6 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
         self._raw_names = self._gpu_batch_names = ()
         self._batch_by_name = {}
         self._plan = {}
-        self._descriptions = None
         self._capturing = False
         self._baseline_captured = False
         self._uncommitted = False
@@ -96,9 +95,8 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
         self._select_codec(codec)
         descriptions = _on_root(lambda: async_utils.run(self._describe()))
         cohort = gpu_delta_session.negotiate_cohort(descriptions)
-        if self._descriptions is not None and cohort.plan_digest != self._cohort.plan_digest:
+        if self._baseline_captured and cohort.plan_digest != self._cohort.plan_digest:
             raise RuntimeError("GPU-delta recovery requires the same canonical tensor plan")
-        self._descriptions = descriptions
         self._cohort = cohort
         self._plan = {tensor["name"]: tensor for tensor in cohort.plan}
 
@@ -253,25 +251,19 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
         _on_root(lambda: set_weight_version(self.rollout_engines, 0), broadcast_value=False)
 
     def _match_layout(self, name, tensor):
-        spec = self._plan.get(name)
-        if spec is None:
-            raise ValueError(f"Exporter tensor {name!r} is absent from the receiver mutable plan")
-        checkpoint_dtype, checkpoint_shape = gpu_delta_publication.checkpoint_tensor_layout(
-            self.args.hf_checkpoint, name
-        )
-        if list(checkpoint_shape) != spec["shape"] or checkpoint_dtype != spec["dtype"]:
-            raise ValueError(f"Receiver/checkpoint canonical layout differs for {name!r}")
-        if tuple(tensor.shape) != checkpoint_shape:
-            raise ValueError(f"Exporter/checkpoint canonical shape differs for {name!r}")
+        spec = self._plan[name]
+        if self._capturing and list(tensor.shape) != spec["shape"]:
+            raise ValueError(f"Exporter/receiver canonical shape differs for {name!r}")
+        target_dtype = spec["dtype"]
         emitted = _safetensors_dtype(tensor.dtype)
-        if emitted == checkpoint_dtype:
+        if emitted == target_dtype:
             return tensor
         if (
             emitted in _PLAIN_FLOAT_DTYPE_BY_SAFETENSORS_DTYPE
-            and checkpoint_dtype in _PLAIN_FLOAT_DTYPE_BY_SAFETENSORS_DTYPE
+            and target_dtype in _PLAIN_FLOAT_DTYPE_BY_SAFETENSORS_DTYPE
         ):
-            return tensor.to(_PLAIN_FLOAT_DTYPE_BY_SAFETENSORS_DTYPE[checkpoint_dtype])
-        raise ValueError(f"Exporter/checkpoint packed dtype differs for {name!r}")
+            return tensor.to(_PLAIN_FLOAT_DTYPE_BY_SAFETENSORS_DTYPE[target_dtype])
+        raise ValueError(f"Exporter/receiver packed dtype differs for {name!r}")
 
     def record_export_error(self, error):
         self._error = self._error or error

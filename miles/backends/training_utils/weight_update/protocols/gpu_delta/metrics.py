@@ -101,8 +101,6 @@ def activation_metrics(activation):
     for receipt in rows:
         timing = receipt["scheduler_timing"]
         start, fence, end = (timing[key] for key in ("pause_started_ns", "reader_fence_completed_ns", "resumed_ns"))
-        if not 0 <= start <= fence <= end:
-            raise ValueError("GPU-delta scheduler timing interval is incomplete or inconsistent")
         fences.append((fence - start) / 1e9)
         pauses.append((end - start) / 1e9)
     _distribution(metrics, "receiver_reader_fence_s", fences)

@@ -72,45 +72,18 @@ def configured_codec(initial_sync: bool = False) -> str:
     return codec
 
 
-def _bytes_view(value) -> np.ndarray:
-    if isinstance(value, np.ndarray):
-        if not value.flags.c_contiguous:
-            raise ValueError("Canonical buffers must be contiguous")
-        return value.reshape(-1).view(np.uint8)
-    return np.frombuffer(value, dtype=np.uint8)
-
-
 def tensor_metadata(name: str, dtype: str, shape: list[int], views=None, encoding="xor_bytes") -> dict:
-    """Canonical tensor schema for compressed matrices and raw scalar/vector targets."""
-    if not name or dtype not in DTYPE_BYTES or any(type(n) is not int or n < 0 for n in shape):
-        raise ValueError("Invalid canonical tensor schema")
-    if encoding not in ("xor_bytes", "raw_bytes"):
-        raise ValueError("Unsupported gpu-delta encoding")
-    if encoding == "raw_bytes" and len(shape) > 1:
-        raise ValueError("Raw replacements require scalar or vector tensors")
-    nbytes = math.prod(shape) * DTYPE_BYTES[dtype]
-    definitions = views if views is not None else [{"id": "full", "slices": [[0, n] for n in shape]}]
-    if len({v["id"] for v in definitions}) != len(definitions):
-        raise ValueError("Duplicate canonical view id")
-    entry = {
+    """Describe a canonical tensor from the negotiated receiver plan."""
+    return {
         "name": name,
         "dtype": dtype,
         "shape": list(shape),
-        "nbytes": nbytes,
+        "nbytes": math.prod(shape) * DTYPE_BYTES[dtype],
         "byte_order": "little",
         "encoding": encoding,
-        "views": [],
+        "views": views if views is not None else [{"id": "full", "slices": [[0, n] for n in shape]}],
         "frames": [],
     }
-    for view in definitions:
-        slices = view["slices"]
-        if len(slices) != len(shape):
-            raise ValueError("Canonical view dimensions differ")
-        for size, bounds in zip(shape, slices, strict=True):
-            if len(bounds) != 2 or any(type(x) is not int for x in bounds) or not 0 <= bounds[0] <= bounds[1] <= size:
-                raise ValueError("Invalid canonical half-open view bounds")
-        entry["views"].append({"id": view["id"], "slices": slices})
-    return entry
 
 
 def _write_exclusive(path: Path, content: bytes) -> None:
@@ -167,7 +140,7 @@ class PublicationWriter:
     def add_raw_tensor(self, name: str, old, new, dtype: str, shape: list[int], views=None):
         """Write complete scalar/vector targets without XOR, frames or codecs."""
         entry = tensor_metadata(name, dtype=dtype, shape=shape, views=views, encoding="raw_bytes")
-        previous, current = _bytes_view(old), _bytes_view(new)
+        previous, current = np.frombuffer(old, dtype=np.uint8), np.frombuffer(new, dtype=np.uint8)
         if previous.size != entry["nbytes"] or current.size != entry["nbytes"]:
             raise ValueError(f"Canonical tensor byte count differs for {name}")
         # CPU-only comparison preserves update-density metrics and omits
