@@ -9,8 +9,8 @@ except ImportError:
     tilelang = None
 
 if tilelang is not None:
-    from miles_plugins.models.deepseek_v4.ops.kernel.tilelang_indexer import v4_lighting_indexer
-    from miles_plugins.models.deepseek_v4.ops.kernel.tilelang_indexer_fwd import (
+    from miles.kernels.attention.dsa.deepseek_v4.indexer import v4_lighting_indexer
+    from miles.kernels.attention.dsa.deepseek_v4.tilelang_indexer_fwd import (
         _make_causal_cu_seqlens,
         batched_indexer_fwd,
     )

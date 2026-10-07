@@ -15,7 +15,7 @@ pass_configs = {
 
 
 @tl.jit(pass_configs=pass_configs)
-def tl_indexer_bwd_impl(
+def _indexer_bwd_kernel(
     heads: int,
     dim: int,
     topk: int,
@@ -136,7 +136,7 @@ def tl_indexer_bwd_impl(
     return tl_indexer_bwd_kernel
 
 
-def indexer_bwd_interface(
+def indexer_bwd(
     index_q: torch.Tensor,
     weights: torch.Tensor,
     index_k: torch.Tensor,
@@ -151,7 +151,7 @@ def indexer_bwd_interface(
     grad_w = torch.empty_like(weights, dtype=torch.float32)
     grad_k = torch.zeros_like(index_k, dtype=torch.float32)
 
-    tl_indexer_bwd_impl(head_num, head_dim, k_top)(
+    _indexer_bwd_kernel(head_num, head_dim, k_top)(
         index_q.contiguous(),
         index_k.contiguous(),
         weights.squeeze(-1).contiguous(),

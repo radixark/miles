@@ -12,9 +12,9 @@ import torch
 import torch.nn.functional as F
 from torch import Tensor
 
+from miles.kernels.attention.qsa import qsa_sparse_attention
 from miles.kernels.embedding.ple_gate_conv import ple_gate_conv
 from miles.kernels.hyper_connection.hc import hc_combine, hc_mix_inject
-from miles_plugins.models.qwen3_8_next.ops.kernel.qsa_sparse_attn import qsa_sparse_attention_triton
 from miles_plugins.models.qwen3_8_next.ops.ple import ngram_hash_ids, shift_right_ignore_eos
 
 
@@ -324,7 +324,7 @@ def test_qsa_sparse_attention(T, S, Hq, Hkv, D, K, dtype):
     idx = torch.where(keep, idx, torch.full_like(idx, -1))
 
     scale = D**-0.5
-    out_t = qsa_sparse_attention_triton(q, k, v, idx, scale)
+    out_t = qsa_sparse_attention(q, k, v, idx, scale)
     gout = torch.randn_like(out_t)
     out_t.backward(gout)
     grads_t = [q.grad.clone(), k.grad.clone(), v.grad.clone()]

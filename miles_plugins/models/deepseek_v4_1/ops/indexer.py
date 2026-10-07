@@ -8,12 +8,12 @@ from megatron.core.extensions.transformer_engine import TELinear
 from megatron.core.transformer.module import MegatronModule, mark_keep_in_fp32
 from megatron.core.transformer.transformer_config import TransformerConfig
 
+from miles.kernels.attention.dsa.deepseek_v4_1.tilelang_indexer_fwd import batched_indexer_fwd
+from miles.kernels.attention.dsa.topk import get_dsa_topk_fn
 from miles.kernels.position.rope import apply_rotary_emb
 from miles.kernels.quant.fake_quant import fake_quant_fp4
 from miles.utils.replay_base import indexer_replay_manager
-from miles_plugins.models.deepseek_v4_1.ops.kernel.tilelang_indexer_fwd import batched_indexer_fwd
 from miles_plugins.models.deepseek_v4_1.ops.norm import RMSNorm
-from miles_plugins.models.dsa_topk import get_dsa_topk_fn
 
 
 def select_candidate_blocks(

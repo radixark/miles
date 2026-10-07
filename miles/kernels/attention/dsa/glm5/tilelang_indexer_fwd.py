@@ -1,4 +1,5 @@
 # ruff: noqa
+# Adapted from https://github.com/tile-ai/tilelang/blob/4956b5835fa554af6c03d4a6289cad44bf310869/examples/deepseek_v32/fp8_lighting_indexer.py
 import tilelang
 import torch
 from tilelang import language as T
@@ -9,14 +10,16 @@ from tilelang import language as T
         tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
     },
 )
-def tl_indexer_fwd_impl(
+def _indexer_fwd_kernel(
     heads,
     index_dim,
-    block_N=128,
-    num_stages=4,
+    block_N=256,
+    num_stages=3,
     threads=512,
-    block_Q=8,
+    block_Q=None,
 ):
+    if block_Q is None:
+        block_Q = 128 // heads
     dtype = T.bfloat16
     accum_dtype = T.float32
     index_dtype = T.int32
@@ -85,7 +88,7 @@ def tl_indexer_fwd_impl(
 
 
 @tilelang.jit
-def clean_logits_(
+def _clean_logits_kernel(
     threads: int = 512,
     block_K: int = 4096,
 ):
@@ -115,73 +118,23 @@ def clean_logits_(
     return clean_logits_kernel
 
 
-def _make_causal_cu_seqlens(seq_len_q, seq_len_kv, compress_ratio, device):
-    """Generate cu_seqlens for causal masking on compressed KV positions.
-
-    For query at position p, valid compressed groups are [0, (p+1) // compress_ratio).
-    """
-    positions = torch.arange(seq_len_q, device=device, dtype=torch.int32)
-    cu_seqlen_ks = torch.zeros(seq_len_q, device=device, dtype=torch.int32)
-    cu_seqlen_ke = ((positions + 1) // compress_ratio).to(torch.int32)
-    return cu_seqlen_ks, cu_seqlen_ke
-
-
-def indexer_fwd_interface(q, kv, weights, cu_seqlen_ks, cu_seqlen_ke, clean_logits=True):
-    """Forward interface matching GLM-5's API but for a single batch element.
-
-    Args:
-        q: [seq_len, heads, index_dim] bf16
-        kv: [seq_len_kv, index_dim] bf16
-        weights: [seq_len, heads] fp32
-        cu_seqlen_ks: [seq_len] int32 — start of valid KV range per query
-        cu_seqlen_ke: [seq_len] int32 — end of valid KV range per query
-
-    Returns:
-        logits: [seq_len, seq_len_kv] fp32
-    """
+def indexer_fwd(q, kv, weights, cu_seqlen_ks, cu_seqlen_ke, clean_logits=True):
     seq_len, heads, index_dim = q.shape
     seq_len_kv = kv.shape[0]
 
-    clean_logits_kernel = clean_logits_()
-    tl_indexer_fwd_kernel = tl_indexer_fwd_impl(heads=heads, index_dim=index_dim)
+    clean_logits_kernel = _clean_logits_kernel()
+
+    tl_indexer_fwd_kernel = _indexer_fwd_kernel(heads=heads, index_dim=index_dim)
 
     logits = torch.empty([seq_len, seq_len_kv], device=q.device, dtype=torch.float32)
     tl_indexer_fwd_kernel(
         q.view(seq_len * heads, index_dim),
         kv,
         logits,
-        weights.float(),
+        weights,
         cu_seqlen_ks,
         cu_seqlen_ke,
     )
     if clean_logits:
         clean_logits_kernel(logits, cu_seqlen_ks, cu_seqlen_ke)
     return logits
-
-
-def batched_indexer_fwd(q, k, weights, cu_seqlen_ks, cu_seqlen_ke):
-    """Batched forward: loops over batch dim.
-
-    Args:
-        q: [seqlen, batch, heads, dim] bf16
-        k: [seqlen_kv, batch, dim] bf16
-        weights: [seqlen, batch, heads] fp32
-        cu_seqlen_ks: [seqlen] int32
-        cu_seqlen_ke: [seqlen] int32
-
-    Returns:
-        logits: [batch, seqlen, seqlen_kv] fp32
-    """
-    seqlen, batch, heads, dim = q.shape
-    seq_len_kv = k.shape[0]
-
-    all_logits = torch.empty([batch, seqlen, seq_len_kv], device=q.device, dtype=torch.float32)
-    for b in range(batch):
-        all_logits[b] = indexer_fwd_interface(
-            q[:, b, :, :].contiguous(),
-            k[:, b, :].contiguous(),
-            weights[:, b, :].contiguous(),
-            cu_seqlen_ks,
-            cu_seqlen_ke,
-        )
-    return all_logits

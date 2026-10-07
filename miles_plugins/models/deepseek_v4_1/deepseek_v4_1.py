@@ -26,6 +26,7 @@ from megatron.core.transformer.transformer_config import TransformerConfig
 from megatron.core.transformer.transformer_layer import HyperConnectionTransformerLayer, get_transformer_layer_offset
 from megatron.core.transformer.utils import make_sharded_tensors_for_checkpoint
 
+from miles.kernels.attention.dsa.deepseek_v4_1.tilelang_sparse_mla import sparse_attn_tilelang
 from miles.kernels.hyper_connection.mhc import mhc_aggregate, mhc_mix
 from miles.kernels.position.rope import apply_rotary_emb
 from miles.kernels.quant.fake_quant import fake_quant_compressed_kv
@@ -39,7 +40,6 @@ from miles_plugins.models.deepseek_v4_1.ops.cp_utils import (
     get_window_topk_idxs_cp,
 )
 from miles_plugins.models.deepseek_v4_1.ops.indexer import DeepSeekV41Indexer
-from miles_plugins.models.deepseek_v4_1.ops.kernel.tilelang_sparse_mla import sparse_attn_tilelang
 from miles_plugins.models.deepseek_v4_1.ops.kvnorm import compressed_kv_stored, kv_norm_rope_fp8
 from miles_plugins.models.deepseek_v4_1.ops.rope_tables import wrapped_precompute_freqs_cis
 

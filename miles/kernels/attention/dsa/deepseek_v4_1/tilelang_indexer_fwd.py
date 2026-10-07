@@ -1,9 +1,4 @@
 # ruff: noqa
-# Adapted from miles_plugins/models/glm5/ops/tilelang_indexer_fwd.py for DeepSeek-V4.
-# Key differences from GLM-5:
-#   - Operates on [seqlen, batch, heads, dim] (SBHD) layout, batch handled externally
-#   - Uses causal mask via cu_seqlens instead of variable-length packed sequences
-#   - Supports compressed KV (seq_len_kv = seq_len_q / compress_ratio)
 import tilelang
 import torch
 from tilelang import language as T
@@ -14,16 +9,14 @@ from tilelang import language as T
         tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
     },
 )
-def tl_indexer_fwd_impl(
+def _indexer_fwd_kernel(
     heads,
     index_dim,
-    block_N=256,
-    num_stages=3,
+    block_N=128,
+    num_stages=4,
     threads=512,
-    block_Q=None,
+    block_Q=8,
 ):
-    if block_Q is None:
-        block_Q = 128 // heads
     dtype = T.bfloat16
     accum_dtype = T.float32
     index_dtype = T.int32
@@ -92,7 +85,7 @@ def tl_indexer_fwd_impl(
 
 
 @tilelang.jit
-def clean_logits_(
+def _clean_logits_kernel(
     threads: int = 512,
     block_K: int = 4096,
 ):
@@ -133,7 +126,7 @@ def _make_causal_cu_seqlens(seq_len_q, seq_len_kv, compress_ratio, device):
     return cu_seqlen_ks, cu_seqlen_ke
 
 
-def indexer_fwd_interface(q, kv, weights, cu_seqlen_ks, cu_seqlen_ke, clean_logits=True):
+def indexer_fwd(q, kv, weights, cu_seqlen_ks, cu_seqlen_ke, clean_logits=True):
     """Forward interface matching GLM-5's API but for a single batch element.
 
     Args:
@@ -149,8 +142,8 @@ def indexer_fwd_interface(q, kv, weights, cu_seqlen_ks, cu_seqlen_ke, clean_logi
     seq_len, heads, index_dim = q.shape
     seq_len_kv = kv.shape[0]
 
-    clean_logits_kernel = clean_logits_()
-    tl_indexer_fwd_kernel = tl_indexer_fwd_impl(heads=heads, index_dim=index_dim)
+    clean_logits_kernel = _clean_logits_kernel()
+    tl_indexer_fwd_kernel = _indexer_fwd_kernel(heads=heads, index_dim=index_dim)
 
     logits = torch.empty([seq_len, seq_len_kv], device=q.device, dtype=torch.float32)
     tl_indexer_fwd_kernel(
@@ -184,7 +177,7 @@ def batched_indexer_fwd(q, k, weights, cu_seqlen_ks, cu_seqlen_ke):
 
     all_logits = torch.empty([batch, seqlen, seq_len_kv], device=q.device, dtype=torch.float32)
     for b in range(batch):
-        all_logits[b] = indexer_fwd_interface(
+        all_logits[b] = indexer_fwd(
             q[:, b, :, :].contiguous(),
             k[:, b, :].contiguous(),
             weights[:, b, :].contiguous(),

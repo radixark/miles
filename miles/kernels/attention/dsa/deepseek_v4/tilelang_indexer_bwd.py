@@ -1,5 +1,5 @@
 # ruff: noqa
-# Adapted from miles_plugins/models/glm5/ops/tilelang_indexer_bwd.py for DeepSeek-V4.
+# Adapted from miles/kernels/attention/dsa/glm5/tilelang_indexer_bwd.py for DeepSeek-V4.
 import tilelang as tl
 import tilelang.language as T
 import torch
@@ -15,7 +15,7 @@ pass_configs = {
 
 
 @tl.jit(pass_configs=pass_configs)
-def tl_indexer_bwd_impl(
+def _indexer_bwd_kernel(
     heads: int,
     dim: int,
     topk: int,
@@ -135,7 +135,7 @@ def tl_indexer_bwd_impl(
     return tl_indexer_bwd_kernel
 
 
-def indexer_bwd_interface(
+def indexer_bwd(
     index_q: torch.Tensor,
     weights: torch.Tensor,
     index_k: torch.Tensor,
@@ -186,7 +186,7 @@ def indexer_bwd_interface(
             dim=1,
         ).contiguous()
 
-    tl_indexer_bwd_impl(head_num, head_dim, padded_topk)(
+    _indexer_bwd_kernel(head_num, head_dim, padded_topk)(
         index_q.contiguous(),
         index_k.contiguous(),
         weights.squeeze(-1).contiguous(),
@@ -223,7 +223,7 @@ def batched_indexer_bwd(index_q, weights, index_k, topk_indices, grad_scores):
     all_grad_k = torch.zeros(seq_len_kv, batch, dim, device=index_q.device, dtype=torch.float32)
 
     for b in range(batch):
-        gq, gw, gk = indexer_bwd_interface(
+        gq, gw, gk = indexer_bwd(
             index_q[:, b, :, :].contiguous(),
             weights[:, b, :].contiguous(),
             index_k[:, b, :].contiguous(),

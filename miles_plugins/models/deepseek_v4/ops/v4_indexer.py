@@ -7,6 +7,8 @@ from megatron.core.tensor_parallel.mappings import gather_from_sequence_parallel
 from megatron.core.transformer.module import MegatronModule
 from megatron.core.transformer.transformer_config import TransformerConfig
 
+from miles.kernels.attention.dsa.deepseek_v4.tilelang_indexer_fwd import batched_indexer_fwd
+from miles.kernels.attention.dsa.topk import get_dsa_topk_fn
 from miles.utils.replay_base import indexer_replay_manager
 from miles_plugins.models.deepseek_v4.ops.compressor import DeepSeekV4Compressor
 from miles_plugins.models.deepseek_v4.ops.cp_row_balance import (
@@ -17,12 +19,10 @@ from miles_plugins.models.deepseek_v4.ops.cp_row_balance import (
     send_rows_to_scorers,
 )
 from miles_plugins.models.deepseek_v4.ops.cp_utils import all_gather_cp, get_freqs_cis_for_cp, get_q_positions_for_cp
-from miles_plugins.models.deepseek_v4.ops.kernel.tilelang_indexer_fwd import batched_indexer_fwd
 from miles_plugins.models.deepseek_v4.ops.qat import fp8_simulate_qat
 from miles_plugins.models.deepseek_v4.ops.rope import apply_rotary_emb, wrapped_precompute_freqs_cis
 from miles_plugins.models.deepseek_v4.ops.thd_utils import ThdLayout, compress_bounds_at_positions, get_q_positions_thd
 from miles_plugins.models.deepseek_v4.ops.utils import rotate_activation
-from miles_plugins.models.dsa_topk import get_dsa_topk_fn
 
 
 class V4Indexer(MegatronModule):
