@@ -130,12 +130,19 @@ directory together with that unchanged HF base.
 
 For inference deployment, start SGLang from the base HF checkpoint and call
 `POST /update_weights_from_gpu_delta` with `{"manifest_path": "/bundle/manifest.json"}`.
-It prepares, applies, resumes and releases delta resources by default. Set
-`"release_state": false` to retain the cache for subsequent weight updates, as
-Miles recovery does. The committed version and model weights remain resident. `POST /clear_gpu_delta_state` with `{}`
-also releases idle delta resources after the ordinary multi-step API. Keep a
-new deployment out of routing until its one-shot load succeeds; an uncertain
-apply requires restarting from the base, not replaying XOR on that process.
+It prepares, applies and releases delta resources by default, preserving an
+existing caller pause. `flush_cache` defaults to `true` for KV and multimodal
+caches; set it to `false` only when the caller already owns cache invalidation.
+`abort_all_requests` defaults to `false`: in-flight requests are retracted and
+requeued at apply. Set it to `true` to abort them after preparation succeeds.
+The staged `apply_gpu_delta` endpoint accepts the same `flush_cache` and
+`abort_all_requests` controls; `prepare_gpu_delta` leaves serving state unchanged.
+Set `"release_state": false` to retain delta buffers and codec setup for later
+updates, as Miles recovery does. The committed version and model weights remain
+resident. `POST /clear_gpu_delta_state` with `{}` also releases idle delta
+resources after the staged API. Keep a new deployment out of routing until its
+one-shot update succeeds; an uncertain apply requires restarting from the base,
+not replaying XOR on that process.
 
 ## Producer and receiver pipeline
 
