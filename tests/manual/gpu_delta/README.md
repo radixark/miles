@@ -348,29 +348,32 @@ python tests/manual/gpu_delta/bench_gpu_delta.py \
 ```
 
 `--output` must be new; omit it to create a timestamped directory. Allow disk
-space for an independent copy of the base checkpoint and three publications.
+space for one independent copy of the base checkpoint and the six arms’ publications.
 The source checkpoint is immutable. No Megatron checkpoint, trainer initialization
 or distributed export setup is required.
 
-One invocation performs four serial stages, releasing each stage's CUDA contexts
-before the next starts:
+One invocation uses a common inventory and oracle, with six serial codec/hash
+arms. Each stage releases its CUDA contexts before the next starts:
 
 1. Start the receiver pair, record its canonical tensor plan, then stop it.
-2. Copy the checkpoint, construct three cumulative perturbations and encode
-   their actual payloads with Miles' production `GpuBatchEncoder` and
-   `PublicationWriter`.
-3. Start fresh receivers from the original base, prepare/apply/resume each
-   publication, and record all rank receipts and selected generation routes.
-4. Load the final altered checkpoint into separate receivers with the original
-   static draft, then compare final text, tokens and prompt/output logprobs.
+2. For each arm, construct the same three cumulative perturbations from the
+   immutable base and encode them with Miles’ production `GpuBatchEncoder` and
+   `PublicationWriter`, using that arm’s hash policy. The first arm alone copies
+   the checkpoint and writes its final target bytes for the shared oracle.
+3. After each arm’s compression, start fresh receivers from the original base,
+   prepare/apply/resume its publications, and record all rank receipts and
+   selected generation routes.
+4. Load the shared final checkpoint once with the original static draft and
+   compare every arm’s final text, tokens and prompt/output logprobs.
 
 Sender compression uses all visible GPUs by default; `--sender-gpus N` limits
 it to the first N visible devices. Model layers, embedding, LM head and remaining tensors form ordered whole
 groups, split into balanced contiguous slices using the Miles ordinary-owner
 rule. Putting embedding/head at the tail leaves that slice fewer model layers
 to offset their higher-precision storage. Ownership and canonical bytes per GPU are recorded
-in `fixture/owner-plan.json`. Every worker reads and mutates only its assigned
-ranges in the copied checkpoint and writes its own publication shard. The parent
+in each arm’s `fixture/owner-plan.json`. Every worker reads only its assigned
+base tensors and writes its own publication shard. Only first-arm workers write
+their disjoint final-version ranges in the shared checkpoint copy. The parent
 seals the shards after all workers finish. This uses the production codec and
 publication path with simple HF ownership; it does not measure Megatron export,
 TP reconstruction, expert ownership or distributed gather.
@@ -382,34 +385,42 @@ byte counts or make an oversized individual tensor fit. Wrapped codecs perform
 one owner-wide GPU Zstd finalization per version. Scalar/vector target bytes
 bypass compression.
 
-Defaults are Snappy-Zstd, 1 MiB inner/outer frames, three cumulative versions,
-two EP4 receivers and receiver payload hashing skipped. `--codec`,
-`--frame-bytes`, `--versions`, `--ports` and `--verify-payload-hash` select a run's
-configuration. Fixtures always retain payload SHA256; the flag controls receiver
-verification. CUDA event instrumentation is enabled for both sides so the report
-contains actual phase measurements. Instrumented timings are distinct from
+The default matrix has six arms: `snappy-zstd`, `lz4-zstd` and `lz4`, each
+with payload hashing on and off. Inner frames are 1 MiB; wrapped codecs also use
+1 MiB outer frames, while plain LZ4 has no outer stage. Every arm uses three
+cumulative versions and two EP4 receivers. `--codecs`, `--hashing`,
+`--frame-bytes`, `--versions` and `--ports` select the configuration. For a quick
+single arm, use `--codecs snappy-zstd --hashing off`. Hash-on arms generate and
+verify payload SHA256; hash-off arms skip it on both sides. CUDA event
+instrumentation is enabled for both sides so the report contains actual phase
+measurements. Instrumented timings are distinct from
 historical `GPU_DELTA_TIMING=0` results.
 
-Mutations are deterministic finite mantissa/packed-FP4 bit changes seeded by
-name and version. `--ratio` defaults to 0.002 and calibrates mutation density
+All arms share one calibrated mutation rate. Mutations are deterministic finite
+mantissa/packed-FP4 bit changes seeded by name and version. Each arm reconstructs
+prior cumulative versions from the immutable base; no arm reads another arm’s
+mutated tensors. `--ratio` defaults to 0.002 and calibrates mutation density
 against CPU Zstd sample frames; the actual selected-codec ratio is measured,
 not forced to that value. Static draft and calibration scales stay unchanged.
 The versions are constructed cumulative targets, not learned gradients or three
 statistical repeats of one delta.
 
-`REPORT.md` summarizes each version; `summary.json` retains every sender owner
-and receiver rank metric, and `comparison.json` records the final selected-output
-oracle. Phase logs, launch configuration, owner assignments, publications,
+`REPORT.md` summarizes every arm/version with its hash policy; `summary.json`
+retains every sender owner and receiver rank metric, and `comparison.json` records
+each arm’s final selected-output comparison. Arm artifacts live under `arms/`;
+the inventory, final checkpoint and oracle are shared. Phase logs, launch configuration, owner assignments, publications,
 original-rank receipts and generation responses remain in the output directory.
 A failure stops advancement and preserves partial output; it is never retried.
 
 Report timing scopes separately:
 
-- **Sender:** summed inner-compression CUDA events per owner, outer-compression
-  CUDA events, packing/final D2H and CPU publication work. Summary columns take
-  independent owner maxima, not a sum or synchronized global critical path.
-  Checkpoint copy, perturbation, H2D, XOR and hashing are excluded from codec-only
-  event columns. Manifest sealing is a separate parent span.
+- **Sender:** the compression-and-publication wall column includes payload
+  hashing when enabled, raw/matrix writes and shard flush/fsync, alongside
+  encoding and finalization. It sums sequential owner call spans, excluding
+  checkpoint reads/writes and perturbation. Separate codec-only CUDA columns
+  exclude hashing, transfers and XOR; publication wall is not pure SHA time.
+  Summary columns take independent owner maxima, not a synchronized global
+  critical path. Parent manifest sealing is separate.
 - **Receiver:** background preparation, CPU outer-decode wall time, DE-stream
   CUDA interval, matrix application and actual scheduler pause. CPU decode wall
   time includes submission/raw copies/drain; DE intervals include zero-fill,

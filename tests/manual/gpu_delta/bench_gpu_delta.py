@@ -7,6 +7,7 @@ Run from the Miles checkout with paired SGLang on PYTHONPATH::
 Requires eight Blackwell GPUs, CUDA 13 and nvCOMP >=5.3. The GLM5.2 W4A16
 workload uses static bundled MTP and two independent TP4/DP4/EP4 receivers.
 Sender processes split whole layers across GPUs; no Megatron checkpoint is needed.
+Defaults: three codecs x payload hashing on/off, all with 1 MiB inner frames.
 Results include actual compression, preparation, decompression and scheduler-pause
 measurements, plus a final selected-output comparison with a disk-loaded target.
 """
@@ -271,16 +272,22 @@ def _calibrate(plan, seed, target_ratio):
     return (low + high) / 2
 
 
-def _alter_fixture_tensor(target, index, tensor, version, seed, rate):
+def _fixture_snapshot(args, index, tensor, version):
+    """Replay cumulative targets from the immutable base for every arm."""
     spec = index[tensor["name"]]
-    with (target / spec["shard"]).open("r+b") as file:
+    with (args.model / spec["shard"]).open("rb") as file:
         file.seek(spec["offset"])
         before = np.frombuffer(file.read(spec["nbytes"]), dtype=np.uint8)
-        if before.size != spec["nbytes"]:
-            raise ValueError("Incomplete checkpoint tensor")
-        after = _mutate(before, name=tensor["name"], dtype=spec["dtype"], seed=seed, version=version, rate=rate)
-        file.seek(spec["offset"])
-        file.write(after)
+    if before.size != spec["nbytes"]:
+        raise ValueError("Incomplete checkpoint tensor")
+    mutation = dict(name=tensor["name"], dtype=spec["dtype"], seed=args.seed, rate=args.mutation_rate)
+    for previous_version in range(1, version):
+        before = _mutate(before, version=previous_version, **mutation)
+    after = _mutate(before, version=version, **mutation)
+    if args.write_target and version == args.versions:
+        with (args.target / spec["shard"]).open("r+b") as file:
+            file.seek(spec["offset"])
+            file.write(after)
     return before, after
 
 
@@ -342,7 +349,7 @@ def _partition_plan(plan, owner_count):
     return owners
 
 
-def _encode_version(args, owner, index, target, rate, encoder, metadata, version):
+def _encode_version(args, owner, index, encoder, metadata, version):
     import torch
 
     tensors = owner["tensors"]
@@ -358,16 +365,18 @@ def _encode_version(args, owner, index, target, rate, encoder, metadata, version
     )
     started, changed = time.monotonic(), 0
     pending, batch, batch_bytes = [], [], 0
-    batch_cuda_s, batch_wall_s = {}, 0.0
+    batch_cuda_s, batch_wall_s, publication_write_s = {}, 0.0, 0.0
     try:
         for tensor in raw_plan:
-            before, after = _alter_fixture_tensor(target, index, tensor, version, args.seed, rate)
+            before, after = _fixture_snapshot(args, index, tensor, version)
+            writing = time.monotonic()
             entry = writer.add_raw_tensor(
                 tensor["name"], before, after, dtype=tensor["dtype"], shape=tensor["shape"], views=tensor["views"]
             )
+            publication_write_s += time.monotonic() - writing
             changed += entry["changed_bytes"]
         for tensor in matrix_plan:
-            before, after = _alter_fixture_tensor(target, index, tensor, version, args.seed, rate)
+            before, after = _fixture_snapshot(args, index, tensor, version)
             batch.append((torch.from_numpy(before.copy()).pin_memory(), torch.from_numpy(after).pin_memory()))
             batch_bytes += after.nbytes
             # A batching target, not an overall memory cap: a larger tensor
@@ -384,6 +393,7 @@ def _encode_version(args, owner, index, target, rate, encoder, metadata, version
             batch_wall_s += metrics["encode_wall_s"]
             for name, seconds in metrics["cuda_phase_s"].items():
                 batch_cuda_s[name] = batch_cuda_s.get(name, 0.0) + seconds
+            writing = time.monotonic()
             writer.add_encoded_tensor(
                 tensor["name"],
                 frames,
@@ -394,8 +404,11 @@ def _encode_version(args, owner, index, target, rate, encoder, metadata, version
                 shape=tensor["shape"],
                 views=tensor["views"],
             )
+            publication_write_s += time.monotonic() - writing
             changed += count
+        writing = time.monotonic()
         shard = writer.finish_shard()
+        publication_write_s += time.monotonic() - writing
     finally:
         writer.close()
     finalization = encoder.finalization_metrics
@@ -410,12 +423,16 @@ def _encode_version(args, owner, index, target, rate, encoder, metadata, version
         batch_cuda_s=batch_cuda_s,
         batch_wall_s=batch_wall_s,
         finalization=finalization,
-        encode_and_target_write_s=time.monotonic() - started,
+        publication_write_s=publication_write_s,
+        compression_and_publication_s=batch_wall_s + finalization["finalize_wall_s"] + publication_write_s,
+        matrix_hash_write_s=writer.payload_metrics["matrix_hash_write_s"],
+        payload_checksum_format=writer.metadata["payload_checksum_format"],
+        owner_elapsed_s=time.monotonic() - started,
     )
     return {"version": version, "changed_bytes": changed, "shard": shard, "metrics": metrics}
 
 
-def _encode_owner(args, owner, index, target, rate, metadata):
+def _encode_owner(args, owner, index, metadata):
     # Spawned workers own CUDA contexts; the parent only copies and seals files.
     import torch
 
@@ -428,7 +445,7 @@ def _encode_owner(args, owner, index, target, rate, metadata):
             torch.device("cuda", owner["gpu"]), codec=metadata["codec"], frame_bytes=args.frame_bytes
         )
         for version in range(1, args.versions + 1):
-            result = _encode_version(args, owner, index, target, rate, encoder, metadata, version)
+            result = _encode_version(args, owner, index, encoder, metadata, version)
             _save(args.output / f"owner-{owner['owner']:05d}-v{version}.json", result)
             results.append(result)
         return results
@@ -455,49 +472,65 @@ def _fixture(args):
     owners = [owner for owner in _partition_plan(plan, owner_count) if owner["groups"]]
     assignments = [owner | {"tensors": [t["name"] for t in owner["tensors"]]} for owner in owners]
     _save(args.output / "owner-plan.json", assignments)
-    target = args.output / "altered-checkpoint"
-    target.mkdir()
-    # Each owner changes disjoint tensor byte ranges in this independent copy.
-    for path in args.model.iterdir():
-        if path.is_file() and path.suffix in {".json", ".py", ".model", ".tiktoken", ".safetensors"}:
-            shutil.copy2(path, target / path.name)
-    rate = _calibrate(plan, args.seed, args.ratio)
+    if args.write_target:
+        args.target.mkdir()
+        # Only the first arm writes final disjoint tensor ranges in this copy.
+        for path in args.model.iterdir():
+            if path.is_file() and path.suffix in {".json", ".py", ".model", ".tiktoken", ".safetensors"}:
+                shutil.copy2(path, args.target / path.name)
     metadata = {
-        "stream_id": sha256(canonical_json({"seed": args.seed, "plan": digest, "rate": rate})),
+        "stream_id": sha256(
+            canonical_json({"seed": args.seed, "plan": digest, "rate": args.mutation_rate, "arm": args.arm_name})
+        ),
         "plan_digest": digest,
         "codec": codec,
         "frame_bytes": args.frame_bytes,
     }
     if len(owners) == 1:
-        results = [_encode_owner(args, owners[0], index, target, rate, metadata)]
+        results = [_encode_owner(args, owners[0], index, metadata)]
     else:
         with ProcessPoolExecutor(
             max_workers=len(owners), mp_context=multiprocessing.get_context("spawn"), max_tasks_per_child=1
         ) as pool:
-            futures = [pool.submit(_encode_owner, args, owner, index, target, rate, metadata) for owner in owners]
+            futures = [pool.submit(_encode_owner, args, owner, index, metadata) for owner in owners]
             results = [future.result() for future in futures]
-    _seal_fixture(args, plan, metadata, target, rate, assignments, results)
+    _seal_fixture(args, plan, metadata, assignments, results)
+    if args.write_target:
+        _save(
+            args.target.parent / "target-complete.json",
+            {
+                "target_checkpoint": str(args.target.resolve()),
+                "plan_digest": digest,
+                "seed": args.seed,
+                "rate": args.mutation_rate,
+                "version": args.versions,
+                "arm": args.arm_name,
+            },
+        )
 
 
-def _seal_fixture(args, plan, metadata, target, rate, assignments, results):
+def _seal_fixture(args, plan, metadata, assignments, results):
     codec = metadata["codec"]
     denominator = sum(math.prod(t["shape"]) * DTYPE_BYTES[t["dtype"]] for t in plan)
     report = {
         "plan_digest": metadata["plan_digest"],
-        "rate": rate,
+        "rate": args.mutation_rate,
         "requested_zstd_ratio": args.ratio,
+        "seed": args.seed,
         "stream_id": metadata["stream_id"],
-        "target_checkpoint": str(target.resolve()),
+        "target_checkpoint": str(args.target.resolve()),
         "rounds": [],
         "calibration": "CPU Zstd level-1 sample-frame estimate; selected-codec size is measured, not forced to this ratio.",
         "canonical_denominator": "Canonical tensors in the receiver plan; excludes frozen draft and other checkpoint entries.",
         "changed_bytes_definition": "Unequal storage bytes, not changed bits or compressed size.",
         "codec": codec,
+        "arm": args.arm_name,
         "sender_gpus": len(results),
         "sender_owners": assignments,
         "owner_plan": "owner-plan.json",
         "inner_codec_origin": "Production GpuBatchEncoder on each owner's GPU: pinned snapshots, GPU XOR/inner compression, optional owner-wide GPU Zstd. Contiguous whole-layer HF ownership, no Megatron export.",
-        "fixture_wall_scope": "Per-version maximum of owner-local encode/target-write spans; owners are not synchronized between versions. Parent sealing is separate.",
+        "fixture_wall_scope": "Per-version maximum of owner-local snapshot/encode/publication spans; only the first arm writes the final target. Owners are not synchronized between versions. Parent sealing is separate.",
+        "compression_wall_scope": "Sequential owner encode_device, finish_device and publication calls, including optional payload SHA, H2D/XOR/final D2H and shard flush/fsync. Excludes checkpoint reads/writes, perturbation and parent manifest sealing.",
     }
     for version in range(1, args.versions + 1):
         records = [owner[version - 1] for owner in results]
@@ -515,7 +548,7 @@ def _seal_fixture(args, plan, metadata, target, rate, assignments, results):
             "accounting": {codec: sizes},
             "ratios": {codec: sizes["publication_bytes"] / denominator},
             "encoded_frame_ratios": {codec: sizes["encoded_frame_bytes"] / denominator},
-            "encode_and_target_write_s": max(record["metrics"]["encode_and_target_write_s"] for record in records),
+            "owner_elapsed_s": max(record["metrics"]["owner_elapsed_s"] for record in records),
             "seal_s": seal_s,
             "compression": {"owners": [record["metrics"] for record in records]},
         }
@@ -711,8 +744,6 @@ async def _run(args, phase):
                     "version": version["version"],
                     "coordinator_s": time.monotonic() - started,
                     "codec": codec,
-                    "fixture_publication": codec,
-                    "inner_codec_origin": fixture.get("inner_codec_origin"),
                     "measurement_phase": "first-use-allocation" if version["version"] == 1 else "warm-update",
                     "receipt": receipt,
                 }
@@ -851,13 +882,24 @@ def _owner_compression(metrics, codec):
         outer = 0.0
     elif enabled:
         outer = _seconds(final["finalize_cuda_phase_s"]["outer_zstd_s"])
+    combined = _seconds(metrics["compression_and_publication_s"])
+    if not math.isclose(
+        combined,
+        metrics["batch_wall_s"] + final["finalize_wall_s"] + metrics["publication_write_s"],
+        rel_tol=1e-9,
+        abs_tol=1e-9,
+    ):
+        raise ValueError("Compression/publication timing differs from its sequential components")
     return {
+        "compression_and_publication_s": combined,
+        "publication_write_s": _seconds(metrics["publication_write_s"]),
         "inner_cuda_s": inner,
         "outer_cuda_s": outer,
         "batch_wall_s": _seconds(metrics["batch_wall_s"]),
+        "finalization_wall_s": _seconds(final["finalize_wall_s"]),
         "outer_wall_s": _seconds(final["outer_zstd_wall_s"]),
         "pack_d2h_wall_s": _seconds(final["pack_d2h_wall_s"]),
-        "encode_and_target_write_s": _seconds(metrics["encode_and_target_write_s"]),
+        "owner_elapsed_s": _seconds(metrics["owner_elapsed_s"]),
         "raw_metrics": metrics,
     }
 
@@ -877,12 +919,15 @@ def _compression(row, codec, assignments):
         "owner_max": {
             key: _maximum(owners, key)
             for key in (
+                "compression_and_publication_s",
+                "publication_write_s",
                 "inner_cuda_s",
                 "outer_cuda_s",
                 "batch_wall_s",
+                "finalization_wall_s",
                 "outer_wall_s",
                 "pack_d2h_wall_s",
-                "encode_and_target_write_s",
+                "owner_elapsed_s",
             )
         },
         "seal_s": _seconds(row["seal_s"]),
@@ -899,120 +944,176 @@ def _format(value):
     return "unmeasured" if value is None else f"{value:.9f}"
 
 
-def _markdown(summary):
-    lines = [
-        "# GPU delta end-to-end benchmark",
+def _report_table(headers, rows):
+    return [
+        "|" + "|".join(headers) + "|",
+        "|" + "|".join("---" for _ in headers) + "|",
+        *("|" + "|".join(map(str, row)) + "|" for row in rows),
         "",
-        f"Codec: `{summary['codec']}`. Final selected outputs match the independently loaded target checkpoint on "
-        f"all {len(summary['comparison']['routes'])} routes, including text, token IDs and input/output logprobs.",
-        "",
-        f"Sender owners: {summary['sender_count']}. Layer-ordered assignments and all per-owner metrics are retained in `summary.json`.",
-        "",
-        "Versions are cumulative synthetic targets, not learned updates or statistical repeats. "
-        "Selected outputs do not prove every weight byte. Startup and oracle generation are outside update timing.",
-        "",
-        "Compression columns are independent owner maxima. Inner CUDA is the maximum of each owner's summed batch events; "
-        "these maxima can come from different owners and are not a synchronized end-to-end latency. "
-        "CUDA events cover their named stream regions, including wrapper/launch gaps, not pure kernel busy time. "
-        "Batch wall time includes pinned-input transfers, "
-        "XOR and metadata waits; packing/D2H is separate. Owner total also includes checkpoint reads/writes, "
-        "payload hashing and shard publication writing. Parent sealing is measured separately after all owners finish. "
-        "These overlapping scopes must not be added.",
-        "",
-        "|Version|Inner CUDA max s|Outer CUDA max s|Batch wall max s|Outer wall max s|Pack/D2H wall max s|Owner total max s|Parent seal s|",
-        "|---|---:|---:|---:|---:|---:|---:|---:|",
     ]
+
+
+def _markdown(summary):
+    versions = [(arm, row) for arm in summary["arms"] for row in arm["versions"]]
     compression_keys = (
+        "compression_and_publication_s",
+        "publication_write_s",
         "inner_cuda_s",
         "outer_cuda_s",
         "batch_wall_s",
+        "finalization_wall_s",
         "outer_wall_s",
         "pack_d2h_wall_s",
-        "encode_and_target_write_s",
+        "owner_elapsed_s",
     )
-    for row in summary["versions"]:
-        lines.append(
-            f"|{row['version']}|"
-            + "|".join(_format(row["compression"]["owner_max"][key]) for key in compression_keys)
-            + f"|{_format(row['compression']['seal_s'])}|"
-        )
-    lines += [
-        "",
-        "Receiver columns are independent maxima over ranks, not rank sums or additive phases. "
-        "Outer CPU/plain-copy wall includes raw copies and job submission/drain; worker sums remain in the raw receipts. "
-        "DE stream events include zero-fill and nvCOMP enqueue/host gaps; they are not pure hardware busy time. "
-        "Matrix apply includes status checks but excludes raw copies and derived refresh. "
-        "Pause comes from completed scheduler pause/resume timestamps. "
-        "Disabled CUDA timing is unmeasured; plain LZ4 has no outer stage.",
-        "",
-        "|Version|Outer CPU max s|Plain copy max s|DE stream CUDA max s|Matrix apply CUDA max s|Prepare max s|Pause max s|Coordinator s|",
-        "|---|---:|---:|---:|---:|---:|---:|---:|",
+    compression_headers = [
+        "Compression/publication s",
+        "Publication write s",
+        "Inner CUDA s",
+        "Outer CUDA s",
+        "Batch wall s",
+        "Finalization wall s",
+        "Outer wall s",
+        "Pack/D2H wall s",
+        "Owner enclosing s",
     ]
     rank_keys = ("outer_cpu_s", "plain_copy_s", "de_stream_cuda_s", "matrix_apply_cuda_s", "prepare_s", "pause_s")
-    for row in summary["versions"]:
-        values = [_format(row["receiver_max"][key]) for key in rank_keys] + [_format(row["coordinator_s"])]
-        lines.append(f"|{row['version']}|" + "|".join(values) + "|")
-    lines += [
+    rank_headers = ["Outer CPU s", "Plain copy s", "DE stream CUDA s", "Matrix apply CUDA s", "Prepare s", "Pause s"]
+    lines = [
+        "# GPU delta end-to-end benchmark",
         "",
-        "|Version|Sender payload checksum|Receiver skips payload SHA|Inner frame bytes|Canonical bytes|Changed bytes|Inner compressed bytes|Matrix payload bytes|Payload file bytes|Manifest bytes|",
-        "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|",
+        f"Status: **{summary['status']}**. "
+        "Every arm's final selected text, token IDs and full input/output logprobs are compared with one "
+        "independently loaded target checkpoint on every route; see `comparison.json`.",
+        "",
+        "Hash on/off controls both sender payload SHA and receiver verification; manifest SHA remains enabled. "
+        "Versions are cumulative synthetic targets, not learned updates or statistical repeats. "
+        "Selected outputs do not prove every weight byte. Startup and oracle generation are untimed.",
+        "",
+        "## Compression and publication",
+        "",
+        "All columns below except parent seal are independent owner maxima. Compression/publication is each "
+        "owner's sum of nonoverlapping batch wall, finalization wall and publication-write intervals, including "
+        "optional payload SHA, payload I/O and shard flush/fsync. It excludes checkpoint reads/writes, perturbation "
+        "and parent manifest sealing; it is not isolated hash time or synchronized end-to-end latency. "
+        "Component maxima can come from different owners and must not be added. Inner CUDA sums batch event "
+        "intervals per owner. CUDA events include wrapper/launch gaps, not pure kernel busy time. "
+        "Outer and pack/D2H wall are nested in finalization. The enclosing owner span also includes snapshots "
+        "and first-arm target-checkpoint writing. Parent seal follows all owners.",
+        "",
     ]
-    for row in summary["versions"]:
-        values = [
-            row["sender_payload_checksum_format"],
-            row["receiver_skip_payload_hash"],
-            row["frame_bytes"],
-            row["canonical_bytes"],
-            row["changed_bytes"],
-        ]
-        values += [
-            row["accounting"][key]
-            for key in ("encoded_frame_bytes", "matrix_payload_bytes", "payload_file_bytes", "manifest_bytes")
-        ]
-        lines.append(f"|{row['version']}|" + "|".join(map(str, values)) + "|")
+    lines += _report_table(
+        ["Arm", "Version"] + ["Max " + name for name in compression_headers] + ["Parent seal s"],
+        (
+            [arm["name"], row["version"]]
+            + [_format(row["compression"]["owner_max"][key]) for key in compression_keys]
+            + [_format(row["compression"]["seal_s"])]
+            for arm, row in versions
+        ),
+    )
     lines += [
+        "## Receiver",
         "",
+        "Columns are independent rank maxima, not rank sums or additive phases. Outer CPU/plain-copy wall "
+        "includes raw copies and job submission/drain; worker sums remain in raw receipts. DE stream events "
+        "include zero-fill and nvCOMP enqueue/host gaps, not pure hardware busy time. Matrix apply includes "
+        "status checks but excludes raw copies and derived refresh. Pause uses completed scheduler "
+        "pause/resume timestamps. Disabled CUDA timing is unmeasured; plain LZ4 has no outer stage.",
+        "",
+    ]
+    lines += _report_table(
+        ["Arm", "Version"] + ["Max " + name for name in rank_headers] + ["Coordinator s"],
+        (
+            [arm["name"], row["version"]]
+            + [_format(row["receiver_max"][key]) for key in rank_keys]
+            + [_format(row["coordinator_s"])]
+            for arm, row in versions
+        ),
+    )
+    lines += _report_table(
+        [
+            "Arm",
+            "Version",
+            "Sender checksum",
+            "Receiver skips SHA",
+            "Inner frame bytes",
+            "Canonical bytes",
+            "Changed bytes",
+            "Inner compressed bytes",
+            "Matrix payload bytes",
+            "Payload file bytes",
+            "Manifest bytes",
+        ],
+        (
+            [
+                arm["name"],
+                row["version"],
+                row["sender_payload_checksum_format"],
+                row["receiver_skip_payload_hash"],
+                row["frame_bytes"],
+                row["canonical_bytes"],
+                row["changed_bytes"],
+            ]
+            + [
+                row["accounting"][key]
+                for key in ("encoded_frame_bytes", "matrix_payload_bytes", "payload_file_bytes", "manifest_bytes")
+            ]
+            for arm, row in versions
+        ),
+    )
+    lines += [
         "## Raw owner timings",
         "",
-        "|Version|Owner|GPU|Canonical bytes|Inner CUDA s|Outer CUDA s|Batch wall s|Outer wall s|Pack/D2H wall s|Owner total s|",
-        "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
+        "Layer assignments, owner counts and complete encoder metrics remain in `summary.json`.",
+        "",
     ]
-    for version in summary["versions"]:
-        for owner in version["compression"]["owners"]:
-            metrics = owner["raw_metrics"]
-            lines.append(
-                f"|{version['version']}|{metrics['owner']}|{metrics['gpu']}|{metrics['canonical_bytes']}|"
-                + "|".join(_format(owner[key]) for key in compression_keys)
-                + "|"
-            )
-    lines += [
-        "",
-        "## Raw rank timings",
-        "",
-        "Full receipts and encoder metrics are retained in `summary.json`.",
-        "",
-        "|Version|Engine|DP rank|Rank ID|Outer CPU s|Plain copy s|DE stream CUDA s|Matrix apply CUDA s|Prepare s|Pause s|",
-        "|---|---|---:|---|---:|---:|---:|---:|---:|---:|",
-    ]
-    for version in summary["versions"]:
-        for row in version["ranks"]:
-            identity = row["identity"]
-            lines.append(
-                f"|{version['version']}|{identity['engine_id']}|{identity['dp_rank']}|{identity['rank_id']}|"
-                + "|".join(_format(row[key]) for key in rank_keys)
-                + "|"
-            )
+    lines += _report_table(
+        ["Arm", "Version", "Owner", "GPU", "Canonical bytes"] + compression_headers,
+        (
+            [
+                arm["name"],
+                row["version"],
+                owner["raw_metrics"]["owner"],
+                owner["raw_metrics"]["gpu"],
+                owner["raw_metrics"]["canonical_bytes"],
+            ]
+            + [_format(owner[key]) for key in compression_keys]
+            for arm, row in versions
+            for owner in row["compression"]["owners"]
+        ),
+    )
+    lines += ["## Raw rank timings", "", "Complete rank receipts remain in `summary.json`.", ""]
+    lines += _report_table(
+        ["Arm", "Version", "Engine", "DP rank", "Rank ID"] + rank_headers,
+        (
+            [
+                arm["name"],
+                version["version"],
+                row["identity"]["engine_id"],
+                row["identity"]["dp_rank"],
+                row["identity"]["rank_id"],
+            ]
+            + [_format(row[key]) for key in rank_keys]
+            for arm, version in versions
+            for row in version["ranks"]
+        ),
+    )
     return "\n".join(lines) + "\n"
 
 
-def _write_report(output: Path):
+def _arm_report(output, arm, oracle_records):
     fixture = _read(output / "fixture" / "fixture.json")
-    codec = fixture["codec"]
+    codec = arm["codec"]
+    checksum = "none" if arm["skip_payload_hash"] else "sha256"
+    if fixture["codec"] != codec or fixture["arm"] != arm["name"]:
+        raise ValueError("Fixture codec/arm differs")
     sender_owners = fixture["sender_owners"]
     assignments = {owner["owner"]: owner for owner in sender_owners}
     if len(assignments) != len(sender_owners) or len(assignments) != fixture["sender_gpus"]:
         raise ValueError("Sender owner plan differs from the fixture")
     inventory = _read(output / "receiver" / "inventory.json")
+    if inventory["plan_digest"] != fixture["plan_digest"]:
+        raise ValueError("Receiver and fixture plans differ")
     original = [rank["identity"] for engine in inventory["descriptions"] for rank in engine["participants"]]
     identities = {identity["rank_id"]: identity for identity in original}
     routes = {(identity["engine_id"], identity["dp_rank"]) for identity in original}
@@ -1028,24 +1129,28 @@ def _write_report(output: Path):
             or publication["target_version"] != version
         ):
             raise ValueError("Fixture versions are not consecutive")
+        if publication["payload_checksum_format"] != checksum:
+            raise ValueError("Sender publication hash policy differs from arm")
         update = _read(output / "receiver" / f"update-{version}.json")
         if update["version"] != version or update["codec"] != codec:
             raise ValueError("Update version/codec differs")
         ranks = _rank_rows(update, publication, identities)
-        hash_policies = {rank["skip_payload_hash"] for rank in ranks}
-        if len(hash_policies) != 1:
-            raise ValueError("Receiver ranks have different payload hash policies")
+        if any(rank["skip_payload_hash"] != arm["skip_payload_hash"] for rank in ranks):
+            raise ValueError("Receiver hash policy differs from arm")
+        compression = _compression(row, codec, assignments)
+        if any(owner["raw_metrics"]["payload_checksum_format"] != checksum for owner in compression["owners"]):
+            raise ValueError("Sender owner hash policy differs from arm")
         selected = _generations(_read(output / "receiver" / f"generation-{version}.json"), routes, version)
         versions.append(
             {
                 "version": version,
                 "frame_bytes": publication["frame_bytes"],
-                "sender_payload_checksum_format": publication["payload_checksum_format"],
-                "receiver_skip_payload_hash": hash_policies.pop(),
+                "sender_payload_checksum_format": checksum,
+                "receiver_skip_payload_hash": arm["skip_payload_hash"],
                 "canonical_bytes": row["canonical_bytes"],
                 "changed_bytes": row["changed_bytes"],
                 "accounting": row["accounting"][codec],
-                "compression": _compression(row, codec, assignments),
+                "compression": compression,
                 "coordinator_s": _seconds(update["coordinator_s"]),
                 "receiver_max": {
                     key: _maximum(ranks, key)
@@ -1063,40 +1168,75 @@ def _write_report(output: Path):
         )
     if not versions:
         raise ValueError("No fixture updates")
-    oracle = _generations(_read(output / "oracle" / "target-generation.json"), routes)
+    oracle = _generations(oracle_records, routes)
     comparison = _compare(selected, oracle)
-    _save(output / "comparison.json", comparison)
-    if comparison["status"] != "PASS":
-        raise ValueError("Final selected generation differs from target checkpoint; see comparison.json")
-    summary = {
-        "status": "PASS",
-        "codec": codec,
+    return arm | {
+        "status": comparison["status"],
+        "plan_digest": fixture["plan_digest"],
+        "seed": fixture["seed"],
+        "rate": fixture["rate"],
+        "stream_id": fixture["stream_id"],
         "target_checkpoint": fixture["target_checkpoint"],
         "sender_count": fixture["sender_gpus"],
         "sender_owners": sender_owners,
         "comparison": comparison,
         "versions": versions,
     }
-    report = _markdown(summary)
+
+
+def _report_geometry(report):
+    return [
+        (row["version"], row["frame_bytes"], row["canonical_bytes"], row["changed_bytes"])
+        for row in report["versions"]
+    ]
+
+
+def _write_report(output: Path, arms):
+    oracle = _read(output / "oracle" / "target-generation.json")
+    reports = [_arm_report(output / "arms" / arm["name"], arm, oracle) for arm in arms]
+    reference = reports[0]
+    for arm in reports[1:]:
+        if any(
+            arm[key] != reference[key] for key in ("plan_digest", "seed", "rate", "target_checkpoint", "sender_owners")
+        ):
+            raise ValueError("Arms do not share the same target and sender ownership")
+        if _report_geometry(arm) != _report_geometry(reference):
+            raise ValueError("Arms do not share the same update geometry")
+    status = "PASS" if all(arm["status"] == "PASS" for arm in reports) else "FAILED"
+    summary = {"status": status, "arms": reports}
+    _save(
+        output / "comparison.json",
+        {
+            "status": status,
+            "arms": [{"name": arm["name"]} | arm["comparison"] for arm in reports],
+        },
+    )
     _save(output / "summary.json", summary)
-    (output / "REPORT.md").write_text(report)
+    (output / "REPORT.md").write_text(_markdown(summary))
+    if status != "PASS":
+        raise ValueError("Final selected generation differs from target checkpoint; see comparison.json")
     return summary
 
 
-def _phase(phase, args, directory, settings):
+def _phase(phase, args, directory, settings, arm):
     os.setsid()  # The parent forwards Ctrl-C once while this process drains its workers.
     # Process exit releases each phase's CUDA context before the next phase starts.
     os.environ.update(settings)
-    with (args.output / f"{directory}.log").open("x") as log:
+    stage_output = args.output / directory
+    stage_output.parent.mkdir(parents=True, exist_ok=True)
+    with stage_output.with_suffix(".log").open("x") as log:
         os.dup2(log.fileno(), 1)
         os.dup2(log.fileno(), 2)
         stage = argparse.Namespace(
             **(
                 vars(args)
                 | {
-                    "output": args.output / directory,
+                    "output": stage_output,
                     "inventory": args.output / "inventory" / "inventory.json",
-                    "fixture": args.output / "fixture" if phase in {"run", "oracle"} else None,
+                    "fixture": args.output / "arms" / arm["name"] / "fixture" if phase in {"run", "oracle"} else None,
+                    "target": args.output / "altered-checkpoint",
+                    "write_target": arm == args.arms[0],
+                    "arm_name": arm["name"],
                 }
             )
         )
@@ -1107,48 +1247,53 @@ def _phase(phase, args, directory, settings):
             asyncio.run(_run(stage, phase))
 
 
-def _end_to_end(args):
+def _run_phase(phase, args, directory, arm, records):
     settings = {
-        "GPU_DELTA_CODEC": configured_codec(),
-        "GPU_DELTA_TIMING": "1",  # This workload reports instrumented CUDA phases.
-        "GPU_DELTA_SKIP_PAYLOAD_HASH": "0" if args.verify_payload_hash else "1",
+        "GPU_DELTA_CODEC": arm["codec"],
+        "GPU_DELTA_TIMING": "1",
+        "GPU_DELTA_SKIP_PAYLOAD_HASH": "1" if arm["skip_payload_hash"] else "0",
     }
+    process = multiprocessing.get_context("spawn").Process(
+        target=_phase, args=(phase, args, directory, settings, arm), name=phase
+    )
+    record = {"phase": phase, "arm": arm["name"], "environment": settings, "status": "RUNNING"}
+    records.append(record)
+    _save(args.output / "workflow.json", {"arms": args.arms, "phases": records})
+    print(f"{phase}: {args.output / directory}", flush=True)
+    started = time.monotonic()
+    process.start()
+    record["pid"] = process.pid
+    _save(args.output / "workflow.json", {"arms": args.arms, "phases": records})
+    try:
+        process.join()
+    except KeyboardInterrupt:
+        if process.is_alive():
+            os.kill(process.pid, signal.SIGINT)
+        process.join()
+        raise
+    record.update(
+        exit_code=process.exitcode,
+        wall_s=time.monotonic() - started,
+        status="PASS" if process.exitcode == 0 else "FAILED",
+    )
+    _save(args.output / "workflow.json", {"arms": args.arms, "phases": records})
+    if process.exitcode != 0:
+        raise RuntimeError(f"{phase} failed; see {(args.output / directory).with_suffix('.log')}")
+
+
+def _end_to_end(args):
     records = []
-    for phase, directory in [
-        ("inventory", "inventory"),
-        ("fixture", "fixture"),
-        ("run", "receiver"),
-        ("oracle", "oracle"),
-    ]:
-        # Fixtures retain hashes; receiver verification is the measured policy.
-        phase_settings = settings | ({"GPU_DELTA_SKIP_PAYLOAD_HASH": "0"} if phase == "fixture" else {})
-        process = multiprocessing.get_context("spawn").Process(
-            target=_phase, args=(phase, args, directory, phase_settings), name=phase
-        )
-        record = {"phase": phase, "environment": phase_settings, "status": "RUNNING"}
-        records.append(record)
-        _save(args.output / "workflow.json", {"phases": records})
-        print(f"{phase}: {args.output / directory}", flush=True)
-        started = time.monotonic()
-        process.start()
-        record["pid"] = process.pid
-        _save(args.output / "workflow.json", {"phases": records})
-        try:
-            process.join()
-        except KeyboardInterrupt:
-            if process.is_alive():
-                os.kill(process.pid, signal.SIGINT)
-            process.join()
-            raise
-        record.update(
-            exit_code=process.exitcode,
-            wall_s=time.monotonic() - started,
-            status="PASS" if process.exitcode == 0 else "FAILED",
-        )
-        _save(args.output / "workflow.json", {"phases": records})
-        if process.exitcode != 0:
-            raise RuntimeError(f"{phase} failed; see {args.output / (directory + '.log')}")
-    _write_report(args.output)
+    _run_phase("inventory", args, Path("inventory"), args.arms[0], records)
+    inventory = _read(args.output / "inventory" / "inventory.json")
+    plan, _, _ = merge_plans(inventory["descriptions"])
+    args.mutation_rate = _calibrate(plan, args.seed, args.ratio)
+    _save(args.output / "arguments.json", {k: str(v) if isinstance(v, Path) else v for k, v in vars(args).items()})
+    for arm in args.arms:
+        directory = Path("arms") / arm["name"]
+        _run_phase("fixture", args, directory / "fixture", arm, records)
+        _run_phase("run", args, directory / "receiver", arm, records)
+    _run_phase("oracle", args, Path("oracle"), args.arms[0], records)
+    _write_report(args.output, args.arms)
     print((args.output / "REPORT.md").read_text(), flush=True)
 
 
@@ -1156,10 +1301,16 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--model", type=Path, required=True, help="Existing NVFP4 HF serving checkpoint")
     parser.add_argument("--output", type=Path, help="New output directory; generated automatically if omitted")
-    parser.add_argument("--codec", choices=CODECS, help="Override GPU_DELTA_CODEC (default: snappy-zstd)")
+    parser.add_argument("--codecs", choices=CODECS, nargs="+", default=list(CODECS), help="Sender/receiver codecs")
     parser.add_argument("--frame-bytes", type=int, default=FRAME_BYTES, help="Inner frame bytes; at most 4 MiB")
     parser.add_argument("--sender-gpus", type=int, help="Compression GPUs; defaults to all visible GPUs")
-    parser.add_argument("--verify-payload-hash", action="store_true", help="Enable receiver payload SHA verification")
+    parser.add_argument(
+        "--hashing",
+        choices=("on", "off"),
+        nargs="+",
+        default=["on", "off"],
+        help="Payload SHA policy on both sender and receiver",
+    )
     parser.add_argument("--versions", type=int, default=3)
     parser.add_argument("--seed", type=int, default=20261001)
     parser.add_argument(
@@ -1174,8 +1325,11 @@ def main():
     args.output = (
         args.output or Path("gpu-delta-" + datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S-%f"))
     ).resolve()
-    if args.codec is not None:
-        os.environ["GPU_DELTA_CODEC"] = args.codec
+    args.arms = [
+        {"name": f"{codec}-hash-{hashing}", "codec": codec, "skip_payload_hash": hashing == "off"}
+        for codec in dict.fromkeys(args.codecs)
+        for hashing in dict.fromkeys(args.hashing)
+    ]
     if not 0 < args.frame_bytes <= 4 << 20:
         parser.error("--frame-bytes must be positive and at most 4 MiB")
     if args.sender_gpus is not None and args.sender_gpus < 1:
