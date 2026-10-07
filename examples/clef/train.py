@@ -61,6 +61,7 @@ class Args(Tap):
     wandb_entity: str = ""
     prometheus_port: int = 9090
     distributed_timeout_seconds: int = 3600
+    forecastbench_path: str = ""
 
     def process_args(self) -> None:
         if not 0 <= self.multi_field_fraction <= 1:
@@ -126,6 +127,7 @@ def _build_optimizer(model: TrainableClefModel, args: Args) -> torch.optim.Optim
 @torch.no_grad()
 def _evaluate(
     model: TrainableClefModel, labels: list[LabeledRecord], pad_token_id: int, device: torch.device, output_dir: Path, step: int,
+    prefix: str = "validation",
 ) -> dict[str, float]:
     model.eval()
     local_rows = []
@@ -138,14 +140,22 @@ def _evaluate(
         if index < len(labels):
             local_rows.extend(prediction_rows(logits, [label]))
     rows = _gather_rows(local_rows)
-    if len(rows) != len(labels) or len({row["id"] for row in rows}) != len(labels):
+    expected = {(label.encoded.record_id, q.question_id) for label in labels for q in label.encoded.questions}
+    if len(rows) != len(expected) or {(row["id"], row["field_id"]) for row in rows} != expected:
         raise ValueError("validation coverage mismatch")
     if rank == 0:
-        destination = output_dir / "validation" / f"step_{step:07d}.jsonl"
+        destination = output_dir / prefix / f"step_{step:07d}.jsonl"
         destination.parent.mkdir(exist_ok=True)
         destination.write_text("".join(json.dumps(row) + "\n" for row in sorted(rows, key=lambda row: row["id"])))
     model.train()
-    return _metrics(rows, "validation")
+    metrics = _metrics(rows, prefix)
+    if prefix == "forecastbench":
+        # ForecastBench scores only the probability of Yes. Two-option summed
+        # Brier is exactly twice this binary convention.
+        if any(len(row["probabilities"]) != 2 or not row["hard_target"] for row in rows):
+            raise ValueError("ForecastBench requires binary resolved targets")
+        metrics[f"{prefix}/binary_brier"] = metrics[f"{prefix}/brier"] / 2
+    return metrics
 
 
 def _step_order(examples: list[DecisionExample], step: int, args: Args) -> list[int]:
@@ -187,7 +197,8 @@ def _train_step(
         losses.append(loss.detach())
         predictions = prediction_rows(logits, labels)
         rows.extend(predictions)
-        for label, fields, prediction in zip(labels, logits, predictions, strict=True):
+        for label, fields in zip(labels, logits, strict=True):
+            prediction = [row for row in predictions if row["id"] == label.encoded.record_id]
             trace.write(json.dumps({"step": step + 1, "phase": "joint" if model.train_backbone else "head_warmup",
                                     "input_ids": label.encoded.input_ids, "prediction": prediction,
                                     "fields": [{"question_id": q.question_id, "option_ids": q.option_ids,
@@ -212,6 +223,11 @@ def _prepare(args: Args) -> tuple[list[DecisionExample], list[DecisionExample], 
     if args.global_batch_size % (world * args.micro_batch_size) or len(train) % args.global_batch_size:
         raise ValueError("global batch must divide data and be divisible by world size * micro batch")
     config = args.as_dict()
+    if args.forecastbench_path:
+        forecast = read_examples(Path(args.forecastbench_path))
+        if not forecast or {e.record["id"] for e in forecast} & {e.record["id"] for e in train + validation}:
+            raise ValueError("empty ForecastBench or overlapping record IDs")
+        config.update({"forecastbench_questions": len(forecast), "forecastbench_sha256": file_sha256(Path(args.forecastbench_path))})
     config.update({"world_size": world, "train_questions": len(train), "validation_questions": len(validation),
                    "train_sha256": file_sha256(root / "train.jsonl"), "validation_sha256": file_sha256(root / "validation.jsonl"),
                    "total_steps": args.max_steps or (args.head_warmup_steps + args.epochs * len(train) // args.global_batch_size),
@@ -242,9 +258,11 @@ def main() -> None:
         validate_resume_config(saved["config"], config)
         start = saved["step"]
     labels = [encode_example(processor.tokenizer, example, args.max_length) for example in validation]
+    forecast_labels = [encode_example(processor.tokenizer, example, args.max_length)
+                       for example in read_examples(Path(args.forecastbench_path))] if args.forecastbench_path else []
     telemetry = Telemetry(Path(args.output_dir), args.run_name, config, args.wandb_project, args.wandb_entity, args.prometheus_port) if dist.get_rank() == 0 else None
     try:
-        _run(model, optimizer, train, labels, processor, head_config, config, start, args, device, telemetry)
+        _run(model, optimizer, train, labels, processor, head_config, config, start, args, device, telemetry, forecast_labels)
     except BaseException:
         # Collective shutdown can deadlock after one rank fails. Print the
         # original error and exit so torchrun can terminate the other ranks.
@@ -259,9 +277,12 @@ def main() -> None:
 def _run(
     model: TrainableClefModel, optimizer: torch.optim.Optimizer, train: list[DecisionExample], labels: list[LabeledRecord],
     processor: Any, head_config: dict[str, int], config: dict[str, Any], start: int, args: Args, device: torch.device, telemetry: Telemetry | None,
+    forecast_labels: list[LabeledRecord] | None = None,
 ) -> None:
     output = Path(args.output_dir)
     initial = _evaluate(model, labels, processor.tokenizer.pad_token_id, device, output, start)
+    if forecast_labels:
+        initial.update(_evaluate(model, forecast_labels, processor.tokenizer.pad_token_id, device, output, start, "forecastbench"))
     if telemetry is not None:
         telemetry.log(initial, start)
     trace_path = output / "traces" / f"rank_{dist.get_rank():04d}.jsonl"
@@ -274,6 +295,8 @@ def _run(
             completed = step + 1
             if completed % args.eval_interval == 0 or completed == config["total_steps"]:
                 metrics.update(_evaluate(model, labels, processor.tokenizer.pad_token_id, device, output, completed))
+                if forecast_labels:
+                    metrics.update(_evaluate(model, forecast_labels, processor.tokenizer.pad_token_id, device, output, completed, "forecastbench"))
             if telemetry is not None:
                 telemetry.log(metrics, completed)
             if completed % args.save_interval == 0 or completed == config["total_steps"]:

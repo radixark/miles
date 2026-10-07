@@ -205,3 +205,15 @@ barriers; use --distributed-timeout-seconds to change it.
 Gradient accumulation reduces every microbatch into sharded gradients to avoid retaining full-model FP32 gradient buffers. Loss scaling still preserves the configured global batch. Worker failures print their original traceback and exit without collective cleanup, allowing torchrun to stop peers.
 
 To extend a completed run, resume its native checkpoint with --max-steps set to the desired cumulative update count (for example, 2000). The deterministic epoch ordering continues from the saved update. Resume checks allow extending the horizon while retaining dataset and optimizer settings.
+# Separate ForecastBench validation
+
+Pass `--forecastbench-path /data/forecastbench.jsonl` to evaluate a frozen,
+resolved ForecastBench cohort at initialization and every `--eval-interval`
+updates. It is never included in training batches. Metrics and per-field traces
+are saved separately under `forecastbench/`; `forecastbench/binary_brier` uses
+the benchmark's binary convention, half the two-option summed Brier loss.
+Convert pinned Decision Index rows using `examples.clef.prepare_forecast_validation`.
+Keep source hashes and cohort provenance: historical evaluation does not certify
+that the backbone has never seen outcomes, or that a private published cohort is
+identical. The native multi-field loader evaluates every field and reports both
+case-weighted and field-weighted Brier.

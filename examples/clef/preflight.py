@@ -12,7 +12,7 @@ from tap import Tap
 from transformers import AutoProcessor, Qwen3_5Config, Qwen3_5ForConditionalGeneration, Qwen3_5TextConfig, Qwen3_5VisionConfig
 
 from examples.clef.checkpoint import load_checkpoint, save_checkpoint
-from examples.clef.data import DecisionExample, LabeledRecord, encode_example
+from examples.clef.data import DecisionExample, LabeledRecord, encode_example, read_examples
 from examples.clef.joint_schema_model import EncodedQuestion, EncodedRecord, JointSchemaHead, collate_records, load_release_model
 from examples.clef.model import TrainableClefModel, build_model, read_head_config, shard_model
 from examples.clef.objective import decision_loss
@@ -26,6 +26,8 @@ class Args(Tap):
     real_model: bool = False
     checkpoint_dir: str = ""
     checkpoint_object_store: bool = False
+    data_path: str = ""
+    allocate_optimizer: bool = False
 
 
 def _tiny_model(device: torch.device) -> tuple[TrainableClefModel, dict[str, int], LabeledRecord]:
@@ -57,6 +59,9 @@ def _real_model(args: Args, processor: Any, device: torch.device) -> tuple[Train
          "questions": {"answer": {"type": "choice", "instructions": "Choose the future outcome.", "criteria": {"A": "Heads", "B": "Tails"}}}},
         {"answer": {"A": 0.7, "B": 0.3}}, "coin",
     )
+    if args.data_path:
+        examples = read_examples(Path(args.data_path))
+        example = max(examples, key=lambda row: len(json.dumps(row.record)))
     return model, head_config, encode_example(processor.tokenizer, example, max_length=65536)
 
 
@@ -138,7 +143,10 @@ def main() -> None:
     processor = AutoProcessor.from_pretrained(args.model_dir, local_files_only=True)
     model, head_config, label = _real_model(args, processor, device) if args.real_model else _tiny_model(device)
     model = shard_model(model, dist.get_world_size())
+    optimizer = _build_optimizer(model, TrainArgs().from_dict({"model_dir": args.model_dir, "data_dir": "preflight", "output_dir": args.output_dir, "run_name": "preflight"})) if args.allocate_optimizer else None
     result = {"real_backbone": args.real_model, "world_size": dist.get_world_size(), "gradients": _check_gradients(model, label, device)}
+    result.update({"record_id": label.encoded.record_id, "input_tokens": len(label.encoded.input_ids),
+                   "fields": len(label.encoded.questions), "optimizer_allocated": optimizer is not None})
     output = Path(args.output_dir)
     if not args.real_model:
         result.update(_checkpoint_probe(model, head_config, label, processor, output, device, args.checkpoint_dir, args.checkpoint_object_store))

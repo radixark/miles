@@ -11,9 +11,8 @@ def validate_resume_config(saved: Mapping[str, Any], current: Mapping[str, Any])
         raise ValueError("resume cannot shorten the training horizon")
     operational = {
         "total_steps", "max_steps", "resume", "output_dir", "run_name", "wandb_project", "wandb_entity", "prometheus_port",
-        "model_dir", "data_dir", "head_config", "checkpoint_dir",
+        "model_dir", "data_dir", "head_config", "checkpoint_dir", "forecastbench_path",
     }
     for key, value in saved.items():
         if key not in operational and current.get(key) != value:
             raise ValueError(f"resume configuration mismatch: {key}")
-
