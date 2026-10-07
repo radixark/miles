@@ -324,14 +324,19 @@ def tool_rows(path: Path, rng: random.Random) -> list[dict[str, Any]]:
         positions = [i for i in range(1, len(conversation)) if conversation[i]["from"] == "assistant" and conversation[i-1]["from"] == "user"]
         if not positions:
             continue
-        position = rng.choice(positions)
-        gold = conversation[position]["value"].strip()
-        try:
-            called = call_names(gold) if gold.startswith("[") else []
-        except ValueError:
+        rng.shuffle(positions)
+        valid_turns = []
+        for position in positions:
+            gold = conversation[position]["value"].strip()
+            try:
+                called = call_names(gold) if gold.startswith("[") else []
+            except ValueError:
+                continue
+            if not set(called) - {tool["name"] for tool in tools}:
+                valid_turns.append((position, gold, called))
+        if not valid_turns:
             continue
-        if set(called) - {tool["name"] for tool in tools}:
-            continue
+        position, gold, called = valid_turns[0]
         selected = [t for t in tools if t["name"] in called]
         others = [t for t in tools if t["name"] not in called]
         rng.shuffle(others)
