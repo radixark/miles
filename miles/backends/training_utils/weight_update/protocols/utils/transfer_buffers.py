@@ -5,11 +5,11 @@ from concurrent.futures import Future
 import torch
 
 
-class StagingBuffers:
-    """Staging memory a p2p sender loads weights into before a transport writes them to the rollout engines.
+class TransferBuffers:
+    """Memory a p2p sender loads weights into and a transport writes them to the rollout engines from.
 
-    The protocol creates it once per process on the transport's staging device and registers each buffer with the
-    transport. For each load it calls `acquire`, loads into the buffer, starts the writes that read it, and hands
+    The protocol creates it once per process on the device the transport reads from and registers each buffer with
+    the transport. For each load it calls `acquire`, loads into the buffer, starts the writes that read it, and hands
     them to `release_after`. A buffer is handed out again only after every write reading it has returned.
     """
 
@@ -22,7 +22,7 @@ class StagingBuffers:
         register_memory: Callable[[torch.Tensor], None],
     ) -> None:
         self.buffer_bytes = buffer_bytes
-        self._buffers = [_allocate_staging_buffer(buffer_bytes, device) for _ in range(num_buffers)]
+        self._buffers = [_allocate_transfer_buffer(buffer_bytes, device) for _ in range(num_buffers)]
         for buffer in self._buffers:
             register_memory(buffer)
         self._pending_writes_by_buffer_index: list[list[Future]] = [[] for _ in self._buffers]
@@ -48,6 +48,6 @@ class StagingBuffers:
         self._pending_writes_by_buffer_index = [[] for _ in self._buffers]
 
 
-def _allocate_staging_buffer(buffer_bytes: int, device: torch.device) -> torch.Tensor:
+def _allocate_transfer_buffer(buffer_bytes: int, device: torch.device) -> torch.Tensor:
     # host buffers are pinned in place: a pageable copy first would stay resident on aarch64 hosts
     return torch.empty(buffer_bytes, dtype=torch.uint8, device=device, pin_memory=device.type == "cpu")
