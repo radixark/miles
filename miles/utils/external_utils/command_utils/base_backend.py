@@ -214,13 +214,12 @@ class BaseCommandBackend(ABC):
         multinode: bool = False,
         num_nodes: int | None = None,
         extra_args: str = "",
-        dir_dst: str = "/root",
+        dir_dst: str = "/root/models",
         hf_checkpoint: str | None = None,
         megatron_path: str = "/root/Megatron-LM",
     ):
         hf_checkpoint = hf_checkpoint or f"/root/models/{model_name}"
 
-        # TODO shall we make it in host-mapped folder and thus can cache it to speedup CI
         path_dst = f"{dir_dst}/{model_name}_torch_dist"
         with exclusive_path_lock(path_dst):
             tracker = Path(path_dst) / "latest_checkpointed_iteration.txt"
