@@ -200,8 +200,7 @@ class DeepSeekV41Indexer(MegatronModule):
         weights, _ = self.linear_weights_proj(x)
         weights = weights * (self.softmax_scale * self.index_n_heads**-0.5)
 
-        base_topk_fn = get_dsa_topk_fn("torch")
-        topk_fn = indexer_replay_manager.get_topk_fn(base_topk_fn, return_probs=False)
+        topk_fn = indexer_replay_manager.get_topk_fn(get_dsa_topk_fn("torch"), return_probs=False)
         idx, candidates = indexer_select(
             q,
             index_k,
@@ -214,7 +213,7 @@ class DeepSeekV41Indexer(MegatronModule):
             candidate_block_size=self.candidate_block_size,
             topk=self.index_topk,
             topk_fn=topk_fn,
-            allow_deep_select=topk_fn is base_topk_fn,
+            allow_deep_select=not indexer_replay_manager.enabled or indexer_replay_manager.stage == "fallthrough",
             query_chunk=INDEXER_QUERY_CHUNK,
         )
         return idx, candidates
