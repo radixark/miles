@@ -1,7 +1,6 @@
 import asyncio
 import logging
 import uuid
-from copy import deepcopy
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -70,7 +69,9 @@ class LinearTrajectory:
     but the agent may retry from an earlier point (e.g. re-running a tool call),
     in which case the session is rolled back at most one assistant step.
 
-    ``turn_args_history`` stores each successful generation's full resolved request.
+    ``turn_args_history`` stores each successful generation's full resolved request
+    by reference: every turn builds a fresh request and nothing mutates it once
+    the turn is committed, so no per-turn copy of its ``input_ids`` and ``messages``.
     Rollback slices it with the token checkpoints. Model rules decide which of
     these fields a continuation inherits or must keep unchanged.
 
@@ -235,7 +236,7 @@ class LinearTrajectory:
         # no longer match its own session.
         self.messages = self.messages + request_messages[len(self.messages) :] + [assistant_message]
         self.trajectory_token_ids.append(all_token_ids)
-        self.turn_args_history.append(deepcopy(turn_args or {}))
+        self.turn_args_history.append(turn_args or {})
         self.generated_checkpoint_message_ends.append(len(request_messages) + 1)
         self.num_assistant = len(self.generated_checkpoint_message_ends)
 
