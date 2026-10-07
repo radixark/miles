@@ -201,7 +201,7 @@ Environment set by the launcher: `SGLANG_ENABLE_DSV41_ENGRAM_HOST_TABLE=1` (with
 --train-memory-margin-bytes 3221225472
 ```
 
-Full-parameter training of the full model on 16 GPUs only fits because the optimizer state leaves the GPU. `--disk-offload` adds `--stream-optimizer-state-to-disk --offload-train-target disk --offload-train-disk-dir <dir>`; `--stream-optimizer-state-moment-dtype bf16` halves the streamed moments. Point `--offload-disk-dir` at node-local NVMe with ~1 TB free per node; the trainer's weight backups go to `MILES_WEIGHT_BACKUP_DIR` if set. `--colocate-memory-peak-device cpu` places the colocation peak on the host; on GB300 devboxes the container memory limit (about 626 GB) is below the GPU memory of the node, so keep host residency under ~560 GB per node. `--optimizer-offload` (CPU Adam) is the alternative when host memory allows.
+Full-parameter training of the full model on 16 GPUs only fits because the optimizer state leaves the GPU. `--disk-offload` adds `--stream-optimizer-state-to-disk --offload-train-target disk --offload-train-disk-dir <dir>`; `--stream-optimizer-state-moment-dtype bf16` halves the streamed moments. Point `--offload-disk-dir` at node-local NVMe with ~1 TB free per node. `--colocate-memory-peak-device cpu` places the colocation peak on the host; on GB300 devboxes the container memory limit (about 626 GB) is below the GPU memory of the node, so keep host residency under ~560 GB per node. `--optimizer-offload` (CPU Adam) is the alternative when host memory allows.
 
 If the run OOMs: lower `--max-tokens-per-gpu`, then add `--grad-reduce-bf16`; `--recompute full` with `--pp-size 2` is already part of the recommended launch.
 
