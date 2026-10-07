@@ -60,11 +60,11 @@ def execute(shared_outer: bool, virtual_experts: bool):
         "--rollout-shuffle "
         "--rm-type math "
         "--num-rollout 1 "
-        "--rollout-batch-size 4 "
-        "--n-samples-per-prompt 4 "
+        "--rollout-batch-size 8 "
+        "--n-samples-per-prompt 8 "
         "--rollout-max-response-len 1024 "
         "--rollout-temperature 1.0 "
-        "--global-batch-size 16 "
+        "--global-batch-size 32 "
     )
 
     perf_args = (
