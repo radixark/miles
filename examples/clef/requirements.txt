@@ -7,6 +7,7 @@ typed-argument-parser
 wandb
 prometheus-client
 polars
+pyarrow
 numpy
 fastapi
 uvicorn

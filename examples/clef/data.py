@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from examples.clef.joint_schema_model import EncodedRecord, encode_record
+from examples.clef.joint_schema_model import EncodedRecord, encode_record, question_options
 
 
 @dataclass(frozen=True)
@@ -71,10 +71,12 @@ def read_examples(path: Path) -> list[DecisionExample]:
     for row in rows:
         if "record" in row:
             example = DecisionExample(row["record"], row["targets"], row["source"])
+            if set(example.targets) != set(example.record["questions"]):
+                raise ValueError("prepared schema/target fields mismatch")
             for field, target in example.targets.items():
                 validate_distribution(list(target.values()))
                 question = example.record["questions"][field]
-                if question["type"] != "choice" or set(question["criteria"]) != set(target):
+                if {key for key, _ in question_options(question)} != set(target):
                     raise ValueError("prepared schema/target mismatch")
         else:
             example = convert_row(row)
@@ -88,6 +90,14 @@ def read_examples(path: Path) -> list[DecisionExample]:
 def augment_example(example: DecisionExample, rng: random.Random, multi_field_fraction: float) -> DecisionExample:
     record = copy.deepcopy(example.record)
     targets = copy.deepcopy(example.targets)
+    if "answer" not in record["questions"] or record["questions"]["answer"]["type"] != "choice":
+        # Named workflow fields keep their identities; order is independent of labels.
+        for question in record["questions"].values():
+            if question["type"] == "choice":
+                items = list(question["criteria"].items())
+                rng.shuffle(items)
+                question["criteria"] = dict(items)
+        return DecisionExample(record, targets, example.source)
     options = record["questions"]["answer"]["criteria"]
     old_keys = list(options)
     rng.shuffle(old_keys)

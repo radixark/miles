@@ -1,5 +1,42 @@
 # Clef-style calibration training
 
+## Broad decision curriculum
+
+`python -m examples.clef.build_broad_dataset` prepares 65,536 training cases
+and 4,096 separate validation cases: 30% rule-based business workflows, 15%
+ToolACE tool selection, 15% SNLI evidence inference, 15% CLINC intent routing,
+15% medium/hard SuperGPQA, 5% recorded human preferences, and 5% exact probability
+problems. Every case has one or more named choice, yes/no, or ordered-score fields.
+Targets and reference actions are outside the encoded input. The loader accepts
+all three field types and preserves semantic field names during augmentation.
+
+The builder requires the pinned source cache, SuperGPQA source, previous validation
+file (to preserve its SuperGPQA holdout), public JevBench directory, MMLU-Pro
+parquet, GPQA ZIP, and local Qwen tokenizer; see `--help`. It checks duplicate
+states/IDs/groups, target mappings, and actual full-schema tokenization through
+the serving encoder for every case, without truncation. The manifest records
+source revisions, checksums, field counts, lengths, exclusions and limitations.
+GPQA and MMLU-Pro are not direct training sources; exact normalized matches are
+excluded from SuperGPQA. JevBench and ForecastBench are not training sources.
+
+Synthetic workflows cover invoices, returns, security triage and agent audits
+with explicit policies, time-ordered evidence, and unrelated document distractors.
+Their labels are programmatically verifiable but realism is not established.
+Validation holds out policy combinations and presentation, not every generator
+family. Public-source validation holds out whole source examples/conversations.
+Exact text exclusion is not a semantic contamination guarantee across the entire
+Decision Index suite; audit the exact evaluation revision before claiming that.
+
+This is a starting curriculum, not a reproduction of Cloudflare's private data.
+SNLI supplies short inference rather than long contract inference; CLINC supplies
+intent routing rather than passage ranking; ToolACE supplies tool selection
+rather than argument generation; recorded preferences supply pairwise helpfulness
+rather than aesthetic judgment or consensus probabilities. Monitor these missing
+subskills separately. Cases differ in field counts; the trainer averages field
+loss within each case before batch averaging.
+
+## Model training
+
 This experimental Miles example attaches a freshly initialized Cloudflare Clef
 joint schema head to original Qwen3.8-27B weights. It first trains the head with
 the text backbone frozen, then fine-tunes the full text backbone and head. It
