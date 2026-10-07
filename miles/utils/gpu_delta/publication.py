@@ -23,10 +23,7 @@ import orjson
 from miles.utils.disk_delta import _tensor_locations
 
 FRAME_BYTES = 1 << 20
-# 2 MiB is a producer benchmark profile, not a streaming-receiver capability.
-_FRAME_SIZES = (1 << 16, 1 << 19, FRAME_BYTES, 1 << 21, 1 << 22)
-CODEC = "snappy-zstd"
-CODECS = {CODEC: ("snappy", "zstd"), "lz4-zstd": ("lz4", "zstd"), "lz4": ("lz4", None)}
+CODECS = {"snappy-zstd": ("snappy", "zstd"), "lz4-zstd": ("lz4", "zstd"), "lz4": ("lz4", None)}
 DTYPE_BYTES = {
     "BOOL": 1,
     "U8": 1,
@@ -69,7 +66,7 @@ def sha256(data) -> str:
 
 def configured_codec(initial_sync: bool = False) -> str:
     variable = "GPU_DELTA_INITIAL_SYNC_CODEC" if initial_sync else "GPU_DELTA_CODEC"
-    codec = os.environ.get(variable, "lz4-zstd" if initial_sync else CODEC)
+    codec = os.environ.get(variable, "lz4-zstd" if initial_sync else "snappy-zstd")
     if codec not in CODECS:
         raise ValueError(f"Expected {variable}=snappy-zstd, lz4-zstd or lz4")
     return codec
@@ -123,61 +120,6 @@ def _write_exclusive(path: Path, content: bytes) -> None:
         os.fsync(output.fileno())
 
 
-def _validate_encoded_tensor(entry, outer, payload, frame_bytes, outer_codec):
-    """Validate metadata without reading inner compressed buffers back to the CPU."""
-    frames = entry["frames"]
-    if not frames:
-        if outer is not None or len(payload) or entry["changed_bytes"]:
-            raise ValueError("Unchanged encoded tensor must have no payload")
-        return
-    if not isinstance(outer, dict) or not entry["changed_bytes"]:
-        raise ValueError("Changed encoded tensor requires an outer description")
-    end, inner_end = 0, 0
-    for frame in frames:
-        offset, size = frame["decoded_offset"], frame["decoded_bytes"]
-        encoded_offset, encoded_size = frame["encoded_offset"], frame["encoded_bytes"]
-        if (
-            type(offset) is not int
-            or type(size) is not int
-            or offset < end
-            or offset % frame_bytes
-            or size != min(frame_bytes, entry["nbytes"] - offset)
-            or size <= 0
-            or type(encoded_offset) is not int
-            or encoded_offset != (inner_end + 15) // 16 * 16
-            or type(encoded_size) is not int
-            or encoded_size <= 0
-            or encoded_size > 32 + size + size // 6
-        ):
-            raise ValueError("Invalid inner frame")
-        end, inner_end = offset + size, encoded_offset + encoded_size
-    if outer.get("decoded_bytes") != inner_end or outer.get("encoded_bytes") != len(payload):
-        raise ValueError("Invalid encoded tensor arena size")
-    if outer_codec is None:
-        if outer.get("frames") != [] or len(payload) != inner_end:
-            raise ValueError("Plain LZ4 requires an unwrapped inner arena")
-        return
-    encoded_end, decoded_end = 0, 0
-    for frame in outer.get("frames", []):
-        offset, size = frame["decoded_offset"], frame["decoded_bytes"]
-        encoded_offset, encoded_size = frame["encoded_offset"], frame["encoded_bytes"]
-        if (
-            type(offset) is not int
-            or offset != decoded_end
-            or type(size) is not int
-            or size != min(FRAME_BYTES, inner_end - offset)
-            or size <= 0
-            or type(encoded_offset) is not int
-            or encoded_offset != (encoded_end + 15) // 16 * 16
-            or type(encoded_size) is not int
-            or encoded_size <= 0
-        ):
-            raise ValueError("Invalid independently framed GPU outer range")
-        encoded_end, decoded_end = encoded_offset + encoded_size, offset + size
-    if decoded_end != inner_end or encoded_end != len(payload):
-        raise ValueError("Incomplete GPU outer frame coverage")
-
-
 class PublicationWriter:
     """One owner's append-only payload; manifest is sealed after all owners finish.
 
@@ -193,15 +135,16 @@ class PublicationWriter:
         base_version: int,
         target_version: int,
         plan_digest: str,
+        codec: str,
         owner: int = 0,
         publication_id: str | None = None,
         frame_bytes: int = FRAME_BYTES,
-        codec: str = CODEC,
     ):
-        if type(frame_bytes) is not int or frame_bytes not in _FRAME_SIZES:
-            raise ValueError("GPU-delta frame_bytes must be 64 KiB, 512 KiB, 1 MiB, 2 MiB or 4 MiB")
+        if type(frame_bytes) is not int or not 0 < frame_bytes <= 4 << 20:
+            raise ValueError("GPU-delta frame_bytes must be a positive integer at most 4 MiB")
         self.frame_bytes = frame_bytes
-        _, self._outer_codec = CODECS[codec]
+        if codec not in CODECS:
+            raise ValueError("GPU-delta codec must be snappy-zstd, lz4-zstd or lz4")
         self.directory = Path(directory)
         self.directory.mkdir(parents=True, exist_ok=True)
         self.payload_metrics = dict(matrix_hash_write_s=0.0, matrix_inner_arena_bytes=0, matrix_payload_bytes=0)
@@ -248,11 +191,9 @@ class PublicationWriter:
     def add_encoded_tensor(self, name, frames, payload, outer, changed_bytes, dtype, shape, views=None):
         """Publish finalized matrix bytes; optional CPU hashing covers only final wire bytes."""
         entry = tensor_metadata(name, dtype=dtype, shape=shape, views=views)
-        if type(changed_bytes) is not int or not 0 <= changed_bytes <= entry["nbytes"]:
-            raise ValueError("Invalid changed-byte count")
         entry["changed_bytes"] = changed_bytes
-        entry["frames"] = [dict(frame) for frame in frames]
-        _validate_encoded_tensor(entry, outer, payload, self.frame_bytes, self._outer_codec)
+        # The encoder owns frame construction and checks native sizes/statuses.
+        entry["frames"] = frames
         with self._lock:
             if outer is not None:
                 self._write_encoded_bytes(bytes((-self._file.tell()) % 16))

@@ -6,10 +6,10 @@ import copy
 import pytest
 
 from miles.backends.training_utils.weight_update.protocols.gpu_delta import session
-from miles.utils.gpu_delta.publication import CODEC, CODECS
+from miles.utils.gpu_delta.publication import CODECS
 
 
-def _setup(failure=None, failed_engine=1, codec=CODEC):
+def _setup(failure=None, failed_engine=1, codec="snappy-zstd"):
     events, clients, descriptions = [], [], []
     for engine in range(2):
         identities = [

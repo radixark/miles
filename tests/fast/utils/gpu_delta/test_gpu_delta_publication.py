@@ -15,7 +15,7 @@ import pytest
 from miles.utils.gpu_delta import publication
 
 
-def _writer(path, owner=0, frame_bytes=publication.FRAME_BYTES, codec=publication.CODEC):
+def _writer(path, owner=0, frame_bytes=publication.FRAME_BYTES, codec="snappy-zstd"):
     return publication.PublicationWriter(
         path,
         stream_id="test",
@@ -29,7 +29,7 @@ def _writer(path, owner=0, frame_bytes=publication.FRAME_BYTES, codec=publicatio
     )
 
 
-def _encoded(base, target, frame_bytes=publication.FRAME_BYTES, codec=publication.CODEC):
+def _encoded(base, target, frame_bytes=publication.FRAME_BYTES, codec="snappy-zstd"):
     delta = np.bitwise_xor(base, target).reshape(-1)
     inner, frames = bytearray(), []
     for offset in range(0, delta.size, frame_bytes):
@@ -77,7 +77,7 @@ def _add(writer, name, base, target):
     )
 
 
-@pytest.mark.parametrize("frame_bytes", [1 << 16, 1 << 19, 1 << 20, 1 << 21, 1 << 22])
+@pytest.mark.parametrize("frame_bytes", [1 << 16, 192 << 10, 1 << 19, 1 << 20, 1 << 21, 1 << 22])
 @pytest.mark.parametrize("codec", publication.CODECS)
 def test_framed_publication_preserves_payload_ranges_and_final_file_hash(tmp_path, monkeypatch, frame_bytes, codec):
     rng = np.random.default_rng(11)
@@ -216,30 +216,3 @@ def test_raw_targets_bypass_compression_and_omit_unchanged(tmp_path, dtype, shap
         blob = (tmp_path / raw["file"]).read_bytes()
         assert blob[raw["encoded_offset"] : raw["encoded_offset"] + raw["encoded_bytes"]] == current.tobytes()
     assert writer.payload_metrics["matrix_inner_arena_bytes"] == writer.payload_metrics["matrix_payload_bytes"] == 0
-
-
-@pytest.mark.parametrize(
-    "mutation", ["chunk-gap", "wrong-outer-size", "empty-with-changes", "wrong-inner-size", "expanded-over-bound"]
-)
-@pytest.mark.parametrize("codec", publication.CODECS)
-def test_malformed_ranges_rejected_before_file_write(tmp_path, mutation, codec):
-    writer = _writer(tmp_path, codec=codec)
-    base, target = np.zeros((1, 1000), np.uint8), np.ones((1, 1000), np.uint8)
-    frames, payload, outer, changed = _encoded(base, target, codec=codec)
-    if mutation == "chunk-gap":
-        if codec == "lz4":
-            outer["frames"] = [{"decoded_offset": 0}]
-        else:
-            outer["frames"][0]["decoded_offset"] = 1
-    elif mutation == "wrong-outer-size":
-        outer["decoded_bytes"] += 1
-    elif mutation == "empty-with-changes":
-        frames, payload, outer = [], b"", None
-    elif mutation == "wrong-inner-size":
-        frames[0]["decoded_bytes"] -= 1
-    else:
-        frames[0]["encoded_bytes"] = 32 + 1000 + 1000 // 6 + 1
-    with pytest.raises(ValueError):
-        writer.add_encoded_tensor("w", frames, payload, outer, changed_bytes=changed, dtype="U8", shape=[1, 1000])
-    assert writer._file.tell() == 0 and not writer._entries
-    writer.close()

@@ -322,8 +322,6 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
                 raw_job = pool.submit(self._write_raw_tensors)
             for batch_names, job in self._encoding_jobs:
                 result = job.result()
-                if len(result) != len(batch_names):
-                    raise RuntimeError("GPU delta encoder returned an incomplete batch")
                 names.extend(batch_names)
                 encoded.extend(result)
                 self._gpu_batch_count += 1

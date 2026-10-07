@@ -109,6 +109,7 @@ def _tiny_fixture(tmp_path, frame_bytes=bench.FRAME_BYTES):
         target_version=1,
         plan_digest=old_digest,
         frame_bytes=frame_bytes,
+        codec="snappy-zstd",
     )
     # Fixed raw Snappy fixture: length 16 followed by one 16-byte literal.
     inner = b"\x10\x3c" + mask.tobytes()
