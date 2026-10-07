@@ -100,7 +100,7 @@ def main() -> None:
     model_config = ModelConfig.from_server_args(server_args)
     reference_engine, p2p_engine = (_build_engine(model_config, parallelism) for _ in range(2))
     _assert_identical(reference_engine, p2p_engine, "at startup")
-    published = _published(p2p_engine)
+    published_locations_by_name = _get_published_locations(p2p_engine)
     model_replica = build_model_replica(RolloutEngineRankConfig(parallelism, server_args), str(args.model_dir))
     buffer_bytes = max(
         BUFFER_BYTES, max(layout.occupied_nbytes for layout in model_replica.transfer_buffer_param_layouts.values())
@@ -108,7 +108,7 @@ def main() -> None:
     buffer = torch.empty(buffer_bytes, dtype=torch.uint8, pin_memory=True)
 
     for version, fill in enumerate(POISON_FILLS, start=1):
-        hf_tensors = _quantize(args.fmt, "reload", _random_hf_tensors(model_config_json, version), quantizer_args)
+        hf_tensors = _quantize(args.fmt, "reload", _make_random_hf_tensors(model_config_json, version), quantizer_args)
 
         # sglang's own update, as WeightUpdater runs it; the DeepSeek loader runs post_load_weights itself
         with ParallelismContext(parallelism):
@@ -118,118 +118,17 @@ def main() -> None:
 
         with ParallelismContext(parallelism):
             DefaultModelLoader.restore_weights_before_loading(p2p_engine, CUDA)
-        assert _published(p2p_engine) == published, "restore moved published storage"
-        _write_p2p_update(model_replica, buffer, fill, hf_tensors, p2p_engine, published)
+        assert _get_published_locations(p2p_engine) == published_locations_by_name, "restore moved published storage"
+        _write_p2p_update(model_replica, buffer, fill, hf_tensors, p2p_engine, published_locations_by_name)
         with ParallelismContext(parallelism):
             post_load_weights(p2p_engine)
             DefaultModelLoader.postprocess_weights(p2p_engine, CUDA)
-        assert _published(p2p_engine) == published, "postprocess moved published storage"
+        assert (
+            _get_published_locations(p2p_engine) == published_locations_by_name
+        ), "postprocess moved published storage"
 
         _assert_identical(reference_engine, p2p_engine, f"after update {version}")
     print("PASS")
-
-
-def _write_p2p_update(
-    model_replica: ModelReplica,
-    buffer: torch.Tensor,
-    fill: int,
-    hf_tensors: list[tuple[str, torch.Tensor]],
-    engine: torch.nn.Module,
-    published: dict[str, tuple[int, int]],
-) -> None:
-    stager = ModelParamStager()
-    params_by_name = dict(engine.named_parameters())
-    for hf_tensor in hf_tensors:
-        ready_hf_tensors_by_param_name = stager.get_transfer_ready_params(
-            [hf_tensor],
-            param_mapper=model_replica.param_mapper,
-            params_dict=model_replica.transfer_buffer_param_layouts,
-        )
-        for param_names in pack_into_buffers(
-            ready_hf_tensors_by_param_name, model_replica.transfer_buffer_param_layouts, buffer.numel()
-        ):
-            buffer.fill_(fill)
-            param_bytes_by_name = model_replica.load_into(
-                buffer, param_names, [t for name in param_names for t in ready_hf_tensors_by_param_name[name]]
-            )
-            for name, param_bytes in param_bytes_by_name.items():
-                _write_raw(params_by_name[name], published[name], param_bytes)
-    stager.assert_all_done()
-
-
-def _write_raw(param: torch.nn.Parameter, published_location: tuple[int, int], param_bytes: torch.Tensor) -> None:
-    """Writes `param_bytes` at the published address, as Mooncake does."""
-    address, nbytes = published_location
-    assert param_bytes.numel() == nbytes, f"{param_bytes.numel()} bytes for a {nbytes}-byte published param"
-    storage = param.untyped_storage()
-    target = torch.empty(0, dtype=torch.uint8, device=CUDA).set_(storage, address - storage.data_ptr(), (nbytes,))
-    target.copy_(param_bytes)
-
-
-def _build_engine(model_config: ModelConfig, parallelism: RankParallelismConfig) -> torch.nn.Module:
-    with ParallelismContext(parallelism):
-        return DefaultModelLoader(LoadConfig(load_format="auto")).load_model(
-            model_config=model_config, device_config=DeviceConfig(device="cuda")
-        )
-
-
-def _published(engine: torch.nn.Module) -> dict[str, tuple[int, int]]:
-    return {
-        name: (param.data_ptr(), param.numel() * param.element_size()) for name, param in engine.named_parameters()
-    }
-
-
-def _assert_identical(engine_a: torch.nn.Module, engine_b: torch.nn.Module, when: str) -> None:
-    tensors_a, scalars_a = _module_state(engine_a)
-    tensors_b, scalars_b = _module_state(engine_b)
-    assert tensors_a.keys() == tensors_b.keys(), f"{when}: {sorted(tensors_a.keys() ^ tensors_b.keys())[:10]}"
-    differing = []
-    for key, tensor_a in tensors_a.items():
-        tensor_b = tensors_b[key]
-        if (tensor_a.shape, tensor_a.dtype) != (tensor_b.shape, tensor_b.dtype):
-            differing.append(
-                f"{key} {tuple(tensor_a.shape)} {tensor_a.dtype} vs {tuple(tensor_b.shape)} {tensor_b.dtype}"
-            )
-        elif not torch.equal(_as_bytes(tensor_a), _as_bytes(tensor_b.to(tensor_a.device))):
-            differing.append(key)
-    differing += [
-        f"{key} {scalars_a.get(key)!r} vs {scalars_b.get(key)!r}"
-        for key in scalars_a.keys() | scalars_b.keys()
-        if scalars_a.get(key) != scalars_b.get(key)
-    ]
-    assert not differing, f"{when}, {len(differing)} differ: {differing[:10]}"
-
-
-def _module_state(model: torch.nn.Module) -> tuple[dict[str, torch.Tensor], dict[str, object]]:
-    """Every tensor and scalar a forward may read: each module's params, buffers and tensor attributes (also inside
-    dicts, such as permute index caches), and each param's attributes."""
-    tensors, scalars = {}, {}
-    for module_name, module in model.named_modules():
-        prefix = f"{module_name}." if module_name else ""
-        for registry in (module._parameters, module._buffers):
-            tensors.update({prefix + key: value for key, value in registry.items() if value is not None})
-        for key, value in vars(module).items():
-            if isinstance(value, torch.Tensor):
-                tensors.setdefault(prefix + key, value)
-            elif isinstance(value, dict) and key not in ("_parameters", "_buffers"):
-                for sub_key, sub_value in value.items():
-                    if isinstance(sub_value, torch.Tensor):
-                        tensors.setdefault(f"{prefix}{key}[{sub_key}]", sub_value)
-            elif isinstance(value, bool | int | float | str) and not key.startswith("__"):
-                scalars[prefix + key] = value
-        for key, param in module._parameters.items():
-            if param is None:
-                continue
-            for attribute, value in vars(param).items():
-                if isinstance(value, torch.Tensor):
-                    tensors.setdefault(f"{prefix}{key}.{attribute}", value)
-                elif isinstance(value, bool | int | float | str):
-                    scalars[f"{prefix}{key}.{attribute}"] = value
-    return tensors, scalars
-
-
-def _as_bytes(tensor: torch.Tensor) -> torch.Tensor:
-    return tensor.detach().contiguous().reshape(-1).view(torch.uint8)
 
 
 def _write_checkpoint(config_dir: Path, model_dir: Path, fmt: str) -> dict:
@@ -253,21 +152,21 @@ def _write_checkpoint(config_dir: Path, model_dir: Path, fmt: str) -> dict:
     model_dir.mkdir(parents=True)
     (model_dir / "config.json").write_text(json.dumps(model_config_json, indent=2))
     # the checkpoint form needs no quantizer args
-    checkpoint = _quantize(fmt, "checkpoint", _random_hf_tensors(model_config_json, version=0), quantizer_args=None)
+    checkpoint = _quantize(
+        fmt, "checkpoint", _make_random_hf_tensors(model_config_json, version=0), quantizer_args=None
+    )
     save_file({name: tensor.contiguous().cpu() for name, tensor in checkpoint}, model_dir / "model.safetensors")
     return model_config_json
 
 
-def _random_hf_tensors(config: dict, version: int) -> list[tuple[str, torch.Tensor]]:
-    return [(name, _random_tensor(name, shape, dtype, version)) for name, (shape, dtype) in _hf_shapes(config).items()]
+def _make_random_hf_tensors(config: dict, version: int) -> list[tuple[str, torch.Tensor]]:
+    return [
+        (name, _make_random_tensor(name, shape, dtype, version))
+        for name, (shape, dtype) in _get_hf_shapes(config).items()
+    ]
 
 
-def _random_tensor(name: str, shape: tuple[int, ...], dtype: torch.dtype, version: int) -> torch.Tensor:
-    generator = torch.Generator(device=CUDA).manual_seed(zlib.crc32(name.encode()) * 131 + version)
-    return (torch.randn(shape, generator=generator, device=CUDA) * 0.02).to(dtype)
-
-
-def _hf_shapes(config: dict) -> dict[str, tuple[tuple[int, ...], torch.dtype]]:
+def _get_hf_shapes(config: dict) -> dict[str, tuple[tuple[int, ...], torch.dtype]]:
     hidden, heads = config["hidden_size"], config["num_attention_heads"]
     qk_nope, qk_rope, v_head = config["qk_nope_head_dim"], config["qk_rope_head_dim"], config["v_head_dim"]
     q_lora, kv_lora = config["q_lora_rank"], config["kv_lora_rank"]
@@ -318,23 +217,9 @@ def _hf_shapes(config: dict) -> dict[str, tuple[tuple[int, ...], torch.dtype]]:
     return shapes
 
 
-def _is_quantized(fmt: str, name: str, shape: tuple[int, ...]) -> bool:
-    if fmt == "bf16" or not name.endswith(".weight") or len(shape) != 2:
-        return False
-    if (
-        name in ("model.embed_tokens.weight", "lm_head.weight")
-        or "layernorm" in name
-        or name.endswith("mlp.gate.weight")
-        # GLM-5.2's indexer is interleaved, so miles' quantizers keep these two in bf16
-        or ".indexer.wk." in name
-        or ".indexer.weights_proj." in name
-    ):
-        return False
-    if fmt == "nvfp4":
-        return ".mlp.experts." in name
-    if fmt == "mxfp8":
-        return ".kv_b_proj." not in name
-    return True
+def _make_random_tensor(name: str, shape: tuple[int, ...], dtype: torch.dtype, version: int) -> torch.Tensor:
+    generator = torch.Generator(device=CUDA).manual_seed(zlib.crc32(name.encode()) * 131 + version)
+    return (torch.randn(shape, generator=generator, device=CUDA) * 0.02).to(dtype)
 
 
 def _quantize(
@@ -379,6 +264,130 @@ def _quantize(
                     )
     assert not gate_or_up_by_expert, f"gate or up without its pair: {list(gate_or_up_by_expert)[:4]}"
     return quantized
+
+
+def _is_quantized(fmt: str, name: str, shape: tuple[int, ...]) -> bool:
+    if fmt == "bf16" or not name.endswith(".weight") or len(shape) != 2:
+        return False
+    if (
+        name in ("model.embed_tokens.weight", "lm_head.weight")
+        or "layernorm" in name
+        or name.endswith("mlp.gate.weight")
+        # GLM-5.2's indexer is interleaved, so miles' quantizers keep these two in bf16
+        or ".indexer.wk." in name
+        or ".indexer.weights_proj." in name
+    ):
+        return False
+    if fmt == "nvfp4":
+        return ".mlp.experts." in name
+    if fmt == "mxfp8":
+        return ".kv_b_proj." not in name
+    return True
+
+
+def _build_engine(model_config: ModelConfig, parallelism: RankParallelismConfig) -> torch.nn.Module:
+    with ParallelismContext(parallelism):
+        return DefaultModelLoader(LoadConfig(load_format="auto")).load_model(
+            model_config=model_config, device_config=DeviceConfig(device="cuda")
+        )
+
+
+def _get_published_locations(engine: torch.nn.Module) -> dict[str, tuple[int, int]]:
+    return {
+        name: (param.data_ptr(), param.numel() * param.element_size()) for name, param in engine.named_parameters()
+    }
+
+
+def _write_p2p_update(
+    model_replica: ModelReplica,
+    buffer: torch.Tensor,
+    fill: int,
+    hf_tensors: list[tuple[str, torch.Tensor]],
+    engine: torch.nn.Module,
+    published_locations_by_name: dict[str, tuple[int, int]],
+) -> None:
+    stager = ModelParamStager()
+    params_by_name = dict(engine.named_parameters())
+    for hf_tensor in hf_tensors:
+        ready_hf_tensors_by_param_name = stager.get_transfer_ready_params(
+            [hf_tensor],
+            param_mapper=model_replica.param_mapper,
+            params_dict=model_replica.transfer_buffer_param_layouts,
+        )
+        for param_names in pack_into_buffers(
+            ready_hf_tensors_by_param_name, model_replica.transfer_buffer_param_layouts, buffer.numel()
+        ):
+            buffer.fill_(fill)
+            param_bytes_by_name = model_replica.load_into(
+                buffer, param_names, [t for name in param_names for t in ready_hf_tensors_by_param_name[name]]
+            )
+            for name, param_bytes in param_bytes_by_name.items():
+                _write_param_bytes(params_by_name[name], published_locations_by_name[name], param_bytes)
+    stager.assert_all_done()
+
+
+def _write_param_bytes(
+    param: torch.nn.Parameter, published_location: tuple[int, int], param_bytes: torch.Tensor
+) -> None:
+    """Writes `param_bytes` at the published address, as Mooncake does."""
+    address, nbytes = published_location
+    assert param_bytes.numel() == nbytes, f"{param_bytes.numel()} bytes for a {nbytes}-byte published param"
+    storage = param.untyped_storage()
+    target = torch.empty(0, dtype=torch.uint8, device=CUDA).set_(storage, address - storage.data_ptr(), (nbytes,))
+    target.copy_(param_bytes)
+
+
+def _assert_identical(engine_a: torch.nn.Module, engine_b: torch.nn.Module, when: str) -> None:
+    tensors_a, scalars_a = _collect_module_state(engine_a)
+    tensors_b, scalars_b = _collect_module_state(engine_b)
+    assert tensors_a.keys() == tensors_b.keys(), f"{when}: {sorted(tensors_a.keys() ^ tensors_b.keys())[:10]}"
+    differing = []
+    for key, tensor_a in tensors_a.items():
+        tensor_b = tensors_b[key]
+        if (tensor_a.shape, tensor_a.dtype) != (tensor_b.shape, tensor_b.dtype):
+            differing.append(
+                f"{key} {tuple(tensor_a.shape)} {tensor_a.dtype} vs {tuple(tensor_b.shape)} {tensor_b.dtype}"
+            )
+        elif not torch.equal(_view_as_bytes(tensor_a), _view_as_bytes(tensor_b.to(tensor_a.device))):
+            differing.append(key)
+    differing += [
+        f"{key} {scalars_a.get(key)!r} vs {scalars_b.get(key)!r}"
+        for key in scalars_a.keys() | scalars_b.keys()
+        if scalars_a.get(key) != scalars_b.get(key)
+    ]
+    assert not differing, f"{when}, {len(differing)} differ: {differing[:10]}"
+
+
+def _collect_module_state(model: torch.nn.Module) -> tuple[dict[str, torch.Tensor], dict[str, object]]:
+    """Every tensor and scalar a forward may read: each module's params, buffers and tensor attributes (also inside
+    dicts, such as permute index caches), and each param's attributes."""
+    tensors, scalars = {}, {}
+    for module_name, module in model.named_modules():
+        prefix = f"{module_name}." if module_name else ""
+        for registry in (module._parameters, module._buffers):
+            tensors.update({prefix + key: value for key, value in registry.items() if value is not None})
+        for key, value in vars(module).items():
+            if isinstance(value, torch.Tensor):
+                tensors.setdefault(prefix + key, value)
+            elif isinstance(value, dict) and key not in ("_parameters", "_buffers"):
+                for sub_key, sub_value in value.items():
+                    if isinstance(sub_value, torch.Tensor):
+                        tensors.setdefault(f"{prefix}{key}[{sub_key}]", sub_value)
+            elif isinstance(value, bool | int | float | str) and not key.startswith("__"):
+                scalars[prefix + key] = value
+        for key, param in module._parameters.items():
+            if param is None:
+                continue
+            for attribute, value in vars(param).items():
+                if isinstance(value, torch.Tensor):
+                    tensors.setdefault(f"{prefix}{key}.{attribute}", value)
+                elif isinstance(value, bool | int | float | str):
+                    scalars[f"{prefix}{key}.{attribute}"] = value
+    return tensors, scalars
+
+
+def _view_as_bytes(tensor: torch.Tensor) -> torch.Tensor:
+    return tensor.detach().contiguous().reshape(-1).view(torch.uint8)
 
 
 if __name__ == "__main__":
