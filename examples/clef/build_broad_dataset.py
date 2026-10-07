@@ -34,7 +34,7 @@ SOURCES = {
 COUNTS = {
     "train": {"workflow": 19661, "tool": 9830, "inference": 9830, "routing": 9830,
               "knowledge": 9831, "preference": 3277, "probability": 3277},
-    "validation": {"workflow": 1229, "tool": 614, "inference": 614, "routing": 614,
+    "validation": {"workflow": 1331, "tool": 512, "inference": 614, "routing": 614,
                    "knowledge": 615, "preference": 205, "probability": 205},
 }
 
