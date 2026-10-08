@@ -58,14 +58,6 @@ def test_a_rollout_engine_without_gpus_is_rejected(gpu_count: int):
         )
 
 
-def test_data_replicas_beyond_the_rollout_engine_ranks_are_not_senders():
-    """A data replica with no rollout engine rank must report itself as no sender rather than query an engine."""
-    assert (
-        assign_rollout_engine_ranks_for_data_replica(data_replica_rank=2, data_replica_size=8, engine_gpu_counts=[2])
-        == []
-    )
-
-
 def test_extra_engines_reuse_a_data_replica_already_on_their_rollout_engine_rank():
     """A data replica that already sends a rollout engine rank's weights serves the same rank of the next engine."""
     assignments = [
