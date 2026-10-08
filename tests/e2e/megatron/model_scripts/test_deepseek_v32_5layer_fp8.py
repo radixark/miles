@@ -35,14 +35,15 @@ def _args() -> ScriptArgs:
         num_gpus_per_node=4,
         from_bf16_ckpt=False,
         num_rollout=2,
+        rollout_batch_size=4,
+        n_samples_per_prompt=4,
+        global_batch_size=16,
         no_save=True,
         extra_args=(
             "--ci-test --check-weight-update-allow-quant-error --bf16 "
             "--use-rollout-routing-replay "
             "--skip-actor-forward-only "
             "--sglang-disable-shared-experts-fusion "
-            # A sanity check, not a convergence run: 4 prompts x 4 samples per step.
-            "--rollout-batch-size 4 --n-samples-per-prompt 4 --global-batch-size 16 "
             # TP2 doubles the per-rank activations of the script's TP4 token budget
             "--max-tokens-per-gpu 16384 "
         ),

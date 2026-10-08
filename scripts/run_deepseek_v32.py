@@ -36,6 +36,9 @@ class ScriptArgs(command_utils.ExecuteTrainConfig):
     model_local_dir: str = "/root/models"
     megatron_path: str = "/root/Megatron-LM"
     num_rollout: int = 3000
+    rollout_batch_size: int = 32
+    n_samples_per_prompt: int = 8
+    global_batch_size: int = 256
     no_save: bool = False
     rollout_mxfp8: bool = False
     rollout_fp8: bool = False
@@ -197,11 +200,11 @@ def _execute_train(args: ScriptArgs):
         "--rollout-shuffle "
         "--rm-type deepscaler "
         f"--num-rollout {args.num_rollout} "
-        "--rollout-batch-size 32 "
-        "--n-samples-per-prompt 8 "
+        f"--rollout-batch-size {args.rollout_batch_size} "
+        f"--n-samples-per-prompt {args.n_samples_per_prompt} "
         f"--rollout-max-response-len {100 if args.mode == 'debug_minimal' else 8192} "
         "--rollout-temperature 1 "
-        "--global-batch-size 256 "
+        f"--global-batch-size {args.global_batch_size} "
         "--balance-data "
     )
 
