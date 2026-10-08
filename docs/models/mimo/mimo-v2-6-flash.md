@@ -1,7 +1,7 @@
 ---
 title: MiMo-V2.6-Flash
 sidebarTitle: MiMo-V2.6
-description: Launch recipe for Xiaomi's MiMo-V2.6-Flash-RL (309B MoE, hybrid sliding-window attention) — Megatron bridge mode on a BF16 conversion, on two 8-GPU nodes.
+description: Launch recipe for Xiaomi's MiMo-V2.6-Flash-RL (309B MoE, hybrid sliding-window attention) — Megatron bridge mode on a BF16 conversion, on two 8×H200 nodes or one 8×B300 node.
 ---
 ## 1. Model Introduction
 

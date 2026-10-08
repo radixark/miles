@@ -108,7 +108,7 @@ def test_fused_qkv_matches_the_checkpoint_layout(args, is_swa):
     k = torch.randn(kv_heads * 192, HIDDEN)
     v = torch.randn(kv_heads * 128, HIDDEN)
     fused = fuse_qkv(q, k, v, MODEL["num_key_value_heads"])
-    for part, expected in zip(split_fused_qkv(fused, MODEL, is_swa), (q, k, v)):
+    for part, expected in zip(split_fused_qkv(fused, MODEL, is_swa), (q, k, v), strict=True):
         torch.testing.assert_close(part, expected, rtol=0, atol=0)
 
     name = "model.layers.1.self_attn.qkv_proj.weight"
@@ -163,8 +163,14 @@ def test_fused_qkv_ue8m0_scales_stack_per_shard(args, monkeypatch, is_swa):
     assert qweight.dtype == torch.float8_e4m3fn and scale.dtype == torch.int32 and scale.shape[0] == 4 * shard_rows
 
     # Each slice SGLang's loader cuts out equals what its load-time requant makes of that shard.
-    for bf16_shard, w_shard, s_shard in zip(bf16.chunk(4), qweight.chunk(4), scale.chunk(4)):
+    for bf16_shard, w_shard, s_shard in zip(bf16.chunk(4), qweight.chunk(4), scale.chunk(4), strict=True):
         ref_w, ref_s = quant_weight_ue8m0(bf16_shard, [128, 128])
         assert torch.equal(w_shard.view(torch.uint8), ref_w.view(torch.uint8))
         assert torch.equal(s_shard, transform_scale_ue8m0(ref_s, mn=shard_rows))
         torch.testing.assert_close(_dequant_ue8m0_rows(w_shard, s_shard), bf16_shard.float(), rtol=0.15, atol=0.02)
+
+
+if __name__ == "__main__":
+    import sys
+
+    sys.exit(pytest.main([__file__, "-v"]))

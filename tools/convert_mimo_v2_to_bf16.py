@@ -18,6 +18,7 @@ source layout and lists them in `ignored_layers`, so an engine runs them without
 quantization; the routed experts stay MXFP4 and the MTP layers keep their source format.
 
 python tools/convert_mimo_v2_to_bf16.py --model-dir <src> --save-dir <dst> [--layers 0,1,5,6] [--num-experts 32]
+    [--keep-quant [--bf16-linears]]
 """
 
 import json
@@ -307,4 +308,12 @@ if __name__ == "__main__":
     parser.add_argument("--device", type=str, default="cpu")
     args = parser.parse_args()
     layers = [int(x) for x in args.layers.split(",")] if args.layers else None
-    main(args.model_dir, args.save_dir, layers, args.num_experts, args.keep_quant, args.device, args.bf16_linears)
+    main(
+        args.model_dir,
+        args.save_dir,
+        layers,
+        args.num_experts,
+        keep_quant=args.keep_quant,
+        device=args.device,
+        bf16_linears=args.bf16_linears,
+    )
