@@ -1,5 +1,4 @@
 import logging
-import os
 
 from megatron.core.tokenizers.utils.build_tokenizer import vocab_size_with_padding as _vocab_size_with_padding
 from megatron.training.arguments import parse_args, validate_args
@@ -33,13 +32,20 @@ def set_default_megatron_args(args):
     if args.seq_length is None:
         args.seq_length = 4096
     args.max_position_embeddings = args.seq_length
-    # Notice(Jiajun): new megatron has removed this argument and use dp_reshardable instead of fully_shard
-    if os.getenv("DEPRECATED_MEGATRON_COMPATIBLE", "0") == "1":
-        args.dist_ckpt_save_pre_mcore_014 = True
     # Before 20260819, radixark/Megatron-LM pick torch gemm for router, which is fp32 x fp32 ->
     # fp32, and 20260819 convert the default to TE gemm which is bf16 x bf16 -> fp32. Result show
     # the TE one increase log prob diff so manually set back
     args.moe_router_use_torch_mm = True
+    # Miles always packs variable-length sequences. The rule lives here, not in training's
+    # post-processing, because the bridge provider reads args.variable_seq_lengths and the offline
+    # converter and the debug worker build their models through the same provider.
+    args.variable_seq_lengths = True
+    if getattr(args, "moe_token_dispatcher_type", None) == "allgather":
+        logger.info(
+            "--moe-token-dispatcher-type allgather does not support variable sequence length, "
+            "please use alltoall dispatcher instead."
+        )
+        args.moe_token_dispatcher_type = "alltoall"
     # compatible for megatron
     if hasattr(args, "rope_type") and args.rope_type is None:
         args.rope_type = "yarn" if args.multi_latent_attention else "rope"

@@ -1,6 +1,5 @@
 import argparse
 import os
-import pickle
 import shutil
 import time
 
@@ -9,33 +8,8 @@ import torch.distributed.checkpoint as dist_cp
 from transformers import AutoModelForCausalLM
 from typing_extensions import override
 
+from miles.backends.megatron_utils.torch_dist_checkpoint import WrappedStorageReader
 from miles.utils.hf_utils.config import load_hf_config
-
-
-class UnpicklerWrapper(pickle.Unpickler):
-    @override
-    def find_class(self, mod_name, name):
-        class DummyClass:
-            def __init__(self, *args, **kwargs):
-                pass
-
-        if mod_name.startswith("megatron") or mod_name.startswith("glm"):
-            return DummyClass
-        return super().find_class(mod_name, name)
-
-
-class WrappedStorageReader(dist_cp.FileSystemReader):
-    @override
-    def read_metadata(self):
-        path = self.fs.concat_path(self.path, ".metadata")
-        with self.fs.create_stream(path, "rb") as metadata_file:
-            metadata = UnpicklerWrapper(metadata_file).load()
-        if getattr(metadata, "storage_meta", None) is None:
-            metadata.storage_meta = dist_cp.StorageMeta()
-        metadata.storage_meta.load_id = self.load_id
-        if metadata.planner_data is None:
-            metadata.planner_data = {}
-        return metadata
 
 
 class EmptyStateDictLoadPlanner(dist_cp.default_planner.DefaultLoadPlanner):
@@ -107,6 +81,13 @@ def _strip_best_prefix(keys: list[str], target_keys: set[str]) -> tuple[str, int
     return best_prefix, best_match
 
 
+def _unloaded_parameters(hf_model: torch.nn.Module, loaded_keys: set[str]) -> list[str]:
+    """Parameters no checkpoint key wrote to. A tied alias such as lm_head.weight is covered by
+    whichever of its names the checkpoint carries."""
+    loaded = {id(tensor) for name, tensor in hf_model.state_dict(keep_vars=True).items() if name in loaded_keys}
+    return [name for name, parameter in hf_model.named_parameters() if id(parameter) not in loaded]
+
+
 def _convert_fsdp_to_hf(
     origin_hf_dir: str,
     input_dir: str,
@@ -137,6 +118,14 @@ def _convert_fsdp_to_hf(
         )
 
     missing, unexpected = hf_model.load_state_dict(model_state, strict=False)
+    # from_config initialized every parameter randomly; one the checkpoint did not overwrite would be
+    # exported as if it were trained.
+    if unloaded := _unloaded_parameters(hf_model, model_state.keys() - set(unexpected)):
+        raise ValueError(
+            f"{len(unloaded)} parameters have no weight in the checkpoint under prefix {best_prefix!r} "
+            f"and would be exported randomly initialized: {unloaded[:10]}. "
+            f"Unexpected checkpoint keys: {unexpected[:10]}"
+        )
     print(f"Missing keys: {missing}\nUnexpected keys: {unexpected}")
 
     os.makedirs(output_dir, exist_ok=True)
