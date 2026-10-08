@@ -9,7 +9,7 @@ register_cuda_ci(
     suite="stage-c-2-gpu-h200",
     labels=["fsdp"],
     hardware=["hopper", "blackwell"],
-)
+ num_gpus=2)
 register_rocm_ci(
     est_time=800,
     suite="nightly-stage-c-2-gpu-mi350",

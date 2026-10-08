@@ -16,7 +16,7 @@ from tests.e2e.megatron.model_scripts import test_deepseek_v4_flash_4layer_ci as
 
 register_cuda_ci(
     est_time=1000, suite="stage-c-4-gpu-h200", labels=["megatron", "model-scripts"], hardware=["hopper", "blackwell"]
-)
+, num_gpus=4)
 register_rocm_ci(est_time=700, suite="nightly-stage-c-4-gpu-mi350", labels=["megatron", "model-scripts"])
 
 register_ci_gate(metric_key="train/grad_norm")

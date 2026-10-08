@@ -11,7 +11,7 @@ register_cuda_ci(
     suite="stage-c-8-gpu-h100",
     labels=["ft-short"],
     hardware=["hopper", "blackwell"],
-)
+ num_gpus=8)
 
 _MODE: str = "kill_train__dp2_cp2__moe_5layer"
 

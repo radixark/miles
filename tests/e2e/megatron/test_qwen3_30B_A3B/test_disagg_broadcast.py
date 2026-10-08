@@ -6,7 +6,7 @@ from tests.e2e.megatron.test_qwen3_30B_A3B._common import CaseConfig, execute, p
 
 register_cuda_ci(
     est_time=1500, suite="stage-c-4-gpu-h200", labels=["megatron", "weight-update"], hardware=["hopper", "blackwell"]
-)
+, num_gpus=4)
 register_rocm_ci(est_time=900, suite="nightly-stage-c-4-gpu-mi350", labels=["megatron", "weight-update"])
 
 register_ci_gate(metric_key="train/grad_norm")

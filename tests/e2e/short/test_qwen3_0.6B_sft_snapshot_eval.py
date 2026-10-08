@@ -22,7 +22,7 @@ register_cuda_ci(
     suite="stage-c-2-gpu-h200",
     labels=["short", "eval", "megatron"],
     hardware=["hopper", "blackwell"],
-)
+ num_gpus=2)
 register_rocm_ci(est_time=300, suite="nightly-stage-c-2-gpu-mi350", labels=["short", "eval", "megatron"])
 
 MODEL_NAME = "Qwen3-0.6B"

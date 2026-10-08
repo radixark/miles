@@ -13,7 +13,7 @@ register_cuda_ci(
     suite="stage-b-2-gpu-h200",
     labels=["miles-plugin"],
     hardware=["hopper", "blackwell"],
-)
+ num_gpus=1)
 register_rocm_ci(est_time=30, suite="nightly-stage-c-2-gpu-mi350", labels=["miles-plugin"])
 
 

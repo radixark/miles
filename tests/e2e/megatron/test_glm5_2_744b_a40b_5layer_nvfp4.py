@@ -11,7 +11,7 @@ register_cuda_ci(
     suite="stage-c-8-gpu-b200",
     labels=["megatron", "model-scripts"],
     hardware=["blackwell"],
-)
+ num_gpus=8)
 
 MODEL_ORG = "Pinaster"
 MODEL_NAME = "GLM-5.2_5layer"

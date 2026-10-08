@@ -20,7 +20,7 @@ register_cuda_ci(
     suite="stage-b-2-gpu-h200",
     labels=["miles-plugin"],
     hardware=["hopper", "blackwell"],
-)
+ num_gpus=1)
 
 SIZES = (1000, 3000, 500)
 LR = 1e-3

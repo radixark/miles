@@ -10,7 +10,7 @@ register_cuda_ci(
     labels=["megatron", "weight-update", "fully-async"],
     hardware=["hopper", "blackwell"],
     disabled="Outdated and simple.",
-)
+ num_gpus=4)
 register_rocm_ci(
     est_time=800,
     suite="nightly-stage-c-4-gpu-mi350",

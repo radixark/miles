@@ -10,7 +10,7 @@ register_cuda_ci(
     suite="stage-c-8-gpu-h100",
     labels=["multi-lora"],
     hardware=["hopper"],
-)
+ num_gpus=8)
 
 
 def execute():

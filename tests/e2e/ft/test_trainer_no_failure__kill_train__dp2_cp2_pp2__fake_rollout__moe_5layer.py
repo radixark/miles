@@ -11,7 +11,7 @@ register_cuda_ci(
     suite="stage-c-8-gpu-h100",
     labels=["ft-short"],
     hardware=["hopper", "blackwell"],
-)
+ num_gpus=8)
 register_rocm_ci(est_time=900, suite="nightly-stage-c-8-gpu-mi350", labels=["ft-short"])
 
 _MODE: str = "kill_train__dp2_cp2_pp2__fake_rollout__moe_5layer"

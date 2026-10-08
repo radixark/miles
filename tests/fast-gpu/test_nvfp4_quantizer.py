@@ -5,7 +5,7 @@ register_cuda_ci(
     suite="stage-c-4-gpu-b200",
     labels=["precision"],
     hardware=["blackwell"],
-)
+ num_gpus=2)
 
 
 import json

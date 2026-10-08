@@ -3,7 +3,7 @@ from tests.e2e.torchtitan._common import CaseConfig, execute, prepare
 
 register_cuda_ci(
     est_time=1500, suite="stage-c-8-gpu-h200", labels=["torchtitan", "weight-update"], hardware=["hopper"]
-)
+, num_gpus=8)
 
 # disk-delta is the only transfer that reconciles the weight stream against the
 # checkpoint's own bytes, which makes it the one case that can catch a stream
