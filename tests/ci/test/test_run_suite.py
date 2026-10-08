@@ -499,7 +499,7 @@ class TestWorkflowScopeSeam:
         assert "matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}" in b200_workflow
         assert "fail-fast: false" in b200_workflow
         assert "max-parallel:" not in b200_workflow
-        assert "--test-file ${{ matrix.file }}" in b200_workflow
+        assert "--test-file ${{ matrix.shell_file }}" in b200_workflow
         assert "num_gpus: ${{ matrix.num_gpus }}" in b200_workflow
         assert "--auto-partition" not in b200_workflow
         assert "run_8_gpu:" in caller

@@ -51,9 +51,15 @@ jobs:
       has_tests: ${{ steps.plan.outputs.has_tests }}
       ref: ${{ steps.plan.outputs.ref }}
     steps:
-      - uses: actions/checkout@v4
+      - name: Check out the planner
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Check out the source snapshot as data
+        uses: actions/checkout@v4
         with:
           ref: ${{ inputs.ref }}
+          path: ci-source
           persist-credentials: false
       - uses: actions/setup-python@v5
         with:
@@ -63,8 +69,8 @@ jobs:
         env:
           PYTHONPATH: ${{ github.workspace }}
         run: |
-          echo "ref=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
-          python tests/ci/b200_plan.py \
+          echo "ref=$(git -C ci-source rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          python tests/ci/b200_plan.py --source-root ci-source \
             --cadence ${{ inputs.cadence }} \
             --labels ${{ inputs.raw_labels }} \
             --suites ${{ inputs.run_8_gpu && 'stage-c-8-gpu-b200' || '' }} ${{ inputs.run_4_gpu && 'stage-c-4-gpu-b200' || '' }} \
@@ -87,7 +93,7 @@ jobs:
       plan_already_resolved: true
       execute_command: >-
         python tests/ci/run_suite.py --hw cuda --suite ${{ matrix.suite }}
-        --test-file ${{ matrix.file }}
+        --test-file ${{ matrix.shell_file }}
         --cadence ${{ inputs.cadence }}
         --labels ${{ inputs.raw_labels }}
         ${{ inputs.match_all_labels && '--match-all-labels' || '' }}

@@ -1,4 +1,9 @@
 import json
+import os
+import shlex
+import subprocess
+import sys
+from pathlib import Path
 
 import pytest
 
@@ -63,3 +68,36 @@ def test_file_rerun_uses_minimum_blackwell_allocation():
     plan = plan_file_run([test], test.filename, "dev")
     assert plan["num_gpus"] == "2"
     assert json.loads(plan["runs_on"]) == ["b200", "2gpu"]
+
+
+def test_snapshot_plan_never_executes_source_python(tmp_path):
+    snapshot = tmp_path / "snapshot"
+    tests = snapshot / "tests/fast-gpu"
+    tests.mkdir(parents=True)
+    labels = snapshot / "tests/ci/labels.py"
+    labels.parent.mkdir()
+    labels.write_text('KNOWN_LABELS: dict = {"megatron": "test"}\nraise AssertionError("imported labels")\n')
+    (snapshot / "tests/__init__.py").write_text('raise AssertionError("imported snapshot")\n')
+    (tests / "test_one.py").write_text(
+        'register_cuda_ci(10, "stage-c-4-gpu-b200", labels=["megatron"], hardware=["blackwell"], num_gpus=1)\n'
+        'raise AssertionError("executed test while planning")\n'
+    )
+    output = tmp_path / "output"
+    root = Path(__file__).resolve().parents[3]
+    proc = subprocess.run(
+        [sys.executable, "-S", "-m", "tests.ci.b200_plan", "--source-root", str(snapshot), "--cadence", "regular", "--labels", "run-ci-megatron", "--suites", "stage-c-4-gpu-b200"],
+        cwd=root,
+        env={**os.environ, "GITHUB_OUTPUT": str(output)},
+        capture_output=True,
+        text=True,
+    )
+    assert proc.returncode == 0, proc.stderr
+    values = dict(line.split("=", 1) for line in output.read_text().splitlines())
+    assert values["has_tests"] == "true"
+    assert json.loads(values["matrix"])["include"][0]["num_gpus"] == 1
+
+
+def test_planned_filename_remains_one_literal_shell_argument():
+    test = registration("quoted'$(touch unwanted)", 1)
+    jobs = plan_jobs([test], ["stage-c-4-gpu-b200"], "regular", ["run-ci-megatron", "run-on-blackwell"])
+    assert shlex.split(jobs[0]["shell_file"]) == [test.filename]

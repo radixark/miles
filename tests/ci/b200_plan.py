@@ -2,9 +2,11 @@ import argparse
 import json
 import math
 import os
+import shlex
 
 from tests.ci.ci_policy import resolve_policy
-from tests.ci.ci_register import HWBackend, collect_tests, discover_ci_files
+from tests.ci.ci_register import HWBackend
+from tests.ci.file_run import collect_snapshot_tests
 from tests.ci.labels import KNOWN_LABELS
 from tests.ci.run_suite import filter_tests
 
@@ -30,6 +32,7 @@ def plan_jobs(registrations, suites, cadence, labels, match_all_labels=False):
             jobs.append(
                 {
                     "file": test.filename,
+                    "shell_file": shlex.quote(test.filename),
                     "suite": suite,
                     "num_gpus": test.required_gpus,
                     "runs_on": json.dumps(["b200", f"{test.required_gpus}gpu"]),
@@ -44,13 +47,14 @@ def plan_jobs(registrations, suites, cadence, labels, match_all_labels=False):
 
 def main():
     parser = argparse.ArgumentParser()
+    parser.add_argument("--source-root", default=".")
     parser.add_argument("--cadence", required=True)
     parser.add_argument("--labels", nargs="*", default=[])
     parser.add_argument("--suites", nargs="*", required=True)
     parser.add_argument("--match-all-labels", action="store_true")
     args = parser.parse_args()
     jobs = plan_jobs(
-        collect_tests(discover_ci_files(), sanity_check=True),
+        collect_snapshot_tests(args.source_root),
         args.suites,
         args.cadence,
         args.labels,
