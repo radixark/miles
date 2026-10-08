@@ -35,7 +35,8 @@ def _apply_bridge_runtime_config(provider, args: argparse.Namespace) -> None:
     Copying those would quietly break the model -- the bridge only logs a
     warning and keeps going, it does not fail. So we copy just the training,
     parallelism, memory, and numerics settings that really come from args. Put
-    new training flags here, not spread across the code.
+    new training flags here, not spread across the code. The MTP layers are the
+    one exception: a trainer builds only those its arguments name (apply_mtp_args).
     """
     # parallelism / sharding
     provider.tensor_model_parallel_size = args.tensor_model_parallel_size
@@ -48,10 +49,6 @@ def _apply_bridge_runtime_config(provider, args: argparse.Namespace) -> None:
     # loss / sequence handling
     provider.calculate_per_token_loss = args.calculate_per_token_loss  # CP>1 VL models assert this
     provider.variable_seq_lengths = args.variable_seq_lengths
-
-    # Match the non-bridge path: MTP must only train its own draft parameters.
-    if getattr(args, "enable_mtp_training", False):
-        provider.mtp_detach_heads = True
 
     # numerics (training infra, not model-defining)
     provider.attention_softmax_in_fp32 = args.attention_softmax_in_fp32
@@ -98,9 +95,10 @@ def _apply_bridge_runtime_config(provider, args: argparse.Namespace) -> None:
         provider.moe_aux_loss_coeff = args.moe_aux_loss_coeff
 
     # Imported here: test_bridge_mtp_detachment.py exec()s this function's AST in a bare namespace (no module names).
-    from miles.utils.megatron_bridge_utils import apply_dsa_backend_args
+    from miles.utils.megatron_bridge_utils import apply_dsa_backend_args, apply_mtp_args
 
     apply_dsa_backend_args(provider, args)
+    apply_mtp_args(provider, args)
 
 
 # Adapt from https://github.com/volcengine/verl/blob/c3b20575d2bc815fcccd84bddb4c0401fc4b632b/verl/models/llama/megatron/layers/parallel_linear.py#L82
@@ -233,12 +231,9 @@ def get_model_provider_func(
         assert config is None, "miles builds the config from args, so it expects config to be None"
         config = core_transformer_config_from_args(args)
 
-        # `enable_mtp_training` comes from miles' arg parser; megatron-only arg contexts
-        # (e.g. the run_megatron debug worker) won't have it, so default to False.
-        if getattr(args, "enable_mtp_training", False):
-            # Detach the MTP heads so RL MTP gradients do not flow into the shared
-            # output layer / embedding.
-            config.mtp_detach_heads = True
+        from miles.utils.megatron_bridge_utils import apply_mtp_args
+
+        apply_mtp_args(config, args)
 
         if args.spec is not None:
             transformer_layer_spec = import_module(args.spec)

@@ -176,3 +176,28 @@ def test_forward_only_omits_sampling_mask_for_callbacks_that_do_not_replay_sampl
     )
 
     assert "rollout_sampling_mask" not in callback_kwargs
+
+
+@pytest.mark.parametrize(
+    ("named", "built", "detached", "error"),
+    [
+        (None, None, False, None),
+        (1, 1, True, None),
+        # Megatron would add the untrained MTP layer's loss to every training forward.
+        (None, 1, True, "has 1 MTP layers, but its trainer names none"),
+        # Nothing would train: e.g. a bridge that builds no MTP layer under --enable-mtp-training.
+        (1, None, False, "has no MTP layers, but its trainer names 1"),
+        # The MTP loss would reach the shared trunk, embedding and output layer.
+        (1, 1, False, "MTP layers are not detached"),
+    ],
+)
+def test_check_mtp_layers(named, built, detached, error):
+    from miles.backends.megatron_utils.model import _check_mtp_layers
+
+    chunk = Namespace(config=Namespace(mtp_num_layers=built, mtp_detach_heads=detached))
+    args = Namespace(mtp_num_layers=named)
+    if error is None:
+        _check_mtp_layers(args, [chunk], "actor")
+    else:
+        with pytest.raises(AssertionError, match=error):
+            _check_mtp_layers(args, [chunk], "actor")

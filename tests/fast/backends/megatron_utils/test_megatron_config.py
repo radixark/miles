@@ -14,6 +14,7 @@ from miles.backends.megatron_utils import megatron_config as megatron_config_mod
 from miles.backends.megatron_utils.megatron_config import (
     MODEL_DEFINITION_ARGS,
     PER_POLICY_ARGS,
+    MegatronTrainerConfig,
     _has_megatron_checkpoint,
     _resolve_overrides,
     compute_trainer_args,
@@ -897,3 +898,51 @@ class TestOverrideWhitelistShape:
         ]
 
         assert misspelled == []
+
+
+class TestTrainerMtpLayers:
+    """Megatron adds the loss of any MTP layer to every training forward, so a trainer builds only the
+    MTP layers it trains; the model scripts pass --mtp-num-layers for checkpoint conversion."""
+
+    @staticmethod
+    def _trainer_args(*, role="actor", overrides=None, **args):
+        trainer = MegatronTrainerConfig(trainer_id=role, model_id=None, role=role, overrides=overrides or {})
+        return compute_trainer_args(_make_args(**args), trainer)
+
+    def test_an_actor_that_does_not_train_mtp_builds_no_mtp_layers(self):
+        assert self._trainer_args(mtp_num_layers=1, enable_mtp_training=False).mtp_num_layers == 0
+
+    def test_an_actor_that_trains_mtp_keeps_its_mtp_layers(self):
+        assert self._trainer_args(mtp_num_layers=1, enable_mtp_training=True).mtp_num_layers == 1
+
+    def test_a_critic_never_builds_mtp_layers(self):
+        assert self._trainer_args(role="critic", mtp_num_layers=1, enable_mtp_training=True).mtp_num_layers == 0
+
+    def test_a_per_trainer_override_follows_the_same_rule(self):
+        trainer = self._trainer_args(overrides={"mtp_num_layers": 1}, enable_mtp_training=False)
+
+        assert trainer.mtp_num_layers == 0
+
+    @pytest.mark.parametrize(
+        ("layout", "args", "error"),
+        [
+            (None, {"mtp_num_layers": 1}, None),
+            ("Et|tL", {"mtp_num_layers": 1}, None),
+            ("Et|tm|L", {"mtp_num_layers": 1, "enable_mtp_training": True}, None),
+            # The actor builds no MTP layer without MTP training.
+            ("Et|tm|L", {"mtp_num_layers": 1}, "places 1 MTP layers ('m'), but trainer 'actor' builds 0"),
+            ("Et|(t|)*2,m|L", {"mtp_num_layers": 1}, "places 1 MTP layers"),
+            # A critic never builds one, whatever the actor trains.
+            ("Et|tm|L", {"mtp_num_layers": 1, "enable_mtp_training": True, "use_critic": True}, "trainer 'critic'"),
+            ("Et|tmm|L", {"mtp_num_layers": 1, "enable_mtp_training": True}, "places 2 MTP layers"),
+        ],
+    )
+    def test_each_trainer_layout_places_the_mtp_layers_it_builds(self, layout, args, error):
+        from miles.backends.megatron_utils.arguments import validate_mtp_pipeline_layout
+
+        run_args = _make_args(pipeline_model_parallel_layout=layout, **({"enable_mtp_training": False} | args))
+        if error is None:
+            validate_mtp_pipeline_layout(run_args)
+        else:
+            with pytest.raises(AssertionError, match=re.escape(error)):
+                validate_mtp_pipeline_layout(run_args)

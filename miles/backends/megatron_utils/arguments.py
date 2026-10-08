@@ -63,3 +63,27 @@ def set_default_megatron_args(args):
         args.cp_comm_type = ["p2p"]
 
     return args
+
+
+def validate_mtp_pipeline_layout(args) -> None:
+    """Each trainer's pipeline layout places exactly the MTP layers that trainer builds.
+
+    A trainer builds MTP layers only to train them (compute_trainer_args): an actor's under
+    --enable-mtp-training, never a critic's. Checked while parsing, before any resource exists.
+    """
+    from megatron.core.transformer.enums import LayerType
+    from megatron.core.transformer.pipeline_parallel_layer_layout import PipelineParallelLayerLayout
+
+    from miles.backends.megatron_utils.megatron_config import compute_trainer_args, resolve_megatron_config
+
+    for trainer in resolve_megatron_config(args).trainers:
+        trainer_args = compute_trainer_args(args, trainer)
+        if trainer_args.pipeline_model_parallel_layout is None:
+            continue
+        stages = PipelineParallelLayerLayout.parse_str_to_list(trainer_args.pipeline_model_parallel_layout)
+        placed = sum(stage.count(LayerType.mtp) for stage in stages)
+        assert placed == trainer_args.mtp_num_layers, (
+            f"--pipeline-model-parallel-layout places {placed} MTP layers ('m'), but trainer {trainer.trainer_id!r} "
+            f"builds {trainer_args.mtp_num_layers}: a trainer builds MTP layers only to train them, an actor's "
+            f"under --enable-mtp-training and never a critic's"
+        )

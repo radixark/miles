@@ -24,6 +24,7 @@ from miles.utils.arguments import (
     _resolve_rollout_functions,
     _resolve_run_uuid,
     _validate_deploy_component,
+    _validate_mtp_args,
     _validate_rematerialize_param_from_master_weight,
     get_miles_extra_args_provider,
     miles_validate_args,
@@ -328,6 +329,32 @@ class TestExternalRolloutValidation:
         miles_validate_args(args)
 
         assert args.rollout_external is False
+
+
+class TestMtpArguments:
+    def _validate(self, extra):
+        parser = argparse.ArgumentParser()
+        get_miles_extra_args_provider()(parser)
+        args = parser.parse_args(extra + ["--num-rollout", "1"] + REQUIRED_ARGS)
+        miles_validate_args(args)
+        return args
+
+    def test_mtp_layers_without_mtp_training_still_describe_the_checkpoint(self):
+        """Checkpoint conversion reads them; each trainer derives the MTP layers it builds."""
+        assert self._validate(["--mtp-num-layers", "1"]).mtp_num_layers == 1
+
+    def test_mtp_training_needs_mtp_layers(self):
+        with pytest.raises(AssertionError, match="mtp_num_layers must be set"):
+            self._validate(["--enable-mtp-training"])
+
+    @pytest.mark.parametrize("lora", [{"lora_rank": 8}, {"multi_lora": True}])
+    def test_lora_cannot_train_mtp(self, lora):
+        args = argparse.Namespace(
+            enable_mtp_training=True, mtp_num_layers=1, multi_lora=False, lora_rank=0, lora_adapter_path=None
+        )
+        vars(args).update(lora)
+        with pytest.raises(AssertionError, match="LoRA does not support --enable-mtp-training"):
+            _validate_mtp_args(args)
 
 
 class TestEventDirectoryDefaults:

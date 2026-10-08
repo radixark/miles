@@ -334,8 +334,8 @@ contract, session behavior, and model-family selection.
 
 | Flag | Type | Default | Notes |
 |---|---|---|---|
-| `--mtp-num-layers` | int | `0` | Number of MTP layers in the checkpoint. |
-| `--enable-mtp-training` | flag | off | Train MTP alongside the policy. |
+| `--mtp-num-layers` | int | `None` | Number of MTP layers in the checkpoint. A trainer builds them only with `--enable-mtp-training`. |
+| `--enable-mtp-training` | flag | off | Train the MTP layers alongside the policy, detached from it. Without it a trainer builds no MTP layers. Not supported with LoRA. |
 | `--mtp-loss-scaling-factor` | float | `0.2` | Weight of MTP loss. |
 
 ### Fault tolerance

@@ -62,6 +62,13 @@ class TestShouldDisableForwardPreHook:
 _MODEL_MODULE = "miles.backends.megatron_utils.model"
 
 
+def _model_chunk():
+    # setup_model_and_optimizer reads the model config's MTP layers; a bare MagicMock claims some.
+    chunk = MagicMock()
+    chunk.config.mtp_num_layers = None
+    return chunk
+
+
 class TestSetupModelAndOptimizerLoraBranch:
     """Verify that LoRA-enabled actor + bridge mode routes to _setup_lora_model_via_bridge."""
 
@@ -97,6 +104,7 @@ class TestSetupModelAndOptimizerLoraBranch:
             override_opt_param_scheduler=False,
             lr_wsd_decay_style="linear",
             use_gloo_process_groups=False,
+            mtp_num_layers=None,
         )
 
     @patch(f"{_MODEL_MODULE}.get_optimizer_param_scheduler")
@@ -105,7 +113,7 @@ class TestSetupModelAndOptimizerLoraBranch:
     def test_lora_actor_bridge_routes_to_lora_setup(self, mock_lora_setup, mock_opt, mock_sched):
         from miles.backends.megatron_utils.model import setup_model_and_optimizer
 
-        mock_lora_setup.return_value = [MagicMock()]
+        mock_lora_setup.return_value = [_model_chunk()]
         mock_opt.return_value = MagicMock(param_groups=[])
         mock_sched.return_value = MagicMock()
 
@@ -122,7 +130,7 @@ class TestSetupModelAndOptimizerLoraBranch:
     def test_lora_critic_skips_lora_setup(self, mock_lora_setup, mock_provider, mock_get_model, mock_opt, mock_sched):
         from miles.backends.megatron_utils.model import setup_model_and_optimizer
 
-        mock_get_model.return_value = [MagicMock()]
+        mock_get_model.return_value = [_model_chunk()]
         mock_opt.return_value = MagicMock(param_groups=[])
         mock_sched.return_value = MagicMock()
 
@@ -140,7 +148,7 @@ class TestSetupModelAndOptimizerLoraBranch:
     def test_non_lora_skips_lora_setup(self, mock_lora_setup, mock_provider, mock_get_model, mock_opt, mock_sched):
         from miles.backends.megatron_utils.model import setup_model_and_optimizer
 
-        mock_get_model.return_value = [MagicMock()]
+        mock_get_model.return_value = [_model_chunk()]
         mock_opt.return_value = MagicMock(param_groups=[])
         mock_sched.return_value = MagicMock()
 
@@ -157,7 +165,7 @@ class TestSetupModelAndOptimizerLoraBranch:
     def test_non_inkling_lora_raw_mode_is_rejected(self, mock_lora_setup, mock_get_model, mock_opt, mock_sched):
         from miles.backends.megatron_utils.model import setup_model_and_optimizer
 
-        mock_get_model.return_value = [MagicMock()]
+        mock_get_model.return_value = [_model_chunk()]
         mock_opt.return_value = MagicMock(param_groups=[])
         mock_sched.return_value = MagicMock()
 
