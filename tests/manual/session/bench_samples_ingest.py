@@ -34,6 +34,7 @@ import json
 import multiprocessing
 import os
 import resource
+import signal
 import socket
 import tempfile
 import threading
@@ -188,12 +189,22 @@ async def _drive(args, url: str) -> tuple[list[float], list[float], dict[str, in
 def _watch_memory(floor_gb: float) -> None:
     import psutil
 
+    def abort(signum, frame):
+        raise SystemExit(3)
+
+    signal.signal(signal.SIGUSR1, abort)
+
     def watch() -> None:
         while True:
             available = psutil.virtual_memory().available
             if available < floor_gb * 1e9:
-                print(json.dumps({"aborted": f"node available memory {available / 1e9:.0f} GB < {floor_gb} GB"}))
-                os._exit(3)
+                print(
+                    json.dumps({"aborted": f"node available memory {available / 1e9:.0f} GB < {floor_gb} GB"}),
+                    flush=True,
+                )
+                # Exit on the main thread so main's finally stops servers and removes their payload.
+                os.kill(os.getpid(), signal.SIGUSR1)
+                return
             time.sleep(0.2)
 
     threading.Thread(target=watch, daemon=True).start()
@@ -227,6 +238,8 @@ def main() -> None:
     finally:
         for server in servers:
             server.terminate()
+        for server in servers:
+            server.join()
         os.unlink(payload_path)
     done = max(len(walls), 1)
     print(

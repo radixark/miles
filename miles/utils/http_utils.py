@@ -317,17 +317,23 @@ async def _post_buffer(url: str, payload: dict) -> np.ndarray:
 
 async def _connect_socket(loop: asyncio.AbstractEventLoop, host: str, port: int) -> socket.socket:
     try:
-        family, sock_type, proto, _, addr = (await loop.getaddrinfo(host, port, type=socket.SOCK_STREAM))[0]
-        sock = socket.socket(family, sock_type, proto)
-        sock.setblocking(False)
-        try:
-            await loop.sock_connect(sock, addr)
-        except BaseException:
-            sock.close()
-            raise
+        addresses = await loop.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+        for index, (family, sock_type, proto, _, addr) in enumerate(addresses):
+            try:
+                sock = socket.socket(family, sock_type, proto)
+                try:
+                    sock.setblocking(False)
+                    await loop.sock_connect(sock, addr)
+                except BaseException:
+                    sock.close()
+                    raise
+                return sock
+            except OSError:
+                if index == len(addresses) - 1:
+                    raise
+        raise OSError(f"no addresses for {host}:{port}")
     except OSError as e:
         raise httpx.ConnectError(f"connect to {host}:{port} failed: {e!r}") from e
-    return sock
 
 
 async def _send_and_read_reply_head(
