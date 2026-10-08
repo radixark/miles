@@ -9,6 +9,12 @@ from miles.utils.http_utils import GeneralHttpClientProvider
 logger = logging.getLogger(__name__)
 
 
+def _http_client() -> httpx.AsyncClient:
+    # Control requests cannot safely be replayed after an ambiguous transport failure. Use fresh
+    # connections so a client stall cannot race the server closing a previous request's idle socket.
+    return GeneralHttpClientProvider.client(reuse_connections=False)
+
+
 def _compute_headers(api_key: str | None) -> dict[str, str]:
     return {
         "Content-Type": "application/json; charset=utf-8",
@@ -18,7 +24,7 @@ def _compute_headers(api_key: str | None) -> dict[str, str]:
 
 async def probe_server_healthy(server_url: str, api_key: str | None, timeout: float = 5.0) -> bool:
     try:
-        response = await GeneralHttpClientProvider.client().get(
+        response = await _http_client().get(
             f"{server_url}/health_generate",
             headers=_compute_headers(api_key),
             timeout=timeout,
@@ -31,7 +37,7 @@ async def probe_server_healthy(server_url: str, api_key: str | None, timeout: fl
 async def wait_server_healthy(server_url, api_key):
     headers = _compute_headers(api_key)
 
-    http_client = GeneralHttpClientProvider.client()
+    http_client = _http_client()
     while True:
         try:
             response = await http_client.get(f"{server_url}/health_generate", headers=headers)
@@ -76,9 +82,7 @@ class SGLangApiClient:
         """
         url = f"{self.server_url}/{endpoint}"
         bound: dict[str, float] = {} if timeout is None else dict(timeout=timeout)
-        response = await GeneralHttpClientProvider.client().post(
-            url, json=payload or {}, headers=self._headers, **bound
-        )
+        response = await _http_client().post(url, json=payload or {}, headers=self._headers, **bound)
         try:
             response.raise_for_status()
         except httpx.HTTPStatusError as e:
@@ -101,7 +105,7 @@ class SGLangApiClient:
         Raises:
             httpx.HTTPError: If the request fails for any reason, including timeout.
         """
-        response = await GeneralHttpClientProvider.client().get(
+        response = await _http_client().get(
             f"{self.server_url}/health_generate",
             headers=self._headers,
             timeout=timeout,
@@ -138,7 +142,7 @@ class SGLangApiClient:
 
     async def get_remote_instance_transfer_engine_info(self, rank: int):
         # TODO: will be changed to `remote_instance_transfer_engine_info` when the sglang side is ready.
-        response = await GeneralHttpClientProvider.client().get(
+        response = await _http_client().get(
             f"{self.server_url}/get_remote_instance_transfer_engine_info",
             params={"rank": rank},
             headers=self._headers,
@@ -148,7 +152,7 @@ class SGLangApiClient:
         return response.json()["remote_instance_transfer_engine_info"]
 
     async def get_parallelism_info(self, rank: int):
-        response = await GeneralHttpClientProvider.client().get(
+        response = await _http_client().get(
             f"{self.server_url}/parallelism_config",
             params={"rank": rank},
             headers=self._headers,
@@ -158,7 +162,7 @@ class SGLangApiClient:
         return response.json()
 
     async def get_server_info(self):
-        response = await GeneralHttpClientProvider.client().get(
+        response = await _http_client().get(
             f"{self.server_url}/server_info",
             headers=self._headers,
             timeout=5.0,
@@ -246,9 +250,7 @@ class SGLangApiClient:
         last_message = None
         for _ in range(60):
             try:
-                response = await GeneralHttpClientProvider.client().get(
-                    f"{self.server_url}/flush_cache", headers=self._headers
-                )
+                response = await _http_client().get(f"{self.server_url}/flush_cache", headers=self._headers)
                 if response.status_code == 200:
                     break
                 last_message = response.text
@@ -262,9 +264,7 @@ class SGLangApiClient:
     async def get_weight_version(self):
         # new sglang change api from /get_weight_version to /model_info
         for endpoint in ("/model_info", "/get_weight_version"):
-            response = await GeneralHttpClientProvider.client().get(
-                f"{self.server_url}{endpoint}", headers=self._headers
-            )
+            response = await _http_client().get(f"{self.server_url}{endpoint}", headers=self._headers)
             if response.status_code == 200:
                 return response.json()["weight_version"]
         response.raise_for_status()
@@ -388,7 +388,7 @@ class SGLangApiClient:
         )
 
     async def pause_generation(self, mode: str = "retract"):
-        response = await GeneralHttpClientProvider.client().post(
+        response = await _http_client().post(
             f"{self.server_url}/pause_generation",
             json={"mode": mode},
             headers=self._headers,
@@ -397,9 +397,7 @@ class SGLangApiClient:
         return response
 
     async def continue_generation(self):
-        response = await GeneralHttpClientProvider.client().post(
-            f"{self.server_url}/continue_generation", json={}, headers=self._headers
-        )
+        response = await _http_client().post(f"{self.server_url}/continue_generation", json={}, headers=self._headers)
         response.raise_for_status()
         return response
 
@@ -436,7 +434,7 @@ class SGLangApiClient:
         with_stack: bool | None = None,
         record_shapes: bool | None = None,
     ):
-        response = await GeneralHttpClientProvider.client().post(
+        response = await _http_client().post(
             f"{self.server_url}/start_profile",
             json={
                 "output_dir": output_dir,
@@ -453,8 +451,6 @@ class SGLangApiClient:
         return response
 
     async def stop_profile(self):
-        response = await GeneralHttpClientProvider.client().post(
-            f"{self.server_url}/stop_profile", json={}, headers=self._headers
-        )
+        response = await _http_client().post(f"{self.server_url}/stop_profile", json={}, headers=self._headers)
         response.raise_for_status()
         return response

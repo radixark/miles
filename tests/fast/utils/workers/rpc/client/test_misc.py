@@ -250,7 +250,7 @@ class TestRpcTransport:
             return httpx.Response(200, json={"status": "ok"}, request=request)
 
         client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
-        monkeypatch.setitem(GeneralHttpClientProvider._clients, asyncio.get_running_loop(), client)
+        monkeypatch.setitem(GeneralHttpClientProvider._clients, (asyncio.get_running_loop(), True), client)
         transport = RpcTransport(
             server_url="http://testserver",
             http_client=None,

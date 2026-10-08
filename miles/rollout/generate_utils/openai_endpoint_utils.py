@@ -69,7 +69,9 @@ class OpenAIEndpointTracer:
         samples_wire_fields = COMPUTED_FIELDS_V2 if use_v2 else COMPUTED_FIELDS
         if should_return_sampling_mask(args, sampling_params, evaluation=evaluation):
             samples_wire_fields += ROLLOUT_SAMPLING_MASK_FIELDS
-        response = await post(f"{session_url}/sessions", body.model_dump(exclude_none=True), action="post")
+        response = await post(
+            f"{session_url}/sessions", body.model_dump(exclude_none=True), action="post", reuse_connections=False
+        )
         session_id = response["session_id"]
         return OpenAIEndpointTracer(
             router_url=session_url,
@@ -96,7 +98,7 @@ class OpenAIEndpointTracer:
         finally:
             try:
                 await asyncio.wait_for(
-                    post(self.base_url, {}, action="delete"),
+                    post(self.base_url, {}, action="delete", reuse_connections=False),
                     timeout=_SESSION_REQUEST_TIMEOUT,
                 )
             except Exception as e:

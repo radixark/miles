@@ -169,9 +169,8 @@ def terminate_process(process: multiprocessing.Process, timeout: float = 1.0) ->
         process.join()
 
 
-# Expire idle pooled connections before the server's keep-alive closes them. uvicorn (SGLang, the Miles
-# router, the session server) closes idle connections after 5s, which equals httpx's default expiry, so a
-# request sent on a connection idle for ~5s races the server's close and fails with httpx.ReadError.
+# Retire idle connections ahead of uvicorn's default 5s keep-alive to reduce close races.
+# This margin cannot protect a request stalled after its connection was selected.
 KEEPALIVE_EXPIRY_SECONDS = 2.0
 
 
@@ -183,19 +182,21 @@ class GeneralHttpClientProvider:
     _LIMITS = httpx.Limits(
         max_connections=None, max_keepalive_connections=None, keepalive_expiry=KEEPALIVE_EXPIRY_SECONDS
     )
+    _NON_REUSING_LIMITS = httpx.Limits(max_connections=None, max_keepalive_connections=0)
 
     # TODO: entries are never evicted and the clients are never aclose()d, so a caller that keeps
     # creating event loops (repeated asyncio.run) leaks one client and its keep-alive sockets per
     # loop. Today's call sites use a bounded number of loops; add eviction before that stops holding.
-    _clients: dict[asyncio.AbstractEventLoop, httpx.AsyncClient] = {}
+    _clients: dict[tuple[asyncio.AbstractEventLoop, bool], httpx.AsyncClient] = {}
 
     @classmethod
-    def client(cls) -> httpx.AsyncClient:
-        loop = asyncio.get_running_loop()
-        client = cls._clients.get(loop)
+    def client(cls, *, reuse_connections: bool = True) -> httpx.AsyncClient:
+        key = (asyncio.get_running_loop(), reuse_connections)
+        client = cls._clients.get(key)
         if client is None:
-            client = httpx.AsyncClient(timeout=cls._TIMEOUT, limits=cls._LIMITS)
-            cls._clients[loop] = client
+            limits = cls._LIMITS if reuse_connections else cls._NON_REUSING_LIMITS
+            client = httpx.AsyncClient(timeout=cls._TIMEOUT, limits=limits)
+            cls._clients[key] = client
         return client
 
 
@@ -279,10 +280,9 @@ async def wait_http_ok(url: str, *, json_payload=None, timeout: float = 180.0, r
 
 async def post_bytes_no_retry(url: str, payload: dict, *, timeout: float) -> bytes:
     """Perform one raw-bytes POST with a total timeout."""
-    assert _http_client is not None, "init_http_client() must run before post_bytes_no_retry()"
 
     async def _do() -> bytes:
-        response = await _http_client.post(url, json=payload)
+        response = await GeneralHttpClientProvider.client(reuse_connections=False).post(url, json=payload)
         if not (200 <= response.status_code < 300):
             raise RuntimeError(f"POST {url} failed with {response.status_code}: {response.text}")
         return response.content
@@ -372,7 +372,19 @@ def _rollout_client() -> httpx.AsyncClient:
 
 
 # TODO may generalize the name since it now contains http DELETE/GET etc (with retries and remote-execution)
-async def post(url, payload, max_retries=60, action="post", headers=None):
+async def post(url, payload, max_retries=60, action="post", headers=None, *, reuse_connections: bool = True):
+    # Session control calls use the local non-reusing client, like sample collection. The
+    # distributed actors' pools remain dedicated to generation traffic.
+    if not reuse_connections:
+        return await _post(
+            GeneralHttpClientProvider.client(reuse_connections=False),
+            url,
+            payload,
+            max_retries,
+            action=action,
+            headers=headers,
+        )
+
     # If distributed mode is enabled and actors exist, dispatch via Ray.
     if _distributed_post_enabled and _post_actors:
         try:

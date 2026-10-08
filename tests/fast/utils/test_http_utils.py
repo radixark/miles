@@ -494,7 +494,15 @@ class TestWaitTcpReadyAsync:
 
 
 class TestGeneralHttpClientProvider:
-    """The provider hands out one httpx client per event loop."""
+    """The provider hands out one httpx client per event loop and reuse policy."""
+
+    async def test_non_reusing_requests_have_a_separate_shared_client(self):
+        pooled = GeneralHttpClientProvider.client()
+        fresh = GeneralHttpClientProvider.client(reuse_connections=False)
+
+        assert fresh is GeneralHttpClientProvider.client(reuse_connections=False)
+        assert fresh is not pooled
+        assert fresh.timeout == pooled.timeout
 
     async def test_the_same_loop_gets_the_same_client(self):
         """Two calls on one loop must share one connection pool."""
@@ -534,7 +542,8 @@ class TestGeneralHttpClientProvider:
         assert GeneralHttpClientProvider._LIMITS.max_connections is None
         assert GeneralHttpClientProvider._LIMITS.max_keepalive_connections is None
 
-    async def test_more_requests_than_httpxs_default_cap_reach_the_server_at_once(self):
+    @pytest.mark.parametrize("reuse_connections", [True, False])
+    async def test_more_requests_than_httpxs_default_cap_reach_the_server_at_once(self, reuse_connections):
         """101 engines must all arrive before the caller joins the collective, and httpx caps
         connections at 100 by default."""
         num_requests = 101
@@ -542,7 +551,7 @@ class TestGeneralHttpClientProvider:
         server = _BlockingHttpServer(arrived)
 
         try:
-            client = GeneralHttpClientProvider.client()
+            client = GeneralHttpClientProvider.client(reuse_connections=reuse_connections)
             requests = [asyncio.create_task(client.get(server.url)) for _ in range(num_requests)]
 
             deadline = time.monotonic() + 60

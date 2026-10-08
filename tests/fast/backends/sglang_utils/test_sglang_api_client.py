@@ -36,7 +36,7 @@ class _Recorder:
 
     def install(self, monkeypatch, responses: list[_FakeResponse] | None = None):
         self.responses = list(responses or [])
-        monkeypatch.setattr(GeneralHttpClientProvider, "client", lambda: self)
+        monkeypatch.setattr(GeneralHttpClientProvider, "client", lambda **kwargs: self)
 
     async def get(self, url, **kwargs):
         return self._record("get", url, kwargs)
@@ -165,7 +165,7 @@ async def test_destroy_weights_update_group_swallows_request_errors(client, monk
         async def post(self, url, **kwargs):
             raise httpx.ConnectError("no such group")
 
-    monkeypatch.setattr(GeneralHttpClientProvider, "client", lambda: _Raising())
+    monkeypatch.setattr(GeneralHttpClientProvider, "client", lambda **kwargs: _Raising())
 
     assert await client.destroy_weights_update_group("group-0") is None
 
@@ -208,7 +208,7 @@ async def test_flush_cache_retries_a_refused_connection(client, monkeypatch):
             return _FakeResponse()
 
     serving = _RefusingThenServing()
-    monkeypatch.setattr(GeneralHttpClientProvider, "client", lambda: serving)
+    monkeypatch.setattr(GeneralHttpClientProvider, "client", lambda **kwargs: serving)
     monkeypatch.setattr(asyncio, "sleep", _noop_sleep)
 
     await client.flush_cache()
@@ -355,7 +355,7 @@ class TestProbeServerHealthy:
             async def get(self, url, **kwargs):
                 raise httpx.ConnectError("connection refused")
 
-        monkeypatch.setattr(GeneralHttpClientProvider, "client", lambda: _Refusing())
+        monkeypatch.setattr(GeneralHttpClientProvider, "client", lambda **kwargs: _Refusing())
 
         assert await sglang_api_client.probe_server_healthy(server_url=SERVER_URL, api_key="k") is False
 
@@ -375,7 +375,7 @@ class TestProbeServerHealthy:
             async def get(self, url, **kwargs):
                 raise OSError("name resolution failed")
 
-        monkeypatch.setattr(GeneralHttpClientProvider, "client", lambda: _Failing())
+        monkeypatch.setattr(GeneralHttpClientProvider, "client", lambda **kwargs: _Failing())
 
         assert await sglang_api_client.probe_server_healthy(server_url=SERVER_URL, api_key="k") is False
 
@@ -445,7 +445,7 @@ class TestWaitServerHealthy:
         async def recording_sleep(seconds):
             sleep_calls.append(seconds)
 
-        monkeypatch.setattr(GeneralHttpClientProvider, "client", lambda: sequenced)
+        monkeypatch.setattr(GeneralHttpClientProvider, "client", lambda **kwargs: sequenced)
         monkeypatch.setattr(asyncio, "sleep", recording_sleep)
 
         await sglang_api_client.wait_server_healthy(server_url=SERVER_URL, api_key="k")
@@ -704,7 +704,7 @@ class TestFlushCacheTimeoutMessage:
             async def get(self, url, **kwargs):
                 raise httpx.ConnectError("connection refused")
 
-        monkeypatch.setattr(GeneralHttpClientProvider, "client", lambda: _AlwaysRaising())
+        monkeypatch.setattr(GeneralHttpClientProvider, "client", lambda **kwargs: _AlwaysRaising())
         monkeypatch.setattr(asyncio, "sleep", _noop_sleep)
 
         with pytest.raises(TimeoutError, match="connection refused"):

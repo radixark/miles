@@ -51,7 +51,8 @@ from miles.utils.types import Sample
 async def test_create_reads_session_server_instance_id_from_args(monkeypatch, create_kwargs, expected_payload):
     calls: list[tuple[str, str]] = []
 
-    async def fake_post(url: str, payload: dict, action: str = "post"):
+    async def fake_post(url: str, payload: dict, action: str = "post", *, reuse_connections):
+        assert not reuse_connections
         calls.append((action, url))
         assert payload == expected_payload
         # 40.0 == 40 in Python, so the equality above cannot see a float leaking through
@@ -82,7 +83,8 @@ async def test_create_reads_session_server_instance_id_from_args(monkeypatch, cr
 
 @pytest.mark.asyncio
 async def test_create_without_instance_id_on_args(monkeypatch):
-    async def fake_post(url: str, payload: dict, action: str = "post"):
+    async def fake_post(url: str, payload: dict, action: str = "post", *, reuse_connections):
+        assert not reuse_connections
         return {"session_id": "session-123"}
 
     monkeypatch.setattr("miles.rollout.generate_utils.openai_endpoint_utils.post", fake_post)
@@ -103,7 +105,8 @@ async def test_create_distributes_sessions_across_port_range(monkeypatch):
     at create time — the URL is the router."""
     calls: list[tuple[str, str]] = []
 
-    async def fake_post(url: str, payload: dict, action: str = "post"):
+    async def fake_post(url: str, payload: dict, action: str = "post", *, reuse_connections):
+        assert not reuse_connections
         calls.append((action, url))
         if action == "post" and url.endswith("/sessions"):
             return {"session_id": f"session-{len(calls)}"}
@@ -149,7 +152,8 @@ class TestOpenAIEndpointTracerCreate:
         """create() sends the session POST to the whole selected host:port and reads that host's instance id, even when both hosts share a port."""
         posted: list[str] = []
 
-        async def fake_post(url: str, payload: dict, action: str = "post"):
+        async def fake_post(url: str, payload: dict, action: str = "post", *, reuse_connections):
+            assert not reuse_connections
             posted.append(url)
             return {"session_id": "session-abc"}
 
@@ -178,7 +182,8 @@ class TestOpenAIEndpointTracerCreate:
         instance, so a session is never opened on one instance and dialed on another."""
         posted: list[str] = []
 
-        async def fake_post(url: str, payload: dict, action: str = "post"):
+        async def fake_post(url: str, payload: dict, action: str = "post", *, reuse_connections):
+            assert not reuse_connections
             posted.append(url)
             return {"session_id": "session-abc"}
 
@@ -205,7 +210,8 @@ class TestOpenAIEndpointTracerCreate:
     async def test_agent_url_falls_back_to_the_cluster_address(self, monkeypatch):
         """Without an external address, the agent dials the address the driver dials."""
 
-        async def fake_post(url: str, payload: dict, action: str = "post"):
+        async def fake_post(url: str, payload: dict, action: str = "post", *, reuse_connections):
+            assert not reuse_connections
             return {"session_id": "session-abc"}
 
         monkeypatch.setattr("miles.rollout.generate_utils.openai_endpoint_utils.post", fake_post)
@@ -226,7 +232,8 @@ class TestOpenAIEndpointTracerCreate:
         """create() raises a RuntimeError pointing at --use-session-server and issues no HTTP request when session_server_instances is absent, null or empty."""
         posted: list[str] = []
 
-        async def fake_post(url: str, payload: dict, action: str = "post"):
+        async def fake_post(url: str, payload: dict, action: str = "post", *, reuse_connections):
+            assert not reuse_connections
             posted.append(url)
             return {"session_id": "session-abc"}
 
@@ -241,7 +248,8 @@ class TestOpenAIEndpointTracerCreate:
     async def test_create_validates_sampling_replay_before_allocating_session(self, monkeypatch):
         posted: list[str] = []
 
-        async def fake_post(url: str, payload: dict, action: str = "post"):
+        async def fake_post(url: str, payload: dict, action: str = "post", *, reuse_connections):
+            assert not reuse_connections
             posted.append(url)
             return {"session_id": "session-abc"}
 
@@ -294,7 +302,7 @@ class _CollectCalls:
                 raise post_outcome
             return post_outcome
 
-        async def fake_post(url, payload, action="post"):
+        async def fake_post(url, payload, action="post", *, reuse_connections):
             assert action == "delete"
             self.calls.append(f"DELETE {url}")
             if isinstance(delete_outcome, Exception):
@@ -398,7 +406,7 @@ class _FakeClient:
 @pytest.mark.asyncio
 async def test_post_bytes_no_retry_returns_raw_bytes(monkeypatch):
     client = _FakeClient([_FakeResponse(200, content=b"\x00\x01binary")])
-    monkeypatch.setattr(http_utils, "_http_client", client)
+    monkeypatch.setattr(http_utils.GeneralHttpClientProvider, "client", lambda **kwargs: client)
     assert await post_bytes_no_retry("http://x/samples", {}, timeout=5) == b"\x00\x01binary"
     assert client.post_count == 1
 
@@ -407,7 +415,7 @@ async def test_post_bytes_no_retry_returns_raw_bytes(monkeypatch):
 async def test_post_bytes_no_retry_does_not_retry_and_carries_body(monkeypatch):
     # Two queued outcomes; a retrying client would consume both. It must not.
     client = _FakeClient([_FakeResponse(422, text="cursor 3 != len(accumulated_token_ids) 4"), RuntimeError("late")])
-    monkeypatch.setattr(http_utils, "_http_client", client)
+    monkeypatch.setattr(http_utils.GeneralHttpClientProvider, "client", lambda **kwargs: client)
     with pytest.raises(RuntimeError, match="422.*cursor 3"):
         await post_bytes_no_retry("http://x/samples", {}, timeout=5)
     assert client.post_count == 1
@@ -416,7 +424,7 @@ async def test_post_bytes_no_retry_does_not_retry_and_carries_body(monkeypatch):
 @pytest.mark.asyncio
 async def test_post_bytes_no_retry_transport_error_propagates_once(monkeypatch):
     client = _FakeClient([ConnectionError("boom"), RuntimeError("late")])
-    monkeypatch.setattr(http_utils, "_http_client", client)
+    monkeypatch.setattr(http_utils.GeneralHttpClientProvider, "client", lambda **kwargs: client)
     with pytest.raises(ConnectionError, match="boom"):
         await post_bytes_no_retry("http://x/samples", {}, timeout=5)
     assert client.post_count == 1
@@ -449,7 +457,7 @@ async def test_collect_samples_v2_payload_carries_metadata_and_decodes_extras(mo
         seen.append(body)
         return payload
 
-    async def fake_post(url, body, action="post"):
+    async def fake_post(url, body, action="post", *, reuse_connections):
         assert action == "delete"
         return {}
 
@@ -471,7 +479,8 @@ async def test_collect_samples_v2_payload_carries_metadata_and_decodes_extras(mo
 
 @pytest.mark.asyncio
 async def test_create_selects_wire_fields_by_session_server_version(monkeypatch):
-    async def fake_post(url: str, payload: dict, action: str = "post"):
+    async def fake_post(url: str, payload: dict, action: str = "post", *, reuse_connections):
+        assert not reuse_connections
         return {"session_id": "sid-x"}
 
     monkeypatch.setattr("miles.rollout.generate_utils.openai_endpoint_utils.post", fake_post)
