@@ -447,6 +447,7 @@ async def test_post_buffer_no_retry_does_not_retry_and_carries_body():
     ("reply", "expected_error"),
     [
         pytest.param(_reply(200, b"x" * 50, declared_length=100), httpx.ReadError, id="body-cut-short"),
+        pytest.param(_reply(200, b"", declared_length=2**100), httpx.ReadError, id="length-overflows-mmap"),
         pytest.param(_reply(200, b"abc", head=b"HTTP/1.1 200 OK\r\n\r\n"), httpx.RemoteProtocolError, id="no-length"),
     ],
 )
@@ -455,6 +456,19 @@ async def test_post_buffer_no_retry_transport_faults_raise_transport_errors_once
         with pytest.raises(expected_error):
             await post_buffer_no_retry(server.url, {}, timeout=5)
     assert len(server.requests) == 1
+
+
+@pytest.mark.asyncio
+async def test_post_buffer_no_retry_allocation_failure_is_a_transport_error(monkeypatch):
+    def unavailable_mapping(*args, **kwargs):
+        raise OSError("allocation unavailable")
+
+    monkeypatch.setattr(mmap, "mmap", unavailable_mapping)
+    async with _ReplyServer(_reply(200, b"sample")) as server:
+        with pytest.raises(httpx.ReadError, match="cannot allocate reply buffer") as error:
+            await post_buffer_no_retry(server.url, {}, timeout=5)
+    assert isinstance(error.value.__cause__, OSError)
+    assert server.requests == [b"{}"]
 
 
 @pytest.mark.asyncio
