@@ -7,6 +7,7 @@ loss matches the cp=1 loss. Chained with the cp=1 snapshot tests, this
 anchors the cp=2 path without storing multi-rank snapshots.
 """
 
+from datetime import timedelta
 from functools import partial
 
 import pytest
@@ -14,7 +15,7 @@ import torch
 import torch.distributed as dist
 from tests.fast.dist_utils import init_gloo, run_multiprocess
 
-from miles.backends.training_utils.data.context_parallel import all_gather_with_cp
+from miles.backends.training_utils.data.context_parallel import all_gather_with_cp, slice_log_prob_with_cp
 from miles.backends.training_utils.loss.hub.logit_processors import get_log_probs_and_entropy
 from miles.backends.training_utils.loss.objective import loss_function
 from miles.backends.training_utils.parallel import GroupInfo, ParallelState, set_parallel_state
@@ -110,3 +111,84 @@ def _run_case(rank: int, world_size: int, port: int, *, prompt_lens: list[int], 
 @pytest.mark.parametrize(("name", "prompt_lens", "response_lens"), CASES, ids=[c[0] for c in CASES])
 def test_allgather_cp2_matches_cp1(name: str, prompt_lens: list[int], response_lens: list[int]) -> None:
     run_multiprocess(partial(_run_case, prompt_lens=prompt_lens, response_lens=response_lens))
+
+
+def _run_backward_case(
+    rank: int,
+    world_size: int,
+    port: int,
+    *,
+    response_length: int,
+    true_on_policy: bool,
+    entropy_coef: float,
+) -> None:
+    # Bound the failure when an empty rank skips a differentiable CP collective.
+    dist.init_process_group(
+        "gloo",
+        init_method=f"tcp://127.0.0.1:{port}",
+        rank=rank,
+        world_size=world_size,
+        timeout=timedelta(seconds=30),
+    )
+    try:
+        tp_group = [dist.new_group([r]) for r in range(world_size)][rank]
+        total_length = 128
+        args = make_args(
+            advantage_estimator="gspo",
+            true_on_policy_mode=true_on_policy,
+            use_rollout_logprobs=True,
+            entropy_coef=entropy_coef,
+            observe_training_entropy=True,
+        )
+        inputs = make_inputs(42, 1, [total_length - response_length], [response_length], VOCAB_SIZE, args)
+        inputs["advantages"] = [torch.ones(response_length)]
+        inputs["loss_masks"][0][::3] = 0
+
+        _set_parallel_state(rank=0, world_size=1, tp_group=tp_group)
+        base_logits = inputs["policy_logits"].clone().requires_grad_()
+        base_res = get_log_probs_and_entropy(
+            base_logits.detach(),
+            args=args,
+            unconcat_tokens=inputs["unconcat_tokens"],
+            total_lengths=[total_length],
+            response_lengths=[response_length],
+        )
+        inputs["rollout_log_probs"] = base_res["log_probs"]
+        base_loss, _, _ = loss_function(args, make_batch(inputs, "policy_loss"), 1, base_logits)
+        base_loss.backward()
+        assert base_logits.grad.norm() > 0
+
+        args.allgather_cp = True
+        _set_parallel_state(rank=rank, world_size=world_size, tp_group=tp_group)
+        cp_batch = make_batch(inputs, "policy_loss")
+        for key in ("advantages", "rollout_log_probs", "log_probs", "ref_log_probs"):
+            cp_batch[key] = [slice_log_prob_with_cp(value, total_length, response_length) for value in cp_batch[key]]
+        local_slice = slice(rank * total_length // world_size, (rank + 1) * total_length // world_size)
+        local_logits = inputs["policy_logits"][:, local_slice].clone().requires_grad_()
+        # Model CP collectives must run after the loss collectives, even on prompt-only ranks.
+        model_logits = torch.cat(dist.nn.all_gather(local_logits), dim=1)[:, local_slice]
+        cp_loss, _, _ = loss_function(args, cp_batch, 1, model_logits)
+        cp_loss.backward()
+
+        cp_loss_sum = cp_loss.detach().clone()
+        dist.all_reduce(cp_loss_sum)
+        torch.testing.assert_close(cp_loss_sum, base_loss.detach())
+        torch.testing.assert_close(local_logits.grad, base_logits.grad[:, local_slice])
+    finally:
+        dist.destroy_process_group()
+
+
+@pytest.mark.parametrize("response_length", [8, 80], ids=["empty_rank", "split_response"])
+@pytest.mark.parametrize("true_on_policy", [False, True], ids=["megatron_logprobs", "true_on_policy"])
+@pytest.mark.parametrize("entropy_coef", [0.0, 0.01], ids=["observed_entropy", "entropy_loss"])
+def test_allgather_cp2_gspo_backward_matches_cp1(
+    response_length: int, true_on_policy: bool, entropy_coef: float
+) -> None:
+    run_multiprocess(
+        partial(
+            _run_backward_case,
+            response_length=response_length,
+            true_on_policy=true_on_policy,
+            entropy_coef=entropy_coef,
+        )
+    )
