@@ -301,6 +301,8 @@ jobs:
     uses: ./.github/workflows/_run-ci.yml
     with:
       runs_on: '["h200", "4gpu"]'
+      # Weekly shards estimate ~6.9h; allow runtime variance and setup.
+      timeout_minutes: 600
       container_image: ${{ needs.resolve-ci-image.outputs.container_image }}
       ref: ${{ inputs.ref || '' }}
       execute_command: >-
