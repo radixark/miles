@@ -167,13 +167,7 @@ def test_the_full_model_bf16_engine_uses_dp_attention_within_budget_on_h200(monk
 
 def test_rl_batch_and_response_length_are_configurable(monkeypatch, tmp_path):
     train = _run(
-        monkeypatch,
-        tmp_path,
-        "execute",
-        model_name="mimo26-p4-bf16",
-        rollout_batch_size=32,
-        n_samples_per_prompt=16,
-        rollout_max_response_len=2048,
+        monkeypatch, tmp_path, "execute", rollout_batch_size=32, n_samples_per_prompt=16, rollout_max_response_len=2048
     )[-1]
 
     assert "--rollout-batch-size 32 --n-samples-per-prompt 16 --rollout-max-response-len 2048 " in train
