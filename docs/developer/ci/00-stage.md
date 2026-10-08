@@ -6,7 +6,7 @@ A *stage* is one CI job in a Miles CI workflow. A *suite* is the `suite=` value 
 
 ## Suite → stage mapping
 
-The canonical suite list is `CI_SUITES` in `tests/ci/run_suite.py`, grouped by hardware backend (CPU / CUDA / ROCm). Cadence does not change this inventory: regular, nightly, weekly, and release runs use the same stages. Every CPU and CUDA entry has one matching job in `pr-test.yml`; `stage-c-4-gpu-mi350` has its matching job in `pr-test-rocm.yml`; the `nightly-` prefixed MI350 suites are owned by the external nightly described below. A test picks its stage purely by `suite=`; the stage job runs `run_suite.py --suite <name>`, which collects exactly the tests carrying that suite.
+The canonical suite list is `CI_SUITES` in `tests/ci/run_suite.py`, grouped by hardware backend (CPU / CUDA / ROCm). Cadence does not change this inventory: regular, nightly, weekly, and release runs use the same stages. Every CPU and CUDA entry has one matching job in `pr-test.yml` or its B200 child `_run-ci-b200.yml`; `stage-c-4-gpu-mi350` has its matching job in `pr-test-rocm.yml`; the `nightly-` prefixed MI350 suites are owned by the external nightly described below. A test picks its stage purely by `suite=`; the stage job runs `run_suite.py --suite <name>`, which collects exactly the tests carrying that suite.
 
 The mapping is kept in sync by hand on both sides:
 - A `suite=` with no matching job never runs.
@@ -25,15 +25,16 @@ Stage names follow `stage-<tier>-<gpus>-<hw>` (or `stage-<tier>-<hw>` for CPU, e
 | `stage-c-4-gpu-h200` | 4× H200 | `["h200","4gpu"]` | 5 | both resolvers, `stage-a-cpu` |
 | `stage-c-8-gpu-h100` | 8× H100 | `["h100","8gpu"]` | 1 | both resolvers, `stage-a-cpu` |
 | `stage-c-8-gpu-h200` | 8× H200 | `["h200","8gpu"]` | 1 | both resolvers, `stage-a-cpu` |
-| `stage-c-8-gpu-b200` | 8× B200 | `["b200","8gpu"]` | 1 | both resolvers, `stage-a-cpu` |
+| `stage-c-8-gpu-b200` | 8× B200 | `["b200","8gpu"]` | 3 (serial) | both resolvers, `stage-a-cpu` |
+| `stage-c-4-gpu-b200` | 4× B200 | `["b200","4gpu"]` | 4 (2 concurrent) | after the 8-GPU stage, under the same host lock |
 | `stage-c-4-gpu-mi350` | 4× MI350 | `["self-hosted","amd","mi350","4gpu"]` | 2 | both resolvers |
 | `nightly-stage-c-2-gpu-mi350` | 2× MI350 | external nightly | — | — |
 | `nightly-stage-c-4-gpu-mi350` | 4× MI350 | external nightly | — | — |
 | `nightly-stage-c-8-gpu-mi350` | 8× MI350 | external nightly | — | — |
 
-`stage-c-8-gpu-b200` is the only Blackwell stage: the Blackwell fleet is a single unpartitioned host, and an 8-GPU runner cannot share a node with 2/4-GPU runners without both claiming the same physical GPUs. Blackwell tests needing fewer than eight GPUs therefore register against this suite too and leave the surplus idle, which is correct because a test declares its own GPU budget (`ray start --num-gpus`, `torchrun --nproc-per-node`) rather than inferring one from the devices it can see.
+The single B200 host requires one 8-GPU runner and two 4-GPU runners pinned to disjoint GPU sets. `_run-ci-b200.yml` holds the repository-wide `b200-oma` concurrency group across three serial 8-GPU shards followed by four 4-GPU shards, at most two at a time. The 4-GPU stage proceeds when the 8-GPU stage is skipped or fails; cancellation stops both. B200 file reruns share the same queue. Its 4-GPU jobs have a nine-hour budget including setup, because a dispatched long test alone has a 7.5-hour per-file timeout. See `tests/ci/README.md` for runner setup and rollout prerequisites.
 
-In `pr-test.yml`, `tier a` (CPU fast) gates PR-image preparation and the NVIDIA GPU fleet; its GPU stages (`b` / `c`) all depend on both resolvers and `stage-a-cpu`, and run concurrently with each other — the `b` / `c` letters classify role, they are not a sequential pipeline. The MI350 stage has no CPU-test gate.
+In `pr-test.yml`, `tier a` (CPU fast) gates PR-image preparation and the NVIDIA GPU fleet; its GPU stages (`b` / `c`) all depend on both resolvers and `stage-a-cpu`, and can run concurrently except for the mutually exclusive B200 layouts — the `b` / `c` letters classify role, they are not a sequential pipeline. The MI350 stage has no CPU-test gate.
 
 `pr-test.yml` and `pr-test-rocm.yml` listen to both `pull_request.labeled` and `pull_request.unlabeled`. Adding or removing any PR label starts a new run in the same PR concurrency group, cancels the previous queued or running run, and resolves CI policy from the remaining labels. Independently dispatched `/rerun-test` runs are unaffected.
 
@@ -78,7 +79,7 @@ That runner pool can include RoCE hosts, and GitHub attaches every job container
 
 **Arch dispatch.** `tests/ci/hardware.py::CUDA_STAGES` is the single source of truth for the CUDA taxonomy: each stage's GPU generation, GPU count, and runner labels. `CI_SUITES` and the `/rerun-test` runner map both derive from it, and a stage's `--suite` already names its generation, so no job passes an arch explicitly.
 
-A test normally runs at its home stage. A [dispatch label](/developer/ci/01-label) can send it to another generation instead, in which case the destination is the smallest stage on that generation with enough GPUs — a test declares its own GPU budget through `ray start --num-gpus` / `torchrun --nproc-per-node` rather than reading the devices it can see, so a wider stage simply leaves the surplus idle. Today every dispatched test lands on `stage-c-8-gpu-b200`, the only Blackwell stage; partitioning a second Blackwell host adds narrower stages and routing follows automatically.
+A test normally runs at its home stage. A [dispatch label](/developer/ci/01-label) can send it to another generation instead, in which case the destination is the smallest stage on that generation with enough GPUs — a test declares its own GPU budget through `ray start --num-gpus` / `torchrun --nproc-per-node` rather than reading the devices it can see, so a wider stage simply leaves the surplus idle. Blackwell dispatch sends 2/4-GPU registrations to `stage-c-4-gpu-b200` and 8-GPU registrations to `stage-c-8-gpu-b200`.
 
 Without a dispatch label nothing leaves its home stage, so scheduled and called runs are unaffected. Whatever stage actually executes a run is also the stage its performance baseline is keyed on, keeping the generations' numbers apart.
 
@@ -88,7 +89,7 @@ CUDA stages then update the SGLang and Megatron-LM checkouts to the selected ref
 
 CUDA and CPU dependency refs resolve in this order: explicit dispatch input or PR-body directive, committed `release-lock.json`, then the moving `sglang-miles` / `miles-main` branch heads. A called release run therefore checks out its requested Miles `ref` and consumes the lockfile on that ref unless an explicit override exists. ROCm checks out the requested Miles ref but keeps the dependencies baked into its image unless the run names a ref for one.
 
-**Launch.** Each CPU/CUDA stage is a thin caller of one hardware-specific reusable workflow: CPU stages use `_run-cpu-ci.yml`, while CUDA stages use `_run-ci.yml`. The CPU workflow has one execution job; each GPU workflow has a hosted planning job followed by conditional GPU execution.
+**Launch.** CPU stages call `_run-cpu-ci.yml`; Hopper stages call `_run-ci.yml`. The B200 caller uses `_run-ci-b200.yml` to hold the host lock across both GPU layouts, and each B200 stage calls `_run-ci.yml`. The CPU workflow has one execution job; each GPU workflow has a hosted planning job followed by conditional GPU execution.
 
 Both workflows receive `execute_command` and an optional `ref`; CUDA callers additionally pass `runs_on` and `container_image`. The reusable workflows own checkout, runner setup, dependency and source resolution, and the two command invocations (first `--list-only`, then the real run). GPU planning needs only Python's standard library and runs before GPU container startup or dependency installation; each stage owns only which runner class, image, ref, and command to select.
 
@@ -96,7 +97,7 @@ Both workflows receive `execute_command` and an optional `ref`; CUDA callers add
 
 **Sharding.** A stage with a `partition_id` matrix splits its tests across N shards; `run_suite.py` balances the shards by each test's `est_time`. Each shard is an independent job instance running the same `execute_command` with a different `--auto-partition-id`.
 
-Weekly runs keep the same shards but set each GPU matrix's `max-parallel` to one, so each stage occupies at most one matching runner. Stages remain independent: `stage-b-2-gpu-h200` and `stage-c-2-gpu-h200` may each occupy one 2-GPU runner at the same time. PR, nightly, and release runs retain their existing matrix parallelism.
+Weekly runs keep the same shards but limit each Hopper and ROCm GPU matrix to one runner. B200 keeps two concurrent 4-GPU shards even for weekly: its host lock already excludes other runs, so serializing those shards would leave half the reserved GPUs idle. Other stages remain independent: `stage-b-2-gpu-h200` and `stage-c-2-gpu-h200` may each occupy one 2-GPU runner at the same time. PR, nightly, and release runs retain their existing matrix parallelism.
 
 ## ROCm PR/nightly/weekly mirror
 

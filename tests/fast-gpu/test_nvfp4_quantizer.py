@@ -2,7 +2,7 @@ from tests.ci.ci_register import register_cuda_ci
 
 register_cuda_ci(
     est_time=60,
-    suite="stage-c-8-gpu-b200",
+    suite="stage-c-4-gpu-b200",
     labels=["precision"],
     hardware=["blackwell"],
 )

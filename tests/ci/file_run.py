@@ -13,21 +13,12 @@ import sys
 from pathlib import Path
 
 from tests.ci.ci_register import HWBackend, collect_tests
+from tests.ci.hardware import CUDA_STAGES
 
 CPU_SUITES = frozenset({"stage-a-cpu", "stage-b-cpu"})
 DISCOVERY_ROOTS = ("tests/fast", "tests/fast-gpu", "tests/e2e", "tests/ci")
 
-# Runner labels per CUDA suite, mirroring the pr-test.yml job wiring.
-# `tests/ci/test/test_file_run.py` locks the key set to
-# `run_suite.CI_SUITES[HWBackend.CUDA]` so a new suite cannot ship unmapped.
-CUDA_SUITE_RUNS_ON = {
-    "stage-b-2-gpu-h200": ["h200", "2gpu"],
-    "stage-c-8-gpu-h100": ["h100", "8gpu"],
-    "stage-c-8-gpu-h200": ["h200", "8gpu"],
-    "stage-c-4-gpu-h200": ["h200", "4gpu"],
-    "stage-c-2-gpu-h200": ["h200", "2gpu"],
-    "stage-c-8-gpu-b200": ["b200", "8gpu"],
-}
+CUDA_SUITE_RUNS_ON = {name: list(stage.runs_on) for name, stage in CUDA_STAGES.items()}
 
 # Same shape the pr-test.yml resolve-ci-image step enforces for a Docker tag.
 _IMAGE_TAG_PATTERN = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}")

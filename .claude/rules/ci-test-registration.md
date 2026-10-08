@@ -38,12 +38,13 @@ run the test; copying a neighbouring test's `suite=` is not a reason.
 | 4 | `stage-c-2-gpu-h200` | 2× H200 | 2-GPU tests |
 | 5 | `stage-c-4-gpu-h200` | 4× H200 | 4-GPU tests |
 | 6 | `stage-c-8-gpu-h200` or `stage-c-8-gpu-h100` | 8× H200 / 8× H100 | 8-GPU tests |
-| — | `stage-c-8-gpu-b200` | 8× B200 | preferably tests that cannot run on Hopper (`hardware=["blackwell"]`), any GPU count |
+| — | `stage-c-4-gpu-b200` | 4× B200 | Blackwell tests needing up to 4 GPUs |
+| — | `stage-c-8-gpu-b200` | 8× B200 | Blackwell tests needing 8 GPUs |
 
 The stage's GPU count equals the count the test requests (`ray start
 --num-gpus`, `--actor-num-gpus-per-node`, `torchrun --nproc-per-node`): a 4-GPU
-test on an 8-GPU stage idles four GPUs for its whole run. `stage-c-8-gpu-b200`
-is the exception, because the Blackwell fleet is a single unpartitioned host.
+test on an 8-GPU stage idles four GPUs for its whole run. Blackwell
+has no 2-GPU runner, so tests needing fewer than 4 GPUs use its 4-GPU stage.
 
 A new test needs no ROCm registration. A file that already has
 `register_rocm_ci(..., suite="nightly-stage-c-<N>-gpu-*")` keeps `<N>` equal to

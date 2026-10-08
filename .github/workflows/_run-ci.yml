@@ -15,6 +15,11 @@ on:
         type: string
         required: false
         default: 'radixark/miles:dev'
+      timeout_minutes:
+        description: 'GPU execution budget, including container and dependency setup.'
+        type: number
+        required: false
+        default: 360
       skip_dependency_install:
         type: boolean
         required: false
@@ -71,6 +76,7 @@ jobs:
     # (e.g. the label name '["h100", "8gpu"]' with brackets), which no
     # runner carries, and the job queues forever.
     runs-on: ${{ fromJSON(inputs.runs_on) }}
+    timeout-minutes: ${{ inputs.timeout_minutes }}
     container:
       image: ${{ inputs.container_image }}
       options: >
@@ -146,6 +152,23 @@ jobs:
           echo "ERROR: nvidia-smi did not become ready after 120s" >&2
           nvidia-smi 2>&1 | tail -20 || true
           exit 1
+
+      - name: Verify B200 CUDA partition
+        if: contains(fromJSON(inputs.runs_on), 'b200')
+        env:
+          EXPECTED_GPUS: ${{ contains(fromJSON(inputs.runs_on), '4gpu') && '4' || '8' }}
+        run: |
+          python3 - <<'PY'
+          import os
+          import torch
+
+          expected = int(os.environ["EXPECTED_GPUS"])
+          actual = torch.cuda.device_count()
+          assert actual == expected, (
+              f"B200 stage requires {expected} CUDA-visible GPUs, found {actual}; "
+              "fix the runner's CUDA_VISIBLE_DEVICES partition"
+          )
+          PY
 
       - name: Resolve dependency refs
         if: ${{ !inputs.skip_dependency_install }}

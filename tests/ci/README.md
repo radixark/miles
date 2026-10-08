@@ -89,12 +89,33 @@ Host conventions:
   CVD intentionally left unset so jobs see all 8 GPUs. The bare
   `--env CUDA_VISIBLE_DEVICES` forwards the "unset" state, and CUDA defaults
   to seeing every visible device.
-* **b200-oma-8gpu-0** (B200, 1 runner, `docker-compose` flow):
-  whole node, CVD unset like the novita hosts. Deliberately not partitioned —
-  the 8-GPU runner would otherwise share physical GPUs with any 2/4-GPU runner
-  on the same host, and GitHub has no cross-runner resource lock. Tests needing
-  fewer than 8 GPUs still run here correctly, because a test declares its own
-  budget via `ray start --num-gpus` / `torchrun --nproc-per-node`.
+* **b200-oma** (required B200 layout, 3 logical runners):
+  `b200-oma-8gpu-0` has labels `b200,8gpu` and sees GPUs `0–7`;
+  `b200-oma-4gpu-0` has labels `b200,4gpu` and CVD `0,1,2,3`;
+  `b200-oma-4gpu-1` has labels `b200,4gpu` and CVD `4,5,6,7`.
+  `_run-ci-b200.yml` serializes the full-node and half-node layouts and holds
+  the repository-wide `b200-oma` concurrency lease across the whole run, so
+  only the two disjoint 4-GPU runners can execute simultaneously. Every B200
+  workflow entry point must use that lease; a direct `_run-ci.yml` call would
+  bypass the resource guarantee.
+
+### Rolling out the B200 layout
+
+Before enabling the two 4-GPU runners, drain all B200 jobs started with the
+old workflow, including file reruns and release workflows. Those revisions
+do not acquire `b200-oma` and can overlap the new half-node jobs. Run the
+updated orchestration for every B200 entry point; do not rerun an old workflow
+revision against the mixed runner layout.
+
+Register the three runners above with separate work directories and disjoint
+`CUDA_VISIBLE_DEVICES` for the two 4-GPU runners. Job containers must retain
+separate PID and network namespaces: cleanup kills Ray processes and tests
+reuse service ports. `_run-ci.yml` verifies the CUDA-visible GPU count before
+running B200 tests; `nvidia-smi` alone cannot verify the CUDA partition.
+
+Validate with a run selecting both stages: no 4-GPU job overlaps any 8-GPU
+job, two 4-GPU jobs execute together, and another PR or file rerun waits until
+the whole run releases the host. Weekly must retain that two-way parallelism.
 
 ## /data/miles_ci path identity rule
 

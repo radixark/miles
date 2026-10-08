@@ -34,7 +34,7 @@ HW_MAPPING = {
 #
 # CUDA suites derive from `hardware.CUDA_STAGES`, which also carries each
 # stage's arch, GPU count and runner labels; each has a matching workflow job in
-# .github/workflows/pr-test.yml.
+# .github/workflows/pr-test.yml or its B200 child workflow.
 CI_SUITES = {
     HWBackend.CPU: [
         "stage-a-cpu",
