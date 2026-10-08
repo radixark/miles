@@ -34,7 +34,12 @@ def _args() -> ScriptArgs:
         optimizer_offload=True,
         recompute="full",
         extra_args=(
-            "--ci-test " "--ci-disable-kl-checker " "--check-weight-update-allow-quant-error " "--num-rollout 2 "
+            "--ci-test "
+            "--ci-disable-kl-checker "
+            "--check-weight-update-allow-quant-error "
+            "--num-rollout 2 "
+            "--no-pin-cpu-grads "
+            "--no-pin-cpu-params "
         ),
     )
 
