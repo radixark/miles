@@ -213,7 +213,7 @@ health checking (`--router-health-failure-threshold 40`,
 ### 5.4 What CI watches
 
 `tests/e2e/megatron/model_scripts/test_qwen3_8_next_4layer_ci.py` runs the 4-layer slice on
-8 × B200 in `stage-c-8-gpu-b200` with rollout-routing replay on, and gates these metrics:
+8 × H200 in `stage-c-8-gpu-h200` with rollout-routing replay on, and gates these metrics:
 
 - `train/grad_norm`
 - `train/ppo_kl`

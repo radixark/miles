@@ -5,10 +5,10 @@ from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
 from tests.ci.metric_history import register_ci_gate
 
 register_cuda_ci(
-    est_time=1300,
-    suite="stage-c-8-gpu-b200",
+    est_time=400,
+    suite="stage-c-8-gpu-h200",
     labels=["megatron", "model-scripts", "lora"],
-    hardware=["blackwell"],
+    hardware=["hopper", "blackwell"],
 )
 register_rocm_ci(
     est_time=400,
@@ -32,7 +32,7 @@ def _args() -> ScriptArgs:
         # the pruned model scores 0 on gsm8k, which zeroes every advantage; a fixed pseudo-random
         # reward keeps the adapter moving so the weight sync carries real deltas
         reward_model="deterministic_random",
-        hardware="B200",
+        hardware="H200",
         num_nodes=1,
         num_gpus_per_node=8,
         lora_rank=32,
