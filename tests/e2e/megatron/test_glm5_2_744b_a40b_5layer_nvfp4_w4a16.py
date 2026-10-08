@@ -5,6 +5,8 @@ from pathlib import Path
 from tests.ci.ci_register import register_cuda_ci
 
 from miles.utils.external_utils import command_utils
+from miles.utils.test_utils.ft_test_actions import compute_ft_test_actions_arg
+from miles.utils.workers.naming import compute_cell_id
 
 register_cuda_ci(
     est_time=800,
@@ -135,25 +137,93 @@ def prepare():
     )
 
 
+def _gpu_delta_env():
+    # Ray jobs receive an explicit environment, not every variable in this shell.
+    from miles.utils.gpu_delta.publication import configured_codec
+
+    return {
+        "GPU_DELTA_CODEC": configured_codec(),
+        "GPU_DELTA_INITIAL_SYNC_CODEC": configured_codec(initial_sync=True),
+        "GPU_DELTA_SORT_BEFORE_HW_DECOMPRESS": os.environ.get("GPU_DELTA_SORT_BEFORE_HW_DECOMPRESS", "0"),
+        "GPU_DELTA_SKIP_PAYLOAD_HASH": os.environ.get("GPU_DELTA_SKIP_PAYLOAD_HASH", "0"),
+        "SGLANG_NVFP4_CKPT_FP8_GEMM_IN_ATTN": "0",
+    }
+
+
+def _assert_gpu_delta_weights_changed(args, version_dir, _rollout_engines):
+    """Reject a successful-looking E2E whose learned publications were all no-ops."""
+    import torch.distributed as dist
+
+    if dist.get_rank() != 0:
+        return
+    version_dir = Path(version_dir)
+    current = json.loads((version_dir / "manifest.json").read_text())
+    # This E2E publishes once at startup and between rollouts, independently of optimizer steps.
+    startup_publications = int(args.update_weight_delta_initial_sync)
+    last_version = startup_publications + args.num_rollout - 1
+    if current["target_version"] != last_version:
+        return
+    codecs = _gpu_delta_env()
+    changed_bytes = []
+    for version in range(1, last_version + 1):
+        manifest = json.loads((version_dir.parent / f"weight_v{version:06d}/manifest.json").read_text())
+        assert manifest["stream_id"] == current["stream_id"]
+        assert manifest["base_version"] == version - 1 and manifest["target_version"] == version
+        codec_key = "GPU_DELTA_INITIAL_SYNC_CODEC" if version <= startup_publications else "GPU_DELTA_CODEC"
+        assert manifest["codec"] == codecs[codec_key], "E2E publication codec differs from configured phase codec"
+        raw_tensors = [tensor for tensor in manifest["tensors"] if len(tensor["shape"]) <= 1]
+        assert raw_tensors, "E2E must exercise direct scalar/vector targets"
+        for tensor in manifest["tensors"]:
+            direct = len(tensor["shape"]) <= 1
+            assert tensor["encoding"] == (
+                "raw_bytes" if direct else "xor_bytes"
+            ), "E2E tensor encoding differs from its shape"
+            if direct:
+                assert not tensor["frames"] and "outer" not in tensor
+                assert tensor.get("raw", {}).get("encoded_bytes", 0) == (
+                    tensor["nbytes"] if tensor["changed_bytes"] else 0
+                ), "E2E direct target is incomplete"
+        if version > startup_publications:
+            changed_bytes.append(sum(tensor["changed_bytes"] for tensor in manifest["tensors"]))
+    assert any(count > 0 for count in changed_bytes), (
+        f"GPU-delta E2E produced only no-op learned publications: {changed_bytes}. "
+        "Version changes alone do not exercise a learned weight delta."
+    )
+    print(f"GPU-delta E2E learned publication changed bytes: {changed_bytes}", flush=True)
+
+
 def execute():
     U = command_utils.default_config().create_backend()
+    weight_transfer_args = (
+        "--update-weight-transfer-mode gpu-delta "
+        "--update-weight-delta-initial-sync "
+        f"--update-weight-disk-dir /root/shared_data/{RUN_ID}/gpu_delta "
+        "--custom-update-weight-post-write-path "
+        "tests.e2e.megatron.test_glm5_2_744b_a40b_5layer_nvfp4_w4a16._assert_gpu_delta_weights_changed "
+    )
+    delta_env = _gpu_delta_env()
+
     os.environ.update(NVFP4_ENV)
     os.environ.update(GLM5_ENV)
+    os.environ.update(delta_env)
     os.environ.setdefault("RAY_TMPDIR", "/tmp/ray")
     te_precision_config_path = command_utils.encode_pseudo_file(TE_PRECISION_CONFIG)
 
     ckpt_args = (
-        f"--hf-checkpoint {MODEL_DIR}/{MODEL_NAME}-NVFP4/ " f"--ref-load {MODEL_DIR}/{MEGATRON_MODEL_NAME}_torch_dist "
+        f"--hf-checkpoint {MODEL_DIR}/{MODEL_NAME}-NVFP4/ "
+        f"--ref-load {MODEL_DIR}/{MEGATRON_MODEL_NAME}_torch_dist "
+        f"--save /root/shared_data/{RUN_ID}/checkpoints --save-interval 2 "
     )
 
+    # Exercise learned deltas despite this pruned model's zero math score.
     rollout_args = (
         f"--prompt-data {DATA_DIR}/dapo-math-17k/dapo-math-17k.jsonl "
         "--input-key prompt "
         "--label-key label "
         "--apply-chat-template "
         "--rollout-shuffle "
-        "--rm-type deepscaler "
-        "--num-rollout 2 "
+        "--rm-type deterministic_random "
+        "--num-rollout 4 "
         "--rollout-batch-size 8 "
         "--n-samples-per-prompt 8 "
         "--rollout-max-response-len 100 "
@@ -162,11 +232,13 @@ def execute():
     )
 
     perf_args = (
-        "--tensor-model-parallel-size 1 "
+        "--tensor-model-parallel-size 2 "
+        # Native AbsorbedMLA requires sequence parallelism with tensor parallelism.
+        "--sequence-parallel "
         # Let the STE propagate gradients to the original expert parameters.
         "--no-gradient-accumulation-fusion "
         "--pipeline-model-parallel-size 1 "
-        f"--context-parallel-size {ACTOR_NUM_GPUS} "
+        "--context-parallel-size 2 "
         f"--expert-model-parallel-size {ACTOR_NUM_GPUS} "
         "--expert-tensor-parallel-size 1 "
         "--recompute-granularity full "
@@ -227,7 +299,19 @@ def execute():
         "--sglang-watchdog-timeout 3600 "
     )
 
-    ci_args = "--ci-test --ci-disable-logprobs-checker --ci-disable-weight-update-checker --ci-disable-kl-checker "
+    ci_args = (
+        "--ci-test --ci-disable-logprobs-checker --ci-disable-weight-update-checker --ci-disable-kl-checker "
+        "--use-fault-tolerance --ft-components rollout "
+        + compute_ft_test_actions_arg(
+            [
+                dict(
+                    at_rollout=1,
+                    action="restart_rollout_cell_at_end",
+                    cell_id=compute_cell_id(pool_id="inference-engine-all-0-0", cell_index=1),
+                ),
+            ]
+        )
+    )
 
     mixed_precision_args = (
         "--transformer-impl transformer_engine "
@@ -251,13 +335,11 @@ def execute():
         "--attention-backend flash "
         "--cp-comm-type allgather "
         "--miles-dsa-topk-backend flashinfer "
-        "--update-weight-transfer-mode broadcast_packed "
         f"--update-weight-buffer-size {2 * 1024 ** 3} "
         "--actor-num-nodes 1 "
         f"--actor-num-gpus-per-node {ACTOR_NUM_GPUS} "
         f"--num-gpus-per-node {NUM_GPUS} "
         f"--rollout-num-gpus {ROLLOUT_NUM_GPUS} "
-        "--use-fault-tolerance "
         "--moe-enable-deepep "
         "--moe-token-dispatcher-type flex "
         # Event logging requests weight checksums that SGLang does not support for NVFP4.
@@ -277,6 +359,7 @@ def execute():
         f"{ci_args} "
         f"{mixed_precision_args} "
         f"{misc_args} "
+        f"{weight_transfer_args} "
     )
 
     U.execute_train(
@@ -284,7 +367,7 @@ def execute():
         num_gpus_per_node=NUM_GPUS,
         megatron_model_type=MODEL_TYPE,
         megatron_path=MEGATRON_PATH,
-        extra_env_vars={**NVFP4_ENV, **GLM5_ENV},
+        extra_env_vars={**NVFP4_ENV, **GLM5_ENV, **delta_env},
     )
 
 

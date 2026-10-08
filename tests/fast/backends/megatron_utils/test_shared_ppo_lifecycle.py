@@ -174,6 +174,7 @@ def test_save_model_does_not_manage_lifecycle(actor_module, monkeypatch):
     worker.optimizer = object()
     worker.opt_param_scheduler = object()
     worker.snapshot_publisher = object()
+    worker.weight_updater = None
     worker.wake_up = Mock()
     worker.sleep = Mock()
     save = Mock()
@@ -208,6 +209,7 @@ def test_force_sync_save_overlaps_hf_export_with_async_checkpoint(actor_module, 
     worker.optimizer = object()
     worker.opt_param_scheduler = object()
     worker.snapshot_publisher = object()
+    worker.weight_updater = None
     events = []
 
     monkeypatch.setattr(actor_module, "save", lambda *_args, **_kwargs: events.append("save"))
@@ -733,7 +735,7 @@ class _RecordingWeightUpdater:
     def verify_engine_version(self, rollout_engines: list[Any]) -> None:
         pass
 
-    def update_weights(self) -> None:
+    def update_weights(self, rollout_id: int | None = None) -> None:
         self.update_weights_calls += 1
         self.weight_version += 1
 
@@ -750,6 +752,7 @@ def _weight_update_worker(actor_module: Any, monkeypatch: pytest.MonkeyPatch) ->
         rematerialize_param_from_master_weight=False,
     )
     worker._asleep = False
+    worker._last_rollout_id = None
     worker._heartbeat = Mock()
     worker.weight_updater = _RecordingWeightUpdater()
     monkeypatch.setattr(actor_module, "print_memory", Mock())

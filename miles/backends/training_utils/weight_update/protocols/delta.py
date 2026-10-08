@@ -116,10 +116,12 @@ class UpdateWeightFromDiskDelta(WeightTransferProtocol):
         self.is_sender = replica_rank == 0
 
     def begin_sync(self, weight_version: int, iter_buckets) -> bool:
-        # The first call only captures the baseline snapshot the next sync diffs against.
-        if not self._baseline_captured:
+        # Capture the HF baseline before the first publication.
+        initial_sync = not self._baseline_captured
+        if initial_sync:
             self._capture_baseline(iter_buckets)
             self._baseline_captured = True
+        if initial_sync and not self.args.update_weight_delta_initial_sync:
             return False
         self._begin_encode(weight_version)
         return True

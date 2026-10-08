@@ -1,7 +1,7 @@
 import itertools
 import re
 from argparse import Namespace
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 
 import torch
@@ -82,44 +82,45 @@ class HfWeightIteratorDirect(MegatronHfWeightIteratorBase):
             disable=rank != 0,
             desc="Update weights",
         )
-        for param_infos in self._non_expert_batches:
-            named_params = _materialize_non_expert_batch(
-                self.args, param_infos, weights, gather_pp=self.placement.gather_pp
-            )
-            if materialize:
-                yield from self._convert_to_hf_param_units(named_params)
-            del named_params
+        for batch in self._non_expert_batches:
+            yield from self._iter_non_expert_batch(batch, weights, materialize=materialize)
             pbar.update(1)
         for batch in self._expert_batches:
-            if self._convert_experts_before_gather:
-                units = self._convert_and_gather_expert_batch(batch, weights)
-                if materialize:
-                    yield from units
-                del units
-            else:
-                # ETP shards must form complete experts before conversion/quantization.
-                named_params = _gather_megatron_expert_batch(
-                    self.args, batch.param_infos, weights, gather_pp=self.placement.gather_pp
-                )
-                if materialize:
-                    yield from self._convert_to_hf_param_units(named_params)
-                del named_params
+            yield from self._iter_expert_batch(batch, weights, materialize)
             pbar.update(1)
         pbar.close()
         yield from _iter_mm_tower_units(self.args, materialize=materialize)
 
+    def _iter_non_expert_batch(self, param_infos, weights, materialize):
+        named_params = _materialize_non_expert_batch(
+            self.args, param_infos, weights, gather_pp=self.placement.gather_pp
+        )
+        if materialize:
+            yield from self._convert_to_hf_param_units(named_params)
+
+    def _iter_expert_batch(self, batch, weights, materialize):
+        if self._convert_experts_before_gather:
+            units = self._convert_and_gather_expert_batch(batch, weights)
+            if materialize:
+                yield from units
+        else:
+            # ETP shards must form complete experts before conversion/quantization.
+            named_params = _gather_megatron_expert_batch(
+                self.args, batch.param_infos, weights, gather_pp=self.placement.gather_pp
+            )
+            if materialize:
+                yield from self._convert_to_hf_param_units(named_params)
+
     def _convert_and_gather_expert_batch(self, batch: _ExpertBatch, weights):
-        """Convert once per expert across EP/EDP, then gather HF weights and scales."""
+        """Convert once per expert across EP/EDP, then gather the converted units."""
         device = torch.device("cuda", torch.cuda.current_device())
         rank = dist.get_rank()
-        # Sender placement is independent of ownership: non-senders also
-        # quantize their assigned experts, once across all expert-DP replicas.
         local_params = (
             (info.name, weights[info.name].detach().to(device=device, non_blocking=True))
             for info in batch.param_infos
             if info.src_rank == rank
         )
-        units = list(self._convert_to_hf_param_units(local_params))
+        units = [unit for unit in self._convert_to_hf_param_units(local_params) if unit]
         for gather in batch.gathers:
             units = gather(units, device=device)
         return units
@@ -137,7 +138,7 @@ class HfWeightIteratorDirect(MegatronHfWeightIteratorBase):
             return export_inkling_lora_hf_named(self.model)
         raise NotImplementedError(f"Raw LoRA export is not implemented for model {self.model_name!r}")
 
-    def _convert_to_hf_param_units(self, named_params: Sequence[tuple[str, torch.Tensor]]):
+    def _convert_to_hf_param_units(self, named_params: Iterable[tuple[str, torch.Tensor]]):
         for name, param in named_params:
             yield list(
                 convert_to_hf(
@@ -146,7 +147,9 @@ class HfWeightIteratorDirect(MegatronHfWeightIteratorBase):
             )
 
 
-def _load_or_allocate_params(param_infos: Sequence[ParamInfo], megatron_local_weights) -> list[torch.Tensor]:
+def _load_or_allocate_params(
+    param_infos: Sequence[ParamInfo], megatron_local_weights, synchronize: bool = True
+) -> list[torch.Tensor]:
     """Owners load from the weight source; other ranks allocate receive buffers."""
     params = []
     for info in param_infos:
@@ -159,7 +162,8 @@ def _load_or_allocate_params(param_infos: Sequence[ParamInfo], megatron_local_we
             )
         else:
             params.append(torch.empty(info.shape, dtype=info.dtype, device=torch.cuda.current_device()))
-    torch.cuda.synchronize()
+    if synchronize:
+        torch.cuda.synchronize()
     return params
 
 
@@ -205,6 +209,7 @@ def _gather_megatron_expert_batch(
     megatron_local_weights,
     *,
     gather_pp: bool,
+    synchronize: bool = True,
 ) -> list[tuple[str, torch.Tensor]]:
     """Load -> PP broadcast (when gather_pp) -> ETP all_gather -> EP all_gather.
 
@@ -212,7 +217,7 @@ def _gather_megatron_expert_batch(
     symmetric EP all_gather with a name exchange.
     """
     monkey_patch_torch_reductions()
-    params = _load_or_allocate_params(param_infos, megatron_local_weights)
+    params = _load_or_allocate_params(param_infos, megatron_local_weights, synchronize=synchronize)
     if gather_pp:
         _broadcast_across_pp(param_infos, params)
     _set_tp_attrs(param_infos, params)

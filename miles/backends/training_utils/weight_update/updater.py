@@ -20,6 +20,7 @@ from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
 from miles.backends.training_utils.parallel import ParallelState
 from miles.backends.training_utils.weight_update.conn_status import ConnStatusManager
 from miles.backends.training_utils.weight_update.protocol import get_weight_transfer_protocol
+from miles.backends.training_utils.weight_update.protocols.gpu_delta.protocol import UpdateWeightFromGpuDelta
 from miles.backends.training_utils.weight_update.session import (
     begin_weight_update,
     end_weight_update,
@@ -68,6 +69,9 @@ class WeightUpdater:
             model_name=model_name,
             quantization_config=quantization_config,
         )
+        if isinstance(self.protocol, UpdateWeightFromGpuDelta):
+            self._hf_weight_iterator.local_consumer = self.protocol.send_bucket
+            self._hf_weight_iterator.local_error_consumer = self.protocol.record_export_error
         self.weights_getter = weights_getter
         self.weight_version = 0
         self.is_lora = is_lora
@@ -121,10 +125,25 @@ class WeightUpdater:
         return self.protocol.pop_metrics()
 
     @torch.no_grad()
-    def update_weights(self) -> None:
-        """Run one weight sync: session frame + base-bucket stream + adapter pushes for LoRA."""
+    def save_checkpoint_delta(self, checkpoint_dir: str, rollout_id: int) -> None:
+        if isinstance(self.protocol, UpdateWeightFromGpuDelta):
+            self.protocol.prepare_checkpoint(
+                checkpoint_dir, rollout_id, self.weight_version + 1, self._iter_base_buckets
+            )
+
+    def finish_checkpoint_delta(self) -> None:
+        if isinstance(self.protocol, UpdateWeightFromGpuDelta):
+            self.protocol.finalize_checkpoint()
+
+    @torch.no_grad()
+    def update_weights(self, rollout_id: int | None = None) -> dict[str, float] | None:
+        """Run one sync and return completed GPU-delta metrics for immediate logging."""
         protocol = self.protocol
-        if not protocol.begin_sync(self.weight_version + 1, self._iter_base_buckets):
+        if isinstance(protocol, UpdateWeightFromGpuDelta):
+            started = protocol.begin_sync(self.weight_version + 1, self._iter_base_buckets, rollout_id)
+        else:
+            started = protocol.begin_sync(self.weight_version + 1, self._iter_base_buckets)
+        if not started:
             return
         self.weight_version += 1
 
@@ -147,12 +166,17 @@ class WeightUpdater:
             ), "the LoRA checksum manifest is recorded on one rank, which must hold the full adapter"
         with timer("update_weights_implementation"):
             pbar = tqdm(desc=f"[{protocol.group_name}] Update weights", total=0) if protocol.is_sender else None
-            for bucket in self._hf_weight_iterator.iter_hf_weights(
-                self.weights_getter(),
-                include_base=sync_base,
-                adapters=adapters,
-                materialize=protocol.is_sender,
-            ):
+            buckets = (
+                ()
+                if isinstance(protocol, UpdateWeightFromGpuDelta) and not protocol.requires_export
+                else self._hf_weight_iterator.iter_hf_weights(
+                    self.weights_getter(),
+                    include_base=sync_base,
+                    adapters=adapters,
+                    materialize=protocol.is_sender,
+                )
+            )
+            for bucket in buckets:
                 if protocol.is_sender:
                     if driver and checksums is not None:
                         record_lora_checksums(bucket, checksums)
@@ -169,6 +193,8 @@ class WeightUpdater:
                 resume_engines(protocol.rollout_engines)
             dist.barrier(group=get_gloo_group())
         protocol.after_engines_resumed()
+        if isinstance(protocol, UpdateWeightFromGpuDelta):
+            return protocol.pop_metrics()
 
     def _iter_base_buckets(self, *, materialize: bool):
         return self._hf_weight_iterator.iter_hf_weights(self.weights_getter(), materialize=materialize)

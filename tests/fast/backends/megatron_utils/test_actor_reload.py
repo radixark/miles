@@ -127,6 +127,7 @@ def _actor(actor_module, *, role: str, args: Namespace):
     actor.model = None
     actor.optimizer = None
     actor.opt_param_scheduler = None
+    actor.weight_updater = None
     actor._last_rollout_id = None
     actor._post_init_random_state = _FakeRandomState()
     return actor

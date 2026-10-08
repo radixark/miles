@@ -12,6 +12,7 @@ nvidia-resiliency-ext~=0.6.0; platform_system == "Linux"
 omegaconf
 onnxscript  # import-time dependency of transformer_engine 2.17, which the docker image installs with --no-deps; without it any Megatron-backend run dies at `import megatron`
 openai  # imported by miles.rollout.generate_utils.tool_call_utils and the openenv adapter; previously only satisfied transitively via sglang
+orjson  # GPU-delta immutable publication manifests
 pillow
 polars==1.42.1
 psycopg[binary]  # metric-history gate store (Neon Postgres driver)
