@@ -91,9 +91,6 @@ jobs:
     env:
       PYTHONPATH: ${{ github.workspace }}
       MILES_HARDWARE_PLATFORM: rocm
-      # tvm-ffi's JIT torch DLPack addon links /opt/rocm's HIP runtime next to torch's bundled one;
-      # two HSA runtimes in one process leave HIP with no device (CUDA driver error 100).
-      TVM_FFI_DISABLE_TORCH_C_DLPACK: '1'
       GITHUB_COMMIT_NAME: ${{ github.event.pull_request.head.sha || github.sha }}_${{ github.event.pull_request.number || 'non-pr' }}
       WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
 
