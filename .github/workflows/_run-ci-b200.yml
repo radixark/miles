@@ -66,11 +66,9 @@ jobs:
           python-version: '3.12'
       - name: Select each test and its minimum GPU count
         id: plan
-        env:
-          PYTHONPATH: ${{ github.workspace }}
         run: |
           echo "ref=$(git -C ci-source rev-parse HEAD)" >> "$GITHUB_OUTPUT"
-          python tests/ci/b200_plan.py --source-root ci-source \
+          python -S -m tests.ci.b200_plan --source-root ci-source \
             --cadence ${{ inputs.cadence }} \
             --labels ${{ inputs.raw_labels }} \
             --suites ${{ inputs.run_8_gpu && 'stage-c-8-gpu-b200' || '' }} ${{ inputs.run_4_gpu && 'stage-c-4-gpu-b200' || '' }} \

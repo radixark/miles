@@ -256,13 +256,21 @@ class TestRegisterNegative:
         with pytest.raises(ValueError, match=r"hardware.*is CUDA-only"):
             ut_parse_one_file(path)
 
-    @pytest.mark.parametrize("count", [0, -1, 9, True, None, "2"])
+    @pytest.mark.parametrize("count", [0, 9, True, None, "2"])
     def test_invalid_gpu_budget_rejected(self, tmp_path, count):
         path = _make_fixture(
             f'register_cuda_ci(60, "stage-b-2-gpu-h200", labels=["megatron"], hardware=["hopper"], num_gpus={count!r})',
             tmp_path,
         )
         with pytest.raises(ValueError, match="num_gpus must be an integer"):
+            ut_parse_one_file(path)
+
+    def test_negative_gpu_budget_rejected_as_nonconstant_ast(self, tmp_path):
+        path = _make_fixture(
+            'register_cuda_ci(60, "stage-b-2-gpu-h200", labels=["megatron"], hardware=["hopper"], num_gpus=-1)',
+            tmp_path,
+        )
+        with pytest.raises(ValueError, match="num_gpus.*must be a literal constant"):
             ut_parse_one_file(path)
 
     def test_gpu_budget_cannot_exceed_home_capacity(self, tmp_path):
