@@ -79,21 +79,18 @@ def _run(monkeypatch, tmp_path, entrypoint, **overrides):
 
 
 @pytest.mark.parametrize(
-    ("model_name", "precision", "engine_name"),
-    [
-        ("mimo26-p4-bf16", "mxfp4_w4a8_linear", "mimo26-p4-native"),
-        ("MiMo-V2.6-Flash-RL-bf16", "mxfp4_w4a8_linear", "MiMo-V2.6-Flash-RL"),
-        ("mimo26-p4-bf16", "mxfp4_w4a16_linear", "mimo26-p4-w4a16"),
-        ("MiMo-V2.6-Flash-RL-bf16", "mxfp4_w4a16_linear", "MiMo-V2.6-Flash-RL-w4a16"),
-    ],
+    ("precision", "engine_name"),
+    [("mxfp4_w4a8_linear", "MiMo-V2.6-Flash-RL"), ("mxfp4_w4a16_linear", "MiMo-V2.6-Flash-RL-w4a16")],
 )
 def test_the_mxfp4_engines_serve_their_checkpoint_while_the_trainer_loads_bf16(
-    monkeypatch, tmp_path, model_name, precision, engine_name
+    monkeypatch, tmp_path, precision, engine_name
 ):
     models = tmp_path / "models"
-    train = _run(monkeypatch, tmp_path, "execute", model_name=model_name, sglang_precision=precision)[-1]
+    train = _run(monkeypatch, tmp_path, "execute", model_name="MiMo-V2.6-Flash-RL-bf16", sglang_precision=precision)[
+        -1
+    ]
 
-    assert f"--hf-checkpoint {models}/{engine_name} --ref-load {models}/{model_name} " in train
+    assert f"--hf-checkpoint {models}/{engine_name} --ref-load {models}/MiMo-V2.6-Flash-RL-bf16 " in train
     assert "--sglang-moe-runner-backend marlin" in train
     assert "--sglang-attention-backend" not in train
     # the fused qkv_proj slices into 4 kv-head shards, so the engine's attention TP must divide 4
@@ -103,9 +100,9 @@ def test_the_mxfp4_engines_serve_their_checkpoint_while_the_trainer_loads_bf16(
 
 
 def test_the_bf16_engine_serves_the_bf16_conversion(monkeypatch, tmp_path):
-    train = _run(monkeypatch, tmp_path, "execute", model_name="mimo26-p4-bf16")[-1]
+    train = _run(monkeypatch, tmp_path, "execute", model_name="MiMo-V2.6-Flash-RL-bf16")[-1]
 
-    assert f"--hf-checkpoint {tmp_path}/models/mimo26-p4-bf16 --megatron-to-hf-mode bridge" in train
+    assert f"--hf-checkpoint {tmp_path}/models/MiMo-V2.6-Flash-RL-bf16 --megatron-to-hf-mode bridge" in train
     assert "--ref-load" not in train and "marlin" not in train
 
 
@@ -152,52 +149,25 @@ def test_the_full_model_trains_on_one_b300_node(monkeypatch, tmp_path):
 
 def test_rollouts_sample_the_full_vocabulary(monkeypatch, tmp_path):
     """top-p 1.0 and top-k -1 (the Miles defaults): no sampling-support replay."""
-    train = _run(monkeypatch, tmp_path, "execute", model_name="mimo26-p4-bf16")[-1]
+    train = _run(monkeypatch, tmp_path, "execute")[-1]
 
     assert "--rollout-top-p" not in train and "--rollout-top-k" not in train
 
 
-@pytest.mark.parametrize(
-    ("precision", "engine_name", "flags"),
-    [
-        ("mxfp4_w4a8_linear", "mimo26-p4-native", "--keep-quant"),
-        ("mxfp4_w4a16_linear", "mimo26-p4-w4a16", "--keep-quant --bf16-linears"),
-    ],
-)
-def test_prepare_converts_the_partial_engine_checkpoint_and_skips_finished_work(
-    monkeypatch, tmp_path, precision, engine_name, flags
-):
-    commands = _run(monkeypatch, tmp_path, "prepare", model_name="mimo26-p4-bf16", sglang_precision=precision)
-    conversions = [c for c in commands if "convert_mimo_v2_to_bf16.py" in c]
-    assert [c.endswith("--layers 0,1,5,6") for c in conversions] == [True, False]
-    assert conversions[1].endswith(f"--layers 0,1,5,6 {flags}")
-    assert f"--save-dir {tmp_path}/models/{engine_name} " in conversions[1]
-
-    for name in ("mimo26-p4-bf16", engine_name):
-        (tmp_path / "models" / name).mkdir(parents=True, exist_ok=True)
-        (tmp_path / "models" / name / "model.safetensors.index.json").write_text("{}")
-    commands = _run(
-        monkeypatch, tmp_path, "prepare", model_name="mimo26-p4-bf16", sglang_precision=precision, prompt_data="x"
-    )
-    assert commands == []
-
-
-def test_prepare_converts_the_full_w4a16_checkpoint_from_the_download(monkeypatch, tmp_path):
+def test_prepare_converts_the_w4a16_checkpoint_from_the_download_and_skips_finished_work(monkeypatch, tmp_path):
     models = tmp_path / "models"
     for name in ("MiMo-V2.6-Flash-RL", "MiMo-V2.6-Flash-RL-bf16"):
         (models / name).mkdir(parents=True)
         (models / name / "model.safetensors.index.json").write_text("{}")
-    commands = _run(
-        monkeypatch,
-        tmp_path,
-        "prepare",
-        model_name="MiMo-V2.6-Flash-RL-bf16",
-        sglang_precision="mxfp4_w4a16_linear",
-        prompt_data="x",
-    )
+    kwargs = {"model_name": "MiMo-V2.6-Flash-RL-bf16", "sglang_precision": "mxfp4_w4a16_linear", "prompt_data": "x"}
+    commands = _run(monkeypatch, tmp_path, "prepare", **kwargs)
     (conversion,) = [c for c in commands if "convert_mimo_v2_to_bf16.py" in c]
     assert f"--model-dir {models}/MiMo-V2.6-Flash-RL --save-dir {models}/MiMo-V2.6-Flash-RL-w4a16 " in conversion
     assert conversion.endswith("--device cuda --keep-quant --bf16-linears")
+
+    (models / "MiMo-V2.6-Flash-RL-w4a16").mkdir()
+    (models / "MiMo-V2.6-Flash-RL-w4a16" / "model.safetensors.index.json").write_text("{}")
+    assert _run(monkeypatch, tmp_path, "prepare", **kwargs) == []
 
 
 def test_the_full_w4a8_engine_serves_the_download_without_converting_it(monkeypatch, tmp_path):
@@ -223,3 +193,8 @@ def test_the_full_w4a8_engine_serves_the_download_without_converting_it(monkeypa
 def test_sft_rejects_an_engine_precision(monkeypatch, tmp_path):
     with pytest.raises(AssertionError, match="only applies to RL"):
         _run(monkeypatch, tmp_path, "execute", mode="sft", sglang_precision="mxfp4_w4a16_linear")
+
+
+def test_the_mxfp4_engines_serve_the_full_model_only(monkeypatch, tmp_path):
+    with pytest.raises(AssertionError, match="full model only"):
+        _run(monkeypatch, tmp_path, "execute", model_name="mimo26-p4-bf16", sglang_precision="mxfp4_w4a16_linear")

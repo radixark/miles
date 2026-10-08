@@ -13,12 +13,10 @@ skipping finished ones: it downloads the official XiaomiMiMo/MiMo-V2.6-Flash-RL 
   MiMo-V2.6-Flash-RL-bf16  the full model (622 GB)
   mimo26-p4-bf16           `--layers 0,1,5,6` (46 GB), a 4-layer partial with one instance of every
                            decoder variant: global+dense, SWA+MoE, global+MoE, SWA+MoE
-The MXFP4 engines serve their own checkpoint instead:
-  mxfp4_w4a8_linear   the official format, whose fused qkv_proj and dense MLP run FP8 W8A8: the
-                      download for the full model, `mimo26-p4-native` (the same layers, `--keep-quant`)
-                      for the partial
-  mxfp4_w4a16_linear  those FP8 linears converted to BF16 (`--keep-quant --bf16-linears`):
-                      `MiMo-V2.6-Flash-RL-w4a16` and `mimo26-p4-w4a16`
+The MXFP4 engines (full model only) serve their own checkpoint instead:
+  mxfp4_w4a8_linear   the official download, whose fused qkv_proj and dense MLP run FP8 W8A8
+  mxfp4_w4a16_linear  `MiMo-V2.6-Flash-RL-w4a16`, those FP8 linears converted to BF16
+                      (`--keep-quant --bf16-linears`)
 Their MXFP4 experts run on Marlin (W4A16), except mxfp4_w4a8_linear on B300, which takes the SGLang
 cookbook's DeepGEMM runner (FP8 activations). Every engine on B300 uses FA4 attention.
 
@@ -30,7 +28,7 @@ Args:
   --sglang-precision: RL only. `bf16` serves the BF16 conversion; `mxfp4_w4a16_linear` and
       `mxfp4_w4a8_linear` serve an MXFP4 checkpoint (`--hf-checkpoint`, see above) while the trainer
       loads the BF16 conversion (`--ref-load`); each weight sync re-quantizes to that format.
-      Log-prob gaps: docs/models/mimo/mimo-v2-6-flash.md section 4.3.
+      Log-prob gaps: docs/models/mimo/mimo-v2-6-flash.md section 4.2.
   --model-name: checkpoint directory under `--model-dir`; selects the matching model args.
   --hardware: `auto` (the node the launcher runs on), `H200` or `B300`; selects the SGLang kernels and
       the full model's default layout.
@@ -81,10 +79,6 @@ class _Recipe:
     # Full-parameter Adam state of the full model (3.7 TB) fits neither 16 GPUs nor two hosts'
     # memory, so it streams through node-local NVMe; that needs bf16 gradient reduction.
     stream_optimizer_state: bool = False
-    # MXFP4 engine checkpoints under --model-dir: the official format (mxfp4_w4a8_linear) and the one
-    # whose FP8 linears are BF16 (mxfp4_w4a16_linear).
-    native_name: str = "MiMo-V2.6-Flash-RL"
-    w4a16_name: str = "MiMo-V2.6-Flash-RL-w4a16"
 
 
 _RECIPES = {
@@ -101,8 +95,6 @@ _RECIPES = {
         megatron_model_type="mimo-v2.6-flash-4layer",
         parallel={"H200": (2, 2, 2), "B300": (2, 2, 2)},
         layers="0,1,5,6",
-        native_name="mimo26-p4-native",
-        w4a16_name="mimo26-p4-w4a16",
     ),
 }
 # SGLang slices the fused qkv_proj of the MXFP4 checkpoints into 4 kv-head shards, so the engine's
@@ -116,11 +108,6 @@ _MXFP4_MOE_RUNNER = {
     ("H200", "mxfp4_w4a8_linear"): "marlin",
     ("B300", "mxfp4_w4a16_linear"): "marlin",
     ("B300", "mxfp4_w4a8_linear"): "deep_gemm",
-}
-# Converter flags that build each MXFP4 engine checkpoint from the download.
-_ENGINE_CONVERT_FLAGS = {
-    "mxfp4_w4a8_linear": ["--keep-quant"],
-    "mxfp4_w4a16_linear": ["--keep-quant", "--bf16-linears"],
 }
 
 
@@ -160,6 +147,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
         assert self.mode == "rl" or self.sglang_precision == "bf16", "--sglang-precision only applies to RL"
         self.hardware = U.resolve_hardware(self)
         recipe = _RECIPES[self.model_name]
+        assert self.sglang_precision == "bf16" or recipe.layers is None, "the MXFP4 engines serve the full model only"
         tp, pp, ep = recipe.parallel[self.hardware]
         self.tensor_model_parallel_size = self.tensor_model_parallel_size or tp
         self.pipeline_model_parallel_size = self.pipeline_model_parallel_size or pp
@@ -168,11 +156,10 @@ class ScriptArgs(U.ExecuteTrainConfig):
     @property
     def engine_checkpoint(self) -> str:
         """Checkpoint directory under --model-dir that the SGLang engine serves."""
-        recipe = _RECIPES[self.model_name]
         return {
             "bf16": self.model_name,
-            "mxfp4_w4a8_linear": recipe.native_name,
-            "mxfp4_w4a16_linear": recipe.w4a16_name,
+            "mxfp4_w4a8_linear": _HF_REPO.split("/")[1],
+            "mxfp4_w4a16_linear": "MiMo-V2.6-Flash-RL-w4a16",
         }[self.sglang_precision]
 
 
@@ -186,24 +173,21 @@ def prepare(args: ScriptArgs):
     recipe = _RECIPES[args.model_name]
     source = f"{args.model_dir}/{_HF_REPO.split('/')[1]}"
     with U.exclusive_path_lock(f"{args.model_dir}/{args.model_name}"):
-        conversions = {args.model_name: []}
-        # The full model's mxfp4_w4a8_linear engine serves the download itself; the rest only convert from it.
-        serves_source = f"{args.model_dir}/{args.engine_checkpoint}" == source
-        if args.sglang_precision != "bf16" and not serves_source:
-            conversions[args.engine_checkpoint] = _ENGINE_CONVERT_FLAGS[args.sglang_precision]
+        conversions = {args.model_name: [f"--layers {recipe.layers}"] if recipe.layers else []}
+        if args.sglang_precision == "mxfp4_w4a16_linear":
+            conversions[args.engine_checkpoint] = ["--keep-quant", "--bf16-linears"]
         pending = {name: flags for name, flags in conversions.items() if not _is_converted(f"{args.model_dir}/{name}")}
-        # `hf download` resumes an interrupted download, whose index may already be in place.
-        if pending or serves_source:
+        # The mxfp4_w4a8_linear engine serves the download itself, and `hf download` resumes an interrupted
+        # download, whose index may already be in place.
+        if pending or args.sglang_precision == "mxfp4_w4a8_linear":
             backend.exec_command_cpu(f"mkdir -p {args.model_dir}")
             backend.exec_command_cpu(f"hf download {_HF_REPO} --local-dir {source}")
-        layer_args = [f"--layers {recipe.layers}"] if recipe.layers else []
         for name, flags in pending.items():
             backend.exec_command_gpu(
                 " ".join(
                     [
                         f"python {U.repo_base_dir}/tools/convert_mimo_v2_to_bf16.py",
                         f"--model-dir {source} --save-dir {args.model_dir}/{name} --device cuda",
-                        *layer_args,
                         *flags,
                     ]
                 )
