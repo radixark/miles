@@ -97,7 +97,9 @@ def test_cancelled_holder_and_waiter_release_their_locks(workers):
         (8, "b200-oma-8gpu-0", "b200-oma-8gpu-0", True),
     ],
 )
-def test_orphan_containers_block_only_overlapping_layouts(monkeypatch, gpu_count, runner_name, existing_runner, blocked):
+def test_orphan_containers_block_only_overlapping_layouts(
+    monkeypatch, gpu_count, runner_name, existing_runner, blocked
+):
     from tests.ci.github_runner.b200_job_lock import assert_no_job_containers
 
     def docker_ps(command, *, text):

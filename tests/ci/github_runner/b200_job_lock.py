@@ -62,7 +62,9 @@ def assert_no_job_containers(gpu_count, runner_name):
         command.extend(["--filter", f"volume=/data/miles_ci/runner_{runner}"])
     # A killed worker can leave daemon-owned job containers after its lock dies.
     containers = subprocess.check_output(command, text=True).split()
-    assert not containers, f"Overlapping B200 job containers remain: {containers}; inspect and clean them up before retrying"
+    assert (
+        not containers
+    ), f"Overlapping B200 job containers remain: {containers}; inspect and clean them up before retrying"
 
 
 if __name__ == "__main__":
