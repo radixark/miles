@@ -83,9 +83,7 @@ class UpdateWeightP2P(WeightTransferProtocol):
     def begin_sync(
         self, weight_version: int, iter_buckets: Callable[..., Iterator[list[tuple[str, torch.Tensor]]]]
     ) -> bool:
-        """Maps the trainer's HF names for every new replica by running its own loader over them, and starts this
-        sync's staging. The first sync of the process collects the names, shapes and dtypes the trainer sends from
-        one pass of the real iterator; every rank joins its collectives."""
+        """Map new replicas and reset staging; all ranks must join the first iterator pass's collectives."""
         if self._hf_tensor_specs is None:
             self._hf_tensor_specs = {
                 hf_name: HfTensorSpec(tuple(tensor.shape), tensor.dtype)
@@ -111,13 +109,7 @@ class UpdateWeightP2P(WeightTransferProtocol):
             runner_sender.model_param_stager.assert_all_done()
 
     def send_bucket(self, converted_named_tensors: list[tuple[str, torch.Tensor]]) -> None:
-        """Loads the params this bucket completes into transfer buffers, a group at a time, and writes them to every
-        rollout engine rank this sender serves.
-
-        Each HF tensor goes to the first runner whose replica holds its param, the target before the draft: a param
-        the draft shares with the target (embed, head) is the target's storage, written once through the target. A
-        tensor no runner holds is one the engine's own loaders ignore too.
-        """
+        """Write complete parameter groups, routing shared embed/head weights through the target only."""
         if not self.is_sender or not converted_named_tensors:
             return
         unknown_hf_names = [hf_name for hf_name, _ in converted_named_tensors if hf_name not in self._hf_tensor_specs]
@@ -168,10 +160,7 @@ class UpdateWeightP2P(WeightTransferProtocol):
         placement: WeightUpdatePlacement,
         selector: str,
     ) -> None:
-        """Connects this trainer rank to the rollout engines handed over: assigns it rollout engine ranks over them
-        and the iterator's placement, picks the model runners `selector` covers, queries their configs and Mooncake
-        shards, and checks each model replica against the weights its ranks publish. Replicas, their HF name
-        mappings, the transport and the transfer buffers carry over from earlier connects."""
+        """Assign and validate write targets, reusing replicas, mappings, transport and buffers across reconnects."""
         self.rollout_engines = rollout_engines
         assignments = assign_rollout_engine_ranks(parallel_state, placement, engine_gpu_counts)
         self.is_sender = bool(assignments)
