@@ -13,7 +13,9 @@ class ModelParamStager:
     """
 
     def __init__(self, hf_name_mapping: HfNameMapping) -> None:
-        self._param_group_by_hf_name, self._hf_names_by_param_group = _build_param_groups_by_shared_hf_inputs(hf_name_mapping)
+        self._param_group_by_hf_name, self._hf_names_by_param_group = _build_param_groups_by_shared_hf_inputs(
+            hf_name_mapping
+        )
         self._staged_hf_tensors_by_param_group: dict[tuple[str, ...], list[tuple[str, torch.Tensor]]] = {}
         self._missing_hf_names_by_param_group: dict[tuple[str, ...], set[str]] = {}
 
