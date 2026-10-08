@@ -96,8 +96,8 @@ Host conventions:
   `_run-ci-b200.yml` serializes the full-node and half-node layouts and holds
   the repository-wide `b200-oma` concurrency lease across the whole run, so
   only the two disjoint 4-GPU runners can execute simultaneously. Every B200
-  workflow entry point must use that lease; a direct `_run-ci.yml` call would
-  bypass the resource guarantee.
+  workflow entry point must use that lease to keep a run's two layouts together.
+  The host hook below also prevents overlap from older workflow revisions.
 
 ### Rolling out the B200 layout
 
@@ -107,6 +107,9 @@ a runner job-start hook on all three runners. It takes a shared host lock for
 A background holder retains the lock until `Runner.Worker` exits, including
 container cleanup, and releases it when a cancelled worker exits. This also
 protects old PR and release workflows that do not acquire the GitHub queue.
+GitHub runs job-start hooks with `always()`: cancelling a job waiting in the
+hook can take the runner's five-minute cancellation grace period. The waiter
+creates no job container and releases its lock holder when the worker exits.
 
 Drain the currently running 8-GPU job before recreating its runner: that job
 started without the hook. Back up the host-local Compose override and `.env`,
