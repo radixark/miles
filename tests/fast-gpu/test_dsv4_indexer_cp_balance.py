@@ -21,14 +21,11 @@ import torch
 import torch.distributed as dist
 from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
 
+from miles.kernels.attention.dsa import causal_ranges_compressed, indexer_logits_sbhd
+from miles.kernels.attention.dsa.topk import get_dsa_topk_fn
 from miles_plugins.models.deepseek_v4.ops.cp_row_balance import RowExchange
-from miles_plugins.models.deepseek_v4.ops.kernel.tilelang_indexer_fwd import (
-    _make_causal_cu_seqlens,
-    batched_indexer_fwd,
-)
 from miles_plugins.models.deepseek_v4.ops.thd_utils import ThdLayout, compressed_cu_seqlens
 from miles_plugins.models.deepseek_v4.ops.v4_indexer import start_row_exchange, topk_for_local_rows
-from miles_plugins.models.dsa_topk import get_dsa_topk_fn
 
 register_cuda_ci(
     est_time=60,
@@ -77,12 +74,12 @@ def _thd_layout(seq_lens, rank, rank_rows):
 def _unbalanced_unpacked_topk(q, k, weights, rank, topk_fn):
     """The unpacked indexer before balancing: this rank's own rows, bounds sliced from the contiguous run."""
     rank_rows = q.shape[0]
-    cu_ks, cu_ke = _make_causal_cu_seqlens(SEQLEN_GLOBAL, k.shape[0], RATIO, q.device)
+    cu_ks, cu_ke = causal_ranges_compressed(SEQLEN_GLOBAL, RATIO, q.device)
     cu_ks, cu_ke = (
         cu_ks[rank * rank_rows : (rank + 1) * rank_rows],
         cu_ke[rank * rank_rows : (rank + 1) * rank_rows],
     )
-    scores = batched_indexer_fwd(q, k, weights, cu_ks, cu_ke)
+    scores = indexer_logits_sbhd(q, k, weights, cu_ks, cu_ke)
     bsz, rows, n_kv = scores.shape
     return topk_fn(scores.reshape(bsz * rows, n_kv), min(TOPK, n_kv)).reshape(bsz, rows, -1)
 

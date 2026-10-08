@@ -50,6 +50,8 @@ from miles.utils.workers.worker_provider.static import parse_host_and_port
 
 logger = logging.getLogger(__name__)
 
+LINEAR_ATTENTION_BACKENDS = ("fla", "flashqla")
+
 FULLY_ASYNC_ROLLOUT_PATH = "miles.rollout.fully_async_rollout.FullyAsyncRolloutFn"
 
 
@@ -440,7 +442,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             parser.add_argument(
                 "--linear-attention-backend",
                 type=str,
-                choices=["fla", "flashqla"],
+                choices=LINEAR_ATTENTION_BACKENDS,
                 default="fla",
                 help=(
                     "Backend for Qwen GDN linear-attention layers. "
@@ -523,7 +525,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 default="tilelang",
                 help=(
                     "DSA sparse-MLA kernel backend for GLM (glm_moe_dsa) under --megatron-to-hf-mode bridge. "
-                    "'tilelang' (default) uses the fused TileLang kernels (SparseMLA + lighting_indexer, vendored from slime) for "
+                    "'tilelang' (default) uses the fused TileLang DSA kernels in miles/kernels/attention/dsa (sparse_attention + lighting_indexer) for "
                     "rollout<->train numerical parity; 'megatron' uses the portable unfused megatron-core "
                     "kernels. 'tilelang' requires --qkv-format thd and the optional tilelang dep, and is "
                     "training/forward-only (no KV cache, cannot serve inference). Both support GLM-5.1 and "

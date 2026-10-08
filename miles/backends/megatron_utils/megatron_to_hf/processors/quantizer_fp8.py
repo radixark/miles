@@ -3,7 +3,7 @@ import re
 
 import torch
 
-from miles.utils.fp8_kernel import blockwise_cast_to_fp8_triton
+from miles.kernels.quant.fp8_blockwise import fp8_blockwise_cast
 
 from ...sglang import (
     per_block_cast_to_fp8,
@@ -125,7 +125,7 @@ def _quantize_param(args, name, weight, weight_block_size):
         ):
             qweight, scale = per_block_cast_to_fp8(weight)
         else:
-            qweight, scale = blockwise_cast_to_fp8_triton(weight, weight_block_size)
+            qweight, scale = fp8_blockwise_cast(weight, weight_block_size)
         scale_name = name.replace(".weight", ".weight_scale_inv")
     else:
         # per tensor quant
