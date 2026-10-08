@@ -17,6 +17,7 @@ from fastapi import FastAPI
 from miles.rollout.session.config import SessionServerConfig
 from miles.rollout.session.core import ProxyRequest
 from miles.rollout.session.sessions import setup_session_routes
+from miles.utils.http_utils import KEEPALIVE_EXPIRY_SECONDS
 from miles.utils.logging_utils import configure_logger_raw
 from miles.utils.workers.argv_utils import parse_config_argv
 
@@ -35,7 +36,7 @@ class SessionServer:
         self.app = FastAPI()
 
         self.client = httpx.AsyncClient(
-            limits=httpx.Limits(max_connections=1024),
+            limits=httpx.Limits(max_connections=1024, keepalive_expiry=KEEPALIVE_EXPIRY_SECONDS),
             timeout=httpx.Timeout(config.timeout),
         )
 

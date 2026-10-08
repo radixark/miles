@@ -169,12 +169,20 @@ def terminate_process(process: multiprocessing.Process, timeout: float = 1.0) ->
         process.join()
 
 
+# Expire idle pooled connections before the server's keep-alive closes them. uvicorn (SGLang, the Miles
+# router, the session server) closes idle connections after 5s, which equals httpx's default expiry, so a
+# request sent on a connection idle for ~5s races the server's close and fails with httpx.ReadError.
+KEEPALIVE_EXPIRY_SECONDS = 2.0
+
+
 class GeneralHttpClientProvider:
     _CONNECT_TIMEOUT = 10.0
     _WRITE_TIMEOUT = 60.0
     _POOL_TIMEOUT = 60.0
     _TIMEOUT = httpx.Timeout(connect=_CONNECT_TIMEOUT, read=None, write=_WRITE_TIMEOUT, pool=_POOL_TIMEOUT)
-    _LIMITS = httpx.Limits(max_connections=None, max_keepalive_connections=None)
+    _LIMITS = httpx.Limits(
+        max_connections=None, max_keepalive_connections=None, keepalive_expiry=KEEPALIVE_EXPIRY_SECONDS
+    )
 
     # TODO: entries are never evicted and the clients are never aclose()d, so a caller that keeps
     # creating event loops (repeated asyncio.run) leaks one client and its keep-alive sockets per
@@ -252,7 +260,7 @@ async def wait_http_ok(url: str, *, json_payload=None, timeout: float = 180.0, r
     else GET); raise ``TimeoutError`` past the deadline."""
     deadline = time.time() + timeout
     last_error = "no attempt made"
-    async with httpx.AsyncClient() as client:
+    async with httpx.AsyncClient(limits=httpx.Limits(keepalive_expiry=KEEPALIVE_EXPIRY_SECONDS)) as client:
         while True:
             try:
                 if json_payload is not None:
@@ -295,7 +303,7 @@ def init_http_client(args):
     _client_concurrency = max(_client_concurrency, args.sglang_server_concurrency)
     if _http_client is None:
         _http_client = httpx.AsyncClient(
-            limits=httpx.Limits(max_connections=_client_concurrency),
+            limits=httpx.Limits(max_connections=_client_concurrency, keepalive_expiry=KEEPALIVE_EXPIRY_SECONDS),
             timeout=httpx.Timeout(None),
         )
 
@@ -329,7 +337,7 @@ def _init_ray_distributed_post(args):
         def __init__(self, *, concurrency: int):
             # Lazy creation to this actor's event loop
             self._client = httpx.AsyncClient(
-                limits=httpx.Limits(max_connections=max(1, concurrency)),
+                limits=httpx.Limits(max_connections=max(1, concurrency), keepalive_expiry=KEEPALIVE_EXPIRY_SECONDS),
                 timeout=httpx.Timeout(None),
             )
 

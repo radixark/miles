@@ -11,6 +11,7 @@ from fastapi.responses import JSONResponse
 from starlette.responses import Response
 
 from miles.router.config import MilesRouterConfig
+from miles.utils.http_utils import KEEPALIVE_EXPIRY_SECONDS
 from miles.utils.logging_utils import configure_logger_raw
 from miles.utils.workers.argv_utils import parse_config_argv
 
@@ -50,7 +51,7 @@ class MilesRouter:
         self.dead_workers: set[str] = set()
 
         self.client = httpx.AsyncClient(
-            limits=httpx.Limits(max_connections=config.max_connections),
+            limits=httpx.Limits(max_connections=config.max_connections, keepalive_expiry=KEEPALIVE_EXPIRY_SECONDS),
             timeout=httpx.Timeout(config.timeout),
         )
 

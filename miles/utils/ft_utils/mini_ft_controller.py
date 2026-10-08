@@ -12,6 +12,7 @@ from typing import Any
 import httpx
 
 from miles.utils.ft_utils.api_server.models import Cell, CellList, CellPatch, CellPatchSpec, TriState
+from miles.utils.http_utils import KEEPALIVE_EXPIRY_SECONDS
 from miles.utils.pydantic_utils import StrictBaseModel
 from miles.utils.tracking_utils.structured_log import log_structured
 from miles.utils.workers.types import ClusterBackend
@@ -54,7 +55,9 @@ class _MiniFTControllerRunner:
         cells_auto_resume: bool,
     ) -> None:
         url = api_server_url.rstrip("/")
-        self._client = httpx.AsyncClient(base_url=url, timeout=30.0)
+        self._client = httpx.AsyncClient(
+            base_url=url, timeout=30.0, limits=httpx.Limits(keepalive_expiry=KEEPALIVE_EXPIRY_SECONDS)
+        )
         self._controller = _MiniFTController(
             get_cells=self._get_cells,
             suspend_cell=self._suspend_cell,
