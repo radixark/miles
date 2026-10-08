@@ -1,6 +1,10 @@
 from argparse import Namespace
 from collections.abc import Mapping, Sequence
 
+import numpy as np
+import torch
+
+from miles.rollout.generate_utils.output_store import ReplayOutputs
 from miles.utils.sampling_mask import RolloutSamplingMask
 from miles.utils.types import Sample
 
@@ -96,8 +100,20 @@ def append_sampling_metadata(
     *,
     aborted: bool = False,
     sampling_logprobs_mode: str = "selected",
+    replay: ReplayOutputs | None = None,
 ) -> list[float]:
-    """Append SGLang's realized support and return sampled-token log-probs."""
+    """Append SGLang's realized support and return sampled-token log-probs.
+
+    The support comes from ``replay`` when the response returned it through the
+    output store, otherwise from the inline ``meta_info`` keys.
+    """
+    if replay is not None and replay.has_sampling_mask:
+        sampling_mask, selected = _sampling_metadata_from_packed(
+            output_token_ids, replay, sampling_logprobs_mode=sampling_logprobs_mode
+        )
+        _append_sampling_mask(sample, sampling_mask)
+        return selected
+
     supports = meta_info.get("output_token_sampling_mask")
     log_probs = meta_info.get("output_token_sampling_logprobs")
     if supports is None or log_probs is None:
@@ -131,6 +147,49 @@ def append_sampling_metadata(
         raise ValueError(f"Unsupported sampling logprobs mode: {sampling_logprobs_mode}")
     _append_sampling_mask(sample, sampling_mask)
     return selected
+
+
+def _sampling_metadata_from_packed(
+    output_token_ids: Sequence[int],
+    replay: ReplayOutputs,
+    *,
+    sampling_logprobs_mode: str,
+) -> tuple[RolloutSamplingMask, list[float]]:
+    """The checks of the inline path, applied to the packed support arrays without building lists."""
+    lengths = replay.sampling_mask_lengths
+    token_ids = replay.sampling_mask_token_ids
+    log_probs = replay.sampling_logprobs
+    sampled = np.asarray(output_token_ids, dtype=np.int64)
+    if len(lengths) != len(sampled):
+        raise ValueError(f"sampling support length {len(lengths)} != token length {len(sampled)}")
+    if np.any(lengths <= 0):
+        raise ValueError("sampling support must contain at least one token")
+    offsets = np.concatenate(([0], np.cumsum(lengths, dtype=np.int64)))
+    if offsets[-1] != len(token_ids):
+        raise ValueError(f"sampling supports hold {len(token_ids)} ids, but their lengths sum to {offsets[-1]}")
+
+    rows = np.repeat(np.arange(len(lengths)), lengths)
+    is_sampled = token_ids == sampled[rows]
+    num_matches = np.bincount(rows, weights=is_sampled, minlength=len(lengths))
+    if np.any(num_matches == 0):
+        missing = sampled[np.flatnonzero(num_matches == 0)[0]]
+        raise ValueError(f"sampled token {missing} is absent from its sampling support")
+
+    if sampling_logprobs_mode == "support":
+        if len(log_probs) != len(token_ids):
+            raise ValueError("SGLang support log-probs must align with the sampling support IDs")
+        if np.any(num_matches != 1):
+            raise ValueError("Sampled token must occur exactly once in its sampling support")
+        selected = log_probs[is_sampled]
+    elif sampling_logprobs_mode == "selected":
+        if len(log_probs) != len(sampled):
+            raise ValueError(f"sampling log-prob length {len(log_probs)} != output token length {len(sampled)}")
+        selected = log_probs
+    else:
+        raise ValueError(f"Unsupported sampling logprobs mode: {sampling_logprobs_mode}")
+
+    sampling_mask = RolloutSamplingMask(ids=torch.from_numpy(token_ids), offsets=torch.from_numpy(offsets))
+    return sampling_mask, selected.tolist()
 
 
 def append_forced_sampling_tokens(sample: Sample, token_ids: Sequence[int]) -> None:

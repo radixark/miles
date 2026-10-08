@@ -1,8 +1,10 @@
 from types import SimpleNamespace
 
+import numpy as np
 import pytest
 
 from miles.rollout.generate_utils.generate_endpoint_utils import compute_request_payload
+from miles.rollout.generate_utils.output_store import ReplayOutputs
 from miles.rollout.generate_utils.sampling_mask import (
     append_forced_sampling_tokens,
     append_sampling_metadata,
@@ -179,6 +181,60 @@ def test_append_sampling_metadata_selects_sampled_probability_from_support_mode(
     ids, offsets = sample.rollout_sampling_mask._as_tensors()
     assert ids.tolist() == [10, 4, 7, 11, 3]
     assert offsets.tolist() == [0, 3, 5]
+
+
+def _packed(supports: list[list[int]], log_probs: list[float]) -> ReplayOutputs:
+    return ReplayOutputs(
+        sampling_mask_lengths=np.array([len(support) for support in supports], dtype=np.int32),
+        sampling_mask_token_ids=np.array([t for support in supports for t in support], dtype=np.int32),
+        sampling_logprobs=np.array(log_probs, dtype=np.float32),
+    )
+
+
+@pytest.mark.parametrize(
+    ("mode", "inline_log_probs", "packed_log_probs"),
+    [
+        ("selected", [-0.25, -0.5], [-0.25, -0.5]),
+        ("support", [[-1.25, -0.75, -2.0], [-0.5, -1.0]], [-1.25, -0.75, -2.0, -0.5, -1.0]),
+    ],
+)
+def test_output_store_supports_append_the_same_mask_and_logprobs_as_inline(mode, inline_log_probs, packed_log_probs):
+    supports, output_token_ids = [[10, 4, 7], [11, 3]], [4, 11]
+    inline, packed = Sample(tokens=[1]), Sample(tokens=[1])
+    meta_info = {"output_token_sampling_mask": supports, "output_token_sampling_logprobs": inline_log_probs}
+
+    inline_log_probs = append_sampling_metadata(inline, output_token_ids, meta_info, sampling_logprobs_mode=mode)
+    packed_log_probs = append_sampling_metadata(
+        packed, output_token_ids, {}, sampling_logprobs_mode=mode, replay=_packed(supports, packed_log_probs)
+    )
+
+    assert packed_log_probs == inline_log_probs
+    for left, right in zip(
+        packed.rollout_sampling_mask._as_tensors(), inline.rollout_sampling_mask._as_tensors(), strict=True
+    ):
+        assert left.tolist() == right.tolist()
+
+
+@pytest.mark.parametrize(
+    ("supports", "log_probs", "output_token_ids", "mode", "match"),
+    [
+        ([[10, 4]], [-0.5], [7], "selected", "absent from its sampling support"),
+        ([[4, 4]], [-0.5, -0.5], [4], "support", "exactly once"),
+        ([[10, 4]], [-0.5], [4], "support", "align"),
+        ([[10, 4]], [-0.5, -0.5], [4], "selected", "log-prob length"),
+        ([[10, 4]], [-0.5], [4, 10], "selected", "support length"),
+        ([[]], [-0.5], [4], "selected", "at least one token"),
+    ],
+)
+def test_output_store_supports_keep_the_inline_checks(supports, log_probs, output_token_ids, mode, match):
+    with pytest.raises(ValueError, match=match):
+        append_sampling_metadata(
+            Sample(tokens=[1]),
+            output_token_ids,
+            {},
+            sampling_logprobs_mode=mode,
+            replay=_packed(supports, log_probs),
+        )
 
 
 def test_append_sampling_metadata_rejects_misaligned_support_logprobs():

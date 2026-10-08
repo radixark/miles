@@ -8,11 +8,13 @@ import pytest
 import torch
 from PIL import Image
 from tests.fast.fixtures.generation_fixtures import GenerateEnv, generation_env, listify, make_sample, run_generate
+from tests.fast.fixtures.output_store_fixtures import FakeMooncakeStore, output_store_ref
 from transformers import AutoProcessor
 
 from miles.rollout.base_types import GenerateFnInput
 from miles.rollout.generate_hub import single_turn
 from miles.rollout.inference_rollout.inference_rollout_common import GenerateState
+from miles.utils import object_store
 from miles.utils.processing_utils import encode_image_for_rollout_engine
 from miles.utils.test_utils.mock_sglang_server import ProcessResult, ProcessResultMetaInfo
 from miles.utils.types import Sample, WeightVersionSpan, WeightVersionsPerCall
@@ -276,6 +278,36 @@ class TestRoutedExperts:
         assert sample.rollout_routed_experts is not None
         assert sample.rollout_routed_experts.shape == (num_tokens - 1, num_layers, moe_router_topk)
         np.testing.assert_array_equal(sample.rollout_routed_experts, routed_experts_array)
+
+    @pytest.mark.parametrize("generation_env", [{"args_kwargs": {"use_rollout_routing_replay": True}}], indirect=True)
+    def test_routed_experts_returned_through_the_output_store(self, variant, generation_env, monkeypatch):
+        num_layers, moe_router_topk = 2, 4
+        num_tokens = len(PROMPT_TOKENS) + len(RESPONSE_TOKENS)
+        routed_experts_array = np.arange((num_tokens - 1) * num_layers * moe_router_topk, dtype=np.int32).reshape(
+            num_tokens - 1, num_layers, moe_router_topk
+        )
+        generation_env.args.num_layers = num_layers
+        generation_env.args.moe_router_topk = moe_router_topk
+        generation_env.args.sglang_output_store_backend = "mooncake"
+        handle = {"type": "mooncake_dataproto_ref", "id": 7}
+        generation_env.mock_server.process_fn = lambda _: ProcessResult(
+            text=RESPONSE_TEXT,
+            finish_reason="stop",
+            meta_info=ProcessResultMetaInfo(
+                output_store_ref=output_store_ref(handle, routed_experts=("int32", list(routed_experts_array.shape)))
+            ),
+        )
+        store = FakeMooncakeStore({"routed_experts": [routed_experts_array.tolist()]})
+        monkeypatch.setattr(object_store, "_INSTANCE", store)
+
+        result = _run_generate(variant, generation_env)
+
+        assert result.requests == [
+            {**expected_request(variant, return_routed_experts=True), "return_outputs_via_store": True}
+        ]
+        sample = result.sample[0] if isinstance(result.sample, list) else result.sample
+        np.testing.assert_array_equal(sample.rollout_routed_experts, routed_experts_array)
+        assert store.removed == [handle]
 
 
 class TestMetaInfo:

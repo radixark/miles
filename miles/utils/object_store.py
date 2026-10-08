@@ -170,11 +170,20 @@ def _release_noop(value: Any) -> None:
 
 # ========================= mooncake backend ========================
 
+# Mooncake checks a bundle's manifest key against the reader's prefix, so every
+# writer whose bundles Miles reads (e.g. an SGLang output store) must use it.
+MOONCAKE_KEY_PREFIX = "miles-object-store"
+
 
 class _MooncakeStoreObjectRef(_BaseStoreObjectRef):
     backend: Literal[ObjectStoreBackend.MOONCAKE.value] = ObjectStoreBackend.MOONCAKE.value
 
     payload: Any
+
+
+def mooncake_ref_from_handle(handle: dict[str, Any]) -> StoreObjectRef:
+    """Ref for a bundle another process wrote and exported with Mooncake's ``export_ref``."""
+    return _MooncakeStoreObjectRef(payload=handle)
 
 
 class MooncakeObjectStore(BaseObjectStore):
@@ -192,7 +201,7 @@ class MooncakeObjectStore(BaseObjectStore):
         )
         if setup_error:
             raise RuntimeError(f"Mooncake store setup failed: {setup_error}")
-        self._transfer = MooncakeBundleTransfer(store, key_prefix="miles-object-store")
+        self._transfer = MooncakeBundleTransfer(store, key_prefix=MOONCAKE_KEY_PREFIX)
 
     def put(self, value: Any, value_spec: dict[str, ValueSpec] | None = None) -> StoreObjectRef:
         ref = self._transfer.put(

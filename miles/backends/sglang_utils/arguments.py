@@ -1,6 +1,7 @@
 import argparse
 
 from sglang.srt.server_args import ServerArgs
+from miles.backends.sglang_utils.output_store_config import validate_output_store_args
 from miles.utils.http_utils import wrap_ipv6
 
 
@@ -205,3 +206,5 @@ def validate_args(args):
 
     if getattr(args, "sglang_router_ip", None):
         args.sglang_router_ip = wrap_ipv6(args.sglang_router_ip)
+
+    validate_output_store_args(args)

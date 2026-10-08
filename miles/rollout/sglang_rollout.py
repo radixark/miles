@@ -42,8 +42,10 @@ from miles.utils.types import Sample
 from .generate_utils.generate_endpoint_utils import (
     compute_routing_headers,
     get_indexer_topk_from_response,
+    maybe_request_outputs_via_store,
     policy_uses_routing_key,
 )
+from .generate_utils.output_store import resolve_replay_outputs
 from .generate_utils.prefill_logprobs import recompute_samples_rollout_logprobs_via_prefill
 from .generate_utils.sample_utils import reward_log_summary, sample_text_preview
 from .generate_utils.sampling_mask import append_sampling_metadata, should_return_sampling_mask
@@ -206,6 +208,8 @@ async def generate(
         payload["return_routed_experts"] = True
     if getattr(args, "use_rollout_indexer_replay", False):
         payload["return_indexer_topk"] = True
+    if not evaluation:
+        maybe_request_outputs_via_store(args, payload)
 
     if sample.multimodal_inputs and sample.multimodal_inputs["images"]:
         image_data = sample.multimodal_inputs["images"]
@@ -229,6 +233,7 @@ async def generate(
     headers = compute_routing_headers(args, sample)
 
     output = await post(url, payload, headers=headers)
+    replay = await resolve_replay_outputs(output["meta_info"])
     if getattr(args, "use_opd", False) and opd_top_k > 0 and opd_top_k_strategy != "only-teacher":
         output_top_logprobs = output.get("meta_info", {}).get("output_top_logprobs")
         if output_top_logprobs is not None:
@@ -247,6 +252,7 @@ async def generate(
             new_response_tokens,
             output["meta_info"],
             sampling_logprobs_mode=payload.get("sampling_logprobs_mode", "selected"),
+            replay=replay,
         )
 
     # Update sample with tokens directly - avoiding re-tokenization
@@ -270,11 +276,17 @@ async def generate(
         sample.rollout_log_probs = []
     sample.rollout_log_probs += new_response_log_probs
 
-    if "routed_experts" in output["meta_info"]:
+    if replay is not None and replay.routed_experts is not None:
+        # Flattened, so the stop-edge handling below infers rows the same way for both sources.
+        _re = replay.routed_experts.reshape(-1)
+    elif "routed_experts" in output["meta_info"]:
         _re = np.frombuffer(
             pybase64.b64decode(output["meta_info"]["routed_experts"].encode("ascii")),
             dtype=np.int32,
         )
+    else:
+        _re = None
+    if _re is not None:
         _ntok = int(output["meta_info"]["prompt_tokens"]) + len(new_response_tokens) - 1
         _topk = _re.size // max(1, _ntok * args.num_layers)
         if _re.size == (_ntok + 1) * args.num_layers * max(1, _topk):
@@ -291,8 +303,8 @@ async def generate(
             "(topk-bypassing --moe-runner-backend such as flashinfer_trtllm?)."
         )
         sample.rollout_routed_experts = _re.reshape(_ntok, args.num_layers, _topk)
-    if "indexer_topk" in output["meta_info"]:
-        sample.rollout_indexer_topk = get_indexer_topk_from_response(args, output, sample)
+    if "indexer_topk" in output["meta_info"] or (replay is not None and replay.indexer_topk is not None):
+        sample.rollout_indexer_topk = get_indexer_topk_from_response(args, output, sample, replay=replay)
 
     sample.update_from_meta_info(args, output["meta_info"])
 

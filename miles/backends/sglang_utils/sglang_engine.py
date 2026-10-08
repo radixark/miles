@@ -6,6 +6,7 @@ import shlex
 
 from sglang.srt.server_args import ServerArgs
 
+from miles.backends.sglang_utils.output_store_config import compute_engine_output_store_extra_config
 from miles.backends.sglang_utils.server_args_utils import server_args_to_argv
 from miles.utils.lora.utils import (
     LORA_ADAPTER_NAME,
@@ -197,6 +198,16 @@ def _compute_server_args(
         logger.info(f"Warning: The following arguments is not supported in the current sglang: {unused_keys}.")
         for key in unused_keys:
             kwargs.pop(key)
+
+    if kwargs.get("output_store_backend", "none") != "none":
+        if worker_type in ("prefill", "decode"):
+            raise ValueError(
+                f"--sglang-output-store-backend does not support PD disaggregation, but a {worker_type} engine enables it"
+            )
+        # Miles writes the whole extra config: output_store_config states which values win.
+        kwargs["output_store_backend_extra_config"] = compute_engine_output_store_extra_config(
+            args, user_config=kwargs.get("output_store_backend_extra_config"), local_hostname=host.strip("[]")
+        )
 
     if is_multi_lora_enabled(args):
         assert kwargs.get("load_format") != "dummy", "Tinker engines must load the frozen base from disk"
