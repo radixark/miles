@@ -46,19 +46,15 @@ concurrency:
 jobs:
   stage-c-8-gpu-b200:
     if: inputs.run_8_gpu
-    strategy:
-      fail-fast: false
-      max-parallel: 1
-      matrix:
-        partition_id: [0, 1, 2]
     uses: ./.github/workflows/_run-ci.yml
     with:
       runs_on: '["b200", "8gpu"]'
+      # Whole-node shards cannot overlap; avoid repeated environment setup.
+      timeout_minutes: 540
       container_image: ${{ inputs.container_image }}
       ref: ${{ inputs.ref }}
       execute_command: >-
         python tests/ci/run_suite.py --hw cuda --suite stage-c-8-gpu-b200
-        --auto-partition-id ${{ matrix.partition_id }} --auto-partition-size 3
         --cadence ${{ inputs.cadence }}
         --labels ${{ inputs.raw_labels }}
         ${{ inputs.match_all_labels && '--match-all-labels' || '' }}

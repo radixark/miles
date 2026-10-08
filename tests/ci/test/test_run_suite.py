@@ -502,9 +502,9 @@ class TestWorkflowScopeSeam:
         assert "if: ${{ !cancelled() && inputs.run_4_gpu }}" in four_gpu
         assert "max-parallel: 2" in four_gpu
         assert "weekly" not in four_gpu
-        assert "max-parallel: 1" in b200_workflow
-        assert "partition_id: [0, 1, 2]" in b200_workflow
-        assert "--auto-partition-size 3" in b200_workflow
+        eight_gpu = b200_workflow.split("  stage-c-8-gpu-b200:", 1)[1].split("  stage-c-4-gpu-b200:", 1)[0]
+        assert "strategy:" not in eight_gpu
+        assert "--auto-partition" not in eight_gpu
         assert "partition_id: [0, 1, 2, 3]" in b200_workflow
         assert "--auto-partition-size 4" in b200_workflow
         assert "run_8_gpu:" in caller

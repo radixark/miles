@@ -197,6 +197,8 @@ def test_b200_suite_and_file_runs_allow_long_test_timeout():
     b200 = yaml.safe_load((workflows / "_run-ci-b200.yml").read_text())
     budget = b200["jobs"]["stage-c-4-gpu-b200"]["with"]["timeout_minutes"]
     assert budget * 60 >= 21600 * 1.25 + 1800
+    whole_node_budget = b200["jobs"]["stage-c-8-gpu-b200"]["with"]["timeout_minutes"]
+    assert whole_node_budget * 60 >= 22500 * 1.25 + 1800
     rerun = yaml.safe_load((workflows / "run-ci-file.yml").read_text())["jobs"]["run-cuda-file"]
     assert f"'stage-c-4-gpu-b200' && {budget} || 360" in rerun["with"]["timeout_minutes"]
     reusable = yaml.safe_load((workflows / "_run-ci.yml").read_text())

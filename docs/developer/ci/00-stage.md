@@ -25,14 +25,14 @@ Stage names follow `stage-<tier>-<gpus>-<hw>` (or `stage-<tier>-<hw>` for CPU, e
 | `stage-c-4-gpu-h200` | 4× H200 | `["h200","4gpu"]` | 5 | both resolvers, `stage-a-cpu` |
 | `stage-c-8-gpu-h100` | 8× H100 | `["h100","8gpu"]` | 1 | both resolvers, `stage-a-cpu` |
 | `stage-c-8-gpu-h200` | 8× H200 | `["h200","8gpu"]` | 1 | both resolvers, `stage-a-cpu` |
-| `stage-c-8-gpu-b200` | 8× B200 | `["b200","8gpu"]` | 3 (serial) | both resolvers, `stage-a-cpu` |
+| `stage-c-8-gpu-b200` | 8× B200 | `["b200","8gpu"]` | 1 | both resolvers, `stage-a-cpu` |
 | `stage-c-4-gpu-b200` | 4× B200 | `["b200","4gpu"]` | 4 (2 concurrent) | after the 8-GPU stage, under the same host lock |
 | `stage-c-4-gpu-mi350` | 4× MI350 | `["self-hosted","amd","mi350","4gpu"]` | 2 | both resolvers |
 | `nightly-stage-c-2-gpu-mi350` | 2× MI350 | external nightly | — | — |
 | `nightly-stage-c-4-gpu-mi350` | 4× MI350 | external nightly | — | — |
 | `nightly-stage-c-8-gpu-mi350` | 8× MI350 | external nightly | — | — |
 
-The single B200 host requires one 8-GPU runner and two 4-GPU runners pinned to disjoint GPU sets. `_run-ci-b200.yml` holds the repository-wide `b200-oma` concurrency group across three serial 8-GPU shards followed by four 4-GPU shards, at most two at a time. The 4-GPU stage proceeds when the 8-GPU stage is skipped or fails; cancellation stops both. B200 file reruns share the same queue. Its 4-GPU jobs have a nine-hour budget including setup, because a dispatched long test alone has a 7.5-hour per-file timeout. See `tests/ci/README.md` for runner setup and rollout prerequisites.
+The single B200 host requires one 8-GPU runner and two 4-GPU runners pinned to disjoint GPU sets. `_run-ci-b200.yml` holds the repository-wide `b200-oma` concurrency group across one 8-GPU job followed by four 4-GPU shards, at most two at a time. The 4-GPU stage proceeds when the 8-GPU stage is skipped or fails; cancellation stops both. B200 file reruns share the same queue. Suite jobs have a nine-hour budget including setup: the broad 8-GPU selection exceeds six hours of registered estimates, and a dispatched 4-GPU long test alone has a 7.5-hour per-file timeout. See `tests/ci/README.md` for runner setup and rollout prerequisites.
 
 In `pr-test.yml`, `tier a` (CPU fast) gates PR-image preparation and the NVIDIA GPU fleet; its GPU stages (`b` / `c`) all depend on both resolvers and `stage-a-cpu`, and can run concurrently except for the mutually exclusive B200 layouts — the `b` / `c` letters classify role, they are not a sequential pipeline. The MI350 stage has no CPU-test gate.
 
