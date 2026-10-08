@@ -75,7 +75,6 @@ class RayWorkerManager:
         configure_logger(args, source=SimpleProcessIdentity(component="worker_manager"))
         import os, subprocess
         print("DIAG env:", {k: v for k, v in os.environ.items() if any(t in k for t in ("VISIBLE", "ROCR", "HIP", "RAY_ACCEL", "LD_LIBRARY", "GPU_DEVICE"))}, flush=True)
-        print("DIAG exec env:", [e for e in open("/proc/self/environ", "rb").read().decode(errors="replace").split("\0") if any(t in e for t in ("VISIBLE", "ROCR", "HIP_", "GPU_DEVICE"))], flush=True)
         print("DIAG ray accel ids:", ray.get_runtime_context().get_accelerator_ids(), flush=True)
         print("DIAG ls dev:", subprocess.run("ls -l /dev/kfd /dev/dri | head -20", shell=True, capture_output=True, text=True).stdout, flush=True)
         print("DIAG probe:", subprocess.run(["python3", "-c", "import torch,os;print(torch.cuda.device_count());print(torch.cuda.get_device_properties(0).gcnArchName)"], capture_output=True, text=True), flush=True)
