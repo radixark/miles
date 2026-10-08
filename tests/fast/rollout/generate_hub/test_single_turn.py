@@ -44,7 +44,6 @@ def expected_request(
     input_ids: list[int] | None = None,
     sampling_params: dict | None = None,
     return_routed_experts: bool = False,
-    return_indexer_topk: bool = False,
     image_data: list[str] | None = None,
 ) -> dict:
     result = {
@@ -54,8 +53,6 @@ def expected_request(
     }
     if variant in ("single_turn", "multi_turn") or return_routed_experts:
         result["return_routed_experts"] = return_routed_experts
-    if variant in ("single_turn", "multi_turn") or return_indexer_topk:
-        result["return_indexer_topk"] = return_indexer_topk
     if image_data is not None:
         result["image_data"] = image_data
     return result

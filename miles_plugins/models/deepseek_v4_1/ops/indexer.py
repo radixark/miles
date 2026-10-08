@@ -8,12 +8,15 @@ from megatron.core.extensions.transformer_engine import TELinear
 from megatron.core.transformer.module import MegatronModule, mark_keep_in_fp32
 from megatron.core.transformer.transformer_config import TransformerConfig
 
-from miles.utils.replay_base import indexer_replay_manager
 from miles_plugins.models.deepseek_v4_1.ops.kernel.tilelang_indexer_fwd import batched_indexer_fwd
 from miles_plugins.models.deepseek_v4_1.ops.norm import RMSNorm
 from miles_plugins.models.deepseek_v4_1.ops.quant import fake_quant_fp4
 from miles_plugins.models.deepseek_v4_1.ops.rope import apply_rotary_emb
-from miles_plugins.models.dsa_topk import get_dsa_topk_fn
+from miles_plugins.models.indexer import freeze_indexer_parameters, get_indexer_topk_fn
+
+
+# Every parameter the V4.1 indexer owns, relative to the indexer module.
+INDEXER_PARAM_GLOBS = ("linear_wq_b.*", "linear_weights_proj.*", "linear_wk.*", "k_norm.*")
 
 
 def select_candidate_blocks(
@@ -171,9 +174,8 @@ class DeepSeekV41Indexer(MegatronModule):
             self.linear_wk = nn.Linear(head_dim, self.index_head_dim, bias=False, dtype=torch.bfloat16)
             self.k_norm = RMSNorm(self.index_head_dim, config.layernorm_epsilon)
             mark_keep_in_fp32(self.k_norm.weight)
-        indexer_replay_manager.register_to_module(
-            self, "indexer_replay", stream_idx=sorted(config.v41_index_source_layer_ids).index(layer_id)
-        )
+        # frozen everywhere: weight decay would drift the selection with no learning signal
+        freeze_indexer_parameters(self, INDEXER_PARAM_GLOBS)
 
     @torch.no_grad()
     def index_keys(self, latent: torch.Tensor, freqs_cis: torch.Tensor) -> torch.Tensor:
@@ -200,7 +202,7 @@ class DeepSeekV41Indexer(MegatronModule):
         weights, _ = self.linear_weights_proj(x)
         weights = weights * (self.softmax_scale * self.index_n_heads**-0.5)
 
-        topk_fn = indexer_replay_manager.get_topk_fn(get_dsa_topk_fn("torch"), return_probs=False)
+        topk_fn = get_indexer_topk_fn("torch")
         idx, candidates = indexer_select(
             q,
             index_k,
@@ -213,7 +215,7 @@ class DeepSeekV41Indexer(MegatronModule):
             candidate_block_size=self.candidate_block_size,
             topk=self.index_topk,
             topk_fn=topk_fn,
-            allow_deep_select=not indexer_replay_manager.enabled or indexer_replay_manager.stage == "fallthrough",
+            allow_deep_select=True,
             query_chunk=INDEXER_QUERY_CHUNK,
         )
         return idx, candidates

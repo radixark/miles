@@ -41,7 +41,6 @@ SAMPLES_VALUE_SPEC: dict[str, ValueSpec] = {
     "rollout_topk_log_probs": ValueSpec("tensor", np.dtype(np.float32), strict=True),
     "rollout_sampling_mask": ValueSpec("sampling_mask"),
     "rollout_routed_experts": ValueSpec("tensor", np.dtype(np.int32), strict=True),
-    "rollout_indexer_topk": ValueSpec("tensor", np.dtype(np.int32), strict=True),
     "status": ValueSpec("json"),
     "weight_versions": ValueSpec("json"),
     "spec_info": ValueSpec("json"),

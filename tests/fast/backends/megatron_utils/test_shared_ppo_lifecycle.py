@@ -15,7 +15,7 @@ from miles.backends.training_utils.types import TrainStepOutcome, TrainStepOutpu
 from miles.backends.training_utils.weight_update.conn_status import ConnStatusManager
 from miles.utils import object_store
 from miles.utils.ray_utils import Box
-from miles.utils.replay_base import IndexerReplayManager, RoutingReplayManager
+from miles.utils.replay_base import RoutingReplayManager
 from miles.utils.tensor_backper import MainCastContext, TensorBackuper
 
 
@@ -447,21 +447,12 @@ def test_skip_actor_forward_only_preserves_reference_teacher_and_training_forwar
     actor_module.train.assert_called_once()
 
 
-@pytest.mark.parametrize(
-    ("manager_cls", "rollout_flag", "data_key"),
-    [
-        (RoutingReplayManager, "use_rollout_routing_replay", "rollout_routed_experts"),
-        (IndexerReplayManager, "use_rollout_indexer_replay", "rollout_indexer_topk"),
-    ],
-)
 def test_skip_actor_forward_only_consumes_preloaded_rollout_replay_during_training(
     actor_module,
     monkeypatch,
-    manager_cls,
-    rollout_flag,
-    data_key,
 ):
-    manager = manager_cls()
+    data_key = "rollout_routed_experts"
+    manager = RoutingReplayManager()
     manager.enabled = True
     manager.enable_check_replay_result = False
     queued_top_indices = []
@@ -474,7 +465,7 @@ def test_skip_actor_forward_only_consumes_preloaded_rollout_replay_during_traini
     worker = _actor_reuse_worker(
         actor_module,
         skip_actor_forward_only=True,
-        **{rollout_flag: True},
+        use_rollout_routing_replay=True,
     )
     _patch_actor_reuse_dependencies(actor_module, monkeypatch, num_microbatches=[1])
     monkeypatch.setattr(actor_module, "all_replay_managers", [manager])

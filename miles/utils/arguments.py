@@ -1802,18 +1802,6 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "explicitly.",
             )
             parser.add_argument(
-                "--use-indexer-replay",
-                action="store_true",
-                default=False,
-                help="Replay indexer topk decisions for layers with indexers.",
-            )
-            parser.add_argument(
-                "--use-rollout-indexer-replay",
-                action="store_true",
-                default=False,
-                help="Replay indexer topk from rollout during training.",
-            )
-            parser.add_argument(
                 "--use-opsm",
                 action="store_true",
                 default=False,
@@ -2800,7 +2788,6 @@ def parse_args(add_custom_arguments=None, entry="train", preprocess_args=None):
 
         args = megatron_parse_args(extra_args_provider=add_miles_arguments)
         args.compress_ratios = None
-        args.rollout_indexer_topk_num_streams = None
         if args.hf_checkpoint:
             hf_config = load_hf_config(args.hf_checkpoint)
             args.compress_ratios = getattr(hf_config, "compress_ratios", None)
@@ -2811,9 +2798,6 @@ def parse_args(add_custom_arguments=None, entry="train", preprocess_args=None):
                 text_config = (getter() if callable(getter) else getattr(hf_config, "text_config", None)) or hf_config
                 args.indexer_rope_interleave = bool(getattr(text_config, "indexer_rope_interleave", False))
                 logger.info(f"Setting indexer_rope_interleave: {args.indexer_rope_interleave} into args")
-                linear_attn_config = getattr(text_config, "linear_attn_config", None)
-                kda_layers = set((linear_attn_config or {}).get("kda_layers") or [])
-                args.rollout_indexer_topk_num_streams = text_config.num_hidden_layers - len(kda_layers)
 
         # TODO: unify this .rank and .world_size w/ indep_dp logics
         args.rank = 0
@@ -3888,10 +3872,6 @@ def miles_validate_args(args):
 
     args.run_uuid = _resolve_run_uuid(args)
 
-    if args.use_rollout_indexer_replay:
-        args.use_indexer_replay = True
-        assert args.context_parallel_size == 1, "indexer replay does not support context parallelism yet"
-
     if args.eval_max_context_len is None:
         logger.info(
             f"args.eval_max_context_len is not set. Use args.rollout_max_context_len {args.rollout_max_context_len} as default value."
@@ -3989,10 +3969,6 @@ def validate_skip_actor_forward_only(args) -> None:
             (
                 "--use-routing-replay",
                 args.use_routing_replay and not args.use_rollout_routing_replay,
-            ),
-            (
-                "--use-indexer-replay",
-                args.use_indexer_replay and not args.use_rollout_indexer_replay,
             ),
         )
         if enabled

@@ -110,7 +110,7 @@ def get_glm5_next_spec(args, config, vp_stage=None):
         module=Glm5NextDSAAttention,
         params={
             "attn_mask_type": AttnMaskType.causal,
-            "topk_backend": args.miles_dsa_topk_backend,
+            "topk_backend": args.indexer_topk_backend,
         },
         submodules=DSASelfAttentionSubmodules(
             linear_q_down_proj=backend.linear(),

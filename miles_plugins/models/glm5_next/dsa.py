@@ -6,7 +6,6 @@ from megatron.core.transformer.enums import AttnMaskType
 from megatron.core.transformer.module import mark_keep_in_fp32
 from megatron.core.transformer.moe.moe_utils import RouterGatingLinearFunction
 
-from miles.utils.replay_base import indexer_replay_manager
 from miles_plugins.models.glm5.glm5 import DSAMLASelfAttention
 from miles_plugins.models.glm5.ops.sparse_mla import SparseMLA
 from miles_plugins.models.glm5_next.ops.kpool_indexer import build_pooled_keys, kpool_select_topk, pool_boundaries
@@ -43,7 +42,6 @@ class Glm5NextDSAAttention(DSAMLASelfAttention):
             name=name,
         )
         self.softmax_scale = self.q_head_dim**-0.5
-        self.index_topk = int(getattr(config, "index_topk", 2048))
         self.index_kpool = int(getattr(config, "index_kpool", 4))
 
         self.index_kpool_compress_gate = torch.nn.Parameter(torch.zeros(config.index_head_dim, config.hidden_size))
@@ -52,10 +50,6 @@ class Glm5NextDSAAttention(DSAMLASelfAttention):
         )
         self.index_kpool_compress_gate.requires_grad_(False)
         self.index_kpool_compress_ape.requires_grad_(False)
-
-        if indexer_replay_manager.enabled:
-            full_attn_layers = list(config.glm5_next_full_attn_layers)
-            self.indexer_replay.stream_idx = full_attn_layers.index(self.layer_number - 1)
 
     def get_absorb_query_key_value_tensors(
         self,
@@ -158,6 +152,7 @@ class Glm5NextDSAAttention(DSAMLASelfAttention):
             pool_cu_seqlens=pool_cu_seqlens,
             index_topk=self.index_topk,
             kpool=self.index_kpool,
+            topk_backend=self.topk_backend,
         )
 
     def forward(

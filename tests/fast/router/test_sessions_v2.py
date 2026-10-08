@@ -46,7 +46,6 @@ def _serve_router(extra_args: dict | None = None):
             "apply_chat_template_kwargs": {"enable_thinking": False},
             "tito_model": "default",
             "use_rollout_routing_replay": False,
-            "use_rollout_indexer_replay": False,
             "use_sampling_support_replay": False,
             "rollout_top_logprobs_num": 0,
             "rollout_sampling_logprobs_mode": "selected",
@@ -103,7 +102,6 @@ def router_env():
             "completion_tokens": len(output_token_logprobs),
             # Replay payloads stay in the record along with the rest of meta_info.
             "routed_experts": [[0, 1], [2, 3]],
-            "indexer_topk": [[4], [5]],
         }
         return response
 
@@ -188,25 +186,6 @@ class TestHealth:
         body = response.json()
         assert body["status"] == "ok"
         assert body["session_server_instance_id"] == "v2-instance-under-test"
-
-
-class TestIndexerReplayWiring:
-    def test_indexer_replay_config_requests_indexer_topk_from_backend(self):
-        """With indexer replay enabled, the upstream chat request asks for indexer topk."""
-        with _serve_router({"use_rollout_indexer_replay": True}) as env:
-            session_id = _create_session(env.url)
-            response = _post_chat(env.url, session_id, {"messages": [{"role": "user", "content": "hi"}]})
-
-            assert response.status_code == 200
-            assert env.backend.request_log[-1]["return_indexer_topk"] is True
-
-    def test_without_indexer_replay_the_backend_request_sends_false_indexer_topk(self, router_env):
-        """The flag comes from config rather than being hardcoded: a plain server sends an explicit False."""
-        session_id = _create_session(router_env.url)
-        response = _post_chat(router_env.url, session_id, {"messages": [{"role": "user", "content": "hi"}]})
-
-        assert response.status_code == 200
-        assert router_env.backend.request_log[-1]["return_indexer_topk"] is False
 
 
 def _keep_all_picker(leaf_samples, _session_metadata):
@@ -424,7 +403,6 @@ class TestRollbackPins:
             response = fixture_response(mock_self, payload)
             meta = response["choices"][0]["meta_info"]
             meta.pop("routed_experts", None)
-            meta.pop("indexer_topk", None)
             return response
 
         with patch.object(MockSGLangServer, "_compute_chat_completions_response", new=clean_meta_response):
@@ -478,7 +456,6 @@ def _clean_r3_meta():
         response = fixture_response(mock_self, payload)
         meta = response["choices"][0]["meta_info"]
         meta.pop("routed_experts", None)
-        meta.pop("indexer_topk", None)
         return response
 
     with patch.object(MockSGLangServer, "_compute_chat_completions_response", new=clean_meta_response):

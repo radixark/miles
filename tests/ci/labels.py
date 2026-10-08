@@ -36,7 +36,7 @@ KNOWN_LABELS: dict[str, str] = {
     "weight-update": "Weight update tests",
     "fully-async": "Fully-async rollout tests",
     "multi-policy": "Multi policy training tests (several policy models in one run)",
-    "replay": "Routing / indexer replay tests",
+    "replay": "Routing replay tests",
     "qwen35": "Qwen3.5-35B-A3B MTP / spec-v2 e2e tests",
     "mooncake": "Mooncake object-store rollout transfer tests",
     "miles-plugin": "miles_plugins extension tests (optimizers, model plugins)",

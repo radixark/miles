@@ -36,7 +36,6 @@ def test_generate_payload_automatically_requests_sampling_mask(
         rollout_max_response_len=16,
         rollout_max_context_len=None,
         use_rollout_routing_replay=False,
-        use_rollout_indexer_replay=False,
         rollout_top_logprobs_num=0,
         rollout_sampling_logprobs_mode="selected",
     )
@@ -84,7 +83,6 @@ def test_evaluation_does_not_request_or_validate_training_sampling_support():
         rollout_max_response_len=16,
         rollout_max_context_len=None,
         use_rollout_routing_replay=False,
-        use_rollout_indexer_replay=False,
         rollout_top_logprobs_num=0,
         rollout_sampling_logprobs_mode="selected",
     )

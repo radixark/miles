@@ -46,7 +46,6 @@ class TestRolloutServerPureFunctions:
         assert (group.num_gpus, group.num_gpus_per_engine) == (2, 2)
         # Eval samples never feed training, so the replay side-channels are forced off.
         assert group.overrides["enable_return_routed_experts"] is False
-        assert group.overrides["enable_return_indexer_topk"] is False
 
         # The fleet boots on --hf-checkpoint; every eval overwrites those weights anyway.
         assert group.model_path == args.hf_checkpoint

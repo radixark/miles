@@ -613,7 +613,7 @@ def get_dsv41_spec(args, config, vp_stage):
     config.v41_carry_state = config.pipeline_model_parallel_size > 1 or config.recompute_granularity == "full"
     config.v41_hf_checkpoint = args.hf_checkpoint
     config.v41_runtime = V41Runtime()
-    config.miles_dsa_topk_backend = args.miles_dsa_topk_backend
+    config.indexer_topk_backend = args.indexer_topk_backend
     _install_patches(config)
 
     _orig_get_spec = _eav_specs.get_experimental_attention_variant_module_spec

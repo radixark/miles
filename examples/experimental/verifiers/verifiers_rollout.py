@@ -596,7 +596,6 @@ def _validate_args(args: Namespace) -> None:
         for enabled, flag in (
             (args.use_opd, "--use-opd"),
             (args.use_rollout_routing_replay, "--use-rollout-routing-replay"),
-            (getattr(args, "use_rollout_indexer_replay", False), "--use-rollout-indexer-replay"),
         )
         if enabled
     ]

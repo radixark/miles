@@ -88,7 +88,6 @@ class TestServerOwnedFields:
                     "return_meta_info": False,
                     "no_stop_trim": True,
                     "return_routed_experts": True,
-                    "return_indexer_topk": True,
                 },
             )
             assert resp.status_code == 200
@@ -97,7 +96,6 @@ class TestServerOwnedFields:
             assert wire["return_meta_info"] is True
             assert wire["no_stop_trim"] is False
             assert wire["return_routed_experts"] is False
-            assert wire["return_indexer_topk"] is False
             assert "lora_path" not in wire
             assert wire["temperature"] == 0.7  # not in the table: the client's
 

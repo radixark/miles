@@ -46,7 +46,6 @@ def _computed_sample(**overrides) -> Sample:
     s.rollout_log_probs = [-0.5, -0.1234567891234567]
     s.rollout_sampling_mask = RolloutSamplingMask(ids=[10, 4, 11], offsets=[0, 2, 3])
     s.rollout_routed_experts = np.arange(24, dtype=np.int32).reshape(4, 3, 2)
-    s.rollout_indexer_topk = None
     s.status = Sample.Status.COMPLETED
     s.weight_versions = [_versions("w1"), _versions("w2")]
     s.prefix_cache_info = Sample.PrefixCacheInfo.from_dict({"cached_tokens": 2, "total_prompt_tokens": 3})
@@ -100,7 +99,6 @@ class TestSamplesWireCodec:
         assert out.prefix_cache_info.to_dict() == {"cached_tokens": 2, "total_prompt_tokens": 3}
         assert out.rollout_routed_experts.dtype == np.int32
         assert np.array_equal(out.rollout_routed_experts, np.arange(24, dtype=np.int32).reshape(4, 3, 2))
-        assert out.rollout_indexer_topk is None
         # template fields carried from the input sample, untouched
         assert out.group_index == 7 and out.index == 3
         assert out.prompt == [{"role": "user", "content": "hi"}]
@@ -173,9 +171,8 @@ class TestSamplesWireCodec:
 
     def test_safetensors_container_round_trips_non_contiguous_replay_tensors(self):
         routed = np.arange(24, dtype=np.int32).reshape(3, 4, 2).transpose(1, 0, 2)
-        indexer = np.arange(48, dtype=np.int32).reshape(8, 3, 2)[::2]
-        assert not routed.flags["C_CONTIGUOUS"] and not indexer.flags["C_CONTIGUOUS"]
-        sample = _computed_sample(rollout_routed_experts=routed, rollout_indexer_topk=indexer)
+        assert not routed.flags["C_CONTIGUOUS"]
+        sample = _computed_sample(rollout_routed_experts=routed)
 
         payload = encode_samples([sample], {}, None, fields=_FIELDS_WITH_SAMPLING_MASK)
         # the reply is a plain safetensors buffer: no Miles framing needed to open it
@@ -188,7 +185,6 @@ class TestSamplesWireCodec:
             "rollout_sampling_mask.ids.0",
             "rollout_sampling_mask.offsets.0",
             "rollout_routed_experts.0",
-            "rollout_indexer_topk.0",
         }
         assert tensors["_samples_meta"].dtype == np.uint8 and tensors["_samples_meta"].ndim == 1
         assert tensors["loss_mask.0"].dtype == np.uint8
@@ -198,7 +194,6 @@ class TestSamplesWireCodec:
         assert out.rollout_log_probs == sample.rollout_log_probs
         assert out.rollout_routed_experts.dtype == np.int32 and out.rollout_routed_experts.shape == (4, 3, 2)
         assert np.array_equal(out.rollout_routed_experts, routed)
-        assert out.rollout_indexer_topk.dtype == np.int32 and np.array_equal(out.rollout_indexer_topk, indexer)
 
     def test_default_fields_do_not_emit_sampling_mask(self):
         payload = encode_samples([_computed_sample()], {}, None)
@@ -211,12 +206,9 @@ class TestSamplesWireCodec:
         assert out.rollout_sampling_mask is None
 
     def test_zero_size_tensor_is_distinct_from_none(self):
-        sample = _computed_sample(
-            rollout_routed_experts=np.empty((0, 3, 2), dtype=np.int32), rollout_indexer_topk=None
-        )
+        sample = _computed_sample(rollout_routed_experts=np.empty((0, 3, 2), dtype=np.int32))
         (out,) = decode_samples_and_merge_input_sample(encode_samples([sample], {}, None), Sample()).samples
         assert isinstance(out.rollout_routed_experts, np.ndarray) and out.rollout_routed_experts.shape == (0, 3, 2)
-        assert out.rollout_indexer_topk is None
 
     def test_null_tokens_restore_fresh_empty_lists(self):
         # A null marker restores per-sample fresh instances, never one shared list.

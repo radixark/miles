@@ -12,6 +12,8 @@ from megatron.core.transformer.module import MegatronModule
 from megatron.core.transformer.transformer_config import TransformerConfig
 from torch import Tensor
 
+from miles_plugins.models.indexer import freeze_indexer_parameters, select_indexer_topk
+
 
 def _indexer_acc_dtype(x):
     return x.dtype if x.dtype in (torch.float32, torch.float64) else torch.float32
@@ -118,6 +120,9 @@ def packed_block_causal_mask(query_positions: Tensor, layout: PackedBlockLayout,
     return (blocks >= lo) & (blocks < first_invalid)
 
 
+INDEXER_PARAM_GLOBS = ("index_qk_proj.*", "q_layernorm", "k_layernorm")
+
+
 class Qwen38NextQSAIndexer(MegatronModule):
     """Selects the sparse-attention budget for one full-attention layer."""
 
@@ -131,6 +136,7 @@ class Qwen38NextQSAIndexer(MegatronModule):
         self.compress_ratio = config.qwen3_8_next_indexer_compress_ratio
         self.block_topk = self.token_topk // self.compress_ratio
         self.norm_eps = config.layernorm_epsilon
+        self.topk_backend = config.indexer_topk_backend
 
         self.index_qk_proj = TELinear(
             config.hidden_size,
@@ -147,6 +153,9 @@ class Qwen38NextQSAIndexer(MegatronModule):
         self.k_layernorm = torch.nn.Parameter(torch.zeros(self.head_dim, dtype=dtype))
         for p in (self.q_layernorm, self.k_layernorm):
             p.sequence_parallel = config.sequence_parallel
+
+        # frozen everywhere: weight decay would drift the selection with no learning signal
+        freeze_indexer_parameters(self, INDEXER_PARAM_GLOBS)
 
     def project_qk(
         self,
@@ -217,9 +226,7 @@ class Qwen38NextQSAIndexer(MegatronModule):
         q, block_k = self.project_qk(hidden_states, positions, rotary_pos_emb, layout=layout)
         logits = self.score_blocks(q, block_k, positions, layout=layout)
 
-        k = min(self.block_topk, logits.shape[-1])
-        block_scores, block_idx = torch.topk(logits, k, dim=-1)
-        block_idx = block_idx.masked_fill(block_scores == float("-inf"), -1)
+        block_idx = select_indexer_topk(logits, self.block_topk, backend=self.topk_backend)
 
         offsets = torch.arange(self.compress_ratio, device=block_idx.device)
         if layout is None:

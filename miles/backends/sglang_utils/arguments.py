@@ -57,7 +57,6 @@ _SKIPPED_SERVER_ARGS = [
     "gated_launch_port",
     "skip_server_warmup",
     "enable_return_routed_experts",
-    "enable_return_indexer_topk",
 ]
 
 # tp_size comes from --eval-num-gpus-per-engine, which also places the engines.

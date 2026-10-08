@@ -477,8 +477,6 @@ def _train(args: ScriptArgs):
 
     if args.enable_r3:
         misc_args += "--use-rollout-routing-replay "
-        # Skip indexer-replay for now
-        # misc_args += "--use-rollout-indexer-replay "
 
     if args.train_deterministic:
         misc_args += "--deterministic-mode "

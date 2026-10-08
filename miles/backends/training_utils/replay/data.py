@@ -38,7 +38,6 @@ def fill_replay_data(
     replay_list: list,
     register_replay_list_func: RegisterReplayListFunc,
     if_sp_region=True,
-    indices_are_token_positions=False,
 ):
     """Load rollout replay tensors into module replay queues.
 
@@ -108,12 +107,6 @@ def fill_replay_data(
                 replay_data = replay_data.chunk(cp_size, dim=0)[cp_rank]
             else:
                 replay_data = [slice_with_cp(r, pad_func, qkv_format) for r in replay_data]
-                if indices_are_token_positions:
-                    # map indices to thd format
-                    offset = 0
-                    for i, r in enumerate(replay_data):
-                        replay_data[i] = torch.where(r != -1, r + offset, r)
-                        offset += r.shape[0]
                 replay_data = torch.cat(replay_data, dim=0)
                 pad = (pad_size - replay_data.size(0) % pad_size) % pad_size
                 if pad != 0:

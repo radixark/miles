@@ -22,10 +22,10 @@ def add_dsa_arguments(parser: ArgumentParser) -> ArgumentParser:
         ),
     )
     group.add_argument(
-        "--miles-dsa-topk-backend",
+        "--indexer-topk-backend",
         choices=["torch", "flashinfer"],
         default="torch",
-        help="DSA indexer top-k backend for both raw DSA implementations.",
+        help="Top-k backend for every sparse-attention indexer (GLM-5/V3.2, GLM-5.3, DeepSeek-V4, Qwen3.8 QSA).",
     )
     return parser
 
@@ -53,7 +53,7 @@ def normalize_dsa_args(args: Namespace, hf_config) -> None:
     args.spec = list(MEGATRON_DSA_SPEC)
     args.experimental_attention_variant = "dsa"
     args.enable_experimental = True
-    args.dsa_indexer_topk_backend = args.miles_dsa_topk_backend
+    args.dsa_indexer_topk_backend = args.indexer_topk_backend
     args.dsa_indexer_n_heads = hf_config.index_n_heads
     args.dsa_indexer_head_dim = hf_config.index_head_dim
     args.dsa_indexer_topk = hf_config.index_topk

@@ -39,11 +39,7 @@ from miles.utils.processing_utils import (
 )
 from miles.utils.types import Sample
 
-from .generate_utils.generate_endpoint_utils import (
-    compute_routing_headers,
-    get_indexer_topk_from_response,
-    policy_uses_routing_key,
-)
+from .generate_utils.generate_endpoint_utils import compute_routing_headers, policy_uses_routing_key
 from .generate_utils.prefill_logprobs import recompute_samples_rollout_logprobs_via_prefill
 from .generate_utils.sample_utils import reward_log_summary, sample_text_preview
 from .generate_utils.sampling_mask import append_sampling_metadata, should_return_sampling_mask
@@ -204,8 +200,6 @@ async def generate(
 
     if args.use_rollout_routing_replay:
         payload["return_routed_experts"] = True
-    if getattr(args, "use_rollout_indexer_replay", False):
-        payload["return_indexer_topk"] = True
 
     if sample.multimodal_inputs and sample.multimodal_inputs["images"]:
         image_data = sample.multimodal_inputs["images"]
@@ -291,8 +285,6 @@ async def generate(
             "(topk-bypassing --moe-runner-backend such as flashinfer_trtllm?)."
         )
         sample.rollout_routed_experts = _re.reshape(_ntok, args.num_layers, _topk)
-    if "indexer_topk" in output["meta_info"]:
-        sample.rollout_indexer_topk = get_indexer_topk_from_response(args, output, sample)
 
     sample.update_from_meta_info(args, output["meta_info"])
 

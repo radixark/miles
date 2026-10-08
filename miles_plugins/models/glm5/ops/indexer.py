@@ -1,41 +1,8 @@
 import torch
 
-from miles.utils.replay_base import indexer_replay_manager
-from miles_plugins.models.dsa_topk import get_dsa_topk_fn
+from miles_plugins.models.indexer import select_indexer_topk
 
-from .tilelang_indexer_bwd import indexer_bwd_interface
 from .tilelang_indexer_fwd import indexer_fwd_interface
-
-
-def pytorch_extract_topk_scores(logits, topk_indices, dim=-1):
-    valid_mask = topk_indices != -1
-    safe_indices = topk_indices.clamp(min=0).to(torch.int64)
-    scores = torch.gather(logits, dim=dim, index=safe_indices)
-    scores = torch.where(valid_mask, scores, float("-inf"))
-    return scores
-
-
-class IndexerFunction(torch.autograd.Function):
-    @staticmethod
-    def forward(
-        ctx,
-        index_q: torch.Tensor,
-        index_k: torch.Tensor,
-        weights: torch.Tensor,
-        cu_seqlen_ks: torch.Tensor,
-        cu_seqlen_ke: torch.Tensor,
-        logits: torch.Tensor,
-        topk_indices: torch.Tensor,
-    ):
-        index_score = pytorch_extract_topk_scores(logits, topk_indices)
-        ctx.save_for_backward(index_q, index_k, weights, cu_seqlen_ks, cu_seqlen_ke, topk_indices)
-        return index_score
-
-    @staticmethod
-    def backward(ctx, grad_scores):
-        index_q, index_k, weights, cu_seqlen_ks, cu_seqlen_ke, topk_indices = ctx.saved_tensors
-        grad_q, grad_w, grad_k = indexer_bwd_interface(index_q, weights, index_k, topk_indices, grad_scores)
-        return grad_q, grad_k, grad_w, None, None, None, None
 
 
 def lighting_indexer(
@@ -46,20 +13,16 @@ def lighting_indexer(
     cu_seqlen_ke: torch.Tensor,
     topk: int,
     topk_backend: str = "torch",
-    topk_indices: torch.Tensor | None = None,
-):
-    if topk_indices is not None:
-        assert not indexer_replay_manager.enabled
+) -> torch.Tensor:
+    """Pick the keys each query attends to.
 
+    The indexer is frozen on every path, so this returns the selection only.
+    The scores it selects on carry no gradient and nothing downstream reads
+    them: attention depends on the index set alone.
+    """
     weights_2d = weights.squeeze(-1)
     logits = indexer_fwd_interface(index_q, index_k, weights_2d, cu_seqlen_ks, cu_seqlen_ke, clean_logits=True)
-
-    if topk_indices is None:
-        topk_fn = indexer_replay_manager.get_topk_fn(get_dsa_topk_fn(topk_backend), return_probs=False)
-        topk_indices = topk_fn(logits, topk)
-
-    index_score = IndexerFunction.apply(index_q, index_k, weights_2d, cu_seqlen_ks, cu_seqlen_ke, logits, topk_indices)
-    return index_score, topk_indices
+    return select_indexer_topk(logits, topk, backend=topk_backend)
 
 
 def generate_varlen_mask_params(cu_seqlens):

@@ -46,7 +46,7 @@ Training uses packed `--qkv-format thd` and supports sequence parallelism. Nativ
 
 The fused cuDNN indexer supports CP1, single-sequence CP batches, and complete multi-sequence CP query partitions. TP-local query slices of multi-sequence CP batches are rejected; select the reference implementation explicitly for that layout. Fused execution uses the configured cuDNN frontend directly and does not silently switch to reference scoring.
 
-`--miles-dsa-topk-backend` selects top-k for both implementations and is accepted by conversion, training, and the standalone `run_megatron` debug worker. This runtime selection does not change the checkpoint layout. The W4A16 test keeps `flashinfer` and `SGLANG_DSA_TOPK_FLASHINFER_TIE_BREAK=large`, preserving its top-k backend and tie policy when selecting native Megatron DSA.
+`--indexer-topk-backend` selects top-k for both implementations and is accepted by conversion, training, and the standalone `run_megatron` debug worker. This runtime selection does not change the checkpoint layout. The W4A16 test keeps `flashinfer` and `SGLANG_DSA_TOPK_FLASHINFER_TIE_BREAK=large`, preserving its top-k backend and tie policy when selecting native Megatron DSA.
 
 Native DSA defaults to `--dsa-indexer-loss-coeff 0` and freezes its indexer parameters, because native top-k selection runs without gradients when the auxiliary objective is disabled. This excludes unused parameters from DDP and optimizer weight decay. A positive native loss coefficient keeps the indexer trainable and requires explicitly selecting the reference implementation with `--dsa-kernel-backend none` or `--attention-backend unfused` when using an external top-k backend.
 

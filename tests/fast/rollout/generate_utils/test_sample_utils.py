@@ -123,26 +123,6 @@ class TestMergeSamples:
         with pytest.raises(AssertionError, match="trainer_model_id mismatch"):
             _merge_sample_pair(a=a, b=b, tokenizer=mock_tokenizer)
 
-    def test_merge_preserves_indexer_topk_from_final_sample(self, mock_tokenizer):
-        a = make_sample(
-            tokens=[1, 2, 10],
-            response_length=1,
-            loss_mask=[1],
-            rollout_log_probs=[-0.1],
-        )
-        b = make_sample(
-            tokens=[1, 2, 10, 20, 30],
-            response_length=1,
-            loss_mask=[1],
-            rollout_log_probs=[-0.2],
-        )
-        a.rollout_indexer_topk = numpy.zeros((2, 2, 3), dtype=numpy.int32)
-        b.rollout_indexer_topk = numpy.ones((4, 2, 3), dtype=numpy.int32)
-
-        merged = _merge_sample_pair(a, b, mock_tokenizer)
-
-        numpy.testing.assert_array_equal(merged.rollout_indexer_topk, b.rollout_indexer_topk)
-
     def test_loss_mask_none_defaults_to_all_ones(self, mock_tokenizer):
         a = make_sample(
             tokens=[1, 2, 10],

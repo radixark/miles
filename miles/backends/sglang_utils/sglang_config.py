@@ -347,7 +347,6 @@ def _eval_sglang_overrides(args) -> dict:
     overrides = {
         # Eval samples never feed training, so the replay side-channels are pure overhead.
         "enable_return_routed_experts": False,
-        "enable_return_indexer_topk": False,
     }
     if args.eval_num_gpus_per_engine != args.rollout_num_gpus_per_engine:
         # Inheriting these across a different tp gives an engine SGLang refuses to boot.

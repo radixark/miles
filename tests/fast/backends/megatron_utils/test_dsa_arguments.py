@@ -27,7 +27,7 @@ def _args(**overrides):
         allgather_cp=False,
         dsa_kernel_backend="cudnn",
         dsa_indexer_loss_coeff=None,
-        miles_dsa_topk_backend="torch",
+        indexer_topk_backend="torch",
         cp_comm_type=None,
     )
     return Namespace(**(values | overrides))
@@ -40,7 +40,7 @@ def _hf_config(**overrides):
 
 def test_default_preserves_the_existing_miles_path():
     args = add_dsa_arguments(ArgumentParser()).parse_args([])
-    assert vars(args) == {"dsa_impl": "miles", "miles_dsa_topk_backend": "torch", "cp_comm_type": None}
+    assert vars(args) == {"dsa_impl": "miles", "indexer_topk_backend": "torch", "cp_comm_type": None}
     before = vars(args).copy()
     normalize_dsa_args(args, None)
     assert vars(args) == before
@@ -137,7 +137,7 @@ def test_native_cp_preserves_per_layer_allgather_communication_with_zigzag_parti
 
 def test_native_dsa_keeps_the_requested_topk_backend():
     parsed = add_dsa_arguments(ArgumentParser()).parse_args(
-        ["--dsa-impl", "megatron", "--miles-dsa-topk-backend", "flashinfer"]
+        ["--dsa-impl", "megatron", "--indexer-topk-backend", "flashinfer"]
     )
     args = _args(**vars(parsed))
     normalize_dsa_args(args, _hf_config())
@@ -217,12 +217,12 @@ def test_worker_parser_registers_dsa_arguments(argv, implementation):
             "/hf",
             "--script-token-ids-file",
             "/tokens.json",
-            "--miles-dsa-topk-backend",
+            "--indexer-topk-backend",
             "flashinfer",
         ]
         + argv
     )
     assert args.dsa_impl == implementation
-    assert args.miles_dsa_topk_backend == "flashinfer"
+    assert args.indexer_topk_backend == "flashinfer"
     assert args.cp_comm_type is None
     assert WORKER_SCRIPT_ARGS_BRIDGE.from_namespace(args).hf_checkpoint == Path("/hf")

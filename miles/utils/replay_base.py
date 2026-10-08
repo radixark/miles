@@ -54,9 +54,6 @@ class BaseReplayManager:
     name: str = ""
     filename: str = ""
     replay_check_min_overlap_ratio = 0.0  # 0.0 = mismatch only on zero overlap
-    # True when replayed indices are token/KV positions (indexer): rebase the
-    # per-sample 0-based rollout indices onto the packed training sequence.
-    replay_indices_are_token_positions = False
 
     def __init__(self):
         self.replays: list[Replay] = []
@@ -225,17 +222,5 @@ class RoutingReplayManager(BaseReplayManager):
     replay_check_max_mismatch_fraction = 1e-2
 
 
-class IndexerReplayManager(BaseReplayManager):
-    name = "indexer"
-    filename = "indexer_replay.pt"
-    data_key = "rollout_indexer_topk"
-    if_sp_region = False
-    enable_check_replay_result = False
-    replay_check_max_mismatch_fraction = 1e-2
-    replay_check_min_overlap_ratio = 0.8
-    replay_indices_are_token_positions = True
-
-
 routing_replay_manager = RoutingReplayManager()
-indexer_replay_manager = IndexerReplayManager()
-all_replay_managers = [routing_replay_manager, indexer_replay_manager]
+all_replay_managers = [routing_replay_manager]

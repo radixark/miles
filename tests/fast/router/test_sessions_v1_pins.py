@@ -179,7 +179,6 @@ class TestRollbackPins:
             response = fixture_response(mock_self, payload)
             meta = response["choices"][0]["meta_info"]
             meta.pop("routed_experts", None)
-            meta.pop("indexer_topk", None)
             return response
 
         with patch.object(MockSGLangServer, "_compute_chat_completions_response", new=clean_meta_response):
