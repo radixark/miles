@@ -110,6 +110,9 @@ protects old PR and release workflows that do not acquire the GitHub queue.
 GitHub runs job-start hooks with `always()`: cancelling a job waiting in the
 hook can take the runner's five-minute cancellation grace period. The waiter
 creates no job container and releases its lock holder when the worker exits.
+After acquiring the lock, the hook rejects remaining job containers on overlapping
+runners. A forced worker exit or runner restart can leave daemon-owned containers;
+inspect the reported IDs and clean up the abandoned job before retrying.
 
 Drain the currently running 8-GPU job before recreating its runner: that job
 started without the hook. Back up the host-local Compose override and `.env`,

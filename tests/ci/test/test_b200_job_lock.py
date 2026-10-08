@@ -83,3 +83,30 @@ def test_cancelled_holder_and_waiter_release_their_locks(workers):
     whole.communicate(timeout=5)
     acquired(half)
     finish(half)
+
+
+@pytest.mark.parametrize(
+    ("gpu_count", "runner_name", "existing_runner", "blocked"),
+    [
+        (4, "b200-oma-4gpu-0", "b200-oma-8gpu-0", True),
+        (4, "b200-oma-4gpu-0", "b200-oma-4gpu-0", True),
+        (4, "b200-oma-4gpu-0", "b200-oma-4gpu-1", False),
+        (4, "b200-oma-4gpu-1", "b200-oma-4gpu-0", False),
+        (8, "b200-oma-8gpu-0", "b200-oma-4gpu-0", True),
+        (8, "b200-oma-8gpu-0", "b200-oma-4gpu-1", True),
+        (8, "b200-oma-8gpu-0", "b200-oma-8gpu-0", True),
+    ],
+)
+def test_orphan_containers_block_only_overlapping_layouts(monkeypatch, gpu_count, runner_name, existing_runner, blocked):
+    from tests.ci.github_runner.b200_job_lock import assert_no_job_containers
+
+    def docker_ps(command, *, text):
+        assert command[:3] == ["docker", "ps", "--quiet"]
+        return "orphan-job\n" if f"volume=/data/miles_ci/runner_{existing_runner}" in command else ""
+
+    monkeypatch.setattr(subprocess, "check_output", docker_ps)
+    if blocked:
+        with pytest.raises(AssertionError, match="Overlapping B200 job containers remain.*orphan-job"):
+            assert_no_job_containers(gpu_count, runner_name)
+    else:
+        assert_no_job_containers(gpu_count, runner_name)

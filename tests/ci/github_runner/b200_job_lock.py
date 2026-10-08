@@ -1,6 +1,7 @@
 import fcntl
 import os
 import select
+import subprocess
 from pathlib import Path
 
 
@@ -51,8 +52,22 @@ def acquire(worker_pid, gpu_count, lock_path):
         os.close(ready_read)
 
 
+def assert_no_job_containers(gpu_count, runner_name):
+    runners = ("b200-oma-8gpu-0", "b200-oma-4gpu-0", "b200-oma-4gpu-1")
+    assert runner_name in runners, runner_name
+    if gpu_count == 4:
+        runners = ("b200-oma-8gpu-0", runner_name)
+    command = ["docker", "ps", "--quiet"]
+    for runner in runners:
+        command.extend(["--filter", f"volume=/data/miles_ci/runner_{runner}"])
+    # A killed worker can leave daemon-owned job containers after its lock dies.
+    containers = subprocess.check_output(command, text=True).split()
+    assert not containers, f"Overlapping B200 job containers remain: {containers}; inspect and clean them up before retrying"
+
+
 if __name__ == "__main__":
     count = int(os.environ["B200_GPU_COUNT"])
     print(f"Waiting for B200 {'shared half-node' if count == 4 else 'exclusive whole-node'} lock", flush=True)
     acquire(find_worker_pid(), count, "/data/miles_ci/b200-job.lock")
+    assert_no_job_containers(count, os.environ["HOSTNAME"])
     print("B200 GPU lock acquired; held through job cleanup", flush=True)
