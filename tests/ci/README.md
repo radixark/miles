@@ -101,11 +101,29 @@ Host conventions:
 
 ### Rolling out the B200 layout
 
-Before enabling the two 4-GPU runners, drain all B200 jobs started with the
-old workflow, including file reruns and release workflows. Those revisions
-do not acquire `b200-oma` and can overlap the new half-node jobs. Run the
-updated orchestration for every B200 entry point; do not rerun an old workflow
-revision against the mixed runner layout.
+The Compose configuration in `github_runner/docker-compose.b200.yml` installs
+a runner job-start hook on all three runners. It takes a shared host lock for
+4-GPU jobs and an exclusive lock for 8-GPU jobs, before creating job containers.
+A background holder retains the lock until `Runner.Worker` exits, including
+container cleanup, and releases it when a cancelled worker exits. This also
+protects old PR and release workflows that do not acquire the GitHub queue.
+
+Drain the currently running 8-GPU job before recreating its runner: that job
+started without the hook. Back up the host-local Compose override and `.env`,
+then, from `tests/ci/github_runner`, install the hooks and start only the three
+B200 services using a fresh repository runner registration token in `.env`:
+
+```shell
+sudo install -d /data/miles_ci/runner-hooks
+sudo install -m 755 b200-job-start.sh /data/miles_ci/runner-hooks/
+sudo install -m 644 b200_job_lock.py /data/miles_ci/runner-hooks/
+docker compose --env-file .env -f docker-compose.b200.yml config --quiet
+docker compose --env-file .env -f docker-compose.b200.yml up -d
+```
+
+Use this same explicit `-f` configuration for subsequent runner operations;
+the old host-local override lacks the host lock. Never start a B200 runner
+without the hook while the two half-node runners are enabled.
 
 Register the three runners above with separate work directories and disjoint
 `CUDA_VISIBLE_DEVICES` for the two 4-GPU runners. Job containers must retain

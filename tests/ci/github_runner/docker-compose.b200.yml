@@ -1,0 +1,43 @@
+x-b200-runner: &b200-runner
+  extends:
+    file: docker-compose.yml
+    service: runner
+  image: ghcr.io/actions/actions-runner:2.336.0
+  init: true
+  environment: &b200-environment
+    RUNNER_ALLOW_RUNASROOT: "1"
+    ACTIONS_RUNNER_HOOK_JOB_STARTED: /data/miles_ci/runner-hooks/b200-job-start.sh
+  entrypoint:
+    - /bin/bash
+    - -ec
+    - |
+      if [ ! -f /home/runner/.runner ]; then
+        /home/runner/config.sh --url ${GITHUB_RUNNER_URL} --token ${GITHUB_RUNNER_TOKEN} --unattended --replace --name "$$HOSTNAME" --labels "b200,$${B200_GPU_COUNT}gpu,gpu-runner" --work "/data/miles_ci/runner_$$HOSTNAME" --disableupdate
+      fi
+      exec /home/runner/run.sh
+
+services:
+  b200-oma-8gpu-0:
+    <<: *b200-runner
+    container_name: b200-oma-8gpu-0
+    hostname: b200-oma-8gpu-0
+    environment:
+      <<: *b200-environment
+      B200_GPU_COUNT: "8"
+      CUDA_VISIBLE_DEVICES: "0,1,2,3,4,5,6,7"
+  b200-oma-4gpu-0:
+    <<: *b200-runner
+    container_name: b200-oma-4gpu-0
+    hostname: b200-oma-4gpu-0
+    environment:
+      <<: *b200-environment
+      B200_GPU_COUNT: "4"
+      CUDA_VISIBLE_DEVICES: "0,1,2,3"
+  b200-oma-4gpu-1:
+    <<: *b200-runner
+    container_name: b200-oma-4gpu-1
+    hostname: b200-oma-4gpu-1
+    environment:
+      <<: *b200-environment
+      B200_GPU_COUNT: "4"
+      CUDA_VISIBLE_DEVICES: "4,5,6,7"
