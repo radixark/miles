@@ -51,7 +51,7 @@ class _RunnerSender:
     replica_targets: list[_ReplicaTarget]
     model_param_stager: ModelParamStager | None = None
 
-    def holds_param_of(self, hf_name: str) -> bool:
+    def loads_hf_tensor(self, hf_name: str) -> bool:
         return hf_name in self.model_replicas.hf_name_mapping.param_names_by_hf_name
 
 
@@ -110,12 +110,12 @@ class UpdateWeightP2P(WeightTransferProtocol):
         unclaimed_hf_tensors = converted_named_tensors
         for runner_sender in self._runner_senders:
             claimed_hf_tensors = [
-                (hf_name, tensor) for hf_name, tensor in unclaimed_hf_tensors if runner_sender.holds_param_of(hf_name)
+                (hf_name, tensor) for hf_name, tensor in unclaimed_hf_tensors if runner_sender.loads_hf_tensor(hf_name)
             ]
             unclaimed_hf_tensors = [
                 (hf_name, tensor)
                 for hf_name, tensor in unclaimed_hf_tensors
-                if not runner_sender.holds_param_of(hf_name)
+                if not runner_sender.loads_hf_tensor(hf_name)
             ]
             self._send_runner_bucket(runner_sender, claimed_hf_tensors)
 
@@ -201,7 +201,7 @@ class UpdateWeightP2P(WeightTransferProtocol):
         hf_names_no_runner_loads = sorted(
             hf_name
             for hf_name in self._hf_tensor_specs
-            if not any(runner_sender.holds_param_of(hf_name) for runner_sender in self._runner_senders)
+            if not any(runner_sender.loads_hf_tensor(hf_name) for runner_sender in self._runner_senders)
         )
         if hf_names_no_runner_loads:
             logger.info(
