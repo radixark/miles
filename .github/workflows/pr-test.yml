@@ -1,361 +1,50 @@
-# doc-dev: docs/developer/ci/00-stage.md
-# doc-dev: docs/developer/ci/01-label.md
-name: PR Test
-
+name: B200 scheduling benchmark
+run-name: B200 ${{ inputs.layout }} benchmark ${{ inputs.round }}
 on:
-  pull_request:
-    types: [opened, synchronize, reopened, ready_for_review, labeled, unlabeled, closed]
-  schedule:
-    # All scheduled runs use UTC. Saturday's weekly full CI replaces nightly.
-    - cron: '0 15 * * 0-5'
-    - cron: '0 15 * * 6'
   workflow_dispatch:
     inputs:
-      infinite_run:
-        description: 'Run training infinitely'
-        required: false
-        type: boolean
-        default: false
-      # Empty defaults are load-bearing: a non-empty default would count as an
-      # explicit override and shadow release-lock.json on a release branch
-      # (precedence: explicit input / PR body > lockfile > branch HEAD).
-      ci_megatron_pr:
-        description: 'Megatron-LM branch/commit (empty: release-lock.json if present, else miles-main)'
-        required: false
-        type: string
-        default: ''
-      ci_megatron_bridge_pr:
-        description: 'Megatron Bridge PR (#N), branch, tag, or commit (empty: keep the existing installation).'
-        required: false
-        type: string
-        default: ''
-      ci_sglang_pr:
-        description: 'SGLang branch/commit (empty: release-lock.json if present, else sglang-miles)'
-        required: false
-        type: string
-        default: ''
-      ci_image_tag:
-        description: 'Miles Docker image tag (default: dev)'
-        required: false
-        type: string
-        default: 'dev'
-  workflow_call:
-    inputs:
-      ref:
-        description: 'Git ref (branch, tag, or SHA) to test, e.g. release/v0.3.0.'
+      layout:
+        type: choice
+        options: [serial, parallel]
         required: true
+      round:
         type: string
-      cadence:
-        description: 'Explicit CI cadence (regular/nightly/weekly/release). Release cuts use release: weekly scope, no baseline writes.'
-        required: false
+        required: true
+      ci_sglang_pr:
         type: string
-        default: 'release'
-      image_tag:
-        description: 'Miles Docker image tag to run suites in (e.g. a frozen dev-<timestamp> tag).'
-        required: false
+        default: b84bec5761a6cdc8b1df86b9b89ead80a7a9bb02
+      ci_megatron_pr:
         type: string
-        default: ''
-
+        default: fd15ee20a4f03b03680529baf4b8f7eeed64df1d
 permissions:
   contents: read
-
 concurrency:
-  # PR updates supersede their previous run; distinct cron schedules and
-  # manual operations must not cancel one another on the default branch.
-  # The prefix is a literal, not github.workflow: in a called workflow that
-  # context resolves to the *caller's* name, which would collapse the CUDA
-  # and ROCm groups of one release-branch-cut run into the same group and
-  # let them cancel each other. inputs.ref (workflow_call only) groups
-  # release CI by branch, so a ② re-dispatch cancels the stale previous run.
-  group: pr-test-${{ github.event.number || github.event.schedule || inputs.ref || github.run_id }}
-  cancel-in-progress: true
-
-# `resolve-ci-policy` passes trigger-specific facts to `ci_policy.py`, which
-# owns the explicit cadence, raw labels, test scope, stage selection, and
-# fast-fail policy.
-# `run_suite.py` consumes that shared policy; GPU jobs consume the shared
-# skip list and bypass output for their job-level gates.
-#
-# Trigger type is not policy: each scheduled cron maps to an explicit cadence,
-# while workflow_dispatch remains a regular manual operation with no implicit
-# domain scope.
-
+  group: b200-oma
+  cancel-in-progress: false
+  queue: max
 jobs:
-  resolve-ci-policy:
-    # A PR based on another branch (e.g. a stacked PR) starts CI only while it
-    # carries a `run-ci*` label; `"run-ci` in the JSON array matches a label
-    # prefix. Every other job needs this one, so skipping it skips the whole run.
-    if: |
-      github.event.action != 'closed' &&
-      (github.event_name != 'pull_request' ||
-        github.event.pull_request.base.ref == github.event.repository.default_branch ||
-        contains(toJSON(github.event.pull_request.labels.*.name), '"run-ci'))
-    runs-on: ubuntu-latest
-    outputs:
-      cadence: ${{ steps.resolve.outputs.cadence }}
-      raw_labels: ${{ steps.resolve.outputs.raw_labels }}
-      bypass_fastfail: ${{ steps.resolve.outputs.bypass_fastfail }}
-      skipped_stages: ${{ steps.resolve.outputs.skipped_stages }}
-      needs_cuda_image: ${{ steps.resolve.outputs.needs_cuda_image }}
-    steps:
-      - name: Checkout repository
-        # Deliberately not inputs.ref: this job executes ci_policy.py, so it
-        # always runs the triggering commit's copy (CodeQL cache-poisoning
-        # surface). The cadence arrives via CADENCE_OVERRIDE; only the suite
-        # jobs check out the release ref.
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 2
-          persist-credentials: false
-      - name: Collect PR changed files
-        if: github.event_name == 'pull_request'
-        shell: bash
-        run: |
-          if ! git diff --name-status -z -M HEAD^1 HEAD > "$RUNNER_TEMP/changed-files.z"; then
-            rm -f "$RUNNER_TEMP/changed-files.z"
-            echo "::warning::Unable to compute PR diff; all selected GPU stages are treated as affected."
-          fi
-      - name: Resolve CI policy inputs
-        id: resolve
-        env:
-          EVENT_NAME: ${{ github.event_name }}
-          SCHEDULE: ${{ github.event.schedule || '' }}
-          PR_LABELS_JSON: ${{ toJSON(github.event.pull_request.labels.*.name) }}
-          # workflow_call inherits the caller's event_name, so the cadence must
-          # be passed explicitly rather than inferred from the trigger.
-          CADENCE_OVERRIDE: ${{ inputs.cadence || '' }}
-          CHANGED_FILES_PATH: ${{ runner.temp }}/changed-files.z
-        run: python -m tests.ci.ci_policy
-
-  # Selected CUDA tests need an image after the fast CPU gate completes.
-  # Nightly, weekly, and bypass-fastfail preserve their cross-stage exception.
-  docker-build:
-    needs: [resolve-ci-policy, stage-a-cpu]
-    if: |
-      always() && !cancelled() &&
-      github.event.action != 'closed' &&
-      needs.resolve-ci-policy.result == 'success' &&
-      needs.resolve-ci-policy.outputs.needs_cuda_image == 'true' &&
-      (needs.stage-a-cpu.result == 'success' ||
-         needs.resolve-ci-policy.outputs.bypass_fastfail == 'true')
-    # Scoped to this call: a build consumes the one-shot rebuild-ci-image label by
-    # removing it. Every other job keeps the workflow-level read-only token.
-    permissions:
-      contents: read
-      actions: read
-      pull-requests: write
-    uses: ./.github/workflows/_build-pr-ci-image.yml
+  serial:
+    if: inputs.layout == 'serial'
+    uses: ./.github/workflows/_run-ci.yml
+    with:
+      runs_on: '["b200", "8gpu"]'
+      ref: ${{ github.sha }}
+      plan_already_resolved: true
+      container_image: radixark/miles@sha256:58b75eaf0ae6a66ee2ed966bede9e6ef8a42a1942588f2692172c3d879b4f67c
+      execute_command: python tests/ci/b200_benchmark.py --test all --gpus 8
     secrets: inherit
-
-  # Gate on this build alone. Without an `if` the default success() spans the whole
-  # dependency closure, so a stage-a-cpu failure skipped this and every GPU stage even
-  # on a nightly, whose policy sets bypass_fastfail precisely to keep them running.
-  resolve-ci-image:
-    needs: [docker-build]
-    if: always() && !cancelled() && needs.docker-build.result == 'success'
-    runs-on: ubuntu-latest
-    outputs:
-      container_image: ${{ steps.resolve.outputs.container_image }}
-    steps:
-      - name: Resolve CI image
-        id: resolve
-        shell: bash
-        env:
-          PR_BODY: ${{ github.event.pull_request.body || '' }}
-          # workflow_call image_tag (a frozen release-CI tag) outranks the
-          # dispatch input, which only exists on manual runs anyway.
-          INPUT_CI_IMAGE_TAG: ${{ inputs.image_tag || github.event.inputs.ci_image_tag || '' }}
-          # Not `built`: a run that reused an unchanged image published earlier must still
-          # test against that image rather than silently falling back to the released one.
-          PR_IMAGE_AVAILABLE: ${{ needs.docker-build.outputs.tag_available }}
-          PR_NUMBER: ${{ github.event.pull_request.number || '' }}
-        run: |
-          CI_IMAGE_TAG="${INPUT_CI_IMAGE_TAG}"
-          [ -z "$CI_IMAGE_TAG" ] && [ "$PR_IMAGE_AVAILABLE" = "true" ] && CI_IMAGE_TAG="pr-${PR_NUMBER}"
-          if [ -n "$PR_BODY" ]; then
-            PR_CI_IMAGE_TAG=$(echo "$PR_BODY" | grep -m1 -oP '^ci-image-tag:\s+\K\S+' || true)
-            [ -z "$CI_IMAGE_TAG" ] && [ -n "$PR_CI_IMAGE_TAG" ] && CI_IMAGE_TAG="$PR_CI_IMAGE_TAG"
-          fi
-          [ -z "$CI_IMAGE_TAG" ] && CI_IMAGE_TAG="dev"
-          if [[ ! "$CI_IMAGE_TAG" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ ]]; then
-            echo "::error::ci-image-tag must be a Docker tag, not a full image name: $CI_IMAGE_TAG"
-            exit 1
-          fi
-          echo "container_image=radixark/miles:${CI_IMAGE_TAG}" >> "$GITHUB_OUTPUT"
-          echo "Resolved CI image: radixark/miles:${CI_IMAGE_TAG}"
-
-  # Stage A: CPU-only fast tests (runs whenever resolve-ci-policy runs)
-  # Uses the CPU-only reusable workflow on GitHub-hosted ubuntu-latest, so
-  # fast tests do not occupy GPU-fleet runner slots.
-  stage-a-cpu:
-    needs: [resolve-ci-policy]
+  parallel:
+    if: inputs.layout == 'parallel'
     strategy:
       fail-fast: false
+      max-parallel: 2
       matrix:
-        partition_id: [0, 1, 2, 3]
-    uses: ./.github/workflows/_run-cpu-ci.yml
-    with:
-      ref: ${{ inputs.ref || '' }}
-      execute_command: >-
-        python tests/ci/run_suite.py --hw cpu --suite stage-a-cpu
-        --auto-partition-id ${{ matrix.partition_id }} --auto-partition-size 4
-        --cadence ${{ needs.resolve-ci-policy.outputs.cadence }}
-        --labels ${{ needs.resolve-ci-policy.outputs.raw_labels }}
-    secrets: inherit
-
-  # Stage B: CPU-only bucket for slower CPU tests that don't fit stage-a-cpu's
-  # fast budget. Runs whenever resolve-ci-policy runs; an empty suite still exits 0
-  # in run_suite.py.
-  stage-b-cpu:
-    needs: [resolve-ci-policy]
-    uses: ./.github/workflows/_run-cpu-ci.yml
-    with:
-      ref: ${{ inputs.ref || '' }}
-      execute_command: >-
-        python tests/ci/run_suite.py --hw cpu --suite stage-b-cpu
-        --cadence ${{ needs.resolve-ci-policy.outputs.cadence }}
-        --labels ${{ needs.resolve-ci-policy.outputs.raw_labels }}
-    secrets: inherit
-
-  stage-b-2-gpu-h200:
-    needs: [resolve-ci-policy, resolve-ci-image, stage-a-cpu]
-    if: |
-      always() && !cancelled() &&
-      needs.resolve-ci-policy.result == 'success' &&
-      needs.resolve-ci-image.result == 'success' &&
-      !contains(fromJSON(needs.resolve-ci-policy.outputs.skipped_stages || '[]'), 'stage-b-2-gpu-h200') &&
-      (needs.stage-a-cpu.result == 'success' ||
-        needs.resolve-ci-policy.outputs.bypass_fastfail == 'true')
+        test: [sft, lora]
     uses: ./.github/workflows/_run-ci.yml
     with:
-      runs_on: '["h200", "2gpu"]'
-      container_image: ${{ needs.resolve-ci-image.outputs.container_image }}
-      ref: ${{ inputs.ref || '' }}
-      execute_command: >-
-        python tests/ci/run_suite.py --hw cuda --suite stage-b-2-gpu-h200
-        --cadence ${{ needs.resolve-ci-policy.outputs.cadence }}
-        --labels ${{ needs.resolve-ci-policy.outputs.raw_labels }}
-        ${{ github.event_name == 'workflow_dispatch' && '--match-all-labels' || '' }}
-    secrets: inherit
-
-  # No partition matrix: there is a single 8x H100 runner, so shards would only
-  # queue behind each other and each pay the job setup again.
-  stage-c-8-gpu-h100:
-    needs: [resolve-ci-policy, resolve-ci-image, stage-a-cpu]
-    if: |
-      always() && !cancelled() &&
-      needs.resolve-ci-policy.result == 'success' &&
-      needs.resolve-ci-image.result == 'success' &&
-      !contains(fromJSON(needs.resolve-ci-policy.outputs.skipped_stages || '[]'), 'stage-c-8-gpu-h100') &&
-      (needs.stage-a-cpu.result == 'success' ||
-        needs.resolve-ci-policy.outputs.bypass_fastfail == 'true')
-    uses: ./.github/workflows/_run-ci.yml
-    with:
-      runs_on: '["h100", "8gpu"]'
-      container_image: ${{ needs.resolve-ci-image.outputs.container_image }}
-      ref: ${{ inputs.ref || '' }}
-      execute_command: >-
-        python tests/ci/run_suite.py --hw cuda --suite stage-c-8-gpu-h100
-        --cadence ${{ needs.resolve-ci-policy.outputs.cadence }}
-        --labels ${{ needs.resolve-ci-policy.outputs.raw_labels }}
-        ${{ github.event_name == 'workflow_dispatch' && '--match-all-labels' || '' }}
-    secrets: inherit
-
-  # No partition matrix: there is a single 8x H200 runner, so shards would only
-  # queue behind each other and each pay the job setup again.
-  stage-c-8-gpu-h200:
-    needs: [resolve-ci-policy, resolve-ci-image, stage-a-cpu]
-    if: |
-      always() && !cancelled() &&
-      needs.resolve-ci-policy.result == 'success' &&
-      needs.resolve-ci-image.result == 'success' &&
-      !contains(fromJSON(needs.resolve-ci-policy.outputs.skipped_stages || '[]'), 'stage-c-8-gpu-h200') &&
-      (needs.stage-a-cpu.result == 'success' ||
-        needs.resolve-ci-policy.outputs.bypass_fastfail == 'true')
-    uses: ./.github/workflows/_run-ci.yml
-    with:
-      runs_on: '["h200", "8gpu"]'
-      container_image: ${{ needs.resolve-ci-image.outputs.container_image }}
-      ref: ${{ inputs.ref || '' }}
-      execute_command: >-
-        python tests/ci/run_suite.py --hw cuda --suite stage-c-8-gpu-h200
-        --cadence ${{ needs.resolve-ci-policy.outputs.cadence }}
-        --labels ${{ needs.resolve-ci-policy.outputs.raw_labels }}
-        ${{ github.event_name == 'workflow_dispatch' && '--match-all-labels' || '' }}
-    secrets: inherit
-
-  stage-c-4-gpu-h200:
-    needs: [resolve-ci-policy, resolve-ci-image, stage-a-cpu]
-    if: |
-      always() && !cancelled() &&
-      needs.resolve-ci-policy.result == 'success' &&
-      needs.resolve-ci-image.result == 'success' &&
-      !contains(fromJSON(needs.resolve-ci-policy.outputs.skipped_stages || '[]'), 'stage-c-4-gpu-h200') &&
-      (needs.stage-a-cpu.result == 'success' ||
-        needs.resolve-ci-policy.outputs.bypass_fastfail == 'true')
-    strategy:
-      fail-fast: false
-      max-parallel: ${{ needs.resolve-ci-policy.outputs.cadence == 'weekly' && 1 || 5 }}
-      matrix:
-        partition_id: [0, 1, 2, 3, 4]
-    uses: ./.github/workflows/_run-ci.yml
-    with:
-      runs_on: '["h200", "4gpu"]'
-      container_image: ${{ needs.resolve-ci-image.outputs.container_image }}
-      ref: ${{ inputs.ref || '' }}
-      execute_command: >-
-        python tests/ci/run_suite.py --hw cuda --suite stage-c-4-gpu-h200
-        --auto-partition-id ${{ matrix.partition_id }} --auto-partition-size 5
-        --cadence ${{ needs.resolve-ci-policy.outputs.cadence }}
-        --labels ${{ needs.resolve-ci-policy.outputs.raw_labels }}
-        ${{ github.event_name == 'workflow_dispatch' && '--match-all-labels' || '' }}
-    secrets: inherit
-
-  stage-c-2-gpu-h200:
-    needs: [resolve-ci-policy, resolve-ci-image, stage-a-cpu]
-    if: |
-      always() && !cancelled() &&
-      needs.resolve-ci-policy.result == 'success' &&
-      needs.resolve-ci-image.result == 'success' &&
-      !contains(fromJSON(needs.resolve-ci-policy.outputs.skipped_stages || '[]'), 'stage-c-2-gpu-h200') &&
-      (needs.stage-a-cpu.result == 'success' ||
-        needs.resolve-ci-policy.outputs.bypass_fastfail == 'true')
-    strategy:
-      fail-fast: false
-      max-parallel: ${{ needs.resolve-ci-policy.outputs.cadence == 'weekly' && 1 || 2 }}
-      matrix:
-        partition_id: [0, 1]
-    uses: ./.github/workflows/_run-ci.yml
-    with:
-      runs_on: '["h200", "2gpu"]'
-      container_image: ${{ needs.resolve-ci-image.outputs.container_image }}
-      ref: ${{ inputs.ref || '' }}
-      execute_command: >-
-        python tests/ci/run_suite.py --hw cuda --suite stage-c-2-gpu-h200
-        --auto-partition-id ${{ matrix.partition_id }} --auto-partition-size 2
-        --cadence ${{ needs.resolve-ci-policy.outputs.cadence }}
-        --labels ${{ needs.resolve-ci-policy.outputs.raw_labels }}
-        ${{ github.event_name == 'workflow_dispatch' && '--match-all-labels' || '' }}
-    secrets: inherit
-
-  # Hold the B200 host across full-node and half-node jobs to prevent overlap.
-  stage-c-b200:
-    needs: [resolve-ci-policy, resolve-ci-image, stage-a-cpu]
-    if: |
-      always() && !cancelled() &&
-      needs.resolve-ci-policy.result == 'success' &&
-      needs.resolve-ci-image.result == 'success' &&
-      (!contains(fromJSON(needs.resolve-ci-policy.outputs.skipped_stages || '[]'), 'stage-c-8-gpu-b200') ||
-        !contains(fromJSON(needs.resolve-ci-policy.outputs.skipped_stages || '[]'), 'stage-c-4-gpu-b200')) &&
-      (needs.stage-a-cpu.result == 'success' ||
-        needs.resolve-ci-policy.outputs.bypass_fastfail == 'true')
-    uses: ./.github/workflows/_run-ci-b200.yml
-    with:
-      container_image: ${{ needs.resolve-ci-image.outputs.container_image }}
-      ref: ${{ inputs.ref || '' }}
-      cadence: ${{ needs.resolve-ci-policy.outputs.cadence }}
-      raw_labels: ${{ needs.resolve-ci-policy.outputs.raw_labels }}
-      match_all_labels: ${{ github.event_name == 'workflow_dispatch' }}
-      run_8_gpu: ${{ !contains(fromJSON(needs.resolve-ci-policy.outputs.skipped_stages || '[]'), 'stage-c-8-gpu-b200') }}
-      run_4_gpu: ${{ !contains(fromJSON(needs.resolve-ci-policy.outputs.skipped_stages || '[]'), 'stage-c-4-gpu-b200') }}
+      runs_on: '["b200", "4gpu"]'
+      ref: ${{ github.sha }}
+      plan_already_resolved: true
+      container_image: radixark/miles@sha256:58b75eaf0ae6a66ee2ed966bede9e6ef8a42a1942588f2692172c3d879b4f67c
+      execute_command: python tests/ci/b200_benchmark.py --test ${{ matrix.test }} --gpus 4
     secrets: inherit
