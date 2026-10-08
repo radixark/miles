@@ -76,15 +76,6 @@ class RayWorkerManager:
         import os, subprocess
         print("DIAG env:", {k: v for k, v in os.environ.items() if any(t in k for t in ("VISIBLE", "ROCR", "HIP", "RAY_ACCEL", "LD_LIBRARY", "GPU_DEVICE"))}, flush=True)
         print("DIAG exec env:", [e for e in open("/proc/self/environ", "rb").read().decode(errors="replace").split("\0") if any(t in e for t in ("VISIBLE", "ROCR", "HIP_", "GPU_DEVICE"))], flush=True)
-        print("DIAG maps:", sorted({l.split()[-1] for l in open("/proc/self/maps") if any(t in l for t in ("amdhip", "hsa", "libcuda", "libcudart", "rocm", "libdrm", "amd_comgr"))}), flush=True)
-        import sys
-        print("DIAG torch loaded:", "torch" in sys.modules, "triton" in sys.modules, "modelopt" in sys.modules, flush=True)
-        try:
-            import torch
-            print("DIAG inproc:", torch.cuda.device_count(), torch.cuda.get_device_properties(0).gcnArchName, flush=True)
-        except Exception as e:
-            print("DIAG inproc failed:", repr(e), flush=True)
-        print("DIAG maps after:", sorted({l.split()[-1] for l in open("/proc/self/maps") if any(t in l for t in ("amdhip", "hsa", "libcuda", "libcudart", "rocm", "libdrm", "amd_comgr"))}), flush=True)
         print("DIAG ray accel ids:", ray.get_runtime_context().get_accelerator_ids(), flush=True)
         print("DIAG ls dev:", subprocess.run("ls -l /dev/kfd /dev/dri | head -20", shell=True, capture_output=True, text=True).stdout, flush=True)
         print("DIAG probe:", subprocess.run(["python3", "-c", "import torch,os;print(torch.cuda.device_count());print(torch.cuda.get_device_properties(0).gcnArchName)"], capture_output=True, text=True), flush=True)
