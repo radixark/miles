@@ -1,18 +1,19 @@
 import copy
 
+import torch
 from megatron.core.models.gpt.gpt_layer_specs import get_gpt_decoder_block_spec
 from megatron.core.transformer.spec_utils import ModuleSpec
 from megatron.core.transformer.transformer_block import get_num_layers_to_build
 from megatron.core.transformer.transformer_layer import get_transformer_layer_offset
 from transformers import AutoConfig
 
-from miles_plugins.models.linear_attn import GatedDeltaNet, Projections
+from miles_plugins.models.linear_attn import GatedDeltaNet
 from miles_plugins.models.qwen3_5 import Attention as _Qwen3_5Attention
 
 
 class Qwen3NextGatedDeltaNet(GatedDeltaNet):
-    """Qwen3-Next GDN: HF fuses ``in_proj_qkvz`` and ``in_proj_ba``, both group-major per key head, so the
-    projections stay fused and are split here."""
+    """Qwen3-Next GDN: HF fuses ``in_proj_qkvz`` and ``in_proj_ba``, both group-major per key head; the stacked
+    in_proj weight regroups their rows into q/k/v, z, b, a sections."""
 
     def _build_projections(self):
         hidden, local = self.config.hidden_size, self.local
@@ -21,25 +22,13 @@ class Qwen3NextGatedDeltaNet(GatedDeltaNet):
         )
         self.in_proj_ba = self.sharded_linear("in_proj_ba", hidden, 2 * local.num_v_heads)
 
-    def project(self, x):
-        batch, seq_len, _ = x.shape
-        local = self.local
-        qkv, z = (
-            self.in_proj_qkvz(x)
-            .view(batch, seq_len, local.num_k_heads, -1)
-            .split([local.group_qkv_dim, local.group_value_dim], dim=-1)
-        )
-        b, a = (
-            self.in_proj_ba(x)
-            .view(batch, seq_len, local.num_k_heads, -1)
-            .split([local.v_per_k, local.v_per_k], dim=-1)
-        )
-        return Projections(
-            qkv.reshape(batch, seq_len, -1),
-            z.reshape(batch, seq_len, -1),
-            b.reshape(batch, seq_len, -1),
-            a.reshape(batch, seq_len, -1),
-        )
+    def in_proj_weight(self):
+        local, hidden = self.local, self.config.hidden_size
+        qkvz = self.in_proj_qkvz.weight.view(local.num_k_heads, -1, hidden)
+        ba = self.in_proj_ba.weight.view(local.num_k_heads, -1, hidden)
+        qkv, z = qkvz.split([local.group_qkv_dim, local.group_value_dim], dim=1)
+        b, a = ba.split([local.v_per_k, local.v_per_k], dim=1)
+        return torch.cat([t.reshape(-1, hidden) for t in (qkv, z, b, a)])
 
 
 class Attention(_Qwen3_5Attention):

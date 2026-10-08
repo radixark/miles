@@ -13,7 +13,7 @@ from transformers.models.qwen3_next.modeling_qwen3_next import Qwen3NextRMSNorm
 
 from miles.backends.megatron_utils.megatron_to_hf.linear_attn_layout import gdn_heads
 from miles.utils.hf_utils.config import load_hf_config
-from miles_plugins.models.linear_attn import GatedDeltaNet, LinearAttentionLayer, Projections
+from miles_plugins.models.linear_attn import GatedDeltaNet, LinearAttentionLayer
 
 
 def _get_text_config(hf_config):
@@ -46,8 +46,10 @@ class Qwen3_5GatedDeltaNet(GatedDeltaNet):
         self.in_proj_b = self.sharded_linear("in_proj_b", hidden, local.num_v_heads)
         self.in_proj_a = self.sharded_linear("in_proj_a", hidden, local.num_v_heads)
 
-    def project(self, x):
-        return Projections(self.in_proj_qkv(x), self.in_proj_z(x), self.in_proj_b(x), self.in_proj_a(x))
+    def in_proj_weight(self):
+        return torch.cat(
+            [self.in_proj_qkv.weight, self.in_proj_z.weight, self.in_proj_b.weight, self.in_proj_a.weight]
+        )
 
 
 class Attention(LinearAttentionLayer):

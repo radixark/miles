@@ -372,12 +372,27 @@ class LinearAttention(MegatronModule, ABC):
 
 class GatedDeltaNet(LinearAttention):
     """Gated DeltaNet: one softplus-gated decay per value head, through fla's or FlashQLA's chunked
-    kernel. Models subclass it with their projections."""
+    kernel. Models subclass it with their projections and :meth:`in_proj_weight`, which stacks this rank's
+    q/k/v (group-major), z, b and a rows so that all four projections are one GEMM."""
 
     def __init__(self, config, heads, conv_kernel_size, norm_eps, tp_group, backend="fla", norm_activation="silu"):
         gdn_kernel(backend)
         super().__init__(config, heads, conv_kernel_size, norm_eps, tp_group, norm_activation)
         self.backend = backend
+        local = self.local
+        self.in_proj_widths = (
+            local.num_k_heads * local.group_qkv_dim,
+            local.value_dim,
+            local.num_v_heads,
+            local.num_v_heads,
+        )
+
+    @abstractmethod
+    def in_proj_weight(self) -> torch.Tensor:
+        """``[sum(in_proj_widths), hidden]``: q/k/v rows group-major, then z, b, a in value-head order."""
+
+    def project(self, x):
+        return Projections(*F.linear(x, self.in_proj_weight()).split(self.in_proj_widths, dim=-1))
 
     def recurrence(self, q, k, v, beta_logits, decay, cu_seqlens, cp_context):
         return gdn_recurrence(
