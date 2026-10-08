@@ -752,6 +752,8 @@ async def _engines(args, model):
         for engine, spec in enumerate(specs):
             port = spec["port"]
             with socket.socket() as sock:
+                # Match the server's reuse policy when a previous arm leaves TIME_WAIT sockets.
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
                 sock.bind(("127.0.0.1", port))
             config = SERVER_ARGS | {
                 "tp_size": spec["parallel_size"],
@@ -1062,8 +1064,8 @@ def _maximum(rows, key):
     return None if any(value is None for value in values) else max(values)
 
 
-def _format(value):
-    return "unmeasured" if value is None else f"{value:.9f}"
+def _format(value, scale=1):
+    return "unmeasured" if value is None else f"{value * scale:.3f}"
 
 
 def _report_table(headers, rows):
@@ -1077,32 +1079,6 @@ def _report_table(headers, rows):
 
 def _markdown(summary):
     versions = [(arm, row) for arm in summary["arms"] for row in arm["versions"]]
-    compression_keys = (
-        "compression_and_publication_s",
-        "publication_write_s",
-        "inner_cuda_s",
-        "outer_cuda_s",
-        "batch_wall_s",
-        "finalization_wall_s",
-        "outer_wall_s",
-        "pack_d2h_wall_s",
-        "input_read_s",
-        "owner_elapsed_s",
-    )
-    compression_headers = [
-        "Compression/publication s",
-        "Publication write s",
-        "Inner CUDA s",
-        "Outer CUDA s",
-        "Batch wall s",
-        "Finalization wall s",
-        "Outer wall s",
-        "Pack/D2H wall s",
-        "Input read/pin s",
-        "Owner enclosing s",
-    ]
-    rank_keys = ("outer_cpu_s", "plain_copy_s", "de_stream_cuda_s", "matrix_apply_cuda_s", "prepare_s", "pause_s")
-    rank_headers = ["Outer CPU s", "Plain copy s", "DE stream CUDA s", "Matrix apply CUDA s", "Prepare s", "Pause s"]
     lines = [
         "# GPU delta end-to-end benchmark",
         "",
@@ -1110,123 +1086,68 @@ def _markdown(summary):
         "Every arm's final selected text, token IDs and full input/output logprobs are compared with one "
         "independently loaded target checkpoint on every route; see `comparison.json`.",
         "",
-        "Hash on/off controls both sender payload SHA and receiver verification; manifest SHA remains enabled. "
-        "Versions are cumulative synthetic targets, not learned updates or statistical repeats. "
-        "Selected outputs do not prove every weight byte. Startup and oracle generation are untimed.",
+        "One row per arm/version, including the first update. SHA on/off controls both sender payload "
+        "hashing and receiver verification; manifest SHA remains enabled. Versions are cumulative synthetic "
+        "targets, not learned updates or statistical repeats. Selected outputs do not prove every weight byte. "
+        "Startup and oracle generation are outside the update timings.",
         "",
         f"Prepared inputs: `{summary['inputs']['path']}`; reused: {summary['inputs']['reused']}. "
-        "Input construction is shared across all arms and excluded from compression measurements. "
-        "The cache reference and original preparation metadata are retained in `inputs.json`.",
-        "",
-        "## Compression and publication",
-        "",
-        "All columns below except parent seal are independent owner maxima. Compression/publication is each "
-        "owner's sum of nonoverlapping batch wall, finalization wall and publication-write intervals, including "
-        "optional payload SHA, payload I/O and shard flush/fsync. It excludes checkpoint reads/writes, perturbation "
-        "and parent manifest sealing; it is not isolated hash time or synchronized end-to-end latency. "
-        "Component maxima can come from different owners and must not be added. Inner CUDA sums batch event "
-        "intervals per owner. CUDA events include wrapper/launch gaps, not pure kernel busy time. "
-        "Outer and pack/D2H wall are nested in finalization. The enclosing owner span also includes reading "
-        "prepared snapshots into pinned buffers, reported separately as input read/pin time. "
-        "Parent seal follows all owners.",
+        "Input construction is shared across all arms and excluded from compression measurements; "
+        "its metadata remains in `inputs.json`.",
         "",
     ]
-    lines += _report_table(
-        ["Arm", "Version"] + ["Max " + name for name in compression_headers] + ["Parent seal s"],
-        (
-            [arm["name"], row["version"]]
-            + [_format(row["compression"]["owner_max"][key]) for key in compression_keys]
-            + [_format(row["compression"]["seal_s"])]
-            for arm, row in versions
-        ),
-    )
-    lines += [
-        "## Receiver",
-        "",
-        "Columns are independent rank maxima, not rank sums or additive phases. Outer CPU/plain-copy wall "
-        "includes raw copies and job submission/drain; worker sums remain in raw receipts. DE stream events "
-        "include zero-fill and nvCOMP enqueue/host gaps, not pure hardware busy time. Matrix apply includes "
-        "status checks but excludes raw copies and derived refresh. Pause uses completed scheduler "
-        "pause/resume timestamps. Disabled CUDA timing is unmeasured; plain LZ4 has no outer stage.",
-        "",
-    ]
-    lines += _report_table(
-        ["Arm", "Version"] + ["Max " + name for name in rank_headers] + ["Coordinator s"],
-        (
-            [arm["name"], row["version"]]
-            + [_format(row["receiver_max"][key]) for key in rank_keys]
-            + [_format(row["coordinator_s"])]
-            for arm, row in versions
-        ),
-    )
     lines += _report_table(
         [
-            "Arm",
+            "Codec",
+            "Frame KiB",
+            "SHA",
             "Version",
-            "Sender checksum",
-            "Receiver skips SHA",
-            "Inner frame bytes",
-            "Canonical bytes",
-            "Changed bytes",
-            "Inner compressed bytes",
-            "Matrix payload bytes",
-            "Payload file bytes",
-            "Manifest bytes",
+            "Compression s",
+            "Prepare s",
+            "Pause ms",
+            "Inner GiB",
+            "Outer GiB",
+            "Payload GiB",
         ],
         (
             [
-                arm["name"],
+                arm["codec"],
+                row["frame_bytes"] / 1024,
+                "off" if arm["skip_payload_hash"] else "on",
                 row["version"],
-                row["sender_payload_checksum_format"],
-                row["receiver_skip_payload_hash"],
-                row["frame_bytes"],
-                row["canonical_bytes"],
-                row["changed_bytes"],
-            ]
-            + [
-                row["accounting"][key]
-                for key in ("encoded_frame_bytes", "matrix_payload_bytes", "payload_file_bytes", "manifest_bytes")
+                _format(row["compression"]["owner_max"]["compression_and_publication_s"]),
+                _format(row["receiver_max"]["prepare_s"]),
+                _format(row["receiver_max"]["pause_s"], scale=1000),
+                _format(row["accounting"]["encoded_frame_bytes"], scale=1 / 2**30),
+                (
+                    "absent"
+                    if arm["codec"] == "lz4"
+                    else _format(row["accounting"]["matrix_payload_bytes"], scale=1 / 2**30)
+                ),
+                _format(row["accounting"]["payload_file_bytes"], scale=1 / 2**30),
             ]
             for arm, row in versions
         ),
     )
     lines += [
-        "## Raw owner timings",
+        "Compression is the maximum owner compression/publication wall time, including optional payload SHA, "
+        "H2D/XOR/final D2H, writes and shard flush/fsync. It excludes prepared-input reads/pinning, shared input "
+        "construction and parent manifest sealing. Prepare is the maximum receiver background-preparation "
+        "wall time. Pause is the maximum actual scheduler pause from completed pause/resume timestamps. "
+        "These independent owner/rank maxima can come from different processes and must not be added.",
         "",
-        "Layer assignments, owner counts and complete encoder metrics remain in `summary.json`.",
+        "Sizes sum across all owners; GiB = 2^30 bytes. Inner is the compressed frame bytes before outer Zstd. "
+        "Outer is the stored Zstd matrix payload; it is absent for plain LZ4. Payload includes all stored "
+        "matrix/raw bytes and alignment, excluding the manifest. The packed inner arena, exact byte counts, "
+        "manifest/publication sizes, frame sizes and canonical/changed bytes remain in `summary.json`.",
+        "",
+        "`summary.json` retains every owner/rank receipt at full precision, including input read/pin and "
+        "owner elapsed time, inner/outer CUDA, publication writes, finalization, pack/D2H, parent sealing, "
+        "CPU outer decode/plain copy, DE stream, matrix apply and coordinator time. Components overlap; "
+        "CUDA intervals include wrapper/launch gaps and are not pure hardware busy time. Unavailable "
+        "measurements are unmeasured. The table rounds values to three decimal places.",
         "",
     ]
-    lines += _report_table(
-        ["Arm", "Version", "Owner", "GPU", "Canonical bytes"] + compression_headers,
-        (
-            [
-                arm["name"],
-                row["version"],
-                owner["raw_metrics"]["owner"],
-                owner["raw_metrics"]["gpu"],
-                owner["raw_metrics"]["canonical_bytes"],
-            ]
-            + [_format(owner[key]) for key in compression_keys]
-            for arm, row in versions
-            for owner in row["compression"]["owners"]
-        ),
-    )
-    lines += ["## Raw rank timings", "", "Complete rank receipts remain in `summary.json`.", ""]
-    lines += _report_table(
-        ["Arm", "Version", "Engine", "DP rank", "Rank ID"] + rank_headers,
-        (
-            [
-                arm["name"],
-                version["version"],
-                row["identity"]["engine_id"],
-                row["identity"]["dp_rank"],
-                row["identity"]["rank_id"],
-            ]
-            + [_format(row[key]) for key in rank_keys]
-            for arm, version in versions
-            for row in version["ranks"]
-        ),
-    )
     return "\n".join(lines) + "\n"
 
 

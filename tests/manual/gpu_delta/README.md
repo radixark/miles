@@ -423,8 +423,12 @@ not forced to that value. Static draft and calibration scales stay unchanged.
 The versions are constructed cumulative targets, not learned gradients or three
 statistical repeats of one delta.
 
-`REPORT.md` summarizes every arm/version with its hash policy; `summary.json`
-retains every sender owner and receiver rank metric, and `comparison.json` records
+Stdout and `REPORT.md` show one table with a row per arm/version: codec, inner frame size (KiB), payload
+SHA policy, compression/publication wall time (seconds), receiver preparation
+(seconds), scheduler pause (milliseconds), and inner, outer and total payload
+sizes (GiB). Plain LZ4 has no outer stage. Full-precision timing components,
+exact byte counts and every sender owner/receiver rank metric remain in
+`summary.json`; `comparison.json` records
 each arm’s final selected-output comparison. `inputs.json` records the cache
 identity, whether it was reused, and its original preparation measurements.
 Arm artifacts live under `arms/`; the inventory and final checkpoint stay in
