@@ -236,6 +236,10 @@ def run_a_suite(args):
         absorb=policy.absorb,
     )
 
+    if args.test_file:
+        ci_tests = [test for test in ci_tests if test.filename == args.test_file]
+        assert len(ci_tests) == 1, f"Selected test is not enabled in this suite: {args.test_file}"
+
     if auto_partition_size:
         ci_tests = auto_partition(ci_tests, auto_partition_id, auto_partition_size)
 
@@ -301,6 +305,7 @@ def main():
         help="Hardware backend to run tests on.",
     )
     parser.add_argument("--suite", type=str, required=True, help="Test suite to run.")
+    parser.add_argument("--test-file", help="Execute one file from the selected suite and policy.")
     cadence_group = parser.add_mutually_exclusive_group()
     cadence_group.add_argument(
         "--cadence",

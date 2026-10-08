@@ -37,47 +37,57 @@ on:
 permissions:
   contents: read
 
-# Hold the whole host across both layouts; file reruns use the same group.
+# Keep one PR's finite task set ahead of the next PR; file reruns share this queue.
 concurrency:
   group: b200-oma
   cancel-in-progress: false
   queue: max
 
 jobs:
-  stage-c-8-gpu-b200:
-    if: inputs.run_8_gpu
-    uses: ./.github/workflows/_run-ci.yml
-    with:
-      runs_on: '["b200", "8gpu"]'
-      # Whole-node shards cannot overlap; avoid repeated environment setup.
-      timeout_minutes: 540
-      container_image: ${{ inputs.container_image }}
-      ref: ${{ inputs.ref }}
-      execute_command: >-
-        python tests/ci/run_suite.py --hw cuda --suite stage-c-8-gpu-b200
-        --cadence ${{ inputs.cadence }}
-        --labels ${{ inputs.raw_labels }}
-        ${{ inputs.match_all_labels && '--match-all-labels' || '' }}
-    secrets: inherit
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+      has_tests: ${{ steps.plan.outputs.has_tests }}
+      ref: ${{ steps.plan.outputs.ref }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Select each test and its minimum GPU count
+        id: plan
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        run: |
+          echo "ref=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          python tests/ci/b200_plan.py \
+            --cadence ${{ inputs.cadence }} \
+            --labels ${{ inputs.raw_labels }} \
+            --suites ${{ inputs.run_8_gpu && 'stage-c-8-gpu-b200' || '' }} ${{ inputs.run_4_gpu && 'stage-c-4-gpu-b200' || '' }} \
+            ${{ inputs.match_all_labels && '--match-all-labels' || '' }}
 
-  stage-c-4-gpu-b200:
-    needs: stage-c-8-gpu-b200
-    if: ${{ !cancelled() && inputs.run_4_gpu }}
+  test:
+    needs: plan
+    if: needs.plan.outputs.has_tests == 'true'
+    name: ${{ matrix.num_gpus }} GPU / ${{ matrix.file }}
     strategy:
       fail-fast: false
-      max-parallel: 2
-      matrix:
-        partition_id: [0, 1, 2, 3]
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
     uses: ./.github/workflows/_run-ci.yml
     with:
-      runs_on: '["b200", "4gpu"]'
-      # An absorbed long test alone has a 7.5-hour per-file timeout.
-      timeout_minutes: 540
+      runs_on: ${{ matrix.runs_on }}
+      num_gpus: ${{ matrix.num_gpus }}
+      timeout_minutes: ${{ matrix.timeout_minutes }}
       container_image: ${{ inputs.container_image }}
-      ref: ${{ inputs.ref }}
+      ref: ${{ needs.plan.outputs.ref }}
+      plan_already_resolved: true
       execute_command: >-
-        python tests/ci/run_suite.py --hw cuda --suite stage-c-4-gpu-b200
-        --auto-partition-id ${{ matrix.partition_id }} --auto-partition-size 4
+        python tests/ci/run_suite.py --hw cuda --suite ${{ matrix.suite }}
+        --test-file ${{ matrix.file }}
         --cadence ${{ inputs.cadence }}
         --labels ${{ inputs.raw_labels }}
         ${{ inputs.match_all_labels && '--match-all-labels' || '' }}

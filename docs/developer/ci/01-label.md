@@ -42,7 +42,7 @@ To add one: add the entry to `KNOWN_LABELS`, then create the matching `run-ci-<k
 
 Domain labels pick *which* tests run; dispatch labels pick *where*. The two axes are independent, so `run-ci-megatron` + `run-on-blackwell` means "every megatron test that can run on Blackwell, on Blackwell, and nowhere else".
 
-Each CUDA test declares the GPU generations its kernels and precision paths support: `register_cuda_ci(..., hardware=["hopper", "blackwell"])`. Its `suite` must name a stage on the first supported generation, so a test's home stage is also where it runs when nothing asks otherwise.
+Each CUDA test declares `num_gpus`, the minimum count preserving all cases, and the GPU generations its kernels and precision paths support: `register_cuda_ci(..., hardware=["hopper", "blackwell"])`. Its `suite` must name a stage on the first supported generation, so a test's home stage is also where it runs when nothing asks otherwise.
 
 | PR labels | Effect |
 |---|---|

@@ -80,6 +80,8 @@ def plan_file_run(all_tests, test_file: str, image_tag: str) -> dict[str, str]:
         runs_on = CUDA_SUITE_RUNS_ON.get(registration.suite)
         if runs_on is None:
             raise FileRunError(f"CUDA suite {registration.suite} has no runner mapping in CUDA_SUITE_RUNS_ON")
+        if CUDA_STAGES[registration.suite].arch == "blackwell":
+            runs_on = ["b200", f"{registration.required_gpus}gpu"]
         hw = "cuda"
         runs_on_json = json.dumps(runs_on)
     else:
@@ -89,6 +91,7 @@ def plan_file_run(all_tests, test_file: str, image_tag: str) -> dict[str, str]:
         runs_on_json = ""
     return {
         "hw": hw,
+        "num_gpus": str(registration.required_gpus if hw == "cuda" else 0),
         "suite": registration.suite,
         "runs_on": runs_on_json,
         "container_image": f"radixark/miles:{image_tag}",
