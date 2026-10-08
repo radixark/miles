@@ -19,7 +19,7 @@ System flow:
 +------------------------+
 | read_metadata_and_plan |
 |------------------------|
-| read common.pt         |
+| read checkpoint args   |
 | read DCP metadata      |
 | build task plan        |
 | publish metadata ref   |
@@ -104,22 +104,15 @@ from typing_extensions import override
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from miles.backends.megatron_utils import megatron_to_hf as m2hf
+from miles.backends.megatron_utils.torch_dist_checkpoint import (
+    UnpicklerWrapper,
+    WrappedStorageReader,
+    load_checkpoint_args,
+    make_storage_meta,
+)
 from miles.utils.hf_utils.config import load_hf_config as _load_hf_config
 
 DEFAULT_DIRECT_MOE_GROUP_SIZE = 2 * 1024**3
-
-
-class UnpicklerWrapper(pickle.Unpickler):
-    @override
-    def find_class(self, mod_name, name):
-        class DummyClass:
-            def __init__(self, *args, **kwargs):
-                pass
-
-        if mod_name.startswith("megatron") or mod_name.startswith("glm"):
-            return DummyClass
-        return super().find_class(mod_name, name)
-
 
 pickle.Unpickler = UnpicklerWrapper
 
@@ -277,20 +270,6 @@ class ProgressReporter:
         self.progress.set_postfix_str(f"tasks={self.completed_tasks}/{self.total_tasks}", refresh=False)
 
 
-class WrappedStorageReader(dist_cp.FileSystemReader):
-    @override
-    def read_metadata(self):
-        path = self.fs.concat_path(self.path, ".metadata")
-        with self.fs.create_stream(path, "rb") as metadata_file:
-            metadata = UnpicklerWrapper(metadata_file).load()
-        if getattr(metadata, "storage_meta", None) is None:
-            metadata.storage_meta = make_storage_meta()
-        metadata.storage_meta.load_id = self.load_id
-        if metadata.planner_data is None:
-            metadata.planner_data = {}
-        return metadata
-
-
 class ChunkedStateDictLoadPlanner(dist_cp.default_planner.DefaultLoadPlanner):
     def __init__(self, keys_to_load: set[str]):
         super().__init__()
@@ -363,13 +342,6 @@ class MeteredStorageReader(WrappedStorageReader):
         fut: Future[None] = Future()
         fut.set_result(None)
         return fut
-
-
-def make_storage_meta():
-    storage_meta = getattr(dist_cp, "StorageMeta", None)
-    if storage_meta is not None:
-        return storage_meta()
-    return dist_cp.metadata.StorageMeta()
 
 
 def compute_dcp_load_accounting(storage_data: dict[Any, Any], plan: LoadPlan) -> tuple[int, int, int]:
@@ -1270,10 +1242,10 @@ def prepare_output_dir(output_dir: str, force: bool) -> str:
 
 
 def load_megatron_args(input_dir: str, model_name_override: str | None, vocab_size: int | None) -> tuple[Any, str]:
-    megatron_args = torch.load(os.path.join(input_dir, "common.pt"), weights_only=False)["args"]
+    megatron_args = load_checkpoint_args(input_dir)
     model_name = model_name_override or getattr(megatron_args, "original_hf_model_name", None)
     if model_name is None:
-        raise ValueError("Model name is required when common.pt does not include original_hf_model_name")
+        raise ValueError("Model name is required when the checkpoint args do not include original_hf_model_name")
     if vocab_size is not None:
         megatron_args.vocab_size = vocab_size
     if not hasattr(megatron_args, "sglang_enable_ep_moe"):
@@ -1297,9 +1269,6 @@ def convert_torch_dist_to_hf_ray(args: Args) -> str:
     reject_cloud_path(args.input_dir, "input_dir")
     if args.origin_hf_dir is not None:
         reject_cloud_path(args.origin_hf_dir, "origin_hf_dir")
-    common_pt = os.path.join(args.input_dir, "common.pt")
-    if not os.path.exists(common_pt):
-        raise FileNotFoundError(f"Expected {common_pt}")
 
     hf_config = load_hf_config(args.origin_hf_dir)
     vocab_size = get_hf_vocab_size(hf_config)
