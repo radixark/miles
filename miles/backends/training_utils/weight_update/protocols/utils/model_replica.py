@@ -278,7 +278,9 @@ class ModelReplica:
         )
 
 
-def _materialize_loader_written_buffers(model: torch.nn.Module, buffer_names: frozenset[str], device: torch.device) -> None:
+def _materialize_loader_written_buffers(
+    model: torch.nn.Module, buffer_names: frozenset[str], device: torch.device
+) -> None:
     """Allocate storage for meta buffers written by the loader, preserving aliases."""
     # preserve aliases for buffers registered under multiple names
     meta_buffer_ids = {id(buffer) for name, buffer in model.named_buffers() if name in buffer_names and buffer.is_meta}
