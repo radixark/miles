@@ -1,12 +1,14 @@
 """
-Inkling family training script (Inkling / Inkling-Small / 4-layer slice).
+Inkling family training script (Inkling / Inkling-Small / layer slices).
 
 Supports:
   - Inkling          66-layer MoE (frozen vision/audio towers optional).
                           Verified profiles: 16 nodes x 4 GPUs (TP4 PP4 EP16) and
                           12 nodes x 4 GPUs (TP4 PP3 EP16) on GB300.
   - Inkling-4layer   4-layer slice for single-node smoke testing.
-  - Inkling-Small-4layer  4-layer slice of Inkling-Small (fits the 4-GPU CI lane).
+  - Inkling-Small-4layer  4-layer slice of Inkling-Small; local attention layers only.
+  - Inkling-Small-6layer  6-layer slice of Inkling-Small (five local + one global
+                          attention layer, the full model's pattern); the 4-GPU CI lane.
   - Inkling-Small    42-layer 276B MoE. Verified profile: 4 nodes x 8 GPUs
                           (TP4 SP PP8 EP4, ctx 4096 / response 2048) on H200.
                           Full: --lr 5e-5, --rollout-batch-size 64 --global-batch-size 128
@@ -52,6 +54,7 @@ Usage patterns:
 """
 
 import os
+import re
 from dataclasses import dataclass, field
 from typing import Literal
 
@@ -61,20 +64,28 @@ from miles.utils.external_utils import command_utils
 
 app = typer.Typer()
 
-# model name -> scripts/models/<type>.py; the 4-layer slices reuse the base
-# definition with MODEL_ARGS_NUM_LAYERS=4 (set in ScriptArgs.__post_init__)
+# model name -> scripts/models/<type>.py; a `-<N>layer` slice reuses the base
+# definition with MODEL_ARGS_NUM_LAYERS=N (set in ScriptArgs.__post_init__)
 _MODEL_REGISTRY = {
     "Inkling": "inkling",
     "Inkling-4layer": "inkling",
     "Inkling-Small": "inkling-small",
     "Inkling-Small-4layer": "inkling-small",
+    "Inkling-Small-6layer": "inkling-small",
 }
+
+
+def _slice_num_layers(model_name: str) -> int | None:
+    match = re.search(r"-(\d+)layer$", model_name)
+    return int(match.group(1)) if match else None
 
 
 @dataclass
 class ScriptArgs(command_utils.ExecuteTrainConfig):
     run_id: str = command_utils.create_run_id()
-    model_name: Literal["Inkling", "Inkling-4layer", "Inkling-Small", "Inkling-Small-4layer"] = "Inkling"
+    model_name: Literal[
+        "Inkling", "Inkling-4layer", "Inkling-Small", "Inkling-Small-4layer", "Inkling-Small-6layer"
+    ] = "Inkling"
 
     train_mode: Literal["full", "lora"] = "full"
     task: Literal["dapo_math", "geo3k"] = "dapo_math"
@@ -83,6 +94,7 @@ class ScriptArgs(command_utils.ExecuteTrainConfig):
     enable_eval: bool = False
     num_rollout: int = 100
     rollout_batch_size: int = 32
+    n_samples_per_prompt: int = 8
     global_batch_size: int = 64
 
     hf_checkpoint: str | None = None
@@ -112,8 +124,8 @@ class ScriptArgs(command_utils.ExecuteTrainConfig):
     extra_args: str = ""
 
     def __post_init__(self):
-        if self.model_name.endswith("-4layer"):
-            os.environ["MODEL_ARGS_NUM_LAYERS"] = "4"
+        if (num_layers := _slice_num_layers(self.model_name)) is not None:
+            os.environ["MODEL_ARGS_NUM_LAYERS"] = str(num_layers)
         if self.hf_checkpoint is None:
             self.hf_checkpoint = f"{self.model_dir}/{self.model_name}"
         if self.torch_dist is None:
@@ -167,7 +179,7 @@ def _get_parallel_config(args: ScriptArgs) -> str:
             "--expert-tensor-parallel-size 1 "
         )
 
-    if args.model_name in ("Inkling-4layer", "Inkling-Small-4layer") and args.actor_num_nodes == 1:
+    if _slice_num_layers(args.model_name) is not None and args.actor_num_nodes == 1:
         return (
             "--tensor-model-parallel-size 4 "
             "--sequence-parallel "
@@ -230,7 +242,7 @@ def _train(args: ScriptArgs):
         "--rm-type math "
         f"--num-rollout {args.num_rollout} "
         f"--rollout-batch-size {args.rollout_batch_size} "
-        "--n-samples-per-prompt 8 "
+        f"--n-samples-per-prompt {args.n_samples_per_prompt} "
         f"--rollout-max-response-len {args.rollout_max_response_len} "
         "--rollout-temperature 1 "
         f"--global-batch-size {args.global_batch_size} "

@@ -10,7 +10,7 @@ from tests.ci.metric_history import register_ci_gate
 
 
 register_cuda_ci(
-    est_time=700,
+    est_time=900,
     suite="stage-c-4-gpu-h200",
     labels=["megatron", "model-scripts"],
     hardware=["hopper", "blackwell"],
@@ -27,18 +27,21 @@ register_ci_gate(metric_key="train/train_rollout_logprob_abs_diff")
 register_ci_gate(metric_key="train/train_rollout_kl")
 register_ci_gate(metric_key="rollout/raw_reward")
 
-_MODEL_ORG = "CharyZeng"
+_MODEL_ORG = "pb09204048"
 
 
 def _args() -> ScriptArgs:
     return ScriptArgs.from_env(
-        model_name="Inkling-Small-4layer",
+        model_name="Inkling-Small-6layer",
         train_mode="full",
         task="dapo_math",
         num_nodes=1,
         num_gpus_per_node=4,
         rollout_num_gpus_per_engine=4,
         num_rollout=2,
+        rollout_batch_size=4,
+        n_samples_per_prompt=4,
+        global_batch_size=16,
         rollout_max_response_len=512,
         sglang_context_length=1024,
         extra_args=(

@@ -63,8 +63,8 @@ def sparse_mqa_fwd(
 
     is_hip = getattr(torch.version, "hip", None)
     if is_hip:
-        # Limit pipeline buffering for 64-head HIP tiles to reduce LDS use.
-        kernel_num_stages = min(num_stages, 1) if H_per_block == 64 else num_stages
+        # Limit pipeline buffering for 32- and 64-head HIP tiles to reduce LDS use.
+        kernel_num_stages = min(num_stages, 1) if H_per_block >= 32 else num_stages
     else:
         kernel_num_stages = num_stages
 

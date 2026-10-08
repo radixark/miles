@@ -34,7 +34,7 @@ CUDA and ROCm registrations must declare at least one domain label. GPU runners 
 
 ### The canonical label list
 
-Domain labels live in `tests/ci/labels.py` (`KNOWN_LABELS`); a `labels=[...]` value outside it is a hard error. Current set: `megatron`, `model-scripts`, `sglang`, `fsdp`, `short`, `long`, `ckpt`, `lora`, `eval`, `precision`, `ft-short`, `ft-long`, `deploy`, `weight-update`, `fully-async`, `multi-policy`, `replay`, `qwen35`, `mooncake`, `miles-plugin`, `amd`, `rpc-comm`.
+Domain labels live in `tests/ci/labels.py` (`KNOWN_LABELS`); a `labels=[...]` value outside it is a hard error. That file is the current set, with a one-line description per label.
 
 To add one: add the entry to `KNOWN_LABELS`, then create the matching `run-ci-<key>` repository label in GitHub. No workflow edit is needed. To expose it through PR comments, also add that exact label to `commands.add_label.allowed_labels` in `.github/workflows/policies/comment-command-access.json`.
 
@@ -74,7 +74,7 @@ Unrecognized comments exit after trusted parsing with capability `none`; they do
 
 The gateway controls only the delegated comment path; it does not restrict users' existing GitHub UI/API label permissions and does not offer commands that add `run-ci-all`, `nightly`, or an arbitrary label absent from the policy.
 
-Post `/clear-labels` as the entire comment to remove every current label whose name starts with `run-ci` or `run-on-`, plus `nightly` and `bypass-fastfail`. All other PR labels are preserved. This stops stale CI scope, dispatch, cadence, fast-fail, and fork-approval choices from carrying into later pushes. On a PR based on the default branch it does not suppress the ordinary CI triggered by `synchronize`; on a PR based on another branch, later pushes stop starting `PR Test`. It never cancels a run that has already started.
+Post `/clear-labels` as the entire comment to remove every current label whose name starts with `run-ci` or `run-on-`, plus `nightly` and `bypass-fastfail`. All other PR labels are preserved. Each removal triggers the [PR workflow restart](/developer/ci/00-stage) with the remaining labels. On a PR based on the default branch, ordinary CI remains enabled; on a PR based on another branch, removing the last `run-ci*` label stops `PR Test` from starting jobs.
 
 Post `/rerun-failed-ci` as the entire comment to request failed-job reruns for the current open PR head. The handler considers only the latest run of each allowlisted PR workflow: `pre-commit.yml`, `pr-test.yml`, and `pr-test-rocm.yml`. A latest run is rerun only when it belongs to this PR and exact head SHA and has completed with conclusion `failure`.
 
@@ -83,6 +83,8 @@ Successful, skipped, cancelled, queued, or in-progress runs are not rerun, and a
 GitHub can omit `pull_requests` from fork workflow-run payloads. For a fork, the handler therefore also requires an all-state lookup by exact head owner and ref to identify only the current open PR, then binds each run to the same head ref, SHA, and repository ID. An absent, reused, or otherwise ambiguous fork head fails without a rerun.
 
 Post `/rerun-test <test-file>` as the entire comment to run one registered test file on the PR's current head, e.g. `/rerun-test tests/e2e/precision/test_hf_attention_cp_relayout.py`. Despite the name, this dispatches a fresh workflow and does not require the test to have run previously. The handler accepts only a repo-relative path under the registry scan roots (`tests/e2e`, `tests/fast`, `tests/fast-gpu`, `tests/ci`), then dispatches the fixed default-branch `.github/workflows/run-ci-file.yml` with the PR number, exact head SHA, and file path as inputs.
+
+Merging the PR cancels its unfinished `Rerun Test` runs, including runs waiting for a runner or queued behind another run of the same file. The trusted `cancel-merged-file-ci.yml` workflow matches the PR number in the file run's name; it leaves completed runs and other PRs alone. Closing without merging does not cancel file runs. While the PR is open, repeated requests for the same file retain their existing queue order.
 
 After GitHub confirms the workflow dispatch, the gateway reacts to the original command with 👍. When the dispatched `Rerun Test` workflow starts, that run posts a separate PR comment containing its running state, start time, and exact Actions run link:
 

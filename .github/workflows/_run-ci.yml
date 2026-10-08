@@ -1,3 +1,4 @@
+# doc-dev: docs/developer/ci/00-stage.md
 name: CI Job
 
 on:
@@ -24,7 +25,7 @@ on:
         required: false
         default: ''
       plan_already_resolved:
-        description: 'Skip the --list-only preflight when a trusted caller already resolved the execution plan.'
+        description: 'Skip hosted planning when a trusted caller already selected an enabled test at an exact ref.'
         type: boolean
         required: false
         default: false
@@ -35,7 +36,36 @@ on:
         required: false
 
 jobs:
+  plan:
+    if: ${{ !inputs.plan_already_resolved }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      has_tests: ${{ steps.select.outputs.has_tests }}
+      ref: ${{ steps.select.outputs.ref }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Resolve suite plan
+        id: select
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        run: |
+          echo "ref=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          ${{ inputs.execute_command }} --list-only --github-output "$GITHUB_OUTPUT"
+
   run:
+    needs: plan
+    if: |
+      !cancelled() &&
+      (inputs.plan_already_resolved ||
+        (needs.plan.result == 'success' && needs.plan.outputs.has_tests == 'true'))
     # fromJSON parses the input list so `runs-on` receives an actual array.
     # Without this, GitHub treats the string verbatim as one label literal
     # (e.g. the label name '["h100", "8gpu"]' with brackets), which no
@@ -72,11 +102,18 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.ref }}
+          ref: ${{ inputs.plan_already_resolved && inputs.ref || needs.plan.outputs.ref }}
 
       - name: Configure source paths
         shell: bash
         run: echo "PYTHONPATH=$GITHUB_WORKSPACE:$SGLANG_SOURCE_ROOT:$MEGATRON_SOURCE_ROOT" >> "$GITHUB_ENV"
+
+      - name: Keep NVSHMEM on NVLink (4-GPU H200)
+        # Single-node stage whose pool can include RoCE runners: a NIC name that
+        # matches nothing keeps NVSHMEM off RDMA. See docs/developer/ci/00-stage.md.
+        if: contains(fromJSON(inputs.runs_on), 'h200') && contains(fromJSON(inputs.runs_on), '4gpu')
+        shell: bash
+        run: echo "NVSHMEM_HCA_LIST=none_single_node_nvlink_only" >> "$GITHUB_ENV"
 
       - name: Cleanup Ray processes
         shell: bash
@@ -179,11 +216,6 @@ jobs:
       - name: Verify source resolution
         shell: bash
         run: python tests/ci/verify_source_resolution.py
-
-      - name: Resolve suite plan
-        if: ${{ !inputs.plan_already_resolved }}
-        shell: bash
-        run: ${{ inputs.execute_command }} --list-only
 
       - name: Run tests
         shell: bash

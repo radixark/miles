@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from typing import Any
 
 import yaml
-from tests.ci.ci_register import register_cuda_ci
+from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
 
 from miles.utils.external_utils import command_utils
 from miles.utils.external_utils.command_utils.common import chart_dir, repo_base_dir
@@ -19,6 +19,7 @@ from miles.utils.external_utils.command_utils.helm_backend.launcher.values.misc 
 from miles.utils.workers.types import ClusterBackend
 
 register_cuda_ci(est_time=300, suite="stage-c-4-gpu-h200", labels=["short"], hardware=["hopper", "blackwell"])
+register_rocm_ci(est_time=700, suite="nightly-stage-c-4-gpu-mi350", labels=["short"])
 
 MODEL_NAME = "Qwen2.5-0.5B-Instruct"
 MODEL_TYPE = "qwen2.5-0.5B"
@@ -184,7 +185,10 @@ def _train_args(engine_addrs: list[str], *, object_store_args: str) -> str:
 
 
 def _engines_started_beside_trainer() -> _ExternalEngines:
-    _train_devices, engine_devices = compute_train_and_engine_devices(os.environ.get("CUDA_VISIBLE_DEVICES"))
+    visible_devices = os.environ.get("CUDA_VISIBLE_DEVICES")
+    if os.environ.get("MILES_HARDWARE_PLATFORM") == "rocm":
+        visible_devices = os.environ.get("HIP_VISIBLE_DEVICES") or visible_devices
+    _train_devices, engine_devices = compute_train_and_engine_devices(visible_devices)
     return _ExternalEngines(
         addrs=[f"{RAY_ENGINE_HOST}:{port}" for port in RAY_ENGINE_PORTS],
         prepare_cmd={"trainer": _ray_engines_launch_cmd(engine_devices)},
@@ -202,8 +206,11 @@ def _engines_installed_beside_run(config: command_utils.ExecuteTrainConfig) -> _
 
 
 def _ray_engines_launch_cmd(engine_devices: list[str]) -> str:
+    device_variable = (
+        "HIP_VISIBLE_DEVICES" if os.environ.get("MILES_HARDWARE_PLATFORM") == "rocm" else "CUDA_VISIBLE_DEVICES"
+    )
     launches = " ".join(
-        f"(CUDA_VISIBLE_DEVICES={device} setsid {shlex.join(_engine_argv(port))} "
+        f"({device_variable}={shlex.quote(device)} setsid {shlex.join(_engine_argv(port))} "
         f"> /tmp/miles_external_engine_{port}.log 2>&1 &);"
         for device, port in zip(engine_devices, RAY_ENGINE_PORTS, strict=True)
     )
