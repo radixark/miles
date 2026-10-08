@@ -91,7 +91,7 @@ CUDA stages then update the SGLang and Megatron-LM checkouts to the selected ref
 
 CUDA and CPU dependency refs resolve in this order: explicit dispatch input or PR-body directive, committed `release-lock.json`, then the moving `sglang-miles` / `miles-main` branch heads. A called release run therefore checks out its requested Miles `ref` and consumes the lockfile on that ref unless an explicit override exists. ROCm checks out the requested Miles ref but keeps the dependencies baked into its image unless the run names a ref for one.
 
-**Launch.** CPU stages call `_run-cpu-ci.yml`; Hopper stages call `_run-ci.yml`. The B200 caller uses `_run-ci-b200.yml` to hold the host lock across both GPU layouts, and each B200 stage calls `_run-ci.yml`. The CPU workflow has one execution job; each GPU workflow has a hosted planning job followed by conditional GPU execution.
+**Launch.** CPU stages call `_run-cpu-ci.yml`; Hopper stages call `_run-ci.yml`. The B200 caller uses `_run-ci-b200.yml` to queue each run and plan one `_run-ci.yml` job per selected file; runner hooks allocate devices for each job. The CPU workflow has one execution job; each GPU workflow has a hosted planning job followed by conditional GPU execution.
 
 Both workflows receive `execute_command` and an optional `ref`; CUDA callers additionally pass `runs_on` and `container_image`. The reusable workflows own checkout, runner setup, dependency and source resolution, and the two command invocations (first `--list-only`, then the real run). GPU planning needs only Python's standard library and runs before GPU container startup or dependency installation; each stage owns only which runner class, image, ref, and command to select.
 
@@ -99,7 +99,7 @@ Both workflows receive `execute_command` and an optional `ref`; CUDA callers add
 
 **Sharding.** A stage with a `partition_id` matrix splits its tests across N shards; `run_suite.py` balances the shards by each test's `est_time`. Each shard is an independent job instance running the same `execute_command` with a different `--auto-partition-id`.
 
-Weekly runs keep the same shards but limit each Hopper and ROCm GPU matrix to one runner. B200 keeps two concurrent 4-GPU shards even for weekly: its host lock already excludes other runs, so serializing those shards would leave half the reserved GPUs idle. Other stages remain independent: `stage-b-2-gpu-h200` and `stage-c-2-gpu-h200` may each occupy one 2-GPU runner at the same time. PR, nightly, and release runs retain their existing matrix parallelism.
+Weekly runs keep the same shards but limit each Hopper and ROCm GPU matrix to one runner. B200 uses the same per-file GPU pool for every cadence, with no matrix parallelism cap; each file starts when its declared GPU budget is available. Other stages remain independent: `stage-b-2-gpu-h200` and `stage-c-2-gpu-h200` may each occupy one 2-GPU runner at the same time. PR, nightly, and release runs retain their existing matrix parallelism.
 
 ## ROCm PR/nightly/weekly mirror
 
