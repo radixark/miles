@@ -89,13 +89,19 @@ def test_load_checkpoint_checks_the_loads_that_initialize_the_trained_model(tmp_
     assert len(loaded) == 1
 
 
-@pytest.mark.parametrize("no_load_optim", [False, True])
-def test_legacy_checkpoint_reaches_megatrons_loader_without_distributed_metadata(tmp_path, monkeypatch, no_load_optim):
+def _legacy(tmp_path: Path) -> Path:
+    """A torch-format checkpoint: one pickled shard per rank and no tensor metadata."""
     load_dir = tmp_path / "ckpt"
     shard = load_dir / "iter_0000005" / "mp_rank_00" / "model_optim_rng.pt"
     shard.parent.mkdir(parents=True)
     torch.save({"model": {TRUNK: torch.zeros(1)}, "iteration": 5}, shard)
     (load_dir / "latest_checkpointed_iteration.txt").write_text("5")
+    return load_dir
+
+
+@pytest.mark.parametrize("no_load_optim", [False, True])
+def test_legacy_checkpoint_reaches_megatrons_loader_without_distributed_metadata(tmp_path, monkeypatch, no_load_optim):
+    load_dir = _legacy(tmp_path)
     args = _args(load_dir, no_load_optim=no_load_optim)
     monkeypatch.setattr(checkpoint, "get_args", lambda: args)
     loaded = []
@@ -105,4 +111,16 @@ def test_legacy_checkpoint_reaches_megatrons_loader_without_distributed_metadata
 
     assert result == (5, 0, False)
     assert len(loaded) == 1
-    assert not (shard.parent.parent / ".metadata").exists()
+    assert not (load_dir / "iter_0000005" / ".metadata").exists()
+
+
+def test_a_legacy_checkpoint_cannot_start_mtp_training(tmp_path, monkeypatch):
+    """Megatron retries a failed strict legacy load without strict, leaving missing MTP layers at random weights."""
+    args = _args(_legacy(tmp_path))
+    monkeypatch.setattr(checkpoint, "get_args", lambda: args)
+    loaded = []
+    monkeypatch.setattr(checkpoint, "_load_checkpoint_megatron", lambda **kwargs: loaded.append(kwargs) or (5, 0))
+
+    with pytest.raises(AssertionError, match="legacy \\(torch format\\) checkpoint that cannot be checked"):
+        checkpoint.load_checkpoint(_model(1), object(), None, {}, False)
+    assert not loaded

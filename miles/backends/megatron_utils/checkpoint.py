@@ -119,17 +119,23 @@ def _check_mtp_checkpoint(args, ddp_model) -> None:
     path = Path(get_load_checkpoint_path_by_args(args, load_arg=load_arg))
     if not path.is_dir():
         return
+    builds_mtp = bool(get_model_config(ddp_model[0]).mtp_num_layers)
     checkpoint_format = _get_checkpoint_format(str(path), args)
     if checkpoint_format == "torch":
-        # Legacy checkpoints have no distributed metadata. Megatron's strict state-dict load
-        # validates them; this precheck guards distributed loads that allow missing tensors.
+        # A legacy checkpoint has no tensor metadata to check, and when a strict load fails Megatron
+        # retries without strict, which would leave MTP layers missing from it at random weights.
+        # Other mismatches (unexpected MTP weights, their optimizer state) still fail or are ignored there.
+        assert not builds_mtp, (
+            f"this trainer trains MTP layers, but {path} is a legacy (torch format) checkpoint that cannot be "
+            f"checked for them; convert it to torch_dist"
+        )
         return
     if checkpoint_format == "torch_dist":
         keys = dist_checkpointing.load_tensors_metadata(str(path))
     else:
         keys = FileSystemReader(path).read_metadata().state_dict_metadata
     saved = any(key.startswith("mtp.") for key in keys)
-    if get_model_config(ddp_model[0]).mtp_num_layers:
+    if builds_mtp:
         assert saved, (
             f"this trainer trains MTP layers, but {path} holds none, so they would start from random weights; "
             f"convert the checkpoint with --mtp-num-layers"
