@@ -1,5 +1,6 @@
 import functools
 import ipaddress
+import json
 import logging
 import os
 import shlex
@@ -201,6 +202,9 @@ def _compute_server_args(
                 "the trainer will skip per-step base weight sync."
             )
 
+    if getattr(args, "update_weight_transfer_mode", "broadcast") == "modelexpress":
+        kwargs["modelexpress_config"] = json.dumps(args.modelexpress_config)
+
     # Last, so a per-group override wins over every args-derived default above.
     if sglang_overrides:
         kwargs.update(sglang_overrides)
@@ -212,6 +216,9 @@ def _compute_server_args(
         if name in base_args and name not in kwargs:
             kwargs[name] = base_args[name]
         unused_keys.discard(name)
+
+    if "modelexpress_config" in unused_keys:
+        raise ValueError("SGLang must include ModelExpress refit support for this transfer mode")
 
     # for compatibility with old args
     if len(unused_keys) > 0:

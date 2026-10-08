@@ -95,6 +95,13 @@ async def test_update_weights_from_tensor_omits_weight_version_when_not_given(cl
     assert "weight_version" not in recorder.calls[0][2]["json"]
 
 
+async def test_modelexpress_refit_forwards_the_opaque_version(client, recorder):
+    await client.update_weights_from_modelexpress("opaque-mx-id", flush_cache=False)
+    verb, url, kwargs = recorder.calls[0]
+    assert (verb, url) == ("post", f"{SERVER_URL}/update_weights_from_modelexpress")
+    assert kwargs["json"] == {"weight_version": "opaque-mx-id", "flush_cache": False}
+
+
 async def test_check_weights_renames_skip_list_to_skip_tensor_list(client, recorder):
     """sglang's CheckWeightsReqInput expects ``skip_tensor_list``, not ``skip_list``."""
     await client.check_weights(action="reset_tensors", skip_list=["lm_head"])
