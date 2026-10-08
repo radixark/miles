@@ -499,12 +499,14 @@ def _encode_version(args, owner, index, encoder, metadata, version):
         target_version=version,
         publication_id=f"{metadata['stream_id']}:{version}",
     )
-    started, changed = time.monotonic(), 0
+    started, changed, input_read_s = time.monotonic(), 0, 0.0
     pending, batch, batch_bytes = [], [], 0
     batch_cuda_s, batch_wall_s, publication_write_s = {}, 0.0, 0.0
     try:
         for tensor in raw_plan:
+            reading = time.monotonic()
             before, after = _fixture_snapshot(args, index, tensor, version)
+            input_read_s += time.monotonic() - reading
             writing = time.monotonic()
             entry = writer.add_raw_tensor(
                 tensor["name"], before, after, dtype=tensor["dtype"], shape=tensor["shape"], views=tensor["views"]
@@ -512,7 +514,9 @@ def _encode_version(args, owner, index, encoder, metadata, version):
             publication_write_s += time.monotonic() - writing
             changed += entry["changed_bytes"]
         for tensor in matrix_plan:
+            reading = time.monotonic()
             before, after = _fixture_snapshot(args, index, tensor, version, pinned=True)
+            input_read_s += time.monotonic() - reading
             batch.append((before, after))
             batch_bytes += after.numel()
             # A batching target, not an overall memory cap: a larger tensor
@@ -563,6 +567,7 @@ def _encode_version(args, owner, index, encoder, metadata, version):
         compression_and_publication_s=batch_wall_s + finalization["finalize_wall_s"] + publication_write_s,
         matrix_hash_write_s=writer.payload_metrics["matrix_hash_write_s"],
         payload_checksum_format=writer.metadata["payload_checksum_format"],
+        input_read_s=input_read_s,
         owner_elapsed_s=time.monotonic() - started,
     )
     return {"version": version, "changed_bytes": changed, "shard": shard, "metrics": metrics}
@@ -1014,6 +1019,7 @@ def _owner_compression(metrics, codec):
         "finalization_wall_s": _seconds(final["finalize_wall_s"]),
         "outer_wall_s": _seconds(final["outer_zstd_wall_s"]),
         "pack_d2h_wall_s": _seconds(final["pack_d2h_wall_s"]),
+        "input_read_s": _seconds(metrics["input_read_s"]),
         "owner_elapsed_s": _seconds(metrics["owner_elapsed_s"]),
         "raw_metrics": metrics,
     }
@@ -1042,6 +1048,7 @@ def _compression(row, codec, assignments):
                 "finalization_wall_s",
                 "outer_wall_s",
                 "pack_d2h_wall_s",
+                "input_read_s",
                 "owner_elapsed_s",
             )
         },
@@ -1079,6 +1086,7 @@ def _markdown(summary):
         "finalization_wall_s",
         "outer_wall_s",
         "pack_d2h_wall_s",
+        "input_read_s",
         "owner_elapsed_s",
     )
     compression_headers = [
@@ -1090,6 +1098,7 @@ def _markdown(summary):
         "Finalization wall s",
         "Outer wall s",
         "Pack/D2H wall s",
+        "Input read/pin s",
         "Owner enclosing s",
     ]
     rank_keys = ("outer_cpu_s", "plain_copy_s", "de_stream_cuda_s", "matrix_apply_cuda_s", "prepare_s", "pause_s")
@@ -1118,7 +1127,8 @@ def _markdown(summary):
         "Component maxima can come from different owners and must not be added. Inner CUDA sums batch event "
         "intervals per owner. CUDA events include wrapper/launch gaps, not pure kernel busy time. "
         "Outer and pack/D2H wall are nested in finalization. The enclosing owner span also includes reading "
-        "prepared snapshots into pinned buffers. Parent seal follows all owners.",
+        "prepared snapshots into pinned buffers, reported separately as input read/pin time. "
+        "Parent seal follows all owners.",
         "",
     ]
     lines += _report_table(
