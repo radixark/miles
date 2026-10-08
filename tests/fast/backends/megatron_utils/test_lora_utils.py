@@ -2,6 +2,7 @@
 
 from argparse import Namespace
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import pytest
 import torch
@@ -140,6 +141,31 @@ def test_load_lora_adapter_rejects_shards_saved_under_another_layout(tmp_path, m
         lora_utils.load_lora_adapter([_AdapterModel()], str(tmp_path))
 
 
+def _write_adapter_checkpoint(tmp_path, *, training_state):
+    torch.save({"lora_A": torch.ones(1, 2), "lora_B": torch.ones(2, 1)}, tmp_path / "adapter_megatron_rank0.pt")
+    if training_state:
+        torch.save({"iteration": 3, "optimizer": {"step": 7}}, tmp_path / "training_state_rank0.pt")
+
+
+def test_weight_only_load_ignores_the_training_state(tmp_path, monkeypatch):
+    _single_rank(monkeypatch)
+    _write_adapter_checkpoint(tmp_path, training_state=True)
+    optimizer = MagicMock()
+
+    assert lora_utils.load_lora_adapter([_AdapterModel()], str(tmp_path), optimizer=optimizer) == (True, None, False)
+    optimizer.load_state_dict.assert_not_called()
+
+
+def test_resume_requires_the_training_state(tmp_path, monkeypatch):
+    _single_rank(monkeypatch)
+    _write_adapter_checkpoint(tmp_path, training_state=False)
+
+    with pytest.raises(FileNotFoundError, match="training_state_rank0.pt"):
+        lora_utils.load_lora_adapter([_AdapterModel()], str(tmp_path), optimizer=MagicMock(), resume=True)
+    # Reference and teacher models load the adapter without an optimizer.
+    assert lora_utils.load_lora_adapter([_AdapterModel()], str(tmp_path), resume=True) == (True, None, False)
+
+
 class TestSaveLoraCheckpointTrainingState:
     def _save(self, tmp_path, *, no_save_optim, scheduler=None):
         publisher = SimpleNamespace(write_adapter=lambda *_: None)
@@ -257,6 +283,7 @@ class TestLoadTrainingStateOptimizerGate:
             optimizer=optimizer,
             opt_param_scheduler=scheduler,
             load_optimizer=False,
+            resume=True,
         )
 
         assert (loaded, iteration, optimizer_restored) == (True, 11, False)

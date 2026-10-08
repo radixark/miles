@@ -450,6 +450,26 @@ class TestResolveArgsCheckpointLoad:
         assert (args.no_load_optim, args.no_load_rng, args.finetune) == (False, False, False)
         assert (args.ckpt_step, args.start_rollout_id) == (None, None)
 
+    @pytest.mark.parametrize("mode", ["bridge", "core"])
+    def test_a_lora_checkpoint_resumes_its_run(self, tmp_path, mode):
+        """LoRA saves write no Megatron tracker, so the iter_*/adapter path alone says 'resume'."""
+        adapter = tmp_path / "run" / "iter_0000007" / "adapter"
+        args = _make_checkpoint_args(tmp_path, megatron_to_hf_mode=mode, lora_adapter_path=str(adapter))
+
+        resolve_args_checkpoint_load(args)
+
+        assert args.lora_resume_root == str((tmp_path / "run").resolve())
+        assert args.start_rollout_id is None
+
+    @pytest.mark.parametrize("adapter", ["released-adapter", "run/iter_7/adapter"])
+    def test_other_lora_adapters_are_weight_only_warm_starts(self, tmp_path, adapter):
+        args = _make_checkpoint_args(tmp_path, megatron_to_hf_mode="bridge", lora_adapter_path=str(tmp_path / adapter))
+
+        resolve_args_checkpoint_load(args)
+
+        assert args.lora_resume_root is None
+        assert args.start_rollout_id == 0
+
 
 class TestHasMegatronCheckpoint:
     def test_a_directory_holding_the_tracker_file_is_a_checkpoint(self, tmp_path):

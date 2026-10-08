@@ -145,12 +145,18 @@ class RolloutDataSource(DataSource):
             logger.warning("--disable-rollout-global-dataset: the dataset starts where a fresh run's would")
             return
 
-        if self.args.load is None:
+        # A LoRA resume keeps --load on the base model; the cursor lives in the run being resumed.
+        resume_root = getattr(self.args, "lora_resume_root", None)
+        load_root = resume_root or self.args.load
+        if load_root is None:
             logger.warning("no --load: the dataset starts where a fresh run's would")
             return
 
-        path = compute_global_dataset_state_path(self.args.load, rollout_id=rollout_id)
+        path = compute_global_dataset_state_path(load_root, rollout_id=rollout_id)
         if not os.path.exists(path):
+            # Rollout -1 is the run starting at rollout 0, which has no cursor to restore.
+            if resume_root is not None and rollout_id >= 0:
+                raise FileNotFoundError(f"Expected data-source checkpoint for the LoRA resume does not exist: {path}")
             logger.warning(f"no dataset state under {path}: the dataset starts where a fresh run's would")
             return
 

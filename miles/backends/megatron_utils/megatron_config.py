@@ -11,6 +11,7 @@ import pydantic
 import yaml
 
 from miles.utils.file_arg_utils import resolve_file_arg
+from miles.utils.lora.utils import lora_resume_root
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
 from miles.utils.workers.argv_utils import coerce_dict_to_args, declared_arg_dests
 from miles.utils.workers.naming import DNS_LABEL_PATTERN, TRAINER_ID_MAX_LENGTH
@@ -357,23 +358,31 @@ def resolve_args_checkpoint_load(args: Namespace) -> None:
     # TODO: refactor
     args.requested_load = args.load
 
+    args.lora_resume_root = lora_resume_root(args.lora_adapter_path)
+    if args.lora_adapter_path is not None and args.lora_resume_root is None:
+        logger.warning(
+            "--lora-adapter-path=%s is not an iter_*/adapter checkpoint; loading its adapter weights only.",
+            args.lora_adapter_path,
+        )
+
+    if _has_megatron_checkpoint(args.load):
+        return
     # TODO: During loading, we need to set the start_rollout_id here.
+    # LoRA saves never write a Megatron checkpoint; a resume takes its rollout from the adapter.
+    if args.lora_resume_root is None:
+        args.start_rollout_id = 0
+
     if args.megatron_to_hf_mode == "bridge":
         # Fresh runs pass a not-yet-created `--load` dir; fall back to the reference
         # weights (loaded via the HF bridge) instead of asserting in load_checkpoint.
-        # Mirrors the non-bridge branch below.
-        if not _has_megatron_checkpoint(args.load):
-            args.load = args.ref_load or args.hf_checkpoint
-            args.start_rollout_id = 0
+        args.load = args.ref_load or args.hf_checkpoint
     else:
-        if not _has_megatron_checkpoint(args.load):
-            args.no_load_optim = True
-            args.no_load_rng = True
-            args.finetune = True
-            args.load = args.ref_load
-            if args.ref_ckpt_step is not None:
-                args.ckpt_step = args.ref_ckpt_step
-            args.start_rollout_id = 0
+        args.no_load_optim = True
+        args.no_load_rng = True
+        args.finetune = True
+        args.load = args.ref_load
+        if args.ref_ckpt_step is not None:
+            args.ckpt_step = args.ref_ckpt_step
 
 
 def _has_megatron_checkpoint(load_dir: str | None) -> bool:

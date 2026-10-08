@@ -1,4 +1,5 @@
 import json
+import re
 from argparse import Namespace
 from dataclasses import dataclass
 from fnmatch import fnmatchcase
@@ -20,6 +21,16 @@ def is_lora_weight_name(name: str) -> bool:
 def is_lora_enabled(args: Namespace) -> bool:
     """Check if LoRA is enabled based on arguments."""
     return getattr(args, "lora_rank", 0) > 0 or getattr(args, "lora_adapter_path", None) is not None
+
+
+def lora_resume_root(adapter_path: str | None) -> str | None:
+    """The run root of an `<root>/iter_XXXXXXX/adapter` checkpoint, or None for any other adapter path."""
+    if adapter_path is None:
+        return None
+    path = Path(adapter_path).resolve()
+    if path.name != "adapter" or not re.fullmatch(r"iter_\d{7}", path.parent.name):
+        return None
+    return str(path.parent.parent)
 
 
 def lora_rollout_enabled(args: Namespace) -> bool:
