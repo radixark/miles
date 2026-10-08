@@ -282,7 +282,7 @@ class ModelReplica:
                 f"{sorted(loader_writes.buffer_names)[:3]}; p2p writes only params, so the rollout engine derives "
                 "these itself"
             )
-        _give_buffers_scratch_storage(self._model, loader_writes.buffer_names, self._transfer_buffer_device)
+        _materialize_loader_written_buffers(self._model, loader_writes.buffer_names, self._transfer_buffer_device)
         return loader_writes.hf_name_mapping
 
     def load_into(
@@ -337,7 +337,8 @@ class ModelReplica:
         )
 
 
-def _give_buffers_scratch_storage(model: torch.nn.Module, buffer_names: frozenset[str], device: torch.device) -> None:
+def _materialize_loader_written_buffers(model: torch.nn.Module, buffer_names: frozenset[str], device: torch.device) -> None:
+    """Allocate storage for meta buffers written by the loader, preserving aliases."""
     # preserve aliases for buffers registered under multiple names
     meta_buffer_ids = {id(buffer) for name, buffer in model.named_buffers() if name in buffer_names and buffer.is_meta}
     scratch_buffers_by_id = {}
