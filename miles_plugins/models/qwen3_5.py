@@ -46,10 +46,8 @@ class Qwen3_5GatedDeltaNet(GatedDeltaNet):
         self.in_proj_b = self.sharded_linear("in_proj_b", hidden, local.num_v_heads)
         self.in_proj_a = self.sharded_linear("in_proj_a", hidden, local.num_v_heads)
 
-    def in_proj_weight(self):
-        return torch.cat(
-            [self.in_proj_qkv.weight, self.in_proj_z.weight, self.in_proj_b.weight, self.in_proj_a.weight]
-        )
+    def in_proj_sections(self):
+        return self.in_proj_qkv.weight, self.in_proj_z.weight, self.in_proj_b.weight, self.in_proj_a.weight
 
 
 class Attention(LinearAttentionLayer):
