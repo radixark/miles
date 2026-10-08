@@ -5,11 +5,17 @@ on:
     inputs:
       layout:
         type: choice
-        options: [serial, parallel, probe4, probe8, envprobe]
+        options: [serial, parallel, poolserial, poolparallel, minimums, probe]
         required: true
       round:
         type: string
         required: true
+      probe_gpus:
+        type: string
+        default: '4'
+      hold_seconds:
+        type: string
+        default: '300'
       ci_sglang_pr:
         type: string
         default: b84bec5761a6cdc8b1df86b9b89ead80a7a9bb02
@@ -19,7 +25,7 @@ on:
 permissions:
   contents: read
 concurrency:
-  group: ${{ (startsWith(inputs.layout, 'probe') || inputs.layout == 'envprobe') && format('b200-probe-{0}', github.run_id) || 'b200-oma' }}
+  group: ${{ inputs.layout == 'probe' && format('b200-probe-{0}', github.run_id) || 'b200-oma' }}
   cancel-in-progress: false
   queue: max
 jobs:
@@ -48,9 +54,81 @@ jobs:
       container_image: radixark/miles@sha256:58b75eaf0ae6a66ee2ed966bede9e6ef8a42a1942588f2692172c3d879b4f67c
       execute_command: python tests/ci/b200_benchmark.py --test ${{ matrix.test }} --gpus 4
     secrets: inherit
+  poolserial:
+    if: inputs.layout == 'poolserial'
+    uses: ./.github/workflows/_run-ci.yml
+    with:
+      runs_on: '["b200", "8gpu"]'
+      num_gpus: 8
+      ref: ${{ github.sha }}
+      plan_already_resolved: true
+      container_image: radixark/miles@sha256:58b75eaf0ae6a66ee2ed966bede9e6ef8a42a1942588f2692172c3d879b4f67c
+      execute_command: python tests/ci/b200_benchmark.py --test pool --gpus 8
+    secrets: inherit
+  poolparallel:
+    if: inputs.layout == 'poolparallel'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {test: sft, gpus: 2}
+          - {test: lora, gpus: 4}
+          - {test: mhc, gpus: 1}
+          - {test: fake_quant, gpus: 1}
+    uses: ./.github/workflows/_run-ci.yml
+    with:
+      runs_on: ${{ format('["b200","{0}gpu"]', matrix.gpus) }}
+      num_gpus: ${{ matrix.gpus }}
+      ref: ${{ github.sha }}
+      plan_already_resolved: true
+      container_image: radixark/miles@sha256:58b75eaf0ae6a66ee2ed966bede9e6ef8a42a1942588f2692172c3d879b4f67c
+      execute_command: python tests/ci/b200_benchmark.py --test ${{ matrix.test }} --gpus ${{ matrix.gpus }}
+    secrets: inherit
+  minimum-plan:
+    if: inputs.layout == 'minimums'
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - id: plan
+        run: |
+          python - <<'PYCODE'
+          import json, os
+          from tests.ci.ci_register import collect_tests, discover_ci_files, HWBackend
+          jobs=[]
+          for test in collect_tests(discover_ci_files()):
+              if test.backend != HWBackend.CUDA or test.disabled or 'blackwell' not in test.hardware:
+                  continue
+              if test.required_gpus == 1 or test.filename == 'tests/fast-gpu/test_nvfp4_quantizer.py':
+                  for gpus in (test.required_gpus, test.required_gpus * 2):
+                      jobs.append({'file': test.filename, 'gpus': gpus})
+          assert len(jobs) == 30, len(jobs)
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write('matrix=' + json.dumps({'include': jobs}) + '\n')
+          PYCODE
+  minimums:
+    needs: minimum-plan
+    if: inputs.layout == 'minimums'
+    name: minimum ${{ matrix.gpus }} GPU / ${{ matrix.file }}
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.minimum-plan.outputs.matrix) }}
+    uses: ./.github/workflows/_run-ci.yml
+    with:
+      runs_on: ${{ format('["b200","{0}gpu"]', matrix.gpus) }}
+      num_gpus: ${{ matrix.gpus }}
+      ref: ${{ github.sha }}
+      plan_already_resolved: true
+      container_image: radixark/miles@sha256:58b75eaf0ae6a66ee2ed966bede9e6ef8a42a1942588f2692172c3d879b4f67c
+      execute_command: python tests/ci/b200_benchmark.py --file '${{ matrix.file }}' --gpus ${{ matrix.gpus }}
+    secrets: inherit
   probe:
-    if: startsWith(inputs.layout, 'probe')
-    runs-on: ${{ inputs.layout == 'probe4' && fromJSON('["b200", "4gpu"]') || fromJSON('["b200", "8gpu"]') }}
+    if: inputs.layout == 'probe'
+    runs-on: ${{ fromJSON(format('["b200","{0}gpu"]', inputs.probe_gpus)) }}
     timeout-minutes: 15
     container:
       image: radixark/miles@sha256:58b75eaf0ae6a66ee2ed966bede9e6ef8a42a1942588f2692172c3d879b4f67c
@@ -58,7 +136,8 @@ jobs:
     steps:
       - name: Hold real CUDA contexts until cancellation
         env:
-          EXPECTED_GPUS: ${{ inputs.layout == 'probe4' && '4' || '8' }}
+          EXPECTED_GPUS: ${{ inputs.probe_gpus }}
+          HOLD_SECONDS: ${{ inputs.hold_seconds }}
         run: |
           python -u - <<'PYCODE'
           import json, os, threading, time
@@ -67,24 +146,6 @@ jobs:
           assert count == int(os.environ['EXPECTED_GPUS'])
           tensors = [torch.ones(1024, device=f'cuda:{i}') for i in range(count)]
           assert all(t.sum().item() == 1024 for t in tensors)
-          print('PROBE_READY ' + json.dumps({'gpus': count, 'cvd': os.environ['CUDA_VISIBLE_DEVICES'], 'timestamp': time.time()}), flush=True)
-          threading.Event().wait(300 if count == 4 else 1)
-          PYCODE
-
-  envprobe:
-    if: inputs.layout == 'envprobe'
-    runs-on: [b200-hook-probe]
-    timeout-minutes: 5
-    container:
-      image: radixark/miles@sha256:58b75eaf0ae6a66ee2ed966bede9e6ef8a42a1942588f2692172c3d879b4f67c
-      options: --gpus all --env CUDA_VISIBLE_DEVICES
-    steps:
-      - name: Verify hook environment reaches job steps without CUDA allocation
-        run: |
-          python - <<'PYCODE'
-          import os, torch
-          assert os.environ['CUDA_VISIBLE_DEVICES'] == '7,3', os.environ['CUDA_VISIBLE_DEVICES']
-          assert torch.cuda.device_count() == 2
-          assert not torch.cuda.is_initialized()
-          print('ENV_PROBE_PASS: dynamic CUDA_VISIBLE_DEVICES=7,3; count=2; no CUDA context')
+          print('PROBE_READY ' + json.dumps({'gpus': count, 'cvd': os.environ['CUDA_VISIBLE_DEVICES'], 'uuids': [str(torch.cuda.get_device_properties(i).uuid) for i in range(count)], 'timestamp': time.time()}), flush=True)
+          threading.Event().wait(int(os.environ['HOLD_SECONDS']))
           PYCODE

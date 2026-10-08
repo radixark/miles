@@ -10,14 +10,18 @@ from tests.ci.ci_register import HWBackend, collect_tests
 from tests.ci.ci_utils import reaping_is_isolated, run_unittest_files
 
 parser = argparse.ArgumentParser()
-parser.add_argument("--test", choices=("all", "sft", "lora"), required=True)
+selector = parser.add_mutually_exclusive_group(required=True)
+selector.add_argument("--test", choices=("all", "pool", "sft", "lora", "mhc", "fake_quant"))
+selector.add_argument("--file")
 parser.add_argument("--gpus", type=int, required=True)
 args = parser.parse_args()
 files = {
     "sft": "tests/e2e/short/test_qwen3_0.6B_sft_snapshot_eval.py",
     "lora": "tests/e2e/lora/test_lora_qwen2.5_0.5B.py",
 }
-selected = list(files.values()) if args.test == "all" else [files[args.test]]
+if args.test != "all":
+    files.update(mhc="tests/fast-gpu/kernels/hyper_connection/test_mhc.py", fake_quant="tests/fast-gpu/kernels/quant/test_fake_quant.py")
+selected = [args.file] if args.file else (list(files.values()) if args.test in ("all", "pool") else [files[args.test]])
 tests = [test for test in collect_tests(selected, sanity_check=True) if test.backend == HWBackend.CUDA]
 assert len(tests) == len(selected)
 assert torch.cuda.device_count() == args.gpus
