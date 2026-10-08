@@ -85,7 +85,20 @@ def test_snapshot_plan_never_executes_source_python(tmp_path):
     output = tmp_path / "output"
     root = Path(__file__).resolve().parents[3]
     proc = subprocess.run(
-        [sys.executable, "-S", "-m", "tests.ci.b200_plan", "--source-root", str(snapshot), "--cadence", "regular", "--labels", "run-ci-megatron", "--suites", "stage-c-4-gpu-b200"],
+        [
+            sys.executable,
+            "-S",
+            "-m",
+            "tests.ci.b200_plan",
+            "--source-root",
+            str(snapshot),
+            "--cadence",
+            "regular",
+            "--labels",
+            "run-ci-megatron",
+            "--suites",
+            "stage-c-4-gpu-b200",
+        ],
         cwd=root,
         env={**os.environ, "GITHUB_OUTPUT": str(output)},
         capture_output=True,
