@@ -25,20 +25,20 @@ def glm52_config_dir(tmp_path_factory: pytest.TempPathFactory) -> Path:
 
 # each case in its own process: sglang keeps its server args and DeepGEMM choice in module globals
 @pytest.mark.parametrize(
-    "fmt, extra_env",
+    "fmt, extra_env, moe_runner_backend",
     [
-        # unquantized MoE runs on flashinfer TRT-LLM, Blackwell's default, which permutes experts in postprocess
-        ("bf16", {}),
+        # unquantized MoE on flashinfer TRT-LLM, Blackwell's default, which permutes experts in postprocess
+        ("bf16", {}, "flashinfer_trtllm"),
         # DeepGEMM requantizes, so miles sends UE8M0 scales
-        ("fp8_block", {}),
-        ("fp8_block", {"SGLANG_ENABLE_JIT_DEEPGEMM": "0"}),
-        ("mxfp8", {}),
-        ("nvfp4", {}),
+        ("fp8_block", {"SGLANG_ENABLE_JIT_DEEPGEMM": "1"}, "auto"),
+        ("fp8_block", {"SGLANG_ENABLE_JIT_DEEPGEMM": "0"}, "auto"),
+        ("mxfp8", {}, "auto"),
+        ("nvfp4", {}, "auto"),
     ],
     ids=["bf16", "fp8_block_ue8m0_scales", "fp8_block_fp32_scales", "mxfp8", "nvfp4"],
 )
 def test_a_p2p_update_leaves_the_engine_identical_to_sglangs_own(
-    fmt: str, extra_env: dict[str, str], glm52_config_dir: Path, tmp_path: Path
+    fmt: str, extra_env: dict[str, str], moe_runner_backend: str, glm52_config_dir: Path, tmp_path: Path
 ) -> None:
     env = os.environ.copy()
     env["PYTHONUNBUFFERED"] = "1"
@@ -56,6 +56,8 @@ def test_a_p2p_update_leaves_the_engine_identical_to_sglangs_own(
             str(tmp_path / "model"),
             "--fmt",
             fmt,
+            "--moe-runner-backend",
+            moe_runner_backend,
             # rank 1 so every TP shard offset is non-zero
             "--rank",
             "1",

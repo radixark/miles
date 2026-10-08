@@ -72,12 +72,18 @@ def main() -> None:
     parser.add_argument("--config-dir", type=Path, required=True, help="GLM-5.2's config.json")
     parser.add_argument("--model-dir", type=Path, required=True)
     parser.add_argument("--fmt", choices=list(QUANT_CONFIGS), required=True)
+    parser.add_argument("--moe-runner-backend", required=True)
     parser.add_argument("--rank", type=int, required=True)
     args = parser.parse_args()
     torch.cuda.set_device(0)
 
     model_config_json = _write_checkpoint(args.config_dir, args.model_dir, args.fmt)
-    server_args = ServerArgs(model_path=str(args.model_dir), tp_size=TP_SIZE, skip_tokenizer_init=True)
+    server_args = ServerArgs(
+        model_path=str(args.model_dir),
+        tp_size=TP_SIZE,
+        skip_tokenizer_init=True,
+        moe_runner_backend=args.moe_runner_backend,
+    )
     server_args_module.set_global_server_args_for_scheduler(server_args)
     initialize_moe_config()
     initialize_fp8_gemm_config()
