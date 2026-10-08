@@ -3,10 +3,8 @@ import dataclasses
 import importlib
 import sys
 import threading
-import time
 from argparse import Namespace
 from collections.abc import Callable, Iterator
-from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import contextmanager, nullcontext
 from types import ModuleType, SimpleNamespace
 from typing import Any
@@ -93,7 +91,6 @@ class _FakeTransferEngine:
     def __init__(self, log: list[tuple]) -> None:
         self._log = log
         self.registered: list[tuple[int, int]] = []
-        self.register_return_code = 0
         self.writes: list[tuple[str, dict[int, list[float]]]] = []
         self.holds: dict[str, _WriteHold] = {}
         self.failing_sessions: set[str] = set()
@@ -107,7 +104,7 @@ class _FakeTransferEngine:
 
     def register_memory(self, address: int, size: int) -> int:
         self.registered.append((address, size))
-        return self.register_return_code
+        return 0
 
     def batch_transfer_sync_write(
         self, session_id: str, source_ptrs: list[int], target_ptrs: list[int], source_lens: list[int]
@@ -138,12 +135,10 @@ class _FakeRolloutApi:
         cell_id: str,
         gpu_count: int,
         generation: int = 1,
-        unreachable: bool = False,
     ) -> None:
         self.cell_id = cell_id
         self.gpu_count = gpu_count
         self.generation = generation
-        self.unreachable = unreachable
         self.calls: list[str] = []
 
     def session_id(self, rank: int) -> str:
@@ -154,8 +149,6 @@ class _FakeRolloutApi:
 
     async def get_remote_instance_transfer_engine_info(self, rank: int) -> tuple[str, dict]:
         self.calls.append("get_remote_instance_transfer_engine_info")
-        if self.unreachable:
-            raise RuntimeError(f"{self.cell_id} is gone")
         weights = {name: (self.target_address(rank, name), _WEIGHT_NUMEL, 4) for name in ("w", "qk")}
         return self.session_id(rank), weights
 
@@ -168,32 +161,10 @@ class _FakeRolloutApi:
         return {"rl_quant_profile": None}
 
 
-class _ObservedExecutor(ThreadPoolExecutor):
-    def __init__(self, waiting_threads: set[int], **kwargs: Any) -> None:
-        super().__init__(**kwargs)
-        self._waiting_threads = waiting_threads
-
-    def submit(self, fn: Callable[..., Any], /, *args: Any, **kwargs: Any) -> Future:
-        future = super().submit(fn, *args, **kwargs)
-        wait_for_result = future.result
-
-        def _observed_result(timeout: float | None = None) -> Any:
-            self._waiting_threads.add(threading.get_ident())
-            try:
-                return wait_for_result(timeout=timeout)
-            finally:
-                self._waiting_threads.discard(threading.get_ident())
-
-        future.result = _observed_result
-        return future
-
-
 class _ProtocolCall:
-    def __init__(self, harness: "_P2PSenderHarness", target: Callable[[], None]) -> None:
-        self._harness = harness
+    def __init__(self, target: Callable[[], None]) -> None:
         self._target = target
         self.error: BaseException | None = None
-        self.log_at_return: list[tuple] | None = None
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
 
@@ -202,26 +173,6 @@ class _ProtocolCall:
             self._target()
         except BaseException as error:
             self.error = error
-        self.log_at_return = list(self._harness.log)
-
-    @property
-    def returned(self) -> bool:
-        return not self._thread.is_alive()
-
-    def is_draining(self) -> bool:
-        return self._thread.ident in self._harness.waiting_threads
-
-    def wait_until_draining_or_returned(self, extra: Callable[[], bool] = lambda: False) -> str:
-        deadline = time.monotonic() + _FAILURE_BOUND
-        while time.monotonic() < deadline:
-            if self.returned:
-                return "returned"
-            if self.is_draining():
-                return "draining"
-            if extra():
-                return "extra"
-            time.sleep(0.001)
-        raise AssertionError("the protocol call neither drained nor returned")
 
     def join(self) -> None:
         self._thread.join(timeout=_FAILURE_BOUND)
@@ -239,17 +190,11 @@ class _P2PSenderHarness:
         self.replicas_created: list[_SharedBufferReplica] = []
         self._loaded_events: dict[int, threading.Event] = {}
         self._calls: list[_ProtocolCall] = []
-        self.waiting_threads: set[int] = set()
         self.data_replica_rank = 0
         self.data_replica_size = 1
 
         mooncake_transport = sys.modules[p2p_protocol.MooncakeTransport.__module__]
         monkeypatch.setattr(mooncake_transport, "_create_transfer_engine", self._create_transfer_engine)
-        monkeypatch.setattr(
-            mooncake_transport,
-            "ThreadPoolExecutor",
-            lambda **kwargs: _ObservedExecutor(self.waiting_threads, **kwargs),
-        )
         monkeypatch.setattr(
             p2p_protocol,
             "assign_rollout_engine_ranks",
@@ -301,7 +246,7 @@ class _P2PSenderHarness:
         )
 
     def call_in_thread(self, target: Callable[[], None]) -> _ProtocolCall:
-        call = _ProtocolCall(self, target)
+        call = _ProtocolCall(target)
         self._calls.append(call)
         return call
 
