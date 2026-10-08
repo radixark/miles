@@ -43,15 +43,13 @@ def quantize_params_fp8(args, megatron_name, converted_named_params, quantizatio
             "linear_fc1",
             "linear_fc2",
         ]:
-            quantize_named_params = []
-            for converted_name, param in converted_named_params:
-                # skip bf16 weight_scale and input_scale
-                # TODO: find a clearer way.
-                if converted_name.endswith("_scale"):
-                    continue
-                quantize_named_params.extend(_quantize_param(args, converted_name, param, weight_block_size))
-
-            return quantize_named_params
+            return _quantize_converted_params(
+                args,
+                converted_named_params,
+                quantization_config,
+                weight_block_size,
+                skip_existing_scales=True,
+            )
 
     # shared expert
     shared_expert_pattern = r"mlp.shared_experts\.(.+)"
@@ -62,11 +60,7 @@ def quantize_params_fp8(args, megatron_name, converted_named_params, quantizatio
             "linear_fc1.weight",
             "linear_fc2.weight",
         ]:
-            quantize_named_params = []
-            for converted_name, param in converted_named_params:
-                quantize_named_params.extend(_quantize_param(args, converted_name, param, weight_block_size))
-
-            return quantize_named_params
+            return _quantize_converted_params(args, converted_named_params, quantization_config, weight_block_size)
 
     fp8_param_names = [
         "self_attention.linear_proj.weight",
@@ -99,14 +93,58 @@ def quantize_params_fp8(args, megatron_name, converted_named_params, quantizatio
         )
 
     if rest in fp8_param_names:
-        quantize_named_params = []
-        for converted_name, param in converted_named_params:
-            quantize_named_params.extend(_quantize_param(args, converted_name, param, weight_block_size))
-
-        return quantize_named_params
+        return _quantize_converted_params(args, converted_named_params, quantization_config, weight_block_size)
 
     # for other parameters, we just return the original converted_named_params
     return converted_named_params
+
+
+def _quantize_converted_params(
+    args,
+    converted_named_params,
+    quantization_config,
+    weight_block_size,
+    *,
+    skip_existing_scales=False,
+):
+    quantized_named_params = []
+    for converted_name, param in converted_named_params:
+        # Some expert converters emit existing BF16 scales alongside weights.
+        if skip_existing_scales and converted_name.endswith("_scale"):
+            continue
+        if _is_excluded_from_quantization(converted_name, quantization_config):
+            quantized_named_params.append((converted_name, param))
+        else:
+            quantized_named_params.extend(_quantize_param(args, converted_name, param, weight_block_size))
+    return quantized_named_params
+
+
+def _is_excluded_from_quantization(name, quantization_config):
+    modules_to_not_convert = quantization_config.get("modules_to_not_convert") or []
+    if isinstance(modules_to_not_convert, str):
+        modules_to_not_convert = [modules_to_not_convert]
+    return any(_module_path_match(module_name, name) for module_name in modules_to_not_convert)
+
+
+def _module_path_match(rule, name):
+    rule = _canonical_module_path(rule)
+    name = _canonical_module_path(name)
+    if not rule or not name:
+        return False
+    if rule == name or name.startswith(f"{rule}."):
+        return True
+    return f".{rule}." in f".{name}."
+
+
+def _canonical_module_path(name):
+    name = name.rstrip(".").removesuffix(".weight")
+    if name == "model.language_model":
+        return "model"
+    if name.startswith("model.language_model."):
+        return "model." + name.removeprefix("model.language_model.")
+    if name.startswith("language_model."):
+        return "model." + name.removeprefix("language_model.")
+    return name
 
 
 def _quantize_param(args, name, weight, weight_block_size):
