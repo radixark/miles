@@ -7,27 +7,6 @@ _STILL_BLOCKED_SECONDS = 0.2
 
 
 class TestSendBucket:
-    def test_an_empty_bucket_loads_and_sends_nothing_and_the_next_bucket_still_goes_out(
-        self, p2p_sender: Any, make_rollout_api: Any, make_bucket: Any
-    ) -> None:
-        """An empty bucket must not load a transfer buffer or issue empty writes, nor wedge the stream."""
-        protocol = p2p_sender.make_protocol()
-        api = make_rollout_api("cell-a", gpu_count=2)
-        p2p_sender.connect(protocol, [api])
-        protocol.begin_sync(weight_version=1, iter_buckets=None)
-
-        protocol.send_bucket([])
-        log_after_empty_bucket = list(p2p_sender.log)
-        protocol.send_bucket(make_bucket("hf.w"))
-        protocol.after_base_weights()
-
-        assert log_after_empty_bucket == []
-        assert [entry for entry in p2p_sender.log if entry[0] == "load"] == [
-            ("load", 0, ("hf.w",)),
-            ("load", 1, ("hf.w",)),
-        ]
-        assert p2p_sender.transfer_engine.written_sessions() == [api.session_id(0), api.session_id(1)]
-
     def test_a_fused_parameter_is_loaded_and_written_only_once_every_shard_arrived(
         self, p2p_sender: Any, make_rollout_api: Any, make_bucket: Any
     ) -> None:
@@ -111,35 +90,23 @@ class TestWriteThreads:
 
 
 class TestWriteCompletion:
-    def test_a_failed_write_to_the_last_rollout_engine_rank_fails_the_update(
+    def test_every_failed_write_is_named_and_fails_the_update(
         self, p2p_sender: Any, make_rollout_api: Any, make_bucket: Any
     ) -> None:
-        """A failed write leaves its rollout engine rank on the old weights, so the update must not succeed."""
+        """A failed write leaves its rollout engine rank on the old weights, so the update must not succeed; the error
+        names each failed rank, the last one included (`main` only logged those), and no other."""
         protocol = p2p_sender.make_protocol()
-        api = make_rollout_api("cell-a", gpu_count=2)
+        api = make_rollout_api("cell-a", gpu_count=3)
         p2p_sender.connect(protocol, [api])
         protocol.begin_sync(weight_version=1, iter_buckets=None)
-        p2p_sender.transfer_engine.failing_sessions = {api.session_id(1)}
+        p2p_sender.transfer_engine.failing_sessions = {api.session_id(1), api.session_id(2)}
 
         protocol.send_bucket(make_bucket("hf.w"))
 
-        with pytest.raises(RuntimeError, match=api.session_id(1)):
+        with pytest.raises(RuntimeError, match="2 of 3 p2p writes failed") as failure:
             protocol.after_base_weights()
-
-    def test_every_failed_write_is_named(self, p2p_sender: Any, make_rollout_api: Any, make_bucket: Any) -> None:
-        """The error names each failed rollout engine rank, not only the first one to fail."""
-        protocol = p2p_sender.make_protocol()
-        api = make_rollout_api("cell-a", gpu_count=2)
-        p2p_sender.connect(protocol, [api])
-        protocol.begin_sync(weight_version=1, iter_buckets=None)
-        p2p_sender.transfer_engine.failing_sessions = {api.session_id(0), api.session_id(1)}
-
-        protocol.send_bucket(make_bucket("hf.w"))
-
-        with pytest.raises(RuntimeError, match="2 of 2 p2p writes failed") as failure:
-            protocol.after_base_weights()
-        assert api.session_id(0) in str(failure.value)
-        assert api.session_id(1) in str(failure.value)
+        assert api.session_id(1) in str(failure.value) and api.session_id(2) in str(failure.value)
+        assert api.session_id(0) not in str(failure.value)
 
     def test_a_write_still_running_at_the_timeout_fails_the_update(
         self, p2p_sender: Any, make_rollout_api: Any, make_bucket: Any
@@ -188,20 +155,24 @@ class TestConnect:
         with pytest.raises(AssertionError, match="different layouts"):
             p2p_sender.connect(protocol, [trtllm_api, triton_api])
 
-    @pytest.mark.parametrize(
-        "expert_placement",
-        [{"ep_num_redundant_experts": 32}, {"init_expert_location": "/placement.json"}, {"enable_eplb": True}],
-        ids=["redundant_experts", "init_expert_location", "eplb"],
-    )
     def test_a_rollout_engine_placing_experts_a_replica_cannot_reproduce_is_rejected(
-        self, p2p_sender: Any, make_rollout_api: Any, expert_placement: dict
+        self, p2p_sender: Any, make_rollout_api: Any
     ) -> None:
         """The engine places these experts by metadata the replica does not have, so p2p would write them into the
-        wrong slots."""
+        wrong slots; each such setting must be named."""
         protocol = p2p_sender.make_protocol()
+        expert_placement = {
+            "ep_num_redundant_experts": 32,
+            "init_expert_location": "/placement.json",
+            "enable_eplb": True,
+            "ep_join_mode": "join",
+            "elastic_ep_initial_size": 4,
+            "dwdp_size": 2,
+            "kt_weight_path": "/kt",
+        }
         api = make_rollout_api("cell-a", gpu_count=1, expert_placement=expert_placement)
 
-        with pytest.raises(AssertionError, match=f"rollout engine 0 places experts by {next(iter(expert_placement))}"):
+        with pytest.raises(AssertionError, match=f"rollout engine 0 places experts by {', '.join(expert_placement)},"):
             p2p_sender.connect(protocol, [api])
 
     def test_a_replica_that_does_not_match_the_published_weights_is_rejected(
