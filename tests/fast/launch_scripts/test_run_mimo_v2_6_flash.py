@@ -163,6 +163,8 @@ def test_the_full_model_bf16_engine_uses_dp_attention_within_budget_on_h200(monk
     assert "--sglang-mem-fraction-static 0.72 " in h200 and "--max-tokens-per-gpu 16384 " in h200
     assert "--sglang-enable-dp-attention" not in b300 and "--sglang-enable-dp-attention" not in mxfp4
     assert "--sglang-mem-fraction-static 0.8 " in b300 and "--max-tokens-per-gpu 9216 " in b300
+    # the MXFP4 engines keep their own budget on H200
+    assert "--sglang-mem-fraction-static 0.8 " in mxfp4 and "--max-tokens-per-gpu 9216 " in mxfp4
 
 
 def test_rl_batch_and_response_length_are_configurable(monkeypatch, tmp_path):

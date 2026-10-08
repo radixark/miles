@@ -41,7 +41,7 @@ Args:
   --async-train / --no-async-train: SFT only; `train_async.py` prefetches the next batch, so a run
       resumed from its checkpoint skips one batch, while `train.py` resumes at the next batch.
   --qkv-format: `thd` packs samples with dynamic batching (`--max-tokens-per-gpu`, default 16384 for the
-      full model on H200, else 9216); `bshd` runs one unpacked sample per micro-batch.
+      full model's BF16 engine on H200, else 9216); `bshd` runs one unpacked sample per micro-batch.
   --num-rollout, --rollout-batch-size: steps and samples (prompts in RL) per step.
   --n-samples-per-prompt, --rollout-max-response-len: RL only; GRPO group size and response cap.
   --save / --save-interval / --load: Megatron checkpoints under `<output-dir>/checkpoints`.
@@ -77,10 +77,10 @@ class _Recipe:
     layers: str | None = None
     # GPUs per colocated BF16 engine.
     rollout_num_gpus_per_engine: int = 4
-    # Per hardware: SGLang static memory (weights + KV) and extra BF16-engine args.
+    # Per hardware: static memory (weights + KV) and extra args of the BF16 engine.
     sglang_mem_fraction_static: dict[str, float] = field(default_factory=lambda: {"H200": 0.6, "B300": 0.6})
     sglang_bf16_engine_args: dict[str, str] = field(default_factory=dict)
-    # Per hardware default of --max-tokens-per-gpu.
+    # Per hardware default of --max-tokens-per-gpu with the BF16 engine.
     max_tokens_per_gpu: dict[str, int] = field(default_factory=lambda: {"H200": 9216, "B300": 9216})
     # Full-parameter Adam state of the full model (3.7 TB) fits neither 16 GPUs nor two hosts'
     # memory, so it streams through node-local NVMe; that needs bf16 gradient reduction.
@@ -114,6 +114,9 @@ _RECIPES = {
 # SGLang slices the fused qkv_proj of the MXFP4 checkpoints into 4 kv-head shards, so the engine's
 # attention TP must divide 4; TP4 also holds the full 173 GB checkpoint.
 _MXFP4_ROLLOUT_NUM_GPUS_PER_ENGINE = 4
+# The MXFP4 engines keep the budget of their validation runs on either hardware.
+_MXFP4_SGLANG_MEM_FRACTION_STATIC = 0.8
+_MXFP4_MAX_TOKENS_PER_GPU = 9216
 # MoE runner of the MXFP4 engines. Marlin (W4A16) keeps activations BF16 and reloads weights in place; on B300
 # the official format follows the SGLang cookbook (DeepGEMM, FP8 activations). Always explicit: SGLang's MiMo
 # override turns `auto` into flashinfer_trtllm for FP8 checkpoints on SM100.
@@ -143,7 +146,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     async_train: bool = True
     # thd packs samples with dynamic batching; bshd runs one unpacked sample per micro-batch.
     qkv_format: Literal["thd", "bshd"] = "thd"
-    # None takes the recipe default of --model-name for the hardware.
+    # None takes the default of --model-name for the hardware and engine.
     max_tokens_per_gpu: int | None = None
     num_rollout: int = 4
     rollout_batch_size: int = 16
@@ -169,7 +172,11 @@ class ScriptArgs(U.ExecuteTrainConfig):
         self.tensor_model_parallel_size = self.tensor_model_parallel_size or tp
         self.pipeline_model_parallel_size = self.pipeline_model_parallel_size or pp
         self.expert_model_parallel_size = self.expert_model_parallel_size or ep
-        self.max_tokens_per_gpu = self.max_tokens_per_gpu or recipe.max_tokens_per_gpu[self.hardware]
+        if self.sglang_precision == "bf16":
+            default_tokens = recipe.max_tokens_per_gpu[self.hardware]
+        else:
+            default_tokens = _MXFP4_MAX_TOKENS_PER_GPU
+        self.max_tokens_per_gpu = self.max_tokens_per_gpu or default_tokens
 
     @property
     def engine_checkpoint(self) -> str:
@@ -298,6 +305,7 @@ def execute(args: ScriptArgs):
         optimizer_args += "--accumulate-allreduce-grads-in-fp32 "
 
     if args.sglang_precision != "bf16":
+        mem_fraction = _MXFP4_SGLANG_MEM_FRACTION_STATIC
         sglang_args = (
             f"--rollout-num-gpus-per-engine {_MXFP4_ROLLOUT_NUM_GPUS_PER_ENGINE} "
             f"--sglang-moe-runner-backend {_MXFP4_MOE_RUNNER[args.hardware, args.sglang_precision]} "
@@ -307,15 +315,14 @@ def execute(args: ScriptArgs):
             # BF16-rounded), so a weight check compares within the quantization error.
             sglang_args += "--check-weight-update-allow-quant-error "
     else:
+        mem_fraction = recipe.sglang_mem_fraction_static[args.hardware]
         sglang_args = f"--rollout-num-gpus-per-engine {recipe.rollout_num_gpus_per_engine} "
         sglang_args += recipe.sglang_bf16_engine_args.get(args.hardware, "")
     if args.hardware == "B300":
         # the SGLang cookbook's attention backend for MiMo-V2.6 on B300
         sglang_args += "--sglang-attention-backend fa4 "
     sglang_args += (
-        "--sglang-dtype bfloat16 "
-        f"--sglang-mem-fraction-static {recipe.sglang_mem_fraction_static[args.hardware]} "
-        "--sglang-decode-log-interval 1000 "
+        f"--sglang-dtype bfloat16 --sglang-mem-fraction-static {mem_fraction} --sglang-decode-log-interval 1000 "
     )
 
     misc_args = (
