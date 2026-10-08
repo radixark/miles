@@ -10,6 +10,7 @@ DELETE is attempted on every path.
 """
 
 import asyncio
+import mmap
 import socket
 import threading
 from types import SimpleNamespace
@@ -424,6 +425,15 @@ async def test_post_buffer_no_retry_returns_the_body_as_a_writable_array(body):
 
 
 @pytest.mark.asyncio
+async def test_post_buffer_no_retry_works_without_linux_prefault_support(monkeypatch):
+    monkeypatch.delattr(mmap, "MAP_POPULATE", raising=False)
+    async with _ReplyServer(_reply(200, b"sample")) as server:
+        reply = await post_buffer_no_retry(server.url, {}, timeout=5)
+    assert reply.flags.writeable and reply.tobytes() == b"sample"
+    assert server.requests == [b"{}"]
+
+
+@pytest.mark.asyncio
 async def test_post_buffer_no_retry_does_not_retry_and_carries_body():
     async with _ReplyServer(_reply(422, b"cursor 3 != len(accumulated_token_ids) 4")) as server:
         with pytest.raises(RuntimeError, match="422.*cursor 3"):
@@ -454,6 +464,27 @@ async def test_post_buffer_no_retry_refused_connection_is_a_transport_error():
         port = probe.getsockname()[1]
     with pytest.raises(httpx.ConnectError):
         await post_buffer_no_retry(f"http://127.0.0.1:{port}/sessions/sid-1/samples", {}, timeout=5)
+
+
+@pytest.mark.asyncio
+async def test_post_buffer_no_retry_tries_other_addresses_before_sending_once(monkeypatch):
+    async with _ReplyServer(_reply(200, b"sample")) as server:
+        port = server.server.sockets[0].getsockname()[1]
+        with socket.socket() as unavailable:
+            unavailable.bind(("127.0.0.1", 0))
+            refused_port = unavailable.getsockname()[1]
+
+            async def resolve(host, requested_port, **kwargs):
+                assert host == "samples.test" and requested_port == port
+                return [
+                    (socket.AF_INET, socket.SOCK_STREAM, 0, "", ("127.0.0.1", refused_port)),
+                    (socket.AF_INET, socket.SOCK_STREAM, 0, "", ("127.0.0.1", port)),
+                ]
+
+            monkeypatch.setattr(asyncio.get_running_loop(), "getaddrinfo", resolve)
+            reply = await post_buffer_no_retry(server.url.replace("127.0.0.1", "samples.test"), {}, timeout=5)
+    assert reply.tobytes() == b"sample"
+    assert server.requests == [b"{}"]
 
 
 @pytest.mark.asyncio
