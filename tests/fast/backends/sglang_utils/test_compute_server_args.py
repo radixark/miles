@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import dataclasses
+import json
 from types import SimpleNamespace
 
 import msgspec
@@ -239,3 +240,9 @@ class TestAttentionDpLoRA:
         pinned = {"lora_name": "miles_lora", "lora_path": "/fake/adapter", "pinned": True}
         assert server_args["lora_paths"] == [pinned if attention_dp else "miles_lora=/fake/adapter"]
         assert server_args["max_loras_per_batch"] == (2 if attention_dp else 1)
+
+
+def test_modelexpress_configuration_reaches_managed_sglang_engines():
+    config = {"model_name": "policy", "initial_base_version_id": "policy-v0", "server_url": "mx:8001"}
+    server_args = compute(make_args(update_weight_transfer_mode="modelexpress", modelexpress_config=config))
+    assert json.loads(server_args["modelexpress_config"]) == config
