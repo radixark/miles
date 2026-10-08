@@ -1,6 +1,7 @@
 import concurrent.futures
+import logging
 from argparse import Namespace
-from collections.abc import Sequence
+from collections.abc import Callable, Iterator, Sequence
 from concurrent.futures import Future
 from typing import NamedTuple
 
@@ -12,11 +13,13 @@ from miles.backends.training_utils.parallel import ParallelState
 from miles.backends.training_utils.weight_update.hf_weight_iterator import WeightUpdatePlacement
 from miles.backends.training_utils.weight_update.protocol import WeightTransferProtocol
 from miles.backends.training_utils.weight_update.protocols.transports.mooncake import MooncakeTransport, RemoteShard
+from miles.backends.training_utils.weight_update.protocols.utils.loader_probe import HfTensorSpec
 from miles.backends.training_utils.weight_update.protocols.utils.model_param_stager import ModelParamStager
 from miles.backends.training_utils.weight_update.protocols.utils.model_replica import (
     ModelReplica,
     ModelReplicas,
     assert_replica_matches_shard,
+    compute_param_group_nbytes,
     pack_into_buffers,
     query_rollout_engine_rank_configs,
 )
@@ -25,6 +28,8 @@ from miles.backends.training_utils.weight_update.protocols.utils.rollout_engine_
 )
 from miles.backends.training_utils.weight_update.protocols.utils.transfer_buffers import TransferBuffers
 from miles.utils.distributed_utils import get_gloo_group
+
+logger = logging.getLogger(__name__)
 
 # one is loaded while the writes of the other are in flight
 _NUM_TRANSFER_BUFFERS = 2
@@ -49,12 +54,35 @@ class UpdateWeightP2P(WeightTransferProtocol):
         if args.sglang_pp_size != 1:
             raise NotImplementedError("Rollout pipeline parallelism is not tested yet.")
         self.global_rank = dist.get_rank(group=get_gloo_group())
-        self._model_param_stager = ModelParamStager()
+        self._hf_tensor_specs: dict[str, HfTensorSpec] | None = None
+        self._model_param_stager: ModelParamStager | None = None
         self._pending_writes: list[tuple[RemoteShard, Future]] = []
-        self._model_replicas = ModelReplicas(model_path=args.hf_checkpoint)
+        self._model_replicas = ModelReplicas(
+            model_path=args.hf_checkpoint, transfer_buffer_device=MooncakeTransport.transfer_buffer_device
+        )
         self._transport: MooncakeTransport | None = None
         self._transfer_buffers: TransferBuffers | None = None
         self._replica_targets: list[_ReplicaTarget] = []
+
+    def begin_sync(
+        self, weight_version: int, iter_buckets: Callable[..., Iterator[list[tuple[str, torch.Tensor]]]]
+    ) -> bool:
+        """Maps the trainer's HF names for every new replica by running its own loader over them, and starts this
+        sync's staging. The first sync of the process collects the names, shapes and dtypes the trainer sends from
+        one pass of the real iterator; every rank joins its collectives."""
+        if self._hf_tensor_specs is None:
+            self._hf_tensor_specs = {
+                hf_name: HfTensorSpec(tuple(tensor.shape), tensor.dtype)
+                for bucket in iter_buckets(materialize=True)
+                for hf_name, tensor in bucket
+            }
+        if self.is_sender:
+            self._model_replicas.map_hf_names(self._hf_tensor_specs)
+            self._model_param_stager = ModelParamStager(self._model_replicas.hf_name_mapping)
+            if self._transfer_buffers is None:
+                self._log_hf_names_no_replica_loads()
+                self._transfer_buffers = self._create_transfer_buffers()
+        return True
 
     def after_base_weights(self) -> None:
         """Wait for every write of this update; fail the update if any write failed or is still running."""
@@ -66,20 +94,27 @@ class UpdateWeightP2P(WeightTransferProtocol):
 
     def send_bucket(self, converted_named_tensors: list[tuple[str, torch.Tensor]]) -> None:
         """Loads the params this bucket completes into transfer buffers, a group at a time, and writes them to every
-        rollout engine rank this sender serves."""
+        rollout engine rank this sender serves. A tensor no replica loads is skipped: the engine's loader ignores it
+        too."""
         if not self.is_sender or not converted_named_tensors:
             return
-        ready_hf_tensors_by_param_name = self._model_param_stager.get_transfer_ready_params(
-            converted_named_tensors,
-            param_mapper=self._model_replicas.param_mapper,
-            params_dict=self._model_replicas.transfer_buffer_param_layouts,
+        unknown_hf_names = [hf_name for hf_name, _ in converted_named_tensors if hf_name not in self._hf_tensor_specs]
+        assert not unknown_hf_names, (
+            f"{unknown_hf_names[:5]} ({len(unknown_hf_names)} in all) were not in the trainer's first pass, so no "
+            "replica was mapped for them"
         )
-        for param_names in pack_into_buffers(
-            ready_hf_tensors_by_param_name,
+        ready_hf_tensors_by_param_group = self._model_param_stager.stage(
+            (hf_name, tensor) for hf_name, tensor in converted_named_tensors if self._replica_loads(hf_name)
+        )
+        for param_groups in pack_into_buffers(
+            ready_hf_tensors_by_param_group,
             self._model_replicas.transfer_buffer_param_layouts,
             self._transfer_buffers.buffer_nbytes,
         ):
-            hf_tensors = [hf_tensor for name in param_names for hf_tensor in ready_hf_tensors_by_param_name[name]]
+            param_names = [param_name for param_group in param_groups for param_name in param_group]
+            hf_tensors = [
+                hf_tensor for param_group in param_groups for hf_tensor in ready_hf_tensors_by_param_group[param_group]
+            ]
             for target in self._replica_targets:
                 buffer = self._transfer_buffers.acquire()
                 param_bytes_by_name = target.model_replica.load_into(buffer, param_names, hf_tensors)
@@ -100,8 +135,8 @@ class UpdateWeightP2P(WeightTransferProtocol):
     ) -> None:
         """Connects this trainer rank to the rollout engines handed over: assigns it rollout engine ranks over them
         and the iterator's placement, queries their configs and Mooncake shards, and checks each model replica
-        against the weights its ranks publish. Replicas, the transport and the transfer buffers carry over from
-        earlier connects."""
+        against the weights its ranks publish. Replicas, their HF name mappings, the transport and the transfer
+        buffers carry over from earlier connects."""
         self.rollout_engines = rollout_engines
         assignments = assign_rollout_engine_ranks(parallel_state, placement, engine_gpu_counts)
         self.is_sender = bool(assignments)
@@ -111,7 +146,6 @@ class UpdateWeightP2P(WeightTransferProtocol):
             if self._transport is None:
                 self._transport = MooncakeTransport()
             remote_shards_by_rollout_engine_rank = self._transport.connect(rollout_engines, assignments)
-            self._model_param_stager = ModelParamStager()
             self._replica_targets = []
             for rollout_engine_rank, remote_shards in remote_shards_by_rollout_engine_rank.items():
                 config = configs_by_rollout_engine_rank[rollout_engine_rank]
@@ -123,16 +157,28 @@ class UpdateWeightP2P(WeightTransferProtocol):
                         published_by=f"rollout engine {remote_shard.rollout_engine_ind} rank {rollout_engine_rank}",
                     )
                 self._replica_targets.append(_ReplicaTarget(model_replica, remote_shards))
-            if self._transfer_buffers is None:
-                self._transfer_buffers = self._create_transfer_buffers()
+
+    def _replica_loads(self, hf_name: str) -> bool:
+        return hf_name in self._model_replicas.hf_name_mapping.param_names_by_hf_name
+
+    def _log_hf_names_no_replica_loads(self) -> None:
+        hf_names_no_replica_loads = sorted(
+            hf_name for hf_name in self._hf_tensor_specs if not self._replica_loads(hf_name)
+        )
+        if hf_names_no_replica_loads:
+            logger.info(
+                f"p2p skips {len(hf_names_no_replica_loads)} HF tensors the rollout engines' loaders ignore, e.g. "
+                f"{hf_names_no_replica_loads[:5]}"
+            )
 
     def _create_transfer_buffers(self) -> TransferBuffers:
-        largest_param_nbytes = max(
-            layout.occupied_nbytes for layout in self._model_replicas.transfer_buffer_param_layouts.values()
+        largest_param_group_nbytes = max(
+            compute_param_group_nbytes(param_group, self._model_replicas.transfer_buffer_param_layouts)
+            for param_group in self._model_param_stager.param_groups
         )
         return TransferBuffers(
             _NUM_TRANSFER_BUFFERS,
-            max(self.args.update_weight_buffer_size, largest_param_nbytes),
+            max(self.args.update_weight_buffer_size, largest_param_group_nbytes),
             device=self._transport.transfer_buffer_device,
             register_memory=self._transport.register_memory,
         )

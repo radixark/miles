@@ -64,17 +64,32 @@ class TestShardLayoutKey:
 class TestModelReplicas:
     @pytest.fixture
     def model_replicas_of_width(self, model_replica_module: ModuleType, monkeypatch: pytest.MonkeyPatch):
-        """`ModelReplicas` whose replica for tp rank r lays out one `weight` of `widths[r]` floats."""
+        """`ModelReplicas` whose replica for tp rank r lays out one `weight` of `widths[r]` floats and loads it from
+        `hf_names_by_rank[r]`."""
 
-        def make(widths: dict[int, int]):
-            def build_model_replica(config, model_path):
-                param_layout = model_replica_module.TransferBufferParamLayout.from_tensor(
-                    torch.empty(widths[config.parallelism.tp_rank])
+        def make(widths: dict[int, int], hf_names_by_rank: dict[int, set[str]] | None = None):
+            def build_model_replica(config, model_path, *, transfer_buffer_device):
+                tp_rank = config.parallelism.tp_rank
+                param_layout = model_replica_module.TransferBufferParamLayout.from_tensor(torch.empty(widths[tp_rank]))
+
+                def map_hf_names(hf_tensor_specs):
+                    mapping_calls.append(tp_rank)
+                    return model_replica_module.HfNameMapping.from_hf_names_by_param_name(
+                        {"weight": frozenset((hf_names_by_rank or {}).get(tp_rank, ()))}
+                    )
+
+                return SimpleNamespace(
+                    transfer_buffer_param_layouts={"weight": param_layout}, map_hf_names=map_hf_names
                 )
-                return SimpleNamespace(transfer_buffer_param_layouts={"weight": param_layout}, param_mapper=None)
+
+            mapping_calls = []
 
             monkeypatch.setattr(model_replica_module, "build_model_replica", build_model_replica)
-            return model_replica_module.ModelReplicas(model_path="/model")
+            model_replicas = model_replica_module.ModelReplicas(
+                model_path="/model", transfer_buffer_device=torch.device("cpu")
+            )
+            model_replicas.mapping_calls = mapping_calls
+            return model_replicas
 
         return make
 
@@ -102,6 +117,20 @@ class TestModelReplicas:
         with pytest.raises(AssertionError, match="lays out weight"):
             model_replicas.get_or_build(_config(model_replica_module, tp_rank=1, global_rank=1))
 
+    def test_a_param_waits_for_the_hf_names_any_replica_loads_into_it(
+        self, model_replica_module: ModuleType, model_replicas_of_width
+    ) -> None:
+        """With experts split across ranks each replica loads only its own, but one packing serves them all."""
+        model_replicas = model_replicas_of_width({0: 4, 1: 4}, hf_names_by_rank={0: {"expert.0"}, 1: {"expert.1"}})
+        model_replicas.get_or_build(_config(model_replica_module, tp_rank=0, global_rank=0))
+        model_replicas.get_or_build(_config(model_replica_module, tp_rank=1, global_rank=1))
+
+        model_replicas.map_hf_names({})
+        model_replicas.map_hf_names({})
+
+        assert model_replicas.hf_name_mapping.hf_names_by_param_name == {"weight": {"expert.0", "expert.1"}}
+        assert model_replicas.mapping_calls == [0, 1]
+
 
 def _copy_into_param(param: torch.nn.Parameter, loaded_weight: torch.Tensor) -> None:
     param.data.copy_(loaded_weight)
@@ -118,9 +147,12 @@ def _parameter(*shape: int, weight_loader=_copy_into_param) -> torch.nn.Paramete
     return param
 
 
-def _toy_model(model_replica_module: ModuleType, *, restores_expert_layout: bool = True) -> torch.nn.Module:
+def _toy_model(
+    model_replica_module: ModuleType, *, restores_expert_layout: bool = True, derives_norm_buffer: bool = False
+) -> torch.nn.Module:
     """A model as sglang builds it, with the postprocess patterns the replica must reproduce: experts permuted into
-    a block layout, a scale registered under a second name, and a param that only postprocess creates."""
+    a block layout, a scale registered under a second name, and a param that only postprocess creates. With
+    `derives_norm_buffer`, the norm's loader also writes `weight + 1` into a buffer, as sglang's Gemma norm does."""
 
     class _BlockExpertsMethod(model_replica_module.QuantizeMethodBase):
         def apply(self, layer: torch.nn.Module, *args, **kwargs) -> torch.Tensor:
@@ -152,6 +184,14 @@ def _toy_model(model_replica_module: ModuleType, *, restores_expert_layout: bool
     linear.quant_method = _SwizzledScaleMethod()
     norm = torch.nn.Module()
     norm.weight = _parameter(2)
+    if derives_norm_buffer:
+        # buffers stay on meta, as the replica builds them
+        norm.register_buffer("weight_plus_one", torch.empty(2, device="meta"), persistent=False)
+        norm.register_buffer("cos_sin_cache", torch.empty(3, device="meta"), persistent=False)
+        norm.weight.weight_loader = lambda param, loaded_weight: (
+            param.data.copy_(loaded_weight),
+            torch.add(param.data, 1.0, out=norm.weight_plus_one),
+        )
 
     model = torch.nn.Module()
     model.experts, model.linear, model.norm = experts, linear, norm
@@ -181,7 +221,6 @@ def make_model_replica(model_replica_module: ModuleType, monkeypatch: pytest.Mon
     """Builds a `ModelReplica` from `_toy_model` the way `build_model_replica` does: parameters swapped for 0-size
     ones, their built shapes passed along, postprocess on the CPU."""
     monkeypatch.setattr(model_replica_module, "ParallelismContext", lambda parallelism: nullcontext())
-    monkeypatch.setattr(model_replica_module, "ParameterMapper", SimpleNamespace(from_model=lambda model: None))
 
     def make(server_args: _ServerArgs | None = None, **toy_model_kwargs):
         model = _toy_model(model_replica_module, **toy_model_kwargs)
@@ -192,7 +231,11 @@ def make_model_replica(model_replica_module: ModuleType, monkeypatch: pytest.Mon
             parallelism=None, server_args=server_args or _ServerArgs()
         )
         return model_replica_module.ModelReplica(
-            model, built_shapes_by_name, config, postprocess_device=torch.device("cpu")
+            model,
+            built_shapes_by_name,
+            config,
+            postprocess_device=torch.device("cpu"),
+            transfer_buffer_device=torch.device("cpu"),
         )
 
     return make
@@ -261,6 +304,53 @@ class TestModelReplica:
 
         assert events == ["enter", "load", "exit"]
 
+    def test_map_hf_names_runs_the_replica_loader_inside_the_rank_parallelism_context(
+        self, model_replica_module: ModuleType, make_model_replica, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The mapping comes from the loader that `load_into` runs, under the same rank."""
+        model_replica = make_model_replica()
+        events = []
+
+        @contextmanager
+        def logged_parallelism_context(parallelism):
+            events.append("enter")
+            yield
+            events.append("exit")
+
+        monkeypatch.setattr(model_replica_module, "ParallelismContext", logged_parallelism_context)
+        load_weights = model_replica._model.load_weights
+        model_replica._model.load_weights = lambda hf_tensors: (events.append("load"), load_weights(hf_tensors))
+        layouts = model_replica.transfer_buffer_param_layouts
+        hf_tensor_specs = {
+            name: model_replica_module.HfTensorSpec(tuple(layouts[name].shape), layouts[name].dtype)
+            for name in ("experts.w13", "norm.weight")
+        }
+
+        hf_name_mapping = model_replica.map_hf_names(hf_tensor_specs)
+
+        assert hf_name_mapping.hf_names_by_param_name == {
+            "experts.w13": {"experts.w13"},
+            "norm.weight": {"norm.weight"},
+        }
+        assert events == ["enter", "load", "exit"]
+        assert all(param.numel() == 0 for param in model_replica._model.parameters())
+
+    def test_buffers_the_loader_writes_get_storage_once_names_are_mapped(
+        self, model_replica_module: ModuleType, make_model_replica
+    ) -> None:
+        """sglang's Gemma norm loader also writes `weight + 1` into a buffer the replica builds without storage; a
+        load would fail there. Buffers the loader never writes stay without storage."""
+        model_replica = make_model_replica(derives_norm_buffer=True)
+        model_replica.map_hf_names({"norm.weight": model_replica_module.HfTensorSpec((2,), torch.float32)})
+
+        param_bytes_by_name = model_replica.load_into(
+            torch.zeros(1024, dtype=torch.uint8), ["norm.weight"], [("norm.weight", _float_tensor(1.0, 2))]
+        )
+
+        assert torch.equal(param_bytes_by_name["norm.weight"].view(torch.float32), _float_tensor(1.0, 2))
+        assert model_replica._model.norm.weight_plus_one.device.type == "cpu"
+        assert model_replica._model.norm.cos_sin_cache.is_meta
+
     def test_a_loader_that_reshapes_its_param_is_rejected(self, make_model_replica) -> None:
         """Without a restore the expert loader reshapes the block-layout param; a raw write would land canonical
         bytes on the engine's block-layout param."""
@@ -322,22 +412,35 @@ class TestPackIntoBuffers:
             for name, nbytes in nbytes_by_name.items()
         }
 
-    def test_every_group_fits_the_layout_load_into_gives_it(self, model_replica_module: ModuleType) -> None:
-        """`load_into` aligns where each param starts, so groups must be packed with the same alignment."""
+    def test_every_pack_fits_the_layout_load_into_gives_it(self, model_replica_module: ModuleType) -> None:
+        """`load_into` aligns where each param starts, so packs must be built with the same alignment."""
         param_layouts = self._layouts(model_replica_module, {"a": 100, "b": 100, "c": 300, "d": 50})
 
-        groups = list(model_replica_module.pack_into_buffers(["a", "b", "c", "d"], param_layouts, buffer_nbytes=512))
+        packs = list(
+            model_replica_module.pack_into_buffers([("a",), ("b",), ("c",), ("d",)], param_layouts, buffer_nbytes=512)
+        )
 
-        assert [name for group in groups for name in group] == ["a", "b", "c", "d"]
-        for group in groups:
-            model_replica_module._slice_buffer_by_param(torch.empty(512, dtype=torch.uint8), group, param_layouts)
+        assert [name for pack in packs for group in pack for name in group] == ["a", "b", "c", "d"]
+        for pack in packs:
+            param_names = [name for group in pack for name in group]
+            model_replica_module._slice_buffer_by_param(
+                torch.empty(512, dtype=torch.uint8), param_names, param_layouts
+            )
 
-    def test_a_param_larger_than_a_buffer_is_rejected(self, model_replica_module: ModuleType) -> None:
-        """No buffer can hold such a param, so packing must fail rather than hand out a group that overflows."""
+    def test_the_params_of_a_group_stay_in_one_pack(self, model_replica_module: ModuleType) -> None:
+        """They load from shared HF tensors, so splitting them would hand the loader a param that is not bound."""
+        param_layouts = self._layouts(model_replica_module, {"a": 200, "b": 200, "c": 200})
+
+        packs = list(model_replica_module.pack_into_buffers([("a",), ("b", "c")], param_layouts, buffer_nbytes=512))
+
+        assert packs == [[("a",)], [("b", "c")]]
+
+    def test_a_group_larger_than_a_buffer_is_rejected(self, model_replica_module: ModuleType) -> None:
+        """No buffer can hold it, so packing must fail rather than hand out a pack that overflows."""
         param_layouts = self._layouts(model_replica_module, {"small": 100, "large": 600})
 
-        with pytest.raises(AssertionError, match="large needs 600 bytes"):
-            list(model_replica_module.pack_into_buffers(["small", "large"], param_layouts, buffer_nbytes=512))
+        with pytest.raises(AssertionError, match=r"\('large',\) need 600 bytes"):
+            list(model_replica_module.pack_into_buffers([("small",), ("large",)], param_layouts, buffer_nbytes=512))
 
 
 @pytest.mark.parametrize(

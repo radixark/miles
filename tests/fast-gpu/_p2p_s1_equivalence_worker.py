@@ -22,6 +22,7 @@ from sglang.srt.model_loader.loader import DefaultModelLoader, post_load_weights
 from sglang.srt.server_args import ServerArgs
 
 from miles.backends.megatron_utils.megatron_to_hf.processors import quantizer_fp8, quantizer_mxfp8, quantizer_nvfp4
+from miles.backends.training_utils.weight_update.protocols.utils.loader_probe import HfTensorSpec
 from miles.backends.training_utils.weight_update.protocols.utils.model_param_stager import ModelParamStager
 from miles.backends.training_utils.weight_update.protocols.utils.model_replica import (
     ModelReplica,
@@ -107,7 +108,11 @@ def main() -> None:
     reference_engine, p2p_engine = (_build_engine(model_config, parallelism) for _ in range(2))
     _assert_identical(reference_engine, p2p_engine, "at startup")
     published_locations_by_name = _get_published_locations(p2p_engine)
-    model_replica = build_model_replica(RolloutEngineRankConfig(parallelism, server_args), str(args.model_dir))
+    model_replica = build_model_replica(
+        RolloutEngineRankConfig(parallelism, server_args),
+        str(args.model_dir),
+        transfer_buffer_device=torch.device("cpu"),
+    )
     buffer_nbytes = max(
         BUFFER_NBYTES, max(layout.occupied_nbytes for layout in model_replica.transfer_buffer_param_layouts.values())
     )
@@ -312,20 +317,24 @@ def _write_p2p_update(
     engine: torch.nn.Module,
     published_locations_by_name: dict[str, tuple[int, int]],
 ) -> None:
-    stager = ModelParamStager()
+    hf_name_mapping = model_replica.map_hf_names(
+        {name: HfTensorSpec(tuple(tensor.shape), tensor.dtype) for name, tensor in hf_tensors}
+    )
+    stager = ModelParamStager(hf_name_mapping)
     params_by_name = dict(engine.named_parameters())
     for hf_tensor in hf_tensors:
-        ready_hf_tensors_by_param_name = stager.get_transfer_ready_params(
-            [hf_tensor],
-            param_mapper=model_replica.param_mapper,
-            params_dict=model_replica.transfer_buffer_param_layouts,
-        )
-        for param_names in pack_into_buffers(
-            ready_hf_tensors_by_param_name, model_replica.transfer_buffer_param_layouts, buffer.numel()
+        if hf_tensor[0] not in hf_name_mapping.param_names_by_hf_name:
+            continue
+        ready_hf_tensors_by_param_group = stager.stage([hf_tensor])
+        for param_groups in pack_into_buffers(
+            ready_hf_tensors_by_param_group, model_replica.transfer_buffer_param_layouts, buffer.numel()
         ):
             buffer.fill_(fill)
+            param_names = [name for param_group in param_groups for name in param_group]
             param_bytes_by_name = model_replica.load_into(
-                buffer, param_names, [t for name in param_names for t in ready_hf_tensors_by_param_name[name]]
+                buffer,
+                param_names,
+                [t for param_group in param_groups for t in ready_hf_tensors_by_param_group[param_group]],
             )
             for name, param_bytes in param_bytes_by_name.items():
                 _write_param_bytes(params_by_name[name], published_locations_by_name[name], param_bytes)

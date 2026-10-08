@@ -54,7 +54,7 @@ Both broadcast and P2P modes share the same bucketed weight-update pipeline in `
 
 ## Supported Model Architectures
 
-P2P weight transfer relies on a unified weight name mapping interface between Megatron and sglang (see [sglang#17326](https://github.com/sgl-project/sglang/pull/17326)). The following sglang model classes are supported:
+P2P weight transfer learns which sglang parameters each HF tensor loads into from the engine's own loader: at the first update, each model replica runs its `load_weights` once over tensors of every name the trainer sends, made one at a time on the GPU, with its params left without storage, and records where their data lands (`protocols/utils/loader_probe.py`), so no model needs its own name mapping. P2P writes parameters only: a buffer the loader derives from them (the `weight + 1` of sglang's Gemma norm) is recomputed by the engine after the update, and `--check-weight-update-equal` covers buffers. The following sglang model classes are tested:
 
 | sglang Model Class | Model Family | Example Models |
 |---|---|---|

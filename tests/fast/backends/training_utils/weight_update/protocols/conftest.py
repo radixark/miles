@@ -4,6 +4,7 @@ import importlib
 import sys
 import threading
 from argparse import Namespace
+from collections import defaultdict
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from types import ModuleType, SimpleNamespace
@@ -11,6 +12,7 @@ from typing import Any
 import pytest
 import torch
 
+from miles.backends.training_utils.weight_update.protocols.utils.loader_probe import HfNameMapping
 from miles.backends.training_utils.weight_update.protocols.utils.rollout_engine_rank_assignment import (
     assign_rollout_engine_ranks_for_data_replica,
 )
@@ -21,6 +23,7 @@ _BUCKET_VALUES = {
     "hf.w": [1.0, 2.0, 3.0, 4.0],
     "hf.q": [5.0, 6.0],
     "hf.k": [7.0, 8.0],
+    "hf.mtp": [9.0, 10.0, 11.0, 12.0],
 }
 
 
@@ -56,23 +59,8 @@ class _FakeRankParallelismConfig:
         return dataclasses.asdict(self)
 
 
-@dataclasses.dataclass
-class _FakeMapping:
-    sglang_name: str
-    num_shards: int
-    num_local_experts: int | None = None
-
-
-_HF_TO_SGLANG = {
-    "hf.w": _FakeMapping("w", num_shards=1),
-    "hf.q": _FakeMapping("qk", num_shards=2),
-    "hf.k": _FakeMapping("qk", num_shards=2),
-}
-
-
-class _FakeParameterMapper:
-    def map(self, name: str) -> _FakeMapping:
-        return _HF_TO_SGLANG[name]
+# what each replica's loader would load every HF name into; it ignores the others
+_PARAM_NAME_BY_HF_NAME = {"hf.w": "w", "hf.q": "qk", "hf.k": "qk"}
 
 
 class _FakeModelReplica:
@@ -82,9 +70,17 @@ class _FakeModelReplica:
         self.tp_rank = tp_rank
         self._harness = harness
         self._model_replica_module = model_replica_module
-        self.param_mapper = _FakeParameterMapper()
         param_layout = model_replica_module.TransferBufferParamLayout.from_tensor(torch.empty(_WEIGHT_NUMEL))
         self.transfer_buffer_param_layouts = {"w": param_layout, "qk": param_layout}
+
+    def map_hf_names(self, hf_tensor_specs: dict) -> HfNameMapping:
+        hf_names_by_param_name = defaultdict(set)
+        for hf_name in hf_tensor_specs:
+            if _PARAM_NAME_BY_HF_NAME.get(hf_name) in self.transfer_buffer_param_layouts:
+                hf_names_by_param_name[_PARAM_NAME_BY_HF_NAME[hf_name]].add(hf_name)
+        return HfNameMapping.from_hf_names_by_param_name(
+            {param_name: frozenset(hf_names) for param_name, hf_names in hf_names_by_param_name.items()}
+        )
 
     def load_into(
         self, buffer: torch.Tensor, param_names: list[str], hf_tensors: list[tuple[str, torch.Tensor]]
@@ -230,6 +226,7 @@ class _P2PSenderHarness:
         self._loaded_events: dict[int, threading.Event] = {}
         self._calls: list[_ProtocolCall] = []
         self.assignment_inputs: list[tuple[Any, list[int]]] = []
+        self.first_passes = 0
 
         mooncake_transport = sys.modules[p2p_protocol.MooncakeTransport.__module__]
         monkeypatch.setattr(mooncake_transport, "_create_transfer_engine", self._create_transfer_engine)
@@ -270,6 +267,15 @@ class _P2PSenderHarness:
             selector="",
         )
 
+    def begin_sync(self, protocol: Any, weight_version: int) -> None:
+        """As the updater begins a sync: the iterator it hands over yields every HF tensor the trainer sends."""
+
+        def iter_buckets(materialize: bool):
+            self.first_passes += 1
+            yield [(name, torch.tensor(values)) for name, values in _BUCKET_VALUES.items()]
+
+        protocol.begin_sync(weight_version=weight_version, iter_buckets=iter_buckets)
+
     def call_in_thread(self, target: Callable[[], None]) -> _ProtocolCall:
         call = _ProtocolCall(target)
         self._calls.append(call)
@@ -294,7 +300,9 @@ class _P2PSenderHarness:
         self.transfer_engines_created += 1
         return self.transfer_engine
 
-    def _build_model_replica(self, config: Any, model_path: str) -> _FakeModelReplica:
+    def _build_model_replica(
+        self, config: Any, model_path: str, *, transfer_buffer_device: torch.device
+    ) -> _FakeModelReplica:
         model_replica = _FakeModelReplica(config.parallelism.tp_rank, self, self._model_replica_module)
         self.replicas_created.append(model_replica)
         return model_replica
@@ -365,7 +373,6 @@ def p2p_protocol() -> ModuleType:
             "sglang.srt.layers.quantization.fp8_utils": {"initialize_fp8_gemm_config": lambda *args, **kwargs: None},
             "sglang.srt.model_loader": {"get_model": lambda *args, **kwargs: None},
             "sglang.srt.model_loader.loader": {"DefaultModelLoader": object},
-            "sglang.srt.model_loader.parameter_mapper": {"ParameterMapper": object},
             "sglang.srt.runtime_context": {"get_server_args": lambda: None},
         }
     ):

@@ -1,3 +1,4 @@
+import logging
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -13,16 +14,22 @@ from sglang.srt.layers.quantization.base_config import QuantizeMethodBase
 from sglang.srt.layers.quantization.fp4_utils import initialize_fp4_gemm_config
 from sglang.srt.layers.quantization.fp8_utils import initialize_fp8_gemm_config
 from sglang.srt.model_loader.loader import DefaultModelLoader
-from sglang.srt.model_loader.parameter_mapper import ParameterMapper
 from sglang.srt.runtime_context import get_server_args
 from sglang.srt.server_args import ServerArgs
 
 from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
+from miles.backends.training_utils.weight_update.protocols.utils.loader_probe import (
+    HfNameMapping,
+    HfTensorSpec,
+    probe_loader_writes,
+)
 from miles.backends.training_utils.weight_update.protocols.utils.rollout_engine_rank_assignment import (
     RolloutEngineRankAssignment,
 )
 from miles.utils import async_utils
 from miles.utils.workers.argv_utils import _record_field_names
+
+logger = logging.getLogger(__name__)
 
 # where a rank sits in the launch, not how it holds its weights
 _PLACEMENT_PARALLELISM_FIELDS = frozenset({"global_rank", "local_rank"})
@@ -179,8 +186,9 @@ class ModelReplica:
     the bytes that rank's loader would write.
 
     Its params are 0-size, and their shapes and attributes are those the engine's params have while it loads an
-    update. The p2p protocol loads each group of ready params into a transfer buffer with `load_into` and writes the
-    returned bytes into the rollout engine ranks of this layout.
+    update. The p2p protocol finds which params each HF tensor loads into with `map_hf_names`, loads each group of
+    ready params into a transfer buffer with `load_into` and writes the returned bytes into the rollout engine ranks
+    of this layout.
     """
 
     def __init__(
@@ -190,17 +198,43 @@ class ModelReplica:
         config: RolloutEngineRankConfig,
         *,
         postprocess_device: torch.device,
+        transfer_buffer_device: torch.device,
     ) -> None:
         # some models call it from their own load_weights; the engine runs it after the writes
         if hasattr(model, "post_load_weights"):
             model.post_load_weights = lambda *args, **kwargs: None
         self._model = model
         self._config = config
+        # the trainer's HF tensors are on the GPU postprocess runs on
+        self._hf_tensor_device = postprocess_device
+        self._transfer_buffer_device = transfer_buffer_device
         self.transfer_buffer_param_layouts = _bring_to_reload_state(
             model, built_shapes_by_name, config.parallelism, postprocess_device
         )
         self._params_by_name = dict(model.named_parameters())
-        self.param_mapper = ParameterMapper.from_model(model)
+
+    def map_hf_names(self, hf_tensor_specs: Mapping[str, HfTensorSpec]) -> HfNameMapping:
+        """Returns which params each HF tensor of `hf_tensor_specs` loads into, found by running this replica's own
+        loader over tensors of those specs on the trainer's GPU, as `load_into` runs it, with params that have no
+        storage.
+
+        Buffers that loader fills besides params get scratch storage for `load_into` to write: a write carries only
+        params, so the rollout engine derives them itself after an update.
+        """
+        if get_server_args() is not self._config.server_args:
+            _publish_server_args(self._config.server_args)
+        with ParallelismContext(self._config.parallelism):
+            loader_writes = probe_loader_writes(
+                self._model, self.transfer_buffer_param_layouts, hf_tensor_specs, device=self._hf_tensor_device
+            )
+        if loader_writes.buffer_names:
+            logger.info(
+                f"the loader also fills {len(loader_writes.buffer_names)} buffers, e.g. "
+                f"{sorted(loader_writes.buffer_names)[:3]}; p2p writes only params, so the rollout engine derives "
+                "these itself"
+            )
+        _give_buffers_scratch_storage(self._model, loader_writes.buffer_names, self._transfer_buffer_device)
+        return loader_writes.hf_name_mapping
 
     def load_into(
         self, buffer: torch.Tensor, param_names: Sequence[str], hf_tensors: list[tuple[str, torch.Tensor]]
@@ -252,6 +286,21 @@ class ModelReplica:
             f"({len(changed_param_names)} in all); the rollout engine receives only bytes, so its param would keep "
             "the old shape, storage or attributes"
         )
+
+
+def _give_buffers_scratch_storage(model: torch.nn.Module, buffer_names: frozenset[str], device: torch.device) -> None:
+    # only meta ones lack storage; by the buffer's id, so one registered under several names stays one tensor
+    meta_buffer_ids = {id(buffer) for name, buffer in model.named_buffers() if name in buffer_names and buffer.is_meta}
+    scratch_buffers_by_id = {}
+    for module in model.modules():
+        for local_name, buffer in module._buffers.items():
+            if buffer is None or id(buffer) not in meta_buffer_ids:
+                continue
+            if id(buffer) not in scratch_buffers_by_id:
+                scratch_buffers_by_id[id(buffer)] = torch.empty_strided(
+                    buffer.shape, buffer.stride(), dtype=buffer.dtype, device=device
+                )
+            module._buffers[local_name] = scratch_buffers_by_id[id(buffer)]
 
 
 def _bring_to_reload_state(
@@ -341,7 +390,9 @@ def _get_param_state_besides_bytes(param: torch.nn.Parameter) -> tuple:
     return param.shape, param.stride(), param.dtype, param.data_ptr(), attributes
 
 
-def build_model_replica(config: RolloutEngineRankConfig, model_path: str) -> ModelReplica:
+def build_model_replica(
+    config: RolloutEngineRankConfig, model_path: str, *, transfer_buffer_device: torch.device
+) -> ModelReplica:
     """Builds the model replica of `config`'s layout. The build holds about one module's params at a time on this
     process's GPU and frees them before it returns."""
     _publish_server_args(config.server_args)
@@ -351,7 +402,11 @@ def build_model_replica(config: RolloutEngineRankConfig, model_path: str) -> Mod
             device=torch.device("cpu"),
         )
     return ModelReplica(
-        model, built_shapes_by_name, config, postprocess_device=torch.device("cuda", torch.cuda.current_device())
+        model,
+        built_shapes_by_name,
+        config,
+        postprocess_device=torch.device("cuda", torch.cuda.current_device()),
+        transfer_buffer_device=transfer_buffer_device,
     )
 
 
@@ -364,36 +419,57 @@ def _publish_server_args(server_args: ServerArgs) -> None:
 
 
 def pack_into_buffers(
-    param_names: Iterable[str], param_layouts: Mapping[str, TransferBufferParamLayout], buffer_nbytes: int
-) -> Iterator[list[str]]:
-    """Splits `param_names`, in order, into groups that `ModelReplica.load_into` can each load into one transfer
-    buffer of `buffer_nbytes`."""
-    group_param_names, group_end_offset = [], 0
+    param_groups: Iterable[tuple[str, ...]],
+    param_layouts: Mapping[str, TransferBufferParamLayout],
+    buffer_nbytes: int,
+) -> Iterator[list[tuple[str, ...]]]:
+    """Splits `param_groups`, in order, into lists whose params `ModelReplica.load_into` can load into one transfer
+    buffer of `buffer_nbytes`. A group's params stay together: their HF tensors load them together."""
+    packed_groups, end_offset = [], 0
+    for param_group in param_groups:
+        group_nbytes = compute_param_group_nbytes(param_group, param_layouts)
+        assert group_nbytes <= buffer_nbytes, f"{param_group} need {group_nbytes} bytes, a buffer has {buffer_nbytes}"
+        group_end_offset = _end_offset_after(param_group, param_layouts, start_offset=end_offset)
+        if packed_groups and group_end_offset > buffer_nbytes:
+            yield packed_groups
+            packed_groups, group_end_offset = [], group_nbytes
+        packed_groups.append(param_group)
+        end_offset = group_end_offset
+    if packed_groups:
+        yield packed_groups
+
+
+def compute_param_group_nbytes(
+    param_group: Iterable[str], param_layouts: Mapping[str, TransferBufferParamLayout]
+) -> int:
+    """The bytes `load_into` lays a group's params out in, from the start of a transfer buffer."""
+    return _end_offset_after(param_group, param_layouts, start_offset=0)
+
+
+def _end_offset_after(
+    param_names: Iterable[str], param_layouts: Mapping[str, TransferBufferParamLayout], start_offset: int
+) -> int:
+    end_offset = start_offset
     for name in param_names:
-        param_nbytes = param_layouts[name].occupied_nbytes
-        assert param_nbytes <= buffer_nbytes, f"{name} needs {param_nbytes} bytes, a buffer has {buffer_nbytes}"
-        param_start_offset = _align_param_start(group_end_offset)
-        if group_param_names and param_start_offset + param_nbytes > buffer_nbytes:
-            yield group_param_names
-            group_param_names, param_start_offset = [], 0
-        group_param_names.append(name)
-        group_end_offset = param_start_offset + param_nbytes
-    if group_param_names:
-        yield group_param_names
+        end_offset = _align_param_start(end_offset) + param_layouts[name].occupied_nbytes
+    return end_offset
 
 
 class ModelReplicas:
     """The model replicas of a p2p sender, one per shard layout, kept for the whole trainer process.
 
-    The p2p protocol asks it for the replica of each rollout engine rank it sends to. Every replica lays its params
-    out the same way in a transfer buffer, so one packing of ready params serves all of them.
+    The p2p protocol asks it for the replica of each rollout engine rank it sends to, then maps the trainer's HF
+    names for every new replica. Every replica lays its params out the same way in a transfer buffer, so one packing
+    of ready params serves all of them.
     """
 
-    def __init__(self, model_path: str) -> None:
+    def __init__(self, model_path: str, transfer_buffer_device: torch.device) -> None:
         self._model_path = model_path
+        self._transfer_buffer_device = transfer_buffer_device
         self._model_replicas_by_shard_layout_key: dict[tuple, ModelReplica] = {}
+        self._mapped_shard_layout_keys: set[tuple] = set()
         self.transfer_buffer_param_layouts: dict[str, TransferBufferParamLayout] = {}
-        self.param_mapper: ParameterMapper | None = None
+        self.hf_name_mapping: HfNameMapping | None = None
 
     def get_or_build(self, config: RolloutEngineRankConfig) -> ModelReplica:
         if config.shard_layout_key not in self._model_replicas_by_shard_layout_key:
@@ -401,10 +477,11 @@ class ModelReplicas:
         return self._model_replicas_by_shard_layout_key[config.shard_layout_key]
 
     def _build(self, config: RolloutEngineRankConfig) -> ModelReplica:
-        model_replica = build_model_replica(config, self._model_path)
+        model_replica = build_model_replica(
+            config, self._model_path, transfer_buffer_device=self._transfer_buffer_device
+        )
         if not self.transfer_buffer_param_layouts:
             self.transfer_buffer_param_layouts = model_replica.transfer_buffer_param_layouts
-            self.param_mapper = model_replica.param_mapper
         differing_param_names = [
             name
             for name in sorted(
@@ -418,6 +495,18 @@ class ModelReplicas:
             "ready params serves all of them"
         )
         return model_replica
+
+    def map_hf_names(self, hf_tensor_specs: Mapping[str, HfTensorSpec]) -> None:
+        """Maps the HF tensors the trainer sends for every replica not mapped yet. Their one packing waits for the
+        names any replica loads into a param: with experts split across ranks, each rank loads only its own."""
+        for shard_layout_key, model_replica in self._model_replicas_by_shard_layout_key.items():
+            if shard_layout_key in self._mapped_shard_layout_keys:
+                continue
+            hf_name_mapping = model_replica.map_hf_names(hf_tensor_specs)
+            self.hf_name_mapping = (
+                hf_name_mapping if self.hf_name_mapping is None else self.hf_name_mapping.union(hf_name_mapping)
+            )
+            self._mapped_shard_layout_keys.add(shard_layout_key)
 
 
 def assert_replica_matches_shard(
