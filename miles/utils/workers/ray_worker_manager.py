@@ -77,6 +77,13 @@ class RayWorkerManager:
         print("DIAG env:", {k: v for k, v in os.environ.items() if any(t in k for t in ("VISIBLE", "ROCR", "HIP", "RAY_ACCEL", "LD_LIBRARY", "GPU_DEVICE"))}, flush=True)
         print("DIAG exec env:", [e for e in open("/proc/self/environ", "rb").read().decode(errors="replace").split("\0") if any(t in e for t in ("VISIBLE", "ROCR", "HIP_", "GPU_DEVICE"))], flush=True)
         print("DIAG maps:", sorted({l.split()[-1] for l in open("/proc/self/maps") if any(t in l for t in ("amdhip", "hsa", "libcuda", "libcudart", "rocm", "libdrm", "amd_comgr"))}), flush=True)
+        _libs = sorted({l.split()[-1] for l in open("/proc/self/maps") if ".so" in l.split()[-1]})
+        for _lib in _libs:
+            _out = subprocess.run(["ldd", _lib], capture_output=True, text=True).stdout
+            _hits = [x.strip() for x in _out.splitlines() if ("libamdhip64" in x or "libhsa-runtime64" in x) and "/opt/rocm" in x]
+            if _hits and "/opt/rocm" not in _lib:
+                print("DIAG rocm-linked:", _lib, _hits, flush=True)
+        print("DIAG nlibs:", len(_libs), flush=True)
         import sys
         print("DIAG torch loaded:", "torch" in sys.modules, "triton" in sys.modules, "modelopt" in sys.modules, flush=True)
         try:
