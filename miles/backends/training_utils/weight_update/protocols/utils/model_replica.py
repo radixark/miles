@@ -1,6 +1,6 @@
 import logging
 from collections.abc import Iterable, Iterator, Mapping, Sequence
-from contextlib import ExitStack, contextmanager
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 from typing import NamedTuple
 
@@ -446,7 +446,7 @@ def build_model_replica(
     process's GPU and frees them before it returns."""
     _publish_server_args(config.server_args)
     is_draft = config.runner_role == "draft"
-    with _runner_build_context(is_draft):
+    with _draft_build_context() if is_draft else nullcontext():
         with ParallelismContext(config.parallelism):
             model, built_shapes_by_name = DefaultModelLoader(LoadConfig()).initialize_model_without_storage(
                 model_config=ModelConfig.from_server_args(
@@ -464,13 +464,12 @@ def build_model_replica(
 
 
 @contextmanager
-def _runner_build_context(is_draft: bool) -> Iterator[None]:
-    # as EAGLEWorkerV2 builds its draft: the speculative MoE backends and the draft's shared-experts fusion
-    with ExitStack() as stack:
-        if is_draft:
-            stack.enter_context(speculative_moe_backend_context())
-            stack.enter_context(speculative_moe_a2a_backend_context())
-            stack.enter_context(draft_model_build_scope())
+def _draft_build_context() -> Iterator[None]:
+    with (
+        speculative_moe_backend_context(),
+        speculative_moe_a2a_backend_context(),
+        draft_model_build_scope(),
+    ):
         yield
 
 
