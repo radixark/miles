@@ -305,7 +305,10 @@ async def _post_buffer(url: str, payload: dict) -> np.ndarray:
         # A private anonymous mapping, not np.empty: numpy madvises large allocations to huge pages,
         # and on a fragmented node each such allocation stalls in direct compaction (2048 bodies of
         # 200 MB in flight: 8.4 -> 2.3 bodies/s). mmap rejects length 0.
-        mapping = mmap.mmap(-1, max(length, 1), flags=mmap.MAP_PRIVATE | mmap.MAP_ANONYMOUS)
+        try:
+            mapping = mmap.mmap(-1, max(length, 1), flags=mmap.MAP_PRIVATE | mmap.MAP_ANONYMOUS)
+        except (OSError, OverflowError) as exc:
+            raise httpx.ReadError(f"cannot allocate reply buffer for Content-Length {length}") from exc
         reply = np.frombuffer(mapping, dtype=np.uint8)[:length]
         await _recv_exactly_into(loop, sock, reply, received)
     finally:
