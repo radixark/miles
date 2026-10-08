@@ -1,8 +1,4 @@
-"""Qwen3.5-35B-A3B: p2p weight updates into an EAGLE engine whose MTP draft is trained.
-
-4 train GPUs (TP1, DP4, EP4) write both the target and its MTP draft straight into one TP4 engine (experts sharded
-by TP, no DP attention, no DeepEP) over Mooncake; the equality check (selector "all") covers both models.
-"""
+"""Qwen3.5-35B-A3B: verify target and trained MTP draft equality after P2P updates without R3."""
 
 import os
 
@@ -10,7 +6,7 @@ from tests.ci.ci_register import register_cuda_ci
 from tests.ci.metric_history import register_ci_gate
 from tests.e2e.megatron.test_qwen3_5_35B_A3B._common import CaseConfig, execute, prepare
 
-# 8x H200 because EP must stay >= 4 (see test_nospec_r3_bf16_sgl_dpattn1x4_meg_tp1cp1_fullyasync.py)
+# EP2 exceeds TE's tensor-handle pool during grad clipping (NVIDIA/TransformerEngine#3090)
 register_cuda_ci(
     est_time=2400,
     suite="stage-c-8-gpu-h200",
@@ -37,8 +33,7 @@ CASE = CaseConfig(
     update_weight_transfer_mode="p2p",
     enable_mtp_training=True,
     use_r3=False,
-    # miles has no VLM/vision implementation on the training side, so vision weights are
-    # never synced; exclude them from the weight-equality check.
+    # the trainer has no vision weights to sync
     check_weight_update_skip_list=("visual",),
 )
 

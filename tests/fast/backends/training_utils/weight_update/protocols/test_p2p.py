@@ -218,8 +218,7 @@ class TestDraftRunner:
     def test_mtp_weights_reach_the_draft_and_weights_it_shares_go_once_through_the_target(
         self, p2p_sender: Any, make_rollout_api: Any, make_bucket: Any
     ) -> None:
-        """p2p used to write the target by the draft's weight table and never write the draft. A weight the draft
-        shares with the target, sent through the draft as well, would carry bytes its loader may not fill."""
+        """The draft must receive MTP weights without overwriting shared weights through its own loader."""
         protocol = p2p_sender.make_protocol()
         api = make_rollout_api("cell-a", gpu_count=1, speculative_args=_EAGLE_MTP)
         p2p_sender.connect(protocol, [api])
@@ -244,8 +243,7 @@ class TestDraftRunner:
     def test_only_the_target_is_written_when_there_is_no_draft_to_update(
         self, p2p_sender: Any, make_rollout_api: Any, make_bucket: Any, selector: str, speculative_args: dict
     ) -> None:
-        """Without MTP layers in the trainer the draft keeps its own weights, and an engine without a draft model
-        publishes no draft to query."""
+        """Target-only updates must not query draft addresses."""
         protocol = p2p_sender.make_protocol()
         api = make_rollout_api("cell-a", gpu_count=1, speculative_args=speculative_args)
         p2p_sender.connect(protocol, [api], selector=selector)
@@ -278,8 +276,7 @@ class TestDraftRunner:
     def test_rollout_engines_running_different_runners_are_rejected(
         self, p2p_sender: Any, make_rollout_api: Any
     ) -> None:
-        """One sender writes the same runners on every engine it serves, so a draft would go unwritten on one engine
-        or be queried on another that has none."""
+        """Mixed roles would leave a draft unwritten or query one that does not exist."""
         protocol = p2p_sender.make_protocol()
         drafting_api = make_rollout_api("cell-a", gpu_count=1, speculative_args=_EAGLE_MTP)
         plain_api = make_rollout_api("cell-b", gpu_count=1)

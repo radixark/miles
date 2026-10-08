@@ -21,8 +21,7 @@ class RemoteWeightLocation(NamedTuple):
 
 @dataclass(frozen=True)
 class RemoteShard:
-    """One model runner (target or draft) of one rank of one rollout engine as a write target: its Mooncake session
-    and where each weight lives."""
+    """Mooncake session and published weight addresses for one engine rank's target or draft runner."""
 
     rollout_engine_ind: int
     rollout_engine_rank: int
@@ -58,7 +57,7 @@ class MooncakeTransport:
         assignments: Sequence[RolloutEngineRankAssignment],
         runner_roles: Sequence[str],
     ) -> dict[str, dict[int, list[RemoteShard]]]:
-        """Returns the shards of the rollout engine ranks in `assignments`, by runner role, then rollout engine rank.
+        """Return assigned shards by runner role and rollout rank.
 
         Starts new write threads: a rollout engine index now names a new engine, which must not queue behind the
         writes of the one it replaced.

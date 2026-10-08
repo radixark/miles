@@ -42,14 +42,12 @@ _PLACEMENT_PARALLELISM_FIELDS = frozenset({"global_rank", "local_rank"})
 # a multiple of every element size, so the bytes of any param view as its dtype
 _PARAM_ALIGNMENT_BYTES = 256
 
-# speculative algorithms that run no draft model
 _SPECULATIVE_ALGORITHMS_WITHOUT_DRAFT_MODEL = frozenset({"NGRAM", "UNO"})
 
 
 @dataclass(frozen=True)
 class RolloutEngineRankConfig:
-    """How one model runner of a rollout engine rank holds its weights, as the engine reports it: the runner of
-    the target model, or of its speculative draft (`runner_role`).
+    """Reported weight layout for one target or draft runner at a rollout rank.
 
     Configs with the same `shard_layout_key` take the same bytes, so one model replica serves them all.
     """
@@ -109,8 +107,7 @@ def query_rollout_engine_rank_configs(
     assignments: Sequence[RolloutEngineRankAssignment],
     runner_role: str,
 ) -> dict[int, RolloutEngineRankConfig]:
-    """Returns the config of the `runner_role` runner of each rollout engine rank in `assignments`, by rollout
-    engine rank.
+    """Query `runner_role` configs by rollout rank, requiring matching layouts across engines.
 
     All rollout engines of one rank must hold it the same way, since one model replica serves them.
     """
@@ -183,11 +180,7 @@ def _assert_expert_placement_reproducible(server_args: ServerArgs, rollout_engin
 def query_runner_roles(
     rollout_engines: Sequence[SGLangApiClient], assignments: Sequence[RolloutEngineRankAssignment], selector: str
 ) -> tuple[str, ...]:
-    """Returns the model runners of the rollout engines in `assignments` that a p2p update writes: the target, and
-    the speculative draft when `selector` covers it (the trainer holds MTP layers) and the engines run one.
-
-    Every engine must run the same runners, since the update writes the same runners on each.
-    """
+    """Return target-first update roles, requiring the same roles on every assigned engine."""
     distinct_runner_roles = {
         _select_runner_roles(_query_server_args(rollout_engines[rollout_engine_ind]), selector)
         for assignment in assignments

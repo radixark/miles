@@ -45,9 +45,7 @@ class _ReplicaTarget(NamedTuple):
 
 @dataclass
 class _RunnerSender:
-    """One model runner (target or draft) of the rollout engine ranks a sender serves: its replicas, its write targets
-    and, from `begin_sync` on, the HF tensors staged for it. Each connect builds a new one around the replicas kept
-    for the process."""
+    """Per-connection write targets and per-sync staging for one runner role, backed by cached replicas."""
 
     model_replicas: ModelReplicas
     replica_targets: list[_ReplicaTarget]
@@ -58,14 +56,7 @@ class _RunnerSender:
 
 
 class UpdateWeightP2P(WeightTransferProtocol):
-    """Writes weight updates straight into the rollout engines' GPU memory over Mooncake.
-
-    Each sender loads the HF tensors of the updater's buckets with a model replica of each rollout engine rank it
-    sends to, into transfer buffers in the bytes that rank's loader would write, and writes those bytes to the
-    rank's published addresses. When the trainer holds MTP layers and the engines draft with them, the draft runner
-    of each rank gets its own replicas and writes. The end of the base weights waits for every write and fails the
-    update if any failed or is still running.
-    """
+    """Write target and supported MTP draft weights to published GPU addresses over Mooncake."""
 
     def __init__(self, args: Namespace) -> None:
         super().__init__(args)
@@ -77,7 +68,6 @@ class UpdateWeightP2P(WeightTransferProtocol):
         self._model_replicas_by_runner_role: dict[str, ModelReplicas] = {}
         self._transport: MooncakeTransport | None = None
         self._transfer_buffers: TransferBuffers | None = None
-        # the target first: see send_bucket
         self._runner_senders: list[_RunnerSender] = []
 
     def begin_sync(

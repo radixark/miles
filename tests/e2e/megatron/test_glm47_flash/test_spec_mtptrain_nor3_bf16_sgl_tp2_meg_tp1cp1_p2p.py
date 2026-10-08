@@ -1,8 +1,4 @@
-"""GLM-4.7-Flash: p2p weight updates into EAGLE engines whose MTP draft is trained, without R3.
-
-4 train GPUs (TP1, DP4, EP4) write the target and its MTP draft straight into two TP2 engines over Mooncake, each
-sender into one engine rank; the equality check covers the target and the draft.
-"""
+"""GLM-4.7-Flash: verify target and trained MTP draft equality after P2P updates without R3."""
 
 import os
 
@@ -37,7 +33,7 @@ CASE = CaseConfig(
     use_r3=False,
     update_weight_transfer_mode="p2p",
     num_rollout=2,
-    # At CP1 a sample stays on one GPU; 8192 holds the longest (its prompt plus a 4096-token response).
+    # CP1 must fit the full prompt and response on one GPU
     max_tokens_per_gpu=8192,
     rollout_max_response_len=4096,
 )

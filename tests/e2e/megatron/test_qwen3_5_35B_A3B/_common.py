@@ -213,7 +213,7 @@ def build_train_args(case: CaseConfig, *, wandb_file: str) -> str:
     if case.use_r3:
         sglang_args += "--use-rollout-routing-replay "
     if case.update_weight_transfer_mode == "p2p":
-        # each engine rank publishes its weights for the trainer to write into
+        # publish destination addresses for P2P writes
         sglang_args += "--sglang-remote-instance-weight-loader-start-seed-via-transfer-engine "
     if case.use_deepep:
         sglang_args += "--sglang-moe-a2a-backend deepep --sglang-deepep-mode auto "
@@ -285,7 +285,7 @@ def execute(case: CaseConfig, *, wandb_file: str) -> None:
     train_args = build_train_args(case, wandb_file=wandb_file)
     extra_env_vars = {"SGLANG_ENABLE_SPEC_V2": "1"} if case.use_spec else {}
     if case.update_weight_transfer_mode == "p2p":
-        # as the p2p e2e: CI hosts lack nvidia_peermem, so Mooncake registers engine GPU memory through dmabuf
+        # CI hosts lack nvidia_peermem; use dmabuf
         extra_env_vars["WITH_NVIDIA_PEERMEM"] = "0"
     U.execute_train(
         train_args=train_args,

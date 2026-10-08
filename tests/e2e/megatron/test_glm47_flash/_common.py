@@ -252,7 +252,7 @@ def build_train_args(case: CaseConfig, *, wandb_file: str) -> str:
     if case.sglang_ep_size is not None:
         sglang_args += f"--sglang-expert-parallel-size {case.sglang_ep_size} "
     if case.update_weight_transfer_mode == "p2p":
-        # each engine rank publishes its weights for the trainer to write into
+        # publish destination addresses for P2P writes
         sglang_args += "--sglang-remote-instance-weight-loader-start-seed-via-transfer-engine "
 
     if case.use_spec:
@@ -323,6 +323,6 @@ def execute(case: CaseConfig, *, wandb_file: str) -> None:
         num_gpus_per_node=case.num_gpus_per_node + (0 if case.colocate else case.rollout_num_gpus),
         megatron_model_type=MODEL_TYPE,
         train_script="train_async.py" if case.fully_async else "train.py",
-        # as the p2p e2e: CI hosts lack nvidia_peermem, so Mooncake registers engine GPU memory through dmabuf
+        # CI hosts lack nvidia_peermem; use dmabuf
         extra_env_vars={"WITH_NVIDIA_PEERMEM": "0"} if case.update_weight_transfer_mode == "p2p" else {},
     )
