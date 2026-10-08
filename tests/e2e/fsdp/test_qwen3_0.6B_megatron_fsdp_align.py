@@ -5,11 +5,8 @@ from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
 from miles.utils.external_utils import command_utils
 
 register_cuda_ci(
-    est_time=900,
-    suite="stage-c-2-gpu-h200",
-    labels=["fsdp"],
-    hardware=["hopper", "blackwell"],
- num_gpus=2)
+    est_time=900, suite="stage-c-2-gpu-h200", labels=["fsdp"], hardware=["hopper", "blackwell"], num_gpus=2
+)
 register_rocm_ci(
     est_time=800,
     suite="nightly-stage-c-2-gpu-mi350",

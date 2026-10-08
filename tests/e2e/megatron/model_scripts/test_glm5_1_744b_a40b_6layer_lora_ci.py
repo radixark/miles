@@ -23,7 +23,8 @@ register_cuda_ci(
     disabled="Megatron's dsa variant now builds AbsorbedMLASelfAttention, which reads "
     "linear_kv_up_proj.weight directly; the pinned Megatron-Bridge's LoRALinear has no such "
     "property. Upstream Bridge added an effective-weight property — re-enable after bumping it.",
- num_gpus=8)
+    num_gpus=8,
+)
 
 # skip the engine-side stacked params a frozen-base LoRA run cannot re-ship
 # (they keep their correct checkpoint values; everything else is verified)

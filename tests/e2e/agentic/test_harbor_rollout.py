@@ -59,7 +59,8 @@ register_cuda_ci(
     hardware=["hopper"],
     labels=["agentic"],
     disabled="CI runners hold no sandbox credential; run it manually on a GPU devbox that has one",
- num_gpus=2)
+    num_gpus=2,
+)
 
 REPO = Path(__file__).resolve().parents[3]
 HARBOR_EXAMPLE_DIR = REPO / "examples" / "experimental" / "harbor"

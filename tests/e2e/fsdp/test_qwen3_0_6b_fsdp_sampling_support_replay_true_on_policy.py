@@ -6,11 +6,8 @@ from tests.ci.metric_history import register_ci_gate
 import miles.utils.external_utils.command_utils as U
 
 register_cuda_ci(
-    est_time=600,
-    suite="stage-c-2-gpu-h200",
-    labels=["fsdp", "sglang", "replay"],
-    hardware=["hopper"],
- num_gpus=2)
+    est_time=600, suite="stage-c-2-gpu-h200", labels=["fsdp", "sglang", "replay"], hardware=["hopper"], num_gpus=2
+)
 # The log-prob diff and both KLs stay at 0 under true-on-policy; a bf16 flip (see execute) adds only about 2e-7 to
 # the diff. ppo_kl compares the training forward with forward-only scoring, so it also covers the loss-path mask.
 register_ci_gate(metric_key="train/train_rollout_logprob_abs_diff")

@@ -15,7 +15,8 @@ register_cuda_ci(
     labels=["megatron", "model-scripts"],
     hardware=["hopper"],
     nightly=True,
- num_gpus=8)
+    num_gpus=8,
+)
 
 register_ci_gate(metric_key="train/grad_norm")
 register_ci_gate(metric_key="train/train_rollout_logprob_abs_diff")

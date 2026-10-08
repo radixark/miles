@@ -178,7 +178,9 @@ def test_gpu_workflow_requires_a_successful_hosted_plan(workflow):
         assert "inputs.plan_already_resolved && inputs.ref" in checkout["with"]["ref"]
 
 
-@pytest.mark.parametrize(("expected", "actual"), [(1, 1), (2, 2), (4, 4), (8, 8), (1, 8), (2, 4), (4, 8), (4, 0), (8, 4)])
+@pytest.mark.parametrize(
+    ("expected", "actual"), [(1, 1), (2, 2), (4, 4), (8, 8), (1, 8), (2, 4), (4, 8), (4, 0), (8, 4)]
+)
 def test_b200_partition_check_rejects_wrong_gpu_exposure(monkeypatch, expected, actual):
     run = yaml.safe_load((ROOT / ".github/workflows/_run-ci.yml").read_text())["jobs"]["run"]
     step = next(step for step in run["steps"] if step.get("name") == "Verify B200 CUDA partition")

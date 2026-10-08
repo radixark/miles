@@ -10,7 +10,8 @@ register_cuda_ci(
     labels=["megatron", "replay"],
     hardware=["hopper", "blackwell"],
     disabled="Failed due to mismatch between fp8 rollout and bf16 training.",
- num_gpus=4)
+    num_gpus=4,
+)
 
 CASE = CaseConfig(
     use_deepep=True,

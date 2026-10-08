@@ -23,9 +23,7 @@ def find_worker_pid():
 
 
 def running_job_containers(root):
-    output = subprocess.check_output(
-        ["docker", "ps", "--no-trunc", "--format", "{{.ID}} {{.Mounts}}"], text=True
-    )
+    output = subprocess.check_output(["docker", "ps", "--no-trunc", "--format", "{{.ID}} {{.Mounts}}"], text=True)
     containers = {}
     for line in output.splitlines():
         container, _, mounts = line.partition(" ")

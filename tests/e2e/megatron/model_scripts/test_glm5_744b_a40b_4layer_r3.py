@@ -21,7 +21,8 @@ register_cuda_ci(
     suite="stage-c-2-gpu-h200",
     labels=["megatron", "model-scripts", "replay"],
     hardware=["hopper", "blackwell"],
- num_gpus=2)
+    num_gpus=2,
+)
 
 register_ci_gate(metric_key="train/grad_norm")
 register_ci_gate(metric_key="train/ppo_kl")

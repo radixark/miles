@@ -12,7 +12,8 @@ register_cuda_ci(
     suite="stage-c-4-gpu-h200",
     labels=["short", "multi-policy", "fully-async"],
     hardware=["hopper", "blackwell"],
- num_gpus=4)
+    num_gpus=4,
+)
 register_rocm_ci(est_time=1700, suite="nightly-stage-c-4-gpu-mi350", labels=["short", "multi-policy", "fully-async"])
 
 NUM_ROLLOUT = int(os.environ.get("MILES_TEST_NUM_ROLLOUT", "5"))
