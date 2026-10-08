@@ -196,7 +196,7 @@ class DeepSeekV4Attention(MegatronModule):
                         config=config, pg_collection=pg_collection, layer_id=layer_id
                     )
                 else:
-                    if topk_backend != "torch":
+                    if topk_backend not in ("canonical", "torch"):
                         raise ValueError(
                             "DeepSeek V4 miles DSA topk backend is only supported with V4_INDEXER_IMPL=tilelang; "
                             f"got {topk_backend=} with {indexer_impl=}."

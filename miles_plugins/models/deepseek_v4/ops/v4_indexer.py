@@ -172,6 +172,7 @@ class V4Indexer(MegatronModule):
             compress_ratio=self.compress_ratio,
             index_topk=self.index_topk,
             topk_fn=topk_fn,
+            clean_logits=self.topk_backend != "canonical",
         )
 
 
@@ -186,7 +187,7 @@ def start_row_exchange(q, weights, thd_layout, cp_group, *, balance: bool) -> Ro
     return send_rows_to_scorers(tensors, plan, cp_group)
 
 
-def topk_for_local_rows(exchange, k, thd_layout, *, compress_ratio, index_topk, topk_fn):
+def topk_for_local_rows(exchange, k, thd_layout, *, compress_ratio, index_topk, topk_fn, clean_logits):
     """The top-k picks for this rank's rows, in local order, scored on the rank ``exchange`` sent them to."""
     q, weights = exchange.wait()
     topk_indices = indexer_topk(
@@ -198,12 +199,13 @@ def topk_for_local_rows(exchange, k, thd_layout, *, compress_ratio, index_topk, 
         compress_ratio=compress_ratio,
         index_topk=index_topk,
         topk_fn=topk_fn,
+        clean_logits=clean_logits,
     )
     # [batch, rows, topk]: the picks go back along the row dim
     return exchange.return_to_owners(topk_indices, dim=1)
 
 
-def indexer_topk(q, k, weights, positions, thd_layout, *, compress_ratio, index_topk, topk_fn):
+def indexer_topk(q, k, weights, positions, thd_layout, *, compress_ratio, index_topk, topk_fn, clean_logits):
     """Score the query rows at global stream ``positions`` against their visible compressed keys.
 
     Args:
@@ -212,6 +214,7 @@ def indexer_topk(q, k, weights, positions, thd_layout, *, compress_ratio, index_
         weights: [rows, batch, heads] fp32 head weights
         positions: [rows] global stream positions of the rows
         thd_layout: packed-stream layout, or None when unpacked
+        clean_logits: write -inf outside each row's keys, which a top-k that reads the whole row needs
 
     Returns:
         [batch, rows, min(index_topk, n_kv)] int32 compressed-key indices
@@ -226,11 +229,11 @@ def indexer_topk(q, k, weights, positions, thd_layout, *, compress_ratio, index_
         cu_ks, cu_ke = compress_bounds_at_positions(
             thd_layout.cu_seqlens, thd_layout.cu_seqlens_compressed, positions, ratio=compress_ratio
         )
-    index_scores = indexer_logits_sbhd(q, k, weights, cu_ks, cu_ke)
+    index_scores = indexer_logits_sbhd(q, k, weights, cu_ks, cu_ke, clean_logits=clean_logits)
     bsz, rows, n_kv = index_scores.shape
     topk_count = min(index_topk, n_kv)
     # flattened to [n_tokens, n_kv], the record/replay convention shared with the MoE seam
-    topk_indices = topk_fn(index_scores.reshape(bsz * rows, n_kv), topk_count)
+    topk_indices = topk_fn(index_scores.reshape(bsz * rows, n_kv), topk_count, cu_ks.repeat(bsz), cu_ke.repeat(bsz))
     return topk_indices.reshape(bsz, rows, topk_count)
 
 

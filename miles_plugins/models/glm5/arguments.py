@@ -23,9 +23,13 @@ def add_dsa_arguments(parser: ArgumentParser) -> ArgumentParser:
     )
     group.add_argument(
         "--miles-dsa-topk-backend",
-        choices=["torch", "flashinfer"],
-        default="torch",
-        help="DSA indexer top-k backend for both raw DSA implementations.",
+        choices=["canonical", "torch", "flashinfer"],
+        default="canonical",
+        help=(
+            "DSA indexer top-k backend for both raw DSA implementations. 'canonical' is the exact top-k with "
+            "ties at the k-th score broken toward the smaller key, like the rollout's top-k, returned in "
+            "ascending key order; native Megatron DSA runs it as its exact 'torch' top-k."
+        ),
     )
     return parser
 
@@ -53,7 +57,9 @@ def normalize_dsa_args(args: Namespace, hf_config) -> None:
     args.spec = list(MEGATRON_DSA_SPEC)
     args.experimental_attention_variant = "dsa"
     args.enable_experimental = True
-    args.dsa_indexer_topk_backend = args.miles_dsa_topk_backend
+    args.dsa_indexer_topk_backend = (
+        "torch" if args.miles_dsa_topk_backend == "canonical" else args.miles_dsa_topk_backend
+    )
     args.dsa_indexer_n_heads = hf_config.index_n_heads
     args.dsa_indexer_head_dim = hf_config.index_head_dim
     args.dsa_indexer_topk = hf_config.index_topk

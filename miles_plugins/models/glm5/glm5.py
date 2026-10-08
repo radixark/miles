@@ -24,7 +24,7 @@ from megatron.core.transformer.moe.moe_utils import RouterGatingLinearFunction a
 from megatron.core.transformer.spec_utils import ModuleSpec, build_module
 from megatron.core.transformer.transformer_block import get_num_layers_to_build
 from megatron.core.transformer.transformer_config import MLATransformerConfig
-from miles.kernels.attention.dsa import causal_ranges, get_dsa_topk_fn, lighting_indexer, sparse_attention
+from miles.kernels.attention.dsa import causal_ranges, get_dsa_topk_fn, indexer_logits, sparse_attention
 from miles.utils.hf_utils.config import load_hf_config
 from miles.utils.replay_base import indexer_replay_manager
 from miles_plugins.models.normalization import rms_norm
@@ -236,31 +236,22 @@ class DSAMultiLatentAttention(Attention):
             # replay records one topk tensor per layer-forward; don't split it
             if indexer_replay_manager.enabled:
                 block_size = seq_len
-            indexer_topk_scores = []
+            topk_fn = indexer_replay_manager.get_topk_fn(get_dsa_topk_fn(self.topk_backend), return_probs=False)
             topk_indices = []
-
             for start in range(0, seq_len, block_size):
                 end = min(start + block_size, seq_len)
-                index_q_block = index_q[start:end]
-                w_block = w[start:end]
-                starts_block = starts[start:end]
-                ends_block = ends[start:end]
-                starts_block = starts_block.to(torch.int32)
-                ends_block = ends_block.to(torch.int32)
-                indexer_topk_scores_block, topk_indices_block = lighting_indexer(
-                    index_q_block,
+                starts_block = starts[start:end].to(torch.int32)
+                ends_block = ends[start:end].to(torch.int32)
+                logits = indexer_logits(
+                    index_q[start:end],
                     index_k,
-                    w_block,
+                    w[start:end],
                     starts_block,
                     ends_block,
-                    self.index_topk,
-                    topk_fn=indexer_replay_manager.get_topk_fn(get_dsa_topk_fn(self.topk_backend), return_probs=False),
+                    clean_logits=self.topk_backend != "canonical",
                 )
-
-                indexer_topk_scores_block = torch.softmax(indexer_topk_scores_block, dim=-1)
-                indexer_topk_scores.append(indexer_topk_scores_block)
-                topk_indices.append(topk_indices_block)
-            return torch.cat(indexer_topk_scores, dim=0), torch.cat(topk_indices, dim=0).unsqueeze(1)
+                topk_indices.append(topk_fn(logits, self.index_topk, starts_block, ends_block))
+            return torch.cat(topk_indices, dim=0).unsqueeze(1)
 
         if self.index_share:
             # Cross-layer index sharing. The top-k holder lives on the per-microbatch
@@ -293,14 +284,14 @@ class DSAMultiLatentAttention(Attention):
                 index_key = index_key.squeeze(1)
                 starts = scatter_to_sequence_parallel_region(starts, group=parallel_state.get_context_parallel_group())
                 ends = scatter_to_sequence_parallel_region(ends, group=parallel_state.get_context_parallel_group())
-                _, topk_indices = fused_select_topk(index_query, index_key, head_weights, starts, ends)
+                topk_indices = fused_select_topk(index_query, index_key, head_weights, starts, ends)
                 holder[self.layer_number] = topk_indices
         else:
             starts, ends = causal_ranges(packed_seq_params.cu_seqlens_q)
             index_key = index_key.squeeze(1)
             starts = scatter_to_sequence_parallel_region(starts, group=parallel_state.get_context_parallel_group())
             ends = scatter_to_sequence_parallel_region(ends, group=parallel_state.get_context_parallel_group())
-            _, topk_indices = fused_select_topk(index_query, index_key, head_weights, starts, ends)
+            topk_indices = fused_select_topk(index_query, index_key, head_weights, starts, ends)
 
         core_attn_out = sparse_attention(
             q.unsqueeze(0),

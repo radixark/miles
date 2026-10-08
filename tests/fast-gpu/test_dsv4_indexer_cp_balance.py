@@ -7,7 +7,7 @@ Run with:
 Each rank runs V4Indexer.forward's two steps around the key gather, start_row_exchange and
 topk_for_local_rows, once keeping its rows and once balancing them with a collective on the CP group
 while the rows are in flight. The balanced picks must equal the local ones, bit for bit for the torch
-top-k and as sets for flashinfer; unpacked, the local ones must also equal the pre-balancing
+and canonical top-k and as sets for flashinfer; unpacked, the local ones must also equal the pre-balancing
 indexer's (tests/fast/test_dsv4_thd.py pins the THD bounds to running each sample alone). Cases:
 unpacked batch 1 and 2, THD packs with a long document and with odd scored-row counts, a pack of
 tiny documents that leaves a CP4 rank nothing to score, and a pack of equal short documents, which
@@ -71,7 +71,7 @@ def _thd_layout(seq_lens, rank, rank_rows):
     return layout
 
 
-def _unbalanced_unpacked_topk(q, k, weights, rank, topk_fn):
+def _unbalanced_unpacked_topk(q, k, weights, rank, topk_fn, clean_logits):
     """The unpacked indexer before balancing: this rank's own rows, bounds sliced from the contiguous run."""
     rank_rows = q.shape[0]
     cu_ks, cu_ke = causal_ranges_compressed(SEQLEN_GLOBAL, RATIO, q.device)
@@ -79,13 +79,14 @@ def _unbalanced_unpacked_topk(q, k, weights, rank, topk_fn):
         cu_ks[rank * rank_rows : (rank + 1) * rank_rows],
         cu_ke[rank * rank_rows : (rank + 1) * rank_rows],
     )
-    scores = indexer_logits_sbhd(q, k, weights, cu_ks, cu_ke)
+    scores = indexer_logits_sbhd(q, k, weights, cu_ks, cu_ke, clean_logits=clean_logits)
     bsz, rows, n_kv = scores.shape
-    return topk_fn(scores.reshape(bsz * rows, n_kv), min(TOPK, n_kv)).reshape(bsz, rows, -1)
+    flat_scores = scores.reshape(bsz * rows, n_kv)
+    return topk_fn(flat_scores, min(TOPK, n_kv), cu_ks.repeat(bsz), cu_ke.repeat(bsz)).reshape(bsz, rows, -1)
 
 
 def _same_picks(got, expected, topk_backend):
-    if topk_backend == "torch":
+    if topk_backend in ("torch", "canonical"):
         return torch.equal(got, expected)
     # flashinfer returns each row's picks unsorted
     return torch.equal(got.sort(dim=-1).values, expected.sort(dim=-1).values)
@@ -98,7 +99,8 @@ def check_picks(rank, world_size, topk_backend, thd_seq_lens=None, bsz=1):
     n_kv = int(thd_layout.cu_seqlens_compressed[-1]) if thd_layout else SEQLEN_GLOBAL // RATIO
     q, k, weights = _inputs(rank, rank_rows, n_kv, bsz)
     topk_fn = get_dsa_topk_fn(topk_backend)
-    options = dict(compress_ratio=RATIO, index_topk=TOPK, topk_fn=topk_fn)
+    clean_logits = topk_backend != "canonical"
+    options = dict(compress_ratio=RATIO, index_topk=TOPK, topk_fn=topk_fn, clean_logits=clean_logits)
     group = dist.group.WORLD
 
     kept = start_row_exchange(q, weights, thd_layout, group, balance=False)
@@ -110,13 +112,13 @@ def check_picks(rank, world_size, topk_backend, thd_seq_lens=None, bsz=1):
 
     picks_equal = _same_picks(balanced, local, topk_backend)
     if thd_layout is None:
-        expected = _unbalanced_unpacked_topk(q, k, weights, rank, topk_fn)
+        expected = _unbalanced_unpacked_topk(q, k, weights, rank, topk_fn, clean_logits)
         picks_equal = picks_equal and _same_picks(local, expected, topk_backend)
     return picks_equal, isinstance(exchange, RowExchange)
 
 
 def _topk_backends():
-    backends = ["torch"]
+    backends = ["torch", "canonical"]
     try:
         get_dsa_topk_fn("flashinfer")(torch.randn(2, 1024, device="cuda"), 8)
         backends.append("flashinfer")

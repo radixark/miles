@@ -59,6 +59,7 @@ def indexer_select(
     candidate_block_size: int,
     topk: int,
     topk_fn,
+    clean_logits: bool,
     allow_deep_select: bool,
     query_chunk: int | None,
 ) -> tuple[torch.Tensor, torch.Tensor | None]:
@@ -66,6 +67,7 @@ def indexer_select(
     n_kv = index_k.size(1)
     k_t = index_k.transpose(0, 1).contiguous()
     deep_selecting = allow_deep_select and use_deep_select()
+    clean_logits = clean_logits or deep_selecting or is_candidate_source
     if deep_selecting:
         # deep_select requires aligned score rows; the padded columns sit past every query's length
         align = deep_select.get_stride_requirement()[0] // 4
@@ -77,15 +79,17 @@ def indexer_select(
     cand_parts: list[torch.Tensor] = []
     for s in range(0, seqlen, chunk):
         e = min(s + chunk, seqlen)
-        lens = compress_lens[s:e]
+        lens = compress_lens[s:e].to(torch.int32)
+        row_starts = torch.zeros(e - s, dtype=torch.int32, device=q.device)
         scores = indexer_logits_sbhd(
             q[:, s:e].transpose(0, 1).contiguous(),
             k_t,
             weights[:, s:e].transpose(0, 1).float().contiguous(),
-            torch.zeros(e - s, dtype=torch.int32, device=q.device),
-            lens.to(torch.int32),
+            row_starts,
+            lens,
+            clean_logits=clean_logits,
         )
-        # indexer_logits_sbhd already wrote -inf outside [0, lens) for every query
+        # with clean_logits, indexer_logits_sbhd wrote -inf outside [0, lens) for every query
         if is_candidate_source:
             cand = select_candidate_blocks(
                 scores[..., :n_kv], lens.unsqueeze(-1), candidate_topk_blocks, candidate_block_size
@@ -112,7 +116,7 @@ def indexer_select(
             continue
         if n_kv < topk:
             scores = torch.nn.functional.pad(scores, (0, topk - n_kv), value=-torch.inf)
-        idx = topk_fn(scores.reshape(bsz * (e - s), scores.size(-1)), topk)
+        idx = topk_fn(scores.reshape(bsz * (e - s), scores.size(-1)), topk, row_starts.repeat(bsz), lens.repeat(bsz))
         idx = idx.reshape(bsz, e - s, topk).sort(dim=-1).values.to(torch.int64)
         idx_parts.append(torch.where(idx < lens.unsqueeze(-1), idx, -1))
     idx = idx_parts[0] if len(idx_parts) == 1 else torch.cat(idx_parts, dim=1)
@@ -143,6 +147,7 @@ class DeepSeekV41Indexer(MegatronModule):
         self.index_n_heads = config.dsa_indexer_n_heads
         self.index_head_dim = config.dsa_indexer_head_dim
         self.index_topk = config.dsa_indexer_topk
+        self.topk_backend = config.miles_dsa_topk_backend
         self.rope_head_dim = config.qk_pos_emb_head_dim
         self.softmax_scale = self.index_head_dim**-0.5
         q_lora_rank = config.q_lora_rank if config.q_lora_rank is not None else config.hidden_size
@@ -200,7 +205,7 @@ class DeepSeekV41Indexer(MegatronModule):
         weights, _ = self.linear_weights_proj(x)
         weights = weights * (self.softmax_scale * self.index_n_heads**-0.5)
 
-        topk_fn = indexer_replay_manager.get_topk_fn(get_dsa_topk_fn("torch"), return_probs=False)
+        topk_fn = indexer_replay_manager.get_topk_fn(get_dsa_topk_fn(self.topk_backend), return_probs=False)
         idx, candidates = indexer_select(
             q,
             index_k,
@@ -213,7 +218,9 @@ class DeepSeekV41Indexer(MegatronModule):
             candidate_block_size=self.candidate_block_size,
             topk=self.index_topk,
             topk_fn=topk_fn,
-            allow_deep_select=not indexer_replay_manager.enabled or indexer_replay_manager.stage == "fallthrough",
+            clean_logits=self.topk_backend != "canonical",
+            allow_deep_select=self.topk_backend == "torch"
+            and (not indexer_replay_manager.enabled or indexer_replay_manager.stage == "fallthrough"),
             query_chunk=INDEXER_QUERY_CHUNK,
         )
         return idx, candidates
