@@ -26,7 +26,7 @@ class ModelParamStager:
     def stage(
         self, hf_tensors: Iterable[tuple[str, torch.Tensor]]
     ) -> dict[tuple[str, ...], list[tuple[str, torch.Tensor]]]:
-        """Return newly completed parameter groups and their HF tensors."""
+        """Accumulate HF tensors across calls and return each group with all its required inputs once complete."""
         ready_hf_tensors_by_param_group = {}
         for hf_name, tensor in hf_tensors:
             param_group = self._param_group_by_hf_name[hf_name]
@@ -53,6 +53,10 @@ class ModelParamStager:
 def _build_param_groups_by_shared_hf_inputs(
     hf_name_mapping: HfNameMapping,
 ) -> tuple[dict[str, tuple[str, ...]], dict[tuple[str, ...], frozenset[str]]]:
+    """Group params connected directly or transitively by shared HF inputs.
+
+    Return mappings from HF name to param group and from param group to its required HF names.
+    """
     # union-find over params: two params sharing an HF name load together
     root_by_param_name = {param_name: param_name for param_name in hf_name_mapping.hf_names_by_param_name}
 
