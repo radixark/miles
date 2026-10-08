@@ -6,7 +6,7 @@ import threading
 from argparse import Namespace
 from collections import defaultdict
 from collections.abc import Callable, Iterator
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from types import ModuleType, SimpleNamespace
 from typing import Any
 import pytest
@@ -25,11 +25,17 @@ _BUCKET_VALUES = {
     "hf.k": [7.0, 8.0],
     "hf.mtp": [9.0, 10.0, 11.0, 12.0],
 }
+# the draft shares "w" with the target, as an MTP draft shares embed and head
+_PUBLISHED_PARAM_NAMES_BY_RUNNER_ROLE = {"target": ("w", "qk"), "draft": ("w", "mtp")}
 
 
 @dataclasses.dataclass
 class _FakeServerArgs:
     moe_runner_backend: str = "auto"
+    model_path: str = "/model"
+    speculative_algorithm: str | None = None
+    speculative_draft_model_path: str | None = None
+    enable_multi_layer_eagle: bool = False
     # expert placement, at sglang's defaults
     ep_num_redundant_experts: int = 0
     init_expert_location: str = "trivial"
@@ -59,19 +65,24 @@ class _FakeRankParallelismConfig:
         return dataclasses.asdict(self)
 
 
-# what each replica's loader would load every HF name into; it ignores the others
-_PARAM_NAME_BY_HF_NAME = {"hf.w": "w", "hf.q": "qk", "hf.k": "qk"}
+# what each replica's loader would load every HF name into
+_PARAM_NAME_BY_HF_NAME = {"hf.w": "w", "hf.q": "qk", "hf.k": "qk", "hf.mtp": "mtp"}
 
 
 class _FakeModelReplica:
     """Loads like the model replica of tp rank `tp_rank`: every HF value plus 100 times the rank."""
 
-    def __init__(self, tp_rank: int, harness: "_P2PSenderHarness", model_replica_module: ModuleType) -> None:
+    def __init__(
+        self, tp_rank: int, runner_role: str, harness: "_P2PSenderHarness", model_replica_module: ModuleType
+    ) -> None:
         self.tp_rank = tp_rank
+        self.runner_role = runner_role
         self._harness = harness
         self._model_replica_module = model_replica_module
         param_layout = model_replica_module.TransferBufferParamLayout.from_tensor(torch.empty(_WEIGHT_NUMEL))
-        self.transfer_buffer_param_layouts = {"w": param_layout, "qk": param_layout}
+        self.transfer_buffer_param_layouts = {
+            name: param_layout for name in _PUBLISHED_PARAM_NAMES_BY_RUNNER_ROLE[runner_role]
+        }
 
     def map_hf_names(self, hf_tensor_specs: dict) -> HfNameMapping:
         hf_names_by_param_name = defaultdict(set)
@@ -92,6 +103,8 @@ class _FakeModelReplica:
             values_by_param_name["w"] = hf_tensors_by_name["hf.w"] + offset
         if "hf.q" in hf_tensors_by_name or "hf.k" in hf_tensors_by_name:
             values_by_param_name["qk"] = torch.cat([hf_tensors_by_name["hf.q"], hf_tensors_by_name["hf.k"]]) + offset
+        if "hf.mtp" in hf_tensors_by_name:
+            values_by_param_name["mtp"] = hf_tensors_by_name["hf.mtp"] + offset
         assert sorted(values_by_param_name) == sorted(param_names)
         param_bytes_by_name = self._model_replica_module._slice_buffer_by_param(
             buffer, param_names, self.transfer_buffer_param_layouts
@@ -167,6 +180,7 @@ class _FakeRolloutApi:
         published_weight_numel: int = _WEIGHT_NUMEL,
         moe_runner_backend: str = "auto",
         expert_placement: dict | None = None,
+        speculative_args: dict | None = None,
     ) -> None:
         self.cell_id = cell_id
         self.gpu_count = gpu_count
@@ -174,26 +188,32 @@ class _FakeRolloutApi:
         self.published_weight_numel = published_weight_numel
         self.moe_runner_backend = moe_runner_backend
         self.expert_placement = expert_placement or {}
+        self.speculative_args = speculative_args or {}
         self.calls: list[str] = []
 
-    def session_id(self, rank: int) -> str:
-        return f"{self.cell_id}-g{self.generation}-r{rank}"
+    def session_id(self, rank: int, runner_role: str = "target") -> str:
+        suffix = "" if runner_role == "target" else f"-{runner_role}"
+        return f"{self.cell_id}-g{self.generation}-r{rank}{suffix}"
 
     def target_address(self, rank: int, name: str) -> int:
+        # one address per weight of a rank: a param the draft shares is the target's storage
         return hash((self.session_id(rank), name)) & 0xFFFFFFFF
 
-    async def get_remote_instance_transfer_engine_info(self, rank: int) -> tuple[str, dict]:
-        self.calls.append("get_remote_instance_transfer_engine_info")
-        weights = {name: (self.target_address(rank, name), self.published_weight_numel, 4) for name in ("w", "qk")}
-        return self.session_id(rank), weights
+    async def get_remote_instance_transfer_engine_info(self, rank: int, role: str) -> tuple[str, dict]:
+        self.calls.append(f"get_remote_instance_transfer_engine_info {role}")
+        weights = {
+            name: (self.target_address(rank, name), self.published_weight_numel, 4)
+            for name in _PUBLISHED_PARAM_NAMES_BY_RUNNER_ROLE[role]
+        }
+        return self.session_id(rank, role), weights
 
-    async def get_parallelism_info(self, rank: int) -> dict:
-        self.calls.append("get_parallelism_info")
+    async def get_parallelism_info(self, rank: int, role: str) -> dict:
+        self.calls.append(f"get_parallelism_info {role}")
         return {"tp_rank": rank, "global_rank": 10 * self.generation + rank}
 
     async def get_server_info(self) -> dict:
         self.calls.append("get_server_info")
-        return {"moe_runner_backend": self.moe_runner_backend, **self.expert_placement}
+        return {"moe_runner_backend": self.moe_runner_backend, **self.expert_placement, **self.speculative_args}
 
 
 class _ProtocolCall:
@@ -257,14 +277,16 @@ class _P2PSenderHarness:
         )
         return self._p2p_protocol.UpdateWeightP2P(args)
 
-    def connect(self, protocol: Any, apis: list[_FakeRolloutApi], placement: Any = None) -> None:
+    def connect(
+        self, protocol: Any, apis: list[_FakeRolloutApi], placement: Any = None, selector: str = "all"
+    ) -> None:
         protocol.connect(
             rollout_engines=apis,
             engine_gpu_counts=[api.gpu_count for api in apis],
             engine_gpu_offsets=None,
             parallel_state=None,
             placement=placement,
-            selector="",
+            selector=selector,
         )
 
     def begin_sync(self, protocol: Any, weight_version: int) -> None:
@@ -303,7 +325,9 @@ class _P2PSenderHarness:
     def _build_model_replica(
         self, config: Any, model_path: str, *, transfer_buffer_device: torch.device
     ) -> _FakeModelReplica:
-        model_replica = _FakeModelReplica(config.parallelism.tp_rank, self, self._model_replica_module)
+        model_replica = _FakeModelReplica(
+            config.parallelism.tp_rank, config.runner_role, self, self._model_replica_module
+        )
         self.replicas_created.append(model_replica)
         return model_replica
 
@@ -364,6 +388,11 @@ def p2p_protocol() -> ModuleType:
                 "RankParallelismConfig": object,
             },
             "sglang.srt.layers.moe": {"initialize_moe_config": lambda *args, **kwargs: None},
+            "sglang.srt.layers.moe.utils": {
+                "draft_model_build_scope": nullcontext,
+                "speculative_moe_a2a_backend_context": nullcontext,
+                "speculative_moe_backend_context": nullcontext,
+            },
             "sglang.srt.layers.quantization.base_config": {
                 "QuantizeMethodBase": type(
                     "QuantizeMethodBase", (), {"restore_weights_before_loading": lambda self, layer: None}

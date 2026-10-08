@@ -109,7 +109,7 @@ def main() -> None:
     _assert_identical(reference_engine, p2p_engine, "at startup")
     published_locations_by_name = _get_published_locations(p2p_engine)
     model_replica = build_model_replica(
-        RolloutEngineRankConfig(parallelism, server_args),
+        RolloutEngineRankConfig(runner_role="target", parallelism=parallelism, server_args=server_args),
         str(args.model_dir),
         transfer_buffer_device=torch.device("cpu"),
     )

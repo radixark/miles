@@ -1,6 +1,6 @@
 import logging
 from collections.abc import Iterable, Iterator, Mapping, Sequence
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from typing import NamedTuple
 
@@ -10,6 +10,11 @@ from sglang.srt.configs.load_config import LoadConfig
 from sglang.srt.configs.model_config import ModelConfig
 from sglang.srt.distributed.parallel_state import ParallelismContext, RankParallelismConfig
 from sglang.srt.layers.moe import initialize_moe_config
+from sglang.srt.layers.moe.utils import (
+    draft_model_build_scope,
+    speculative_moe_a2a_backend_context,
+    speculative_moe_backend_context,
+)
 from sglang.srt.layers.quantization.base_config import QuantizeMethodBase
 from sglang.srt.layers.quantization.fp4_utils import initialize_fp4_gemm_config
 from sglang.srt.layers.quantization.fp8_utils import initialize_fp8_gemm_config
@@ -37,14 +42,19 @@ _PLACEMENT_PARALLELISM_FIELDS = frozenset({"global_rank", "local_rank"})
 # a multiple of every element size, so the bytes of any param view as its dtype
 _PARAM_ALIGNMENT_BYTES = 256
 
+# speculative algorithms that run no draft model
+_SPECULATIVE_ALGORITHMS_WITHOUT_DRAFT_MODEL = frozenset({"NGRAM", "UNO"})
+
 
 @dataclass(frozen=True)
 class RolloutEngineRankConfig:
-    """How one rollout engine rank holds its weights, as the engine reports it.
+    """How one model runner of a rollout engine rank holds its weights, as the engine reports it: the runner of
+    the target model, or of its speculative draft (`runner_role`).
 
-    Ranks with the same `shard_layout_key` take the same bytes, so one model replica serves them all.
+    Configs with the same `shard_layout_key` take the same bytes, so one model replica serves them all.
     """
 
+    runner_role: str
     parallelism: RankParallelismConfig
     server_args: ServerArgs
 
@@ -58,7 +68,7 @@ class RolloutEngineRankConfig:
         server_args_fields = {
             f"server_args.{name}": value for name, value in _get_shard_layout_server_args(self.server_args).items()
         }
-        return tuple(sorted((sharding_fields | server_args_fields).items()))
+        return tuple(sorted((sharding_fields | server_args_fields | {"runner_role": self.runner_role}).items()))
 
 
 def _get_shard_layout_server_args(server_args: ServerArgs) -> dict[str, object]:
@@ -76,6 +86,8 @@ def _get_shard_layout_server_args(server_args: ServerArgs) -> dict[str, object]:
         # MoE structure: expert count, shared-expert fusion and its sharding
         "moe_a2a_backend",
         "moe_runner_backend",
+        "speculative_moe_a2a_backend",
+        "speculative_moe_runner_backend",
         "disable_shared_experts_fusion",
         "enforce_shared_experts_fusion",
         "enable_two_batch_overlap",
@@ -93,16 +105,19 @@ def _get_shard_layout_server_args(server_args: ServerArgs) -> dict[str, object]:
 
 
 def query_rollout_engine_rank_configs(
-    rollout_engines: Sequence[SGLangApiClient], assignments: Sequence[RolloutEngineRankAssignment]
+    rollout_engines: Sequence[SGLangApiClient],
+    assignments: Sequence[RolloutEngineRankAssignment],
+    runner_role: str,
 ) -> dict[int, RolloutEngineRankConfig]:
-    """Returns the config of each rollout engine rank in `assignments`, by rollout engine rank.
+    """Returns the config of the `runner_role` runner of each rollout engine rank in `assignments`, by rollout
+    engine rank.
 
     All rollout engines of one rank must hold it the same way, since one model replica serves them.
     """
     configs_by_rollout_engine_rank = {}
     for assignment in assignments:
         configs = [
-            _query_config(rollout_engines[rollout_engine_ind], assignment.rollout_engine_rank)
+            _query_config(rollout_engines[rollout_engine_ind], assignment.rollout_engine_rank, runner_role)
             for rollout_engine_ind in assignment.rollout_engine_indices
         ]
         for rollout_engine_ind, config in zip(assignment.rollout_engine_indices, configs, strict=True):
@@ -113,20 +128,27 @@ def query_rollout_engine_rank_configs(
             for name, _ in set(config.shard_layout_key) ^ set(configs[0].shard_layout_key)
         }
         assert not differing_fields, (
-            f"rollout engines {assignment.rollout_engine_indices} hold rank {assignment.rollout_engine_rank} in "
-            f"different layouts, so one model replica cannot serve them: they differ in {sorted(differing_fields)}"
+            f"rollout engines {assignment.rollout_engine_indices} hold the {runner_role} of rank "
+            f"{assignment.rollout_engine_rank} in different layouts, so one model replica cannot serve them: they "
+            f"differ in {sorted(differing_fields)}"
         )
         configs_by_rollout_engine_rank[assignment.rollout_engine_rank] = configs[0]
     return configs_by_rollout_engine_rank
 
 
-def _query_config(rollout_engine: SGLangApiClient, rollout_engine_rank: int) -> RolloutEngineRankConfig:
-    parallelism_info = async_utils.run(rollout_engine.get_parallelism_info(rank=rollout_engine_rank))
-    server_info = async_utils.run(rollout_engine.get_server_info())
+def _query_config(
+    rollout_engine: SGLangApiClient, rollout_engine_rank: int, runner_role: str
+) -> RolloutEngineRankConfig:
+    parallelism_info = async_utils.run(rollout_engine.get_parallelism_info(rank=rollout_engine_rank, role=runner_role))
     return RolloutEngineRankConfig(
+        runner_role=runner_role,
         parallelism=RankParallelismConfig.from_dict(parallelism_info),
-        server_args=create_server_args_from_dict(server_info),
+        server_args=_query_server_args(rollout_engine),
     )
+
+
+def _query_server_args(rollout_engine: SGLangApiClient) -> ServerArgs:
+    return create_server_args_from_dict(async_utils.run(rollout_engine.get_server_info()))
 
 
 def create_server_args_from_dict(data_dict: dict) -> ServerArgs:
@@ -156,6 +178,50 @@ def _assert_expert_placement_reproducible(server_args: ServerArgs, rollout_engin
         "replica does not reproduce, so p2p would write experts into the wrong slots. Update its weights with "
         "another --update-weight-transfer-mode."
     )
+
+
+def query_runner_roles(
+    rollout_engines: Sequence[SGLangApiClient], assignments: Sequence[RolloutEngineRankAssignment], selector: str
+) -> tuple[str, ...]:
+    """Returns the model runners of the rollout engines in `assignments` that a p2p update writes: the target, and
+    the speculative draft when `selector` covers it (the trainer holds MTP layers) and the engines run one.
+
+    Every engine must run the same runners, since the update writes the same runners on each.
+    """
+    distinct_runner_roles = {
+        _select_runner_roles(_query_server_args(rollout_engines[rollout_engine_ind]), selector)
+        for assignment in assignments
+        for rollout_engine_ind in assignment.rollout_engine_indices
+    }
+    assert len(distinct_runner_roles) == 1, (
+        f"the rollout engines run different model runners {sorted(distinct_runner_roles)}, but one update writes the "
+        "same runners on each; a draft would go unwritten on some engines or be queried on engines without one"
+    )
+    (runner_roles,) = distinct_runner_roles
+    return runner_roles
+
+
+def _select_runner_roles(server_args: ServerArgs, selector: str) -> tuple[str, ...]:
+    if selector != "all" or server_args.speculative_algorithm in (None, *_SPECULATIVE_ALGORITHMS_WITHOUT_DRAFT_MODEL):
+        return ("target",)
+    _assert_draft_is_target_mtp(server_args)
+    return ("target", "draft")
+
+
+def _assert_draft_is_target_mtp(server_args: ServerArgs) -> None:
+    if server_args.speculative_algorithm != "EAGLE" or server_args.speculative_draft_model_path not in (
+        None,
+        server_args.model_path,
+    ):
+        raise NotImplementedError(
+            f"the rollout engines draft with {server_args.speculative_algorithm} from "
+            f"{server_args.speculative_draft_model_path}, but p2p updates only a draft that is the target model's own "
+            "MTP layer (EAGLE)"
+        )
+    if server_args.enable_multi_layer_eagle:
+        raise NotImplementedError(
+            "multi-layer EAGLE runs a draft runner per MTP layer; p2p updates one draft runner per rollout engine rank"
+        )
 
 
 class TransferBufferParamLayout(NamedTuple):
@@ -229,7 +295,7 @@ class ModelReplica:
             )
         if loader_writes.buffer_names:
             logger.info(
-                f"the loader also fills {len(loader_writes.buffer_names)} buffers, e.g. "
+                f"the {self._config.runner_role} loader also fills {len(loader_writes.buffer_names)} buffers, e.g. "
                 f"{sorted(loader_writes.buffer_names)[:3]}; p2p writes only params, so the rollout engine derives "
                 "these itself"
             )
@@ -396,18 +462,33 @@ def build_model_replica(
     """Builds the model replica of `config`'s layout. The build holds about one module's params at a time on this
     process's GPU and frees them before it returns."""
     _publish_server_args(config.server_args)
-    with ParallelismContext(config.parallelism):
-        model, built_shapes_by_name = DefaultModelLoader(LoadConfig()).initialize_model_without_storage(
-            model_config=ModelConfig.from_server_args(config.server_args, model_path=model_path),
-            device=torch.device("cpu"),
+    is_draft = config.runner_role == "draft"
+    with _runner_build_context(is_draft):
+        with ParallelismContext(config.parallelism):
+            model, built_shapes_by_name = DefaultModelLoader(LoadConfig()).initialize_model_without_storage(
+                model_config=ModelConfig.from_server_args(
+                    config.server_args, model_path=model_path, is_draft_model=is_draft
+                ),
+                device=torch.device("cpu"),
+            )
+        return ModelReplica(
+            model,
+            built_shapes_by_name,
+            config,
+            postprocess_device=torch.device("cuda", torch.cuda.current_device()),
+            transfer_buffer_device=transfer_buffer_device,
         )
-    return ModelReplica(
-        model,
-        built_shapes_by_name,
-        config,
-        postprocess_device=torch.device("cuda", torch.cuda.current_device()),
-        transfer_buffer_device=transfer_buffer_device,
-    )
+
+
+@contextmanager
+def _runner_build_context(is_draft: bool) -> Iterator[None]:
+    # as EAGLEWorkerV2 builds its draft: the speculative MoE backends and the draft's shared-experts fusion
+    with ExitStack() as stack:
+        if is_draft:
+            stack.enter_context(speculative_moe_backend_context())
+            stack.enter_context(speculative_moe_a2a_backend_context())
+            stack.enter_context(draft_model_build_scope())
+        yield
 
 
 def _publish_server_args(server_args: ServerArgs) -> None:
@@ -456,7 +537,8 @@ def _end_offset_after(
 
 
 class ModelReplicas:
-    """The model replicas of a p2p sender, one per shard layout, kept for the whole trainer process.
+    """The model replicas of one model runner (target or draft) of a p2p sender, one per shard layout, kept for
+    the whole trainer process.
 
     The p2p protocol asks it for the replica of each rollout engine rank it sends to, then maps the trainer's HF
     names for every new replica. Every replica lays its params out the same way in a transfer buffer, so one packing
