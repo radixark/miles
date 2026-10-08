@@ -5,7 +5,7 @@ on:
     inputs:
       layout:
         type: choice
-        options: [serial, parallel]
+        options: [serial, parallel, probe4, probe8]
         required: true
       round:
         type: string
@@ -19,7 +19,7 @@ on:
 permissions:
   contents: read
 concurrency:
-  group: b200-oma
+  group: ${{ startsWith(inputs.layout, 'probe') && format('b200-probe-{0}', github.run_id) || 'b200-oma' }}
   cancel-in-progress: false
   queue: max
 jobs:
@@ -48,3 +48,25 @@ jobs:
       container_image: radixark/miles@sha256:58b75eaf0ae6a66ee2ed966bede9e6ef8a42a1942588f2692172c3d879b4f67c
       execute_command: python tests/ci/b200_benchmark.py --test ${{ matrix.test }} --gpus 4
     secrets: inherit
+  probe:
+    if: startsWith(inputs.layout, 'probe')
+    runs-on: ${{ inputs.layout == 'probe4' && fromJSON('["b200", "4gpu"]') || fromJSON('["b200", "8gpu"]') }}
+    timeout-minutes: 15
+    container:
+      image: radixark/miles@sha256:58b75eaf0ae6a66ee2ed966bede9e6ef8a42a1942588f2692172c3d879b4f67c
+      options: --gpus all --env CUDA_VISIBLE_DEVICES
+    steps:
+      - name: Hold real CUDA contexts until cancellation
+        env:
+          EXPECTED_GPUS: ${{ inputs.layout == 'probe4' && '4' || '8' }}
+        run: |
+          python -u - <<'PYCODE'
+          import json, os, threading, time
+          import torch
+          count = torch.cuda.device_count()
+          assert count == int(os.environ['EXPECTED_GPUS'])
+          tensors = [torch.ones(1024, device=f'cuda:{i}') for i in range(count)]
+          assert all(t.sum().item() == 1024 for t in tensors)
+          print('PROBE_READY ' + json.dumps({'gpus': count, 'cvd': os.environ['CUDA_VISIBLE_DEVICES'], 'timestamp': time.time()}), flush=True)
+          threading.Event().wait(300 if count == 4 else 1)
+          PYCODE
