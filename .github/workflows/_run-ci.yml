@@ -104,6 +104,12 @@ jobs:
         with:
           ref: ${{ inputs.plan_already_resolved && inputs.ref || needs.plan.outputs.ref }}
 
+      - name: Attach isolated RDMA networks
+        shell: bash
+        env:
+          JOB_CONTAINER_ID: ${{ job.container.id }}
+        run: python3 tests/ci/attach_rdma_networks.py
+
       - name: Configure source paths
         shell: bash
         run: echo "PYTHONPATH=$GITHUB_WORKSPACE:$SGLANG_SOURCE_ROOT:$MEGATRON_SOURCE_ROOT" >> "$GITHUB_ENV"
