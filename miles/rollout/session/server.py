@@ -6,6 +6,7 @@
 - ``run_session_server`` is the subprocess entry point: fresh interpreter, so it configures logging and the process title itself, then serves uvicorn.
 """
 
+import asyncio
 import json
 import logging
 
@@ -26,6 +27,20 @@ logger = logging.getLogger(__name__)
 _DROP_REQUEST_HEADERS = ("content-length", "transfer-encoding", "host")
 
 
+class _TimedBytesPayload(aiohttp.BytesPayload):
+    def __init__(self, body: bytes, *, timeout: float):
+        super().__init__(body)
+        self._write_timeout = timeout
+
+    async def write(self, writer) -> None:
+        await self.write_with_length(writer, None)
+
+    async def write_with_length(self, writer, content_length: int | None) -> None:
+        body = self._value if content_length is None else self._value[:content_length]
+        # aiohttp's read deadline starts after upload; bound a stalled upload separately.
+        await asyncio.wait_for(writer.write(body), timeout=self._write_timeout)
+
+
 class SessionServer:
     """Lightweight FastAPI server that manages sessions and proxies inference
     requests through the inference router (sglang or miles)."""
@@ -36,7 +51,7 @@ class SessionServer:
 
         # Every turn's backend reply is megabytes (per-token logprobs, R3). aiohttp parses it in C;
         # httpx's pure-Python client path took 35-40% of a saturated server's CPU.
-        # Bounds as before: connecting (pool wait included) and each socket read.
+        # Connecting (pool wait included) and each socket read; the payload bounds writing.
         self.timeout = aiohttp.ClientTimeout(total=None, connect=config.timeout, sock_read=config.timeout)
         # A ClientSession binds to the running loop, so the first proxy call opens it.
         self.client: aiohttp.ClientSession | None = None
@@ -77,7 +92,7 @@ class SessionServer:
             async with self._get_client().request(
                 request.method,
                 url,
-                data=body,
+                data=_TimedBytesPayload(body, timeout=self.timeout.sock_read),
                 headers=headers,
                 allow_redirects=False,
                 skip_auto_headers=("Content-Type",),
