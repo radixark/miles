@@ -252,7 +252,6 @@ class TestConvertCheckpoint:
 
 class TestExecCommandGpuOnce:
     def test_a_finished_run_is_not_repeated(self, commands, tmp_path):
-        """The first call clears and fills the destination, then marks it; the next one skips."""
         dst = str(tmp_path / "Qwen3-30B-A3B-INT4")
 
         _backend().exec_command_gpu_once("convert", dst)
@@ -262,8 +261,6 @@ class TestExecCommandGpuOnce:
         assert (tmp_path / "Qwen3-30B-A3B-INT4.done").exists()
 
     def test_a_failed_run_leaves_no_marker(self, commands, monkeypatch, tmp_path):
-        """A half-written destination must not count as done, so the next call converts again."""
-
         def fail(self, cmd, capture_output=False, **kwargs):
             raise RuntimeError("converter died")
 

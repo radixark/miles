@@ -308,7 +308,7 @@ class BaseCommandBackend(ABC):
         marks completion; a sibling `<path_dst>.done` written after `cmd` succeeds does.
         """
         done = Path(f"{path_dst}.done")
-        with _exclusive_path_lock(path_dst):
+        with exclusive_path_lock(path_dst):
             if done.exists():
                 logger.info(f"exec_command_gpu_once skip {path_dst} since {done} exists")
                 return
