@@ -378,7 +378,9 @@ class Qwen3_5Bridge(Qwen2MoEBridge):
             w = hf_weights[0]
             if w.dim() == 3:
                 # Extract expert_id from name like "...linear_fc1.weight42"
-                expert_id = int(mcore_weights_name.split("weight")[-1])
+                local_expert_id = int(mcore_weights_name.split("weight")[-1])
+                experts_per_rank = self._get_text_config().num_experts // self.mpu.ep_size
+                expert_id = self.mpu.ep_rank * experts_per_rank + local_expert_id
                 expert_w = w[expert_id]  # (out_features, in_features)
                 return expert_w.contiguous()
 
