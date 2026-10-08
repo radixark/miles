@@ -26,7 +26,7 @@ name: PR Test (ROCm)
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened, ready_for_review, labeled]
+    types: [opened, synchronize, reopened, ready_for_review, labeled, unlabeled, closed]
   schedule:
     # Same UTC nightly/weekly split as pr-test.yml; ci_policy.py maps each exact cron.
     - cron: '0 15 * * 0-5'
@@ -72,11 +72,12 @@ concurrency:
   # Literal prefix, not github.workflow — see pr-test.yml's concurrency
   # comment: the caller-resolved name would collide this group with the CUDA
   # one under a single release-branch-cut run.
-  group: pr-test-rocm-${{ github.event.pull_request.number || github.event.schedule || inputs.ref || github.run_id }}
+  group: pr-test-rocm-${{ github.event.number || github.event.schedule || inputs.ref || github.run_id }}
   cancel-in-progress: true
 
 jobs:
   resolve-ci-policy:
+    if: github.event.action != 'closed'
     runs-on: ubuntu-latest
     outputs:
       cadence: ${{ steps.resolve.outputs.cadence }}
@@ -136,6 +137,7 @@ jobs:
           echo "Resolved CI image: rocm/sgl-dev:${CI_IMAGE_TAG}"
 
   resolve-ci-deps:
+    if: github.event.action != 'closed'
     runs-on: ubuntu-latest
     outputs:
       skip_dependency_install: ${{ steps.resolve.outputs.skip_dependency_install }}

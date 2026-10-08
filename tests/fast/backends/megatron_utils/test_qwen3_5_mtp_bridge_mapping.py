@@ -112,6 +112,16 @@ def install_bridge_stubs():
     sys.modules["mbridge.core"] = mbridge_core_mod
     sys.modules["mbridge.models"] = mbridge_models_mod
 
+    # the real mixin is dependency-free; loading its file directly skips the package
+    # __init__, which imports every bridge and their real megatron/mbridge deps
+    mixin_path = Path(__file__).resolve().parents[4] / "miles_plugins" / "mbridge" / "linear_attn.py"
+    spec = importlib.util.spec_from_file_location("miles_plugins.mbridge.linear_attn", mixin_path)
+    mixin_mod = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(mixin_mod)
+    sys.modules["miles_plugins.mbridge"] = types.ModuleType("miles_plugins.mbridge")
+    sys.modules["miles_plugins.mbridge.linear_attn"] = mixin_mod
+
 
 def load_bridge_module():
     install_bridge_stubs()

@@ -367,7 +367,7 @@ class TestWorkflowScopeSeam:
         gpu_jobs = re.findall(job_id_pattern, gpu_workflow.split("\njobs:\n", 1)[1], re.MULTILINE)
         cpu_jobs = re.findall(job_id_pattern, cpu_workflow.split("\njobs:\n", 1)[1], re.MULTILINE)
         docker_jobs = re.findall(job_id_pattern, docker_workflow.split("\njobs:\n", 1)[1], re.MULTILINE)
-        assert gpu_jobs == ["run"]
+        assert gpu_jobs == ["plan", "run"]
         assert cpu_jobs == ["run-cpu"]
         assert docker_jobs == ["docker-decide", "docker-build"]
         assert "cpu_runner" not in gpu_workflow
@@ -462,8 +462,7 @@ class TestWorkflowScopeSeam:
     def test_weekly_serializes_each_gpu_matrix(self):
         workflow = self._workflow()
         normal_parallelism = {
-            "stage-c-8-gpu-h200": 2,
-            "stage-c-4-gpu-h200": 3,
+            "stage-c-4-gpu-h200": 5,
             "stage-c-2-gpu-h200": 2,
         }
         for job, default in normal_parallelism.items():
@@ -512,7 +511,7 @@ class TestWorkflowScopeSeam:
 
     def test_closed_pr_only_cancels_existing_run(self):
         workflow = self._workflow()
-        assert "types: [opened, synchronize, reopened, ready_for_review, labeled, closed]" in workflow
+        assert "types: [opened, synchronize, reopened, ready_for_review, labeled, unlabeled, closed]" in workflow
         assert (
             "group: pr-test-${{ github.event.number || github.event.schedule || inputs.ref || github.run_id }}"
             in workflow
@@ -532,9 +531,29 @@ class TestRocmWorkflowScopeSeam:
     def _workflow() -> str:
         return (Path(__file__).resolve().parents[3] / ".github" / "workflows" / "pr-test-rocm.yml").read_text()
 
+    def test_closed_pr_cancels_without_starting_resolvers_or_gpu_jobs(self):
+        workflow = self._workflow()
+        assert (
+            "group: pr-test-rocm-${{ github.event.number || github.event.schedule || inputs.ref || github.run_id }}"
+            in workflow
+        )
+        assert "cancel-in-progress: true" in workflow
+        for job in ("resolve-ci-policy", "resolve-ci-deps"):
+            header = workflow.split(f"  {job}:\n", 1)[1].split("    runs-on:", 1)[0]
+            assert "if: github.event.action != 'closed'" in header
+        image = workflow.split("  resolve-ci-image:\n", 1)[1].split("    runs-on:", 1)[0]
+        assert "needs: [resolve-ci-policy]" in image
+        assert "always()" not in image
+        stage = workflow.split("  stage-c-4-gpu-mi350:\n", 1)[1]
+        assert "needs.resolve-ci-policy.result == 'success'" in stage
+        assert "needs.resolve-ci-deps.result == 'success'" in stage
+
     def test_pr_schedules_and_dispatch_share_policy(self):
         workflow = self._workflow()
-        assert "pull_request:\n    types: [opened, synchronize, reopened, ready_for_review, labeled]" in workflow
+        assert (
+            "pull_request:\n    types: [opened, synchronize, reopened, ready_for_review, labeled, unlabeled, closed]"
+            in workflow
+        )
         assert "pull_request_target:" not in workflow
         configured = set(re.findall(r"^\s+- cron: ['\"]([^'\"]+)['\"]\s*$", workflow, flags=re.MULTILINE))
         assert configured == set(SCHEDULE_POLICIES)
@@ -672,6 +691,7 @@ def _run_args(*, hw: str, suite: str, cadence: str, labels: list[str] | None = N
         auto_partition_id=None,
         auto_partition_size=None,
         list_only=False,
+        github_output=None,
         timeout_per_file=1800,
         enable_retry=False,
         retry_timeout_increase=600,

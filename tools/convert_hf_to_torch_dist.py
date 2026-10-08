@@ -1,20 +1,21 @@
 import gc
 import os
-import shutil
 
 import torch
 import torch.distributed as dist
 from megatron.core.enums import ModelType
 from megatron.training.arguments import parse_args, validate_args
-from megatron.training.checkpointing import get_checkpoint_name, get_checkpoint_tracker_filename, save_checkpoint
+from megatron.training.checkpointing import get_checkpoint_tracker_filename, save_checkpoint
 from megatron.training.training import get_model
 
 import miles_plugins.mbridge  # noqa: F401
 from mbridge import AutoBridge
 from miles.backends.megatron_utils.arguments import set_default_megatron_args
+from miles.backends.megatron_utils.checkpoint import publish_as_release
 from miles.backends.megatron_utils.fp32_param_utils import enforce_marked_param_dtypes
 from miles.backends.megatron_utils.initialize import init
 from miles.backends.megatron_utils.model_provider import get_model_provider_func
+from miles.utils.arguments import LINEAR_ATTENTION_BACKENDS
 from miles.utils.logging_utils import configure_logger_raw
 from miles.utils.memory_utils import print_memory
 from miles_plugins.models.deepseek_v4.arguments import add_dsv4_arguments
@@ -26,6 +27,8 @@ def add_conversion_args(parser):
     add_dsv4_arguments(parser)
     add_dsa_arguments(parser)
     parser.add_argument("--hf-checkpoint", type=str, required=True, help="HuggingFace model path")
+    parser.add_argument("--linear-attention-backend", choices=LINEAR_ATTENTION_BACKENDS, default="fla")
+    parser.add_argument("--allgather-cp", action="store_true")
     parser.add_argument(
         "--megatron-to-hf-mode",
         choices=["raw", "bridge"],
@@ -148,9 +151,7 @@ def main():
     save_checkpoint(1, model, None, None, 0)
 
     if dist.get_rank() == 0:
-        source_dir = get_checkpoint_name(args.save, 1, False, return_base_dir=True)
-        target_dir = get_checkpoint_name(args.save, -1, True, return_base_dir=True)
-        shutil.move(source_dir, target_dir)
+        publish_as_release(args.save)
 
     dist.barrier()
 

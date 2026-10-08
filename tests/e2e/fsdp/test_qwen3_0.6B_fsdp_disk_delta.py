@@ -1,6 +1,6 @@
 import os
 
-from tests.ci.ci_register import register_cuda_ci
+from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
 
 import miles.utils.external_utils.command_utils.legacy as U
 
@@ -10,6 +10,7 @@ register_cuda_ci(
     labels=["weight-update"],
     hardware=["hopper"],
 )
+register_rocm_ci(est_time=500, suite="nightly-stage-c-4-gpu-mi350", labels=["weight-update"])
 
 # The FSDP backend streams through the shared WeightUpdater, so every transfer
 # protocol is open to it. disk-delta is the one that reconciles the stream

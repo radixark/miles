@@ -61,6 +61,9 @@ class ScriptArgs(command_utils.ExecuteTrainConfig):
     num_gpus_per_node: int | None = None
     enable_eval: bool = False
     num_rollout: int = 3000
+    rollout_batch_size: int = 32
+    n_samples_per_prompt: int = 8
+    global_batch_size: int = 256
     extra_args: str = ""
     data_dir: str = "/root/datasets"
     model_dir: str = "/root/models"
@@ -130,11 +133,11 @@ def _execute_train(args: ScriptArgs):
         "--balance-data "
         "--rm-type deepscaler "
         f"--num-rollout {args.num_rollout} "
-        "--rollout-batch-size 32 "
-        "--n-samples-per-prompt 8 "
+        f"--rollout-batch-size {args.rollout_batch_size} "
+        f"--n-samples-per-prompt {args.n_samples_per_prompt} "
         f"--rollout-max-response-len {100 if args.mode == 'debug_minimal' else 16384} "
         "--rollout-temperature 1 "
-        "--global-batch-size 256 "
+        f"--global-batch-size {args.global_batch_size} "
         "--use-dynamic-global-batch-size "
     )
 
