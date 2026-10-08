@@ -294,6 +294,9 @@ ENV TORCHINDUCTOR_MAX_AUTOTUNE=1
 ENV TORCHINDUCTOR_MAX_AUTOTUNE_POINTWISE=1
 # Keep GPUs visible to Ray num_gpus=0 coordinators so Megatron device checks do not crash.
 ENV RAY_ACCEL_ENV_VAR_OVERRIDE_ON_ZERO=0
+# tvm-ffi's JIT torch DLPack addon links /opt/rocm's HIP runtime next to torch's bundled one;
+# two HSA runtimes in one process leave HIP with no device (CUDA driver error 100).
+ENV TVM_FFI_DISABLE_TORCH_C_DLPACK=1
 
 RUN rm -rf /root/.cache/pip /root/TransformerEngine /tmp/amd_patch
 
