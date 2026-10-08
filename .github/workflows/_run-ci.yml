@@ -105,6 +105,8 @@ jobs:
           ref: ${{ inputs.plan_already_resolved && inputs.ref || needs.plan.outputs.ref }}
 
       - name: Attach isolated RDMA networks
+        # Release CI can check out refs that predate this setup helper.
+        if: hashFiles('tests/ci/attach_rdma_networks.py') != ''
         shell: bash
         env:
           JOB_CONTAINER_ID: ${{ job.container.id }}
