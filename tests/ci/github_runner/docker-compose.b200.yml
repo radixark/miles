@@ -25,6 +25,27 @@ services:
     environment:
       <<: *b200-environment
       B200_GPU_COUNT: "8"
+  b200-oma-7gpu-0:
+    <<: *b200-runner
+    container_name: b200-oma-7gpu-0
+    hostname: b200-oma-7gpu-0
+    environment:
+      <<: *b200-environment
+      B200_GPU_COUNT: "7"
+  b200-oma-6gpu-0:
+    <<: *b200-runner
+    container_name: b200-oma-6gpu-0
+    hostname: b200-oma-6gpu-0
+    environment:
+      <<: *b200-environment
+      B200_GPU_COUNT: "6"
+  b200-oma-5gpu-0:
+    <<: *b200-runner
+    container_name: b200-oma-5gpu-0
+    hostname: b200-oma-5gpu-0
+    environment:
+      <<: *b200-environment
+      B200_GPU_COUNT: "5"
   b200-oma-4gpu-0:
     <<: *b200-runner
     container_name: b200-oma-4gpu-0
@@ -39,6 +60,20 @@ services:
     environment:
       <<: *b200-environment
       B200_GPU_COUNT: "4"
+  b200-oma-3gpu-0:
+    <<: *b200-runner
+    container_name: b200-oma-3gpu-0
+    hostname: b200-oma-3gpu-0
+    environment:
+      <<: *b200-environment
+      B200_GPU_COUNT: "3"
+  b200-oma-3gpu-1:
+    <<: *b200-runner
+    container_name: b200-oma-3gpu-1
+    hostname: b200-oma-3gpu-1
+    environment:
+      <<: *b200-environment
+      B200_GPU_COUNT: "3"
   b200-oma-2gpu-0:
     <<: *b200-runner
     container_name: b200-oma-2gpu-0

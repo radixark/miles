@@ -32,7 +32,7 @@ Stage names follow `stage-<tier>-<gpus>-<hw>` (or `stage-<tier>-<hw>` for CPU, e
 | `nightly-stage-c-4-gpu-mi350` | 4× MI350 | external nightly | — | — |
 | `nightly-stage-c-8-gpu-mi350` | 8× MI350 | external nightly | — | — |
 
-B200 jobs declare their minimum allocation with `register_cuda_ci(..., num_gpus=1|2|4|8)`. The existing B200 suite names select tests; they do not reserve a fixed partition. `_run-ci-b200.yml` plans all selected files at an exact commit and makes their jobs independently runnable. The host allocates any free GPU set, allowing `4+2+1+1`, `2+2+2+2`, or other fitting combinations. An 8-GPU job requires the whole host. Weekly uses the same scheduling rules. Per-job timeouts cover the file timeout plus 20 minutes for setup; one long file receives 470 minutes.
+B200 jobs declare their minimum allocation with `register_cuda_ci(..., num_gpus=N)` for an integer N from 1 to 8. The existing B200 suite names select tests; they do not reserve a fixed partition. `_run-ci-b200.yml` plans all selected files at an exact commit and makes their jobs independently runnable. The host allocates any free GPU set, allowing `4+2+1+1`, `2+2+2+2`, or other fitting combinations. An 8-GPU job requires the whole host. Weekly uses the same scheduling rules. Per-job timeouts cover the file timeout plus 20 minutes for setup; one long file receives 470 minutes.
 
 The repository-wide `b200-oma` workflow queue keeps PRs and B200 file reruns in order. Host device locks remain necessary for old workflow revisions and hold through container cleanup. See `tests/ci/README.md` for deployment, cancellation, and orphan-container handling.
 

@@ -8,7 +8,7 @@ from contextlib import ExitStack
 from pathlib import Path
 
 
-GPU_COUNTS = (1, 2, 4, 8)
+GPU_COUNTS = tuple(range(1, 9))
 
 
 def find_worker_pid():
@@ -29,7 +29,7 @@ def running_job_containers(root):
         container, _, mounts = line.partition(" ")
         for mount in mounts.split(","):
             path = Path(mount)
-            if path.parent == root and re.fullmatch(r"runner_b200-oma-[1248]gpu-\d+", path.name):
+            if path.parent == root and re.fullmatch(r"runner_b200-oma-[1-8]gpu-\d+", path.name):
                 runner = path.name.removeprefix("runner_")
                 assert runner not in containers, f"Multiple running job containers for {runner}"
                 containers[runner] = container

@@ -89,8 +89,8 @@ Host conventions:
   CVD intentionally left unset so jobs see all 8 GPUs. The bare
   `--env CUDA_VISIBLE_DEVICES` forwards the "unset" state, and CUDA defaults
   to seeing every visible device.
-* **b200-oma** (15 logical runners on one 8-GPU host): eight `1gpu`, four
-  `2gpu`, two `4gpu`, and one `8gpu` runner. These are admission slots, not fixed
+* **b200-oma** (20 logical runners on one 8-GPU host): for each count `n` from 1 to 8,
+  `floor(8/n)` runners carry the corresponding `<n>gpu` label. These are admission slots, not fixed
   device partitions. Every CUDA registration declares `num_gpus`; the B200 plan
   creates one job per selected file with that budget. The job-start hook assigns
   any available GPU set and writes `CUDA_VISIBLE_DEVICES` through `GITHUB_ENV`

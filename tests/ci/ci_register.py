@@ -247,8 +247,8 @@ class RegistryVisitor(ast.NodeVisitor):
         if "num_gpus" in parsed:
             if backend is not HWBackend.CUDA:
                 raise ValueError(f"{self.filename}: num_gpus is CUDA-only")
-            if type(num_gpus) is not int or num_gpus not in (1, 2, 4, 8):
-                raise ValueError(f"{self.filename}: num_gpus must be one of 1, 2, 4, 8")
+            if type(num_gpus) is not int or not 1 <= num_gpus <= 8:
+                raise ValueError(f"{self.filename}: num_gpus must be an integer from 1 to 8")
             if num_gpus > CUDA_STAGES[parsed["suite"]].num_gpus:
                 raise ValueError(f"{self.filename}: num_gpus exceeds the home suite's capacity")
 

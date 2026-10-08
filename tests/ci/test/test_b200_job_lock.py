@@ -62,6 +62,18 @@ def finish(proc):
     assert proc.returncode == 0
 
 
+def test_non_power_of_two_budgets_fill_the_host(workers):
+    five = workers(5)
+    five_gpus = acquired(five)
+    three = workers(3)
+    three_gpus = acquired(three)
+    assert len(five_gpus) == 5 and len(three_gpus) == 3
+    assert five_gpus.isdisjoint(three_gpus)
+    assert five_gpus | three_gpus == set(range(8))
+    finish(five)
+    finish(three)
+
+
 def test_mixed_counts_fill_host_and_reuse_only_released_gpus(workers):
     active = []
     used = set()
