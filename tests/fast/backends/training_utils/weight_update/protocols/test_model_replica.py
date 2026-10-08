@@ -150,9 +150,7 @@ def _parameter(*shape: int, weight_loader=_copy_into_param) -> torch.nn.Paramete
 def _toy_model(
     model_replica_module: ModuleType, *, restores_expert_layout: bool = True, derives_norm_buffer: bool = False
 ) -> torch.nn.Module:
-    """A model as sglang builds it, with the postprocess patterns the replica must reproduce: experts permuted into
-    a block layout, a scale registered under a second name, and a param that only postprocess creates. With
-    `derives_norm_buffer`, the norm's loader also writes `weight + 1` into a buffer, as sglang's Gemma norm does."""
+    """Exercise postprocess reshaping, parameter aliases and creation, and optional Gemma-style buffers."""
 
     class _BlockExpertsMethod(model_replica_module.QuantizeMethodBase):
         def apply(self, layer: torch.nn.Module, *args, **kwargs) -> torch.Tensor:
@@ -338,8 +336,7 @@ class TestModelReplica:
     def test_buffers_the_loader_writes_get_storage_once_names_are_mapped(
         self, model_replica_module: ModuleType, make_model_replica
     ) -> None:
-        """sglang's Gemma norm loader also writes `weight + 1` into a buffer the replica builds without storage; a
-        load would fail there. Buffers the loader never writes stay without storage."""
+        """Gemma-style derived buffers need writable storage; unused buffers must stay on meta."""
         model_replica = make_model_replica(derives_norm_buffer=True)
         model_replica.map_hf_names({"norm.weight": model_replica_module.HfTensorSpec((2,), torch.float32)})
 

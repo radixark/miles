@@ -7,12 +7,9 @@ from miles.backends.training_utils.weight_update.protocols.utils.loader_probe im
 
 
 class ModelParamStager:
-    """Holds the HF tensors of each param group of a model replica until the whole group can be loaded.
+    """Hold each parameter group's HF tensors until the group is complete.
 
-    A param group is the params that share HF tensors, with the HF tensors that load them: sglang fuses several HF
-    tensors into one param (q/k/v into `qkv_proj`, every expert's gate and up into `w13_weight`), and one HF tensor
-    can fill several params (a tied embedding). Its tensors can arrive in different buckets, and loading part of a
-    group would leave bytes unwritten. The p2p protocol creates one per sync from the replicas' `HfNameMapping`.
+    Parameters sharing HF inputs form one group; loading only part would leave parameters unbound or incomplete.
     """
 
     def __init__(self, hf_name_mapping: HfNameMapping) -> None:
@@ -27,8 +24,7 @@ class ModelParamStager:
     def stage(
         self, hf_tensors: Iterable[tuple[str, torch.Tensor]]
     ) -> dict[tuple[str, ...], list[tuple[str, torch.Tensor]]]:
-        """Stages HF tensors that load into this replica's params; returns the HF tensors of each param group they
-        complete, by the group's params."""
+        """Return newly completed parameter groups and their HF tensors."""
         ready_hf_tensors_by_param_group = {}
         for hf_name, tensor in hf_tensors:
             param_group = self._param_group_by_hf_name[hf_name]

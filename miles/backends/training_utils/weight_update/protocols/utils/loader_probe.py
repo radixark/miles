@@ -19,8 +19,7 @@ class HfTensorSpec(NamedTuple):
 
 @dataclass(frozen=True)
 class HfNameMapping:
-    """Which params of a model replica each HF name loads into, as the replica's own loader writes them, and the
-    reverse. An HF name its loader ignores maps to no params."""
+    """Bidirectional HF-to-parameter dependencies; ignored HF names are absent."""
 
     param_names_by_hf_name: Mapping[str, frozenset[str]]
     hf_names_by_param_name: Mapping[str, frozenset[str]]
@@ -48,8 +47,7 @@ class HfNameMapping:
 
 
 class LoaderWrites(NamedTuple):
-    """What a model replica's loader writes: its params, by the HF names whose data lands in them, and the buffers
-    it fills besides (sglang's Gemma norm derives `weight + 1` into one)."""
+    """Parameter dependencies and buffer names written by the loader."""
 
     hf_name_mapping: HfNameMapping
     buffer_names: frozenset[str]
@@ -62,12 +60,9 @@ def probe_loader_writes(
     *,
     device: torch.device,
 ) -> LoaderWrites:
-    """Runs `model.load_weights` once over HF tensors of `hf_tensor_specs` and returns what it writes.
+    """Record `model.load_weights` writes using meta parameters and real HF tensors on `device`.
 
-    The model replica calls it inside its rank's parallelism context, so the loader shards, places experts and fuses
-    names as the engine's loader does. Params are swapped for meta ones in `param_layouts` (shape, stride, dtype)
-    for the call and restored after it, so the probe allocates no param storage. The HF tensors are real, made one
-    at a time on `device`, so the loader's checks and kernels see values on a device as in a real load.
+    The caller must enter the replica's parallelism context. Original parameters are restored on exit.
     """
     originals, param_names_by_storage = _swap_params_for_meta(model, param_layouts)
     recorder = _SourceRecordingMode(param_names_by_storage, _get_buffer_names_by_storage(model))
@@ -96,7 +91,7 @@ def probe_loader_writes(
 def _swap_params_for_meta(
     model: torch.nn.Module, param_layouts: Mapping[str, object]
 ) -> tuple[list[tuple[torch.nn.Module, str, torch.nn.Parameter]], dict[StorageWeakRef, list[str]]]:
-    # by the original's id, so a param shared by several modules stays shared; a meta tensor refuses `.data = <cpu>`
+    # preserve parameter ties when replacing CPU parameters with meta ones
     param_names_by_param_id = defaultdict(list)
     for name, param in model.named_parameters(remove_duplicate=False):
         param_names_by_param_id[id(param)].append(name)
@@ -113,7 +108,7 @@ def _swap_params_for_meta(
                 replacements[id(param)] = replacement
             originals.append((module, local_name, param))
             module._parameters[local_name] = replacements[id(param)]
-    # only the name params are known by, so a param registered under two names is reported once
+    # match the canonical names from named_parameters()
     param_names_by_storage = {
         StorageWeakRef(replacements[param_id].untyped_storage()): [names[0]]
         for param_id, names in param_names_by_param_id.items()
@@ -129,8 +124,7 @@ def _get_buffer_names_by_storage(model: torch.nn.Module) -> dict[StorageWeakRef,
 
 
 class _SourceRecordingMode(TorchDispatchMode):
-    """Carries through every op the HF names a tensor derives from, records them at each write into a param, and
-    records every buffer written."""
+    """Propagate HF tensor sources through ops and record parameter and buffer writes."""
 
     def __init__(
         self,
@@ -140,7 +134,6 @@ class _SourceRecordingMode(TorchDispatchMode):
         super().__init__()
         self._param_names_by_storage = param_names_by_storage
         self._buffer_names_by_storage = buffer_names_by_storage
-        # by identity, dropped when the tensor goes
         self._hf_names_by_tensor: WeakIdKeyDictionary = WeakIdKeyDictionary()
         self._hf_names_of_pending_scalar: frozenset[str] = frozenset()
         self.hf_names_by_param_name: dict[str, set[str]] = defaultdict(set)
@@ -178,7 +171,6 @@ class _SourceRecordingMode(TorchDispatchMode):
             param_names = self._param_names_by_storage.get(storage)
             if param_names is None:
                 self.tag(destination, self._hf_names_of(destination) | hf_names)
-                # most destinations are intermediates, in no table
                 self.written_buffer_names.update(self._buffer_names_by_storage.get(storage, ()))
             else:
                 # writes without HF names, such as zeroed padding, are not loaded data

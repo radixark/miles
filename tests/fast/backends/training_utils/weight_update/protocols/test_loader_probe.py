@@ -19,9 +19,7 @@ def _empty_param(*shape: int) -> torch.nn.Parameter:
 
 
 class _ToyModel(torch.nn.Module):
-    """Loads like an sglang model: stacked shards, experts of other ranks skipped inside the loader, a pair fused
-    with `cat` once both arrive, a direct write that also derives a buffer from the param, a scalar read with
-    `.item()`, zeroed padding, a tied embedding, and a name it ignores."""
+    """Exercise fused, sharded and shared-input loads, scalar reads and derived buffers."""
 
     def __init__(self) -> None:
         super().__init__()
@@ -92,9 +90,7 @@ def _param_layouts(model: torch.nn.Module) -> dict[str, SimpleNamespace]:
 
 
 def test_each_hf_name_maps_to_the_params_its_loader_writes() -> None:
-    """Experts of other ranks and ignored names land nowhere; a fused pair maps to its param through `cat`; padding
-    zeroed by the loader is not loaded data. A buffer the loader writes is reported, since the replica has no storage
-    for it; one it never writes is not."""
+    """Fused and shared inputs must retain their dependencies; ignored inputs and padding must not add any."""
     model = _ToyModel()
 
     loader_writes = probe_loader_writes(model, _param_layouts(model), _HF_TENSOR_SPECS, device=_CPU)
@@ -152,8 +148,7 @@ def test_a_loader_error_propagates_and_params_come_back() -> None:
 
 
 class _PackedScaleModel(torch.nn.Module):
-    """Loads a packed scale as sglang's UE8M0 scale loader does: checks the loaded rows that must repeat, then repacks
-    them with a kernel that has no meta implementation."""
+    """Require repeated scale rows and a repacking kernel with no meta implementation."""
 
     def __init__(self) -> None:
         super().__init__()
@@ -167,15 +162,14 @@ class _PackedScaleModel(torch.nn.Module):
 
 
 def _repack(tensor: torch.Tensor) -> torch.Tensor:
-    # as DeepGEMM's layout kernel, which takes its input through DLPack
+    # DeepGEMM's DLPack path requires real storage
     if tensor.is_meta:
         raise RuntimeError("Cannot pack tensors on meta")
     return tensor.clone()
 
 
 def test_the_loader_sees_values_on_a_device_as_in_a_real_load() -> None:
-    """On Blackwell fp8 the UE8M0 scale loader checked loaded values and repacked them with DeepGEMM; over meta
-    tensors the check read a guessed `False` and DeepGEMM refused the tensor."""
+    """Meta inputs cannot satisfy UE8M0 value checks or DeepGEMM's storage requirement."""
     model = _PackedScaleModel()
 
     mapping = probe_loader_writes(
