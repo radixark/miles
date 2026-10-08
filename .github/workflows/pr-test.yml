@@ -4,7 +4,7 @@ name: PR Test
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened, ready_for_review, labeled, closed]
+    types: [opened, synchronize, reopened, ready_for_review, labeled, unlabeled, closed]
   schedule:
     # All scheduled runs use UTC. Saturday's weekly full CI replaces nightly.
     - cron: '0 15 * * 0-5'

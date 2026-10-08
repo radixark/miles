@@ -35,7 +35,9 @@ Stage names follow `stage-<tier>-<gpus>-<hw>` (or `stage-<tier>-<hw>` for CPU, e
 
 In `pr-test.yml`, `tier a` (CPU fast) gates PR-image preparation and the NVIDIA GPU fleet; its GPU stages (`b` / `c`) all depend on both resolvers and `stage-a-cpu`, and run concurrently with each other — the `b` / `c` letters classify role, they are not a sequential pipeline. The MI350 stage has no CPU-test gate.
 
-`pr-test.yml` and `pr-test-rocm.yml` treat `pull_request.closed` (including merges) as cancellation-only: each close event shares its workflow's PR concurrency group, cancels queued or running runs of that workflow, and starts no resolver or test jobs.
+`pr-test.yml` and `pr-test-rocm.yml` listen to both `pull_request.labeled` and `pull_request.unlabeled`. Adding or removing any PR label starts a new run in the same PR concurrency group, cancels the previous queued or running run, and resolves CI policy from the remaining labels. Independently dispatched `/rerun-test` runs are unaffected.
+
+Both workflows treat `pull_request.closed` (including merges) as cancellation-only: each close event shares its workflow's PR concurrency group, cancels queued or running runs of that workflow, and starts no resolver or test jobs.
 
 A PR event starts jobs only when the PR's base is the default branch or the PR carries a `run-ci*` label. Otherwise `resolve-ci-policy` is skipped, and because every other job needs it, the run starts nothing. A stacked PR therefore runs `PR Test` only while labeled; retargeting a PR to `main` is an `edited` event, which does not start a run.
 
