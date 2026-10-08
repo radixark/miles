@@ -56,6 +56,7 @@ def test_cuda_file_resolves_to_its_suite_runner_and_image(suite, runner):
     plan = plan_file_run(tests, "tests/e2e/x/test_a.py", "dev")
     assert plan == {
         "hw": "cuda",
+        "num_gpus": runner[1].removesuffix("gpu"),
         "suite": suite,
         "runs_on": json.dumps(runner),
         "container_image": "radixark/miles:dev",
@@ -68,6 +69,7 @@ def test_cpu_file_resolves_without_runner_labels():
     plan = plan_file_run(tests, "tests/fast/test_a.py", "pr-42")
     assert plan == {
         "hw": "cpu",
+        "num_gpus": "0",
         "suite": "stage-a-cpu",
         "runs_on": "",
         "container_image": "radixark/miles:pr-42",

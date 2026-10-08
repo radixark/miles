@@ -15,6 +15,11 @@ on:
         type: string
         required: false
         default: 'radixark/miles:dev'
+      num_gpus:
+        description: 'Exact CUDA-visible device count for a dynamically allocated B200 job.'
+        type: number
+        required: false
+        default: 0
       timeout_minutes:
         description: 'GPU execution budget, including container and dependency setup.'
         type: number
@@ -156,7 +161,7 @@ jobs:
       - name: Verify B200 CUDA partition
         if: contains(fromJSON(inputs.runs_on), 'b200')
         env:
-          EXPECTED_GPUS: ${{ contains(fromJSON(inputs.runs_on), '4gpu') && '4' || '8' }}
+          EXPECTED_GPUS: ${{ inputs.num_gpus || (contains(fromJSON(inputs.runs_on), '4gpu') && 4 || 8) }}
         run: |
           python3 - <<'PY'
           import os

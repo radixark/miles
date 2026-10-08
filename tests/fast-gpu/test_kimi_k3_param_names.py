@@ -12,7 +12,9 @@ import torch
 import torch.distributed as dist
 from tests.ci.ci_register import register_cuda_ci
 
-register_cuda_ci(est_time=60, suite="stage-b-2-gpu-h200", labels=["miles-plugin"], hardware=["hopper", "blackwell"])
+register_cuda_ci(
+    est_time=60, suite="stage-b-2-gpu-h200", labels=["miles-plugin"], hardware=["hopper", "blackwell"], num_gpus=1
+)
 
 pytest.importorskip("fla")
 pytest.importorskip("mbridge")

@@ -1,6 +1,6 @@
 ---
 title: DeepSeek-V4.1 Flash
-description: Launch recipe for DeepSeek-V4.1 with radixark/miles:deepseek-v41 — BF16 train / BF16 rollout, colocated, 4-node GB300 (16 GPUs) with optimizer state streamed to NVMe.
+description: Launch recipe for DeepSeek-V4.1 with radixark/miles:dev — BF16 train / BF16 rollout, colocated, 4-node GB300 (16 GPUs) with optimizer state streamed to NVMe.
 ---
 ## 1. Model Introduction
 
@@ -29,16 +29,16 @@ The validated configuration is 4 nodes x 4 GB300 (16 GPUs), colocated rollout en
 ### 3.1 Pull the image
 
 ```bash
-docker pull radixark/miles:deepseek-v41
+docker pull radixark/miles:dev
 ```
 
-The image is the `radixark/miles` dev image (arm64) with the DeepSeek-V4.1 SGLang fork installed at `/sgl-workspace/sglang/python` and this branch of miles at `/root/miles`. The pinned revisions are in `/sgl-workspace/sglang/.sglang_rev` and `/root/miles/.miles_rev` and in the image labels `dsv41.sglang-commit` and `dsv41.miles-commit`.
+The standard `radixark/miles:dev` image (multi-arch; GB300 pulls arm64) carries everything DeepSeek-V4.1 needs: miles at `/root/miles`, and `sglang-miles` at `/sgl-workspace/sglang/python`, which includes the DeepSeek-V4.1 model and runtime support. No separate image or SGLang fork is needed.
 
 Start one container per node with the GPUs, the host network and a node-local NVMe volume mounted at the same path everywhere (`/scratch` below):
 
 ```bash
 docker run -d --name miles --gpus all --network host --ipc host --shm-size 512g \
-   -v /scratch:/scratch radixark/miles:deepseek-v41 sleep infinity
+   -v /scratch:/scratch radixark/miles:dev sleep infinity
 ```
 
 ### 3.2 Prepare the checkpoint
@@ -186,7 +186,7 @@ Environment set by the launcher: `SGLANG_ENABLE_DSV41_ENGRAM_HOST_TABLE=1` (with
 
 **Engram host table.** In a colocated run the engines release all GPU memory during `sleep`; parameters come back through the weight update, but the engram tables are constants that the update does not carry. `--sglang-engram-host-table` keeps one copy of each table in pinned host memory shared by the tensor-parallel ranks of an engine, so a wake-up restores them. On hosts where the shared layout is not auto-selected (H200), set `SGLANG_DSV41_ENGRAM_HOST_TABLE_LAYOUT=shared` as well. The weight-update equality check skips `engram_hasher.` and `engram.embed.` for the same reason (`--check-weight-update` re-enables the check; the validated runs pass `--no-check-weight-update`).
 
-**SGLang version.** The rollout side needs the DeepSeek-V4.1 SGLang fork, which `radixark/miles:deepseek-v41` carries at `/sgl-workspace/sglang/python`; the fork validates the V4.1 feature set from `server_args` at startup.
+**SGLang version.** The rollout side uses the `sglang-miles` build that `radixark/miles:dev` carries at `/sgl-workspace/sglang/python`; it validates the V4.1 feature set from `server_args` at startup.
 
 ### 4.4 Optimizer and memory
 

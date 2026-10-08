@@ -89,29 +89,36 @@ Host conventions:
   CVD intentionally left unset so jobs see all 8 GPUs. The bare
   `--env CUDA_VISIBLE_DEVICES` forwards the "unset" state, and CUDA defaults
   to seeing every visible device.
-* **b200-oma** (required B200 layout, 3 logical runners):
-  `b200-oma-8gpu-0` has labels `b200,8gpu` and sees GPUs `0–7`;
-  `b200-oma-4gpu-0` has labels `b200,4gpu` and CVD `0,1,2,3`;
-  `b200-oma-4gpu-1` has labels `b200,4gpu` and CVD `4,5,6,7`.
-  `_run-ci-b200.yml` serializes the full-node and half-node layouts and holds
-  the repository-wide `b200-oma` concurrency lease across the whole run, so
-  only the two disjoint 4-GPU runners can execute simultaneously. Every B200
-  workflow entry point must use that lease; a direct `_run-ci.yml` call would
-  bypass the resource guarantee.
+* **b200-oma** (20 logical runners on one 8-GPU host): for each count `n` from 1 to 8,
+  `floor(8/n)` runners carry the corresponding `<n>gpu` label. These are admission slots, not fixed
+  device partitions. Every CUDA registration declares `num_gpus`; the B200 plan
+  creates one job per selected file with that budget. The job-start hook assigns
+  any available GPU set and writes `CUDA_VISIBLE_DEVICES` through `GITHUB_ENV`
+  before test steps run. Driver-level visibility remains host-wide.
+  The repository-wide `b200-oma` workflow queue keeps one PR's finite job set
+  ahead of the next PR; B200 file reruns use the same queue. Within a run, mixes
+  such as `4+2+1+1` and noncontiguous free sets can execute concurrently.
 
-### Rolling out the B200 layout
+### Rolling out the B200 allocator
 
-The Compose configuration in `github_runner/docker-compose.b200.yml` installs
-a runner job-start hook on all three runners. It takes a shared host lock for
-4-GPU jobs and an exclusive lock for 8-GPU jobs, before creating job containers.
-A background holder retains the lock until `Runner.Worker` exits, including
-container cleanup, and releases it when a cancelled worker exits. This also
-protects old PR and release workflows that do not acquire the GitHub queue.
+`github_runner/docker-compose.b200.yml` supplies enough slots for every supported
+count so waiting large jobs cannot consume the smaller jobs' runner slots. The
+matrix has no `max-parallel` cap: physical admission is governed by device locks.
+Each job keeps its GPU locks through `Runner.Worker` exit and container cleanup.
+A shared host lock for smaller jobs and an exclusive one for whole-node jobs also
+exclude old whole-node workflow revisions during rollout.
 
-Drain the currently running 8-GPU job before recreating its runner: that job
-started without the hook. Back up the host-local Compose override and `.env`,
-then, from `tests/ci/github_runner`, install the hooks and start only the three
-B200 services using a fresh repository runner registration token in `.env`:
+Allocation metadata in `/data/miles_ci/b200-gpu-leases` records each runner's
+assigned devices. The hook checks daemon-owned job containers before reusing
+cards: a surviving container after worker death retains its devices, even when
+its file locks disappear. A container without a lease fails admission; a runner
+with its own previous job container also fails. Inspect and clean up abandoned
+containers before retrying; do not delete lease records to free GPUs.
+
+Drain running jobs before replacing an existing hook or recreating runners.
+Back up the host-local Compose override, hooks, and `.env`. From
+`tests/ci/github_runner`, install the hooks and use a fresh repository runner
+registration token in `.env`:
 
 ```shell
 sudo install -d /data/miles_ci/runner-hooks
@@ -121,19 +128,18 @@ docker compose --env-file .env -f docker-compose.b200.yml config --quiet
 docker compose --env-file .env -f docker-compose.b200.yml up -d
 ```
 
-Use this same explicit `-f` configuration for subsequent runner operations;
-the old host-local override lacks the host lock. Never start a B200 runner
-without the hook while the two half-node runners are enabled.
+Use the same explicit `-f` configuration for later runner operations. Every
+runner needs its own work directory and the hook. Job containers must retain
+private PID and network namespaces: cleanup kills Ray processes and tests reuse
+service ports. `_run-ci.yml` checks the exact CUDA-visible GPU count; `nvidia-smi`
+alone cannot verify a CUDA allocation. The hook's `GITHUB_ENV` value overrides
+the runner's default CVD for job steps and their child processes.
 
-Register the three runners above with separate work directories and disjoint
-`CUDA_VISIBLE_DEVICES` for the two 4-GPU runners. Job containers must retain
-separate PID and network namespaces: cleanup kills Ray processes and tests
-reuse service ports. `_run-ci.yml` verifies the CUDA-visible GPU count before
-running B200 tests; `nvidia-smi` alone cannot verify the CUDA partition.
-
-Validate with a run selecting both stages: no 4-GPU job overlaps any 8-GPU
-job, two 4-GPU jobs execute together, and another PR or file rerun waits until
-the whole run releases the host. Weekly must retain that two-way parallelism.
+Validate mixed `4+2+1+1` execution, reuse of noncontiguous free cards, whole-node
+exclusion, normal cancellation, and forced worker exit with a surviving CUDA
+container. GitHub executes job-start hooks with `always()`, so cancelling a
+waiting job can take the runner's five-minute cancellation grace period. A
+waiting job creates no test container; its holder exits with the worker.
 
 ## /data/miles_ci path identity rule
 

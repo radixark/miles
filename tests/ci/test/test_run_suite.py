@@ -338,7 +338,7 @@ class TestWorkflowScopeSeam:
 
         b200_workflow = self._reusable_workflow("_run-ci-b200.yml")
         b200_commands = b200_workflow.split("execute_command:")[1:]
-        assert len(b200_commands) == 2
+        assert len(b200_commands) == 1
         for block in b200_commands:
             cmd = block.split("secrets:")[0]
             assert "--cadence ${{ inputs.cadence }}" in cmd
@@ -381,7 +381,7 @@ class TestWorkflowScopeSeam:
         cpu_jobs = re.findall(job_id_pattern, cpu_workflow.split("\njobs:\n", 1)[1], re.MULTILINE)
         docker_jobs = re.findall(job_id_pattern, docker_workflow.split("\njobs:\n", 1)[1], re.MULTILINE)
         assert gpu_jobs == ["plan", "run"]
-        assert b200_workflow.count("uses: ./.github/workflows/_run-ci.yml") == 2
+        assert b200_workflow.count("uses: ./.github/workflows/_run-ci.yml") == 1
         assert cpu_jobs == ["run-cpu"]
         assert docker_jobs == ["docker-decide", "docker-build"]
         assert "cpu_runner" not in gpu_workflow
@@ -495,18 +495,13 @@ class TestWorkflowScopeSeam:
         assert "group: b200-oma" in b200_workflow
         assert "cancel-in-progress: false" in b200_workflow
         assert "queue: max" in b200_workflow
-        assert "stage-c-8-gpu-b200:" in b200_workflow
-        assert "stage-c-4-gpu-b200:" in b200_workflow
-        assert "needs: stage-c-8-gpu-b200" in b200_workflow
-        four_gpu = b200_workflow.split("  stage-c-4-gpu-b200:", 1)[1]
-        assert "if: ${{ !cancelled() && inputs.run_4_gpu }}" in four_gpu
-        assert "max-parallel: 2" in four_gpu
-        assert "weekly" not in four_gpu
-        assert "max-parallel: 1" in b200_workflow
-        assert "partition_id: [0, 1, 2]" in b200_workflow
-        assert "--auto-partition-size 3" in b200_workflow
-        assert "partition_id: [0, 1, 2, 3]" in b200_workflow
-        assert "--auto-partition-size 4" in b200_workflow
+        assert "needs: plan" in b200_workflow
+        assert "matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}" in b200_workflow
+        assert "fail-fast: false" in b200_workflow
+        assert "max-parallel:" not in b200_workflow
+        assert "--test-file ${{ matrix.shell_file }}" in b200_workflow
+        assert "num_gpus: ${{ matrix.num_gpus }}" in b200_workflow
+        assert "--auto-partition" not in b200_workflow
         assert "run_8_gpu:" in caller
         assert "run_4_gpu:" in caller
 
@@ -727,6 +722,7 @@ class TestRunSuiteCLI:
 
 def _run_args(*, hw: str, suite: str, cadence: str, labels: list[str] | None = None):
     return SimpleNamespace(
+        test_file=None,
         hw=hw,
         suite=suite,
         cadence=cadence,

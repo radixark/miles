@@ -7,10 +7,7 @@ from tests.ci.ci_register import register_cuda_ci
 from tests.e2e.ft.conftest_ft.scenario_trainer_no_failure import run_ci
 
 register_cuda_ci(
-    est_time=1200,
-    suite="stage-c-8-gpu-h100",
-    labels=["ft-short"],
-    hardware=["hopper", "blackwell"],
+    est_time=1200, suite="stage-c-8-gpu-h100", labels=["ft-short"], hardware=["hopper", "blackwell"], num_gpus=8
 )
 
 _MODE: str = "kill_train__dp2_cp2__moe_5layer"
