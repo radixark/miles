@@ -8,8 +8,10 @@ _FLASHINFER_TIE_BREAK_VALUES = {
     "large": 2,
 }
 SCORE_ROW_ALIGN = 4
-_SELECT_BLOCK = 1024
+_SELECT_BLOCK = 512
 _SELECT_RADIX_BITS = 4
+# Sorting a verified proposal beats a compaction pass over the row at topk 512 and loses at 2048 (H200, 16k).
+_SELECT_SORT_MAX_TOPK = 1024
 
 
 def torch_dsa_topk(logits: torch.Tensor, topk: int, row_starts=None, row_ends=None) -> torch.Tensor:
@@ -96,6 +98,7 @@ def _select_topk_kernel(
     TOPK_PAD: tl.constexpr,
     BLOCK: tl.constexpr,
     BITS: tl.constexpr,
+    SORT_PROPOSAL: tl.constexpr,
 ):
     row = tl.program_id(0).to(tl.int64)
     start = tl.load(row_starts_ptr + row)
@@ -133,7 +136,7 @@ def _select_topk_kernel(
         select_all = tl.sum(count_valid) <= TOPK
         threshold_exact = select_all | ((n_above < TOPK) & (n_above + n_equal >= TOPK))
         remaining = TOPK - n_above
-        if (select_all == 0) & (n_above + n_equal == TOPK):
+        if SORT_PROPOSAL & (select_all == 0) & (n_above + n_equal == TOPK):
             hint_valid = hint_in_range & (hint_x != -float("inf"))
             sorted_hint = tl.sort(tl.where(hint_valid, hint, 2147483647), 0)
             tl.store(out_row + slots, sorted_hint, mask=slots < TOPK)
@@ -178,9 +181,9 @@ def select_topk(
 
     Ties at the k-th value keep the smaller column and -inf is never picked, so the result is a pure function
     of the scores. One pass over each row checks that the smallest score of proposal[i] (any [rows, topk]
-    candidate set, -1 allowed) is the exact k-th value with nothing tied across it, and then the sorted
-    proposal is the answer. Other rows run an in-kernel radix select. Columns outside a row's range are
-    never read."""
+    candidate set, -1 allowed) is the exact k-th value; the answer is then the sorted proposal when nothing is
+    tied across it, or one index-ordered pass over the row. Other rows run an in-kernel radix select first.
+    Columns outside a row's range are never read."""
     rows = logits.shape[0]
     out = torch.empty(rows, topk, dtype=torch.int32, device=logits.device)
     if rows == 0:
@@ -198,6 +201,7 @@ def select_topk(
         TOPK_PAD=triton.next_power_of_2(topk),
         BLOCK=_SELECT_BLOCK,
         BITS=_SELECT_RADIX_BITS,
+        SORT_PROPOSAL=topk <= _SELECT_SORT_MAX_TOPK,
         num_warps=num_warps,
     )
     return out
