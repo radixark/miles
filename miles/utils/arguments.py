@@ -451,6 +451,17 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 ),
             )
             parser.add_argument(
+                "--linear-attention-input-norm",
+                type=str,
+                choices=["te", "hf"],
+                default="te",
+                help=(
+                    "Input RMSNorm of the Qwen3.5 / Qwen3-Next GDN layers, zero-centred ((1 + w) scale, fp32 math) "
+                    "either way. 'te' is Transformer Engine's fused kernel; 'hf' is the eager HF Qwen3NextRMSNorm "
+                    "these layers used before, kept to reproduce its numerics (same math, slower)."
+                ),
+            )
+            parser.add_argument(
                 "--true-on-policy-mode",
                 action="store_true",
                 default=False,

@@ -1,5 +1,8 @@
 import copy
 
+import torch
+import torch.nn as nn
+import transformer_engine.pytorch as te
 from megatron.core.models.gpt.gpt_layer_specs import get_gpt_decoder_block_spec
 from megatron.core.process_groups_config import ProcessGroupCollection
 from megatron.core.transformer.spec_utils import ModuleSpec
@@ -18,6 +21,19 @@ def _get_text_config(hf_config):
     if hasattr(hf_config, "text_config"):
         return hf_config.text_config
     return hf_config
+
+
+class _TEZeroCenteredRMSNorm(te.RMSNorm):
+    get_extra_state = nn.Module.get_extra_state
+    set_extra_state = nn.Module.set_extra_state
+
+
+def gdn_input_layernorm(kind: str, hidden_size: int, eps: float, params_dtype: torch.dtype) -> nn.Module:
+    """``weight`` holds w of the ``(1 + w)`` scale under either kernel, so checkpoints and conversion see the same
+    parameter."""
+    if kind == "hf":
+        return Qwen3NextRMSNorm(hidden_size, eps=eps)
+    return _TEZeroCenteredRMSNorm(hidden_size, eps=eps, zero_centered_gamma=True, params_dtype=params_dtype)
 
 
 class Qwen3_5GatedDeltaNet(GatedDeltaNet):
@@ -52,7 +68,9 @@ class Attention(LinearAttentionLayer):
             backend=args.linear_attention_backend,
             norm_activation=text_config.hidden_act,
         )
-        input_layernorm = Qwen3NextRMSNorm(text_config.hidden_size, eps=text_config.rms_norm_eps)
+        input_layernorm = gdn_input_layernorm(
+            args.linear_attention_input_norm, text_config.hidden_size, text_config.rms_norm_eps, config.params_dtype
+        )
         super().__init__(config, linear_attn, input_layernorm, pg_collection, allgather_cp=args.allgather_cp)
 
 
