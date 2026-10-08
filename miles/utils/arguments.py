@@ -2242,7 +2242,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 type=str,
                 default="all",
                 choices=["all", "target", "draft"],
-                help="Which model the post-update equality check covers: 'all' (target + "
+                help="Which model the startup snapshot/reset and post-update equality check cover: 'all' (target + "
                 "draft/MTP), 'target' (target model only; skips the draft, e.g. when MTP "
                 "training is off), or 'draft' (draft/MTP worker only).",
             )

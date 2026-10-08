@@ -179,7 +179,12 @@ class ServerCell:
             return
 
         if self.args.check_weight_update_equal and self.meta.update_weights:
-            await self.check_weights(action="snapshot", allow_quant_error=False, selector="all", skip_list=None)
+            await self.check_weights(
+                action="snapshot",
+                allow_quant_error=False,
+                selector=self.args.check_weight_update_selector,
+                skip_list=None,
+            )
 
         if self.meta.needs_offload:
             api_client = SGLangApiClient(server_url=addr_info.server_url)
@@ -191,7 +196,7 @@ class ServerCell:
             await self.check_weights(
                 action="reset_tensors",
                 allow_quant_error=False,
-                selector="all",
+                selector=self.args.check_weight_update_selector,
                 skip_list=self.args.check_weight_update_skip_list,
             )
 

@@ -554,6 +554,37 @@ class TestTick:
         assert [kwargs["action"] for kwargs in checker_calls] == ["snapshot", "reset_tensors"]
         assert checker_calls[1]["skip_list"] == ["a"]
 
+    async def test_target_only_weight_checks_preserve_the_fixed_draft(self, cell_env, monkeypatch):
+        """A target-only trainer cannot restore draft tensors scrambled by the startup checker."""
+        weights = {"target": 10, "draft": 20}
+        snapshots = {}
+
+        async def _check_weights(self, action, allow_quant_error, selector, skip_list):
+            roles = tuple(weights) if selector == "all" else (selector,)
+            for role in roles:
+                if action == "snapshot":
+                    snapshots[role] = weights[role]
+                elif action == "reset_tensors":
+                    weights[role] = -1
+                elif action == "compare":
+                    assert weights[role] == snapshots[role], f"{role} weights were not restored"
+                else:
+                    raise AssertionError(action)
+
+        monkeypatch.setattr(_RecordingApiClient, "check_weights", _check_weights)
+        cell = _make_cell(args_overrides=dict(check_weight_update_equal=True, check_weight_update_selector="target"))
+        await cell.init()
+        await cell.tick()
+
+        assert weights == {"target": -1, "draft": 20}
+        assert snapshots == {"target": 10}
+        with pytest.raises(AssertionError, match="target weights were not restored"):
+            await cell.check_weights(action="compare", allow_quant_error=False, selector="target", skip_list=None)
+
+        weights["target"] = 10  # The trainer synchronizes only the target model.
+        await cell.check_weights(action="compare", allow_quant_error=False, selector="target", skip_list=None)
+        assert weights["draft"] == 20
+
     async def test_the_weight_update_checker_stays_out_of_the_way_when_it_is_disabled(self, cell_env):
         """The checker is a ci-only tool and must not touch engines in a normal run."""
         cell = _make_cell()
