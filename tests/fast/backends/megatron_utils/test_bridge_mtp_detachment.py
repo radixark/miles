@@ -1,4 +1,8 @@
-"""CPU regression tests for MTP detachment on bridge-built providers."""
+"""CPU regression tests for the MTP rule: a bridge builds only the MTP layers its trainer names, detached.
+
+Megatron adds the MTP loss to every training forward of a model that has MTP layers, rolling the
+labels from input_ids when labels is None. Undetached, it trains the policy on its own samples.
+"""
 
 import argparse
 import ast
@@ -56,29 +60,50 @@ def runtime_args() -> argparse.Namespace:
 
 
 @pytest.mark.parametrize(
-    ("enabled", "initial_detach", "expected_detach"),
+    ("named", "inherited", "expected"),
     [
-        (True, False, True),
-        (True, True, True),
-        (False, False, False),
-        (False, True, True),
-        (None, False, False),
-        (None, True, True),
+        # A trainer that does not train MTP names 0, so the HF config's MTP layer is not built.
+        (0, 1, None),
+        # Checkpoint conversion leaves --mtp-num-layers unset and keeps the checkpoint's MTP layer.
+        (None, 1, 1),
+        (1, 1, 1),
+        # The argument never adds an MTP layer the bridge does not build (e.g. GLM-5.3's).
+        (1, None, None),
     ],
 )
-def test_bridge_mtp_detachment(
+def test_bridge_builds_only_the_named_mtp_layers_detached(
     apply_bridge_runtime_config: Callable,
     runtime_args: argparse.Namespace,
-    enabled: bool | None,
-    initial_detach: bool,
-    expected_detach: bool,
+    named: int | None,
+    inherited: int | None,
+    expected: int | None,
 ) -> None:
-    # A missing flag covers callers that only register Megatron's arguments.
-    if enabled is not None:
-        runtime_args.enable_mtp_training = enabled
-    provider = SimpleNamespace(mtp_num_layers=1, mtp_detach_heads=initial_detach)
+    runtime_args.mtp_num_layers = named
+    provider = SimpleNamespace(mtp_num_layers=inherited, mtp_detach_heads=False)
 
     apply_bridge_runtime_config(provider, runtime_args)
 
-    assert provider.mtp_detach_heads is expected_detach
-    assert provider.mtp_num_layers == 1
+    assert provider.mtp_num_layers == expected
+    # Megatron would otherwise train the shared trunk, embedding and output layer on the MTP loss.
+    assert provider.mtp_detach_heads is True
+
+
+def test_a_hybrid_bridge_drops_the_pattern_its_mtp_layers_are_rebuilt_from(
+    apply_bridge_runtime_config: Callable, runtime_args: argparse.Namespace
+) -> None:
+    runtime_args.mtp_num_layers = 0
+    provider = SimpleNamespace(mtp_num_layers=1, mtp_hybrid_override_pattern="*-", mtp_detach_heads=False)
+
+    apply_bridge_runtime_config(provider, runtime_args)
+
+    assert (provider.mtp_num_layers, provider.mtp_hybrid_override_pattern) == (None, None)
+
+
+def test_a_bridge_refuses_a_different_number_of_mtp_layers(
+    apply_bridge_runtime_config: Callable, runtime_args: argparse.Namespace
+) -> None:
+    runtime_args.mtp_num_layers = 2
+    provider = SimpleNamespace(mtp_num_layers=1, mtp_detach_heads=False)
+
+    with pytest.raises(AssertionError, match="--mtp-num-layers 2, but the model has 1 MTP layers"):
+        apply_bridge_runtime_config(provider, runtime_args)

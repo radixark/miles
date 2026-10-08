@@ -130,6 +130,22 @@ def _is_muon_optimizer(optimizer: str | None) -> bool:
     return optimizer is not None and "muon" in optimizer.lower()
 
 
+def _check_mtp_layers(args: Namespace, model: Sequence[DDP], role: str) -> None:
+    """The model has exactly the MTP layers its trainer's arguments name, and they are detached.
+
+    Megatron adds the loss of any MTP layer to every training forward; undetached, that loss trains
+    the policy on its own samples. A custom model provider builds its own layers, and a bridge can
+    lack the MTP layers that --enable-mtp-training asks to train.
+    """
+    config = get_model_config(model[0])
+    built, named = config.mtp_num_layers or None, args.mtp_num_layers or None
+    assert built == named, (
+        f"the {role} model has {built or 'no'} MTP layers, but its trainer names {named or 'none'} "
+        f"(a trainer builds MTP layers only to train them, under --enable-mtp-training)"
+    )
+    assert built is None or config.mtp_detach_heads, f"the {role} model's MTP layers are not detached"
+
+
 def setup_model_and_optimizer(
     args: Namespace,
     role: str = "actor",
@@ -181,6 +197,8 @@ def setup_model_and_optimizer(
                     "use --megatron-to-hf-mode bridge"
                 )
         model = get_model(provider_func, ModelType.encoder_or_decoder)
+
+    _check_mtp_layers(args, model, role)
 
     if args.debug_disable_optimizer:
         if is_first_replica_megatron_main_rank():

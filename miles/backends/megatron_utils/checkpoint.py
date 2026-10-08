@@ -5,12 +5,15 @@ from contextlib import contextmanager
 from pathlib import Path
 
 import torch.distributed as dist
-from megatron.core.utils import unwrap_model
+from megatron.core import dist_checkpointing
+from megatron.core.utils import get_model_config, unwrap_model
 
 # TODO: may need to copy those 2 functions and do refactoring.
+from megatron.training.checkpointing import _get_checkpoint_format, checkpoint_exists, get_load_checkpoint_path_by_args
 from megatron.training.checkpointing import load_checkpoint as _load_checkpoint_megatron
 from megatron.training.checkpointing import save_checkpoint
 from megatron.training.global_vars import get_args
+from torch.distributed.checkpoint import FileSystemReader
 
 from miles.backends.training_utils.weight_update.snapshot_publisher import SnapshotPublisher
 from miles.utils import megatron_bridge_utils
@@ -102,6 +105,48 @@ logger = logging.getLogger(__name__)
 __all__ = ["save_checkpoint", "save_checkpoint_with_lora", "load_checkpoint"]
 
 
+def _check_mtp_checkpoint(args, ddp_model) -> None:
+    """Reject a checkpoint whose MTP layers do not fit the trainer it initializes.
+
+    A trainer builds MTP layers only to train them (compute_trainer_args). One that does needs them in
+    the checkpoint, or they would start from random weights. One that does not still loads a checkpoint
+    with MTP layers, but not that checkpoint's optimizer state, which covers parameters it no longer has.
+    The checkpoint and whether its optimizer state is restored are resolved as Megatron resolves them.
+    """
+    load_arg, finetune = "load", args.finetune
+    if args.pretrained_checkpoint is not None and not checkpoint_exists(args.load):
+        load_arg, finetune = "pretrained_checkpoint", True
+    path = Path(get_load_checkpoint_path_by_args(args, load_arg=load_arg))
+    if not path.is_dir():
+        return
+    checkpoint_format = _get_checkpoint_format(str(path), args)
+    if checkpoint_format == "torch":
+        # Legacy checkpoints have no distributed metadata. Megatron's strict state-dict load
+        # validates them; this precheck guards distributed loads that allow missing tensors.
+        return
+    if checkpoint_format == "torch_dist":
+        keys = dist_checkpointing.load_tensors_metadata(str(path))
+    else:
+        keys = FileSystemReader(path).read_metadata().state_dict_metadata
+    saved = any(key.startswith("mtp.") for key in keys)
+    if get_model_config(ddp_model[0]).mtp_num_layers:
+        assert saved, (
+            f"this trainer trains MTP layers, but {path} holds none, so they would start from random weights; "
+            f"convert the checkpoint with --mtp-num-layers"
+        )
+        return
+    restores_optimizer = (
+        path.name != "release"
+        and not finetune
+        and not args.no_load_optim
+        and any(key.startswith("optimizer.") for key in keys)
+    )
+    assert not (saved and restores_optimizer), (
+        f"{path} holds MTP layers with their optimizer state, but a trainer builds MTP layers only with "
+        f"--enable-mtp-training: resume with --no-load-optim, or with --enable-mtp-training"
+    )
+
+
 def load_checkpoint(ddp_model, optimizer, opt_param_scheduler, checkpointing_context, skip_load_to_model_and_opt):
     # ref: how megatron `load_checkpoint` gets directory
     args = get_args()
@@ -119,6 +164,9 @@ def load_checkpoint(ddp_model, optimizer, opt_param_scheduler, checkpointing_con
     if has_local_checkpoint_manager or _is_megatron_checkpoint(load_path):
         if not has_local_checkpoint_manager and is_dsv4_model(args):
             assert_checkpoint_is_current(load_path)
+        # Loads that initialize the trained model; reference and teacher loads pass no optimizer.
+        if not has_local_checkpoint_manager and optimizer is not None:
+            _check_mtp_checkpoint(args, ddp_model)
         result = _load_checkpoint_megatron(
             ddp_model=ddp_model,
             optimizer=optimizer,

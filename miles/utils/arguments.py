@@ -2537,7 +2537,11 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "--enable-mtp-training",
                 action="store_true",
                 default=False,
-                help="Enable MTP layer parameter updates during training",
+                help=(
+                    "Build the --mtp-num-layers MTP layers and train them on the MTP loss, detached from the "
+                    "policy. Without it a trainer builds no MTP layers, and a speculative draft keeps the "
+                    "checkpoint's MTP weights. Not supported with LoRA."
+                ),
             )
 
             return parser
@@ -2797,6 +2801,7 @@ def parse_args(add_custom_arguments=None, entry="train", preprocess_args=None):
         from miles.backends.megatron_utils.arguments import parse_args as megatron_parse_args
         from miles.backends.megatron_utils.arguments import set_default_megatron_args
         from miles.backends.megatron_utils.arguments import validate_args as megatron_validate_args
+        from miles.backends.megatron_utils.arguments import validate_mtp_pipeline_layout
 
         args = megatron_parse_args(extra_args_provider=add_miles_arguments)
         args.compress_ratios = None
@@ -2849,6 +2854,7 @@ def parse_args(add_custom_arguments=None, entry="train", preprocess_args=None):
 
     if backend == "megatron":
         megatron_validate_args(args)
+        validate_mtp_pipeline_layout(args)
 
         # always use varlen
         args.variable_seq_lengths = True
@@ -3207,6 +3213,20 @@ def _resolve_run_uuid(args: argparse.Namespace) -> str:
         f"with --run-uuid"
     )
     return generate_run_uuid()
+
+
+def _validate_mtp_args(args: argparse.Namespace) -> None:
+    if not args.enable_mtp_training:
+        if args.mtp_num_layers:
+            logger.info(
+                f"--mtp-num-layers {args.mtp_num_layers} without --enable-mtp-training: trainers build no MTP layers"
+            )
+        return
+    assert args.mtp_num_layers, "mtp_num_layers must be set when enable_mtp_training is set"
+    assert not (args.multi_lora or is_lora_enabled(args)), (
+        "LoRA does not support --enable-mtp-training: the MTP base weights stay frozen, and SGLang "
+        "applies adapters to the target model only, never to the speculative draft"
+    )
 
 
 def miles_validate_args(args):
@@ -3849,8 +3869,7 @@ def miles_validate_args(args):
                 "num_epoch is not set, but num_rollout is not set, " "please set --num-rollout or --num-epoch"
             )
 
-    if args.enable_mtp_training:
-        assert args.mtp_num_layers, "mtp_num_layers must be set when enable_mtp_training is set"
+    _validate_mtp_args(args)
 
     if args.use_rollout_routing_replay:
         args.use_routing_replay = True

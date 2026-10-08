@@ -261,10 +261,17 @@ def load_lora_adapter(
         missing = adapter_params.keys() - state_dict.keys()
         unexpected = state_dict.keys() - adapter_params.keys()
         if missing or unexpected:
-            raise RuntimeError(
+            message = (
                 f"Adapter checkpoint {native_path} does not match the model's adapter parameters: "
                 f"missing={sorted(missing)}, unexpected={sorted(unexpected)}"
             )
+            if mtp := [name for name in unexpected if ".mtp." in name]:
+                message += (
+                    f". {len(mtp)} of the unexpected tensors adapt MTP layers, which a trainer builds only with "
+                    "--enable-mtp-training (not supported with LoRA): remove them from the adapter shards and "
+                    "resume with --no-load-optim"
+                )
+            raise RuntimeError(message)
         for name, param in adapter_params.items():
             param.data.copy_(state_dict[name].to(device=param.device))
         logger.info(f"Loaded {len(adapter_params)} adapter tensors from Megatron-native checkpoint: {native_path}")

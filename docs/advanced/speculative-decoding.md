@@ -44,6 +44,13 @@ draft. Fewer draft tokens pass verification, and over many steps speculative
 decoding can become a net negative because the wasted draft compute outweighs
 the verified speedup.
 
+Megatron adds the loss of any MTP layer the model has to every training forward,
+so the trainer builds MTP layers only for `--enable-mtp-training`, even when
+`--mtp-num-layers` or the HF config declares them, and always detaches them: the
+MTP loss never reaches the policy. Without MTP training the draft keeps the
+checkpoint's MTP weights (the weight sync skips it) and shares the target's
+updated embedding and output layer.
+
 Miles supports training the draft alongside the target through online MTP-SFT.
 
 ## Online SFT for MTP-style draft models
@@ -58,8 +65,8 @@ PERF_ARGS+=(
 
 | Flag | Notes |
 |---|---|
-| `--mtp-num-layers` | Number of MTP layers in the checkpoint (1 matches GLM/DeepSeek release defaults). |
-| `--enable-mtp-training` | Backprop through MTP loss alongside the policy loss. |
+| `--mtp-num-layers` | Number of MTP layers in the checkpoint (1 matches GLM/DeepSeek release defaults). The trainer builds them only with `--enable-mtp-training`. |
+| `--enable-mtp-training` | Build the MTP layers and train them on the MTP loss, detached so that it updates only the MTP layers. Not supported with LoRA. |
 | `--mtp-loss-scaling-factor` | Weight of the MTP loss in the combined gradient (default `0.2`). |
 
 <Note>

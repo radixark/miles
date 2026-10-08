@@ -325,6 +325,7 @@ def compute_trainer_args(args: Namespace, trainer: MegatronTrainerConfig) -> Nam
         setattr(ans, key, value)
 
     _apply_critical_derived_overrides(ans, base=args, trainer=trainer)
+    ans.mtp_num_layers = _trainer_mtp_num_layers(ans, trainer=trainer)
 
     if trainer.model_id is not None:
         ans.save = compute_trainer_checkpoint_dir(base_dir=ans.save, trainer_id=trainer.trainer_id)
@@ -336,6 +337,16 @@ def compute_trainer_args(args: Namespace, trainer: MegatronTrainerConfig) -> Nam
         resolve_args_checkpoint_load(ans)
 
     return ans
+
+
+def _trainer_mtp_num_layers(ans: Namespace, *, trainer: MegatronTrainerConfig) -> int:
+    # Megatron adds the loss of any MTP layer to every training forward, so a trainer builds only
+    # the MTP layers it trains: an actor's, under --enable-mtp-training. Any other trainer builds
+    # none, which is 0: an unset --mtp-num-layers keeps a Bridge provider's MTP layers, as
+    # checkpoint conversion needs.
+    if ans.enable_mtp_training and trainer.role == ACTOR_ROLE:
+        return ans.mtp_num_layers
+    return 0
 
 
 def _apply_critical_derived_overrides(ans: Namespace, *, base: Namespace, trainer: MegatronTrainerConfig) -> None:

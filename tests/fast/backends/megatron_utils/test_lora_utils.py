@@ -131,6 +131,16 @@ def test_load_lora_adapter_rejects_a_shard_that_does_not_match_the_adapter(tmp_p
         lora_utils.load_lora_adapter([_AdapterModel()], str(tmp_path))
 
 
+def test_load_lora_adapter_explains_adapters_of_mtp_layers(tmp_path, monkeypatch):
+    """A trainer builds MTP layers only for --enable-mtp-training, which LoRA does not support."""
+    _single_rank(monkeypatch)
+    adapter = {"lora_A": torch.ones(1, 2), "lora_B": torch.ones(2, 1), "module.mtp.layers.0.lora_A": torch.ones(1)}
+    torch.save(adapter, tmp_path / "adapter_megatron_rank0.pt")
+
+    with pytest.raises(RuntimeError, match="1 of the unexpected tensors adapt MTP layers"):
+        lora_utils.load_lora_adapter([_AdapterModel()], str(tmp_path))
+
+
 def test_load_lora_adapter_rejects_shards_saved_under_another_layout(tmp_path, monkeypatch):
     """Falling through to fresh adapter weights would hide a resharding mistake."""
     _single_rank(monkeypatch)
