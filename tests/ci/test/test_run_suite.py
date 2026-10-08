@@ -462,8 +462,7 @@ class TestWorkflowScopeSeam:
     def test_weekly_serializes_each_gpu_matrix(self):
         workflow = self._workflow()
         normal_parallelism = {
-            "stage-c-8-gpu-h200": 2,
-            "stage-c-4-gpu-h200": 3,
+            "stage-c-4-gpu-h200": 5,
             "stage-c-2-gpu-h200": 2,
         }
         for job, default in normal_parallelism.items():
@@ -512,7 +511,7 @@ class TestWorkflowScopeSeam:
 
     def test_closed_pr_only_cancels_existing_run(self):
         workflow = self._workflow()
-        assert "types: [opened, synchronize, reopened, ready_for_review, labeled, closed]" in workflow
+        assert "types: [opened, synchronize, reopened, ready_for_review, labeled, unlabeled, closed]" in workflow
         assert (
             "group: pr-test-${{ github.event.number || github.event.schedule || inputs.ref || github.run_id }}"
             in workflow
@@ -552,7 +551,8 @@ class TestRocmWorkflowScopeSeam:
     def test_pr_schedules_and_dispatch_share_policy(self):
         workflow = self._workflow()
         assert (
-            "pull_request:\n    types: [opened, synchronize, reopened, ready_for_review, labeled, closed]" in workflow
+            "pull_request:\n    types: [opened, synchronize, reopened, ready_for_review, labeled, unlabeled, closed]"
+            in workflow
         )
         assert "pull_request_target:" not in workflow
         configured = set(re.findall(r"^\s+- cron: ['\"]([^'\"]+)['\"]\s*$", workflow, flags=re.MULTILINE))

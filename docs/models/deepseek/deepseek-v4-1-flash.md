@@ -4,7 +4,7 @@ description: Launch recipe for DeepSeek-V4.1 with radixark/miles:deepseek-v41 â€
 ---
 ## 1. Model Introduction
 
-[DeepSeek-V4.1 Flash](https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash) is a sparse-attention Mixture-of-Experts model (`model_type: deepseek_v41` (the legacy `deepseek_v4.1` name is still accepted)): 40 decoder layers, 384 routed experts at top-6 plus one shared expert, fp8 dense weights at a 32-wide ue8m0 block scale with fp4 routed experts.
+[DeepSeek-V4.1 Flash](https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash) is a sparse-attention Mixture-of-Experts model (`model_type: deepseek_v41`): 40 decoder layers, 384 routed experts at top-6 plus one shared expert, fp8 dense weights at a 32-wide ue8m0 block scale with fp4 routed experts.
 
 **Architecture.** Every layer keeps one 512-wide KV latent per position and uses it as both key and value for all 64 query heads, with no separate value projection. Each layer reads two stores that behave oppositely: compressed latents, produced only at source layers and shared forward, collapsing 2 positions into 1 in layers 2â€“19 and 1-to-1 from layer 20 on; and a 128-position sliding window, recomputed per layer from that layer's own activations, so it can never be shared but also never grows with context. The residual stream is four parallel copies mixed by a per-token doubly stochastic matrix; each sublayer's mixing coefficients are consumed by the next sublayer.
 
@@ -12,7 +12,7 @@ description: Launch recipe for DeepSeek-V4.1 with radixark/miles:deepseek-v41 â€
 
 **Engram.** An additive n-gram hash memory at two layers. Token ids are normalized before hashing, so " The", "the" and "THE" cannot fork into separate rows. Its two fp8 tables are the largest single block of weight in the checkpoint.
 
-On the training side the Megatron plugin lives under `miles_plugins/models/deepseek_v41/`, the model definition is `scripts/models/deepseek-v4.1.py`, and the launcher is `scripts/run_deepseek_v41.py`. The plugin reproduces the model's fp4/fp8 quantization points in the training forward so the trainer scores what the served model computes, and carries the cross-layer state (mixing coefficients, source latents, top-k, candidate mask) inside the inter-layer hidden tensor so pipeline parallelism and full activation recompute work.
+On the training side the Megatron plugin lives under `miles_plugins/models/deepseek_v4_1/`, the model definition is `scripts/models/deepseek-v4.1.py`, and the launcher is `scripts/run_deepseek_v4_1.py`. The plugin reproduces the model's fp4/fp8 quantization points in the training forward so the trainer scores what the served model computes, and carries the cross-layer state (mixing coefficients, source latents, top-k, candidate mask) inside the inter-layer hidden tensor so pipeline parallelism and full activation recompute work.
 
 ## 2. Supported Variants
 
@@ -20,7 +20,7 @@ On the training side the Megatron plugin lives under `miles_plugins/models/deeps
 |---|---|---|
 | DeepSeek-V4.1 Flash | ~5 B dense + 6 of 384 experts / ~750 B (544 B experts + 197 B frozen engram) | [deepseek-ai/DeepSeek-V4.1-Flash](https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash), converted to a BF16 HF checkpoint on node-local NVMe (see [Â§3.2](#32-prepare-the-checkpoint)) |
 
-`model_type` is `deepseek_v4.1`; the launcher selects the recipe with `--model-name DeepSeek-V4.1`.
+`model_type` is `deepseek_v41`; the launcher selects the recipe with `--model-name DeepSeek-V4.1`.
 
 ## 3. Quick Start
 
@@ -48,7 +48,7 @@ The trainer loads a **BF16 HF checkpoint** directly (no `torch_dist` conversion)
 - dense fp8 and expert fp4 weights dequantized to bf16;
 - the two engram tables kept as fp8 bits plus e8m0 scales (about 197 GB; they are never upcast);
 - MTP, DSpark and vision tensors dropped;
-- a flattened `config.json` with `model_type: deepseek_v41` (the legacy `deepseek_v4.1` name is still accepted).
+- a flattened `config.json` with `model_type: deepseek_v41`.
 
 `tools/fp8_cast_bf16.py` covers the fp8 dense format only; the cast tool that also handles the fp4 experts and the engram layout (`dsv41_cut_cast.py --src <fp8 ckpt> --dst <bf16 ckpt> --config <flattened config.json> --layers 0,...,39`) is kept with the bring-up scripts. The result is about 1.2 TB and must be present on **every training node's local NVMe** at the same path, for example `/scratch/models/DeepSeek-V4.1-bf16`. Reserve a further ~1 TB per node for the streamed optimizer state.
 
@@ -58,7 +58,7 @@ Once, on the head node:
 
 ```bash
 cd /root/miles
-python scripts/run_deepseek_v41.py prepare-data --task dapo_aime --data-dir /scratch/datasets
+python scripts/run_deepseek_v4_1.py prepare-data --task dapo_aime --data-dir /scratch/datasets
 ```
 
 This downloads `dapo-math-17k` and `aime-2024`. Copy or re-run on the other nodes if `/scratch` is not shared.
@@ -80,7 +80,7 @@ On the head node:
 
 ```bash
 cd /root/miles
-MILES_SCRIPT_EXTERNAL_RAY=1 python scripts/run_deepseek_v41.py train \
+MILES_SCRIPT_EXTERNAL_RAY=1 python scripts/run_deepseek_v4_1.py train \
    --model-name DeepSeek-V4.1 \
    --hf-checkpoint /scratch/models/DeepSeek-V4.1-bf16 \
    --model-dir /scratch/models --data-dir /scratch/datasets \
@@ -201,7 +201,7 @@ Environment set by the launcher: `SGLANG_ENABLE_DSV41_ENGRAM_HOST_TABLE=1` (with
 --train-memory-margin-bytes 3221225472
 ```
 
-Full-parameter training of the full model on 16 GPUs only fits because the optimizer state leaves the GPU. `--disk-offload` adds `--stream-optimizer-state-to-disk --offload-train-target disk --offload-train-disk-dir <dir>`; `--stream-optimizer-state-moment-dtype bf16` halves the streamed moments. Point `--offload-disk-dir` at node-local NVMe with ~1 TB free per node; the trainer's weight backups go to `MILES_WEIGHT_BACKUP_DIR` if set. `--colocate-memory-peak-device cpu` places the colocation peak on the host; on GB300 devboxes the container memory limit (about 626 GB) is below the GPU memory of the node, so keep host residency under ~560 GB per node. `--optimizer-offload` (CPU Adam) is the alternative when host memory allows.
+Full-parameter training of the full model on 16 GPUs only fits because the optimizer state leaves the GPU. `--disk-offload` adds `--stream-optimizer-state-to-disk --offload-train-target disk --offload-train-disk-dir <dir>`; `--stream-optimizer-state-moment-dtype bf16` halves the streamed moments. Point `--offload-disk-dir` at node-local NVMe with ~1 TB free per node. `--colocate-memory-peak-device cpu` places the colocation peak on the host; on GB300 devboxes the container memory limit (about 626 GB) is below the GPU memory of the node, so keep host residency under ~560 GB per node. `--optimizer-offload` (CPU Adam) is the alternative when host memory allows.
 
 If the run OOMs: lower `--max-tokens-per-gpu`, then add `--grad-reduce-bf16`; `--recompute full` with `--pp-size 2` is already part of the recommended launch.
 
@@ -221,5 +221,5 @@ DAPO on dapo-math-17k, 16 GB300 GPUs, 2K response cap, 16 prompts x 8 samples pe
 ## 6. Pairs Well With
 
 - [DeepSeek-V4 Flash](/models/deepseek/deepseek-v4-flash) - the parent architecture and the `torch_dist` conversion flow.
-- [Architecture Support](/advanced/architecture-support) - the plugin lives under `miles_plugins/models/deepseek_v41/` (`deepseek_v41.py`, `engram.py`, `ops/{compressor,indexer,kvnorm,quant,rope}.py`).
+- [Architecture Support](/advanced/architecture-support) - the plugin lives under `miles_plugins/models/deepseek_v4_1/` (`deepseek_v4_1.py`, `engram.py`, `ops/{compressor,indexer,kvnorm,quant,rope}.py`).
 - [Low Precision RL](/advanced/low-precision) - the fake-quantization points the plugin reproduces are the same ones an fp8/fp4 rollout would expose.
