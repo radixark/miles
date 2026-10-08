@@ -5,7 +5,7 @@ on:
     inputs:
       layout:
         type: choice
-        options: [serial, parallel, probe4, probe8]
+        options: [serial, parallel, probe4, probe8, envprobe]
         required: true
       round:
         type: string
@@ -19,7 +19,7 @@ on:
 permissions:
   contents: read
 concurrency:
-  group: ${{ startsWith(inputs.layout, 'probe') && format('b200-probe-{0}', github.run_id) || 'b200-oma' }}
+  group: ${{ (startsWith(inputs.layout, 'probe') || inputs.layout == 'envprobe') && format('b200-probe-{0}', github.run_id) || 'b200-oma' }}
   cancel-in-progress: false
   queue: max
 jobs:
@@ -69,4 +69,22 @@ jobs:
           assert all(t.sum().item() == 1024 for t in tensors)
           print('PROBE_READY ' + json.dumps({'gpus': count, 'cvd': os.environ['CUDA_VISIBLE_DEVICES'], 'timestamp': time.time()}), flush=True)
           threading.Event().wait(300 if count == 4 else 1)
+          PYCODE
+
+  envprobe:
+    if: inputs.layout == 'envprobe'
+    runs-on: [b200-hook-probe]
+    timeout-minutes: 5
+    container:
+      image: radixark/miles@sha256:58b75eaf0ae6a66ee2ed966bede9e6ef8a42a1942588f2692172c3d879b4f67c
+      options: --gpus all --env CUDA_VISIBLE_DEVICES
+    steps:
+      - name: Verify hook environment reaches job steps without CUDA allocation
+        run: |
+          python - <<'PYCODE'
+          import os, torch
+          assert os.environ['CUDA_VISIBLE_DEVICES'] == '7,3', os.environ['CUDA_VISIBLE_DEVICES']
+          assert torch.cuda.device_count() == 2
+          assert not torch.cuda.is_initialized()
+          print('ENV_PROBE_PASS: dynamic CUDA_VISIBLE_DEVICES=7,3; count=2; no CUDA context')
           PYCODE
