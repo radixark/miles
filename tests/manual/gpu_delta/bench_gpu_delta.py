@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import hashlib
+import inspect
 import json
 import math
 import multiprocessing
@@ -272,23 +273,160 @@ def _calibrate(plan, seed, target_ratio):
     return (low + high) / 2
 
 
-def _fixture_snapshot(args, index, tensor, version):
-    """Replay cumulative targets from the immutable base for every arm."""
+def _prepared_settings(args):
+    files = []
+    for path in sorted(args.model.iterdir()):
+        if path.is_file() and path.suffix in {".json", ".py", ".model", ".tiktoken", ".safetensors"}:
+            stat = path.stat()
+            files.append({"path": path.name, "nbytes": stat.st_size, "mtime_ns": stat.st_mtime_ns})
+    return {
+        "model": str(args.model.resolve()),
+        "base_files": files,
+        "seed": args.seed,
+        "ratio": args.ratio,
+        "versions": args.versions,
+        "mutation_sha256": sha256(inspect.getsource(_mutate).encode()),
+        "mutation_frame_bytes": FRAME_BYTES,
+    }
+
+
+def _prepare_owner(args, owner, index, rate):
+    """CPU-only preparation; owners write disjoint canonical ranges."""
+    cache = args.prepared_inputs
+    outputs = [(cache / "data" / f"v{version}.bin").open("r+b") for version in range(1, args.versions)]
+    try:
+        for tensor in owner["tensors"]:
+            spec = index[tensor["name"]]
+            with (args.model / spec["shard"]).open("rb") as source:
+                source.seek(spec["offset"])
+                current = np.frombuffer(source.read(spec["nbytes"]), dtype=np.uint8)
+            if current.size != spec["nbytes"]:
+                raise ValueError(f"Incomplete base tensor: {tensor['name']}")
+            for version in range(1, args.versions + 1):
+                current = _mutate(current, tensor["name"], spec["dtype"], args.seed, version, rate)
+                if version < args.versions:
+                    output = outputs[version - 1]
+                    output.seek(spec["prepared_offset"])
+                    output.write(current)
+                else:
+                    with (cache / "target-checkpoint" / spec["shard"]).open("r+b") as target:
+                        target.seek(spec["offset"])
+                        target.write(current)
+    finally:
+        for output in outputs:
+            output.close()
+
+
+def _prepare_inputs(args):
+    """Materialize each cumulative target once, then publish READY last."""
+    import torch
+
+    started, cache = time.monotonic(), args.prepared_inputs
+    settings = _prepared_settings(args)
+    inventory_path = cache / "inventory" / "inventory.json"
+    plan, _, digest = merge_plans(json.loads(inventory_path.read_text())["descriptions"])
+    base_index, index, canonical_bytes = _tensor_index(args.model), {}, 0
+    for tensor in plan:
+        spec = base_index[tensor["name"]]
+        if tensor["shape"] != spec["shape"] or tensor["dtype"] != spec["dtype"]:
+            raise ValueError(f"Inventory/checkpoint mismatch: {tensor['name']}")
+        index[tensor["name"]] = spec | {"prepared_offset": canonical_bytes}
+        canonical_bytes += spec["nbytes"]
+    data, target = cache / "data", cache / "target-checkpoint"
+    if (cache / "READY.json").exists() or target.exists() or (data.exists() and any(data.iterdir())):
+        raise ValueError(f"Prepared input cache already contains data; use a new directory: {cache}")
+    data.mkdir(exist_ok=True)
+    target.mkdir()
+    for file in settings["base_files"]:
+        shutil.copy2(args.model / file["path"], target / file["path"])
+    index_path = data / "index.json"
+    _save(index_path, index)
+    raw_paths = [data / f"v{version}.bin" for version in range(1, args.versions)]
+    for path in raw_paths:
+        with path.open("xb") as output:
+            output.truncate(canonical_bytes)
+    rate = _calibrate(plan, args.seed, args.ratio)
+    owner_count = torch.cuda.device_count() if args.sender_gpus is None else args.sender_gpus
+    if owner_count < 1:
+        raise ValueError("Input preparation requires at least one sender owner")
+    owners = [owner for owner in _partition_plan(plan, owner_count) if owner["groups"]]
+    if len(owners) == 1:
+        _prepare_owner(args, owners[0], index, rate)
+    else:
+        with ProcessPoolExecutor(
+            max_workers=len(owners), mp_context=multiprocessing.get_context("spawn"), max_tasks_per_child=1
+        ) as pool:
+            futures = [pool.submit(_prepare_owner, args, owner, index, rate) for owner in owners]
+            for future in futures:
+                future.result()
+    paths = [inventory_path, index_path, *raw_paths, *sorted(target.iterdir())]
+    for path in paths:
+        with path.open("rb") as file:
+            os.fsync(file.fileno())
+    manifest = {
+        "settings": settings,
+        "rate": rate,
+        "plan_digest": digest,
+        "canonical_bytes": canonical_bytes,
+        "files": [{"path": str(path.relative_to(cache)), "nbytes": path.stat().st_size} for path in paths],
+        "preparation_wall_s": time.monotonic() - started,
+    }
+    pending = cache / "READY.json.pending"
+    with pending.open("x") as file:
+        json.dump(manifest, file, indent=2, allow_nan=False)
+        file.write("\n")
+        file.flush()
+        os.fsync(file.fileno())
+    os.link(pending, cache / "READY.json")
+    pending.unlink()
+    return manifest
+
+
+def _load_prepared_inputs(args):
+    cache = args.prepared_inputs
+    if not (cache / "READY.json").is_file():
+        raise ValueError(f"Prepared input cache is incomplete; use a new directory: {cache}")
+    manifest = json.loads((cache / "READY.json").read_text())
+    if manifest["settings"] != _prepared_settings(args):
+        raise ValueError("Prepared input settings differ from the requested immutable base or mutations")
+    for file in manifest["files"]:
+        path = cache / file["path"]
+        if not path.is_file() or path.stat().st_size != file["nbytes"]:
+            raise ValueError(f"Prepared input file is missing or has changed size: {path}")
+    inventory = json.loads((cache / "inventory" / "inventory.json").read_text())
+    _, _, digest = merge_plans(inventory["descriptions"])
+    if digest != manifest["plan_digest"]:
+        raise ValueError("Prepared input inventory plan differs from READY")
+    return manifest
+
+
+def _read_prepared_tensor(args, spec, version, pinned):
+    if version == 0:
+        path, offset = args.model / spec["shard"], spec["offset"]
+    elif version == args.versions:
+        path, offset = args.prepared_inputs / "target-checkpoint" / spec["shard"], spec["offset"]
+    else:
+        path, offset = args.prepared_inputs / "data" / f"v{version}.bin", spec["prepared_offset"]
+    if pinned:
+        import torch
+
+        result = torch.empty(spec["nbytes"], dtype=torch.uint8, pin_memory=True)
+        array = result.numpy()
+    else:
+        result = array = np.empty(spec["nbytes"], dtype=np.uint8)
+    with path.open("rb") as file:
+        file.seek(offset)
+        if file.readinto(array) != spec["nbytes"]:
+            raise ValueError(f"Incomplete prepared tensor: {path} at {offset}")
+    return result
+
+
+def _fixture_snapshot(args, index, tensor, version, pinned=False):
     spec = index[tensor["name"]]
-    with (args.model / spec["shard"]).open("rb") as file:
-        file.seek(spec["offset"])
-        before = np.frombuffer(file.read(spec["nbytes"]), dtype=np.uint8)
-    if before.size != spec["nbytes"]:
-        raise ValueError("Incomplete checkpoint tensor")
-    mutation = dict(name=tensor["name"], dtype=spec["dtype"], seed=args.seed, rate=args.mutation_rate)
-    for previous_version in range(1, version):
-        before = _mutate(before, version=previous_version, **mutation)
-    after = _mutate(before, version=version, **mutation)
-    if args.write_target and version == args.versions:
-        with (args.target / spec["shard"]).open("r+b") as file:
-            file.seek(spec["offset"])
-            file.write(after)
-    return before, after
+    return (
+        _read_prepared_tensor(args, spec, version - 1, pinned),
+        _read_prepared_tensor(args, spec, version, pinned),
+    )
 
 
 def _publication_accounting(publication):
@@ -350,8 +488,6 @@ def _partition_plan(plan, owner_count):
 
 
 def _encode_version(args, owner, index, encoder, metadata, version):
-    import torch
-
     tensors = owner["tensors"]
     raw_plan = [tensor for tensor in tensors if tensor["encoding"] == "raw_bytes"]
     matrix_plan = [tensor for tensor in tensors if tensor["encoding"] == "xor_bytes"]
@@ -376,9 +512,9 @@ def _encode_version(args, owner, index, encoder, metadata, version):
             publication_write_s += time.monotonic() - writing
             changed += entry["changed_bytes"]
         for tensor in matrix_plan:
-            before, after = _fixture_snapshot(args, index, tensor, version)
-            batch.append((torch.from_numpy(before.copy()).pin_memory(), torch.from_numpy(after).pin_memory()))
-            batch_bytes += after.nbytes
+            before, after = _fixture_snapshot(args, index, tensor, version, pinned=True)
+            batch.append((before, after))
+            batch_bytes += after.numel()
             # A batching target, not an overall memory cap: a larger tensor
             # stays whole; compact inner payloads remain until owner finalization.
             if batch_bytes >= 512 * 1024**2:
@@ -433,7 +569,7 @@ def _encode_version(args, owner, index, encoder, metadata, version):
 
 
 def _encode_owner(args, owner, index, metadata):
-    # Spawned workers own CUDA contexts; the parent only copies and seals files.
+    # Spawned workers own CUDA contexts; the parent seals their publications.
     import torch
 
     from miles.utils.gpu_delta.encoder import GpuBatchEncoder
@@ -460,11 +596,7 @@ def _fixture(args):
     codec = configured_codec()
     inventory = json.loads(args.inventory.read_text())
     plan, _, digest = merge_plans(inventory["descriptions"])
-    index = _tensor_index(args.model)
-    for tensor in plan:
-        actual = index[tensor["name"]]
-        if tensor["shape"] != actual["shape"] or tensor["dtype"] != actual["dtype"]:
-            raise ValueError(f"Inventory/checkpoint mismatch: {tensor['name']}")
+    index = _read(args.prepared_inputs / "data" / "index.json")
     visible = torch.cuda.device_count()
     owner_count = visible if args.sender_gpus is None else args.sender_gpus
     if not 0 < owner_count <= visible:
@@ -472,12 +604,6 @@ def _fixture(args):
     owners = [owner for owner in _partition_plan(plan, owner_count) if owner["groups"]]
     assignments = [owner | {"tensors": [t["name"] for t in owner["tensors"]]} for owner in owners]
     _save(args.output / "owner-plan.json", assignments)
-    if args.write_target:
-        args.target.mkdir()
-        # Only the first arm writes final disjoint tensor ranges in this copy.
-        for path in args.model.iterdir():
-            if path.is_file() and path.suffix in {".json", ".py", ".model", ".tiktoken", ".safetensors"}:
-                shutil.copy2(path, args.target / path.name)
     metadata = {
         "stream_id": sha256(
             canonical_json({"seed": args.seed, "plan": digest, "rate": args.mutation_rate, "arm": args.arm_name})
@@ -495,18 +621,6 @@ def _fixture(args):
             futures = [pool.submit(_encode_owner, args, owner, index, metadata) for owner in owners]
             results = [future.result() for future in futures]
     _seal_fixture(args, plan, metadata, assignments, results)
-    if args.write_target:
-        _save(
-            args.target.parent / "target-complete.json",
-            {
-                "target_checkpoint": str(args.target.resolve()),
-                "plan_digest": digest,
-                "seed": args.seed,
-                "rate": args.mutation_rate,
-                "version": args.versions,
-                "arm": args.arm_name,
-            },
-        )
 
 
 def _seal_fixture(args, plan, metadata, assignments, results):
@@ -519,6 +633,7 @@ def _seal_fixture(args, plan, metadata, assignments, results):
         "seed": args.seed,
         "stream_id": metadata["stream_id"],
         "target_checkpoint": str(args.target.resolve()),
+        "input_cache_id": args.input_cache_id,
         "rounds": [],
         "calibration": "CPU Zstd level-1 sample-frame estimate; selected-codec size is measured, not forced to this ratio.",
         "canonical_denominator": "Canonical tensors in the receiver plan; excludes frozen draft and other checkpoint entries.",
@@ -529,8 +644,8 @@ def _seal_fixture(args, plan, metadata, assignments, results):
         "sender_owners": assignments,
         "owner_plan": "owner-plan.json",
         "inner_codec_origin": "Production GpuBatchEncoder on each owner's GPU: pinned snapshots, GPU XOR/inner compression, optional owner-wide GPU Zstd. Contiguous whole-layer HF ownership, no Megatron export.",
-        "fixture_wall_scope": "Per-version maximum of owner-local snapshot/encode/publication spans; only the first arm writes the final target. Owners are not synchronized between versions. Parent sealing is separate.",
-        "compression_wall_scope": "Sequential owner encode_device, finish_device and publication calls, including optional payload SHA, H2D/XOR/final D2H and shard flush/fsync. Excludes checkpoint reads/writes, perturbation and parent manifest sealing.",
+        "fixture_wall_scope": "Per-version maximum of owner-local prepared-input read/encode/publication spans. Owners are not synchronized between versions. Parent sealing is separate.",
+        "compression_wall_scope": "Sequential owner encode_device, finish_device and publication calls, including optional payload SHA, H2D/XOR/final D2H and shard flush/fsync. Excludes shared input preparation, pinned input reads and parent manifest sealing.",
     }
     for version in range(1, args.versions + 1):
         records = [owner[version - 1] for owner in results]
@@ -990,6 +1105,10 @@ def _markdown(summary):
         "Versions are cumulative synthetic targets, not learned updates or statistical repeats. "
         "Selected outputs do not prove every weight byte. Startup and oracle generation are untimed.",
         "",
+        f"Prepared inputs: `{summary['inputs']['path']}`; reused: {summary['inputs']['reused']}. "
+        "Input construction is shared across all arms and excluded from compression measurements. "
+        "The cache reference and original preparation metadata are retained in `inputs.json`.",
+        "",
         "## Compression and publication",
         "",
         "All columns below except parent seal are independent owner maxima. Compression/publication is each "
@@ -998,8 +1117,8 @@ def _markdown(summary):
         "and parent manifest sealing; it is not isolated hash time or synchronized end-to-end latency. "
         "Component maxima can come from different owners and must not be added. Inner CUDA sums batch event "
         "intervals per owner. CUDA events include wrapper/launch gaps, not pure kernel busy time. "
-        "Outer and pack/D2H wall are nested in finalization. The enclosing owner span also includes snapshots "
-        "and first-arm target-checkpoint writing. Parent seal follows all owners.",
+        "Outer and pack/D2H wall are nested in finalization. The enclosing owner span also includes reading "
+        "prepared snapshots into pinned buffers. Parent seal follows all owners.",
         "",
     ]
     lines += _report_table(
@@ -1177,6 +1296,7 @@ def _arm_report(output, arm, oracle_records):
         "rate": fixture["rate"],
         "stream_id": fixture["stream_id"],
         "target_checkpoint": fixture["target_checkpoint"],
+        "input_cache_id": fixture["input_cache_id"],
         "sender_count": fixture["sender_gpus"],
         "sender_owners": sender_owners,
         "comparison": comparison,
@@ -1197,13 +1317,17 @@ def _write_report(output: Path, arms):
     reference = reports[0]
     for arm in reports[1:]:
         if any(
-            arm[key] != reference[key] for key in ("plan_digest", "seed", "rate", "target_checkpoint", "sender_owners")
+            arm[key] != reference[key]
+            for key in ("plan_digest", "seed", "rate", "target_checkpoint", "input_cache_id", "sender_owners")
         ):
             raise ValueError("Arms do not share the same target and sender ownership")
         if _report_geometry(arm) != _report_geometry(reference):
             raise ValueError("Arms do not share the same update geometry")
     status = "PASS" if all(arm["status"] == "PASS" for arm in reports) else "FAILED"
-    summary = {"status": status, "arms": reports}
+    inputs = _read(output / "inputs.json")
+    if reference["input_cache_id"] != inputs["id"]:
+        raise ValueError("Arm inputs differ from the prepared-input reference")
+    summary = {"status": status, "inputs": inputs, "arms": reports}
     _save(
         output / "comparison.json",
         {
@@ -1232,16 +1356,17 @@ def _phase(phase, args, directory, settings, arm):
                 vars(args)
                 | {
                     "output": stage_output,
-                    "inventory": args.output / "inventory" / "inventory.json",
+                    "inventory": args.prepared_inputs / "inventory" / "inventory.json",
                     "fixture": args.output / "arms" / arm["name"] / "fixture" if phase in {"run", "oracle"} else None,
-                    "target": args.output / "altered-checkpoint",
-                    "write_target": arm == args.arms[0],
+                    "target": args.prepared_inputs / "target-checkpoint",
                     "arm_name": arm["name"],
                 }
             )
         )
         stage.output.mkdir()
-        if phase == "fixture":
+        if phase == "prepare":
+            _prepare_inputs(stage)
+        elif phase == "fixture":
             _fixture(stage)
         else:
             asyncio.run(_run(stage, phase))
@@ -1283,10 +1408,18 @@ def _run_phase(phase, args, directory, arm, records):
 
 def _end_to_end(args):
     records = []
-    _run_phase("inventory", args, Path("inventory"), args.arms[0], records)
-    inventory = _read(args.output / "inventory" / "inventory.json")
-    plan, _, _ = merge_plans(inventory["descriptions"])
-    args.mutation_rate = _calibrate(plan, args.seed, args.ratio)
+    reused = args.prepared_inputs.exists()
+    if not reused:
+        args.prepared_inputs.mkdir(parents=True)
+        _run_phase("inventory", args, args.prepared_inputs / "inventory", args.arms[0], records)
+        _run_phase("prepare", args, args.prepared_inputs / "data", args.arms[0], records)
+    prepared = _load_prepared_inputs(args)
+    args.mutation_rate = prepared["rate"]
+    args.input_cache_id = sha256((args.prepared_inputs / "READY.json").read_bytes())
+    _save(
+        args.output / "inputs.json",
+        {"path": str(args.prepared_inputs), "id": args.input_cache_id, "reused": reused, "preparation": prepared},
+    )
     _save(args.output / "arguments.json", {k: str(v) if isinstance(v, Path) else v for k, v in vars(args).items()})
     for arm in args.arms:
         directory = Path("arms") / arm["name"]
@@ -1301,6 +1434,9 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--model", type=Path, required=True, help="Existing NVFP4 HF serving checkpoint")
     parser.add_argument("--output", type=Path, help="New output directory; generated automatically if omitted")
+    parser.add_argument(
+        "--prepared-inputs", type=Path, help="Create or reuse a completed input cache; defaults to OUTPUT/inputs"
+    )
     parser.add_argument("--codecs", choices=CODECS, nargs="+", default=list(CODECS), help="Sender/receiver codecs")
     parser.add_argument("--frame-bytes", type=int, default=FRAME_BYTES, help="Inner frame bytes; at most 4 MiB")
     parser.add_argument("--sender-gpus", type=int, help="Compression GPUs; defaults to all visible GPUs")
@@ -1325,6 +1461,7 @@ def main():
     args.output = (
         args.output or Path("gpu-delta-" + datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S-%f"))
     ).resolve()
+    args.prepared_inputs = (args.prepared_inputs or args.output / "inputs").resolve()
     args.arms = [
         {"name": f"{codec}-hash-{hashing}", "codec": codec, "skip_payload_hash": hashing == "off"}
         for codec in dict.fromkeys(args.codecs)
@@ -1340,6 +1477,8 @@ def main():
         parser.error(str(error))
     if args.versions < 1 or not 0 < args.ratio < 0.1:
         parser.error("versions must be positive and ratio in (0, 0.1)")
+    if args.prepared_inputs == args.output or args.prepared_inputs in args.output.parents:
+        parser.error("--output must be outside the prepared-input cache")
     args.output.mkdir(parents=True, exist_ok=False)
     _save(args.output / "arguments.json", {k: str(v) if isinstance(v, Path) else v for k, v in vars(args).items()})
     _end_to_end(args)
