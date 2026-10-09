@@ -24,6 +24,8 @@ def _args(**overrides) -> Namespace:
         rollout_max_response_len=4096,
         ref_update_interval=None,
         save_debug_train_data=None,
+        fsdp_cpu_offload=False,
+        titan_optimizer_state_dir=None,
         fp16=False,
         lr_decay_style="constant",
         lr_warmup_fraction=None,

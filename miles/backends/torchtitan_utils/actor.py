@@ -5,7 +5,7 @@ from contextlib import contextmanager
 import torch
 import torch.distributed as dist
 
-from miles.backends.torchtitan_utils import compat
+from miles.backends.torchtitan_utils import compat, disk_optimizer_state
 from miles.backends.torchtitan_utils.config import build_trainer_config
 from miles.backends.torchtitan_utils.hf_weight_iterator import TitanHfWeightIterator
 from miles.backends.torchtitan_utils.parallel import create_titan_parallel_state, parallel_dims_from_config
@@ -85,6 +85,10 @@ class TorchtitanTrainRayActor(TorchNativeTrainRayActor):
             init_tracking(args, primary=False)
 
         self.trainer.checkpointer.load()
+        if args.titan_optimizer_state_dir is not None:
+            disk_optimizer_state.install(
+                self.optimizers, directory=args.titan_optimizer_state_dir, rank=dist.get_rank()
+            )
         start_rollout_id = self.trainer.step // _steps_per_rollout(args)
 
         if with_ref:

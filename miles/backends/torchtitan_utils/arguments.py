@@ -17,6 +17,9 @@ class TorchtitanArgs(FSDPArgs):
     pipeline_model_parallel_size: int = 1
     expert_model_parallel_size: int = 1
 
+    # node-local dir for mmap'd Adam moments when host RAM cannot hold them next to the offloaded shards
+    titan_optimizer_state_dir: str | None = None
+
 
 def build_torchtitan_parser(extra_args_provider=None):
     return build_dataclass_parser(TorchtitanArgs, "torchtitan Training (miles)", extra_args_provider)
@@ -62,3 +65,5 @@ def validate_torchtitan_args(args) -> None:
         )
     if args.save_debug_train_data is not None:
         raise ValueError("--save-debug-train-data is not wired up for the torchtitan backend")
+    if args.titan_optimizer_state_dir is not None and not args.fsdp_cpu_offload:
+        raise ValueError("--titan-optimizer-state-dir backs host-resident Adam moments; it needs --fsdp-cpu-offload")
