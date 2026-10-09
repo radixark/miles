@@ -337,7 +337,9 @@ class TestWorkflowScopeSeam:
             assert "--continue-on-error" not in cmd
 
         b200_workflow = self._reusable_workflow("_run-ci-b200.yml")
-        b200_commands = b200_workflow.split("execute_command:")[1:]
+        assert "cadence: ${{ inputs.cadence }}" in b200_workflow
+        assert "raw_labels: ${{ inputs.raw_labels }}" in b200_workflow
+        b200_commands = self._reusable_workflow("_run-ci-b200-batch.yml").split("execute_command:")[1:]
         assert len(b200_commands) == 1
         for block in b200_commands:
             cmd = block.split("secrets:")[0]
@@ -381,7 +383,8 @@ class TestWorkflowScopeSeam:
         cpu_jobs = re.findall(job_id_pattern, cpu_workflow.split("\njobs:\n", 1)[1], re.MULTILINE)
         docker_jobs = re.findall(job_id_pattern, docker_workflow.split("\njobs:\n", 1)[1], re.MULTILINE)
         assert gpu_jobs == ["plan", "run"]
-        assert b200_workflow.count("uses: ./.github/workflows/_run-ci.yml") == 1
+        assert b200_workflow.count("uses: ./.github/workflows/_run-ci-b200-batch.yml") == 1
+        assert self._reusable_workflow("_run-ci-b200-batch.yml").count("uses: ./.github/workflows/_run-ci.yml") == 1
         assert cpu_jobs == ["run-cpu"]
         assert docker_jobs == ["docker-decide", "docker-build"]
         assert "cpu_runner" not in gpu_workflow
@@ -498,10 +501,13 @@ class TestWorkflowScopeSeam:
         assert "needs: plan" in b200_workflow
         assert "matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}" in b200_workflow
         assert "fail-fast: false" in b200_workflow
-        assert "max-parallel:" not in b200_workflow
-        assert "--test-file ${{ matrix.shell_file }}" in b200_workflow
-        assert "num_gpus: ${{ matrix.num_gpus }}" in b200_workflow
-        assert "--auto-partition" not in b200_workflow
+        assert "max-parallel: 1" in b200_workflow
+        batch_workflow = self._reusable_workflow("_run-ci-b200-batch.yml")
+        assert "concurrency:" not in batch_workflow
+        assert "max-parallel:" not in batch_workflow
+        assert "--test-file ${{ matrix.shell_file }}" in batch_workflow
+        assert "num_gpus: ${{ matrix.num_gpus }}" in batch_workflow
+        assert "--auto-partition" not in batch_workflow
         assert "run_8_gpu:" in caller
         assert "run_4_gpu:" in caller
 
@@ -514,8 +520,9 @@ class TestWorkflowScopeSeam:
         cuda_stages = workflow.split("  stage-b-2-gpu-h200:", 1)[1]
         assert cuda_stages.count(manual_scope) == 5
         assert "match_all_labels: ${{ github.event_name == 'workflow_dispatch' }}" in cuda_stages
+        assert "match_all_labels: ${{ inputs.match_all_labels }}" in self._reusable_workflow("_run-ci-b200.yml")
         assert "${{ inputs.match_all_labels && '--match-all-labels' || '' }}" in self._reusable_workflow(
-            "_run-ci-b200.yml"
+            "_run-ci-b200-batch.yml"
         )
 
     def test_gpu_gates_consume_shared_bypass_output(self):
