@@ -348,14 +348,14 @@ class TestWorkflowScopeSeam:
             assert "--event-name" not in cmd
             assert "--continue-on-error" not in cmd
 
-    def test_cpu_stages_only_require_policy(self):
+    def test_stage_b_cpu_waits_for_stage_a_without_requiring_an_image(self):
         workflow = self._workflow()
         stage_a = workflow.split("  stage-a-cpu:", 1)[1].split("  stage-b-cpu:", 1)[0]
         stage_b = workflow.split("  stage-b-cpu:", 1)[1].split("  stage-b-2-gpu-h200:", 1)[0]
 
-        expected = "needs: [resolve-ci-policy]"
-        assert expected in stage_a
-        assert expected in stage_b
+        assert "needs: [resolve-ci-policy]" in stage_a
+        assert "needs: [resolve-ci-policy, stage-a-cpu]" in stage_b
+        assert "    if:" not in stage_b
         assert "resolve-ci-image" not in stage_a
         assert "resolve-ci-image" not in stage_b
 

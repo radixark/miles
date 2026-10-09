@@ -204,15 +204,19 @@ jobs:
     secrets: inherit
 
   # Stage B: CPU-only bucket for slower CPU tests that don't fit stage-a-cpu's
-  # fast budget. Runs whenever resolve-ci-policy runs; an empty suite still exits 0
-  # in run_suite.py.
+  # fast budget. Waits for Stage A; an empty suite still exits 0 in run_suite.py.
   stage-b-cpu:
-    needs: [resolve-ci-policy]
+    needs: [resolve-ci-policy, stage-a-cpu]
+    strategy:
+      fail-fast: false
+      matrix:
+        partition_id: [0, 1, 2, 3]
     uses: ./.github/workflows/_run-cpu-ci.yml
     with:
       ref: ${{ inputs.ref || '' }}
       execute_command: >-
         python tests/ci/run_suite.py --hw cpu --suite stage-b-cpu
+        --auto-partition-id ${{ matrix.partition_id }} --auto-partition-size 4
         --cadence ${{ needs.resolve-ci-policy.outputs.cadence }}
         --labels ${{ needs.resolve-ci-policy.outputs.raw_labels }}
     secrets: inherit
