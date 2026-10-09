@@ -119,6 +119,9 @@ class MegatronTrainRayActor(TrainRayActor):
         self.weight_updater: WeightUpdater | None = None
         self.snapshot_publisher: SnapshotPublisher | None = None
         monkey_patch_torch_dist()
+        from .misc_utils import maybe_hide_te_flash_attn_4
+
+        maybe_hide_te_flash_attn_4(args)
 
         self._last_rollout_id: int | None = None
         super()._init_common(args, role, with_ref, with_opd_teacher=with_opd_teacher)
