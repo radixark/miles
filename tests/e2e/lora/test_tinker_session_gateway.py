@@ -232,6 +232,28 @@ async def _client_checks(base_url: str) -> None:
         raise AssertionError("a group whose every trial ended in AgentError must be skipped")
     print("client trajectory rules passed: AgentError dropped, timeout scored 0, bind cap truncated, sessions gone")
 
+    # the cookbook gathers every group's execute() at once; the trial cap must hold across them
+    in_flight = {"now": 0, "peak": 0}
+    first_turn = [{"role": "user", "content": "Name a color in one word."}]
+
+    async def counted_trial(*, base_url, prompt, request_kwargs, metadata):
+        in_flight["now"] += 1
+        in_flight["peak"] = max(in_flight["peak"], in_flight["now"])
+        try:
+            async with httpx.AsyncClient(timeout=300.0) as client:  # one real turn, so the trial has a trajectory
+                chat = {"model": BASE_MODEL, "messages": first_turn, **request_kwargs}
+                (await client.post(f"{base_url}/v1/chat/completions", json=chat)).raise_for_status()
+            return {"reward": 1.0, "exit_status": "Submitted", "role": "ok"}
+        finally:
+            in_flight["now"] -= 1
+
+    capped = harbor_env.SessionRolloutStrategy(run_trial=counted_trial, **{**common, "concurrency": 2})
+    groups = [harbor_env.HarborGroup(f"cap-{i}", group_size=3) for i in range(3)]
+    results = await asyncio.gather(*(capped.execute(group, policy) for group in groups))
+    assert [len(result.trajectories) for result in results] == [3, 3, 3], "every counted trial must train"
+    assert in_flight["peak"] <= 2, f"{in_flight['peak']} trials ran at once under concurrency=2"
+    print("client trial cap passed: peak", in_flight["peak"], "across 3 groups of 3 under concurrency=2")
+
 
 # --- the Harbor recipe: cookbook train.main with scripted trials on recorded sessions -----------
 
@@ -325,7 +347,82 @@ def _check(events: list[dict], work: Path, base_url: str, api_key: str) -> None:
     print(f"harbor recipe acceptance passed: {len(events)} scripted trials, grad norms {grad_norms}, sampler advanced")
 
 
+# --- client scheduling against a fake gateway: no engine, runs before the real one starts -------
+
+
+_FAKE_TURN = {
+    "input_ids": [1, 2],
+    "output_ids": [3],
+    "logprobs": [-0.1],
+    "finish_reason": "stop",
+    "created_at": 0.0,
+    "inherits": False,
+    "reset_reason": "first",
+    "after_truncation": False,
+    "parent": None,
+}
+
+
+def _fake_gateway(request: httpx.Request) -> httpx.Response:
+    session_id = request.url.path.rsplit("/", 1)[1]
+    if request.method == "POST":
+        return httpx.Response(
+            200, json={"session_id": session_id, "model_path": "tinker://m/weights/1", "max_datum_tokens": 64}
+        )
+    if request.method == "GET":
+        return httpx.Response(
+            200,
+            json={
+                "session_id": session_id,
+                "model_path": "tinker://m/weights/1",
+                "max_trim_tokens": 0,
+                "turns": [_FAKE_TURN],
+            },
+        )
+    return httpx.Response(200, json={"session_id": session_id, "deleted": True})
+
+
+async def _scheduling_checks() -> None:
+    """The trial cap is per strategy, not per group: 3 groups gathered at once never exceed concurrency=2."""
+    try:
+        harbor_env.SessionRolloutStrategy(gateway_url="http://gateway", api_key="k", concurrency=0)
+    except ValueError as error:
+        assert "concurrency" in str(error)
+    else:
+        raise AssertionError("concurrency=0 would wait forever on an empty semaphore; it must be refused")
+    in_flight = {"now": 0, "peak": 0}
+    release = asyncio.Event()
+
+    async def trial(**kwargs):
+        in_flight["now"] += 1
+        in_flight["peak"] = max(in_flight["peak"], in_flight["now"])
+        await release.wait()  # hold every started trial until all groups have dispatched theirs
+        in_flight["now"] -= 1
+        return {"reward": 1.0, "exit_status": "Submitted"}
+
+    strategy = harbor_env.SessionRolloutStrategy(
+        gateway_url="http://gateway",
+        api_key="k",
+        concurrency=2,
+        run_trial=trial,
+        transport=httpx.MockTransport(_fake_gateway),
+    )
+    policy = SimpleNamespace(sampling_client=SimpleNamespace(_sampling_session_id="sampling-1"))
+    groups = [harbor_env.HarborGroup(f"task-{index}", group_size=3) for index in range(3)]
+    gathered = asyncio.gather(*(strategy.execute(group, policy) for group in groups))  # as the cookbook does
+    for _ in range(50):
+        await asyncio.sleep(0)
+    dispatched = in_flight["now"]
+    release.set()
+    results = await gathered
+    assert (dispatched, in_flight["peak"]) == (2, 2), f"{dispatched} trials started at once under concurrency=2"
+    assert [len(result.trajectories) for result in results] == [3, 3, 3]
+    assert all(len(trajectory.transitions) == 1 for result in results for trajectory in result.trajectories)
+    print("client scheduling passed: concurrency=0 refused; 3 groups x 3 trials capped at 2 in flight")
+
+
 def execute():
+    asyncio.run(_scheduling_checks())
     with running_gateway(SESSION_SERVER_ARGS) as base_url:
         os.environ["CUDA_VISIBLE_DEVICES"] = ""  # the clients never need a GPU; the gateway already holds its own
         asyncio.run(_session_scenarios(base_url))

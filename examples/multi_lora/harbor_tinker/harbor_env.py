@@ -252,16 +252,22 @@ class SessionRolloutStrategy(RolloutStrategy):
     # test seams: the trial runner (default harbor_agent_function.run) and an httpx transport (default: the network)
     run_trial: RunTrial | None = field(default=None, compare=False, repr=False)
     transport: httpx.AsyncBaseTransport | None = field(default=None, compare=False, repr=False)
+    # the cookbook gathers every group's execute() at once, so the cap must outlive one call
+    _semaphore: asyncio.Semaphore = field(init=False, compare=False, repr=False)
+
+    def __post_init__(self) -> None:
+        if self.concurrency < 1:  # Semaphore(0) never admits a trial
+            raise ValueError(f"concurrency must be positive, got {self.concurrency}")
+        object.__setattr__(self, "_semaphore", asyncio.Semaphore(self.concurrency))
 
     async def execute(self, env_group_builder: EnvGroupBuilder, policy: TokenCompleter) -> RolloutResult:
         """Bind each env's session to the policy's sampler, run trials under a semaphore, return RolloutResult."""
         envs = await env_group_builder.make_envs()
         sampling_session_id = sampling_session_id_of(policy)
-        semaphore = asyncio.Semaphore(self.concurrency)
         async with self._client() as http:
 
             async def one(env: HarborEnv) -> Trajectory:
-                async with semaphore:
+                async with self._semaphore:
                     return await self.run_one(env, sampling_session_id, http)
 
             outcomes = await asyncio.gather(*(one(env) for env in envs), return_exceptions=True)
