@@ -190,9 +190,9 @@ def make_case(index: int, split: str, seed: int) -> dict[str, Any]:
     raise ValueError('could not draw scenario for requested partition')
 
 
-async def api_json(client: AsyncOpenAI, system: str, content: str, effort: str = 'none') -> tuple[dict[str, Any], dict[str, Any]]:
+async def api_json(client: AsyncOpenAI, system: str, content: str, effort: str = 'none', max_tokens: int = 2400) -> tuple[dict[str, Any], dict[str, Any]]:
     response = await client.chat.completions.create(
-        model='gpt-6-luna', reasoning_effort=effort, max_completion_tokens=2400,
+        model='gpt-6-luna', reasoning_effort=effort, max_completion_tokens=max_tokens,
         response_format={'type':'json_object'},
         messages=[{'role':'system','content':system}, {'role':'user','content':content}],
     )
@@ -202,7 +202,7 @@ async def api_json(client: AsyncOpenAI, system: str, content: str, effort: str =
             'model':response.model, 'usage':response.usage.model_dump()}
 
 
-async def generate_one(client: AsyncOpenAI, case: dict[str, Any], root: Path) -> None:
+async def generate_one(client: AsyncOpenAI, case: dict[str, Any], root: Path, *, audit_effort: str = 'low', audit_tokens: int = 2400) -> None:
     path = root/'accepted'/f"{case['id']}.json"
     if path.exists():
         saved = json.loads(path.read_text())
@@ -242,7 +242,7 @@ async def generate_one(client: AsyncOpenAI, case: dict[str, Any], root: Path) ->
                 '"explanation":string}. Set unsupported_claims true if framing adds decision-relevant '
                 'facts not grounded in the supplied canonical fact list. Copy option descriptions exactly, not IDs. Do not '
                 'use outside policies or assumptions.',
-                json.dumps({'record':record,'canonical_facts':case['facts']}), effort='low')
+                json.dumps({'record':record,'canonical_facts':case['facts']}), effort=audit_effort, max_tokens=audit_tokens)
             traces.append({'phase':'audit','attempt':attempt,'usage':audit_usage,'output':audit})
             expected_answers = {k:case['questions'][k]['criteria'][v] for k,v in case['answers'].items()}
             if audit['answers'] != expected_answers or audit['unambiguous'] is not True or audit['unsupported_claims'] is not False:

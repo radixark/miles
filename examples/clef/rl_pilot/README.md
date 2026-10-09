@@ -38,3 +38,28 @@ every label and probe the exact field and whole-record reward functions.
 Pass `--endpoint` to measure checkpoint difficulty, Brier loss, exact record
 success, and near-one-hot fields. It verifies the endpoint's model path first.
 No RL training is performed by these scripts.
+# Hard pilot
+
+`python -m examples.clef.rl_pilot.hard --output /path/to/data` generates 2,048
+training and 256 validation cases using GPT-6 Luna. Labels come from an
+executable revision resolver and business rules; the model supplies document
+framing and a blind answer audit with medium reasoning effort. Model training
+still consumes the decision head directly and generates no reasoning.
+
+The six families are invoice, support, security, transfer, tool choice, and
+policy retrieval. Records include signed revisions, unsigned proposals, future
+changes, and unrelated entities. Policies combine arithmetic, inclusive/exclusive
+boundaries, exceptions, and competing reasons with explicit priorities. Rare
+positive branches are deliberately represented to avoid trivial all-no fields.
+Options are shuffled; labels and provenance remain outside the encoded state.
+
+Validation uses new scenarios plus additional policy-clause compositions.
+It is frozen before evaluation, not selected based on model mistakes. Task
+families and revision-resolution rules remain shared between splits. This is
+a controlled synthetic pilot, not an organic workflow benchmark.
+
+`python -m examples.clef.rl_pilot.hard_check` executes independent rule-boundary
+fixtures and checks all 2,304 generated schemas. Finalization rechecks exact
+targets, fact preservation, reviewer agreement, unique scenarios, and split
+separation. `--canonical-only` skips API rendering for development probes;
+it must not be confused with the reviewed final dataset.

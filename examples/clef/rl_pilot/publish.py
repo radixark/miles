@@ -31,6 +31,12 @@ def publish(args: Args) -> None:
             if api_key in p.read_bytes():
                 raise ValueError('credential found in source')
             archive.write(p,'code/'+name)
+        for name in ['hard.py', 'hard_check.py']:
+            p = Path(__file__).parent / name
+            if p.exists():
+                if api_key in p.read_bytes():
+                    raise ValueError('credential found in source')
+                archive.write(p, 'code/' + name)
         revision = Path(__file__).parent/'source-revision.txt'
         if revision.exists():
             archive.write(revision,'code/source-revision.txt')
