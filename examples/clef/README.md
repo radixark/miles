@@ -1,5 +1,9 @@
 # Clef-style calibration training
 
+For post-training categorical decision-policy RL, see [RL.md](RL.md).
+The dedicated `examples.clef.rl_train` entrypoint loads an already trained head;
+the supervised entrypoint below continues to initialize a fresh head.
+
 ## Broad decision curriculum
 
 `python -m examples.clef.build_broad_dataset` prepares 65,536 training cases

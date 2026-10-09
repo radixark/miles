@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 
 import torch
+from safetensors.torch import load_file
 from torch.distributed.device_mesh import init_device_mesh
 from torch.distributed.fsdp import MixedPrecisionPolicy, fully_shard
 from transformers import Qwen3_5ForConditionalGeneration
@@ -44,9 +45,12 @@ class TrainableClefModel(ClefModel):
         )
 
 
-def build_model(model_dir: str, head_config: dict[str, int], device: torch.device) -> TrainableClefModel:
+def build_model(model_dir: str, head_config: dict[str, int], device: torch.device, *, pretrained_head: bool = False) -> TrainableClefModel:
     backbone = Qwen3_5ForConditionalGeneration.from_pretrained(
-        model_dir, dtype=torch.bfloat16, attn_implementation="sdpa", local_files_only=True,
+        model_dir,
+        dtype=torch.bfloat16,
+        attn_implementation="sdpa",
+        local_files_only=True,
     )
     if backbone.config.text_config.hidden_size != head_config["hidden_size"]:
         raise ValueError("backbone hidden size does not match head")
@@ -57,7 +61,19 @@ def build_model(model_dir: str, head_config: dict[str, int], device: torch.devic
     head = JointSchemaHead(**head_config).to(device=device)
     # Tiny backbone learning rates require FP32 master weights and Adam moments;
     # updating BF16 weights directly can round away nearly every optimizer step.
-    return apply_fp32_master(TrainableClefModel(backbone, head))
+    model = TrainableClefModel(backbone, head)
+    if pretrained_head:
+        load_trained_head(model.head, Path(model_dir) / "joint_head.safetensors")
+    return apply_fp32_master(model)
+
+
+def load_trained_head(head: torch.nn.Module, path: Path) -> None:
+    state = load_file(str(path), device="cpu")
+    expected = head.state_dict()
+    for name in ("prior_logit_scale", "joint_logit_scale", "residual_gate"):
+        if name in state and name in expected:
+            state[name] = state[name].reshape(expected[name].shape)
+    head.load_state_dict(state, strict=True)
 
 
 def shard_model(model: TrainableClefModel, world_size: int) -> TrainableClefModel:
