@@ -194,7 +194,9 @@ def _loom_indexer_logits(q, k, weights, cu_ks, cu_ke):
     return loom_dsa_ops().indexer_logits(q, k, weights, cu_ks, cu_ke, layout="sbhd")
 
 
-def topk_for_local_rows(exchange, k, thd_layout, *, compress_ratio, index_topk, topk_fn, logits_fn=indexer_logits_sbhd):
+def topk_for_local_rows(
+    exchange, k, thd_layout, *, compress_ratio, index_topk, topk_fn, logits_fn=indexer_logits_sbhd
+):
     """The top-k picks for this rank's rows, in local order, scored on the rank ``exchange`` sent them to."""
     q, weights = exchange.wait()
     topk_indices = indexer_topk(
@@ -212,7 +214,9 @@ def topk_for_local_rows(exchange, k, thd_layout, *, compress_ratio, index_topk, 
     return exchange.return_to_owners(topk_indices, dim=1)
 
 
-def indexer_topk(q, k, weights, positions, thd_layout, *, compress_ratio, index_topk, topk_fn, logits_fn=indexer_logits_sbhd):
+def indexer_topk(
+    q, k, weights, positions, thd_layout, *, compress_ratio, index_topk, topk_fn, logits_fn=indexer_logits_sbhd
+):
     """Score the query rows at global stream ``positions`` against their visible compressed keys.
 
     Args:

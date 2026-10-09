@@ -147,7 +147,9 @@ def test_glm5_sparse_attention_matches_reference_and_is_deterministic(heads):
 
         q_t = q.clone().requires_grad_(True)
         kv_t = kv.clone().requires_grad_(True)
-        out_t = sparse_attention(q_t.unsqueeze(0), kv_t.unsqueeze(0), indices.unsqueeze(0), sm_scale, d_v=512).squeeze(0)
+        out_t = sparse_attention(q_t.unsqueeze(0), kv_t.unsqueeze(0), indices.unsqueeze(0), sm_scale, d_v=512).squeeze(
+            0
+        )
         out_t.backward(do)
         assert _rel_err(out, out_t) < 1e-2
         assert _rel_err(dq, q_t.grad) < 1e-2
