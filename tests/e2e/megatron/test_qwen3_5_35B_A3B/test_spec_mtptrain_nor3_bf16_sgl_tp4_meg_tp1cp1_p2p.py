@@ -8,7 +8,7 @@ from tests.e2e.megatron.test_qwen3_5_35B_A3B._common import CaseConfig, execute,
 
 # EP2 exceeds TE's tensor-handle pool during grad clipping (NVIDIA/TransformerEngine#3090)
 register_cuda_ci(
-    est_time=2400,
+    est_time=1500,
     suite="stage-c-8-gpu-h200",
     labels=["megatron", "qwen35", "weight-update"],
     hardware=["hopper"],
