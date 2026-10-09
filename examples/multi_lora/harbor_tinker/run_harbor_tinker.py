@@ -121,6 +121,7 @@ def build_config(config: HarborTinkerConfig) -> train.Config:
         loss_fn=config.loss_fn,
         max_steps=config.max_steps,
         save_every=config.save_every,
+        ttl_seconds=None,  # the gateway rejects a TTL it cannot honor; its checkpoints never expire
         wandb_project=config.wandb_project,
         wandb_name=config.wandb_name,
     )
