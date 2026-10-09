@@ -45,6 +45,13 @@ def test_short_conv_backend_respects_fla_conv_backend(monkeypatch):
     assert linear_attn.short_conv_backend.__wrapped__() == "cuda"
 
 
+def test_loom_short_conv_defaults_to_triton_unless_set(monkeypatch):
+    monkeypatch.delenv("FLA_CONV_BACKEND", raising=False)
+    assert linear_attn.loom_conv_backend.__wrapped__() == "triton"
+    monkeypatch.setenv("FLA_CONV_BACKEND", "cuda")
+    assert linear_attn.loom_conv_backend.__wrapped__() == "cuda"
+
+
 NUM_HEADS = 4
 HEAD_K_DIM = 128
 HEAD_V_DIM = 128

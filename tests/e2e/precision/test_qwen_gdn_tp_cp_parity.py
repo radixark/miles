@@ -108,7 +108,10 @@ def run_case(tp: int, cp: int, family: str, backend: str) -> dict[str, float]:
         out_again, dx_again, grads_again = forward_backward()
         errors["nondeterministic_out"] = float(not torch.equal(out, out_again))
         errors["nondeterministic_dx"] = float(not torch.equal(dx, dx_again))
-        errors["nondeterministic_grads"] = float(sum(not torch.equal(grads[n], grads_again[n]) for n in grads))
+        for name in grads:  # one entry per parameter whose gradient the second pass did not reproduce bit for bit
+            if not torch.equal(grads[name], grads_again[name]):
+                gap = (grads[name].float() - grads_again[name].float()).abs().max().item()
+                errors[f"nondeterministic_grad[{name}]"] = gap
 
     if cp > 1:  # each CP rank saw a token shard: the full parameter gradient is the sum over the CP group
         for g in grads.values():

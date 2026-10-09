@@ -111,7 +111,7 @@ The GDN (gated delta-net) layers run through the head-sharded linear-attention l
 |---|---|---|---|
 | `fla` (default) | flash-linear-attention (Triton) | any | portable reference |
 | `flashqla` | FlashQLA | SM90+ | no context parallelism |
-| `loom` | generated deterministic forward + backward in `miles_plugins/models/gdn_chunk_train` | SM100a / SM103a (Blackwell) | bit-identical outputs and gradients across calls (no atomics, fixed reduction order); grouped value heads without `repeat_interleave`; `K = V = 128`; built on first use as torch CUDA extensions (`TORCH_EXTENSIONS_DIR`); context parallelism through fla's state passing |
+| `loom` | generated deterministic forward + backward in `miles_plugins/models/gdn_chunk_train` | SM100a / SM103a (Blackwell) | bit-identical outputs and gradients across calls (no atomics, fixed reduction order); grouped value heads without `repeat_interleave`; `K = V = 128`; built on first use as torch CUDA extensions (`TORCH_EXTENSIONS_DIR`); context parallelism through fla's state passing; the layer's short conv runs on fla's Triton kernels (causal-conv1d's CUDA backward accumulates its weight gradient with atomics) unless `FLA_CONV_BACKEND` says otherwise |
 
 `loom` is the backend for true-on-policy runs that need reproducible gradients. `tests/e2e/precision/test_qwen_gdn_tp_cp_parity.py` checks it against `fla` under TP=2, CP=2 and TP=2 × CP=2 for both HF projection layouts, and `tests/e2e/megatron/test_qwen3_5_4B_gdn_loom.py` runs Qwen3.5-4B GRPO on it.
 
