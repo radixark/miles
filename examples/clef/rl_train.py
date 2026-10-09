@@ -90,13 +90,23 @@ def reference_cache(model: Any, labels: list, pad: int, device: torch.device, ou
                 rows.append({"id": label.encoded.record_id, "probabilities": [x.float().softmax(-1).cpu().tolist() for x in fields]})
         rows = _gather_rows(rows)
         cache = {row["id"]: row["probabilities"] for row in rows}
-        if dist.get_rank() == 0:
-            path.write_text(json.dumps(cache, sort_keys=True))
+        # /scratch is node-local. Persist identical gathered probabilities on
+        # every node, not only on global rank zero. Atomic replacement also
+        # works when nodes happen to share the output filesystem.
+        if int(os.environ["LOCAL_RANK"]) == 0:
+            temporary = path.with_name(f".reference-rank{dist.get_rank()}.tmp")
+            temporary.write_text(json.dumps(cache, sort_keys=True))
+            temporary.replace(path)
         dist.barrier()
     if set(cache) != {label.encoded.record_id for label in labels}:
         raise ValueError("reference cache record coverage mismatch")
     model.train()
-    return cache, file_sha256(path)
+    digest = file_sha256(path)
+    digests = [None] * dist.get_world_size()
+    dist.all_gather_object(digests, digest)
+    if len(set(digests)) != 1:
+        raise ValueError("reference cache differs across nodes")
+    return cache, digest
 
 
 def train_step(model: Any, optimizer: Any, train: list, labels: list, reference: dict, processor: Any, step: int, args: Args, device: torch.device, trace: Any) -> tuple[list, dict]:
@@ -176,8 +186,9 @@ def main() -> None:
             saved = load_checkpoint(model, optimizer, args.resume)
             validate_resume_config(saved["config"], config, allow_forecastbench_change=args.allow_forecastbench_change)
             start = saved["step"]
-        if dist.get_rank() == 0:
+        if int(os.environ["LOCAL_RANK"]) == 0:
             (output / "config.json").write_text(json.dumps(config, indent=2))
+        if dist.get_rank() == 0:
             telemetry = Telemetry(output, args.run_name, config, args.wandb_project, args.wandb_entity, args.prometheus_port)
         metrics = _evaluate(model, val, processor.tokenizer.pad_token_id, device, output, start)
         if forecast:

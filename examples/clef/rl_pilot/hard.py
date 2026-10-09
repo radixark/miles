@@ -22,6 +22,8 @@ class Args(Tap):
     concurrency: int = 16
     seed: int = 261010
     canonical_only: bool = False
+    audit_effort: str = "medium"
+    audit_tokens: int = 4800
 
 
 def resolve(rows: list[dict], as_of: int, entity: str) -> dict[str, Any]:
@@ -463,7 +465,7 @@ async def main(args: Args) -> None:
         async def worker(case: dict) -> None:
             nonlocal done
             async with semaphore:
-                await generate_one(client, case, args.output, audit_effort="medium", audit_tokens=4800)
+                await generate_one(client, case, args.output, audit_effort=args.audit_effort, audit_tokens=args.audit_tokens)
                 done += 1
                 if done % 32 == 0:
                     print("PROGRESS", done, "accepted", len(list((args.output / "accepted").glob("*.json"))), flush=True)

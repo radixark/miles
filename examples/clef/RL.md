@@ -35,8 +35,9 @@ collapse, reward variance, constant groups, entropy, KL, and clipping fraction.
 
 The initial reference probabilities are cached in `output_dir/reference.json`.
 Save this file with checkpoints: resuming requires copying it to the resumed
-output directory. Resume validates its content digest, initial model file
-digests, dataset digests, and optimizer/objective settings. A supervised native
+output directory on every node when output storage is local. Resume validates
+its content digest, initial model file digests, dataset digests, and
+optimizer/objective settings. A supervised native
 checkpoint is not an RL resume: use its HF export to initialize a new RL run
 with a fresh optimizer. Initial head loading is strict and handles the scalar
 shape conversion used by FSDP exports.

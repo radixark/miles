@@ -95,6 +95,18 @@ def main() -> None:
         cache, digest = reference_cache(model, [hard_label], 0, device, cache_root, False)
         cached, restored_digest = reference_cache(model, [hard_label], 0, device, cache_root, True)
         assert cached == cache and restored_digest == digest
+        # Simulate node-local storage with a separate directory per worker.
+        # Each worker represents local rank zero of a different machine.
+        node_cache = cache_root / f"node_{dist.get_rank()}"
+        node_cache.mkdir()
+        local_rank = os.environ["LOCAL_RANK"]
+        os.environ["LOCAL_RANK"] = "0"
+        node_reference, node_digest = reference_cache(model, [hard_label], 0, device, node_cache, False)
+        node_restored, restored_node_digest = reference_cache(model, [hard_label], 0, device, node_cache, True)
+        os.environ["LOCAL_RANK"] = local_rank
+        assert node_reference == node_restored == cache and node_digest == restored_node_digest == digest
+        (node_cache / "reference.json").unlink()
+        node_cache.rmdir()
         batch = collate_records([label.encoded], pad_token_id=0, device=device)
         with torch.no_grad():
             fields = model(batch)[0]
