@@ -3,14 +3,14 @@ import re
 
 import torch
 
-from miles.kernels.quant.fp8_blockwise import fp8_blockwise_cast
-
-from ...sglang import (
+from miles.backends.megatron_utils.sglang import (
+    is_layer_skipped,
     per_block_cast_to_fp8,
     quant_weight_ue8m0,
     should_deepgemm_weight_requant_ue8m0,
     transform_scale_ue8m0,
 )
+from miles.kernels.quant.fp8_blockwise import fp8_blockwise_cast
 
 
 def quantize_params_fp8(args, megatron_name, converted_named_params, quantization_config):
@@ -19,6 +19,11 @@ def quantize_params_fp8(args, megatron_name, converted_named_params, quantizatio
     assert fmt == "e4m3", f"Unsupported FP8 format: {fmt}"
     assert quantization_config["activation_scheme"] == "dynamic"
     weight_block_size = quantization_config.get("weight_block_size", None)
+    ignored_layers = []
+    for name in quantization_config.get("ignored_layers", quantization_config.get("modules_to_not_convert", [])) or []:
+        name = name.removeprefix("model.")
+        ignored_layers.extend((name, f"model.{name}"))
+    packed_modules_mapping = quantization_config.get("packed_modules_mapping") or {}
 
     decoder_layers_pattern = r"module\.module\.decoder\.layers\.(\d+)\.(.+)"
     match = re.match(decoder_layers_pattern, megatron_name)
@@ -49,7 +54,11 @@ def quantize_params_fp8(args, megatron_name, converted_named_params, quantizatio
                 # TODO: find a clearer way.
                 if converted_name.endswith("_scale"):
                     continue
-                quantize_named_params.extend(_quantize_param(args, converted_name, param, weight_block_size))
+                quantize_named_params.extend(
+                    _quantize_param(
+                        args, converted_name, param, weight_block_size, ignored_layers, packed_modules_mapping
+                    )
+                )
 
             return quantize_named_params
 
@@ -64,7 +73,11 @@ def quantize_params_fp8(args, megatron_name, converted_named_params, quantizatio
         ]:
             quantize_named_params = []
             for converted_name, param in converted_named_params:
-                quantize_named_params.extend(_quantize_param(args, converted_name, param, weight_block_size))
+                quantize_named_params.extend(
+                    _quantize_param(
+                        args, converted_name, param, weight_block_size, ignored_layers, packed_modules_mapping
+                    )
+                )
 
             return quantize_named_params
 
@@ -101,7 +114,9 @@ def quantize_params_fp8(args, megatron_name, converted_named_params, quantizatio
     if rest in fp8_param_names:
         quantize_named_params = []
         for converted_name, param in converted_named_params:
-            quantize_named_params.extend(_quantize_param(args, converted_name, param, weight_block_size))
+            quantize_named_params.extend(
+                _quantize_param(args, converted_name, param, weight_block_size, ignored_layers, packed_modules_mapping)
+            )
 
         return quantize_named_params
 
@@ -109,8 +124,16 @@ def quantize_params_fp8(args, megatron_name, converted_named_params, quantizatio
     return converted_named_params
 
 
-def _quantize_param(args, name, weight, weight_block_size):
+def _quantize_param(args, name, weight, weight_block_size, ignored_layers, packed_modules_mapping):
     assert name.endswith(".weight"), f"Expected weight parameter, got {name}"
+    prefix = name.removesuffix(".weight")
+    if ".experts." in prefix:
+        # SGLang chooses one precision for the entire FusedMoE module.
+        prefix = prefix.split(".experts.", 1)[0] + ".experts"
+    # Honor the checkpoint's exclusions: rollout layers kept at their original
+    # precision must receive unquantized weights, without FP8 scales.
+    if ignored_layers and is_layer_skipped(prefix, ignored_layers, fused_mapping=packed_modules_mapping):
+        return [(name, weight)]
     FP8_MIN = torch.finfo(torch.float8_e4m3fn).min
     FP8_MAX = torch.finfo(torch.float8_e4m3fn).max
     if weight_block_size is not None:
