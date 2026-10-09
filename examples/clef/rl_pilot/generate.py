@@ -205,7 +205,12 @@ async def api_json(client: AsyncOpenAI, system: str, content: str, effort: str =
 async def generate_one(client: AsyncOpenAI, case: dict[str, Any], root: Path) -> None:
     path = root/'accepted'/f"{case['id']}.json"
     if path.exists():
-        if json.loads(path.read_text())['metadata']['ground_truth'] == case:
+        saved = json.loads(path.read_text())
+        if saved['metadata']['ground_truth'] == case:
+            return
+        if saved['metadata']['ground_truth'] == {k:v for k,v in case.items() if k != 'scenario_group'}:
+            saved['metadata']['ground_truth'] = case
+            path.write_text(json.dumps(saved)+'\n')
             return
         path.replace(root/'provisional'/path.name)
     traces: list[dict[str, Any]] = []
