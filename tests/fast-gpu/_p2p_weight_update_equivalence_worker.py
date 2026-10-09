@@ -1,6 +1,7 @@
-"""One case of test_p2p_s1_equivalence.py: two engines start from the same checkpoint; one takes sglang's own weight
-update, the other a p2p update (`ModelReplica` bytes written raw into its published storage) from the same HF
-tensors, twice in a row. Prints PASS when every tensor and scalar of the two engines is equal after each update."""
+"""One case of test_p2p_weight_update_equivalence.py: two engines start from the same checkpoint; one takes
+sglang's own weight update, the other a p2p update (`ModelReplica` bytes written raw into its published storage)
+from the same HF tensors, twice in a row. Prints PASS when every tensor and scalar of the two engines is equal
+after each update."""
 
 import argparse
 import json
