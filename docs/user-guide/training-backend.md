@@ -683,6 +683,20 @@ the activations split across the CP group. The `4layer` flavor is the validated 
 It needs an SGLang with GLM-5.3-Flash support (`docker.io/radixark/miles:glm53next`); the e2e
 cases `tests/e2e/torchtitan/test_glm53_flash_4layer_*.py` carry the SGLang flags.
 
+The full `flash` flavor (313B parameters) trains every parameter on **4 × 8 H200** with FSDP2 CPU
+offload: the fp32 weight, gradient and Adam state (16 bytes per parameter, 5.0 TB) does not fit on
+32 GPUs. The weight and gradient shards then fill most of a node's host RAM, so
+`--titan-optimizer-state-dir` keeps the Adam moments in one memory-mapped file per rank on
+node-local NVMe instead:
+
+```bash
+--titan-model-flavor flash \
+--fsdp-cpu-offload \
+--titan-optimizer-state-dir /scratch/glm53_optstate \
+--expert-model-parallel-size 32 \
+--gradient-checkpointing
+```
+
 ### Try it
 
 ```bash
