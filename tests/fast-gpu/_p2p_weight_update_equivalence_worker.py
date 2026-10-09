@@ -31,7 +31,7 @@ from miles.backends.training_utils.weight_update.protocols.utils.model_replica i
     build_model_replica,
     pack_into_buffers,
 )
-from miles.utils.fp8_kernel import blockwise_cast_to_fp8_triton
+from miles.kernels.quant.fp8_blockwise import fp8_blockwise_cast
 
 CUDA = torch.device("cuda")
 TP_SIZE = 2
@@ -244,7 +244,7 @@ def _quantize(
         if not _is_quantized(fmt, name, tuple(weight.shape)):
             quantized.append((name, weight))
         elif fmt == "fp8_block" and purpose == "checkpoint":
-            qweight, scale = blockwise_cast_to_fp8_triton(weight, [128, 128])
+            qweight, scale = fp8_blockwise_cast(weight, [128, 128])
             quantized += [(name, qweight), (name.replace(".weight", ".weight_scale_inv"), scale)]
         elif fmt == "fp8_block":
             quantized += quantizer_fp8._quantize_param(quantizer_args, name, weight, [128, 128])
