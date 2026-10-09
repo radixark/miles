@@ -1,7 +1,7 @@
 import { createAnatomy } from "./anatomy.js";
 import { api } from "./api.js";
 import { el, fmtNum } from "./app.js";
-import { divergingColor, drawChart, hideTooltip, sequentialColor, showTooltip } from "./charts.js";
+import { divergingColor, drawChart, extent, hideTooltip, sequentialColor, showTooltip } from "./charts.js";
 import { renderConversation, renderSampleChips } from "./conversation.js";
 
 // stat -> how to color a value: diverging stats define center/scale via values
@@ -22,11 +22,11 @@ function colorFor(stat, values) {
   if (spec.color) return spec.color;
   const finite = values.filter((v) => v !== null && Number.isFinite(v));
   if (spec.diverging) {
-    const scale = Math.max(...finite.map(Math.abs), 1e-9);
+    const scale = Math.max(extent(finite.map(Math.abs))[1], 1e-9);
     return (v) => divergingColor(v / scale);
   }
   const transformed = spec.negate ? finite.map((v) => -v) : finite;
-  const [lo, hi] = [Math.min(...transformed), Math.max(...transformed)];
+  const [lo, hi] = extent(transformed);
   return (v) => sequentialColor(((spec.negate ? -v : v) - lo) / Math.max(hi - lo, 1e-9));
 }
 

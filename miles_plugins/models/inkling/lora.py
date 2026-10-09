@@ -10,7 +10,18 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from miles.utils.lora.hf_lora_targets import resolve_hf_lora_targets
+from miles_plugins.models.normalization import rms_norm as _rmsnorm
+
 logger = logging.getLogger(__name__)
+
+
+def resolve_inkling_adapter_targets(hf_config, targets):
+    expected = resolve_hf_lora_targets(hf_config)
+    assert set(targets) == set(
+        expected
+    ), "Native Inkling LoRA requires its complete adapter layout; omit --target-modules and --exclude-modules"
+    return "all-linear"
 
 
 class InklingLoRAAdapter(nn.Module):
@@ -25,13 +36,6 @@ class InklingLoRAAdapter(nn.Module):
     def sharded_state_dict(self, prefix="", sharded_offsets=(), metadata=None):
         del prefix, sharded_offsets, metadata
         return {}
-
-
-def _rmsnorm(inputs: torch.Tensor, gamma: torch.Tensor, eps: float) -> torch.Tensor:
-    """Recompute the RMSNorm fused into TELayerNormColumnParallelLinear (eager, fp32 internals)."""
-    x = inputs.float()
-    x = x * torch.rsqrt(x.pow(2).mean(-1, keepdim=True) + eps)
-    return (x * gamma.float()).to(inputs.dtype)
 
 
 def _new_param(
@@ -373,7 +377,7 @@ def _apply_lm_head_lora(model, args, *, scale: float, dropout: float, a_init: st
 
 def apply_inkling_lora(model, args):
     """Attach Inkling LoRA to ONE built model chunk (before Float16Module / DDP wrapping)."""
-    from miles.backends.megatron_utils.lora_utils import patch_param_grad_buffer_for_colocate_mode_lora
+    from miles.backends.megatron_utils.lora.utils import patch_param_grad_buffer_for_colocate_mode_lora
 
     from miles_plugins.models.inkling.layers import InklingDenseMLP, InklingSelfAttention, InklingSharedExperts
 

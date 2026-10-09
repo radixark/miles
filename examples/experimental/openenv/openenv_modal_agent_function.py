@@ -43,6 +43,7 @@ the code each one steers.
 """
 
 import logging
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -60,7 +61,7 @@ logger = logging.getLogger(__name__)
 # backstops it per episode.
 #
 # Modal caps concurrent containers per plan; the shared backend caps in-flight
-# creates process-wide and retries throttled ones with jittered exponential
+# creates per rollout and retries throttled ones with jittered exponential
 # backoff (knobs: OPENENV_MODAL_CREATE_*).
 def _is_throttle_error(exc: BaseException) -> bool:
     """True when a sandbox create failed only because Modal was out of room.
@@ -84,7 +85,7 @@ def _is_throttle_error(exc: BaseException) -> bool:
 
 def _start_sandbox(task_id: str, tasks_dir: str) -> tuple[Any, str]:
     sandbox, url = tb2_sandbox_modal.create_task_sandbox(Path(tasks_dir) / task_id)
-    return sandbox.terminate, url
+    return partial(tb2_sandbox_modal.close_sandbox, sandbox), url
 
 
 BACKEND = common.SandboxBackend(

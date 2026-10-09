@@ -2,13 +2,14 @@
 
 import logging
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Literal
 
 import pydantic
 import yaml
 
 from miles.backends.sglang_utils.arguments import collect_eval_sglang_overrides
+from miles.utils.file_arg_utils import resolve_file_arg
+from miles.utils.lora.utils import is_multi_lora_enabled
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
 
 logger = logging.getLogger(__name__)
@@ -71,7 +72,7 @@ class _RawModelConfig(FrozenStrictBaseModel):
 class _RawSglangConfig(FrozenStrictBaseModel):
     """Configuration for SGLang engine deployment.
 
-    Loaded from ``--sglang-config`` YAML file.
+    Loaded from ``--sglang-config``: either a YAML file path or an inline ``base64:`` payload.
 
     **Config format**::
 
@@ -110,8 +111,8 @@ class _RawSglangConfig(FrozenStrictBaseModel):
     models: list[_RawModelConfig] = pydantic.Field(validation_alias=pydantic.AliasChoices("models", "sglang"))
 
     @classmethod
-    def from_yaml(cls, path: str) -> "_RawSglangConfig":
-        return cls.model_validate(yaml.safe_load(Path(path).read_text()))
+    def from_file_arg(cls, value: str) -> "_RawSglangConfig":
+        return cls.model_validate(yaml.safe_load(resolve_file_arg(value)))
 
     @staticmethod
     def from_prefill_num_servers(args) -> "_RawSglangConfig":
@@ -226,7 +227,11 @@ class ModelConfig(FrozenStrictBaseModel):
             effective_model_path = default_model_path
 
         update_weights = raw.update_weights
-        if update_weights is None:
+        if is_multi_lora_enabled(args):
+            assert update_weights is not True, "Tinker loads a frozen base; update_weights must be false"
+            assert effective_model_path == args.hf_checkpoint, "Tinker engines must load the trainer's base checkpoint"
+            update_weights = False
+        elif update_weights is None:
             if effective_model_path != args.hf_checkpoint:
                 logger.warning(
                     f"Model '{raw.name}' uses model_path='{effective_model_path}' which differs "
@@ -293,7 +298,7 @@ def _compute_raw_sglang_config(args) -> _RawSglangConfig:
     rollout_num_gpus = args.rollout_num_gpus or 0
 
     if getattr(args, "sglang_config", None) is not None:
-        config = _RawSglangConfig.from_yaml(args.sglang_config)
+        config = _RawSglangConfig.from_file_arg(args.sglang_config)
         expected = rollout_num_gpus + eval_num_gpus
         actual = config.total_num_gpus
         assert (

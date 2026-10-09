@@ -92,7 +92,7 @@ Both topologies use GSPO (`--advantage-estimator gspo --eps-clip 4e-4`); `--use-
 --rollout-num-gpus-per-engine 8
 --sglang-mem-fraction-static 0.8
 --sglang-ep-size 8
---sglang-cuda-graph-bs 1 2 4 8 16 24 ... 128
+--sglang-cuda-graph-bs-decode 1 2 4 8 16 24 ... 128
 
 --sglang-speculative-algorithm EAGLE
 --sglang-speculative-num-steps 2

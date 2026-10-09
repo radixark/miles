@@ -56,6 +56,8 @@ class ModelConfig:
     assistant_text_threshold: float = ASSISTANT_TEXT_MISMATCH_RATIO_THRESHOLD
     # Optional Anthropic-only override; None inherits the per-model threshold.
     anthropic_assistant_text_threshold: float | None = None
+    # Hard-gate tolerance for special_token_count mismatch ratio; 0 keeps it strict.
+    special_token_count_threshold: float = 0.0
     # Endpoint capability gate; unsupported families still run both OpenAI versions.
     verify_anthropic: bool = True
     # Required per-model Anthropic E2E contract.  The agent still derives the
@@ -112,6 +114,7 @@ def run_one(
         session_verify_cycles=cfg.cycles,
         tool_call_failure_mode=cfg.tool_call_failure_mode,
         assistant_text_threshold=assistant_text_threshold,
+        ci_tito_special_token_count_threshold=cfg.special_token_count_threshold,
         anthropic_intermediate_system_expectation=(
             cfg.anthropic_intermediate_system_expectation if endpoint == "anthropic" else None
         ),

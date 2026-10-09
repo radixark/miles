@@ -40,7 +40,7 @@ from miles.rollout.base_types import (
 from miles.rollout.filter_hub.base_types import MetricGatherer
 from miles.rollout.filter_hub.common_filters import apply_preput_filters
 from miles.rollout.generate_utils.prefill_logprobs import recompute_samples_rollout_logprobs_via_prefill
-from miles.utils.lora import LORA_ADAPTER_NAME, is_lora_enabled
+from miles.utils.lora.utils import LORA_ADAPTER_NAME, is_lora_enabled
 from miles.utils.types import Sample
 
 logger = logging.getLogger(__name__)
@@ -809,6 +809,7 @@ class VerifiersRolloutFn(BaseRolloutFn):
                             continue
                         await self._apply_miles_rewards(group)
                         all_groups.append(group)
+                        metrics.on_group_before_dynamic_filter(self.args, _flatten_samples(group))
                         filter_output = apply_preput_filters(
                             self.args,
                             self.dynamic_filter,

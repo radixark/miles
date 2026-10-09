@@ -15,17 +15,22 @@ class SessionServerConfig(FrozenStrictBaseModel):
     apply_chat_template_kwargs: dict[str, Any] | None
     use_rollout_routing_replay: bool
     use_rollout_indexer_replay: bool
+    use_sampling_support_replay: bool
     sglang_speculative_algorithm: str | None
     num_layers: int | None
     moe_router_topk: int | None
     save_debug_trajectory_data: str | None
     lora_rank: int
     lora_adapter_path: str | None
+    lora_train_only: bool
     use_session_server: bool | str | None
     session_message_matcher: str
     pause_generation_mode: str | None
     session_sample_picker_path: str | None
     session_sample_postprocessor_path: str | None
+    rollout_top_logprobs_num: int
+    rollout_sampling_logprobs_mode: str
+    rollout_temperature: float
 
 
 def compute_session_server_config(
@@ -43,15 +48,20 @@ def compute_session_server_config(
         apply_chat_template_kwargs=args.apply_chat_template_kwargs,
         use_rollout_routing_replay=args.use_rollout_routing_replay,
         use_rollout_indexer_replay=args.use_rollout_indexer_replay,
+        use_sampling_support_replay=args.use_sampling_support_replay,
         sglang_speculative_algorithm=args.sglang_speculative_algorithm,
         num_layers=getattr(args, "num_layers", None),
         moe_router_topk=getattr(args, "moe_router_topk", None),
         save_debug_trajectory_data=args.save_debug_trajectory_data,
         lora_rank=args.lora_rank,
         lora_adapter_path=args.lora_adapter_path,
+        lora_train_only=getattr(args, "lora_train_only", False),
         use_session_server=getattr(args, "use_session_server", None),
         session_message_matcher=getattr(args, "session_message_matcher", "strict"),
         pause_generation_mode=getattr(args, "pause_generation_mode", None),
         session_sample_picker_path=getattr(args, "session_sample_picker_path", None),
         session_sample_postprocessor_path=getattr(args, "session_sample_postprocessor_path", None),
+        rollout_top_logprobs_num=args.rollout_top_logprobs_num,
+        rollout_sampling_logprobs_mode=args.rollout_sampling_logprobs_mode,
+        rollout_temperature=getattr(args, "rollout_temperature", 1.0),
     )

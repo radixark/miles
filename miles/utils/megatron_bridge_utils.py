@@ -27,3 +27,13 @@ def patch_megatron_model(model):
     finally:
         if attribute_was_added:
             delattr(model_config, "share_embeddings_and_output_weights")
+
+
+def apply_dsa_backend_args(provider, args) -> None:
+    """Map --dsa-attention-backend onto the provider's dsa_attention_backend (bridge) or dsa_kernel_backend (main)."""
+    backend = getattr(args, "dsa_attention_backend", "megatron")
+    if hasattr(provider, "dsa_attention_backend"):
+        provider.dsa_attention_backend = backend
+    elif hasattr(provider, "dsa_kernel_backend"):
+        explicit = getattr(args, "dsa_kernel_backend", None)
+        provider.dsa_kernel_backend = explicit or {"tilelang": "tilelang", "megatron": "none"}[backend]

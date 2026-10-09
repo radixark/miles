@@ -1,3 +1,4 @@
+from contextlib import contextmanager
 from datetime import timedelta
 from typing import Any
 
@@ -33,6 +34,14 @@ def get_gloo_group():
     if GLOO_GROUP is None:
         raise RuntimeError("Gloo group has not been initialized. Call _init_gloo_group() first.")
     return GLOO_GROUP
+
+
+@contextmanager
+def one_rank_at_a_time():
+    for rank in range(dist.get_world_size()):
+        if rank == dist.get_rank():
+            yield
+        dist.barrier(group=get_gloo_group())
 
 
 # Copy from pytorch to allow creating multiple main groups.

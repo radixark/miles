@@ -34,7 +34,7 @@ HW_MAPPING = {
 #
 # CUDA suites derive from `hardware.CUDA_STAGES`, which also carries each
 # stage's arch, GPU count and runner labels; each has a matching workflow job in
-# .github/workflows/pr-test.yml.
+# .github/workflows/pr-test.yml or its B200 child workflow.
 CI_SUITES = {
     HWBackend.CPU: [
         "stage-a-cpu",
@@ -199,7 +199,10 @@ def build_cpu_pytest_cmd(filenames: list[str], continue_on_error: bool) -> list[
     `-x` so every file runs; pytest still exits non-zero if any failed, so the
     stage stays red.
     """
-    cmd = ["pytest", *filenames, "-v"]
+    # sorted so every directory is named in one run of arguments: pytest loads a directory's
+    # conftest once, and an argument list that returns to a directory after naming its parent
+    # leaves the tests of that second visit without the fixtures their own conftest defines
+    cmd = ["pytest", *sorted(filenames), "-v"]
     if not continue_on_error:
         cmd.append("-x")
     return cmd
@@ -233,10 +236,18 @@ def run_a_suite(args):
         absorb=policy.absorb,
     )
 
+    if args.test_file:
+        ci_tests = [test for test in ci_tests if test.filename == args.test_file]
+        assert len(ci_tests) == 1, f"Selected test is not enabled in this suite: {args.test_file}"
+
     if auto_partition_size:
         ci_tests = auto_partition(ci_tests, auto_partition_id, auto_partition_size)
 
     pretty_print_tests(args, policy, continue_on_error, ci_tests, skipped_tests)
+
+    if args.github_output:
+        with open(args.github_output, "a", encoding="utf-8") as output:
+            output.write(f"has_tests={str(bool(ci_tests)).lower()}\n")
 
     if len(ci_tests) == 0:
         print("No tests to run. Exiting with success.", flush=True)
@@ -294,6 +305,7 @@ def main():
         help="Hardware backend to run tests on.",
     )
     parser.add_argument("--suite", type=str, required=True, help="Test suite to run.")
+    parser.add_argument("--test-file", help="Execute one file from the selected suite and policy.")
     cadence_group = parser.add_mutually_exclusive_group()
     cadence_group.add_argument(
         "--cadence",
@@ -373,6 +385,10 @@ def main():
         ),
     )
     parser.add_argument(
+        "--github-output",
+        help="Append has_tests for the selected shard to a GitHub Actions output file; requires --list-only.",
+    )
+    parser.add_argument(
         "--match-all-labels",
         action="store_true",
         default=False,
@@ -384,6 +400,9 @@ def main():
         ),
     )
     args = parser.parse_args()
+
+    if args.github_output and not args.list_only:
+        parser.error("--github-output requires --list-only.")
 
     # Validate auto-partition arguments
     if (args.auto_partition_id is not None) != (args.auto_partition_size is not None):

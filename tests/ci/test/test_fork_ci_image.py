@@ -215,6 +215,11 @@ def source(tmp_path, identity):
     git("commit", "-qm", "base")
     base = git("rev-parse", "HEAD")
     (root / "docker/Dockerfile").write_text("FROM scratch\nLABEL pin=fixed\n")
+    (root / "tests/ci").mkdir(parents=True)
+    (root / "tests/ci/labels.py").write_text(
+        "raise RuntimeError('PR imports must not execute')\n"
+        "KNOWN_LABELS: dict[str, str] = {'megatron': 'Megatron tests'}\n"
+    )
     (root / "tests/e2e").mkdir(parents=True)
     (root / "tests/e2e/test_new.py").write_text(
         "raise RuntimeError('PR imports must not execute')\nregister_cuda_ci(est_time=1, suite='stage-b-2-gpu-h200', labels=['megatron'], hardware=['hopper'])\n"

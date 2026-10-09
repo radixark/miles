@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import argparse
-import dataclasses
 import functools
 import json
+import os
 from argparse import Namespace
 from typing import Any
 
@@ -17,7 +17,18 @@ from sglang.srt.server_args import ServerArgs
 
 from miles.backends.sglang_utils.server_args_utils import parse_server_args_argv, server_args_to_argv
 from miles.backends.sglang_utils.sglang_engine import _compute_server_args
-from miles.utils.workers.argv_utils import _actions_by_dest, _render_action_argv, _resolve_action
+from miles.utils.workers.argv_utils import _actions_by_dest, _record_field_names, _render_action_argv, _resolve_action
+
+
+@pytest.fixture(autouse=True)
+def _assert_sweep_restores_env():
+    # sglang writes tuning switches into the process environment while it validates a ServerArgs, and
+    # this file builds one per cli option, so anything reading os.environ afterwards reads the sweep
+    saved = dict(os.environ)
+    yield
+    os.environ.clear()
+    os.environ.update(saved)
+
 
 _FIELDS_WITHOUT_A_RENDERABLE_CLI: dict[str, str] = {
     "custom_sigquit_handler": "A Python-only callable hook; sglang registers no CLI option for it.",
@@ -25,6 +36,15 @@ _FIELDS_WITHOUT_A_RENDERABLE_CLI: dict[str, str] = {
     "uses_mamba_radix_cache": "Derived inside __post_init__; sglang registers no CLI option for it.",
     "_speculative_draft_quantization_explicitly_set": (
         "Derived inside __post_init__ and declared Arg(no_cli=True); sglang registers no CLI option for it."
+    ),
+    "_radix_eviction_policy_explicitly_set": (
+        "Derived during resolution and declared Arg(no_cli=True); sglang registers no CLI option for it."
+    ),
+    "_swa_full_tokens_ratio_explicitly_set": (
+        "Derived by the cache hook and declared Arg(no_cli=True); sglang registers no CLI option for it."
+    ),
+    "speculative_boundary_reduction": (
+        "Derived from boundary_reduction and declared Arg(no_cli=True); sglang registers no CLI option for it."
     ),
     "grpc_worker_threads": (
         "Env-only (SGLANG_GRPC_WORKER_THREADS) and declared Arg(no_cli=True); sglang registers no CLI option for it."
@@ -77,11 +97,7 @@ def _assert_roundtrips(server_args_dict: dict) -> None:
     parsed = parse_server_args_argv(server_args_to_argv(server_args_dict))
     device = server_args_dict.get("device") or parsed.device
     wanted = ServerArgs(**{**server_args_dict, "device": device})
-    differing = [
-        field.name
-        for field in dataclasses.fields(wanted)
-        if getattr(parsed, field.name) != getattr(wanted, field.name)
-    ]
+    differing = [name for name in _record_field_names(wanted) if getattr(parsed, name) != getattr(wanted, name)]
     assert differing == []
 
 
@@ -99,9 +115,10 @@ class TestServerArgsToArgv:
             assert argv.count(flag) == 1
 
     def test_an_unspecified_device_renders_the_auto_detected_accelerator(self, monkeypatch):
-        """An unset device renders the accelerator chosen by ServerArgs instead of the text None."""
+        """An unset low-level device renders the accelerator chosen by ServerArgs instead of the text None."""
         monkeypatch.setattr("miles.backends.sglang_utils.server_args_utils.get_device", lambda: "cuda")
-        server_args = _server_args(sglang_overrides={"device": None})
+        server_args = _server_args()
+        server_args["device"] = None
         argv = server_args_to_argv(server_args)
 
         assert server_args["device"] is None
@@ -188,7 +205,9 @@ class TestServerArgsToArgv:
     def test_lora_adapter_paths_roundtrip(self):
         """The name=path lora mapping survives the argv boundary."""
         server_args = _server_args(
-            args=_args(lora_rank=8, target_modules=["linear_qkv"], lora_adapter_path="/fake/adapter")
+            args=_args(
+                lora_rank=8, target_modules=["linear_qkv"], lora_adapter_path="/fake/adapter", debug_rollout_only=True
+            )
         )
         _assert_roundtrips(server_args)
 
@@ -216,14 +235,14 @@ class TestEveryServerArgsFieldIsRenderable:
         [
             (
                 pytest.param(
-                    field.name,
-                    marks=pytest.mark.xfail(reason=_FIELDS_WITHOUT_A_RENDERABLE_CLI[field.name], strict=True),
-                    id=field.name,
+                    name,
+                    marks=pytest.mark.xfail(reason=_FIELDS_WITHOUT_A_RENDERABLE_CLI[name], strict=True),
+                    id=name,
                 )
-                if field.name in _FIELDS_WITHOUT_A_RENDERABLE_CLI
-                else pytest.param(field.name, id=field.name)
+                if name in _FIELDS_WITHOUT_A_RENDERABLE_CLI
+                else pytest.param(name, id=name)
             )
-            for field in dataclasses.fields(ServerArgs)
+            for name in _record_field_names(ServerArgs)
         ],
     )
     def test_a_field_renders_to_argv_that_parses_back_to_the_same_value(self, field_name: str) -> None:
@@ -299,3 +318,8 @@ def _scalar_candidates(*, action: argparse.Action, default_value: object) -> lis
         return ["other-sweep-value" if default_value == "sweep-value" else "sweep-value"]
 
     return [1, "sweep-value", 1.0]
+
+
+def test_the_sweep_leaves_the_environment_as_it_found_it():
+    """A tuning switch left behind is read as the machine's own by every later test that consults it."""
+    assert os.environ.get("SGLANG_OPT_USE_CUSTOM_ALL_REDUCE_V2") is None

@@ -13,9 +13,10 @@ about turning that recipe into a running cloud sandbox:
       pays one cold build of the full chain (measured: ~70 s cold including
       the registry pull, ~9 s warm).
   ``create_task_sandbox(...)``  per-episode create: build-or-cache-hit the
-      image, start the env server as the sandbox's entrypoint, expose port
-      8000 through an encrypted tunnel, wait for /health, return
-      ``(sandbox, base_url)``. The sandbox carries the recipe's ownership tags.
+      image, start the env server as the sandbox's entrypoint, wait for Modal's
+      TCP readiness probe, expose port 8000 through an encrypted tunnel, verify
+      /health, return ``(sandbox, base_url)``. The sandbox carries the recipe's
+      ownership tags.
 
 Orphan reclamation differs from the sibling providers by design. A Modal
 sandbox's ``timeout`` is a hard ceiling that CANNOT be extended, so the
@@ -106,8 +107,10 @@ def task_resources(task_dir: Path) -> dict[str, float | int]:
     """Sandbox size from ``task.toml [environment]``.
 
     Modal bills per second on ``max(request, actual)``, so the request is the
-    task's stated requirement and nothing above it. There is no disk knob to
-    map ``storage_mb`` onto — Modal sizes sandbox disk itself.
+    task's stated requirement and nothing above it. Scalar CPU and memory
+    values set no hard limit, leaving the sandbox free to burst above that
+    request. There is no disk knob to map ``storage_mb`` onto — Modal sizes
+    sandbox disk itself.
     """
     cpus, memory_mb, _storage_mb = task_env_resources(task_dir)
     return {"cpu": float(cpus), "memory": memory_mb}
@@ -189,6 +192,14 @@ def _exit_detail(sandbox) -> str:
         return ""
 
 
+def close_sandbox(sandbox) -> None:
+    """Terminate one sandbox and release its client-side connection."""
+    try:
+        sandbox.terminate()
+    finally:
+        sandbox.detach()
+
+
 def create_task_sandbox(
     task_dir: Path,
     *,
@@ -200,7 +211,7 @@ def create_task_sandbox(
 ):
     """Create ONE per-episode sandbox for *task_dir*.
 
-    Returns ``(sandbox, base_url)``. Caller must ``sandbox.terminate()`` when
+    Returns ``(sandbox, base_url)``. Caller must ``close_sandbox(sandbox)`` when
     the episode ends. The first create for a task pays the image build (Modal
     builds as part of the create); later creates hit the layer cache.
 
@@ -216,7 +227,7 @@ def create_task_sandbox(
     materializes anyway is reclaimed by *idle_timeout*, since nothing will ever
     connect to it.
     """
-    from modal import Sandbox
+    from modal import Probe, Sandbox
 
     task_dir = Path(task_dir)
     cmd = server_cmd(command_timeout_s, default_task_id=task_dir.name)
@@ -229,6 +240,7 @@ def create_task_sandbox(
             timeout=int(ttl_s),
             idle_timeout=int(idle_timeout_s),
             tags=sandbox_labels(task_dir),
+            readiness_probe=Probe.with_tcp(_ENV_SERVER_PORT),
             **task_resources(task_dir),
         )
         if not _BUILD_LOGS:
@@ -243,13 +255,14 @@ def create_task_sandbox(
     sandbox = run_with_deadline(_create, create_timeout_s)
 
     try:
+        sandbox.wait_until_ready(timeout=max(1, int(ready_timeout_s)))
         url = base_url(sandbox)
         wait_server_ready(url, timeout_s=ready_timeout_s)
         return sandbox, url
     except Exception as e:
         detail = _exit_detail(sandbox)
         try:
-            sandbox.terminate()
+            close_sandbox(sandbox)
         except Exception:
             pass  # already gone, or the API is down; idle_timeout backstops it
         if detail:

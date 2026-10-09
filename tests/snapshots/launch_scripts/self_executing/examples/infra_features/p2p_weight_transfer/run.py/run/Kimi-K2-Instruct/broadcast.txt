@@ -96,7 +96,7 @@ MODEL_ARGS_LINE="$(python3 "<REPO_ROOT>/miles/utils/external_utils/model_args_ut
   --sglang-ep-size 32
   --sglang-dp-size 8
   --sglang-moe-dense-tp-size 1
-  --sglang-cuda-graph-bs 1 2 4 8 16
+  --sglang-cuda-graph-bs-decode 1 2 4 8 16
   --sglang-enable-dp-attention
   --sglang-enable-dp-lm-head
   --sglang-server-concurrency 1024

@@ -195,7 +195,7 @@ def test_run_agent_runs_six_turns_and_checks_canonical_records(
         {"type": "none"},
     ] * 3
     assert all(payload["model"] == "/models/test" for _, payload in posted)
-    assert all(payload["max_tokens"] == 1024 for _, payload in posted)
+    assert all(payload["max_tokens"] == 2048 for _, payload in posted)
     assert all(payload["stream"] is False for _, payload in posted)
     assert all(payload["stop_sequences"] == ["<stop>"] for _, payload in posted)
     assert posted[0][1]["tools"][0]["input_schema"]["required"] == ["location"]

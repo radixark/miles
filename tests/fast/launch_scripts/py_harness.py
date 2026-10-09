@@ -13,8 +13,9 @@ from types import ModuleType
 from tests.fast.launch_scripts.sh_harness import REPO_ROOT, sanitize
 from tests.fast.utils.command_recorder import record_commands
 
-import miles.utils.external_utils.command_utils as command_utils
-from miles.utils.external_utils.model_args_utils import import_module_from_path
+from miles.utils.external_utils import command_utils
+from miles.utils.external_utils.command_utils import base_backend
+from miles.utils.external_utils.model_args_utils import _import_module_from_path
 
 FROZEN_RUN_ID = "260101-000000-000"
 FROZEN_HARDWARE = "H200"
@@ -71,7 +72,9 @@ class PyLaunchScript:
 
 
 def iter_py_launch_scripts() -> list[PyLaunchScript]:
-    paths = sorted((REPO_ROOT / "scripts").rglob("run_*.py"))
+    paths = sorted(
+        [*(REPO_ROOT / "scripts").rglob("run_*.py"), REPO_ROOT / "examples/multi_lora/serve_qwen3_30b_a3b_tinker.py"]
+    )
     return [PyLaunchScript(path=path, entrypoints=tuple(_entrypoint_names(path))) for path in paths]
 
 
@@ -125,7 +128,7 @@ def freeze_environment(monkeypatch, hardware: str = FROZEN_HARDWARE) -> None:
         monkeypatch.setenv(key, value)
     for key in CLEARED_ENV:
         monkeypatch.delenv(key, raising=False)
-    monkeypatch.setattr(command_utils, "detect_hardware", lambda: hardware)
+    monkeypatch.setattr(base_backend, "detect_hardware", lambda: hardware)
 
 
 def install_command_recorder(monkeypatch) -> Recording:
@@ -143,7 +146,7 @@ def install_command_recorder(monkeypatch) -> Recording:
 
 def import_launch_script(path: Path) -> ModuleType:
     name = "miles_launch_script_" + path.relative_to(REPO_ROOT).with_suffix("").as_posix().replace("/", "_")
-    return import_module_from_path(path, name)
+    return _import_module_from_path(path, name)
 
 
 @contextmanager

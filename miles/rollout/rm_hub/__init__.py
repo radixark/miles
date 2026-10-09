@@ -5,7 +5,6 @@ import random
 import aiohttp
 
 from miles.utils.function_registry import load_function
-from miles.utils.multi_lora import is_multi_lora_enabled
 from miles.utils.types import Sample
 
 from .deepscaler import get_deepscaler_rule_based_reward, get_gemma_math_reward
@@ -101,7 +100,7 @@ async def batched_async_rm(
             sample.reward = reward
         return None
 
-    if args.custom_rm_path is not None and not is_multi_lora_enabled(args):
+    if args.custom_rm_path is not None:
         rm_function = load_function(args.custom_rm_path)
         return await rm_function(args, samples, **kwargs)
     tasks = [async_rm(args, sample, **kwargs) for sample in samples]

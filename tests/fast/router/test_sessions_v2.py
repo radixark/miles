@@ -26,7 +26,7 @@ from miles.rollout.session.v2 import core as session_core_v2
 from miles.utils.chat_template_utils.tito_tokenizer import TITOTokenizer
 from miles.utils.function_registry import function_registry
 from miles.utils.http_utils import find_available_port
-from miles.utils.lora import LORA_ADAPTER_NAME
+from miles.utils.lora.utils import LORA_ADAPTER_NAME
 from miles.utils.test_utils.mock_sglang_server import MockSGLangServer, ProcessResult, with_mock_server
 from miles.utils.test_utils.uvicorn_thread_server import UvicornThreadServer
 
@@ -47,6 +47,9 @@ def _serve_router(extra_args: dict | None = None):
             "tito_model": "default",
             "use_rollout_routing_replay": False,
             "use_rollout_indexer_replay": False,
+            "use_sampling_support_replay": False,
+            "rollout_top_logprobs_num": 0,
+            "rollout_sampling_logprobs_mode": "selected",
             "sglang_speculative_algorithm": None,
             "num_layers": None,
             "moe_router_topk": None,
@@ -56,7 +59,7 @@ def _serve_router(extra_args: dict | None = None):
             "use_session_server": "v2",
             "session_server_instance_id": uuid.uuid4().hex,
             "pause_generation_mode": "retract",
-            "session_sample_picker_path": "miles.rollout.session.v2.picker_hub.drop_retries",
+            "session_sample_picker_path": "miles.rollout.session.v2.picker_hub.drop_same_prompt_retries",
             "session_sample_postprocessor_path": "miles.rollout.session.v2.postprocessor_hub.default_postprocess",
         }
         args_values.update(extra_args or {})
@@ -98,8 +101,7 @@ def router_env():
         choice["meta_info"] = {
             "output_token_logprobs": output_token_logprobs,
             "completion_tokens": len(output_token_logprobs),
-            # R3 replay payloads: must reach the session record but never the
-            # client-facing chat response (see _strip_replay_payloads).
+            # Replay payloads stay in the record along with the rest of meta_info.
             "routed_experts": [[0, 1], [2, 3]],
             "indexer_topk": [[4], [5]],
         }
@@ -168,9 +170,12 @@ def test_proxy_chat_postprocesses_completion_before_commit(router_env, monkeypat
 
     assert response.status_code == 200
     assert response.json()["choices"][0]["message"]["reasoning_content"] == "parsed"
+    assert "meta_info" not in response.json()["choices"][0]
     assert len(calls) == 1
     assert calls[0][2]
     assert committed_messages == [{**calls[0][1], "reasoning_content": "parsed", "_server_state": "stored"}]
+    record = requests.get(f"{router_env.url}/sessions/{session_id}", timeout=5.0).json()["records"][0]
+    assert record["response"]["choices"][0]["meta_info"] == calls[0][0]["meta_info"]
 
 
 class TestHealth:
@@ -195,13 +200,13 @@ class TestIndexerReplayWiring:
             assert response.status_code == 200
             assert env.backend.request_log[-1]["return_indexer_topk"] is True
 
-    def test_without_indexer_replay_the_backend_request_omits_indexer_topk(self, router_env):
-        """The flag comes from config rather than being hardcoded, so a plain server never asks for it."""
+    def test_without_indexer_replay_the_backend_request_sends_false_indexer_topk(self, router_env):
+        """The flag comes from config rather than being hardcoded: a plain server sends an explicit False."""
         session_id = _create_session(router_env.url)
         response = _post_chat(router_env.url, session_id, {"messages": [{"role": "user", "content": "hi"}]})
 
         assert response.status_code == 200
-        assert "return_indexer_topk" not in router_env.backend.request_log[-1]
+        assert router_env.backend.request_log[-1]["return_indexer_topk"] is False
 
 
 def _keep_all_picker(leaf_samples, _session_metadata):
@@ -210,7 +215,7 @@ def _keep_all_picker(leaf_samples, _session_metadata):
 
 def test_concurrent_requests_from_same_parent_commit_siblings():
     """Successful concurrent generations from one parent are both collected."""
-    picker_path = "miles.rollout.session.v2.picker_hub.drop_retries"
+    picker_path = "miles.rollout.session.v2.picker_hub.drop_same_prompt_retries"
     with function_registry.temporary(picker_path, _keep_all_picker):
         with _serve_router() as env:
             session_id = _create_session(env.url)
@@ -391,7 +396,7 @@ class TestRollbackPins:
         assert resend.status_code == 200
         assert len(self._get(router_env.url, session_id)["records"]) == 2
 
-    def test_disallowed_append_role_400_with_rollback_side_effect(self, router_env):
+    def test_disallowed_append_role_400_has_no_side_effect(self, router_env):
         session_id, a1, _ = self._two_turn_session(router_env)
 
         resp = _post_chat(
@@ -401,10 +406,10 @@ class TestRollbackPins:
         assert resp.status_code == 400
         error = resp.json()["error"]
         assert error.endswith("; the selected TITO fixed template does not support appending this role")
-        # Characterization: today the rollback mutates BEFORE the append-only
-        # check rejects, and the 400 leaves the rolled-back state behind. The
-        # classify/apply split must keep this order.
-        assert len(self._get(router_env.url, session_id)["records"]) == 1
+        # Attaching is a pure lookup and nothing committed, so the served chain
+        # still ends at the second generation (v1's destructive rollback differs;
+        # see the same pin in test_sessions.py).
+        assert len(self._get(router_env.url, session_id)["records"]) == 2
 
     def test_collect_samples_after_rollback_single_sample(self, router_env):
         from miles.rollout.session.samples.codec import decode_samples_and_merge_input_sample

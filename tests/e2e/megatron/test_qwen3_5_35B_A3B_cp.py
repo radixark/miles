@@ -8,7 +8,7 @@ import os
 
 from tests.ci.ci_register import register_cuda_ci
 
-import miles.utils.external_utils.command_utils as U
+from miles.utils.external_utils import command_utils
 
 # FIXME: fix this
 register_cuda_ci(
@@ -17,6 +17,7 @@ register_cuda_ci(
     labels=["megatron"],
     hardware=["hopper", "blackwell"],
     disabled="Flaky; temporarily disabled to validate PR correctness",
+    num_gpus=8,
 )
 
 MODEL_NAME = "Qwen3.5-35B-A3B"
@@ -25,6 +26,7 @@ NUM_GPUS = 8
 
 
 def prepare():
+    U = command_utils.default_config().create_backend()
     U.exec_command_cpu("mkdir -p /root/models /root/datasets")
     U.exec_command_cpu(f"hf download Qwen/{MODEL_NAME} --local-dir /root/models/{MODEL_NAME}")
     U.hf_download_dataset("zhuzilin/dapo-math-17k")
@@ -34,6 +36,7 @@ def prepare():
 
 def _execute_with_cp(cp_size: int):
     """Run a short training loop with the given context-parallel size."""
+    U = command_utils.default_config().create_backend()
     assert NUM_GPUS % cp_size == 0
     ep_size = NUM_GPUS // cp_size
 
@@ -46,7 +49,7 @@ def _execute_with_cp(cp_size: int):
         "--apply-chat-template "
         "--rollout-shuffle "
         "--rm-type deepscaler "
-        "--num-rollout 3 "
+        "--num-rollout 2 "
         "--rollout-batch-size 8 "
         "--n-samples-per-prompt 8 "
         "--rollout-max-response-len 8192 "
@@ -110,7 +113,7 @@ def _execute_with_cp(cp_size: int):
         # SGLang requires extra_buffer + SGLANG_ENABLE_SPEC_V2=1 to combine
         # speculative decoding with radix cache on Qwen3.5MoE; the prod
         # script run_qwen3_5_35b_a3b_mtp.py already pairs these two.
-        "--sglang-mamba-scheduler-strategy extra_buffer "
+        "--sglang-mamba-radix-cache-strategy extra_buffer "
     )
 
     mtp_args = "--enable-mtp-training " "--mtp-num-layers 1 " "--mtp-loss-scaling-factor 0.2 "
@@ -135,7 +138,7 @@ def _execute_with_cp(cp_size: int):
         f"{rollout_args} "
         f"{optimizer_args} "
         f"{grpo_args} "
-        f"{U.get_default_wandb_args(__file__)} "
+        f"{command_utils.get_default_wandb_args(__file__)} "
         f"{perf_args} "
         f"{eval_args} "
         f"{sglang_args} "

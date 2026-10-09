@@ -38,7 +38,7 @@ from typing import Literal
 
 import typer
 
-import miles.utils.external_utils.command_utils as U
+from miles.utils.external_utils import command_utils
 
 _MODEL_NAMES = Literal[
     "Qwen3-4B",
@@ -78,10 +78,8 @@ _RECIPES: dict[str, _Recipe] = {
         0.7,
         True,
         num_rollout=5,
-        extra_sglang_args=f"--sglang-cuda-graph-bs {_QWEN3_32B_CUDA_GRAPH_BS} ",
+        extra_sglang_args=f"--sglang-cuda-graph-bs-decode {_QWEN3_32B_CUDA_GRAPH_BS} ",
     ),
-    # SGLang TP>1 produces garbage output for Qwen3.5 on 0.5.9, which miles still pins
-    # (https://github.com/sgl-project/sglang/issues/21039), hence one GPU per engine.
     "Qwen3.5-4B": _Recipe("qwen3.5-4B", 2, 9216, 1, 0.7, False),
     "Qwen3.5-9B": _Recipe("qwen3.5-9B", 2, 9216, 1, 0.6, False),
     "Qwen3.5-27B": _Recipe("qwen3.5-27B", 4, 8192, 1, 0.5, True),
@@ -91,8 +89,8 @@ _RECIPES: dict[str, _Recipe] = {
 
 
 @dataclass
-class ScriptArgs(U.ExecuteTrainConfig):
-    run_id: str = U.create_run_id()
+class ScriptArgs(command_utils.ExecuteTrainConfig):
+    run_id: str = command_utils.create_run_id()
     model_name: _MODEL_NAMES = "Qwen3-4B"
     num_gpus_per_node: int = 8
     cuda_visible_devices: str = ""
@@ -110,6 +108,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
 
 
 def execute(args: ScriptArgs):
+    U = args.create_backend()
     if args.cuda_visible_devices:
         # exported rather than passed along: ray reads it when it starts the head
         os.environ["CUDA_VISIBLE_DEVICES"] = args.cuda_visible_devices
@@ -212,7 +211,7 @@ def execute(args: ScriptArgs):
         f"{rollout_args} "
         f"{optimizer_args} "
         f"{grpo_args} "
-        f"{U.get_default_wandb_args(__file__, run_id=args.run_id)} "
+        f"{command_utils.get_default_wandb_args(__file__, run_id=args.run_id)} "
         f"{perf_args} "
         f"{eval_args} "
         f"{sglang_args} "
@@ -222,14 +221,13 @@ def execute(args: ScriptArgs):
 
     U.execute_train(
         train_args=train_args,
-        config=args,
         num_gpus_per_node=args.num_gpus_per_node,
         megatron_model_type=args.recipe.megatron_model_type,
         megatron_path=args.megatron_path,
     )
 
 
-@U.dataclass_cli
+@command_utils.dataclass_cli
 def main(args: ScriptArgs):
     execute(args)
 

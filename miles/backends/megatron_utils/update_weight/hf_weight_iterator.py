@@ -1,8 +1,10 @@
 """Megatron implementations' shared base and factory for the backend-neutral
 HF weight iterator API."""
 
+import json
 import logging
 import math
+import os
 from abc import abstractmethod
 from argparse import Namespace
 from collections.abc import Sequence
@@ -12,13 +14,12 @@ import torch.distributed as dist
 from megatron.core.utils import unwrap_model
 
 from miles.backends.training_utils.parallel import get_parallel_state
-from miles.backends.training_utils.weight_update.hf_weight_iterator import (
-    HfWeightIteratorBase,
-    WeightUpdatePlacement,
-    resolve_placement,
-)
+from miles.backends.training_utils.weight_update.hf_weight_iterator import HfWeightIteratorBase, WeightUpdatePlacement
 from miles.backends.training_utils.weight_update.hf_weight_iterator.atomic_groups import get_hf_atomic_update_groups
-from miles.utils.lora import is_lora_weight_name
+from miles.backends.training_utils.weight_update.hf_weight_iterator.checkpoint_towers import (
+    iter_checkpoint_tower_units,
+)
+from miles.utils.lora.utils import is_lora_weight_name
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +29,12 @@ class MegatronHfWeightIteratorBase(HfWeightIteratorBase):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        self.packed_weight_basenames = (
+            get_packed_weight_basenames(self.args.hf_checkpoint)
+            if self.quantization_config is not None
+            and self.quantization_config["quant_method"] == "compressed-tensors"
+            else None
+        )
         trainer_has_mtp = bool(unwrap_model(self.model)[0].config.mtp_num_layers)
         if self.args.sglang_speculative_algorithm and not trainer_has_mtp:
             self.weight_update_selector = "target"
@@ -35,7 +42,7 @@ class MegatronHfWeightIteratorBase(HfWeightIteratorBase):
     def _hf_atomic_update_groups(self):
         return get_hf_atomic_update_groups(self.model_name, q_lora_rank=self.args.q_lora_rank)
 
-    def _iter_hf_adapter_units(self, lora_name, adapter, *, materialize):
+    def _iter_hf_adapter_units(self, adapter, *, materialize):
         """Both megatron exporters are PP-local after gathering TP/EP; the PP
         gather runs only where the resolved placement asks for it."""
         named_tensors = self._export_pp_local_lora(adapter)
@@ -46,16 +53,12 @@ class MegatronHfWeightIteratorBase(HfWeightIteratorBase):
         if not materialize:
             return
         if not named_tensors:
-            raise RuntimeError(
-                f"LoRA weight sync failed: the adapter export produced zero tensors"
-                f"{f' for adapter {adapter!r}' if adapter is not None else ''}. "
-                "This usually means the Megatron-Bridge or SGLang version is incompatible."
-            )
-        if not any(is_lora_weight_name(name) for name, _tensor in named_tensors):
+            raise RuntimeError("LoRA weight sync failed: the adapter export produced zero tensors")
+        if not any(is_lora_weight_name(name) for name, _ in named_tensors):
             raise RuntimeError("LoRA weight sync failed: the adapter export contains no lora_A/lora_B names.")
         while named_tensors:
             hf_name, tensor = named_tensors.pop(0)
-            yield [(f"{lora_name}:{hf_name}", tensor)]
+            yield [(hf_name, tensor)]
 
     @abstractmethod
     def _export_pp_local_lora(self, adapter) -> list[tuple[str, torch.Tensor]]:
@@ -78,13 +81,22 @@ def get_hf_weight_iterator(
         "bridge": HfWeightIteratorBridge,
     }[args.megatron_to_hf_mode]
 
-    return cls(
+    return cls.build(
         args,
         model,
-        placement=resolve_placement(required_placement, cls.forced_placement),
+        required_placement=required_placement,
         model_name=model_name,
         quantization_config=quantization_config,
     )
+
+
+def get_packed_weight_basenames(hf_checkpoint: str) -> set[str]:
+    """Base names the checkpoint stores as compressed-tensors `weight_packed`; the quantizer
+    re-quantizes exactly these, since the published `ignore` list is written for loaders and
+    leaves out BF16 weights such as routers, residual projections and the vision tower."""
+    with open(os.path.join(hf_checkpoint, "model.safetensors.index.json")) as index_file:
+        names = json.load(index_file)["weight_map"]
+    return {n.removesuffix(".weight_packed") for n in names if n.endswith(".weight_packed")}
 
 
 def _gather_pp_full_adapter(
@@ -126,44 +138,7 @@ def _gather_pp_full_adapter(
     return sorted(merged.items())
 
 
-_MM_TOWER_CACHE: list[tuple[str, "torch.Tensor"]] | None = None
-
-
 def _iter_mm_tower_units(args, *, materialize):
-    """Transitional: Inkling MM trains only the language model; the frozen
-    vision/audio towers are deliberately unregistered trainer-side (ckpt
-    compat) and exist only on pre_process ranks, so the boot checkpoint is the
-    uniform source every rank can re-send from (loads are idempotent).
-    Goes away when the towers become real megatron params (Kimi-style) or the
-    engine keeps them across offload."""
-    global _MM_TOWER_CACHE
     if "inkling_mm_model_provider" not in (args.custom_model_provider_path or ""):
         return
-    if not materialize:
-        return
-    if _MM_TOWER_CACHE is None:
-        import json
-        import os
-
-        from safetensors import safe_open
-
-        ckpt_dir = args.hf_checkpoint
-        with open(os.path.join(ckpt_dir, "model.safetensors.index.json"), encoding="utf-8") as f:
-            weight_map = json.load(f)["weight_map"]
-        tower_keys = sorted(
-            k
-            for k in weight_map
-            if ".visual." in f".{k}" or ".audio." in f".{k}" or k.startswith(("visual.", "audio."))
-        )
-        by_shard: dict[str, list[str]] = {}
-        for k in tower_keys:
-            by_shard.setdefault(weight_map[k], []).append(k)
-        cache = []
-        for shard, keys in by_shard.items():
-            with safe_open(os.path.join(ckpt_dir, shard), framework="pt", device="cpu") as f:
-                for k in keys:
-                    cache.append((k, f.get_tensor(k)))
-        logger.info("mm tower sync: caching %d tower tensors from %s", len(cache), ckpt_dir)
-        _MM_TOWER_CACHE = cache
-    for name, tensor in _MM_TOWER_CACHE:
-        yield [(name, tensor.to(torch.cuda.current_device()))]
+    yield from iter_checkpoint_tower_units(args.hf_checkpoint, materialize=materialize)

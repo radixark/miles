@@ -49,8 +49,13 @@ class _FakeSandbox:
         self._exit_code = exit_code
         self.stdout = types.SimpleNamespace(read=lambda: output)
         self.terminated = False
+        self.detached = False
+        self.ready_timeout = None
         self.tunnel_timeout = None
         self._tunnel_url = tunnel_url
+
+    def wait_until_ready(self, *, timeout=300):
+        self.ready_timeout = timeout
 
     def tunnels(self, timeout=50):
         self.tunnel_timeout = timeout
@@ -58,6 +63,9 @@ class _FakeSandbox:
 
     def terminate(self):
         self.terminated = True
+
+    def detach(self):
+        self.detached = True
 
     def poll(self):
         return self._exit_code
@@ -71,6 +79,12 @@ class _FakeSandboxCls:
     def create(*args, **kwargs):
         _FakeSandboxCls.created = {"args": args, "kwargs": kwargs}
         return _FakeSandboxCls.instance
+
+
+class _FakeProbe:
+    @staticmethod
+    def with_tcp(port, **kwargs):
+        return ("tcp", port, kwargs)
 
 
 class _FakeApp:
@@ -89,6 +103,7 @@ def fake_modal(monkeypatch):
     _FakeSandboxCls.instance = _FakeSandbox()
     mod = types.ModuleType("modal")
     mod.Image = _FakeImage
+    mod.Probe = _FakeProbe
     mod.Sandbox = _FakeSandboxCls
     mod.App = _FakeApp
     monkeypatch.setitem(sys.modules, "modal", mod)
@@ -126,9 +141,8 @@ def test_task_image_pulls_anonymously_by_default(fake_modal):
 
 
 def test_task_resources_floors_and_omits_disk(tmp_path):
-    """Modal is billed on max(request, actual) so the request tracks task.toml
-    (floored by the recipe); storage_mb has no Modal counterpart and must not
-    leak in as an unexpected kwarg."""
+    """Scalar requests track task.toml without adding a hard burst limit;
+    storage_mb has no Modal counterpart and must not leak into create."""
     (tmp_path / "task.toml").write_text("[environment]\ncpus = 4\nmemory_mb = 8192\nstorage_mb = 20480\n")
     assert sandbox.task_resources(tmp_path) == {"cpu": 4.0, "memory": 8192}
 
@@ -167,7 +181,9 @@ def test_create_passes_the_lifetime_and_ownership_contract(fake_modal):
     assert kwargs["timeout"] == 1200
     assert kwargs["idle_timeout"] == 120
     assert kwargs["tags"] == {"openenv-tbench2-task": "regex-chess"}
+    assert kwargs["readiness_probe"] == ("tcp", 8000, {})
     assert kwargs["cpu"] == 2.0 and kwargs["memory"] == 4096
+    assert sandbox_obj.ready_timeout == 300
     assert not sandbox_obj.terminated
 
 
@@ -193,6 +209,19 @@ def test_create_terminates_the_sandbox_when_the_server_never_comes_up(fake_modal
     with pytest.raises(RuntimeError, match="no module named tbench2_env"):
         sandbox.create_task_sandbox(Path("/tasks/regex-chess"))
     assert _FakeSandboxCls.instance.terminated
+    assert _FakeSandboxCls.instance.detached
+
+
+def test_create_cleans_up_when_the_readiness_probe_fails(fake_modal, monkeypatch):
+    def fail_readiness(*, timeout=300):
+        raise RuntimeError("readiness timed out")
+
+    monkeypatch.setattr(_FakeSandboxCls.instance, "wait_until_ready", fail_readiness)
+
+    with pytest.raises(RuntimeError, match="readiness timed out"):
+        sandbox.create_task_sandbox(Path("/tasks/t"))
+    assert _FakeSandboxCls.instance.terminated
+    assert _FakeSandboxCls.instance.detached
 
 
 def test_create_does_not_read_the_stream_of_a_live_sandbox(fake_modal, monkeypatch):
@@ -213,6 +242,23 @@ def test_create_does_not_read_the_stream_of_a_live_sandbox(fake_modal, monkeypat
     with pytest.raises(RuntimeError, match="health check timed out"):
         sandbox.create_task_sandbox(Path("/tasks/t"))
     assert _FakeSandboxCls.instance.terminated
+    assert _FakeSandboxCls.instance.detached
+
+
+def test_close_terminates_and_detaches(fake_modal):
+    sandbox.close_sandbox(_FakeSandboxCls.instance)
+    assert _FakeSandboxCls.instance.terminated
+    assert _FakeSandboxCls.instance.detached
+
+
+def test_close_detaches_when_termination_fails(fake_modal, monkeypatch):
+    def fail_termination():
+        raise RuntimeError("terminate failed")
+
+    monkeypatch.setattr(_FakeSandboxCls.instance, "terminate", fail_termination)
+    with pytest.raises(RuntimeError, match="terminate failed"):
+        sandbox.close_sandbox(_FakeSandboxCls.instance)
+    assert _FakeSandboxCls.instance.detached
 
 
 def test_create_enforces_the_build_wall_clock(fake_modal, monkeypatch):

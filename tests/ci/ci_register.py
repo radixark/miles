@@ -25,7 +25,7 @@ _POSITIONAL_PARAMS = ("est_time", "suite")
 # All accepted keyword arguments (in addition to the positional pair above).
 # `hardware` is CUDA-only; CPU has no GPU generation and ROCm is a separate
 # backend rather than a CUDA arch.
-_VALID_KWARGS = frozenset({"est_time", "suite", "labels", "nightly", "disabled", "hardware"})
+_VALID_KWARGS = frozenset({"est_time", "suite", "labels", "nightly", "disabled", "hardware", "num_gpus"})
 
 _REGISTER_NAMES = frozenset({"register_cpu_ci", "register_cuda_ci", "register_rocm_ci"})
 
@@ -53,6 +53,12 @@ class CIRegistry:
     # convention (currently for tests/fast/ files that declare no register
     # call); False for every entry parsed from a register_*_ci() call.
     implicit: bool = False
+    num_gpus: int | None = None
+
+    @property
+    def required_gpus(self):
+        # Older source snapshots declare their GPU budget through the home suite.
+        return self.num_gpus if self.num_gpus is not None else CUDA_STAGES[self.suite].num_gpus
 
 
 def register_cpu_ci(
@@ -81,6 +87,7 @@ def register_cuda_ci(
     *,
     labels: list[str],
     hardware: list[str],
+    num_gpus: int | None = None,
     nightly: bool = False,
     disabled: str | None = None,
 ):
@@ -93,7 +100,8 @@ def register_cuda_ci(
     test supports, e.g. `["hopper", "blackwell"]`. It is required: a default
     would silently claim a capability nobody decided. `suite` must name a stage
     on the first supported arch, so a test's home stage is where it runs when
-    nothing asks for a different one.
+    nothing asks for a different one. `num_gpus` is the smallest allocation that
+    preserves all cases; B200 jobs allocate this count independently of the stage.
     """
     return None
 
@@ -158,8 +166,9 @@ def _extract_list_constant(node: ast.AST, *, context: str = "value") -> list:
 
 
 class RegistryVisitor(ast.NodeVisitor):
-    def __init__(self, filename: str):
+    def __init__(self, filename: str, *, known_labels=KNOWN_LABELS):
         self.filename = filename
+        self.known_labels = known_labels
         self.registries: list[CIRegistry] = []
 
     def _parse_call_args(self, func_call: ast.Call, func_name: str) -> CIRegistry:
@@ -234,9 +243,18 @@ class RegistryVisitor(ast.NodeVisitor):
                 f"CPU has no GPU generation and ROCm is a separate backend"
             )
 
-        unknown = [label for label in labels if label not in KNOWN_LABELS]
+        num_gpus = parsed.get("num_gpus")
+        if "num_gpus" in parsed:
+            if backend is not HWBackend.CUDA:
+                raise ValueError(f"{self.filename}: num_gpus is CUDA-only")
+            if type(num_gpus) is not int or not 1 <= num_gpus <= 8:
+                raise ValueError(f"{self.filename}: num_gpus must be an integer from 1 to 8")
+            if num_gpus > CUDA_STAGES[parsed["suite"]].num_gpus:
+                raise ValueError(f"{self.filename}: num_gpus exceeds the home suite's capacity")
+
+        unknown = [label for label in labels if label not in self.known_labels]
         if unknown:
-            valid_list = ", ".join(sorted(KNOWN_LABELS))
+            valid_list = ", ".join(sorted(self.known_labels))
             raise ValueError(
                 f"{self.filename}: unknown labels {unknown} in {func_name}(); "
                 f"valid labels: [{valid_list}]. "
@@ -254,6 +272,7 @@ class RegistryVisitor(ast.NodeVisitor):
             nightly=nightly,
             disabled=disabled,
             implicit=False,
+            num_gpus=num_gpus,
         )
 
     def _check_cuda_hardware(self, func_name: str, suite: str, hardware: list) -> None:
@@ -302,11 +321,11 @@ class RegistryVisitor(ast.NodeVisitor):
                 self.registries.append(cr)
 
 
-def ut_parse_one_file(filename: str) -> list[CIRegistry]:
+def ut_parse_one_file(filename: str, *, known_labels=KNOWN_LABELS) -> list[CIRegistry]:
     with open(filename) as f:
         file_content = f.read()
     tree = ast.parse(file_content, filename=filename)
-    visitor = RegistryVisitor(filename=filename)
+    visitor = RegistryVisitor(filename=filename, known_labels=known_labels)
     visitor.visit(tree)
     return visitor.registries
 
@@ -363,10 +382,10 @@ def _make_implicit_cpu_registry(filename: str) -> CIRegistry:
     )
 
 
-def collect_tests(files: list[str], sanity_check: bool = True) -> list[CIRegistry]:
+def collect_tests(files: list[str], sanity_check: bool = True, *, known_labels=KNOWN_LABELS) -> list[CIRegistry]:
     ci_tests: list[CIRegistry] = []
     for file in files:
-        registries = ut_parse_one_file(file)
+        registries = ut_parse_one_file(file, known_labels=known_labels)
         if _is_implicit_fast_cpu_path(file):
             # tests/fast/ is CPU-only by location;
             for r in registries:

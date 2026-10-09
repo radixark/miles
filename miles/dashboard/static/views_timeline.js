@@ -2,7 +2,7 @@ import { api } from "./api.js";
 import { el, fmtNum, setViewCleanup, statBox } from "./app.js";
 import { createCarpet } from "./carpet.js";
 import { createFleet } from "./fleet.js";
-import { hideTooltip, showTooltip } from "./charts.js";
+import { extent, hideTooltip, showTooltip } from "./charts.js";
 
 // idle states share a light neutral family (train_wait also gets a hatch
 // texture below — the accessibility channel — so idle doesn't lean on hue
@@ -421,8 +421,8 @@ export async function renderTimeline(view, meta, route) {
 
   // -------------------------------- canvas ----------------------------------
   const canvas = el("canvas", { class: "timeline" });
-  const overlayMax = () => Math.max(...engineSeries.flatMap((s) => s.value), 1e-9);
-  const memMax = () => Math.max(...Object.values(gpu).flatMap((s) => s.mem_mb), 1);
+  const overlayMax = () => Math.max(extent(...engineSeries.map((s) => s.value))[1], 1e-9);
+  const memMax = () => Math.max(extent(...Object.values(gpu).map((s) => s.mem_mb))[1], 1);
 
   function draw() {
     canvas.style.height = `${M_TOP + Math.max(lanes.length, 1) * LANE_H + 8}px`;

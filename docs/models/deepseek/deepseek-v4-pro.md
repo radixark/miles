@@ -39,7 +39,7 @@ python scripts/run_deepseek_v4.py full-train \
    --num-nodes 32 --num-gpus-per-node 8
 ```
 
-The `full-train` subcommand chains `prepare-download → prepare-single → prepare-spmd → prepare-cp → train`. Each stage has a sentinel-based skip so you can re-run safely after the first invocation.
+The `full-train` subcommand chains `prepare-download → prepare-single → prepare-spmd → train`. Each stage has a sentinel-based skip so you can re-run safely after the first invocation.
 
 ### 3.2 Launcher path defaults
 
@@ -47,7 +47,7 @@ The `full-train` subcommand chains `prepare-download → prepare-single → prep
 |---|---|---|
 | `--data-dir` | `/root/datasets` | HF datasets (e.g. dapo-math-17k, …) |
 | `--model-dir` | `/root/models` | parent directory holding the HF checkpoint and Megatron `_torch_dist` artifacts |
-| `--model-local-dir` | unset → same as `--model-dir` | local NVMe path on each node; `prepare-cp` rsyncs the HF checkpoint and `_torch_dist` here so the trainer reads from local disk (set it when `--model-dir` is on shared/remote storage) |
+| `--model-local-dir` | unset → same as `--model-dir` | local NVMe path on each node; when it differs from `--model-dir`, every trainer rsyncs the HF checkpoint and `_torch_dist` here before training starts (set it when `--model-dir` is on shared/remote storage) |
 | `--save-dir` | `/root/models` | training checkpoints under `{save-dir}/{run-id}/checkpoints/` |
 
 Pro uses the same launcher as V4-Flash, so every option above can also be preconfigured via `MILES_SCRIPT_<FIELD_NAME_UPPER>` env vars (precedence: CLI flag > env var > built-in default) — see [V4-Flash §3.2](/models/deepseek/deepseek-v4-flash#32-launcher-path-defaults) for details.
@@ -85,7 +85,7 @@ SGLANG_ARGS=(
    --sglang-chunked-prefill-size 8192
    --sglang-server-concurrency 1024
    --sglang-moe-a2a-backend deepep             # DeepEP normal-mode dispatch
-   --sglang-cuda-graph-max-bs 8                # see hang caveat below
+   --sglang-cuda-graph-max-bs-decode 8                # see hang caveat below
    --sglang-mem-fraction-static 0.7            # Pro needs a larger dynamic buffer
 )
 ```
@@ -98,7 +98,7 @@ Megatron side: `--qkv-format bshd` (V4 needs `bshd` with CP-aware data slicing).
 
 1. **Engine size ≥ 32 GPUs.** Pro needs a single SGLang engine spanning at least 32 GPUs — the launcher hard-codes `--rollout-num-gpus-per-engine 32`. Smaller engines do not leave enough memory after weights, KV cache, indexer state, and DeepEP buffers, and rollout will OOM under load.
 2. **EP is mandatory; pure TP will not shard the model.** 384 routed experts × `moe_ffn_hidden_size=3072` cannot be partitioned by tensor parallelism alone — the model must use expert parallelism (`--sglang-ep-size 32`) to spread the expert MLPs across ranks. `--sglang-tp-size 32` only covers the attention / embedding paths.
-3. **DeepEP normal-mode + CUDA graphs can hang at large batch sizes.** When `--sglang-moe-a2a-backend deepep` is on, an overly large `--sglang-cuda-graph-max-bs` makes SGLang hang during graph capture or replay. The launcher pins it to `8` for Pro — raise it only after verifying the engine doesn't deadlock at your target batch.
+3. **DeepEP normal-mode + CUDA graphs can hang at large batch sizes.** When `--sglang-moe-a2a-backend deepep` is on, an overly large `--sglang-cuda-graph-max-bs-decode` makes SGLang hang during graph capture or replay. The launcher pins it to `8` for Pro — raise it only after verifying the engine doesn't deadlock at your target batch.
 
 </Warning>
 

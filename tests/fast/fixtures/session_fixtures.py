@@ -18,17 +18,22 @@ def make_session_server_config(**overrides: Any) -> SessionServerConfig:
         apply_chat_template_kwargs=None,
         use_rollout_routing_replay=False,
         use_rollout_indexer_replay=False,
+        use_sampling_support_replay=False,
         sglang_speculative_algorithm=None,
         num_layers=None,
         moe_router_topk=None,
         save_debug_trajectory_data=None,
         lora_rank=0,
         lora_adapter_path=None,
+        lora_train_only=False,
         use_session_server=None,
         session_message_matcher="strict",
         pause_generation_mode=None,
         session_sample_picker_path=None,
         session_sample_postprocessor_path=None,
+        rollout_top_logprobs_num=0,
+        rollout_sampling_logprobs_mode="selected",
+        rollout_temperature=1.0,
     )
     defaults.update(overrides)
     return SessionServerConfig(**defaults)

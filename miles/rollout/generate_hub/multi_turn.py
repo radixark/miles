@@ -51,7 +51,12 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
     for _turn in range(args.generate_max_turns):
         # ----------------------- Call inference endpoint -------------------------
 
-        payload, halt_status = compute_request_payload(args, sample.tokens, input.sampling_params)
+        payload, halt_status = compute_request_payload(
+            args,
+            sample.tokens,
+            input.sampling_params,
+            evaluation=input.evaluation,
+        )
         if payload is None:
             sample.status = halt_status
             break

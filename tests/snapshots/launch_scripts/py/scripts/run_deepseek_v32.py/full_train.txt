@@ -91,9 +91,14 @@ export PYTHONUNBUFFERED=1 && ray start
   --expert-tensor-parallel-size 1 
 
 ### 8
-nvidia-smi topo -m 2>/dev/null | grep -o 'NV[0-9][0-9]*' | wc -l
+[multi_node num_nodes=None] mkdir -p /root/models/DeepSeek-V3.2_torch_dist && rsync -a
+  --info=progress2 /root/models/DeepSeek-V3.2_torch_dist/ /root/models/DeepSeek-V3.2_torch_dist && mkdir -p /root/models/DeepSeek-V3.2 && rsync -a
+  --info=progress2 /root/models/DeepSeek-V3.2/ /root/models/DeepSeek-V3.2
 
 ### 9
+nvidia-smi topo -m 2>/dev/null | grep -o 'NV[0-9][0-9]*' | wc -l
+
+### 10
 export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --address="http://127.0.0.1:8265"
   --runtime-env-json='{"env_vars": {"PYTHONUNBUFFERED": "1", "CUDA_DEVICE_MAX_CONNECTIONS": "1", "NCCL_NVLS_ENABLE": "0", "no_proxy": "127.0.0.1,127.0.0.1", "MASTER_ADDR": "127.0.0.1", "SGLANG_NSA_FORCE_MLA": "1", "SGLANG_NSA_PREFILL_DENSE_ATTN_KV_LEN_THRESHOLD": "0", "NVSHMEM_DISABLE_NCCL": "1", "PYTHONPATH": "<REPO_ROOT>:/root/Megatron-LM:/frozen/pythonpath"}}'
@@ -198,8 +203,8 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --expert-tensor-parallel-size 1  
   --sglang-mem-fraction-static 0.8
   --sglang-attention-backend nsa
-  --sglang-nsa-decode-backend flashmla_sparse
-  --sglang-nsa-prefill-backend flashmla_sparse
+  --sglang-dsa-decode-backend flashmla_sparse
+  --sglang-dsa-prefill-backend flashmla_sparse
   --sglang-kv-cache-dtype bf16
   --sglang-page-size 64
   --rollout-num-gpus-per-engine 8
@@ -208,7 +213,7 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --sglang-dp-size 8
   --sglang-enable-dp-attention
   --sglang-enable-dp-lm-head
-  --sglang-cuda-graph-max-bs 256 
+  --sglang-cuda-graph-max-bs-decode 256 
   --attention-dropout 0.0
   --hidden-dropout 0.0
   --accumulate-allreduce-grads-in-fp32

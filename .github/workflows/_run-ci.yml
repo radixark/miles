@@ -1,3 +1,4 @@
+# doc-dev: docs/developer/ci/00-stage.md
 name: CI Job
 
 on:
@@ -14,6 +15,16 @@ on:
         type: string
         required: false
         default: 'radixark/miles:dev'
+      num_gpus:
+        description: 'Exact CUDA-visible device count for a dynamically allocated B200 job.'
+        type: number
+        required: false
+        default: 0
+      timeout_minutes:
+        description: 'Job budget, including GPU admission waiting, setup, execution, and cleanup.'
+        type: number
+        required: false
+        default: 360
       skip_dependency_install:
         type: boolean
         required: false
@@ -24,7 +35,7 @@ on:
         required: false
         default: ''
       plan_already_resolved:
-        description: 'Skip the --list-only preflight when a trusted caller already resolved the execution plan.'
+        description: 'Skip hosted planning when a trusted caller already selected an enabled test at an exact ref.'
         type: boolean
         required: false
         default: false
@@ -35,12 +46,42 @@ on:
         required: false
 
 jobs:
+  plan:
+    if: ${{ !inputs.plan_already_resolved }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      has_tests: ${{ steps.select.outputs.has_tests }}
+      ref: ${{ steps.select.outputs.ref }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Resolve suite plan
+        id: select
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        run: |
+          echo "ref=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          ${{ inputs.execute_command }} --list-only --github-output "$GITHUB_OUTPUT"
+
   run:
+    needs: plan
+    if: |
+      !cancelled() &&
+      (inputs.plan_already_resolved ||
+        (needs.plan.result == 'success' && needs.plan.outputs.has_tests == 'true'))
     # fromJSON parses the input list so `runs-on` receives an actual array.
     # Without this, GitHub treats the string verbatim as one label literal
     # (e.g. the label name '["h100", "8gpu"]' with brackets), which no
     # runner carries, and the job queues forever.
     runs-on: ${{ fromJSON(inputs.runs_on) }}
+    timeout-minutes: ${{ inputs.timeout_minutes }}
     container:
       image: ${{ inputs.container_image }}
       options: >
@@ -72,11 +113,18 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.ref }}
+          ref: ${{ inputs.plan_already_resolved && inputs.ref || needs.plan.outputs.ref }}
 
       - name: Configure source paths
         shell: bash
         run: echo "PYTHONPATH=$GITHUB_WORKSPACE:$SGLANG_SOURCE_ROOT:$MEGATRON_SOURCE_ROOT" >> "$GITHUB_ENV"
+
+      - name: Keep NVSHMEM on NVLink (4-GPU H200)
+        # Single-node stage whose pool can include RoCE runners: a NIC name that
+        # matches nothing keeps NVSHMEM off RDMA. See docs/developer/ci/00-stage.md.
+        if: contains(fromJSON(inputs.runs_on), 'h200') && contains(fromJSON(inputs.runs_on), '4gpu')
+        shell: bash
+        run: echo "NVSHMEM_HCA_LIST=none_single_node_nvlink_only" >> "$GITHUB_ENV"
 
       - name: Cleanup Ray processes
         shell: bash
@@ -109,6 +157,23 @@ jobs:
           echo "ERROR: nvidia-smi did not become ready after 120s" >&2
           nvidia-smi 2>&1 | tail -20 || true
           exit 1
+
+      - name: Verify B200 CUDA partition
+        if: contains(fromJSON(inputs.runs_on), 'b200')
+        env:
+          EXPECTED_GPUS: ${{ inputs.num_gpus || (contains(fromJSON(inputs.runs_on), '4gpu') && 4 || 8) }}
+        run: |
+          python3 - <<'PY'
+          import os
+          import torch
+
+          expected = int(os.environ["EXPECTED_GPUS"])
+          actual = torch.cuda.device_count()
+          assert actual == expected, (
+              f"B200 stage requires {expected} CUDA-visible GPUs, found {actual}; "
+              "fix the runner's CUDA_VISIBLE_DEVICES partition"
+          )
+          PY
 
       - name: Resolve dependency refs
         if: ${{ !inputs.skip_dependency_install }}
@@ -156,26 +221,8 @@ jobs:
       - name: Reconcile Miles dependencies
         shell: bash
         run: |
-          # The image pins cuDNN deliberately: transformer_engine's fused attention needs a
-          # newer build than torch's own exact pin, so the Dockerfile installs it last. This
-          # resolve drags it back down to whatever torch asks for, which makes fused attention
-          # backward fail with CUDNN_STATUS_BAD_PARAM. Record what the image shipped and put it
-          # back afterwards; --no-deps so nothing else in the resolved set moves.
-          pinned=""
-          for pkg in nvidia-cudnn-cu13 nvidia-cudnn-cu12; do
-            v=$(python -m pip show "$pkg" 2>/dev/null | awk '/^Version:/{print $2}' || true)
-            if [ -n "$v" ]; then pinned="$pinned $pkg==$v"; fi
-          done
-          python -m pip install -r "$GITHUB_WORKSPACE/requirements.txt" --break-system-packages
-          for spec in $pinned; do
-            pkg=${spec%%==*}
-            want=${spec##*==}
-            got=$(python -m pip show "$pkg" 2>/dev/null | awk '/^Version:/{print $2}' || true)
-            if [ -n "$got" ] && [ "$got" != "$want" ]; then
-              echo "Restoring image pin: $pkg $got -> $want"
-              python -m pip install --no-deps --break-system-packages "$spec"
-            fi
-          done
+          python tests/ci/reconcile_dependencies.py \
+            examples/multi_lora/requirements.txt requirements.txt
 
       - name: Sync dependency sources
         if: ${{ !inputs.skip_dependency_install }}
@@ -187,14 +234,16 @@ jobs:
           cd /sgl-workspace/sglang && git reset --hard HEAD && git clean -fd && git fetch origin "$SGLANG_PR" && git checkout -f FETCH_HEAD && git log --oneline -1
           cd /root/Megatron-LM && git reset --hard HEAD && git clean -fd && git fetch origin "$MEGATRON_PR" && git checkout -f FETCH_HEAD && git log --oneline -1
 
+      - name: Install Megatron Bridge override
+        if: ${{ !inputs.skip_dependency_install && (github.event.inputs.ci_megatron_bridge_pr != '' || contains(github.event.pull_request.body, 'ci-megatron-bridge-pr:')) }}
+        uses: ./.github/actions/install-megatron-bridge
+        with:
+          ref: ${{ github.event.inputs.ci_megatron_bridge_pr || '' }}
+          pr_body: ${{ github.event.pull_request.body || '' }}
+
       - name: Verify source resolution
         shell: bash
         run: python tests/ci/verify_source_resolution.py
-
-      - name: Resolve suite plan
-        if: ${{ !inputs.plan_already_resolved }}
-        shell: bash
-        run: ${{ inputs.execute_command }} --list-only
 
       - name: Run tests
         shell: bash

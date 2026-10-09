@@ -7,7 +7,6 @@ from pydantic import ValidationError
 
 from miles.rollout.session.config import SessionServerConfig, compute_session_server_config
 
-
 _ARGS_TO_CONFIG_FIELD = {
     "miles_router_timeout": "timeout",
     "hf_checkpoint": "hf_checkpoint",
@@ -16,21 +15,25 @@ _ARGS_TO_CONFIG_FIELD = {
     "apply_chat_template_kwargs": "apply_chat_template_kwargs",
     "use_rollout_routing_replay": "use_rollout_routing_replay",
     "use_rollout_indexer_replay": "use_rollout_indexer_replay",
+    "use_sampling_support_replay": "use_sampling_support_replay",
     "sglang_speculative_algorithm": "sglang_speculative_algorithm",
     "num_layers": "num_layers",
     "moe_router_topk": "moe_router_topk",
     "save_debug_trajectory_data": "save_debug_trajectory_data",
     "lora_rank": "lora_rank",
     "lora_adapter_path": "lora_adapter_path",
+    "lora_train_only": "lora_train_only",
     "use_session_server": "use_session_server",
     "session_message_matcher": "session_message_matcher",
     "pause_generation_mode": "pause_generation_mode",
     "session_sample_picker_path": "session_sample_picker_path",
     "session_sample_postprocessor_path": "session_sample_postprocessor_path",
+    "rollout_top_logprobs_num": "rollout_top_logprobs_num",
+    "rollout_sampling_logprobs_mode": "rollout_sampling_logprobs_mode",
+    "rollout_temperature": "rollout_temperature",
 }
 
 _CALL_SITE_FIELDS = ("host", "port", "instance_id", "backend_url")
-
 _OPTIONAL_ARGS_ATTRS = (
     "num_layers",
     "pause_generation_mode",
@@ -48,17 +51,22 @@ _DISTINCT_ARGS_VALUES = dict(
     apply_chat_template_kwargs={"enable_thinking": True},
     use_rollout_routing_replay=True,
     use_rollout_indexer_replay=True,
+    use_sampling_support_replay=True,
     sglang_speculative_algorithm="EAGLE",
     num_layers=61,
     moe_router_topk=8,
     save_debug_trajectory_data="/fake/traj",
     lora_rank=32,
     lora_adapter_path="/fake/adapters/x",
+    lora_train_only=True,
     use_session_server="v2",
     session_message_matcher="fake.matcher",
     pause_generation_mode="in_place",
     session_sample_picker_path="fake.picker",
     session_sample_postprocessor_path="fake.postprocessor",
+    rollout_top_logprobs_num=32,
+    rollout_sampling_logprobs_mode="support",
+    rollout_temperature=0.7,
 )
 
 
@@ -112,6 +120,15 @@ class TestComputeSessionServerConfig:
         )
         assert [getattr(config, name) for name in _OPTIONAL_ARGS_ATTRS] == [None] * len(_OPTIONAL_ARGS_ATTRS)
 
+    def test_older_args_default_rollout_temperature(self):
+        args = Namespace(
+            **{key: value for key, value in _DISTINCT_ARGS_VALUES.items() if key != "rollout_temperature"}
+        )
+        config = compute_session_server_config(
+            args, host="127.0.0.1", port=5001, instance_id=None, backend_url="http://127.0.0.1:3000"
+        )
+        assert config.rollout_temperature == 1.0
+
 
 _COMPLETE_CONFIG_KWARGS = dict(
     host="127.0.0.1",
@@ -125,17 +142,22 @@ _COMPLETE_CONFIG_KWARGS = dict(
     apply_chat_template_kwargs=None,
     use_rollout_routing_replay=False,
     use_rollout_indexer_replay=False,
+    use_sampling_support_replay=False,
     sglang_speculative_algorithm=None,
     num_layers=None,
     moe_router_topk=None,
     save_debug_trajectory_data=None,
     lora_rank=0,
     lora_adapter_path=None,
+    lora_train_only=False,
     use_session_server=None,
     session_message_matcher="strict",
     pause_generation_mode=None,
     session_sample_picker_path=None,
     session_sample_postprocessor_path=None,
+    rollout_top_logprobs_num=0,
+    rollout_sampling_logprobs_mode="selected",
+    rollout_temperature=1.0,
 )
 
 

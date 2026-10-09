@@ -15,6 +15,7 @@ from miles.rollout.filter_hub.common_filters import (
     apply_preput_filters,
     apply_reward_nonzero_std_filter,
     group_staleness,
+    group_weight_version_stats,
 )
 from miles.utils.function_registry import load_function
 from miles.utils.types import Sample, WeightVersionSpan, WeightVersionsPerCall
@@ -248,3 +249,27 @@ def test_group_staleness_uses_oldest_version_across_nested_samples():
     assert group_staleness(group, current_version=None) is None
     assert group_staleness([make_sample()], current_version=10) is None
     assert group_staleness([make_sample(weight_versions=("12",))], current_version=10) == -2
+
+
+def test_group_weight_version_stats_preserve_sample_and_token_populations():
+    first = make_sample()
+    first.weight_versions = [
+        WeightVersionsPerCall(
+            spans=[
+                WeightVersionSpan(version="4", abs_start=2, abs_end=5),
+                WeightVersionSpan(version="6", abs_start=5, abs_end=6),
+            ]
+        )
+    ]
+    second = make_sample(weight_versions=("not-numeric",))
+
+    stats = group_weight_version_stats([first, [second]])
+
+    assert stats.sample_count == 2
+    assert stats.versioned_sample_count == 1
+    assert stats.versioned_token_count == 4
+    assert stats.oldest_lag(current_version=10) == 6
+    assert stats.newest_lag(current_version=10) == 4
+    assert stats.token_weighted_lag(current_version=10) == 5.5
+    assert stats.oldest_lag(current_version=None) is None
+    assert stats.token_weighted_lag(current_version=None) is None

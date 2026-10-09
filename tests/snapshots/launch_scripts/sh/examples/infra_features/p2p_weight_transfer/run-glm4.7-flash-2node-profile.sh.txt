@@ -243,7 +243,7 @@
 "0.7"
 "--sglang-ep-size"
 "4"
-"--sglang-cuda-graph-bs"
+"--sglang-cuda-graph-bs-decode"
 "1"
 "2"
 "4"

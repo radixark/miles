@@ -1,6 +1,7 @@
 import logging
 import os
 import re
+import shutil
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -8,14 +9,16 @@ import torch.distributed as dist
 from megatron.core.utils import unwrap_model
 
 # TODO: may need to copy those 2 functions and do refactoring.
+from megatron.training.checkpointing import get_checkpoint_name
 from megatron.training.checkpointing import load_checkpoint as _load_checkpoint_megatron
 from megatron.training.checkpointing import save_checkpoint
 from megatron.training.global_vars import get_args
 
+from miles.backends.training_utils.weight_update.snapshot_publisher import SnapshotPublisher
 from miles.utils import megatron_bridge_utils
 from miles_plugins.models.deepseek_v4.arguments import assert_checkpoint_is_current, is_dsv4_model
 
-from .lora_utils import is_lora_enabled, is_lora_model, load_lora_adapter, save_lora_checkpoint
+from .lora.utils import is_lora_enabled, is_lora_model, load_lora_adapter, save_lora_checkpoint
 from .model_provider import LinearForLastLayer
 
 try:
@@ -118,6 +121,8 @@ def load_checkpoint(ddp_model, optimizer, opt_param_scheduler, checkpointing_con
     if has_local_checkpoint_manager or _is_megatron_checkpoint(load_path):
         if not has_local_checkpoint_manager and is_dsv4_model(args):
             assert_checkpoint_is_current(load_path)
+        if not has_local_checkpoint_manager and _has_linear_attention(ddp_model):
+            assert_linear_attn_checkpoint_is_current(load_path)
         result = _load_checkpoint_megatron(
             ddp_model=ddp_model,
             optimizer=optimizer,
@@ -134,10 +139,11 @@ def load_checkpoint(ddp_model, optimizer, opt_param_scheduler, checkpointing_con
         )
 
     # Load LoRA adapter weights if available
+    native_optimizer_restored = False
     if is_lora_enabled(args):
         adapter_path = getattr(args, "lora_adapter_path", None)
         if adapter_path is not None:
-            loaded, iteration = load_lora_adapter(
+            loaded, iteration, native_optimizer_restored = load_lora_adapter(
                 ddp_model,
                 adapter_path,
                 optimizer=optimizer,
@@ -155,26 +161,73 @@ def load_checkpoint(ddp_model, optimizer, opt_param_scheduler, checkpointing_con
                     f"Training will start with freshly initialized adapter weights."
                 )
 
-    return result
+    return (*result, native_optimizer_restored)
 
 
-def save_checkpoint_with_lora(iteration, model, optimizer, opt_param_scheduler):
+def save_checkpoint_with_lora(
+    iteration, model, optimizer, opt_param_scheduler, *, publisher: SnapshotPublisher | None = None
+):
     """Extended save that handles LoRA adapters separately."""
     args = get_args()
 
     if is_lora_model(model):
+        assert (
+            publisher is not None or args.megatron_to_hf_mode == "raw"
+        ), "Bridge LoRA checkpoint requires a snapshot publisher"
         save_dir = Path(args.save) / f"iter_{iteration:07d}" / "adapter"
         logger.info(f"Saving LoRA checkpoint to {save_dir}")
         save_lora_checkpoint(
             model,
             args,
             str(save_dir),
+            publisher=publisher,
             optimizer=optimizer,
             opt_param_scheduler=opt_param_scheduler,
             iteration=iteration,
         )
     else:
         save_checkpoint(iteration, model, optimizer, opt_param_scheduler)
+
+
+def publish_as_release(save_dir: str) -> None:
+    """Rename this run's iteration directory to ``release``, replacing an earlier conversion.
+
+    ``shutil.move`` into an existing directory nests rather than replaces, which would leave the
+    previous conversion's weights in place behind a tracker that says the new one is there.
+    """
+    source_dir = get_checkpoint_name(save_dir, 1, False, return_base_dir=True)
+    target_dir = get_checkpoint_name(save_dir, -1, True, return_base_dir=True)
+    shutil.rmtree(target_dir, ignore_errors=True)
+    shutil.move(source_dir, target_dir)
+
+
+LINEAR_ATTN_LAYOUT_KEY = "weight_layout_version"
+
+
+def _has_linear_attention(ddp_model) -> bool:
+    return any(LINEAR_ATTN_LAYOUT_KEY in name for chunk in ddp_model for name, _ in chunk.named_buffers())
+
+
+def assert_linear_attn_checkpoint_is_current(load_dir: str) -> None:
+    """Reject torch_dist checkpoints written before the shared linear-attention layer (group-major GDN
+    q/k/v and conv rows, Kimi-K3 KDA under linear_attn.*). Megatron skips tensors a checkpoint lacks, so
+    such a checkpoint would load scrambled or half-initialized instead of failing."""
+    from torch.distributed.checkpoint import FileSystemReader
+
+    path = Path(load_dir)
+    step_file = path / "latest_checkpointed_iteration.txt"
+    if step_file.is_file():
+        step = step_file.read_text().strip()
+        path = path / (step if step == "release" else f"iter_{int(step):07d}")
+    if not path.is_dir():
+        return
+    if not any(
+        key.endswith(LINEAR_ATTN_LAYOUT_KEY) for key in FileSystemReader(path).read_metadata().state_dict_metadata
+    ):
+        raise ValueError(
+            f"{load_dir} was written before the shared linear-attention layer's weight layout and would load "
+            "scrambled. Re-convert it from the HuggingFace checkpoint (tools/convert_hf_to_torch_dist.py)."
+        )
 
 
 def _is_megatron_checkpoint(path: str | Path) -> bool:
@@ -200,15 +253,39 @@ def _hide_critic_value_head_from_hf_load(ddp_model):
             setattr(chunk, name, head)
 
 
+def _load_hf_weights_with_mbridge(ddp_model, args, load_path: str) -> None:
+    """Raw-mode HF load through mbridge for models Megatron-Bridge lacks; staging copies bypass the memory saver."""
+    from contextlib import nullcontext
+
+    import torch
+
+    import miles_plugins.mbridge  # noqa: F401
+    from mbridge import AutoBridge
+
+    if args.offload_train:
+        from torch_memory_saver import torch_memory_saver
+
+        bypass = torch_memory_saver.disable()
+    else:
+        bypass = nullcontext()
+    logger.info(f"Load checkpoint from HuggingFace model into Megatron via mbridge (path={load_path})")
+    with _hide_critic_value_head_from_hf_load(ddp_model), bypass:
+        bridge = AutoBridge.from_pretrained(load_path, trust_remote_code=True)
+        bridge.load_weights(ddp_model, load_path, memory_efficient=True)
+    torch.cuda.synchronize()
+
+
 def _load_checkpoint_hf(ddp_model, optimizer, args, load_path: str):
-    assert args.megatron_to_hf_mode == "bridge", "Only bridge mode is supported for loading HF checkpoint"
-    from megatron.bridge import AutoBridge
+    if args.megatron_to_hf_mode != "bridge":
+        _load_hf_weights_with_mbridge(ddp_model, args, load_path)
+    else:
+        from megatron.bridge import AutoBridge
 
-    logger.info(f"Load checkpoint from HuggingFace model into Megatron (path={load_path})")
+        logger.info(f"Load checkpoint from HuggingFace model into Megatron (path={load_path})")
 
-    with megatron_bridge_utils.patch_megatron_model(ddp_model), _hide_critic_value_head_from_hf_load(ddp_model):
-        bridge = AutoBridge.from_hf_pretrained(load_path, trust_remote_code=True)
-        bridge.load_hf_weights(ddp_model)
+        with megatron_bridge_utils.patch_megatron_model(ddp_model), _hide_critic_value_head_from_hf_load(ddp_model):
+            bridge = AutoBridge.from_hf_pretrained(load_path, trust_remote_code=True)
+            bridge.load_hf_weights(ddp_model)
 
     # Copied from Megatron-core :: load_checkpoint (with simplifications)
     if (args.fp16 or args.bf16) and optimizer is not None:

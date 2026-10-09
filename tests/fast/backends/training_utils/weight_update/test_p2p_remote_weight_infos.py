@@ -1,17 +1,19 @@
+import dataclasses
 import importlib
 import sys
 from collections import Counter
 from contextlib import contextmanager
-from dataclasses import dataclass
 from types import ModuleType
 
+import msgspec
 import pytest
 
 _MODULE = "miles.backends.training_utils.weight_update.protocols.p2p_transfer_utils"
 
 
-@dataclass
-class _FakeServerArgs:
+class _FakeServerArgs(msgspec.Struct):
+    """A Struct, like the real ServerArgs since sglang v0.5.20."""
+
     model_path: str | None = None
 
 
@@ -113,6 +115,19 @@ def _query(module, engines: list[_FakeRolloutEngine], pairs: list[tuple[int, int
     return module.query_remote_weight_infos(engines, _make_targets(module, pairs))
 
 
+@pytest.mark.parametrize(
+    "record_factory", [dataclasses.make_dataclass, msgspec.defstruct], ids=["dataclass", "msgspec"]
+)
+def test_server_args_from_remote_info_filters_unknown_fields(p2p_transfer_utils, monkeypatch, record_factory):
+    server_args_type = record_factory("ServerArgs", [("model_path", str)])
+    monkeypatch.setattr(p2p_transfer_utils, "ServerArgs", server_args_type)
+
+    result = p2p_transfer_utils.create_server_args_from_dict({"model_path": "/model", "unknown_field": True})
+
+    assert isinstance(result, server_args_type)
+    assert result.model_path == "/model"
+
+
 class TestQueryRemoteWeightInfos:
     """Remote-info discovery over the rollout engines' HTTP API."""
 
@@ -165,3 +180,44 @@ class TestQueryRemoteWeightInfos:
             "session-0-1": "/model/0",
             "session-1-0": "/model/1",
         }
+
+
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
+import torch
+from miles.backends.training_utils.weight_update.protocols.p2p import UpdateWeightP2P, _ReplicaTarget
+
+_P2P_MODULE = "miles.backends.training_utils.weight_update.protocols.p2p"
+
+
+def test_replica_loads_inside_its_parallelism_context():
+    """sglang's sharded weight loaders read the attention-TP rank at call time, which only
+    exists while the replica's ParallelismContext is entered; a load outside it asserts."""
+    active = {"inside": False}
+    seen = []
+
+    @contextmanager
+    def fake_context(config):
+        active["inside"] = True
+        seen.append(config)
+        try:
+            yield
+        finally:
+            active["inside"] = False
+
+    replica = MagicMock()
+    replica.load_weights.side_effect = lambda tensors: seen.append(("load", active["inside"]))
+
+    protocol = object.__new__(UpdateWeightP2P)
+    protocol.is_sender = True
+    protocol._replica_targets = [_ReplicaTarget(replica, [SimpleNamespace(session_id="s0")], "cfg-0")]
+    protocol.transfer_manager = MagicMock()
+    protocol._do_p2p_write_one_session = MagicMock()
+    ready = [("model.embed_tokens.weight", torch.zeros(1))]
+    protocol._get_transfer_ready_params = lambda tensors: (["model.embed_tokens.weight"], ready)
+
+    with patch(f"{_P2P_MODULE}.ParallelismContext", fake_context):
+        protocol.send_bucket(list(ready))
+
+    assert seen == ["cfg-0", ("load", True)]
+    assert active["inside"] is False

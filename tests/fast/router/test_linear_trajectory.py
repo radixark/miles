@@ -9,11 +9,27 @@ from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
+from tests.fast.fixtures.session_fixtures import make_session_server_config
 
 from miles.rollout.session.errors import MessageValidationError, SessionNotFoundError, TokenizationError
 from miles.rollout.session.linear_trajectory import SessionRegistry
 from miles.rollout.session.types import SessionRecord
 from miles.utils.chat_template_utils.tito_tokenizer import ALL_APPEND_ROLES, FixedTemplate, TITOTokenizer
+
+
+def _prepare_token_ids(session, request_messages, tools=None, *, tito_tokenizer, message_matcher=None) -> list[int]:
+    """Rollback + request args + render for a messages-only request; returns ``input_ids``."""
+    client_args = {"messages": request_messages}
+    if tools is not None:
+        client_args["tools"] = tools
+    prepared = session.prepare_token_ids_and_request_args(
+        client_args,
+        config=make_session_server_config(),
+        tito_tokenizer=tito_tokenizer,
+        message_matcher=message_matcher,
+    )
+    return prepared.body["input_ids"]
+
 
 _MOCK_FIRST_TURN_TOKENS = [0]
 
@@ -32,8 +48,8 @@ class _MockTITOTokenizer(TITOTokenizer):
         messages: list[dict[str, Any]],
         *,
         add_generation_prompt: bool,
-        tools: list[dict[str, Any]] | None = None,
         tokenize: bool = False,
+        template_args: dict[str, Any] | None = None,
     ) -> list[int]:
         return list(_MOCK_FIRST_TURN_TOKENS)
 
@@ -41,7 +57,8 @@ class _MockTITOTokenizer(TITOTokenizer):
         self,
         old_messages: list[dict[str, Any]],
         new_messages: list[dict[str, Any]],
-        tools: list[dict[str, Any]] | None = None,
+        *,
+        template_args: dict[str, Any] | None = None,
     ) -> list[int]:
         return []
 
@@ -50,7 +67,8 @@ class _MockTITOTokenizer(TITOTokenizer):
         old_messages: list[dict[str, Any]],
         new_messages: list[dict[str, Any]],
         pretokenized_token_ids: list[int],
-        tools: list[dict[str, Any]] | None = None,
+        *,
+        template_args: dict[str, Any] | None = None,
     ) -> list[int]:
         return list(pretokenized_token_ids)
 
@@ -167,14 +185,14 @@ RETRY_SYS_MSG = {"role": "system", "content": "Please try using the tools to ans
 
 
 class TestSingleUserTurnPretokenized:
-    """Test prepare_pretokenized and update_pretokenized_state across turns."""
+    """Test prepare_token_ids_and_request_args and update_pretokenized_state across turns."""
 
     def test_first_turn_renders_from_scratch(self, registry: SessionRegistry):
         """First turn has no prior token_ids, so prepare renders from scratch."""
         sid = registry.create_session()
         session = registry.get_session(sid)
         messages = [SYS_MSG, USER_MSG]
-        result = session.prepare_pretokenized(messages, tito_tokenizer=registry.tito_tokenizer)
+        result = _prepare_token_ids(session, messages, tito_tokenizer=registry.tito_tokenizer)
         assert result == _MOCK_FIRST_TURN_TOKENS
 
     def test_two_turn_trajectory(self, registry: SessionRegistry):
@@ -185,7 +203,7 @@ class TestSingleUserTurnPretokenized:
         # --- Turn 1: [sys, user] -> assistant with tool_call ---
         turn1_messages = [SYS_MSG, USER_MSG]
         assert (
-            session.prepare_pretokenized(turn1_messages, tito_tokenizer=registry.tito_tokenizer)
+            _prepare_token_ids(session, turn1_messages, tito_tokenizer=registry.tito_tokenizer)
             == _MOCK_FIRST_TURN_TOKENS
         )
 
@@ -200,7 +218,7 @@ class TestSingleUserTurnPretokenized:
 
         # --- Turn 2: [sys, user, assistant, tool] -> final answer ---
         turn2_messages = [SYS_MSG, USER_MSG, ASSISTANT_MSG_1, TOOL_MSG_1]
-        result = session.prepare_pretokenized(turn2_messages, tito_tokenizer=registry.tito_tokenizer)
+        result = _prepare_token_ids(session, turn2_messages, tito_tokenizer=registry.tito_tokenizer)
         assert result == [1, 2, 3, 4, 5, 10, 11, 12]
 
         turn2_prompt_ids = [1, 2, 3, 4, 5, 10, 11, 12, 20, 21]
@@ -223,7 +241,7 @@ class TestSingleUserTurnPretokenized:
 
         # Turn 2
         t2_msgs = [SYS_MSG, USER_MSG, ASSISTANT_MSG_1, TOOL_MSG_1]
-        result = session.prepare_pretokenized(t2_msgs, tito_tokenizer=registry.tito_tokenizer)
+        result = _prepare_token_ids(session, t2_msgs, tito_tokenizer=registry.tito_tokenizer)
         assert result == [1, 2, 3, 10, 11]
 
         session.update_pretokenized_state(
@@ -232,7 +250,7 @@ class TestSingleUserTurnPretokenized:
 
         # Turn 3
         t3_msgs = [SYS_MSG, USER_MSG, ASSISTANT_MSG_1, TOOL_MSG_1, ASSISTANT_MSG_2, TOOL_MSG_2]
-        result = session.prepare_pretokenized(t3_msgs, tito_tokenizer=registry.tito_tokenizer)
+        result = _prepare_token_ids(session, t3_msgs, tito_tokenizer=registry.tito_tokenizer)
         assert result == [1, 2, 3, 10, 11, 20, 21, 30, 31]
 
         session.update_pretokenized_state(
@@ -269,7 +287,7 @@ class TestSingleUserTurnPretokenized:
         session.update_pretokenized_state(msgs, ASSISTANT_MSG_1, [1, 2], [10], max_trim_tokens=0)
 
         t2_msgs = [USER_MSG, ASSISTANT_MSG_1, TOOL_MSG_1]
-        result = session.prepare_pretokenized(t2_msgs, tito_tokenizer=registry.tito_tokenizer)
+        result = _prepare_token_ids(session, t2_msgs, tito_tokenizer=registry.tito_tokenizer)
         assert result == [1, 2, 10]
 
     def test_multiple_system_messages_at_start(self, registry: SessionRegistry):
@@ -278,14 +296,14 @@ class TestSingleUserTurnPretokenized:
         session = registry.get_session(sid)
         extra_sys = {"role": "system", "content": "Extra instructions."}
         msgs = [SYS_MSG, extra_sys, USER_MSG]
-        result = session.prepare_pretokenized(msgs, tito_tokenizer=registry.tito_tokenizer)
+        result = _prepare_token_ids(session, msgs, tito_tokenizer=registry.tito_tokenizer)
         assert result == _MOCK_FIRST_TURN_TOKENS  # first turn, no prior tokens
 
         session.update_pretokenized_state(msgs, ASSISTANT_MSG_1, [1, 2, 3, 4], [10, 11], max_trim_tokens=0)
         assert session.messages == [SYS_MSG, extra_sys, USER_MSG, ASSISTANT_MSG_1]
 
         t2_msgs = [SYS_MSG, extra_sys, USER_MSG, ASSISTANT_MSG_1, TOOL_MSG_1]
-        result = session.prepare_pretokenized(t2_msgs, tito_tokenizer=registry.tito_tokenizer)
+        result = _prepare_token_ids(session, t2_msgs, tito_tokenizer=registry.tito_tokenizer)
         assert result == [1, 2, 3, 4, 10, 11]
 
 
@@ -306,7 +324,7 @@ class TestAppendRoleDefault:
         session.update_pretokenized_state([SYS_MSG, USER_MSG], ASSISTANT_MSG_1, [1, 2, 3], [10], max_trim_tokens=0)
 
         messages = [SYS_MSG, USER_MSG, ASSISTANT_MSG_1, TOOL_MSG_1, {"role": "user", "content": "extra"}]
-        result = session.prepare_pretokenized(messages, tito_tokenizer=registry.tito_tokenizer)
+        result = _prepare_token_ids(session, messages, tito_tokenizer=registry.tito_tokenizer)
         assert isinstance(result, list)
 
     def test_default_template_allows_assistant_append(self, registry: SessionRegistry):
@@ -315,7 +333,7 @@ class TestAppendRoleDefault:
         session.update_pretokenized_state([SYS_MSG, USER_MSG], ASSISTANT_MSG_1, [1, 2, 3], [10], max_trim_tokens=0)
 
         messages = [SYS_MSG, USER_MSG, ASSISTANT_MSG_1, TOOL_MSG_1, {"role": "assistant", "content": "injected"}]
-        result = session.prepare_pretokenized(messages, tito_tokenizer=registry.tito_tokenizer)
+        result = _prepare_token_ids(session, messages, tito_tokenizer=registry.tito_tokenizer)
         assert isinstance(result, list)
 
 
@@ -328,7 +346,7 @@ class TestAppendRoleToolOnly:
         session.update_pretokenized_state([SYS_MSG, USER_MSG], ASSISTANT_MSG_1, [1, 2, 3], [10], max_trim_tokens=0)
 
         messages = [SYS_MSG, USER_MSG, ASSISTANT_MSG_1, TOOL_MSG_1]
-        result = session.prepare_pretokenized(messages, tito_tokenizer=registry_tool_only.tito_tokenizer)
+        result = _prepare_token_ids(session, messages, tito_tokenizer=registry_tool_only.tito_tokenizer)
         assert isinstance(result, list)
 
     def test_system_append_rejected(self, registry_tool_only: SessionRegistry):
@@ -338,7 +356,7 @@ class TestAppendRoleToolOnly:
 
         messages = [SYS_MSG, USER_MSG, ASSISTANT_MSG_1, TOOL_MSG_1, RETRY_SYS_MSG]
         with pytest.raises(MessageValidationError, match="role='system'.*allowed="):
-            session.prepare_pretokenized(messages, tito_tokenizer=registry_tool_only.tito_tokenizer)
+            _prepare_token_ids(session, messages, tito_tokenizer=registry_tool_only.tito_tokenizer)
 
     def test_user_append_rejected(self, registry_tool_only: SessionRegistry):
         sid = registry_tool_only.create_session()
@@ -347,7 +365,7 @@ class TestAppendRoleToolOnly:
 
         messages = [SYS_MSG, USER_MSG, ASSISTANT_MSG_1, TOOL_MSG_1, {"role": "user", "content": "extra"}]
         with pytest.raises(MessageValidationError, match="role='user'.*allowed="):
-            session.prepare_pretokenized(messages, tito_tokenizer=registry_tool_only.tito_tokenizer)
+            _prepare_token_ids(session, messages, tito_tokenizer=registry_tool_only.tito_tokenizer)
 
 
 class TestAppendRoleAssistant:
@@ -369,7 +387,7 @@ class TestAppendRoleAssistant:
             {"role": "assistant", "content": "injected"},
             {"role": "user", "content": "next"},
         ]
-        result = session.prepare_pretokenized(messages, tito_tokenizer=registry_with_assistant.tito_tokenizer)
+        result = _prepare_token_ids(session, messages, tito_tokenizer=registry_with_assistant.tito_tokenizer)
         assert isinstance(result, list)
 
 
@@ -382,7 +400,7 @@ class TestAppendRoleToolSystem:
         session.update_pretokenized_state([SYS_MSG, USER_MSG], ASSISTANT_MSG_1, [1, 2, 3], [10], max_trim_tokens=0)
 
         messages = [SYS_MSG, USER_MSG, ASSISTANT_MSG_1, TOOL_MSG_1]
-        result = session.prepare_pretokenized(messages, tito_tokenizer=registry_with_system.tito_tokenizer)
+        result = _prepare_token_ids(session, messages, tito_tokenizer=registry_with_system.tito_tokenizer)
         assert isinstance(result, list)
 
     def test_system_append_allowed(self, registry_with_system: SessionRegistry):
@@ -391,7 +409,7 @@ class TestAppendRoleToolSystem:
         session.update_pretokenized_state([SYS_MSG, USER_MSG], ASSISTANT_MSG_1, [1, 2, 3], [10, 11], max_trim_tokens=0)
 
         messages = [SYS_MSG, USER_MSG, ASSISTANT_MSG_1, TOOL_MSG_1, RETRY_SYS_MSG]
-        result = session.prepare_pretokenized(messages, tito_tokenizer=registry_with_system.tito_tokenizer)
+        result = _prepare_token_ids(session, messages, tito_tokenizer=registry_with_system.tito_tokenizer)
         assert result == [1, 2, 3, 10, 11]
 
     def test_system_then_assistant_trajectory(self, registry_with_system: SessionRegistry):
@@ -403,7 +421,7 @@ class TestAppendRoleToolSystem:
         session.update_pretokenized_state(t1_msgs, ASSISTANT_MSG_1, [1, 2, 3], [10, 11], max_trim_tokens=0)
 
         t2_msgs = [SYS_MSG, USER_MSG, ASSISTANT_MSG_1, TOOL_MSG_1, RETRY_SYS_MSG]
-        result = session.prepare_pretokenized(t2_msgs, tito_tokenizer=registry_with_system.tito_tokenizer)
+        result = _prepare_token_ids(session, t2_msgs, tito_tokenizer=registry_with_system.tito_tokenizer)
         assert isinstance(result, list)
 
         session.update_pretokenized_state(
@@ -412,7 +430,7 @@ class TestAppendRoleToolSystem:
         assert session.messages == [SYS_MSG, USER_MSG, ASSISTANT_MSG_1, TOOL_MSG_1, RETRY_SYS_MSG, ASSISTANT_MSG_2]
 
         t3_msgs = [SYS_MSG, USER_MSG, ASSISTANT_MSG_1, TOOL_MSG_1, RETRY_SYS_MSG, ASSISTANT_MSG_2, TOOL_MSG_2]
-        result = session.prepare_pretokenized(t3_msgs, tito_tokenizer=registry_with_system.tito_tokenizer)
+        result = _prepare_token_ids(session, t3_msgs, tito_tokenizer=registry_with_system.tito_tokenizer)
         assert isinstance(result, list)
 
     def test_user_append_rejected(self, registry_with_system: SessionRegistry):
@@ -422,7 +440,7 @@ class TestAppendRoleToolSystem:
 
         messages = [SYS_MSG, USER_MSG, ASSISTANT_MSG_1, TOOL_MSG_1, {"role": "user", "content": "extra"}]
         with pytest.raises(MessageValidationError, match="role='user'.*allowed="):
-            session.prepare_pretokenized(messages, tito_tokenizer=registry_with_system.tito_tokenizer)
+            _prepare_token_ids(session, messages, tito_tokenizer=registry_with_system.tito_tokenizer)
 
 
 class TestAppendRoleToolUser:
@@ -434,7 +452,7 @@ class TestAppendRoleToolUser:
         session.update_pretokenized_state([SYS_MSG, USER_MSG], ASSISTANT_MSG_1, [1, 2, 3], [10], max_trim_tokens=0)
 
         messages = [SYS_MSG, USER_MSG, ASSISTANT_MSG_1, TOOL_MSG_1]
-        result = session.prepare_pretokenized(messages, tito_tokenizer=registry_with_user.tito_tokenizer)
+        result = _prepare_token_ids(session, messages, tito_tokenizer=registry_with_user.tito_tokenizer)
         assert isinstance(result, list)
 
     def test_user_append_allowed(self, registry_with_user: SessionRegistry):
@@ -443,7 +461,7 @@ class TestAppendRoleToolUser:
         session.update_pretokenized_state([SYS_MSG, USER_MSG], ASSISTANT_MSG_1, [1, 2, 3], [10], max_trim_tokens=0)
 
         messages = [SYS_MSG, USER_MSG, ASSISTANT_MSG_1, TOOL_MSG_1, {"role": "user", "content": "follow-up"}]
-        result = session.prepare_pretokenized(messages, tito_tokenizer=registry_with_user.tito_tokenizer)
+        result = _prepare_token_ids(session, messages, tito_tokenizer=registry_with_user.tito_tokenizer)
         assert isinstance(result, list)
 
     def test_user_then_assistant_trajectory(self, registry_with_user: SessionRegistry):
@@ -458,7 +476,7 @@ class TestAppendRoleToolUser:
         # Turn 2: append tool + user follow-up -> assistant(tool_call)
         follow_up = {"role": "user", "content": "Also check Shanghai."}
         t2_msgs = [SYS_MSG, USER_MSG, ASSISTANT_MSG_1, TOOL_MSG_1, follow_up]
-        result = session.prepare_pretokenized(t2_msgs, tito_tokenizer=registry_with_user.tito_tokenizer)
+        result = _prepare_token_ids(session, t2_msgs, tito_tokenizer=registry_with_user.tito_tokenizer)
         assert isinstance(result, list)
 
         session.update_pretokenized_state(
@@ -468,7 +486,7 @@ class TestAppendRoleToolUser:
 
         # Turn 3: append tool after the second assistant
         t3_msgs = [SYS_MSG, USER_MSG, ASSISTANT_MSG_1, TOOL_MSG_1, follow_up, ASSISTANT_MSG_2, TOOL_MSG_2]
-        result = session.prepare_pretokenized(t3_msgs, tito_tokenizer=registry_with_user.tito_tokenizer)
+        result = _prepare_token_ids(session, t3_msgs, tito_tokenizer=registry_with_user.tito_tokenizer)
         assert isinstance(result, list)
 
     def test_system_append_rejected(self, registry_with_user: SessionRegistry):
@@ -478,7 +496,7 @@ class TestAppendRoleToolUser:
 
         messages = [SYS_MSG, USER_MSG, ASSISTANT_MSG_1, TOOL_MSG_1, RETRY_SYS_MSG]
         with pytest.raises(MessageValidationError, match="role='system'.*allowed="):
-            session.prepare_pretokenized(messages, tito_tokenizer=registry_with_user.tito_tokenizer)
+            _prepare_token_ids(session, messages, tito_tokenizer=registry_with_user.tito_tokenizer)
 
 
 class TestRollback:
@@ -495,7 +513,7 @@ class TestRollback:
 
         # Turn 2: [sys, user, asst1, tool1] -> assistant2
         t2_msgs = [SYS_MSG, USER_MSG, ASSISTANT_MSG_1, TOOL_MSG_1]
-        session.prepare_pretokenized(t2_msgs, tito_tokenizer=registry.tito_tokenizer)
+        _prepare_token_ids(session, t2_msgs, tito_tokenizer=registry.tito_tokenizer)
         session.update_pretokenized_state(
             t2_msgs, ASSISTANT_MSG_2, [1, 2, 3, 10, 11, 20, 21], [30, 31], max_trim_tokens=0
         )
@@ -506,7 +524,7 @@ class TestRollback:
         # Rollback: send [sys, user, asst1, NEW_tool] - diverges after asst1
         new_tool = {"role": "tool", "content": '{"temperature": 99}', "tool_call_id": "call_1"}
         rollback_msgs = [SYS_MSG, USER_MSG, ASSISTANT_MSG_1, new_tool]
-        result = session.prepare_pretokenized(rollback_msgs, tito_tokenizer=registry.tito_tokenizer)
+        result = _prepare_token_ids(session, rollback_msgs, tito_tokenizer=registry.tito_tokenizer)
         assert isinstance(result, list)
 
         # State should be rolled back to checkpoint 0
@@ -523,13 +541,13 @@ class TestRollback:
         session.update_pretokenized_state([SYS_MSG, USER_MSG], ASSISTANT_MSG_1, [1, 2, 3], [10, 11], max_trim_tokens=0)
 
         t2_msgs = [SYS_MSG, USER_MSG, ASSISTANT_MSG_1, TOOL_MSG_1]
-        session.prepare_pretokenized(t2_msgs, tito_tokenizer=registry.tito_tokenizer)
+        _prepare_token_ids(session, t2_msgs, tito_tokenizer=registry.tito_tokenizer)
         session.update_pretokenized_state(
             t2_msgs, ASSISTANT_MSG_2, [1, 2, 3, 10, 11, 20, 21], [30, 31], max_trim_tokens=0
         )
 
         t3_msgs = [SYS_MSG, USER_MSG, ASSISTANT_MSG_1, TOOL_MSG_1, ASSISTANT_MSG_2, TOOL_MSG_2]
-        session.prepare_pretokenized(t3_msgs, tito_tokenizer=registry.tito_tokenizer)
+        _prepare_token_ids(session, t3_msgs, tito_tokenizer=registry.tito_tokenizer)
         session.update_pretokenized_state(
             t3_msgs, ASSISTANT_MSG_FINAL, [1, 2, 3, 10, 11, 20, 21, 30, 31, 40], [50, 51], max_trim_tokens=0
         )
@@ -545,8 +563,8 @@ class TestRollback:
         # Attempt rollback to checkpoint 0 (discard 2 assistants) — should fail
         new_tool = {"role": "tool", "content": '{"alt": true}', "tool_call_id": "call_1"}
         with pytest.raises(MessageValidationError, match="exceeds max_assistant_rollback_steps"):
-            session.prepare_pretokenized(
-                [SYS_MSG, USER_MSG, ASSISTANT_MSG_1, new_tool], tito_tokenizer=registry.tito_tokenizer
+            _prepare_token_ids(
+                session, [SYS_MSG, USER_MSG, ASSISTANT_MSG_1, new_tool], tito_tokenizer=registry.tito_tokenizer
             )
 
         # State must be unchanged
@@ -566,13 +584,13 @@ class TestRollback:
 
         # Turn 2
         t2_msgs = [SYS_MSG, USER_MSG, ASSISTANT_MSG_1, TOOL_MSG_1]
-        session.prepare_pretokenized(t2_msgs, tito_tokenizer=registry.tito_tokenizer)
+        _prepare_token_ids(session, t2_msgs, tito_tokenizer=registry.tito_tokenizer)
         session.update_pretokenized_state(t2_msgs, ASSISTANT_MSG_2, [1, 2, 3, 10, 11, 20], [30], max_trim_tokens=0)
 
         # Rollback to asst1, send different tool
         new_tool = {"role": "tool", "content": '{"retry": true}', "tool_call_id": "call_1"}
         rollback_msgs = [SYS_MSG, USER_MSG, ASSISTANT_MSG_1, new_tool]
-        result = session.prepare_pretokenized(rollback_msgs, tito_tokenizer=registry.tito_tokenizer)
+        result = _prepare_token_ids(session, rollback_msgs, tito_tokenizer=registry.tito_tokenizer)
         assert isinstance(result, list)
 
         # Continue: complete a new turn from the rolled-back state
@@ -595,13 +613,13 @@ class TestRollback:
 
         # Turn 2: [sys, user, asst1, tool1] -> asst2
         t2_msgs = [SYS_MSG, USER_MSG, ASSISTANT_MSG_1, TOOL_MSG_1]
-        session.prepare_pretokenized(t2_msgs, tito_tokenizer=registry_with_system.tito_tokenizer)
+        _prepare_token_ids(session, t2_msgs, tito_tokenizer=registry_with_system.tito_tokenizer)
         session.update_pretokenized_state(t2_msgs, ASSISTANT_MSG_2, [1, 2, 10, 20], [30], max_trim_tokens=0)
         # stored messages: [sys, user, asst1, tool1, asst2] (5 messages)
 
         # Agent retries with only [sys, user, asst1, sys_retry] (4 messages)
         retry_msgs = [SYS_MSG, USER_MSG, ASSISTANT_MSG_1, RETRY_SYS_MSG]
-        result = session.prepare_pretokenized(retry_msgs, tito_tokenizer=registry_with_system.tito_tokenizer)
+        result = _prepare_token_ids(session, retry_msgs, tito_tokenizer=registry_with_system.tito_tokenizer)
         assert isinstance(result, list)
 
         assert session.num_assistant == 1
@@ -616,11 +634,11 @@ class TestRollback:
         session.update_pretokenized_state([SYS_MSG, USER_MSG], ASSISTANT_MSG_1, [1, 2], [10], max_trim_tokens=0)
 
         t2 = [SYS_MSG, USER_MSG, ASSISTANT_MSG_1, TOOL_MSG_1]
-        session.prepare_pretokenized(t2, tito_tokenizer=registry.tito_tokenizer)
+        _prepare_token_ids(session, t2, tito_tokenizer=registry.tito_tokenizer)
         session.update_pretokenized_state(t2, ASSISTANT_MSG_2, [1, 2, 10, 20], [30], max_trim_tokens=0)
 
         t3 = [SYS_MSG, USER_MSG, ASSISTANT_MSG_1, TOOL_MSG_1, ASSISTANT_MSG_2, TOOL_MSG_2]
-        session.prepare_pretokenized(t3, tito_tokenizer=registry.tito_tokenizer)
+        _prepare_token_ids(session, t3, tito_tokenizer=registry.tito_tokenizer)
         session.update_pretokenized_state(t3, ASSISTANT_MSG_FINAL, [1, 2, 10, 20, 30, 40], [50], max_trim_tokens=0)
 
         assert session.num_assistant == 3
@@ -628,7 +646,7 @@ class TestRollback:
         # Rollback: keep up to asst2, diverge at tool2
         new_tool = {"role": "tool", "content": '{"alt": 1}', "tool_call_id": "call_2"}
         rollback_msgs = [SYS_MSG, USER_MSG, ASSISTANT_MSG_1, TOOL_MSG_1, ASSISTANT_MSG_2, new_tool]
-        result = session.prepare_pretokenized(rollback_msgs, tito_tokenizer=registry.tito_tokenizer)
+        result = _prepare_token_ids(session, rollback_msgs, tito_tokenizer=registry.tito_tokenizer)
         assert isinstance(result, list)
 
         assert session.num_assistant == 2
@@ -645,7 +663,7 @@ class TestRollback:
 
         # Append tool - not a rollback
         t2_msgs = [SYS_MSG, USER_MSG, ASSISTANT_MSG_1, TOOL_MSG_1]
-        result = session.prepare_pretokenized(t2_msgs, tito_tokenizer=registry.tito_tokenizer)
+        result = _prepare_token_ids(session, t2_msgs, tito_tokenizer=registry.tito_tokenizer)
         assert isinstance(result, list)
 
         # State should NOT have been rolled back
@@ -661,7 +679,7 @@ class TestRollback:
 
         # Diverge at user message (index 1) - only sys matched, no assistant
         new_msgs = [SYS_MSG, {"role": "user", "content": "different question"}]
-        result = session.prepare_pretokenized(new_msgs, tito_tokenizer=registry.tito_tokenizer)
+        result = _prepare_token_ids(session, new_msgs, tito_tokenizer=registry.tito_tokenizer)
 
         assert result == _MOCK_FIRST_TURN_TOKENS
         assert session.messages == []
@@ -681,11 +699,11 @@ class TestRollback:
         session = registry.get_session(sid)
 
         turn1 = [USER_MSG]
-        assert session.prepare_pretokenized(turn1, tito_tokenizer=registry.tito_tokenizer) == _MOCK_FIRST_TURN_TOKENS
+        assert _prepare_token_ids(session, turn1, tito_tokenizer=registry.tito_tokenizer) == _MOCK_FIRST_TURN_TOKENS
         session.update_pretokenized_state(turn1, ASSISTANT_MSG_1, [1, 2], [10], max_trim_tokens=0)
         assert session.num_assistant == 1
 
-        result = session.prepare_pretokenized(turn1, tito_tokenizer=registry.tito_tokenizer)
+        result = _prepare_token_ids(session, turn1, tito_tokenizer=registry.tito_tokenizer)
 
         assert result == _MOCK_FIRST_TURN_TOKENS
         assert session.messages == []
@@ -706,13 +724,13 @@ class TestRollback:
         turn1 = [USER_MSG]
         session.update_pretokenized_state(turn1, ASSISTANT_MSG_1, [1, 2], [10], max_trim_tokens=0)
         turn2 = [USER_MSG, ASSISTANT_MSG_1, TOOL_MSG_1]
-        session.prepare_pretokenized(turn2, tito_tokenizer=registry.tito_tokenizer)
+        _prepare_token_ids(session, turn2, tito_tokenizer=registry.tito_tokenizer)
         session.update_pretokenized_state(turn2, ASSISTANT_MSG_2, [1, 2, 10, 20], [30], max_trim_tokens=0)
         assert session.num_assistant == 2
 
         # Discarding both assistants exceeds the single-step budget.
         with pytest.raises(MessageValidationError, match="exceeds max_assistant_rollback_steps"):
-            session.prepare_pretokenized(turn1, tito_tokenizer=registry.tito_tokenizer)
+            _prepare_token_ids(session, turn1, tito_tokenizer=registry.tito_tokenizer)
 
         assert session.num_assistant == 2
         assert session.token_ids == [1, 2, 10, 20, 30]
@@ -731,7 +749,7 @@ class TestRollback:
 
         # Turn 2
         t2 = [SYS_MSG, USER_MSG, ASSISTANT_MSG_1, TOOL_MSG_1]
-        session.prepare_pretokenized(t2, tito_tokenizer=registry.tito_tokenizer)
+        _prepare_token_ids(session, t2, tito_tokenizer=registry.tito_tokenizer)
         session.update_pretokenized_state(t2, ASSISTANT_MSG_2, [1, 2, 10, 20], [30], max_trim_tokens=0)
         r2 = SessionRecord(
             timestamp=2.0, method="POST", path="/v1/chat/completions", status_code=200, request={}, response={}
@@ -742,8 +760,8 @@ class TestRollback:
 
         # Rollback to checkpoint 0
         new_tool = {"role": "tool", "content": '{"alt": 1}', "tool_call_id": "call_1"}
-        session.prepare_pretokenized(
-            [SYS_MSG, USER_MSG, ASSISTANT_MSG_1, new_tool], tito_tokenizer=registry.tito_tokenizer
+        _prepare_token_ids(
+            session, [SYS_MSG, USER_MSG, ASSISTANT_MSG_1, new_tool], tito_tokenizer=registry.tito_tokenizer
         )
 
         assert len(session.records) == 1
@@ -787,7 +805,8 @@ class TestRollback:
             follow_up,
         ]
         second_prompt_tokens = first_tokens + [20, 21, 22]
-        session.prepare_pretokenized(
+        _prepare_token_ids(
+            session,
             injected_request,
             tito_tokenizer=registry_with_assistant.tito_tokenizer,
         )
@@ -817,7 +836,8 @@ class TestRollback:
         # Resend the exact request that produced assistant2. The absent generated
         # response is one rollback step; the two injected assistants are prompt
         # history, not additional checkpoints.
-        session.prepare_pretokenized(
+        _prepare_token_ids(
+            session,
             injected_request,
             tito_tokenizer=registry_with_assistant.tito_tokenizer,
         )
@@ -893,9 +913,9 @@ class TestComputeSessionMismatch:
         mock_comparator.compare_sequences.assert_called_once_with([1, 2, 3, 10, 11], [1, 2, 3, 10, 11])
         registry.tito_tokenizer.apply_chat_template.assert_called_once_with(
             session.messages,
-            tools=None,
             add_generation_prompt=False,
             tokenize=True,
+            template_args={},
         )
 
     def test_returns_mismatch_dicts(self, registry: SessionRegistry):
@@ -929,18 +949,20 @@ class TestComputeSessionMismatch:
         with pytest.raises(TokenizationError, match="tokenizer failed"):
             registry.compute_session_mismatch(session)
 
-    def test_uses_tools_from_last_record(self, registry: SessionRegistry):
+    def test_renders_with_the_tools_the_tip_recorded(self, registry: SessionRegistry):
         sid = registry.create_session()
         session = registry.get_session(sid)
-        session.update_pretokenized_state([SYS_MSG, USER_MSG], ASSISTANT_MSG_1, [1, 2], [10], max_trim_tokens=0)
-
         tools = [{"type": "function", "function": {"name": "get_weather"}}]
+        session.update_pretokenized_state(
+            [SYS_MSG, USER_MSG], ASSISTANT_MSG_1, [1, 2], [10], max_trim_tokens=0, turn_args={"tools": tools}
+        )
+        # A record carrying other tools does not matter: the tip's template args do.
         record = SessionRecord(
             timestamp=1.0,
             method="POST",
             path="/v1/chat/completions",
             status_code=200,
-            request={"tools": tools},
+            request={"tools": [{"type": "function", "function": {"name": "get_time"}}]},
             response={},
         )
         session.append_record(record)
@@ -953,7 +975,61 @@ class TestComputeSessionMismatch:
 
         registry.compute_session_mismatch(session)
 
-        # Verify tools were passed to the TITO renderer.
         _, kwargs = mock_tokenize.call_args
-        assert kwargs["tools"] == tools
+        assert kwargs["template_args"] == {"tools": tools}
         assert kwargs["add_generation_prompt"] is False
+
+    def test_renders_with_the_kwargs_the_tip_recorded(self, registry: SessionRegistry):
+        sid = registry.create_session()
+        session = registry.get_session(sid)
+        session.update_pretokenized_state(
+            [SYS_MSG, USER_MSG],
+            ASSISTANT_MSG_1,
+            [1, 2, 3],
+            [10, 11],
+            max_trim_tokens=0,
+            turn_args={"temperature": 0.7, "chat_template_kwargs": {"reasoning_effort": "low"}},
+        )
+
+        mock_tokenize = MagicMock(return_value=[1, 2, 3, 10, 11])
+        registry.tito_tokenizer.apply_chat_template = mock_tokenize
+        registry.comparator = MagicMock(compare_sequences=MagicMock(return_value=[]))
+
+        assert registry.compute_session_mismatch(session) == []
+        assert mock_tokenize.call_args.kwargs["template_args"] == {"reasoning_effort": "low"}
+
+
+def test_committed_full_turn_args_are_isolated_from_later_request_mutation(registry):
+    session = registry.get_session(registry.create_session())
+    request_args = {
+        "temperature": 0.7,
+        "messages": [{"role": "user", "content": "hi"}],
+        "tools": [{"function": {"name": "f"}}],
+        "chat_template_kwargs": {"nested": [1]},
+        "input_ids": [1, 2],
+    }
+    session.update_pretokenized_state(
+        [SYS_MSG, USER_MSG], ASSISTANT_MSG_1, [1, 2], [3], max_trim_tokens=0, turn_args=request_args
+    )
+    request_args["temperature"] = 0.1
+    request_args["messages"][0]["content"] = "changed"
+    request_args["tools"][0]["function"]["name"] = "changed"
+    request_args["chat_template_kwargs"]["nested"].append(2)
+    request_args["input_ids"].append(9)
+    assert session.turn_args == {
+        "temperature": 0.7,
+        "messages": [{"role": "user", "content": "hi"}],
+        "tools": [{"function": {"name": "f"}}],
+        "chat_template_kwargs": {"nested": [1]},
+        "input_ids": [1, 2],
+    }
+
+
+def test_mismatch_does_not_resolve_defaults_for_an_empty_committed_record(registry):
+    session = registry.get_session(registry.create_session())
+    session.update_pretokenized_state([SYS_MSG, USER_MSG], ASSISTANT_MSG_1, [1], [2], max_trim_tokens=0, turn_args={})
+    registry.tito_tokenizer.chat_template_kwargs = {"enable_thinking": True}
+    registry.tito_tokenizer.apply_chat_template = MagicMock(return_value=[1, 2])
+    registry.comparator = MagicMock(compare_sequences=MagicMock(return_value=[]))
+    assert registry.compute_session_mismatch(session) == []
+    assert registry.tito_tokenizer.apply_chat_template.call_args.kwargs["template_args"] == {}

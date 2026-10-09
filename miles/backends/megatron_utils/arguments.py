@@ -4,7 +4,9 @@ import os
 from megatron.core.tokenizers.utils.build_tokenizer import vocab_size_with_padding as _vocab_size_with_padding
 from megatron.training.arguments import parse_args, validate_args
 
+from miles.utils.hf_utils.config import load_hf_config
 from miles_plugins.models.deepseek_v4.arguments import is_dsv4_model, normalize_dsv4_args
+from miles_plugins.models.glm5.arguments import normalize_dsa_args
 
 __all__ = ["validate_args", "parse_args", "set_default_megatron_args"]
 
@@ -52,10 +54,12 @@ def set_default_megatron_args(args):
 
     args.trust_remote_code = True
 
-    if not hasattr(args, "miles_dsa_topk_backend"):
-        args.miles_dsa_topk_backend = "torch"
-
     if is_dsv4_model(args):
         normalize_dsv4_args(args)
+
+    if args.dsa_impl == "megatron":
+        normalize_dsa_args(args, load_hf_config(args.hf_checkpoint))
+    elif args.cp_comm_type is None:
+        args.cp_comm_type = ["p2p"]
 
     return args

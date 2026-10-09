@@ -2,6 +2,7 @@ from copy import deepcopy
 from dataclasses import fields
 from typing import Any
 
+from miles.rollout.generate_utils.rollout_topk_logprobs import merge_rollout_topk_logprobs_field
 from miles.rollout.generate_utils.sampling_mask import merge_sampling_masks
 from miles.utils.types import Sample
 
@@ -162,6 +163,8 @@ def _merge_sample_pair(a: Sample, b: Sample, tokenizer) -> Sample:
             loss_mask=a.loss_mask + [0] * obs_len + b.loss_mask,
             weight_versions=a.weight_versions + b.weight_versions,
             rollout_log_probs=a.rollout_log_probs + [0.0] * obs_len + b.rollout_log_probs,
+            rollout_topk_token_ids=merge_rollout_topk_logprobs_field(a, b, "rollout_topk_token_ids", obs_len),
+            rollout_topk_log_probs=merge_rollout_topk_logprobs_field(a, b, "rollout_topk_log_probs", obs_len),
             rollout_sampling_mask=sampling_mask,
             teacher_log_probs=_merge_optional_per_token("teacher_log_probs"),
             opd_reverse_kl=_merge_optional_per_token("opd_reverse_kl"),
@@ -172,9 +175,9 @@ def _merge_sample_pair(a: Sample, b: Sample, tokenizer) -> Sample:
             metadata=_merge_metadata(),
             generate_function_path=_merge_equal_value("generate_function_path"),
             train_metadata=_merge_equal_value("train_metadata"),
-            adapter=_merge_equal_value("adapter"),
             reward_spec=_merge_equal_value("reward_spec"),
             routing_key=_merge_equal_value("routing_key"),
+            trainer_model_id=_merge_equal_value("trainer_model_id"),
             non_generation_time=_merge_equal_value("non_generation_time"),
             spec_info=_merge_spec_info(a.spec_info, b.spec_info),
             prefix_cache_info=_merge_prefix_cache_info(a.prefix_cache_info, b.prefix_cache_info),

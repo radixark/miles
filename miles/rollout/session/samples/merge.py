@@ -15,7 +15,9 @@ from miles.rollout.generate_utils.generate_endpoint_utils import (
     get_indexer_topk_from_response,
     get_routed_experts_from_response,
 )
+from miles.rollout.generate_utils.rollout_topk_logprobs import append_rollout_topk_logprobs
 from miles.rollout.generate_utils.sample_utils import merge_samples
+from miles.rollout.generate_utils.sampling_mask import append_sampling_metadata
 from miles.rollout.session.types import SessionRecord
 from miles.utils.lifecycle import attach_lifecycle_metadata
 from miles.utils.types import Sample, WeightVersionsPerCall
@@ -29,6 +31,7 @@ def compute_samples_from_openai_records(
     max_trim_tokens: int = 0,
     *,
     use_addition_r3: bool = False,
+    evaluation: bool = False,
 ) -> list[Sample]:
     """Convert per-turn session records into training Samples, aligning each
     turn's output tokens against the TITO accumulated token sequence.
@@ -81,7 +84,7 @@ def compute_samples_from_openai_records(
             cursor += matched
 
         sample = _compute_sample_from_openai_record(
-            args, record, tokenizer, trim_count, use_addition_r3=use_addition_r3
+            args, record, tokenizer, trim_count, use_addition_r3=use_addition_r3, evaluation=evaluation
         )
         attach_lifecycle_metadata(sample, record, records[i - 1] if i else None, turn=i + 1)
         if is_last and args.save_debug_trajectory_data is not None:
@@ -99,9 +102,16 @@ def compute_samples_from_openai_records(
 
 
 def _compute_sample_from_openai_record(
-    args: Namespace, record: SessionRecord, tokenizer, trim_count: int = 0, *, use_addition_r3: bool = False
+    args: Namespace,
+    record: SessionRecord,
+    tokenizer,
+    trim_count: int = 0,
+    *,
+    use_addition_r3: bool = False,
+    evaluation: bool = False,
 ) -> Sample:
     choice = record.response["choices"][0]
+    finish_reason = choice.get("finish_reason")
 
     prompt_token_ids = record.request.get("input_ids")
     if prompt_token_ids is None:
@@ -111,11 +121,28 @@ def _compute_sample_from_openai_record(
     output_log_probs = [item[0] for item in choice["meta_info"]["output_token_logprobs"]]
 
     sample = Sample()
+    if record.request.get("return_sampling_mask", False):
+        output_log_probs = append_sampling_metadata(
+            sample,
+            output_token_ids,
+            choice["meta_info"],
+            aborted=finish_reason == "abort",
+            sampling_logprobs_mode=record.request.get("sampling_logprobs_mode", "selected"),
+        )
     sample.tokens = prompt_token_ids + output_token_ids
     sample.rollout_log_probs = output_log_probs
     sample.response = tokenizer.decode(output_token_ids)
     sample.response_length = len(output_token_ids)
     sample.loss_mask = [1] * len(output_token_ids)
+    if not evaluation and (
+        record.request.get("top_logprobs") or record.request.get("sampling_logprobs_mode") == "support"
+    ):
+        append_rollout_topk_logprobs(
+            sample,
+            choice["meta_info"],
+            args.rollout_top_logprobs_num,
+            sampling_logprobs_mode=record.request.get("sampling_logprobs_mode", "selected"),
+        )
     sample.rollout_routed_experts = (
         None if use_addition_r3 else get_routed_experts_from_response(args, choice, len(sample.tokens) - 1)
     )
@@ -126,7 +153,7 @@ def _compute_sample_from_openai_record(
         sample.strip_last_output_tokens(trim_count, tokenizer)
 
     # TODO unify with Sample.update_from_meta_info
-    match choice["finish_reason"]:
+    match finish_reason:
         case "stop" | "tool_calls":
             sample.status = Sample.Status.COMPLETED
         case "length":

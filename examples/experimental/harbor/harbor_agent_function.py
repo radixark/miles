@@ -43,16 +43,14 @@ Env vars (read on the rollout worker):
   AGENT_MAX_INPUT_TOKENS / AGENT_MAX_OUTPUT_TOKENS, HARBOR_MAX_SEQ_LEN,
   HARBOR_AGENT_MAX_ITERATIONS, HARBOR_RESPONSE_LENGTH_POLICY,
   HARBOR_TERMINUS_2_ENABLE_SUMMARIZE, HARBOR_TERMINUS_2_LINEAR_HISTORY,
-  HARBOR_OVERRIDE_MEMORY_MB, HARBOR_TIMEOUT_MULTIPLIER,
+  HARBOR_OVERRIDE_CPUS, HARBOR_OVERRIDE_MEMORY_MB,
+  HARBOR_CPU_ENFORCEMENT_POLICY, HARBOR_MEMORY_ENFORCEMENT_POLICY,
+  HARBOR_TIMEOUT_MULTIPLIER,
   HARBOR_VERIFIER_TIMEOUT_SEC, HARBOR_ENV_BUILD_TIMEOUT_MULTIPLIER,
   HARBOR_AGENT_ALLOWED_HOSTS
                          same meaning as on the agent server
   HARBOR_OVERRIDE_STORAGE_MB
                          per-sandbox disk, Harbor's ``override_storage_mb``
-  MILES_ROUTER_EXTERNAL_HOST
-                         host the sandbox uses to reach the session server
-                         (in-sandbox agents call the model from inside the
-                         sandbox, so it must route from the sandbox platform)
 
 Failure semantics: a verdict is returned as-is; every episode that ends
 without one scores 0 with a named ``exit_status`` (``TimeLimitExceeded``,
@@ -76,7 +74,7 @@ from pathlib import Path
 from typing import Any
 
 from miles.rollout.agentic.credentials import PROVIDER_CREDENTIALS, resolve_provider_api_key
-from miles.rollout.agentic.session import resolve_session_url
+from miles.rollout.agentic.session import openai_session_url
 
 logger = logging.getLogger(__name__)
 
@@ -322,6 +320,7 @@ def _environment_config():
             )
     overrides = {}
     for field, var in (
+        ("override_cpus", "HARBOR_OVERRIDE_CPUS"),
         ("override_memory_mb", "HARBOR_OVERRIDE_MEMORY_MB"),
         ("override_storage_mb", "HARBOR_OVERRIDE_STORAGE_MB"),
     ):
@@ -329,7 +328,14 @@ def _environment_config():
         if value is not None and value <= 0:
             raise ValueError(f"{var} must be a positive integer")
         overrides[field] = value
-    return EnvironmentConfig(type=env_type, delete=True, kwargs=kwargs, **overrides)
+    policies = {}
+    for field, var in (
+        ("cpu_enforcement_policy", "HARBOR_CPU_ENFORCEMENT_POLICY"),
+        ("memory_enforcement_policy", "HARBOR_MEMORY_ENFORCEMENT_POLICY"),
+    ):
+        if value := os.getenv(var, "").strip():
+            policies[field] = value
+    return EnvironmentConfig(type=env_type, delete=True, kwargs=kwargs, **overrides, **policies)
 
 
 def build_trial_config(metadata: dict[str, Any], session_url: str, request_kwargs: dict[str, Any]):
@@ -448,7 +454,7 @@ async def run(
 
     metadata = metadata or {}
     request_kwargs = request_kwargs or {}
-    session_url = resolve_session_url(base_url)
+    session_url = openai_session_url(base_url)
     instance_id = metadata.get("instance_id")
     trial_timeout_s = _trial_timeout_s()
 

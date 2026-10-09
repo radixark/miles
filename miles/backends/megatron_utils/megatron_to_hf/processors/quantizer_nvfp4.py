@@ -63,19 +63,12 @@ def quantize_params_nvfp4(args, megatron_name, converted_named_params, quantizat
 
     ignore_rules = _get_ignore_rules(quantization_config)
 
-    decoder_layers_pattern = r"decoder\.layers\.(\d+)\.(.+)"
-    match = re.search(decoder_layers_pattern, megatron_name)
-
+    # Only the main language decoder is eligible; MTP and modality towers stay in high precision.
+    decoder_layers_pattern = r"(?:module\.)*(?:language_model\.)?decoder\.layers\.(\d+)\.(.+)"
+    match = re.match(decoder_layers_pattern, megatron_name)
     if not match:
-        # check mtp layers
-        mtp_layer_pattern = r"mtp\.layers\.(\d+)\.(.+)"
-        match = re.search(mtp_layer_pattern, megatron_name)
-        if not match:
-            return converted_named_params
-        layer_idx, rest = match.groups()
-        rest = rest.replace("transformer_layer.", "").replace("mtp_model_layer.", "")
-    else:
-        layer_idx, rest = match.groups()
+        return converted_named_params
+    layer_idx, rest = match.groups()
 
     # Skip quantization for BF16 tail of main decoder layers.
     if getattr(args, "first_last_layers_bf16", False):

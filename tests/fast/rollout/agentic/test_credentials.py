@@ -27,7 +27,7 @@ _SPEC_KEYS = {
     "target",
 }
 # Per-backend extras a spec may carry; the launchers read them with .get().
-_OPTIONAL_SPEC_KEYS = {"sdk_min_version"}
+_OPTIONAL_SPEC_KEYS = {"env_defaults", "sdk_min_version"}
 
 
 # --- the credential table ----------------------------------------------------
@@ -245,6 +245,25 @@ def test_provision_provider_wires_key_path_addresses_and_preflight(monkeypatch, 
     assert env["E2B_API_URL"] == "http://agentenv.internal:8000"
     assert "E2B_SANDBOX_URL" not in env  # unset vars are not forwarded
     assert "e2b_secret" not in str(env)
+
+
+def test_modal_provisioning_uses_public_sandbox_v2_switch(monkeypatch, tmp_path):
+    config = tmp_path / "modal.toml"
+    config.write_text('[radixark]\ntoken_id = "ak-123"\ntoken_secret = "as-456"\n')
+    monkeypatch.setitem(sys.modules, "modal", types.ModuleType("modal"))
+    monkeypatch.setattr(credentials.importlib.metadata, "version", lambda name: "1.5.5")
+    monkeypatch.delenv("MODAL_SANDBOX_V2", raising=False)
+
+    env: dict[str, str] = {}
+    provision_provider(env, PROVIDER_CREDENTIALS["modal"], arg_path=str(config))
+
+    assert env["MODAL_CONFIG_PATH"] == str(config)
+    assert env["MODAL_SANDBOX_V2"] == "1"
+
+    monkeypatch.setenv("MODAL_SANDBOX_V2", "0")
+    overridden: dict[str, str] = {}
+    provision_provider(overridden, PROVIDER_CREDENTIALS["modal"], arg_path=str(config))
+    assert overridden["MODAL_SANDBOX_V2"] == "0"
 
 
 def test_credential_available_accepts_either_supply(monkeypatch, tmp_path):

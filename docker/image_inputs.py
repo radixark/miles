@@ -26,9 +26,10 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 
 # A build reads exactly these. Anything outside them cannot change the image, so a
 # PR touching only such files reuses the released image. Dockerfile.rocm is absent on
-# purpose: it feeds pr-test-rocm.yml, not the cu13 multi-arch image built here.
+# purpose: it feeds the rocm/sgl-dev images, not the cu13 multi-arch image built here.
 INPUT_GLOBS = (
     "docker/Dockerfile",
+    "docker/Dockerfile.rubin",
     "docker/build.py",
     "docker/install-kube-tools.sh",
     "docker/verify_transformer_engine.py",

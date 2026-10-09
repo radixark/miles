@@ -14,6 +14,7 @@ import httpx
 from miles.utils.ft_utils.api_server.models import Cell, CellList, CellPatch, CellPatchSpec, TriState
 from miles.utils.pydantic_utils import StrictBaseModel
 from miles.utils.tracking_utils.structured_log import log_structured
+from miles.utils.workers.types import ClusterBackend
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +30,7 @@ def maybe_start_mini_ft_controller(args: Any) -> None:
         api_server_url=f"http://127.0.0.1:{args.api_server_port}",
         poll_interval=args.mini_ft_controller_poll_interval,
         resume_delay=args.mini_ft_controller_resume_delay,
+        cells_auto_resume=ClusterBackend(args.cluster_backend) == ClusterBackend.KUBERNETES,
     )
 
     def _run() -> None:
@@ -49,6 +51,7 @@ class _MiniFTControllerRunner:
         api_server_url: str,
         poll_interval: float,
         resume_delay: float,
+        cells_auto_resume: bool,
     ) -> None:
         url = api_server_url.rstrip("/")
         self._client = httpx.AsyncClient(base_url=url, timeout=30.0)
@@ -58,6 +61,7 @@ class _MiniFTControllerRunner:
             resume_cell=self._resume_cell,
             poll_interval=poll_interval,
             resume_delay=resume_delay,
+            cells_auto_resume=cells_auto_resume,
         )
 
     async def run(self) -> None:
@@ -133,6 +137,7 @@ class _MiniFTController:
         resume_cell: Callable[[str], Awaitable[None]],
         poll_interval: float,
         resume_delay: float,
+        cells_auto_resume: bool = False,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self._get_cells = get_cells
@@ -140,6 +145,7 @@ class _MiniFTController:
         self._resume_cell = resume_cell
         self._poll_interval = poll_interval
         self._resume_delay = resume_delay
+        self._cells_auto_resume = cells_auto_resume
         self._clock = clock
 
         self._running: bool = False
@@ -201,8 +207,9 @@ class _MiniFTController:
             )
             await asyncio.sleep(self._resume_delay)
 
-            log_structured(logger.info, tag="ft", op="heal", phase="resume", cell=cell_name)
-            await self._resume_cell(cell_name)
+            if not self._cells_auto_resume:
+                log_structured(logger.info, tag="ft", op="heal", phase="resume", cell=cell_name)
+                await self._resume_cell(cell_name)
 
             backoff.consecutive_failures = 0
             backoff.next_attempt_at = self._clock() + self._resume_delay

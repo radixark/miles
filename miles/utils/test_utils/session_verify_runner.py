@@ -30,8 +30,9 @@ import shutil
 import tempfile
 from typing import Any, Literal
 
-import miles.utils.external_utils.command_utils as U
 from miles.utils.chat_template_utils import resolve_reasoning_and_tool_call_parser
+from miles.utils.external_utils import command_utils
+from miles.utils.external_utils.command_utils.base_backend import BaseCommandBackend
 from miles.utils.tracking_utils.ci_history import RECORD_DIR_ENV
 
 logger = logging.getLogger(__name__)
@@ -111,7 +112,7 @@ def _ensure_prompt_data() -> str:
     return PROMPT_DATA_PATH
 
 
-def _ensure_model_downloaded(hf_checkpoint: str) -> str:
+def _ensure_model_downloaded(hf_checkpoint: str, *, backend: BaseCommandBackend) -> str:
     """Return a local model path, downloading HF repos when needed.
 
     Lets callers pass either a HuggingFace repo id (downloaded under
@@ -124,7 +125,7 @@ def _ensure_model_downloaded(hf_checkpoint: str) -> str:
     short = hf_checkpoint.split("/")[-1]
     local_dir = os.path.join(LOCAL_MODELS_ROOT, short)
     os.makedirs(LOCAL_MODELS_ROOT, exist_ok=True)
-    U.exec_command_cpu(f"hf download {hf_checkpoint} --local-dir {local_dir}")
+    backend.exec_command_cpu(f"hf download {hf_checkpoint} --local-dir {local_dir}")
     return local_dir
 
 
@@ -205,6 +206,8 @@ def namespace_to_train_args(ns: argparse.Namespace) -> str:
         parts.append("--debug-rollout-only")
     if ns.ci_test:
         parts.append("--ci-test")
+    if getattr(ns, "ci_tito_special_token_count_threshold", 0.0):
+        parts.append(f"--ci-tito-special-token-count-threshold {ns.ci_tito_special_token_count_threshold}")
     if ns.colocate:
         parts.append("--colocate")
     return " ".join(parts) + " "
@@ -249,12 +252,13 @@ def run_session_verify(args: argparse.Namespace, *, wire_format: SessionWireForm
     if wire_format not in ("openai", "anthropic"):
         raise ValueError(f"unsupported session verification wire format: {wire_format}")
 
+    backend = command_utils.default_config().create_backend()
     args.sglang_reasoning_parser, args.sglang_tool_call_parser = resolve_reasoning_and_tool_call_parser(
         args.tito_model, args.sglang_reasoning_parser, args.sglang_tool_call_parser
     )
     _ensure_prompt_data()
     _clear_proxy_env()
-    args.hf_checkpoint = _ensure_model_downloaded(args.hf_checkpoint)
+    args.hf_checkpoint = _ensure_model_downloaded(args.hf_checkpoint, backend=backend)
 
     train_args = namespace_to_train_args(args)
 
@@ -265,7 +269,7 @@ def run_session_verify(args: argparse.Namespace, *, wire_format: SessionWireForm
     os.close(metrics_fd)
 
     try:
-        U.execute_train(
+        backend.execute_train(
             train_args=train_args,
             num_gpus_per_node=args.actor_num_gpus_per_node,
             megatron_model_type=None,
@@ -274,6 +278,7 @@ def run_session_verify(args: argparse.Namespace, *, wire_format: SessionWireForm
         assert_session_verify_metrics(
             metrics_path,
             assistant_text_threshold=args.assistant_text_threshold,
+            special_token_count_threshold=getattr(args, "ci_tito_special_token_count_threshold", 0.0),
             require_append_tool=wire_format == "openai",
         )
     except Exception:
@@ -293,19 +298,25 @@ def run_session_verify(args: argparse.Namespace, *, wire_format: SessionWireForm
 
 
 def assert_session_verify_metrics(
-    metrics_path: str, *, assistant_text_threshold: float, require_append_tool: bool = True
+    metrics_path: str,
+    *,
+    assistant_text_threshold: float,
+    special_token_count_threshold: float = 0.0,
+    require_append_tool: bool = True,
 ) -> None:
     """Read per-sample JSONL metrics and assert cross-sample verifier gates.
 
     Forbidden mismatch types (special_*, non_assistant_text) are recorded by
     the agent wrapper and hard-failed here so the rollout loop cannot discard
-    their assertion as a retryable sample failure.  The assistant_text tier
-    remains soft and is checked only against the caller-provided ratio
-    threshold.
+    their assertion as a retryable sample failure.  Samples whose only hard
+    type is special_token_count are tolerated up to the caller-provided
+    ``special_token_count_threshold`` ratio.  The assistant_text tier remains
+    soft and is checked only against the caller-provided ratio threshold.
     """
     samples_with_mismatch = 0
     total_samples = 0
     has_append_tool = False
+    samples_with_special_token_count_only = 0
     samples_with_hard_mismatch = 0
     hard_mismatch_count = 0
     hard_mismatch_types = set()
@@ -342,6 +353,8 @@ def assert_session_verify_metrics(
             entry_hard_types = entry.get("hard_mismatch_types", [])
             entry_hard_count = entry.get("hard_mismatch_count", len(entry_hard_types))
             if entry_hard_count or entry_hard_types:
+                if set(entry_hard_types) == {"special_token_count"}:
+                    samples_with_special_token_count_only += 1
                 samples_with_hard_mismatch += 1
                 hard_mismatch_count += entry_hard_count
                 hard_mismatch_types.update(entry_hard_types)
@@ -381,13 +394,17 @@ def assert_session_verify_metrics(
         ratio,
         assistant_text_threshold,
     )
-    if samples_with_hard_mismatch:
+    special_token_count_ratio = samples_with_special_token_count_only / total_samples
+    if samples_with_hard_mismatch > samples_with_special_token_count_only or (
+        special_token_count_ratio > special_token_count_threshold
+    ):
         raise AssertionError(
             f"Session multi-role e2e: hard TITO mismatches found in "
             f"{samples_with_hard_mismatch}/{total_samples} attempted samples "
             f"({hard_mismatch_count} mismatches, types={sorted(hard_mismatch_types)}, "
             f"first={hard_mismatch_example}).  These types must be 0 for any "
-            "TITO-correct setup."
+            f"TITO-correct setup (special_token_count-only samples tolerated up to "
+            f"{special_token_count_threshold})."
         )
 
     if require_append_tool and not has_append_tool:

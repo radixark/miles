@@ -103,7 +103,7 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --sglang-max-total-tokens 327680
   --sglang-attention-backend fa4
   --sglang-moe-runner-backend triton
-  --sglang-mamba-scheduler-strategy extra_buffer
+  --sglang-mamba-radix-cache-strategy extra_buffer
   --sglang-enable-multimodal
   --sglang-context-length 8192
   --sglang-disable-custom-all-reduce 

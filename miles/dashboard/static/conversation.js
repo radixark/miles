@@ -52,6 +52,14 @@ function toolCallBlock(name, args) {
   return el("div", {}, [el("span", { class: "chip" }, [name]), el("pre", { class: "msg-text" }, [pretty])]);
 }
 
+function contentBlock(part) {
+  if (part?.type === "image_url") {
+    return el("img", { class: "msg-image", src: part.image_url.url, alt: "Conversation image", loading: "lazy" });
+  }
+  const text = part?.type === "text" ? part.text : part;
+  return el("pre", { class: "msg-text" }, [typeof text === "string" ? text : JSON.stringify(text, null, 2)]);
+}
+
 function messageCard(message, index) {
   const role = message.role ?? "?";
   const body = [];
@@ -67,7 +75,7 @@ function messageCard(message, index) {
     body.push(el("div", { class: "msg-thinking" }, [message.reasoning_content]));
   }
   if (content) {
-    body.push(el("pre", { class: "msg-text" }, [typeof content === "string" ? content : JSON.stringify(content, null, 2)]));
+    body.push(...(Array.isArray(content) ? content : [content]).map(contentBlock));
   }
   for (const raw of rawCalls) {
     let name = "tool_call";

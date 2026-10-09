@@ -4,7 +4,6 @@ from scripts.run_kimi_k25 import ScriptArgs, _convert_to_bf16, _execute_train, _
 from tests.ci.ci_register import register_cuda_ci
 from tests.ci.metric_history import register_ci_gate
 
-import miles.utils.external_utils.command_utils as U
 
 # Smoke test for the Kimi-K2.5 (MoE + MLA, INT4 rollout + BF16 Megatron bridge) training
 # script. It runs the 2-layer pruned model on a single 4-GPU H200 node and only verifies that
@@ -12,7 +11,11 @@ import miles.utils.external_utils.command_utils as U
 
 
 register_cuda_ci(
-    est_time=1200, suite="stage-c-4-gpu-h200", labels=["megatron", "model-scripts"], hardware=["hopper", "blackwell"]
+    est_time=1000,
+    suite="stage-c-4-gpu-h200",
+    labels=["megatron", "model-scripts"],
+    hardware=["hopper", "blackwell"],
+    num_gpus=4,
 )
 
 register_ci_gate(metric_key="train/grad_norm")
@@ -23,17 +26,21 @@ register_ci_gate(metric_key="rollout/raw_reward")
 
 
 def _args() -> ScriptArgs:
-    return ScriptArgs(
+    return ScriptArgs.from_env(
         hardware="H200",
         model_name="Kimi-K2.5-2layer",
         num_nodes=1,
         num_gpus_per_node=4,
         num_rollout=2,
+        rollout_batch_size=4,
+        n_samples_per_prompt=4,
+        global_batch_size=16,
         extra_args=("--ci-test " "--ci-disable-logprobs-checker " "--skip-actor-forward-only "),
     )
 
 
 def prepare(args: ScriptArgs):
+    U = args.create_backend()
     U.exec_command_cpu(f"mkdir -p {args.output_dir}")
     _prepare_download(args)
     _convert_to_bf16(args)

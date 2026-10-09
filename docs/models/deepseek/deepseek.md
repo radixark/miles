@@ -24,18 +24,21 @@ definition — the single-node smoke-test path.
 
 ## 3. Launch
 
-`scripts/run_deepseek.py` drives the whole pipeline: HF download, FP8 → BF16 cast, HF → Megatron
-`torch_dist` conversion, an rsync of both directories to node-local storage, and the `train.py`
-submission.
+`scripts/run_deepseek.py` splits the pipeline across three commands:
+
+- `prepare` — HF download, FP8 → BF16 cast, HF → Megatron `torch_dist` conversion.
+- `train` — the `train.py` submission; each trainer pod first rsyncs both model directories to
+  node-local storage.
+- `full-train` — `prepare` followed by `train`, which is the whole pipeline in one invocation.
 
 ```bash
-python scripts/run_deepseek.py train --num-nodes 16 --num-gpus-per-node 8
+python scripts/run_deepseek.py full-train --num-nodes 16 --num-gpus-per-node 8
 ```
 
 Single-node smoke test on a pruned checkpoint:
 
 ```bash
-python scripts/run_deepseek.py train --model-name DeepSeek-V3-0324-5layer --num-nodes 1
+python scripts/run_deepseek.py full-train --model-name DeepSeek-V3-0324-5layer --num-nodes 1
 ```
 
 Directories default to `--model-dir /root/models` (shared FS), `--data-dir /root/datasets`, and
@@ -59,7 +62,7 @@ ray start --address=${MASTER_ADDR}:6379 --num-gpus 8 \
           --node-ip-address ${WORKER_IP} --disable-usage-stats
 
 # back on node 0
-MILES_SCRIPT_EXTERNAL_RAY=1 python scripts/run_deepseek.py train \
+MILES_SCRIPT_EXTERNAL_RAY=1 python scripts/run_deepseek.py full-train \
    --num-nodes 16 --num-gpus-per-node 8
 ```
 
@@ -84,7 +87,8 @@ runs on that one node.
 
 ## 4. Checkpoint conversion
 
-`train` performs the two conversion steps for you; the equivalent manual commands are below.
+`prepare`, and therefore `full-train`, performs the two conversion steps for you; the equivalent
+manual commands are below.
 
 The HF checkpoint ships in block-quantized FP8 — first cast it to BF16:
 
@@ -201,14 +205,14 @@ with attention DP 1 and 8 respectively.
 --sglang-server-concurrency 1024
 --sglang-max-running-requests 2048
 --sglang-chunked-prefill-size 16384
---sglang-cuda-graph-max-bs 256
+--sglang-cuda-graph-max-bs-decode 256
 ```
 
 `--rollout-num-gpus-per-engine` corresponds to SGLang's `tp_size`. To exploit large-EP inference,
 the recipe sets EP64, DP-attention with DP8, and DeepEP `low_latency`.
 `--sglang-server-concurrency` is a miles-specific knob to keep the SGLang HTTP server from being
 swamped — default 512, raised to 1024 here so each of the 8 DP ranks gets 128 concurrent requests.
-`SGLANG_DEEPEP_NUM_MAX_DISPATCH_TOKENS_PER_RANK` is exported to match `--sglang-cuda-graph-max-bs`.
+`SGLANG_DEEPEP_NUM_MAX_DISPATCH_TOKENS_PER_RANK` is exported to match `--sglang-cuda-graph-max-bs-decode`.
 
 ### 5.4 Optimizer
 

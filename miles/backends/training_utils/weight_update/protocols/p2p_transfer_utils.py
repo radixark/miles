@@ -13,6 +13,7 @@ from miles.backends.training_utils.parallel import get_parallel_state
 from miles.backends.training_utils.weight_update.hf_weight_iterator import WeightUpdatePlacement
 from miles.backends.training_utils.weight_update.utils import get_data_replica_rank_and_size
 from miles.utils import async_utils
+from miles.utils.workers.argv_utils import _record_field_names
 
 logger = logging.getLogger(__name__)
 
@@ -178,7 +179,7 @@ class P2PTransferManager:
 
 
 def create_server_args_from_dict(data_dict: dict) -> ServerArgs:
-    valid_fields = {f.name for f in dataclasses.fields(ServerArgs)}
+    valid_fields = set(_record_field_names(ServerArgs))
     filtered_data = {k: v for k, v in data_dict.items() if k in valid_fields}
     return ServerArgs(**filtered_data)
 
