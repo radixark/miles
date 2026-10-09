@@ -123,6 +123,7 @@ class TestCISuites:
             "stage-c-8-gpu-h200",
             "stage-c-4-gpu-h200",
             "stage-c-2-gpu-h200",
+            "stage-c-4-gpu-b200",
             "stage-c-8-gpu-b200",
         ]
 
@@ -327,11 +328,23 @@ class TestWorkflowScopeSeam:
     def test_every_stage_consumes_resolved_policy(self):
         workflow = self._workflow()
         commands = workflow.split("execute_command:")[1:]
-        assert len(commands) == 8, "stage inventory changed; update this lock test"
+        assert len(commands) == 7, "stage inventory changed; update this lock test"
         for block in commands:
             cmd = block.split("secrets:")[0]
             assert "--cadence ${{ needs.resolve-ci-policy.outputs.cadence }}" in cmd
             assert "--labels ${{ needs.resolve-ci-policy.outputs.raw_labels }}" in cmd
+            assert "--event-name" not in cmd
+            assert "--continue-on-error" not in cmd
+
+        b200_workflow = self._reusable_workflow("_run-ci-b200.yml")
+        assert "cadence: ${{ inputs.cadence }}" in b200_workflow
+        assert "raw_labels: ${{ inputs.raw_labels }}" in b200_workflow
+        b200_commands = self._reusable_workflow("_run-ci-b200-batch.yml").split("execute_command:")[1:]
+        assert len(b200_commands) == 1
+        for block in b200_commands:
+            cmd = block.split("secrets:")[0]
+            assert "--cadence ${{ inputs.cadence }}" in cmd
+            assert "--labels ${{ inputs.raw_labels }}" in cmd
             assert "--event-name" not in cmd
             assert "--continue-on-error" not in cmd
 
@@ -356,11 +369,13 @@ class TestWorkflowScopeSeam:
     def test_cpu_and_gpu_stages_use_dedicated_reusable_workflows(self):
         workflow = self._workflow()
         assert workflow.count("uses: ./.github/workflows/_run-cpu-ci.yml") == 2
-        assert workflow.count("uses: ./.github/workflows/_run-ci.yml") == 6
+        assert workflow.count("uses: ./.github/workflows/_run-ci.yml") == 5
+        assert workflow.count("uses: ./.github/workflows/_run-ci-b200.yml") == 1
         assert workflow.count("uses: ./.github/workflows/_build-pr-ci-image.yml") == 1
         assert "cpu_runner" not in workflow
 
         gpu_workflow = self._reusable_workflow("_run-ci.yml")
+        b200_workflow = self._reusable_workflow("_run-ci-b200.yml")
         cpu_workflow = self._reusable_workflow("_run-cpu-ci.yml")
         docker_workflow = self._reusable_workflow("_build-pr-ci-image.yml")
         job_id_pattern = r"^  ([A-Za-z_][A-Za-z0-9_-]*):$"
@@ -368,6 +383,8 @@ class TestWorkflowScopeSeam:
         cpu_jobs = re.findall(job_id_pattern, cpu_workflow.split("\njobs:\n", 1)[1], re.MULTILINE)
         docker_jobs = re.findall(job_id_pattern, docker_workflow.split("\njobs:\n", 1)[1], re.MULTILINE)
         assert gpu_jobs == ["plan", "run"]
+        assert b200_workflow.count("uses: ./.github/workflows/_run-ci-b200-batch.yml") == 1
+        assert self._reusable_workflow("_run-ci-b200-batch.yml").count("uses: ./.github/workflows/_run-ci.yml") == 1
         assert cpu_jobs == ["run-cpu"]
         assert docker_jobs == ["docker-decide", "docker-build"]
         assert "cpu_runner" not in gpu_workflow
@@ -459,7 +476,7 @@ class TestWorkflowScopeSeam:
         assert "    - cron: '0 15 * * 6'" in workflow
         assert "timezone:" not in workflow
 
-    def test_weekly_serializes_each_gpu_matrix(self):
+    def test_weekly_limits_shared_hopper_runners(self):
         workflow = self._workflow()
         normal_parallelism = {
             "stage-c-8-gpu-h200": 2,
@@ -474,6 +491,27 @@ class TestWorkflowScopeSeam:
             )
             assert expected in block
 
+    def test_b200_jobs_share_one_cross_pr_host_lease(self):
+        workflow = self._workflow()
+        b200_workflow = self._reusable_workflow("_run-ci-b200.yml")
+        caller = workflow.split("  stage-c-b200:", 1)[1]
+
+        assert "group: b200-oma" in b200_workflow
+        assert "cancel-in-progress: false" in b200_workflow
+        assert "queue: max" in b200_workflow
+        assert "needs: plan" in b200_workflow
+        assert "matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}" in b200_workflow
+        assert "fail-fast: false" in b200_workflow
+        assert "max-parallel: 1" in b200_workflow
+        batch_workflow = self._reusable_workflow("_run-ci-b200-batch.yml")
+        assert "concurrency:" not in batch_workflow
+        assert "max-parallel:" not in batch_workflow
+        assert "--test-file ${{ matrix.shell_file }}" in batch_workflow
+        assert "num_gpus: ${{ matrix.num_gpus }}" in batch_workflow
+        assert "--auto-partition" not in batch_workflow
+        assert "run_8_gpu:" in caller
+        assert "run_4_gpu:" in caller
+
     def test_dispatch_has_no_scope_input_but_runs_all_cuda_domains(self):
         workflow = self._workflow()
         dispatch_inputs = workflow.split("workflow_dispatch:", 1)[1].split("permissions:", 1)[0]
@@ -481,7 +519,12 @@ class TestWorkflowScopeSeam:
         assert "ci_scope" not in dispatch_inputs
         manual_scope = "${{ github.event_name == 'workflow_dispatch' && '--match-all-labels' || '' }}"
         cuda_stages = workflow.split("  stage-b-2-gpu-h200:", 1)[1]
-        assert cuda_stages.count(manual_scope) == 6
+        assert cuda_stages.count(manual_scope) == 5
+        assert "match_all_labels: ${{ github.event_name == 'workflow_dispatch' }}" in cuda_stages
+        assert "match_all_labels: ${{ inputs.match_all_labels }}" in self._reusable_workflow("_run-ci-b200.yml")
+        assert "${{ inputs.match_all_labels && '--match-all-labels' || '' }}" in self._reusable_workflow(
+            "_run-ci-b200-batch.yml"
+        )
 
     def test_gpu_gates_consume_shared_bypass_output(self):
         workflow = self._workflow()
@@ -494,14 +537,18 @@ class TestWorkflowScopeSeam:
 
     def test_each_cuda_stage_consumes_the_fail_open_skip_list(self):
         workflow = self._workflow()
-        cuda_stages = PR_GPU_STAGES - {"stage-c-4-gpu-mi350"}
+        b200_stages = {"stage-c-4-gpu-b200", "stage-c-8-gpu-b200"}
+        cuda_stages = PR_GPU_STAGES - {"stage-c-4-gpu-mi350"} - b200_stages
         for stage_name in cuda_stages:
             block = workflow.split(f"  {stage_name}:", 1)[1]
             block = re.split(r"^  [A-Za-z_][A-Za-z0-9_-]*:\s*$", block, maxsplit=1, flags=re.MULTILINE)[0]
             expected = f"!contains(fromJSON(needs.resolve-ci-policy.outputs.skipped_stages || '[]'), '{stage_name}')"
             assert expected in block
 
-        assert workflow.count("outputs.skipped_stages || '[]'") == len(cuda_stages)
+        b200_caller = workflow.split("  stage-c-b200:", 1)[1]
+        for stage_name in b200_stages:
+            expected = f"!contains(fromJSON(needs.resolve-ci-policy.outputs.skipped_stages || '[]'), '{stage_name}')"
+            assert expected in b200_caller
 
     def test_non_pr_concurrency_does_not_collapse_to_ref(self):
         workflow = self._workflow()
@@ -683,6 +730,7 @@ class TestRunSuiteCLI:
 
 def _run_args(*, hw: str, suite: str, cadence: str, labels: list[str] | None = None):
     return SimpleNamespace(
+        test_file=None,
         hw=hw,
         suite=suite,
         cadence=cadence,

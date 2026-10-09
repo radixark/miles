@@ -29,7 +29,9 @@ from linear_attn_reference import (  # noqa: E402
     sharded_projections,
 )
 
-register_cuda_ci(est_time=300, suite="stage-c-4-gpu-h200", labels=["precision"], hardware=["hopper", "blackwell"])
+register_cuda_ci(
+    est_time=300, suite="stage-c-4-gpu-h200", labels=["precision"], hardware=["hopper", "blackwell"], num_gpus=4
+)
 
 HIDDEN = 256
 CASES = {
