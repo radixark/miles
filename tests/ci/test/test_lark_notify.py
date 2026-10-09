@@ -499,7 +499,7 @@ def test_notifier_workflow_pins_its_identity_boundaries():
     assert "permission-pull-requests: read" in workflow
     assert "permission-issues" not in workflow and "permission-actions: write" not in workflow
     assert "CI_FAILURE_ANALYSIS_APP_CLIENT_ID" in workflow
-    assert "CI_COMMAND_APP" not in workflow
+    assert "CI_APP" not in workflow
     assert "OPENAI_API_KEY" not in workflow
     assert "actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683" in workflow
     assert "actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065" in workflow
@@ -517,3 +517,115 @@ def test_policy_prompt_and_schema_are_git_versioned_and_strict():
     assert schema["additionalProperties"] is False
     assert schema["properties"]["analyses"]["items"]["additionalProperties"] is False
     assert "untrusted" in prompt and "exactly one factual sentence" in prompt
+
+
+def docker_run(**overrides):
+    return run(name="Docker Build & Push", status="in_progress", conclusion=None, **overrides)
+
+
+def build_job(conclusion="failure"):
+    return {
+        "id": 40,
+        "name": "build-and-push",
+        "conclusion": conclusion,
+        "html_url": "https://example/jobs/40",
+        "steps": [
+            {"name": "Login to Docker Hub", "conclusion": "success"},
+            {"name": "Build and push", "conclusion": conclusion},
+        ],
+    }
+
+
+def test_failed_docker_build_posts_one_card_naming_the_failed_job_and_step(monkeypatch):
+    posted = []
+    monkeypatch.setattr(HANDLER, "post_card", lambda card, webhook, dry_run: posted.append(card))
+    check = {"id": 30, "name": "check-upstream", "conclusion": "success", "html_url": "https://example/jobs/30"}
+    HANDLER.cmd_build_failure(args(), FakeGitHub(docker_run(), [check, build_job()]))
+    assert len(posted) == 1
+    header = posted[0]["card"]["header"]
+    assert header["title"]["content"] == "Docker Build & Push: FAILED" and header["template"] == "red"
+    content = markdown(posted[0])
+    assert "- [build-and-push](https://example/jobs/40) at `Build and push`" in content
+    assert "check-upstream" not in content
+    assert "Scheduled rebuild" in json.dumps(posted[0])
+
+
+def test_push_triggered_build_failure_names_its_branch():
+    card = HANDLER.render_build_failure(docker_run(event="push", head_branch="main"), [build_job()])
+    assert "push to main" in json.dumps(card)
+
+
+def test_docker_build_notifier_skips_a_run_without_failed_jobs(monkeypatch, capsys):
+    posted = []
+    monkeypatch.setattr(HANDLER, "post_card", lambda *values: posted.append(values))
+    HANDLER.cmd_build_failure(args(), FakeGitHub(docker_run(), [build_job("success")]))
+    assert posted == []
+    assert "no failed job" in capsys.readouterr().out
+
+
+def test_docker_build_workflow_reports_only_failed_automatic_builds():
+    workflow = (SCRIPT_DIR.parents[0] / "docker-build.yml").read_text()
+    job = workflow.split("\n  notify-build-failure:\n", 1)[1]
+    assert "needs: [build-and-push]" in job
+    assert "needs.build-and-push.result == 'failure'" in job
+    assert "github.event_name != 'workflow_dispatch'" in job
+    assert "github.repository == 'radixark/miles'" in job
+    assert "secrets.LARK_WEBHOOK" in job and "lark_notify.py docker-build-failure" in job
+    assert "actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683" in job
+    assert "persist-credentials: false" in job
+    # lark_notify.py imports ci_failure_analysis, so the sparse checkout must carry both
+    for relative in (".github/workflows/scripts/lark_notify.py", ".github/workflows/scripts/ci_failure_analysis.py"):
+        assert f"\n            {relative}\n" in job
+    assert "write" not in job.split("steps:", 1)[0]
+
+
+@pytest.mark.parametrize("event", ["schedule", "workflow_dispatch"])
+@pytest.mark.parametrize(
+    "failed_name,failed_step",
+    [
+        ("check", "Compare each source with the commit its release records"),
+        ("build-te-x86", "Build transformer_engine_torch in the SGLang base image"),
+        ("publish (x86_64, x86)", "Sync into the miles-wheels release"),
+    ],
+)
+def test_wheels_failure_cli_renders_one_card_without_rerunning(monkeypatch, capsys, event, failed_name, failed_step):
+    failed = job(name=failed_name)
+    failed["steps"] = [
+        {"name": "Set up job", "conclusion": "success"},
+        {"name": failed_step, "conclusion": "failure"},
+    ]
+    gh = FakeGitHub(
+        run(name="Build Wheels", event=event, head_branch="main", status="in_progress", conclusion=None),
+        [failed, job(20, "unchanged", "skipped"), job(30, "finished", "success"), job(40, "notifier", None)],
+    )
+    monkeypatch.setattr(HANDLER, "GitHub", lambda *unused: gh)
+    monkeypatch.delenv("LARK_WEBHOOK", raising=False)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["lark_notify.py", "--token", "test-token", "--dry-run", "wheels-build-failure", "--run-id", "123"],
+    )
+
+    assert HANDLER.main() == 0
+    card = json.loads(capsys.readouterr().out)
+    assert card["card"]["header"] == {
+        "title": {"tag": "plain_text", "content": "Build Wheels: FAILED"},
+        "template": "red",
+    }
+    content = markdown(card)
+    assert f"- [{failed_name}](https://example/jobs/10) at `{failed_step}`" in content
+    assert all(name not in content for name in ["unchanged", "finished", "notifier", "Set up job"])
+    trigger = "Scheduled rebuild" if event == "schedule" else "workflow_dispatch to main"
+    assert trigger in json.dumps(card)
+    assert card["card"]["body"]["elements"][-1]["behaviors"][0]["default_url"] == run()["html_url"]
+    assert not gh.rerun_calls()
+
+
+@pytest.mark.parametrize("conclusion", ["success", "skipped", "cancelled", None])
+def test_wheels_without_failed_jobs_do_not_post(monkeypatch, conclusion):
+    posted = []
+    monkeypatch.setattr(HANDLER, "post_card", lambda *values: posted.append(values))
+    HANDLER.cmd_build_failure(
+        args(), FakeGitHub(run(name="Build Wheels", run_attempt=2), [job(conclusion=conclusion)])
+    )
+    assert not posted

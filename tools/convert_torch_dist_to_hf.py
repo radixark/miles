@@ -12,7 +12,7 @@ import torch.distributed.checkpoint as dist_cp
 from typing_extensions import override
 
 from miles.backends.megatron_utils.megatron_to_hf import convert_to_hf, remove_padding
-from miles.utils.hf_config import load_hf_config
+from miles.utils.hf_utils.config import load_hf_config
 
 
 class UnpicklerWrapper(pickle.Unpickler):
@@ -201,6 +201,8 @@ if __name__ == "__main__":
     print(f"loading model from {args.input_dir}")
     t = time.time()
     megatron_args = torch.load(os.path.join(args.input_dir, "common.pt"), weights_only=False)["args"]
+    if args.origin_hf_dir:
+        megatron_args.hf_checkpoint = args.origin_hf_dir
     dist_cp.state_dict_loader._load_state_dict(
         state_dict,
         storage_reader=WrappedStorageReader(args.input_dir),

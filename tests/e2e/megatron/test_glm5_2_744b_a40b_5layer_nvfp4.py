@@ -4,10 +4,10 @@ from pathlib import Path
 
 from tests.ci.ci_register import register_cuda_ci
 
-import miles.utils.external_utils.command_utils as U
+from miles.utils.external_utils import command_utils
 
 register_cuda_ci(
-    est_time=3600,
+    est_time=1500,
     suite="stage-c-8-gpu-b200",
     labels=["megatron", "model-scripts"],
     hardware=["blackwell"],
@@ -22,7 +22,7 @@ ROLLOUT_NUM_GPUS = 4
 ROLLOUT_GPUS_PER_ENGINE = 2
 NUM_LAYERS_AT_START_IN_BF16 = 1
 NUM_LAYERS_AT_END_IN_BF16 = 1
-RUN_ID = U.create_run_id()
+RUN_ID = command_utils.create_run_id()
 
 MODEL_DIR = "/root/models"
 DATA_DIR = "/root/datasets"
@@ -107,6 +107,7 @@ def _validate_glm_checkpoint():
 
 
 def prepare():
+    U = command_utils.default_config().create_backend()
     os.environ.update(NVFP4_ENV)
     U.exec_command_cpu(f"mkdir -p {MODEL_DIR} {DATA_DIR}")
     U.exec_command_cpu(f"hf download {MODEL_ORG}/{MODEL_NAME} --local-dir {MODEL_DIR}/{MODEL_NAME}")
@@ -140,10 +141,11 @@ def prepare():
 
 
 def execute():
+    U = command_utils.default_config().create_backend()
     os.environ.update(NVFP4_ENV)
     os.environ.update(GLM5_ENV)
     os.environ.setdefault("RAY_TMPDIR", "/tmp/ray")
-    te_precision_config_path = U.encode_pseudo_file(TE_PRECISION_CONFIG)
+    te_precision_config_path = command_utils.encode_pseudo_file(TE_PRECISION_CONFIG)
 
     ckpt_args = f"--hf-checkpoint {MODEL_DIR}/{MODEL_NAME}-NVFP4/ " f"--ref-load {MODEL_DIR}/{MODEL_NAME}_torch_dist "
 
@@ -155,11 +157,11 @@ def execute():
         "--rollout-shuffle "
         "--rm-type deepscaler "
         "--num-rollout 2 "
-        "--rollout-batch-size 8 "
-        "--n-samples-per-prompt 8 "
+        "--rollout-batch-size 4 "
+        "--n-samples-per-prompt 4 "
         "--rollout-max-response-len 100 "
         "--rollout-temperature 1 "
-        "--global-batch-size 64 "
+        "--global-batch-size 16 "
     )
 
     perf_args = (
@@ -251,6 +253,7 @@ def execute():
         "--attention-backend flash "
         "--allgather-cp "
         "--miles-dsa-topk-backend flashinfer "
+        "--update-weight-transfer-mode broadcast_packed "
         f"--update-weight-buffer-size {2 * 1024 ** 3} "
         "--actor-num-nodes 1 "
         f"--actor-num-gpus-per-node {ACTOR_NUM_GPUS} "
@@ -267,7 +270,7 @@ def execute():
         f"{rollout_args} "
         f"{optimizer_args} "
         f"{grpo_args} "
-        f"{U.get_default_wandb_args(__file__, run_id=RUN_ID)} "
+        f"{command_utils.get_default_wandb_args(__file__, run_id=RUN_ID)} "
         f"{perf_args} "
         f"{sglang_args} "
         f"{ci_args} "

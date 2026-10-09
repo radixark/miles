@@ -14,7 +14,7 @@ __all__ = [
 ]
 
 
-def quantize_params(args, megatron_name, converted_named_params, quantization_config):
+def quantize_params(args, megatron_name, converted_named_params, quantization_config, packed_weight_basenames=None):
     if quantization_config is None:
         return converted_named_params
     elif quantization_config["quant_method"] == "fp8":
@@ -24,5 +24,7 @@ def quantize_params(args, megatron_name, converted_named_params, quantization_co
     elif quantization_config.get("quant_algo") == "NVFP4" or quantization_config["quant_method"] == "nvfp4":
         return quantize_params_nvfp4(args, megatron_name, converted_named_params, quantization_config)
     elif quantization_config["quant_method"] == "compressed-tensors":
-        # only int4 at the moment.
-        return quantize_params_compressed_tensors(converted_named_params, quantization_config)
+        assert (
+            packed_weight_basenames is not None
+        ), "compressed-tensors quantization needs the checkpoint's packed weight names"
+        return quantize_params_compressed_tensors(converted_named_params, quantization_config, packed_weight_basenames)

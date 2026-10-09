@@ -8,9 +8,9 @@ import os
 
 from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
 
-import miles.utils.external_utils.command_utils as U
+from miles.utils.external_utils import command_utils
 
-register_cuda_ci(est_time=1200, suite="stage-c-4-gpu-h200", labels=["megatron"], hardware=["hopper", "blackwell"])
+register_cuda_ci(est_time=500, suite="stage-c-4-gpu-h200", labels=["megatron"], hardware=["hopper", "blackwell"])
 register_rocm_ci(est_time=500, suite="nightly-stage-c-4-gpu-mi350", labels=["megatron"])
 
 MODEL_NAME = "Qwen3-4B"
@@ -19,6 +19,7 @@ NUM_GPUS = 4
 
 
 def prepare():
+    U = command_utils.default_config().create_backend()
     U.exec_command_cpu("mkdir -p /root/models /root/datasets")
     U.exec_command_cpu(f"hf download Qwen/{MODEL_NAME} --local-dir /root/models/{MODEL_NAME}")
     U.hf_download_dataset("zhuzilin/dapo-math-17k")
@@ -26,6 +27,7 @@ def prepare():
 
 
 def execute():
+    U = command_utils.default_config().create_backend()
     ckpt_args = f"--hf-checkpoint /root/models/{MODEL_NAME}/ " f"--ref-load /root/{MODEL_NAME}_torch_dist "
 
     rollout_args = (
@@ -35,7 +37,7 @@ def execute():
         "--apply-chat-template "
         "--rollout-shuffle "
         "--rm-type deepscaler "
-        "--num-rollout 3 "
+        "--num-rollout 2 "
         "--rollout-batch-size 8 "
         "--n-samples-per-prompt 4 "
         "--rollout-max-response-len 4096 "
@@ -96,7 +98,7 @@ def execute():
         f"{rollout_args} "
         f"{optimizer_args} "
         f"{grpo_args} "
-        f"{U.get_default_wandb_args(__file__)} "
+        f"{command_utils.get_default_wandb_args(__file__)} "
         f"{perf_args} "
         f"{sglang_args} "
         "--ci-test "

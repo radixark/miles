@@ -14,7 +14,7 @@ cursor, since HF's GradientCheckpointingLayer re-runs each layer's forward durin
 import os
 from dataclasses import dataclass
 
-import miles.utils.external_utils.command_utils as U
+from miles.utils.external_utils import command_utils
 
 
 @dataclass
@@ -23,15 +23,19 @@ class CaseConfig:
     hf_repo: str
     num_gpus: int
     rollout_num_gpus_per_engine: int
+    sglang_attention_backend: str = "fa3"
+    attn_implementation: str = "flash_attention_3"
 
 
 def prepare(case: CaseConfig) -> None:
+    U = command_utils.default_config().create_backend()
     U.exec_command_cpu("mkdir -p /root/models /root/datasets")
     U.exec_command_cpu(f"hf download {case.hf_repo} --local-dir /root/models/{case.model_name}")
     U.hf_download_dataset("zhuzilin/dapo-math-17k")
 
 
 def execute(case: CaseConfig, wandb_file: str) -> None:
+    U = command_utils.default_config().create_backend()
     ckpt_args = f"--hf-checkpoint /root/models/{case.model_name} "
 
     rollout_args = (
@@ -41,7 +45,7 @@ def execute(case: CaseConfig, wandb_file: str) -> None:
         "--apply-chat-template "
         "--rollout-shuffle "
         "--rm-type math "
-        "--num-rollout 3 "
+        "--num-rollout 2 "
         "--rollout-batch-size 8 "
         "--n-samples-per-prompt 8 "
         "--rollout-max-response-len 1024 "
@@ -85,8 +89,8 @@ def execute(case: CaseConfig, wandb_file: str) -> None:
         "--sglang-mem-fraction-static 0.8 "
         "--sglang-decode-log-interval 1000 "
         "--sglang-chunked-prefill-size 4096 "
-        "--sglang-attention-backend fa3 "
-        "--attn-implementation flash_attention_3 "
+        f"--sglang-attention-backend {case.sglang_attention_backend} "
+        f"--attn-implementation {case.attn_implementation} "
     )
 
     ci_args = "--ci-test "
@@ -103,7 +107,7 @@ def execute(case: CaseConfig, wandb_file: str) -> None:
         f"{sglang_args} "
         f"{ci_args} "
         f"{misc_args} "
-        f"{U.get_default_wandb_args(wandb_file)} "
+        f"{command_utils.get_default_wandb_args(wandb_file)} "
     )
 
     U.execute_train(

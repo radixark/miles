@@ -3,8 +3,7 @@
 ``--dsa-attention-backend`` picks one kernel family for both DSA model plugins (GLM-5 / DeepSeek-V3.2
 ``thd`` MLA and DeepSeek-V4 ``bshd`` MQA):
 
-* ``tilelang`` (default): the fused TileLang kernels vendored per model (``glm5/ops``,
-  ``deepseek_v4/ops/kernel``).
+* ``tilelang`` (default): the fused TileLang kernels in ``miles/kernels/attention/dsa``.
 * ``loom``: the generated deterministic kernels in ``miles_plugins/models/dsa_train`` (SM100a /
   SM103a): one launch for the batched DeepSeek-V4 indexer, bit-deterministic backward for both
   operators, FP32 attention sink and shared-latent gradients reduced without atomics.

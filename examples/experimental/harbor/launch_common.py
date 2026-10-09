@@ -22,13 +22,22 @@ def agentic_pythonpath_dirs() -> list[str]:
     return [str(HARBOR_EXAMPLE_DIR), str(HARBOR_DOCKER_EXAMPLE_DIR)]
 
 
-def agentic_train_args(*, tito_model: str, session_server_workers: int, session_server_port: int = 30000) -> str:
+def agentic_train_args(
+    *,
+    tito_model: str,
+    session_server_workers: int,
+    session_server_port: int = 30000,
+    session_server_external_host: str = "",
+) -> str:
     """The agentic wiring every Harbor launcher passes to train.py.
 
     One copy, shared by the recipes and the GPU e2e, so the flags the test
     exercises are the flags the recipes ship. Model-specific values come from
     the caller.
     """
+    external_host_arg = (
+        f"--session-server-external-host {session_server_external_host} " if session_server_external_host else ""
+    )
     return (
         "--custom-generate-function-path miles.rollout.generate_hub.agentic_tool_call.generate "
         "--custom-agent-function-path harbor_agent_function.run "
@@ -39,6 +48,7 @@ def agentic_train_args(*, tito_model: str, session_server_workers: int, session_
         "--use-session-server "
         f"--session-server-port {session_server_port} "
         f"--session-server-workers {session_server_workers} "
+        f"{external_host_arg}"
     )
 
 
@@ -73,7 +83,6 @@ def harbor_env_vars(args) -> dict[str, str]:
         "HARBOR_TRIALS_DIR": args.harbor_trials_dir,
         "AGENT_MODEL_NAME": args.agent_model_name,
         "AGENT_TIMEOUT": str(args.agent_timeout),
-        "MILES_ROUTER_EXTERNAL_HOST": args.router_external_host,
     }
     if args.harbor_env_kwargs:
         env["HARBOR_ENV_KWARGS"] = args.harbor_env_kwargs

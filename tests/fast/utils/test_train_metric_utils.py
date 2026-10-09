@@ -4,10 +4,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from miles.utils import train_metric_utils
+from miles.backends.training_utils.metrics import perf
+from miles.backends.training_utils.metrics.perf import log_perf_data_raw
 from miles.utils.misc import SingletonMeta
 from miles.utils.timer import Timer
-from miles.utils.train_metric_utils import log_perf_data_raw
 
 SEQ_LENS = [1024, 2048]
 FWD_TFLOPS = 60.0
@@ -25,18 +25,19 @@ def timer():
 @pytest.fixture
 def logged(monkeypatch):
     calls = []
-    monkeypatch.setattr(train_metric_utils.tracking, "log", lambda args, payload, **kw: calls.append(payload))
+    monkeypatch.setattr(perf.tracking, "log", lambda args, payload, **kw: calls.append(payload))
     return calls
 
 
 def make_args(**overrides):
-    return SimpleNamespace(wandb_always_use_train_step=False, mfu_peak_tflops=None, **overrides)
+    defaults = dict(wandb_always_use_train_step=False, mfu_peak_tflops=None, trainer_model_id=None)
+    return SimpleNamespace(**{**defaults, **overrides})
 
 
 def run(timer, args, *, times: dict[str, float], peak: float | None):
     timer.timers = dict(times)
     with pytest.MonkeyPatch.context() as patch:
-        patch.setattr(train_metric_utils, "local_peak_bf16_tflops", lambda: peak)
+        patch.setattr(perf, "local_peak_bf16_tflops", lambda: peak)
         log_perf_data_raw(
             rollout_id=0,
             args=args,
@@ -72,7 +73,7 @@ def test_unknown_peak_omits_mfu_instead_of_defaulting(timer, logged):
 def test_no_mfu_without_a_flops_model(timer, logged):
     timer.timers = {"actor_train": 2.0}
     with pytest.MonkeyPatch.context() as patch:
-        patch.setattr(train_metric_utils, "local_peak_bf16_tflops", lambda: 989.0)
+        patch.setattr(perf, "local_peak_bf16_tflops", lambda: 989.0)
         log_perf_data_raw(rollout_id=0, args=make_args(), is_primary_rank=True, compute_total_fwd_flops=None)
     [payload] = logged
     assert "perf/actor_train_mfu" not in payload
@@ -90,3 +91,22 @@ def test_non_primary_rank_logs_nothing(timer, logged):
     timer.timers = {"actor_train": 2.0}
     log_perf_data_raw(rollout_id=0, args=make_args(), is_primary_rank=False, compute_total_fwd_flops=lambda **_: 1.0)
     assert logged == []
+
+
+class TestLogPerfData:
+    def test_the_perf_curves_follow_the_policy_step_axis(self, timer, monkeypatch):
+        """Every perf point of a policy must land on that policy's own step axis, not on a shared one."""
+        calls: list[tuple[dict, str]] = []
+        monkeypatch.setattr(perf.tracking, "log", lambda _args, payload, step_key: calls.append((payload, step_key)))
+        timer.timers = {"actor_train": 2.0}
+
+        log_perf_data_raw(
+            rollout_id=3,
+            args=make_args(trainer_model_id="alpha"),
+            is_primary_rank=True,
+            compute_total_fwd_flops=None,
+        )
+
+        [(payload, step_key)] = calls
+        assert step_key == "alpha/rollout/step"
+        assert payload == {"alpha/perf/actor_train_time": 2.0, "alpha/rollout/step": 3}

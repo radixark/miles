@@ -23,6 +23,7 @@ from megatron.core.transformer.spec_utils import ModuleSpec
 from megatron.core.transformer.transformer_config import TransformerConfig
 from megatron.core.transformer.utils import make_sharded_tensors_for_checkpoint
 
+from miles.kernels.attention.dsa import sparse_attention
 from miles_plugins.models.deepseek_v4.ops.compressor import DeepSeekV4Compressor
 from miles_plugins.models.deepseek_v4.ops.cp_utils import (
     all_gather_cp,
@@ -31,7 +32,6 @@ from miles_plugins.models.deepseek_v4.ops.cp_utils import (
     get_q_positions_for_cp,
     get_window_topk_idxs_cp,
 )
-from miles_plugins.models.deepseek_v4.ops.kernel.tilelang_sparse_mla import sparse_attn_tilelang
 from miles_plugins.models.deepseek_v4.ops.qat import fp8_simulate_qat
 from miles_plugins.models.deepseek_v4.ops.rope import apply_rotary_emb, wrapped_precompute_freqs_cis
 from miles_plugins.models.deepseek_v4.ops.thd_utils import (
@@ -180,7 +180,7 @@ class DeepSeekV4Attention(MegatronModule):
         )
         self.softmax_scale = self.head_dim**-0.5
         self.sequence_parallel = config.sequence_parallel
-        # ``tilelang``: sparse_attn_tilelang; ``loom``: the generated deterministic kernels in
+        # ``tilelang``: miles.kernels sparse_attention; ``loom``: the generated deterministic kernels in
         # miles_plugins/models/dsa_train (bshd contract, FP32 sink, batched indexer in one launch).
         self.attention_backend = resolve_dsa_attention_backend(getattr(config, "dsa_attention_backend", None))
 
@@ -417,9 +417,15 @@ class DeepSeekV4Attention(MegatronModule):
                 q, kv, topk_idxs, sm_scale=self.softmax_scale, attn_sink=self.core_attention.attn_sink, layout="bshd"
             )
         else:
-            o = sparse_attn_tilelang(q, kv, self.core_attention.attn_sink, topk_idxs, self.softmax_scale)
+            o = sparse_attention(
+                q,
+                kv.unsqueeze(2),
+                topk_idxs.unsqueeze(2),
+                self.softmax_scale,
+                attn_sink=self.core_attention.attn_sink,
+            )
 
-        apply_rotary_emb(o[..., -rd:], freqs_cis, inverse=True)
+        o = torch.cat((o[..., :-rd], apply_rotary_emb(o[..., -rd:].clone(), freqs_cis, inverse=True)), dim=-1)
 
         o = o.view(bsz, seqlen_local, self.n_local_groups, -1)
         wo_a = self.linear_o_group_proj.view(self.n_local_groups, self.o_lora_rank, -1)

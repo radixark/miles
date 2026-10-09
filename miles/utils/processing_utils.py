@@ -11,7 +11,7 @@ from huggingface_hub import hf_hub_download
 from tokenizers import Tokenizer as RawTokenizer
 from transformers import AutoProcessor, AutoTokenizer, PreTrainedTokenizerBase, ProcessorMixin
 
-from miles.utils.hf_config import register_hf_config_aliases
+from miles.utils.hf_utils.config import register_hf_config_aliases
 
 logger = logging.getLogger(__name__)
 

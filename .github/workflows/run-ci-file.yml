@@ -27,6 +27,11 @@ on:
         required: false
         type: string
         default: ''
+      ci_megatron_bridge_pr:
+        description: 'Megatron Bridge PR (#N), branch, tag, or commit (empty: keep the existing installation).'
+        required: false
+        type: string
+        default: ''
       ci_sglang_pr:
         description: 'SGLang branch/commit pin forwarded from the PR body (empty: sglang-miles).'
         required: false

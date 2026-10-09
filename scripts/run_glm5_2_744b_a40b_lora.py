@@ -49,7 +49,7 @@ from typing import Literal
 
 import typer
 
-import miles.utils.external_utils.command_utils as U
+from miles.utils.external_utils import command_utils
 
 app = typer.Typer()
 
@@ -63,15 +63,10 @@ _MEGATRON_MODEL_TYPE = {
     "GLM-5.2_5layer": "glm5.2-744B-A40B_5layer_lora",
 }
 
-# Standard attn + MLA + MLP/MoE, EXCLUDING the DSA indexer (wq_b/wk/weights_proj).
-_DEFAULT_TARGET_MODULES = (
-    "q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj,q_a_proj,kv_a_proj_with_mqa,q_b_proj,kv_b_proj"
-)
-
 
 @dataclass
-class ScriptArgs(U.ExecuteTrainConfig):
-    run_id: str = U.create_run_id()
+class ScriptArgs(command_utils.ExecuteTrainConfig):
+    run_id: str = command_utils.create_run_id()
     model_name: Literal[
         "GLM-5.2",
         "GLM-5.2_5layer",
@@ -98,7 +93,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     lora_rank: int = 16
     lora_alpha: int = 32
     lora_dropout: float = 0.0
-    target_modules: str = _DEFAULT_TARGET_MODULES
+    target_modules: str = "all-linear"
     # required for true on-policy under colocate (OFF -> KL ~1.0 vs ~1e-4); opt out only
     # when host RAM cannot take the ~372 GB/node mirror on the full model
     lora_base_cpu_backup: bool = True
@@ -164,6 +159,7 @@ def _get_parallel_config(args: ScriptArgs) -> str:
 
 
 def _download_dataset(args: ScriptArgs):
+    U = args.create_backend()
     match args.task:
         case "gsm8k":
             U.hf_download_dataset("zhuzilin/gsm8k", data_dir=args.data_dir)
@@ -172,6 +168,7 @@ def _download_dataset(args: ScriptArgs):
 
 
 def _prepare_download(args: ScriptArgs):
+    U = args.create_backend()
     U.exec_command_cpu(f"mkdir -p {args.data_dir} {args.model_dir}")
     repo = _HF_REPO.get(args.model_name)
     if repo is not None:
@@ -180,6 +177,7 @@ def _prepare_download(args: ScriptArgs):
 
 
 def _train(args: ScriptArgs):
+    U = args.create_backend()
     print(
         f"[run] GLM-5.2 LoRA: model={args.model_name} (megatron_model_type={args.megatron_model_type}), dsa-backend={args.dsa_attention_backend}, r3={args.use_r3}, {args.num_gpus_per_node} GPUs, rollout tp={args.rollout_num_gpus_per_engine}"
     )
@@ -192,11 +190,8 @@ def _train(args: ScriptArgs):
 
     # the full rollout config applies to the toys too (same glm_moe_dsa serving path)
     _is_full = True
-    _tm = args.target_modules
     # KEEP_MOE_LORA=0 drops the expert projections (attention-only LoRA)
     _keep_moe_lora = os.environ.get("KEEP_MOE_LORA", "1") != "0"
-    if _is_full and not _keep_moe_lora:
-        _tm = ",".join(m for m in _tm.split(",") if m.strip() not in ("gate_proj", "up_proj", "down_proj"))
     # the MOE_LORA_LAYERS subset feature is disabled; warn so it is not silently ignored
     _moe_lora_layers = os.environ.get("MOE_LORA_LAYERS", "").strip()
     if _moe_lora_layers:
@@ -204,7 +199,12 @@ def _train(args: ScriptArgs):
             f"[run_glm5_2_744b_a40b_lora] WARNING: MOE_LORA_LAYERS={_moe_lora_layers} is SET but the subset-rewrite "
             "feature is DISABLED (commented out for debugging) -> MoE-expert LoRA stays on ALL layers."
         )
-    lora_args = f'--lora-rank {args.lora_rank} --lora-alpha {args.lora_alpha} --lora-dropout {args.lora_dropout} --target-modules "{_tm}" '
+    lora_args = (
+        f"--lora-rank {args.lora_rank} --lora-alpha {args.lora_alpha} --lora-dropout {args.lora_dropout} "
+        f'--target-modules "{args.target_modules}" '
+    )
+    if not _keep_moe_lora:
+        lora_args += "--exclude-modules gate_proj,up_proj,gate_up_proj,down_proj "
     if _keep_moe_lora and args.experts_shared_outer_loras:
         lora_args += "--experts-shared-outer-loras "
     if _is_full:
@@ -295,7 +295,7 @@ def _train(args: ScriptArgs):
 
     misc_args = f"--attention-dropout 0.0 --hidden-dropout 0.0 --accumulate-allreduce-grads-in-fp32 --attention-softmax-in-fp32 --attention-backend flash --calculate-per-token-loss --actor-num-nodes 1 --actor-num-gpus-per-node {args.num_gpus_per_node} --num-gpus-per-node {args.num_gpus_per_node} --colocate "
 
-    wandb_args = U.get_default_wandb_args(__file__, run_id=args.run_id) if args.enable_wandb else ""
+    wandb_args = command_utils.get_default_wandb_args(__file__, run_id=args.run_id) if args.enable_wandb else ""
 
     seq_args = (
         f"--seq-length {args.seq_window} --rollout-max-context-len {args.seq_window} " if args.seq_window > 0 else ""
@@ -305,7 +305,6 @@ def _train(args: ScriptArgs):
 
     U.execute_train(
         train_args=train_args,
-        config=args,
         num_gpus_per_node=args.num_gpus_per_node,
         megatron_model_type=args.megatron_model_type,
         extra_env_vars={
@@ -319,21 +318,21 @@ def _train(args: ScriptArgs):
 
 
 @app.command()
-@U.dataclass_cli
+@command_utils.dataclass_cli
 def prepare(args: ScriptArgs):
     """Download the model checkpoint (for a known HF repo) and the task dataset (gsm8k or dapo-math). Run once per node before training."""
     _prepare_download(args)
 
 
 @app.command()
-@U.dataclass_cli
+@command_utils.dataclass_cli
 def train(args: ScriptArgs):
     """Run GRPO LoRA training (assumes the dataset is already prepared)."""
     _train(args)
 
 
 @app.command()
-@U.dataclass_cli
+@command_utils.dataclass_cli
 def full_train(args: ScriptArgs):
     """Download the model checkpoint + dataset, then run GRPO LoRA training."""
     _prepare_download(args)

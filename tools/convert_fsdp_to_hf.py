@@ -9,7 +9,7 @@ import torch.distributed.checkpoint as dist_cp
 from transformers import AutoModelForCausalLM
 from typing_extensions import override
 
-from miles.utils.hf_config import load_hf_config
+from miles.utils.hf_utils.config import load_hf_config
 
 
 class UnpicklerWrapper(pickle.Unpickler):

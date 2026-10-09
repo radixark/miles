@@ -1,6 +1,6 @@
 import torch
 
-from miles.backends.training_utils.loss import compute_advantages_and_returns
+from miles.backends.training_utils.loss.objective import compute_advantages_and_returns
 
 from .loss_test_utils import make_args, make_parallel_state
 

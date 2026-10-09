@@ -248,6 +248,16 @@ python tools/convert_hf_to_nvfp4.py \
   --save-dir /root/models/Qwen3-30B-A3B-NVFP4
 ```
 
+Checkpoint conversion and live weight export quantize only routed experts in
+the main language decoder. MTP weights (including appended decoder layers),
+vision/audio components, shared experts, and dense layers keep their source
+precision. The HF converter uses the language `num_hidden_layers` from
+`text_config` when present, otherwise the top-level config, and recognizes
+`model.layers`, `language_model.model.layers`, `model.language_model.layers`,
+and `language_model.layers`. First/last-layer BF16 controls apply to those
+language layers. Unsupported namespaces remain unquantized. Training-time
+precision is still controlled separately by `--te-precision-config-file`.
+
 #### Advanced: dequantized backward
 
 Dequantized backward keeps the backward GEMMs in BF16 but uses BF16
@@ -301,7 +311,8 @@ conversion, Megatron training, SGLang rollout, and live weight export.
 | `--te-precision-config-file` | Select Transformer Engine recipes by Megatron tensor name. |
 
 Use equivalent Hugging Face and Megatron name matchers for exceptions beyond a
-recipe's default scope. NVFP4 excludes shared experts automatically. Common
+recipe's default scope. NVFP4 checkpoint conversion and live export exclude
+shared experts, MTP, and non-language components automatically. Common
 additional exceptions include final transformer layers and MLA projections
 whose contraction axis does not match a one-dimensional scaling layout.
 

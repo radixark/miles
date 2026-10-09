@@ -3,7 +3,7 @@ from collections import defaultdict
 from collections.abc import Callable, Hashable, Iterator, Sequence
 from typing import Protocol, TypeVar
 
-from miles.backends.megatron_utils.ft.types import TrainStepOutcome
+from miles.backends.training_utils.types import TrainStepOutcome
 from miles.utils.audit_utils.event_logger.models import (
     Event,
     TrainAdvantageComputationEvent,

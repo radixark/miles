@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import numpy as np
 import pytest
 from tests.fast.ray.rollout.conftest import make_args, make_sample, make_samples_grouped
 
@@ -10,6 +11,7 @@ from miles.ray.rollout.metrics import (
     _compute_spec_metrics,
     _compute_training_sample_metrics,
     _compute_zero_std_metrics,
+    log_eval_rollout_data,
     log_rollout_data,
 )
 from miles.rollout.session.v2.metrics import SESSION_ROLLOUT_METRICS_KEY
@@ -137,6 +139,56 @@ class TestTrainingSampleMetrics:
 
 
 class TestComputeZeroStdMetrics:
+    @pytest.mark.parametrize("reward_type", [int, float, np.int32, np.int64, np.float32, np.float64])
+    def test_binary_percentages_do_not_depend_on_reward_type(self, reward_type):
+        args = make_args(advantage_estimator="grpo", reward_key=None)
+        zero, one = reward_type(0), reward_type(1)
+        samples = make_samples_grouped(3, 2, rewards=[zero, zero, one, one, zero, one])
+
+        out = _compute_zero_std_metrics(args, samples)
+
+        assert out[f"zero_std/count_{round(zero, 1)}"] == 1
+        assert out[f"zero_std/count_{round(one, 1)}"] == 1
+        assert out["zero_std/all_zero_percentage"] == pytest.approx(1 / 3)
+        assert out["zero_std/all_one_percentage"] == pytest.approx(1 / 3)
+
+    def test_mixed_numeric_types_and_unequal_group_sizes_count_groups_equally(self):
+        args = make_args(advantage_estimator="grpo", reward_key=None)
+        samples = [
+            make_sample(group_index=0, reward=0),
+            make_sample(group_index=1, reward=1),
+            make_sample(group_index=1, reward=1.0),
+            make_sample(group_index=1, reward=np.int64(1)),
+            make_sample(group_index=2, reward=0.0),
+            make_sample(group_index=2, reward=1.0),
+        ]
+
+        out = _compute_zero_std_metrics(args, samples)
+
+        assert out["zero_std/all_zero_percentage"] == pytest.approx(1 / 3)
+        assert out["zero_std/all_one_percentage"] == pytest.approx(1 / 3)
+
+    @pytest.mark.parametrize("reward", [-0.04, 0.04, 0.96, 1.04])
+    def test_rounded_fractional_rewards_do_not_count_as_binary(self, reward):
+        args = make_args(advantage_estimator="grpo", reward_key=None)
+        samples = make_samples_grouped(1, 2, rewards=[reward, reward])
+
+        out = _compute_zero_std_metrics(args, samples)
+
+        assert out[f"zero_std/count_{round(reward, 1)}"] == 1
+        assert out["zero_std/all_zero_percentage"] == 0.0
+        assert out["zero_std/all_one_percentage"] == 0.0
+
+    def test_negative_zero_counts_as_zero(self):
+        args = make_args(advantage_estimator="grpo", reward_key=None)
+        samples = make_samples_grouped(1, 2, rewards=[-0.0, 0.0])
+
+        out = _compute_zero_std_metrics(args, samples)
+
+        assert out["zero_std/count_-0.0"] == 1
+        assert out["zero_std/all_zero_percentage"] == 1.0
+        assert out["zero_std/all_one_percentage"] == 0.0
+
     def test_returns_empty_for_ppo_regardless_of_reward_distribution(self):
         args = make_args(advantage_estimator="ppo")
         out = _compute_zero_std_metrics(args, make_samples_grouped(2, 4, rewards=[1.0] * 8))
@@ -312,6 +364,35 @@ class TestTitoMismatchMetrics:
         ):
             _compute_metrics_from_samples(args, samples)
 
+    @pytest.mark.parametrize(
+        ("mismatch_type", "threshold", "raises"),
+        [
+            ("special_token_count", 0.25, False),
+            ("special_token_count", 0.2, True),
+            ("special_token_type", 0.25, True),
+        ],
+    )
+    def test_special_token_count_threshold_under_ci_test(self, mismatch_type, threshold, raises):
+        """The special_token_count threshold only relaxes that type; the
+        other strict types stay at 0."""
+        args = make_args(
+            advantage_estimator="ppo",
+            ci_test=True,
+            ci_tito_special_token_count_threshold=threshold,
+            log_passrate=False,
+            use_session_server="v2",
+        )
+        samples = make_samples_grouped(1, 4)
+        samples[0].metadata = {"tito_session_mismatch": [{"type": mismatch_type}]}
+        for s in samples[1:]:
+            s.metadata = {"tito_session_mismatch": []}
+        if raises:
+            with pytest.raises(AssertionError, match=rf"tito_session_mismatch_rate/v2/{mismatch_type}=0\.2500"):
+                _compute_metrics_from_samples(args, samples)
+        else:
+            out = _compute_metrics_from_samples(args, samples)
+            assert out[f"tito_session_mismatch_rate/v2/{mismatch_type}"] == 0.25
+
     def test_assistant_text_mismatch_does_not_raise_under_ci_test(self):
         """assistant_text mismatch is non-critical (tokens inherited from the
         pretokenized prefix) — even under ci_test, must not raise."""
@@ -454,3 +535,38 @@ def _make_versioned_sample(versions: list[str], *, index: int) -> Sample:
         WeightVersionsPerCall(spans=[WeightVersionSpan(version, i, i + 1)]) for i, version in enumerate(versions)
     ]
     return sample
+
+
+class TestLogRolloutData:
+    def test_the_model_id_comes_from_the_caller_not_from_the_args(self, monkeypatch):
+        """One rollout executor serves every policy, so the id must travel with the call, not with the run."""
+        calls: list[tuple[dict, str]] = []
+        monkeypatch.setattr(
+            "miles.ray.rollout.metrics.tracking.log",
+            lambda _args, payload, step_key: calls.append((payload, step_key)),
+        )
+        args = make_args(advantage_estimator="ppo", ci_test=False, log_passrate=False, trainer_model_id=None)
+
+        log_rollout_data(0, args, make_samples_grouped(1, 4), None, 1.0, trainer_model_id="alpha")
+
+        [(payload, step_key)] = calls
+        assert step_key == "alpha/rollout/step"
+        assert all(key.startswith("alpha/") for key in payload)
+
+
+class TestEvalMetrics:
+    def test_eval_metrics_are_not_namespaced_by_policy(self, monkeypatch):
+        """Pinning the status quo: a run training several policies is refused an eval, so eval keeps one step axis."""
+        calls: list[tuple[dict, str]] = []
+        monkeypatch.setattr(
+            "miles.ray.rollout.metrics.tracking.log",
+            lambda _args, payload, step_key: calls.append((payload, step_key)),
+        )
+        args = make_args(log_passrate=False, trainer_model_id="alpha")
+
+        log_eval_rollout_data(0, args, {"gsm8k": {"rewards": [1.0, 0.0]}})
+
+        [(payload, step_key)] = calls
+        assert step_key == "eval/step"
+        assert payload["eval/gsm8k"] == 0.5
+        assert not any(key.startswith("alpha/") for key in payload)

@@ -18,7 +18,7 @@ from tests.fast.router.test_sessions import _create_session, _post_chat, _serve_
 from tests.fast.router.test_sessions_v2 import _serve_router as _serve_router_v2
 
 from miles.utils.chat_template_utils.tito_tokenizer import TITOTokenizer
-from miles.utils.lora import LORA_ADAPTER_NAME
+from miles.utils.lora.utils import LORA_ADAPTER_NAME
 from miles.utils.test_utils.mock_sglang_server import MockSGLangServer
 
 USER = {"role": "user", "content": "hi"}

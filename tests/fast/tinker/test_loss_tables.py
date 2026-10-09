@@ -1,6 +1,6 @@
 """The admission tables in core must agree with the trainer's loss registry."""
 
-from miles.backends.training_utils.loss_hub.tinker_losses import TINKER_LOSS_FUNCTIONS
+from miles.backends.training_utils.loss.hub.tinker_losses import TINKER_LOSS_FUNCTIONS
 from miles.tinker.core.types import LOSS_FN_INPUTS, LOSS_INPUT_KEYS
 from miles.tinker.runtime import DATUM_TO_BATCH_KEYS
 

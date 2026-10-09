@@ -71,20 +71,25 @@ class WeightTransferProtocol(ABC):
 
 
 def get_weight_transfer_protocol(args: Namespace) -> WeightTransferProtocol:
+    mode = getattr(args, "update_weight_transfer_mode", "broadcast")
+    if mode not in ("broadcast", "broadcast_packed", "p2p", "disk-delta"):
+        raise ValueError(f"Unknown --update-weight-transfer-mode {mode!r}")
+    if mode == "broadcast_packed" and (getattr(args, "train_backend", None) != "megatron" or args.colocate):
+        raise ValueError("broadcast_packed requires Megatron non-colocated weight transfer")
     if args.colocate:
         from miles.backends.training_utils.weight_update.protocols.cuda_ipc import UpdateWeightFromTensor
 
         return UpdateWeightFromTensor(args)
-    if args.update_weight_transfer_mode == "broadcast":
+    if mode in ("broadcast", "broadcast_packed"):
         from miles.backends.training_utils.weight_update.protocols.broadcast import UpdateWeightFromDistributed
 
         return UpdateWeightFromDistributed(args)
-    if args.update_weight_transfer_mode == "disk-delta":
+    if mode == "disk-delta":
         from miles.backends.training_utils.weight_update.protocols.delta import UpdateWeightFromDiskDelta
 
         return UpdateWeightFromDiskDelta(args)
-    if args.update_weight_transfer_mode == "p2p":
+    if mode == "p2p":
         from miles.backends.training_utils.weight_update.protocols.p2p import UpdateWeightP2P
 
         return UpdateWeightP2P(args)
-    raise ValueError(f"Unknown --update-weight-transfer-mode {args.update_weight_transfer_mode!r}")
+    raise ValueError(f"Unknown --update-weight-transfer-mode {mode!r}")

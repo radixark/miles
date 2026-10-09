@@ -5,13 +5,12 @@
 #       python docker/build.py --variant cu13     --image-tag dev --push   # radixark/miles:dev      (amd64+arm64)
 #       python docker/build.py --variant cu13-x86 --image-tag dev --push   # radixark/miles:dev (amd64)
 #       python docker/build.py --variant cu13-aarch64 --image-tag dev --push   # radixark/miles:dev (arm64)
-#       python docker/build.py --variant cu12-x86 --image-tag dev --push   # radixark/miles:dev-cu12 (CUDA 12.9)
 #
 # A multi-arch build runs the recipe once per platform; it installs the wheels
 # release for the current arch picked from TARGETARCH — WHEELS_TAG_X86 on amd64,
-# WHEELS_TAG_ARM64 on arm64 (cu12-x86 overrides WHEELS_TAG_X86).
+# WHEELS_TAG_ARM64 on arm64.
 
-ARG SGLANG_IMAGE_TAG=v0.5.20
+ARG SGLANG_IMAGE_TAG=v0.5.21
 FROM lmsysorg/sglang:${SGLANG_IMAGE_TAG} AS sglang
 
 # ======================================== Arguments =============================================
@@ -23,10 +22,10 @@ ARG MEGATRON_REPO=radixark/Megatron-LM
 ARG MEGATRON_BRANCH=miles-main
 # Empty means the branch HEAD at build time; release builds set it to freeze one commit.
 ARG MEGATRON_COMMIT=""
+ARG TORCHTITAN_REPO=pytorch/torchtitan
+ARG TORCHTITAN_COMMIT=086bf6c166ec85c1298eb5596fa9bf95f6a2d840
 
-ARG ENABLE_CUDA_13=1
-
-ARG WHEELS_REPO=yueming-yuan/miles-wheels
+ARG WHEELS_REPO=radixark/miles-wheels
 # Two complete wheels release tags (the wheels repo's own names). The build picks
 # one by TARGETARCH and installs it verbatim — no on-the-fly tag assembly here.
 ARG TARGETARCH
@@ -84,12 +83,44 @@ RUN pip install /tmp/wheels/flash_attn_3-*.whl
 
 RUN pip install git+https://github.com/ISEEKYAN/mbridge.git@89eb10887887bc74853f89a4de258c0702932a1c --no-deps
 
-RUN pip install flash-linear-attention==0.5.2
+# fla 0.5.2 computes BK = triton.next_power_of_2(K) inside a @triton.jit KDA kernel, which this triton
+# rejects at the first GLM-5.3-Flash trainer forward. Fixed upstream by
+# https://github.com/fla-org/flash-linear-attention/pull/1108; drop the patch once a release has it.
+COPY docker/patch/fla_kda_hoist_next_power_of_2.patch /tmp/fla_kda_hoist_next_power_of_2.patch
+RUN pip install flash-linear-attention==0.5.2 && \
+    FLA_DIR=$(python3 -c 'import importlib.util; print(importlib.util.find_spec("fla").submodule_search_locations[0])') && \
+    patch --fuzz=0 -p1 -d "$FLA_DIR" < /tmp/fla_kda_hoist_next_power_of_2.patch && \
+    rm /tmp/fla_kda_hoist_next_power_of_2.patch
 # required for DeepSeek V4
-RUN pip install tilelang==0.1.8 -f https://tile-ai.github.io/whl/nightly/cu128/
-RUN pip install --no-deps tile_kernels==1.0.0
+RUN pip install tilelang==0.1.14 apache-tvm-ffi==0.1.11
+# TileLang fp16 256-bit store fix on Blackwell: https://github.com/tile-ai/tilelang/pull/3158. Drop with TileLang > 0.1.14.
+COPY docker/patch/tilelang_pack_float16x4.patch /tmp/tilelang_pack_float16x4.patch
+RUN TILELANG_DIR=$(python3 -c 'import importlib.util; print(importlib.util.find_spec("tilelang").submodule_search_locations[0])') && \
+    patch --fuzz=0 -p1 -d "$TILELANG_DIR" < /tmp/tilelang_pack_float16x4.patch && \
+    rm /tmp/tilelang_pack_float16x4.patch
+# TileKernels target-import fix: https://github.com/deepseek-ai/TileKernels/pull/25.
+COPY docker/patch/tile_kernels_target.patch /tmp/tile_kernels_target.patch
+RUN pip install --no-deps tile_kernels==1.0.0 && \
+    TILE_KERNELS_DIR=$(python3 -c 'import importlib.util; print(importlib.util.find_spec("tile_kernels").submodule_search_locations[0])') && \
+    patch --fuzz=0 -p1 -d "$TILE_KERNELS_DIR" < /tmp/tile_kernels_target.patch && \
+    rm /tmp/tile_kernels_target.patch
 # FlashQLA backend for Qwen GDN linear-attention layers (requires SM90+, CUDA 12.8+, PyTorch 2.8+; built on tilelang above)
-RUN pip install -v --no-build-isolation "git+https://github.com/QwenLM/FlashQLA.git"
+# Its dependency pins would downgrade TileLang and TVM-FFI; use the versions above.
+RUN pip install -v --no-deps --no-build-isolation "git+https://github.com/QwenLM/FlashQLA.git@7c7dfe16416ad21b1d03258189fc8d3b8460ae06"
+# DeepSelect: the top-k the DeepSeek-V4.1 indexer selects with. It ships sm100a/sm103a only, and
+# the V4.1 plugin falls back to torch.topk on anything older. Its setup.py probes for a GPU with
+# lspci, which a build host does not have, hence pciutils and the explicit target. Its setup.py
+# also stamps the wall clock into the version, so metadata and wheel builds that straddle a
+# second boundary disagree and pip rejects the wheel; pin the stamp for a deterministic version.
+RUN apt-get update && apt-get install -y --no-install-recommends pciutils && rm -rf /var/lib/apt/lists/* && \
+    git init -q /tmp/DeepSelect && cd /tmp/DeepSelect && \
+    git remote add origin https://github.com/deepseek-ai/DeepSelect.git && \
+    git fetch --depth 1 origin 0f03b68748b304863fdf0181a11458d04ae533a9 && \
+    git checkout -q 0f03b68748b304863fdf0181a11458d04ae533a9 && \
+    git submodule update --init --depth 1 csrc/3rdparty/cutlass && \
+    sed -i 's/^datetime_rev = .*/datetime_rev = "0"/' setup.py && \
+    DEEP_SELECT_BUILD_TARGET_PLATFORM=CUDA MAX_JOBS=${MAX_JOBS:-32} pip install --no-build-isolation . && \
+    rm -rf /tmp/DeepSelect
 # Prefer the prebuilt wheel; fall back to a source build while the current
 # arch's wheels release doesn't carry it yet (QEMU-emulated arm64 source
 # builds are the expensive path this avoids).
@@ -104,10 +135,8 @@ RUN if ls /tmp/wheels/fast_hadamard_transform-*.whl 2>/dev/null | grep -q .; the
 # (cudnn.DSA.indexer_forward_top_k_wrapper with `deterministic`) that upstream
 # Megatron #5992 requires on SM100; 1.26.0 has no compact wrapper and fails
 # TransformerConfig validation once that change is in miles-main.
-RUN if [ "${ENABLE_CUDA_13}" = "1" ]; then \
-      pip install /tmp/wheels/flash_mla-*.whl && \
-      pip install --no-deps "nvidia-cudnn-frontend==1.28.0"; \
-    fi
+RUN pip install /tmp/wheels/flash_mla-*.whl && \
+    pip install --no-deps "nvidia-cudnn-frontend==1.28.0"
 
 # Mamba kernels for nemotron_h hybrid (mamba+attention) models.
 RUN if ls /tmp/wheels/causal_conv1d-*.whl 2>/dev/null | grep -q . && \
@@ -123,22 +152,17 @@ RUN if ls /tmp/wheels/causal_conv1d-*.whl 2>/dev/null | grep -q . && \
 # runtime deps, which still have to be installed: transformer_engine.pytorch
 # imports onnxscript unconditionally (module/_common -> export -> onnx_extensions).
 RUN --mount=type=bind,source=docker/verify_transformer_engine.py,target=/tmp/verify_transformer_engine.py \
-    if [ "${ENABLE_CUDA_13}" = "1" ]; then \
-      TE_CORE_DIST=transformer_engine_cu13; \
-    else \
-      TE_CORE_DIST=transformer_engine_cu12; \
-    fi && \
     set -- \
       /tmp/wheels/transformer_engine-2.17.0-py3-none-any.whl \
-      /tmp/wheels/${TE_CORE_DIST}-2.17.0-py3-none-manylinux_2_28_*.whl \
+      /tmp/wheels/transformer_engine_cu13-2.17.0-py3-none-manylinux_2_28_*.whl \
       /tmp/wheels/transformer_engine_torch-2.17.0-cp312-cp312-linux_*.whl; \
     if [ "$#" -ne 3 ] || [ ! -f "$1" ] || [ ! -f "$2" ] || [ ! -f "$3" ]; then \
-      echo "expected exactly one TransformerEngine 2.17 wheel for each component (${TE_CORE_DIST})" >&2; exit 1; \
+      echo "expected exactly one TransformerEngine 2.17 wheel for each component (transformer_engine_cu13)" >&2; exit 1; \
     fi && \
-    pip uninstall -y transformer-engine transformer-engine-cu12 transformer-engine-cu13 transformer-engine-torch && \
+    pip uninstall -y transformer-engine transformer-engine-cu13 transformer-engine-torch && \
     pip install --force-reinstall --no-deps "$@" && \
     pip install einops onnx onnxscript pydantic nvdlfw-inspect && \
-    python3 /tmp/verify_transformer_engine.py "${TE_CORE_DIST}"
+    python3 /tmp/verify_transformer_engine.py "transformer_engine_cu13"
 
 # TE patches (cu13): B300/GB300 FA2 and backward override fixes
 # te_dequantized_backward_override.patch is a hot fix from
@@ -147,7 +171,7 @@ COPY docker/patch/ /tmp/patches/
 # A `for` loop exits with the status of its LAST iteration, so a patch that fails
 # to apply here used to be swallowed whenever a later one succeeded -- the image
 # shipped with TE silently unpatched. Fail the build instead.
-RUN if [ "${ENABLE_CUDA_13}" = "1" ] && [ -d /tmp/patches/cu13 ]; then \
+RUN if [ -d /tmp/patches/cu13 ]; then \
       TE_DIR=$(python -c 'import importlib.util; print(importlib.util.find_spec("transformer_engine").submodule_search_locations[0])') && \
       for p in /tmp/patches/cu13/*.patch; do \
         echo "Applying $(basename $p) to $TE_DIR"; \
@@ -175,9 +199,18 @@ RUN pip install "git+https://github.com/NVIDIA-NeMo/Emerging-Optimizers.git@v0.3
 RUN TMS_CUDA_MAJOR=$(python3 -c "import torch; print(torch.version.cuda.split('.')[0])") \
     pip install git+https://github.com/fzyzcjy/torch_memory_saver.git@b5588e83de86412a48689a6583a4b567e75f7acc --no-cache-dir --force-reinstall
 RUN pip install "nvidia-modelopt[torch]>=0.37.0" --no-build-isolation
-RUN pip install git+https://github.com/radixark/Megatron-Bridge.git@2e09c234a3272285140224d0d698593418b55ba5 --no-deps --no-build-isolation
+RUN pip install git+https://github.com/radixark/Megatron-Bridge.git@8cd3466d14d2337c8492827b3712482c2b3e4866 --no-deps --no-build-isolation
 RUN pip install megatron-energon --no-deps
 RUN pip install multi-storage-client --no-deps
+
+# torchtitan backend: pinned to the v0.3.0 release commit because torchtitan tracks
+# torch nightly and its model/adapter layouts move; --no-deps keeps its torch and
+# datasets pins from touching the versions sglang links against. Its own python
+# deps are pinned explicitly (spmd_types is a hard import in parallel_dims).
+RUN git clone https://github.com/${TORCHTITAN_REPO}.git torchtitan && \
+    cd torchtitan && git checkout -f ${TORCHTITAN_COMMIT} && \
+    pip install --no-deps -e .
+RUN pip install "spmd_types==0.2.3" "tyro>=1.0.5" && pip install --no-deps "torchdata>=0.8.0"
 
 COPY requirements.txt /tmp/requirements.txt
 RUN rm -rf /usr/lib/python3/dist-packages/jwt /usr/lib/python3/dist-packages/PyJWT* && pip install -r /tmp/requirements.txt
@@ -185,16 +218,11 @@ RUN rm -rf /usr/lib/python3/dist-packages/jwt /usr/lib/python3/dist-packages/PyJ
 # The apt copy shadows the pip one in ldconfig and the loader interleaves the two,
 # so transformer_engine gets a mixed set of libcudnn sub-libraries. The packages are
 # held, hence --allow-change-held-packages.
-RUN if [ "${ENABLE_CUDA_13}" = "1" ]; then CU=13; else CU=12; fi; \
-  apt-get remove -y --purge --allow-change-held-packages \
-    libcudnn9-cuda-${CU} libcudnn9-dev-cuda-${CU} libcudnn9-headers-cuda-${CU} \
+RUN apt-get remove -y --purge --allow-change-held-packages \
+    libcudnn9-cuda-13 libcudnn9-dev-cuda-13 libcudnn9-headers-cuda-13 \
   && rm -rf /var/lib/apt/lists/*
 
-RUN if [ "${ENABLE_CUDA_13}" = "1" ]; then \
-    pip install nvidia-cudnn-cu13==9.22.0.52; \
-  else \
-    pip install nvidia-cudnn-cu12==9.22.0.52; \
-  fi
+RUN pip install nvidia-cudnn-cu13==9.22.0.52
 
 
 RUN rm -rf /root/.cache/pip /root/flash-attention
@@ -202,11 +230,6 @@ RUN rm -rf /root/.cache/pip /root/flash-attention
 # ====================================== Install sglang-miles ============================================
 
 # Install sglang from sglang-miles branch
-# The CUDA 12 sglang images sed their dependency markers from cu13 to cu12 in
-# python/pyproject.toml and never commit it, so a plain checkout aborts on the dirty
-# file. Force it, then re-apply the same rewrite: the tree we just checked out carries
-# the cu13 markers, and sglang's editable install makes them visible to every later pip
-# resolve, which would drag cu13 packages onto a cu12 image.
 # The base image ships the Rust extension modules prebuilt (SGLANG_RUST_BUILD_MODE=never);
 # re-installing must not rebuild them, which needs the torch link path only the upstream
 # build stage has.
@@ -217,27 +240,7 @@ RUN cd /sgl-workspace/sglang && \
     else \
       git checkout -f FETCH_HEAD; \
     fi && \
-    if [ "${ENABLE_CUDA_13}" != "1" ]; then \
-      sed -i 's/cuda-python>=13\.0/cuda-python>=12,<13/' python/pyproject.toml && \
-      sed -i 's/flashinfer_python\[cu13\]/flashinfer_python[cu12]/' python/pyproject.toml && \
-      sed -i 's/nvidia-cutlass-dsl\[cu13\]/nvidia-cutlass-dsl/' python/pyproject.toml; \
-    fi && \
     SGLANG_BUILD_RUST_EXTS=none pip install -e "python[all]" --no-deps
-
-# =========================== Mooncake structured object store wheel ===========================
-
-# Miles' Mooncake backend requires the structured object store API. Install the selected
-# CUDA 13 wheel as one coherent Python/native package; CUDA 12 keeps its base Mooncake.
-RUN if [ "${ENABLE_CUDA_13}" = "1" ]; then \
-      set -- /tmp/wheels/mooncake_transfer_engine*-*.whl; \
-      if [ "$#" -ne 1 ] || [ ! -e "$1" ]; then \
-        echo "expected exactly one mooncake wheel for cu13/${TARGETARCH}" >&2; exit 1; \
-      fi && \
-      pip install --force-reinstall --no-deps "$1" && \
-      python3 -c "from mooncake.structured_object_store import FieldSchema, MooncakeBundleTransfer, export_ref, import_ref; MooncakeBundleTransfer.put; MooncakeBundleTransfer.get; MooncakeBundleTransfer.release_result; MooncakeBundleTransfer.cleanup_dataproto"; \
-    else \
-      echo "CUDA 12 variant: keeping the base image's mooncake"; \
-    fi
 
 COPY docker/install-kube-tools.sh /tmp/install-kube-tools.sh
 RUN bash /tmp/install-kube-tools.sh "${TARGETARCH}" && rm -f /tmp/install-kube-tools.sh
@@ -250,7 +253,7 @@ RUN git clone https://github.com/radixark/miles.git /root/miles && \
     git checkout ${MILES_COMMIT} && \
     pip install -e . --no-deps
 
-# int4_qat
+# int4 fake-quant extension (source: miles/kernels/quant/int4_fake)
 RUN pip install /tmp/wheels/fake_int4_quant_cuda-*.whl
 
 # ====================================== Install sgl-model-gateway ============================================

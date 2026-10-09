@@ -10,7 +10,7 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from miles.backends.training_utils import log_utils
+from miles.backends.training_utils.metrics import log_utils
 
 
 def test_min_max_keys_reduce_to_global_extrema():
