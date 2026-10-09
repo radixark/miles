@@ -11,7 +11,7 @@ ACTOR_NUM_GPUS = NUM_GPUS - ROLLOUT_NUM_GPUS  # 6: training actor pool (p2p keep
 
 register_cuda_ci(
     est_time=800,
-    suite="stage-c-8-gpu-h100",
+    suite="stage-c-8-gpu-h200-rdma",
     labels=["megatron", "weight-update"],
     hardware=["hopper", "blackwell"],
 )
