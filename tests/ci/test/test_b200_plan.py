@@ -68,7 +68,7 @@ def test_short_job_can_wait_for_long_gpu_holder_and_still_execute():
         "regular",
         ["run-ci-megatron", "run-on-blackwell"],
     )
-    batch, = batch_jobs(jobs)
+    (batch,) = batch_jobs(jobs)
     planned = json.loads(batch["jobs"])["include"]
     for last in jobs:
         waiting = sum(job["timeout_minutes"] for job in jobs if job["file"] != last["file"])
@@ -108,7 +108,7 @@ def test_single_file_at_platform_budget_boundary(minutes):
         with pytest.raises(AssertionError, match="test_long.py"):
             batch_jobs(jobs)
     else:
-        batch, = batch_jobs(jobs)
+        (batch,) = batch_jobs(jobs)
         assert json.loads(batch["jobs"])["include"][0]["timeout_minutes"] == minutes
 
 
@@ -162,7 +162,7 @@ def test_snapshot_plan_never_executes_source_python(tmp_path):
     assert proc.returncode == 0, proc.stderr
     values = dict(line.split("=", 1) for line in output.read_text().splitlines())
     assert values["has_tests"] == "true"
-    batch, = json.loads(values["matrix"])["include"]
+    (batch,) = json.loads(values["matrix"])["include"]
     assert json.loads(batch["jobs"])["include"][0]["num_gpus"] == 1
 
 
