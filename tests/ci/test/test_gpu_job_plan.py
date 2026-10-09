@@ -197,7 +197,17 @@ def test_b200_partition_check_rejects_wrong_gpu_exposure(monkeypatch, expected, 
 def test_b200_suite_and_file_runs_allow_long_test_timeout():
     workflows = ROOT / ".github/workflows"
     b200 = yaml.safe_load((workflows / "_run-ci-b200.yml").read_text())
-    assert b200["jobs"]["test"]["with"]["timeout_minutes"] == "${{ matrix.timeout_minutes }}"
+    batches = b200["jobs"]["test"]
+    assert batches["uses"] == "./.github/workflows/_run-ci-b200-batch.yml"
+    assert batches["strategy"]["max-parallel"] == 1
+    assert batches["strategy"]["fail-fast"] is False
+    assert batches["with"]["matrix"] == "${{ matrix.jobs }}"
+    batch = yaml.safe_load((workflows / "_run-ci-b200-batch.yml").read_text())["jobs"]["test"]
+    assert batch["strategy"]["matrix"] == "${{ fromJSON(inputs.matrix) }}"
+    assert "max-parallel" not in batch["strategy"]
+    assert batch["strategy"]["fail-fast"] is False
+    assert batch["with"]["timeout_minutes"] == "${{ matrix.timeout_minutes }}"
+    assert "--timeout-per-file" not in batch["with"]["execute_command"]
     rerun = yaml.safe_load((workflows / "run-ci-file.yml").read_text())["jobs"]["run-cuda-file"]
     assert "'stage-c-4-gpu-b200' && 540 || 360" in rerun["with"]["timeout_minutes"]
     reusable = yaml.safe_load((workflows / "_run-ci.yml").read_text())

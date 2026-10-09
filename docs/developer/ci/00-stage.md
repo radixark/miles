@@ -32,7 +32,7 @@ Stage names follow `stage-<tier>-<gpus>-<hw>` (or `stage-<tier>-<hw>` for CPU, e
 | `nightly-stage-c-4-gpu-mi350` | 4× MI350 | external nightly | — | — |
 | `nightly-stage-c-8-gpu-mi350` | 8× MI350 | external nightly | — | — |
 
-B200 jobs declare their minimum allocation with `register_cuda_ci(..., num_gpus=N)` for an integer N from 1 to 8. The existing B200 suite names select tests; they do not reserve a fixed partition. `_run-ci-b200.yml` plans all selected files at an exact commit and makes their jobs independently runnable. The host allocates any free GPU set, allowing `4+2+1+1`, `2+2+2+2`, or other fitting combinations. An 8-GPU job requires the whole host. Weekly uses the same scheduling rules. Per-job timeouts cover the file timeout plus 20 minutes for setup; one long file receives 470 minutes.
+B200 jobs declare their minimum allocation with `register_cuda_ci(..., num_gpus=N)` for an integer N from 1 to 8. The existing B200 suite names select tests; they do not reserve a fixed partition. `_run-ci-b200.yml` plans all selected files at an exact commit and makes their jobs independently runnable. The host allocates any free GPU set, allowing `4+2+1+1`, `2+2+2+2`, or other fitting combinations. An 8-GPU job requires the whole host. Weekly uses the same scheduling rules. Jobs wait for GPUs after the runner accepts them, so their timeout includes admission waiting. The planner splits large selections into sequential batches whose summed file-timeout plus setup/cleanup allowances stay at or below 23 hours, below the 24-hour `GITHUB_TOKEN` lifetime and 5-day self-hosted job limit. Every job gets its batch's serial budget, covering even the last job to acquire GPUs; per-file execution timeouts remain unchanged. Files within each batch have no matrix parallelism cap.
 
 The repository-wide `b200-oma` workflow queue keeps PRs and B200 file reruns in order. Host device locks remain necessary for old workflow revisions and hold through container cleanup. See `tests/ci/README.md` for deployment, cancellation, and orphan-container handling.
 
@@ -99,7 +99,7 @@ Both workflows receive `execute_command` and an optional `ref`; CUDA callers add
 
 **Sharding.** A stage with a `partition_id` matrix splits its tests across N shards; `run_suite.py` balances the shards by each test's `est_time`. Each shard is an independent job instance running the same `execute_command` with a different `--auto-partition-id`.
 
-Weekly runs keep the same shards but limit each Hopper and ROCm GPU matrix to one runner. B200 uses the same per-file GPU pool for every cadence, with no matrix parallelism cap; each file starts when its declared GPU budget is available. Other stages remain independent: `stage-b-2-gpu-h200` and `stage-c-2-gpu-h200` may each occupy one 2-GPU runner at the same time. PR, nightly, and release runs retain their existing matrix parallelism.
+Weekly runs keep the same shards but limit each Hopper and ROCm GPU matrix to one runner. B200 uses the same per-file GPU pool for every cadence, with no matrix parallelism cap within each bounded batch; each file starts when its declared GPU budget is available. Other stages remain independent: `stage-b-2-gpu-h200` and `stage-c-2-gpu-h200` may each occupy one 2-GPU runner at the same time. PR, nightly, and release runs retain their existing matrix parallelism.
 
 ## ROCm PR/nightly/weekly mirror
 

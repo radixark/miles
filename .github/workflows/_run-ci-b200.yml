@@ -77,22 +77,17 @@ jobs:
   test:
     needs: plan
     if: needs.plan.outputs.has_tests == 'true'
-    name: ${{ matrix.num_gpus }} GPU / ${{ matrix.file }}
+    name: Batch ${{ matrix.batch }}
     strategy:
       fail-fast: false
+      max-parallel: 1
       matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
-    uses: ./.github/workflows/_run-ci.yml
+    uses: ./.github/workflows/_run-ci-b200-batch.yml
     with:
-      runs_on: ${{ matrix.runs_on }}
-      num_gpus: ${{ matrix.num_gpus }}
-      timeout_minutes: ${{ matrix.timeout_minutes }}
+      matrix: ${{ matrix.jobs }}
       container_image: ${{ inputs.container_image }}
       ref: ${{ needs.plan.outputs.ref }}
-      plan_already_resolved: true
-      execute_command: >-
-        python tests/ci/run_suite.py --hw cuda --suite ${{ matrix.suite }}
-        --test-file ${{ matrix.shell_file }}
-        --cadence ${{ inputs.cadence }}
-        --labels ${{ inputs.raw_labels }}
-        ${{ inputs.match_all_labels && '--match-all-labels' || '' }}
+      cadence: ${{ inputs.cadence }}
+      raw_labels: ${{ inputs.raw_labels }}
+      match_all_labels: ${{ inputs.match_all_labels }}
     secrets: inherit

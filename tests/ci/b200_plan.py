@@ -11,6 +11,10 @@ from tests.ci.labels import KNOWN_LABELS
 from tests.ci.run_suite import filter_tests
 
 
+# Leave headroom below GITHUB_TOKEN's 24-hour lifetime (and the 5-day job limit).
+MAX_BATCH_MINUTES = 23 * 60
+
+
 def plan_jobs(registrations, suites, cadence, labels, match_all_labels=False):
     policy = resolve_policy(cadence, set(labels))
     selected_labels = set(policy.include_labels)
@@ -45,6 +49,31 @@ def plan_jobs(registrations, suites, cadence, labels, match_all_labels=False):
     return sorted(jobs, key=lambda job: (-job["est_time"], job["file"]))
 
 
+def batch_jobs(jobs):
+    batches = []
+    current = []
+    minutes = 0
+    for job in jobs:
+        budget = job["timeout_minutes"]
+        assert budget <= MAX_BATCH_MINUTES, f"B200 test exceeds batch budget: {job['file']} ({budget} minutes)"
+        if current and minutes + budget > MAX_BATCH_MINUTES:
+            batches.append(current)
+            current = []
+            minutes = 0
+        current.append(job)
+        minutes += budget
+    if current:
+        batches.append(current)
+
+    result = []
+    for index, batch in enumerate(batches):
+        # Any file can run last: cover all peers' execution/setup/cleanup, even without overlap.
+        timeout = sum(job["timeout_minutes"] for job in batch)
+        matrix = {"include": [{**job, "timeout_minutes": timeout} for job in batch]}
+        result.append({"batch": index + 1, "jobs": json.dumps(matrix)})
+    return result
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--source-root", default=".")
@@ -60,7 +89,7 @@ def main():
         args.labels,
         args.match_all_labels,
     )
-    matrix = json.dumps({"include": jobs})
+    matrix = json.dumps({"include": batch_jobs(jobs)})
     with open(os.environ["GITHUB_OUTPUT"], "a") as output:
         output.write(f"matrix={matrix}\nhas_tests={str(bool(jobs)).lower()}\n")
     print(matrix)

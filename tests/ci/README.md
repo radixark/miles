@@ -102,8 +102,11 @@ Host conventions:
 ### Rolling out the B200 allocator
 
 `github_runner/docker-compose.b200.yml` supplies enough slots for every supported
-count so waiting large jobs cannot consume the smaller jobs' runner slots. The
-matrix has no `max-parallel` cap: physical admission is governed by device locks.
+count so waiting large jobs cannot consume the smaller jobs' runner slots. Large plans run in sequential batches with at most 23 hours of summed
+file-timeout and setup/cleanup budgets. Each job receives that batch budget so
+GPU admission waiting cannot consume its own execution allowance. This stays
+below the 24-hour GitHub token lifetime and 5-day self-hosted job limit. Within
+a batch, the matrix has no `max-parallel` cap; device locks govern admission.
 Each job keeps its GPU locks through `Runner.Worker` exit and container cleanup.
 A shared host lock for smaller jobs and an exclusive one for whole-node jobs also
 exclude old whole-node workflow revisions during rollout.

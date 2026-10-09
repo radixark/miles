@@ -21,7 +21,7 @@ on:
         required: false
         default: 0
       timeout_minutes:
-        description: 'GPU execution budget, including container and dependency setup.'
+        description: 'Job budget, including GPU admission waiting, setup, execution, and cleanup.'
         type: number
         required: false
         default: 360
