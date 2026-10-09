@@ -128,9 +128,9 @@ def build_config(config: HarborTinkerConfig) -> train.Config:
 
 def main(config: HarborTinkerConfig) -> None:
     """Export HARBOR_TASKS_DIR and TINKER_API_KEY for the trial runner and SDK, preflight, then run train.main."""
-    os.environ.setdefault("HARBOR_TASKS_DIR", config.tasks_dir)
+    os.environ["HARBOR_TASKS_DIR"] = config.tasks_dir
     if config.api_key:
-        os.environ.setdefault("TINKER_API_KEY", config.api_key)
+        os.environ["TINKER_API_KEY"] = config.api_key
     preflight_sandbox()
     asyncio.run(train.main(build_config(config)))
 
