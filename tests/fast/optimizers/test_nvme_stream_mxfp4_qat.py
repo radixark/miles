@@ -6,6 +6,7 @@ dense params and the fp32 mains are untouched.
 
 from types import SimpleNamespace
 
+import pytest
 import torch
 
 from miles.utils.mxfp4 import project_mxfp4
@@ -70,3 +71,12 @@ def test_without_qat_every_param_gets_its_main():
 
     for entry in entries:
         assert torch.equal(_written(param_data, ranges, entry), entry.main_param.to(torch.bfloat16))
+
+
+def test_a_split_expert_shard_is_rejected_at_setup():
+    store, (expert, dense, bias), _, _ = _store(qat=True)
+    half = expert._replace(main_param=expert.main_param[: expert.main_param.numel() // 2])
+    store.buckets = [SimpleNamespace(entries=[half, dense, bias])]
+
+    with pytest.raises(AssertionError, match="whole in one shard"):
+        store._select_mxfp4_projected()

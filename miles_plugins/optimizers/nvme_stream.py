@@ -402,12 +402,6 @@ class NVMeOptimizerStateStore:
             group["lr"] = master_groups[group_index]["lr"]
             group["weight_decay"] = master_groups[group_index]["weight_decay"]
 
-    # Adapted from DistributedOptimizer._copy_main_params_to_model_params, which walks every
-    # group at once, at
-    # https://github.com/radixark/Megatron-LM/blob/4716f75475c78e2fc2c6f0d3af095f1681b770b4/megatron/core/optimizer/distrib_optimizer.py#L2469-L2519
-    # Recheck against that revision when bumping Megatron. Its fp8 branch is absent because
-    # quantize_param_shard() is a DP collective over the whole fp8 param set and cannot be
-    # split per bucket; __init__ rejects fp8 params instead.
     def _select_mxfp4_projected(self) -> set[int]:
         """ids of the model params whose updates are projected onto the MXFP4 grid (none without MXFP4 QAT)."""
         if self._mxfp4_qat_group_size is None:
@@ -418,6 +412,10 @@ class NVMeOptimizerStateStore:
             for e in b.entries
             if _is_mxfp4_routed_expert(e.model_param, self._mxfp4_qat_group_size)
         ]
+        # Blocks run along the last dim, so each projected param must sit whole in this rank's shard.
+        assert all(
+            e.main_param.nelement() == e.model_param.numel() for e in entries
+        ), "MXFP4 QAT needs each routed-expert param whole in one shard (expert data parallel size 1)"
         logger.info(
             f"MXFP4 QAT: {len(entries)} routed-expert params "
             f"({sum(e.model_param.numel() for e in entries) / 1e9:.2f}B elements) are projected onto the MXFP4 "
@@ -425,6 +423,12 @@ class NVMeOptimizerStateStore:
         )
         return {id(e.model_param) for e in entries}
 
+    # Adapted from DistributedOptimizer._copy_main_params_to_model_params, which walks every
+    # group at once, at
+    # https://github.com/radixark/Megatron-LM/blob/4716f75475c78e2fc2c6f0d3af095f1681b770b4/megatron/core/optimizer/distrib_optimizer.py#L2469-L2519
+    # Recheck against that revision when bumping Megatron. Its fp8 branch is absent because
+    # quantize_param_shard() is a DP collective over the whole fp8 param set and cannot be
+    # split per bucket; __init__ rejects fp8 params instead.
     def _copy_main_to_model_params(self, entries: list[_Entry]) -> None:
         dist_opt = self.dist_opt
         for entry in entries:
@@ -437,10 +441,7 @@ class NVMeOptimizerStateStore:
             if id(entry.model_param) in self._mxfp4_projected:
                 # QAT for an MXFP4 rollout engine: the trainer computes with the values the engine decodes,
                 # so a weight sync delivers them exactly, while the fp32 main keeps accumulating the updates
-                # that stay below one grid step. Blocks run along the last dim, so the whole param must be here.
-                assert (
-                    entry.main_param.nelement() == entry.model_param.numel()
-                ), "MXFP4 QAT needs each routed-expert param whole in one shard (expert data parallel size 1)"
+                # that stay below one grid step. _select_mxfp4_projected checked that the whole param is here.
                 weight = entry.main_param.view(entry.model_param.shape).to(torch.bfloat16)
                 source = project_mxfp4(weight, self._mxfp4_qat_group_size).view(-1)
             param_data.view(-1)[world_range.start : world_range.end].copy_(source)
