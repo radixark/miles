@@ -121,6 +121,7 @@ class TestCISuites:
             "stage-b-2-gpu-h200",
             "stage-c-8-gpu-h100",
             "stage-c-8-gpu-h200",
+            "stage-c-8-gpu-h200-rdma",
             "stage-c-4-gpu-h200",
             "stage-c-2-gpu-h200",
             "stage-c-8-gpu-b200",
@@ -327,7 +328,7 @@ class TestWorkflowScopeSeam:
     def test_every_stage_consumes_resolved_policy(self):
         workflow = self._workflow()
         commands = workflow.split("execute_command:")[1:]
-        assert len(commands) == 8, "stage inventory changed; update this lock test"
+        assert len(commands) == 9, "stage inventory changed; update this lock test"
         for block in commands:
             cmd = block.split("secrets:")[0]
             assert "--cadence ${{ needs.resolve-ci-policy.outputs.cadence }}" in cmd
@@ -356,7 +357,7 @@ class TestWorkflowScopeSeam:
     def test_cpu_and_gpu_stages_use_dedicated_reusable_workflows(self):
         workflow = self._workflow()
         assert workflow.count("uses: ./.github/workflows/_run-cpu-ci.yml") == 2
-        assert workflow.count("uses: ./.github/workflows/_run-ci.yml") == 6
+        assert workflow.count("uses: ./.github/workflows/_run-ci.yml") == 7
         assert workflow.count("uses: ./.github/workflows/_build-pr-ci-image.yml") == 1
         assert "cpu_runner" not in workflow
 
@@ -480,15 +481,15 @@ class TestWorkflowScopeSeam:
         assert "ci_scope" not in dispatch_inputs
         manual_scope = "${{ github.event_name == 'workflow_dispatch' && '--match-all-labels' || '' }}"
         cuda_stages = workflow.split("  stage-b-2-gpu-h200:", 1)[1]
-        assert cuda_stages.count(manual_scope) == 6
+        assert cuda_stages.count(manual_scope) == 7
 
     def test_gpu_gates_consume_shared_bypass_output(self):
         workflow = self._workflow()
         gpu_stages = workflow.split("  stage-b-2-gpu-h200:", 1)[1]
         bypass_gate = "needs.resolve-ci-policy.outputs.bypass_fastfail == 'true'"
-        assert gpu_stages.count(bypass_gate) == 6
-        assert gpu_stages.count("needs.resolve-ci-policy.result == 'success'") == 6
-        assert gpu_stages.count("needs.resolve-ci-image.result == 'success'") == 6
+        assert gpu_stages.count(bypass_gate) == 7
+        assert gpu_stages.count("needs.resolve-ci-policy.result == 'success'") == 7
+        assert gpu_stages.count("needs.resolve-ci-image.result == 'success'") == 7
         assert "needs.stage-a-cpu.result == 'failure'" not in gpu_stages
 
     def test_each_cuda_stage_consumes_the_fail_open_skip_list(self):

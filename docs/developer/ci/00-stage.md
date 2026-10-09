@@ -25,11 +25,14 @@ Stage names follow `stage-<tier>-<gpus>-<hw>` (or `stage-<tier>-<hw>` for CPU, e
 | `stage-c-4-gpu-h200` | 4× H200 | `["h200","4gpu"]` | 5 | both resolvers, `stage-a-cpu` |
 | `stage-c-8-gpu-h100` | 8× H100 | `["h100","8gpu"]` | 1 | both resolvers, `stage-a-cpu` |
 | `stage-c-8-gpu-h200` | 8× H200 | `["h200","8gpu"]` | 1 | both resolvers, `stage-a-cpu` |
+| `stage-c-8-gpu-h200-rdma` | 8× H200, RDMA between the host's GPUs | `["h200","8gpu","rdma"]` | 1 | both resolvers, `stage-a-cpu` |
 | `stage-c-8-gpu-b200` | 8× B200 | `["b200","8gpu"]` | 1 | both resolvers, `stage-a-cpu` |
 | `stage-c-4-gpu-mi350` | 4× MI350 | `["self-hosted","amd","mi350","4gpu"]` | 2 | both resolvers |
 | `nightly-stage-c-2-gpu-mi350` | 2× MI350 | external nightly | — | — |
 | `nightly-stage-c-4-gpu-mi350` | 4× MI350 | external nightly | — | — |
 | `nightly-stage-c-8-gpu-mi350` | 8× MI350 | external nightly | — | — |
+
+`stage-c-8-gpu-h200-rdma` holds the tests that move data between a host's GPUs over RDMA, as p2p weight updates do; only runners whose RDMA works between all of their GPUs carry the `rdma` label. Those runners also carry `h200` and `8gpu`, so `stage-c-8-gpu-h200` uses them as well, and tests without the need never wait for them.
 
 `stage-c-8-gpu-b200` is the only Blackwell stage: the Blackwell fleet is a single unpartitioned host, and an 8-GPU runner cannot share a node with 2/4-GPU runners without both claiming the same physical GPUs. Blackwell tests needing fewer than eight GPUs therefore register against this suite too and leave the surplus idle, which is correct because a test declares its own GPU budget (`ray start --num-gpus`, `torchrun --nproc-per-node`) rather than inferring one from the devices it can see.
 
@@ -78,7 +81,7 @@ That runner pool can include RoCE hosts, and GitHub attaches every job container
 
 **Arch dispatch.** `tests/ci/hardware.py::CUDA_STAGES` is the single source of truth for the CUDA taxonomy: each stage's GPU generation, GPU count, and runner labels. `CI_SUITES` and the `/rerun-test` runner map both derive from it, and a stage's `--suite` already names its generation, so no job passes an arch explicitly.
 
-A test normally runs at its home stage. A [dispatch label](/developer/ci/01-label) can send it to another generation instead, in which case the destination is the smallest stage on that generation with enough GPUs — a test declares its own GPU budget through `ray start --num-gpus` / `torchrun --nproc-per-node` rather than reading the devices it can see, so a wider stage simply leaves the surplus idle. Today every dispatched test lands on `stage-c-8-gpu-b200`, the only Blackwell stage; partitioning a second Blackwell host adds narrower stages and routing follows automatically.
+A test normally runs at its home stage. A [dispatch label](/developer/ci/01-label) can send it to another generation instead, in which case the destination is the smallest stage on that generation with enough GPUs and every capability of the home stage (the runner labels after the GPU model and count, such as `rdma`) — a test declares its own GPU budget through `ray start --num-gpus` / `torchrun --nproc-per-node` rather than reading the devices it can see, so a wider stage simply leaves the surplus idle, but a capability it was homed for cannot be dropped. A generation without such a stage does not run the test. Today every dispatched test lands on `stage-c-8-gpu-b200`, the only Blackwell stage; partitioning a second Blackwell host adds narrower stages and routing follows automatically.
 
 Without a dispatch label nothing leaves its home stage, so scheduled and called runs are unaffected. Whatever stage actually executes a run is also the stage its performance baseline is keyed on, keeping the generations' numbers apart.
 

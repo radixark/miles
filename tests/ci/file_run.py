@@ -24,6 +24,7 @@ CUDA_SUITE_RUNS_ON = {
     "stage-b-2-gpu-h200": ["h200", "2gpu"],
     "stage-c-8-gpu-h100": ["h100", "8gpu"],
     "stage-c-8-gpu-h200": ["h200", "8gpu"],
+    "stage-c-8-gpu-h200-rdma": ["h200", "8gpu", "rdma"],
     "stage-c-4-gpu-h200": ["h200", "4gpu"],
     "stage-c-2-gpu-h200": ["h200", "2gpu"],
     "stage-c-8-gpu-b200": ["b200", "8gpu"],

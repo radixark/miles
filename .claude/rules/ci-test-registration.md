@@ -38,6 +38,7 @@ run the test; copying a neighbouring test's `suite=` is not a reason.
 | 4 | `stage-c-2-gpu-h200` | 2× H200 | 2-GPU tests |
 | 5 | `stage-c-4-gpu-h200` | 4× H200 | 4-GPU tests |
 | 6 | `stage-c-8-gpu-h200` or `stage-c-8-gpu-h100` | 8× H200 / 8× H100 | 8-GPU tests |
+| 6 | `stage-c-8-gpu-h200-rdma` | 8× H200 with RDMA between them | 8-GPU tests that need RDMA inside the host, such as p2p weight updates |
 | — | `stage-c-8-gpu-b200` | 8× B200 | preferably tests that cannot run on Hopper (`hardware=["blackwell"]`), any GPU count |
 
 The stage's GPU count equals the count the test requests (`ray start

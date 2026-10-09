@@ -284,6 +284,29 @@ jobs:
         ${{ github.event_name == 'workflow_dispatch' && '--match-all-labels' || '' }}
     secrets: inherit
 
+  # Tests that need RDMA between the GPUs of one host (p2p weight updates). Its
+  # runners also carry h200 and 8gpu, so stage-c-8-gpu-h200 runs there too.
+  stage-c-8-gpu-h200-rdma:
+    needs: [resolve-ci-policy, resolve-ci-image, stage-a-cpu]
+    if: |
+      always() && !cancelled() &&
+      needs.resolve-ci-policy.result == 'success' &&
+      needs.resolve-ci-image.result == 'success' &&
+      !contains(fromJSON(needs.resolve-ci-policy.outputs.skipped_stages || '[]'), 'stage-c-8-gpu-h200-rdma') &&
+      (needs.stage-a-cpu.result == 'success' ||
+        needs.resolve-ci-policy.outputs.bypass_fastfail == 'true')
+    uses: ./.github/workflows/_run-ci.yml
+    with:
+      runs_on: '["h200", "8gpu", "rdma"]'
+      container_image: ${{ needs.resolve-ci-image.outputs.container_image }}
+      ref: ${{ inputs.ref || '' }}
+      execute_command: >-
+        python tests/ci/run_suite.py --hw cuda --suite stage-c-8-gpu-h200-rdma
+        --cadence ${{ needs.resolve-ci-policy.outputs.cadence }}
+        --labels ${{ needs.resolve-ci-policy.outputs.raw_labels }}
+        ${{ github.event_name == 'workflow_dispatch' && '--match-all-labels' || '' }}
+    secrets: inherit
+
   stage-c-4-gpu-h200:
     needs: [resolve-ci-policy, resolve-ci-image, stage-a-cpu]
     if: |

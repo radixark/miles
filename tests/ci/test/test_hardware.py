@@ -116,6 +116,25 @@ def test_target_stage_is_none_when_no_stage_is_wide_enough():
     assert target_stage("stage-c-8-gpu-h200", "nonexistent-arch") is None
 
 
+def test_a_capability_of_the_home_stage_is_kept_on_another_arch():
+    """A p2p test on a runner without RDMA between its GPUs fails at connect; no
+    Blackwell stage offers that yet, so the test stays on Hopper."""
+    assert target_stage("stage-c-8-gpu-h200-rdma", "blackwell") is None
+    assert dispatch_targets(
+        "stage-c-8-gpu-h200-rdma", ["hopper", "blackwell"], dispatch_arches=BOTH, absorb=True
+    ) == {"stage-c-8-gpu-h200-rdma"}
+
+
+def test_a_test_without_a_capability_never_takes_a_stage_that_offers_one():
+    # those runners are the scarce ones the capable tests wait for
+    for home, stage in CUDA_STAGES.items():
+        if stage.capabilities:
+            continue
+        for arch in KNOWN_ARCHES:
+            destination = target_stage(home, arch)
+            assert destination is None or not CUDA_STAGES[destination].capabilities, (home, arch)
+
+
 def test_blackwell_work_never_reaches_a_hopper_stage():
     """`target_stage` alone would route it; `dispatch_targets` never asks.
 

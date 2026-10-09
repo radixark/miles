@@ -33,13 +33,21 @@ KNOWN_ARCHES: tuple[str, ...] = ("hopper", "blackwell")
 class CudaStage:
     arch: str
     num_gpus: int
+    # the GPU model and count, then any capability the runners offer beyond the GPUs
     runs_on: tuple[str, ...]
+
+    @property
+    def capabilities(self) -> frozenset[str]:
+        """What a test homed here may rely on besides the GPUs, such as `rdma`."""
+        return frozenset(self.runs_on[2:])
 
 
 CUDA_STAGES: dict[str, CudaStage] = {
     "stage-b-2-gpu-h200": CudaStage("hopper", 2, ("h200", "2gpu")),
     "stage-c-8-gpu-h100": CudaStage("hopper", 8, ("h100", "8gpu")),
     "stage-c-8-gpu-h200": CudaStage("hopper", 8, ("h200", "8gpu")),
+    # RDMA between the GPUs of one host, which p2p weight updates write over
+    "stage-c-8-gpu-h200-rdma": CudaStage("hopper", 8, ("h200", "8gpu", "rdma")),
     "stage-c-4-gpu-h200": CudaStage("hopper", 4, ("h200", "4gpu")),
     "stage-c-2-gpu-h200": CudaStage("hopper", 2, ("h200", "2gpu")),
     "stage-c-8-gpu-b200": CudaStage("blackwell", 8, ("b200", "8gpu")),
@@ -59,10 +67,13 @@ def target_stage(home_suite: str, arch: str) -> str | None:
     """The stage on `arch` that runs a test homed at `home_suite`.
 
     On the test's own arch that is its home stage. On another arch it is the
-    smallest stage with enough GPUs: a test declares its own budget through
-    `ray start --num-gpus` / `torchrun --nproc-per-node` rather than reading the
-    devices it can see, so a larger stage just leaves the surplus idle. None
-    when that arch has no stage big enough.
+    smallest stage with enough GPUs and every capability of the home stage: a
+    test declares its own budget through `ray start --num-gpus` /
+    `torchrun --nproc-per-node` rather than reading the devices it can see, so a
+    larger stage just leaves the surplus idle, but it cannot do without a
+    capability it was homed for. Among those, the one with the fewest
+    capabilities, so no test takes a runner it does not need. None when that
+    arch has no such stage.
 
     Derived rather than tabulated. A hand-written home -> destination map would
     encode a fleet shape that does not exist yet; this rule gives today's
@@ -72,9 +83,15 @@ def target_stage(home_suite: str, arch: str) -> str | None:
     home = CUDA_STAGES[home_suite]
     if home.arch == arch:
         return home_suite
-    fits = [name for name, stage in CUDA_STAGES.items() if stage.arch == arch and stage.num_gpus >= home.num_gpus]
-    # Tie-break on the name so two stages of equal width choose deterministically.
-    return min(fits, key=lambda name: (CUDA_STAGES[name].num_gpus, name), default=None)
+    fits = [
+        name
+        for name, stage in CUDA_STAGES.items()
+        if stage.arch == arch and stage.num_gpus >= home.num_gpus and stage.capabilities >= home.capabilities
+    ]
+    # Tie-break on the name so two equal stages choose deterministically.
+    return min(
+        fits, key=lambda name: (CUDA_STAGES[name].num_gpus, len(CUDA_STAGES[name].capabilities), name), default=None
+    )
 
 
 def dispatch_targets(
