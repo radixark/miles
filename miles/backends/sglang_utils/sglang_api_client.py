@@ -137,9 +137,8 @@ class SGLangApiClient:
         )
 
     async def get_remote_instance_transfer_engine_info(self, rank: int):
-        # TODO: will be changed to `remote_instance_transfer_engine_info` when the sglang side is ready.
         response = await GeneralHttpClientProvider.client().get(
-            f"{self.server_url}/get_remote_instance_transfer_engine_info",
+            f"{self.server_url}/remote_instance_transfer_engine_info",
             params={"rank": rank},
             headers=self._headers,
             timeout=5.0,
