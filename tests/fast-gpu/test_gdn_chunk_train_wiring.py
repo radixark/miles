@@ -83,9 +83,16 @@ def _inputs(seq_lens, num_k_heads=2, num_v_heads=4, seed=0):
     return q, k, v, g, beta, do
 
 
-def _step(inputs, **kwargs):
-    q, k, v, g, beta, do = inputs
-    leaves = [t.detach().clone().requires_grad_(True) for t in (q, k, v, g, beta)]
+def _leaves(inputs):
+    q, k, v, g, beta, _do = inputs
+    return [t.detach().clone().requires_grad_(True) for t in (q, k, v, g, beta)]
+
+
+def _step(inputs, leaves=None, **kwargs):
+    do = inputs[-1]
+    leaves = _leaves(inputs) if leaves is None else leaves
+    for t in leaves:
+        t.grad = None
     out, _ = ops.chunk_gated_delta_rule(*leaves, use_qk_l2norm_in_kernel=True, **kwargs)
     out.backward(do)
     return {"out": out.detach(), **{n: t.grad for n, t in zip(("dq", "dk", "dv", "dg", "dbeta"), leaves, strict=True)}}
@@ -134,13 +141,14 @@ def test_wiring_has_no_host_sync_and_nine_launches_per_layer(monkeypatch):
     inputs = _inputs(LAYOUT, seed=2)
     cu = torch.tensor(_cu(LAYOUT), device="cuda", dtype=torch.int32)
     kwargs = dict(cu_seqlens=cu, cu_seqlens_cpu=_cu(LAYOUT))
-    _step(inputs, **kwargs)  # warm-up: kernels loaded, chunk table built (one pinned host-to-device copy)
+    leaves = _leaves(inputs)  # the autograd leaves are created outside the profiled region (clone = a device copy)
+    _step(inputs, leaves, **kwargs)  # warm-up: kernels loaded, chunk table built (one pinned host-to-device copy)
     torch.cuda.synchronize()
     builds = ops._HOST_META_BUILDS
     layers = 3
     with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA]) as prof:
         for _ in range(layers):
-            _step(inputs, **kwargs)
+            _step(inputs, leaves, **kwargs)
         torch.cuda.synchronize()
     assert ops._HOST_META_BUILDS == builds, "the chunk table must be reused across layers"
     runtime = [e.name for e in prof.events() if e.name.startswith(("cuda", "cu")) and not e.name.startswith("cudnn")]
