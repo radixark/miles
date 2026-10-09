@@ -1659,6 +1659,30 @@ def test_stream_optimizer_state_to_disk_rejects_fault_tolerant_training():
         miles_validate_args(args)
 
 
+@pytest.mark.parametrize(
+    ("megatron_args", "match"),
+    [
+        ({"fp16": True}, "does not support loss scaling"),
+        ({"loss_scale": 1024.0}, "does not support loss scaling"),
+        ({"log_num_zeros_in_grad": True}, "does not support --log-num-zeros-in-grad"),
+        ({"enable_mtp_training": True}, "does not support --enable-mtp-training"),
+    ],
+)
+def test_stream_optimizer_state_to_disk_rejects_reading_grads_outside_the_step(megatron_args, match):
+    """The streamed params have fp32 gradients only inside the optimizer step."""
+    parser = argparse.ArgumentParser()
+    get_miles_extra_args_provider()(parser)
+    args = parser.parse_args(["--stream-optimizer-state-to-disk", "--num-rollout", "1"] + REQUIRED_ARGS)
+    args.optimizer = "adam"
+    args.use_distributed_optimizer = True
+    args.fp16, args.loss_scale, args.log_num_zeros_in_grad = False, None, False
+    vars(args).update(megatron_args)
+    _set_megatron_parallel_sizes(args)
+
+    with pytest.raises(AssertionError, match=match):
+        miles_validate_args(args)
+
+
 class TestCriticSaveDerivation:
     def _validate(self, extra):
         parser = argparse.ArgumentParser()

@@ -31,7 +31,7 @@ from tests.e2e.conftest_dumper import (
 
 from miles.utils.external_utils import command_utils
 
-register_cuda_ci(est_time=1200, suite="stage-c-8-gpu-h200", labels=["short"], hardware=["hopper", "blackwell"])
+register_cuda_ci(est_time=900, suite="stage-c-8-gpu-h100", labels=["short"], hardware=["hopper", "blackwell"])
 register_rocm_ci(est_time=1800, suite="nightly-stage-c-8-gpu-mi350", labels=["short"])
 
 

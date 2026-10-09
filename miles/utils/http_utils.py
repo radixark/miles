@@ -358,6 +358,11 @@ def _init_ray_distributed_post(args):
     _post_actors = created
 
 
+def _rollout_client() -> httpx.AsyncClient:
+    # a process where init_http_client never ran, such as a subproc agent call, gets a default client
+    return _http_client if _http_client is not None else GeneralHttpClientProvider.client()
+
+
 # TODO may generalize the name since it now contains http DELETE/GET etc (with retries and remote-execution)
 async def post(url, payload, max_retries=60, action="post", headers=None):
     # If distributed mode is enabled and actors exist, dispatch via Ray.
@@ -370,12 +375,12 @@ async def post(url, payload, max_retries=60, action="post", headers=None):
             logger.info(f"[http_utils] Distributed POST failed, falling back to local: {e} (url={url})")
             # fall through to local
 
-    return await _post(_http_client, url, payload, max_retries, action=action, headers=headers)
+    return await _post(_rollout_client(), url, payload, max_retries, action=action, headers=headers)
 
 
 # TODO unify w/ `post` to add retries and remote-execution
 async def get(url):
-    response = await _http_client.get(url)
+    response = await _rollout_client().get(url)
     response.raise_for_status()
     output = response.json()
     return output

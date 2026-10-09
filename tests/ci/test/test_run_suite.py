@@ -512,7 +512,7 @@ class TestWorkflowScopeSeam:
 
     def test_closed_pr_only_cancels_existing_run(self):
         workflow = self._workflow()
-        assert "types: [opened, synchronize, reopened, ready_for_review, labeled, closed]" in workflow
+        assert "types: [opened, synchronize, reopened, ready_for_review, labeled, unlabeled, closed]" in workflow
         assert (
             "group: pr-test-${{ github.event.number || github.event.schedule || inputs.ref || github.run_id }}"
             in workflow
@@ -552,7 +552,8 @@ class TestRocmWorkflowScopeSeam:
     def test_pr_schedules_and_dispatch_share_policy(self):
         workflow = self._workflow()
         assert (
-            "pull_request:\n    types: [opened, synchronize, reopened, ready_for_review, labeled, closed]" in workflow
+            "pull_request:\n    types: [opened, synchronize, reopened, ready_for_review, labeled, unlabeled, closed]"
+            in workflow
         )
         assert "pull_request_target:" not in workflow
         configured = set(re.findall(r"^\s+- cron: ['\"]([^'\"]+)['\"]\s*$", workflow, flags=re.MULTILINE))

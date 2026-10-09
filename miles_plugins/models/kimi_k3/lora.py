@@ -157,31 +157,40 @@ def _apply_attention_lora(attention, args, layer_idx: int, scale: float, dropout
         "kda_attention" if attention.is_kda else "mla_attention",
         f"language_model.model.layers.{layer_idx}.self_attn.",
     )
+    o_proj = attention.linear_attn.out_proj if attention.is_kda else attention.o_proj
 
     _register_param(
         adapter,
         "o_lora_A",
-        attention.o_proj.weight,
-        (rank, attention.o_proj.weight.shape[1]),
+        o_proj.weight,
+        (rank, o_proj.weight.shape[1]),
         init="xavier",
     )
     _register_param(
         adapter,
         "o_lora_B",
-        attention.o_proj.weight,
+        o_proj.weight,
         (hidden_size, rank),
         init="zero",
+        grad_sum_group="tp" if attention.is_kda else None,
     )
 
-    o_proj = attention.o_proj
     original_o_proj = o_proj.forward
 
-    def o_proj_forward(inputs, *forward_args, **forward_kwargs):
-        output, bias = original_o_proj(inputs, *forward_args, **forward_kwargs)
-        local = F.linear(_dropout(inputs, dropout, o_proj.training), adapter.o_lora_A)
-        reduced = reduce_from_tensor_model_parallel_region(local, group=attention.tp_group)
-        delta = F.linear(reduced, adapter.o_lora_B)
-        return torch.add(output, delta, alpha=scale), bias
+    if attention.is_kda:
+
+        def o_proj_forward(inputs):
+            local = F.linear(_dropout(inputs, dropout, o_proj.training), adapter.o_lora_A)
+            return torch.add(original_o_proj(inputs), F.linear(local, adapter.o_lora_B), alpha=scale)
+
+    else:
+
+        def o_proj_forward(inputs, *forward_args, **forward_kwargs):
+            output, bias = original_o_proj(inputs, *forward_args, **forward_kwargs)
+            local = F.linear(_dropout(inputs, dropout, o_proj.training), adapter.o_lora_A)
+            reduced = reduce_from_tensor_model_parallel_region(local, group=attention.tp_group)
+            delta = F.linear(reduced, adapter.o_lora_B)
+            return torch.add(output, delta, alpha=scale), bias
 
     o_proj.forward = o_proj_forward
 
@@ -430,7 +439,7 @@ def apply_kimi_k3_lora(model, args):
     from megatron.core.transformer.mlp import MLP
     from megatron.core.transformer.moe.moe_layer import MoELayer
 
-    from .layers import KimiK3Attention
+    from .layers import KimiK3Attention, KimiK3KDAAttention
 
     rank = int(args.lora_rank)
     if rank <= 0:
@@ -444,7 +453,7 @@ def apply_kimi_k3_lora(model, args):
 
     for layer in model.decoder.layers:
         layer_idx = layer.layer_number - 1
-        if not isinstance(layer.self_attention, KimiK3Attention):
+        if not isinstance(layer.self_attention, (KimiK3Attention, KimiK3KDAAttention)):
             raise TypeError(f"Kimi K3 layer {layer_idx} has unexpected attention type {type(layer.self_attention)}")
         _apply_attention_lora(layer.self_attention, args, layer_idx, scale, dropout)
 

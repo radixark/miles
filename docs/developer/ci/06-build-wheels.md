@@ -11,7 +11,7 @@ Three `radixark/miles-wheels` asset sets follow a moving source. Each build writ
 | set | source | x86_64 | aarch64 |
 | --- | --- | --- | --- |
 | `sgl-router` (wheel + `sgl-model-gateway` binary) | `radixark/sgl-router-for-miles` `main` | GitHub-hosted `ubuntu-24.04` | GitHub-hosted `ubuntu-24.04-arm` |
-| `int4_qat` (`fake_int4_quant_cuda`) | last `main` commit touching `miles/backends/megatron_utils/kernels/int4_qat` | `docker-build` runner, in the SGLang base image | by hand |
+| `int4_qat` (`fake_int4_quant_cuda`) | last `main` commit touching `miles/kernels/quant/int4_fake` | `docker-build` runner, in the SGLang base image | by hand |
 | `te` (Transformer Engine triplet, `<release>+miles`) | `radixark/TransformerEngine` `miles-main`: NVIDIA's release commit plus the fixes Miles carries | `docker-build` runner | by hand |
 
 ## Publish setup
