@@ -365,7 +365,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                     "computes with exactly the experts the engine serves; the fp32 master keeps the full "
                     "update. Without it the engine's experts round back to their previous grid points while "
                     "the trainer's move, and the train/rollout mismatch grows with the expert updates. "
-                    "Requires --stream-optimizer-state-to-disk with Adam, no LoRA, and expert data parallel size 1."
+                    "Requires --stream-optimizer-state-to-disk with Adam and expert data parallel size 1."
                 ),
             )
             parser.add_argument(
@@ -3716,11 +3716,6 @@ def miles_validate_args(args):
         assert "muon" not in (args.optimizer or "").lower(), (
             "--mxfp4-qat-routed-experts projects in the Adam NVMe store; the Muon disk backend has no "
             f"projection, got --optimizer {args.optimizer}"
-        )
-        # LoRA freezes the experts, and its 2-D expert adapters would match the routed-expert selection.
-        assert args.lora_rank <= 0, (
-            "--mxfp4-qat-routed-experts trains full routed-expert weights; with LoRA they are frozen and the "
-            "expert adapters must not be projected onto the MXFP4 grid"
         )
 
     if args.stream_optimizer_state_to_disk:
