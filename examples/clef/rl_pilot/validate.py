@@ -64,15 +64,17 @@ def validate(args: Args) -> None:
             audit = row['metadata']['audit']
             assert audit['answers'] == {k:truth['questions'][k]['criteria'][v] for k,v in truth['answers'].items()}
             assert audit['unambiguous'] and not audit['unsupported_claims']
-            groups[split].add(hashlib.sha256(row['record']['state'].encode()).hexdigest())
+            groups[split].add(truth['scenario_group'])
             counts[truth['family']] += 1
             fields += len(truth['answers'])
-        assert len(groups[split]) == len(rows)
-        report[split] = {'records':len(rows),'fields':fields,'families':dict(counts),'sha256':digest}
+        assert len({r['record']['id'] for r in rows}) == len(rows)
+        assert len({r['record']['state'] for r in rows}) == len(rows)
+        report[split] = {'records':len(rows),'fields':fields,'families':dict(counts),'sha256':digest,
+                         'unique_semantic_scenarios':len(groups[split])}
     assert not groups['train'] & groups['validation']
     report['checks'] = ['deterministic ground-truth regeneration','complete evidence preservation',
                         'native choice target alignment','exact correct/incorrect reward probes',
-                        'incomplete answer rejection','unique states within/across splits','blind reviewer agreement']
+                        'incomplete answer rejection','unique rendered states','disjoint semantic scenario groups','blind reviewer agreement']
     (args.data/'validation-report.json').write_text(json.dumps(report,indent=2))
     print(json.dumps(report,indent=2))
 

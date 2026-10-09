@@ -20,7 +20,10 @@ quota prevents publication. Resume by rerunning the same command; accepted IDs
 are preserved. Credential errors retain only exception types.
 
 This pilot has seven fixed scenario families, not broad organic business data.
-Train and validation have distinct seeds and records but share rule families.
+Train and validation have distinct seeds and records and disjoint semantic
+fact/policy groups, ignoring arbitrary case IDs, but share rule families.
+Several rendered examples can instantiate the same semantic scenario within a
+split; the validation report records the effective unique scenario count.
 The reviewer uses the same model and does not establish human-level label
 quality. Tool labels model catalog capabilities/preconditions, not real API
 execution. No benchmark questions are inputs; semantic decontamination and

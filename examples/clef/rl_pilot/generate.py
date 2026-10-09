@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import json
 import random
+import re
 from collections import Counter
 from pathlib import Path
 from typing import Any
@@ -26,7 +27,7 @@ def field(instructions: str, options: list[str]) -> dict[str, Any]:
             'criteria': {chr(65+i): v for i, v in enumerate(options)}}
 
 
-def make_case(index: int, split: str, seed: int) -> dict[str, Any]:
+def build_case(index: int, split: str, seed: int) -> dict[str, Any]:
     rng = random.Random(f'{seed}:{split}:{index}')
     family = ['invoice', 'support', 'security', 'agent', 'tool', 'retrieval', 'extract', 'tool'][index % 8]
     # Quotas: workflows50%, tool25%, retrieval12.5%, extraction12.5%.
@@ -172,6 +173,23 @@ def make_case(index: int, split: str, seed: int) -> dict[str, Any]:
             'split': split, 'scenario_seed': f'{seed}:{split}:{index}'}
 
 
+def scenario_group(case: dict[str, Any]) -> str:
+    facts = [re.sub(r'(TRAIN|VALIDATION)-\d+', 'CASE', text) for text in case['facts']]
+    payload = json.dumps({'family':case['family'],'facts':facts,'policy':case['policy']},sort_keys=True)
+    return hashlib.sha256(payload.encode()).hexdigest()
+
+
+def make_case(index: int, split: str, seed: int) -> dict[str, Any]:
+    # Assign semantic scenarios before rendering variants, ignoring arbitrary IDs.
+    for salt in range(1000):
+        case = build_case(index,split,seed+salt)
+        group = scenario_group(case)
+        if (int(group[:8],16) % 8 == 0) == (split == 'validation'):
+            case['scenario_group'] = group
+            return case
+    raise ValueError('could not draw scenario for requested partition')
+
+
 async def api_json(client: AsyncOpenAI, system: str, content: str, effort: str = 'none') -> tuple[dict[str, Any], dict[str, Any]]:
     response = await client.chat.completions.create(
         model='gpt-6-luna', reasoning_effort=effort, max_completion_tokens=2400,
@@ -187,7 +205,9 @@ async def api_json(client: AsyncOpenAI, system: str, content: str, effort: str =
 async def generate_one(client: AsyncOpenAI, case: dict[str, Any], root: Path) -> None:
     path = root/'accepted'/f"{case['id']}.json"
     if path.exists():
-        return
+        if json.loads(path.read_text())['metadata']['ground_truth'] == case:
+            return
+        path.replace(root/'provisional'/path.name)
     traces: list[dict[str, Any]] = []
     for attempt in range(4):
         try:
@@ -254,7 +274,7 @@ def finalize(args: Args) -> None:
                 'families':dict(Counter(r['source'] for r in rows)),
                 'validation_method':'canonical facts inserted verbatim; blind API solve matches deterministic labels',
                 'limitations':['Same-model independent reviewer, not independent human verification.',
-                               'Fixed rule families shared across splits; distinct scenario seeds and IDs.',
+                               'Fixed rule families shared across splits; semantic scenario groups held out.',
                                'No external benchmark material used; semantic decontamination not proven.',
                                'Model-error mining and executable tool sandbox evaluation not yet performed.'],
                 'sha256':{s:hashlib.sha256((args.output/f'{s}.jsonl').read_bytes()).hexdigest() for s in ['train','validation']}}
@@ -263,7 +283,7 @@ def finalize(args: Args) -> None:
 
 
 async def main(args: Args) -> None:
-    for name in ['accepted','rejected']:
+    for name in ['accepted','rejected','provisional']:
         (args.output/name).mkdir(parents=True,exist_ok=True)
     client = AsyncOpenAI(api_key=args.key_file.read_text().strip(),max_retries=3,timeout=90)
     semaphore = asyncio.Semaphore(args.concurrency)
