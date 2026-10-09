@@ -11,7 +11,8 @@ _client = None
 async def run_agent(base_url, **kwargs):
     global _client
     if _client is None:
-        _client = httpx.AsyncClient(timeout=120)
+        # One agent request includes all turns, including the slower comparison baseline.
+        _client = httpx.AsyncClient(timeout=900)
     response = await _client.post(os.environ["MILES_BENCH_AGENT_URL"] + "/run", json={"base_url": base_url})
     response.raise_for_status()
     return response.json()

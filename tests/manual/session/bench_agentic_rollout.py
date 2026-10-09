@@ -9,6 +9,7 @@ The first complete rollout is warmup. Timings exclude startup and validation.
 """
 
 import argparse
+import asyncio
 import base64
 import gc
 import json
@@ -24,7 +25,13 @@ from pathlib import Path
 from unittest.mock import patch
 
 from tests.manual.session import _rollout_benchmark_agent as agent
-from tests.manual.session.bench_session_server_overhead import _build_turn_specs, _positive_int, _terminate_proc
+from tests.manual.session.bench_session_server_overhead import (
+    _build_turn_specs,
+    _positive_int,
+    _RSSSampler,
+    _terminate_proc,
+    benchmark_resources,
+)
 
 NUM_LAYERS = 48
 TOPK = 8
@@ -131,7 +138,7 @@ def run_benchmark(bench):
     from miles.rollout.session.server import run_session_server
     from miles.rollout.session.types import SessionServerInstance
     from miles.utils import http_utils
-    from miles.utils.async_utils import run
+    from miles.utils.async_utils import run, submit
     from miles.utils.chat_template_utils import get_tito_tokenizer, resolve_fixed_chat_template
     from miles.utils.http_utils import find_available_port, wait_for_server_ready
     from miles.utils.processing_utils import load_tokenizer
@@ -152,6 +159,8 @@ def run_benchmark(bench):
     ctx = multiprocessing.get_context("spawn")
     processes = []
     results = []
+    resources = benchmark_resources()
+    print("BENCHMARK_RESOURCES " + json.dumps(resources), flush=True)
     try:
         with tempfile.TemporaryDirectory(prefix="miles-rollout-bench-") as temp:
             prompt_path = Path(temp) / "prompts.jsonl"
@@ -195,6 +204,10 @@ def run_benchmark(bench):
             )
             manager = psutil.Process()
             server_process = psutil.Process(server.pid)
+            mock_processes = [
+                psutil.Process(backend.pid),
+                psutil.Process(agent_process.pid),
+            ]
             for step in range(bench.repetitions + 1):
                 gc.collect()
                 peak_rss = [manager.memory_info().rss]
@@ -206,18 +219,33 @@ def run_benchmark(bench):
 
                 sampler = threading.Thread(target=sample_rss, args=(stop, peak_rss), daemon=True)
                 sampler.start()
-                cpu0 = time.process_time()
-                server_cpu0 = server_process.cpu_times()
-                start = time.perf_counter()
-                try:
-                    output = call_rollout_function(rollout, RolloutFnTrainInput(rollout_id=step))
-                    wall = time.perf_counter() - start
-                    cpu = time.process_time() - cpu0
-                    server_cpu1 = server_process.cpu_times()
-                    peak_rss[0] = max(peak_rss[0], manager.memory_info().rss)
-                finally:
-                    stop.set()
-                    sampler.join()
+                lag_ms = []
+                loop_stop = threading.Event()
+
+                async def sample_loop_lag(loop_stop, lag_ms):
+                    while not loop_stop.is_set():
+                        start = time.perf_counter()
+                        await asyncio.sleep(0.01)
+                        lag_ms.append(max(0.0, time.perf_counter() - start - 0.01) * 1000)
+
+                loop_sampler = submit(sample_loop_lag(loop_stop, lag_ms))
+                with _RSSSampler([os.getpid()], interval=0.05) as tree_rss:
+                    mock_cpu0 = [sum(p.cpu_times()[:2]) for p in mock_processes]
+                    cpu0 = time.process_time()
+                    server_cpu0 = server_process.cpu_times()
+                    start = time.perf_counter()
+                    try:
+                        output = call_rollout_function(rollout, RolloutFnTrainInput(rollout_id=step))
+                        wall = time.perf_counter() - start
+                        cpu = time.process_time() - cpu0
+                        server_cpu1 = server_process.cpu_times()
+                        mock_cpu1 = [sum(p.cpu_times()[:2]) for p in mock_processes]
+                        peak_rss[0] = max(peak_rss[0], manager.memory_info().rss)
+                    finally:
+                        stop.set()
+                        sampler.join()
+                        loop_stop.set()
+                        loop_sampler.result(timeout=10)
                 assert len(output.samples) == bench.sessions
                 assert all(len(group) == 1 and len(group[0]) == 1 for group in output.samples)
                 samples = [sample for group in output.samples for trajectory in group for sample in trajectory]
@@ -228,6 +256,11 @@ def run_benchmark(bench):
                     "trajectories_per_s": len(samples) / wall,
                     "manager_cpu_s": cpu,
                     "manager_peak_rss_bytes": peak_rss[0],
+                    "tree_peak_rss_bytes": tree_rss.peak_bytes,
+                    "loop_lag_p99_ms": sorted(lag_ms)[min(len(lag_ms) - 1, int(len(lag_ms) * 0.99))],
+                    "loop_lag_max_ms": max(lag_ms),
+                    "backend_cpu_s": mock_cpu1[0] - mock_cpu0[0],
+                    "agent_cpu_s": mock_cpu1[1] - mock_cpu0[1],
                     "server_cpu_s": server_cpu1.user + server_cpu1.system - server_cpu0.user - server_cpu0.system,
                     "samples": len(samples),
                     "turns": len(samples) * len(specs),
@@ -248,6 +281,7 @@ def run_benchmark(bench):
     measured = results[1:]
     return {
         "config": vars(bench),
+        "resources": resources,
         "rollout_function": args.rollout_function_path,
         "steps": results,
         "median_trajectories_per_s": statistics.median(r["trajectories_per_s"] for r in measured),
@@ -258,10 +292,10 @@ def run_benchmark(bench):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--hf-checkpoint", default="Qwen/Qwen3-0.6B")
-    parser.add_argument("--sessions", type=_positive_int, default=8)
-    parser.add_argument("--turns", type=_positive_int, default=8)
-    parser.add_argument("--input-tokens", type=_positive_int, default=256)
-    parser.add_argument("--output-tokens", type=_positive_int, default=256)
+    parser.add_argument("--sessions", type=_positive_int, default=32)
+    parser.add_argument("--turns", type=_positive_int, default=100)
+    parser.add_argument("--input-tokens", type=_positive_int, default=128)
+    parser.add_argument("--output-tokens", type=_positive_int, default=128)
     parser.add_argument("--repetitions", type=_positive_int, default=3)
     parser.add_argument("--json-out", required=True)
     bench = parser.parse_args()
