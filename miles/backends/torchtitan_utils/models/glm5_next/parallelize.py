@@ -25,6 +25,10 @@ def parallelize_glm5_next(
     if compile_config.enable and "model" in compile_config.components:
         raise NotImplementedError("GLM-5.3-Flash does not support torch.compile of the model yet")
 
+    if parallel_dims.cp_enabled:
+        model.enable_context_parallel(
+            parallel_dims.get_mesh("cp"), load_balancer=parallelism.context_parallel_load_balancer
+        )
     if parallel_dims.ep_enabled:
         model.parallelize(parallel_dims)
     if ac_config is not None:
@@ -41,7 +45,7 @@ def parallelize_glm5_next(
         model,
         dp_mesh=dp_mesh,
         reshard_after_forward=get_fsdp_reshard_after_forward_policy(
-            parallelism.fsdp_reshard_after_forward, pp_enabled=False
+            parallelism.fsdp_reshard_after_forward, pp_enabled=parallel_dims.pp_enabled
         ),
     )
     apply_fsdp_to_decoder(
@@ -49,7 +53,7 @@ def parallelize_glm5_next(
         dp_mesh,
         param_dtype=TORCH_DTYPE_MAP[training.mixed_precision_param],
         reduce_dtype=TORCH_DTYPE_MAP[training.mixed_precision_reduce],
-        pp_enabled=False,
+        pp_enabled=parallel_dims.pp_enabled,
         cpu_offload=training.enable_cpu_offload,
         reshard_after_forward_policy=parallelism.fsdp_reshard_after_forward,
         ep_degree=parallel_dims.ep,

@@ -1,4 +1,4 @@
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 import torch
 import torch.nn.functional as F
@@ -8,12 +8,13 @@ from fla.ops.kda import chunk_kda
 from fla.ops.kda.gate import fused_kda_gate
 from torch import nn
 from torch.distributed.tensor import DTensor
-from torchtitan.models.common.attention import VarlenAttention, VarlenMetadata
+from torchtitan.models.common.attention import VarlenMetadata
 from torchtitan.models.common.feed_forward import FeedForward
 from torchtitan.models.common.linear import Linear
 from torchtitan.models.common.moe import GroupedExperts
 from torchtitan.protocols.module import Module
 
+from miles.backends.torchtitan_utils.models.glm5_next.packed_sequence import PackedSequence
 from miles.kernels.attention.dsa import sparse_attention
 from miles.kernels.attention.dsa.kpool import build_pooled_keys, pool_boundaries
 from miles_plugins.models.glm5_next.ops.kpool_indexer import kpool_select_topk
@@ -274,8 +275,10 @@ class KimiDeltaAttention(Module):
         ):
             setattr(self, name, getattr(config, name).build())
 
-    def forward(self, x_BLD: torch.Tensor, masks: VarlenMetadata) -> torch.Tensor:
-        assert x_BLD.shape[0] == 1, "KDA runs on one packed (varlen) sequence"
+    def forward(self, x_BLD: torch.Tensor, sequence: PackedSequence) -> torch.Tensor:
+        return sequence.keep_local(self._forward_whole_sequence(sequence.gather(x_BLD), sequence.masks))
+
+    def _forward_whole_sequence(self, x_BLD: torch.Tensor, masks: VarlenMetadata) -> torch.Tensor:
         cu_seqlens, cu_seqlens_cpu = _cu_seqlens(masks)
         heads = (self.num_heads, self.head_dim)
         q = self.q_conv1d(self.q_proj(x_BLD), cu_seqlens, cu_seqlens_cpu).unflatten(-1, heads)
@@ -365,8 +368,6 @@ class DSAAttention(Module):
         wkv_b: Linear.Config
         o_proj: Linear.Config
         indexer: KpoolIndexer.Config
-        # never built: the trainer only builds varlen masks when the first attention names one
-        inner_attention: Module.Config = field(default_factory=VarlenAttention.Config)
 
     def __init__(self, config: Config):
         super().__init__()
@@ -384,8 +385,10 @@ class DSAAttention(Module):
         self.o_proj = config.o_proj.build()
         self.indexer = config.indexer.build()
 
-    def forward(self, x_BLD: torch.Tensor, masks: VarlenMetadata) -> torch.Tensor:
-        assert x_BLD.shape[0] == 1, "DSA runs on one packed (varlen) sequence"
+    def forward(self, x_BLD: torch.Tensor, sequence: PackedSequence) -> torch.Tensor:
+        return sequence.keep_local(self._forward_whole_sequence(sequence.gather(x_BLD), sequence.masks))
+
+    def _forward_whole_sequence(self, x_BLD: torch.Tensor, masks: VarlenMetadata) -> torch.Tensor:
         x_TD = x_BLD.squeeze(0)
         q_lora = self.q_norm(self.wq_a(x_TD))
         q = self.wq_b(q_lora).unflatten(-1, (self.n_heads, self.qk_head_dim))

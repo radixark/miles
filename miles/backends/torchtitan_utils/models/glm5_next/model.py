@@ -3,7 +3,7 @@ from dataclasses import dataclass
 import spmd_types as spmd
 import torch
 from torch import nn
-from torchtitan.models.common.attention import VarlenMetadata, create_varlen_metadata_for_document
+from torch.distributed.device_mesh import DeviceMesh
 from torchtitan.models.common.decoder import Decoder
 from torchtitan.models.common.moe import MoE
 from torchtitan.models.common.moe_sharding import set_moe_sharding_config
@@ -18,6 +18,11 @@ from miles.backends.torchtitan_utils.models.glm5_next.layers import (
     HyperConnection,
     KimiDeltaAttention,
     hc_post,
+)
+from miles.backends.torchtitan_utils.models.glm5_next.packed_sequence import (
+    ContextParallelLayout,
+    PackedSequence,
+    build_packed_sequence,
 )
 
 _GROUPED_EXPERTS_PARAM_LAYOUT: dict[str, spmd.PerMeshAxisSpmdType] = {
@@ -57,11 +62,11 @@ class Glm5NextBlock(Module):
     def forward(
         self,
         x_BLND: torch.Tensor,
-        attention_masks: VarlenMetadata,
+        sequence: PackedSequence,
         positions: torch.Tensor | None = None,
     ) -> torch.Tensor:
         aggregated, h_post, h_res = self.hc_attn(x_BLND)
-        out = self.attn(self.attention_norm(aggregated), attention_masks)
+        out = self.attn(self.attention_norm(aggregated), sequence)
         x_BLND = hc_post(out, x_BLND, h_post, h_res)
 
         aggregated, h_post, h_res = self.hc_ffn(x_BLND)
@@ -82,16 +87,8 @@ class Glm5NextModel(Decoder):
 
         def update_from_config(self, *, config, **kwargs) -> None:
             parallelism = config.parallelism
-            unsupported = {
-                "tensor": parallelism.tensor_parallel_degree,
-                "context": parallelism.context_parallel_degree,
-                "pipeline": parallelism.pipeline_parallel_degree,
-            }
-            for kind, degree in unsupported.items():
-                if degree > 1:
-                    raise NotImplementedError(
-                        f"GLM-5.3-Flash on torchtitan supports FSDP + EP only, not {kind} parallel"
-                    )
+            if parallelism.tensor_parallel_degree > 1:
+                raise NotImplementedError("GLM-5.3-Flash on torchtitan does not support tensor parallelism yet")
             if config.training.seq_len > self.max_position_embeddings:
                 raise ValueError(
                     f"training.seq_len {config.training.seq_len} exceeds max_position_embeddings "
@@ -123,21 +120,45 @@ class Glm5NextModel(Decoder):
     def __init__(self, config: Config):
         super().__init__(config)
         self.num_streams = config.num_streams
+        self.cp_mesh: DeviceMesh | None = None
+        self.cp_load_balancer: str | None = None
+        self._cp_layouts: dict[int, ContextParallelLayout] = {}
 
-    def get_attention_masks(self, positions: torch.Tensor) -> VarlenMetadata:
-        return create_varlen_metadata_for_document(positions, include_host_offsets=True)
+    def enable_context_parallel(self, mesh: DeviceMesh, *, load_balancer: str) -> None:
+        self.cp_mesh = mesh
+        self.cp_load_balancer = load_balancer
+        self._cp_layouts = {}
+
+    def _cp_layout(self, local_len: int, device) -> ContextParallelLayout | None:
+        if self.cp_mesh is None:
+            return None
+        if local_len not in self._cp_layouts:
+            self._cp_layouts[local_len] = ContextParallelLayout.build(
+                self.cp_mesh,
+                load_balancer=self.cp_load_balancer,
+                seq_len=local_len * self.cp_mesh.size(),
+                device=device,
+            )
+        return self._cp_layouts[local_len]
 
     def forward(
         self,
         tokens: torch.Tensor,
         positions: torch.Tensor | None = None,
-        attention_masks: VarlenMetadata | None = None,
+        attention_masks=None,
     ) -> torch.Tensor:
-        h_BLD = self.tok_embeddings(tokens)
-        x_BLND = h_BLD.unsqueeze(-2).expand(*h_BLD.shape[:-1], self.num_streams, h_BLD.shape[-1]).contiguous()
+        assert positions is not None and positions.shape[0] == 1, "GLM-5.3-Flash trains on one packed sequence"
+        sequence = build_packed_sequence(positions, self._cp_layout(positions.shape[1], positions.device))
+        if self.tok_embeddings is None:
+            x_BLND = tokens
+        else:
+            h_BLD = self.tok_embeddings(tokens)
+            x_BLND = h_BLD.unsqueeze(-2).expand(*h_BLD.shape[:-1], self.num_streams, h_BLD.shape[-1]).contiguous()
         for layer in self.layers.values():
-            x_BLND = layer(x_BLND, attention_masks, positions)
+            x_BLND = layer(x_BLND, sequence, positions)
+        if self.norm is None:
+            return x_BLND
         h_BLD = self.norm(x_BLND.mean(dim=-2))
-        if self._skip_lm_head:
+        if self._skip_lm_head or self.lm_head is None:
             return h_BLD
         return self.lm_head(h_BLD)
