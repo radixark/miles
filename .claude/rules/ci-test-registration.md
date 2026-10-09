@@ -24,6 +24,22 @@ do when a check goes red is in `ci-failure-triage.md`.
   on every run. Add cases to an existing file with the same launch; a new file
   is for a new fixture, model, or parallel layout.
 
+## Host caches
+
+A runner host keeps `/data/miles_ci` across jobs and shares it among its
+runners; the rest of the job container is discarded with it. It holds the
+models, datasets and HF cache (mounted at `/root/models`, `/root/datasets`,
+`/root/.cache/huggingface`) and the compiled-kernel caches under
+`/data/miles_ci/jit`, configured by `_run-ci.yml`. Later jobs can reuse matching
+cache entries; library-specific isolation and the TileLang exception are
+listed in `tests/ci/README.md`.
+
+- A checkpoint a test derives (torch_dist, bf16 cast, FP8/INT4/NVFP4) follows
+  "Derived checkpoints" in `launch-and-model-scripts.md`: next to the HF one
+  under `/root/models`, made once, one directory per recipe.
+- Keep shared JIT cache paths under workflow ownership; tests must not clear
+  or delete caches that another runner may be using.
+
 ## Stage
 
 A test holds every GPU of its stage for its whole run, and the wider stages have

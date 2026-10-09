@@ -98,6 +98,16 @@ jobs:
       WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
       NEON_DATABASE_URL: ${{ secrets.NEON_DATABASE_URL }}
       MILES_TEST_ENABLE_INFINITE_RUN: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.infinite_run) || 'false' }}
+      # Persist shared JIT caches across job containers; see tests/ci/README.md.
+      SGLANG_CACHE_DIR: /data/miles_ci/jit
+      # DeepGEMM's PID-based subdirectories must not collide across containers.
+      SGLANG_DG_CACHE_DIR: /tmp/deep_gemm
+      TRITON_CACHE_DIR: /data/miles_ci/jit/triton
+      TORCHINDUCTOR_CACHE_DIR: /data/miles_ci/jit/inductor
+      # TileLang 0.1.14 does not key on the headers patched by our image.
+      TILELANG_CACHE_DIR: /tmp/tilelang_cache
+      CUDA_CACHE_PATH: /data/miles_ci/jit/nv
+      FLASHINFER_WORKSPACE_BASE: /data/miles_ci/jit
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4

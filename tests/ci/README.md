@@ -15,6 +15,13 @@ The miles CI workflow bind-mounts `/data/miles_ci` (and its `models`,
 `models` also holds the `<model>_torch_dist` checkpoints that
 `convert_checkpoint` writes by default, so a host converts each model once and
 every later job on it reuses the result.
+`jit` holds the Triton, Inductor, FlashInfer, CuTe and CUDA cache
+roots configured by `_run-ci.yml`. Reuse and invalidation follow each library's
+cache keys. DeepGEMM stays under `/tmp/deep_gemm` so its PID-based directories
+cannot collide across job containers. TileLang stays
+under `/tmp/tilelang_cache` in each job: its 0.1.14 cache key omits the headers
+patched by our image. Remove unused host caches only while the host has no
+running jobs; later jobs rebuild missing entries.
 Every CI host must provide `/data/miles_ci` either as a real directory on its
 biggest disk or as a symlink to wherever the big disk is.
 [`tests/ci/skills/setup-ci-host`](skills/setup-ci-host/) automates this:
