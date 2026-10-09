@@ -31,9 +31,15 @@ def publish(args: Args) -> None:
             if api_key in p.read_bytes():
                 raise ValueError('credential found in source')
             archive.write(p,'code/'+name)
+        revision = Path(__file__).parent/'source-revision.txt'
+        if revision.exists():
+            archive.write(revision,'code/source-revision.txt')
     s3 = boto3.client('s3')
     verified = {}
-    for name in ['train.jsonl','validation.jsonl','manifest.json','validation-report.json','provenance.zip']:
+    names = ['train.jsonl','validation.jsonl','manifest.json','validation-report.json','provenance.zip']
+    if (root/'native-probe.json').exists():
+        names.append('native-probe.json')
+    for name in names:
         path = root/name
         data = path.read_bytes()
         if api_key in data:
