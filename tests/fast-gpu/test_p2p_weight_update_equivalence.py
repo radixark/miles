@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 from huggingface_hub import snapshot_download
 
-_WORKER = Path(__file__).with_name("_p2p_s1_equivalence_worker.py")
+_WORKER = Path(__file__).with_name("_p2p_weight_update_equivalence_worker.py")
 _REPO_ROOT = Path(__file__).parents[2]
 
 
