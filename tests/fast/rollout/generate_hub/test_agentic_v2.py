@@ -1,4 +1,6 @@
+import asyncio
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -248,3 +250,77 @@ async def test_collection_error_propagates(monkeypatch):
 
     with pytest.raises(RuntimeError, match="samples unavailable"):
         await agentic_tool_call.generate(_generate_input())
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("session_version", [True, "v2"])
+@pytest.mark.parametrize("agent_fails", [False, True])
+async def test_agent_failure_retries_whole_group_without_reward(monkeypatch, session_version, agent_fails):
+    from miles.rollout.fully_async_data_buffer import DataBufferConstructorInput, DataBufferInput, DefaultDataBuffer
+    from miles.rollout.inference_rollout import inference_rollout_common
+
+    # The server can assemble valid tokens even when the tool/sandbox failed.
+    sample = Sample(
+        status=Sample.Status.COMPLETED,
+        response="partial",
+        tokens=[1],
+        response_length=1,
+        reward=1.0 if agent_fails else 0.0,
+    )
+    tracer = _Tracer(SamplesReply(samples=[sample], session_metadata={}, empty_reason=None))
+    _patch_agent(monkeypatch, tracer)
+
+    async def agent(**kwargs):
+        if agent_fails:
+            raise RuntimeError("sandbox transport timed out")
+        return {"reward": 0.0}
+
+    monkeypatch.setattr(agentic_tool_call, "load_function", lambda path: agent)
+    rm = AsyncMock(side_effect=AssertionError("failed episodes must not reach reward dispatch"))
+    monkeypatch.setattr(inference_rollout_common, "async_rm", rm)
+    monkeypatch.setattr(inference_rollout_common, "TrajectoryLifecycle", lambda: SimpleNamespace(sink=None))
+    inp = _generate_input(
+        use_session_server=session_version,
+        group_rm=False,
+        async_data_buffer_capacity_factor=2,
+        rollout_batch_size=1,
+        dynamic_sampling_filter_path=None,
+        reward_key=None,
+        custom_rm_path=None,
+    )
+    inp.state.aborted = False
+    inp.state.generate_fn_semaphore = asyncio.Semaphore(1)
+    inp.state.generate_function = agentic_tool_call.generate
+    output = await inference_rollout_common.generate_and_rm(inp.state, inp.sample, {})
+    rm.assert_not_awaited()
+    assert sample.status == (Sample.Status.ABORTED if agent_fails else Sample.Status.COMPLETED)
+    assert sample.reward == (None if agent_fails else 0.0)
+
+    prompt_group = [Sample(index=i, prompt="same task") for i in range(8)]
+    group = [output] + [Sample(status=Sample.Status.COMPLETED, reward=0.0) for _ in range(7)]
+    recycled = []
+    buffer = DefaultDataBuffer(DataBufferConstructorInput(args=inp.args, unused_handler_fn=recycled.append))
+    entry = DataBufferInput(prompt_group=prompt_group, group=group)
+    await buffer.put(entry)
+    metrics = buffer.get_metrics()
+    assert metrics["rollout/fully_async/aborted_groups_filtered"] == int(agent_fails)
+    assert metrics["rollout/fully_async/queue_size"] == int(not agent_fails)
+    assert recycled == ([prompt_group] if agent_fails else [])
+    if not agent_fails:
+        assert await buffer.get() is entry
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("session_version", [True, "v2"])
+async def test_eval_agent_failure_remains_an_error(monkeypatch, session_version):
+    tracer = _Tracer(SamplesReply(samples=[Sample()], session_metadata={}, empty_reason=None))
+    _patch_agent(monkeypatch, tracer)
+    tracer.collect_samples = AsyncMock(wraps=tracer.collect_samples)
+
+    async def agent(**kwargs):
+        raise RuntimeError("sandbox unavailable")
+
+    monkeypatch.setattr(agentic_tool_call, "load_function", lambda path: agent)
+    with pytest.raises(RuntimeError, match="sandbox unavailable"):
+        await agentic_tool_call.generate(_generate_input(evaluation=True, use_session_server=session_version))
+    tracer.collect_samples.assert_awaited_once()
