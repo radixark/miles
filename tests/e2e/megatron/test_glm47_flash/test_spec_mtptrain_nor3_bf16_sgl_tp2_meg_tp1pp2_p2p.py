@@ -23,9 +23,10 @@ CASE = CaseConfig(
     use_deepep=False,
     num_gpus_per_node=4,
     cp_size=1,
-    pp_size=1,
+    # both stages write each engine rank, on both engines; only the last stage holds the MTP layer
+    pp_size=2,
     tp_size=1,
-    ep_size=4,
+    ep_size=2,
     colocate=False,
     rollout_num_gpus=4,
     rollout_num_gpus_per_engine=2,
