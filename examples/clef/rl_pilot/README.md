@@ -32,3 +32,9 @@ step-2048 error mining require separate checks before making benchmark claims.
 After generation, run `uv run --project examples/clef/rl_pilot
 examples/clef/rl_pilot/validate.py --data /scratch/clef-rl-pilot` to regenerate
 every label and probe the exact field and whole-record reward functions.
+
+`probe.py` runs in an existing Miles/SGLang environment with the repository on
+`PYTHONPATH`; it checks all records through the actual Clef tokenizer/encoder.
+Pass `--endpoint` to measure checkpoint difficulty, Brier loss, exact record
+success, and near-one-hot fields. It verifies the endpoint's model path first.
+No RL training is performed by these scripts.

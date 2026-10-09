@@ -21,12 +21,12 @@ def publish(args: Args) -> None:
     api_key = Path('/home/ubuntu/openai.key').read_bytes().strip()
     package = root/'provenance.zip'
     with zipfile.ZipFile(package,'w',zipfile.ZIP_DEFLATED) as archive:
-        for directory in ['accepted','rejected']:
+        for directory in ['accepted','rejected','provisional']:
             for p in sorted((root/directory).glob('*.json')):
                 if api_key in p.read_bytes():
                     raise ValueError('credential found in artifact')
                 archive.write(p,p.relative_to(root))
-        for name in ['generate.py','validate.py','publish.py','pyproject.toml','uv.lock','README.md']:
+        for name in ['generate.py','validate.py','publish.py','probe.py','pyproject.toml','uv.lock','README.md']:
             p=Path(__file__).parent/name
             if api_key in p.read_bytes():
                 raise ValueError('credential found in source')
