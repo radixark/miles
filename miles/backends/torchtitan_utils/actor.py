@@ -15,6 +15,7 @@ from miles.backends.training_utils.parallel import get_parallel_state, set_paral
 from miles.backends.training_utils.replay.routing_replay import enable as enable_routing_replay
 from miles.backends.training_utils.torch_native.actor import TorchNativeTrainRayActor
 from miles.utils.context_utils import with_defer
+from miles.utils.distributed_utils import get_gloo_group
 from miles.utils.ft_utils.indep_dp import IndepDPInfo
 from miles.utils.memory_utils import clear_memory
 from miles.utils.profile_utils import TrainProfiler
@@ -96,6 +97,14 @@ class TorchtitanTrainRayActor(TorchNativeTrainRayActor):
             self.sleep()
         self.prof.on_init_end()
         return args.start_rollout_id if args.start_rollout_id is not None else start_rollout_id
+
+    def _move_to(self, device: str) -> None:
+        if self.args.fsdp_cpu_offload:
+            # the training state already lives on the host; moving it would pull it all onto the GPU on wake
+            clear_memory()
+            dist.barrier(group=get_gloo_group())
+            return
+        super()._move_to(device)
 
     def _step_runner(self):
         return self.trainer.step_runner()

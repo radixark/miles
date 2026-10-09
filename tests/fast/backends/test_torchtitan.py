@@ -88,6 +88,7 @@ def _config_args(**overrides) -> Namespace:
         weight_decay=0.1,
         seed=1,
         gradient_checkpointing=False,
+        fsdp_cpu_offload=False,
         save=None,
         load=None,
     )
