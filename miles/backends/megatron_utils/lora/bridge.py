@@ -217,6 +217,8 @@ def _setup_lora_model_via_bridge(args: Namespace) -> list:
             parameter_names=parameter_names,
             hf_mapping=hf_mapping,
             canonical=args.lora_type == "canonical_lora",
+            # Resolved names carry global layer indices; Bridge matches each stage's local ones.
+            module_subsets=args.pipeline_model_parallel_size == 1,
         )
         lora = create_adapter(args, target_modules=adapter_targets)
         transformed = lora(model_chunks, training=True)

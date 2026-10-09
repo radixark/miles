@@ -280,6 +280,13 @@ RUN set -eux; \
       echo "[dedup] no wheel-SDK trees, skipping"; \
     fi
 
+# torch bundles its own HIP runtime; point it at /opt/rocm's so no process maps two.
+RUN set -eux; \
+    torch_lib="$(python3 -c 'import importlib.util; print(next(iter(importlib.util.find_spec("torch").submodule_search_locations)))')/lib"; \
+    if [ -f "$torch_lib/libamdhip64.so" ] && [ ! -L "$torch_lib/libamdhip64.so" ] && [ -e /opt/rocm/lib/libamdhip64.so.7 ]; then \
+      ln -sf "$(readlink -f /opt/rocm/lib/libamdhip64.so.7)" "$torch_lib/libamdhip64.so"; \
+    fi
+
 # ====================================== Runtime knobs ==========================================
 
 # Runtime knobs consumed by the current SGLang/PyTorch stack.

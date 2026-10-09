@@ -22,13 +22,14 @@ def _mapping(megatron, *hf):
     return _Mapping(megatron_param=megatron, hf_param=hf[0] if len(hf) == 1 else dict(enumerate(hf)))
 
 
-def _resolve(targets, mappings, parameter_names, *, canonical=False, hf_mapping=None):
+def _resolve(targets, mappings, parameter_names, *, canonical=False, hf_mapping=None, module_subsets=False):
     return resolve_megatron_lora_targets(
         targets,
         mappings,
         parameter_names=set(parameter_names),
         hf_mapping=hf_mapping or HfWeightMapping(frozenset()),
         canonical=canonical,
+        module_subsets=module_subsets,
     )
 
 
@@ -110,6 +111,25 @@ def test_absent_fused_alternative_does_not_reject_selection():
     ]
     selected = _resolve(["q_proj"], mappings, ["decoder.layers.0.self_attention.linear_q.weight"])
     assert set(selected) == {"decoder.layers.*.self_attention.linear_q"}
+
+
+def test_layer_subset_names_the_selected_modules():
+    fc1 = _mapping(
+        "decoder.layers.*.mlp.linear_fc1.weight",
+        *(f"model.layers.*.mlp.{p}_proj.weight" for p in ("gate", "up")),
+    )
+    experts = _mapping(
+        "decoder.layers.*.mlp.experts.linear_fc1.weight*", "model.layers.*.mlp.experts.*.gate_up_proj.weight"
+    )
+    targets = [f"model.layers.1.mlp.{p}_proj" for p in ("gate", "up")] + ["model.layers.1.mlp.experts.*.gate_up_proj"]
+    parameters = [f"decoder.layers.{layer}.mlp.linear_fc1.weight" for layer in range(2)]
+    parameters += [f"decoder.layers.{layer}.mlp.experts.linear_fc1.weight{e}" for layer in range(2) for e in range(2)]
+    with pytest.raises(AssertionError, match="cannot select a subset"):
+        _resolve(targets, [fc1, experts], parameters)
+    assert _resolve(targets, [fc1, experts], parameters, module_subsets=True) == [
+        "decoder.layers.1.mlp.linear_fc1",
+        "decoder.layers.1.mlp.experts.linear_fc1",
+    ]
 
 
 def test_canonical_selection_cannot_expand_across_layers():
