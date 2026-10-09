@@ -185,7 +185,7 @@ SHAPES = [
     pytest.param(1, 0, 2, 2, [100, 640, 77], id="packed_unequal_3_h2"),
     pytest.param(1, 0, 2, 4, [383, 402, 128, 296], id="packed_rl4_h2_hv4_gva"),
     pytest.param(1, 0, 2, 2, [129, 1], id="packed_129_1_h2"),
-    pytest.param(1, 2048, 16, 16, False, id="b1_t2048_h16", marks=pytest.mark.slow),
+    pytest.param(1, 2048, 16, 16, False, id="b1_t2048_h16"),
 ]
 
 
