@@ -20,6 +20,9 @@ PRIMUS_CONFIG=${PRIMUS_CONFIG:-${MILES_DIR}/examples/primus/glm5.3-flash-bf16-rl
 TRAIN_NODES=${TRAIN_NODES:-4}
 ROLLOUT_NODES=${ROLLOUT_NODES:-2}
 RESPONSE_LEN=${ROLLOUT_MAX_RESPONSE_LEN:-8192}
+EVAL_RESPONSE_LEN=${EVAL_MAX_RESPONSE_LEN:-${RESPONSE_LEN}}
+# Prompt budget + longest response; the 1M model default inflates per-token SGLang buffers.
+SGLANG_CONTEXT_LEN=$(( (RESPONSE_LEN > EVAL_RESPONSE_LEN ? RESPONSE_LEN : EVAL_RESPONSE_LEN) + 2048 ))
 
 export PYTHONPATH="${MILES_DIR}:${MEGATRON_DIR}:${PRIMUS_DIR}:${SGLANG_DIR}${PYTHONPATH:+:${PYTHONPATH}}"
 export PRIMUS_PATH="${PRIMUS_DIR}"
@@ -98,7 +101,7 @@ ray job submit --address="http://127.0.0.1:8265" \
   --eval-input-key prompt \
   --eval-label-key label \
   --n-samples-per-eval-prompt 1 \
-  --eval-max-response-len "${EVAL_MAX_RESPONSE_LEN:-${RESPONSE_LEN}}" \
+  --eval-max-response-len "${EVAL_RESPONSE_LEN}" \
   --eval-top-k 1 \
   --advantage-estimator grpo \
   --kl-coef 0.00 \
@@ -138,6 +141,7 @@ ray job submit --address="http://127.0.0.1:8265" \
   --sglang-disable-radix-cache \
   --sglang-max-running-requests 128 \
   --sglang-chunked-prefill-size 16384 \
+  --sglang-context-length "${SGLANG_CONTEXT_LEN}" \
   --actor-num-nodes "${TRAIN_NODES}" \
   --actor-num-gpus-per-node 8 \
   --num-gpus-per-node 8 \
