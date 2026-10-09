@@ -74,7 +74,7 @@ def fused_log_probs_and_entropy(
         rows.long(),
         targets.long(),
         tp_group,
-        _valid_columns(logits, tp_group, vocab_size),
+        _unpadded_columns(logits, tp_group, vocab_size),
         temperature,
         with_entropy,
         with_entropy and entropy_requires_grad,
@@ -100,13 +100,13 @@ class _FusedLogProbsAndEntropy(torch.autograd.Function):
         rows,
         targets,
         tp_group,
-        n_valid,
+        n_unpadded_cols,
         temperature,
         with_entropy,
         entropy_requires_grad,
         inplace_backward,
     ):
-        stats = _row_statistics(logits, rows, targets, tp_group, n_valid, temperature, with_entropy)
+        stats = _row_statistics(logits, rows, targets, tp_group, n_unpadded_cols, temperature, with_entropy)
         log_probs = stats.target - stats.log_sum
         entropy = stats.log_sum - stats.mean if with_entropy else log_probs.new_empty(0)
         if not entropy_requires_grad:
@@ -115,7 +115,7 @@ class _FusedLogProbsAndEntropy(torch.autograd.Function):
             logits, rows, targets, stats.max, stats.log_sum, log_probs, stats.mean if entropy_requires_grad else None
         )
         ctx.tp_group = tp_group
-        ctx.n_valid = n_valid
+        ctx.n_unpadded_cols = n_unpadded_cols
         ctx.temperature = temperature
         ctx.entropy_requires_grad = entropy_requires_grad
         ctx.inplace_backward = inplace_backward
@@ -137,7 +137,7 @@ class _FusedLogProbsAndEntropy(torch.autograd.Function):
             _contiguous_or_none(grad_log_probs),
             _contiguous_or_none(grad_entropy) if ctx.entropy_requires_grad else None,
             vocab_start=_vocab_start(logits, ctx.tp_group),
-            n_valid=ctx.n_valid,
+            n_unpadded_cols=ctx.n_unpadded_cols,
             temperature=ctx.temperature,
         )
         if rows.numel() < grad.size(0):  # rows are unique, so otherwise every row was scored
@@ -149,7 +149,7 @@ class _FusedLogProbsAndEntropy(torch.autograd.Function):
         return grad, None, None, None, None, None, None, None, None
 
 
-def _row_statistics(logits, rows, targets, tp_group, n_valid, temperature, with_entropy) -> _RowStats:
+def _row_statistics(logits, rows, targets, tp_group, n_unpadded_cols, temperature, with_entropy) -> _RowStats:
     """Statistics of the selected rows, combined over the vocab-parallel group."""
     vocab_start = _vocab_start(logits, tp_group)
     row_max, row_sum, row_dsum, target = kernels.row_statistics(
@@ -157,11 +157,11 @@ def _row_statistics(logits, rows, targets, tp_group, n_valid, temperature, with_
         rows,
         targets,
         vocab_start=vocab_start,
-        n_valid=n_valid,
+        n_unpadded_cols=n_unpadded_cols,
         temperature=temperature,
         with_entropy=with_entropy,
     )
-    in_shard = (targets >= vocab_start) & (targets < vocab_start + n_valid)
+    in_shard = (targets >= vocab_start) & (targets < vocab_start + n_unpadded_cols)
     row_max, row_sum, row_dsum, target = _combine_over_tp(
         row_max, row_sum, row_dsum, target, in_shard, tp_group, temperature
     )
@@ -198,7 +198,7 @@ def _vocab_start(logits: Tensor, tp_group: dist.ProcessGroup | None) -> int:
     return dist.get_rank(tp_group) * logits.size(1)
 
 
-def _valid_columns(logits: Tensor, tp_group: dist.ProcessGroup | None, vocab_size: int | None) -> int:
+def _unpadded_columns(logits: Tensor, tp_group: dist.ProcessGroup | None, vocab_size: int | None) -> int:
     """How many of this shard's columns are in the true vocabulary; the rest are padding."""
     if vocab_size is None:
         return logits.size(1)
