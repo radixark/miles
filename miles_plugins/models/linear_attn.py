@@ -74,17 +74,25 @@ def gdn_kernel(backend: str):
 
 
 @functools.cache
-def kda_kernel():
-    """fla's chunk_kda. On Blackwell its backward runs the Triton dqkg kernel (FLA_TILELANG=0), which
-    beats fla's TileLang one there at every tiling; an explicit FLA_TILELANG wins."""
+def kda_kernel(backend: str = "fla"):
+    """fla's chunk_kda, or for ``backend="deterministic"`` Miles' drop-in with fla's forward and the deterministic
+    chunked backward (:mod:`miles_plugins.models.kda_chunk_train`; fla for the calls it does not cover). On Blackwell
+    fla's backward runs the Triton dqkg kernel (FLA_TILELANG=0), which beats fla's TileLang one there at every
+    tiling; an explicit FLA_TILELANG wins."""
     try:
         from fla.ops.kda import chunk_kda
     except ImportError as exc:
         raise ImportError("KDA requires flash-linear-attention >= 0.5 (fla.ops.kda).") from exc
     if torch.cuda.is_available() and torch.cuda.get_device_capability()[0] >= 10:
         os.environ.setdefault("FLA_TILELANG", "0")
-    logger.info(f"KDA backward: FLA_TILELANG={os.environ.get('FLA_TILELANG', 'unset')}")
-    return chunk_kda
+    logger.info(f"KDA backend: {backend}; fla backward: FLA_TILELANG={os.environ.get('FLA_TILELANG', 'unset')}")
+    if backend == "fla":
+        return chunk_kda
+    if backend == "deterministic":
+        from miles_plugins.models.kda_chunk_train import chunk_kda as deterministic_chunk_kda
+
+        return deterministic_chunk_kda
+    raise ValueError(f"Unsupported KDA backend: {backend}")
 
 
 def gdn_recurrence(q, k, v, beta_logits, decay, A_log, dt_bias, *, backend, cu_seqlens, cp_context):
@@ -111,11 +119,13 @@ def gdn_recurrence(q, k, v, beta_logits, decay, A_log, dt_bias, *, backend, cu_s
     return out
 
 
-def kda_recurrence(q, k, v, beta_logits, decay, A_log, dt_bias, *, gate_lower_bound, cu_seqlens, cp_context):
+def kda_recurrence(
+    q, k, v, beta_logits, decay, A_log, dt_bias, *, gate_lower_bound, cu_seqlens, cp_context, backend="fla"
+):
     """q/k ``[b, s, H, hk]``, v ``[b, s, H, hv]``, decay ``[b, s, H * hv]`` (the low-rank forget gate,
-    gated inside the kernel) -> ``[b, s, H, hv]``."""
+    gated inside the kernel) -> ``[b, s, H, hv]``. ``backend`` picks the kernel, see :func:`kda_kernel`."""
     boundaries = {"cp_context": cp_context} if cp_context is not None else {"cu_seqlens": cu_seqlens}
-    out, _ = kda_kernel()(
+    out, _ = kda_kernel(backend)(
         q=q,
         k=k,
         v=v,
@@ -400,14 +410,18 @@ class KimiDeltaAttention(LinearAttention):
     gated inside fla's kernel. One key head per value head, so the convs see contiguous per-head q / k / v
     and need no group-major permutation. ``f_a_proj`` is replicated and feeds head-sharded ``f_b_proj``,
     so its weight passes the TP copy op like the norm. The conv weights train in fp32, as Kimi's
-    checkpoints store them."""
+    checkpoints store them. ``backend`` selects the recurrence kernel (``--kda-backend``, see
+    :func:`kda_kernel`)."""
 
     dt_bias_per_channel = True
     dt_bias_dtype = torch.float32
 
-    def __init__(self, config, heads, conv_kernel_size, norm_eps, tp_group, gate_lower_bound: float):
+    def __init__(
+        self, config, heads, conv_kernel_size, norm_eps, tp_group, gate_lower_bound: float, backend: str = "fla"
+    ):
         super().__init__(config, heads, conv_kernel_size, norm_eps, tp_group, norm_activation="sigmoid")
         self.gate_lower_bound = gate_lower_bound
+        self.backend = backend
 
     def _build_projections(self):
         hidden, local = self.config.hidden_size, self.local
@@ -468,6 +482,7 @@ class KimiDeltaAttention(LinearAttention):
             gate_lower_bound=self.gate_lower_bound,
             cu_seqlens=cu_seqlens,
             cp_context=cp_context,
+            backend=self.backend,
         )
 
 

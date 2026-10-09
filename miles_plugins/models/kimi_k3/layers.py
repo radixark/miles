@@ -37,6 +37,16 @@ def _linear(module: nn.Module, inputs: torch.Tensor) -> torch.Tensor:
     return output
 
 
+def _kda_backend_from_args() -> str:
+    """``--kda-backend`` from the Megatron args; ``fla`` when no args are initialized (layer unit tests)."""
+    try:
+        from megatron.training import get_args
+
+        return getattr(get_args(), "kda_backend", "fla")
+    except (ImportError, AssertionError):
+        return "fla"
+
+
 class KimiK3Attention(MegatronModule):
     """K3's MLA layers; the KDA layers are :class:`KimiK3KDAAttention`."""
 
@@ -245,7 +255,8 @@ class KimiK3Attention(MegatronModule):
 
 class KimiK3KDAAttention(LinearAttentionLayer):
     """K3's KDA layers on the shared head-sharded linear-attention layer. The ``self_attention`` constructor
-    signature K3's layer spec builds with; the input norm is the transformer layer's, so none here."""
+    signature K3's layer spec builds with; the input norm is the transformer layer's, so none here. The
+    recurrence kernel follows ``--kda-backend`` (fla, or fla's forward with the deterministic chunked backward)."""
 
     is_kda = True
 
@@ -274,6 +285,7 @@ class KimiK3KDAAttention(LinearAttentionLayer):
             config.layernorm_epsilon,
             pg_collection.tp,
             gate_lower_bound=config.kimi_kda_gate_lower_bound,
+            backend=_kda_backend_from_args(),
         )
         super().__init__(config, core, nn.Identity(), pg_collection, allgather_cp=False)
 
