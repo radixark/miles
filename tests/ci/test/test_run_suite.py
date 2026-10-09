@@ -462,7 +462,8 @@ class TestWorkflowScopeSeam:
     def test_weekly_serializes_each_gpu_matrix(self):
         workflow = self._workflow()
         normal_parallelism = {
-            "stage-c-4-gpu-h200": 5,
+            "stage-c-8-gpu-h200": 2,
+            "stage-c-4-gpu-h200": 3,
             "stage-c-2-gpu-h200": 2,
         }
         for job, default in normal_parallelism.items():
