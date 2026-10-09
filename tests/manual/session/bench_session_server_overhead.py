@@ -77,6 +77,47 @@ class TurnSpec:
     r3_json_chars: int
 
 
+def benchmark_resources() -> dict[str, Any]:
+    """Report host resources and cgroup v2 limits without resizing the workload."""
+    import psutil
+
+    memory = psutil.virtual_memory()
+    cpus = len(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else os.cpu_count()
+    result = {
+        "cpu_affinity_count": cpus,
+        "effective_cpus": cpus,
+        "host_memory_bytes": memory.total,
+        "available_memory_bytes": memory.available,
+    }
+    mount = Path("/sys/fs/cgroup")
+    membership = Path("/proc/self/cgroup")
+    if membership.exists():
+        for line in membership.read_text().splitlines():
+            if line.startswith("0::"):
+                cgroup = mount / line[3:].lstrip("/")
+                break
+        else:
+            cgroup = None
+        while cgroup is not None and cgroup.is_relative_to(mount):
+            cpu_max = cgroup / "cpu.max"
+            if cpu_max.exists():
+                quota, period = cpu_max.read_text().split()
+                if quota != "max":
+                    result["effective_cpus"] = min(result["effective_cpus"], int(quota) / int(period))
+            memory_max = cgroup / "memory.max"
+            if memory_max.exists():
+                limit = memory_max.read_text().strip()
+                if limit != "max":
+                    current = int((cgroup / "memory.current").read_text())
+                    result["available_memory_bytes"] = min(
+                        result["available_memory_bytes"], max(0, int(limit) - current)
+                    )
+            if cgroup == mount:
+                break
+            cgroup = cgroup.parent
+    return result
+
+
 def _positive_int(value: str) -> int:
     parsed = int(value)
     if parsed <= 0:
@@ -660,7 +701,9 @@ def run_http_bench(args, *, warmup_sessions: int = 0) -> dict[str, Any]:
             ):
                 raise RuntimeError(f"benchmark warmup failed: {warmup}")
         cpu_before = sum(sum(psutil.Process(pid).cpu_times()[:2]) for pid in server_root_pids)
-        with _RSSSampler(server_root_pids) as rss:
+        backend_cpu_before = sum(sum(psutil.Process(p.pid).cpu_times()[:2]) for p in backend_procs)
+        driver_cpu_before = time.process_time()
+        with _RSSSampler(server_root_pids) as rss, _RSSSampler([os.getpid()]) as tree_rss:
             samples, agg, wall_s = _drive_workload(
                 base_urls,
                 request_bodies,
@@ -671,6 +714,9 @@ def run_http_bench(args, *, warmup_sessions: int = 0) -> dict[str, Any]:
             )
         server_cpu_s = sum(sum(psutil.Process(pid).cpu_times()[:2]) for pid in server_root_pids) - cpu_before
         peak_rss_bytes = rss.peak_bytes
+        tree_peak_rss_bytes = tree_rss.peak_bytes
+        driver_cpu_s = time.process_time() - driver_cpu_before
+        backend_cpu_s = sum(sum(psutil.Process(p.pid).cpu_times()[:2]) for p in backend_procs) - backend_cpu_before
     finally:
         for proc in server_procs:
             _terminate_proc(proc)
@@ -721,6 +767,9 @@ def run_http_bench(args, *, warmup_sessions: int = 0) -> dict[str, Any]:
         "chat_template_kwargs": chat_template_kwargs,
         "wall_s": wall_s,
         "server_cpu_s": server_cpu_s,
+        "driver_parent_cpu_s": driver_cpu_s,
+        "backend_cpu_s": backend_cpu_s,
+        "tree_peak_rss_bytes": tree_peak_rss_bytes,
         "throughput_turns_per_s": completed_turns / wall_s if wall_s > 0 else float("nan"),
         "throughput_content_tokens_per_s": content_tokens / wall_s if wall_s > 0 else float("nan"),
         "throughput_completion_tokens_per_s": completion_tokens / wall_s if wall_s > 0 else float("nan"),
