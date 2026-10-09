@@ -337,10 +337,6 @@ def policy_loss_function(
         if args.kl_loss_coef != 0:
             loss = loss + args.kl_loss_coef * kl_loss
 
-    # make sure the gradient could backprop correctly; fp32 sum avoids fp16 inf -> nan
-    if log_probs.numel() == 0:
-        loss += 0 * logits.sum(dtype=torch.float32)
-
     train_rollout_logprob_abs_diff = None
     train_rollout_kl = None
     if rollout_old_log_probs:
@@ -450,10 +446,6 @@ def value_loss_function(
     loss = sum_of_sample_mean(loss)
     values_clipfrac = sum_of_sample_mean(values_clipfrac.float())
 
-    # make sure the gradient could backprop correctly.
-    if values.numel() == 0:
-        loss += 0 * values.sum()
-
     reported_loss = {
         "value_loss": loss.clone().detach(),
         "value_clipfrac": values_clipfrac.clone().detach(),
@@ -500,10 +492,6 @@ def sft_loss_function(
     log_probs = log_probs_and_entropy["log_probs"]
     log_probs = torch.cat(log_probs, dim=0)
     loss = -sum_of_sample_mean(log_probs)
-
-    # make sure the gradient could backprop correctly; fp32 sum avoids fp16 inf -> nan
-    if log_probs.numel() == 0:
-        loss += 0 * logits.sum(dtype=torch.float32)
 
     return (
         loss,

@@ -379,8 +379,9 @@ def all_gather_with_cp(
 
     # logprob should be within the range of [prompt_length - 1, total_length - 1]
     if chunk_0.shape[0] == 0 and chunk_1.shape[0] == 0:
-        # all empty
-        full_tensor = zero(response_length)
+        # this rank holds none of the response; the padded empty tensor keeps it in the graph, and the
+        # zeros make it differentiable like the other branches, so every rank runs the backward all-reduce
+        full_tensor = zero(response_length) + F.pad(tensor, (0, 0) * (tensor.dim() - 1) + (0, response_length))
     elif chunk_0.shape[0] != 0 and chunk_1.shape[0] == 0:
         # only first chunk
         left = zero(logits_offset[0][0] - (prompt_length - 1))
@@ -524,22 +525,11 @@ def allgather_cp_redistribute(
 
             s = max(logit_global_start, chunk_start)
             e = min(logit_global_end, chunk_end)
-
-            if e <= s:
-                # This rank has no response logprobs for this sample
-                full_resp = (
-                    torch.zeros(
-                        (response_length, *value.shape[1:]),
-                        dtype=value.dtype,
-                        device=value.device,
-                        requires_grad=True,
-                    )
-                    + value.sum() * 0
-                )
-            else:
-                resp_start = s - logit_global_start
-                resp_end = e - logit_global_start
-                full_resp = F.pad(value, (0, 0) * (value.ndim - 1) + (resp_start, response_length - resp_end))
+            if e <= s:  # this rank holds none of the response: value is empty and pads to all zeros
+                s = e = logit_global_start
+            resp_start = s - logit_global_start
+            resp_end = e - logit_global_start
+            full_resp = F.pad(value, (0, 0) * (value.ndim - 1) + (resp_start, response_length - resp_end))
 
             assert full_resp.size(0) == response_length, f"Expected {response_length}, got {full_resp.size(0)}"
             full_resps.append(full_resp)

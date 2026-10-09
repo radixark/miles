@@ -187,11 +187,6 @@ def loss_function(
     else:
         loss, log = func(args, batch, logits, sum_of_sample_mean)
 
-    # Forces autograd to traverse the full graph on every rank to avoid hang.
-    # fp32 sum: an fp16 logits sum can overflow to inf, and 0 * inf is nan.
-    if parallel_state.cp.size > 1 and args.allgather_cp:
-        loss = loss + 0 * logits.sum(dtype=torch.float32)
-
     # Here we need to divide by cp_size because to cancel the multiply in Megatron.
     if num_rollouts is not None:
         global_batch_size = num_rollouts

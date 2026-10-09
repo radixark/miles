@@ -1040,9 +1040,10 @@ def calculate_log_probs_and_entropy(
             if with_entropy:
                 entropy = compute_entropy(logits)
     else:
-        log_prob = logits.new_zeros((0,), dtype=torch.float32)
+        # a rank with no rows still backprops into its logits, or the CP collectives in the model hang
+        log_prob = logits.sum(-1, dtype=torch.float32)
         if with_entropy:
-            entropy = logits.new_zeros((0,), dtype=torch.float32)
+            entropy = log_prob if entropy_requires_grad else log_prob.detach()
 
     return log_prob, entropy
 
@@ -1079,8 +1080,9 @@ def _calculate_log_probs_and_entropy_true_on_policy(
         and *entropy* has shape ``[R]`` or is ``None``.
     """
     if logits.size(0) == 0:
-        log_prob = logits.new_zeros((0,))
-        entropy = logits.new_zeros((0,)) if with_entropy else None
+        # a rank with no rows still backprops into its logits, or the CP collectives in the model hang
+        log_prob = logits.sum(-1)
+        entropy = (log_prob if entropy_requires_grad else log_prob.detach()) if with_entropy else None
         return log_prob, entropy
 
     log_prob_logits = _apply_sampling_mask(logits, sampling_mask)
