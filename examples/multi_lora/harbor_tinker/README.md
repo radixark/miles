@@ -11,7 +11,7 @@ turn's prompt inherits the previous turn's tokens (TITO), so a trajectory trains
 
 | Where | What |
 |---|---|
-| gateway `miles/tinker/core/tinker_session_server.py`, `prompt_renderer.py` | `TrajectoryCollector`: recorded sessions, one per trajectory, ownership, caps, turns; `PromptRenderer`: renders through an injected miles `TITOTokenizer` (the `default` family without `--tinker-tito-model`, as the miles session server), and with TITO each turn inherits the previous turn's tokens (full re-render when a chain breaks) |
+| gateway `miles/tinker/core/tinker_session_server.py`, `miles/tinker/prompt_renderer.py` (integration layer: HF, TITO, jinja) | `TrajectoryCollector`: recorded sessions, one per trajectory, ownership, caps, turns; `PromptRenderer`: renders through an injected miles `TITOTokenizer` (the `default` family without `--tinker-tito-model`, as the miles session server), and with TITO each turn inherits the previous turn's tokens (full re-render when a chain breaks) |
 | gateway `miles/tinker/server/session_routes.py`, `oai_shapes.py` | `POST /oai/sessions/{sid}` bind (`sampling_session_id` required: its sampler version and lease, optional `max_datum_tokens`; the answer carries the effective per-datum cap, never above the gateway's, which the client truncates to), `POST /oai/sessions/{sid}/v1/chat/completions`, `GET /oai/sessions/{sid}` turns, `DELETE`; `oai_shapes.py` maps the OpenAI body to a `TurnRequest` and the recorded `TurnResult` back to ChatCompletion JSON |
 | gateway `serve_tinker.py`, `miles/tinker/arguments.py` | `--tinker-session-server` (default off) mounts the routes on the served app; `--tinker-session-ttl-s` (default 3600), `--tinker-session-max-body-bytes` (default 16 MiB), `--tinker-tito-model` (a `TITOTokenizerType`, its fixed template replaces `--chat-template-path`), renders with `--apply-chat-template-kwargs` |
 | client `harbor_env.py` | cookbook plug-ins: `HarborDatasetBuilder`, `HarborGroup` (rewards from Harbor verdicts; an `AgentError` trial is dropped, not scored 0), `SessionRolloutStrategy` (bind → Harbor trial → export → delete → `Trajectory`) |
@@ -36,12 +36,12 @@ such continuations with 409 instead. The export also
 carries `max_trim_tokens`, the boundary tokens the TITO family may drop when it extends a prefix (GLM: 1): with a
 non-zero value consecutive turns are not strict prefixes and the cookbook keeps them as separate Datums.
 
-API adapters: a chat dialect is one pair of functions, body → `TurnRequest` and (body, `TurnResult`) → response JSON,
-registered under its path suffix in `session_routes.CHAT_ADAPTERS`; the collector, TITO and sampling only ever see the
-unified OpenAI-style message dicts (`role`, `content`, `tool_calls`, `tool_call_id`, `name`), and the assistant message
-an adapter renders is the very dict TITO stores. OpenAI lives in `oai_shapes.py`; an Anthropic `/v1/messages` adapter
-would add `parse_messages_request` / `messages_response_json` and one registry entry (its error shape, streaming and
-tool-call parsing are not covered yet).
+The chat route speaks the OpenAI ChatCompletion subset in `oai_shapes.py`: body → `TurnRequest`, `TurnResult` →
+response JSON. The collector, TITO and sampling only ever see OpenAI-style message dicts (`role`, `content`,
+`tool_calls`, `tool_call_id`, `name`), and the assistant message the route returns is the very dict TITO stores.
+Not offered: streaming, `n > 1`, raw completions, reasoning separation, tool-call parsing, and generation parameters
+without a Tinker sampling equivalent (penalties, `logit_bias`, `logprobs`, `response_format` other than text,
+`tool_choice` other than `auto`), which the route refuses rather than ignores. There is no Anthropic route.
 
 ## Run
 
@@ -69,7 +69,7 @@ tool-call parsing are not covered yet).
 2. **Client host** (must reach the gateway and the sandbox API):
 
    ```bash
-   pip install "tinker==0.26.2" tinker-cookbook "harbor[e2b] @ git+https://github.com/harbor-framework/harbor@harbor-miles-v0.20.0"
+   pip install -r examples/multi_lora/requirements.txt "harbor[e2b] @ git+https://github.com/harbor-framework/harbor@harbor-miles-v0.20.0"
    mkdir -p ~/.config/e2b && echo <key> > ~/.config/e2b/api_key && chmod 600 ~/.config/e2b/api_key
    git clone https://github.com/laude-institute/terminal-bench-2 ~/.cache/terminal-bench-2   # one task dir per task.toml
    ```
