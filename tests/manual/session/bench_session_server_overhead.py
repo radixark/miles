@@ -390,10 +390,7 @@ def _start_backend(
     `response_bodies`. `inference_interval` (seconds) is the simulated
     generation delay the mock waits before returning each chat response.
     """
-    # `_mock_r3_backend` lives beside this script; `sys.path[0]` is this
-    # script's dir, which the spawn child inherits, so a top-level import resolves
-    # in both parent and child without a tests/manual/session package.
-    from _mock_r3_backend import run_mock_r3_backend
+    from tests.manual.session._mock_r3_backend import run_mock_r3_backend
 
     from miles.utils.http_utils import find_available_port, wait_for_server_ready
 
@@ -504,7 +501,7 @@ def _drive_workload(
     """
     # Imported here (not at module top) so the spawn children that target the
     # mock backend / session server do not transitively import httpx eagerly.
-    from _bench_load_generator import lg_drive_all, load_generator_entry
+    from tests.manual.session._bench_load_generator import lg_drive_all, load_generator_entry
 
     if driver_procs <= 1:
         wall_start = time.perf_counter()
@@ -559,7 +556,9 @@ def _drive_workload(
     return samples, agg, wall_s
 
 
-def run_http_bench(args) -> dict[str, Any]:
+def run_http_bench(args, *, warmup_sessions: int = 0) -> dict[str, Any]:
+    import psutil
+
     from miles.utils.chat_template_utils import get_tito_tokenizer, resolve_fixed_chat_template
     from miles.utils.http_utils import find_available_port, is_port_available, wait_for_server_ready
     from miles.utils.processing_utils import load_tokenizer
@@ -640,6 +639,22 @@ def run_http_bench(args) -> dict[str, Any]:
         server_root_pids = [p.pid for p in server_procs]
 
         request_bodies = [spec.request_body for spec in specs]
+        if warmup_sessions:
+            _, warmup, _ = _drive_workload(
+                base_urls,
+                request_bodies,
+                warmup_sessions,
+                get_records=False,
+                tool_interval=0.0,
+                driver_procs=args.bench_driver_procs,
+            )
+            if (
+                warmup["completed_turns"] != warmup_sessions * args.turns
+                or warmup["chat_server_errors"]
+                or warmup["chat_transport_errors"]
+            ):
+                raise RuntimeError(f"benchmark warmup failed: {warmup}")
+        cpu_before = sum(sum(psutil.Process(pid).cpu_times()[:2]) for pid in server_root_pids)
         with _RSSSampler(server_root_pids) as rss:
             samples, agg, wall_s = _drive_workload(
                 base_urls,
@@ -649,6 +664,7 @@ def run_http_bench(args) -> dict[str, Any]:
                 tool_interval=args.tool_interval,
                 driver_procs=args.bench_driver_procs,
             )
+        server_cpu_s = sum(sum(psutil.Process(pid).cpu_times()[:2]) for pid in server_root_pids) - cpu_before
         peak_rss_bytes = rss.peak_bytes
     finally:
         for proc in server_procs:
@@ -699,6 +715,7 @@ def run_http_bench(args) -> dict[str, Any]:
         "chat_template_path": chat_template_path,
         "chat_template_kwargs": chat_template_kwargs,
         "wall_s": wall_s,
+        "server_cpu_s": server_cpu_s,
         "throughput_turns_per_s": completed_turns / wall_s if wall_s > 0 else float("nan"),
         "throughput_content_tokens_per_s": content_tokens / wall_s if wall_s > 0 else float("nan"),
         "throughput_completion_tokens_per_s": completion_tokens / wall_s if wall_s > 0 else float("nan"),

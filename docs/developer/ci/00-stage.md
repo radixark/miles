@@ -52,7 +52,7 @@ Both PR workflows expose reusable `workflow_call` entry points. Release CI calls
 
 The ROCm resolver uses only its dispatch input, defaults to its undated `rocm/sgl-dev` tag, and uses that default for reusable calls too. For PRs, it runs only when `stage-c-4-gpu-mi350` is selected. CPU-only PRs skip both CUDA image preparation and ROCm image resolution.
 
-Distinct from image selection, the **`run-ci-image` label** selects the test scope — every enabled tag except `long`, `ft-short`, and `ft-long` — which validates an image bump without selecting those domains implicitly.
+Distinct from image selection, the **`run-ci-image` label** selects the test scope — every enabled tag except `long`, `ft-short`, `ft-long`, and `rollout` — which validates an image bump without selecting those domains implicitly.
 
 **Policy resolution (`resolve-ci-policy`).**
 
@@ -63,9 +63,11 @@ Distinct from image selection, the **`run-ci-image` label** selects the test sco
 - A manual dispatch keeps regular cadence and has no PR labels. Both GPU workflows add `--match-all-labels` so an explicit manual operation runs the full regular GPU suites; CPU selection remains unchanged.
 - A reusable `workflow_call` supplies an explicit cadence override because the called workflow inherits the caller's event name. Policy resolution deliberately runs the caller commit's `ci_policy.py`; only suite jobs check out the requested release ref.
 
-A **nightly** policy selects every enabled tag except `long` and `ft-long`, admits both regular and `nightly=True` registrations, and disables fast-fail. **Weekly** and **release** select every enabled tag, admit both registration types, and disable fast-fail; release differs by never writing the rolling performance baseline. Regular cadence admits only regular registrations. All four cadences use the same stage inventory.
+A **nightly** policy selects every enabled tag except `long`, `ft-long`, and `rollout`, admits both regular and `nightly=True` registrations, and disables fast-fail. **Weekly** and **release** select every enabled tag except `rollout`, admit both registration types, and disable fast-fail; release differs by never writing the rolling performance baseline. Regular cadence admits only regular registrations. All four cadences use the same stage inventory.
 
-`run-ci-all` selects the full domain-tag set without changing cadence. `run-ci-image` selects every enabled tag except `long`, `ft-short`, and `ft-long`. If scope signals overlap, the precedence is `run-ci-all` > weekly/release full scope > nightly > `run-ci-image`. The resolved cadence and raw/synthetic labels are passed to `run_suite.py`, which computes one run policy (see [Labels](/developer/ci/01-label) for the subtraction semantics).
+`run-ci-all` selects every domain tag except `rollout` without changing cadence. `run-ci-image` selects every enabled tag except `long`, `ft-short`, `ft-long`, and `rollout`. If scope signals overlap, the precedence is `run-ci-all` > weekly/release full scope > nightly > `run-ci-image`. The resolved cadence and raw/synthetic labels are passed to `run_suite.py`, which computes one run policy (see [Labels](/developer/ci/01-label) for the subtraction semantics).
+
+`rollout` is opt-in: Stage B CPU benchmarks registered with `labels=["rollout"]` require `run-ci-rollout`. Broad scopes (`run-ci-all`, `run-ci-image`, nightly, weekly, and release) exclude this label unless explicitly requested. Other Stage B CPU tests retain their existing selection.
 
 **PR GPU stage selection.** Before runner allocation, PR GPU stages are filtered by `runnable ∩ affected`: `runnable` reuses cadence/label selection, while `affected` maps changed registered tests to their suites. Known non-GPU paths affect none; unknown, missing, or malformed diffs affect all. `nightly`, `run-ci-all`, and `run-ci-image` add their runnable stages; `bypass-fastfail` does not. This path-based filter does not apply to CPU stages or scheduled/manual runs.
 
