@@ -50,7 +50,9 @@ def tito_pair():
 
 
 def _plain_renderer(tokenizer) -> PromptRenderer:
-    return PromptRenderer(tokenizer, get_tito_tokenizer(tokenizer, "default"), inherit=False)
+    return PromptRenderer(
+        tokenizer, get_tito_tokenizer(tokenizer, "default"), inherit=False, message_matcher=strict_message_matches
+    )
 
 
 def _tito_renderer(tito_pair) -> PromptRenderer:
@@ -130,6 +132,29 @@ def test_renderer_merge_failure_falls_back_to_the_full_render(tito_pair):
     appended = [*USER, reply, {"role": "assistant", "content": "", "tool_calls": [{}]}]
     with pytest.raises(UserInputError):  # the merge raises TypeError; the full render refuses the same input (400)
         renderer.prepare_pretokenized(session, appended, None, None, max_new_tokens=8, budget=8192)
+
+
+def test_renderer_merge_refusal_rewrites_but_an_internal_error_propagates(tito_pair):
+    renderer, session = _tito_renderer(tito_pair), TrajectorySession(SID, TENANT)
+    _, reply = _record(session, renderer, USER, _reply(tito_pair[0], "Blue."))
+    follow = [*USER, reply, {"role": "user", "content": "Another one."}]
+    merge = renderer.tito_tokenizer.merge_tokens
+
+    def refuse(**kwargs):
+        raise ValueError("not append-only")
+
+    def crash(**kwargs):
+        raise AttributeError("a bug in the TITO family")
+
+    try:
+        renderer.tito_tokenizer.merge_tokens = refuse
+        rendered = renderer.prepare_pretokenized(session, follow, None, None, max_new_tokens=8, budget=8192)
+        assert (rendered.inherits, rendered.reset_reason) == (False, "rewrite")
+        renderer.tito_tokenizer.merge_tokens = crash
+        with pytest.raises(AttributeError):  # never a quiet full render, never a user 400
+            renderer.prepare_pretokenized(session, follow, None, None, max_new_tokens=8, budget=8192)
+    finally:
+        renderer.tito_tokenizer.merge_tokens = merge
 
 
 def test_renderer_full_render_goes_through_the_miles_renderer():

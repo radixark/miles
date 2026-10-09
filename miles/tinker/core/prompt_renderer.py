@@ -15,15 +15,18 @@ if TYPE_CHECKING:
 MessageMatcher = Callable[[dict[str, Any], dict[str, Any]], bool]  # (stored message, request message) -> same?
 
 
-def _same_role_and_content(stored: dict[str, Any], new: dict[str, Any]) -> bool:
-    """The fallback matcher, role and content only; serve_tinker injects the miles strict matcher instead."""
-    return stored.get("role") == new.get("role") and stored.get("content") == new.get("content")
+def _is_template_input_error(error: BaseException) -> bool:
+    """What a fixed chat template raises for the request's own messages or tools; anything else is a bug of ours."""
+    # jinja's errors (raise_exception in a template, an undefined field) by package: core stays stdlib-only
+    return isinstance(error, (TypeError, ValueError)) or type(error).__module__.partition(".")[0] == "jinja2"
+
+
+def _template_input_error(error: Exception) -> UserInputError:
+    return UserInputError(f"cannot render messages with the chat template: {error}")
 
 
 def _named_parameters(function) -> frozenset[str]:
-    """The keyword-passable parameter names of a callable (none when absent): apply_chat_template's own arguments."""
-    if function is None:
-        return frozenset()
+    """The keyword-passable parameter names of a callable: apply_chat_template's own arguments."""
     kinds = (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
     return frozenset(name for name, param in inspect.signature(function).parameters.items() if param.kind in kinds)
 
@@ -64,8 +67,10 @@ def _rendered_ids(render: Any) -> list[int]:
     """Run a chat-template render, mapping template errors to UserInputError and refusing an empty prompt."""
     try:
         rendered = render()
-    except Exception as error:  # the template is fixed: a failed render, jinja's too, is the request's fault
-        raise UserInputError(f"cannot render messages with the chat template: {error}") from error
+    except Exception as error:
+        if not _is_template_input_error(error):
+            raise
+        raise _template_input_error(error) from error
     ids = _token_list(rendered)
     if not ids:
         raise UserInputError("the chat template rendered an empty prompt")
@@ -128,8 +133,12 @@ def _try_merge_tokens(
             pretokenized_token_ids=prefix_ids,
             template_args=template_args,
         )
-    except Exception:  # the appended messages cannot extend this prefix (a disallowed role, a malformed tool call)
+    except ValueError:  # the TITO family refuses this extension: a role it cannot inherit or a diverging re-render
         return None, "rewrite"
+    except Exception as error:
+        if not _is_template_input_error(error):
+            raise
+        raise _template_input_error(error) from error  # the same request fault a full render would refuse
     prompt_token_ids = [int(token) for token in prompt]
     kept = len(prefix_ids) - tito_tokenizer.max_trim_tokens
     if kept > 0 and prompt_token_ids[:kept] != prefix_ids[:kept]:
@@ -142,15 +151,12 @@ def _try_merge_tokens(
 class PromptRenderer:
     """A session's history as prompt ids: a TITO merge from the turn it continues, else a full render."""
 
-    def __init__(
-        self, tokenizer, tito_tokenizer, *, inherit: bool = True, message_matcher: MessageMatcher | None = None
-    ) -> None:
-        """Keep the HF tokenizer (decode), the TITOTokenizer that renders, whether turns inherit, and the matcher."""
+    def __init__(self, tokenizer, tito_tokenizer, *, inherit: bool, message_matcher: MessageMatcher) -> None:
         self.tokenizer = tokenizer
         self.tito_tokenizer = tito_tokenizer
         self.inherit = inherit
-        self.message_matcher = message_matcher or _same_role_and_content
-        self._render_arguments = _named_parameters(getattr(tokenizer, "apply_chat_template", None))
+        self.message_matcher = message_matcher  # the miles session matcher the operator selected; no weaker default
+        self._render_arguments = _named_parameters(tokenizer.apply_chat_template)
 
     def prepare_pretokenized(
         self,
