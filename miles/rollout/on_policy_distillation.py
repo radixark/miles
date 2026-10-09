@@ -23,55 +23,80 @@ STUDENT_ON_TEACHER_STRATEGIES = {"only-teacher", "union", "xor"}
 DEFAULT_TEACHER_NAME = "default"
 
 
-def parse_teacher_urls(values: Iterable[str] | None) -> dict[str, str]:
-    """Parse ``NAME=URL`` entries from ``--opd-teacher-urls`` into a routing map.
+def _parse_name_map(values: Iterable[str] | None, flag: str, value_label: str) -> dict[str, str]:
+    """Parse ``NAME=VALUE`` entries from a teacher routing flag into a map.
 
-    Splits on the first ``=`` only, so URLs containing ``=`` (e.g. query
+    Splits on the first ``=`` only, so values containing ``=`` (e.g. URL query
     strings) survive intact. Raises on malformed entries and duplicate names
     so misconfiguration fails at startup, not mid-rollout.
     """
-    url_map: dict[str, str] = {}
-    for value in values or []:
-        name, sep, url = value.partition("=")
-        name, url = name.strip(), url.strip()
-        if not sep or not name or not url:
-            raise ValueError(f"Invalid --opd-teacher-urls entry {value!r}; expected NAME=URL.")
-        if name in url_map:
-            raise ValueError(f"Duplicate teacher name {name!r} in --opd-teacher-urls.")
-        url_map[name] = url
-    return url_map
+    name_map: dict[str, str] = {}
+    for entry in values or []:
+        name, sep, value = entry.partition("=")
+        name, value = name.strip(), value.strip()
+        if not sep or not name or not value:
+            raise ValueError(f"Invalid {flag} entry {entry!r}; expected NAME={value_label}.")
+        if name in name_map:
+            raise ValueError(f"Duplicate teacher name {name!r} in {flag}.")
+        name_map[name] = value
+    return name_map
 
 
-def _teacher_url_for_sample(args: Namespace, sample: Sample) -> str:
-    """Resolve the teacher scoring endpoint for one sample.
+def parse_teacher_urls(values: Iterable[str] | None) -> dict[str, str]:
+    """Parse ``NAME=URL`` entries from ``--opd-teacher-urls`` into a routing map."""
+    return _parse_name_map(values, "--opd-teacher-urls", "URL")
 
-    Without ``--opd-teacher-urls`` every sample goes to ``--rm-url`` (the
-    original single-teacher path, unchanged). With it, the sample is routed by
-    the teacher name in ``sample.metadata[--opd-teacher-key]``; samples whose
-    name is missing or unknown fall back to the reserved ``default`` entry,
-    and raise if no default is configured — silently distilling from the
-    wrong teacher is worse than failing the rollout.
+
+def parse_teacher_adapters(values: Iterable[str] | None) -> dict[str, str]:
+    """Parse ``NAME=ADAPTER`` entries from ``--opd-teacher-adapters`` into a routing map.
+
+    An adapter name is a ``lora_name`` the teacher server was launched with
+    (``--lora-paths NAME=PATH``). Routing by adapter lets several specialist
+    teachers share one server and one frozen base, each selected per request by
+    ``lora_path`` rather than by endpoint.
     """
-    url_map = parse_teacher_urls(getattr(args, "opd_teacher_urls", None))
-    if not url_map:
-        return args.rm_url
+    return _parse_name_map(values, "--opd-teacher-adapters", "ADAPTER")
 
+
+def _resolve_teacher_name(args: Namespace, sample: Sample, known: set[str]) -> str:
+    """Resolve which configured teacher scores this sample.
+
+    The sample is routed by the teacher name in
+    ``sample.metadata[--opd-teacher-key]``; samples whose name is missing or
+    unknown fall back to the reserved ``default`` entry, and raise if no default
+    is configured — silently distilling from the wrong teacher is worse than
+    failing the rollout.
+    """
     metadata = sample.metadata if isinstance(sample.metadata, dict) else {}
     key = getattr(args, "opd_teacher_key", "opd_teacher")
     name = metadata.get(key)
+    if name is not None and str(name) in known:
+        return str(name)
+    if DEFAULT_TEACHER_NAME in known:
+        return DEFAULT_TEACHER_NAME
     if name is not None:
-        url = url_map.get(str(name))
-        if url is not None:
-            return url
-        if DEFAULT_TEACHER_NAME in url_map:
-            return url_map[DEFAULT_TEACHER_NAME]
         raise ValueError(
-            f"Sample metadata[{key!r}]={name!r} matches no --opd-teacher-urls name "
-            f"(known: {sorted(url_map)}) and no 'default' entry is configured."
+            f"Sample metadata[{key!r}]={name!r} matches no teacher name configured by "
+            f"--opd-teacher-urls/--opd-teacher-adapters (known: {sorted(known)}) "
+            "and no 'default' entry is configured."
         )
-    if DEFAULT_TEACHER_NAME in url_map:
-        return url_map[DEFAULT_TEACHER_NAME]
-    raise ValueError(f"Sample metadata is missing teacher key {key!r} and --opd-teacher-urls has no 'default' entry.")
+    raise ValueError(f"Sample metadata is missing teacher key {key!r} and no 'default' teacher entry is configured.")
+
+
+def _teacher_target_for_sample(args: Namespace, sample: Sample) -> tuple[str, str | None]:
+    """Resolve ``(scoring endpoint, teacher LoRA adapter)`` for one sample.
+
+    A teacher is its own server (``--opd-teacher-urls``), an adapter over a
+    shared frozen base (``--opd-teacher-adapters``), or both; with neither map
+    set every sample goes to ``--rm-url`` on the base weights.
+    """
+    url_map = parse_teacher_urls(getattr(args, "opd_teacher_urls", None))
+    adapter_map = parse_teacher_adapters(getattr(args, "opd_teacher_adapters", None))
+    if not url_map and not adapter_map:
+        return args.rm_url, None
+
+    name = _resolve_teacher_name(args, sample, set(url_map) | set(adapter_map))
+    return url_map.get(name, args.rm_url), adapter_map.get(name)
 
 
 def _get_opd_top_k(args: Namespace) -> int:
@@ -97,6 +122,7 @@ def _score_payload(
     top_k: int = 0,
     token_ids: list[int] | None = None,
     token_ids_positions: list[list[int]] | None = None,
+    lora_path: str | None = None,
 ) -> dict[str, Any]:
     payload = {
         "input_ids": input_ids,
@@ -117,6 +143,9 @@ def _score_payload(
         payload["token_ids_logprob_positions"] = token_ids_positions
     elif token_ids:
         payload["token_ids_logprob"] = token_ids
+    if lora_path is not None:
+        # omitting the key scores the server's base, which is what an unrouted teacher wants
+        payload["lora_path"] = lora_path
     return payload
 
 
@@ -354,11 +383,11 @@ async def reward_func(args: Namespace, sample: Sample, **kwargs: Any) -> dict[st
     # Optional per-request timeout so a hung teacher/student scoring call cannot stall
     # the whole rollout (no-op when unset).
     request_timeout = getattr(args, "sglang_router_request_timeout_secs", None)
-    # Multi-teacher routing: pick this sample's teacher endpoint (falls back to
-    # --rm-url when --opd-teacher-urls is unset).
-    teacher_url = _teacher_url_for_sample(args, sample)
+    teacher_url, teacher_adapter = _teacher_target_for_sample(args, sample)
     if top_k == 0:
-        return await _post_json(teacher_url, _score_payload(sample.tokens), timeout_secs=request_timeout)
+        return await _post_json(
+            teacher_url, _score_payload(sample.tokens, lora_path=teacher_adapter), timeout_secs=request_timeout
+        )
 
     strategy = _get_top_k_strategy(args)
     # Per-position scoring requires a patched teacher/student server that understands
@@ -376,12 +405,17 @@ async def reward_func(args: Namespace, sample: Sample, **kwargs: Any) -> dict[st
 
     if student_top is not None and per_position:
         teacher_payload = _score_payload(
-            sample.tokens, top_k=teacher_top_k, token_ids_positions=_per_position_ids(student_top, prompt_len)
+            sample.tokens,
+            top_k=teacher_top_k,
+            token_ids_positions=_per_position_ids(student_top, prompt_len),
+            lora_path=teacher_adapter,
         )
     elif teacher_token_ids is not None:
-        teacher_payload = _score_payload(sample.tokens, top_k=teacher_top_k, token_ids=teacher_token_ids)
+        teacher_payload = _score_payload(
+            sample.tokens, top_k=teacher_top_k, token_ids=teacher_token_ids, lora_path=teacher_adapter
+        )
     else:
-        teacher_payload = _score_payload(sample.tokens, top_k=teacher_top_k)
+        teacher_payload = _score_payload(sample.tokens, top_k=teacher_top_k, lora_path=teacher_adapter)
     teacher_response = await _post_json(teacher_url, teacher_payload, timeout_secs=request_timeout)
 
     reward_payload = {"teacher": teacher_response}

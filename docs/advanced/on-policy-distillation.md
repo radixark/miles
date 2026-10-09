@@ -15,6 +15,7 @@ On-policy distillation (OPD) trains a student model on its own rollouts while us
 | `--opd-top-k-strategy` | Top-k token set strategy: `only-student`, `only-teacher`, `intersection`, `union`, or `xor`. |
 | `--opd-reward-weight-mode` | Weighting scheme for top-k rewards: `student_p`, `teacher_p`, or `none`. |
 | `--opd-teacher-urls` | Optional multi-teacher routing map (`NAME=URL` pairs, SGLang mode only). Routes each sample to a teacher by `sample.metadata[--opd-teacher-key]`; reserved name `default` is the fallback. Unset = single teacher at `--rm-url`. |
+| `--opd-teacher-adapters` | Optional multi-teacher routing map over LoRA adapters (`NAME=ADAPTER` pairs, SGLang mode only). Each `ADAPTER` is a `lora_name` the teacher server was launched with, so specialist teachers share one server and one frozen base. Routes by the same key as `--opd-teacher-urls`, including `default`. |
 | `--opd-teacher-key` | Metadata key holding the teacher name for routing (default: `opd_teacher`). |
 | `--opd-teacher-load` | Path to teacher Megatron checkpoint. **Required** when `--opd-type=megatron`, **must not be set** when `--opd-type=sglang`. |
 | `--opd-teacher-ckpt-step` | Optional checkpoint step for teacher model. |
@@ -110,6 +111,57 @@ when the routing map is set):
 > student router). For throughput, point multiple names (or one name backed by
 > an sglang router) at replicas; `--opd-teacher-urls` is for *different*
 > teachers, not load balancing.
+
+### LoRA Teachers (SGLang mode only)
+
+When every specialist teacher is a LoRA adapter over the *same* frozen base —
+for example a shared `M0` plus separately trained coding, math and agentic
+adapters — `--opd-teacher-adapters` routes by adapter instead of by endpoint.
+All teachers then share one server, one base copy, and one `--rm-url`:
+
+```bash
+--rm-url http://<TEACHER_IP>:<TEACHER_PORT>/generate
+--opd-teacher-adapters math=math_lora code=code_lora agentic=agentic_lora default=math_lora
+--opd-teacher-key opd_teacher
+```
+
+The teacher server is launched once with the adapters resident:
+
+```bash
+python3 -m sglang.launch_server --model-path /path/to/M0 \
+    --enable-lora \
+    --lora-paths '{"lora_name":"math_lora","lora_path":"/path/to/adapters/math","pinned":true}' \
+                 '{"lora_name":"code_lora","lora_path":"/path/to/adapters/code","pinned":true}' \
+                 '{"lora_name":"agentic_lora","lora_path":"/path/to/adapters/agentic","pinned":true}' \
+    --max-loras-per-batch 4 --max-lora-rank 32 --lora-backend triton
+```
+
+`--max-loras-per-batch` counts the base model as one slot and SGLang caps pinned
+adapters at `max_loras_per_batch - 1`, so three pinned teachers need four slots.
+Pinning is worth it here: teachers are few, hot and permanent, so keeping them
+resident removes eviction and reload latency from the scoring path.
+
+Routing semantics are unchanged — each sample is still scored by exactly one
+teacher, scoring cost is identical to single-teacher OPD, and the loss does not
+change. Two properties come for free with this layout:
+
+- **Tokenizer agreement is automatic.** Teachers sharing the student's base
+  cannot disagree with it about tokenization, which the URL-routed path requires
+  but does not check.
+- **N teachers cost one base copy plus N adapters**, not N model replicas.
+
+The two maps compose: a name in `--opd-teacher-urls` gets its own endpoint, a
+name in `--opd-teacher-adapters` alone is scored at `--rm-url` with that adapter,
+and a name in both is scored at its own endpoint with that adapter. So a dense
+specialist on its own server and a shared-base adapter can be sibling teachers
+in one run.
+
+Adapter directories written by the multi-LoRA Tinker gateway's
+`save_weights_for_sampler` (see [LoRA Training and Serving](/advanced/lora)) are
+directly loadable here; so is any PEFT adapter over the same base.
+
+See `examples/on_policy_distillation/run-qwen3-8B-opd-lora-teachers.sh` for a
+complete launcher.
 
 ### Megatron Mode (`--opd-type megatron`)
 
