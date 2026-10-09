@@ -1,7 +1,11 @@
 # Codex Instructions
 
-When creating or substantially modifying `miles/**/*.py`, `scripts/**/*.py`, `tools/**/*.py`, `train.py`, or `train_async.py`, read and follow `.claude/rules/general-code-style.md`.
+Before working in this repository, discover and read all Markdown rule files under `.agents/rules/`, including subdirectories. This repository-root-relative path is a symlink to `.claude/rules/`, the shared source of truth. Treat these files as repository instructions; newly added rules belong to the same set.
 
-When creating or substantially modifying a launcher under `scripts/` or `examples/`, or a model definition under `scripts/models/`, also read and follow `.claude/rules/launch-and-model-scripts.md`.
+Apply each rule according to its `paths` frontmatter, matching globs against repository-relative file paths. Rules without `paths` apply repository-wide. Preserve any further applicability conditions in the rule body, such as applying only to new or substantially modified code.
 
-When adding or changing a CLI flag, a config field, a per-request field, or code that merges launch and request values, also read and follow `.claude/rules/launch-and-request-args.md`.
+Recheck which rules apply when the task expands to additional files or components.
+
+## Code Review Rules
+
+For pull request reviews, also read and follow `REVIEW.md` at the repository root.

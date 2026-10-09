@@ -39,6 +39,13 @@ VARIANTS = {
         "tag_postfix": "",
         "build_args": {},
     },
+    "rubin": {
+        "image": "radixark/miles",
+        "platforms": ["linux/arm64"],
+        "tag_postfix": "-rubin",
+        "dockerfile": "docker/Dockerfile.rubin",
+        "build_args": {},
+    },
     "rocm724-mi35x": {
         "image": "rocm/sgl-dev",
         "tag_postfix": "-rocm724-mi35x",
@@ -175,6 +182,7 @@ class Variant(str, Enum):
     cu13 = "cu13"
     cu13_x86 = "cu13-x86"
     cu13_aarch64 = "cu13-aarch64"
+    rubin = "rubin"
     rocm724_mi35x = "rocm724-mi35x"
     rocm10_mi35x = "rocm10-mi35x"
     rocm10_mi30x = "rocm10-mi30x"
