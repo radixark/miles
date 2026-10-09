@@ -17,7 +17,6 @@ MODEL_ORG = "Pinaster"
 MODEL_NAME = "GLM-5.2_5layer"
 MODEL_TYPE = "glm5.2-744B-A40B_5layer"
 MEGATRON_MODEL_NAME = f"{MODEL_NAME}-megatron-dsa"
-# Its own name: the extra high-precision layers make it differ from the nvfp4 test's -NVFP4.
 NVFP4_MODEL_NAME = f"{MODEL_NAME}-NVFP4-w4a16"
 DSA_ARGS = "--megatron-to-hf-mode raw --dsa-impl megatron --dsa-kernel-backend cudnn "
 NUM_GPUS = 8

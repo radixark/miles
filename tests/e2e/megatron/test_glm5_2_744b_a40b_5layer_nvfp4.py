@@ -22,6 +22,7 @@ ROLLOUT_NUM_GPUS = 4
 ROLLOUT_GPUS_PER_ENGINE = 2
 NUM_LAYERS_AT_START_IN_BF16 = 1
 NUM_LAYERS_AT_END_IN_BF16 = 1
+NVFP4_MODEL_NAME = f"{MODEL_NAME}-NVFP4-bf16-{NUM_LAYERS_AT_START_IN_BF16}-{NUM_LAYERS_AT_END_IN_BF16}"
 RUN_ID = command_utils.create_run_id()
 
 MODEL_DIR = "/root/models"
@@ -117,10 +118,10 @@ def prepare():
     U.exec_command_gpu_once(
         f"python tools/convert_hf_to_nvfp4.py "
         f"--model-dir {MODEL_DIR}/{MODEL_NAME} "
-        f"--save-dir {MODEL_DIR}/{MODEL_NAME}-NVFP4 "
+        f"--save-dir {MODEL_DIR}/{NVFP4_MODEL_NAME} "
         f"--num-layers-at-start-in-bf16 {NUM_LAYERS_AT_START_IN_BF16} "
         f"--num-layers-at-end-in-bf16 {NUM_LAYERS_AT_END_IN_BF16} ",
-        f"{MODEL_DIR}/{MODEL_NAME}-NVFP4",
+        f"{MODEL_DIR}/{NVFP4_MODEL_NAME}",
     )
 
     U.convert_checkpoint(
@@ -146,7 +147,7 @@ def execute():
     os.environ.setdefault("RAY_TMPDIR", "/tmp/ray")
     te_precision_config_path = command_utils.encode_pseudo_file(TE_PRECISION_CONFIG)
 
-    ckpt_args = f"--hf-checkpoint {MODEL_DIR}/{MODEL_NAME}-NVFP4/ " f"--ref-load {MODEL_DIR}/{MODEL_NAME}_torch_dist "
+    ckpt_args = f"--hf-checkpoint {MODEL_DIR}/{NVFP4_MODEL_NAME}/ " f"--ref-load {MODEL_DIR}/{MODEL_NAME}_torch_dist "
 
     rollout_args = (
         f"--prompt-data {DATA_DIR}/dapo-math-17k/dapo-math-17k.jsonl "
