@@ -143,11 +143,11 @@ def test_glm5_sparse_attention_matches_reference_and_is_deterministic(heads):
     assert _rel_err(dkv.squeeze(1), kv32.grad) < 1e-2
 
     if HAS_TILELANG:
-        from miles_plugins.models.glm5.ops.sparse_mla import SparseMLA
+        from miles.kernels.attention.dsa import sparse_attention
 
         q_t = q.clone().requires_grad_(True)
         kv_t = kv.clone().requires_grad_(True)
-        out_t, _ = SparseMLA.apply(q_t, kv_t, indices, sm_scale)
+        out_t = sparse_attention(q_t.unsqueeze(0), kv_t.unsqueeze(0), indices.unsqueeze(0), sm_scale, d_v=512).squeeze(0)
         out_t.backward(do)
         assert _rel_err(out, out_t) < 1e-2
         assert _rel_err(dq, q_t.grad) < 1e-2
@@ -200,18 +200,18 @@ def test_glm5_lightning_indexer_matches_reference_and_is_deterministic(heads):
     assert _rel_err(dw, w32.grad) < 1e-3
 
     if HAS_TILELANG:
-        from miles_plugins.models.glm5.ops.indexer import lighting_indexer
+        from miles.kernels.attention.dsa import lighting_indexer
 
         q_t = index_q.clone().requires_grad_(True)
         k_t = index_k.clone().requires_grad_(True)
-        w_t = weights.clone().unsqueeze(-1).requires_grad_(True)
-        scores_t, topk_t = lighting_indexer(q_t, k_t, w_t, ks, ke, topk, topk_indices=topk_indices)
+        w_t = weights.clone().requires_grad_(True)
+        scores_t, topk_t = lighting_indexer(q_t, k_t, w_t, ks, ke, topk, topk_fn=lambda logits, k: topk_indices)
         assert torch.equal(topk_t, topk_indices)
         assert _rel_err(scores, scores_t) < 1e-3
         scores_t.masked_fill(~torch.isfinite(scores_t), 0.0).backward(grad)
         assert _rel_err(dq, q_t.grad) < 2e-2
         assert _rel_err(dk, k_t.grad) < 1e-2
-        assert _rel_err(dw, w_t.grad.squeeze(-1)) < 1e-3
+        assert _rel_err(dw, w_t.grad) < 1e-3
 
 
 # --------------------------------------------------------------------------- #
@@ -262,12 +262,12 @@ def test_dsv4_sparse_attention_with_sink_matches_reference_and_is_deterministic(
     assert _rel_err(dsink, s32.grad) < 1e-2
 
     if HAS_TILELANG:
-        from miles_plugins.models.deepseek_v4.ops.kernel.tilelang_sparse_mla import sparse_attn_tilelang
+        from miles.kernels.attention.dsa import sparse_attention
 
         q_t = q.clone().requires_grad_(True)
         kv_t = kv.clone().requires_grad_(True)
         s_t = sink.clone().requires_grad_(True)
-        out_t = sparse_attn_tilelang(q_t, kv_t, s_t, indices, sm_scale)
+        out_t = sparse_attention(q_t, kv_t.unsqueeze(2), indices.unsqueeze(2), sm_scale, attn_sink=s_t)
         out_t.backward(do)
         # Measured on GB300 with TileLang 0.1.9: o 2.4e-3, dq 2.1e-3, dkv 4.2e-3, dsink 5.0e-4 (BF16-level).
         for name, ours, theirs in (
@@ -320,7 +320,7 @@ def test_dsv4_batched_indexer_logits_match_reference_and_tilelang():
         assert _rel_err(logits[b], ref_indexer_logits(q[:, b], k[:, b], weights[:, b], ks, ke)) < 1e-3
 
     if HAS_TILELANG:
-        from miles_plugins.models.deepseek_v4.ops.kernel.tilelang_indexer_fwd import batched_indexer_fwd
+        from miles.kernels.attention.dsa import indexer_logits_sbhd
 
-        theirs = batched_indexer_fwd(q, k, weights.float(), ks, ke)
+        theirs = indexer_logits_sbhd(q, k, weights.float(), ks, ke)
         assert _rel_err(logits, theirs) < 1e-3
