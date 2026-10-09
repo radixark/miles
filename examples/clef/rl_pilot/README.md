@@ -13,7 +13,7 @@ Workflow cases comprise 50%, tool selection 25%, retrieval 12.5%, and extraction
 12.5%. Every case retains rules, canonical facts, exact answers, generated text,
 API usage and blind reviewer outputs. Labels never enter the model input.
 
-Rendering uses mandatory fact placeholders replaced deterministically, followed
+Rendering uses explicit fact assignments inserted verbatim by code, followed
 by a separate Luna call solving the rendered case without access to the answer.
 Disagreements are retried up to four times and retained for inspection. A failed
 quota prevents publication. Resume by rerunning the same command; accepted IDs
@@ -25,3 +25,7 @@ The reviewer uses the same model and does not establish human-level label
 quality. Tool labels model catalog capabilities/preconditions, not real API
 execution. No benchmark questions are inputs; semantic decontamination and
 step-2048 error mining require separate checks before making benchmark claims.
+
+After generation, run `uv run --project examples/clef/rl_pilot
+examples/clef/rl_pilot/validate.py --data /scratch/clef-rl-pilot` to regenerate
+every label and probe the exact field and whole-record reward functions.

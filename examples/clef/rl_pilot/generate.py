@@ -252,7 +252,7 @@ def finalize(args: Args) -> None:
     assert len(set(ids)) == len(rows) == len(set(states))
     manifest = {'seed':args.seed,'model':'gpt-6-luna','train':args.count,'validation':args.validation_count,
                 'families':dict(Counter(r['source'] for r in rows)),
-                'validation':'canonical facts inserted verbatim; blind API solve matches deterministic labels',
+                'validation_method':'canonical facts inserted verbatim; blind API solve matches deterministic labels',
                 'limitations':['Same-model independent reviewer, not independent human verification.',
                                'Fixed rule families shared across splits; distinct scenario seeds and IDs.',
                                'No external benchmark material used; semantic decontamination not proven.',
