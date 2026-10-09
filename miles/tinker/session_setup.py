@@ -2,9 +2,9 @@
 
 from fastapi import FastAPI
 
-from miles.tinker.core.prompt_renderer import PromptRenderer
 from miles.tinker.core.service import TinkerService
 from miles.tinker.core.tinker_session_server import TrajectoryCollector
+from miles.tinker.prompt_renderer import PromptRenderer
 from miles.tinker.server.app import build_app
 from miles.tinker.server.session_routes import setup_session_routes
 from miles.utils.chat_template_utils import TITOTokenizerType, get_tito_tokenizer

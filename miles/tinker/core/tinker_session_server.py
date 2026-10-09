@@ -12,7 +12,6 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from miles.tinker.core.future import FAILED
-from miles.tinker.core.prompt_renderer import PromptRenderer, Rendered
 from miles.tinker.core.service import TinkerService
 from miles.tinker.core.types import GatewayError, OwnershipError, UserInputError
 
@@ -55,6 +54,17 @@ def _validate_session_id(session_id: str) -> None:
     """A session id is 32 to 128 chars of [A-Za-z0-9._:-], starting alphanumeric (e.g. a prefix + uuid4 hex)."""
     if not isinstance(session_id, str) or _SESSION_ID.fullmatch(session_id) is None:
         raise UserInputError(f"invalid session id {session_id!r}: use 32-128 chars of A-Z a-z 0-9 . _ : -")
+
+
+@dataclass(frozen=True)
+class Rendered:
+    """One turn's prompt: its ids, whether they inherit the parent's, why not, the resolved args, the parent turn."""
+
+    prompt_token_ids: list[int]
+    inherits: bool
+    reset_reason: str | None
+    request_args: dict[str, Any] | None
+    parent: int | None
 
 
 @dataclass
@@ -150,7 +160,7 @@ class TrajectoryCollector:
     def __init__(
         self,
         service: TinkerService,
-        renderer: PromptRenderer,
+        renderer,
         session_ttl_s: float,
         clock: Callable[[], float] = time.time,
         max_sessions_per_tenant: int = 1024,

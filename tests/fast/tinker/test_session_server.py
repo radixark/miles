@@ -6,10 +6,10 @@ import types
 
 import httpx
 import pytest
+from jinja2.exceptions import TemplateError, TemplateSyntaxError
 from tests.fast.tinker.harness import make_service
 
 from miles.tinker.arguments import _configure_tito
-from miles.tinker.core.prompt_renderer import PromptRenderer
 from miles.tinker.core.tinker_session_server import (
     SamplingBackendError,
     SessionLimitError,
@@ -21,6 +21,7 @@ from miles.tinker.core.tinker_session_server import (
     TurnRequest,
 )
 from miles.tinker.core.types import OwnershipError, UserInputError
+from miles.tinker.prompt_renderer import PromptRenderer
 from miles.tinker.server.app import build_app
 from miles.tinker.server.session_routes import setup_session_routes
 from miles.tinker.session_setup import build_session_app
@@ -87,7 +88,7 @@ def _reply(hf, text: str) -> list[int]:
     return hf.encode(text, add_special_tokens=False) + [hf.convert_tokens_to_ids("<|im_end|>")]
 
 
-# --- renderer (miles/tinker/core/prompt_renderer.py) ---------------------------------------------
+# --- renderer (miles/tinker/prompt_renderer.py) --------------------------------------------------
 
 
 def test_renderer_first_turn_is_a_root_and_a_resend_is_a_retry(tito_pair):
@@ -126,15 +127,20 @@ def test_renderer_reply_ended_on_a_stop_string_forces_a_full_render(tito_pair):
     assert "<|im_end|>\n<|im_start|>user\nNow say done." in hf.decode(rendered.prompt_token_ids)
 
 
-def test_renderer_merge_failure_falls_back_to_the_full_render(tito_pair):
+@pytest.mark.parametrize("history", ["fresh_session", "with_parent"])
+def test_renderer_malformed_tool_call_is_a_user_error(tito_pair, history):
+    """Real malformed input (an empty tool call makes the template's tojson raise TypeError) answers 400 on both paths."""
     renderer, session = _tito_renderer(tito_pair), TrajectorySession(SID, TENANT)
-    _, reply = _record(session, renderer, USER, _reply(tito_pair[0], "Blue."))
-    appended = [*USER, reply, {"role": "assistant", "content": "", "tool_calls": [{}]}]
-    with pytest.raises(UserInputError):  # the merge raises TypeError; the full render refuses the same input (400)
-        renderer.prepare_pretokenized(session, appended, None, None, max_new_tokens=8, budget=8192)
+    messages = list(USER)
+    if history == "with_parent":  # the merge boundary sees it first
+        _, reply = _record(session, renderer, USER, _reply(tito_pair[0], "Blue."))
+        messages.append(reply)
+    messages.append({"role": "assistant", "content": "", "tool_calls": [{}]})
+    with pytest.raises(UserInputError, match="cannot render messages"):
+        renderer.prepare_pretokenized(session, messages, None, None, max_new_tokens=8, budget=8192)
 
 
-def test_renderer_merge_refusal_rewrites_but_an_internal_error_propagates(tito_pair):
+def test_renderer_merge_refusal_rewrites(tito_pair):
     renderer, session = _tito_renderer(tito_pair), TrajectorySession(SID, TENANT)
     _, reply = _record(session, renderer, USER, _reply(tito_pair[0], "Blue."))
     follow = [*USER, reply, {"role": "user", "content": "Another one."}]
@@ -143,18 +149,55 @@ def test_renderer_merge_refusal_rewrites_but_an_internal_error_propagates(tito_p
     def refuse(**kwargs):
         raise ValueError("not append-only")
 
-    def crash(**kwargs):
-        raise AttributeError("a bug in the TITO family")
-
     try:
         renderer.tito_tokenizer.merge_tokens = refuse
         rendered = renderer.prepare_pretokenized(session, follow, None, None, max_new_tokens=8, budget=8192)
         assert (rendered.inherits, rendered.reset_reason) == (False, "rewrite")
-        renderer.tito_tokenizer.merge_tokens = crash
-        with pytest.raises(AttributeError):  # never a quiet full render, never a user 400
-            renderer.prepare_pretokenized(session, follow, None, None, max_new_tokens=8, budget=8192)
     finally:
         renderer.tito_tokenizer.merge_tokens = merge
+
+
+@pytest.mark.parametrize("boundary", ["merge", "full_render"])
+@pytest.mark.parametrize(
+    "error",
+    [AttributeError("a bug"), KeyError("k"), AssertionError("invariant"), TemplateSyntaxError("broken template", 1)],
+)
+def test_renderer_internal_errors_propagate_from_both_render_boundaries(tito_pair, tokenizer, boundary, error):
+    def crash(*args, **kwargs):
+        raise error
+
+    if boundary == "merge":  # a TITO parent: the merge is attempted first
+        renderer, session = _tito_renderer(tito_pair), TrajectorySession(SID, TENANT)
+        _, reply = _record(session, renderer, USER, _reply(tito_pair[0], "Blue."))
+        messages, name = [*USER, reply, {"role": "user", "content": "Another one."}], "merge_tokens"
+    else:  # no inheritance: straight to the full render
+        renderer, session = _plain_renderer(tokenizer), TrajectorySession(SID, TENANT)
+        messages, name = USER, "apply_chat_template"
+    original = getattr(renderer.tito_tokenizer, name)
+    try:
+        setattr(renderer.tito_tokenizer, name, crash)
+        with pytest.raises(type(error)):  # never a quiet full render, never a user 400
+            renderer.prepare_pretokenized(session, messages, None, None, max_new_tokens=8, budget=8192)
+    finally:
+        setattr(renderer.tito_tokenizer, name, original)
+
+
+@pytest.mark.parametrize(
+    "error", [TemplateError("roles must alternate"), TypeError("Undefined is not JSON serializable")]
+)
+def test_renderer_template_input_errors_are_user_errors_at_the_full_render(tokenizer, error):
+    renderer, session = _plain_renderer(tokenizer), TrajectorySession(SID, TENANT)
+    original = renderer.tito_tokenizer.apply_chat_template
+
+    def refuse(*args, **kwargs):
+        raise error
+
+    try:
+        renderer.tito_tokenizer.apply_chat_template = refuse
+        with pytest.raises(UserInputError, match="cannot render messages"):
+            renderer.prepare_pretokenized(session, USER, None, None, max_new_tokens=8, budget=8192)
+    finally:
+        renderer.tito_tokenizer.apply_chat_template = original
 
 
 def test_renderer_full_render_goes_through_the_miles_renderer():
@@ -434,6 +477,8 @@ async def test_routes_bad_bodies_answer_400(client, content):
         {"top_logprobs": 2},
         {"logit_bias": {"1": 5}},
         {"reasoning_effort": 0},
+        {"reasoning_effort": 0.0},
+        {"reasoning_effort": "none"},
         {"reasoning_effort": "low"},
         {"separate_reasoning": True},
         {"tool_choice": "required"},

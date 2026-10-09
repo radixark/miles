@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import inspect
 from collections.abc import Callable
-from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from jinja2.exceptions import TemplateError, TemplateSyntaxError
+
+from miles.tinker.core.tinker_session_server import Rendered
 from miles.tinker.core.types import UserInputError
 
 if TYPE_CHECKING:
@@ -14,11 +16,8 @@ if TYPE_CHECKING:
 
 MessageMatcher = Callable[[dict[str, Any], dict[str, Any]], bool]  # (stored message, request message) -> same?
 
-
-def _is_template_input_error(error: BaseException) -> bool:
-    """What a fixed chat template raises for the request's own messages or tools; anything else is a bug of ours."""
-    # jinja's errors (raise_exception in a template, an undefined field) by package: core stays stdlib-only
-    return isinstance(error, (TypeError, ValueError)) or type(error).__module__.partition(".")[0] == "jinja2"
+# the request's own template faults: jinja errors, HF's ValueError, and tojson over an undefined field (a TypeError)
+_TEMPLATE_INPUT_ERRORS = (TemplateError, TypeError, ValueError)
 
 
 def _template_input_error(error: Exception) -> UserInputError:
@@ -29,17 +28,6 @@ def _named_parameters(function) -> frozenset[str]:
     """The keyword-passable parameter names of a callable: apply_chat_template's own arguments."""
     kinds = (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
     return frozenset(name for name, param in inspect.signature(function).parameters.items() if param.kind in kinds)
-
-
-@dataclass(frozen=True)
-class Rendered:
-    """One turn's prompt: its ids, whether they inherit the parent's, why not, the resolved args, the parent turn."""
-
-    prompt_token_ids: list[int]
-    inherits: bool
-    reset_reason: str | None
-    request_args: dict[str, Any] | None
-    parent: int | None
 
 
 def _token_list(rendered) -> list[int]:
@@ -66,9 +54,9 @@ def _validate_messages(request_messages: Any) -> None:
 def _rendered_ids(render: Any) -> list[int]:
     try:
         rendered = render()
-    except Exception as error:
-        if not _is_template_input_error(error):
-            raise
+    except TemplateSyntaxError:
+        raise
+    except _TEMPLATE_INPUT_ERRORS as error:
         raise _template_input_error(error) from error
     ids = _token_list(rendered)
     if not ids:
@@ -134,9 +122,9 @@ def _try_merge_tokens(
         )
     except ValueError:  # the TITO family refuses this extension: a role it cannot inherit or a diverging re-render
         return None, "rewrite"
-    except Exception as error:
-        if not _is_template_input_error(error):
-            raise
+    except TemplateSyntaxError:
+        raise
+    except _TEMPLATE_INPUT_ERRORS as error:
         raise _template_input_error(error) from error  # the same request fault a full render would refuse
     prompt_token_ids = [int(token) for token in prompt]
     kept = len(prefix_ids) - tito_tokenizer.max_trim_tokens
