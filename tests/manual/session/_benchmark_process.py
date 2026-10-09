@@ -12,8 +12,10 @@ import time
 
 import psutil
 
+MEMORY_BUDGET_BYTES = 12_000_000_000
 
-def run_benchmark_process(command, *, cwd, env, timeout=1200, memory_bytes=12_000_000_000):
+
+def run_benchmark_process(command, *, cwd, env, timeout=1200, memory_bytes=MEMORY_BUDGET_BYTES):
     """Run the guard in isolation so it owns even orphaned benchmark descendants."""
     policy = {"command": command, "cwd": str(cwd), "timeout": timeout, "memory_bytes": memory_bytes}
     result = subprocess.run(

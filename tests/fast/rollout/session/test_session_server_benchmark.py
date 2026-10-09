@@ -9,20 +9,20 @@ from pathlib import Path
 
 import pytest
 from tests.ci.ci_register import register_cpu_ci
-from tests.manual.session._benchmark_process import run_benchmark_process
+from tests.manual.session._benchmark_process import MEMORY_BUDGET_BYTES, run_benchmark_process
 from tests.manual.session.bench_session_server_overhead import (
     DEFAULT_HF_CHECKPOINT,
     benchmark_resources,
     run_http_bench,
 )
 
-register_cpu_ci(est_time=600, suite="stage-b-cpu", labels=["rollout"])
+register_cpu_ci(est_time=650, suite="stage-b-cpu", labels=["rollout"])
 
 
 def _measure(version):
     resources = benchmark_resources()
     assert resources["effective_cpus"] >= 4, resources
-    assert resources["available_memory_bytes"] >= 12_000_000_000, resources
+    assert resources["available_memory_bytes"] >= MEMORY_BUDGET_BYTES, resources
     args = Namespace(
         sessions=32,
         turns=100,
@@ -93,8 +93,9 @@ def test_session_server_benchmark(version, tmp_path, capsys):
     report = json.loads(result_path.read_text())["summary"]
     with capsys.disabled():
         print(json.dumps(report), flush=True)
-    assert report["tree_peak_rss_bytes"] <= 12_000_000_000, report
-    assert report["median_cpu_ms_per_turn"] <= 50.0, report
+    assert report["tree_peak_rss_bytes"] <= MEMORY_BUDGET_BYTES, report
+    # Hosted four-vCPU runs measured about 25 ms/turn; allow 40% runner variation.
+    assert report["median_cpu_ms_per_turn"] <= 35.0, report
 
 
 @pytest.mark.parametrize("failure", ["start", "ready"])
