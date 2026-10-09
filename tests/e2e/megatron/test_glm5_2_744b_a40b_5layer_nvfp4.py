@@ -157,11 +157,11 @@ def execute():
         "--rollout-shuffle "
         "--rm-type deepscaler "
         "--num-rollout 2 "
-        "--rollout-batch-size 8 "
-        "--n-samples-per-prompt 8 "
+        "--rollout-batch-size 4 "
+        "--n-samples-per-prompt 4 "
         "--rollout-max-response-len 100 "
         "--rollout-temperature 1 "
-        "--global-batch-size 64 "
+        "--global-batch-size 16 "
     )
 
     perf_args = (
