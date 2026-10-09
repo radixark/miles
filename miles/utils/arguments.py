@@ -578,9 +578,9 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                     "How per-token log-probs and entropy are computed from the logits. 'torch' upcasts each "
                     "response chunk to fp32 and keeps its softmax for backward. 'fused' streams the logits "
                     "through Triton kernels, writes the gradient in place, and normalizes over the true "
-                    "vocabulary (--vocab-size) as the rollout engine does, not over Megatron's padded one. "
-                    "'fused' does not support --true-on-policy-mode or sampling-support replay "
-                    "(--rollout-top-p below 1 or a positive --rollout-top-k)."
+                    "vocabulary (--vocab-size) as the rollout engine does, not over Megatron's padded one; "
+                    "under sampling-support replay it normalizes the log-probs over each token's support "
+                    "instead. 'fused' does not support --true-on-policy-mode."
                 ),
             )
             parser.add_argument(
@@ -3233,12 +3233,6 @@ def validate_log_probs_backend_args(args) -> None:
         raise ValueError(
             "--log-probs-backend fused does not support --true-on-policy-mode, which needs bitwise "
             "parity with the rollout engine's own log-softmax; use --log-probs-backend torch."
-        )
-    if args.use_sampling_support_replay:
-        raise ValueError(
-            "--log-probs-backend fused does not support sampling-support replay "
-            f"(--rollout-top-p {args.rollout_top_p}, --rollout-top-k {args.rollout_top_k}); "
-            "use --log-probs-backend torch."
         )
     # unset, the actor falls back to the tokenizer's vocab_size, which can leave out added special tokens
     if args.train_backend == "megatron" and getattr(args, "vocab_size", None) is None:

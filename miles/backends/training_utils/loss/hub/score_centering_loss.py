@@ -47,21 +47,44 @@ def _candidate_log_probs(args: Namespace, batch: RolloutBatch, logits: torch.Ten
     if with_entropy:
         result["entropy"] = []
     if getattr(args, "log_probs_backend", "torch") == "fused":
-        # startup rejects sampling-support replay with the fused backend, so every row is full-vocabulary
-        selected, entropy = fused_response_log_probs(
-            logits,
-            args=args,
-            total_lengths=batch["total_lengths"],
-            response_lengths=batch["response_lengths"],
-            max_seq_lens=batch.get("max_seq_lens"),
-            sample_targets=lambda i, sample_rows: _sampled_and_candidate_ids(batch, i, sample_rows),
-            with_entropy=with_entropy,
-        )
+        if support_only:
+            # filtered sampling: score the sampled token and its whole support, normalized over it
+            scores = fused_response_log_probs(
+                logits,
+                args=args,
+                total_lengths=batch["total_lengths"],
+                response_lengths=batch["response_lengths"],
+                max_seq_lens=batch.get("max_seq_lens"),
+                sample_targets=lambda i, sample_rows: _sampled_ids(batch, i, sample_rows),
+                sample_support=lambda i, sample_rows: _candidate_ids(
+                    batch, i, torch.as_tensor(sample_rows.response_indices(), dtype=torch.long)
+                ),
+                with_entropy=with_entropy,
+                entropy_over_support=True,
+            )
+            selected = [
+                torch.cat((sampled.unsqueeze(-1), support), dim=-1)
+                for sampled, support in zip(scores.log_probs, scores.support_log_probs, strict=True)
+            ]
+        else:
+            # replay with reference KL is rejected at startup, so without support-only every row is
+            # full-vocabulary
+            assert not replay, "score centering replays the support only without reference KL"
+            scores = fused_response_log_probs(
+                logits,
+                args=args,
+                total_lengths=batch["total_lengths"],
+                response_lengths=batch["response_lengths"],
+                max_seq_lens=batch.get("max_seq_lens"),
+                sample_targets=lambda i, sample_rows: _sampled_and_candidate_ids(batch, i, sample_rows),
+                with_entropy=with_entropy,
+            )
+            selected = scores.log_probs
         result["selected"] = selected
         if args.use_kl_loss:
             result["kl_log_probs"] = [sample[:, 0] for sample in selected]
         if with_entropy:
-            result["entropy"] = entropy
+            result["entropy"] = scores.entropy
         _redistribute_allgather_cp(args, batch, logits, result)
         return result
     chunks = _iter_response_chunks(
@@ -108,10 +131,15 @@ def _candidate_log_probs(args: Namespace, batch: RolloutBatch, logits: torch.Ten
     return result
 
 
+def _sampled_ids(batch: RolloutBatch, sample: int, sample_rows: LocalResponseRows) -> torch.Tensor:
+    """``[R]`` sampled token per local row."""
+    total, response = batch["total_lengths"][sample], batch["response_lengths"][sample]
+    return sample_rows.tokens(batch["unconcat_tokens"][sample], total - response).long()
+
+
 def _sampled_and_candidate_ids(batch: RolloutBatch, sample: int, sample_rows: LocalResponseRows) -> torch.Tensor:
     """``[R, 1 + K]`` token ids per local row: the sampled token, then the rollout's top-K candidates."""
-    total, response = batch["total_lengths"][sample], batch["response_lengths"][sample]
-    sampled = sample_rows.tokens(batch["unconcat_tokens"][sample], total - response).long()
+    sampled = _sampled_ids(batch, sample, sample_rows)
     indices = torch.as_tensor(sample_rows.response_indices(), dtype=torch.long)
     candidates = _candidate_ids(batch, sample, indices).to(sampled.device)
     return torch.cat((sampled.unsqueeze(-1), candidates), dim=-1)

@@ -866,17 +866,15 @@ def test_sampling_support_arguments_fail_closed(extra, message):
     ("extra", "vocab_size", "message"),
     [
         (["--true-on-policy-mode"], 151_936, "does not support --true-on-policy-mode"),
-        (["--rollout-top-k", "32"], 151_936, "does not support sampling-support replay"),
         ([], None, "needs --vocab-size"),
     ],
-    ids=["true_on_policy", "sampling_support_replay", "no_vocab_size"],
+    ids=["true_on_policy", "no_vocab_size"],
 )
 def test_fused_log_probs_backend_rejects_what_it_does_not_cover(extra, vocab_size, message):
     parser = argparse.ArgumentParser()
     get_miles_extra_args_provider()(parser)
     args = parser.parse_args(["--log-probs-backend", "fused", "--num-rollout", "1"] + extra + REQUIRED_ARGS)
     args.vocab_size = vocab_size  # a Megatron flag, absent from this parser
-    args.use_sampling_support_replay = "--rollout-top-k" in extra  # derived by miles_validate_args
 
     with pytest.raises(ValueError, match=message):
         validate_log_probs_backend_args(args)
