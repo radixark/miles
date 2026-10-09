@@ -35,7 +35,9 @@ Stage names follow `stage-<tier>-<gpus>-<hw>` (or `stage-<tier>-<hw>` for CPU, e
 
 In `pr-test.yml`, `tier a` (CPU fast) gates PR-image preparation and the NVIDIA GPU fleet; its GPU stages (`b` / `c`) all depend on both resolvers and `stage-a-cpu`, and run concurrently with each other — the `b` / `c` letters classify role, they are not a sequential pipeline. The MI350 stage has no CPU-test gate.
 
-`pr-test.yml` and `pr-test-rocm.yml` treat `pull_request.closed` (including merges) as cancellation-only: each close event shares its workflow's PR concurrency group, cancels queued or running runs of that workflow, and starts no resolver or test jobs.
+`pr-test.yml` and `pr-test-rocm.yml` listen to both `pull_request.labeled` and `pull_request.unlabeled`. Adding or removing any PR label starts a new run in the same PR concurrency group, cancels the previous queued or running run, and resolves CI policy from the remaining labels. Independently dispatched `/rerun-test` runs are unaffected.
+
+Both workflows treat `pull_request.closed` (including merges) as cancellation-only: each close event shares its workflow's PR concurrency group, cancels queued or running runs of that workflow, and starts no resolver or test jobs.
 
 A PR event starts jobs only when the PR's base is the default branch or the PR carries a `run-ci*` label. Otherwise `resolve-ci-policy` is skipped, and because every other job needs it, the run starts nothing. A stacked PR therefore runs `PR Test` only while labeled; retargeting a PR to `main` is an `edited` event, which does not start a run.
 
@@ -69,6 +71,10 @@ A **nightly** policy selects every enabled tag except `long` and `ft-long`, admi
 **Dependencies / gating.** In `pr-test.yml`, both CPU stages require only `resolve-ci-policy`. PR-image preparation requires selected CUDA tests and the `stage-a-cpu` success/bypass gate; NVIDIA GPU stages follow image resolution. `stage-b-cpu` stays parallel and does not gate that chain. Resolved nightly, weekly, or release cadence and the `bypass-fastfail` PR label admit the chain after an actual `stage-a-cpu` failure and make each suite continue after a test failure. This fast-fail exception does not itself select GPU tests or bypass policy or Docker/image failure; cadence and labels determine selection as described above. Scheduled, manual, and called release runs retain their existing image preparation.
 
 **Runner selection.** CUDA stages request runners by label via `runs_on`, a JSON list passed through to `runs-on` — a runner must carry **all** listed labels (GPU class + count). CPU stages call `_run-cpu-ci.yml`, whose only job runs on GitHub-hosted `ubuntu-latest`, so they don't occupy GPU-fleet slots.
+
+**NVSHMEM on 4-GPU H200.** When `runs_on` carries both `h200` and `4gpu`, `_run-ci.yml` sets `NVSHMEM_HCA_LIST` to a NIC name that matches nothing before any test command runs. NVSHMEM then skips its IB transports at init, and DeepEP keeps its intra-node traffic on NVLink. The override relies on the stage being single-node; every other stage keeps NVSHMEM's RDMA transports, and a multi-node stage must not inherit it.
+
+That runner pool can include RoCE hosts, and GitHub attaches every job container to a runner-created bridge network (`container.options` cannot set `--network`). The host's RoCE GIDs are unusable inside that container, so NVSHMEM's IBRC/IBGDA connection setup fails and DeepEP low-latency waits until the job timeout.
 
 **Arch dispatch.** `tests/ci/hardware.py::CUDA_STAGES` is the single source of truth for the CUDA taxonomy: each stage's GPU generation, GPU count, and runner labels. `CI_SUITES` and the `/rerun-test` runner map both derive from it, and a stage's `--suite` already names its generation, so no job passes an arch explicitly.
 
