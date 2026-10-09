@@ -429,12 +429,37 @@ async def test_routes_bad_bodies_answer_400(client, content):
         {"model": 123},
         {"stop": [1]},
         {"chat_template_kwargs": "x"},
+        {"presence_penalty": 0.5},
+        {"logprobs": True},
+        {"top_logprobs": 2},
+        {"logit_bias": {"1": 5}},
+        {"reasoning_effort": 0},
+        {"reasoning_effort": "low"},
+        {"separate_reasoning": True},
+        {"tool_choice": "required"},
+        {"response_format": {"type": "json_object"}},
+        {"parallel_tool_calls": False},
     ],
 )
 async def test_routes_chat_request_validation(client, extra):
     await client.post(f"/oai/sessions/{SID}", json={"sampling_session_id": client.ssid}, headers=_key())
     body = {key: value for key, value in _chat_body(**extra).items() if value is not DROP}
     assert (await client.post(f"/oai/sessions/{SID}/v1/chat/completions", json=body)).status_code == 400
+
+
+async def test_routes_chat_accepts_harmless_metadata_and_defaults(client):
+    await client.post(f"/oai/sessions/{SID}", json={"sampling_session_id": client.ssid}, headers=_key())
+    body = {
+        **_chat_body(),
+        "user": "harness-1",
+        "tool_choice": "auto",
+        "response_format": {"type": "text"},
+        "presence_penalty": 0,
+        "logprobs": False,
+        "logit_bias": {},
+        "separate_reasoning": False,
+    }
+    assert (await client.post(f"/oai/sessions/{SID}/v1/chat/completions", json=body)).status_code == 200
 
 
 async def test_routes_chat_response_names_the_sampling_model(client):

@@ -15,6 +15,31 @@ def _number(body: dict[str, Any], key: str) -> float:
     return value
 
 
+# OpenAI parameters that change what is generated and have no Tinker sampling equivalent, with the values that
+# mean "off" in OpenAI's own schema; anything else is refused, never ignored
+_UNSUPPORTED_SAMPLING: dict[str, tuple[Any, ...]] = {
+    "presence_penalty": (None, 0),
+    "frequency_penalty": (None, 0),
+    "logit_bias": (None, {}),
+    "logprobs": (None, False),
+    "top_logprobs": (None, 0),
+    "reasoning_effort": (None,),
+    "separate_reasoning": (None, False),  # the route never splits reasoning out of content
+}
+
+
+def _refuse_unsupported(body: dict[str, Any]) -> None:
+    refused = [key for key, off in _UNSUPPORTED_SAMPLING.items() if body.get(key) not in off]
+    if body.get("tool_choice") not in (None, "auto"):
+        refused.append("tool_choice")  # tools are rendered into the prompt; the model chooses freely
+    if body.get("response_format") not in (None, {"type": "text"}):
+        refused.append("response_format")
+    if body.get("parallel_tool_calls") is False:
+        refused.append("parallel_tool_calls")
+    if refused:
+        raise UserInputError(f"not supported on the recorded session route: {', '.join(refused)}")
+
+
 def parse_chat_request(body: dict[str, Any]) -> TurnRequest:
     """OpenAI chat body → TurnRequest: n=1 only, no stream, max_tokens required, stop normalized to a list."""
     sampling_params: dict[str, Any] = {"max_tokens": body.get("max_tokens", body.get("max_completion_tokens"))}
@@ -23,6 +48,7 @@ def parse_chat_request(body: dict[str, Any]) -> TurnRequest:
         raise UserInputError("a recorded session samples one completion per turn; use n=1")
     if body.get("stream"):
         raise UserInputError("stream=true is not supported on the recorded session route")
+    _refuse_unsupported(body)
     for key in ("temperature", "top_p"):  # omitted: runtime's defaults
         if key in body:
             sampling_params[key] = _number(body, key)
