@@ -214,17 +214,17 @@ class TestResolvePolicy:
             (REGULAR_CADENCE, set(), set(), False),
             (REGULAR_CADENCE, {"run-ci-megatron"}, {"megatron"}, False),
             (REGULAR_CADENCE, {"bypass-fastfail"}, set(), True),
-            (REGULAR_CADENCE, {"run-ci-image"}, _BROAD - {"long", "ft-short", "ft-long"}, False),
+            (REGULAR_CADENCE, {"run-ci-image"}, _ALL - {"long", "ft-short", "ft-long"}, False),
             (REGULAR_CADENCE, {"run-ci-all"}, _BROAD, False),
-            (REGULAR_CADENCE, {"run-ci-image", "run-ci-all"}, _BROAD, False),
+            (REGULAR_CADENCE, {"run-ci-image", "run-ci-all"}, _ALL, False),
             (NIGHTLY_CADENCE, set(), _BROAD - {"long", "ft-long"}, True),
             (NIGHTLY_CADENCE, {"nightly"}, _BROAD - {"long", "ft-long"}, True),
-            (NIGHTLY_CADENCE, {"run-ci-image", "nightly"}, _BROAD - {"long", "ft-long"}, True),
+            (NIGHTLY_CADENCE, {"run-ci-image", "nightly"}, _ALL - {"long", "ft-long"}, True),
             (NIGHTLY_CADENCE, {"nightly", "run-ci-all"}, _BROAD, True),
             (WEEKLY_CADENCE, set(), _BROAD, True),
-            (WEEKLY_CADENCE, {"run-ci-image"}, _BROAD, True),
+            (WEEKLY_CADENCE, {"run-ci-image"}, _ALL, True),
             (RELEASE_CADENCE, set(), _BROAD, True),
-            (RELEASE_CADENCE, {"run-ci-image"}, _BROAD, True),
+            (RELEASE_CADENCE, {"run-ci-image"}, _ALL, True),
         ],
     )
     def test_selection_and_fastfail(self, cadence, labels, expected, bypass):
@@ -284,11 +284,11 @@ class TestResolvePolicy:
     @pytest.mark.parametrize(
         ("cadence", "labels", "expected"),
         [
-            (REGULAR_CADENCE, {"run-ci-image", "run-ci-long"}, _BROAD - {"ft-short", "ft-long"}),
-            (REGULAR_CADENCE, {"run-ci-image", "run-ci-ft-short"}, _BROAD - {"long", "ft-long"}),
+            (REGULAR_CADENCE, {"run-ci-image", "run-ci-long"}, _ALL - {"ft-short", "ft-long"}),
+            (REGULAR_CADENCE, {"run-ci-image", "run-ci-ft-short"}, _ALL - {"long", "ft-long"}),
             (NIGHTLY_CADENCE, {"nightly", "run-ci-long"}, _BROAD - {"ft-long"}),
             (NIGHTLY_CADENCE, {"nightly", "run-ci-ft-long"}, _BROAD - {"long"}),
-            (REGULAR_CADENCE, {"run-ci-image", "run-ci-ft-short", "run-ci-ft-long"}, _BROAD - {"long"}),
+            (REGULAR_CADENCE, {"run-ci-image", "run-ci-ft-short", "run-ci-ft-long"}, _ALL - {"long"}),
             (NIGHTLY_CADENCE, {"run-ci-ft-long"}, _BROAD - {"long"}),
         ],
     )
@@ -791,6 +791,11 @@ class TestRunSuitePolicyIntegration:
             (REGULAR_CADENCE, []),
             (REGULAR_CADENCE, ["run-ci-all"]),
             (REGULAR_CADENCE, ["run-ci-image"]),
+            (REGULAR_CADENCE, ["run-ci-image", "run-ci-all"]),
+            (REGULAR_CADENCE, ["run-ci-image", "run-ci-blackwell-only"]),
+            (NIGHTLY_CADENCE, ["run-ci-image", "nightly"]),
+            (WEEKLY_CADENCE, ["run-ci-image"]),
+            (RELEASE_CADENCE, ["run-ci-image"]),
             (REGULAR_CADENCE, ["run-ci-blackwell-only"]),
             (NIGHTLY_CADENCE, ["nightly"]),
             (WEEKLY_CADENCE, []),
@@ -798,7 +803,9 @@ class TestRunSuitePolicyIntegration:
         ],
     )
     @pytest.mark.parametrize("explicit_rollout", [False, True])
-    def test_rollout_cpu_benchmarks_require_explicit_label(self, monkeypatch, cadence, labels, explicit_rollout):
+    def test_rollout_cpu_benchmarks_require_rollout_or_image_label(
+        self, monkeypatch, cadence, labels, explicit_rollout
+    ):
         always_on = "tests/fast/test_regular.py"
         benchmark = "tests/fast/test_rollout_benchmark.py"
         self._stub_collection(
@@ -817,7 +824,7 @@ class TestRunSuitePolicyIntegration:
         assert result == 0
         assert len(commands) == 1
         assert always_on in commands[0]
-        assert (benchmark in commands[0]) is explicit_rollout
+        assert (benchmark in commands[0]) is (explicit_rollout or "run-ci-image" in labels)
 
     def test_nightly_bypass_reaches_cpu_runner(self, monkeypatch):
         tests = [_make("tests/fast/test_regular.py", backend=HWBackend.CPU, suite="stage-a-cpu")]
