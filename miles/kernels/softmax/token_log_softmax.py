@@ -1,17 +1,10 @@
-"""Log-softmax of one target token per selected row: per-row softmax statistics and the logits gradient.
+"""Log-softmax of one target token per selected row: per-row statistics and the logits gradient.
 
-Both kernels read one vocab shard of selected logits rows, in the logits' own dtype, and do all
-arithmetic in fp32 on ``d = (x - m) / T``, measured from the row max ``m`` before scaling. Columns
-from ``n_unpadded_cols`` on are vocabulary padding: they get probability zero and a zero gradient. To keep
-the exponential off the critical path they use one ``exp2`` per element, multiply by the reciprocal
-temperature instead of dividing, and the statistics kernel rescales its running sums once per
-block, not per element.
-
-A third, store-only kernel zeroes the gradient rows the op did not score, so the backward never
-reads or rewrites the scored rows a second time.
-
-All three are memory-bound streaming passes, so their launch shape (vocab block and warps) is the
-only thing to tune per GPU; ``kernel_configs`` picks it by GPU family.
+The kernels read one vocab shard of the selected rows in the logits' dtype and compute in fp32 on
+``d = (x - m) / T``, measured from the row max ``m``. Columns from ``n_unpadded_cols`` on are vocab
+padding, with probability and gradient zero. A third, store-only kernel zeroes the rows the op did
+not score. All three are memory-bound streaming passes, so the launch shape is the only per-GPU
+setting; ``kernel_configs`` picks it by GPU family.
 """
 
 import functools
@@ -37,18 +30,13 @@ class KernelConfigs:
     zero: LaunchConfig
 
 
-# Measured at [65536, 129280] bf16 with tests/manual/bench_fused_log_probs.py, which prints the row
-# for the GPU it runs on. Bandwidth as a share of a device copy on the same GPU:
-#   sm90 (H100, H200), on H200: statistics 101%, gradient 93%, zeroing 103%
-#   sm100 (B200, GB200), on B200: statistics 89%, gradient 89%, zeroing 108%
-#   sm103 (B300, GB300), on GB300: statistics 89%, gradient 90%, zeroing 107%
+# measured at [65536, 129280] bf16 by tests/manual/bench_fused_log_probs.py, which prints a new row
 _MEASURED_CONFIGS = {
     "sm90": KernelConfigs(stats=LaunchConfig(2048, 1), grad=LaunchConfig(4096, 1), zero=LaunchConfig(2048, 16)),
     "sm100": KernelConfigs(stats=LaunchConfig(2048, 1), grad=LaunchConfig(8192, 2), zero=LaunchConfig(2048, 16)),
     "sm103": KernelConfigs(stats=LaunchConfig(2048, 1), grad=LaunchConfig(8192, 2), zero=LaunchConfig(1024, 16)),
 }
-# A family nobody has measured yet (gfx942: MI300X; gfx950: MI350X, MI355X) runs the B200 shape:
-# every shape gives the same results, only the speed differs.
+# an unmeasured family (e.g. ROCm) runs the B200 shape; every shape gives the same results
 _FALLBACK_CONFIGS = _MEASURED_CONFIGS["sm100"]
 
 
@@ -87,8 +75,7 @@ def _row_stats_kernel(
     lanes = tl.arange(0, BLOCK_V)
     log2_scale = inv_temperature * 1.4426950408889634  # exp(d) = 2^((x - m) * log2_scale)
 
-    # with d = (x - m) / T for the running max m: sum exp(d) and sum exp(d) * d. Subtracting the max
-    # before scaling keeps d exact near the max, where a confident token's log-prob lives.
+    # subtracting the running max m before scaling keeps d exact near m, where a confident token lives
     run_max = tl.full([], float("-inf"), tl.float32)
     run_sum = tl.zeros([], tl.float32)
     run_sum_error = tl.zeros([], tl.float32)  # Kahan compensation of run_sum
@@ -105,8 +92,7 @@ def _row_stats_kernel(
             shift = tl.where(run_max == float("-inf"), 0.0, (run_max - new_max) * inv_temperature)
             d = (x - new_max) * inv_temperature
             run_dsum = (run_dsum + shift * run_sum) * rescale + tl.sum(tl.where(in_vocab, e * d, 0.0), axis=0)
-        # For a confident token run_sum sits near 1 while each later block adds ~1e-7; compensated
-        # addition keeps those small sums instead of rounding each one away at 1's ulp.
+        # Kahan: for a confident token run_sum sits near 1, and later blocks' ~1e-7 sums would round away
         scaled_sum = run_sum * rescale
         addend = tl.sum(e, axis=0) - run_sum_error * rescale
         new_sum = scaled_sum + addend

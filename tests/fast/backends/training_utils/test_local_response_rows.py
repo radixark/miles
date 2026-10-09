@@ -1,9 +1,4 @@
-"""``context_parallel.iter_local_response_rows`` must name exactly the local logit rows that score each response.
-
-Each token's value encodes its sample and position, so a yielded row is checked independently of
-context_parallel: it must sit at the position just before its token, in the layout the CP mode gives this
-rank. Over all ranks, the rows of a response must tile it exactly once.
-"""
+"""``iter_local_response_rows`` must name the rows that score each response, tiling it once over all ranks."""
 
 import random
 from types import SimpleNamespace
