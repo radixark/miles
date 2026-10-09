@@ -10,10 +10,11 @@ resolved request as ``turn_args``. A continuation supplies that history to the
 model resolver, which decides which fields inherit or must stay compatible.
 """
 
-import json
 from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any
+
+import orjson
 
 from miles.rollout.generate_utils.rollout_topk_logprobs import configure_rollout_topk_logprobs_request
 from miles.rollout.generate_utils.sampling_mask import validate_sampling_support_request
@@ -35,8 +36,9 @@ def filter_turn_args(
 def parse_chat_request(body: bytes) -> dict[str, Any]:
     """Decode the JSON request body, treating an empty body as an empty dict."""
     try:
-        return json.loads(body) if body else {}
-    except json.JSONDecodeError as e:
+        # Reject invalid Unicode before tokenization or session rollback, matching the proxy encoder.
+        return orjson.loads(body) if body else {}
+    except orjson.JSONDecodeError as e:
         raise MessageValidationError(f"invalid JSON body: {e}") from e
 
 

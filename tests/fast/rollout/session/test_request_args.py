@@ -11,6 +11,7 @@ from miles.rollout.session.request_args import (
     ClientResponseIntent,
     apply_session_sampling_defaults,
     filter_turn_args,
+    parse_chat_request,
     prepare_chat_request,
     resolve_request_args_by_config,
 )
@@ -368,3 +369,14 @@ def test_template_compatibility_applies_to_train_and_eval(evaluation):
             turn_args={"chat_template_kwargs": {}},
             evaluation=evaluation,
         )
+
+
+@pytest.mark.parametrize("body", [b"{", b'{"value":NaN}', b'{"value":Infinity}', b'{"value":-Infinity}'])
+def test_parse_chat_request_rejects_invalid_json(body):
+    with pytest.raises(MessageValidationError, match="invalid JSON body"):
+        parse_chat_request(body)
+
+
+def test_parse_chat_request_preserves_unicode_and_empty_body():
+    assert parse_chat_request(b"") == {}
+    assert parse_chat_request(rb'{"content":"\u4f60\u597d \ud83d\ude00"}') == {"content": "你好 😀"}
