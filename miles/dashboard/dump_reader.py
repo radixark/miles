@@ -27,7 +27,10 @@ from typing import Any, ClassVar
 import polars as pl
 import torch
 
-from miles.backends.training_utils.cp_utils import assemble_log_prob_from_cp, get_logits_and_tokens_offset_with_cp
+from miles.backends.training_utils.data.context_parallel import (
+    assemble_log_prob_from_cp,
+    get_logits_and_tokens_offset_with_cp,
+)
 from miles.utils.types import LEGACY_WEIGHT_VERSIONS_KEY, Sample, WeightVersionsPerCall
 
 

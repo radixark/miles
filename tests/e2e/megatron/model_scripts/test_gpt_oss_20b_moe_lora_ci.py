@@ -1,8 +1,8 @@
 import os
 
-from tests.ci.ci_register import register_cuda_ci
+from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
 
-import miles.utils.external_utils.command_utils as U
+from miles.utils.external_utils import command_utils
 
 # MoE-expert LoRA smoke test on gpt-oss-20b (expert-only targets, bridge mode; CI-sized
 # version of examples/lora/run-gpt-oss-20B-megatron-moe-lora.sh). Runs both serving
@@ -16,6 +16,7 @@ register_cuda_ci(
     labels=["megatron", "model-scripts", "lora"],
     hardware=["hopper", "blackwell"],
 )
+register_rocm_ci(est_time=1600, suite="nightly-stage-c-4-gpu-mi350", labels=["megatron", "model-scripts", "lora"])
 
 MODEL_NAME = "gpt-oss-20b-bf16"
 MODEL_TYPE = "gpt-oss-20b"
@@ -29,6 +30,7 @@ _CONFIGS = [
 
 
 def prepare():
+    U = command_utils.default_config().create_backend()
     U.exec_command_cpu("mkdir -p /root/models /root/datasets")
     U.exec_command_cpu(f"hf download lmsys/{MODEL_NAME} --local-dir /root/models/{MODEL_NAME}")
     U.exec_command_cpu(
@@ -37,13 +39,14 @@ def prepare():
 
 
 def execute(shared_outer: bool, virtual_experts: bool):
+    U = command_utils.default_config().create_backend()
     ckpt_args = f"--hf-checkpoint /root/models/{MODEL_NAME}/ " "--megatron-to-hf-mode bridge "
 
     lora_args = (
         "--lora-rank 32 "
         "--lora-alpha 32 "
         "--lora-dropout 0.0 "
-        '--target-modules "gate_proj,up_proj,down_proj" '
+        '--target-modules "gate_up_proj,down_proj" '
         "--sglang-lora-backend triton "
         f"{'--experts-shared-outer-loras ' if shared_outer else ''}"
         f"{'' if virtual_experts else '--no-sglang-lora-use-virtual-experts '}"
@@ -129,6 +132,8 @@ if __name__ == "__main__":
     for name, shared_outer, virtual_experts in _CONFIGS:
         print(f"[gpt-oss-moe-lora-ci] ===== combo: {name} =====", flush=True)
         # fresh ray/sglang between combos
-        U.exec_command_cpu("ray stop --force || true; pkill -9 sglang || true; sleep 10")
+        command_utils.default_config().create_backend().exec_command_cpu(
+            "ray stop --force || true; pkill -9 sglang || true; sleep 10"
+        )
         execute(shared_outer, virtual_experts)
         print(f"[gpt-oss-moe-lora-ci] ===== combo PASSED: {name} =====", flush=True)

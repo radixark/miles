@@ -93,8 +93,9 @@ snapshot_download('${HF_REPO}', local_dir='/root/models/${MODEL_NAME}')
 "
 
 python3 -c "
-from miles.utils.external_utils.command_utils import hf_download_dataset
-hf_download_dataset('zhuzilin/dapo-math-17k')
+from miles.utils.external_utils import command_utils
+U = command_utils.default_config().create_backend()
+U.hf_download_dataset('zhuzilin/dapo-math-17k')
 "
 
 # ---------------------------------------------------------------------------
@@ -207,7 +208,8 @@ if [ "${DOWNLOAD_ONLY}" -eq 0 ]; then
     fi
 
     python3 -c "
-from miles.utils.external_utils.command_utils import convert_checkpoint
+from miles.utils.external_utils import command_utils
+U = command_utils.default_config().create_backend()
 kwargs = dict(
     model_name='${MODEL_NAME}',
     megatron_model_type='${MODEL_TYPE}',
@@ -219,7 +221,7 @@ kwargs = dict(
 num_nodes = ${PY_NUM_NODES}
 if num_nodes is not None:
     kwargs['num_nodes'] = num_nodes
-convert_checkpoint(**kwargs)
+U.convert_checkpoint(**kwargs)
 "
     echo "Prepare done (full: download + patch + convert)."
 else

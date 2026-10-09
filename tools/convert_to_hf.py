@@ -6,7 +6,7 @@ from transformers import AutoModelForCausalLM
 import miles.backends.megatron_utils as megatron_utils
 from miles.backends.megatron_utils import update_weight_utils
 from miles.utils.arguments import parse_args
-from miles.utils.hf_config import load_hf_config
+from miles.utils.hf_utils.config import load_hf_config
 from miles.utils.processing_utils import load_tokenizer
 
 

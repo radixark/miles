@@ -1,0 +1,8 @@
+# Native Workplace service (Gym is a separately pinned checkout).
+fastapi>=0.115,<1
+httpx>=0.28,<1
+pandas>=2,<3
+polars>=1,<2
+pyarrow>=18
+typed-argument-parser>=1.10,<2
+uvicorn>=0.30,<1

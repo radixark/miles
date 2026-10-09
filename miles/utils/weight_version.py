@@ -2,7 +2,7 @@ import re
 from argparse import Namespace
 from typing import TYPE_CHECKING
 
-from miles.utils.lora import is_lora_enabled
+from miles.utils.lora.utils import is_lora_enabled
 
 if TYPE_CHECKING:
     from miles.utils.types import Sample

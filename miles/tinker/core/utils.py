@@ -23,7 +23,6 @@ def resolve_checkpoint_dir(checkpoint_root: str, model_id: str, kind: str, name:
     path = f"{root}/{model_id}/{kind}/{name}"
     resolved = os.path.realpath(path)
     assert resolved.startswith(root + os.sep), f"checkpoint path {resolved!r} escapes {root!r}"
-    # saves replace the public link, not the version it currently points to
     return path
 
 

@@ -1,12 +1,19 @@
 import torch
+
 from mbridge.core import register_model
 from mbridge.models import Qwen2MoEBridge
+from miles.backends.megatron_utils.megatron_to_hf.linear_attn_layout import (
+    gdn_heads,
+    qkv_flat_to_group_major,
+    qkv_group_major_to_flat,
+)
+from miles_plugins.mbridge.linear_attn import LinearAttentionBridgeMixin
 
-from miles_plugins.mbridge.gdn_layout import _head_interleaved_linear_attn_param
+_GDN_CONV = "self_attention.linear_attn.conv1d.weight"
 
 
 @register_model("qwen3_next")
-class Qwen3NextBridge(Qwen2MoEBridge):
+class Qwen3NextBridge(LinearAttentionBridgeMixin, Qwen2MoEBridge):
     _ATTENTION_MAPPING = (
         Qwen2MoEBridge._ATTENTION_MAPPING
         | {
@@ -40,37 +47,11 @@ class Qwen3NextBridge(Qwen2MoEBridge):
         }
     )
 
-    def _gdn_layout(self):
-        from miles_plugins.models.gdn_attention import GdnLayout
-
-        layout = getattr(self, "_gdn_layout_cached", None)
-        if layout is None:
-            layout = self._gdn_layout_cached = GdnLayout.from_hf_config(self.hf_config, hf_layout="qwen3_next")
-        return layout
-
-    def _weight_to_hf_format(
-        self, mcore_weights_name: str, mcore_weights: torch.Tensor
-    ) -> tuple[list[str], list[torch.Tensor]]:
-        hf_names, hf_weights = super()._weight_to_hf_format(mcore_weights_name, mcore_weights)
-        linear_attn_name = _head_interleaved_linear_attn_param(mcore_weights_name, "qwen3_next")
-        if linear_attn_name is not None:
-            from miles_plugins.models.gdn_attention import megatron_to_hf_linear_attn
-
-            hf_weights = [megatron_to_hf_linear_attn(self._gdn_layout(), linear_attn_name, hf_weights[0])]
-        return hf_names, hf_weights
-
     def _weight_to_mcore_format(
         self, mcore_weights_name: str, hf_weights: list[torch.Tensor]
     ) -> tuple[list[str], list[torch.Tensor]]:
-        linear_attn_name = _head_interleaved_linear_attn_param(mcore_weights_name, "qwen3_next")
-        if linear_attn_name is not None:
-            # The Megatron module stores these rows head-interleaved so contiguous TP chunks are head shards.
-            from miles_plugins.models.gdn_attention import hf_to_megatron_linear_attn
-
-            assert len(hf_weights) == 1
-            return hf_to_megatron_linear_attn(
-                self._gdn_layout(), linear_attn_name, super()._weight_to_mcore_format(mcore_weights_name, hf_weights)
-            )
+        if mcore_weights_name.endswith(_GDN_CONV):
+            return qkv_flat_to_group_major(hf_weights[0], gdn_heads(self.hf_config))
 
         if "self_attention.linear_qkv." in mcore_weights_name and "layer_norm" not in mcore_weights_name:
             # merge qkv
@@ -105,6 +86,14 @@ class Qwen3NextBridge(Qwen2MoEBridge):
             return qgkv
 
         return super()._weight_to_mcore_format(mcore_weights_name, hf_weights)
+
+    def _weight_to_hf_format(
+        self, mcore_weights_name: str, mcore_weights: torch.Tensor
+    ) -> tuple[list[str], list[torch.Tensor]]:
+        names, weights = super()._weight_to_hf_format(mcore_weights_name, mcore_weights)
+        if mcore_weights_name.endswith(_GDN_CONV):
+            weights = [qkv_group_major_to_flat(weights[0], gdn_heads(self.hf_config))]
+        return names, weights
 
     def _build_config(self):
         mtp_args = {}

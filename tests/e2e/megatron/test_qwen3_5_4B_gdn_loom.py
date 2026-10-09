@@ -2,10 +2,10 @@
 
 Runs ``--linear-attention-backend loom`` (the generated deterministic chunked GDN kernels in
 ``miles_plugins/models/gdn_chunk_train``) with ``--tensor-model-parallel-size 2 --sequence-parallel``,
-so the unified GDN core shards the linear-attention heads across TP instead of replicating the GDN
-compute, and the Megatron -> HF weight update goes through the head-interleaved ``in_proj_qkv`` /
-``conv1d`` converters.  ``MILES_GDN_BACKEND=fla`` runs the same recipe on the FLA backend for an
-A/B reference.  Needs Blackwell (SM100a/SM103a) GPUs for the loom backend.
+so the head-sharded linear-attention layer (``miles_plugins/models/linear_attn.py``) runs each rank's
+key-head groups through the deterministic kernels, and the Megatron -> HF weight update goes through the
+group-major ``in_proj_qkv`` / ``conv1d`` converters.  ``MILES_GDN_BACKEND=fla`` runs the same recipe on the
+FLA backend for an A/B reference.  Needs Blackwell (SM100a/SM103a) GPUs for the loom backend.
 
 ``MILES_E2E_MODE`` selects ``live`` (default: rollouts + training), ``record`` (live, additionally dumps every
 rollout batch to ``MILES_E2E_DEBUG_DIR``) or ``replay`` (``--debug-train-only`` on the recorded batches, saving
@@ -21,7 +21,7 @@ import os
 
 from tests.ci.ci_register import register_cuda_ci
 
-import miles.utils.external_utils.command_utils as U
+from miles.utils.external_utils import command_utils
 
 register_cuda_ci(
     est_time=1800,
@@ -46,6 +46,7 @@ RUN_TAG = os.environ.get("MILES_E2E_RUN_TAG", BACKEND)
 
 
 def prepare():
+    U = command_utils.default_config().create_backend()
     U.exec_command_cpu(f"mkdir -p {MODEL_DIR} {DATA_DIR}")
     U.exec_command_cpu(f"hf download Qwen/{MODEL_NAME} --local-dir {MODEL_DIR}/{MODEL_NAME}")
     U.hf_download_dataset("zhuzilin/dapo-math-17k", data_dir=DATA_DIR)
@@ -61,6 +62,7 @@ def prepare():
 
 
 def execute():
+    U = command_utils.default_config().create_backend()
     ckpt_args = f"--hf-checkpoint {MODEL_DIR}/{MODEL_NAME}/ " f"--ref-load {CKPT_DIR}/{MODEL_NAME}_torch_dist "
 
     rollout_args = (
@@ -156,7 +158,7 @@ def execute():
         f"{rollout_args} "
         f"{optimizer_args} "
         f"{grpo_args} "
-        f"{U.get_default_wandb_args(__file__, run_name_prefix=f'gdn-{RUN_TAG}-{MODE}')} "
+        f"{command_utils.get_default_wandb_args(__file__, run_name_prefix=f'gdn-{RUN_TAG}-{MODE}')} "
         f"{perf_args} "
         f"{eval_args} "
         f"{sglang_args} "

@@ -73,6 +73,7 @@ def build_leaf_material(
             accumulated_token_ids=leaf.token_ids,
             max_trim_tokens=registry.tito_tokenizer.max_trim_tokens,
             use_addition_r3=use_addition_r3,
+            evaluation=state.evaluation,
         )
         if max_seq_len is not None:
             turns = truncate_samples_by_total_tokens(turns, max_seq_len, registry.tokenizer)

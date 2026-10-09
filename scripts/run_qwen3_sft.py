@@ -34,7 +34,7 @@ from typing import Literal
 
 import typer
 
-import miles.utils.external_utils.command_utils as U
+from miles.utils.external_utils import command_utils
 
 _MODEL_NAMES = Literal["Qwen3-4B-Base", "Qwen3-235B-A22B"]
 
@@ -58,8 +58,8 @@ _RECIPES: dict[str, _Recipe] = {
 
 
 @dataclass
-class ScriptArgs(U.ExecuteTrainConfig):
-    run_id: str = U.create_run_id()
+class ScriptArgs(command_utils.ExecuteTrainConfig):
+    run_id: str = command_utils.create_run_id()
     model_name: _MODEL_NAMES = "Qwen3-4B-Base"
     num_gpus_per_node: int = 8
     join_ray_workers: bool = True
@@ -74,6 +74,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
 
 
 def execute(args: ScriptArgs):
+    U = args.create_backend()
     ckpt_args = (
         f"--hf-checkpoint {args.model_dir}/{args.model_name} "
         f"--ref-load {args.model_dir}/{args.model_name}_torch_dist "
@@ -145,7 +146,7 @@ def execute(args: ScriptArgs):
         f"{ckpt_args} "
         f"{sft_args} "
         f"{optimizer_args} "
-        f"{U.get_default_wandb_args(__file__, run_id=args.run_id)} "
+        f"{command_utils.get_default_wandb_args(__file__, run_id=args.run_id)} "
         f"{perf_args} "
         f"{misc_args} "
         f"{args.extra_args} "
@@ -153,7 +154,6 @@ def execute(args: ScriptArgs):
 
     U.execute_train(
         train_args=train_args,
-        config=args,
         num_gpus_per_node=args.num_gpus_per_node,
         megatron_model_type=args.recipe.megatron_model_type,
         megatron_path=args.megatron_path,
@@ -173,7 +173,7 @@ def execute(args: ScriptArgs):
     )
 
 
-@U.dataclass_cli
+@command_utils.dataclass_cli
 def main(args: ScriptArgs):
     execute(args)
 

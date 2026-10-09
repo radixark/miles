@@ -113,3 +113,30 @@ def test_effective_dp_cp_uses_inner_outer_pair_in_indep_mode():
     assert result.size == 3 * 4
     assert result.groups_inner_to_outer == [None, None]
     assert result.gloo_groups_inner_to_outer == [None, None]
+
+
+from argparse import Namespace
+from unittest.mock import MagicMock, patch
+from miles.backends.fsdp_utils import parallel as parallel_module
+from miles.utils.ft_utils.process_group_utils import GroupInfo
+
+_FSDP_PARALLEL_MODULE = "miles.backends.fsdp_utils.parallel"
+
+
+def test_the_degree_one_axes_get_their_own_single_rank_group():
+    self_group = object()
+    with (
+        patch(f"{_FSDP_PARALLEL_MODULE}.dist") as dist,
+        patch(f"{_FSDP_PARALLEL_MODULE}.build_fsdp_meshes", return_value={"dp": MagicMock(), "fsdp": MagicMock()}),
+        patch(f"{_FSDP_PARALLEL_MODULE}.get_gloo_group", return_value=object()),
+        patch.object(GroupInfo, "_verify_group", lambda self, group, name: None),
+    ):
+        dist.get_world_size.return_value = 4
+        dist.get_rank.return_value = 3
+        dist.new_group.return_value = self_group
+        state = parallel_module.create_fsdp_parallel_state(Namespace(dp_replicate_size=1))
+    dist.new_group.assert_called_once_with([3])
+    for axis in (state.pp, state.ep, state.etp, state.indep_dp, state.tp, state.cp):
+        assert axis.group is self_group
+        assert (axis.rank, axis.size) == (0, 1)
+    assert (state.intra_dp.rank, state.intra_dp.size) == (3, 4)

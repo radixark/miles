@@ -199,7 +199,10 @@ def build_cpu_pytest_cmd(filenames: list[str], continue_on_error: bool) -> list[
     `-x` so every file runs; pytest still exits non-zero if any failed, so the
     stage stays red.
     """
-    cmd = ["pytest", *filenames, "-v"]
+    # sorted so every directory is named in one run of arguments: pytest loads a directory's
+    # conftest once, and an argument list that returns to a directory after naming its parent
+    # leaves the tests of that second visit without the fixtures their own conftest defines
+    cmd = ["pytest", *sorted(filenames), "-v"]
     if not continue_on_error:
         cmd.append("-x")
     return cmd
@@ -237,6 +240,10 @@ def run_a_suite(args):
         ci_tests = auto_partition(ci_tests, auto_partition_id, auto_partition_size)
 
     pretty_print_tests(args, policy, continue_on_error, ci_tests, skipped_tests)
+
+    if args.github_output:
+        with open(args.github_output, "a", encoding="utf-8") as output:
+            output.write(f"has_tests={str(bool(ci_tests)).lower()}\n")
 
     if len(ci_tests) == 0:
         print("No tests to run. Exiting with success.", flush=True)
@@ -373,6 +380,10 @@ def main():
         ),
     )
     parser.add_argument(
+        "--github-output",
+        help="Append has_tests for the selected shard to a GitHub Actions output file; requires --list-only.",
+    )
+    parser.add_argument(
         "--match-all-labels",
         action="store_true",
         default=False,
@@ -384,6 +395,9 @@ def main():
         ),
     )
     args = parser.parse_args()
+
+    if args.github_output and not args.list_only:
+        parser.error("--github-output requires --list-only.")
 
     # Validate auto-partition arguments
     if (args.auto_partition_id is not None) != (args.auto_partition_size is not None):

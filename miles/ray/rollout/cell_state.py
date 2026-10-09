@@ -4,7 +4,7 @@ from miles.utils.pydantic_utils import FrozenStrictBaseModel
 class CellAddrInfo(FrozenStrictBaseModel):
     server_url: str
     bootstrap_port: int | None
-    gate_url: str
+    gate_url: str | None
 
 
 class StateUninitialized(FrozenStrictBaseModel):

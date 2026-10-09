@@ -1,77 +1,49 @@
 import copy
 
-import torch
-from megatron.core import mpu
 from megatron.core.models.gpt.gpt_layer_specs import get_gpt_decoder_block_spec
 from megatron.core.transformer.spec_utils import ModuleSpec
 from megatron.core.transformer.transformer_block import get_num_layers_to_build
 from megatron.core.transformer.transformer_layer import get_transformer_layer_offset
 from transformers import AutoConfig
 
-try:
-    from transformers.models.qwen3_next.modeling_qwen3_next import Qwen3NextAttention, Qwen3NextRMSNorm
-except ImportError:
-    Qwen3NextAttention = Qwen3NextRMSNorm = None
-
-from .gdn_attention import GatedDeltaRuleAttentionCore, GdnLayout
-from .hf_attention import HuggingfaceAttention
+from miles_plugins.models.linear_attn import GatedDeltaNet, Projections
+from miles_plugins.models.qwen3_5 import Attention as _Qwen3_5Attention
 
 
-class Qwen3NextGatedDeltaNet(GatedDeltaRuleAttentionCore):
-    """Qwen3-Next GatedDeltaNet (fused ``in_proj_qkvz`` / ``in_proj_ba``) on the unified head-sharded
-    core.  With ``mp_config`` (the Megatron ``TransformerConfig``) the projections are TP-sharded by
-    key-head group; without it the module is a plain replicated layer (unit tests)."""
+class Qwen3NextGatedDeltaNet(GatedDeltaNet):
+    """Qwen3-Next GDN: HF fuses ``in_proj_qkvz`` and ``in_proj_ba``, both group-major per key head, so the
+    projections stay fused and are split here."""
 
-    def __init__(self, config, layer_idx: int, args=None, *, mp_config=None, tp_group=None):
-        super().__init__(
-            GdnLayout.from_hf_config(config, hf_layout="qwen3_next"),
-            layer_idx=layer_idx,
-            gdn_backend=getattr(args, "linear_attention_backend", "fla"),
-            mp_config=mp_config,
-            tp_group=tp_group,
-            params_dtype=config.dtype if getattr(config, "dtype", None) is not None else torch.get_default_dtype(),
-            a_log_fp32=False,
+    def _build_projections(self):
+        hidden, local = self.config.hidden_size, self.local
+        self.in_proj_qkvz = self.sharded_linear(
+            "in_proj_qkvz", hidden, local.num_k_heads * (local.group_qkv_dim + local.group_value_dim)
+        )
+        self.in_proj_ba = self.sharded_linear("in_proj_ba", hidden, 2 * local.num_v_heads)
+
+    def project(self, x):
+        batch, seq_len, _ = x.shape
+        local = self.local
+        qkv, z = (
+            self.in_proj_qkvz(x)
+            .view(batch, seq_len, local.num_k_heads, -1)
+            .split([local.group_qkv_dim, local.group_value_dim], dim=-1)
+        )
+        b, a = (
+            self.in_proj_ba(x)
+            .view(batch, seq_len, local.num_k_heads, -1)
+            .split([local.v_per_k, local.v_per_k], dim=-1)
+        )
+        return Projections(
+            qkv.reshape(batch, seq_len, -1),
+            z.reshape(batch, seq_len, -1),
+            b.reshape(batch, seq_len, -1),
+            a.reshape(batch, seq_len, -1),
         )
 
 
-class Attention(HuggingfaceAttention):
-    def __init__(
-        self,
-        args,
-        config,
-        layer_number: int,
-        cp_comm_type: str = "p2p",
-        pg_collection=None,
-        name: str | None = None,
-    ):
-        super().__init__(
-            args,
-            config,
-            layer_number,
-            cp_comm_type,
-            pg_collection,
-            name=name,
-        )
-        if Qwen3NextAttention is None:
-            raise ImportError("Please install transformers>=4.35.0 to use Qwen3NextAttention.")
-
-        self.linear_attn = Qwen3NextGatedDeltaNet(
-            self.hf_config,
-            self.hf_layer_idx,
-            args=args,
-            mp_config=config,
-            tp_group=mpu.get_tensor_model_parallel_group(),
-        )
-        self.tp_sharded_compute = self.linear_attn.tp_sharded
-        self.input_layernorm = Qwen3NextRMSNorm(self.hf_config.hidden_size, eps=self.hf_config.rms_norm_eps)
-
-    def hf_forward(self, hidden_states, packed_seq_params):
-        hidden_states = self.input_layernorm(hidden_states)
-        hidden_states = self.linear_attn(
-            hidden_states=hidden_states,
-            cu_seqlens=packed_seq_params.cu_seqlens_q,
-        )
-        return hidden_states
+class Attention(_Qwen3_5Attention):
+    core_cls = Qwen3NextGatedDeltaNet
 
 
 def get_qwen3_next_spec(args, config, vp_stage):

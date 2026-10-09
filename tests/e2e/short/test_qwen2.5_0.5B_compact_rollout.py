@@ -7,23 +7,27 @@ import os
 
 from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
 
-import miles.utils.external_utils.command_utils as U
+from miles.utils.external_utils import command_utils
 
-register_cuda_ci(est_time=400, suite="stage-c-8-gpu-h100", labels=["short"], hardware=["hopper", "blackwell"])
-register_rocm_ci(est_time=400, suite="nightly-stage-c-8-gpu-mi350", labels=["short"])
+register_cuda_ci(
+    est_time=400, suite="stage-c-2-gpu-h200", labels=["short"], hardware=["hopper", "blackwell"], nightly=True
+)
+register_rocm_ci(est_time=400, suite="nightly-stage-c-2-gpu-mi350", labels=["short"])
 
 MODEL_NAME = "Qwen2.5-0.5B-Instruct"
 MODEL_TYPE = "qwen2.5-0.5B"
-NUM_GPUS = 8
+NUM_GPUS = 2
 
 
 def prepare():
+    U = command_utils.default_config().create_backend()
     U.exec_command_cpu("mkdir -p /root/models /root/datasets")
     U.exec_command_cpu(f"hf download Qwen/{MODEL_NAME} --local-dir /root/models/{MODEL_NAME}")
     U.hf_download_dataset("zhuzilin/gsm8k")
 
 
 def execute():
+    U = command_utils.default_config().create_backend()
     ckpt_args = f"--hf-checkpoint /root/models/{MODEL_NAME}/ " f"--ref-load /root/models/{MODEL_NAME}/ "
 
     rollout_args = (
@@ -34,7 +38,7 @@ def execute():
         "--rollout-shuffle "
         "--custom-generate-function-path tests.manual.compact_split_generate.generate "
         "--rm-type math "
-        "--num-rollout 3 "
+        "--num-rollout 2 "
         "--rollout-batch-size 8 "
         "--n-samples-per-prompt 4 "
         "--rollout-max-response-len 1024 "
@@ -99,7 +103,7 @@ def execute():
         f"{rollout_args} "
         f"{optimizer_args} "
         f"{grpo_args} "
-        f"{U.get_default_wandb_args(__file__)} "
+        f"{command_utils.get_default_wandb_args(__file__)} "
         f"{perf_args} "
         f"{eval_args} "
         f"{sglang_args} "

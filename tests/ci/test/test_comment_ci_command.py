@@ -584,7 +584,19 @@ def test_checked_in_policy_exposes_exact_labels_and_access_groups():
     }
     assert loaded["groups"]["add_label_access"] == {
         "repository_permissions": WRITE_PERMISSIONS,
-        "user_ids": frozenset({82826991, 59716405, 101526713, 106564213}),
+        "user_ids": frozenset(
+            {
+                82826991,
+                59716405,
+                101526713,
+                106564213,
+                185285563,
+                295988875,
+                258897383,
+                109944218,
+                214322989,
+            }
+        ),
         "author_associations": frozenset(),
     }
     assert loaded["groups"]["repo_write_access"] == {
@@ -1685,9 +1697,13 @@ def test_file_run_main_reports_the_dispatched_run_without_writing_an_output(monk
     assert not output_path.exists()
 
 
-def test_file_run_forwards_validated_pr_body_pins():
+@pytest.mark.parametrize("bridge_ref", ["#41", "bridge", "v0.7.0", "8cd3466d14d2337c8492827b3712482c2b3e4866"])
+def test_file_run_forwards_validated_pr_body_pins(bridge_ref):
     target = pull()
-    target["body"] = "Summary line\nci-image-tag: pr-42\nci-megatron-pr: #77\nci-sglang-pr: feature/pin-x\n"
+    target["body"] = (
+        "Summary line\nci-image-tag: pr-42\nci-megatron-pr: #77\nci-sglang-pr: feature/pin-x\n"
+        f"ci-megatron-bridge-pr: {bridge_ref}\n"
+    )
     api = FakeAPI(target)
 
     HANDLER.process_event(event(body=RUN_FILE_BODY), policy(), api)
@@ -1700,12 +1716,13 @@ def test_file_run_forwards_validated_pr_body_pins():
         "ci_image_tag": "pr-42",
         "ci_megatron_pr": "#77",
         "ci_sglang_pr": "feature/pin-x",
+        "ci_megatron_bridge_pr": bridge_ref,
     }
 
 
 @pytest.mark.parametrize(
     "line",
-    ["ci-image-tag: -bad", "ci-megatron-pr: $(reboot)", "ci-sglang-pr: bad;ref"],
+    ["ci-image-tag: -bad", "ci-megatron-pr: $(reboot)", "ci-sglang-pr: bad;ref", "ci-megatron-bridge-pr: $(reboot)"],
 )
 def test_file_run_rejects_an_invalid_pr_body_pin(line):
     target = pull()
@@ -2465,21 +2482,21 @@ def test_workflow_runs_only_trusted_code_with_minimal_permissions():
     assert "ref: ${{ github.sha }}" in workflow
     assert "persist-credentials: false" in workflow
     assert "actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683" in workflow
-    # The command App exists only for the issues capability: label mutations
+    # This gateway mints a CI App token only for the issues capability: label mutations
     # made with GITHUB_TOKEN would never trigger the labeled CI workflows.
     assert workflow.count("actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1") == 1
-    assert workflow.count("client-id: ${{ vars.CI_COMMAND_APP_CLIENT_ID }}") == 1
-    assert workflow.count("private-key: ${{ secrets.CI_COMMAND_APP_PRIVATE_KEY }}") == 1
+    assert workflow.count("client-id: ${{ vars.CI_APP_CLIENT_ID }}") == 1
+    assert workflow.count("private-key: ${{ secrets.CI_APP_PRIVATE_KEY }}") == 1
     assert "permission-issues: write" in workflow
     assert "permission-actions" not in workflow
     assert "CI_COMMAND_API_TOKEN: ${{ github.token }}" in workflow
     assert "CI_COMMAND_API_TOKEN: ${{ steps.issues-token.outputs.token }}" in workflow
-    assert "CI_COMMAND_APP_TOKEN" not in workflow
+    assert "CI_APP_TOKEN" not in workflow
     assert workflow.index("CI_COMMAND_PREFLIGHT") < workflow.index("actions/create-github-app-token@")
     # The actions capability never waits on the App gate; label commands fail
     # loudly when the App is not enabled instead of skipping silently.
-    assert "vars.CI_COMMAND_APP_ENABLED != 'true'" in workflow
-    assert "vars.CI_COMMAND_APP_ENABLED == 'true'" not in workflow
+    assert "vars.CI_APP_ENABLED != 'true'" in workflow
+    assert "vars.CI_APP_ENABLED == 'true'" not in workflow
     assert "steps.authorize.outputs.capability != 'none'" in workflow
     assert "steps.authorize.outputs.capability != 'issues'" in workflow
     assert "steps.authorize.outputs.capability != 'actions'" in workflow
@@ -2500,8 +2517,9 @@ def test_workflow_runs_only_trusted_code_with_minimal_permissions():
     assert "\n          permission-issues: write\n" in issues_token
     assert "\n          permission-pull-requests: write\n" in issues_token
     assert "permission-pull-requests: read" not in issues_token
-    assert "Require the command App for label commands" in handle_job
-    assert handle_job.index("Require the command App for label commands") < handle_job.index(
+    assert "permission-contents" not in issues_token
+    assert "Require the CI App for label commands" in handle_job
+    assert handle_job.index("Require the CI App for label commands") < handle_job.index(
         "Mint the issues-scoped App token"
     )
     # Each GITHUB_TOKEN job scopes its own permissions; only the actions job

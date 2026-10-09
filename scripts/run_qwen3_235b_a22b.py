@@ -33,12 +33,12 @@ from dataclasses import dataclass
 
 import typer
 
-import miles.utils.external_utils.command_utils as U
+from miles.utils.external_utils import command_utils
 
 
 @dataclass
-class ScriptArgs(U.ExecuteTrainConfig):
-    run_id: str = U.create_run_id()
+class ScriptArgs(command_utils.ExecuteTrainConfig):
+    run_id: str = command_utils.create_run_id()
     model_name: str = "Qwen3-235B-A22B"
     megatron_model_type: str = "qwen3-235B-A22B"
     num_gpus_per_node: int = 8
@@ -56,6 +56,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
 
 
 def execute(args: ScriptArgs):
+    U = args.create_backend()
     master_addr = os.environ.get("MASTER_ADDR")
     assert master_addr, "MASTER_ADDR is not set. Please set it to the master node address."
 
@@ -168,7 +169,7 @@ def execute(args: ScriptArgs):
         f"{rollout_args} "
         f"{optimizer_args} "
         f"{grpo_args} "
-        f"{U.get_default_wandb_args(__file__, run_id=args.run_id)} "
+        f"{command_utils.get_default_wandb_args(__file__, run_id=args.run_id)} "
         f"{perf_args} "
         f"{eval_args} "
         f"{sglang_args} "
@@ -178,7 +179,6 @@ def execute(args: ScriptArgs):
 
     U.execute_train(
         train_args=train_args,
-        config=args,
         num_gpus_per_node=args.num_gpus_per_node,
         megatron_model_type=args.megatron_model_type,
         megatron_path=args.megatron_path,
@@ -197,7 +197,7 @@ def execute(args: ScriptArgs):
     )
 
 
-@U.dataclass_cli
+@command_utils.dataclass_cli
 def main(args: ScriptArgs):
     execute(args)
 

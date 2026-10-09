@@ -25,9 +25,6 @@ Env vars:
   NEMO_GYM_RUN_TIMEOUT  hard wall-clock cap in seconds for one /run call
                  (default: 3600). SWE episodes pull per-task docker images on
                  first use, which can dominate early rollouts.
-  MILES_ROUTER_EXTERNAL_HOST  optional host rewrite for the session URL when
-                 the NeMo Gym server cannot resolve the trainer's hostname
-                 (e.g. it runs outside the trainer's docker network).
 """
 
 import asyncio
@@ -37,7 +34,8 @@ import random
 from typing import Any
 
 import httpx
-from miles.rollout.agentic.session import resolve_session_url
+
+from miles.rollout.agentic.session import openai_session_url
 
 logger = logging.getLogger(__name__)
 
@@ -112,7 +110,7 @@ async def run(
     request: dict[str, Any] = {
         **metadata,
         "responses_create_params": build_responses_create_params(request_kwargs),
-        "policy_base_url": resolve_session_url(base_url),
+        "policy_base_url": openai_session_url(base_url),
     }
 
     try:

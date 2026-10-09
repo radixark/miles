@@ -24,12 +24,10 @@ from megatron.core.transformer.moe.moe_utils import RouterGatingLinearFunction a
 from megatron.core.transformer.spec_utils import ModuleSpec, build_module
 from megatron.core.transformer.transformer_block import get_num_layers_to_build
 from megatron.core.transformer.transformer_config import MLATransformerConfig
-from miles.utils.hf_config import load_hf_config
-
+from miles.kernels.attention.dsa import causal_ranges, get_dsa_topk_fn, lighting_indexer, sparse_attention
+from miles.utils.hf_utils.config import load_hf_config
 from miles.utils.replay_base import indexer_replay_manager
-
-from .ops.indexer import generate_varlen_mask_params, lighting_indexer
-from .ops.sparse_mla import SparseMLA
+from miles_plugins.models.normalization import rms_norm
 
 # Names of the indexer submodules. On a DSA model with *cross-layer index
 # sharing* these only exist on "computing" layers; "skip" layers drop them.
@@ -256,7 +254,7 @@ class DSAMultiLatentAttention(Attention):
                     starts_block,
                     ends_block,
                     self.index_topk,
-                    topk_backend=self.topk_backend,
+                    topk_fn=indexer_replay_manager.get_topk_fn(get_dsa_topk_fn(self.topk_backend), return_probs=False),
                 )
 
                 indexer_topk_scores_block = torch.softmax(indexer_topk_scores_block, dim=-1)
@@ -291,22 +289,26 @@ class DSAMultiLatentAttention(Attention):
                     )
                 topk_indices = holder[self._source_layer]
             else:
-                starts, ends = generate_varlen_mask_params(packed_seq_params.cu_seqlens_q)
+                starts, ends = causal_ranges(packed_seq_params.cu_seqlens_q)
                 index_key = index_key.squeeze(1)
-                head_weights = head_weights.unsqueeze(-1)
                 starts = scatter_to_sequence_parallel_region(starts, group=parallel_state.get_context_parallel_group())
                 ends = scatter_to_sequence_parallel_region(ends, group=parallel_state.get_context_parallel_group())
                 _, topk_indices = fused_select_topk(index_query, index_key, head_weights, starts, ends)
                 holder[self.layer_number] = topk_indices
         else:
-            starts, ends = generate_varlen_mask_params(packed_seq_params.cu_seqlens_q)
+            starts, ends = causal_ranges(packed_seq_params.cu_seqlens_q)
             index_key = index_key.squeeze(1)
-            head_weights = head_weights.unsqueeze(-1)
             starts = scatter_to_sequence_parallel_region(starts, group=parallel_state.get_context_parallel_group())
             ends = scatter_to_sequence_parallel_region(ends, group=parallel_state.get_context_parallel_group())
             _, topk_indices = fused_select_topk(index_query, index_key, head_weights, starts, ends)
 
-        core_attn_out, _ = SparseMLA.apply(q, kv, topk_indices, self.softmax_scale)
+        core_attn_out = sparse_attention(
+            q.unsqueeze(0),
+            kv.unsqueeze(0),
+            topk_indices.unsqueeze(0),
+            self.softmax_scale,
+            d_v=self.config.kv_lora_rank,
+        ).squeeze(0)
         core_attn_out = torch.einsum("thm,hdm->thd", core_attn_out, wv)
 
         core_attn_out = core_attn_out.reshape(core_attn_out.size(0), 1, -1)
@@ -501,11 +503,6 @@ class DSAMLASelfAttention(DSAMultiLatentAttention):
         )
         self.weights_proj.weight._skip_gather = True
 
-        if getattr(self.config, "freeze_indexer", False):
-            for module in (self.wq_b, self.wk, self.k_norm, self.weights_proj):
-                for param in module.parameters():
-                    param.requires_grad = False
-
         # Index-share skip layers carry no indexer weights -- drop the modules built
         # above so the parameter set matches the checkpoint (which only stores indexer
         # weights on computing layers) and weight export to HF omits them on skip layers.
@@ -632,6 +629,13 @@ class DSAMLASelfAttention(DSAMultiLatentAttention):
         # =========================================
         # Project queries and keys
         q_compressed = q_compressed.detach()
+        # The query RMSNorm is fused into linear_q_up_proj, so q_compressed
+        # still holds its unnormalized input. Share the norm with the indexer
+        # without sending indexer gradients into the attention parameters.
+        q_norm_weight = self.linear_q_up_proj.layer_norm_weight.detach()
+        if self.config.layernorm_zero_centered_gamma:
+            q_norm_weight = q_norm_weight.float() + 1
+        q_compressed = rms_norm(q_compressed, q_norm_weight, self.config.layernorm_epsilon)
         hidden_states = hidden_states.detach()
         rotary_pos_emb = rotary_pos_emb.detach()
 
@@ -745,7 +749,6 @@ def get_glm5_spec(args, config, vp_stage):
     config.index_num_attention_heads = hf_config.index_n_heads
     config.index_head_dim = hf_config.index_head_dim
     config.indexer_rope_interleave = bool(getattr(hf_config, "indexer_rope_interleave", False))
-    config.freeze_indexer = getattr(args, "freeze_indexer", False)
     # Optional cross-layer index-sharing schedule. Present on DSA checkpoints that only
     # store indexer weights on a subset of "computing" layers (e.g. GLM-5.2). When absent,
     # every layer computes its own top-k (plain DSA) and DSAMLASelfAttention runs the

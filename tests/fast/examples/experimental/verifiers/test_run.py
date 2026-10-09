@@ -3,9 +3,9 @@ import shlex
 
 import pytest
 from examples.experimental.verifiers import run
-from tests.fast.utils.command_recorder import record_commands
+from tests.fast.utils.command_recorder import patch_helper, record_commands
 
-import miles.utils.external_utils.command_utils as U
+from miles.utils.external_utils.command_utils.ray_backend.backend import RayCommandBackend
 
 LEGACY_ROLLOUT_ENV = "MILES_USE_LEGACY_ROLLOUT_V1"
 
@@ -36,7 +36,7 @@ def test_adapter_and_ray_runtime_use_the_same_legacy_flag(
     expected_runtime_value,
 ):
     commands = record_commands(monkeypatch)
-    monkeypatch.setattr(U, "check_has_nvlink", lambda: False)
+    patch_helper(monkeypatch, "_check_has_nvlink", lambda self: False, backend_class=RayCommandBackend)
     monkeypatch.setenv("MILES_SCRIPT_EXTERNAL_RAY", "1")
     monkeypatch.setenv("MILES_SCRIPT_ENABLE_RAY_SUBMIT", "1")
     monkeypatch.setenv("MASTER_ADDR", "127.0.0.1")

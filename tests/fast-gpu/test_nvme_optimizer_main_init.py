@@ -4,7 +4,7 @@ import os
 from types import SimpleNamespace
 
 import torch
-from tests.ci.ci_register import register_cuda_ci
+from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
 
 from miles_plugins.optimizers.nvme_stream import NVMeOptimizerStateStore, _Bucket, _Entry, _resize, _Stager
 
@@ -14,6 +14,7 @@ register_cuda_ci(
     labels=["miles-plugin"],
     hardware=["hopper", "blackwell"],
 )
+register_rocm_ci(est_time=30, suite="nightly-stage-c-2-gpu-mi350", labels=["miles-plugin"])
 
 
 def test_bucketwise_main_initialization_preserves_bytes_and_releases_cuda_storage(tmp_path):
@@ -43,3 +44,11 @@ def test_bucketwise_main_initialization_preserves_bytes_and_releases_cuda_storag
     restored = torch.frombuffer(bytearray(os.pread(bucket.fd, nbytes, 0)), dtype=torch.float32)
     torch.testing.assert_close(restored, model_param.float().cpu(), atol=0, rtol=0)
     os.close(bucket.fd)
+
+
+if __name__ == "__main__":
+    import sys
+
+    import pytest
+
+    sys.exit(pytest.main([__file__, "-v"]))

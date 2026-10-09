@@ -2,8 +2,8 @@ import pytest
 import torch
 from tests.fast.backends.training_utils.loss.loss_test_utils import make_args, make_parallel_state
 
-from miles.backends.training_utils.loss_hub import math_utils
-from miles.backends.training_utils.loss_hub.logit_processors import get_log_probs_and_entropy
+from miles.backends.training_utils.loss.hub import math_utils
+from miles.backends.training_utils.loss.hub.logit_processors import get_log_probs_and_entropy
 
 MODEL_DTYPES = [torch.bfloat16, torch.float16]
 
@@ -12,8 +12,11 @@ MODEL_DTYPES = [torch.bfloat16, torch.float16]
 def test_chunked_log_probs_upcast_only_each_chunk(monkeypatch, model_dtype):
     kernel_inputs = []
 
-    def fake_compute_log_probs(logits, tokens, _tp_group, *, sampling_mask=None):
+    def fake_compute_log_probs(
+        logits, tokens, _tp_group, *, sampling_mask=None, debug_unified_grad_fused_logprob=False
+    ):
         assert sampling_mask is None
+        assert debug_unified_grad_fused_logprob is False
         kernel_inputs.append((logits.shape, logits.dtype))
         return torch.zeros((tokens.size(0), 1), dtype=logits.dtype)
 
@@ -32,8 +35,11 @@ def test_chunked_log_probs_upcast_only_each_chunk(monkeypatch, model_dtype):
 
 @pytest.mark.parametrize("model_dtype", MODEL_DTYPES)
 def test_temperature_is_applied_in_fp32(monkeypatch, model_dtype):
-    def naive_compute_log_probs(logits, tokens, _tp_group, *, sampling_mask=None):
+    def naive_compute_log_probs(
+        logits, tokens, _tp_group, *, sampling_mask=None, debug_unified_grad_fused_logprob=False
+    ):
         assert sampling_mask is None
+        assert debug_unified_grad_fused_logprob is False
         return torch.log_softmax(logits, dim=-1).gather(-1, tokens.unsqueeze(-1))
 
     monkeypatch.setattr(math_utils, "compute_log_probs", naive_compute_log_probs)

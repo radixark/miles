@@ -48,6 +48,7 @@ def _thd(cu, *, max_seqlen=0, compressed_group_ids=None):
     """ThdLayout for a single-rank packed stream."""
     return ThdLayout(
         cu_seqlens=cu,
+        seq_lens=tuple(torch.diff(cu).tolist()),
         global_start=0,
         max_seqlen=max_seqlen,
         compressed_group_ids=compressed_group_ids,

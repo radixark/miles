@@ -1,24 +1,8 @@
 import re
-from functools import cache
 
 import torch
 
-
-@cache
-def _gdn_layout(hf_checkpoint: str):
-    """Static GDN shape facts of the checkpoint (for the head-interleaved ``linear_attn`` tensors)."""
-    from miles.utils.hf_config import load_hf_config
-    from miles_plugins.models.gdn_attention import GdnLayout
-
-    hf_config = load_hf_config(hf_checkpoint)
-    return GdnLayout.from_hf_config(getattr(hf_config, "text_config", hf_config), hf_layout="qwen3_5")
-
-
-def _linear_attn_to_hf(args, rest: str, param):
-    """Megatron ``linear_attn.<name>`` tensor (TP-merged, head-interleaved rows) -> HF row order."""
-    from miles_plugins.models.gdn_attention import megatron_to_hf_linear_attn
-
-    return megatron_to_hf_linear_attn(_gdn_layout(args.hf_checkpoint), rest[len("linear_attn.") :], param)
+from miles.backends.megatron_utils.megatron_to_hf.linear_attn_layout import gdn_heads_of, qkv_group_major_to_flat
 
 
 def _convert_mtp_layer(args, name, param, layer_idx):
@@ -186,15 +170,15 @@ def convert_qwen3_5_to_hf(args, name, param):
             return [(f"{prefix}.self_attn.q_norm.weight", param)]
         elif rest == "self_attention.k_layernorm.weight":
             return [(f"{prefix}.self_attn.k_norm.weight", param)]
+        elif rest in ("self_attention.linear_attn.in_proj_qkv.weight", "self_attention.linear_attn.conv1d.weight"):
+            hf_rest = rest[len("self_attention.") :]
+            return [(f"{prefix}.{hf_rest}", qkv_group_major_to_flat(param, gdn_heads_of(args.hf_checkpoint)))]
         elif rest.startswith("self_attention.") and rest[len("self_attention.") :] in [
             "input_layernorm.weight",
-            # linear attn (Qwen3.5 uses separate in_proj_b/in_proj_a)
             "linear_attn.A_log",
-            "linear_attn.conv1d.weight",
             "linear_attn.dt_bias",
             "linear_attn.in_proj_a.weight",
             "linear_attn.in_proj_b.weight",
-            "linear_attn.in_proj_qkv.weight",
             "linear_attn.in_proj_z.weight",
             "linear_attn.norm.weight",
             "linear_attn.out_proj.weight",
@@ -207,8 +191,6 @@ def convert_qwen3_5_to_hf(args, name, param):
             "self_attn.v_proj.weight",
         ]:
             rest = rest[len("self_attention.") :]
-            if rest.startswith("linear_attn."):
-                param = _linear_attn_to_hf(args, rest, param)
             return [(f"{prefix}.{rest}", param)]
 
     raise ValueError(f"Unknown parameter name: {name}")

@@ -35,7 +35,7 @@ class RpcSerializer:
         return dict(self.query_model(**_NonFiniteFloatCodec.decode(query)))
 
     def encode_result(self, result: Any) -> Any:
-        return _NonFiniteFloatCodec.encode(self.result_adapter.dump_python(result, mode="json"))
+        return _NonFiniteFloatCodec.encode(self.result_adapter.dump_python(result, mode="json", warnings="error"))
 
     def decode_result(self, payload: Any) -> Any:
         return self.result_adapter.validate_python(_NonFiniteFloatCodec.decode(payload))

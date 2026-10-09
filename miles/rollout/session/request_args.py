@@ -1,8 +1,9 @@
 """Resolve chat arguments before rendering or forwarding a request.
 
 ``prepare_chat_request`` owns a copy of the client's input. Config rules apply
-Session server constraints and retain the client's streaming preference. The
-TITO tokenizer then applies model rules to the same full request.
+Session server constraints and retain what the client asked the response to
+carry. The session's sampling defaults fill the fields the client omitted. The TITO
+tokenizer then applies model rules to the same full request.
 
 After rendering and a successful generation, the session records the complete
 resolved request as ``turn_args``. A continuation supplies that history to the
@@ -14,10 +15,12 @@ from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any
 
+from miles.rollout.generate_utils.rollout_topk_logprobs import configure_rollout_topk_logprobs_request
+from miles.rollout.generate_utils.sampling_mask import validate_sampling_support_request
 from miles.rollout.session.config import SessionServerConfig
 from miles.rollout.session.errors import MessageValidationError
 from miles.utils.chat_template_utils.tito_tokenizer import TITOTokenizer, extract_template_args
-from miles.utils.lora import LORA_ADAPTER_NAME, lora_rollout_enabled
+from miles.utils.lora.utils import LORA_ADAPTER_NAME, lora_rollout_enabled
 
 DEFAULT_TURN_ARGS_DROP_KEYS = ("input_ids", "messages")
 
@@ -37,14 +40,27 @@ def parse_chat_request(body: bytes) -> dict[str, Any]:
         raise MessageValidationError(f"invalid JSON body: {e}") from e
 
 
+@dataclass(frozen=True)
+class ClientResponseIntent:
+    """What the client's own request asked the response to carry.
+
+    The backend request always asks for ``logprobs`` and never streams, because
+    TITO and the session record need a complete response. The reply to the client
+    streams and carries ``logprobs`` only when the client asked for it.
+    """
+
+    stream: bool
+    logprobs: bool
+
+
 @dataclass
 class PreparedChatRequest:
     """Outbound body before adding ``input_ids``, template args to render them,
-    and the client's streaming preference for the response."""
+    and what the client asked the response to carry."""
 
     body: dict[str, Any]
     template_args: dict[str, Any]
-    client_stream: bool
+    response_intent: ClientResponseIntent
 
 
 def prepare_chat_request(
@@ -53,38 +69,85 @@ def prepare_chat_request(
     *,
     config: SessionServerConfig,
     turn_args: dict[str, Any] | None,
+    evaluation: bool = False,
+    sampling_defaults: dict[str, Any] | None = None,
+    sampling_support_replay: bool = False,
 ) -> PreparedChatRequest:
-    """Resolve an owned request using server rules, model rules, and prior turn args.
+    """Resolve an owned request using server rules, session defaults, model rules, and prior turn args.
 
     ``turn_args`` is the continued turn's full request; ``None`` starts a root.
+    ``sampling_defaults`` are the session's values for sampling fields the client omits.
     Client input and recorded history remain unchanged.
     """
-    request_args, client_stream = resolve_request_args_by_config(deepcopy(client_args), config)
+    request_args, response_intent = resolve_request_args_by_config(
+        deepcopy(client_args), config, evaluation=evaluation
+    )
+    apply_session_sampling_defaults(request_args, sampling_defaults or {}, evaluation=evaluation)
     try:
         request_args = tito_tokenizer.resolve_request_args(request_args, turn_args=turn_args)
     except ValueError as e:
         raise MessageValidationError(str(e)) from e
+    # The rollout args own the sampling log-prob mode; training requests get it from them below.
+    request_args.pop("sampling_logprobs_mode", None)
+    if evaluation:
+        # Model rules must not re-enable training replay outputs for evaluation.
+        request_args.update(return_sampling_mask=False, return_routed_experts=False, return_indexer_topk=False)
+        request_args.pop("routed_experts_start_len", None)
+    else:
+        try:
+            configure_rollout_topk_logprobs_request(config, request_args, openai=True)
+            return_sampling_mask = validate_sampling_support_request(
+                request_args,
+                replay_enabled=sampling_support_replay,
+                expected_temperature=(sampling_defaults or {}).get("temperature"),
+            )
+        except ValueError as e:
+            raise MessageValidationError(str(e)) from e
+        if return_sampling_mask:
+            request_args["return_sampling_mask"] = True
+        else:
+            request_args.pop("return_sampling_mask", None)
     return PreparedChatRequest(
-        body=request_args, template_args=extract_template_args(request_args), client_stream=client_stream
+        body=request_args, template_args=extract_template_args(request_args), response_intent=response_intent
     )
 
 
+def apply_session_sampling_defaults(
+    request_args: dict[str, Any], sampling_defaults: dict[str, Any], *, evaluation: bool = False
+) -> None:
+    """Fill in place the sampling fields the client left unset from the session's defaults.
+
+    ``None`` counts as unset. Explicit values are kept, except a training temperature
+    mismatch raises ``MessageValidationError`` to keep rollout and training aligned.
+    """
+    for key, value in sampling_defaults.items():
+        if request_args.get(key) is None:
+            request_args[key] = value
+        elif not evaluation and key == "temperature" and request_args[key] != value:
+            raise MessageValidationError(
+                f"temperature={request_args[key]!r} does not match the training session temperature={value!r}"
+            )
+
+
 def resolve_request_args_by_config(
-    request_args: dict[str, Any], config: SessionServerConfig
-) -> tuple[dict[str, Any], bool]:
-    """Apply server constraints in place and return the same request and stream intent.
+    request_args: dict[str, Any], config: SessionServerConfig, *, evaluation: bool = False
+) -> tuple[dict[str, Any], ClientResponseIntent]:
+    """Apply server constraints in place and return the same request and the client's response intent.
 
     The caller owns ``request_args``; this function does not copy it.
     """
+    # the client's own value decides whether its reply carries logprobs
+    client_logprobs = bool(request_args.get("logprobs"))
     # TITO needs these on every request: agent-side overrides would break token accumulation.
     request_args["logprobs"] = True
     request_args["return_meta_info"] = True
+
     # Must be False so stop-token text is trimmed from assistant content;
     # token IDs still come from logprobs below.
     request_args["no_stop_trim"] = False
-    # R3 replay follows the launch flags, on or off.
-    request_args["return_routed_experts"] = bool(config.use_rollout_routing_replay)
-    request_args["return_indexer_topk"] = bool(config.use_rollout_indexer_replay)
+    # Training replay follows the launch flags; eval never requests replay outputs.
+    request_args["return_routed_experts"] = not evaluation and bool(config.use_rollout_routing_replay)
+    request_args["return_indexer_topk"] = not evaluation and bool(config.use_rollout_indexer_replay)
 
     # The served adapter is selected by training; SGLang lets a ``base:adapter``
     # model parameter beat ``lora_path``, so that spelling is refused too.
@@ -108,7 +171,7 @@ def resolve_request_args_by_config(
             f"input_ids={value!r} is not accepted: TITO token ids are rendered by the session server"
         )
     request_args.pop("input_ids", None)
-    if (value := request_args.get("routed_experts_start_len")) is not None:
+    if not evaluation and (value := request_args.get("routed_experts_start_len")) is not None:
         raise MessageValidationError(
             f"routed_experts_start_len={value!r} is not accepted: R3 offsets are computed by the session server"
         )
@@ -127,4 +190,4 @@ def resolve_request_args_by_config(
         raise MessageValidationError("chat_template_kwargs must be an object")
     if kwargs is not None and "tools" in kwargs:
         raise MessageValidationError("tools belongs at the top level of the request, not in chat_template_kwargs")
-    return request_args, client_stream
+    return request_args, ClientResponseIntent(stream=client_stream, logprobs=client_logprobs)
