@@ -28,6 +28,7 @@ class Args(Tap):
     checkpoint_object_store: bool = False
     data_path: str = ""
     allocate_optimizer: bool = False
+    pretrained_head: bool = False
 
 
 def _tiny_model(device: torch.device) -> tuple[TrainableClefModel, dict[str, int], LabeledRecord]:
@@ -52,8 +53,8 @@ def _tiny_model(device: torch.device) -> tuple[TrainableClefModel, dict[str, int
 
 
 def _real_model(args: Args, processor: Any, device: torch.device) -> tuple[TrainableClefModel, dict[str, int], LabeledRecord]:
-    head_config = read_head_config(Path(__file__).with_name("joint_head_config.json"))
-    model = build_model(args.model_dir, head_config, device)
+    head_config = read_head_config(Path(args.model_dir) / "joint_head_config.json" if args.pretrained_head else Path(__file__).with_name("joint_head_config.json"))
+    model = build_model(args.model_dir, head_config, device, pretrained_head=args.pretrained_head)
     example = DecisionExample(
         {"id": "real-backbone-probe", "state": "A coin lands heads with probability 0.7. Take a guess at the next flip.",
          "questions": {"answer": {"type": "choice", "instructions": "Choose the future outcome.", "criteria": {"A": "Heads", "B": "Tails"}}}},
