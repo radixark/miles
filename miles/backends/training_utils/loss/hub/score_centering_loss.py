@@ -6,11 +6,12 @@ from collections.abc import Callable
 import torch
 
 from miles.backends.training_utils.data.context_parallel import (
+    LocalResponseRows,
     allgather_cp_redistribute,
     get_local_response_loss_masks,
     slice_log_prob_with_cp,
 )
-from miles.backends.training_utils.loss.hub.logit_processors import _iter_response_chunks
+from miles.backends.training_utils.loss.hub.logit_processors import _iter_response_chunks, fused_response_log_probs
 from miles.backends.training_utils.loss.hub.math_utils import compute_approx_kl
 from miles.backends.training_utils.loss.hub.score_centering import (
     ScoreCenteringInputs,
@@ -45,6 +46,24 @@ def _candidate_log_probs(args: Namespace, batch: RolloutBatch, logits: torch.Ten
     support_only = replay and not args.use_kl_loss
     if with_entropy:
         result["entropy"] = []
+    if getattr(args, "log_probs_backend", "torch") == "fused":
+        # startup rejects sampling-support replay with the fused backend, so every row is full-vocabulary
+        selected, entropy = fused_response_log_probs(
+            logits,
+            args=args,
+            total_lengths=batch["total_lengths"],
+            response_lengths=batch["response_lengths"],
+            max_seq_lens=batch.get("max_seq_lens"),
+            sample_targets=lambda i, sample_rows: _sampled_and_candidate_ids(batch, i, sample_rows),
+            with_entropy=with_entropy,
+        )
+        result["selected"] = selected
+        if args.use_kl_loss:
+            result["kl_log_probs"] = [sample[:, 0] for sample in selected]
+        if with_entropy:
+            result["entropy"] = entropy
+        _redistribute_allgather_cp(args, batch, logits, result)
+        return result
     chunks = _iter_response_chunks(
         logits,
         args=args,
@@ -85,7 +104,21 @@ def _candidate_log_probs(args: Namespace, batch: RolloutBatch, logits: torch.Ten
         result["selected"].append(selected)
         if with_entropy:
             result["entropy"].append(entropy)
-    if args.allgather_cp and parallel.cp.size > 1:
+    _redistribute_allgather_cp(args, batch, logits, result)
+    return result
+
+
+def _sampled_and_candidate_ids(batch: RolloutBatch, sample: int, sample_rows: LocalResponseRows) -> torch.Tensor:
+    """``[R, 1 + K]`` token ids per local row: the sampled token, then the rollout's top-K candidates."""
+    total, response = batch["total_lengths"][sample], batch["response_lengths"][sample]
+    sampled = sample_rows.tokens(batch["unconcat_tokens"][sample], total - response).long()
+    indices = torch.as_tensor(sample_rows.response_indices(), dtype=torch.long)
+    candidates = _candidate_ids(batch, sample, indices).to(sampled.device)
+    return torch.cat((sampled.unsqueeze(-1), candidates), dim=-1)
+
+
+def _redistribute_allgather_cp(args: Namespace, batch: RolloutBatch, logits: torch.Tensor, result: dict) -> None:
+    if args.allgather_cp and get_parallel_state().cp.size > 1:
         allgather_cp_redistribute(
             result,
             logits=logits,
@@ -94,7 +127,6 @@ def _candidate_log_probs(args: Namespace, batch: RolloutBatch, logits: torch.Ten
             response_lengths=batch["response_lengths"],
             max_seq_lens=batch.get("max_seq_lens"),
         )
-    return result
 
 
 def _local_candidates(args: Namespace, batch: RolloutBatch, key: str, device: torch.device) -> torch.Tensor:
