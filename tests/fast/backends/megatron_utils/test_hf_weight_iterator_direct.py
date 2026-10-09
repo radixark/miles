@@ -31,12 +31,14 @@ def _install_import_stubs(monkeypatch):
         "sglang.srt.layers",
         "sglang.srt.layers.quantization",
         "sglang.srt.layers.quantization.fp8_utils",
+        "sglang.srt.layers.quantization.utils",
     ]:
         monkeypatch.setitem(sys.modules, name, types.ModuleType(name))
 
     sys.modules["sglang.srt.utils"].MultiprocessingSerializer = object
     sys.modules["sglang.srt.utils.patch_torch"].monkey_patch_torch_reductions = lambda: None
     sys.modules["sglang.srt.weight_sync.tensor_bucket"].FlattenedTensorBucket = object
+    sys.modules["sglang.srt.layers.quantization.utils"].is_layer_skipped = lambda *args, **kwargs: False
     fp8_utils = sys.modules["sglang.srt.layers.quantization.fp8_utils"]
     fp8_utils.quant_weight_ue8m0 = lambda *args, **kwargs: None
     fp8_utils.transform_scale_ue8m0 = lambda x, **kwargs: x

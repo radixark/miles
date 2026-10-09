@@ -5,7 +5,7 @@ from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
 from tests.ci.metric_history import register_ci_gate
 
 register_cuda_ci(
-    est_time=1900,
+    est_time=1100,
     suite="stage-c-4-gpu-h200",
     labels=["megatron", "model-scripts"],
     hardware=["hopper", "blackwell"],
@@ -33,6 +33,8 @@ def _args() -> ScriptArgs:
         hardware="H200",
         skip_saving=True,
         use_fault_tolerance=False,
+        rollout_batch_size=4,
+        n_samples_per_prompt=4,
         dsv4_impl="megatron",
         dsa_kernel_backend="cudnn",
         extra_args=(

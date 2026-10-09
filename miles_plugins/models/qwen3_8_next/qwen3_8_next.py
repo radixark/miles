@@ -15,8 +15,8 @@ from megatron.core.transformer.transformer_block import get_num_layers_to_build
 from megatron.core.transformer.transformer_layer import get_transformer_layer_offset
 
 from miles.utils.hf_utils.config import load_hf_config, register_hf_config_aliases
-from miles_plugins.models.qwen3_5 import Attention as Qwen35LinearAttention
 from miles_plugins.models.qwen3_5 import _get_text_config
+from miles_plugins.models.qwen3_8_next.gdn import ReplicatedGDNAttention as Qwen35LinearAttention
 from miles_plugins.models.qwen3_8_next.hyper_connection import (
     Qwen38NextHCHeadContraction,
     Qwen38NextHyperConnection,
