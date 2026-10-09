@@ -78,20 +78,20 @@ def _check_layout(monkeypatch, *, mode, cp_size, prompt_lengths, response_length
         )
         samples = context_parallel.iter_local_response_rows(
             layout.num_rows,
-            unconcat_tokens=tokens,
             total_lengths=total_lengths,
             response_lengths=response_lengths,
             qkv_format=qkv_format,
             allgather_cp=mode == "allgather",
             max_seq_lens=[max_seq_len] * len(total_lengths) if max_seq_len else None,
-            include_response_indices=True,
         )
-        for sample, (row_ranges, sample_tokens, response_indices) in enumerate(samples):
-            rows = [row for start, end in row_ranges for row in range(start, end)]
-            assert all(0 <= start <= end <= layout.num_rows for start, end in row_ranges), row_ranges
-            assert sample_tokens.tolist() == [sample * _SAMPLE_STRIDE + layout.position(sample, r) + 1 for r in rows]
+        for sample, sample_rows in enumerate(samples):
+            rows = [row for start, end in sample_rows.row_ranges for row in range(start, end)]
+            assert all(0 <= start <= end <= layout.num_rows for start, end in sample_rows.row_ranges), sample_rows
             prompt_length = prompt_lengths[sample]
-            assert list(response_indices) == [layout.position(sample, r) + 1 - prompt_length for r in rows]
+            sample_tokens = sample_rows.tokens(tokens[sample], prompt_length)
+            assert sample_tokens.tolist() == [sample * _SAMPLE_STRIDE + layout.position(sample, r) + 1 for r in rows]
+            response_indices = sample_rows.response_indices()
+            assert response_indices == [layout.position(sample, r) + 1 - prompt_length for r in rows]
             covered[sample].extend(response_indices)
     for sample, response_length in enumerate(response_lengths):
         assert sorted(covered[sample]) == list(range(response_length)), f"sample {sample} not tiled once"
