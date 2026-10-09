@@ -102,7 +102,7 @@ class ScriptArgs(command_utils.ExecuteTrainConfig):
 
     # performance configs
     num_gpus_per_node: int | None = None
-    hardware: Literal["auto", "H100", "H200", "B200", "B300", "GB200", "GB300"] = "auto"
+    hardware: Literal["auto", "H100", "H200", "B200", "B300", "GB200", "GB300", "Rubin"] = "auto"
     # use colocate by default. will switch to disaggregated mode when 0 < rollout_num_nodes < num_nodes
     rollout_num_nodes: int = 0
     colocate: bool = field(init=False)
@@ -115,6 +115,8 @@ class ScriptArgs(command_utils.ExecuteTrainConfig):
     dsa_kernel_backend: Literal["none", "tilelang", "cudnn"] | None = None
     optimizer_offload: bool = True
     use_fault_tolerance: bool = True
+    rollout_batch_size: int = 32
+    n_samples_per_prompt: int = 8
     # None runs each recipe's own CP. Only the single-node miles impl lets it vary (TP takes the GPUs
     # CP leaves, CP split with --allgather-cp); every other recipe accepts only its own CP size.
     cp_size: int | None = None
@@ -488,8 +490,8 @@ def _train(args: ScriptArgs):
         "--rollout-shuffle "
         "--rm-type math "
         "--num-rollout 3000 "
-        "--rollout-batch-size 32 "
-        "--n-samples-per-prompt 8 "
+        f"--rollout-batch-size {args.rollout_batch_size} "
+        f"--n-samples-per-prompt {args.n_samples_per_prompt} "
         "--rollout-temperature 0.8 "
         "--num-steps-per-rollout 1 "
         "--balance-data "

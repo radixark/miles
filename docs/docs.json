@@ -163,6 +163,7 @@
         "pages": [
          "models/glm/index",
          "models/glm/glm5-3-flash",
+         "models/glm/glm5-3",
          "models/glm/glm5-2",
          "models/glm/glm5",
          "models/glm/glm4-7-flash",
@@ -205,7 +206,8 @@
         ],
         "expanded": false
        },
-       "models/gpt-oss/gpt-oss"
+       "models/gpt-oss/gpt-oss",
+       "models/mimo/mimo-v2-6-flash"
       ]
      }
     ]
@@ -298,7 +300,6 @@
      {
       "group": "CI",
       "pages": [
-       "ci/contributor-guide",
        "ci/00-stage",
        "ci/01-label",
        "ci/02-docker-build",
@@ -428,6 +429,11 @@
   {
    "source": "/user-guide/dashboard",
    "destination": "/user-guide/monitoring",
+   "permanent": true
+  },
+  {
+   "source": "/developer/ci/contributor-guide",
+   "destination": "/developer/contributor-guide#registering-a-test",
    "permanent": true
   }
  ],

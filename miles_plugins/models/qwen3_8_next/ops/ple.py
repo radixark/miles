@@ -16,8 +16,8 @@ from megatron.core.transformer.module import MegatronModule
 from megatron.core.transformer.transformer_config import TransformerConfig
 from torch import Tensor
 
-from miles_plugins.models.qwen3_8_next.ops.kernel.ple_gather import gather_ple_rows
-from miles_plugins.models.qwen3_8_next.ops.kernel.ple_triton import ple_gate_conv_triton
+from miles.kernels.embedding.ple_gate_conv import ple_gate_conv
+from miles.kernels.embedding.ple_gather import gather_ple_rows
 
 logger = logging.getLogger(__name__)
 
@@ -327,7 +327,7 @@ class Qwen38NextPLE(MegatronModule):
                 f"{self.n * self.hidden_size}, got {hc_state.shape[-1]}"
             )
 
-        return ple_gate_conv_triton(
+        return ple_gate_conv(
             hc_state,
             key,
             value,
