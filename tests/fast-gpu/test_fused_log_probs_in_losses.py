@@ -30,6 +30,7 @@ from miles.backends.training_utils.loss.hub import score_centering_loss
 from miles.backends.training_utils.loss.hub.logit_processors import get_log_probs_and_entropy
 from miles.backends.training_utils.loss.objective import loss_function
 from miles.backends.training_utils.parallel import GroupInfo, ParallelState, set_parallel_state
+from miles.utils.sampling_mask import RolloutSamplingMask
 
 _WORLD_SIZE = 2
 # Megatron's fused CE (the torch backend) rounds its logits gradient to bf16 even for fp32 logits
@@ -246,6 +247,100 @@ def test_score_centering_candidates_match_the_torch_backend(nccl_world, dtype):
     # both backends round the gradient into the logits' dtype once
     grad_tol = dict(rtol=1e-5, atol=1e-5) if dtype == torch.float32 else dict(rtol=1e-2, atol=1e-3)
     torch.testing.assert_close(grad.float(), reference_grad.float(), **grad_tol)
+
+
+def _support_batch(prompt_lens, response_lens, vocab_size, max_support, seed):
+    """Token sequences and, per response token, a sampling support holding the sampled token."""
+    gen = torch.Generator().manual_seed(seed)
+    total_lens = [p + r for p, r in zip(prompt_lens, response_lens, strict=True)]
+    tokens = [torch.randint(0, vocab_size, (total,), generator=gen) for total in total_lens]
+    supports = []
+    for sample_tokens, response in zip(tokens, response_lens, strict=True):
+        rows = []
+        for token in sample_tokens[-response:].tolist():
+            size = int(torch.randint(1, max_support + 1, (1,), generator=gen))
+            others = [i for i in torch.randperm(vocab_size, generator=gen)[: size + 1].tolist() if i != token]
+            rows.append([token, *others[: size - 1]])
+        supports.append(rows)
+    return total_lens, [t.cuda() for t in tokens], supports
+
+
+def test_sampling_support_replay_matches_the_torch_backend(nccl_world):
+    """Under top-p/top-k replay the policy scores each token over its sampling support: the torch
+    backend masks the logits, the fused one reads only the support. Log-probs, the (full-vocabulary)
+    entropy and the logits gradient must agree."""
+    make_parallel_state()
+    prompt_lens, response_lens = [5, 9, 3], [7, 4, 6]
+    total_lens, tokens, supports = _support_batch(prompt_lens, response_lens, _LOSS_VOCAB, 24, seed=33)
+    masks = [RolloutSamplingMask.from_mask_list(rows) for rows in supports]
+    logits = torch.randn(
+        1, sum(total_lens), _LOSS_VOCAB, device="cuda", generator=torch.Generator("cuda").manual_seed(34)
+    )
+
+    outputs = {}
+    for backend in ("torch", "fused"):
+        args = make_args(true_on_policy_mode=False, log_probs_backend=backend, rollout_temperature=0.8)
+        leaf = (logits * 4).requires_grad_(True)
+        res = get_log_probs_and_entropy(
+            leaf * 1,
+            args=args,
+            unconcat_tokens=tokens,
+            total_lengths=total_lens,
+            response_lengths=response_lens,
+            with_entropy=True,
+            rollout_sampling_mask=masks,
+        )
+        log_probs, entropy = torch.cat(res["log_probs"]), torch.cat(res["entropy"])
+        (log_probs.sum() + 0.1 * entropy.sum()).backward()
+        outputs[backend] = (log_probs.detach(), entropy.detach(), leaf.grad)
+
+    (torch_lp, torch_ent, torch_grad), (fused_lp, fused_ent, fused_grad) = outputs["torch"], outputs["fused"]
+    torch.testing.assert_close(fused_lp, torch_lp, rtol=1e-5, atol=2e-5)
+    torch.testing.assert_close(fused_ent, torch_ent, rtol=1e-5, atol=5e-5)
+    torch.testing.assert_close(fused_grad, torch_grad, **_TORCH_BACKEND_GRAD_TOL)
+
+
+def test_score_centering_filtered_mode_matches_the_torch_backend(nccl_world):
+    """Filtered score centering scores the sampled token and its whole support, normalized over it,
+    with the entropy over the support: the fused support mode against _SupportLogProbs."""
+    make_parallel_state()
+    prompt_lens, response_lens, width = [5, 9, 3], [7, 4, 6], 24
+    total_lens, tokens, supports = _support_batch(prompt_lens, response_lens, _LOSS_VOCAB, width, seed=35)
+    candidates = [
+        torch.tensor([row + [-1] * (width - len(row)) for row in rows], dtype=torch.long) for rows in supports
+    ]
+    batch = {
+        "unconcat_tokens": tokens,
+        "total_lengths": total_lens,
+        "response_lengths": response_lens,
+        "rollout_topk_token_ids": candidates,
+    }
+    logits = torch.randn(
+        1, sum(total_lens), _LOSS_VOCAB, device="cuda", generator=torch.Generator("cuda").manual_seed(36)
+    )
+
+    outputs = {}
+    for backend in ("torch", "fused"):
+        args = make_args(
+            loss_type="score_centering",
+            true_on_policy_mode=False,
+            log_probs_backend=backend,
+            rollout_temperature=0.8,
+            use_kl_loss=False,
+            entropy_coef=0.01,
+            observe_training_entropy=False,
+            use_sampling_support_replay=True,
+            recompute_loss_function=False,
+        )
+        leaf = (logits * 4).requires_grad_(True)
+        result = score_centering_loss._candidate_log_probs(args, batch, leaf * 1)
+        selected, entropy = torch.cat(result["selected"]), torch.cat(result["entropy"])
+        weights = torch.linspace(-1, 1, selected.numel(), device="cuda").view(selected.shape)
+        ((selected * weights).sum() + 0.1 * entropy.sum()).backward()
+        outputs[backend] = (selected.detach(), entropy.detach(), leaf.grad)
+
+    for fused, reference in zip(outputs["fused"], outputs["torch"], strict=True):
+        torch.testing.assert_close(fused, reference, rtol=1e-5, atol=5e-5)
 
 
 def _score_centering_batch(prompt_lens, response_lens, vocab_size, n_candidates, seed):
