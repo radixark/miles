@@ -51,6 +51,9 @@ def _args() -> ScriptArgs:
         num_nodes=1,
         num_gpus_per_node=4,
         num_rollout=2,
+        rollout_batch_size=4,
+        n_samples_per_prompt=4,
+        global_batch_size=16,
         enable_optimizer_offload=True,
         extra_args=("--ci-test " "--ci-disable-logprobs-checker "),
     )

@@ -17,7 +17,7 @@ class ScriptArgs(command_utils.ExecuteTrainConfig):
     actor_num_gpus_per_node: int | None = None
     rollout_num_gpus: int | None = None
     no_colocate: bool = False
-    hardware: Literal["auto", "H100", "B200", "B300", "GB200", "GB300"] = "auto"
+    hardware: Literal["auto", "H100", "B200", "B300", "GB200", "GB300", "Rubin"] = "auto"
     enable_eval: bool = True
     extra_args: str = ""
     data_dir: str = "/root/datasets"
@@ -229,7 +229,7 @@ def execute(args: ScriptArgs):
 
     if args.train_fp8 or args.train_mxfp8:
         match args.hardware:
-            case "B200" | "B300" | "GB200" | "GB300":
+            case "B200" | "B300" | "GB200" | "GB300" | "Rubin":
                 misc_args += (
                     "--transformer-impl transformer_engine "
                     "--bf16 "
@@ -315,7 +315,7 @@ matchers:
             optimizer_args += (
                 "--optimizer-cpu-offload " "--overlap-cpu-optimizer-d2h-h2d " "--use-precision-aware-optimizer "
             )
-        case ("B200" | "B300" | "GB200" | "GB300", 1 | 2 | 4):
+        case ("B200" | "B300" | "GB200" | "GB300", 1 | 2 | 4) | ("Rubin", 1):
             perf_args += (
                 f"--tensor-model-parallel-size {min(4, args.actor_num_gpus_per_node)} "
                 "--sequence-parallel "
@@ -328,6 +328,8 @@ matchers:
             else:
                 perf_args += f"--expert-model-parallel-size {args.num_gpus_per_node if args.train_mxfp8 else 4} "
             sglang_args = "--sglang-mem-fraction-static 0.7 " "--sglang-attention-backend trtllm_mha "
+            if args.hardware == "Rubin":
+                sglang_args += "--sglang-moe-runner-backend triton "
             if args.rollout_fp8:
                 sglang_world_size = 2
                 sglang_attn_tp_size = 2

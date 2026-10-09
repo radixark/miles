@@ -1,3 +1,4 @@
+# doc-dev: docs/developer/ci/00-stage.md
 name: CI Job
 
 on:
@@ -106,6 +107,13 @@ jobs:
       - name: Configure source paths
         shell: bash
         run: echo "PYTHONPATH=$GITHUB_WORKSPACE:$SGLANG_SOURCE_ROOT:$MEGATRON_SOURCE_ROOT" >> "$GITHUB_ENV"
+
+      - name: Keep NVSHMEM on NVLink (4-GPU H200)
+        # Single-node stage whose pool can include RoCE runners: a NIC name that
+        # matches nothing keeps NVSHMEM off RDMA. See docs/developer/ci/00-stage.md.
+        if: contains(fromJSON(inputs.runs_on), 'h200') && contains(fromJSON(inputs.runs_on), '4gpu')
+        shell: bash
+        run: echo "NVSHMEM_HCA_LIST=none_single_node_nvlink_only" >> "$GITHUB_ENV"
 
       - name: Cleanup Ray processes
         shell: bash

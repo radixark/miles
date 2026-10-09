@@ -208,6 +208,16 @@ jobs:
           ref: ${{ github.event.inputs.ci_megatron_bridge_pr || '' }}
           pr_body: ${{ github.event.pull_request.body || '' }}
 
+      - name: Load one HIP runtime
+        shell: bash
+        run: |
+          torch_lib="$(python3 -c 'import os, torch; print(os.path.join(os.path.dirname(torch.__file__), "lib"))')"
+          for lib in libamdhip64.so libhsa-runtime64.so; do
+            target="$(readlink -f "/opt/rocm/lib/${lib}")"
+            [ -f "$torch_lib/$lib" ] && [ -f "$target" ] && ln -sfn "$target" "$torch_lib/$lib"
+            ls -l "$torch_lib/$lib"
+          done
+
       - name: Run tests
         shell: bash
         run: ${{ inputs.execute_command }}

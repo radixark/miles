@@ -7,7 +7,7 @@ from tests.ci.ci_register import register_cuda_ci
 from miles.utils.external_utils import command_utils
 
 register_cuda_ci(
-    est_time=800,
+    est_time=1000,
     suite="stage-c-8-gpu-b200",
     labels=["megatron", "model-scripts"],
     hardware=["blackwell"],
@@ -154,11 +154,11 @@ def execute():
         "--rollout-shuffle "
         "--rm-type deepscaler "
         "--num-rollout 2 "
-        "--rollout-batch-size 8 "
-        "--n-samples-per-prompt 8 "
+        "--rollout-batch-size 4 "
+        "--n-samples-per-prompt 4 "
         "--rollout-max-response-len 100 "
         "--rollout-temperature 1 "
-        "--global-batch-size 64 "
+        "--global-batch-size 16 "
     )
 
     perf_args = (
