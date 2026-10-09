@@ -10,6 +10,7 @@ GPU CI runs inside `radixark/miles`. This doc maps which Dockerfiles exist, the 
 | Path                     | Builds                   | Wired into                             |
 | ------------------------ | ------------------------ | -------------------------------------- |
 | `docker/Dockerfile`      | `radixark/miles` (CUDA)  | `docker-build.yml`, `release-docker.yml` |
+| `docker/Dockerfile.rubin` | Vera Rubin (aarch64/SM107) | `docker-build.yml` (`rubin` manual variant) |
 | `docker/Dockerfile.rocm` | AMD ROCm (MI35x, MI30x) | `docker-build.yml` (`rocm*-mi35x`, `rocm10-mi30x` variants) |
 | `docker/Dockerfile.cu12` | Deprecated CUDA 12.9 (x86_64), unmaintained | Manual builds only |
 
@@ -52,6 +53,7 @@ The CUDA 13 defaults use `lmsysorg/sglang:v0.5.21` and the stable branch `sglang
 | `cu13`         | `radixark/miles:dev`               | `linux/amd64` + `linux/arm64` | **multi-arch**, one manifest — the daily image |
 | `cu13-x86`     | `radixark/miles:dev`               | `linux/amd64`                 | x86-only build of the same image               |
 | `cu13-aarch64` | `radixark/miles:dev`               | `linux/arm64`                 | arm64-only build of the same image             |
+| `rubin` | `radixark/miles:dev-rubin` | `linux/arm64` | Vera Rubin — `docker/Dockerfile.rubin` |
 | `rocm724-mi35x` | `rocm/sgl-dev:miles-rocm724-mi35x` | native                       | AMD MI35x (`gfx950`, ROCm 7.2.4) — `docker/Dockerfile.rocm` |
 | `rocm10-mi35x`  | `rocm/sgl-dev:miles-rocm10-mi35x`  | native                       | AMD MI35x (`gfx950`, ROCm 10, ROCm SDK as pip wheels) — `docker/Dockerfile.rocm` |
 | `rocm10-mi30x`  | `rocm/sgl-dev:miles-rocm10-mi30x`  | native                       | AMD MI300X / MI325X (`gfx942`, ROCm 10) — `docker/Dockerfile.rocm` |
@@ -62,6 +64,8 @@ The cu13 variants share one multi-arch CUDA base image and differ only in platfo
 The **Tag** column is for `--image-tag dev`, which also pushes a timestamped `dev-<YYYYMMDDHHMM>` sibling; `latest` swaps the prefix to `latest`, `custom` uses `--custom-tag`. `cu13` / `cu13-x86` / `cu13-aarch64` intentionally share `radixark/miles:dev` — the daily build runs `cu13` (multi-arch), while a single-arch variant overwrites `dev` with one arch when run alone.
 
 A multi-arch build (`cu13`) needs Buildx's `docker-container` driver. Use `--push` to publish directly, or `--output type=oci,dest=/tmp/image,tar=false` to export a local OCI layout for later publication; it cannot load into the local image store. Use `cu13-x86` / `cu13-aarch64` (single-platform; the arm64 one cross-builds via QEMU on an x86 host) for local single-arch iteration. Other flags: `--push`, `--dry-run`, `--dockerfile`, `--custom-tag`, and repeatable `--build-arg KEY=VALUE`. `--context <repository>` selects a separate build context while keeping the driver and hash reader in their original checkout.
+
+The `rubin` variant uses the existing `docker-build` runner and targets `linux/arm64`, like `cu13-aarch64`. It is not included in scheduled builds, automatic tag promotion/pruning, regular CUDA PR images or versioned releases.
 
 ## PR build check (in `pr-test.yml`)
 
@@ -78,7 +82,7 @@ Dockerfile changes can be build-tested on the PR itself, before merge, by select
 
 So a rerun, or a push that touches only source files, reuses the image the PR already has instead of rebuilding an identical one. Non-docker PRs are untouched: no PR image, matrix on `dev`, as before.
 
-`docker/image_inputs.py` is the single source of truth for what counts as an input (`docker/Dockerfile`, `docker/build.py`, `docker/install-kube-tools.sh`, `docker/verify_transformer_engine.py`, `docker/patch/**`, `requirements.txt`). `Dockerfile.rocm` is deliberately excluded — it feeds the `rocm/sgl-dev` images, not the `cu13` image built here.
+`docker/image_inputs.py` is the single source of truth for what counts as an input (`docker/Dockerfile`, `docker/Dockerfile.rubin`, `docker/build.py`, `docker/install-kube-tools.sh`, `docker/verify_transformer_engine.py`, `docker/patch/**`, `requirements.txt`). `Dockerfile.rocm` is deliberately excluded — it feeds the `rocm/sgl-dev` images, not the `cu13` image built here.
 
 To rebuild an eligible PR image when its inputs did not change — a moved base image, a floating dependency, a corrupt push — add the **`rebuild-ci-image`** label alongside a CUDA test request. The label does not select tests or make a PR whose build inputs match the base eligible. Once consumed by a build, it is removed so later runs can reuse the image.
 
@@ -109,7 +113,7 @@ This workflow owns the rolling `dev` and `latest` image families. It has three j
 ### Triggers: automatic vs manual
 
 - **Automatic** (no human) — the **schedule** (10-minute poll, gated by `check-upstream`) and any **push to `main` that touches `docker/Dockerfile`, `docker/install-kube-tools.sh`, `docker/verify_transformer_engine.py`, or `requirements.txt`**. Both leave `--variant` empty and build `cu13` → `radixark/miles` (multi-arch).
-- **Manual** — `workflow_dispatch` (pick one variant — see Trigger a build yourself below) or running `docker/build.py` locally. Only the ROCm images (`rocm*-mi35x`, `rocm10-mi30x`) have **no automatic path in this repo** (their nightlies live in sgl-project/sglang) (`cu13-x86` / `cu13-aarch64` just rebuild the same `dev` image single-arch).
+- **Manual** — `workflow_dispatch` (pick one variant — see Trigger a build yourself below) or running `docker/build.py` locally. The `rubin` and ROCm images (`rocm*-mi35x`, `rocm10-mi30x`) have **no automatic path in this repo** (ROCm nightlies live in sgl-project/sglang) (`cu13-x86` / `cu13-aarch64` just rebuild the same `dev` image single-arch).
 
 `docker/build.py` and `docker/patch/**` participate in PR image validation but are not `main`-push triggers; [Release a Version](/developer/ci/04-release) treats them as manual preflight cases.
 
@@ -129,6 +133,7 @@ All images push to **Docker Hub**. CUDA variants → `radixark/miles`; ROCm vari
 | variant(s) | `--image-tag dev` writes | `latest` mode writes |
 | --- | --- | --- |
 | `cu13` / `cu13-x86` / `cu13-aarch64` | `radixark/miles:dev` + `radixark/miles:dev-<YYYYMMDDHHMM>` | `radixark/miles:latest` |
+| `rubin` | `radixark/miles:dev-rubin` (+ timestamped sibling) | `radixark/miles:latest-rubin` |
 | `rocm724-mi35x` / `rocm10-mi35x` | `rocm/sgl-dev:miles-rocm*-mi35x` (+ timestamped sibling) | `rocm/sgl-dev:latest-rocm*-mi35x` |
 | `rocm10-mi30x` | `rocm/sgl-dev:miles-rocm10-mi30x` (+ timestamped sibling) | `rocm/sgl-dev:latest-rocm10-mi30x` |
 
@@ -149,7 +154,7 @@ gh workflow run docker-build.yml -f variant=cu13-x86 -f image_tag=custom -f cust
 
 | input | required | values / default |
 | ----- | -------- | ---------------- |
-| `variant` | yes | `cu13` / `cu13-x86` / `cu13-aarch64` / `rocm724-mi35x` / `rocm10-mi35x` / `rocm10-mi30x` |
+| `variant` | yes | `cu13` / `cu13-x86` / `cu13-aarch64` / `rubin` / `rocm724-mi35x` / `rocm10-mi35x` / `rocm10-mi30x` |
 | `image_tag` | yes | `dev` / `latest` / `custom` |
 | `custom_tag` | no | tag name; required when `image_tag=custom` |
 | `dockerfile` | no | path to Dockerfile (default `docker/Dockerfile`) |

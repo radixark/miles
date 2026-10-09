@@ -63,6 +63,8 @@ class ScriptArgs(command_utils.ExecuteTrainConfig):
     enable_eval: bool = True
     enable_mtp: bool = False
     dsv4_impl: Literal["miles"] = "miles"
+    rollout_batch_size: int = 32
+    n_samples_per_prompt: int = 8
     cp_size: int | None = None
 
     hf_checkpoint: str | None = None
@@ -322,8 +324,8 @@ def _train(args: ScriptArgs):
         "--rollout-shuffle "
         "--rm-type math "
         "--num-rollout 3000 "
-        "--rollout-batch-size 32 "
-        "--n-samples-per-prompt 8 "
+        f"--rollout-batch-size {args.rollout_batch_size} "
+        f"--n-samples-per-prompt {args.n_samples_per_prompt} "
         "--rollout-temperature 0.8 "
         "--num-steps-per-rollout 1 "
         "--balance-data "

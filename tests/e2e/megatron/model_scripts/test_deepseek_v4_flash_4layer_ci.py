@@ -11,7 +11,7 @@ from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
 from tests.ci.metric_history import register_ci_gate
 
 register_cuda_ci(
-    est_time=1900, suite="stage-c-4-gpu-h200", labels=["megatron", "model-scripts"], hardware=["hopper", "blackwell"]
+    est_time=1000, suite="stage-c-4-gpu-h200", labels=["megatron", "model-scripts"], hardware=["hopper", "blackwell"]
 )
 register_rocm_ci(
     est_time=1900,
@@ -37,6 +37,8 @@ def _args() -> ScriptArgs:
         num_gpus_per_node=4,
         skip_saving=True,
         use_fault_tolerance=False,
+        rollout_batch_size=4,
+        n_samples_per_prompt=4,
         extra_args=(
             "--ci-test " "--check-weight-update-allow-quant-error " "--ci-disable-logprobs-checker " "--num-rollout 2 "
         ),
