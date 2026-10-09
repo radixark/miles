@@ -16,6 +16,14 @@ state scan, output; backward: dv_local, adjoint state scan, dq/dk/dw/dg, WY pull
 recompute the transient WY/state tensors exactly in the backward, as FLA does.  ``K = V = 128``,
 ``HV % H == 0`` (grouped value heads without materialised ``repeat_interleave``), BF16 q/k/v.
 
+Host-side wiring (see ``design_doc/active/MILES_GDN_CHUNKED_BACKWARD.md`` in the kernel repository, section
+"Host wiring"): the chunk table is a pure function of the micro-batch's segment lengths, so it is built once per
+distinct layout from the host copy of ``cu_seqlens`` that Megatron's ``packed_seq_params`` already carries
+(``cu_seqlens_cpu``; no device-to-host synchronisation, no launch) and shared by every layer and by the
+activation-recompute forward; a device-only ``cu_seqlens`` falls back to the on-device table kernel.  The forward
+keeps the WY / state tensors (``w``, ``u``, ``h``, ``v_new``) on the autograd tape by default
+(``MILES_GDN_CHUNK_TRAIN_SAVE_STATE=0`` recomputes them in the backward instead; both give bit-identical gradients).
+
 Context parallelism reuses FLA v0.5.2's ``fla.ops.cp`` pre-processing exactly
 (``chunk_gated_delta_rule_fwd_h_pre_process``, ``compress_h0``, ``expand_h0``,
 ``chunk_gated_delta_rule_bwd_dhu_pre_process``), so ``build_gdn_cp_context`` semantics are
@@ -27,7 +35,8 @@ from __future__ import annotations
 import math
 import os
 from dataclasses import dataclass
-from functools import cache
+from functools import cache, lru_cache
+from collections.abc import Sequence
 from typing import Any
 
 import torch
@@ -38,6 +47,7 @@ __all__ = [
     "ChunkGatedDeltaRuleFunction",
     "ChunkMeta",
     "chunk_gated_delta_rule",
+    "chunk_meta_from_host",
     "gdn_chunk_backward",
     "gdn_chunk_forward",
 ]
@@ -49,6 +59,8 @@ HEAD_DIM = 128
 REG_SCAN_CONFIGS = ((32, 2), (32, 1), (64, 1))
 # Tests may pin a scan configuration; production always derives it from shape and device.
 FORCED_SCAN_CONFIG: tuple[int, int] | None = None
+# Keep w/u/h/v_new on the autograd tape (default) instead of recomputing them in the backward.
+SAVE_STATE = os.environ.get("MILES_GDN_CHUNK_TRAIN_SAVE_STATE", "1") == "1"
 
 
 # --------------------------------------------------------------------------- #
@@ -84,17 +96,59 @@ def build_chunk_meta(seq_lens, device) -> ChunkMeta:
         seq_chunk_start.append(len(starts))
         token += seq_len
 
-    def to_dev(values):
-        return torch.tensor(values, dtype=torch.int32, device=device)
-
+    # One host tensor, one asynchronous copy (pinned staging): a pageable ``torch.tensor(..., device="cuda")``
+    # would synchronise the stream before each of three copies.
+    table = torch.tensor(starts + lens + seq_chunk_start, dtype=torch.int32)
+    device = torch.device(device)
+    table = table.pin_memory().to(device, non_blocking=True) if device.type == "cuda" else table.to(device)
+    n = len(starts)
     return ChunkMeta(
-        chunk_start=to_dev(starts),
-        chunk_len=to_dev(lens),
-        seq_chunk_start=to_dev(seq_chunk_start),
-        num_chunks=len(starts),
+        chunk_start=table[:n],
+        chunk_len=table[n : 2 * n],
+        seq_chunk_start=table[2 * n :],
+        num_chunks=n,
         num_seqs=len(seq_lens),
         seq_lens=tuple(int(x) for x in seq_lens),
     )
+
+
+_HOST_META_BUILDS = 0  # chunk tables built from host boundaries (tests assert one per micro-batch layout)
+
+
+def _seq_lens_from_host(cu_seqlens_host) -> tuple[int, ...]:
+    """Segment lengths from a host copy of ``cu_seqlens``: a tuple / list of ints or a CPU integer tensor."""
+    if isinstance(cu_seqlens_host, torch.Tensor):
+        if cu_seqlens_host.is_cuda:
+            raise ValueError("cu_seqlens_cpu must live on the host")
+        values = cu_seqlens_host.flatten().tolist()
+    else:
+        values = list(cu_seqlens_host)
+    values = [int(x) for x in values]
+    if len(values) < 2:
+        raise ValueError("cu_seqlens must have at least two entries")
+    if values[0] != 0 or any(b < a for a, b in zip(values[:-1], values[1:], strict=True)):
+        raise ValueError(f"cu_seqlens must be non-decreasing and start at 0, got {values[:8]}...")
+    return tuple(b - a for a, b in zip(values[:-1], values[1:], strict=True))
+
+
+@lru_cache(maxsize=256)
+def _host_chunk_meta(seq_lens: tuple[int, ...], device_index: int) -> ChunkMeta:
+    global _HOST_META_BUILDS
+    _HOST_META_BUILDS += 1
+    return build_chunk_meta(seq_lens, torch.device("cuda", device_index))
+
+
+def chunk_meta_from_host(cu_seqlens_host, device) -> ChunkMeta:
+    """Exact chunk table for a micro-batch layout, built once per distinct layout and device.
+
+    Megatron hands every layer of a micro-batch the same ``packed_seq_params`` (``cu_seqlens_host`` next to the
+    device ``cu_seqlens_q``); the table is a pure function of the segment lengths, so all layers and the
+    activation-recompute forward of that micro-batch share one build (three tiny int32 tensors, no
+    device-to-host synchronisation, no launch).  The launch extent is exact (no padding chunks).
+    """
+    device = torch.device(device)
+    index = device.index if device.index is not None else torch.cuda.current_device()
+    return _host_chunk_meta(_seq_lens_from_host(cu_seqlens_host), int(index))
 
 
 def build_chunk_meta_from_cu_seqlens(cu_seqlens: torch.Tensor, total_tokens: int, arch: str) -> ChunkMeta:
@@ -153,6 +207,11 @@ def choose_register_scan_config(
     """
     if FORCED_SCAN_CONFIG is not None:
         return FORCED_SCAN_CONFIG
+    return _choose_register_scan_config(kind, num_seqs, num_v_heads, device_index, arch)
+
+
+@cache
+def _choose_register_scan_config(kind: str, num_seqs: int, num_v_heads: int, device_index: int, arch: str):
     sm_count, smem_optin, _major = _device_props(device_index)
     for vb, ks in REG_SCAN_CONFIGS:
         ctas = num_seqs * num_v_heads * (HEAD_DIM // vb)
@@ -536,16 +595,18 @@ def gdn_chunk_backward(
 def _chunk_meta(cu_seqlens, cu_seqlens_cpu, batch: int, seq_len: int, device, arch: str) -> ChunkMeta:
     """Chunk table without a device-to-host synchronisation.
 
-    Equal-length batches and a caller-supplied host copy of ``cu_seqlens`` build the exact table from
-    host integers; a device-only ``cu_seqlens`` builds it on the GPU (padded launch extent).
+    Equal-length batches and a caller-supplied host copy of ``cu_seqlens`` take the exact table from the
+    per-layout cache (one build per micro-batch layout, shared by every layer); a device-only
+    ``cu_seqlens`` builds it on the GPU (padded launch extent, one launch per call).
     """
+    device = torch.device(device)
     if cu_seqlens is None:
-        return build_chunk_meta([seq_len] * batch, device)
+        index = device.index if device.index is not None else torch.cuda.current_device()
+        return _host_chunk_meta((int(seq_len),) * int(batch), int(index))
     if batch != 1:
         raise ValueError("cu_seqlens requires a leading batch dimension of 1")
     if cu_seqlens_cpu is not None:
-        values = [int(x) for x in cu_seqlens_cpu.tolist()]
-        return build_chunk_meta([b - a for a, b in zip(values[:-1], values[1:], strict=True)], device)
+        return chunk_meta_from_host(cu_seqlens_cpu, device)
     return build_chunk_meta_from_cu_seqlens(cu_seqlens, batch * seq_len, arch)
 
 
@@ -638,6 +699,9 @@ class ChunkGatedDeltaRuleFunction(torch.autograd.Function):
             )
             saved_state = initial_state
 
+        # The WY / state tensors stay on the tape by default: the backward would otherwise rerun the WY and state-scan
+        # kernels (bit-identical either way, ~20 % of the backward's device time at 8k tokens).
+        state_tensors = (fwd["w"], fwd["u"], fwd["h"], fwd["v_new"]) if SAVE_STATE else ()
         ctx.save_for_backward(
             fwd["qn"],
             fwd["kn"],
@@ -649,7 +713,9 @@ class ChunkGatedDeltaRuleFunction(torch.autograd.Function):
             fwd["A"],
             saved_state,
             cu_seqlens,
+            *state_tensors,
         )
+        ctx.saved_state_tensors = bool(state_tensors)
         ctx.meta = meta
         ctx.arch = arch
         ctx.scale = float(scale)
@@ -664,7 +730,7 @@ class ChunkGatedDeltaRuleFunction(torch.autograd.Function):
 
     @staticmethod
     def backward(ctx, do: torch.Tensor, dht: torch.Tensor | None):
-        qn, kn, rstd_q, rstd_k, v_flat, g_cs, beta32, A, saved_state, cu_seqlens = ctx.saved_tensors
+        qn, kn, rstd_q, rstd_k, v_flat, g_cs, beta32, A, saved_state, cu_seqlens, *state_tensors = ctx.saved_tensors
         batch, seq_len, num_heads, num_v_heads, key_dim, value_dim = ctx.shapes
         g_dtype, beta_dtype = ctx.dtypes
         do_flat = do.reshape(batch * seq_len, num_v_heads, value_dim).contiguous()
@@ -682,6 +748,8 @@ class ChunkGatedDeltaRuleFunction(torch.autograd.Function):
             "scale": ctx.scale,
             "normalize_qk": ctx.normalize_qk,
         }
+        if ctx.saved_state_tensors:
+            tape["w"], tape["u"], tape["h"], tape["v_new"] = state_tensors
         cp_context = ctx.cp_context
         initial_state = saved_state
         dht_hook = None
@@ -731,7 +799,7 @@ def chunk_gated_delta_rule(
     initial_state: torch.Tensor | None = None,
     output_final_state: bool = False,
     cu_seqlens: torch.LongTensor | None = None,
-    cu_seqlens_cpu: torch.LongTensor | None = None,
+    cu_seqlens_cpu: torch.LongTensor | Sequence[int] | None = None,
     use_qk_l2norm_in_kernel: bool = False,
     cp_context: Any = None,
     chunk_size: int = 64,
@@ -744,6 +812,10 @@ def chunk_gated_delta_rule(
     ``output_final_state`` (V-last ``[N, HV, K, V]``), ``use_qk_l2norm_in_kernel``, and ``cp_context``
     state passing.  Gate fusion (``use_gate_in_kernel``), beta sigmoid fusion, ``state_v_first``,
     ``head_first``, and non-64 chunk sizes are rejected explicitly.
+
+    ``cu_seqlens_cpu`` (the same boundaries on the host: a tuple of ints such as Megatron's
+    ``packed_seq_params.cu_seqlens_host``, or a CPU tensor) selects the exact per-layout chunk table that
+    every layer of the micro-batch shares; without it the table is built on the device per call.
     """
     for name, value in unsupported.items():
         if value not in (None, False):

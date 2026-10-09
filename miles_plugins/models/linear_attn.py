@@ -97,15 +97,27 @@ def kda_kernel():
     return chunk_kda
 
 
-def gdn_recurrence(q, k, v, beta_logits, decay, A_log, dt_bias, *, backend, cu_seqlens, cp_context):
+def gdn_recurrence(
+    q, k, v, beta_logits, decay, A_log, dt_bias, *, backend, cu_seqlens, cp_context, cu_seqlens_host=None
+):
     """q/k ``[b, s, G, hk]``, v ``[b, s, H, hv]`` (fla and the loom kernels group value heads per key head),
-    decay ``[b, s, H]`` -> ``[b, s, H, hv]``."""
+    decay ``[b, s, H]`` -> ``[b, s, H, hv]``.
+
+    ``cu_seqlens_host`` (the packed boundaries as host ints, from ``packed_seq_params.cu_seqlens_host``) lets the
+    ``loom`` backend take its exact per-layout chunk table from a cache shared by every layer of the micro-batch
+    instead of rebuilding it on the device per layer; it is not passed under context parallelism, where the CP
+    context carries this rank's local boundaries."""
     if cp_context is not None and backend not in ("fla", "loom"):
         raise NotImplementedError(f"GDN context parallelism requires the 'fla' or 'loom' backend, got {backend!r}.")
     beta = beta_logits.sigmoid()
     g = -A_log.float().exp() * F.softplus(decay.float() + dt_bias)
     if backend == "flashqla":
         q, k, v, g, beta = (t.contiguous() for t in (q, k, v, g, beta))
+    extra = {}
+    if cp_context is not None:
+        extra["cp_context"] = cp_context
+    elif backend == "loom" and cu_seqlens_host is not None and cu_seqlens is not None:
+        extra["cu_seqlens_cpu"] = cu_seqlens_host
     out, _ = gdn_kernel(backend)(
         q,
         k,
@@ -116,7 +128,7 @@ def gdn_recurrence(q, k, v, beta_logits, decay, A_log, dt_bias, *, backend, cu_s
         output_final_state=False,
         use_qk_l2norm_in_kernel=True,
         cu_seqlens=cu_seqlens,
-        **({"cp_context": cp_context} if cp_context is not None else {}),
+        **extra,
     )
     return out
 
@@ -377,15 +389,18 @@ class LinearAttention(MegatronModule, ABC):
     def project(self, x: torch.Tensor) -> Projections: ...
 
     @abstractmethod
-    def recurrence(self, q, k, v, beta_logits, decay, cu_seqlens, cp_context) -> torch.Tensor:
-        """q/k ``[b, s, Gl, hk]``, v ``[b, s, Hl, hv]`` -> ``[b, s, Hl, hv]``."""
+    def recurrence(self, q, k, v, beta_logits, decay, cu_seqlens, cp_context, cu_seqlens_host=None) -> torch.Tensor:
+        """q/k ``[b, s, Gl, hk]``, v ``[b, s, Hl, hv]`` -> ``[b, s, Hl, hv]``.  ``cu_seqlens_host``: the same
+        boundaries as host ints when the batch carries them (see :func:`gdn_recurrence`)."""
 
-    def forward(self, x: torch.Tensor, cu_seqlens: torch.Tensor | None, cp_context=None) -> torch.Tensor:
+    def forward(
+        self, x: torch.Tensor, cu_seqlens: torch.Tensor | None, cp_context=None, cu_seqlens_host=None
+    ) -> torch.Tensor:
         """x ``[b, s, hidden]``, TP collective already applied -> ``[b, s, local value_dim]``."""
         batch, seq_len, _ = x.shape
         qkv, gate, beta_logits, decay = self.project(x)
         q, k, v = self.convolve(qkv, cu_seqlens, cp_context)
-        core = self.recurrence(q, k, v, beta_logits, decay, cu_seqlens, cp_context)
+        core = self.recurrence(q, k, v, beta_logits, decay, cu_seqlens, cp_context, cu_seqlens_host=cu_seqlens_host)
         weight = copy_to_tensor_model_parallel_region(self.norm.weight, group=self.tp_group)
         core = rms_norm_gated(
             core.reshape(-1, self.heads.head_v_dim),
@@ -412,7 +427,7 @@ class GatedDeltaNet(LinearAttention):
         )
         self.backend = backend
 
-    def recurrence(self, q, k, v, beta_logits, decay, cu_seqlens, cp_context):
+    def recurrence(self, q, k, v, beta_logits, decay, cu_seqlens, cp_context, cu_seqlens_host=None):
         return gdn_recurrence(
             q,
             k,
@@ -424,6 +439,7 @@ class GatedDeltaNet(LinearAttention):
             backend=self.backend,
             cu_seqlens=cu_seqlens,
             cp_context=cp_context,
+            cu_seqlens_host=cu_seqlens_host,
         )
 
 
@@ -489,7 +505,7 @@ class KimiDeltaAttention(LinearAttention):
             self.f_b_proj(F.linear(x, f_a_weight)),
         )
 
-    def recurrence(self, q, k, v, beta_logits, decay, cu_seqlens, cp_context):
+    def recurrence(self, q, k, v, beta_logits, decay, cu_seqlens, cp_context, cu_seqlens_host=None):
         return kda_recurrence(
             q,
             k,
@@ -528,10 +544,12 @@ class LinearAttentionLayer(MegatronModule):
             param.sequence_parallel = self.sequence_parallel
 
     def _global_cu_seqlens(self, hidden_states, packed_seq_params):
+        """Global packed boundaries on the device and, when the batch carries them, the same values as host ints
+        (``PackedSeqParamsWithHostCuSeqlens.cu_seqlens_host``; ``None`` otherwise)."""
         if packed_seq_params is not None and packed_seq_params.cu_seqlens_q is not None:
-            return packed_seq_params.cu_seqlens_q
+            return packed_seq_params.cu_seqlens_q, getattr(packed_seq_params, "cu_seqlens_host", None)
         total = hidden_states.shape[0] * self.cp_size
-        return torch.tensor([0, total], dtype=torch.int32, device=hidden_states.device)
+        return torch.tensor([0, total], dtype=torch.int32, device=hidden_states.device), (0, total)
 
     def forward(
         self,
@@ -554,7 +572,7 @@ class LinearAttentionLayer(MegatronModule):
         else:
             x = copy_to_tensor_model_parallel_region(x, group=self.tp_group)
 
-        global_cu_seqlens = self._global_cu_seqlens(x, packed_seq_params)
+        global_cu_seqlens, cu_seqlens_host = self._global_cu_seqlens(x, packed_seq_params)
         relayout = self.cp_size > 1 and not self.allgather_cp
         if relayout:
             x = zigzag_to_packed_shard(x, global_cu_seqlens, self.cp_group, self.cp_group.rank(), self.cp_size)
@@ -565,8 +583,11 @@ class LinearAttentionLayer(MegatronModule):
                 global_cu_seqlens, self.cp_group, self.linear_attn.conv_kernel_size, x.device
             )
             cu_seqlens = cp_context.cu_seqlens
+            cu_seqlens_host = None  # the CP context carries this rank's local boundaries
 
-        core = self.linear_attn(x.transpose(0, 1), cu_seqlens, cp_context).transpose(0, 1)
+        core = self.linear_attn(
+            x.transpose(0, 1), cu_seqlens, cp_context, cu_seqlens_host=cu_seqlens_host
+        ).transpose(0, 1)
 
         if relayout:
             core = packed_shard_to_zigzag(core, global_cu_seqlens, self.cp_group, self.cp_group.rank(), self.cp_size)

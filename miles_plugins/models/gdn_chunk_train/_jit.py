@@ -100,6 +100,9 @@ def prebuild(arch, max_workers=None):
     return time.perf_counter() - t0
 
 
+_GRID_INDEX = {"grid_x": 0, "grid_y": 1, "grid_z": 2}
+
+
 class NativeKernel:
     """One generated stage; named bindings are mapped onto the exported argument plan.
 
@@ -115,6 +118,7 @@ class NativeKernel:
         native = load(stage, self.arch)
         self._call = getattr(native, record["ffi_entry"])
         self._arg_plan = tuple(tuple(item) for item in record["arg_plan"])
+        self._binding_names = frozenset(name for kind, name in self._arg_plan if kind not in ("grid", "workspace"))
         workspace_bytes = int(record["tma_workspace_bytes"])
         self.descriptor_storage = (
             torch.empty(workspace_bytes, dtype=torch.uint8, device=device if device is not None else "cuda")
@@ -123,22 +127,22 @@ class NativeKernel:
         )
 
     def launch(self, *, grid, **bindings):
-        grid = tuple(int(g) for g in grid) + (1,) * (3 - len(grid))
+        # Hot path (one call per kernel launch): a single set comparison validates the bindings; the ordered
+        # argument list follows the exported plan.
+        if len(bindings) != len(self._binding_names) or not self._binding_names.issuperset(bindings):
+            missing = sorted(self._binding_names.difference(bindings))
+            unexpected = sorted(set(bindings).difference(self._binding_names))
+            raise KeyError(f"{self.stage}: missing bindings {missing!r}, unexpected bindings {unexpected!r}")
+        if len(grid) < 3:
+            grid = tuple(grid) + (1,) * (3 - len(grid))
         args = []
-        used = set()
         for kind, name in self._arg_plan:
             if kind == "grid":
-                args.append(grid[("grid_x", "grid_y", "grid_z").index(name)])
+                args.append(int(grid[_GRID_INDEX[name]]))
             elif kind == "workspace":
                 args.append(self.descriptor_storage)
             else:
-                if name not in bindings:
-                    raise KeyError(f"{self.stage}: missing binding {name!r}")
                 args.append(bindings[name])
-                used.add(name)
-        unexpected = set(bindings) - used
-        if unexpected:
-            raise KeyError(f"{self.stage}: unexpected bindings {sorted(unexpected)!r}")
         return self._call(*args)
 
 
