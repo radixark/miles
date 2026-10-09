@@ -1,9 +1,13 @@
 from argparse import Namespace
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence
 
 import torch
 
-from miles.backends.training_utils.data.context_parallel import allgather_cp_redistribute, iter_local_response_rows
+from miles.backends.training_utils.data.context_parallel import (
+    LocalResponseRows,
+    allgather_cp_redistribute,
+    iter_local_response_rows,
+)
 from miles.backends.training_utils.data.sampling_mask import build_local_sampling_mask
 from miles.backends.training_utils.loss.hub.math_utils import calculate_log_probs_and_entropy
 from miles.backends.training_utils.loss.hub.score_centering import selected_log_probs_and_entropy
@@ -278,7 +282,38 @@ def _fused_log_probs_and_entropy(
     entropy_requires_grad: bool,
     max_seq_lens: list[int] | None,
 ) -> dict[str, list[torch.Tensor]]:
-    """All samples' response rows through one ``fused_log_probs_and_entropy`` call."""
+    """Each response row's next token through ``fused_response_log_probs``."""
+    log_probs, entropy = fused_response_log_probs(
+        logits,
+        args=args,
+        total_lengths=total_lengths,
+        response_lengths=response_lengths,
+        max_seq_lens=max_seq_lens,
+        sample_targets=lambda i, sample_rows: sample_rows.tokens(
+            unconcat_tokens[i], total_lengths[i] - response_lengths[i]
+        ),
+        with_entropy=with_entropy,
+        entropy_requires_grad=entropy_requires_grad,
+    )
+    res = {"log_probs": log_probs}
+    if with_entropy:
+        res["entropy"] = entropy
+    return res
+
+
+def fused_response_log_probs(
+    logits: torch.Tensor,
+    *,
+    args: Namespace,
+    total_lengths: list[int],
+    response_lengths: list[int],
+    max_seq_lens: list[int] | None,
+    sample_targets: Callable[[int, LocalResponseRows], torch.Tensor],
+    with_entropy: bool,
+    entropy_requires_grad: bool = True,
+) -> tuple[list[torch.Tensor], list[torch.Tensor] | None]:
+    """Per sample, the log-probs of ``sample_targets(i, rows)`` (``[R_i]`` or ``[R_i, K]``) and the
+    entropy at this rank's response rows, all samples in one ``fused_log_probs_and_entropy`` call."""
     # imported here: the op needs triton, which not every host that imports the losses has
     from miles.backends.training_utils.loss.hub.fused_log_probs import fused_log_probs_and_entropy
 
@@ -291,20 +326,16 @@ def _fused_log_probs_and_entropy(
         response_lengths=response_lengths,
         max_seq_lens=max_seq_lens,
     )
-    row_ranges, targets, lengths = [], [], []
-    for sample_rows, tokens, total_length, response_length in zip(
-        layout, unconcat_tokens, total_lengths, response_lengths, strict=False
-    ):
-        tokens_chunk = sample_rows.tokens(tokens, total_length - response_length)
-        row_ranges.extend(sample_rows.row_ranges)
-        targets.append(tokens_chunk)
-        lengths.append(tokens_chunk.size(0))
     device = flat_logits.device
+    row_ranges, targets = [], []
+    for i, sample_rows in enumerate(layout):
+        row_ranges.extend(sample_rows.row_ranges)
+        targets.append(sample_targets(i, sample_rows).to(device))
     rows = torch.cat([torch.arange(row_start, row_end, device=device) for row_start, row_end in row_ranges])
     log_probs, entropy = fused_log_probs_and_entropy(
         flat_logits,
         rows,
-        torch.cat(targets).to(device),
+        torch.cat(targets),
         tp_group=get_parallel_state().tp.group,
         vocab_size=getattr(args, "vocab_size", None),  # a Megatron flag; other backends' logits are unpadded
         temperature=args.rollout_temperature,
@@ -313,10 +344,8 @@ def _fused_log_probs_and_entropy(
         # the checkpointed loss replays its forward on these logits during backward
         inplace_backward=not args.recompute_loss_function,
     )
-    res = {"log_probs": list(log_probs.split(lengths))}
-    if with_entropy:
-        res["entropy"] = list(entropy.split(lengths))
-    return res
+    lengths = [sample.size(0) for sample in targets]
+    return list(log_probs.split(lengths)), (list(entropy.split(lengths)) if with_entropy else None)
 
 
 def get_values(

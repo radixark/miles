@@ -21,6 +21,7 @@ from tests.fast.backends.training_utils.loss.loss_test_utils import (
 )
 
 from miles.backends.training_utils.data.context_parallel import all_gather_with_cp
+from miles.backends.training_utils.loss.hub import score_centering_loss
 from miles.backends.training_utils.loss.hub.fused_log_probs import fused_log_probs_and_entropy
 from miles.backends.training_utils.loss.hub.logit_processors import get_log_probs_and_entropy
 from miles.backends.training_utils.loss.hub.math_utils import calculate_log_probs_and_entropy
@@ -34,10 +35,21 @@ _TORCH_BACKEND_GRAD_TOL = dict(rtol=2e-2, atol=5e-3)
 
 
 def _reference(logits, rows, targets, temperature, vocab_size=None):
-    """log_softmax over the first ``vocab_size`` columns (all of them by default)."""
+    """log_softmax over the first ``vocab_size`` columns (all of them by default); a ``-1`` target scores 0."""
     log_softmax = torch.log_softmax(logits.index_select(0, rows)[:, :vocab_size].float() / temperature, dim=-1)
-    log_probs = log_softmax.gather(1, targets.unsqueeze(1)).squeeze(1)
+    index = targets.reshape(targets.size(0), -1)
+    log_probs = torch.where(index >= 0, log_softmax.gather(1, index.clamp(min=0)), 0.0).view(targets.shape)
     return log_probs, -(log_softmax.exp() * log_softmax).sum(dim=-1)
+
+
+def _k_targets(rows, n_targets, vocab, seed):
+    """``[R, K]`` targets as score centering builds them: a sampled token repeated among its
+    candidates, and ``-1`` padding for rows with fewer candidates."""
+    gen = torch.Generator(device="cuda").manual_seed(seed)
+    targets = torch.randint(0, vocab, (rows.numel(), n_targets), device="cuda", generator=gen)
+    targets[:, -1] = targets[:, 0]
+    targets[::3, 1:3] = -1
+    return targets
 
 
 def _inputs(n_rows, vocab, dtype, device, seed=0):
@@ -128,6 +140,39 @@ def test_true_vocab_bound_excludes_the_padding_columns(inplace_backward):
     torch.testing.assert_close(entropy, ref_entropy.detach(), rtol=1e-5, atol=5e-5)
     torch.testing.assert_close(leaf.grad.float(), ref_leaf.grad.float(), rtol=1e-2, atol=1e-3)
     assert (leaf.grad[:, vocab_size:] == 0).all()
+
+
+@pytest.mark.parametrize("inplace_backward", [True, False])
+def test_k_targets_per_row_match_log_softmax(inplace_backward):
+    """Each row scores K targets; a repeated token gets the sum of its gradients and a ``-1`` none."""
+    width, vocab_size = 129_280, 129_280 - 1_000
+    logits, rows, _ = _inputs(300, width, torch.bfloat16, "cuda", seed=26)
+    targets = _k_targets(rows, 9, vocab_size, seed=27)
+    gen = torch.Generator(device="cuda").manual_seed(28)
+    g = torch.randn(targets.shape, device="cuda", generator=gen)
+    c = torch.randn(rows.numel(), device="cuda", generator=gen)
+
+    ref_leaf = logits.clone().requires_grad_(True)
+    ref_log_probs, ref_entropy = _reference(ref_leaf, rows, targets, 0.8, vocab_size)
+    ((ref_log_probs * g).sum() + (ref_entropy * c).sum()).backward()
+
+    leaf = logits.clone().requires_grad_(True)
+    log_probs, entropy = fused_log_probs_and_entropy(
+        leaf * 1,
+        rows,
+        targets,
+        tp_group=None,
+        vocab_size=vocab_size,
+        temperature=0.8,
+        with_entropy=True,
+        inplace_backward=inplace_backward,
+    )
+    ((log_probs * g).sum() + (entropy * c).sum()).backward()
+
+    assert log_probs.shape == targets.shape
+    torch.testing.assert_close(log_probs, ref_log_probs.detach(), rtol=1e-5, atol=2e-5)
+    torch.testing.assert_close(entropy, ref_entropy.detach(), rtol=1e-5, atol=5e-5)
+    torch.testing.assert_close(leaf.grad.float(), ref_leaf.grad.float(), rtol=1e-2, atol=1e-3)
 
 
 @pytest.fixture
@@ -486,13 +531,68 @@ def test_score_centering_log_probs_match_the_torch_backend(nccl_world, with_entr
     assert (fused_grad[..., vocab_size:] == 0).all()
 
 
+@pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
+def test_score_centering_candidates_match_the_torch_backend(nccl_world, dtype):
+    """Score centering's training loss scores ``[sampled token, top-K candidates]`` per row: the fused
+    backend in one call with K targets, the torch backend through selected_log_probs_and_entropy.
+    Scores, entropy and the logits gradient must agree."""
+    make_parallel_state()
+    prompt_lens, response_lens, n_candidates = [5, 9, 3], [7, 4, 6], 8
+    width, vocab_size = _LOSS_VOCAB, _LOSS_VOCAB - 96
+    total_lens = [p + r for p, r in zip(prompt_lens, response_lens, strict=True)]
+    gen = torch.Generator(device="cuda").manual_seed(29)
+    logits = (torch.randn(1, sum(total_lens), width, device="cuda", generator=gen) * 4).to(dtype)
+    tokens = [torch.randint(0, vocab_size, (total,), device="cuda", generator=gen) for total in total_lens]
+    candidates = []
+    for sample_tokens, response in zip(tokens, response_lens, strict=True):
+        ids = torch.randint(0, vocab_size, (response, n_candidates), device="cuda", generator=gen)
+        ids[:, 0] = sample_tokens[-response:]  # the sampled token is usually among the candidates
+        ids[::2, -2:] = -1
+        candidates.append(ids.cpu())
+    batch = {
+        "unconcat_tokens": tokens,
+        "total_lengths": total_lens,
+        "response_lengths": response_lens,
+        "rollout_topk_token_ids": candidates,
+    }
+
+    outputs = {}
+    for backend in ("torch", "fused"):
+        args = make_args(
+            loss_type="score_centering",
+            true_on_policy_mode=False,
+            log_probs_backend=backend,
+            rollout_temperature=0.8,
+            vocab_size=vocab_size,
+            use_kl_loss=True,
+            entropy_coef=0.01,
+            observe_training_entropy=False,
+            use_sampling_support_replay=False,
+            recompute_loss_function=False,
+        )
+        leaf = logits.clone().requires_grad_(True)
+        result = score_centering_loss._candidate_log_probs(args, batch, leaf * 1)
+        selected, entropy = torch.cat(result["selected"]), torch.cat(result["entropy"])
+        weights = torch.linspace(-1, 1, selected.numel(), device="cuda").view(selected.shape)
+        ((selected * weights).sum() + 0.1 * entropy.sum()).backward()
+        outputs[backend] = (selected.detach(), torch.cat(result["kl_log_probs"]).detach(), entropy.detach(), leaf.grad)
+
+    *scores, grad = outputs["fused"]
+    *reference_scores, reference_grad = outputs["torch"]
+    for fused, reference in zip(scores, reference_scores, strict=True):
+        torch.testing.assert_close(fused, reference, rtol=1e-5, atol=5e-5)
+    # both backends round the gradient into the logits' dtype once
+    grad_tol = dict(rtol=1e-5, atol=1e-5) if dtype == torch.float32 else dict(rtol=1e-2, atol=1e-3)
+    torch.testing.assert_close(grad.float(), reference_grad.float(), **grad_tol)
+
+
 def _free_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         sock.bind(("localhost", 0))
         return sock.getsockname()[1]
 
 
-def _tp_worker(rank: int, world_size: int, port: int, padding: int) -> None:
+def _tp_worker(rank: int, world_size: int, port: int, padding: int, n_targets: int) -> None:
     os.environ["MASTER_ADDR"] = "localhost"
     os.environ["MASTER_PORT"] = str(port)
     torch.cuda.set_device(rank)
@@ -501,10 +601,13 @@ def _tp_worker(rank: int, world_size: int, port: int, padding: int) -> None:
         vocab = 129_280
         vocab_size = vocab - padding
         logits, rows, _ = _inputs(300, vocab, torch.bfloat16, "cuda", seed=5)
-        targets = torch.randint(
-            0, vocab_size, (rows.numel(),), device="cuda", generator=torch.Generator(device="cuda").manual_seed(8)
-        )
-        g = torch.randn(rows.numel(), device="cuda", generator=torch.Generator(device="cuda").manual_seed(6))
+        if n_targets == 1:
+            targets = torch.randint(
+                0, vocab_size, (rows.numel(),), device="cuda", generator=torch.Generator(device="cuda").manual_seed(8)
+            )
+        else:
+            targets = _k_targets(rows, n_targets, vocab_size, seed=8)
+        g = torch.randn(targets.shape, device="cuda", generator=torch.Generator(device="cuda").manual_seed(6))
         c = torch.randn(rows.numel(), device="cuda", generator=torch.Generator(device="cuda").manual_seed(7))
         full = logits.clone().requires_grad_(True)
         ref_log_probs, ref_entropy = _reference(full, rows, targets, 0.9, vocab_size)
@@ -534,11 +637,12 @@ def _tp_worker(rank: int, world_size: int, port: int, padding: int) -> None:
 
 
 # Vocab padding at the end of the last shard: none, part of the last shard, and the whole last shard.
+@pytest.mark.parametrize("n_targets", [1, 9])
 @pytest.mark.parametrize("padding", [0, 1_000, 129_280 // _WORLD_SIZE], ids=["none", "partial", "whole_shard"])
-def test_vocab_shards_over_nccl_combine_like_the_full_vocab(padding):
+def test_vocab_shards_over_nccl_combine_like_the_full_vocab(padding, n_targets):
     if torch.cuda.device_count() < _WORLD_SIZE:
         raise RuntimeError(f"requires {_WORLD_SIZE} GPUs, found {torch.cuda.device_count()}")
-    mp.spawn(_tp_worker, args=(_WORLD_SIZE, _free_port(), padding), nprocs=_WORLD_SIZE, join=True)
+    mp.spawn(_tp_worker, args=(_WORLD_SIZE, _free_port(), padding, n_targets), nprocs=_WORLD_SIZE, join=True)
 
 
 # (prompt_lens, response_lens): totals divide by 2 * cp. In the second case rank 0's contiguous

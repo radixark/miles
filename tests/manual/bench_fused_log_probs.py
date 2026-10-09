@@ -60,7 +60,7 @@ def main() -> None:
     device = torch.device("cuda", torch.cuda.current_device())
     logits = (torch.randn(args.rows, args.vocab, device=device) * 3).to(torch.bfloat16)
     rows = torch.arange(args.rows, device=device)
-    targets = torch.randint(0, args.vocab, (args.rows,), device=device)
+    targets = torch.randint(0, args.vocab, (args.rows, 1), device=device)
     logits_bytes = logits.numel() * logits.element_size()
 
     copy_tbps = 2 * logits_bytes / _median_ms(lambda: logits.clone()) / 1e9  # a copy reads and writes
@@ -73,26 +73,20 @@ def main() -> None:
             kernels.row_statistics(
                 logits,
                 rows,
-                targets,
-                vocab_start=0,
                 n_unpadded_cols=logits.size(1),
                 temperature=TEMPERATURE,
                 with_entropy=with_entropy,
                 launch=launch,
             )
 
-    row_max, row_sum, row_dsum, target = kernels.row_statistics(
-        logits,
-        rows,
-        targets,
-        vocab_start=0,
-        n_unpadded_cols=logits.size(1),
-        temperature=TEMPERATURE,
-        with_entropy=True,
+    row_max, row_sum, row_dsum = kernels.row_statistics(
+        logits, rows, n_unpadded_cols=logits.size(1), temperature=TEMPERATURE, with_entropy=True
     )
     log_sum, mean = torch.log(row_sum), row_dsum / row_sum
-    one_minus_p = -torch.expm1(target - log_sum)
-    grad_log_probs = torch.randn(args.rows, device=device)
+    target_d = (logits.gather(1, targets).float() - row_max.unsqueeze(1)) / TEMPERATURE
+    log_probs = target_d - log_sum.unsqueeze(1)
+    one_minus_p = -torch.expm1(log_probs)
+    grad_log_probs = torch.randn(args.rows, 1, device=device)
     grad_entropy = torch.randn(args.rows, device=device)
     grad = torch.empty_like(logits)
 
@@ -102,10 +96,11 @@ def main() -> None:
             logits,
             rows,
             targets,
+            log_probs,
+            one_minus_p,
             row_max,
             log_sum,
             mean,
-            one_minus_p,
             grad_log_probs,
             grad_entropy,
             vocab_start=0,
