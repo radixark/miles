@@ -666,9 +666,9 @@ existing sharding plans do not apply. Two checks belong with every package: a fa
 `models/glm5_next/` (GLM-5.3-Flash) is the package grown all the way: KDA linear attention,
 kpool-indexed DSA sparse attention and mHC residual streams are new blocks in `layers.py`, the
 adapter maps the `model.language_model.*` names, and the package supports **FSDP, EP, PP and
-CP, but not TP yet**. Under CP the KDA and DSA layers gather the whole sequence, compute on it
-and keep their own shard, so CP cuts the activation memory of every other block but not the
-attention compute. The `4layer` flavor is the validated one:
+CP, but not TP yet**. Under CP, KDA runs fla's context-parallel kernels on a contiguous shard and
+DSA attends each rank's queries over the gathered latent KV, so both the attention compute and
+the activations split across the CP group. The `4layer` flavor is the validated one:
 
 ```bash
 --train-backend torchtitan \
