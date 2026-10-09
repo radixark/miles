@@ -33,6 +33,7 @@ def build_checkpoint_metadata(record: ModelRecord, config: GatewayConfig) -> dic
         "base_model": record.base_model,
         "lora_rank": record.lora_rank,
         "lora_alpha": record.lora_alpha,
+        "lora_type": config.lora_type,
         "experts_shared_outer_loras": config.experts_shared_outer_loras,
         "train_attn": config.trains_attn,
         "train_mlp": config.trains_mlp,

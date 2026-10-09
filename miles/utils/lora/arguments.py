@@ -44,7 +44,7 @@ def add_lora_arguments(parser):
         type=str,
         default="lora",
         choices=["lora", "canonical_lora"],
-        help="LoRA variant to use: 'lora' (standard) or 'canonical_lora' (split Q/K/V) (default: lora)",
+        help="LoRA variant to use: 'lora' (standard) or 'canonical_lora' (independent Q/K/V and gate/up) (default: lora)",
     )
     parser.add_argument(
         "--target-modules",

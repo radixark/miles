@@ -42,7 +42,7 @@ logger = logging.getLogger(__name__)
 
 
 class ExpertModel(MegatronModule):
-    def __init__(self, config):
+    def __init__(self, config, canonical):
         super().__init__(config)
         self.layers = torch.nn.ModuleList()
         for index, (linear, inputs, outputs) in enumerate(
@@ -69,6 +69,7 @@ class ExpertModel(MegatronModule):
                     num_local_experts=2,
                     experts_shared_outer_loras=True,
                     row_init_method="normal",
+                    projection_targets={"linear_fc1_gate", "linear_fc1_up"} if canonical and index == 0 else None,
                 )
             )
 
@@ -106,7 +107,7 @@ def forward_backward(model, inputs):
         allreduce_expert_parallel_replicated_grads(model)
 
 
-def run_worker(directory, tp):
+def run_worker(directory, tp, canonical):
     torch.cuda.set_device(int(os.environ["LOCAL_RANK"]))
     dist.init_process_group("nccl", timeout=timedelta(seconds=180))
     parallel_state.initialize_model_parallel(
@@ -119,6 +120,7 @@ def run_worker(directory, tp):
         hidden_size=32,
         num_attention_heads=4,
         num_moe_experts=4,
+        gated_linear_unit=True,
         moe_grouped_gemm=True,
         moe_token_dispatcher_type="alltoall",
         moe_permute_fusion=False,
@@ -129,7 +131,7 @@ def run_worker(directory, tp):
         bf16=True,
         gradient_accumulation_fusion=False,
     )
-    expert_model = ExpertModel(config).cuda()
+    expert_model = ExpertModel(config, canonical).cuda()
     enable_expert_parallel_grad_sync_in_finalize(expert_model)
     model = [
         DistributedDataParallel(
@@ -142,11 +144,13 @@ def run_worker(directory, tp):
     optimizers = {slot: SlotOptimizer(args, model, slot) for slot in range(3)}
     params = [p for slot in range(3) for p in adapter_slot_parameters(model, slot)]
     for layer in expert_model.layers:
-        for adapter in layer.adapters:
-            shared = adapter.linear_out.weight if layer.input_is_parallel else adapter.linear_in.weight
-            replicas = [torch.empty_like(shared) for _ in range(2)]
-            dist.all_gather(replicas, shared, group=parallel_state.get_expert_model_parallel_group())
-            torch.testing.assert_close(replicas[0], replicas[1], atol=0, rtol=0)
+        for slot in layer.adapters:
+            adapters = slot.values() if isinstance(slot, torch.nn.ModuleDict) else (slot,)
+            for adapter in adapters:
+                shared = adapter.linear_out.weight if layer.input_is_parallel else adapter.linear_in.weight
+                replicas = [torch.empty_like(shared) for _ in range(2)]
+                dist.all_gather(replicas, shared, group=parallel_state.get_expert_model_parallel_group())
+                torch.testing.assert_close(replicas[0], replicas[1], atol=0, rtol=0)
 
     inputs = torch.randn(32, 32, device="cuda", dtype=torch.bfloat16)
     forward_backward(model, inputs)
@@ -198,10 +202,11 @@ if __name__ == "__main__":
     parser.add_argument("--checkpoint-root", type=Path)
     parser.add_argument("--worker-dir", type=Path)
     parser.add_argument("--tp", type=int, default=1)
+    parser.add_argument("--canonical", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--gpus", type=int, default=2)
     options = parser.parse_args()
     if options.worker_dir is not None:
-        run_worker(options.worker_dir, options.tp)
+        run_worker(options.worker_dir, options.tp, options.canonical)
     else:
         with tempfile.TemporaryDirectory(prefix="shared-outer-", dir=options.checkpoint_root) as directory:
             subprocess.run(
@@ -216,6 +221,7 @@ if __name__ == "__main__":
                     directory + "/checkpoint",
                     "--tp",
                     str(options.tp),
+                    "--canonical" if options.canonical else "--no-canonical",
                 ],
                 check=True,
             )

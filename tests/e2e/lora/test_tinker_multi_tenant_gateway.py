@@ -15,7 +15,7 @@ register_cuda_ci(
 
 def execute():
     U = command_utils.default_config().create_backend()
-    with running_gateway() as base_url:
+    with running_gateway(lora_type="canonical_lora") as base_url:
         U.exec_command_cpu(
             "python examples/multi_lora/run_multi_tenant_example.py "
             f"--base-url {base_url} --base-model {BASE_MODEL} "

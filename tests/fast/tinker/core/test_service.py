@@ -628,7 +628,9 @@ async def test_checkpoint_meta_stores_a_digest_not_the_credential(service):
     assert (info["train_attn"], info["train_mlp"], info["train_unembed"]) == (True, True, False)
 
 
-@pytest.mark.parametrize("field,value", [("lora_alpha", 99), ("experts_shared_outer_loras", True)])
+@pytest.mark.parametrize(
+    "field,value", [("lora_alpha", 99), ("lora_type", "canonical_lora"), ("experts_shared_outer_loras", True)]
+)
 async def test_a_checkpoint_saved_under_other_settings_does_not_load(service, field, value):
     import json
     import os
@@ -651,6 +653,37 @@ async def test_a_checkpoint_saved_under_other_settings_does_not_load(service, fi
     future = await await_settled(service, "tenant", loaded)
     assert (future.state, future.error_category) == (FAILED, "user") and field in future.error
     assert not service.backend.named("load_slot")[1:], "nothing may touch the slot on a mismatch"
+
+
+@pytest.mark.parametrize("shared_outer", [False, True])
+async def test_a_checkpoint_saved_before_lora_type_was_recorded_loads_as_fused(tmp_path, shared_outer):
+    import json
+    import os
+
+    gateway = make_service(tmp_path, experts_shared_outer_loras=shared_outer)
+    run_task = asyncio.create_task(gateway.run())
+    try:
+        model_id = await created_model(gateway)
+        saved = gateway.submit(
+            "tenant", "save_state", {"model_id": model_id, "seq_id": 1, "name": "ck", "overwrite": False}
+        )
+        path = (await await_settled(gateway, "tenant", saved)).result["path"]
+        meta_path = os.path.join(
+            resolve_checkpoint_dir(gateway.config.checkpoint_root, model_id, "weights", "ck"), "META.json"
+        )
+        meta = json.loads(open(meta_path).read())
+        assert meta["experts_shared_outer_loras"] is shared_outer, "the expert layout is written as configured"
+        del meta["lora_type"]  # what a gateway without canonical support wrote
+        open(meta_path, "w").write(json.dumps(meta))
+
+        loaded = gateway.submit(
+            "tenant", "load_state", {"model_id": model_id, "seq_id": 2, "path": path, "optimizer": True}
+        )
+        assert (await await_settled(gateway, "tenant", loaded)).state == DONE
+    finally:
+        run_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await run_task
 
 
 async def test_a_recycled_slot_belongs_to_a_fresh_model_queue(service):
