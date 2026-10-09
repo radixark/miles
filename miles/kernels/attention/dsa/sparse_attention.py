@@ -116,7 +116,6 @@ class _SparseAttention(torch.autograd.Function):
     @staticmethod
     def forward(ctx, q, kv, indices, attn_sink, sm_scale, d_v, config):
         q, kv, indices = q.contiguous(), kv.contiguous(), _pad_topk_block(indices, _TILELANG_TOPK_MULTIPLE)
-        kv_indices = indices.clamp(min=0)
         if config.forward_backend == "flash_mla":
             out, lse = _flash_mla_forward(q, kv, indices, attn_sink, sm_scale)
         else:
@@ -127,13 +126,12 @@ class _SparseAttention(torch.autograd.Function):
                 q,
                 kv,
                 indices,
-                kv_indices,
                 attn_sink,
                 d_v,
                 sm_scale=sm_scale,
                 threads=config.forward_threads,
             )
-        ctx.save_for_backward(q, kv, indices, kv_indices, attn_sink, out, lse)
+        ctx.save_for_backward(q, kv, indices, attn_sink, out, lse)
         ctx.sm_scale = sm_scale
         ctx.d_v = d_v
         ctx.config = config
@@ -141,7 +139,7 @@ class _SparseAttention(torch.autograd.Function):
 
     @staticmethod
     def backward(ctx, grad_out):
-        q, kv, indices, kv_indices, attn_sink, out, lse = ctx.saved_tensors
+        q, kv, indices, attn_sink, out, lse = ctx.saved_tensors
         from miles.kernels.attention.dsa.tilelang.sparse_attention_bwd import sparse_attention_bwd
 
         dq, dkv, delta = sparse_attention_bwd(
@@ -150,7 +148,6 @@ class _SparseAttention(torch.autograd.Function):
             out,
             grad_out.contiguous(),
             indices,
-            kv_indices,
             lse,
             ctx.d_v,
             sm_scale=ctx.sm_scale,
