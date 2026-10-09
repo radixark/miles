@@ -75,4 +75,5 @@ def serve_backend(response_bodies, port):
     async def abort():
         return {"status": "ok"}
 
-    uvicorn.run(app, host="127.0.0.1", port=port, log_level="warning")
+    # Slow sample collection can block the old server loop beyond uvicorn's 5s idle timeout.
+    uvicorn.run(app, host="127.0.0.1", port=port, log_level="warning", timeout_keep_alive=600)
