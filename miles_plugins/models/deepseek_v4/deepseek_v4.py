@@ -48,6 +48,7 @@ from miles_plugins.models.deepseek_v4.ops.thd_utils import (
     to_rank_major_rows,
 )
 from miles_plugins.models.deepseek_v4.ops.v4_indexer import V4Indexer
+from miles_plugins.models.dsa_backend import loom_dsa_ops, resolve_dsa_attention_backend
 
 
 def _enable_deepseek_v4_tf32():
@@ -179,6 +180,9 @@ class DeepSeekV4Attention(MegatronModule):
         )
         self.softmax_scale = self.head_dim**-0.5
         self.sequence_parallel = config.sequence_parallel
+        # ``tilelang``: miles.kernels sparse_attention; ``loom``: the generated deterministic kernels in
+        # miles_plugins/models/dsa_train (bshd contract, FP32 sink, batched indexer in one launch).
+        self.attention_backend = resolve_dsa_attention_backend(getattr(config, "dsa_attention_backend", None))
 
         if self.compress_ratio:
             self.core_attention.compressor = DeepSeekV4Compressor(
@@ -408,13 +412,18 @@ class DeepSeekV4Attention(MegatronModule):
 
         kv = copy_to_tensor_model_parallel_region(kv, group=self.tp_group, all_reduce_grad_fp32=True)
 
-        o = sparse_attention(
-            q,
-            kv.unsqueeze(2),
-            topk_idxs.unsqueeze(2),
-            self.softmax_scale,
-            attn_sink=self.core_attention.attn_sink,
-        )
+        if self.attention_backend == "loom":
+            o = loom_dsa_ops().sparse_attention(
+                q, kv, topk_idxs, sm_scale=self.softmax_scale, attn_sink=self.core_attention.attn_sink, layout="bshd"
+            )
+        else:
+            o = sparse_attention(
+                q,
+                kv.unsqueeze(2),
+                topk_idxs.unsqueeze(2),
+                self.softmax_scale,
+                attn_sink=self.core_attention.attn_sink,
+            )
 
         o = torch.cat((o[..., :-rd], apply_rotary_emb(o[..., -rd:].clone(), freqs_cis, inverse=True)), dim=-1)
 
@@ -457,6 +466,7 @@ def get_dsv4_spec(args, config, vp_stage):
         return get_transformer_block_with_experimental_attention_variant_spec(config, vp_stage=vp_stage)
 
     config.miles_dsa_topk_backend = args.miles_dsa_topk_backend
+    config.dsa_attention_backend = resolve_dsa_attention_backend(getattr(args, "dsa_attention_backend", None))
     _orig_get_spec = _eav_specs.get_experimental_attention_variant_module_spec
 
     def _patched_get_spec(config, backend=None):

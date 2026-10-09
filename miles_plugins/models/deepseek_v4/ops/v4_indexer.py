@@ -23,6 +23,7 @@ from miles_plugins.models.deepseek_v4.ops.qat import fp8_simulate_qat
 from miles_plugins.models.deepseek_v4.ops.rope import apply_rotary_emb, wrapped_precompute_freqs_cis
 from miles_plugins.models.deepseek_v4.ops.thd_utils import ThdLayout, compress_bounds_at_positions, get_q_positions_thd
 from miles_plugins.models.deepseek_v4.ops.utils import rotate_activation
+from miles_plugins.models.dsa_backend import loom_dsa_ops, resolve_dsa_attention_backend
 
 
 class V4Indexer(MegatronModule):
@@ -37,6 +38,7 @@ class V4Indexer(MegatronModule):
         self.index_head_dim = config.dsa_indexer_head_dim
         self.index_topk = config.dsa_indexer_topk
         self.topk_backend = config.miles_dsa_topk_backend
+        self.attention_backend = resolve_dsa_attention_backend(getattr(config, "dsa_attention_backend", None))
         self.rope_head_dim = config.qk_pos_emb_head_dim
         self.compress_ratio = 4
         self.use_fp8_qat = config.fp8 is not None
@@ -165,6 +167,7 @@ class V4Indexer(MegatronModule):
 
         # RL replay can pin the rollout's top-k picks here; get_topk_fn is transparent when disabled.
         topk_fn = indexer_replay_manager.get_topk_fn(get_dsa_topk_fn(self.topk_backend), return_probs=False)
+        logits_fn = _loom_indexer_logits if self.attention_backend == "loom" else indexer_logits_sbhd
         return topk_for_local_rows(
             exchange,
             k,
@@ -172,6 +175,7 @@ class V4Indexer(MegatronModule):
             compress_ratio=self.compress_ratio,
             index_topk=self.index_topk,
             topk_fn=topk_fn,
+            logits_fn=logits_fn,
         )
 
 
@@ -186,7 +190,13 @@ def start_row_exchange(q, weights, thd_layout, cp_group, *, balance: bool) -> Ro
     return send_rows_to_scorers(tensors, plan, cp_group)
 
 
-def topk_for_local_rows(exchange, k, thd_layout, *, compress_ratio, index_topk, topk_fn):
+def _loom_indexer_logits(q, k, weights, cu_ks, cu_ke):
+    return loom_dsa_ops().indexer_logits(q, k, weights, cu_ks, cu_ke, layout="sbhd")
+
+
+def topk_for_local_rows(
+    exchange, k, thd_layout, *, compress_ratio, index_topk, topk_fn, logits_fn=indexer_logits_sbhd
+):
     """The top-k picks for this rank's rows, in local order, scored on the rank ``exchange`` sent them to."""
     q, weights = exchange.wait()
     topk_indices = indexer_topk(
@@ -198,12 +208,15 @@ def topk_for_local_rows(exchange, k, thd_layout, *, compress_ratio, index_topk, 
         compress_ratio=compress_ratio,
         index_topk=index_topk,
         topk_fn=topk_fn,
+        logits_fn=logits_fn,
     )
     # [batch, rows, topk]: the picks go back along the row dim
     return exchange.return_to_owners(topk_indices, dim=1)
 
 
-def indexer_topk(q, k, weights, positions, thd_layout, *, compress_ratio, index_topk, topk_fn):
+def indexer_topk(
+    q, k, weights, positions, thd_layout, *, compress_ratio, index_topk, topk_fn, logits_fn=indexer_logits_sbhd
+):
     """Score the query rows at global stream ``positions`` against their visible compressed keys.
 
     Args:
@@ -226,7 +239,7 @@ def indexer_topk(q, k, weights, positions, thd_layout, *, compress_ratio, index_
         cu_ks, cu_ke = compress_bounds_at_positions(
             thd_layout.cu_seqlens, thd_layout.cu_seqlens_compressed, positions, ratio=compress_ratio
         )
-    index_scores = indexer_logits_sbhd(q, k, weights, cu_ks, cu_ke)
+    index_scores = logits_fn(q, k, weights, cu_ks, cu_ke)
     bsz, rows, n_kv = index_scores.shape
     topk_count = min(index_topk, n_kv)
     # flattened to [n_tokens, n_kv], the record/replay convention shared with the MoE seam
