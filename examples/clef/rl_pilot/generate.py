@@ -192,26 +192,24 @@ async def generate_one(client: AsyncOpenAI, case: dict[str, Any], root: Path) ->
     traces: list[dict[str, Any]] = []
     for attempt in range(4):
         try:
-            system = ('Write a realistic business evidence packet, not an answer. Return JSON {"documents": '
-                      '[{"title":string,"text":string}]}. Use every supplied fact placeholder [[F0]], [[F1]], etc '
-                      'exactly once in document text. We will replace them with exact facts. Add natural '
+            system = ('Write a realistic business evidence packet scaffold, not an answer. Return JSON {"documents": '
+                      '[{"title":string,"introduction":string,"fact_ids":[integer]}]}. Assign each supplied '
+                      'integer fact ID to exactly one document. We will insert its exact text afterward. Add natural '
                       'email/memo/record framing and transitions, but NO additional factual claims, numerical '
                       'values, policy rules, decisions, hints, or answers. Divide facts among 2-4 related '
                       'documents. Do not include the policy in documents. Vary style, order and titles.')
-            payload = {'family':case['family'], 'facts':{f'[[F{i}]]':f for i,f in enumerate(case['facts'])},
+            payload = {'family':case['family'], 'facts':{str(i):f for i,f in enumerate(case['facts'])},
                        'style': ['email chain','operations memo','case notes','document bundle'][int(case['id'].split('-')[-1])%4]}
             rendered, usage = await api_json(client, system, json.dumps(payload))
             traces.append({'phase':'render','attempt':attempt,'usage':usage,'output':rendered})
             docs = rendered['documents']
             if not 2 <= len(docs) <= 4:
                 raise ValueError('document count')
-            joined = '\n'.join(d['text'] for d in docs)
-            expected = [f'[[F{i}]]' for i in range(len(case['facts']))]
-            if sorted(re.findall(r'\[\[F\d+\]\]',joined)) != sorted(expected):
+            assigned = [i for d in docs for i in d['fact_ids']]
+            if any(type(i) is not int for i in assigned) or sorted(assigned) != list(range(len(case['facts']))):
                 raise ValueError('fact placeholder coverage')
             for d in docs:
-                for i, fact in enumerate(case['facts']):
-                    d['text'] = d['text'].replace(f'[[F{i}]]',fact)
+                d['text'] = d['introduction']+'\n'+'\n'.join(case['facts'][i] for i in d['fact_ids'])
             state = 'Applicable policy (authoritative):\n'+case['policy']+'\n\nEvidence packet:\n'+ '\n\n'.join(d['title']+'\n'+d['text'] for d in docs)
             record = {'id':case['id'], 'state':state, 'questions':case['questions']}
             audit, audit_usage = await api_json(client,
