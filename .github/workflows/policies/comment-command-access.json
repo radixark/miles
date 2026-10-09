@@ -40,6 +40,7 @@
         "run-ci-ft-short",
         "run-ci-fully-async",
         "run-ci-image",
+        "run-ci-k8s",
         "run-ci-long",
         "run-ci-lora",
         "run-ci-multi-lora",

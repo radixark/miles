@@ -32,6 +32,7 @@ KNOWN_LABELS: dict[str, str] = {
     "precision": "Numerical precision parity tests",
     "ft-short": "Fault-tolerance trainer comparison tests (no_failure / deterministic / with_failure)",
     "ft-long": "Fault-tolerance trainer soak tests (random-crash survival, realistic-gsm8k convergence)",
+    "k8s": "Kubernetes apiserver and kind integration tests",
     "deploy": "Split deployment tests (a run installed as one helm release per deployment)",
     "weight-update": "Weight update tests",
     "fully-async": "Fully-async rollout tests",
