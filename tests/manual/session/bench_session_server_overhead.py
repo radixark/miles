@@ -397,20 +397,25 @@ def _start_backend(
     ctx = multiprocessing.get_context("spawn")
     port = find_available_port(28000)
     backend_procs = []
-    for _ in range(procs):
-        proc = ctx.Process(
-            target=run_mock_r3_backend,
-            args=(response_bodies, ip, port, inference_interval),
-            name="bench-mock-r3-backend",
-            daemon=False,
-        )
-        proc.start()
-        backend_procs.append(proc)
-    # The port probe passes once ANY shard listens; shards bind before serving
-    # and workers only open connections after the (much later) server readiness,
-    # so all shards are accepting by the time load arrives.
-    for proc in backend_procs:
-        wait_for_server_ready(ip, port, proc, timeout=120.0)
+    try:
+        for _ in range(procs):
+            proc = ctx.Process(
+                target=run_mock_r3_backend,
+                args=(response_bodies, ip, port, inference_interval),
+                name="bench-mock-r3-backend",
+                daemon=False,
+            )
+            proc.start()
+            backend_procs.append(proc)
+        # The port probe passes once ANY shard listens; shards bind before serving
+        # and workers only open connections after the (much later) server readiness,
+        # so all shards are accepting by the time load arrives.
+        for proc in backend_procs:
+            wait_for_server_ready(ip, port, proc, timeout=120.0)
+    except BaseException:
+        for proc in backend_procs:
+            _terminate_proc(proc)
+        raise
     return backend_procs, f"http://{ip}:{port}"
 
 

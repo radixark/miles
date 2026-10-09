@@ -8,7 +8,7 @@ import pytest
 from tests.ci.ci_register import register_cpu_ci
 from tests.manual.session.bench_session_server_overhead import DEFAULT_HF_CHECKPOINT, run_http_bench
 
-register_cpu_ci(est_time=180, suite="stage-b-cpu", labels=["rollout"])
+register_cpu_ci(est_time=120, suite="stage-b-cpu", labels=["rollout"])
 
 
 @pytest.mark.parametrize("version", ["v1", "v2"])
@@ -52,3 +52,35 @@ def test_session_server_benchmark(version, tmp_path, capsys):
     (tmp_path / f"session-server-{version}.json").write_text(json.dumps({"summary": report, "runs": runs}))
     with capsys.disabled():
         print(json.dumps(report), flush=True)
+    # Hosted CPU baseline is about 8 ms/turn; allow 50% headroom for runner variation.
+    assert report["median_cpu_ms_per_turn"] <= 12.0, report
+
+
+@pytest.mark.parametrize("failure", ["start", "ready"])
+def test_mock_backend_startup_failure_cleans_up(monkeypatch, failure):
+    from tests.manual.session import bench_session_server_overhead as benchmark
+
+    from miles.utils import http_utils
+
+    created, started, terminated = [], [], []
+
+    class Process:
+        def __init__(self, **kwargs):
+            created.append(self)
+
+        def start(self):
+            if failure == "start" and len(created) == 2:
+                raise RuntimeError("injected startup failure")
+            started.append(self)
+
+    def fail_readiness(*args, **kwargs):
+        raise RuntimeError("injected startup failure")
+
+    monkeypatch.setattr(benchmark.multiprocessing, "get_context", lambda *_: Namespace(Process=Process))
+    monkeypatch.setattr(http_utils, "find_available_port", lambda *_: 28000)
+    monkeypatch.setattr(http_utils, "wait_for_server_ready", fail_readiness)
+    monkeypatch.setattr(benchmark, "_terminate_proc", terminated.append)
+    with pytest.raises(RuntimeError, match="injected startup failure"):
+        benchmark._start_backend([], "127.0.0.1", procs=3)
+    assert len(started) == (1 if failure == "start" else 3)
+    assert terminated == started
