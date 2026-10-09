@@ -232,7 +232,7 @@ def _dsv4_attention_inputs(batch, seq, heads, topk, device):
     return q, kv, indices, sink, do, 1.0 / math.sqrt(d)
 
 
-@pytest.mark.parametrize("heads", [16, 64], ids=["tp4-h16", "tp1-h64"])
+@pytest.mark.parametrize("heads", [8, 16, 32, 64], ids=["tp8-h8", "tp4-h16", "tp2-h32", "tp1-h64"])
 def test_dsv4_sparse_attention_with_sink_matches_reference_and_is_deterministic(heads):
     cake = _cake()
     batch, seq, topk = 2, 256, 192  # 128 window + 64 compressed slots; padded to 256 inside

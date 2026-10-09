@@ -108,6 +108,8 @@ Three flags are not optional in this configuration:
 | `--disk-offload --offload-disk-dir` | Full-parameter Adam state for the full model does not fit in GPU or host memory on 16 GPUs; it is streamed to node-local NVMe between steps. |
 | `--load-from-hf` | The BF16 HF checkpoint is mapped through the mbridge at startup, so no multi-node `torch_dist` conversion is needed. |
 
+**Attention kernel backend.** `--extra-args "--dsa-attention-backend cake"` switches the sparse-attention kernel from the per-sample TileLang kernels (`tilelang`, the default) to the generated deterministic kernels in `miles/kernels/attention/dsa/cake` (Blackwell SM100a / SM103a only): `bshd` sparse attention over the 128-token window plus the top-512 compressed slots with the FP32 attention sink, and bit-identical gradients across calls. The V4.1 indexer (`DeepSeekV41Indexer`, forward-only top-k selection) is not affected by the switch. The first step JIT-compiles the kernels for the node's architecture; `MILES_DSA_BWD_WORKSPACE_BYTES` bounds the backward workspace.
+
 ### 3.6 What to expect
 
 | Signal | Expected |
