@@ -64,7 +64,7 @@ def initial_model_identity(root: Path) -> dict[str, str]:
             raise ValueError("a complete trained backbone/head export is required")
         identity = {path.name: file_sha256(path) for path in files}
         for path in sorted(root.iterdir()):
-            if path.is_file() and path.suffix in {".json", ".jinja", ".model"}:
+            if path.is_file() and path.name != "STAGED.json" and path.suffix in {".json", ".jinja", ".model"}:
                 identity[path.name] = file_sha256(path)
     values = [identity]
     dist.broadcast_object_list(values, src=0)
