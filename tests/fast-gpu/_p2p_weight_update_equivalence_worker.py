@@ -247,7 +247,7 @@ def _quantize(
             qweight, scale = fp8_blockwise_cast(weight, [128, 128])
             quantized += [(name, qweight), (name.replace(".weight", ".weight_scale_inv"), scale)]
         elif fmt == "fp8_block":
-            quantized += quantizer_fp8._quantize_param(quantizer_args, name, weight, [128, 128])
+            quantized += quantizer_fp8._quantize_param(quantizer_args, name, weight, [128, 128], [], {})
         elif fmt == "mxfp8":
             quantized += quantizer_mxfp8._quantize_param(name, weight)
         else:
