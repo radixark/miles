@@ -161,8 +161,6 @@ class DSAMultiLatentAttention(Attention):
         )
 
         self.index_topk = 2048
-        if topk_backend not in ("torch", "flashinfer"):
-            raise ValueError(f"Unsupported miles DSA topk backend: {topk_backend}")
         self.topk_backend = topk_backend
         indexer_replay_manager.register_to_module(self, "indexer_replay", stream_idx=self.layer_number - 1)
 
