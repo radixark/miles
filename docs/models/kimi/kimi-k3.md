@@ -193,7 +193,9 @@ forward and runs the backward through Miles' own deterministic chunked KDA train
 (`miles_plugins/models/kda_chunk_train`): fixed-order reductions and no atomics, so repeated
 backward passes on identical inputs are bit-identical, at 1.2-2.5x the FLA backward's latency
 on the Kimi K3 head geometry. Pass it through the launcher with
-`--extra-args "--kda-backend deterministic"`.
+`--extra-args "--kda-backend deterministic"`. The switch sits on the shared head-sharded
+linear-attention layer (`kda_recurrence(..., backend=...)` in `miles_plugins/models/linear_attn.py`),
+so it covers every KDA layer of the model; `fla` is the unchanged default path.
 
 The kernel ships as generated CUDA sources and builds on first use as a torch CUDA extension
 (`nvcc` and `ninja` from the image; cached under `TORCH_EXTENSIONS_DIR`, so the first backward
