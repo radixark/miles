@@ -219,14 +219,8 @@ def turns_to_trajectory(turns: list[dict[str, Any]]) -> Trajectory:
 
 
 def sampling_session_id_of(policy: TokenCompleter) -> str:
-    """The Tinker sampling session behind the cookbook's TinkerTokenCompleter; the gateway resolves it to a path."""
-    sampling_client = getattr(policy, "sampling_client", None)
-    sampling_session_id = getattr(sampling_client, "_sampling_session_id", None) or getattr(
-        sampling_client, "sampling_session_id", None
-    )
-    if not sampling_session_id:
-        raise TypeError("SessionRolloutStrategy needs a TinkerTokenCompleter over a tinker.SamplingClient")
-    return str(sampling_session_id)
+    """The sampling session behind the cookbook's TinkerTokenCompleter; the gateway binds the same sampler and lease."""
+    return policy.sampling_client._sampling_session_id  # tinker 0.26.2 keeps it private; there is no public accessor
 
 
 def _default_run_trial() -> RunTrial:
