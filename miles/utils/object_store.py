@@ -11,7 +11,11 @@ from types import TracebackType
 from typing import Annotated, Any, Literal
 
 import ray
-import ray._private.internal_api
+
+try:  # ray 2.59 removed the API that force-frees an object pinned by a serialized reference
+    from ray._private.internal_api import free as _ray_free
+except ImportError:
+    _ray_free = None
 from pydantic import AfterValidator, ConfigDict, Field, PlainSerializer
 
 from miles.utils.object_store_config import compute_mooncake_store_config
@@ -150,8 +154,14 @@ class RayObjectStore(BaseObjectStore):
         return ObjectStoreGetResult(value=ray.get(ref.payload), release_fn=_release_noop)
 
     def remove(self, ref: StoreObjectRef) -> None:
-        if self._frees_objects:
-            ray._private.internal_api.free([ref.payload])
+        if not self._frees_objects:
+            return
+        if _ray_free is None:
+            raise RuntimeError(
+                "this ray (>= 2.59) removed ray._private.internal_api.free, so an object pinned by a "
+                "serialized reference cannot be released by hand; pin ray < 2.59 for the rpc object wire"
+            )
+        _ray_free([ref.payload])
 
 
 def _release_noop(value: Any) -> None:
