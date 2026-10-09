@@ -9,7 +9,7 @@ from pathlib import Path
 
 from tests.ci.ci_register import register_cpu_ci
 
-register_cpu_ci(est_time=180, suite="stage-b-cpu", labels=["rollout"])
+register_cpu_ci(est_time=60, suite="stage-b-cpu", labels=["rollout"])
 
 
 def test_agentic_rollout_benchmark(tmp_path, capsys):
@@ -54,3 +54,5 @@ def test_agentic_rollout_benchmark(tmp_path, capsys):
         assert step["manager_cpu_s"] > 0
     with capsys.disabled():
         print("ROLLOUT_BENCHMARK " + json.dumps(result, sort_keys=True))
+    # Hosted CPU baseline is about 0.09 s per rollout; leave headroom for runner variation.
+    assert result["median_manager_cpu_s"] <= 0.15, result
