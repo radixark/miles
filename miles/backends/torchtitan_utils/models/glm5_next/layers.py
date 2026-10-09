@@ -14,7 +14,7 @@ from torchtitan.models.common.linear import Linear
 from torchtitan.models.common.moe import GroupedExperts
 from torchtitan.protocols.module import Module
 
-from miles.backends.torchtitan_utils.models.glm5_next.packed_sequence import PackedSequence
+from miles.backends.torchtitan_utils.models.glm5_next.packed_sequence import PackedSequence, gather_tokens_no_grad
 from miles.kernels.attention.dsa import sparse_attention
 from miles.kernels.attention.dsa.kpool import build_pooled_keys, pool_boundaries
 from miles_plugins.models.glm5_next.ops.kpool_indexer import kpool_select_topk
@@ -169,13 +169,14 @@ class ShortConv(Module):
     def reset_parameters(self) -> None:
         nn.init.kaiming_uniform_(self.weight)
 
-    def forward(self, x: torch.Tensor, cu_seqlens: torch.Tensor, cu_seqlens_cpu: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, cu_seqlens: torch.Tensor, cu_seqlens_cpu, cp_context) -> torch.Tensor:
         out, _ = causal_conv1d(
             x=x,
             weight=self.weight.squeeze(1),
             activation="silu",
             cu_seqlens=cu_seqlens,
             cu_seqlens_cpu=cu_seqlens_cpu,
+            cp_context=cp_context,
         )
         return out
 
@@ -276,14 +277,22 @@ class KimiDeltaAttention(Module):
             setattr(self, name, getattr(config, name).build())
 
     def forward(self, x_BLD: torch.Tensor, sequence: PackedSequence) -> torch.Tensor:
-        return sequence.keep_local(self._forward_whole_sequence(sequence.gather(x_BLD), sequence.masks))
+        if sequence.cp_layout is None:
+            cu_seqlens, cu_seqlens_cpu = _cu_seqlens(sequence.masks)
+            return self._forward_shard(x_BLD, cu_seqlens=cu_seqlens, cu_seqlens_cpu=cu_seqlens_cpu, cp_context=None)
+        cp_context = sequence.kda_cp_context
+        contiguous = sequence.to_contiguous(x_BLD.squeeze(0)).unsqueeze(0)
+        out = self._forward_shard(
+            contiguous, cu_seqlens=cp_context.cu_seqlens, cu_seqlens_cpu=None, cp_context=cp_context
+        )
+        return sequence.from_contiguous(out.squeeze(0)).unsqueeze(0)
 
-    def _forward_whole_sequence(self, x_BLD: torch.Tensor, masks: VarlenMetadata) -> torch.Tensor:
-        cu_seqlens, cu_seqlens_cpu = _cu_seqlens(masks)
+    def _forward_shard(self, x_BLD: torch.Tensor, *, cu_seqlens, cu_seqlens_cpu, cp_context) -> torch.Tensor:
         heads = (self.num_heads, self.head_dim)
-        q = self.q_conv1d(self.q_proj(x_BLD), cu_seqlens, cu_seqlens_cpu).unflatten(-1, heads)
-        k = self.k_conv1d(self.k_proj(x_BLD), cu_seqlens, cu_seqlens_cpu).unflatten(-1, heads)
-        v = self.v_conv1d(self.v_proj(x_BLD), cu_seqlens, cu_seqlens_cpu).unflatten(-1, heads)
+        conv_args = (cu_seqlens, cu_seqlens_cpu, cp_context)
+        q = self.q_conv1d(self.q_proj(x_BLD), *conv_args).unflatten(-1, heads)
+        k = self.k_conv1d(self.k_proj(x_BLD), *conv_args).unflatten(-1, heads)
+        v = self.v_conv1d(self.v_proj(x_BLD), *conv_args).unflatten(-1, heads)
         beta = torch.sigmoid(self.b_proj(x_BLD).float())
         g = self.gate(self.f_b_proj(self.f_a_proj(x_BLD)))
         out, _ = chunk_kda(
@@ -297,6 +306,7 @@ class KimiDeltaAttention(Module):
             use_qk_l2norm_in_kernel=True,
             cu_seqlens=cu_seqlens,
             cu_seqlens_cpu=cu_seqlens_cpu,
+            cp_context=cp_context,
         )
         norm_gate = self.g_b_proj(self.g_a_proj(x_BLD))
         out = self.o_norm(out.reshape(-1, self.head_dim), norm_gate.reshape(-1, self.head_dim))
@@ -335,11 +345,12 @@ class KpoolIndexer(Module):
         nn.init.zeros_(self.index_kpool_compress_ape)
 
     @torch.no_grad()
-    def forward(self, x_TD: torch.Tensor, q_lora_TR: torch.Tensor, cu_seqlens: torch.Tensor) -> torch.Tensor:
+    def forward(self, x_TD: torch.Tensor, q_lora_TR: torch.Tensor, sequence: PackedSequence) -> torch.Tensor:
+        cu_seqlens = sequence.masks.cu_seq_q
         x_TD = x_TD.detach()
         index_q = self.wq_b(q_lora_TR.detach()).unflatten(-1, (self.num_heads, self.head_dim))
-        index_k = self.k_norm(self.wk(x_TD)).bfloat16()
-        gate_score = F.linear(x_TD, self.index_kpool_compress_gate.to(x_TD.dtype))
+        index_k = gather_tokens_no_grad(self.k_norm(self.wk(x_TD)).bfloat16(), sequence)
+        gate_score = gather_tokens_no_grad(F.linear(x_TD, self.index_kpool_compress_gate.to(x_TD.dtype)), sequence)
         head_weights = F.linear(x_TD.float(), self.weights_proj.weight.float()) * self.head_weight_scale
         pooled_k = build_pooled_keys(index_k, gate_score, self.index_kpool_compress_ape, cu_seqlens, self.kpool)
         return kpool_select_topk(
@@ -350,6 +361,7 @@ class KpoolIndexer(Module):
             pool_cu_seqlens=pool_boundaries(cu_seqlens, self.kpool),
             index_topk=self.topk,
             kpool=self.kpool,
+            query_token_ids=sequence.query_token_ids,
         )
 
 
@@ -386,20 +398,17 @@ class DSAAttention(Module):
         self.indexer = config.indexer.build()
 
     def forward(self, x_BLD: torch.Tensor, sequence: PackedSequence) -> torch.Tensor:
-        return sequence.keep_local(self._forward_whole_sequence(sequence.gather(x_BLD), sequence.masks))
-
-    def _forward_whole_sequence(self, x_BLD: torch.Tensor, masks: VarlenMetadata) -> torch.Tensor:
         x_TD = x_BLD.squeeze(0)
         q_lora = self.q_norm(self.wq_a(x_TD))
         q = self.wq_b(q_lora).unflatten(-1, (self.n_heads, self.qk_head_dim))
-        latent_kv = self.kv_norm(self.wkv_a(x_TD))
+        latent_kv = sequence.gather_tokens(self.kv_norm(self.wkv_a(x_TD)))
 
         w_kc, w_vc = self.wkv_b.weight.unflatten(0, (self.n_heads, -1)).split(
             [self.qk_head_dim, self.v_head_dim], dim=1
         )
         query = torch.einsum("thd,hdm->thm", q, w_kc.to(q.dtype))
 
-        topk_indices = self.indexer(x_TD, q_lora, masks.cu_seq_q)
+        topk_indices = self.indexer(x_TD, q_lora, sequence)
         out = sparse_attention(
             F.pad(query, (0, _SPARSE_MLA_TAIL_DIM)).unsqueeze(0),
             F.pad(latent_kv, (0, _SPARSE_MLA_TAIL_DIM)).unsqueeze(1).unsqueeze(0),

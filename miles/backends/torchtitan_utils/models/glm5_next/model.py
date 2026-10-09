@@ -120,6 +120,7 @@ class Glm5NextModel(Decoder):
     def __init__(self, config: Config):
         super().__init__(config)
         self.num_streams = config.num_streams
+        self.kda_conv_kernel_size = next(layer.kda.q_conv1d.kernel_size for layer in config.layers if layer.kda)
         self.cp_mesh: DeviceMesh | None = None
         self.cp_load_balancer: str | None = None
         self._cp_layouts: dict[int, ContextParallelLayout] = {}
@@ -148,7 +149,11 @@ class Glm5NextModel(Decoder):
         attention_masks=None,
     ) -> torch.Tensor:
         assert positions is not None and positions.shape[0] == 1, "GLM-5.3-Flash trains on one packed sequence"
-        sequence = build_packed_sequence(positions, self._cp_layout(positions.shape[1], positions.device))
+        sequence = build_packed_sequence(
+            positions,
+            self._cp_layout(positions.shape[1], positions.device),
+            conv_kernel_size=self.kda_conv_kernel_size,
+        )
         if self.tok_embeddings is None:
             x_BLND = tokens
         else:
