@@ -925,12 +925,6 @@ def validate_log_probs_backend_args(args) -> None:
             f"--log-probs-backend {backend} does not support --true-on-policy-mode, which needs bitwise "
             "parity with the rollout engine's own log-softmax; use --log-probs-backend torch."
         )
-    if args.use_sampling_support_replay:
-        raise ValueError(
-            f"--log-probs-backend {backend} does not support sampling-support replay "
-            f"(--rollout-top-p {args.rollout_top_p}, --rollout-top-k {args.rollout_top_k}); "
-            "use --log-probs-backend torch."
-        )
     # unset, the actor falls back to the tokenizer's vocab_size, which can leave out added special tokens
     if args.train_backend == "megatron" and args.vocab_size is None:
         raise ValueError(
@@ -950,6 +944,12 @@ def _validate_fused_lm_head_args(args) -> None:
     if args.loss_type not in ("policy_loss", "sft_loss"):
         raise ValueError(
             f"--log-probs-backend fused_lm_head supports --loss-type policy_loss and sft_loss, got {args.loss_type}"
+        )
+    if args.use_sampling_support_replay:
+        raise ValueError(
+            "--log-probs-backend fused_lm_head does not support sampling-support replay "
+            f"(--rollout-top-p {args.rollout_top_p}, --rollout-top-k {args.rollout_top_k}); "
+            "use --log-probs-backend fused."
         )
     # the raw flag: args.multi_lora is derived from it later, in validate_lora_args
     if args.multi_lora_n_adapters > 0:

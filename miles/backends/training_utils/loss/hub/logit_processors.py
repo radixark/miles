@@ -1,9 +1,10 @@
 from argparse import Namespace
 from collections.abc import Callable, Iterator, Sequence
-from typing import Protocol
+from typing import NamedTuple, Protocol
 
 import torch
 import torch.distributed as dist
+import torch.nn.functional as F
 
 from miles.backends.training_utils.data.context_parallel import (
     LocalResponseRows,
@@ -13,6 +14,7 @@ from miles.backends.training_utils.data.context_parallel import (
 from miles.backends.training_utils.data.sampling_mask import (
     build_local_sampling_mask,
     get_rollout_sampling_masks,
+    local_support_ids,
     rollout_topk_candidate_ids,
 )
 from miles.backends.training_utils.loss.hub.math_utils import (
@@ -221,9 +223,6 @@ def get_log_probs_and_entropy(
                     f"{response_length} for sample {sample_index}"
                 )
     if args.log_probs_backend in ("fused", "fused_lm_head"):
-        assert (
-            rollout_sampling_mask is None
-        ), f"--log-probs-backend {args.log_probs_backend} does not take a sampling mask"
         assert (lm_head is not None) == (args.log_probs_backend == "fused_lm_head"), "fused_lm_head needs the lm_head"
         res = _fused_log_probs_and_entropy(
             logits,
@@ -235,6 +234,7 @@ def get_log_probs_and_entropy(
             entropy_requires_grad=entropy_requires_grad,
             max_seq_lens=max_seq_lens,
             lm_head=lm_head,
+            rollout_sampling_mask=rollout_sampling_mask,
         )
     else:
         res = _torch_log_probs_and_entropy(
@@ -438,22 +438,33 @@ def _fused_log_probs_and_entropy(
     entropy_requires_grad: bool,
     max_seq_lens: list[int] | None,
     lm_head: LMHead | None,
+    rollout_sampling_mask: Sequence[RolloutSamplingMask] | None,
 ) -> dict[str, list[torch.Tensor]]:
-    """Each response row's next token through ``fused_response_log_probs``."""
-    log_probs, entropy = fused_response_log_probs(
+    """Each response row's next token through ``fused_response_log_probs``.
+
+    With a rollout sampling mask the log-probs are over each token's sampling support, and the
+    entropy stays over the vocabulary, as on the torch path.
+    """
+    sample_support = None
+    if rollout_sampling_mask is not None:
+        sample_support = lambda i, sample_rows: local_support_ids(  # noqa: E731
+            rollout_sampling_mask[i], sample_rows.response_indices
+        )
+    scores = fused_response_log_probs(
         logits,
         args=args,
         unconcat_tokens=unconcat_tokens,
         total_lengths=total_lengths,
         response_lengths=response_lengths,
         max_seq_lens=max_seq_lens,
+        sample_support=sample_support,
         with_entropy=with_entropy,
         entropy_requires_grad=entropy_requires_grad,
         lm_head=lm_head,
     )
-    res = {"log_probs": log_probs}
+    res = {"log_probs": scores.log_probs}
     if with_entropy:
-        res["entropy"] = entropy
+        res["entropy"] = scores.entropy
     return res
 
 
@@ -463,6 +474,14 @@ def to_device_without_sync(tensor: torch.Tensor, device: torch.device) -> torch.
     if not tensor.is_cpu:
         return tensor.to(device)
     return tensor.pin_memory().to(device, non_blocking=True)
+
+
+class FusedResponseScores(NamedTuple):
+    """Per-sample outputs of ``fused_response_log_probs``."""
+
+    log_probs: list[torch.Tensor]  # [R_i], or [R_i, 1 + K] with candidates
+    entropy: list[torch.Tensor] | None
+    support_log_probs: list[torch.Tensor] | None  # [R_i, S] for the support ids, with a support
 
 
 def fused_response_log_probs(
@@ -476,13 +495,17 @@ def fused_response_log_probs(
     with_entropy: bool,
     entropy_requires_grad: bool = True,
     sample_candidates: Callable[[int, LocalResponseRows], torch.Tensor] | None = None,
+    sample_support: Callable[[int, LocalResponseRows], torch.Tensor] | None = None,
+    entropy_over_support: bool = False,
     lm_head: LMHead | None = None,
-) -> tuple[list[torch.Tensor], list[torch.Tensor] | None]:
-    """Per sample, the log-probs of each response row's next token and the entropy at this rank's
-    response rows, all samples in one ``fused_log_probs_and_entropy`` call.
+) -> FusedResponseScores:
+    """Log-probs of each response row's next token and the entropy at this rank's response rows,
+    all samples in one fused call.
 
-    ``sample_candidates`` gives ``[R_i, K]`` CPU ids scored after each row's own token, so that sample's
-    log-probs are ``[R_i, 1 + K]``; all samples' candidates reach the GPU in one copy. With ``lm_head``,
+    ``sample_candidates`` gives ``[R_i, K]`` CPU ids scored after each row's own token. With
+    ``sample_support`` (``[R_i, S_i]`` CPU ids, ``-1`` padding) the log-probs are normalized over each
+    row's support and the support ids are scored too; the entropy is over the vocabulary unless
+    ``entropy_over_support``. Candidates and supports reach the GPU in one copy each. With ``lm_head``,
     ``logits`` is the output layer's input and ``fused_lm_head_log_probs_and_entropy`` projects the scored
     rows a tile at a time.
     """
@@ -490,6 +513,7 @@ def fused_response_log_probs(
     from miles.backends.training_utils.loss.hub.fused_log_probs import (
         fused_lm_head_log_probs_and_entropy,
         fused_log_probs_and_entropy,
+        fused_support_log_probs,
     )
 
     flat_output, layout = _local_response_layout(
@@ -499,15 +523,17 @@ def fused_response_log_probs(
         total_lengths=total_lengths,
         response_lengths=response_lengths,
         max_seq_lens=max_seq_lens,
-        include_response_indices=sample_candidates is not None,
+        include_response_indices=sample_candidates is not None or sample_support is not None,
     )
     device = flat_output.device
-    row_ranges, targets, candidates = [], [], []
+    row_ranges, targets, candidates, supports = [], [], [], []
     for i, sample_rows in enumerate(layout):
         row_ranges.extend(sample_rows.row_ranges)
         targets.append(sample_rows.tokens)
         if sample_candidates is not None:
             candidates.append(sample_candidates(i, sample_rows))
+        if sample_support is not None:
+            supports.append(sample_support(i, sample_rows))
     # built on the CPU and copied once: one arange kernel per run would be hundreds of tiny launches
     rows = to_device_without_sync(torch.cat([torch.arange(start, end) for start, end in row_ranges]), device)
     all_targets = to_device_without_sync(torch.cat(targets), device)
@@ -523,6 +549,10 @@ def fused_response_log_probs(
         with_entropy=with_entropy,
         entropy_requires_grad=entropy_requires_grad,
     )
+    lengths = [sample.size(0) for sample in targets]
+    support_log_probs = None
+    # the checkpointed loss replays its forward on these logits during backward
+    inplace_backward = not args.recompute_loss_function
     if lm_head is not None:
         log_probs, entropy = fused_lm_head_log_probs_and_entropy(
             flat_output,
@@ -532,17 +562,26 @@ def fused_response_log_probs(
             tile_rows=args.log_probs_chunk_size if args.log_probs_chunk_size > 0 else DEFAULT_LM_HEAD_TILE_ROWS,
             **common,
         )
-    else:
+    elif sample_support is None:
         log_probs, entropy = fused_log_probs_and_entropy(
+            flat_output, rows, all_targets, inplace_backward=inplace_backward, **common
+        )
+    else:
+        width = max((support.size(1) for support in supports), default=0)
+        support = torch.cat([F.pad(support, (0, width - support.size(1)), value=-1) for support in supports])
+        log_probs, all_support_log_probs, entropy = fused_support_log_probs(
             flat_output,
             rows,
             all_targets,
-            # the checkpointed loss replays its forward on these logits during backward
-            inplace_backward=not args.recompute_loss_function,
+            to_device_without_sync(support, device),
+            entropy_over_support=entropy_over_support,
+            inplace_backward=inplace_backward,
             **common,
         )
-    lengths = [sample.size(0) for sample in targets]
-    return list(log_probs.split(lengths)), (list(entropy.split(lengths)) if with_entropy else None)
+        support_log_probs = list(all_support_log_probs.split(lengths))
+    return FusedResponseScores(
+        list(log_probs.split(lengths)), list(entropy.split(lengths)) if with_entropy else None, support_log_probs
+    )
 
 
 def get_values(
