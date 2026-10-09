@@ -105,10 +105,11 @@ class TestGenerateRequest:
 class TestEngineResponseParsing:
     def test_to_sequence_reads_tokens_and_stop_reason(self):
         response = {
+            "text": "ab",
             "meta_info": {
                 "output_token_logprobs": [(-0.1, 11), (-0.2, 12)],
-                "finish_reason": {"type": "length"},
-            }
+                "finish_reason": {"type": "length", "length": 2},
+            },
         }
         sequence = _to_sequence(response)
         assert (sequence["tokens"], sequence["logprobs"], sequence["stop_reason"]) == (
@@ -116,6 +117,8 @@ class TestEngineResponseParsing:
             [-0.1, -0.2],
             "length",
         )
+        # the engine's own text and verdict ride along for the session server, off the public schema
+        assert (sequence["text"], sequence["finish_reason"]) == ("ab", {"type": "length", "length": 2})
 
     def test_prompt_logprobs_pad_the_unscored_first_token(self):
         response = {"meta_info": {"input_token_logprobs": [(None, 1), (-0.5, 2)]}}

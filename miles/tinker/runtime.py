@@ -205,12 +205,15 @@ def _topk_prompt_logprobs(response: dict, k: int) -> dict:
 
 def _to_sequence(response: dict) -> dict:
     output_token_logprobs = response["meta_info"]["output_token_logprobs"]
-    finish = response["meta_info"]["finish_reason"]["type"]
-    if finish == "abort":
+    finish = response["meta_info"]["finish_reason"]
+    if finish["type"] == "abort":
         # a truncated sequence must fail the request, not pass as a completed sample
         return {"error": "the engine aborted this sample; resubmit the request"}
     return {
         "tokens": [entry[1] for entry in output_token_logprobs],
         "logprobs": [entry[0] for entry in output_token_logprobs],
-        "stop_reason": "length" if finish == "length" else "stop",
+        "stop_reason": "length" if finish["type"] == "length" else "stop",
+        # gateway-internal: the text the engine cut at the stop it matched, and that verdict
+        "text": response["text"],
+        "finish_reason": finish,
     }

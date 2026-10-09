@@ -95,7 +95,13 @@ class FakeBackend:
             return failure
         return {
             "sequences": [
-                {"tokens": [1, 2], "logprobs": [0.0, 0.0], "stop_reason": "stop"}
+                {
+                    "tokens": [1, 2],
+                    "logprobs": [0.0, 0.0],
+                    "stop_reason": "stop",
+                    "text": "ok",
+                    "finish_reason": {"type": "stop", "matched": 2},
+                }
                 for _ in range(payload["num_samples"])
             ]
         }

@@ -58,8 +58,8 @@ def _tito_renderer(tito_pair) -> PromptRenderer:
     return PromptRenderer(hf, tito, inherit=True, message_matcher=strict_message_matches)
 
 
-def _record(session, renderer, messages, reply_ids, *, finish="stop", stop=None, budget=8192):
-    """Render, then commit a reply the way the collector does; returns (rendered, assistant message)."""
+def _record(session, renderer, messages, reply_ids, *, finish="stop", matched=None, budget=8192):
+    """Render, then commit a reply the way the collector does with what the engine reports; returns (rendered, message)."""
     rendered = renderer.prepare_pretokenized(session, messages, None, None, max_new_tokens=8, budget=budget)
     turn = Turn(
         input_ids=rendered.prompt_token_ids,
@@ -71,7 +71,11 @@ def _record(session, renderer, messages, reply_ids, *, finish="stop", stop=None,
         parent=rendered.parent,
         request_args=rendered.request_args,
     )
-    message, turn.ended_on_stop = renderer.assistant_message(turn, stop)
+    text = renderer.tokenizer.decode(list(reply_ids), skip_special_tokens=True)
+    if isinstance(matched, str):  # the engine cuts its text at the stop string it matched
+        text = text[: text.index(matched)]
+        turn.ended_on_stop = True
+    message = {"role": "assistant", "content": text}
     turn.messages = [*messages, message]
     session.turns.append(turn)
     return rendered, message
@@ -112,7 +116,7 @@ def test_renderer_tito_turn_extends_the_parent_prefix(tito_pair):
 def test_renderer_reply_ended_on_a_stop_string_forces_a_full_render(tito_pair):
     hf = tito_pair[0]
     renderer, session = _tito_renderer(tito_pair), TrajectorySession(SID, TENANT)
-    _, reply = _record(session, renderer, USER, hf.encode("1, 2, 3", add_special_tokens=False), stop=["3"])
+    _, reply = _record(session, renderer, USER, hf.encode("1, 2, 3", add_special_tokens=False), matched="3")
     assert reply["content"] == "1, 2, " and session.turns[0].ended_on_stop
     follow = [*USER, reply, {"role": "user", "content": "Now say done."}]
     rendered = renderer.prepare_pretokenized(session, follow, None, None, max_new_tokens=8, budget=8192)
@@ -172,17 +176,6 @@ def test_renderer_malformed_messages_are_user_errors(tokenizer, messages):
         )
 
 
-def test_renderer_assistant_message_strips_only_a_matching_stop_string(tokenizer):
-    renderer = _plain_renderer(tokenizer)
-    ids = tokenizer.encode("1, 2, 3", add_special_tokens=False)
-    turn = Turn(input_ids=[1], output_ids=ids, logprobs=[0.0] * len(ids), finish_reason="stop")
-    assert renderer.assistant_message(turn, ["3"]) == ({"role": "assistant", "content": "1, 2, "}, True)
-    assert renderer.assistant_message(turn, ["9"]) == ({"role": "assistant", "content": "1, 2, 3"}, False)
-    turn.finish_reason = "length"
-    assert renderer.assistant_message(turn, ["3"]) == ({"role": "assistant", "content": "1, 2, 3"}, False)
-    assert turn.ended_on_stop is False  # the renderer never writes to the Turn; the collector does
-
-
 # --- collector (miles/tinker/core/tinker_session_server.py) --------------------------------------
 
 
@@ -201,6 +194,43 @@ def _sampling_session(service, tenant: str = TENANT) -> str:
 
 def _turn(messages=USER, **sampling) -> TurnRequest:
     return TurnRequest(messages=messages, tools=None, sampling_params={"max_tokens": 4, **sampling})
+
+
+def _engine_sequence(tokens, text, finish_reason) -> dict:
+    """What runtime._to_sequence hands the service: ids and logprobs for training, the engine's text and verdict."""
+    return {
+        "tokens": tokens,
+        "logprobs": [0.0] * len(tokens),
+        "stop_reason": "length" if finish_reason["type"] == "length" else "stop",
+        "text": text,
+        "finish_reason": finish_reason,
+    }
+
+
+async def test_collector_takes_the_engine_text_and_stop_verdict(gateway):
+    service, collector = gateway
+    collector.create_session(SID, TENANT, sampling_session_id=_sampling_session(service))
+    replies = iter(
+        [
+            # "Blue" is one token; the engine matched "ue" (list order, not position) and cut the text there
+            _engine_sequence([10331], "Bl", {"type": "stop", "matched": "ue"}),
+            # a stop token id is a complete reply: no stop string, the next turn may extend it
+            _engine_sequence([10331, 2], "Blue", {"type": "stop", "matched": 2}),
+            _engine_sequence([2], "", {"type": "stop", "matched": 2}),
+        ]
+    )
+
+    async def engine(payload, lora_name, lora_path=None):
+        return {"sequences": [next(replies)]}
+
+    service.backend.sample = engine
+    cut = await collector.complete(SID, _turn(stop=["ue", "Bl"]))
+    assert cut.assistant_message == {"role": "assistant", "content": "Bl"} and cut.turn.ended_on_stop
+    assert (list(cut.turn.output_ids), list(cut.turn.logprobs)) == ([10331], [0.0]), "training keeps the whole token"
+    whole = await collector.complete(SID, _turn())
+    assert whole.assistant_message["content"] == "Blue" and not whole.turn.ended_on_stop
+    follow = [*USER, cut.assistant_message, {"role": "user", "content": "Go on."}]
+    assert (await collector.complete(SID, _turn(follow))).turn.reset_reason == "stop_string"
 
 
 def test_collector_bind_checks_the_sampling_session(gateway):
@@ -298,7 +328,7 @@ async def test_collector_cut_reply_flags_its_lineage_and_strict_mode_refuses(gat
     collector.create_session(SID, TENANT, sampling_session_id=_sampling_session(service))
 
     async def cut(payload, lora_name, lora_path=None):
-        return {"sequences": [{"tokens": [1], "logprobs": [0.0], "stop_reason": "length"}]}
+        return {"sequences": [_engine_sequence([1], "x", {"type": "length", "length": 1})]}
 
     service.backend.sample = cut
     first = await collector.complete(SID, _turn())

@@ -167,6 +167,13 @@ def decode_sample_request(payload: dict) -> dict:
 # -------- result rendering (JSON; proto_codec renders the binary forms) --------
 
 
+_PUBLIC_SEQUENCE_KEYS = ("sequence_id", "tokens", "logprobs", "stop_reason")
+
+
+def _public_sequence(sequence: dict) -> dict:
+    return {key: sequence[key] for key in _PUBLIC_SEQUENCE_KEYS}
+
+
 def render_result(result: dict) -> dict:
     op = result["op"]
     if op in ("forward_backward", "forward_only"):
@@ -181,7 +188,7 @@ def render_result(result: dict) -> dict:
             "metrics": {"loss:sum": float(sum(output["loss"] for output in outputs))},
         }
     if op == "sample":
-        rendered = {"type": "sample", "sequences": result["sequences"]}
+        rendered = {"type": "sample", "sequences": [_public_sequence(sequence) for sequence in result["sequences"]]}
         if result.get("prompt_logprobs") is not None:
             rendered["prompt_logprobs"] = [
                 None if math.isnan(logprob) else logprob for logprob in result["prompt_logprobs"]

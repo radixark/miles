@@ -299,9 +299,8 @@ class TrajectoryCollector:
                 raise TruncatedGenerationError("cannot extend a reply that ended at max_tokens; resample it or rebind")
             payload = self._payload(session, rendered.prompt_token_ids, request.sampling_params)
             sequence = await self._sample(session, payload)
-            stop = request.sampling_params.get("stop")
             return self._commit_generation(
-                session, request.messages, rendered, sequence, after_truncation=after_truncation, stop=stop
+                session, request.messages, rendered, sequence, after_truncation=after_truncation
             )
 
     @staticmethod
@@ -344,14 +343,14 @@ class TrajectoryCollector:
         rendered: Rendered,
         sequence: dict[str, Any],
         after_truncation: bool,
-        stop: list[str] | None = None,
     ) -> TurnResult:
         """Build the Turn with its history and assistant message, then append it: the tree grows by one node."""
+        finish = sequence["finish_reason"]
         turn = Turn(
             input_ids=array("i", rendered.prompt_token_ids),
             output_ids=array("i", (int(token) for token in sequence["tokens"])),
             logprobs=array("d", (float(value) for value in sequence["logprobs"])),
-            finish_reason="length" if sequence.get("stop_reason") == "length" else "stop",
+            finish_reason="length" if finish["type"] == "length" else "stop",
             created_at=self.clock(),
             inherits=rendered.inherits,
             reset_reason=rendered.reset_reason,
@@ -359,7 +358,10 @@ class TrajectoryCollector:
             parent=rendered.parent,
             request_args=rendered.request_args,
         )
-        message, turn.ended_on_stop = self.renderer.assistant_message(turn, stop)
+        # the engine cut the text at the stop it matched: a str match is a request stop string, so the ids
+        # lack the end-of-turn token; an int match is a stop token and the reply is complete
+        turn.ended_on_stop = finish["type"] == "stop" and isinstance(finish["matched"], str)
+        message = {"role": "assistant", "content": sequence["text"]}
         turn.messages = [*request_messages, message]  # the same dict the adapter renders: a child matches it later
         session.turns.append(turn)
         session.last_seen = turn.created_at

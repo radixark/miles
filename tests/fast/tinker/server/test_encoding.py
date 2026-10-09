@@ -1,5 +1,7 @@
 """JSON decoding validates datum inputs and renders SDK result shapes."""
 
+import pytest
+
 from miles.tinker.server.encoding import (
     ADAM_PARAM_DEFAULTS,
     build_datum,
@@ -96,7 +98,28 @@ def test_decode_sample_request_defaults():
     assert decoded["topk_prompt_logprobs"] == 0
 
 
+_ENGINE_SEQUENCE = {
+    "sequence_id": "s",
+    "tokens": [5, 6],
+    "logprobs": [-0.5, -0.6],
+    "stop_reason": "stop",
+    "text": "ab",  # gateway-internal, for the session server
+    "finish_reason": {"type": "stop", "matched": "b"},
+}
+
+
 class TestRenderResult:
+    def test_sample_json_keeps_the_public_sequence_fields_only(self):
+        rendered = render_result({"op": "sample", "sequences": [dict(_ENGINE_SEQUENCE)]})
+        assert rendered["sequences"] == [
+            {"sequence_id": "s", "tokens": [5, 6], "logprobs": [-0.5, -0.6], "stop_reason": "stop"}
+        ]
+
+    def test_sample_json_refuses_an_incomplete_sequence(self):
+        incomplete = {key: value for key, value in _ENGINE_SEQUENCE.items() if key != "logprobs"}
+        with pytest.raises(KeyError):  # never a partial success response
+            render_result({"op": "sample", "sequences": [incomplete]})
+
     def test_forward_backward_renders_per_datum_records(self):
         rendered = render_result({"op": "forward_backward", "outputs": [{"loss": 2.0, "logprobs": [0.1, 0.2]}]})
         assert rendered["loss_fn_output_type"] == "ArrayRecord"

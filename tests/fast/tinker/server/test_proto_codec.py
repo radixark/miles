@@ -112,6 +112,14 @@ def test_the_sdk_parses_our_sample_response():
     assert list(parsed.prompt_logprobs) == pytest.approx([-1.0, -2.0])
 
 
+def test_the_proto_sample_response_ignores_gateway_internal_fields():
+    internal = {"sequence_id": "s", "tokens": [5], "logprobs": [-0.5], "stop_reason": "stop"}
+    with_internal = {**internal, "text": "a", "finish_reason": {"type": "stop", "matched": "a"}}
+    assert encode_sample_response({"op": "sample", "sequences": [with_internal]}) == encode_sample_response(
+        {"op": "sample", "sequences": [internal]}
+    )
+
+
 @pytest.mark.parametrize("forward_only", [False, True])
 @pytest.mark.parametrize("invalid", ["missing_targets", "bad_shape"])
 def test_content_errors_preserve_the_model_queue_envelope(forward_only, invalid):
