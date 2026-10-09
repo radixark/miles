@@ -16,6 +16,7 @@ from typing import Literal
 import torch
 
 from miles.kernels.attention.dsa.topk import SCORE_ROW_ALIGN
+from miles.kernels.attention.dsa.triton.indexer_fwd import indexer_fwd as triton_indexer_fwd
 
 
 _BWD_MIN_TOPK = 32
@@ -70,9 +71,7 @@ def _empty_scores(*leading: int, seq_len_kv: int, device) -> torch.Tensor:
 
 def _write_logits(q, k, weights, cu_seqlen_ks, cu_seqlen_ke, out, clean_logits, config):
     if config.score_backend == "triton":
-        from miles.kernels.attention.dsa.triton.indexer_fwd import indexer_fwd
-
-        indexer_fwd(
+        triton_indexer_fwd(
             q,
             k,
             weights,

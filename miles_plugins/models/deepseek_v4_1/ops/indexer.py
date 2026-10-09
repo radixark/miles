@@ -59,7 +59,7 @@ def indexer_select(
     candidate_block_size: int,
     topk: int,
     topk_fn,
-    clean_logits: bool,
+    canonical_topk: bool,
     allow_deep_select: bool,
     query_chunk: int | None,
 ) -> tuple[torch.Tensor, torch.Tensor | None]:
@@ -67,7 +67,7 @@ def indexer_select(
     n_kv = index_k.size(1)
     k_t = index_k.transpose(0, 1).contiguous()
     deep_selecting = allow_deep_select and use_deep_select()
-    clean_logits = clean_logits or deep_selecting or is_candidate_source
+    clean_logits = not canonical_topk or deep_selecting or is_candidate_source
     if deep_selecting:
         # deep_select requires aligned score rows; the padded columns sit past every query's length
         align = deep_select.get_stride_requirement()[0] // 4
@@ -117,7 +117,11 @@ def indexer_select(
         if n_kv < topk:
             scores = torch.nn.functional.pad(scores, (0, topk - n_kv), value=-torch.inf)
         idx = topk_fn(scores.reshape(bsz * (e - s), scores.size(-1)), topk, row_starts.repeat(bsz), lens.repeat(bsz))
-        idx = idx.reshape(bsz, e - s, topk).sort(dim=-1).values.to(torch.int64)
+        idx = idx.reshape(bsz, e - s, topk)
+        if canonical_topk:
+            idx_parts.append(idx.to(torch.int64))
+            continue
+        idx = idx.sort(dim=-1).values.to(torch.int64)
         idx_parts.append(torch.where(idx < lens.unsqueeze(-1), idx, -1))
     idx = idx_parts[0] if len(idx_parts) == 1 else torch.cat(idx_parts, dim=1)
     if is_candidate_source:
@@ -218,7 +222,7 @@ class DeepSeekV41Indexer(MegatronModule):
             candidate_block_size=self.candidate_block_size,
             topk=self.index_topk,
             topk_fn=topk_fn,
-            clean_logits=self.topk_backend != "canonical",
+            canonical_topk=self.topk_backend == "canonical",
             allow_deep_select=self.topk_backend == "torch"
             and (not indexer_replay_manager.enabled or indexer_replay_manager.stage == "fallthrough"),
             query_chunk=INDEXER_QUERY_CHUNK,
