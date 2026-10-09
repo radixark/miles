@@ -35,6 +35,7 @@ KNOWN_LABELS: dict[str, str] = {
     "k8s": "Kubernetes apiserver and kind integration tests",
     "deploy": "Split deployment tests (a run installed as one helm release per deployment)",
     "weight-update": "Weight update tests",
+    "rollout": "Rollout CPU integration tests and performance benchmarks",
     "fully-async": "Fully-async rollout tests",
     "multi-policy": "Multi policy training tests (several policy models in one run)",
     "replay": "Routing / indexer replay tests",
