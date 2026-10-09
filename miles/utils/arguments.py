@@ -1042,7 +1042,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             )
             parser.add_argument(
                 "--update-weight-transfer-mode",
-                choices=["broadcast", "broadcast_packed", "p2p", "disk-delta"],
+                choices=["broadcast", "broadcast_packed", "p2p", "disk-delta", "http-lora"],
                 default="broadcast",
                 help=(
                     "The method to transfer weights to remote rollout engines during update weight. "
@@ -1053,7 +1053,10 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                     "exceed --update-weight-buffer-size. "
                     "'disk-delta' diffs each sync against a CPU snapshot of the previous one and publishes "
                     "only the changed bytes to --update-weight-disk-dir; each engine's /pull_weights applies "
-                    "them into a host-local checkpoint that the engine reloads from."
+                    "them into a host-local checkpoint that the engine reloads from. "
+                    "'http-lora' is LoRA-only: rank 0 hands the adapter to each engine's LoRA load route over "
+                    "HTTP (see --http-lora-ship), so the trainer and the engines need not share a vendor, an "
+                    "interconnect, or a host."
                 ),
             )
             parser.add_argument(
@@ -1064,6 +1067,21 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                     "Filesystem directory disk-delta weight sync publishes to: one delta directory "
                     "(changed tensors only) per sync, written by the trainer and read by every "
                     "rollout host. Required for --update-weight-transfer-mode=disk-delta."
+                ),
+            )
+            parser.add_argument(
+                "--http-lora-ship",
+                type=str,
+                choices=["path", "tensors"],
+                default="path",
+                help=(
+                    "How http-lora hands the adapter to the engines. 'path': write a versioned PEFT "
+                    "directory under --update-weight-disk-dir and POST its path to load_lora_adapter; "
+                    "the directory must be visible to the engine hosts, or "
+                    "--custom-update-weight-post-write-path copies it there. 'tensors': POST the "
+                    "adapter weights in the request body (load_lora_adapter_from_tensors), so the "
+                    "engines need nothing but an HTTP port; --update-weight-disk-dir is then optional "
+                    "and only keeps versioned copies for auditing."
                 ),
             )
             parser.add_argument(
@@ -3631,6 +3649,17 @@ def miles_validate_args(args):
         assert os.path.isdir(args.hf_checkpoint), (
             "--update-weight-transfer-mode=disk-delta requires --hf-checkpoint to be a local directory: "
             "the baseline snapshot is seeded from its safetensors bytes."
+        )
+
+    if args.update_weight_transfer_mode == "http-lora":
+        assert is_lora_enabled(args) and not args.multi_lora, (
+            "--update-weight-transfer-mode=http-lora publishes a single LoRA adapter: it needs --lora-rank > 0 "
+            "and does not support multi-LoRA."
+        )
+        assert not args.colocate, "--update-weight-transfer-mode=http-lora is for non-colocated engines"
+        assert args.http_lora_ship == "tensors" or args.update_weight_disk_dir, (
+            "--http-lora-ship path requires --update-weight-disk-dir as the staging directory (shared with "
+            "the engines, or replicated by --custom-update-weight-post-write-path)."
         )
 
     if args.colocate:

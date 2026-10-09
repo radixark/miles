@@ -177,6 +177,7 @@ class SGLangApiClient:
         added_tokens_config: dict | None = None,
         upsert: bool = False,
         expected_checksums: dict | None = None,
+        timeout: float | None = None,
     ):
         """Load a LoRA adapter from either transport (exactly one of the two).
 
@@ -204,10 +205,7 @@ class SGLangApiClient:
         if expected_checksums is not None:
             payload["expected_checksums"] = expected_checksums
 
-        return await self._make_request(
-            "load_lora_adapter_from_tensors",
-            payload,
-        )
+        return await self._make_request("load_lora_adapter_from_tensors", payload, timeout=timeout)
 
     async def load_lora_adapter_from_distributed(
         self,
@@ -275,6 +273,18 @@ class SGLangApiClient:
             "register_lora_adapter",
             {"lora_name": lora_name, "config_dict": config_dict, "pinned": pinned},
         )
+
+    async def load_lora_adapter(
+        self, lora_name: str, lora_path: str, pinned: bool = False, upsert: bool = False, timeout: float | None = None
+    ):
+        """Load a PEFT adapter directory. With ``upsert``, a same-name adapter is replaced in place."""
+        payload = {"lora_name": lora_name, "lora_path": lora_path, "pinned": pinned}
+        if upsert:
+            payload["upsert"] = True
+        return await self._make_request("load_lora_adapter", payload, timeout=timeout)
+
+    async def unload_lora_adapter(self, lora_name: str, timeout: float | None = None):
+        return await self._make_request("unload_lora_adapter", {"lora_name": lora_name}, timeout=timeout)
 
     async def release_memory_occupation(self, tags: list[str] = None):
         """Release memory occupation. Available tags: weights, kv_cache."""
