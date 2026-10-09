@@ -120,9 +120,9 @@ def test_a_capability_of_the_home_stage_is_kept_on_another_arch():
     """A p2p test on a runner without RDMA between its GPUs fails at connect; no
     Blackwell stage offers that yet, so the test stays on Hopper."""
     assert target_stage("stage-c-8-gpu-h200-rdma", "blackwell") is None
-    assert dispatch_targets(
-        "stage-c-8-gpu-h200-rdma", ["hopper", "blackwell"], dispatch_arches=BOTH, absorb=True
-    ) == {"stage-c-8-gpu-h200-rdma"}
+    assert dispatch_targets("stage-c-8-gpu-h200-rdma", ["hopper", "blackwell"], dispatch_arches=BOTH, absorb=True) == {
+        "stage-c-8-gpu-h200-rdma"
+    }
 
 
 def test_a_test_without_a_capability_never_takes_a_stage_that_offers_one():
