@@ -16,36 +16,36 @@ _VOCAB = 50_001
 _TEMPERATURE = 0.7
 
 
-def _inputs(n_rows, vocab, n_valid, seed):
+def _inputs(n_rows, vocab, n_unpadded_cols, seed):
     g = torch.Generator(device="cuda").manual_seed(seed)
     logits = (torch.randn(n_rows, vocab, device="cuda", generator=g) * 3).to(torch.bfloat16)
     rows = torch.cat([torch.arange(3, n_rows // 2), torch.arange(n_rows // 2 + 5, n_rows)]).cuda()
-    targets = torch.randint(0, n_valid, (rows.numel(),), device="cuda", generator=g)
+    targets = torch.randint(0, n_unpadded_cols, (rows.numel(),), device="cuda", generator=g)
     return logits, rows, targets
 
 
-def _reference(logits, rows, targets, n_valid):
-    """log_softmax over the first ``n_valid`` columns only; the padding columns have no probability."""
-    log_softmax = torch.log_softmax(logits.index_select(0, rows)[:, :n_valid].float() / _TEMPERATURE, dim=-1)
+def _reference(logits, rows, targets, n_unpadded_cols):
+    """log_softmax over the first ``n_unpadded_cols`` columns only; the padding columns have no probability."""
+    log_softmax = torch.log_softmax(logits.index_select(0, rows)[:, :n_unpadded_cols].float() / _TEMPERATURE, dim=-1)
     log_probs = log_softmax.gather(1, targets.unsqueeze(1)).squeeze(1)
     return log_probs, -(log_softmax.exp() * log_softmax).sum(dim=-1)
 
 
-@pytest.mark.parametrize("n_valid", [_VOCAB, _VOCAB - 777], ids=["no_padding", "padding"])
+@pytest.mark.parametrize("n_unpadded_cols", [_VOCAB, _VOCAB - 777], ids=["no_padding", "padding"])
 @pytest.mark.parametrize(
     "launch", [LaunchConfig(1024, 1), LaunchConfig(2048, 2), LaunchConfig(4096, 8), LaunchConfig(8192, 16)], ids=str
 )
-def test_every_launch_shape_matches_log_softmax(launch, n_valid):
+def test_every_launch_shape_matches_log_softmax(launch, n_unpadded_cols):
     """Each GPU family may run its own launch shape; every shape must give log_softmax's values and
     gradient over the true vocabulary, write every element of the gradient, and zero the padding."""
-    logits, rows, targets = _inputs(64, _VOCAB, n_valid, seed=15)
-    ref_log_probs, ref_entropy = _reference(logits, rows, targets, n_valid)
+    logits, rows, targets = _inputs(64, _VOCAB, n_unpadded_cols, seed=15)
+    ref_log_probs, ref_entropy = _reference(logits, rows, targets, n_unpadded_cols)
     row_max, row_sum, row_dsum, target = row_statistics(
         logits,
         rows,
         targets,
         vocab_start=0,
-        n_valid=n_valid,
+        n_unpadded_cols=n_unpadded_cols,
         temperature=_TEMPERATURE,
         with_entropy=True,
         launch=launch,
@@ -58,7 +58,7 @@ def test_every_launch_shape_matches_log_softmax(launch, n_valid):
     g = torch.randn(rows.numel(), device="cuda", generator=gen)
     c = torch.randn(rows.numel(), device="cuda", generator=gen)
     ref_leaf = logits.clone().requires_grad_(True)
-    ref_lp, ref_ent = _reference(ref_leaf, rows, targets, n_valid)
+    ref_lp, ref_ent = _reference(ref_leaf, rows, targets, n_unpadded_cols)
     ((ref_lp * g).sum() + (ref_ent * c).sum()).backward()
     grad = torch.full_like(logits, float("nan"))  # any element the kernels miss stays NaN
     write_logits_grad(
@@ -73,13 +73,13 @@ def test_every_launch_shape_matches_log_softmax(launch, n_valid):
         g,
         c,
         vocab_start=0,
-        n_valid=n_valid,
+        n_unpadded_cols=n_unpadded_cols,
         temperature=_TEMPERATURE,
         launch=launch,
     )
     zero_unscored_rows(grad, rows, launch=launch)
     torch.testing.assert_close(grad.float(), ref_leaf.grad.float(), rtol=1e-2, atol=1e-3)
-    assert (grad[:, n_valid:] == 0).all()
+    assert (grad[:, n_unpadded_cols:] == 0).all()
 
 
 def test_an_all_padding_shard_reports_no_mass():
@@ -87,7 +87,7 @@ def test_an_all_padding_shard_reports_no_mass():
     -inf, and no target, so that combining it with the other shards adds nothing."""
     logits, rows, targets = _inputs(16, 1024, 1024, seed=19)
     row_max, row_sum, row_dsum, target = row_statistics(
-        logits, rows, targets, vocab_start=0, n_valid=0, temperature=_TEMPERATURE, with_entropy=True
+        logits, rows, targets, vocab_start=0, n_unpadded_cols=0, temperature=_TEMPERATURE, with_entropy=True
     )
     assert (row_max == float("-inf")).all()
     assert (row_sum == 0).all() and (row_dsum == 0).all() and (target == 0).all()

@@ -75,14 +75,20 @@ def main() -> None:
                 rows,
                 targets,
                 vocab_start=0,
-                n_valid=logits.size(1),
+                n_unpadded_cols=logits.size(1),
                 temperature=TEMPERATURE,
                 with_entropy=with_entropy,
                 launch=launch,
             )
 
     row_max, row_sum, row_dsum, target = kernels.row_statistics(
-        logits, rows, targets, vocab_start=0, n_valid=logits.size(1), temperature=TEMPERATURE, with_entropy=True
+        logits,
+        rows,
+        targets,
+        vocab_start=0,
+        n_unpadded_cols=logits.size(1),
+        temperature=TEMPERATURE,
+        with_entropy=True,
     )
     log_sum, mean = torch.log(row_sum), row_dsum / row_sum
     one_minus_p = -torch.expm1(target - log_sum)
@@ -103,7 +109,7 @@ def main() -> None:
             grad_log_probs,
             grad_entropy,
             vocab_start=0,
-            n_valid=logits.size(1),
+            n_unpadded_cols=logits.size(1),
             temperature=TEMPERATURE,
             launch=launch,
         )

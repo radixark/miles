@@ -2,7 +2,7 @@
 
 Both kernels read one vocab shard of selected logits rows, in the logits' own dtype, and do all
 arithmetic in fp32 on ``d = (x - m) / T``, measured from the row max ``m`` before scaling. Columns
-from ``n_valid`` on are vocabulary padding: they get probability zero and a zero gradient. To keep
+from ``n_unpadded_cols`` on are vocabulary padding: they get probability zero and a zero gradient. To keep
 the exponential off the critical path they use one ``exp2`` per element, multiply by the reciprocal
 temperature instead of dividing, and the statistics kernel rescales its running sums once per
 block, not per element.
@@ -75,7 +75,7 @@ def _row_stats_kernel(
     dsum_ptr,
     target_ptr,
     stride_row,
-    n_valid,
+    n_unpadded_cols,
     vocab_start,
     inv_temperature,
     WITH_ENTROPY: tl.constexpr,
@@ -93,9 +93,9 @@ def _row_stats_kernel(
     run_sum = tl.zeros([], tl.float32)
     run_sum_error = tl.zeros([], tl.float32)  # Kahan compensation of run_sum
     run_dsum = tl.zeros([], tl.float32)
-    for start in range(0, n_valid, BLOCK_V):
+    for start in range(0, n_unpadded_cols, BLOCK_V):
         cols = start + lanes
-        in_vocab = cols < n_valid
+        in_vocab = cols < n_unpadded_cols
         x = tl.load(row_ptr + cols, mask=in_vocab, other=float("-inf")).to(tl.float32)
         new_max = tl.maximum(run_max, tl.max(x, axis=0))
         e = tl.exp2((x - new_max) * log2_scale)
@@ -120,7 +120,7 @@ def _row_stats_kernel(
         tl.store(dsum_ptr + pid, run_dsum)
 
     target = tl.load(targets_ptr + pid) - vocab_start
-    in_shard = (target >= 0) & (target < n_valid)
+    in_shard = (target >= 0) & (target < n_unpadded_cols)
     target_x = tl.load(row_ptr + target, mask=in_shard, other=0.0).to(tl.float32)
     tl.store(target_ptr + pid, tl.where(in_shard, (target_x - run_max) * inv_temperature, 0.0))
 
@@ -140,7 +140,7 @@ def _logits_grad_kernel(
     stride_row,
     grad_stride_row,
     n_vocab,
-    n_valid,
+    n_unpadded_cols,
     vocab_start,
     inv_temperature,
     HAS_GRAD_LOG_PROBS: tl.constexpr,
@@ -156,7 +156,7 @@ def _logits_grad_kernel(
     x = tl.load(logits_ptr + row * stride_row + cols, mask=in_vocab, other=0.0).to(tl.float32)
     d = (x - tl.load(max_ptr + pid_row)) * inv_temperature
     p = tl.exp2((d - tl.load(log_sum_ptr + pid_row)) * 1.4426950408889634)
-    p = tl.where(cols < n_valid, p, 0.0)  # padding columns: zero probability, so a zero gradient
+    p = tl.where(cols < n_unpadded_cols, p, 0.0)  # padding columns: zero probability, so a zero gradient
     dd = tl.zeros([BLOCK_V], tl.float32)
     if HAS_GRAD_LOG_PROBS:
         g = tl.load(grad_log_probs_ptr + pid_row)
@@ -187,14 +187,14 @@ def row_statistics(
     targets,
     *,
     vocab_start: int,
-    n_valid: int,
+    n_unpadded_cols: int,
     temperature: float,
     with_entropy: bool,
     launch: LaunchConfig | None = None,
 ):
     """This shard's ``(max, sum exp(d), sum exp(d) * d or None, d_y or 0)`` per row, ``d = (x - max) / T``.
 
-    Only the first ``n_valid`` columns count; a shard with none reports ``(-inf, 0, 0, 0)``.
+    Only the first ``n_unpadded_cols`` columns count; a shard with none reports ``(-inf, 0, 0, 0)``.
     """
     launch = launch or kernel_configs(logits.device).stats
     n_rows = rows.numel()
@@ -209,7 +209,7 @@ def row_statistics(
             stats[2],
             stats[3],
             logits.stride(0),
-            n_valid,
+            n_unpadded_cols,
             vocab_start,
             1.0 / temperature,
             WITH_ENTROPY=with_entropy,
@@ -233,13 +233,13 @@ def write_logits_grad(
     grad_entropy,
     *,
     vocab_start: int,
-    n_valid: int,
+    n_unpadded_cols: int,
     temperature: float,
     launch: LaunchConfig | None = None,
 ):
     """Write the gradient of the selected rows into ``grad``; ``grad`` may be ``logits`` itself.
 
-    Every column of a selected row is written, the padding columns from ``n_valid`` on with zero.
+    Every column of a selected row is written, the padding columns from ``n_unpadded_cols`` on with zero.
     """
     launch = launch or kernel_configs(logits.device).grad
     n_rows = rows.numel()
@@ -260,7 +260,7 @@ def write_logits_grad(
         logits.stride(0),
         grad.stride(0),
         logits.size(1),
-        n_valid,
+        n_unpadded_cols,
         vocab_start,
         1.0 / temperature,
         HAS_GRAD_LOG_PROBS=grad_log_probs is not None,
