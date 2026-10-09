@@ -25,9 +25,10 @@ from miles.utils.external_utils import command_utils
 
 register_cuda_ci(
     est_time=1800,
-    suite="stage-c-8-gpu-b200",
+    suite="stage-c-4-gpu-b200",
     labels=["megatron"],
     hardware=["blackwell"],
+    num_gpus=4,
 )
 
 MODEL_NAME = "Qwen3.5-4B"

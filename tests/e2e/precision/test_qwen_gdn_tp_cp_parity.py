@@ -35,7 +35,7 @@ from linear_attn_reference import (  # noqa: E402
     sharded_projections,
 )
 
-register_cuda_ci(est_time=600, suite="stage-c-8-gpu-b200", labels=["precision"], hardware=["blackwell"])
+register_cuda_ci(est_time=600, suite="stage-c-4-gpu-b200", labels=["precision"], hardware=["blackwell"], num_gpus=4)
 
 HIDDEN = 512
 # The loom kernels take K = V = 128; two value heads per key head exercise the grouped-head path.
