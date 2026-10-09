@@ -16,12 +16,15 @@ class Args(Tap):
     data: Path
     model_path: Path
     endpoint: str = ''
+    timeout: float = 10800
 
 
 def probe(args: Args) -> None:
     tokenizer = AutoTokenizer.from_pretrained(args.model_path)
     report = {}
-    client = httpx.Client(timeout=120)
+    if args.timeout <= 0:
+        raise ValueError('timeout must be positive')
+    client = httpx.Client(timeout=args.timeout)
     if args.endpoint:
         health = client.get(args.endpoint+'/health')
         health.raise_for_status()
