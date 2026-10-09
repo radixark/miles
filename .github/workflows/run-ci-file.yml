@@ -1,239 +1,115 @@
-name: Rerun Test
-run-name: "/rerun-test ${{ inputs.test_file }} (PR #${{ inputs.pull_number }})"
-
-# Fixed default-branch orchestration for /rerun-test <test-file>. The reviewed
-# resolver chooses the plan before an execution job checks out the exact PR
-# head and invokes that file as PR-controlled code. Fork heads are accepted
-# (the gateway gates who may request them); their runs receive no repository
-# secrets, matching the pr-test fork policy.
+name: Verify isolated RoCE
+run-name: "Verify isolated RoCE PR 3986 at 397ffb0"
 
 on:
   workflow_dispatch:
-    inputs:
-      pull_number:
-        description: 'Pull request number this file run belongs to (audit and concurrency only).'
-        required: true
-        type: string
-      head_sha:
-        description: 'Exact PR head SHA selected by the comment gateway.'
-        required: true
-        type: string
-      test_file:
-        description: 'Registered test file to run, e.g. tests/e2e/precision/test_hf_attention_cp_relayout.py.'
-        required: true
-        type: string
-      ci_megatron_pr:
-        description: 'Megatron-LM branch/commit pin forwarded from the PR body (empty: miles-main).'
-        required: false
-        type: string
-        default: ''
-      ci_megatron_bridge_pr:
-        description: 'Megatron Bridge PR (#N), branch, tag, or commit (empty: keep the existing installation).'
-        required: false
-        type: string
-        default: ''
-      ci_sglang_pr:
-        description: 'SGLang branch/commit pin forwarded from the PR body (empty: sglang-miles).'
-        required: false
-        type: string
-        default: ''
-      ci_image_tag:
-        description: 'Miles Docker image tag forwarded from the PR body (empty: dev).'
-        required: false
-        type: string
-        default: ''
 
 permissions:
   contents: read
 
 concurrency:
-  group: run-ci-file-${{ inputs.pull_number }}-${{ inputs.test_file }}
+  group: verify-isolated-roce-${{ github.run_id }}
   cancel-in-progress: false
-  queue: max
 
 jobs:
-  # The run owns its own status comment: it is the only party that knows when
-  # execution starts, how long it takes, and how it ends. Announcing here
-  # (rather than from the gateway's reply) also covers direct dispatches.
-  announce-file-run:
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    outputs:
-      comment_id: ${{ steps.announce.outputs.comment_id }}
-    permissions:
-      contents: read
-      issues: write
-      pull-requests: write
-    steps:
-      - name: Check out the trusted reporter
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-        with:
-          persist-credentials: false
-          sparse-checkout: .github/workflows/scripts/comment_ci_command.py
-          sparse-checkout-cone-mode: false
-
-      - name: Announce the file run on its pull request
-        id: announce
-        env:
-          CI_COMMAND_API_TOKEN: ${{ github.token }}
-          CI_COMMAND_FILE_RUN_STATUS: announce
-          FILE_RUN_PULL_NUMBER: ${{ inputs.pull_number }}
-          FILE_RUN_TEST_FILE: ${{ inputs.test_file }}
-          FILE_RUN_RUN_ID: ${{ github.run_id }}
-        run: python3 .github/workflows/scripts/comment_ci_command.py
-
-  resolve-file-run:
-    needs: announce-file-run
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    outputs:
-      hw: ${{ steps.resolve.outputs.hw }}
-      suite: ${{ steps.resolve.outputs.suite }}
-      runs_on: ${{ steps.resolve.outputs.runs_on }}
-      container_image: ${{ steps.resolve.outputs.container_image }}
-      timeout_seconds: ${{ steps.resolve.outputs.timeout_seconds }}
-      head_is_fork: ${{ steps.head-repo.outputs.head_is_fork }}
-    steps:
-      - name: Validate dispatch inputs
-        shell: bash
-        env:
-          PULL_NUMBER: ${{ inputs.pull_number }}
-          HEAD_SHA: ${{ inputs.head_sha }}
-          TEST_FILE: ${{ inputs.test_file }}
-        run: |
-          [[ "$PULL_NUMBER" =~ ^[0-9]+$ ]] || { echo "::error::pull_number must be numeric"; exit 1; }
-          [[ "$HEAD_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::head_sha must be a 40-hex SHA"; exit 1; }
-          # The charset below keeps the path safe to interpolate into the
-          # suite jobs' execute_command shell lines; the gateway enforces the
-          # same shape, and this re-check covers direct dispatches.
-          [[ "$TEST_FILE" =~ ^tests/(e2e|fast|fast-gpu|ci)(/[A-Za-z0-9_][A-Za-z0-9_.-]*)*/test_[A-Za-z0-9_][A-Za-z0-9_.-]*\.py$ ]] \
-            || { echo "::error::test_file must be a registered tests/ path: $TEST_FILE"; exit 1; }
-
-      - name: Resolve the head repository from the pull request
-        id: head-repo
-        env:
-          GH_TOKEN: ${{ github.token }}
-          PULL_NUMBER: ${{ inputs.pull_number }}
-        run: |
-          # The live PR, not a dispatch input, decides fork-ness: fork heads
-          # run without repository secrets, matching the pr-test fork policy.
-          head_is_fork=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PULL_NUMBER}" \
-            --jq 'if .head.repo.id == .base.repo.id then "false" else "true" end')
-          echo "head_is_fork=${head_is_fork}" >> "$GITHUB_OUTPUT"
-
-      - name: Check out the trusted resolver
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-        with:
-          persist-credentials: false
-
-      - name: Check out the requested head
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-        with:
-          ref: ${{ inputs.head_sha }}
-          path: pr-source
-          persist-credentials: false
-
-      # An anonymous inspect can fail on Docker Hub's pull rate limit, which the
-      # step below would read as "no pr-<number> image" and quietly fall back to
-      # dev -- the very confusion it exists to remove.
-      - name: Login to Docker Hub
-        if: inputs.ci_image_tag == ''
-        uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-
-      # A PR that built an image keeps it as pr-<number> for its whole life, so
-      # that is the image its own file runs should use; dev is for a PR whose
-      # build never ran.
-      - name: Pick the image tag when the PR body did not pin one
-        id: image
-        env:
-          CI_IMAGE_TAG: ${{ inputs.ci_image_tag }}
-          PULL_NUMBER: ${{ inputs.pull_number }}
-        run: |
-          set -euo pipefail
-          if [ -n "${CI_IMAGE_TAG}" ]; then
-            echo "tag=${CI_IMAGE_TAG}" >> "$GITHUB_OUTPUT"
-            echo "Using the pinned tag ${CI_IMAGE_TAG}."
-            exit 0
-          fi
-          if docker buildx imagetools inspect "radixark/miles:pr-${PULL_NUMBER}" >/dev/null 2>&1; then
-            echo "tag=pr-${PULL_NUMBER}" >> "$GITHUB_OUTPUT"
-            echo "Using this PR's image pr-${PULL_NUMBER}."
-          else
-            echo "tag=dev" >> "$GITHUB_OUTPUT"
-            echo "No pr-${PULL_NUMBER} image is published; using dev."
-          fi
-
-      - name: Resolve the file's execution plan
-        id: resolve
-        env:
-          TEST_FILE: ${{ inputs.test_file }}
-          CI_IMAGE_TAG: ${{ steps.image.outputs.tag }}
-          CI_SOURCE_ROOT: ${{ github.workspace }}/pr-source
-        run: python3 -S -m tests.ci.file_run
-
-  run-cuda-file:
-    needs: resolve-file-run
-    if: needs.resolve-file-run.outputs.hw == 'cuda'
-    uses: ./.github/workflows/_run-ci.yml
+  verify:
+    uses: radixark/miles/.github/workflows/_run-ci.yml@397ffb0cca2f8ae568364c461eb5a5173dff4789
     with:
-      ref: ${{ inputs.head_sha }}
+      ref: '397ffb0cca2f8ae568364c461eb5a5173dff4789'
       plan_already_resolved: true
-      runs_on: ${{ needs.resolve-file-run.outputs.runs_on }}
-      container_image: ${{ needs.resolve-file-run.outputs.container_image }}
-      execute_command: >-
-        timeout --signal=TERM --kill-after=30s
-        '${{ needs.resolve-file-run.outputs.timeout_seconds }}s'
-        python3 '${{ inputs.test_file }}'
-    secrets:
-      WANDB_API_KEY: ${{ needs.resolve-file-run.outputs.head_is_fork != 'true' && secrets.WANDB_API_KEY || '' }}
+      runs_on: '["h200", "8gpu"]'
+      container_image: 'radixark/miles:release-v0.1.2-ci'
+      skip_dependency_install: true
+      execute_command: |
+        set -euo pipefail
+        probe_dir=$(mktemp -d)
+        trap 'rm -rf "$probe_dir"' EXIT
+        cat > "$probe_dir/probe.py" <<'PYTHON'
+        import multiprocessing as mp
+        import os
+        from pathlib import Path
 
-  run-cpu-file:
-    needs: resolve-file-run
-    if: needs.resolve-file-run.outputs.hw == 'cpu'
-    uses: ./.github/workflows/_run-cpu-ci.yml
-    with:
-      ref: ${{ inputs.head_sha }}
-      plan_already_resolved: true
-      execute_command: >-
-        timeout --signal=TERM --kill-after=30s
-        '${{ needs.resolve-file-run.outputs.timeout_seconds }}s'
-        pytest '${{ inputs.test_file }}' -v -x
-    secrets:
-      HF_TOKEN: ${{ needs.resolve-file-run.outputs.head_is_fork != 'true' && secrets.HF_TOKEN || '' }}
+        os.environ["WITH_NVIDIA_PEERMEM"] = "0"
+        os.environ.pop("MC_GID_INDEX", None)
 
-  # No `if` beyond always(): a resolver failure, a cancelled run, and a failing
-  # test must all reach the pull request, or a silent run reads as a pass.
-  report-file-run:
-    needs: [announce-file-run, resolve-file-run, run-cuda-file, run-cpu-file]
-    if: always()
-    permissions:
-      actions: read
-      contents: read
-      issues: write
-      pull-requests: write
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - name: Check out the trusted reporter
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-        with:
-          persist-credentials: false
-          sparse-checkout: .github/workflows/scripts/comment_ci_command.py
-          sparse-checkout-cone-mode: false
+        import torch
+        from mooncake.engine import TransferEngine
 
-      - name: Report the file run's result on its pull request
-        env:
-          CI_COMMAND_API_TOKEN: ${{ github.token }}
-          CI_COMMAND_FILE_RUN_STATUS: report
-          FILE_RUN_COMMENT_ID: ${{ needs.announce-file-run.outputs.comment_id }}
-          FILE_RUN_PULL_NUMBER: ${{ inputs.pull_number }}
-          FILE_RUN_TEST_FILE: ${{ inputs.test_file }}
-          FILE_RUN_RUN_ID: ${{ github.run_id }}
-          FILE_RUN_SUITE: ${{ needs.resolve-file-run.outputs.suite }}
-          FILE_RUN_RESOLVE_RESULT: ${{ needs.resolve-file-run.result }}
-          FILE_RUN_CUDA_RESULT: ${{ needs.run-cuda-file.result }}
-          FILE_RUN_CPU_RESULT: ${{ needs.run-cpu-file.result }}
-        run: python3 .github/workflows/scripts/comment_ci_command.py
+        COUNT = 103
+        CHUNK = 4096
+        SIZE = COUNT * CHUNK
+
+
+        def payload():
+            return (torch.arange(SIZE, dtype=torch.int64) % 251 + 1).to(torch.uint8)
+
+
+        def engine(device):
+            transport = TransferEngine()
+            assert transport.initialize("127.0.0.1:0", "P2PHANDSHAKE", "rdma", device) == 0
+            return transport
+
+
+        def receiver(device, ready, written):
+            torch.cuda.set_device(1)
+            destination = torch.zeros(SIZE, dtype=torch.uint8, device="cuda:1")
+            torch.cuda.synchronize()
+            transport = engine(device)
+            assert transport.register_memory(destination.data_ptr(), SIZE) == 0
+            ready.put((destination.data_ptr(), transport.get_rpc_port()))
+            try:
+                assert written.wait(120), "Timed out waiting for GPU RDMA writes"
+                torch.cuda.synchronize()
+                assert torch.equal(destination.cpu(), payload()), "GPU destination payload mismatch"
+                print("GPU_RDMA_PAYLOAD_PASS", flush=True)
+            finally:
+                assert transport.unregister_memory(destination.data_ptr()) == 0
+
+
+        def main():
+            assert torch.cuda.device_count() >= 2, "Need two GPUs for this validation"
+            devices = []
+            for device in sorted(Path("/sys/class/infiniband").iterdir()):
+                for entry in device.glob("ports/1/gid_attrs/ndevs/*"):
+                    try:
+                        if entry.read_text().strip():
+                            devices.append(device.name)
+                            break
+                    except OSError:
+                        pass
+            assert len(devices) >= 2, "Need two namespace-local RDMA interfaces"
+            context = mp.get_context("spawn")
+            ready, written = context.Queue(), context.Event()
+            target = context.Process(target=receiver, args=(devices[-1], ready, written))
+            target.start()
+            try:
+                remote_address, port = ready.get(timeout=60)
+                torch.cuda.set_device(0)
+                source = payload().to("cuda:0")
+                torch.cuda.synchronize()
+                transport = engine(devices[0])
+                assert transport.register_memory(source.data_ptr(), SIZE) == 0
+                try:
+                    code = transport.batch_transfer_sync_write(
+                        f"127.0.0.1:{port}",
+                        [source.data_ptr() + i * CHUNK for i in range(COUNT)],
+                        [remote_address + i * CHUNK for i in range(COUNT)],
+                        [CHUNK] * COUNT,
+                    )
+                    assert code == 0, f"GPU RDMA batch write failed: {code}"
+                    written.set()
+                    target.join(timeout=30)
+                    assert target.exitcode == 0, f"GPU receiver failed: {target.exitcode}"
+                    print(f"GPU_RDMA_PASS writes={COUNT} bytes={SIZE} separate_processes=True", flush=True)
+                finally:
+                    assert transport.unregister_memory(source.data_ptr()) == 0
+            finally:
+                if target.is_alive():
+                    target.terminate()
+                    target.join(timeout=10)
+
+
+        if __name__ == "__main__":
+            main()
+        PYTHON
+        timeout --signal=TERM --kill-after=10s 180 python3 "$probe_dir/probe.py"
