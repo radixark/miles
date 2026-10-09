@@ -114,7 +114,8 @@ _RECIPES = {
 # SGLang slices the fused qkv_proj of the MXFP4 checkpoints into 4 kv-head shards, so the engine's
 # attention TP must divide 4; TP4 also holds the full 173 GB checkpoint.
 _MXFP4_ROLLOUT_NUM_GPUS_PER_ENGINE = 4
-# The MXFP4 engines keep the budget of their validation runs on either hardware.
+# The recipes' per-hardware budgets are tuned for the BF16 engine; the MXFP4 engines keep the full model's
+# earlier budget on either hardware.
 _MXFP4_SGLANG_MEM_FRACTION_STATIC = 0.8
 _MXFP4_MAX_TOKENS_PER_GPU = 9216
 # MoE runner of the MXFP4 engines. Marlin (W4A16) keeps activations BF16 and reloads weights in place; on B300
