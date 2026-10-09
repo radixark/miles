@@ -4,7 +4,6 @@ import asyncio
 import hashlib
 import json
 import random
-import re
 from collections import Counter
 from pathlib import Path
 from typing import Any
@@ -24,7 +23,7 @@ class Args(Tap):
 
 def field(instructions: str, options: list[str]) -> dict[str, Any]:
     return {'type': 'choice', 'instructions': instructions,
-            'criteria': {str(i): v for i, v in enumerate(options)}}
+            'criteria': {chr(65+i): v for i, v in enumerate(options)}}
 
 
 def make_case(index: int, split: str, seed: int) -> dict[str, Any]:
@@ -173,9 +172,9 @@ def make_case(index: int, split: str, seed: int) -> dict[str, Any]:
             'split': split, 'scenario_seed': f'{seed}:{split}:{index}'}
 
 
-async def api_json(client: AsyncOpenAI, system: str, content: str) -> tuple[dict[str, Any], dict[str, Any]]:
+async def api_json(client: AsyncOpenAI, system: str, content: str, effort: str = 'none') -> tuple[dict[str, Any], dict[str, Any]]:
     response = await client.chat.completions.create(
-        model='gpt-6-luna', reasoning_effort='none', max_completion_tokens=2400,
+        model='gpt-6-luna', reasoning_effort=effort, max_completion_tokens=2400,
         response_format={'type':'json_object'},
         messages=[{'role':'system','content':system}, {'role':'user','content':content}],
     )
@@ -214,13 +213,14 @@ async def generate_one(client: AsyncOpenAI, case: dict[str, Any], root: Path) ->
             record = {'id':case['id'], 'state':state, 'questions':case['questions']}
             audit, audit_usage = await api_json(client,
                 'Independently solve every requested decision using only the policy and evidence. '
-                'Return JSON {"answers":{field_id:option_id},"unambiguous":boolean,"unsupported_claims":boolean,'
+                'Return JSON {"answers":{field_id:exact_option_description},"unambiguous":boolean,"unsupported_claims":boolean,'
                 '"explanation":string}. Set unsupported_claims true if framing adds decision-relevant '
-                'facts not grounded in the supplied canonical fact list. Option IDs are strings. Do not '
+                'facts not grounded in the supplied canonical fact list. Copy option descriptions exactly, not IDs. Do not '
                 'use outside policies or assumptions.',
-                json.dumps({'record':record,'canonical_facts':case['facts']}))
+                json.dumps({'record':record,'canonical_facts':case['facts']}), effort='low')
             traces.append({'phase':'audit','attempt':attempt,'usage':audit_usage,'output':audit})
-            if audit['answers'] != case['answers'] or audit['unambiguous'] is not True or audit['unsupported_claims'] is not False:
+            expected_answers = {k:case['questions'][k]['criteria'][v] for k,v in case['answers'].items()}
+            if audit['answers'] != expected_answers or audit['unambiguous'] is not True or audit['unsupported_claims'] is not False:
                 raise ValueError('independent audit disagreement')
             targets = {k:{o:float(o == case['answers'][k]) for o in v['criteria']} for k,v in case['questions'].items()}
             example = {'record':record,'targets':targets,'source':'clef_rl_pilot_'+case['family'],
