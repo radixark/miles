@@ -259,10 +259,11 @@ def write_logits_grad(
 
     ``targets``, ``log_probs``, ``one_minus_p`` and ``grad_log_probs`` are ``[R, K]``; a ``-1``
     target is padding. Every column of a selected row is written, the vocab padding from
-    ``n_unpadded_cols`` on with zero.
+    ``n_unpadded_cols`` on with zero. With ``targets`` None only the dense pass runs: the entropy
+    term, or zeros, everywhere.
     """
     launch = launch or kernel_configs(logits.device).grad
-    n_rows, n_targets = targets.shape
+    n_rows = rows.numel()
     if not n_rows:
         return
     target_grad_sum = grad_log_probs.sum(dim=1) if grad_log_probs is not None else None
@@ -286,6 +287,9 @@ def write_logits_grad(
         BLOCK_V=launch.block_v,
         num_warps=launch.num_warps,
     )
+    if targets is None:
+        return
+    n_targets = targets.size(1)
     # stream order puts this after the dense pass, so these values replace its target columns
     _target_grads_kernel[(n_rows,)](
         grad,

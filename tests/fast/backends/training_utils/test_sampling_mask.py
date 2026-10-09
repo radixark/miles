@@ -4,7 +4,11 @@ import pytest
 import torch
 
 from miles.backends.training_utils.data import context_parallel
-from miles.backends.training_utils.data.sampling_mask import build_local_sampling_mask, get_rollout_sampling_masks
+from miles.backends.training_utils.data.sampling_mask import (
+    build_local_sampling_mask,
+    get_rollout_sampling_masks,
+    local_support_ids,
+)
 from miles.backends.training_utils.loss.hub import logit_processors
 from miles.backends.training_utils.loss.hub.math_utils import _calculate_log_probs_and_entropy_true_on_policy
 from miles.utils.sampling_mask import RolloutSamplingMask
@@ -265,3 +269,11 @@ def test_zigzag_cp_response_rows_keep_global_response_indices(monkeypatch, cp_ra
     assert list(response_indices) == expected_indices
     assert tokens_chunk.tolist() == [3 + index for index in expected_indices]
     assert logits_chunk.size(0) == len(expected_indices)
+
+
+def test_local_support_ids_pads_each_selected_row_with_minus_one():
+    """The fused backend reads a rank's supports as ``[R, S]`` ids: each selected response position's
+    support in order, padded with -1 to the widest one."""
+    mask = RolloutSamplingMask.from_mask_list([[4, 1], [7], [2, 9, 3], [5, 6]])
+    ids = local_support_ids(mask, [3, 0, 2], torch.device("cpu"))
+    assert ids.tolist() == [[5, 6, -1], [4, 1, -1], [2, 9, 3]]
