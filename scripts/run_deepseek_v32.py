@@ -36,6 +36,9 @@ class ScriptArgs(command_utils.ExecuteTrainConfig):
     model_local_dir: str = "/root/models"
     megatron_path: str = "/root/Megatron-LM"
     num_rollout: int = 3000
+    rollout_batch_size: int = 32
+    n_samples_per_prompt: int = 8
+    global_batch_size: int = 256
     no_save: bool = False
     rollout_mxfp8: bool = False
     rollout_fp8: bool = False
@@ -48,9 +51,10 @@ class ScriptArgs(command_utils.ExecuteTrainConfig):
         self.hardware = command_utils.resolve_hardware(self)
         self.num_gpus_per_node = self.num_gpus_per_node or command_utils.NUM_GPUS_OF_HARDWARE[self.hardware]
         if self.use_single_node:
+            # Half of the node trains and the other half serves rollout.
             self.actor_num_nodes = 1
-            self.actor_num_gpus_per_node = 4
-            self.rollout_num_gpus = 4
+            self.actor_num_gpus_per_node = self.num_gpus_per_node // 2
+            self.rollout_num_gpus = self.num_gpus_per_node // 2
         assert not (self.rollout_fp8 and self.rollout_mxfp8), "rollout_fp8 and rollout_mxfp8 are mutually exclusive"
         if self.hardware in ("H100", "H200"):
             assert not self.rollout_mxfp8, "MXFP8 rollout is not supported on H100/H200 (no native MXFP8)"
@@ -196,11 +200,11 @@ def _execute_train(args: ScriptArgs):
         "--rollout-shuffle "
         "--rm-type deepscaler "
         f"--num-rollout {args.num_rollout} "
-        "--rollout-batch-size 32 "
-        "--n-samples-per-prompt 8 "
+        f"--rollout-batch-size {args.rollout_batch_size} "
+        f"--n-samples-per-prompt {args.n_samples_per_prompt} "
         f"--rollout-max-response-len {100 if args.mode == 'debug_minimal' else 8192} "
         "--rollout-temperature 1 "
-        "--global-batch-size 256 "
+        f"--global-batch-size {args.global_batch_size} "
         "--balance-data "
     )
 
