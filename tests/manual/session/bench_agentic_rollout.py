@@ -200,11 +200,11 @@ def run_benchmark(bench):
                 peak_rss = [manager.memory_info().rss]
                 stop = threading.Event()
 
-                def sample_rss():
+                def sample_rss(stop, peak_rss):
                     while not stop.wait(0.02):
                         peak_rss[0] = max(peak_rss[0], manager.memory_info().rss)
 
-                sampler = threading.Thread(target=sample_rss, daemon=True)
+                sampler = threading.Thread(target=sample_rss, args=(stop, peak_rss), daemon=True)
                 sampler.start()
                 cpu0 = time.process_time()
                 server_cpu0 = server_process.cpu_times()
