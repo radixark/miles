@@ -69,3 +69,7 @@ def test_a_p2p_update_leaves_the_engine_identical_to_sglangs_own(
     )
     assert result.returncode == 0, result.stdout + result.stderr
     assert "PASS" in result.stdout
+
+
+if __name__ == "__main__":
+    sys.exit(pytest.main([__file__, "-v"]))
