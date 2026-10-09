@@ -65,19 +65,21 @@ def _iter_response_chunks(
         elif getattr(args, "fp16", False):
             logits = logits.to(torch.float16)
 
-    for row_ranges, tokens_chunk, response_indices in iter_local_response_rows(
+    layout = iter_local_response_rows(
         logits.size(0),
         qkv_format=args.qkv_format,
         allgather_cp=args.allgather_cp,
-        unconcat_tokens=unconcat_tokens,
         total_lengths=total_lengths,
         response_lengths=response_lengths,
         max_seq_lens=max_seq_lens,
-        include_response_indices=include_response_indices,
+    )
+    for sample_rows, tokens, total_length, response_length in zip(
+        layout, unconcat_tokens, total_lengths, response_lengths, strict=False
     ):
-        pieces = [logits[row_start:row_end] for row_start, row_end in row_ranges]
+        pieces = [logits[row_start:row_end] for row_start, row_end in sample_rows.row_ranges]
         logits_chunk = pieces[0] if len(pieces) == 1 else torch.cat(pieces, dim=0)
-        yield logits_chunk, tokens_chunk, response_indices
+        tokens_chunk = sample_rows.tokens(tokens, total_length - response_length)
+        yield logits_chunk, tokens_chunk, (sample_rows.response_indices() if include_response_indices else ())
 
 
 def get_responses(
@@ -281,18 +283,20 @@ def _fused_log_probs_and_entropy(
     from miles.backends.training_utils.loss.hub.fused_log_probs import fused_log_probs_and_entropy
 
     flat_logits = _flatten_logits(logits, args.qkv_format, max_seq_lens)
-    row_ranges, targets, lengths = [], [], []
-    for sample_ranges, tokens_chunk, _ in iter_local_response_rows(
+    layout = iter_local_response_rows(
         flat_logits.size(0),
         qkv_format=args.qkv_format,
         allgather_cp=args.allgather_cp,
-        unconcat_tokens=unconcat_tokens,
         total_lengths=total_lengths,
         response_lengths=response_lengths,
         max_seq_lens=max_seq_lens,
-        include_response_indices=False,
+    )
+    row_ranges, targets, lengths = [], [], []
+    for sample_rows, tokens, total_length, response_length in zip(
+        layout, unconcat_tokens, total_lengths, response_lengths, strict=False
     ):
-        row_ranges.extend(sample_ranges)
+        tokens_chunk = sample_rows.tokens(tokens, total_length - response_length)
+        row_ranges.extend(sample_rows.row_ranges)
         targets.append(tokens_chunk)
         lengths.append(tokens_chunk.size(0))
     device = flat_logits.device
