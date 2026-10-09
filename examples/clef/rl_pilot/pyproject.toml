@@ -1,0 +1,6 @@
+[project]
+name = "clef-rl-pilot"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = ["openai>=2", "typed-argument-parser>=1.12"]
+
