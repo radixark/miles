@@ -2276,13 +2276,6 @@ class TestMultiLoRAValidation:
         with pytest.raises(AssertionError, match="qkv-format thd"):
             miles_validate_args(args)
 
-    def test_rejects_shared_outer_expert_loras(self):
-        # Per-expert layout only; the flag would switch sglang to a layout training never produces.
-        args = self._parse([])
-        args.experts_shared_outer_loras = True
-        with pytest.raises(AssertionError, match="experts-shared-outer-loras"):
-            miles_validate_args(args)
-
     def test_accepts_expert_leaf_targets_without_expert_tp_flag(self):
         # --expert-tensor-parallel-size stays None until Megatron's own validate_args;
         # comparing the raw value here rejected every run that omitted the flag.

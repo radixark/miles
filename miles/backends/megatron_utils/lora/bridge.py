@@ -137,6 +137,7 @@ def _setup_lora_model_via_bridge(args: Namespace) -> list:
     """
     from megatron.bridge import AutoBridge
     from megatron.bridge.models.conversion.model_bridge import _megatron_local_name_to_global
+    from megatron.bridge.peft.utils import enable_expert_parallel_grad_sync_in_finalize
     from megatron.bridge.training.config import DistributedDataParallelConfig
     from megatron.bridge.utils.fusions import validate_rope_fusion_compatibility
 
@@ -221,6 +222,7 @@ def _setup_lora_model_via_bridge(args: Namespace) -> list:
         lora = create_adapter(args, target_modules=adapter_targets)
         transformed = lora(model_chunks, training=True)
         if is_multi_lora_enabled(args):
+            enable_expert_parallel_grad_sync_in_finalize(transformed)
             for chunk in transformed:
                 for module in chunk.modules():
                     if isinstance(module, TopKRouter):
@@ -240,8 +242,7 @@ def _setup_lora_model_via_bridge(args: Namespace) -> list:
 
     use_distributed_optimizer = "muon" not in (args.optimizer or "").lower()
     if is_multi_lora_enabled(args):
-        # Per-slot LayerWise optimizers: plain DDP all-reduce keeps full grads on
-        # every rank (whole-param sharding + retained-gradient idempotency).
+        # Per-slot LayerWise optimizers require full parameter gradients.
         use_distributed_optimizer = False
     ddp_config = DistributedDataParallelConfig(
         use_distributed_optimizer=use_distributed_optimizer,
