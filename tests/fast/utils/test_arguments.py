@@ -29,6 +29,7 @@ from miles.utils.arguments import (
     miles_validate_args,
     resolve_rollout_function_paths,
     validate_async_off_policy_correction,
+    validate_log_probs_backend_args,
     validate_skip_actor_forward_only,
 )
 from miles.utils.env_report.redaction import _SECRET_ARG_NAMES, _SECRET_ENV_VAR_PATTERN
@@ -859,6 +860,25 @@ def test_sampling_support_arguments_fail_closed(extra, message):
 
     with pytest.raises(ValueError, match=message):
         miles_validate_args(args)
+
+
+@pytest.mark.parametrize(
+    ("extra", "message"),
+    [
+        (["--true-on-policy-mode"], "does not support --true-on-policy-mode"),
+        (["--rollout-top-k", "32"], "does not support sampling-support replay"),
+        ([], "needs --vocab-size"),
+    ],
+)
+def test_fused_log_probs_backend_rejects_what_it_does_not_cover(extra, message):
+    parser = argparse.ArgumentParser()
+    get_miles_extra_args_provider()(parser)
+    args = parser.parse_args(["--log-probs-backend", "fused", "--num-rollout", "1"] + extra + REQUIRED_ARGS)
+    args.vocab_size = None if message == "needs --vocab-size" else 151_936
+    args.use_sampling_support_replay = "--rollout-top-k" in extra  # derived by miles_validate_args
+
+    with pytest.raises(ValueError, match=message):
+        validate_log_probs_backend_args(args)
 
 
 @pytest.mark.parametrize(
