@@ -24,7 +24,9 @@ class TitanHfWeightIterator(HfWeightIteratorBase):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._engine_dtypes = _checkpoint_dtypes(self.args.hf_checkpoint)
-        self._q_lora_rank = getattr(load_hf_config(self.args.hf_checkpoint), "q_lora_rank", None) or None
+        hf_config = load_hf_config(self.args.hf_checkpoint)
+        text_config = getattr(hf_config, "text_config", None) or hf_config
+        self._q_lora_rank = getattr(text_config, "q_lora_rank", None) or None
 
     def _iter_hf_param_units(self, weights, *, materialize):
         for name, tensor in hf_weights(self.model, complete_across_pp=self.placement.gather_pp):
