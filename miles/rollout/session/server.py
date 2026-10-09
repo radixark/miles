@@ -9,6 +9,7 @@
 import asyncio
 import json
 import logging
+from contextlib import asynccontextmanager
 
 import aiohttp
 import setproctitle
@@ -47,36 +48,29 @@ class SessionServer:
 
     def __init__(self, config: SessionServerConfig):
         self.backend_url = config.backend_url
-        self.app = FastAPI()
+        self.app = FastAPI(lifespan=self._lifespan)
 
         # Every turn's backend reply is megabytes (per-token logprobs, R3). aiohttp parses it in C;
         # httpx's pure-Python client path took 35-40% of a saturated server's CPU.
         # Connecting (pool wait included) and each socket read; the payload bounds writing.
         self.timeout = aiohttp.ClientTimeout(total=None, connect=config.timeout, sock_read=config.timeout)
-        # A ClientSession binds to the running loop, so the first proxy call opens it.
-        self.client: aiohttp.ClientSession | None = None
-
-        # Close the connection pool when uvicorn shuts down to avoid FD leaks.
-        self.app.router.on_shutdown.append(self._close_client)
+        self.client: aiohttp.ClientSession
 
         # `retract` may recompute earlier rows and must return full R3; all other
         # pause modes preserve prior rows and can request only the appended R3.
         self.use_addition_r3 = config.pause_generation_mode != "retract"
         setup_session_routes(self.app, self, config, use_addition_r3=self.use_addition_r3)
 
-    def _get_client(self) -> aiohttp.ClientSession:
-        if self.client is None:
-            # httpx defaults kept: 5 s keep-alive, no redirects followed, proxy settings from the environment.
-            self.client = aiohttp.ClientSession(
-                connector=aiohttp.TCPConnector(limit=1024, keepalive_timeout=5),
-                timeout=self.timeout,
-                trust_env=True,
-            )
-        return self.client
-
-    async def _close_client(self) -> None:
-        if self.client is not None:
-            await self.client.close()
+    @asynccontextmanager
+    async def _lifespan(self, app: FastAPI):
+        # Bind the client to uvicorn's running loop before accepting requests.
+        async with aiohttp.ClientSession(
+            connector=aiohttp.TCPConnector(limit=1024, keepalive_timeout=5),
+            timeout=self.timeout,
+            trust_env=True,
+        ) as client:
+            self.client = client
+            yield
 
     async def do_proxy(self, request: ProxyRequest, path: str, *, body: bytes, headers: dict) -> dict:
         url = f"{self.backend_url}/{path}"
@@ -89,7 +83,7 @@ class SessionServer:
             # The body is read inside the try: a reply cut off mid-body is a transport error (502), as with httpx.
             # skip_auto_headers: a request without Content-Type reaches the backend without one (SGLang then
             # parses JSON), instead of aiohttp's application/octet-stream.
-            async with self._get_client().request(
+            async with self.client.request(
                 request.method,
                 url,
                 data=_TimedBytesPayload(body, timeout=self.timeout.sock_read),
