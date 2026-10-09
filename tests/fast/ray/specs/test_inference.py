@@ -39,6 +39,7 @@ from miles.router.config import MilesRouterConfig
 from miles.utils.external_utils.command_utils.helm_backend.launcher.values.builder import build_values
 from miles.utils.external_utils.command_utils.helm_backend.launcher.values.misc import SECTION_OF_CATEGORY, LaunchPlan
 from miles.utils.function_registry import load_function
+from miles.utils.http_utils import GeneralHttpClientProvider
 from miles.utils.workers.argv_utils import parse_config_argv
 from miles.utils.workers.registration.hub import RegistrationHub
 from miles.utils.workers.types import PlatformAccess
@@ -512,11 +513,13 @@ class TestInferenceEngineEnvVars:
         """Without an override the engine must still get miles' own safety values rather than sglang's."""
         monkeypatch.delenv("SGLANG_JIT_DEEPGEMM_PRECOMPILE", raising=False)
         monkeypatch.delenv("SGLANG_MEMORY_SAVER_CUDA_GRAPH", raising=False)
+        monkeypatch.delenv("SGLANG_TIMEOUT_KEEP_ALIVE", raising=False)
 
         envs = compute_inference_engine_env_vars(make_args())
 
         assert envs["SGLANG_JIT_DEEPGEMM_PRECOMPILE"] == "false"
         assert envs["SGLANG_MEMORY_SAVER_CUDA_GRAPH"] == "true"
+        assert int(envs["SGLANG_TIMEOUT_KEEP_ALIVE"]) > GeneralHttpClientProvider._LIMITS.keepalive_expiry
 
     def test_custom_all_reduce_v2_is_disabled_only_for_colocated_multi_gpu_engines(self, monkeypatch):
         """Only a colocated engine spanning several gpus hits the v2 all-reduce conflict; disabling it elsewhere

@@ -407,6 +407,8 @@ def compute_inference_engine_env_vars(args) -> dict[str, str]:
             "SGLANG_BATCH_INVARIANT_OPS_ENABLE_MM_FALLBACK_VARIANT": "true",
             "SGLANG_ENABLE_HEALTH_ENDPOINT_GENERATION": "false",
             "SGLANG_ENABLE_STRICT_MEM_CHECK_DURING_IDLE": "false",
+            # Keep server-side idle closure well after the HTTP client's default 5s expiry.
+            "SGLANG_TIMEOUT_KEEP_ALIVE": "60",
             "SGLANG_EXPOSE_OWN_ENV_VARS": "1",
         }.items()
     }
