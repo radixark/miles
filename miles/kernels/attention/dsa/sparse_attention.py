@@ -40,6 +40,7 @@ _FLASH_MLA_ARCH_MAJORS = (9, 10)
 _CUDNN_HEAD_DIMS = (512, 576)
 _CUDNN_ARCH_MAJORS = (9, 10)
 _CUDNN_SM100_HEAD_TILE = 64
+_SHORT_TOPK = 128
 
 
 @dataclass(frozen=True)
@@ -78,6 +79,10 @@ _TUNED = {
     (9, False, 64): SparseAttentionConfig(backward_backend="cudnn", backward_split_store=4),
 }
 
+# (arch major, heads bucket) where the TileLang backward beats cuDNN when topk <= _SHORT_TOPK (DeepSeek-V4
+# sliding-window layers): too little work per row to amortize compaction, and on sm100 the head padding to 64.
+_TILELANG_BACKWARD_SHORT_TOPK = {(9, 8), (9, 16), (10, 8), (10, 16), (10, 32)}
+
 
 def _pad_topk_block(indices, multiple: int):
     topk = indices.shape[-1]
@@ -87,7 +92,7 @@ def _pad_topk_block(indices, multiple: int):
     return torch.nn.functional.pad(indices, (0, padded - topk), value=-1).contiguous()
 
 
-def _default_config(q, kv, d_v: int) -> SparseAttentionConfig:
+def _default_config(q, kv, topk: int, d_v: int) -> SparseAttentionConfig:
     arch_major = torch.cuda.get_device_capability(q.device)[0]
     heads_per_group = q.shape[2] // kv.shape[2]
     heads_bucket = min(max(8, 1 << (heads_per_group - 1).bit_length()), 64)
@@ -110,7 +115,8 @@ def _default_config(q, kv, d_v: int) -> SparseAttentionConfig:
         and kv.shape[2] == 1
         and q.shape[2] > 1
     )
-    if config.backward_backend == "cudnn" and not cudnn_supported:
+    is_short_topk = topk <= _SHORT_TOPK and (arch_major, heads_bucket) in _TILELANG_BACKWARD_SHORT_TOPK
+    if config.backward_backend == "cudnn" and (is_short_topk or not cudnn_supported):
         config = replace(config, backward_backend="tilelang")
     return config
 
@@ -249,5 +255,5 @@ def sparse_attention(
     if d_v is None:
         d_v = q.shape[-1]
     if config is None:
-        config = _default_config(q, kv, d_v)
+        config = _default_config(q, kv, indices.shape[-1], d_v)
     return _SparseAttention.apply(q, kv, indices, attn_sink, sm_scale, d_v, config)
