@@ -64,7 +64,6 @@ def _validate_messages(request_messages: Any) -> None:
 
 
 def _rendered_ids(render: Any) -> list[int]:
-    """Run a chat-template render, mapping template errors to UserInputError and refusing an empty prompt."""
     try:
         rendered = render()
     except Exception as error:

@@ -75,7 +75,6 @@ class Turn:
     ended_on_stop: bool = False  # the reply ended on a request stop string, so its ids lack the end-of-turn token
 
     def as_json(self) -> dict[str, Any]:
-        """Plain lists for the trajectory export (what the client's turns_to_trajectory reads)."""
         return {
             "input_ids": list(self.input_ids),
             "output_ids": list(self.output_ids),
@@ -158,7 +157,6 @@ class TrajectoryCollector:
         max_turns_per_session: int = 1024,
         strict_truncation: bool = False,
     ) -> None:
-        """Keep the service, renderer, TTL, clock, caps and whether a truncated reply may be extended."""
         self.service = service
         self.renderer = renderer
         self.session_ttl_s = session_ttl_s
@@ -215,7 +213,6 @@ class TrajectoryCollector:
         return session
 
     def _get_session(self, session_id: str, tenant: str | None = None) -> TrajectorySession:
-        """Return the session; the tenant, when given, must own it; unknown ids raise SessionNotFoundError."""
         session = self.sessions.get(session_id)
         if session is None:
             raise SessionNotFoundError(
@@ -305,7 +302,6 @@ class TrajectoryCollector:
 
     @staticmethod
     def _payload(session: TrajectorySession, prompt_token_ids: list[int], sampling_params: dict) -> dict[str, Any]:
-        """The Tinker sample body for one turn: the pinned sampler path, this prompt, the turn's sampling params."""
         return {
             "model_path": session.model_path,
             "num_samples": 1,

@@ -64,7 +64,6 @@ class HarborEnv(Env):
         raise NotImplementedError("HarborEnv is driven by SessionRolloutStrategy, not by the cookbook rollout loop")
 
     async def step(self, action: Action, *, extra: ActionExtra | None = None) -> StepResult:
-        """Never driven by the runner (see initial_observation)."""
         raise NotImplementedError("HarborEnv is driven by SessionRolloutStrategy, not by the cookbook rollout loop")
 
 
@@ -83,13 +82,11 @@ class HarborGroup(EnvGroupBuilder):
     """group_size HarborEnvs for one task; compute_group_rewards reads each env's Harbor verdict."""
 
     def __init__(self, task_id: str, group_size: int, agent_name: str = "terminus-2") -> None:
-        """Remember the task id, how many trajectories to sample for it, and which harness runs it."""
         self.task_id = task_id
         self.group_size = group_size
         self.agent_name = agent_name
 
     async def make_envs(self) -> Sequence[Env]:
-        """group_size fresh HarborEnv instances for this task."""
         return [HarborEnv(task_id=self.task_id, agent_name=self.agent_name) for _ in range(self.group_size)]
 
     async def compute_group_rewards(
@@ -99,7 +96,6 @@ class HarborGroup(EnvGroupBuilder):
         return [verdict_reward(getattr(env, "verdict", None)) for env in env_group]
 
     def logging_tags(self) -> list[str]:
-        """Aggregate metrics under the harness name and the task."""
         return ["harbor", self.agent_name, self.task_id]
 
 
@@ -121,7 +117,6 @@ class HarborDataset(RLDataset):
         self.epochs = epochs
 
     def get_batch(self, index: int) -> Sequence[EnvGroupBuilder]:
-        """groups_per_batch builders for batch `index`."""
         start = index * self.groups_per_batch
         return [
             HarborGroup(self.task_ids[(start + offset) % len(self.task_ids)], self.group_size, self.agent_name)
@@ -345,7 +340,6 @@ class SessionRolloutStrategy(RolloutStrategy):
             handle.write(json.dumps(line) + "\n")
 
     def _client(self) -> httpx.AsyncClient:
-        """One HTTP client per group: the gateway URL, the tenant's bearer, and the optional test transport."""
         return httpx.AsyncClient(
             base_url=self.gateway_url,
             headers={"Authorization": f"Bearer {self.api_key}"},

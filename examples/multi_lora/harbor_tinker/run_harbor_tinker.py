@@ -86,7 +86,6 @@ def _probe_sandbox_api(api_url: str, api_key: str) -> None:
 
 
 def build_config(config: HarborTinkerConfig) -> train.Config:
-    """Build cookbook train.Config from HarborTinkerConfig (HarborDatasetBuilder + SessionRolloutStrategy)."""
     api_key = config.api_key or os.environ.get("TINKER_API_KEY", "").strip()
     if not api_key:
         raise RuntimeError(
@@ -128,7 +127,6 @@ def build_config(config: HarborTinkerConfig) -> train.Config:
 
 
 def main(config: HarborTinkerConfig) -> None:
-    """Export HARBOR_TASKS_DIR and TINKER_API_KEY for the trial runner and SDK, preflight, then run train.main."""
     os.environ["HARBOR_TASKS_DIR"] = config.tasks_dir
     if config.api_key:
         os.environ["TINKER_API_KEY"] = config.api_key
