@@ -577,10 +577,10 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help=(
                     "How per-token log-probs and entropy are computed from the logits. 'torch' upcasts each "
                     "response chunk to fp32 and keeps its softmax for backward. 'fused' streams the logits "
-                    "through Triton kernels, keeps three numbers per token, writes the gradient in place, "
-                    "and normalizes over the true vocabulary (--vocab-size), as the rollout engine does, "
-                    "rather than over Megatron's padded one. 'fused' rejects --true-on-policy-mode and "
-                    "sampling-support replay (--rollout-top-p below 1 or a positive --rollout-top-k)."
+                    "through Triton kernels, writes the gradient in place, and normalizes over the true "
+                    "vocabulary (--vocab-size) as the rollout engine does, not over Megatron's padded one. "
+                    "'fused' does not support --true-on-policy-mode or sampling-support replay "
+                    "(--rollout-top-p below 1 or a positive --rollout-top-k)."
                 ),
             )
             parser.add_argument(
@@ -3240,9 +3240,7 @@ def validate_log_probs_backend_args(args) -> None:
             f"(--rollout-top-p {args.rollout_top_p}, --rollout-top-k {args.rollout_top_k}); "
             "use --log-probs-backend torch."
         )
-    # Megatron pads the output layer's vocabulary, and the fused op excludes the padding columns
-    # by --vocab-size. Without it, the actor would fall back to the tokenizer's vocab_size, which
-    # can leave out added special tokens.
+    # unset, the actor falls back to the tokenizer's vocab_size, which can leave out added special tokens
     if args.train_backend == "megatron" and getattr(args, "vocab_size", None) is None:
         raise ValueError(
             "--log-probs-backend fused needs --vocab-size (the HF config's vocab_size) on the megatron "

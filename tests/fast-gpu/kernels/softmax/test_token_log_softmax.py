@@ -1,5 +1,4 @@
-"""The token log-softmax Triton kernels against a torch log_softmax reference: the per-row statistics
-and the logits gradient, for every launch shape and with vocabulary padding columns."""
+"""The token log-softmax kernels must match torch log_softmax for every launch shape, with and without vocab padding."""
 
 import sys
 

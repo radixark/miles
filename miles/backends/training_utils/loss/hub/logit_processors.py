@@ -121,8 +121,7 @@ def get_log_probs_and_entropy(
     log-probabilities via softmax across the tensor-parallel group. Log-probs
     are squeezed from `[R, 1]` to `[R]`. Entropy is computed and returned only
     when requested. With `--log-probs-backend fused` all samples go through one
-    fused op instead of one chunk each, normalized over the true vocabulary
-    (`args.vocab_size`); startup rejects the settings that op does not cover.
+    fused op, normalized over the true vocabulary (`args.vocab_size`).
 
     Args:
         logits: Policy logits with shape `[1, T, V]`.
@@ -303,7 +302,7 @@ def _fused_log_probs_and_entropy(
         rows,
         torch.cat(targets).to(device),
         tp_group=get_parallel_state().tp.group,
-        vocab_size=getattr(args, "vocab_size", None),
+        vocab_size=getattr(args, "vocab_size", None),  # a Megatron flag; other backends' logits are unpadded
         temperature=args.rollout_temperature,
         with_entropy=with_entropy,
         entropy_requires_grad=entropy_requires_grad,

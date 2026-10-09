@@ -2,14 +2,7 @@ from tests.ci.ci_register import register_cuda_ci
 
 register_cuda_ci(est_time=300, suite="stage-b-2-gpu-h200", labels=["megatron"], hardware=["hopper", "blackwell"])
 
-"""GPU tests for ``--log-probs-backend fused``.
-
-The op must give log_softmax's log-prob, entropy and logits gradient, over the true vocabulary when
-given one; vocab shards over a real NCCL group, including padding-only shards, must combine to the
-full-vocab result; the policy, SFT and score-centering log-probs, and the all-gather and zigzag CP
-layouts, must match the torch backend; and at a long-context shape the op must not hold any
-vocab-sized buffer of its own. The kernels alone are tested in tests/fast-gpu/kernels/softmax/.
-"""
+"""``--log-probs-backend fused`` must match log_softmax and the torch backend, over TP shards, CP layouts and losses."""
 
 import dataclasses
 import os
