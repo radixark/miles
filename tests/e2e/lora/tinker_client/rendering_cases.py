@@ -81,6 +81,14 @@ def test_reasoning_content_is_history_thinking_that_qwen3_instruct_strips(render
     assert "look first" not in renderer.tokenizer.decode(expected)  # as HF's template, history keeps no thinking
 
 
+def test_developer_role_renders_as_the_cookbook_renders_it(renderer):
+    expected = cookbook_prompt(
+        renderer, [Message(role="developer", content=SYSTEM), Message(role="user", content=USER["content"])]
+    )
+    assert render_prompt(renderer, ChatRequest(messages=[{"role": "developer", "content": SYSTEM}, USER])) == expected
+    assert renderer.tokenizer.decode(expected).startswith(f"<|im_start|>developer\n{SYSTEM}<|im_end|>")
+
+
 def test_each_request_renders_the_history_it_carries(renderer):
     histories = [
         [USER],
