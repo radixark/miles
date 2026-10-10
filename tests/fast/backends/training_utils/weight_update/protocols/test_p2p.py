@@ -1,6 +1,7 @@
 from typing import Any
 
 import pytest
+import torch
 
 _WAIT_BOUND = 10.0
 _STILL_BLOCKED_SECONDS = 0.2
@@ -14,7 +15,7 @@ class TestSendBucket:
         protocol = p2p_sender.make_protocol()
         api = make_rollout_api("cell-a", gpu_count=1)
         p2p_sender.connect(protocol, [api])
-        protocol.begin_sync(weight_version=1, iter_buckets=None)
+        p2p_sender.begin_sync(protocol, weight_version=1)
 
         protocol.send_bucket(make_bucket("hf.q"))
         log_after_first_shard = list(p2p_sender.log)
@@ -33,11 +34,11 @@ class TestSendBucket:
         """A shard that never arrives would otherwise leave the engine serving a stale parameter silently."""
         protocol = p2p_sender.make_protocol()
         p2p_sender.connect(protocol, [make_rollout_api("cell-a", gpu_count=1)])
-        protocol.begin_sync(weight_version=1, iter_buckets=None)
+        p2p_sender.begin_sync(protocol, weight_version=1)
 
         protocol.send_bucket(make_bucket("hf.q"))
 
-        with pytest.raises(AssertionError, match="not transferred"):
+        with pytest.raises(AssertionError, match=r"\('qk',\) lacks \['hf.k'\]"):
             protocol.after_base_weights()
 
 
@@ -50,6 +51,7 @@ class TestTransferBuffers:
         protocol = p2p_sender.make_protocol()
         api = make_rollout_api("cell-a", gpu_count=3)
         p2p_sender.connect(protocol, [api])
+        p2p_sender.begin_sync(protocol, weight_version=1)
         first_write = p2p_sender.transfer_engine.hold(api.session_id(0))
 
         call = p2p_sender.call_in_thread(lambda: protocol.send_bucket(make_bucket("hf.w")))
@@ -74,7 +76,7 @@ class TestWriteThreads:
         stuck_api = make_rollout_api("cell-a", gpu_count=1)
         healthy_api = make_rollout_api("cell-b", gpu_count=1)
         p2p_sender.connect(protocol, [stuck_api, healthy_api])
-        protocol.begin_sync(weight_version=1, iter_buckets=None)
+        p2p_sender.begin_sync(protocol, weight_version=1)
         stuck_write = p2p_sender.transfer_engine.hold(stuck_api.session_id(0))
         healthy_write = p2p_sender.transfer_engine.hold(healthy_api.session_id(0))
 
@@ -98,7 +100,7 @@ class TestWriteCompletion:
         protocol = p2p_sender.make_protocol()
         api = make_rollout_api("cell-a", gpu_count=3)
         p2p_sender.connect(protocol, [api])
-        protocol.begin_sync(weight_version=1, iter_buckets=None)
+        p2p_sender.begin_sync(protocol, weight_version=1)
         p2p_sender.transfer_engine.failing_sessions = {api.session_id(1), api.session_id(2)}
 
         protocol.send_bucket(make_bucket("hf.w"))
@@ -115,7 +117,7 @@ class TestWriteCompletion:
         protocol = p2p_sender.make_protocol(p2p_transfer_timeout=0.1)
         api = make_rollout_api("cell-a", gpu_count=1)
         p2p_sender.connect(protocol, [api])
-        protocol.begin_sync(weight_version=1, iter_buckets=None)
+        p2p_sender.begin_sync(protocol, weight_version=1)
         p2p_sender.transfer_engine.hold(api.session_id(0))
 
         protocol.send_bucket(make_bucket("hf.w"))
@@ -137,7 +139,7 @@ class TestConnect:
         api = make_rollout_api("cell-a", gpu_count=2)
 
         p2p_sender.connect(protocol, [api], placement=resolved_placement)
-        protocol.begin_sync(weight_version=1, iter_buckets=None)
+        p2p_sender.begin_sync(protocol, weight_version=1)
         protocol.send_bucket(make_bucket("hf.w"))
         protocol.after_base_weights()
 
@@ -192,13 +194,13 @@ class TestConnect:
         registered."""
         protocol = p2p_sender.make_protocol()
         p2p_sender.connect(protocol, [make_rollout_api("cell-a", gpu_count=1)])
-        protocol.begin_sync(weight_version=1, iter_buckets=None)
+        p2p_sender.begin_sync(protocol, weight_version=1)
         protocol.send_bucket(make_bucket("hf.w"))
         protocol.after_base_weights()
 
         replaced_api = make_rollout_api("cell-a", gpu_count=1, generation=2)
         p2p_sender.connect(protocol, [replaced_api])
-        protocol.begin_sync(weight_version=2, iter_buckets=None)
+        p2p_sender.begin_sync(protocol, weight_version=2)
         protocol.send_bucket(make_bucket("hf.w"))
         protocol.after_base_weights()
 
@@ -206,3 +208,44 @@ class TestConnect:
         assert len(p2p_sender.replicas_created) == 1
         assert p2p_sender.transfer_engines_created == 1
         assert len(p2p_sender.transfer_engine.registered) == 2
+
+
+class TestHfNames:
+    def test_the_trainer_names_are_collected_once_for_the_process(
+        self, p2p_sender: Any, make_rollout_api: Any, make_bucket: Any
+    ) -> None:
+        """The first pass costs a sync's gather and convert; the names never change, so later syncs reuse them."""
+        protocol = p2p_sender.make_protocol()
+        p2p_sender.connect(protocol, [make_rollout_api("cell-a", gpu_count=1)])
+        for weight_version in (1, 2):
+            p2p_sender.begin_sync(protocol, weight_version=weight_version)
+            protocol.send_bucket(make_bucket("hf.w"))
+            protocol.after_base_weights()
+
+        assert p2p_sender.first_passes == 1
+
+    def test_a_tensor_outside_the_first_pass_fails_the_send(self, p2p_sender: Any, make_rollout_api: Any) -> None:
+        """No replica was mapped for it, so writing would guess where its bytes land."""
+        protocol = p2p_sender.make_protocol()
+        p2p_sender.connect(protocol, [make_rollout_api("cell-a", gpu_count=1)])
+        p2p_sender.begin_sync(protocol, weight_version=1)
+
+        with pytest.raises(AssertionError, match="were not in the trainer's first pass"):
+            protocol.send_bucket([("hf.unknown", torch.zeros(4))])
+        assert p2p_sender.transfer_engine.writes == []
+
+    def test_a_tensor_no_replica_loads_is_skipped(
+        self, p2p_sender: Any, make_rollout_api: Any, make_bucket: Any
+    ) -> None:
+        """The engine's own loader ignores it too, as a target model's loader ignores its MTP layers."""
+        protocol = p2p_sender.make_protocol()
+        api = make_rollout_api("cell-a", gpu_count=1)
+        p2p_sender.connect(protocol, [api])
+        p2p_sender.begin_sync(protocol, weight_version=1)
+
+        protocol.send_bucket(make_bucket("hf.mtp", "hf.w"))
+        protocol.after_base_weights()
+
+        assert p2p_sender.transfer_engine.payload_of(api.session_id(0)) == {
+            api.target_address(0, "w"): [1.0, 2.0, 3.0, 4.0]
+        }

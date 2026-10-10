@@ -1,74 +1,84 @@
-from __future__ import annotations
-
-import logging
-from typing import TYPE_CHECKING
+from collections import defaultdict
+from collections.abc import Iterable
 
 import torch
 
-if TYPE_CHECKING:
-    from sglang.srt.model_loader.parameter_mapper import ParameterMapper
-
-logger = logging.getLogger(__name__)
+from miles.backends.training_utils.weight_update.protocols.utils.loader_probe import HfNameMapping
 
 
 class ModelParamStager:
-    def __init__(self) -> None:
-        self._tensor_update_pending: dict[str, int] = {}
-        self._staged_tensors: dict[str, list[tuple[str, torch.Tensor]]] = {}
+    """Hold each parameter group's HF tensors until the group is complete.
 
-    def get_transfer_ready_params(
-        self,
-        converted_named_tensors: list[tuple[str, torch.Tensor]],
-        param_mapper: ParameterMapper,
-        params_dict: dict[str, torch.Tensor],
-    ) -> dict[str, list[tuple[str, torch.Tensor]]]:
-        """Stages `converted_named_tensors` and returns the HF tensors of each sglang param that became complete, by
-        sglang param name.
+    Parameters sharing HF inputs form one group; loading only part would leave parameters unbound or incomplete.
+    """
 
-        sglang fuses several HF tensors into one param (q/k/v into `qkv_proj`, every expert's gate and up into
-        `w13_weight`), and they can arrive in different buckets; a load of a param missing some of them would leave
-        part of its bytes unwritten.
-        """
-        transfer_ready_params = []
+    def __init__(self, hf_name_mapping: HfNameMapping) -> None:
+        self._param_group_by_hf_name, self._hf_names_by_param_group = _build_param_groups_by_shared_hf_inputs(
+            hf_name_mapping
+        )
+        self._staged_hf_tensors_by_param_group: dict[tuple[str, ...], list[tuple[str, torch.Tensor]]] = {}
+        self._missing_hf_names_by_param_group: dict[tuple[str, ...], set[str]] = {}
 
-        for name, tensor in converted_named_tensors:
-            # map the tensor name of huggingface to the one of sglang.
-            mapped_result = param_mapper.map(name)
-            mapped, num_shards, num_experts = (
-                mapped_result.sglang_name,
-                mapped_result.num_shards,
-                mapped_result.num_local_experts,
+    @property
+    def param_groups(self) -> list[tuple[str, ...]]:
+        return list(self._hf_names_by_param_group)
+
+    def stage(
+        self, hf_tensors: Iterable[tuple[str, torch.Tensor]]
+    ) -> dict[tuple[str, ...], list[tuple[str, torch.Tensor]]]:
+        """Accumulate HF tensors across calls and return each group with all its required inputs once complete."""
+        ready_hf_tensors_by_param_group = {}
+        for hf_name, tensor in hf_tensors:
+            param_group = self._param_group_by_hf_name[hf_name]
+            missing_hf_names = self._missing_hf_names_by_param_group.setdefault(
+                param_group, set(self._hf_names_by_param_group[param_group])
             )
-            if mapped not in params_dict:
-                logger.warning(f"Parameter {mapped} not found in shared model replica.")
-                continue
-
-            if num_experts is not None and num_experts > 0:
-                total_expected = num_experts * num_shards
-            else:
-                total_expected = num_shards
-
-            self._staged_tensors.setdefault(mapped, []).append((name, tensor))
-
-            if total_expected == 1:
-                transfer_ready_params.append(mapped)
-            else:
-                if mapped not in self._tensor_update_pending:
-                    self._tensor_update_pending[mapped] = total_expected - 1
-                else:
-                    self._tensor_update_pending[mapped] -= 1
-                if self._tensor_update_pending[mapped] == 0:
-                    transfer_ready_params.append(mapped)
-
-        ready_hf_tensors_by_param_name: dict[str, list[tuple[str, torch.Tensor]]] = {}
-        for param_name in dict.fromkeys(transfer_ready_params):
-            ready_hf_tensors_by_param_name[param_name] = self._staged_tensors.pop(param_name, [])
-            self._tensor_update_pending.pop(param_name, None)
-
-        return ready_hf_tensors_by_param_name
+            missing_hf_names.discard(hf_name)
+            self._staged_hf_tensors_by_param_group.setdefault(param_group, []).append((hf_name, tensor))
+            if not missing_hf_names:
+                del self._missing_hf_names_by_param_group[param_group]
+                ready_hf_tensors_by_param_group[param_group] = self._staged_hf_tensors_by_param_group.pop(param_group)
+        return ready_hf_tensors_by_param_group
 
     def assert_all_done(self) -> None:
-        assert len(self._tensor_update_pending) == 0 and len(self._staged_tensors) == 0, (
-            f"Some tensors were not transferred during P2P weight update. "
-            f"Pending: {self._tensor_update_pending}, Staged: {self._staged_tensors}"
+        assert not self._missing_hf_names_by_param_group, (
+            "p2p update ended with params still missing HF tensors, which would leave their bytes unwritten: "
+            + ", ".join(
+                f"{param_group} lacks {sorted(missing)[:3]}"
+                for param_group, missing in list(self._missing_hf_names_by_param_group.items())[:5]
+            )
         )
+
+
+def _build_param_groups_by_shared_hf_inputs(
+    hf_name_mapping: HfNameMapping,
+) -> tuple[dict[str, tuple[str, ...]], dict[tuple[str, ...], frozenset[str]]]:
+    """Group params connected directly or transitively by shared HF inputs.
+
+    Return mappings from HF name to param group and from param group to its required HF names.
+    """
+    # union-find over params: two params sharing an HF name load together
+    root_by_param_name = {param_name: param_name for param_name in hf_name_mapping.hf_names_by_param_name}
+
+    def find_root(param_name: str) -> str:
+        while root_by_param_name[param_name] != param_name:
+            root_by_param_name[param_name] = root_by_param_name[root_by_param_name[param_name]]
+            param_name = root_by_param_name[param_name]
+        return param_name
+
+    for param_names in hf_name_mapping.param_names_by_hf_name.values():
+        first_param_name, *other_param_names = sorted(param_names)
+        for param_name in other_param_names:
+            root_by_param_name[find_root(param_name)] = find_root(first_param_name)
+
+    param_names_by_root = defaultdict(list)
+    for param_name in root_by_param_name:
+        param_names_by_root[find_root(param_name)].append(param_name)
+    param_group_by_hf_name, hf_names_by_param_group = {}, {}
+    for param_names in param_names_by_root.values():
+        param_group = tuple(sorted(param_names))
+        hf_names = frozenset().union(*(hf_name_mapping.hf_names_by_param_name[name] for name in param_group))
+        hf_names_by_param_group[param_group] = hf_names
+        for hf_name in hf_names:
+            param_group_by_hf_name[hf_name] = param_group
+    return param_group_by_hf_name, hf_names_by_param_group

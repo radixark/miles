@@ -49,12 +49,16 @@ Both broadcast and P2P modes share the same bucketed weight-update pipeline in `
 |---|---|---|
 | **Rollout engine rank assignment** | `protocols/utils/rollout_engine_rank_assignment.py` | Decides which rollout engine ranks each training rank sends weights to, for the rollout engines the rollout manager passes in (`engine_gpu_counts`). Senders are the training ranks that hold the same weights: those of one PP stage, or all ranks when PP is gathered (Megatron Bridge). Every (rollout engine, rollout engine rank) gets exactly one sender. First every sender gets one, so all of them send in parallel; the rest go to a sender that already sends the same rollout engine rank, so it prepares those weights once and sends them to several rollout engines. |
 | **Model replica** | `protocols/utils/model_replica.py` | An sglang model of the target rank's layout, built on `meta` with no parameter storage and brought, one module at a time on the GPU, to the state the engine loads updates into: its startup postprocess, then the restore every update session begins with. Its `weight_loader` functions re-shard all-gathered HF weights into the exact bytes the target rank expects, loaded into a transfer buffer. `ModelReplicas` keeps one replica per shard layout (the rank's parallelism and the sglang arguments that change its bytes and may differ between server groups, such as quantization and MoE and GEMM backends) for the whole trainer process, so a reconnect rebuilds only the connections to the new engines. Rollout engines whose expert placement a replica cannot reproduce (redundant experts, a non-trivial `init_expert_location`, EPLB, elastic EP, DWDP, KTransformers) are rejected at connect. |
-| **Transfer buffers** | `protocols/utils/transfer_buffers.py` | Two pinned host buffers per sender, each `--update-weight-buffer-size` bytes (or the largest parameter, if larger), registered with the Mooncake TransferEngine once per trainer process. Ready parameters are packed into groups that fit one buffer; a buffer is loaded again only after every write reading it has returned. |
+| **Transfer buffers** | `protocols/utils/transfer_buffers.py` | Two pinned host buffers per sender, sized to the larger of `--update-weight-buffer-size` and the largest complete parameter group, including alignment. Parameters sharing HF inputs stay in one group. Buffers are registered once per trainer process and reused only after every write reading them has returned. |
 | **Pipelined transfer** | `p2p.py`, `protocols/transports/mooncake.py` | While the writes reading one transfer buffer are in flight, the sender loads the next group of parameters into the other. Each rollout engine has its own write thread, so a stuck engine delays only its own writes. The end of the update waits for every write and fails it if any write failed or is still running after `--p2p-transfer-timeout`. |
 
 ## Supported Model Architectures
 
-P2P weight transfer relies on a unified weight name mapping interface between Megatron and sglang (see [sglang#17326](https://github.com/sgl-project/sglang/pull/17326)). The following sglang model classes are supported:
+P2P derives HF-to-parameter mappings by probing each replica's `load_weights` at the first update (`protocols/utils/loader_probe.py`). The probe uses real GPU inputs and meta parameters, then caches the mapping for later updates. Models need no separate mapping implementation.
+
+P2P writes **parameters only**. The engine recomputes derived buffers, such as Gemma norm's `weight + 1`, after the update; `--check-weight-update-equal` checks those buffers too.
+
+The following sglang model classes are tested:
 
 | sglang Model Class | Model Family | Example Models |
 |---|---|---|
