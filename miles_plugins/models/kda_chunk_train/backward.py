@@ -29,10 +29,12 @@ host-side repacking or padding copies are needed.
 
 from __future__ import annotations
 
+from collections import OrderedDict
 from collections.abc import Sequence
 from dataclasses import dataclass
 from functools import cached_property
 
+import numpy as np
 import torch
 
 from ._jit import device_arch, kernel
@@ -128,7 +130,76 @@ class ChunkLayout:
         return x if self.identity else x.index_select(0, self.internal_rows)
 
 
+class _LRUCache:
+    """Bounded dict that evicts its least recently used entry (a hit refreshes the entry)."""
+
+    def __init__(self, limit: int):
+        self.limit = limit
+        self._data: OrderedDict = OrderedDict()
+
+    def get(self, key):
+        value = self._data.get(key)
+        if value is not None:
+            self._data.move_to_end(key)
+        return value
+
+    def put(self, key, value) -> None:
+        self._data[key] = value
+        self._data.move_to_end(key)
+        while len(self._data) > self.limit:
+            self._data.popitem(last=False)
+
+    def __len__(self) -> int:
+        return len(self._data)
+
+    def clear(self) -> None:
+        self._data.clear()
+
+
+_TABLE_ALIGN = 64  # int32 elements: every table view starts 256-byte aligned inside the shared buffer
+
+
+def _round_up(n: int, m: int) -> int:
+    return -(-n // m) * m
+
+
+def _host_tables(lengths: tuple[int, ...], offsets: tuple[int, ...], rows_external: int):
+    """Host-side layout tables, vectorised (numpy over at most a few thousand elements; no Python loop
+    over chunks or tokens): ``starts`` (``N + 1`` int64), ``bos`` / ``clen`` (``nc`` int32 each) and the
+    internal row of every input row (``rows_external`` int64)."""
+    L = np.asarray(lengths, dtype=np.int64)
+    offs = np.asarray(offsets, dtype=np.int64)
+    n = L.size
+    nch = (L + (CHUNK - 1)) // CHUNK
+    starts = np.empty(n + 1, dtype=np.int64)
+    starts[0] = 0
+    np.cumsum(nch, out=starts[1:])
+    nc = int(starts[-1])
+    # per chunk: owning sequence (by repeat), index within it, first input row, valid tokens
+    i = np.arange(nc, dtype=np.int64) - np.repeat(starts[:-1], nch)
+    bos = np.repeat(offs, nch) + i * CHUNK
+    clen = np.minimum(CHUNK, np.repeat(L, nch) - i * CHUNK)
+    # per input row: position within its sequence, external row, internal row
+    excl = np.empty(n, dtype=np.int64)
+    excl[0] = 0
+    np.cumsum(L[:-1], out=excl[1:])
+    j = np.arange(rows_external, dtype=np.int64) - np.repeat(excl, L)
+    internal = np.repeat(starts[:-1] * CHUNK, L) + j
+    # packed and fixed-length inputs lay the sequences out back to back (offsets = exclusive cumsum of
+    # the lengths): the external row of token j of sequence n is then just its index -> ext is None
+    ext = None if np.array_equal(offs, excl) else np.repeat(offs, L) + j
+    return starts, bos.astype(np.int32, copy=False), clen.astype(np.int32, copy=False), ext, internal
+
+
 def _build_layout(lengths, offsets, rows_external: int, device) -> ChunkLayout:
+    """Build the layout of ``lengths`` / ``offsets`` on ``device``.
+
+    Host cost is a handful of vectorised numpy ops; the device side is exactly two host-to-device
+    copies, both ``non_blocking`` from pinned staging buffers (one int32 buffer holding ``chunk_bos``,
+    ``chunk_len`` and ``seq_chunk_start`` as 256-byte-aligned views, one int64 buffer for
+    ``internal_rows``), so building a layout never drains the stream. The staging buffers come from
+    torch's caching pinned-memory allocator, which hands them out again once the copies have retired.
+    """
     lengths = tuple(int(x) for x in lengths)
     offsets = tuple(int(x) for x in offsets)
     _check(
@@ -137,34 +208,62 @@ def _build_layout(lengths, offsets, rows_external: int, device) -> ChunkLayout:
     )
     _check(all(length > 0 for length in lengths), "every packed sequence must have at least one token")
     _check(sum(lengths) == rows_external, "the packed sequences must cover the token rows exactly once")
-    starts = [0]
-    for length in lengths:
-        starts.append(starts[-1] + -(-length // CHUNK))
-    nc = starts[-1]
-    nc_pad = -(-nc // 2) * 2
-    bos = torch.zeros(nc_pad, dtype=torch.int32)
-    clen = torch.zeros(nc_pad, dtype=torch.int32)
-    internal = torch.empty(rows_external, dtype=torch.int64)
-    for n, (length, offset) in enumerate(zip(lengths, offsets, strict=True)):
-        c0 = starts[n]
-        for i in range(starts[n + 1] - c0):
-            bos[c0 + i] = offset + i * CHUNK
-            clen[c0 + i] = min(CHUNK, length - i * CHUNK)
-        internal[offset : offset + length] = torch.arange(c0 * CHUNK, c0 * CHUNK + length, dtype=torch.int64)
+    device = torch.device(device) if not isinstance(device, torch.device) else device
+    pinned = device.type == "cuda"
+
+    starts, bos, clen, ext, internal = _host_tables(lengths, offsets, rows_external)
+    n = len(lengths)
+    nc = int(starts[-1])
+    nc_pad = _round_up(nc, 2)
+    table = _round_up(nc_pad, _TABLE_ALIGN)
+    start_table = _round_up(n + 1, _TABLE_ALIGN)
+
+    host32 = torch.zeros(2 * table + start_table, dtype=torch.int32, pin_memory=pinned)
+    a32 = host32.numpy()
+    a32[:nc] = bos
+    a32[table : table + nc] = clen
+    a32[2 * table : 2 * table + n + 1] = starts
+    host64 = torch.empty(rows_external, dtype=torch.int64, pin_memory=pinned)
+    if ext is None:
+        host64.numpy()[:] = internal
+    else:
+        host64.numpy()[ext] = internal
+
+    dev32 = torch.empty_like(host32, device=device)
+    dev32.copy_(host32, non_blocking=pinned)
+    dev64 = torch.empty_like(host64, device=device)
+    dev64.copy_(host64, non_blocking=pinned)
     return ChunkLayout(
         lengths=lengths,
         offsets=offsets,
         rows_external=int(rows_external),
-        seq_chunk_start_cpu=tuple(starts),
-        chunk_bos=bos.to(device),
-        chunk_len=clen.to(device),
-        seq_chunk_start=torch.tensor(starts, dtype=torch.int32).to(device),
-        internal_rows=internal.to(device),
+        seq_chunk_start_cpu=tuple(int(x) for x in starts),
+        chunk_bos=dev32[:nc_pad],
+        chunk_len=dev32[table : table + nc_pad],
+        seq_chunk_start=dev32[2 * table : 2 * table + n + 1],
+        internal_rows=dev64,
     )
 
 
-_LAYOUT_CACHE: dict[tuple, ChunkLayout] = {}
 _LAYOUT_CACHE_LIMIT = 256
+_LAYOUT_CACHE: _LRUCache = _LRUCache(_LAYOUT_CACHE_LIMIT)
+
+
+def host_boundaries(cu_seqlens_cpu) -> tuple[int, ...]:
+    """The host copy of ``cu_seqlens`` as a tuple of ints: from a CPU integer tensor (the canonical
+    ``cu_seqlens_cpu``) or any sequence of ints. A device tensor is rejected rather than copied."""
+    if isinstance(cu_seqlens_cpu, torch.Tensor):
+        _check(cu_seqlens_cpu.device.type == "cpu", "cu_seqlens_cpu must be a host (CPU) tensor")
+        return tuple(cu_seqlens_cpu.tolist())
+    return tuple(int(x) for x in cu_seqlens_cpu)
+
+
+def _device_key(device):
+    device = torch.device(device) if not isinstance(device, torch.device) else device
+    index = device.index
+    if index is None and device.type == "cuda":
+        index = torch.cuda.current_device()
+    return (device.type, index)
 
 
 def chunk_layout(
@@ -173,42 +272,44 @@ def chunk_layout(
     cu_seqlens: torch.Tensor | None,
     device,
     *,
-    cu_seqlens_cpu: Sequence[int] | None = None,
+    cu_seqlens_cpu: torch.Tensor | Sequence[int] | None = None,
 ) -> ChunkLayout:
     """Layout of a ``[batch, seq_len]`` input, or of ``cu_seqlens``-packed sequences (``batch == 1``).
 
-    Layouts are cached per (lengths, device): a training run repeats a few packing shapes and the
-    tables otherwise cost a handful of small host-to-device copies per backward.
+    Layouts are cached per (host boundaries, device) in an LRU of ``_LAYOUT_CACHE_LIMIT`` entries: a
+    training run repeats a few packing shapes, and a hit costs no host-to-device copy, no stream
+    synchronisation and no device read. The key is the host tuple of boundaries, so every object
+    carrying the same boundaries (a new ``PackedSeqParams`` of the next micro-batch, a tuple from a
+    direct kernel-level call) hits the same entry.
 
-    ``cu_seqlens_cpu`` is the host copy of ``cu_seqlens`` (any sequence of ints).  When the caller
-    has it (the forward already needs one), the layout lookup reads it instead of ``cu_seqlens``,
-    so the backward issues no device-to-host copy and never waits for the stream to drain.
+    ``cu_seqlens_cpu`` is the host copy of ``cu_seqlens``: a CPU int64 tensor (the canonical form the
+    layer passes) or any sequence of ints. With it the lookup never touches ``cu_seqlens``. Without it
+    the boundaries are read from the device (``cu_seqlens.tolist()``: one device-to-host copy that waits
+    for the stream) -- a fallback for direct callers, not the training path.
     """
-    dev_key = device.index if isinstance(device, torch.device) else device
-    if dev_key is None:
-        dev_key = torch.cuda.current_device()
+    dev_key = _device_key(device)
     if cu_seqlens is None:
         key = ("fixed", int(batch), int(seq_len), dev_key)
         cu = None
     else:
         _check(batch == 1, f"packed input must have batch 1, got {batch}")
-        cu = tuple(cu_seqlens_cpu) if cu_seqlens_cpu is not None else tuple(int(x) for x in cu_seqlens.tolist())
+        if cu_seqlens_cpu is not None:
+            cu = host_boundaries(cu_seqlens_cpu)
+        else:
+            cu = tuple(int(x) for x in cu_seqlens.tolist())
         key = ("packed", cu, dev_key)
     layout = _LAYOUT_CACHE.get(key)
     if layout is None:
         if cu is None:
             lengths, offsets = [seq_len] * batch, [b * seq_len for b in range(batch)]
         else:
-            cu = [int(x) for x in cu]
             _check(
                 len(cu) >= 2 and cu[0] == 0 and cu[-1] == seq_len,
                 f"cu_seqlens must run from 0 to the token count {seq_len}",
             )
             lengths, offsets = [b - a for a, b in zip(cu[:-1], cu[1:], strict=True)], cu[:-1]
         layout = _build_layout(lengths, offsets, batch * seq_len, device)
-        if len(_LAYOUT_CACHE) >= _LAYOUT_CACHE_LIMIT:
-            _LAYOUT_CACHE.clear()
-        _LAYOUT_CACHE[key] = layout
+        _LAYOUT_CACHE.put(key, layout)
     return layout
 
 
@@ -609,7 +710,7 @@ def chunk_kda_backward(
     scale: float,
     lower_bound: float,
     cu_seqlens: torch.Tensor | None = None,
-    cu_seqlens_cpu: Sequence[int] | None = None,
+    cu_seqlens_cpu: torch.Tensor | Sequence[int] | None = None,
 ) -> dict[str, torch.Tensor]:
     """Deterministic chunked KDA training backward.
 
@@ -629,8 +730,11 @@ def chunk_kda_backward(
       ``lower_bound``: the safe-gate lower bound (negative).
     - ``cu_seqlens``: optional int32 ``[N + 1]`` packed-sequence offsets (``B`` must be 1); the
       sequences may have any lengths, as in the reference's varlen convention.
-    - ``cu_seqlens_cpu``: optional host copy of ``cu_seqlens`` (a sequence of ints).  With it the
-      backward performs no device-to-host copy; without it ``cu_seqlens`` is read once per call.
+    - ``cu_seqlens_cpu``: host copy of ``cu_seqlens`` -- a CPU int64 tensor (the layer's canonical
+      form) or a sequence of ints. With it the backward issues no device-to-host copy and, once the
+      packing's layout is cached, no host-to-device copy and no stream synchronisation either (the
+      first backward of a new packing uploads the layout tables with two non-blocking copies). Without
+      it ``cu_seqlens`` is read from the device once per call (a fallback for direct callers).
 
     Any ``T`` is accepted.  ``HV`` must be a positive multiple of ``H`` (grouped value heads).
     Returns ``dq``/``dk`` bf16 ``[B, T, H, 128]``, ``dv`` bf16 ``[B, T, HV, 128]``, ``dbeta`` bf16
@@ -763,4 +867,4 @@ def chunk_kda_backward(
     }
 
 
-__all__ = ["ChunkLayout", "chunk_kda_backward", "chunk_layout", "CHUNK", "HEAD_DIM"]
+__all__ = ["ChunkLayout", "chunk_kda_backward", "chunk_layout", "host_boundaries", "CHUNK", "HEAD_DIM"]
