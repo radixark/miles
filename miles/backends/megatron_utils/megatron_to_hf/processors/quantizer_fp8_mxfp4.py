@@ -1,7 +1,7 @@
 """Weight-sync quantizer for FP8 block checkpoints that store the routed experts as MXFP4.
 
-`quant_method: fp8` with `store_dtype: mxfp4` (MiMo-V2): routed experts are e2m1 nibbles with E8M0
-scales (`weight` + `weight_scale`), the modules in `ignored_layers` stay BF16, and everything else
+`quant_method: fp8` with MXFP4 routed experts (has_mxfp4_routed_experts): the experts are e2m1 nibbles
+with E8M0 scales (`weight` + `weight_scale`), the modules in `ignored_layers` stay BF16, and everything else
 follows quantize_params_fp8. A fused `qkv_proj` is block-quantized per kv-head shard, as stored in
 the checkpoint and sliced by SGLang; on Blackwell its scales take the same UE8M0 layout as every
 other dense FP8 weight (SGLang requantizes them to it at load).
@@ -15,25 +15,26 @@ from functools import lru_cache
 import torch
 
 from miles.backends.megatron_utils.megatron_to_hf.processors.quantizer_fp8 import _quantize_param, quantize_params_fp8
-from miles.utils.mxfp4 import quantize_mxfp4
+from miles.utils.mxfp4 import has_mxfp4_routed_experts, quantize_mxfp4
 
 _ROUTED_EXPERT_RE = re.compile(
     r"\.mlp\.experts\.(linear_fc[12]\.weight\d+|local_experts\.\d+\.linear_fc[12]\.weight)$"
 )
+# The OCP MX block length; SGLang decodes the experts with it and reads no block size from the config.
+_MXFP4_BLOCK_SIZE = 32
 
 
 def quantize_params_fp8_mxfp4_experts(args, megatron_name, converted_named_params, quantization_config):
-    assert quantization_config["quant_method"] == "fp8" and quantization_config["store_dtype"] == "mxfp4"
+    assert quantization_config["quant_method"] == "fp8" and has_mxfp4_routed_experts(quantization_config)
     ignored = set(quantization_config.get("ignored_layers") or ())
     if all(name.removesuffix(".weight") in ignored for name, _ in converted_named_params):
         return converted_named_params
 
     if _ROUTED_EXPERT_RE.search(megatron_name):
-        group_size = quantization_config["mxfp4_block_size"]
         quantized = []
         for name, param in converted_named_params:
             assert name.endswith(".weight"), f"unexpected routed-expert tensor {name}"
-            packed, scale = quantize_mxfp4(param, group_size)
+            packed, scale = quantize_mxfp4(param, _MXFP4_BLOCK_SIZE)
             quantized += [(name, packed), (f"{name.removesuffix('.weight')}.weight_scale", scale)]
         return quantized
 

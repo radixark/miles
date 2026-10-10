@@ -67,13 +67,21 @@ def _checkpoint_mxfp4(rows: int, cols: int) -> tuple[torch.Tensor, torch.Tensor]
     return packed, scale
 
 
-def test_routed_experts_repack_to_the_checkpoint_bytes(args):
+# MiMo-V2 declares its MXFP4 experts with `store_dtype`; other FP8 checkpoints use the generic key.
+GENERIC_QCFG = {
+    **{key: value for key, value in QCFG.items() if key not in ("store_dtype", "mxfp4_block_size")},
+    "routed_experts_quant_method": "mxfp4",
+}
+
+
+@pytest.mark.parametrize("qcfg", [QCFG, GENERIC_QCFG], ids=["store_dtype", "routed_experts_quant_method"])
+def test_routed_experts_repack_to_the_checkpoint_bytes(args, qcfg):
     packed, scale = _checkpoint_mxfp4(512, HIDDEN)
     weight = dequant_mxfp4(packed, scale).to(torch.bfloat16).cuda()
     name = "model.layers.1.mlp.experts.3.gate_proj.weight"
 
     out = dict(
-        quantize_params(args, "module.module.decoder.layers.1.mlp.experts.linear_fc1.weight3", [(name, weight)], QCFG)
+        quantize_params(args, "module.module.decoder.layers.1.mlp.experts.linear_fc1.weight3", [(name, weight)], qcfg)
     )
 
     assert set(out) == {name, "model.layers.1.mlp.experts.3.gate_proj.weight_scale"}

@@ -42,6 +42,8 @@ from megatron.core.models.gpt.gpt_model import GPTModel
 from megatron.core.transformer import ModuleSpec
 from megatron.core.transformer.attention import SelfAttention
 
+from miles.utils.mxfp4 import has_mxfp4_routed_experts
+
 logger = logging.getLogger(__name__)
 
 
@@ -209,7 +211,7 @@ class MiMoV2Bridge(MegatronModelBridge):
         assert layout in ("split", "fused_qkv"), f"unsupported attention_projection_layout {layout!r}"
         quant = getattr(hf, "quantization_config", None)
         # Weight sync reproduces BF16 and the FP8 + MXFP4-experts format (quantizer_fp8_mxfp4.py) only.
-        if quant is not None and not (quant.get("quant_method") == "fp8" and quant.get("store_dtype") == "mxfp4"):
+        if quant is not None and not (quant.get("quant_method") == "fp8" and has_mxfp4_routed_experts(quant)):
             raise ValueError(
                 f"MiMo-V2 bridge cannot sync weights to a {quant.get('quant_method')} checkpoint "
                 "without MXFP4 experts; convert it with tools/convert_mimo_v2_to_bf16.py and serve "
