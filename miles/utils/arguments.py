@@ -2852,15 +2852,6 @@ def parse_args(add_custom_arguments=None, entry="train", preprocess_args=None):
     if backend == "megatron":
         megatron_validate_args(args)
 
-        # always use varlen
-        args.variable_seq_lengths = True
-        if getattr(args, "moe_token_dispatcher_type", None) == "allgather":
-            logger.info(
-                "--moe-token-dispatcher-type allgather does not support variable sequence length, "
-                "please use alltoall dispatcher instead."
-            )
-            args.moe_token_dispatcher_type = "alltoall"
-
         if args.pipeline_model_parallel_size == 1:
             assert args.decoder_first_pipeline_num_layers is None and args.decoder_last_pipeline_num_layers is None, (
                 "decoder_first_pipeline_num_layers and decoder_last_pipeline_num_layers should be None when "
