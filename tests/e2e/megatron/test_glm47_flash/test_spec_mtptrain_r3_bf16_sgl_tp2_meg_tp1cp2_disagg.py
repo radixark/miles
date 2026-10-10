@@ -9,6 +9,7 @@ register_cuda_ci(
     suite="stage-c-4-gpu-h200",
     labels=["megatron", "weight-update", "replay"],
     hardware=["hopper", "blackwell"],
+    num_gpus=4,
 )
 
 register_ci_gate(metric_key="train/grad_norm")

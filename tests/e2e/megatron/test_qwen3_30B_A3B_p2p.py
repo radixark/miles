@@ -15,6 +15,7 @@ register_cuda_ci(
     labels=["megatron", "weight-update"],
     # the B200 CI runner's RDMA has a network issue: writes between its NICs exceed the transport retry count
     hardware=["hopper"],
+    num_gpus=8,
 )
 
 register_ci_gate(metric_key="train/grad_norm")
