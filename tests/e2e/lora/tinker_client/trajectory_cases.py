@@ -36,5 +36,7 @@ def test_repeated_prompts_and_continuations_after_length_are_retained():
     for index, stop_reason in enumerate(["length", "stop"]):
         trace.record(str(index), [1, 2], [3 + index], [-0.5], stop_reason)
     trajectory = turns_to_trajectory(trace.turns)
+    assert [transition.ac.stop_reason for transition in trajectory.transitions] == ["length", "stop"]
+    assert trajectory.stop_reason is None  # a sample's verdict is not the episode's
     assert len(trajectory.transitions) == 2
     assert len(trajectory_to_data(trajectory, traj_advantage=1.0)) == 2

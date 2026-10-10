@@ -98,7 +98,9 @@ def test_reasoning_content_is_kept_where_the_renderer_keeps_history_thinking(ren
     )
     assert render_prompt(keeping, ChatRequest(messages=history)) == expected
     assert "look first" in keeping.tokenizer.decode(expected)  # the strip-free renderer must see the thinking
-    assert expected != render_prompt(keeping, ChatRequest(messages=[USER, {"role": "assistant", "content": "done"}, USER]))
+    assert expected != render_prompt(
+        keeping, ChatRequest(messages=[USER, {"role": "assistant", "content": "done"}, USER])
+    )
 
 
 def test_developer_role_renders_as_the_cookbook_renders_it(renderer):

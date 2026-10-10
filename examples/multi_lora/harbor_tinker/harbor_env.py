@@ -8,11 +8,19 @@ from examples.experimental.harbor.harbor_agent_function import run
 from tinker_cookbook import renderers
 from tinker_cookbook.completers import TinkerTokenCompleter
 from tinker_cookbook.rl.rollout_strategy import RolloutResult, RolloutStrategy
-from tinker_cookbook.rl.types import Env, EnvGroupBuilder, RLDataset, RLDatasetBuilder
+from tinker_cookbook.rl.types import Env, EnvGroupBuilder, RLDataset, RLDatasetBuilder, StopReason
 
 from miles.tinker.client.server import SessionServer
 from miles.tinker.client.session import ChatSession
 from miles.tinker.client.trajectory import turns_to_trajectory
+
+
+# Why the episode ended, in the cookbook's vocabulary, from the exit_status harbor_agent_function assigns.
+STOP_REASONS = {
+    "Submitted": StopReason.COMPLETED,
+    "TimeLimitExceeded": StopReason.ROLLOUT_TIMEOUT,
+    "SequenceLengthLimitExceeded": StopReason.CONTEXT_OVERFLOW,
+}
 
 
 @dataclass
@@ -122,7 +130,7 @@ class SessionRolloutStrategy(RolloutStrategy):
                         )
                     if env.verdict["exit_status"] == "AgentError":
                         raise RuntimeError(f"Harbor trial {env.task_id} failed: {env.verdict}")
-                    return turns_to_trajectory(session.trace.turns)
+                    return turns_to_trajectory(session.trace.turns, str(STOP_REASONS[env.verdict["exit_status"]]))
 
             # An infrastructure failure invalidates the group, rather than becoming a zero reward.
             async with asyncio.TaskGroup() as tasks:
