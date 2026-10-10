@@ -37,6 +37,7 @@ class ScriptArgs(command_utils.ExecuteTrainConfig):
     hf_checkpoint: str = "zai-org/GLM-4.7-Flash"
     ref_load: str = "/root/GLM-4.7-Flash_torch_dist"
     save_dir: str = "/root/GLM-4.7-Flash_agent_v2/"
+    load_dir: str = ""  # empty: resume from save_dir
     prompt_data: str = "/root/swe_train.jsonl"
 
     # Training settings
@@ -105,6 +106,8 @@ def execute(args: ScriptArgs):
     ckpt_args = (
         f"--hf-checkpoint {args.hf_checkpoint} "
         f"--ref-load {args.ref_load} "
+        # Resume from save_dir when it holds a checkpoint; miles falls back to ref_load otherwise.
+        f"--load {args.load_dir or args.save_dir} "
         f"--save {args.save_dir} "
         f"--save-interval {args.save_interval} "
     )

@@ -55,6 +55,7 @@ class ScriptArgs(command_utils.ExecuteTrainConfig):
     hf_checkpoint: str = "/models/zai-org/GLM-4.7-Flash"
     ref_load: str = "/models/zai-org/GLM-4.7-Flash_torch_dist"
     save_dir: str = "/root/GLM-4.7-Flash_agentic_async/"
+    load_dir: str = ""  # empty: resume from save_dir
     # Directory to dump rollout + training traces (per-rollout .pt files). Empty
     # means default to ``<save_dir>/traces``; set to ``"disabled"`` to skip.
     save_traces_dir: str = ""
@@ -153,6 +154,8 @@ def execute(args: ScriptArgs):
     ckpt_args = (
         f"--hf-checkpoint {args.hf_checkpoint} "
         f"--ref-load {args.ref_load} "
+        # Resume from save_dir when it holds a checkpoint; miles falls back to ref_load otherwise.
+        f"--load {args.load_dir or args.save_dir} "
         f"--save {args.save_dir} "
         f"--save-interval {args.save_interval} "
     )
