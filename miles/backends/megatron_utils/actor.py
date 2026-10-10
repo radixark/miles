@@ -44,6 +44,7 @@ from miles.utils.audit_utils.witness.allocator import WitnessInfo
 from miles.utils.context_utils import with_defer
 from miles.utils.distributed_utils import get_gloo_group
 from miles.utils.ft_utils.indep_dp import IndepDPInfo
+from miles.utils.hub import push_model_to_hub
 from miles.utils.lora.utils import build_lora_config, is_multi_lora_enabled
 from miles.utils.memory_utils import clear_memory, print_memory
 from miles.utils.object_store import StoreObjectRef, ValueSpec
@@ -830,6 +831,15 @@ class MegatronTrainRayActor(TrainRayActor):
         if self.args.save_hf is not None and self.role == "actor":
             assert self.snapshot_publisher is not None, "HF export requires a snapshot publisher"
             save_hf_model(self.args, rollout_id, self.model, publisher=self.snapshot_publisher)
+            if self.args.push_to_hub and dist.get_rank() == 0:
+                push_model_to_hub(
+                    checkpoint_dir=self.args.save_hf.format(rollout_id=rollout_id),
+                    repo_id=self.args.hub_model_id,
+                    private=self.args.hub_private_repo,
+                    strategy=self.args.hub_strategy,
+                    rollout_id=rollout_id,
+                    is_final=rollout_id == self.args.num_rollout - 1,
+                )
 
         if force_sync:
             self._finalize_pending_async_save()
