@@ -75,7 +75,9 @@ def render_prompt(renderer: Renderer, request: ChatRequest) -> list[int]:
             system_prompt = ""
             if messages[0]["role"] == "system":
                 content = messages.pop(0)["content"]
-                system_prompt = content if isinstance(content, str) else "".join(ensure_text([part]) for part in content)
+                system_prompt = (
+                    content if isinstance(content, str) else "".join(ensure_text([part]) for part in content)
+                )
             try:
                 prefix = renderer.create_conversation_prefix_with_tools(
                     openai_tools_to_tinker(request.tools), system_prompt=system_prompt
