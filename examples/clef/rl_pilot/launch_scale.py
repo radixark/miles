@@ -32,7 +32,7 @@ def main(args: Args) -> None:
         print('WAITING_FOR_REVIEWED_DATA', flush=True)
         time.sleep(5)
     package = base + '/training-transfer.zip'
-    call(['ssh', '-n', cpu, f'cd {base}/data && zip -q {package} train.jsonl validation.jsonl manifest.json validation-report.json publication.json'])
+    call(['ssh', '-n', cpu, f'cd {base}/data && /home/ubuntu/clef-rl-pilot-261009/code/.venv/bin/python -m zipfile -c {package} train.jsonl validation.jsonl manifest.json validation-report.json publication.json'])
     for rank in (0, 1):
         target = ['ssh'] + (['-F', '/tmp/2dcf7753-shi3-rank1-ssh'] if rank else [])
         target += ['shi-h200-3-sync' if rank else 'shi-h200-3', 'cat > /scratch/2dcf7753-scale-data.zip']
