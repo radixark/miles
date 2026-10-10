@@ -21,10 +21,9 @@ from miles.utils.timer import Timer
 from miles.utils.tracking_utils.tracking import init_tracking
 from miles.utils.workers.rpc.common.wire_types import Pickled
 
-from .adaptations.class_patches import apply_class_patches, apply_model_instance_patches
-from .adaptations.packing import apply_packing
-from .adaptations.post_load_fixups import apply_post_load_fixups
-from .adaptations.precision import apply_fp32_master, precision_forward_context, resolve_precision_policy
+from .adaptations.config_checks import validate_hf_config
+from .adaptations.precision import apply_fp32_master, default_precision_policy, precision_forward_context
+from .adaptations.specs import resolve_arch_adapter
 from .hf_weight_iterator import FSDPHfWeightIterator
 from .lr_scheduler import get_lr_scheduler
 from .parallel import create_fsdp_parallel_state
@@ -83,13 +82,13 @@ class FSDPTrainRayActor(TorchNativeTrainRayActor):
 
         self.load_hf_assets(with_processor=True)
 
-        self.precision_policy = resolve_precision_policy(self.hf_config, self.args)
+        self.arch_adapter = resolve_arch_adapter(self.hf_config)
+        validate_hf_config(self.hf_config, verified=self.arch_adapter.verified, rank=dist.get_rank())
+        self.precision_policy = self.arch_adapter.resolve_precision(default_precision_policy(args), args)
 
         routing_replay.enable(args)
 
-        # FSDP trains stock HF modeling: HF-compat patches + config-lifetime packing, before construction.
-        apply_class_patches(self.hf_config, self.args)
-        apply_packing(None, self.hf_config, "config")
+        self.arch_adapter.patch_classes(args)
 
         # Collective across all ranks; inert unless --kernel-backend hub.
         self.hub_kernels = HubKernels.prepare(self.args)
@@ -97,23 +96,8 @@ class FSDPTrainRayActor(TorchNativeTrainRayActor):
         # backend-level true-on-policy setup (batch-invariant ops)
         self._enable_true_on_policy_optimizations(args)
 
-        init_context = self._get_init_weight_context_manager()
-
-        model, n = self._build_model_with_attn_bridge(self.args.hf_checkpoint, init_context)
-        if n > 0:
-            logger.info(f"FSDPTrainRayActor applied triton attention patch to {n} layer(s)")
-
-        apply_model_instance_patches(model, self.hf_config, self.args)
-        self.hub_kernels.bind(model)
-        routing_replay.install(model, self.hf_config)
-        if self.precision_policy.keep_fp32_master:
-            model = apply_fp32_master(model, self.precision_policy.sync_dtype_resolver)
-
-        # re-assert the checkpoint over any param from_pretrained clobbered post-load (arch-gated, else no-op)
-        apply_post_load_fixups(model, self.hf_config, self.args.hf_checkpoint)
-
-        # post-load packing patches that need the instantiated model (NemotronH); no-op for archs that don't
-        apply_packing(model, self.hf_config, "post_load")
+        model = self._load_hf_model(self.args.hf_checkpoint, keep_fp32_master=self.precision_policy.keep_fp32_master)
+        routing_replay.install(model, self.arch_adapter.routing_replay)
 
         model.train()
 
@@ -203,6 +187,20 @@ class FSDPTrainRayActor(TorchNativeTrainRayActor):
             if native_cls_name is not None:
                 return getattr(transformers, native_cls_name)
             return AutoModelForCausalLM
+
+    def _load_hf_model(self, checkpoint_path: str, *, keep_fp32_master: bool) -> torch.nn.Module:
+        """Build the HF model and apply the architecture's corrections; shared by the actor and ref model."""
+        model, n = self._build_model_with_attn_bridge(checkpoint_path, self._get_init_weight_context_manager())
+        if n > 0:
+            logger.info(
+                f"[Rank {dist.get_rank()}] Applied triton attention patch to {n} layer(s) of {checkpoint_path}"
+            )
+
+        self.arch_adapter.patch_model(model, self.args)
+        self.hub_kernels.bind(model)
+        if keep_fp32_master:
+            model = apply_fp32_master(model, self.precision_policy.sync_dtype_resolver)
+        return model
 
     def _build_model_with_attn_bridge(self, checkpoint_path: str, init_context):
         """Build HF model and optionally apply Triton attention bridge patch."""
@@ -366,18 +364,12 @@ class FSDPTrainRayActor(TorchNativeTrainRayActor):
         if os.path.isdir(ref_load_path):
             logger.info(f"[Rank {dist.get_rank()}] Creating separate ref model from {ref_load_path}")
 
-            init_context = self._get_init_weight_context_manager()
-
-            ref_model, ref_patch_n = self._build_model_with_attn_bridge(ref_load_path, init_context)
-            if ref_patch_n > 0:
-                logger.info(
-                    f"[Rank {dist.get_rank()}] Applied triton attention patch to ref model ({ref_patch_n} layer(s))"
-                )
-
-            apply_model_instance_patches(ref_model, self.hf_config, self.args)
-            self.hub_kernels.bind(ref_model)
-            if self.precision_policy.keep_fp32_master and self.precision_policy.param_dtype is torch.float32:
-                ref_model = apply_fp32_master(ref_model, self.precision_policy.sync_dtype_resolver)
+            # The ref model never trains, so it keeps fp32 weights only when fp32 is also the compute dtype.
+            ref_model = self._load_hf_model(
+                ref_load_path,
+                keep_fp32_master=self.precision_policy.keep_fp32_master
+                and self.precision_policy.param_dtype is torch.float32,
+            )
             full_state = ref_model.state_dict()
 
             # Always use CPUOffloadPolicy for reference, let FSDP2 handle the offload. It is faster than model.cpu().
@@ -406,7 +398,17 @@ class FSDPTrainRayActor(TorchNativeTrainRayActor):
             "input_ids": batch["tokens"],
             "position_ids": batch["position_ids"],
             "attention_mask": None,
+            # the ref model would otherwise cache, and NemotronH's packed-document reset skips cached forwards
+            "use_cache": False,
         }
+
+        model_args.update(
+            self.arch_adapter.packing_kwargs(
+                cu_seqlens=batch["cu_seqlens"],
+                cu_seqlens_host=batch["cu_seqlens_host"],
+                max_seqlen=batch["max_seqlen"],
+            )
+        )
 
         if batch.get("multimodal_train_inputs"):
             model_args.update(batch["multimodal_train_inputs"])
