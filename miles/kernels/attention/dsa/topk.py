@@ -177,13 +177,10 @@ def select_topk(
     proposal: torch.Tensor,
     num_warps: int = 4,
 ) -> torch.Tensor:
-    """Exact top-k of logits[i, row_starts[i]:row_ends[i]]: int32 column ids, ascending, -1 padded.
-
-    Ties at the k-th value keep the smaller column and -inf is never picked, so the result is a pure function
-    of the scores. One pass over each row checks that the smallest score of proposal[i] (any [rows, topk]
-    candidate set, -1 allowed) is the exact k-th value; the answer is then the sorted proposal when nothing is
-    tied across it, or one index-ordered pass over the row. Other rows run an in-kernel radix select first.
-    Columns outside a row's range are never read."""
+    """Exact top-k of logits[i, row_starts[i]:row_ends[i]]: int32 column ids, ascending, -1 padded; ties at the
+    k-th value keep the smaller column and -inf is never picked. proposal [rows, topk] (-1 allowed) only sets the
+    speed: a row whose proposal fails the one-pass check runs an in-kernel radix select. Columns outside a row's
+    range are never read."""
     rows = logits.shape[0]
     out = torch.empty(rows, topk, dtype=torch.int32, device=logits.device)
     if rows == 0:

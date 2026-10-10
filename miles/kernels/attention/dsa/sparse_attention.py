@@ -55,9 +55,8 @@ class SparseAttentionConfig:
 _TILELANG_SMALL_HEADS = SparseAttentionConfig(forward_backend="tilelang", forward_threads=128)
 
 # Measured per layer at 16k / 64k tokens on H200 (9) and B300 / GB300 (10, identical winners) for GLM-5
-# (RoPE tail 64, topk 2048) and DeepSeek-V4.1 (no tail, topk 640). FlashMLA pads heads to 64. cuDNN's backward
-# beats the TileLang one on every row (H200 and GB300, 4k-64k, packed); the TileLang tunables are kept for shapes
-# cuDNN does not take.
+# (RoPE tail 64, topk 2048) and DeepSeek-V4.1 (no tail, topk 640). FlashMLA pads heads to 64. The TileLang backward
+# tunables apply where _default_config falls back from cuDNN.
 _TUNED = {
     (10, True, 8): SparseAttentionConfig(backward_backend="cudnn", backward_stages=2, backward_split_store=1),
     (10, True, 16): SparseAttentionConfig(backward_backend="cudnn", backward_stages=2, backward_split_store=1),
@@ -79,8 +78,7 @@ _TUNED = {
     (9, False, 64): SparseAttentionConfig(backward_backend="cudnn", backward_split_store=4),
 }
 
-# (arch major, heads bucket) where the TileLang backward beats cuDNN when topk <= _SHORT_TOPK (DeepSeek-V4
-# sliding-window layers): too little work per row to amortize compaction, and on sm100 the head padding to 64.
+# (arch major, heads bucket) where the TileLang backward beat cuDNN at topk <= _SHORT_TOPK (sliding-window layers)
 _TILELANG_BACKWARD_SHORT_TOPK = {(9, 8), (9, 16), (10, 8), (10, 16), (10, 32)}
 
 

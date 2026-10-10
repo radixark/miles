@@ -1,8 +1,4 @@
-"""The GDN layer's input RMSNorm: TE's fused zero-centred kernel ('te', the default) against the eager HF
-Qwen3NextRMSNorm ('hf') and a float64 reference. Both compute in fp32 and round once to bf16, so forward
-outputs agree to one bf16 ulp on a ~1e-5 fraction of elements (fp32 reduction order), and gradients carry
-the same error against float64. Both expose one ``weight`` holding w of the (1 + w) scale and nothing else,
-so checkpoints and HF conversion are unchanged."""
+"""The TE input RMSNorm of the GDN layer matches the eager HF one and keeps its single `weight` parameter."""
 
 import sys
 

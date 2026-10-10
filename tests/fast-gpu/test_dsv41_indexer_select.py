@@ -1,9 +1,4 @@
-"""DeepSeek-V4.1 indexer_select with the canonical top-k against the torch top-k it replaces.
-
-The canonical path skips the clean pass and returns each row's picks in ascending order with -1 at the tail;
-the torch path sorts -1 to the front. Both must pick the same key set per query (scores are continuous, so
-there are no ties), across query chunks, a batch of 2, fewer keys than topk, and candidate-block masking.
-"""
+"""DeepSeek-V4.1 indexer_select with the canonical top-k picks the same keys per query as the torch top-k."""
 
 import sys
 
