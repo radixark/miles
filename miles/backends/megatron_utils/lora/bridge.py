@@ -168,6 +168,8 @@ def _setup_lora_model_via_bridge(args: Namespace) -> list:
     provider.variable_seq_lengths = True
     provider.moe_token_dispatcher_type = "alltoall"
     provider.moe_router_load_balancing_type = "none"
+    # Mirror the Megatron arg; the GLM-5 bridge defaults this to True, which trips a Bridge LoRA adapter bug.
+    provider.moe_shared_expert_overlap = bool(getattr(args, "moe_shared_expert_overlap", False))
     if is_multi_lora_enabled(args):
         assert not args.enable_mtp_training, "Multi-LoRA does not support MTP training"
         provider.mtp_num_layers = None
