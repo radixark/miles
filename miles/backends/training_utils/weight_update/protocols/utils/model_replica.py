@@ -1,5 +1,7 @@
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass
+from typing import NamedTuple
 
 import torch
 from sglang.srt import server_args as server_args_module
@@ -8,10 +10,13 @@ from sglang.srt.configs.load_config import LoadConfig
 from sglang.srt.configs.model_config import ModelConfig
 from sglang.srt.distributed.parallel_state import ParallelismContext, RankParallelismConfig
 from sglang.srt.layers.moe import initialize_moe_config
+from sglang.srt.layers.quantization.base_config import QuantizeMethodBase
 from sglang.srt.layers.quantization.fp4_utils import initialize_fp4_gemm_config
 from sglang.srt.layers.quantization.fp8_utils import initialize_fp8_gemm_config
 from sglang.srt.model_loader import get_model
+from sglang.srt.model_loader.loader import DefaultModelLoader
 from sglang.srt.model_loader.parameter_mapper import ParameterMapper
+from sglang.srt.runtime_context import get_server_args
 from sglang.srt.server_args import ServerArgs
 
 from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
@@ -23,6 +28,9 @@ from miles.utils.workers.argv_utils import _record_field_names
 
 # where a rank sits in the launch, not how it holds its weights
 _PLACEMENT_PARALLELISM_FIELDS = frozenset({"global_rank", "local_rank"})
+
+# a multiple of every element size, so the bytes of any param view as its dtype
+_PARAM_ALIGNMENT_BYTES = 256
 
 
 @dataclass(frozen=True)
@@ -79,6 +87,303 @@ def _get_shard_layout_server_args(server_args: ServerArgs) -> dict[str, object]:
     return {name: getattr(server_args, name) for name in field_names}
 
 
+def query_rollout_engine_rank_configs(
+    rollout_engines: Sequence[SGLangApiClient], assignments: Sequence[RolloutEngineRankAssignment]
+) -> dict[int, RolloutEngineRankConfig]:
+    """Returns the config of each rollout engine rank in `assignments`, by rollout engine rank.
+
+    All rollout engines of one rank must hold it the same way, since one model replica serves them.
+    """
+    configs_by_rollout_engine_rank = {}
+    for assignment in assignments:
+        configs = [
+            _query_config(rollout_engines[rollout_engine_ind], assignment.rollout_engine_rank)
+            for rollout_engine_ind in assignment.rollout_engine_indices
+        ]
+        for rollout_engine_ind, config in zip(assignment.rollout_engine_indices, configs, strict=True):
+            _assert_expert_placement_reproducible(config.server_args, rollout_engine_ind)
+        differing_fields = {
+            name
+            for config in configs[1:]
+            for name, _ in set(config.shard_layout_key) ^ set(configs[0].shard_layout_key)
+        }
+        assert not differing_fields, (
+            f"rollout engines {assignment.rollout_engine_indices} hold rank {assignment.rollout_engine_rank} in "
+            f"different layouts, so one model replica cannot serve them: they differ in {sorted(differing_fields)}"
+        )
+        configs_by_rollout_engine_rank[assignment.rollout_engine_rank] = configs[0]
+    return configs_by_rollout_engine_rank
+
+
+def _query_config(rollout_engine: SGLangApiClient, rollout_engine_rank: int) -> RolloutEngineRankConfig:
+    parallelism_info = async_utils.run(rollout_engine.get_parallelism_info(rank=rollout_engine_rank))
+    server_info = async_utils.run(rollout_engine.get_server_info())
+    return RolloutEngineRankConfig(
+        parallelism=RankParallelismConfig.from_dict(parallelism_info),
+        server_args=create_server_args_from_dict(server_info),
+    )
+
+
+def create_server_args_from_dict(data_dict: dict) -> ServerArgs:
+    valid_fields = set(_record_field_names(ServerArgs))
+    filtered_data = {k: v for k, v in data_dict.items() if k in valid_fields}
+    return ServerArgs(**filtered_data)
+
+
+def _assert_expert_placement_reproducible(server_args: ServerArgs, rollout_engine_ind: int) -> None:
+    # the engine places these experts by its expert-location metadata, runtime rebalancing or CPU offload; a model
+    # replica loads every expert into its default slot
+    unreproducible_fields = [
+        name
+        for name, is_in_use in (
+            ("ep_num_redundant_experts", server_args.ep_num_redundant_experts != 0),
+            ("init_expert_location", server_args.init_expert_location != "trivial"),
+            ("enable_eplb", server_args.enable_eplb),
+            ("ep_join_mode", server_args.ep_join_mode is not None),
+            ("elastic_ep_initial_size", server_args.elastic_ep_initial_size is not None),
+            ("dwdp_size", server_args.dwdp_size != 1),
+            ("kt_weight_path", server_args.kt_weight_path is not None),
+        )
+        if is_in_use
+    ]
+    assert not unreproducible_fields, (
+        f"rollout engine {rollout_engine_ind} places experts by {', '.join(unreproducible_fields)}, which a model "
+        "replica does not reproduce, so p2p would write experts into the wrong slots. Update its weights with "
+        "another --update-weight-transfer-mode."
+    )
+
+
+class TransferBufferParamLayout(NamedTuple):
+    """How one param's bytes are laid out in a transfer buffer: as the engine's param is after
+    `restore_weights_before_loading`, which is what its loader writes into."""
+
+    shape: torch.Size
+    stride: tuple[int, ...]
+    dtype: torch.dtype
+    occupied_nbytes: int
+
+    @classmethod
+    def from_tensor(cls, tensor: torch.Tensor) -> "TransferBufferParamLayout":
+        return cls(tensor.shape, tensor.stride(), tensor.dtype, _compute_occupied_nbytes(tensor))
+
+
+def _compute_occupied_nbytes(tensor: torch.Tensor) -> int:
+    """The bytes a tensor's elements cover in memory, from its first element to its last; `numel × element_size`
+    when it is contiguous, more when its strides leave gaps."""
+    if tensor.numel() == 0:
+        return 0
+    last_element_offset = sum((size - 1) * stride for size, stride in zip(tensor.shape, tensor.stride(), strict=True))
+    return (last_element_offset + 1) * tensor.element_size()
+
+
+class ModelReplica:
+    """An sglang model in one rollout engine rank's layout, without parameter storage, that turns HF weights into
+    the bytes that rank's loader would write.
+
+    Its params are 0-size, and their shapes and attributes are those the engine's params have while it loads an
+    update. The p2p protocol loads each group of ready params into a transfer buffer with `load_into` and writes the
+    returned bytes into the rollout engine ranks of this layout.
+    """
+
+    def __init__(
+        self,
+        model: torch.nn.Module,
+        built_shapes_by_name: Mapping[str, torch.Size],
+        config: RolloutEngineRankConfig,
+        *,
+        postprocess_device: torch.device,
+    ) -> None:
+        # some models call it from their own load_weights; the engine runs it after the writes
+        if hasattr(model, "post_load_weights"):
+            model.post_load_weights = lambda *args, **kwargs: None
+        self._model = model
+        self._config = config
+        self.transfer_buffer_param_layouts = _bring_to_reload_state(
+            model, built_shapes_by_name, config.parallelism, postprocess_device
+        )
+        self._params_by_name = dict(model.named_parameters())
+        self.param_mapper = ParameterMapper.from_model(model)
+
+    def load_into(
+        self, buffer: torch.Tensor, param_names: Sequence[str], hf_tensors: list[tuple[str, torch.Tensor]]
+    ) -> dict[str, torch.Tensor]:
+        """Loads `hf_tensors`, the HF tensors of exactly `param_names`, into the uint8 `buffer`; returns the bytes
+        of each param in `buffer`, by name.
+
+        `pack_into_buffers` gives groups of params that fit one buffer. Raises if loading changed a param in any way
+        but its bytes, since a write carries only bytes to the rollout engine.
+        """
+        # sglang keeps one live config per process; load under the one this replica was built with
+        if get_server_args() is not self._config.server_args:
+            _publish_server_args(self._config.server_args)
+        param_bytes_by_name = _slice_buffer_by_param(buffer, param_names, self.transfer_buffer_param_layouts)
+        with self._bind_params_to_bytes(param_bytes_by_name) as bound_params_by_name:
+            state_before_load_by_name = {
+                name: _get_param_state_besides_bytes(param) for name, param in bound_params_by_name.items()
+            }
+            with ParallelismContext(self._config.parallelism):
+                self._model.load_weights(hf_tensors)
+            self._assert_params_changed_only_bytes(bound_params_by_name, state_before_load_by_name)
+        return param_bytes_by_name
+
+    @contextmanager
+    def _bind_params_to_bytes(
+        self, param_bytes_by_name: Mapping[str, torch.Tensor]
+    ) -> Iterator[dict[str, torch.nn.Parameter]]:
+        bound_params_by_name = {name: self._params_by_name[name] for name in param_bytes_by_name}
+        try:
+            for name, param in bound_params_by_name.items():
+                param.data = _view_bytes_as_param(param_bytes_by_name[name], self.transfer_buffer_param_layouts[name])
+            yield bound_params_by_name
+        finally:
+            for param in bound_params_by_name.values():
+                param.data = torch.empty(0, dtype=param.dtype)
+
+    def _assert_params_changed_only_bytes(
+        self, bound_params_by_name: Mapping[str, torch.nn.Parameter], state_before_load_by_name: Mapping[str, tuple]
+    ) -> None:
+        params_after_load_by_name = dict(self._model.named_parameters())
+        changed_param_names = [
+            name
+            for name, param in bound_params_by_name.items()
+            if params_after_load_by_name[name] is not param
+            or _get_param_state_besides_bytes(param) != state_before_load_by_name[name]
+        ]
+        assert not changed_param_names, (
+            f"loading changed more than the bytes of {', '.join(changed_param_names[:5])} "
+            f"({len(changed_param_names)} in all); the rollout engine receives only bytes, so its param would keep "
+            "the old shape, storage or attributes"
+        )
+
+
+def _bring_to_reload_state(
+    model: torch.nn.Module,
+    built_shapes_by_name: Mapping[str, torch.Size],
+    parallelism: RankParallelismConfig,
+    postprocess_device: torch.device,
+) -> dict[str, TransferBufferParamLayout]:
+    """Runs the engine's startup postprocess and session restore on `model`, one module at a time on zero tensors,
+    and returns the transfer buffer layout of each param afterwards, by name. Every param ends 0-size on the CPU."""
+    built_shapes_by_param_id = {id(param): built_shapes_by_name[name] for name, param in model.named_parameters()}
+    reload_layouts_by_param_id = {}
+    for module_name, module in model.named_modules():
+        # modules without one keep their params as built
+        if getattr(module, "quant_method", None) is not None:
+            reload_layouts_by_param_id |= _bring_module_to_reload_state(
+                module_name, module, built_shapes_by_param_id, parallelism, postprocess_device
+            )
+
+    param_layouts = {}
+    for name, param in model.named_parameters():
+        if id(param) in reload_layouts_by_param_id:
+            param_layouts[name] = reload_layouts_by_param_id[id(param)]
+        else:
+            built_param = torch.empty(built_shapes_by_name[name], dtype=param.dtype, device="meta")
+            param_layouts[name] = TransferBufferParamLayout.from_tensor(built_param)
+    return param_layouts
+
+
+def _bring_module_to_reload_state(
+    module_name: str,
+    module: torch.nn.Module,
+    built_shapes_by_param_id: Mapping[int, torch.Size],
+    parallelism: RankParallelismConfig,
+    postprocess_device: torch.device,
+) -> dict[int, TransferBufferParamLayout]:
+    for param in module.parameters(recurse=False):
+        param.data = torch.zeros(built_shapes_by_param_id[id(param)], dtype=param.dtype, device=postprocess_device)
+    with ParallelismContext(parallelism):
+        module.quant_method.process_weights_after_loading(module)
+        # as the engine does: duck-typed quant methods have no restore
+        if isinstance(module.quant_method, QuantizeMethodBase):
+            module.quant_method.restore_weights_before_loading(module)
+
+    reload_layouts_by_param_id = {}
+    # one entry per Parameter, though postprocess may register one under two names
+    for param_name, param in module.named_parameters(recurse=False):
+        assert param.device.type != "meta", (
+            f"the postprocess of {module_name} left {param_name} on meta; it must have read a tensor that "
+            "construction without storage does not allocate"
+        )
+        reload_layouts_by_param_id[id(param)] = TransferBufferParamLayout.from_tensor(param)
+        param.data = torch.empty(0, dtype=param.dtype)
+    return reload_layouts_by_param_id
+
+
+def _slice_buffer_by_param(
+    buffer: torch.Tensor, param_names: Sequence[str], param_layouts: Mapping[str, TransferBufferParamLayout]
+) -> dict[str, torch.Tensor]:
+    """Lays `param_names` out one after another in the uint8 `buffer`, each start aligned; returns the bytes each
+    param occupies, by name."""
+    param_bytes_by_name, param_end_offset = {}, 0
+    for name in param_names:
+        param_start_offset = _align_param_start(param_end_offset)
+        param_end_offset = param_start_offset + param_layouts[name].occupied_nbytes
+        assert param_end_offset <= buffer.numel(), (
+            f"{', '.join(param_names)} do not fit a {buffer.numel()}-byte transfer buffer; group them with "
+            "pack_into_buffers"
+        )
+        param_bytes_by_name[name] = buffer[param_start_offset:param_end_offset]
+    return param_bytes_by_name
+
+
+def _align_param_start(offset: int) -> int:
+    return -(-offset // _PARAM_ALIGNMENT_BYTES) * _PARAM_ALIGNMENT_BYTES
+
+
+def _view_bytes_as_param(param_bytes: torch.Tensor, param_layout: TransferBufferParamLayout) -> torch.Tensor:
+    return torch.as_strided(param_bytes.view(param_layout.dtype), param_layout.shape, param_layout.stride)
+
+
+def _get_param_state_besides_bytes(param: torch.nn.Parameter) -> tuple:
+    attributes = {
+        key: value if isinstance(value, bool | int | float | str | None) else id(value)
+        for key, value in vars(param).items()
+    }
+    return param.shape, param.stride(), param.dtype, param.data_ptr(), attributes
+
+
+def build_model_replica(config: RolloutEngineRankConfig, model_path: str) -> ModelReplica:
+    """Builds the model replica of `config`'s layout. The build holds about one module's params at a time on this
+    process's GPU and frees them before it returns."""
+    _publish_server_args(config.server_args)
+    with ParallelismContext(config.parallelism):
+        model, built_shapes_by_name = DefaultModelLoader(LoadConfig()).initialize_model_without_storage(
+            model_config=ModelConfig.from_server_args(config.server_args, model_path=model_path),
+            device=torch.device("cpu"),
+        )
+    return ModelReplica(
+        model, built_shapes_by_name, config, postprocess_device=torch.device("cuda", torch.cuda.current_device())
+    )
+
+
+def _publish_server_args(server_args: ServerArgs) -> None:
+    # model construction and quant methods read these process-wide settings
+    server_args_module.set_global_server_args_for_scheduler(server_args)
+    initialize_moe_config()
+    initialize_fp8_gemm_config()
+    initialize_fp4_gemm_config()
+
+
+def pack_into_buffers(
+    param_names: Iterable[str], param_layouts: Mapping[str, TransferBufferParamLayout], buffer_nbytes: int
+) -> Iterator[list[str]]:
+    """Splits `param_names`, in order, into groups that `ModelReplica.load_into` can each load into one transfer
+    buffer of `buffer_nbytes`."""
+    group_param_names, group_end_offset = [], 0
+    for name in param_names:
+        param_nbytes = param_layouts[name].occupied_nbytes
+        assert param_nbytes <= buffer_nbytes, f"{name} needs {param_nbytes} bytes, a buffer has {buffer_nbytes}"
+        param_start_offset = _align_param_start(group_end_offset)
+        if group_param_names and param_start_offset + param_nbytes > buffer_nbytes:
+            yield group_param_names
+            group_param_names, param_start_offset = [], 0
+        group_param_names.append(name)
+        group_end_offset = param_start_offset + param_nbytes
+    if group_param_names:
+        yield group_param_names
+
+
 class ModelReplicas:
     """Model replicas that load HF weights in rollout engine ranks' layouts, one per shard layout.
 
@@ -118,91 +423,6 @@ class ModelReplicas:
         return model_replica
 
 
-def query_rollout_engine_rank_configs(
-    rollout_engines: Sequence[SGLangApiClient], assignments: Sequence[RolloutEngineRankAssignment]
-) -> dict[int, RolloutEngineRankConfig]:
-    """Returns the config of each rollout engine rank in `assignments`, by rollout engine rank.
-
-    All rollout engines of one rank must hold it the same way, since one model replica serves them.
-    """
-    configs_by_rollout_engine_rank = {}
-    for assignment in assignments:
-        configs = [
-            _query_config(rollout_engines[rollout_engine_ind], assignment.rollout_engine_rank)
-            for rollout_engine_ind in assignment.rollout_engine_indices
-        ]
-        for rollout_engine_ind, config in zip(assignment.rollout_engine_indices, configs, strict=True):
-            _assert_expert_placement_reproducible(config.server_args, rollout_engine_ind)
-        differing_fields = {
-            name
-            for config in configs[1:]
-            for name, _ in set(config.shard_layout_key) ^ set(configs[0].shard_layout_key)
-        }
-        assert not differing_fields, (
-            f"rollout engines {assignment.rollout_engine_indices} hold rank {assignment.rollout_engine_rank} in "
-            f"different layouts, so one model replica cannot serve them: they differ in {sorted(differing_fields)}"
-        )
-        configs_by_rollout_engine_rank[assignment.rollout_engine_rank] = configs[0]
-    return configs_by_rollout_engine_rank
-
-
-def assert_replica_matches_shard(
-    model_replica: torch.nn.Module, published_nbytes_by_name: Mapping[str, int], published_by: str
-) -> None:
-    """The replica must hold exactly the weights a rollout engine rank publishes, each in the published number of
-    bytes; otherwise what it loads cannot be written into that rank's memory."""
-    replica_nbytes_by_name = {
-        name: param.numel() * param.element_size() for name, param in model_replica.named_parameters()
-    }
-    mismatches = [
-        f"{name} is {replica_nbytes_by_name.get(name)} bytes here, {published_nbytes_by_name.get(name)} there"
-        for name in sorted(replica_nbytes_by_name.keys() | published_nbytes_by_name.keys())
-        if replica_nbytes_by_name.get(name) != published_nbytes_by_name.get(name)
-    ]
-    assert not mismatches, (
-        f"the model replica does not match the weights {published_by} publishes: "
-        f"{', '.join(mismatches[:5])} ({len(mismatches)} in all)"
-    )
-
-
-def create_server_args_from_dict(data_dict: dict) -> ServerArgs:
-    valid_fields = set(_record_field_names(ServerArgs))
-    filtered_data = {k: v for k, v in data_dict.items() if k in valid_fields}
-    return ServerArgs(**filtered_data)
-
-
-def _assert_expert_placement_reproducible(server_args: ServerArgs, rollout_engine_ind: int) -> None:
-    # the engine places these experts by its expert-location metadata, runtime rebalancing or CPU offload; a model
-    # replica loads every expert into its default slot
-    unreproducible_fields = [
-        name
-        for name, is_in_use in (
-            ("ep_num_redundant_experts", server_args.ep_num_redundant_experts != 0),
-            ("init_expert_location", server_args.init_expert_location != "trivial"),
-            ("enable_eplb", server_args.enable_eplb),
-            ("ep_join_mode", server_args.ep_join_mode is not None),
-            ("elastic_ep_initial_size", server_args.elastic_ep_initial_size is not None),
-            ("dwdp_size", server_args.dwdp_size != 1),
-            ("kt_weight_path", server_args.kt_weight_path is not None),
-        )
-        if is_in_use
-    ]
-    assert not unreproducible_fields, (
-        f"rollout engine {rollout_engine_ind} places experts by {', '.join(unreproducible_fields)}, which a model "
-        "replica does not reproduce, so p2p would write experts into the wrong slots. Update its weights with "
-        "another --update-weight-transfer-mode."
-    )
-
-
-def _query_config(rollout_engine: SGLangApiClient, rollout_engine_rank: int) -> RolloutEngineRankConfig:
-    parallelism_info = async_utils.run(rollout_engine.get_parallelism_info(rank=rollout_engine_rank))
-    server_info = async_utils.run(rollout_engine.get_server_info())
-    return RolloutEngineRankConfig(
-        parallelism=RankParallelismConfig.from_dict(parallelism_info),
-        server_args=create_server_args_from_dict(server_info),
-    )
-
-
 def _build_cpu_replica(config: RolloutEngineRankConfig, model_path: str) -> torch.nn.Module:
     """Create a CPU model replica that loads the right shard and skips post_load_weights."""
     load_config = LoadConfig(
@@ -210,10 +430,7 @@ def _build_cpu_replica(config: RolloutEngineRankConfig, model_path: str) -> torc
         model_loader_extra_config=None,
         rl_quant_profile=config.server_args.rl_quant_profile,
     )
-    server_args_module.set_global_server_args_for_scheduler(config.server_args)
-    initialize_moe_config()
-    initialize_fp8_gemm_config()
-    initialize_fp4_gemm_config()
+    _publish_server_args(config.server_args)
 
     # Monkey-patch the loader-level post_load_weights to no-op BEFORE get_model,
     # because get_model() calls post_load_weights() internally (loader.py:1310)
@@ -240,3 +457,22 @@ def _build_cpu_replica(config: RolloutEngineRankConfig, model_path: str) -> torc
         model.post_load_weights = lambda *args, **kwargs: None
 
     return model
+
+
+def assert_replica_matches_shard(
+    model_replica: torch.nn.Module, published_nbytes_by_name: Mapping[str, int], published_by: str
+) -> None:
+    """The replica must hold exactly the weights a rollout engine rank publishes, each in the published number of
+    bytes; otherwise what it loads cannot be written into that rank's memory."""
+    replica_nbytes_by_name = {
+        name: param.numel() * param.element_size() for name, param in model_replica.named_parameters()
+    }
+    mismatches = [
+        f"{name} is {replica_nbytes_by_name.get(name)} bytes here, {published_nbytes_by_name.get(name)} there"
+        for name in sorted(replica_nbytes_by_name.keys() | published_nbytes_by_name.keys())
+        if replica_nbytes_by_name.get(name) != published_nbytes_by_name.get(name)
+    ]
+    assert not mismatches, (
+        f"the model replica does not match the weights {published_by} publishes: "
+        f"{', '.join(mismatches[:5])} ({len(mismatches)} in all)"
+    )

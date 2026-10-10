@@ -344,10 +344,17 @@ def p2p_protocol() -> ModuleType:
                 "RankParallelismConfig": object,
             },
             "sglang.srt.layers.moe": {"initialize_moe_config": lambda *args, **kwargs: None},
+            "sglang.srt.layers.quantization.base_config": {
+                "QuantizeMethodBase": type(
+                    "QuantizeMethodBase", (), {"restore_weights_before_loading": lambda self, layer: None}
+                )
+            },
             "sglang.srt.layers.quantization.fp4_utils": {"initialize_fp4_gemm_config": lambda *args, **kwargs: None},
             "sglang.srt.layers.quantization.fp8_utils": {"initialize_fp8_gemm_config": lambda *args, **kwargs: None},
             "sglang.srt.model_loader": {"get_model": lambda *args, **kwargs: None},
+            "sglang.srt.model_loader.loader": {"DefaultModelLoader": object},
             "sglang.srt.model_loader.parameter_mapper": {"ParameterMapper": object},
+            "sglang.srt.runtime_context": {"get_server_args": lambda: None},
         }
     ):
         return importlib.import_module(_P2P_PROTOCOL_MODULE)

@@ -37,12 +37,9 @@ class TestGetTransferReadyParams:
         stager, mapper, params_dict = _stager_with({"hf.embed": _FakeMapping("embed", num_shards=1)}, ["embed"])
         tensor = torch.zeros(2)
 
-        ready_params, ready_tensors = stager.get_transfer_ready_params(
-            [("hf.embed", tensor)], param_mapper=mapper, params_dict=params_dict
-        )
+        ready = stager.get_transfer_ready_params([("hf.embed", tensor)], param_mapper=mapper, params_dict=params_dict)
 
-        assert ready_params == ["embed"]
-        assert ready_tensors == [("hf.embed", tensor)]
+        assert ready == {"embed": [("hf.embed", tensor)]}
         stager.assert_all_done()
 
     def test_a_fused_parameter_waits_until_every_shard_has_been_staged(self) -> None:
@@ -65,12 +62,9 @@ class TestGetTransferReadyParams:
             [("hf.v", tensors["hf.v"])], param_mapper=mapper, params_dict=params_dict
         )
 
-        assert first == ([], [])
-        assert second == ([], [])
-        assert third == (
-            ["qkv_proj"],
-            [("hf.q", tensors["hf.q"]), ("hf.k", tensors["hf.k"]), ("hf.v", tensors["hf.v"])],
-        )
+        assert first == {}
+        assert second == {}
+        assert third == {"qkv_proj": [("hf.q", tensors["hf.q"]), ("hf.k", tensors["hf.k"]), ("hf.v", tensors["hf.v"])]}
         stager.assert_all_done()
 
     def test_all_shards_of_a_fused_parameter_inside_one_bucket_are_returned_together(self) -> None:
@@ -82,14 +76,13 @@ class TestGetTransferReadyParams:
         stager, mapper, params_dict = _stager_with(mappings, ["qkv_proj"])
         tensors = {name: torch.zeros(2) for name in mappings}
 
-        ready_params, ready_tensors = stager.get_transfer_ready_params(
+        ready = stager.get_transfer_ready_params(
             [("hf.q", tensors["hf.q"]), ("hf.k", tensors["hf.k"])],
             param_mapper=mapper,
             params_dict=params_dict,
         )
 
-        assert ready_params == ["qkv_proj"]
-        assert ready_tensors == [("hf.q", tensors["hf.q"]), ("hf.k", tensors["hf.k"])]
+        assert ready == {"qkv_proj": [("hf.q", tensors["hf.q"]), ("hf.k", tensors["hf.k"])]}
 
     def test_an_expert_parameter_expects_one_shard_per_local_expert(self) -> None:
         """MoE weights are fused over experts too, so the expected count multiplies by the local expert count."""
@@ -104,13 +97,13 @@ class TestGetTransferReadyParams:
         partial = stager.get_transfer_ready_params(
             [(name, torch.zeros(1)) for name in names[:3]], param_mapper=mapper, params_dict=params_dict
         )
-        ready_params, ready_tensors = stager.get_transfer_ready_params(
+        ready = stager.get_transfer_ready_params(
             [(names[3], torch.zeros(1))], param_mapper=mapper, params_dict=params_dict
         )
 
-        assert partial == ([], [])
-        assert ready_params == ["w13"]
-        assert [name for name, _tensor in ready_tensors] == names
+        assert partial == {}
+        assert list(ready) == ["w13"]
+        assert [name for name, _tensor in ready["w13"]] == names
 
     def test_a_parameter_missing_from_the_replica_is_skipped_without_being_staged(self) -> None:
         """The shared replica holds only the target's shard, so unknown mapped names must not accumulate."""
@@ -120,14 +113,14 @@ class TestGetTransferReadyParams:
         }
         stager, mapper, params_dict = _stager_with(mappings, ["embed"])
 
-        ready_params, ready_tensors = stager.get_transfer_ready_params(
+        ready = stager.get_transfer_ready_params(
             [("hf.unknown", torch.zeros(1)), ("hf.embed", torch.zeros(1))],
             param_mapper=mapper,
             params_dict=params_dict,
         )
 
-        assert ready_params == ["embed"]
-        assert [name for name, _tensor in ready_tensors] == ["hf.embed"]
+        assert list(ready) == ["embed"]
+        assert [name for name, _tensor in ready["embed"]] == ["hf.embed"]
         stager.assert_all_done()
 
     def test_two_fused_parameters_are_accumulated_independently(self) -> None:
@@ -143,23 +136,45 @@ class TestGetTransferReadyParams:
         first = stager.get_transfer_ready_params(
             [("hf.q", torch.zeros(1)), ("hf.gate", torch.zeros(1))], param_mapper=mapper, params_dict=params_dict
         )
-        ready_params, ready_tensors = stager.get_transfer_ready_params(
+        ready = stager.get_transfer_ready_params(
             [("hf.up", torch.zeros(1))], param_mapper=mapper, params_dict=params_dict
         )
 
-        assert first == ([], [])
-        assert ready_params == ["gate_up_proj"]
-        assert [name for name, _tensor in ready_tensors] == ["hf.gate", "hf.up"]
+        assert first == {}
+        assert list(ready) == ["gate_up_proj"]
+        assert [name for name, _tensor in ready["gate_up_proj"]] == ["hf.gate", "hf.up"]
         with pytest.raises(AssertionError, match="qkv_proj"):
             stager.assert_all_done()
 
-        ready_params, ready_tensors = stager.get_transfer_ready_params(
+        ready = stager.get_transfer_ready_params(
             [("hf.k", torch.zeros(1))], param_mapper=mapper, params_dict=params_dict
         )
 
-        assert ready_params == ["qkv_proj"]
-        assert [name for name, _tensor in ready_tensors] == ["hf.q", "hf.k"]
+        assert list(ready) == ["qkv_proj"]
+        assert [name for name, _tensor in ready["qkv_proj"]] == ["hf.q", "hf.k"]
         stager.assert_all_done()
+
+    def test_parameters_completed_in_one_bucket_keep_their_own_hf_tensors(self) -> None:
+        """Each parameter is loaded into a transfer buffer with only its own HF tensors, so completing several at once
+        must not mix them."""
+        mappings = {
+            "hf.q": _FakeMapping("qkv_proj", num_shards=2),
+            "hf.k": _FakeMapping("qkv_proj", num_shards=2),
+            "hf.gate": _FakeMapping("gate_up_proj", num_shards=2),
+            "hf.up": _FakeMapping("gate_up_proj", num_shards=2),
+        }
+        stager, mapper, params_dict = _stager_with(mappings, ["qkv_proj", "gate_up_proj"])
+
+        ready = stager.get_transfer_ready_params(
+            [(name, torch.zeros(1)) for name in ("hf.q", "hf.gate", "hf.k", "hf.up")],
+            param_mapper=mapper,
+            params_dict=params_dict,
+        )
+
+        assert {param_name: [name for name, _tensor in hf_tensors] for param_name, hf_tensors in ready.items()} == {
+            "qkv_proj": ["hf.q", "hf.k"],
+            "gate_up_proj": ["hf.gate", "hf.up"],
+        }
 
 
 class TestStagerLifecycle:
@@ -168,16 +183,15 @@ class TestStagerLifecycle:
         stager, mapper, params = _stager_with({"q": _FakeMapping("qkv", 2), "k": _FakeMapping("qkv", 2)}, ["qkv"])
         q, k = torch.ones(2), torch.full((2,), 2)
 
-        assert stager.get_transfer_ready_params([], param_mapper=mapper, params_dict=params) == ([], [])
+        assert stager.get_transfer_ready_params([], param_mapper=mapper, params_dict=params) == {}
         stager.get_transfer_ready_params([("q", q)], param_mapper=mapper, params_dict=params)
-        assert stager.get_transfer_ready_params([], param_mapper=mapper, params_dict=params) == ([], [])
+        assert stager.get_transfer_ready_params([], param_mapper=mapper, params_dict=params) == {}
         with pytest.raises(AssertionError, match="qkv"):
             stager.assert_all_done()
 
-        assert stager.get_transfer_ready_params([("k", k)], param_mapper=mapper, params_dict=params) == (
-            ["qkv"],
-            [("q", q), ("k", k)],
-        )
+        assert stager.get_transfer_ready_params([("k", k)], param_mapper=mapper, params_dict=params) == {
+            "qkv": [("q", q), ("k", k)]
+        }
         stager.assert_all_done()
 
     def test_a_completed_update_does_not_leak_tensors_into_the_next_update(self) -> None:
@@ -186,10 +200,11 @@ class TestStagerLifecycle:
 
         for version in range(2):
             q, k = torch.full((2,), version), torch.full((2,), version + 10)
-            assert stager.get_transfer_ready_params([("q", q)], param_mapper=mapper, params_dict=params) == ([], [])
-            ready, tensors = stager.get_transfer_ready_params([("k", k)], param_mapper=mapper, params_dict=params)
+            assert stager.get_transfer_ready_params([("q", q)], param_mapper=mapper, params_dict=params) == {}
+            ready = stager.get_transfer_ready_params([("k", k)], param_mapper=mapper, params_dict=params)
 
-            assert ready == ["qkv"]
+            assert list(ready) == ["qkv"]
+            tensors = ready["qkv"]
             assert tensors[0][0] == "q" and tensors[0][1] is q
             assert tensors[1][0] == "k" and tensors[1][1] is k
             assert len(tensors) == 2
@@ -200,14 +215,8 @@ class TestStagerLifecycle:
         first, mapper, params = _stager_with({"q": _FakeMapping("qkv", 2), "k": _FakeMapping("qkv", 2)}, ["qkv"])
         second = ModelParamStager()
 
-        assert first.get_transfer_ready_params([("q", torch.ones(1))], param_mapper=mapper, params_dict=params) == (
-            [],
-            [],
-        )
-        assert second.get_transfer_ready_params([("k", torch.ones(1))], param_mapper=mapper, params_dict=params) == (
-            [],
-            [],
-        )
+        assert first.get_transfer_ready_params([("q", torch.ones(1))], param_mapper=mapper, params_dict=params) == {}
+        assert second.get_transfer_ready_params([("k", torch.ones(1))], param_mapper=mapper, params_dict=params) == {}
         for stager in (first, second):
             with pytest.raises(AssertionError, match="qkv"):
                 stager.assert_all_done()
@@ -219,16 +228,11 @@ class TestStagerLifecycle:
             {name: _FakeMapping("qkv", 2, num_experts) for name in ("q", "k")}, ["qkv"]
         )
 
-        assert stager.get_transfer_ready_params([("q", torch.ones(1))], param_mapper=mapper, params_dict=params) == (
-            [],
-            [],
-        )
-        ready, tensors = stager.get_transfer_ready_params(
-            [("k", torch.ones(1))], param_mapper=mapper, params_dict=params
-        )
+        assert stager.get_transfer_ready_params([("q", torch.ones(1))], param_mapper=mapper, params_dict=params) == {}
+        ready = stager.get_transfer_ready_params([("k", torch.ones(1))], param_mapper=mapper, params_dict=params)
 
-        assert ready == ["qkv"]
-        assert [name for name, _ in tensors] == ["q", "k"]
+        assert list(ready) == ["qkv"]
+        assert [name for name, _ in ready["qkv"]] == ["q", "k"]
         stager.assert_all_done()
 
 

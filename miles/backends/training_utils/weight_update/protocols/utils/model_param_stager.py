@@ -21,19 +21,13 @@ class ModelParamStager:
         converted_named_tensors: list[tuple[str, torch.Tensor]],
         param_mapper: ParameterMapper,
         params_dict: dict[str, torch.Tensor],
-    ) -> tuple[list[str], list[tuple[str, torch.Tensor]]]:
-        """Determine which sglang params have all shards present, returning their accumulated tensors.
+    ) -> dict[str, list[tuple[str, torch.Tensor]]]:
+        """Stages `converted_named_tensors` and returns the HF tensors of each sglang param that became complete, by
+        sglang param name.
 
-        Some parameters are trained separately on the training side but fused into a
-        single tensor on the rollout side (e.g., Q/K/V projections are separate in
-        Megatron but merged into one qkv_proj in sglang). This function stages
-        incoming HF tensors in self._staged_tensors until all shards for a
-        sglang param are collected. Only returns tensors for fully-ready params,
-        preventing partial load_weights() calls that would corrupt the shared buffer.
-
-        Return:
-            transfer_ready_params: tensors' names for the ones ready to be transferred.
-            ready_hf_tensor: corresponding complete tensors ready to be transferred.
+        sglang fuses several HF tensors into one param (q/k/v into `qkv_proj`, every expert's gate and up into
+        `w13_weight`), and they can arrive in different buckets; a load of a param missing some of them would leave
+        part of its bytes unwritten.
         """
         transfer_ready_params = []
 
@@ -66,13 +60,12 @@ class ModelParamStager:
                 if self._tensor_update_pending[mapped] == 0:
                     transfer_ready_params.append(mapped)
 
-        ready_hf_tensors: list[tuple[str, torch.Tensor]] = []
-        for param_name in transfer_ready_params:
-            staged = self._staged_tensors.pop(param_name, [])
-            ready_hf_tensors.extend(staged)
+        ready_hf_tensors_by_param_name: dict[str, list[tuple[str, torch.Tensor]]] = {}
+        for param_name in dict.fromkeys(transfer_ready_params):
+            ready_hf_tensors_by_param_name[param_name] = self._staged_tensors.pop(param_name, [])
             self._tensor_update_pending.pop(param_name, None)
 
-        return transfer_ready_params, ready_hf_tensors
+        return ready_hf_tensors_by_param_name
 
     def assert_all_done(self) -> None:
         assert len(self._tensor_update_pending) == 0 and len(self._staged_tensors) == 0, (
