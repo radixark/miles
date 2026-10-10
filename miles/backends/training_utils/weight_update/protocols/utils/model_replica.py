@@ -5,7 +5,6 @@ from typing import NamedTuple
 
 import torch
 from sglang.srt import server_args as server_args_module
-from sglang.srt.configs.device_config import DeviceConfig
 from sglang.srt.configs.load_config import LoadConfig
 from sglang.srt.configs.model_config import ModelConfig
 from sglang.srt.distributed.parallel_state import ParallelismContext, RankParallelismConfig
@@ -13,7 +12,6 @@ from sglang.srt.layers.moe import initialize_moe_config
 from sglang.srt.layers.quantization.base_config import QuantizeMethodBase
 from sglang.srt.layers.quantization.fp4_utils import initialize_fp4_gemm_config
 from sglang.srt.layers.quantization.fp8_utils import initialize_fp8_gemm_config
-from sglang.srt.model_loader import get_model
 from sglang.srt.model_loader.loader import DefaultModelLoader
 from sglang.srt.model_loader.parameter_mapper import ParameterMapper
 from sglang.srt.runtime_context import get_server_args
@@ -385,87 +383,50 @@ def pack_into_buffers(
 
 
 class ModelReplicas:
-    """Model replicas that load HF weights in rollout engine ranks' layouts, one per shard layout.
+    """The model replicas of a p2p sender, one per shard layout, kept for the whole trainer process.
 
-    The p2p protocol keeps one for the whole trainer process. The first replica's params, pinned, are the buffer
-    every later replica loads into and every write reads from, so the buffer is registered once and stays valid
-    across reconnects.
+    The p2p protocol asks it for the replica of each rollout engine rank it sends to. Every replica lays its params
+    out the same way in a transfer buffer, so one packing of ready params serves all of them.
     """
 
     def __init__(self, model_path: str) -> None:
         self._model_path = model_path
-        self._model_replicas_by_shard_layout_key: dict[tuple, torch.nn.Module] = {}
-        self.shared_params_dict: dict[str, torch.Tensor] = {}
+        self._model_replicas_by_shard_layout_key: dict[tuple, ModelReplica] = {}
+        self.transfer_buffer_param_layouts: dict[str, TransferBufferParamLayout] = {}
         self.param_mapper: ParameterMapper | None = None
 
-    def get_or_build(self, config: RolloutEngineRankConfig) -> torch.nn.Module:
+    def get_or_build(self, config: RolloutEngineRankConfig) -> ModelReplica:
         if config.shard_layout_key not in self._model_replicas_by_shard_layout_key:
             self._model_replicas_by_shard_layout_key[config.shard_layout_key] = self._build(config)
         return self._model_replicas_by_shard_layout_key[config.shard_layout_key]
 
-    def _build(self, config: RolloutEngineRankConfig) -> torch.nn.Module:
-        model_replica = _build_cpu_replica(config, self._model_path)
-        if not self.shared_params_dict:
-            for param in model_replica.parameters():
-                param.data = param.data.pin_memory()
-            self.shared_params_dict = dict(model_replica.named_parameters())
-            self.param_mapper = ParameterMapper.from_model(model_replica)
-            return model_replica
-
-        for name, param in model_replica.named_parameters():
-            assert name in self.shared_params_dict, f"[P2P-Shared] Parameter {name} not found in shared buffers"
-            shared = self.shared_params_dict[name]
-            assert param.shape == shared.shape and param.dtype == shared.dtype, (
-                f"[P2P-Shared] {name} is {tuple(param.shape)} {param.dtype} in the replica for "
-                f"{config.parallelism} but {tuple(shared.shape)} {shared.dtype} in the shared buffer"
+    def _build(self, config: RolloutEngineRankConfig) -> ModelReplica:
+        model_replica = build_model_replica(config, self._model_path)
+        if not self.transfer_buffer_param_layouts:
+            self.transfer_buffer_param_layouts = model_replica.transfer_buffer_param_layouts
+            self.param_mapper = model_replica.param_mapper
+        differing_param_names = [
+            name
+            for name in sorted(
+                self.transfer_buffer_param_layouts.keys() | model_replica.transfer_buffer_param_layouts.keys()
             )
-            param.data = shared
+            if self.transfer_buffer_param_layouts.get(name) != model_replica.transfer_buffer_param_layouts.get(name)
+        ]
+        assert not differing_param_names, (
+            f"the model replica for {config.parallelism} lays out {', '.join(differing_param_names[:5])} "
+            f"({len(differing_param_names)} in all) differently from this sender's other replicas, but one packing of "
+            "ready params serves all of them"
+        )
         return model_replica
 
 
-def _build_cpu_replica(config: RolloutEngineRankConfig, model_path: str) -> torch.nn.Module:
-    """Create a CPU model replica that loads the right shard and skips post_load_weights."""
-    load_config = LoadConfig(
-        load_format="dummy",
-        model_loader_extra_config=None,
-        rl_quant_profile=config.server_args.rl_quant_profile,
-    )
-    _publish_server_args(config.server_args)
-
-    # Monkey-patch the loader-level post_load_weights to no-op BEFORE get_model,
-    # because get_model() calls post_load_weights() internally (loader.py:1310)
-    # which may invoke CUDA-only kernels (e.g., per_tensor_quant_fp8 for FP8 models).
-    # This is safe because the rollout engine runs post_load_weights on its own GPU
-    # after RDMA transfer, at end_weight_update.
-    from sglang.srt.model_loader import loader as model_loader_module
-
-    original_post_load_weights = model_loader_module.post_load_weights
-    model_loader_module.post_load_weights = lambda *args, **kwargs: None
-    try:
-        with ParallelismContext(config.parallelism):
-            model = get_model(
-                model_config=ModelConfig(model_path),
-                load_config=load_config,
-                device_config=DeviceConfig(device="cpu"),
-            )
-    finally:
-        model_loader_module.post_load_weights = original_post_load_weights
-
-    # Also patch the instance method for subsequent load_weights() calls
-    # (deepseek_weight_loader.py:342 calls self.post_load_weights() at the end).
-    if hasattr(model, "post_load_weights"):
-        model.post_load_weights = lambda *args, **kwargs: None
-
-    return model
-
-
 def assert_replica_matches_shard(
-    model_replica: torch.nn.Module, published_nbytes_by_name: Mapping[str, int], published_by: str
+    model_replica: ModelReplica, published_nbytes_by_name: Mapping[str, int], published_by: str
 ) -> None:
     """The replica must hold exactly the weights a rollout engine rank publishes, each in the published number of
     bytes; otherwise what it loads cannot be written into that rank's memory."""
     replica_nbytes_by_name = {
-        name: param.numel() * param.element_size() for name, param in model_replica.named_parameters()
+        name: layout.occupied_nbytes for name, layout in model_replica.transfer_buffer_param_layouts.items()
     }
     mismatches = [
         f"{name} is {replica_nbytes_by_name.get(name)} bytes here, {published_nbytes_by_name.get(name)} there"

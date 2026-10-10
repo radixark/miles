@@ -38,10 +38,13 @@ class RemoteShard:
 class MooncakeTransport:
     """Writes tensors from this trainer process's registered memory into rollout engines over Mooncake.
 
-    The p2p protocol keeps one for the whole trainer process: it registers its source tensors once, calls
+    The p2p protocol keeps one for the whole trainer process: it registers its transfer buffers once, calls
     `connect` with each new set of rollout engines, then `write` for each rollout engine rank. Each rollout engine
     has its own write thread, so a stuck engine holds up only its own writes.
     """
+
+    # host memory: no trainer GPU memory, and no GPUDirect RDMA needed
+    transfer_buffer_device = torch.device("cpu")
 
     def __init__(self) -> None:
         self._transfer_engine = _create_transfer_engine()
