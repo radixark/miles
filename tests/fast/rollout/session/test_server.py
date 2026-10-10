@@ -112,6 +112,61 @@ class TestDoProxy:
 
         assert asyncio.run(run())["status_code"] == 502
 
+    def test_backend_that_stops_reading_the_upload_is_a_502(self):
+        async def run():
+            transports = []
+
+            class NonReadingBackend(asyncio.Protocol):
+                def connection_made(self, transport):
+                    transports.append(transport)
+                    transport.pause_reading()
+
+            upstream = await asyncio.get_running_loop().create_server(NonReadingBackend, "127.0.0.1", 0)
+            port = upstream.sockets[0].getsockname()[1]
+            server = SessionServer(make_session_server_config(backend_url=f"http://127.0.0.1:{port}", timeout=0.1))
+            try:
+                return await asyncio.wait_for(_proxy(server, "x", body=b"x" * (16 * 1024 * 1024)), timeout=2)
+            finally:
+                upstream.close()
+                for transport in transports:
+                    transport.abort()
+                await upstream.wait_closed()
+
+        assert asyncio.run(run())["status_code"] == 502
+
+    def test_reply_can_exceed_one_timeout_while_each_read_makes_progress(self):
+        async def run():
+            tasks = set()
+
+            async def reply(reader, writer):
+                tasks.add(asyncio.current_task())
+                try:
+                    await reader.readuntil(b"\r\n\r\n")
+                    await reader.readexactly(2)
+                    writer.write(b"HTTP/1.1 200 OK\r\nContent-Length: 6\r\n\r\n")
+                    for _ in range(6):
+                        await asyncio.sleep(0.05)
+                        writer.write(b"x")
+                        await writer.drain()
+                finally:
+                    writer.close()
+                    await writer.wait_closed()
+                    tasks.remove(asyncio.current_task())
+
+            upstream = await asyncio.start_server(reply, "127.0.0.1", 0)
+            port = upstream.sockets[0].getsockname()[1]
+            server = SessionServer(make_session_server_config(backend_url=f"http://127.0.0.1:{port}", timeout=0.2))
+            try:
+                return await asyncio.wait_for(_proxy(server, "x"), timeout=2)
+            finally:
+                upstream.close()
+                await upstream.wait_closed()
+                await asyncio.gather(*tasks)
+
+        result = asyncio.run(run())
+        assert result["status_code"] == 200
+        assert result["response_body"] == b"xxxxxx"
+
 
 def test_run_session_server_suppresses_routine_request_logs(monkeypatch):
     app = object()

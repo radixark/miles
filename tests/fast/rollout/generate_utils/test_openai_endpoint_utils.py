@@ -10,6 +10,7 @@ DELETE is attempted on every path.
 """
 
 import asyncio
+import mmap
 import socket
 import threading
 from types import SimpleNamespace
@@ -424,6 +425,15 @@ async def test_post_buffer_no_retry_returns_the_body_as_a_writable_array(body):
 
 
 @pytest.mark.asyncio
+async def test_post_buffer_no_retry_works_without_linux_prefault_support(monkeypatch):
+    monkeypatch.delattr(mmap, "MAP_POPULATE", raising=False)
+    async with _ReplyServer(_reply(200, b"sample")) as server:
+        reply = await post_buffer_no_retry(server.url, {}, timeout=5)
+    assert reply.flags.writeable and reply.tobytes() == b"sample"
+    assert server.requests == [b"{}"]
+
+
+@pytest.mark.asyncio
 async def test_post_buffer_no_retry_does_not_retry_and_carries_body():
     async with _ReplyServer(_reply(422, b"cursor 3 != len(accumulated_token_ids) 4")) as server:
         with pytest.raises(RuntimeError, match="422.*cursor 3"):
@@ -437,6 +447,7 @@ async def test_post_buffer_no_retry_does_not_retry_and_carries_body():
     ("reply", "expected_error"),
     [
         pytest.param(_reply(200, b"x" * 50, declared_length=100), httpx.ReadError, id="body-cut-short"),
+        pytest.param(_reply(200, b"", declared_length=2**100), httpx.ReadError, id="length-overflows-mmap"),
         pytest.param(_reply(200, b"abc", head=b"HTTP/1.1 200 OK\r\n\r\n"), httpx.RemoteProtocolError, id="no-length"),
     ],
 )
@@ -448,12 +459,46 @@ async def test_post_buffer_no_retry_transport_faults_raise_transport_errors_once
 
 
 @pytest.mark.asyncio
+async def test_post_buffer_no_retry_allocation_failure_is_a_transport_error(monkeypatch):
+    def unavailable_mapping(*args, **kwargs):
+        raise OSError("allocation unavailable")
+
+    monkeypatch.setattr(mmap, "mmap", unavailable_mapping)
+    async with _ReplyServer(_reply(200, b"sample")) as server:
+        with pytest.raises(httpx.ReadError, match="cannot allocate reply buffer") as error:
+            await post_buffer_no_retry(server.url, {}, timeout=5)
+    assert isinstance(error.value.__cause__, OSError)
+    assert server.requests == [b"{}"]
+
+
+@pytest.mark.asyncio
 async def test_post_buffer_no_retry_refused_connection_is_a_transport_error():
     with socket.socket() as probe:
         probe.bind(("127.0.0.1", 0))
         port = probe.getsockname()[1]
     with pytest.raises(httpx.ConnectError):
         await post_buffer_no_retry(f"http://127.0.0.1:{port}/sessions/sid-1/samples", {}, timeout=5)
+
+
+@pytest.mark.asyncio
+async def test_post_buffer_no_retry_tries_other_addresses_before_sending_once(monkeypatch):
+    async with _ReplyServer(_reply(200, b"sample")) as server:
+        port = server.server.sockets[0].getsockname()[1]
+        with socket.socket() as unavailable:
+            unavailable.bind(("127.0.0.1", 0))
+            refused_port = unavailable.getsockname()[1]
+
+            async def resolve(host, requested_port, **kwargs):
+                assert host == "samples.test" and requested_port == port
+                return [
+                    (socket.AF_INET, socket.SOCK_STREAM, 0, "", ("127.0.0.1", refused_port)),
+                    (socket.AF_INET, socket.SOCK_STREAM, 0, "", ("127.0.0.1", port)),
+                ]
+
+            monkeypatch.setattr(asyncio.get_running_loop(), "getaddrinfo", resolve)
+            reply = await post_buffer_no_retry(server.url.replace("127.0.0.1", "samples.test"), {}, timeout=5)
+    assert reply.tobytes() == b"sample"
+    assert server.requests == [b"{}"]
 
 
 @pytest.mark.asyncio

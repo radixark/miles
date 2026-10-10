@@ -298,9 +298,15 @@ async def _post_buffer(url: str, payload: dict) -> np.ndarray:
                 length = response.content_length
                 if length is None:
                     raise httpx.RemoteProtocolError("reply without Content-Length")
-                # Private anonymous mmap avoids numpy huge-page compaction; mmap rejects length 0.
+                # Private mmap avoids numpy huge-page compaction; prefault on a worker
+                # keeps page faults out of the event-loop copy into the reply buffer.
                 try:
-                    mapping = mmap.mmap(-1, max(length, 1), flags=mmap.MAP_PRIVATE | mmap.MAP_ANONYMOUS)
+                    mapping = await asyncio.to_thread(
+                        mmap.mmap,
+                        -1,
+                        max(length, 1),
+                        flags=mmap.MAP_PRIVATE | mmap.MAP_ANONYMOUS | getattr(mmap, "MAP_POPULATE", 0),
+                    )
                 except (OSError, OverflowError) as exc:
                     raise httpx.ReadError(f"cannot allocate reply buffer for Content-Length {length}") from exc
                 reply = np.frombuffer(mapping, dtype=np.uint8)[:length]
