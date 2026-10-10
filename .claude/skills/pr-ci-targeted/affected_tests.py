@@ -17,9 +17,9 @@ import subprocess
 from collections import Counter
 from pathlib import Path
 
-from tests.ci.ci_register import HWBackend, discover_ci_files, ut_parse_one_file
+from tests.ci.ci_register import HWBackend, collect_tests, discover_ci_files
 
-SOURCE_ROOTS = ("miles", "miles_plugins", "scripts", "examples")
+SOURCE_ROOTS = ("miles", "miles_plugins", "scripts", "examples", "tests")
 
 
 def changed_files(base: str) -> list[str]:
@@ -34,7 +34,7 @@ def module_tokens(path: str) -> list[str]:
     if not path.endswith(".py"):
         return [path]
     if path.startswith("scripts/models/"):
-        return [path, f'"{Path(path).stem}']
+        return [path, f'"{Path(path).stem}"']
     parts = Path(path).with_suffix("").parts
     if parts[-1] == "__init__":
         parts = parts[:-1]
@@ -51,13 +51,18 @@ def module_tokens(path: str) -> list[str]:
 def reference_pattern(tokens: list[str]) -> re.Pattern:
     return re.compile(
         "|".join(
-            re.escape(token) if token.startswith('"') else rf"(?<![\w.]){re.escape(token)}(?![\w])" for token in tokens
+            (
+                rf"{re.escape(token[:-1])}(?=[\"_{{-])"
+                if token.startswith('"')
+                else rf"(?<![\w.]){re.escape(token)}(?![\w])"
+            )
+            for token in tokens
         )
     )
 
 
 def python_files(roots: tuple[str, ...]) -> list[str]:
-    return sorted(str(p) for root in roots if Path(root).exists() for p in Path(root).rglob("*.py"))
+    return sorted(str(p) for root in roots if Path(root).exists() for p in Path(root).rglob("*.py") if p.is_file())
 
 
 def main() -> None:
@@ -69,19 +74,24 @@ def main() -> None:
 
     changed = changed_files(args.base)
     registered = set(discover_ci_files())
-    sources = {path: Path(path).read_text() for path in python_files(SOURCE_ROOTS)}
+    sources = {path: Path(path).read_text() for path in python_files(SOURCE_ROOTS) if path not in registered}
     tests = {path: Path(path).read_text() for path in registered}
 
     reached: dict[str, str] = {path: "changed" for path in changed if path in registered}
     frontier = [path for path in changed if path not in registered and (path.endswith(".py") or "/" in path)]
     seen = set(frontier)
     hubs: dict[str, int] = {}
+    unmatched = {
+        path for path in frontier if not path.endswith((".py", ".md", ".mdx")) and not path.startswith("docs/")
+    }
     for hop in range(args.depth + 1):
         next_frontier = []
         for path in frontier:
             pattern = reference_pattern(module_tokens(path))
             test_refs = [test for test, text in tests.items() if pattern.search(text)]
             source_refs = [source for source, text in sources.items() if source != path and pattern.search(text)]
+            if test_refs or source_refs:
+                unmatched.discard(path)
             if len(test_refs) + len(source_refs) > args.hub_limit:
                 hubs[path] = len(test_refs) + len(source_refs)
                 continue
@@ -95,10 +105,12 @@ def main() -> None:
                     next_frontier.append(source)
         frontier = next_frontier
 
-    unreferenced = [path for path in changed if not path.endswith(".py") and not path.startswith("docs/")]
+    untraced = sorted(
+        unmatched | {path for path in changed if "/" not in path and not path.endswith((".py", ".md", ".mdx"))}
+    )
     rows = []
     for test in sorted(reached):
-        for registry in ut_parse_one_file(test):
+        for registry in collect_tests([test]):
             rows.append((test, registry))
 
     print(f"{len(changed)} changed files vs {args.base}; {len(rows)} registered tests reached\n")
@@ -118,7 +130,7 @@ def main() -> None:
     label_cost = Counter(
         label
         for path in registered
-        for r in ut_parse_one_file(path)
+        for r in collect_tests([path])
         if r.backend == HWBackend.CUDA and not r.disabled
         for label in r.labels
     )
@@ -130,9 +142,9 @@ def main() -> None:
         print("\nHubs not followed (referenced by many files; a changed hub needs domain labels):")
         for path, count in sorted(hubs.items(), key=lambda item: -item[1]):
             print(f"  {path}: {count} referencing files{' (changed)' if path in changed else ''}")
-    if unreferenced:
-        print("\nChanged non-Python paths (not traced; they may need broader CI):")
-        for path in unreferenced:
+    if untraced:
+        print("\nChanged non-Python paths no source or test refers to (they may need broader CI):")
+        for path in untraced:
             print(f"  {path}")
 
 

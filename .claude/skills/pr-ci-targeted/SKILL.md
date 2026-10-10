@@ -29,7 +29,11 @@ It prints:
 - one ready-to-post `/rerun-test <file>` line per enabled CUDA test;
 - the domain labels of those tests, as "reached / all tests with that label";
 - hubs: files referenced by too many others to trace, such as shared
-  arguments or command utils. A changed hub means the change is broad.
+  arguments or command utils. A changed hub means the change is broad, unless
+  the diff there only adds something new (a flag read by the files already
+  listed); judge it by what changed.
+- changed non-Python, non-doc paths that no source or test refers to (Docker,
+  workflow, config files): these need label-based CI.
 
 The trace is a text search through dotted imports, re-exporting packages, and
 model definitions under `scripts/models/` (referenced by `--model-name`). Read
