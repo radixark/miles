@@ -188,15 +188,15 @@ A domain label explicitly requested on the PR wins over a scope subtraction: `ru
 
 ## Registration and scan scope
 
-Labels are optional for CPU registrations and required for GPU registrations; registration itself is not optional. The runner scans `tests/fast`, `tests/fast-gpu`, `tests/e2e`, `tests/ci` recursively for `test_*.py`. Every file must resolve to a registration or collection fails:
+The registration parser in `tests/ci/ci_register.py` requires domain labels for GPU registrations and CPU registrations above the fast-test budget (`est_time > 30` seconds); those CPU files must use `stage-b-cpu`. Shorter CPU registrations may omit labels. The runner scans `tests/fast`, `tests/fast-gpu`, `tests/e2e`, `tests/ci` recursively for `test_*.py`. Every file must resolve to a registration or collection fails:
 
 - A file outside `tests/fast/` with no `register_*_ci()` call → `No CI registry found`.
-- A CUDA or ROCm registration with missing, `None`, or empty `labels` → `labels ... must contain at least one domain label`.
+- A registration requiring domain labels with missing, `None`, or empty `labels` → `labels ... must contain at least one domain label`.
 - A `labels=[...]` value not in `KNOWN_LABELS` → `unknown labels [...]`.
 
 ## `tests/fast/` auto-registers as CPU
 
-Each `test_*.py` under `tests/fast/` is auto-registered as a CPU test (backend CPU, suite `stage-a-cpu`, `labels=[]`) with no `register_*_ci()` call, and runs on the GitHub-hosted `ubuntu-latest` runner. Here "CPU" is the hardware backend, not a label. A `register_cuda_ci()` under `tests/fast/` is a hard error — move it to `tests/fast-gpu/`.
+Each `test_*.py` under `tests/fast/` without an explicit registration is auto-registered as a CPU test (backend CPU, suite `stage-a-cpu`, `labels=[]`), and runs on the GitHub-hosted `ubuntu-latest` runner. Files exceeding the budget above need an explicit `register_cpu_ci(...)` with their estimate, suite, and domain labels. Here "CPU" is the hardware backend, not a label. A `register_cuda_ci()` under `tests/fast/` is a hard error — move it to `tests/fast-gpu/`.
 
 ## `bypass-fastfail`: opt out of fast-fail
 

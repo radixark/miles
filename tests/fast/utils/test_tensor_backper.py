@@ -5,7 +5,7 @@ import torch
 
 from tests.ci.ci_register import register_cpu_ci
 
-register_cpu_ci(est_time=60, suite="stage-a-cpu", labels=[])
+register_cpu_ci(est_time=60, suite="stage-b-cpu", labels=["weight-update"])
 
 from miles.utils.tensor_backper import MainCastContext, TensorBackuper, _TensorBackuperMainCast
 
