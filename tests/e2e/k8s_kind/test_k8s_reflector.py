@@ -13,7 +13,7 @@ from miles.utils.workers.k8s_types import Pod
 from miles.utils.workers.reconcile.k8s_api import KubernetesAsyncioPodApi, PodWatchEvent
 from miles.utils.workers.reconcile.loop import ReconcileLoop
 
-register_cpu_ci(est_time=660, suite="stage-b-cpu", labels=[])
+register_cpu_ci(est_time=660, suite="stage-b-cpu", labels=["k8s"])
 
 _BOOKMARK_TIMEOUT = 240.0
 _STARTUP_TIMEOUT = 180.0

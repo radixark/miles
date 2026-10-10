@@ -17,6 +17,7 @@ register_cuda_ci(
         "stage-c-8-gpu-h200 lane, then drop this argument. Two of this entry's constants are also uncalibrated "
         "until it has run once: MIN_LOSS_DECREASE and est_time. See tests/e2e/ft/README.md."
     ),
+    num_gpus=8,
 )
 
 _MODE: str = "kill_rollout__dp4__colocate"
