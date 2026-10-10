@@ -1,14 +1,20 @@
 import os
 
 from scripts.run_deepseek_v4 import ScriptArgs, _prepare_download, _prepare_single, _prepare_spmd, _train
-from tests.ci.ci_register import register_cuda_ci
+from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
 from tests.ci.metric_history import register_ci_gate
 
 register_cuda_ci(
-    est_time=1900,
+    est_time=1100,
     suite="stage-c-4-gpu-h200",
     labels=["megatron", "model-scripts"],
     hardware=["hopper", "blackwell"],
+    num_gpus=4,
+)
+register_rocm_ci(
+    est_time=900,
+    suite="nightly-stage-c-4-gpu-mi350",
+    labels=["megatron", "model-scripts"],
 )
 
 register_ci_gate(metric_key="train/grad_norm")
@@ -19,7 +25,7 @@ register_ci_gate(metric_key="rollout/raw_reward")
 
 
 def _args() -> ScriptArgs:
-    return ScriptArgs(
+    args = ScriptArgs(
         model_name="DeepSeek-V4-Flash-FP8-4layer",
         task="gsm8k",
         enable_eval=False,
@@ -28,12 +34,18 @@ def _args() -> ScriptArgs:
         hardware="H200",
         skip_saving=True,
         use_fault_tolerance=False,
+        rollout_batch_size=4,
+        n_samples_per_prompt=4,
         dsv4_impl="megatron",
         dsa_kernel_backend="cudnn",
         extra_args=(
             "--ci-test " "--check-weight-update-allow-quant-error " "--ci-disable-logprobs-checker " "--num-rollout 2 "
         ),
     )
+    if os.getenv("MILES_HARDWARE_PLATFORM") == "rocm":
+        args.dsa_kernel_backend = "none"
+        args.extra_args += """--train-env-vars '{"NVTE_FP8_BLOCK_SCALING_FP32_SCALES":"0"}' """
+    return args
 
 
 def prepare(args: ScriptArgs):

@@ -17,6 +17,7 @@ register_cuda_ci(
     labels=["megatron", "short"],
     hardware=["hopper", "blackwell"],
     nightly=True,
+    num_gpus=4,
 )
 register_rocm_ci(est_time=800, suite="nightly-stage-c-4-gpu-mi350", labels=["megatron", "short"])
 

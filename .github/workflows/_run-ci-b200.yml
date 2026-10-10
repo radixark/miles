@@ -1,0 +1,93 @@
+# doc-dev: docs/developer/ci/00-stage.md
+name: B200 CI
+
+on:
+  workflow_call:
+    inputs:
+      container_image:
+        type: string
+        required: true
+      ref:
+        description: 'Git ref to check out (empty = the triggering commit).'
+        type: string
+        required: false
+        default: ''
+      cadence:
+        type: string
+        required: true
+      raw_labels:
+        type: string
+        required: true
+      match_all_labels:
+        type: boolean
+        required: false
+        default: false
+      run_8_gpu:
+        type: boolean
+        required: true
+      run_4_gpu:
+        type: boolean
+        required: true
+    secrets:
+      WANDB_API_KEY:
+        required: false
+      NEON_DATABASE_URL:
+        required: false
+
+permissions:
+  contents: read
+
+# Keep one PR's finite task set ahead of the next PR; file reruns share this queue.
+concurrency:
+  group: b200-oma
+  cancel-in-progress: false
+  queue: max
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+      has_tests: ${{ steps.plan.outputs.has_tests }}
+      ref: ${{ steps.plan.outputs.ref }}
+    steps:
+      - name: Check out the planner
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Check out the source snapshot as data
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+          path: ci-source
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Select each test and its minimum GPU count
+        id: plan
+        run: |
+          echo "ref=$(git -C ci-source rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          python -S -m tests.ci.b200_plan --source-root ci-source \
+            --cadence ${{ inputs.cadence }} \
+            --labels ${{ inputs.raw_labels }} \
+            --suites ${{ inputs.run_8_gpu && 'stage-c-8-gpu-b200' || '' }} ${{ inputs.run_4_gpu && 'stage-c-4-gpu-b200' || '' }} \
+            ${{ inputs.match_all_labels && '--match-all-labels' || '' }}
+
+  test:
+    needs: plan
+    if: needs.plan.outputs.has_tests == 'true'
+    name: Batch ${{ matrix.batch }}
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    uses: ./.github/workflows/_run-ci-b200-batch.yml
+    with:
+      matrix: ${{ matrix.jobs }}
+      container_image: ${{ inputs.container_image }}
+      ref: ${{ needs.plan.outputs.ref }}
+      cadence: ${{ inputs.cadence }}
+      raw_labels: ${{ inputs.raw_labels }}
+      match_all_labels: ${{ inputs.match_all_labels }}
+    secrets: inherit

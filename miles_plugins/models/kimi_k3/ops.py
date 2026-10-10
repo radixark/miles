@@ -2,43 +2,6 @@ import torch
 import torch.nn as nn
 
 
-def kda(
-    q: torch.Tensor,
-    k: torch.Tensor,
-    v: torch.Tensor,
-    g: torch.Tensor,
-    beta: torch.Tensor,
-    A_log: torch.Tensor,
-    dt_bias: torch.Tensor,
-    lower_bound: float,
-    *,
-    cu_seqlens: torch.Tensor | None = None,
-    cp_context=None,
-) -> torch.Tensor:
-    """fla delta-rule core; boundaries travel as ``cu_seqlens`` without CP or ``cp_context`` under CP, never both."""
-    from fla.ops.kda import chunk_kda
-
-    boundaries = {"cp_context": cp_context} if cp_context is not None else {"cu_seqlens": cu_seqlens}
-    output, _ = chunk_kda(
-        q=q,
-        k=k,
-        v=v,
-        g=g,
-        beta=beta,
-        A_log=A_log,
-        dt_bias=dt_bias,
-        initial_state=None,
-        output_final_state=False,
-        use_qk_l2norm_in_kernel=True,
-        use_gate_in_kernel=True,
-        safe_gate=True,
-        lower_bound=lower_bound,
-        transpose_state_layout=True,
-        **boundaries,
-    )
-    return output
-
-
 def situ_and_mul(
     x: torch.Tensor,
     beta: float = 4.0,

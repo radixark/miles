@@ -10,7 +10,7 @@ from tests.ci.ci_register import register_cpu_ci
 from tests.e2e.k8s_apiserver.utils import BUSYBOX_IMAGE, CELL_LABEL, pod_body, unique_name
 from tests.e2e.k8s_kind.kind_cluster import KindCluster
 
-register_cpu_ci(est_time=480, suite="stage-b-cpu", labels=[])
+register_cpu_ci(est_time=480, suite="stage-b-cpu", labels=["k8s"])
 
 _STARTUP_TIMEOUT = 180.0
 _TERMINATION_TIMEOUT = 120.0

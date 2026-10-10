@@ -18,6 +18,7 @@ register_cuda_ci(
         "Until then tests/fast/e2e/ft/test_rollout_gated_recovery.py is the fast-layer stand-in for this entry "
         "(suspend -> gated relaunch -> recovery, no GPU). See tests/e2e/ft/README.md."
     ),
+    num_gpus=8,
 )
 
 _MODE: str = "kill_rollout__dp4__colocate"

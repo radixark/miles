@@ -107,6 +107,20 @@ RUN pip install --no-deps tile_kernels==1.0.0 && \
 # FlashQLA backend for Qwen GDN linear-attention layers (requires SM90+, CUDA 12.8+, PyTorch 2.8+; built on tilelang above)
 # Its dependency pins would downgrade TileLang and TVM-FFI; use the versions above.
 RUN pip install -v --no-deps --no-build-isolation "git+https://github.com/QwenLM/FlashQLA.git@7c7dfe16416ad21b1d03258189fc8d3b8460ae06"
+# DeepSelect: the top-k the DeepSeek-V4.1 indexer selects with. It ships sm100a/sm103a only, and
+# the V4.1 plugin falls back to torch.topk on anything older. Its setup.py probes for a GPU with
+# lspci, which a build host does not have, hence pciutils and the explicit target. Its setup.py
+# also stamps the wall clock into the version, so metadata and wheel builds that straddle a
+# second boundary disagree and pip rejects the wheel; pin the stamp for a deterministic version.
+RUN apt-get update && apt-get install -y --no-install-recommends pciutils && rm -rf /var/lib/apt/lists/* && \
+    git init -q /tmp/DeepSelect && cd /tmp/DeepSelect && \
+    git remote add origin https://github.com/deepseek-ai/DeepSelect.git && \
+    git fetch --depth 1 origin 0f03b68748b304863fdf0181a11458d04ae533a9 && \
+    git checkout -q 0f03b68748b304863fdf0181a11458d04ae533a9 && \
+    git submodule update --init --depth 1 csrc/3rdparty/cutlass && \
+    sed -i 's/^datetime_rev = .*/datetime_rev = "0"/' setup.py && \
+    DEEP_SELECT_BUILD_TARGET_PLATFORM=CUDA MAX_JOBS=${MAX_JOBS:-32} pip install --no-build-isolation . && \
+    rm -rf /tmp/DeepSelect
 # Prefer the prebuilt wheel; fall back to a source build while the current
 # arch's wheels release doesn't carry it yet (QEMU-emulated arm64 source
 # builds are the expensive path this avoids).
@@ -239,7 +253,7 @@ RUN git clone https://github.com/radixark/miles.git /root/miles && \
     git checkout ${MILES_COMMIT} && \
     pip install -e . --no-deps
 
-# int4_qat
+# int4 fake-quant extension (source: miles/kernels/quant/int4_fake)
 RUN pip install /tmp/wheels/fake_int4_quant_cuda-*.whl
 
 # ====================================== Install sgl-model-gateway ============================================

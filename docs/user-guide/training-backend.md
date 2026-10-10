@@ -231,9 +231,9 @@ again by the time Adam launches. That case is what streaming addresses:
 
 The fp32 masters and Adam moments live in per-bucket files on NVMe, and the step brings in
 one bucket at a time, so peak residency is one bucket instead of the whole state. At the
-default `fp32` moment dtype it is bit-identical to keeping the state on the GPU and costs
-disk traffic every step; `--stream-optimizer-state-moment-dtype bf16` cuts the volume by a
-third. It requires the `disk` target and excludes `--optimizer-cpu-offload`.
+default `fp32` moment dtype it matches keeping the state on the GPU up to the grad norm's
+rounding and costs disk traffic every step; `--stream-optimizer-state-moment-dtype bf16` cuts
+the volume by a third. It requires the `disk` target and excludes `--optimizer-cpu-offload`.
 
 [Disk Offload](/advanced/disk-offload) has the full picture for both, including the
 same-topology resume limit, what checkpointing costs, and measured sleep / wake numbers.
@@ -510,7 +510,7 @@ Specs ship today for `qwen3`, `qwen3_moe`, `qwen3_5`, `glm4_moe_lite` (GLM-4.7-F
 `nemotron_h`; `adaptations/specs/__init__.py` is the source of truth for that list.
 
 MoE is part of this backend rather than an exception to it: expert layers use the fused
-Triton kernels in `fsdp_utils/kernels/`, the weight bridge unfuses batched experts at sync
+Triton kernels in `miles/kernels/moe/`, the weight bridge unfuses batched experts at sync
 time, and `--use-rollout-routing-replay` (R3) works through per-architecture routing
 adapters.
 

@@ -7,9 +7,13 @@ back, release -- so GPU residency is bounded by one bucket rather than the whole
 state. For runs where the state does not fit the GPU *while the step runs*, which
 sleep-window offload cannot help with.
 
+The streamed params' fp32 gradients follow the same pattern: they have no ``.grad``
+outside ``step()``, which builds one bucket's at a time (clip applied) and drops it
+after that bucket's Adam step; the grad norm reads the DDP grad buffer instead.
+
 ``setup_optimizer_state_streaming`` gives each ``DistributedOptimizer`` in the chain
-a store and routes the five entry points that touch optimizer state at it, so
-Megatron carries no NVMe-specific behaviour. The one piece that stays on Megatron's
+a store and routes the entry points that touch optimizer state or streamed gradients
+at it, so Megatron carries no NVMe-specific behaviour. The one piece that stays on Megatron's
 side is the pair of checkpoint hooks in ``megatron/training/checkpointing.py``, which
 have to be inside ``save_checkpoint`` / ``load_checkpoint`` to cover every call path;
 they reach this class through four methods:
@@ -308,9 +312,17 @@ class NVMeOptimizerStateStore:
         os.makedirs(self.dir, exist_ok=True)
         atexit.register(shutil.rmtree, self.dir, ignore_errors=True)
 
+        # Streamed params get their fp32 grads per bucket, so everything that reads main grads
+        # outside step() has to go through grads_for_norm(): no loss scaling, no zero counting,
+        # no separate grad-norm groups.
+        assert distrib_optimizer.grad_scaler is None, "NVMe state store does not support loss scaling."
+        assert not config.log_num_zeros_in_grad, "NVMe state store does not support --log-num-zeros-in-grad."
+        self._grad_norm: torch.Tensor | float | None = None
+
         self._stager = _Stager(chunk_mb * 1024 * 1024)
         self.buckets = self._build_buckets()
         self._fp32_group_indices, self._fp32_adam = self._build_fp32_optimizer()
+        self._assert_no_separate_grad_norm_group()
 
         total_gb = sum(b.nbytes for b in self.buckets) / 1024**3
         logger.info(
@@ -395,14 +407,81 @@ class NVMeOptimizerStateStore:
             param_data = dist_opt.buffers[gbuf_index].buckets[bucket_id].param_data
             param_data.view(-1)[world_range.start : world_range.end].copy_(entry.main_param)
 
+    def _assert_no_separate_grad_norm_group(self) -> None:
+        from megatron.core.optimizer.optimizer import _get_param_grad_norm_group, _is_separate_grad_norm_group
+
+        for bucket in self.buckets:
+            for entry in bucket.entries:
+                group = _get_param_grad_norm_group(entry.main_param)
+                assert not _is_separate_grad_norm_group(group), (
+                    f"NVMe state store does not support separate grad-norm groups ({group!r}): "
+                    "their clipping reads main grads that exist only inside step()"
+                )
+
+    def _model_grad_shard(self, entry: _Entry) -> torch.Tensor:
+        """This rank's slice of the reduced gradient in the DDP grad buffer, in its buffer dtype."""
+        param_range = self.dist_opt._get_model_param_range_map(entry.model_param)["param"]
+        return entry.model_param.main_grad.view(-1)[param_range.start : param_range.end]
+
+    @torch.no_grad()
+    def grads_for_norm(self) -> list[torch.Tensor]:
+        """The local L2 norm of the streamed gradients, as a one-element fp32 tensor.
+
+        Megatron's get_grad_norm_fp32 squares and sums it with the other grads it is given, so
+        the one norm stands in for the shards. Filtered like MegatronOptimizer._filter_grads_for_norm
+        on the main params.
+        """
+        from megatron.core.tensor_parallel import param_is_not_tensor_parallel_duplicate
+        from megatron.core.transformer.module import param_is_not_shared
+
+        dist_opt = self.dist_opt
+        tp_group = getattr(dist_opt, "tp_group", None)
+        expert_tp_group = getattr(dist_opt, "expert_tp_group", None)
+        sum_sq = torch.zeros((), dtype=torch.float32, device=torch.cuda.current_device())
+        for bucket in self.buckets:
+            for entry in bucket.entries:
+                main = entry.main_param
+                if (
+                    param_is_not_shared(main)
+                    and param_is_not_tensor_parallel_duplicate(
+                        main, tp_group=tp_group, expert_tp_group=expert_tp_group
+                    )
+                    and not getattr(main, "_is_witness_param", False)
+                ):
+                    sum_sq += torch.linalg.vector_norm(self._model_grad_shard(entry), dtype=torch.float32) ** 2
+        return [sum_sq.sqrt().reshape(1)]
+
+    def record_grad_norm(self, grad_norm) -> None:
+        """The total norm the chain clips with, as Megatron returns it; set before every step."""
+        self._grad_norm = grad_norm
+
+    def _attach_grads(self, entries: list[_Entry]) -> None:
+        for entry in entries:
+            entry.main_param.grad = self._model_grad_shard(entry).float()
+
+    @staticmethod
+    def _detach_grads(entries: list[_Entry]) -> None:
+        for entry in entries:
+            entry.main_param.grad = None
+
     @torch.no_grad()
     def step(self) -> bool:
+        from megatron.core.optimizer.clip_grads import clip_grad_by_total_norm_fp32
+
         started = time.monotonic()
         read = written = 0
+        clip_grad = self.dist_opt.config.clip_grad
+        grad_norm, self._grad_norm = self._grad_norm, None
+        assert clip_grad <= 0.0 or grad_norm is not None, "the chain's grad norm was not recorded before step()"
         for bucket in self.buckets:
             read += bucket.fetch()
             self._sync_lr_wd(bucket.adam, bucket.group_indices)
+            self._attach_grads(bucket.entries)
+            if clip_grad > 0.0:
+                # ChainedOptimizer.step's clip skipped these params: they had no .grad until here.
+                clip_grad_by_total_norm_fp32([e.main_param for e in bucket.entries], clip_grad, grad_norm)
             bucket.adam.step()
+            self._detach_grads(bucket.entries)
             self._copy_main_to_model_params(bucket.entries)
             written += bucket.flush()
         if self._fp32_adam is not None:
@@ -519,6 +598,7 @@ def setup_optimizer_state_streaming(args, optimizer) -> None:
 
     dir_root = _state_dir_root(args)
     _purge_rank_dir(dir_root)
+    stores = []
     for dist_opt in optimizer.chained_optimizers:
         assert isinstance(
             dist_opt, DistributedOptimizer
@@ -541,6 +621,8 @@ def setup_optimizer_state_streaming(args, optimizer) -> None:
             f"NVMe optimizer main-param initialization: wrote {written / 1024**3:.1f} GB " f"directly to {store.dir}"
         )
         _bind(dist_opt, store)
+        stores.append(store)
+    _record_grad_norm_into(optimizer, stores)
 
 
 def setup_muon_state_on_disk(args) -> None:
@@ -610,8 +692,21 @@ def _purge_rank_dir(dir_root: str) -> str:
     return rank_dir
 
 
+def _record_grad_norm_into(optimizer, stores: list[NVMeOptimizerStateStore]) -> None:
+    """Hand the norm the chain clips with to every store, which applies the clip itself."""
+    chain_get_grad_norm = optimizer.get_grad_norm
+
+    def get_grad_norm(self):
+        grad_norm = chain_get_grad_norm()
+        for store in stores:
+            store.record_grad_norm(grad_norm)
+        return grad_norm
+
+    optimizer.get_grad_norm = MethodType(get_grad_norm, optimizer)
+
+
 def _bind(dist_opt: "DistributedOptimizer", store: NVMeOptimizerStateStore) -> None:
-    """Point the five DistributedOptimizer entry points that touch optimizer state at ``store``."""
+    """Point the DistributedOptimizer entry points that touch optimizer state or streamed grads at ``store``."""
     from megatron.core.optimizer.distrib_optimizer import DistributedOptimizer
 
     # The all-gather tail is copied from DistributedOptimizer.step_with_ready_grads and has
@@ -643,6 +738,23 @@ def _bind(dist_opt: "DistributedOptimizer", store: NVMeOptimizerStateStore) -> N
     def sharded_state_dict(self, model_sharded_state_dict, is_loading=False, sharding_type=None, metadata=None):
         return {}
 
+    # The gradient overrides below follow DistributedOptimizer._copy_model_grads_to_main_grads at
+    # radixark/Megatron-LM miles-main fd15ee20a4f0, whose clip skips a child with no .grad at all
+    # (radixark/Megatron-LM#106); recheck them when bumping Megatron.
+    def _copy_model_grads_to_main_grads(self) -> None:
+        # Only the GPU-resident native-fp32 params get their fp32 grads here; store.step()
+        # converts the streamed ones bucket by bucket.
+        for model_group, shard_group in zip(self.model_fp32_groups, self.shard_fp32_groups, strict=True):
+            for model_param, shard_main_param in zip(model_group, shard_group, strict=True):
+                param_range = self._get_model_param_range_map(model_param)["param"]
+                shard_main_param.grad = model_param.main_grad.view(-1)[param_range.start : param_range.end].float()
+
+    def get_grads_for_grad_norm(self, grad_norm_group=None):
+        grads = DistributedOptimizer.get_grads_for_grad_norm(self, grad_norm_group)
+        return grads + store.grads_for_norm() if grad_norm_group is None else grads
+
+    dist_opt._copy_model_grads_to_main_grads = MethodType(_copy_model_grads_to_main_grads, dist_opt)
+    dist_opt.get_grads_for_grad_norm = MethodType(get_grads_for_grad_norm, dist_opt)
     dist_opt.step_with_ready_grads = MethodType(step_with_ready_grads, dist_opt)
     dist_opt.reload_model_params = MethodType(reload_model_params, dist_opt)
     dist_opt.state_dict = MethodType(state_dict, dist_opt)

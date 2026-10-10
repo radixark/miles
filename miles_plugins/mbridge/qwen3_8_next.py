@@ -15,6 +15,10 @@ from miles_plugins.mbridge.qwen3_5 import Qwen3_5Bridge
 class Qwen38NextBridge(Qwen3_5Bridge):
     """Weight mapping + Megatron config for Qwen3.8-Next."""
 
+    # Qwen3.8-Next still runs the replicated GDN, which holds q/k/v and the conv in HF's own
+    # layout rather than the head-sharded layer's group-major rows
+    _GDN_GROUP_MAJOR = ()
+
     _DIRECT_MAPPING = Qwen3_5Bridge._DIRECT_MAPPING.copy()
 
     # no final norm in the checkpoint: the final mixer's hc_norm is the final norm

@@ -8,6 +8,7 @@ register_cuda_ci(
     labels=["sglang"],
     hardware=["hopper", "blackwell"],
     disabled="Miles Router is deprecated.",
+    num_gpus=4,
 )
 
 """E2E test: verify sglang router and miles router produce identical rollout

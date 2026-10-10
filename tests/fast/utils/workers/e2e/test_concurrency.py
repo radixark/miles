@@ -25,7 +25,14 @@ class TestSyncSerialization:
 
     async def test_same_group_keeps_submission_order(self, handle, tag):
         """Queued sync calls execute in the order they were accepted."""
-        await asyncio.gather(*[handle.demo_sleep_sync(tag=f"{tag}{i}", seconds=0.05) for i in range(4)])
+        # Concurrent sends are separate HTTP requests whose arrival order is not their send
+        # order, so space the sends out while the first call holds the group: every later
+        # call then reaches the server's queue in a known order.
+        calls = []
+        for i in range(4):
+            calls.append(asyncio.create_task(handle.demo_sleep_sync(tag=f"{tag}{i}", seconds=0.3 if i == 0 else 0.05)))
+            await asyncio.sleep(0.05)
+        await asyncio.gather(*calls)
 
         events = await handle.report_events()
         starts = [e.tag for e in events if e.phase == "start" and e.tag.startswith(tag)]

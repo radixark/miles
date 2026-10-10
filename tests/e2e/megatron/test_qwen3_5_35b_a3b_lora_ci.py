@@ -13,11 +13,14 @@ from miles.utils.external_utils import command_utils
 # combination must pass. Functionality, not accuracy; 8 GPUs (TP2, EP=8).
 
 
+# Stays on 8x H200: on 8x B200 (#3956) the first combo fails the step-0 check_kl
+# with ppo_kl 1.6e-4 against the 1e-8 LoRA limit, where H200 logs 0.0.
 register_cuda_ci(
     est_time=1200,
     suite="stage-c-8-gpu-h200",
     labels=["megatron", "model-scripts", "lora"],
     hardware=["hopper", "blackwell"],
+    num_gpus=8,
 )
 register_rocm_ci(est_time=900, suite="nightly-stage-c-8-gpu-mi350", labels=["megatron", "model-scripts", "lora"])
 

@@ -240,6 +240,9 @@ NUM_GPUS_OF_HARDWARE = {
     "B300": 8,
     "GB200": 4,
     "GB300": 4,
+    "Rubin": 4,
+    "MI300X": 8,
+    "MI325X": 8,
     "MI350X": 8,
     "MI355X": 8,
 }
@@ -251,6 +254,7 @@ GENERATION_HARDWARE = {
     "B300": "Blackwell",
     "GB200": "Blackwell",
     "GB300": "Blackwell",
+    "Rubin": "Rubin",
 }
 
 
@@ -261,7 +265,7 @@ def detect_hardware() -> str:
     assert torch.cuda.is_available(), "no visible GPU to detect the hardware from, pass --hardware explicitly"
     name = torch.cuda.get_device_name()
     if torch.version.hip is not None:
-        detected = next((hardware for hardware in ("MI350X", "MI355X") if hardware in name), None)
+        detected = next((hardware for hardware in ("MI300X", "MI325X", "MI350X", "MI355X") if hardware in name), None)
     else:
         grace = platform.machine() == "aarch64"
         match torch.cuda.get_device_capability():
@@ -271,6 +275,8 @@ def detect_hardware() -> str:
                 detected = "GB200" if grace else "B200"
             case (10, 3):
                 detected = "GB300" if grace else "B300"
+            case (10, 7):
+                detected = "Rubin"
             case _:
                 detected = None
     assert detected is not None, f"cannot tell which hardware {name!r} is, pass --hardware explicitly"

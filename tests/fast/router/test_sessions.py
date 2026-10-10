@@ -286,7 +286,8 @@ class TestSessionProxy:
 
         payload = {
             "messages": [{"role": "user", "content": "What is 2+2?"}],
-            "return_logprob": True,
+            "logprobs": True,
+            "return_meta_info": True,
         }
         resp = requests.post(
             f"{router_env.url}/sessions/{session_id}/v1/chat/completions",
@@ -307,6 +308,26 @@ class TestSessionProxy:
         assert client_choice["message"] == record["response"]["choices"][0]["message"]
         assert client_choice["logprobs"] == record["response"]["choices"][0]["logprobs"]
         assert client_response["usage"] == record["response"]["usage"]
+
+    @pytest.mark.parametrize(
+        "client_flags, expect_logprobs",
+        [({}, False), ({"logprobs": True}, True), ({"logprobs": False}, False)],
+        ids=["omitted", "asked", "explicit-false"],
+    )
+    def test_chat_response_carries_logprobs_only_when_the_client_asked(
+        self, router_env, client_flags, expect_logprobs
+    ):
+        session_id = _create_session(router_env.url)
+
+        resp = _post_chat(
+            router_env.url, session_id, {"messages": [{"role": "user", "content": "What is 3+3?"}], **client_flags}
+        )
+
+        assert resp.status_code == 200
+        assert ("logprobs" in resp.json()["choices"][0]) is expect_logprobs
+        # The record keeps logprobs for TITO and training, whatever the client asked for.
+        record = requests.get(f"{router_env.url}/sessions/{session_id}", timeout=5.0).json()["records"][0]
+        assert record["response"]["choices"][0]["logprobs"]["content"]
 
 
 class TestChatFakeStreaming:

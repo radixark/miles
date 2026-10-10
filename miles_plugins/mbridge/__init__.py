@@ -1,4 +1,5 @@
 from .deepseek_v4 import DeepseekV4Bridge
+from .deepseek_v4_1 import DeepseekV41Bridge
 from .deepseek_v32 import DeepseekV32Bridge
 from .glm4 import GLM4Bridge
 from .glm4moe import GLM4MoEBridge
@@ -23,6 +24,7 @@ __all__ = [
     "DeepseekV32Bridge",
     "Glm5NextBridge",
     "DeepseekV4Bridge",
+    "DeepseekV41Bridge",
     "JoyAILLMFlashBridge",
     "InklingBridge",
     "KimiK3Bridge",

@@ -2,7 +2,11 @@ from tests.ci.ci_register import register_cuda_ci
 from tests.e2e.torchtitan._common import CaseConfig, execute, prepare
 
 register_cuda_ci(
-    est_time=2400, suite="stage-c-8-gpu-h200", labels=["torchtitan", "fully-async", "replay"], hardware=["hopper"]
+    est_time=2400,
+    suite="stage-c-8-gpu-h200",
+    labels=["torchtitan", "fully-async", "replay"],
+    hardware=["hopper"],
+    num_gpus=8,
 )
 
 # Routing replay while generation and training run at once. The rollout that

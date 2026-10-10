@@ -141,6 +141,7 @@ The launcher exposes these as flags:
 
 ## 6. Pairs Well With
 
+- [GLM-5.3](/models/glm/glm5-3) — same architecture; runs on the GLM-5.2 LoRA launcher.
 - [PD Disaggregation](/advanced/pd-disaggregation) — on by default for multi-node runs.
 - [Low Precision RL](/advanced/low-precision) — opt-in via `--fp8-rollout`.
 - [Speculative Decoding](/advanced/speculative-decoding) — opt-in via `--enable-mtp`.

@@ -12,9 +12,15 @@ from unittest.mock import patch
 import pytest
 import requests
 from fastapi.responses import JSONResponse
+
+from tests.fast.router import test_sessions
 from tests.fast.router.test_sessions import _create_session, _post_chat
 
 from miles.utils.test_utils.mock_sglang_server import MockSGLangServer
+
+
+# registered here too: in some CI shard combinations the conftest's copy is not visible to this module
+router_env = test_sessions.router_env
 
 
 class TestRollbackPins:

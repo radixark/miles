@@ -112,7 +112,7 @@ python scripts/run_deepseek_v32.py train --actor-num-nodes 8 --rollout-num-gpus 
 
 ### 4.3 Single-node smoke test
 
-The `--use-single-node` flag pins the run to one node with 4 training GPUs and 4 rollout GPUs, switches the parallelism to TP4 / PP1 / EP4, converts the checkpoint on that single node, and runs SGLang with 2-GPU engines. Pair it with a pruned checkpoint — the full 671 B model does not fit on 4 GPUs.
+The `--use-single-node` flag pins the run to one node, gives half of its GPUs to training and half to rollout (4 + 4 on an 8-GPU node), sets TP and EP to the training GPU count with PP1, converts the checkpoint on that single node, and runs SGLang with 2-GPU engines. Pair it with a pruned checkpoint — the full 671 B model does not fit on 4 GPUs.
 
 ## 5. Recipe Configuration
 
@@ -121,7 +121,7 @@ The `--use-single-node` flag pins the run to one node with 4 training GPUs and 4
 | Stage | TP | PP | CP | EP | expert-TP | Last PP stage |
 |---|---|---|---|---|---|---|
 | Training, multi-node | 2 | 4 | 1 | 16 | 1 | 13 layers |
-| Training, `--use-single-node` | 4 | 1 | 1 | 4 | 1 | — |
+| Training, `--use-single-node` | half the node (4) | 1 | 1 | half the node (4) | 1 | — |
 | `torch_dist` conversion, multi-node | 4 | 6 | — | 16 | 1 | 13 layers |
 
 61 layers do not divide evenly into PP=4, so `--decoder-last-pipeline-num-layers 13` splits the training stages 16 / 16 / 16 / 13. Megatron also requires the world size to be divisible by `expert-TP × EP × PP` = 64, so `--actor-num-nodes` has to be a multiple of 8 at 8 GPUs per node.

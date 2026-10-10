@@ -74,7 +74,7 @@
 
 - **Gating labels**: `run-ci-ft-short` for the comparison scenarios (minutes each), `run-ci-ft-long` for the soaks (tens of minutes to hours). Nothing here runs on an unlabelled PR.
 - **Broad scopes**: `run-ci-all` includes both; the nightly cadence includes `ft-short` but not `ft-long`; `run-ci-image` excludes both.
-- **Suite**: `suite="stage-c-8-gpu-h200"`, run by the job of the same name in `.github/workflows/pr-test.yml`.
+- **Suite**: the enabled `test_trainer_no_failure__*` entries use `suite="stage-c-8-gpu-h100"`; every other entry uses `suite="stage-c-8-gpu-h200"`. Each runs in the job of the same name in `.github/workflows/pr-test.yml`.
 - **Hardware**: every entry declares `hardware=["hopper", "blackwell"]`.
 - **ft-long is disabled**: every ft-long entry passes `disabled="FT soak tests pending CI infra support"`, and `tests/ci/run_suite.py` drops every test with a non-`None` `disabled`, so `run-ci-ft-long` executes nothing. Unblocked by an ft-long capable lane; nothing in the tests is known broken.
 - **Fast-layer stand-in**: `tests/fast/e2e/ft/test_rollout_gated_recovery.py` covers suspend → gated relaunch → recovery on CPU meanwhile.

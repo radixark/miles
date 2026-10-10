@@ -13,6 +13,7 @@ register_cuda_ci(
     hardware=["hopper", "blackwell"],
     disabled="needs a CI image with GLM-5.3-Flash sglang support (branch sglang-miles-glm53); "
     "re-enable once it lands.",
+    num_gpus=8,
 )
 
 register_ci_gate(metric_key="train/grad_norm")

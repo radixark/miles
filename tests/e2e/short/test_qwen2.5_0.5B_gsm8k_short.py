@@ -8,7 +8,11 @@ from miles.utils.object_store import ObjectStoreBackend
 from miles.utils.workers.types import WorkerCommBackend
 
 register_cuda_ci(
-    est_time=400, suite="stage-c-2-gpu-h200", labels=["short", "mooncake"], hardware=["hopper", "blackwell"]
+    est_time=400,
+    suite="stage-c-2-gpu-h200",
+    labels=["short", "mooncake"],
+    hardware=["hopper", "blackwell"],
+    num_gpus=2,
 )
 register_rocm_ci(est_time=300, suite="nightly-stage-c-2-gpu-mi350", labels=["short", "mooncake"])
 

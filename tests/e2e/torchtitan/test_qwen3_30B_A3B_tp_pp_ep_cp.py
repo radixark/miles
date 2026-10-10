@@ -1,7 +1,9 @@
 from tests.ci.ci_register import register_cuda_ci
 from tests.e2e.torchtitan._common import CaseConfig, execute, prepare
 
-register_cuda_ci(est_time=2700, suite="stage-c-8-gpu-h200", labels=["torchtitan", "replay"], hardware=["hopper"])
+register_cuda_ci(
+    est_time=2700, suite="stage-c-8-gpu-h200", labels=["torchtitan", "replay"], hardware=["hopper"], num_gpus=8
+)
 
 # Every axis at once on one MoE model: tensor, pipeline, context and expert
 # parallelism with routing replay, and the FSDP shard degree left at one. Each

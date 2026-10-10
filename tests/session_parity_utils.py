@@ -249,6 +249,7 @@ def _serve_session(*, backend_url: str, hf_checkpoint: str, version: str) -> Ite
         session_server_instances=[SessionServerInstance(addr=session_addr, instance_id=instance_id)],
         save_debug_trajectory_data=None,
         custom_agent_function_path="miles.utils.test_utils.session_verify_agent.run_agent",
+        custom_agent_function_mode="inline",
         partial_rollout=False,
         max_seq_len=None,
         session_verify_cycles=1,

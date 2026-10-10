@@ -1,4 +1,4 @@
-"""Qwen3-4B GRPO training script for AMD (MI350X / MI355X).
+"""Qwen3-4B GRPO training script for AMD (MI300X / MI325X / MI350X / MI355X).
 
 =====================
 
@@ -13,7 +13,7 @@ the training job.
 =====================
 
 Args:
-  --hardware: MI350X or MI355X, which fixes the default GPU count per node.
+  --hardware: MI300X, MI325X, MI350X or MI355X, which fixes the default GPU count per node.
   --num-gpus-per-node: Override the GPU count, e.g. when only some devices are visible.
   --enable-eval: Run AIME evaluation every 20 steps (default: on).
   --model-dir / --data-dir: Checkpoint / dataset directories.
@@ -38,7 +38,7 @@ class ScriptArgs(command_utils.ExecuteTrainConfig):
     model_name: str = "Qwen3-4B"
     megatron_model_type: str = "qwen3-4B"
     num_gpus_per_node: int | None = None
-    hardware: Literal["auto", "MI350X", "MI355X"] = "auto"
+    hardware: Literal["auto", "MI300X", "MI325X", "MI350X", "MI355X"] = "auto"
     enable_eval: bool = True
     num_rollout: int = 3000
     extra_args: str = ""

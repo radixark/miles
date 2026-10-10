@@ -1,8 +1,10 @@
 """
-Inkling training script for ROCm (Inkling-Small 4-layer slice).
+Inkling training script for ROCm (Inkling-Small layer slices).
 
 Supports:
-  - Inkling-Small-4layer  4-layer slice of Inkling-Small (fits the 4-GPU CI lane).
+  - Inkling-Small-4layer  4-layer slice of Inkling-Small; local attention layers only.
+  - Inkling-Small-6layer  6-layer slice of Inkling-Small (five local + one global
+                          attention layer, the full model's pattern); the 4-GPU CI lane.
 
 Usage patterns:
 
@@ -19,6 +21,7 @@ Usage patterns:
 """
 
 import os
+import re
 from dataclasses import dataclass, field
 from typing import Literal
 
@@ -28,23 +31,30 @@ import miles.utils.external_utils.command_utils as U
 
 app = typer.Typer()
 
-# model name -> scripts/models/<type>.sh; the 4-layer slices reuse the base
-# definition with MODEL_ARGS_NUM_LAYERS=4 (set in ScriptArgs.__post_init__)
+# model name -> scripts/models/<type>.py; a `-<N>layer` slice reuses the base
+# definition with MODEL_ARGS_NUM_LAYERS=N (set in ScriptArgs.__post_init__)
 _MODEL_REGISTRY = {
     "Inkling-Small-4layer": "inkling-small",
+    "Inkling-Small-6layer": "inkling-small",
 }
+
+
+def _slice_num_layers(model_name: str) -> int | None:
+    match = re.search(r"-(\d+)layer$", model_name)
+    return int(match.group(1)) if match else None
 
 
 @dataclass
 class ScriptArgs(U.ExecuteTrainConfig):
     run_id: str = U.create_run_id()
-    model_name: Literal["Inkling-Small-4layer"] = "Inkling-Small-4layer"
+    model_name: Literal["Inkling-Small-4layer", "Inkling-Small-6layer"] = "Inkling-Small-4layer"
 
     train_mode: Literal["full"] = "full"
     task: Literal["dapo_math"] = "dapo_math"
     enable_eval: bool = False
     num_rollout: int = 100
     rollout_batch_size: int = 32
+    n_samples_per_prompt: int = 8
     global_batch_size: int = 64
 
     hf_checkpoint: str | None = None
@@ -70,8 +80,8 @@ class ScriptArgs(U.ExecuteTrainConfig):
     extra_args: str = ""
 
     def __post_init__(self):
-        if self.model_name.endswith("-4layer"):
-            os.environ["MODEL_ARGS_NUM_LAYERS"] = "4"
+        if (num_layers := _slice_num_layers(self.model_name)) is not None:
+            os.environ["MODEL_ARGS_NUM_LAYERS"] = str(num_layers)
         if self.hf_checkpoint is None:
             self.hf_checkpoint = f"{self.model_dir}/{self.model_name}"
         if self.torch_dist is None:
@@ -93,7 +103,7 @@ def _get_parallel_config(args: ScriptArgs) -> str:
     """
     total_gpus = args.actor_num_nodes * args.actor_num_gpus_per_node
 
-    if args.model_name == "Inkling-Small-4layer" and args.actor_num_nodes == 1:
+    if _slice_num_layers(args.model_name) is not None and args.actor_num_nodes == 1:
         return (
             "--tensor-model-parallel-size 4 "
             "--sequence-parallel "
@@ -132,7 +142,7 @@ def _train(args: ScriptArgs):
         "--rm-type math "
         f"--num-rollout {args.num_rollout} "
         f"--rollout-batch-size {args.rollout_batch_size} "
-        "--n-samples-per-prompt 8 "
+        f"--n-samples-per-prompt {args.n_samples_per_prompt} "
         f"--rollout-max-response-len {args.rollout_max_response_len} "
         "--rollout-temperature 1 "
         f"--global-batch-size {args.global_batch_size} "

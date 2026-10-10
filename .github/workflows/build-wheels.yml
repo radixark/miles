@@ -57,7 +57,7 @@ env:
   WHEELS_REPO: radixark/miles-wheels
   ROUTER_REPO: radixark/sgl-router-for-miles
   ROUTER_REF: main
-  INT4_QAT_PATH: miles/backends/megatron_utils/kernels/int4_qat
+  INT4_QAT_PATH: miles/kernels/quant/int4_fake
   TE_REPO: radixark/TransformerEngine
   # Scheduled te runs stay off while docker/Dockerfile installs NVIDIA's 2.17.0:
   # a te upload without keep_superseded deletes those wheels. Turn this on with

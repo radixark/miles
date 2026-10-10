@@ -11,7 +11,11 @@ from tests.ci.metric_history import register_ci_gate
 
 
 register_cuda_ci(
-    est_time=1200, suite="stage-c-4-gpu-h200", labels=["megatron", "model-scripts"], hardware=["hopper", "blackwell"]
+    est_time=1000,
+    suite="stage-c-4-gpu-h200",
+    labels=["megatron", "model-scripts"],
+    hardware=["hopper", "blackwell"],
+    num_gpus=4,
 )
 
 register_ci_gate(metric_key="train/grad_norm")
@@ -28,6 +32,9 @@ def _args() -> ScriptArgs:
         num_nodes=1,
         num_gpus_per_node=4,
         num_rollout=2,
+        rollout_batch_size=4,
+        n_samples_per_prompt=4,
+        global_batch_size=16,
         extra_args=("--ci-test " "--ci-disable-logprobs-checker " "--skip-actor-forward-only "),
     )
 

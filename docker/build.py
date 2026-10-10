@@ -39,6 +39,13 @@ VARIANTS = {
         "tag_postfix": "",
         "build_args": {},
     },
+    "rubin": {
+        "image": "radixark/miles",
+        "platforms": ["linux/arm64"],
+        "tag_postfix": "-rubin",
+        "dockerfile": "docker/Dockerfile.rubin",
+        "build_args": {},
+    },
     "rocm724-mi35x": {
         "image": "rocm/sgl-dev",
         "tag_postfix": "-rocm724-mi35x",
@@ -65,6 +72,21 @@ VARIANTS = {
             "WHEELS_TAG_ROCM": "rocm10-gfx950-v0.5.18",
             "APEX_USE_PREBUILT": "1",
             "TE_USE_WHEEL": "1",
+        },
+    },
+    "rocm10-mi30x": {
+        "image": "rocm/sgl-dev",
+        "tag_postfix": "-rocm10-mi30x",
+        "tag_prefix": "miles",
+        "dockerfile": "docker/Dockerfile.rocm",
+        "build_args": {
+            "GPU_ARCH": "gfx942",
+            "SGLANG_IMAGE_REPO": "lmsysorg/sglang",
+            "SGLANG_IMAGE_TAG": "v0.5.21-rocm10-mi30x",
+            "WHEELS_TAG_ROCM": "rocm10-gfx942-v0.5.20",
+            "APEX_USE_PREBUILT": "1",
+            "TE_USE_WHEEL": "1",
+            "AITER_PREBUILD_JIT": "1",
         },
     },
 }
@@ -160,8 +182,10 @@ class Variant(str, Enum):
     cu13 = "cu13"
     cu13_x86 = "cu13-x86"
     cu13_aarch64 = "cu13-aarch64"
+    rubin = "rubin"
     rocm724_mi35x = "rocm724-mi35x"
     rocm10_mi35x = "rocm10-mi35x"
+    rocm10_mi30x = "rocm10-mi30x"
 
 
 class ImageTag(str, Enum):

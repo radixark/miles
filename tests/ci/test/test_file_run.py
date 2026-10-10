@@ -40,16 +40,25 @@ def test_every_cpu_suite_is_allowed():
     assert set(CPU_SUITES) == set(CI_SUITES[HWBackend.CPU])
 
 
-def test_cuda_file_resolves_to_its_suite_runner_and_image():
+@pytest.mark.parametrize(
+    ("suite", "runner"),
+    [
+        ("stage-c-4-gpu-h200", ["h200", "4gpu"]),
+        ("stage-c-4-gpu-b200", ["b200", "4gpu"]),
+        ("stage-c-8-gpu-b200", ["b200", "8gpu"]),
+    ],
+)
+def test_cuda_file_resolves_to_its_suite_runner_and_image(suite, runner):
     tests = [
-        _make("tests/e2e/x/test_a.py", suite="stage-c-4-gpu-h200", nightly=True),
+        _make("tests/e2e/x/test_a.py", suite=suite, nightly=True),
         _make("tests/e2e/x/test_b.py"),
     ]
     plan = plan_file_run(tests, "tests/e2e/x/test_a.py", "dev")
     assert plan == {
         "hw": "cuda",
-        "suite": "stage-c-4-gpu-h200",
-        "runs_on": json.dumps(["h200", "4gpu"]),
+        "num_gpus": runner[1].removesuffix("gpu"),
+        "suite": suite,
+        "runs_on": json.dumps(runner),
         "container_image": "radixark/miles:dev",
         "timeout_seconds": "1800",
     }
@@ -60,6 +69,7 @@ def test_cpu_file_resolves_without_runner_labels():
     plan = plan_file_run(tests, "tests/fast/test_a.py", "pr-42")
     assert plan == {
         "hw": "cpu",
+        "num_gpus": "0",
         "suite": "stage-a-cpu",
         "runs_on": "",
         "container_image": "radixark/miles:pr-42",
@@ -207,6 +217,8 @@ def test_target_workflow_keeps_orchestration_trusted_and_checks_out_exact_head()
     assert "WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}" not in workflow
     assert "HF_TOKEN: ${{ secrets.HF_TOKEN }}" not in workflow
     assert "group: run-ci-file-${{ inputs.pull_number }}-${{ inputs.test_file }}" in workflow
+    assert "endsWith(needs.resolve-file-run.outputs.suite, '-b200')" in workflow
+    assert "&& 'b200-oma' || format('run-ci-file-execution-{0}-{1}'" in workflow
     assert "cancel-in-progress: false" in workflow
     assert "queue: max" in workflow
     assert "comment_id: ${{ steps.announce.outputs.comment_id }}" in workflow

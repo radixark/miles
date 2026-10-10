@@ -7,10 +7,7 @@ import pytest
 torch = pytest.importorskip("torch")
 pytest.importorskip("triton")
 
-from miles_plugins.models.qwen3_8_next.ops.kernel.qsa_block_sparse_attn import (  # noqa: E402
-    build_tile_index,
-    build_tile_index_pair,
-)
+from miles.kernels.attention.qsa.block_sparse_attention import build_tile_index, build_tile_index_pair  # noqa: E402
 from miles_plugins.models.qwen3_8_next.ops.qsa_indexer import PackedBlockLayout  # noqa: E402
 
 RATIO = 4

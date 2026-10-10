@@ -2,6 +2,7 @@ from miles.utils.external_utils.command_utils.base_backend import (
     CommandUtilConfig,
     ExecuteTrainConfig,
     default_config,
+    exclusive_path_lock,
     resolve_extra_env_vars,
     resolve_hardware,
 )
@@ -30,6 +31,7 @@ __all__ = [
     "default_config",
     "detect_hardware",
     "encode_pseudo_file",
+    "exclusive_path_lock",
     "get_bool_env_var",
     "get_default_wandb_args",
     "get_env_enable_infinite_run",

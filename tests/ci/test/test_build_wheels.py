@@ -15,7 +15,7 @@ WORKFLOW = yaml.safe_load((ROOT / ".github/workflows/build-wheels.yml").read_tex
 SOURCES = {
     "sgl-router": ("repos/radixark/sgl-router-for-miles/commits/main", "a" * 40),
     "int4_qat": (
-        "repos/radixark/miles/commits?sha=main&path=miles/backends/megatron_utils/kernels/int4_qat&per_page=1",
+        "repos/radixark/miles/commits?sha=main&path=miles/kernels/quant/int4_fake&per_page=1",
         "b" * 40,
     ),
     "te": ("repos/radixark/TransformerEngine/commits/miles-main", "c" * 40),

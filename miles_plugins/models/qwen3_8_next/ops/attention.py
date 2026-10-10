@@ -11,8 +11,7 @@ from megatron.core.transformer.attention import SelfAttention
 from megatron.core.transformer.module import MegatronModule
 from torch import Tensor
 
-from miles_plugins.models.qwen3_8_next.ops.kernel.qsa_block_sparse_attn import qsa_block_sparse_attention_triton
-from miles_plugins.models.qwen3_8_next.ops.kernel.qsa_sparse_attn import qsa_sparse_attention_triton
+from miles.kernels.attention.qsa import qsa_block_sparse_attention, qsa_sparse_attention
 from miles_plugins.models.qwen3_8_next.ops.qsa_indexer import PackedBlockLayout, Qwen38NextQSAIndexer
 
 
@@ -37,7 +36,7 @@ class Qwen38NextQSACoreAttention(MegatronModule):
         if query.dim() == 3:
             if block_form is not None:
                 sel_bitmap, lo, hi, blk_base, tok_base, block_first, block_last, blk = block_form
-                return qsa_block_sparse_attention_triton(
+                return qsa_block_sparse_attention(
                     query,
                     key,
                     value,
@@ -51,17 +50,14 @@ class Qwen38NextQSACoreAttention(MegatronModule):
                     self.softmax_scale,
                     blk,
                 ).reshape(query.shape[0], -1)
-            return qsa_sparse_attention_triton(query, key, value, selection, self.softmax_scale).reshape(
-                query.shape[0], -1
-            )
+            return qsa_sparse_attention(query, key, value, selection, self.softmax_scale).reshape(query.shape[0], -1)
 
         if query.dim() != 4:
             raise RuntimeError(f"QSA core attention expected a 3D (thd) or 4D (sbhd) query, got {tuple(query.shape)}")
 
         s, b, hq, d = query.shape
         out = [
-            qsa_sparse_attention_triton(query[:, i], key[:, i], value[:, i], selection, self.softmax_scale)
-            for i in range(b)
+            qsa_sparse_attention(query[:, i], key[:, i], value[:, i], selection, self.softmax_scale) for i in range(b)
         ]
         return torch.stack(out, dim=1).reshape(s, b, hq * d)
 

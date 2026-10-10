@@ -15,7 +15,9 @@ from tests.ci.ci_register import register_cuda_ci
 
 # Needs a GPU only because the shared replay queue hands its entries out on the
 # current CUDA device; the alignment being tested is device-independent.
-register_cuda_ci(est_time=60, suite="stage-b-2-gpu-h200", labels=["torchtitan", "replay"], hardware=["hopper"])
+register_cuda_ci(
+    est_time=60, suite="stage-b-2-gpu-h200", labels=["torchtitan", "replay"], hardware=["hopper"], num_gpus=2
+)
 
 import pytest
 import torch
@@ -167,3 +169,9 @@ def test_the_reference_model_is_left_alone(part):
 
     with routing_replay.consumption_guard([other], 7):
         pass
+
+
+if __name__ == "__main__":
+    import sys
+
+    sys.exit(pytest.main([__file__, "-v"]))

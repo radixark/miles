@@ -35,6 +35,7 @@ def _generate_input(*, evaluation=False, sampling_params=None, **args_kwargs) ->
         **{
             "session_server_instances": [SessionServerInstance(addr="127.0.0.1:12345")],
             "custom_agent_function_path": "test.fake_agent",
+            "custom_agent_function_mode": "inline",
             "max_seq_len": None,
             "partial_rollout": False,
             "use_session_server": "v2",

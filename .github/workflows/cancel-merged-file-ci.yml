@@ -1,0 +1,28 @@
+name: Cancel merged PR file tests
+
+on:
+  pull_request_target:
+    types: [closed]
+
+permissions:
+  contents: read
+  actions: write
+
+jobs:
+  cancel-file-runs:
+    if: github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out the trusted cancellation handler
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          sparse-checkout: .github/workflows/scripts/cancel_merged_file_ci.py
+          sparse-checkout-cone-mode: false
+
+      - name: Cancel unfinished file runs for the merged PR
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 .github/workflows/scripts/cancel_merged_file_ci.py
