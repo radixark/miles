@@ -12,11 +12,11 @@ logger = logging.getLogger(__name__)
 _MOMENTS = ("exp_avg", "exp_avg_sq")
 
 
-def move_adam_moments_to_disk(optimizers: list[torch.optim.Optimizer], *, state_dir_root: str) -> None:
+def setup_adam_state_on_disk(optimizers: list[torch.optim.Optimizer], *, state_dir_root: str) -> None:
     """Back every param's Adam moments with file pages, keeping whatever a checkpoint already loaded."""
     rank_dir = purge_rank_dir(state_dir_root)
     for optimizer in optimizers:
-        _move_moments_to_disk(optimizer, rank_dir)
+        _back_moments_with_files(optimizer, rank_dir)
 
 
 def _local(tensor: torch.Tensor) -> torch.Tensor:
@@ -30,7 +30,7 @@ def _as_param_dtensor(local: torch.Tensor, param: torch.Tensor) -> torch.Tensor:
     return DTensor(local, param._spec, requires_grad=False)
 
 
-def _move_moments_to_disk(optimizer: torch.optim.Optimizer, rank_dir: str) -> None:
+def _back_moments_with_files(optimizer: torch.optim.Optimizer, rank_dir: str) -> None:
     params = [p for group in optimizer.param_groups for p in group["params"] if p.requires_grad]
     if any(_local(p).device.type != "cpu" for p in params):
         raise RuntimeError(

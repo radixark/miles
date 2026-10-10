@@ -10,7 +10,7 @@ from tests.ci.ci_register import register_cpu_ci
 from torch.distributed.device_mesh import init_device_mesh
 from torch.distributed.tensor import DTensor, Shard, distribute_tensor
 
-from miles.backends.torchtitan_utils.disk_optimizer_state import move_adam_moments_to_disk
+from miles.backends.torchtitan_utils.optimizer_state_on_disk import setup_adam_state_on_disk
 
 register_cpu_ci(est_time=10, suite="stage-a-cpu", labels=[])
 
@@ -56,7 +56,7 @@ def test_file_backed_moments_update_like_in_memory_adamw(tmp_path, single_rank_g
     in_memory, file_backed = _make_params(), _make_params()
     reference = torch.optim.AdamW(in_memory, lr=1e-2, fused=True)
     optimizer = torch.optim.AdamW(file_backed, lr=1e-2, fused=True)
-    move_adam_moments_to_disk([optimizer], state_dir_root=str(tmp_path))
+    setup_adam_state_on_disk([optimizer], state_dir_root=str(tmp_path))
 
     _train(reference, in_memory, steps=3)
     _train(optimizer, file_backed, steps=3)
@@ -73,7 +73,7 @@ def test_dtensor_params_get_file_backed_dtensor_moments(tmp_path, single_rank_gl
     mesh = init_device_mesh("cpu", (1,))
     params = [torch.nn.Parameter(distribute_tensor(p.detach(), mesh, [Shard(0)])) for p in _make_params()]
     optimizer = torch.optim.AdamW(params, lr=1e-2, fused=True)
-    move_adam_moments_to_disk([optimizer], state_dir_root=str(tmp_path))
+    setup_adam_state_on_disk([optimizer], state_dir_root=str(tmp_path))
 
     _train(optimizer, params, steps=2)
     for param in params:
@@ -91,7 +91,7 @@ def test_moments_a_checkpoint_loaded_carry_over(tmp_path, single_rank_gloo):
     _train(reference_optimizer, reference, steps=2)
     _train(resumed_optimizer, resumed, steps=2)
 
-    move_adam_moments_to_disk([resumed_optimizer], state_dir_root=str(tmp_path))
+    setup_adam_state_on_disk([resumed_optimizer], state_dir_root=str(tmp_path))
     _train(reference_optimizer, reference, steps=2, seed=2)
     _train(resumed_optimizer, resumed, steps=2, seed=2)
 

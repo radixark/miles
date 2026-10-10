@@ -7,8 +7,8 @@ import torch.distributed as dist
 
 from miles.backends.torchtitan_utils import compat
 from miles.backends.torchtitan_utils.config import build_trainer_config
-from miles.backends.torchtitan_utils.disk_optimizer_state import move_adam_moments_to_disk
 from miles.backends.torchtitan_utils.hf_weight_iterator import TitanHfWeightIterator
+from miles.backends.torchtitan_utils.optimizer_state_on_disk import setup_adam_state_on_disk
 from miles.backends.torchtitan_utils.parallel import create_titan_parallel_state, parallel_dims_from_config
 from miles.backends.torchtitan_utils.routing_replay import install as install_routing_replay
 from miles.backends.torchtitan_utils.trainer import TitanTrainer
@@ -88,7 +88,7 @@ class TorchtitanTrainRayActor(TorchNativeTrainRayActor):
 
         self.trainer.checkpointer.load()
         if args.stream_optimizer_state_to_disk:
-            move_adam_moments_to_disk(self.optimizers, state_dir_root=optimizer_state_dir_root(args))
+            setup_adam_state_on_disk(self.optimizers, state_dir_root=optimizer_state_dir_root(args))
         start_rollout_id = self.trainer.step // _steps_per_rollout(args)
 
         if with_ref:
