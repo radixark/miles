@@ -5,7 +5,7 @@ Covers the AST-collection behavior of the suite-as-runner-class refactor:
 domain labels gates the test on the resolved domain scope, while None / [] /
 omitted means always-on within an eligible cadence; `nightly=True` excludes a
 registration from regular cadence while nightly and weekly admit it;
-`num_gpus` is gone; `labels` must be passed by
+`num_gpus` declares the minimum CUDA allocation; `labels` must be passed by
 keyword (not as a positional third argument).
 """
 
@@ -67,7 +67,7 @@ class TestRegisterPositive:
         assert r.backend == HWBackend.CUDA
         assert r.suite == "stage-c-8-gpu-h100"
         assert r.labels == ["megatron"]
-        assert not hasattr(r, "num_gpus")
+        assert r.required_gpus == 8
         assert not hasattr(r, "always_on")
 
     def test_labels_omitted_is_always_run(self, tmp_path):
@@ -256,17 +256,34 @@ class TestRegisterNegative:
         with pytest.raises(ValueError, match=r"hardware.*is CUDA-only"):
             ut_parse_one_file(path)
 
-    def test_num_gpus_kwarg_rejected(self, tmp_path):
+    @pytest.mark.parametrize("count", [0, 9, True, None, "2"])
+    def test_invalid_gpu_budget_rejected(self, tmp_path, count):
         path = _make_fixture(
-            """
-            from tests.ci.ci_register import register_cuda_ci
-            register_cuda_ci(
-                est_time=600, suite="stage-c-8-gpu-h100", labels=["megatron"], num_gpus=8
-            )
-            """,
+            f'register_cuda_ci(60, "stage-b-2-gpu-h200", labels=["megatron"], hardware=["hopper"], num_gpus={count!r})',
             tmp_path,
         )
-        with pytest.raises(ValueError, match=r"unknown argument 'num_gpus'"):
+        with pytest.raises(ValueError, match="num_gpus must be an integer"):
+            ut_parse_one_file(path)
+
+    def test_negative_gpu_budget_rejected_as_nonconstant_ast(self, tmp_path):
+        path = _make_fixture(
+            'register_cuda_ci(60, "stage-b-2-gpu-h200", labels=["megatron"], hardware=["hopper"], num_gpus=-1)',
+            tmp_path,
+        )
+        with pytest.raises(ValueError, match="num_gpus.*must be a literal constant"):
+            ut_parse_one_file(path)
+
+    def test_gpu_budget_cannot_exceed_home_capacity(self, tmp_path):
+        path = _make_fixture(
+            'register_cuda_ci(60, "stage-b-2-gpu-h200", labels=["megatron"], hardware=["hopper"], num_gpus=4)',
+            tmp_path,
+        )
+        with pytest.raises(ValueError, match="exceeds the home suite"):
+            ut_parse_one_file(path)
+
+    def test_gpu_budget_is_cuda_only(self, tmp_path):
+        path = _make_fixture('register_cpu_ci(1, "stage-a-cpu", num_gpus=1)', tmp_path)
+        with pytest.raises(ValueError, match="num_gpus is CUDA-only"):
             ut_parse_one_file(path)
 
     def test_always_on_kwarg_rejected(self, tmp_path):

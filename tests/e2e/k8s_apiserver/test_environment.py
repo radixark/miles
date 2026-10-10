@@ -15,7 +15,7 @@ from tests.e2e.k8s_apiserver.apiserver import (
 )
 from tests.e2e.k8s_apiserver.utils import CELL_LABEL, create_namespace, pod_body, wait_until, wait_until_serving
 
-register_cpu_ci(est_time=180, suite="stage-b-cpu", labels=[])
+register_cpu_ci(est_time=180, suite="stage-b-cpu", labels=["k8s"])
 
 
 class TestApiserverEnvironment:

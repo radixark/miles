@@ -10,6 +10,7 @@ register_cuda_ci(
     suite="stage-c-8-gpu-h100",
     labels=["lora", "weight-update", "multi-lora"],
     hardware=["hopper"],
+    num_gpus=8,
 )
 
 

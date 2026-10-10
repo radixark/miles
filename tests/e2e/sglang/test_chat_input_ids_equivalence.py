@@ -8,7 +8,9 @@ from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
 from tests.e2e.sglang.utils.sglang_server import start_sglang_server
 from transformers import AutoTokenizer
 
-register_cuda_ci(est_time=190, suite="stage-c-4-gpu-h200", labels=["sglang"], hardware=["hopper", "blackwell"])
+register_cuda_ci(
+    est_time=190, suite="stage-c-4-gpu-h200", labels=["sglang"], hardware=["hopper", "blackwell"], num_gpus=4
+)
 register_rocm_ci(est_time=80, suite="nightly-stage-c-4-gpu-mi350", labels=["sglang"])
 
 DEFAULT_MODEL_ID = "Qwen/Qwen3-0.6B"
