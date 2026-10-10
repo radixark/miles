@@ -101,12 +101,18 @@ def check_case(case: dict) -> None:
 
 def finalize(args: Args) -> None:
     groups, templates, reports = {}, {}, {}
+    dropped = {}
     for split, count in (("train", args.count), ("validation", args.validation_count)):
         rows = []
+        omitted = []
         for index in range(count):
             case = make_case(index, split, args.seed)
             check_case(case)
-            row = json.loads((args.output / "accepted" / f"{case['id']}.json").read_text())
+            path = args.output / "accepted" / f"{case['id']}.json"
+            if not path.exists() and getattr(args, 'drop_unresolved', False):
+                omitted.append(case['id'])
+                continue
+            row = json.loads(path.read_text())
             assert row["metadata"]["ground_truth"] == case
             assert row["record"]["questions"] == case["questions"]
             assert case["policy"] in row["record"]["state"]
@@ -120,17 +126,19 @@ def finalize(args: Args) -> None:
             rows.append(row)
         groups[split] = {r["metadata"]["ground_truth"]["scenario_group"] for r in rows}
         templates[split] = {r["metadata"]["ground_truth"]["template_group"] for r in rows}
-        assert len(groups[split]) == count
+        assert len(groups[split]) == len(rows)
+        dropped[split] = omitted
         random.Random(f"{args.seed}:{split}").shuffle(rows)
         destination = args.output / f"{split}.jsonl"
         destination.write_text("".join(json.dumps(row) + "\n" for row in rows))
-        reports[split] = {"records": count, "fields": sum(len(r["targets"]) for r in rows), "families": dict(Counter(r["source"] for r in rows)), "sha256": hashlib.sha256(destination.read_bytes()).hexdigest()}
+        reports[split] = {"records": len(rows), "fields": sum(len(r["targets"]) for r in rows), "families": dict(Counter(r["source"] for r in rows)), "sha256": hashlib.sha256(destination.read_bytes()).hexdigest()}
     assert not groups["train"] & groups["validation"]
     assert not templates["train"] & templates["validation"]
     manifest = {
         "seed": args.seed,
-        "train": args.count,
-        "validation": args.validation_count,
+        "train": reports['train']['records'],
+        "validation": reports['validation']['records'],
+        "dropped_unresolved": dropped,
         "model": "none" if args.canonical_only else "gpt-6-luna",
         "report": reports,
         "sha256": {k: v["sha256"] for k, v in reports.items()},

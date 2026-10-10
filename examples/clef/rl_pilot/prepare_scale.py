@@ -31,7 +31,7 @@ def main(args: Args) -> None:
     zipfile.ZipFile(args.data_zip).extractall(data)
     manifest = json.loads((data / 'manifest.json').read_text())
     receipt = json.loads((data / 'publication.json').read_text())
-    if manifest['train'] != 32768 or manifest['validation'] != 2048:
+    if not 32000 <= manifest['train'] <= 32768 or not 1900 <= manifest['validation'] <= 2048:
         raise ValueError('Unexpected dataset size')
     for name in ('train.jsonl', 'validation.jsonl', 'manifest.json', 'validation-report.json'):
         if hashlib.sha256((data / name).read_bytes()).hexdigest() != receipt['objects'][name]['sha256']:
@@ -41,7 +41,8 @@ def main(args: Args) -> None:
     old_id = args.pilot_root.name
     launch = (args.pilot_root / 'launch.fish').read_text().replace(old_id, args.run_id)
     launch = launch.replace('261009-clef-rl-hard2048-g32-a07c2b72', args.run_id + '-clef-rl-scaled32768-g32')
-    for old, new in (('--max-steps 64', '--max-steps 1024'), ('--save-interval 32', '--save-interval 128'),
+    steps = 2 * manifest['train'] // 64
+    for old, new in (('--max-steps 64', f'--max-steps {steps}'), ('--save-interval 32', '--save-interval 128'),
                      ('--eval-interval 16', '--eval-interval 32'), ('--master-port=29694', '--master-port=29696'),
                      ('--prometheus-port 9094', '--prometheus-port 9096')):
         launch = launch.replace(old, new)
@@ -52,7 +53,7 @@ def main(args: Args) -> None:
     run.update(run_id=args.run_id, status='prepared', host=socket.gethostname(), node_rank=args.node_rank,
                source_revision=args.source_revision, source_archive_sha256=hashlib.sha256(args.source_zip.read_bytes()).hexdigest(),
                launch_command=launch.split(' > ')[0], dataset=manifest, publication=receipt,
-               training='Full-parameter hybrid categorical GRPO plus Brier and KL; 1024 updates',
+               training=f'Full-parameter hybrid categorical GRPO plus Brier and KL; {steps} updates',
                initialization='Original supervised step2048, fresh optimizer; not pilot weights')
     (root / 'manifest.json').write_text(json.dumps(run, indent=2))
     shutil.copyfile(args.pilot_root / 'requirements.freeze.txt', root / 'requirements.freeze.txt')
