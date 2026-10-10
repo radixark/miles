@@ -74,7 +74,6 @@ def _sparse_attention_fwd_kernel(
         Q: T.Tensor(q_shape, dtype),  # type: ignore
         KV: T.Tensor(kv_shape, dtype),  # type: ignore
         Indices: T.Tensor(indices_shape, indices_dtype),  # type: ignore
-        KVIndices: T.Tensor(indices_shape, indices_dtype),  # type: ignore
         Sink: T.Tensor(sink_shape, accum_dtype),  # type: ignore
         Output: T.Tensor(o_shape, dtype),  # type: ignore
         Lse: T.Tensor(lse_shape, accum_dtype),  # type: ignore
@@ -116,10 +115,12 @@ def _sparse_attention_fwd_kernel(
 
             for i_i in T.Pipelined(NI, num_stages=0):
                 for bi_i, d_i in T.Parallel(BI, D):
-                    KV_shared[bi_i, d_i] = KV[b_i, KVIndices[b_i, s_i, g_i, i_i * BI + bi_i], g_i, d_i]
+                    KV_shared[bi_i, d_i] = KV[b_i, T.max(Indices[b_i, s_i, g_i, i_i * BI + bi_i], 0), g_i, d_i]
                 if D_tail > 0:
                     for bi_i, d_i in T.Parallel(BI, D_tail):
-                        K_tail_shared[bi_i, d_i] = KV[b_i, KVIndices[b_i, s_i, g_i, i_i * BI + bi_i], g_i, D + d_i]
+                        K_tail_shared[bi_i, d_i] = KV[
+                            b_i, T.max(Indices[b_i, s_i, g_i, i_i * BI + bi_i], 0), g_i, D + d_i
+                        ]
 
                 for h_i, bi_i in T.Parallel(H_per_block, BI):
                     acc_s[h_i, bi_i] = T.if_then_else(
@@ -178,9 +179,9 @@ def _sparse_attention_fwd_kernel(
     return main
 
 
-def sparse_attention_fwd(q, kv, indices, kv_indices, sink, d_v, *, sm_scale, threads, block_I=64):
+def sparse_attention_fwd(q, kv, indices, sink, d_v, *, sm_scale, threads, block_I=64):
     """q [B, S, H, d_v + d_tail], kv [B, S_kv, G, d_v + d_tail], indices [B, S, G, topk] (-1 = padding),
-    kv_indices = indices.clamp(min=0) (the rows actually read), sink [H] fp32 or None.
+    sink [H] fp32 or None.
     Returns out [B, S, H, d_v] and lse [B, S, H] in log2 space."""
     assert q.is_contiguous() and kv.is_contiguous() and indices.is_contiguous()
     batch, seq_len, heads, dim_plus_tail_dim = q.shape
@@ -204,4 +205,4 @@ def sparse_attention_fwd(q, kv, indices, kv_indices, sink, d_v, *, sm_scale, thr
     )
     if sink is None:
         sink = torch.zeros(heads, device=q.device, dtype=torch.float32)
-    return kernel(q, kv, indices, kv_indices, sink)
+    return kernel(q, kv, indices, sink)
