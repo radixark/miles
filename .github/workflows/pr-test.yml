@@ -261,7 +261,7 @@ jobs:
       fail-fast: false
       max-parallel: 1
       matrix:
-        partition_id: [0, 1]
+        partition_id: ${{ fromJSON(needs.resolve-ci-policy.outputs.cadence == 'regular' && '[0]' || '[0,1]') }}
     uses: ./.github/workflows/_run-ci.yml
     with:
       runs_on: '["h100", "8gpu"]'
@@ -288,7 +288,7 @@ jobs:
       fail-fast: false
       max-parallel: ${{ needs.resolve-ci-policy.outputs.cadence == 'weekly' && 1 || 2 }}
       matrix:
-        partition_id: ${{ fromJSON(needs.resolve-ci-policy.outputs.cadence == 'regular' && '[0,1,2,3,4,5,6,7]' || '[0,1,2,3]') }}
+        partition_id: [0, 1, 2, 3]
     uses: ./.github/workflows/_run-ci.yml
     with:
       runs_on: '["h200", "8gpu"]'
@@ -315,7 +315,7 @@ jobs:
       fail-fast: false
       max-parallel: ${{ needs.resolve-ci-policy.outputs.cadence == 'weekly' && 1 || 3 }}
       matrix:
-        partition_id: ${{ fromJSON(needs.resolve-ci-policy.outputs.cadence == 'regular' && '[0,1,2,3,4,5,6,7,8,9,10,11,12,13,14]' || '[0,1,2,3,4,5,6,7,8]') }}
+        partition_id: [0, 1, 2, 3, 4, 5, 6, 7, 8]
     uses: ./.github/workflows/_run-ci.yml
     with:
       runs_on: '["h200", "4gpu"]'
@@ -342,7 +342,7 @@ jobs:
       fail-fast: false
       max-parallel: ${{ needs.resolve-ci-policy.outputs.cadence == 'weekly' && 1 || 2 }}
       matrix:
-        partition_id: [0, 1, 2, 3]
+        partition_id: ${{ fromJSON(needs.resolve-ci-policy.outputs.cadence == 'regular' && '[0,1]' || '[0,1,2,3]') }}
     uses: ./.github/workflows/_run-ci.yml
     with:
       runs_on: '["h200", "2gpu"]'
