@@ -27,7 +27,21 @@ _BUCKET_VALUES = {
 @dataclasses.dataclass
 class _FakeServerArgs:
     rl_quant_profile: str | None = None
-    quantization: str | None = None
+    moe_runner_backend: str = "auto"
+    # expert placement, at sglang's defaults
+    ep_num_redundant_experts: int = 0
+    init_expert_location: str = "trivial"
+    enable_eplb: bool = False
+    ep_join_mode: str | None = None
+    elastic_ep_initial_size: int | None = None
+    dwdp_size: int = 1
+    kt_weight_path: str | None = None
+
+    def __getattr__(self, name: str) -> None:
+        # the other server args a replica key reads, all unset
+        if name.startswith("_"):
+            raise AttributeError(name)
+        return None
 
 
 @dataclasses.dataclass
@@ -135,10 +149,16 @@ class _FakeRolloutApi:
         cell_id: str,
         gpu_count: int,
         generation: int = 1,
+        published_weight_numel: int = _WEIGHT_NUMEL,
+        moe_runner_backend: str = "auto",
+        expert_placement: dict | None = None,
     ) -> None:
         self.cell_id = cell_id
         self.gpu_count = gpu_count
         self.generation = generation
+        self.published_weight_numel = published_weight_numel
+        self.moe_runner_backend = moe_runner_backend
+        self.expert_placement = expert_placement or {}
         self.calls: list[str] = []
 
     def session_id(self, rank: int) -> str:
@@ -149,7 +169,7 @@ class _FakeRolloutApi:
 
     async def get_remote_instance_transfer_engine_info(self, rank: int) -> tuple[str, dict]:
         self.calls.append("get_remote_instance_transfer_engine_info")
-        weights = {name: (self.target_address(rank, name), _WEIGHT_NUMEL, 4) for name in ("w", "qk")}
+        weights = {name: (self.target_address(rank, name), self.published_weight_numel, 4) for name in ("w", "qk")}
         return self.session_id(rank), weights
 
     async def get_parallelism_info(self, rank: int) -> dict:
@@ -158,7 +178,7 @@ class _FakeRolloutApi:
 
     async def get_server_info(self) -> dict:
         self.calls.append("get_server_info")
-        return {"rl_quant_profile": None}
+        return {"rl_quant_profile": None, "moe_runner_backend": self.moe_runner_backend, **self.expert_placement}
 
 
 class _ProtocolCall:
@@ -323,6 +343,11 @@ def p2p_protocol() -> ModuleType:
         }
     ):
         return importlib.import_module(_P2P_PROTOCOL_MODULE)
+
+
+@pytest.fixture(scope="module")
+def mooncake_module(p2p_protocol: ModuleType) -> ModuleType:
+    return sys.modules[p2p_protocol.MooncakeTransport.__module__]
 
 
 @pytest.fixture(scope="module")

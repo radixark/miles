@@ -15,32 +15,49 @@ class _Parallelism:
         return dataclasses.asdict(self)
 
 
-def _config(model_replica_module: ModuleType, *, tp_rank: int, global_rank: int, quantization: str | None = None):
+@dataclasses.dataclass
+class _ServerArgs:
+    quantization: str | None = None
+    moe_runner_backend: str = "auto"
+    enable_dp_lm_head: bool = False
+    port: int = 30000
+    mem_fraction_static: float = 0.8
+
+    def __getattr__(self, name: str) -> None:
+        # the other server args a replica key reads, all unset
+        if name.startswith("_"):
+            raise AttributeError(name)
+        return None
+
+
+def _config(model_replica_module: ModuleType, *, tp_rank: int, global_rank: int, **server_args):
     return model_replica_module.RolloutEngineRankConfig(
-        parallelism=_Parallelism(tp_rank=tp_rank, global_rank=global_rank),
-        server_args=SimpleNamespace(quantization=quantization),
+        parallelism=_Parallelism(tp_rank=tp_rank, global_rank=global_rank), server_args=_ServerArgs(**server_args)
     )
 
 
 class TestShardLayoutKey:
-    def test_ranks_that_differ_only_in_their_place_in_the_launch_share_a_layout(
+    def test_ranks_that_differ_only_in_their_launch_or_serving_share_a_layout(
         self, model_replica_module: ModuleType
     ) -> None:
-        """Engines launched on different GPUs hold the same rank the same way, so one replica serves them all."""
-        first_engine = _config(model_replica_module, tp_rank=0, global_rank=0)
-        second_engine = _config(model_replica_module, tp_rank=0, global_rank=8)
+        """Engines on other GPUs, ports or memory settings, such as the two PD roles, hold the same rank the same way,
+        so one replica serves them all."""
+        first_engine = _config(model_replica_module, tp_rank=0, global_rank=0, port=30000, mem_fraction_static=0.8)
+        second_engine = _config(model_replica_module, tp_rank=0, global_rank=8, port=30001, mem_fraction_static=0.6)
 
         assert first_engine.shard_layout_key == second_engine.shard_layout_key
 
-    def test_ranks_with_another_shard_or_quantization_do_not(self, model_replica_module: ModuleType) -> None:
-        """A replica built for one shard or quantization would write wrong bytes into another."""
+    def test_ranks_with_another_shard_or_sglang_arguments_do_not(self, model_replica_module: ModuleType) -> None:
+        """A replica built for one shard, quantization, MoE backend or lm_head sharding would write wrong bytes into
+        another."""
         config = _config(model_replica_module, tp_rank=0, global_rank=0)
 
         assert config.shard_layout_key != _config(model_replica_module, tp_rank=1, global_rank=1).shard_layout_key
-        assert (
-            config.shard_layout_key
-            != _config(model_replica_module, tp_rank=0, global_rank=0, quantization="fp8").shard_layout_key
-        )
+        for server_args in ({"quantization": "fp8"}, {"moe_runner_backend": "triton"}, {"enable_dp_lm_head": True}):
+            assert (
+                config.shard_layout_key
+                != _config(model_replica_module, tp_rank=0, global_rank=0, **server_args).shard_layout_key
+            )
 
 
 class TestModelReplicas:
@@ -78,6 +95,16 @@ class TestModelReplicas:
             == first.weight.data_ptr()
             == model_replicas.shared_params_dict["weight"].data_ptr()
         )
+
+    def test_a_replica_whose_params_do_not_fit_the_shared_buffer_is_rejected(
+        self, model_replica_module: ModuleType, model_replicas_of_width
+    ) -> None:
+        """A param of another shape cannot alias the shared buffer without loading wrong bytes."""
+        model_replicas = model_replicas_of_width({0: 4, 1: 3})
+        model_replicas.get_or_build(_config(model_replica_module, tp_rank=0, global_rank=0))
+
+        with pytest.raises(AssertionError, match="in the shared buffer"):
+            model_replicas.get_or_build(_config(model_replica_module, tp_rank=1, global_rank=1))
 
 
 @pytest.mark.parametrize(

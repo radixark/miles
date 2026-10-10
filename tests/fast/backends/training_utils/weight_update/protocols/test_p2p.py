@@ -157,3 +157,40 @@ class TestConnect:
 
         assert p2p_sender.assignment_inputs == [(resolved_placement, [2])]
         assert p2p_sender.transfer_engine.written_sessions() == [api.session_id(0), api.session_id(1)]
+
+    def test_rollout_engines_holding_one_rank_in_different_layouts_are_rejected(
+        self, p2p_sender: Any, make_rollout_api: Any
+    ) -> None:
+        """One model replica serves all engines of a rank, so their layouts must match."""
+        protocol = p2p_sender.make_protocol()
+        trtllm_api = make_rollout_api("cell-a", gpu_count=1, moe_runner_backend="flashinfer_trtllm")
+        triton_api = make_rollout_api("cell-b", gpu_count=1, moe_runner_backend="triton")
+
+        with pytest.raises(AssertionError, match="different layouts"):
+            p2p_sender.connect(protocol, [trtllm_api, triton_api])
+
+    @pytest.mark.parametrize(
+        "expert_placement",
+        [{"ep_num_redundant_experts": 32}, {"init_expert_location": "/placement.json"}, {"enable_eplb": True}],
+        ids=["redundant_experts", "init_expert_location", "eplb"],
+    )
+    def test_a_rollout_engine_placing_experts_a_replica_cannot_reproduce_is_rejected(
+        self, p2p_sender: Any, make_rollout_api: Any, expert_placement: dict
+    ) -> None:
+        """The engine places these experts by metadata the replica does not have, so p2p would write them into the
+        wrong slots."""
+        protocol = p2p_sender.make_protocol()
+        api = make_rollout_api("cell-a", gpu_count=1, expert_placement=expert_placement)
+
+        with pytest.raises(AssertionError, match=f"rollout engine 0 places experts by {next(iter(expert_placement))}"):
+            p2p_sender.connect(protocol, [api])
+
+    def test_a_replica_that_does_not_match_the_published_weights_is_rejected(
+        self, p2p_sender: Any, make_rollout_api: Any
+    ) -> None:
+        """Bytes loaded in a layout the rollout engine does not hold would land in the wrong places."""
+        protocol = p2p_sender.make_protocol()
+        api = make_rollout_api("cell-a", gpu_count=1, published_weight_numel=2)
+
+        with pytest.raises(AssertionError, match="does not match the weights rollout engine 0 rank 0 publishes"):
+            p2p_sender.connect(protocol, [api])
