@@ -48,6 +48,35 @@ async def test_harbor_http_turns_become_unmodified_training_data(monkeypatch):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "exit_status,stop_reason",
+    [
+        ("Submitted", "completed"),
+        ("TimeLimitExceeded", "rollout_timeout"),
+        ("SequenceLengthLimitExceeded", "context_overflow"),
+    ],
+)
+async def test_the_harbor_verdict_names_why_the_episode_ended(monkeypatch, exit_status, stop_reason):
+    policy = make_session().policy
+    policy.sampling_client.get_tokenizer = lambda: make_session().renderer.tokenizer
+
+    async def trial(base_url, prompt, request_kwargs, metadata):
+        async with httpx.AsyncClient() as http:
+            response = await http.post(
+                f"{base_url}/v1/chat/completions", json={"messages": [{"role": "user", "content": "hi"}]}
+            )
+            response.raise_for_status()
+        return {"reward": 0.0, "exit_status": exit_status}
+
+    monkeypatch.setattr(harbor_env, "run", trial)
+    strategy = harbor_env.SessionRolloutStrategy(renderer_name="role_colon")
+    outcome = await strategy.execute(harbor_env.HarborGroup("task", 1, "terminus-2"), policy)
+    [trajectory] = outcome.trajectories
+    assert trajectory.transitions[-1].ac.stop_reason == "stop"  # the sample finished; the episode may not have
+    assert trajectory.stop_reason == stop_reason
+
+
+@pytest.mark.asyncio
 async def test_infrastructure_failure_cannot_become_a_zero_reward(monkeypatch):
     policy = make_session().policy
     policy.sampling_client.get_tokenizer = lambda: make_session().renderer.tokenizer
