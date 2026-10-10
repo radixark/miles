@@ -73,6 +73,7 @@ _ARGS_DEFAULTS = dict(
     allgather_cp=False,
     log_probs_chunk_size=-1,
     true_on_policy_mode=True,
+    debug_unified_grad_fused_logprob=False,
     # compute_advantages_and_returns
     advantage_estimator="grpo",
     use_rollout_logprobs=False,

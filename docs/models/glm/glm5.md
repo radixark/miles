@@ -32,7 +32,27 @@ python scripts/run_glm5_744b_a40b.py prepare --model-name GLM-5 --num-nodes 16
 
 ### 3.2 HF → Megatron `torch_dist` conversion
 
-Also handled by `prepare`. Before conversion the launcher validates, via `_validate_glm_checkpoint`, that the checkpoint uses the native GLM-5 config (`model_type=glm_moe_dsa`, `architectures=[GlmMoeDsaForCausalLM]`) and fails fast if it does not, then converts it to the `glm5-744B-A40B` Megatron model type. Run `prepare-cp` afterwards on every node to copy the converted checkpoint from shared NFS to local disk.
+Also handled by `prepare`. Before conversion the launcher validates, via `_validate_glm_checkpoint`, that the checkpoint uses the native GLM-5 config (`model_type=glm_moe_dsa`, `architectures=[GlmMoeDsaForCausalLM]`) and fails fast if it does not, then converts it to the `glm5-744B-A40B` Megatron model type. Training itself copies the converted checkpoint from shared NFS to each node's local disk before it starts.
+
+### 3.3 DSA training implementation
+
+The raw Megatron path supports `--dsa-impl miles|megatron` for DSA models using the shared GLM-5 / DeepSeek-V3.2 spec. `miles` remains the default. To select Megatron's native DSA without Megatron-Bridge, pass the following to both `tools/convert_hf_to_torch_dist.py` and training:
+
+```bash
+--megatron-to-hf-mode raw --dsa-impl megatron --dsa-kernel-backend cudnn
+```
+
+Training uses packed `--qkv-format thd` and supports sequence parallelism. Native context parallelism uses zigzag token partitioning within each sequence and `--cp-comm-type allgather` for attention communication. Omitting `--cp-comm-type` selects `allgather` for native DSA; explicitly selecting another communication type is rejected. Miles' `--allgather-cp` instead selects contiguous token partitioning and is rejected for native DSA when CP > 1. GLM-5.2's cross-layer index sharing schedule is preserved. Indexer replay is outside the scope of this backend integration.
+
+The fused cuDNN indexer supports CP1, single-sequence CP batches, and complete multi-sequence CP query partitions. TP-local query slices of multi-sequence CP batches are rejected; select the reference implementation explicitly for that layout. Fused execution uses the configured cuDNN frontend directly and does not silently switch to reference scoring.
+
+`--miles-dsa-topk-backend` selects top-k for both implementations and is accepted by conversion, training, and the standalone `run_megatron` debug worker. This runtime selection does not change the checkpoint layout. The W4A16 test keeps `flashinfer` and `SGLANG_DSA_TOPK_FLASHINFER_TIE_BREAK=large`, preserving its top-k backend and tie policy when selecting native Megatron DSA.
+
+Native DSA defaults to `--dsa-indexer-loss-coeff 0` and freezes its indexer parameters, because native top-k selection runs without gradients when the auxiliary objective is disabled. This excludes unused parameters from DDP and optimizer weight decay. A positive native loss coefficient keeps the indexer trainable and requires explicitly selecting the reference implementation with `--dsa-kernel-backend none` or `--attention-backend unfused` when using an external top-k backend.
+
+Convert into a separate `torch_dist` directory when changing implementations: the native attention and indexer parameter names differ from the Miles checkpoint layout. Use the same implementation for conversion, checkpoint loading, and training. This selector applies to DSA training; SGLang rollout backend flags remain independent.
+
+With BF16 training, native cuDNN uses BF16 head weights; Miles produces FP32 head weights from BF16 projection operands. [cuDNN Frontend PR #1311](https://github.com/NVIDIA/cudnn-frontend/pull/1311) adds FP32 input support to forward scoring only. This wiring remains BF16; FP32 projection and auxiliary-loss recompute/backward support are separate work. Head-weight precision affects scores independently of the top-k backend and tie policy.
 
 ## 4. Launch
 
@@ -42,7 +62,7 @@ Also handled by `prepare`. Before conversion the launcher validates, via `_valid
 python scripts/run_glm5_744b_a40b.py full-train --model-name GLM-5 --num-nodes 16
 ```
 
-The Typer app exposes four subcommands:
+The Typer app exposes three subcommands:
 
 ```bash
 python scripts/run_glm5_744b_a40b.py full-train --model-name GLM-5 --num-nodes <N>
@@ -50,10 +70,7 @@ python scripts/run_glm5_744b_a40b.py full-train --model-name GLM-5 --num-nodes <
 # Just download model + datasets and convert to Megatron
 python scripts/run_glm5_744b_a40b.py prepare    --model-name GLM-5 --num-nodes <N>
 
-# Copy converted checkpoint from shared NFS to local disk (run on every node)
-python scripts/run_glm5_744b_a40b.py prepare-cp --model-name GLM-5 --num-nodes <N>
-
-# Train only (assumes prepare/prepare-cp done)
+# Train only (assumes prepare done); copies the checkpoint to each node's local disk first
 python scripts/run_glm5_744b_a40b.py train      --model-name GLM-5 --num-nodes <N>
 ```
 

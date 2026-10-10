@@ -5,7 +5,7 @@ from copy import deepcopy
 import wandb
 from wandb.sdk.lib.runid import generate_id
 
-from miles.utils.env_report import decode_env_report
+from miles.utils.env_report.launcher_report import read_launcher_report
 
 logger = logging.getLogger(__name__)
 
@@ -64,6 +64,8 @@ def init_wandb_primary(args):
         "name": run_name,
         "config": _compute_config_for_logging(args),
     }
+    if args.wandb_run_id is not None:
+        init_kwargs |= {"id": args.wandb_run_id, "resume": "allow"}
 
     # Configure settings based on offline/online mode
     if offline:
@@ -96,7 +98,7 @@ def _compute_config_for_logging(args):
     output["env_vars"] = {k: v for k, v in os.environ.items() if k in whitelist_env_vars}
 
     if env_report_raw := args.env_report:
-        if launcher_report := decode_env_report(env_report_raw):
+        if launcher_report := read_launcher_report(env_report_raw):
             output["launcher_env_report"] = launcher_report
 
     return output

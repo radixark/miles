@@ -75,7 +75,7 @@ def test_aborted_generation_is_not_committed(version):
 
     with with_mock_server(model_name=_MODEL, process_fn=abort_generation) as backend:
         with _serve_session(backend_url=backend.url, hf_checkpoint=_MODEL, version=version) as args:
-            session_url = f"http://{args.session_server_addrs[0]}"
+            session_url = args.session_server_instances[0].url
             session_id = requests.post(f"{session_url}/sessions", timeout=5.0).json()["session_id"]
             response = requests.post(
                 f"{session_url}/sessions/{session_id}/v1/chat/completions",
@@ -90,7 +90,7 @@ def test_aborted_generation_is_not_committed(version):
 
 
 @pytest.mark.parametrize("random_tool_ids", [False, True])
-def test_agentic_v2_drop_retries_matches_v1_training_payload_bitwise(random_tool_ids, monkeypatch):
+def test_agentic_v2_same_prompt_retries_match_v1_training_payload_bitwise(random_tool_ids, monkeypatch):
     if random_tool_ids:
         original = MockSGLangServer._compute_chat_completions_response
 

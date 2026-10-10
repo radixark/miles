@@ -39,3 +39,28 @@ def test_cycle_prone_modules_import_in_either_order(module_names: tuple[str, str
     )
 
     assert result.returncode == 0, f"importing {module_names} failed:\n{result.stderr}"
+
+
+def test_inference_specs_import_without_loading_gpu_dumper_dependencies() -> None:
+    """A CPU-only controller can import inference specs without loading GPU dumper dependencies."""
+    program = "\n".join(
+        [
+            "import sys",
+            "import miles.ray.specs.inference",
+            "assert 'miles.utils.dumper_utils' not in sys.modules",
+            "assert 'sglang.srt.debug_utils.dumper' not in sys.modules",
+        ]
+    )
+    env: dict[str, str] = dict(os.environ)
+    env["PYTHONPATH"] = os.pathsep.join(filter(None, [str(REPO_ROOT), env.get("PYTHONPATH", "")]))
+
+    result = subprocess.run(
+        [sys.executable, "-c", program],
+        cwd=REPO_ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=300,
+    )
+
+    assert result.returncode == 0, f"importing inference specs loaded GPU dumper dependencies:\n{result.stderr}"

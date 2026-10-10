@@ -29,7 +29,7 @@ stability -- needs real training, so go there next rather than widening this.
 import os
 from pathlib import Path
 
-import miles.utils.external_utils.command_utils as U
+from miles.utils.external_utils import command_utils
 
 MODEL_NAME = os.environ.get("MILES_SCRIPT_MODEL_NAME", "Qwen3-VL-4B-Instruct")
 NUM_GPUS = int(os.environ.get("MILES_SCRIPT_NUM_GPUS", "8"))
@@ -80,6 +80,7 @@ def preflight() -> dict[str, str]:
 
 
 def execute():
+    U = command_utils.default_config().create_backend()
     ckpt_args = f"--hf-checkpoint /root/models/{MODEL_NAME} "
 
     rollout_args = (
@@ -169,7 +170,7 @@ def execute():
         f"{custom_args} "
         f"{optimizer_args} "
         f"{grpo_args} "
-        f"{U.get_default_wandb_args(__file__)} "
+        f"{command_utils.get_default_wandb_args(__file__)} "
         f"{fsdp_args} "
         f"{sglang_args} "
         f"{telemetry_args} "

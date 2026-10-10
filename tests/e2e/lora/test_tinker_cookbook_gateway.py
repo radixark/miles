@@ -3,21 +3,31 @@
 from tests.ci.ci_register import register_cuda_ci
 from tests.e2e.lora.tinker_gateway import BASE_MODEL, prepare_gateway, running_gateway
 
-import miles.utils.external_utils.command_utils as U
+from miles.utils.external_utils import command_utils
 
 register_cuda_ci(
-    est_time=2400,
-    suite="stage-c-8-gpu-h200",
+    est_time=400,
+    suite="stage-c-8-gpu-h100",
     labels=["lora", "weight-update", "multi-lora"],
     hardware=["hopper"],
+    num_gpus=8,
 )
 
 
 def execute():
+    U = command_utils.default_config().create_backend()
     with running_gateway() as base_url:
         U.exec_command_cpu(
+            "uv run --no-project --isolated --index https://download.pytorch.org/whl/cpu "
+            "--with-requirements examples/multi_lora/requirements.txt "
             "python examples/multi_lora/run_client_recipes.py "
             f"--base-url {base_url} --base-model {BASE_MODEL} --mode both --steps 2"
+        )
+        U.exec_command_cpu(
+            "uv run --no-project --isolated --index https://download.pytorch.org/whl/cpu "
+            "--with-requirements examples/multi_lora/requirements.txt "
+            "python tests/e2e/lora/tinker_session_acceptance.py "
+            f"--base-url {base_url} --base-model {BASE_MODEL}"
         )
 
 

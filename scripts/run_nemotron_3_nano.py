@@ -34,7 +34,7 @@ from typing import Literal
 
 import typer
 
-import miles.utils.external_utils.command_utils as U
+from miles.utils.external_utils import command_utils
 
 _MODEL_NAMES = Literal["NVIDIA-Nemotron-3-Nano-4B-BF16", "NVIDIA-Nemotron-3-Nano-30B-A3B-BF16"]
 
@@ -93,8 +93,8 @@ _RECIPES: dict[str, _Recipe] = {
 
 
 @dataclass
-class ScriptArgs(U.ExecuteTrainConfig):
-    run_id: str = U.create_run_id()
+class ScriptArgs(command_utils.ExecuteTrainConfig):
+    run_id: str = command_utils.create_run_id()
     model_name: _MODEL_NAMES = "NVIDIA-Nemotron-3-Nano-4B-BF16"
     num_gpus_per_node: int = 8
     num_rollout: int = 10
@@ -109,6 +109,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
 
 
 def execute(args: ScriptArgs):
+    U = args.create_backend()
     recipe = args.recipe
     hf_checkpoint = f"{args.model_dir}/{args.model_name}"
 
@@ -197,7 +198,7 @@ def execute(args: ScriptArgs):
         f"{rollout_args} "
         f"{optimizer_args} "
         f"{grpo_args} "
-        f"{U.get_default_wandb_args(__file__, run_id=args.run_id)} "
+        f"{command_utils.get_default_wandb_args(__file__, run_id=args.run_id)} "
         f"{perf_args} "
         f"{sglang_args} "
         f"{misc_args} "
@@ -206,14 +207,13 @@ def execute(args: ScriptArgs):
 
     U.execute_train(
         train_args=train_args,
-        config=args,
         num_gpus_per_node=args.num_gpus_per_node,
         megatron_model_type=recipe.megatron_model_type,
         megatron_path=args.megatron_path,
     )
 
 
-@U.dataclass_cli
+@command_utils.dataclass_cli
 def main(args: ScriptArgs):
     execute(args)
 

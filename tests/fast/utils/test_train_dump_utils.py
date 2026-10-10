@@ -6,7 +6,7 @@ import pytest
 import torch
 
 import miles.backends.training_utils.parallel as parallel
-from miles.utils import train_dump_utils
+from miles.backends.training_utils.metrics import train_dump
 from miles.utils.ft_utils.process_group_utils import GroupInfo
 
 
@@ -40,6 +40,6 @@ def test_only_one_rank_per_shard_writes(tmp_path, monkeypatch, tp_rank, is_pp_la
         qkv_format="thd",
     )
 
-    train_dump_utils.save_debug_train_data(args, rollout_id=3, rollout_data={"sample_indices": [0]})
+    train_dump.save_debug_train_data(args, rollout_id=3, rollout_data={"sample_indices": [0]})
 
     assert (tmp_path / "3_5.pt").exists() == writes

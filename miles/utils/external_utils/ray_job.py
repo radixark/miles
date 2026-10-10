@@ -11,7 +11,7 @@ from typing import Literal
 
 from ray.job_submission import JobStatus, JobSubmissionClient
 
-from miles.utils.external_utils.exec_command import exec_command_cpu
+from miles.utils.external_utils.command_utils.common import run_shell_command as exec_command_cpu
 
 
 def run_ray_job(

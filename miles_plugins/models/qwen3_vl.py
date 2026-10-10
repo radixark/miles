@@ -204,7 +204,7 @@ def _cp_size_rank():
 def _natural_to_zigzag_slice(t, cp_size, cp_rank, dim):
     """Slice a full-length tensor into this rank's zigzag (load-balanced ring-attn) CP chunks.
 
-    Mirrors miles.backends.training_utils.cp_utils.slice_with_cp / natural_to_zigzag_slice:
+    Mirrors miles.backends.training_utils.data.context_parallel.slice_with_cp / natural_to_zigzag_slice:
     rank r owns chunks [r, 2*cp_size-1-r] of the 2*cp_size equal partitions along ``dim``.
     """
     total = t.shape[dim]

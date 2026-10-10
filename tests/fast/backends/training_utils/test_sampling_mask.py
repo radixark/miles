@@ -3,10 +3,10 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from miles.backends.training_utils import cp_utils
-from miles.backends.training_utils.loss_hub import logit_processors
-from miles.backends.training_utils.loss_hub.math_utils import _calculate_log_probs_and_entropy_true_on_policy
-from miles.backends.training_utils.sampling_mask import build_local_sampling_mask, get_rollout_sampling_masks
+from miles.backends.training_utils.data import context_parallel
+from miles.backends.training_utils.data.sampling_mask import build_local_sampling_mask, get_rollout_sampling_masks
+from miles.backends.training_utils.loss.hub import logit_processors
+from miles.backends.training_utils.loss.hub.math_utils import _calculate_log_probs_and_entropy_true_on_policy
 from miles.utils.sampling_mask import RolloutSamplingMask
 
 
@@ -159,6 +159,7 @@ def test_get_log_probs_and_entropy_applies_per_response_sampling_support(monkeyp
         log_probs_chunk_size=-1,
         vocab_size=4,
         allgather_cp=False,
+        debug_unified_grad_fused_logprob=False,
     )
     logits = torch.tensor(
         [
@@ -239,7 +240,7 @@ def test_allgather_cp_response_rows_keep_global_response_indices(monkeypatch, cp
 def test_zigzag_cp_response_rows_keep_global_response_indices(monkeypatch, cp_rank, expected_indices):
     parallel_state = SimpleNamespace(cp=SimpleNamespace(rank=cp_rank, size=2))
     monkeypatch.setattr(logit_processors, "get_parallel_state", lambda: parallel_state)
-    monkeypatch.setattr(cp_utils, "get_parallel_state", lambda: parallel_state)
+    monkeypatch.setattr(context_parallel, "get_parallel_state", lambda: parallel_state)
     args = SimpleNamespace(
         qkv_format="thd",
         rollout_temperature=1.0,

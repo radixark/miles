@@ -30,8 +30,8 @@ Prereqs:
 
     NOTE (open decisions before a real run): the shared server wants a Docker
     host with disk + socket, and colocating heavy per-task containers on the GPU
-    pod is risky, so it likely runs off-pod (use --openenv-env-url / the host
-    rewrite) -- per-episode sandboxes sidestep that entirely. The binary sparse
+    pod is risky, so it likely runs off-pod (use --openenv-env-url /
+    --session-server-external-host) -- per-episode sandboxes sidestep that entirely. The binary sparse
     reward also needs a task subset where the base policy *sometimes* succeeds
     (advantage variance) -- e.g. the TB2 variance band -- or GRPO sees a flat
     signal.
@@ -49,15 +49,15 @@ from typing import Literal
 import openenv_launch_common as C
 import typer
 
-import miles.utils.external_utils.command_utils as U
+from miles.utils.external_utils import command_utils
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 
 
 @dataclass
-class ScriptArgs(U.ExecuteTrainConfig):
+class ScriptArgs(command_utils.ExecuteTrainConfig):
     mode: Literal["normal", "debug_rollout_only"] = "normal"
-    run_id: str = U.create_run_id()
+    run_id: str = command_utils.create_run_id()
     megatron_model_type: str = "glm4.7-flash"
     num_gpus_per_node: int = 8
     megatron_path: str = "/root/Megatron-LM"
@@ -108,9 +108,10 @@ class ScriptArgs(U.ExecuteTrainConfig):
     # loss masks, reward, multi-turn messages) to <dir>/rollout_data/{rollout_id}.pt
     # for post-hoc inspection via miles.utils.debug_utils.display_debug_rollout_data.
     dump_details: str = os.environ.get("OPENENV_DUMP_DETAILS", "")
-    # Optional host rewrite for the policy URL (only needed if the in-process
-    # agent cannot reach the session server at its raw base_url host).
-    router_external_host: str = os.environ.get("MILES_ROUTER_EXTERNAL_HOST", "")
+    # The host the in-process agent reaches the session servers on, when their placed addresses do not
+    # route from there. Passed as --session-server-external-host, which also keeps the session servers
+    # on the head node.
+    session_server_external_host: str = ""
     # Leave empty so miles resolves the numeric LAN IP itself. sgl-router's Rust
     # binder rejects a hostname ("invalid socket address syntax"), and a numeric
     # base_url host keeps the in-process policy client off hostname DNS too.
@@ -130,6 +131,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
 
 def prepare(args: ScriptArgs):
     """Convert HF checkpoint to torch_dist format if not already done."""
+    U = args.create_backend()
     U.convert_checkpoint(
         model_name=args.model_name,
         megatron_model_type=args.megatron_model_type,
@@ -141,6 +143,7 @@ def prepare(args: ScriptArgs):
 
 
 def execute(args: ScriptArgs):
+    U = args.create_backend()
     ckpt_args = (
         f"--hf-checkpoint {args.hf_checkpoint} "
         f"--ref-load {args.ref_load} "
@@ -179,7 +182,11 @@ def execute(args: ScriptArgs):
         "--sglang-router-port 31000 "
     )
 
-    agent_args = C.agent_args("glm47", sandbox_backend=C.resolve_sandbox_backend(args))
+    agent_args = C.agent_args(
+        "glm47",
+        sandbox_backend=C.resolve_sandbox_backend(args),
+        session_server_external_host=args.session_server_external_host,
+    )
 
     misc_args = (
         "--attention-dropout 0.0 "
@@ -216,12 +223,11 @@ def execute(args: ScriptArgs):
         f"{dump_args}"
     )
 
-    extra_env_vars = C.base_env_vars(args, str(SCRIPT_DIR), args.megatron_path, U.repo_base_dir)
+    extra_env_vars = C.base_env_vars(args, str(SCRIPT_DIR), args.megatron_path, command_utils.repo_base_dir)
     C.apply_optional_env_vars(extra_env_vars, args)
 
     U.execute_train(
         train_args=train_args,
-        config=args,
         num_gpus_per_node=args.num_gpus_per_node,
         megatron_model_type=args.megatron_model_type,
         megatron_path=args.megatron_path,
@@ -229,7 +235,7 @@ def execute(args: ScriptArgs):
     )
 
 
-@U.dataclass_cli
+@command_utils.dataclass_cli
 def main(args: ScriptArgs):
     C.cleanup()
     if not args.skip_prepare:

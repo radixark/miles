@@ -16,13 +16,12 @@ Usage patterns:
            --model-name DeepSeek-V4-Flash-FP8-4layer \
            --num-nodes 1 --num-gpus-per-node 8
 
-  2. Individual steps (download -> FP8->BF16 -> BF16->torch_dist -> rsync -> train):
+  2. Individual steps (download -> FP8->BF16 -> BF16->torch_dist -> train):
        python scripts/run_deepseek_v4.py prepare-download --model-name DeepSeek-V4-Flash-FP8
        python scripts/run_deepseek_v4.py prepare-single   --model-name DeepSeek-V4-Flash-FP8 \
            --hf-checkpoint /root/models/DeepSeek-V4-Flash-FP8
        python scripts/run_deepseek_v4.py prepare-spmd     --model-name DeepSeek-V4-Flash-FP8 \
            --num-nodes 1 --num-gpus-per-node 8
-       python scripts/run_deepseek_v4.py prepare-cp       --model-name DeepSeek-V4-Flash-FP8
        python scripts/run_deepseek_v4.py train            --model-name DeepSeek-V4-Flash-FP8 \
            --num-nodes 4 --num-gpus-per-node 8 \
            --hf-checkpoint /root/models/DeepSeek-V4-Flash-FP8
@@ -34,7 +33,7 @@ from typing import Literal
 
 import typer
 
-import miles.utils.external_utils.command_utils as U
+from miles.utils.external_utils import command_utils
 
 app = typer.Typer()
 
@@ -51,9 +50,9 @@ _MEGATRON_MODEL_TYPE = {
 
 
 @dataclass
-class ScriptArgs(U.ExecuteTrainConfig):
+class ScriptArgs(command_utils.ExecuteTrainConfig):
     mode: Literal["normal", "debug_minimal"] = "debug_minimal"
-    run_id: str = U.create_run_id()
+    run_id: str = command_utils.create_run_id()
     model_org: str = ""
     model_name: Literal[
         "DeepSeek-V4-Flash-FP8",
@@ -63,6 +62,10 @@ class ScriptArgs(U.ExecuteTrainConfig):
     task: Literal["dapo_aime", "gsm8k"] = "dapo_aime"
     enable_eval: bool = True
     enable_mtp: bool = False
+    dsv4_impl: Literal["miles"] = "miles"
+    rollout_batch_size: int = 32
+    n_samples_per_prompt: int = 8
+    cp_size: int | None = None
 
     hf_checkpoint: str | None = None
     data_dir: str = "/root/datasets"
@@ -131,6 +134,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
 
 def _download_dataset(args: ScriptArgs):
     """Download the task-specific dataset(s)."""
+    U = args.create_backend()
     match args.task:
         case "dapo_aime":
             U.hf_download_dataset("zhuzilin/dapo-math-17k", data_dir=args.data_dir)
@@ -159,6 +163,7 @@ def _ensure_4layer_model_type(args: ScriptArgs):
 
 def _prepare_download(args: ScriptArgs):
     """Download HF checkpoint + task dataset. Idempotent: hf skips existing blobs."""
+    U = args.create_backend()
     U.exec_command_cpu(f"mkdir -p {args.model_dir} {args.data_dir}")
     # Only download if the user has NOT supplied a pre-existing checkpoint dir.
     # (prepare_single / train with --hf-checkpoint bypass this.)
@@ -170,13 +175,14 @@ def _prepare_download(args: ScriptArgs):
 
 
 @app.command()
-@U.dataclass_cli
+@command_utils.dataclass_cli
 def prepare_download(args: ScriptArgs):
     """Download HF checkpoint + dataset from HuggingFace. Run on one node (shared NFS)."""
     _prepare_download(args)
 
 
 def _prepare_single(args: ScriptArgs):
+    U = args.create_backend()
     _download_dataset(args)
 
     src = _hf_checkpoint_path(args)
@@ -187,17 +193,18 @@ def _prepare_single(args: ScriptArgs):
 
 
 @app.command()
-@U.dataclass_cli
+@command_utils.dataclass_cli
 def prepare_single(args: ScriptArgs):
     """FP8 -> BF16 cast for Megatron. Needs --hf-checkpoint (or pre-downloaded). One node."""
     _prepare_single(args)
 
 
 def _prepare_spmd(args: ScriptArgs):
+    U = args.create_backend()
     is_4layer = args.model_name == "DeepSeek-V4-Flash-FP8-4layer"
     actor_num_nodes = args.actor_num_nodes
     actor_num_gpus_per_node = args.actor_num_gpus_per_node
-    extra_args = "--dsv4-impl miles --expert-tensor-parallel-size 1 --context-parallel-size 1 "
+    extra_args = f"--dsv4-impl {args.dsv4_impl} --expert-tensor-parallel-size 1 --context-parallel-size 1 "
     if actor_num_nodes == 1 and is_4layer:
         extra_args += (
             "--tensor-model-parallel-size 1 " "--pipeline-model-parallel-size 1 " "--expert-model-parallel-size 1 "
@@ -215,7 +222,7 @@ def _prepare_spmd(args: ScriptArgs):
 
     num_gpus_for_convert = actor_num_gpus_per_node
     if is_4layer:
-        num_gpus_for_convert = min(num_gpus_for_convert, 4)
+        num_gpus_for_convert = 1
 
     U.convert_checkpoint(
         model_name=args.model_name,
@@ -231,28 +238,22 @@ def _prepare_spmd(args: ScriptArgs):
 
 
 @app.command()
-@U.dataclass_cli
+@command_utils.dataclass_cli
 def prepare_spmd(args: ScriptArgs):
     _prepare_spmd(args)
 
 
-@app.command()
-@U.dataclass_cli
-def prepare_cp(args: ScriptArgs):
-    _prepare_cp(args)
+def _prepare_cmd(args: ScriptArgs) -> dict[str, str]:
+    if args.model_local_dir == args.model_dir:
+        return {}
 
-
-def _prepare_cp(args: ScriptArgs):
-    U.rsync_simple(
-        path_src=f"{args.model_dir}/{args.torch_dist_name}",
-        path_dst=f"{args.model_local_dir}/{args.torch_dist_name}",
-        num_nodes=args.num_nodes,
-    )
-    U.rsync_simple(
-        path_src=f"{args.model_dir}/{args.model_name}",
-        path_dst=f"{args.model_local_dir}/{args.model_name}",
-        num_nodes=args.num_nodes,
-    )
+    copies = [
+        command_utils.rsync_cmd(
+            f"{args.model_dir}/{args.torch_dist_name}", f"{args.model_local_dir}/{args.torch_dist_name}"
+        ),
+        command_utils.rsync_cmd(f"{args.model_dir}/{args.model_name}", f"{args.model_local_dir}/{args.model_name}"),
+    ]
+    return {"trainer": " && ".join(copies)}
 
 
 def _get_parallel_config(args: ScriptArgs) -> str:
@@ -267,11 +268,13 @@ def _get_parallel_config(args: ScriptArgs) -> str:
 
     # Single-node smoke-test configs
     if actor_num_nodes == 1:
+        cp_size = args.cp_size or 1
         return (
-            f"--tensor-model-parallel-size {actor_num_gpus_per_node} "
+            f"--tensor-model-parallel-size {actor_num_gpus_per_node // cp_size} "
             "--sequence-parallel "
             "--pipeline-model-parallel-size 1 "
-            "--context-parallel-size 1 "
+            f"--context-parallel-size {cp_size} "
+            f"{'--allgather-cp ' if cp_size > 1 else ''}"
             f"--expert-model-parallel-size {actor_num_gpus_per_node} "
             "--expert-tensor-parallel-size 1 "
         )
@@ -299,6 +302,7 @@ def _get_parallel_config(args: ScriptArgs) -> str:
 
 
 def _train(args: ScriptArgs):
+    U = args.create_backend()
     print(f"[precision] fp8_training={args.fp8_training}")
     print(
         f"running on {args.num_nodes} nodes "
@@ -320,8 +324,8 @@ def _train(args: ScriptArgs):
         "--rollout-shuffle "
         "--rm-type math "
         "--num-rollout 3000 "
-        "--rollout-batch-size 32 "
-        "--n-samples-per-prompt 8 "
+        f"--rollout-batch-size {args.rollout_batch_size} "
+        f"--n-samples-per-prompt {args.n_samples_per_prompt} "
         "--rollout-temperature 0.8 "
         "--num-steps-per-rollout 1 "
         "--balance-data "
@@ -414,6 +418,7 @@ def _train(args: ScriptArgs):
     extra_env_vars = {
         "SGLANG_SKIP_CHECKPOINT_LOAD_CHECK": "1",
         "SGLANG_DSV4_FP4_EXPERTS": "0",
+        "SGLANG_OPT_FP8_WO_A_GEMM": "0",
         "SGLANG_HACK_FLASHMLA_BACKEND": "unified_kv_triton",
         # unified_kv lives in compressor_v2 only; on HIP the v1 path leaves
         # compress_kv_pool unset and the memory pool asserts on it.
@@ -437,7 +442,7 @@ def _train(args: ScriptArgs):
         "--sglang-mem-fraction-static 0.5 "
         "--sglang-watchdog-timeout 1800 "  # ROCm: slow aiter gemm tune under colocate; avoid watchdog SIGQUIT
         "--accumulate-allreduce-grads-in-fp32 "
-        "--dsv4-impl miles "  # ROCm has no cudnn/flash_mla path for the megatron impl
+        f"--dsv4-impl {args.dsv4_impl} "  # ROCm has no cudnn/flash_mla path for the megatron impl
         "--model-name deepseekv4 "  # for mbridge load
         "--qkv-format thd "
         "--moe-router-freeze-gate "
@@ -506,7 +511,7 @@ def _train(args: ScriptArgs):
         f"{rollout_args} "
         f"{optimizer_args} "
         f"{grpo_args} "
-        f"{U.get_default_wandb_args(__file__, run_id=args.run_id)} "
+        f"{command_utils.get_default_wandb_args(__file__, run_id=args.run_id)} "
         f"{perf_args} "
         f"{eval_args} "
         f"{sglang_args} "
@@ -516,23 +521,23 @@ def _train(args: ScriptArgs):
 
     U.execute_train(
         train_args=train_args,
-        config=args,
         num_gpus_per_node=args.num_gpus_per_node,
         megatron_model_type=args.megatron_model_type,
         extra_env_vars={**extra_env_vars},
         megatron_path=args.megatron_path,
+        prepare_cmd=_prepare_cmd(args),
     )
 
 
 @app.command()
-@U.dataclass_cli
+@command_utils.dataclass_cli
 def train(args: ScriptArgs):
     """Run training. Assumes data/model/torch_dist are already prepared on {model_local_dir}."""
     _train(args)
 
 
 @app.command()
-@U.dataclass_cli
+@command_utils.dataclass_cli
 def full_train(args: ScriptArgs):
     _prepare_download(args)
 
@@ -549,11 +554,6 @@ def full_train(args: ScriptArgs):
         _prepare_spmd(args)
     else:
         print(f"[full_train] Skipping BF16->torch_dist conversion: {torch_dist_sentinel} already exists.")
-
-    if args.model_local_dir != args.model_dir:
-        _prepare_cp(args)
-    else:
-        print(f"[full_train] Skipping rsync: model_local_dir == model_dir ({args.model_dir})")
 
     if args.hf_checkpoint is None:
         args.hf_checkpoint = f"{args.model_local_dir}/{args.model_name}"

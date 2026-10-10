@@ -87,6 +87,31 @@ For structured parsing, the payload may use SGLang's
 `ChatCompletionRequest`-compatible fields, which extend the OpenAI format.
 
 
+### Where the agent runs
+
+By default (`--custom-agent-function-mode subproc`) every agent call runs in a
+child process of its own, started by the rollout process. One episode that blocks
+on a slow step, or crashes, then affects only itself; on the rollout's single
+event loop it would stall every other episode, long enough under many episodes
+for their sandbox requests to time out. The contract changes in three ways:
+
+- The arguments and the return value cross a process boundary, so both must be
+  picklable.
+- Module-level state lasts one call. A module-level semaphore no longer limits
+  anything; use `rollout_semaphore` or `rollout_lock` from
+  `miles.rollout.agentic.rollout_limits`, which hold across the rollout's agent
+  processes. The number of concurrent calls is already bounded by the rollout's
+  batch settings.
+- Cleanup the agent leaves in a thread must be a non-daemon thread. The call
+  returns without waiting for it, and the process waits up to ten minutes for it
+  before exiting.
+
+Cancelling a call cancels the agent inside its process, so cleanup such as closing
+a sandbox still runs; an agent still running two minutes later is stopped.
+
+`--custom-agent-function-mode inline` runs the agent on the rollout's event loop,
+as before; use it for debugging and for agents that keep state across calls.
+
 ### Optional teardown hook
 
 The module named by `--custom-agent-function-path` may expose an `abort` function
@@ -97,10 +122,12 @@ async def abort(args) -> None:
     ...  # cancel this agent's in-flight external work
 ```
 
-Miles calls this hook during oversampling abort after it stops in-flight SGLang
-generation. Use it when the agent drives an external sandbox or agent server that
-would otherwise keep issuing completion requests until its own length limit or
-timeout. The hook is optional; modules without it continue to work.
+Miles calls this hook in the rollout process during oversampling abort after it
+stops in-flight SGLang generation, so under `subproc` it cannot reach the agent
+calls' module state; tell the external backend to stop, as below. Use it when the
+agent drives an external sandbox or agent server that would otherwise keep issuing
+completion requests until its own length limit or timeout. The hook is optional;
+modules without it continue to work.
 
 See [`swe_agent_function.abort`](https://github.com/radixark/miles/blob/main/examples/swe-agent-harbor-docker/swe_agent_function.py)
 for an implementation that flushes the Harbor agent server.
@@ -125,6 +152,8 @@ sequence, trims model-specific boundary tokens, and builds the training sample.
 
 </Warning>
 
+Chat responses from both session-server versions omit `choices[*].meta_info`. Ordinary JSON replies retain the message and `usage`, and carry standard `logprobs` only when the request set `logprobs`. The server keeps the full metadata and logprobs in session records for training sample collection and inspection through `GET /sessions/{id}`. Streaming chunks omit both.
+
 ### Choose template options per session
 
 - Ordinary `chat_template_kwargs` use request > continued turn > launch defaults. Fields required to preserve the reused prompt retain their recorded values; fixed model settings override conflicts. Qwen3.8 selects `reasoning_effort` on a new root and preserves its value or absence on continuation. When the field is absent, the template defaults to `xhigh`.
@@ -148,7 +177,10 @@ History handling depends on the selected server version:
 - **v2 (Experimental) is an append-only tree.** A request attaches to the deepest checkpoint
   whose complete message path prefixes the request. Any unmatched suffix creates
   a branch, and existing branches are never deleted. A path whose last generation
-  ended with `finish_reason=length` cannot be extended.
+  ended with `finish_reason=length` cannot be extended. By default, a leaf becomes
+  no sample when a later request re-sent its exact prompt tokens; a later request
+  that differs is a separate branch and its own sample
+  (`--session-sample-picker-path`).
 
 Whether a replayed message counts as "the same" as the stored one is decided by
 `--session-message-matcher` (default `strict`); see

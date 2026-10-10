@@ -9,7 +9,6 @@ Usage:
 """
 
 import os
-import socket
 import subprocess
 import time
 from dataclasses import dataclass
@@ -18,15 +17,15 @@ from typing import Literal
 
 import typer
 
-import miles.utils.external_utils.command_utils as U
+from miles.utils.external_utils import command_utils
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 
 
 @dataclass
-class ScriptArgs(U.ExecuteTrainConfig):
+class ScriptArgs(command_utils.ExecuteTrainConfig):
     mode: Literal["normal", "debug_rollout_only"] = "normal"
-    run_id: str = U.create_run_id()
+    run_id: str = command_utils.create_run_id()
     megatron_model_type: str = "glm4.7-flash"
     num_gpus_per_node: int = 8
     megatron_path: str = "/root/Megatron-LM"
@@ -55,7 +54,9 @@ class ScriptArgs(U.ExecuteTrainConfig):
     )
     agent_model_name: str = os.environ.get("AGENT_MODEL_NAME", "model")
     harbor_tasks_dir: str = os.environ.get("HARBOR_TASKS_DIR", "/root/harbor_tasks")
-    router_external_host: str = os.environ.get("MILES_ROUTER_EXTERNAL_HOST", socket.gethostname())  # public IP
+    # The host agents outside the cluster reach every session server on; passed as
+    # --session-server-external-host, which also keeps the session servers on the head node.
+    session_server_external_host: str = ""
     miles_host_ip: str = os.environ.get("MILES_HOST_IP", "")  # optional cluster/pod IP override
 
     # W&B settings
@@ -88,6 +89,7 @@ def cleanup():
 
 def prepare(args: ScriptArgs):
     """Convert HF checkpoint to torch_dist format if not already done."""
+    U = args.create_backend()
     U.convert_checkpoint(
         model_name=args.model_name,
         megatron_model_type=args.megatron_model_type,
@@ -99,6 +101,7 @@ def prepare(args: ScriptArgs):
 
 
 def execute(args: ScriptArgs):
+    U = args.create_backend()
     ckpt_args = (
         f"--hf-checkpoint {args.hf_checkpoint} "
         f"--ref-load {args.ref_load} "
@@ -165,6 +168,12 @@ def execute(args: ScriptArgs):
         "--sglang-router-port 31000 "
     )
 
+    external_host_arg = (
+        f"--session-server-external-host {args.session_server_external_host} "
+        if args.session_server_external_host
+        else ""
+    )
+
     agent_args = (
         "--custom-generate-function-path miles.rollout.generate_hub.agentic_tool_call.generate "
         "--custom-agent-function-path swe_agent_function.run "
@@ -175,6 +184,7 @@ def execute(args: ScriptArgs):
         "--use-session-server "
         "--session-server-port 30000 "
         "--session-server-workers 32 "
+        f"{external_host_arg}"
     )
 
     misc_args = (
@@ -229,13 +239,12 @@ def execute(args: ScriptArgs):
         f"{debug_args}"
     )
 
-    miles_root = U.repo_base_dir
+    miles_root = command_utils.repo_base_dir
 
     extra_env_vars = {
         "PYTHONPATH": f"{args.megatron_path}:{SCRIPT_DIR}:{miles_root}",
         "AGENT_SERVER_URL": args.agent_server_url,
         "AGENT_MODEL_NAME": args.agent_model_name,
-        "MILES_ROUTER_EXTERNAL_HOST": args.router_external_host,
         "HARBOR_TASKS_DIR": args.harbor_tasks_dir,
     }
     if args.miles_host_ip:
@@ -243,7 +252,6 @@ def execute(args: ScriptArgs):
 
     U.execute_train(
         train_args=train_args,
-        config=args,
         num_gpus_per_node=args.num_gpus_per_node,
         megatron_model_type=args.megatron_model_type,
         megatron_path=args.megatron_path,
@@ -251,7 +259,7 @@ def execute(args: ScriptArgs):
     )
 
 
-@U.dataclass_cli
+@command_utils.dataclass_cli
 def main(args: ScriptArgs):
     cleanup()
     if not args.skip_prepare:

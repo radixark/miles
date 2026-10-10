@@ -37,22 +37,12 @@ LOSS_FN_INPUTS = {
 }
 
 
-class GatewayError(Exception):
-    """An error the HTTP layer answers with status_code and its message."""
-
-    status_code = 500
-
-
-class UserInputError(GatewayError):
+class UserInputError(Exception):
     """Rejected request content; fails the future with category user."""
 
-    status_code = 400
 
-
-class OwnershipError(GatewayError):
+class OwnershipError(Exception):
     """model/checkpoint does not belong to the caller's tenant."""
-
-    status_code = 403
 
 
 @dataclass

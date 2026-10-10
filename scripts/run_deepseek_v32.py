@@ -1,11 +1,9 @@
 from dataclasses import dataclass
-from functools import partial
-from pathlib import Path
 from typing import Literal
 
 import typer
 
-import miles.utils.external_utils.command_utils as U
+from miles.utils.external_utils import command_utils
 
 app = typer.Typer()
 
@@ -18,9 +16,9 @@ DEFAULT_MXFP8_EXTRA_HIGH_PRECISION_LAYERS_MEGATRON = (
 
 
 @dataclass
-class ScriptArgs(U.ExecuteTrainConfig):
+class ScriptArgs(command_utils.ExecuteTrainConfig):
     mode: Literal["normal", "debug_minimal"] = "normal"
-    run_id: str = U.create_run_id()
+    run_id: str = command_utils.create_run_id()
     model_org: str = "deepseek-ai"
     model_name: str = "DeepSeek-V3.2"
     megatron_model_type: str = "deepseek-v32"
@@ -38,6 +36,9 @@ class ScriptArgs(U.ExecuteTrainConfig):
     model_local_dir: str = "/root/models"
     megatron_path: str = "/root/Megatron-LM"
     num_rollout: int = 3000
+    rollout_batch_size: int = 32
+    n_samples_per_prompt: int = 8
+    global_batch_size: int = 256
     no_save: bool = False
     rollout_mxfp8: bool = False
     rollout_fp8: bool = False
@@ -47,12 +48,13 @@ class ScriptArgs(U.ExecuteTrainConfig):
     tis_use_rs: bool = True
 
     def __post_init__(self):
-        self.hardware = U.resolve_hardware(self)
-        self.num_gpus_per_node = self.num_gpus_per_node or U.NUM_GPUS_OF_HARDWARE[self.hardware]
+        self.hardware = command_utils.resolve_hardware(self)
+        self.num_gpus_per_node = self.num_gpus_per_node or command_utils.NUM_GPUS_OF_HARDWARE[self.hardware]
         if self.use_single_node:
+            # Half of the node trains and the other half serves rollout.
             self.actor_num_nodes = 1
-            self.actor_num_gpus_per_node = 4
-            self.rollout_num_gpus = 4
+            self.actor_num_gpus_per_node = self.num_gpus_per_node // 2
+            self.rollout_num_gpus = self.num_gpus_per_node // 2
         assert not (self.rollout_fp8 and self.rollout_mxfp8), "rollout_fp8 and rollout_mxfp8 are mutually exclusive"
         if self.hardware in ("H100", "H200"):
             assert not self.rollout_mxfp8, "MXFP8 rollout is not supported on H100/H200 (no native MXFP8)"
@@ -60,6 +62,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
 
 
 def _prepare_download(args: ScriptArgs):
+    U = args.create_backend()
     U.exec_command_cpu(f"mkdir -p {args.model_dir} {args.data_dir}")
     if args.from_bf16_ckpt:
         U.exec_command_cpu(
@@ -74,6 +77,7 @@ def _prepare_download(args: ScriptArgs):
 
 
 def _prepare_bf16_ckpt(args: ScriptArgs):
+    U = args.create_backend()
     if not args.from_bf16_ckpt:
         U.fp8_cast_bf16(
             path_src=f"{args.model_dir}/{args.model_name}",
@@ -82,6 +86,7 @@ def _prepare_bf16_ckpt(args: ScriptArgs):
 
 
 def _prepare_mxfp8_ckpt(args: ScriptArgs):
+    U = args.create_backend()
     if args.rollout_mxfp8:
         extra_args = args.extra_args
         if "--extra-high-precision-layers-hf" not in extra_args:
@@ -97,6 +102,7 @@ def _prepare_mxfp8_ckpt(args: ScriptArgs):
 
 def _prepare_fp8_ckpt(args: ScriptArgs):
     """Convert BF16 checkpoint to block-quant FP8 (for sglang rollout, no MXFP8)."""
+    U = args.create_backend()
     if args.rollout_fp8:
         U.exec_command_gpu(
             f"python tools/convert_hf_to_fp8.py "
@@ -108,6 +114,7 @@ def _prepare_fp8_ckpt(args: ScriptArgs):
 
 def _prepare_megatron_ckpt(args: ScriptArgs):
 
+    U = args.create_backend()
     if args.use_single_node:
         U.convert_checkpoint(
             model_name=args.model_name,
@@ -144,15 +151,9 @@ def _prepare_megatron_ckpt(args: ScriptArgs):
         )
 
 
-def _prepare_cp(args: ScriptArgs, skip_existing: bool = False):
+def _prepare_cmd(args: ScriptArgs) -> dict[str, str]:
     if args.use_single_node:
-        return
-    torch_dist_dst = f"{args.model_local_dir}/{args.model_name}_torch_dist"
-    if not (skip_existing and Path(torch_dist_dst).exists()):
-        U.rsync_simple(
-            path_src=f"{args.model_dir}/{args.model_name}_torch_dist",
-            path_dst=torch_dist_dst,
-        )
+        return {}
 
     if args.rollout_mxfp8:
         hf_suffix = "-MXFP8"
@@ -161,15 +162,19 @@ def _prepare_cp(args: ScriptArgs, skip_existing: bool = False):
     else:
         hf_suffix = ""
     hf_name = f"{args.model_name}{hf_suffix}"
-    hf_dst = f"{args.model_local_dir}/{hf_name}"
-    if not (skip_existing and Path(hf_dst).exists()):
-        U.rsync_simple(
-            path_src=f"{args.model_dir}/{hf_name}",
-            path_dst=hf_dst,
-        )
+
+    copies = [
+        command_utils.rsync_cmd(
+            f"{args.model_dir}/{args.model_name}_torch_dist",
+            f"{args.model_local_dir}/{args.model_name}_torch_dist",
+        ),
+        command_utils.rsync_cmd(f"{args.model_dir}/{hf_name}", f"{args.model_local_dir}/{hf_name}"),
+    ]
+    return {"trainer": " && ".join(copies)}
 
 
-def _execute_train(args: ScriptArgs, before_ray_job_submit=None):
+def _execute_train(args: ScriptArgs):
+    U = args.create_backend()
     ref_load_path = f"{args.model_dir}/{args.model_name}_torch_dist"
     load_save_path = f"{args.output_dir}/{args.run_id}/checkpoints"
 
@@ -195,11 +200,11 @@ def _execute_train(args: ScriptArgs, before_ray_job_submit=None):
         "--rollout-shuffle "
         "--rm-type deepscaler "
         f"--num-rollout {args.num_rollout} "
-        "--rollout-batch-size 32 "
-        "--n-samples-per-prompt 8 "
+        f"--rollout-batch-size {args.rollout_batch_size} "
+        f"--n-samples-per-prompt {args.n_samples_per_prompt} "
         f"--rollout-max-response-len {100 if args.mode == 'debug_minimal' else 8192} "
         "--rollout-temperature 1 "
-        "--global-batch-size 256 "
+        f"--global-batch-size {args.global_batch_size} "
         "--balance-data "
     )
 
@@ -381,7 +386,9 @@ matchers:
     config: "bf16"
 """.strip()
                 if "--te-precision-config-file" not in args.extra_args:
-                    misc_args += f"--te-precision-config-file {U.encode_pseudo_file(te_precision_config_text)} "
+                    misc_args += (
+                        f"--te-precision-config-file {command_utils.encode_pseudo_file(te_precision_config_text)} "
+                    )
             else:
                 if args.use_single_node:
                     sglang_world_size = 2
@@ -422,7 +429,7 @@ rs_veto_threshold: 1.0e-4
 tis_batch_normalize: true
 """.strip()
         misc_args += (
-            f"--custom-config-path {U.encode_pseudo_file(config_text)} "
+            f"--custom-config-path {command_utils.encode_pseudo_file(config_text)} "
             "--custom-tis-function-path examples.infra_features.train_infer_mismatch_helper.mis.compute_mis_weights_with_cp "
         )
 
@@ -431,7 +438,7 @@ tis_batch_normalize: true
         f"{rollout_args} "
         f"{optimizer_args} "
         f"{grpo_args} "
-        f"{U.get_default_wandb_args(__file__, run_id=args.run_id)} "
+        f"{command_utils.get_default_wandb_args(__file__, run_id=args.run_id)} "
         f"{perf_args} "
         f"{eval_args} "
         f"{sglang_args} "
@@ -441,28 +448,28 @@ tis_batch_normalize: true
 
     U.execute_train(
         train_args=train_args,
-        config=args,
         num_gpus_per_node=args.num_gpus_per_node,
         megatron_model_type=args.megatron_model_type,
         extra_env_vars={**misc_env_vars},
         megatron_path=args.megatron_path,
-        before_ray_job_submit=before_ray_job_submit,
+        prepare_cmd=_prepare_cmd(args),
     )
 
 
 @app.command()
-@U.dataclass_cli
+@command_utils.dataclass_cli
 def full_train(args: ScriptArgs):
     """Full pipeline: download, cast, convert, copy, train."""
     _prepare_download(args)
     _prepare_bf16_ckpt(args)
     _prepare_mxfp8_ckpt(args)
     _prepare_fp8_ckpt(args)
-    _execute_train(args, before_ray_job_submit=partial(_prepare_megatron_ckpt, args))
+    _prepare_megatron_ckpt(args)
+    _execute_train(args)
 
 
 @app.command()
-@U.dataclass_cli
+@command_utils.dataclass_cli
 def prepare(args: ScriptArgs):
     """Download model/data and convert to Megatron checkpoints (run on head node)."""
     _prepare_download(args)
@@ -473,22 +480,15 @@ def prepare(args: ScriptArgs):
 
 
 @app.command()
-@U.dataclass_cli
+@command_utils.dataclass_cli
 def prepare_megatron_ckpt(args: ScriptArgs):
     _prepare_megatron_ckpt(args)
 
 
 @app.command()
-@U.dataclass_cli
-def prepare_cp(args: ScriptArgs):
-    """Copy model/checkpoint to local storage (run on each node)."""
-    _prepare_cp(args)
-
-
-@app.command()
-@U.dataclass_cli
+@command_utils.dataclass_cli
 def train(args: ScriptArgs):
-    """Run training only (assumes prepare and optional prepare-cp are done)."""
+    """Run training only (assumes prepare is done)."""
     _execute_train(args)
 
 
