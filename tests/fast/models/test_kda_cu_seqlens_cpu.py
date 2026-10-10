@@ -359,25 +359,58 @@ def _drop_in_kwargs(t, **extra):
     )
 
 
-def test_cp_falls_back_to_fla_with_exactly_one_warning_and_passes_the_boundaries_through(monkeypatch):
-    """U0: context parallelism still routes to fla (one warning per process); host copy and context pass through."""
+def test_cp_routes_to_the_deterministic_path_on_the_context_boundaries_with_no_warning(monkeypatch):
+    """Context parallelism is in the domain. With an fla CP context the drop-in takes
+    the rank-local boundaries from the context (device ``cu_seqlens`` and its host copy, as fla overrides them),
+    hands the context to the deterministic autograd function and does not warn; fla's ``chunk_kda`` is not called.
+    (``build_fla_cp_context`` receiving the micro-batch's host copy: ``test_cp_context_is_built_once_per_microbatch``.)"""
     fla_kda = pytest.importorskip("fla.ops.kda")
-    recorder = _Recorder()
-    monkeypatch.setattr(fla_kda, "chunk_kda", recorder)
+    fla_recorder = _Recorder()
+    monkeypatch.setattr(fla_kda, "chunk_kda", fla_recorder)
     monkeypatch.setattr(drop_in, "_fallback_warned", False)
+    monkeypatch.setattr(drop_in, "_BLACKWELL_CAPABILITIES", ((0, 0),))  # CPU operands report capability (0, 0)
+    applied = []
+
+    def fake_apply(*args):
+        applied.append(args)
+        return args[0]
+
+    monkeypatch.setattr(drop_in, "_ChunkKDADeterministicBackward", SimpleNamespace(apply=fake_apply))
     t = _small_operands()
+    local = torch.tensor([0, 8], dtype=torch.int32)
     host = torch.tensor([0, 8], dtype=torch.int64)
-    ctx = SimpleNamespace(cu_seqlens=torch.tensor([0, 8], dtype=torch.int32), cu_seqlens_cpu=host)
+    ctx = SimpleNamespace(group=object(), cu_seqlens=local, cu_seqlens_cpu=host, is_first_rank=True, is_last_rank=False)
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
         for _ in range(3):
             out, _ = drop_in.chunk_kda(**_drop_in_kwargs(t, cu_seqlens_cpu=host, cp_context=ctx))
+    assert not [w for w in caught if "fell back to fla" in str(w.message)]
+    assert not fla_recorder.calls and len(applied) == 3 and out is t["q"]
+    for args in applied:
+        cu_seqlens, cu_seqlens_cpu, source, cp_context = args[9], args[10], args[11], args[12]
+        assert cu_seqlens is local and cu_seqlens_cpu is host and cp_context is ctx and source == "fla"
+
+
+def test_cp_context_without_a_host_copy_falls_back_to_fla_with_exactly_one_warning(monkeypatch):
+    """A context object carrying no host copy of the local boundaries (fla's ``build_cp_context`` always fills
+    ``cu_seqlens_cpu``, so this is the drop-in's rule for any other context object) routes to fla with the caller's
+    arguments untouched, once-warned, like packed input without a host copy."""
+    fla_kda = pytest.importorskip("fla.ops.kda")
+    recorder = _Recorder()
+    monkeypatch.setattr(fla_kda, "chunk_kda", recorder)
+    monkeypatch.setattr(drop_in, "_fallback_warned", False)
+    monkeypatch.setattr(drop_in, "_BLACKWELL_CAPABILITIES", ((0, 0),))
+    t = _small_operands()
+    ctx = SimpleNamespace(group=object(), cu_seqlens=torch.tensor([0, 8], dtype=torch.int32), cu_seqlens_cpu=None)
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        for _ in range(2):
+            out, _ = drop_in.chunk_kda(**_drop_in_kwargs(t, cu_seqlens_cpu=None, cp_context=ctx))
     fallbacks = [w for w in caught if "fell back to fla" in str(w.message)]
-    assert len(fallbacks) == 1 and "context parallelism" in str(fallbacks[0].message)
-    assert len(recorder.calls) == 3 and out is t["q"]
+    assert len(fallbacks) == 1 and "cu_seqlens_cpu" in str(fallbacks[0].message)
+    assert len(recorder.calls) == 2 and out is t["q"]
     for call in recorder.calls:
-        assert call["cp_context"] is ctx and call["cu_seqlens_cpu"] is host and call["state_v_first"] is True
-        assert call["cu_seqlens"] is None
+        assert call["cp_context"] is ctx and call["cu_seqlens"] is None and call["cu_seqlens_cpu"] is None
 
 
 def test_packed_input_without_a_host_copy_falls_back_to_fla_with_exactly_one_warning(monkeypatch):
