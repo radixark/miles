@@ -16,13 +16,15 @@ class TokenTrace:
 
     turns: list[TokenTurn] = field(default_factory=list)
 
-    def record(self, request_id: str, input_ids: list[int], sequence: dict) -> TokenTurn:
+    def record(
+        self, request_id: str, input_ids: list[int], tokens: list[int], logprobs: list[float], stop_reason: str
+    ) -> TokenTurn:
         turn = TokenTurn(
             id=request_id,
             input_ids=tuple(input_ids),
-            output_ids=tuple(sequence["tokens"]),
-            logprobs=tuple(sequence["logprobs"]),
-            stop_reason=sequence["stop_reason"],
+            output_ids=tuple(tokens),
+            logprobs=tuple(logprobs),
+            stop_reason=stop_reason,
         )
         assert len(turn.output_ids) == len(turn.logprobs), "each sampled token must have a logprob"
         self.turns.append(turn)
