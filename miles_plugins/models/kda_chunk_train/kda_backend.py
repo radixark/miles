@@ -9,21 +9,48 @@ reductions, no atomics, so repeated backward passes on identical inputs are bit-
 kernel takes any sequence length and the variable-length ``thd`` packs RL batches produce through
 their ``cu_seqlens`` directly, chunking every sequence from its own first token as fla does.
 
-Calls the kernel does not cover -- context parallelism, non-Blackwell devices, K or V != 128, or
-forward options outside the Kimi K3 contract (in-kernel q/k L2 norm, in-kernel lower-bound safe
-gate on ``A_log`` / ``dt_bias``, no initial or final state) -- run through fla's ``chunk_kda``
-unchanged and warn once per process.
+Calls the kernel does not cover -- context parallelism, non-Blackwell devices, K or V != 128, packed
+input without a host copy of its boundaries, or forward options outside the Kimi K3 contract
+(in-kernel q/k L2 norm, in-kernel lower-bound safe gate on ``A_log`` / ``dt_bias``, no initial or
+final state) -- run through fla's ``chunk_kda`` unchanged and warn once per process.
+
+Boundary contract (packed ``thd`` input)
+----------------------------------------
+The canonical form of the packed boundaries is the pair device int32 ``cu_seqlens`` + ``cu_seqlens_cpu``,
+the same boundaries as a CPU ``torch.int64`` tensor (fla's own ``cu_seqlens_cpu`` annotation). The
+training path builds ``cu_seqlens_cpu`` exactly once per micro-batch
+(``miles.backends.megatron_utils.parallel.get_packed_seq_params`` attaches it to the ``PackedSeqParams``
+object) and every KDA layer's forward, recompute forward and backward of that micro-batch receives
+that one object (``LinearAttentionLayer.forward`` -> ``kda_recurrence`` -> this drop-in, for both
+backends). Invariants of this module under that contract:
+
+- no device-to-host copy inside the op: the host-side index work (fla's ``prepare_chunk_indices`` and
+  the backward's chunk layout) reads ``cu_seqlens_cpu``, never ``cu_seqlens``;
+- the hit path issues no host-to-device copy and no stream synchronisation: the chunk indices of the
+  forward and the layout tables of the backward are cached per (host tuple of boundaries, device) in
+  LRUs of 256 entries, so only the first forward of a new packing uploads chunk indices (fla's one
+  blocking copy) and only its first backward uploads the layout tables (two non-blocking copies from
+  pinned memory);
+- kernel-level direct calls may pass ``cu_seqlens_cpu`` as a sequence of ints; it is turned into a fresh
+  int64 host tensor per call (fla's identity-keyed ``tensor_cache`` then misses, which only costs that
+  call the chunk-indices upload); packed input with no host copy at all falls back to fla.
+
+Fixed-length ``[B, T]`` input has no boundaries and needs no host copy. Under context parallelism the
+rank-local boundaries come from the fla CP context and this drop-in falls back to fla.
 """
 
+import functools
 import warnings
 
 import torch
 
-from .backward import chunk_kda_backward
+from .backward import _LRUCache, chunk_kda_backward, host_boundaries
 
 _HEAD_DIM = 128
 _BLACKWELL_CAPABILITIES = ((10, 0), (10, 3))
 _CHUNK_SIZE = 64
+_CHUNK_INDICES_CACHE_LIMIT = 256
+_CHUNK_INDICES_CACHE: _LRUCache = _LRUCache(_CHUNK_INDICES_CACHE_LIMIT)
 
 
 def deterministic_backward_applies(
@@ -106,34 +133,65 @@ def _warn_fallback_once(reason: str) -> None:
     _fallback_warned = True
     warnings.warn(
         f"KDA backend 'deterministic' fell back to fla's backward for this call ({reason}); "
-        "the deterministic chunked backward covers SM100a/SM103a, K = V = 128 and no context parallelism.",
+        "the deterministic chunked backward covers SM100a/SM103a, K = V = 128, no context parallelism and "
+        "packed input with a host copy of its boundaries (cu_seqlens_cpu).",
         stacklevel=3,
     )
+
+
+@functools.lru_cache(maxsize=None)
+def _device_capability(device: torch.device) -> tuple[int, int]:
+    """``torch.cuda.get_device_capability`` once per device (the query costs ~10 us; the drop-in asks on
+    every call)."""
+    return torch.cuda.get_device_capability(device)
+
+
+def _host_copy(cu_seqlens_cpu) -> tuple[tuple[int, ...], torch.Tensor]:
+    """``(host tuple, CPU int64 tensor)`` of the caller's host copy: the tensor is the caller's own object
+    when it already is a CPU int64 tensor (so fla's identity-keyed caches keep hitting), else a fresh one."""
+    host = host_boundaries(cu_seqlens_cpu)
+    if isinstance(cu_seqlens_cpu, torch.Tensor) and cu_seqlens_cpu.dtype == torch.int64:
+        return host, cu_seqlens_cpu
+    return host, torch.tensor(host, dtype=torch.int64)
+
+
+def _chunk_indices(cu_seqlens: torch.Tensor, cu_seqlens_cpu: torch.Tensor, host: tuple[int, ...]) -> torch.Tensor:
+    """fla's chunk indices of ``cu_seqlens`` (``[num_chunks, 2]`` int32 on its device), cached per (host
+    boundaries, device): a new object carrying a known packing hits here without any upload, independent
+    of fla's identity-keyed ``tensor_cache`` and its depth."""
+    from fla.ops.utils.index import prepare_chunk_indices
+
+    key = (host, cu_seqlens.device)
+    indices = _CHUNK_INDICES_CACHE.get(key)
+    if indices is None:
+        indices = prepare_chunk_indices(cu_seqlens, _CHUNK_SIZE, cu_seqlens_cpu=cu_seqlens_cpu)
+        _CHUNK_INDICES_CACHE.put(key, indices)
+    return indices
 
 
 class _ChunkKDADeterministicBackward(torch.autograd.Function):
     """fla forward (same kernels and rounding as ``chunk_kda``) with the deterministic chunked backward.
 
     ``beta`` arrives already sigmoided (fp32), as the Kimi K3 layer produces it, so the backward returns
-    the gradient with respect to that beta directly.
+    the gradient with respect to that beta directly. ``cu_seqlens_cpu`` is the host copy of ``cu_seqlens``
+    (a CPU int64 tensor on the training path; a sequence of ints from direct kernel-level calls) and is
+    required whenever ``cu_seqlens`` is given: the forward never copies the boundaries off the device.
     """
 
     @staticmethod
     def forward(ctx, q, k, v, g, beta, A_log, dt_bias, lower_bound, scale, cu_seqlens, cu_seqlens_cpu):
         from fla.modules.l2norm import l2norm_fwd
         from fla.ops.kda.chunk_fwd import chunk_kda_fwd
-        from fla.ops.utils.index import prepare_chunk_indices
 
-        if cu_seqlens is not None and cu_seqlens_cpu is None:
-            cu_seqlens_cpu = cu_seqlens.cpu()
+        host = None
+        if cu_seqlens is not None:
+            if cu_seqlens_cpu is None:
+                raise ValueError("packed cu_seqlens requires its host copy cu_seqlens_cpu (CPU int64 tensor)")
+            host, cu_seqlens_cpu = _host_copy(cu_seqlens_cpu)
         with torch.no_grad():
             q_norm, q_rstd = l2norm_fwd(q)
             k_norm, k_rstd = l2norm_fwd(k)
-            chunk_indices = (
-                prepare_chunk_indices(cu_seqlens, _CHUNK_SIZE, cu_seqlens_cpu=cu_seqlens_cpu)
-                if cu_seqlens is not None
-                else None
-            )
+            chunk_indices = _chunk_indices(cu_seqlens, cu_seqlens_cpu, host) if cu_seqlens is not None else None
             outputs = chunk_kda_fwd(
                 q=q_norm,
                 k=k_norm,
@@ -158,8 +216,8 @@ class _ChunkKDADeterministicBackward(torch.autograd.Function):
         ctx.save_for_backward(q_norm, k_norm, q_rstd, k_rstd, v, g, beta, A_log, dt_bias, Aqk, Akk, cu_seqlens)
         ctx.scale = scale
         ctx.lower_bound = lower_bound
-        # the backward keys its layout tables on the host copy: no device-to-host copy per call
-        ctx.cu_seqlens_cpu = tuple(int(x) for x in cu_seqlens_cpu.tolist()) if cu_seqlens_cpu is not None else None
+        # the backward keys its layout tables on the host boundaries: no device-to-host copy per call
+        ctx.cu_seqlens_cpu = host
         return o.type_as(q)
 
     @staticmethod
@@ -219,17 +277,19 @@ def chunk_kda(
     return_intermediate_states: bool = False,
     state_v_first: bool = False,
     cu_seqlens: torch.Tensor | None = None,
-    cu_seqlens_cpu: torch.Tensor | None = None,
+    cu_seqlens_cpu=None,
     cp_context=None,
     **kwargs,
 ):
     """fla's ``chunk_kda`` signature (``A_log`` / ``dt_bias`` / ``chunk_size`` / the deprecated
     ``transpose_state_layout`` travel in ``kwargs`` as there) -> ``(output, None)``.
 
-    The deterministic backward runs when the call is in its domain (:func:`deterministic_backward_applies`)
-    and the options match the Kimi K3 contract (:func:`outside_contract`); ``disable_recompute`` and the
-    state layout only shape fla's own saved set and are accepted. Every other call goes to fla's
-    ``chunk_kda`` with the arguments unchanged, after one warning per process.
+    The deterministic backward runs when the call is in its domain (:func:`deterministic_backward_applies`),
+    the options match the Kimi K3 contract (:func:`outside_contract`) and packed input comes with its
+    host copy ``cu_seqlens_cpu`` (a CPU int64 tensor, or a sequence of ints from direct calls);
+    ``disable_recompute`` and the state layout (``state_v_first``) only shape fla's own saved set and are
+    accepted. Every other call goes to fla's ``chunk_kda`` with the arguments unchanged, after one warning
+    per process.
     """
     from fla.ops.kda import chunk_kda as fla_chunk_kda
 
@@ -276,7 +336,11 @@ def chunk_kda(
     )
     if reason is not None:
         return fallback(reason)
-    capability = torch.cuda.get_device_capability(q.device) if q.is_cuda else (0, 0)
+    if cp_context is not None:
+        return fallback("context parallelism")
+    if cu_seqlens is not None and cu_seqlens_cpu is None:
+        return fallback("packed cu_seqlens without a host copy (cu_seqlens_cpu)")
+    capability = _device_capability(q.device) if q.is_cuda else (0, 0)
     if not deterministic_backward_applies(
         capability=capability,
         head_dim=q.shape[-1],
