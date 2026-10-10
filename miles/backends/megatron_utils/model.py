@@ -6,7 +6,7 @@ import logging
 import math
 from argparse import Namespace
 from collections.abc import Callable, Sequence
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
 from functools import partial
 from pathlib import Path
 
@@ -959,6 +959,32 @@ def build_model_and_optimizer(
     return model, optimizer, opt_param_scheduler
 
 
+@dataclasses.dataclass
+class _SchedulerRestoreRecord:
+    restored: bool = False
+
+
+@contextmanager
+def _record_scheduler_restore(opt_param_scheduler: OptimizerParamScheduler | None):
+    """Record whether the checkpoint load inside this context calls opt_param_scheduler.load_state_dict."""
+    record = _SchedulerRestoreRecord()
+    if opt_param_scheduler is None:
+        yield record
+        return
+
+    load_state_dict = opt_param_scheduler.load_state_dict
+
+    def _recording_load_state_dict(state_dict):
+        record.restored = True
+        return load_state_dict(state_dict)
+
+    opt_param_scheduler.load_state_dict = _recording_load_state_dict
+    try:
+        yield record
+    finally:
+        del opt_param_scheduler.load_state_dict
+
+
 @dataclasses.dataclass(frozen=True)
 class LoadCheckpointOutput:
     loaded_rollout_id: int
@@ -985,9 +1011,10 @@ def load_model_state(
 
     load_dir = getattr(args, "load", None)
     native_optimizer_restored = False
+    scheduler_restored = False
     # --load may be unset: setup_model_and_optimizer already asserted pretrained_checkpoint covers it.
     if load_dir is None or _has_loadable_ckpt(load_dir):
-        with load_ctx:
+        with load_ctx, _record_scheduler_restore(opt_param_scheduler) as restore_record:
             iteration, _, native_optimizer_restored = load_checkpoint(
                 model,
                 optimizer,
@@ -995,6 +1022,7 @@ def load_model_state(
                 checkpointing_context=checkpointing_context,
                 skip_load_to_model_and_opt=False,
             )
+        scheduler_restored = restore_record.restored
     else:
         if is_first_replica_megatron_main_rank():
             logger.warning("--load %r is empty; starting from model_provider-initialized weights", load_dir)
@@ -1021,9 +1049,14 @@ def load_model_state(
 
     check_model_hashes(args, model, iteration)
 
-    # Megatron checkpoint loads can restore scheduler state directly. In that
-    # case, stepping by the checkpoint iteration here would double-count.
-    if opt_param_scheduler is not None and not (args.use_checkpoint_opt_param_scheduler and iteration > 0):
+    # Megatron and LoRA checkpoint loads restore the scheduler through load_state_dict, which replays the
+    # saved num_steps whatever --use-checkpoint-opt-param-scheduler says. Stepping by the checkpoint
+    # iteration as well would double-count.
+    if (
+        opt_param_scheduler is not None
+        and not scheduler_restored
+        and not (args.use_checkpoint_opt_param_scheduler and iteration > 0)
+    ):
         opt_param_scheduler.step(increment=iteration * args.global_batch_size)
 
     if args.finetune and not is_lora_enabled(args):

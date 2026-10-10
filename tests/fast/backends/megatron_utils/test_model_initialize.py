@@ -47,6 +47,10 @@ class _DummyScheduler:
     pass
 
 
+class _DummyPackedSeqParams:
+    pass
+
+
 class _DummyOptimizerConfig:
     def __init__(self, **kwargs):
         self.__dict__.update(kwargs)
@@ -106,7 +110,7 @@ def _mock_megatron_environment():
             },
         )
         _stub_module("megatron.core.optimizer_param_scheduler", {"OptimizerParamScheduler": _DummyScheduler})
-        _stub_module("megatron.core.packed_seq_params", {"PackedSeqParams": MagicMock()})
+        _stub_module("megatron.core.packed_seq_params", {"PackedSeqParams": _DummyPackedSeqParams})
         _stub_module("megatron.core.pipeline_parallel", {"get_forward_backward_func": MagicMock()})
         _stub_module("megatron.core.transformer", is_package=True)
         _stub_module("megatron.core.transformer.utils", {"sharded_state_dict_default": MagicMock()})
@@ -219,6 +223,42 @@ def test_initialize_steps_scheduler_when_checkpoint_did_not_restore_it():
         LoadCheckpointOutput(loaded_rollout_id=100, start_rollout_id=101),
     )
     opt_param_scheduler.step.assert_called_once_with(increment=800)
+
+
+def test_initialize_does_not_step_scheduler_its_checkpoint_load_restored():
+    from miles.backends.megatron_utils.model import LoadCheckpointOutput, initialize_model_and_optimizer
+
+    args = Namespace(use_checkpoint_opt_param_scheduler=False, global_batch_size=8, finetune=False)
+    model = [_FakeModelChunk()]
+    optimizer = object()
+    opt_param_scheduler = MagicMock()
+    load_state_dict = opt_param_scheduler.load_state_dict
+
+    def restoring_load_checkpoint(model, optimizer, opt_param_scheduler, **kwargs):
+        opt_param_scheduler.load_state_dict({"num_steps": 800})
+        return 100, 0, False
+
+    with ExitStack() as stack:
+        stack.enter_context(
+            patch(
+                "miles.backends.megatron_utils.model.setup_model_and_optimizer",
+                return_value=(model, optimizer, opt_param_scheduler),
+            )
+        )
+        stack.enter_context(
+            patch("miles.backends.megatron_utils.model.load_checkpoint", side_effect=restoring_load_checkpoint)
+        )
+        _patch_initialize_side_effects(stack)
+        result = initialize_model_and_optimizer(args)
+
+    assert result == (
+        model,
+        optimizer,
+        opt_param_scheduler,
+        LoadCheckpointOutput(loaded_rollout_id=100, start_rollout_id=101),
+    )
+    load_state_dict.assert_called_once_with({"num_steps": 800})
+    opt_param_scheduler.step.assert_not_called()
 
 
 def _load_model_state_with(
