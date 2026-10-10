@@ -29,8 +29,8 @@ backends). Invariants of this module under that contract:
 - the hit path issues no host-to-device copy and no stream synchronisation: the chunk indices of the
   forward and the layout tables of the backward are cached per (host tuple of boundaries, device) in
   LRUs of 256 entries, so only the first forward of a new packing uploads chunk indices (fla's one
-  blocking copy) and only its first backward uploads the layout tables (two non-blocking copies from
-  pinned memory);
+  blocking copy) and only its first backward uploads the layout tables (one non-blocking copy from
+  one pinned staging buffer);
 - kernel-level direct calls may pass ``cu_seqlens_cpu`` as a sequence of ints; it is turned into a fresh
   int64 host tensor per call (fla's identity-keyed ``tensor_cache`` then misses, which only costs that
   call the chunk-indices upload); packed input with no host copy at all falls back to fla.
