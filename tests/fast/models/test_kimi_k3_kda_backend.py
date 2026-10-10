@@ -124,7 +124,10 @@ def _inputs(seq_len: int, seed: int) -> dict[str, torch.Tensor]:
 
 
 def _run(kda_recurrence, backend: str, inputs: dict[str, torch.Tensor], cu_seqlens: torch.Tensor | None):
+    """One forward + backward through the layer's recurrence. Packed input travels as the layer sends it: the
+    device int32 ``cu_seqlens`` plus its CPU int64 host copy ``cu_seqlens_cpu``."""
     leaves = {name: tensor.detach().clone().requires_grad_(True) for name, tensor in inputs.items()}
+    cu_seqlens_cpu = None if cu_seqlens is None else torch.tensor(cu_seqlens.tolist(), dtype=torch.int64)
     output = kda_recurrence(
         leaves["q"],
         leaves["k"],
@@ -137,6 +140,7 @@ def _run(kda_recurrence, backend: str, inputs: dict[str, torch.Tensor], cu_seqle
         cu_seqlens=cu_seqlens,
         cp_context=None,
         backend=backend,
+        cu_seqlens_cpu=cu_seqlens_cpu,
     )
     torch.manual_seed(0)
     upstream = torch.randn_like(output)
