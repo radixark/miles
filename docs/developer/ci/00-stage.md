@@ -99,19 +99,11 @@ Both workflows receive `execute_command` and an optional `ref`; CUDA callers add
 
 **Sharding.** A stage with a `partition_id` matrix splits its tests across N shards; `run_suite.py` balances the shards by each test's `est_time`. Each shard is an independent job instance running the same `execute_command` with a different `--auto-partition-id`.
 
-Hopper shard counts are multiples of the matching runner capacity: two 2-GPU H200 runners, three 4-GPU H200 runners, two 8-GPU H200 runners, and one 8-GPU H100 runner. The two 2-GPU stages share their runner pool. A matrix caps concurrent jobs at that capacity; additional shards queue for later waves. Empty shards are removed by hosted planning before GPU allocation.
-
-A shard's budget is the sum of its selected test files' `est_time` values. For PR sizing, select regular-cadence `run-ci-image` tests, apply `auto_partition`, and take the largest shard sum, targeting at most two hours. Apply the same calculation to nightly selection, targeting less than two hours. Choose the smallest runner-capacity multiple whose largest shard sum meets the target. Do not add environment setup, cleanup, or queue time to this budget.
-
-`run-ci-image` alone excludes `nightly=True` registrations and omits `long`, `ft-short`, and `ft-long` from its label scope. Nightly admits nightly registrations and includes `ft-short`; weekly/release includes all labels. Label matching is inclusive: another included label on a file can still select it. Explicit extra labels, `run-ci-all`, and full manual or weekly/release runs can exceed the PR sizing scope. All regular runs use the regular shard counts in the roster; other cadences use the other counts.
-
-These are `est_time` sizing targets, not job timeouts or guarantees of actual elapsed time. Sharding never splits a test file: `long` / `ft-long` tests can exceed the ordinary PR target by themselves. Smaller shards reduce the tests repeated by a failed-job rerun, but extra waves do not reduce total runner work and each nonempty shard pays setup again. See [CI labels](01-label.md) for selection and rerun commands.
-
-Weekly runs limit each Hopper and ROCm GPU matrix to one runner. B200 uses the same per-file GPU pool for every cadence, with no matrix parallelism cap within each bounded batch; each file starts when its declared GPU budget is available. Other stages remain independent: `stage-b-2-gpu-h200` and `stage-c-2-gpu-h200` may each occupy one 2-GPU runner at the same time. Other cadences allow up to the matching runner capacity per Hopper matrix.
+Shard sizing and concurrency policy live in [CI Maintenance](../../../.claude/rules/ci-maintenance.md).
 
 ## ROCm PR/nightly/weekly mirror
 
-`pr-test-rocm.yml` exposes `pull_request`, exact nightly and weekly crons, `workflow_dispatch`, and `workflow_call`. PR runs use the same low-trust merge-commit model as `pr-test.yml`. It runs `stage-c-4-gpu-mi350` through `_run-ci-rocm.yml` on two 4-GPU MI350 runners and splits tests into two `est_time`-balanced shards; weekly alone limits the matrix to one runner at a time. It runs no CPU tests.
+`pr-test-rocm.yml` exposes `pull_request`, exact nightly and weekly crons, `workflow_dispatch`, and `workflow_call`. PR runs use the same low-trust merge-commit model as `pr-test.yml`. It runs `stage-c-4-gpu-mi350` through `_run-ci-rocm.yml` on two 4-GPU MI350 runners and splits tests into two `est_time`-balanced shards. It runs no CPU tests.
 
 Reusable calls can select a Miles `ref` and cadence, but resolve the same undated `rocm/sgl-dev:miles-rocm724-mi35x` image as the other automatic paths. SGLang and Megatron-LM remain baked into that image. The release branch-cut workflow does not call ROCm CI or include it in the `release-ci` gate.
 
