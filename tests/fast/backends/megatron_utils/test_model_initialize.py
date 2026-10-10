@@ -222,13 +222,21 @@ def test_initialize_steps_scheduler_when_checkpoint_did_not_restore_it():
 
 
 def _load_model_state_with(
-    *, tmp_path: Path, finetune: bool, iteration: int, lora_rank: int = 0
+    *,
+    tmp_path: Path,
+    finetune: bool,
+    iteration: int,
+    lora_rank: int = 0,
+    write_tracker: bool = True,
+    ckpt_step: int | None = None,
+    exit_on_missing_checkpoint: bool = False,
 ) -> "LoadCheckpointOutput":
     from miles.backends.megatron_utils.model import load_model_state
 
     load_dir = tmp_path / "ckpt"
     load_dir.mkdir()
-    (load_dir / "latest_checkpointed_iteration.txt").write_text(str(iteration))
+    if write_tracker:
+        (load_dir / "latest_checkpointed_iteration.txt").write_text(str(iteration))
 
     with ExitStack() as stack:
         stack.enter_context(
@@ -244,6 +252,8 @@ def _load_model_state_with(
                 megatron_to_hf_mode="core",
                 lora_adapter_path=None,
                 load=str(load_dir),
+                ckpt_step=ckpt_step,
+                exit_on_missing_checkpoint=exit_on_missing_checkpoint,
             ),
             model=[_FakeModelChunk()],
             optimizer=None,
@@ -270,6 +280,22 @@ class TestWhereALoadSaysTheRunStarts:
         """--finetune promises iteration 0; anything else means the two disagree about where the run stands."""
         with pytest.raises(AssertionError, match="disagree about where this run stands"):
             _load_model_state_with(tmp_path=tmp_path, finetune=True, iteration=100)
+
+    @pytest.mark.parametrize(
+        "selector",
+        [{"ckpt_step": 7}, {"exit_on_missing_checkpoint": True}],
+        ids=["checkpoint-step", "exit-on-missing"],
+    )
+    def test_an_explicit_selection_enters_the_checkpoint_loader_without_a_tracker(self, tmp_path, selector):
+        output = _load_model_state_with(
+            tmp_path=tmp_path,
+            finetune=False,
+            iteration=7,
+            write_tracker=False,
+            **selector,
+        )
+
+        assert (output.loaded_rollout_id, output.start_rollout_id) == (7, 8)
 
 
 class TestALoraAdapterThatCarriesItsOwnIteration:

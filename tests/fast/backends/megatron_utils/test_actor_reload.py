@@ -72,6 +72,7 @@ def _args(tmp_path: Path, **overrides) -> Namespace:
         save=str(tmp_path / "run"),
         ckpt_step=None,
         ref_ckpt_step=None,
+        opd_teacher_ckpt_step=None,
         no_load_optim=False,
         no_load_rng=False,
         finetune=False,
@@ -148,6 +149,55 @@ def _watch_load(actor_module, monkeypatch, *, args: Namespace, iteration: int) -
     monkeypatch.setattr(model_module, "check_model_hashes", lambda *a, **k: None)
     monkeypatch.setattr(actor_module, "clear_memory", lambda *a, **k: None)
     return seen
+
+
+@pytest.mark.parametrize(
+    ("model_tag", "path", "expected_step"),
+    [("ref", "/ref", None), ("teacher", "/teacher", 7), ("old_actor", "/actor", 39)],
+)
+def test_auxiliary_load_uses_its_own_checkpoint_step(
+    actor_module, monkeypatch, tmp_path, model_tag, path, expected_step
+):
+    args = _args(tmp_path, ckpt_step=39, opd_teacher_ckpt_step=7)
+    worker = object.__new__(actor_module.MegatronTrainRayActor)
+    worker.args = args
+    worker.model = object()
+    worker.weights_backuper = Mock()
+    observed_args = {}
+
+    def load_checkpoint(*_args, **_kwargs):
+        observed_args.update(vars(args))
+        return _CheckpointLoadResult(0, 0, False)
+
+    monkeypatch.setattr(actor_module, "load_checkpoint", load_checkpoint)
+
+    worker.load_other_checkpoint(model_tag, path)
+
+    assert observed_args["load"] == path
+    assert observed_args["no_load_optim"] is True
+    assert observed_args["no_load_rng"] is True
+    assert observed_args["finetune"] is True
+    assert observed_args["ckpt_step"] == expected_step
+    assert args.ckpt_step == 39
+    assert args.load == str(tmp_path / "pretrain")
+    worker.weights_backuper.backup.assert_called_once_with(model_tag)
+    assert worker._active_model_tag == model_tag
+
+
+def test_auxiliary_load_restores_arguments_after_failure(actor_module, monkeypatch, tmp_path):
+    args = _args(tmp_path, ckpt_step=39)
+    original_args = vars(args).copy()
+    worker = object.__new__(actor_module.MegatronTrainRayActor)
+    worker.args = args
+    worker.model = object()
+    worker.weights_backuper = Mock()
+    monkeypatch.setattr(actor_module, "load_checkpoint", Mock(side_effect=RuntimeError("load failed")))
+
+    with pytest.raises(RuntimeError, match="load failed"):
+        worker.load_other_checkpoint("ref", "/ref")
+
+    assert vars(args) == original_args
+    worker.weights_backuper.backup.assert_not_called()
 
 
 class _Scheduler:
