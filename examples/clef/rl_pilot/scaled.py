@@ -133,7 +133,7 @@ def finalize(args: Args) -> None:
         "model": "none" if args.canonical_only else "gpt-6-luna",
         "report": reports,
         "sha256": {k: v["sha256"] for k, v in reports.items()},
-        "checks": ["unique disjoint semantic cases", "disjoint evidence-format/policy-composition templates", "rule-derived labels", "exact evidence preservation", "blind review on every accepted case"],
+        "checks": ["unique disjoint semantic cases", "disjoint evidence-format/policy-composition templates", "rule-derived labels", "exact evidence preservation", "canonical test fixtures only" if args.canonical_only else "blind review on every accepted case"],
         "limitations": ["Shared families and base oracle between splits", "Same-model review, no human audit", "Synthetic policy-input overrides; no organic or executed tool cases"],
     }
     (args.output / "manifest.json").write_text(json.dumps(manifest, indent=2))
