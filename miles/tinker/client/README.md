@@ -36,11 +36,18 @@ URLs as credentials. Use a trusted network or TLS proxy when exposing them.
 
 The supported surface is non-streaming, text-only `/v1/chat/completions`, one
 completion per request, with function tools where the chosen renderer supports
-them. Sampling defaults come from the policy and renderer; explicit stop lists
-(including `[]`) override renderer stops. Per-request output limits may lower the
-policy cap. The configured per-Datum limit counts model-input tokens (prompt plus
-output minus one); requests exceeding that budget are rejected before sampling.
-Unsupported request options fail instead of being silently ignored.
+them. Messages use the OpenAI roles (system, developer, user, assistant, tool)
+with string content or text parts. Sampling defaults come from the policy and
+renderer; an explicit `stop` is handed to the SDK as given (all strings, all
+token ids, or `[]`), overriding renderer stops, and the reply text is whatever
+the renderer's parser makes of the raw sampled tokens, exactly as with the SDK.
+Per-request output limits may lower the policy cap. The configured per-Datum
+limit counts model-input tokens (prompt plus output minus one); requests
+exceeding that budget are rejected before sampling. `user`, `metadata` and
+`store: false` are accepted as information; `store: true` and any other
+unsupported request option fail instead of being silently ignored. Malformed
+requests are 400s; a failure after a sample was recorded is a 500 and the sample
+stays in the trace.
 
 This is independent of full-model rollout TITO. The trace is training evidence,
 not an authority over future prompts. A renderer may remove thinking or change
