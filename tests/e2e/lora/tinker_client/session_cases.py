@@ -110,10 +110,17 @@ async def test_real_http_lifecycle_isolated_policies_and_validation():
                     {"role": "user", "content": "continue"},
                 ]
             }
-            for extra in [{"n": 2}, {"stream": True}, {"max_tokens": 0}, {"chat_template_kwargs": {}}]:
+            for extra in [
+                {"n": 2},
+                {"stream": True},
+                {"max_tokens": 0},
+                {"chat_template_kwargs": {}},
+                {"store": True},
+            ]:
                 result = await http.post(f"{path}/v1/chat/completions", json={**body, **extra})
                 assert result.status_code == 400, result.text
-            result = await http.post(f"{path}/v1/chat/completions", json=body)
+            informational = {"user": "harbor", "metadata": {"trial": "1"}, "store": False}
+            result = await http.post(f"{path}/v1/chat/completions", json={**body, **informational})
             assert result.status_code == 200, result.text
             assert len(first.trace.turns) == 1
             assert not second.trace.turns
