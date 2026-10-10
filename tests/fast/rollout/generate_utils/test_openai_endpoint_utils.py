@@ -10,12 +10,14 @@ DELETE is attempted on every path.
 """
 
 import asyncio
+import socket
 import threading
 from types import SimpleNamespace
 
+import httpx
+import numpy as np
 import pytest
 
-import miles.utils.http_utils as http_utils
 from miles.rollout.generate_utils.openai_endpoint_utils import OpenAIEndpointTracer
 from miles.rollout.session.samples.codec import (
     COMPUTED_FIELDS,
@@ -25,7 +27,7 @@ from miles.rollout.session.samples.codec import (
     encode_samples,
 )
 from miles.rollout.session.types import SessionServerInstance
-from miles.utils.http_utils import post_bytes_no_retry
+from miles.utils.http_utils import post_buffer_no_retry
 from miles.utils.types import Sample
 
 
@@ -114,7 +116,7 @@ async def test_create_distributes_sessions_across_port_range(monkeypatch):
         return encode_samples([], {}, "no_records")
 
     monkeypatch.setattr("miles.rollout.generate_utils.openai_endpoint_utils.post", fake_post)
-    monkeypatch.setattr("miles.rollout.generate_utils.openai_endpoint_utils.post_bytes_no_retry", fake_post_bytes)
+    monkeypatch.setattr("miles.rollout.generate_utils.openai_endpoint_utils.post_buffer_no_retry", fake_post_bytes)
 
     ports = [12345, 12346, 12347, 12348]
     args = SimpleNamespace(
@@ -301,7 +303,7 @@ class _CollectCalls:
                 raise delete_outcome
             return {}
 
-        monkeypatch.setattr("miles.rollout.generate_utils.openai_endpoint_utils.post_bytes_no_retry", fake_post_bytes)
+        monkeypatch.setattr("miles.rollout.generate_utils.openai_endpoint_utils.post_buffer_no_retry", fake_post_bytes)
         monkeypatch.setattr("miles.rollout.generate_utils.openai_endpoint_utils.post", fake_post)
 
 
@@ -372,54 +374,172 @@ async def test_collect_samples_delete_failure_is_tolerated(monkeypatch):
     assert len(result.samples) == 1
 
 
-# ── post_bytes_no_retry primitive ──
+# ── post_buffer_no_retry primitive ──
 
 
-class _FakeResponse:
-    def __init__(self, status_code: int, content: bytes = b"", text: str = ""):
-        self.status_code = status_code
-        self.content = content
-        self.text = text
+class _ReplyServer:
+    """Local HTTP/1.1 server: records each POST body, then lets `reply(server, writer)` answer it."""
+
+    def __init__(self, reply):
+        self.reply = reply
+        self.requests: list[bytes] = []
+        self.closing = asyncio.Event()
+
+    async def __aenter__(self):
+        self.server = await asyncio.start_server(self._handle, "127.0.0.1", 0)
+        self.url = f"http://127.0.0.1:{self.server.sockets[0].getsockname()[1]}/sessions/sid-1/samples"
+        return self
+
+    async def __aexit__(self, *exc):
+        self.closing.set()
+        self.server.close()
+        await self.server.wait_closed()
+
+    async def _handle(self, reader, writer):
+        head = await reader.readuntil(b"\r\n\r\n")
+        length = next(
+            int(line.split(b":")[1]) for line in head.split(b"\r\n") if line.lower().startswith(b"content-length")
+        )
+        self.requests.append(await reader.readexactly(length))
+        await self.reply(self, writer)
+        writer.close()
 
 
-class _FakeClient:
-    def __init__(self, responses):
-        self.responses = list(responses)
-        self.post_count = 0
+def _reply(status: int, body: bytes, *, declared_length: int | None = None, head: bytes | None = None):
+    async def write(server, writer):
+        length = len(body) if declared_length is None else declared_length
+        writer.write((head or f"HTTP/1.1 {status} X\r\ncontent-length: {length}\r\n\r\n".encode()) + body)
+        await writer.drain()
 
-    async def post(self, url, json=None):
-        self.post_count += 1
-        outcome = self.responses.pop(0)
-        if isinstance(outcome, Exception):
-            raise outcome
-        return outcome
+    return write
 
 
 @pytest.mark.asyncio
-async def test_post_bytes_no_retry_returns_raw_bytes(monkeypatch):
-    client = _FakeClient([_FakeResponse(200, content=b"\x00\x01binary")])
-    monkeypatch.setattr(http_utils, "_http_client", client)
-    assert await post_bytes_no_retry("http://x/samples", {}, timeout=5) == b"\x00\x01binary"
-    assert client.post_count == 1
+@pytest.mark.parametrize("body", [bytes(range(256)) * 4096, b""], ids=["1MiB", "empty"])
+async def test_post_buffer_no_retry_returns_the_body_as_a_writable_array(body):
+    async with _ReplyServer(_reply(200, body)) as server:
+        reply = await post_buffer_no_retry(server.url, {"max_seq_len": 7}, timeout=5)
+    assert reply.dtype == np.uint8 and reply.flags.writeable and reply.tobytes() == body
+    assert server.requests == [b'{"max_seq_len": 7}']
 
 
 @pytest.mark.asyncio
-async def test_post_bytes_no_retry_does_not_retry_and_carries_body(monkeypatch):
-    # Two queued outcomes; a retrying client would consume both. It must not.
-    client = _FakeClient([_FakeResponse(422, text="cursor 3 != len(accumulated_token_ids) 4"), RuntimeError("late")])
-    monkeypatch.setattr(http_utils, "_http_client", client)
-    with pytest.raises(RuntimeError, match="422.*cursor 3"):
-        await post_bytes_no_retry("http://x/samples", {}, timeout=5)
-    assert client.post_count == 1
+async def test_post_buffer_no_retry_does_not_retry_and_carries_body():
+    async with _ReplyServer(_reply(422, b"cursor 3 != len(accumulated_token_ids) 4")) as server:
+        with pytest.raises(RuntimeError, match="422.*cursor 3"):
+            await post_buffer_no_retry(server.url, {}, timeout=5)
+    assert len(server.requests) == 1
+
+
+# `generate` turns exactly these into an ABORTED sample: (TimeoutError, httpx.TransportError).
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("reply", "expected_error"),
+    [
+        pytest.param(_reply(200, b"x" * 50, declared_length=100), httpx.ReadError, id="body-cut-short"),
+        pytest.param(_reply(200, b"abc", head=b"HTTP/1.1 200 OK\r\n\r\n"), httpx.RemoteProtocolError, id="no-length"),
+    ],
+)
+async def test_post_buffer_no_retry_transport_faults_raise_transport_errors_once(reply, expected_error):
+    async with _ReplyServer(reply) as server:
+        with pytest.raises(expected_error):
+            await post_buffer_no_retry(server.url, {}, timeout=5)
+    assert len(server.requests) == 1
 
 
 @pytest.mark.asyncio
-async def test_post_bytes_no_retry_transport_error_propagates_once(monkeypatch):
-    client = _FakeClient([ConnectionError("boom"), RuntimeError("late")])
-    monkeypatch.setattr(http_utils, "_http_client", client)
-    with pytest.raises(ConnectionError, match="boom"):
-        await post_bytes_no_retry("http://x/samples", {}, timeout=5)
-    assert client.post_count == 1
+async def test_post_buffer_no_retry_refused_connection_is_a_transport_error():
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+    with pytest.raises(httpx.ConnectError):
+        await post_buffer_no_retry(f"http://127.0.0.1:{port}/sessions/sid-1/samples", {}, timeout=5)
+
+
+@pytest.mark.asyncio
+async def test_post_buffer_no_retry_stalled_reply_times_out():
+    async def stall(server, writer):
+        await server.closing.wait()
+
+    async with _ReplyServer(stall) as server:
+        with pytest.raises(TimeoutError):
+            await post_buffer_no_retry(server.url, {}, timeout=0.2)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cancel", [False, True], ids=["total-timeout", "cancel"])
+async def test_post_buffer_no_retry_closes_stalled_body_connection(cancel):
+    started = asyncio.Event()
+    closed = asyncio.Event()
+    requests = []
+
+    async def handle(reader, writer):
+        try:
+            requests.append(await reader.readuntil(b"\r\n\r\n"))
+            await reader.readexactly(2)
+            writer.write(b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\nx")
+            await writer.drain()
+            started.set()
+            assert await reader.read() == b""
+            closed.set()
+        finally:
+            writer.close()
+            await writer.wait_closed()
+
+    async with await asyncio.start_server(handle, "127.0.0.1", 0) as server:
+        port = server.sockets[0].getsockname()[1]
+        task = asyncio.create_task(post_buffer_no_retry(f"http://127.0.0.1:{port}/samples", {}, timeout=0.2))
+        await asyncio.wait_for(started.wait(), timeout=2)
+        if cancel:
+            task.cancel()
+        with pytest.raises(asyncio.CancelledError if cancel else TimeoutError):
+            await task
+        await asyncio.wait_for(closed.wait(), timeout=2)
+    assert len(requests) == 1
+
+
+@pytest.mark.asyncio
+async def test_post_buffer_no_retry_does_not_follow_redirects():
+    head = b"HTTP/1.1 307 Temporary Redirect\r\nLocation: /again\r\nContent-Length: 0\r\n\r\n"
+    async with _ReplyServer(_reply(307, b"", head=head)) as server:
+        with pytest.raises(RuntimeError, match="307"):
+            await post_buffer_no_retry(server.url, {}, timeout=5)
+    assert server.requests == [b"{}"]
+
+
+@pytest.mark.asyncio
+async def test_post_buffer_no_retry_stalled_upload_has_total_deadline():
+    connected = asyncio.Event()
+    release = asyncio.Event()
+    closed = asyncio.Event()
+    connections = []
+
+    async def handle(reader, writer):
+        connections.append(writer)
+        writer.transport.pause_reading()
+        connected.set()
+        try:
+            await release.wait()
+        finally:
+            writer.close()
+            await writer.wait_closed()
+            closed.set()
+
+    async with await asyncio.start_server(handle, "127.0.0.1", 0) as server:
+        port = server.sockets[0].getsockname()[1]
+        started = asyncio.get_running_loop().time()
+        task = asyncio.create_task(
+            post_buffer_no_retry(f"http://127.0.0.1:{port}/samples", {"data": "x" * (8 * 1024 * 1024)}, timeout=0.5)
+        )
+        try:
+            await asyncio.wait_for(connected.wait(), timeout=2)
+            with pytest.raises(TimeoutError):
+                await asyncio.wait_for(task, timeout=2)
+            assert asyncio.get_running_loop().time() - started < 1.5
+        finally:
+            release.set()
+            await asyncio.wait_for(closed.wait(), timeout=2)
+    assert len(connections) == 1
 
 
 # ── v2 wire (--use-session-server v2): metadata channel + extended fields ──
@@ -453,7 +573,7 @@ async def test_collect_samples_v2_payload_carries_metadata_and_decodes_extras(mo
         assert action == "delete"
         return {}
 
-    monkeypatch.setattr("miles.rollout.generate_utils.openai_endpoint_utils.post_bytes_no_retry", fake_post_bytes)
+    monkeypatch.setattr("miles.rollout.generate_utils.openai_endpoint_utils.post_buffer_no_retry", fake_post_bytes)
     monkeypatch.setattr("miles.rollout.generate_utils.openai_endpoint_utils.post", fake_post)
 
     tracer = OpenAIEndpointTracer(
