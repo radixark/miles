@@ -103,7 +103,7 @@ class TorchtitanTrainRayActor(TorchNativeTrainRayActor):
         return args.start_rollout_id if args.start_rollout_id is not None else start_rollout_id
 
     def _move_to(self, device: str) -> None:
-        if self.args.fsdp_cpu_offload:
+        if self.args.optimizer_cpu_offload:
             # the training state already lives on the host; moving it would pull it all onto the GPU on wake
             clear_memory()
             dist.barrier(group=get_gloo_group())

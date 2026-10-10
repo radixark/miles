@@ -30,7 +30,7 @@ CASE = CaseConfig(
         "--sglang-kv-cache-dtype bfloat16 "
         "--model-name glm5_next "
         "--ci-disable-logprobs-checker "
-        "--fsdp-cpu-offload "
+        "--optimizer-cpu-offload "
         "--stream-optimizer-state-to-disk "
     ),
 )

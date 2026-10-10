@@ -169,7 +169,7 @@ class TestInitRunsExactlyOnce:
             debug_deterministic_collective=False,
             distributed_backend="nccl",
             distributed_timeout_minutes=1,
-            fsdp_cpu_offload=False,
+            train_backend="megatron",
         )
         actor = _ActorWithoutReloadSupport.__new__(_ActorWithoutReloadSupport)
         actor._init_once = InitOnce("TrainRayActor")
@@ -300,7 +300,7 @@ class TestNumaAffinity:
             debug_deterministic_collective=False,
             distributed_backend="nccl",
             distributed_timeout_minutes=1,
-            fsdp_cpu_offload=False,
+            train_backend="megatron",
             num_gpus_per_node=4,
         )
         actor = _ActorWithoutReloadSupport.__new__(_ActorWithoutReloadSupport)

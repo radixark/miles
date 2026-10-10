@@ -62,8 +62,8 @@ The rest follows from that split:
 | Architecture definition | `scripts/models/<megatron_model_type>.py` plus a Megatron spec for anything non-standard | HF `config.json`, plus an optional adaptation spec | a torchtitan model name + flavor |
 | Checkpoints written | Megatron `torch_dist` | PyTorch Distributed Checkpoint | torchtitan's own DCP checkpointer |
 | Activation recompute | `--recompute-granularity / method / num-layers` | `--gradient-checkpointing` | `--gradient-checkpointing` |
-| Optimizer on CPU | `--optimizer-cpu-offload` | `--fsdp-cpu-offload` | Not supported |
-| Offload beyond host RAM | `--offload-train-target disk`, `--stream-optimizer-state-to-disk` | Not supported | Not supported |
+| Optimizer on CPU | `--optimizer-cpu-offload` | `--optimizer-cpu-offload` | `--optimizer-cpu-offload` |
+| Offload beyond host RAM | `--offload-train-target disk`, `--stream-optimizer-state-to-disk` | Not supported | `--stream-optimizer-state-to-disk` (Adam moments) |
 | LoRA | Supported | Not supported | Not supported |
 
 ---
@@ -364,7 +364,7 @@ Memory, once the layout is set:
 | Flag | Effect |
 |---|---|
 | `--gradient-checkpointing` | Recompute activations. This backend's `--recompute-*`. |
-| `--fsdp-cpu-offload` | Offload parameters, gradients and optimizer state to CPU. The optimizer step runs there. |
+| `--optimizer-cpu-offload` | Offload parameters, gradients and optimizer state to CPU. The optimizer step runs there. Megatron's name for the same switch; `--fsdp-cpu-offload` is the deprecated spelling. |
 | `--fsdp-cpu-backend gloo` | CPU process-group backend used by the offload path. |
 
 Under `--colocate` this backend also implements `sleep` / `wake_up` by moving the model and
@@ -629,7 +629,7 @@ new model is a Python package that assembles torchtitan's own blocks.
 **No LoRA, no Muon (`--optimizer adam` only), no on-policy distillation, and
 `--ref-update-interval` is rejected** rather than silently ignored.
 
-**Host offload is FSDP2's, validated on `glm5_next` only.** `--fsdp-cpu-offload` keeps the
+**Host offload is FSDP2's, validated on `glm5_next` only.** `--optimizer-cpu-offload` keeps the
 weights, gradients and Adam state on the host and steps Adam on the CPU, and
 `--stream-optimizer-state-to-disk` then moves the Adam moments into files; other models pass the
 same policy through torchtitan's parallelize functions but have not been run that way.
@@ -699,7 +699,7 @@ directory is cleared at startup, so a killed run leaves nothing behind:
 
 ```bash
 --titan-model-flavor flash \
---fsdp-cpu-offload \
+--optimizer-cpu-offload \
 --stream-optimizer-state-to-disk \
 --offload-train-disk-dir /scratch/miles_train_offload \
 --expert-model-parallel-size 32 \

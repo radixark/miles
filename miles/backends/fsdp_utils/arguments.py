@@ -1,9 +1,12 @@
 import argparse
 import dataclasses
 import difflib
+import logging
 from dataclasses import dataclass
 
 import yaml
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -49,9 +52,10 @@ class FSDPArgs:
 
     # FSDP configuration
     fsdp_state_dict_cpu_offload: bool = True  # If True, offload full state dict to CPU during collection.
-    fsdp_cpu_offload: bool = (
-        False  # If True, offload parameters, gradients, and optimizer states to CPU (optimizer runs on CPU)
-    )
+    # Megatron's name for the same switch: the fp32 master params (FSDP's sharded params), their grads and the
+    # optimizer state live on the host, and the optimizer steps on the CPU
+    optimizer_cpu_offload: bool = False
+    fsdp_cpu_offload: bool = False  # deprecated spelling of --optimizer-cpu-offload
     fsdp_cpu_backend: str | None = (
         "gloo"  # CPU backend for FSDP CPU offload (e.g., "gloo"). Set to None to disable hybrid backend.
     )
@@ -141,6 +145,10 @@ def load_args_from_parser(parser: argparse.ArgumentParser):
                 f"--recompute-granularity {args.recompute_granularity!r}: this backend recomputes whole layers only; use full"
             )
         args.gradient_checkpointing = True
+    if args.fsdp_cpu_offload:
+        logger.warning("--fsdp-cpu-offload is deprecated; use --optimizer-cpu-offload, its name on every backend")
+        args.optimizer_cpu_offload = True
+    del args.fsdp_cpu_offload
     return args
 
 

@@ -1,4 +1,4 @@
-"""Adam moments in unlinked files on node-local NVMe, for torchtitan runs under `--fsdp-cpu-offload`."""
+"""Adam moments in unlinked files on node-local NVMe, for torchtitan runs under `--optimizer-cpu-offload`."""
 
 import logging
 
@@ -35,7 +35,7 @@ def _back_moments_with_files(optimizer: torch.optim.Optimizer, rank_dir: str) ->
     if any(_local(p).device.type != "cpu" for p in params):
         raise RuntimeError(
             "--stream-optimizer-state-to-disk on torchtitan backs host-resident moments; "
-            "the parameters are not on the host, pass --fsdp-cpu-offload"
+            "the parameters are not on the host, pass --optimizer-cpu-offload"
         )
 
     numels = [_local(p).numel() for p in params]

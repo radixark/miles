@@ -83,7 +83,7 @@ def build_trainer_config(args: Namespace, *, hf_assets_path: str, lr_total_steps
     dp_size = parallel_dims.dp_replicate * parallel_dims.dp_shard
 
     config.training.seq_len = args.seq_length
-    config.training.enable_cpu_offload = args.fsdp_cpu_offload
+    config.training.enable_cpu_offload = args.optimizer_cpu_offload
     if parallel_dims.pp_enabled and args.global_batch_size % (dp_size * args.micro_batch_size):
         raise ValueError(
             f"--global-batch-size {args.global_batch_size} must be a multiple of dp * micro_batch_size "

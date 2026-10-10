@@ -356,7 +356,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                     "plus a non-zero --optimizer-state-offload-fraction. --optimizer-cpu-offload is "
                     "Adam-only. This bounds host residency, not the GPU restore window -- for that "
                     "set --optimizer-state-offload-chunk-size-mb, which Megatron warns about at 0.\n"
-                    "torchtitan: with --fsdp-cpu-offload, the host-resident Adam moments live in "
+                    "torchtitan: with --optimizer-cpu-offload, the host-resident Adam moments live in "
                     "unlinked files instead of anonymous RAM; the step still runs on the CPU."
                 ),
             )
