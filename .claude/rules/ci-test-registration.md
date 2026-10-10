@@ -138,15 +138,16 @@ its history; `/rerun-test` never writes it.
 
 ## Shard runtime budget
 
-When adding or moving tests, run selection and `auto_partition` for each
-affected individual domain `run-ci-*` label and for nightly. A shard's budget
-is the sum of its test files' registered `est_time` values. Compare the largest
-shard sum with the targets in `docs/developer/ci/00-stage.md`; do not add
-environment setup, cleanup, or queue time.
+When adding or moving tests, check regular-cadence `run-ci-image` and nightly
+selection in each affected stage. Apply `auto_partition`, sum the registered
+`est_time` values in each shard, and compare the largest sum with the targets
+in `docs/developer/ci/00-stage.md`. Do not add environment setup, cleanup,
+or queue time.
 
-Ordinary PR sizing takes the maximum across individual labels, excluding
-`run-ci-image` and `run-ci-all`. Multiple labels select a larger union;
-a `long` / `ft-long` file can exceed the target alone.
+Use `run-ci-image` as the broad PR sizing baseline. It does not admit
+`nightly=True` registrations; nightly has a larger scope. Explicit extra
+labels and `run-ci-all` can exceed this baseline, and a `long` / `ft-long`
+file can exceed the target alone.
 
 Keep shard counts an integer multiple of the matching runner pool capacity,
 while capping concurrency at that capacity (one per matrix for weekly).
