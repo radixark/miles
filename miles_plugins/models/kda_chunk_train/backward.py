@@ -156,49 +156,54 @@ class _LRUCache:
         self._data.clear()
 
 
-_TABLE_ALIGN = 64  # int32 elements: every table view starts 256-byte aligned inside the shared buffer
+_TABLE_ALIGN = 64  # int32 elements: every int32 table view starts 256-byte aligned inside the shared buffer
+_ROW_ALIGN = 32  # int64 elements: the int32 tables start 256-byte aligned behind the int64 rows
 
 
 def _round_up(n: int, m: int) -> int:
     return -(-n // m) * m
 
 
-def _host_tables(lengths: tuple[int, ...], offsets: tuple[int, ...], rows_external: int):
-    """Host-side layout tables, vectorised (numpy over at most a few thousand elements; no Python loop
-    over chunks or tokens): ``starts`` (``N + 1`` int64), ``bos`` / ``clen`` (``nc`` int32 each) and the
-    internal row of every input row (``rows_external`` int64)."""
-    L = np.asarray(lengths, dtype=np.int64)
-    offs = np.asarray(offsets, dtype=np.int64)
-    n = L.size
-    nch = (L + (CHUNK - 1)) // CHUNK
-    starts = np.empty(n + 1, dtype=np.int64)
-    starts[0] = 0
-    np.cumsum(nch, out=starts[1:])
-    nc = int(starts[-1])
-    # per chunk: owning sequence (by repeat), index within it, first input row, valid tokens
-    i = np.arange(nc, dtype=np.int64) - np.repeat(starts[:-1], nch)
-    bos = np.repeat(offs, nch) + i * CHUNK
-    clen = np.minimum(CHUNK, np.repeat(L, nch) - i * CHUNK)
-    # per input row: position within its sequence, external row, internal row
-    excl = np.empty(n, dtype=np.int64)
-    excl[0] = 0
-    np.cumsum(L[:-1], out=excl[1:])
-    j = np.arange(rows_external, dtype=np.int64) - np.repeat(excl, L)
-    internal = np.repeat(starts[:-1] * CHUNK, L) + j
-    # packed and fixed-length inputs lay the sequences out back to back (offsets = exclusive cumsum of
-    # the lengths): the external row of token j of sequence n is then just its index -> ext is None
-    ext = None if np.array_equal(offs, excl) else np.repeat(offs, L) + j
-    return starts, bos.astype(np.int32, copy=False), clen.astype(np.int32, copy=False), ext, internal
+def _host_tables(lengths: tuple[int, ...], offsets: tuple[int, ...], rows_external: int, rows_out, bos_out, clen_out):
+    """Fill the layout tables straight into their (pinned) staging views, vectorised: ``rows_out``
+    (``rows_external`` int64, the internal row of every input row), ``bos_out`` / ``clen_out`` (``nc``
+    int32 each). Returns ``starts`` (``N + 1`` Python ints). Per-sequence scalars stay in Python (a
+    pack has a few sequences), only the per-chunk and per-row arrays go through numpy, and the per-row
+    array is written with a single ``np.add(..., out=)`` when the sequences lie back to back (packed
+    and fixed-length input: offsets = exclusive cumsum of the lengths)."""
+    n = len(lengths)
+    nch = [(length + (CHUNK - 1)) // CHUNK for length in lengths]
+    starts = [0] * (n + 1)
+    excl = [0] * n
+    for s in range(n):
+        starts[s + 1] = starts[s] + nch[s]
+        if s:
+            excl[s] = excl[s - 1] + lengths[s - 1]
+    nc = starts[-1]
+    # per chunk: index within its sequence (by repeat), first input row, valid tokens
+    i = np.arange(nc, dtype=np.int64) - np.repeat(np.asarray(starts[:-1], dtype=np.int64), nch)
+    bos_out[:] = np.repeat(np.asarray(offsets, dtype=np.int64), nch) + i * CHUNK
+    clen_out[:] = np.minimum(CHUNK, np.repeat(np.asarray(lengths, dtype=np.int64), nch) - i * CHUNK)
+    # per input row: internal row = row + (first internal row of its sequence - its exclusive cumsum)
+    shift = np.asarray([starts[s] * CHUNK - excl[s] for s in range(n)], dtype=np.int64)
+    if tuple(excl) == offsets:
+        np.add(np.arange(rows_external, dtype=np.int64), np.repeat(shift, lengths), out=rows_out)
+    else:
+        j = np.arange(rows_external, dtype=np.int64) - np.repeat(np.asarray(excl, dtype=np.int64), lengths)
+        rows_out[np.repeat(np.asarray(offsets, dtype=np.int64), lengths) + j] = np.repeat(shift + np.asarray(excl, dtype=np.int64), lengths) + j
+    return starts
 
 
 def _build_layout(lengths, offsets, rows_external: int, device) -> ChunkLayout:
     """Build the layout of ``lengths`` / ``offsets`` on ``device``.
 
-    Host cost is a handful of vectorised numpy ops; the device side is exactly two host-to-device
-    copies, both ``non_blocking`` from pinned staging buffers (one int32 buffer holding ``chunk_bos``,
-    ``chunk_len`` and ``seq_chunk_start`` as 256-byte-aligned views, one int64 buffer for
-    ``internal_rows``), so building a layout never drains the stream. The staging buffers come from
-    torch's caching pinned-memory allocator, which hands them out again once the copies have retired.
+    Host cost is a handful of vectorised numpy ops writing straight into ONE pinned staging buffer
+    (int64: ``internal_rows`` first, then ``chunk_bos``, ``chunk_len`` and ``seq_chunk_start`` as
+    256-byte-aligned int32 views of its tail); the device side is exactly one device allocation and one
+    ``non_blocking`` host-to-device copy, so building a layout never drains the stream (the U0-1 gate
+    allows up to two such copies). The staging buffer comes from torch's caching pinned-memory
+    allocator, which hands it out again once the copy has retired. On a CPU device the buffer is
+    pageable and the copy is a plain copy (tests).
     """
     lengths = tuple(int(x) for x in lengths)
     offsets = tuple(int(x) for x in offsets)
@@ -211,37 +216,32 @@ def _build_layout(lengths, offsets, rows_external: int, device) -> ChunkLayout:
     device = torch.device(device) if not isinstance(device, torch.device) else device
     pinned = device.type == "cuda"
 
-    starts, bos, clen, ext, internal = _host_tables(lengths, offsets, rows_external)
     n = len(lengths)
-    nc = int(starts[-1])
+    nc = sum((length + (CHUNK - 1)) // CHUNK for length in lengths)
     nc_pad = _round_up(nc, 2)
     table = _round_up(nc_pad, _TABLE_ALIGN)
     start_table = _round_up(n + 1, _TABLE_ALIGN)
-
-    host32 = torch.zeros(2 * table + start_table, dtype=torch.int32, pin_memory=pinned)
-    a32 = host32.numpy()
-    a32[:nc] = bos
-    a32[table : table + nc] = clen
+    rows64 = _round_up(rows_external, _ROW_ALIGN)
+    host = torch.empty(rows64 + (2 * table + start_table) // 2, dtype=torch.int64, pin_memory=pinned)
+    a32 = host[rows64:].view(torch.int32).numpy()
+    starts = _host_tables(lengths, offsets, rows_external, host.numpy()[:rows_external], a32[:nc], a32[table : table + nc])
+    if nc_pad != nc:  # trailing pad chunk: no rows, zero length
+        a32[nc] = 0
+        a32[table + nc] = 0
     a32[2 * table : 2 * table + n + 1] = starts
-    host64 = torch.empty(rows_external, dtype=torch.int64, pin_memory=pinned)
-    if ext is None:
-        host64.numpy()[:] = internal
-    else:
-        host64.numpy()[ext] = internal
 
-    dev32 = torch.empty_like(host32, device=device)
-    dev32.copy_(host32, non_blocking=pinned)
-    dev64 = torch.empty_like(host64, device=device)
-    dev64.copy_(host64, non_blocking=pinned)
+    dev = torch.empty_like(host, device=device)
+    dev.copy_(host, non_blocking=pinned)
+    tables = dev[rows64:].view(torch.int32)
     return ChunkLayout(
         lengths=lengths,
         offsets=offsets,
         rows_external=int(rows_external),
-        seq_chunk_start_cpu=tuple(int(x) for x in starts),
-        chunk_bos=dev32[:nc_pad],
-        chunk_len=dev32[table : table + nc_pad],
-        seq_chunk_start=dev32[2 * table : 2 * table + n + 1],
-        internal_rows=dev64,
+        seq_chunk_start_cpu=tuple(starts),
+        chunk_bos=tables[:nc_pad],
+        chunk_len=tables[table : table + nc_pad],
+        seq_chunk_start=tables[2 * table : 2 * table + n + 1],
+        internal_rows=dev[:rows_external],
     )
 
 
@@ -733,7 +733,7 @@ def chunk_kda_backward(
     - ``cu_seqlens_cpu``: host copy of ``cu_seqlens`` -- a CPU int64 tensor (the layer's canonical
       form) or a sequence of ints. With it the backward issues no device-to-host copy and, once the
       packing's layout is cached, no host-to-device copy and no stream synchronisation either (the
-      first backward of a new packing uploads the layout tables with two non-blocking copies). Without
+      first backward of a new packing uploads the layout tables with one non-blocking copy). Without
       it ``cu_seqlens`` is read from the device once per call (a fallback for direct callers).
 
     Any ``T`` is accepted.  ``HV`` must be a positive multiple of ``H`` (grouped value heads).
