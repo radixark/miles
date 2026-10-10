@@ -20,8 +20,8 @@ from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
 from miles.backends.training_utils.parallel import ParallelState
 from miles.backends.training_utils.weight_update.hf_weight_iterator import WeightUpdatePlacement
 from miles.backends.training_utils.weight_update.protocol import WeightTransferProtocol
+from miles.backends.training_utils.weight_update.protocols.utils.data_replica import get_data_replica_rank_and_size
 from miles.backends.training_utils.weight_update.session import check_weight_sync_results
-from miles.backends.training_utils.weight_update.utils import get_data_replica_rank_and_size
 from miles.utils import async_utils
 from miles.utils.disk_delta import NUM_WORKERS, checksum, make_tensor_reader, overwrite_encode
 from miles.utils.distributed_utils import get_gloo_group

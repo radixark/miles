@@ -12,7 +12,7 @@ from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
 from miles.backends.training_utils.parallel import ParallelState, get_parallel_state
 from miles.backends.training_utils.weight_update.hf_weight_iterator import WeightUpdatePlacement
 from miles.backends.training_utils.weight_update.protocol import WeightTransferProtocol
-from miles.backends.training_utils.weight_update.utils import get_data_replica_rank_and_size
+from miles.backends.training_utils.weight_update.protocols.utils.data_replica import get_data_replica_rank_and_size
 from miles.utils import async_utils
 from miles.utils.distributed_lock import create_world_ticket_lock
 from miles.utils.distributed_utils import init_process_group

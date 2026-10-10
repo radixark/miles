@@ -40,17 +40,17 @@ Both broadcast and P2P modes share the same bucketed weight-update pipeline in `
 |---|---|
 | **TP/EP all-gather** | Megatron TP shards are all-gathered within each PP stage; EP shards are gathered per-bucket when the accumulated expert data exceeds `buffer_size * ep_size`. Both modes perform this identically via `common.py`. |
 | **Bucketed update** | Weights are not transferred one parameter at a time. Instead, converted tensors are accumulated into a fixed-size buffer (`--update-weight-buffer-size`, default 512 MB). When the buffer is full, the entire bucket is flushed — via NCCL broadcast or RDMA write depending on the mode. This amortizes per-transfer overhead. Non-expert and expert weights use separate buckets. |
-| **PP independence** | Each pipeline-parallel stage updates its own weights independently. In broadcast mode, each PP rank has its own NCCL group (`miles-pp_{pp_rank}`). In P2P mode, each PP rank has its own transfer plan. No cross-PP synchronization is needed during weight transfer, which is key to scaling. |
+| **PP independence** | Each pipeline-parallel stage updates its own weights independently. In broadcast mode, each PP rank has its own NCCL group (`miles-pp_{pp_rank}`). In P2P mode, each PP rank has its own rollout engine rank assignment. No cross-PP synchronization is needed during weight transfer, which is key to scaling. |
 | **HF format conversion** | After all-gather, Megatron-format tensors (with custom naming and sharding) are converted to HuggingFace-format names expected by the sglang rollout engine. |
 
 ### P2P-specific components
 
 | Component | File | Description |
 |---|---|---|
-| **Transfer plan** | `p2p_transfer_utils.py` | Maps each training rank to its target rollout engine rank(s). Uses round-robin assignment with load balancing: the first `min(sources, targets)` ranks get 1:1 mapping, remaining targets are distributed evenly. This minimizes the number of RDMA sessions per source. |
-| **CPU model replica** | `p2p.py` | A full sglang model is instantiated on CPU (not GPU) to mirror the target engine's parallelism layout. This replica provides the correct `weight_loader` functions to re-shard all-gathered HF weights into the exact format expected by each target rank. Only the first engine's replica pins memory; subsequent engines reuse the mapping via `ParameterMapper`. |
-| **Shared pinned buffer** | `p2p.py` | A single CPU pinned memory buffer is registered with the mooncake TransferEngine for RDMA. This buffer is reused across all target engines (O(1) memory, not O(num\_engines)). The buffer is overwritten per-engine, per-bucket. |
-| **Pipelined transfer** | `p2p.py` | RDMA writes to multiple target engines are pipelined: for non-last engines, the transfer manager waits for the previous write to complete before reusing the buffer; for the last engine, writes are fire-and-forget to a background thread pool, overlapping with the next bucket's load phase. |
+| **Rollout engine rank assignment** | `protocols/utils/rollout_engine_rank_assignment.py` | Maps each training rank to its target rollout engine rank(s). Uses round-robin assignment with load balancing: the first `min(sources, targets)` ranks get 1:1 mapping, remaining targets are distributed evenly. This minimizes the number of RDMA sessions per source. |
+| **CPU model replica** | `protocols/utils/model_replica.py` | A full sglang model is instantiated on CPU (not GPU) to mirror the target engine's parallelism layout. This replica provides the correct `weight_loader` functions to re-shard all-gathered HF weights into the exact format expected by each target rank. Only the first engine's replica pins memory; subsequent engines reuse the mapping via `ParameterMapper`. |
+| **Shared pinned buffer** | `protocols/utils/model_replica.py` | A single CPU pinned memory buffer is registered with the mooncake TransferEngine for RDMA. This buffer is reused across all target engines (O(1) memory, not O(num\_engines)). The buffer is overwritten per-engine, per-bucket. |
+| **Pipelined transfer** | `p2p.py`, `protocols/transports/mooncake.py` | RDMA writes to multiple target engines are pipelined: for non-last engines, the sender waits for the previous write to complete before reusing the buffer; for the last engine, writes run in the background on the transport's thread pool, overlapping with the next bucket's load phase. |
 
 ## Supported Model Architectures
 
