@@ -2,7 +2,7 @@ from typing import Literal
 
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, ValidationError
 from tinker_cookbook.renderers import Renderer
-from tinker_cookbook.renderers.base import RendererError
+from tinker_cookbook.renderers.base import RendererError, ensure_text
 from tinker_cookbook.third_party.openai_compat import openai_messages_to_tinker, openai_tools_to_tinker
 
 from miles.tinker.core.token_trace import TokenTurn
@@ -44,8 +44,10 @@ def render_prompt(renderer: Renderer, request: ChatRequest) -> list[int]:
             not isinstance(part, dict) or part.get("type") != "text" for part in content
         ):
             raise ChatRequestError("the session adapter accepts text-only messages")
-    if any(tool.get("type") != "function" for tool in request.tools or ()):
-        raise ChatRequestError("only function tools are supported")
+    for tool in request.tools or ():
+        function = tool.get("function") if tool.get("type") == "function" else None
+        if not isinstance(function, dict) or not isinstance(function.get("name"), str):
+            raise ChatRequestError("tools must be function tools with a function.name")
     try:
         messages = openai_messages_to_tinker(
             [{key: value for key, value in message.items() if value is not None} for message in request.messages]
@@ -59,14 +61,13 @@ def render_prompt(renderer: Renderer, request: ChatRequest) -> list[int]:
             message["content"] = [{"type": "thinking", "thinking": source["reasoning_content"]}, *parts]
     try:
         if request.tools:
-            system_prompt = ""
-            if messages[0]["role"] == "system":
-                system_prompt = messages.pop(0)["content"]
-                if not isinstance(system_prompt, str):
-                    raise ChatRequestError("a system prompt with tools must be a string")
-            prefix = renderer.create_conversation_prefix_with_tools(
-                openai_tools_to_tinker(request.tools), system_prompt=system_prompt
-            )
+            system_prompt = ensure_text(messages.pop(0)["content"]) if messages[0]["role"] == "system" else ""
+            try:
+                prefix = renderer.create_conversation_prefix_with_tools(
+                    openai_tools_to_tinker(request.tools), system_prompt=system_prompt
+                )
+            except NotImplementedError as error:  # e.g. RoleColon has no tool-calling convention
+                raise ChatRequestError(f"the {type(renderer).__name__} renderer does not support tools") from error
             messages = [*prefix, *messages]
         return renderer.build_generation_prompt(messages).to_ints()
     except RendererError as error:  # the cookbook's own verdict on content it cannot render
