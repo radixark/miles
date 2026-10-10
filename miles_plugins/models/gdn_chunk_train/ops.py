@@ -361,7 +361,7 @@ def _scan_stage(kind: str, num_seqs: int, num_v_heads: int, device: torch.device
 PRESCAN_CONFIG = (32, 2)  # the only register-scan configuration with a pre-scan variant
 MIN_SEGMENT_CHUNKS = 4  # 256 tokens: shorter segments pay more in pre-scan + stitch than they save
 # Cost model of the split, in chunk steps of the (32,2) register scan at one CTA per SM, calibrated on the round-R2
-# sweep (B200 / GB300, 1x8192 and 1x16384 tokens at HV 12, forced L = 13/26/43/64): a second co-resident CTA raises the
+# sweep (GB300, 1x8192 and 1x16384 tokens at HV 12, forced L = 13/26/43/64): a second co-resident CTA raises the
 # per-step time to ~1.55x (the step is latency-bound but two CTAs share the SM's issue slots), a third wave doubles it;
 # the pre-scan step costs ~1.16x (one more operand tile); one serial stitch step (3xBF16 128^3 tensor-core product +
 # tile rebuild, ~6 us) is ~5 chunk steps.  Training runs without an initial state / final-state gradient, so the first

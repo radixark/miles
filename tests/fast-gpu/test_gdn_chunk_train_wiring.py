@@ -21,6 +21,12 @@ CHUNK = ops.CHUNK
 DEVICE = torch.device("cuda", torch.cuda.current_device())
 
 
+@pytest.fixture(autouse=True)
+def _no_ambient_segment_override(monkeypatch):
+    # a leaked override would turn the policy arms into the serial path with every assertion still passing
+    monkeypatch.delenv("MILES_GDN_CHUNK_TRAIN_SEG_CHUNKS", raising=False)
+
+
 def _cu(seq_lens):
     return (0, *itertools.accumulate(seq_lens))
 
@@ -257,33 +263,62 @@ def test_segment_planner_reproduces_the_measured_optima(sm_count):
     for residency in (2, 1):
         assert ops.plan_segments(129, 1, HV12_CTAS, sm_count, residency)[0] == 43
         assert ops.plan_segments(257, 1, HV12_CTAS, sm_count, residency)[0] == 86
-    # the real micro-batch 8481 + 223 (pad) tokens: bound 138, longest chain 137 -> 46 (= L 64 within 0.1 %)
+    # the real micro-batch 8481 + 223 (pad) tokens: bound 138, longest chain 137
+    # -> 46 (same segment table as the measured L = 64 arm: ceil(133/46) = ceil(133/64) = 3)
     assert ops.plan_segments(138, 2, HV12_CTAS, sm_count, 2)[0] == 46
-    # balanced 4 x 4096 / 8 x 1024 layouts share the bound of one long sequence: one segment per real sequence
+    # balanced 4 x 4096 / 8 x 1024 / 4 x 1024 layouts share the bound of one long sequence: one segment per real
+    # sequence (planner in isolation; production guards 8 x 1024 and the 4 x 4096 dhu scan to L = 0)
     assert ops.plan_segments(260, 4, HV12_CTAS, sm_count, 2)[0] == 86
     assert ops.plan_segments(136, 8, HV12_CTAS, sm_count, 2)[0] == 43
+    assert ops.plan_segments(68, 4, HV12_CTAS, sm_count, 2)[0] == 22
     # TP1 (192 CTAs per segment) cannot gain 5 % over the serial scan
     assert ops.plan_segments(129, 1, HV48_CTAS, sm_count, 2) == (0, 129.0)
     # documented limitation: a balanced 4 x 1024 layout at four value heads is priced as one long sequence (L = 13)
     assert ops.plan_segments(68, 4, 4 * (ops.HEAD_DIM // 32), sm_count, 2)[0] == 13
 
 
+def _split_cost(longest, segments, per_segment, sm_count, residency):
+    # the planner's price of ``segments`` equal segments of the longest chain: pass-2 scan + pre-scan + serial stitch
+    seg_len = -(-longest // segments)
+    return (
+        seg_len * ops._wave_factor(segments * per_segment, sm_count, residency)
+        + seg_len * ops.PRESCAN_STEP_FACTOR * ops._wave_factor((2 * segments - 3) * per_segment, sm_count, residency)
+        + (segments - 1) * ops.STITCH_STEP_CHUNKS
+    )
+
+
 def test_segment_planner_only_splits_for_a_modelled_gain():
+    per_segment, sm_count, residency = HV12_CTAS, B200_SMS, 2
     for bound in range(2, 400, 7):
         for num_seqs in (1, 2, 5):
             if bound < num_seqs:
                 continue
-            seg_len, cost = ops.plan_segments(bound, num_seqs, HV12_CTAS, B200_SMS, 2)
+            seg_len, cost = ops.plan_segments(bound, num_seqs, per_segment, sm_count, residency)
             longest = bound - (num_seqs - 1)
+            # independent argmin over every admissible segment count (the MIN_SEGMENT_CHUNKS filter of plan_segments)
+            admissible = {
+                s: _split_cost(longest, s, per_segment, sm_count, residency)
+                for s in range(2, longest // ops.MIN_SEGMENT_CHUNKS + 1)
+                if ops.MIN_SEGMENT_CHUNKS <= -(-longest // s) < longest
+            }
             if seg_len == 0:
                 assert cost == float(longest)
+                # the converse of the test name: no admissible split beats the serial scan by the required 5 %
+                if admissible:
+                    assert min(admissible.values()) >= ops.SPLIT_GAIN_THRESHOLD * longest
             else:
                 assert ops.MIN_SEGMENT_CHUNKS <= seg_len < longest
                 assert cost < ops.SPLIT_GAIN_THRESHOLD * longest
+                # the priced segment count is the smallest S with this L (the strict < keeps the first minimum)
+                segments = -(-longest // seg_len)
+                assert -(-longest // segments) == seg_len
+                assert cost == admissible[segments]
+                assert all(cost <= other for other in admissible.values())
 
 
 def test_segment_len_env_override_wins_over_the_planner(monkeypatch):
-    arch = ops.device_arch(DEVICE)
+    # arch is dead on the env-override path (choose_segment_len returns first); avoid the Blackwell-only device_arch
+    arch = "sm_100a"
     monkeypatch.setattr(ops, "FORCED_SEGMENT_LEN", None)
     monkeypatch.setenv("MILES_GDN_CHUNK_TRAIN_SEG_CHUNKS", "7")
     assert ops.segment_lens(8192, 1, 12, DEVICE.index, arch) == (7, 7)
