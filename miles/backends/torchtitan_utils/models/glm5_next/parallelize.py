@@ -1,5 +1,5 @@
 import torch
-from torch.distributed.fsdp import MixedPrecisionPolicy, fully_shard
+from torch.distributed.fsdp import CPUOffloadPolicy, MixedPrecisionPolicy, OffloadPolicy, fully_shard
 from torchtitan.config import TORCH_DTYPE_MAP, CompileConfig, ParallelismConfig, TrainingConfig
 from torchtitan.distributed import ParallelDims
 from torchtitan.distributed.activation_checkpoint import ActivationCheckpointingConfig
@@ -47,6 +47,7 @@ def parallelize_glm5_next(
         reshard_after_forward=get_fsdp_reshard_after_forward_policy(
             parallelism.fsdp_reshard_after_forward, pp_enabled=parallel_dims.pp_enabled
         ),
+        offload_policy=CPUOffloadPolicy() if training.enable_cpu_offload else OffloadPolicy(),
     )
     apply_fsdp_to_decoder(
         model,
@@ -62,7 +63,7 @@ def parallelize_glm5_next(
     return model
 
 
-def _shard_fp32_submodules(model, *, dp_mesh, reshard_after_forward: bool) -> None:
+def _shard_fp32_submodules(model, *, dp_mesh, reshard_after_forward: bool, offload_policy: OffloadPolicy) -> None:
     # Megatron and SGLang keep the mHC mappings and the KDA decay in fp32
     fp32_policy = MixedPrecisionPolicy(
         param_dtype=torch.float32, reduce_dtype=torch.float32, cast_forward_inputs=False
@@ -72,4 +73,10 @@ def _shard_fp32_submodules(model, *, dp_mesh, reshard_after_forward: bool) -> No
         if isinstance(block.attn, KimiDeltaAttention):
             modules.append(block.attn.gate)
         for module in modules:
-            fully_shard(module, mesh=dp_mesh, mp_policy=fp32_policy, reshard_after_forward=reshard_after_forward)
+            fully_shard(
+                module,
+                mesh=dp_mesh,
+                mp_policy=fp32_policy,
+                offload_policy=offload_policy,
+                reshard_after_forward=reshard_after_forward,
+            )

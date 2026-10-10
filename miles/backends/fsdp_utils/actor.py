@@ -68,9 +68,9 @@ class FSDPTrainRayActor(TorchNativeTrainRayActor):
         if self.args.debug_rollout_only:
             return 0
 
-        self.fsdp_cpu_offload = getattr(self.args, "fsdp_cpu_offload", False)
-        # Offload train and fsdp cpu offload cannot be used together, fsdp_cpu_offload is more aggressive
-        if self.args.offload_train and self.fsdp_cpu_offload:
+        self.optimizer_cpu_offload = self.args.optimizer_cpu_offload
+        # offload-train moves the state the CPU offload already keeps on the host
+        if self.args.offload_train and self.optimizer_cpu_offload:
             self.args.offload_train = False
 
         if dist.get_rank() == 0:
@@ -122,7 +122,7 @@ class FSDPTrainRayActor(TorchNativeTrainRayActor):
         model = apply_fsdp2(
             model,
             mesh=get_parallel_state().get_mesh("fsdp"),
-            cpu_offload=self.fsdp_cpu_offload,
+            cpu_offload=self.optimizer_cpu_offload,
             args=self.args,
             param_dtype=self.precision_policy.param_dtype,
             reduce_dtype=self.precision_policy.reduce_dtype,
@@ -132,7 +132,7 @@ class FSDPTrainRayActor(TorchNativeTrainRayActor):
             model,
             full_state,
             get_parallel_state().get_mesh("fsdp"),
-            cpu_offload=True if self.fsdp_cpu_offload else None,
+            cpu_offload=True if self.optimizer_cpu_offload else None,
         )
 
         self.model = model
@@ -297,7 +297,7 @@ class FSDPTrainRayActor(TorchNativeTrainRayActor):
             yield
             return
 
-        if not self.fsdp_cpu_offload:
+        if not self.optimizer_cpu_offload:
             self.model.cpu()
             torch.cuda.empty_cache()
             dist.barrier(group=get_gloo_group())
@@ -307,7 +307,7 @@ class FSDPTrainRayActor(TorchNativeTrainRayActor):
         finally:
             torch.cuda.empty_cache()
             dist.barrier(group=get_gloo_group())
-            if not self.fsdp_cpu_offload:
+            if not self.optimizer_cpu_offload:
                 self.model.cuda()
                 dist.barrier(group=get_gloo_group())
 

@@ -48,7 +48,11 @@ class TitanHfWeightIterator(HfWeightIteratorBase):
 
 
 def hf_weights(trainer, *, complete_across_pp: bool = True) -> Iterator[tuple[str, torch.Tensor]]:
-    offloaded = next(trainer.model_parts[0].parameters()).device.type == "cpu"
+    # FSDP2 CPU offload keeps the shards on the host; gather_full_param moves one tensor at a time
+    offloaded = (
+        not trainer.config.training.enable_cpu_offload
+        and next(trainer.model_parts[0].parameters()).device.type == "cpu"
+    )
     if offloaded:
         for part in trainer.model_parts:
             part.cuda()

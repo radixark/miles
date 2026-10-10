@@ -110,7 +110,7 @@ MISC_ARGS=(
    --colocate
    --use-fault-tolerance
    --dump-details /root/shared_data/qwen3-4B-fsdp-1116-noref/dump_details
-   # --fsdp-cpu-offload
+   # --optimizer-cpu-offload
 )
 
 CUSTOM_ARGS=(

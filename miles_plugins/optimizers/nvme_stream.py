@@ -33,19 +33,25 @@ rest alone. Those buffers are unlinked once mapped, so they show up in ``df``, n
 """
 
 import atexit
-import ctypes
-import errno
 import json
 import logging
 import os
 import shutil
-import tempfile
 import time
 from types import MethodType
 from typing import TYPE_CHECKING, NamedTuple
 
 import torch
 from megatron.core.fp8_utils import is_float8tensor
+
+from miles.utils.disk_backed_tensor import (
+    disk_backed_like,
+    flush_mapping,
+    is_disk_backed,
+    optimizer_state_dir_root,
+    purge_rank_dir,
+    reserve_file,
+)
 
 if TYPE_CHECKING:
     from megatron.core.optimizer.distrib_optimizer import DistributedOptimizer
@@ -79,23 +85,9 @@ def _resize(tensor: torch.Tensor, numel: int) -> None:
     tensor.untyped_storage().resize_(numel * tensor.element_size())
 
 
-def _reserve(fd: int, nbytes: int) -> None:
-    """Reserve blocks up front, so a full filesystem fails here as ENOSPC.
-
-    Sizing a file with ftruncate alone leaves it sparse: the mapping succeeds and the
-    process dies on SIGBUS at first touch instead, with nothing to point at.
-    """
-    try:
-        os.posix_fallocate(fd, 0, nbytes)
-    except OSError as e:
-        if e.errno not in (errno.EOPNOTSUPP, errno.ENOTSUP, errno.EINVAL):
-            raise
-        os.ftruncate(fd, nbytes)
-
-
 def _allocate_file(path: str, nbytes: int) -> int:
     fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_CLOEXEC, 0o600)
-    _reserve(fd, nbytes)
+    reserve_file(fd, nbytes)
     return fd
 
 
@@ -107,43 +99,6 @@ def _rw_full(op, fd: int, offset: int, buf) -> None:
         if n <= 0:
             raise OSError(f"short {op.__name__} ({n}) on optimizer state file at offset {offset + done}")
         done += n
-
-
-def _disk_backed_like(tensor: torch.Tensor, directory: str) -> torch.Tensor:
-    nbytes = max(tensor.numel() * tensor.element_size(), 1)
-    fd, path = tempfile.mkstemp(dir=directory, suffix=".bin")
-    try:
-        _reserve(fd, nbytes)
-    finally:
-        os.close(fd)
-    storage = torch.UntypedStorage.from_file(path, shared=True, nbytes=nbytes)
-    os.unlink(path)
-    buffer = torch.empty(0, dtype=tensor.dtype).set_(storage, 0, tensor.shape)
-    buffer._miles_disk_backed = True
-    return buffer
-
-
-def _is_disk_backed(tensor: torch.Tensor) -> bool:
-    return getattr(tensor, "_miles_disk_backed", False)
-
-
-_MS_SYNC = 4
-_libc = ctypes.CDLL(None, use_errno=True)
-
-
-def _flush_mapping(tensor: torch.Tensor) -> int:
-    """msync one file-backed buffer, returning the bytes it covered.
-
-    Checkpointing calls os.fsync on its own files, which waits on the kernel's writeback
-    queue -- and our mappings are rewritten every step, so that queue is carrying gigabytes
-    of our dirty pages by then. Flushing them here keeps that cost attributable and cheap
-    to repeat: msync over an already-clean mapping returns immediately.
-    """
-    storage = tensor.untyped_storage()
-    nbytes = storage.nbytes()
-    if _libc.msync(ctypes.c_void_p(storage.data_ptr()), ctypes.c_size_t(nbytes), _MS_SYNC) != 0:
-        raise OSError(ctypes.get_errno(), "msync of optimizer state mapping failed")
-    return nbytes
 
 
 def plan_buckets(entries_by_ddp_bucket: dict, limit: int = BUCKET_NUMEL_LIMIT) -> list[list[_Entry]]:
@@ -596,8 +551,8 @@ def setup_optimizer_state_streaming(args, optimizer) -> None:
     """
     from megatron.core.optimizer.distrib_optimizer import DistributedOptimizer
 
-    dir_root = _state_dir_root(args)
-    _purge_rank_dir(dir_root)
+    dir_root = optimizer_state_dir_root(args)
+    purge_rank_dir(dir_root)
     stores = []
     for dist_opt in optimizer.chained_optimizers:
         assert isinstance(
@@ -636,7 +591,7 @@ def setup_muon_state_on_disk(args) -> None:
     base = defining_module.ChunkedOptimizerStateOffloader
     if base.__name__ == "DiskOptimizerStateOffloader":
         return
-    rank_dir = _purge_rank_dir(_state_dir_root(args))
+    rank_dir = purge_rank_dir(optimizer_state_dir_root(args))
 
     class DiskOptimizerStateOffloader(base):
         state_dir = rank_dir
@@ -646,9 +601,9 @@ def setup_muon_state_on_disk(args) -> None:
             # adopt_cpu_optimizer_state reallocates every non-pinned CPU tensor it finds in
             # optimizer.state, and ours never report pinned, so each checkpoint would otherwise
             # copy the whole state into fresh mappings.
-            if _is_disk_backed(tensor):
+            if is_disk_backed(tensor):
                 return tensor
-            buffer = _disk_backed_like(tensor, self.state_dir)
+            buffer = disk_backed_like(tensor, self.state_dir)
             self._disk_bytes += buffer.numel() * buffer.element_size()
             return buffer
 
@@ -661,35 +616,14 @@ def setup_muon_state_on_disk(args) -> None:
             super().synchronize_for_checkpoint()
             flushed = 0
             for state in self._cpu_state.values():
-                flushed += sum(_flush_mapping(t) for t in state.values() if _is_disk_backed(t))
-            flushed += sum(_flush_mapping(t) for t in self._cpu_master.values() if _is_disk_backed(t))
+                flushed += sum(flush_mapping(t) for t in state.values() if is_disk_backed(t))
+            flushed += sum(flush_mapping(t) for t in self._cpu_master.values() if is_disk_backed(t))
             logger.info(f"Muon disk state flushed before checkpoint: {flushed / 1024**3:.2f} GB")
 
     # optimizer.py imported the name directly, so rebinding only the defining module is a no-op.
     defining_module.ChunkedOptimizerStateOffloader = DiskOptimizerStateOffloader
     consuming_module.ChunkedOptimizerStateOffloader = DiskOptimizerStateOffloader
     logger.info(f"Muon optimizer state on disk: buffers backed by files under {rank_dir}")
-
-
-def _state_dir_root(args) -> str:
-    return os.path.join(args.offload_train_disk_dir, "optimizer_state")
-
-
-def _purge_rank_dir(dir_root: str) -> str:
-    """Drop everything this rank left behind, before any store claims its own path.
-
-    A store only removes the exact path it is about to use, so state written under a
-    different layout -- another parallelism, a renamed directory scheme -- survives
-    forever, and a run killed by the scheduler never reaches its atexit cleanup either.
-    On a 744B DP1 model that is hundreds of GB per rank per stale run, and node-local
-    NVMe fills up until allocation fails. The rank subtree is exclusively this rank's,
-    so clearing it whole is safe, and it must happen before the chained dense and
-    expert stores are constructed, since they share it.
-    """
-    rank_dir = os.path.join(dir_root, f"rank{torch.distributed.get_rank():05d}")
-    shutil.rmtree(rank_dir, ignore_errors=True)
-    os.makedirs(rank_dir, exist_ok=True)
-    return rank_dir
 
 
 def _record_grad_norm_into(optimizer, stores: list[NVMeOptimizerStateStore]) -> None:
