@@ -62,8 +62,10 @@ class HarborDataset(RLDataset):
 
     def get_batch(self, index):
         start = index * self.groups_per_batch
-        return [HarborGroup(self.task_ids[i % len(self.task_ids)], self.group_size, self.agent_name)
-                for i in range(start, min(start + self.groups_per_batch, len(self.task_ids) * self.epochs))]
+        return [
+            HarborGroup(self.task_ids[i % len(self.task_ids)], self.group_size, self.agent_name)
+            for i in range(start, min(start + self.groups_per_batch, len(self.task_ids) * self.epochs))
+        ]
 
     def __len__(self):
         return math.ceil(len(self.task_ids) * self.epochs / self.groups_per_batch)
@@ -103,6 +105,7 @@ class SessionRolloutStrategy(RolloutStrategy):
         server = SessionServer()
         semaphore = asyncio.Semaphore(self.max_parallel_trials_per_group)
         async with server.serve(self.listen_host) as port:
+
             async def one(env):
                 async with semaphore:
                     session = ChatSession(policy, renderer, self.max_datum_tokens, self.max_turns)
@@ -111,8 +114,11 @@ class SessionRolloutStrategy(RolloutStrategy):
                             base_url=f"http://{self.advertised_host}:{port}{path}",
                             prompt=None,
                             request_kwargs={"max_tokens": policy.max_tokens, "temperature": policy.temperature},
-                            metadata={"instance_id": env.task_id, "agent_name": env.agent_name,
-                                      "max_seq_len": self.max_datum_tokens + 1},
+                            metadata={
+                                "instance_id": env.task_id,
+                                "agent_name": env.agent_name,
+                                "max_seq_len": self.max_datum_tokens + 1,
+                            },
                         )
                     if env.verdict["exit_status"] == "AgentError":
                         raise RuntimeError(f"Harbor trial {env.task_id} failed: {env.verdict}")

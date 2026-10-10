@@ -1,11 +1,11 @@
 from collections.abc import Sequence
 
-import tinker
 from tinker_cookbook.completers import TokensWithLogprobs
 from tinker_cookbook.rl.types import StopReason, Trajectory, Transition
 
-
+import tinker
 from miles.tinker.core.token_trace import TokenTurn
+
 
 def turns_to_trajectory(turns: Sequence[TokenTurn]) -> Trajectory:
     if not turns:

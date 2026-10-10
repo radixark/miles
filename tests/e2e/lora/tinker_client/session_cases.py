@@ -4,10 +4,10 @@ from unittest.mock import AsyncMock
 
 import httpx
 import pytest
-import tinker
 from tinker_cookbook.completers import TinkerTokenCompleter
 from tinker_cookbook.renderers.role_colon import RoleColonRenderer
 
+import tinker
 from miles.tinker.client.rendering import ChatRequest, render_prompt
 from miles.tinker.client.server import SessionServer
 from miles.tinker.client.session import ChatSession
@@ -39,8 +39,11 @@ async def test_renderer_owns_every_prompt_and_trace_keeps_raw_tokens():
     session = make_session()
     histories = [
         [{"role": "user", "content": "original"}],
-        [{"role": "user", "content": "edited"}, {"role": "assistant", "content": "hello"},
-         {"role": "user", "content": "continue"}],
+        [
+            {"role": "user", "content": "edited"},
+            {"role": "assistant", "content": "hello"},
+            {"role": "user", "content": "continue"},
+        ],
         [{"role": "user", "content": "summary"}],
         [{"role": "user", "content": "summary"}],
     ]
@@ -63,8 +66,10 @@ async def test_renderer_owns_every_prompt_and_trace_keeps_raw_tokens():
 @pytest.mark.asyncio
 async def test_parser_failure_does_not_erase_sample(monkeypatch):
     session = make_session()
+
     def fail(_):
         raise ValueError("cannot parse")
+
     monkeypatch.setattr(session.renderer, "parse_response", fail)
     with pytest.raises(ValueError, match="cannot parse"):
         await session.complete(ChatRequest(messages=[{"role": "user", "content": "hi"}]))
@@ -112,10 +117,12 @@ async def test_session_close_waits_for_inflight_sample():
     session = make_session()
     original = session.policy.sampling_client.sample_async.return_value
     started, release = asyncio.Event(), asyncio.Event()
+
     async def sample(**kwargs):
         started.set()
         await release.wait()
         return original
+
     session.policy.sampling_client.sample_async.side_effect = sample
     server = SessionServer()
     context = server.session(session)

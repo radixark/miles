@@ -4,11 +4,11 @@ import argparse
 import asyncio
 
 import httpx
-import tinker
 from tinker_cookbook import renderers
 from tinker_cookbook.completers import TinkerTokenCompleter
 from tinker_cookbook.rl.data_processing import trajectory_to_data
 
+import tinker
 from miles.tinker.client.rendering import ChatRequest, render_prompt
 from miles.tinker.client.server import SessionServer
 from miles.tinker.client.session import ChatSession

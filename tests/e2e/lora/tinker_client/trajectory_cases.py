@@ -1,12 +1,15 @@
 import pytest
 from tinker_cookbook.rl.data_processing import trajectory_to_data
 
-from miles.tinker.core.token_trace import TokenTrace
 from miles.tinker.client.trajectory import turns_to_trajectory
+from miles.tinker.core.token_trace import TokenTrace
 
 
-@pytest.mark.parametrize("next_prompt,expected_count", [([1, 2, 3, 4, 5], 1), ([1, 2, 30, 5], 2), ([9, 10], 2)],
-                         ids=["extends", "retokenized", "compacted"])
+@pytest.mark.parametrize(
+    "next_prompt,expected_count",
+    [([1, 2, 3, 4, 5], 1), ([1, 2, 30, 5], 2), ([9, 10], 2)],
+    ids=["extends", "retokenized", "compacted"],
+)
 def test_only_actual_token_prefixes_merge(next_prompt, expected_count):
     trace = TokenTrace()
     trace.record("first", [1, 2], {"tokens": [3, 4], "logprobs": [-0.3, -0.4], "stop_reason": "stop"})
