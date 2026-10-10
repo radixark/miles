@@ -26,6 +26,8 @@ DEVICE = torch.device("cuda", torch.cuda.current_device())
 def _no_ambient_segment_override(monkeypatch):
     # a leaked override would turn the policy arms into the serial path with every assertion still passing
     monkeypatch.delenv("MILES_GDN_CHUNK_TRAIN_SEG_CHUNKS", raising=False)
+    monkeypatch.delenv("MILES_GDN_CHUNK_TRAIN_SCAN_CFG", raising=False)
+    ops._scan_plans_memo.cache_clear()  # the plan memo (R4) starts empty in every test
 
 
 def _cu(seq_lens):
@@ -46,8 +48,10 @@ def _expected_table(seq_lens):
 def test_host_chunk_table_is_built_once_per_layout():
     ops._host_chunk_meta.cache_clear()
     before = ops._HOST_META_BUILDS
-    metas = [ops.chunk_meta_from_host(_cu(LAYOUT), DEVICE) for _ in range(48)]
+    metas = [ops.chunk_meta_from_host(_cu(LAYOUT), DEVICE, 4) for _ in range(48)]  # R3 C6: the head count is part of the plan key
     assert ops._HOST_META_BUILDS == before + 1, "48 layers of one micro-batch must share one chunk table"
+    info = ops._scan_plans_memo.cache_info()  # R4: the joint scan plan is searched once per layout, not per layer
+    assert (info.hits, info.misses) == (47, 1), info
     assert all(m is metas[0] for m in metas)
     starts, lens, seq_chunk_start = _expected_table(LAYOUT)
     assert metas[0].num_chunks == len(starts) and metas[0].num_seqs == len(LAYOUT)
@@ -56,18 +60,18 @@ def test_host_chunk_table_is_built_once_per_layout():
     assert metas[0].seq_chunk_start.tolist() == seq_chunk_start
     assert all(t.dtype == torch.int32 and t.is_cuda for t in (metas[0].chunk_start, metas[0].chunk_len))
     # the same layout from a CPU tensor hits the cache; another layout is another build
-    assert ops.chunk_meta_from_host(torch.tensor(_cu(LAYOUT), dtype=torch.int64), DEVICE) is metas[0]
-    other = ops.chunk_meta_from_host(_cu((8192, 512)), DEVICE)
+    assert ops.chunk_meta_from_host(torch.tensor(_cu(LAYOUT), dtype=torch.int64), DEVICE, 4) is metas[0]
+    other = ops.chunk_meta_from_host(_cu((8192, 512)), DEVICE, 4)
     assert other is not metas[0] and ops._HOST_META_BUILDS == before + 2
 
 
 def test_host_boundaries_are_validated():
     with pytest.raises(ValueError):
-        ops.chunk_meta_from_host((0, 10, 5), DEVICE)
+        ops.chunk_meta_from_host((0, 10, 5), DEVICE, 4)
     with pytest.raises(ValueError):
-        ops.chunk_meta_from_host((4,), DEVICE)
+        ops.chunk_meta_from_host((4,), DEVICE, 4)
     with pytest.raises(ValueError):
-        ops.chunk_meta_from_host(torch.tensor([0, 64], device=DEVICE), DEVICE)
+        ops.chunk_meta_from_host(torch.tensor([0, 64], device=DEVICE), DEVICE, 4)
 
 
 def _require_blackwell():
@@ -108,8 +112,10 @@ def _step(inputs, leaves=None, **kwargs):
 def test_host_table_matches_the_device_table():
     _require_blackwell()
     cu = torch.tensor(_cu(LAYOUT), device="cuda", dtype=torch.int32)
-    dev = ops.build_chunk_meta_from_cu_seqlens(cu, sum(LAYOUT), ops.device_arch(cu.device))
-    host = ops.chunk_meta_from_host(_cu(LAYOUT), cu.device)
+    arch = ops.device_arch(cu.device)
+    plans = ops.scan_plans(sum(LAYOUT), len(LAYOUT), 4, DEVICE.index, arch)
+    dev = ops.build_chunk_meta_from_cu_seqlens(cu, sum(LAYOUT), arch, scan_plans=plans)
+    host = ops.chunk_meta_from_host(_cu(LAYOUT), cu.device, 4, arch=arch)
     n = host.num_chunks
     assert dev.num_chunks >= n
     assert torch.equal(dev.chunk_start[:n], host.chunk_start)
@@ -198,11 +204,12 @@ def test_segment_tables_host_match_device(monkeypatch):
     arch = ops.device_arch(DEVICE)
     cu = torch.tensor(_cu(LAYOUT), device="cuda", dtype=torch.int32)
     host = ops.chunk_meta_from_host(_cu(LAYOUT), DEVICE, 4, arch=arch)
-    dev = ops.build_chunk_meta_from_cu_seqlens(cu, sum(LAYOUT), arch, segment_lens=(3, 3))
+    plans = ops.scan_plans(sum(LAYOUT), len(LAYOUT), 4, DEVICE.index, arch)  # the pinned length, planned configurations
+    dev = ops.build_chunk_meta_from_cu_seqlens(cu, sum(LAYOUT), arch, scan_plans=plans)
     seq_chunk_start = _expected_table(LAYOUT)[2]
     for kind in ("fwd_segments", "bwd_segments"):
         h, d = getattr(host, kind), getattr(dev, kind)
-        assert h.segment_len == d.segment_len == 3
+        assert h.segment_len == d.segment_len == 3 and h.scan_config == d.scan_config == (32, 2)
         n = h.num_segments
         assert d.num_segments >= n
         assert torch.equal(d.seg_chunk_start[: n + 1], h.seg_chunk_start)
@@ -290,6 +297,9 @@ def test_planner_constants_mirror_loom_verbatim():
     assert (ops.PRESCAN_WARMUP_CHUNKS, ops.STITCH_FIXED_CHUNKS, ops.STITCH_COPY_CHUNKS) == (3.3, 2.75, 2.3)
     assert (ops.SPLIT_GAIN_THRESHOLD, ops.MAX_SCAN_ROUNDS) == (0.95, 2)
     assert ops.WARMUP_THRESH_LOG2 == -10.0 / math.log(2.0)
+    # R3 (C6): per-configuration step factors and the configurations with pre-scan stages
+    assert ops.SCAN_STEP_FACTOR == {(32, 2): 1.0, (32, 1): 1.18, (64, 1): 1.27}
+    assert ops.PRESCAN_CONFIGS == ((32, 2), (64, 1))
 
 
 def test_warmup_threshold_env_override(monkeypatch):
@@ -419,22 +429,56 @@ def test_host_route_prices_the_exact_layout():
     index = DEVICE.index
     # two long sequences + the 512-alignment pseudo-sequence: the device route (chunk bound only) prices one 129-chunk
     # chain (22 / 43), the host route the exact 69 + 55 + 6 layout (fwd_h 23: 3 + 3 + 1 segments; dhu serial)
+    # (R3, C6: the joint plan moves both scans onto the (64,1) block, see tools/planner_mirror_v6.py and loom's
+    # test_scan_plan_prices_configuration_switches_and_splits; the exact layout and the bound differ in L)
+    P = ops.ScanPlan
     pack = (4360, 3491, 341)
-    assert ops.segment_lens(sum(pack), 3, 12, index, arch) == (22, 43)
-    assert ops.segment_lens(sum(pack), 3, 12, index, arch, pack) == (23, 0)
+    assert ops.scan_plans(sum(pack), 3, 12, index, arch) == (P((64, 1), 33), P((64, 1), 22))
+    assert ops.scan_plans(sum(pack), 3, 12, index, arch, pack) == (P((64, 1), 12), P((64, 1), 23))
+    assert ops.segment_lens(sum(pack), 3, 12, index, arch, pack) == (12, 23)
     meta = ops.chunk_meta_from_host(_cu(pack), DEVICE, 12, arch=arch)
-    assert meta.fwd_segments.segment_len == 23 and meta.bwd_segments.segment_len == 0
-    assert meta.fwd_segments.num_segments == 7 and meta.bwd_segments.num_segments == len(pack)
-    assert meta.fwd_segments.seg_chunk_start.tolist() == [0, 23, 46, 69, 87, 105, 124, 130]
-    # one dominant sequence + pad: the device route (bound 137 + 1) picks 23 / 46, the exact layout 27 (five fwd_h
-    # segments: the pad's CTAs make every grid above one CTA per SM co-resident) / 45 (three dhu segments)
+    assert meta.fwd_segments.scan_config == meta.bwd_segments.scan_config == (64, 1)
+    assert meta.fwd_segments.segment_len == 12 and meta.bwd_segments.segment_len == 23
+    assert meta.fwd_segments.num_segments == 12 and meta.bwd_segments.num_segments == 7
+    assert meta.fwd_segments.seg_chunk_start.tolist() == [0, 11, 23, 34, 46, 57, 69, 80, 91, 102, 113, 124, 130]
+    assert meta.bwd_segments.seg_chunk_start.tolist() == [0, 23, 46, 69, 87, 105, 124, 130]
+    # one dominant sequence + pad: the device route (bound 137 + 1) picks 28 / 23, the exact layout 27 / 27 (five
+    # segments per scan on the (64,1) block: 168 CTAs incl. the pad's, inside one CTA per SM)
     mb00 = (8481, 223)
-    assert ops.segment_lens(sum(mb00), 2, 12, index, arch) == (23, 46)
-    assert ops.segment_lens(sum(mb00), 2, 12, index, arch, mb00) == (27, 45)
+    assert ops.scan_plans(sum(mb00), 2, 12, index, arch) == (P((64, 1), 28), P((64, 1), 23))
+    assert ops.scan_plans(sum(mb00), 2, 12, index, arch, mb00) == (P((64, 1), 27), P((64, 1), 27))
     host = ops.chunk_meta_from_host(_cu(mb00), DEVICE, 12, arch=arch)
     assert host.fwd_segments.segment_len == 27 and host.fwd_segments.num_segments == 6  # 5 segments + the pad sequence
     assert host.fwd_segments.seg_chunk_start.tolist() == [0, 26, 53, 79, 106, 133, 137]
-    assert host.bwd_segments.segment_len == 45 and host.bwd_segments.seg_chunk_start.tolist() == [0, 44, 88, 133, 137]
+    assert host.bwd_segments.segment_len == 27 and host.bwd_segments.seg_chunk_start.tolist() == [0, 26, 53, 79, 106, 133, 137]
+    # layouts whose (32,2) grid is small keep the preferred block: the wiring layout at HV 4 splits both scans at 18
+    assert ops.scan_plans(sum(LAYOUT), len(LAYOUT), 4, index, arch, LAYOUT) == (P((32, 2), 18), P((32, 2), 18))
+    # a pinned configuration is planned for: (64,1) at 1x8192 / HV 12 -> six 22-chunk segments on both scans
+    ops.FORCED_SCAN_CONFIG = (64, 1)
+    try:
+        assert ops.scan_plans(8192, 1, 12, index, arch) == (P((64, 1), 22), P((64, 1), 22))
+    finally:
+        ops.FORCED_SCAN_CONFIG = None
+    assert ops.scan_plans(8192, 1, 12, index, arch) == (P((64, 1), 22), P((64, 1), 22))  # the joint plan picks it unpinned too
+    assert ops.scan_plans(8192, 1, 48, index, arch) == (P((64, 1), 43), P((64, 1), 43))  # TP1: 288 CTAs in three segments
+
+
+def test_scan_plans_are_memoised_per_layout_and_pins(monkeypatch):
+    # mirror of loom's test: the memo key carries the layout, the device and the pins (a pin change re-plans)
+    arch = ops.device_arch(DEVICE)
+    P = ops.ScanPlan
+    first = ops.scan_plans(8192, 1, 12, DEVICE.index, arch)
+    assert first == (P((64, 1), 22), P((64, 1), 22))
+    assert ops.scan_plans(8192, 1, 12, DEVICE.index, arch) is first
+    assert ops._scan_plans_memo.cache_info().hits == 1 and ops._scan_plans_memo.cache_info().misses == 1
+    monkeypatch.setattr(ops, "FORCED_SCAN_CONFIG", (32, 2))
+    assert ops.scan_plans(8192, 1, 12, DEVICE.index, arch) == (P((32, 2), 43), P((32, 2), 43))
+    monkeypatch.setattr(ops, "FORCED_SCAN_CONFIG", None)
+    monkeypatch.setenv("MILES_GDN_CHUNK_TRAIN_SEG_CHUNKS", "0")
+    assert ops.scan_plans(8192, 1, 12, DEVICE.index, arch) == (P((32, 2), 0), P((32, 2), 0))
+    monkeypatch.delenv("MILES_GDN_CHUNK_TRAIN_SEG_CHUNKS")
+    assert ops.scan_plans(8192, 1, 12, DEVICE.index, arch) is first
+    assert ops._scan_plans_memo.cache_info().misses == 3
 
 
 def test_segment_len_env_override_wins_over_the_planner(monkeypatch):
@@ -456,5 +500,9 @@ def test_segment_len_override_is_validated_at_plan_time(monkeypatch):
     # the pin is honoured where a pre-scan exists and dropped with a warning naming the layout where none does
     monkeypatch.setenv("MILES_GDN_CHUNK_TRAIN_SEG_CHUNKS", "43")
     assert ops.choose_register_scan_config("dhu", 5, 12, DEVICE.index, arch) == (64, 1)
-    with pytest.warns(RuntimeWarning, match=r"forced segment length 43 ignored for the dhu scan .*\(64, 1\)"):
-        assert ops.segment_lens(16384, 5, 12, DEVICE.index, arch) == (43, 0)
+    # (64,1) has pre-scan stages since R3 (C6): the pin is honoured on both scans
+    assert ops.segment_lens(16384, 5, 12, DEVICE.index, arch) == (43, 43)
+    # (32,1) has none: pinned through the environment, the segment pin is dropped with a warning naming the layout
+    monkeypatch.setenv("MILES_GDN_CHUNK_TRAIN_SCAN_CFG", "32,1")
+    with pytest.warns(RuntimeWarning, match=r"forced segment length 43 ignored for the dhu scan .*\(32, 1\)"):
+        assert ops.segment_lens(16384, 5, 12, DEVICE.index, arch) == (0, 0)

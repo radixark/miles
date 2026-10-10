@@ -51,6 +51,8 @@ __all__ = [
     "chunk_meta_from_host",
     "gdn_chunk_backward",
     "gdn_chunk_forward",
+    "scan_plans",
+    "ScanPlan",
 ]
 
 CHUNK = 64
@@ -68,6 +70,18 @@ SAVE_STATE = os.environ.get("MILES_GDN_CHUNK_TRAIN_SAVE_STATE", "1") == "1"
 # chunk table
 # --------------------------------------------------------------------------- #
 @dataclass(frozen=True)
+class ScanPlan:
+    """Launch plan of one state scan: the register-scan configuration ``(value rows per CTA, K split)`` and the chunks
+    per segment (``0``: one segment per sequence, the serial scan).  A pure function of the layout and the device
+    (:func:`choose_scan_plan`); the segment table built from it carries the configuration, so the launch runs exactly
+    the stages the plan was priced for on both table routes.
+    """
+
+    config: tuple[int, int]
+    segment_len: int
+
+
+@dataclass(frozen=True)
 class SegmentTable:
     """Scan segments: every sequence's chunk range cut into near-equal pieces (all int32 CUDA tensors).
 
@@ -75,7 +89,8 @@ class SegmentTable:
     the segments of sequence ``i`` are ``[seq_seg_start[i], seq_seg_start[i + 1])`` in chunk order.
     ``num_segments`` is the launch extent: a table built on the device is padded to its upper bound with
     empty segments (``seg_seq == -1``) that the scan kernels skip.  ``segment_len == 0`` means one segment
-    per sequence (the serial scan).
+    per sequence (the serial scan).  ``scan_config`` is the register-scan configuration ``(value rows per CTA,
+    K split)`` the table was planned for (:class:`ScanPlan`).
     """
 
     seg_chunk_start: torch.Tensor
@@ -83,6 +98,7 @@ class SegmentTable:
     seq_seg_start: torch.Tensor
     num_segments: int
     segment_len: int
+    scan_config: tuple[int, int]
 
 
 @dataclass(frozen=True)
@@ -93,7 +109,7 @@ class ChunkMeta:
     it is an upper bound (``T // 64 + num_seqs``) and the trailing entries are padding chunks with
     ``chunk_len == 0`` that every chunk kernel skips.  ``fwd_segments`` / ``bwd_segments`` are the
     segment tables of the forward state scan and of the backward state-gradient scan
-    (:func:`segment_lens`; ``segment_len == 0`` keeps the serial scan).
+    (:func:`scan_plans`; ``segment_len == 0`` keeps the serial scan).
     """
 
     chunk_start: torch.Tensor
@@ -130,8 +146,11 @@ def _segment_lists(seq_chunk_start: list[int], segment_len: int) -> tuple[list[i
     return seg_chunk_start, seg_seq, seq_seg_start
 
 
-def build_chunk_meta(seq_lens, device, *, segment_lens: tuple[int, int] = (0, 0)) -> ChunkMeta:
-    """Exact chunk and segment tables from host sequence lengths (one pinned copy, no synchronisation)."""
+def build_chunk_meta(seq_lens, device, *, scan_plans: tuple[ScanPlan, ScanPlan]) -> ChunkMeta:
+    """Exact chunk and segment tables from host sequence lengths (one pinned copy, no synchronisation).
+
+    ``scan_plans`` are the layout's forward and backward scan plans (:func:`scan_plans`).
+    """
     starts: list[int] = []
     lens: list[int] = []
     seq_chunk_start = [0]
@@ -144,8 +163,8 @@ def build_chunk_meta(seq_lens, device, *, segment_lens: tuple[int, int] = (0, 0)
         seq_chunk_start.append(len(starts))
         token += seq_len
     parts: list[list[int]] = [starts, lens, seq_chunk_start]
-    for seg_len in segment_lens:
-        parts.extend(_segment_lists(seq_chunk_start, int(seg_len)))
+    for plan in scan_plans:
+        parts.extend(_segment_lists(seq_chunk_start, int(plan.segment_len)))
 
     # One host tensor, one asynchronous copy (pinned staging): a pageable ``torch.tensor(..., device="cuda")``
     # would synchronise the stream before each copy.
@@ -163,7 +182,8 @@ def build_chunk_meta(seq_lens, device, *, segment_lens: tuple[int, int] = (0, 0)
             seg_seq=views[4 + 3 * i],
             seq_seg_start=views[5 + 3 * i],
             num_segments=len(parts[4 + 3 * i]),
-            segment_len=int(segment_lens[i]),
+            segment_len=int(scan_plans[i].segment_len),
+            scan_config=tuple(scan_plans[i].config),
         )
         for i in range(2)
     ]
@@ -199,37 +219,36 @@ def _seq_lens_from_host(cu_seqlens_host) -> tuple[int, ...]:
 
 
 @lru_cache(maxsize=256)
-def _host_chunk_meta(seq_lens: tuple[int, ...], segment_lens: tuple[int, int], device_index: int) -> ChunkMeta:
+def _host_chunk_meta(seq_lens: tuple[int, ...], scan_plans: tuple[ScanPlan, ScanPlan], device_index: int) -> ChunkMeta:
     global _HOST_META_BUILDS
     _HOST_META_BUILDS += 1
-    return build_chunk_meta(seq_lens, torch.device("cuda", device_index), segment_lens=segment_lens)
+    return build_chunk_meta(seq_lens, torch.device("cuda", device_index), scan_plans=scan_plans)
 
 
-def _host_meta(seq_lens, num_v_heads, device_index: int, arch: str | None, total_tokens: int | None = None) -> ChunkMeta:
-    # The scan segment lengths are part of the layout key; ``total_tokens`` is the padded token extent the
-    # device table path sees (``T``) so both paths derive identical tables.  Without ``num_v_heads`` the
-    # scans stay serial (one segment per sequence).
+def _host_meta(seq_lens, num_v_heads: int, device_index: int, arch: str, total_tokens: int | None = None) -> ChunkMeta:
+    # The scan plans (configuration + segment length) are part of the layout key; ``total_tokens`` is the padded
+    # token extent the device table path sees (``T``) so both paths derive identical tables.
     seq_lens = tuple(int(x) for x in seq_lens)
     tokens = int(total_tokens) if total_tokens is not None else sum(seq_lens)
-    segs = segment_lens(tokens, len(seq_lens), int(num_v_heads), int(device_index), arch, seq_lens) if num_v_heads else (0, 0)
-    return _host_chunk_meta(seq_lens, segs, int(device_index))
+    plans = scan_plans(tokens, len(seq_lens), int(num_v_heads), int(device_index), arch, seq_lens)
+    return _host_chunk_meta(seq_lens, plans, int(device_index))
 
 
 def chunk_meta_from_host(
-    cu_seqlens_host, device, num_v_heads: int | None = None, total_tokens: int | None = None, arch: str | None = None
+    cu_seqlens_host, device, num_v_heads: int, total_tokens: int | None = None, arch: str | None = None
 ) -> ChunkMeta:
     """Exact chunk (and, given ``num_v_heads``, scan segment) tables for a micro-batch layout, built once per
     distinct layout and device.
 
-    The tables are a pure function of the segment lengths, the head count and the device, so every layer of
-    a micro-batch (and the activation-recompute forward) shares one build: a few tiny int32 tensors, no
+    The tables are a pure function of the scan plans, the head count and the device, so every layer of a
+    micro-batch (and the activation-recompute forward) shares one build: a few tiny int32 tensors, no
     device-to-host synchronisation, no launch, exact launch extents.
     """
     device = torch.device(device)
     index = device.index if device.index is not None else torch.cuda.current_device()
-    if num_v_heads is not None and arch is None:
+    if arch is None:
         arch = device_arch(device)
-    return _host_meta(_seq_lens_from_host(cu_seqlens_host), num_v_heads, int(index), arch, total_tokens)
+    return _host_meta(_seq_lens_from_host(cu_seqlens_host), int(num_v_heads), int(index), arch, total_tokens)
 
 
 def segments_upper_bound(num_chunks_max: int, num_seqs: int, segment_len: int) -> int:
@@ -238,7 +257,7 @@ def segments_upper_bound(num_chunks_max: int, num_seqs: int, segment_len: int) -
 
 
 def build_chunk_meta_from_cu_seqlens(
-    cu_seqlens: torch.Tensor, total_tokens: int, arch: str, *, segment_lens: tuple[int, int] = (0, 0)
+    cu_seqlens: torch.Tensor, total_tokens: int, arch: str, *, scan_plans: tuple[ScanPlan, ScanPlan]
 ) -> ChunkMeta:
     """Chunk and segment tables from a device ``cu_seqlens`` tensor without synchronising the host.
 
@@ -249,7 +268,7 @@ def build_chunk_meta_from_cu_seqlens(
         raise ValueError("cu_seqlens must be a 1-D tensor with at least two entries")
     num_seqs = int(cu_seqlens.numel()) - 1
     num_chunks_max = total_tokens // CHUNK + num_seqs
-    seg_max = [segments_upper_bound(num_chunks_max, num_seqs, seg_len) for seg_len in segment_lens]
+    seg_max = [segments_upper_bound(num_chunks_max, num_seqs, plan.segment_len) for plan in scan_plans]
     cu32 = cu_seqlens if cu_seqlens.dtype == torch.int32 else cu_seqlens.to(torch.int32)
     cu32 = cu32.contiguous()
     device = cu_seqlens.device
@@ -277,8 +296,8 @@ def build_chunk_meta_from_cu_seqlens(
         num_seqs=num_seqs,
         num_chunks_max=num_chunks_max,
         total_tokens=int(total_tokens),
-        fwd_segment_len=int(segment_lens[0]),
-        bwd_segment_len=int(segment_lens[1]),
+        fwd_segment_len=int(scan_plans[0].segment_len),
+        bwd_segment_len=int(scan_plans[1].segment_len),
         fwd_num_segments_max=seg_max[0],
         bwd_num_segments_max=seg_max[1],
     )
@@ -288,7 +307,8 @@ def build_chunk_meta_from_cu_seqlens(
             seg_seq=views[4 + 3 * i],
             seq_seg_start=views[5 + 3 * i],
             num_segments=seg_max[i],
-            segment_len=int(segment_lens[i]),
+            segment_len=int(scan_plans[i].segment_len),
+            scan_config=tuple(scan_plans[i].config),
         )
         for i in range(2)
     ]
@@ -324,10 +344,16 @@ def choose_register_scan_config(
 
     The preferred configuration (32 rows, K split in two -> four warps) has the shortest per-chunk
     chain and fills all four SM sub-partitions; wider blocks are used only when the preferred grid
-    would need more than one wave.  The choice depends only on shape and device, never on data.
+    would need more than one wave.  ``MILES_GDN_CHUNK_TRAIN_SCAN_CFG=vb,ksplit`` (or :data:`FORCED_SCAN_CONFIG`)
+    pins a configuration for experiments and tests.  The choice depends only on shape and device, never on data;
+    it is the baseline the segment planner (:func:`choose_scan_plan`) prices every alternative against.
     """
     if FORCED_SCAN_CONFIG is not None:
-        return FORCED_SCAN_CONFIG
+        return int(FORCED_SCAN_CONFIG[0]), int(FORCED_SCAN_CONFIG[1])
+    forced = os.environ.get("MILES_GDN_CHUNK_TRAIN_SCAN_CFG")
+    if forced:
+        vb, ks = (int(x) for x in forced.split(","))
+        return vb, ks
     return _choose_register_scan_config(kind, num_seqs, num_v_heads, device_index, arch)
 
 
@@ -344,9 +370,10 @@ def _choose_register_scan_config(kind: str, num_seqs: int, num_v_heads: int, dev
     return 64, 1
 
 
-def _scan_stage(kind: str, num_seqs: int, num_v_heads: int, device: torch.device, arch: str) -> tuple[str, int]:
+def _scan_stage(kind: str, config: tuple[int, int], device: torch.device, arch: str) -> tuple[str, int]:
+    """Stage name and value block of the ``kind`` register scan in ``config`` (the planned configuration)."""
     device_index = device.index if device.index is not None else torch.cuda.current_device()
-    vb, ks = choose_register_scan_config(kind, num_seqs, num_v_heads, device_index, arch)
+    vb, ks = config
     _sm_count, smem_optin, major = _device_props(device_index)
     record = _scan_record(kind, vb, ks, arch)
     if major < 9 or int(record["scan"]["select_smem_bytes"]) > smem_optin:
@@ -359,7 +386,7 @@ def _scan_stage(kind: str, num_seqs: int, num_v_heads: int, device: torch.device
 # --------------------------------------------------------------------------- #
 # segment-parallel state scans (a pure function of the layout bound and the device)
 # --------------------------------------------------------------------------- #
-PRESCAN_CONFIG = (32, 2)  # the only register-scan configuration with a pre-scan variant
+PRESCAN_CONFIGS = ((32, 2), (64, 1))  # the register-scan configurations with pre-scan stages (loom: PRESCAN_CONFIGS)
 MIN_SEGMENT_CHUNKS = 4  # 256 tokens: shorter segments pay more in pre-scan + stitch than they save
 # Cost model of the split, in chunk steps of the (32,2) register scan at one CTA per SM, re-fit on the round-R3 GB300
 # forced-L sweep (1x8192 and 1x16384 tokens at HV 12, L = 13/22/26/43/64/86, CUPTI per kernel; fwd_h 1.23 us and dhu
@@ -382,6 +409,12 @@ STITCH_FIXED_CHUNKS = 2.75  # stitch launch floor in chunk steps
 STITCH_COPY_CHUNKS = 2.3  # one copy-only stitch step (serial over the boundaries) in chunk steps
 SPLIT_GAIN_THRESHOLD = 0.95  # split only when the modelled makespan beats the serial scan by at least 5 %
 MAX_SCAN_ROUNDS = 2  # a split may launch at most two rounds of the resident set (the sweep's calibrated range)
+# Per-chunk step time of each register-scan configuration relative to the preferred (32, 2) block in the same residency
+# class (round R3, C6): the (64, 1) block halves the grid (one CTA per 64 value rows) at a longer per-chunk chain (16
+# instead of 8 key blocks per warp, no K-split reduction); (32, 1) keeps the (32, 2) grid and doubles the chain.  Scales
+# the scan and pre-scan terms of a plan, not the stitch.  Initial values from the round-R2 per-configuration step times;
+# re-fit per architecture from the pinned-configuration sweep (tactic: calibrated_segment_planner_...).
+SCAN_STEP_FACTOR = {(32, 2): 1.0, (32, 1): 1.18, (64, 1): 1.27}
 FORCED_SEGMENT_LEN: int | None = None  # tests pin the segment length (0 = serial); production derives it
 # Warm-up threshold of the pre-scans in log2: the trailing (forward) / leading (backward) chunks of a segment whose
 # summed gate is below it bound the segment's map ``|M| <= 2^thresh`` and the dropped earlier contributions to ``B``
@@ -471,33 +504,24 @@ def bound_layout_chunks(chunks_bound: int, num_seqs: int) -> tuple[int, ...]:
     return (chunks_bound - (num_seqs - 1),) + (1,) * (num_seqs - 1)
 
 
-def plan_segments(
-    chunks_bound: int,
-    num_seqs: int,
-    per_segment: int,
-    sm_count: int,
-    residency: int,
-    seq_chunks: tuple[int, ...] | None = None,
-) -> tuple[int, float]:
-    """``(segment_len, modelled makespan in chunk steps)`` of a layout; ``segment_len == 0`` keeps the serial scan.
+def _serial_cost(chunks: Sequence[int], per_segment: int, sm_count: int, residency: int, step_factor: float) -> float:
+    """Modelled makespan of the serial scan (one segment per sequence) in chunk steps of the (32, 2) scan."""
+    return step_factor * _scan_makespan(chunks, (1,) * len(chunks), per_segment, sm_count, residency)
 
-    Pure function of the layout and the device.  Without ``seq_chunks`` (the device route, which knows only the padded
-    chunk bound ``T // 64 + num_seqs``) it prices :func:`bound_layout_chunks`; with ``seq_chunks`` (the host route:
-    the exact per-sequence chunk counts) it prices the tables that will actually run.  A segment length ``L`` cuts
-    sequence ``i`` into ``k_i = ceil(n_i / L)`` equal-sized segments (``k_i = 1``: unsplit) and costs
-    ``makespan(k) + 3.3 x 1.16 x waves(sum (k_i - 1) x per_segment) + 2.75 + 2.3 x (max k_i - 1)`` chunk steps --
-    the pass-2 scan over every sequence's segments (:func:`_scan_makespan`), the warm-up pre-scan of the consumed
-    segments' value blocks, the stitch launch floor plus one serial copy-only step per boundary -- against the serial
-    scan's own ``makespan(1, ..., 1)``; candidates whose grid exceeds :data:`MAX_SCAN_ROUNDS` rounds of the resident
-    set lie outside the calibration and are skipped.  The ``L`` with the lowest makespan is taken when it beats
-    ``0.95 x`` the serial scan.  Balanced packed layouts whose sequences are all shorter than ``L`` keep one segment
-    per sequence (the pre-scan and stitch then launch on the device route and exit immediately).
+
+def _best_split(chunks: Sequence[int], per_segment: int, sm_count: int, residency: int, step_factor: float) -> tuple[int, float]:
+    """``(segment_len, modelled cost)`` of the cheapest admissible split of ``chunks`` (``(0, inf)`` when none is).
+
+    A segment length ``L`` cuts sequence ``i`` into ``k_i = ceil(n_i / L)`` equal-sized segments (``k_i = 1``: unsplit)
+    and costs ``f x makespan(k) + f x 3.3 x 1.16 x waves(sum (k_i - 1) x per_segment) + 2.75 + 2.3 x (max k_i - 1)``
+    chunk steps for the configuration's step factor ``f`` -- the pass-2 scan over every sequence's segments
+    (:func:`_scan_makespan`), the warm-up pre-scan of the consumed segments' value blocks, the stitch launch floor plus
+    one serial copy-only step per boundary.  Candidates whose grid exceeds :data:`MAX_SCAN_ROUNDS` rounds of the
+    resident set lie outside the calibration and are skipped.
     """
-    chunks = tuple(int(c) for c in seq_chunks) if seq_chunks is not None else bound_layout_chunks(chunks_bound, num_seqs)
     longest = max(chunks)
     per_wave = sm_count * (2 if residency >= 2 else 1)
-    serial = _scan_makespan(chunks, (1,) * len(chunks), per_segment, sm_count, residency)
-    best_len, best_cost = 0, serial
+    best_len, best_cost = 0, math.inf
     for segments in range(2, longest // MIN_SEGMENT_CHUNKS + 1):
         seg_len = -(-longest // segments)
         if seg_len < MIN_SEGMENT_CHUNKS or seg_len >= longest:
@@ -505,17 +529,66 @@ def plan_segments(
         splits = tuple(max(1, -(-n // seg_len)) for n in chunks)
         if sum(splits) * per_segment > MAX_SCAN_ROUNDS * per_wave:
             continue
-        scan = _scan_makespan(chunks, splits, per_segment, sm_count, residency)
-        pre = PRESCAN_WARMUP_CHUNKS * PRESCAN_STEP_FACTOR * _wave_factor(sum(k - 1 for k in splits) * per_segment, sm_count, residency)
+        scan = step_factor * _scan_makespan(chunks, splits, per_segment, sm_count, residency)
+        pre = PRESCAN_WARMUP_CHUNKS * PRESCAN_STEP_FACTOR * step_factor * _wave_factor(sum(k - 1 for k in splits) * per_segment, sm_count, residency)
         cost = scan + pre + STITCH_FIXED_CHUNKS + STITCH_COPY_CHUNKS * (max(splits) - 1)
         if cost < best_cost:
             best_len, best_cost = seg_len, cost
+    return best_len, best_cost
+
+
+def plan_segments(
+    chunks_bound: int,
+    num_seqs: int,
+    per_segment: int,
+    sm_count: int,
+    residency: int,
+    seq_chunks: tuple[int, ...] | None = None,
+    step_factor: float = 1.0,
+) -> tuple[int, float]:
+    """``(segment_len, modelled makespan in chunk steps)`` of a layout in one configuration; ``0`` keeps the serial scan.
+
+    Pure function of the layout and the device.  Without ``seq_chunks`` (the device route, which knows only the padded
+    chunk bound ``T // 64 + num_seqs``) it prices :func:`bound_layout_chunks`; with ``seq_chunks`` (the host route:
+    the exact per-sequence chunk counts) it prices the tables that will actually run.  The cheapest split
+    (:func:`_best_split`) is taken when it beats ``0.95 x`` the serial scan's own makespan (:func:`_serial_cost`), both
+    at the configuration's ``step_factor``.  Balanced packed layouts whose sequences are all shorter than ``L`` keep one
+    segment per sequence (the pre-scan and stitch then launch on the device route and exit immediately).
+    """
+    chunks = tuple(int(c) for c in seq_chunks) if seq_chunks is not None else bound_layout_chunks(chunks_bound, num_seqs)
+    serial = _serial_cost(chunks, per_segment, sm_count, residency, step_factor)
+    best_len, best_cost = _best_split(chunks, per_segment, sm_count, residency, step_factor)
     if best_len == 0 or best_cost >= SPLIT_GAIN_THRESHOLD * serial:
         return 0, serial
     return best_len, best_cost
 
 
-def choose_segment_len(
+def _scan_fits(kind: str, config: tuple[int, int], device_index: int, arch: str) -> str | None:
+    """``None`` when the ``kind`` register scan in ``config`` is rendered for ``arch`` and fits the device, else why not."""
+    vb, ks = config
+    stage = f"{kind}_r{vb}k{ks}"
+    _sm_count, smem_optin, major = _device_props(device_index)
+    if stage not in MODULES or arch not in MODULES[stage]:
+        return f"no {stage} stage is rendered for {arch}"
+    if major < 9:
+        return f"compute capability {major}.x has no register scan"
+    smem = int(_scan_record(kind, vb, ks, arch)["scan"]["select_smem_bytes"])
+    if smem > smem_optin:
+        return f"the {kind} register scan {config} needs {smem} B of shared memory, above the device opt-in {smem_optin} B"
+    return None
+
+
+def _prescan_fits(kind: str, config: tuple[int, int], device_index: int, arch: str) -> str | None:
+    """``None`` when ``config`` can be split for ``kind`` on this device (pre-scan stage rendered, scan fits), else why not."""
+    if config not in PRESCAN_CONFIGS:
+        return f"its register-scan configuration {config} has no pre-scan stage (only {PRESCAN_CONFIGS} have one)"
+    pre = f"{kind}_pre_r{config[0]}k{config[1]}"
+    if pre not in MODULES or arch not in MODULES[pre]:
+        return f"no {pre} stage is rendered for {arch}"
+    return _scan_fits(kind, config, device_index, arch)
+
+
+def choose_scan_plan(
     kind: str,
     total_tokens: int,
     num_seqs: int,
@@ -523,37 +596,25 @@ def choose_segment_len(
     device_index: int,
     arch: str,
     seq_lens: tuple[int, ...] | None = None,
-) -> int:
-    """Chunks per scan segment for ``kind`` (``0``: one segment per sequence, the serial scan).
+) -> ScanPlan:
+    """Register-scan configuration and chunks per segment of the ``kind`` state scan of a layout.
 
-    Only the preferred register-scan configuration is split (it is the one with pre-scan kernels); the decision is
-    :func:`plan_segments` over the exact per-sequence chunk counts when ``seq_lens`` is known (host route) or the
-    padded chunk bound ``T // 64 + num_seqs`` otherwise (device route), the per-segment CTA count ``HV x K / vb``
-    and the device's SM count and scan residency.
-    ``MILES_GDN_CHUNK_TRAIN_SEG_CHUNKS`` (or :data:`FORCED_SEGMENT_LEN`) pins the segment length for tests; the pin is
-    validated here, at plan time: on a layout whose scan runs another register configuration (no pre-scan stage) it is
-    ignored with a :class:`RuntimeWarning` naming the layout, and the serial scan runs.
+    The baseline is :func:`choose_register_scan_config` run serially (one segment per sequence).  Every register
+    configuration rendered for the device is priced serially at its :data:`SCAN_STEP_FACTOR`, and the configurations
+    with pre-scan stages (:data:`PRESCAN_CONFIGS`) also at their cheapest split (:func:`_best_split`); the exact
+    per-sequence chunk counts are priced when ``seq_lens`` is known (host route), the padded chunk bound
+    ``T // 64 + num_seqs`` otherwise (device route).  The cheapest plan is taken when it beats ``0.95 x`` the baseline
+    (one rule for a configuration switch and for a split); otherwise the baseline runs.
+    ``MILES_GDN_CHUNK_TRAIN_SCAN_CFG`` / :data:`FORCED_SCAN_CONFIG` pin the configuration (the segment length is then
+    planned for it); ``MILES_GDN_CHUNK_TRAIN_SEG_CHUNKS`` / :data:`FORCED_SEGMENT_LEN` pin the segment length of the
+    baseline (or pinned) configuration, validated at plan time: a pin on a configuration without a pre-scan stage is
+    dropped with a :class:`RuntimeWarning` naming the layout, and the serial scan runs.
     """
     env = os.environ.get("MILES_GDN_CHUNK_TRAIN_SEG_CHUNKS")
     forced_len = int(FORCED_SEGMENT_LEN) if FORCED_SEGMENT_LEN is not None else (int(env) if env else None)
-    vb, ks = PRESCAN_CONFIG
-    pre = f"{kind}_pre_r{vb}k{ks}"
-    config = choose_register_scan_config(kind, num_seqs, num_v_heads, device_index, arch)
-    sm_count, smem_optin, major = _device_props(device_index)
-    if config != (vb, ks):
-        unsplittable = f"its register-scan configuration {config} has no pre-scan stage (only {PRESCAN_CONFIG} has one)"
-    elif pre not in MODULES or arch not in MODULES[pre]:
-        unsplittable = f"no {pre} stage is rendered for {arch}"
-    elif major < 9:
-        unsplittable = f"compute capability {major}.x has no register scan"
-    elif int(_scan_record(kind, vb, ks, arch)["scan"]["select_smem_bytes"]) > smem_optin:
-        unsplittable = (
-            f"the {kind} register scan {PRESCAN_CONFIG} needs {_scan_record(kind, vb, ks, arch)['scan']['select_smem_bytes']} B "
-            f"of shared memory, above the device opt-in {smem_optin} B"
-        )
-    else:
-        unsplittable = None
+    baseline = choose_register_scan_config(kind, num_seqs, num_v_heads, device_index, arch)
     if forced_len is not None:
+        unsplittable = _prescan_fits(kind, baseline, device_index, arch)
         if forced_len > 0 and unsplittable is not None:
             warnings.warn(
                 f"forced segment length {forced_len} ignored for the {kind} scan of this layout ({num_seqs} sequences, "
@@ -561,27 +622,78 @@ def choose_segment_len(
                 RuntimeWarning,
                 stacklevel=2,
             )
-            return 0
-        return forced_len
-    if unsplittable is not None:
-        return 0
+            return ScanPlan(baseline, 0)
+        return ScanPlan(baseline, forced_len)
+    if _scan_fits(kind, baseline, device_index, arch) is not None:
+        return ScanPlan(baseline, 0)  # the launch reports the unsupported device (_scan_stage)
+    pinned = FORCED_SCAN_CONFIG is not None or bool(os.environ.get("MILES_GDN_CHUNK_TRAIN_SCAN_CFG"))
     chunks_bound = total_tokens // CHUNK + num_seqs
-    per_segment = num_v_heads * (HEAD_DIM // vb)
-    seq_chunks = tuple(-(-int(x) // CHUNK) for x in seq_lens) if seq_lens is not None else None
-    seg_len, _cost = plan_segments(
-        chunks_bound, num_seqs, per_segment, sm_count, _scan_residency(kind, vb, ks, device_index, arch), seq_chunks=seq_chunks
+    chunks = tuple(-(-int(x) // CHUNK) for x in seq_lens) if seq_lens is not None else bound_layout_chunks(chunks_bound, num_seqs)
+    sm_count, _smem_optin, _major = _device_props(device_index)
+    candidates = [baseline] if pinned else [config for config in REG_SCAN_CONFIGS if _scan_fits(kind, config, device_index, arch) is None]
+    baseline_cost = _serial_cost(chunks, num_v_heads * (HEAD_DIM // baseline[0]), sm_count, _scan_residency(kind, baseline[0], baseline[1], device_index, arch), SCAN_STEP_FACTOR[baseline])
+    best = (baseline, 0, baseline_cost)
+    for config in candidates:
+        per_segment = num_v_heads * (HEAD_DIM // config[0])
+        residency = _scan_residency(kind, config[0], config[1], device_index, arch)
+        options = [(0, _serial_cost(chunks, per_segment, sm_count, residency, SCAN_STEP_FACTOR[config]))]
+        if _prescan_fits(kind, config, device_index, arch) is None:
+            options.append(_best_split(chunks, per_segment, sm_count, residency, SCAN_STEP_FACTOR[config]))
+        for seg_len, cost in options:
+            if cost < best[2]:
+                best = (config, seg_len, cost)
+    config, seg_len, cost = best
+    if (config, seg_len) != (baseline, 0) and cost >= SPLIT_GAIN_THRESHOLD * baseline_cost:
+        return ScanPlan(baseline, 0)
+    return ScanPlan(config, seg_len)
+
+
+def _plan_pins() -> tuple:
+    """The test / experiment pins a plan depends on besides its arguments (part of the :func:`scan_plans` memo key)."""
+    return (
+        None if FORCED_SEGMENT_LEN is None else int(FORCED_SEGMENT_LEN),
+        os.environ.get("MILES_GDN_CHUNK_TRAIN_SEG_CHUNKS"),
+        None if FORCED_SCAN_CONFIG is None else (int(FORCED_SCAN_CONFIG[0]), int(FORCED_SCAN_CONFIG[1])),
+        os.environ.get("MILES_GDN_CHUNK_TRAIN_SCAN_CFG"),
     )
-    return seg_len
+
+
+@lru_cache(maxsize=4096)
+def _scan_plans_memo(
+    total_tokens: int,
+    num_seqs: int,
+    num_v_heads: int,
+    device_index: int,
+    arch: str,
+    seq_lens: tuple[int, ...] | None,
+    device_props: tuple[int, int, int],
+    pins: tuple,
+) -> tuple[ScanPlan, ScanPlan]:
+    # ``device_props`` and ``pins`` are key material only: the plan reads the same values through the helpers
+    return (
+        choose_scan_plan("fwd_h", total_tokens, num_seqs, num_v_heads, device_index, arch, seq_lens),
+        choose_scan_plan("dhu", total_tokens, num_seqs, num_v_heads, device_index, arch, seq_lens),
+    )
+
+
+def scan_plans(
+    total_tokens: int, num_seqs: int, num_v_heads: int, device_index: int, arch: str, seq_lens: tuple[int, ...] | None = None
+) -> tuple[ScanPlan, ScanPlan]:
+    """``(forward scan, backward scan)`` plans of a layout (see :func:`choose_scan_plan`).
+
+    Memoised per layout, device (index and properties) and pin state, like loom's ``scan_plans``: the host route
+    (``chunk_meta_from_host``) plans on every call and the joint search costs ~60 us of host time per call; a
+    repeated layout is a dictionary hit, a pin change always re-plans.
+    """
+    seq_key = None if seq_lens is None else tuple(int(x) for x in seq_lens)
+    return _scan_plans_memo(int(total_tokens), int(num_seqs), int(num_v_heads), int(device_index), str(arch), seq_key, _device_props(int(device_index)), _plan_pins())
 
 
 def segment_lens(
     total_tokens: int, num_seqs: int, num_v_heads: int, device_index: int, arch: str, seq_lens: tuple[int, ...] | None = None
 ) -> tuple[int, int]:
-    """``(forward scan, backward scan)`` segment lengths of a layout (see :func:`choose_segment_len`)."""
-    return (
-        choose_segment_len("fwd_h", total_tokens, num_seqs, num_v_heads, device_index, arch, seq_lens),
-        choose_segment_len("dhu", total_tokens, num_seqs, num_v_heads, device_index, arch, seq_lens),
-    )
+    """The two plans' segment lengths (:func:`scan_plans`); the per-case record of the benchmark and DET harnesses."""
+    return tuple(plan.segment_len for plan in scan_plans(total_tokens, num_seqs, num_v_heads, device_index, arch, seq_lens))
 
 
 # --------------------------------------------------------------------------- #
@@ -620,8 +732,8 @@ def _launch_fwd_h(
     )
     h0 = initial_state.contiguous().float() if initial_state is not None else final_state
     use_init = 1 if initial_state is not None else 0
-    stage, vb = _scan_stage("fwd_h", meta.num_seqs, num_v_heads, device, arch)
     segs = meta.fwd_segments
+    stage, vb = _scan_stage("fwd_h", segs.scan_config, device, arch)  # the configuration the table was planned for
     if segs.segment_len > 0 and segs.num_segments > meta.num_seqs:
         # Segment-parallel scan: every segment's affine map in parallel (value and identity column blocks of
         # the augmented state), the serial stitch of the start states, then the ordinary scan per segment
@@ -885,8 +997,8 @@ def gdn_chunk_backward(
     )
     dht32 = dht.contiguous().float() if dht is not None else dh0
     use_dht = 1 if dht is not None else 0
-    scan_stage, vb = _scan_stage("dhu", meta.num_seqs, num_v_heads, device, arch)
     segs = meta.bwd_segments
+    scan_stage, vb = _scan_stage("dhu", segs.scan_config, device, arch)  # the configuration the table was planned for
     if segs.segment_len > 0 and segs.num_segments > meta.num_seqs:
         # Segment-parallel reverse scan: per-segment affine maps, reverse stitch of the segment end states,
         # then the ordinary reverse scan per segment from its FP32 end state.
@@ -1068,7 +1180,7 @@ def _chunk_meta(cu_seqlens, cu_seqlens_cpu, batch: int, seq_len: int, device, ar
         return chunk_meta_from_host(cu_seqlens_cpu, device, num_v_heads, total_tokens, arch)
     num_seqs = int(cu_seqlens.numel()) - 1
     return build_chunk_meta_from_cu_seqlens(
-        cu_seqlens, total_tokens, arch, segment_lens=segment_lens(total_tokens, num_seqs, int(num_v_heads), int(index), arch)
+        cu_seqlens, total_tokens, arch, scan_plans=scan_plans(total_tokens, num_seqs, int(num_v_heads), int(index), arch)
     )
 
 

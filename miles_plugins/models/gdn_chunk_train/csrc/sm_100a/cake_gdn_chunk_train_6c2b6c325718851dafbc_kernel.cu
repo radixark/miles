@@ -90,7 +90,7 @@ __device__ __forceinline__ void mul_f32x2_inplace(float2* a, float2 b) {
 extern "C" {
 
 __global__ __launch_bounds__(THREADS) void
-kernel_cake_gdn_chunk_train_773e4e3fd3526410792d(__nv_bfloat16* __restrict__ kn, __nv_bfloat16* __restrict__ w, __nv_bfloat16* __restrict__ u, float* __restrict__ g_cs, float* __restrict__ h0, __nv_bfloat16* __restrict__ h_out, __nv_bfloat16* __restrict__ v_new, float* __restrict__ final_state, float* __restrict__ seg_state, int* __restrict__ chunk_start, int* __restrict__ chunk_len, int* __restrict__ seg_chunk_start, int* __restrict__ seg_seq, int* __restrict__ seq_chunk_start, int num_heads, int num_v_heads, int use_initial_state, int store_final_state, int* __restrict__ seg_flag, float warmup_thresh_log2)
+kernel_cake_gdn_chunk_train_6c2b6c325718851dafbc(__nv_bfloat16* __restrict__ kn, __nv_bfloat16* __restrict__ w, __nv_bfloat16* __restrict__ u, float* __restrict__ g_cs, float* __restrict__ h0, __nv_bfloat16* __restrict__ h_out, __nv_bfloat16* __restrict__ v_new, float* __restrict__ final_state, float* __restrict__ seg_state, int* __restrict__ chunk_start, int* __restrict__ chunk_len, int* __restrict__ seg_chunk_start, int* __restrict__ seg_seq, int* __restrict__ seq_chunk_start, int num_heads, int num_v_heads, int use_initial_state, int store_final_state, int* __restrict__ seg_flag, float warmup_thresh_log2)
 {
     const int tid = threadIdx.x;
     const int warp = make_warp_uniform(tid / 32);
@@ -540,133 +540,85 @@ kernel_cake_gdn_chunk_train_773e4e3fd3526410792d(__nv_bfloat16* __restrict__ kn,
                     : "r"((hpk + ks * 4)[0]), "r"((hpk + ks * 4)[1]), "r"((hpk + ks * 4)[2]), "r"((hpk + ks * 4)[3]), "r"(b_frag_k[2]), "r"(b_frag_k[(2) + 1]), "f"(((ks == 0) ? 0.0f : (acc_v + nb3 * 8 + 4)[0])), "f"(((ks == 0) ? 0.0f : (acc_v + nb3 * 8 + 4)[1])), "f"(((ks == 0) ? 0.0f : (acc_v + nb3 * 8 + 4)[2])), "f"(((ks == 0) ? 0.0f : (acc_v + nb3 * 8 + 4)[3])));
             }
         }
-        int own_base = warp_1 * 1024 + lane_0 * 4;
-        int partner_base = (warp_1 ^ 1) * 1024 + lane_0 * 4;
-        {
-            float4 _v4 = make_float4(acc_v[0 + 0], acc_v[0 + 1], acc_v[0 + 2], acc_v[0 + 3]);
-            *reinterpret_cast<float4*>((reinterpret_cast<float*>(s_red)) + own_base) = _v4;
-        }
-        {
-            float4 _v4 = make_float4(acc_v[4 + 0], acc_v[4 + 1], acc_v[4 + 2], acc_v[4 + 3]);
-            *reinterpret_cast<float4*>((reinterpret_cast<float*>(s_red)) + own_base + 128) = _v4;
-        }
-        {
-            float4 _v4 = make_float4(acc_v[8 + 0], acc_v[8 + 1], acc_v[8 + 2], acc_v[8 + 3]);
-            *reinterpret_cast<float4*>((reinterpret_cast<float*>(s_red)) + own_base + 256) = _v4;
-        }
-        {
-            float4 _v4 = make_float4(acc_v[12 + 0], acc_v[12 + 1], acc_v[12 + 2], acc_v[12 + 3]);
-            *reinterpret_cast<float4*>((reinterpret_cast<float*>(s_red)) + own_base + 384) = _v4;
-        }
-        {
-            float4 _v4 = make_float4(acc_v[16 + 0], acc_v[16 + 1], acc_v[16 + 2], acc_v[16 + 3]);
-            *reinterpret_cast<float4*>((reinterpret_cast<float*>(s_red)) + own_base + 512) = _v4;
-        }
-        {
-            float4 _v4 = make_float4(acc_v[20 + 0], acc_v[20 + 1], acc_v[20 + 2], acc_v[20 + 3]);
-            *reinterpret_cast<float4*>((reinterpret_cast<float*>(s_red)) + own_base + 640) = _v4;
-        }
-        {
-            float4 _v4 = make_float4(acc_v[24 + 0], acc_v[24 + 1], acc_v[24 + 2], acc_v[24 + 3]);
-            *reinterpret_cast<float4*>((reinterpret_cast<float*>(s_red)) + own_base + 768) = _v4;
-        }
-        {
-            float4 _v4 = make_float4(acc_v[28 + 0], acc_v[28 + 1], acc_v[28 + 2], acc_v[28 + 3]);
-            *reinterpret_cast<float4*>((reinterpret_cast<float*>(s_red)) + own_base + 896) = _v4;
-        }
+        int own_byte = warp_1 * 4096 + lane_0 * 16;
+        int partner_byte = (warp_1 ^ 1) * 4096 + lane_0 * 16;
+        asm volatile("st.shared.v4.b32 [%0], {%1,%2,%3,%4};" ::
+            "r"(s_red_addr + (unsigned int)own_byte), "r"(*reinterpret_cast<uint32_t*>(&acc_v[0])), "r"(*reinterpret_cast<uint32_t*>(&acc_v[(0) + 1])), "r"(*reinterpret_cast<uint32_t*>(&acc_v[(0) + 2])), "r"(*reinterpret_cast<uint32_t*>(&acc_v[(0) + 3])));
+        asm volatile("st.shared.v4.b32 [%0], {%1,%2,%3,%4};" ::
+            "r"(s_red_addr + (unsigned int)own_byte + 512), "r"(*reinterpret_cast<uint32_t*>(&acc_v[4])), "r"(*reinterpret_cast<uint32_t*>(&acc_v[(4) + 1])), "r"(*reinterpret_cast<uint32_t*>(&acc_v[(4) + 2])), "r"(*reinterpret_cast<uint32_t*>(&acc_v[(4) + 3])));
+        asm volatile("st.shared.v4.b32 [%0], {%1,%2,%3,%4};" ::
+            "r"(s_red_addr + (unsigned int)own_byte + 1024), "r"(*reinterpret_cast<uint32_t*>(&acc_v[8])), "r"(*reinterpret_cast<uint32_t*>(&acc_v[(8) + 1])), "r"(*reinterpret_cast<uint32_t*>(&acc_v[(8) + 2])), "r"(*reinterpret_cast<uint32_t*>(&acc_v[(8) + 3])));
+        asm volatile("st.shared.v4.b32 [%0], {%1,%2,%3,%4};" ::
+            "r"(s_red_addr + (unsigned int)own_byte + 1536), "r"(*reinterpret_cast<uint32_t*>(&acc_v[12])), "r"(*reinterpret_cast<uint32_t*>(&acc_v[(12) + 1])), "r"(*reinterpret_cast<uint32_t*>(&acc_v[(12) + 2])), "r"(*reinterpret_cast<uint32_t*>(&acc_v[(12) + 3])));
+        asm volatile("st.shared.v4.b32 [%0], {%1,%2,%3,%4};" ::
+            "r"(s_red_addr + (unsigned int)own_byte + 2048), "r"(*reinterpret_cast<uint32_t*>(&acc_v[16])), "r"(*reinterpret_cast<uint32_t*>(&acc_v[(16) + 1])), "r"(*reinterpret_cast<uint32_t*>(&acc_v[(16) + 2])), "r"(*reinterpret_cast<uint32_t*>(&acc_v[(16) + 3])));
+        asm volatile("st.shared.v4.b32 [%0], {%1,%2,%3,%4};" ::
+            "r"(s_red_addr + (unsigned int)own_byte + 2560), "r"(*reinterpret_cast<uint32_t*>(&acc_v[20])), "r"(*reinterpret_cast<uint32_t*>(&acc_v[(20) + 1])), "r"(*reinterpret_cast<uint32_t*>(&acc_v[(20) + 2])), "r"(*reinterpret_cast<uint32_t*>(&acc_v[(20) + 3])));
+        asm volatile("st.shared.v4.b32 [%0], {%1,%2,%3,%4};" ::
+            "r"(s_red_addr + (unsigned int)own_byte + 3072), "r"(*reinterpret_cast<uint32_t*>(&acc_v[24])), "r"(*reinterpret_cast<uint32_t*>(&acc_v[(24) + 1])), "r"(*reinterpret_cast<uint32_t*>(&acc_v[(24) + 2])), "r"(*reinterpret_cast<uint32_t*>(&acc_v[(24) + 3])));
+        asm volatile("st.shared.v4.b32 [%0], {%1,%2,%3,%4};" ::
+            "r"(s_red_addr + (unsigned int)own_byte + 3584), "r"(*reinterpret_cast<uint32_t*>(&acc_v[28])), "r"(*reinterpret_cast<uint32_t*>(&acc_v[(28) + 1])), "r"(*reinterpret_cast<uint32_t*>(&acc_v[(28) + 2])), "r"(*reinterpret_cast<uint32_t*>(&acc_v[(28) + 3])));
         __syncthreads();
         float part[4];
-        {
-            float4 _v4 = *reinterpret_cast<const float4*>(reinterpret_cast<float*>(s_red) + partner_base);
-            part[0 + 0] = _v4.x;
-            part[0 + 1] = _v4.y;
-            part[0 + 2] = _v4.z;
-            part[0 + 3] = _v4.w;
-        }
+        asm volatile("ld.shared.v4.b32 {%0,%1,%2,%3}, [%4];"
+            : "=r"(*reinterpret_cast<uint32_t*>(&part[0])), "=r"(*reinterpret_cast<uint32_t*>(&part[(0) + 1])), "=r"(*reinterpret_cast<uint32_t*>(&part[(0) + 2])), "=r"(*reinterpret_cast<uint32_t*>(&part[(0) + 3]))
+            : "r"(s_red_addr + (unsigned int)partner_byte));
         acc_v[0] = acc_v[0] + part[0];
         acc_v[1] = acc_v[1] + part[1];
         acc_v[2] = acc_v[2] + part[2];
         acc_v[3] = acc_v[3] + part[3];
         float part_1[4];
-        {
-            float4 _v4 = *reinterpret_cast<const float4*>(reinterpret_cast<float*>(s_red) + partner_base + 128);
-            part_1[0 + 0] = _v4.x;
-            part_1[0 + 1] = _v4.y;
-            part_1[0 + 2] = _v4.z;
-            part_1[0 + 3] = _v4.w;
-        }
+        asm volatile("ld.shared.v4.b32 {%0,%1,%2,%3}, [%4];"
+            : "=r"(*reinterpret_cast<uint32_t*>(&part_1[0])), "=r"(*reinterpret_cast<uint32_t*>(&part_1[(0) + 1])), "=r"(*reinterpret_cast<uint32_t*>(&part_1[(0) + 2])), "=r"(*reinterpret_cast<uint32_t*>(&part_1[(0) + 3]))
+            : "r"(s_red_addr + (unsigned int)partner_byte + 512));
         acc_v[4] = acc_v[4] + part_1[0];
         acc_v[5] = acc_v[5] + part_1[1];
         acc_v[6] = acc_v[6] + part_1[2];
         acc_v[7] = acc_v[7] + part_1[3];
         float part_2[4];
-        {
-            float4 _v4 = *reinterpret_cast<const float4*>(reinterpret_cast<float*>(s_red) + partner_base + 256);
-            part_2[0 + 0] = _v4.x;
-            part_2[0 + 1] = _v4.y;
-            part_2[0 + 2] = _v4.z;
-            part_2[0 + 3] = _v4.w;
-        }
+        asm volatile("ld.shared.v4.b32 {%0,%1,%2,%3}, [%4];"
+            : "=r"(*reinterpret_cast<uint32_t*>(&part_2[0])), "=r"(*reinterpret_cast<uint32_t*>(&part_2[(0) + 1])), "=r"(*reinterpret_cast<uint32_t*>(&part_2[(0) + 2])), "=r"(*reinterpret_cast<uint32_t*>(&part_2[(0) + 3]))
+            : "r"(s_red_addr + (unsigned int)partner_byte + 1024));
         acc_v[8] = acc_v[8] + part_2[0];
         acc_v[9] = acc_v[9] + part_2[1];
         acc_v[10] = acc_v[10] + part_2[2];
         acc_v[11] = acc_v[11] + part_2[3];
         float part_3[4];
-        {
-            float4 _v4 = *reinterpret_cast<const float4*>(reinterpret_cast<float*>(s_red) + partner_base + 384);
-            part_3[0 + 0] = _v4.x;
-            part_3[0 + 1] = _v4.y;
-            part_3[0 + 2] = _v4.z;
-            part_3[0 + 3] = _v4.w;
-        }
+        asm volatile("ld.shared.v4.b32 {%0,%1,%2,%3}, [%4];"
+            : "=r"(*reinterpret_cast<uint32_t*>(&part_3[0])), "=r"(*reinterpret_cast<uint32_t*>(&part_3[(0) + 1])), "=r"(*reinterpret_cast<uint32_t*>(&part_3[(0) + 2])), "=r"(*reinterpret_cast<uint32_t*>(&part_3[(0) + 3]))
+            : "r"(s_red_addr + (unsigned int)partner_byte + 1536));
         acc_v[12] = acc_v[12] + part_3[0];
         acc_v[13] = acc_v[13] + part_3[1];
         acc_v[14] = acc_v[14] + part_3[2];
         acc_v[15] = acc_v[15] + part_3[3];
         float part_4[4];
-        {
-            float4 _v4 = *reinterpret_cast<const float4*>(reinterpret_cast<float*>(s_red) + partner_base + 512);
-            part_4[0 + 0] = _v4.x;
-            part_4[0 + 1] = _v4.y;
-            part_4[0 + 2] = _v4.z;
-            part_4[0 + 3] = _v4.w;
-        }
+        asm volatile("ld.shared.v4.b32 {%0,%1,%2,%3}, [%4];"
+            : "=r"(*reinterpret_cast<uint32_t*>(&part_4[0])), "=r"(*reinterpret_cast<uint32_t*>(&part_4[(0) + 1])), "=r"(*reinterpret_cast<uint32_t*>(&part_4[(0) + 2])), "=r"(*reinterpret_cast<uint32_t*>(&part_4[(0) + 3]))
+            : "r"(s_red_addr + (unsigned int)partner_byte + 2048));
         acc_v[16] = acc_v[16] + part_4[0];
         acc_v[17] = acc_v[17] + part_4[1];
         acc_v[18] = acc_v[18] + part_4[2];
         acc_v[19] = acc_v[19] + part_4[3];
         float part_5[4];
-        {
-            float4 _v4 = *reinterpret_cast<const float4*>(reinterpret_cast<float*>(s_red) + partner_base + 640);
-            part_5[0 + 0] = _v4.x;
-            part_5[0 + 1] = _v4.y;
-            part_5[0 + 2] = _v4.z;
-            part_5[0 + 3] = _v4.w;
-        }
+        asm volatile("ld.shared.v4.b32 {%0,%1,%2,%3}, [%4];"
+            : "=r"(*reinterpret_cast<uint32_t*>(&part_5[0])), "=r"(*reinterpret_cast<uint32_t*>(&part_5[(0) + 1])), "=r"(*reinterpret_cast<uint32_t*>(&part_5[(0) + 2])), "=r"(*reinterpret_cast<uint32_t*>(&part_5[(0) + 3]))
+            : "r"(s_red_addr + (unsigned int)partner_byte + 2560));
         acc_v[20] = acc_v[20] + part_5[0];
         acc_v[21] = acc_v[21] + part_5[1];
         acc_v[22] = acc_v[22] + part_5[2];
         acc_v[23] = acc_v[23] + part_5[3];
         float part_6[4];
-        {
-            float4 _v4 = *reinterpret_cast<const float4*>(reinterpret_cast<float*>(s_red) + partner_base + 768);
-            part_6[0 + 0] = _v4.x;
-            part_6[0 + 1] = _v4.y;
-            part_6[0 + 2] = _v4.z;
-            part_6[0 + 3] = _v4.w;
-        }
+        asm volatile("ld.shared.v4.b32 {%0,%1,%2,%3}, [%4];"
+            : "=r"(*reinterpret_cast<uint32_t*>(&part_6[0])), "=r"(*reinterpret_cast<uint32_t*>(&part_6[(0) + 1])), "=r"(*reinterpret_cast<uint32_t*>(&part_6[(0) + 2])), "=r"(*reinterpret_cast<uint32_t*>(&part_6[(0) + 3]))
+            : "r"(s_red_addr + (unsigned int)partner_byte + 3072));
         acc_v[24] = acc_v[24] + part_6[0];
         acc_v[25] = acc_v[25] + part_6[1];
         acc_v[26] = acc_v[26] + part_6[2];
         acc_v[27] = acc_v[27] + part_6[3];
         float part_7[4];
-        {
-            float4 _v4 = *reinterpret_cast<const float4*>(reinterpret_cast<float*>(s_red) + partner_base + 896);
-            part_7[0 + 0] = _v4.x;
-            part_7[0 + 1] = _v4.y;
-            part_7[0 + 2] = _v4.z;
-            part_7[0 + 3] = _v4.w;
-        }
+        asm volatile("ld.shared.v4.b32 {%0,%1,%2,%3}, [%4];"
+            : "=r"(*reinterpret_cast<uint32_t*>(&part_7[0])), "=r"(*reinterpret_cast<uint32_t*>(&part_7[(0) + 1])), "=r"(*reinterpret_cast<uint32_t*>(&part_7[(0) + 2])), "=r"(*reinterpret_cast<uint32_t*>(&part_7[(0) + 3]))
+            : "r"(s_red_addr + (unsigned int)partner_byte + 3584));
         acc_v[28] = acc_v[28] + part_7[0];
         acc_v[29] = acc_v[29] + part_7[1];
         acc_v[30] = acc_v[30] + part_7[2];

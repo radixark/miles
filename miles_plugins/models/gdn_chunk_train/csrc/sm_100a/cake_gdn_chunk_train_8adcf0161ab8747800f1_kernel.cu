@@ -99,7 +99,7 @@ __device__ __forceinline__ void mul_f32x2_inplace(float2* a, float2 b) {
 extern "C" {
 
 __global__ __launch_bounds__(THREADS) void
-kernel_cake_gdn_chunk_train_c0f8ea32133f01dc4f54(__nv_bfloat16* __restrict__ qn, __nv_bfloat16* __restrict__ kn, __nv_bfloat16* __restrict__ w, __nv_bfloat16* __restrict__ do_, __nv_bfloat16* __restrict__ dv_local, float* __restrict__ g_cs, float* __restrict__ dht, __nv_bfloat16* __restrict__ dh_out, __nv_bfloat16* __restrict__ dv2, float* __restrict__ dh0, float* __restrict__ seg_state, int* __restrict__ chunk_start, int* __restrict__ chunk_len, int* __restrict__ seg_chunk_start, int* __restrict__ seg_seq, int* __restrict__ seq_chunk_start, int num_heads, int num_v_heads, int use_final_state_grad, int store_initial_state_grad, float scale)
+kernel_cake_gdn_chunk_train_8adcf0161ab8747800f1(__nv_bfloat16* __restrict__ qn, __nv_bfloat16* __restrict__ kn, __nv_bfloat16* __restrict__ w, __nv_bfloat16* __restrict__ do_, __nv_bfloat16* __restrict__ dv_local, float* __restrict__ g_cs, float* __restrict__ dht, __nv_bfloat16* __restrict__ dh_out, __nv_bfloat16* __restrict__ dv2, float* __restrict__ dh0, float* __restrict__ seg_state, int* __restrict__ chunk_start, int* __restrict__ chunk_len, int* __restrict__ seg_chunk_start, int* __restrict__ seg_seq, int* __restrict__ seq_chunk_start, int num_heads, int num_v_heads, int use_final_state_grad, int store_initial_state_grad, float scale)
 {
     const int tid = threadIdx.x;
     const int warp = make_warp_uniform(tid / 32);
@@ -568,133 +568,85 @@ kernel_cake_gdn_chunk_train_c0f8ea32133f01dc4f54(__nv_bfloat16* __restrict__ qn,
             *reinterpret_cast<int4*>(reinterpret_cast<int*>(dh_out) + (tape_base + (long long)(ld_row_8 * 128) + (long long)(ld_ch * 8)) / 2) = _iv4;
         }
         __syncwarp();
-        int own_base = warp_1 * 1024 + lane_0 * 4;
-        int partner_base = (warp_1 ^ 1) * 1024 + lane_0 * 4;
-        {
-            float4 _v4 = make_float4(acc_v[0 + 0], acc_v[0 + 1], acc_v[0 + 2], acc_v[0 + 3]);
-            *reinterpret_cast<float4*>((reinterpret_cast<float*>(s_red)) + own_base) = _v4;
-        }
-        {
-            float4 _v4 = make_float4(acc_v[4 + 0], acc_v[4 + 1], acc_v[4 + 2], acc_v[4 + 3]);
-            *reinterpret_cast<float4*>((reinterpret_cast<float*>(s_red)) + own_base + 128) = _v4;
-        }
-        {
-            float4 _v4 = make_float4(acc_v[8 + 0], acc_v[8 + 1], acc_v[8 + 2], acc_v[8 + 3]);
-            *reinterpret_cast<float4*>((reinterpret_cast<float*>(s_red)) + own_base + 256) = _v4;
-        }
-        {
-            float4 _v4 = make_float4(acc_v[12 + 0], acc_v[12 + 1], acc_v[12 + 2], acc_v[12 + 3]);
-            *reinterpret_cast<float4*>((reinterpret_cast<float*>(s_red)) + own_base + 384) = _v4;
-        }
-        {
-            float4 _v4 = make_float4(acc_v[16 + 0], acc_v[16 + 1], acc_v[16 + 2], acc_v[16 + 3]);
-            *reinterpret_cast<float4*>((reinterpret_cast<float*>(s_red)) + own_base + 512) = _v4;
-        }
-        {
-            float4 _v4 = make_float4(acc_v[20 + 0], acc_v[20 + 1], acc_v[20 + 2], acc_v[20 + 3]);
-            *reinterpret_cast<float4*>((reinterpret_cast<float*>(s_red)) + own_base + 640) = _v4;
-        }
-        {
-            float4 _v4 = make_float4(acc_v[24 + 0], acc_v[24 + 1], acc_v[24 + 2], acc_v[24 + 3]);
-            *reinterpret_cast<float4*>((reinterpret_cast<float*>(s_red)) + own_base + 768) = _v4;
-        }
-        {
-            float4 _v4 = make_float4(acc_v[28 + 0], acc_v[28 + 1], acc_v[28 + 2], acc_v[28 + 3]);
-            *reinterpret_cast<float4*>((reinterpret_cast<float*>(s_red)) + own_base + 896) = _v4;
-        }
+        int own_byte = warp_1 * 4096 + lane_0 * 16;
+        int partner_byte = (warp_1 ^ 1) * 4096 + lane_0 * 16;
+        asm volatile("st.shared.v4.b32 [%0], {%1,%2,%3,%4};" ::
+            "r"(s_red_addr + (unsigned int)own_byte), "r"(*reinterpret_cast<uint32_t*>(&acc_v[0])), "r"(*reinterpret_cast<uint32_t*>(&acc_v[(0) + 1])), "r"(*reinterpret_cast<uint32_t*>(&acc_v[(0) + 2])), "r"(*reinterpret_cast<uint32_t*>(&acc_v[(0) + 3])));
+        asm volatile("st.shared.v4.b32 [%0], {%1,%2,%3,%4};" ::
+            "r"(s_red_addr + (unsigned int)own_byte + 512), "r"(*reinterpret_cast<uint32_t*>(&acc_v[4])), "r"(*reinterpret_cast<uint32_t*>(&acc_v[(4) + 1])), "r"(*reinterpret_cast<uint32_t*>(&acc_v[(4) + 2])), "r"(*reinterpret_cast<uint32_t*>(&acc_v[(4) + 3])));
+        asm volatile("st.shared.v4.b32 [%0], {%1,%2,%3,%4};" ::
+            "r"(s_red_addr + (unsigned int)own_byte + 1024), "r"(*reinterpret_cast<uint32_t*>(&acc_v[8])), "r"(*reinterpret_cast<uint32_t*>(&acc_v[(8) + 1])), "r"(*reinterpret_cast<uint32_t*>(&acc_v[(8) + 2])), "r"(*reinterpret_cast<uint32_t*>(&acc_v[(8) + 3])));
+        asm volatile("st.shared.v4.b32 [%0], {%1,%2,%3,%4};" ::
+            "r"(s_red_addr + (unsigned int)own_byte + 1536), "r"(*reinterpret_cast<uint32_t*>(&acc_v[12])), "r"(*reinterpret_cast<uint32_t*>(&acc_v[(12) + 1])), "r"(*reinterpret_cast<uint32_t*>(&acc_v[(12) + 2])), "r"(*reinterpret_cast<uint32_t*>(&acc_v[(12) + 3])));
+        asm volatile("st.shared.v4.b32 [%0], {%1,%2,%3,%4};" ::
+            "r"(s_red_addr + (unsigned int)own_byte + 2048), "r"(*reinterpret_cast<uint32_t*>(&acc_v[16])), "r"(*reinterpret_cast<uint32_t*>(&acc_v[(16) + 1])), "r"(*reinterpret_cast<uint32_t*>(&acc_v[(16) + 2])), "r"(*reinterpret_cast<uint32_t*>(&acc_v[(16) + 3])));
+        asm volatile("st.shared.v4.b32 [%0], {%1,%2,%3,%4};" ::
+            "r"(s_red_addr + (unsigned int)own_byte + 2560), "r"(*reinterpret_cast<uint32_t*>(&acc_v[20])), "r"(*reinterpret_cast<uint32_t*>(&acc_v[(20) + 1])), "r"(*reinterpret_cast<uint32_t*>(&acc_v[(20) + 2])), "r"(*reinterpret_cast<uint32_t*>(&acc_v[(20) + 3])));
+        asm volatile("st.shared.v4.b32 [%0], {%1,%2,%3,%4};" ::
+            "r"(s_red_addr + (unsigned int)own_byte + 3072), "r"(*reinterpret_cast<uint32_t*>(&acc_v[24])), "r"(*reinterpret_cast<uint32_t*>(&acc_v[(24) + 1])), "r"(*reinterpret_cast<uint32_t*>(&acc_v[(24) + 2])), "r"(*reinterpret_cast<uint32_t*>(&acc_v[(24) + 3])));
+        asm volatile("st.shared.v4.b32 [%0], {%1,%2,%3,%4};" ::
+            "r"(s_red_addr + (unsigned int)own_byte + 3584), "r"(*reinterpret_cast<uint32_t*>(&acc_v[28])), "r"(*reinterpret_cast<uint32_t*>(&acc_v[(28) + 1])), "r"(*reinterpret_cast<uint32_t*>(&acc_v[(28) + 2])), "r"(*reinterpret_cast<uint32_t*>(&acc_v[(28) + 3])));
         __syncthreads();
         float part[4];
-        {
-            float4 _v4 = *reinterpret_cast<const float4*>(reinterpret_cast<float*>(s_red) + partner_base);
-            part[0 + 0] = _v4.x;
-            part[0 + 1] = _v4.y;
-            part[0 + 2] = _v4.z;
-            part[0 + 3] = _v4.w;
-        }
+        asm volatile("ld.shared.v4.b32 {%0,%1,%2,%3}, [%4];"
+            : "=r"(*reinterpret_cast<uint32_t*>(&part[0])), "=r"(*reinterpret_cast<uint32_t*>(&part[(0) + 1])), "=r"(*reinterpret_cast<uint32_t*>(&part[(0) + 2])), "=r"(*reinterpret_cast<uint32_t*>(&part[(0) + 3]))
+            : "r"(s_red_addr + (unsigned int)partner_byte));
         acc_v[0] = acc_v[0] + part[0];
         acc_v[1] = acc_v[1] + part[1];
         acc_v[2] = acc_v[2] + part[2];
         acc_v[3] = acc_v[3] + part[3];
         float part_10[4];
-        {
-            float4 _v4 = *reinterpret_cast<const float4*>(reinterpret_cast<float*>(s_red) + partner_base + 128);
-            part_10[0 + 0] = _v4.x;
-            part_10[0 + 1] = _v4.y;
-            part_10[0 + 2] = _v4.z;
-            part_10[0 + 3] = _v4.w;
-        }
+        asm volatile("ld.shared.v4.b32 {%0,%1,%2,%3}, [%4];"
+            : "=r"(*reinterpret_cast<uint32_t*>(&part_10[0])), "=r"(*reinterpret_cast<uint32_t*>(&part_10[(0) + 1])), "=r"(*reinterpret_cast<uint32_t*>(&part_10[(0) + 2])), "=r"(*reinterpret_cast<uint32_t*>(&part_10[(0) + 3]))
+            : "r"(s_red_addr + (unsigned int)partner_byte + 512));
         acc_v[4] = acc_v[4] + part_10[0];
         acc_v[5] = acc_v[5] + part_10[1];
         acc_v[6] = acc_v[6] + part_10[2];
         acc_v[7] = acc_v[7] + part_10[3];
         float part_11[4];
-        {
-            float4 _v4 = *reinterpret_cast<const float4*>(reinterpret_cast<float*>(s_red) + partner_base + 256);
-            part_11[0 + 0] = _v4.x;
-            part_11[0 + 1] = _v4.y;
-            part_11[0 + 2] = _v4.z;
-            part_11[0 + 3] = _v4.w;
-        }
+        asm volatile("ld.shared.v4.b32 {%0,%1,%2,%3}, [%4];"
+            : "=r"(*reinterpret_cast<uint32_t*>(&part_11[0])), "=r"(*reinterpret_cast<uint32_t*>(&part_11[(0) + 1])), "=r"(*reinterpret_cast<uint32_t*>(&part_11[(0) + 2])), "=r"(*reinterpret_cast<uint32_t*>(&part_11[(0) + 3]))
+            : "r"(s_red_addr + (unsigned int)partner_byte + 1024));
         acc_v[8] = acc_v[8] + part_11[0];
         acc_v[9] = acc_v[9] + part_11[1];
         acc_v[10] = acc_v[10] + part_11[2];
         acc_v[11] = acc_v[11] + part_11[3];
         float part_12[4];
-        {
-            float4 _v4 = *reinterpret_cast<const float4*>(reinterpret_cast<float*>(s_red) + partner_base + 384);
-            part_12[0 + 0] = _v4.x;
-            part_12[0 + 1] = _v4.y;
-            part_12[0 + 2] = _v4.z;
-            part_12[0 + 3] = _v4.w;
-        }
+        asm volatile("ld.shared.v4.b32 {%0,%1,%2,%3}, [%4];"
+            : "=r"(*reinterpret_cast<uint32_t*>(&part_12[0])), "=r"(*reinterpret_cast<uint32_t*>(&part_12[(0) + 1])), "=r"(*reinterpret_cast<uint32_t*>(&part_12[(0) + 2])), "=r"(*reinterpret_cast<uint32_t*>(&part_12[(0) + 3]))
+            : "r"(s_red_addr + (unsigned int)partner_byte + 1536));
         acc_v[12] = acc_v[12] + part_12[0];
         acc_v[13] = acc_v[13] + part_12[1];
         acc_v[14] = acc_v[14] + part_12[2];
         acc_v[15] = acc_v[15] + part_12[3];
         float part_13[4];
-        {
-            float4 _v4 = *reinterpret_cast<const float4*>(reinterpret_cast<float*>(s_red) + partner_base + 512);
-            part_13[0 + 0] = _v4.x;
-            part_13[0 + 1] = _v4.y;
-            part_13[0 + 2] = _v4.z;
-            part_13[0 + 3] = _v4.w;
-        }
+        asm volatile("ld.shared.v4.b32 {%0,%1,%2,%3}, [%4];"
+            : "=r"(*reinterpret_cast<uint32_t*>(&part_13[0])), "=r"(*reinterpret_cast<uint32_t*>(&part_13[(0) + 1])), "=r"(*reinterpret_cast<uint32_t*>(&part_13[(0) + 2])), "=r"(*reinterpret_cast<uint32_t*>(&part_13[(0) + 3]))
+            : "r"(s_red_addr + (unsigned int)partner_byte + 2048));
         acc_v[16] = acc_v[16] + part_13[0];
         acc_v[17] = acc_v[17] + part_13[1];
         acc_v[18] = acc_v[18] + part_13[2];
         acc_v[19] = acc_v[19] + part_13[3];
         float part_14[4];
-        {
-            float4 _v4 = *reinterpret_cast<const float4*>(reinterpret_cast<float*>(s_red) + partner_base + 640);
-            part_14[0 + 0] = _v4.x;
-            part_14[0 + 1] = _v4.y;
-            part_14[0 + 2] = _v4.z;
-            part_14[0 + 3] = _v4.w;
-        }
+        asm volatile("ld.shared.v4.b32 {%0,%1,%2,%3}, [%4];"
+            : "=r"(*reinterpret_cast<uint32_t*>(&part_14[0])), "=r"(*reinterpret_cast<uint32_t*>(&part_14[(0) + 1])), "=r"(*reinterpret_cast<uint32_t*>(&part_14[(0) + 2])), "=r"(*reinterpret_cast<uint32_t*>(&part_14[(0) + 3]))
+            : "r"(s_red_addr + (unsigned int)partner_byte + 2560));
         acc_v[20] = acc_v[20] + part_14[0];
         acc_v[21] = acc_v[21] + part_14[1];
         acc_v[22] = acc_v[22] + part_14[2];
         acc_v[23] = acc_v[23] + part_14[3];
         float part_15[4];
-        {
-            float4 _v4 = *reinterpret_cast<const float4*>(reinterpret_cast<float*>(s_red) + partner_base + 768);
-            part_15[0 + 0] = _v4.x;
-            part_15[0 + 1] = _v4.y;
-            part_15[0 + 2] = _v4.z;
-            part_15[0 + 3] = _v4.w;
-        }
+        asm volatile("ld.shared.v4.b32 {%0,%1,%2,%3}, [%4];"
+            : "=r"(*reinterpret_cast<uint32_t*>(&part_15[0])), "=r"(*reinterpret_cast<uint32_t*>(&part_15[(0) + 1])), "=r"(*reinterpret_cast<uint32_t*>(&part_15[(0) + 2])), "=r"(*reinterpret_cast<uint32_t*>(&part_15[(0) + 3]))
+            : "r"(s_red_addr + (unsigned int)partner_byte + 3072));
         acc_v[24] = acc_v[24] + part_15[0];
         acc_v[25] = acc_v[25] + part_15[1];
         acc_v[26] = acc_v[26] + part_15[2];
         acc_v[27] = acc_v[27] + part_15[3];
         float part_16[4];
-        {
-            float4 _v4 = *reinterpret_cast<const float4*>(reinterpret_cast<float*>(s_red) + partner_base + 896);
-            part_16[0 + 0] = _v4.x;
-            part_16[0 + 1] = _v4.y;
-            part_16[0 + 2] = _v4.z;
-            part_16[0 + 3] = _v4.w;
-        }
+        asm volatile("ld.shared.v4.b32 {%0,%1,%2,%3}, [%4];"
+            : "=r"(*reinterpret_cast<uint32_t*>(&part_16[0])), "=r"(*reinterpret_cast<uint32_t*>(&part_16[(0) + 1])), "=r"(*reinterpret_cast<uint32_t*>(&part_16[(0) + 2])), "=r"(*reinterpret_cast<uint32_t*>(&part_16[(0) + 3]))
+            : "r"(s_red_addr + (unsigned int)partner_byte + 3584));
         acc_v[28] = acc_v[28] + part_16[0];
         acc_v[29] = acc_v[29] + part_16[1];
         acc_v[30] = acc_v[30] + part_16[2];
@@ -747,58 +699,58 @@ kernel_cake_gdn_chunk_train_c0f8ea32133f01dc4f54(__nv_bfloat16* __restrict__ qn,
             float gain_hi8 = s_gain[g_off + ks2 * 16 + 8 + quad * 2 + 1];
             uint32_t _bf16x2_scale_0;
             {
-                uint32_t _bf16x2_pair_17 = a_frag_mn[0];
-                float _bf16x2_lo_17;
-                float _bf16x2_hi_17;
-                asm volatile("cvt.f32.bf16 %0, %1;" : "=f"(_bf16x2_lo_17) : "h"((uint16_t)(_bf16x2_pair_17 & 0xFFFFu)));
-                asm volatile("cvt.f32.bf16 %0, %1;" : "=f"(_bf16x2_hi_17) : "h"((uint16_t)(_bf16x2_pair_17 >> 16)));
-                _bf16x2_lo_17 *= gain_lo;
-                _bf16x2_hi_17 *= gain_hi;
-                uint32_t _bf16x2_out_17;
-                asm volatile("cvt.rn.bf16x2.f32 %0, %1, %2;" : "=r"(_bf16x2_out_17) : "f"(_bf16x2_hi_17), "f"(_bf16x2_lo_17));
-                _bf16x2_scale_0 = _bf16x2_out_17;
+                uint32_t _bf16x2_pair_9 = a_frag_mn[0];
+                float _bf16x2_lo_9;
+                float _bf16x2_hi_9;
+                asm volatile("cvt.f32.bf16 %0, %1;" : "=f"(_bf16x2_lo_9) : "h"((uint16_t)(_bf16x2_pair_9 & 0xFFFFu)));
+                asm volatile("cvt.f32.bf16 %0, %1;" : "=f"(_bf16x2_hi_9) : "h"((uint16_t)(_bf16x2_pair_9 >> 16)));
+                _bf16x2_lo_9 *= gain_lo;
+                _bf16x2_hi_9 *= gain_hi;
+                uint32_t _bf16x2_out_9;
+                asm volatile("cvt.rn.bf16x2.f32 %0, %1, %2;" : "=r"(_bf16x2_out_9) : "f"(_bf16x2_hi_9), "f"(_bf16x2_lo_9));
+                _bf16x2_scale_0 = _bf16x2_out_9;
             }
             a_frag_mn[0] = _bf16x2_scale_0;
             uint32_t _bf16x2_scale_1;
             {
-                uint32_t _bf16x2_pair_18 = a_frag_mn[1];
-                float _bf16x2_lo_18;
-                float _bf16x2_hi_18;
-                asm volatile("cvt.f32.bf16 %0, %1;" : "=f"(_bf16x2_lo_18) : "h"((uint16_t)(_bf16x2_pair_18 & 0xFFFFu)));
-                asm volatile("cvt.f32.bf16 %0, %1;" : "=f"(_bf16x2_hi_18) : "h"((uint16_t)(_bf16x2_pair_18 >> 16)));
-                _bf16x2_lo_18 *= gain_lo;
-                _bf16x2_hi_18 *= gain_hi;
-                uint32_t _bf16x2_out_18;
-                asm volatile("cvt.rn.bf16x2.f32 %0, %1, %2;" : "=r"(_bf16x2_out_18) : "f"(_bf16x2_hi_18), "f"(_bf16x2_lo_18));
-                _bf16x2_scale_1 = _bf16x2_out_18;
+                uint32_t _bf16x2_pair_10 = a_frag_mn[1];
+                float _bf16x2_lo_10;
+                float _bf16x2_hi_10;
+                asm volatile("cvt.f32.bf16 %0, %1;" : "=f"(_bf16x2_lo_10) : "h"((uint16_t)(_bf16x2_pair_10 & 0xFFFFu)));
+                asm volatile("cvt.f32.bf16 %0, %1;" : "=f"(_bf16x2_hi_10) : "h"((uint16_t)(_bf16x2_pair_10 >> 16)));
+                _bf16x2_lo_10 *= gain_lo;
+                _bf16x2_hi_10 *= gain_hi;
+                uint32_t _bf16x2_out_10;
+                asm volatile("cvt.rn.bf16x2.f32 %0, %1, %2;" : "=r"(_bf16x2_out_10) : "f"(_bf16x2_hi_10), "f"(_bf16x2_lo_10));
+                _bf16x2_scale_1 = _bf16x2_out_10;
             }
             a_frag_mn[1] = _bf16x2_scale_1;
             uint32_t _bf16x2_scale_2;
             {
-                uint32_t _bf16x2_pair_19 = a_frag_mn[2];
-                float _bf16x2_lo_19;
-                float _bf16x2_hi_19;
-                asm volatile("cvt.f32.bf16 %0, %1;" : "=f"(_bf16x2_lo_19) : "h"((uint16_t)(_bf16x2_pair_19 & 0xFFFFu)));
-                asm volatile("cvt.f32.bf16 %0, %1;" : "=f"(_bf16x2_hi_19) : "h"((uint16_t)(_bf16x2_pair_19 >> 16)));
-                _bf16x2_lo_19 *= gain_lo8;
-                _bf16x2_hi_19 *= gain_hi8;
-                uint32_t _bf16x2_out_19;
-                asm volatile("cvt.rn.bf16x2.f32 %0, %1, %2;" : "=r"(_bf16x2_out_19) : "f"(_bf16x2_hi_19), "f"(_bf16x2_lo_19));
-                _bf16x2_scale_2 = _bf16x2_out_19;
+                uint32_t _bf16x2_pair_11 = a_frag_mn[2];
+                float _bf16x2_lo_11;
+                float _bf16x2_hi_11;
+                asm volatile("cvt.f32.bf16 %0, %1;" : "=f"(_bf16x2_lo_11) : "h"((uint16_t)(_bf16x2_pair_11 & 0xFFFFu)));
+                asm volatile("cvt.f32.bf16 %0, %1;" : "=f"(_bf16x2_hi_11) : "h"((uint16_t)(_bf16x2_pair_11 >> 16)));
+                _bf16x2_lo_11 *= gain_lo8;
+                _bf16x2_hi_11 *= gain_hi8;
+                uint32_t _bf16x2_out_11;
+                asm volatile("cvt.rn.bf16x2.f32 %0, %1, %2;" : "=r"(_bf16x2_out_11) : "f"(_bf16x2_hi_11), "f"(_bf16x2_lo_11));
+                _bf16x2_scale_2 = _bf16x2_out_11;
             }
             a_frag_mn[2] = _bf16x2_scale_2;
             uint32_t _bf16x2_scale_3;
             {
-                uint32_t _bf16x2_pair_20 = a_frag_mn[3];
-                float _bf16x2_lo_20;
-                float _bf16x2_hi_20;
-                asm volatile("cvt.f32.bf16 %0, %1;" : "=f"(_bf16x2_lo_20) : "h"((uint16_t)(_bf16x2_pair_20 & 0xFFFFu)));
-                asm volatile("cvt.f32.bf16 %0, %1;" : "=f"(_bf16x2_hi_20) : "h"((uint16_t)(_bf16x2_pair_20 >> 16)));
-                _bf16x2_lo_20 *= gain_lo8;
-                _bf16x2_hi_20 *= gain_hi8;
-                uint32_t _bf16x2_out_20;
-                asm volatile("cvt.rn.bf16x2.f32 %0, %1, %2;" : "=r"(_bf16x2_out_20) : "f"(_bf16x2_hi_20), "f"(_bf16x2_lo_20));
-                _bf16x2_scale_3 = _bf16x2_out_20;
+                uint32_t _bf16x2_pair_12 = a_frag_mn[3];
+                float _bf16x2_lo_12;
+                float _bf16x2_hi_12;
+                asm volatile("cvt.f32.bf16 %0, %1;" : "=f"(_bf16x2_lo_12) : "h"((uint16_t)(_bf16x2_pair_12 & 0xFFFFu)));
+                asm volatile("cvt.f32.bf16 %0, %1;" : "=f"(_bf16x2_hi_12) : "h"((uint16_t)(_bf16x2_pair_12 >> 16)));
+                _bf16x2_lo_12 *= gain_lo8;
+                _bf16x2_hi_12 *= gain_hi8;
+                uint32_t _bf16x2_out_12;
+                asm volatile("cvt.rn.bf16x2.f32 %0, %1, %2;" : "=r"(_bf16x2_out_12) : "f"(_bf16x2_hi_12), "f"(_bf16x2_lo_12));
+                _bf16x2_scale_3 = _bf16x2_out_12;
             }
             a_frag_mn[3] = _bf16x2_scale_3;
             #pragma unroll
@@ -831,37 +783,37 @@ kernel_cake_gdn_chunk_train_c0f8ea32133f01dc4f54(__nv_bfloat16* __restrict__ qn,
             int r_idx_1 = lane_0 % 8;
             int st_half = m_idx_0 % 2;
             int st_tok = m_idx_0 / 2 * 8 + r_idx_1;
-            uint32_t _stmatrix_addr_21 = static_cast<uint32_t>(stage_base + st_tok * 32 + ((st_half ^ st_tok >> 2 & 1) << 4));
+            uint32_t _stmatrix_addr_13 = static_cast<uint32_t>(stage_base + st_tok * 32 + ((st_half ^ st_tok >> 2 & 1) << 4));
             asm volatile("stmatrix.sync.aligned.m8n8.x4.trans.shared.b16 [%0], {%1, %2, %3, %4};\n"
-                :: "r"(_stmatrix_addr_21), "r"(*reinterpret_cast<const uint32_t*>(&vw[0])), "r"(*reinterpret_cast<const uint32_t*>(&vw[1])), "r"(*reinterpret_cast<const uint32_t*>(&vw[2])), "r"(*reinterpret_cast<const uint32_t*>(&vw[3]))
+                :: "r"(_stmatrix_addr_13), "r"(*reinterpret_cast<const uint32_t*>(&vw[0])), "r"(*reinterpret_cast<const uint32_t*>(&vw[1])), "r"(*reinterpret_cast<const uint32_t*>(&vw[2])), "r"(*reinterpret_cast<const uint32_t*>(&vw[3]))
                 : "memory");
             int st_tok_2 = (2 + m_idx_0 / 2) * 8 + r_idx_1;
-            uint32_t _stmatrix_addr_22 = static_cast<uint32_t>(stage_base + st_tok_2 * 32 + ((st_half ^ st_tok_2 >> 2 & 1) << 4));
+            uint32_t _stmatrix_addr_14 = static_cast<uint32_t>(stage_base + st_tok_2 * 32 + ((st_half ^ st_tok_2 >> 2 & 1) << 4));
             asm volatile("stmatrix.sync.aligned.m8n8.x4.trans.shared.b16 [%0], {%1, %2, %3, %4};\n"
-                :: "r"(_stmatrix_addr_22), "r"(*reinterpret_cast<const uint32_t*>(&vw[4])), "r"(*reinterpret_cast<const uint32_t*>(&vw[5])), "r"(*reinterpret_cast<const uint32_t*>(&vw[6])), "r"(*reinterpret_cast<const uint32_t*>(&vw[7]))
+                :: "r"(_stmatrix_addr_14), "r"(*reinterpret_cast<const uint32_t*>(&vw[4])), "r"(*reinterpret_cast<const uint32_t*>(&vw[5])), "r"(*reinterpret_cast<const uint32_t*>(&vw[6])), "r"(*reinterpret_cast<const uint32_t*>(&vw[7]))
                 : "memory");
             int st_tok_3 = (4 + m_idx_0 / 2) * 8 + r_idx_1;
-            uint32_t _stmatrix_addr_23 = static_cast<uint32_t>(stage_base + st_tok_3 * 32 + ((st_half ^ st_tok_3 >> 2 & 1) << 4));
+            uint32_t _stmatrix_addr_15 = static_cast<uint32_t>(stage_base + st_tok_3 * 32 + ((st_half ^ st_tok_3 >> 2 & 1) << 4));
             asm volatile("stmatrix.sync.aligned.m8n8.x4.trans.shared.b16 [%0], {%1, %2, %3, %4};\n"
-                :: "r"(_stmatrix_addr_23), "r"(*reinterpret_cast<const uint32_t*>(&vw[8])), "r"(*reinterpret_cast<const uint32_t*>(&vw[9])), "r"(*reinterpret_cast<const uint32_t*>(&vw[10])), "r"(*reinterpret_cast<const uint32_t*>(&vw[11]))
+                :: "r"(_stmatrix_addr_15), "r"(*reinterpret_cast<const uint32_t*>(&vw[8])), "r"(*reinterpret_cast<const uint32_t*>(&vw[9])), "r"(*reinterpret_cast<const uint32_t*>(&vw[10])), "r"(*reinterpret_cast<const uint32_t*>(&vw[11]))
                 : "memory");
             int st_tok_4 = (6 + m_idx_0 / 2) * 8 + r_idx_1;
-            uint32_t _stmatrix_addr_24 = static_cast<uint32_t>(stage_base + st_tok_4 * 32 + ((st_half ^ st_tok_4 >> 2 & 1) << 4));
+            uint32_t _stmatrix_addr_16 = static_cast<uint32_t>(stage_base + st_tok_4 * 32 + ((st_half ^ st_tok_4 >> 2 & 1) << 4));
             asm volatile("stmatrix.sync.aligned.m8n8.x4.trans.shared.b16 [%0], {%1, %2, %3, %4};\n"
-                :: "r"(_stmatrix_addr_24), "r"(*reinterpret_cast<const uint32_t*>(&vw[12])), "r"(*reinterpret_cast<const uint32_t*>(&vw[13])), "r"(*reinterpret_cast<const uint32_t*>(&vw[14])), "r"(*reinterpret_cast<const uint32_t*>(&vw[15]))
+                :: "r"(_stmatrix_addr_16), "r"(*reinterpret_cast<const uint32_t*>(&vw[12])), "r"(*reinterpret_cast<const uint32_t*>(&vw[13])), "r"(*reinterpret_cast<const uint32_t*>(&vw[14])), "r"(*reinterpret_cast<const uint32_t*>(&vw[15]))
                 : "memory");
             __syncwarp();
             int ld_half = lane_0 % 2;
             int ld_tok = lane_0 / 2;
             int words_6[4];
             {
-                const int4* _ivptr_25 = reinterpret_cast<const int4*>(reinterpret_cast<int*>(s_stage) + stage_u32_base + ld_tok * 8 + ((ld_half ^ ld_tok >> 2 & 1) << 2));
-                int4 _ivld_25;
-                _ivld_25 = *_ivptr_25;
-                words_6[0 + 0] = _ivld_25.x;
-                words_6[0 + 1] = _ivld_25.y;
-                words_6[0 + 2] = _ivld_25.z;
-                words_6[0 + 3] = _ivld_25.w;
+                const int4* _ivptr_17 = reinterpret_cast<const int4*>(reinterpret_cast<int*>(s_stage) + stage_u32_base + ld_tok * 8 + ((ld_half ^ ld_tok >> 2 & 1) << 2));
+                int4 _ivld_17;
+                _ivld_17 = *_ivptr_17;
+                words_6[0 + 0] = _ivld_17.x;
+                words_6[0 + 1] = _ivld_17.y;
+                words_6[0 + 2] = _ivld_17.z;
+                words_6[0 + 3] = _ivld_17.w;
             }
             if (ld_tok < n_valid) {
                 {
@@ -872,13 +824,13 @@ kernel_cake_gdn_chunk_train_c0f8ea32133f01dc4f54(__nv_bfloat16* __restrict__ qn,
             int ld_tok_7 = 16 + lane_0 / 2;
             int words_8[4];
             {
-                const int4* _ivptr_26 = reinterpret_cast<const int4*>(reinterpret_cast<int*>(s_stage) + stage_u32_base + ld_tok_7 * 8 + ((ld_half ^ ld_tok_7 >> 2 & 1) << 2));
-                int4 _ivld_26;
-                _ivld_26 = *_ivptr_26;
-                words_8[0 + 0] = _ivld_26.x;
-                words_8[0 + 1] = _ivld_26.y;
-                words_8[0 + 2] = _ivld_26.z;
-                words_8[0 + 3] = _ivld_26.w;
+                const int4* _ivptr_18 = reinterpret_cast<const int4*>(reinterpret_cast<int*>(s_stage) + stage_u32_base + ld_tok_7 * 8 + ((ld_half ^ ld_tok_7 >> 2 & 1) << 2));
+                int4 _ivld_18;
+                _ivld_18 = *_ivptr_18;
+                words_8[0 + 0] = _ivld_18.x;
+                words_8[0 + 1] = _ivld_18.y;
+                words_8[0 + 2] = _ivld_18.z;
+                words_8[0 + 3] = _ivld_18.w;
             }
             if (ld_tok_7 < n_valid) {
                 {
@@ -889,13 +841,13 @@ kernel_cake_gdn_chunk_train_c0f8ea32133f01dc4f54(__nv_bfloat16* __restrict__ qn,
             int ld_tok_9 = 32 + lane_0 / 2;
             int words_10[4];
             {
-                const int4* _ivptr_27 = reinterpret_cast<const int4*>(reinterpret_cast<int*>(s_stage) + stage_u32_base + ld_tok_9 * 8 + ((ld_half ^ ld_tok_9 >> 2 & 1) << 2));
-                int4 _ivld_27;
-                _ivld_27 = *_ivptr_27;
-                words_10[0 + 0] = _ivld_27.x;
-                words_10[0 + 1] = _ivld_27.y;
-                words_10[0 + 2] = _ivld_27.z;
-                words_10[0 + 3] = _ivld_27.w;
+                const int4* _ivptr_19 = reinterpret_cast<const int4*>(reinterpret_cast<int*>(s_stage) + stage_u32_base + ld_tok_9 * 8 + ((ld_half ^ ld_tok_9 >> 2 & 1) << 2));
+                int4 _ivld_19;
+                _ivld_19 = *_ivptr_19;
+                words_10[0 + 0] = _ivld_19.x;
+                words_10[0 + 1] = _ivld_19.y;
+                words_10[0 + 2] = _ivld_19.z;
+                words_10[0 + 3] = _ivld_19.w;
             }
             if (ld_tok_9 < n_valid) {
                 {
@@ -906,13 +858,13 @@ kernel_cake_gdn_chunk_train_c0f8ea32133f01dc4f54(__nv_bfloat16* __restrict__ qn,
             int ld_tok_11 = 48 + lane_0 / 2;
             int words_12[4];
             {
-                const int4* _ivptr_28 = reinterpret_cast<const int4*>(reinterpret_cast<int*>(s_stage) + stage_u32_base + ld_tok_11 * 8 + ((ld_half ^ ld_tok_11 >> 2 & 1) << 2));
-                int4 _ivld_28;
-                _ivld_28 = *_ivptr_28;
-                words_12[0 + 0] = _ivld_28.x;
-                words_12[0 + 1] = _ivld_28.y;
-                words_12[0 + 2] = _ivld_28.z;
-                words_12[0 + 3] = _ivld_28.w;
+                const int4* _ivptr_20 = reinterpret_cast<const int4*>(reinterpret_cast<int*>(s_stage) + stage_u32_base + ld_tok_11 * 8 + ((ld_half ^ ld_tok_11 >> 2 & 1) << 2));
+                int4 _ivld_20;
+                _ivld_20 = *_ivptr_20;
+                words_12[0 + 0] = _ivld_20.x;
+                words_12[0 + 1] = _ivld_20.y;
+                words_12[0 + 2] = _ivld_20.z;
+                words_12[0 + 3] = _ivld_20.w;
             }
             if (ld_tok_11 < n_valid) {
                 {
