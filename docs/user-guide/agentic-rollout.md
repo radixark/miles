@@ -230,7 +230,7 @@ More model families and verification history live in
 ### Verify a new model TITO
 
 To add a named family, register its `TITOTokenizer` and `FIXED_TEMPLATE` in
-[`tito_tokenizer.py`](https://github.com/radixark/miles/blob/main/miles/utils/chat_template_utils/tito_tokenizer.py),
+[`tito_tokenizer/`](https://github.com/radixark/miles/tree/main/miles/utils/chat_template_utils/tito_tokenizer),
 then run both checks. Either failure blocks support.
 
 ```bash
