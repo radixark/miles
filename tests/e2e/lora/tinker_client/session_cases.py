@@ -3,6 +3,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import httpx
+import numpy as np
 import pytest
 from tinker_cookbook.completers import TinkerTokenCompleter
 from tinker_cookbook.renderers.role_colon import RoleColonRenderer
@@ -25,8 +26,10 @@ class Tokenizer:
 
 
 def make_session():
-    sequence = tinker.types.SampledSequence(tokens=[1000], logprobs=[-0.25], stop_reason="stop")
-    client = SimpleNamespace(sample_async=AsyncMock(return_value=SimpleNamespace(sequences=[sequence])))
+    sequence = tinker.SampledSequence(
+        stop_reason="stop", sequence_id="s", tokens_np=np.array([1000]), logprobs_np=np.array([-0.25])
+    )
+    client = SimpleNamespace(sample_async=AsyncMock(return_value=tinker.SampleResponse(sequences=[sequence])))
     return ChatSession(
         TinkerTokenCompleter(client, max_tokens=32, temperature=0.7),
         RoleColonRenderer(Tokenizer()),
@@ -51,7 +54,9 @@ async def test_renderer_owns_every_prompt_and_trace_keeps_raw_tokens():
         request = ChatRequest(messages=messages)
         result = await session.complete(request)
         assert result["choices"][0]["message"]["content"] == "hello"
+        assert result["choices"][0]["finish_reason"] == "stop"
         turn = session.trace.turns[-1]
+        assert turn.stop_reason == "stop"  # read off the SDK's SampledSequence, not a dict copy
         expected = render_prompt(session.renderer, request)
         assert list(turn.input_ids) == expected
         assert 1000 not in turn.input_ids
