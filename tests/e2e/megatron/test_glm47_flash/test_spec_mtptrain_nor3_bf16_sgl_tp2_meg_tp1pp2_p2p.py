@@ -9,6 +9,7 @@ from tests.e2e.megatron.test_glm47_flash._common import CaseConfig, execute, pre
 register_cuda_ci(
     est_time=1000,
     suite="stage-c-8-gpu-h200",
+    num_gpus=8,
     labels=["megatron", "weight-update"],
     hardware=["hopper"],
 )
