@@ -11,10 +11,7 @@ from __future__ import annotations
 from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
 
 register_cuda_ci(
-    est_time=30,
-    suite="stage-b-2-gpu-h200",
-    labels=["megatron"],
-    hardware=["hopper", "blackwell"],
+    est_time=30, suite="stage-b-2-gpu-h200", labels=["megatron"], hardware=["hopper", "blackwell"], num_gpus=1
 )
 register_rocm_ci(
     est_time=20,

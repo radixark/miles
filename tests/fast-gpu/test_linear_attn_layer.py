@@ -21,7 +21,9 @@ from miles.backends.megatron_utils.megatron_to_hf.linear_attn_layout import Line
 sys.path.insert(0, os.path.dirname(__file__))
 from linear_attn_reference import ReplicatedKDA, build_layer, gather, packed, rel_err  # noqa: E402
 
-register_cuda_ci(est_time=120, suite="stage-b-2-gpu-h200", labels=["precision"], hardware=["hopper", "blackwell"])
+register_cuda_ci(
+    est_time=120, suite="stage-b-2-gpu-h200", labels=["precision"], hardware=["hopper", "blackwell"], num_gpus=2
+)
 
 HIDDEN = 256
 HEADS = LinearAttnHeads(num_k_heads=8, num_v_heads=8, head_k_dim=64, head_v_dim=64)

@@ -88,6 +88,7 @@ jobs:
     timeout-minutes: 10
     outputs:
       hw: ${{ steps.resolve.outputs.hw }}
+      num_gpus: ${{ steps.resolve.outputs.num_gpus }}
       suite: ${{ steps.resolve.outputs.suite }}
       runs_on: ${{ steps.resolve.outputs.runs_on }}
       container_image: ${{ steps.resolve.outputs.container_image }}
@@ -177,11 +178,18 @@ jobs:
   run-cuda-file:
     needs: resolve-file-run
     if: needs.resolve-file-run.outputs.hw == 'cuda'
+    concurrency:
+      # B200 reruns share the host lock; other runs must not reacquire their parent group.
+      group: ${{ endsWith(needs.resolve-file-run.outputs.suite, '-b200') && 'b200-oma' || format('run-ci-file-execution-{0}-{1}', inputs.pull_number, inputs.test_file) }}
+      cancel-in-progress: false
+      queue: max
     uses: ./.github/workflows/_run-ci.yml
     with:
       ref: ${{ inputs.head_sha }}
       plan_already_resolved: true
       runs_on: ${{ needs.resolve-file-run.outputs.runs_on }}
+      num_gpus: ${{ fromJSON(needs.resolve-file-run.outputs.num_gpus) }}
+      timeout_minutes: ${{ needs.resolve-file-run.outputs.suite == 'stage-c-4-gpu-b200' && 540 || 360 }}
       container_image: ${{ needs.resolve-file-run.outputs.container_image }}
       execute_command: >-
         timeout --signal=TERM --kill-after=30s
