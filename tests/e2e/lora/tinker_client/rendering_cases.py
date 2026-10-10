@@ -32,9 +32,13 @@ def cookbook_prompt(renderer, messages, tools=(), system_prompt=""):
     return renderer.build_generation_prompt([*prefix, *messages]).to_ints()
 
 
-def test_system_prompt_with_tools_renders_the_same_as_text_or_as_one_text_part(renderer):
+def test_system_prompt_with_tools_renders_equivalent_text_parts_identically(renderer):
     expected = cookbook_prompt(renderer, [Message(role="user", content=USER["content"])], [SPEC], SYSTEM)
-    for system in [SYSTEM, [{"type": "text", "text": SYSTEM}]]:
+    for system in [
+        SYSTEM,
+        [{"type": "text", "text": SYSTEM}],
+        [{"type": "text", "text": SYSTEM[:8]}, {"type": "text", "text": SYSTEM[8:]}],
+    ]:
         request = ChatRequest(messages=[{"role": "system", "content": system}, USER], tools=[TOOL])
         assert render_prompt(renderer, request) == expected
     text = renderer.tokenizer.decode(expected)
@@ -148,10 +152,6 @@ def test_each_request_renders_the_history_it_carries(renderer):
 @pytest.mark.parametrize(
     "messages,tools",
     [
-        (
-            [{"role": "system", "content": [{"type": "text", "text": "a"}, {"type": "text", "text": "b"}]}, USER],
-            [TOOL],
-        ),
         ([USER], [{"type": "function"}]),
         ([USER], [{"type": "function", "function": {"description": "nameless"}}]),
         ([USER], [{"type": "code_interpreter"}]),
@@ -174,7 +174,6 @@ def test_each_request_renders_the_history_it_carries(renderer):
         ([USER, {"role": "assistant", "content": "x", "reasoning_content": 1}], None),
     ],
     ids=[
-        "multi-part-system",
         "no-function",
         "no-name",
         "not-a-function",
