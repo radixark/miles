@@ -131,4 +131,4 @@ Both runner containers can see all eight host GPUs through `/dev/dri`. Each runn
 
 - Suite-to-stage mappings are maintained manually across `run_suite.py`, the Miles workflows, and the external MI350 nightly workflow.
 - Runner placement assumes the live fleet actually carries the requested `runs_on` labels for each GPU class and count.
-- `est_time` only affects shard balancing and per-file timeout, never pass/fail.
+- `est_time` controls shard balancing, CPU [registration eligibility](01-label.md#registration-and-scan-scope), and timeouts for per-file runs.

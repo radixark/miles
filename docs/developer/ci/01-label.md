@@ -11,7 +11,7 @@ A label is a GitHub PR label that changes what CI runs or how it fails. Three ki
 | Scope label | `run-ci-image` | run every enabled tag except `long`, `ft-short`, and `ft-long` |
 | Cadence/scope label | `nightly` | select nightly cadence and every enabled tag except `long` and `ft-long`, with fast-fail disabled |
 | Scope label | `run-ci-all` | run every enabled tag |
-| Behavior label | `bypass-fastfail` | opt out of fast-fail; one run surfaces every failure |
+| Behavior label | `bypass-fastfail` | opt out of CUDA cross-stage gating and within-suite stopping |
 | Behavior label | `rebuild-ci-image` | force a rebuild when selected CUDA tests need an eligible PR image; does not select tests and is removed once consumed (see [Docker build](/developer/ci/02-docker-build)) |
 | Opt-in label | `run-ci` (or any `run-ci*` label) | lets a PR whose base is not the default branch run `PR Test` (see [below](#labels-opt-non-main-prs-into-ci)) |
 
@@ -205,14 +205,16 @@ By default CI fails fast on two levels:
 - Cross-stage: CUDA GPU stages run only when `stage-a-cpu` succeeds — the `if` requires `needs.stage-a-cpu.result == 'success'`.
 - Within-stage: each suite stops at the first failure (`pytest -x` for CPU; `run_unittest_files` breaks on the first failing file for CUDA).
 
-The `bypass-fastfail` PR label turns both off so one run surfaces every failure:
+The `bypass-fastfail` PR label disables CUDA cross-stage gating and within-suite stopping:
 
 - Cross-stage: each CUDA GPU stage consumes the shared `bypass_fastfail` policy output, so CUDA GPU stages run even after `stage-a-cpu` fails.
 - Within-stage: `run_suite.py` derives continue-on-error from the same resolved policy (drops `pytest -x`; sets `continue_on_error=True` for CUDA). The stage still ends red — it changes coverage, not the verdict.
 
 The ROCm workflow has no CPU cross-stage gate, so `bypass-fastfail` changes only its within-stage behavior.
 
-A resolved nightly, weekly, or release cadence bypasses fast-fail on both levels so a broad run surfaces every failure rather than stopping at the first. For nightly this applies equally whether the cadence came from the PR `nightly` label or the explicitly mapped nightly cron; release comes from the called workflow's explicit override. Local `--nightly` applies the same nightly selection and within-stage behavior; cross-stage gating does not exist in a local invocation.
+A resolved nightly, weekly, or release cadence applies the same bypass. For nightly this applies equally whether the cadence came from the PR `nightly` label or the explicitly mapped nightly cron; release comes from the called workflow's explicit override. Local `--nightly` applies the same nightly selection and within-stage behavior; cross-stage gating does not exist in a local invocation.
+
+These cross-stage exceptions apply to CUDA stages; [Stage B CPU still requires Stage A success](00-stage.md).
 
 Like the scope labels, `bypass-fastfail` is a workflow-only input and is not in `KNOWN_LABELS`.
 

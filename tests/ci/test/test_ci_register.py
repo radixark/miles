@@ -1,12 +1,11 @@
 """AST-time validation tests for register_cuda_ci / register_cpu_ci.
 
-Covers the AST-collection behavior of the suite-as-runner-class refactor:
-`labels` is optional (default None ≡ []); a non-empty list of canonical
-domain labels gates the test on the resolved domain scope, while None / [] /
-omitted means always-on within an eligible cadence; `nightly=True` excludes a
-registration from regular cadence while nightly and weekly admit it;
-`num_gpus` declares the minimum CUDA allocation; `labels` must be passed by
-keyword (not as a positional third argument).
+CPU estimates above 30 seconds require `stage-b-cpu` and non-empty domain labels;
+only CPU registrations at or below that budget may omit `labels`. Non-empty
+labels gate selection on the resolved domain scope; omitted/None/[] labels
+are always-on within an eligible cadence. `nightly=True` excludes regular
+cadence; `num_gpus` declares the minimum CUDA allocation; `labels` is
+keyword-only.
 """
 
 import ast
