@@ -41,9 +41,17 @@ def render_prompt(renderer: Renderer, request: ChatRequest) -> list[int]:
         if content is not None and not isinstance(content, (str, list)):
             raise ChatRequestError("message content must be text or a list of text parts")
         if isinstance(content, list) and any(
-            not isinstance(part, dict) or part.get("type") != "text" for part in content
+            not isinstance(part, dict) or part.get("type") != "text" or not isinstance(part.get("text"), str)
+            for part in content
         ):
-            raise ChatRequestError("the session adapter accepts text-only messages")
+            raise ChatRequestError("the session adapter accepts text-only messages: parts of {type: text, text: str}")
+        if message.get("reasoning_content") is not None and not isinstance(message["reasoning_content"], str):
+            raise ChatRequestError("reasoning_content must be text")
+        tool_calls = message.get("tool_calls")
+        if tool_calls is not None and (
+            not isinstance(tool_calls, list) or any(not isinstance(call, dict) for call in tool_calls)
+        ):
+            raise ChatRequestError("tool_calls must be a list of tool call objects")
     for tool in request.tools or ():
         function = tool.get("function") if tool.get("type") == "function" else None
         if not isinstance(function, dict) or not isinstance(function.get("name"), str):
