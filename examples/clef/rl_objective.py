@@ -58,11 +58,12 @@ def group_loss(
     reference: Sequence[Sequence[float]],
     *,
     clip_epsilon: float = 0.2,
+    policy_weight: float = 1.0,
     brier_weight: float = 1.0,
     kl_weight: float = 0.1,
 ) -> tuple[torch.Tensor, dict[str, float]]:
     validate_targets(targets, logits)
-    if not 0 < clip_epsilon < 1 or min(brier_weight, kl_weight) < 0:
+    if not 0 < clip_epsilon < 1 or min(policy_weight, brier_weight, kl_weight) < 0:
         raise ValueError("invalid objective coefficients")
     if len(reference) != len(logits) or len(group.actions) != len(logits):
         raise ValueError("reference/action field count mismatch")
@@ -94,7 +95,7 @@ def group_loss(
     policy = -torch.minimum(ratio * advantage, ratio.clamp(1 - clip_epsilon, 1 + clip_epsilon) * advantage).mean()
     calibration = torch.stack(brier).mean()
     divergence = torch.stack(kl).mean()
-    loss = policy + brier_weight * calibration + kl_weight * divergence
+    loss = policy_weight * policy + brier_weight * calibration + kl_weight * divergence
     if not torch.isfinite(loss):
         raise FloatingPointError("non-finite RL objective")
     metrics = {

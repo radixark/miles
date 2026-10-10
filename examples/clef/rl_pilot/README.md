@@ -1,5 +1,16 @@
 # Clef RL pilot data
 
+The scalable generator is `python -m examples.clef.rl_pilot.scaled --output
+/scratch/clef-rl-scaled`. Its defaults are 32,768 training and 2,048 validation
+records, using GPT-6 Luna framing and blind review for every accepted record.
+Training varies ledger formats and policy input conjunctions; validation uses
+an unseen register format and conjunction-plus-negation compositions. Semantic
+cases and format/composition template groups must be disjoint. Labels come from
+executable rules. This is controlled synthetic coverage, not organic workflow
+data or an independently human-verified benchmark. `--canonical-only` checks
+the generator without API calls; its output is a test fixture, not the reviewed
+training release. Failed reviews block finalization and must be investigated.
+
 Generate native Clef choice records with deterministic one-hot targets and GPT-6
 Luna document framing. API credentials are read from a protected file, never
 stored in outputs. Run on a devbox, not a workstation.

@@ -31,6 +31,7 @@ class Args(SupervisedArgs):
     group_size: int = 32
     record_reward_weight: float = 0.5
     clip_epsilon: float = 0.2
+    policy_weight: float = 1.0
     brier_weight: float = 1.0
     kl_weight: float = 0.1
     freeze_backbone: bool = False
@@ -41,7 +42,7 @@ class Args(SupervisedArgs):
             raise ValueError("RL uses fixed schemas, no warmup, and micro_batch_size=1")
         if self.group_size < 2 or not 0 <= self.record_reward_weight <= 1:
             raise ValueError("invalid group or reward weight")
-        if not 0 < self.clip_epsilon < 1 or min(self.brier_weight, self.kl_weight) < 0:
+        if not 0 < self.clip_epsilon < 1 or min(self.policy_weight, self.brier_weight, self.kl_weight) < 0:
             raise ValueError("invalid loss coefficients")
 
 
@@ -124,7 +125,7 @@ def train_step(model: Any, optimizer: Any, train: list, labels: list, reference:
             group = sample_group(old, label.targets, args.group_size, generator, args.record_reward_weight)
         model.set_requires_gradient_sync(True)
         fields = model(batch)[0]
-        loss, metrics = group_loss(fields, label.targets, group, reference[label.encoded.record_id], clip_epsilon=args.clip_epsilon, brier_weight=args.brier_weight, kl_weight=args.kl_weight)
+        loss, metrics = group_loss(fields, label.targets, group, reference[label.encoded.record_id], clip_epsilon=args.clip_epsilon, policy_weight=args.policy_weight, brier_weight=args.brier_weight, kl_weight=args.kl_weight)
         (loss / len(indices)).backward()
         metrics["loss"] = loss.detach().item()
         observations.append(metrics)

@@ -1,5 +1,11 @@
 # Decision-head RL
 
+For a matched supervised calibration control, set `--policy-weight 0`.
+This removes the policy-gradient contribution while preserving Brier and KL
+weights, categorical sampling, random-number consumption, and trace logging.
+The default `--policy-weight 1` preserves the hybrid objective. Reward metrics
+remain diagnostic in the control; they do not supply its gradient.
+
 `python -m examples.clef.rl_train` under `torchrun` warm-starts both the
 backbone and the trained `joint_head.safetensors` from an HF export. This is
 categorical policy optimization, not supervised JSON completion or token RL.
