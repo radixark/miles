@@ -1,4 +1,5 @@
 import importlib
+import inspect
 import logging
 import os
 import tempfile
@@ -38,6 +39,8 @@ def resolve_model_spec(args: Namespace):
     registry = getattr(module, "model_registry", None)
     if registry is None:
         raise ValueError(f"{module.__name__} exposes no model_registry(); cannot build a ModelSpec")
+    if "hf_config" in inspect.signature(registry).parameters:
+        return registry(args.titan_model_flavor, attn_backend="flex", hf_config=load_hf_config(args.hf_checkpoint))
     return registry(args.titan_model_flavor, attn_backend="flex")
 
 

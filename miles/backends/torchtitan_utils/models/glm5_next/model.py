@@ -120,7 +120,9 @@ class Glm5NextModel(Decoder):
     def __init__(self, config: Config):
         super().__init__(config)
         self.num_streams = config.num_streams
-        self.kda_conv_kernel_size = next(layer.kda.q_conv1d.kernel_size for layer in config.layers if layer.kda)
+        self.kda_conv_kernel_size = next(
+            (layer.kda.q_conv1d.kernel_size for layer in config.layers if layer.kda), None
+        )
         self._cp_mesh: DeviceMesh | None = None
         self._cp_load_balancer: str | None = None
         self._cp_layouts: dict[int, ContextParallelLayout] = {}
