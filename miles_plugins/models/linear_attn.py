@@ -5,7 +5,7 @@
 zigzag relayout, and the row-parallel ``out_proj`` collective out. :class:`LinearAttention` runs this
 rank's heads: the model's input projections, the short conv(s) over q/k/v (one over group-major rows
 for GDN, see ``megatron_to_hf.linear_attn_layout``; one per tensor for KDA), the family's recurrence
-through fla, and a gated RMSNorm whose
+through fla (GDN also through FlashQLA or the generated deterministic ``loom`` kernels), and a gated RMSNorm whose
 replicated weight has its gradient summed across TP. A family subclass supplies the recurrence; a model
 subclass declares the projections under the HF names, plain bf16 linears on sharded parameters, so
 ``--fp8`` training leaves this layer in bf16.
@@ -70,6 +70,16 @@ def gdn_kernel(backend: str):
             ) from exc
         return chunk_gated_delta_rule
 
+    if backend == "loom":
+        try:
+            from miles_plugins.models.gdn_chunk_train import chunk_gated_delta_rule
+        except ImportError as exc:
+            raise ImportError(
+                "GDN backend 'loom' requires the generated deterministic kernels in "
+                "miles_plugins/models/gdn_chunk_train."
+            ) from exc
+        return chunk_gated_delta_rule
+
     raise ValueError(f"Unsupported GDN backend: {backend}")
 
 
@@ -88,10 +98,10 @@ def kda_kernel():
 
 
 def gdn_recurrence(q, k, v, beta_logits, decay, A_log, dt_bias, *, backend, cu_seqlens, cp_context):
-    """q/k ``[b, s, G, hk]``, v ``[b, s, H, hv]`` (fla groups value heads per key head), decay ``[b, s, H]``
-    -> ``[b, s, H, hv]``."""
-    if cp_context is not None and backend != "fla":
-        raise NotImplementedError(f"GDN context parallelism requires the 'fla' backend, got {backend!r}.")
+    """q/k ``[b, s, G, hk]``, v ``[b, s, H, hv]`` (fla and the loom kernels group value heads per key head),
+    decay ``[b, s, H]`` -> ``[b, s, H, hv]``."""
+    if cp_context is not None and backend not in ("fla", "loom"):
+        raise NotImplementedError(f"GDN context parallelism requires the 'fla' or 'loom' backend, got {backend!r}.")
     beta = beta_logits.sigmoid()
     g = -A_log.float().exp() * F.softplus(decay.float() + dt_bias)
     if backend == "flashqla":
@@ -151,6 +161,16 @@ def short_conv_backend() -> str:
     return backend
 
 
+@functools.cache
+def loom_conv_backend() -> str:
+    """Short conv backend under the ``loom`` GDN backend: fla's Triton kernels, whose backward reproduces the weight
+    gradient bit for bit, instead of :func:`short_conv_backend`'s ``mix`` (causal-conv1d's CUDA backward accumulates
+    ``dweight`` with atomics, so repeated passes differ in the last bits). An explicit ``FLA_CONV_BACKEND`` wins."""
+    backend = os.environ.get("FLA_CONV_BACKEND", "triton")
+    logger.info(f"Linear-attention short conv backend under loom: {backend}")
+    return backend
+
+
 class _ContiguousGrad(torch.autograd.Function):
     """Identity whose backward hands on a contiguous gradient. The gradient of one channel chunk of a
     concatenation is a strided view whose row stride is the full width; fla's conv backward indexes it
@@ -193,7 +213,7 @@ class ShardedShortConv(nn.Conv1d):
     """Depthwise causal conv (SiLU, no bias) over this rank's channels, holding the TP-sharded weight.
     Built like fla's ``ShortConvolution``, so weights and checkpoints match it."""
 
-    def __init__(self, channels: int, kernel_size: int, tp_group, device=None, dtype=None):
+    def __init__(self, channels: int, kernel_size: int, tp_group, device=None, dtype=None, backend: str | None = None):
         super().__init__(
             in_channels=channels,
             out_channels=channels,
@@ -205,7 +225,7 @@ class ShardedShortConv(nn.Conv1d):
             dtype=dtype,
         )
         self.activation = "silu"
-        self.backend = short_conv_backend()
+        self.backend = backend or short_conv_backend()
         self.tp_group = tp_group
         set_tensor_model_parallel_attributes(self.weight, True, 0, 1)
 
@@ -239,7 +259,8 @@ class Projections(NamedTuple):
 class LinearAttention(MegatronModule, ABC):
     """This rank's heads: projections -> conv -> recurrence -> gated norm. ``out_proj`` holds this
     rank's columns; :class:`LinearAttentionLayer` applies it and the TP reduction. ``dt_bias`` is one
-    value per value head, or per value channel when the family sets ``dt_bias_per_channel``."""
+    value per value head, or per value channel when the family sets ``dt_bias_per_channel``.
+    ``conv_backend`` pins the short conv's fla backend (``None``: :func:`short_conv_backend`)."""
 
     dt_bias_per_channel: bool = False
     dt_bias_dtype: torch.dtype | None = None
@@ -252,12 +273,14 @@ class LinearAttention(MegatronModule, ABC):
         norm_eps: float,
         tp_group,
         norm_activation: str,
+        conv_backend: str | None = None,
     ):
         super().__init__(config=config)
         self.tp_group = tp_group
         self.heads = heads
         self.local = heads.local(tp_group.size())
         self.conv_kernel_size = conv_kernel_size
+        self.conv_backend = conv_backend
         self.norm_eps = norm_eps
         self.norm_activation = norm_activation
         device = torch.cuda.current_device()
@@ -290,7 +313,12 @@ class LinearAttention(MegatronModule, ABC):
 
     def sharded_conv(self, channels: int) -> ShardedShortConv:
         return ShardedShortConv(
-            channels, self.conv_kernel_size, self.tp_group, torch.cuda.current_device(), self.config.params_dtype
+            channels,
+            self.conv_kernel_size,
+            self.tp_group,
+            torch.cuda.current_device(),
+            self.config.params_dtype,
+            backend=self.conv_backend,
         )
 
     def _build_convolutions(self) -> None:
@@ -372,11 +400,16 @@ class LinearAttention(MegatronModule, ABC):
 
 class GatedDeltaNet(LinearAttention):
     """Gated DeltaNet: one softplus-gated decay per value head, through fla's or FlashQLA's chunked
-    kernel. Models subclass it with their projections."""
+    kernel, or the bit-deterministic generated one (``loom``, Blackwell SM100a / SM103a, K = V = 128,
+    see ``miles_plugins/models/gdn_chunk_train``; its short conv runs on :func:`loom_conv_backend` so the
+    whole layer's gradients are reproducible). Models subclass it with their projections."""
 
     def __init__(self, config, heads, conv_kernel_size, norm_eps, tp_group, backend="fla", norm_activation="silu"):
         gdn_kernel(backend)
-        super().__init__(config, heads, conv_kernel_size, norm_eps, tp_group, norm_activation)
+        conv_backend = loom_conv_backend() if backend == "loom" else None
+        super().__init__(
+            config, heads, conv_kernel_size, norm_eps, tp_group, norm_activation, conv_backend=conv_backend
+        )
         self.backend = backend
 
     def recurrence(self, q, k, v, beta_logits, decay, cu_seqlens, cp_context):

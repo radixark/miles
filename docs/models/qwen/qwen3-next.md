@@ -117,6 +117,7 @@ Both topologies enable CPU Adam:
 ### 5.5 Notable quirks
 
 - Gated DeltaNet (GDN) is loaded via the HuggingFace bridge; miles doesn't re-implement GDN in Megatron native code.
+- `--linear-attention-backend loom` selects the bit-deterministic generated GDN kernels on Blackwell (SM100a / SM103a) for the head-sharded linear-attention layer Qwen3-Next shares with Qwen3.5; see the Qwen3.5 page, section 5.6, for the backend table.
 
 ## 6. Pairs Well With
 

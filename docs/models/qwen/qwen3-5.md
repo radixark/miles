@@ -101,6 +101,20 @@ From `scripts/models/qwen3.5-4B.py` (and analogous configs for 9 B / 27 B):
 
 See [Backends Beyond Megatron](/advanced/architecture-support) for how miles preserves FP32 parameters like `A_log` through Megatron's mixed-precision pipeline.
 
+### 5.6 GDN kernel backend
+
+The GDN (gated delta-net) layers run through the head-sharded linear-attention layer (`miles_plugins/models/linear_attn.py`): with `--tensor-model-parallel-size N` each rank computes only its `linear_num_key_heads / N` key heads and their value heads. The Megatron copies of `in_proj_qkv.weight` and `conv1d.weight` are stored group-major (`[q_g, k_g, v_g]` per key head, see `megatron_to_hf/linear_attn_layout.py`) so a TP chunk is exactly that rank's heads; the HF → Megatron bridge and the Megatron → HF weight update translate the order.
+
+`--linear-attention-backend` selects the `chunk_gated_delta_rule` kernel:
+
+| backend | kernel | GPUs | notes |
+|---|---|---|---|
+| `fla` (default) | flash-linear-attention (Triton) | any | portable reference |
+| `flashqla` | FlashQLA | SM90+ | no context parallelism |
+| `loom` | generated deterministic forward + backward in `miles_plugins/models/gdn_chunk_train` | SM100a / SM103a (Blackwell) | bit-identical outputs and gradients across calls (no atomics, fixed reduction order); grouped value heads without `repeat_interleave`; `K = V = 128`; built on first use as torch CUDA extensions (`TORCH_EXTENSIONS_DIR`); context parallelism through fla's state passing; the layer's short conv runs on fla's Triton kernels (causal-conv1d's CUDA backward accumulates its weight gradient with atomics) unless `FLA_CONV_BACKEND` says otherwise |
+
+`loom` is the backend for true-on-policy runs that need reproducible gradients. `tests/e2e/precision/test_qwen_gdn_tp_cp_parity.py` checks it against `fla` under TP=2, CP=2 and TP=2 × CP=2 for both HF projection layouts, and `tests/e2e/megatron/test_qwen3_5_4B_gdn_loom.py` runs Qwen3.5-4B GRPO on it.
+
 ## 6. Pairs Well With
 
 - [Backends Beyond Megatron](/advanced/architecture-support)
