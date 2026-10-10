@@ -105,10 +105,16 @@ def _cake_forward(inp, **extra):
     )
 
 
-def _fla_defined_aqk(rows: int) -> torch.Tensor:
+def _fla_defined_aqk(rows: int, cu_seqlens: torch.Tensor | None = None) -> torch.Tensor:
     """Boolean ``[1, rows, 1, 64]`` mask of the Aqk entries fla's forward defines: row ``t`` of a chunk holds its 64
-    chunk-local columns ``s``; the 16x16 block ``(i, j)`` with ``j > i`` (``s // 16 > t // 16``) is never stored by fla."""
-    t = torch.arange(rows, device="cuda") % CHUNK
+    chunk-local columns ``s``; the 16x16 block ``(i, j)`` with ``j > i`` (``s // 16 > t // 16``) is never stored by fla.
+    Chunks are counted from each sequence's own start: with packed ``cu_seqlens`` the chunk-local row of token ``t`` of
+    the sequence starting at ``bos`` is ``(t - bos) % 64`` (fla's varlen chunking, Cake's ``chunk_bos``/``chunk_len``)."""
+    t = torch.arange(rows, device="cuda")
+    if cu_seqlens is not None:
+        cu = cu_seqlens.to(device="cuda", dtype=torch.int64)
+        t = t - cu[torch.searchsorted(cu, t, right=True) - 1]
+    t = t % CHUNK
     s = torch.arange(CHUNK, device="cuda")
     return ((s[None, :] // 16) <= (t[:, None] // 16))[None, :, None, :]
 
@@ -147,9 +153,10 @@ def test_forward_matches_fla_output_and_saved_set(batch, seq_len, heads, value_h
             # blocks are stored whole, zero above the diagonal): the upper blocks are UNDEFINED memory on the fla side
             # (fla 0.5.2 fla/ops/kda/chunk_intra.py: chunk_kda_fwd_intra allocation and stores). Cake's kernel writes zeros
             # there (SHA-stable saved set). Compare the defined region, pin Cake's zeros above it.
-            defined = _fla_defined_aqk(out[name].shape[1])
-            torch.testing.assert_close(out[name].float()[defined], ref[name].float()[defined], **TOL, msg=name)
-            assert bool((out[name][~defined] == 0).all()), "Cake Aqk: non-zero entries in the upper 16x16 blocks"
+            defined = _fla_defined_aqk(out[name].shape[1], inp["cu_seqlens"])  # [1, T, 1, 64], broadcast over batch / heads
+            cake, fla = out[name].float(), ref[name].float()
+            torch.testing.assert_close(cake.masked_fill(~defined, 0.0), fla.masked_fill(~defined, 0.0), **TOL, msg=name)
+            assert float(cake.masked_fill(defined, 0.0).abs().max()) == 0.0, "Cake Aqk: non-zero entries in the upper 16x16 blocks"
             continue
         torch.testing.assert_close(out[name].float(), ref[name].float(), **TOL, msg=name)
     for name in ("q_rstd", "k_rstd", "beta"):
