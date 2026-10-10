@@ -5,9 +5,10 @@ HTTP-agnostic: the FastAPI adapter (``sessions.py`` + ``server.py``) turns each 
 - `chat_completions` omits choice `meta_info` from client replies, and choice `logprobs` unless the client's request asked for them, without modifying the stored response; `SessionRecord` retains both for sample collection and `GET /sessions/{id}`.
 - ``chat_completions`` holds the per-session lock for prep and state update but not across the proxy call; ``closing`` re-checks and the ``num_assistant`` check gate concurrent DELETE/chat.
 - ``stream: true`` is served as fake streaming: the backend call stays non-streaming (TITO needs the complete message + meta_info) and the full response is re-rendered as a single SSE chunk plus ``data: [DONE]``. Errors all happen before the SSE body is built, so they keep their real status codes as JSON.
-- ``collect_samples`` assembles training Samples from the session's records on the server (compute -> truncate -> merge, synchronously on the loop like the lock-free ``get_session``); deterministic assembly failures return 422 with the assertion text.
+- ``collect_samples`` holds that session's lock while it assembles training Samples in a worker thread, so the snapshot stays stable without blocking unrelated sessions.
 """
 
+import asyncio
 import json
 import logging
 import time
@@ -270,12 +271,34 @@ class SessionCore:
             content=_render_json(payload.model_dump(mode="json")), status_code=200, media_type=JSON_MEDIA_TYPE
         )
 
+    async def _run_sample_materialization(self, session, function, *args) -> Response:
+        async with session.lock:
+            worker = asyncio.create_task(asyncio.to_thread(function, *args))
+            try:
+                return await asyncio.shield(worker)
+            except asyncio.CancelledError:
+                try:
+                    await worker
+                except Exception:
+                    logger.exception("Session sample materialization failed after its request was cancelled")
+                raise
+
     async def collect_samples(self, session_id: str, *, max_seq_len: int | None) -> Response:
         """Assemble training Samples from this session's records.
 
-        Validation failures return 422; unexpected errors propagate.
+        The session lock provides a stable record snapshot while materialization
+        runs off the shared server event loop.
         """
         session = self.registry.get_session(session_id)
+        return await self._run_sample_materialization(
+            session,
+            self._collect_samples_sync,
+            session_id,
+            session,
+            max_seq_len,
+        )
+
+    def _collect_samples_sync(self, session_id: str, session, max_seq_len: int | None) -> Response:
         metadata = self._session_metadata(session_id, session)
         tokenizer = self.registry.tokenizer
         fields = COMPUTED_FIELDS

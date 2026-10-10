@@ -21,7 +21,7 @@ from miles.utils.types import Sample
 
 logger = logging.getLogger(__name__)
 
-_SESSION_REQUEST_TIMEOUT = 120
+_SESSION_DELETE_TIMEOUT = 120
 
 
 class OpenAIEndpointTracer:
@@ -32,6 +32,7 @@ class OpenAIEndpointTracer:
         session_server_instance_id: str | None = None,
         samples_wire_fields: tuple[str, ...] = COMPUTED_FIELDS,
         agent_router_url: str | None = None,
+        samples_timeout: float = 120.0,
     ):
         self.router_url = router_url
         self.session_id = session_id
@@ -39,6 +40,7 @@ class OpenAIEndpointTracer:
         # The agent may run outside the cluster; the driver's own calls stay on base_url.
         self.agent_base_url = f"{agent_router_url or router_url}/sessions/{session_id}"
         self.session_server_instance_id = session_server_instance_id
+        self.samples_timeout = samples_timeout
         # The samples-wire allowlist must match the server's encode: v1 default,
         # extended under --use-session-server v2 (create() selects from args;
         # direct constructions keep v1).
@@ -77,6 +79,7 @@ class OpenAIEndpointTracer:
             session_server_instance_id=instance.instance_id,
             samples_wire_fields=samples_wire_fields,
             agent_router_url=instance.external_url,
+            samples_timeout=getattr(args, "session_samples_timeout", 120.0),
         )
 
     async def collect_samples(
@@ -91,13 +94,13 @@ class OpenAIEndpointTracer:
             payload = await post_bytes_no_retry(
                 f"{self.base_url}/samples",
                 body,
-                timeout=_SESSION_REQUEST_TIMEOUT,
+                timeout=self.samples_timeout,
             )
         finally:
             try:
                 await asyncio.wait_for(
                     post(self.base_url, {}, action="delete"),
-                    timeout=_SESSION_REQUEST_TIMEOUT,
+                    timeout=_SESSION_DELETE_TIMEOUT,
                 )
             except Exception as e:
                 logger.warning(f"Failed to delete session {self.session_id} after collecting samples: {e}")
