@@ -83,21 +83,23 @@ class MultiTurnLossMaskGenerator:
 
         prefix_message = {"role": "user", "content": "FOR CALCULATING LOSS MASK ONLY"}
         prefix_token_ids = self.tokenizer.apply_chat_template([prefix_message], tokenize=True, return_dict=False)
+        # prefix_token_ids starts with any default system prompt the template injects
+        # (system_message_length tokens); the prefix turn rendered after a message does not.
+        prefix_turn_length = len(prefix_token_ids) - self.system_message_length
 
         for i, message in enumerate(messages):
             if i == 0:
                 tailed_message_ids = self.tokenizer.apply_chat_template(
                     [message, prefix_message], tokenize=True, return_dict=False, tools=tools
                 )
-                message_ids = tailed_message_ids[: -len(prefix_token_ids)]
+                message_ids = tailed_message_ids[:-prefix_turn_length]
             else:
+                # Stripping len(prefix_token_ids) already removes the default system prompt,
+                # so no further system_message_length strip here.
                 prefixed_message_ids = self.tokenizer.apply_chat_template(
                     [prefix_message, message], tokenize=True, return_dict=False
                 )
                 message_ids = prefixed_message_ids[len(prefix_token_ids) :]
-
-            if message["role"] != "system" and i > 0:
-                message_ids = message_ids[self.system_message_length :]
 
             if message["role"] == "assistant":
                 loss_mask = [0] * self.gen_token_length + [1] * (len(message_ids) - self.gen_token_length)

@@ -93,6 +93,32 @@ def test_loss_mask_qwen3_tools(model_name: str = "Qwen/Qwen3-8B"):
     print("selected_texts = ", selected_texts)
 
 
+
+def test_loss_mask_qwen3_matches_template_with_default_system_prompt(model_name: str = "Qwen/Qwen3.8-27B"):
+    """Qwen3.8's template injects a default system prompt, so system_message_length > 0.
+    The qwen3 generator must still emit exactly the template's tokens, headers included."""
+    tokenizer = load_tokenizer(model_name)
+    mask_generator = MultiTurnLossMaskGenerator(tokenizer, tokenizer_type="qwen3")
+    assert mask_generator.system_message_length > 0
+    for messages in (
+        [
+            {"role": "system", "content": "SYSTEM MESSAGE FOR TESTING ONLY"},
+            {"role": "user", "content": "USER CONTENT FOR TESTING ONLY"},
+            {"role": "assistant", "content": "ASSISTANT RESPONSE FOR TESTING ONLY"},
+            {"role": "user", "content": "SECOND USER TURN"},
+            {"role": "assistant", "content": "SECOND ASSISTANT TURN"},
+        ],
+        [
+            {"role": "user", "content": "USER CONTENT FOR TESTING ONLY"},
+            {"role": "assistant", "content": "ASSISTANT RESPONSE FOR TESTING ONLY"},
+        ],
+    ):
+        all_token_ids, all_loss_masks = mask_generator.gen_multi_turn_loss_mask_qwen3(messages)
+        expected = tokenizer.apply_chat_template(messages, tokenize=True, return_dict=False)
+        assert all_token_ids == list(expected), tokenizer.decode(all_token_ids)
+        selected_texts = mask_generator.get_text_from_loss_mask(all_token_ids, all_loss_masks)
+        assert selected_texts[-1].endswith(messages[-1]["content"] + "<|im_end|>\n"), selected_texts
+
 if __name__ == "__main__":
     test_loss_mask_qwen3_simple("Qwen/Qwen3-Coder-30B-A3B-Instruct")
     test_loss_mask_qwen3_tools("Qwen/Qwen3-Coder-30B-A3B-Instruct")
