@@ -1,9 +1,6 @@
 """Coordinate a reviewed-data-gated launch without storing data on the Mac."""
-import json
-import shlex
 import subprocess
 import time
-from pathlib import Path
 
 from tap import Tap
 
