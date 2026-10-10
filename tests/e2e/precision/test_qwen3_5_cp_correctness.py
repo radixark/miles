@@ -21,7 +21,9 @@ from miles.backends.megatron_utils.megatron_to_hf.linear_attn_layout import Line
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "fast-gpu"))
 from linear_attn_reference import ReplicatedGDN, ReplicatedKDA, build_layer, packed, rel_err  # noqa: E402
 
-register_cuda_ci(est_time=300, suite="stage-c-4-gpu-h200", labels=["precision"], hardware=["hopper", "blackwell"])
+register_cuda_ci(
+    est_time=300, suite="stage-c-4-gpu-h200", labels=["precision"], hardware=["hopper", "blackwell"], num_gpus=4
+)
 register_rocm_ci(est_time=200, suite="nightly-stage-c-4-gpu-mi350", labels=["precision"])
 
 HIDDEN = 256

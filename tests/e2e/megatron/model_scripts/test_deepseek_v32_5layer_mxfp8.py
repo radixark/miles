@@ -10,6 +10,7 @@ register_cuda_ci(
     labels=["megatron", "model-scripts"],
     hardware=["blackwell"],
     disabled="Temporarily disabled; superseded by test_deepseek_v32_5layer_ci on H100.",
+    num_gpus=8,
 )
 
 MODEL_ORG = "Pinaster"
