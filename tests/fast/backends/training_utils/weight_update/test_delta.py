@@ -1,8 +1,11 @@
 from argparse import Namespace
+from collections import deque
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+import safetensors.torch
+import torch
 
 from miles.backends.training_utils.weight_update.protocols.delta import UpdateWeightFromDiskDelta
 
@@ -40,6 +43,82 @@ class TestPostWriteHookConstruction:
 
         load_function.assert_called_once_with("miles_plugins.example:upload_delta")
         assert protocol._post_write_hook is hook
+
+
+class TestCanonicalCheckpointLayout:
+    @staticmethod
+    def _protocol(checkpoint: Path) -> UpdateWeightFromDiskDelta:
+        protocol = UpdateWeightFromDiskDelta.__new__(UpdateWeightFromDiskDelta)
+        protocol.args = Namespace(hf_checkpoint=str(checkpoint))
+        return protocol
+
+    def test_casts_only_between_plain_float_storage_dtypes(self, tmp_path: Path) -> None:
+        safetensors.torch.save_file(
+            {"router": torch.zeros((2, 3), dtype=torch.bfloat16)},
+            tmp_path / "model.safetensors",
+        )
+
+        emitted = torch.ones((2, 3), dtype=torch.float32)
+        matched = self._protocol(tmp_path)._match_checkpoint_layout("router", emitted)
+
+        assert matched.dtype is torch.bfloat16
+        torch.testing.assert_close(matched.float(), emitted)
+
+    def test_preserves_an_exact_nvfp4_layout(self, tmp_path: Path) -> None:
+        tensors = {
+            "expert.weight": torch.zeros((2, 3), dtype=torch.uint8),
+            "expert.weight_scale": torch.zeros((2, 1), dtype=torch.float8_e4m3fn),
+            "expert.weight_scale_2": torch.zeros((), dtype=torch.float32),
+        }
+        safetensors.torch.save_file(tensors, tmp_path / "model.safetensors")
+        protocol = self._protocol(tmp_path)
+
+        for name, emitted in tensors.items():
+            assert protocol._match_checkpoint_layout(name, emitted) is emitted
+
+    def test_rejects_a_missing_quantization_step(self, tmp_path: Path) -> None:
+        safetensors.torch.save_file(
+            {"expert.weight": torch.zeros((2, 3), dtype=torch.uint8)},
+            tmp_path / "model.safetensors",
+        )
+
+        with pytest.raises(ValueError, match="must be produced by the model's weight converter"):
+            self._protocol(tmp_path)._match_checkpoint_layout(
+                "expert.weight", torch.ones((2, 3), dtype=torch.bfloat16)
+            )
+
+    def test_rejects_shape_and_name_mismatches(self, tmp_path: Path) -> None:
+        safetensors.torch.save_file(
+            {"weight": torch.zeros((2, 3), dtype=torch.bfloat16)},
+            tmp_path / "model.safetensors",
+        )
+        protocol = self._protocol(tmp_path)
+
+        with pytest.raises(ValueError, match="has shape"):
+            protocol._match_checkpoint_layout("weight", torch.ones((3, 2), dtype=torch.bfloat16))
+        with pytest.raises(ValueError, match="absent from the canonical checkpoint"):
+            protocol._match_checkpoint_layout("missing", torch.ones((2, 3), dtype=torch.bfloat16))
+
+
+def test_send_bucket_encodes_a_scalar_tensor(tmp_path: Path) -> None:
+    safetensors.torch.save_file(
+        {"weight_scale": torch.ones((), dtype=torch.float32)},
+        tmp_path / "model.safetensors",
+    )
+    protocol = UpdateWeightFromDiskDelta.__new__(UpdateWeightFromDiskDelta)
+    protocol.args = Namespace(hf_checkpoint=str(tmp_path))
+    protocol._use_pinned = False
+    protocol._pool = MagicMock()
+    protocol._inflight = deque()
+    protocol.total_bytes = 0
+
+    protocol.send_bucket([("weight_scale", torch.ones((), dtype=torch.float32))])
+
+    _, name, payload, nbytes, pinned = protocol._pool.submit.call_args.args
+    assert name == "weight_scale"
+    assert payload.shape == (torch.float32.itemsize,)
+    assert nbytes == torch.float32.itemsize
+    assert not pinned
 
 
 class TestReloadEnginesFailureTransitions:
