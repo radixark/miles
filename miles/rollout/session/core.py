@@ -13,6 +13,7 @@ import logging
 import time
 from dataclasses import dataclass
 
+import orjson
 from starlette.responses import Response
 
 from miles.rollout.generate_utils.sample_utils import merge_samples
@@ -161,7 +162,8 @@ def extract_completion(result: dict) -> tuple:
     completion_token_ids)``; malformed upstream payloads raise
     ``UpstreamResponseError``.
     """
-    response = json.loads(result["response_body"])
+    # orjson: every turn parses a multi-MB body (per-token logprobs, R3); SGLang writes it with orjson too.
+    response = orjson.loads(result["response_body"])
     choice = response.get("choices", [{}])[0]
     if choice.get("finish_reason") == "abort":
         raise UpstreamGenerationAbortedError("upstream generation aborted before completion")
@@ -225,10 +227,10 @@ class SessionCore:
         if not (self.use_addition_r3 and request_body.get("return_routed_experts")):
             return
         previous_rows = max(0, len(checkpoint_token_ids) - 1)
-        stable_prefix_tokens = _lcp_len(checkpoint_token_ids, prompt_token_ids)
-        assert (
-            stable_prefix_tokens >= previous_rows
-        ), f"additional R3 requires {previous_rows} stable prefix tokens, got {stable_prefix_tokens}"
+        assert prompt_token_ids[:previous_rows] == checkpoint_token_ids[:previous_rows], (
+            f"additional R3 requires {previous_rows} stable prefix tokens, "
+            f"got {_lcp_len(checkpoint_token_ids, prompt_token_ids)}"
+        )
         request_body["routed_experts_start_len"] = previous_rows
 
     async def health(self) -> Response:
@@ -355,7 +357,8 @@ class SessionCore:
             # the checkpoint this request builds on.
             self._maybe_request_addition_r3(request_body, session.token_ids, prompt_token_ids)
 
-            proxy_body = json.dumps(request_body).encode()
+            # orjson: the body carries the whole prompt's input_ids on every turn.
+            proxy_body = orjson.dumps(request_body)
             expected_num_assistant = session.num_assistant
         # --- lock released ---
 

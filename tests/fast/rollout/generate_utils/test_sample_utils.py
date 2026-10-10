@@ -1,3 +1,4 @@
+from copy import deepcopy
 from unittest.mock import MagicMock
 
 import numpy
@@ -74,6 +75,26 @@ class TestMergeSamples:
         assert "response1" in merged.response
         assert "response2" in merged.response
         assert "<decoded:[20, 21]>" in merged.response
+
+    def test_merge_fills_omitted_per_token_lists_without_modifying_either_input(self, mock_tokenizer):
+        a = make_sample(tokens=[1, 2, 10, 11], response="r1", response_length=2)
+        b = make_sample(tokens=[1, 2, 10, 11, 20, 30], response="r2", response_length=1, loss_mask=[1])
+        a.metadata = {"messages": [{"role": "user", "content": "hi"}], "lifecycle": [{"turn": 0}], "k": [1]}
+        b.metadata = {"messages": [{"role": "user", "content": "hi"}], "lifecycle": [{"turn": 1}], "k": [1]}
+        before = (deepcopy(a), deepcopy(b))
+
+        merged = _merge_sample_pair(a, b, mock_tokenizer)
+
+        assert (a, b) == before
+        assert merged.loss_mask == [1, 1, 0, 1]
+        assert merged.rollout_log_probs == [0.0, 0.0, 0.0, 0.0]
+        assert merged.metadata == {
+            "k": [1],
+            "lifecycle": [{"turn": 0}, {"turn": 1}],
+            "messages": b.metadata["messages"],
+        }
+        merged.metadata["k"].append(2)
+        assert a.metadata["k"] == [1]
 
     def test_merge_concatenates_weight_versions_per_call(self, mock_tokenizer):
         """Merging concatenates per-call entries; spans are unchanged since the token space is shared."""
