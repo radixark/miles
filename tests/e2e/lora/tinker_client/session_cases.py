@@ -121,11 +121,12 @@ async def test_real_http_lifecycle_isolated_policies_and_validation():
                 {"max_tokens": 0},
                 {"chat_template_kwargs": {}},
                 {"store": True},
+                {"user": "harbor"},
+                {"metadata": {"trial": "1"}},
             ]:
                 result = await http.post(f"{path}/v1/chat/completions", json={**body, **extra})
                 assert result.status_code == 400, result.text
-            informational = {"user": "harbor", "metadata": {"trial": "1"}, "store": False}
-            result = await http.post(f"{path}/v1/chat/completions", json={**body, **informational})
+            result = await http.post(f"{path}/v1/chat/completions", json={**body, "store": False})
             assert result.status_code == 200, result.text
             assert len(first.trace.turns) == 1
             assert not second.trace.turns

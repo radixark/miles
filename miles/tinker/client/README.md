@@ -42,12 +42,13 @@ renderer; an explicit `stop` (a string, normalized to a one-element list; a list
 of strings; a list of token ids; or `[]`) overrides renderer stops and is sent to
 the SDK. The SDK returns raw tokens and a stop reason and does not parse
 messages; the cookbook renderer's `parse_response` turns those raw tokens into
-the reply.
+the reply. Arbitrary custom stop strings are not guaranteed to be removed from
+the displayed reply.
 Per-request output limits may lower the policy cap. The configured per-Datum
 limit counts model-input tokens (prompt plus output minus one); requests
-exceeding that budget are rejected before sampling. `user`, `metadata` and
-`store: false` are accepted as information; `store: true` and any other
-unsupported request option fail instead of being silently ignored. Malformed
+exceeding that budget are rejected before sampling. `store: false` is accepted;
+completion storage, `user`, `metadata` and other unsupported request options
+are rejected instead of being silently ignored. Malformed
 requests are 400s; a failure after a sample was recorded is a 500 and the sample
 stays in the trace.
 
