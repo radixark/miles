@@ -14,6 +14,7 @@ MODEL_ORG = "Pinaster"
 MODEL_NAME = "GLM-5.2_5layer"
 MODEL_TYPE = "glm5.2-744B-A40B_5layer"
 MEGATRON_MODEL_NAME = f"{MODEL_NAME}-megatron-dsa"
+NVFP4_MODEL_NAME = f"{MODEL_NAME}-NVFP4-w4a16"
 DSA_ARGS = "--megatron-to-hf-mode raw --dsa-impl megatron --dsa-kernel-backend cudnn "
 NUM_GPUS = 8
 ACTOR_NUM_GPUS = 4
@@ -106,13 +107,12 @@ def prepare():
     U.hf_download_dataset("zhuzilin/dapo-math-17k", data_dir=DATA_DIR)
 
     _validate_glm_checkpoint()
-    U.exec_command_cpu(f"rm -rf {MODEL_DIR}/{MODEL_NAME}-NVFP4 {MODEL_DIR}/{MEGATRON_MODEL_NAME}_torch_dist")
-
-    U.exec_command_gpu(
+    U.exec_command_gpu_once(
         f"python tools/convert_hf_to_nvfp4.py "
         f"--model-dir {MODEL_DIR}/{MODEL_NAME} "
-        f"--save-dir {MODEL_DIR}/{MODEL_NAME}-NVFP4 "
-        f"{_extra_high_precision_layers_hf_args()}"
+        f"--save-dir {MODEL_DIR}/{NVFP4_MODEL_NAME} "
+        f"{_extra_high_precision_layers_hf_args()}",
+        f"{MODEL_DIR}/{NVFP4_MODEL_NAME}",
     )
 
     U.convert_checkpoint(
@@ -140,7 +140,7 @@ def execute():
     te_precision_config_path = command_utils.encode_pseudo_file(TE_PRECISION_CONFIG)
 
     ckpt_args = (
-        f"--hf-checkpoint {MODEL_DIR}/{MODEL_NAME}-NVFP4/ " f"--ref-load {MODEL_DIR}/{MEGATRON_MODEL_NAME}_torch_dist "
+        f"--hf-checkpoint {MODEL_DIR}/{NVFP4_MODEL_NAME}/ " f"--ref-load {MODEL_DIR}/{MEGATRON_MODEL_NAME}_torch_dist "
     )
 
     rollout_args = (
