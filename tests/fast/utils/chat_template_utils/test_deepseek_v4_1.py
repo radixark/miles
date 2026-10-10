@@ -10,11 +10,8 @@ register_cpu_ci(est_time=25, suite="stage-a-cpu", labels=[])
 import json
 
 from miles.utils.chat_template_utils import deepseek
-from miles.utils.chat_template_utils.tito_tokenizer import (
-    DeepSeekV4TITOTokenizer,
-    DeepSeekV41TITOTokenizer,
-    TITOTokenizerType,
-)
+from miles.utils.chat_template_utils.tito_tokenizer import TITOTokenizerType
+from miles.utils.chat_template_utils.tito_tokenizer.deepseek import DeepSeekV4TITOTokenizer, DeepSeekV41TITOTokenizer
 
 
 class _FakeTokenizer:

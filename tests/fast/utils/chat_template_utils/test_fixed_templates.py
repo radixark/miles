@@ -8,19 +8,17 @@ import os
 from unittest.mock import MagicMock
 
 import pytest
+
 from miles.utils.chat_template_utils import TEMPLATE_DIR, TITOTokenizerType, resolve_fixed_chat_template
 from miles.utils.chat_template_utils.template import apply_chat_template_from_str
-from miles.utils.chat_template_utils.tito_tokenizer import (
-    ALL_APPEND_ROLES,
-    DeepSeekV4TITOTokenizer,
-    FixedTemplate,
-    MinimaxM25TITOTokenizer,
-    MinimaxM27TITOTokenizer,
+from miles.utils.chat_template_utils.tito_tokenizer import ALL_APPEND_ROLES, FixedTemplate, TITOTokenizer
+from miles.utils.chat_template_utils.tito_tokenizer.deepseek import DeepSeekV4TITOTokenizer
+from miles.utils.chat_template_utils.tito_tokenizer.minimax import MinimaxM25TITOTokenizer, MinimaxM27TITOTokenizer
+from miles.utils.chat_template_utils.tito_tokenizer.qwen import (
     Qwen3TITOTokenizer,
     Qwen35TITOTokenizer,
     Qwen36TITOTokenizer,
     Qwen38SmallTITOTokenizer,
-    TITOTokenizer,
 )
 
 _EXPECTED_FIXED_TEMPLATES = {
