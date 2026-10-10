@@ -39,7 +39,9 @@ def render_prompt(renderer: Renderer, request: ChatRequest) -> list[int]:
             not isinstance(part, dict) or part.get("type") != "text" for part in content
         ):
             raise ValueError("the session adapter accepts text-only messages")
-    messages = openai_messages_to_tinker(request.messages)
+    messages = openai_messages_to_tinker(
+        [{key: value for key, value in message.items() if value is not None} for message in request.messages]
+    )
     for source, message in zip(request.messages, messages, strict=True):
         if source.get("reasoning_content"):
             content = message["content"]
