@@ -89,12 +89,60 @@ Host conventions:
   CVD intentionally left unset so jobs see all 8 GPUs. The bare
   `--env CUDA_VISIBLE_DEVICES` forwards the "unset" state, and CUDA defaults
   to seeing every visible device.
-* **b200-oma-8gpu-0** (B200, 1 runner, `docker-compose` flow):
-  whole node, CVD unset like the novita hosts. Deliberately not partitioned —
-  the 8-GPU runner would otherwise share physical GPUs with any 2/4-GPU runner
-  on the same host, and GitHub has no cross-runner resource lock. Tests needing
-  fewer than 8 GPUs still run here correctly, because a test declares its own
-  budget via `ray start --num-gpus` / `torchrun --nproc-per-node`.
+* **b200-oma** (20 logical runners on one 8-GPU host): for each count `n` from 1 to 8,
+  `floor(8/n)` runners carry the corresponding `<n>gpu` label. These are admission slots, not fixed
+  device partitions. Every CUDA registration declares `num_gpus`; the B200 plan
+  creates one job per selected file with that budget. The job-start hook assigns
+  any available GPU set and writes `CUDA_VISIBLE_DEVICES` through `GITHUB_ENV`
+  before test steps run. Driver-level visibility remains host-wide.
+  The repository-wide `b200-oma` workflow queue keeps one PR's finite job set
+  ahead of the next PR; B200 file reruns use the same queue. Within a run, mixes
+  such as `4+2+1+1` and noncontiguous free sets can execute concurrently.
+
+### Rolling out the B200 allocator
+
+`github_runner/docker-compose.b200.yml` supplies enough slots for every supported
+count so waiting large jobs cannot consume the smaller jobs' runner slots. Large plans run in sequential batches with at most 23 hours of summed
+file-timeout and setup/cleanup budgets. Each job receives that batch budget so
+GPU admission waiting cannot consume its own execution allowance. This stays
+below the 24-hour GitHub token lifetime and 5-day self-hosted job limit. Within
+a batch, the matrix has no `max-parallel` cap; device locks govern admission.
+Each job keeps its GPU locks through `Runner.Worker` exit and container cleanup.
+A shared host lock for smaller jobs and an exclusive one for whole-node jobs also
+exclude old whole-node workflow revisions during rollout.
+
+Allocation metadata in `/data/miles_ci/b200-gpu-leases` records each runner's
+assigned devices. The hook checks daemon-owned job containers before reusing
+cards: a surviving container after worker death retains its devices, even when
+its file locks disappear. A container without a lease fails admission; a runner
+with its own previous job container also fails. Inspect and clean up abandoned
+containers before retrying; do not delete lease records to free GPUs.
+
+Drain running jobs before replacing an existing hook or recreating runners.
+Back up the host-local Compose override, hooks, and `.env`. From
+`tests/ci/github_runner`, install the hooks and use a fresh repository runner
+registration token in `.env`:
+
+```shell
+sudo install -d /data/miles_ci/runner-hooks
+sudo install -m 755 b200-job-start.sh /data/miles_ci/runner-hooks/
+sudo install -m 644 b200_job_lock.py /data/miles_ci/runner-hooks/
+docker compose --env-file .env -f docker-compose.b200.yml config --quiet
+docker compose --env-file .env -f docker-compose.b200.yml up -d
+```
+
+Use the same explicit `-f` configuration for later runner operations. Every
+runner needs its own work directory and the hook. Job containers must retain
+private PID and network namespaces: cleanup kills Ray processes and tests reuse
+service ports. `_run-ci.yml` checks the exact CUDA-visible GPU count; `nvidia-smi`
+alone cannot verify a CUDA allocation. The hook's `GITHUB_ENV` value overrides
+the runner's default CVD for job steps and their child processes.
+
+Validate mixed `4+2+1+1` execution, reuse of noncontiguous free cards, whole-node
+exclusion, normal cancellation, and forced worker exit with a surviving CUDA
+container. GitHub executes job-start hooks with `always()`, so cancelling a
+waiting job can take the runner's five-minute cancellation grace period. A
+waiting job creates no test container; its holder exits with the worker.
 
 ## /data/miles_ci path identity rule
 

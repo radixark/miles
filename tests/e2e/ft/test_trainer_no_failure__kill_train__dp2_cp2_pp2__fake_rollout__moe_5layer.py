@@ -7,10 +7,7 @@ from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
 from tests.e2e.ft.conftest_ft.scenario_trainer_no_failure import run_ci
 
 register_cuda_ci(
-    est_time=800,
-    suite="stage-c-8-gpu-h100",
-    labels=["ft-short"],
-    hardware=["hopper", "blackwell"],
+    est_time=800, suite="stage-c-8-gpu-h100", labels=["ft-short"], hardware=["hopper", "blackwell"], num_gpus=8
 )
 register_rocm_ci(est_time=900, suite="nightly-stage-c-8-gpu-mi350", labels=["ft-short"])
 
