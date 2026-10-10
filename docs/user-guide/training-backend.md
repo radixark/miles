@@ -686,13 +686,16 @@ cases `tests/e2e/torchtitan/test_glm53_flash_4layer_*.py` carry the SGLang flags
 The full `flash` flavor (313B parameters) trains every parameter on **4 × 8 H200** with FSDP2 CPU
 offload: the fp32 weight, gradient and Adam state (16 bytes per parameter, 5.0 TB) does not fit on
 32 GPUs. The weight and gradient shards then fill most of a node's host RAM, so
-`--titan-optimizer-state-dir` keeps the Adam moments in one memory-mapped file per rank on
-node-local NVMe instead:
+`--stream-optimizer-state-to-disk` keeps the Adam moments in files under
+`--offload-train-disk-dir` instead -- the same flags the Megatron backend uses for disk-resident
+optimizer state. The files are unlinked once mapped (they show in `df`, not `du`) and each rank's
+directory is cleared at startup, so a killed run leaves nothing behind:
 
 ```bash
 --titan-model-flavor flash \
 --fsdp-cpu-offload \
---titan-optimizer-state-dir /scratch/glm53_optstate \
+--stream-optimizer-state-to-disk \
+--offload-train-disk-dir /scratch/miles_train_offload \
 --expert-model-parallel-size 32 \
 --gradient-checkpointing
 ```

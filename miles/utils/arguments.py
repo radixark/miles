@@ -355,7 +355,9 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                     "dist_muon: the disk backend for --chunked-optimizer-state-offload, so pass that "
                     "plus a non-zero --optimizer-state-offload-fraction. --optimizer-cpu-offload is "
                     "Adam-only. This bounds host residency, not the GPU restore window -- for that "
-                    "set --optimizer-state-offload-chunk-size-mb, which Megatron warns about at 0."
+                    "set --optimizer-state-offload-chunk-size-mb, which Megatron warns about at 0.\n"
+                    "torchtitan: with --fsdp-cpu-offload, the host-resident Adam moments live in "
+                    "unlinked files instead of anonymous RAM; the step still runs on the CPU."
                 ),
             )
             parser.add_argument(
@@ -3698,6 +3700,11 @@ def miles_validate_args(args):
         )
 
     if args.stream_optimizer_state_to_disk:
+        assert args.train_backend in (
+            "megatron",
+            "torchtitan",
+        ), f"--stream-optimizer-state-to-disk supports the megatron and torchtitan backends, got {args.train_backend}"
+    if args.stream_optimizer_state_to_disk and args.train_backend == "megatron":
         assert args.offload_train_target == "disk" or not args.offload_train, (
             "--stream-optimizer-state-to-disk with --offload-train requires "
             "--offload-train-target=disk: a run that cannot hold the optimizer state on GPU for "

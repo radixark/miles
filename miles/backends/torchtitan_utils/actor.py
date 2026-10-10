@@ -5,8 +5,9 @@ from contextlib import contextmanager
 import torch
 import torch.distributed as dist
 
-from miles.backends.torchtitan_utils import compat, disk_optimizer_state
+from miles.backends.torchtitan_utils import compat
 from miles.backends.torchtitan_utils.config import build_trainer_config
+from miles.backends.torchtitan_utils.disk_optimizer_state import move_adam_moments_to_disk
 from miles.backends.torchtitan_utils.hf_weight_iterator import TitanHfWeightIterator
 from miles.backends.torchtitan_utils.parallel import create_titan_parallel_state, parallel_dims_from_config
 from miles.backends.torchtitan_utils.routing_replay import install as install_routing_replay
@@ -15,6 +16,7 @@ from miles.backends.training_utils.parallel import get_parallel_state, set_paral
 from miles.backends.training_utils.replay.routing_replay import enable as enable_routing_replay
 from miles.backends.training_utils.torch_native.actor import TorchNativeTrainRayActor
 from miles.utils.context_utils import with_defer
+from miles.utils.disk_backed_tensor import optimizer_state_dir_root
 from miles.utils.distributed_utils import get_gloo_group
 from miles.utils.ft_utils.indep_dp import IndepDPInfo
 from miles.utils.memory_utils import clear_memory
@@ -85,10 +87,8 @@ class TorchtitanTrainRayActor(TorchNativeTrainRayActor):
             init_tracking(args, primary=False)
 
         self.trainer.checkpointer.load()
-        if args.titan_optimizer_state_dir is not None:
-            disk_optimizer_state.install(
-                self.optimizers, directory=args.titan_optimizer_state_dir, rank=dist.get_rank()
-            )
+        if args.stream_optimizer_state_to_disk:
+            move_adam_moments_to_disk(self.optimizers, state_dir_root=optimizer_state_dir_root(args))
         start_rollout_id = self.trainer.step // _steps_per_rollout(args)
 
         if with_ref:
