@@ -663,6 +663,28 @@ the new block (subclassing torchtitan's `TransformerBlock` / `BaseAttention`), t
 `state_dict_adapter.py` if the HF names differ, and only then a `parallelize.py` if the
 existing sharding plans do not apply. Two checks belong with every package: a fast test that pins the flavor's dimensions to the values recorded from the model's `config.json` and checks the adapter's map covers every key pattern recorded from `model.safetensors.index.json`, and an e2e case under `tests/e2e/torchtitan/` — SGLang has to implement the architecture too, since it is what consumes the streamed weights.
 
+`models/glm5_next/` (GLM-5.3-Flash) is the package grown all the way: KDA linear attention,
+kpool-indexed DSA sparse attention and mHC residual streams are new blocks in `layers.py`, the
+adapter maps the `model.language_model.*` names, and the package supports **FSDP, EP, PP and
+CP, but not TP yet**. Under CP, KDA runs fla's context-parallel kernels on a contiguous shard and
+DSA attends each rank's queries over the gathered latent KV, so both the attention compute and
+the activations split across the CP group. Like Megatron, the package sizes the model from the
+`--hf-checkpoint`'s `config.json` (layer types, MoE, mHC, KDA and indexer settings), so
+`--titan-model-flavor` only names the run; the four-layer slice is the validated checkpoint:
+
+```bash
+--train-backend torchtitan \
+--titan-model-name glm5_next \
+--titan-model-flavor 4layer \
+--pipeline-model-parallel-size 2 \
+--context-parallel-size 2 \
+--expert-model-parallel-size 4 \
+--hf-checkpoint /root/models/GLM-5.3-Flash-4layer
+```
+
+It needs an SGLang with GLM-5.3-Flash support (`docker.io/radixark/miles:glm53next`); the e2e
+cases `tests/e2e/torchtitan/test_glm53_flash_4layer_*.py` carry the SGLang flags.
+
 ### Try it
 
 ```bash
