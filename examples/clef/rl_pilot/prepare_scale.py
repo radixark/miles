@@ -41,7 +41,7 @@ def main(args: Args) -> None:
     old_id = args.pilot_root.name
     launch = (args.pilot_root / 'launch.fish').read_text().replace(old_id, args.run_id)
     launch = launch.replace('261009-clef-rl-hard2048-g32-a07c2b72', args.run_id + '-clef-rl-scaled32768-g32')
-    steps = 2 * manifest['train'] // 64
+    steps = 2 * (manifest['train'] // 64)
     for old, new in (('--max-steps 64', f'--max-steps {steps}'), ('--save-interval 32', '--save-interval 128'),
                      ('--eval-interval 16', '--eval-interval 32'), ('--master-port=29694', '--master-port=29696'),
                      ('--prometheus-port 9094', '--prometheus-port 9096')):
