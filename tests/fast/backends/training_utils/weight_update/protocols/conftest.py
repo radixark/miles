@@ -32,10 +32,13 @@ _PUBLISHED_PARAM_NAMES_BY_RUNNER_ROLE = {"target": ("w", "qk"), "draft": ("w", "
 @dataclasses.dataclass
 class _FakeServerArgs:
     moe_runner_backend: str = "auto"
+    moe_a2a_backend: str = "none"
     model_path: str = "/model"
     speculative_algorithm: str | None = None
     speculative_draft_model_path: str | None = None
     enable_multi_layer_eagle: bool = False
+    speculative_moe_runner_backend: str | None = None
+    speculative_moe_a2a_backend: str | None = None
     # expert placement, at sglang's defaults
     ep_num_redundant_experts: int = 0
     init_expert_location: str = "trivial"

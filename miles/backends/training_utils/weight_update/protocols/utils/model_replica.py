@@ -198,6 +198,7 @@ def _select_runner_roles(server_args: ServerArgs, selector: str) -> tuple[str, .
     if selector != "all" or server_args.speculative_algorithm in (None, *_SPECULATIVE_ALGORITHMS_WITHOUT_DRAFT_MODEL):
         return ("target",)
     _assert_draft_is_target_mtp(server_args)
+    _assert_draft_shares_target_moe_backends(server_args)
     return ("target", "draft")
 
 
@@ -214,6 +215,25 @@ def _assert_draft_is_target_mtp(server_args: ServerArgs) -> None:
     if server_args.enable_multi_layer_eagle:
         raise NotImplementedError(
             "multi-layer EAGLE runs a draft runner per MTP layer; p2p updates one draft runner per rollout engine rank"
+        )
+
+
+def _assert_draft_shares_target_moe_backends(server_args: ServerArgs) -> None:
+    # sglang builds and runs a draft under its speculative MoE backends but reloads it under the target's
+    draft_and_target_backends_by_name = {
+        "moe_runner_backend": (server_args.speculative_moe_runner_backend, server_args.moe_runner_backend),
+        "moe_a2a_backend": (server_args.speculative_moe_a2a_backend, server_args.moe_a2a_backend),
+    }
+    differing_backends = [
+        f"{name} {draft_backend} (target {target_backend})"
+        for name, (draft_backend, target_backend) in draft_and_target_backends_by_name.items()
+        if draft_backend not in (None, target_backend)
+    ]
+    if differing_backends:
+        raise NotImplementedError(
+            f"the draft runs its own {', '.join(differing_backends)}, but the rollout engine reloads it under the "
+            "target's, so no weight layout is defined for its update. Leave --speculative-moe-runner-backend and "
+            "--speculative-moe-a2a-backend unset to update the draft by p2p."
         )
 
 
