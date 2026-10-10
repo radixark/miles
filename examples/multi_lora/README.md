@@ -50,9 +50,34 @@ python examples/multi_lora/run_multi_tenant_example.py --base-model /root/models
 
 ## Supported inputs
 
-Training accepts text with 1-D loss inputs. 2-D soft targets, including SDFT,
+Training accepts encoded text and SDK `ImageChunk` inputs with 1-D loss inputs.
+Image chunks are expanded by the served checkpoint's processor; set
+`expected_tokens` to the processor's image-token count so loss inputs align with
+the expanded sequence. Encoded text IDs and explicit targets are preserved.
+Image sampling forwards the images to SGLang. 2-D soft targets, including SDFT,
 are not supported. Sampling requires a `/sampler_weights/` path returned by
 `save_weights_for_sampler()`; `/weights/` training checkpoints cannot be sampled directly.
+
+Qwen3-VL-30B-A3B uses `--model-type qwen3-vl-30B-A3B` and its matching HF
+checkpoint. The manual GEO3K validation script exercises sampling, RL updates,
+and adapter publication through the official Tinker SDK:
+
+```bash
+# Temporary four-GPU Modal run, with Modal installed and authenticated:
+modal run examples/multi_lora/modal_geo3k.py --output-dir ./geo3k-results
+```
+
+This uses a pinned `hiyouga/geometry3k` snapshot, 64 training problems, 32 held-out
+validation problems, four sampled answers per prompt, and 16 group-relative RL
+updates. Settings match the recorded validation run: rank-8 attention LoRA,
+1,536 completion tokens, and learning rate 1e-4. Each update publishes an adapter
+for the next rollouts. `summary.json` and `events.jsonl` record rewards, before/after
+accuracy, a blank-image control, logprob agreement, and sampled answers.
+With a local four-GPU runtime, run `python -m examples.multi_lora.validate_geo3k`.
+
+The internal `multimodal_train_inputs` path also preserves preprocessed audio
+tensors. SDK `DmelChunk` audio decoding is not yet supported; Qwen3-VL has no
+audio encoder.
 
 ## Failure handling
 
