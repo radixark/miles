@@ -405,6 +405,7 @@ MIN_SEGMENT_CHUNKS = 4  # 256 tokens: shorter segments pay more in pre-scan + st
 SCAN_CO_RESIDENT_FACTOR = 1.60
 PRESCAN_STEP_FACTOR = 1.16
 PRESCAN_WARMUP_CHUNKS = 3.3  # modelled warm-up length in chunk steps (strong gating: n_w = 1 plus the prologue and launch floor)
+STITCH_VSPLIT = 4  # stitch CTAs per (sequence, head): V-column blocks of the [K][V] start state (grid z; mirrors the kernel constant)
 STITCH_FIXED_CHUNKS = 2.75  # stitch launch floor in chunk steps
 STITCH_COPY_CHUNKS = 2.3  # one copy-only stitch step (serial over the boundaries) in chunk steps
 SPLIT_GAIN_THRESHOLD = 0.95  # split only when the modelled makespan beats the serial scan by at least 5 %
@@ -772,7 +773,7 @@ def _launch_fwd_h(
         )
         h_start = torch.empty(segs.num_segments, num_v_heads, HEAD_DIM, HEAD_DIM, dtype=torch.float32, device=device)
         kernel("stitch", arch).launch(
-            grid=(meta.num_seqs, num_v_heads, 1),
+            grid=(meta.num_seqs, num_v_heads, STITCH_VSPLIT),
             seg_state=seg_state,
             init_state=h0,
             state_out=h_start,
@@ -1038,7 +1039,7 @@ def gdn_chunk_backward(
         )
         dh_end = torch.empty(segs.num_segments, num_v_heads, HEAD_DIM, HEAD_DIM, dtype=torch.float32, device=device)
         kernel("stitch", arch).launch(
-            grid=(meta.num_seqs, num_v_heads, 1),
+            grid=(meta.num_seqs, num_v_heads, STITCH_VSPLIT),
             seg_state=seg_state,
             init_state=dht32,
             state_out=dh_end,

@@ -90,7 +90,7 @@ __device__ __forceinline__ void mul_f32x2_inplace(float2* a, float2 b) {
 extern "C" {
 
 __global__ __launch_bounds__(THREADS) void
-kernel_cake_gdn_chunk_train_04056e1f417e6b2577af(__nv_bfloat16* __restrict__ kn, __nv_bfloat16* __restrict__ w, __nv_bfloat16* __restrict__ u, float* __restrict__ g_cs, float* __restrict__ h0, __nv_bfloat16* __restrict__ h_out, __nv_bfloat16* __restrict__ v_new, float* __restrict__ final_state, float* __restrict__ seg_state, int* __restrict__ chunk_start, int* __restrict__ chunk_len, int* __restrict__ seg_chunk_start, int* __restrict__ seg_seq, int* __restrict__ seq_chunk_start, int num_heads, int num_v_heads, int use_initial_state, int store_final_state, int* __restrict__ seg_flag, float warmup_thresh_log2)
+kernel_cake_gdn_chunk_train_4519d86bcb09ec28f7d7(__nv_bfloat16* __restrict__ kn, __nv_bfloat16* __restrict__ w, __nv_bfloat16* __restrict__ u, float* __restrict__ g_cs, float* __restrict__ h0, __nv_bfloat16* __restrict__ h_out, __nv_bfloat16* __restrict__ v_new, float* __restrict__ final_state, float* __restrict__ seg_state, int* __restrict__ chunk_start, int* __restrict__ chunk_len, int* __restrict__ seg_chunk_start, int* __restrict__ seg_seq, int* __restrict__ seq_chunk_start, int num_heads, int num_v_heads, int use_initial_state, int store_final_state, int* __restrict__ seg_flag, float warmup_thresh_log2)
 {
     const int tid = threadIdx.x;
     const int warp = make_warp_uniform(tid / 32);
@@ -479,6 +479,13 @@ kernel_cake_gdn_chunk_train_04056e1f417e6b2577af(__nv_bfloat16* __restrict__ kn,
         if (tok_0 < _min_12) {
             g_far[0] = g_cs[(long long)(tok0 + 128 + tok_0) * (long long)num_v_heads + (long long)hv];
         }
+        asm volatile("cp.async.wait_group 0;");
+        #pragma unroll
+        for (int _lp = 0; _lp < 32; _lp++) {
+            __nv_bfloat162 _bf2 = __float22bfloat162_rn(make_float2(acc_h[_lp*2 + 0], acc_h[_lp*2+1 + 0]));
+            hpk[_lp] = *(uint32_t*)&_bf2;
+        }
+        __syncthreads();
         if (num_chunks > it_chunk + 1) {
             int next_tok0 = tok0 + 64;
             int _min_13 = ((seq_len - (it_chunk + 1) * 64) < (64) ? (seq_len - (it_chunk + 1) * 64) : (64));
@@ -541,16 +548,7 @@ kernel_cake_gdn_chunk_train_04056e1f417e6b2577af(__nv_bfloat16* __restrict__ kn,
                     :: "r"(dst0_5 + 6144), "l"(u + (src_row_4 + 48 * row_stride_3)), "r"((next_len > r0_1 + 48) ? 16 : 0));
             }
             asm volatile("cp.async.commit_group;");
-            asm volatile("cp.async.wait_group 1;");
-        } else {
-            asm volatile("cp.async.wait_group 0;");
         }
-        #pragma unroll
-        for (int _lp = 0; _lp < 32; _lp++) {
-            __nv_bfloat162 _bf2 = __float22bfloat162_rn(make_float2(acc_h[_lp*2 + 0], acc_h[_lp*2+1 + 0]));
-            hpk[_lp] = *(uint32_t*)&_bf2;
-        }
-        __syncthreads();
         float g_last = s_g[g_off + n_valid - 1];
         float _exp2_0 = approx_exp2(g_last);
         #if __CUDA_ARCH__ >= 1000
@@ -652,7 +650,6 @@ kernel_cake_gdn_chunk_train_04056e1f417e6b2577af(__nv_bfloat16* __restrict__ kn,
         for (int gi3 = 0; gi3 < 1; gi3++) {
             g_next[gi3] = g_far[gi3];
         }
-        __syncthreads();
         stage_off = next_off;
         g_off = next_g_off;
     }
