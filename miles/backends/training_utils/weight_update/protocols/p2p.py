@@ -49,6 +49,9 @@ class UpdateWeightP2P(WeightTransferProtocol):
         self._model_registered = False
         self._model_param_stager = ModelParamStager()
         self._pending_writes: list[tuple[RemoteShard, Future]] = []
+        self._model_replicas = ModelReplicas(model_path=args.hf_checkpoint)
+        self._transport: MooncakeTransport | None = None
+        self._replica_targets: list[_ReplicaTarget] = []
 
     def after_base_weights(self) -> None:
         """Wait for every write of this update; fail the update if any write failed or is still running."""
@@ -110,17 +113,19 @@ class UpdateWeightP2P(WeightTransferProtocol):
     ) -> None:
         """Connects this trainer rank to the rollout engines handed over: assigns it rollout engine ranks over them
         and the iterator's placement, queries their configs and Mooncake shards, and checks each model replica
-        against the weights its ranks publish."""
+        against the weights its ranks publish. Replicas, the transport and the registered buffer carry over from
+        earlier connects."""
         self.rollout_engines = rollout_engines
         assignments = assign_rollout_engine_ranks(parallel_state, placement, engine_gpu_counts)
         self.is_sender = bool(assignments)
 
         if self.is_sender:
             configs_by_rollout_engine_rank = query_rollout_engine_rank_configs(rollout_engines, assignments)
-            self._transport = MooncakeTransport()
+            if self._transport is None:
+                self._transport = MooncakeTransport()
             remote_shards_by_rollout_engine_rank = self._transport.connect(rollout_engines, assignments)
-            self._model_replicas = ModelReplicas(model_path=self.args.hf_checkpoint)
-            self._replica_targets: list[_ReplicaTarget] = []
+            self._model_param_stager = ModelParamStager()
+            self._replica_targets = []
             for rollout_engine_rank, remote_shards in remote_shards_by_rollout_engine_rank.items():
                 config = configs_by_rollout_engine_rank[rollout_engine_rank]
                 model_replica = self._model_replicas.get_or_build(config)
