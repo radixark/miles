@@ -74,17 +74,25 @@ def gdn_kernel(backend: str):
 
 
 @functools.cache
-def kda_kernel():
-    """fla's chunk_kda. On Blackwell its backward runs the Triton dqkg kernel (FLA_TILELANG=0), which
-    beats fla's TileLang one there at every tiling; an explicit FLA_TILELANG wins."""
+def kda_kernel(backend: str = "fla"):
+    """fla's chunk_kda, or for ``backend="deterministic"`` Miles' drop-in with fla's forward and the deterministic
+    chunked backward (:mod:`miles_plugins.models.kda_chunk_train`; fla for the calls it does not cover). On Blackwell
+    fla's backward runs the Triton dqkg kernel (FLA_TILELANG=0), which beats fla's TileLang one there at every
+    tiling; an explicit FLA_TILELANG wins."""
     try:
         from fla.ops.kda import chunk_kda
     except ImportError as exc:
         raise ImportError("KDA requires flash-linear-attention >= 0.5 (fla.ops.kda).") from exc
     if torch.cuda.is_available() and torch.cuda.get_device_capability()[0] >= 10:
         os.environ.setdefault("FLA_TILELANG", "0")
-    logger.info(f"KDA backward: FLA_TILELANG={os.environ.get('FLA_TILELANG', 'unset')}")
-    return chunk_kda
+    logger.info(f"KDA backend: {backend}; fla backward: FLA_TILELANG={os.environ.get('FLA_TILELANG', 'unset')}")
+    if backend == "fla":
+        return chunk_kda
+    if backend == "deterministic":
+        from miles_plugins.models.kda_chunk_train import chunk_kda as deterministic_chunk_kda
+
+        return deterministic_chunk_kda
+    raise ValueError(f"Unsupported KDA backend: {backend}")
 
 
 def gdn_recurrence(q, k, v, beta_logits, decay, A_log, dt_bias, *, backend, cu_seqlens, cp_context):
@@ -111,11 +119,33 @@ def gdn_recurrence(q, k, v, beta_logits, decay, A_log, dt_bias, *, backend, cu_s
     return out
 
 
-def kda_recurrence(q, k, v, beta_logits, decay, A_log, dt_bias, *, gate_lower_bound, cu_seqlens, cp_context):
+def kda_recurrence(
+    q,
+    k,
+    v,
+    beta_logits,
+    decay,
+    A_log,
+    dt_bias,
+    *,
+    gate_lower_bound,
+    cu_seqlens,
+    cp_context,
+    backend="fla",
+    cu_seqlens_cpu=None,
+):
     """q/k ``[b, s, H, hk]``, v ``[b, s, H, hv]``, decay ``[b, s, H * hv]`` (the low-rank forget gate,
-    gated inside the kernel) -> ``[b, s, H, hv]``."""
+    gated inside the kernel) -> ``[b, s, H, hv]``. ``backend`` picks the kernel, see :func:`kda_kernel`.
+
+    ``cu_seqlens_cpu`` is the host copy of the packed boundaries (CPU int64 tensor, one object per
+    micro-batch from ``PackedSeqParams.cu_seqlens_cpu``) and goes to both backends with the device
+    ``cu_seqlens``: the kernel's host-side index work reads it, so neither backend copies the
+    boundaries off the device. Under CP the kernel takes the rank-local boundaries from
+    ``cp_context`` (fla overrides both from the context); ``cu_seqlens_cpu`` is then the int64 host
+    copy of those local boundaries. Fixed-length ``[b, s]`` input passes neither.
+    """
     boundaries = {"cp_context": cp_context} if cp_context is not None else {"cu_seqlens": cu_seqlens}
-    out, _ = kda_kernel()(
+    out, _ = kda_kernel(backend)(
         q=q,
         k=k,
         v=v,
@@ -129,7 +159,8 @@ def kda_recurrence(q, k, v, beta_logits, decay, A_log, dt_bias, *, gate_lower_bo
         use_gate_in_kernel=True,
         safe_gate=True,
         lower_bound=gate_lower_bound,
-        transpose_state_layout=True,
+        state_v_first=True,
+        cu_seqlens_cpu=cu_seqlens_cpu,
         **boundaries,
     )
     return out
@@ -349,15 +380,18 @@ class LinearAttention(MegatronModule, ABC):
     def project(self, x: torch.Tensor) -> Projections: ...
 
     @abstractmethod
-    def recurrence(self, q, k, v, beta_logits, decay, cu_seqlens, cp_context) -> torch.Tensor:
-        """q/k ``[b, s, Gl, hk]``, v ``[b, s, Hl, hv]`` -> ``[b, s, Hl, hv]``."""
+    def recurrence(self, q, k, v, beta_logits, decay, cu_seqlens, cp_context, cu_seqlens_cpu=None) -> torch.Tensor:
+        """q/k ``[b, s, Gl, hk]``, v ``[b, s, Hl, hv]`` -> ``[b, s, Hl, hv]``. ``cu_seqlens_cpu``: host copy
+        of the boundaries (CPU int64), see :func:`kda_recurrence`."""
 
-    def forward(self, x: torch.Tensor, cu_seqlens: torch.Tensor | None, cp_context=None) -> torch.Tensor:
+    def forward(
+        self, x: torch.Tensor, cu_seqlens: torch.Tensor | None, cp_context=None, cu_seqlens_cpu=None
+    ) -> torch.Tensor:
         """x ``[b, s, hidden]``, TP collective already applied -> ``[b, s, local value_dim]``."""
         batch, seq_len, _ = x.shape
         qkv, gate, beta_logits, decay = self.project(x)
         q, k, v = self.convolve(qkv, cu_seqlens, cp_context)
-        core = self.recurrence(q, k, v, beta_logits, decay, cu_seqlens, cp_context)
+        core = self.recurrence(q, k, v, beta_logits, decay, cu_seqlens, cp_context, cu_seqlens_cpu=cu_seqlens_cpu)
         weight = copy_to_tensor_model_parallel_region(self.norm.weight, group=self.tp_group)
         core = rms_norm_gated(
             core.reshape(-1, self.heads.head_v_dim),
@@ -379,7 +413,8 @@ class GatedDeltaNet(LinearAttention):
         super().__init__(config, heads, conv_kernel_size, norm_eps, tp_group, norm_activation)
         self.backend = backend
 
-    def recurrence(self, q, k, v, beta_logits, decay, cu_seqlens, cp_context):
+    def recurrence(self, q, k, v, beta_logits, decay, cu_seqlens, cp_context, cu_seqlens_cpu=None):
+        del cu_seqlens_cpu  # GDN keeps fla's own boundary handling (not wired to the host copy)
         return gdn_recurrence(
             q,
             k,
@@ -400,14 +435,18 @@ class KimiDeltaAttention(LinearAttention):
     gated inside fla's kernel. One key head per value head, so the convs see contiguous per-head q / k / v
     and need no group-major permutation. ``f_a_proj`` is replicated and feeds head-sharded ``f_b_proj``,
     so its weight passes the TP copy op like the norm. The conv weights train in fp32, as Kimi's
-    checkpoints store them."""
+    checkpoints store them. ``backend`` selects the recurrence kernel (``--kda-backend``, see
+    :func:`kda_kernel`)."""
 
     dt_bias_per_channel = True
     dt_bias_dtype = torch.float32
 
-    def __init__(self, config, heads, conv_kernel_size, norm_eps, tp_group, gate_lower_bound: float):
+    def __init__(
+        self, config, heads, conv_kernel_size, norm_eps, tp_group, gate_lower_bound: float, backend: str = "fla"
+    ):
         super().__init__(config, heads, conv_kernel_size, norm_eps, tp_group, norm_activation="sigmoid")
         self.gate_lower_bound = gate_lower_bound
+        self.backend = backend
 
     def _build_projections(self):
         hidden, local = self.config.hidden_size, self.local
@@ -456,7 +495,7 @@ class KimiDeltaAttention(LinearAttention):
             self.f_b_proj(F.linear(x, f_a_weight)),
         )
 
-    def recurrence(self, q, k, v, beta_logits, decay, cu_seqlens, cp_context):
+    def recurrence(self, q, k, v, beta_logits, decay, cu_seqlens, cp_context, cu_seqlens_cpu=None):
         return kda_recurrence(
             q,
             k,
@@ -468,6 +507,8 @@ class KimiDeltaAttention(LinearAttention):
             gate_lower_bound=self.gate_lower_bound,
             cu_seqlens=cu_seqlens,
             cp_context=cp_context,
+            backend=self.backend,
+            cu_seqlens_cpu=cu_seqlens_cpu,
         )
 
 
@@ -500,6 +541,28 @@ class LinearAttentionLayer(MegatronModule):
         total = hidden_states.shape[0] * self.cp_size
         return torch.tensor([0, total], dtype=torch.int32, device=hidden_states.device)
 
+    def _cp_context(self, packed_seq_params, global_cu_seqlens, cu_seqlens_cpu, device):
+        """This rank's fla CP context for the micro-batch, and the int64 host copy of its local boundaries.
+
+        Built at the first KDA layer that sees the ``PackedSeqParams`` object and kept on it
+        (``fla_cp_context`` / ``fla_cp_cu_seqlens_cpu``), so the other layers, the recompute forward and
+        the backward reuse one context object (fla's identity-keyed caches hit; no second host partition
+        or upload). Without a host copy (``bshd`` / a foreign ``PackedSeqParams``) the context is rebuilt per
+        call as before, through fla's ``cu_seqlens.cpu()``."""
+        conv_kernel_size = self.linear_attn.conv_kernel_size
+        cached = getattr(packed_seq_params, "fla_cp_context", None)
+        if cached is not None and cached.group is self.cp_group and cached.conv1d_kernel_size == conv_kernel_size:
+            return cached, packed_seq_params.fla_cp_cu_seqlens_cpu
+        cp_context = build_fla_cp_context(
+            global_cu_seqlens, self.cp_group, conv_kernel_size, device, cu_seqlens_cpu=cu_seqlens_cpu
+        )
+        local_cpu = cp_context.cu_seqlens_cpu
+        local_cpu = local_cpu.to(torch.int64) if local_cpu is not None else None
+        if cu_seqlens_cpu is not None and hasattr(packed_seq_params, "fla_cp_context"):
+            packed_seq_params.fla_cp_context = cp_context
+            packed_seq_params.fla_cp_cu_seqlens_cpu = local_cpu
+        return cp_context, local_cpu
+
     def forward(
         self,
         hidden_states: torch.Tensor,
@@ -522,18 +585,22 @@ class LinearAttentionLayer(MegatronModule):
             x = copy_to_tensor_model_parallel_region(x, group=self.tp_group)
 
         global_cu_seqlens = self._global_cu_seqlens(x, packed_seq_params)
+        # the micro-batch's host copy of the boundaries (CPU int64, one object per micro-batch); None for
+        # bshd input or a PackedSeqParams that does not carry it -> the kernels fall back to their own handling
+        cu_seqlens_cpu = getattr(packed_seq_params, "cu_seqlens_cpu", None)
         relayout = self.cp_size > 1 and not self.allgather_cp
         if relayout:
             x = zigzag_to_packed_shard(x, global_cu_seqlens, self.cp_group, self.cp_group.rank(), self.cp_size)
         cp_context = None
         cu_seqlens = global_cu_seqlens
         if self.cp_size > 1:
-            cp_context = build_fla_cp_context(
-                global_cu_seqlens, self.cp_group, self.linear_attn.conv_kernel_size, x.device
+            cp_context, cu_seqlens_cpu = self._cp_context(
+                packed_seq_params, global_cu_seqlens, cu_seqlens_cpu, x.device
             )
             cu_seqlens = cp_context.cu_seqlens
 
-        core = self.linear_attn(x.transpose(0, 1), cu_seqlens, cp_context).transpose(0, 1)
+        core = self.linear_attn(x.transpose(0, 1), cu_seqlens, cp_context, cu_seqlens_cpu=cu_seqlens_cpu)
+        core = core.transpose(0, 1)
 
         if relayout:
             core = packed_shard_to_zigzag(core, global_cu_seqlens, self.cp_group, self.cp_group.rank(), self.cp_size)
