@@ -8,7 +8,9 @@ import pytest
 import torch
 from tests.ci.ci_register import register_cuda_ci
 
-register_cuda_ci(est_time=30, suite="stage-b-2-gpu-h200", labels=["precision"], hardware=["hopper", "blackwell"])
+register_cuda_ci(
+    est_time=30, suite="stage-b-2-gpu-h200", labels=["precision"], hardware=["hopper", "blackwell"], num_gpus=1
+)
 
 pytest.importorskip("triton")
 pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")

@@ -17,7 +17,7 @@ from miles.backends.torchtitan_utils.models.glm5_next.layers import (
     Glm5NextRMSNorm,
     HyperConnection,
     KimiDeltaAttention,
-    hc_post,
+    update_residual_streams,
 )
 from miles.backends.torchtitan_utils.models.glm5_next.packed_sequence import (
     ContextParallelLayout,
@@ -67,12 +67,12 @@ class Glm5NextBlock(Module):
     ) -> torch.Tensor:
         aggregated, h_post, h_res = self.hc_attn(x_BLND)
         out = self.attn(self.attention_norm(aggregated), sequence)
-        x_BLND = hc_post(out, x_BLND, h_post, h_res)
+        x_BLND = update_residual_streams(out, x_BLND, h_post, h_res)
 
         aggregated, h_post, h_res = self.hc_ffn(x_BLND)
         ffn = self.moe if self.moe_enabled else self.feed_forward
         out = ffn(self.ffn_norm(aggregated))
-        return hc_post(out, x_BLND, h_post, h_res)
+        return update_residual_streams(out, x_BLND, h_post, h_res)
 
 
 class Glm5NextModel(Decoder):
@@ -121,23 +121,23 @@ class Glm5NextModel(Decoder):
         super().__init__(config)
         self.num_streams = config.num_streams
         self.kda_conv_kernel_size = next(layer.kda.q_conv1d.kernel_size for layer in config.layers if layer.kda)
-        self.cp_mesh: DeviceMesh | None = None
-        self.cp_load_balancer: str | None = None
+        self._cp_mesh: DeviceMesh | None = None
+        self._cp_load_balancer: str | None = None
         self._cp_layouts: dict[int, ContextParallelLayout] = {}
 
     def enable_context_parallel(self, mesh: DeviceMesh, *, load_balancer: str) -> None:
-        self.cp_mesh = mesh
-        self.cp_load_balancer = load_balancer
+        self._cp_mesh = mesh
+        self._cp_load_balancer = load_balancer
         self._cp_layouts = {}
 
     def _cp_layout(self, local_len: int, device) -> ContextParallelLayout | None:
-        if self.cp_mesh is None:
+        if self._cp_mesh is None:
             return None
         if local_len not in self._cp_layouts:
             self._cp_layouts[local_len] = ContextParallelLayout.build(
-                self.cp_mesh,
-                load_balancer=self.cp_load_balancer,
-                seq_len=local_len * self.cp_mesh.size(),
+                self._cp_mesh,
+                load_balancer=self._cp_load_balancer,
+                seq_len=local_len * self._cp_mesh.size(),
                 device=device,
             )
         return self._cp_layouts[local_len]

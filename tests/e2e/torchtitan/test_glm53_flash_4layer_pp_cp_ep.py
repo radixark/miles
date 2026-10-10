@@ -7,7 +7,7 @@ register_cuda_ci(
     labels=["torchtitan"],
     hardware=["hopper"],
     disabled="needs a CI image with GLM-5.3-Flash sglang support (branch sglang-miles-glm53); "
-    "re-enable once it lands.",
+    "re-enable once it lands (#3989).",
 )
 
 # two layers per stage keep a KDA and a DSA layer on each side of the pipeline cut

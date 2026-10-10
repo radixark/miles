@@ -11,6 +11,7 @@ register_cuda_ci(
     labels=["megatron", "precision"],
     hardware=["hopper", "blackwell"],
     disabled="Disabled due to bugs.",
+    num_gpus=8,
 )
 
 ENABLE_EVAL = bool(int(os.environ.get("MILES_TEST_ENABLE_EVAL", "0")))

@@ -7,7 +7,7 @@ register_cuda_ci(
     labels=["torchtitan"],
     hardware=["hopper"],
     disabled="needs a CI image with GLM-5.3-Flash sglang support (branch sglang-miles-glm53); "
-    "re-enable once it lands.",
+    "re-enable once it lands (#3989).",
 )
 
 # four layers cover both attention kinds and both MLP kinds; glm5_next supports FSDP + EP only

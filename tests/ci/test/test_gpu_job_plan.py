@@ -4,6 +4,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import yaml
@@ -175,3 +176,39 @@ def test_gpu_workflow_requires_a_successful_hosted_plan(workflow):
         assert "inputs.plan_already_resolved ||" in run["if"]
         assert "!cancelled()" in run["if"]
         assert "inputs.plan_already_resolved && inputs.ref" in checkout["with"]["ref"]
+
+
+@pytest.mark.parametrize(
+    ("expected", "actual"), [(1, 1), (2, 2), (4, 4), (8, 8), (1, 8), (2, 4), (4, 8), (4, 0), (8, 4)]
+)
+def test_b200_partition_check_rejects_wrong_gpu_exposure(monkeypatch, expected, actual):
+    run = yaml.safe_load((ROOT / ".github/workflows/_run-ci.yml").read_text())["jobs"]["run"]
+    step = next(step for step in run["steps"] if step.get("name") == "Verify B200 CUDA partition")
+    code = step["run"].split("python3 - <<'PY'\n", 1)[1].rsplit("\nPY", 1)[0]
+    monkeypatch.setenv("EXPECTED_GPUS", str(expected))
+    monkeypatch.setitem(sys.modules, "torch", SimpleNamespace(cuda=SimpleNamespace(device_count=lambda: actual)))
+    if expected == actual:
+        exec(code)
+    else:
+        with pytest.raises(AssertionError, match=f"requires {expected} CUDA-visible GPUs, found {actual}"):
+            exec(code)
+
+
+def test_b200_suite_and_file_runs_allow_long_test_timeout():
+    workflows = ROOT / ".github/workflows"
+    b200 = yaml.safe_load((workflows / "_run-ci-b200.yml").read_text())
+    batches = b200["jobs"]["test"]
+    assert batches["uses"] == "./.github/workflows/_run-ci-b200-batch.yml"
+    assert batches["strategy"]["max-parallel"] == 1
+    assert batches["strategy"]["fail-fast"] is False
+    assert batches["with"]["matrix"] == "${{ matrix.jobs }}"
+    batch = yaml.safe_load((workflows / "_run-ci-b200-batch.yml").read_text())["jobs"]["test"]
+    assert batch["strategy"]["matrix"] == "${{ fromJSON(inputs.matrix) }}"
+    assert "max-parallel" not in batch["strategy"]
+    assert batch["strategy"]["fail-fast"] is False
+    assert batch["with"]["timeout_minutes"] == "${{ matrix.timeout_minutes }}"
+    assert "--timeout-per-file" not in batch["with"]["execute_command"]
+    rerun = yaml.safe_load((workflows / "run-ci-file.yml").read_text())["jobs"]["run-cuda-file"]
+    assert "'stage-c-4-gpu-b200' && 540 || 360" in rerun["with"]["timeout_minutes"]
+    reusable = yaml.safe_load((workflows / "_run-ci.yml").read_text())
+    assert reusable["jobs"]["run"]["timeout-minutes"] == "${{ inputs.timeout_minutes }}"

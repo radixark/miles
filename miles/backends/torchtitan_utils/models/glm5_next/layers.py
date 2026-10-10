@@ -14,7 +14,7 @@ from torchtitan.models.common.linear import Linear
 from torchtitan.models.common.moe import GroupedExperts
 from torchtitan.protocols.module import Module
 
-from miles.backends.torchtitan_utils.models.glm5_next.packed_sequence import PackedSequence, gather_tokens_no_grad
+from miles.backends.torchtitan_utils.models.glm5_next.packed_sequence import PackedSequence
 from miles.kernels.attention.dsa import sparse_attention
 from miles.kernels.attention.dsa.kpool import build_pooled_keys, pool_boundaries
 from miles_plugins.models.glm5_next.ops.kpool_indexer import kpool_select_topk
@@ -149,11 +149,11 @@ class HyperConnection(Module):
         return aggregated, h_post, h_res
 
 
-def hc_post(
-    x_BLD: torch.Tensor, residual_BLND: torch.Tensor, h_post: torch.Tensor, h_res: torch.Tensor
+def update_residual_streams(
+    layer_out_BLD: torch.Tensor, streams_BLND: torch.Tensor, h_post: torch.Tensor, h_res: torch.Tensor
 ) -> torch.Tensor:
-    mixed = torch.einsum("blij,blic->bljc", h_res, residual_BLND.float())
-    return (mixed + h_post.unsqueeze(-1) * x_BLD.float().unsqueeze(-2)).to(residual_BLND.dtype)
+    mixed = torch.einsum("blij,blic->bljc", h_res, streams_BLND.float())
+    return (mixed + h_post.unsqueeze(-1) * layer_out_BLD.float().unsqueeze(-2)).to(streams_BLND.dtype)
 
 
 class ShortConv(Module):
@@ -349,8 +349,8 @@ class KpoolIndexer(Module):
         cu_seqlens = sequence.masks.cu_seq_q
         x_TD = x_TD.detach()
         index_q = self.wq_b(q_lora_TR.detach()).unflatten(-1, (self.num_heads, self.head_dim))
-        index_k = gather_tokens_no_grad(self.k_norm(self.wk(x_TD)).bfloat16(), sequence)
-        gate_score = gather_tokens_no_grad(F.linear(x_TD, self.index_kpool_compress_gate.to(x_TD.dtype)), sequence)
+        index_k = sequence.gather_tokens_detached(self.k_norm(self.wk(x_TD)).bfloat16())
+        gate_score = sequence.gather_tokens_detached(F.linear(x_TD, self.index_kpool_compress_gate.to(x_TD.dtype)))
         head_weights = F.linear(x_TD.float(), self.weights_proj.weight.float()) * self.head_weight_scale
         pooled_k = build_pooled_keys(index_k, gate_score, self.index_kpool_compress_ape, cu_seqlens, self.kpool)
         return kpool_select_topk(

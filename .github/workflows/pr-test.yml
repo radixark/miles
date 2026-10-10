@@ -204,15 +204,19 @@ jobs:
     secrets: inherit
 
   # Stage B: CPU-only bucket for slower CPU tests that don't fit stage-a-cpu's
-  # fast budget. Runs whenever resolve-ci-policy runs; an empty suite still exits 0
-  # in run_suite.py.
+  # fast budget. Waits for Stage A; an empty suite still exits 0 in run_suite.py.
   stage-b-cpu:
-    needs: [resolve-ci-policy]
+    needs: [resolve-ci-policy, stage-a-cpu]
+    strategy:
+      fail-fast: false
+      matrix:
+        partition_id: [0, 1, 2, 3]
     uses: ./.github/workflows/_run-cpu-ci.yml
     with:
       ref: ${{ inputs.ref || '' }}
       execute_command: >-
         python tests/ci/run_suite.py --hw cpu --suite stage-b-cpu
+        --auto-partition-id ${{ matrix.partition_id }} --auto-partition-size 4
         --cadence ${{ needs.resolve-ci-policy.outputs.cadence }}
         --labels ${{ needs.resolve-ci-policy.outputs.raw_labels }}
     secrets: inherit
@@ -261,8 +265,6 @@ jobs:
         ${{ github.event_name == 'workflow_dispatch' && '--match-all-labels' || '' }}
     secrets: inherit
 
-  # No partition matrix: there is a single 8x H200 runner, so shards would only
-  # queue behind each other and each pay the job setup again.
   stage-c-8-gpu-h200:
     needs: [resolve-ci-policy, resolve-ci-image, stage-a-cpu]
     if: |
@@ -272,6 +274,11 @@ jobs:
       !contains(fromJSON(needs.resolve-ci-policy.outputs.skipped_stages || '[]'), 'stage-c-8-gpu-h200') &&
       (needs.stage-a-cpu.result == 'success' ||
         needs.resolve-ci-policy.outputs.bypass_fastfail == 'true')
+    strategy:
+      fail-fast: false
+      max-parallel: ${{ needs.resolve-ci-policy.outputs.cadence == 'weekly' && 1 || 2 }}
+      matrix:
+        partition_id: [0, 1]
     uses: ./.github/workflows/_run-ci.yml
     with:
       runs_on: '["h200", "8gpu"]'
@@ -279,6 +286,7 @@ jobs:
       ref: ${{ inputs.ref || '' }}
       execute_command: >-
         python tests/ci/run_suite.py --hw cuda --suite stage-c-8-gpu-h200
+        --auto-partition-id ${{ matrix.partition_id }} --auto-partition-size 2
         --cadence ${{ needs.resolve-ci-policy.outputs.cadence }}
         --labels ${{ needs.resolve-ci-policy.outputs.raw_labels }}
         ${{ github.event_name == 'workflow_dispatch' && '--match-all-labels' || '' }}
@@ -295,9 +303,9 @@ jobs:
         needs.resolve-ci-policy.outputs.bypass_fastfail == 'true')
     strategy:
       fail-fast: false
-      max-parallel: ${{ needs.resolve-ci-policy.outputs.cadence == 'weekly' && 1 || 5 }}
+      max-parallel: ${{ needs.resolve-ci-policy.outputs.cadence == 'weekly' && 1 || 3 }}
       matrix:
-        partition_id: [0, 1, 2, 3, 4]
+        partition_id: [0, 1, 2]
     uses: ./.github/workflows/_run-ci.yml
     with:
       runs_on: '["h200", "4gpu"]'
@@ -305,7 +313,7 @@ jobs:
       ref: ${{ inputs.ref || '' }}
       execute_command: >-
         python tests/ci/run_suite.py --hw cuda --suite stage-c-4-gpu-h200
-        --auto-partition-id ${{ matrix.partition_id }} --auto-partition-size 5
+        --auto-partition-id ${{ matrix.partition_id }} --auto-partition-size 3
         --cadence ${{ needs.resolve-ci-policy.outputs.cadence }}
         --labels ${{ needs.resolve-ci-policy.outputs.raw_labels }}
         ${{ github.event_name == 'workflow_dispatch' && '--match-all-labels' || '' }}
@@ -338,28 +346,24 @@ jobs:
         ${{ github.event_name == 'workflow_dispatch' && '--match-all-labels' || '' }}
     secrets: inherit
 
-  # The Blackwell fleet is one unpartitioned 8-GPU host: an 8-GPU runner cannot
-  # coexist with 2/4-GPU runners on the same node, since GitHub would dispatch
-  # jobs onto overlapping devices. Tests needing fewer than 8 GPUs therefore
-  # register against this suite too. No partition matrix: one runner serialises
-  # shards anyway, and the suite's current budget is far inside the job timeout.
-  stage-c-8-gpu-b200:
+  # Select both B200 suites into one pool of independently runnable tests.
+  stage-c-b200:
     needs: [resolve-ci-policy, resolve-ci-image, stage-a-cpu]
     if: |
       always() && !cancelled() &&
       needs.resolve-ci-policy.result == 'success' &&
       needs.resolve-ci-image.result == 'success' &&
-      !contains(fromJSON(needs.resolve-ci-policy.outputs.skipped_stages || '[]'), 'stage-c-8-gpu-b200') &&
+      (!contains(fromJSON(needs.resolve-ci-policy.outputs.skipped_stages || '[]'), 'stage-c-8-gpu-b200') ||
+        !contains(fromJSON(needs.resolve-ci-policy.outputs.skipped_stages || '[]'), 'stage-c-4-gpu-b200')) &&
       (needs.stage-a-cpu.result == 'success' ||
         needs.resolve-ci-policy.outputs.bypass_fastfail == 'true')
-    uses: ./.github/workflows/_run-ci.yml
+    uses: ./.github/workflows/_run-ci-b200.yml
     with:
-      runs_on: '["b200", "8gpu"]'
       container_image: ${{ needs.resolve-ci-image.outputs.container_image }}
       ref: ${{ inputs.ref || '' }}
-      execute_command: >-
-        python tests/ci/run_suite.py --hw cuda --suite stage-c-8-gpu-b200
-        --cadence ${{ needs.resolve-ci-policy.outputs.cadence }}
-        --labels ${{ needs.resolve-ci-policy.outputs.raw_labels }}
-        ${{ github.event_name == 'workflow_dispatch' && '--match-all-labels' || '' }}
+      cadence: ${{ needs.resolve-ci-policy.outputs.cadence }}
+      raw_labels: ${{ needs.resolve-ci-policy.outputs.raw_labels }}
+      match_all_labels: ${{ github.event_name == 'workflow_dispatch' }}
+      run_8_gpu: ${{ !contains(fromJSON(needs.resolve-ci-policy.outputs.skipped_stages || '[]'), 'stage-c-8-gpu-b200') }}
+      run_4_gpu: ${{ !contains(fromJSON(needs.resolve-ci-policy.outputs.skipped_stages || '[]'), 'stage-c-4-gpu-b200') }}
     secrets: inherit
