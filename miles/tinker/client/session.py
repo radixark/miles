@@ -7,7 +7,13 @@ from tinker_cookbook.completers import TinkerTokenCompleter
 from tinker_cookbook.renderers import Renderer
 
 import tinker
-from miles.tinker.client.rendering import ChatRequest, parse_completion, render_prompt, sampling_params
+from miles.tinker.client.rendering import (
+    ChatRequest,
+    ChatRequestError,
+    parse_completion,
+    render_prompt,
+    sampling_params,
+)
 from miles.tinker.core.token_trace import TokenTrace
 
 
@@ -24,9 +30,9 @@ class ChatSession:
     async def complete(self, request: ChatRequest) -> dict:
         async with self.lock:
             if self.closed:
-                raise ValueError("session is closed")
+                raise ChatRequestError("session is closed")
             if len(self.trace.turns) >= self.max_turns:
-                raise ValueError("session turn limit reached")
+                raise ChatRequestError("session turn limit reached")
             input_ids = await asyncio.to_thread(render_prompt, self.renderer, request)
             params = sampling_params(self.renderer, request)
             params["max_tokens"] = min(params.get("max_tokens", self.policy.max_tokens), self.policy.max_tokens)
@@ -34,7 +40,7 @@ class ChatSession:
             if self.policy.context_window is not None:
                 params["max_tokens"] = min(params["max_tokens"], self.policy.context_window - len(input_ids))
             if params["max_tokens"] <= 0 or len(input_ids) + params["max_tokens"] - 1 > self.max_datum_tokens:
-                raise ValueError("prompt plus completion exceeds the per-datum token budget")
+                raise ChatRequestError("prompt plus completion exceeds the per-datum token budget")
             response = await self.policy.sampling_client.sample_async(
                 prompt=tinker.ModelInput.from_ints(input_ids),
                 num_samples=1,
