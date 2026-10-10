@@ -7,7 +7,7 @@ import uvicorn
 from fastapi import FastAPI, HTTPException, Request
 from pydantic import ValidationError
 
-from miles.tinker.client.rendering import ChatRequest
+from miles.tinker.client.rendering import ChatRequest, ChatRequestError
 from miles.tinker.client.session import ChatSession
 
 
@@ -49,10 +49,11 @@ class SessionServer:
                 raise HTTPException(413, "request body too large")
         try:
             chat_request = ChatRequest.model_validate_json(body)
-            return await session.complete(chat_request)
         except ValidationError as error:
             raise HTTPException(400, str(error)) from error
-        except ValueError as error:
+        try:
+            return await session.complete(chat_request)
+        except ChatRequestError as error:  # refused before sampling; anything after a sample propagates as a 500
             raise HTTPException(400, str(error)) from error
 
     @asynccontextmanager

@@ -1,10 +1,15 @@
 from typing import Literal
 
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, ValidationError
 from tinker_cookbook.renderers import Renderer
+from tinker_cookbook.renderers.base import RendererError
 from tinker_cookbook.third_party.openai_compat import openai_messages_to_tinker, openai_tools_to_tinker
 
 from miles.tinker.core.token_trace import TokenTurn
+
+
+class ChatRequestError(ValueError):
+    """The request cannot be rendered or admitted; raised only before anything is sampled (a 400)."""
 
 
 class ChatRequest(BaseModel):
@@ -29,37 +34,43 @@ def render_prompt(renderer: Renderer, request: ChatRequest) -> list[int]:
     for message in request.messages:
         unknown = message.keys() - {"role", "content", "name", "tool_call_id", "tool_calls", "reasoning_content"}
         if unknown:
-            raise ValueError(f"unsupported message fields: {sorted(unknown)}")
+            raise ChatRequestError(f"unsupported message fields: {sorted(unknown)}")
         if message.get("role") not in {"system", "user", "assistant", "tool"}:
-            raise ValueError("messages must use system, user, assistant or tool roles")
+            raise ChatRequestError("messages must use system, user, assistant or tool roles")
         content = message.get("content")
         if content is not None and not isinstance(content, (str, list)):
-            raise ValueError("message content must be text or a list of text parts")
+            raise ChatRequestError("message content must be text or a list of text parts")
         if isinstance(content, list) and any(
             not isinstance(part, dict) or part.get("type") != "text" for part in content
         ):
-            raise ValueError("the session adapter accepts text-only messages")
-    messages = openai_messages_to_tinker(
-        [{key: value for key, value in message.items() if value is not None} for message in request.messages]
-    )
+            raise ChatRequestError("the session adapter accepts text-only messages")
+    if any(tool.get("type") != "function" for tool in request.tools or ()):
+        raise ChatRequestError("only function tools are supported")
+    try:
+        messages = openai_messages_to_tinker(
+            [{key: value for key, value in message.items() if value is not None} for message in request.messages]
+        )
+    except ValidationError as error:  # a tool_calls entry the cookbook's ToolCall schema refuses
+        raise ChatRequestError(f"invalid tool_calls: {error}") from error
     for source, message in zip(request.messages, messages, strict=True):
         if source.get("reasoning_content"):
             content = message["content"]
             parts = [{"type": "text", "text": content}] if isinstance(content, str) else content
             message["content"] = [{"type": "thinking", "thinking": source["reasoning_content"]}, *parts]
-    if request.tools:
-        if any(tool.get("type") != "function" for tool in request.tools):
-            raise ValueError("only function tools are supported")
-        system_prompt = ""
-        if messages[0]["role"] == "system":
-            system_prompt = messages.pop(0)["content"]
-            if not isinstance(system_prompt, str):
-                raise ValueError("a system prompt with tools must be a string")
-        prefix = renderer.create_conversation_prefix_with_tools(
-            openai_tools_to_tinker(request.tools), system_prompt=system_prompt
-        )
-        messages = [*prefix, *messages]
-    return renderer.build_generation_prompt(messages).to_ints()
+    try:
+        if request.tools:
+            system_prompt = ""
+            if messages[0]["role"] == "system":
+                system_prompt = messages.pop(0)["content"]
+                if not isinstance(system_prompt, str):
+                    raise ChatRequestError("a system prompt with tools must be a string")
+            prefix = renderer.create_conversation_prefix_with_tools(
+                openai_tools_to_tinker(request.tools), system_prompt=system_prompt
+            )
+            messages = [*prefix, *messages]
+        return renderer.build_generation_prompt(messages).to_ints()
+    except RendererError as error:  # the cookbook's own verdict on content it cannot render
+        raise ChatRequestError(f"cannot render messages: {error}") from error
 
 
 def sampling_params(renderer: Renderer, request: ChatRequest) -> dict:
