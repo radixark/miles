@@ -46,7 +46,15 @@ async def execute(base_url, base_model):
                 len(turn.output_ids) for turn in session.trace.turns
             )
             datums.extend(group_datums)
-    backward = await training.forward_backward_async(datums, loss_fn="ppo")
+    # The cookbook trainer drops its client-side "mask" before forward_backward (rl/train.py _remove_mask).
+    sent = [
+        tinker.Datum(
+            model_input=datum.model_input,
+            loss_fn_inputs={key: value for key, value in datum.loss_fn_inputs.items() if key != "mask"},
+        )
+        for datum in datums
+    ]
+    backward = await training.forward_backward_async(sent, loss_fn="ppo")
     step = await training.optim_step_async(tinker.types.AdamParams(learning_rate=1e-5))
     await backward
     await step
