@@ -81,6 +81,7 @@ def indexer_fwd(
     """Writes the [ks, ke) scores of every query into out [T, T_kv] (row stride free, columns contiguous).
     Columns outside a query's range hold -inf when clean_logits, otherwise whatever out held or partial
     scores of its query block. block_rows = queries per program x heads, the MMA's N dimension."""
+    assert q.is_contiguous() and k.is_contiguous() and weights.is_contiguous() and out.stride(-1) == 1
     seq_len, heads, dim = q.shape
     block_q = max(1, block_rows // heads)
     _indexer_fwd_kernel[(triton.cdiv(seq_len, block_q),)](

@@ -107,7 +107,16 @@ def indexer_logits(
     """Scores [T, T_kv] fp32 with SCORE_ROW_ALIGN-padded rows. Keys outside a query's range are -inf when
     clean_logits; otherwise they are undefined and only a range-aware top-k may read the result."""
     out = _empty_scores(q.shape[0], seq_len_kv=k.shape[0], device=q.device)
-    _write_logits(q, k, weights.float(), cu_seqlen_ks, cu_seqlen_ke, out, clean_logits, config or _default_config(q))
+    _write_logits(
+        q.contiguous(),
+        k.contiguous(),
+        weights.float().contiguous(),
+        cu_seqlen_ks,
+        cu_seqlen_ke,
+        out,
+        clean_logits,
+        config or _default_config(q),
+    )
     return out
 
 
