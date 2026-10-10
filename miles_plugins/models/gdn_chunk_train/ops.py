@@ -210,7 +210,7 @@ def _host_meta(seq_lens, num_v_heads, device_index: int, arch: str | None, total
     # scans stay serial (one segment per sequence).
     seq_lens = tuple(int(x) for x in seq_lens)
     tokens = int(total_tokens) if total_tokens is not None else sum(seq_lens)
-    segs = segment_lens(tokens, len(seq_lens), int(num_v_heads), int(device_index), arch) if num_v_heads else (0, 0)
+    segs = segment_lens(tokens, len(seq_lens), int(num_v_heads), int(device_index), arch, seq_lens) if num_v_heads else (0, 0)
     return _host_chunk_meta(seq_lens, segs, int(device_index))
 
 
@@ -399,28 +399,48 @@ def _wave_factor(ctas: int, sm_count: int, residency: int) -> float:
     return cost
 
 
-def plan_segments(chunks_bound: int, num_seqs: int, per_segment: int, sm_count: int, residency: int) -> tuple[int, float]:
-    """``(segment_len, modelled makespan in chunk steps)`` for a layout bound; ``segment_len == 0`` keeps the serial scan.
+def bound_layout_chunks(chunks_bound: int, num_seqs: int) -> tuple[int, ...]:
+    """Per-sequence chunk counts of the layout a padded chunk bound allows with the longest serial chain.
 
-    Pure function of the padded chunk bound (``T // 64 + num_seqs``) and the device, so the host and device table
-    builders agree.  It prices the layout the bound allows with the longest serial chain (one sequence holds every
-    chunk but one per other sequence): splitting that sequence into ``S`` segments of ``L`` chunks costs
-    ``L x waves(S x per_segment) + L x 1.16 x waves((2S - 3) x per_segment) + 5 x (S - 1)`` chunk steps (pass-2 scan,
-    pre-scan, serial stitch; the other sequences' single segments finish after their first steps) and is taken for
-    the ``S`` with the lowest modelled makespan when that beats ``0.95 x`` the serial scan.  Balanced packed layouts
-    whose sequences are all shorter than ``L`` keep one segment per sequence (the pre-scan and stitch then launch on
-    the device route and exit immediately).
+    One sequence holds every chunk but one per other sequence; this is all the device table builder (no host copy of
+    ``cu_seqlens``) can price.
     """
-    longest = chunks_bound - (num_seqs - 1)
+    return (chunks_bound - (num_seqs - 1),) + (1,) * (num_seqs - 1)
+
+
+def plan_segments(
+    chunks_bound: int,
+    num_seqs: int,
+    per_segment: int,
+    sm_count: int,
+    residency: int,
+    seq_chunks: tuple[int, ...] | None = None,
+) -> tuple[int, float]:
+    """``(segment_len, modelled makespan in chunk steps)`` of a layout; ``segment_len == 0`` keeps the serial scan.
+
+    Pure function of the layout and the device.  Without ``seq_chunks`` (the device route, which knows only the padded
+    chunk bound ``T // 64 + num_seqs``) it prices :func:`bound_layout_chunks`; with ``seq_chunks`` (the host route:
+    the exact per-sequence chunk counts) it prices the tables that will actually run.  A segment length ``L`` cuts
+    sequence ``i`` into ``k_i = ceil(n_i / L)`` equal-sized segments (``k_i = 1``: unsplit, it finishes after its first
+    steps) and costs ``steps x waves(sum k_i x per_segment) + steps x 1.16 x waves(sum (2 k_i - 3) x per_segment)
+    + 5 x (max k_i - 1)`` chunk steps over the split sequences (pass-2 scan, pre-scan, serial stitch; ``steps`` =
+    the longest segment); the ``L`` with the lowest makespan is taken when it beats ``0.95 x`` the serial scan (the
+    longest sequence).  Balanced packed layouts whose sequences are all shorter than ``L`` keep one segment per
+    sequence (the pre-scan and stitch then launch on the device route and exit immediately).
+    """
+    chunks = tuple(int(c) for c in seq_chunks) if seq_chunks is not None else bound_layout_chunks(chunks_bound, num_seqs)
+    longest = max(chunks)
     serial = float(longest)
     best_len, best_cost = 0, serial
     for segments in range(2, longest // MIN_SEGMENT_CHUNKS + 1):
         seg_len = -(-longest // segments)
         if seg_len < MIN_SEGMENT_CHUNKS or seg_len >= longest:
             continue
-        scan = seg_len * _wave_factor(segments * per_segment, sm_count, residency)
-        pre = seg_len * PRESCAN_STEP_FACTOR * _wave_factor((2 * segments - 3) * per_segment, sm_count, residency)
-        cost = scan + pre + (segments - 1) * STITCH_STEP_CHUNKS
+        split = [(n, -(-n // seg_len)) for n in chunks if n > seg_len]
+        steps = max(-(-n // k) for n, k in split)
+        scan = steps * _wave_factor(sum(k for _n, k in split) * per_segment, sm_count, residency)
+        pre = steps * PRESCAN_STEP_FACTOR * _wave_factor(sum(2 * k - 3 for _n, k in split) * per_segment, sm_count, residency)
+        cost = scan + pre + max(k - 1 for _n, k in split) * STITCH_STEP_CHUNKS
         if cost < best_cost:
             best_len, best_cost = seg_len, cost
     if best_len == 0 or best_cost >= SPLIT_GAIN_THRESHOLD * serial:
@@ -428,12 +448,21 @@ def plan_segments(chunks_bound: int, num_seqs: int, per_segment: int, sm_count: 
     return best_len, best_cost
 
 
-def choose_segment_len(kind: str, total_tokens: int, num_seqs: int, num_v_heads: int, device_index: int, arch: str) -> int:
+def choose_segment_len(
+    kind: str,
+    total_tokens: int,
+    num_seqs: int,
+    num_v_heads: int,
+    device_index: int,
+    arch: str,
+    seq_lens: tuple[int, ...] | None = None,
+) -> int:
     """Chunks per scan segment for ``kind`` (``0``: one segment per sequence, the serial scan).
 
     Only the preferred register-scan configuration is split (it is the one with pre-scan kernels); the decision is
-    :func:`plan_segments` over the padded chunk bound ``T // 64 + num_seqs`` that both table builders know, the
-    per-segment CTA count ``HV x K / vb`` and the device's SM count and scan residency.
+    :func:`plan_segments` over the exact per-sequence chunk counts when ``seq_lens`` is known (host route) or the
+    padded chunk bound ``T // 64 + num_seqs`` otherwise (device route), the per-segment CTA count ``HV x K / vb``
+    and the device's SM count and scan residency.
     ``MILES_GDN_CHUNK_TRAIN_SEG_CHUNKS`` (or :data:`FORCED_SEGMENT_LEN`) pins the segment length for tests.
     """
     if FORCED_SEGMENT_LEN is not None:
@@ -452,15 +481,20 @@ def choose_segment_len(kind: str, total_tokens: int, num_seqs: int, num_v_heads:
         return 0
     chunks_bound = total_tokens // CHUNK + num_seqs
     per_segment = num_v_heads * (HEAD_DIM // vb)
-    seg_len, _cost = plan_segments(chunks_bound, num_seqs, per_segment, sm_count, _scan_residency(kind, vb, ks, device_index, arch))
+    seq_chunks = tuple(-(-int(x) // CHUNK) for x in seq_lens) if seq_lens is not None else None
+    seg_len, _cost = plan_segments(
+        chunks_bound, num_seqs, per_segment, sm_count, _scan_residency(kind, vb, ks, device_index, arch), seq_chunks=seq_chunks
+    )
     return seg_len
 
 
-def segment_lens(total_tokens: int, num_seqs: int, num_v_heads: int, device_index: int, arch: str) -> tuple[int, int]:
+def segment_lens(
+    total_tokens: int, num_seqs: int, num_v_heads: int, device_index: int, arch: str, seq_lens: tuple[int, ...] | None = None
+) -> tuple[int, int]:
     """``(forward scan, backward scan)`` segment lengths of a layout (see :func:`choose_segment_len`)."""
     return (
-        choose_segment_len("fwd_h", total_tokens, num_seqs, num_v_heads, device_index, arch),
-        choose_segment_len("dhu", total_tokens, num_seqs, num_v_heads, device_index, arch),
+        choose_segment_len("fwd_h", total_tokens, num_seqs, num_v_heads, device_index, arch, seq_lens),
+        choose_segment_len("dhu", total_tokens, num_seqs, num_v_heads, device_index, arch, seq_lens),
     )
 
 

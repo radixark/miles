@@ -316,6 +316,53 @@ def test_segment_planner_only_splits_for_a_modelled_gain():
                 assert all(cost <= other for other in admissible.values())
 
 
+@pytest.mark.parametrize("sm_count", (B200_SMS, GB300_SMS))
+def test_segment_planner_prices_the_exact_host_layout(sm_count):
+    chunks = lambda *lens: tuple(-(-t // ops.CHUNK) for t in lens)  # noqa: E731 - per-sequence chunk counts (ceil)
+    assert ops.bound_layout_chunks(138, 2) == (137, 1)
+    for bound, n in ((129, 1), (257, 1), (138, 2), (260, 4), (136, 8)):
+        assert ops.plan_segments(bound, n, HV12_CTAS, sm_count, 2) == ops.plan_segments(
+            bound, n, HV12_CTAS, sm_count, 2, seq_chunks=ops.bound_layout_chunks(bound, n)
+        )
+    # one dominant sequence plus the 512-alignment pseudo-sequence: L = 43 / 45 on the exact layout, 46 on the bound,
+    # the same three-segment tables either way
+    assert ops.plan_segments(138, 2, HV12_CTAS, sm_count, 2, seq_chunks=chunks(8192, 512))[0] == 43
+    assert ops.segment_bounds(128, 43) == ops.segment_bounds(128, 46)
+    for residency in (2, 1):
+        assert ops.plan_segments(138, 2, HV12_CTAS, sm_count, residency, seq_chunks=chunks(8481, 223))[0] == 45
+    assert ops.segment_bounds(133, 45) == ops.segment_bounds(133, 46) == [0, 44, 88, 133]
+    # two long sequences plus the pseudo-sequence: the bound splits both scans (L = 43), the exact layout stays serial
+    assert ops.plan_segments(131, 3, HV12_CTAS, sm_count, 2)[0] == 43
+    for residency in (2, 1):
+        assert ops.plan_segments(131, 3, HV12_CTAS, sm_count, residency, seq_chunks=chunks(4360, 3491, 341)) == (0, 69.0)
+    assert ops.plan_segments(132, 4, HV12_CTAS, sm_count, 2, seq_chunks=chunks(2802, 2771, 2476, 143)) == (0, 44.0)
+    assert ops.plan_segments(260, 4, HV12_CTAS, sm_count, 2, seq_chunks=chunks(4096, 4096, 4096, 4096)) == (0, 64.0)
+    assert ops.plan_segments(68, 4, 16, sm_count, 2, seq_chunks=chunks(1024, 1024, 1024, 1024)) == (0, 16.0)
+    assert ops.plan_segments(260, 2, HV12_CTAS, sm_count, 2, seq_chunks=chunks(16384, 512))[0] == 86
+
+
+def test_host_route_prices_the_exact_layout():
+    _require_blackwell()
+    ops._host_chunk_meta.cache_clear()
+    arch = ops.device_arch(DEVICE)
+    index = DEVICE.index
+    # two long sequences + the 512-alignment pseudo-sequence: the device route (chunk bound only) would split both
+    # scans at L = 43; the host route prices the exact layout and keeps one segment per sequence
+    pack = (4360, 3491, 341)
+    assert ops.segment_lens(sum(pack), 3, 12, index, arch) == (43, 43)
+    assert ops.segment_lens(sum(pack), 3, 12, index, arch, pack) == (0, 0)
+    meta = ops.chunk_meta_from_host(_cu(pack), DEVICE, 12, arch=arch)
+    assert meta.fwd_segments.segment_len == 0 and meta.bwd_segments.segment_len == 0
+    assert meta.fwd_segments.num_segments == len(pack) and meta.bwd_segments.num_segments == len(pack)
+    # one dominant sequence + pad: exact L = 45 vs bound L = 46 build the same three-segment table
+    mb00 = (8481, 223)
+    assert ops.segment_lens(sum(mb00), 2, 12, index, arch) == (46, 46)
+    assert ops.segment_lens(sum(mb00), 2, 12, index, arch, mb00) == (45, 45)
+    host = ops.chunk_meta_from_host(_cu(mb00), DEVICE, 12, arch=arch)
+    assert host.fwd_segments.segment_len == 45 and host.fwd_segments.num_segments == 4  # 3 segments + the pad sequence
+    assert host.fwd_segments.seg_chunk_start.tolist() == [0, 44, 88, 133, 137]
+
+
 def test_segment_len_env_override_wins_over_the_planner(monkeypatch):
     # arch is dead on the env-override path (choose_segment_len returns first); avoid the Blackwell-only device_arch
     arch = "sm_100a"
