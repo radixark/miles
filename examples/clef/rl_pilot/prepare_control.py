@@ -46,6 +46,8 @@ def main(args: Args) -> None:
     (root / "manifest.json").write_text(json.dumps(manifest, indent=2))
     shutil.copyfile(args.pilot_root / "requirements.freeze.txt", root / "requirements.freeze.txt")
     for name in ("compare.py", "finalize.py"):
+        if not (args.pilot_root / name).is_file():
+            continue
         text = (args.pilot_root / name).read_text().replace(old_id, args.run_id)
         text = text.replace("https://wandb.ai/radixarkai/clef-model-training/runs/2ctt9x6c", "")
         if name == "finalize.py":
@@ -56,4 +58,3 @@ def main(args: Args) -> None:
 
 if __name__ == "__main__":
     main(Args(underscores_to_dashes=True).parse_args())
-
