@@ -13,7 +13,6 @@ register_cuda_ci(
 import pytest
 import torch
 from tools.convert_hf_to_mxfp8 import quantize_mxfp8 as tool_quantize_mxfp8
-from tools.convert_hf_to_mxfp8 import should_quantize as tool_should_quantize_mxfp8
 from transformer_engine.pytorch import MXFP8Quantizer
 from transformer_engine.pytorch.constants import TE_DType
 
@@ -21,6 +20,7 @@ from miles.backends.megatron_utils.megatron_to_hf.processors.quantizer_mxfp8 imp
     _quantize_param as processor_quantize_mxfp8_param,
 )
 from miles.backends.megatron_utils.megatron_to_hf.processors.quantizer_mxfp8 import quantize_params_mxfp8
+from miles.utils.mxfp8 import should_use_mxfp8
 
 MXFP8_GROUP_SIZE = 32
 MXFP8_SHAPES = [
@@ -132,15 +132,17 @@ def test_mxfp8_quantize_params_respects_first_last_layers_bf16(layer_idx):
 def test_mxfp8_hf_should_quantize_respects_extra_high_precision_layers_hf():
     weight = torch.randn((4, MXFP8_GROUP_SIZE), dtype=torch.bfloat16)
 
-    assert not tool_should_quantize_mxfp8(
+    assert not should_use_mxfp8(
         "model.layers.0.mlp.experts.0.down_proj.weight",
-        weight,
-        skip_weight_substrings=("mlp.experts.0",),
+        tuple(weight.shape),
+        weight.dtype,
+        skip_substrings=("mlp.experts.0",),
     )
-    assert tool_should_quantize_mxfp8(
+    assert should_use_mxfp8(
         "model.layers.0.mlp.experts.0.down_proj.weight",
-        weight,
-        skip_weight_substrings=("mlp.experts.1",),
+        tuple(weight.shape),
+        weight.dtype,
+        skip_substrings=("mlp.experts.1",),
     )
 
 
