@@ -19,7 +19,7 @@ from miles.utils.context_utils import with_defer
 from miles.utils.disk_backed_tensor import optimizer_state_dir_root
 from miles.utils.distributed_utils import get_gloo_group
 from miles.utils.ft_utils.indep_dp import IndepDPInfo
-from miles.utils.memory_utils import clear_memory
+from miles.utils.memory_utils import clear_memory, print_memory
 from miles.utils.profile_utils import TrainProfiler
 from miles.utils.timer import Timer
 from miles.utils.tracking_utils.tracking import init_tracking
@@ -105,8 +105,10 @@ class TorchtitanTrainRayActor(TorchNativeTrainRayActor):
     def _move_to(self, device: str) -> None:
         if self.args.optimizer_cpu_offload:
             # the training state already lives on the host; moving it would pull it all onto the GPU on wake
+            print_memory(f"before releasing the GPU cache for {device}")
             clear_memory()
             dist.barrier(group=get_gloo_group())
+            print_memory(f"after releasing the GPU cache for {device}")
             return
         super()._move_to(device)
 
