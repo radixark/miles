@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import dataclasses
+import json
 from types import SimpleNamespace
 
 import msgspec
@@ -166,3 +167,9 @@ class TestAdapterOwnership:
         server_args = compute(make_args(lora_rank=8, lora_adapter_path="/fake/adapter", **{flag: True}))
 
         assert server_args["lora_paths"] == ["miles_lora=/fake/adapter"]
+
+
+def test_modelexpress_configuration_reaches_managed_sglang_engines():
+    config = {"model_name": "policy", "initial_base_version_id": "policy-v0", "server_url": "mx:8001"}
+    server_args = compute(make_args(update_weight_transfer_mode="modelexpress", modelexpress_config=config))
+    assert json.loads(server_args["modelexpress_config"]) == config

@@ -2972,13 +2972,29 @@ class TestWeightTransferModeSelection:
         with pytest.raises(SystemExit):
             self._parse(["--update-weight-transfer-mode", "typo"])
 
-    def test_packed_mode_from_yaml_overrides_cli_and_remains_observable(self, tmp_path):
-        config = tmp_path / "custom.yaml"
-        config.write_text("update_weight_transfer_mode: broadcast_packed\n")
-        args = self._parse(["--custom-config-path", str(config), "--update-weight-transfer-mode", "broadcast"])
+    def test_modelexpress_choice_passes_validation(self):
+        args = self._parse(["--update-weight-transfer-mode", "modelexpress", "--pause-generation-mode", "abort"])
         _set_megatron_parallel_sizes(args)
         miles_validate_args(args)
-        assert args.update_weight_transfer_mode == "broadcast_packed"
+        assert args.update_weight_transfer_mode == "modelexpress"
+
+    @pytest.mark.parametrize("mode", ["broadcast_packed", "modelexpress"])
+    def test_mode_from_yaml_overrides_cli_and_remains_observable(self, tmp_path, mode):
+        config = tmp_path / "custom.yaml"
+        config.write_text(f"update_weight_transfer_mode: {mode}\n")
+        args = self._parse(
+            [
+                "--custom-config-path",
+                str(config),
+                "--update-weight-transfer-mode",
+                "broadcast",
+                "--pause-generation-mode",
+                "abort",
+            ]
+        )
+        _set_megatron_parallel_sizes(args)
+        miles_validate_args(args)
+        assert args.update_weight_transfer_mode == mode
 
     @pytest.mark.parametrize(
         "body,extra,error",

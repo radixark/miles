@@ -1042,7 +1042,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             )
             parser.add_argument(
                 "--update-weight-transfer-mode",
-                choices=["broadcast", "broadcast_packed", "p2p", "disk-delta"],
+                choices=["broadcast", "broadcast_packed", "p2p", "disk-delta", "modelexpress"],
                 default="broadcast",
                 help=(
                     "The method to transfer weights to remote rollout engines during update weight. "
@@ -1051,10 +1051,17 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                     "non-colocated transfer and SGLang's mixed-dtype flattened-bucket API. It adds a "
                     "contiguous bucket allocation on sender and receivers; atomic update units may "
                     "exceed --update-weight-buffer-size. "
+                    "'modelexpress' publishes S3 deltas and periodic full checkpoints to SGLang engines. "
                     "'disk-delta' diffs each sync against a CPU snapshot of the previous one and publishes "
                     "only the changed bytes to --update-weight-disk-dir; each engine's /pull_weights applies "
                     "them into a host-local checkpoint that the engine reloads from."
                 ),
+            )
+            parser.add_argument(
+                "--modelexpress-config",
+                type=json.loads,
+                default={},
+                help="ModelExpress model, server, seed checkpoint, and S3 configuration as a JSON object.",
             )
             parser.add_argument(
                 "--update-weight-disk-dir",
@@ -3220,7 +3227,7 @@ def miles_validate_args(args):
             setattr(args, k, v)
 
     mode = args.update_weight_transfer_mode
-    if mode not in ("broadcast", "broadcast_packed", "p2p", "disk-delta"):
+    if mode not in ("broadcast", "broadcast_packed", "p2p", "disk-delta", "modelexpress"):
         raise ValueError(f"Unknown --update-weight-transfer-mode {mode!r}")
     if mode == "broadcast_packed" and (args.train_backend != "megatron" or args.colocate):
         raise ValueError("broadcast_packed requires Megatron non-colocated weight transfer")
@@ -3595,6 +3602,17 @@ def miles_validate_args(args):
         and not args.ci_disable_weight_update_checker
     ):
         args.check_weight_update_equal = True
+
+    if args.update_weight_transfer_mode == "modelexpress":
+        if not isinstance(args.modelexpress_config, dict):
+            raise ValueError("--modelexpress-config must be a JSON object")
+        if (
+            args.train_backend != "megatron"
+            or args.colocate
+            or args.lora_rank > 0
+            or args.pause_generation_mode == "in_place"
+        ):
+            raise ValueError("ModelExpress requires Megatron, no LoRA/colocation, and abort/retract pausing")
 
     # always true on offload for colocate at the moment.
     if args.update_weight_transfer_mode == "p2p":
