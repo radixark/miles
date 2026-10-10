@@ -122,16 +122,14 @@ patches:
   - target: sglang.srt.models.qwen3_moe.Qwen3MoeDecoderLayer.forward
     edits:
       - match: |
-          hidden_states, residual = (
-              self.layer_communicator.prepare_attn_and_capture_last_layer_outputs(
-                  hidden_states,
-                  residual,
-                  forward_batch,
-                  captured_last_layer_outputs=captured_last_layer_outputs,
-                  **kwargs,
-              )
+          hidden_states = self.attn_boundary.prepare(
+              hidden_states,
+              forward_batch,
+              captured_last_layer_outputs=captured_last_layer_outputs,
+              capture_output=capture_output,
+              **kwargs,
           )
-        append: "dumper.dump('layer_input', residual, dims='t h # tp:replicated dp:=attn_dp')"
+        append: "dumper.dump('layer_input', forward_batch.residual_stream.residual, dims='t h # tp:replicated dp:=attn_dp')"
       - match: |
           if hidden_states.shape[0] != 0:
               hidden_states = self.self_attn(
@@ -141,14 +139,19 @@ patches:
               )
         append: "dumper.dump('attn_output', hidden_states, dims='t h # tp:replicated dp:=attn_dp')"
       - match: |
-          hidden_states, residual = self.layer_communicator.prepare_mlp(
-              hidden_states, residual, forward_batch
-          )
+          hidden_states = self.ffn_boundary.prepare(hidden_states, forward_batch)
         append: |
-          dumper.dump('pre_mlp_residual', residual, dims='t h # tp:replicated dp:=attn_dp')
+          dumper.dump('pre_mlp_residual', forward_batch.residual_stream.residual, dims='t h # tp:replicated dp:=attn_dp')
           dumper.dump('pre_mlp_layernorm_output', hidden_states, dims='t h # tp:replicated')
       - match: "hidden_states = self.mlp(hidden_states, forward_batch)"
-        append: "dumper.dump('mlp_output', hidden_states, dims='t h # tp:replicated')"
+        append: |
+          # The exit may defer TP reduction beyond this capture point.
+          mlp_output_dims = (
+              't h[tp:partial]'
+              if ffn_exit.fuse_mlp_allreduce or ffn_exit.mlp_reduce_scatter
+              else 't h # tp:replicated'
+          )
+          dumper.dump('mlp_output', hidden_states, dims=mlp_output_dims)
 
   # --- attention internals ---
   - target: sglang.srt.models.qwen3_moe.Qwen3MoeAttention.forward_core

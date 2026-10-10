@@ -5,8 +5,8 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from miles.backends.training_utils import cp_utils
-from miles.backends.training_utils import data as data_utils
+from miles.backends.training_utils.data import context_parallel
+from miles.backends.training_utils.data import rollout as data_utils
 from miles.backends.training_utils.parallel import GroupInfo, ParallelState
 
 mtp = pytest.importorskip("megatron.core.transformer.multi_token_prediction")
@@ -29,7 +29,7 @@ def test_actual_mtp_loss_selects_intended_targets(
         intra_dp=group, intra_dp_cp=group, cp=group, tp=group, pp=group, ep=group, etp=group, indep_dp=group
     )
     monkeypatch.setattr(data_utils, "get_parallel_state", lambda: state)
-    monkeypatch.setattr(cp_utils, "get_parallel_state", lambda: state)
+    monkeypatch.setattr(context_parallel, "get_parallel_state", lambda: state)
     monkeypatch.setattr(torch.cuda, "current_device", lambda: torch.device("cpu"))
     monkeypatch.setattr(torch.Tensor, "cuda", lambda self, *args, **kwargs: self)
     monkeypatch.setattr(mtp.MTPLossAutoScaler, "main_loss_backward_scale", torch.tensor(1.0))

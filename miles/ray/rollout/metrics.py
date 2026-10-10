@@ -13,6 +13,7 @@ from miles.utils.metric_utils import (
     compute_statistics,
     dict_add_prefix,
     has_repetition,
+    namespace_metrics,
 )
 from miles.utils.tracking_utils import tracking
 from miles.utils.types import Sample
@@ -70,7 +71,9 @@ def log_eval_skip(rollout_id, args, reason: str):
     tracking.log(args, log_dict, step_key="eval/step")
 
 
-def log_rollout_data(rollout_id, args, samples, rollout_extra_metrics, rollout_time):
+def log_rollout_data(
+    rollout_id, args, samples, rollout_extra_metrics, rollout_time, trainer_model_id: str | None = None
+):
     if (x := args.custom_rollout_log_function_path) is not None:
         custom_log_func = load_function(x)
         if custom_log_func(rollout_id, args, samples, rollout_extra_metrics, rollout_time):
@@ -88,9 +91,13 @@ def log_rollout_data(rollout_id, args, samples, rollout_extra_metrics, rollout_t
             "passrate/",
         )
     logger.info(f"perf {rollout_id}: {log_dict}")
-    step = compute_rollout_step(args, rollout_id)
-    log_dict["rollout/step"] = step
-    tracking.log(args, log_dict, step_key="rollout/step")
+    log_dict, step_key = namespace_metrics(
+        log_dict,
+        trainer_model_id=trainer_model_id,
+        step_name="rollout/step",
+        step=compute_rollout_step(args, rollout_id),
+    )
+    tracking.log(args, log_dict, step_key=step_key)
 
 
 def _compute_metrics_from_samples(args, samples):
@@ -247,7 +254,8 @@ def _compute_zero_std_metrics(args, all_samples: list[Sample]):
     all_sample_groups = group_by(all_samples, lambda s: s.group_index)
     interesting_sample_groups = [g for g in all_sample_groups.values() if _is_zero_std(g)]
 
-    interesting_rewards = [str(round(g[0].get_reward_value(args), 1)) for g in interesting_sample_groups]
+    uniform_rewards = [g[0].get_reward_value(args) for g in interesting_sample_groups]
+    interesting_rewards = [str(round(reward, 1)) for reward in uniform_rewards]
 
     counts = {reward: len(items) for reward, items in group_by(interesting_rewards).items()}
     log_dict = {f"zero_std/count_{reward}": count for reward, count in counts.items()}
@@ -257,8 +265,8 @@ def _compute_zero_std_metrics(args, all_samples: list[Sample]):
     # rollout batch size.
     total_groups = len(all_sample_groups)
     if total_groups > 0:
-        log_dict["zero_std/all_zero_percentage"] = counts.get("0.0", 0) / total_groups
-        log_dict["zero_std/all_one_percentage"] = counts.get("1.0", 0) / total_groups
+        log_dict["zero_std/all_zero_percentage"] = sum(1 for reward in uniform_rewards if reward == 0) / total_groups
+        log_dict["zero_std/all_one_percentage"] = sum(1 for reward in uniform_rewards if reward == 1) / total_groups
 
     return log_dict
 

@@ -16,6 +16,10 @@ from tqdm import tqdm
 from miles.rollout.base_types import GenerateFnInput, RolloutFnEvalOutput, RolloutFnTrainOutput
 from miles.rollout.filter_hub.base_types import MetricGatherer
 from miles.rollout.filter_hub.common_filters import apply_preput_filters
+from miles.rollout.generate_utils.rollout_topk_logprobs import (
+    append_rollout_topk_logprobs,
+    configure_rollout_topk_logprobs_request,
+)
 from miles.rollout.inference_rollout.compatibility import load_generate_function
 from miles.utils import dumper_utils
 from miles.utils.async_utils import run
@@ -62,7 +66,7 @@ def get_model_url(args: Namespace, model_name: str, endpoint: str = "/generate")
     Falls back to the default router if *model_name* is not found or
     ``sglang_model_routers`` is not set.
     """
-    routers = getattr(args, "sglang_model_routers", None)
+    routers = args.sglang_model_routers
     if routers and model_name in routers:
         ip, port = routers[model_name]
         return f"http://{ip}:{port}{endpoint}"
@@ -192,6 +196,8 @@ async def generate(
     opd_top_k_strategy = getattr(args, "opd_top_k_strategy", "only-student")
     if getattr(args, "use_opd", False) and opd_top_k > 0 and opd_top_k_strategy != "only-teacher":
         payload["top_logprobs_num"] = opd_top_k
+    if not evaluation:
+        configure_rollout_topk_logprobs_request(args, payload)
 
     if lora_rollout_enabled(args):
         payload["lora_path"] = LORA_ADAPTER_NAME
@@ -236,12 +242,24 @@ async def generate(
         new_response_tokens, new_response_log_probs = [], []
 
     if payload.get("return_sampling_mask", False):
-        new_response_log_probs = append_sampling_metadata(sample, new_response_tokens, output["meta_info"])
+        new_response_log_probs = append_sampling_metadata(
+            sample,
+            new_response_tokens,
+            output["meta_info"],
+            sampling_logprobs_mode=payload.get("sampling_logprobs_mode", "selected"),
+        )
 
     # Update sample with tokens directly - avoiding re-tokenization
     sample.tokens = sample.tokens + new_response_tokens
     sample.response_length += len(new_response_tokens)
     sample.response += output["text"]
+    if not evaluation:
+        append_rollout_topk_logprobs(
+            sample,
+            output["meta_info"],
+            args.rollout_top_logprobs_num,
+            sampling_logprobs_mode=payload.get("sampling_logprobs_mode", "selected"),
+        )
 
     # When partial rollout and masking off policy is enabled, update the loss mask
     if sample.loss_mask is not None:
@@ -267,6 +285,10 @@ async def generate(
             f"routed_experts buffer {_re.size} != ntok({_ntok}) x layers({args.num_layers}) x topk({_topk}); "
             f"prompt_tokens={output['meta_info'].get('prompt_tokens')} response={len(new_response_tokens)} "
             f"unexpanded_tokens={len(sample.tokens)}"
+        )
+        assert _re.size == 0 or _re.any(), (
+            "routed_experts payload is all zeros: the sglang engine did not capture routed experts "
+            "(topk-bypassing --moe-runner-backend such as flashinfer_trtllm?)."
         )
         sample.rollout_routed_experts = _re.reshape(_ntok, args.num_layers, _topk)
     if "indexer_topk" in output["meta_info"]:
@@ -407,7 +429,7 @@ async def abort(args: Namespace, rollout_id: int) -> list[list[Sample]]:
     logger.info(f"Abort request for {urls}")
     abort_tasks = [post(f"{url}/abort_request", {"abort_all": True}) for url in urls]
     abort_results = await asyncio.gather(*abort_tasks, return_exceptions=True)
-    for url, result in zip(urls, abort_results, strict=False):
+    for url, result in zip(urls, abort_results, strict=True):
         if isinstance(result, Exception):
             logger.warning(f"Failed to abort worker at {url}: {result}")
 
@@ -496,6 +518,7 @@ async def generate_rollout_async(
 
             assert len(group) == args.n_samples_per_prompt
             all_data.append(group)
+            metric_gatherer.on_group_before_dynamic_filter(args, group)
             filter_output = apply_preput_filters(args, dynamic_filter, group)
             if not filter_output.keep:
                 metric_gatherer.on_dynamic_filter_drop(reason=filter_output.reason)

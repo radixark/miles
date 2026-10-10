@@ -6,10 +6,7 @@ from tests.ci.metric_history import register_ci_gate
 import miles.utils.external_utils.command_utils as U
 
 register_cuda_ci(
-    est_time=600,
-    suite="stage-c-2-gpu-h200",
-    labels=["fsdp", "sglang", "replay"],
-    hardware=["hopper"],
+    est_time=600, suite="stage-c-2-gpu-h200", labels=["fsdp", "sglang", "replay"], hardware=["hopper"], num_gpus=2
 )
 # The log-prob diff and both KLs stay at 0 under true-on-policy; a bf16 flip (see execute) adds only about 2e-7 to
 # the diff. ppo_kl compares the training forward with forward-only scoring, so it also covers the loss-path mask.
@@ -22,9 +19,10 @@ NUM_GPUS = 2
 
 
 def prepare() -> None:
-    U.exec_command_cpu("mkdir -p /root/models /root/datasets")
-    U.exec_command_cpu(f"hf download Qwen/{MODEL_NAME} --local-dir /root/models/{MODEL_NAME}")
-    U.hf_download_dataset("zhuzilin/gsm8k")
+    backend = U.default_config().create_backend()
+    backend.exec_command_cpu("mkdir -p /root/models /root/datasets")
+    backend.exec_command_cpu(f"hf download Qwen/{MODEL_NAME} --local-dir /root/models/{MODEL_NAME}")
+    backend.hf_download_dataset("zhuzilin/gsm8k")
 
 
 def execute() -> None:
@@ -87,7 +85,8 @@ def execute() -> None:
         + "--ci-test --actor-num-nodes 1 --actor-num-gpus-per-node 2 --colocate "
     )
 
-    U.execute_train(
+    backend = U.default_config().create_backend()
+    backend.execute_train(
         train_args=train_args,
         num_gpus_per_node=NUM_GPUS,
         megatron_model_type=None,

@@ -12,6 +12,7 @@ from dataclasses import dataclass
 
 import torch.distributed as dist
 from megatron.core.tensor_parallel import ColumnParallelLinear
+from megatron.core.transformer.moe.router import TopKRouter
 from megatron.core.utils import get_attr_wrapped_model
 
 from miles.backends.megatron_utils.lora.slots import create_multi_lora_instance
@@ -137,6 +138,7 @@ def _setup_lora_model_via_bridge(args: Namespace) -> list:
     from megatron.bridge import AutoBridge
     from megatron.bridge.models.conversion.model_bridge import _megatron_local_name_to_global
     from megatron.bridge.training.config import DistributedDataParallelConfig
+    from megatron.bridge.utils.fusions import validate_rope_fusion_compatibility
 
     hf_config = load_hf_config(args.hf_checkpoint)
     bridge = AutoBridge.from_hf_pretrained(args.hf_checkpoint, trust_remote_code=True)
@@ -156,9 +158,19 @@ def _setup_lora_model_via_bridge(args: Namespace) -> list:
     provider.recompute_modules = args.recompute_modules
     provider.distribute_saved_activations = args.distribute_saved_activations
     provider.attention_backend = args.attention_backend
+    provider.apply_rope_fusion = args.apply_rope_fusion
+    # Custom providers can bypass GPTModelProvider.provide() and its fusion checks.
+    if not validate_rope_fusion_compatibility(provider):
+        provider.apply_rope_fusion = False
+    provider.bias_activation_fusion = args.bias_swiglu_fusion
+    provider.moe_router_dtype = args.moe_router_dtype
+    provider.moe_router_use_torch_mm = args.moe_router_use_torch_mm
     provider.variable_seq_lengths = True
     provider.moe_token_dispatcher_type = "alltoall"
     provider.moe_router_load_balancing_type = "none"
+    if is_multi_lora_enabled(args):
+        assert not args.enable_mtp_training, "Multi-LoRA does not support MTP training"
+        provider.mtp_num_layers = None
     if is_multi_lora_enabled(args) and targets_expert_leaves(args.hf_lora_targets):
         # Expert adapters cannot replay the fused permute's row_id_map, and most bridge
         # MoE providers default the fusion on — so turn it off rather than refuse to build.
@@ -208,6 +220,11 @@ def _setup_lora_model_via_bridge(args: Namespace) -> list:
         )
         lora = create_adapter(args, target_modules=adapter_targets)
         transformed = lora(model_chunks, training=True)
+        if is_multi_lora_enabled(args):
+            for chunk in transformed:
+                for module in chunk.modules():
+                    if isinstance(module, TopKRouter):
+                        module.frozen_expert_bias = True
         lora.set_params_to_save(transformed)
         return transformed
 
