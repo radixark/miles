@@ -20,8 +20,21 @@ except ImportError:
     _fla_build_cp_context = None
 
 
-def build_fla_cp_context(cu_seqlens: torch.Tensor, cp_group, conv_kernel_size: int, device: torch.device):
-    """fla CP context for a rank of ``cp_group`` from the global packed boundaries ``cu_seqlens``."""
+def build_fla_cp_context(
+    cu_seqlens: torch.Tensor,
+    cp_group,
+    conv_kernel_size: int,
+    device: torch.device,
+    cu_seqlens_cpu: torch.Tensor | None = None,
+):
+    """fla CP context for a rank of ``cp_group`` from the global packed boundaries ``cu_seqlens``.
+
+    ``cu_seqlens_cpu`` is the host copy of the same boundaries (CPU int64, the micro-batch's
+    ``PackedSeqParams.cu_seqlens_cpu``). With it fla partitions the boundaries on the host and never
+    copies ``cu_seqlens`` off the device; without it fla does ``cu_seqlens.cpu()`` (one device-to-host
+    copy and stream drain per call). Either way fla uploads the rank-local boundaries once per
+    context; callers build the context once per micro-batch (``LinearAttentionLayer``).
+    """
     if _fla_build_cp_context is None:
         raise RuntimeError(
             "Hybrid CP requires fla.ops.cp (flash-linear-attention >= 0.4.2) " "but it could not be imported."
@@ -32,6 +45,7 @@ def build_fla_cp_context(cu_seqlens: torch.Tensor, cp_group, conv_kernel_size: i
         cu_seqlens=cu_seqlens.to(device=device, dtype=torch.int32),
         group=cp_group,
         conv1d_kernel_size=conv_kernel_size,
+        cu_seqlens_cpu=cu_seqlens_cpu,
     )
 
 
