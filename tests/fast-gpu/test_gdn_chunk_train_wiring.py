@@ -6,6 +6,7 @@ counts, and the bit-identical tape / recompute backward.  Needs a CUDA device; t
 """
 
 import itertools
+import math
 
 import pytest
 
@@ -117,14 +118,27 @@ def test_host_table_matches_the_device_table():
     assert bool((dev.chunk_len[n:] == 0).all())
 
 
-def test_host_and_device_tables_give_identical_results():
+def test_host_and_device_tables_give_identical_results(monkeypatch):
+    # The device route prices the chunk bound, the host route the exact layout, so the two routes may pick different
+    # segment lengths (design doc: "bitwise when the segment lengths agree, within tolerance otherwise").  Like with
+    # like: at one pinned segment length the chunk tables and every result are bit-identical across the routes; at the
+    # planner's own picks the results agree within the BF16 contract tolerance.
     _require_blackwell()
+    arch = ops.device_arch(DEVICE)
     inputs = _inputs(LAYOUT)
     cu = torch.tensor(_cu(LAYOUT), device="cuda", dtype=torch.int32)
+    host_fwd, _host_bwd = ops.segment_lens(sum(LAYOUT), len(LAYOUT), 4, DEVICE.index, arch, LAYOUT)
+    assert host_fwd > 0, "LAYOUT must split on the host route for the pinned comparison to exercise a segment table"
+    monkeypatch.setattr(ops, "FORCED_SEGMENT_LEN", host_fwd)
     a = _step(inputs, cu_seqlens=cu)
     b = _step(inputs, cu_seqlens=cu, cu_seqlens_cpu=_cu(LAYOUT))
     for name in a:
-        assert torch.equal(a[name], b[name]), f"{name} differs between the device and host chunk tables"
+        assert torch.equal(a[name], b[name]), f"{name} differs between the device and host chunk tables at L={host_fwd}"
+    monkeypatch.setattr(ops, "FORCED_SEGMENT_LEN", None)
+    a = _step(inputs, cu_seqlens=cu)
+    b = _step(inputs, cu_seqlens=cu, cu_seqlens_cpu=_cu(LAYOUT))
+    for name in a:
+        assert torch.allclose(a[name].float(), b[name].float(), atol=1e-2, rtol=1e-2), f"{name} differs between the routes' own picks"
 
 
 def test_tape_and_recompute_backward_are_bit_identical(monkeypatch):
@@ -251,69 +265,112 @@ def test_wave_factor_prices_co_residency_and_waves():
     # a second co-resident CTA per SM shares the SM's issue slots
     assert ops._wave_factor(149, 148, 2) == ops.SCAN_CO_RESIDENT_FACTOR
     assert ops._wave_factor(296, 148, 2) == ops.SCAN_CO_RESIDENT_FACTOR
-    # beyond the resident set: further waves; a tail wave that fits one CTA per SM is priced at 1.0
-    assert ops._wave_factor(297, 148, 2) == ops.SCAN_CO_RESIDENT_FACTOR + 1.0
+    # beyond the resident set: further waves; a tail wave behind a full wave starts staggered and shares SMs with it,
+    # so it runs at the full wave's factor (R3 re-fit), not at 1.0
+    assert ops._wave_factor(297, 148, 2) == 2 * ops.SCAN_CO_RESIDENT_FACTOR
     assert ops._wave_factor(149, 148, 1) == 2.0 and ops._wave_factor(297, 148, 1) == 3.0
+    assert ops._wave_factor(0, 148, 2) == 0.0
+
+
+def test_scan_makespan_prices_dispatch_order_co_residency_and_slot_release():
+    # one sequence: steps x the wave factor of the whole grid; the real 8481 + 223 micro-batch: the pad's 48 CTAs make
+    # the three-segment grid 192 CTAs, two per SM on 32 SMs for the WHOLE scan (dispatch order; measured 1.53x), six
+    # segments (336 CTAs) start the 16 CTAs beyond the resident set when the pad finishes (measured 1.85x over 23);
+    # at one CTA per SM there is no factor and the 32 extra CTAs start after the pad's 4 steps
+    assert ops._scan_makespan((129,), (3,), HV12_CTAS, GB300_SMS, 2) == 43.0
+    assert ops._scan_makespan((133, 4), (3, 1), HV12_CTAS, GB300_SMS, 2) == pytest.approx(45 * ops.SCAN_CO_RESIDENT_FACTOR)
+    assert ops._scan_makespan((133, 4), (6, 1), HV12_CTAS, GB300_SMS, 2) == pytest.approx((4 + 23) * ops.SCAN_CO_RESIDENT_FACTOR)
+    assert ops._scan_makespan((133, 4), (3, 1), HV12_CTAS, GB300_SMS, 1) == 49.0
+    assert ops._scan_makespan((38, 38, 38, 15, 3), (1,) * 5, HV12_CTAS, GB300_SMS, 2) == pytest.approx(38 * ops.SCAN_CO_RESIDENT_FACTOR)
+
+
+def test_planner_constants_mirror_loom_verbatim():
+    # the same literals as loom's gdn_chunk_training.py (its loom/tests/infra/test_gdn_chunk_segment_planner.py pins them)
+    assert (ops.MIN_SEGMENT_CHUNKS, ops.SCAN_CO_RESIDENT_FACTOR, ops.PRESCAN_STEP_FACTOR) == (4, 1.60, 1.16)
+    assert (ops.PRESCAN_WARMUP_CHUNKS, ops.STITCH_FIXED_CHUNKS, ops.STITCH_COPY_CHUNKS) == (3.3, 2.75, 2.3)
+    assert (ops.SPLIT_GAIN_THRESHOLD, ops.MAX_SCAN_ROUNDS) == (0.95, 2)
+    assert ops.WARMUP_THRESH_LOG2 == -10.0 / math.log(2.0)
+
+
+def test_warmup_threshold_env_override(monkeypatch):
+    monkeypatch.delenv("MILES_GDN_CHUNK_TRAIN_WARMUP_LOG2", raising=False)
+    assert ops.warmup_thresh_log2() == ops.WARMUP_THRESH_LOG2
+    monkeypatch.setenv("MILES_GDN_CHUNK_TRAIN_WARMUP_LOG2", "-inf")
+    assert ops.warmup_thresh_log2() == float("-inf")
 
 
 @pytest.mark.parametrize("sm_count", (B200_SMS, GB300_SMS))
-def test_segment_planner_reproduces_the_measured_optima(sm_count):
-    # one 8192-token sequence (129 padded chunks): three 43-chunk segments on both scans (best of L = 13/26/43/64/86
-    # on B200 and GB300); one 16384-token sequence: three 86-chunk segments (best of the same sweep)
-    for residency in (2, 1):
-        assert ops.plan_segments(129, 1, HV12_CTAS, sm_count, residency)[0] == 43
-        assert ops.plan_segments(257, 1, HV12_CTAS, sm_count, residency)[0] == 86
-    # the real micro-batch 8481 + 223 (pad) tokens: bound 138, longest chain 137
-    # -> 46 (same segment table as the measured L = 64 arm: ceil(133/46) = ceil(133/64) = 3)
-    assert ops.plan_segments(138, 2, HV12_CTAS, sm_count, 2)[0] == 46
-    # balanced 4 x 4096 / 8 x 1024 / 4 x 1024 layouts share the bound of one long sequence: one segment per real
-    # sequence (planner in isolation; production guards 8 x 1024 and the 4 x 4096 dhu scan to L = 0)
-    assert ops.plan_segments(260, 4, HV12_CTAS, sm_count, 2)[0] == 86
-    assert ops.plan_segments(136, 8, HV12_CTAS, sm_count, 2)[0] == 43
-    assert ops.plan_segments(68, 4, HV12_CTAS, sm_count, 2)[0] == 22
-    # TP1 (192 CTAs per segment) cannot gain 5 % over the serial scan
-    assert ops.plan_segments(129, 1, HV48_CTAS, sm_count, 2) == (0, 129.0)
-    # documented limitation: a balanced 4 x 1024 layout at four value heads is priced as one long sequence (L = 13)
+def test_segment_planner_reproduces_the_modelled_optima(sm_count):
+    # one 8192-token sequence (129 padded chunks): three 43-chunk segments on both scans (fwd_h at two CTAs per SM:
+    # 54.2 chunk steps vs 55.6 for six -- the forced-L sweep measured L = 22 / 43 as a tie on fwd_h and L = 43 as the
+    # best f+b arm; dhu at one CTA per SM: six segments would run two waves); 16384 tokens: 43 / 86
+    assert ops.plan_segments(129, 1, HV12_CTAS, sm_count, 2) == (43, pytest.approx(54.178))
+    assert ops.plan_segments(129, 1, HV12_CTAS, sm_count, 1) == (43, pytest.approx(54.178))
+    assert ops.plan_segments(257, 1, HV12_CTAS, sm_count, 2) == (43, pytest.approx(89.1748))
+    assert ops.plan_segments(257, 1, HV12_CTAS, sm_count, 1) == (86, pytest.approx(97.178))
+    # the real micro-batch 8481 + 223 (pad) tokens on the bound (137 + 1 chunks): the pad's CTAs make every grid above
+    # one CTA per SM co-resident, so fwd_h takes six segments (23) and dhu at one CTA per SM three (46)
+    assert ops.plan_segments(138, 2, HV12_CTAS, sm_count, 2)[0] == 23
+    assert ops.plan_segments(138, 2, HV12_CTAS, sm_count, 1)[0] == 46
+    # balanced 4 x 4096 / 8 x 1024 / 4 x 1024 layouts share the bound of one long sequence (planner in isolation; the
+    # host route prices the exact layout and production guards 8 x 1024 and the 4 x 4096 dhu scan to L = 0)
+    assert ops.plan_segments(260, 4, HV12_CTAS, sm_count, 2)[0] == 43
+    assert ops.plan_segments(136, 8, HV12_CTAS, sm_count, 2)[0] == {B200_SMS: 26, GB300_SMS: 22}[sm_count]
+    assert ops.plan_segments(68, 4, HV12_CTAS, sm_count, 2)[0] == 11
+    # TP1 (192 CTAs per segment): three segments run two rounds of the resident set (576 CTAs at 3.2x) and still beat
+    # the serial scan's 192 co-resident CTAs by 24 % where two CTAs fit one SM; at one CTA per SM nothing beats serial
+    assert ops.plan_segments(129, 1, HV48_CTAS, sm_count, 2) == (43, pytest.approx(157.1996))
+    assert ops.plan_segments(129, 1, HV48_CTAS, sm_count, 1) == (0, 258.0)
+    # documented limitation: a balanced 4 x 1024 layout at four value heads is priced as one long sequence on the bound
     assert ops.plan_segments(68, 4, 4 * (ops.HEAD_DIM // 32), sm_count, 2)[0] == 13
 
 
-def _split_cost(longest, segments, per_segment, sm_count, residency):
-    # the planner's price of ``segments`` equal segments of the longest chain: pass-2 scan + pre-scan + serial stitch
-    seg_len = -(-longest // segments)
+def _split_cost(chunks, seg_len, per_segment, sm_count, residency):
+    # the planner's price of segment length ``seg_len`` on ``chunks``: pass-2 makespan over every sequence's segments,
+    # warm-up pre-scan of the consumed segments' value blocks, stitch launch floor + one copy-only step per boundary
+    splits = tuple(max(1, -(-n // seg_len)) for n in chunks)
     return (
-        seg_len * ops._wave_factor(segments * per_segment, sm_count, residency)
-        + seg_len * ops.PRESCAN_STEP_FACTOR * ops._wave_factor((2 * segments - 3) * per_segment, sm_count, residency)
-        + (segments - 1) * ops.STITCH_STEP_CHUNKS
+        ops._scan_makespan(chunks, splits, per_segment, sm_count, residency)
+        + ops.PRESCAN_WARMUP_CHUNKS * ops.PRESCAN_STEP_FACTOR * ops._wave_factor(sum(k - 1 for k in splits) * per_segment, sm_count, residency)
+        + ops.STITCH_FIXED_CHUNKS
+        + ops.STITCH_COPY_CHUNKS * (max(splits) - 1)
     )
 
 
-def test_segment_planner_only_splits_for_a_modelled_gain():
-    per_segment, sm_count, residency = HV12_CTAS, B200_SMS, 2
+def _admissible_segment_lens(chunks, per_segment, sm_count, residency):
+    longest = max(chunks)
+    per_wave = sm_count * (2 if residency >= 2 else 1)
+    return {
+        -(-longest // s)
+        for s in range(2, longest // ops.MIN_SEGMENT_CHUNKS + 1)
+        if ops.MIN_SEGMENT_CHUNKS <= -(-longest // s) < longest
+        and sum(max(1, -(-n // -(-longest // s))) for n in chunks) * per_segment <= ops.MAX_SCAN_ROUNDS * per_wave
+    }
+
+
+@pytest.mark.parametrize("residency", (2, 1))
+def test_segment_planner_only_splits_for_a_modelled_gain(residency):
+    per_segment, sm_count = HV12_CTAS, B200_SMS
     for bound in range(2, 400, 7):
         for num_seqs in (1, 2, 5):
             if bound < num_seqs:
                 continue
+            chunks = ops.bound_layout_chunks(bound, num_seqs)
             seg_len, cost = ops.plan_segments(bound, num_seqs, per_segment, sm_count, residency)
-            longest = bound - (num_seqs - 1)
-            # independent argmin over every admissible segment count (the MIN_SEGMENT_CHUNKS filter of plan_segments)
-            admissible = {
-                s: _split_cost(longest, s, per_segment, sm_count, residency)
-                for s in range(2, longest // ops.MIN_SEGMENT_CHUNKS + 1)
-                if ops.MIN_SEGMENT_CHUNKS <= -(-longest // s) < longest
-            }
+            serial = ops._scan_makespan(chunks, (1,) * num_seqs, per_segment, sm_count, residency)
+            # independent argmin over every admissible segment length (MIN_SEGMENT_CHUNKS and MAX_SCAN_ROUNDS filters)
+            admissible = {length: _split_cost(chunks, length, per_segment, sm_count, residency) for length in _admissible_segment_lens(chunks, per_segment, sm_count, residency)}
             if seg_len == 0:
-                assert cost == float(longest)
+                assert cost == serial
                 # the converse of the test name: no admissible split beats the serial scan by the required 5 %
                 if admissible:
-                    assert min(admissible.values()) >= ops.SPLIT_GAIN_THRESHOLD * longest
+                    assert min(admissible.values()) >= ops.SPLIT_GAIN_THRESHOLD * serial
             else:
-                assert ops.MIN_SEGMENT_CHUNKS <= seg_len < longest
-                assert cost < ops.SPLIT_GAIN_THRESHOLD * longest
-                # the priced segment count is the smallest S with this L (the strict < keeps the first minimum)
-                segments = -(-longest // seg_len)
-                assert -(-longest // segments) == seg_len
-                assert cost == admissible[segments]
-                assert all(cost <= other for other in admissible.values())
+                assert ops.MIN_SEGMENT_CHUNKS <= seg_len < max(chunks)
+                assert cost < ops.SPLIT_GAIN_THRESHOLD * serial
+                assert cost == admissible[seg_len] == min(admissible.values())
+                # the strict < in the search keeps the first minimum: the largest L (smallest S) among equal costs
+                assert seg_len == max(length for length, other in admissible.items() if other == cost)
 
 
 @pytest.mark.parametrize("sm_count", (B200_SMS, GB300_SMS))
@@ -324,21 +381,35 @@ def test_segment_planner_prices_the_exact_host_layout(sm_count):
         assert ops.plan_segments(bound, n, HV12_CTAS, sm_count, 2) == ops.plan_segments(
             bound, n, HV12_CTAS, sm_count, 2, seq_chunks=ops.bound_layout_chunks(bound, n)
         )
-    # one dominant sequence plus the 512-alignment pseudo-sequence: L = 43 / 45 on the exact layout, 46 on the bound,
-    # the same three-segment tables either way
-    assert ops.plan_segments(138, 2, HV12_CTAS, sm_count, 2, seq_chunks=chunks(8192, 512))[0] == 43
-    assert ops.segment_bounds(128, 43) == ops.segment_bounds(128, 46)
-    for residency in (2, 1):
-        assert ops.plan_segments(138, 2, HV12_CTAS, sm_count, residency, seq_chunks=chunks(8481, 223))[0] == 45
+    # one dominant sequence plus the 512-alignment pseudo-sequence: the pad's 48 CTAs push every fwd_h grid above one
+    # CTA per SM (co-resident throughout), so five segments beat three (61.3 vs 83.2 chunk steps for 8481 + 223);
+    # dhu at one CTA per SM keeps three (60.2 vs 73.6 for five)
+    assert ops.plan_segments(138, 2, HV12_CTAS, sm_count, 2, seq_chunks=chunks(8192, 512))[0] == 26
+    assert ops.plan_segments(138, 2, HV12_CTAS, sm_count, 2, seq_chunks=chunks(8481, 223)) == (27, pytest.approx(61.2748))
+    assert ops.plan_segments(138, 2, HV12_CTAS, sm_count, 1, seq_chunks=chunks(8481, 223)) == (45, pytest.approx(60.178))
+    assert ops.segment_bounds(133, 27) == [0, 26, 53, 79, 106, 133]
     assert ops.segment_bounds(133, 45) == ops.segment_bounds(133, 46) == [0, 44, 88, 133]
-    # two long sequences plus the pseudo-sequence: the bound splits both scans (L = 43), the exact layout stays serial
-    assert ops.plan_segments(131, 3, HV12_CTAS, sm_count, 2)[0] == 43
-    for residency in (2, 1):
-        assert ops.plan_segments(131, 3, HV12_CTAS, sm_count, residency, seq_chunks=chunks(4360, 3491, 341)) == (0, 69.0)
-    assert ops.plan_segments(132, 4, HV12_CTAS, sm_count, 2, seq_chunks=chunks(2802, 2771, 2476, 143)) == (0, 44.0)
-    assert ops.plan_segments(260, 4, HV12_CTAS, sm_count, 2, seq_chunks=chunks(4096, 4096, 4096, 4096)) == (0, 64.0)
+    assert ops.plan_segments(260, 2, HV12_CTAS, sm_count, 2, seq_chunks=chunks(16384, 512))[0] == 52
+    assert ops.plan_segments(260, 2, HV12_CTAS, sm_count, 1, seq_chunks=chunks(16384, 512))[0] == 86
+    # two long sequences plus the pseudo-sequence (69 + 55 + 6 chunks): the exact layout splits fwd_h at L = 23
+    # (3 + 3 + 1 segments, 59.9 vs 69 chunk steps) and keeps dhu serial (one CTA per SM); the bound splits 22 / 43
+    assert ops.plan_segments(131, 3, HV12_CTAS, sm_count, 2)[0] == 22
+    assert ops.plan_segments(131, 3, HV12_CTAS, sm_count, 1)[0] == 43
+    assert ops.plan_segments(131, 3, HV12_CTAS, sm_count, 2, seq_chunks=chunks(4360, 3491, 341)) == (23, pytest.approx(59.8748))
+    assert ops.plan_segments(131, 3, HV12_CTAS, sm_count, 1, seq_chunks=chunks(4360, 3491, 341)) == (0, 69.0)
+    # packs: 44 / 44 / 39 / 3 chunks (192 CTAs, co-resident even unsplit) split fwd_h at 22; the real five-sequence
+    # micro-batch (38/38/38/15/3 chunks, 240 CTAs) stays serial on both scans (the R3 pre-fit planner split it at
+    # L = 19 and measured +5 % on the forward); 4 x 4096 splits fwd_h at L = 22 (12 segments, two rounds at 3.2x: 90
+    # vs 102.4 chunk steps for 192 co-resident CTAs) and keeps the one-CTA-per-SM dhu scan serial; 4 x 1024 at HV 4
+    # stays serial
+    assert ops.plan_segments(132, 4, HV12_CTAS, sm_count, 2, seq_chunks=chunks(2802, 2771, 2476, 143)) == (22, pytest.approx(48.878))
+    assert ops.plan_segments(133, 5, HV12_CTAS, sm_count, 2, seq_chunks=chunks(2384, 2382, 2369, 902, 155)) == (0, pytest.approx(60.8))
+    assert ops.plan_segments(260, 4, HV12_CTAS, sm_count, 2, seq_chunks=chunks(4096, 4096, 4096, 4096)) == (22, pytest.approx(89.9996))
+    assert ops.plan_segments(260, 4, HV12_CTAS, sm_count, 1, seq_chunks=chunks(4096, 4096, 4096, 4096)) == (0, 128.0)
+    assert ops.plan_segments(130, 2, 24 * (ops.HEAD_DIM // 32), sm_count, 2, seq_chunks=chunks(4096, 4096)) == (22, pytest.approx(89.9996))
     assert ops.plan_segments(68, 4, 16, sm_count, 2, seq_chunks=chunks(1024, 1024, 1024, 1024)) == (0, 16.0)
-    assert ops.plan_segments(260, 2, HV12_CTAS, sm_count, 2, seq_chunks=chunks(16384, 512))[0] == 86
+    # the wiring LAYOUT at HV 4 splits both scans at 18 on the exact layout
+    assert ops.plan_segments(125, 4, 16, sm_count, 2, seq_chunks=chunks(3339, 2802, 1340, 263)) == (18, pytest.approx(29.178))
 
 
 def test_host_route_prices_the_exact_layout():
@@ -346,28 +417,44 @@ def test_host_route_prices_the_exact_layout():
     ops._host_chunk_meta.cache_clear()
     arch = ops.device_arch(DEVICE)
     index = DEVICE.index
-    # two long sequences + the 512-alignment pseudo-sequence: the device route (chunk bound only) would split both
-    # scans at L = 43; the host route prices the exact layout and keeps one segment per sequence
+    # two long sequences + the 512-alignment pseudo-sequence: the device route (chunk bound only) prices one 129-chunk
+    # chain (22 / 43), the host route the exact 69 + 55 + 6 layout (fwd_h 23: 3 + 3 + 1 segments; dhu serial)
     pack = (4360, 3491, 341)
-    assert ops.segment_lens(sum(pack), 3, 12, index, arch) == (43, 43)
-    assert ops.segment_lens(sum(pack), 3, 12, index, arch, pack) == (0, 0)
+    assert ops.segment_lens(sum(pack), 3, 12, index, arch) == (22, 43)
+    assert ops.segment_lens(sum(pack), 3, 12, index, arch, pack) == (23, 0)
     meta = ops.chunk_meta_from_host(_cu(pack), DEVICE, 12, arch=arch)
-    assert meta.fwd_segments.segment_len == 0 and meta.bwd_segments.segment_len == 0
-    assert meta.fwd_segments.num_segments == len(pack) and meta.bwd_segments.num_segments == len(pack)
-    # one dominant sequence + pad: exact L = 45 vs bound L = 46 build the same three-segment table
+    assert meta.fwd_segments.segment_len == 23 and meta.bwd_segments.segment_len == 0
+    assert meta.fwd_segments.num_segments == 7 and meta.bwd_segments.num_segments == len(pack)
+    assert meta.fwd_segments.seg_chunk_start.tolist() == [0, 23, 46, 69, 87, 105, 124, 130]
+    # one dominant sequence + pad: the device route (bound 137 + 1) picks 23 / 46, the exact layout 27 (five fwd_h
+    # segments: the pad's CTAs make every grid above one CTA per SM co-resident) / 45 (three dhu segments)
     mb00 = (8481, 223)
-    assert ops.segment_lens(sum(mb00), 2, 12, index, arch) == (46, 46)
-    assert ops.segment_lens(sum(mb00), 2, 12, index, arch, mb00) == (45, 45)
+    assert ops.segment_lens(sum(mb00), 2, 12, index, arch) == (23, 46)
+    assert ops.segment_lens(sum(mb00), 2, 12, index, arch, mb00) == (27, 45)
     host = ops.chunk_meta_from_host(_cu(mb00), DEVICE, 12, arch=arch)
-    assert host.fwd_segments.segment_len == 45 and host.fwd_segments.num_segments == 4  # 3 segments + the pad sequence
-    assert host.fwd_segments.seg_chunk_start.tolist() == [0, 44, 88, 133, 137]
+    assert host.fwd_segments.segment_len == 27 and host.fwd_segments.num_segments == 6  # 5 segments + the pad sequence
+    assert host.fwd_segments.seg_chunk_start.tolist() == [0, 26, 53, 79, 106, 133, 137]
+    assert host.bwd_segments.segment_len == 45 and host.bwd_segments.seg_chunk_start.tolist() == [0, 44, 88, 133, 137]
 
 
 def test_segment_len_env_override_wins_over_the_planner(monkeypatch):
-    # arch is dead on the env-override path (choose_segment_len returns first); avoid the Blackwell-only device_arch
-    arch = "sm_100a"
+    # the pin is validated at plan time against the stages rendered for the device's arch (R3: a pin on a layout or
+    # arch without a pre-scan stage is dropped with a warning, see test_segment_len_override_is_validated_at_plan_time)
+    _require_blackwell()
+    arch = ops.device_arch(DEVICE)
     monkeypatch.setattr(ops, "FORCED_SEGMENT_LEN", None)
     monkeypatch.setenv("MILES_GDN_CHUNK_TRAIN_SEG_CHUNKS", "7")
     assert ops.segment_lens(8192, 1, 12, DEVICE.index, arch) == (7, 7)
     monkeypatch.setenv("MILES_GDN_CHUNK_TRAIN_SEG_CHUNKS", "0")
     assert ops.segment_lens(8192, 1, 12, DEVICE.index, arch) == (0, 0)
+
+
+def test_segment_len_override_is_validated_at_plan_time(monkeypatch):
+    _require_blackwell()
+    arch = ops.device_arch(DEVICE)
+    # a five-sequence TP4 layout runs the (64,1) configuration on the dhu scan (no pre-scan stage) and (32,2) on fwd_h:
+    # the pin is honoured where a pre-scan exists and dropped with a warning naming the layout where none does
+    monkeypatch.setenv("MILES_GDN_CHUNK_TRAIN_SEG_CHUNKS", "43")
+    assert ops.choose_register_scan_config("dhu", 5, 12, DEVICE.index, arch) == (64, 1)
+    with pytest.warns(RuntimeWarning, match=r"forced segment length 43 ignored for the dhu scan .*\(64, 1\)"):
+        assert ops.segment_lens(16384, 5, 12, DEVICE.index, arch) == (43, 0)

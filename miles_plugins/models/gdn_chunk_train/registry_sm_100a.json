@@ -284,10 +284,10 @@
   "compile_flags": []
  },
  "wy": {
-  "name": "cake_gdn_chunk_train_911e08b745ce208cc23e",
+  "name": "cake_gdn_chunk_train_c6435250a74239dc2445",
   "arch": "sm_100a",
-  "cache_name": "cake_gdn_chunk_train_911e08b745ce208cc23e_sm_100a",
-  "kernel_symbol": "kernel_cake_gdn_chunk_train_911e08b745ce208cc23e",
+  "cache_name": "cake_gdn_chunk_train_c6435250a74239dc2445_sm_100a",
+  "kernel_symbol": "kernel_cake_gdn_chunk_train_c6435250a74239dc2445",
   "arg_plan": [
    [
     "buffer",
@@ -351,15 +351,15 @@
    ]
   ],
   "sources": [
-   "sm_100a/cake_gdn_chunk_train_911e08b745ce208cc23e_kernel.cu",
-   "sm_100a/cake_gdn_chunk_train_911e08b745ce208cc23e_binding.cu"
+   "sm_100a/cake_gdn_chunk_train_c6435250a74239dc2445_kernel.cu",
+   "sm_100a/cake_gdn_chunk_train_c6435250a74239dc2445_binding.cu"
   ],
   "block": [
    128,
    1,
    1
   ],
-  "dynamic_smem_bytes": 93696,
+  "dynamic_smem_bytes": 74240,
   "ffi_entry": "run",
   "compile_flags": []
  },
@@ -697,10 +697,10 @@
   }
  },
  "fwd_h_pre_r32k2": {
-  "name": "cake_gdn_chunk_train_9c39e2e952b5c4d4b59a",
+  "name": "cake_gdn_chunk_train_773e4e3fd3526410792d",
   "arch": "sm_100a",
-  "cache_name": "cake_gdn_chunk_train_9c39e2e952b5c4d4b59a_sm_100a",
-  "kernel_symbol": "kernel_cake_gdn_chunk_train_9c39e2e952b5c4d4b59a",
+  "cache_name": "cake_gdn_chunk_train_773e4e3fd3526410792d_sm_100a",
+  "kernel_symbol": "kernel_cake_gdn_chunk_train_773e4e3fd3526410792d",
   "arg_plan": [
    [
     "buffer",
@@ -775,6 +775,14 @@
     "store_final_state"
    ],
    [
+    "buffer",
+    "seg_flag"
+   ],
+   [
+    "parameter",
+    "warmup_thresh_log2"
+   ],
+   [
     "grid",
     "grid_x"
    ],
@@ -788,8 +796,8 @@
    ]
   ],
   "sources": [
-   "sm_100a/cake_gdn_chunk_train_9c39e2e952b5c4d4b59a_kernel.cu",
-   "sm_100a/cake_gdn_chunk_train_9c39e2e952b5c4d4b59a_binding.cu"
+   "sm_100a/cake_gdn_chunk_train_773e4e3fd3526410792d_kernel.cu",
+   "sm_100a/cake_gdn_chunk_train_773e4e3fd3526410792d_binding.cu"
   ],
   "block": [
    128,
@@ -808,10 +816,10 @@
   }
  },
  "stitch": {
-  "name": "cake_gdn_chunk_train_77b8591775e1bff29935",
+  "name": "cake_gdn_chunk_train_34b87a433d64c526faea",
   "arch": "sm_100a",
-  "cache_name": "cake_gdn_chunk_train_77b8591775e1bff29935_sm_100a",
-  "kernel_symbol": "kernel_cake_gdn_chunk_train_77b8591775e1bff29935",
+  "cache_name": "cake_gdn_chunk_train_34b87a433d64c526faea_sm_100a",
+  "kernel_symbol": "kernel_cake_gdn_chunk_train_34b87a433d64c526faea",
   "arg_plan": [
    [
     "buffer",
@@ -828,6 +836,10 @@
    [
     "buffer",
     "seq_seg_start"
+   ],
+   [
+    "buffer",
+    "seg_flag"
    ],
    [
     "parameter",
@@ -855,8 +867,8 @@
    ]
   ],
   "sources": [
-   "sm_100a/cake_gdn_chunk_train_77b8591775e1bff29935_kernel.cu",
-   "sm_100a/cake_gdn_chunk_train_77b8591775e1bff29935_binding.cu"
+   "sm_100a/cake_gdn_chunk_train_34b87a433d64c526faea_kernel.cu",
+   "sm_100a/cake_gdn_chunk_train_34b87a433d64c526faea_binding.cu"
   ],
   "block": [
    256,
@@ -1385,10 +1397,10 @@
   }
  },
  "dhu_pre_r32k2": {
-  "name": "cake_gdn_chunk_train_b587ac4faca6ceefb32b",
+  "name": "cake_gdn_chunk_train_a2b022faa61fb2f7ca9d",
   "arch": "sm_100a",
-  "cache_name": "cake_gdn_chunk_train_b587ac4faca6ceefb32b_sm_100a",
-  "kernel_symbol": "kernel_cake_gdn_chunk_train_b587ac4faca6ceefb32b",
+  "cache_name": "cake_gdn_chunk_train_a2b022faa61fb2f7ca9d_sm_100a",
+  "kernel_symbol": "kernel_cake_gdn_chunk_train_a2b022faa61fb2f7ca9d",
   "arg_plan": [
    [
     "buffer",
@@ -1475,6 +1487,14 @@
     "scale"
    ],
    [
+    "buffer",
+    "seg_flag"
+   ],
+   [
+    "parameter",
+    "warmup_thresh_log2"
+   ],
+   [
     "grid",
     "grid_x"
    ],
@@ -1488,8 +1508,8 @@
    ]
   ],
   "sources": [
-   "sm_100a/cake_gdn_chunk_train_b587ac4faca6ceefb32b_kernel.cu",
-   "sm_100a/cake_gdn_chunk_train_b587ac4faca6ceefb32b_binding.cu"
+   "sm_100a/cake_gdn_chunk_train_a2b022faa61fb2f7ca9d_kernel.cu",
+   "sm_100a/cake_gdn_chunk_train_a2b022faa61fb2f7ca9d_binding.cu"
   ],
   "block": [
    128,
@@ -1508,10 +1528,10 @@
   }
  },
  "dqkwg": {
-  "name": "cake_gdn_chunk_train_88d34833644f16753854",
+  "name": "cake_gdn_chunk_train_1a6521749f9b48fc464b",
   "arch": "sm_100a",
-  "cache_name": "cake_gdn_chunk_train_88d34833644f16753854_sm_100a",
-  "kernel_symbol": "kernel_cake_gdn_chunk_train_88d34833644f16753854",
+  "cache_name": "cake_gdn_chunk_train_1a6521749f9b48fc464b_sm_100a",
+  "kernel_symbol": "kernel_cake_gdn_chunk_train_1a6521749f9b48fc464b",
   "arg_plan": [
    [
     "buffer",
@@ -1595,23 +1615,23 @@
    ]
   ],
   "sources": [
-   "sm_100a/cake_gdn_chunk_train_88d34833644f16753854_kernel.cu",
-   "sm_100a/cake_gdn_chunk_train_88d34833644f16753854_binding.cu"
+   "sm_100a/cake_gdn_chunk_train_1a6521749f9b48fc464b_kernel.cu",
+   "sm_100a/cake_gdn_chunk_train_1a6521749f9b48fc464b_binding.cu"
   ],
   "block": [
    128,
    1,
    1
   ],
-  "dynamic_smem_bytes": 156928,
+  "dynamic_smem_bytes": 107776,
   "ffi_entry": "run",
   "compile_flags": []
  },
  "wy_bwd": {
-  "name": "cake_gdn_chunk_train_d7b6a76e4ab096053366",
+  "name": "cake_gdn_chunk_train_0d8c390041e8ef908589",
   "arch": "sm_100a",
-  "cache_name": "cake_gdn_chunk_train_d7b6a76e4ab096053366_sm_100a",
-  "kernel_symbol": "kernel_cake_gdn_chunk_train_d7b6a76e4ab096053366",
+  "cache_name": "cake_gdn_chunk_train_0d8c390041e8ef908589_sm_100a",
+  "kernel_symbol": "kernel_cake_gdn_chunk_train_0d8c390041e8ef908589",
   "arg_plan": [
    [
     "buffer",
@@ -1687,23 +1707,23 @@
    ]
   ],
   "sources": [
-   "sm_100a/cake_gdn_chunk_train_d7b6a76e4ab096053366_kernel.cu",
-   "sm_100a/cake_gdn_chunk_train_d7b6a76e4ab096053366_binding.cu"
+   "sm_100a/cake_gdn_chunk_train_0d8c390041e8ef908589_kernel.cu",
+   "sm_100a/cake_gdn_chunk_train_0d8c390041e8ef908589_binding.cu"
   ],
   "block": [
    128,
    1,
    1
   ],
-  "dynamic_smem_bytes": 108032,
+  "dynamic_smem_bytes": 75520,
   "ffi_entry": "run",
   "compile_flags": []
  },
  "wy_bwd_bf16": {
-  "name": "cake_gdn_chunk_train_5dec2802d7f46ec7e825",
+  "name": "cake_gdn_chunk_train_e8f9a510e21191612ecf",
   "arch": "sm_100a",
-  "cache_name": "cake_gdn_chunk_train_5dec2802d7f46ec7e825_sm_100a",
-  "kernel_symbol": "kernel_cake_gdn_chunk_train_5dec2802d7f46ec7e825",
+  "cache_name": "cake_gdn_chunk_train_e8f9a510e21191612ecf_sm_100a",
+  "kernel_symbol": "kernel_cake_gdn_chunk_train_e8f9a510e21191612ecf",
   "arg_plan": [
    [
     "buffer",
@@ -1779,23 +1799,23 @@
    ]
   ],
   "sources": [
-   "sm_100a/cake_gdn_chunk_train_5dec2802d7f46ec7e825_kernel.cu",
-   "sm_100a/cake_gdn_chunk_train_5dec2802d7f46ec7e825_binding.cu"
+   "sm_100a/cake_gdn_chunk_train_e8f9a510e21191612ecf_kernel.cu",
+   "sm_100a/cake_gdn_chunk_train_e8f9a510e21191612ecf_binding.cu"
   ],
   "block": [
    128,
    1,
    1
   ],
-  "dynamic_smem_bytes": 108032,
+  "dynamic_smem_bytes": 75520,
   "ffi_entry": "run",
   "compile_flags": []
  },
  "finalize": {
-  "name": "cake_gdn_chunk_train_ed585d13b9a8f974c050",
+  "name": "cake_gdn_chunk_train_4e0c71c901510c55496e",
   "arch": "sm_100a",
-  "cache_name": "cake_gdn_chunk_train_ed585d13b9a8f974c050_sm_100a",
-  "kernel_symbol": "kernel_cake_gdn_chunk_train_ed585d13b9a8f974c050",
+  "cache_name": "cake_gdn_chunk_train_4e0c71c901510c55496e_sm_100a",
+  "kernel_symbol": "kernel_cake_gdn_chunk_train_4e0c71c901510c55496e",
   "arg_plan": [
    [
     "buffer",
@@ -1879,8 +1899,8 @@
    ]
   ],
   "sources": [
-   "sm_100a/cake_gdn_chunk_train_ed585d13b9a8f974c050_kernel.cu",
-   "sm_100a/cake_gdn_chunk_train_ed585d13b9a8f974c050_binding.cu"
+   "sm_100a/cake_gdn_chunk_train_4e0c71c901510c55496e_kernel.cu",
+   "sm_100a/cake_gdn_chunk_train_4e0c71c901510c55496e_binding.cu"
   ],
   "block": [
    128,

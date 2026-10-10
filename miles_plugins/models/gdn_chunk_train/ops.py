@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import math
 import os
+import warnings
 from dataclasses import dataclass
 from functools import cache, lru_cache
 from collections.abc import Sequence
@@ -360,19 +361,39 @@ def _scan_stage(kind: str, num_seqs: int, num_v_heads: int, device: torch.device
 # --------------------------------------------------------------------------- #
 PRESCAN_CONFIG = (32, 2)  # the only register-scan configuration with a pre-scan variant
 MIN_SEGMENT_CHUNKS = 4  # 256 tokens: shorter segments pay more in pre-scan + stitch than they save
-# Cost model of the split, in chunk steps of the (32,2) register scan at one CTA per SM, calibrated on the round-R2
-# sweep (GB300, 1x8192 and 1x16384 tokens at HV 12, forced L = 13/26/43/64): a second co-resident CTA raises the
-# per-step time to ~1.55x (the step is latency-bound but two CTAs share the SM's issue slots), a third wave doubles it;
-# the pre-scan step costs ~1.16x (one more operand tile); one serial stitch step (3xBF16 128^3 tensor-core product +
-# tile rebuild, ~6 us) is ~5 chunk steps.  Training runs without an initial state / final-state gradient, so the first
-# (last) segment's identity blocks are skipped: the pre-scan runs 2S-3 column-block sets for S segments.
+# Cost model of the split, in chunk steps of the (32,2) register scan at one CTA per SM, re-fit on the round-R3 GB300
+# forced-L sweep (1x8192 and 1x16384 tokens at HV 12, L = 13/22/26/43/64/86, CUPTI per kernel; fwd_h 1.23 us and dhu
+# 1.58 us per serial chunk step): a second co-resident CTA raises the per-step time to ~1.60x (192/240/288 CTAs on 160
+# SMs measured 1.54/1.60/1.63x; the step is latency-bound but two CTAs share the SM's issue slots), a tail wave behind
+# a full wave runs at the same factor (480/576 CTAs measured 3.40/3.21x), and a third round (960 CTAs, 6.77x) is
+# outside the model (MAX_SCAN_ROUNDS).  With the gate-adaptive warm-up (round R3, C1) the pre-scan runs only the
+# trailing (forward) / leading (backward) chunks whose summed gate drops below the warm-up threshold: ~3.8 chunk steps
+# per consumed segment = PRESCAN_WARMUP_CHUNKS x PRESCAN_STEP_FACTOR (1.16: one more operand tile) on the value blocks
+# of the S-1 consumed segments (the identity blocks exit).  The stitch launch costs 3.4 us + 2.8 us per boundary (both
+# directions, both lengths) = STITCH_FIXED_CHUNKS + STITCH_COPY_CHUNKS x (max k - 1) fwd_h steps; a boundary without a
+# map is a copy of ``B``.  The exact fallback (weak gating: full-segment pre-scan, identity blocks, 3xBF16 128^3 product
+# + tile rebuild) is not priced.
 # Mirror of ``loom/examples/weave/gdn_chunk_training.py`` (same constants, same functions): both sides must agree so the
 # host table and the device table split identically.
-SCAN_CO_RESIDENT_FACTOR = 1.55
+SCAN_CO_RESIDENT_FACTOR = 1.60
 PRESCAN_STEP_FACTOR = 1.16
-STITCH_STEP_CHUNKS = 5.0
+PRESCAN_WARMUP_CHUNKS = 3.3  # modelled warm-up length in chunk steps (strong gating: n_w = 1 plus the prologue and launch floor)
+STITCH_FIXED_CHUNKS = 2.75  # stitch launch floor in chunk steps
+STITCH_COPY_CHUNKS = 2.3  # one copy-only stitch step (serial over the boundaries) in chunk steps
 SPLIT_GAIN_THRESHOLD = 0.95  # split only when the modelled makespan beats the serial scan by at least 5 %
+MAX_SCAN_ROUNDS = 2  # a split may launch at most two rounds of the resident set (the sweep's calibrated range)
 FORCED_SEGMENT_LEN: int | None = None  # tests pin the segment length (0 = serial); production derives it
+# Warm-up threshold of the pre-scans in log2: the trailing (forward) / leading (backward) chunks of a segment whose
+# summed gate is below it bound the segment's map ``|M| <= 2^thresh`` and the dropped earlier contributions to ``B``
+# to the same relative size; -10 nats is FlashQLA's warm-up rule (cp_fwd.py at 0.1.2+7c7dfe1).
+# ``MILES_GDN_CHUNK_TRAIN_WARMUP_LOG2`` overrides it for experiments (``-inf``: the exact path on every segment).
+WARMUP_THRESH_LOG2 = -10.0 / math.log(2.0)
+
+
+def warmup_thresh_log2() -> float:
+    """The pre-scan warm-up threshold (log2), :data:`WARMUP_THRESH_LOG2` unless ``MILES_GDN_CHUNK_TRAIN_WARMUP_LOG2`` is set."""
+    forced = os.environ.get("MILES_GDN_CHUNK_TRAIN_WARMUP_LOG2")
+    return float(forced) if forced else WARMUP_THRESH_LOG2
 
 
 def _scan_residency(kind: str, vb: int, ks: int, device_index: int, arch: str) -> int:
@@ -383,11 +404,13 @@ def _scan_residency(kind: str, vb: int, ks: int, device_index: int, arch: str) -
 
 
 def _wave_factor(ctas: int, sm_count: int, residency: int) -> float:
-    """Makespan factor of ``ctas`` latency-bound scan CTAs relative to one CTA per SM.
+    """Makespan factor of ``ctas`` concurrently alive latency-bound scan CTAs relative to one CTA per SM.
 
     Co-resident CTAs (at most two per SM, when the scan's shared memory allows it) finish together at
-    :data:`SCAN_CO_RESIDENT_FACTOR` x the single-CTA step time; CTAs beyond the resident set run as further waves,
-    the last of which is priced at 1.0 when it fits one CTA per SM.
+    :data:`SCAN_CO_RESIDENT_FACTOR` x the single-CTA step time; CTAs beyond the resident set run as further waves.  A
+    tail wave is priced at 1.0 only when it is the sole wave and fits one CTA per SM: behind a full wave it starts
+    staggered as resident CTAs finish and shares SMs with them, so it runs at the full wave's factor (480 / 576 CTAs on
+    160 SMs measured 3.40 / 3.21x against 2.55 / 3.10x under the round-R2 rule).
     """
     co_resident = residency >= 2
     per_wave = sm_count * (2 if co_resident else 1)
@@ -395,8 +418,48 @@ def _wave_factor(ctas: int, sm_count: int, residency: int) -> float:
     full, tail = divmod(ctas, per_wave)
     cost = full * full_factor
     if tail:
-        cost += 1.0 if tail <= sm_count else full_factor
+        cost += full_factor if (full or tail > sm_count) else 1.0
     return cost
+
+
+def _scan_makespan(chunks: Sequence[int], splits: Sequence[int], per_segment: int, sm_count: int, residency: int) -> float:
+    """Modelled makespan, in chunk steps of one CTA per SM, of a scan grid over ``chunks`` cut into ``splits`` segments.
+
+    Sequence ``i`` runs ``splits[i] x per_segment`` CTAs for ``ceil(chunks[i] / splits[i])`` steps (its segments are
+    equal-sized within one chunk).  The first ``sm_count x residency`` CTAs are resident from the start, the shortest
+    first (the grid interleaves the sequences' segments, so every sequence is represented in the first wave and the
+    short ones free their slots first); every further CTA starts when a resident CTA finishes and is priced at the
+    longest duration.  Whenever more than one CTA per SM is launched the whole makespan runs at
+    :data:`SCAN_CO_RESIDENT_FACTOR`: the dispatch order, not the durations, decides which SMs hold two CTAs, so a
+    short sequence leaving early does not un-double the SMs that hold two long CTAs (the real 8481 + 223 micro-batch:
+    192 CTAs with a 4-chunk pad measured 1.53x over the full 45 steps; its six-segment grid of 336 CTAs ran at
+    1.6 x (4 + 23) steps, the 16 CTAs beyond the resident set starting when the pad's CTAs finished).  One sequence
+    reduces to ``steps x _wave_factor(all CTAs)`` within :data:`MAX_SCAN_ROUNDS`.
+    """
+    runs = sorted((-(-n // k), k * per_segment) for n, k in zip(chunks, splits))
+    slots = sm_count * (2 if residency >= 2 else 1)
+    longest = runs[-1][0]
+    releases = []
+    capacity, waiting = slots, 0
+    for steps, ctas in runs:
+        resident = min(ctas, capacity)
+        capacity -= resident
+        if resident:
+            releases.append((steps, resident))
+        waiting += ctas - resident
+    makespan = longest
+    while waiting > 0 and releases:
+        next_releases = []
+        for at, count in releases:
+            if waiting <= 0:
+                break
+            started = min(count, waiting)
+            waiting -= started
+            makespan = max(makespan, at + longest)
+            next_releases.append((at + longest, started))
+        releases = next_releases
+    factor = SCAN_CO_RESIDENT_FACTOR if (residency >= 2 and sum(c for _s, c in runs) > sm_count) else 1.0
+    return factor * makespan
 
 
 def bound_layout_chunks(chunks_bound: int, num_seqs: int) -> tuple[int, ...]:
@@ -421,26 +484,30 @@ def plan_segments(
     Pure function of the layout and the device.  Without ``seq_chunks`` (the device route, which knows only the padded
     chunk bound ``T // 64 + num_seqs``) it prices :func:`bound_layout_chunks`; with ``seq_chunks`` (the host route:
     the exact per-sequence chunk counts) it prices the tables that will actually run.  A segment length ``L`` cuts
-    sequence ``i`` into ``k_i = ceil(n_i / L)`` equal-sized segments (``k_i = 1``: unsplit, it finishes after its first
-    steps) and costs ``steps x waves(sum k_i x per_segment) + steps x 1.16 x waves(sum (2 k_i - 3) x per_segment)
-    + 5 x (max k_i - 1)`` chunk steps over the split sequences (pass-2 scan, pre-scan, serial stitch; ``steps`` =
-    the longest segment); the ``L`` with the lowest makespan is taken when it beats ``0.95 x`` the serial scan (the
-    longest sequence).  Balanced packed layouts whose sequences are all shorter than ``L`` keep one segment per
-    sequence (the pre-scan and stitch then launch on the device route and exit immediately).
+    sequence ``i`` into ``k_i = ceil(n_i / L)`` equal-sized segments (``k_i = 1``: unsplit) and costs
+    ``makespan(k) + 3.3 x 1.16 x waves(sum (k_i - 1) x per_segment) + 2.75 + 2.3 x (max k_i - 1)`` chunk steps --
+    the pass-2 scan over every sequence's segments (:func:`_scan_makespan`), the warm-up pre-scan of the consumed
+    segments' value blocks, the stitch launch floor plus one serial copy-only step per boundary -- against the serial
+    scan's own ``makespan(1, ..., 1)``; candidates whose grid exceeds :data:`MAX_SCAN_ROUNDS` rounds of the resident
+    set lie outside the calibration and are skipped.  The ``L`` with the lowest makespan is taken when it beats
+    ``0.95 x`` the serial scan.  Balanced packed layouts whose sequences are all shorter than ``L`` keep one segment
+    per sequence (the pre-scan and stitch then launch on the device route and exit immediately).
     """
     chunks = tuple(int(c) for c in seq_chunks) if seq_chunks is not None else bound_layout_chunks(chunks_bound, num_seqs)
     longest = max(chunks)
-    serial = float(longest)
+    per_wave = sm_count * (2 if residency >= 2 else 1)
+    serial = _scan_makespan(chunks, (1,) * len(chunks), per_segment, sm_count, residency)
     best_len, best_cost = 0, serial
     for segments in range(2, longest // MIN_SEGMENT_CHUNKS + 1):
         seg_len = -(-longest // segments)
         if seg_len < MIN_SEGMENT_CHUNKS or seg_len >= longest:
             continue
-        split = [(n, -(-n // seg_len)) for n in chunks if n > seg_len]
-        steps = max(-(-n // k) for n, k in split)
-        scan = steps * _wave_factor(sum(k for _n, k in split) * per_segment, sm_count, residency)
-        pre = steps * PRESCAN_STEP_FACTOR * _wave_factor(sum(2 * k - 3 for _n, k in split) * per_segment, sm_count, residency)
-        cost = scan + pre + max(k - 1 for _n, k in split) * STITCH_STEP_CHUNKS
+        splits = tuple(max(1, -(-n // seg_len)) for n in chunks)
+        if sum(splits) * per_segment > MAX_SCAN_ROUNDS * per_wave:
+            continue
+        scan = _scan_makespan(chunks, splits, per_segment, sm_count, residency)
+        pre = PRESCAN_WARMUP_CHUNKS * PRESCAN_STEP_FACTOR * _wave_factor(sum(k - 1 for k in splits) * per_segment, sm_count, residency)
+        cost = scan + pre + STITCH_FIXED_CHUNKS + STITCH_COPY_CHUNKS * (max(splits) - 1)
         if cost < best_cost:
             best_len, best_cost = seg_len, cost
     if best_len == 0 or best_cost >= SPLIT_GAIN_THRESHOLD * serial:
@@ -463,21 +530,40 @@ def choose_segment_len(
     :func:`plan_segments` over the exact per-sequence chunk counts when ``seq_lens`` is known (host route) or the
     padded chunk bound ``T // 64 + num_seqs`` otherwise (device route), the per-segment CTA count ``HV x K / vb``
     and the device's SM count and scan residency.
-    ``MILES_GDN_CHUNK_TRAIN_SEG_CHUNKS`` (or :data:`FORCED_SEGMENT_LEN`) pins the segment length for tests.
+    ``MILES_GDN_CHUNK_TRAIN_SEG_CHUNKS`` (or :data:`FORCED_SEGMENT_LEN`) pins the segment length for tests; the pin is
+    validated here, at plan time: on a layout whose scan runs another register configuration (no pre-scan stage) it is
+    ignored with a :class:`RuntimeWarning` naming the layout, and the serial scan runs.
     """
-    if FORCED_SEGMENT_LEN is not None:
-        return int(FORCED_SEGMENT_LEN)
-    forced = os.environ.get("MILES_GDN_CHUNK_TRAIN_SEG_CHUNKS")
-    if forced:
-        return int(forced)
+    env = os.environ.get("MILES_GDN_CHUNK_TRAIN_SEG_CHUNKS")
+    forced_len = int(FORCED_SEGMENT_LEN) if FORCED_SEGMENT_LEN is not None else (int(env) if env else None)
     vb, ks = PRESCAN_CONFIG
     pre = f"{kind}_pre_r{vb}k{ks}"
-    if pre not in MODULES or arch not in MODULES[pre]:
-        return 0
-    if choose_register_scan_config(kind, num_seqs, num_v_heads, device_index, arch) != (vb, ks):
-        return 0
+    config = choose_register_scan_config(kind, num_seqs, num_v_heads, device_index, arch)
     sm_count, smem_optin, major = _device_props(device_index)
-    if major < 9 or int(_scan_record(kind, vb, ks, arch)["scan"]["select_smem_bytes"]) > smem_optin:
+    if config != (vb, ks):
+        unsplittable = f"its register-scan configuration {config} has no pre-scan stage (only {PRESCAN_CONFIG} has one)"
+    elif pre not in MODULES or arch not in MODULES[pre]:
+        unsplittable = f"no {pre} stage is rendered for {arch}"
+    elif major < 9:
+        unsplittable = f"compute capability {major}.x has no register scan"
+    elif int(_scan_record(kind, vb, ks, arch)["scan"]["select_smem_bytes"]) > smem_optin:
+        unsplittable = (
+            f"the {kind} register scan {PRESCAN_CONFIG} needs {_scan_record(kind, vb, ks, arch)['scan']['select_smem_bytes']} B "
+            f"of shared memory, above the device opt-in {smem_optin} B"
+        )
+    else:
+        unsplittable = None
+    if forced_len is not None:
+        if forced_len > 0 and unsplittable is not None:
+            warnings.warn(
+                f"forced segment length {forced_len} ignored for the {kind} scan of this layout ({num_seqs} sequences, "
+                f"{num_v_heads} value heads, {total_tokens} tokens): {unsplittable}; the serial scan runs",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+            return 0
+        return forced_len
+    if unsplittable is not None:
         return 0
     chunks_bound = total_tokens // CHUNK + num_seqs
     per_segment = num_v_heads * (HEAD_DIM // vb)
@@ -543,7 +629,12 @@ def _launch_fwd_h(
         pre = stage.replace("fwd_h_r", "fwd_h_pre_r")
         if pre not in MODULES or arch not in MODULES[pre]:
             raise NotImplementedError(f"the segmented fwd_h scan needs the pre-scan stage {pre} for {arch}")
+        pre_threads = int(MODULES[pre][arch]["block"][0])
+        if segs.segment_len > pre_threads:
+            raise ValueError(f"segment_len {segs.segment_len} exceeds the {pre_threads} chunks per segment the {pre} warm-up prologue scans")
         seg_state = torch.empty(segs.num_segments, num_v_heads, HEAD_DIM, 2 * HEAD_DIM, dtype=torch.float32, device=device)
+        # per-segment flags written by the pre-scan (1: exact fallback, map block present) and read by the stitch
+        seg_flag = torch.empty(segs.num_segments, num_v_heads, dtype=torch.int32, device=device)
         kernel(pre, arch).launch(
             grid=(segs.num_segments, num_v_heads, 2 * HEAD_DIM // vb),
             kn=kn,
@@ -564,6 +655,8 @@ def _launch_fwd_h(
             num_v_heads=num_v_heads,
             use_initial_state=use_init,
             store_final_state=0,
+            seg_flag=seg_flag,
+            warmup_thresh_log2=warmup_thresh_log2(),
         )
         h_start = torch.empty(segs.num_segments, num_v_heads, HEAD_DIM, HEAD_DIM, dtype=torch.float32, device=device)
         kernel("stitch", arch).launch(
@@ -572,6 +665,7 @@ def _launch_fwd_h(
             init_state=h0,
             state_out=h_start,
             seq_seg_start=segs.seq_seg_start,
+            seg_flag=seg_flag,
             num_v_heads=num_v_heads,
             use_init=use_init,
             reverse=0,
@@ -799,7 +893,11 @@ def gdn_chunk_backward(
         pre = scan_stage.replace("dhu_r", "dhu_pre_r")
         if pre not in MODULES or arch not in MODULES[pre]:
             raise NotImplementedError(f"the segmented dhu scan needs the pre-scan stage {pre} for {arch}")
+        pre_threads = int(MODULES[pre][arch]["block"][0])
+        if segs.segment_len > pre_threads:
+            raise ValueError(f"segment_len {segs.segment_len} exceeds the {pre_threads} chunks per segment the {pre} warm-up prologue scans")
         seg_state = torch.empty(segs.num_segments, num_v_heads, HEAD_DIM, 2 * HEAD_DIM, dtype=torch.float32, device=device)
+        seg_flag = torch.empty(segs.num_segments, num_v_heads, dtype=torch.int32, device=device)
         kernel(pre, arch).launch(
             grid=(segs.num_segments, num_v_heads, 2 * HEAD_DIM // vb),
             qn=qn,
@@ -823,6 +921,8 @@ def gdn_chunk_backward(
             use_final_state_grad=use_dht,
             store_initial_state_grad=0,
             scale=scale,
+            seg_flag=seg_flag,
+            warmup_thresh_log2=warmup_thresh_log2(),
         )
         dh_end = torch.empty(segs.num_segments, num_v_heads, HEAD_DIM, HEAD_DIM, dtype=torch.float32, device=device)
         kernel("stitch", arch).launch(
@@ -831,6 +931,7 @@ def gdn_chunk_backward(
             init_state=dht32,
             state_out=dh_end,
             seq_seg_start=segs.seq_seg_start,
+            seg_flag=seg_flag,
             num_v_heads=num_v_heads,
             use_init=use_dht,
             reverse=1,
@@ -917,7 +1018,7 @@ def gdn_chunk_backward(
     dk = torch.empty_like(kn)
     dg = torch.empty_like(dg2)
     kernel("finalize", arch).launch(
-        grid=(meta.num_chunks, num_v_heads, 1),
+        grid=(meta.num_chunks, num_heads, 1),
         qn=qn,
         kn=kn,
         rstd_q=forward["rstd_q"],
