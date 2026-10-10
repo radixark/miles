@@ -42,7 +42,7 @@ To add one: add the entry to `KNOWN_LABELS`, then create the matching `run-ci-<k
 
 Domain labels pick *which* tests run; dispatch labels pick *where*. The two axes are independent, so `run-ci-megatron` + `run-on-blackwell` means "every megatron test that can run on Blackwell, on Blackwell, and nowhere else".
 
-Each CUDA test declares the GPU generations its kernels and precision paths support: `register_cuda_ci(..., hardware=["hopper", "blackwell"])`. Its `suite` must name a stage on the first supported generation, so a test's home stage is also where it runs when nothing asks otherwise.
+Each CUDA test declares `num_gpus`, the minimum count preserving all cases, and the GPU generations its kernels and precision paths support: `register_cuda_ci(..., hardware=["hopper", "blackwell"])`. Its `suite` must name a stage on the first supported generation, so a test's home stage is also where it runs when nothing asks otherwise.
 
 | PR labels | Effect |
 |---|---|
@@ -95,6 +95,8 @@ Started at <timestamp> UTC; elapsed time and the result will be recorded here wh
 ```
 
 The reaction acknowledges that the request was accepted. When execution finishes, the workflow updates that same status comment—identified by the comment ID returned when it was created—to ✅ passed, ❌ failed, or ⚪ cancelled, and records the selected suite and total elapsed time. A run is reported as passed only when its CPU or CUDA execution job succeeds; resolver failures and runs where no execution job starts are reported as failed rather than as successful dispatches.
+
+A B200 file rerun joins the same `b200-oma` whole-host queue as PR, scheduled, and release CI, so it cannot overlap either B200 stage.
 
 An explicit file request is the selection: domain labels and the nightly cadence gate do not apply, while a symlinked or `disabled` test, an unregistered path, a ROCm-only registration, or a file with more than one CPU/CUDA registration fails the resolve job instead of silently running nothing.
 

@@ -26,8 +26,8 @@ do when a check goes red is in `ci-failure-triage.md`.
 
 ## Stage
 
-A test holds every GPU of its stage for its whole run, and the wider stages have
-fewer runners. Walk the table from the top and stop at the first stage that can
+A Hopper test holds its stage allocation for its whole run. B200 allocates the
+test's explicit `num_gpus` from a shared pool; preserve all cases when choosing it. Walk the table from the top and stop at the first stage that can
 run the test; copying a neighbouring test's `suite=` is not a reason.
 
 | Order | Where | Runs on | Use for |
@@ -38,12 +38,16 @@ run the test; copying a neighbouring test's `suite=` is not a reason.
 | 4 | `stage-c-2-gpu-h200` | 2× H200 | 2-GPU tests |
 | 5 | `stage-c-4-gpu-h200` | 4× H200 | 4-GPU tests |
 | 6 | `stage-c-8-gpu-h200` or `stage-c-8-gpu-h100` | 8× H200 / 8× H100 | 8-GPU tests |
-| — | `stage-c-8-gpu-b200` | 8× B200 | preferably tests that cannot run on Hopper (`hardware=["blackwell"]`), any GPU count |
+| — | `stage-c-4-gpu-b200` | 4× B200 | Blackwell tests needing up to 4 GPUs |
+| — | `stage-c-8-gpu-b200` | 8× B200 | Blackwell tests needing 8 GPUs |
 
 The stage's GPU count equals the count the test requests (`ray start
 --num-gpus`, `--actor-num-gpus-per-node`, `torchrun --nproc-per-node`): a 4-GPU
-test on an 8-GPU stage idles four GPUs for its whole run. `stage-c-8-gpu-b200`
-is the exception, because the Blackwell fleet is a single unpartitioned host.
+test on an 8-GPU stage idles four GPUs for its whole run. Blackwell
+uses the 4-GPU suite to select small tests, but allocates the declared
+`num_gpus=1`, `2`, or `4`; the suite no longer fixes its allocation.
+Every new CUDA test must declare `num_gpus` explicitly. Never lower it by
+introducing skips or reducing the parallel topology that the test covers.
 
 A new test needs no ROCm registration. A file that already has
 `register_rocm_ci(..., suite="nightly-stage-c-<N>-gpu-*")` keeps `<N>` equal to
@@ -61,6 +65,7 @@ from tests.ci.ci_register import register_cuda_ci
 register_cuda_ci(
     est_time=500,                      # measured; see est_time below
     suite="stage-c-2-gpu-h200",        # home stage, from the table above
+    num_gpus=2,                       # minimum preserving every test case
     labels=["megatron"],               # domain labels that select it on a PR
     hardware=["hopper", "blackwell"],  # supported CUDA generations
 )
