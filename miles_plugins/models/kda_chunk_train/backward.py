@@ -223,8 +223,10 @@ def _build_layout(lengths, offsets, rows_external: int, device) -> ChunkLayout:
     start_table = _round_up(n + 1, _TABLE_ALIGN)
     rows64 = _round_up(rows_external, _ROW_ALIGN)
     host = torch.empty(rows64 + (2 * table + start_table) // 2, dtype=torch.int64, pin_memory=pinned)
-    a32 = host[rows64:].view(torch.int32).numpy()
-    starts = _host_tables(lengths, offsets, rows_external, host.numpy()[:rows_external], a32[:nc], a32[table : table + nc])
+    # numpy views of the staging buffer (a numpy view costs well under a microsecond; a torch view op ~4 us)
+    a64 = host.numpy()
+    a32 = a64[rows64:].view(np.int32)
+    starts = _host_tables(lengths, offsets, rows_external, a64[:rows_external], a32[:nc], a32[table : table + nc])
     if nc_pad != nc:  # trailing pad chunk: no rows, zero length
         a32[nc] = 0
         a32[table + nc] = 0
@@ -232,15 +234,16 @@ def _build_layout(lengths, offsets, rows_external: int, device) -> ChunkLayout:
 
     dev = torch.empty_like(host, device=device)
     dev.copy_(host, non_blocking=pinned)
-    tables = dev[rows64:].view(torch.int32)
+    tables = dev.view(torch.int32)  # the int32 tables start at element 2 * rows64 (256-byte aligned)
+    t0 = 2 * rows64
     return ChunkLayout(
         lengths=lengths,
         offsets=offsets,
         rows_external=int(rows_external),
         seq_chunk_start_cpu=tuple(starts),
-        chunk_bos=tables[:nc_pad],
-        chunk_len=tables[table : table + nc_pad],
-        seq_chunk_start=tables[2 * table : 2 * table + n + 1],
+        chunk_bos=tables[t0 : t0 + nc_pad],
+        chunk_len=tables[t0 + table : t0 + table + nc_pad],
+        seq_chunk_start=tables[t0 + 2 * table : t0 + 2 * table + n + 1],
         internal_rows=dev[:rows_external],
     )
 
