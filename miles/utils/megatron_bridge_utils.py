@@ -30,7 +30,11 @@ def patch_megatron_model(model):
 
 
 def apply_dsa_backend_args(provider, args) -> None:
-    """Map --dsa-attention-backend onto the provider's dsa_attention_backend (bridge) or dsa_kernel_backend (main)."""
+    """Resolve DSV4 kernel selection separately from the GLM DSA backend option."""
+    if getattr(provider, "experimental_attention_variant", None) == "dsv4_hybrid":
+        provider.dsa_kernel_backend = getattr(args, "dsa_kernel_backend", None) or "cudnn"
+        return
+
     backend = getattr(args, "dsa_attention_backend", "megatron")
     if hasattr(provider, "dsa_attention_backend"):
         provider.dsa_attention_backend = backend

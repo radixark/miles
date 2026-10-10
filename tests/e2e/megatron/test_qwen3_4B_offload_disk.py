@@ -22,10 +22,7 @@ NUM_GPUS = 4
 OFFLOAD_DIR = "/root/train_offload_disk"
 
 register_cuda_ci(
-    est_time=600,
-    suite="stage-c-4-gpu-h200",
-    labels=["megatron"],
-    hardware=["hopper", "blackwell"],
+    est_time=600, suite="stage-c-4-gpu-h200", labels=["megatron"], hardware=["hopper", "blackwell"], num_gpus=4
 )
 register_rocm_ci(
     est_time=300,

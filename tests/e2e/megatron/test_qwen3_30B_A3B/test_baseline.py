@@ -10,6 +10,7 @@ register_cuda_ci(
     labels=["megatron", "weight-update", "short", "mooncake"],
     hardware=["hopper", "blackwell"],
     disabled="Outdated and simple.",
+    num_gpus=4,
 )
 
 register_ci_gate(metric_key="train/grad_norm")

@@ -6,10 +6,7 @@ from miles.utils.external_utils import command_utils
 
 # FIXME: fix this
 register_cuda_ci(
-    est_time=1500,
-    suite="stage-c-4-gpu-h200",
-    labels=["megatron"],
-    hardware=["hopper", "blackwell"],
+    est_time=1500, suite="stage-c-4-gpu-h200", labels=["megatron"], hardware=["hopper", "blackwell"], num_gpus=4
 )
 register_rocm_ci(
     est_time=800,
