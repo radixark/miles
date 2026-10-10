@@ -360,7 +360,18 @@ def _scan_stage(kind: str, num_seqs: int, num_v_heads: int, device: torch.device
 # --------------------------------------------------------------------------- #
 PRESCAN_CONFIG = (32, 2)  # the only register-scan configuration with a pre-scan variant
 MIN_SEGMENT_CHUNKS = 4  # 256 tokens: shorter segments pay more in pre-scan + stitch than they save
-STITCH_STEP_CHUNKS = 2.0  # one serial stitch step (3xBF16 128^3 tensor-core product + tile rebuild) in chunk steps
+# Cost model of the split, in chunk steps of the (32,2) register scan at one CTA per SM, calibrated on the round-R2
+# sweep (B200 / GB300, 1x8192 and 1x16384 tokens at HV 12, forced L = 13/26/43/64): a second co-resident CTA raises the
+# per-step time to ~1.55x (the step is latency-bound but two CTAs share the SM's issue slots), a third wave doubles it;
+# the pre-scan step costs ~1.16x (one more operand tile); one serial stitch step (3xBF16 128^3 tensor-core product +
+# tile rebuild, ~6 us) is ~5 chunk steps.  Training runs without an initial state / final-state gradient, so the first
+# (last) segment's identity blocks are skipped: the pre-scan runs 2S-3 column-block sets for S segments.
+# Mirror of ``loom/examples/weave/gdn_chunk_training.py`` (same constants, same functions): both sides must agree so the
+# host table and the device table split identically.
+SCAN_CO_RESIDENT_FACTOR = 1.55
+PRESCAN_STEP_FACTOR = 1.16
+STITCH_STEP_CHUNKS = 5.0
+SPLIT_GAIN_THRESHOLD = 0.95  # split only when the modelled makespan beats the serial scan by at least 5 %
 FORCED_SEGMENT_LEN: int | None = None  # tests pin the segment length (0 = serial); production derives it
 
 
@@ -371,16 +382,59 @@ def _scan_residency(kind: str, vb: int, ks: int, device_index: int, arch: str) -
     return max(1, min(2048 // threads, 65536 // (256 * threads), smem_optin // smem, 4))
 
 
+def _wave_factor(ctas: int, sm_count: int, residency: int) -> float:
+    """Makespan factor of ``ctas`` latency-bound scan CTAs relative to one CTA per SM.
+
+    Co-resident CTAs (at most two per SM, when the scan's shared memory allows it) finish together at
+    :data:`SCAN_CO_RESIDENT_FACTOR` x the single-CTA step time; CTAs beyond the resident set run as further waves,
+    the last of which is priced at 1.0 when it fits one CTA per SM.
+    """
+    co_resident = residency >= 2
+    per_wave = sm_count * (2 if co_resident else 1)
+    full_factor = SCAN_CO_RESIDENT_FACTOR if co_resident else 1.0
+    full, tail = divmod(ctas, per_wave)
+    cost = full * full_factor
+    if tail:
+        cost += 1.0 if tail <= sm_count else full_factor
+    return cost
+
+
+def plan_segments(chunks_bound: int, num_seqs: int, per_segment: int, sm_count: int, residency: int) -> tuple[int, float]:
+    """``(segment_len, modelled makespan in chunk steps)`` for a layout bound; ``segment_len == 0`` keeps the serial scan.
+
+    Pure function of the padded chunk bound (``T // 64 + num_seqs``) and the device, so the host and device table
+    builders agree.  It prices the layout the bound allows with the longest serial chain (one sequence holds every
+    chunk but one per other sequence): splitting that sequence into ``S`` segments of ``L`` chunks costs
+    ``L x waves(S x per_segment) + L x 1.16 x waves((2S - 3) x per_segment) + 5 x (S - 1)`` chunk steps (pass-2 scan,
+    pre-scan, serial stitch; the other sequences' single segments finish after their first steps) and is taken for
+    the ``S`` with the lowest modelled makespan when that beats ``0.95 x`` the serial scan.  Balanced packed layouts
+    whose sequences are all shorter than ``L`` keep one segment per sequence (the pre-scan and stitch then launch on
+    the device route and exit immediately).
+    """
+    longest = chunks_bound - (num_seqs - 1)
+    serial = float(longest)
+    best_len, best_cost = 0, serial
+    for segments in range(2, longest // MIN_SEGMENT_CHUNKS + 1):
+        seg_len = -(-longest // segments)
+        if seg_len < MIN_SEGMENT_CHUNKS or seg_len >= longest:
+            continue
+        scan = seg_len * _wave_factor(segments * per_segment, sm_count, residency)
+        pre = seg_len * PRESCAN_STEP_FACTOR * _wave_factor((2 * segments - 3) * per_segment, sm_count, residency)
+        cost = scan + pre + (segments - 1) * STITCH_STEP_CHUNKS
+        if cost < best_cost:
+            best_len, best_cost = seg_len, cost
+    if best_len == 0 or best_cost >= SPLIT_GAIN_THRESHOLD * serial:
+        return 0, serial
+    return best_len, best_cost
+
+
 def choose_segment_len(kind: str, total_tokens: int, num_seqs: int, num_v_heads: int, device_index: int, arch: str) -> int:
     """Chunks per scan segment for ``kind`` (``0``: one segment per sequence, the serial scan).
 
-    A pure function of the layout, through the padded chunk bound ``T // 64 + num_seqs`` that both table
-    builders know, and of the device.  Only the preferred register-scan configuration is split.  Splitting
-    pays when the one-segment grid leaves most of the device idle: the pre-scan runs ``(V + K) / V`` column
-    blocks per split segment and the stitch adds a serial step per boundary, so the estimated makespan
-    ``(waves(pre-scan) + waves(scan)) * segment_len + stitch`` must beat the serial scan over the longest
-    sequence the bound allows.  ``MILES_GDN_CHUNK_TRAIN_SEG_CHUNKS`` (or :data:`FORCED_SEGMENT_LEN`) pins
-    the segment length for tests.
+    Only the preferred register-scan configuration is split (it is the one with pre-scan kernels); the decision is
+    :func:`plan_segments` over the padded chunk bound ``T // 64 + num_seqs`` that both table builders know, the
+    per-segment CTA count ``HV x K / vb`` and the device's SM count and scan residency.
+    ``MILES_GDN_CHUNK_TRAIN_SEG_CHUNKS`` (or :data:`FORCED_SEGMENT_LEN`) pins the segment length for tests.
     """
     if FORCED_SEGMENT_LEN is not None:
         return int(FORCED_SEGMENT_LEN)
@@ -397,20 +451,9 @@ def choose_segment_len(kind: str, total_tokens: int, num_seqs: int, num_v_heads:
     if major < 9 or int(_scan_record(kind, vb, ks, arch)["scan"]["select_smem_bytes"]) > smem_optin:
         return 0
     chunks_bound = total_tokens // CHUNK + num_seqs
-    slots = sm_count * _scan_residency(kind, vb, ks, device_index, arch)
     per_segment = num_v_heads * (HEAD_DIM // vb)
-    max_segments = slots // per_segment
-    if max_segments <= num_seqs:
-        return 0
-    seg_len = max(MIN_SEGMENT_CHUNKS, -(-chunks_bound // (max_segments - num_seqs)))
-    longest = chunks_bound - (num_seqs - 1)
-    if seg_len >= longest:
-        return 0
-    segments = -(-longest // seg_len)
-    waves_scan = -(-segments * per_segment // slots)
-    waves_pre = -(-(segments - 1) * 2 * per_segment // slots)
-    split_cost = (waves_scan + waves_pre) * seg_len + (segments - 1) * STITCH_STEP_CHUNKS
-    return seg_len if split_cost < 0.9 * longest else 0
+    seg_len, _cost = plan_segments(chunks_bound, num_seqs, per_segment, sm_count, _scan_residency(kind, vb, ks, device_index, arch))
+    return seg_len
 
 
 def segment_lens(total_tokens: int, num_seqs: int, num_v_heads: int, device_index: int, arch: str) -> tuple[int, int]:

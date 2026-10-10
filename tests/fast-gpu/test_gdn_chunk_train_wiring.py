@@ -229,3 +229,63 @@ def test_segmented_scans_are_bit_deterministic(monkeypatch):
         again = _step(inputs, cu_seqlens=cu, cu_seqlens_cpu=_cu(LAYOUT))
         for name in first:
             assert torch.equal(first[name], again[name]), f"{name}: repeated segmented passes differ"
+
+
+# --------------------------------------------------------------------------- #
+# segment planner (round R2b): the calibrated cost model is a pure function shared with loom's
+# ``gdn_chunk_training.plan_segments`` (same constants, same table below), so both tables split identically.
+# --------------------------------------------------------------------------- #
+B200_SMS, GB300_SMS = 148, 160
+HV12_CTAS = 12 * (ops.HEAD_DIM // 32)  # CTAs per segment of the (32,2) scan at TP4 (12 value heads)
+HV48_CTAS = 48 * (ops.HEAD_DIM // 32)  # TP1
+
+
+def test_wave_factor_prices_co_residency_and_waves():
+    assert ops._wave_factor(148, 148, 2) == 1.0 and ops._wave_factor(1, 148, 1) == 1.0  # one wave, one CTA per SM
+    # a second co-resident CTA per SM shares the SM's issue slots
+    assert ops._wave_factor(149, 148, 2) == ops.SCAN_CO_RESIDENT_FACTOR
+    assert ops._wave_factor(296, 148, 2) == ops.SCAN_CO_RESIDENT_FACTOR
+    # beyond the resident set: further waves; a tail wave that fits one CTA per SM is priced at 1.0
+    assert ops._wave_factor(297, 148, 2) == ops.SCAN_CO_RESIDENT_FACTOR + 1.0
+    assert ops._wave_factor(149, 148, 1) == 2.0 and ops._wave_factor(297, 148, 1) == 3.0
+
+
+@pytest.mark.parametrize("sm_count", (B200_SMS, GB300_SMS))
+def test_segment_planner_reproduces_the_measured_optima(sm_count):
+    # one 8192-token sequence (129 padded chunks): three 43-chunk segments on both scans (best of L = 13/26/43/64/86
+    # on B200 and GB300); one 16384-token sequence: three 86-chunk segments (best of the same sweep)
+    for residency in (2, 1):
+        assert ops.plan_segments(129, 1, HV12_CTAS, sm_count, residency)[0] == 43
+        assert ops.plan_segments(257, 1, HV12_CTAS, sm_count, residency)[0] == 86
+    # the real micro-batch 8481 + 223 (pad) tokens: bound 138, longest chain 137 -> 46 (= L 64 within 0.1 %)
+    assert ops.plan_segments(138, 2, HV12_CTAS, sm_count, 2)[0] == 46
+    # balanced 4 x 4096 / 8 x 1024 layouts share the bound of one long sequence: one segment per real sequence
+    assert ops.plan_segments(260, 4, HV12_CTAS, sm_count, 2)[0] == 86
+    assert ops.plan_segments(136, 8, HV12_CTAS, sm_count, 2)[0] == 43
+    # TP1 (192 CTAs per segment) cannot gain 5 % over the serial scan
+    assert ops.plan_segments(129, 1, HV48_CTAS, sm_count, 2) == (0, 129.0)
+    # documented limitation: a balanced 4 x 1024 layout at four value heads is priced as one long sequence (L = 13)
+    assert ops.plan_segments(68, 4, 4 * (ops.HEAD_DIM // 32), sm_count, 2)[0] == 13
+
+
+def test_segment_planner_only_splits_for_a_modelled_gain():
+    for bound in range(2, 400, 7):
+        for num_seqs in (1, 2, 5):
+            if bound < num_seqs:
+                continue
+            seg_len, cost = ops.plan_segments(bound, num_seqs, HV12_CTAS, B200_SMS, 2)
+            longest = bound - (num_seqs - 1)
+            if seg_len == 0:
+                assert cost == float(longest)
+            else:
+                assert ops.MIN_SEGMENT_CHUNKS <= seg_len < longest
+                assert cost < ops.SPLIT_GAIN_THRESHOLD * longest
+
+
+def test_segment_len_env_override_wins_over_the_planner(monkeypatch):
+    arch = ops.device_arch(DEVICE)
+    monkeypatch.setattr(ops, "FORCED_SEGMENT_LEN", None)
+    monkeypatch.setenv("MILES_GDN_CHUNK_TRAIN_SEG_CHUNKS", "7")
+    assert ops.segment_lens(8192, 1, 12, DEVICE.index, arch) == (7, 7)
+    monkeypatch.setenv("MILES_GDN_CHUNK_TRAIN_SEG_CHUNKS", "0")
+    assert ops.segment_lens(8192, 1, 12, DEVICE.index, arch) == (0, 0)
