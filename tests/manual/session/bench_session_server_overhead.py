@@ -77,6 +77,47 @@ class TurnSpec:
     r3_json_chars: int
 
 
+def benchmark_resources() -> dict[str, Any]:
+    """Report host resources and cgroup v2 limits without resizing the workload."""
+    import psutil
+
+    memory = psutil.virtual_memory()
+    cpus = len(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else os.cpu_count()
+    result = {
+        "cpu_affinity_count": cpus,
+        "effective_cpus": cpus,
+        "host_memory_bytes": memory.total,
+        "available_memory_bytes": memory.available,
+    }
+    mount = Path("/sys/fs/cgroup")
+    membership = Path("/proc/self/cgroup")
+    if membership.exists():
+        for line in membership.read_text().splitlines():
+            if line.startswith("0::"):
+                cgroup = mount / line[3:].lstrip("/")
+                break
+        else:
+            cgroup = None
+        while cgroup is not None and cgroup.is_relative_to(mount):
+            cpu_max = cgroup / "cpu.max"
+            if cpu_max.exists():
+                quota, period = cpu_max.read_text().split()
+                if quota != "max":
+                    result["effective_cpus"] = min(result["effective_cpus"], int(quota) / int(period))
+            memory_max = cgroup / "memory.max"
+            if memory_max.exists():
+                limit = memory_max.read_text().strip()
+                if limit != "max":
+                    current = int((cgroup / "memory.current").read_text())
+                    result["available_memory_bytes"] = min(
+                        result["available_memory_bytes"], max(0, int(limit) - current)
+                    )
+            if cgroup == mount:
+                break
+            cgroup = cgroup.parent
+    return result
+
+
 def _positive_int(value: str) -> int:
     parsed = int(value)
     if parsed <= 0:
@@ -390,30 +431,32 @@ def _start_backend(
     `response_bodies`. `inference_interval` (seconds) is the simulated
     generation delay the mock waits before returning each chat response.
     """
-    # `_mock_r3_backend` lives beside this script; `sys.path[0]` is this
-    # script's dir, which the spawn child inherits, so a top-level import resolves
-    # in both parent and child without a tests/manual/session package.
-    from _mock_r3_backend import run_mock_r3_backend
+    from tests.manual.session._mock_r3_backend import run_mock_r3_backend
 
     from miles.utils.http_utils import find_available_port, wait_for_server_ready
 
     ctx = multiprocessing.get_context("spawn")
     port = find_available_port(28000)
     backend_procs = []
-    for _ in range(procs):
-        proc = ctx.Process(
-            target=run_mock_r3_backend,
-            args=(response_bodies, ip, port, inference_interval),
-            name="bench-mock-r3-backend",
-            daemon=False,
-        )
-        proc.start()
-        backend_procs.append(proc)
-    # The port probe passes once ANY shard listens; shards bind before serving
-    # and workers only open connections after the (much later) server readiness,
-    # so all shards are accepting by the time load arrives.
-    for proc in backend_procs:
-        wait_for_server_ready(ip, port, proc, timeout=120.0)
+    try:
+        for _ in range(procs):
+            proc = ctx.Process(
+                target=run_mock_r3_backend,
+                args=(response_bodies, ip, port, inference_interval),
+                name="bench-mock-r3-backend",
+                daemon=False,
+            )
+            proc.start()
+            backend_procs.append(proc)
+        # The port probe passes once ANY shard listens; shards bind before serving
+        # and workers only open connections after the (much later) server readiness,
+        # so all shards are accepting by the time load arrives.
+        for proc in backend_procs:
+            wait_for_server_ready(ip, port, proc, timeout=120.0)
+    except BaseException:
+        for proc in backend_procs:
+            _terminate_proc(proc)
+        raise
     return backend_procs, f"http://{ip}:{port}"
 
 
@@ -504,7 +547,7 @@ def _drive_workload(
     """
     # Imported here (not at module top) so the spawn children that target the
     # mock backend / session server do not transitively import httpx eagerly.
-    from _bench_load_generator import lg_drive_all, load_generator_entry
+    from tests.manual.session._bench_load_generator import lg_drive_all, load_generator_entry
 
     if driver_procs <= 1:
         wall_start = time.perf_counter()
@@ -559,7 +602,9 @@ def _drive_workload(
     return samples, agg, wall_s
 
 
-def run_http_bench(args) -> dict[str, Any]:
+def run_http_bench(args, *, warmup_sessions: int = 0) -> dict[str, Any]:
+    import psutil
+
     from miles.utils.chat_template_utils import get_tito_tokenizer, resolve_fixed_chat_template
     from miles.utils.http_utils import find_available_port, is_port_available, wait_for_server_ready
     from miles.utils.processing_utils import load_tokenizer
@@ -640,7 +685,25 @@ def run_http_bench(args) -> dict[str, Any]:
         server_root_pids = [p.pid for p in server_procs]
 
         request_bodies = [spec.request_body for spec in specs]
-        with _RSSSampler(server_root_pids) as rss:
+        if warmup_sessions:
+            _, warmup, _ = _drive_workload(
+                base_urls,
+                request_bodies,
+                warmup_sessions,
+                get_records=False,
+                tool_interval=0.0,
+                driver_procs=args.bench_driver_procs,
+            )
+            if (
+                warmup["completed_turns"] != warmup_sessions * args.turns
+                or warmup["chat_server_errors"]
+                or warmup["chat_transport_errors"]
+            ):
+                raise RuntimeError(f"benchmark warmup failed: {warmup}")
+        cpu_before = sum(sum(psutil.Process(pid).cpu_times()[:2]) for pid in server_root_pids)
+        backend_cpu_before = sum(sum(psutil.Process(p.pid).cpu_times()[:2]) for p in backend_procs)
+        driver_cpu_before = time.process_time()
+        with _RSSSampler(server_root_pids) as rss, _RSSSampler([os.getpid()]) as tree_rss:
             samples, agg, wall_s = _drive_workload(
                 base_urls,
                 request_bodies,
@@ -649,7 +712,11 @@ def run_http_bench(args) -> dict[str, Any]:
                 tool_interval=args.tool_interval,
                 driver_procs=args.bench_driver_procs,
             )
+        server_cpu_s = sum(sum(psutil.Process(pid).cpu_times()[:2]) for pid in server_root_pids) - cpu_before
         peak_rss_bytes = rss.peak_bytes
+        tree_peak_rss_bytes = tree_rss.peak_bytes
+        driver_cpu_s = time.process_time() - driver_cpu_before
+        backend_cpu_s = sum(sum(psutil.Process(p.pid).cpu_times()[:2]) for p in backend_procs) - backend_cpu_before
     finally:
         for proc in server_procs:
             _terminate_proc(proc)
@@ -699,6 +766,10 @@ def run_http_bench(args) -> dict[str, Any]:
         "chat_template_path": chat_template_path,
         "chat_template_kwargs": chat_template_kwargs,
         "wall_s": wall_s,
+        "server_cpu_s": server_cpu_s,
+        "driver_parent_cpu_s": driver_cpu_s,
+        "backend_cpu_s": backend_cpu_s,
+        "tree_peak_rss_bytes": tree_peak_rss_bytes,
         "throughput_turns_per_s": completed_turns / wall_s if wall_s > 0 else float("nan"),
         "throughput_content_tokens_per_s": content_tokens / wall_s if wall_s > 0 else float("nan"),
         "throughput_completion_tokens_per_s": completion_tokens / wall_s if wall_s > 0 else float("nan"),

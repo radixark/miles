@@ -9,8 +9,8 @@ A label is a GitHub PR label that changes what CI runs or how it fails. Three ki
 | Domain label | `run-ci-megatron` | selects which tests run |
 | Dispatch label | `run-on-blackwell` | selects which GPU generation runs them |
 | Scope label | `run-ci-image` | run every enabled tag except `long`, `ft-short`, and `ft-long` |
-| Cadence/scope label | `nightly` | select nightly cadence and every enabled tag except `long` and `ft-long`, with fast-fail disabled |
-| Scope label | `run-ci-all` | run every enabled tag |
+| Cadence/scope label | `nightly` | select nightly cadence and every enabled tag except `long`, `ft-long`, and `rollout`, with fast-fail disabled |
+| Scope label | `run-ci-all` | run every enabled tag except `rollout` |
 | Behavior label | `bypass-fastfail` | opt out of fast-fail; one run surfaces every failure |
 | Behavior label | `rebuild-ci-image` | force a rebuild when selected CUDA tests need an eligible PR image; does not select tests and is removed once consumed (see [Docker build](/developer/ci/02-docker-build)) |
 | Opt-in label | `run-ci` (or any `run-ci*` label) | lets a PR whose base is not the default branch run `PR Test` (see [below](#labels-opt-non-main-prs-into-ci)) |
@@ -25,6 +25,7 @@ A test declares its labels: `register_cuda_ci(..., labels=["megatron"])`. The PR
 |---|---|
 | CPU `labels=[]` (or omitted) | every run whose cadence admits the test (always-on within that cadence) |
 | `labels=["megatron"]` | PR has `run-ci-megatron` |
+| `labels=["rollout"]` | PR has `run-ci-rollout` or `run-ci-image` |
 | `labels=["sglang"]` | PR has `run-ci-sglang` |
 | `labels=["fsdp", "lora"]` | PR has `run-ci-fsdp` or `run-ci-lora` |
 
@@ -160,7 +161,7 @@ The comment command support becomes available after this workflow change reaches
 
 ## Cadence eligibility
 
-There are four CI cadences: `regular`, the ordinary mode; `nightly`, which admits `nightly=True` tests and broadens scope; `weekly`, which admits those tests and selects every enabled tag; and `release`, an explicit called-workflow cadence with weekly's selection but no rolling performance-baseline writes. Nightly, weekly, and release all bypass fast-fail.
+There are four CI cadences: `regular`, the ordinary mode; `nightly`, which admits `nightly=True` tests and broadens scope; `weekly`, which admits those tests and selects every enabled tag except `rollout`; and `release`, an explicit called-workflow cadence with weekly's selection but no rolling performance-baseline writes. Nightly, weekly, and release all bypass fast-fail.
 
 `register_*_ci(nightly=True)` means the test is eligible under nightly, weekly, and release cadence, but not regular cadence. It does not create a separate suite inventory and does not replace domain-label filtering. A regular run selects regular registrations only; nightly, weekly, and release select regular plus `nightly=True` registrations, then apply their own domain-label scopes. For example, a `nightly=True` test carrying only `ft-long` remains outside the nightly scope unless `run-ci-ft-long` or `run-ci-all` explicitly includes it, while weekly and release include it automatically.
 
@@ -170,10 +171,10 @@ The workflow's `resolve-ci-policy` job forwards trigger-specific facts or a call
 
 | Scope | Explicit source | Runs | Subtracts | Fast-fail |
 |---|---|---|---|---|
-| all | `run-ci-all` label | every enabled tag | — | determined by cadence |
-| weekly | exact weekly cron | every enabled tag | — | disabled on both levels |
-| release | `release-branch-cut.yml` calling with `cadence=release` | every enabled tag | — | disabled on both levels |
-| nightly | resolved nightly cadence from the PR label, exact nightly cron, or local `--nightly` | every enabled tag except `long` and `ft-long`, incl. `ft-short` | `long`, `ft-long` | disabled on both levels (within-stage only for local runs) |
+| all | `run-ci-all` label | every enabled tag except `rollout` | `rollout` | determined by cadence |
+| weekly | exact weekly cron | every enabled tag except `rollout` | `rollout` | disabled on both levels |
+| release | `release-branch-cut.yml` calling with `cadence=release` | every enabled tag except `rollout` | `rollout` | disabled on both levels |
+| nightly | resolved nightly cadence from the PR label, exact nightly cron, or local `--nightly` | every enabled tag except `long`, `ft-long`, and `rollout`, incl. `ft-short` | `long`, `ft-long`, `rollout` | disabled on both levels (within-stage only for local runs) |
 | image | `run-ci-image` label | every enabled tag except `long` and FT tags | `long`, `ft-short`, `ft-long` | determined by cadence |
 
 Release and weekly have the same selection and fast-fail policy. Release is separate because frozen release refs must never write the rolling performance baseline; see [Metric history & regression gate](/developer/ci/03-metric-history-gate#trust-cleanup-who-writes).
@@ -185,6 +186,8 @@ The generic triggers carry no policy. All scheduled runs use UTC: nightly is ide
 A subtraction is not a per-test veto — it only stops that label from granting inclusion. A test carrying a subtracted label still runs when another of its labels is in the set, so a test that must stay outside the standard nightly scope must carry only labels that nightly subtracts.
 
 A domain label explicitly requested on the PR wins over a scope subtraction: `run-ci-image` plus `run-ci-long` or `run-ci-ft-short`, and nightly plus `run-ci-long`, add the explicitly requested tests back rather than silently dropping the request.
+
+`rollout` benchmarks declare only `labels=["rollout"]` so no other domain can select them. They run in Stage B CPU when `run-ci-rollout` or `run-ci-image` is present, including when combined with another broad scope. Explicit local `--match-all-labels` and trusted `/rerun-test` are separate manual actions that bypass normal label selection; CPU workflow dispatch does not use `--match-all-labels`.
 
 ## Registration and scan scope
 

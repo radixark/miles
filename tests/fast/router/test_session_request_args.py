@@ -283,6 +283,40 @@ class TestTurnArgs:
             if version == "v2":
                 assert _metadata(env.url, session_id)["tree"]["nodes"][0]["turn_args"] == first_args
 
+    def test_committed_turn_args_stay_the_request_the_turn_sent(self, version):
+        """Committed turns keep their request by reference, so later turns, a retry that
+        continues an earlier turn, and sample collection must all leave it as sent."""
+        with _serve(version) as env:
+            session_id = _create_session(env.url)
+            first = self._turn(env, session_id, [USER], tools=TOOLS, chat_template_kwargs=THINKING_ON, temperature=0.2)
+            assert first.status_code == 200
+            history = [USER, first.json()["choices"][0]["message"], {"role": "user", "content": "more"}]
+            second = self._turn(env, session_id, history, temperature=0.8)
+            assert second.status_code == 200
+            history += [second.json()["choices"][0]["message"], {"role": "user", "content": "again"}]
+            assert self._turn(env, session_id, history).status_code == 200
+            sent = deepcopy(env.backend.request_log)
+            original_resolve = TITOTokenizer.resolve_request_args
+            continued = []
+
+            def resolve(tokenizer, request_args, *, turn_args):
+                continued.append(deepcopy(turn_args))
+                return original_resolve(tokenizer, request_args, turn_args=turn_args)
+
+            with patch.object(TITOTokenizer, "resolve_request_args", new=resolve):
+                assert self._turn(env, session_id, history).status_code == 200  # retries the third turn
+            assert continued == [sent[1]]
+            samples = requests.post(f"{env.url}/sessions/{session_id}/samples", json={"max_seq_len": None}, timeout=30)
+            assert samples.status_code == 200
+
+            # v1 rolled the third turn back; v2 keeps it beside the retry's branch.
+            kept = 2 if version == "v1" else 3
+            assert [record["request"] for record in _records(env.url, session_id)][:kept] == sent[:kept]
+            if version == "v2":
+                nodes = _metadata(env.url, session_id)["tree"]["nodes"]
+                for node, request_args in zip(nodes[:kept], sent, strict=True):
+                    _assert_exported_turn_args(node["turn_args"], request_args)
+
     def test_full_model_result_reaches_render_backend_and_snapshot(self, version):
         original = TITOTokenizer.request_arg_rules
 

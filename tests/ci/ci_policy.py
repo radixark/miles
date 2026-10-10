@@ -98,7 +98,8 @@ def resolve_policy(cadence: str, raw_labels: set[str]) -> RunPolicy:
     always-on case) or any of its labels is in the effective include set. GPU
     registrations are validated separately to require a non-empty label set.
 
-    Broad scopes are large include sets:
+    `rollout` benchmarks require `run-ci-rollout` or `run-ci-image`, even
+    when other scope signals are present. For other labels:
 
     - `run-ci-all` includes every registered label.
     - Weekly and release cadences include every registered label; release
@@ -132,6 +133,9 @@ def resolve_policy(cadence: str, raw_labels: set[str]) -> RunPolicy:
         scope = set(KNOWN_LABELS) - {"long", "ft-short", "ft-long"}
     else:
         scope = set()
+
+    if "run-ci-image" not in raw_labels:
+        scope.discard("rollout")
 
     # An explicit `run-on-*` both picks the arches and permits a test to leave
     # its home stage. `run-ci-blackwell-only` picks an arch without permitting

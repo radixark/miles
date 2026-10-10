@@ -204,6 +204,7 @@ class TestStripRunCiPrefix:
 
 
 _ALL = set(KNOWN_LABELS)
+_BROAD = _ALL - {"rollout"}
 
 
 class TestResolvePolicy:
@@ -214,15 +215,15 @@ class TestResolvePolicy:
             (REGULAR_CADENCE, {"run-ci-megatron"}, {"megatron"}, False),
             (REGULAR_CADENCE, {"bypass-fastfail"}, set(), True),
             (REGULAR_CADENCE, {"run-ci-image"}, _ALL - {"long", "ft-short", "ft-long"}, False),
-            (REGULAR_CADENCE, {"run-ci-all"}, _ALL, False),
+            (REGULAR_CADENCE, {"run-ci-all"}, _BROAD, False),
             (REGULAR_CADENCE, {"run-ci-image", "run-ci-all"}, _ALL, False),
-            (NIGHTLY_CADENCE, set(), _ALL - {"long", "ft-long"}, True),
-            (NIGHTLY_CADENCE, {"nightly"}, _ALL - {"long", "ft-long"}, True),
+            (NIGHTLY_CADENCE, set(), _BROAD - {"long", "ft-long"}, True),
+            (NIGHTLY_CADENCE, {"nightly"}, _BROAD - {"long", "ft-long"}, True),
             (NIGHTLY_CADENCE, {"run-ci-image", "nightly"}, _ALL - {"long", "ft-long"}, True),
-            (NIGHTLY_CADENCE, {"nightly", "run-ci-all"}, _ALL, True),
-            (WEEKLY_CADENCE, set(), _ALL, True),
+            (NIGHTLY_CADENCE, {"nightly", "run-ci-all"}, _BROAD, True),
+            (WEEKLY_CADENCE, set(), _BROAD, True),
             (WEEKLY_CADENCE, {"run-ci-image"}, _ALL, True),
-            (RELEASE_CADENCE, set(), _ALL, True),
+            (RELEASE_CADENCE, set(), _BROAD, True),
             (RELEASE_CADENCE, {"run-ci-image"}, _ALL, True),
         ],
     )
@@ -258,9 +259,8 @@ class TestResolvePolicy:
         assert policy.dispatch_arches == dispatch
         assert policy.absorb is absorb
 
-    def test_blackwell_only_selects_every_domain(self):
-        # The arch is the selection, so no domain label may narrow it away.
-        assert resolve_policy(REGULAR_CADENCE, {"run-ci-blackwell-only"}).include_labels == _ALL
+    def test_blackwell_only_preserves_opt_in_domains(self):
+        assert resolve_policy(REGULAR_CADENCE, {"run-ci-blackwell-only"}).include_labels == _BROAD
 
     def test_scheduled_cadences_never_absorb(self):
         # Cron runs carry no labels, so nightly and weekly keep every test on
@@ -286,10 +286,10 @@ class TestResolvePolicy:
         [
             (REGULAR_CADENCE, {"run-ci-image", "run-ci-long"}, _ALL - {"ft-short", "ft-long"}),
             (REGULAR_CADENCE, {"run-ci-image", "run-ci-ft-short"}, _ALL - {"long", "ft-long"}),
-            (NIGHTLY_CADENCE, {"nightly", "run-ci-long"}, _ALL - {"ft-long"}),
-            (NIGHTLY_CADENCE, {"nightly", "run-ci-ft-long"}, _ALL - {"long"}),
+            (NIGHTLY_CADENCE, {"nightly", "run-ci-long"}, _BROAD - {"ft-long"}),
+            (NIGHTLY_CADENCE, {"nightly", "run-ci-ft-long"}, _BROAD - {"long"}),
             (REGULAR_CADENCE, {"run-ci-image", "run-ci-ft-short", "run-ci-ft-long"}, _ALL - {"long"}),
-            (NIGHTLY_CADENCE, {"run-ci-ft-long"}, _ALL - {"long"}),
+            (NIGHTLY_CADENCE, {"run-ci-ft-long"}, _BROAD - {"long"}),
         ],
     )
     def test_explicit_domain_label_wins_over_scope_subtraction(self, cadence, labels, expected):
@@ -784,6 +784,47 @@ class TestRunSuitePolicyIntegration:
             labels=set(policy.include_labels),
         )
         assert _names(enabled) == {"tests/e2e/regular.py", "tests/e2e/nightly.py"}
+
+    @pytest.mark.parametrize(
+        ("cadence", "labels"),
+        [
+            (REGULAR_CADENCE, []),
+            (REGULAR_CADENCE, ["run-ci-all"]),
+            (REGULAR_CADENCE, ["run-ci-image"]),
+            (REGULAR_CADENCE, ["run-ci-image", "run-ci-all"]),
+            (REGULAR_CADENCE, ["run-ci-image", "run-ci-blackwell-only"]),
+            (NIGHTLY_CADENCE, ["run-ci-image", "nightly"]),
+            (WEEKLY_CADENCE, ["run-ci-image"]),
+            (RELEASE_CADENCE, ["run-ci-image"]),
+            (REGULAR_CADENCE, ["run-ci-blackwell-only"]),
+            (NIGHTLY_CADENCE, ["nightly"]),
+            (WEEKLY_CADENCE, []),
+            (RELEASE_CADENCE, []),
+        ],
+    )
+    @pytest.mark.parametrize("explicit_rollout", [False, True])
+    def test_rollout_cpu_benchmarks_require_rollout_or_image_label(
+        self, monkeypatch, cadence, labels, explicit_rollout
+    ):
+        always_on = "tests/fast/test_regular.py"
+        benchmark = "tests/fast/test_rollout_benchmark.py"
+        self._stub_collection(
+            monkeypatch,
+            [
+                _make(always_on, backend=HWBackend.CPU, suite="stage-b-cpu"),
+                _make(benchmark, backend=HWBackend.CPU, suite="stage-b-cpu", labels=["rollout"]),
+            ],
+        )
+        commands = []
+        monkeypatch.setattr(run_suite_module.subprocess, "call", lambda cmd: commands.append(cmd) or 0)
+        raw_labels = labels + (["run-ci-rollout"] if explicit_rollout else [])
+        result = run_suite_module.run_a_suite(
+            _run_args(hw="cpu", suite="stage-b-cpu", cadence=cadence, labels=raw_labels)
+        )
+        assert result == 0
+        assert len(commands) == 1
+        assert always_on in commands[0]
+        assert (benchmark in commands[0]) is (explicit_rollout or "run-ci-image" in labels)
 
     def test_nightly_bypass_reaches_cpu_runner(self, monkeypatch):
         tests = [_make("tests/fast/test_regular.py", backend=HWBackend.CPU, suite="stage-a-cpu")]

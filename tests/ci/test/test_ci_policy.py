@@ -24,6 +24,7 @@ register_cpu_ci(est_time=1, suite="stage-a-cpu", labels=[])
     ("event_name", "schedule", "labels_json", "cadence", "raw_labels", "bypass_fastfail"),
     [
         ("pull_request", "", "[]", REGULAR_CADENCE, (), False),
+        ("pull_request", "", '["run-ci-rollout"]', REGULAR_CADENCE, ("run-ci-rollout",), False),
         (
             "pull_request",
             "",
