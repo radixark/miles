@@ -13,7 +13,9 @@ class ChatRequest(BaseModel):
     messages: list[dict] = Field(min_length=1)
     model: str | None = None
     tools: list[dict] | None = None
-    max_tokens: int | None = Field(default=None, gt=0, strict=True, validation_alias=AliasChoices("max_tokens", "max_completion_tokens"))
+    max_tokens: int | None = Field(
+        default=None, gt=0, strict=True, validation_alias=AliasChoices("max_tokens", "max_completion_tokens")
+    )
     temperature: float | None = Field(default=None, ge=0, allow_inf_nan=False)
     top_p: float = Field(default=1.0, gt=0, le=1)
     top_k: int = Field(default=-1, ge=-1, strict=True)
@@ -33,7 +35,9 @@ def render_prompt(renderer: Renderer, request: ChatRequest) -> list[int]:
         content = message.get("content")
         if content is not None and not isinstance(content, (str, list)):
             raise ValueError("message content must be text or a list of text parts")
-        if isinstance(content, list) and any(not isinstance(part, dict) or part.get("type") != "text" for part in content):
+        if isinstance(content, list) and any(
+            not isinstance(part, dict) or part.get("type") != "text" for part in content
+        ):
             raise ValueError("the session adapter accepts text-only messages")
     messages = openai_messages_to_tinker(request.messages)
     for source, message in zip(request.messages, messages, strict=True):

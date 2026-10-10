@@ -61,7 +61,9 @@ class SessionServer:
         with socket.socket() as sock:
             sock.bind((host, 0))
             sock.listen()
-            server = _EmbeddedServer(uvicorn.Config(self.app, log_level="warning", lifespan="off", timeout_graceful_shutdown=30))
+            server = _EmbeddedServer(
+                uvicorn.Config(self.app, log_level="warning", lifespan="off", timeout_graceful_shutdown=30)
+            )
             task = asyncio.create_task(server.serve(sockets=[sock]))
             try:
                 while not server.started:

@@ -3,10 +3,10 @@ import time
 import uuid
 from dataclasses import dataclass, field
 
-import tinker
 from tinker_cookbook.completers import TinkerTokenCompleter
 from tinker_cookbook.renderers import Renderer
 
+import tinker
 from miles.tinker.client.rendering import ChatRequest, parse_completion, render_prompt, sampling_params
 from miles.tinker.core.token_trace import TokenTrace
 
@@ -48,11 +48,17 @@ class ChatSession:
                 "object": "chat.completion",
                 "created": int(time.time()),
                 "model": request.model or "tinker",
-                "choices": [{
-                    "index": 0,
-                    "message": message,
-                    "finish_reason": "tool_calls" if turn.stop_reason == "stop" and message.get("tool_calls") else turn.stop_reason,
-                }],
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": message,
+                        "finish_reason": (
+                            "tool_calls"
+                            if turn.stop_reason == "stop" and message.get("tool_calls")
+                            else turn.stop_reason
+                        ),
+                    }
+                ],
                 "usage": {
                     "prompt_tokens": len(turn.input_ids),
                     "completion_tokens": len(turn.output_ids),
