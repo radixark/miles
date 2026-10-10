@@ -190,8 +190,6 @@ class _P2PSenderHarness:
         self.replicas_created: list[_SharedBufferReplica] = []
         self._loaded_events: dict[int, threading.Event] = {}
         self._calls: list[_ProtocolCall] = []
-        self.data_replica_rank = 0
-        self.data_replica_size = 1
         self.assignment_inputs: list[tuple[Any, list[int]]] = []
 
         mooncake_transport = sys.modules[p2p_protocol.MooncakeTransport.__module__]
@@ -213,13 +211,10 @@ class _P2PSenderHarness:
     def loaded_event(self, tp_rank: int) -> threading.Event:
         return self._loaded_events.setdefault(tp_rank, threading.Event())
 
-    def make_protocol(self, *, data_replica_rank: int = 0, data_replica_size: int = 1) -> Any:
-        self.data_replica_rank = data_replica_rank
-        self.data_replica_size = data_replica_size
+    def make_protocol(self, *, p2p_transfer_timeout: float = _FAILURE_BOUND) -> Any:
         args = Namespace(
             hf_checkpoint="/model",
-            p2p_transfer_timeout=_FAILURE_BOUND,
-            p2p_transfer_num_workers=4,
+            p2p_transfer_timeout=p2p_transfer_timeout,
             update_weight_engine_request_timeout=_FAILURE_BOUND,
             sglang_pp_size=1,
         )
@@ -250,8 +245,8 @@ class _P2PSenderHarness:
     ) -> list[Any]:
         self.assignment_inputs.append((placement, list(engine_gpu_counts)))
         return assign_rollout_engine_ranks_for_data_replica(
-            data_replica_rank=self.data_replica_rank,
-            data_replica_size=self.data_replica_size,
+            data_replica_rank=0,
+            data_replica_size=1,
             engine_gpu_counts=engine_gpu_counts,
         )
 

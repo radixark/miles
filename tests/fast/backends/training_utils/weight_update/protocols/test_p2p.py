@@ -5,6 +5,8 @@ from typing import Any
 
 import pytest
 
+_WAIT_BOUND = 10.0
+
 
 class TestSendBucket:
     def test_a_fused_parameter_is_loaded_and_written_only_once_every_shard_arrived(
@@ -74,6 +76,65 @@ class TestSendBucket:
         protocol.send_bucket(make_bucket("hf.q"))
 
         with pytest.raises(AssertionError, match="not transferred"):
+            protocol.after_base_weights()
+
+
+class TestWriteThreads:
+    def test_a_stuck_rollout_engine_does_not_hold_up_writes_to_another(
+        self, p2p_sender: Any, make_rollout_api: Any, make_bucket: Any
+    ) -> None:
+        """Each rollout engine has its own write thread, so a stuck engine delays only its own writes."""
+        protocol = p2p_sender.make_protocol()
+        stuck_api = make_rollout_api("cell-a", gpu_count=1)
+        healthy_api = make_rollout_api("cell-b", gpu_count=1)
+        p2p_sender.connect(protocol, [stuck_api, healthy_api])
+        protocol.begin_sync(weight_version=1, iter_buckets=None)
+        stuck_write = p2p_sender.transfer_engine.hold(stuck_api.session_id(0))
+        healthy_write = p2p_sender.transfer_engine.hold(healthy_api.session_id(0))
+
+        protocol.send_bucket(make_bucket("hf.w"))
+
+        assert stuck_write.entered.wait(timeout=_WAIT_BOUND)
+        assert healthy_write.entered.wait(timeout=_WAIT_BOUND), "the healthy engine's write waited for the stuck one"
+        p2p_sender.transfer_engine.release_all()
+        protocol.after_base_weights()
+        assert sorted(p2p_sender.transfer_engine.written_sessions()) == sorted(
+            [stuck_api.session_id(0), healthy_api.session_id(0)]
+        )
+
+
+class TestWriteCompletion:
+    def test_every_failed_write_is_named_and_fails_the_update(
+        self, p2p_sender: Any, make_rollout_api: Any, make_bucket: Any
+    ) -> None:
+        """A failed write leaves its rollout engine rank on the old weights, so the update must not succeed; the error
+        names each failed rank, the last one included (`main` only logged those), and no other."""
+        protocol = p2p_sender.make_protocol()
+        api = make_rollout_api("cell-a", gpu_count=3)
+        p2p_sender.connect(protocol, [api])
+        protocol.begin_sync(weight_version=1, iter_buckets=None)
+        p2p_sender.transfer_engine.failing_sessions = {api.session_id(1), api.session_id(2)}
+
+        protocol.send_bucket(make_bucket("hf.w"))
+
+        with pytest.raises(RuntimeError, match="2 of 3 p2p writes failed") as failure:
+            protocol.after_base_weights()
+        assert api.session_id(1) in str(failure.value) and api.session_id(2) in str(failure.value)
+        assert api.session_id(0) not in str(failure.value)
+
+    def test_a_write_still_running_at_the_timeout_fails_the_update(
+        self, p2p_sender: Any, make_rollout_api: Any, make_bucket: Any
+    ) -> None:
+        """A write that has not finished within --p2p-transfer-timeout fails the update instead of being forgotten."""
+        protocol = p2p_sender.make_protocol(p2p_transfer_timeout=0.1)
+        api = make_rollout_api("cell-a", gpu_count=1)
+        p2p_sender.connect(protocol, [api])
+        protocol.begin_sync(weight_version=1, iter_buckets=None)
+        p2p_sender.transfer_engine.hold(api.session_id(0))
+
+        protocol.send_bucket(make_bucket("hf.w"))
+
+        with pytest.raises(RuntimeError, match="still running after 0.1s"):
             protocol.after_base_weights()
 
 
