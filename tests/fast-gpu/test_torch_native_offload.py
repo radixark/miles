@@ -8,7 +8,9 @@ from torch.distributed.tensor import DTensor
 
 from miles.backends.training_utils.torch_native.offload import move_train_state
 
-register_cuda_ci(est_time=30, suite="stage-b-2-gpu-h200", labels=["fsdp", "torchtitan"], hardware=["hopper"])
+register_cuda_ci(
+    est_time=30, suite="stage-b-2-gpu-h200", labels=["fsdp", "torchtitan"], hardware=["hopper"], num_gpus=2
+)
 register_rocm_ci(est_time=60, suite="nightly-stage-c-2-gpu-mi350", labels=["fsdp", "torchtitan"])
 
 
