@@ -6,6 +6,7 @@ import pytest
 from tests.e2e.lora.tinker_client.session_cases import Tokenizer
 from tinker_cookbook import renderers, tokenizer_utils
 from tinker_cookbook.renderers import Message, ToolCall, ToolSpec
+from tinker_cookbook.renderers.qwen3 import Qwen3Renderer
 from tinker_cookbook.renderers.role_colon import RoleColonRenderer
 
 from miles.tinker.client.rendering import ChatRequest, ChatRequestError, render_prompt
@@ -79,6 +80,25 @@ def test_reasoning_content_is_history_thinking_that_qwen3_instruct_strips(render
     )
     assert render_prompt(renderer, ChatRequest(messages=history)) == expected
     assert "look first" not in renderer.tokenizer.decode(expected)  # as HF's template, history keeps no thinking
+
+
+def test_reasoning_content_is_kept_where_the_renderer_keeps_history_thinking(renderer):
+    keeping = Qwen3Renderer(renderer.tokenizer, strip_thinking_from_history=False)
+    history = [USER, {"role": "assistant", "content": "done", "reasoning_content": "look first"}, USER]
+    expected = cookbook_prompt(
+        keeping,
+        [
+            Message(role="user", content=USER["content"]),
+            Message(
+                role="assistant",
+                content=[{"type": "thinking", "thinking": "look first"}, {"type": "text", "text": "done"}],
+            ),
+            Message(role="user", content=USER["content"]),
+        ],
+    )
+    assert render_prompt(keeping, ChatRequest(messages=history)) == expected
+    assert "look first" in keeping.tokenizer.decode(expected)  # the strip-free renderer must see the thinking
+    assert expected != render_prompt(keeping, ChatRequest(messages=[USER, {"role": "assistant", "content": "done"}, USER]))
 
 
 def test_developer_role_renders_as_the_cookbook_renders_it(renderer):
