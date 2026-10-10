@@ -15,7 +15,7 @@ from miles.tinker.client.session import ChatSession
 
 
 class Tokenizer:
-    name_or_path = "fake-tokenizer"  # get_renderer stamps it on the renderer for pickling, as HF tokenizers carry it
+    name_or_path = "fake-tokenizer"
     bos_token = None
     eos_token_id = None
 
@@ -57,7 +57,7 @@ async def test_renderer_owns_every_prompt_and_trace_keeps_raw_tokens():
         assert result["choices"][0]["message"]["content"] == "hello"
         assert result["choices"][0]["finish_reason"] == "stop"
         turn = session.trace.turns[-1]
-        assert turn.stop_reason == "stop"  # read off the SDK's SampledSequence, not a dict copy
+        assert turn.stop_reason == "stop"
         expected = render_prompt(session.renderer, request)
         assert list(turn.input_ids) == expected
         assert 1000 not in turn.input_ids

@@ -46,7 +46,7 @@ class ChatSession:
                 num_samples=1,
                 sampling_params=tinker.SamplingParams(**params),
             )
-            sequence = response.sequences[0]  # tinker.SampledSequence: tokens/logprobs are its public views
+            sequence = response.sequences[0]
             # Parsing is a display operation; its failure must not erase a completed sample.
             turn = self.trace.record(
                 f"chatcmpl-{uuid.uuid4().hex}", input_ids, sequence.tokens, sequence.logprobs, sequence.stop_reason
