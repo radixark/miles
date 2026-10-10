@@ -97,11 +97,13 @@ async def test_real_http_lifecycle_isolated_policies_and_validation():
     server = SessionServer()
     async with server.serve() as port, httpx.AsyncClient(base_url=f"http://127.0.0.1:{port}") as http:
         async with server.session(first) as path, server.session(second) as other:
-            body = {"messages": [
-                {"role": "user", "content": "hi"},
-                {"role": "assistant", "content": "hello", "tool_calls": None, "reasoning_content": None},
-                {"role": "user", "content": "continue"},
-            ]}
+            body = {
+                "messages": [
+                    {"role": "user", "content": "hi"},
+                    {"role": "assistant", "content": "hello", "tool_calls": None, "reasoning_content": None},
+                    {"role": "user", "content": "continue"},
+                ]
+            }
             for extra in [{"n": 2}, {"stream": True}, {"max_tokens": 0}, {"chat_template_kwargs": {}}]:
                 result = await http.post(f"{path}/v1/chat/completions", json={**body, **extra})
                 assert result.status_code == 400, result.text
