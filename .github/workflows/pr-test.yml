@@ -232,7 +232,6 @@ jobs:
         needs.resolve-ci-policy.outputs.bypass_fastfail == 'true')
     strategy:
       fail-fast: false
-      max-parallel: 2
       matrix:
         partition_id: [0, 1]
     uses: ./.github/workflows/_run-ci.yml
@@ -259,7 +258,6 @@ jobs:
         needs.resolve-ci-policy.outputs.bypass_fastfail == 'true')
     strategy:
       fail-fast: false
-      max-parallel: 1
       matrix:
         partition_id: ${{ fromJSON(needs.resolve-ci-policy.outputs.cadence == 'regular' && '[0]' || '[0,1]') }}
     uses: ./.github/workflows/_run-ci.yml
@@ -286,7 +284,6 @@ jobs:
         needs.resolve-ci-policy.outputs.bypass_fastfail == 'true')
     strategy:
       fail-fast: false
-      max-parallel: 2
       matrix:
         partition_id: [0, 1, 2, 3]
     uses: ./.github/workflows/_run-ci.yml
@@ -313,7 +310,6 @@ jobs:
         needs.resolve-ci-policy.outputs.bypass_fastfail == 'true')
     strategy:
       fail-fast: false
-      max-parallel: 3
       matrix:
         partition_id: [0, 1, 2, 3, 4, 5, 6, 7, 8]
     uses: ./.github/workflows/_run-ci.yml
@@ -340,7 +336,6 @@ jobs:
         needs.resolve-ci-policy.outputs.bypass_fastfail == 'true')
     strategy:
       fail-fast: false
-      max-parallel: 2
       matrix:
         partition_id: ${{ fromJSON(needs.resolve-ci-policy.outputs.cadence == 'regular' && '[0,1]' || '[0,1,2,3]') }}
     uses: ./.github/workflows/_run-ci.yml

@@ -16,4 +16,4 @@ Use `run-ci-image` as the broad PR sizing baseline. It does not admit
 labels and `run-ci-all` can exceed this baseline, and a `long` / `ft-long`
 file can exceed the target alone.
 
-Try shard counts in ascending multiples of the matching runner pool capacity and choose the first whose largest shard sum meets the budget. Cap concurrency at that capacity for every cadence. Preserve hosted empty-shard planning and selected-test coverage. Adding shards cannot shorten an indivisible test file and adds setup cost for each nonempty shard; do not change test coverage merely to meet the runtime target.
+Try shard counts in ascending multiples of the matching runner pool capacity and choose the first whose largest shard sum meets the budget. Do not set `max-parallel` on Hopper or ROCm shard matrices; let available runners control execution. Preserve hosted empty-shard planning and selected-test coverage. Adding shards cannot shorten an indivisible test file and adds setup cost for each nonempty shard; do not change test coverage merely to meet the runtime target.

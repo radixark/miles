@@ -476,19 +476,8 @@ class TestWorkflowScopeSeam:
         assert "    - cron: '0 15 * * 6'" in workflow
         assert "timezone:" not in workflow
 
-    def test_hopper_shards_use_runner_capacity_for_every_cadence(self):
-        workflow = self._workflow()
-        runner_capacity = {
-            "stage-b-2-gpu-h200": 2,
-            "stage-c-8-gpu-h100": 1,
-            "stage-c-8-gpu-h200": 2,
-            "stage-c-4-gpu-h200": 3,
-            "stage-c-2-gpu-h200": 2,
-        }
-        for job, capacity in runner_capacity.items():
-            block = workflow.split(f"  {job}:", 1)[1]
-            block = re.split(r"^  [A-Za-z_][A-Za-z0-9_-]*:\s*$", block, maxsplit=1, flags=re.MULTILINE)[0]
-            assert re.search(rf"^      max-parallel: {capacity}$", block, flags=re.MULTILINE)
+    def test_hopper_shards_are_not_throttled_before_runner_queue(self):
+        assert "max-parallel:" not in self._workflow()
 
     def test_b200_jobs_share_one_cross_pr_host_lease(self):
         workflow = self._workflow()
@@ -627,7 +616,7 @@ class TestRocmWorkflowScopeSeam:
         assert "needs: [resolve-ci-policy, resolve-ci-image, resolve-ci-deps]" in stage
         assert "allow_self_hosted" not in stage
         assert "partition_id: [0, 1]" in stage
-        assert re.search(r"^      max-parallel: 2$", stage, flags=re.MULTILINE)
+        assert "max-parallel:" not in stage
         assert "--auto-partition-size 2" in command
         assert "checkout_ref:" not in stage
         assert "--cadence ${{ needs.resolve-ci-policy.outputs.cadence }}" in command
