@@ -125,6 +125,31 @@ async def test_real_http_lifecycle_isolated_policies_and_validation():
 
 
 @pytest.mark.asyncio
+async def test_only_what_is_refused_before_sampling_is_a_400(monkeypatch):
+    session = make_session()
+    server = SessionServer()
+    body = {"messages": [{"role": "user", "content": "hi"}]}
+    async with (
+        server.serve() as port,
+        httpx.AsyncClient(base_url=f"http://127.0.0.1:{port}") as http,
+        server.session(session) as path,
+    ):
+        session.max_datum_tokens = 1
+        result = await http.post(f"{path}/v1/chat/completions", json=body)
+        assert result.status_code == 400 and "budget" in result.text
+        assert session.policy.sampling_client.sample_async.await_count == 0
+        session.max_datum_tokens = 1024
+
+        def fail(_):
+            raise ValueError("cannot parse")
+
+        monkeypatch.setattr(session.renderer, "parse_response", fail)
+        result = await http.post(f"{path}/v1/chat/completions", json=body)
+        assert result.status_code == 500  # the sample exists and is ours to keep; the harness did nothing wrong
+        assert session.trace.turns[0].output_ids == (1000,)
+
+
+@pytest.mark.asyncio
 async def test_session_close_waits_for_inflight_sample():
     session = make_session()
     original = session.policy.sampling_client.sample_async.return_value
