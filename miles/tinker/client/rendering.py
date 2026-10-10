@@ -28,6 +28,10 @@ class ChatRequest(BaseModel):
     stop: str | list[str] | None = None
     n: Literal[1] = 1
     stream: Literal[False] = False
+    # Informational fields that do not touch sampling; store=True promises persistence nobody provides.
+    user: str | None = None
+    metadata: dict[str, str] | None = None
+    store: Literal[False] | None = None
 
 
 def render_prompt(renderer: Renderer, request: ChatRequest) -> list[int]:
