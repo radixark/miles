@@ -8,7 +8,7 @@ from tests.ci.ci_register import register_cpu_ci
 register_cpu_ci(est_time=300, suite="stage-b-cpu", labels=[])
 
 
-if __name__ == "__main__":
+def test_cookbook_client():
     cases = Path(__file__).with_name("tinker_client")
     subprocess.run(
         [
@@ -33,3 +33,7 @@ if __name__ == "__main__":
         ],
         check=True,
     )
+
+
+if __name__ == "__main__":
+    test_cookbook_client()
