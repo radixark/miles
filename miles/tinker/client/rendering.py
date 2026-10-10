@@ -1,3 +1,4 @@
+from json import JSONDecodeError
 from typing import Annotated, Literal
 
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, Strict, ValidationError
@@ -83,7 +84,7 @@ def render_prompt(renderer: Renderer, request: ChatRequest) -> list[int]:
                 raise ChatRequestError(f"the {type(renderer).__name__} renderer does not support tools") from error
             messages = [*prefix, *messages]
         return renderer.build_generation_prompt(messages).to_ints()
-    except RendererError as error:  # the cookbook's own verdict on content it cannot render
+    except (RendererError, JSONDecodeError) as error:
         raise ChatRequestError(f"cannot render messages: {error}") from error
 
 

@@ -2,14 +2,16 @@
 
 import json
 
+import httpx
 import pytest
-from tests.e2e.lora.tinker_client.session_cases import Tokenizer
+from tests.e2e.lora.tinker_client.session_cases import Tokenizer, make_session
 from tinker_cookbook import renderers, tokenizer_utils
 from tinker_cookbook.renderers import Message, ToolCall, ToolSpec
 from tinker_cookbook.renderers.qwen3 import Qwen3Renderer
 from tinker_cookbook.renderers.role_colon import RoleColonRenderer
 
 from miles.tinker.client.rendering import ChatRequest, ChatRequestError, render_prompt
+from miles.tinker.client.server import SessionServer
 
 MODEL = "Qwen/Qwen3-4B-Instruct-2507"  # the README's configuration, rendered by qwen3_instruct
 SYSTEM = "You are a terminal agent."
@@ -63,6 +65,22 @@ def test_tool_calls_and_tool_results_render_like_the_cookbook(renderer):
     assert render_prompt(renderer, ChatRequest(messages=messages, tools=[TOOL])) == expected
     text = renderer.tokenizer.decode(expected)
     assert "<tool_call>\n" in text and "<tool_response>\na.txt\nb.txt\n</tool_response>" in text
+
+
+@pytest.mark.asyncio
+async def test_invalid_tool_arguments_are_rejected_before_sampling(renderer):
+    session = make_session()
+    session.renderer = renderer
+    server = SessionServer()
+    transport = httpx.ASGITransport(app=server.app, raise_app_exceptions=False)
+    call = {**CALL, "function": {"name": "bash", "arguments": "{"}}
+    messages = [USER, {"role": "assistant", "content": None, "tool_calls": [call]}]
+    async with server.session(session) as path, httpx.AsyncClient(transport=transport, base_url="http://test") as http:
+        response = await http.post(f"{path}/v1/chat/completions", json={"messages": messages})
+    assert response.status_code == 400, response.text
+    assert "Expecting property name" in response.json()["detail"]
+    session.policy.sampling_client.sample_async.assert_not_awaited()
+    assert not session.trace.turns
 
 
 def test_reasoning_content_is_history_thinking_that_qwen3_instruct_strips(renderer):
