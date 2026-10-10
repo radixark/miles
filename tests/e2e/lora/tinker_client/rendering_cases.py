@@ -127,6 +127,11 @@ def test_each_request_renders_the_history_it_carries(renderer):
             ],
             [TOOL],
         ),
+        ([{"role": "user", "content": [{"type": "text"}]}], None),
+        ([{"role": "user", "content": [{"type": "text", "text": 1}]}], None),
+        ([USER, {"role": "assistant", "content": "x", "tool_calls": 1}], None),
+        ([USER, {"role": "assistant", "content": "x", "tool_calls": ["bash"]}], None),
+        ([USER, {"role": "assistant", "content": "x", "reasoning_content": 1}], None),
     ],
     ids=[
         "multi-part-system",
@@ -135,6 +140,11 @@ def test_each_request_renders_the_history_it_carries(renderer):
         "not-a-function",
         "empty-tool-call",
         "arguments-not-json-text",
+        "text-part-without-text",
+        "text-part-not-a-string",
+        "tool-calls-not-a-list",
+        "tool-call-not-an-object",
+        "reasoning-not-a-string",
     ],
 )
 def test_what_the_cookbook_cannot_render_is_a_request_error(renderer, messages, tools):
