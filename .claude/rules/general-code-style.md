@@ -19,7 +19,6 @@ deviations in review.
   it, such as rollout, training, tracking, and distributed-runtime managers.
 - **Prefer immutable.** Default to immutable data and read-only inputs. Mutate
   only when there is a clear need and the owner of the state is explicit.
-- **Keep a single source of truth (SSOT).** Give each configuration value, state, and decision one authoritative owner. Find that owner before adding another representation; consumers should read, derive from, or reference it. Derive decisions once at the owner and pass them through instead of repeating the logic at call sites. Do not add per-field fallback or merge layers over an already authoritative input. Consolidate independently maintained copies instead of adding synchronization logic; cached derived values follow the lifecycle rule below.
 - **Initialize stable derived values once.** When a derived value's inputs are
   stable for an object's lifetime, compute it at the earliest lifecycle point
   where its dependencies are valid: in `__init__` for construction-time
