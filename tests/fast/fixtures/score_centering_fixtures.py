@@ -3,6 +3,7 @@
 from argparse import Namespace
 
 import numpy as np
+import pybase64
 
 from miles.rollout.generate_utils.rollout_topk_logprobs import append_rollout_topk_logprobs
 from miles.utils.types import Sample
@@ -78,4 +79,29 @@ def _meta(output: list[int], probabilities: list[float]) -> dict:
         "output_token_logprobs": entries,
         "output_top_logprobs": [entries] * len(output),
         "finish_reason": {"type": "stop"},
+    }
+
+
+def _flat_meta(output: list[int], probabilities: list[float]) -> dict:
+    """``_meta`` with the candidates in SGLang's flat base64 output top-logprob format."""
+    meta = _meta(output, probabilities)
+    return meta | _flat_output_top_logprobs(meta.pop("output_top_logprobs"))
+
+
+def _flat_output_top_logprobs(rows: list, *, null_prefix: int = 0, b64: bool = True) -> dict:
+    """Encode nested [logprob, token_id, text] rows the way SGLang's return_flat_raw_output_top_logprobs does."""
+    shape = [len(rows), len(rows[0]) if rows else 0]
+    val = np.asarray([[entry[0] for entry in row] for row in rows], dtype=np.float32).reshape(shape)
+    idx = np.asarray([[entry[1] for entry in row] for row in rows], dtype=np.int32).reshape(shape)
+    fields = {"output_top_logprobs_shape": shape, "output_top_logprobs_null_prefix": null_prefix}
+    if not b64:
+        return fields | {
+            "output_top_logprobs_val_flat": val.ravel().tolist(),
+            "output_top_logprobs_idx_flat": idx.ravel().tolist(),
+        }
+    return fields | {
+        "output_top_logprobs_val_flat_b64": pybase64.b64encode(val.tobytes()).decode("ascii"),
+        "output_top_logprobs_idx_flat_b64": pybase64.b64encode(idx.tobytes()).decode("ascii"),
+        "output_top_logprobs_val_flat_b64_dtype": "float32",
+        "output_top_logprobs_idx_flat_b64_dtype": "int32",
     }
