@@ -75,7 +75,8 @@ def make_case(index: int, split: str, seed: int) -> dict:
     else:
         mode = index // 8 % 3
         if mode == 1:
-            case["facts"] = [first] + [f"Register row: entity={r['entity']}; key={r['key']}; value={json.dumps(r['value'])}; day={r['day']}; signed={str(r['signed']).lower()}." for r in rows]
+            entries = [f"Register row: entity={r['entity']}; key={r['key']}; value={json.dumps(r['value'])}; day={r['day']}; signed={str(r['signed']).lower()}." for r in rows]
+            case["facts"] = [first] + ["\n".join(entries[offset:offset + 8]) for offset in range(0, len(entries), 8)]
         elif mode == 2:
             case["facts"] = [first] + ["Evidence bundle: " + json.dumps(rows[offset : offset + 12], sort_keys=False) for offset in range(0, len(rows), 12)]
     template = json.dumps({"family": case["family"], "overrides": operations, "evidence_format": "table" if split == "validation" else "json-or-register"}, sort_keys=True)

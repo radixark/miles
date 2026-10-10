@@ -29,4 +29,5 @@ def test_scaled_labels_and_disjoint_templates() -> None:
             templates[split].add(case["template_group"])
             assert case["split"] == split
             assert len(case["questions"]) >= 3
+            assert len(case["facts"]) <= 16
     assert not templates["train"] & templates["validation"]
