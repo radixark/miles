@@ -3,15 +3,22 @@ from collections.abc import Iterator, Sequence
 
 import torch
 
-from miles.backends.training_utils.data.context_parallel import (
-    allgather_cp_redistribute,
-    get_logits_and_tokens_offset_with_cp,
-)
+from miles.backends.training_utils.data.context_parallel import allgather_cp_redistribute, iter_local_response_rows
 from miles.backends.training_utils.data.sampling_mask import build_local_sampling_mask
 from miles.backends.training_utils.loss.hub.math_utils import calculate_log_probs_and_entropy
 from miles.backends.training_utils.loss.hub.score_centering import selected_log_probs_and_entropy
 from miles.backends.training_utils.parallel import get_parallel_state
 from miles.utils.sampling_mask import RolloutSamplingMask
+
+
+def _flatten_logits(logits: torch.Tensor, qkv_format: str, max_seq_lens: list[int] | None) -> torch.Tensor:
+    """``[1, T, V]`` (thd) or ``[B, S, V]`` (bshd) model logits as ``[rows, V]``, a view."""
+    assert len(logits.shape) == 3, f"{logits.shape}"
+    if qkv_format == "thd":
+        assert logits.size(0) == 1, f"{logits.shape}"
+        return logits.squeeze(0)
+    assert max_seq_lens is not None
+    return logits.view(-1, logits.size(-1))
 
 
 def _iter_response_chunks(
@@ -28,9 +35,7 @@ def _iter_response_chunks(
 
     After squeezing batch dimension and applying temperature scaling, this
     function extracts the logits and tokens corresponding to response segments
-    for each sample. When context parallelism is disabled, it slices directly
-    from the concatenated sequence. With context parallelism enabled, it
-    handles split sequences across ranks.
+    for each sample (``context_parallel.iter_local_response_rows`` owns the row layout).
 
     Args:
         logits: Model outputs with shape `[1, T, V]` (policy) or `[1, T, 1]`
@@ -47,19 +52,10 @@ def _iter_response_chunks(
         local row back to the full response. The mapping is empty when
         `include_response_indices` is false.
     """
-    qkv_format = args.qkv_format
-
     if not args.true_on_policy_mode:
         # Model-precision callers hand native bf16/fp16 logits; chunks are upcast to fp32 downstream
         assert logits.dtype in (torch.float32, torch.bfloat16, torch.float16), f"{logits.dtype}"
-    assert len(logits.shape) == 3, f"{logits.shape}"
-
-    if qkv_format == "thd":
-        assert logits.size(0) == 1, f"{logits.shape}"
-        logits = logits.squeeze(0)
-    else:
-        assert max_seq_lens is not None
-        logits = logits.view(-1, logits.size(-1))
+    logits = _flatten_logits(logits, args.qkv_format, max_seq_lens)
 
     if args.true_on_policy_mode:
         if logits.size(-1) > 1 and args.rollout_temperature > 0 and args.rollout_temperature != 1.0:
@@ -69,104 +65,18 @@ def _iter_response_chunks(
         elif getattr(args, "fp16", False):
             logits = logits.to(torch.float16)
 
-    parallel_state = get_parallel_state()
-    cp_size = parallel_state.cp.size
-    end = 0
-    seq_start = 0
-    for i, (tokens, total_length, response_length) in enumerate(
-        zip(unconcat_tokens, total_lengths, response_lengths, strict=False)
+    for row_ranges, tokens_chunk, response_indices in iter_local_response_rows(
+        logits.size(0),
+        qkv_format=args.qkv_format,
+        allgather_cp=args.allgather_cp,
+        unconcat_tokens=unconcat_tokens,
+        total_lengths=total_lengths,
+        response_lengths=response_lengths,
+        max_seq_lens=max_seq_lens,
+        include_response_indices=include_response_indices,
     ):
-        max_seq_len = max_seq_lens[i] if max_seq_lens is not None else None
-
-        if cp_size == 1:
-            if qkv_format == "bshd":
-                end = max_seq_len * i + total_length
-                start = end - response_length
-                logits_chunk = logits[start - 1 : end - 1]
-            else:
-                end += total_length
-                start = end - response_length
-                logits_chunk = logits[start - 1 : end - 1]
-            tokens_chunk = tokens[-response_length:] if response_length else tokens[0:0]
-            response_indices = range(response_length) if include_response_indices else ()
-        elif args.allgather_cp:
-            # THD concatenates samples before the CP split. BSHD splits each
-            # padded sample independently, then flattens the local batch.
-            if qkv_format == "bshd":
-                logits_local_len = max_seq_len // cp_size
-                logits_offset = i * logits_local_len
-                sample_start = 0
-            else:
-                logits_local_len = logits.size(0)
-                logits_offset = 0
-                sample_start = seq_start
-            cp_rank = parallel_state.cp.rank
-            chunk_start = cp_rank * logits_local_len
-            chunk_end = chunk_start + logits_local_len
-
-            prompt_length = total_length - response_length
-            resp_token_start = sample_start + prompt_length
-            resp_token_end = sample_start + total_length
-            logit_global_start = resp_token_start - 1
-            logit_global_end = resp_token_end - 1
-
-            s = max(logit_global_start, chunk_start)
-            e = min(logit_global_end, chunk_end)
-            if e <= s:
-                logits_chunk = logits[0:0]
-                tokens_chunk = tokens[0:0]
-                response_indices = ()
-            else:
-                logits_chunk = logits[logits_offset + s - chunk_start : logits_offset + e - chunk_start]
-                tokens_chunk = tokens[(s + 1) - sample_start : (e + 1) - sample_start]
-                response_indices = (
-                    range(
-                        s - logit_global_start,
-                        e - logit_global_start,
-                    )
-                    if include_response_indices
-                    else ()
-                )
-            assert logits_chunk.size(0) == tokens_chunk.size(0), f"{logits_chunk.size(0)} vs {tokens_chunk.size(0)}"
-        else:
-            # TODO: this is super ugly... do better abstraction.
-            chunk_size, chunks_offset, logits_offset, tokens_offset = get_logits_and_tokens_offset_with_cp(
-                total_length, response_length, qkv_format, max_seq_len
-            )
-
-            logits_0, logits_1 = logits[end : end + chunk_size], logits[end + chunk_size : end + 2 * chunk_size]
-            end += 2 * chunk_size
-
-            logits_0 = logits_0[logits_offset[0][0] - chunks_offset[0][0] : logits_offset[0][1] - chunks_offset[0][0]]
-            tokens_0 = tokens[tokens_offset[0][0] : tokens_offset[0][1]]
-
-            logits_1 = logits_1[logits_offset[1][0] - chunks_offset[1][0] : logits_offset[1][1] - chunks_offset[1][0]]
-            tokens_1 = tokens[tokens_offset[1][0] : tokens_offset[1][1]]
-
-            assert logits_0.size(0) == tokens_0.size(0), f"{logits_0.size(0)} vs {tokens_0.size(0)}"
-            assert logits_1.size(0) == tokens_1.size(0), f"{logits_1.size(0)} vs {tokens_1.size(0)}"
-
-            logits_chunk = torch.cat([logits_0, logits_1], dim=0)
-            tokens_chunk = torch.cat([tokens_0, tokens_1], dim=0)
-            if include_response_indices:
-                prompt_length = total_length - response_length
-                response_indices = [
-                    *range(
-                        tokens_offset[0][0] - prompt_length,
-                        tokens_offset[0][1] - prompt_length,
-                    ),
-                    *range(
-                        tokens_offset[1][0] - prompt_length,
-                        tokens_offset[1][1] - prompt_length,
-                    ),
-                ]
-            else:
-                response_indices = ()
-
-        seq_start += total_length
-
-        if include_response_indices:
-            assert len(response_indices) == tokens_chunk.size(0)
+        pieces = [logits[row_start:row_end] for row_start, row_end in row_ranges]
+        logits_chunk = pieces[0] if len(pieces) == 1 else torch.cat(pieces, dim=0)
         yield logits_chunk, tokens_chunk, response_indices
 
 
@@ -210,7 +120,8 @@ def get_log_probs_and_entropy(
     For each sample, extracts response-aligned logits and tokens, then computes
     log-probabilities via softmax across the tensor-parallel group. Log-probs
     are squeezed from `[R, 1]` to `[R]`. Entropy is computed and returned only
-    when requested.
+    when requested. With `--log-probs-backend fused` all samples go through one
+    fused op, normalized over the true vocabulary (`args.vocab_size`).
 
     Args:
         logits: Policy logits with shape `[1, T, V]`.
@@ -240,6 +151,58 @@ def get_log_probs_and_entropy(
                     f"sampling-mask length {len(sampling_mask)} != response length "
                     f"{response_length} for sample {sample_index}"
                 )
+    if getattr(args, "log_probs_backend", "torch") == "fused":
+        assert rollout_sampling_mask is None, "--log-probs-backend fused does not take a sampling mask"
+        res = _fused_log_probs_and_entropy(
+            logits,
+            args=args,
+            unconcat_tokens=unconcat_tokens,
+            total_lengths=total_lengths,
+            response_lengths=response_lengths,
+            with_entropy=with_entropy,
+            entropy_requires_grad=entropy_requires_grad,
+            max_seq_lens=max_seq_lens,
+        )
+    else:
+        res = _torch_log_probs_and_entropy(
+            logits,
+            args=args,
+            unconcat_tokens=unconcat_tokens,
+            total_lengths=total_lengths,
+            response_lengths=response_lengths,
+            with_entropy=with_entropy,
+            entropy_requires_grad=entropy_requires_grad,
+            max_seq_lens=max_seq_lens,
+            rollout_sampling_mask=rollout_sampling_mask,
+        )
+
+    # we need to turn the all gather kv into zigzag ring attn kv
+    if args.allgather_cp:
+        allgather_cp_redistribute(
+            res,
+            logits=logits,
+            args=args,
+            total_lengths=total_lengths,
+            response_lengths=response_lengths,
+            max_seq_lens=max_seq_lens,
+        )
+
+    return res
+
+
+def _torch_log_probs_and_entropy(
+    logits: torch.Tensor,
+    *,
+    args: Namespace,
+    unconcat_tokens: list[torch.Tensor],
+    total_lengths: list[int],
+    response_lengths: list[int],
+    with_entropy: bool,
+    entropy_requires_grad: bool,
+    max_seq_lens: list[int] | None,
+    rollout_sampling_mask: Sequence[RolloutSamplingMask] | None,
+) -> dict[str, list[torch.Tensor]]:
+    """Each sample's response chunk through ``calculate_log_probs_and_entropy``."""
     parallel_state = get_parallel_state()
     log_probs_list = []
     entropy_list = []
@@ -299,18 +262,56 @@ def get_log_probs_and_entropy(
     }
     if with_entropy:
         res["entropy"] = entropy_list
+    return res
 
-    # we need to turn the all gather kv into zigzag ring attn kv
-    if args.allgather_cp:
-        allgather_cp_redistribute(
-            res,
-            logits=logits,
-            args=args,
-            total_lengths=total_lengths,
-            response_lengths=response_lengths,
-            max_seq_lens=max_seq_lens,
-        )
 
+def _fused_log_probs_and_entropy(
+    logits: torch.Tensor,
+    *,
+    args: Namespace,
+    unconcat_tokens: list[torch.Tensor],
+    total_lengths: list[int],
+    response_lengths: list[int],
+    with_entropy: bool,
+    entropy_requires_grad: bool,
+    max_seq_lens: list[int] | None,
+) -> dict[str, list[torch.Tensor]]:
+    """All samples' response rows through one ``fused_log_probs_and_entropy`` call."""
+    # imported here: the op needs triton, which not every host that imports the losses has
+    from miles.backends.training_utils.loss.hub.fused_log_probs import fused_log_probs_and_entropy
+
+    flat_logits = _flatten_logits(logits, args.qkv_format, max_seq_lens)
+    row_ranges, targets, lengths = [], [], []
+    for sample_ranges, tokens_chunk, _ in iter_local_response_rows(
+        flat_logits.size(0),
+        qkv_format=args.qkv_format,
+        allgather_cp=args.allgather_cp,
+        unconcat_tokens=unconcat_tokens,
+        total_lengths=total_lengths,
+        response_lengths=response_lengths,
+        max_seq_lens=max_seq_lens,
+        include_response_indices=False,
+    ):
+        row_ranges.extend(sample_ranges)
+        targets.append(tokens_chunk)
+        lengths.append(tokens_chunk.size(0))
+    device = flat_logits.device
+    rows = torch.cat([torch.arange(row_start, row_end, device=device) for row_start, row_end in row_ranges])
+    log_probs, entropy = fused_log_probs_and_entropy(
+        flat_logits,
+        rows,
+        torch.cat(targets).to(device),
+        tp_group=get_parallel_state().tp.group,
+        vocab_size=getattr(args, "vocab_size", None),  # a Megatron flag; other backends' logits are unpadded
+        temperature=args.rollout_temperature,
+        with_entropy=with_entropy,
+        entropy_requires_grad=entropy_requires_grad,
+        # the checkpointed loss replays its forward on these logits during backward
+        inplace_backward=not args.recompute_loss_function,
+    )
+    res = {"log_probs": list(log_probs.split(lengths))}
+    if with_entropy:
+        res["entropy"] = list(entropy.split(lengths))
     return res
 
 
