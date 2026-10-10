@@ -38,9 +38,11 @@ The supported surface is non-streaming, text-only `/v1/chat/completions`, one
 completion per request, with function tools where the chosen renderer supports
 them. Messages use the OpenAI roles (system, developer, user, assistant, tool)
 with string content or text parts. Sampling defaults come from the policy and
-renderer; an explicit `stop` is handed to the SDK as given (all strings, all
-token ids, or `[]`), overriding renderer stops, and the reply text is whatever
-the renderer's parser makes of the raw sampled tokens, exactly as with the SDK.
+renderer; an explicit `stop` (a string, normalized to a one-element list; a list
+of strings; a list of token ids; or `[]`) overrides renderer stops and is sent to
+the SDK. The SDK returns raw tokens and a stop reason and does not parse
+messages; the cookbook renderer's `parse_response` turns those raw tokens into
+the reply.
 Per-request output limits may lower the policy cap. The configured per-Datum
 limit counts model-input tokens (prompt plus output minus one); requests
 exceeding that budget are rejected before sampling. `user`, `metadata` and
