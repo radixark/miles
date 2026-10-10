@@ -60,13 +60,18 @@ class PackedSequence:
         gathered = all_gather_single_autograd(x_TD.contiguous(), 0, self.cp_layout.group)
         return gathered.index_select(0, self.cp_layout.restore_indices)
 
+    def gather_tokens_detached(self, x_TD: torch.Tensor) -> torch.Tensor:
+        if self.cp_layout is None:
+            return x_TD
+        return _gather_tokens(x_TD, self.cp_layout.group).index_select(0, self.cp_layout.restore_indices)
+
     def to_contiguous(self, x_TD: torch.Tensor) -> torch.Tensor:
         layout = self.cp_layout
-        return _GatherSelect.apply(x_TD, layout.contiguous_indices, layout.local_indices, layout.group)
+        return _PermuteTokensAcrossRanks.apply(x_TD, layout.contiguous_indices, layout.local_indices, layout.group)
 
     def from_contiguous(self, x_TD: torch.Tensor) -> torch.Tensor:
         layout = self.cp_layout
-        return _GatherSelect.apply(x_TD, layout.local_indices, layout.contiguous_indices, layout.group)
+        return _PermuteTokensAcrossRanks.apply(x_TD, layout.local_indices, layout.contiguous_indices, layout.group)
 
 
 def build_packed_sequence(
@@ -85,19 +90,13 @@ def build_packed_sequence(
     )
 
 
-def gather_tokens_no_grad(x_TD: torch.Tensor, sequence: PackedSequence) -> torch.Tensor:
-    if sequence.cp_layout is None:
-        return x_TD
-    return _gather_tokens(x_TD, sequence.cp_layout.group).index_select(0, sequence.cp_layout.restore_indices)
-
-
 def _gather_tokens(local: torch.Tensor, group: dist.ProcessGroup) -> torch.Tensor:
     gathered = local.new_empty((dist.get_world_size(group) * local.shape[0], *local.shape[1:]))
     dist.all_gather_into_tensor(gathered, local.contiguous(), group=group)
     return gathered
 
 
-class _GatherSelect(torch.autograd.Function):
+class _PermuteTokensAcrossRanks(torch.autograd.Function):
     """A permutation of tokens across the CP group: gather every shard, keep ``index`` rows. Each
     token has one owner on either side, so the gradient is the same move with ``inverse_index``."""
 

@@ -17,7 +17,7 @@ from miles.backends.torchtitan_utils.models.glm5_next.layers import (
     Glm5NextRMSNorm,
     HyperConnection,
     KimiDeltaAttention,
-    hc_post,
+    update_residual_streams,
 )
 from miles.backends.torchtitan_utils.models.glm5_next.packed_sequence import (
     ContextParallelLayout,
@@ -67,12 +67,12 @@ class Glm5NextBlock(Module):
     ) -> torch.Tensor:
         aggregated, h_post, h_res = self.hc_attn(x_BLND)
         out = self.attn(self.attention_norm(aggregated), sequence)
-        x_BLND = hc_post(out, x_BLND, h_post, h_res)
+        x_BLND = update_residual_streams(out, x_BLND, h_post, h_res)
 
         aggregated, h_post, h_res = self.hc_ffn(x_BLND)
         ffn = self.moe if self.moe_enabled else self.feed_forward
         out = ffn(self.ffn_norm(aggregated))
-        return hc_post(out, x_BLND, h_post, h_res)
+        return update_residual_streams(out, x_BLND, h_post, h_res)
 
 
 class Glm5NextModel(Decoder):
