@@ -466,6 +466,82 @@ async def test_post_buffer_no_retry_stalled_reply_times_out():
             await post_buffer_no_retry(server.url, {}, timeout=0.2)
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cancel", [False, True], ids=["total-timeout", "cancel"])
+async def test_post_buffer_no_retry_closes_stalled_body_connection(cancel):
+    started = asyncio.Event()
+    closed = asyncio.Event()
+    requests = []
+
+    async def handle(reader, writer):
+        try:
+            requests.append(await reader.readuntil(b"\r\n\r\n"))
+            await reader.readexactly(2)
+            writer.write(b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\nx")
+            await writer.drain()
+            started.set()
+            assert await reader.read() == b""
+            closed.set()
+        finally:
+            writer.close()
+            await writer.wait_closed()
+
+    async with await asyncio.start_server(handle, "127.0.0.1", 0) as server:
+        port = server.sockets[0].getsockname()[1]
+        task = asyncio.create_task(post_buffer_no_retry(f"http://127.0.0.1:{port}/samples", {}, timeout=0.2))
+        await asyncio.wait_for(started.wait(), timeout=2)
+        if cancel:
+            task.cancel()
+        with pytest.raises(asyncio.CancelledError if cancel else TimeoutError):
+            await task
+        await asyncio.wait_for(closed.wait(), timeout=2)
+    assert len(requests) == 1
+
+
+@pytest.mark.asyncio
+async def test_post_buffer_no_retry_does_not_follow_redirects():
+    head = b"HTTP/1.1 307 Temporary Redirect\r\nLocation: /again\r\nContent-Length: 0\r\n\r\n"
+    async with _ReplyServer(_reply(307, b"", head=head)) as server:
+        with pytest.raises(RuntimeError, match="307"):
+            await post_buffer_no_retry(server.url, {}, timeout=5)
+    assert server.requests == [b"{}"]
+
+
+@pytest.mark.asyncio
+async def test_post_buffer_no_retry_stalled_upload_has_total_deadline():
+    connected = asyncio.Event()
+    release = asyncio.Event()
+    closed = asyncio.Event()
+    connections = []
+
+    async def handle(reader, writer):
+        connections.append(writer)
+        writer.transport.pause_reading()
+        connected.set()
+        try:
+            await release.wait()
+        finally:
+            writer.close()
+            await writer.wait_closed()
+            closed.set()
+
+    async with await asyncio.start_server(handle, "127.0.0.1", 0) as server:
+        port = server.sockets[0].getsockname()[1]
+        started = asyncio.get_running_loop().time()
+        task = asyncio.create_task(
+            post_buffer_no_retry(f"http://127.0.0.1:{port}/samples", {"data": "x" * (8 * 1024 * 1024)}, timeout=0.5)
+        )
+        try:
+            await asyncio.wait_for(connected.wait(), timeout=2)
+            with pytest.raises(TimeoutError):
+                await asyncio.wait_for(task, timeout=2)
+            assert asyncio.get_running_loop().time() - started < 1.5
+        finally:
+            release.set()
+            await asyncio.wait_for(closed.wait(), timeout=2)
+    assert len(connections) == 1
+
+
 # ── v2 wire (--use-session-server v2): metadata channel + extended fields ──
 
 

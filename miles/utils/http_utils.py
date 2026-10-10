@@ -11,6 +11,7 @@ import subprocess
 import time
 import urllib.parse
 
+import aiohttp
 import httpx
 import numpy as np
 
@@ -273,120 +274,52 @@ async def wait_http_ok(url: str, *, json_payload=None, timeout: float = 180.0, r
 
 
 async def post_buffer_no_retry(url: str, payload: dict, *, timeout: float) -> np.ndarray:
-    """Perform one JSON POST and return the whole reply body as a fresh writable uint8 array.
+    """POST once and return a writable buffer; bound the whole operation by timeout.
 
-    The body is read with ``sock_recv_into`` straight into one buffer sized by the reply's
-    Content-Length. A bulk reply (a ``/samples`` body is mostly R3 and can be hundreds of MB)
-    read through httpx is copied several times and parsed 64 KiB at a time on the event loop.
-    Plain ``http://`` only, one connection per call, no retry, total ``timeout``. Transport
-    failures raise ``httpx.TransportError`` subclasses and a non-2xx reply raises
-    ``RuntimeError`` carrying its body, as the httpx client did.
+    Plain HTTP only. Transport failures remain httpx.TransportError for the rollout
+    abort handler; non-2xx responses raise RuntimeError carrying the response body.
     """
     return await asyncio.wait_for(_post_buffer(url, payload), timeout=timeout)
 
 
-_MAX_REPLY_HEAD_BYTES = 64 * 1024
-
-
 async def _post_buffer(url: str, payload: dict) -> np.ndarray:
-    parts = urllib.parse.urlsplit(url)
-    if parts.scheme != "http":
+    if urllib.parse.urlsplit(url).scheme != "http":
         raise ValueError(f"post_buffer_no_retry supports http:// only, got {url}")
-    body = json.dumps(payload).encode()
-    request = (
-        f"POST {parts.path or '/'}{'?' + parts.query if parts.query else ''} HTTP/1.1\r\n"
-        f"Host: {parts.netloc}\r\nContent-Type: application/json\r\nContent-Length: {len(body)}\r\n"
-        "Connection: close\r\n\r\n"
-    ).encode() + body
-    loop = asyncio.get_running_loop()
-    sock = await _connect_socket(loop, parts.hostname, parts.port or 80)
     try:
-        status, length, received = await _send_and_read_reply_head(loop, sock, request)
-        # A private anonymous mapping, not np.empty: numpy madvises large allocations to huge pages,
-        # and on a fragmented node each such allocation stalls in direct compaction (2048 bodies of
-        # 200 MB in flight: 8.4 -> 2.3 bodies/s). mmap rejects length 0.
-        try:
-            mapping = mmap.mmap(-1, max(length, 1), flags=mmap.MAP_PRIVATE | mmap.MAP_ANONYMOUS)
-        except (OSError, OverflowError) as exc:
-            raise httpx.ReadError(f"cannot allocate reply buffer for Content-Length {length}") from exc
-        reply = np.frombuffer(mapping, dtype=np.uint8)[:length]
-        await _recv_exactly_into(loop, sock, reply, received)
-    finally:
-        sock.close()
-    if not (200 <= status < 300):
-        raise RuntimeError(f"POST {url} failed with {status}: {reply.tobytes().decode(errors='replace')}")
-    return reply
-
-
-async def _connect_socket(loop: asyncio.AbstractEventLoop, host: str, port: int) -> socket.socket:
-    try:
-        addresses = await loop.getaddrinfo(host, port, type=socket.SOCK_STREAM)
-        for index, (family, sock_type, proto, _, addr) in enumerate(addresses):
-            try:
-                sock = socket.socket(family, sock_type, proto)
+        async with aiohttp.ClientSession(
+            timeout=aiohttp.ClientTimeout(total=None),
+            auto_decompress=False,
+            skip_auto_headers={"Accept-Encoding"},
+            cookie_jar=aiohttp.DummyCookieJar(),
+        ) as client:
+            async with client.post(
+                url, json=payload, headers={"Connection": "close"}, allow_redirects=False
+            ) as response:
+                length = response.content_length
+                if length is None:
+                    raise httpx.RemoteProtocolError("reply without Content-Length")
+                # Private anonymous mmap avoids numpy huge-page compaction; mmap rejects length 0.
                 try:
-                    sock.setblocking(False)
-                    await loop.sock_connect(sock, addr)
-                except BaseException:
-                    sock.close()
-                    raise
-                return sock
-            except OSError:
-                if index == len(addresses) - 1:
-                    raise
-        raise OSError(f"no addresses for {host}:{port}")
-    except OSError as e:
-        raise httpx.ConnectError(f"connect to {host}:{port} failed: {e!r}") from e
-
-
-async def _send_and_read_reply_head(
-    loop: asyncio.AbstractEventLoop, sock: socket.socket, request: bytes
-) -> tuple[int, int, bytes]:
-    """Send the request; return (status, Content-Length, body bytes already received)."""
-    try:
-        await loop.sock_sendall(sock, request)
-    except OSError as e:
-        raise httpx.WriteError(repr(e)) from e
-    head = b""
-    try:
-        while b"\r\n\r\n" not in head:
-            if len(head) > _MAX_REPLY_HEAD_BYTES:
-                raise httpx.RemoteProtocolError(f"reply head exceeds {_MAX_REPLY_HEAD_BYTES} bytes")
-            chunk = await loop.sock_recv(sock, 65536)
-            if not chunk:
-                raise httpx.RemoteProtocolError("connection closed before the reply head")
-            head += chunk
-    except OSError as e:
-        raise httpx.ReadError(repr(e)) from e
-    head, _, received = head.partition(b"\r\n\r\n")
-    status_line, *header_lines = head.split(b"\r\n")
-    headers = {
-        name.strip().lower(): value.strip() for name, _, value in (line.partition(b":") for line in header_lines)
-    }
-    try:
-        status = int(status_line.split()[1])
-        length = int(headers[b"content-length"])
-    except (IndexError, KeyError, ValueError) as e:
-        raise httpx.RemoteProtocolError(f"reply head without a status or Content-Length: {head[:200]!r}") from e
-    if len(received) > length:
-        raise httpx.RemoteProtocolError(f"reply carries {len(received)} bytes past a Content-Length of {length}")
-    return status, length, received
-
-
-async def _recv_exactly_into(
-    loop: asyncio.AbstractEventLoop, sock: socket.socket, buffer: np.ndarray, received: bytes
-) -> None:
-    view = memoryview(buffer)
-    view[: len(received)] = received
-    filled = len(received)
-    try:
-        while filled < len(buffer):
-            n = await loop.sock_recv_into(sock, view[filled:])
-            if n == 0:
-                raise httpx.ReadError(f"connection closed after {filled} of {len(buffer)} body bytes")
-            filled += n
-    except OSError as e:
-        raise httpx.ReadError(repr(e)) from e
+                    mapping = mmap.mmap(-1, max(length, 1), flags=mmap.MAP_PRIVATE | mmap.MAP_ANONYMOUS)
+                except (OSError, OverflowError) as exc:
+                    raise httpx.ReadError(f"cannot allocate reply buffer for Content-Length {length}") from exc
+                reply = np.frombuffer(mapping, dtype=np.uint8)[:length]
+                view = memoryview(reply)
+                filled = 0
+                async for chunk in response.content.iter_any():
+                    view[filled : filled + len(chunk)] = chunk
+                    filled += len(chunk)
+                if filled != length:
+                    raise httpx.ReadError(f"connection closed after {filled} of {length} body bytes")
+                if not (200 <= response.status < 300):
+                    raise RuntimeError(
+                        f"POST {url} failed with {response.status}: {reply.tobytes().decode(errors='replace')}"
+                    )
+                return reply
+    except aiohttp.ClientConnectorError as exc:
+        raise httpx.ConnectError(str(exc)) from exc
+    except aiohttp.ClientError as exc:
+        raise httpx.ReadError(str(exc)) from exc
 
 
 def init_http_client(args):
