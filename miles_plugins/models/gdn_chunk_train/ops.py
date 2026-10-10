@@ -67,12 +67,32 @@ SAVE_STATE = os.environ.get("MILES_GDN_CHUNK_TRAIN_SAVE_STATE", "1") == "1"
 # chunk table
 # --------------------------------------------------------------------------- #
 @dataclass(frozen=True)
+class SegmentTable:
+    """Scan segments: every sequence's chunk range cut into near-equal pieces (all int32 CUDA tensors).
+
+    Segment ``s`` covers chunks ``[seg_chunk_start[s], seg_chunk_start[s + 1])`` of sequence ``seg_seq[s]``;
+    the segments of sequence ``i`` are ``[seq_seg_start[i], seq_seg_start[i + 1])`` in chunk order.
+    ``num_segments`` is the launch extent: a table built on the device is padded to its upper bound with
+    empty segments (``seg_seq == -1``) that the scan kernels skip.  ``segment_len == 0`` means one segment
+    per sequence (the serial scan).
+    """
+
+    seg_chunk_start: torch.Tensor
+    seg_seq: torch.Tensor
+    seq_seg_start: torch.Tensor
+    num_segments: int
+    segment_len: int
+
+
+@dataclass(frozen=True)
 class ChunkMeta:
     """Chunk table for packed varlen sequences (all int32 CUDA tensors).
 
     ``num_chunks`` is the launch extent; when the table is built on the device from ``cu_seqlens``
     it is an upper bound (``T // 64 + num_seqs``) and the trailing entries are padding chunks with
-    ``chunk_len == 0`` that every chunk kernel skips.
+    ``chunk_len == 0`` that every chunk kernel skips.  ``fwd_segments`` / ``bwd_segments`` are the
+    segment tables of the forward state scan and of the backward state-gradient scan
+    (:func:`segment_lens`; ``segment_len == 0`` keeps the serial scan).
     """
 
     chunk_start: torch.Tensor
@@ -81,9 +101,36 @@ class ChunkMeta:
     num_chunks: int
     num_seqs: int
     seq_lens: tuple[int, ...] | None
+    fwd_segments: SegmentTable
+    bwd_segments: SegmentTable
 
 
-def build_chunk_meta(seq_lens, device) -> ChunkMeta:
+def segment_bounds(num_chunks: int, segment_len: int) -> list[int]:
+    """Segment boundaries of one sequence (chunk offsets), balanced to within one chunk.
+
+    The device table builder (the ``meta`` stage) evaluates the same integer formula.
+    """
+    if segment_len <= 0 or num_chunks <= segment_len:
+        return [0, num_chunks]
+    count = -(-num_chunks // segment_len)
+    return [(s * num_chunks) // count for s in range(count + 1)]
+
+
+def _segment_lists(seq_chunk_start: list[int], segment_len: int) -> tuple[list[int], list[int], list[int]]:
+    seg_chunk_start = [0]
+    seg_seq: list[int] = []
+    seq_seg_start = [0]
+    for seq in range(len(seq_chunk_start) - 1):
+        c0 = seq_chunk_start[seq]
+        bounds = segment_bounds(seq_chunk_start[seq + 1] - c0, segment_len)
+        seg_chunk_start.extend(c0 + b for b in bounds[1:])
+        seg_seq.extend([seq] * (len(bounds) - 1))
+        seq_seg_start.append(len(seg_seq))
+    return seg_chunk_start, seg_seq, seq_seg_start
+
+
+def build_chunk_meta(seq_lens, device, *, segment_lens: tuple[int, int] = (0, 0)) -> ChunkMeta:
+    """Exact chunk and segment tables from host sequence lengths (one pinned copy, no synchronisation)."""
     starts: list[int] = []
     lens: list[int] = []
     seq_chunk_start = [0]
@@ -95,20 +142,39 @@ def build_chunk_meta(seq_lens, device) -> ChunkMeta:
             lens.append(min(CHUNK, seq_len - chunk_start))
         seq_chunk_start.append(len(starts))
         token += seq_len
+    parts: list[list[int]] = [starts, lens, seq_chunk_start]
+    for seg_len in segment_lens:
+        parts.extend(_segment_lists(seq_chunk_start, int(seg_len)))
 
     # One host tensor, one asynchronous copy (pinned staging): a pageable ``torch.tensor(..., device="cuda")``
-    # would synchronise the stream before each of three copies.
-    table = torch.tensor(starts + lens + seq_chunk_start, dtype=torch.int32)
+    # would synchronise the stream before each copy.
+    table = torch.tensor([x for part in parts for x in part], dtype=torch.int32)
     device = torch.device(device)
     table = table.pin_memory().to(device, non_blocking=True) if device.type == "cuda" else table.to(device)
-    n = len(starts)
+    views = []
+    offset = 0
+    for part in parts:
+        views.append(table[offset : offset + len(part)])
+        offset += len(part)
+    segments = [
+        SegmentTable(
+            seg_chunk_start=views[3 + 3 * i],
+            seg_seq=views[4 + 3 * i],
+            seq_seg_start=views[5 + 3 * i],
+            num_segments=len(parts[4 + 3 * i]),
+            segment_len=int(segment_lens[i]),
+        )
+        for i in range(2)
+    ]
     return ChunkMeta(
-        chunk_start=table[:n],
-        chunk_len=table[n : 2 * n],
-        seq_chunk_start=table[2 * n :],
-        num_chunks=n,
+        chunk_start=views[0],
+        chunk_len=views[1],
+        seq_chunk_start=views[2],
+        num_chunks=len(starts),
         num_seqs=len(seq_lens),
         seq_lens=tuple(int(x) for x in seq_lens),
+        fwd_segments=segments[0],
+        bwd_segments=segments[1],
     )
 
 
@@ -132,54 +198,108 @@ def _seq_lens_from_host(cu_seqlens_host) -> tuple[int, ...]:
 
 
 @lru_cache(maxsize=256)
-def _host_chunk_meta(seq_lens: tuple[int, ...], device_index: int) -> ChunkMeta:
+def _host_chunk_meta(seq_lens: tuple[int, ...], segment_lens: tuple[int, int], device_index: int) -> ChunkMeta:
     global _HOST_META_BUILDS
     _HOST_META_BUILDS += 1
-    return build_chunk_meta(seq_lens, torch.device("cuda", device_index))
+    return build_chunk_meta(seq_lens, torch.device("cuda", device_index), segment_lens=segment_lens)
 
 
-def chunk_meta_from_host(cu_seqlens_host, device) -> ChunkMeta:
-    """Exact chunk table for a micro-batch layout, built once per distinct layout and device.
+def _host_meta(seq_lens, num_v_heads, device_index: int, arch: str | None, total_tokens: int | None = None) -> ChunkMeta:
+    # The scan segment lengths are part of the layout key; ``total_tokens`` is the padded token extent the
+    # device table path sees (``T``) so both paths derive identical tables.  Without ``num_v_heads`` the
+    # scans stay serial (one segment per sequence).
+    seq_lens = tuple(int(x) for x in seq_lens)
+    tokens = int(total_tokens) if total_tokens is not None else sum(seq_lens)
+    segs = segment_lens(tokens, len(seq_lens), int(num_v_heads), int(device_index), arch) if num_v_heads else (0, 0)
+    return _host_chunk_meta(seq_lens, segs, int(device_index))
 
-    Megatron hands every layer of a micro-batch the same ``packed_seq_params`` (``cu_seqlens_host`` next to the
-    device ``cu_seqlens_q``); the table is a pure function of the segment lengths, so all layers and the
-    activation-recompute forward of that micro-batch share one build (three tiny int32 tensors, no
-    device-to-host synchronisation, no launch).  The launch extent is exact (no padding chunks).
+
+def chunk_meta_from_host(
+    cu_seqlens_host, device, num_v_heads: int | None = None, total_tokens: int | None = None, arch: str | None = None
+) -> ChunkMeta:
+    """Exact chunk (and, given ``num_v_heads``, scan segment) tables for a micro-batch layout, built once per
+    distinct layout and device.
+
+    The tables are a pure function of the segment lengths, the head count and the device, so every layer of
+    a micro-batch (and the activation-recompute forward) shares one build: a few tiny int32 tensors, no
+    device-to-host synchronisation, no launch, exact launch extents.
     """
     device = torch.device(device)
     index = device.index if device.index is not None else torch.cuda.current_device()
-    return _host_chunk_meta(_seq_lens_from_host(cu_seqlens_host), int(index))
+    if num_v_heads is not None and arch is None:
+        arch = device_arch(device)
+    return _host_meta(_seq_lens_from_host(cu_seqlens_host), num_v_heads, int(index), arch, total_tokens)
 
 
-def build_chunk_meta_from_cu_seqlens(cu_seqlens: torch.Tensor, total_tokens: int, arch: str) -> ChunkMeta:
-    """Chunk table from a device ``cu_seqlens`` tensor without synchronising the host."""
+def segments_upper_bound(num_chunks_max: int, num_seqs: int, segment_len: int) -> int:
+    """Launch extent of a device-built segment table: ``sum(ceil(n_i / L)) <= num_chunks_max // L + num_seqs``."""
+    return num_seqs + (num_chunks_max // int(segment_len) if int(segment_len) > 0 else 0)
+
+
+def build_chunk_meta_from_cu_seqlens(
+    cu_seqlens: torch.Tensor, total_tokens: int, arch: str, *, segment_lens: tuple[int, int] = (0, 0)
+) -> ChunkMeta:
+    """Chunk and segment tables from a device ``cu_seqlens`` tensor without synchronising the host.
+
+    The launch extents are upper bounds (``total_tokens // 64 + num_seqs`` chunks, :func:`segments_upper_bound`
+    segments); the padding entries are skipped by every kernel.
+    """
     if cu_seqlens.dim() != 1 or cu_seqlens.numel() < 2:
         raise ValueError("cu_seqlens must be a 1-D tensor with at least two entries")
     num_seqs = int(cu_seqlens.numel()) - 1
     num_chunks_max = total_tokens // CHUNK + num_seqs
+    seg_max = [segments_upper_bound(num_chunks_max, num_seqs, seg_len) for seg_len in segment_lens]
     cu32 = cu_seqlens if cu_seqlens.dtype == torch.int32 else cu_seqlens.to(torch.int32)
     cu32 = cu32.contiguous()
     device = cu_seqlens.device
-    chunk_start = torch.empty(num_chunks_max, dtype=torch.int32, device=device)
-    chunk_len = torch.empty(num_chunks_max, dtype=torch.int32, device=device)
-    seq_chunk_start = torch.empty(num_seqs + 1, dtype=torch.int32, device=device)
+    sizes = [num_chunks_max, num_chunks_max, num_seqs + 1]
+    for n in seg_max:
+        sizes.extend((n + 1, n, num_seqs + 1))
+    table = torch.empty(sum(sizes), dtype=torch.int32, device=device)
+    views = []
+    offset = 0
+    for n in sizes:
+        views.append(table[offset : offset + n])
+        offset += n
     kernel("meta", arch).launch(
         grid=(1, 1, 1),
         cu_seqlens=cu32,
-        chunk_start=chunk_start,
-        chunk_len=chunk_len,
-        seq_chunk_start=seq_chunk_start,
+        chunk_start=views[0],
+        chunk_len=views[1],
+        seq_chunk_start=views[2],
+        fwd_seg_chunk_start=views[3],
+        fwd_seg_seq=views[4],
+        fwd_seq_seg_start=views[5],
+        bwd_seg_chunk_start=views[6],
+        bwd_seg_seq=views[7],
+        bwd_seq_seg_start=views[8],
         num_seqs=num_seqs,
         num_chunks_max=num_chunks_max,
         total_tokens=int(total_tokens),
+        fwd_segment_len=int(segment_lens[0]),
+        bwd_segment_len=int(segment_lens[1]),
+        fwd_num_segments_max=seg_max[0],
+        bwd_num_segments_max=seg_max[1],
     )
+    segments = [
+        SegmentTable(
+            seg_chunk_start=views[3 + 3 * i],
+            seg_seq=views[4 + 3 * i],
+            seq_seg_start=views[5 + 3 * i],
+            num_segments=seg_max[i],
+            segment_len=int(segment_lens[i]),
+        )
+        for i in range(2)
+    ]
     return ChunkMeta(
-        chunk_start=chunk_start,
-        chunk_len=chunk_len,
-        seq_chunk_start=seq_chunk_start,
+        chunk_start=views[0],
+        chunk_len=views[1],
+        seq_chunk_start=views[2],
         num_chunks=num_chunks_max,
         num_seqs=num_seqs,
         seq_lens=None,
+        fwd_segments=segments[0],
+        bwd_segments=segments[1],
     )
 
 
@@ -236,6 +356,72 @@ def _scan_stage(kind: str, num_seqs: int, num_v_heads: int, device: torch.device
 
 
 # --------------------------------------------------------------------------- #
+# segment-parallel state scans (a pure function of the layout bound and the device)
+# --------------------------------------------------------------------------- #
+PRESCAN_CONFIG = (32, 2)  # the only register-scan configuration with a pre-scan variant
+MIN_SEGMENT_CHUNKS = 4  # 256 tokens: shorter segments pay more in pre-scan + stitch than they save
+STITCH_STEP_CHUNKS = 2.0  # one serial stitch step (3xBF16 128^3 tensor-core product + tile rebuild) in chunk steps
+FORCED_SEGMENT_LEN: int | None = None  # tests pin the segment length (0 = serial); production derives it
+
+
+def _scan_residency(kind: str, vb: int, ks: int, device_index: int, arch: str) -> int:
+    _sm_count, smem_optin, _major = _device_props(device_index)
+    threads = 32 * (vb // 16) * ks
+    smem = int(_scan_record(kind, vb, ks, arch)["scan"]["select_smem_bytes"])
+    return max(1, min(2048 // threads, 65536 // (256 * threads), smem_optin // smem, 4))
+
+
+def choose_segment_len(kind: str, total_tokens: int, num_seqs: int, num_v_heads: int, device_index: int, arch: str) -> int:
+    """Chunks per scan segment for ``kind`` (``0``: one segment per sequence, the serial scan).
+
+    A pure function of the layout, through the padded chunk bound ``T // 64 + num_seqs`` that both table
+    builders know, and of the device.  Only the preferred register-scan configuration is split.  Splitting
+    pays when the one-segment grid leaves most of the device idle: the pre-scan runs ``(V + K) / V`` column
+    blocks per split segment and the stitch adds a serial step per boundary, so the estimated makespan
+    ``(waves(pre-scan) + waves(scan)) * segment_len + stitch`` must beat the serial scan over the longest
+    sequence the bound allows.  ``MILES_GDN_CHUNK_TRAIN_SEG_CHUNKS`` (or :data:`FORCED_SEGMENT_LEN`) pins
+    the segment length for tests.
+    """
+    if FORCED_SEGMENT_LEN is not None:
+        return int(FORCED_SEGMENT_LEN)
+    forced = os.environ.get("MILES_GDN_CHUNK_TRAIN_SEG_CHUNKS")
+    if forced:
+        return int(forced)
+    vb, ks = PRESCAN_CONFIG
+    pre = f"{kind}_pre_r{vb}k{ks}"
+    if pre not in MODULES or arch not in MODULES[pre]:
+        return 0
+    if choose_register_scan_config(kind, num_seqs, num_v_heads, device_index, arch) != (vb, ks):
+        return 0
+    sm_count, smem_optin, major = _device_props(device_index)
+    if major < 9 or int(_scan_record(kind, vb, ks, arch)["scan"]["select_smem_bytes"]) > smem_optin:
+        return 0
+    chunks_bound = total_tokens // CHUNK + num_seqs
+    slots = sm_count * _scan_residency(kind, vb, ks, device_index, arch)
+    per_segment = num_v_heads * (HEAD_DIM // vb)
+    max_segments = slots // per_segment
+    if max_segments <= num_seqs:
+        return 0
+    seg_len = max(MIN_SEGMENT_CHUNKS, -(-chunks_bound // (max_segments - num_seqs)))
+    longest = chunks_bound - (num_seqs - 1)
+    if seg_len >= longest:
+        return 0
+    segments = -(-longest // seg_len)
+    waves_scan = -(-segments * per_segment // slots)
+    waves_pre = -(-(segments - 1) * 2 * per_segment // slots)
+    split_cost = (waves_scan + waves_pre) * seg_len + (segments - 1) * STITCH_STEP_CHUNKS
+    return seg_len if split_cost < 0.9 * longest else 0
+
+
+def segment_lens(total_tokens: int, num_seqs: int, num_v_heads: int, device_index: int, arch: str) -> tuple[int, int]:
+    """``(forward scan, backward scan)`` segment lengths of a layout (see :func:`choose_segment_len`)."""
+    return (
+        choose_segment_len("fwd_h", total_tokens, num_seqs, num_v_heads, device_index, arch),
+        choose_segment_len("dhu", total_tokens, num_seqs, num_v_heads, device_index, arch),
+    )
+
+
+# --------------------------------------------------------------------------- #
 # forward
 # --------------------------------------------------------------------------- #
 def _launch_wy(arch, kn, v, g_cs, beta32, A, meta: ChunkMeta, num_heads: int, num_v_heads: int, *, recompute: bool):
@@ -270,9 +456,52 @@ def _launch_fwd_h(
         meta.num_seqs if store_final_state else 0, num_v_heads, HEAD_DIM, HEAD_DIM, dtype=torch.float32, device=device
     )
     h0 = initial_state.contiguous().float() if initial_state is not None else final_state
+    use_init = 1 if initial_state is not None else 0
     stage, vb = _scan_stage("fwd_h", meta.num_seqs, num_v_heads, device, arch)
+    segs = meta.fwd_segments
+    if segs.segment_len > 0 and segs.num_segments > meta.num_seqs:
+        # Segment-parallel scan: every segment's affine map in parallel (value and identity column blocks of
+        # the augmented state), the serial stitch of the start states, then the ordinary scan per segment
+        # from its FP32 start state.
+        pre = stage.replace("fwd_h_r", "fwd_h_pre_r")
+        if pre not in MODULES or arch not in MODULES[pre]:
+            raise NotImplementedError(f"the segmented fwd_h scan needs the pre-scan stage {pre} for {arch}")
+        seg_state = torch.empty(segs.num_segments, num_v_heads, HEAD_DIM, 2 * HEAD_DIM, dtype=torch.float32, device=device)
+        kernel(pre, arch).launch(
+            grid=(segs.num_segments, num_v_heads, 2 * HEAD_DIM // vb),
+            kn=kn,
+            w=w,
+            u=u,
+            g_cs=g_cs,
+            h0=h0,
+            h_out=h,
+            v_new=v_new,
+            final_state=final_state,
+            seg_state=seg_state,
+            chunk_start=meta.chunk_start,
+            chunk_len=meta.chunk_len,
+            seg_chunk_start=segs.seg_chunk_start,
+            seg_seq=segs.seg_seq,
+            seq_chunk_start=meta.seq_chunk_start,
+            num_heads=num_heads,
+            num_v_heads=num_v_heads,
+            use_initial_state=use_init,
+            store_final_state=0,
+        )
+        h_start = torch.empty(segs.num_segments, num_v_heads, HEAD_DIM, HEAD_DIM, dtype=torch.float32, device=device)
+        kernel("stitch", arch).launch(
+            grid=(meta.num_seqs, num_v_heads, 1),
+            seg_state=seg_state,
+            init_state=h0,
+            state_out=h_start,
+            seq_seg_start=segs.seq_seg_start,
+            num_v_heads=num_v_heads,
+            use_init=use_init,
+            reverse=0,
+        )
+        h0, use_init = h_start, 1
     kernel(stage, arch).launch(
-        grid=(meta.num_seqs, num_v_heads, HEAD_DIM // vb),
+        grid=(segs.num_segments, num_v_heads, HEAD_DIM // vb),
         kn=kn,
         w=w,
         u=u,
@@ -281,12 +510,15 @@ def _launch_fwd_h(
         h_out=h,
         v_new=v_new,
         final_state=final_state,
+        seg_state=final_state,
         chunk_start=meta.chunk_start,
         chunk_len=meta.chunk_len,
+        seg_chunk_start=segs.seg_chunk_start,
+        seg_seq=segs.seg_seq,
         seq_chunk_start=meta.seq_chunk_start,
         num_heads=num_heads,
         num_v_heads=num_v_heads,
-        use_initial_state=1 if initial_state is not None else 0,
+        use_initial_state=use_init,
         store_final_state=1 if store_final_state else 0,
     )
     return h, v_new, final_state
@@ -481,9 +713,54 @@ def gdn_chunk_backward(
         meta.num_seqs if has_initial_state else 0, num_v_heads, HEAD_DIM, HEAD_DIM, dtype=torch.float32, device=device
     )
     dht32 = dht.contiguous().float() if dht is not None else dh0
+    use_dht = 1 if dht is not None else 0
     scan_stage, vb = _scan_stage("dhu", meta.num_seqs, num_v_heads, device, arch)
+    segs = meta.bwd_segments
+    if segs.segment_len > 0 and segs.num_segments > meta.num_seqs:
+        # Segment-parallel reverse scan: per-segment affine maps, reverse stitch of the segment end states,
+        # then the ordinary reverse scan per segment from its FP32 end state.
+        pre = scan_stage.replace("dhu_r", "dhu_pre_r")
+        if pre not in MODULES or arch not in MODULES[pre]:
+            raise NotImplementedError(f"the segmented dhu scan needs the pre-scan stage {pre} for {arch}")
+        seg_state = torch.empty(segs.num_segments, num_v_heads, HEAD_DIM, 2 * HEAD_DIM, dtype=torch.float32, device=device)
+        kernel(pre, arch).launch(
+            grid=(segs.num_segments, num_v_heads, 2 * HEAD_DIM // vb),
+            qn=qn,
+            kn=kn,
+            w=w,
+            do=do,
+            dv_local=dv_local,
+            g_cs=g_cs,
+            dht=dht32,
+            dh_out=dh,
+            dv2=dv2,
+            dh0=dh0,
+            seg_state=seg_state,
+            chunk_start=meta.chunk_start,
+            chunk_len=meta.chunk_len,
+            seg_chunk_start=segs.seg_chunk_start,
+            seg_seq=segs.seg_seq,
+            seq_chunk_start=meta.seq_chunk_start,
+            num_heads=num_heads,
+            num_v_heads=num_v_heads,
+            use_final_state_grad=use_dht,
+            store_initial_state_grad=0,
+            scale=scale,
+        )
+        dh_end = torch.empty(segs.num_segments, num_v_heads, HEAD_DIM, HEAD_DIM, dtype=torch.float32, device=device)
+        kernel("stitch", arch).launch(
+            grid=(meta.num_seqs, num_v_heads, 1),
+            seg_state=seg_state,
+            init_state=dht32,
+            state_out=dh_end,
+            seq_seg_start=segs.seq_seg_start,
+            num_v_heads=num_v_heads,
+            use_init=use_dht,
+            reverse=1,
+        )
+        dht32, use_dht = dh_end, 1
     kernel(scan_stage, arch).launch(
-        grid=(meta.num_seqs, num_v_heads, HEAD_DIM // vb),
+        grid=(segs.num_segments, num_v_heads, HEAD_DIM // vb),
         qn=qn,
         kn=kn,
         w=w,
@@ -494,12 +771,15 @@ def gdn_chunk_backward(
         dh_out=dh,
         dv2=dv2,
         dh0=dh0,
+        seg_state=dh0,
         chunk_start=meta.chunk_start,
         chunk_len=meta.chunk_len,
+        seg_chunk_start=segs.seg_chunk_start,
+        seg_seq=segs.seg_seq,
         seq_chunk_start=meta.seq_chunk_start,
         num_heads=num_heads,
         num_v_heads=num_v_heads,
-        use_final_state_grad=1 if dht is not None else 0,
+        use_final_state_grad=use_dht,
         store_initial_state_grad=1 if has_initial_state else 0,
         scale=scale,
     )
@@ -592,22 +872,26 @@ def gdn_chunk_backward(
 # --------------------------------------------------------------------------- #
 # autograd wrapper with FLA's signature
 # --------------------------------------------------------------------------- #
-def _chunk_meta(cu_seqlens, cu_seqlens_cpu, batch: int, seq_len: int, device, arch: str) -> ChunkMeta:
-    """Chunk table without a device-to-host synchronisation.
+def _chunk_meta(cu_seqlens, cu_seqlens_cpu, batch: int, seq_len: int, device, arch: str, num_v_heads: int) -> ChunkMeta:
+    """Chunk and segment tables without a device-to-host synchronisation.
 
-    Equal-length batches and a caller-supplied host copy of ``cu_seqlens`` take the exact table from the
-    per-layout cache (one build per micro-batch layout, shared by every layer); a device-only
-    ``cu_seqlens`` builds it on the GPU (padded launch extent, one launch per call).
+    Equal-length batches and a caller-supplied host copy of ``cu_seqlens`` take the exact tables from the
+    per-layout cache (one build per micro-batch layout, shared by every layer); a device-only ``cu_seqlens``
+    builds them on the GPU (padded launch extents, one launch per call).
     """
     device = torch.device(device)
+    index = device.index if device.index is not None else torch.cuda.current_device()
+    total_tokens = int(batch) * int(seq_len)
     if cu_seqlens is None:
-        index = device.index if device.index is not None else torch.cuda.current_device()
-        return _host_chunk_meta((int(seq_len),) * int(batch), int(index))
+        return _host_meta((int(seq_len),) * int(batch), num_v_heads, int(index), arch, total_tokens)
     if batch != 1:
         raise ValueError("cu_seqlens requires a leading batch dimension of 1")
     if cu_seqlens_cpu is not None:
-        return chunk_meta_from_host(cu_seqlens_cpu, device)
-    return build_chunk_meta_from_cu_seqlens(cu_seqlens, batch * seq_len, arch)
+        return chunk_meta_from_host(cu_seqlens_cpu, device, num_v_heads, total_tokens, arch)
+    num_seqs = int(cu_seqlens.numel()) - 1
+    return build_chunk_meta_from_cu_seqlens(
+        cu_seqlens, total_tokens, arch, segment_lens=segment_lens(total_tokens, num_seqs, int(num_v_heads), int(index), arch)
+    )
 
 
 def _cp_modules():
@@ -658,7 +942,7 @@ class ChunkGatedDeltaRuleFunction(torch.autograd.Function):
         v_flat = flat(v, num_v_heads, value_dim)
         g_flat = g.reshape(batch * seq_len, num_v_heads)
         beta_flat = beta.reshape(batch * seq_len, num_v_heads)
-        meta = _chunk_meta(cu_seqlens, cu_seqlens_cpu, batch, seq_len, q.device, arch)
+        meta = _chunk_meta(cu_seqlens, cu_seqlens_cpu, batch, seq_len, q.device, arch, num_v_heads)
 
         use_cp = cp_context is not None and getattr(cp_context, "group", None) is not None
         if use_cp and initial_state is not None:

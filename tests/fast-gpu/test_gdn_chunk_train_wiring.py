@@ -133,7 +133,7 @@ def test_tape_and_recompute_backward_are_bit_identical(monkeypatch):
         assert torch.equal(results[True][name], results[False][name]), f"{name}: tape vs recompute differ"
 
 
-def test_wiring_has_no_host_sync_and_nine_launches_per_layer(monkeypatch):
+def test_wiring_has_no_host_sync_and_fixed_launches_per_layer(monkeypatch):
     _require_blackwell()
     from torch.profiler import ProfilerActivity, profile
 
@@ -155,5 +155,77 @@ def test_wiring_has_no_host_sync_and_nine_launches_per_layer(monkeypatch):
     launches = [n for n in runtime if "LaunchKernel" in n]
     syncs = [n for n in runtime if "Synchronize" in n and n != "cudaDeviceSynchronize"]
     copies = [n for n in runtime if "Memcpy" in n]
-    assert len(launches) == layers * 9, (len(launches), sorted(set(runtime)))  # 4 forward + 5 backward kernels
+    meta = ops.chunk_meta_from_host(_cu(LAYOUT), DEVICE, 4)
+    split = [s.segment_len > 0 and s.num_segments > meta.num_seqs for s in (meta.fwd_segments, meta.bwd_segments)]
+    per_layer = 9 + 2 * sum(split)  # 4 forward + 5 backward kernels, plus pre-scan + stitch per segmented scan
+    assert len(launches) == layers * per_layer, (len(launches), per_layer, sorted(set(runtime)))
     assert not syncs and not copies, sorted(set(runtime))
+
+
+# --------------------------------------------------------------------------- #
+# segment-parallel state scans (phase 2, task 1, round R2)
+# --------------------------------------------------------------------------- #
+def _allclose(a, b):
+    for name in a:
+        atol = rtol = 1e-3 if name == "dg" else 1e-2
+        assert torch.allclose(a[name].float(), b[name].float(), atol=atol, rtol=rtol), name
+
+
+def test_segment_tables_host_match_device(monkeypatch):
+    _require_blackwell()
+    monkeypatch.setattr(ops, "FORCED_SEGMENT_LEN", 3)
+    ops._host_chunk_meta.cache_clear()
+    arch = ops.device_arch(DEVICE)
+    cu = torch.tensor(_cu(LAYOUT), device="cuda", dtype=torch.int32)
+    host = ops.chunk_meta_from_host(_cu(LAYOUT), DEVICE, 4, arch=arch)
+    dev = ops.build_chunk_meta_from_cu_seqlens(cu, sum(LAYOUT), arch, segment_lens=(3, 3))
+    seq_chunk_start = _expected_table(LAYOUT)[2]
+    for kind in ("fwd_segments", "bwd_segments"):
+        h, d = getattr(host, kind), getattr(dev, kind)
+        assert h.segment_len == d.segment_len == 3
+        n = h.num_segments
+        assert d.num_segments >= n
+        assert torch.equal(d.seg_chunk_start[: n + 1], h.seg_chunk_start)
+        assert torch.equal(d.seg_seq[:n], h.seg_seq)
+        assert torch.equal(d.seq_seg_start, h.seq_seg_start)
+        # the device table pads to its upper bound with empty segments that no kernel touches
+        assert bool((d.seg_seq[n:] == -1).all()) and bool((d.seg_chunk_start[n + 1 :] == host.num_chunks).all())
+        # every sequence's chunks are covered exactly once, in order, by segments of one to three chunks
+        starts, seqs, sstart = h.seg_chunk_start.tolist(), h.seg_seq.tolist(), h.seq_seg_start.tolist()
+        for i in range(len(LAYOUT)):
+            segs = range(sstart[i], sstart[i + 1])
+            assert starts[segs.start] == seq_chunk_start[i] and starts[segs.stop] == seq_chunk_start[i + 1]
+            assert all(seqs[s] == i and 1 <= starts[s + 1] - starts[s] <= 3 for s in segs)
+
+
+def test_segmented_scans_match_the_serial_scans(monkeypatch):
+    _require_blackwell()
+    inputs = _inputs(LAYOUT, seed=3)
+    cu = torch.tensor(_cu(LAYOUT), device="cuda", dtype=torch.int32)
+    kwargs = dict(cu_seqlens=cu, cu_seqlens_cpu=_cu(LAYOUT))
+    results = {}
+    for forced in (0, 4, None):  # serial scans, forced four-chunk segments, the production policy
+        monkeypatch.setattr(ops, "FORCED_SEGMENT_LEN", forced)
+        ops._host_chunk_meta.cache_clear()
+        results[forced] = _step(inputs, **kwargs)
+    _allclose(results[4], results[0])
+    _allclose(results[None], results[0])
+    # the device-table path of the segmented scans is bit-identical to the host-table path
+    monkeypatch.setattr(ops, "FORCED_SEGMENT_LEN", 4)
+    ops._host_chunk_meta.cache_clear()
+    dev = _step(inputs, cu_seqlens=cu)
+    for name in dev:
+        assert torch.equal(dev[name], results[4][name]), f"{name} differs between the device and host segment tables"
+
+
+def test_segmented_scans_are_bit_deterministic(monkeypatch):
+    _require_blackwell()
+    inputs = _inputs(LAYOUT, seed=4)
+    cu = torch.tensor(_cu(LAYOUT), device="cuda", dtype=torch.int32)
+    monkeypatch.setattr(ops, "FORCED_SEGMENT_LEN", 4)
+    ops._host_chunk_meta.cache_clear()
+    first = _step(inputs, cu_seqlens=cu, cu_seqlens_cpu=_cu(LAYOUT))
+    for _ in range(5):
+        again = _step(inputs, cu_seqlens=cu, cu_seqlens_cpu=_cu(LAYOUT))
+        for name in first:
+            assert torch.equal(first[name], again[name]), f"{name}: repeated segmented passes differ"
