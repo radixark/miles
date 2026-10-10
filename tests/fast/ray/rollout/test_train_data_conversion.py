@@ -565,6 +565,66 @@ class TestPostProcessRewards:
         assert (raw, processed) == sentinel
 
 
+class TestFlashReinforceRewards:
+    """flash_reinforce centers each rollout's reward on the batch mean: no prompt groups, no std."""
+
+    def test_centers_on_the_batch_mean_without_std(self):
+        args = make_args(
+            advantage_estimator="flash_reinforce",
+            grpo_std_normalization=True,  # read only by grpo/gspo
+            n_samples_per_prompt=1,
+            rollout_batch_size=4,
+        )
+        samples = make_samples_grouped(4, 1, rewards=[1.0, 0.0, 0.0, 0.0])
+
+        raw, processed = _post_process_rewards(args, samples, custom_reward_post_process_func=None)
+
+        assert raw == [1.0, 0.0, 0.0, 0.0]
+        assert processed == pytest.approx([0.75, -0.25, -0.25, -0.25])
+
+    def test_ignores_prompt_groups(self):
+        rewards = [1.0, 0.0, 0.0, 0.0, 1.0, 1.0, 0.0, 1.0]
+        args = make_args(advantage_estimator="flash_reinforce", n_samples_per_prompt=4, rollout_batch_size=2)
+
+        _, processed = _post_process_rewards(
+            args, make_samples_grouped(2, 4, rewards=rewards), custom_reward_post_process_func=None
+        )
+
+        assert processed == pytest.approx([r - 0.5 for r in rewards])
+
+    def test_counts_each_rollout_once(self):
+        # Rollout 10 spans three samples: the baseline is the mean over rollouts (0.5), not over rows (0.75).
+        args = make_args(advantage_estimator="flash_reinforce", n_samples_per_prompt=1, rollout_batch_size=2)
+        samples = [
+            make_sample(group_index=0, index=0, rollout_id=10, reward=1.0),
+            make_sample(group_index=0, index=0, rollout_id=10, reward=1.0),
+            make_sample(group_index=0, index=0, rollout_id=10, reward=1.0),
+            make_sample(group_index=1, index=1, rollout_id=11, reward=0.0),
+        ]
+
+        _, processed = _post_process_rewards(args, samples, custom_reward_post_process_func=None)
+
+        assert processed == pytest.approx([0.5, 0.5, 0.5, -0.5])
+
+    def test_single_outcome_batch_has_zero_advantage(self):
+        args = make_args(advantage_estimator="flash_reinforce", n_samples_per_prompt=1, rollout_batch_size=3)
+
+        _, processed = _post_process_rewards(
+            args, make_samples_grouped(3, 1, rewards=[1.0, 1.0, 1.0]), custom_reward_post_process_func=None
+        )
+
+        assert processed == [0.0, 0.0, 0.0]
+
+    def test_disable_rewards_normalization_keeps_raw_rewards(self):
+        args = make_args(advantage_estimator="flash_reinforce", rewards_normalization=False)
+
+        raw, processed = _post_process_rewards(
+            args, make_samples_grouped(2, 1, rewards=[1.0, 0.0]), custom_reward_post_process_func=None
+        )
+
+        assert raw == processed == [1.0, 0.0]
+
+
 class TestPostProcessRewardsProperties:
     """Hypothesis-driven invariants for the GRPO normalization path.
 

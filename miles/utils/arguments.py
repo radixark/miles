@@ -1650,10 +1650,13 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                     "reinforce_plus_plus",
                     "reinforce_plus_plus_baseline",
                     "ppo",
+                    "flash_reinforce",
                 ],
                 default="grpo",
                 help=(
-                    "Advantage estimator to use. Note: on-policy distillation (OPD) is now orthogonal "
+                    "Advantage estimator to use. flash_reinforce (FlashREINFORCE) subtracts the mean reward over "
+                    "every rollout of the batch, with no per-prompt groups and no std normalization; it is meant "
+                    "for --n-samples-per-prompt 1. Note: on-policy distillation (OPD) is now orthogonal "
                     "to the advantage estimator. Use --opd-kl-coef > 0 to enable OPD on top of any estimator."
                 ),
             )
@@ -1775,6 +1778,17 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 type=float,
                 default=0,
                 help="Lower bound clipping threshold C for importance sampling ratios to control variance.",
+            )
+            parser.add_argument(
+                "--tis-binary-kl-threshold",
+                type=float,
+                default=5e-3,
+                help=(
+                    "Trust-region threshold of miles.backends.training_utils.loss.hub.corrections."
+                    "binary_kl_trust_region_function (FlashREINFORCE): a sequence whose mean sampled-token binary KL "
+                    "between the rollout and training policies exceeds it gets no policy gradient; kept sequences "
+                    "carry their unclipped per-token IS weight. inf disables the gate."
+                ),
             )
             parser.add_argument(
                 "--custom-tis-function-path",
@@ -3479,6 +3493,9 @@ def miles_validate_args(args):
 
     if args.use_rollout_logprobs:
         assert not args.use_tis, "use_rollout_logprobs and use_tis cannot be set at the same time."
+
+    # NaN fails `> 0` too; inf is allowed and disables the trust region.
+    assert args.tis_binary_kl_threshold > 0, "--tis-binary-kl-threshold must be > 0 (inf disables the trust region)."
 
     if args.get_mismatch_metrics:
         assert (

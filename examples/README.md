@@ -6,6 +6,7 @@ These examples are runnable starting points for your own RL workflow. A few are 
 
 End-to-end training workflows — the place to start.
 
+- **[flash_reinforce](./flash_reinforce)**: Critic-free, single-rollout async RL with batch-centered rewards and a sequence trust region.
 - **[geo3k_vlm](./geo3k_vlm)**: Training VLMs with FSDP using GRPO on the GEO3K dataset.
   - **[multi_turn](./geo3k_vlm/multi_turn)**: The same dataset over multiple turns, with the model cropping images through an interactive environment.
 - **[lora](./lora)**: LoRA fine-tuning with the Megatron backend.

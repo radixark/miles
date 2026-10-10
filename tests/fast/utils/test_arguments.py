@@ -1,6 +1,7 @@
 import argparse
 import json
 import logging
+import math
 import re
 import sys
 from fnmatch import fnmatchcase
@@ -2573,6 +2574,59 @@ def test_skip_actor_forward_only_is_gated_during_miles_validation():
 
     with pytest.raises(AssertionError, match="--skip-actor-forward-only"):
         miles_validate_args(args)
+
+
+class TestFlashReinforceArguments:
+    _RECIPE = [
+        "--advantage-estimator",
+        "flash_reinforce",
+        "--n-samples-per-prompt",
+        "1",
+        "--num-steps-per-rollout",
+        "1",
+        "--skip-actor-forward-only",
+        "--use-tis",
+        "--custom-tis-function-path",
+        "miles.backends.training_utils.loss.hub.corrections.binary_kl_trust_region_function",
+        "--num-rollout",
+        "1",
+    ]
+
+    @staticmethod
+    def _parse(extra):
+        parser = argparse.ArgumentParser()
+        get_miles_extra_args_provider()(parser)
+        args = parser.parse_args(extra + REQUIRED_ARGS)
+        # Megatron flags that --skip-actor-forward-only validation reads.
+        vars(args).update(
+            hidden_dropout=0.0,
+            attention_dropout=0.0,
+            lora_dropout=0.0,
+            moe_input_jitter_eps=None,
+            moe_router_force_biased=None,
+            moe_router_force_load_balancing=False,
+            moe_router_load_balancing_type="aux_loss",
+        )
+        return args
+
+    def test_the_threshold_defaults_to_the_paper_value(self):
+        assert self._parse([]).tis_binary_kl_threshold == 5e-3
+
+    def test_the_recipe_validates_into_one_step_per_rollout_batch(self):
+        args = self._parse(self._RECIPE + ["--tis-binary-kl-threshold", "inf"])
+
+        miles_validate_args(args)
+
+        assert args.advantage_estimator == "flash_reinforce"
+        assert args.tis_binary_kl_threshold == math.inf
+        assert args.global_batch_size == args.rollout_batch_size
+
+    @pytest.mark.parametrize("threshold", ["0", "-1e-3", "nan"])
+    def test_validation_rejects_a_non_positive_threshold(self, threshold):
+        args = self._parse(self._RECIPE + [f"--tis-binary-kl-threshold={threshold}"])
+
+        with pytest.raises(AssertionError, match="--tis-binary-kl-threshold"):
+            miles_validate_args(args)
 
 
 def _make_skip_actor_forward_only_args(**overrides) -> SimpleNamespace:

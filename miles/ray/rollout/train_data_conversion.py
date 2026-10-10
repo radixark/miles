@@ -238,7 +238,11 @@ def _compute_rollout_mask_sums(rollout_ids: list[int], loss_masks: list[list[int
 
 
 def _reward_group_segments(args: Any, samples: list[Sample], prompt_group_sizes: list[int] | None) -> list[list[int]]:
-    """Return the flattened row indices for each prompt reward group."""
+    """Return the flattened row indices for each reward baseline group."""
+    # FlashREINFORCE centers on the whole rollout batch rather than on prompt groups.
+    if args.advantage_estimator == "flash_reinforce":
+        return [list(range(len(samples)))]
+
     # Multi-LoRA records explicit prompt boundaries before flattening.
     if prompt_group_sizes is not None:
         assert sum(prompt_group_sizes) == len(
@@ -332,7 +336,10 @@ def _post_process_rewards(
         return f(args, samples)
 
     raw_rewards = [sample.get_reward_value(args) for sample in samples]
-    if args.advantage_estimator in ["grpo", "gspo", "reinforce_plus_plus_baseline"] and args.rewards_normalization:
+    if (
+        args.advantage_estimator in ["grpo", "gspo", "reinforce_plus_plus_baseline", "flash_reinforce"]
+        and args.rewards_normalization
+    ):
         normalized_rewards = _normalize_rewards_by_rollout(args, samples, raw_rewards, prompt_group_sizes)
         return raw_rewards, normalized_rewards
 

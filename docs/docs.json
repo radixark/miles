@@ -259,6 +259,7 @@
      {
       "group": "Recipes",
       "pages": [
+       "examples/flash-reinforce",
        "examples/geo3k-vlm",
        "examples/geo3k-vlm/multi-turn",
        "examples/multi-lora",
