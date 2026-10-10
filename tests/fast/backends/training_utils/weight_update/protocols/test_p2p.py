@@ -261,7 +261,10 @@ class TestDraftRunner:
             ({**_EAGLE_MTP, "enable_multi_layer_eagle": True}, "multi-layer EAGLE"),
             ({"speculative_algorithm": "EAGLE3", "speculative_draft_model_path": "/eagle3-head"}, "own MTP layer"),
             ({**_EAGLE_MTP, "speculative_moe_runner_backend": "triton"}, "moe_runner_backend triton"),
-            ({**_EAGLE_MTP, "moe_a2a_backend": "deepep", "speculative_moe_a2a_backend": "none"}, "moe_a2a_backend none"),
+            (
+                {**_EAGLE_MTP, "moe_a2a_backend": "deepep", "speculative_moe_a2a_backend": "none"},
+                "moe_a2a_backend none",
+            ),
         ],
         ids=["multi_layer_eagle", "draft_checkpoint", "own_moe_runner_backend", "own_moe_a2a_backend"],
     )
