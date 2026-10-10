@@ -61,16 +61,17 @@ class _Architecture:
     index_head_dim: int
     index_topk: int
     index_kpool: int
-    kda_heads: int
-    kda_head_dim: int
-    kda_conv_kernel_size: int
-    kda_gate_lower_bound: float
+    kda_heads: int | None
+    kda_head_dim: int | None
+    kda_conv_kernel_size: int | None
+    kda_gate_lower_bound: float | None
 
     @classmethod
     def from_hf_config(cls, hf_config) -> "_Architecture":
         text = getattr(hf_config, "text_config", None) or hf_config
         _require_supported(text)
-        linear = text.linear_attn_config
+        # an optional HF key: only checkpoints with linear-attention layers carry it
+        linear = getattr(text, "linear_attn_config", None) or {}
         return cls(
             dim=text.hidden_size,
             vocab_size=text.vocab_size,
@@ -98,10 +99,10 @@ class _Architecture:
             index_head_dim=text.index_head_dim,
             index_topk=text.index_topk,
             index_kpool=text.index_kpool,
-            kda_heads=linear["num_heads"],
-            kda_head_dim=linear["head_dim"],
-            kda_conv_kernel_size=linear["short_conv_kernel_size"],
-            kda_gate_lower_bound=linear["gate_lower_bound"],
+            kda_heads=linear.get("num_heads"),
+            kda_head_dim=linear.get("head_dim"),
+            kda_conv_kernel_size=linear.get("short_conv_kernel_size"),
+            kda_gate_lower_bound=linear.get("gate_lower_bound"),
         )
 
 
@@ -118,6 +119,8 @@ def _require_supported(text) -> None:
         "layer_types must be linear_attention / deepseek_sparse_attention": not set(text.layer_types)
         <= {"linear_attention", "deepseek_sparse_attention"},
         "mlp_layer_types must be dense / sparse": not set(text.mlp_layer_types) <= {"dense", "sparse"},
+        "linear_attention layers need linear_attn_config": "linear_attention" in text.layer_types
+        and not getattr(text, "linear_attn_config", None),
     }
     failed = [reason for reason, is_unsupported in unsupported.items() if is_unsupported]
     if failed:

@@ -192,3 +192,14 @@ def test_every_trained_tensor_maps_onto_exactly_the_checkpoint_text_keys(tmp_pat
 def test_a_checkpoint_variant_the_package_does_not_implement_is_refused(tmp_path):
     with pytest.raises(ValueError, match="NoPE"):
         _spec(tmp_path, qk_rope_head_dim=64)
+
+
+def test_a_checkpoint_without_linear_attention_layers_builds_without_their_config(tmp_path):
+    spec = _spec(
+        tmp_path,
+        num_hidden_layers=2,
+        layer_types=["deepseek_sparse_attention", "deepseek_sparse_attention"],
+        mlp_layer_types=["dense", "sparse"],
+        linear_attn_config=None,
+    )
+    assert [layer.kda for layer in spec.model.layers] == [None, None]
