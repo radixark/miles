@@ -75,7 +75,7 @@ class PackedSequence:
 
 
 def build_packed_sequence(
-    positions: torch.Tensor, cp_layout: ContextParallelLayout | None, *, conv_kernel_size: int
+    positions: torch.Tensor, cp_layout: ContextParallelLayout | None, *, conv_kernel_size: int | None
 ) -> PackedSequence:
     if cp_layout is None:
         return PackedSequence(masks=create_varlen_metadata_for_document(positions, include_host_offsets=True))
@@ -86,7 +86,11 @@ def build_packed_sequence(
     return PackedSequence(
         masks=masks,
         cp_layout=cp_layout,
-        kda_cp_context=build_fla_cp_context(masks.cu_seq_q, cp_layout.group, conv_kernel_size, positions.device),
+        kda_cp_context=(
+            None
+            if conv_kernel_size is None
+            else build_fla_cp_context(masks.cu_seq_q, cp_layout.group, conv_kernel_size, positions.device)
+        ),
     )
 
 

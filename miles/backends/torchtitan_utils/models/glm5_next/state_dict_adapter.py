@@ -1,7 +1,6 @@
 from torchtitan.models.deepseek_v3.state_dict_adapter import DeepSeekV3StateDictAdapter
 from torchtitan.models.utils import MoEStateDictAdapter
 
-from miles.utils.hf_utils.config import load_hf_config
 
 _HF_LAYER = "model.language_model.layers.{}"
 
@@ -69,8 +68,6 @@ _LAYER_MAP = {
 class Glm5NextStateDictAdapter(DeepSeekV3StateDictAdapter):
     def __init__(self, model_config, hf_assets_path: str | None):
         MoEStateDictAdapter.__init__(self, model_config, hf_assets_path)
-        if hf_assets_path is not None:
-            _check_layer_layout(model_config, hf_assets_path)
         self.from_hf_map = {
             "model.language_model.embed_tokens.weight": "tok_embeddings.weight",
             "model.language_model.norm.weight": "norm.weight",
@@ -80,21 +77,3 @@ class Glm5NextStateDictAdapter(DeepSeekV3StateDictAdapter):
 
     def _validate_hf_rope_config(self, expected_rope_cls: type) -> None:
         pass
-
-
-def _check_layer_layout(model_config, hf_assets_path: str) -> None:
-    text_config = load_hf_config(hf_assets_path)
-    text_config = getattr(text_config, "text_config", None) or text_config
-    expected = [
-        ("linear_attention" if layer.kda is not None else "deepseek_sparse_attention", layer.moe is not None)
-        for layer in model_config.layers
-    ]
-    actual = [
-        (layer_type, mlp_type == "sparse")
-        for layer_type, mlp_type in zip(text_config.layer_types, text_config.mlp_layer_types, strict=True)
-    ]
-    if expected != actual:
-        raise ValueError(
-            f"torchtitan flavor layout {expected} does not match the checkpoint's layer_types / "
-            f"mlp_layer_types {actual}"
-        )

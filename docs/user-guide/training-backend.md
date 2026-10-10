@@ -668,7 +668,9 @@ kpool-indexed DSA sparse attention and mHC residual streams are new blocks in `l
 adapter maps the `model.language_model.*` names, and the package supports **FSDP, EP, PP and
 CP, but not TP yet**. Under CP, KDA runs fla's context-parallel kernels on a contiguous shard and
 DSA attends each rank's queries over the gathered latent KV, so both the attention compute and
-the activations split across the CP group. The `4layer` flavor is the validated one:
+the activations split across the CP group. Like Megatron, the package sizes the model from the
+`--hf-checkpoint`'s `config.json` (layer types, MoE, mHC, KDA and indexer settings), so
+`--titan-model-flavor` only names the run; the four-layer slice is the validated checkpoint:
 
 ```bash
 --train-backend torchtitan \

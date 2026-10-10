@@ -35,6 +35,16 @@ _HF_TEXT_CONFIG = dict(
     intermediate_size=12288,
     swiglu_limit=10.0,
     vocab_size=154880,
+    rms_norm_eps=1e-5,
+    max_position_embeddings=1048576,
+    n_shared_experts=1,
+    hc_eps=1e-6,
+    mhc=True,
+    scoring_func="sigmoid",
+    n_group=1,
+    topk_group=1,
+    index_kpool_compress=True,
+    index_kpool_always_select_tail=True,
     linear_attn_config={"num_heads": 64, "head_dim": 128, "short_conv_kernel_size": 4, "gate_lower_bound": -5.0},
     layer_types=["linear_attention", "deepseek_sparse_attention", "linear_attention", "deepseek_sparse_attention"],
     mlp_layer_types=["dense", "sparse", "sparse", "sparse"],
@@ -109,15 +119,18 @@ def _write_checkpoint_config(tmp_path, **text_overrides) -> str:
     return str(tmp_path)
 
 
-def _spec():
+def _spec(tmp_path, **text_overrides):
     from miles.backends.torchtitan_utils.config import resolve_model_spec
 
-    return resolve_model_spec(Namespace(titan_model_name="glm5_next", titan_model_flavor="4layer"))
+    checkpoint = _write_checkpoint_config(tmp_path, **text_overrides)
+    return resolve_model_spec(
+        Namespace(titan_model_name="glm5_next", titan_model_flavor="4layer", hf_checkpoint=checkpoint)
+    )
 
 
-def test_the_4layer_flavor_matches_its_hf_config():
+def test_the_model_is_sized_from_the_checkpoint_config(tmp_path):
     hf = _HF_TEXT_CONFIG
-    model = _spec().model
+    model = _spec(tmp_path).model
     assert (model.dim, model.vocab_size, len(model.layers), model.num_streams) == (
         hf["hidden_size"],
         hf["vocab_size"],
@@ -160,20 +173,22 @@ def test_the_4layer_flavor_matches_its_hf_config():
         hf["norm_topk_prob"],
     )
     assert moe.routed_experts.inner_experts.swiglu_limit == hf["swiglu_limit"]
+    assert [(layer.kda is not None, layer.moe is not None) for layer in model.layers] == [
+        (attn == "linear_attention", mlp == "sparse")
+        for attn, mlp in zip(hf["layer_types"], hf["mlp_layer_types"], strict=True)
+    ]
 
 
 def test_every_trained_tensor_maps_onto_exactly_the_checkpoint_text_keys(tmp_path):
-    spec = _spec()
+    spec = _spec(tmp_path)
     with torch.device("meta"):
         model = spec.model.build()
-    adapter = spec.state_dict_adapter(spec.model, _write_checkpoint_config(tmp_path))
+    adapter = spec.state_dict_adapter(spec.model, str(tmp_path))
     state = {k: v for k, v in model.state_dict().items() if "tokens_per_expert" not in k}
     hf_keys = {re.sub(r"\.experts\.\d+\.", ".experts.E.", k) for k in adapter.to_hf(state)}
     assert hf_keys == _checkpoint_keys()
 
 
-def test_a_checkpoint_with_another_layer_layout_is_refused(tmp_path):
-    spec = _spec()
-    checkpoint = _write_checkpoint_config(tmp_path, mlp_layer_types=["dense", "dense", "sparse", "sparse"])
-    with pytest.raises(ValueError, match="does not match the checkpoint"):
-        spec.state_dict_adapter(spec.model, checkpoint)
+def test_a_checkpoint_variant_the_package_does_not_implement_is_refused(tmp_path):
+    with pytest.raises(ValueError, match="NoPE"):
+        _spec(tmp_path, qk_rope_head_dim=64)
