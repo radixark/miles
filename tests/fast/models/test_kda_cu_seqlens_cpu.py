@@ -6,14 +6,17 @@ checks need a Blackwell (SM100a/SM103a) device with flash-linear-attention and t
 backward; they skip otherwise.
 
 Sync-free check (``test_sync_free_after_one_warmup``): ``torch.cuda.set_sync_debug_mode("error")`` raises
-on every CUDA call torch's ``c10::cuda::warn_or_error_on_sync`` guards -- confirmed on the compute node
-(GB300, torch 2.13.0+cu130, ``sync_debug_probe.py``): ``.item()`` / ``.tolist()`` / ``.cpu()`` of a CUDA
-tensor, a blocking ``copy_`` in either direction (including ``torch.tensor(list, device="cuda")`` and a
-``.to("cuda")`` from pageable memory, both of which drain the stream after the memcpy),
-``torch.cuda.synchronize()``, ``Event.synchronize()`` and ``Stream.synchronize()``. NOT flagged (and
-not synchronising): ``copy_(non_blocking=True)`` from pinned memory, ``pin_memory=True`` allocation,
-kernel launches, device-side ``repeat_interleave`` / indexing (PyTorch keeps those asynchronous). The
-probe's own output is kept with the step log of the run that confirmed the set.
+on the CUDA calls torch's ``c10::cuda::warn_or_error_on_sync`` guards. Confirmed on the compute node
+(nvl72d377-T09, GB300, torch 2.13.0+cu130, ``sync_debug_probe.py`` in the step log of lease 919049 step
+s10): FLAGGED -- ``.item()`` / ``.tolist()`` / ``.cpu()`` of a CUDA tensor, a blocking ``copy_`` in either
+direction (``torch.tensor(list, device="cuda")``, ``.to("cuda")`` from pageable memory: memcpy + stream
+drain), ``Stream.synchronize()``, and the data-dependent-shape ops ``nonzero`` / ``masked_select`` /
+``repeat_interleave`` with tensor repeats / ``bool(tensor)``. NOT flagged -- ``copy_(non_blocking=True)``
+from pinned or pageable memory, ``.to("cpu", non_blocking=True)``, ``pin_memory`` allocations, kernel
+launches, ``cumsum``; and, on this build, also ``torch.cuda.synchronize()``, ``Event.synchronize()`` and
+``Event.query()`` (torch itself warns that the mode "does not yet detect all synchronizing operations").
+Explicit stream / device / event synchronisation inside the op is therefore not covered by this test; the
+U0-1 CUPTI count of ``cuda*Synchronize`` records in the KDA windows covers it.
 """
 
 from __future__ import annotations
