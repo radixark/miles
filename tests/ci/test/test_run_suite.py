@@ -479,6 +479,7 @@ class TestWorkflowScopeSeam:
     def test_weekly_limits_shared_hopper_runners(self):
         workflow = self._workflow()
         normal_parallelism = {
+            "stage-b-2-gpu-h200": 2,
             "stage-c-8-gpu-h200": 2,
             "stage-c-4-gpu-h200": 3,
             "stage-c-2-gpu-h200": 2,

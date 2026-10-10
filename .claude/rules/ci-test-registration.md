@@ -136,6 +136,21 @@ Repeat steps 2–5 when a test moves to another stage or its runtime clearly
 changes. A new `register_ci_gate(...)` stays inactive until nightly runs seed
 its history; `/rerun-test` never writes it.
 
+## Shard runtime budget
+
+When adding or moving tests, check the resulting shard load for every affected
+individual domain `run-ci-*` label and for nightly. Use the shard counts and
+runtime targets in `docs/developer/ci/00-stage.md`; ordinary PR sizing excludes
+`run-ci-image` and `run-ci-all`. Include job setup and cleanup, exclude queue
+time, and distinguish measured runtimes from estimates. Multiple labels can
+select a larger union; a `long` / `ft-long` file can exceed the target alone.
+
+Keep shard counts an integer multiple of the matching runner pool capacity,
+while capping concurrency at that capacity (one per matrix for weekly).
+Preserve hosted empty-shard planning and selected-test coverage. Adding shards
+cannot shorten an indivisible test file and adds setup cost for each nonempty
+shard; do not change test coverage merely to meet the runtime target.
+
 ## `disabled=`
 
 - Set it to unblock other PRs on a maintainer's call, never to land your own
