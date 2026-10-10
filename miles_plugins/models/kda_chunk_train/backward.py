@@ -25,10 +25,18 @@ run on a chunk-aligned internal row layout (:class:`ChunkLayout`) in which
 every sequence starts on a 64-token chunk boundary, the first stage gathers
 the token rows into it and the last stages scatter the gradients back, so no
 host-side repacking or padding copies are needed.
+
+Context parallelism (fla ``FLACPContext`` with a process group) follows the deterministic kernels' CP host
+protocol (fla's state-exchange pre-process around the Cake stages, fed with fla's own recompute of its operands),
+mirrored here stage for stage from the Cake compiler's reference host wrapper: the forward seeds the first local
+sequence with the compressed state fla's forward pre-process exchanged, the backward runs fla's backward
+pre-process between dAv and the adjoint recurrence and seeds the last local sequence's adjoint state with
+the exchanged ``dht``; the exchange kernels and the one ``all_gather`` per call are fla's own.
 """
 
 from __future__ import annotations
 
+import functools
 from collections import OrderedDict
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -42,6 +50,7 @@ from ._jit import device_arch, kernel
 CHUNK = 64
 HEAD_DIM = 128
 PAIR_ROWS = 2 * CHUNK
+_WALKS = ("auto", "v1", "v2")  # serial_walk: the launchers' dispatch rule, or the pinned fwdh / dhu kernel
 
 
 def _check(cond: bool, message: str) -> None:
@@ -409,20 +418,174 @@ def _sm_count(device) -> int:
     return sm
 
 
-def _serial_walk_stage(stage, pairs, device):
+def _serial_walk_stage(stage, pairs, device, walk="auto"):
     """Pick the two-half (``stage``) or four-slice (``stage + "_slices"``) kernel for the serial chunk walks.
 
     The slice kernels shorten each (sequence, head) walk by ~1.3x but quadruple the CTA count; they win
     only while every CTA runs in one wave (``pairs * 4 <= SM count``, measured on B200: b1 t8192
     199/236 -> 153/175 us; b4 t2048 dhu 68 -> 100 us and rlpack 8x2688 133/192 -> 157/276 us once a
-    second wave appears).  Returns ``(stage name, grid x)``."""
-    sm = _sm_count(device)
-    if pairs * SLICE_BLOCKS <= sm:
+    second wave appears).  ``walk``: ``"auto"`` = that rule; ``"v1"`` / ``"v2"`` pin the two-half / four-slice
+    kernel (the CP host protocol's ``serial_walk`` knob; v1 and v2 are bitwise equal on every row).
+    Returns ``(stage name, grid x)``."""
+    _check(walk in _WALKS, f"serial_walk must be one of {_WALKS}, got {walk!r}")
+    if walk == "auto":
+        walk = "v2" if pairs * SLICE_BLOCKS <= _sm_count(device) else "v1"
+    if walk == "v2":
         return stage + "_slices", pairs * SLICE_BLOCKS
     return stage, pairs * 2
 
 
-def _launch_fwdh(arch, w, kg, u, gk, *, layout):
+_STATE_DUMMY: dict[str, torch.Tensor] = {}
+
+
+def state_dummy(device) -> torch.Tensor:
+    """Cached one-element fp32 zero bound to a flag-off state slot of ``fwdh`` / ``dhu`` (``use_h0 = 0`` /
+    ``store_ht = 0`` / ``use_dht = 0`` / ``store_dh0 = 0``): the kernels never dereference the pointer when the
+    flag is off, so no per-call allocation and no extra launch."""
+    key = str(torch.device(device))
+    hit = _STATE_DUMMY.get(key)
+    if hit is None:
+        hit = _STATE_DUMMY[key] = torch.zeros(1, dtype=torch.float32, device=device)
+    return hit
+
+
+def _check_state(t: torch.Tensor, *, name: str, num_sequences: int, hv: int) -> torch.Tensor:
+    """An fp32 ``[N, HV, 128, 128]`` state carrier (k rows x v cols, contiguous; slot = layout sequence index)."""
+    _check(
+        t.dtype == torch.float32 and t.is_contiguous() and tuple(t.shape) == (num_sequences, hv, HEAD_DIM, HEAD_DIM),
+        f"{name}: expected contiguous fp32 [{num_sequences}, {hv}, 128, 128], got {t.dtype} {tuple(t.shape)}",
+    )
+    return t
+
+
+def _state_args(state_in, return_out, *, layout, hv, device, in_name, out_name):
+    """``(state_in, use_in, state_out, store_out)`` for the two state slots of a serial-walk launch."""
+    n = layout.num_sequences
+    if state_in is None:
+        state_in, use_in = state_dummy(device), 0
+    else:
+        state_in, use_in = _check_state(state_in, name=in_name, num_sequences=n, hv=hv), 1
+    if return_out:
+        state_out, store_out = torch.empty(n, hv, HEAD_DIM, HEAD_DIM, dtype=torch.float32, device=device), 1
+    else:
+        state_out, store_out = state_dummy(device), 0
+    return state_in, use_in, state_out, store_out
+
+
+def _use_cp(cp_context) -> bool:
+    """An fla CP context with a process group: the CP host protocol applies."""
+    return cp_context is not None and getattr(cp_context, "group", None) is not None
+
+
+_PAIR_CU_LIMIT = 64
+_PAIR_CU: _LRUCache = _LRUCache(_PAIR_CU_LIMIT)
+
+
+def _pair_cu(length: int, device) -> torch.Tensor:
+    """int32 device ``[0, L]``: the two-entry ``cu_seqlens`` fla's CP pre-process kernels index for the single
+    boundary sequence. Cached per (device, L): one 8-byte host-to-device copy per distinct boundary length per
+    process, none afterwards."""
+    key = (_device_key(device), int(length))
+    hit = _PAIR_CU.get(key)
+    if hit is None:
+        hit = torch.tensor([0, int(length)], dtype=torch.int32, device=device)
+        _PAIR_CU.put(key, hit)
+    return hit
+
+
+def _first_slot(state_c: torch.Tensor, n: int) -> torch.Tensor:
+    """Compressed CP state ``[1, HV, 128, 128]`` -> the ``[n, HV, 128, 128]`` carrier with slot 0 filled (fla's
+    ``expand_h0``); ``n == 1``: the tensor itself."""
+    if n == 1:
+        return state_c
+    out = state_c.new_zeros(n, *state_c.shape[1:])
+    out[0].copy_(state_c[0])
+    return out
+
+
+def _last_slot(state_c: torch.Tensor, n: int) -> torch.Tensor:
+    """``dht`` of the single-sequence pre-process call (slot 0) -> slot ``n - 1`` of the ``[n, HV, 128, 128]`` carrier."""
+    if n == 1:
+        return state_c
+    out = state_c.new_zeros(n, *state_c.shape[1:])
+    out[n - 1].copy_(state_c[0])
+    return out
+
+
+@functools.cache
+def _fla_ops() -> dict:
+    """fla's pieces of the CP host protocol (imported on first use: fla is only needed under CP). The pre-process
+    wrappers are fla's own CP kernels (``pre_process_*_kernel_merged`` / ``merge_fwd_bwd_kernel`` + one
+    ``all_gather`` per call on every rank); the rest is the A1 feed's recompute of fla's forward operands."""
+    from fla.modules.l2norm import l2norm_fwd
+    from fla.ops.common.gate import fused_beta_sigmoid_fwd
+    from fla.ops.cp.chunk_delta_h import (
+        chunk_gated_delta_rule_bwd_dhu_pre_process,
+        chunk_gated_delta_rule_fwd_h_pre_process,
+    )
+    from fla.ops.kda.chunk_intra import chunk_kda_fwd_intra
+    from fla.ops.kda.gate import kda_gate_chunk_cumsum
+    from fla.ops.kda.wy_fast import recompute_w_u_fwd
+    from fla.ops.utils.constant import RCP_LN2
+
+    return {
+        "l2norm_fwd": l2norm_fwd,
+        "fused_beta_sigmoid_fwd": fused_beta_sigmoid_fwd,
+        "chunk_kda_fwd_intra": chunk_kda_fwd_intra,
+        "kda_gate_chunk_cumsum": kda_gate_chunk_cumsum,
+        "recompute_w_u_fwd": recompute_w_u_fwd,
+        "fwd_h_pre_process": chunk_gated_delta_rule_fwd_h_pre_process,
+        "bwd_dhu_pre_process": chunk_gated_delta_rule_bwd_dhu_pre_process,
+        "RCP_LN2": RCP_LN2,
+    }
+
+
+def _a1_forward_feed(fl, q, k, v, g_raw, beta_logits, A_log, dt_bias, *, scale, lower_bound):
+    """fla's forward operands of one sequence ``[1, L, ., 128]`` (raw q/k/v/g/beta-logit slices): ``g`` (log2 chunk
+    cumsum, fp32), ``w`` / ``u`` / ``kg`` (bf16) exactly as fla's own forward computes them for that sequence
+    (fla chunk.py l2norm + fused sigmoid, chunk_fwd.py), in fixed-length mode (``B = 1``, no ``cu_seqlens``, no
+    chunk indices, no host copies): the forward feed of the CP host protocol."""
+    q_n, _ = fl["l2norm_fwd"](q)
+    k_n, _ = fl["l2norm_fwd"](k)
+    beta = fl["fused_beta_sigmoid_fwd"](beta_logits, 1.0)
+    g = fl["kda_gate_chunk_cumsum"](
+        g=g_raw, A_log=A_log, dt_bias=dt_bias, scale=fl["RCP_LN2"], chunk_size=CHUNK, cu_seqlens=None,
+        chunk_indices=None, lower_bound=lower_bound,
+    )
+    w, u, _qg, kg, _aqk, _akk = fl["chunk_kda_fwd_intra"](
+        q=q_n, k=k_n, v=v, gk=g, beta=beta, scale=scale, cu_seqlens=None, chunk_size=CHUNK, chunk_indices=None,
+        safe_gate=True, disable_recompute=True,
+    )
+    return {"g": g, "w": w, "u": u, "kg": kg}
+
+
+def _a1_backward_feed(fl, q_norm, k_norm, v, beta_s, Akk, g_raw, A_log, dt_bias, *, lower_bound):
+    """fla's backward recompute operands of one sequence ``[1, L, ., 128]`` from the saved set: ``g``, ``w``,
+    ``qg``, ``kg`` (fla chunk_bwd.py recompute; ``u`` is discarded): the backward feed of the CP host protocol."""
+    g = fl["kda_gate_chunk_cumsum"](
+        g=g_raw, A_log=A_log, dt_bias=dt_bias, scale=fl["RCP_LN2"], chunk_size=CHUNK, cu_seqlens=None,
+        chunk_indices=None, lower_bound=lower_bound,
+    )
+    w, _u, qg, kg = fl["recompute_w_u_fwd"](
+        k=k_norm, v=v, beta=beta_s, A=Akk, gk=g, q=q_norm, cu_seqlens=None, chunk_indices=None
+    )
+    return {"g": g, "w": w, "qg": qg, "kg": kg}
+
+
+def _roles(cp_context) -> dict:
+    return {k: getattr(cp_context, k, None) for k in ("is_first_rank", "is_last_rank", "pre_num_ranks", "post_num_ranks", "num_seqs")}
+
+
+#: Record of this process's most recent CP exchange (diagnostics; not consumed by the op):
+#: ``h0_compressed`` (fp32 ``[1, HV, 128, 128]`` k rows x v cols, None when no state enters this rank), ``dht``
+#: (same layout, None until the backward ran), ``fwdh_variant`` / ``dhu_variant`` (``"v1"`` | ``"v2"``), ``roles``,
+#: ``local_lengths``, ``forward_source``.
+LAST_CP_STATES: dict = {}
+
+
+def _launch_fwdh(arch, w, kg, u, gk, *, layout, h0=None, return_ht=False, walk="auto"):
+    """Forward state walk. ``h0`` fp32 ``[N, HV, 128, 128]`` seeds each sequence's state (``None`` = zeros, the
+    flag-off path); with ``return_ht`` the fp32 state after each sequence's last chunk is returned third."""
     rows, hv, _ = w.shape
     nc = layout.num_chunks
     h_out = torch.empty(nc, hv, HEAD_DIM, HEAD_DIM, dtype=torch.bfloat16, device=w.device)
@@ -430,7 +593,10 @@ def _launch_fwdh(arch, w, kg, u, gk, *, layout):
     if layout.has_pad_chunk:
         v_new[nc * CHUNK :].zero_()
     pairs = layout.num_sequences * hv
-    stage, grid = _serial_walk_stage("fwdh", pairs, w.device)
+    stage, grid = _serial_walk_stage("fwdh", pairs, w.device, walk)
+    h0_t, use_h0, ht_t, store_ht = _state_args(
+        h0, return_ht, layout=layout, hv=hv, device=w.device, in_name="h0", out_name="ht"
+    )
     kernel(stage, arch).launch(
         grid=(grid, 1, 1),
         w_tma=w,
@@ -441,7 +607,13 @@ def _launch_fwdh(arch, w, kg, u, gk, *, layout):
         v_new=v_new,
         num_heads=hv,
         seq_chunk_start=layout.seq_chunk_start,
+        h0=h0_t,
+        use_h0=use_h0,
+        ht_out=ht_t,
+        store_ht=store_ht,
     )
+    if return_ht:
+        return h_out, v_new, ht_t
     return h_out, v_new
 
 
@@ -462,7 +634,9 @@ def _launch_dav(arch, do, v_new, aqk_tril, *, scale):
     return dAqk, dv1
 
 
-def _launch_dhu(arch, kg, qg, w, do, dv1, gk, *, layout, scale):
+def _launch_dhu(arch, kg, qg, w, do, dv1, gk, *, layout, scale, dht=None, return_dh0=False, walk="auto"):
+    """Reverse state walk. ``dht`` fp32 ``[N, HV, 128, 128]`` seeds each sequence's adjoint state (``None`` =
+    zeros); with ``return_dh0`` the fp32 adjoint state before each sequence's first chunk is returned third."""
     rows, hv, _ = kg.shape
     nc = layout.num_chunks
     dh_out = torch.empty(nc, hv, HEAD_DIM, HEAD_DIM, dtype=torch.bfloat16, device=kg.device)
@@ -470,7 +644,10 @@ def _launch_dhu(arch, kg, qg, w, do, dv1, gk, *, layout, scale):
     if layout.has_pad_chunk:
         dv2[nc * CHUNK :].zero_()
     pairs = layout.num_sequences * hv
-    stage, grid = _serial_walk_stage("dhu", pairs, kg.device)
+    stage, grid = _serial_walk_stage("dhu", pairs, kg.device, walk)
+    dht_t, use_dht, dh0_t, store_dh0 = _state_args(
+        dht, return_dh0, layout=layout, hv=hv, device=kg.device, in_name="dht", out_name="dh0"
+    )
     kernel(stage, arch).launch(
         grid=(grid, 1, 1),
         kg_tma=kg,
@@ -484,7 +661,13 @@ def _launch_dhu(arch, kg, qg, w, do, dv1, gk, *, layout, scale):
         num_heads=hv,
         seq_chunk_start=layout.seq_chunk_start,
         scale=float(scale),
+        dht=dht_t,
+        use_dht=use_dht,
+        dh0_out=dh0_t,
+        store_dh0=store_dh0,
     )
+    if return_dh0:
+        return dh_out, dv2, dh0_t
     return dh_out, dv2
 
 
@@ -714,7 +897,13 @@ def chunk_kda_backward(
     lower_bound: float,
     cu_seqlens: torch.Tensor | None = None,
     cu_seqlens_cpu: torch.Tensor | Sequence[int] | None = None,
-) -> dict[str, torch.Tensor]:
+    h0: torch.Tensor | None = None,
+    dht: torch.Tensor | None = None,
+    return_dh0: bool = False,
+    cp_context=None,
+    serial_walk: str = "auto",
+    feed_beta_from_logits: bool = False,
+) -> dict[str, torch.Tensor | None]:
     """Deterministic chunked KDA training backward.
 
     Arguments follow the chunked KDA forward's saved-for-backward set:
@@ -738,6 +927,24 @@ def chunk_kda_backward(
       packing's layout is cached, no host-to-device copy and no stream synchronisation either (the
       first backward of a new packing uploads the layout tables with one non-blocking copy). Without
       it ``cu_seqlens`` is read from the device once per call (a fallback for direct callers).
+    - ``h0`` / ``dht``: optional fp32 ``[N, HV, 128, 128]`` state carriers (k rows x v cols, one slot per
+      sequence of the layout): the state entering each sequence's first chunk (the forward's
+      ``initial_state``) and the adjoint state entering its last chunk (the gradient of the forward's final
+      state). ``None`` = zeros (the flag-off path: the kernels read a cached one-element zero and skip the
+      load). ``return_dh0`` returns the adjoint state before each sequence's first chunk as ``dh0`` (the
+      gradient of ``h0``); otherwise ``dh0`` is ``None``.
+    - ``cp_context``: fla ``FLACPContext`` with a process group = context parallelism, the host protocol of
+      the deterministic kernels (fla's state exchange around the Cake stages) mirrored stage for stage: ``h0`` is
+      then the **compressed** state
+      entering this rank's first local sequence (fp32 ``[1, HV, 128, 128]`` k rows x v cols, the forward's
+      ``h0_compressed``; ``None`` on a rank that receives none) and ``dht`` / ``return_dh0`` must be ``None`` /
+      ``False`` (fla discards ``dh0`` under CP). Between dAv and the adjoint recurrence the backward runs fla's
+      CP backward pre-process on the first local sequence (the A1 feed: fla's own recompute of ``g`` / ``w`` /
+      ``qg`` / ``kg`` from the saved set, ``state_v_first=True`` as the fla path tunes those kernels, one
+      ``all_gather``) and seeds the last local sequence's adjoint state with the exchanged ``dht``.
+    - ``serial_walk``: ``"auto"`` (the launchers' dispatch rule) | ``"v1"`` | ``"v2"`` pins the fwdh / dhu kernel.
+    - ``feed_beta_from_logits``: the A1 feed's beta is fla's ``fused_beta_sigmoid_fwd`` of ``beta_logits`` on the
+      boundary sequence (Cake forward: the saved ``beta`` is Cake's sigmoid) instead of the saved ``beta`` slice.
 
     Any ``T`` is accepted.  ``HV`` must be a positive multiple of ``H`` (grouped value heads).
     Returns ``dq``/``dk`` bf16 ``[B, T, H, 128]``, ``dv`` bf16 ``[B, T, HV, 128]``, ``dbeta`` bf16
@@ -752,6 +959,11 @@ def chunk_kda_backward(
     layout = chunk_layout(batch0, seq0, cu_seqlens, q_norm.device, cu_seqlens_cpu=cu_seqlens_cpu)
     rows = layout.rows_external
     bf, f32 = torch.bfloat16, torch.float32
+    use_cp = _use_cp(cp_context)
+    _check(
+        not use_cp or (dht is None and not return_dh0),
+        "dht / dh0 are not part of the CP contract (fla discards dh0 under context parallelism)",
+    )
 
     qn = _contiguous("q_norm", _rows(q_norm, rows), bf)
     kn = _contiguous("k_norm", _rows(k_norm, rows), bf)
@@ -779,9 +991,48 @@ def chunk_kda_backward(
         arch, g_r, qn, kn, v_r, beta_s, A_log, dt_bias, aqk, akk, do_r, layout=layout, lower_bound=lower_bound
     )
     u, w = _launch_wy(arch, pre["akk"], pre["vb"], pre["kb"])
-    h_state, v_new = _launch_fwdh(arch, w, pre["kg"], u, pre["gk"], layout=layout)
+    # forward state recurrence from the carried state (CP: the compressed h0 of the first local sequence in slot 0;
+    # the first rank of its sequence receives none -- fla carries zeros there, the kernel's flag-off path is the
+    # same values without the 64 KiB/head load)
+    h0_c = None
+    if use_cp:
+        if h0 is not None:
+            h0_c = _check_state(h0, name="h0 (compressed)", num_sequences=1, hv=hv)
+        h0 = None if (h0_c is None or cp_context.is_first_rank) else _first_slot(h0_c, layout.num_sequences)
+    h_state, v_new = _launch_fwdh(arch, w, pre["kg"], u, pre["gk"], layout=layout, h0=h0, walk=serial_walk)
     dAqk, dv1 = _launch_dav(arch, pre["do"], v_new, pre["aqk_tril"], scale=scale)
-    dh_state, dv2 = _launch_dhu(arch, pre["kg"], pre["qg"], w, pre["do"], dv1, pre["gk"], layout=layout, scale=scale)
+    # CP hook (fla chunk_bwd.py, between dAv and dhu): fla's backward pre-process on the FIRST local sequence
+    # (internal rows [0, L1): prep gathers the sequences in order from row 0) -> the adjoint state entering the
+    # LAST local sequence. state_v_first=True as the Miles fla path tunes fla's kernels (Triton's autotune cache keys
+    # ignore the constexpr; a False call after a True one reuses the V-first config and overflows shared memory on
+    # GB300); the compressed state is transposed once on the host.
+    dht_c = None
+    if use_cp:
+        fl = _fla_ops()
+        first = layout.lengths[0]
+        if feed_beta_from_logits:
+            _check(beta_logits is not None, "feed_beta_from_logits needs beta_logits")
+            beta_feed = fl["fused_beta_sigmoid_fwd"](beta_raw[:first][None], 1.0)
+        else:
+            beta_feed = beta_s[:first][None]
+        feed = _a1_backward_feed(
+            fl, qn[:first][None], kn[:first][None], v_r[:first][None], beta_feed, akk[:first][None], g_r[:first][None],
+            A_log, dt_bias, lower_bound=lower_bound,
+        )
+        dht_vf, _none = fl["bwd_dhu_pre_process"](
+            q=feed["qg"], k=feed["kg"], w=feed["w"], do=pre["do"][:first][None], dv=dv1[:first][None], gk=feed["g"],
+            scale=scale, state_v_first=True, cu_seqlens=_pair_cu(first, q_norm.device), dht=None, initial_state=None,
+            context=cp_context, chunk_size=CHUNK,
+        )
+        del feed
+        dht_c = dht_vf.transpose(-1, -2).contiguous()
+        dht = None if cp_context.is_last_rank else _last_slot(dht_c, layout.num_sequences)
+    dhu_out = _launch_dhu(
+        arch, pre["kg"], pre["qg"], w, pre["do"], dv1, pre["gk"], layout=layout, scale=scale, dht=dht,
+        return_dh0=return_dh0, walk=serial_walk,
+    )
+    dh_state, dv2 = dhu_out[0], dhu_out[1]
+    dh0 = dhu_out[2] if return_dh0 else None
     dq_f, dk_f, dg_f, db_f, dAkk, dv = _launch_dqkg(
         arch,
         pre["do"],
@@ -854,6 +1105,13 @@ def chunk_kda_backward(
         lower_bound=lower_bound,
         qk_done=qk_done,
     )
+    if use_cp:
+        walk = _serial_walk_stage("fwdh", layout.num_sequences * hv, q_norm.device, serial_walk)[0]
+        LAST_CP_STATES.update({
+            "h0_compressed": h0_c, "dht": dht_c, "fwdh_variant": "v2" if walk.endswith("_slices") else "v1",
+            "dhu_variant": "v2" if walk.endswith("_slices") else "v1", "roles": _roles(cp_context),
+            "local_lengths": list(layout.lengths),
+        })
     # every gradient below is a fresh contiguous kernel output (or an index_select of one): view, not reshape
     return {
         "dq": dq.view(batch0, seq0, h, kd),
@@ -867,7 +1125,17 @@ def chunk_kda_backward(
         "dg": dg.view(batch0, seq0, hv, kd),
         "dA_log": dA_log_grad,
         "dt_bias": dt_bias_grad,
+        "dh0": dh0,
     }
 
 
-__all__ = ["ChunkLayout", "chunk_kda_backward", "chunk_layout", "host_boundaries", "CHUNK", "HEAD_DIM"]
+__all__ = [
+    "ChunkLayout",
+    "LAST_CP_STATES",
+    "chunk_kda_backward",
+    "chunk_layout",
+    "host_boundaries",
+    "state_dummy",
+    "CHUNK",
+    "HEAD_DIM",
+]

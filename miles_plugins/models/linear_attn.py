@@ -75,10 +75,12 @@ def gdn_kernel(backend: str):
 
 @functools.cache
 def kda_kernel(backend: str = "fla"):
-    """fla's chunk_kda, or for ``backend="deterministic"`` Miles' drop-in with fla's forward and the deterministic
-    chunked backward (:mod:`miles_plugins.models.kda_chunk_train`; fla for the calls it does not cover). On Blackwell
-    fla's backward runs the Triton dqkg kernel (FLA_TILELANG=0), which beats fla's TileLang one there at every
-    tiling; an explicit FLA_TILELANG wins."""
+    """fla's chunk_kda, or for the ``deterministic*`` backends Miles' drop-in with the deterministic chunked
+    backward (:mod:`miles_plugins.models.kda_chunk_train`; fla for the calls it does not cover):
+    ``deterministic_fla_fwd`` keeps fla's forward, ``deterministic_cake_fwd`` runs the Cake forward (it takes the
+    beta logits: the callable's ``takes_beta_logits`` attribute, read by :func:`kda_recurrence`), ``deterministic``
+    is the alias of the family's current default. On Blackwell fla's backward runs the Triton dqkg kernel
+    (FLA_TILELANG=0), which beats fla's TileLang one there at every tiling; an explicit FLA_TILELANG wins."""
     try:
         from fla.ops.kda import chunk_kda
     except ImportError as exc:
@@ -88,10 +90,10 @@ def kda_kernel(backend: str = "fla"):
     logger.info(f"KDA backend: {backend}; fla backward: FLA_TILELANG={os.environ.get('FLA_TILELANG', 'unset')}")
     if backend == "fla":
         return chunk_kda
-    if backend == "deterministic":
-        from miles_plugins.models.kda_chunk_train import chunk_kda as deterministic_chunk_kda
+    from miles_plugins.models.kda_chunk_train import DETERMINISTIC_BACKENDS, chunk_kda_for
 
-        return deterministic_chunk_kda
+    if backend in DETERMINISTIC_BACKENDS:
+        return chunk_kda_for(backend)
     raise ValueError(f"Unsupported KDA backend: {backend}")
 
 
@@ -142,15 +144,22 @@ def kda_recurrence(
     ``cu_seqlens``: the kernel's host-side index work reads it, so neither backend copies the
     boundaries off the device. Under CP the kernel takes the rank-local boundaries from
     ``cp_context`` (fla overrides both from the context); ``cu_seqlens_cpu`` is then the int64 host
-    copy of those local boundaries. Fixed-length ``[b, s]`` input passes neither.
+    copy of those local boundaries. Fixed-length ``[b, s]`` input passes neither. ``beta`` travels as the
+    post-sigmoid fp32 value for fla and the fla-forward deterministic mode, and as the raw logits with
+    ``use_beta_sigmoid_in_kernel=True`` for the Cake-forward mode (the kernel's ``takes_beta_logits``).
     """
     boundaries = {"cp_context": cp_context} if cp_context is not None else {"cu_seqlens": cu_seqlens}
-    out, _ = kda_kernel(backend)(
+    kernel = kda_kernel(backend)
+    if getattr(kernel, "takes_beta_logits", False):
+        # the Cake forward applies the sigmoid inside its first stage; dbeta then comes back w.r.t. the logits
+        beta = {"beta": beta_logits, "use_beta_sigmoid_in_kernel": True}
+    else:
+        beta = {"beta": beta_logits.float().sigmoid()}
+    out, _ = kernel(
         q=q,
         k=k,
         v=v,
         g=decay.reshape(v.shape),
-        beta=beta_logits.float().sigmoid(),
         A_log=A_log,
         dt_bias=dt_bias,
         initial_state=None,
@@ -161,6 +170,7 @@ def kda_recurrence(
         lower_bound=gate_lower_bound,
         state_v_first=True,
         cu_seqlens_cpu=cu_seqlens_cpu,
+        **beta,
         **boundaries,
     )
     return out
