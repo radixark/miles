@@ -75,3 +75,24 @@ class TestSendBucket:
 
         with pytest.raises(AssertionError, match="not transferred"):
             protocol.after_base_weights()
+
+
+class TestConnect:
+    def test_ranks_are_assigned_over_the_rollout_engines_and_placement_handed_over(
+        self, p2p_sender: Any, make_rollout_api: Any, make_bucket: Any
+    ) -> None:
+        """Assigning over the engines in args queried engines that were not there and never wrote others; a fixed
+        placement made every PP stage write the whole model under Megatron Bridge."""
+        protocol = p2p_sender.make_protocol()
+        protocol.args.rollout_num_gpus_per_engine = 1
+        protocol.args.rollout_num_gpus = 1
+        resolved_placement = object()
+        api = make_rollout_api("cell-a", gpu_count=2)
+
+        p2p_sender.connect(protocol, [api], placement=resolved_placement)
+        protocol.begin_sync(weight_version=1, iter_buckets=None)
+        protocol.send_bucket(make_bucket("hf.w"))
+        protocol.after_base_weights()
+
+        assert p2p_sender.assignment_inputs == [(resolved_placement, [2])]
+        assert p2p_sender.transfer_engine.written_sessions() == [api.session_id(0), api.session_id(1)]

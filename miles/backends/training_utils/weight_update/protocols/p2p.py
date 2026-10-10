@@ -118,16 +118,11 @@ class UpdateWeightP2P(WeightTransferProtocol):
         placement: WeightUpdatePlacement,
         selector: str,
     ) -> None:
-        """Connects this trainer rank to the rollout engines: assigns it rollout engine ranks, queries their configs
-        and Mooncake shards, and builds a model replica per shard layout."""
+        """Connects this trainer rank to the rollout engines handed over: assigns it rollout engine ranks over them
+        and the iterator's placement, queries their configs and Mooncake shards, and builds a model replica per
+        shard layout."""
         self.rollout_engines = rollout_engines
-        # TODO: assign from engine_gpu_counts and placement, not args
-        assignments = assign_rollout_engine_ranks(
-            parallel_state,
-            WeightUpdatePlacement(gather_pp=False),
-            [self.args.rollout_num_gpus_per_engine]
-            * (self.args.rollout_num_gpus // self.args.rollout_num_gpus_per_engine),
-        )
+        assignments = assign_rollout_engine_ranks(parallel_state, placement, engine_gpu_counts)
         self.is_sender = bool(assignments)
 
         if self.is_sender:
