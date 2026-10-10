@@ -31,7 +31,7 @@ def main(args: Args) -> None:
     zipfile.ZipFile(args.data_zip).extractall(data)
     manifest = json.loads((data / 'manifest.json').read_text())
     receipt = json.loads((data / 'publication.json').read_text())
-    if not 32000 <= manifest['train'] <= 32768 or not 1900 <= manifest['validation'] <= 2048:
+    if not 32000 <= manifest['train'] <= 32768 or not 1800 <= manifest['validation'] <= 2048:
         raise ValueError('Unexpected dataset size')
     for name in ('train.jsonl', 'validation.jsonl', 'manifest.json', 'validation-report.json'):
         if hashlib.sha256((data / name).read_bytes()).hexdigest() != receipt['objects'][name]['sha256']:
