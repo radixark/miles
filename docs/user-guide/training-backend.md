@@ -626,8 +626,14 @@ because that check compares the engine against the original HF checkpoint.
 `miles/backends/torchtitan_utils/models/`.** There is no per-architecture spec to write; a
 new model is a Python package that assembles torchtitan's own blocks.
 
-**No LoRA, no optimizer CPU offload, no disk offload, no on-policy distillation, and
+**No LoRA, no Muon (`--optimizer adam` only), no on-policy distillation, and
 `--ref-update-interval` is rejected** rather than silently ignored.
+
+**Host offload is FSDP2's, validated on `glm5_next` only.** `--fsdp-cpu-offload` keeps the
+weights, gradients and Adam state on the host and steps Adam on the CPU, and
+`--stream-optimizer-state-to-disk` then moves the Adam moments into files; other models pass the
+same policy through torchtitan's parallelize functions but have not been run that way.
+`--offload-train-target=disk` (the rollout-window backup) remains Megatron-only.
 
 </Warning>
 
