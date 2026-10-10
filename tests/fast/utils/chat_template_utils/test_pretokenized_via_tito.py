@@ -15,7 +15,7 @@ register_cpu_ci(est_time=120, suite="stage-b-cpu", labels=["rollout"])
 
 
 from miles.utils.chat_template_utils import TITOTokenizerType, resolve_fixed_chat_template
-from miles.utils.chat_template_utils.tito_tokenizer import Qwen3TITOTokenizer
+from miles.utils.chat_template_utils.tito_tokenizer.qwen import Qwen3TITOTokenizer
 from miles.utils.test_utils.chat_template_verify import run_all_checks_via_tito, verify_append_only_via_tito_instance
 from miles.utils.test_utils.mock_trajectories import SingleToolTrajectory
 

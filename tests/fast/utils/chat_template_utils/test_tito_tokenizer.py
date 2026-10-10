@@ -63,25 +63,24 @@ from miles.utils.chat_template_utils import (
 )
 from miles.utils.chat_template_utils.tito_tokenizer import (
     ALL_APPEND_ROLES,
-    DeepSeekV4TITOTokenizer,
-    DeepSeekV32TITOTokenizer,
     FixedTemplate,
-    GLM47TITOTokenizer,
-    GLM53TITOTokenizer,
-    InklingTITOTokenizer,
-    Kimi25TITOTokenizer,
-    Kimi26TITOTokenizer,
-    Nemotron3TITOTokenizer,
+    TITOTokenizer,
+    TITOTokenizerType,
+    extract_template_args,
+    get_tito_tokenizer,
+)
+from miles.utils.chat_template_utils.tito_tokenizer.base import _build_dummy_assistant
+from miles.utils.chat_template_utils.tito_tokenizer.deepseek import DeepSeekV4TITOTokenizer, DeepSeekV32TITOTokenizer
+from miles.utils.chat_template_utils.tito_tokenizer.glm import GLM47TITOTokenizer, GLM53TITOTokenizer
+from miles.utils.chat_template_utils.tito_tokenizer.inkling import InklingTITOTokenizer
+from miles.utils.chat_template_utils.tito_tokenizer.kimi import Kimi25TITOTokenizer, Kimi26TITOTokenizer
+from miles.utils.chat_template_utils.tito_tokenizer.nemotron import Nemotron3TITOTokenizer
+from miles.utils.chat_template_utils.tito_tokenizer.qwen import (
     Qwen3TITOTokenizer,
     Qwen35TITOTokenizer,
     Qwen36TITOTokenizer,
     Qwen38SmallTITOTokenizer,
     QwenNextTITOTokenizer,
-    TITOTokenizer,
-    TITOTokenizerType,
-    _build_dummy_assistant,
-    extract_template_args,
-    get_tito_tokenizer,
 )
 from miles.utils.processing_utils import load_tokenizer
 from miles.utils.test_utils.mock_trajectories import (

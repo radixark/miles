@@ -17,11 +17,8 @@ from sglang.srt.entrypoints.openai import chat_encoding, encoding_dsv4, encoding
 from sglang.srt.entrypoints.openai.protocol import Tool
 
 from miles.utils.chat_template_utils import apply_chat_template, deepseek
-from miles.utils.chat_template_utils.tito_tokenizer import (
-    DeepSeekV4TITOTokenizer,
-    DeepSeekV41TITOTokenizer,
-    TITOTokenizerType,
-)
+from miles.utils.chat_template_utils.tito_tokenizer import TITOTokenizerType
+from miles.utils.chat_template_utils.tito_tokenizer.deepseek import DeepSeekV4TITOTokenizer, DeepSeekV41TITOTokenizer
 
 _MSGS = {
     "no_system": [{"role": "user", "content": "Hello"}],
