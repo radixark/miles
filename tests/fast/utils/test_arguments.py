@@ -481,6 +481,7 @@ def _fully_async_candidate_args(**overrides) -> SimpleNamespace:
         recompute_logprobs_via_prefill=False,
         rollout_all_samples_process_path=None,
         eval_num_gpus=0,
+        over_sampling_batch_size=None,
     )
     return SimpleNamespace(**(defaults | overrides))
 
@@ -545,6 +546,7 @@ def test_fully_async_rejects_abort_pause_mode():
         recompute_logprobs_via_prefill=False,
         rollout_all_samples_process_path=None,
         eval_num_gpus=0,
+        over_sampling_batch_size=None,
     )
 
     with pytest.raises(AssertionError, match="pause-generation-mode abort"):
@@ -2998,3 +3000,22 @@ class TestWeightTransferModeSelection:
         args = self._parse(["--custom-config-path", str(config), *extra])
         with pytest.raises(ValueError, match=error):
             miles_validate_args(args)
+
+
+def test_fully_async_warns_that_over_sampling_batch_size_is_ignored(caplog):
+    """Fully-async never reads --over-sampling-batch-size; passing it silently does nothing."""
+    args = _fully_async_candidate_args(fully_async=True, over_sampling_batch_size=32)
+
+    with caplog.at_level(logging.WARNING, logger="miles.utils.arguments"):
+        _resolve_rollout_functions(args)
+
+    assert "--over-sampling-batch-size has no effect under --fully-async" in caplog.text
+
+
+def test_fully_async_without_over_sampling_batch_size_does_not_warn(caplog):
+    args = _fully_async_candidate_args(fully_async=True)
+
+    with caplog.at_level(logging.WARNING, logger="miles.utils.arguments"):
+        _resolve_rollout_functions(args)
+
+    assert "over-sampling-batch-size" not in caplog.text
