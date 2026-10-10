@@ -75,9 +75,11 @@ A **nightly** policy selects every enabled tag except `long` and `ft-long`, admi
 
 **Runner selection.** CUDA stages request runners by label via `runs_on`, a JSON list passed through to `runs-on` — a runner must carry **all** listed labels (GPU class + count). CPU stages call `_run-cpu-ci.yml`, whose only job runs on GitHub-hosted `ubuntu-latest`, so they don't occupy GPU-fleet slots.
 
+**RoCE in isolated containers.** After checkout, `_run-ci.yml` calls `tests/ci/attach_rdma_networks.py` to attach host-provisioned Docker networks labeled `miles.ci.rdma`, preserving each job's network namespace and default routes. Hosts without labeled networks skip setup; no extra runner label or restart is needed. Host operators own network provisioning. Older checkout refs need the helper backported to receive this fix.
+
 **NVSHMEM on 4-GPU H200.** When `runs_on` carries both `h200` and `4gpu`, `_run-ci.yml` sets `NVSHMEM_HCA_LIST` to a NIC name that matches nothing before any test command runs. NVSHMEM then skips its IB transports at init, and DeepEP keeps its intra-node traffic on NVLink. The override relies on the stage being single-node; every other stage keeps NVSHMEM's RDMA transports, and a multi-node stage must not inherit it.
 
-That runner pool can include RoCE hosts, and GitHub attaches every job container to a runner-created bridge network (`container.options` cannot set `--network`). The host's RoCE GIDs are unusable inside that container, so NVSHMEM's IBRC/IBGDA connection setup fails and DeepEP low-latency waits until the job timeout.
+That runner pool can include RoCE hosts, and GitHub attaches every job container to a runner-created bridge network (`container.options` cannot set `--network`). Without namespace-local RoCE interfaces, the host's GIDs are unusable inside that container, so NVSHMEM's IBRC/IBGDA connection setup fails and DeepEP low-latency waits until the job timeout.
 
 **Arch dispatch.** `tests/ci/hardware.py::CUDA_STAGES` is the single source of truth for the CUDA taxonomy: each stage's GPU generation, GPU count, and runner labels. `CI_SUITES` and the default `/rerun-test` runner map derive from it. B200 overrides the runner width with the registration's `num_gpus`; a stage's `--suite` still names its generation.
 
