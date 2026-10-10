@@ -118,13 +118,12 @@ class NativeKernel:
         native = load(stage, self.arch)
         self._call = getattr(native, record["ffi_entry"])
         self._arg_plan = tuple(tuple(item) for item in record["arg_plan"])
-        self._binding_names = frozenset(name for kind, name in self._arg_plan if kind not in ("grid", "workspace"))
-        workspace_bytes = int(record["tma_workspace_bytes"])
-        self.descriptor_storage = (
-            torch.empty(workspace_bytes, dtype=torch.uint8, device=device if device is not None else "cuda")
-            if workspace_bytes
-            else None
-        )
+        # The thin launchers encode their TMA descriptors inside the binding (no host workspace), so the plan only
+        # carries buffers, parameters and the grid.
+        unknown = sorted({kind for kind, _ in self._arg_plan} - {"buffer", "parameter", "grid"})
+        if unknown:
+            raise ValueError(f"{stage}: unsupported argument kinds {unknown!r} in the exported plan")
+        self._binding_names = frozenset(name for kind, name in self._arg_plan if kind != "grid")
 
     def launch(self, *, grid, **bindings):
         # Hot path (one call per kernel launch): a single set comparison validates the bindings; the ordered
@@ -139,8 +138,6 @@ class NativeKernel:
         for kind, name in self._arg_plan:
             if kind == "grid":
                 args.append(int(grid[_GRID_INDEX[name]]))
-            elif kind == "workspace":
-                args.append(self.descriptor_storage)
             else:
                 args.append(bindings[name])
         return self._call(*args)
