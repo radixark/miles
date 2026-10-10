@@ -15,6 +15,7 @@ from miles.tinker.client.session import ChatSession
 
 
 class Tokenizer:
+    name_or_path = "fake-tokenizer"  # get_renderer stamps it on the renderer for pickling, as HF tokenizers carry it
     bos_token = None
     eos_token_id = None
 
