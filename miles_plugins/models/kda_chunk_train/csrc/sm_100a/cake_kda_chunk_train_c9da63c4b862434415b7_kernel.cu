@@ -77,7 +77,7 @@ __device__ __forceinline__ float approx_rcp(float x) {
 extern "C" {
 
 __global__ __launch_bounds__(THREADS, LAUNCH_MIN_BLOCKS) void
-kernel_cake_kda_chunk_train_19feab58a3e430f33a04(__nv_bfloat16* __restrict__ q, __nv_bfloat16* __restrict__ k, __nv_bfloat16* __restrict__ v, __nv_bfloat16* __restrict__ g_raw, __nv_bfloat16* __restrict__ beta_logits, float* __restrict__ A_log, float* __restrict__ dt_bias, int* __restrict__ chunk_bos, int* __restrict__ chunk_len, __nv_bfloat16* __restrict__ q_norm_out, __nv_bfloat16* __restrict__ k_norm_out, float* __restrict__ q_rstd_out, float* __restrict__ k_rstd_out, float* __restrict__ beta_out, float* __restrict__ gk_out, __nv_bfloat16* __restrict__ vb_out, __nv_bfloat16* __restrict__ kb_out, __nv_bfloat16* __restrict__ kg_out, __nv_bfloat16* __restrict__ qg_out, int num_qk_heads, int num_heads, int group, int write_qg, float lower_bound)
+kernel_cake_kda_chunk_train_c9da63c4b862434415b7(__nv_bfloat16* __restrict__ q, __nv_bfloat16* __restrict__ k, __nv_bfloat16* __restrict__ v, __nv_bfloat16* __restrict__ g_raw, __nv_bfloat16* __restrict__ beta_logits, float* __restrict__ A_log, float* __restrict__ dt_bias, int* __restrict__ chunk_bos, int* __restrict__ chunk_len, __nv_bfloat16* __restrict__ q_norm_out, __nv_bfloat16* __restrict__ k_norm_out, float* __restrict__ q_rstd_out, float* __restrict__ k_rstd_out, float* __restrict__ beta_out, float* __restrict__ gk_out, __nv_bfloat16* __restrict__ vb_out, __nv_bfloat16* __restrict__ kb_out, __nv_bfloat16* __restrict__ kg_out, __nv_bfloat16* __restrict__ qg_out, int num_qk_heads, int num_heads, int group, int write_qg, float lower_bound)
 {
     const int tid = threadIdx.x;
     const int warp = make_warp_uniform(tid / 32);
@@ -184,8 +184,8 @@ kernel_cake_kda_chunk_train_19feab58a3e430f33a04(__nv_bfloat16* __restrict__ q, 
         blv[u] = _cvt_f32_0;
     }
     float gates[16];
-    float qn[16];
-    float kn[16];
+    unsigned int qw[8];
+    unsigned int kw[8];
     float btv[4];
     #pragma unroll
     for (int u_1 = 0; u_1 < 4; u_1++) {
@@ -228,6 +228,8 @@ kernel_cake_kda_chunk_train_19feab58a3e430f33a04(__nv_bfloat16* __restrict__ q, 
             bt_u = bt_l;
         }
         btv[u_1] = bt_u;
+        float qn4[4];
+        float kn4[4];
         #pragma unroll
         for (int e_1 = 0; e_1 < 4; e_1++) {
             __nv_bfloat16 _cvt_bf16_0 = __float2bfloat16(qv[u_1 * 4 + e_1] * rq);
@@ -247,9 +249,26 @@ kernel_cake_kda_chunk_train_19feab58a3e430f33a04(__nv_bfloat16* __restrict__ q, 
                 kn_u = kn_l;
                 gate_u = gate_l;
             }
-            qn[u_1 * 4 + e_1] = qn_u;
-            kn[u_1 * 4 + e_1] = kn_u;
+            qn4[e_1] = qn_u;
+            kn4[e_1] = kn_u;
             gates[u_1 * 4 + e_1] = gate_u;
+        }
+        uint32_t qn4_bf16[2];
+        #pragma unroll
+        for (int _lp = 0; _lp < 2; _lp++) {
+            __nv_bfloat162 _bf2 = __float22bfloat162_rn(make_float2(qn4[_lp*2 + 0], qn4[_lp*2+1 + 0]));
+            qn4_bf16[_lp] = *(uint32_t*)&_bf2;
+        }
+        uint32_t kn4_bf16[2];
+        #pragma unroll
+        for (int _lp = 0; _lp < 2; _lp++) {
+            __nv_bfloat162 _bf2 = __float22bfloat162_rn(make_float2(kn4[_lp*2 + 0], kn4[_lp*2+1 + 0]));
+            kn4_bf16[_lp] = *(uint32_t*)&_bf2;
+        }
+        #pragma unroll
+        for (int h = 0; h < 2; h++) {
+            qw[u_1 * 2 + h] = qn4_bf16[h];
+            kw[u_1 * 2 + h] = kn4_bf16[h];
         }
         asm volatile("st.shared.v4.f32 [%0], {%1,%2,%3,%4};" :: "r"(graw_addr + (unsigned int)((t_u_1 * 128 + d0) * 4)), "f"(gates[u_1 * 4]), "f"(gates[u_1 * 4 + 1]), "f"(gates[u_1 * 4 + 2]), "f"(gates[u_1 * 4 + 3]) : "memory");
         if (t_u_1 < clen) {
@@ -257,15 +276,15 @@ kernel_cake_kda_chunk_train_19feab58a3e430f33a04(__nv_bfloat16* __restrict__ q, 
                 {
                     uint2 _pk2;
                     __nv_bfloat162* _pk = reinterpret_cast<__nv_bfloat162*>(&_pk2);
-                    _pk[0] = __floats2bfloat162_rn(qn[u_1 * 4 + 0], qn[u_1 * 4 + 1]);
-                    _pk[1] = __floats2bfloat162_rn(qn[u_1 * 4 + 2], qn[u_1 * 4 + 3]);
+                    _pk[0] = __floats2bfloat162_rn(qn4[0 + 0], qn4[0 + 1]);
+                    _pk[1] = __floats2bfloat162_rn(qn4[0 + 2], qn4[0 + 3]);
                     *reinterpret_cast<uint2*>(&((__nv_bfloat16*)(q_norm_out + qidx))[0]) = _pk2;
                 }
                 {
                     uint2 _pk2;
                     __nv_bfloat162* _pk = reinterpret_cast<__nv_bfloat162*>(&_pk2);
-                    _pk[0] = __floats2bfloat162_rn(kn[u_1 * 4 + 0], kn[u_1 * 4 + 1]);
-                    _pk[1] = __floats2bfloat162_rn(kn[u_1 * 4 + 2], kn[u_1 * 4 + 3]);
+                    _pk[0] = __floats2bfloat162_rn(kn4[0 + 0], kn4[0 + 1]);
+                    _pk[1] = __floats2bfloat162_rn(kn4[0 + 2], kn4[0 + 3]);
                     *reinterpret_cast<uint2*>(&((__nv_bfloat16*)(k_norm_out + qidx))[0]) = _pk2;
                 }
                 if (lane_1 == 0) {
@@ -367,6 +386,25 @@ kernel_cake_kda_chunk_train_19feab58a3e430f33a04(__nv_bfloat16* __restrict__ q, 
         int t_u_3 = warp_0 * 4 + u_4;
         long long iidx = ibase + (long long)(t_u_3 * rs);
         float bt = btv[u_4];
+        unsigned int qw2[2];
+        unsigned int kw2[2];
+        #pragma unroll
+        for (int h_1 = 0; h_1 < 2; h_1++) {
+            qw2[h_1] = qw[u_4 * 2 + h_1];
+            kw2[h_1] = kw[u_4 * 2 + h_1];
+        }
+        float qw2_f32[4];
+        #pragma unroll
+        for (int _pair = 0; _pair < 2; _pair++) {
+            (&qw2_f32[_pair * 2])[0] = __uint_as_float(static_cast<uint32_t>(qw2[_pair]) << 16);
+            (&qw2_f32[_pair * 2])[1] = __uint_as_float(static_cast<uint32_t>(qw2[_pair]) & 0xffff0000u);
+        }
+        float kw2_f32[4];
+        #pragma unroll
+        for (int _pair = 0; _pair < 2; _pair++) {
+            (&kw2_f32[_pair * 2])[0] = __uint_as_float(static_cast<uint32_t>(kw2[_pair]) << 16);
+            (&kw2_f32[_pair * 2])[1] = __uint_as_float(static_cast<uint32_t>(kw2[_pair]) & 0xffff0000u);
+        }
         float gkt[4];
         float vb[4];
         float kb[4];
@@ -381,12 +419,12 @@ kernel_cake_kda_chunk_train_19feab58a3e430f33a04(__nv_bfloat16* __restrict__ q, 
             if (t_u_3 < clen) {
                 v_e = vv[u_4 * 4 + e_10];
             }
-            float kn_e = kn[u_4 * 4 + e_10];
+            float kn_e = kw2_f32[e_10];
             vb[e_10] = v_e * bt;
             kb[e_10] = kn_e * bt * e_g;
             float _exp2_1 = approx_exp2(gk_n[e_10] - gkt[e_10]);
             kg[e_10] = kn_e * _exp2_1;
-            qg[e_10] = qn[u_4 * 4 + e_10] * e_g;
+            qg[e_10] = qw2_f32[e_10] * e_g;
         }
         {
             float4 _v4 = make_float4(gkt[0 + 0], gkt[0 + 1], gkt[0 + 2], gkt[0 + 3]);

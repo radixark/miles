@@ -140,7 +140,9 @@ def _launch_fwd_prep(arch, q, k, v, g_raw, beta_logits, A_log, dt_bias, *, layou
 def _launch_fwd_intra(arch, q_norm, k_norm, gk, beta, *, layout, scale):
     """Token rows: bf16 ``q_norm``/``k_norm`` ``[T, H, 128]``, fp32 ``beta`` ``[T, HV]``; internal fp32 ``gk``
     ``[R, HV, 128]``. Returns ``(aqk, akk, aqk_int, akk_int)``: bf16 ``[T, HV, 64]`` saved-set tensors in token
-    rows and the internal-layout copies (the same tensors when the layout is the identity)."""
+    rows and the internal-layout copy of ``akk`` with zero pad rows (``akk`` itself when the layout is the identity)
+    for ``wy``. ``aqk_int`` is always ``None``: the forward reads ``aqk`` from the token rows (``fwd_o``), so the
+    kernel does not produce an internal copy of it."""
     rows, hv, kd = gk.shape
     rows_ext = layout.rows_external
     h = q_norm.shape[1]
@@ -157,9 +159,8 @@ def _launch_fwd_intra(arch, q_norm, k_norm, gk, beta, *, layout, scale):
     aqk = torch.empty(rows_ext, hv, CHUNK, dtype=bf, device=dev)
     akk = torch.empty(rows_ext, hv, CHUNK, dtype=bf, device=dev)
     if layout.identity:
-        aqk_int, akk_int, write_int = aqk, akk, 0
+        akk_int, write_int = akk, 0
     else:
-        aqk_int = torch.empty(rows, hv, CHUNK, dtype=bf, device=dev)
         akk_int = torch.empty(rows, hv, CHUNK, dtype=bf, device=dev)
         write_int = 1
     kernel("fwd_intra", arch).launch(
@@ -172,7 +173,6 @@ def _launch_fwd_intra(arch, q_norm, k_norm, gk, beta, *, layout, scale):
         chunk_len=layout.chunk_len,
         aqk_ext=aqk,
         akk_ext=akk,
-        aqk_int=aqk_int,
         akk_int=akk_int,
         num_heads=hv,
         num_qk_heads=h,
@@ -180,7 +180,7 @@ def _launch_fwd_intra(arch, q_norm, k_norm, gk, beta, *, layout, scale):
         write_int=write_int,
         scale=float(scale),
     )
-    return aqk, akk, aqk_int, akk_int
+    return aqk, akk, None, akk_int
 
 
 def _launch_fwd_o(arch, qg, h, aqk_ext, v_new, *, layout, scale):
