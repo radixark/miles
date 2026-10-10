@@ -18,8 +18,16 @@ def execute():
     U = command_utils.default_config().create_backend()
     with running_gateway() as base_url:
         U.exec_command_cpu(
+            "uv run --no-project --isolated --index https://download.pytorch.org/whl/cpu "
+            "--with-requirements examples/multi_lora/requirements.txt "
             "python examples/multi_lora/run_client_recipes.py "
             f"--base-url {base_url} --base-model {BASE_MODEL} --mode both --steps 2"
+        )
+        U.exec_command_cpu(
+            "uv run --no-project --isolated --index https://download.pytorch.org/whl/cpu "
+            "--with-requirements examples/multi_lora/requirements.txt "
+            "python tests/e2e/lora/tinker_session_acceptance.py "
+            f"--base-url {base_url} --base-model {BASE_MODEL}"
         )
 
 
