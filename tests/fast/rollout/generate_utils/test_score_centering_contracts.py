@@ -125,6 +125,23 @@ def test_invalid_options_fail_early(field: str, value: object) -> None:
         validate_score_centering_args(_args(**{field: value}))
 
 
+def test_dflash_is_supported_with_unfiltered_sampling() -> None:
+    validate_score_centering_args(_args(sglang_speculative_algorithm="DFLASH"))
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"use_sampling_support_replay": True},
+        {"sglang_speculative_accept_threshold_acc": 0.9},
+        {"sglang_device": "npu"},
+    ],
+)
+def test_dflash_requires_exact_unfiltered_verification(overrides: dict) -> None:
+    with pytest.raises(ValueError):
+        validate_score_centering_args(_args(sglang_speculative_algorithm="DFLASH", **overrides))
+
+
 @pytest.mark.parametrize("session", ["v1", "v2"])
 @pytest.mark.parametrize("top_k", [21, 128])
 def test_large_session_heads_can_use_sglang_router(session: str, top_k: int) -> None:

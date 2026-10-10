@@ -90,8 +90,22 @@ Custom rollout producers must supply these fields with probabilities from the ac
 - Sampling requires a fixed positive temperature and `min_p=0` on every call. Filtered sampling, including top-p filtering, automatically uses support mode and requires a positive `top_k`, for example `--rollout-top-p 0.9 --rollout-top-k 64 --rollout-top-logprobs-num 128`. Global filtered rollout settings automatically enable sampling-support replay; per-request overrides are checked when each request is built. See the [sampling-support replay guide](../../../docs/advanced/sampling-support-replay.md) for its request and server requirements.
 - Filtered sampling requires SGLang with support log probabilities (SGLang PR [#40932](https://github.com/sgl-project/sglang/pull/40932), included in the `sglang-miles` branch by [#41047](https://github.com/sgl-project/sglang/pull/41047), merge commit [`ae04cb14046896b6d453758c5769d639deedd353`](https://github.com/sgl-project/sglang/commit/ae04cb14046896b6d453758c5769d639deedd353) or a descendant containing it). External servers must set `SGLANG_RETURN_ORIGINAL_LOGPROB=0` like Miles-managed workers. OpenAI session responses must expose the SGLang fields above in `choices[0].meta_info`; a generic OpenAI-compatible server without that metadata is insufficient.
 - The SGLang router must include [sgl-router-for-miles #21](https://github.com/radixark/sgl-router-for-miles/pull/21) (`df2c790`; see `Git Commit` in `smg --version-verbose`), which raises the chat `top_logprobs` limit from 20 to 128 and forwards `sampling_logprobs_mode`.
-- Constrained/custom sampling, speculative decoding, true-on-policy mode, OPD, multi-LoRA/Tinker losses, sequence masking, custom policy-loss reducers, custom train-data converters, and logprob recomputation via prefill are rejected. Multimodal token expansion is not supported. The initial advantage estimator is GRPO.
+- DFlash speculative decoding is supported with unfiltered sampling. See [Speculative decoding](#speculative-decoding). Other speculative algorithms are rejected.
+- Constrained/custom sampling, true-on-policy mode, OPD, multi-LoRA/Tinker losses, sequence masking, custom policy-loss reducers, custom train-data converters, and logprob recomputation via prefill are rejected. Multimodal token expansion is not supported. The initial advantage estimator is GRPO.
 - Retaining `k=128` uses about 1 KiB per response position for the two arrays, before transport overhead. Eligible support-mode training batches replace the duplicate ID array with one int32 count per response position, saving `4 * (k - 1)` bytes per position in training transport and storage. Source Samples and session payloads keep the original storage cost. Larger `k` improves the unfiltered tail approximation at additional storage and compute cost.
+
+## Speculative decoding
+
+Score centering supports DFlash and DFlash2 drafts through `--sglang-speculative-algorithm DFLASH`. DFlash verifies each draft token against the target model, so the generated tokens are samples from the target distribution. The recorded probabilities are target-model probabilities.
+
+Requirements:
+
+- Use unfiltered sampling: `--rollout-top-k -1` and `--rollout-top-p 1.0`. Filtered sampling with DFlash is rejected.
+- Use CUDA rollout servers. On other platforms, SGLang verifies sampled DFlash requests with greedy argmax. The generated tokens then do not follow the recorded probabilities.
+- Keep `speculative_accept_threshold_single` and `speculative_accept_threshold_acc` at `1.0`.
+- Do not set `SGLANG_SIMULATE_ACC_LEN` to a positive value.
+
+Miles checks these requirements for the servers that it launches, after server-group overrides. Miles does not check external servers (`--rollout-external`). Configure external servers to satisfy the same requirements.
 
 ## Metrics and verification
 

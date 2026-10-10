@@ -3,6 +3,10 @@
 import math
 import os
 from argparse import Namespace
+from collections.abc import Mapping
+from typing import Any
+
+import torch
 
 from miles.utils.rollout_topk_logprobs import validate_rollout_topk_logprobs_sampling
 
@@ -30,7 +34,6 @@ def validate_score_centering_args(args: Namespace) -> None:
         "use_opsm": "sequence masking changes the score-centering estimator",
         "true_on_policy_mode": "score centering uses float32 probability arithmetic",
         "recompute_logprobs_via_prefill": "sampler probabilities must be recorded at generation time",
-        "sglang_speculative_algorithm": "speculative candidate-logprob semantics are not verified",
         "custom_pg_loss_reducer_function_path": "use the standard token/sample reducer",
         "multi_lora": "per-sample Tinker losses bypass the score-centering loss",
         "use_opd": "distillation composition is not supported",
@@ -41,3 +44,38 @@ def validate_score_centering_args(args: Namespace) -> None:
             raise ValueError(f"Score centering is incompatible with --{option.replace('_', '-')}: {reason}")
     if os.environ.get("SGLANG_RETURN_ORIGINAL_LOGPROB", "").lower() in ("1", "true"):
         raise ValueError("Score centering requires SGLANG_RETURN_ORIGINAL_LOGPROB=0 on rollout servers")
+    if not getattr(args, "sglang_config", None) and not getattr(args, "rollout_external", False):
+        validate_score_centering_speculative_config(
+            {name.removeprefix("sglang_"): value for name, value in vars(args).items() if name.startswith("sglang_")},
+            environ=os.environ,
+            filtered_sampling=args.use_sampling_support_replay,
+        )
+
+
+def validate_score_centering_speculative_config(
+    server_args: Mapping[str, Any], *, environ: Mapping[str, str], filtered_sampling: bool
+) -> None:
+    algorithm = server_args.get("speculative_algorithm")
+    if algorithm is None:
+        return
+    if algorithm != "DFLASH":
+        raise ValueError(
+            "Score centering supports speculative decoding only with --sglang-speculative-algorithm DFLASH"
+        )
+    if filtered_sampling:
+        raise ValueError(
+            "Score centering with DFLASH supports only unfiltered sampling (--rollout-top-k -1 --rollout-top-p 1.0)"
+        )
+    if (server_args.get("device") or "cuda") != "cuda" or torch.version.hip is not None:
+        raise ValueError("Score centering with DFLASH requires CUDA rollout servers for exact sampled verification")
+    for field in ("speculative_accept_threshold_single", "speculative_accept_threshold_acc"):
+        if server_args.get(field, 1.0) != 1.0:
+            raise ValueError(
+                f"Score centering requires --sglang-{field.replace('_', '-')}=1.0 for exact DFlash sampling"
+            )
+    try:
+        simulated_acceptance = float(environ.get("SGLANG_SIMULATE_ACC_LEN", "-1"))
+    except ValueError as error:
+        raise ValueError("Score centering requires SGLANG_SIMULATE_ACC_LEN<=0") from error
+    if not math.isfinite(simulated_acceptance) or simulated_acceptance > 0:
+        raise ValueError("Score centering requires SGLANG_SIMULATE_ACC_LEN<=0 (no simulated speculative acceptance)")

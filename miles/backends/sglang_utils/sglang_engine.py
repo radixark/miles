@@ -14,6 +14,7 @@ from miles.utils.lora.utils import (
     lora_base_cpu_backup_enabled,
     lora_rollout_enabled,
 )
+from miles.utils.score_centering import validate_score_centering_speculative_config
 from miles.utils.workers.argv_utils import _record_field_names
 
 logger = logging.getLogger(__name__)
@@ -207,6 +208,11 @@ def _compute_server_args(
 
     if kwargs.get("device") is None:
         kwargs["device"] = "cuda"
+
+    if getattr(args, "loss_type", None) == "score_centering":
+        validate_score_centering_speculative_config(
+            kwargs, environ=os.environ, filtered_sampling=args.use_sampling_support_replay
+        )
 
     return kwargs
 

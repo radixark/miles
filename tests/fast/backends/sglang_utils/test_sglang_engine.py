@@ -23,6 +23,7 @@ def _cmd(
     addr_overrides: dict | None = None,
     base_gpu_id: int = 0,
     random_seed: int = 0,
+    sglang_overrides: dict | None = None,
     **kwargs,
 ) -> str:
     addr_and_ports = dict(
@@ -41,7 +42,7 @@ def _cmd(
         node_rank=0,
         worker_type=worker_type,
         base_gpu_id=base_gpu_id,
-        sglang_overrides={},
+        sglang_overrides=sglang_overrides or {},
         num_gpus_per_engine=1,
         dist_init_addr=addr_and_ports["dist_init_addr"],
         nccl_port=addr_and_ports["nccl_port"],
@@ -112,6 +113,12 @@ class TestComputeEngineLaunchCmd:
         cmd = _cmd(args=make_engine_args(sglang_api_key="secret"))
         parsed = parse_server_args_argv(shlex.split(cmd)[3:])
         assert parsed.api_key == "secret"
+
+
+def test_score_centering_checks_the_server_group_speculative_algorithm():
+    args = make_engine_args(loss_type="score_centering", use_sampling_support_replay=False)
+    with pytest.raises(ValueError, match="DFLASH"):
+        _cmd(args=args, sglang_overrides={"speculative_algorithm": "EAGLE"})
 
 
 class TestLoraTargetModules:
