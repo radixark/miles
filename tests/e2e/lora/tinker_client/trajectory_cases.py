@@ -12,8 +12,8 @@ from miles.tinker.core.token_trace import TokenTrace
 )
 def test_only_actual_token_prefixes_merge(next_prompt, expected_count):
     trace = TokenTrace()
-    trace.record("first", [1, 2], {"tokens": [3, 4], "logprobs": [-0.3, -0.4], "stop_reason": "stop"})
-    trace.record("second", next_prompt, {"tokens": [6, 7], "logprobs": [-0.6, -0.7], "stop_reason": "length"})
+    trace.record("first", [1, 2], [3, 4], [-0.3, -0.4], "stop")
+    trace.record("second", next_prompt, [6, 7], [-0.6, -0.7], "length")
     datums = trajectory_to_data(turns_to_trajectory(trace.turns), traj_advantage=2.0)
     assert len(datums) == expected_count
     trained_tokens, logprobs = [], []
@@ -34,7 +34,7 @@ def test_only_actual_token_prefixes_merge(next_prompt, expected_count):
 def test_repeated_prompts_and_continuations_after_length_are_retained():
     trace = TokenTrace()
     for index, stop_reason in enumerate(["length", "stop"]):
-        trace.record(str(index), [1, 2], {"tokens": [3 + index], "logprobs": [-0.5], "stop_reason": stop_reason})
+        trace.record(str(index), [1, 2], [3 + index], [-0.5], stop_reason)
     trajectory = turns_to_trajectory(trace.turns)
     assert len(trajectory.transitions) == 2
     assert len(trajectory_to_data(trajectory, traj_advantage=1.0)) == 2
