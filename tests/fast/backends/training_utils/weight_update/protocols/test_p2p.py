@@ -5,6 +5,8 @@ import torch
 
 _WAIT_BOUND = 10.0
 _STILL_BLOCKED_SECONDS = 0.2
+# the target model's own MTP layer drafts, as sglang resolves NEXTN
+_EAGLE_MTP = {"speculative_algorithm": "EAGLE", "speculative_draft_model_path": "/model"}
 
 
 class TestSendBucket:
@@ -184,7 +186,9 @@ class TestConnect:
         protocol = p2p_sender.make_protocol()
         api = make_rollout_api("cell-a", gpu_count=1, published_weight_numel=2)
 
-        with pytest.raises(AssertionError, match="does not match the weights rollout engine 0 rank 0 publishes"):
+        with pytest.raises(
+            AssertionError, match="does not match the weights the target of rollout engine 0 rank 0 publishes"
+        ):
             p2p_sender.connect(protocol, [api])
 
     def test_a_reconnect_keeps_the_replica_and_the_registered_transfer_buffers(
@@ -208,6 +212,82 @@ class TestConnect:
         assert len(p2p_sender.replicas_created) == 1
         assert p2p_sender.transfer_engines_created == 1
         assert len(p2p_sender.transfer_engine.registered) == 2
+
+
+class TestDraftRunner:
+    def test_mtp_weights_reach_the_draft_and_weights_it_shares_go_once_through_the_target(
+        self, p2p_sender: Any, make_rollout_api: Any, make_bucket: Any
+    ) -> None:
+        """The draft must receive MTP weights without overwriting shared weights through its own loader."""
+        protocol = p2p_sender.make_protocol()
+        api = make_rollout_api("cell-a", gpu_count=1, speculative_args=_EAGLE_MTP)
+        p2p_sender.connect(protocol, [api])
+        p2p_sender.begin_sync(protocol, weight_version=1)
+
+        protocol.send_bucket(make_bucket("hf.w", "hf.q", "hf.k", "hf.mtp"))
+        protocol.after_base_weights()
+
+        assert p2p_sender.transfer_engine.payload_of(api.session_id(0)) == {
+            api.target_address(0, "w"): [1.0, 2.0, 3.0, 4.0],
+            api.target_address(0, "qk"): [5.0, 6.0, 7.0, 8.0],
+        }
+        assert p2p_sender.transfer_engine.payload_of(api.session_id(0, "draft")) == {
+            api.target_address(0, "mtp"): [9.0, 10.0, 11.0, 12.0]
+        }
+
+    @pytest.mark.parametrize(
+        "selector, speculative_args",
+        [("target", _EAGLE_MTP), ("all", {"speculative_algorithm": "NGRAM"})],
+        ids=["trainer_without_mtp", "no_draft_model"],
+    )
+    def test_only_the_target_is_written_when_there_is_no_draft_to_update(
+        self, p2p_sender: Any, make_rollout_api: Any, make_bucket: Any, selector: str, speculative_args: dict
+    ) -> None:
+        """Target-only updates must not query draft addresses."""
+        protocol = p2p_sender.make_protocol()
+        api = make_rollout_api("cell-a", gpu_count=1, speculative_args=speculative_args)
+        p2p_sender.connect(protocol, [api], selector=selector)
+        p2p_sender.begin_sync(protocol, weight_version=1)
+
+        protocol.send_bucket(make_bucket("hf.w"))
+        protocol.after_base_weights()
+
+        assert p2p_sender.transfer_engine.written_sessions() == [api.session_id(0)]
+        assert not [call for call in api.calls if call.endswith(" draft")]
+
+    @pytest.mark.parametrize(
+        "speculative_args, reason",
+        [
+            ({**_EAGLE_MTP, "enable_multi_layer_eagle": True}, "multi-layer EAGLE"),
+            ({"speculative_algorithm": "EAGLE3", "speculative_draft_model_path": "/eagle3-head"}, "own MTP layer"),
+            ({**_EAGLE_MTP, "speculative_moe_runner_backend": "triton"}, "moe_runner_backend triton"),
+            (
+                {**_EAGLE_MTP, "moe_a2a_backend": "deepep", "speculative_moe_a2a_backend": "none"},
+                "moe_a2a_backend none",
+            ),
+        ],
+        ids=["multi_layer_eagle", "draft_checkpoint", "own_moe_runner_backend", "own_moe_a2a_backend"],
+    )
+    def test_a_draft_p2p_cannot_update_is_rejected_at_connect(
+        self, p2p_sender: Any, make_rollout_api: Any, speculative_args: dict, reason: str
+    ) -> None:
+        """Left unwritten, the draft would fall behind the trained target and its proposals stop being accepted."""
+        protocol = p2p_sender.make_protocol()
+        api = make_rollout_api("cell-a", gpu_count=1, speculative_args=speculative_args)
+
+        with pytest.raises(NotImplementedError, match=reason):
+            p2p_sender.connect(protocol, [api])
+
+    def test_rollout_engines_running_different_runners_are_rejected(
+        self, p2p_sender: Any, make_rollout_api: Any
+    ) -> None:
+        """Mixed roles would leave a draft unwritten or query one that does not exist."""
+        protocol = p2p_sender.make_protocol()
+        drafting_api = make_rollout_api("cell-a", gpu_count=1, speculative_args=_EAGLE_MTP)
+        plain_api = make_rollout_api("cell-b", gpu_count=1)
+
+        with pytest.raises(AssertionError, match="run different model runners"):
+            p2p_sender.connect(protocol, [drafting_api, plain_api])
 
 
 class TestHfNames:
@@ -234,10 +314,10 @@ class TestHfNames:
             protocol.send_bucket([("hf.unknown", torch.zeros(4))])
         assert p2p_sender.transfer_engine.writes == []
 
-    def test_a_tensor_no_replica_loads_is_skipped(
+    def test_a_tensor_no_runner_loads_is_skipped(
         self, p2p_sender: Any, make_rollout_api: Any, make_bucket: Any
     ) -> None:
-        """The engine's own loader ignores it too, as a target model's loader ignores its MTP layers."""
+        """An MTP layer the engines do not draft with is one their own loaders ignore too."""
         protocol = p2p_sender.make_protocol()
         api = make_rollout_api("cell-a", gpu_count=1)
         p2p_sender.connect(protocol, [api])

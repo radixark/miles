@@ -21,10 +21,11 @@ class RemoteWeightLocation(NamedTuple):
 
 @dataclass(frozen=True)
 class RemoteShard:
-    """One rank of one rollout engine as a write target: its Mooncake session and where each weight lives."""
+    """Mooncake session and published weight addresses for one engine rank's target or draft runner."""
 
     rollout_engine_ind: int
     rollout_engine_rank: int
+    runner_role: str
     session_id: str
     weight_locations_by_name: dict[str, RemoteWeightLocation]
 
@@ -51,9 +52,12 @@ class MooncakeTransport:
         self._write_executors_by_rollout_engine_ind: dict[int, ThreadPoolExecutor] = {}
 
     def connect(
-        self, rollout_engines: Sequence[SGLangApiClient], assignments: Sequence[RolloutEngineRankAssignment]
-    ) -> dict[int, list[RemoteShard]]:
-        """Returns the shards of the rollout engine ranks in `assignments`, by rollout engine rank.
+        self,
+        rollout_engines: Sequence[SGLangApiClient],
+        assignments: Sequence[RolloutEngineRankAssignment],
+        runner_roles: Sequence[str],
+    ) -> dict[str, dict[int, list[RemoteShard]]]:
+        """Return assigned shards by runner role and rollout rank.
 
         Starts new write threads: a rollout engine index now names a new engine, which must not queue behind the
         writes of the one it replaced.
@@ -62,13 +66,19 @@ class MooncakeTransport:
             write_executor.shutdown(wait=False)
         self._write_executors_by_rollout_engine_ind = {}
         return {
-            assignment.rollout_engine_rank: [
-                _query_remote_shard(
-                    rollout_engines[rollout_engine_ind], rollout_engine_ind, assignment.rollout_engine_rank
-                )
-                for rollout_engine_ind in assignment.rollout_engine_indices
-            ]
-            for assignment in assignments
+            runner_role: {
+                assignment.rollout_engine_rank: [
+                    _query_remote_shard(
+                        rollout_engines[rollout_engine_ind],
+                        rollout_engine_ind,
+                        assignment.rollout_engine_rank,
+                        runner_role,
+                    )
+                    for rollout_engine_ind in assignment.rollout_engine_indices
+                ]
+                for assignment in assignments
+            }
+            for runner_role in runner_roles
         }
 
     def register_memory(self, tensor: torch.Tensor) -> None:
@@ -113,17 +123,18 @@ class MooncakeTransport:
 
 
 def _query_remote_shard(
-    rollout_engine: SGLangApiClient, rollout_engine_ind: int, rollout_engine_rank: int
+    rollout_engine: SGLangApiClient, rollout_engine_ind: int, rollout_engine_rank: int, runner_role: str
 ) -> RemoteShard:
     session_id, weights_info = async_utils.run(
-        rollout_engine.get_remote_instance_transfer_engine_info(rank=rollout_engine_rank)
+        rollout_engine.get_remote_instance_transfer_engine_info(rank=rollout_engine_rank, role=runner_role)
     )
     assert (
         session_id is not None
-    ), f"rollout engine {rollout_engine_ind} rank {rollout_engine_rank} has no Mooncake session"
+    ), f"the {runner_role} of rollout engine {rollout_engine_ind} rank {rollout_engine_rank} has no Mooncake session"
     return RemoteShard(
         rollout_engine_ind=rollout_engine_ind,
         rollout_engine_rank=rollout_engine_rank,
+        runner_role=runner_role,
         session_id=session_id,
         weight_locations_by_name={name: RemoteWeightLocation(*location) for name, location in weights_info.items()},
     )
@@ -139,7 +150,10 @@ def _create_transfer_engine() -> Any:
 
 
 def _assert_tensors_fit(remote_shard: RemoteShard, tensors_by_name: dict[str, torch.Tensor]) -> None:
-    target = f"rollout engine {remote_shard.rollout_engine_ind} rank {remote_shard.rollout_engine_rank}"
+    target = (
+        f"the {remote_shard.runner_role} of rollout engine {remote_shard.rollout_engine_ind} "
+        f"rank {remote_shard.rollout_engine_rank}"
+    )
     for name, tensor in tensors_by_name.items():
         assert name in remote_shard.weight_locations_by_name, f"{target} publishes no {name}"
         location = remote_shard.weight_locations_by_name[name]

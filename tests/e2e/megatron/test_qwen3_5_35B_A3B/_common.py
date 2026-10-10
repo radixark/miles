@@ -66,6 +66,7 @@ class CaseConfig:
     rollout_max_response_len: int = 8192
     colocate: bool = True
     rollout_num_gpus: int = None
+    update_weight_transfer_mode: str = None
     fully_async: bool = False
     optimizer: Literal["adam", "dist_muon"] = "adam"
     extra_args: str = ""
@@ -77,6 +78,10 @@ class CaseConfig:
             raise ValueError("fully_async requires colocate=False: train_async.py rejects colocation")
         if not self.colocate and self.rollout_num_gpus is None:
             raise ValueError("rollout_num_gpus must be set when colocate is False")
+        if self.update_weight_transfer_mode is not None:
+            assert self.update_weight_transfer_mode in ("broadcast", "p2p")
+        if self.update_weight_transfer_mode == "p2p" and self.colocate:
+            raise ValueError("p2p weight updates require colocate=False: the engines are written from other GPUs")
         if not self.use_spec and (self.enable_mtp_training or self.check_weight_update_selector != "target"):
             raise ValueError("without spec there is no draft: set enable_mtp_training=False and selector 'target'")
         if self.sglang_deepep_dispatcher_output_dtype is not None and not self.use_deepep:
@@ -207,6 +212,9 @@ def build_train_args(case: CaseConfig, *, wandb_file: str) -> str:
         sglang_args += "--sglang-enable-dp-attention "
     if case.use_r3:
         sglang_args += "--use-rollout-routing-replay "
+    if case.update_weight_transfer_mode == "p2p":
+        # publish destination addresses for P2P writes
+        sglang_args += "--sglang-remote-instance-weight-loader-start-seed-via-transfer-engine "
     if case.use_deepep:
         sglang_args += "--sglang-moe-a2a-backend deepep --sglang-deepep-mode auto "
         # The decode CUDA-graph batch is per DP rank: capture at most one DP rank's requests.
@@ -249,6 +257,8 @@ def build_train_args(case: CaseConfig, *, wandb_file: str) -> str:
         misc_args += f"--rollout-num-gpus {case.rollout_num_gpus} "
     if case.fully_async:
         misc_args += "--fully-async "
+    if case.update_weight_transfer_mode is not None:
+        misc_args += f"--update-weight-transfer-mode {case.update_weight_transfer_mode} "
     misc_args += f"--moe-token-dispatcher-type {case.megatron_dispatcher} "
     if case.colocate and case.optimizer == "adam":
         misc_args += "--rematerialize-param-from-master-weight "
@@ -273,10 +283,14 @@ def build_train_args(case: CaseConfig, *, wandb_file: str) -> str:
 def execute(case: CaseConfig, *, wandb_file: str) -> None:
     U = command_utils.default_config().create_backend()
     train_args = build_train_args(case, wandb_file=wandb_file)
+    extra_env_vars = {"SGLANG_ENABLE_SPEC_V2": "1"} if case.use_spec else {}
+    if case.update_weight_transfer_mode == "p2p":
+        # CI hosts lack nvidia_peermem; use dmabuf
+        extra_env_vars["WITH_NVIDIA_PEERMEM"] = "0"
     U.execute_train(
         train_args=train_args,
         num_gpus_per_node=case.num_gpus_per_node + (0 if case.colocate else case.rollout_num_gpus),
         megatron_model_type=MODEL_TYPE,
         train_script="train_async.py" if case.fully_async else "train.py",
-        extra_env_vars={"SGLANG_ENABLE_SPEC_V2": "1"} if case.use_spec else {},
+        extra_env_vars=extra_env_vars,
     )

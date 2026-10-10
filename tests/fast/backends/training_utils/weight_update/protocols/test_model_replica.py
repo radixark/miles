@@ -33,7 +33,9 @@ class _ServerArgs:
 
 def _config(model_replica_module: ModuleType, *, tp_rank: int, global_rank: int, **server_args):
     return model_replica_module.RolloutEngineRankConfig(
-        parallelism=_Parallelism(tp_rank=tp_rank, global_rank=global_rank), server_args=_ServerArgs(**server_args)
+        runner_role="target",
+        parallelism=_Parallelism(tp_rank=tp_rank, global_rank=global_rank),
+        server_args=_ServerArgs(**server_args),
     )
 
 
@@ -226,7 +228,7 @@ def make_model_replica(model_replica_module: ModuleType, monkeypatch: pytest.Mon
         for param in model.parameters():
             param.data = torch.empty(0, dtype=param.dtype)
         config = model_replica_module.RolloutEngineRankConfig(
-            parallelism=None, server_args=server_args or _ServerArgs()
+            runner_role="target", parallelism=None, server_args=server_args or _ServerArgs()
         )
         return model_replica_module.ModelReplica(
             model,
