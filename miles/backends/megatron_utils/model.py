@@ -30,7 +30,7 @@ from miles.backends.megatron_utils.local_weight_checksum import dump_local_weigh
 from miles.backends.megatron_utils.optimizer_state_reset import reset_optimizer_states
 from miles.backends.training_utils.data.rollout import DataIterator, get_batch
 from miles.backends.training_utils.data.sampling_mask import get_rollout_sampling_masks
-from miles.backends.training_utils.loss.objective import loss_function
+from miles.backends.training_utils.loss.objective import get_values, loss_function
 from miles.backends.training_utils.metrics.checks import check_grad_norm, check_kl
 from miles.backends.training_utils.metrics.log_utils import (
     aggregate_forward_results,
@@ -73,7 +73,9 @@ from .fp32_param_utils import enforce_marked_param_dtypes
 from .lora.bridge import _ensure_model_list, _setup_lora_model_via_bridge  # noqa: F401
 
 
-def get_optimizer_param_scheduler(args: Namespace, optimizer: MegatronOptimizer) -> OptimizerParamScheduler | None:
+def get_optimizer_param_scheduler(
+    args: Namespace, optimizer: MegatronOptimizer, role: str = "actor"
+) -> OptimizerParamScheduler | None:
     """Create and configure the optimizer learning-rate/weight-decay scheduler.
 
     This configures iteration-based schedules derived from the global batch size
@@ -90,15 +92,16 @@ def get_optimizer_param_scheduler(args: Namespace, optimizer: MegatronOptimizer)
     args.train_iters = args.num_rollout * args.rollout_batch_size * args.n_samples_per_prompt // args.global_batch_size
     if args.lr_decay_iters is None:
         args.lr_decay_iters = args.train_iters
-    lr_decay_steps = args.lr_decay_iters * args.global_batch_size
-    wd_incr_steps = args.train_iters * args.global_batch_size
+    update_ratio = getattr(args, "critic_updates_per_actor", 1) if role == "critic" else 1
+    lr_decay_steps = args.lr_decay_iters * args.global_batch_size * update_ratio
+    wd_incr_steps = args.train_iters * args.global_batch_size * update_ratio
     wsd_decay_steps = None
     if args.lr_wsd_decay_iters is not None:
-        wsd_decay_steps = args.lr_wsd_decay_iters * args.global_batch_size
+        wsd_decay_steps = args.lr_wsd_decay_iters * args.global_batch_size * update_ratio
     if args.lr_warmup_fraction is not None:
         lr_warmup_steps = args.lr_warmup_fraction * lr_decay_steps
     else:
-        lr_warmup_steps = args.lr_warmup_iters * args.global_batch_size
+        lr_warmup_steps = args.lr_warmup_iters * args.global_batch_size * update_ratio
 
     opt_param_scheduler = OptimizerParamScheduler(
         optimizer,
@@ -236,7 +239,7 @@ def setup_model_and_optimizer(
 
         setup_optimizer_state_streaming(args, optimizer)
 
-    opt_param_scheduler = get_optimizer_param_scheduler(args, optimizer)
+    opt_param_scheduler = get_optimizer_param_scheduler(args, optimizer, role=role)
     return model, optimizer, opt_param_scheduler
 
 
@@ -336,6 +339,8 @@ def forward_only(
             "max_seq_lens",
             "witness_ids",
         ]
+        if f is get_values and getattr(args, "bootstrap_truncated", False):
+            forward_only_keys.append("truncated")
         if use_rollout_sampling_mask:
             forward_only_keys.extend(["rollout_sampling_mask_ids", "rollout_sampling_mask_offsets"])
         batch = get_batch(
@@ -377,6 +382,8 @@ def forward_only(
             with_entropy=args.use_rollout_entropy,
             max_seq_lens=batch.get("max_seq_lens", None),
         )
+        if f is get_values and getattr(args, "bootstrap_truncated", False):
+            callback_kwargs["truncated"] = batch["truncated"]
         if use_rollout_sampling_mask:
             callback_kwargs["rollout_sampling_mask"] = rollout_sampling_mask
 
@@ -712,6 +719,9 @@ def train(
     witness_info: WitnessInfo | None,
     attempt: int,
     ft_test_action_executor: FTTestActionActorExecutor | None = None,
+    step_id_offset: int = 0,
+    log_num_steps_per_rollout: int | None = None,
+    reset_optimizer_each_call: bool = True,
 ) -> TrainStepOutcome:
     """Run training over a rollout consisting of multiple steps.
 
@@ -747,7 +757,7 @@ def train(
 
     pre_hook_enabled = False
 
-    if args.reset_optimizer_states and not disable_optimizer:
+    if args.reset_optimizer_states and reset_optimizer_each_call and not disable_optimizer:
         if is_first_replica_megatron_main_rank():
             logger.info("Reset optimizer states")
         reset_optimizer_states(optimizer)
@@ -771,17 +781,19 @@ def train(
         pre_hook_enabled = False
 
     num_steps_per_rollout = len(num_microbatches)
+    log_num_steps_per_rollout = log_num_steps_per_rollout or num_steps_per_rollout
     if parallel_state.indep_dp.size > 1:
         assert num_steps_per_rollout == 1, "indep_dp is incompatible with num_steps_per_rollout>1 currently"
 
     # Run training iterations till done.
     for step_id in range(num_steps_per_rollout):
+        logged_step_id = step_id_offset + step_id
 
         # Run training step.
         loss_dict, grad_norm, train_step_outcome = train_one_step(
             args,
             rollout_id,
-            step_id,
+            logged_step_id,
             data_iterator,
             model,
             optimizer,
@@ -826,7 +838,7 @@ def train(
 
         # per train step log.
         if (train_step_outcome == TrainStepOutcome.NORMAL) and is_first_replica_megatron_main_rank():
-            accumulated_step_id = rollout_id * num_steps_per_rollout + step_id
+            accumulated_step_id = rollout_id * log_num_steps_per_rollout + logged_step_id
             role = getattr(model[0], "role", "actor")
             role_tag = "" if role == "actor" else f"{role}-"
 
@@ -843,15 +855,15 @@ def train(
                 loss_dict=loss_dict,
                 grad_norm=grad_norm,
                 rollout_id=rollout_id,
-                step_id=step_id,
-                num_steps_per_rollout=num_steps_per_rollout,
+                step_id=logged_step_id,
+                num_steps_per_rollout=log_num_steps_per_rollout,
                 role=role,
                 extra_metrics=extra_metrics,
                 should_log=True,
             )
 
             if args.ci_test and not args.ci_disable_kl_checker:
-                check_kl(args, log_dict, step_id, accumulated_step_id)
+                check_kl(args, log_dict, logged_step_id, accumulated_step_id)
 
             logger.info(f"{role_tag}step {accumulated_step_id}: {log_dict}")
 
@@ -860,7 +872,7 @@ def train(
                     args=args,
                     grad_norm=grad_norm,
                     rollout_id=rollout_id,
-                    step_id=step_id,
+                    step_id=logged_step_id,
                     role=role,
                     rank=parallel_state.effective_dp.rank,
                 )
@@ -1024,7 +1036,8 @@ def load_model_state(
     # Megatron checkpoint loads can restore scheduler state directly. In that
     # case, stepping by the checkpoint iteration here would double-count.
     if opt_param_scheduler is not None and not (args.use_checkpoint_opt_param_scheduler and iteration > 0):
-        opt_param_scheduler.step(increment=iteration * args.global_batch_size)
+        update_ratio = getattr(args, "critic_updates_per_actor", 1) if role == "critic" else 1
+        opt_param_scheduler.step(increment=iteration * args.global_batch_size * update_ratio)
 
     if args.finetune and not is_lora_enabled(args):
         assert iteration == 0, (

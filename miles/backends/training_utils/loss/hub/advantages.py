@@ -23,6 +23,7 @@ def compute_advantages(
     response_lengths: list[int],
     values: list[torch.Tensor] | None = None,
     max_seq_lens: list[int] | None = None,
+    bootstrap_values: list[torch.Tensor] | None = None,
 ) -> tuple[list[torch.Tensor], list[torch.Tensor]]:
     """Dispatch to the configured advantage estimator.
 
@@ -42,6 +43,7 @@ def compute_advantages(
         total_lengths: List length `B`; `total_lengths[i] = T_i`.
         response_lengths: List length `B`; `response_lengths[i] = R_i`.
         values: `None` or list length `B`; `values[i]` has shape `[C_i]`. PPO requires this input.
+        bootstrap_values: `None` or list length `B`; each element is the final-state value for PPO GAE.
         max_seq_lens: `None` or list length `B`; `max_seq_lens[i] = P_i`. Required for BSHD with CP.
 
     `C_i = R_i` when CP size is 1. With CP size greater than 1, `0 <= C_i <= R_i`; `C_i` can be zero and can differ across ranks. THD partitions a sequence of length `T_i`, while BSHD partitions the padded maximum sequence length, so the two formats do not guarantee the same `C_i`.
@@ -74,6 +76,7 @@ def compute_advantages(
             loss_masks=loss_masks,
             gamma=args.gamma,
             lambd=args.lambd,
+            bootstrap_values=bootstrap_values,
         )
 
     elif args.advantage_estimator == "reinforce_plus_plus":

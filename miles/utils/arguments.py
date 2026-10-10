@@ -1,6 +1,7 @@
 import argparse
 import json
 import logging
+import math
 import os
 import re
 from string import Formatter
@@ -1599,7 +1600,29 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 default=None,
                 help="lower bound of the value for Dual-clip PPO from https://arxiv.org/pdf/1912.09729",
             )
-            parser.add_argument("--value-clip", type=float, default=0.2, help="the clip for value loss")
+            parser.add_argument("--value-clip", type=float, default=0.2, help="the clip for scalar value loss")
+            parser.add_argument(
+                "--critic-value-bins", type=int, default=1,
+                help="Number of HL-Gauss critic bins; 1 uses the scalar PPO value loss",
+            )
+            parser.add_argument(
+                "--critic-value-min", type=float, default=None, help="Lower edge of the HL-Gauss critic support"
+            )
+            parser.add_argument(
+                "--critic-value-max", type=float, default=None, help="Upper edge of the HL-Gauss critic support"
+            )
+            parser.add_argument(
+                "--critic-value-sigma", type=float, default=None,
+                help="HL-Gauss target standard deviation; defaults to 0.75 bin widths",
+            )
+            parser.add_argument(
+                "--critic-updates-per-actor", type=int, default=1,
+                help="Critic passes over each PPO rollout per actor pass",
+            )
+            parser.add_argument(
+                "--bootstrap-truncated", action="store_true",
+                help="Bootstrap GAE from the final critic value for length-truncated PPO samples",
+            )
             parser.add_argument(
                 "--kl-coef",
                 type=float,
@@ -3544,6 +3567,27 @@ def miles_validate_args(args):
         )
 
     args.use_critic = args.advantage_estimator == "ppo"
+    if args.critic_value_bins < 1:
+        raise ValueError("--critic-value-bins must be positive")
+    if args.critic_updates_per_actor < 1:
+        raise ValueError("--critic-updates-per-actor must be positive")
+    if args.critic_value_bins > 1:
+        if args.critic_value_min is None or args.critic_value_max is None:
+            raise ValueError("HL-Gauss requires --critic-value-min and --critic-value-max")
+        if not all(math.isfinite(x) for x in (args.critic_value_min, args.critic_value_max)):
+            raise ValueError("HL-Gauss support bounds must be finite")
+        if not args.critic_value_min < args.critic_value_max:
+            raise ValueError("--critic-value-min must be less than --critic-value-max")
+        if args.critic_value_sigma is None:
+            args.critic_value_sigma = 0.75 * (args.critic_value_max - args.critic_value_min) / args.critic_value_bins
+        if not math.isfinite(args.critic_value_sigma) or args.critic_value_sigma <= 0:
+            raise ValueError("--critic-value-sigma must be finite and positive")
+    elif any(x is not None for x in (args.critic_value_min, args.critic_value_max, args.critic_value_sigma)):
+        raise ValueError("HL-Gauss support and sigma require --critic-value-bins > 1")
+    if not args.use_critic and (
+        args.critic_value_bins > 1 or args.critic_updates_per_actor != 1 or args.bootstrap_truncated
+    ):
+        raise ValueError("Critic value bins, update ratio, and truncated bootstrap require --advantage-estimator ppo")
     if args.use_critic:
         assert not args.indep_dp, (
             "Shared Actor/Critic PPO hands the critic outputs to a single trainer cell as external data; "
