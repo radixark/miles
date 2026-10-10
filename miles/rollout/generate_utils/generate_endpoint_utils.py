@@ -141,7 +141,8 @@ async def update_sample_from_response(
 
 
 def _decode_topk_buffer(info: str, num_tokens: int, num_layers: int, topk: int) -> np.ndarray:
-    x = np.frombuffer(pybase64.b64decode(info.encode("ascii")), dtype=np.int32)
+    # validate=True: SGLang sends plain base64; pybase64 skips its slow non-alphabet filtering pass.
+    x = np.frombuffer(pybase64.b64decode(info, validate=True), dtype=np.int32)
     if num_tokens <= 0:
         return np.empty((0, num_layers, max(0, topk)), dtype=np.int32)
     if topk == -1:  # indexer: topk dim recovered from buffer length
