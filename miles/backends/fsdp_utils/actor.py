@@ -8,6 +8,7 @@ import torch.distributed as dist
 
 from miles.backends.fsdp_utils import checkpoint
 from miles.backends.fsdp_utils.adaptations import routing_replay
+from miles.backends.fsdp_utils.diffusion_gemma.config import is_diffusion_gemma, validate_training_args
 from miles.backends.training_utils.metrics import train_dump
 from miles.backends.training_utils.parallel import get_parallel_state, set_parallel_state
 from miles.backends.training_utils.torch_native.actor import TorchNativeTrainRayActor
@@ -83,6 +84,11 @@ class FSDPTrainRayActor(TorchNativeTrainRayActor):
 
         self.load_hf_assets(with_processor=True)
 
+        if is_diffusion_gemma(self.hf_config):
+            validate_training_args(self.args)
+            if with_ref or with_opd_teacher:
+                raise ValueError("DiffusionGemma offline SFT does not use reference or teacher actors")
+
         self.precision_policy = resolve_precision_policy(self.hf_config, self.args)
 
         routing_replay.enable(args)
@@ -116,6 +122,11 @@ class FSDPTrainRayActor(TorchNativeTrainRayActor):
         apply_packing(model, self.hf_config, "post_load")
 
         model.train()
+
+        if is_diffusion_gemma(self.hf_config) and self.args.diffusion_freeze_router:
+            for name, parameter in model.named_parameters():
+                if ".router." in name:
+                    parameter.requires_grad_(False)
 
         full_state = model.state_dict()
 
@@ -187,6 +198,11 @@ class FSDPTrainRayActor(TorchNativeTrainRayActor):
         return not auto_map or "AutoModelForImageTextToText" in auto_map
 
     def _get_model_cls(self):
+        if is_diffusion_gemma(self.hf_config):
+            # Optional model dependency; keep causal-only workers independent of it.
+            from miles.backends.fsdp_utils.diffusion_gemma.model import DiffusionGemmaForBlockDiffusion
+
+            return DiffusionGemmaForBlockDiffusion
         if self._has_image_text_to_text_impl():
             from transformers import AutoModelForImageTextToText
 
@@ -320,6 +336,14 @@ class FSDPTrainRayActor(TorchNativeTrainRayActor):
 
     def _step_runner(self) -> LinearStepRunner:
         return LinearStepRunner(self._forward, self._zero_grad, self._apply_step)
+
+    def _train_core(self, rollout_id: int, rollout_data: dict) -> None:
+        if is_diffusion_gemma(self.hf_config):
+            from miles.backends.fsdp_utils.diffusion_gemma.engine import train
+
+            train(self, rollout_id=rollout_id, rollout_data=rollout_data)
+            return
+        super()._train_core(rollout_id=rollout_id, rollout_data=rollout_data)
 
     def _after_rollout(self, rollout_id: int, rollout_data) -> None:
         if self.args.save_debug_train_data is not None:

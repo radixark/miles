@@ -3927,7 +3927,18 @@ def miles_validate_args(args):
     ), "sglang_config and prefill_num_servers are mutually exclusive. Use server_groups in the YAML config instead."
 
     if args.qkv_format == "bshd":
-        assert args.train_backend == "megatron", "bshd format is only supported for megatron backend."
+        diffusion_fsdp = False
+        if args.train_backend == "fsdp":
+            # This model owns explicit padded encoder/canvas batches instead of
+            # the generic FSDP packed causal forward. Keep other FSDP models gated.
+            from miles.backends.fsdp_utils.diffusion_gemma.config import is_diffusion_gemma, validate_training_args
+
+            diffusion_fsdp = is_diffusion_gemma(load_hf_config(args.hf_checkpoint))
+            if diffusion_fsdp:
+                validate_training_args(args)
+        assert (
+            args.train_backend == "megatron" or diffusion_fsdp
+        ), "bshd format requires Megatron or DiffusionGemma offline FSDP training."
         assert (
             args.use_dynamic_batch_size is False
         ), "Dynamic batch size is not supported for bshd format. Please specify --micro-batch-size instead."

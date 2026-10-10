@@ -79,7 +79,8 @@ def get_rollout_data(
 
         # pad to reduce memory fragmentation and maybe make the computation faster
         pad_size = parallel_state.tp.size * args.data_pad_size_multiplier
-        max_compress_ratio = max(args.compress_ratios) if args.compress_ratios else 0
+        compress_ratios = getattr(args, "compress_ratios", None)
+        max_compress_ratio = max(compress_ratios) if compress_ratios else 0
         if max_compress_ratio:
             local_seqlen_multiple = max_compress_ratio * (2 if parallel_state.cp.size > 1 else 1)
             pad_size = max(pad_size, local_seqlen_multiple * parallel_state.cp.size)

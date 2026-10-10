@@ -1,0 +1,56 @@
+### 0
+pkill -9 sglang; sleep 3; ray stop
+  --force; pkill -9 ray; pkill -9 miles; sleep 3; pkill -9 ray; pkill -9 miles; pkill -9 redis; true; 
+
+### 1
+export PYTHONUNBUFFERED=1 && ray start
+  --head
+  --node-ip-address 127.0.0.1
+  --num-gpus 8
+  --disable-usage-stats
+
+### 2
+nvidia-smi topo -m 2>/dev/null | grep -o 'NV[0-9][0-9]*' | wc -l
+
+### 3
+export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
+  --address="http://127.0.0.1:8265"
+  --runtime-env-json='{"env_vars": {"PYTHONUNBUFFERED": "1", "NCCL_NVLS_ENABLE": "0", "no_proxy": "127.0.0.1,127.0.0.1", "MASTER_ADDR": "127.0.0.1", "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True", "PYTHONPATH": "<REPO_ROOT>:/root/Megatron-LM:/frozen/pythonpath"}}'
+  -- python3 <REPO_ROOT>/train.py 
+  --train-backend fsdp
+  --hf-checkpoint /root/models/diffusiongemma-26B-A4B-it
+  --prompt-data /root/datasets/sft.jsonl
+  --input-key messages
+  --rollout-function-path miles.rollout.diffusion_gemma_sft.generate_rollout
+  --rollout-shuffle
+  --n-samples-per-prompt 1
+  --debug-train-only
+  --loss-type sft_loss
+  --disable-compute-advantages-and-returns
+  --qkv-format bshd
+  --attn-implementation sdpa
+  --gradient-checkpointing
+  --actor-num-nodes 1
+  --actor-num-gpus-per-node 8
+  --num-gpus-per-node 8
+  --rollout-batch-size 8
+  --global-batch-size 8
+  --micro-batch-size 1
+  --num-epoch 1
+  --load /root/shared_data/checkpoints
+  --save /root/shared_data/checkpoints
+  --save-interval 10
+  --optimizer adam
+  --lr 1e-05
+  --lr-decay-style constant
+  --weight-decay 0.01
+  --diffusion-noise-epsilon 0.001
+  --diffusion-self-conditioning-probability 0.5
+  --diffusion-encoder-loss-weight 1.0
+  --diffusion-freeze-router
+  --use-wandb
+  --wandb-project miles-run_diffusiongemma_26b_a4b_fsdp_sft
+  --wandb-group 260101-000000-000
+  --wandb-key 'frozen-wandb-api-key'
+  --disable-wandb-random-suffix  
+  --deploy-component all
