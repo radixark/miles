@@ -475,6 +475,9 @@ def test_sync_free_after_one_warmup():
     host = torch.tensor(cu_list, dtype=torch.int64)
     inputs = _inputs(cu_list[-1], seed=579)
     upstream = torch.randn_like(inputs["v"])
+    # the next micro-batch's boundary objects (same pack): inputs of the op, built outside the checked region
+    cu2 = torch.tensor(cu_list, dtype=torch.int32, device="cuda")
+    host2 = torch.tensor(cu_list, dtype=torch.int64)
     for backend in ("fla", "deterministic"):
         _fwd_bwd(kda_recurrence, backend, inputs, cu, host, upstream)
     torch.cuda.synchronize()
@@ -482,8 +485,6 @@ def test_sync_free_after_one_warmup():
     try:
         for backend in ("fla", "deterministic"):
             _fwd_bwd(kda_recurrence, backend, inputs, cu, host, upstream)
-        cu2 = torch.tensor(cu_list, dtype=torch.int32, device="cuda")
-        host2 = torch.tensor(cu_list, dtype=torch.int64)
         _fwd_bwd(kda_recurrence, "deterministic", inputs, cu2, host2, upstream)
     finally:
         torch.cuda.set_sync_debug_mode("default")
