@@ -1,6 +1,6 @@
-from typing import Literal
+from typing import Annotated, Literal
 
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field, ValidationError
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, Strict, ValidationError
 from tinker_cookbook.renderers import Renderer
 from tinker_cookbook.renderers.base import RendererError, ensure_text
 from tinker_cookbook.third_party.openai_compat import openai_messages_to_tinker, openai_tools_to_tinker
@@ -25,7 +25,8 @@ class ChatRequest(BaseModel):
     top_p: float = Field(default=1.0, gt=0, le=1)
     top_k: int = Field(default=-1, ge=-1, strict=True)
     seed: int | None = None
-    stop: str | list[str] | None = None
+    # The SDK's forms: all strings or all token ids; Strict keeps booleans out of the id list.
+    stop: str | list[str] | list[Annotated[int, Strict()]] | None = None
     n: Literal[1] = 1
     stream: Literal[False] = False
     # Informational fields that do not touch sampling; store=True promises persistence nobody provides.

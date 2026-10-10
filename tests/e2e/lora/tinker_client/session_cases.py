@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock
 import httpx
 import numpy as np
 import pytest
+from pydantic import ValidationError
 from tinker_cookbook.completers import TinkerTokenCompleter
 from tinker_cookbook.renderers.role_colon import RoleColonRenderer
 
@@ -90,11 +91,15 @@ async def test_caps_and_stop_overrides():
     params = session.policy.sampling_client.sample_async.call_args.kwargs["sampling_params"]
     assert params.max_tokens == 9
     assert params.stop == []
+    await session.complete(ChatRequest(messages=[{"role": "user", "content": "hi"}], stop=[7]))
+    assert session.policy.sampling_client.sample_async.call_args.kwargs["sampling_params"].stop == [7]
+    with pytest.raises(ValidationError):
+        ChatRequest(messages=[{"role": "user", "content": "hi"}], stop=[7, "x"])
     session.max_datum_tokens = 1
     with pytest.raises(ValueError, match="budget"):
         await session.complete(request)
-    assert len(session.trace.turns) == 1
-    assert session.policy.sampling_client.sample_async.await_count == 1
+    assert len(session.trace.turns) == 2
+    assert session.policy.sampling_client.sample_async.await_count == 2
 
 
 @pytest.mark.asyncio
