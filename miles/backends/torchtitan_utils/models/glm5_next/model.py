@@ -121,23 +121,23 @@ class Glm5NextModel(Decoder):
         super().__init__(config)
         self.num_streams = config.num_streams
         self.kda_conv_kernel_size = next(layer.kda.q_conv1d.kernel_size for layer in config.layers if layer.kda)
-        self.cp_mesh: DeviceMesh | None = None
-        self.cp_load_balancer: str | None = None
+        self._cp_mesh: DeviceMesh | None = None
+        self._cp_load_balancer: str | None = None
         self._cp_layouts: dict[int, ContextParallelLayout] = {}
 
     def enable_context_parallel(self, mesh: DeviceMesh, *, load_balancer: str) -> None:
-        self.cp_mesh = mesh
-        self.cp_load_balancer = load_balancer
+        self._cp_mesh = mesh
+        self._cp_load_balancer = load_balancer
         self._cp_layouts = {}
 
     def _cp_layout(self, local_len: int, device) -> ContextParallelLayout | None:
-        if self.cp_mesh is None:
+        if self._cp_mesh is None:
             return None
         if local_len not in self._cp_layouts:
             self._cp_layouts[local_len] = ContextParallelLayout.build(
-                self.cp_mesh,
-                load_balancer=self.cp_load_balancer,
-                seq_len=local_len * self.cp_mesh.size(),
+                self._cp_mesh,
+                load_balancer=self._cp_load_balancer,
+                seq_len=local_len * self._cp_mesh.size(),
                 device=device,
             )
         return self._cp_layouts[local_len]
