@@ -1,11 +1,15 @@
 """The DSA attention backend switch: one value selects the kernel family for both DSA model plugins.
 
 Also the ``cake`` top-k backend (``--miles-dsa-topk-backend cake``) on CPU: resolver, registry, input validation
-ahead of any launch, argument parsing and the GLM-5 (top-k 2048 > 512) rejection.  Nothing here needs CUDA.
+ahead of any launch, argument parsing and the GLM-5 (top-k 2048 > 512) rejection; and the ``cake_fused`` switch of
+``lightning_indexer``: its rejection as a logits backend, the stage family, the launcher's validation, the segment
+table derived from the key bounds and the routing / globalisation around a stubbed kernel.  Nothing here needs CUDA.
 """
 
 import ast
 import importlib.util
+import itertools
+import math
 import sys
 import types
 from argparse import ArgumentParser, Namespace
@@ -16,6 +20,7 @@ import torch
 
 REPO = Path(__file__).resolve().parents[2]
 TOPK_STAGES = {f"dsa_topk_fp32_c{capacity}_k512" for capacity in (4096, 8192, 16384, 32768)}
+FUSED_STAGES = {"dsa_indexer_topk_scan_h32_d128", "dsa_indexer_topk_finalize_k512"}
 TC_STAGES = {f"dsa_attention_fwd_tc_h{h}_d512t{t}" for h in (16, 32, 64) for t in (64, 0)}
 TC_BWD_STAGES = {f"dsa_attention_bwd_tc_h64_d512t{t}" for t in (64, 0)}
 
@@ -79,6 +84,7 @@ def test_generated_package_registry_covers_both_architectures():
         "dsa_segmented_reduce_split4",
         "dsa_attention_delta",
         *TOPK_STAGES,
+        *FUSED_STAGES,
         *TC_STAGES,
         *TC_BWD_STAGES,
     }
@@ -99,6 +105,18 @@ def test_generated_package_registry_covers_both_architectures():
             "has_row_end",
         ], stage
         assert record["block"] == [256, 1, 1] and record["tma_workspace_bytes"] == 0, stage
+    scan, finalize = jit.MODULES["dsa_indexer_topk_scan_h32_d128"], jit.MODULES["dsa_indexer_topk_finalize_k512"]
+    scan_args = (
+        "Q K W cu_seqlens_q cu_seqlens_k q_offsets Indices Scores Cand num_segments top_k ratio has_offsets "
+        "cand_cap first_cap sample_tiles_max sample_shift_permille check_period grid_ctas softmax_scale n_split"
+    ).split()
+    assert [name for kind, name in scan["arg_plan"] if kind != "grid"] == scan_args
+    assert [kind for kind, _ in scan["arg_plan"][:3]] == ["tma_buffer"] * 3  # by-value descriptors, no workspace
+    assert scan["block"] == [384, 1, 1] and scan["dynamic_smem_bytes"] == 207104 and scan["tma_workspace_bytes"] == 0
+    assert scan["compile_flags"] == ["--ptxas-options=--register-usage-level=10"]
+    finalize_args = [name for kind, name in finalize["arg_plan"] if kind != "grid"]
+    assert finalize_args == ["Indices", "Scores", "top_k", "key_bits"]
+    assert finalize["block"] == [64, 1, 1] and finalize["dynamic_smem_bytes"] == 8192
     # the tcgen05 forward stages: the generator's dsa_h64_fwd ABI (four by-value tensor maps, no workspace), 384 threads,
     # built plain (precise math like the register-MMA stages: no compile flag)
     tc_args = (
@@ -202,6 +220,15 @@ def test_plugin_topk_backends_include_cake():
     assert ops.get_topk_fn(replay_wrapper) is replay_wrapper
     with pytest.raises(ValueError, match="unknown DSA top-k backend"):
         ops.get_topk_fn("nope")
+    # "cake_fused" is a lightning_indexer switch, never a fn(logits, topk) backend: there are no logits to pass.
+    assert "cake_fused" not in ops._TOPK_BACKENDS
+    with pytest.raises(ValueError, match="fused indexer switch"):
+        ops.get_topk_fn("cake_fused")
+    with pytest.raises(ValueError, match="fused indexer switch"):
+        ops.select_topk(torch.zeros(2, 8), 4, "cake_fused")
+    with pytest.raises(ValueError, match="fused indexer switch"):
+        ops.register_topk_backend("cake_fused", replay_wrapper)
+    assert "cake_fused" not in ops._TOPK_BACKENDS
 
 
 def test_dsa_topk_validates_before_any_launch(monkeypatch):
@@ -402,7 +429,15 @@ def test_prebuild_is_scoped_to_the_stage_family(monkeypatch):
     _kernels._kernel("dsa_topk_fp32_c32768_k512", "cuda")
     assert len(calls) == 1, "a family is prebuilt once per architecture"
     _kernels._kernel("dsa_indexer_clean", "cuda")
-    assert len(calls) == 2 and set(calls[1][1]) == set(_jit.MODULES) - TOPK_STAGES and len(calls[1][1]) == 17
+    assert len(calls) == 2 and set(calls[1][1]) == set(_jit.MODULES) - TOPK_STAGES - FUSED_STAGES
+    assert len(calls[1][1]) == 17, "the attention / indexer family builds neither top-k family"
+    _kernels._kernel("dsa_indexer_topk_scan_h32_d128", "cuda")
+    assert len(calls) == 3 and set(calls[2][1]) == FUSED_STAGES, "the fused family builds exactly its two stages"
+    _kernels._kernel("dsa_indexer_topk_finalize_k512", "cuda")
+    assert len(calls) == 3
+    assert {_kernels._stage_family(stage) for stage in FUSED_STAGES} == {"indexer_topk"}
+    assert {_kernels._stage_family(stage) for stage in TOPK_STAGES} == {"topk"}
+    assert {_kernels._stage_family(stage) for stage in set(_jit.MODULES) - TOPK_STAGES - FUSED_STAGES} == {"attention"}
     monkeypatch.setenv("MILES_DSA_TRAIN_PREBUILD", "0")
     monkeypatch.setattr(_kernels, "_PREBUILT", set())
     _kernels._kernel("dsa_topk_fp32_c4096_k512", "cuda")
@@ -412,3 +447,186 @@ def test_prebuild_is_scoped_to_the_stage_family(monkeypatch):
     monkeypatch.setattr(_jit, "load", lambda stage, arch: loaded.append(stage))
     _jit.prebuild.__wrapped__("sm_100a", stages=("dsa_topk_fp32_c4096_k512", "dsa_indexer_clean"), max_workers=1)
     assert set(loaded) == {"dsa_topk_fp32_c4096_k512", "dsa_indexer_clean"}
+
+
+# --------------------------------------------------------------------------- #
+# fused indexer scoring + top-k (lightning_indexer(topk_backend="cake_fused"))
+# --------------------------------------------------------------------------- #
+
+
+def test_dsa_indexer_topk_validates_before_any_launch(monkeypatch):
+    """Every contract limit of the fused launcher raises ahead of the kernel loader; the launch scalars are the
+    generator's pure functions of the call (they size the workspace and pace the selection, never the result)."""
+    from miles.kernels.attention.dsa.cake import _kernels
+
+    monkeypatch.setattr(_kernels, "_kernel", lambda name, device: pytest.fail(f"{name} was launched"))
+    rows, keys = 6, 40
+    q = torch.zeros(rows, 32, 128, dtype=torch.bfloat16)
+    k = torch.zeros(keys, 128, dtype=torch.bfloat16)
+    w = torch.zeros(rows, 32)
+    cu_q = torch.tensor([0, rows], dtype=torch.int32)
+    cu_k = torch.tensor([0, keys], dtype=torch.int32)
+    good = dict(topk=4, softmax_scale=1.0, ratio=1)
+
+    def rejects(match, *args, **overrides):
+        with pytest.raises(ValueError, match=match):
+            _kernels.dsa_indexer_topk(*args, **{**good, **overrides})
+
+    rejects(r"index_q must be bf16 \[T, 32, 128\]", q[:, :16], k, w[:, :16], cu_q, cu_k)  # 16 heads: no exported scan
+    rejects(r"index_q must be bf16 \[T, 32, 128\]", q.float(), k, w, cu_q, cu_k)
+    strided_q = torch.zeros(rows, 32, 256, dtype=torch.bfloat16)[..., :128]
+    rejects("index_q must be contiguous", strided_q, k, w, cu_q, cu_k)
+    rejects(r"index_k must be bf16 \[Tkv, 128\]", q, k.unsqueeze(1), w, cu_q, cu_k)
+    rejects(r"index_k must be bf16 \[Tkv, 128\]", q, k.float(), w, cu_q, cu_k)
+    rejects("unit inner stride", q, torch.zeros(keys, 256, dtype=torch.bfloat16)[:, ::2], w, cu_q, cu_k)
+    rejects("multiple of 8", q, torch.zeros(keys, 132, dtype=torch.bfloat16)[:, :128], w, cu_q, cu_k)
+    rejects("16-byte aligned", q, torch.zeros(keys * 128 + 4, dtype=torch.bfloat16)[4:].view(keys, 128), w, cu_q, cu_k)
+    rejects(r"weights must be contiguous fp32 \[T, 32\]", q, k, w.half(), cu_q, cu_k)
+    rejects(r"weights must be contiguous fp32 \[T, 32\]", q, k, w[:, :16], cu_q, cu_k)
+    rejects(r"weights must be contiguous fp32 \[T, 32\]", q, k, torch.zeros(rows, 64)[:, ::2], cu_q, cu_k)
+    rejects(r"cu_seqlens_q must be contiguous int32", q, k, w, cu_q.long(), cu_k)
+    rejects(r"cu_seqlens_k must be contiguous int32", q, k, w, cu_q, cu_k.unsqueeze(0))
+    rejects(r"both be \[S \+ 1\]", q, k, w, cu_q, torch.tensor([0, 10, keys], dtype=torch.int32))
+    for bad in (0, 513, True):
+        rejects("1 <= topk <= 512", q, k, w, cu_q, cu_k, topk=bad)
+    for bad in (0, 2.0, False):
+        rejects("ratio must be a positive integer", q, k, w, cu_q, cu_k, ratio=bad)
+    for bad in (0.0, -1.0, math.nan):
+        rejects("softmax_scale must be positive", q, k, w, cu_q, cu_k, softmax_scale=bad)
+    # Valid requests on CPU tensors stop at the device check, still ahead of the kernel loader.
+    rejects("CUDA", q, k, w, cu_q, cu_k)
+    rejects("CUDA", q, k, w, cu_q, cu_k, topk=512, ratio=4, softmax_scale=0.1)
+    rejects("CUDA", q[:0], k, w[:0], torch.tensor([0], dtype=torch.int32), torch.tensor([0], dtype=torch.int32))
+
+    # Launch scalars (mirrors of the generator's host functions).
+    assert [_kernels.indexer_topk_cand_cap(topk) for topk in (1, 3, 64, 500, 512)] == [8192, 8320, 8192, 8576, 8192]
+    assert _kernels.indexer_topk_check_period(512, 8192) == 16 and _kernels.indexer_topk_check_period(64, 8192) == 16
+    assert _kernels.indexer_topk_check_period(1, 256) == 1
+    assert [_kernels.indexer_topk_key_bits(n) for n in (1, 2, 4096, 4097, 65536)] == [1, 1, 12, 13, 16]
+    # estimated mean unit tiles (Tkv - T / (2 ratio)) / S / 128: <= 128 -> 8, <= 640 -> 16, else 32
+    tiles = _kernels.indexer_topk_sample_tiles
+    assert (tiles(1024, 1024, 1, 1), tiles(4096, 40000, 1, 1), tiles(4096, 100000, 1, 1)) == (8, 16, 32)
+    assert (tiles(0, 16384, 1, 1), tiles(0, 16385, 1, 1)) == (8, 16)  # the 128-tile boundary is inclusive
+    assert (tiles(0, 81920, 1, 1), tiles(0, 81921, 1, 1)) == (16, 32)  # so is the 640-tile one
+    assert tiles(4096, 10, 4, 1) == 8 and tiles(4096, 100000, 1, 2) == 32
+    assert _kernels.indexer_topk_workspace_elems(148, 8192) == 148 * 4 * 8192  # 38.8 MB of int64 at 148 SMs
+
+
+def _causal_bounds(seq_lens, ratio, key_lens=None):
+    """``thd`` per-query key bounds of packed sequences under the fused rule: ``ks`` = the sequence's key start,
+    ``ke - ks = min(Lk, max(0, floor((offset + u + 1) / ratio)))``, ``offset = Lk - Lq`` at ratio 1, else 0.
+    ``Lk`` defaults to ``ceil(Lq / ratio)``.  Returns ``(ks, ke, num_kv)``."""
+    key_lens = [(n + ratio - 1) // ratio for n in seq_lens] if key_lens is None else list(key_lens)
+    ks, ke, k0 = [], [], 0
+    for lq, lk in zip(seq_lens, key_lens, strict=True):
+        offset = lk - lq if ratio == 1 else 0
+        for u in range(lq):
+            ks.append(k0)
+            ke.append(k0 + min(lk, max(0, (offset + u + 1) // ratio)))
+        k0 += lk
+    return torch.tensor(ks, dtype=torch.int32), torch.tensor(ke, dtype=torch.int32), k0
+
+
+def test_causal_segments_follow_the_fused_visibility_rule():
+    """The segment table is derived from the per-query bounds and every row is checked against the kernel's rule."""
+    from miles.kernels.attention.dsa.cake import ops
+
+    lens = [5, 1, 8, 3]
+    for ratio in (1, 2, 4):
+        ks, ke, num_kv = _causal_bounds(lens, ratio)
+        cu_q, cu_k = ops._causal_segments(ks, ke, sum(lens), num_kv, ratio)
+        assert cu_q.dtype == cu_k.dtype == torch.int32
+        assert cu_q.tolist() == [0, 5, 6, 14, 17]
+        assert cu_k.tolist() == [0, *itertools.accumulate((n + ratio - 1) // ratio for n in lens)]
+    # ratio 1 with keys ahead of the first query (offset = Lk - Lq > 0) and a key-less sequence (offset < 0)
+    ks, ke, num_kv = _causal_bounds([4, 2, 3], 1, key_lens=[7, 0, 3])
+    assert ke.tolist() == [4, 5, 6, 7, 7, 7, 8, 9, 10]
+    cu_q, cu_k = ops._causal_segments(ks, ke, 9, num_kv, 1)
+    assert cu_q.tolist() == [0, 4, 9] and cu_k.tolist() == [0, 7, 10], "the key-less rows fold into one segment"
+    # the tail rows of a sequence (a query block starting mid-sequence) are a valid segment with offset = Lk - Lq
+    ks, ke, num_kv = _causal_bounds([6], 1)
+    cu_q, cu_k = ops._causal_segments(ks[2:], ke[2:], 4, num_kv, 1)
+    assert cu_q.tolist() == [0, 4] and cu_k.tolist() == [0, 6]
+    empty = torch.zeros(0, dtype=torch.int32)
+    cu_q, cu_k = ops._causal_segments(empty, empty, 0, 0, 1)
+    assert cu_q.tolist() == [0] and cu_k.tolist() == [0]
+    # rejected: the head rows of a sequence cut before its end (the kernel would see offset = Lk - Lq = 2), a sliding
+    # window, the bounds of another ratio, decreasing key starts, bad shapes and a bad ratio
+    with pytest.raises(ValueError, match=r"row 0 has the key range \[0, 1\) .* prefix \[0, 3\) of its segment 0"):
+        ops._causal_segments(ks[:4], ke[:4], 4, num_kv, 1)
+    window_ks = (torch.arange(6) - 2).clamp(min=0).int()
+    with pytest.raises(ValueError, match="row 0 has the key range"):
+        ops._causal_segments(window_ks, ke, 6, num_kv, 1)
+    ks2, ke2, num_kv2 = _causal_bounds([6], 2)
+    with pytest.raises(ValueError, match="ratio 1"):
+        ops._causal_segments(ks2, ke2, 6, num_kv2, 1)
+    with pytest.raises(ValueError, match="key starts that increase"):
+        ops._causal_segments(torch.tensor([3, 3, 0, 0], dtype=torch.int32), torch.tensor([4, 5, 1, 2]).int(), 4, 5, 1)
+    with pytest.raises(ValueError, match="key starts that increase"):
+        ops._causal_segments(torch.tensor([0, 0, 5], dtype=torch.int32), torch.tensor([1, 2, 6]).int(), 3, 4, 1)
+    with pytest.raises(ValueError, match=r"cu_seqlen_ks/ke must be \[6\]"):
+        ops._causal_segments(ks[:3], ke, 6, num_kv, 1)
+    for bad in (0, 1.5, True):
+        with pytest.raises(ValueError, match="ratio must be a positive integer"):
+            ops._causal_segments(ks, ke, 6, num_kv, bad)
+
+
+def test_lightning_indexer_fused_switch_routes_and_globalizes(monkeypatch):
+    """``cake_fused`` feeds the fused launcher the derived segment table with ``softmax_scale = 1`` and returns global
+    key rows; ``topk_indices=`` and the logits backends run the dense path and never reach the fused launcher."""
+    from miles.kernels.attention.dsa.cake import _kernels, ops
+
+    lens, topk = [3, 2], 2
+    ks, ke, num_kv = _causal_bounds(lens, 1)
+    rows = sum(lens)
+    q = torch.randn(rows, 32, 128).bfloat16().requires_grad_(True)
+    k = torch.randn(num_kv, 1, 128).bfloat16()  # [T_kv, 1, D] single-group keys, as the thd model path passes them
+    w = torch.randn(rows, 32, 1)  # [T, H, 1] weights
+    seen = {}
+
+    def fake_fused(index_q, index_k, weights, cu_q, cu_k, *, topk, softmax_scale, ratio):
+        seen.update(cu_q=cu_q.tolist(), cu_k=cu_k.tolist(), topk=topk, softmax_scale=softmax_scale, ratio=ratio)
+        assert index_q.shape == (rows, 32, 128) and index_k.shape == (num_kv, 128) and weights.shape == (rows, 32)
+        assert weights.dtype == torch.float32 and index_q.is_contiguous() and index_k.is_contiguous()
+        # the kernel's layout: segment-local ascending ids, -1 / -inf tail; row u of a ratio-1 sequence sees u + 1 keys
+        local = torch.full((rows, topk), -1, dtype=torch.int32)
+        scores = torch.full((rows, topk), -math.inf)
+        for t, u in enumerate([0, 1, 2, 0, 1]):
+            n = min(u + 1, topk)
+            local[t, :n] = torch.arange(u + 1 - n, u + 1, dtype=torch.int32)
+            scores[t, :n] = torch.arange(n).float()
+        return local, scores
+
+    class Launched(Exception):
+        pass
+
+    def dense_kernel(name, device):
+        raise Launched(name)
+
+    monkeypatch.setattr(_kernels, "dsa_indexer_topk", fake_fused)
+    monkeypatch.setattr(_kernels, "_kernel", dense_kernel)
+
+    scores, idx = ops.lightning_indexer(q, k, w, ks, ke, topk, layout="thd", topk_backend="cake_fused")
+    assert seen == dict(cu_q=[0, 3, 5], cu_k=[0, 3, 5], topk=2, softmax_scale=1.0, ratio=1)
+    assert idx.dtype == torch.int32 and idx.tolist() == [[0, -1], [0, 1], [1, 2], [3, -1], [3, 4]]
+    expected = torch.tensor([[0.0, -math.inf], [0, 1], [0, 1], [0, -math.inf], [0, 1]])
+    assert scores.requires_grad and torch.equal(scores.detach(), expected)
+    assert not idx.requires_grad
+    seen.clear()
+    _, idx2 = ops.fused_indexer_topk_scores(q, k, w, ks, ke, topk, ratio=1)
+    assert torch.equal(idx2, idx) and seen["ratio"] == 1
+    with pytest.raises(ValueError, match="layout='thd' only"):
+        ops.lightning_indexer(q, k, w, ks, ke, topk, layout="bshd", topk_backend="cake_fused")
+    with pytest.raises(ValueError, match="ratio applies to topk_backend='cake_fused' only"):
+        ops.lightning_indexer(q, k, w, ks, ke, topk, layout="thd", topk_backend="torch", ratio=2)
+    # replay pass-through and the logits backends: the dense indexer logits kernel is the first launch
+    seen.clear()
+    for kwargs in (
+        dict(topk_backend="cake_fused", topk_indices=idx),
+        dict(topk_backend="cake"),
+        dict(topk_backend="torch"),
+        dict(topk_backend=lambda logits, count: idx),
+    ):
+        with pytest.raises(Launched, match="dsa_indexer_logits_h32"):
+            ops.lightning_indexer(q, k, w, ks, ke, topk, layout="thd", **kwargs)
+    assert not seen, "the fused launcher must not run under topk_indices= or a logits backend"

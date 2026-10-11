@@ -9,6 +9,9 @@ Covers both model contracts on Blackwell (SM100a / SM103a):
 * The generated FP32 row top-k (``--miles-dsa-topk-backend cake``, ``-k topk``): exact match with a CPU reference
   of its contract, bit-identical repeated launches, agreement with ``torch.topk`` / FlashInfer up to boundary ties,
   on ``thd``-style flattened rows and through the DeepSeek-V4.1 ``indexer_select`` seam.
+* The fused indexer scoring + top-k (``lightning_indexer(topk_backend="cake_fused")``, ``-k cake_fused``): the same
+  key sets and scores as the dense ``cake`` path up to FP32 reordering, bit-identical repeats, the same gradients
+  through the shared backward, and the replay pass-through that bypasses it.
 
 Every cake gradient is checked to be bit-identical across two passes.  The TileLang comparisons skip when
 ``tilelang`` is not importable; the FP32-reference and determinism checks always run.
@@ -524,3 +527,144 @@ def test_dsv41_indexer_select_with_cake_topk_backend(ratio, monkeypatch):
     assert _picks(flat_scores, idx.reshape(batch * seq, topk)) == _picks(
         flat_scores, idx_torch.reshape(batch * seq, topk)
     )
+
+
+# --------------------------------------------------------------------------- #
+# Fused indexer scoring + top-k (lightning_indexer(topk_backend="cake_fused"))
+# --------------------------------------------------------------------------- #
+
+
+def _causal_bounds(seq_lens, ratio, device):
+    """``thd`` per-query key bounds of packed sequences under the fused kernel's rule: ``ks`` = the sequence's key
+    start, ``ke - ks = min(Lk, floor((u + 1) / ratio))`` with ``Lk = ceil(Lq / ratio)`` (``offset = Lk - Lq = 0`` at
+    ratio 1).  Returns ``(ks, ke, num_kv)``."""
+    ks, ke, k0 = [], [], 0
+    for lq in seq_lens:
+        lk = (lq + ratio - 1) // ratio
+        for u in range(lq):
+            ks.append(k0)
+            ke.append(k0 + min(lk, (u + 1) // ratio))
+        k0 += lk
+    meta = dict(dtype=torch.int32, device=device)
+    return torch.tensor(ks, **meta), torch.tensor(ke, **meta), k0
+
+
+def _fused_indexer_inputs(seq_lens, ratio, device, seed):
+    gen = torch.Generator(device=device).manual_seed(seed)
+    ks, ke, num_kv = _causal_bounds(seq_lens, ratio, device)
+    rows = sum(seq_lens)
+    index_q = torch.randn(rows, 32, 128, device=device, dtype=torch.bfloat16, generator=gen)
+    index_k = torch.randn(num_kv, 128, device=device, dtype=torch.bfloat16, generator=gen)
+    weights = torch.randn(rows, 32, device=device, generator=gen)
+    return index_q, index_k, weights, ks, ke
+
+
+_FUSED_SEQ_LENS = (257, 1, 640, 96, 30)  # several packed sequences (one of a single row); T = 1024
+
+
+@pytest.mark.parametrize(("ratio", "topk"), [(1, 512), (1, 64), (2, 512), (2, 64)])
+def test_lightning_indexer_cake_fused_matches_dense_cake_and_is_bit_identical(ratio, topk):
+    """``cake_fused`` (fused scan + finalize) vs ``cake`` (dense ``indexer_logits`` + standalone top-k): the same key
+    sets on every row whose k-th / (k+1)-th scores are separated beyond the FP32 reordering noise, the same scores at
+    the selection, bit-identical repeats and the same gradients through the shared backward."""
+    cake = _cake()
+    index_q, index_k, weights, ks, ke = _fused_indexer_inputs(_FUSED_SEQ_LENS, ratio, "cuda", seed=7 + ratio)
+    rows, num_kv = index_q.shape[0], index_k.shape[0]
+
+    def run(backend, **kwargs):
+        return cake.lightning_indexer(
+            index_q, index_k, weights, ks, ke, topk, layout="thd", topk_backend=backend, **kwargs
+        )
+
+    scores_f, idx_f = run("cake_fused", ratio=ratio)
+    scores_d, idx_d = run("cake")
+    assert idx_f.dtype == torch.int32 and idx_f.shape == (rows, topk) and scores_f.shape == (rows, topk)
+    # Layout contract: ascending global key rows, then the -1 / -inf tail; exactly min(topk, visible) picks per row,
+    # all inside the row's key bounds.
+    valid = idx_f >= 0
+    assert torch.equal(valid, torch.isfinite(scores_f))
+    assert (valid[:, 1:] <= valid[:, :-1]).all(), "the -1 tail follows the picks"
+    assert ((idx_f[:, 1:] > idx_f[:, :-1]) | ~valid[:, 1:]).all(), "ascending key ids"
+    assert (((idx_f >= ks.unsqueeze(1)) & (idx_f < ke.unsqueeze(1))) | ~valid).all()
+    assert torch.equal(valid.sum(1), torch.minimum(ke - ks, torch.full_like(ks, topk)))
+    # (b) bit-identical launches
+    for _ in range(19):
+        again_s, again_i = run("cake_fused", ratio=ratio)
+        assert torch.equal(again_i, idx_f) and torch.equal(again_s, scores_f), "cake_fused is not bit-identical"
+    # (a) scores: the fused kernel's FP32 reduction order (tcgen05 accumulation, head-sum chain) differs from the
+    # dense logits kernel's (mma.sync), so the two agree to FP32 reassociation noise, not bitwise.  Bound 1e-4 of the
+    # row-max magnitude: about 10x the expected noise (sqrt(n) eps over n = 128 x 32 terms) and 40x below BF16
+    # resolution (2^-8), so a wrong head, key, weight or scale fails while reordering passes.
+    logits = cake.indexer_logits(index_q, index_k, weights, ks, ke, layout="thd")
+    at_fused = cake.extract_topk_scores(logits, idx_f)
+    score_err = _rel_err(scores_f, at_fused)
+    print(f"cake_fused ratio={ratio} topk={topk}: score rel err vs dense logits {score_err:.3e}")
+    assert score_err < 1e-4
+    # (a) key sets: rows whose k-th and (k+1)-th dense scores are separated by more than twice the measured
+    # reordering noise (with margin) must select the same keys; rows with at most topk visible keys select all.
+    noise = torch.where(valid, scores_f - at_fused, torch.zeros_like(scores_f)).abs().max().item()
+    separation = 4.0 * noise + 1e-6
+    ranked = logits.sort(dim=1, descending=True).values
+    visible = ke - ks
+    clear = visible <= topk  # every visible key is selected: the sets must match exactly
+    if num_kv > topk:
+        clear |= (ranked[:, topk - 1] - ranked[:, topk]) > separation
+    same = (idx_f.sort(dim=1).values == idx_d.sort(dim=1).values).all(dim=1)
+    print(f"  clear rows {int(clear.sum())}/{rows}, identical sets {int(same.sum())}/{rows}, noise {noise:.3e}")
+    assert same[clear].all(), "cake_fused and cake select different keys on a row with a clear k-th gap"
+    assert clear.float().mean() > 0.9, "the key-set comparison must cover most rows"
+    # (c) gradients through the shared backward: per-(row, key) upstream gradients, so the slot order (ascending ids
+    # here, score-descending in cake) does not matter; rows whose key sets differ (near-ties) get zero gradient.
+    gen = torch.Generator(device="cuda").manual_seed(11)
+    upstream = torch.randn(rows, num_kv, device="cuda", generator=gen)
+    upstream[~same] = 0.0
+
+    def grads(backend, **kwargs):
+        q_ = index_q.clone().requires_grad_(True)
+        k_ = index_k.clone().requires_grad_(True)
+        w_ = weights.clone().requires_grad_(True)
+        scores, idx = cake.lightning_indexer(q_, k_, w_, ks, ke, topk, layout="thd", topk_backend=backend, **kwargs)
+        grad = torch.where(idx >= 0, upstream.gather(1, idx.clamp(min=0).long()), torch.zeros_like(scores))
+        scores.masked_fill(~torch.isfinite(scores), 0.0).backward(grad)
+        return q_.grad, k_.grad, w_.grad
+
+    dq_f, dk_f, dw_f = grads("cake_fused", ratio=ratio)
+    dq_f2, dk_f2, dw_f2 = grads("cake_fused", ratio=ratio)
+    for ours, again in ((dq_f, dq_f2), (dk_f, dk_f2), (dw_f, dw_f2)):
+        assert torch.equal(ours, again), "the cake_fused backward is not bit-identical"
+    dq_d, dk_d, dw_d = grads("cake")
+    # d index_k: the key-side partials are reduced per key in row order (stable sort by key), identical for both slot
+    # orders -- bitwise expected.  dq (BF16 output) and dw (FP32) sum the slots in slot order: FP32 noise, and for dq
+    # at most one BF16 ulp (2^-8) at the largest element.
+    print(f"  grads: dk bitwise {torch.equal(dk_f, dk_d)}, dw rel err {_rel_err(dw_f, dw_d):.3e}")
+    print(f"  grads: dq rel err {_rel_err(dq_f, dq_d):.3e}")
+    assert _rel_err(dk_f, dk_d) < 1e-6
+    assert _rel_err(dw_f, dw_d) < 1e-5
+    assert _rel_err(dq_f, dq_d) < 4e-3
+
+
+def test_lightning_indexer_cake_fused_replay_bypasses_the_fused_kernel(monkeypatch):
+    """``topk_indices=`` (rollout replay) and callable backends score through the dense path; the fused launcher is
+    not called.  The head-count limit of the exported scan surfaces as a ValueError before any launch."""
+    cake = _cake()
+    from miles.kernels.attention.dsa.cake import _kernels
+
+    index_q, index_k, weights, ks, ke = _fused_indexer_inputs((40, 88), 1, "cuda", seed=3)
+    topk = 64
+    _, idx = cake.lightning_indexer(index_q, index_k, weights, ks, ke, topk, layout="thd", topk_backend="cake_fused")
+    logits = cake.indexer_logits(index_q, index_k, weights, ks, ke, layout="thd")
+    assert torch.equal(idx.sort(dim=1).values, cake.select_topk(logits, topk, "cake").sort(dim=1).values)
+    pinned = idx.flip(-1)  # any slot order: consumers gather by slot
+    monkeypatch.setattr(_kernels, "dsa_indexer_topk", lambda *a, **k: pytest.fail("the fused kernel ran under replay"))
+    scores, passed = cake.lightning_indexer(
+        index_q, index_k, weights, ks, ke, topk, layout="thd", topk_backend="cake_fused", topk_indices=pinned
+    )
+    assert passed is pinned and torch.equal(scores, cake.extract_topk_scores(logits, pinned))
+    _, replayed = cake.lightning_indexer(
+        index_q, index_k, weights, ks, ke, topk, layout="thd", topk_backend=lambda logits, count: pinned
+    )
+    assert torch.equal(replayed, pinned)
+    monkeypatch.undo()
+    q64, w64 = torch.cat([index_q, index_q], dim=1), torch.cat([weights, weights], dim=1)  # 64 heads: no scan
+    with pytest.raises(ValueError, match=r"index_q must be bf16 \[T, 32, 128\]"):
+        cake.lightning_indexer(q64, index_k, w64, ks, ke, topk, layout="thd", topk_backend="cake_fused")
