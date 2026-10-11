@@ -441,7 +441,7 @@ def test_prebuild_is_scoped_to_the_stage_family(monkeypatch):
     monkeypatch.setenv("MILES_DSA_TRAIN_PREBUILD", "0")
     monkeypatch.setattr(_kernels, "_PREBUILT", set())
     _kernels._kernel("dsa_topk_fp32_c4096_k512", "cuda")
-    assert len(calls) == 2, "MILES_DSA_TRAIN_PREBUILD=0 builds lazily"
+    assert len(calls) == 3, "MILES_DSA_TRAIN_PREBUILD=0 builds lazily (no fourth prebuild call)"
     # The real prebuild honours the stage filter (its loader is replaced, so nothing compiles here).
     loaded = []
     monkeypatch.setattr(_jit, "load", lambda stage, arch: loaded.append(stage))
