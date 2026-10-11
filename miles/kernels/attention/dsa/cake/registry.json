@@ -1691,6 +1691,178 @@
    "sm_103a"
   ]
  },
+ "dsa_indexer_topk_scan_h32_d128": {
+  "name": "cake_dsa_train_ba2bd51be25776a57734",
+  "kernel_symbol": "kernel_cake_dsa_train_ba2bd51be25776a57734",
+  "arg_plan": [
+   [
+    "tma_buffer",
+    "Q"
+   ],
+   [
+    "tma_buffer",
+    "K"
+   ],
+   [
+    "tma_buffer",
+    "W"
+   ],
+   [
+    "buffer",
+    "cu_seqlens_q"
+   ],
+   [
+    "buffer",
+    "cu_seqlens_k"
+   ],
+   [
+    "buffer",
+    "q_offsets"
+   ],
+   [
+    "buffer",
+    "Indices"
+   ],
+   [
+    "buffer",
+    "Scores"
+   ],
+   [
+    "buffer",
+    "Cand"
+   ],
+   [
+    "parameter",
+    "num_segments"
+   ],
+   [
+    "parameter",
+    "top_k"
+   ],
+   [
+    "parameter",
+    "ratio"
+   ],
+   [
+    "parameter",
+    "has_offsets"
+   ],
+   [
+    "parameter",
+    "cand_cap"
+   ],
+   [
+    "parameter",
+    "first_cap"
+   ],
+   [
+    "parameter",
+    "sample_tiles_max"
+   ],
+   [
+    "parameter",
+    "sample_shift_permille"
+   ],
+   [
+    "parameter",
+    "check_period"
+   ],
+   [
+    "parameter",
+    "grid_ctas"
+   ],
+   [
+    "parameter",
+    "softmax_scale"
+   ],
+   [
+    "parameter",
+    "n_split"
+   ],
+   [
+    "grid",
+    "grid_x"
+   ],
+   [
+    "grid",
+    "grid_y"
+   ],
+   [
+    "grid",
+    "grid_z"
+   ]
+  ],
+  "sources": [
+   "cake_dsa_train_ba2bd51be25776a57734_kernel.cu",
+   "cake_dsa_train_ba2bd51be25776a57734_binding.cu"
+  ],
+  "block": [
+   384,
+   1,
+   1
+  ],
+  "dynamic_smem_bytes": 207104,
+  "tma_workspace_bytes": 0,
+  "ffi_entry": "run",
+  "compile_flags": [
+   "--ptxas-options=--register-usage-level=10"
+  ],
+  "arches": [
+   "sm_100a",
+   "sm_103a"
+  ]
+ },
+ "dsa_indexer_topk_finalize_k512": {
+  "name": "cake_dsa_train_b36533d493d570c8a22b",
+  "kernel_symbol": "kernel_cake_dsa_train_b36533d493d570c8a22b",
+  "arg_plan": [
+   [
+    "buffer",
+    "Indices"
+   ],
+   [
+    "buffer",
+    "Scores"
+   ],
+   [
+    "parameter",
+    "top_k"
+   ],
+   [
+    "parameter",
+    "key_bits"
+   ],
+   [
+    "grid",
+    "grid_x"
+   ],
+   [
+    "grid",
+    "grid_y"
+   ],
+   [
+    "grid",
+    "grid_z"
+   ]
+  ],
+  "sources": [
+   "cake_dsa_train_b36533d493d570c8a22b_kernel.cu",
+   "cake_dsa_train_b36533d493d570c8a22b_binding.cu"
+  ],
+  "block": [
+   64,
+   1,
+   1
+  ],
+  "dynamic_smem_bytes": 8192,
+  "tma_workspace_bytes": 0,
+  "ffi_entry": "run",
+  "compile_flags": [],
+  "arches": [
+   "sm_100a",
+   "sm_103a"
+  ]
+ },
  "dsa_segmented_reduce_split4": {
   "name": "cake_dsa_train_d1104bd6373a6115f000",
   "kernel_symbol": "kernel_cake_dsa_train_d1104bd6373a6115f000",
