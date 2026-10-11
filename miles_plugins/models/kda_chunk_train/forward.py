@@ -22,6 +22,12 @@ the saved set :func:`.backward.chunk_kda_backward` consumes -- ``q_norm`` / ``k_
 is the backward's :class:`.backward.ChunkLayout`, built once per packing and shared by both directions.
 Repeated calls on identical inputs are bit-identical (no atomics, fixed-order reductions).
 
+Host cost per call is kept to what the five launches need: the token-row operands are passed to the kernels in the
+caller's own ``[B, T, ...]`` shape (the kernels take base pointers over the token rows; no per-call reshape of the
+inputs) and the token-row outputs are allocated directly in that shape (no per-call view of the outputs). Only the
+chunk-aligned internal buffers carry the ``[rows, HV, 128]`` layout. The forward never reads the pad rows of its
+internal buffers (``fwd_o`` reads real chunks only), so it does not zero them.
+
 Under context parallelism (``cp_context`` with a process group) the forward follows the deterministic kernels'
 CP host protocol (Cake-forward mode): before the five launches it recomputes fla's forward operands of the **last local
 sequence** (the A1 feed: fla's l2norm, fused beta sigmoid, gate cumsum and ``chunk_kda_fwd_intra`` in
@@ -32,6 +38,7 @@ and seeds the first local sequence's state with the exchanged compressed ``h0`` 
 
 from __future__ import annotations
 
+import math
 from collections.abc import Sequence
 
 import torch
@@ -43,59 +50,61 @@ from .backward import (
     LAST_CP_STATES,
     _a1_forward_feed,
     _check,
-    _contiguous,
     _first_slot,
     _fla_ops,
     _launch_fwdh,
     _launch_wy,
-    _pair_cu,
     _roles,
-    _rows,
     _use_cp,
     chunk_layout,
 )
 
 SAVED_SET = ("q_norm", "k_norm", "q_rstd", "k_rstd", "Aqk", "Akk")
-_DUMMY_BF16: dict[str, torch.Tensor] = {}
+_DUMMY_BF16: dict = {}
 
 
-def _dummy_bf16(device) -> torch.Tensor:
+def _dummy_bf16(device: torch.device) -> torch.Tensor:
     """Cached one-element bf16 tensor for the flag-off ``qg_out`` slot of ``fwd_prep`` (never dereferenced)."""
-    key = str(torch.device(device))
-    hit = _DUMMY_BF16.get(key)
+    hit = _DUMMY_BF16.get(device.index)
     if hit is None:
-        hit = _DUMMY_BF16[key] = torch.zeros(1, dtype=torch.bfloat16, device=device)
+        hit = _DUMMY_BF16[device.index] = torch.zeros(1, dtype=torch.bfloat16, device=device)
     return hit
 
 
-def _launch_fwd_prep(arch, q, k, v, g_raw, beta_logits, A_log, dt_bias, *, layout, lower_bound, write_qg=True):
-    """Token rows ``T = layout.rows_external``: bf16 ``q``/``k`` ``[T, H, 128]`` (raw), bf16 ``v``/``g_raw``
-    ``[T, HV, 128]``, bf16 ``beta_logits`` ``[T, HV]``, fp32 ``A_log`` ``[HV]`` / ``dt_bias`` ``[HV * 128]``.
-    Returns the saved-set tensors in token rows (``q_norm``/``k_norm`` bf16, ``q_rstd``/``k_rstd`` fp32, ``beta``
-    fp32) and the internal-layout stage inputs ``gk`` fp32, ``vb``/``kb``/``kg`` (+ ``qg``) bf16 ``[R, HV, 128]``."""
-    rows_ext, hv, kd = v.shape
-    h = q.shape[1]
+def _token_rows(name: str, t: torch.Tensor, rows: int, tail: tuple[int, ...], dtype: torch.dtype) -> torch.Tensor:
+    """A token-row operand as the kernels take it: ``dtype``, trailing dims ``tail``, exactly ``rows`` token rows in
+    the caller's own leading shape (``[T, ...]`` or ``[B, T, ...]``) and contiguous (the kernels take the base
+    pointer). Returns ``t`` itself when it already qualifies, else a contiguous copy."""
+    if t.dtype != dtype:
+        raise ValueError(f"{name} must be {dtype}, got {t.dtype}")
+    n = len(tail)
     _check(
-        kd == HEAD_DIM
-        and hv % h == 0
-        and q.shape == (rows_ext, h, HEAD_DIM)
-        and k.shape == (rows_ext, h, HEAD_DIM)
-        and g_raw.shape == (rows_ext, hv, HEAD_DIM)
-        and beta_logits.shape == (rows_ext, hv)
-        and A_log.shape == (hv,)
-        and dt_bias.shape == (hv * HEAD_DIM,),
-        "fwd_prep: expected [T,H,128] q/k, [T,HV,128] v/g, [T,HV] beta logits, [HV] A_log, [HV*128] dt_bias",
+        t.dim() > n and tuple(t.shape[-n:]) == tail and t.numel() == rows * math.prod(tail),
+        f"{name}: expected [..., {rows} token rows, {', '.join(map(str, tail))}], got {tuple(t.shape)}",
     )
-    _check(rows_ext == layout.rows_external, "fwd_prep: the layout covers a different number of token rows")
+    return t if t.is_contiguous() else t.contiguous()
+
+
+def _launch_fwd_prep(arch, q, k, v, g_raw, beta_logits, A_log, dt_bias, *, layout, lead, lower_bound, write_qg=True):
+    """Token rows ``T = layout.rows_external`` (validated by the caller): bf16 ``q``/``k`` ``[.., H, 128]`` (raw), bf16
+    ``v``/``g_raw`` ``[.., HV, 128]``, bf16 ``beta_logits`` ``[.., HV]``, fp32 ``A_log`` ``[HV]`` / ``dt_bias``
+    ``[HV * 128]``. Returns the saved-set tensors in token rows with the leading shape ``lead`` (``q_norm``/``k_norm``
+    bf16, ``q_rstd``/``k_rstd`` fp32, ``beta`` fp32) and the internal-layout stage inputs ``gk`` fp32, ``vb``/``kb``/``kg``
+    (+ ``qg``) bf16 ``[R, HV, 128]``."""
+    h, hv = q.shape[-2], v.shape[-2]
+    _check(
+        hv % h == 0 and A_log.shape == (hv,) and dt_bias.shape == (hv * HEAD_DIM,),
+        "fwd_prep: expected HV a multiple of H, [HV] A_log, [HV*128] dt_bias",
+    )
     _check(hv * HEAD_DIM * CHUNK < 2**31, "fwd_prep: HV * 128 * 64 must fit a 32-bit row offset")
     dev, bf, f32 = v.device, torch.bfloat16, torch.float32
     rows = layout.rows
     out = {
-        "q_norm": torch.empty(rows_ext, h, HEAD_DIM, dtype=bf, device=dev),
-        "k_norm": torch.empty(rows_ext, h, HEAD_DIM, dtype=bf, device=dev),
-        "q_rstd": torch.empty(rows_ext, h, dtype=f32, device=dev),
-        "k_rstd": torch.empty(rows_ext, h, dtype=f32, device=dev),
-        "beta": torch.empty(rows_ext, hv, dtype=f32, device=dev),
+        "q_norm": torch.empty(*lead, h, HEAD_DIM, dtype=bf, device=dev),
+        "k_norm": torch.empty(*lead, h, HEAD_DIM, dtype=bf, device=dev),
+        "q_rstd": torch.empty(*lead, h, dtype=f32, device=dev),
+        "k_rstd": torch.empty(*lead, h, dtype=f32, device=dev),
+        "beta": torch.empty(*lead, hv, dtype=f32, device=dev),
         "gk": torch.empty(rows, hv, HEAD_DIM, dtype=f32, device=dev),
     }
     # separate allocations (not one carved block): the composition frees vb / kb right after ``wy`` and kg after
@@ -137,27 +146,18 @@ def _launch_fwd_prep(arch, q, k, v, g_raw, beta_logits, A_log, dt_bias, *, layou
     return out
 
 
-def _launch_fwd_intra(arch, q_norm, k_norm, gk, beta, *, layout, scale):
-    """Token rows: bf16 ``q_norm``/``k_norm`` ``[T, H, 128]``, fp32 ``beta`` ``[T, HV]``; internal fp32 ``gk``
-    ``[R, HV, 128]``. Returns ``(aqk, akk, aqk_int, akk_int)``: bf16 ``[T, HV, 64]`` saved-set tensors in token
-    rows and the internal-layout copy of ``akk`` with zero pad rows (``akk`` itself when the layout is the identity)
-    for ``wy``. ``aqk_int`` is always ``None``: the forward reads ``aqk`` from the token rows (``fwd_o``), so the
-    kernel does not produce an internal copy of it."""
-    rows, hv, kd = gk.shape
-    rows_ext = layout.rows_external
-    h = q_norm.shape[1]
-    _check(
-        kd == HEAD_DIM
-        and rows == layout.rows
-        and q_norm.shape == (rows_ext, h, HEAD_DIM)
-        and k_norm.shape == (rows_ext, h, HEAD_DIM)
-        and beta.shape == (rows_ext, hv)
-        and hv % h == 0,
-        "fwd_intra: expected [T,H,128] q_norm/k_norm, [T,HV] beta, [R,HV,128] gk matching the layout",
-    )
+def _launch_fwd_intra(arch, q_norm, k_norm, gk, beta, *, layout, lead, scale):
+    """Token rows: bf16 ``q_norm``/``k_norm`` ``[.., H, 128]``, fp32 ``beta`` ``[.., HV]`` (the ``fwd_prep`` outputs);
+    internal fp32 ``gk`` ``[R, HV, 128]``. Returns ``(aqk, akk, aqk_int, akk_int)``: bf16 ``[.., HV, 64]`` saved-set
+    tensors in token rows (leading shape ``lead``) and the internal-layout copy of ``akk`` with zero pad rows (``akk``
+    itself when the layout is the identity) for ``wy``. ``aqk_int`` is always ``None``: the forward reads ``aqk`` from
+    the token rows (``fwd_o``), so the kernel does not produce an internal copy of it."""
+    rows, hv, _ = gk.shape
+    h = q_norm.shape[-2]
+    _check(rows == layout.rows, "fwd_intra: gk does not match the layout's internal rows")
     dev, bf = gk.device, torch.bfloat16
-    aqk = torch.empty(rows_ext, hv, CHUNK, dtype=bf, device=dev)
-    akk = torch.empty(rows_ext, hv, CHUNK, dtype=bf, device=dev)
+    aqk = torch.empty(*lead, hv, CHUNK, dtype=bf, device=dev)
+    akk = torch.empty(*lead, hv, CHUNK, dtype=bf, device=dev)
     if layout.identity:
         akk_int, write_int = akk, 0
     else:
@@ -183,21 +183,18 @@ def _launch_fwd_intra(arch, q_norm, k_norm, gk, beta, *, layout, scale):
     return aqk, akk, None, akk_int
 
 
-def _launch_fwd_o(arch, qg, h, aqk_ext, v_new, *, layout, scale):
+def _launch_fwd_o(arch, qg, h, aqk_ext, v_new, *, layout, lead, scale):
     """``qg``/``v_new``: internal-layout bf16 ``[R, HV, 128]``; ``h``: bf16 ``[num_chunks, HV, 128, 128]`` (the state
-    entering each real chunk); ``aqk_ext``: token-row bf16 ``[T, HV, 64]``. Returns ``o`` bf16 ``[T, HV, 128]`` in
-    the token rows (pad rows are never written)."""
+    entering each real chunk); ``aqk_ext``: token-row bf16 ``[.., HV, 64]``. Returns ``o`` bf16 ``[.., HV, 128]`` in
+    the token rows with the leading shape ``lead`` (pad rows are never written). Reads real chunks only: the pad
+    rows of ``qg`` / ``v_new`` are never touched."""
     rows, hv, kd = qg.shape
     nc = layout.num_chunks
     _check(
-        kd == HEAD_DIM
-        and rows == layout.rows
-        and v_new.shape == qg.shape
-        and tuple(h.shape) == (nc, hv, HEAD_DIM, HEAD_DIM)
-        and tuple(aqk_ext.shape) == (layout.rows_external, hv, CHUNK),
-        "fwd_o: expected internal [R,HV,128] qg/v_new, [NC,HV,128,128] h, token-row [T,HV,64] Aqk",
+        kd == HEAD_DIM and rows == layout.rows and v_new.shape == qg.shape and tuple(h.shape) == (nc, hv, HEAD_DIM, HEAD_DIM),
+        "fwd_o: expected internal [R,HV,128] qg/v_new and [NC,HV,128,128] h",
     )
-    o = torch.empty(layout.rows_external, hv, HEAD_DIM, dtype=torch.bfloat16, device=qg.device)
+    o = torch.empty(*lead, hv, HEAD_DIM, dtype=torch.bfloat16, device=qg.device)
     kernel("fwd_o", arch).launch(
         grid=(nc, hv, 1),
         qg_tma=qg,
@@ -235,7 +232,8 @@ def chunk_kda_forward(
 
     - ``q``, ``k``: raw (pre-l2norm) bf16 ``[B, T, H, 128]``; ``v``, ``g``: bf16 ``[B, T, HV, 128]`` (``g`` = raw
       gate pre-activations); ``beta_logits``: bf16 ``[B, T, HV]`` (the layer's pre-sigmoid beta); ``A_log`` fp32
-      ``[HV]``; ``dt_bias`` fp32 ``[HV * 128]``; ``scale``; ``lower_bound`` (negative).
+      ``[HV]``; ``dt_bias`` fp32 ``[HV * 128]``; ``scale``; ``lower_bound`` (negative). Contiguous operands are passed
+      to the kernels as they are (no per-call copy or reshape); a non-contiguous one is copied once.
     - ``cu_seqlens`` / ``cu_seqlens_cpu``: the packed boundaries as :func:`.backward.chunk_kda_backward` takes them
       (``B == 1``; the host copy keeps the op free of device-to-host copies).
     - ``h0``: optional fp32 ``[N, HV, 128, 128]`` initial state per sequence (``None`` = zeros);
@@ -246,8 +244,8 @@ def chunk_kda_forward(
       for :func:`.backward.chunk_kda_backward`. ``serial_walk``: ``"auto"`` | ``"v1"`` | ``"v2"`` (fwdh kernel pin).
 
     Returns ``o`` bf16 ``[B, T, HV, 128]``, the saved set (``q_norm``, ``k_norm``, ``q_rstd``, ``k_rstd``, ``Aqk``,
-    ``Akk``; shapes and dtypes as the backward's docstring), ``beta`` fp32 ``[B, T, HV]``, ``ht`` (or ``None``) and
-    ``h0_compressed`` (``None`` outside CP).
+    ``Akk``; shapes and dtypes as the backward's docstring, every one a fresh contiguous kernel output allocated in
+    that shape), ``beta`` fp32 ``[B, T, HV]``, ``ht`` (or ``None``) and ``h0_compressed`` (``None`` outside CP).
     """
     arch = device_arch(v.device)
     batch0, seq0, h, kd = q.shape
@@ -256,19 +254,22 @@ def chunk_kda_forward(
     _check(hv % h == 0, "HV must be a multiple of H")
     layout = chunk_layout(batch0, seq0, cu_seqlens, q.device, cu_seqlens_cpu=cu_seqlens_cpu)
     rows = layout.rows_external
+    lead = (batch0, seq0)
     bf, f32 = torch.bfloat16, torch.float32
-    q_r = _contiguous("q", _rows(q, rows), bf)
-    k_r = _contiguous("k", _rows(k, rows), bf)
-    v_r = _contiguous("v", _rows(v, rows), bf)
-    g_r = _contiguous("g", _rows(g, rows), bf)
-    beta_r = _contiguous("beta_logits", _rows(beta_logits, rows), bf)
-    A_log = A_log.contiguous() if A_log.dtype == f32 else A_log.to(f32)
-    dt_bias = dt_bias.contiguous() if dt_bias.dtype == f32 else dt_bias.to(f32)
+    q_r = _token_rows("q", q, rows, (h, HEAD_DIM), bf)
+    k_r = _token_rows("k", k, rows, (h, HEAD_DIM), bf)
+    v_r = _token_rows("v", v, rows, (hv, HEAD_DIM), bf)
+    g_r = _token_rows("g", g, rows, (hv, HEAD_DIM), bf)
+    beta_r = _token_rows("beta_logits", beta_logits, rows, (hv,), bf)
+    if A_log.dtype != f32 or not A_log.is_contiguous():
+        A_log = A_log.to(f32).contiguous()
+    if dt_bias.dtype != f32 or not dt_bias.is_contiguous():
+        dt_bias = dt_bias.to(f32).contiguous()
 
     # CP (host protocol, Cake-forward mode): fla's forward pre-process on the LAST local sequence (external rows
     # [s, T), fed with fla's own recompute of its operands) exchanges the compressed state entering the FIRST local
-    # sequence; state_v_first=True as the fla path tunes those kernels (Triton autotune keys ignore the constexpr), one
-    # host transpose.
+    # sequence; its two-entry cu_seqlens is the layout's (uploaded with the tables); state_v_first=True as the fla path
+    # tunes those kernels (Triton autotune keys ignore the constexpr), one host transpose.
     use_cp = _use_cp(cp_context)
     _check(
         not use_cp or (h0 is None and not output_final_state),
@@ -277,13 +278,13 @@ def chunk_kda_forward(
     h0_c = None
     if use_cp:
         fl = _fla_ops()
-        start, last = layout.offsets[-1], layout.lengths[-1]
+        start = layout.offsets[-1]
         feed = _a1_forward_feed(
-            fl, q_r[start:][None], k_r[start:][None], v_r[start:][None], g_r[start:][None], beta_r[start:][None],
+            fl, q_r[:, start:], k_r[:, start:], v_r[:, start:], g_r[:, start:], beta_r[:, start:],
             A_log, dt_bias, scale=scale, lower_bound=lower_bound,
         )
         h0_vf = fl["fwd_h_pre_process"](
-            k=feed["kg"], w=feed["w"], u=feed["u"], gk=feed["g"], cu_seqlens=_pair_cu(last, q.device), initial_state=None,
+            k=feed["kg"], w=feed["w"], u=feed["u"], gk=feed["g"], cu_seqlens=layout.cp_cu_last, initial_state=None,
             context=cp_context, chunk_size=CHUNK, state_v_first=True,
         )
         del feed
@@ -292,25 +293,28 @@ def chunk_kda_forward(
         LAST_CP_STATES.clear()
         LAST_CP_STATES.update({"h0_compressed": h0_c, "roles": _roles(cp_context), "forward_source": "cake"})
 
-    pre = _launch_fwd_prep(arch, q_r, k_r, v_r, g_r, beta_r, A_log, dt_bias, layout=layout, lower_bound=lower_bound)
-    aqk, akk, _aqk_int, akk_int = _launch_fwd_intra(arch, pre["q_norm"], pre["k_norm"], pre["gk"], pre["beta"], layout=layout, scale=scale)
+    pre = _launch_fwd_prep(arch, q_r, k_r, v_r, g_r, beta_r, A_log, dt_bias, layout=layout, lead=lead, lower_bound=lower_bound)
+    aqk, akk, _aqk_int, akk_int = _launch_fwd_intra(arch, pre["q_norm"], pre["k_norm"], pre["gk"], pre["beta"], layout=layout, lead=lead, scale=scale)
     u, w = _launch_wy(arch, akk_int, pre["vb"], pre["kb"])
     del pre["vb"], pre["kb"]  # forward transients die with their consumer; the kernels launch on the current stream
-    res = _launch_fwdh(arch, w, pre["kg"], u, pre["gk"], layout=layout, h0=h0, return_ht=output_final_state, walk=serial_walk)
+    # the forward never reads v_new's pad rows (fwd_o walks real chunks only): no pad fill in this direction
+    res = _launch_fwdh(
+        arch, w, pre["kg"], u, pre["gk"], layout=layout, h0=h0, return_ht=output_final_state, walk=serial_walk, zero_pad_rows=False
+    )
     h_state, v_new = res[0], res[1]
     ht = res[2] if output_final_state else None
     del pre["kg"], pre["gk"], akk_int, u, w  # w / u are recomputed by the backward from the saved set (fla rule)
-    o = _launch_fwd_o(arch, pre["qg"], h_state, aqk, v_new, layout=layout, scale=scale)
-    # every tensor below is a fresh contiguous kernel output in token rows: view, not reshape
+    o = _launch_fwd_o(arch, pre["qg"], h_state, aqk, v_new, layout=layout, lead=lead, scale=scale)
+    # every tensor below was allocated in the caller's [B, T, ...] shape by its stage: no view per call
     return {
-        "o": o.view(batch0, seq0, hv, kd),
-        "q_norm": pre["q_norm"].view(batch0, seq0, h, kd),
-        "k_norm": pre["k_norm"].view(batch0, seq0, h, kd),
-        "q_rstd": pre["q_rstd"].view(batch0, seq0, h),
-        "k_rstd": pre["k_rstd"].view(batch0, seq0, h),
-        "Aqk": aqk.view(batch0, seq0, hv, CHUNK),
-        "Akk": akk.view(batch0, seq0, hv, CHUNK),
-        "beta": pre["beta"].view(batch0, seq0, hv),
+        "o": o,
+        "q_norm": pre["q_norm"],
+        "k_norm": pre["k_norm"],
+        "q_rstd": pre["q_rstd"],
+        "k_rstd": pre["k_rstd"],
+        "Aqk": aqk,
+        "Akk": akk,
+        "beta": pre["beta"],
         "ht": ht,
         "h0_compressed": h0_c,
     }

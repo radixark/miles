@@ -36,16 +36,17 @@ object) and every KDA layer's forward, recompute forward and backward of that mi
 that one object (``LinearAttentionLayer.forward`` -> ``kda_recurrence`` -> this drop-in, for every
 backend). Invariants of this module under that contract:
 
-- no device-to-host copy inside the op: the host-side index work (fla's ``prepare_chunk_indices`` and
-  the chunk layout of the Cake stages) reads ``cu_seqlens_cpu``, never ``cu_seqlens``;
-- the hit path issues no host-to-device copy and no stream synchronisation: the chunk indices of the
-  fla forward and the layout tables of the Cake stages are cached per (host tuple of boundaries, device)
-  in LRUs of 256 entries, so only the first forward of a new packing uploads chunk indices (fla's one
-  blocking copy) and only its first Cake launch uploads the layout tables (one non-blocking copy from
-  one pinned staging buffer);
+- no device-to-host copy inside the op: the host-side index work (the chunk layout of the Cake stages,
+  which also carries fla's chunk indices for the fla forward) reads ``cu_seqlens_cpu``, never ``cu_seqlens``;
+- the hit path issues no host-to-device copy and no stream synchronisation: the layout (chunk tables, fla's
+  ``chunk_indices``, the CP boundary pairs) is cached per (host tuple of boundaries, device) in an LRU of 256
+  entries, so only the first call of a new packing uploads it -- one non-blocking copy from one pinned staging
+  buffer, in either mode's forward -- plus one more non-blocking copy for the per-row scatter table the first
+  time a backward of the fla-forward mode needs it; the fla forward receives the layout's chunk indices and
+  issues no blocking upload of its own for a new packing;
 - kernel-level direct calls may pass ``cu_seqlens_cpu`` as a sequence of ints; it is turned into a fresh
-  int64 host tensor per call (fla's identity-keyed ``tensor_cache`` then misses, which only costs that
-  call the chunk-indices upload); packed input with no host copy at all falls back to fla.
+  int64 host tensor per call for the fla forward's own ``cu_seqlens_cpu`` argument; packed input with no host
+  copy at all falls back to fla.
 
 Fixed-length ``[B, T]`` input has no boundaries and needs no host copy.
 
@@ -68,13 +69,11 @@ import warnings
 
 import torch
 
-from .backward import LAST_CP_STATES, _LRUCache, _roles, _use_cp, chunk_kda_backward, host_boundaries
+from .backward import LAST_CP_STATES, _roles, _use_cp, chunk_kda_backward, chunk_layout, host_boundaries
 
 _HEAD_DIM = 128
 _BLACKWELL_CAPABILITIES = ((10, 0), (10, 3))
 _CHUNK_SIZE = 64
-_CHUNK_INDICES_CACHE_LIMIT = 256
-_CHUNK_INDICES_CACHE: _LRUCache = _LRUCache(_CHUNK_INDICES_CACHE_LIMIT)
 
 # --kda-backend values of the deterministic family and the forward source each one selects.
 FLA_FORWARD = "deterministic_fla_fwd"  # fla forward + deterministic backward (comparator / same-kernel arm)
@@ -141,24 +140,32 @@ def outside_contract(
     for (fla's ``chunk_kda`` as the Kimi K3 layer calls it), else the first option that is not. The beta
     convention follows the forward source: post-sigmoid beta for the fla forward
     (``use_beta_sigmoid_in_kernel=False``), logits for the Cake forward (``True``)."""
+    # plain early returns in the layer's per-call path (no per-call table of options)
+    if initial_state is not None:
+        return "initial_state must be None for the deterministic backward"
+    if output_final_state:
+        return "output_final_state must be False for the deterministic backward"
+    if not use_qk_l2norm_in_kernel:
+        return "use_qk_l2norm_in_kernel must be True for the deterministic backward"
+    if not use_gate_in_kernel:
+        return "use_gate_in_kernel must be True for the deterministic backward"
     beta_logits = forward_source == "cake"
-    expected = {
-        "initial_state": (initial_state is None, "None"),
-        "output_final_state": (not output_final_state, "False"),
-        "use_qk_l2norm_in_kernel": (use_qk_l2norm_in_kernel, "True"),
-        "use_gate_in_kernel": (use_gate_in_kernel, "True"),
-        "use_beta_sigmoid_in_kernel": (use_beta_sigmoid_in_kernel == beta_logits, str(beta_logits)),
-        "allow_neg_eigval": (not allow_neg_eigval, "False"),
-        "safe_gate": (safe_gate, "True"),
-        "lower_bound": (lower_bound is not None, "a float"),
-        "return_intermediate_states": (not return_intermediate_states, "False"),
-        "A_log": (A_log is not None, "a tensor"),
-        "dt_bias": (dt_bias is not None, "a tensor"),
-        "chunk_size": (chunk_size == _CHUNK_SIZE, str(_CHUNK_SIZE)),
-    }
-    for name, (holds, wanted) in expected.items():
-        if not holds:
-            return f"{name} must be {wanted} for the deterministic backward"
+    if use_beta_sigmoid_in_kernel != beta_logits:
+        return f"use_beta_sigmoid_in_kernel must be {beta_logits} for the deterministic backward"
+    if allow_neg_eigval:
+        return "allow_neg_eigval must be False for the deterministic backward"
+    if not safe_gate:
+        return "safe_gate must be True for the deterministic backward"
+    if lower_bound is None:
+        return "lower_bound must be a float for the deterministic backward"
+    if return_intermediate_states:
+        return "return_intermediate_states must be False for the deterministic backward"
+    if A_log is None:
+        return "A_log must be a tensor for the deterministic backward"
+    if dt_bias is None:
+        return "dt_bias must be a tensor for the deterministic backward"
+    if chunk_size != _CHUNK_SIZE:
+        return f"chunk_size must be {_CHUNK_SIZE} for the deterministic backward"
     return None
 
 
@@ -200,20 +207,6 @@ def _host_copy(cu_seqlens_cpu) -> tuple[tuple[int, ...], torch.Tensor]:
     return host, torch.tensor(host, dtype=torch.int64)
 
 
-def _chunk_indices(cu_seqlens: torch.Tensor, cu_seqlens_cpu: torch.Tensor, host: tuple[int, ...]) -> torch.Tensor:
-    """fla's chunk indices of ``cu_seqlens`` (``[num_chunks, 2]`` int32 on its device), cached per (host
-    boundaries, device): a new object carrying a known packing hits here without any upload, independent
-    of fla's identity-keyed ``tensor_cache`` and its depth."""
-    from fla.ops.utils.index import prepare_chunk_indices
-
-    key = (host, cu_seqlens.device)
-    indices = _CHUNK_INDICES_CACHE.get(key)
-    if indices is None:
-        indices = prepare_chunk_indices(cu_seqlens, _CHUNK_SIZE, cu_seqlens_cpu=cu_seqlens_cpu)
-        _CHUNK_INDICES_CACHE.put(key, indices)
-    return indices
-
-
 class _ChunkKDADeterministicBackward(torch.autograd.Function):
     """One of the two forwards with the deterministic chunked backward.
 
@@ -232,6 +225,7 @@ class _ChunkKDADeterministicBackward(torch.autograd.Function):
 
     @staticmethod
     def forward(ctx, q, k, v, g, beta, A_log, dt_bias, lower_bound, scale, cu_seqlens, cu_seqlens_cpu, source, cp_context):
+        # autograd runs a Function's forward with grad mode off: no extra no_grad scope per call
         host = None
         if cu_seqlens is not None:
             if cu_seqlens_cpu is None:
@@ -239,61 +233,66 @@ class _ChunkKDADeterministicBackward(torch.autograd.Function):
             host, cu_seqlens_cpu = _host_copy(cu_seqlens_cpu)
         use_cp = cp_context is not None
         h0_c = None
-        with torch.no_grad():
-            if source == "cake":
-                from .forward import chunk_kda_forward
+        if source == "cake":
+            from .forward import chunk_kda_forward
 
-                res = chunk_kda_forward(
-                    q=q,
-                    k=k,
-                    v=v,
-                    g=g,
-                    beta_logits=beta,
-                    A_log=A_log,
-                    dt_bias=dt_bias,
-                    scale=scale,
-                    lower_bound=lower_bound,
-                    cu_seqlens=cu_seqlens,
-                    cu_seqlens_cpu=host,
-                    cp_context=cp_context,
-                )
-                o, q_norm, k_norm, q_rstd, k_rstd = res["o"], res["q_norm"], res["k_norm"], res["q_rstd"], res["k_rstd"]
-                Aqk, Akk, beta_saved, beta_logits = res["Aqk"], res["Akk"], res["beta"], beta
-                h0_c = res["h0_compressed"]
-            else:
-                from fla.modules.l2norm import l2norm_fwd
-                from fla.ops.kda.chunk_fwd import chunk_kda_fwd
+            res = chunk_kda_forward(
+                q=q,
+                k=k,
+                v=v,
+                g=g,
+                beta_logits=beta,
+                A_log=A_log,
+                dt_bias=dt_bias,
+                scale=scale,
+                lower_bound=lower_bound,
+                cu_seqlens=cu_seqlens,
+                cu_seqlens_cpu=host,
+                cp_context=cp_context,
+            )
+            o, q_norm, k_norm, q_rstd, k_rstd = res["o"], res["q_norm"], res["k_norm"], res["q_rstd"], res["k_rstd"]
+            Aqk, Akk, beta_saved, beta_logits = res["Aqk"], res["Akk"], res["beta"], beta
+            h0_c = res["h0_compressed"]
+        else:
+            from fla.modules.l2norm import l2norm_fwd
+            from fla.ops.kda.chunk_fwd import chunk_kda_fwd
 
-                q_norm, q_rstd = l2norm_fwd(q)
-                k_norm, k_rstd = l2norm_fwd(k)
-                chunk_indices = _chunk_indices(cu_seqlens, cu_seqlens_cpu, host) if cu_seqlens is not None else None
-                outputs = chunk_kda_fwd(
-                    q=q_norm,
-                    k=k_norm,
-                    v=v,
-                    g=g,
-                    beta=beta,
-                    scale=scale,
-                    initial_state=None,
-                    output_final_state=False,
-                    cu_seqlens=cu_seqlens,
-                    cu_seqlens_cpu=cu_seqlens_cpu,
-                    chunk_indices=chunk_indices,
-                    chunk_size=_CHUNK_SIZE,
-                    safe_gate=True,
-                    lower_bound=lower_bound,
-                    use_gate_in_kernel=True,
-                    A_log=A_log,
-                    dt_bias=dt_bias,
-                    state_v_first=True,
-                    # under CP fla runs its forward pre-process itself and returns the compressed h0 (outputs[11],
-                    # V-first [1, HV, V, K]); outside CP the call stays exactly chunk_kda's
-                    **({"cp_context": cp_context} if use_cp else {}),
-                )
-                o, Aqk, Akk = outputs[0], outputs[3], outputs[4]
-                beta_saved, beta_logits = beta, None
-                if use_cp:
-                    h0_c = outputs[11][:1].transpose(-1, -2).contiguous()  # k rows x v cols once (host transpose)
+            q_norm, q_rstd = l2norm_fwd(q)
+            k_norm, k_rstd = l2norm_fwd(k)
+            # fla's chunk indices of this packing come from the (cached) layout the backward runs on: a new packing
+            # costs one non-blocking upload of the layout, never fla's blocking one; a known packing costs nothing
+            chunk_indices = (
+                chunk_layout(q.shape[0], q.shape[1], cu_seqlens, q.device, cu_seqlens_cpu=host).chunk_indices
+                if cu_seqlens is not None
+                else None
+            )
+            outputs = chunk_kda_fwd(
+                q=q_norm,
+                k=k_norm,
+                v=v,
+                g=g,
+                beta=beta,
+                scale=scale,
+                initial_state=None,
+                output_final_state=False,
+                cu_seqlens=cu_seqlens,
+                cu_seqlens_cpu=cu_seqlens_cpu,
+                chunk_indices=chunk_indices,
+                chunk_size=_CHUNK_SIZE,
+                safe_gate=True,
+                lower_bound=lower_bound,
+                use_gate_in_kernel=True,
+                A_log=A_log,
+                dt_bias=dt_bias,
+                state_v_first=True,
+                # under CP fla runs its forward pre-process itself and returns the compressed h0 (outputs[11],
+                # V-first [1, HV, V, K]); outside CP the call stays exactly chunk_kda's
+                **({"cp_context": cp_context} if use_cp else {}),
+            )
+            o, Aqk, Akk = outputs[0], outputs[3], outputs[4]
+            beta_saved, beta_logits = beta, None
+            if use_cp:
+                h0_c = outputs[11][:1].transpose(-1, -2).contiguous()  # k rows x v cols once (host transpose)
         ctx.save_for_backward(
             q_norm, k_norm, q_rstd, k_rstd, v, g, beta_saved, beta_logits, A_log, dt_bias, Aqk, Akk, cu_seqlens, h0_c
         )
@@ -306,7 +305,7 @@ class _ChunkKDADeterministicBackward(torch.autograd.Function):
         if use_cp:
             LAST_CP_STATES.clear()
             LAST_CP_STATES.update({"h0_compressed": h0_c, "roles": _roles(cp_context), "forward_source": source})
-        return o.type_as(q)
+        return _as_dtype(o, q.dtype)
 
     @staticmethod
     def backward(ctx, do):
