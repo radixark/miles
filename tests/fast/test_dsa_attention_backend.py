@@ -1,14 +1,21 @@
-"""The DSA attention backend switch: one value selects the kernel family for both DSA model plugins."""
+"""The DSA attention backend switch: one value selects the kernel family for both DSA model plugins.
 
+Also the ``cake`` top-k backend (``--miles-dsa-topk-backend cake``) on CPU: resolver, registry, input validation
+ahead of any launch, argument parsing and the GLM-5 (top-k 2048 > 512) rejection.  Nothing here needs CUDA.
+"""
+
+import ast
 import importlib.util
 import sys
 import types
-from argparse import Namespace
+from argparse import ArgumentParser, Namespace
 from pathlib import Path
 
 import pytest
+import torch
 
 REPO = Path(__file__).resolve().parents[2]
+TOPK_STAGES = {f"dsa_topk_fp32_c{capacity}_k512" for capacity in (4096, 8192, 16384, 32768)}
 TC_STAGES = {f"dsa_attention_fwd_tc_h{h}_d512t{t}" for h in (16, 32, 64) for t in (64, 0)}
 TC_BWD_STAGES = {f"dsa_attention_bwd_tc_h64_d512t{t}" for t in (64, 0)}
 
@@ -71,6 +78,7 @@ def test_generated_package_registry_covers_both_architectures():
         "dsa_segmented_reduce",
         "dsa_segmented_reduce_split4",
         "dsa_attention_delta",
+        *TOPK_STAGES,
         *TC_STAGES,
         *TC_BWD_STAGES,
     }
@@ -80,6 +88,17 @@ def test_generated_package_registry_covers_both_architectures():
         assert record["kernel_symbol"] == f"kernel_{record['name']}", stage
         for relative in record["sources"]:
             assert (REPO / "miles/kernels/attention/dsa/cake/csrc" / relative).is_file(), (stage, relative)
+    for stage in TOPK_STAGES:
+        record = jit.MODULES[stage]
+        # The host wrapper binds these names and leaves the launch geometry to the record.
+        assert [name for kind, name in record["arg_plan"] if kind != "grid"] == [
+            "logits",
+            "out",
+            "row_end",
+            "n_kv",
+            "has_row_end",
+        ], stage
+        assert record["block"] == [256, 1, 1] and record["tma_workspace_bytes"] == 0, stage
     # the tcgen05 forward stages: the generator's dsa_h64_fwd ABI (four by-value tensor maps, no workspace), 384 threads,
     # built plain (precise math like the register-MMA stages: no compile flag)
     tc_args = (
@@ -148,3 +167,118 @@ def test_attention_forward_dispatch_selects_the_tcgen05_stage_for_production_hea
     monkeypatch.setenv("MILES_DSA_ATTENTION_TC", "0")
     assert _kernels.attention_tc_stage(64, 0, "sm_100a") is None
     assert _kernels.attention_block_h(64) == 32 and _kernels.attention_head_blocks(64) == 2
+
+
+# --------------------------------------------------------------------------- #
+# cake top-k backend
+# --------------------------------------------------------------------------- #
+
+
+def test_core_topk_resolver_defers_the_plugin_import():
+    """``get_dsa_topk_fn("cake")`` is a plain callable; the plugin (and its CUDA extensions) load on the first call."""
+    topk = _load("test_dsa_topk_module", "miles/kernels/attention/dsa/topk.py")
+    before = {name for name in sys.modules if name.startswith("miles_plugins")}
+    fn = topk.get_dsa_topk_fn("cake")
+    assert callable(fn) and fn is topk.cake_dsa_topk
+    assert {name for name in sys.modules if name.startswith("miles_plugins")} == before
+    assert topk.get_dsa_topk_fn("torch") is topk.torch_dsa_topk
+    assert topk.get_dsa_topk_fn("flashinfer") is topk.flashinfer_dsa_topk
+    with pytest.raises(ValueError, match="Unsupported miles DSA topk backend"):
+        topk.get_dsa_topk_fn("nope")
+    # The plugin validates before touching CUDA: GLM-5's 2048 exceeds the kernel's 512 slots.
+    with pytest.raises(ValueError, match="512"):
+        fn(torch.zeros(2, 8192), 2048)
+
+
+def test_plugin_topk_backends_include_cake():
+    from miles.kernels.attention.dsa.cake import ops
+
+    assert set(ops._TOPK_BACKENDS) >= {"torch", "flashinfer", "cake"}
+    assert ops.get_topk_fn("cake") is ops.cake_topk
+
+    def replay_wrapper(logits, topk):  # a replay-manager style callable passes through untouched
+        return logits
+
+    assert ops.get_topk_fn(replay_wrapper) is replay_wrapper
+    with pytest.raises(ValueError, match="unknown DSA top-k backend"):
+        ops.get_topk_fn("nope")
+
+
+def test_dsa_topk_validates_before_any_launch(monkeypatch):
+    from miles.kernels.attention.dsa.cake import _kernels
+
+    monkeypatch.setattr(_kernels, "_kernel", lambda name, device: pytest.fail(f"{name} was launched"))
+    logits = torch.zeros(3, 1024)
+    with pytest.raises(TypeError, match="float32"):
+        _kernels.dsa_topk(logits.half(), 64)
+    with pytest.raises(TypeError, match="2-D"):
+        _kernels.dsa_topk(logits.unsqueeze(0), 64)
+    with pytest.raises(ValueError, match="32768"):
+        _kernels.dsa_topk(torch.zeros(1, 32769), 64)
+    with pytest.raises(ValueError, match="512"):
+        _kernels.dsa_topk(logits, 513)
+    with pytest.raises(ValueError, match="1 <= topk"):
+        _kernels.dsa_topk(logits, 0)
+    # Valid requests on CPU tensors stop at the device check, still ahead of the kernel loader.
+    with pytest.raises(ValueError, match="CUDA"):
+        _kernels.dsa_topk(logits, 64)
+    with pytest.raises(ValueError, match="CUDA"):
+        _kernels.dsa_topk(torch.zeros(3, 100), 512)  # topk > num_keys: -inf columns are padded first
+    assert [_kernels.topk_capacity(n) for n in (1, 4096, 4097, 8192, 8193, 16384, 16385, 32768)] == [
+        4096,
+        4096,
+        8192,
+        8192,
+        16384,
+        16384,
+        32768,
+        32768,
+    ]
+    for bad in (0, 32769):
+        with pytest.raises(ValueError, match="1..32768"):
+            _kernels.topk_capacity(bad)
+
+
+def test_parser_accepts_the_cake_topk_backend():
+    from miles_plugins.models.glm5.arguments import add_dsa_arguments, normalize_dsa_args
+
+    parser = add_dsa_arguments(ArgumentParser())
+    assert parser.parse_args([]).miles_dsa_topk_backend == "torch"
+    assert parser.parse_args(["--miles-dsa-topk-backend", "cake"]).miles_dsa_topk_backend == "cake"
+    with pytest.raises(SystemExit):
+        parser.parse_args(["--miles-dsa-topk-backend", "nope"])
+    # Native Megatron DSA cannot host the generated kernel.
+    with pytest.raises(ValueError, match="only available with --dsa-impl miles"):
+        normalize_dsa_args(Namespace(dsa_impl="megatron", miles_dsa_topk_backend="cake"), None)
+    args = Namespace(dsa_impl="miles", miles_dsa_topk_backend="cake")
+    normalize_dsa_args(args, None)
+    assert args.miles_dsa_topk_backend == "cake"
+
+
+def test_glm5_rejects_the_cake_topk_backend(monkeypatch):
+    backend = _load("test_dsa_backend_topk_module", "miles/kernels/attention/dsa/backend.py")
+    with pytest.raises(ValueError, match=r"index_topk <= 512.*GLM-5.*2048 keys per query"):
+        backend.check_cake_topk_backend("cake", 2048, model="GLM-5")
+    backend.check_cake_topk_backend("torch", 2048, model="GLM-5")
+    backend.check_cake_topk_backend("flashinfer", 2048, model="GLM-5")
+    # Within the limit: the device check only runs on CUDA hosts (the kernel loader enforces it again).
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    backend.check_cake_topk_backend("cake", 512, model="DeepSeek-V4.1")
+    backend.check_cake_topk_backend("cake", None, model="DeepSeek-V4.1")
+    # The plugin specs call the guard before the model is built.
+    for relative, scopes in (
+        ("miles_plugins/models/glm5/glm5.py", {"get_glm5_spec", "__init__"}),
+        ("miles_plugins/models/deepseek_v4/deepseek_v4.py", {"get_dsv4_spec"}),
+        ("miles_plugins/models/deepseek_v4_1/deepseek_v4_1.py", {"get_dsv41_spec"}),
+    ):
+        tree = ast.parse((REPO / relative).read_text())
+        callers = {
+            node.name
+            for node in ast.walk(tree)
+            if isinstance(node, ast.FunctionDef)
+            and any(
+                isinstance(call, ast.Call) and getattr(call.func, "id", None) == "check_cake_topk_backend"
+                for call in ast.walk(node)
+            )
+        }
+        assert scopes <= callers, (relative, callers)

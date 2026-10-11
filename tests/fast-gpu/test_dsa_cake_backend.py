@@ -6,6 +6,9 @@ Covers both model contracts on Blackwell (SM100a / SM103a):
   ``lightning_indexer`` vs ``lighting_indexer`` (logits, selected scores, gradients).
 * DeepSeek-V4 ``bshd`` MQA (``d = 512``, FP32 sink, batched): ``sparse_attention`` vs ``sparse_attn_tilelang`` and
   the batched ``sbhd`` indexer logits vs ``batched_indexer_fwd``.
+* The generated FP32 row top-k (``--miles-dsa-topk-backend cake``, ``-k topk``): exact match with a CPU reference
+  of its contract, bit-identical repeated launches, agreement with ``torch.topk`` / FlashInfer up to boundary ties,
+  on ``thd``-style flattened rows and through the DeepSeek-V4.1 ``indexer_select`` seam.
 
 Every cake gradient is checked to be bit-identical across two passes.  The TileLang comparisons skip when
 ``tilelang`` is not importable; the FP32-reference and determinism checks always run.
@@ -326,3 +329,185 @@ def test_dsv4_batched_indexer_logits_match_reference_and_tilelang():
 
         theirs = indexer_logits_sbhd(q, k, weights.float(), ks, ke)
         assert _rel_err(logits, theirs) < 1e-3
+
+
+# --------------------------------------------------------------------------- #
+# Deterministic FP32 row top-k (--miles-dsa-topk-backend cake)
+# --------------------------------------------------------------------------- #
+
+
+def ref_topk(logits, topk):
+    """CPU reference of the cake top-k contract in float64 / int64.
+
+    Slot ``j`` holds the key with the ``j``-th highest score (``torch.sort(stable=True)`` descending, so equal
+    scores keep ascending index order), ``-inf`` and NaN are never selected and the unfilled tail is ``-1``.
+    """
+    x = logits.detach().to(device="cpu", dtype=torch.float64)
+    selectable = ~(torch.isnan(x) | (x == -math.inf))
+    keys = torch.where(selectable, x, torch.full_like(x, -math.inf))
+    order = torch.sort(keys, dim=-1, descending=True, stable=True).indices
+    take = min(topk, x.shape[1])
+    picked = torch.gather(selectable, 1, order)[:, :take]
+    out = torch.where(picked, order[:, :take], torch.full_like(order[:, :take], -1))
+    return torch.nn.functional.pad(out, (0, topk - take), value=-1).to(torch.int32)
+
+
+def _topk_logits(rows, num_keys, seed):
+    """FP32 rows with exact ties (every third row quantized to half-integers), random valid prefix lengths like
+    causal / compressed-length masks (row 0 all ``-inf``, row 1 fewer finite keys than any tested top-k, row 2
+    full) and 5 % scattered ``-inf`` inside the prefix."""
+    gen = torch.Generator().manual_seed(seed)
+    x = torch.randn(rows, num_keys, generator=gen)
+    tie_rows = torch.arange(rows) % 3 == 0
+    x[tie_rows] = torch.round(x[tie_rows] * 2) / 2
+    lens = torch.randint(0, num_keys + 1, (rows,), generator=gen)
+    lens[0], lens[1], lens[2] = 0, min(num_keys, 7), num_keys
+    x = x.masked_fill(torch.arange(num_keys)[None, :] >= lens[:, None], -math.inf)
+    x = x.masked_fill(torch.rand(rows, num_keys, generator=gen) < 0.05, -math.inf)
+    return x.cuda()
+
+
+def _picks(logits, indices):
+    """Per row: ``(sorted selected scores, selected keys strictly above the k-th score)``.
+
+    De-tie rule: backends must agree on the multiset of selected scores, but keys tied with the k-th (lowest
+    selected) score may be chosen arbitrarily by ``torch.topk`` / FlashInfer while the cake kernel takes the
+    smallest indices, so those keys are excluded from the index-set comparison.
+    """
+    x = logits.detach().to(device="cpu", dtype=torch.float64)
+    idx = indices.detach().to(device="cpu", dtype=torch.int64)
+    out = []
+    for r in range(x.shape[0]):
+        picks = idx[r][idx[r] >= 0]
+        assert picks.unique().numel() == picks.numel(), f"row {r} selects a key twice"
+        scores = x[r, picks]
+        above = picks[scores > scores.min()] if picks.numel() else picks
+        out.append((scores.sort().values.tolist(), set(above.tolist())))
+    return out
+
+
+_TOPK_CASES = [
+    # (rows, num_keys, topk): thd-style flattened rows as lightning_indexer / select_topk feed the backend
+    *((rows, num_keys, topk) for rows in (37, 256) for num_keys in (512, 513, 4096, 8191) for topk in (64, 512)),
+    (37, 100, 512),  # topk > num_keys: the host pads -inf columns, the kernel writes the -1 tail
+    (37, 12000, 512),  # capacity-16384 variant
+    (37, 16385, 64),  # capacity-32768 variant
+    (37, 32768, 512),  # the maximum row length
+]
+
+
+@pytest.mark.parametrize(("rows", "num_keys", "topk"), _TOPK_CASES, ids=lambda value: str(value))
+def test_cake_topk_matches_reference_and_is_bit_identical(rows, num_keys, topk):
+    cake = _cake()
+    from miles.kernels.attention.dsa.topk import get_dsa_topk_fn, torch_dsa_topk
+
+    logits = _topk_logits(rows, num_keys, seed=rows * 100003 + num_keys * 7 + topk)
+    expected = ref_topk(logits, topk)
+    out = cake.cake_topk(logits, topk)
+    assert out.dtype == torch.int32 and out.shape == (rows, topk)
+    assert torch.equal(out.cpu(), expected)
+    assert torch.equal(get_dsa_topk_fn("cake")(logits, topk), out)
+    assert torch.equal(cake.select_topk(logits, topk, backend="cake"), out)
+    for _ in range(19):
+        assert torch.equal(cake.cake_topk(logits, topk), out), "cake top-k is not bit-identical across launches"
+    theirs = torch_dsa_topk(logits, min(topk, num_keys))
+    assert _picks(logits, out) == _picks(logits, theirs)
+
+
+@pytest.mark.parametrize(("rows", "num_keys", "topk"), [(256, 4096, 512), (37, 8192, 64)])
+def test_cake_topk_agrees_with_flashinfer_up_to_ties(rows, num_keys, topk):
+    cake = _cake()
+    pytest.importorskip("flashinfer")
+    logits = _topk_logits(rows, num_keys, seed=11)
+    assert _picks(logits, cake.cake_topk(logits, topk)) == _picks(logits, cake.flashinfer_topk(logits, topk))
+
+
+def test_glm5_lightning_indexer_with_cake_topk_backend():
+    """The thd seam: ``lightning_indexer(topk_backend="cake")`` selects per the contract and replay callables pass."""
+    cake = _cake()
+    rows, heads, topk = 512, 32, 128
+    index_q, index_k, weights, ks, ke = _glm5_indexer_inputs(rows, heads, topk, "cuda")
+    logits = cake.indexer_logits(index_q, index_k, weights, ks, ke, layout="thd")
+    scores, topk_indices = cake.lightning_indexer(
+        index_q, index_k, weights, ks, ke, topk, layout="thd", topk_backend="cake"
+    )
+    assert torch.equal(topk_indices.cpu(), ref_topk(logits, topk))
+    assert torch.equal(scores, cake.extract_topk_scores(logits, topk_indices))
+    # causal rows: row r sees r + 1 keys, so early rows end in -1 and late rows fill every slot
+    assert (topk_indices[0, 1:] == -1).all() and (topk_indices[-1] >= 0).all()
+    pinned = topk_indices.flip(-1)
+    _, replayed = cake.lightning_indexer(
+        index_q, index_k, weights, ks, ke, topk, layout="thd", topk_backend=lambda logits, k: pinned
+    )
+    assert torch.equal(replayed, pinned)
+
+
+def _ref_logits_sbhd(q, k, weights, cu_ks, cu_ke):
+    """``indexer_logits_sbhd`` in plain torch: ``q [S, B, H, D]``, ``k [S_kv, B, D]``, ``weights [S, B, H]`` ->
+    FP32 ``[B, S, S_kv]`` with ``-inf`` outside each query's ``[ks, ke)``."""
+    sims = torch.relu(torch.einsum("sbhd,kbd->bshk", q.float(), k.float()))
+    logits = torch.einsum("bshk,sbh->bsk", sims, weights.float())
+    keys = torch.arange(k.shape[0], device=k.device)
+    inside = (keys[None, :] >= cu_ks[:, None]) & (keys[None, :] < cu_ke[:, None])
+    return logits.masked_fill(~inside.unsqueeze(0), float("-inf"))
+
+
+@pytest.mark.parametrize("ratio", [1, 2])
+def test_dsv41_indexer_select_with_cake_topk_backend(ratio, monkeypatch):
+    """The DeepSeek-V4.1 ``bshd`` seam: compressed-length masking, ``n_kv < topk`` padding, int64 ``-1`` contract."""
+    cake = _cake()
+    try:
+        from miles_plugins.models.deepseek_v4_1.ops import indexer as v41
+    except ImportError as exc:  # Megatron / TransformerEngine are not part of every image
+        pytest.skip(f"DeepSeek-V4.1 plugin unavailable: {exc}")
+    from miles.kernels.attention.dsa.topk import torch_dsa_topk
+
+    # The seam under test is the selection: the logits come from the torch reference (no TileLang dependency).
+    monkeypatch.setattr(v41, "indexer_logits_sbhd", _ref_logits_sbhd)
+    device = "cuda"
+    gen = torch.Generator(device=device).manual_seed(6)
+    batch, seq, heads, dim, topk = 2, 256, 64, 128, 512
+    n_kv = seq // ratio
+    q = torch.randn(batch, seq, heads, dim, device=device, dtype=torch.bfloat16, generator=gen)
+    index_k = torch.randn(batch, n_kv, dim, device=device, dtype=torch.bfloat16, generator=gen)
+    weights = torch.randn(batch, seq, heads, device=device, dtype=torch.bfloat16, generator=gen)
+    lens = (torch.arange(seq, device=device) + 1) // ratio
+    common = dict(
+        compress_lens=lens,
+        candidates=None,
+        is_candidate_source=False,
+        uses_candidates=False,
+        candidate_topk_blocks=0,
+        candidate_block_size=1,
+        topk=topk,
+        allow_deep_select=False,
+        query_chunk=None,
+    )
+    fed = {}
+
+    def cake_fn(scores, k):
+        fed["cake"] = scores
+        return cake.cake_topk(scores, k)
+
+    def torch_fn(scores, k):
+        fed["torch"] = scores
+        return torch_dsa_topk(scores, k)
+
+    idx, _ = v41.indexer_select(q, index_k, weights, topk_fn=cake_fn, topk_backend="cake", **common)
+    assert idx.dtype == torch.int64 and idx.shape == (batch, seq, topk)
+    assert fed["cake"].shape == (batch * seq, topk) and fed["cake"].dtype == torch.float32  # -inf padded to topk
+    expected = ref_topk(fed["cake"], topk).reshape(batch, seq, topk).to(torch.int64)
+    assert torch.equal(idx.cpu(), expected), "cake indices are used as returned (no re-sort)"
+    assert ((idx < lens.view(1, seq, 1)) | (idx == -1)).all()
+    assert torch.equal((idx >= 0).sum(-1), lens.clamp(max=topk).expand(batch, seq))
+    idx2, _ = v41.indexer_select(q, index_k, weights, topk_fn=cake_fn, topk_backend="cake", **common)
+    assert torch.equal(idx, idx2)
+
+    # The torch path keeps its ascending-index layout and selects the same keys up to boundary ties.
+    idx_torch, _ = v41.indexer_select(q, index_k, weights, topk_fn=torch_fn, topk_backend="torch", **common)
+    assert torch.equal(fed["torch"], fed["cake"])
+    assert torch.equal(idx_torch, idx_torch.sort(dim=-1).values)
+    flat_scores = fed["cake"]
+    assert _picks(flat_scores, idx.reshape(batch * seq, topk)) == _picks(
+        flat_scores, idx_torch.reshape(batch * seq, topk)
+    )
