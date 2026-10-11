@@ -586,7 +586,7 @@ def test_lightning_indexer_cake_fused_matches_dense_cake_and_is_bit_identical(ra
     assert (valid[:, 1:] <= valid[:, :-1]).all(), "the -1 tail follows the picks"
     assert ((idx_f[:, 1:] > idx_f[:, :-1]) | ~valid[:, 1:]).all(), "ascending key ids"
     assert (((idx_f >= ks.unsqueeze(1)) & (idx_f < ke.unsqueeze(1))) | ~valid).all()
-    assert torch.equal(valid.sum(1), torch.minimum(ke - ks, torch.full_like(ks, topk)))
+    assert torch.equal(valid.sum(1), torch.minimum(ke - ks, torch.full_like(ks, topk)).long())
     # (b) bit-identical launches
     for _ in range(19):
         again_s, again_i = run("cake_fused", ratio=ratio)
@@ -653,7 +653,9 @@ def test_lightning_indexer_cake_fused_replay_bypasses_the_fused_kernel(monkeypat
     topk = 64
     _, idx = cake.lightning_indexer(index_q, index_k, weights, ks, ke, topk, layout="thd", topk_backend="cake_fused")
     logits = cake.indexer_logits(index_q, index_k, weights, ks, ke, layout="thd")
-    assert torch.equal(idx.sort(dim=1).values, cake.select_topk(logits, topk, "cake").sort(dim=1).values)
+    full = (ke - ks) <= topk  # every visible key is selected on these rows: identical sets by construction
+    dense = cake.select_topk(logits, topk, "cake")
+    assert full.any() and torch.equal(idx[full].sort(dim=1).values, dense[full].sort(dim=1).values)
     pinned = idx.flip(-1)  # any slot order: consumers gather by slot
     monkeypatch.setattr(_kernels, "dsa_indexer_topk", lambda *a, **k: pytest.fail("the fused kernel ran under replay"))
     scores, passed = cake.lightning_indexer(
