@@ -17,6 +17,9 @@ Public surface (all layouts of :mod:`.layouts`):
   explicit ``topk_indices`` override for rollout replay; replaces
   ``glm5.ops.indexer.lighting_indexer`` / ``IndexerFunction`` and
   ``deepseek_v4...tilelang_indexer.V4IndexerFunction``.
+* :func:`fused_indexer_topk_scores` -- the ``cake_fused`` switch of :func:`lightning_indexer`
+  (``thd``): the generated fused scoring + top-k stages return the selected scores and
+  indices without the dense ``[T, T_kv]`` logits; same deterministic backward.
 * :func:`sparse_attention_forward` / :func:`sparse_attention_backward` /
   :func:`indexer_backward` -- non-autograd entry points for tests and benchmarks.
 
@@ -48,6 +51,8 @@ INDEXER_REDUCE_SPLIT = 4
 ATTENTION_REDUCE_SPLIT = 4
 
 TopkFn = Callable[[torch.Tensor, int], torch.Tensor]
+# Not a top-k backend over logits: the ``lightning_indexer`` switch to the fused scoring + top-k stages.
+FUSED_TOPK_BACKEND = "cake_fused"
 
 
 # --------------------------------------------------------------------------- #
@@ -79,6 +84,12 @@ def get_topk_fn(backend: str | TopkFn) -> TopkFn:
     the registry the TileLang path uses too."""
     if callable(backend):
         return backend
+    if backend == FUSED_TOPK_BACKEND:
+        raise ValueError(
+            f"{backend!r} is not a top-k backend over logits: it is the fused indexer switch "
+            f"lightning_indexer(..., topk_backend={backend!r}), which scores and selects in one kernel pair "
+            "without logits; the top-k backends are registered in miles.kernels.attention.dsa.topk"
+        )
     return get_dsa_topk_fn(backend)
 
 
@@ -437,6 +448,22 @@ def indexer_backward(
     return meta.rows_to_layout(dq), dw, dk
 
 
+def _indexer_scores_backward(ctx, grad_scores):
+    """The backward shared by the selected-score Functions: ``(d index_q, d index_k, d weights)`` from the saved
+    ``(index_q, index_k, weights, topk_indices)`` -- nothing derived from the dense logits is needed."""
+    index_q, index_k, weights, topk_indices = ctx.saved_tensors
+    dq, dw, dk = indexer_backward(
+        index_q,
+        index_k,
+        weights,
+        topk_indices,
+        grad_scores,
+        layout=ctx.layout,
+        workspace_bytes=ctx.workspace_bytes,
+    )
+    return dq, dk, dw.to(weights.dtype)
+
+
 class IndexerScoresFunction(torch.autograd.Function):
     """Top-k indexer scores with the unified deterministic backward."""
 
@@ -449,17 +476,8 @@ class IndexerScoresFunction(torch.autograd.Function):
 
     @staticmethod
     def backward(ctx, grad_scores):
-        index_q, index_k, weights, topk_indices = ctx.saved_tensors
-        dq, dw, dk = indexer_backward(
-            index_q,
-            index_k,
-            weights,
-            topk_indices,
-            grad_scores,
-            layout=ctx.layout,
-            workspace_bytes=ctx.workspace_bytes,
-        )
-        return dq, dk, dw.to(weights.dtype), None, None, None, None
+        dq, dk, dw = _indexer_scores_backward(ctx, grad_scores)
+        return dq, dk, dw, None, None, None, None
 
 
 def indexer_topk_scores(
@@ -481,6 +499,115 @@ def indexer_topk_scores(
     return IndexerScoresFunction.apply(index_q, index_k, weights, topk_indices, logits, layout, workspace_bytes)
 
 
+def _causal_segments(ks: torch.Tensor, ke: torch.Tensor, num_rows: int, num_kv: int, ratio: int):
+    """The segment table ``(cu_seqlens_q, cu_seqlens_k)`` (int32 ``[S + 1]``) behind ``thd`` causal key bounds.
+
+    Segments start where ``cu_seqlen_ks`` changes; segment ``s`` owns the keys ``[ks_s, ks_{s+1})`` (the last one up
+    to ``num_kv``).  Row ``u`` of a segment with ``Lq`` queries and ``Lk`` keys must satisfy
+    ``ke - ks == min(Lk, max(0, floor((offset + u + 1) / ratio)))`` with ``offset = Lk - Lq`` at ``ratio == 1`` and
+    ``0`` otherwise: the causal prefix of GLM-5 / DeepSeek-V3.2 and the compressed-key prefix of DeepSeek-V4.  Any
+    other pattern (a sliding-window start, a block of query rows cut before its sequence end, context-parallel row
+    shuffles) raises ``ValueError`` naming the first offending row; the dense path serves those calls.  Reads the
+    two bound vectors on the host (one device-to-host copy per call).
+    """
+    if isinstance(ratio, bool) or not isinstance(ratio, int) or ratio < 1:
+        raise ValueError(f"ratio must be a positive integer, got {ratio!r}")
+    if tuple(ks.shape) != (num_rows,) or tuple(ke.shape) != (num_rows,):
+        raise ValueError(f"cu_seqlen_ks/ke must be [{num_rows}], got {tuple(ks.shape)} / {tuple(ke.shape)}")
+    if num_rows == 0:
+        empty = torch.zeros(1, dtype=torch.int32, device=ks.device)
+        return empty, empty.clone()
+    ks64 = ks.detach().to(device="cpu", dtype=torch.int64)
+    ke64 = ke.detach().to(device="cpu", dtype=torch.int64)
+    starts = torch.cat([torch.zeros(1, dtype=torch.int64), torch.nonzero(ks64[1:] != ks64[:-1]).flatten() + 1])
+    ends = torch.cat([starts[1:], torch.tensor([num_rows])])
+    kstarts = ks64[starts]
+    kends = torch.cat([kstarts[1:], torch.tensor([num_kv])])
+    if kstarts[0] < 0 or (kends < kstarts).any():
+        raise ValueError(
+            "the fused indexer top-k needs key starts that increase with the packed sequences and end within "
+            f"index_k ({num_kv} keys), got segment key starts {kstarts[:8].tolist()}"
+            f"{'...' if len(kstarts) > 8 else ''}"
+        )
+    lq, lk = ends - starts, kends - kstarts
+    seg = torch.repeat_interleave(torch.arange(starts.numel()), lq)
+    u = torch.arange(num_rows) - starts[seg]
+    offset = (lk - lq) if ratio == 1 else torch.zeros_like(lk)
+    visible = torch.div(offset[seg] + u + 1, ratio, rounding_mode="floor").clamp(min=0)
+    visible = torch.minimum(visible, lk[seg])
+    mismatch = torch.nonzero(ke64 != ks64 + visible).flatten()
+    if mismatch.numel():
+        t = int(mismatch[0])
+        s = int(seg[t])
+        raise ValueError(
+            f"row {t} has the key range [{int(ks64[t])}, {int(ke64[t])}) but the fused indexer top-k scores the "
+            f"causal prefix [{int(ks64[t])}, {int(ks64[t] + visible[t])}) of its segment {s} ({int(lq[s])} queries, "
+            f"{int(lk[s])} keys, ratio {ratio}); use the dense path for other key bounds"
+        )
+    cu_q = torch.cat([starts, torch.tensor([num_rows])]).to(torch.int32)
+    cu_k = torch.cat([kstarts, torch.tensor([num_kv])]).to(torch.int32)
+    return cu_q.to(ks.device), cu_k.to(ks.device)
+
+
+class FusedIndexerScoresFunction(torch.autograd.Function):
+    """``thd`` fused indexer scoring + top-k with the backward of :class:`IndexerScoresFunction`."""
+
+    @staticmethod
+    def forward(ctx, index_q, index_k, weights, cu_seqlen_ks, cu_seqlen_ke, topk, ratio, workspace_bytes):
+        from . import _kernels as weave
+
+        q_flat, k_flat, w_flat, meta = layouts.flatten_indexer_inputs(index_q, index_k, weights, "thd")
+        if q_flat.dtype != torch.bfloat16 or k_flat.dtype != torch.bfloat16:
+            raise TypeError("indexer expects BF16 index_q and index_k")
+        ks = cu_seqlen_ks.to(torch.int32).contiguous()
+        ke = cu_seqlen_ke.to(torch.int32).contiguous()
+        cu_q, cu_k = _causal_segments(ks, ke, meta.num_rows, meta.num_kv, ratio)
+        # softmax_scale = 1.0: the dense path scores relu(q . k) without a scale (callers fold theirs into the inputs).
+        local, scores = weave.dsa_indexer_topk(
+            q_flat, k_flat, w_flat, cu_q, cu_k, topk=topk, softmax_scale=1.0, ratio=ratio
+        )
+        # The kernel emits segment-local key ids; the consumers and the backward take global key rows (-1 stays).
+        topk_indices = torch.where(local >= 0, local + ks.unsqueeze(1), local)
+        ctx.save_for_backward(index_q, index_k, weights, topk_indices)
+        ctx.layout = "thd"
+        ctx.workspace_bytes = workspace_bytes
+        ctx.mark_non_differentiable(topk_indices)
+        return scores, topk_indices
+
+    @staticmethod
+    def backward(ctx, grad_scores, _grad_indices):
+        dq, dk, dw = _indexer_scores_backward(ctx, grad_scores)
+        return dq, dk, dw, None, None, None, None, None
+
+
+def fused_indexer_topk_scores(
+    index_q: torch.Tensor,
+    index_k: torch.Tensor,
+    weights: torch.Tensor,
+    cu_seqlen_ks: torch.Tensor,
+    cu_seqlen_ke: torch.Tensor,
+    topk: int,
+    *,
+    ratio: int = 1,
+    workspace_bytes: int | None = None,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Fused indexer scoring + top-k (``thd``): ``(scores, topk_indices)`` with gradients for q, k and weights.
+
+    The ``cake_fused`` switch of :func:`lightning_indexer`: the generated scan + finalize stages (Blackwell SM100a /
+    SM103a) score the keys in FP32 and select each row's top-k on chip, so the dense ``[T, T_kv]`` logits are never
+    materialised.  The scores are those of :func:`indexer_logits` at the selection (FP32, no scale; the two kernels
+    round their reductions in different orders, so a near-tie may select differently from :func:`cake_topk`).
+    ``topk_indices`` is int32 ``[T, topk]`` of global key rows in ascending order with the ``-1`` tail (consumers
+    gather by slot), ``scores`` FP32 ``[T, topk]`` with ``-inf`` at the tail.  Limits: ``index_q`` with 32 heads of
+    dim 128, ``1 <= topk <= 512``, key bounds that are each packed sequence's causal (``ratio == 1``) or
+    compressed-key (``ratio >= 2``) prefix; everything else raises ``ValueError`` -- there is no silent fallback.
+    Bit-identical across calls; the backward is :func:`indexer_backward`, as for every other backend.
+    """
+    return FusedIndexerScoresFunction.apply(
+        index_q, index_k, weights, cu_seqlen_ks, cu_seqlen_ke, topk, ratio, workspace_bytes
+    )
+
+
 def lightning_indexer(
     index_q: torch.Tensor,
     index_k: torch.Tensor,
@@ -492,15 +619,29 @@ def lightning_indexer(
     layout: str = "thd",
     topk_backend: str | TopkFn = "torch",
     topk_indices: torch.Tensor | None = None,
+    ratio: int = 1,
     workspace_bytes: int | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Indexer logits -> top-k selection -> differentiable selected scores.
 
     ``topk_backend`` is a registered name or any ``fn(logits, topk)`` callable (a
     replay-manager wrapper, for instance); ``topk_indices`` bypasses selection
-    entirely (rollout replay).  Returns ``(scores, topk_indices)``: ``[T, topk]``
-    (``thd``) or batch-major ``[B, S, topk]``.
+    entirely (rollout replay).  ``topk_backend="cake_fused"`` (``thd`` only) replaces
+    the three steps by :func:`fused_indexer_topk_scores` -- no dense logits; the key
+    bounds must be each sequence's causal / compressed-key prefix (``ratio``) -- except
+    under ``topk_indices``, where the dense path scores the given selection as for
+    every backend.  Returns ``(scores, topk_indices)``: ``[T, topk]`` (``thd``) or
+    batch-major ``[B, S, topk]``.
     """
+    fused = isinstance(topk_backend, str) and topk_backend == FUSED_TOPK_BACKEND
+    if fused and topk_indices is None:
+        if layout != "thd":
+            raise ValueError(f"topk_backend={FUSED_TOPK_BACKEND!r} supports layout='thd' only, got {layout!r}")
+        return fused_indexer_topk_scores(
+            index_q, index_k, weights, cu_seqlen_ks, cu_seqlen_ke, topk, ratio=ratio, workspace_bytes=workspace_bytes
+        )
+    if ratio != 1 and not fused:
+        raise ValueError(f"ratio applies to topk_backend={FUSED_TOPK_BACKEND!r} only, got ratio={ratio!r}")
     logits = indexer_logits(index_q, index_k, weights, cu_seqlen_ks, cu_seqlen_ke, layout=layout)
     if topk_indices is None:
         topk_indices = select_topk(logits, topk, topk_backend)
