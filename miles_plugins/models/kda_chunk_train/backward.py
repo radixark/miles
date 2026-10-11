@@ -98,10 +98,11 @@ class ChunkLayout:
     trailing pad chunk); ``seq_chunk_start[n]``: first chunk of sequence ``n`` (``N + 1`` entries);
     ``chunk_indices[c]``: ``(sequence, chunk index within it)`` of real chunk ``c`` -- the rows of fla's
     ``prepare_chunk_indices`` for the same packing, handed to the fla forward of the ``deterministic_fla_fwd``
-    mode; ``cp_cu_first`` / ``cp_cu_last``: int32 ``[0, L]`` of the first / last sequence, the two-entry
-    ``cu_seqlens`` fla's CP pre-process kernels index.  All of these are int32 views of ONE device buffer
-    filled by one host-to-device copy.  ``internal_rows[r]`` (int64): internal row of input row ``r``, built
-    and uploaded the first time :meth:`scatter` needs it.
+    mode (``chunk_indices_flat`` is its storage; the ``[nc, 2]`` view is taken on first use); ``cp_cu_first`` /
+    ``cp_cu_last``: int32 ``[0, L]`` of the first / last sequence, the two-entry ``cu_seqlens`` fla's CP
+    pre-process kernels index.  All of these are int32 views of ONE device buffer filled by one host-to-device
+    copy.  ``internal_rows[r]`` (int64): internal row of input row ``r``, built and uploaded the first time
+    :meth:`scatter` needs it.
 
     Layouts are immutable and cached per packing, so the derived counts below are computed once per
     layout rather than on every access from the backward's hot path.
@@ -114,7 +115,7 @@ class ChunkLayout:
     chunk_bos: torch.Tensor
     chunk_len: torch.Tensor
     seq_chunk_start: torch.Tensor
-    chunk_indices: torch.Tensor
+    chunk_indices_flat: torch.Tensor
     cp_cu_first: torch.Tensor
     cp_cu_last: torch.Tensor
 
@@ -147,6 +148,11 @@ class ChunkLayout:
             and all(length % CHUNK == 0 for length in self.lengths)
             and all(offset == sum(self.lengths[:i]) for i, offset in enumerate(self.offsets))
         )
+
+    @cached_property
+    def chunk_indices(self) -> torch.Tensor:
+        """int32 ``[num_chunks, 2]``: fla's chunk indices of this packing (a view of the uploaded tables)."""
+        return self.chunk_indices_flat.view(self.num_chunks, 2)
 
     @cached_property
     def internal_rows(self) -> torch.Tensor:
@@ -277,17 +283,21 @@ def _build_layout(lengths, offsets, rows_external: int, device) -> ChunkLayout:
 
     dev = torch.empty(host.numel(), dtype=torch.int32, device=device)
     dev.copy_(host, non_blocking=pinned)
+    # every table view comes out of ONE split call (gap sections may be empty) rather than one slice op per table
+    bos, _, clen, _, start, _, ci, _, cp_first, cp_last, _ = dev.split(
+        [nc_pad, table - nc_pad, nc_pad, table - nc_pad, n + 1, o_ci - o_start - (n + 1), 2 * nc, o_cp - o_ci - 2 * nc, 2, 2, _TABLE_ALIGN - 4]
+    )
     return ChunkLayout(
         lengths=lengths,
         offsets=offsets,
         rows_external=int(rows_external),
         seq_chunk_start_cpu=tuple(starts),
-        chunk_bos=dev[:nc_pad],
-        chunk_len=dev[table : table + nc_pad],
-        seq_chunk_start=dev[o_start : o_start + n + 1],
-        chunk_indices=dev[o_ci : o_ci + 2 * nc].view(nc, 2),
-        cp_cu_first=dev[o_cp : o_cp + 2],
-        cp_cu_last=dev[o_cp + 2 : o_cp + 4],
+        chunk_bos=bos,
+        chunk_len=clen,
+        seq_chunk_start=start,
+        chunk_indices_flat=ci,
+        cp_cu_first=cp_first,
+        cp_cu_last=cp_last,
     )
 
 

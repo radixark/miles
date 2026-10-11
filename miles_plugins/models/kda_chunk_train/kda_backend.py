@@ -394,9 +394,10 @@ def chunk_kda(
     source = forward_source if forward_source is not None else FORWARD_SOURCES[DETERMINISTIC_DEFAULT]
     if source not in ("fla", "cake"):
         raise ValueError(f"forward_source must be 'fla' or 'cake', got {source!r}")
-    from fla.ops.kda import chunk_kda as fla_chunk_kda
 
     def fallback(reason: str):
+        from fla.ops.kda import chunk_kda as fla_chunk_kda
+
         _warn_fallback_once(reason)
         return fla_chunk_kda(
             q,
