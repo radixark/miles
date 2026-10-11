@@ -309,6 +309,84 @@ def test_cake_topk_backend_rejects_long_key_rows(monkeypatch):
         backend.check_cake_topk_backend("cake", 512, model="DeepSeek-V4.1", max_keys=32769)
 
 
+def test_dsv41_topk_dump_is_env_gated(monkeypatch, tmp_path):
+    """``MILES_DSV41_TOPK_DUMP_DIR`` writes sampled selections next to the torch reference; unset writes nothing."""
+    dump = _load("test_dsv41_topk_dump_module", "miles_plugins/models/deepseek_v4_1/ops/topk_dump.py")
+    topk_module = _load("test_dsa_topk_module_for_dump", "miles/kernels/attention/dsa/topk.py")
+    torch.manual_seed(0)
+    bsz, rows, n_kv, topk = 1, 3, 6, 4
+    lens = torch.tensor([1, 4, 6])
+    scores = torch.randn(bsz * rows, n_kv).masked_fill(torch.arange(n_kv)[None, :] >= lens[:, None], -torch.inf)
+    # the seam's torch path on the same rows
+    idx = topk_module.torch_dsa_topk(scores, topk).reshape(bsz, rows, topk).sort(dim=-1).values.to(torch.int64)
+    idx = torch.where(idx < lens.unsqueeze(-1), idx, -1)
+
+    monkeypatch.delenv("MILES_DSV41_TOPK_DUMP_DIR", raising=False)
+    dump.topk_dump_config.cache_clear()
+    assert dump.maybe_dump_topk("torch", 0, scores, idx, lens, topk) is None
+    assert list(tmp_path.iterdir()) == []
+
+    out_dir = tmp_path / "dumps"
+    monkeypatch.setenv("MILES_DSV41_TOPK_DUMP_DIR", str(out_dir))
+    monkeypatch.setenv("MILES_DSV41_TOPK_DUMP_EVERY", "2")
+    monkeypatch.setenv("MILES_DSV41_TOPK_DUMP_MAX", "2")
+    monkeypatch.setenv("MILES_DSV41_TOPK_DUMP_LAYERS", "0,3")
+    dump.topk_dump_config.cache_clear()
+    paths = [dump.maybe_dump_topk("torch", 0, scores, idx, lens, topk) for _ in range(6)]
+    assert [path is not None for path in paths] == [True, False, True, False, False, False], "EVERY=2, MAX=2"
+    assert paths[0] == str(out_dir / "rank0_layer0_call0.pt") and paths[2] == str(out_dir / "rank0_layer0_call2.pt")
+    assert dump.maybe_dump_topk("torch", 1, scores, idx, lens, topk) is None, "layer 1 is not in LAYERS"
+    assert dump.maybe_dump_topk("cake", 3, scores, idx, lens, topk) == str(out_dir / "rank0_layer3_call0.pt")
+    assert sorted(p.name for p in out_dir.iterdir()) == [
+        "rank0_layer0_call0.pt",
+        "rank0_layer0_call2.pt",
+        "rank0_layer3_call0.pt",
+    ]
+
+    payload = torch.load(paths[0])
+    assert set(payload) == {
+        "schema",
+        "backend",
+        "layer",
+        "rank",
+        "call",
+        "time",
+        "topk",
+        "n_kv",
+        "deep_select",
+        "compress_lens",
+        "idx",
+        "ref_idx",
+        "topvals",
+    }
+    assert (payload["schema"], payload["backend"], payload["layer"], payload["rank"], payload["call"]) == (
+        1,
+        "torch",
+        0,
+        0,
+        0,
+    )
+    assert payload["topk"] == topk and payload["n_kv"] == n_kv and payload["deep_select"] is False
+    assert isinstance(payload["time"], float)
+    assert torch.equal(payload["compress_lens"], lens)
+    assert payload["idx"].dtype == torch.int32 and payload["ref_idx"].dtype == torch.int32
+    assert torch.equal(payload["idx"], idx.to(torch.int32)) and torch.equal(payload["idx"], payload["ref_idx"])
+    assert (payload["idx"][0, 0, :3] == -1).all() and payload["idx"][0, 0, 3] == 0  # lens 1: one key, -1 first
+    assert payload["topvals"].shape == (bsz * rows, topk + 1) and payload["topvals"].dtype == torch.float32
+    assert (payload["topvals"][:, 1:] <= payload["topvals"][:, :-1]).all(), "descending"
+    assert torch.load(paths[2])["call"] == 2
+
+    # The V4.1 seam calls the hook once per chunk on both selection paths.
+    tree = ast.parse((REPO / "miles_plugins/models/deepseek_v4_1/ops/indexer.py").read_text())
+    seam = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "indexer_select")
+    calls = [
+        node
+        for node in ast.walk(seam)
+        if isinstance(node, ast.Call) and getattr(node.func, "id", None) == "maybe_dump_topk"
+    ]
+    assert len(calls) == 2
+
+
 def test_prebuild_is_scoped_to_the_stage_family(monkeypatch):
     """The attention / indexer operators never compile the top-k variants and vice versa; PREBUILD=0 stays lazy."""
     from miles.kernels.attention.dsa.cake import _jit, _kernels
