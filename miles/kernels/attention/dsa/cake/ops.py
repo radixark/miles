@@ -12,8 +12,9 @@ Public surface (all layouts of :mod:`.layouts`):
   ``deepseek_v4...tilelang_sparse_mla.sparse_attn_tilelang``.
 * :func:`indexer_logits`, :func:`select_topk`, :func:`indexer_topk_scores`,
   :func:`lightning_indexer` -- the indexer pipeline over the shared Miles top-k
-  backends (:mod:`miles.kernels.attention.dsa.topk`) or a caller-supplied top-k
-  callable, with an explicit ``topk_indices`` override for rollout replay; replaces
+  backends (:mod:`miles.kernels.attention.dsa.topk`: ``torch``, ``flashinfer``, or ``cake`` =
+  the generated deterministic :func:`cake_topk`) or a caller-supplied top-k callable, with an
+  explicit ``topk_indices`` override for rollout replay; replaces
   ``glm5.ops.indexer.lighting_indexer`` / ``IndexerFunction`` and
   ``deepseek_v4...tilelang_indexer.V4IndexerFunction``.
 * :func:`sparse_attention_forward` / :func:`sparse_attention_backward` /
@@ -54,9 +55,27 @@ TopkFn = Callable[[torch.Tensor, int], torch.Tensor]
 # --------------------------------------------------------------------------- #
 
 
+def cake_topk(logits: torch.Tensor, topk: int) -> torch.Tensor:
+    """The generated deterministic FP32 row top-k (``dsa_topk_fp32``) with the same ``-1`` convention.
+
+    ``logits`` is FP32 ``[rows, num_keys]`` with ``num_keys <= 32768`` and ``topk <= 512`` (SM100a /
+    SM103a); ``-inf`` and NaN positions are never selected.  Output layout contract: slot ``j`` of a
+    row holds the key with the ``j``-th highest score (ties: the smaller index first) and the unfilled
+    tail is ``-1`` (also when a row has fewer than ``topk`` finite scores).  This differs from the
+    ascending-index layout (``-1`` first) of the ``torch.topk`` + ``.sort`` paths; every consumer
+    gathers by slot and is position-independent, so callers use the output directly and must not
+    re-sort it.  Bit-identical run to run (no floating-point atomics).  Limits are enforced with a
+    ``ValueError``; there is no silent fallback to another backend.  Registered as ``"cake"`` in
+    :mod:`miles.kernels.attention.dsa.topk`.
+    """
+    from . import _kernels as weave
+
+    return weave.dsa_topk(logits, topk)
+
+
 def get_topk_fn(backend: str | TopkFn) -> TopkFn:
     """Resolve a top-k backend: a callable (e.g. a replay-manager wrapper) is used as is; a name
-    (``torch``, ``flashinfer``) resolves through :func:`miles.kernels.attention.dsa.topk.get_dsa_topk_fn`,
+    (``torch``, ``flashinfer``, ``cake``) resolves through :func:`miles.kernels.attention.dsa.topk.get_dsa_topk_fn`,
     the registry the TileLang path uses too."""
     if callable(backend):
         return backend

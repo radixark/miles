@@ -14,10 +14,14 @@ partials in an order fixed by the indices, so repeated passes on identical input
 Public surface (see :mod:`.ops`): :func:`sparse_attention`, :func:`lightning_indexer`,
 :func:`indexer_logits`, :func:`select_topk`, :func:`indexer_topk_scores`, plus the non-autograd
 :func:`sparse_attention_forward` / :func:`sparse_attention_backward` / :func:`indexer_backward`.
+The top-k backends (``torch``, ``flashinfer``, ``cake``) are registered in :mod:`miles.kernels.attention.dsa.topk`;
+the generated deterministic one is :func:`cake_topk` (``--miles-dsa-topk-backend cake``; FP32 rows of at most
+32768 keys, ``topk <= 512``).
 """
 
 from ._jit import SUPPORTED_CAPABILITIES, device_arch
 from .ops import (
+    cake_topk,
     extract_topk_scores,
     get_topk_fn,
     indexer_backward,
@@ -32,6 +36,7 @@ from .ops import (
 
 __all__ = [
     "SUPPORTED_CAPABILITIES",
+    "cake_topk",
     "device_arch",
     "extract_topk_scores",
     "get_topk_fn",

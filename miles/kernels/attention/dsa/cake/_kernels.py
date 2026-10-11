@@ -492,6 +492,86 @@ def dsa_indexer_backward_rows(index_q, index_k, weights, topk_indices, grad_scor
     )
 
 
+# --------------------------------------------------------------------------- #
+# indexer top-k
+# --------------------------------------------------------------------------- #
+
+# One exported variant per shared-memory row capacity (``num_keys <= capacity``), all traced for
+# ``K = TOPK_K`` slots: ``dsa_topk_fp32_c{capacity}_k512``.  ``TOPK_CAPACITIES[-1]`` is the kernel's
+# maximum row length; 4096 is the DeepSeek-V4.1 compressed row length.
+TOPK_CAPACITIES = (4096, 8192, 16384, 32768)
+TOPK_K = 512
+
+_TOPK_NO_ROW_END: dict = {}
+
+
+def _topk_name(capacity: int) -> str:
+    return f"dsa_topk_fp32_c{capacity}_k{TOPK_K}"
+
+
+def topk_capacity(num_keys: int) -> int:
+    """The exported top-k variant for a row length: the smallest ``TOPK_CAPACITIES`` entry with ``num_keys <= capacity``.
+
+    A variant stages at most ``capacity`` positions per row and has no device-side ``num_keys`` check,
+    so the host must select it here.
+    """
+    num_keys = int(num_keys)
+    if num_keys < 1 or num_keys > TOPK_CAPACITIES[-1]:
+        raise ValueError(f"top-k row length must be in 1..{TOPK_CAPACITIES[-1]}, got {num_keys}")
+    return next(capacity for capacity in TOPK_CAPACITIES if num_keys <= capacity)
+
+
+def _topk_no_row_end(device):
+    """The ignored ``row_end`` operand of a launch with ``has_row_end == 0`` (one int32 per device)."""
+    tensor = _TOPK_NO_ROW_END.get(device)
+    if tensor is None:
+        tensor = _TOPK_NO_ROW_END[device] = torch.zeros(1, dtype=torch.int32, device=device)
+    return tensor
+
+
+def dsa_topk(logits, topk: int):
+    """Deterministic FP32 row top-k: int32 ``[rows, topk]`` key indices of ``logits[rows, num_keys]``.
+
+    Slot ``j`` of a row holds the key with the ``j``-th highest score (ties: the smaller index first);
+    ``-inf`` and NaN positions are never selected and every unfilled slot is ``-1`` -- a tail after the
+    valid picks, also when a row has fewer than ``topk`` finite scores (the kernel writes it; nothing is
+    post-processed here).  Identical inputs give bit-identical outputs.  ``num_keys`` must be at most
+    ``TOPK_CAPACITIES[-1]`` and ``topk`` at most ``TOPK_K``: the exported variants are traced for
+    ``K = 512`` and a smaller ``topk`` keeps the first ``topk`` slots.  When ``topk > num_keys`` the
+    row is padded with ``-inf`` columns up to ``topk`` and the kernel pads the missing slots with ``-1``.
+    """
+    if logits.dim() != 2 or logits.dtype != torch.float32:
+        raise TypeError(f"top-k logits must be a 2-D float32 tensor, got {tuple(logits.shape)} {logits.dtype}")
+    rows, num_keys = (int(v) for v in logits.shape)
+    topk = int(topk)
+    if topk < 1 or topk > TOPK_K:
+        raise ValueError(f"the cake top-k backend supports 1 <= topk <= {TOPK_K}, got topk={topk}")
+    if num_keys > TOPK_CAPACITIES[-1]:
+        raise ValueError(
+            f"the cake top-k backend supports at most {TOPK_CAPACITIES[-1]} keys per row, got num_keys={num_keys}"
+        )
+    if num_keys < topk:
+        logits = torch.nn.functional.pad(logits, (0, topk - num_keys), value=float("-inf"))
+        num_keys = topk
+    if not logits.is_cuda:
+        raise ValueError("the cake top-k backend needs CUDA logits")
+    name = _topk_name(topk_capacity(num_keys))
+    if name not in MODULES:
+        raise NotImplementedError(f"{name}: the generated top-k kernels are not in this checkout's registry.json")
+    out = torch.empty(rows, TOPK_K, dtype=torch.int32, device=logits.device)
+    if rows == 0:
+        return out[:, :topk]
+    _kernel(name, logits.device).launch(
+        grid=(rows, 1, 1),
+        logits=logits.contiguous(),
+        out=out,
+        row_end=_topk_no_row_end(logits.device),
+        n_kv=num_keys,
+        has_row_end=0,
+    )
+    return out if topk == TOPK_K else out[:, :topk].contiguous()
+
+
 __all__ = [
     "ATTENTION_D_LATENT",
     "ATTENTION_D_ROPE",
@@ -503,6 +583,8 @@ __all__ = [
     "INDEXER_HEAD_DIM",
     "REDUCE_SPLIT_MAX_DIM",
     "MODULES",
+    "TOPK_CAPACITIES",
+    "TOPK_K",
     "AttentionGeometry",
     "attention_block_h",
     "attention_geometry",
@@ -515,6 +597,8 @@ __all__ = [
     "dsa_indexer_backward_rows",
     "dsa_indexer_logits",
     "dsa_segmented_reduce_launch",
+    "dsa_topk",
     "indexer_key_block",
     "indexer_padded_heads",
+    "topk_capacity",
 ]
